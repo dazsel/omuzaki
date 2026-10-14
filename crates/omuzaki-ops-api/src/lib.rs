@@ -18,6 +18,7 @@ mod actor;
 mod approval;
 mod ctx;
 mod error;
+mod fence;
 mod file_access;
 mod jobs;
 mod nested;
@@ -31,6 +32,7 @@ pub use actor::{Actor, Cause, CauseKind, Grants};
 pub use approval::{ApprovalId, ApprovalRef, ApprovalRequest, Decision, Need, PendingApproval, Resolution, Resolved};
 pub use ctx::OpCtx;
 pub use error::{ErrorCode, ErrorDetail, OpError, RevertConflict};
+pub use fence::{fence_covers, fence_overlap, fence_within, normalize_fence};
 pub use file_access::{
     CanonicalPath, DirEntryInfo, EntryKind, FsMode, ProjectDir, ProjectDirError, Replacement, WriteMode,
 };
@@ -39,7 +41,7 @@ pub use jobs::{
     Lane, NeverCancel,
 };
 pub use registry::{OpRegistration, find, registrations};
-pub use runner::{Event, Mode, OpInfo, OpRecord, Outcome, Request, Runner, TxId};
+pub use runner::{ClashKind, Event, Mode, OpInfo, OpRecord, Outcome, Request, Runner, TxId};
 pub use scope::Scope;
 pub use services::{Service, Services, ServicesBuilder};
 pub use session::{
