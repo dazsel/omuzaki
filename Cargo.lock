@@ -3799,6 +3799,7 @@ dependencies = [
 name = "omuzaki-mcp"
 version = "0.0.0"
 dependencies = [
+ "base64",
  "blake3",
  "bytes",
  "constant_time_eq",
@@ -3810,6 +3811,8 @@ dependencies = [
  "omuzaki-doc-api",
  "omuzaki-doc-mock",
  "omuzaki-ops-api",
+ "omuzaki-store-api",
+ "omuzaki-store-mock",
  "proptest",
  "reqwest",
  "rmcp",

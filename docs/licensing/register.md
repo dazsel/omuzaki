@@ -45,6 +45,7 @@ Format rule (the repo licence gate will parse this): one row per item, with colu
 | toml, toml_edit | crate | project files | yes | | (crates.io: MIT OR Apache-2.0) |
 | clap | crate | CLI | yes | | (crates.io: MIT OR Apache-2.0) |
 | blake3 | crate | content hashes for the asset store | yes | | (crates.io: CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception) |
+| base64 0.23 | crate | standard base64 for the blob of MCP image resources (`omuzaki-mcp` `RenderProvider`) | yes | MIT OR Apache-2.0: keep the notices; already in the lock through rmcp, so no new crate | #881 |
 | image (png only) | crate | golden renders, thumbnails | yes | | (crates.io: MIT OR Apache-2.0) |
 | tokio | crate | async runtime for MCP | yes | | (crates.io: MIT) |
 | tracing, tracing-subscriber | crate | logging | yes | | (crates.io: MIT) |
