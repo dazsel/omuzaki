@@ -1,0 +1,14 @@
+{
+  "default": 10,
+  "crates": {
+    "omuzaki-char": 1361,
+    "omuzaki-rig": 69,
+    "omuzaki-stage": 48,
+    "omuzaki-render": 45,
+    "omuzaki-store": 27,
+    "omuzaki-gltf": 25,
+    "omuzaki-pixfmt": 19,
+    "omuzaki-ui": 12,
+    "omuzaki-io-vrm": 11
+  }
+}
