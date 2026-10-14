@@ -189,11 +189,14 @@ impl BuiltCharacter {
     /// Returns the names of the materials whose spec changed, in name order: what a stage must update on the renderer.
     ///
     /// # Errors
-    /// [`LookError::Invalid`] if `look` does not validate; the character is then unchanged.
+    /// [`LookError::Invalid`] if `look` does not validate, or if it makes a material the renderer would reject (a
+    /// finite width times a finite scale can overflow); the character is then unchanged.
     pub fn apply_look(&mut self, look: &LookParams) -> Result<Vec<MaterialName>, LookError> {
         look.validate()?;
+        let drawn =
+            self.draw(look).into_iter().map(|(name, d)| d.map(|spec| (name, spec))).collect::<Result<Vec<_>, _>>()?;
         self.look = look.clone();
-        Ok(self.redraw())
+        Ok(self.commit(drawn))
     }
 
     /// The look the materials are drawn in. Empty after a build: the parts' own materials, the soft-SD look.
@@ -206,21 +209,35 @@ impl BuiltCharacter {
     /// [`apply_look`](Self::apply_look) does. It can't fail: a character's look validated when it was applied.
     pub fn inherit_look(&mut self, previous: &Self) -> Vec<MaterialName> {
         self.look.clone_from(&previous.look);
-        self.redraw()
+        // The rebuilt parts can differ from the ones the look was checked on; a material the look would make invalid
+        // keeps its part's own spec rather than failing the rebuild.
+        let drawn = self
+            .draw(&self.look)
+            .into_iter()
+            .map(|(name, d)| (name.clone(), d.unwrap_or_else(|_| self.part_materials[&name].clone())))
+            .collect();
+        self.commit(drawn)
     }
 
-    /// Draws every part material in the current look; returns the names whose drawn material changed.
-    fn redraw(&mut self) -> Vec<MaterialName> {
-        let look = &self.look;
-        let by_class: BTreeMap<MaterialClass, _> = MaterialClass::ALL.into_iter().map(|c| (c, look.class(c))).collect();
+    /// Every part material drawn in `look`, in name order; a material the look makes invalid carries the error.
+    fn draw(&self, look: &LookParams) -> Vec<(MaterialName, Result<MaterialSpec, LookError>)> {
+        self.part_materials
+            .iter()
+            .map(|(name, part)| {
+                let class = self.material_classes.get(name).copied().unwrap_or(MaterialClass::Cloth);
+                let drawn = look.class(class).try_apply(part, &format!("materials.{}", name.as_str()));
+                (name.clone(), drawn)
+            })
+            .collect()
+    }
+
+    /// Stores `drawn`; returns the names whose drawn material changed.
+    fn commit(&mut self, drawn: Vec<(MaterialName, MaterialSpec)>) -> Vec<MaterialName> {
         let mut changed = Vec::new();
-        for (name, part) in &self.part_materials {
-            let class = self.material_classes.get(name).copied().unwrap_or(MaterialClass::Cloth);
-            let Some(settings) = by_class.get(&class) else { continue };
-            let drawn = settings.apply(part);
-            if self.materials.get(name) != Some(&drawn) {
+        for (name, spec) in drawn {
+            if self.materials.get(&name) != Some(&spec) {
                 changed.push(name.clone());
-                self.materials.insert(name.clone(), drawn);
+                self.materials.insert(name, spec);
             }
         }
         changed

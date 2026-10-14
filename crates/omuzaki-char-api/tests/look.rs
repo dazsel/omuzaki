@@ -280,3 +280,30 @@ fn presets_register_resolve_and_suggest_the_nearest_id() {
     let missing_default = LookDef::default().resolve().unwrap_err();
     assert!(matches!(missing_default, LookError::UnknownPreset { ref id, .. } if id == "soft-sd"), "{missing_default}");
 }
+
+#[test]
+fn a_look_whose_computed_values_overflow_is_refused_and_changes_nothing() {
+    let mut built = built();
+    built.apply_look(&soft()).unwrap();
+    let (look, materials) = (built.look().clone(), built.materials.clone());
+    // Each number is finite and >= 0 on its own; their product is not a width the renderer accepts.
+    let overflow = LookParams {
+        all: ClassLook { outline_width: Some(1e30), outline_width_scale: Some(1e30), ..ClassLook::default() },
+        ..LookParams::default()
+    };
+    let err = built.apply_look(&overflow).unwrap_err();
+    assert!(matches!(&err, LookError::Invalid { path, .. } if path.starts_with("materials.look-")), "{err:?}");
+    assert_eq!((built.look(), &built.materials), (&look, &materials), "the character is as it was");
+    // A rim scale that overflows the strength is refused the same way.
+    let rim =
+        LookParams { all: ClassLook { rim_scale: Some(f32::MAX), ..ClassLook::default() }, ..LookParams::default() };
+    let big_rim = LookParams { all: ClassLook { rim_scale: Some(f32::MAX), ..rim.all.clone() }, ..rim };
+    let mut loud = self::built();
+    for spec in loud.part_materials.values_mut() {
+        if let Shading::Toon(t) = &mut spec.shading {
+            t.rim.strength = 2.0;
+        }
+    }
+    assert!(loud.apply_look(&big_rim).is_err());
+    assert!(loud.look().is_empty());
+}

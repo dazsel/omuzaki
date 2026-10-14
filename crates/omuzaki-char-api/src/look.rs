@@ -448,7 +448,14 @@ impl ClassLook {
         if let Some(program) = &self.program
             && let Some(name) = &program.name
         {
-            out.shading = Shading::Program { name: name.clone(), params: program.params.clone() };
+            // Retaining the program keeps its parameters (a hair program's palette-resolved root, mid and tip colours),
+            // with the look's own parameters over them; only a different program starts from the look's parameters.
+            match &mut out.shading {
+                Shading::Program { name: current, params } if current == name => {
+                    params.extend(program.params.iter().map(|(k, v)| (k.clone(), *v)));
+                }
+                shading => *shading = Shading::Program { name: name.clone(), params: program.params.clone() },
+            }
         }
         match &mut out.shading {
             Shading::Toon(toon) => {
@@ -471,6 +478,22 @@ impl ClassLook {
             out.receives_shadows = receives;
         }
         out
+    }
+
+    /// [`apply`](Self::apply), then the renderer's own material check on the result, so a look that is valid on its
+    /// own but overflows on this material (a width of 1e30 times a scale of 1e30) is refused here instead of stored.
+    /// A material the look leaves as it was is not checked: it is the part's business.
+    ///
+    /// # Errors
+    /// [`LookError::Invalid`] at `path` with the renderer's reason.
+    pub fn try_apply(&self, spec: &MaterialSpec, path: &str) -> Result<MaterialSpec, LookError> {
+        let drawn = self.apply(spec);
+        if drawn != *spec
+            && let Err(e) = drawn.validate()
+        {
+            return Err(invalid(path, format!("the look makes a material the renderer rejects: {e}")));
+        }
+        Ok(drawn)
     }
 
     /// The line `spec` gets. Untouched when no outline field is set, so the empty look keeps the part's bytes; a width
@@ -987,6 +1010,44 @@ mod tests {
         assert_eq!(params[&slug("ring-strength")], ParamValue::Float(0.0));
         assert_eq!(params[&slug("root")], ParamValue::Colour(Colour::hex(0x0011_2233)), "other parameters stay");
         assert_eq!(flat_hair.apply(&toon(0.28, 0.1)), toon(0.28, 0.1), "a toon material has no hair program");
+    }
+
+    #[test]
+    fn retaining_the_program_name_keeps_its_parameters() {
+        let named = |params: ProgramParams| ClassLook {
+            program: Some(ProgramLook { name: Some(slug(HAIR_PROGRAM)), params }),
+            ..ClassLook::default()
+        };
+        let Shading::Program { params: own, .. } = hair().shading else { panic!("a program") };
+        let Shading::Program { params, .. } = named(ProgramParams::default()).apply(&hair()).shading else {
+            panic!("still a program")
+        };
+        assert_eq!(params, own);
+        assert_eq!(params[&slug("root")], ParamValue::Colour(Colour::hex(0x0011_2233)));
+        // The look's own parameters win over the retained ones; the rest stay.
+        let look = named([(slug("ring-strength"), ParamValue::Float(0.0))].into());
+        let Shading::Program { params, .. } = look.apply(&hair()).shading else { panic!("still a program") };
+        assert_eq!(params[&slug("ring-strength")], ParamValue::Float(0.0));
+        assert_eq!(params[&slug("root")], ParamValue::Colour(Colour::hex(0x0011_2233)));
+    }
+
+    #[test]
+    fn a_look_that_overflows_a_material_is_refused() {
+        let huge = ClassLook { outline_width: Some(1e30), outline_width_scale: Some(1e30), ..ClassLook::default() };
+        assert!(huge.validate("cloth").is_ok(), "each number is finite on its own");
+        let err = huge.try_apply(&toon(0.28, 0.1), "materials.skin").unwrap_err();
+        assert!(matches!(&err, LookError::Invalid { path, .. } if path == "materials.skin"), "{err:?}");
+        let rim = ClassLook { rim_scale: Some(f32::MAX), ..ClassLook::default() };
+        assert!(rim.try_apply(&toon(0.28, f32::MAX), "m").is_err(), "rim strength overflows");
+        // The boundary: the largest finite width is accepted, one past it is not.
+        let edge = ClassLook { outline_width: Some(f32::MAX), outline_width_scale: Some(1.0), ..ClassLook::default() };
+        assert_eq!(edge.try_apply(&toon(0.28, 0.1), "m").unwrap().outline.unwrap().width, f32::MAX);
+        let past = ClassLook { outline_width_scale: Some(2.0), ..edge };
+        assert!(past.try_apply(&toon(0.28, 0.1), "m").is_err());
+        // A look that changes nothing never fails, even on a material the renderer would reject.
+        let mut broken = toon(0.28, 0.1);
+        broken.outline = Some(Outline { colour: Colour::BLACK, width: f32::INFINITY });
+        assert_eq!(ClassLook::default().try_apply(&broken, "m").unwrap(), broken);
     }
 
     #[test]
