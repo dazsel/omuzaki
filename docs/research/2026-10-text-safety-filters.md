@@ -24,17 +24,36 @@ Evidence legend: **read** = the file or page was read in this session; **search*
 
 | # | Candidate | Weights licence | Training data | Runtime and deps | Verdict |
 |---|---|---|---|---|---|
-| 1 | **Own rule layer**: Unicode normalisation, per-language word lists, regex for links and personal data, run and repeat limits | none (no weights); our code, written by us | none; word lists we write (§6) | in-process Rust; Aho-Corasick and regex crates (rows needed when the code lands); `unicode-normalization` already in the register | `yes` |
+| 1 | **Own rule layer**: Unicode normalisation, per-language word lists, regex for links and personal data, run and repeat limits | none (no weights); our code, written by us | none; word lists we write (§6) | in-process Rust; `aho-corasick`, `regex` and `unicode-normalization` (runtime licences in §2.1; register rows added) | `yes` |
 | 2 | **Detoxify** `original`, `unbiased`, `multilingual` (Unitary) | not read (Hub cards); code is Apache-2.0 | Jigsaw Kaggle competitions 2018, 2019, 2020 ([README, read](https://raw.githubusercontent.com/unitaryai/detoxify/master/README.md)); Kaggle data terms not read | PyTorch; `ort` needs an ONNX export we would make; `multilingual` is `xlm-roberta-base` | `unverified` |
 | 3 | **Llama Guard 3-1B** (Meta) | Llama 3.2 Community Licence ([read](https://raw.githubusercontent.com/meta-llama/PurpleLlama/main/Llama-Guard3/1B/LICENSE)): attribution and copy of the agreement on redistribution, an Acceptable Use Policy flow-down, a 700M monthly-user clause; no non-commercial term | Llama 3 / 2 generations on hh-rlhf prompts plus "human and synthetically generated" multilingual data ([model card, read](https://raw.githubusercontent.com/meta-llama/PurpleLlama/main/Llama-Guard3/1B/MODEL_CARD.md)); the extra data is not described | generative LLM, 1B params; server or llama.cpp-class runtime, not `ort` today | `unverified` (training data); weights are `conditions` |
 | 4 | **Llama Prompt Guard 2 22M / 86M** (Meta; injection and jailbreak) | Llama community licence per the family; this card does not state it, not read | open datasets plus Meta's synthetic injections and red-team data; base models `deberta-v3-xsmall` (22M) and `mdeberta-v3-base` (86M), MIT per the card ([card, read](https://raw.githubusercontent.com/meta-llama/PurpleLlama/main/Llama-Prompt-Guard-2/86M/MODEL_CARD.md)) | encoder classifier; ONNX export is plausible, not done | `unverified` |
-| 5 | **Granite Guardian** 3.x / 4.1, 2B to 8B (IBM) | Apache-2.0 ([README, read](https://raw.githubusercontent.com/ibm-granite/granite-guardian/main/README.md); `LICENSE` read) | not read | generative LLM; the README's examples use vLLM (server) | `unverified` (training data); weights `yes` |
+| 5a | **Granite Guardian** 3.x / 4.1, 2B to 8B (IBM) | Apache-2.0 ([README, read](https://raw.githubusercontent.com/ibm-granite/granite-guardian/main/README.md); `LICENSE` read) | not read | generative LLM; the README's examples use vLLM (server); runtime licences in §2.1 | `unverified` (training data); weights `yes` |
+| 5b | **Granite Guardian HAP 38M and 125M** (IBM; hate, abuse, profanity classifiers) | the README lists both and gives the Granite Guardian family as Apache-2.0, but the two HAP model cards are on the Hub and were not read | "several English HAP benchmarks", not named; 38M base is `slate.38m.english.distilled` ([IBM cookbook notebook, read](https://raw.githubusercontent.com/ibm-granite-community/granite-snack-cookbook/main/recipes/Granite_Guardian/HAP.ipynb)); the 125M base is not stated | encoder classifier (4 layers, 12 heads for the 38M); the cookbook runs it in PyTorch with `transformers`; `ort` needs an ONNX export we would make; runtime licences in §2.1 | `unverified` (weights card and benchmark licences not read) |
 | 6 | **Qwen3Guard** Gen and Stream, 0.6B / 4B / 8B (Alibaba) | not found: the repository has no `LICENSE` on `main` (404) and the cards are on the Hub | "1.19 million prompts and responses labeled for safety" ([README, read](https://raw.githubusercontent.com/QwenLM/Qwen3Guard/main/README.md)); sources not described | generative LLM; Stream needs Qwen3 token ids and `trust_remote_code`; server-class | `unverified` |
 | 7 | **gpt-oss-safeguard** (OpenAI) | gpt-oss is Apache-2.0 ([repo README and `LICENSE`, read](https://raw.githubusercontent.com/openai/gpt-oss/main/README.md)); the safeguard variant's own card is not read | not read | 20B-class (gpt-oss-20b is 21B params, 3.6B active); server | `unverified` |
 | 8 | **LLM Guard** (Protect AI) and its prompt-injection / toxicity models | library MIT ([`LICENSE`, read](https://raw.githubusercontent.com/protectai/llm-guard/main/LICENSE)); the models are on the Hub, not read | not read | Python library; README says the project and its models are "no longer under active development or maintained" | `unverified` |
 | 9 | **OpenAI moderation endpoint** (`omni-moderation-latest`) | hosted service, no weights | undisclosed | needs an OpenAI account, a network call per sentence: **needs-user**. Free to API users per a third-party summary; OpenAI's terms not read ([search](https://developers.openai.com/api/docs/models/omni-moderation-latest.md)) | `unverified` |
 | 10 | **Perspective API** (Jigsaw) | hosted service, no weights | undisclosed | needs an API key: **needs-user**. Stops on 2026-12-31, no new requests ([perspectiveapi.com sunset notice, via search](https://perspectiveapi.com/)) | `NO` (service ends) |
 | 11 | **LLM-as-judge through the person's own provider** (`llm-api.md` seam) | none from us: the person's model and provider | the provider's | one extra LLM call per turn through the existing `LlmClient`; **needs-user**, `spend` scope, off by default | `conditions` (opt-in; nothing shipped) |
+
+### 2.1 Runtime and dependency licences (the policy's third check)
+
+Read from each project's `LICENSE` on GitHub, retrieved 2026-10-14. "Needed by" is which candidates in §2 use it. This checks the licence of the runtime itself; its own dependency trees were not walked, so any runtime we would ship still goes through `cargo deny` or the third-party notices (`policy.md`, "Adding anything new").
+
+| Runtime or dependency | Needed by | Licence (primary source) | Verdict |
+|---|---|---|---|
+| ONNX Runtime and `ort` | 2, 4, 5b after export | MIT, "Copyright (c) Microsoft Corporation" ([LICENSE](https://raw.githubusercontent.com/microsoft/onnxruntime/main/LICENSE)); already registered at 1.28.3 | `yes` |
+| PyTorch | 2, 4, 5b (the vendors' reference code) | BSD-style, Facebook, DeepMind and others ([LICENSE](https://raw.githubusercontent.com/pytorch/pytorch/main/LICENSE)); bundled third-party notices unread; not shipped by us | `conditions` |
+| Hugging Face `transformers` | 2, 4, 5b, 6 reference code | Apache-2.0 ([LICENSE](https://raw.githubusercontent.com/huggingface/transformers/main/LICENSE)); not shipped by us | `yes` |
+| llama.cpp | 3, 5a, 6 (the local LLM runtime option) | MIT, "Copyright (c) 2023-2026 The ggml authors" ([LICENSE](https://raw.githubusercontent.com/ggml-org/llama.cpp/master/LICENSE)) | `yes` |
+| vLLM | 5a, 6, 7 (server option) | Apache-2.0 ([LICENSE](https://raw.githubusercontent.com/vllm-project/vllm/main/LICENSE)); its Python and CUDA dependency tree unread | `conditions` |
+| Qwen3Guard `trust_remote_code` model code | 6 | not found: no `LICENSE` in the repository (404 on `main`) | `unverified` |
+| `aho-corasick` | 1 | Unlicense or MIT ([UNLICENSE](https://raw.githubusercontent.com/BurntSushi/aho-corasick/master/UNLICENSE), [LICENSE-MIT](https://raw.githubusercontent.com/BurntSushi/aho-corasick/master/LICENSE-MIT)); already in `Cargo.lock` | `yes` |
+| `regex` | 1 | MIT or Apache-2.0 ([LICENSE-MIT](https://raw.githubusercontent.com/rust-lang/regex/master/LICENSE-MIT), [LICENSE-APACHE](https://raw.githubusercontent.com/rust-lang/regex/master/LICENSE-APACHE)); already in `Cargo.lock` | `yes` |
+| `unicode-normalization` | 1 | MIT or Apache-2.0 ([LICENSE-MIT](https://raw.githubusercontent.com/unicode-rs/unicode-normalization/master/LICENSE-MIT)); already a register row | `yes` |
+
+PyTorch, `transformers` and vLLM are Python-side tools for the vendors' reference code; our shippable path loads none of them. The Python candidates become shippable only through an ONNX export run by `ort`, which is why rows 2, 4 and 5b need an export we can reproduce (§5).
 
 Notes that decide the table:
 
@@ -52,14 +71,15 @@ Sizes are what the architecture implies, not file sizes read from a Hub listing 
 | 2 | after our own ONNX export | `xlm-roberta-base` is about 278M params, roughly 1.1 GB at fp32 (arithmetic, claimed); the Albert `-small` variants are smaller | **claimed** tens of ms on a mid laptop core for a base-size encoder at 40 tokens; unmeasured | `multilingual` trained on en, fr, es, it, pt, tr, ru ([README](https://raw.githubusercontent.com/unitaryai/detoxify/master/README.md)): **en, es, pt only**; no ja, ko, zh |
 | 3 | no (LLM) | 1B params; the card ships a pruned INT4 variant | **claimed** hundreds of ms on CPU (1B generative); over budget | en, fr, de, hi, it, pt, es, th ([card](https://raw.githubusercontent.com/meta-llama/PurpleLlama/main/Llama-Guard3/1B/MODEL_CARD.md)): **en, es, pt only** |
 | 4 | probably (encoder) | 22M and 86M params | vendor: 19.3 ms (22M) and 92.4 ms (86M) per classification on an **A100 GPU at 512 tokens** ([card](https://raw.githubusercontent.com/meta-llama/PurpleLlama/main/Llama-Prompt-Guard-2/86M/MODEL_CARD.md)); a CPU figure is not given, so **claimed**, unknown | 86M evaluated on en, fr, de, hi, it, pt, es, th: **en, es, pt**; the 22M is English-centric by the card's own limits |
-| 5 | no (LLM) | 2B to 8B params | **claimed** seconds on CPU; over budget | not stated in the README |
+| 5a | no (LLM) | 2B to 8B params | **claimed** seconds on CPU; over budget | **English only**: the README says "The model is only trained and tested on English data" |
+| 5b | after our own ONNX export | 38M params (about 150 MB at fp32, arithmetic, claimed); 125M params (about 500 MB, claimed) | the vendor says "low inference latency" on CPUs, with no number ([cookbook, read](https://raw.githubusercontent.com/ibm-granite-community/granite-snack-cookbook/main/recipes/Granite_Guardian/HAP.ipynb)); **claimed** single-digit to low tens of ms for the 38M at 40 tokens, unmeasured | **English only** for the 38M (English base and benchmarks); the 125M is not stated, so treated as English only |
 | 6 | no (LLM; Stream needs Qwen3 ids) | 0.6B to 8B params | **claimed** hundreds of ms on CPU at 0.6B; over budget | "119 languages and dialects" per the README (**claimed**): would cover all six, unmeasured |
 | 7 | no | 21B params | **claimed** far over budget; server | not read |
 | 8 | no (Python) | n/a | n/a | not read |
 | 9, 10 | n/a (network) | none | a network round trip, **claimed** 100 ms or more, over budget | OpenAI: "especially in non-English languages" ([announcement, via search](https://openai.com/index/upgrading-the-moderation-api-with-our-new-multimodal-moderation-model/)); exact languages not read |
 | 11 | n/a (the person's provider) | none | one LLM call, **claimed** a second or more | the provider's model |
 
-Reading across: **only the rule layer and a small encoder classifier can meet 30 ms on a CPU core**, and the only encoder candidates (2, 4) are `unverified` and cover three of the six languages at best. Ja, ko and zh have no candidate except row 6 (an LLM) and our own lists.
+Reading across: **only the rule layer and a small encoder classifier can meet 30 ms on a CPU core**, and the encoder candidates (2, 4, 5b) are all `unverified`. Of them, Detoxify `multilingual` and Prompt Guard 2 86M reach three of the six languages (en, es, pt) and the Granite HAP 38M reaches one (en) but is the smallest and the most likely to fit the budget. Ja, ko and zh have no candidate except row 6 (an LLM) and our own lists.
 
 ## 4. Recommended first-party chain
 
@@ -87,7 +107,7 @@ No learned classifier covers the gaps in the shippable path. That is the stated 
 
 ## 5. What would unlock a classifier
 
-A classifier enters the shippable path when one candidate has, from primary sources: the weights licence read from a `LICENSE` or card; the training data named and its licence read; runtime dependencies checked; an ONNX export we can reproduce; and a latency measured on the reference machines (`2026-10-reference-machine-definition.md`) at or under 30 ms for 40 tokens. Rows 2 and 4 are the nearest in size; each needs the Hub card and the training-data terms read. Until then the verdict stays `unverified`.
+A classifier enters the shippable path when one candidate has, from primary sources: the weights licence read from a `LICENSE` or card; the training data named and its licence read; runtime dependencies checked; an ONNX export we can reproduce; and a latency measured on the reference machines (`2026-10-reference-machine-definition.md`) at or under 30 ms for 40 tokens. Row 5b (Granite HAP 38M) is the nearest to the budget but English only; rows 2 and 4 reach en, es and pt; each needs its Hub card and training-data terms read. Until then the verdict stays `unverified`, and the shippable chain is unchanged by adding the runtime check: the only runtimes it needs (`aho-corasick`, `regex`, `unicode-normalization`) are `yes`, and a classifier would run on `ort`, also `yes`.
 
 ## 6. Test-set plan (licence-clean)
 
@@ -102,7 +122,7 @@ For AP-07's regression suite (`evals.md` §11 holds real sets out of the reposit
 
 ## 7. Open points
 
-- Read the Hub cards and training-data statements for rows 2, 4, 5, 6 and 7 once `huggingface.co` is reachable; then re-grade.
+- Read the Hub cards and training-data statements for rows 2, 4, 5a, 5b, 6 and 7 once `huggingface.co` is reachable; then re-grade.
 - Read the Llama Acceptable Use Policy flow-down and decide if it is acceptable to pass to our users (legal review).
 - Read OpenAI's usage terms before any hosted-moderation connector (row 9).
 - Word lists for ja, ko and zh need a native-speaker review by the maintainers; we do not copy third-party lists, and each list's provenance is recorded.
