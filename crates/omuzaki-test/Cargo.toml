@@ -49,11 +49,6 @@ omuzaki-io-gltf = { path = "../omuzaki-io-gltf" }
 omuzaki-io-mock = { path = "../omuzaki-io-mock" }
 omuzaki-io-ops = { path = "../omuzaki-io-ops" }
 
-# The model folder checks (tests/track_models.rs) open `omuzaki_track::ModelDir` over stand-in files.
-omuzaki-ai-api = { path = "../omuzaki-ai-api" }
-omuzaki-track = { path = "../omuzaki-track" }
-sha2.workspace = true
-
 [lints]
 workspace = true
 

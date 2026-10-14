@@ -1,4 +1,4 @@
-//! The model folder checks of `omuzaki_track::ModelDir`, over stand-in files so they need no model and always run.
+//! The model folder checks of `omuzaki_track::models::ModelDir`, over stand-in files so they need no model and always run.
 //! The real graphs, the runtime and the tracker meet in the gated tests that follow in a later change.
 #![allow(clippy::unwrap_used)] // a panic is a test failure
 
@@ -8,7 +8,7 @@ use omuzaki_ai_api::{
     FetchError, FileSource, LoadError, ModelSource, PinnedFile, Probe, Progress, Runtime, RuntimeId, Session,
     SessionOptions, Signature,
 };
-use omuzaki_track::{MODEL_FILES, ModelDir, ModelError};
+use omuzaki_track::models::{MODEL_FILES, ModelDir, ModelError};
 use sha2::{Digest, Sha256};
 
 /// A folder of stand-in files with a matching manifest, for the checks that need no model.

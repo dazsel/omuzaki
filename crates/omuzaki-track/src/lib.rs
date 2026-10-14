@@ -14,7 +14,7 @@
 //! | [`metadata`] | the canonical face ([`GeometryMetadata`]) and the protobuf reader for it |
 //! | [`geometry`] | the head-pose fit (Procrustes through a virtual camera) |
 //! | [`smoothing`] | the One-Euro landmark filter |
-//! | [`models`] | [`ModelDir`]: the verified model folder and its three loaded graphs |
+//! | [`models`] | [`models::ModelDir`]: the verified model folder and its three loaded graphs |
 //! | [`pipeline`] | [`FaceTracker`]: the three graphs, tracking between frames, [`Mode`] |
 //! | [`sample`] | [`FaceSample`], [`StageTimings`] and [`to_track_frame`] |
 //! | [`error`] | [`FaceTrackError`] |
@@ -44,7 +44,6 @@ pub use error::FaceTrackError;
 pub use frame::RgbFrame;
 pub use landmarks::landmarks_signature;
 pub use metadata::GeometryMetadata;
-pub use models::{MODEL_FILES, ModelDir, ModelError};
 pub use pipeline::{FaceGraphs, FaceTracker, FaceTrackerConfig, Mode};
 pub use roi::NormRect;
 pub use sample::{FaceSample, StageTimings, to_track_frame};

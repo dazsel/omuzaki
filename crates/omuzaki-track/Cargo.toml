@@ -20,6 +20,8 @@ omuzaki-core = { path = "../omuzaki-core" }
 [dev-dependencies]
 criterion.workspace = true
 omuzaki-ai-mock = { path = "../omuzaki-ai-mock" }
+sha2.workspace = true
+tempfile.workspace = true
 
 [[bench]]
 name = "pipeline"
