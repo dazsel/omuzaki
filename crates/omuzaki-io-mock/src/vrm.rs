@@ -76,7 +76,7 @@ pub(crate) fn write(scene: &IoScene, gltf: &mut Gltf, report: &mut Report) {
         ext["firstPerson"] = first_person_json(first);
     }
     let mut extensions = vec![(EXTENSION, ext)];
-    if let Some(body) = spring::body(av) {
+    if let Some(body) = spring::body(av, report) {
         extensions.push((spring::EXTENSION, body));
     }
     for (name, body) in extensions {

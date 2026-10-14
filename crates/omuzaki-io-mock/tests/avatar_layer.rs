@@ -68,6 +68,7 @@ fn rich_scene() -> IoScene {
         gravity_power: 0.5,
         gravity_dir: Vec3::new(0.0, -1.0, 0.25),
         drag_force: 0.25,
+        limit: None,
     };
     let av = s.avatar.as_mut().expect("the fixture has an avatar");
     av.spring_bones = SpringBones {
@@ -221,6 +222,23 @@ fn an_avatar_without_springs_writes_no_spring_extension_and_constraints_are_stil
 }
 
 #[test]
+fn extended_colliders_and_limits_are_written_as_the_inert_fallback_and_reported() {
+    let mut scene = rich_scene();
+    let node = ix(&scene, "head");
+    let sb = &mut scene.avatar.as_mut().unwrap().spring_bones;
+    let before = sb.colliders.len();
+    sb.colliders.push(Collider { node, shape: ColliderShape::Plane { offset: Vec3::ZERO, normal: Vec3::Y } });
+    sb.chains[0].joints[0].limit =
+        Some(omuzaki_io_api::JointLimit::Cone { angle: 0.5, rotation: omuzaki_core::glam::Quat::IDENTITY });
+    let out = export_outcome(&scene);
+    let dropped = out.report.findings.iter().filter(|f| f.rule == "gltf.extension_dropped").count();
+    assert_eq!(dropped, 2, "one for the collider, one for the limit: {:#?}", out.report);
+    let (doc, _) = glb_parts(&out.files[0].bytes).expect("a GLB");
+    let shape = &doc["extensions"]["VRMC_springBone"]["colliders"][before]["shape"];
+    assert_eq!(*shape, json!({ "sphere": { "offset": [0.0, -10000.0, 0.0], "radius": 0.0 } }));
+}
+
+#[test]
 fn a_joint_that_leaves_its_parameters_out_reads_back_as_the_spec_defaults() {
     let scene = rich_scene();
     let right_upper = ix(&scene, "rightUpperArm");
@@ -302,6 +320,7 @@ proptest! {
                     gravity_power: gravity,
                     gravity_dir: Vec3::new(offset, gravity_y, 0.0),
                     drag_force: drag,
+                    limit: None,
                 }],
                 collider_groups: vec![0],
                 center: None,
@@ -319,4 +338,13 @@ proptest! {
         prop_assert_eq!(&avatar_of(&back).spring_bones, &avatar_of(&scene).spring_bones);
         prop_assert_eq!(avatar_of(&back).look_at, avatar_of(&scene).look_at);
     }
+}
+
+/// The mock's spring JSON for plain spheres, capsules and joints is what `main` wrote before the extended shapes.
+#[test]
+fn existing_spring_json_is_byte_identical_to_the_pre_extension_baseline() {
+    let out = export_outcome(&rich_scene());
+    let (doc, _) = glb_parts(&out.files[0].bytes).expect("a GLB");
+    let baseline = include_str!("baseline/spring_mock.json").trim_end();
+    assert_eq!(doc["extensions"]["VRMC_springBone"].to_string(), baseline);
 }

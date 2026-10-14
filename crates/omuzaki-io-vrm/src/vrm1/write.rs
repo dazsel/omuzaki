@@ -80,7 +80,7 @@ pub(crate) fn root_extensions(scene: &IoScene, report: &mut Report) -> Vec<(&'st
     licence_condition(scene, report);
     let mut out = vec![(EXTENSION, body)];
     if !av.spring_bones.chains.is_empty() || !av.spring_bones.colliders.is_empty() {
-        out.push((SPRING_BONE, to_json(&spring_bones(av))));
+        out.push((SPRING_BONE, to_json(&spring_bones(av, report))));
     }
     out
 }
@@ -159,27 +159,64 @@ fn look_at(l: &LookAt) -> WireLookAt {
     }
 }
 
-fn spring_bones(av: &Avatar) -> WireSpringBone {
+/// The base shape of a collider. `VRMC_springBone_extended_collider` shapes are not written yet: each one gets the
+/// spec's own fallback for a reader without the extension, an inert sphere of radius 0 far below the model, so the
+/// collider indices in the groups stay valid.
+fn base_shape(shape: ColliderShape) -> (WireShape, bool) {
+    match shape {
+        ColliderShape::Sphere { offset, radius } => {
+            (WireShape { sphere: Some(WireSphere { offset: offset.to_array(), radius }), capsule: None }, false)
+        }
+        ColliderShape::Capsule { offset, radius, tail } => (
+            WireShape {
+                sphere: None,
+                capsule: Some(WireCapsule { offset: offset.to_array(), radius, tail: tail.to_array() }),
+            },
+            false,
+        ),
+        _ => (WireShape { sphere: Some(WireSphere { offset: INERT_OFFSET, radius: 0.0 }), capsule: None }, true),
+    }
+}
+
+/// Where the inert fallback sphere sits (`VRMC_springBone_extended_collider-1.0`, "Fallback").
+const INERT_OFFSET: [f32; 3] = [0.0, -10_000.0, 0.0];
+
+fn spring_bones(av: &Avatar, report: &mut Report) -> WireSpringBone {
     let sb = &av.spring_bones;
+    let mut colliders_dropped = 0_usize;
+    let colliders = sb
+        .colliders
+        .iter()
+        .map(|c| {
+            let (shape, dropped) = base_shape(c.shape);
+            colliders_dropped += usize::from(dropped);
+            WireCollider { node: c.node.index(), shape: Some(shape), extensions: BTreeMap::new() }
+        })
+        .collect();
+    let limits_dropped = sb.chains.iter().flat_map(|c| &c.joints).filter(|j| j.limit.is_some()).count();
+    if colliders_dropped > 0 {
+        report.push(
+            Finding::warning(
+                "vrm.collider_dropped",
+                format!(
+                    "{colliders_dropped} inside-out or plane collider(s) are not written yet; an inert sphere stands in"
+                ),
+            )
+            .at("avatar/springBone/colliders"),
+        );
+    }
+    if limits_dropped > 0 {
+        report.push(
+            Finding::warning(
+                "vrm.limit_dropped",
+                format!("{limits_dropped} spring joint limit(s) are not written yet"),
+            )
+            .at("avatar/springBone/springs"),
+        );
+    }
     WireSpringBone {
         spec_version: "1.0".to_owned(),
-        colliders: sb
-            .colliders
-            .iter()
-            .map(|c| WireCollider {
-                node: c.node.index(),
-                shape: Some(match c.shape {
-                    ColliderShape::Sphere { offset, radius } => {
-                        WireShape { sphere: Some(WireSphere { offset: offset.to_array(), radius }), capsule: None }
-                    }
-                    ColliderShape::Capsule { offset, radius, tail } => WireShape {
-                        sphere: None,
-                        capsule: Some(WireCapsule { offset: offset.to_array(), radius, tail: tail.to_array() }),
-                    },
-                }),
-                extensions: BTreeMap::new(),
-            })
-            .collect(),
+        colliders,
         collider_groups: sb
             .collider_groups
             .iter()

@@ -166,6 +166,9 @@ pub(crate) fn write(scene: &IoScene, av: &Avatar, report: &mut Report) -> WireSe
                     capsules = true;
                     spheres_along(offset, radius, tail)
                 }
+                // 0.x has only outside spheres; keeping an inside shape or a plane as a sphere would block the
+                // joints it was meant to hold in.
+                _ => continue,
             };
             match by_node.iter_mut().find(|(n, _)| *n == c.node) {
                 Some((_, list)) => list.extend(spheres),
@@ -185,6 +188,33 @@ pub(crate) fn write(scene: &IoScene, av: &Avatar, report: &mut Report) -> WireSe
                 "0.x colliders are spheres; capsules were written as rows of spheres",
             )
             .at("avatar/springBone/colliders"),
+        );
+    }
+    // Counted over every collider, once each: an ungrouped one is dropped too, and a shared one is still one collider.
+    let unsupported_colliders = sb
+        .colliders
+        .iter()
+        .filter(|c| !matches!(c.shape, ColliderShape::Sphere { .. } | ColliderShape::Capsule { .. }))
+        .count();
+    if unsupported_colliders > 0 {
+        report.push(
+            Finding::warning(
+                "vrm0.collider_unsupported",
+                format!(
+                    "0.x has only outside spheres; {unsupported_colliders} inside-out or plane collider(s) were dropped"
+                ),
+            )
+            .at("avatar/springBone/colliders"),
+        );
+    }
+    let limits = sb.chains.iter().flat_map(|c| &c.joints).filter(|j| j.limit.is_some()).count();
+    if limits > 0 {
+        report.push(
+            Finding::warning(
+                "vrm0.limit_unsupported",
+                format!("0.x has no joint limits; {limits} limit(s) were dropped"),
+            )
+            .at("avatar/springBone/springs"),
         );
     }
     let mut approximated = false;
@@ -211,7 +241,7 @@ fn bone_group(scene: &IoScene, chain: &SpringChain, group_map: &[Vec<i64>]) -> (
     // The last joint is only a tail in 1.0; its own parameters are unused.
     let moving = &chain.joints[..chain.joints.len() - 1];
     let first = &moving[0];
-    let same = moving.iter().all(|j| SpringJoint { node: first.node, ..*j } == *first);
+    let same = moving.iter().all(|j| SpringJoint { node: first.node, limit: first.limit, ..*j } == *first);
     #[allow(clippy::cast_precision_loss)] // a chain has a handful of joints
     let n = moving.len() as f32;
     // Identical joints give their own value back exactly; a mean of equal floats can be a rounding step off.

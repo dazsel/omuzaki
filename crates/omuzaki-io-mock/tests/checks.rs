@@ -6,9 +6,9 @@
 
 use omuzaki_core::glam::{Quat, Vec3, Vec4};
 use omuzaki_io_api::{
-    ColliderGroup, ConstraintKind, ExportOptions, ExpressionName, ExtraAttribute, IoScene, MeshIx, MorphTarget, Node,
-    NodeConstraint, NodeIx, Purpose, Report, RollAxis, Severity, SpringChain, SpringJoint, VrmVersion, preflight,
-    vrm_profile,
+    Collider, ColliderGroup, ColliderShape, ConstraintKind, ExportOptions, ExpressionName, ExtraAttribute, IoScene,
+    JointLimit, MeshIx, MorphTarget, Node, NodeConstraint, NodeIx, Purpose, Report, RollAxis, Severity, SpringChain,
+    SpringJoint, VrmVersion, preflight, vrm_profile,
 };
 use omuzaki_io_mock::fixtures::{BODY_NODE, authored_provenance, options_without_face_channels, tiny_avatar};
 use omuzaki_store_api::{Commercial, Consent};
@@ -148,6 +148,91 @@ fn spring_bones_and_constraints_are_checked() {
     only_error(&s.check(), "avatar.constraint_invalid");
     s.avatar.as_mut().unwrap().constraints = vec![constraint(low)];
     assert_eq!(s.check().findings, []);
+}
+
+/// A valid scene with all five collider shapes and a valid limit on a non-tail joint.
+fn scene_with_extended_springs() -> IoScene {
+    let mut s = tiny_avatar();
+    let (up, low) = (
+        NodeIx(u32::try_from(node_of(&s, "leftUpperArm")).unwrap()),
+        NodeIx(u32::try_from(node_of(&s, "leftLowerArm")).unwrap()),
+    );
+    let (offset, tail) = (Vec3::new(0.0, 0.1, 0.0), Vec3::new(0.0, 0.3, 0.0));
+    let shapes = [
+        ColliderShape::Sphere { offset, radius: 0.1 },
+        ColliderShape::Capsule { offset, radius: 0.1, tail },
+        ColliderShape::SphereInside { offset, radius: 0.5 },
+        ColliderShape::CapsuleInside { offset, radius: 0.5, tail },
+        ColliderShape::Plane { offset, normal: Vec3::Y },
+    ];
+    let first = SpringJoint {
+        limit: Some(JointLimit::Spherical { pitch: 0.5, yaw: 0.25, rotation: Quat::IDENTITY }),
+        ..SpringJoint::new(up)
+    };
+    let sb = &mut s.avatar.as_mut().unwrap().spring_bones;
+    sb.colliders = shapes.iter().map(|&shape| Collider { node: up, shape }).collect();
+    sb.chains = vec![SpringChain { joints: vec![first, SpringJoint::new(low)], ..SpringChain::default() }];
+    s
+}
+
+#[test]
+fn extended_colliders_and_limits_are_clean_when_valid() {
+    assert_eq!(scene_with_extended_springs().check().findings, []);
+}
+
+#[test]
+fn extended_spring_rules_fire_on_one_line_mutations() {
+    fn broken(edit: impl FnOnce(&mut IoScene)) -> Report {
+        let mut s = scene_with_extended_springs();
+        edit(&mut s);
+        s.check()
+    }
+    fn shape(s: &mut IoScene, i: usize, shape: ColliderShape) {
+        s.avatar.as_mut().unwrap().spring_bones.colliders[i].shape = shape;
+    }
+    fn limit(s: &mut IoScene, limit: JointLimit) {
+        s.avatar.as_mut().unwrap().spring_bones.chains[0].joints[0].limit = Some(limit);
+    }
+    let at = Vec3::ZERO;
+
+    only_error(&broken(|s| shape(s, 0, ColliderShape::Sphere { offset: at, radius: -0.1 })), "avatar.collider_invalid");
+    only_error(
+        &broken(|s| {
+            shape(s, 1, ColliderShape::Capsule { offset: at, radius: 0.1, tail: Vec3::new(f32::NAN, 0.0, 0.0) });
+        }),
+        "avatar.collider_invalid",
+    );
+    only_error(
+        &broken(|s| shape(s, 3, ColliderShape::CapsuleInside { offset: at, radius: f32::INFINITY, tail: at })),
+        "avatar.collider_invalid",
+    );
+    only_error(
+        &broken(|s| shape(s, 4, ColliderShape::Plane { offset: at, normal: Vec3::new(0.0, 2.0, 0.0) })),
+        "avatar.collider_invalid",
+    );
+    only_error(
+        &broken(|s| limit(s, JointLimit::Cone { angle: -0.1, rotation: Quat::IDENTITY })),
+        "avatar.limit_invalid",
+    );
+    only_error(
+        &broken(|s| limit(s, JointLimit::Hinge { angle: f32::NAN, rotation: Quat::IDENTITY })),
+        "avatar.limit_invalid",
+    );
+    only_error(
+        &broken(|s| limit(s, JointLimit::Spherical { pitch: 0.1, yaw: -0.1, rotation: Quat::IDENTITY })),
+        "avatar.limit_invalid",
+    );
+    only_error(
+        &broken(|s| limit(s, JointLimit::Cone { angle: 0.1, rotation: Quat::from_xyzw(0.0, 0.0, 0.0, 2.0) })),
+        "avatar.limit_invalid",
+    );
+
+    let tail = broken(|s| {
+        let chain = &mut s.avatar.as_mut().unwrap().spring_bones.chains[0];
+        chain.joints[1].limit = Some(JointLimit::Cone { angle: 0.1, rotation: Quat::IDENTITY });
+    });
+    assert_eq!(tail.errors().count(), 0, "{tail:#?}");
+    assert!(tail.has_rule("avatar.limit_on_tail"), "{tail:#?}");
 }
 
 #[test]

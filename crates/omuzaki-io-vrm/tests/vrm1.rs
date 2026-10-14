@@ -16,14 +16,15 @@
 
 mod common;
 
-use omuzaki_core::glam::Vec3;
+use omuzaki_core::glam::{Quat, Vec3};
 use omuzaki_io_api::{
-    Confidence, ExpressionName, ImportInput, ImportOptions, Importer, IoError, IoScene, Severity, Shading,
+    Collider, ColliderGroup, ColliderShape, Confidence, ExpressionName, ImportInput, ImportOptions, Importer, IoError,
+    IoScene, JointLimit, Severity, Shading,
 };
 use omuzaki_io_vrm::{Vrm1Exporter, Vrm1Importer};
 use serde_json::{Value, json};
 
-use common::{avatar, export, glb, import, minimal1, parts, try_import};
+use common::{avatar, export, export_with, glb, import, minimal1, options, parts, try_import};
 
 /// Compares everything the file carries, one field at a time so a failure names the part that differs. Provenance is
 /// excluded: it isn't in the file, the importer derives it.
@@ -331,4 +332,46 @@ fn unknown_extensions_pass_through_and_dropped_ones_are_reported() {
     assert!(out.report.has_rule("gltf.animations_dropped") && out.report.has_rule("gltf.extension_dropped"));
     assert_eq!(out.scene.nodes[ids.body.index()].passthrough.extensions["EXT_fixture_node"], json!({"flag": true}));
     assert_eq!(out.scene.materials[1].passthrough.extras, Some(json!({"layer": "cloth"})));
+}
+
+/// Until the extension is written, an inside shape or a plane leaves as the spec's own fallback for a reader without
+/// it: an inert sphere of radius 0 far below the model, which keeps the collider indices of the groups valid.
+#[test]
+fn extended_colliders_and_limits_leave_as_the_inert_fallback_with_warnings() {
+    let (mut scene, ids) = avatar();
+    let head = ids.node("head");
+    let sb = &mut scene.avatar.as_mut().unwrap().spring_bones;
+    let before = sb.colliders.len();
+    let shapes = [
+        ColliderShape::SphereInside { offset: Vec3::ZERO, radius: 0.5 },
+        ColliderShape::Plane { offset: Vec3::ZERO, normal: Vec3::Y },
+    ];
+    sb.colliders.extend(shapes.map(|shape| Collider { node: head, shape }));
+    sb.collider_groups
+        .push(ColliderGroup { name: "extended".into(), colliders: vec![before as u32, before as u32 + 1] });
+    sb.chains[0].joints[0].limit = Some(JointLimit::Cone { angle: 0.5, rotation: Quat::IDENTITY });
+
+    let (file, report) = export_with(&Vrm1Exporter, &scene, &options()).unwrap();
+    assert!(report.has_rule("vrm.collider_dropped") && report.has_rule("vrm.limit_dropped"), "{report:#?}");
+    let (doc, _) = parts(&file);
+    let spring = &doc["extensions"]["VRMC_springBone"];
+    for i in [before, before + 1] {
+        assert_eq!(spring["colliders"][i]["shape"], json!({"sphere": {"offset": [0.0, -10000.0, 0.0], "radius": 0.0}}));
+    }
+    assert!(spring["springs"][0]["joints"][0].get("extensions").is_none(), "no limit extension is written");
+
+    let back = import(&Vrm1Importer, &file);
+    let colliders = &back.scene.avatar.as_ref().unwrap().spring_bones.colliders;
+    assert_eq!(colliders.len(), before + 2);
+    assert_eq!(colliders[before].shape, ColliderShape::Sphere { offset: Vec3::new(0.0, -10_000.0, 0.0), radius: 0.0 });
+}
+
+/// Scenes with ordinary spheres and capsules and no limits export the same spring JSON as before the extended shapes
+/// existed. The baseline is the output of the exporter on `main`, serialised compactly.
+#[test]
+fn existing_spring_json_is_byte_identical_to_the_pre_extension_baseline() {
+    let (scene, _) = avatar();
+    let (doc, _) = parts(&export(&Vrm1Exporter, &scene));
+    let baseline = include_str!("baseline/spring_vrm1.json").trim_end();
+    assert_eq!(doc["extensions"]["VRMC_springBone"].to_string(), baseline);
 }

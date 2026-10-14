@@ -21,17 +21,29 @@ pub(crate) const EXTENSION: &str = "VRMC_springBone";
 
 /// The body of `VRMC_springBone` for `av`, or `None` when there are no springs and no colliders, in which case the file
 /// does not list the extension. Empty lists are omitted, because the 1.0 schema wants an entry whenever a list is there.
-pub(crate) fn body(av: &Avatar) -> Option<Value> {
+pub(crate) fn body(av: &Avatar, report: &mut Report) -> Option<Value> {
     let sb = &av.spring_bones;
     if sb.chains.is_empty() && sb.colliders.is_empty() {
         return None;
     }
     let mut out = json!({ "specVersion": "1.0" });
     if !sb.colliders.is_empty() {
+        let dropped = sb.colliders.iter().filter(|c| base_shape(c.shape).is_none()).count();
+        if dropped > 0 {
+            note_unwritten(
+                report,
+                "avatar/springBone/colliders",
+                &format!("{dropped} inside-out or plane collider(s)"),
+            );
+        }
         out["colliders"] = Value::Array(sb.colliders.iter().map(collider_json).collect());
     }
     if !sb.collider_groups.is_empty() {
         out["colliderGroups"] = Value::Array(sb.collider_groups.iter().map(group_json).collect());
+    }
+    let limits = sb.chains.iter().flat_map(|c| &c.joints).filter(|j| j.limit.is_some()).count();
+    if limits > 0 {
+        note_unwritten(report, "avatar/springBone/springs", &format!("{limits} spring joint limit(s)"));
     }
     if !sb.chains.is_empty() {
         out["springs"] = Value::Array(sb.chains.iter().map(chain_json).collect());
@@ -39,15 +51,24 @@ pub(crate) fn body(av: &Avatar) -> Option<Value> {
     Some(out)
 }
 
-fn collider_json(c: &Collider) -> Value {
-    let shape = match c.shape {
+/// The base shape of a collider, or `None` for an extended shape, which the mock does not write.
+fn base_shape(shape: ColliderShape) -> Option<Value> {
+    match shape {
         ColliderShape::Sphere { offset, radius } => {
-            json!({ "sphere": { "offset": offset.to_array(), "radius": radius } })
+            Some(json!({ "sphere": { "offset": offset.to_array(), "radius": radius } }))
         }
         ColliderShape::Capsule { offset, radius, tail } => {
-            json!({ "capsule": { "offset": offset.to_array(), "radius": radius, "tail": tail.to_array() } })
+            Some(json!({ "capsule": { "offset": offset.to_array(), "radius": radius, "tail": tail.to_array() } }))
         }
-    };
+        _ => None,
+    }
+}
+
+/// An extended shape is written as the spec's fallback for a reader without the extension, an inert sphere of radius 0
+/// far below the model, which keeps the collider indices in the groups valid.
+fn collider_json(c: &Collider) -> Value {
+    let shape =
+        base_shape(c.shape).unwrap_or_else(|| json!({ "sphere": { "offset": [0.0, -10_000.0, 0.0], "radius": 0.0 } }));
     json!({ "node": c.node.index(), "shape": shape })
 }
 
@@ -121,6 +142,14 @@ fn has_extension(v: &Value, name: &str) -> bool {
     v.get("extensions").and_then(|e| e.get(name)).is_some()
 }
 
+/// Says that part of the avatar's spring data was not written, because the mock doesn't model its extension.
+fn note_unwritten(report: &mut Report, at: &str, what: &str) {
+    report.push(
+        Finding::warning("gltf.extension_dropped", format!("{what} not written: the mock doesn't model the extension"))
+            .at(at),
+    );
+}
+
 /// Says that an extension the mock doesn't model was not kept, in the same words and severity as `omuzaki-io-vrm`.
 fn note_dropped(report: &mut Report, at: &str, what: &str) {
     report.push(
@@ -186,5 +215,6 @@ fn joint(j: &Value, at: &str) -> Result<SpringJoint, IoError> {
         gravity_power: optional(j, "gravityPower", at, number, spec.gravity_power)?,
         gravity_dir: optional(j, "gravityDir", at, vec3, spec.gravity_dir)?,
         drag_force: optional(j, "dragForce", at, number, spec.drag_force)?,
+        limit: None,
     })
 }
