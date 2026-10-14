@@ -92,8 +92,9 @@ impl ModelDir {
     /// Loads the three graphs with the signatures of [`detector_signature`], [`landmarks_signature`] and
     /// [`blendshapes_signature`] through `runtime`. Cold: the runtime may take seconds.
     ///
-    /// The converted graphs keep the names TensorFlow gave their tensors, so each slot port is matched to the model's
-    /// own port by position (the slot's order is the graph's), and the runtime then checks names, types and shapes.
+    /// A graph that already names the slot's ports is matched by name, in any order, as `Signature::accepts` does. The
+    /// converted graphs keep the names TensorFlow gave their tensors instead, so their ports are paired with the slot's
+    /// by position (the slot's order is the graph's); the runtime then checks names, types and shapes.
     ///
     /// # Errors
     /// [`ModelError::Load`] when the runtime refuses a graph or it does not fit its slot.
