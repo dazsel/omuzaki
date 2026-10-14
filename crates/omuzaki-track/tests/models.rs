@@ -2,6 +2,7 @@
 //! The real graphs, the runtime and the tracker meet in the gated tests that follow in a later change.
 #![allow(clippy::unwrap_used)] // a panic is a test failure
 
+use std::fmt::Write as _;
 use std::sync::Mutex;
 
 use omuzaki_ai_api::{
@@ -120,7 +121,8 @@ fn fake_model_file(
             let name = rename(input, i, &specs[i].name);
             let shape =
                 shape.iter().map(|d| d.parse::<usize>().map_or(format!("\"{d}\""), |_| d.clone())).collect::<Vec<_>>();
-            text += &format!("[[{section}]]\nname = \"{name}\"\ndtype = \"{dtype}\"\nshape = [{}]\n", shape.join(", "));
+            let _ =
+                write!(text, "[[{section}]]\nname = \"{name}\"\ndtype = \"{dtype}\"\nshape = [{}]\n", shape.join(", "));
         }
     };
     ports(true, &signature.inputs);
