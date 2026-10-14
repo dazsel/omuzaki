@@ -81,7 +81,14 @@ impl Grants {
 
     /// The default for agents: read, edit, render. `broadcast`, `publish` and `spend` need a per-session grant (§6).
     pub fn agent_default() -> Self {
-        Self::of([Scope::Read, Scope::EditCharacter, Scope::EditScene, Scope::EditLibrary, Scope::Render])
+        Self::of([
+            Scope::Read,
+            Scope::EditCharacter,
+            Scope::EditScene,
+            Scope::EditLibrary,
+            Scope::EditSettings,
+            Scope::Render,
+        ])
     }
 
     /// Adds a scope (a per-session grant).
@@ -203,7 +210,7 @@ mod tests {
     #[test]
     fn agents_need_explicit_grants_for_risky_scopes() {
         let g = Grants::agent_default();
-        assert!(g.allows(Scope::EditCharacter) && g.allows(Scope::Render));
+        assert!(g.allows(Scope::EditCharacter) && g.allows(Scope::EditSettings) && g.allows(Scope::Render));
         assert!(!g.allows(Scope::Publish) && !g.allows(Scope::Spend) && !g.allows(Scope::Broadcast));
         assert!(g.with(Scope::Publish).allows(Scope::Publish));
         assert!(Grants::person().allows(Scope::Native));
