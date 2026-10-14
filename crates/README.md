@@ -127,7 +127,7 @@ App's `Services`.
 files count) to crates, adds every crate that depends on them (dev-dependencies too), then runs in order: `fmt --check`,
 `clippy -D warnings`, `test`, `cargo deny check licenses bans sources`, `lint-deps`, `lint-links`, `models` (every shipped model has an allowed register row). A change to `Cargo.toml`,
 `Cargo.lock`, `deny.toml`, `clippy.toml`, `rustfmt.toml`, `rust-toolchain.toml` or `.cargo/` checks everything; a change
-outside every crate (docs, tools) runs nothing. It always runs every step and ends with a one-screen summary; the exit
+outside every crate (docs, tools) runs only the `models` gate, since a register change can break it. It always runs every step and ends with a one-screen summary; the exit
 code is non-zero if any step failed.
 
 **Link gate only.** An App such as `omuzaki-cli` links every op crate only to carry their registrations (ADR 0015), so a
