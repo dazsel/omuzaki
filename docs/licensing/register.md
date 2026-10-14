@@ -28,6 +28,7 @@ Format rule (the repo licence gate will parse this): one row per item, with colu
 | ICT-FaceKit Light | dataset | synthetic faces for the own webcam tracker (ML-08); private test renders for the webcam spike (kept local, untracked) | unverified | scan consent + Basel/FaceWarehouse prior unknown; no shipped model trained on it; the spike renders are private test inputs only, and nothing trained on them ships | A5 |
 | cargo-about 0.9.2 | tool | builds the third-party notices bundle (`tools/release/notices.sh`) | yes | build tool only, not shipped; MIT OR Apache-2.0 | (crates.io: MIT OR Apache-2.0) |
 | Poly Haven HDRIs | asset | lighting in synthetic renders | yes | CC0; keep local copies, don't scrape | A5 |
+| Omuzaki wordmark (`.github/assets/omuzaki-wordmark.png`) | asset | the README's heading image | yes | made by Dazsel: the name set in Archivo (OFL-1.1, Omnibus-Type) and filled with the house stripes. It is an image of set type, not a copy of the font, so the OFL adds no condition; the name and mark are Dazsel trademarks (`TRADEMARKS.md`) | (Dazsel, 2026-10-14) |
 | YuNet 2023mar | model | (a local copy exists, unused) | NO | trained on WIDER FACE (cc by-nc-nd) | A5 |
 
 ## Planned: Rust stack (spec §9)
