@@ -44,6 +44,7 @@ Format rule (the repo licence gate will parse this): one row per item, with colu
 | cc | crate | build script of the broadcast spike: compiles the C++ shim and the Spout2 SDK | yes | | (crates.io: MIT OR Apache-2.0) |
 | toml, toml_edit | crate | project files | yes | | (crates.io: MIT OR Apache-2.0) |
 | clap | crate | CLI | yes | | (crates.io: MIT OR Apache-2.0) |
+| rustix 1.1 | crate | safe `renameat2(RENAME_EXCHANGE)` for the project save (omuzaki-doc, Linux only; already in the tree via other crates) | yes | | (crates.io: Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT) |
 | blake3 | crate | content hashes for the asset store | yes | | (crates.io: CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception) |
 | image (png only) | crate | golden renders, thumbnails | yes | | (crates.io: MIT OR Apache-2.0) |
 | tokio | crate | async runtime for MCP | yes | | (crates.io: MIT) |

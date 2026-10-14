@@ -15,6 +15,10 @@ thiserror.workspace = true
 toml_edit.workspace = true
 omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-doc-api = { path = "../omuzaki-doc-api" }
+omuzaki-store-api = { path = "../omuzaki-store-api" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true

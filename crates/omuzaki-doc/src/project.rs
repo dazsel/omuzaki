@@ -1,13 +1,16 @@
 //! [`Project`]: a project folder held in memory as a document tree.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use omuzaki_doc_api::{Change, DocPath, DocRead, DocVersion, DocWrite, Patch, PatchError, lookup};
+use omuzaki_store_api::ContentHash;
 use serde_json::{Map, Value, json};
 
-use crate::disk::{self, Loaded, PROJECT_KEY};
+use crate::disk::{self, Loaded, PROJECT_KEY, Replace};
 use crate::error::StoreError;
+use crate::known::Known;
 use crate::layout::{Entry, Layout, Pending, Segs, doc_path};
 use crate::migrate;
 use crate::toml_write::{RenderError, render};
@@ -22,22 +25,39 @@ pub struct SaveReport {
     pub removed: usize,
 }
 
+/// One project file as a save would write it, rendered from memory.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RenderedFile {
+    /// The file's path relative to the project folder, for example `characters/mia/face.toml`.
+    pub path: PathBuf,
+    /// The text the file has, or would have after a save.
+    pub text: String,
+    /// The hash of `text`'s bytes.
+    pub hash: ContentHash,
+    /// Whether a save would write it: the text differs from the last-known text, or the file is new.
+    pub changed: bool,
+}
+
 /// A project folder, open for reading and editing.
 ///
 /// The document is a tree held in memory. [`DocWrite::apply`] changes it (all of a patch or none of it), and
 /// [`save`](Self::save) writes the files whose part of the tree changed. Nothing touches the disk in between, so a
 /// project that is opened, edited and dropped without saving leaves its folder exactly as it was.
 ///
-/// One `Project` should be the only thing writing a folder at a time: files changed behind its back are not
-/// noticed, and a save overwrites them.
+/// The project keeps the exact text and hash of every file as it last read or wrote it. Saves are rendered against
+/// that text, never a fresh read, and before a file is replaced its hash on disk must still be the last-known one:
+/// a file edited outside Omuzaki is refused with [`StoreError::ChangedOnDisk`], never overwritten.
+///
+/// Cloning a project copies the tree, the layout and the known texts, so the clone is independent.
 ///
 /// See the [crate docs](crate) for how folders and files map onto the tree.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Project {
     dir: PathBuf,
     root: Value,
     version: DocVersion,
     layout: Layout,
+    known: Known,
     upgraded_from: Option<u32>,
 }
 
@@ -58,7 +78,14 @@ impl Project {
             _ => Ok(()),
         };
         let Loaded { mut root, files } = disk::load(dir, too_new)?;
-        let mut layout = Layout::from_disk(files);
+        let mut known = Known::default();
+        let mut layout_files = Vec::with_capacity(files.len());
+        for file in files {
+            layout_files.push((file.segs.clone(), file.sticky));
+            let hash = ContentHash::of(file.text.as_bytes());
+            known.record(file.segs, file.text, hash);
+        }
+        let mut layout = Layout::from_disk(layout_files);
         let found = migrate::schema_of(&root)?;
         let upgraded_from = (found < supported).then_some(found);
         if upgraded_from.is_some() {
@@ -69,7 +96,7 @@ impl Project {
                 .map_err(|e| StoreError::MigratedTree(e.to_string()))?;
             layout.commit(edit);
         }
-        Ok(Self { dir: dir.to_path_buf(), root, version: DocVersion(0), layout, upgraded_from })
+        Ok(Self { dir: dir.to_path_buf(), root, version: DocVersion(0), layout, known, upgraded_from })
     }
 
     /// Creates a project called `name` in `dir` (making the folder if needed) and writes its `project.toml`.
@@ -90,7 +117,14 @@ impl Project {
         let edit =
             layout.plan(&root, &[DocPath::root().join("project")]).map_err(|e| StoreError::Internal(e.to_string()))?;
         layout.commit(edit);
-        let mut project = Self { dir: dir.to_path_buf(), root, version: DocVersion(0), layout, upgraded_from: None };
+        let mut project = Self {
+            dir: dir.to_path_buf(),
+            root,
+            version: DocVersion(0),
+            layout,
+            known: Known::default(),
+            upgraded_from: None,
+        };
         project.save()?;
         Ok(project)
     }
@@ -122,6 +156,29 @@ impl Project {
         self.layout.is_dirty()
     }
 
+    /// The hash of every file as this project last read or wrote it, by path relative to the project folder.
+    pub fn file_hashes(&self) -> BTreeMap<PathBuf, ContentHash> {
+        self.known.hashes().map(|(segs, hash)| (disk::file_path(Path::new(""), segs), hash)).collect()
+    }
+
+    /// Every file of the project as a save would leave it, in path order, rendered from memory: no disk reads.
+    ///
+    /// Files with pending edits are rendered against their last-known text, exactly as [`save`](Self::save) does,
+    /// and are marked `changed` when that differs from it; the rest are returned as last known.
+    ///
+    /// # Errors
+    /// A file's last-known text is no longer valid TOML, or the tree holds something TOML can't store (both are
+    /// bugs in the store, not in the caller).
+    pub fn rendered_files(&self) -> Result<Vec<RenderedFile>, StoreError> {
+        self.layout
+            .entries()
+            .map(|(segs, entry)| {
+                let Rendered { text, hash, changed } = self.render_file(segs, *entry)?;
+                Ok(RenderedFile { path: disk::file_path(Path::new(""), segs), text, hash, changed })
+            })
+            .collect()
+    }
+
     /// Writes what changed since the last save (or since opening), then deletes files whose part of the document is
     /// gone, then writes `project.toml` (if it changed).
     ///
@@ -133,47 +190,89 @@ impl Project {
     /// migrated. A file that was edited by hand keeps its comments, order and layout; only the values that changed
     /// are touched. If a save fails, calling it again continues where it stopped.
     ///
+    /// A file is replaced only if its bytes on disk are the ones this project last read or wrote. That is checked on
+    /// the file itself after it has been moved aside (so an editor's save can't slip in between the check and the
+    /// replacement), and the replaced file is kept under `.omuzaki/replaced/`; see `disk::replace_checked`. A file that
+    /// isn't what was expected is put back and left alone, the save carries on with the rest, and the first such
+    /// file is reported as [`StoreError::ChangedOnDisk`] (or [`StoreError::Syntax`] if it no longer parses).
+    /// `project.toml` is not written after a refusal, for the reason above: the files it describes aren't all up to
+    /// date.
+    ///
     /// # Errors
     /// A file can't be read, written or deleted; a file about to be edited was broken by hand and is no longer valid
-    /// TOML (nothing is overwritten in that case); or a file or folder to write into is a symbolic link
-    /// ([`StoreError::Symlink`]: the store never writes through or over a link).
+    /// TOML (nothing is overwritten in that case); a file or folder to write into is a symbolic link
+    /// ([`StoreError::Symlink`]: the store never writes through or over a link); or a file was changed on disk
+    /// ([`StoreError::ChangedOnDisk`]).
     pub fn save(&mut self) -> Result<SaveReport, StoreError> {
         let (project, others): (Vec<_>, Vec<_>) =
             self.layout.pending().into_iter().partition(|(segs, _)| segs.as_slice() == [PROJECT_KEY]);
         let mut report = SaveReport::default();
-        self.write_files(others, &mut report)?;
+        let mut refused = None;
+        self.write_files(others, &mut report, &mut refused)?;
         // Deleting before the last write means an interrupted save never leaves a hole where a file's replacement
         // should be, and never leaves files the new schema has no place for.
         for segs in self.layout.deleted() {
             disk::remove_file(&self.dir, &segs)?;
             self.layout.mark_deleted(&segs);
+            self.known.forget(&segs);
             report.removed += 1;
         }
         // `project.toml` holds the schema, so it goes last: if the save stops anywhere before this, the project still
         // says it is the old schema and the migrations run again on the next open. The other order could record the
-        // new schema over data that was never migrated.
-        self.write_files(project, &mut report)?;
-        Ok(report)
+        // new schema over data that was never migrated. A refused file counts as stopping early.
+        if refused.is_none() {
+            self.write_files(project, &mut report, &mut refused)?;
+        }
+        refused.map_or(Ok(report), Err)
     }
 
-    /// Writes `files` (document path and what is known about each), skipping any whose text would not change.
-    fn write_files(&mut self, files: Vec<(Segs, Entry)>, report: &mut SaveReport) -> Result<(), StoreError> {
+    /// Renders the file `segs` from memory: pending edits against its last-known text, a fresh file from scratch.
+    /// `changed` says whether it is new or differs from the last-known text.
+    fn render_file(&self, segs: &[String], entry: Entry) -> Result<Rendered, StoreError> {
+        let known = self.known.text(segs);
+        if entry.pending == Pending::Clean {
+            let (text, hash) = known.zip(self.known.hash(segs)).ok_or_else(|| missing_text(segs))?;
+            return Ok(Rendered { text: text.to_owned(), hash, changed: false });
+        }
+        let path = disk::file_path(&self.dir, segs);
+        let Some(Value::Object(table)) = lookup(&self.root, &doc_path(segs)) else {
+            return Err(StoreError::Internal(format!("{} is a file but isn't an object", path.display())));
+        };
+        // A file edited in place starts from its last-known text; a new one, or one deleted and made again, from nothing.
+        let base = if entry.pending == Pending::Edit && entry.on_disk {
+            Some(known.ok_or_else(|| missing_text(segs))?)
+        } else {
+            None
+        };
+        let text = render(base, table).map_err(|e| match e {
+            RenderError::Syntax(source) => StoreError::Syntax { path: path.clone(), source },
+            RenderError::Unstorable(u) => {
+                StoreError::Internal(format!("{}: {} (at {})", path.display(), u.reason, u.at))
+            }
+        })?;
+        let changed = base != Some(text.as_str());
+        let hash = ContentHash::of(text.as_bytes());
+        Ok(Rendered { text, hash, changed })
+    }
+
+    /// Writes `files` (document path and what is known about each), skipping any whose text would not change and
+    /// any that changed on disk. The first of those is left in `refused`.
+    fn write_files(
+        &mut self,
+        files: Vec<(Segs, Entry)>,
+        report: &mut SaveReport,
+        refused: &mut Option<StoreError>,
+    ) -> Result<(), StoreError> {
         for (segs, entry) in files {
-            let path = disk::file_path(&self.dir, &segs);
-            let Some(Value::Object(table)) = lookup(&self.root, &doc_path(&segs)) else {
-                return Err(StoreError::Internal(format!("{} is a file but isn't an object", path.display())));
-            };
-            // A file edited in place is read fresh; one that vanished since it was read is simply written again.
-            let current =
-                if entry.pending == Pending::Edit && entry.on_disk { disk::read_text_if_exists(&path)? } else { None };
-            let text = render(current.as_deref(), table).map_err(|e| match e {
-                RenderError::Syntax(source) => StoreError::Syntax { path: path.clone(), source },
-                RenderError::Unstorable(u) => {
-                    StoreError::Internal(format!("{}: {} (at {})", path.display(), u.reason, u.at))
+            let rendered = self.render_file(&segs, entry)?;
+            if rendered.changed {
+                let path = disk::file_path(&self.dir, &segs);
+                let expected = self.known.hash(&segs);
+                if disk::replace_checked(&self.dir, &path, &rendered.text, expected)? == Replace::Refused {
+                    refused.get_or_insert(disk::why_changed(path));
+                    continue;
                 }
-            })?;
-            if current.as_deref() != Some(text.as_str()) {
-                disk::write_atomic(&self.dir, &path, &text)?;
+                self.known.record(segs.clone(), rendered.text, rendered.hash);
                 report.written += 1;
             }
             self.layout.mark_written(&segs);
@@ -208,6 +307,17 @@ impl Project {
         }
         cause
     }
+}
+
+/// The outcome of rendering one file.
+struct Rendered {
+    text: String,
+    hash: ContentHash,
+    changed: bool,
+}
+
+fn missing_text(segs: &[String]) -> StoreError {
+    StoreError::Internal(format!("no last-known text for {}", segs.join("/")))
 }
 
 impl DocRead for Project {

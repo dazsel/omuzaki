@@ -52,6 +52,13 @@ pub enum StoreError {
         /// When it took the lock, in seconds since the Unix epoch.
         since: u64,
     },
+    /// A file this save would replace is not the one this process last read or wrote: it was changed (or created)
+    /// outside Omuzaki. The file is left untouched.
+    #[error("{} was changed outside Omuzaki since it was loaded; it was not overwritten", path.display())]
+    ChangedOnDisk {
+        /// The file.
+        path: PathBuf,
+    },
     /// `create` found a project already there.
     #[error("{} already holds a project", dir.display())]
     AlreadyExists {
