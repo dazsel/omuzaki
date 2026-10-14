@@ -1,7 +1,8 @@
 # The cloud lane: operating manual and handover
 
 This is how the cloud lane works, written so that a new cloud lead, on any account, can take over from the repository
-alone. Read `CLAUDE.md` and `AGENTS.md` first; everything there applies. Live state is in the pinned issue
+alone. Read `CLAUDE.md` and `AGENTS.md` first; everything there applies. The rules come from ADR 0053 and ADR 0054 (#1410 until
+they merge). Live state is in the pinned issue
 **"Cloud lane: state"**; coordination with the Director is on **#2**.
 
 ## The role
@@ -30,6 +31,8 @@ ADR 0053's limits:
 - at most **40 open pull requests in total** across both lanes (raised as the merge rate rises; the current figure is
   on #2);
 - before starting a task, check its fence against open pull requests: `python3 tools/dispatch-check.py <issue>`.
+  Until that script is on `main` (#1479), check by hand: list the files of every open pull request
+  (`gh pr list --limit 200 --json number,files`) and compare them with the fence; when in doubt, ask on #2.
 
 **Priority:** fix rounds on open pull requests first; then V0 (milestone "V0: live slice"); then the redo list and the
 structure work (ADR 0054); then Phase 1.
@@ -97,9 +100,9 @@ least every few hours and before stopping:
 
 **For the new lead, first hour:**
 1. Read this file, `CLAUDE.md`, the state issue and the recent comments on #2.
-2. List the lane's open pull requests
-   (`gh pr list --limit 200 --json number,headRefName,title --jq '.[] | select(.headRefName | startswith("cloud/"))'`)
-   and match them with the state issue.
+2. List **every** open pull request (`gh pr list --limit 200 --json number,headRefName,title`), not only `cloud/*`
+   branches: the lane also owns `port/*` and `local/*` pull requests handed to it. Reconcile ownership with the state
+   issue and the handovers recorded on #2.
 3. Post on #2: "taken over", what you found, and anything inconsistent.
 4. Resume fix rounds first, then the next tasks from the state issue.
 
