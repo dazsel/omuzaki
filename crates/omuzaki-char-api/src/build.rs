@@ -206,16 +206,34 @@ impl BuiltCharacter {
 
     /// Draws this character in the look `previous` is drawn in, for a rebuild of the same character (a palette change
     /// rebuilds it whole), so the look survives the rebuild. Returns the materials that changed, as
-    /// [`apply_look`](Self::apply_look) does. It can't fail: a character's look validated when it was applied.
+    /// [`apply_look`](Self::apply_look) does. It can't fail: a material the look would make invalid on the rebuilt parts keeps its part's own spec, and a warning
+    /// naming the part, the material and the reason goes to that part's [`PartReport::warnings`].
     pub fn inherit_look(&mut self, previous: &Self) -> Vec<MaterialName> {
         self.look.clone_from(&previous.look);
         // The rebuilt parts can differ from the ones the look was checked on; a material the look would make invalid
         // keeps its part's own spec rather than failing the rebuild.
+        let mut warnings = Vec::new();
         let drawn = self
             .draw(&self.look)
             .into_iter()
-            .map(|(name, d)| (name.clone(), d.unwrap_or_else(|_| self.part_materials[&name].clone())))
+            .map(|(name, d)| match d {
+                Ok(spec) => (name, spec),
+                Err(e) => {
+                    warnings.push((name.clone(), e.to_string()));
+                    let part = self.part_materials[&name].clone();
+                    (name, part)
+                }
+            })
             .collect();
+        for (material, reason) in warnings {
+            let owner = self.meshes.iter().find(|m| m.mesh.material == material).map(|m| m.part.clone());
+            if let Some(report) = owner.and_then(|o| self.report.parts.iter_mut().find(|p| p.part == o)) {
+                report.warnings.push(format!(
+                    "part '{}', material '{}': the inherited look was not applied, the part's own material is kept: {reason}",
+                    report.part, material.as_str()
+                ));
+            }
+        }
         self.commit(drawn)
     }
 

@@ -306,3 +306,24 @@ fn a_look_whose_computed_values_overflow_is_refused_and_changes_nothing() {
     assert!(loud.apply_look(&big_rim).is_err());
     assert!(loud.look().is_empty());
 }
+
+#[test]
+fn an_inherited_look_that_overflows_the_rebuilt_parts_warns_and_keeps_their_materials() {
+    let mut drawn = built();
+    let wide = LookParams {
+        all: ClassLook { outline_width_scale: Some(1e30), ..ClassLook::default() },
+        ..LookParams::default()
+    };
+    drawn.apply_look(&wide).unwrap();
+    // A rebuild whose parts differ from the ones the look was checked on: lines wide enough to overflow the scale.
+    let mut rebuilt = built();
+    for spec in rebuilt.part_materials.values_mut() {
+        spec.outline = Some(Outline { colour: Colour::BLACK, width: 4e10 });
+    }
+    let changed = rebuilt.inherit_look(&drawn);
+    assert_eq!(rebuilt.materials, rebuilt.part_materials, "the parts' own materials are kept");
+    assert_eq!(changed.len(), 3, "{changed:?}");
+    let warnings: Vec<_> = rebuilt.report.parts.iter().flat_map(|p| &p.warnings).collect();
+    assert_eq!(warnings.len(), 3, "{warnings:?}");
+    assert!(warnings.iter().any(|w| w.contains("look-skin") && w.contains("inherited look")), "{warnings:?}");
+}
