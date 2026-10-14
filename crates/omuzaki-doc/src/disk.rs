@@ -187,8 +187,9 @@ fn refuse_links(dir: &Path, path: &Path) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// The folder (inside the project) that holds a backup of every file a save replaced, and every file a save displaced.
-/// Only an explicit cleanup policy ever deletes from it; a save never does.
+/// The folder (inside the project) that holds every file a save displaced and could not prove was the expected one
+/// (an editor's save or write that raced it). Only an explicit cleanup policy ever deletes from it; a save never does.
+/// A file that was replaced as expected leaves nothing here: its bytes are the text this project last read or wrote.
 const REPLACED_DIR: &str = ".omuzaki/replaced";
 
 /// What [`replace_checked`] did.
@@ -273,11 +274,10 @@ fn replace_checked_with(
         }
         Backup::Held(held) => {
             let outcome = replace_held(dir, path, &tmp, &held, expected, hooks);
-            if !matches!(outcome, Ok(Replace::Placed)) {
-                // A refusal or an error: the target is as it was (or the editor's), so the backup adds nothing.
-                // Deleting it is safe because it is a copy of, or a second name for, a file still at the target.
-                drop(fs::remove_file(&held.path));
-            }
+            // Deleted whatever happened. After a placement the displaced bytes were verified to be the last-known
+            // text, so nothing the person wrote is lost; after a refusal or an error the target is as it was (or the
+            // editor's) and any displaced file is kept separately by `preserve`.
+            drop(fs::remove_file(&held.path));
             outcome
         }
     };
@@ -759,7 +759,7 @@ mod tests {
     }
 
     #[test]
-    fn replace_checked_replaces_keeps_the_old_file_and_leaves_no_temporary_file() {
+    fn replace_checked_replaces_and_leaves_no_old_file_or_temporary_file() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("a/b.toml");
         assert_eq!(replace_checked(tmp.path(), &path, "x = 1\n", None).unwrap(), Replace::Placed);
@@ -768,9 +768,7 @@ mod tests {
         assert_eq!(fs::read_to_string(&path).unwrap(), "x = 2\n");
         let names: Vec<_> = fs::read_dir(path.parent().unwrap()).unwrap().map(|e| e.unwrap().file_name()).collect();
         assert_eq!(names, ["b.toml"]);
-        let old = kept(tmp.path());
-        assert_eq!(texts(&old), ["x = 1\n"]);
-        assert!(old[0].0.starts_with("a/b.toml."), "{old:?}");
+        assert_eq!(kept(tmp.path()), []);
     }
 
     const MINE: &str = "mine = 1\n";
@@ -883,7 +881,7 @@ mod tests {
         let items = kept(dir);
         let mut all = texts(&items);
         all.sort_unstable();
-        assert_eq!(all, ["displaced by a crash = 5\n", MINE]);
+        assert_eq!(all, ["displaced by a crash = 5\n"]);
         assert!(no_temporary_file(dir));
     }
 

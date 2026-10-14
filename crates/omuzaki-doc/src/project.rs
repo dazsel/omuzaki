@@ -192,7 +192,7 @@ impl Project {
     ///
     /// A file is replaced only if its bytes on disk are the ones this project last read or wrote. That is checked on
     /// the file itself after it has been moved aside (so an editor's save can't slip in between the check and the
-    /// replacement), and the replaced file is kept under `.omuzaki/replaced/`; see `disk::replace_checked`. A file that
+    /// replacement); see `disk::replace_checked`. A file that
     /// isn't what was expected is put back and left alone, the save carries on with the rest, and the first such
     /// file is reported as [`StoreError::ChangedOnDisk`] (or [`StoreError::Syntax`] if it no longer parses).
     /// `project.toml` is not written after a refusal, for the reason above: the files it describes aren't all up to

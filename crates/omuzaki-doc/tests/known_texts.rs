@@ -158,15 +158,18 @@ fn a_file_changed_into_broken_toml_is_reported_as_a_syntax_error() {
 }
 
 #[test]
-fn a_replaced_file_is_kept_inside_the_project() {
+fn a_replaced_file_leaves_nothing_behind_in_the_project() {
     let tmp = folder();
     let mut project = Project::open(tmp.path()).unwrap();
     edit_blend(&mut project, 0.5, 0.9);
     project.save().unwrap();
-    let kept = tmp.path().join(".omuzaki/replaced/characters/mia");
-    let names: Vec<_> = std::fs::read_dir(kept).unwrap().map(|e| e.unwrap().path()).collect();
-    assert_eq!(names.len(), 1);
-    assert_eq!(std::fs::read_to_string(&names[0]).unwrap(), FACE);
+    // The displaced bytes were the last-known text, so no copy of them is kept.
+    let files: Vec<_> = snapshot(tmp.path())
+        .into_iter()
+        .map(|(name, _)| name)
+        .filter(|n| n.starts_with(".omuzaki/replaced/"))
+        .collect();
+    assert_eq!(files, Vec::<String>::new());
 }
 
 /// The destination never goes missing during a replacement, so a reader opening the project while it is saved always
