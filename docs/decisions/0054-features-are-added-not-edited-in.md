@@ -29,7 +29,9 @@ They are left as they are until a feature needs to add styles from outside the c
 A crate's feature folders (`src/ops/`, `src/parts/`, `src/grammar/rules/`, ...) are declared by a build script, not by
 hand. `omuzaki-embed` gains `modules(dir, visibility)`, which writes `#[path = "<absolute file>"] <vis> mod <name>;` for
 every `.rs` file and every folder holding a `mod.rs`, sorted by name, into `OUT_DIR`, and prints
-`cargo:rerun-if-changed` for the folder so adding a file rebuilds. The crate includes it once:
+`cargo:rerun-if-changed` for the folder so adding a file rebuilds. It skips the folder's own `mod.rs` (the file that
+includes the list, so there is no `mod mod;` and no recursion), and `lib.rs` and `main.rs`; a fixture with exactly that
+layout tests it. The crate includes it once:
 
 ```rust
 include!(concat!(env!("OUT_DIR"), "/ops_mods.rs")); // in src/ops/mod.rs
@@ -81,7 +83,11 @@ never write their struct literals or match them exhaustively: a new field or var
 defines it.
 
 - **Cache keys** that destructure a definition on purpose, so a new field can't be missed (`omuzaki-char/src/builder.rs`),
-  hash its canonical serialised form instead. A new field is in the key automatically, and a test plants one to prove it.
+  hash a **canonical projection** of it instead: the serialised definition with the recolour-only inputs removed (the
+  palette, and each kind's colour parameters that its `recolour` handles). A palette or colourway change therefore
+  still never rebuilds geometry (`char-face-api.md` Q6), while any new geometry field is in the key automatically. Two
+  tests guard it: a planted new field changes the key, and a palette change leaves it unchanged (the existing recolour
+  tests in `omuzaki-char/tests/builder.rs` keep passing).
 - **Events:** `omuzaki-mcp` forwards events generically through their serialised form and matches only the ones it
   treats specially.
 
