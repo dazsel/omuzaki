@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Renders the declared evidence cases at two checkouts and compares them. Standard library plus Pillow.
 
-    evidence.py run --crates "omuzaki-char ..." --before DIR --after DIR --out OUT [--title TEXT]
+    evidence.py run --crates "omuzaki-char ..." [--changed FILE] --before DIR --after DIR --out OUT [--title TEXT]
 
-For every crate named, reads `crates/<crate>/evidence.toml` from the AFTER checkout and runs each case in both
-checkouts (the PR's base and its merge result), then writes under OUT:
+Reads every `crates/*/evidence.toml` from the AFTER checkout. A case is selected when its crate is named, or when a
+file it runs (a script, an example, its manifest) is listed in FILE. It runs each selected case in both checkouts
+(the merge base and the PR head), then writes under OUT:
 
     <crate>/<case>/<image>.before.png  .after.png  .diff.png   the pictures and their amplified absolute difference
     <crate>/<case>/sheet.png                                   before | after | difference, one row per image
@@ -55,13 +56,25 @@ def font(size):
         return ImageFont.load_default()
 
 
-def load_cases(repo, crates):
-    """(crate, case) for every case declared by the named crates, in order. Raises ValueError on a malformed manifest."""
+def declared_paths(crate, case):
+    """Repo-relative files a case runs: script and file arguments of its commands, `--example` sources, its manifest."""
+    paths = {f"crates/{crate}/evidence.toml"}
+    for step in case["steps"]:
+        argv = step["run"]
+        paths.update(a for a in argv if "{" not in a and "/" in a)
+        for flag, name in zip(argv, argv[1:]):
+            if flag == "--example":
+                paths.add(f"crates/{crate}/examples/{name}.rs")
+    return paths
+
+
+def load_cases(repo, crates, changed=()):
+    """(crate, case) for the cases of the named crates, plus any case of another crate whose own script, example or
+    manifest is in `changed`: a change confined to a sheet tool reaches no crate, yet it changes what the case draws.
+    Raises ValueError on a malformed manifest."""
     cases = []
-    for crate in crates:
-        path = Path(repo, "crates", crate, "evidence.toml")
-        if not path.is_file():
-            continue
+    for path in sorted(Path(repo, "crates").glob("*/evidence.toml")):
+        crate = path.parent.name
         data = tomllib.loads(path.read_text(encoding="utf-8"))
         seen = set()
         for case in data.get("case", []):
@@ -71,7 +84,8 @@ def load_cases(repo, crates):
             seen.add(name)
             if not case.get("steps") or not case.get("images"):
                 raise ValueError(f"{path}: case {name} needs steps and images")
-            cases.append((crate, case))
+            if crate in crates or declared_paths(crate, case) & set(changed):
+                cases.append((crate, case))
     return cases
 
 
@@ -245,7 +259,8 @@ def cmd_run(args):
     before, after, out = Path(args.before).resolve(), Path(args.after).resolve(), Path(args.out).resolve()
     shutil.rmtree(out, ignore_errors=True)
     out.mkdir(parents=True)
-    cases = load_cases(after, crates)
+    changed = Path(args.changed).read_text(encoding="utf-8").split() if args.changed else []
+    cases = load_cases(after, crates, changed)
     scratch = Path(os.environ.get("RUNNER_TEMP", "/tmp")) / "evidence-scratch"
     records, sheets = [], []
     for crate, case in cases:
@@ -268,10 +283,11 @@ def main(argv):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
     run = sub.add_parser("run")
-    run.add_argument("--crates", required=True, help="space separated crate names whose manifests to read")
+    run.add_argument("--crates", required=True, help="space separated crate names whose cases all run (may be empty)")
     run.add_argument("--before", required=True)
     run.add_argument("--after", required=True)
     run.add_argument("--out", required=True)
+    run.add_argument("--changed", help="file listing the PR's changed paths, one per line; selects cases by their tools")
     run.add_argument("--title", default="")
     run.add_argument("--note", default="")
     args = parser.parse_args(argv)

@@ -47,6 +47,27 @@ mkdir -p "$work/sparse-base"; echo 9 >"$work/sparse-base/level"; echo 10 >"$work
 python3 -I "$EVIDENCE" run --crates x --before "$work/sparse-base" --after "$work/sparse" --out "$work/sparse-out" >/dev/null
 if grep -q '(1 px) | 1 |' "$work/sparse-out/comment.md"; then pass "one changed pixel is not rounded to identical"; else fail "sparse: $(cat "$work/sparse-out/comment.md")"; fi
 
+# A change confined to a tool reaches no crate (--crates is empty), yet its case must still run.
+mkdir -p "$work/tool/crates/x" "$work/tool/tools"
+cat >"$work/tool/crates/x/evidence.toml" <<'T'
+[[case]]
+name = "drawn"
+env = { OUT = "{out}" }
+steps = [{ run = ["python3", "tools/draw.py", "{out}/p.png"] }]
+images = ["p.png"]
+T
+cat >"$work/tool/tools/draw.py" <<'T'
+import sys
+from PIL import Image
+Image.new("RGB", (4, 4), (1, 2, 3)).save(sys.argv[1])
+T
+echo "tools/draw.py" >"$work/changed.txt"
+python3 -I "$EVIDENCE" run --crates "" --changed "$work/changed.txt" --before "$work/tool" --after "$work/tool" --out "$work/tool-out" >/dev/null
+if grep -q 'x/drawn' "$work/tool-out/comment.md"; then pass "a tools-only change selects the case that runs the tool"; else fail "tools-only: $(cat "$work/tool-out/comment.md")"; fi
+echo "README.md" >"$work/changed.txt"
+python3 -I "$EVIDENCE" run --crates "" --changed "$work/changed.txt" --before "$work/tool" --after "$work/tool" --out "$work/none-out" >/dev/null
+if grep -q 'No declared cases' "$work/none-out/comment.md"; then pass "an unrelated change selects nothing"; else fail "unrelated: $(cat "$work/none-out/comment.md")"; fi
+
 rm "$work/base/level"
 python3 -I "$EVIDENCE" run --crates x --before "$work/base" --after "$work/head" --out "$work/new" >/dev/null 2>&1
 if grep -q 'could not render it' "$work/new/comment.md"; then pass "a case the base cannot render is reported"; else fail "new case: $(cat "$work/new/comment.md")"; fi

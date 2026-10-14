@@ -1,8 +1,8 @@
 # Before/after renders for pull requests labelled `visual`, so a visual change is reviewed from pictures CI made and
 # nobody has to build anything locally.
 #
-#   render   builds each affected crate's declared cases (crates/*/evidence.toml) at the PR's base commit and at the PR
-#            (the merge result CI tests), compares the pictures and uploads them. Read-only token.
+#   render   builds each affected crate's declared cases (crates/*/evidence.toml) at the PR's merge base and at the PR's
+#            head, also those whose sheet tool or example changed, compares the pictures and uploads them. Read-only token.
 #   comment  posts the statistics table and the artifact links as ONE comment, found by its hidden marker and updated on
 #            later pushes. The only job with `pull-requests: write`; it checks out and runs no PR code.
 #
@@ -51,26 +51,32 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0   # the base commit and the affected-crate diff need history
+          # The PR's own head, not the merge result: "after" is the PR, "before" its merge base, so a main that moved
+          # on since the branch was cut does not show up as a difference.
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0   # the merge base and the affected-crate diff need history
       - uses: ./.github/actions/setup-linux
         with:
           cache-key: test
           gpu: true
-      - name: Affected crates
+      - name: Merge base and affected crates
         id: scope
         env:
           BASE_REF: ${{ github.base_ref }}
         run: |
-          cargo run --locked --quiet -p xtask -- check --format json --base "origin/$BASE_REF" >"$RUNNER_TEMP/report.json"
+          base=$(git merge-base "origin/$BASE_REF" HEAD)
+          echo "base=$base" >>"$GITHUB_OUTPUT"
+          git diff --name-only "$base" HEAD >"$RUNNER_TEMP/changed.txt"
+          cargo run --locked --quiet -p xtask -- check --format json --base "$base" >"$RUNNER_TEMP/report.json"
           python3 -I - "$RUNNER_TEMP/report.json" >>"$GITHUB_OUTPUT" <<'PY'
           import json, sys
           r = json.load(open(sys.argv[1]))
           print("crates=" + " ".join(sorted(set(r["full"] + r["link_only"]))))
           PY
-      # The PR's base, side by side with the checkout (which is the merge result): "before" is what main renders today.
+      # The merge base, side by side with the checkout: "before" is what the PR branched from.
       - name: Base checkout
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_SHA: ${{ steps.scope.outputs.base }}
         run: git worktree add --detach "$RUNNER_TEMP/base" "$BASE_SHA"
       # Exact versions, so the sheet tools draw the same pixels on every run.
       - name: Python packages
@@ -85,7 +91,7 @@ jobs:
           CRATES: ${{ steps.scope.outputs.crates }}
           TITLE: "(PR #${{ github.event.pull_request.number }})"
         run: |
-          python3 -I tools/ci/evidence.py run --crates "$CRATES" --before "$RUNNER_TEMP/base" --after "$GITHUB_WORKSPACE" \
+          python3 -I tools/ci/evidence.py run --crates "$CRATES" --changed "$RUNNER_TEMP/changed.txt" --before "$RUNNER_TEMP/base" --after "$GITHUB_WORKSPACE" \
             --out "$RUNNER_TEMP/evidence" --title "$TITLE"
       - name: All images
         id: all
