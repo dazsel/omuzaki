@@ -88,6 +88,7 @@
 //! need `read`; an unknown URI is `resource_not_found` naming the URIs that exist, as is an id with no character. A host
 //! adds a family with [`McpOptions::with_provider`], never by editing a list here. [`MeasureProvider`] serves
 //! `omuzaki://measure/liveliness/..`: a read runs the liveliness measurement and returns its answer, nothing is stored.
+//! [`RenderProvider`] serves `omuzaki://render/<id>.png`, a PNG the asset store holds, read as an `image/png` blob.
 //!
 //! **Prompts.** Recipes the client offers its user (`prompts/list`, `prompts/get`). A [`PromptDef`] names the ops its
 //! text relies on (`needs`), and a session is offered only the prompts whose ops are all among its tools, so a recipe
@@ -167,6 +168,6 @@ pub use access::{AccessToken, RECORD_VERSION, TokenId, TokenRecord};
 pub use error::ServerError;
 pub use http::{HttpOptions, HttpServer};
 pub use prompts::{PromptArg, PromptDef};
-pub use resources::{MeasureProvider, ResourceProvider};
+pub use resources::{MeasureProvider, RenderProvider, ResourceProvider};
 pub use server::{McpOptions, McpServer};
 pub use session::Session;

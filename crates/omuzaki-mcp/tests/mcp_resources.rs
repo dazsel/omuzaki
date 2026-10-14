@@ -9,8 +9,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::FakeRunner;
-use omuzaki_mcp::{McpOptions, McpServer, MeasureProvider, ResourceProvider};
+use omuzaki_mcp::{McpOptions, McpServer, MeasureProvider, RenderProvider, ResourceProvider};
 use omuzaki_ops_api::{Actor, Grants, Op, OpCtx, OpError, OpKind, OpMeta, Plan, Runner, Scope, Undo};
+use omuzaki_store_api::{Commercial, ContentHash, Store};
+use omuzaki_store_mock::{MemStore, conformance::sample_provenance};
 use rmcp::model::{
     CallToolRequestParams, ErrorCode, ResourceContents, ResourceTemplate, ResourceUpdatedNotificationParam,
     ServerNotification, SubscribeRequestParams, SubscriptionFilter, UnsubscribeRequestParams,
@@ -497,5 +499,104 @@ async fn a_measurement_needs_the_read_scope() {
     let options = McpOptions::with_grants(Grants::of([Scope::EditCharacter]));
     let client = connect_measuring(options).await;
     let error = read_error(&client, "omuzaki://measure/liveliness/life/1/20/rest").await;
+    assert!(error.contains("needs the `read` scope"), "{error}");
+}
+
+// ---- render ------------------------------------------------------------------------------------------------------
+
+/// A PNG for the tests: the eight signature bytes, then three more.
+const PNG: &[u8] = &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3];
+
+/// A server with the render provider over `store`, as the App registers it.
+async fn connect_rendering(store: &Arc<MemStore>, options: McpOptions) -> RunningService<RoleClient, Client> {
+    let store: Arc<dyn Store> = store.clone();
+    connect(two_characters(), options.with_provider(Arc::new(RenderProvider::new(store)))).await
+}
+
+fn render_uri(hash: &ContentHash) -> String {
+    format!("omuzaki://render/{hash}.png")
+}
+
+#[tokio::test]
+async fn a_stored_render_is_read_as_a_png_blob() {
+    let store = Arc::new(MemStore::new());
+    let hash = store.put(PNG, sample_provenance(Commercial::Ok)).expect("stores");
+    let client = connect_rendering(&store, McpOptions::default()).await;
+    let uri = render_uri(&hash);
+    let read = client.read_resource(ReadResourceRequestParams::new(uri.clone())).await.unwrap();
+    assert_eq!(read.contents.len(), 1);
+    match &read.contents[0] {
+        ResourceContents::BlobResourceContents { uri: got, mime_type, blob, .. } => {
+            assert_eq!(got, &uri);
+            assert_eq!(mime_type.as_deref(), Some("image/png"));
+            assert_eq!(blob, "iVBORw0KGgoBAgM=");
+        }
+        other => panic!("expected a blob, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn the_render_template_is_advertised_and_nothing_is_listed() {
+    let store = Arc::new(MemStore::new());
+    store.put(PNG, sample_provenance(Commercial::Ok)).expect("stores");
+    let client = connect_rendering(&store, McpOptions::default()).await;
+    let templates = client.list_all_resource_templates().await.unwrap();
+    let advertised: Vec<_> = templates.iter().map(|t| t.uri_template.as_str()).collect();
+    assert_eq!(advertised, ["omuzaki://character/{id}", "omuzaki://render/{id}.png"]);
+    assert_eq!(templates[1].mime_type.as_deref(), Some("image/png"));
+    // A render never changes and the store cannot tell renders from other assets, so none is listed.
+    assert_eq!(
+        uris(&client).await,
+        ["omuzaki://log", "omuzaki://project", "omuzaki://character/mira", "omuzaki://character/noor"]
+    );
+}
+
+#[tokio::test]
+async fn what_names_no_render_is_resource_not_found() {
+    let store = Arc::new(MemStore::new());
+    let hash = store.put(PNG, sample_provenance(Commercial::Ok)).expect("stores");
+    let client = connect_rendering(&store, McpOptions::default()).await;
+    let never_stored = render_uri(&ContentHash::of(b"never stored"));
+    assert_eq!(read_error_code(&client, &never_stored).await, ErrorCode::RESOURCE_NOT_FOUND);
+    assert!(read_error(&client, &never_stored).await.contains("no render"));
+    let hash = hash.to_string();
+    for uri in [
+        "omuzaki://render/zzz.png".to_owned(),
+        format!("omuzaki://render/{hash}"),
+        format!("omuzaki://render/{}.png", hash.to_uppercase()),
+    ] {
+        assert_eq!(read_error_code(&client, &uri).await, ErrorCode::RESOURCE_NOT_FOUND, "{uri}");
+        assert!(read_error(&client, &uri).await.contains("64 lowercase hex characters"), "{uri}");
+    }
+}
+
+#[tokio::test]
+async fn a_stored_asset_that_is_not_a_png_is_not_a_render() {
+    let store = Arc::new(MemStore::new());
+    let hash = store.put(b"not a png", sample_provenance(Commercial::Ok)).expect("stores");
+    let client = connect_rendering(&store, McpOptions::default()).await;
+    let uri = render_uri(&hash);
+    assert_eq!(read_error_code(&client, &uri).await, ErrorCode::RESOURCE_NOT_FOUND);
+    assert!(read_error(&client, &uri).await.contains("isn't a PNG"));
+}
+
+#[tokio::test]
+async fn a_damaged_render_is_an_internal_error() {
+    let store = Arc::new(MemStore::new());
+    let hash = store.put(PNG, sample_provenance(Commercial::Ok)).expect("stores");
+    assert!(store.flip_byte(&hash));
+    let client = connect_rendering(&store, McpOptions::default()).await;
+    let uri = render_uri(&hash);
+    assert_eq!(read_error_code(&client, &uri).await, ErrorCode::INTERNAL_ERROR);
+    assert!(read_error(&client, &uri).await.contains("damaged"));
+}
+
+#[tokio::test]
+async fn a_render_needs_the_read_scope() {
+    let store = Arc::new(MemStore::new());
+    let hash = store.put(PNG, sample_provenance(Commercial::Ok)).expect("stores");
+    let options = McpOptions::with_grants(Grants::of([Scope::EditCharacter]));
+    let client = connect_rendering(&store, options).await;
+    let error = read_error(&client, &render_uri(&hash)).await;
     assert!(error.contains("needs the `read` scope"), "{error}");
 }
