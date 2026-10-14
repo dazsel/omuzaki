@@ -6,7 +6,7 @@ use omuzaki_core::glam::Mat4;
 use omuzaki_render_api::{Instance, JointRange, MaterialId, MeshId, Scene};
 
 use crate::error::StageError;
-use crate::upload::StageCharacter;
+use crate::upload::MeshLookup;
 
 /// What one mesh needs each frame, resolved once so the frame does no lookups by name.
 struct Draw {
@@ -29,7 +29,7 @@ impl ScenePlan {
     ///
     /// # Errors
     /// [`StageError::NotUploaded`] for a mesh that was not uploaded.
-    pub(crate) fn new(built: &BuiltCharacter, uploaded: &StageCharacter) -> Result<Self, StageError> {
+    pub(crate) fn new(built: &BuiltCharacter, uploaded: &impl MeshLookup) -> Result<Self, StageError> {
         let mut keyed = Vec::with_capacity(built.meshes.len());
         for built_mesh in &built.meshes {
             let mesh = &built_mesh.mesh;

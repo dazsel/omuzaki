@@ -25,6 +25,7 @@ use omuzaki_char_api::{BuiltCharacter, StepCtx};
 use omuzaki_core::glam::{Mat4, Vec3};
 use omuzaki_render_api::{FrameInfo, FrameReport, Quality, Renderer, Scene, TargetId};
 
+use self::face::FaceRig;
 use self::rig::{RigFrame, SkinPose};
 use self::runtimes::DynamicMeshes;
 use self::scene::ScenePlan;
@@ -111,7 +112,8 @@ pub struct Stage {
     rig: RigFrame,
     dynamic: DynamicMeshes,
     plan: ScenePlan,
-    /// The character's world matrix of the frame being run, for the face system.
+    face: Option<Box<FaceRig>>,
+    /// The character's world matrix of the last frame: the face system's and [`settle`](Stage::settle)'s.
     root: Mat4,
     scene: Scene,
     target: TargetId,
@@ -137,9 +139,19 @@ impl Stage {
     ) -> Result<Self, StageError> {
         let character = StageCharacter::upload(renderer, &built, options)?;
         match Self::prepare(&built, &character) {
-            Ok((rig, dynamic, plan)) => {
-                Ok(Self { built, character, rig, dynamic, plan, root: Mat4::IDENTITY, scene, target, quality, clock })
-            }
+            Ok((rig, dynamic, plan)) => Ok(Self {
+                built,
+                character,
+                rig,
+                dynamic,
+                plan,
+                face: None,
+                root: Mat4::IDENTITY,
+                scene,
+                target,
+                quality,
+                clock,
+            }),
             Err(error) => {
                 if let Err(cleanup) = character.release(renderer) {
                     tracing::warn!(%cleanup, "releasing a character whose stage could not start failed too");
@@ -159,7 +171,7 @@ impl Stage {
     /// Runs one frame and renders it into the stage's target.
     ///
     /// # Errors
-    /// [`StageError::Render`] if the renderer refuses a vertex update or the frame, or whatever the face update reports.
+    /// [`StageError::Render`] if the renderer refuses a vertex update or the frame, or whatever the face update reports (a layer that fails to paint, a variant that fails to rebuild).
     /// The simulations have already stepped; the next call carries on from there.
     pub fn tick(&mut self, renderer: &mut dyn Renderer, input: &FrameInput) -> Result<FrameOutput, StageError> {
         let tick = self.clock.next(input.dt);

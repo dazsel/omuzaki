@@ -1,0 +1,685 @@
+//! The frame loop's face on the mock character: unchanged layers are not repainted, variants switch only at the
+//! crossings and re-upload only what changed, a palette applies without a new mesh, a failing painter keeps its old
+//! pixels, and the face path allocates nothing in steady state.
+
+// Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
+// The counting allocator is the one unsafe impl: it forwards to `System` unchanged (as in tests/frame.rs).
+#![allow(
+    unsafe_code,
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation
+)]
+
+// The shared double has helpers (the mock character builder) that this file does not need.
+#[allow(dead_code)]
+#[path = "frame/double.rs"]
+mod double;
+
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
+use std::sync::Arc;
+
+use omuzaki_anim_api::Channel;
+use omuzaki_char::builder::CachingBuilder;
+use omuzaki_char_api::{
+    BuildOptions, BuildServices, BuiltCharacter, CharId, CharacterBuilder, CharacterDef, JointRef, PartId, VariantId,
+    VariantSet, resolve_variant,
+};
+use omuzaki_char_mock::{mock_character, mock_variants};
+use omuzaki_core::colour::Colour;
+use omuzaki_core::glam::{UVec2, Vec3};
+use omuzaki_core::rng::Rng;
+use omuzaki_face::FaceSystem;
+use omuzaki_face_api::{FaceLayerId, Palette, PaletteSlot};
+use omuzaki_face_mock::{MockPainter, MockRasterizer};
+use omuzaki_render_api::{
+    AlphaEncoding, Background, Camera, Capabilities, FrameReport, Image, Light, Material, MaterialId, MeshData, MeshId,
+    MeshOptions, Painter, Projection, Quality, RenderError, Renderer, ResourceRef, ResourceStats, Scene, TargetDesc,
+    TargetId, TextureDesc, TextureId,
+};
+use omuzaki_stage::frame::face::{CharacterSource, FaceRig, SETTLE_STEPS};
+use omuzaki_stage::frame::{FrameInput, Stage, StageClock};
+use omuzaki_stage::{StageError, UploadOptions};
+
+use double::Recorder;
+
+/// Counts the allocations made on a thread that has switched counting on, so parallel tests don't see each other's.
+struct Counting;
+
+thread_local! {
+    static ACTIVE: Cell<bool> = const { Cell::new(false) };
+    static COUNT: Cell<u64> = const { Cell::new(0) };
+}
+
+fn note() {
+    // `try_with`: the allocator also runs while a thread is being torn down.
+    let _ = ACTIVE.try_with(|active| {
+        if active.get() {
+            let _ = COUNT.try_with(|count| count.set(count.get() + 1));
+        }
+    });
+}
+
+// SAFETY: every call forwards unchanged to the system allocator; counting touches only const-initialised cells.
+unsafe impl GlobalAlloc for Counting {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        note();
+        unsafe { System.alloc(layout) }
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        unsafe { System.dealloc(ptr, layout) }
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        note();
+        unsafe { System.realloc(ptr, layout, new_size) }
+    }
+}
+
+#[global_allocator]
+static ALLOCATOR: Counting = Counting;
+
+/// Allocations made by `f` on this thread.
+fn allocations_in<R>(f: impl FnOnce() -> R) -> (R, u64) {
+    COUNT.with(|count| count.set(0));
+    ACTIVE.with(|active| active.set(true));
+    let result = f();
+    ACTIVE.with(|active| active.set(false));
+    (result, COUNT.with(Cell::get))
+}
+
+/// The recording renderer with the counters this task's acceptance reads, and a switch that makes painting fail.
+struct Spy {
+    inner: Recorder,
+    mesh_creates: u32,
+    material_updates: u32,
+    /// Every `paint_texture` call, by texture.
+    paints: Vec<TextureId>,
+    fail_paints: bool,
+    /// Every `update_vertices` call so far.
+    update_calls: u32,
+    /// The `update_vertices` call (1-based, counted from `update_calls`) that fails once, then the switch resets.
+    fail_update_call: Option<u32>,
+    /// Makes the next `release` call fail (the resource stays), then resets.
+    fail_next_release: bool,
+}
+
+impl Spy {
+    fn new(draw: bool) -> Self {
+        Self {
+            inner: Recorder::new(draw),
+            mesh_creates: 0,
+            material_updates: 0,
+            paints: Vec::with_capacity(1 << 12),
+            fail_paints: false,
+            update_calls: 0,
+            fail_update_call: None,
+            fail_next_release: false,
+        }
+    }
+}
+
+impl Renderer for Spy {
+    fn capabilities(&self) -> &Capabilities {
+        self.inner.capabilities()
+    }
+    fn stats(&self) -> ResourceStats {
+        self.inner.stats()
+    }
+    fn create_mesh(&mut self, mesh: &MeshData) -> Result<MeshId, RenderError> {
+        self.mesh_creates += 1;
+        self.inner.create_mesh(mesh)
+    }
+    fn create_mesh_with(&mut self, mesh: &MeshData, options: &MeshOptions) -> Result<MeshId, RenderError> {
+        self.mesh_creates += 1;
+        self.inner.create_mesh_with(mesh, options)
+    }
+    fn update_vertices(&mut self, mesh: MeshId, p: &[Vec3], n: &[Vec3]) -> Result<(), RenderError> {
+        self.update_calls += 1;
+        if self.fail_update_call == Some(self.update_calls) {
+            self.fail_update_call = None;
+            return Err(RenderError::invalid("update_vertices", "the upload was told to fail once"));
+        }
+        self.inner.update_vertices(mesh, p, n)
+    }
+    fn create_texture(&mut self, desc: &TextureDesc, rgba: Option<&[u8]>) -> Result<TextureId, RenderError> {
+        self.inner.create_texture(desc, rgba)
+    }
+    fn paint_texture(&mut self, texture: TextureId, painter: &mut dyn Painter) -> Result<(), RenderError> {
+        self.paints.push(texture);
+        if self.fail_paints {
+            return Err(RenderError::invalid("paint", "the painter was told to fail"));
+        }
+        self.inner.paint_texture(texture, painter)
+    }
+    fn create_material(&mut self, material: &Material) -> Result<MaterialId, RenderError> {
+        self.inner.create_material(material)
+    }
+    fn update_material(&mut self, id: MaterialId, material: &Material) -> Result<(), RenderError> {
+        self.material_updates += 1;
+        self.inner.update_material(id, material)
+    }
+    fn create_target(&mut self, desc: &TargetDesc) -> Result<TargetId, RenderError> {
+        self.inner.create_target(desc)
+    }
+    fn resize_target(&mut self, target: TargetId, size: UVec2) -> Result<(), RenderError> {
+        self.inner.resize_target(target, size)
+    }
+    fn release(&mut self, resource: ResourceRef) -> Result<(), RenderError> {
+        if std::mem::take(&mut self.fail_next_release) {
+            return Err(RenderError::invalid("release", "the release was told to fail once"));
+        }
+        self.inner.release(resource)
+    }
+    fn render(&mut self, target: TargetId, scene: &Scene, quality: &Quality) -> Result<FrameReport, RenderError> {
+        self.inner.render(target, scene, quality)
+    }
+    fn read_target(&mut self, target: TargetId) -> Result<Image, RenderError> {
+        self.inner.read_target(target)
+    }
+}
+
+const FPS: f32 = 60.0;
+const FACE_PX_PER_M: f32 = 2000.0;
+/// The head fills this much of the frame at the start of a stage.
+const START_COVERAGE: f64 = 0.15;
+
+fn id(s: &str) -> VariantId {
+    VariantId::new(s).unwrap()
+}
+
+/// The mock character built the way a live app builds it: through the caching builder, in the `game` variant.
+struct Fixture {
+    source: CharacterSource,
+    built: BuiltCharacter,
+}
+
+fn fixture() -> Fixture {
+    fixture_from(mock_character().unwrap(), mock_variants().unwrap())
+}
+
+fn fixture_from(base: CharacterDef, variants: VariantSet) -> Fixture {
+    let builder = Arc::new(CachingBuilder::new());
+    let options = BuildOptions { variant: Some(id("game")), ..BuildOptions::default() };
+    let def = resolve_variant(&base, &variants, &id("game")).unwrap();
+    let services = BuildServices::default();
+    let built = builder.build(&CharId::new("mock").unwrap(), &def, &options, &services).unwrap();
+    Fixture { source: CharacterSource::new(builder, base, variants, options, services), built }
+}
+
+fn scene() -> Scene {
+    let mut scene = Scene::new(Camera::default());
+    scene.background = Background::Solid { colour: Colour::hex(0x0018_1220) };
+    scene.lights =
+        vec![Light::Hemisphere { sky: Colour::hex(0x00f3_e8ff), ground: Colour::hex(0x003a_2a24), intensity: 1.0 }];
+    scene
+}
+
+/// A stage with a face rig on `renderer`. `with_source` lets it switch variants and apply palettes.
+fn stage_on(renderer: &mut Spy, size: u32, with_source: bool) -> Stage {
+    stage_with_rig(renderer, size, with_source, mock_rig())
+}
+
+/// The mock painter's rig: the real painter's sections are still stubs, so only the mock reacts to the bus. It draws at
+/// a fixed density, so `resize_face` tests use [`FaceRig::standard`].
+fn mock_rig() -> FaceRig {
+    FaceRig::new(Box::new(|projection, _| {
+        FaceSystem::new(Box::new(MockPainter::new(*projection)), Box::new(MockRasterizer))
+    }))
+}
+
+fn stage_with_rig(renderer: &mut Spy, size: u32, with_source: bool, rig: FaceRig) -> Stage {
+    stage_from(renderer, size, with_source, rig, fixture())
+}
+
+fn stage_from(renderer: &mut Spy, size: u32, with_source: bool, rig: FaceRig, fixture: Fixture) -> Stage {
+    let Fixture { source, built } = fixture;
+    let target = renderer
+        .create_target(&TargetDesc { size: UVec2::splat(size), alpha: AlphaEncoding::Straight })
+        .expect("a target");
+    let mut stage = Stage::new(
+        renderer,
+        built,
+        UploadOptions { face_px_per_m: FACE_PX_PER_M },
+        scene(),
+        target,
+        Quality::offline(),
+        StageClock::fixed(FPS),
+    )
+    .expect("the stage starts");
+    stage.set_face(if with_source { rig.with_source(source) } else { rig }).expect("the face binds");
+    stage.scene_mut().camera = camera_for(&stage, START_COVERAGE);
+    stage
+}
+
+/// A camera looking at the head from the front that sees the head at `coverage` of the frame's height.
+fn camera_for(stage: &Stage, coverage: f64) -> Camera {
+    let built = stage.built();
+    let face = built.face.as_ref().expect("the mock has a face");
+    let head_height = f64::from(face.projection.rect.y1 - face.projection.rect.y0);
+    let bone = built.rig.bone(&JointRef::HEAD).expect("a head bone").index();
+    let bind = built.rig.inverse_bind()[bone].inverse().w_axis.truncate();
+    let head = stage.skin().get(bone).map_or(bind, |skin| skin.transform_point3(bind));
+    let fov: f64 = 30.0;
+    let distance = head_height / (coverage * 2.0 * (fov.to_radians() * 0.5).tan());
+    Camera::look_at(
+        head + Vec3::new(0.0, 0.0, distance as f32),
+        head,
+        Vec3::Y,
+        Projection::Perspective { fov_y_deg: 30.0, near: 0.01, far: 50.0 },
+    )
+}
+
+fn blink(on: bool) -> FrameInput {
+    let mut input = FrameInput::default();
+    let value = if on { 1.0 } else { 0.0 };
+    input.channels.set(Channel::EYE_BLINK_LEFT, value);
+    input.channels.set(Channel::EYE_BLINK_RIGHT, value);
+    input.channels.set(Channel::JAW_OPEN, value * 0.6);
+    input.channels.set(Channel::BROW_DOWN_LEFT, value);
+    input
+}
+
+#[test]
+fn unchanged_layers_are_not_repainted_over_a_300_frame_run_with_a_10_frame_blink() {
+    let mut renderer = Spy::new(true);
+    let mut stage = stage_on(&mut renderer, 48, false);
+    let layers = stage.character().face_layers().count();
+    assert!(layers > 0, "the mock head has face layers");
+    let mut per_frame = Vec::new();
+    for n in 0..300 {
+        let before = renderer.paints.len();
+        stage.tick(&mut renderer, &blink((100..110).contains(&n))).expect("frame");
+        per_frame.push(renderer.paints.len() - before);
+    }
+    println!(
+        "face layers {layers}; paints: first frame {}, blink on {}, blink off {}, total {}",
+        per_frame[0],
+        per_frame[100],
+        per_frame[110],
+        renderer.paints.len()
+    );
+    assert_eq!(per_frame[0], layers, "the first frame paints every layer once");
+    for (n, &paints) in per_frame.iter().enumerate() {
+        if !matches!(n, 0 | 100 | 110) {
+            assert_eq!(paints, 0, "frame {n}: nothing changed, so nothing is painted");
+        }
+    }
+    assert!(per_frame[100] > 0 && per_frame[110] > 0, "the blink repaints the layers it touches");
+    assert!(per_frame[100] <= layers && per_frame[110] <= layers);
+    assert_eq!(per_frame[100], per_frame[110], "closing and opening touch the same layers");
+    stage.release(&mut renderer).expect("released");
+}
+
+/// Coverage of frame `step` in a sweep from 0.10 up to 1.00 (and back), jittered by at most 0.01.
+fn sweep(rng: &mut Rng, step: u32) -> f64 {
+    0.10 + 0.0010 * f64::from(step) + f64::from(rng.range_f32(-0.01, 0.01))
+}
+
+#[test]
+fn a_zoom_sweep_switches_variants_at_the_two_crossings_and_uploads_only_what_changed() {
+    let mut renderer = Spy::new(false);
+    let mut stage = stage_on(&mut renderer, 32, true);
+    let mut rng = Rng::new(571);
+    let steps: Vec<u32> = (0..=900).chain((0..=900).rev()).collect();
+    let mut switches = Vec::new();
+    for (frame, step) in steps.into_iter().enumerate() {
+        stage.scene_mut().camera = camera_for(&stage, sweep(&mut rng, step));
+        let (variant, before) = (stage.built().variant.clone(), renderer.mesh_creates);
+        let old = stage.built().meshes.clone();
+        stage.tick(&mut renderer, &FrameInput::default()).expect("frame");
+        if stage.built().variant == variant {
+            assert_eq!(renderer.mesh_creates, before, "frame {frame}: no switch, no new mesh");
+            continue;
+        }
+        let new = &stage.built().meshes;
+        let changed = new
+            .iter()
+            .filter(|m| !old.iter().any(|o| o.part == m.part && o.local == m.local && o.mesh == m.mesh))
+            .count();
+        let created = (renderer.mesh_creates - before) as usize;
+        println!(
+            "frame {frame}: {variant:?} -> {:?}: {created} of {} meshes re-uploaded",
+            stage.built().variant,
+            new.len()
+        );
+        assert_eq!(created, changed, "only the meshes whose geometry changed are created");
+        assert!(created < new.len(), "the unchanged parts keep their upload");
+        switches.push((frame, stage.built().variant.clone()));
+    }
+    let names: Vec<_> = switches.iter().map(|(_, v)| v.as_ref().map(VariantId::as_str)).collect();
+    assert_eq!(names, vec![Some("close-up"), Some("game")], "one switch up the zoom, one back: {switches:?}");
+    stage.release(&mut renderer).expect("released");
+}
+
+#[test]
+fn a_switched_character_matches_a_fresh_build_of_the_variant() {
+    let mut renderer = Spy::new(false);
+    let mut stage = stage_on(&mut renderer, 32, true);
+    stage.scene_mut().camera = camera_for(&stage, 0.8);
+    stage.tick(&mut renderer, &FrameInput::default()).expect("frame");
+    let fresh = {
+        let (base, variants) = (mock_character().unwrap(), mock_variants().unwrap());
+        let def = resolve_variant(&base, &variants, &id("close-up")).unwrap();
+        let options = BuildOptions { variant: Some(id("close-up")), ..BuildOptions::default() };
+        omuzaki_char_api::RegistryBuilder
+            .build(&CharId::new("mock").unwrap(), &def, &options, &BuildServices::default())
+            .unwrap()
+    };
+    assert_eq!(stage.built().variant, Some(id("close-up")));
+    assert_eq!(stage.built().meshes, fresh.meshes, "the same meshes as a build from scratch");
+    assert_eq!(stage.character().meshes().len(), fresh.meshes.len(), "and each has an upload");
+    stage.release(&mut renderer).expect("released");
+}
+
+fn palette_with_outfit(stage: &Stage, colour: Colour) -> Palette {
+    let mut palette = stage.built().palette.clone();
+    palette.0.insert(PaletteSlot::new("outfit").expect("a slot name"), colour);
+    palette
+}
+
+#[test]
+fn apply_palette_changes_the_next_frame_without_creating_a_mesh() {
+    let mut renderer = Spy::new(true);
+    let mut stage = stage_on(&mut renderer, 96, true);
+    stage.scene_mut().camera = Camera::look_at(
+        Vec3::new(0.0, 1.0, 2.5),
+        Vec3::new(0.0, 0.9, 0.0),
+        Vec3::Y,
+        Projection::Perspective { fov_y_deg: 40.0, near: 0.05, far: 20.0 },
+    );
+    let shot = |stage: &mut Stage, renderer: &mut Spy| {
+        stage.tick(renderer, &FrameInput::default()).expect("frame");
+        renderer.read_target(stage.target()).expect("pixels").rgba8
+    };
+    let before = shot(&mut stage, &mut renderer);
+    let (creates, updates) = (renderer.mesh_creates, renderer.material_updates);
+    let palette = palette_with_outfit(&stage, Colour::hex(0x00d0_2060));
+    let report = stage.apply_palette(&mut renderer, &palette).expect("the palette applies");
+    println!("apply_palette: {report:?}");
+    assert_eq!(renderer.mesh_creates, creates, "no create_mesh call");
+    assert_eq!(report.meshes_created, 0);
+    assert!(renderer.material_updates > updates, "materials were updated in place");
+    assert_ne!(shot(&mut stage, &mut renderer), before, "the next frame shows the new colours");
+    assert_eq!(stage.built().palette, palette);
+    stage.release(&mut renderer).expect("released");
+}
+
+#[test]
+fn a_failing_painter_keeps_the_layer_pending_and_it_is_retried() {
+    let mut renderer = Spy::new(false);
+    let mut stage = stage_on(&mut renderer, 48, false);
+    stage.tick(&mut renderer, &blink(false)).expect("frame");
+    let layers = stage.character().face_layers().count();
+
+    // The mock renderer commits a texture only when its painter succeeds, so a refused paint leaves the old pixels.
+    renderer.fail_paints = true;
+    let before = renderer.paints.len();
+    let error = stage.tick(&mut renderer, &blink(true)).expect_err("the paint is refused");
+    assert!(matches!(error, StageError::Render { .. }), "{error}");
+    assert_eq!(renderer.paints.len() - before, layers, "every changed layer was tried, not only the first");
+
+    // The face system already counts the picture as shown; the stage still owes the texture its paint.
+    let before = renderer.paints.len();
+    let error = stage.tick(&mut renderer, &blink(true)).expect_err("still refused, with no new change");
+    assert!(matches!(error, StageError::Render { .. }), "{error}");
+    assert_eq!(renderer.paints.len() - before, layers, "the layers are retried on the next frame");
+
+    renderer.fail_paints = false;
+    let before = renderer.paints.len();
+    stage.tick(&mut renderer, &blink(true)).expect("the retry paints");
+    assert_eq!(renderer.paints.len() - before, layers);
+    let before = renderer.paints.len();
+    stage.tick(&mut renderer, &blink(true)).expect("frame");
+    assert_eq!(renderer.paints.len(), before, "once painted, nothing is owed");
+    stage.release(&mut renderer).expect("released");
+}
+
+#[test]
+fn settle_moves_the_simulations_and_creates_nothing() {
+    let mut renderer = Spy::new(false);
+    let mut stage = stage_on(&mut renderer, 32, false);
+    stage.tick(&mut renderer, &FrameInput::default()).expect("frame");
+    let hair = |stage: &Stage| -> Vec<Vec3> {
+        stage
+            .built()
+            .runtimes
+            .iter()
+            .filter_map(|slot| slot.runtime.dynamic_mesh(0).map(|view| view.positions.to_vec()))
+            .flatten()
+            .collect()
+    };
+    let (before, creates) = (hair(&stage), renderer.mesh_creates);
+    assert!(!before.is_empty(), "the mock character has simulated hair");
+    stage.settle(SETTLE_STEPS);
+    assert_ne!(hair(&stage), before, "{SETTLE_STEPS} steps at 1/90 moved the hair");
+    let out = stage.tick(&mut renderer, &FrameInput::default()).expect("frame");
+    assert!(out.uploads > 0, "the next frame uploads the settled hair");
+    assert_eq!(renderer.mesh_creates, creates);
+    stage.release(&mut renderer).expect("released");
+}
+
+#[test]
+fn resizing_the_face_repaints_every_layer_at_the_new_density() {
+    let mut renderer = Spy::new(false);
+    let mut stage = stage_with_rig(&mut renderer, 32, false, FaceRig::standard());
+    stage.tick(&mut renderer, &FrameInput::default()).expect("frame");
+    let layers = stage.character().face_layers().count();
+    stage.resize_face(&mut renderer, FACE_PX_PER_M / 2.0).expect("resized");
+    let before = renderer.paints.len();
+    stage.tick(&mut renderer, &FrameInput::default()).expect("frame");
+    assert_eq!(renderer.paints.len() - before, layers, "every layer, once, on the new textures");
+    let before = renderer.paints.len();
+    stage.tick(&mut renderer, &FrameInput::default()).expect("frame");
+    assert_eq!(renderer.paints.len(), before);
+    stage.release(&mut renderer).expect("released");
+}
+
+#[test]
+fn the_face_path_allocates_nothing_in_steady_state() {
+    let mut renderer = Spy::new(false);
+    let mut stage = stage_on(&mut renderer, 32, true);
+    let input = blink(false);
+    for _ in 0..20 {
+        stage.tick(&mut renderer, &input).expect("warm-up frame");
+    }
+    // The variant check runs every frame here (a source is attached), as does the face mapping and fingerprinting.
+    let (result, allocations) = allocations_in(|| {
+        for _ in 0..100 {
+            stage.tick(&mut renderer, &input)?;
+        }
+        Ok::<(), StageError>(())
+    });
+    result.expect("frames");
+    assert_eq!(allocations, 0, "100 steady-state frames with a face allocated {allocations} times");
+    stage.release(&mut renderer).expect("released");
+}
+
+/// Ticks once at `coverage` and returns the result.
+fn tick_at(stage: &mut Stage, renderer: &mut Spy, coverage: f64) -> Result<(), StageError> {
+    stage.scene_mut().camera = camera_for(stage, coverage);
+    stage.tick(renderer, &FrameInput::default()).map(|_| ())
+}
+
+#[test]
+fn a_failed_dynamic_upload_during_a_variant_switch_leaves_the_stage_sound_and_a_retry_succeeds() {
+    let mut renderer = Spy::new(true);
+    let mut stage = stage_on(&mut renderer, 32, true);
+    tick_at(&mut stage, &mut renderer, START_COVERAGE).expect("frame");
+    // How many `update_vertices` calls an ordinary frame makes, so the failure can be aimed at the install's refresh.
+    let before = renderer.update_calls;
+    tick_at(&mut stage, &mut renderer, START_COVERAGE).expect("frame");
+    let per_frame = renderer.update_calls - before;
+    assert!(per_frame > 0, "the mock hair moves every frame, or this test aims at nothing");
+
+    let (stats, variant, meshes) = (renderer.stats(), stage.built().variant.clone(), stage.built().meshes.clone());
+    renderer.fail_update_call = Some(renderer.update_calls + per_frame + 1);
+    let error = tick_at(&mut stage, &mut renderer, 0.8).expect_err("the refresh after the rebuild is refused");
+    assert!(matches!(error, StageError::Render { .. }), "{error}");
+    assert_eq!(stage.built().variant, variant, "the previous character is still the stage's");
+    assert_eq!(stage.built().meshes, meshes);
+    assert_eq!(renderer.stats(), stats, "what the abandoned install created was given back");
+
+    // The old character is coherent: a frame at the old zoom draws (a dead handle would be a render error) ...
+    tick_at(&mut stage, &mut renderer, START_COVERAGE).expect("the old character still runs");
+    tick_at(&mut stage, &mut renderer, START_COVERAGE).expect("and again");
+    // ... and the retry at the new zoom switches.
+    tick_at(&mut stage, &mut renderer, 0.8).expect("the retry succeeds");
+    assert_eq!(stage.built().variant, Some(id("close-up")));
+    tick_at(&mut stage, &mut renderer, 0.8).expect("the new character runs");
+    stage.release(&mut renderer).expect("released");
+}
+
+/// Two variants that differ only in whether the hair's brows show through, so no projection or profile changes.
+fn brows_variants() -> VariantSet {
+    serde_json::from_str(
+        r#"{
+            "game": { "shot": { "min": 0.0, "max": 0.35 },
+                      "overrides": { "parts/hair/params/shading/brows_through": false } },
+            "close-up": { "extends": "game", "shot": { "min": 0.35, "max": 5.0 },
+                          "overrides": { "parts/hair/params/shading/brows_through": true } }
+        }"#,
+    )
+    .expect("variants")
+}
+
+#[test]
+fn a_variant_that_turns_brows_through_on_paints_the_new_brows_layer_on_the_same_tick() {
+    let mut renderer = Spy::new(true);
+    let fixture = fixture_from(mock_character().unwrap(), brows_variants());
+    let mut stage = stage_from(&mut renderer, 32, true, mock_rig(), fixture);
+    for _ in 0..3 {
+        tick_at(&mut stage, &mut renderer, START_COVERAGE).expect("frame");
+    }
+    assert!(stage.character().face_layer(FaceLayerId::Brows).is_none(), "the wide variant has no brows layer");
+
+    let paints = renderer.paints.len();
+    tick_at(&mut stage, &mut renderer, 0.8).expect("the switching frame");
+    assert_eq!(stage.built().variant, Some(id("close-up")));
+    let brows = stage.character().face_layer(FaceLayerId::Brows).expect("the close-up has a brows layer").texture;
+    assert!(renderer.paints[paints..].contains(&brows), "the new layer texture got its paint on the very next tick");
+    stage.release(&mut renderer).expect("released");
+}
+
+/// The mock character with streaked hair, so a palette slot is baked into hair vertex colours.
+fn streaked_base() -> CharacterDef {
+    let mut base = mock_character().unwrap();
+    base.palette.0.insert(PaletteSlot::new("streak").unwrap(), Colour::rgb(200, 30, 30));
+    base.parts.get_mut(&PartId::new("hair").unwrap()).unwrap().params = serde_json::json!({
+        "groups": {
+            "a-cap": { "generator": { "type": "cap" } },
+            "b-bangs": { "generator": { "type": "bangs" } },
+            "c-curtain": { "generator": { "type": "curtain" } },
+        },
+        "shading": {
+            "streaks": [{ "fraction": 0.5, "colour": "@streak", "strength": 0.8, "seed": 3, "blend": "replace" }],
+        },
+    });
+    base
+}
+
+#[test]
+fn a_palette_change_creates_exactly_the_meshes_whose_baked_tint_moved() {
+    let mut renderer = Spy::new(false);
+    let fixture = fixture_from(streaked_base(), mock_variants().unwrap());
+    let mut stage = stage_from(&mut renderer, 32, true, mock_rig(), fixture);
+
+    // A slot no vertex colour reads: materials only, no mesh.
+    let palette = palette_with_outfit(&stage, Colour::hex(0x0020_a060));
+    let creates = renderer.mesh_creates;
+    let report = stage.apply_palette(&mut renderer, &palette).expect("applies");
+    assert_eq!(renderer.mesh_creates, creates, "a palette change that touches no baked tint creates no mesh");
+    assert_eq!(report.meshes_created, 0);
+
+    // The streak slot is baked into the hair: those meshes are recreated (will update their vertices instead).
+    let old = stage.built().meshes.clone();
+    let mut palette = stage.built().palette.clone();
+    palette.0.insert(PaletteSlot::new("streak").unwrap(), Colour::rgb(20, 220, 90));
+    let creates = renderer.mesh_creates;
+    let report = stage.apply_palette(&mut renderer, &palette).expect("applies");
+    let affected = stage
+        .built()
+        .meshes
+        .iter()
+        .filter(|m| !old.iter().any(|o| o.part == m.part && o.local == m.local && o.mesh == m.mesh))
+        .count();
+    assert!(affected > 0, "the streaks reach some hair mesh");
+    assert!(affected < stage.built().meshes.len(), "and not every mesh");
+    assert_eq!((renderer.mesh_creates - creates) as usize, affected, "exactly the affected meshes are created");
+    assert_eq!(report.meshes_created as usize, affected);
+    stage.release(&mut renderer).expect("released");
+}
+
+#[test]
+fn a_rejected_palette_does_not_come_back_with_the_next_variant_switch() {
+    let mut renderer = Spy::new(true);
+    let mut stage = stage_on(&mut renderer, 32, true);
+    tick_at(&mut stage, &mut renderer, START_COVERAGE).expect("frame");
+    let before = renderer.update_calls;
+    tick_at(&mut stage, &mut renderer, START_COVERAGE).expect("frame");
+    let per_frame = renderer.update_calls - before;
+
+    let original = stage.built().palette.clone();
+    let rejected = palette_with_outfit(&stage, Colour::hex(0x0020_a060));
+    assert_ne!(rejected, original);
+    // The install's dynamic refresh is refused, so the palette change is abandoned.
+    renderer.fail_update_call = Some(renderer.update_calls + 1);
+    stage.apply_palette(&mut renderer, &rejected).expect_err("the install fails");
+    assert_eq!(stage.built().palette, original, "the old palette stays in force");
+
+    // Zooming in switches variants, which rebuilds from the source: it must carry the palette in force, not the rejected one.
+    tick_at(&mut stage, &mut renderer, 0.8).expect("the switch");
+    assert_eq!(stage.built().variant, Some(id("close-up")));
+    assert_eq!(stage.built().palette, original, "the rejected palette did not leak into the rebuild");
+    assert!(per_frame > 0);
+    stage.release(&mut renderer).expect("released");
+}
+
+#[test]
+fn an_aborted_install_makes_the_kept_character_resend_every_dynamic_mesh() {
+    let mut renderer = Spy::new(true);
+    let mut stage = stage_on(&mut renderer, 32, true);
+    tick_at(&mut stage, &mut renderer, START_COVERAGE).expect("frame");
+    let before = renderer.update_calls;
+    tick_at(&mut stage, &mut renderer, START_COVERAGE).expect("frame");
+    let per_frame = renderer.update_calls - before;
+    assert!(per_frame > 0, "the mock hair moves every frame");
+
+    // Fail the install's refresh (the frame's own upload comes first): the install is abandoned, and the meshes it shares
+    // with the kept character may already show the abandoned simulation.
+    renderer.fail_update_call = Some(renderer.update_calls + per_frame + 1);
+    tick_at(&mut stage, &mut renderer, 0.8).expect_err("the refresh is refused");
+
+    // The kept character's next frame resends all of its meshes, so none keeps showing the abandoned shape. A revision
+    // that merely differs from the last seen one is not enough: the steps of that frame move it back to equality.
+    let before = renderer.update_calls;
+    tick_at(&mut stage, &mut renderer, START_COVERAGE).expect("the kept character runs");
+    assert_eq!(renderer.update_calls - before, per_frame, "every dynamic mesh was uploaded again");
+    stage.release(&mut renderer).expect("released");
+}
+
+#[test]
+fn a_failed_release_after_a_resize_still_rebinds_the_face_system() {
+    let mut renderer = Spy::new(false);
+    let mut stage = stage_with_rig(&mut renderer, 32, false, FaceRig::standard());
+    stage.tick(&mut renderer, &FrameInput::default()).expect("frame");
+    let layers = stage.character().face_layers().count();
+
+    renderer.fail_next_release = true;
+    let error = stage.resize_face(&mut renderer, FACE_PX_PER_M / 2.0).expect_err("the old textures stay");
+    assert!(matches!(error, StageError::Render { .. }), "{error}");
+    assert_eq!(
+        stage.character().face_px_per_m().to_bits(),
+        (FACE_PX_PER_M / 2.0).to_bits(),
+        "the new density is in force"
+    );
+
+    let before = renderer.paints.len();
+    stage.tick(&mut renderer, &FrameInput::default()).expect("painting at the new density validates");
+    assert_eq!(renderer.paints.len() - before, layers, "every layer repainted on the new textures");
+    // The refused release left the old textures behind; that is the renderer's to clean up, not this test's.
+    stage.release(&mut renderer).expect("released");
+}
