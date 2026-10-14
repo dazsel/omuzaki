@@ -88,8 +88,8 @@ pub struct Weights {
     parts: BTreeMap<String, usize>,
     /// Measured weights of individual partitions, keyed by their label (`name@k/n`). Hash partitions are uneven when a
     /// crate has a few very slow tests; a partition not listed weighs an equal share of the crate's weight.
-    #[serde(default)]
-    part_weights: BTreeMap<String, u64>,
+    #[serde(default, rename = "part_weights")]
+    by_partition: BTreeMap<String, u64>,
 }
 
 impl Weights {
@@ -101,7 +101,7 @@ impl Weights {
 
     /// Every crate weighs the same, which makes [`shard`] an even split by count.
     pub fn uniform() -> Self {
-        Self { default: 1, crates: BTreeMap::new(), parts: BTreeMap::new(), part_weights: BTreeMap::new() }
+        Self { default: 1, crates: BTreeMap::new(), parts: BTreeMap::new(), by_partition: BTreeMap::new() }
     }
 
     /// Build weights from explicit pairs (tests).
@@ -111,14 +111,14 @@ impl Weights {
             default,
             crates: pairs.iter().map(|(name, weight)| ((*name).to_owned(), *weight)).collect(),
             parts: BTreeMap::new(),
-            part_weights: BTreeMap::new(),
+            by_partition: BTreeMap::new(),
         }
     }
 
     /// Set the weight of one partition label (tests).
     #[cfg(test)]
     fn with_part_weight(mut self, label: &str, weight: u64) -> Self {
-        self.part_weights.insert(label.to_owned(), weight);
+        self.by_partition.insert(label.to_owned(), weight);
         self
     }
 
@@ -178,7 +178,7 @@ pub fn shard(names: &[String], max_shards: usize, weights: &Weights) -> Vec<Vec<
             for index in 1..=parts {
                 let label = format!("{name}@{index}/{parts}");
                 let even = weight.div_ceil(u64::try_from(parts).unwrap_or(1));
-                let part_weight = weights.part_weights.get(&label).copied().unwrap_or(even).max(1);
+                let part_weight = weights.by_partition.get(&label).copied().unwrap_or(even).max(1);
                 items.push(Item { name: name.clone(), weight: part_weight, part: Some((index, parts)) });
             }
         } else {
