@@ -83,11 +83,14 @@ never write their struct literals or match them exhaustively: a new field or var
 defines it.
 
 - **Cache keys** that destructure a definition on purpose, so a new field can't be missed (`omuzaki-char/src/builder.rs`),
-  hash a **canonical projection** of it instead: the serialised definition with the recolour-only inputs removed (the
-  palette, and each kind's colour parameters that its `recolour` handles). A palette or colourway change therefore
-  still never rebuilds geometry (`char-face-api.md` Q6), while any new geometry field is in the key automatically. Two
-  tests guard it: a planted new field changes the key, and a palette change leaves it unchanged (the existing recolour
-  tests in `omuzaki-char/tests/builder.rs` keep passing).
+  hash a **canonical projection** instead, and stay **per part** as the builder caches today. A part's geometry key
+  hashes only that part's own inputs: its kind and the kind's version, its `PartDef` with the recolour-only parameters
+  removed (those its `recolour` handles), the template and quality, and the value hashes of the facts it reads from
+  earlier parts. Character-level inputs that don't shape a part's geometry are keyed separately for the stage that uses
+  them: the palette for recolour, the weight brushes for skinning. So a hair edit still rebuilds only the hair, a brush
+  edit re-skins without rebuilding geometry, a palette or colourway change rebuilds nothing (`char-face-api.md` Q6),
+  and a new geometry field in a `PartDef` joins that part's key automatically. The existing builder tests for these
+  cases keep passing, plus one that plants a new field and sees only that part's key change.
 - **Events:** `omuzaki-mcp` forwards events generically through their serialised form and matches only the ones it
   treats specially.
 
