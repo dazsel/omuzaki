@@ -136,12 +136,20 @@ impl ModelDir {
     }
 }
 
-/// The manifest `io` table pairing each slot port with the model's port at the same position; `None` when the inputs
-/// differ in count or the model has fewer outputs than the slot.
+/// The manifest `io` table that renames the model's ports to the slot's. `Signature::accepts` matches ports by name,
+/// so a model that already names every slot port (in any order, with extra outputs) needs no renaming; only a model
+/// whose names differ (TensorFlow's own) is paired with the slot by position. `None` when positions are the only way
+/// to pair them and the counts do not allow it.
 fn port_map(slot: &Signature, model: &Signature) -> Option<BTreeMap<String, String>> {
-    if slot.inputs.len() != model.inputs.len() || slot.outputs.len() > model.outputs.len() {
-        return None;
+    let mut io = BTreeMap::new();
+    for (slot, model, same_count) in [(&slot.inputs, &model.inputs, true), (&slot.outputs, &model.outputs, false)] {
+        if slot.iter().all(|s| model.iter().any(|m| m.name == s.name)) {
+            continue;
+        }
+        if if same_count { slot.len() != model.len() } else { slot.len() > model.len() } {
+            return None;
+        }
+        io.extend(slot.iter().zip(model).map(|(s, m)| (s.name.clone(), m.name.clone())));
     }
-    let pairs = slot.inputs.iter().zip(&model.inputs).chain(slot.outputs.iter().zip(&model.outputs));
-    Some(pairs.map(|(s, m)| (s.name.clone(), m.name.clone())).collect())
+    Some(io)
 }

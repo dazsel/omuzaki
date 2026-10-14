@@ -1,77 +1,20 @@
 //! The humanoid pose solve: VRM normalised rotations onto one skeleton's own bones (spec §8, §20, RG-01).
 //!
-//! # What "normalised" means, and the one formula
+//! The conversion itself (`local = Wp⁻¹ · q · Wb`, and its inverse) lives in
+//! [`HumanoidFrames`] in the contract crate, so `omuzaki-io-ops` can read an authored rest back as a pose without
+//! depending on this crate; [`HumanoidRig`] holds one and forwards to it. See that module for the maths.
 //!
-//! Animation speaks [`HumanoidPose`], in the *normalised* space of VRM Animation: every bone's rest orientation is the
-//! identity, so a rotation means "turn this bone this much, about the world's axes as they are in the T-pose".
-//! The same numbers move any character's arm the same way. A real skeleton does not have identity rest rotations: bones
-//! exported from Blender or a VRM 0.x model carry arbitrary local axes (often with the bone's Y along the limb). So the
-//! solve converts.
-//!
-//! Let `Wp` be the skeleton-space rest rotation of a bone's parent, `Wb` the bone's own, and `q` its normalised
-//! rotation. In normalised space the bone's world rotation is `D·q`, where `D` is the parent's accumulated rotation.
-//! On the real skeleton that same motion is `D·Wb` for the bone and `D·Wp` for its parent, so the bone's new
-//! parent-local rotation is `(D·Wp)⁻¹ · D·q·Wb`, in which `D` cancels:
-//!
-//! ```text
-//! local = Wp⁻¹ · q · Wb
-//! ```
-//!
-//! Two multiplies per bone, with `Wp` and `Wb` read from tables built once. This is the conversion
-//! three-vrm's normalised rig performs. The inverse, [`HumanoidRig::to_humanoid`], is `q = Wp · local · Wb⁻¹`.
-//!
-//! Optional humanoid bones a skeleton lacks are skipped: a rotation for an absent bone is ignored (as VRM Animation
-//! specifies) and the children hang from the nearest present ancestor, which is what `Wp` of the child already is.
 //! A *generic* skeleton (a quadruped, a blob: [`Skeleton::generic`]) lacks every humanoid bone, so there is nothing to
 //! turn: [`HumanoidRig::new`] accepts it and every solve gives the rest pose (the soft parts move through the spring
 //! solver as on any skeleton), while [`HumanoidRig::try_new`] refuses it for callers that need a humanoid.
 //! Bones that are not humanoid (hair, cloth, accessories) stay at rest here; spring bones and IK write them later in
 //! the frame (spec §8 order).
-//!
-//! The hips offset is in the same world-aligned rest axes, so it is carried into the hips parent's frame (`Wp⁻¹`)
-//! before it is added to the hips translation.
 
 use std::sync::Arc;
 
-use omuzaki_anim_api::{HumanoidBone, HumanoidPose, NotHumanoid, Pose, Rig, Skeleton, Tick};
-use omuzaki_core::glam::{Quat, Vec4};
+use omuzaki_anim_api::{HumanoidFrames, HumanoidPose, NotHumanoid, Pose, Rig, Skeleton, Tick};
 
 use crate::skeleton::RigSkeleton;
-
-/// `q` scaled to unit length, or `None` if it is zero or not finite (so a bad input can be skipped, not propagated).
-fn unit(q: Quat) -> Option<Quat> {
-    Vec4::from(q).try_normalize().map(Quat::from_vec4)
-}
-
-/// One present humanoid bone, with the two rest rotations the conversion needs.
-#[derive(Copy, Clone, Debug)]
-struct Binding {
-    /// Index into [`HumanoidPose::rotations`].
-    bone: usize,
-    /// Index into [`Pose::local`].
-    joint: usize,
-    /// `Wp`: skeleton-space rest rotation of the parent (identity for a root).
-    parent_world: Quat,
-    /// `Wb`: skeleton-space rest rotation of the bone itself.
-    own_world: Quat,
-}
-
-impl Binding {
-    fn new(rig: &RigSkeleton, bone: HumanoidBone) -> Option<Self> {
-        let skeleton = rig.skeleton();
-        let id = skeleton.humanoid_bone(bone)?;
-        let parent_world = match skeleton.get(id)?.parent {
-            Some(parent) => rig.rest_world(parent)?.rotation.normalize(),
-            None => Quat::IDENTITY,
-        };
-        Some(Self {
-            bone: bone.index(),
-            joint: id.index(),
-            parent_world,
-            own_world: rig.rest_world(id)?.rotation.normalize(),
-        })
-    }
-}
 
 /// Solves humanoid poses onto one skeleton: the "humanoid rotations onto the skeleton's rest" stage of [`Rig::solve`].
 ///
@@ -82,11 +25,8 @@ impl Binding {
 #[derive(Clone, Debug)]
 pub struct HumanoidRig {
     skeleton: Arc<RigSkeleton>,
-    /// Every humanoid bone the skeleton has, in [`HumanoidBone::ALL`] order (none for a generic skeleton).
-    bindings: Vec<Binding>,
-    /// The hips: the only bone whose position the pose moves. `None` for a generic skeleton, which has no humanoid
-    /// bones (a humanoid [`Skeleton`] always has hips).
-    hips: Option<Binding>,
+    /// The `Wp`/`Wb` table and both conversions; the maths lives in the contract crate.
+    frames: HumanoidFrames,
 }
 
 impl HumanoidRig {
@@ -95,9 +35,8 @@ impl HumanoidRig {
     /// Accepts a generic skeleton too, as a rig that leaves every bone at rest. Use [`HumanoidRig::try_new`] when a
     /// non-humanoid skeleton is a mistake rather than a character to animate some other way.
     pub fn new(skeleton: Arc<RigSkeleton>) -> Self {
-        let bindings: Vec<Binding> = HumanoidBone::ALL.into_iter().filter_map(|b| Binding::new(&skeleton, b)).collect();
-        let hips = bindings.iter().copied().find(|b| b.bone == HumanoidBone::Hips.index());
-        Self { skeleton, bindings, hips }
+        let frames = HumanoidFrames::new(skeleton.skeleton());
+        Self { skeleton, frames }
     }
 
     /// As [`HumanoidRig::new`], but refuses a skeleton that is not a VRM humanoid.
@@ -120,33 +59,14 @@ impl HumanoidRig {
     /// A rotation that is not finite (or is zero) leaves that bone at rest, and a non-finite hips offset is ignored, so
     /// a bad input never reaches the renderer as a NaN matrix.
     pub fn apply_humanoid(&self, pose: &HumanoidPose, out: &mut Pose) {
-        out.local[..self.skeleton.len()].copy_from_slice(self.skeleton.rest_local());
-        for b in &self.bindings {
-            let local = b.parent_world.conjugate() * pose.rotations[b.bone] * b.own_world;
-            if let Some(local) = unit(local) {
-                out.local[b.joint].rotation = local;
-            }
-        }
-        if let Some(hips) = self.hips
-            && pose.hips_offset.is_finite()
-        {
-            out.local[hips.joint].translation += hips.parent_world.conjugate() * pose.hips_offset;
-        }
+        self.frames.apply_humanoid(self.skeleton.rest_local(), pose, out);
     }
 
     /// The inverse of [`apply_humanoid`](Self::apply_humanoid): reads the humanoid rotations and the hips offset back
     /// out of a solved pose, in normalised space. Bones the skeleton lacks come out as the identity. This is how a
     /// pose on the rig is saved to the pose library (RG-06) or compared across characters. Hot path.
     pub fn to_humanoid(&self, local: &Pose, out: &mut HumanoidPose) {
-        *out = HumanoidPose::REST;
-        for b in &self.bindings {
-            let q = b.parent_world * local.local[b.joint].rotation * b.own_world.conjugate();
-            out.rotations[b.bone] = unit(q).unwrap_or(Quat::IDENTITY);
-        }
-        if let Some(hips) = self.hips {
-            let moved = local.local[hips.joint].translation - self.skeleton.rest_local()[hips.joint].translation;
-            out.hips_offset = hips.parent_world * moved;
-        }
+        self.frames.to_humanoid(self.skeleton.rest_local(), local, out);
     }
 }
 
@@ -165,14 +85,64 @@ impl Rig for HumanoidRig {
 
 #[cfg(test)]
 mod tests {
-    use omuzaki_anim_api::Transform;
+    use omuzaki_anim_api::{HumanoidBone, Transform};
+    use omuzaki_core::glam::Quat;
     use omuzaki_core::glam::Vec3;
+    use omuzaki_core::rng::Rng;
 
     use super::*;
 
     fn rig_with(bones: &[HumanoidBone]) -> HumanoidRig {
         let skeleton = Skeleton::humanoid(bones, |_| Transform::from_translation(Vec3::Y * 0.1)).unwrap();
         HumanoidRig::new(RigSkeleton::new(skeleton))
+    }
+
+    /// A Blender-style rig: every bone has its own arbitrary rest rotation and translation.
+    fn arbitrary_rest_rig() -> HumanoidRig {
+        let rng = std::cell::RefCell::new(Rng::new(99));
+        let skeleton = Skeleton::humanoid(&HumanoidBone::ALL, |_| {
+            let mut rng = rng.borrow_mut();
+            Transform { translation: random_vec(&mut rng, 0.2), rotation: random_rotation(&mut rng) }
+        })
+        .unwrap();
+        HumanoidRig::new(RigSkeleton::new(skeleton))
+    }
+
+    fn random_vec(rng: &mut Rng, spread: f32) -> Vec3 {
+        Vec3::new(rng.range_f32(-spread, spread), rng.range_f32(-spread, spread), rng.range_f32(-spread, spread))
+    }
+
+    fn random_rotation(rng: &mut Rng) -> Quat {
+        let axis = random_vec(rng, 1.0).try_normalize().unwrap_or(Vec3::Y);
+        Quat::from_axis_angle(axis, rng.range_f32(-1.5, 1.5))
+    }
+
+    /// FNV-1a over the bit patterns of every number the two conversions produce for 8 seeded poses.
+    fn conversion_digest(rig: &HumanoidRig) -> u64 {
+        let mut rng = Rng::new(7);
+        let mut digest = 0xcbf2_9ce4_8422_2325_u64;
+        let mix = |h: u64, v: f32| (h ^ u64::from(v.to_bits())).wrapping_mul(0x0000_0100_0000_01b3);
+        for _ in 0..8 {
+            let mut pose = HumanoidPose::REST;
+            for bone in HumanoidBone::ALL {
+                pose.set(bone, random_rotation(&mut rng));
+            }
+            pose.hips_offset = random_vec(&mut rng, 0.3);
+            let (mut local, mut back) = (Pose::IDENTITY, HumanoidPose::REST);
+            rig.apply_humanoid(&pose, &mut local);
+            rig.to_humanoid(&local, &mut back);
+            for t in &local.local[..rig.rig_skeleton().len()] {
+                digest = t.translation.to_array().into_iter().chain(t.rotation.to_array()).fold(digest, mix);
+            }
+            digest ^= back.checksum();
+        }
+        digest
+    }
+
+    /// Recorded at `origin/main` before the maths moved to `HumanoidFrames`: the move must change no bit.
+    #[test]
+    fn the_conversions_are_bit_for_bit_what_they_were() {
+        assert_eq!(conversion_digest(&arbitrary_rest_rig()), 13_635_560_173_654_275_620);
     }
 
     #[test]
@@ -190,7 +160,7 @@ mod tests {
     fn bones_the_skeleton_lacks_are_ignored() {
         let required: Vec<_> = HumanoidBone::ALL.into_iter().filter(|b| b.is_required()).collect();
         let rig = rig_with(&required);
-        assert_eq!(rig.bindings.len(), 15);
+        assert_eq!(rig.frames.len(), 15);
         let mut pose = HumanoidPose::REST;
         pose.set(HumanoidBone::Chest, Quat::from_rotation_x(1.0)); // absent: no bone to turn
         pose.set(HumanoidBone::Head, Quat::from_rotation_y(0.5));

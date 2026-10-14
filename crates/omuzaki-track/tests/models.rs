@@ -8,7 +8,9 @@ use omuzaki_ai_api::{
     FetchError, FileSource, LoadError, ModelSource, PinnedFile, Probe, Progress, Runtime, RuntimeId, Session,
     SessionOptions, Signature,
 };
+use omuzaki_ai_mock::FakeRuntime;
 use omuzaki_track::models::{MODEL_FILES, ModelDir, ModelError};
+use omuzaki_track::{blendshapes_signature, detector_signature, landmarks_signature};
 use sha2::{Digest, Sha256};
 
 /// A folder of stand-in files with a matching manifest, for the checks that need no model.
@@ -97,4 +99,96 @@ fn a_graphs_identity_is_the_digest_of_its_file_list() {
     let bytes = std::fs::read(dir.path().join(name)).unwrap();
     let text = format!("{:x} {} {name}\n", Sha256::digest(&bytes), bytes.len());
     assert_eq!(*runtime.0.lock().unwrap(), [(name.to_owned(), format!("{:x}", Sha256::digest(text)))]);
+}
+
+/// The `fake` runtime's model file for `signature`, with its ports named and ordered by `rename`.
+fn fake_model_file(
+    signature: &Signature,
+    rename: impl Fn(bool, usize, &str) -> String,
+    reverse_outputs: bool,
+) -> String {
+    let mut text = String::from("scale = 1.0\nbias = 0.0\n");
+    let mut ports = |input: bool, specs: &[omuzaki_ai_api::TensorSpec]| {
+        let mut order: Vec<usize> = (0..specs.len()).collect();
+        if !input && reverse_outputs {
+            order.reverse();
+        }
+        for i in order {
+            let shape: Vec<String> = specs[i].shape.iter().map(ToString::to_string).collect();
+            let dtype = format!("{:?}", specs[i].dtype).to_lowercase();
+            let section = if input { "inputs" } else { "outputs" };
+            let name = rename(input, i, &specs[i].name);
+            let shape =
+                shape.iter().map(|d| d.parse::<usize>().map_or(format!("\"{d}\""), |_| d.clone())).collect::<Vec<_>>();
+            text += &format!("[[{section}]]\nname = \"{name}\"\ndtype = \"{dtype}\"\nshape = [{}]\n", shape.join(", "));
+        }
+    };
+    ports(true, &signature.inputs);
+    ports(false, &signature.outputs);
+    text
+}
+
+/// A folder whose three graphs are `fake` model files for the real slots, written by `file`.
+fn fake_folder(file: impl Fn(&Signature) -> String) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let slots = [detector_signature(), landmarks_signature(), blendshapes_signature()];
+    let mut files = serde_json::Map::new();
+    for (index, name) in MODEL_FILES.iter().enumerate() {
+        let bytes = slots.get(index).map_or_else(|| "stand-in".to_owned(), &file);
+        std::fs::write(dir.path().join(name), &bytes).unwrap();
+        files.insert((*name).to_owned(), serde_json::json!({ "sha256": format!("{:x}", Sha256::digest(&bytes)) }));
+    }
+    std::fs::write(dir.path().join("manifest.json"), serde_json::json!({ "files": files }).to_string()).unwrap();
+    dir
+}
+
+fn load(dir: &tempfile::TempDir) -> Result<omuzaki_track::FaceGraphs, ModelError> {
+    ModelDir::open(dir.path()).unwrap().load(&FakeRuntime, &NoFetch, &SessionOptions::default())
+}
+
+fn assert_loaded_with_slot_signatures(graphs: &omuzaki_track::FaceGraphs) {
+    assert_eq!(graphs.detector.signature(), &detector_signature());
+    assert_eq!(graphs.landmarks.signature(), &landmarks_signature());
+    assert_eq!(graphs.blendshapes.signature(), &blendshapes_signature());
+}
+
+#[test]
+fn graphs_that_name_the_slot_ports_load() {
+    let dir = fake_folder(|s| fake_model_file(s, |_, _, n| n.to_owned(), false));
+    assert_loaded_with_slot_signatures(&load(&dir).unwrap());
+}
+
+#[test]
+fn outputs_exported_in_another_order_load_by_name() {
+    let dir = fake_folder(|s| fake_model_file(s, |_, _, n| n.to_owned(), true));
+    assert_loaded_with_slot_signatures(&load(&dir).unwrap());
+}
+
+#[test]
+fn graphs_with_tensorflows_own_names_are_paired_by_position() {
+    let dir = fake_folder(|s| {
+        fake_model_file(s, |input, i, _| format!("tf_{}_{i}", if input { "in" } else { "out" }), false)
+    });
+    assert_loaded_with_slot_signatures(&load(&dir).unwrap());
+}
+
+#[test]
+fn a_graph_that_does_not_fit_its_slot_is_refused() {
+    // A detector with one input too many cannot be paired, and one with the wrong output shape is refused by the runtime.
+    let extra_input = fake_folder(|s| {
+        let mut with_extra = s.clone();
+        with_extra.inputs.push(omuzaki_ai_api::TensorSpec::new(
+            "extra",
+            omuzaki_ai_api::DType::F32,
+            [omuzaki_ai_api::Dim::Fixed(1)],
+        ));
+        fake_model_file(&with_extra, |input, i, n| if input { format!("tf_in_{i}") } else { n.to_owned() }, false)
+    });
+    assert!(matches!(load(&extra_input), Err(ModelError::Load(m)) if m.contains("face_detector.onnx")));
+    let wrong_shape = fake_folder(|s| {
+        let mut bad = s.clone();
+        bad.outputs[0].shape = vec![omuzaki_ai_api::Dim::Fixed(7)];
+        fake_model_file(&bad, |_, _, n| n.to_owned(), false)
+    });
+    assert!(matches!(load(&wrong_shape), Err(ModelError::Load(m)) if m.contains("face_detector.onnx")));
 }

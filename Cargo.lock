@@ -3546,6 +3546,8 @@ dependencies = [
 name = "omuzaki-doc-api"
 version = "0.0.0"
 dependencies = [
+ "criterion",
+ "proptest",
  "schemars",
  "serde",
  "serde_json",
