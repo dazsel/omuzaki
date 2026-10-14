@@ -37,8 +37,9 @@ fn both_handles_work_as_dyn_cancel() {
     assert!(handles[1].is_cancelled());
 }
 
-#[test]
-fn a_cancel_on_one_thread_is_seen_on_another() {
+/// One round: a watcher spins on a clone while this thread cancels; returns the time from `cancel()` to the watcher's
+/// first sighting, or `None` if it never saw it within the safety bound.
+fn cancel_latency() -> Option<Duration> {
     let flag = CancelFlag::new();
     let watcher = flag.clone();
     let (ready_tx, ready_rx) = mpsc::channel();
@@ -47,13 +48,24 @@ fn a_cancel_on_one_thread_is_seen_on_another() {
         let start = Instant::now();
         while !watcher.is_cancelled() {
             if start.elapsed() > Duration::from_secs(5) {
-                return false;
+                return None;
             }
             thread::yield_now();
         }
-        true
+        Some(Instant::now())
     });
     ready_rx.recv().expect("watcher started");
+    let cancelled_at = Instant::now();
     flag.cancel();
-    assert!(handle.join().expect("watcher thread"), "the watcher never saw the cancel");
+    let seen_at = handle.join().expect("watcher thread")?;
+    Some(seen_at.saturating_duration_since(cancelled_at))
+}
+
+#[test]
+fn a_cancel_on_one_thread_is_seen_on_another_within_10_ms() {
+    // #1125 requires observation within 10 ms. A loaded CI runner can deschedule a thread for longer than that, so the
+    // acceptance is the best of several rounds: a flag that is slow by design would miss the bound every time.
+    let best =
+        (0..20).map(|_| cancel_latency().expect("the watcher never saw the cancel")).min().expect("at least one round");
+    assert!(best < Duration::from_millis(10), "best cancel latency was {best:?}");
 }
