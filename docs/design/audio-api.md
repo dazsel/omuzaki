@@ -429,6 +429,7 @@ pub trait AudioEngine: Send + Sync {
 - **Lifetimes:**
   - dropping a `TapHandle` or a `TapReader` closes its tap;
   - dropping a `FeedWriter` closes its feed, and its source plays silence;
+  - a closing feed fades out over 2.5 ms; `FeedWriter::closer()` raises the close flag from another thread, and `FeedWriter::playhead()` says which feed sample enters the bus at which engine sample (`ai-performer-voice-face.md` §3.2, §3.3, ADR 0041);
   - closing sets a flag the audio thread reads at the next block and never waits for it. The slot is reclaimed at the
     next compile.
 - **Events:** each `subscribe()` gets its own bounded queue of 256 that drops the oldest event and counts drops, so
@@ -546,6 +547,7 @@ One follow-up keeps it DRY: once the API crate carries the ring, the speech host
 (TTS, a music decoder). An underrun plays silence and is counted. A feed declares its rate, and the engine resamples it
 at the edge. TTS writes the AI voice ahead of time; the soundboard and music use the player source (BR-21), whose
 decoded samples are shared buffers made off-thread.
+The AI performer's TTS host writes two alternating feeds into `ai_voice` and drives its mouth from the PCM ahead of playback, not from the bus tap (`ai-performer-voice-face.md` §3, §4.1, ADR 0041). Its private turns go to a third feed on an `ai_voice_private` bus whose only output is `monitor_out`, so they never depend on how long `CohostOnly` lasts (§3.2 there).
 
 ### 4.5 Streaming model slots in the graph (ML-14)
 
