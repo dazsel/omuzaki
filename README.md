@@ -1,80 +1,90 @@
-# Omuzaki
+<p align="center">
+  <img src=".github/assets/omuzaki-wordmark.png" alt="Omuzaki" width="520">
+</p>
 
-**A desktop studio to build, perform and stream a VTuber, driven by people or by AI agents through MCP.**
+<p align="center">
+  <b>A free, open-source studio to build, perform and stream your VTuber.</b><br>
+  Anything you can do in it, an AI agent can do too.
+</p>
 
-Omuzaki is made by [Dazsel](https://dazsel.com/omuzaki). The code is at <https://github.com/dazsel/omuzaki>.
+<p align="center">
+  <a href="#licence"><img src="https://img.shields.io/badge/licence-MIT%20or%20Apache--2.0-4fb0bb" alt="Licence: MIT or Apache-2.0"></a>
+  <a href="https://github.com/dazsel/omuzaki/milestone/6"><img src="https://img.shields.io/badge/status-early%20development-f9a06d" alt="Status: early development"></a>
+  <img src="https://img.shields.io/badge/built%20with-Rust-f45d62" alt="Built with Rust">
+</p>
 
-## Status: early development
+> [!WARNING]
+> **There is no app to download yet.** What exists today is the engine underneath it: libraries, a command line and an
+> MCP server, each with tests. The first thing you'll be able to try is the live slice: your webcam driving a character
+> on screen and into OBS. Follow it on the [V0 milestone](https://github.com/dazsel/omuzaki/milestone/6).
 
-Omuzaki is **not released**. There is no installer, no stable API and no promise that any given feature works yet.
-The workspace builds and its tests pass, but most of the studio is contracts, mocks and first implementations, not a
-finished app. The spec describes where it is going; the crate list in `crates/README.md` shows what exists today, and
-marks what does not exist yet.
+## Where it stands
 
-## What it will do
+- ✅ **Projects are plain files.** A project is a folder of TOML files that diff cleanly in git. Every change is an operation you can preview first and undo after.
+- ✅ **Agents can do everything.** Each operation is a command on the `omuzaki` CLI and a tool on its MCP server, both generated from one registry.
+- ✅ **A procedural character:** head, hair, body, outfit and accessories built from parameters, and a rig that poses any VRM humanoid skeleton.
+- ✅ **A painted 2D face** (eyes, brows, mouth, nose, marks and expressions) driven by the 52 ARKit face shapes.
+- ✅ **A toon renderer** on wgpu, with outlines. It also runs headless, so renders are tested.
+- ✅ **VRM 1.0, VRM 0.x and glTF** import and export.
+- ✅ **Webcam face tracking** with MediaPipe's face models, and **speech** with Silero VAD and Whisper, as libraries.
+- ❌ **The live slice:** webcam → your character on screen → OBS. In progress ([V0](https://github.com/dazsel/omuzaki/milestone/6)).
+- ❌ **The desktop app.** Its design system exists; the app around it doesn't yet.
+- ❌ **Then:** streaming outputs, creating with agents inside the app, an AI performer, and sharing ([phases 2 to 5](https://github.com/dazsel/omuzaki/milestones)).
 
-- **Build** a character: from an idea, a sketch or an existing model to a rigged, expressive character, with a typed
-  operation behind every action so each step can be undone.
-- **Perform** it live: from a webcam, a phone, motion capture, a voice or an AI performer, into any streaming setup.
-- **Stream and reuse** it: live output for streaming software, and exports for games and rendered video.
-- **Be driven by agents:** every operation the app can do is exposed through MCP, so Claude Code, Codex or any other MCP
-  client can do what a person can, while the person watches and can steer or undo.
+## Try the engine
 
-The full plan is in `docs/product/02-studio-spec-v3.md`. It is a plan, not a list of working features.
+You need Rust through [rustup](https://rustup.rs); `rust-toolchain.toml` pins the version. On Debian or Ubuntu, add the
+system libraries for audio, input and windows:
+
+```sh
+sudo apt install pkg-config libasound2-dev libudev-dev libxkbcommon-dev libwayland-dev libx11-dev libxcb1-dev
+```
+
+Then:
+
+```sh
+git clone https://github.com/dazsel/omuzaki
+cd omuzaki
+cargo run -p omuzaki-cli -- ops                    # every operation: name, scope and summary
+cargo run -p omuzaki-cli -- help face.set_profile  # one operation's arguments, with types and ranges
+```
+
+## Use it from an AI agent
+
+A project is a folder with a `project.toml`. Point any MCP client at `omuzaki --project <folder> mcp`. With Claude Code:
+
+```sh
+mkdir my-show && printf 'name = "My show"\nschema = 1\n' > my-show/project.toml
+cargo build --release -p omuzaki-cli
+claude mcp add omuzaki -- "$PWD/target/release/omuzaki" --project "$PWD/my-show" mcp
+```
+
+The agent can then list, preview, apply and undo operations on that project, and each change is saved to the folder as
+it is made.
 
 ## How it's built
 
-A Rust workspace in `crates/`, built contract-first. Each area has an API crate that holds the types and traits, a mock
-crate with a deterministic in-memory version for tests, and implementation crates that do the real work. A dependency
-rule, checked by `cargo xtask lint-deps`, keeps implementations depending on contracts and never on each other.
-Implementations register themselves (operations, part kinds, formats), so adding one does not edit a shared list.
+A Rust workspace, built contract-first so many people (and agents) can work on it at once. Each area has a small API
+crate with its types and traits, a mock crate that is a deterministic stand-in for tests, and implementation crates that
+do the real work. `cargo xtask lint-deps` keeps implementations depending on contracts, never on each other, and
+operations, part kinds and formats register themselves, so adding one never edits a shared list.
 
-Start with `crates/README.md` for the layout and the rules, then `docs/README.md` for the documentation map.
-
-## Building from source
-
-You need a recent Rust toolchain through [rustup](https://rustup.rs). `rust-toolchain.toml` pins the version and rustup
-installs it on first use.
-
-```sh
-cargo build
-cargo test
-```
-
-Some tests and spikes can use optional heavy assets (models, audio). They are not in the repository. Point
-`OMUZAKI_ASSETS` at a folder that holds them; the default is an `assets-local/` folder in the workspace root, which is
-git-ignored. Tests that need an asset that is missing skip or are marked as such, so a plain `cargo test` works without
-any. See `assets/README.md`.
-
-The full check that CI runs on the crates you changed:
-
-```sh
-cargo xtask check --affected
-```
-
-Linux builds need the usual system development packages for audio and windowing (ALSA, udev, xkbcommon, X11 or
-Wayland).
+Start with [`crates/README.md`](crates/README.md) for the layout and [`docs/README.md`](docs/README.md) for the docs.
+The full plan is the [spec](docs/product/02-studio-spec-v3.md): a plan, not a list of working features.
 
 ## Contributing
 
-Ideas and bug reports are welcome: open an issue for a bug, or start a discussion for an idea. **We are not accepting
-code contributions (pull requests) yet.** Pull requests from outside the Dazsel organisation are closed automatically.
-That may change later. `CONTRIBUTING.md` explains how to report a bug and why, and `SECURITY.md` explains how to report
-a vulnerability privately.
-
-AI coding agents working in the repository should read `AGENTS.md`.
+Bug reports and ideas are welcome: open an [issue](https://github.com/dazsel/omuzaki/issues/new/choose) for a bug, or
+start a [discussion](https://github.com/dazsel/omuzaki/discussions) for an idea. **We aren't taking code contributions
+yet:** pull requests from outside the Dazsel organisation are closed automatically while the contracts settle.
+[`CONTRIBUTING.md`](CONTRIBUTING.md) explains why and how to report a bug; [`SECURITY.md`](SECURITY.md) covers
+vulnerabilities. AI coding agents should read [`AGENTS.md`](AGENTS.md).
 
 ## Licence
 
-Licensed under either of
+Licensed under either of [Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT), at your option. Dependencies, models and
+assets keep their own licences, and nothing with a non-commercial licence is ever used
+([policy](docs/licensing/policy.md)).
 
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
-- MIT licence ([LICENSE-MIT](LICENSE-MIT))
-
-at your option. Third-party dependencies, models and assets keep their own licences; the policy for them is in
-`docs/licensing/policy.md`.
-
-## Trademarks
-
-Omuzaki and Dazsel are trademarks of Dazsel; the code licence does not grant use of the names or logos. See
-[TRADEMARKS.md](TRADEMARKS.md).
+Omuzaki and Dazsel are trademarks of [Dazsel](https://dazsel.com); the code licence doesn't cover the names or logos
+([TRADEMARKS.md](TRADEMARKS.md)).
