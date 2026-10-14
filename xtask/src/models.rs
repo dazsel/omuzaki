@@ -13,6 +13,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use omuzaki_ai_api::{ModelManifest, Origin};
+use xtask::registry::lex::{Tok, Token, tokens};
 
 use crate::workspace::{Package, Workspace};
 
@@ -89,37 +90,52 @@ pub fn problems(file: &str, text: &str, register: &[Row], sources: &[(String, St
     out
 }
 
-/// The `(id, file name)` of every `register_model!("<id>", include_str!("<path>"))` in one Rust source. A plain scan, like
-/// `cargo xtask registry`: it reads the literals and never parses Rust.
+/// The `(id, file name)` of every `register_model!("<id>", include_str!("<path>"))` in one Rust source. It reads the
+/// registry's lexer, so a commented-out or quoted example never counts, and whitespace or newlines inside the call don't
+/// matter.
 fn registrations(source: &str) -> Vec<(String, String)> {
-    const CALL: &str = "register_model!(";
+    let toks = tokens(source);
     let mut found = Vec::new();
-    let mut rest = source;
-    while let Some(at) = rest.find(CALL) {
-        let after = &rest[at + CALL.len()..];
-        let end = after.find(')').unwrap_or(after.len());
-        let call = &after[..end];
-        if let (Some(id), Some(include)) = (first_literal(call), include_name(call)) {
-            found.push((id.to_owned(), include.to_owned()));
+    for at in 0..toks.len() {
+        let call = toks[at].is_ident("register_model") && is_punct(&toks, at + 1, '!') && is_punct(&toks, at + 2, '(');
+        if !call {
+            continue;
         }
-        rest = &after[end..];
+        let id = toks.get(at + 3).and_then(string_value);
+        let file = include_file(&toks, at + 4);
+        if let (Some(id), Some(file)) = (id, file) {
+            found.push((id, file));
+        }
     }
     found
 }
 
-/// The text of the first `"…"` in `call`, which is the id of a `register_model!`.
-fn first_literal(call: &str) -> Option<&str> {
-    let start = call.find('"')? + 1;
-    let len = call[start..].find('"')?;
-    Some(&call[start..start + len])
+/// The file name of `, include_str!("<path>")` starting at `at`: the last component of the path.
+fn include_file(toks: &[Token], at: usize) -> Option<String> {
+    let include = is_punct(toks, at, ',')
+        && toks.get(at + 1).is_some_and(|t| t.is_ident("include_str"))
+        && is_punct(toks, at + 2, '!')
+        && is_punct(toks, at + 3, '(');
+    if !include {
+        return None;
+    }
+    let path = string_value(toks.get(at + 4)?)?;
+    path.rsplit('/').next().map(str::to_owned)
 }
 
-/// The file name of the `include_str!("…")` in `call`, the last component of its path.
-fn include_name(call: &str) -> Option<&str> {
-    const INCLUDE: &str = "include_str!(\"";
-    let start = call.find(INCLUDE)? + INCLUDE.len();
-    let len = call[start..].find('"')?;
-    call[start..start + len].rsplit('/').next()
+fn is_punct(toks: &[Token], at: usize, c: char) -> bool {
+    toks.get(at).is_some_and(|t| t.is_punct(c))
+}
+
+/// The value of a string literal token, without its quotes or raw-string hashes; `None` for anything else.
+fn string_value(token: &Token) -> Option<String> {
+    let Tok::Literal(text) = &token.tok else { return None };
+    if let Some(raw) = text.strip_prefix('r') {
+        let body = raw.trim_start_matches('#').strip_prefix('"')?;
+        return Some(body.trim_end_matches('#').strip_suffix('"')?.to_owned());
+    }
+    let body = text.strip_prefix('"')?.strip_suffix('"')?;
+    Some(body.to_owned())
 }
 
 /// Every `.rs` file under `dir`, recursively, as `(workspace-relative path, text)`. An unreadable file is reported as its
@@ -342,6 +358,45 @@ spdx = "MIT OR Apache-2.0"
                 ("other".to_owned(), "other.model.toml".to_owned()),
             ]
         );
+    }
+
+    #[test]
+    fn whitespace_newlines_and_raw_strings_do_not_hide_a_registration() {
+        let spread =
+            "register_model!(\n    \"tiny\",\n    include_str!(\n        \"../models/tiny.model.toml\"\n    ),\n);";
+        assert_eq!(registrations(spread), [("tiny".to_owned(), "tiny.model.toml".to_owned())]);
+        let raw = r##"register_model!(r#"tiny"#, include_str!("../models/tiny.model.toml"));"##;
+        assert_eq!(registrations(raw), [("tiny".to_owned(), "tiny.model.toml".to_owned())]);
+    }
+
+    #[test]
+    fn a_commented_out_or_quoted_example_is_not_a_registration() {
+        let text = r#"
+// register_model!("tiny", include_str!("../models/tiny.model.toml"));
+/* register_model!("tiny", include_str!("../models/tiny.model.toml")); */
+/// register_model!("tiny", include_str!("../models/tiny.model.toml"));
+const DOC: &str = "register_model!(\"tiny\", include_str!(\"../models/tiny.model.toml\"))";
+"#;
+        assert!(registrations(text).is_empty(), "{:?}", registrations(text));
+    }
+
+    #[test]
+    fn a_register_only_change_to_no_fails_the_gate_without_touching_a_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("docs/licensing")).unwrap();
+        fs::write(root.join(REGISTER), REGISTER_TEXT).unwrap();
+        let tiny = root.join("crates/omuzaki-tiny");
+        fs::create_dir_all(tiny.join("models")).unwrap();
+        fs::create_dir_all(tiny.join("src")).unwrap();
+        fs::write(tiny.join("models/tiny.model.toml"), manifest("tiny", HTTPS)).unwrap();
+        fs::write(tiny.join("src/lib.rs"), good_source("tiny")[0].1.as_str()).unwrap();
+        let mut ws = workspace(&[("omuzaki-tiny", &[])]);
+        ws.root = root.to_path_buf();
+        assert!(report(&ws));
+
+        fs::write(root.join(REGISTER), REGISTER_TEXT.replace("| yes |", "| NO |")).unwrap();
+        assert!(!report(&ws));
     }
 
     #[test]

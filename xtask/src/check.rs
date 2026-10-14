@@ -139,6 +139,12 @@ fn plan(scope: &Scope) -> Vec<Step> {
     steps
 }
 
+/// The steps for `scope`: [`plan`], or, when no crate is affected, only the repo-wide models gate. A register-only change
+/// (ML-01) can break that gate without touching any crate, so it still runs.
+fn steps_for(scope: &Scope) -> Vec<Step> {
+    if scope.is_empty() { vec![Step { name: "models", action: Action::Models }] } else { plan(scope) }
+}
+
 /// The cargo package selectors each step of a [`Scope`] uses.
 struct Selected {
     /// For `cargo fmt`: every crate in scope.
@@ -255,11 +261,7 @@ pub fn run(workspace: &Workspace, args: &CheckArgs) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
     println!("{}", banner(&scope, workspace, &args.base));
-    if scope.is_empty() {
-        println!("check: nothing to run");
-        return Ok(ExitCode::SUCCESS);
-    }
-    let results = execute(&plan(&scope), |step| run_step(workspace, step, &args.base));
+    let results = execute(&steps_for(&scope), |step| run_step(workspace, step, &args.base));
     println!("{}", summary(&results));
     Ok(if results.iter().all(|result| result.passed) { ExitCode::SUCCESS } else { ExitCode::FAILURE })
 }
@@ -356,6 +358,13 @@ mod tests {
             ]
         );
         assert_eq!(got.len(), 10, "the same trailing steps as ever: {got:?}");
+    }
+
+    #[test]
+    fn an_empty_scope_still_runs_the_models_gate() {
+        let names: Vec<&str> = steps_for(&crates(&[])).iter().map(|step| step.name).collect();
+        assert_eq!(names, ["models"]);
+        assert!(steps_for(&crates(&["omuzaki-core"])).len() > 1);
     }
 
     #[test]
