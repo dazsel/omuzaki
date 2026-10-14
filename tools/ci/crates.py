@@ -48,7 +48,9 @@ def main(argv):
     if argv[0] == "wasm":
         wanted = set(argv[1:]) or set(names)
         names = [p["name"] for p in packages if targets_wasm(p) and p["name"] in wanted]
-    print("\n".join(sorted(names)))
+    # One name per line, and nothing at all for an empty list: `mapfile` would read a lone newline as one empty name.
+    for name in sorted(names):
+        print(name)
     return 0
 
 

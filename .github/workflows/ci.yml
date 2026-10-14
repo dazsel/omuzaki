@@ -141,13 +141,44 @@ jobs:
           cache-key: test
           gpu: true
           free-disk: ${{ needs.plan.outputs.mode == 'workspace' }}
+          tools: cargo-nextest
       # Render and UI tests open a software Vulkan adapter (lavapipe). The setup step above installs it, so they run
-      # for real here instead of being skipped.
+      # for real here instead of being skipped. nextest runs the tests of every binary in parallel (.config/nextest.toml
+      # caps the GPU ones); it does not run doctests, so `cargo test --doc` follows. `PARTS` holds crates too heavy for
+      # one job, as `name@k/n`: this job runs partition k of n (xtask/src/report.rs).
       - name: Test
+        env:
+          PARTS: ${{ matrix.parts }}
         run: |
-          packages=(); for name in $CRATES; do packages+=(-p "$name"); done
-          features=(); [[ " $CRATES " == *" omuzaki-cli "* ]] && features=(--features omuzaki-cli/test-fixtures)
-          cargo test --locked "${packages[@]}" "${features[@]}"
+          status=0
+          features_for() { [[ " $* " == *" omuzaki-cli "* ]] && echo --features omuzaki-cli/test-fixtures; return 0; }
+
+          if [[ -n $CRATES ]]; then
+            packages=(); for name in $CRATES; do packages+=(-p "$name"); done
+            # shellcheck disable=SC2046
+            cargo nextest run --profile ci --locked "${packages[@]}" $(features_for $CRATES) || status=1
+          fi
+          for part in $PARTS; do
+            name=${part%@*}; slice=${part#*@}
+            # shellcheck disable=SC2046
+            cargo nextest run --profile ci --locked -p "$name" $(features_for "$name") --partition "hash:$slice" || status=1
+          done
+
+          # Doctests, once per crate: a split crate's doctests run with its first part.
+          doc_crates=($CRATES)
+          for part in $PARTS; do [[ ${part#*@} == 1/* ]] && doc_crates+=("${part%@*}"); done
+          if ((${#doc_crates[@]} > 0)); then
+            packages=(); for name in "${doc_crates[@]}"; do packages+=(-p "$name"); done
+            # shellcheck disable=SC2046
+            if ! output=$(cargo test --doc --locked "${packages[@]}" $(features_for "${doc_crates[@]}") 2>&1); then
+              echo "$output"
+              # Crates with no library target have no doctests; that is not a failure.
+              [[ $output == *"no library targets found"* ]] || status=1
+            else
+              echo "$output"
+            fi
+          fi
+          exit $status
 
   # The Apps' link gate tests (ADR 0015): a changed op crate can drop out of a binary without any unit test noticing.
   link-gate:
