@@ -10,6 +10,8 @@ repository.workspace = true
 
 [dependencies]
 nalgebra.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 omuzaki-ai-api = { path = "../omuzaki-ai-api" }
 omuzaki-anim-api = { path = "../omuzaki-anim-api" }
