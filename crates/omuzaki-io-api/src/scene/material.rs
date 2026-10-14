@@ -6,9 +6,12 @@
 //! Colour factors are linear, as in glTF; colour textures (base colour, emissive, shade, matcap, rim) are sRGB-coded
 //! images, data textures (normal, shading shift, masks) are linear.
 
+use std::fmt;
 use std::sync::Arc;
 
 use omuzaki_core::glam::{Vec2, Vec3, Vec4};
+use serde::de::{self, Visitor};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::{ImageIx, Passthrough, TextureIx};
 
@@ -38,9 +41,60 @@ impl Blob {
     }
 }
 
+/// Serialises as a lowercase hex string, like `ContentHash`, so JSON stays text and diffs stay readable.
+impl Serialize for Blob {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        const DIGITS: &[u8; 16] = b"0123456789abcdef";
+        let mut hex = String::with_capacity(self.0.len() * 2);
+        for &b in self.0.iter() {
+            hex.push(char::from(DIGITS[usize::from(b >> 4)]));
+            hex.push(char::from(DIGITS[usize::from(b & 15)]));
+        }
+        serializer.serialize_str(&hex)
+    }
+}
+
+/// Reads the hex string back; an odd length or a non-hex character is an error.
+impl<'de> Deserialize<'de> for Blob {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct HexVisitor;
+
+        impl Visitor<'_> for HexVisitor {
+            type Value = Blob;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a hex string of even length")
+            }
+
+            fn visit_str<E: de::Error>(self, v: &str) -> Result<Blob, E> {
+                if !v.len().is_multiple_of(2) {
+                    return Err(E::invalid_length(v.len(), &self));
+                }
+                let nibble = |c: u8| match c {
+                    b'0'..=b'9' => Ok(c - b'0'),
+                    b'a'..=b'f' => Ok(c - b'a' + 10),
+                    b'A'..=b'F' => Ok(c - b'A' + 10),
+                    _ => Err(E::invalid_value(de::Unexpected::Char(char::from(c)), &self)),
+                };
+                let bytes = v
+                    .as_bytes()
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|[hi, lo]| Ok(nibble(*hi)? << 4 | nibble(*lo)?))
+                    .collect::<Result<Vec<u8>, E>>()?;
+                Ok(Blob::new(bytes))
+            }
+        }
+
+        deserializer.deserialize_str(HexVisitor)
+    }
+}
+
 /// The two image formats glTF 2.0 core allows. VRM forbids extension formats for the thumbnail
 /// (`VRMC_vrm-1.0/meta.md`, "thumbnailImage"), and we don't use them elsewhere.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ImageMime {
     /// `image/png`.
     Png,
@@ -60,7 +114,7 @@ impl ImageMime {
 
 /// An encoded image, byte for byte as in the file. Decoding is the consumer's job; keeping the original bytes means
 /// an unchanged texture round-trips bit-identically and hashes to the same `ContentHash`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct EncodedImage {
     /// Display name.
@@ -79,7 +133,8 @@ impl EncodedImage {
 }
 
 /// Texture coordinate wrapping.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Wrap {
     /// Tile.
     #[default]
@@ -91,7 +146,8 @@ pub enum Wrap {
 }
 
 /// Texture filtering.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Filter {
     /// Nearest texel (pixel art, flipbook cells).
     Nearest,
@@ -101,7 +157,7 @@ pub enum Filter {
 }
 
 /// How a texture is sampled.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Sampler {
     /// Wrapping along U.
     pub wrap_u: Wrap,
@@ -122,7 +178,7 @@ impl Default for Sampler {
 }
 
 /// An image plus how to sample it.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Texture {
     /// The image.
     pub image: ImageIx,
@@ -133,7 +189,7 @@ pub struct Texture {
 /// A `KHR_texture_transform` offset and scale. VRM 1.0 recommends *not* using the extension's `rotation` and
 /// `texCoord` (`VRMC_vrm-1.0/README.md`, "Obsolete properties of `KHR_texture_transform` with VRM1"), so they are not
 /// representable: importers drop them with a warning.
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct UvTransform {
     /// Added to the UV.
     pub offset: Vec2,
@@ -148,7 +204,7 @@ impl Default for UvTransform {
 }
 
 /// A use of a texture by a material slot.
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TexRef {
     /// The texture.
     pub texture: TextureIx,
@@ -166,7 +222,8 @@ impl TexRef {
 }
 
 /// How transparency is handled (glTF `alphaMode`).
-#[derive(Copy, Clone, Debug, Default, PartialEq)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AlphaMode {
     /// Ignore alpha.
     #[default]
@@ -181,7 +238,7 @@ pub enum AlphaMode {
 }
 
 /// A normal map and its strength.
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct NormalTexture {
     /// The map.
     pub texture: TexRef,
@@ -190,7 +247,7 @@ pub struct NormalTexture {
 }
 
 /// Metallic-roughness shading (glTF core).
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Pbr {
     /// 0 dielectric, 1 metal.
     pub metallic: f32,
@@ -209,7 +266,8 @@ impl Default for Pbr {
 }
 
 /// How outlines are drawn.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum OutlineMode {
     /// No outline.
     #[default]
@@ -221,7 +279,7 @@ pub enum OutlineMode {
 }
 
 /// A shading-shift texture and its contribution.
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ShiftTexture {
     /// The map.
     pub texture: TexRef,
@@ -232,7 +290,7 @@ pub struct ShiftTexture {
 /// `VRMC_materials_mtoon` 1.0 parameters. Defaults are the spec's, with one hazard: the README table gives
 /// `shadeColorFactor` default `[0,0,0]` while the JSON schema says `[1,1,1]`. We follow the README prose and always
 /// write explicit values on export, so a file we write never depends on either.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct Toon {
     /// Colour of the shaded side (linear). Never grey: LK-01 wants a tinted shade.
@@ -317,7 +375,8 @@ impl Default for Toon {
 }
 
 /// The shading model of a material.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Shading {
     /// glTF metallic-roughness.
     Pbr(Pbr),
@@ -328,7 +387,7 @@ pub enum Shading {
 }
 
 /// A material. For toon materials `base_color` and `base_color_texture` are the lit colour, as in the `MToon` spec.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct Material {
     /// Display name. Material names are what 0.x expressions refer to, so keep them unique when exporting 0.x.

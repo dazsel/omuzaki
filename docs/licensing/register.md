@@ -30,6 +30,7 @@ Format rule (the repo licence gate will parse this): one row per item, with colu
 | Poly Haven HDRIs | asset | lighting in synthetic renders | yes | CC0; keep local copies, don't scrape | A5 |
 | cargo-nextest (prebuilt, through `taiki-e/install-action`) | tool | the CI test runner (`ci.yml`, `.config/nextest.toml`) | yes | Apache-2.0 OR MIT; a build tool, nothing of it ships | (github.com/nextest-rs/nextest, checked 2026-10-14) |
 | cargo-deny (prebuilt, through `taiki-e/install-action`) | tool | the CI licence, advisory and source checks (`deny.toml`) | yes | MIT OR Apache-2.0; a build tool, nothing of it ships | (github.com/EmbarkStudios/cargo-deny) |
+| Omuzaki wordmark (`.github/assets/omuzaki-wordmark.png`) | asset | the README's heading image | yes | made by Dazsel: the name set in Archivo (OFL-1.1, Omnibus-Type) and filled with the house stripes. It is an image of set type, not a copy of the font, so the OFL adds no condition; the name and mark are Dazsel trademarks (`TRADEMARKS.md`) | (Dazsel, 2026-10-14) |
 | YuNet 2023mar | model | (a local copy exists, unused) | NO | trained on WIDER FACE (cc by-nc-nd) | A5 |
 
 ## Planned: Rust stack (spec §9)
