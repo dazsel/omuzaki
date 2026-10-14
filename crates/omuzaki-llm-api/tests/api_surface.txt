@@ -1,0 +1,74 @@
+src/error.rs: pub enum LlmError {
+src/lib.rs: pub use error::LlmError;
+src/lib.rs: pub use message::{
+src/lib.rs: pub use provider::{
+src/lib.rs: pub use stream::{Cancel, EventSource, LlmEvent, Next, StopReason, Turn, TurnStream};
+src/lib.rs: pub use usage::{ImageCost, Ledger, MicroUsd, ModelInfo, PriceTable, PriceTier, Rates, Usage};
+src/lib.rs: pub use inventory as __inventory;
+src/lib.rs: pub use omuzaki_core::__record_registration;
+src/lib.rs: pub trait LlmClient: Send + Sync {
+src/message.rs: pub struct TurnRequest {
+src/message.rs: pub struct SystemBlock {
+src/message.rs: pub enum Role {
+src/message.rs: pub struct Message {
+src/message.rs: pub enum ImageMime {
+src/message.rs: pub enum ImageOrigin {
+src/message.rs: pub enum ContentBlock {
+src/message.rs: pub struct ToolDef {
+src/message.rs: pub enum ToolChoice {
+src/message.rs: pub enum Effort {
+src/message.rs: pub struct CachePlan {
+src/provider.rs: pub struct SecretLabel(pub String);
+src/provider.rs: pub struct SecretRef(pub SecretLabel);
+src/provider.rs: pub struct SecretValue(String);
+src/provider.rs: pub fn new(value: impl Into<String>) -> Self {
+src/provider.rs: pub fn expose(&self) -> &str {
+src/provider.rs: pub trait SecretStore: Send + Sync {
+src/provider.rs: pub struct RuntimeHandle(Arc<dyn Any + Send + Sync>);
+src/provider.rs: pub fn new<T: Any + Send + Sync>(handle: T) -> Self {
+src/provider.rs: pub fn none() -> Self {
+src/provider.rs: pub fn downcast_ref<T: Any>(&self) -> Option<&T> {
+src/provider.rs: pub struct ProviderConfig {
+src/provider.rs: pub struct RetryPolicy {
+src/provider.rs: pub struct ProviderEnv {
+src/provider.rs: pub enum LlmCapability {
+src/provider.rs: pub enum Privacy {
+src/provider.rs: pub enum CostModel {
+src/provider.rs: pub struct ProviderManifest {
+src/provider.rs: pub type BuildFn = fn(&ProviderConfig, &ProviderEnv) -> Result<Box<dyn LlmClient>, LlmError>;
+src/provider.rs: pub type ListModelsFn = fn(&ProviderConfig, &ProviderEnv) -> Result<Vec<ModelInfo>, LlmError>;
+src/provider.rs: pub struct LlmProvider {
+src/provider.rs: pub fn providers() -> Vec<&'static LlmProvider> {
+src/provider.rs: pub fn provider(kind: &str) -> Option<&'static LlmProvider> {
+src/provider.rs: macro_rules! register_llm_provider {
+src/stream.rs: pub struct Cancel(Arc<AtomicBool>);
+src/stream.rs: pub fn new() -> Self {
+src/stream.rs: pub fn cancel(&self) {
+src/stream.rs: pub fn is_cancelled(&self) -> bool {
+src/stream.rs: pub enum StopReason {
+src/stream.rs: pub enum LlmEvent {
+src/stream.rs: pub enum Next {
+src/stream.rs: pub struct Turn {
+src/stream.rs: pub model: String,
+src/stream.rs: pub trait EventSource: Send {
+src/stream.rs: pub struct TurnStream {
+src/stream.rs: pub fn new(source: Box<dyn EventSource>, cancel: &Cancel) -> Self {
+src/stream.rs: pub fn try_next(&mut self) -> Result<Next, LlmError> {
+src/stream.rs: pub fn next_timeout(&mut self, wait: Duration) -> Result<Next, LlmError> {
+src/stream.rs: pub fn usage_so_far(&self) -> Option<Usage> {
+src/stream.rs: pub fn collect(&mut self, idle: Duration) -> Result<Turn, LlmError> {
+src/usage.rs: pub struct Usage {
+src/usage.rs: pub fn prompt(&self) -> u64 {
+src/usage.rs: pub fn tokens(&self) -> u64 {
+src/usage.rs: pub struct MicroUsd(pub u64);
+src/usage.rs: pub struct Rates {
+src/usage.rs: pub struct PriceTier {
+src/usage.rs: pub struct PriceTable {
+src/usage.rs: pub fn rates_for(&self, prompt: u64) -> Rates {
+src/usage.rs: pub enum ImageCost {
+src/usage.rs: pub struct ModelInfo {
+src/usage.rs: pub struct Ledger {
+src/usage.rs: pub fn new() -> Self {
+src/usage.rs: pub fn observe(&mut self, request: &TurnRequest, usage: &Usage) {
+src/usage.rs: pub fn prompt_estimate(&self, request: &TurnRequest, info: &ModelInfo) -> u64 {
+src/usage.rs: pub fn bound(&self, request: &TurnRequest, info: &ModelInfo, prices: &PriceTable) -> MicroUsd {

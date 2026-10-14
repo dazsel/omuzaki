@@ -3809,6 +3809,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-llm-api"
+version = "0.0.0"
+dependencies = [
+ "inventory",
+ "omuzaki-core",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "omuzaki-llm-mock"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-core",
+ "omuzaki-llm-api",
+ "schemars",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "omuzaki-mcp"
 version = "0.0.0"
 dependencies = [

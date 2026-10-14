@@ -1,0 +1,19 @@
+[package]
+name = "omuzaki-llm-mock"
+description = "FakeLlm: a deterministic, scripted LlmClient for tests (llm-api D10). Scripted turns, chunking, usage and error injection on FakeClock; registers as the fake provider kind."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-llm-api = { path = "../omuzaki-llm-api" }
+schemars.workspace = true
+
+[lints]
+workspace = true

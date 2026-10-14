@@ -1,0 +1,20 @@
+[package]
+name = "omuzaki-llm-api"
+description = "Contract for calling an LLM (llm-api D1 to D5, D8, D10): LlmClient, provider-neutral messages, the pull-based TurnStream, Usage and prices, the pre-request Ledger bound, LlmError, Cancel and register_llm_provider!."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+inventory.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+omuzaki-core = { path = "../omuzaki-core" }
+
+[lints]
+workspace = true

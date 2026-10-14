@@ -1,0 +1,13 @@
+src/fake.rs: pub struct FakeLlm {
+src/fake.rs: pub fn new(script: Script) -> Self {
+src/fake.rs: pub fn from_json(json: &str) -> Result<Self, LlmError> {
+src/fake.rs: pub fn clock(&self) -> Arc<FakeClock> {
+src/fake.rs: pub fn requests(&self) -> Vec<TurnRequest> {
+src/lib.rs: pub use fake::FakeLlm;
+src/lib.rs: pub use script::{Expect, Injected, Script, ScriptTurn};
+src/script.rs: pub struct Script {
+src/script.rs: pub model: String,
+src/script.rs: pub struct ScriptTurn {
+src/script.rs: pub struct Expect {
+src/script.rs: pub user_contains: Option<String>,
+src/script.rs: pub struct Injected {
