@@ -35,8 +35,7 @@ pub fn change(path: &str, before: Option<Value>, after: Option<Value>) -> Patch 
     Patch::new().with(p(path), before, after)
 }
 
-/// Every file under `dir` (relative paths, sorted) with its bytes, except the store's own bookkeeping in `.omuzaki/`
-/// (the files a save replaced are kept there).
+/// Every file under `dir` (relative paths, sorted) with its bytes.
 pub fn snapshot(dir: &Path) -> Vec<(String, Vec<u8>)> {
     snapshot_except(dir, &[])
 }
@@ -47,9 +46,6 @@ pub fn snapshot_except(dir: &Path, skip: &[&str]) -> Vec<(String, Vec<u8>)> {
     fn walk(dir: &Path, base: &Path, skip: &[&str], out: &mut Vec<(String, Vec<u8>)>) {
         for entry in fs::read_dir(dir).unwrap() {
             let path = entry.unwrap().path();
-            if path.strip_prefix(base).is_ok_and(|rel| rel == Path::new(".omuzaki")) {
-                continue;
-            }
             if path.is_dir() {
                 let skipped = dir == base && path.file_name().is_some_and(|name| skip.iter().any(|s| name == *s));
                 if !skipped {

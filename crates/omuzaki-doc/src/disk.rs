@@ -307,8 +307,10 @@ fn replace_held(
         return Ok(Replace::Placed);
     }
     (hooks.swapped)();
-    // The file we displaced is at `tmp`. A hard-linked backup is the same file, so it keeps every byte and the name
-    // can go. A copy does not follow an editor that still holds the original open, so that file is kept as well.
+    // The file we displaced is at `tmp`, and it must still hold the bytes that were hashed. A hard-linked backup is
+    // the same file, so it keeps every byte and the name can go. A copy does not follow an editor that still holds
+    // the original open, so that file is kept as well. An in-place edit after the backup was hashed fails the check
+    // (even for a link, whose inode is unchanged) and falls through to the undo below.
     if held.is_file_at(tmp) {
         if held.linked {
             drop(fs::remove_file(tmp));
@@ -334,20 +336,18 @@ fn replace_held(
 struct Held {
     /// Where the backup is.
     path: PathBuf,
-    /// The hash of its bytes when it was made.
+    /// The hash of its bytes when it was made; the displaced file must still hash to this.
     found: ContentHash,
     /// True if it is a hard link (the same inode as the target was); false for a verified copy.
     linked: bool,
 }
 
 impl Held {
-    /// True if the file at `other` is the backed-up one: its inode for a link, its hash for a copy.
+    /// True if the file at `other` is the backed-up one with the bytes it had when backed up: for a link the same
+    /// inode (an in-place edit keeps the inode, so the bytes are checked too), for a copy the hash alone.
     fn is_file_at(&self, other: &Path) -> bool {
-        if self.linked {
-            same_inode(&self.path, other)
-        } else {
-            fs::read(other).is_ok_and(|bytes| ContentHash::of(&bytes) == self.found)
-        }
+        (!self.linked || same_inode(&self.path, other))
+            && fs::read(other).is_ok_and(|bytes| ContentHash::of(&bytes) == self.found)
     }
 }
 
@@ -573,13 +573,18 @@ fn rename_no_replace(from: &Path, to: &Path) -> Result<bool, StoreError> {
     }
 }
 
-/// Check, then rename; the race of microseconds this leaves is.
+/// Without `renameat2` there is no atomic rename that refuses to replace (`std::fs::rename` overwrites), and a check
+/// followed by a rename would lose a file created in between. So this is an error, not a guess; it is reached only on
+/// a file system without hard links (FAT, exFAT), where the caller's link already failed.
 #[cfg(not(target_os = "linux"))]
-fn rename_no_replace(from: &Path, to: &Path) -> Result<bool, StoreError> {
-    if fs::symlink_metadata(to).is_ok() {
-        return Ok(false);
-    }
-    fs::rename(from, to).map(|()| true).map_err(|e| StoreError::io(to, e))
+fn rename_no_replace(_: &Path, to: &Path) -> Result<bool, StoreError> {
+    Err(StoreError::io(
+        to,
+        io::Error::new(
+            io::ErrorKind::Unsupported,
+            "this file system has no hard links and this system has no atomic rename that won't replace a file",
+        ),
+    ))
 }
 
 /// Deletes the file for the document path `segs`, then any folders it leaves empty (never `dir` itself).
@@ -802,16 +807,20 @@ mod tests {
         assert!(no_temporary_file(dir));
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
-    fn an_in_place_edit_after_the_backup_lands_in_the_backup_too() {
+    fn an_in_place_edit_after_the_backup_is_refused_and_both_versions_survive() {
         let tmp = TempDir::new().unwrap();
         let (dir, (path, expected)) = (tmp.path(), with_file(tmp.path()));
         let edit = || fs::write(dir.join("f.toml"), "theirs = 2\n").unwrap();
         let out = replace_with(dir, expected, &Hooks { backed_up: &edit, ..Hooks::default() }).unwrap();
-        // The swap still succeeds (the inode is unchanged) and the edit is not lost: the backup holds it.
-        assert_eq!(out, Replace::Placed);
-        assert_eq!(fs::read_to_string(&path).unwrap(), "ours = 3\n");
-        assert_eq!(texts(&kept(dir)), ["theirs = 2\n"]);
+        // The inode is unchanged but the displaced bytes are not the hashed ones: the swap is undone and refused.
+        assert_eq!(out, Replace::Refused);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "theirs = 2\n");
+        // Our own file was exposed at the target for an instant, so it is kept.
+        let items = kept(dir);
+        assert_eq!(texts(&items), ["ours = 3\n"]);
+        assert!(items[0].0.ends_with(".displaced"), "{items:?}");
         assert!(no_temporary_file(dir));
     }
 
@@ -929,6 +938,39 @@ mod tests {
         assert!(no_temporary_file(dir));
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_no_replace_rename_refuses_an_existing_target_and_leaves_both_files() {
+        let tmp = TempDir::new().unwrap();
+        let (dir, path) = (tmp.path(), tmp.path().join("f.toml"));
+        let from = dir.join(".f.toml.tmp");
+        fs::write(&from, "ours = 3\n").unwrap();
+        fs::write(&path, "theirs = 1\n").unwrap();
+        // The kernel makes the check and the rename one step, so there is no window for a file to be lost in.
+        assert!(!rename_no_replace(&from, &path).unwrap());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "theirs = 1\n");
+        assert_eq!(fs::read_to_string(&from).unwrap(), "ours = 3\n");
+        fs::remove_file(&path).unwrap();
+        assert!(rename_no_replace(&from, &path).unwrap());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "ours = 3\n");
+        assert!(!from.exists());
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn without_an_atomic_no_replace_rename_a_linkless_placement_is_unsupported() {
+        let tmp = TempDir::new().unwrap();
+        let (dir, path) = (tmp.path(), tmp.path().join("f.toml"));
+        let from = dir.join(".f.toml.tmp");
+        fs::write(&from, "ours = 3\n").unwrap();
+        let no_links = |_: &Path, _: &Path| Err(io::ErrorKind::PermissionDenied.into());
+        let err = place_no_replace_with(&from, &path, &no_links).unwrap_err();
+        assert!(matches!(err, StoreError::Io { .. }), "{err}");
+        assert!(!path.exists());
+        assert_eq!(fs::read_to_string(&from).unwrap(), "ours = 3\n");
+    }
+
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_file_created_while_links_fail_is_never_replaced() {
         let tmp = TempDir::new().unwrap();
@@ -944,6 +986,7 @@ mod tests {
         assert_eq!(fs::read_to_string(&path).unwrap(), "theirs = 1\n");
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_new_file_is_placed_by_rename_where_links_fail_and_other_link_errors_propagate() {
         let tmp = TempDir::new().unwrap();
