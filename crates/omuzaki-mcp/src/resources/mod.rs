@@ -7,6 +7,7 @@
 
 pub(crate) mod doc;
 pub(crate) mod measure;
+pub(crate) mod renders;
 
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -18,6 +19,7 @@ use rmcp::model::{Resource, ResourceContents, ResourceTemplate};
 use serde_json::json;
 
 pub use measure::MeasureProvider;
+pub use renders::RenderProvider;
 
 /// A family of readable `omuzaki://` resources.
 ///
