@@ -3516,6 +3516,8 @@ dependencies = [
  "omuzaki-ops",
  "omuzaki-ops-api",
  "omuzaki-stage",
+ "omuzaki-store",
+ "omuzaki-store-api",
  "schemars",
  "serde",
  "serde_json",
