@@ -82,15 +82,15 @@ Contract structs and enums that features extend (`BuildCtx`, `PartOutput`, `Buil
 never write their struct literals or match them exhaustively: a new field or variant then edits only the crate that
 defines it.
 
-- **Cache keys** that destructure a definition on purpose, so a new field can't be missed (`omuzaki-char/src/builder.rs`),
-  hash a **canonical projection** instead, and stay **per part** as the builder caches today. A part's geometry key
-  hashes only that part's own inputs: its kind and the kind's version, its `PartDef` with the recolour-only parameters
-  removed (those its `recolour` handles), the template and quality, and the value hashes of the facts it reads from
-  earlier parts. Character-level inputs that don't shape a part's geometry are keyed separately for the stage that uses
-  them: the palette for recolour, the weight brushes for skinning. So a hair edit still rebuilds only the hair, a brush
-  edit re-skins without rebuilding geometry, a palette or colourway change rebuilds nothing (`char-face-api.md` Q6),
-  and a new geometry field in a `PartDef` joins that part's key automatically. The existing builder tests for these
-  cases keep passing, plus one that plants a new field and sees only that part's key change.
+- **Cache keys stay as the builder computes them today** (`omuzaki-char/src/builder.rs`): per part, a geometry key over
+  the shared inputs (template, seed, quality, rig export, face profile), the part's id, kind, attachment and normalised
+  parameters, and the chain of earlier publishers' geometry keys; and a full key that adds only the colours of the
+  palette slots the parameters name (so a palette change rebuilds nothing, decision Q6). With facts, the chain covers
+  what a part reads from earlier parts. What changes is where the **compile-time guard** lives: the function that
+  destructures every `BuildCtx` and `PartDef` field next to how it is keyed moves into `omuzaki-char-api`, the crate
+  that defines them, where exhaustive destructuring of a `#[non_exhaustive]` struct still compiles. A field added
+  there fails to compile until its author says how it is keyed, and the existing builder tests (an edit rebuilds the
+  part and those after a publisher it changed, and nothing else; a palette change rebuilds nothing) keep passing.
 - **Events:** `omuzaki-mcp` forwards events generically through their serialised form and matches only the ones it
   treats specially.
 
