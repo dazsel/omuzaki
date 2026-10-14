@@ -1,13 +1,18 @@
 # weights.json
 
-Seconds of test time per crate, used by `cargo xtask check --format json` (`xtask/src/report.rs`) to balance the CI
-test jobs. Crates not listed weigh `default`. Only crates above the default are listed.
+Estimated seconds of wall time one crate adds to a CI test job (compile plus nextest run), used by
+`cargo xtask check --format json` (`xtask/src/report.rs`) to balance the test jobs. Crates not listed weigh `default`.
 
-Source: the test-job logs of merge-queue run 38596279345 (all six test jobs). For each crate the seconds between its
-first `Running ...` line and the end of its last test binary (doctests included) are summed from the log timestamps.
-`omuzaki-char` is 1361 s there (about 17 minutes in run 38589415493: the same tests, `cargo test` running its binaries
-one after another). Compile time is not included, so a crate that is cheap to test but slow to build still weighs the
-default; the default stands in for that per-crate cost.
+How the numbers were derived, per crate, from the test-job logs of merge-queue run 38596279345 (all six test jobs, plus
+run 38589415493 for `omuzaki-char`'s per-binary times):
 
-Weights are serial times (the old `cargo test` behaviour); nextest runs tests in parallel, so real jobs finish sooner.
-Refresh them when the measured shard spread drifts: compare the per-job durations on a full-workspace run.
+    weight = serial_test_seconds / 3 + 4 * test_binaries            (minimum 8)
+    omuzaki-ui and omuzaki-cli: + 150, their measured extra compile time
+
+- `serial_test_seconds`: seconds between the crate's first `Running ...` line and the end of its last test binary
+  (doctests included), summed from log timestamps. `omuzaki-char` is 1361 s there. Divided by 3 because nextest runs
+  tests in parallel on the 4-vCPU runner (the measured speedup of the first nextest run was 3 to 4).
+- `test_binaries`: the number of `Running` lines for the crate. Each one is a separate link step, which is why
+  compile time, not test time, dominated the first nextest run for crates with many small test binaries.
+
+The weights are estimates. Refresh them from a full-workspace run when the per-job durations drift apart.

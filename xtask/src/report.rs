@@ -38,6 +38,11 @@ pub struct Report {
 impl Report {
     /// The report for an analysed change, splitting test sets into at most `max_shards` groups.
     pub fn new(workspace: &Workspace, analysis: &Analysis, max_shards: usize) -> Self {
+        Self::with_weights(workspace, analysis, max_shards, &Weights::embedded())
+    }
+
+    /// [`Report::new`] with explicit crate weights.
+    pub fn with_weights(workspace: &Workspace, analysis: &Analysis, max_shards: usize, weights: &Weights) -> Self {
         let owned = |names: &BTreeSet<String>| names.iter().cloned().collect::<Vec<_>>();
         let (mode, trigger, full, link_only) = match &analysis.scope {
             Scope::Workspace { trigger } => (
@@ -49,13 +54,12 @@ impl Report {
             Scope::Crates { full, link_only } => ("crates", None, owned(full), owned(link_only)),
         };
         let changed = owned(&analysis.changed);
-        let weights = Weights::embedded();
         Self {
             mode,
             trigger,
             empty: analysis.scope.is_empty(),
-            shards_changed: shard(&changed, max_shards, &weights),
-            shards_full: shard(&full, max_shards, &weights),
+            shards_changed: shard(&changed, max_shards, weights),
+            shards_full: shard(&full, max_shards, weights),
             direct: owned(&analysis.direct),
             changed,
             full,
@@ -280,7 +284,7 @@ mod tests {
     #[test]
     fn a_leaf_change_tests_only_the_changed_crate_but_lints_its_direct_dependents() {
         let analysis = analyse_files(&sample(), &[PathBuf::from("crates/omuzaki-doc-api/src/lib.rs")]);
-        let report = Report::new(&sample(), &analysis, 4);
+        let report = Report::with_weights(&sample(), &analysis, 4, &Weights::uniform());
         assert_eq!(report.mode, "crates");
         assert_eq!(report.changed, names(&["omuzaki-doc-api"]));
         assert_eq!(report.direct, names(&["omuzaki-doc-api", "omuzaki-render"]));
@@ -293,7 +297,7 @@ mod tests {
     #[test]
     fn a_docs_only_change_is_empty() {
         let analysis = analyse_files(&sample(), &[PathBuf::from("docs/README.md")]);
-        let report = Report::new(&sample(), &analysis, 4);
+        let report = Report::with_weights(&sample(), &analysis, 4, &Weights::uniform());
         assert!(report.empty);
         assert!(report.shards_changed.is_empty() && report.shards_full.is_empty());
     }
@@ -301,7 +305,7 @@ mod tests {
     #[test]
     fn a_workspace_wide_change_selects_every_crate_and_names_the_trigger() {
         let analysis = analyse_files(&sample(), &[PathBuf::from("Cargo.lock")]);
-        let report = Report::new(&sample(), &analysis, 2);
+        let report = Report::with_weights(&sample(), &analysis, 2, &Weights::uniform());
         assert_eq!(report.mode, "workspace");
         assert_eq!(report.trigger.as_deref(), Some("Cargo.lock"));
         assert_eq!(report.changed.len(), 4);
@@ -312,7 +316,7 @@ mod tests {
     #[test]
     fn the_report_serialises_to_one_json_line() {
         let analysis = analyse_files(&sample(), &[PathBuf::from("crates/omuzaki-core/src/lib.rs")]);
-        let json = Report::new(&sample(), &analysis, 1).to_json();
+        let json = Report::with_weights(&sample(), &analysis, 1, &Weights::uniform()).to_json();
         assert!(!json.contains('\n'));
         assert!(
             json.starts_with(r#"{"mode":"crates","trigger":null,"empty":false,"changed":["omuzaki-core"]"#),
