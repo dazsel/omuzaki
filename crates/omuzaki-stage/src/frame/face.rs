@@ -153,7 +153,7 @@ enum NextBound {
 /// A variant fully prepared beside the live character: swapping it in only moves things.
 struct Staged {
     new: BuiltCharacter,
-    new_rig: Option<RigFrame>,
+    newrig: Option<RigFrame>,
     bound: NextBound,
     prepared: PreparedSync,
     dynamic: DynamicMeshes,
@@ -163,15 +163,14 @@ struct Staged {
 }
 
 /// What a swap replaced, kept until the next [`Stage::service_variants`] drops it and releases its renderer resources,
-/// so the swap itself calls no renderer release and frees no large table. The underscored fields are only kept alive
-/// (to be dropped off the tick); `retired` is read when its resources are released.
+/// so the swap itself calls no renderer release and frees no large table.
 #[derive(Default)]
 struct Retiring {
-    _built: Option<BuiltCharacter>,
-    _rig: Option<RigFrame>,
-    _dynamic: Option<DynamicMeshes>,
-    _plan: Option<ScenePlan>,
-    _bound: Option<Bound>,
+    built: Option<BuiltCharacter>,
+    rig: Option<RigFrame>,
+    dynamic: Option<DynamicMeshes>,
+    plan: Option<ScenePlan>,
+    bound: Option<Bound>,
     retired: Option<Retired>,
 }
 
@@ -367,8 +366,10 @@ pub(super) fn discard_switch(renderer: &mut dyn Renderer, rig: &mut FaceRig) {
 /// Drops what the last swap replaced and gives its renderer resources back. A failed release is logged: the new
 /// character is long in place and there is no one left to tell.
 fn release_retiring(renderer: &mut dyn Renderer, rig: &mut FaceRig) {
-    let retiring = mem::take(&mut rig.retiring);
-    if let Some(retired) = retiring.retired
+    let Retiring { built, rig: old_rig, dynamic, plan, bound, retired } = mem::take(&mut rig.retiring);
+    // Dropped here, off the tick.
+    drop((built, old_rig, dynamic, plan, bound));
+    if let Some(retired) = retired
         && let Err(error) = retired.release(renderer)
     {
         tracing::warn!(%error, "releasing the old variant's resources failed");
@@ -678,12 +679,12 @@ impl Stage {
         }
         let Staged { new, new_rig, bound, prepared, dynamic, plan, fresh } = staged;
         rig.retiring.retired = Some(self.character.commit_sync(prepared));
-        rig.retiring._built = Some(mem::replace(&mut self.built, new));
+        rig.retiring.built = Some(mem::replace(&mut self.built, new));
         if let Some(frame) = new_rig {
-            rig.retiring._rig = Some(mem::replace(&mut self.rig, frame));
+            rig.retiring.rig = Some(mem::replace(&mut self.rig, frame));
         }
-        rig.retiring._dynamic = Some(mem::replace(&mut self.dynamic, dynamic));
-        rig.retiring._plan = Some(mem::replace(&mut self.plan, plan));
+        rig.retiring.dynamic = Some(mem::replace(&mut self.dynamic, dynamic));
+        rig.retiring.plan = Some(mem::replace(&mut self.plan, plan));
         match bound {
             NextBound::Keep(next) => {
                 if let Some(live) = rig.bound.take() {
@@ -698,8 +699,8 @@ impl Stage {
                     tracing::error!("a staged variant kept a face system the rig no longer has; the face is unbound");
                 }
             }
-            NextBound::Fresh(next) => rig.retiring._bound = rig.bound.replace(*next),
-            NextBound::Unbound => rig.retiring._bound = rig.bound.take(),
+            NextBound::Fresh(next) => rig.retiring.bound = rig.bound.replace(*next),
+            NextBound::Unbound => rig.retiring.bound = rig.bound.take(),
         }
         // A new layer texture is empty, and the face system's fingerprints still say its picture was shown.
         for layer in FaceLayerId::ALL {

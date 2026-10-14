@@ -272,7 +272,7 @@ impl SwitchExecutor for Deferred {
 }
 
 /// One frame the way a live app runs it: the variant service, then the tick.
-fn frame(stage: &mut Stage, renderer: &mut Spy, input: &FrameInput) -> Result<(), StageError> {
+fn run_frame(stage: &mut Stage, renderer: &mut Spy, input: &FrameInput) -> Result<(), StageError> {
     stage.service_variants(renderer, input)?;
     stage.tick(renderer, input).map(|_| ())
 }
@@ -376,7 +376,7 @@ fn a_zoom_sweep_switches_variants_at_the_two_crossings_and_uploads_only_what_cha
         stage.scene_mut().camera = camera_for(&stage, sweep(&mut rng, step));
         let (variant, before) = (stage.built().variant.clone(), renderer.mesh_creates);
         let old = stage.built().meshes.clone();
-        frame(&mut stage, &mut renderer, &FrameInput::default()).expect("frame");
+        run_frame(&mut stage, &mut renderer, &FrameInput::default()).expect("frame");
         if stage.built().variant == variant {
             assert_eq!(renderer.mesh_creates, before, "frame {frame}: no switch, no new mesh");
             continue;
@@ -407,7 +407,7 @@ fn a_switched_character_matches_a_fresh_build_of_the_variant() {
     let mut stage = stage_on(&mut renderer, 32, true);
     stage.tick(&mut renderer, &FrameInput::default()).expect("frame");
     stage.scene_mut().camera = camera_for(&stage, 0.8);
-    frame(&mut stage, &mut renderer, &FrameInput::default()).expect("frame");
+    run_frame(&mut stage, &mut renderer, &FrameInput::default()).expect("frame");
     let fresh = {
         let (base, variants) = (mock_character().unwrap(), mock_variants().unwrap());
         let def = resolve_variant(&base, &variants, &id("close-up")).unwrap();
@@ -548,7 +548,7 @@ fn the_face_path_allocates_nothing_in_steady_state() {
 /// Ticks once at `coverage` and returns the result.
 fn tick_at(stage: &mut Stage, renderer: &mut Spy, coverage: f64) -> Result<(), StageError> {
     stage.scene_mut().camera = camera_for(stage, coverage);
-    frame(stage, renderer, &FrameInput::default())
+    run_frame(stage, renderer, &FrameInput::default())
 }
 
 #[test]
