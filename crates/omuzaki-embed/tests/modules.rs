@@ -1,4 +1,7 @@
 //! `modules` against a fixture folder (ADR 0054 step 1).
+// A fixture that cannot be built should stop the test with its reason.
+#![allow(clippy::unwrap_used)]
+
 use std::path::{Path, PathBuf};
 
 fn write(root: &Path, relative: &str) {
@@ -61,7 +64,9 @@ fn watches_the_folder_subfolders_and_declared_files() {
     let expected: Vec<PathBuf> = ["", "assets", "group", "alpha.rs", "zeta.rs"].iter().map(|p| r.join(p)).collect();
     let mut got = list.watched.clone();
     // `PathBuf::join("")` adds a trailing separator; compare by components.
-    got.iter_mut().for_each(|p| *p = p.components().collect());
+    for p in &mut got {
+        *p = p.components().collect();
+    }
     let expected: Vec<PathBuf> = expected.iter().map(|p| p.components().collect()).collect();
     assert_eq!(got, expected);
 }
