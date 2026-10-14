@@ -166,13 +166,22 @@ fn a_sidecar_that_climbs_out_of_the_folder_is_refused_even_when_the_file_exists(
 
 #[test]
 fn an_absolute_sidecar_uri_is_refused() {
+    // A portable absolute URI: a native path would carry backslashes on Windows, which are refused for another reason.
     let project = Project::new();
-    let absolute = project.path("models/hero.bin");
-    let uri = absolute.to_str().unwrap();
-    project.write("models/absolute.gltf", &gltf(uri, 1));
+    project.write("models/absolute.gltf", &gltf("/hero.bin", 1));
     let error = inspect(&project, "models/absolute.gltf").unwrap_err();
     assert_eq!(error.code, ErrorCode::NotFound, "{error:?}");
     assert!(error.message.contains("refused:") && error.message.contains("the path is absolute"), "{}", error.message);
+}
+
+#[test]
+fn a_drive_letter_sidecar_uri_is_refused() {
+    // Only the refusal is asserted: which rule catches it depends on the platform's path handling.
+    let project = Project::new();
+    project.write("models/drive.gltf", &gltf("C:/hero.bin", 1));
+    let error = inspect(&project, "models/drive.gltf").unwrap_err();
+    assert_eq!(error.code, ErrorCode::NotFound, "{error:?}");
+    assert!(error.message.contains("refused:"), "{}", error.message);
 }
 
 #[test]
