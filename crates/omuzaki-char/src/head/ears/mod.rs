@@ -180,10 +180,21 @@ fn grid_indices() -> Vec<u32> {
     indices
 }
 
-/// A shell mesh from `positions` (the grid, column by column), with the smooth normals of its triangles.
-fn shell_mesh(positions: Vec<Vec3>) -> Result<MeshData, MeshError> {
-    let indices = grid_indices();
-    let mut normals = vertex_normals(&positions, &indices);
+/// How far (metres at size 1) the ear's outer skin stands outside the grid at the concha's centre. It tapers to
+/// nothing at the rim, where the two skins meet in the same vertices and close the shell.
+const SKIN: f64 = 0.0015;
+
+/// A closed shell mesh from the prototype's `grid` (column by column, `RINGS + 1` rows), seated on `head`.
+///
+/// The prototype's grid is an open sheet: its outer rim is a boundary, so each rim edge belongs to one triangle. The
+/// shell is closed by a second skin over the grid, with the same triangles and winding, standing up to [`SKIN`] x
+/// `size` radially outside it. The skin shares the grid's rim vertices (row `RINGS`, where its offset is zero), so
+/// every rim edge is used by one triangle of each skin and every other edge by two of its own skin. The grid's
+/// vertices, normals and triangles come first and are unchanged; the skin's follow. The seam (first and last column)
+/// and the concha's centre repeat a point, so the shell is closed once coincident vertices are welded.
+fn shell_mesh(grid: Vec<Vec3>, head: &dyn HeadSurface, size: f64) -> Result<MeshData, MeshError> {
+    let grid_indices = grid_indices();
+    let mut normals = vertex_normals(&grid, &grid_indices);
     // The concha's centre is one point repeated down a whole column's worth of grid cells, so its first vertex belongs
     // only to zero-area triangles and has no normal of its own (three.js leaves float noise there). It takes the
     // centre's other normals, which are all the shell's direction.
@@ -191,9 +202,35 @@ fn shell_mesh(positions: Vec<Vec3>) -> Result<MeshData, MeshError> {
     for n in normals.iter_mut().filter(|n| **n == Vec3::ZERO) {
         *n = centre;
     }
+
+    let grid_len = grid.len();
+    let head_centre = head.centre();
+    // The skin's vertex for every grid vertex: a new one below the rim, the rim's own vertex on it.
+    let mut skin_of = Vec::with_capacity(grid_len);
+    let mut positions = grid;
+    for (at, ring) in (0..grid_len).zip((0..=RINGS).cycle()) {
+        if ring == RINGS {
+            skin_of.push(index(at));
+            continue;
+        }
+        skin_of.push(index(positions.len()));
+        let taper = 1.0 - f64::from(ring) / f64::from(RINGS);
+        let outward = (positions[at] - head_centre).normalize_or_zero();
+        positions.push(positions[at] + outward * narrow(SKIN * size * taper));
+        normals.push(normals[at]);
+    }
+    let mut indices = grid_indices;
+    indices.extend(indices.clone().into_iter().map(|i| skin_of[i as usize]));
+
     let mesh = MeshData { positions, normals, indices, ..MeshData::default() };
     mesh.validate()?;
     Ok(mesh)
+}
+
+/// A vertex position as an index. An ear has a few hundred vertices; saturating keeps the library free of panics and
+/// is caught by `MeshData::validate` if it ever happened.
+fn index(position: usize) -> u32 {
+    u32::try_from(position).unwrap_or(u32::MAX)
 }
 
 /// Where the left ear's root sits, bind space: on `head`'s surface in the direction of [`Ears::position`] from the head
