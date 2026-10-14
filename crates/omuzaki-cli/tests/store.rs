@@ -56,7 +56,7 @@ fn a_corrupt_object_fails_verify_is_quarantined_by_repair_and_then_verifies_clea
     let (dir, hash) = corrupted_store(root.path());
 
     let first = store_cmd("verify", &dir, &[]);
-    assert_eq!(first.status.code(), Some(11), "stderr: {}", text(&first.stderr));
+    assert_eq!(first.status.code(), Some(12), "stderr: {}", text(&first.stderr));
     assert!(text(&first.stdout).contains(&format!("asset {hash}: its bytes no longer match the hash")));
     assert!(text(&first.stdout).starts_with("checked 2 objects: 1 problem\n"), "{}", text(&first.stdout));
 
@@ -79,7 +79,7 @@ fn verify_json_names_each_problem_by_kind() {
     let (dir, _) = corrupted_store(root.path());
 
     let out = store_cmd("verify", &dir, &["--json"]);
-    assert_eq!(out.status.code(), Some(11));
+    assert_eq!(out.status.code(), Some(12));
     let body: serde_json::Value = serde_json::from_str(&text(&out.stdout)).expect("stdout is JSON");
     assert_eq!(body["checked"], 2);
     assert_eq!(body["clean"], false);
@@ -152,7 +152,7 @@ fn a_stray_file_in_objects_is_left_alone_and_repair_exits_11() {
     std::fs::write(&stray, b"not ours").expect("write stray");
 
     let text_out = store_cmd("repair", &dir, &[]);
-    assert_eq!(text_out.status.code(), Some(11), "stderr: {}", text(&text_out.stderr));
+    assert_eq!(text_out.status.code(), Some(12), "stderr: {}", text(&text_out.stderr));
     let report = text(&text_out.stdout);
     assert!(report.contains("left alone (needs a person):"), "{report}");
     assert!(report.contains("notes.txt: not part of the store layout"), "{report}");
@@ -160,7 +160,7 @@ fn a_stray_file_in_objects_is_left_alone_and_repair_exits_11() {
     assert_eq!(std::fs::read(&stray).expect("stray still there"), b"not ours");
 
     let out = store_cmd("repair", &dir, &["--json"]);
-    assert_eq!(out.status.code(), Some(11));
+    assert_eq!(out.status.code(), Some(12));
     let body: serde_json::Value = serde_json::from_str(&text(&out.stdout)).expect("stdout is JSON");
     assert_eq!(body["quarantined"], serde_json::json!([]));
     assert_eq!(body["left_alone"][0]["kind"], "stray");

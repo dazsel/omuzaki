@@ -42,7 +42,7 @@ fn help_documents_the_exit_codes() {
         "  3  invalid",
         "  7  unsupported",
         "  8  unavailable",
-        "  11  problems",
+        "  12  problems",
     ] {
         assert!(help.contains(line), "missing {line:?} in:\n{help}");
     }

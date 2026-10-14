@@ -18,7 +18,8 @@ pub const USAGE: u8 = 2;
 
 /// A store check ran and found something a person must look at (`store verify` found a problem, or `store repair`
 /// left one alone). Not an [`ErrorCode`]: the command succeeded and printed its report, so there is no error to name.
-pub const FOUND_PROBLEMS: u8 = 11;
+/// Its number is the first unused one after [`ErrorCode::Cancelled`]'s 11, so no code means two things.
+pub const FOUND_PROBLEMS: u8 = 12;
 
 /// An exit code and what it means.
 struct Row {
@@ -138,6 +139,6 @@ mod tests {
     fn help_lists_the_codes_in_numeric_order() {
         let numbers: Vec<u8> =
             help_text().lines().skip(1).filter_map(|l| l.split_whitespace().next()?.parse().ok()).collect();
-        assert_eq!(numbers, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+        assert_eq!(numbers, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
     }
 }

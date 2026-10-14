@@ -94,10 +94,10 @@ pub enum Command {
 /// A `omuzaki store` subcommand.
 #[derive(Subcommand, Debug, PartialEq, Eq)]
 pub enum StoreCommand {
-    /// Check every object in the store and report each problem. Changes nothing; exits 11 if anything is wrong.
+    /// Check every object in the store and report each problem. Changes nothing; exits 12 if anything is wrong.
     Verify(StoreArgs),
 
-    /// Move what the store can't trust into its quarantine folder; nothing is deleted. Exits 11 if a problem needs a
+    /// Move what the store can't trust into its quarantine folder; nothing is deleted. Exits 12 if a problem needs a
     /// person (listed as left alone), and 0 otherwise.
     Repair(StoreArgs),
 }
