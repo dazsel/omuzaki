@@ -1,0 +1,10 @@
+id = "empty-mini"
+summary = "One original synthetic character on the mini template with a body part, nothing else."
+# `parts = "empty"` and a body: the `body` part kind is the one the product registers today (the `hair` kind is a stub
+# and the default parts include it).
+steps = [
+  { op = "character.create", args = { id = "aki", name = "Aki", template = "mini", parts = "empty" } },
+  { op = "part.add", args = { character = "{0.character}", kind = "body", id = "body" } },
+]
+# `character.create` reports the new id under `character`.
+exports = { main = "{0.character}" }

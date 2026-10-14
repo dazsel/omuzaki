@@ -1,0 +1,30 @@
+# Spike: GPU vector rasteriser for the face draw list, Vello against a custom coverage rasteriser.
+# Its own workspace root on purpose (as spikes/toon-viewport): Vello and its dependency tree stay out of the main workspace.
+[workspace]
+members = ["."]
+resolver = "3"
+
+[package]
+name = "face-gpu"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+bytemuck = { version = "1.25", features = ["derive"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+pollster = "1"
+vello = { version = "0.11", default-features = false, features = ["wgpu"] }
+wgpu = "30"
+omuzaki-anim-api = { path = "../../crates/omuzaki-anim-api" }
+omuzaki-core = { path = "../../crates/omuzaki-core" }
+omuzaki-face = { path = "../../crates/omuzaki-face" }
+omuzaki-face-api = { path = "../../crates/omuzaki-face-api" }
+omuzaki-face-mock = { path = "../../crates/omuzaki-face-mock" }
+omuzaki-render = { path = "../../crates/omuzaki-render" }
+omuzaki-render-api = { path = "../../crates/omuzaki-render-api" }
+
+[profile.release]
+debug = "line-tables-only"

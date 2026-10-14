@@ -1,0 +1,16 @@
+[package]
+name = "omuzaki-doc-mock"
+description = "In-memory project document for tests and the walking skeleton (spec v3 §39 rule 6)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+omuzaki-doc-api = { path = "../omuzaki-doc-api" }
+
+[lints]
+workspace = true

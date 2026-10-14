@@ -1,0 +1,29 @@
+[package]
+name = "omuzaki-store"
+description = "Content-addressed asset store on disk: crash-safe, deduplicating, verifying (spec v3 §7)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+omuzaki-store-api = { path = "../omuzaki-store-api" }
+
+[dev-dependencies]
+criterion.workspace = true
+tempfile.workspace = true
+omuzaki-store-mock = { path = "../omuzaki-store-mock" }
+
+[[bench]]
+name = "store"
+harness = false
+
+[lints]
+workspace = true
+
+# Native only: stores assets on the local filesystem
+[package.metadata.omuzaki]
+wasm = false

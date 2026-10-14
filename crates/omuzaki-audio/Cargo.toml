@@ -1,0 +1,24 @@
+[package]
+name = "omuzaki-audio"
+description = "The speech host (spec v3 ML-03): streaming Silero VAD, an utterance segmenter and Whisper on a worker thread, fed lock-free from the audio callback."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ort.workspace = true
+thiserror.workspace = true
+whisper-rs.workspace = true
+
+[dev-dependencies]
+hound.workspace = true
+
+[lints]
+workspace = true
+
+# Native only: whisper.cpp builds from source with CMake and ONNX Runtime has no wasm32 build
+[package.metadata.omuzaki]
+wasm = false

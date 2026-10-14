@@ -1,0 +1,11 @@
+# Keeps the SHA-pinned actions current. Each update arrives as a pull request that shows the new tag.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directories:
+      - "/"
+      - "/.github/actions/setup-linux"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "ci"

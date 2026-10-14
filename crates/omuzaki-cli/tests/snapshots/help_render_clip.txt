@@ -1,0 +1,43 @@
+test.render_clip
+  Render a clip of a scene to a video file.
+
+  The render runs in the job manager, so this returns at once with a job id. Progress and cancellation are
+  reported through events.
+
+  kind   job
+  scope  render
+  undo   explicit
+
+Arguments:
+  scene          string              required
+      The scene to render.
+      pattern ^[a-z0-9][a-z0-9_-]{0,63}$
+  quality        string              required
+      How much work to do.
+      one of:
+        "Draft"  Fast, with visible noise.
+        "Final"  Slow, final quality.
+  size           [integer, integer]  required
+      Output size in pixels, width then height.
+  tags           array of string     required
+      Labels for the finished clip.
+      items <= 8
+  frames         integer             optional
+      Frames to render.
+      range 1 to 600
+      default 120
+  padding        number or null      optional
+      Seconds of padding before and after.
+      range >= 0.0
+  target         object or null      optional
+      Where to write; defaults to the project's renders folder.
+  target.folder  string              optional
+      Folder to write into.
+  target.format  string or null      optional
+      Container format, e.g. `mp4`.
+
+Run it:
+  omuzaki run test.render_clip --args '<json>'
+  omuzaki run test.render_clip --args '<json>' --dry-run
+
+The full JSON Schema: omuzaki help test.render_clip --json

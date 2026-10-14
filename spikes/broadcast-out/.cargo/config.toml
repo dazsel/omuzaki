@@ -1,0 +1,5 @@
+# Clippy reads clippy.toml from the package directory only; point it at the shared one so tests may unwrap, as in the
+# main workspace. Cross-compiling for Windows needs the target linker from the repository root's .cargo/config.toml, which
+# applies here too (cargo merges configs up the tree).
+[env]
+CLIPPY_CONF_DIR = { value = ".", relative = true }

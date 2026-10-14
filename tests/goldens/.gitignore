@@ -1,0 +1,4 @@
+# Sidecar files that serialise manifest updates (*.lock) and crash leftovers of atomic writes
+# (<suite>.toml.<pid>-<n>.tmp), written by omuzaki-test; never committed.
+*.lock
+*.tmp

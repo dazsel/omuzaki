@@ -1,0 +1,10 @@
+# Hand shape "rest". Angles are degrees; spread is positive toward the thumb side, flexion toward the palm
+# (see crates/omuzaki-anim/src/hands/mod.rs for the conventions).
+id = "rest"
+summary = "A relaxed hand hanging at rest: the fingers gently curled, more toward the little finger, the thumb alongside the index."
+
+thumb  = { spread = -15.0, mcp =  10.0, pip =  12.0, dip =  10.0 }
+index  = { spread =   3.0, mcp =  15.0, pip =  20.0, dip =  10.0 }
+middle = { spread =   0.0, mcp =  20.0, pip =  25.0, dip =  12.0 }
+ring   = { spread =  -3.0, mcp =  25.0, pip =  30.0, dip =  14.0 }
+little = { spread =  -8.0, mcp =  30.0, pip =  35.0, dip =  16.0 }

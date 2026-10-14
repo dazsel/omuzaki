@@ -1,0 +1,27 @@
+# Face-shape preset `egg-oval` (CB-10). Head-local metres. The numbers are fitted to the targets in
+# tests/shape_presets.rs and already sit inside the plausible space of head/outline.rs, so the outline named here
+# is the outline that is built.
+id = "egg-oval"
+summary = "An egg: widest at the temples, tapering to a soft chin."
+
+[outline]
+half_width = 0.1560
+top = -0.0950
+height = 0.1050
+exponent = 1.900
+cheek_puff = 0.0030
+
+[outline.chin]
+y = -0.2000
+stretch_top = -0.0950
+min_ratio = 0.62
+
+[layout]
+eye_y = -0.0950
+eye_spacing = 0.0860
+eye_width = 0.0482
+brow_gap = 0.0800
+nose_y = -0.1275
+mouth_y = -0.1580
+blush_y = -0.1328
+blush_spacing = 0.1032

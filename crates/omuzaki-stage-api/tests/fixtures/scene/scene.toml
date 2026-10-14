@@ -1,0 +1,19 @@
+name = "Main"
+subject = "main"
+camera = "full"
+
+[backdrop]
+kind = "colour"
+colour = "#00b140"
+
+[ground]
+kind = "shadow"
+opacity = 0.25
+radius = 0.83
+
+[post]
+bloom = true
+tonemap = "aces"
+grain = 0.04
+depth_of_field = { focus = "subject", range = 0.25, max_blur = 0.01 }
+grade = { saturation = 1.0, contrast = 1.0 }

@@ -1,0 +1,10 @@
+# Hand shape "fist". Angles are degrees; spread is positive toward the thumb side, flexion toward the palm
+# (see crates/omuzaki-anim/src/hands/mod.rs for the conventions).
+id = "fist"
+summary = "A closed fist: knuckles 80-90, middle joints 90-100, tips 60-70 degrees, the thumb folded across the fingers."
+
+thumb  = { spread = -56.0, mcp =   9.0, pip =  53.0, dip =  39.0 }
+index  = { spread =   0.0, mcp =  80.0, pip =  92.0, dip =  62.0 }
+middle = { spread =   0.0, mcp =  84.0, pip =  95.0, dip =  64.0 }
+ring   = { spread =   0.0, mcp =  87.0, pip =  97.0, dip =  66.0 }
+little = { spread =   0.0, mcp =  89.0, pip =  99.0, dip =  69.0 }

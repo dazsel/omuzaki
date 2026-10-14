@@ -1,0 +1,6 @@
+# One pinned toolchain for every agent, CI runner and machine (spec §36: upgrade deliberately, once a quarter).
+[toolchain]
+channel = "1.99.0"
+components = ["rustfmt", "clippy"]
+targets = ["x86_64-pc-windows-gnu", "wasm32-unknown-unknown"]
+profile = "minimal"

@@ -1,0 +1,100 @@
+# The Omuzaki workspace (spec v3 §9, §39). Members are globbed so adding a crate never edits this file (§39 rule 11).
+# Internal crates depend on each other with `path = "../<crate>"` in their own manifests, for the same reason.
+[workspace]
+resolver = "3"
+members = ["crates/*", "xtask"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/dazsel/omuzaki"
+
+# External dependencies, versioned once (§39 rule 11). Every entry needs a row in docs/licensing/register.md.
+[workspace.dependencies]
+# Pre-declared early so parallel changes don't collide on this file. Unused entries cost nothing.
+ab_glyph = "0.2"   # text rasteriser for character sheets (Apache-2.0; pure Rust, no shaping), omuzaki-stage
+blake3 = "1.8"
+bytemuck = { version = "1.25", features = ["derive"] }
+bytes = "1"
+clap = { version = "4.6", features = ["derive"] }
+constant_time_eq = "0.4"
+criterion = "0.8"
+ed25519-dalek = { version = "2.2", default-features = false, features = ["std"] }   # verifies library item signatures (BSD-3-Clause), omuzaki-library-api; signing only in tests
+eframe = { version = "0.36", default-features = false, features = ["wgpu", "wayland", "x11", "accesskit", "default_fonts"] }
+egui = "0.36"
+egui-phosphor = { version = "0.14", default-features = false, features = ["regular", "fill"] }   # Phosphor icon fonts (MIT), omuzaki-ui icons
+egui_tiles = { version = "0.17", features = ["serde"] }   # docking for the app shell (MIT OR Apache-2.0), omuzaki-ui
+egui_kittest = { version = "0.36", features = ["wgpu"] }   # headless render + AccessKit queries for UI tests and gallery screenshots
+flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] } # gunzips the ONNX Runtime archives (MIT OR Apache-2.0), omuzaki-ai-ort
+fluent-bundle = "0.16" # Fluent message formatting (Apache-2.0 OR MIT), omuzaki-l10n-api catalog
+fluent-langneg = "0.14" # locale negotiation (Apache-2.0), omuzaki-l10n-api
+fluent-syntax = "0.12" # Fluent parser for the l10n checks (Apache-2.0 OR MIT), omuzaki-l10n-api
+getrandom = "0.4"
+intl-memoizer = "0.5"   # named for the exact-integer FluentType in omuzaki-l10n-api (Apache-2.0 OR MIT; already a fluent-bundle dependency)
+harfrust = "0.14"   # OpenType shaping (MIT): Arabic joining, Devanagari conjuncts, Thai marks in the sheet text fallback, omuzaki-stage
+glam = { version = "0.34", features = ["serde", "bytemuck"] }
+hound = "3.5"   # WAV reading in the speech host benchmark (Apache-2.0), omuzaki-audio
+http-body-util = "0.1"
+hyper = { version = "1", default-features = false, features = ["http1", "server"] }
+hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+inventory = "0.3"
+libm = "0.2"   # transcendental maths bit-identical on every platform (the CPU rasteriser's stroker, ADR 0009)
+# ONNX Runtime wrapper. `load-dynamic`: the app loads Microsoft's official MIT library from a path we choose, so Pyke's prebuilt binaries
+# (and the TLS stack `download-binaries` drags in) never enter the build (register: ort). omuzaki-audio.
+nalgebra = { version = "0.35", default-features = false, features = ["std"] }   # matrix and rotation maths for the head-pose fit (Apache-2.0), omuzaki-track
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "load-dynamic", "api-27"] }
+pollster = "1"
+proptest = "1.12"
+reqwest = { version = "0.13", default-features = false }
+rmcp = { version = "3.5", features = ["server", "transport-io", "transport-streamable-http-server"] }
+rustix = { version = "1.1", default-features = false, features = ["std", "fs"] } # opens beneath a folder handle, never through a link (openat2, O_NOFOLLOW), omuzaki-ops-api
+schemars = "1.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] } # recorded tracks must replay bit-identically after a save
+sha2 = "0.10"   # pins the lazily downloaded fallback fonts by SHA-256 (MIT OR Apache-2.0), omuzaki-stage
+tar = { version = "0.4", default-features = false } # unpacks the ONNX Runtime.tgz archives (MIT OR Apache-2.0), omuzaki-ai-ort
+sys-locale = "0.3" # the OS language list (MIT OR Apache-2.0), omuzaki-l10n-api
+tempfile = "3.27"
+thiserror = "2"
+tiny-skia = { version = "0.12", default-features = false, features = ["std"] }   # tests only: the oracle for the CPU face rasteriser's stroker (BSD-3-Clause)
+tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "sync", "io-std"] }
+tokio-util = "0.7"
+toml = "1.1"
+toml_edit = "0.25"
+unic-langid = "0.9"   # validated BCP 47 tags (MIT OR Apache-2.0), omuzaki-l10n-api
+unicode-normalization = "0.1"   # NFC before font selection so a base and its marks pick one face (MIT OR Apache-2.0), omuzaki-stage
+unicode-bidi = "0.3"   # visual order of mixed right-to-left and left-to-right sheet text (MIT OR Apache-2.0), omuzaki-stage
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+wgpu = "30"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem"] } # the Windows side of the same: reparse-point-aware opens, final-path checks
+zip = { version = "9", default-features = false, features = ["deflate-flate2"] } # unpacks the ONNX Runtime Windows.zip archives (MIT), omuzaki-ai-ort
+whisper-rs = "0.16"   # whisper.cpp built from source (Unlicense crate, MIT library); omuzaki-audio
+
+[workspace.lints.rust]
+unsafe_code = "deny"            # a crate that needs it (GPU/OS shims) allows it locally, with a why-comment
+unused_must_use = "deny"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"   # `omuzaki_ops_api::OpError` reads better than a bare `Error` in other crates
+must_use_candidate = "allow"        # too noisy for small getters
+unwrap_used = "deny"                # library code returns errors (see CONTRIBUTING.md); tests are exempt via clippy.toml
+expect_used = "deny"
+dbg_macro = "deny"
+todo = "deny"
+
+[profile.dev]
+debug = "line-tables-only"   # enough for backtraces; keeps the shared slot target dirs small
+
+[profile.dev.package."*"]
+opt-level = 2                # dependencies (glam, wgpu, image codecs) optimised: debug builds stay usable for real-time tests
+
+[profile.release]
+lto = "thin"
+codegen-units = 16

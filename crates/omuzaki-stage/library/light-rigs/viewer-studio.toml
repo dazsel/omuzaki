@@ -1,0 +1,43 @@
+# viewer-studio: transcribed from the golden manifest (spec.rig of its cases). Lighting numbers only.
+# Three.js units (render-api D10): the numbers are copied, not rescaled.
+name = "viewer-studio"
+source = "js/viewer.js LIGHTS.studio"
+exposure = 0.9
+background = "#4a3b31"
+skin_floor = 0.48
+
+[hemisphere]
+sky = "#f1eef8"
+ground = "#4a3e36"
+intensity = 0.75
+
+[key]
+colour = "#fff6ec"
+intensity = 1.7
+position = [1.6, 3.0, 2.4]
+
+[key.shadow]
+map_size = 2048
+left = -2.2
+right = 2.2
+top = 2.2
+bottom = -2.2
+near = 0.1
+far = 12.0
+bias = -0.0003
+normal_bias = 0.012
+
+[rim]
+colour = "#dfe6ff"
+intensity = 0.8
+position = [-2.2, 2.0, -2.5]
+
+[fill]
+colour = "#fff0e0"
+intensity = 0.45
+position = [-2.4, 1.2, 2.0]
+
+[bloom]
+strength = 0.32
+radius = 0.5
+threshold = 0.92

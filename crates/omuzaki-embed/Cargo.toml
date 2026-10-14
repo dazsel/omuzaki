@@ -1,0 +1,18 @@
+[package]
+name = "omuzaki-embed"
+description = "Build-script helper that embeds a data folder into a crate as a sorted table of (relative path, contents) (library seed data, ADR 0019 D14). Std only."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[package.metadata.omuzaki]
+layer = "lib"
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,39 @@
+[package]
+name = "vcam-source"
+description = "Spike: a Media Foundation virtual camera source (COM DLL) and a probe that tests it in-process"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+# The COM DLL Frame Server would load, plus an rlib so the probe and the tests can link the same code.
+[lib]
+name = "omuzaki_vcam_source"
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "vcam-probe"
+path = "src/bin/vcam-probe.rs"
+
+[dependencies]
+clap.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Media_KernelStreaming",
+    "Win32_Media_MediaFoundation",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Performance",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Registry",
+    "Win32_System_Services",
+    "Win32_System_Variant",
+] }
+windows-core.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,16 @@
+# Skin tone 9 of 12 (CB-04): deep. The base is the neutral-undertone colour in OKLCH (lightness 0..1,
+# chroma, hue in degrees); `skin_ramp` derives every other colour from it (`src/palette/skin_tone.rs`).
+id = "tone-09"
+name = "Deep"
+
+[base]
+l = 0.526
+c = 0.066
+h = 47.0
+
+# `Shading::Toon.skin` for this tone: the shadow floor as a fraction of the albedo, and how strongly coloured light is
+# pulled back to the skin hue. Lower values keep the warm shade tint alive; higher ones fight a strong colour cast. The
+# floor rises on deeper tones because the filmic tone curve crushes dark values hardest.
+[skin]
+floor = 0.50
+hue_keep = 0.68

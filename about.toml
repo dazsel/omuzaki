@@ -1,0 +1,48 @@
+# cargo-about config for the third-party notices bundle: `tools/release/notices.sh` runs `cargo about generate`.
+# The licence policy lives in deny.toml. `xtask/tests/notices_config.rs` fails when `accepted` or `targets` drift from it.
+
+# Exactly deny.toml's `[licenses] allow` list, plus the licences of its per-crate exceptions (OFL-1.1 and
+# Ubuntu-font-1.0 for egui's bundled fonts). A licence missing here fails the generate step, which is the point.
+accepted = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "BSL-1.0",
+    "0BSD",
+    "Unlicense",
+    "CC0-1.0",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "MPL-2.0",
+    "OFL-1.1",
+    "Ubuntu-font-1.0",
+]
+
+# Exactly deny.toml's `[graph] targets`, so the notices cover every platform the policy checks.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+    "x86_64-pc-windows-gnu",
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "wasm32-unknown-unknown",
+]
+
+# Dev-dependencies are tests and mocks: they never ship, so they don't need notices.
+ignore-dev-dependencies = true
+# Build dependencies run at compile time and their code can end up in the binary (build scripts, proc macros), so they stay in.
+ignore-build-dependencies = false
+# Every dependency of a shipped crate counts, not just the direct ones.
+ignore-transitive-dependencies = false
+
+# Our own crates are not third-party: they are skipped here and carried by the root LICENSE files.
+[private]
+ignore = true
+
+# No `no-clearly-defined` key: cargo-about 0.9.2 has no such option. It only fetches over the network for
+# `[[…clarify.git]]` entries, and this file has none, so the bundle never looks anything up online.

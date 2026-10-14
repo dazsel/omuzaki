@@ -1,0 +1,26 @@
+[package]
+name = "omuzaki-render-api"
+description = "Contract for the renderer: scene description, toon materials, quality modes, the frame graph and headless rendering (spec v3 §9, §10, §21)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+schemars.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+omuzaki-core = { path = "../omuzaki-core" }
+
+[dev-dependencies]
+criterion.workspace = true
+serde_json.workspace = true
+
+[[bench]]
+name = "scene"
+harness = false
+
+[lints]
+workspace = true

@@ -1,0 +1,55 @@
+id = "intro-wave"
+title = "Intro wave"
+tags = ["intro", "greeting"]
+version = "1.0.0"
+origin = "design target: a warm hello with a smile and a wave, 3 s"
+
+[score]
+duration = 3.0
+
+[[score.tracks]]
+channel = "mouthSmileLeft"
+keys = [
+  { time = 0.2, value = 0.7, over = 0.35 },
+  { time = 2.3, value = 0.0, over = 0.6 },
+]
+
+[[score.tracks]]
+channel = "mouthSmileRight"
+keys = [
+  { time = 0.2, value = 0.7, over = 0.35 },
+  { time = 2.3, value = 0.0, over = 0.6 },
+]
+
+[[score.tracks]]
+channel = "eyeArcLeft"
+keys = [
+  { time = 0.2, value = 0.5, over = 0.3 },
+  { time = 2.3, value = 0.0, over = 0.6 },
+]
+
+[[score.tracks]]
+channel = "eyeArcRight"
+keys = [
+  { time = 0.2, value = 0.5, over = 0.3 },
+  { time = 2.3, value = 0.0, over = 0.6 },
+]
+
+[[score.tracks]]
+channel = "headRoll"
+keys = [
+  { time = 0.5, value = 0.08, over = 0.5 },
+  { time = 2.3, value = 0.0, over = 0.6 },
+]
+
+[[score.cues]]
+time = 0.0
+type = "marker"
+name = "intro"
+
+[[score.cues]]
+time = 0.4
+type = "clip"
+clip = "wave"
+weight = 1.0
+fade_s = 0.25

@@ -1,0 +1,5 @@
+framing = "free"
+anchor = "stage"
+position = [0.0, 1.0, 3.0]
+target = [0.0, 0.9, 0.0]
+fov = 40.0

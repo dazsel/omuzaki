@@ -1,0 +1,18 @@
+dry run of face.set_profile: nothing was changed
+
+changes (3):
+  ~ characters/mira/face/blend
+      - 0.2
+      + 0.6
+  + characters/mira/face/profile
+      + {
+      +   "name": "close-up",
+      +   "weights": [
+      +     1,
+      +     0
+      +   ]
+      + }
+  - characters/mira/hair/color
+      - "#fff"
+
+cost: about 2.5 s, 4096 MiB GPU memory, $0.10

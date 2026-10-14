@@ -1,0 +1,10 @@
+# Hand shape "thumbs-up". Angles are degrees; spread is positive toward the thumb side, flexion toward the palm
+# (see crates/omuzaki-anim/src/hands/mod.rs for the conventions).
+id = "thumbs-up"
+summary = "A thumbs-up: the four fingers in a fist and the thumb straight out to the thumb side."
+
+thumb  = { spread =  40.0, mcp =   0.0, pip =   0.0, dip =   0.0 }
+index  = { spread =   0.0, mcp =  80.0, pip =  92.0, dip =  62.0 }
+middle = { spread =   0.0, mcp =  84.0, pip =  95.0, dip =  64.0 }
+ring   = { spread =   0.0, mcp =  87.0, pip =  97.0, dip =  66.0 }
+little = { spread =   0.0, mcp =  89.0, pip =  99.0, dip =  69.0 }

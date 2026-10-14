@@ -1,0 +1,57 @@
+id = "smug"
+title = "Smug"
+tags = ["reaction", "smug"]
+version = "1.0.0"
+origin = "design target: a lopsided smile, one low brow and a tilt, 1.6 s"
+
+[score]
+duration = 1.6
+
+[[score.tracks]]
+channel = "mouthSmileLeft"
+keys = [
+  { time = 0.0, value = 0.6, over = 0.3 },
+  { time = 1.2, value = 0.0, over = 0.4 },
+]
+
+[[score.tracks]]
+channel = "mouthSmileRight"
+keys = [
+  { time = 0.0, value = 0.1, over = 0.3 },
+  { time = 1.2, value = 0.0, over = 0.4 },
+]
+
+[[score.tracks]]
+channel = "browDownLeft"
+keys = [
+  { time = 0.0, value = 0.3, over = 0.3 },
+  { time = 1.2, value = 0.0, over = 0.4 },
+]
+
+[[score.tracks]]
+channel = "eyeSquintLeft"
+keys = [
+  { time = 0.0, value = 0.4, over = 0.3 },
+  { time = 1.2, value = 0.0, over = 0.4 },
+]
+
+[[score.tracks]]
+channel = "eyeSquintRight"
+keys = [
+  { time = 0.0, value = 0.4, over = 0.3 },
+  { time = 1.2, value = 0.0, over = 0.4 },
+]
+
+[[score.tracks]]
+channel = "headRoll"
+keys = [
+  { time = 0.0, value = -0.07, over = 0.3 },
+  { time = 1.2, value = 0.0, over = 0.4 },
+]
+
+[[score.tracks]]
+channel = "headYaw"
+keys = [
+  { time = 0.0, value = 0.05, over = 0.3 },
+  { time = 1.2, value = 0.0, over = 0.4 },
+]

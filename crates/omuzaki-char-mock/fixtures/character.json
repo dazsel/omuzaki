@@ -1,0 +1,21 @@
+{
+  "name": "Mock",
+  "template": "soft-sd",
+  "seed": 7,
+  "palette": { "skin": "#f9d3c5", "skin_shade": "#f2b4ab", "skin_line": "#c98a80", "outfit": "#24392f" },
+  "parts": {
+    "body": { "kind": "mock-body" },
+    "head": { "kind": "mock-head" },
+    "hair": {
+      "kind": "mock-hair",
+      "params": {
+        "groups": {
+          "a-cap": { "generator": { "type": "cap" } },
+          "c-curtain": { "generator": { "type": "curtain" }, "dynamics": { "simulate": true, "follow": "body" } }
+        }
+      }
+    },
+    "shirt": { "kind": "mock-garment", "layer": 20, "params": { "ease": 0.004 } },
+    "vest": { "kind": "mock-garment", "layer": 30, "params": { "ease": 0.006, "colour": "@outfit" } }
+  }
+}

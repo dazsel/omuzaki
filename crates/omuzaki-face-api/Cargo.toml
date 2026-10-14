@@ -1,0 +1,25 @@
+[package]
+name = "omuzaki-face-api"
+description = "Contract for the procedural face: how channels become paint parameters, face profiles, expressions and the painter that turns them into vector draw lists (spec v3 §19, CB-20..25)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+inventory.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+omuzaki-anim-api = { path = "../omuzaki-anim-api" }
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-io-api = { path = "../omuzaki-io-api" }
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

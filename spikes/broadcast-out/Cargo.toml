@@ -1,0 +1,51 @@
+# Spike: can a wgpu frame with premultiplied alpha reach OBS (Spout2), a Windows virtual camera (Media Foundation)
+# and NDI? Its own workspace root on purpose, like spikes/toon-viewport: nothing here touches the main workspace's lockfile
+# or the shared build slots' dependency set.
+[workspace]
+members = ["spout-out", "vcam-source"]
+resolver = "3"
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+bytemuck = { version = "1.25", features = ["derive"] }
+cc = "1"
+clap = { version = "4.6", features = ["derive"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+pollster = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "dx12", "wgsl"] }
+windows = "0.62"
+windows-core = "0.62"
+
+# The same lint table as the main workspace (Cargo.toml at the repo root). `unsafe_code` is denied crate-wide and each FFI
+# module opts in with a narrow `#![allow(unsafe_code)]`, so every unsafe block is easy to find and carries a SAFETY comment.
+[workspace.lints.rust]
+unsafe_code = "deny"
+unused_must_use = "deny"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+unwrap_used = "deny"
+expect_used = "deny"
+dbg_macro = "deny"
+todo = "deny"
+
+# The camera's synthetic picture is drawn per pixel on the CPU; unoptimised it cannot hold 30 fps, which would make the
+# in-process pacing tests meaningless in dev builds.
+[profile.dev.package.vcam-source]
+opt-level = 3
+
+[profile.release]
+lto = "thin"
+codegen-units = 16

@@ -1,0 +1,8 @@
+# Body-shape preset: five numbers in -1..=1 (0 is the template as it is). See template/shape.rs.
+id = "curvy"
+summary = "Full bust and hips with a defined waist, wider below than above."
+height = 0.0
+build = 0.3
+curves = 1.0
+musculature = -0.2
+shoulder_hip = -0.4

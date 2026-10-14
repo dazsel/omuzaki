@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "denied",
+    "field": null,
+    "hint": "grant the publish scope",
+    "message": "publish isn't granted"
+  }
+}

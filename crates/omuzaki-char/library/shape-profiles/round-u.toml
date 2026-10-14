@@ -1,0 +1,27 @@
+# Face-shape preset `round-u` (CB-10). Head-local metres. The numbers are fitted to the targets in
+# tests/shape_presets.rs and already sit inside the plausible space of head/outline.rs, so the outline named here
+# is the outline that is built.
+id = "round-u"
+summary = "A soft round U: a short lower face, wide at the cheeks, with no chin point."
+
+[outline]
+half_width = 0.1600
+top = -0.0880
+height = 0.1020
+exponent = 2.100
+cheek_puff = 0.0060
+
+[outline.chin]
+y = -0.1900
+stretch_top = -0.0880
+min_ratio = 0.65
+
+[layout]
+eye_y = -0.0880
+eye_spacing = 0.0900
+eye_width = 0.0522
+brow_gap = 0.0800
+nose_y = -0.1186
+mouth_y = -0.1472
+blush_y = -0.1247
+blush_spacing = 0.1080

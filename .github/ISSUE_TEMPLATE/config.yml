@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Ideas and questions
+    url: https://github.com/dazsel/omuzaki/discussions
+    about: Suggest a feature or ask how something works. Please use Discussions, not Issues, for ideas.
+  - name: Report a security vulnerability
+    url: https://github.com/dazsel/omuzaki/security/policy
+    about: Do not open a public issue. Follow the security policy to report privately.

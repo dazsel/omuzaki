@@ -1,0 +1,21 @@
+[package]
+name = "omuzaki-vts"
+description = "The VTube Studio plugin API as data: message types, validators and limits (CN-13). No I/O; clean-room from the documented wire protocol."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true
+
+# Native only: the later client task opens a WebSocket to a local app
+[package.metadata.omuzaki]
+wasm = false

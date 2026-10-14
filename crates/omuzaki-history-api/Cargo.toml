@@ -1,0 +1,26 @@
+[package]
+name = "omuzaki-history-api"
+description = "Contract for the write-ahead journal and project snapshots: history entries, the journal sink, the history export, snapshot refs and the Snapshots service (spec v3 §6, §7, §29; ADR 0021)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+inventory.workspace = true
+# `rc`: entries and exports share records and steps through `Arc` so that appending one is O(1).
+serde = { workspace = true, features = ["rc"] }
+thiserror.workspace = true
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-doc-api = { path = "../omuzaki-doc-api" }
+omuzaki-ops-api = { path = "../omuzaki-ops-api" }
+omuzaki-store-api = { path = "../omuzaki-store-api" }
+
+[dev-dependencies]
+proptest.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

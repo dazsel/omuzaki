@@ -1,0 +1,8 @@
+# Body-shape preset: five numbers in -1..=1 (0 is the template as it is). See template/shape.rs.
+id = "slim"
+summary = "Light and narrow: slim girth, soft muscle, a little taller than average."
+height = 0.1
+build = -0.8
+curves = 0.1
+musculature = -0.3
+shoulder_hip = 0.0

@@ -1,0 +1,57 @@
+id = "shy"
+title = "Shy"
+tags = ["reaction", "shy"]
+version = "1.0.0"
+origin = "design target: a blush, a downward glance and a small smile, 1.8 s"
+
+[score]
+duration = 1.8
+
+[[score.tracks]]
+channel = "blush"
+keys = [
+  { time = 0.0, value = 0.9, over = 0.3 },
+  { time = 1.3, value = 0.0, over = 0.5 },
+]
+
+[[score.tracks]]
+channel = "eyeLookDownLeft"
+keys = [
+  { time = 0.0, value = 0.4, over = 0.3 },
+  { time = 1.3, value = 0.0, over = 0.5 },
+]
+
+[[score.tracks]]
+channel = "eyeLookDownRight"
+keys = [
+  { time = 0.0, value = 0.4, over = 0.3 },
+  { time = 1.3, value = 0.0, over = 0.5 },
+]
+
+[[score.tracks]]
+channel = "mouthSmileLeft"
+keys = [
+  { time = 0.0, value = 0.3, over = 0.3 },
+  { time = 1.3, value = 0.0, over = 0.5 },
+]
+
+[[score.tracks]]
+channel = "mouthSmileRight"
+keys = [
+  { time = 0.0, value = 0.3, over = 0.3 },
+  { time = 1.3, value = 0.0, over = 0.5 },
+]
+
+[[score.tracks]]
+channel = "headPitch"
+keys = [
+  { time = 0.0, value = 0.1, over = 0.3 },
+  { time = 1.3, value = 0.0, over = 0.5 },
+]
+
+[[score.tracks]]
+channel = "headRoll"
+keys = [
+  { time = 0.0, value = 0.05, over = 0.3 },
+  { time = 1.3, value = 0.0, over = 0.5 },
+]

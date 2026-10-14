@@ -1,0 +1,8 @@
+# Body-shape preset: five numbers in -1..=1 (0 is the template as it is). See template/shape.rs.
+id = "broad"
+summary = "Wide and solid: heavy build, strong shoulders, a straight waist."
+height = 0.2
+build = 0.9
+curves = -0.3
+musculature = 0.3
+shoulder_hip = 0.3

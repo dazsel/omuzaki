@@ -1,0 +1,43 @@
+id = "gasp"
+title = "Gasp"
+tags = ["reaction", "surprise"]
+version = "1.0.0"
+origin = "design target: raised brows, wide eyes and an open jaw, 1.2 s"
+
+[score]
+duration = 1.2
+
+[[score.tracks]]
+channel = "browInnerUp"
+keys = [
+  { time = 0.0, value = 0.9, over = 0.08 },
+  { time = 0.8, value = 0.0, over = 0.4 },
+]
+
+[[score.tracks]]
+channel = "jawOpen"
+keys = [
+  { time = 0.0, value = 0.35, over = 0.08 },
+  { time = 0.8, value = 0.0, over = 0.4 },
+]
+
+[[score.tracks]]
+channel = "headPitch"
+keys = [
+  { time = 0.0, value = -0.06, over = 0.15 },
+  { time = 0.8, value = 0.0, over = 0.4 },
+]
+
+[[score.tracks]]
+channel = "eyeWideLeft"
+keys = [
+  { time = 0.0, value = 0.8, over = 0.08 },
+  { time = 0.8, value = 0.0, over = 0.4 },
+]
+
+[[score.tracks]]
+channel = "eyeWideRight"
+keys = [
+  { time = 0.0, value = 0.8, over = 0.08 },
+  { time = 0.8, value = 0.0, over = 0.4 },
+]

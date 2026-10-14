@@ -1,0 +1,31 @@
+[package]
+name = "omuzaki-track"
+description = "The webcam face tracker (PF-01): MediaPipe's detector, face mesh and blendshape graphs over ai-api sessions, with video-mode tracking, landmark smoothing and head pose, reporting anim-api track frames."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+nalgebra.workspace = true
+thiserror.workspace = true
+omuzaki-ai-api = { path = "../omuzaki-ai-api" }
+omuzaki-anim-api = { path = "../omuzaki-anim-api" }
+omuzaki-core = { path = "../omuzaki-core" }
+
+[dev-dependencies]
+criterion.workspace = true
+omuzaki-ai-mock = { path = "../omuzaki-ai-mock" }
+
+[[bench]]
+name = "pipeline"
+harness = false
+
+# Native only: the webcam capture path (camera thread, pixel conversion) has no wasm32 counterpart.
+[package.metadata.omuzaki]
+wasm = false
+
+[lints]
+workspace = true

@@ -1,0 +1,43 @@
+# perform-facecam: transcribed from the golden manifest (spec.rig of its cases). Lighting numbers only.
+# Three.js units (render-api D10): the numbers are copied, not rescaled.
+name = "perform-facecam"
+source = "js/perform/perform.js (face-cam: soft warm key from front-left, cool rim, gentle fill)"
+exposure = 1.0
+background = "#3b2418"
+skin_floor = 0.42
+
+[hemisphere]
+sky = "#f3e8ff"
+ground = "#3a2a24"
+intensity = 0.9
+
+[key]
+colour = "#fff0e0"
+intensity = 2.0
+position = [-0.8, 1.6, 2.2]
+
+[key.shadow]
+map_size = 1024
+left = -1.0
+right = 1.0
+top = 1.5
+bottom = -0.5
+near = 0.1
+far = 6.0
+bias = -0.0004
+normal_bias = 0.01
+
+[rim]
+colour = "#b8c8ff"
+intensity = 1.3
+position = [1.6, 1.4, -1.8]
+
+[fill]
+colour = "#ffd9c4"
+intensity = 0.55
+position = [1.8, 0.6, 1.5]
+
+[bloom]
+strength = 0.35
+radius = 0.5
+threshold = 0.9

@@ -1,0 +1,4 @@
+NAME | KIND | SCOPE | SUMMARY
+test.describe | query | read | Describe the open project.
+test.render_clip | job | render | Render a clip of a scene to a video file.
+test.set_profile_blend | edit | edit:character | Set the blend between the base face and the face-shape profile.

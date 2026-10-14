@@ -1,0 +1,235 @@
+src/backend.rs: pub struct StreamConfig {
+src/backend.rs: pub struct CallbackTime {
+src/backend.rs: pub enum BackendError {
+src/backend.rs: pub type InputCallback = Box<dyn FnMut(&[f32], CallbackTime) + Send + 'static>;
+src/backend.rs: pub type OutputCallback = Box<dyn FnMut(&mut [f32], CallbackTime) + Send + 'static>;
+src/backend.rs: pub type ErrorCallback = Box<dyn FnMut(BackendError) + Send + 'static>;
+src/backend.rs: pub trait DeviceStream: Send {
+src/backend.rs: pub trait AudioBackend: Send + Sync {
+src/clock.rs: pub struct ClockSnapshot {
+src/clock.rs: pub fn nominal(rate: u32) -> Self {
+src/clock.rs: pub fn time_of(&self, sample: u64) -> Seconds {
+src/clock.rs: pub fn sample_at(&self, time: Seconds) -> u64 {
+src/clock.rs: pub struct EngineClock {
+src/clock.rs: pub fn new(initial: ClockSnapshot) -> Self {
+src/clock.rs: pub fn publish(&self, snapshot: ClockSnapshot) {
+src/clock.rs: pub fn read(&self) -> ClockSnapshot {
+src/clock.rs: pub fn time_of(&self, sample: u64) -> Seconds {
+src/clock.rs: pub fn sample_at(&self, time: Seconds) -> u64 {
+src/device.rs: pub struct DeviceId {
+src/device.rs: pub enum Direction {
+src/device.rs: pub struct ChannelMap(pub Vec<u16>);
+src/device.rs: pub fn mono(channel: u16) -> Self {
+src/device.rs: pub fn stereo(left: u16, right: u16) -> Self {
+src/device.rs: pub fn channels(&self) -> &[u16] {
+src/device.rs: pub enum Binding {
+src/device.rs: pub fn channels(&self) -> &ChannelMap {
+src/device.rs: pub fn speakers(&self) -> bool {
+src/device.rs: pub struct DeviceInfo {
+src/device.rs: pub enum DeviceState {
+src/device.rs: pub enum ProfileError {
+src/device.rs: pub trait ProfileStore: Send + Sync {
+src/engine.rs: pub enum AudioError {
+src/engine.rs: pub trait AudioEngine: Send + Sync {
+src/engine.rs: pub type Planar = Vec<Vec<f32>>;
+src/engine.rs: pub enum BlockPlan {
+src/engine.rs: pub fn sizes(self, total: usize) -> Vec<usize> {
+src/engine.rs: pub struct OfflineInput {
+src/engine.rs: pub struct OfflineOutput {
+src/engine.rs: pub trait OfflineRender {
+src/graph/egress.rs: pub enum MicMode {
+src/graph/egress.rs: pub const fn after_leaving_cohost(self) -> Self {
+src/graph/egress.rs: pub const fn restored(self) -> Self {
+src/graph/egress.rs: pub struct Bindings {
+src/graph/egress.rs: pub struct CapturedSource(pub DeviceRole);
+src/graph/egress.rs: pub enum Egress {
+src/graph/egress.rs: pub fn egress_pairs(graph: &GraphSpec, bindings: &Bindings) -> BTreeSet<(CapturedSource, Egress)> {
+src/graph/mod.rs: pub use egress::{Bindings, CapturedSource, Egress, MicMode, egress_pairs};
+src/graph/mod.rs: pub use validate::{GraphError, KindLookup};
+src/graph/mod.rs: pub const MIC_BUS: &str = "mic";
+src/graph/mod.rs: pub const AI_VOICE_BUS: &str = "ai_voice";
+src/graph/mod.rs: pub const MONITOR_OUT_ROLE: &str = "monitor_out";
+src/graph/mod.rs: pub const MAX_GAIN_DB: f32 = 12.0;
+src/graph/mod.rs: pub enum Channels {
+src/graph/mod.rs: pub const fn count(self) -> usize {
+src/graph/mod.rs: pub enum SourceRef {
+src/graph/mod.rs: pub struct SendSpec {
+src/graph/mod.rs: pub type Params = BTreeMap<String, f32>;
+src/graph/mod.rs: pub struct NodeSpec {
+src/graph/mod.rs: pub struct BusSpec {
+src/graph/mod.rs: pub enum DuckTrigger {
+src/graph/mod.rs: pub struct DuckRule {
+src/graph/mod.rs: pub struct GraphSpec {
+src/graph/mod.rs: pub enum AecMode {
+src/graph/mod.rs: pub fn bus(&self, id: &BusId) -> Option<&BusSpec> {
+src/graph/validate.rs: pub type KindLookup<'a> = &'a dyn Fn(&NodeKindId) -> Option<NodeKindInfo>;
+src/graph/validate.rs: pub enum GraphError {
+src/graph/validate.rs: pub fn validate_structure(&self) -> Result<(), GraphError> {
+src/graph/validate.rs: pub fn validate(&self, kinds: KindLookup<'_>) -> Result<(), GraphError> {
+src/graph/validate.rs: pub fn validate_registered(&self) -> Result<(), GraphError> {
+src/graph/validate.rs: pub fn bus_order(&self) -> Result<Vec<BusId>, GraphError> {
+src/ids.rs: pub struct NodeKindId(String);
+src/ids.rs: pub fn new(s: impl Into<String>) -> Result<Self, SlugError> {
+src/ids.rs: pub fn as_str(&self) -> &str {
+src/lib.rs: pub mod backend;
+src/lib.rs: pub mod clock;
+src/lib.rs: pub mod device;
+src/lib.rs: pub mod engine;
+src/lib.rs: pub mod graph;
+src/lib.rs: pub mod ids;
+src/lib.rs: pub mod node;
+src/lib.rs: pub mod preset;
+src/lib.rs: pub mod report;
+src/lib.rs: pub mod ring;
+src/lib.rs: pub mod semantics;
+src/lib.rs: pub mod tap;
+src/lib.rs: pub use backend::{AudioBackend, BackendError, CallbackTime, DeviceStream, StreamConfig};
+src/lib.rs: pub use clock::{ClockSnapshot, EngineClock};
+src/lib.rs: pub use device::{Binding, ChannelMap, DeviceId, DeviceInfo, DeviceState, Direction, ProfileStore};
+src/lib.rs: pub use engine::{AudioEngine, AudioError, BlockPlan, OfflineInput, OfflineOutput, OfflineRender};
+src/lib.rs: pub use graph::{
+src/lib.rs: pub use ids::{BusId, DeviceRole, FeedId, GateId, NodeId, NodeKindId, PlayerId};
+src/lib.rs: pub use node::{BlockMut, MAX_BLOCK, Node, NodeKind, SAMPLE_RATE};
+src/lib.rs: pub use preset::FxPreset;
+src/lib.rs: pub use report::{AudioEvent, AudioStatus, BridgeStatus, GraphReport, LatencyEstimate, Meters, RouteLatency};
+src/lib.rs: pub use tap::{TapInfo, TapPoint, TapReader, TapRequest, TapSink};
+src/lib.rs: pub use inventory as __inventory;
+src/lib.rs: pub use omuzaki_core::__record_registration;
+src/node.rs: pub const SAMPLE_RATE: u32 = 48_000;
+src/node.rs: pub const MAX_BLOCK: usize = 1024;
+src/node.rs: pub struct ParamIndex(pub u16);
+src/node.rs: pub enum Unit {
+src/node.rs: pub struct ParamSpec {
+src/node.rs: pub enum ChannelSupport {
+src/node.rs: pub const fn accepts(self, channels: Channels) -> bool {
+src/node.rs: pub struct LatencyRange {
+src/node.rs: pub struct NodeKindInfo {
+src/node.rs: pub fn param_index(&self, name: &str) -> Option<ParamIndex> {
+src/node.rs: pub enum ConfigValue {
+src/node.rs: pub struct NodeConfig(pub BTreeMap<String, ConfigValue>);
+src/node.rs: pub fn get(&self, key: &str) -> Option<&ConfigValue> {
+src/node.rs: pub enum NodeError {
+src/node.rs: pub struct BlockMut<'a> {
+src/node.rs: pub fn mono(samples: &'a mut [f32], first_sample: u64) -> Self {
+src/node.rs: pub fn stereo(left: &'a mut [f32], right: &'a mut [f32], first_sample: u64) -> Self {
+src/node.rs: pub fn with_sidechain(mut self, sidechain: &'a [f32]) -> Self {
+src/node.rs: pub fn frames(&self) -> usize {
+src/node.rs: pub fn channel_count(&self) -> usize {
+src/node.rs: pub fn for_each_channel(&mut self, mut f: impl FnMut(&mut [f32])) {
+src/node.rs: pub struct NodeReport {
+src/node.rs: pub trait Node: Send {
+src/node.rs: pub trait NodeKind: Send + Sync {
+src/node.rs: pub struct NodeKindRegistration {
+src/node.rs: pub const fn of<T: NodeKind>(name: &'static str, kind: &'static T) -> Self {
+src/node.rs: pub fn node_kinds() -> Vec<&'static dyn NodeKind> {
+src/node.rs: pub fn node_kind(id: &NodeKindId) -> Option<&'static dyn NodeKind> {
+src/node.rs: pub fn duplicate_kind_ids() -> Vec<&'static str> {
+src/node.rs: macro_rules! register_node_kind {
+src/preset.rs: pub struct FxPreset {
+src/preset.rs: pub fn keeps_shape_of(&self, current: &[NodeSpec]) -> bool {
+src/report.rs: pub enum RouteEnd {
+src/report.rs: pub struct RouteLatency {
+src/report.rs: pub fn graph(&self) -> Seconds {
+src/report.rs: pub fn declared_total(&self) -> Seconds {
+src/report.rs: pub struct BusLatency {
+src/report.rs: pub struct GraphReport {
+src/report.rs: pub struct LatencyEstimate {
+src/report.rs: pub enum ClockSource {
+src/report.rs: pub struct BridgeStatus {
+src/report.rs: pub struct TapDrops {
+src/report.rs: pub struct LeavingTap {
+src/report.rs: pub struct AudioStatus {
+src/report.rs: pub model_blocks_missed: u64,
+src/report.rs: pub enum AudioEvent {
+src/report.rs: pub const EVENT_QUEUE_CAPACITY: usize = 256;
+src/report.rs: pub struct EventSender {
+src/report.rs: pub struct AudioEvents {
+src/report.rs: pub fn event_queue() -> (EventSender, AudioEvents) {
+src/report.rs: pub fn send(&self, event: AudioEvent) {
+src/report.rs: pub fn is_subscribed(&self) -> bool {
+src/report.rs: pub fn next(&self) -> Option<AudioEvent> {
+src/report.rs: pub fn drain(&self) -> Vec<AudioEvent> {
+src/report.rs: pub fn dropped(&self) -> u64 {
+src/report.rs: pub enum MeterPoint {
+src/report.rs: pub struct Meters {
+src/report.rs: pub const SILENT: Self = Self {
+src/report.rs: pub struct MeterCell {
+src/report.rs: pub fn new() -> Self {
+src/report.rs: pub fn store(&self, m: Meters) {
+src/report.rs: pub fn load(&self) -> Meters {
+src/ring.rs: pub struct TapFlags {
+src/ring.rs: pub struct TapRead {
+src/ring.rs: pub struct Producer {
+src/ring.rs: pub struct Consumer {
+src/ring.rs: pub fn ring(capacity: usize, policy: DropPolicy, origin: u64) -> (Producer, Consumer) {
+src/ring.rs: pub fn push(&mut self, samples: &[f32]) -> usize {
+src/ring.rs: pub fn push_gap(&mut self, count: u64) {
+src/ring.rs: pub fn set_flags(&mut self, flags: TapFlags) {
+src/ring.rs: pub fn free(&self) -> usize {
+src/ring.rs: pub fn written(&self) -> u64 {
+src/ring.rs: pub fn dropped(&self) -> u64 {
+src/ring.rs: pub fn reader_gone(&self) -> bool {
+src/ring.rs: pub fn read(&mut self, out: &mut [f32]) -> TapRead {
+src/ring.rs: pub fn pop_into(&mut self, out: &mut [f32]) -> usize {
+src/ring.rs: pub fn available(&self) -> usize {
+src/ring.rs: pub fn dropped(&self) -> u64 {
+src/ring.rs: pub fn overwritten(&self) -> u64 {
+src/ring.rs: pub fn writer_gone(&self) -> bool {
+src/ring.rs: pub fn origin(&self) -> u64 {
+src/semantics.rs: pub const FADER_RAMP_SAMPLES: u32 = 240;
+src/semantics.rs: pub const MONO_TO_STEREO_GAIN: f32 = std::f32::consts::FRAC_1_SQRT_2;
+src/semantics.rs: pub fn db_to_gain(db: f32) -> f32 {
+src/semantics.rs: pub fn is_silent_gain(db: f32) -> bool {
+src/semantics.rs: pub struct FaderRamp {
+src/semantics.rs: pub const fn new(gain: f32) -> Self {
+src/semantics.rs: pub fn current(&self) -> f32 {
+src/semantics.rs: pub const fn target(&self) -> f32 {
+src/semantics.rs: pub const fn is_settled(&self) -> bool {
+src/semantics.rs: pub fn set_target(&mut self, target: f32) {
+src/semantics.rs: pub fn next_gain(&mut self) -> f32 {
+src/semantics.rs: pub fn apply(&mut self, samples: &mut [f32]) {
+src/semantics.rs: pub const TRIGGER_DELAY: usize = 1024;
+src/semantics.rs: pub struct LevelFollower {
+src/semantics.rs: pub fn new() -> Self {
+src/semantics.rs: pub fn step(&mut self, max_abs: f32) -> f32 {
+src/semantics.rs: pub const fn level(&self) -> f32 {
+src/semantics.rs: pub struct DuckEnvelope {
+src/semantics.rs: pub fn new(depth_db: f32, attack_ms: f32, hold_ms: f32, release_ms: f32) -> Self {
+src/semantics.rs: pub fn set_params(&mut self, depth_db: f32, attack_ms: f32, hold_ms: f32, release_ms: f32) {
+src/semantics.rs: pub fn step(&mut self, active: bool) -> f32 {
+src/semantics.rs: pub const fn gain_db(&self) -> f32 {
+src/semantics.rs: pub fn retire(&mut self) {
+src/semantics.rs: pub fn is_idle(&self) -> bool {
+src/semantics.rs: pub fn duck_factor(gains_db: impl IntoIterator<Item = f32>) -> f32 {
+src/tap.rs: pub type TapReader = crate::ring::Consumer;
+src/tap.rs: pub type FeedWriter = crate::ring::Producer;
+src/tap.rs: pub enum DropPolicy {
+src/tap.rs: pub enum VoiceUse {
+src/tap.rs: pub enum VoiceSignal {
+src/tap.rs: pub enum TapPoint {
+src/tap.rs: pub enum TapRate {
+src/tap.rs: pub const fn hz(self) -> u32 {
+src/tap.rs: pub struct TapFormat {
+src/tap.rs: pub const fn default_signal(self) -> VoiceSignal {
+src/tap.rs: pub const fn format(self) -> TapFormat {
+src/tap.rs: pub const fn policy(self) -> DropPolicy {
+src/tap.rs: pub const fn default_capacity(self) -> Seconds {
+src/tap.rs: pub const fn hears_private_talk(self) -> bool {
+src/tap.rs: pub const RECORDING_CAPACITY: Seconds = Seconds(2.0);
+src/tap.rs: pub enum VoiceSetup {
+src/tap.rs: pub struct VoiceRouting<'a> {
+src/tap.rs: pub struct ResolvedVoiceTap {
+src/tap.rs: pub fn resolve(self, setup: VoiceSetup, routing: VoiceRouting<'_>) -> ResolvedVoiceTap {
+src/tap.rs: pub struct VoiceTaps(BTreeMap<VoiceUse, VoiceSignal>);
+src/tap.rs: pub fn signal(&self, consumer: VoiceUse) -> VoiceSignal {
+src/tap.rs: pub fn set(&mut self, consumer: VoiceUse, signal: VoiceSignal) {
+src/tap.rs: pub fn resolve(&self, consumer: VoiceUse, setup: VoiceSetup, routing: VoiceRouting<'_>) -> ResolvedVoiceTap {
+src/tap.rs: pub struct TapRequest {
+src/tap.rs: pub fn voice(consumer: VoiceUse, name: impl Into<String>) -> Self {
+src/tap.rs: pub trait TapSink: Send {
+src/tap.rs: pub struct TapHandle {
+src/tap.rs: pub struct TapClosed {
+src/tap.rs: pub fn is_closed(&self) -> bool {
+src/tap.rs: pub fn new() -> (Self, TapClosed) {
+src/tap.rs: pub struct TapInfo {
+src/tap.rs: pub struct FeedRequest {

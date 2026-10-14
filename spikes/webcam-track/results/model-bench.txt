@@ -1,0 +1,118 @@
+machine load average (1 min) at start: 27.95
+-- round 1, 1 thread(s)
+ORT, workers spin:
+face_detector.onnx               mean   2.045 ms  p50   1.584  p95   3.107  max   4.790
+face_landmarks_detector.onnx     mean  12.013 ms  p50  10.711  p95  19.422  max  23.045
+face_blendshapes.onnx            mean   1.122 ms  p50   1.130  p95   1.336  max   2.865
+ORT, workers sleep:
+face_detector.onnx               mean   1.737 ms  p50   1.497  p95   2.762  max   4.918
+face_landmarks_detector.onnx     mean  10.099 ms  p50   9.430  p95  17.779  max  21.894
+face_blendshapes.onnx            mean   0.901 ms  p50   0.763  p95   1.848  max   2.400
+TFLite XNNPACK:
+face_detector.tflite             mean   1.134 ms  p50   1.128  p95   2.101  max   3.281
+face_landmarks_detector.tflite   mean   6.831 ms  p50   6.472  p95  10.551  max  11.385
+face_blendshapes.tflite          mean   0.769 ms  p50   0.725  p95   1.225  max   2.061
+-- round 1, 2 thread(s)
+ORT, workers spin:
+face_detector.onnx               mean   1.141 ms  p50   1.004  p95   1.706  max   2.528
+face_landmarks_detector.onnx     mean   8.768 ms  p50   8.256  p95  13.051  max  17.172
+face_blendshapes.onnx            mean   1.631 ms  p50   1.595  p95   2.856  max   4.190
+ORT, workers sleep:
+face_detector.onnx               mean   2.506 ms  p50   2.346  p95   3.997  max   8.700
+face_landmarks_detector.onnx     mean  13.460 ms  p50  13.230  p95  18.854  max  23.164
+face_blendshapes.onnx            mean   1.632 ms  p50   1.671  p95   2.309  max   3.356
+TFLite XNNPACK:
+face_detector.tflite             mean   1.266 ms  p50   1.092  p95   1.760  max  15.824
+face_landmarks_detector.tflite   mean   4.253 ms  p50   3.957  p95   6.192  max  13.787
+face_blendshapes.tflite          mean   1.255 ms  p50   1.153  p95   1.876  max  12.012
+-- round 1, 4 thread(s)
+ORT, workers spin:
+face_detector.onnx               mean   1.241 ms  p50   1.229  p95   1.689  max   1.987
+face_landmarks_detector.onnx     mean   8.974 ms  p50   8.930  p95  11.430  max  14.188
+face_blendshapes.onnx            mean   1.119 ms  p50   1.139  p95   1.447  max   1.861
+ORT, workers sleep:
+face_detector.onnx               mean   3.515 ms  p50   3.274  p95   5.230  max   5.948
+face_landmarks_detector.onnx     mean  16.316 ms  p50  16.503  p95  20.871  max  27.403
+face_blendshapes.onnx            mean   2.279 ms  p50   1.991  p95   3.877  max   6.633
+TFLite XNNPACK:
+face_detector.tflite             mean   2.660 ms  p50   1.502  p95   6.403  max  76.792
+face_landmarks_detector.tflite   mean   3.420 ms  p50   3.241  p95   4.613  max   8.460
+face_blendshapes.tflite          mean   1.802 ms  p50   1.578  p95   2.685  max  11.498
+-- round 2, 1 thread(s)
+ORT, workers spin:
+face_detector.onnx               mean   2.418 ms  p50   2.689  p95   3.372  max   4.728
+face_landmarks_detector.onnx     mean  10.938 ms  p50   9.856  p95  19.423  max  27.051
+face_blendshapes.onnx            mean   1.315 ms  p50   1.270  p95   2.179  max   2.589
+ORT, workers sleep:
+face_detector.onnx               mean   2.234 ms  p50   1.881  p95   3.475  max   5.689
+face_landmarks_detector.onnx     mean  10.709 ms  p50   9.940  p95  18.703  max  29.349
+face_blendshapes.onnx            mean   1.026 ms  p50   0.824  p95   2.148  max   2.447
+TFLite XNNPACK:
+face_detector.tflite             mean   1.600 ms  p50   1.372  p95   2.532  max   2.868
+face_landmarks_detector.tflite   mean   6.388 ms  p50   6.385  p95   9.358  max  20.733
+face_blendshapes.tflite          mean   0.771 ms  p50   0.760  p95   0.935  max   1.865
+-- round 2, 2 thread(s)
+ORT, workers spin:
+face_detector.onnx               mean   1.508 ms  p50   1.484  p95   2.259  max   6.926
+face_landmarks_detector.onnx     mean   8.771 ms  p50   9.103  p95  12.635  max  13.744
+face_blendshapes.onnx            mean   1.145 ms  p50   1.247  p95   1.522  max   1.894
+ORT, workers sleep:
+face_detector.onnx               mean   2.134 ms  p50   2.139  p95   2.427  max   3.876
+face_landmarks_detector.onnx     mean  12.368 ms  p50  12.543  p95  16.432  max  19.411
+face_blendshapes.onnx            mean   1.841 ms  p50   1.794  p95   2.364  max   3.691
+TFLite XNNPACK:
+face_detector.tflite             mean   1.218 ms  p50   1.113  p95   1.781  max   3.222
+face_landmarks_detector.tflite   mean   4.714 ms  p50   4.696  p95   6.659  max  10.669
+face_blendshapes.tflite          mean   1.251 ms  p50   1.249  p95   1.809  max   2.651
+-- round 2, 4 thread(s)
+ORT, workers spin:
+face_detector.onnx               mean   1.512 ms  p50   1.367  p95   2.674  max   6.730
+face_landmarks_detector.onnx     mean   9.291 ms  p50   8.518  p95  15.792  max  22.076
+face_blendshapes.onnx            mean   0.942 ms  p50   0.956  p95   1.248  max   1.458
+ORT, workers sleep:
+face_detector.onnx               mean   3.024 ms  p50   2.975  p95   4.623  max   6.722
+face_landmarks_detector.onnx     mean  16.952 ms  p50  16.798  p95  20.888  max  24.342
+face_blendshapes.onnx            mean   2.351 ms  p50   2.085  p95   3.438  max   6.621
+TFLite XNNPACK:
+face_detector.tflite             mean   1.237 ms  p50   0.840  p95   3.066  max  12.580
+face_landmarks_detector.tflite   mean   4.143 ms  p50   3.659  p95   7.516  max  12.801
+face_blendshapes.tflite          mean   2.168 ms  p50   1.028  p95   8.183  max  44.819
+-- round 3, 1 thread(s)
+ORT, workers spin:
+face_detector.onnx               mean   2.150 ms  p50   1.717  p95   3.126  max   7.558
+face_landmarks_detector.onnx     mean  12.300 ms  p50  11.277  p95  19.299  max  24.776
+face_blendshapes.onnx            mean   1.369 ms  p50   1.255  p95   2.408  max   4.110
+ORT, workers sleep:
+face_detector.onnx               mean   1.534 ms  p50   1.385  p95   2.749  max   3.228
+face_landmarks_detector.onnx     mean  12.828 ms  p50  12.038  p95  22.030  max  43.437
+face_blendshapes.onnx            mean   2.067 ms  p50   2.293  p95   2.843  max   7.988
+TFLite XNNPACK:
+face_detector.tflite             mean   1.897 ms  p50   1.461  p95   2.864  max   6.925
+face_landmarks_detector.tflite   mean  11.986 ms  p50  11.996  p95  16.925  max  29.676
+face_blendshapes.tflite          mean   1.287 ms  p50   1.039  p95   2.802  max   6.236
+-- round 3, 2 thread(s)
+ORT, workers spin:
+face_detector.onnx               mean   1.312 ms  p50   1.175  p95   1.983  max   2.385
+face_landmarks_detector.onnx     mean   8.310 ms  p50   8.186  p95  11.687  max  12.731
+face_blendshapes.onnx            mean   1.397 ms  p50   1.487  p95   1.718  max   2.484
+ORT, workers sleep:
+face_detector.onnx               mean   2.222 ms  p50   2.170  p95   3.501  max   3.855
+face_landmarks_detector.onnx     mean  13.392 ms  p50  13.278  p95  17.034  max  22.077
+face_blendshapes.onnx            mean   1.921 ms  p50   1.826  p95   2.948  max   3.556
+TFLite XNNPACK:
+face_detector.tflite             mean   0.573 ms  p50   0.487  p95   0.894  max   1.280
+face_landmarks_detector.tflite   mean   2.887 ms  p50   2.838  p95   3.934  max   6.159
+face_blendshapes.tflite          mean   0.829 ms  p50   0.746  p95   1.287  max   1.767
+-- round 3, 4 thread(s)
+ORT, workers spin:
+face_detector.onnx               mean   0.854 ms  p50   0.851  p95   1.227  max   1.434
+face_landmarks_detector.onnx     mean   7.081 ms  p50   6.652  p95   9.889  max  19.395
+face_blendshapes.onnx            mean   0.996 ms  p50   0.964  p95   1.396  max   1.839
+ORT, workers sleep:
+face_detector.onnx               mean   3.197 ms  p50   3.049  p95   4.708  max   6.099
+face_landmarks_detector.onnx     mean  17.162 ms  p50  16.955  p95  23.387  max  28.674
+face_blendshapes.onnx            mean   2.320 ms  p50   1.924  p95   3.965  max  11.392
+TFLite XNNPACK:
+face_detector.tflite             mean   1.764 ms  p50   0.909  p95   6.123  max  16.596
+face_landmarks_detector.tflite   mean   3.003 ms  p50   2.935  p95   3.895  max   7.180
+face_blendshapes.tflite          mean   1.990 ms  p50   1.795  p95   4.032  max  17.082

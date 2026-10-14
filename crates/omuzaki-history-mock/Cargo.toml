@@ -1,0 +1,19 @@
+[package]
+name = "omuzaki-history-mock"
+description = "In-memory journal sink and snapshot service for tests (spec v3 §39 rule 6)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+omuzaki-doc-api = { path = "../omuzaki-doc-api" }
+omuzaki-history-api = { path = "../omuzaki-history-api" }
+omuzaki-ops-api = { path = "../omuzaki-ops-api" }
+omuzaki-store-api = { path = "../omuzaki-store-api" }
+
+[lints]
+workspace = true

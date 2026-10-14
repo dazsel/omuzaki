@@ -1,0 +1,21 @@
+[package]
+name = "omuzaki-io-gltf"
+description = "glTF 2.0 and GLB importer and exporter registered as format `glb` against omuzaki-io-api (spec v3 §27 EX-02); the work is done by omuzaki-gltf."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-gltf = { path = "../omuzaki-gltf" }
+omuzaki-io-api = { path = "../omuzaki-io-api" }
+
+[dev-dependencies]
+omuzaki-io-mock = { path = "../omuzaki-io-mock" }
+
+[lints]
+workspace = true

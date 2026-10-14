@@ -1,0 +1,38 @@
+# dev-night: transcribed from the golden manifest (spec.rig of its cases). Lighting numbers only.
+# Three.js units (render-api D10): the numbers are copied, not rescaled.
+name = "dev-night"
+source = "prototype dev viewer, night rig"
+exposure = 1.0
+background = "#1b2236"
+skin_floor = 0.42
+
+[hemisphere]
+sky = "#8090c0"
+ground = "#202030"
+intensity = 1.1
+
+[key]
+colour = "#ffcf98"
+intensity = 2.4
+position = [-1.6, 1.8, 2.0]
+
+[key.shadow]
+map_size = 1024
+left = -0.8
+right = 0.8
+top = 0.8
+bottom = -0.8
+near = 0.1
+far = 8.0
+bias = -0.0004
+normal_bias = 0.01
+
+[rim]
+colour = "#9fb4ff"
+intensity = 1.5
+position = [2.0, 2.6, -2.0]
+
+[bloom]
+strength = 0.32
+radius = 0.5
+threshold = 0.92

@@ -1,0 +1,8 @@
+# Body-shape preset: five numbers in -1..=1 (0 is the template as it is). See template/shape.rs.
+id = "hourglass"
+summary = "Balanced shoulders and hips with a strongly defined waist."
+height = 0.1
+build = 0.1
+curves = 1.0
+musculature = 0.0
+shoulder_hip = 0.0

@@ -1,0 +1,24 @@
+name = "talking"
+summary = "A person in conversation: the mouth moves, blinks come more often, gaze leaves the listener now and then."
+sources = [
+  "blinks: Bentivoglio et al. 1997, Movement Disorders 12(6): mean 26 per minute in conversation; the band covers the spread between people.",
+  "saccades: estimate. Speakers look away from the listener to think and glance back; about one to three moves a second counting the larger ones. To be replaced by measurement from real takes (SH-01).",
+  "change_per_second: provisional; the mouth channels add motion over rest. No published figure; to be replaced from real takes (SH-01, tuning).",
+  "longest_frozen_s: as for rest.",
+]
+
+[change_per_second]
+low = 0.05
+high = 1.5
+
+[blinks_per_minute]
+low = 15.0
+high = 40.0
+
+[saccades_per_second]
+low = 0.3
+high = 3.5
+
+[longest_frozen_s]
+low = 0.0
+high = 0.5

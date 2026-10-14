@@ -1,0 +1,7 @@
+framing = "full"
+subject = "subject"
+yaw = 30.0
+pitch = 6.0
+fov = 30.0
+zoom = 1.0
+shift = [0.0, 0.0]

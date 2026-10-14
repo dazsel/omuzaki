@@ -1,0 +1,28 @@
+[package]
+name = "omuzaki-char-mock"
+description = "A small deterministic character (head, hair, body, garments) built through the real part-kind contract, for tests and the walking skeleton (spec v3 §39 rule 6)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+omuzaki-anim-api = { path = "../omuzaki-anim-api" }
+omuzaki-char-api = { path = "../omuzaki-char-api" }
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-face-api = { path = "../omuzaki-face-api" }
+omuzaki-render-api = { path = "../omuzaki-render-api" }
+
+[dev-dependencies]
+image.workspace = true
+omuzaki-render-mock = { path = "../omuzaki-render-mock" }
+omuzaki-doc-api = { path = "../omuzaki-doc-api" }
+omuzaki-face-mock = { path = "../omuzaki-face-mock" }
+
+[lints]
+workspace = true

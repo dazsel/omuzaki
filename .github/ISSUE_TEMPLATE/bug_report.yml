@@ -1,0 +1,42 @@
+name: Bug report
+description: Something is broken or behaves differently from what the docs say.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Omuzaki is in early development, so many things are unfinished. Please check the README and the spec first.
+        For security problems, do not open an issue: see the security policy.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: The shortest list of steps or commands that shows the problem.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Commit or version
+      description: Output of `git rev-parse --short HEAD`, or the version you ran.
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Operating system, GPU and Rust version
+      description: For example "Windows 11, RTX 4070, rustc 1.99".
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs, screenshots or renders
+      description: Paste the output as text where you can. Remove anything private first.
+      render: shell

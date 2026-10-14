@@ -1,0 +1,38 @@
+# dev-studio: transcribed from the golden manifest (spec.rig of its cases). Lighting numbers only.
+# Three.js units (render-api D10): the numbers are copied, not rescaled.
+name = "dev-studio"
+source = "prototype dev viewer, studio rig"
+exposure = 1.0
+background = "#8a8f99"
+skin_floor = 0.42
+
+[hemisphere]
+sky = "#ffffff"
+ground = "#666677"
+intensity = 1.6
+
+[key]
+colour = "#ffffff"
+intensity = 2.2
+position = [1.2, 2.2, 2.4]
+
+[key.shadow]
+map_size = 1024
+left = -0.8
+right = 0.8
+top = 0.8
+bottom = -0.8
+near = 0.1
+far = 8.0
+bias = -0.0004
+normal_bias = 0.01
+
+[rim]
+colour = "#c8d4ff"
+intensity = 0.6
+position = [-2.0, 1.0, -1.5]
+
+[bloom]
+strength = 0.32
+radius = 0.5
+threshold = 0.92

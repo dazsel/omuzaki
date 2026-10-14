@@ -1,0 +1,43 @@
+[package]
+name = "spout-out"
+description = "Spike: send a wgpu premultiplied-alpha frame to Spout2 (OBS) and measure it with a receiver"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+bytemuck.workspace = true
+clap.workspace = true
+image.workspace = true
+pollster.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+wgpu.workspace = true
+
+# Off Windows only the pure logic and the scene shader run, on whatever Vulkan driver is around; Windows uses DX12 (the
+# workspace default) because the Spout hand-off is built on it.
+[target.'cfg(not(windows))'.dependencies]
+wgpu = { workspace = true, features = ["vulkan"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Direct3D11on12",
+    "Win32_Graphics_Direct3D12",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Security",
+    "Win32_System_Memory",
+    "Win32_System_Performance",
+    "Win32_System_Threading",
+] }
+
+[build-dependencies]
+cc.workspace = true
+
+[lints]
+workspace = true

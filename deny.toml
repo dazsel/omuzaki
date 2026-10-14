@@ -1,0 +1,74 @@
+# cargo-deny configuration: the licence policy (docs/licensing/policy.md) as a CI gate.
+# Changing this file needs a maintainer review: every allow-list entry, exception or ban needs a row in
+# docs/licensing/register.md explaining why.
+
+[graph]
+# Check every platform we ship, so a platform-only dependency can't slip in unchecked.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+    "x86_64-pc-windows-gnu",
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "wasm32-unknown-unknown",
+]
+all-features = false
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = []
+
+[licenses]
+version = 2
+# Anything not listed is denied, so GPL, AGPL, LGPL, SSPL, BUSL and every non-commercial licence fail by default.
+# MPL-2.0 is file-level copyleft: allowed for unmodified crates (policy: "Allowed").
+allow = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "BSL-1.0",
+    "0BSD",
+    "Unlicense",
+    "CC0-1.0",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "MPL-2.0",
+]
+confidence-threshold = 0.93
+# The allow list is the policy, not an inventory: licences we allow but don't use yet aren't warnings.
+unused-allowed-license = "allow"
+# Per-crate exceptions for licences that are fine in one place only (e.g. fonts bundled by egui).
+# Add with a register row; never widen the global allow list for one crate.
+exceptions = [
+    # egui's bundled UI fonts (Hack, Ubuntu-Light, emoji icons): font licences, fine to ship with their notices
+    # (register: egui/eframe, "conditions"; notices generated). Allowed for this one crate only.
+    { crate = "epaint_default_fonts", allow = ["OFL-1.1", "Ubuntu-font-1.0"] },
+]
+
+[licenses.private]
+# Our own crates (MIT OR Apache-2.0) are unpublished and are not checked as third-party.
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true   # our own unpublished crates use path deps without versions
+deny = [
+    { crate = "sherpa-onnx", reason = "links GPL-3.0 espeak-ng (licence audit blocker 1)" },
+    { crate = "sherpa-onnx-sys", reason = "links GPL-3.0 espeak-ng (licence audit blocker 1)" },
+    { crate = "intel-mkl-src", reason = "Intel non-standard licence; keep candle's mkl feature off (register: candle)" },
+    { crate = "asio-sys", reason = "downloads the Steinberg ASIO SDK (GPLv3 or proprietary); keep cpal's asio feature off" },
+    { crate = "openssl-src", reason = "vendored OpenSSL; use rustls" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

@@ -1,0 +1,43 @@
+id = "sad"
+title = "Sad"
+tags = ["reaction", "sad"]
+version = "1.0.0"
+origin = "design target: lowered head, frown and tears, 2 s"
+
+[score]
+duration = 2.0
+
+[[score.tracks]]
+channel = "browInnerUp"
+keys = [
+  { time = 0.0, value = 0.6, over = 0.4 },
+  { time = 1.5, value = 0.0, over = 0.5 },
+]
+
+[[score.tracks]]
+channel = "mouthFrownLeft"
+keys = [
+  { time = 0.0, value = 0.5, over = 0.4 },
+  { time = 1.5, value = 0.0, over = 0.5 },
+]
+
+[[score.tracks]]
+channel = "mouthFrownRight"
+keys = [
+  { time = 0.0, value = 0.5, over = 0.4 },
+  { time = 1.5, value = 0.0, over = 0.5 },
+]
+
+[[score.tracks]]
+channel = "tears"
+keys = [
+  { time = 0.2, value = 0.5, over = 0.4 },
+  { time = 1.5, value = 0.0, over = 0.5 },
+]
+
+[[score.tracks]]
+channel = "headPitch"
+keys = [
+  { time = 0.0, value = 0.12, over = 0.4 },
+  { time = 1.5, value = 0.0, over = 0.5 },
+]

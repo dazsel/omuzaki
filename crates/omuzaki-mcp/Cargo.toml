@@ -1,0 +1,45 @@
+[package]
+name = "omuzaki-mcp"
+description = "MCP server exposing every op as a tool, over stdio or a local Streamable HTTP port (spec v3 §11)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+blake3.workspace = true
+bytes.workspace = true
+constant_time_eq.workspace = true
+getrandom.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+rmcp.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["net", "time"] }
+tokio-util.workspace = true
+tracing.workspace = true
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-doc-api = { path = "../omuzaki-doc-api" }
+omuzaki-ops-api = { path = "../omuzaki-ops-api" }
+
+[dev-dependencies]
+# The clients the integration tests talk to the server with: in-process, and over a real loopback port.
+proptest.workspace = true
+reqwest.workspace = true
+# `test-util` pauses tokio's clock, which is how the timeout tests run without sleeping (see `limits.rs`).
+tokio = { workspace = true, features = ["test-util"] }
+rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }
+omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
+
+[lints]
+workspace = true
+
+# Native only: an MCP server on tokio, over stdio or a local TCP port (the web player talks to agents differently)
+[package.metadata.omuzaki]
+wasm = false

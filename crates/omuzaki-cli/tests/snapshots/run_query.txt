@@ -1,0 +1,7 @@
+ran project.describe
+
+output:
+  {
+    "characters": 2,
+    "name": "my-show"
+  }

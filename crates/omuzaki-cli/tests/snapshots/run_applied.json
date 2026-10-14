@@ -1,0 +1,88 @@
+{
+  "applied": {
+    "actor": {
+      "kind": "person",
+      "name": "tester"
+    },
+    "approval": null,
+    "args": {
+      "blend": 0.6,
+      "character": "mira"
+    },
+    "at": 1.5,
+    "cause": null,
+    "on_behalf_of": null,
+    "op": "face.set_profile",
+    "patch": {
+      "changes": [
+        {
+          "after": 0.6,
+          "before": 0.2,
+          "path": "characters/mira/face/blend"
+        },
+        {
+          "after": {
+            "name": "close-up",
+            "weights": [
+              1,
+              0
+            ]
+          },
+          "before": null,
+          "path": "characters/mira/face/profile"
+        },
+        {
+          "after": null,
+          "before": "#fff",
+          "path": "characters/mira/hair/color"
+        },
+        {
+          "after": "calm",
+          "before": "calm",
+          "path": "characters/mira/face/mood"
+        }
+      ]
+    },
+    "seq": 3,
+    "tx": 3,
+    "version": 7
+  },
+  "plan": {
+    "cost": {
+      "gpu_mib": 4096,
+      "seconds": 2.5,
+      "usd": 0.1
+    },
+    "output": null,
+    "patch": {
+      "changes": [
+        {
+          "after": 0.6,
+          "before": 0.2,
+          "path": "characters/mira/face/blend"
+        },
+        {
+          "after": {
+            "name": "close-up",
+            "weights": [
+              1,
+              0
+            ]
+          },
+          "before": null,
+          "path": "characters/mira/face/profile"
+        },
+        {
+          "after": null,
+          "before": "#fff",
+          "path": "characters/mira/hair/color"
+        },
+        {
+          "after": "calm",
+          "before": "calm",
+          "path": "characters/mira/face/mood"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,62 @@
+id = "kiss-mwah"
+title = "Kiss"
+tags = ["reaction", "kiss"]
+version = "1.0.0"
+origin = "design target: a blown kiss with a pucker, a pop and hearts, 1.4 s"
+
+[score]
+duration = 1.4
+
+[[score.tracks]]
+channel = "eyeArcLeft"
+keys = [
+  { time = 0.0, value = 0.6, over = 0.15 },
+  { time = 1.1, value = 0.0, over = 0.3 },
+]
+
+[[score.tracks]]
+channel = "eyeArcRight"
+keys = [
+  { time = 0.0, value = 0.6, over = 0.15 },
+  { time = 1.1, value = 0.0, over = 0.3 },
+]
+
+[[score.tracks]]
+channel = "mouthPucker"
+keys = [
+  { time = 0.15, value = 0.9, over = 0.2 },
+  { time = 0.5, value = 0.0, over = 0.08 },
+]
+
+[[score.tracks]]
+channel = "lean"
+keys = [
+  { time = 0.15, value = 0.3, over = 0.3 },
+  { time = 1.1, value = 0.0, over = 0.3 },
+]
+
+[[score.tracks]]
+channel = "jawOpen"
+keys = [
+  { time = 0.5, value = 0.25, over = 0.05 },
+  { time = 0.62, value = 0.0, over = 0.1 },
+]
+
+[[score.tracks]]
+channel = "blush"
+keys = [
+  { time = 0.55, value = 0.6, over = 0.1 },
+  { time = 1.1, value = 0.0, over = 0.3 },
+]
+
+[[score.tracks]]
+channel = "eyesHeart"
+keys = [
+  { time = 0.55, value = 1.0, over = 0.1 },
+  { time = 1.1, value = 0.0, over = 0.3 },
+]
+
+[[score.cues]]
+time = 0.5
+type = "marker"
+name = "mwah"

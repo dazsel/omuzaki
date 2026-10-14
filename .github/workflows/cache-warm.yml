@@ -1,0 +1,93 @@
+# Builds the dependency caches that ci.yml restores. This is the only workflow that SAVES caches.
+#
+# Why: the repository gets 10 GB of Actions cache, evicted least-recently-used. If every pull request saved its own
+# entries they would push main's out, and a cache saved on a PR or merge-queue ref cannot be restored by any other
+# run anyway (only the default branch's caches are shared). So main saves, everything else restores.
+#
+# Budget (measure on the first runs and adjust): test about 3 GB, lint about 2, win-cross about 2.5, xtask under 0.5.
+# Each key is saved once per Cargo.lock/toolchain; a push that changes neither restores, finds nothing to add and
+# finishes in a few minutes.
+name: Cache warm
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: cache-warm
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  # Must match ci.yml: a different profile setting is a different build and would make the cache useless there.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+
+jobs:
+  xtask:
+    name: xtask
+    runs-on: ubuntu-latest
+    if: github.repository == 'dazsel/omuzaki'
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: ./.github/actions/setup-linux
+        with:
+          cache-key: xtask
+          save-cache: true
+      - run: cargo build --locked -p xtask
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    if: github.repository == 'dazsel/omuzaki'
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: ./.github/actions/setup-linux
+        with:
+          cache-key: lint
+          save-cache: true
+          free-disk: true
+      - name: Build clippy and wasm artifacts
+        run: |
+          cargo build --locked -p xtask
+          cargo clippy --locked --workspace --features omuzaki-cli/test-fixtures --all-targets
+          mapfile -t wasm < <(python3 -I tools/ci/crates.py wasm)
+          packages=(); for name in "${wasm[@]}"; do packages+=(-p "$name"); done
+          cargo check --locked --target wasm32-unknown-unknown "${packages[@]}"
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    if: github.repository == 'dazsel/omuzaki'
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: ./.github/actions/setup-linux
+        with:
+          cache-key: test
+          save-cache: true
+          gpu: true
+          free-disk: true
+      - name: Build every test binary (not run)
+        run: cargo test --locked --workspace --features omuzaki-cli/test-fixtures --no-run
+
+  win-cross:
+    name: windows build
+    runs-on: ubuntu-latest
+    if: github.repository == 'dazsel/omuzaki'
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: ./.github/actions/setup-linux
+        with:
+          cache-key: win-cross
+          save-cache: true
+          windows-cross: true
+          free-disk: true
+      - run: cargo build --locked --workspace --target x86_64-pc-windows-gnu

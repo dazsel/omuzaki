@@ -1,0 +1,7 @@
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+
+# Many parity-test PRs each add a dev-dependency line to the App test crate; union-merge those additions instead of
+# stopping every rebase on a conflict (a duplicate line would fail `cargo metadata`, which rebase-relock runs).
+crates/omuzaki-test/Cargo.toml merge=union

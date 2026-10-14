@@ -1,0 +1,6 @@
+# Per-attempt caps a task gets unless its own [caps] table overrides them (design 3.2, 12.3).
+[caps]
+turns = 30
+tool_calls = 60
+wall_s = 600
+tokens = 400_000

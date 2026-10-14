@@ -1,0 +1,27 @@
+[package]
+name = "omuzaki-anim-api"
+description = "Contract for animation and rig: tracker frames, retarget, life layer, blending, skeleton, spring bones, scores (spec v3 §8, §20, §22)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+schemars.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+omuzaki-core = { path = "../omuzaki-core" }
+
+[dev-dependencies]
+criterion.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+
+[[bench]]
+name = "hot_path"
+harness = false
+
+[lints]
+workspace = true

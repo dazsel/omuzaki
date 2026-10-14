@@ -1,0 +1,18 @@
+# Pose "wave-right": the right hand raised, open, for a greeting. Rotations are degrees, Euler XYZ, in the VRM
+# normalised space (T-pose = zero); see crates/omuzaki-anim/src/poses/mod.rs for the conventions.
+id = "wave-right"
+summary = "Right arm raised with the elbow bent and the hand open, the left arm relaxed down: a hello."
+tags = ["greeting", "arm"]
+mirrorable = true
+
+[bones]
+leftUpperArm = [0.0, 0.0, -65.0]
+leftLowerArm = [0.0, -10.0, 0.0]
+rightUpperArm = [0.0, 20.0, -20.0]
+rightLowerArm = [0.0, 0.0, -85.0]
+rightHand = [0.0, 0.0, 10.0]
+head = [0.0, -8.0, -4.0]
+
+[hands.right]
+shape = "open"
+weight = 1.0

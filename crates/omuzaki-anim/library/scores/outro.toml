@@ -1,0 +1,53 @@
+id = "outro"
+title = "Outro"
+tags = ["outro", "farewell"]
+version = "1.0.0"
+origin = "design target: a wave goodbye and a bow, 4 s"
+
+[score]
+duration = 4.0
+
+[[score.tracks]]
+channel = "mouthSmileLeft"
+keys = [
+  { time = 0.3, value = 0.7, over = 0.35 },
+  { time = 3.4, value = 0.0, over = 0.6 },
+]
+
+[[score.tracks]]
+channel = "mouthSmileRight"
+keys = [
+  { time = 0.3, value = 0.7, over = 0.35 },
+  { time = 3.4, value = 0.0, over = 0.6 },
+]
+
+[[score.tracks]]
+channel = "headPitch"
+keys = [
+  { time = 2.2, value = 0.2, over = 0.5 },
+  { time = 3.4, value = 0.0, over = 0.6 },
+]
+
+[[score.cues]]
+time = 0.0
+type = "marker"
+name = "outro"
+
+[[score.cues]]
+time = 0.3
+type = "clip"
+clip = "wave"
+weight = 1.0
+fade_s = 0.2
+
+[[score.cues]]
+time = 2.2
+type = "clip"
+clip = "bow"
+weight = 1.0
+fade_s = 0.3
+
+[[score.cues]]
+time = 4.0
+type = "marker"
+name = "end"

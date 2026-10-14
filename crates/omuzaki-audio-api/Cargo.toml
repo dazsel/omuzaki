@@ -1,0 +1,30 @@
+[package]
+name = "omuzaki-audio-api"
+description = "Contract for the audio engine: devices and roles, the mixer graph, nodes, taps and feeds with their SPSC ring, the engine clock, latency and health reports (spec v3 §8, §9, §10; ADR 0018)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+inventory.workspace = true
+schemars.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+omuzaki-core = { path = "../omuzaki-core" }
+
+[dev-dependencies]
+criterion.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+# Only for the compile-time proof that `dyn AudioEngine` is a `Service` (the blanket impl).
+omuzaki-ops-api = { path = "../omuzaki-ops-api" }
+
+[[bench]]
+name = "ring"
+harness = false
+
+[lints]
+workspace = true

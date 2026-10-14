@@ -1,0 +1,20 @@
+name: Idea
+description: Suggest a feature or a change. Ideas are discussed in GitHub Discussions.
+labels: ["idea"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Ideas are discussed in [Discussions](https://github.com/dazsel/omuzaki/discussions/new?category=ideas) so that
+        Issues stay for bugs. Please post it there. If you open this form anyway, a maintainer may move it.
+  - type: textarea
+    id: idea
+    attributes:
+      label: The idea
+      description: What would you like to do that you can't do today, and why?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you have tried

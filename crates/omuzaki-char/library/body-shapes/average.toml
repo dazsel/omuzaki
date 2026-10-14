@@ -1,0 +1,8 @@
+# Body-shape preset: five numbers in -1..=1 (0 is the template as it is). See template/shape.rs.
+id = "average"
+summary = "The template as it is: every axis at zero."
+height = 0.0
+build = 0.0
+curves = 0.0
+musculature = 0.0
+shoulder_hip = 0.0

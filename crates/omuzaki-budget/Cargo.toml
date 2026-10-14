@@ -1,0 +1,24 @@
+[package]
+name = "omuzaki-budget"
+description = "The frame-budget scheduler (spec v3 §8): smooths FrameReport times, compares them with the budgets and steps Quality down and up with hysteresis."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-render-api = { path = "../omuzaki-render-api" }
+
+[dev-dependencies]
+criterion.workspace = true
+omuzaki-render-mock = { path = "../omuzaki-render-mock" }
+
+[[bench]]
+name = "observe"
+harness = false
+
+[lints]
+workspace = true

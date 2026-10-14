@@ -1,0 +1,68 @@
+[package]
+name = "omuzaki-char"
+description = "The procedural character: geometry kit, body templates, head, hair, outfit, accessories, cloth, palette and the character ops (spec v3 §18; contracts omuzaki-char-api, omuzaki-face-api, omuzaki-anim-api, omuzaki-render-api)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Every dependency the crate's modules will need is declared here, so adding a module does not edit this file.
+# Impl crates may not depend on `omuzaki-test`, an App crate.
+[dependencies]
+inventory.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+omuzaki-anim-api = { path = "../omuzaki-anim-api" }
+omuzaki-char-api = { path = "../omuzaki-char-api" }
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-doc-api = { path = "../omuzaki-doc-api" }
+omuzaki-face-api = { path = "../omuzaki-face-api" }
+omuzaki-ops-api = { path = "../omuzaki-ops-api" }
+omuzaki-render-api = { path = "../omuzaki-render-api" }
+omuzaki-store-api = { path = "../omuzaki-store-api" }
+
+[dev-dependencies]
+criterion.workspace = true
+proptest.workspace = true
+omuzaki-char-mock = { path = "../omuzaki-char-mock" }
+omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
+omuzaki-face-mock = { path = "../omuzaki-face-mock" }
+omuzaki-render-mock = { path = "../omuzaki-render-mock" }
+
+# One bench target per hot path. A target needs its file to exist, so the skeleton declares them all up front, and
+# each bench file's `//!` line says what it measures.
+[[bench]]
+name = "kit"
+harness = false
+
+[[bench]]
+name = "builder"
+harness = false
+
+[[bench]]
+name = "hair_verlet"
+harness = false
+
+[[bench]]
+name = "hair_runtime"
+harness = false
+
+[[bench]]
+name = "cloth_solver"
+harness = false
+
+[[bench]]
+name = "cloth_contact"
+harness = false
+
+[[bench]]
+name = "cloth_runtime"
+harness = false
+
+[lints]
+workspace = true

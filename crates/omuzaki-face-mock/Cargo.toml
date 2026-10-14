@@ -1,0 +1,22 @@
+[package]
+name = "omuzaki-face-mock"
+description = "A deterministic stand-in face painter and CPU rasteriser for tests and the walking skeleton (spec v3 §39 rule 6)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+omuzaki-anim-api = { path = "../omuzaki-anim-api" }
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-face-api = { path = "../omuzaki-face-api" }
+omuzaki-io-api = { path = "../omuzaki-io-api" }
+
+[dev-dependencies]
+image.workspace = true
+omuzaki-io-mock = { path = "../omuzaki-io-mock" }
+
+[lints]
+workspace = true

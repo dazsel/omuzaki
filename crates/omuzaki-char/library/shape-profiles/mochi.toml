@@ -1,0 +1,27 @@
+# Face-shape preset `mochi` (CB-10). Head-local metres. The numbers are fitted to the targets in
+# tests/shape_presets.rs and already sit inside the plausible space of head/outline.rs, so the outline named here
+# is the outline that is built.
+id = "mochi"
+summary = "Soft and wide like a rice cake: a very short lower face, no chin point, low-set features."
+
+[outline]
+half_width = 0.1679
+top = -0.0750
+height = 0.1005
+exponent = 2.400
+cheek_puff = 0.0100
+
+[outline.chin]
+y = -0.1755
+stretch_top = -0.0750
+min_ratio = 0.75
+
+[layout]
+eye_y = -0.0930
+eye_spacing = 0.0920
+eye_width = 0.0570
+brow_gap = 0.0750
+nose_y = -0.1153
+mouth_y = -0.1392
+blush_y = -0.1227
+blush_spacing = 0.1104

@@ -1,0 +1,21 @@
+# A shipped model of the mock's test_echo@1 slot, so registry tests can install, verify and roll back without a
+# network or real weights. The pin is the SHA-256 and size of echo.fake.toml.
+id = "echo-fake"
+version = "1.0.0"
+name = "Echo (fake)"
+slot = "test_echo@1"
+runtime = "fake"
+providers = ["cpu"]
+
+[[files]]
+name = "echo.fake.toml"
+sha256 = "e5b9c1f03be8153f32f0df28a9196840741698957730b384a262d2b9517bb99c"
+size = 226
+urls = ["https://models.invalid/echo-fake/1.0.0/echo.fake.toml"]
+
+[card]
+register = "omuzaki-ai-mock test fixtures"
+authors = "Omuzaki"
+
+[card.licence]
+spdx = "MIT OR Apache-2.0"

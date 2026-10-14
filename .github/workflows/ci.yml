@@ -1,0 +1,219 @@
+# The gate for pull requests and for the merge queue. One required check, `gate`, aggregates every job below, so jobs
+# can be added, split or renamed without touching the branch ruleset.
+#
+#   pull request   fmt, clippy -D warnings on the changed crates and their direct dependents, tests of the changed
+#                  crates only, the link gates, the licence/dependency lints.
+#   merge queue    the same on EVERYTHING affected (dependents included), plus the Windows cross-build. The queue
+#                  builds the exact commit that will land on main, so this is the run that protects main.
+#
+# Scope comes from `cargo xtask check --format json` (xtask/src/affected.rs). The full Windows test suite runs in
+# nightly.yml, not here. Dependency caches are written by cache-warm.yml on main; these jobs only restore them.
+#
+# Required: the ruleset must require `gate` AND the merge queue, and this workflow must run on `merge_group`, or the
+# queue waits for a check that never starts.
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  merge_group:
+    types: [checks_requested]
+
+# A newer push to a PR supersedes its run in progress. Merge-queue runs are never cancelled: each has its own group
+# (its commit SHA), and cancelling one would eject the pull requests in it.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  # Smaller artifacts keep the cache and the runner's disk in budget; backtraces still have line numbers.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  RUST_BACKTRACE: "1"
+
+jobs:
+  # Decides what the other jobs do. About two minutes with a warm cache: xtask is small.
+  plan:
+    name: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Draft pull requests get no CI (it would queue behind real work); `ready_for_review` starts it.
+    if: github.event.pull_request.draft != true
+    outputs:
+      mode: ${{ steps.outputs.outputs.mode }}
+      empty: ${{ steps.outputs.outputs.empty }}
+      has_tests: ${{ steps.outputs.outputs.has_tests }}
+      test_matrix: ${{ steps.outputs.outputs.test_matrix }}
+      lint_crates: ${{ steps.outputs.outputs.lint_crates }}
+      link_crates: ${{ steps.outputs.outputs.link_crates }}
+      has_link_gates: ${{ steps.outputs.outputs.has_link_gates }}
+      cross_crates: ${{ steps.outputs.outputs.cross_crates }}
+      has_cross: ${{ steps.outputs.outputs.has_cross }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0   # the affected-crate diff needs the base branch's history
+      - uses: ./.github/actions/setup-linux
+        with:
+          cache-key: xtask
+      - name: Affected crates
+        id: outputs
+        env:
+          EVENT: ${{ github.event_name }}
+          # A PR is measured against its base branch; a merge-queue run against the commit the queue built on, so the
+          # scope is the union of every PR in the group.
+          BASE: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || format('origin/{0}', github.base_ref) }}
+        run: |
+          cargo run --locked --quiet -p xtask -- check --format json --shards 6 --base "$BASE" >"$RUNNER_TEMP/report.json"
+          cat "$RUNNER_TEMP/report.json"
+          python3 -I tools/ci/plan-outputs.py "$RUNNER_TEMP/report.json" "$EVENT" | tee -a "$GITHUB_OUTPUT"
+
+  lint:
+    name: lint
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      LINT_CRATES: ${{ needs.plan.outputs.lint_crates }}
+      BASE: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || format('origin/{0}', github.base_ref) }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-linux
+        with:
+          cache-key: lint
+          tools: cargo-deny
+          free-disk: ${{ needs.plan.outputs.mode == 'workspace' }}
+      - name: Cargo.lock is current
+        run: cargo metadata --locked --format-version 1 >/dev/null
+      # fmt is cheap on the whole workspace, so it is not scoped.
+      - name: fmt
+        run: cargo fmt --all --check
+      - name: clippy
+        if: needs.plan.outputs.empty != 'true'
+        run: |
+          packages=(); for name in $LINT_CRATES; do packages+=(-p "$name"); done
+          # The fixture binary is behind a feature that `cargo install` leaves off; the gates turn it on (xtask/src/check.rs).
+          features=(); [[ " $LINT_CRATES " == *" omuzaki-cli "* ]] && features=(--features omuzaki-cli/test-fixtures)
+          cargo clippy --locked "${packages[@]}" "${features[@]}" --all-targets -- -D warnings
+      - name: WebAssembly check
+        if: needs.plan.outputs.empty != 'true'
+        run: |
+          mapfile -t wasm < <(python3 -I tools/ci/crates.py wasm $LINT_CRATES)
+          if ((${#wasm[@]} == 0)); then echo "no affected crate targets wasm"; exit 0; fi
+          packages=(); for name in "${wasm[@]}"; do packages+=(-p "$name"); done
+          cargo check --locked --target wasm32-unknown-unknown "${packages[@]}"
+      - name: Layering, link and UI-write lints
+        run: |
+          cargo xtask lint-deps
+          cargo xtask lint-links
+          cargo xtask lint-ui-writes
+          cargo xtask lint-seed --base "$BASE"
+      # Licences, bans and sources only: advisories come from a database that changes daily, so they run in nightly.yml
+      # and a new advisory never fails an unrelated pull request.
+      - name: cargo-deny
+        run: cargo deny --log-level error check licenses bans sources
+      - name: Shell tests
+        run: |
+          for test in tools/tests/*.sh; do echo "== $test"; bash "$test"; done
+
+  test:
+    name: test (${{ matrix.name }})
+    needs: plan
+    if: needs.plan.outputs.has_tests == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.test_matrix) }}
+    env:
+      CRATES: ${{ matrix.crates }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: ./.github/actions/setup-linux
+        with:
+          cache-key: test
+          gpu: true
+          free-disk: ${{ needs.plan.outputs.mode == 'workspace' }}
+      # Render and UI tests open a software Vulkan adapter (lavapipe). The setup step above installs it, so they run
+      # for real here instead of being skipped.
+      - name: Test
+        run: |
+          packages=(); for name in $CRATES; do packages+=(-p "$name"); done
+          features=(); [[ " $CRATES " == *" omuzaki-cli "* ]] && features=(--features omuzaki-cli/test-fixtures)
+          cargo test --locked "${packages[@]}" "${features[@]}"
+
+  # The Apps' link gate tests (ADR 0015): a changed op crate can drop out of a binary without any unit test noticing.
+  link-gate:
+    name: link gate
+    needs: plan
+    if: needs.plan.outputs.has_link_gates == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      LINK_CRATES: ${{ needs.plan.outputs.link_crates }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: ./.github/actions/setup-linux
+        with:
+          cache-key: test
+          gpu: true
+      - name: Link gate tests
+        run: |
+          for name in $LINK_CRATES; do cargo test --locked -p "$name" --test registrations; done
+
+  # Merge queue only: ordinary pull requests don't pay for the Windows toolchain. Native Windows tests run nightly.
+  win-cross:
+    name: windows build
+    needs: plan
+    if: github.event_name == 'merge_group' && needs.plan.outputs.has_cross == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CROSS_CRATES: ${{ needs.plan.outputs.cross_crates }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: ./.github/actions/setup-linux
+        with:
+          cache-key: win-cross
+          windows-cross: true
+          free-disk: true
+      - name: Cross-build for Windows
+        run: |
+          packages=(); for name in $CROSS_CRATES; do packages+=(-p "$name"); done
+          cargo build --locked --target x86_64-pc-windows-gnu "${packages[@]}"
+
+  # THE required check. It passes when every job it waits for passed or was legitimately skipped (a draft, a docs-only
+  # change, a job that only runs in the queue), and fails if any failed or was cancelled. `if: always()` makes it run
+  # even then; without it a failed job would leave this one skipped, and a skipped required check counts as passing.
+  gate:
+    name: gate
+    needs: [plan, lint, test, link-gate, win-cross]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Aggregate
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          python3 -I - <<'PY'
+          import json, os, sys
+          results = {name: job["result"] for name, job in json.loads(os.environ["NEEDS"]).items()}
+          for name, result in results.items():
+              print(f"{name}: {result}")
+          bad = [name for name, result in results.items() if result not in ("success", "skipped")]
+          # lint always runs once plan succeeded; skipped there means something upstream went wrong.
+          if results.get("plan") == "success" and results.get("lint") != "success":
+              bad.append("lint")
+          if bad:
+              print("gate failed: " + ", ".join(sorted(set(bad))))
+              sys.exit(1)
+          PY

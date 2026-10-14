@@ -1,0 +1,50 @@
+# viewer-candle: transcribed from the golden manifest (spec.rig of its cases). Lighting numbers only.
+# Three.js units (render-api D10): the numbers are copied, not rescaled.
+name = "viewer-candle"
+source = "js/viewer.js LIGHTS.candle (flame key from the candle, cool rim, warm fill, flickering candle point light at t = 0)"
+exposure = 0.92
+background = "#2a1810"
+skin_floor = 0.42
+
+[hemisphere]
+sky = "#8a7f9a"
+ground = "#2a1a10"
+intensity = 0.42
+
+[key]
+colour = "#ffc28a"
+intensity = 1.6
+position = [1.65, 2.209, -0.55]
+
+[key.shadow]
+map_size = 2048
+left = -2.2
+right = 2.2
+top = 2.2
+bottom = -2.2
+near = 0.1
+far = 12.0
+bias = -0.0003
+normal_bias = 0.012
+
+[rim]
+colour = "#8fa8ff"
+intensity = 1.0
+position = [-2.5, 2.2, -2.8]
+
+[fill]
+colour = "#ffe2c4"
+intensity = 0.25
+position = [-2.0, 1.0, 2.5]
+
+[point]
+# three.js decay is 2 (its default) in every rig. The contract has no decay field: the renderer falls off as three.js does at decay 2 (D10).
+colour = "#ffa25a"
+intensity = 4.84
+position = [1.45, 1.239, -1.15]
+distance = 7.0
+
+[bloom]
+strength = 0.32
+radius = 0.5
+threshold = 0.92

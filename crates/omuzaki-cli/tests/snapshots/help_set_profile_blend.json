@@ -1,0 +1,39 @@
+{
+  "kind": "edit",
+  "name": "test.set_profile_blend",
+  "schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "Blend 0 keeps the character's base face; 1 uses the face-shape profile completely.",
+    "properties": {
+      "blend": {
+        "description": "0 = base face, 1 = full profile.",
+        "format": "float",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "type": "number"
+      },
+      "character": {
+        "description": "The character.",
+        "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+        "type": "string"
+      },
+      "note": {
+        "description": "Why the blend changed, for the history.",
+        "maxLength": 80,
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "character",
+      "blend"
+    ],
+    "title": "SetProfileBlend",
+    "type": "object"
+  },
+  "scope": "edit:character",
+  "summary": "Set the blend between the base face and the face-shape profile.",
+  "undo": "auto"
+}

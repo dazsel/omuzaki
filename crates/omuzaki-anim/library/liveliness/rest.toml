@@ -1,0 +1,24 @@
+name = "rest"
+summary = "A person sitting, looking at a screen or a listener, not speaking."
+sources = [
+  "blinks: Bentivoglio et al. 1997, Movement Disorders 12(6), 'Analysis of blink rate patterns in normal subjects': mean 17 per minute at rest, with a wide spread between people; the band is wider than the 15 to 20 per minute the earlier prototype's liveliness check accepted.",
+  "saccades: estimate. Free viewing makes about 3 fixations a second (Rayner 1998, Psychological Bulletin 124(3)); a peak speed above 100 degrees a second is a saccade of roughly 4 degrees or more, so the band counts the larger moves only. To be replaced by measurement from real takes (SH-01).",
+  "change_per_second: provisional. No published figure exists for mean blendshape change; set from the life layer's own run and a wide margin, to be replaced from real takes (SH-01, tuning).",
+  "longest_frozen_s: a live face is never fully still for long; the earlier prototype's liveliness check allowed 0.5 s on the eyes. Here every face and head channel must stay under 0.001 a frame, a stricter test, so the limit is the same 0.5 s.",
+]
+
+[change_per_second]
+low = 0.01
+high = 0.5
+
+[blinks_per_minute]
+low = 10.0
+high = 25.0
+
+[saccades_per_second]
+low = 0.1
+high = 3.0
+
+[longest_frozen_s]
+low = 0.0
+high = 0.5

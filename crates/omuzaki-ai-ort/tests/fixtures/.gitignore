@@ -1,0 +1,2 @@
+# the root .gitignore drops *.onnx (weights are kept outside the repo); these few-hundred-byte fixtures are the exception
+!*.onnx

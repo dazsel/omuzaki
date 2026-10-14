@@ -1,0 +1,17 @@
+//! The app shell (`docs/design/ux/shell.md`): workspaces, docking, panels, the top bar and the status bar.
+//!
+//! This module is built in layers so each can be tested without a window:
+//!
+//! - [`class`]: the width classes and what each changes, and the order docks collapse in as the window shrinks;
+//! - [`registry`]: workspaces and panels register themselves (`register_workspace!`, `register_panel!`), so the tab bar
+//!   and the View menu show whatever is compiled in and nothing edits a central list (spec §39 rule 2);
+//! - [`layout`]: a layout is a small serialisable tree of panel ids; it converts to and from the docking widget's tree;
+//! - [`persist`]: layouts belong to the person, not the project, and are saved per workspace.
+
+// Layout arithmetic converts between small integers and `f32` (window sizes, counts); every value is bounded by a screen.
+#![allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+
+pub mod class;
+pub mod layout;
+pub mod persist;
+pub mod registry;

@@ -1,0 +1,2 @@
+{"turn":1,"call":"character.rename","args":{"character":"{main}","name":"Mika"},"applied":true}
+{"turn":2,"call":"part.remove","args":{"character":"{main}","part":"body"},"applied":true}

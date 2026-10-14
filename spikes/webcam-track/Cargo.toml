@@ -1,0 +1,49 @@
+# Spike: can the MediaPipe face models (ONNX) run under `ort` in Rust, and how do they compare with the JS tracker?
+# Its own workspace root on purpose, like `spikes/toon-viewport`: the spike's dependencies (ort, nalgebra) stay out of the
+# main workspace (members = crates/*, xtask) and its build-slot dependency set.
+[workspace]
+members = ["."]
+resolver = "3"
+
+[package]
+name = "webcam-track"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+clap = { version = "4.6", features = ["derive"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+nalgebra = { version = "0.35", default-features = false, features = ["std"] }
+# `load-dynamic`: load a libonnxruntime.so we choose at run time, so the build never downloads Pyke's prebuilt binaries
+# (docs/licensing/register.md: "don't use Pyke's unlicensed prebuilt ORT binaries in releases"). The spike runs against
+# Microsoft's official release tarball; see models/PROVENANCE.md.
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "load-dynamic", "cuda"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+# The same lint table as the main workspace (Cargo.toml at the repo root).
+[lints.rust]
+unsafe_code = "deny"
+unused_must_use = "deny"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+unwrap_used = "deny"
+expect_used = "deny"
+doc_markdown = "allow"            # product names (MediaPipe, BlazeFace, ARKit) are prose here, not code
+dbg_macro = "deny"
+todo = "deny"
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+lto = "thin"
+codegen-units = 16

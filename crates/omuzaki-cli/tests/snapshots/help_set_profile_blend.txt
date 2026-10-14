@@ -1,0 +1,25 @@
+test.set_profile_blend
+  Set the blend between the base face and the face-shape profile.
+
+  Blend 0 keeps the character's base face; 1 uses the face-shape profile completely.
+
+  kind   edit
+  scope  edit:character
+  undo   auto
+
+Arguments:
+  character  string          required
+      The character.
+      pattern ^[a-z0-9][a-z0-9_-]{0,63}$
+  blend      number          required
+      0 = base face, 1 = full profile.
+      range 0.0 to 1.0
+  note       string or null  optional
+      Why the blend changed, for the history.
+      length <= 80
+
+Run it:
+  omuzaki run test.set_profile_blend --args '<json>'
+  omuzaki run test.set_profile_blend --args '<json>' --dry-run
+
+The full JSON Schema: omuzaki help test.set_profile_blend --json

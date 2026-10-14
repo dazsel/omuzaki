@@ -1,0 +1,62 @@
+[package]
+name = "omuzaki-cli"
+description = "The `omuzaki` command: every op as a CLI call, generated from the op registry (spec v3 §6)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "omuzaki_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "omuzaki"
+path = "src/main.rs"
+
+# A copy of `omuzaki` with two demo ops linked in, for the end-to-end tests (`tests/e2e.rs`): the real binary links no
+# op crate yet, so it has no op to run. Not part of the product. `required-features` keeps it out of `cargo install`
+# and `cargo build --workspace`; the gates (`cargo xtask check`) enable `test-fixtures` to build it for `tests/e2e.rs`.
+[[bin]]
+name = "omuzaki-fixture"
+path = "src/bin/omuzaki-fixture.rs"
+required-features = ["test-fixtures"]
+
+[features]
+# Builds `omuzaki-fixture` and compiles `tests/e2e.rs`, which runs it. Off by default so installs ship only `omuzaki`.
+test-fixtures = []
+
+[dependencies]
+clap.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
+tokio.workspace = true
+tracing-subscriber.workspace = true
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-doc = { path = "../omuzaki-doc" }
+omuzaki-doc-api = { path = "../omuzaki-doc-api" }
+omuzaki-mcp = { path = "../omuzaki-mcp" }
+omuzaki-ops = { path = "../omuzaki-ops" }
+omuzaki-io-gltf = { path = "../omuzaki-io-gltf" }
+omuzaki-io-ops = { path = "../omuzaki-io-ops" }
+omuzaki-io-vrm = { path = "../omuzaki-io-vrm" }
+omuzaki-ops-api = { path = "../omuzaki-ops-api" }
+omuzaki-stage = { path = "../omuzaki-stage" }
+
+[dev-dependencies]
+tempfile.workspace = true
+# The registration scan behind the link gate (`tests/registrations.rs`, ADR 0015).
+xtask = { path = "../../xtask" }
+
+[lints]
+workspace = true
+
+# Native only: the desktop command-line binary
+[package.metadata.omuzaki]
+wasm = false
+# Held only to link their registrations in (`omuzaki_cli::link`, ADR 0015); this crate's source calls none of their API.
+# A change to one of them runs just `tests/registrations.rs` here (`cargo xtask check --affected`), not every test.
+link_only = ["omuzaki-io-gltf", "omuzaki-io-ops", "omuzaki-io-vrm", "omuzaki-stage"]

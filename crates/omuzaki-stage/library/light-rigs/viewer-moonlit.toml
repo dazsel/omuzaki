@@ -1,0 +1,50 @@
+# viewer-moonlit: transcribed from the golden manifest (spec.rig of its cases). Lighting numbers only.
+# Three.js units (render-api D10): the numbers are copied, not rescaled.
+name = "viewer-moonlit"
+source = "js/viewer.js LIGHTS.moonlit (the candle point light at 25%)"
+exposure = 1.0
+background = "#121a2e"
+skin_floor = 0.45
+
+[hemisphere]
+sky = "#40507a"
+ground = "#14100e"
+intensity = 0.55
+
+[key]
+colour = "#9db6ff"
+intensity = 1.9
+position = [-1.8, 3.2, -2.2]
+
+[key.shadow]
+map_size = 2048
+left = -2.2
+right = 2.2
+top = 2.2
+bottom = -2.2
+near = 0.1
+far = 12.0
+bias = -0.0003
+normal_bias = 0.012
+
+[rim]
+colour = "#bcd0ff"
+intensity = 1.4
+position = [2.4, 1.6, -2.6]
+
+[fill]
+colour = "#6a78a8"
+intensity = 0.35
+position = [1.5, 1.0, 2.5]
+
+[point]
+# three.js decay is 2 (its default) in every rig. The contract has no decay field: the renderer falls off as three.js does at decay 2 (D10).
+colour = "#ffa25a"
+intensity = 1.21
+position = [1.45, 1.239, -1.15]
+distance = 7.0
+
+[bloom]
+strength = 0.32
+radius = 0.5
+threshold = 0.92

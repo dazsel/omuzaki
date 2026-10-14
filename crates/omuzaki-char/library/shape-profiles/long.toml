@@ -1,0 +1,27 @@
+# Face-shape preset `long` (CB-10). Head-local metres. The numbers are fitted to the targets in
+# tests/shape_presets.rs and already sit inside the plausible space of head/outline.rs, so the outline named here
+# is the outline that is built.
+id = "long"
+summary = "A long face with a stretched chin."
+
+[outline]
+half_width = 0.1570
+top = -0.0820
+height = 0.1267
+exponent = 1.650
+cheek_puff = 0.0000
+
+[outline.chin]
+y = -0.2087
+stretch_top = -0.0820
+min_ratio = 0.60
+
+[layout]
+eye_y = -0.0820
+eye_spacing = 0.0820
+eye_width = 0.0426
+brow_gap = 0.0800
+nose_y = -0.1225
+mouth_y = -0.1631
+blush_y = -0.1276
+blush_spacing = 0.0984

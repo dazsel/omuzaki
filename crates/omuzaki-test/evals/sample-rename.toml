@@ -1,0 +1,23 @@
+# A minimal task that lints clean; the loader tests and the `eval list` golden read it.
+id = "sample.rename-character"
+feature = "QG-03"
+title = "Rename the character"
+prompt = "Call her Mika instead of Aki."
+fixture = "empty-mini"
+scopes = ["read", "edit:character"]
+tags = ["starter"]
+version = 1
+
+[caps]
+turns = 12
+
+[[check]]
+id = "renamed"
+kind = "doc.equals"
+path = "characters/{main}/name"
+value = "Mika"
+
+[[check]]
+id = "only-the-name"
+kind = "doc.changed_only"
+paths = ["characters/{main}/name"]

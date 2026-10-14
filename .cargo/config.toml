@@ -1,0 +1,29 @@
+[alias]
+xtask = "run --quiet --package xtask --"
+
+# Linux uses the toolchain's bundled rust-lld (the default since Rust 1.90). mold 1.0.3 miscompiled whisper.cpp.
+
+# Windows builds cross-compile from WSL (native Windows testing comes at the end).
+# The unsuffixed MinGW compilers use the win32 thread model, whose GCC has no std::mutex/std::thread, so C++ dependencies
+# built by cmake (whisper.cpp via whisper-rs-sys) fail to compile. The -posix variants have them. The cc/cmake crates read
+# CC_/CXX_<target>. tools/ci/mingw-link.sh links the MinGW runtime statically (no extra DLLs); -ladvapi32 is for ggml's
+# registry calls, which whisper-rs-sys doesn't request on windows-gnu. Debian's MinGW-w64 8.0
+# headers also lack THREAD_POWER_THROTTLING_STATE, which ggml-cpu.c guards with `_WIN32_WINNT >= 0x0602`, so the C/C++
+# deps target Windows 7 (0x0601): that skips ggml's optional "don't throttle this thread" call (a Windows 11 tuning).
+[target.x86_64-pc-windows-gnu]
+linker = "tools/ci/mingw-link.sh"
+rustflags = ["-C", "link-arg=-ladvapi32"]
+
+[env]
+CC_x86_64_pc_windows_gnu = "x86_64-w64-mingw32-gcc-posix"
+CXX_x86_64_pc_windows_gnu = "x86_64-w64-mingw32-g++-posix"
+CMAKE_x86_64_pc_windows_gnu = { value = "tools/ci/cmake-mingw.sh", relative = true }
+CFLAGS_x86_64_pc_windows_gnu = "-D_WIN32_WINNT=0x0601"
+CXXFLAGS_x86_64_pc_windows_gnu = "-D_WIN32_WINNT=0x0601"
+
+# One codegen unit per crate on wasm, so each crate is one object file (ADR 0015). wasm-ld keeps only the object files
+# something references, and for wasm rustc adds nothing that references the `#[used]` statics self-registration relies
+# on: a registration in a module nobody calls into would vanish. With one object per crate, the `link()` call every App
+# makes keeps all of a crate's registrations. (`RUSTFLAGS` replaces this, so a wasm build that sets it must keep it.)
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "codegen-units=1"]

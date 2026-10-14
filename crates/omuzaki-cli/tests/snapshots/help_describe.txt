@@ -1,0 +1,17 @@
+test.describe
+  Describe the open project.
+
+  Reports the project's name, schema version and number of characters, scenes and shows.
+
+  kind   query
+  scope  read
+  undo   none
+
+Arguments:
+  none
+
+Run it:
+  omuzaki run test.describe --args '<json>'
+  omuzaki run test.describe --args '<json>' --dry-run
+
+The full JSON Schema: omuzaki help test.describe --json

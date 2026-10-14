@@ -1,0 +1,16 @@
+[package]
+name = "omuzaki-http-api"
+description = "Contract for outgoing HTTP: the HttpTransport trait, request, response and stream types, HttpError and the Cancel handle shared by connectors, net.http and the LLM providers (connectors D13)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

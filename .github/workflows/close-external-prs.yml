@@ -1,0 +1,39 @@
+# Omuzaki does not accept outside pull requests yet (see CONTRIBUTING.md). This closes them with a friendly note.
+#
+# Security: `pull_request_target` runs with the base repository's token, so this workflow never checks out or runs
+# code from the pull request. It only uses `gh` against the API, with the default token and the one permission it needs.
+name: Close external pull requests
+
+on:
+  pull_request_target:
+    types: [opened, reopened]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  close:
+    name: close
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Kept, never closed: authors who are owners, members or collaborators; bots (Dependabot and GitHub Apps, whose
+    # `user.type` is Bot and whose login ends in [bot]); and anyone listed in the repository variable
+    # PR_ALLOWED_AUTHORS (comma-separated logins), for maintainers whose organisation membership is private and so
+    # shows up as CONTRIBUTOR or NONE.
+    if: >-
+      ${{
+        github.event.pull_request.user.type != 'Bot'
+        && !endsWith(github.event.pull_request.user.login, '[bot]')
+        && !contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association)
+        && !contains(format(',{0},', vars.PR_ALLOWED_AUTHORS), format(',{0},', github.event.pull_request.user.login))
+      }}
+    steps:
+      - name: Comment and close
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh pr close "$PR_NUMBER" --repo "$REPO" --comment "Thank you for taking the time to contribute. Omuzaki is in early development and does not accept outside pull requests yet, so this one is being closed automatically. This is not a judgement of your change.
+
+          Bug reports are welcome in [Issues](https://github.com/$REPO/issues), and ideas and questions in [Discussions](https://github.com/$REPO/discussions). See CONTRIBUTING.md for the reasons, and for what may change later."

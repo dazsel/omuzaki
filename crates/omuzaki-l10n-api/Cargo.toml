@@ -1,0 +1,33 @@
+[package]
+name = "omuzaki-l10n-api"
+description = "Contract for localised text (SE-03, ADR 0023): Text and Arg, derived message ids, the messages! and register_locales! macros, locales and the pseudo-locale."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+fluent-bundle.workspace = true
+fluent-syntax.workspace = true
+intl-memoizer.workspace = true
+inventory.workspace = true
+schemars.workspace = true
+serde.workspace = true
+sys-locale.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+omuzaki-core = { path = "../omuzaki-core" }
+unic-langid.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+serde_json.workspace = true
+
+[[bench]]
+name = "catalog"
+harness = false
+
+[lints]
+workspace = true

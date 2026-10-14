@@ -1,0 +1,43 @@
+# heavy assets never live in git (see docs/decisions/0003-assets-outside-git.md)
+*.blend
+*.blend1
+*.vrm
+*.glb
+*.gltf
+*.fbx
+*.obj
+*.mp4
+*.mov
+*.webm
+*.wav
+*.mp3
+*.psd
+*.exr
+*.hdr
+*.task
+*.onnx
+*.safetensors
+*.ckpt
+*.zip
+*.tar*
+# build and tool output
+node_modules/
+target/
+shots/
+.ana/
+.ref/
+dist/
+__pycache__/
+*.pyc
+# local and secret
+.env
+.env.*
+*.local.json
+.claude/*.lock
+.claude/settings.local.json
+.DS_Store
+Thumbs.db
+
+
+# heavy assets (see assets/README.md); OMUZAKI_ASSETS overrides
+/assets-local/

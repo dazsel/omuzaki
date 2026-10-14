@@ -1,0 +1,10 @@
+# Hand shape "open". Angles are degrees; spread is positive toward the thumb side, flexion toward the palm
+# (see crates/omuzaki-anim/src/hands/mod.rs for the conventions).
+id = "open"
+summary = "An open hand with the fingers relaxed apart: no finger flexed, 10 degrees between neighbours, the thumb out."
+
+thumb  = { spread =  10.0, mcp =   0.0, pip =   0.0, dip =   0.0 }
+index  = { spread =  10.0, mcp =   0.0, pip =   0.0, dip =   0.0 }
+middle = { spread =   0.0, mcp =   0.0, pip =   0.0, dip =   0.0 }
+ring   = { spread = -10.0, mcp =   0.0, pip =   0.0, dip =   0.0 }
+little = { spread = -20.0, mcp =   0.0, pip =   0.0, dip =   0.0 }

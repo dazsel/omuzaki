@@ -1,0 +1,27 @@
+[package]
+name = "omuzaki-gltf"
+description = "Shared glTF 2.0 format library: document model, GLB and .gltf containers, accessors, and the document <-> omuzaki-io-api scene mapping with hooks for glTF-based formats (VRM)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Format libraries sit between the API crates and the implementations (crates/README.md, ADR 0011): importers and
+# exporters (omuzaki-io-gltf, omuzaki-io-vrm) depend on this crate; this crate depends on API crates only.
+[package.metadata.omuzaki]
+layer = "lib"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-io-api = { path = "../omuzaki-io-api" }
+
+[dev-dependencies]
+omuzaki-io-mock = { path = "../omuzaki-io-mock" }
+omuzaki-store-api = { path = "../omuzaki-store-api" }
+
+[lints]
+workspace = true

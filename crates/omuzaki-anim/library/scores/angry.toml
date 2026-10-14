@@ -1,0 +1,57 @@
+id = "angry"
+title = "Angry"
+tags = ["reaction", "angry"]
+version = "1.0.0"
+origin = "design target: low brows, pressed lips and a squint, 1.4 s"
+
+[score]
+duration = 1.4
+
+[[score.tracks]]
+channel = "browDownLeft"
+keys = [
+  { time = 0.0, value = 0.8, over = 0.15 },
+  { time = 1.0, value = 0.0, over = 0.4 },
+]
+
+[[score.tracks]]
+channel = "browDownRight"
+keys = [
+  { time = 0.0, value = 0.8, over = 0.15 },
+  { time = 1.0, value = 0.0, over = 0.4 },
+]
+
+[[score.tracks]]
+channel = "mouthPressLeft"
+keys = [
+  { time = 0.0, value = 0.5, over = 0.15 },
+  { time = 1.0, value = 0.0, over = 0.4 },
+]
+
+[[score.tracks]]
+channel = "mouthPressRight"
+keys = [
+  { time = 0.0, value = 0.5, over = 0.15 },
+  { time = 1.0, value = 0.0, over = 0.4 },
+]
+
+[[score.tracks]]
+channel = "eyeSquintLeft"
+keys = [
+  { time = 0.0, value = 0.3, over = 0.15 },
+  { time = 1.0, value = 0.0, over = 0.4 },
+]
+
+[[score.tracks]]
+channel = "eyeSquintRight"
+keys = [
+  { time = 0.0, value = 0.3, over = 0.15 },
+  { time = 1.0, value = 0.0, over = 0.4 },
+]
+
+[[score.tracks]]
+channel = "headPitch"
+keys = [
+  { time = 0.0, value = 0.04, over = 0.12 },
+  { time = 1.0, value = 0.0, over = 0.4 },
+]

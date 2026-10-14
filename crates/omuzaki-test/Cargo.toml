@@ -1,0 +1,57 @@
+[package]
+name = "omuzaki-test"
+description = "Test harness: tolerant golden-image comparison, per-branch golden manifests in git over a content-addressed image store, and the `omuzaki-test` CLI."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+blake3.workspace = true
+clap.workspace = true
+image.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+omuzaki-core = { path = "../omuzaki-core" }
+# The face parity harness (`face_parity`) paints with the real painter and rasterises on the CPU; an app crate may
+# depend on implementation crates.
+omuzaki-face = { path = "../omuzaki-face" }
+omuzaki-face-api = { path = "../omuzaki-face-api" }
+omuzaki-ops-api = { path = "../omuzaki-ops-api" }
+omuzaki-store-api = { path = "../omuzaki-store-api" }
+
+# The integration test `rig_template` is the one place the character implementation (`omuzaki-char`) and the rig
+# (`omuzaki-rig`) meet: implementations may not depend on each other, but this app crate may.
+[dev-dependencies]
+tempfile.workspace = true
+# Parity tests against the JS prototype live here because implementation crates may not depend on this App crate.
+# The parity tests (`tests/char_*_parity.rs`) check the character crate against the JS prototype's dumps: an impl crate
+# may not depend on this App crate, so they live here.
+omuzaki-anim = { path = "../omuzaki-anim" }
+omuzaki-anim-api = { path = "../omuzaki-anim-api" }
+omuzaki-char = { path = "../omuzaki-char" }
+omuzaki-char-api = { path = "../omuzaki-char-api" }
+omuzaki-render-api = { path = "../omuzaki-render-api" }
+omuzaki-rig = { path = "../omuzaki-rig" }
+# The CPU rasteriser's Chrome-canvas parity probes (tests/raster_probes.rs): an app crate may depend on impl crates.
+omuzaki-face = { path = "../omuzaki-face" }
+omuzaki-face-api = { path = "../omuzaki-face-api" }
+# The real-format round trip (tests/gather_real_gltf.rs): the gather of `omuzaki-io-ops` through omuzaki-io-gltf, which no
+# implementation crate may test against.
+omuzaki-char-mock = { path = "../omuzaki-char-mock" }
+omuzaki-io-api = { path = "../omuzaki-io-api" }
+omuzaki-io-gltf = { path = "../omuzaki-io-gltf" }
+omuzaki-io-mock = { path = "../omuzaki-io-mock" }
+omuzaki-io-ops = { path = "../omuzaki-io-ops" }
+
+[lints]
+workspace = true
+
+# Native only: test harness on the build machine
+[package.metadata.omuzaki]
+wasm = false

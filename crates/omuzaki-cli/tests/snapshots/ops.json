@@ -1,0 +1,20 @@
+[
+  {
+    "kind": "query",
+    "name": "test.describe",
+    "scope": "read",
+    "summary": "Describe the open project."
+  },
+  {
+    "kind": "job",
+    "name": "test.render_clip",
+    "scope": "render",
+    "summary": "Render a clip of a scene to a video file."
+  },
+  {
+    "kind": "edit",
+    "name": "test.set_profile_blend",
+    "scope": "edit:character",
+    "summary": "Set the blend between the base face and the face-shape profile."
+  }
+]

@@ -1,0 +1,13 @@
+# The `fake` runtime's identity model, shipped by the mock as `echo-fake` (see ../src/slot.rs).
+scale = 1.0
+bias = 0.0
+
+[[inputs]]
+name = "x"
+dtype = "f32"
+shape = ["any"]
+
+[[outputs]]
+name = "y"
+dtype = "f32"
+shape = ["any"]

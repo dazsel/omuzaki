@@ -1,0 +1,306 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080" role="img" aria-label="Build workspace at 1920 by 1080">
+<title>Build workspace at 1920 by 1080</title>
+<rect width="1920" height="1080" fill="#0E0D11"/>
+<rect x="0" y="0" width="1920" height="1080" rx="0" fill="#0E0D11"/>
+<rect x="0" y="0" width="1920" height="40" rx="0" fill="#1E1B23"/>
+<line x1="0" y1="40" x2="1920" y2="40" stroke="#3A3542" stroke-width="1"/>
+<rect x="8" y="6" width="28" height="28" rx="4" fill="#28242F"/>
+<text x="22" y="25" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="16" font-weight="500" fill="#EFE8D8" text-anchor="middle">≡</text>
+<text x="46" y="25" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="15" font-weight="700" fill="#EFE8D8" text-anchor="start">Omuzaki</text>
+<text x="104" y="25" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="400" fill="#B9B2C0" text-anchor="start">sample-show</text>
+<circle cx="204" cy="21" r="3.5" fill="#5FD7B8"/>
+<text x="214" y="25" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="12" font-weight="400" fill="#A09AAB" text-anchor="start">saved</text>
+<rect x="260" y="13" width="14" height="14" rx="3" fill="none" stroke="#A09AAB" stroke-width="1"/>
+<text x="280" y="25" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="500" fill="#B9B2C0" text-anchor="start">Concept</text>
+<rect x="346" y="5" width="80" height="30" rx="5" fill="#28242F"/>
+<rect x="356" y="33" width="60" height="2" rx="0" fill="#E6C36A"/>
+<rect x="356" y="13" width="14" height="14" rx="3" fill="none" stroke="#EFE8D8" stroke-width="1"/>
+<text x="376" y="25" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="600" fill="#EFE8D8" text-anchor="start">Build</text>
+<rect x="436" y="13" width="14" height="14" rx="3" fill="none" stroke="#A09AAB" stroke-width="1"/>
+<text x="456" y="25" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="500" fill="#B9B2C0" text-anchor="start">Face</text>
+<rect x="508" y="13" width="14" height="14" rx="3" fill="none" stroke="#A09AAB" stroke-width="1"/>
+<text x="528" y="25" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="500" fill="#B9B2C0" text-anchor="start">Rig</text>
+<rect x="572" y="13" width="14" height="14" rx="3" fill="none" stroke="#A09AAB" stroke-width="1"/>
+<text x="592" y="25" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="500" fill="#B9B2C0" text-anchor="start">Look</text>
+<line x1="637" y1="10" x2="637" y2="30" stroke="#3A3542" stroke-width="1"/>
+<rect x="654" y="13" width="14" height="14" rx="3" fill="none" stroke="#A09AAB" stroke-width="1"/>
+<text x="674" y="25" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="500" fill="#B9B2C0" text-anchor="start">Perform</text>
+<rect x="750" y="13" width="14" height="14" rx="3" fill="none" stroke="#A09AAB" stroke-width="1"/>
+<text x="770" y="25" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="500" fill="#B9B2C0" text-anchor="start">Stage</text>
+<rect x="830" y="13" width="14" height="14" rx="3" fill="none" stroke="#A09AAB" stroke-width="1"/>
+<text x="850" y="25" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="500" fill="#B9B2C0" text-anchor="start">Broadcast</text>
+<line x1="935" y1="10" x2="935" y2="30" stroke="#3A3542" stroke-width="1"/>
+<rect x="952" y="13" width="14" height="14" rx="3" fill="none" stroke="#A09AAB" stroke-width="1"/>
+<text x="972" y="25" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="500" fill="#B9B2C0" text-anchor="start">Shots</text>
+<line x1="1025" y1="10" x2="1025" y2="30" stroke="#3A3542" stroke-width="1"/>
+<rect x="1042" y="13" width="14" height="14" rx="3" fill="none" stroke="#A09AAB" stroke-width="1"/>
+<text x="1062" y="25" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="500" fill="#B9B2C0" text-anchor="start">Theatre</text>
+<circle cx="1120" cy="12" r="4" fill="#B9A2FF"/>
+<rect x="1812" y="6" width="96" height="28" rx="5" fill="none" stroke="#F25A72" stroke-width="1.5"/>
+<circle cx="1828" cy="20" r="4" fill="#F25A72"/>
+<text x="1872" y="25" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="600" fill="#F25A72" text-anchor="middle">Go Live</text>
+<rect x="1656" y="6" width="144" height="28" rx="14" fill="none" stroke="#B9A2FF" stroke-width="1.2"/>
+<circle cx="1672" cy="20" r="5" fill="#B9A2FF"/>
+<text x="1684" y="25" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="12.5" font-weight="500" fill="#EFE8D8" text-anchor="start">Designer  4/9</text>
+<rect x="1414" y="6" width="230" height="28" rx="5" fill="#16141A" stroke="#7D7589" stroke-width="1"/>
+<text x="1426" y="25" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="400" fill="#A09AAB" text-anchor="start">Search or run…</text>
+<text x="1632" y="25" font-family="JetBrains Mono, 'DejaVu Sans Mono', ui-monospace, monospace" font-size="12" font-weight="400" fill="#A09AAB" text-anchor="end">Ctrl K</text>
+<rect x="0" y="1056" width="1920" height="24" rx="0" fill="#1E1B23"/>
+<line x1="0" y1="1056" x2="1920" y2="1056" stroke="#3A3542" stroke-width="1"/>
+<text x="12" y="1072" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="12" font-weight="400" fill="#B9B2C0" text-anchor="start">Face profile · 1 selected</text>
+<text x="220" y="1072" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="12" font-weight="400" fill="#B9B2C0" text-anchor="start">Undo: Head › face profile width 0.62</text>
+<text x="483.6" y="1072" font-family="JetBrains Mono, 'DejaVu Sans Mono', ui-monospace, monospace" font-size="11" font-weight="400" fill="#A09AAB" text-anchor="start">Ctrl Z</text>
+<text x="553.6" y="1072" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="12" font-weight="400" fill="#A09AAB" text-anchor="start">Fence: Designer holds Head, Hair</text>
+<text x="1908" y="1072" font-family="JetBrains Mono, 'DejaVu Sans Mono', ui-monospace, monospace" font-size="12" font-weight="400" fill="#B9B2C0" text-anchor="end">60 fps  ·  GPU 0.9 ms  ·  38 ms  ·  $0.12 / $2.00</text>
+<rect x="4" y="44" width="296" height="560" rx="6" fill="#16141A" stroke="#3A3542" stroke-width="1"/>
+<line x1="4" y1="72" x2="300" y2="72" stroke="#3A3542" stroke-width="1"/>
+<text x="14" y="63" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="600" fill="#EFE8D8" text-anchor="start">Outliner</text>
+<text x="288" y="63" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="400" fill="#A09AAB" text-anchor="end">...</text>
+<rect x="12" y="80" width="280" height="28" rx="5" fill="#1E1B23" stroke="#7D7589" stroke-width="1"/>
+<text x="22" y="99" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="500" fill="#EFE8D8" text-anchor="start">Variant: game</text>
+<text x="278" y="99" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="12" font-weight="400" fill="#B9B2C0" text-anchor="end">▾</text>
+<rect x="12" y="114" width="280" height="26" rx="5" fill="#1E1B23" stroke="#7D7589" stroke-width="1"/>
+<text x="22" y="132" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="400" fill="#A09AAB" text-anchor="start">Filter parts…</text>
+<text x="16" y="165" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="11" font-weight="400" fill="#B9B2C0" text-anchor="start">▾</text>
+<rect x="30" y="155" width="12" height="12" rx="3" fill="none" stroke="#A09AAB" stroke-width="1"/>
+<text x="48" y="165.5" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="400" fill="#B9B2C0" text-anchor="start">Sample character</text>
+<ellipse cx="282" cy="161" rx="6" ry="4" fill="none" stroke="#A09AAB" stroke-width="1.3"/>
+<text x="32" y="191" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="11" font-weight="400" fill="#B9B2C0" text-anchor="start">▸</text>
+<rect x="46" y="181" width="12" height="12" rx="3" fill="none" stroke="#A09AAB" stroke-width="1"/>
+<text x="64" y="191.5" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="400" fill="#B9B2C0" text-anchor="start">Body</text>
+<ellipse cx="282" cy="187" rx="6" ry="4" fill="none" stroke="#A09AAB" stroke-width="1.3"/>
+<text x="32" y="217" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="11" font-weight="400" fill="#B9B2C0" text-anchor="start">▾</text>
+<rect x="46" y="207" width="12" height="12" rx="3" fill="none" stroke="#A09AAB" stroke-width="1"/>
+<text x="64" y="217.5" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="400" fill="#B9B2C0" text-anchor="start">Head</text>
+<rect x="278" y="211" width="10" height="8" rx="2" fill="none" stroke="#A09AAB" stroke-width="1"/>
+<ellipse cx="264" cy="213" rx="6" ry="4" fill="none" stroke="#A09AAB" stroke-width="1.3"/>
+<rect x="8" y="226" width="288" height="26" rx="4" fill="#342F3D"/>
+<rect x="8" y="229" width="2" height="20" rx="0" fill="#E6C36A"/>
+<rect x="62" y="233" width="12" height="12" rx="3" fill="none" stroke="#A09AAB" stroke-width="1"/>
+<text x="80" y="243.5" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="600" fill="#EFE8D8" text-anchor="start">Face profile</text>
+<ellipse cx="282" cy="239" rx="6" ry="4" fill="none" stroke="#A09AAB" stroke-width="1.3"/>
+<rect x="62" y="259" width="12" height="12" rx="3" fill="none" stroke="#A09AAB" stroke-width="1"/>
+<text x="80" y="269.5" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="400" fill="#B9B2C0" text-anchor="start">Eyes</text>
+<ellipse cx="282" cy="265" rx="6" ry="4" fill="none" stroke="#A09AAB" stroke-width="1.3"/>
+<rect x="62" y="285" width="12" height="12" rx="3" fill="none" stroke="#A09AAB" stroke-width="1"/>
+<text x="80" y="295.5" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="400" fill="#B9B2C0" text-anchor="start">Brows</text>
+<circle cx="285" cy="291" r="4" fill="#B9A2FF"/>
+<ellipse cx="264" cy="291" rx="6" ry="4" fill="none" stroke="#A09AAB" stroke-width="1.3"/>
+<rect x="62" y="311" width="12" height="12" rx="3" fill="none" stroke="#A09AAB" stroke-width="1"/>
+<text x="80" y="321.5" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="400" fill="#B9B2C0" text-anchor="start">Mouth</text>
+<ellipse cx="282" cy="317" rx="6" ry="4" fill="none" stroke="#A09AAB" stroke-width="1.3"/>
+<text x="32" y="347" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="11" font-weight="400" fill="#B9B2C0" text-anchor="start">▾</text>
+<rect x="46" y="337" width="12" height="12" rx="3" fill="none" stroke="#A09AAB" stroke-width="1"/>
+<text x="64" y="347.5" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="400" fill="#B9B2C0" text-anchor="start">Hair</text>
+<ellipse cx="282" cy="343" rx="6" ry="4" fill="none" stroke="#A09AAB" stroke-width="1.3"/>
+<rect x="62" y="363" width="12" height="12" rx="3" fill="none" stroke="#A09AAB" stroke-width="1"/>
+<text x="80" y="373.5" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="400" fill="#B9B2C0" text-anchor="start">Fringe</text>
+<path d="M282 364 l7 12 h-14 z" fill="none" stroke="#F58A1F" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+<circle cx="265" cy="369" r="4" fill="#B9A2FF"/>
+<ellipse cx="244" cy="369" rx="6" ry="4" fill="none" stroke="#A09AAB" stroke-width="1.3"/>
+<rect x="62" y="389" width="12" height="12" rx="3" fill="none" stroke="#A09AAB" stroke-width="1"/>
+<text x="80" y="399.5" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="400" fill="#B9B2C0" text-anchor="start">Side locks</text>
+<ellipse cx="282" cy="395" rx="6" ry="4" fill="none" stroke="#A09AAB" stroke-width="1.3"/>
+<rect x="62" y="415" width="12" height="12" rx="3" fill="none" stroke="#A09AAB" stroke-width="1"/>
+<text x="80" y="425.5" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="400" fill="#B9B2C0" text-anchor="start">Braid crown</text>
+<ellipse cx="282" cy="421" rx="6" ry="4" fill="none" stroke="#A09AAB" stroke-width="1.3"/>
+<text x="32" y="451" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="11" font-weight="400" fill="#B9B2C0" text-anchor="start">▸</text>
+<rect x="46" y="441" width="12" height="12" rx="3" fill="none" stroke="#A09AAB" stroke-width="1"/>
+<text x="64" y="451.5" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="400" fill="#B9B2C0" text-anchor="start">Outfit</text>
+<ellipse cx="282" cy="447" rx="6" ry="4" fill="none" stroke="#A09AAB" stroke-width="1.3"/>
+<text x="32" y="477" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="11" font-weight="400" fill="#B9B2C0" text-anchor="start">▸</text>
+<rect x="46" y="467" width="12" height="12" rx="3" fill="none" stroke="#A09AAB" stroke-width="1"/>
+<text x="64" y="477.5" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="400" fill="#B9B2C0" text-anchor="start">Accessories</text>
+<ellipse cx="282" cy="473" rx="6" ry="4" fill="none" stroke="#A09AAB" stroke-width="1.3"/>
+<rect x="4" y="608" width="296" height="444" rx="6" fill="#16141A" stroke="#3A3542" stroke-width="1"/>
+<line x1="4" y1="636" x2="300" y2="636" stroke="#3A3542" stroke-width="1"/>
+<text x="14" y="627" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="600" fill="#EFE8D8" text-anchor="start">Library</text>
+<rect x="14" y="634" width="58" height="2" rx="0" fill="#E6C36A"/>
+<text x="86" y="627" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="400" fill="#A09AAB" text-anchor="start">Assets</text>
+<text x="288" y="627" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="400" fill="#A09AAB" text-anchor="end">...</text>
+<rect x="12" y="644" width="280" height="26" rx="5" fill="#1E1B23" stroke="#7D7589" stroke-width="1"/>
+<text x="22" y="662" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="400" fill="#A09AAB" text-anchor="start">Search by text, tag or image…</text>
+<rect x="12" y="678" width="54" height="20" rx="10.0" fill="none" stroke="#E6C36A" stroke-width="1"/>
+<text x="39.0" y="692.0" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="12" font-weight="500" fill="#E6C36A" text-anchor="middle">Hair</text>
+<rect x="72" y="678" width="54" height="20" rx="10.0" fill="none" stroke="#B9B2C0" stroke-width="1"/>
+<text x="99.0" y="692.0" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="12" font-weight="500" fill="#B9B2C0" text-anchor="middle">Eyes</text>
+<rect x="132" y="678" width="70" height="20" rx="10.0" fill="none" stroke="#B9B2C0" stroke-width="1"/>
+<text x="167.0" y="692.0" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="12" font-weight="500" fill="#B9B2C0" text-anchor="middle">Outfit</text>
+<rect x="208" y="678" width="62" height="20" rx="10.0" fill="none" stroke="#B9B2C0" stroke-width="1"/>
+<text x="239.0" y="692.0" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="12" font-weight="500" fill="#B9B2C0" text-anchor="middle">Poses</text>
+<rect x="12" y="708.0" width="136" height="108.80000000000001" rx="6" fill="#1E1B23" stroke="#3A3542" stroke-width="1"/>
+<ellipse cx="80.0" cy="762.4" rx="29.92" ry="35.36" fill="#B88FE0" opacity="0.8"/>
+<text x="16" y="832.8" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="12" font-weight="400" fill="#B9B2C0" text-anchor="start">Hime cut</text>
+<rect x="156" y="708.0" width="136" height="108.80000000000001" rx="6" fill="#1E1B23" stroke="#3A3542" stroke-width="1"/>
+<ellipse cx="224.0" cy="762.4" rx="29.92" ry="35.36" fill="#B88FE0" opacity="0.8"/>
+<text x="160" y="832.8" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="12" font-weight="400" fill="#B9B2C0" text-anchor="start">Twintails</text>
+<rect x="12" y="842.8" width="136" height="108.80000000000001" rx="6" fill="#1E1B23" stroke="#3A3542" stroke-width="1"/>
+<ellipse cx="80.0" cy="897.1999999999999" rx="29.92" ry="35.36" fill="#B88FE0" opacity="0.8"/>
+<text x="16" y="967.5999999999999" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="12" font-weight="400" fill="#B9B2C0" text-anchor="start">Wolf cut</text>
+<rect x="156" y="842.8" width="136" height="108.80000000000001" rx="6" fill="#1E1B23" stroke="#3A3542" stroke-width="1"/>
+<ellipse cx="224.0" cy="897.1999999999999" rx="29.92" ry="35.36" fill="#B88FE0" opacity="0.8"/>
+<text x="160" y="967.5999999999999" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="12" font-weight="400" fill="#B9B2C0" text-anchor="start">Bob</text>
+<rect x="304" y="44" width="1252" height="1008" rx="6" fill="#0E0D11" stroke="#3A3542" stroke-width="1"/>
+<rect x="305" y="45" width="1250" height="1006" rx="5" fill="#241F2D" opacity="0.55"/>
+<rect x="312" y="52" width="1236" height="34" rx="6" fill="#16141A" stroke="#3A3542" stroke-width="1" opacity="0.94"/>
+<rect x="318" y="56" width="70" height="26" rx="4" fill="#342F3D"/>
+<text x="353.0" y="74" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="12.5" font-weight="500" fill="#EFE8D8" text-anchor="middle">Select</text>
+<text x="415.0" y="74" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="12.5" font-weight="500" fill="#B9B2C0" text-anchor="middle">Move</text>
+<text x="473.0" y="74" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="12.5" font-weight="500" fill="#B9B2C0" text-anchor="middle">Guide</text>
+<text x="527.0" y="74" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="12.5" font-weight="500" fill="#B9B2C0" text-anchor="middle">Pen</text>
+<line x1="554" y1="60" x2="554" y2="78" stroke="#3A3542" stroke-width="1"/>
+<text x="593.0" y="74" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="12.5" font-weight="500" fill="#B9B2C0" text-anchor="middle">Front</text>
+<rect x="624" y="56" width="30" height="26" rx="4" fill="#342F3D"/>
+<text x="639.0" y="74" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="12.5" font-weight="500" fill="#EFE8D8" text-anchor="middle">¾</text>
+<text x="681.0" y="74" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="12.5" font-weight="500" fill="#B9B2C0" text-anchor="middle">Side</text>
+<text x="735.0" y="74" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="12.5" font-weight="500" fill="#B9B2C0" text-anchor="middle">Back</text>
+<line x1="766" y1="60" x2="766" y2="78" stroke="#3A3542" stroke-width="1"/>
+<text x="819.0" y="74" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="12.5" font-weight="500" fill="#B9B2C0" text-anchor="middle">Compare ▾</text>
+<text x="913.0" y="74" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="12.5" font-weight="500" fill="#B9B2C0" text-anchor="middle">Underlay ▾</text>
+<text x="1011.0" y="74" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="12.5" font-weight="500" fill="#B9B2C0" text-anchor="middle">Overlays ▾</text>
+<text x="1538" y="74" font-family="JetBrains Mono, 'DejaVu Sans Mono', ui-monospace, monospace" font-size="12" font-weight="400" fill="#B9B2C0" text-anchor="end">Live preview · 60 fps</text>
+<ellipse cx="930.0" cy="484.0088888888889" rx="239.96666666666667" ry="303.9577777777778" fill="#B9A2FF" opacity="0.1"/>
+<ellipse cx="930.0" cy="787.9666666666667" rx="111.98444444444445" ry="15.997777777777777" fill="#000000" opacity="0.35"/>
+<path d="M846.8115555555555 643.9866666666667 q83.18844444444444 -41.59422222222222 166.37688888888889 0 l19.197333333333333 137.5808888888889 h-204.77155555555555 z" fill="#5C5470"/>
+<ellipse cx="930.0" cy="436.0155555555556" rx="188.77377777777778" ry="179.1751111111111" fill="#C9A7E8"/>
+<ellipse cx="930.0" cy="464.81155555555557" rx="153.57866666666666" ry="147.17955555555557" fill="#FBE3D1"/>
+<path d="M763.6231111111111 436.0155555555556 q166.37688888888889 -153.57866666666666 332.75377777777777 0 q-47.99333333333333 -15.997777777777777 -83.18844444444444 54.39244444444444 q-31.995555555555555 -47.99333333333333 -83.18844444444444 -12.798222222222222 q-47.99333333333333 47.99333333333333 -83.18844444444444 -41.59422222222222 q-35.19511111111111 38.394666666666666 -83.18844444444444 0.0 z" fill="#B88FE0"/>
+<ellipse cx="875.6075555555556" cy="477.60977777777777" rx="23.996666666666666" ry="33.59533333333333" fill="#2B2140"/>
+<circle cx="869.2084444444445" cy="464.81155555555557" r="7.998888888888889" fill="#FFFFFF"/>
+<circle cx="885.2062222222222" cy="487.20844444444447" r="3.9994444444444444" fill="#FFFFFF"/>
+<ellipse cx="984.3924444444444" cy="477.60977777777777" rx="23.996666666666666" ry="33.59533333333333" fill="#2B2140"/>
+<circle cx="977.9933333333333" cy="464.81155555555557" r="7.998888888888889" fill="#FFFFFF"/>
+<circle cx="993.9911111111111" cy="487.20844444444447" r="3.9994444444444444" fill="#FFFFFF"/>
+<path d="M914.0022222222223 525.6031111111112 q15.997777777777777 12.798222222222222 31.995555555555555 0" fill="none" stroke="#9A5A63" stroke-width="3.5195111111111115" stroke-linecap="round" stroke-linejoin="round"/>
+<ellipse cx="840.4124444444444" cy="506.40577777777776" rx="20.79711111111111" ry="11.198444444444444" fill="#F2A0A8" opacity="0.55"/>
+<ellipse cx="1019.5875555555556" cy="506.40577777777776" rx="20.79711111111111" ry="11.198444444444444" fill="#F2A0A8" opacity="0.55"/>
+<ellipse cx="930.0" cy="464.81155555555557" rx="159.97777777777776" ry="153.57866666666666" fill="none" stroke="#000000" stroke-width="4" opacity="0.7"/>
+<ellipse cx="930.0" cy="464.81155555555557" rx="159.97777777777776" ry="153.57866666666666" fill="none" stroke="#E6C36A" stroke-width="2"/>
+<rect x="760.4235555555556" y="276.03777777777776" width="339.15288888888887" height="111.98444444444445" rx="14" fill="#B9A2FF" stroke="#B9A2FF" stroke-width="2" stroke-dasharray="6 4" opacity="0.18"/>
+<rect x="765.0" y="978" width="330" height="30" rx="15" fill="#16141A" stroke="#B9A2FF" stroke-width="1.2" opacity="0.96"/>
+<circle cx="781.0" cy="993" r="5" fill="#B9A2FF"/>
+<text x="795.0" y="998" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="500" fill="#EFE8D8" text-anchor="start">Designer · Hair: adding fringe, 9 locks</text>
+<rect x="312" y="1016" width="1236" height="28" rx="6" fill="#16141A" stroke="#3A3542" stroke-width="1" opacity="0.94"/>
+<text x="322" y="1035" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="12.5" font-weight="500" fill="#B9B2C0" text-anchor="start">▴ Expressions</text>
+<text x="1538" y="1035" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="12.5" font-weight="400" fill="#B9B2C0" text-anchor="end">Follow agent  ◉    Fit    Home</text>
+<rect x="1560" y="44" width="356" height="640" rx="6" fill="#16141A" stroke="#3A3542" stroke-width="1"/>
+<line x1="1560" y1="72" x2="1916" y2="72" stroke="#3A3542" stroke-width="1"/>
+<text x="1570" y="63" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="600" fill="#EFE8D8" text-anchor="start">Inspector</text>
+<text x="1904" y="63" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="400" fill="#A09AAB" text-anchor="end">...</text>
+<text x="1572" y="94" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="15" font-weight="600" fill="#EFE8D8" text-anchor="start">Face profile</text>
+<text x="1572" y="112" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="12" font-weight="400" fill="#A09AAB" text-anchor="start">Head › Face</text>
+<circle cx="1773" cy="107" r="7" fill="#B9A2FF"/>
+<text x="1773" y="111" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="10" font-weight="700" fill="#17102B" text-anchor="middle">D</text>
+<text x="1786" y="111" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="12" font-weight="400" fill="#B9B2C0" text-anchor="start">Designer</text>
+<text x="1904" y="116" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="11" font-weight="400" fill="#A09AAB" text-anchor="end">2m ago</text>
+<rect x="1568" y="122" width="340" height="26" rx="5" fill="#1E1B23" stroke="#7D7589" stroke-width="1"/>
+<text x="1578" y="140" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="400" fill="#A09AAB" text-anchor="start">Search settings…</text>
+<text x="1570" y="174" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="12" font-weight="400" fill="#B9B2C0" text-anchor="start">▾</text>
+<text x="1588" y="174" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="600" fill="#EFE8D8" text-anchor="start">Essentials</text>
+<line x1="1568" y1="182" x2="1908" y2="182" stroke="#3A3542" stroke-width="1"/>
+<text x="1572" y="206" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="400" fill="#B9B2C0" text-anchor="start">Profile</text>
+<rect x="1688" y="187" width="158" height="28" rx="5" fill="#1E1B23" stroke="#7D7589" stroke-width="1"/>
+<text x="1708.0" y="205.5" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="500" fill="#B9B2C0" text-anchor="middle">U</text>
+<rect x="1730" y="189" width="48" height="24" rx="4" fill="#342F3D"/>
+<rect x="1736" y="210" width="36" height="2" rx="0" fill="#E6C36A"/>
+<text x="1754.0" y="205.5" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="600" fill="#EFE8D8" text-anchor="middle">Egg</text>
+<text x="1813.0" y="205.5" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="500" fill="#B9B2C0" text-anchor="middle">Mochi</text>
+<text x="1572" y="240" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="400" fill="#B9B2C0" text-anchor="start">Width</text>
+<circle cx="1565" cy="236" r="2.5" fill="#E6C36A"/>
+<rect x="1688" y="234" width="132" height="4" rx="2" fill="#342F3D"/>
+<rect x="1686" y="230" width="136" height="12" rx="6" fill="#B9A2FF" opacity="0.22"/>
+<rect x="1688" y="234" width="81.84" height="4" rx="2" fill="#B9A2FF"/>
+<line x1="1754.0" y1="230" x2="1754.0" y2="242" stroke="#A09AAB" stroke-width="1"/>
+<circle cx="1769.84" cy="236" r="7" fill="#EFE8D8" stroke="#16141A" stroke-width="2"/>
+<rect x="1828" y="225" width="52" height="22" rx="4" fill="#1E1B23" stroke="#7D7589" stroke-width="1"/>
+<text x="1874" y="240" font-family="JetBrains Mono, 'DejaVu Sans Mono', ui-monospace, monospace" font-size="12" font-weight="400" fill="#EFE8D8" text-anchor="end">0.62</text>
+<text x="1904" y="241" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="14" font-weight="400" fill="#B9B2C0" text-anchor="end">↺</text>
+<text x="1572" y="270" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="400" fill="#B9B2C0" text-anchor="start">Chin</text>
+<rect x="1688" y="264" width="132" height="4" rx="2" fill="#342F3D"/>
+<rect x="1688" y="264" width="40.92" height="4" rx="2" fill="#E6C36A"/>
+<line x1="1728.92" y1="260" x2="1728.92" y2="272" stroke="#A09AAB" stroke-width="1"/>
+<circle cx="1728.92" cy="266" r="7" fill="#EFE8D8" stroke="#16141A" stroke-width="2"/>
+<rect x="1828" y="255" width="52" height="22" rx="4" fill="#1E1B23" stroke="#7D7589" stroke-width="1"/>
+<text x="1874" y="270" font-family="JetBrains Mono, 'DejaVu Sans Mono', ui-monospace, monospace" font-size="12" font-weight="400" fill="#EFE8D8" text-anchor="end">0.31</text>
+<text x="1572" y="300" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="400" fill="#B9B2C0" text-anchor="start">Cheeks</text>
+<rect x="1688" y="294" width="132" height="4" rx="2" fill="#342F3D"/>
+<rect x="1688" y="294" width="66.0" height="4" rx="2" fill="#E6C36A"/>
+<line x1="1754.0" y1="290" x2="1754.0" y2="302" stroke="#A09AAB" stroke-width="1"/>
+<circle cx="1754.0" cy="296" r="7" fill="#EFE8D8" stroke="#16141A" stroke-width="2"/>
+<rect x="1828" y="285" width="52" height="22" rx="4" fill="#1E1B23" stroke="#7D7589" stroke-width="1"/>
+<text x="1874" y="300" font-family="JetBrains Mono, 'DejaVu Sans Mono', ui-monospace, monospace" font-size="12" font-weight="400" fill="#EFE8D8" text-anchor="end">0.50</text>
+<text x="1572" y="330" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="400" fill="#B9B2C0" text-anchor="start">Jaw taper</text>
+<rect x="1688" y="315" width="34" height="18" rx="9" fill="#E6C36A"/>
+<circle cx="1713" cy="324" r="6" fill="#1D1508"/>
+<path d="M1709 324 l3 3 l5 -6" fill="none" stroke="#1D1508" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="1732" y="329" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="12" font-weight="400" fill="#A09AAB" text-anchor="start">Follow profile</text>
+<text x="1570" y="364" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="12" font-weight="400" fill="#B9B2C0" text-anchor="start">▸</text>
+<text x="1588" y="364" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="600" fill="#EFE8D8" text-anchor="start">Advanced</text>
+<rect x="1842.8" y="350" width="61.2" height="20" rx="10.0" fill="none" stroke="#A09AAB" stroke-width="1"/>
+<text x="1873.3999999999999" y="364.0" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="12" font-weight="500" fill="#A09AAB" text-anchor="middle">6 more</text>
+<line x1="1568" y1="372" x2="1908" y2="372" stroke="#3A3542" stroke-width="1"/>
+<text x="1570" y="396" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="12" font-weight="400" fill="#B9B2C0" text-anchor="start">▾</text>
+<text x="1588" y="396" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="600" fill="#EFE8D8" text-anchor="start">Variants</text>
+<line x1="1568" y1="404" x2="1908" y2="404" stroke="#3A3542" stroke-width="1"/>
+<text x="1572" y="424" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="400" fill="#B9B2C0" text-anchor="start">game</text>
+<text x="1650" y="424" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="12" font-weight="400" fill="#A09AAB" text-anchor="start">base values</text>
+<text x="1572" y="446" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="400" fill="#B9B2C0" text-anchor="start">close-up</text>
+<text x="1650" y="446" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="12" font-weight="400" fill="#E6C36A" text-anchor="start">3 overrides</text>
+<rect x="1560" y="688" width="356" height="364" rx="6" fill="#16141A" stroke="#3A3542" stroke-width="1"/>
+<line x1="1560" y1="716" x2="1916" y2="716" stroke="#3A3542" stroke-width="1"/>
+<text x="1570" y="707" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="600" fill="#EFE8D8" text-anchor="start">Agent</text>
+<rect x="1570" y="714" width="42" height="2" rx="0" fill="#E6C36A"/>
+<text x="1626" y="707" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="400" fill="#A09AAB" text-anchor="start">History</text>
+<text x="1904" y="707" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="400" fill="#A09AAB" text-anchor="end">...</text>
+<circle cx="1577" cy="733" r="7" fill="#B9A2FF"/>
+<text x="1577" y="737" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="10" font-weight="700" fill="#17102B" text-anchor="middle">D</text>
+<text x="1590" y="737" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="12" font-weight="400" fill="#B9B2C0" text-anchor="start">Designer (Claude)</text>
+<rect x="1832" y="724" width="72" height="20" rx="10.0" fill="none" stroke="#B9A2FF" stroke-width="1"/>
+<text x="1868.0" y="738.0" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="12" font-weight="500" fill="#B9A2FF" text-anchor="middle">working</text>
+<text x="1570" y="760" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="500" fill="#EFE8D8" text-anchor="start">Plan: make the face more oval</text>
+<rect x="1570" y="772" width="336" height="6" rx="3" fill="#342F3D"/>
+<rect x="1570" y="772" width="149.33333333333334" height="6" rx="3" fill="#B9A2FF"/>
+<text x="1570" y="794" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="12" font-weight="400" fill="#A09AAB" text-anchor="start">Step 4 of 9 · Hair: adding fringe</text>
+<rect x="1570" y="804" width="70" height="28" rx="4" fill="#28242F" stroke="#7D7589" stroke-width="1"/>
+<text x="1605.0" y="822.5" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="500" fill="#EFE8D8" text-anchor="middle">Pause</text>
+<text x="1676.0" y="822.5" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="500" fill="#B9B2C0" text-anchor="middle">Stop</text>
+<text x="1904" y="823" font-family="JetBrains Mono, 'DejaVu Sans Mono', ui-monospace, monospace" font-size="12" font-weight="400" fill="#A09AAB" text-anchor="end">$0.12 / $2.00</text>
+<line x1="1568" y1="844" x2="1908" y2="844" stroke="#3A3542" stroke-width="1"/>
+<rect x="1568" y="852" width="340" height="52" rx="6" fill="#1E1B23" stroke="#3A3542" stroke-width="1"/>
+<rect x="1574" y="858" width="40" height="40" rx="4" fill="#28242F"/>
+<ellipse cx="1594" cy="878" rx="11" ry="13" fill="#FBE3D1"/>
+<text x="1622" y="874" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="500" fill="#EFE8D8" text-anchor="start">Head › face profile 0.62</text>
+<text x="1622" y="892" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="12" font-weight="400" fill="#A09AAB" text-anchor="start">likeness +0.03 · 4 s ago</text>
+<rect x="1568" y="910" width="340" height="52" rx="6" fill="#1E1B23" stroke="#3A3542" stroke-width="1"/>
+<rect x="1574" y="916" width="40" height="40" rx="4" fill="#28242F"/>
+<ellipse cx="1594" cy="936" rx="11" ry="13" fill="#FBE3D1"/>
+<text x="1622" y="932" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="500" fill="#EFE8D8" text-anchor="start">Hair › bangs 9 locks</text>
+<text x="1622" y="950" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="12" font-weight="400" fill="#A09AAB" text-anchor="start">likeness +0.03 · now</text>
+<rect x="1568" y="986" width="340" height="58" rx="6" fill="#1E1B23" stroke="#7D7589" stroke-width="1"/>
+<text x="1578" y="1008" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="400" fill="#A09AAB" text-anchor="start">Ask or tell…</text>
+<rect x="1574" y="1018" width="118.8" height="20" rx="10.0" fill="none" stroke="#B9B2C0" stroke-width="1"/>
+<text x="1633.4" y="1032.0" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="12" font-weight="500" fill="#B9B2C0" text-anchor="middle">@ Face profile</text>
+<rect x="1698.8" y="1018" width="97.2" height="20" rx="10.0" fill="none" stroke="#B9B2C0" stroke-width="1"/>
+<text x="1747.3999999999999" y="1032.0" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="12" font-weight="500" fill="#B9B2C0" text-anchor="middle">+ reference</text>
+<text x="1898" y="1034" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="14" font-weight="400" fill="#B9B2C0" text-anchor="end">⏎</text>
+<circle cx="1190" cy="20" r="13" fill="#E6C36A" stroke="#0E0D11" stroke-width="2"/>
+<text x="1190" y="25.5" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="15" font-weight="700" fill="#1D1508" text-anchor="middle">1</text>
+<circle cx="1425" cy="40" r="13" fill="#E6C36A" stroke="#0E0D11" stroke-width="2"/>
+<text x="1425" y="45.5" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="15" font-weight="700" fill="#1D1508" text-anchor="middle">2</text>
+<circle cx="1700" cy="40" r="13" fill="#E6C36A" stroke="#0E0D11" stroke-width="2"/>
+<text x="1700" y="45.5" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="15" font-weight="700" fill="#1D1508" text-anchor="middle">3</text>
+<circle cx="250" cy="57" r="13" fill="#E6C36A" stroke="#0E0D11" stroke-width="2"/>
+<text x="250" y="62.5" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="15" font-weight="700" fill="#1D1508" text-anchor="middle">4</text>
+<circle cx="328" cy="114" r="13" fill="#E6C36A" stroke="#0E0D11" stroke-width="2"/>
+<text x="328" y="119.5" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="15" font-weight="700" fill="#1D1508" text-anchor="middle">5</text>
+<circle cx="1860" cy="57" r="13" fill="#E6C36A" stroke="#0E0D11" stroke-width="2"/>
+<text x="1860" y="62.5" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="15" font-weight="700" fill="#1D1508" text-anchor="middle">6</text>
+<circle cx="1860" cy="702" r="13" fill="#E6C36A" stroke="#0E0D11" stroke-width="2"/>
+<text x="1860" y="707.5" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="15" font-weight="700" fill="#1D1508" text-anchor="middle">7</text>
+<circle cx="1100" cy="1068" r="13" fill="#E6C36A" stroke="#0E0D11" stroke-width="2"/>
+<text x="1100" y="1073.5" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="15" font-weight="700" fill="#1D1508" text-anchor="middle">8</text>
+<circle cx="250" cy="622" r="13" fill="#E6C36A" stroke="#0E0D11" stroke-width="2"/>
+<text x="250" y="627.5" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="15" font-weight="700" fill="#1D1508" text-anchor="middle">9</text>
+<circle cx="1180" cy="58" r="13" fill="#E6C36A" stroke="#0E0D11" stroke-width="2"/>
+<text x="1180" y="63.5" font-family="Instrument Sans, Inter, 'Segoe UI', system-ui, sans-serif" font-size="15" font-weight="700" fill="#1D1508" text-anchor="middle">10</text>
+</svg>

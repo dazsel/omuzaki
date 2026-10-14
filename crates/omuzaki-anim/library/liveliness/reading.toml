@@ -1,0 +1,24 @@
+name = "reading"
+summary = "A person reading text on a screen: few blinks, many small eye moves along the line."
+sources = [
+  "blinks: Bentivoglio et al. 1997, Movement Disorders 12(6): mean 4.5 per minute while reading; the band covers the spread between people.",
+  "saccades: Rayner 1998, Psychological Bulletin 124(3): reading makes 4 to 5 fixations a second with saccades of 7 to 9 letters (about 2 degrees); only the faster ones pass 100 degrees a second, so the band is an estimate, to be replaced by measurement from real takes (SH-01).",
+  "change_per_second: provisional; the head and face are nearly still while the eyes move. No published figure; to be replaced from real takes (SH-01).",
+  "longest_frozen_s: as for rest, relaxed because a reader's face is very still.",
+]
+
+[change_per_second]
+low = 0.005
+high = 0.3
+
+[blinks_per_minute]
+low = 1.0
+high = 10.0
+
+[saccades_per_second]
+low = 1.0
+high = 6.0
+
+[longest_frozen_s]
+low = 0.0
+high = 1.0

@@ -1,0 +1,39 @@
+[package]
+name = "omuzaki-io-ops"
+description = "The op layer for model import and export: io.list_formats, io.inspect, io.import, io.export, and the conversions between file types and the runtime character, face and animation types (spec v3 §6, §27)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Every dependency the io-ops tasks need is declared here, once, so the tasks that fill in the stub modules never edit
+# this file.
+[dependencies]
+image.workspace = true
+inventory.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+omuzaki-anim-api = { path = "../omuzaki-anim-api" }
+omuzaki-char-api = { path = "../omuzaki-char-api" }
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-doc-api = { path = "../omuzaki-doc-api" }
+omuzaki-face-api = { path = "../omuzaki-face-api" }
+omuzaki-io-api = { path = "../omuzaki-io-api" }
+omuzaki-ops-api = { path = "../omuzaki-ops-api" }
+omuzaki-render-api = { path = "../omuzaki-render-api" }
+omuzaki-store-api = { path = "../omuzaki-store-api" }
+
+[dev-dependencies]
+tempfile.workspace = true
+omuzaki-char-mock = { path = "../omuzaki-char-mock" }
+omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
+omuzaki-io-mock = { path = "../omuzaki-io-mock" }
+omuzaki-store-mock = { path = "../omuzaki-store-mock" }
+
+[lints]
+workspace = true

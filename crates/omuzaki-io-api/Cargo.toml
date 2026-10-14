@@ -1,0 +1,21 @@
+[package]
+name = "omuzaki-io-api"
+description = "Contract for glTF / VRM import and export: importer and exporter traits, the intermediate scene, VRM meta and provenance, perfect-sync baking and validation reports (spec v3 §7, §27)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+inventory.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-store-api = { path = "../omuzaki-store-api" }
+
+[lints]
+workspace = true

@@ -1,0 +1,52 @@
+rig = "viewer-studio"
+exposure = 0.9
+background = "#4a3b31"
+outline_light = 1.0
+skin_floor = 0.42
+
+[ambient]
+sky = "#f1eef8"
+ground = "#4a3e36"
+intensity = 0.75
+
+[bloom]
+strength = 0.32
+radius = 0.5
+threshold = 0.92
+
+[lights.key]
+kind = "directional"
+role = "key"
+colour = "#fff6ec"
+intensity = 1.7
+azimuth = 33.69
+elevation = 46.13
+shadow = true
+anchor = "subject"
+
+[lights.rim]
+kind = "directional"
+role = "rim"
+colour = "#dfe6ff"
+intensity = 0.8
+azimuth = -138.65
+elevation = 30.99
+anchor = "subject"
+
+[lights.fill]
+kind = "directional"
+role = "fill"
+colour = "#fff0e0"
+intensity = 0.45
+azimuth = -50.19
+elevation = 21.01
+anchor = "subject"
+
+[lights.candle]
+kind = "point"
+role = "practical"
+colour = "#ffb060"
+intensity = 5.187
+position = [1.501, 1.283, -1.19]
+range = 7.246
+anchor = "member:kiri"

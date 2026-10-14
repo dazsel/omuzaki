@@ -1,0 +1,22 @@
+[package]
+name = "omuzaki-io-vrm"
+description = "VRM 1.0 and 0.x importer and exporter (meta, humanoid, expressions, spring bones, constraints, MToon) against omuzaki-io-api (spec v3 §27 EX-01)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-gltf = { path = "../omuzaki-gltf" }
+omuzaki-io-api = { path = "../omuzaki-io-api" }
+
+[dev-dependencies]
+omuzaki-store-api = { path = "../omuzaki-store-api" }
+
+[lints]
+workspace = true

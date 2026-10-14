@@ -1,0 +1,222 @@
+//! Structured op errors: every refusal says what to fix (spec §6 "errors are structured and actionable").
+//! Agents act on these directly, so the code, field and hint matter as much as the message.
+
+use std::fmt;
+
+use omuzaki_doc_api::{DocPath, DocVersion};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+use crate::approval::{ApprovalId, Need};
+use crate::session::{EndReason, PauseReason};
+use crate::{Actor, Scope};
+
+/// Broad class of an op failure; stable, so agents and scripts can branch on it.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorCode {
+    /// The arguments are wrong (out of range, malformed).
+    Invalid,
+    /// A referenced thing doesn't exist.
+    NotFound,
+    /// The actor lacks the scope; it may be queued for approval.
+    Denied,
+    /// The document changed underneath; re-plan and retry.
+    Conflict,
+    /// Valid, but not supported here (platform, missing model or device). Retrying won't help: pick another approach.
+    Unsupported,
+    /// The op needs a service the app did not wire in (a renderer, the character builder). Unlike `Unsupported`, the
+    /// op itself is fine: report it to the user, or retry once the app provides the service.
+    Unavailable,
+    /// A bug in Omuzaki. Report it.
+    Internal,
+    /// Nothing ran: a person must act first (approve, pair, resume). Do not retry; the detail says what is awaited.
+    Waiting,
+    /// A session limit (rate or queue) was hit. Retry after the time in the detail.
+    Limited,
+}
+
+impl fmt::Display for ErrorCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            ErrorCode::Invalid => "invalid",
+            ErrorCode::NotFound => "not_found",
+            ErrorCode::Denied => "denied",
+            ErrorCode::Conflict => "conflict",
+            ErrorCode::Unsupported => "unsupported",
+            ErrorCode::Unavailable => "unavailable",
+            ErrorCode::Internal => "internal",
+            ErrorCode::Waiting => "waiting",
+            ErrorCode::Limited => "limited",
+        })
+    }
+}
+
+/// Why an op was refused or failed.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema, thiserror::Error)]
+#[error("{code}: {message}")]
+pub struct OpError {
+    /// The class of failure.
+    pub code: ErrorCode,
+    /// What went wrong, in a sentence.
+    pub message: String,
+    /// The argument at fault, when there is one (e.g. `blend`).
+    pub field: Option<String>,
+    /// How to fix it (e.g. "use a value between 0 and 1").
+    pub hint: Option<String>,
+    /// A machine-readable reason, when the code alone does not say enough (what is awaited, how long to wait). Absent
+    /// from the JSON when empty, so older readers and writers are unaffected. Boxed so that `Result<_, OpError>`
+    /// stays small (clippy's `result_large_err`); the JSON is the same as an unboxed [`ErrorDetail`]. Read it with
+    /// `error.detail.as_deref()`, set it with [`with_detail`](Self::with_detail).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<Box<ErrorDetail>>,
+}
+
+/// The structured reason behind an [`OpError`], for agents and UIs that branch on it. Set by the executor and by
+/// [`OpCtx::require_person`](crate::OpCtx::require_person); an op sets one only through the constructors below.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ErrorDetail {
+    /// The actor lacks this scope.
+    MissingScope {
+        /// The scope to grant.
+        scope: Scope,
+    },
+    /// The op needs a person to act or confirm. Not yet queued: the executor turns it into [`Queued`](Self::Queued)
+    /// when it can, and returns it as is when no approver is present.
+    NeedsPerson {
+        /// Why, shown to the person.
+        reason: String,
+    },
+    /// Only a person can do this, and confirming is not enough. Never queued.
+    PersonOnly {
+        /// Why, and where the person can do it.
+        reason: String,
+    },
+    /// Nothing ran; the request waits in the approval queue. Do not retry: wait for the resolution.
+    Queued {
+        /// The approval to wait for.
+        approval: ApprovalId,
+        /// What it waits for.
+        need: Need,
+    },
+    /// The session is paused.
+    Paused {
+        /// Who paused it.
+        by: Actor,
+        /// Why.
+        reason: PauseReason,
+    },
+    /// The session has ended.
+    Ended {
+        /// Why.
+        reason: EndReason,
+    },
+    /// An agent or plugin made a request without an open session.
+    NoSession,
+    /// A session limit was hit.
+    RetryAfter {
+        /// How long to wait, in seconds.
+        seconds: f32,
+        /// The limit that was hit and its value, for example `edits_per_minute=600`.
+        limit: String,
+    },
+    /// The document changed under the request's `base` version.
+    Changed {
+        /// The path that changed.
+        path: DocPath,
+        /// Who changed it last.
+        by: Actor,
+        /// The document version after that change.
+        version: DocVersion,
+    },
+}
+
+impl OpError {
+    fn new(code: ErrorCode, message: impl Into<String>) -> Self {
+        Self { code, message: message.into(), field: None, hint: None, detail: None }
+    }
+
+    /// Bad argument `field`.
+    pub fn invalid(field: impl Into<String>, message: impl Into<String>) -> Self {
+        Self { field: Some(field.into()), ..Self::new(ErrorCode::Invalid, message) }
+    }
+
+    /// Something referenced doesn't exist.
+    pub fn not_found(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::NotFound, message)
+    }
+
+    /// The actor lacks a scope.
+    pub fn denied(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::Denied, message)
+    }
+
+    /// The document changed underneath.
+    pub fn conflict(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::Conflict, message)
+    }
+
+    /// Not supported here.
+    pub fn unsupported(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::Unsupported, message)
+    }
+
+    /// The op needs the service named `service` (the trait's type name) and the app did not register it.
+    pub fn unavailable(service: &'static str) -> Self {
+        Self::new(ErrorCode::Unavailable, format!("the service `{service}` is not available"))
+            .hint("the app did not wire this service in: report it to the user, or retry once it is available")
+    }
+
+    /// The op needs a person to act or confirm (`Denied`, detail [`ErrorDetail::NeedsPerson`]). The executor queues
+    /// it for approval when a person can be asked.
+    pub fn needs_person(reason: impl Into<String>) -> Self {
+        let reason = reason.into();
+        Self::new(ErrorCode::Denied, format!("a person must confirm this: {reason}"))
+            .with_detail(ErrorDetail::NeedsPerson { reason })
+    }
+
+    /// Only a person can do this and nobody can confirm it for them (`Denied`, detail [`ErrorDetail::PersonOnly`]).
+    pub fn person_only(reason: impl Into<String>) -> Self {
+        let reason = reason.into();
+        Self::new(ErrorCode::Denied, format!("only a person can do this: {reason}"))
+            .hint("only a person can do this, in the Omuzaki window")
+            .with_detail(ErrorDetail::PersonOnly { reason })
+    }
+
+    /// A bug.
+    pub fn internal(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::Internal, message)
+    }
+
+    /// Adds a fix-it hint.
+    #[must_use]
+    pub fn hint(mut self, hint: impl Into<String>) -> Self {
+        self.hint = Some(hint.into());
+        self
+    }
+
+    /// Attaches the machine-readable reason.
+    #[must_use]
+    pub fn with_detail(mut self, detail: ErrorDetail) -> Self {
+        self.detail = Some(Box::new(detail));
+        self
+    }
+
+    /// The error for arguments that don't decode into the schema of op `op`. `field` is the argument at fault, or
+    /// `args` when the whole value is wrong. Its hint is the one [`is_decode_error`](Self::is_decode_error) recognises.
+    pub fn decode_failed(op: &str, field: impl Into<String>, reason: impl fmt::Display) -> Self {
+        Self::invalid(field, format!("arguments for {op} don't match its schema: {reason}"))
+            .hint(format!("{DECODE_HINT_START}{op} (MCP tools/list, or `omuzaki help {op}`)"))
+    }
+
+    /// Whether this is an argument-decode failure from [`decode_failed`](Self::decode_failed). Its hint names the CLI,
+    /// so a surface that talks to agents over MCP shows the expected call next to it instead.
+    pub fn is_decode_error(&self) -> bool {
+        self.code == ErrorCode::Invalid && self.hint.as_deref().is_some_and(|hint| hint.starts_with(DECODE_HINT_START))
+    }
+}
+
+/// Opens the hint of every argument-decode error. [`OpError::is_decode_error`] matches on it; the wording is free to
+/// change as long as both sides use this constant.
+const DECODE_HINT_START: &str = "ask for the schema of ";

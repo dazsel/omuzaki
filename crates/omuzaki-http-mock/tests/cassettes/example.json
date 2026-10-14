@@ -1,0 +1,55 @@
+{
+  "routes": [
+    {
+      "method": "POST",
+      "url": "https://api.example.com/v1/messages",
+      "body_contains": "\"stream\":false",
+      "replies": [
+        {
+          "status": 200,
+          "headers": {"content-type": "application/json"},
+          "body_json": {
+            "id": "msg_example_1",
+            "type": "message",
+            "content": [{"type": "text", "text": "Hello from the example cassette."}]
+          }
+        }
+      ]
+    },
+    {
+      "method": "POST",
+      "url": "https://api.example.com/v1/messages",
+      "body_contains": "\"stream\":true",
+      "replies": [
+        {
+          "status": 200,
+          "headers": {"content-type": "text/event-stream"},
+          "chunks": [
+            {"text": "event: start\ndata: {\"id\":\"msg_example_2\"}\n\n"},
+            {"text": "event: delta\ndata: {\"text\":\"Hi\"}\n\n"},
+            "stall"
+          ]
+        }
+      ]
+    },
+    {
+      "method": "GET",
+      "url": "https://api.example.com/v1/files/readme.txt",
+      "replies": [
+        {"status": 200, "headers": {"content-type": "text/plain"}, "body_text": "example file"},
+        {"status": 404, "headers": {"content-type": "text/plain"}, "body_text": "not found"}
+      ]
+    },
+    {
+      "method": "GET",
+      "url": "https://api.example.com/v1/files/blob.bin",
+      "replies": [
+        {
+          "status": 200,
+          "headers": {"content-type": "application/octet-stream"},
+          "body_base64": "AAECAw=="
+        }
+      ]
+    }
+  ]
+}

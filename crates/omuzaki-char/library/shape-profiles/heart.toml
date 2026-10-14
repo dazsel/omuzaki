@@ -1,0 +1,27 @@
+# Face-shape preset `heart` (CB-10). Head-local metres. The numbers are fitted to the targets in
+# tests/shape_presets.rs and already sit inside the plausible space of head/outline.rs, so the outline named here
+# is the outline that is built.
+id = "heart"
+summary = "Widest at the eye line, tapering to a soft chin point."
+
+[outline]
+half_width = 0.1679
+top = -0.0750
+height = 0.1337
+exponent = 1.600
+cheek_puff = 0.0100
+
+[outline.chin]
+y = -0.2087
+stretch_top = -0.0750
+min_ratio = 0.60
+
+[layout]
+eye_y = -0.0710
+eye_spacing = 0.0820
+eye_width = 0.0443
+brow_gap = 0.0800
+nose_y = -0.1123
+mouth_y = -0.1564
+blush_y = -0.1206
+blush_spacing = 0.0984
