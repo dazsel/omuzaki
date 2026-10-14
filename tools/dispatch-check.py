@@ -21,7 +21,7 @@ entry is a path or glob: backtick-quoted or bare, comma- or space-separated, one
 - total cap: `--total-cap` or more open PRs in total.
 - contract first: the fence names an `*-api` crate or `omuzaki-core` and another open PR touches that crate.
 
-Fail closed: `gh pr list` returns at most 100 files per PR, so a PR with more reads its full list from the REST API. If
+Fail closed: a fence entry that cannot be understood makes the task wait. `gh pr list` returns at most 100 files per PR, so a PR with more reads its full list from the REST API. If
 that list cannot be read, every task waits. If the `crates/` folder cannot be read, a task with a wildcard crate waits.
 
 Open PRs are listed in one call with a limit of PR_LIMIT. Reaching the limit means the list may be cut, so the script
@@ -52,6 +52,7 @@ CRATE_SEGMENT = re.compile(r"crates/([^/]+)(?:/|$)")
 WILDCARD_CRATE = re.compile(r"crates/[^/]*[*?\[]")
 CRATE_NAME = re.compile(r"[A-Za-z0-9_-]+")
 TRUNCATED_FILES = "cannot read the changed files of #{n}; waiting until they can be read"
+UNREADABLE_ENTRY = "cannot understand the fence entry {entry}; waiting until it is fixed"
 UNRESOLVED_WILDCARD = "cannot resolve {entry}: the crates/ folder could not be read"
 
 
@@ -207,30 +208,113 @@ def fence_section(body):
 
 
 def fence_entries(body):
-    """The fence's paths and globs. Each line contributes its backtick-quoted entries and its bare ones.
+    """The fence's paths and globs, and the entries that cannot be understood, as `(entries, bad)`.
 
-    A bare entry is cut at the first ':', ';' or '(' on its line, so a trailing note is not read as a path. Entries
-    without a slash or a dot are prose ("none") and are dropped.
+    Each line contributes its backtick-quoted entries and its bare ones. A bare entry is cut at the first ':', ';' or
+    '(' on its line, so a trailing note is not read as a path. A token is a path when it has a '/', a '.' or a glob
+    character, judged before any trailing slash is removed, so `tools/` stays; other tokens are prose ("none") and
+    are dropped. `bad` lists entries that fence_matches rejects; the caller must wait on them (fail closed).
     """
-    entries = []
+    entries, bad = [], []
     for line in fence_section(body):
         line = re.sub(r"^\s*[-*]\s+", "", line)
         quoted = re.findall(r"`([^`]+)`", line)
         bare = re.split(r"[:;(]", re.sub(r"`[^`]*`", " ", line), maxsplit=1)[0]
         for token in [t for span in quoted for t in split_entries(span)] + split_entries(bare):
-            for pattern in expand_braces(token.strip().strip("\"'`")):
-                pattern = pattern.strip().removeprefix("./").rstrip("/")
-                if ("/" in pattern or "." in pattern) and pattern not in entries:
+            token = token.strip().strip("\"'`")
+            if not re.search(r"[/.*?\[{}]", token):
+                continue
+            try:
+                patterns = expand_braces_checked(token)
+                for pattern in patterns:
+                    fence_matches(pattern, "x")  # validates the pattern
+            except ValueError:
+                if token not in bad:
+                    bad.append(token)
+                continue
+            for pattern in patterns:
+                pattern = pattern.removeprefix("./").rstrip("/")
+                if pattern not in entries:
                     entries.append(pattern)
-    return entries
+    return entries, bad
 
 
-def covers(entry, path):
-    """True when the path is the entry, matches its glob, or lies inside it as a folder."""
-    if fnmatch.fnmatchcase(path, entry):
-        return True
-    folder = entry.rstrip("*").rstrip("/")
-    return bool(folder) and path.startswith(folder + "/")
+def expand_braces_checked(pattern):
+    """expand_braces, but a stray '{' or '}' left over (unbalanced group) raises ValueError."""
+    expanded = expand_braces(pattern)
+    if any("{" in p or "}" in p for p in expanded):
+        raise ValueError(f"unbalanced braces in {pattern!r}")
+    return expanded
+
+
+def glob_regex(pattern):
+    """The regular expression for one brace-free glob, matched against a whole path. Raises ValueError if unreadable.
+
+    `**` crosses '/' (and `**/` may match no folder at all), `*` and `?` stay within one segment, `[...]` is one
+    character of a segment.
+    """
+    out, i = [], 0
+    while i < len(pattern):
+        char = pattern[i]
+        if pattern.startswith("**/", i):
+            out.append("(?:.*/)?")
+            i += 3
+        elif pattern.startswith("**", i):
+            out.append(".*")
+            i += 2
+        elif char == "*":
+            out.append("[^/]*")
+            i += 1
+        elif char == "?":
+            out.append("[^/]")
+            i += 1
+        elif char == "[":
+            end = pattern.find("]", i + 2)
+            if end < 0:
+                raise ValueError(f"unclosed [ in {pattern!r}")
+            body = pattern[i + 1:end]
+            negate = body[:1] in ("!", "^")
+            body = body[1:] if negate else body
+            if "/" in body or not body:
+                raise ValueError(f"unreadable [...] in {pattern!r}")
+            out.append("[" + ("^/" if negate else "") + re.sub(r"([\\\[\]])", r"\\\1", body) + "]")
+            i = end + 1
+        else:
+            out.append(re.escape(char))
+            i += 1
+    return re.compile("".join(out))
+
+
+def fence_matches(entry, path):
+    """True when the fence entry covers the changed path. Raises ValueError for an entry it cannot understand.
+
+    The rules, applied to each alternative after brace groups are expanded first (`a/{x,y}.rs` is `a/x.rs` or
+    `a/y.rs`):
+
+    - a literal file (`tools/x.py`) covers exactly that path;
+    - a literal folder (`tools` or `tools/`, trailing slash optional) covers every path inside it;
+    - `*` matches any characters within one path segment (never '/'), `?` one such character, `[abc]` one of them;
+    - `**` matches across segments, and `a/**/b` also matches `a/b`;
+    - every pattern, glob or literal, covers a path when it matches the path itself or ANY ancestor folder of the
+      path, so `crates/omuzaki-*/src/` covers `crates/omuzaki-ops/src/a.rs`.
+
+    A leading './' is ignored. Absolute paths, '..' segments, an empty entry, unbalanced braces or brackets raise
+    ValueError, and the caller treats that as a reason to wait.
+    """
+    alternatives = expand_braces_checked(entry.strip())
+    path = path.strip("/")
+    # The path itself, then each ancestor folder: a/b/c.rs -> a/b/c.rs, a/b, a.
+    parts = path.split("/")
+    candidates = ["/".join(parts[:n]) for n in range(len(parts), 0, -1)]
+    matched = False
+    for alternative in alternatives:
+        alternative = alternative.strip().removeprefix("./").rstrip("/")
+        if not alternative or alternative.startswith("/") or ".." in alternative.split("/") or "//" in alternative:
+            raise ValueError(f"unreadable fence entry {entry!r}")
+        regex = glob_regex(alternative)
+        if any(regex.fullmatch(c) for c in candidates):
+            matched = True
+    return matched
 
 
 def crate_of(path):
@@ -283,10 +367,11 @@ def check_issue(issue, prs, crate_cap, total_cap, native_blocked=frozenset(), na
     """
     number = issue["number"]
     body = issue.get("body") or ""
-    fence = fence_entries(body)
-    if not fence:
+    fence, bad = fence_entries(body)
+    if not fence and not bad:
         return ["no fence"]
-    reasons = [UNRESOLVED_WILDCARD.format(entry=e) for e in fence if WILDCARD_CRATE.match(e) and crate_names is None]
+    reasons = [UNREADABLE_ENTRY.format(entry=e) for e in bad]
+    reasons += [UNRESOLVED_WILDCARD.format(entry=e) for e in fence if WILDCARD_CRATE.match(e) and crate_names is None]
     blocked = blocked_by(body) | set(native_blocked)
     # Drafts don't count, and the task's own pull request (the one that closes it) is not a conflict with itself.
     others = [p for p in prs if not p["draft"] and number not in p["closes"]]
@@ -295,7 +380,7 @@ def check_issue(issue, prs, crate_cap, total_cap, native_blocked=frozenset(), na
     for pr in others:
         if pr["files"] is None:
             continue
-        hit = next((path for path in pr["files"] if any(covers(e, path) for e in fence)), None)
+        hit = next((path for path in pr["files"] if any(fence_matches(e, path) for e in fence)), None)
         if hit is None:
             continue
         # Chained: this task is blocked by the work (it closes a blocker), or this task blocks the work it closes.

@@ -289,6 +289,82 @@ J
 run 9009
 expect_line "wait #9009: contract first: omuzaki-ops-api has open PR(s) #621; a contract lands alone" "contract first: waits"
 
+# fence_matches: one table for every rule. Each row is entry, path, expected (True, False, or "error" for unreadable).
+python3 -I - "$CHECK" <<'P'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("dc", sys.argv[1])
+dc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(dc)
+T, F, E = True, False, "error"
+table = [
+    # literal file: exact path only
+    ("tools/x.py", "tools/x.py", T), ("tools/x.py", "tools/y.py", F), ("tools/x.py", "tools/x.py/z", T),
+    ("tools/x.py", "xtools/x.py", F), ("./tools/x.py", "tools/x.py", T), ("CLAUDE.md", "CLAUDE.md", T),
+    # literal directory, with and without trailing slash: every descendant, not siblings
+    ("tools", "tools/x.py", T), ("tools/", "tools/x.py", T), ("tools/", "tools/a/b/c.py", T),
+    ("tools/", "tools2/x.py", F), ("tools", "tool/x.py", F), ("tools/", "tools", T),
+    # * stays within one segment
+    ("tools/*.py", "tools/x.py", T), ("tools/*.py", "tools/a/x.py", F), ("tools/*", "tools/a/x.py", T),
+    ("crates/*-api/src", "crates/omuzaki-ops-api/src/lib.rs", T), ("crates/*-api/src", "crates/a/b-api/src/x", F),
+    ("a/?.rs", "a/b.rs", T), ("a/?.rs", "a/bc.rs", F), ("a/[ab].rs", "a/b.rs", T), ("a/[!ab].rs", "a/b.rs", F),
+    # ** crosses segments, and a/**/b may match a/b
+    ("crates/**/mod.rs", "crates/a/b/mod.rs", T), ("crates/**/mod.rs", "crates/mod.rs", T),
+    ("crates/**/mod.rs", "crates/a/b/lib.rs", F), ("docs/**", "docs/a/b.md", T), ("**/x.py", "tools/a/x.py", T),
+    # ancestor directories: globs and brace groups match descendants too
+    ("crates/omuzaki-*/src/", "crates/omuzaki-ops/src/a.rs", T), ("crates/omuzaki-*/src", "crates/omuzaki-ops/tests/a.rs", F),
+    ("crates/omuzaki-*", "crates/omuzaki-ops/src/a.rs", T), ("tools/*.d", "tools/x.d/deep/y", T),
+    ("crates/{a,b}/src/", "crates/b/src/x.rs", T), ("crates/{a,b}/src/", "crates/c/src/x.rs", F),
+    ("tools/{x,y}.py", "tools/y.py", T), ("crates/{a,{b,c}}/src", "crates/c/src/z.rs", T),
+    ("crates/omuzaki-{ops,io}-*/src/", "crates/omuzaki-io-ops/src/a.rs", T),
+    # unreadable entries fail closed
+    ("tools/{a,b", "tools/a", E), ("tools/a}", "tools/a", E), ("a/[bc", "a/b", E), ("/etc/passwd", "etc/passwd", E),
+    ("../x", "x", E), ("a//b", "a/b", E), ("", "a", E), ("/", "a", E),
+]
+bad = 0
+for entry, path, want in table:
+    try:
+        got = dc.fence_matches(entry, path)
+    except ValueError:
+        got = E
+    if got != want:
+        bad += 1
+        print(f"FAIL: fence_matches({entry!r}, {path!r}) = {got}, wanted {want}", file=sys.stderr)
+sys.exit(1 if bad else 0)
+P
+if [[ $? == 0 ]]; then pass "fence_matches: every rule"; else fail "fence_matches table"; fi
+
+# regression: `Fence: tools/, CLAUDE.md` keeps the top-level folder, so a PR in tools/ blocks.
+scenario topdir
+issue 9020 <<'B'
+**Fence:** tools/, CLAUDE.md
+B
+cat >"$FX/prs.json" <<'J'
+[{"number":641,"headRefName":"cloud/641","isDraft":false,"createdAt":"2026-10-09T10:00:00Z","files":[{"path":"tools/x.py"}],"body":""}]
+J
+run 9020
+expect_line "wait #9020: overlap with #641 (tools/x.py)" "top-level folder entry is kept"
+
+# regression: a glob folder covers its descendants.
+scenario globdir
+issue 9021 <<'B'
+**Fence:** `crates/omuzaki-*/src/`
+B
+cat >"$FX/prs.json" <<'J'
+[{"number":642,"headRefName":"cloud/642","isDraft":false,"createdAt":"2026-10-09T10:00:00Z","files":[{"path":"crates/omuzaki-ops/src/a.rs"}],"body":""}]
+J
+echo '[{"name":"omuzaki-ops","type":"dir"}]' >"$FX/crates.json"
+run 9021
+if grep -q "overlap with #642 (crates/omuzaki-ops/src/a.rs)" <<<"$out"; then pass "glob folder covers descendants"; else fail "glob folder: $out"; fi
+
+# fail closed: an entry that cannot be understood waits, even beside a good one.
+scenario unreadable
+issue 9022 <<'B'
+**Fence:** `tools/x.py`, `crates/{a,b/src`
+B
+echo '[]' >"$FX/prs.json"
+run 9022
+if grep -q "^wait #9022: cannot understand the fence entry crates/{a,b/src" <<<"$out"; then pass "unreadable entry waits"; else fail "unreadable entry: $out"; fi
+
 # report: lanes, crates and drafts, oldest first.
 scenario report
 cat >"$FX/prs.json" <<'J'
