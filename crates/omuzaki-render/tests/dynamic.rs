@@ -84,22 +84,31 @@ fn a_bad_update_is_an_error_and_leaves_the_mesh_as_it_was() {
     let dynamic = r.create_mesh_with(&mesh, &DYNAMIC).unwrap();
     let before = render(&mut r, dynamic, material);
     let (positions, normals) = mesh_vertices(&mesh);
+    // After every refused update the original handle must still draw exactly as it did.
+    let unchanged = |r: &mut WgpuRenderer, what: &str| {
+        assert_eq!(render(r, dynamic, material).rgba8, before.rgba8, "{what}: the refused update changed the mesh");
+    };
 
     let short = r.update_vertices(dynamic, &positions[1..], &normals);
     assert!(matches!(short, Err(RenderError::Invalid { .. })), "{short:?}");
+    unchanged(&mut r, "short positions");
     let mut nan = positions.clone();
     nan[3].y = f32::NAN;
     let non_finite = r.update_vertices(dynamic, &nan, &normals);
     assert!(matches!(non_finite, Err(RenderError::Invalid { .. })), "{non_finite:?}");
+    unchanged(&mut r, "non-finite position");
+    let mut bad_normals = normals.clone();
+    bad_normals[2].x = f32::INFINITY;
+    let non_finite_normal = r.update_vertices(dynamic, &positions, &bad_normals);
+    assert!(matches!(non_finite_normal, Err(RenderError::Invalid { .. })), "{non_finite_normal:?}");
+    unchanged(&mut r, "non-finite normal");
     let fixed = r.create_mesh(&mesh).unwrap();
     let on_static = r.update_vertices(fixed, &positions, &normals);
     assert!(matches!(on_static, Err(RenderError::Invalid { .. })), "{on_static:?}");
+    unchanged(&mut r, "update of a static mesh");
     r.release(dynamic.into()).unwrap();
     let released = r.update_vertices(dynamic, &positions, &normals);
     assert!(matches!(released, Err(RenderError::UnknownHandle { .. })), "{released:?}");
-
-    let again = r.create_mesh_with(&mesh, &DYNAMIC).unwrap();
-    assert_eq!(render(&mut r, again, material).rgba8, before.rgba8);
 }
 
 #[test]
