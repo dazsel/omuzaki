@@ -92,13 +92,18 @@ fn allocations_in<R>(f: impl FnOnce() -> R) -> (R, u64) {
     (result, COUNT.with(Cell::get))
 }
 
-/// Runs `f` with counting paused on this thread.
+/// Runs `f` with counting paused on this thread: the renderer's and the painter's own work is theirs, not the stage's.
 fn uncounted<R>(f: impl FnOnce() -> R) -> R {
     let was = ACTIVE.with(Cell::get);
     ACTIVE.with(|active| active.set(false));
     let result = f();
     ACTIVE.with(|active| active.set(was));
     result
+}
+
+/// [`uncounted`] if `skip`: lets one test count the stage's allocations apart from the renderer's.
+fn quiet<R>(skip: bool, f: impl FnOnce() -> R) -> R {
+    if skip { uncounted(f) } else { f() }
 }
 
 /// The recording renderer with the counters this task's acceptance reads, and a switch that makes painting fail.
@@ -115,6 +120,8 @@ struct Spy {
     fail_update_call: Option<u32>,
     /// Makes the next `release` call fail (the resource stays), then resets.
     fail_next_release: bool,
+    /// Leaves the renderer's own allocations out of [`allocations_in`] (the painter's always are).
+    quiet: bool,
 }
 
 impl Spy {
@@ -128,6 +135,7 @@ impl Spy {
             update_calls: 0,
             fail_update_call: None,
             fail_next_release: false,
+            quiet: false,
         }
     }
 }
@@ -141,11 +149,11 @@ impl Renderer for Spy {
     }
     fn create_mesh(&mut self, mesh: &MeshData) -> Result<MeshId, RenderError> {
         self.mesh_creates += 1;
-        self.inner.create_mesh(mesh)
+        quiet(self.quiet, || self.inner.create_mesh(mesh))
     }
     fn create_mesh_with(&mut self, mesh: &MeshData, options: &MeshOptions) -> Result<MeshId, RenderError> {
         self.mesh_creates += 1;
-        self.inner.create_mesh_with(mesh, options)
+        quiet(self.quiet, || self.inner.create_mesh_with(mesh, options))
     }
     fn update_vertices(&mut self, mesh: MeshId, p: &[Vec3], n: &[Vec3]) -> Result<(), RenderError> {
         self.update_calls += 1;
@@ -153,10 +161,10 @@ impl Renderer for Spy {
             self.fail_update_call = None;
             return Err(RenderError::invalid("update_vertices", "the upload was told to fail once"));
         }
-        self.inner.update_vertices(mesh, p, n)
+        quiet(self.quiet, || self.inner.update_vertices(mesh, p, n))
     }
     fn create_texture(&mut self, desc: &TextureDesc, rgba: Option<&[u8]>) -> Result<TextureId, RenderError> {
-        self.inner.create_texture(desc, rgba)
+        quiet(self.quiet, || self.inner.create_texture(desc, rgba))
     }
     fn paint_texture(&mut self, texture: TextureId, painter: &mut dyn Painter) -> Result<(), RenderError> {
         self.paints.push(texture);
@@ -167,29 +175,29 @@ impl Renderer for Spy {
         uncounted(|| self.inner.paint_texture(texture, painter))
     }
     fn create_material(&mut self, material: &Material) -> Result<MaterialId, RenderError> {
-        self.inner.create_material(material)
+        quiet(self.quiet, || self.inner.create_material(material))
     }
     fn update_material(&mut self, id: MaterialId, material: &Material) -> Result<(), RenderError> {
         self.material_updates += 1;
-        self.inner.update_material(id, material)
+        quiet(self.quiet, || self.inner.update_material(id, material))
     }
     fn create_target(&mut self, desc: &TargetDesc) -> Result<TargetId, RenderError> {
-        self.inner.create_target(desc)
+        quiet(self.quiet, || self.inner.create_target(desc))
     }
     fn resize_target(&mut self, target: TargetId, size: UVec2) -> Result<(), RenderError> {
-        self.inner.resize_target(target, size)
+        quiet(self.quiet, || self.inner.resize_target(target, size))
     }
     fn release(&mut self, resource: ResourceRef) -> Result<(), RenderError> {
         if std::mem::take(&mut self.fail_next_release) {
             return Err(RenderError::invalid("release", "the release was told to fail once"));
         }
-        self.inner.release(resource)
+        quiet(self.quiet, || self.inner.release(resource))
     }
     fn render(&mut self, target: TargetId, scene: &Scene, quality: &Quality) -> Result<FrameReport, RenderError> {
-        self.inner.render(target, scene, quality)
+        quiet(self.quiet, || self.inner.render(target, scene, quality))
     }
     fn read_target(&mut self, target: TargetId) -> Result<Image, RenderError> {
-        self.inner.read_target(target)
+        quiet(self.quiet, || self.inner.read_target(target))
     }
 }
 
@@ -599,15 +607,17 @@ fn tick_allocates_nothing_across_a_variant_switch() {
     stage.service_variants(&mut renderer, &input).expect("the switch is built and staged");
     assert_eq!(stage.built().variant, Some(id("game")), "staged, not yet swapped");
 
-    let (result, allocations) = allocations_in(|| {
-        for _ in 0..3 {
-            stage.tick(&mut renderer, &input)?;
-        }
-        Ok::<(), StageError>(())
-    });
-    result.expect("frames");
+    // The swapping tick, then two more: the new character's first frames must not allocate either.
+    renderer.quiet = true;
+    let mut per_tick = Vec::new();
+    for _ in 0..3 {
+        let (result, allocations) = allocations_in(|| stage.tick(&mut renderer, &input));
+        result.expect("frame");
+        per_tick.push(allocations);
+    }
+    let allocations: u64 = per_tick.iter().sum();
     assert_eq!(stage.built().variant, Some(id("close-up")), "the first of these ticks swapped the variant in");
-    assert_eq!(allocations, 0, "the swapping tick and two after it allocated {allocations} times");
+    assert_eq!(allocations, 0, "the swapping tick and two after it allocated {allocations} times: {per_tick:?}");
     stage.service_variants(&mut renderer, &input).expect("the retired character is released");
     stage.release(&mut renderer).expect("released");
 }

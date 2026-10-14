@@ -634,12 +634,13 @@ impl Stage {
             Some(next) if rig.bound.as_ref().is_some_and(|live| live.projection == next.projection) => {
                 NextBound::Keep(Box::new(next))
             }
-            Some(Resolved { profile, projection, head }) => NextBound::Fresh(Box::new(Bound {
-                system: (rig.factory)(&projection, self.character.face_px_per_m()),
-                profile,
-                projection,
-                head,
-            })),
+            Some(Resolved { profile, projection, head }) => {
+                let mut system = (rig.factory)(&projection, self.character.face_px_per_m());
+                // The first update of a face system sets up its scratch; do it here so the swap tick's update does not.
+                let view = FaceView { highlight_shift: Vec2::ZERO };
+                system.update(&input.channels, &profile, tick.time, view).map_err(face_error)?;
+                NextBound::Fresh(Box::new(Bound { system, profile, projection, head }))
+            }
         };
         let prepared = self.character.prepare_sync(renderer, &self.built, &new)?;
         let frames = DynamicMeshes::new(&new, &prepared).and_then(|dynamic| {
@@ -653,7 +654,8 @@ impl Stage {
                 return Err(error);
             }
         };
-        let mut fresh = [false; FaceLayerId::COUNT];
+        // A new face system counts every layer's picture as shown (its warm-up update above), so all of them are owed a paint.
+        let mut fresh = [matches!(bound, NextBound::Fresh(_)); FaceLayerId::COUNT];
         for layer in prepared.fresh_face_layers(&self.character) {
             fresh[layer as usize] = true;
         }
