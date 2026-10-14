@@ -1,0 +1,21 @@
+[package]
+name = "omuzaki-git-api"
+description = "Contract for the person's own git: the Git trait, Cancel, CancelFlag, NeverCancel, commit and status types, errors and shared timeouts (VC-04; design in docs/design/git.md; ADR 0045)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+schemars.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+omuzaki-core = { path = "../omuzaki-core" }
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true
