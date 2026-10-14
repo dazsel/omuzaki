@@ -69,11 +69,13 @@ impl Hand {
     }
 }
 
-/// Whether a quaternion can be normalised and inverted: every component finite, and not (nearly) zero. A zero quaternion
-/// has no direction, and normalising or inverting it produces NaNs that would reach the pose.
-fn is_rotation(q: Quat) -> bool {
-    const MIN_LENGTH_SQUARED: f32 = 1e-12;
-    q.is_finite() && q.length_squared() > MIN_LENGTH_SQUARED
+/// `q` normalised, if that is a usable rotation: the result is finite and within `1e-4` of unit length. Judged on the
+/// result, not the input, because an input can be finite yet overflow (`1e20`) or underflow (`1e-30`) when squared, and
+/// normalising it then gives NaNs or zero, which would reach the pose.
+fn unit_rotation(q: Quat) -> Option<Quat> {
+    const TOLERANCE: f32 = 1e-4;
+    let unit = q.normalize();
+    (unit.is_finite() && (unit.length() - 1.0).abs() <= TOLERANCE).then_some(unit)
 }
 
 /// The inverse of a rigid transform.
@@ -111,24 +113,29 @@ pub struct HandTarget {
 
 impl HandTarget {
     /// Solves the arm and turns the hand so the palm lands on the frame. Returns `false`, leaving the pose alone, if the
-    /// skeleton lacks the arm bones, any field is not finite, or either rotation is zero (see [`is_rotation`]).
+    /// skeleton lacks the arm bones, any field is not finite, or either rotation does not normalise to a unit
+    /// quaternion (see [`unit_rotation`]).
     ///
     /// The position error is that of the two-bone solve (inside 98% of the reach, under half a millimetre); an
     /// out-of-reach frame is approached with a straight arm. The angle is exact at full weight.
     pub fn solve(&self, skeleton: &Skeleton, pose: &mut Pose) -> bool {
         let Some([_, _, hand]) = self.hand.ids(skeleton) else { return false };
         let ok = self.frame.translation.is_finite()
-            && is_rotation(self.frame.rotation)
             && self.palm.translation.is_finite()
-            && is_rotation(self.palm.rotation)
             && self.pole.is_finite()
             && self.weight.is_finite();
+        let (Some(frame_rotation), Some(palm_rotation)) =
+            (unit_rotation(self.frame.rotation), unit_rotation(self.palm.rotation))
+        else {
+            return false;
+        };
         if !ok {
             return false;
         }
-        let frame = Transform { translation: self.frame.translation, rotation: self.frame.rotation.normalize() };
+        let frame = Transform { translation: self.frame.translation, rotation: frame_rotation };
+        let palm = Transform { translation: self.palm.translation, rotation: palm_rotation };
         // The hand bone's world transform that puts the palm on the frame.
-        let wanted = frame * inverse(self.palm);
+        let wanted = frame * inverse(palm);
         let limb = Some(Limb { target: wanted.translation, pole: self.pole, weight: self.weight });
         let mut goals = IkGoals::NONE;
         match self.hand {
