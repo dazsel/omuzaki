@@ -127,6 +127,25 @@ all of them (with defaults, so implementations keep compiling), and it merges be
   generated-link check and the existing link gate. The compiler itself stops other crates from writing struct literals
   of a `#[non_exhaustive]` contract.
 
+## How it stays this way
+
+The structure decays one convenient edit at a time, so keeping it is enforced, not remembered:
+
+1. **Each step ships its lint, and CI fails on a regression:** `lint-mods`, `lint-reexports`, the `registers` flag
+   check, the per-area rule in `lint-deps`, no crate table in `crates/README.md`, one licence file per dependency. A
+   change that brings an old pattern back can't merge.
+2. **Reviews check the architecture.** The automated review flags, as blocking, a new central list, a new field on a
+   shared contract struct or variant on a contract enum that other crates must follow, a new closed enum in a contract
+   for something features extend, a new flat re-export list, an implementation-to-implementation dependency, a
+   cross-crate test in a shared test crate, and a hand-edited generated file, unless the issue or a maintainer ruling
+   approves it.
+3. **Hub files need the architect's sign-off.** A short, maintained list of hub patterns (contract crates, crate-root
+   module lists, the CI workflows, decision records, the agent instructions) gets the same rule as contract crates: the
+   merge queue won't take a pull request touching them without `director-approved`.
+4. **Collisions are measured.** The tracker lists the files changed by the most merged pull requests over 7 days and
+   the files most open pull requests touch. A file that isn't a known hub but crosses 5 merges a week, or 3 open pull
+   requests at once, is a new hub forming; it gets a restructure task before it starts costing rebases.
+
 ## Order of work (each lands alone)
 
 1. `omuzaki-embed::modules` and `lint-mods`; convert `omuzaki-anim`, `omuzaki-stage` and the ops folders. (Sonnet, then
