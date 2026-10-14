@@ -145,6 +145,7 @@ mod access;
 mod builtin;
 mod catalog;
 mod changes;
+mod connection;
 mod describe;
 mod error;
 mod events;
@@ -163,9 +164,13 @@ mod signature;
 mod suggest;
 
 pub use access::{AccessToken, RECORD_VERSION, TokenId, TokenRecord};
+pub use connection::ConnectionService;
 pub use error::ServerError;
 pub use http::{HttpOptions, HttpServer};
 pub use prompts::{PromptArg, PromptDef};
 pub use resources::ResourceProvider;
 pub use server::{McpOptions, McpServer};
 pub use session::Session;
+
+// This crate registers ops (`agent.connection`), so the app that calls it links them in (ADR 0015).
+omuzaki_core::define_link!();

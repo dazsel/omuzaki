@@ -8,8 +8,10 @@ use rmcp::ServiceExt;
 use rmcp::model::Tool;
 use rmcp::service::RoleServer;
 use rmcp::transport::IntoTransport;
+use serde_json::Value;
 
 use crate::catalog::Catalog;
+use crate::connection::Connections;
 use crate::describe::{Guidance, instructions};
 use crate::error::ServerError;
 use crate::events::EventHub;
@@ -66,6 +68,7 @@ pub(crate) struct Shared {
     pub hub: Arc<EventHub>,
     pub providers: Providers,
     pub prompts: Prompts,
+    pub connections: Connections,
     next_session: AtomicU64,
 }
 
@@ -114,6 +117,7 @@ impl McpServer {
             hub,
             providers: Providers::new(&options.providers),
             prompts: Prompts::new(&options.prompts),
+            connections: Connections::default(),
             next_session: AtomicU64::new(1),
         };
         Ok(Self { shared: Arc::new(shared), view: Arc::new(view) })
@@ -146,6 +150,13 @@ impl McpServer {
     /// The grants this server's sessions hold.
     pub fn grants(&self) -> &Grants {
         &self.view.grants
+    }
+
+    /// The `agent.connection` probe: `{connected, client_name?, sessions}` for the sessions this server holds now.
+    /// `client_name` is the newest client that has completed its handshake; `sessions` counts every live session,
+    /// named or not. Holds no credential, so it is safe to show the person at setup.
+    pub fn connection(&self) -> Value {
+        self.shared.connections.answer()
     }
 
     /// A handler for one client connection. Pass it to rmcp's `serve` with any transport.
