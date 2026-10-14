@@ -161,8 +161,7 @@ pub fn shard(names: &[String], max_shards: usize, weights: &Weights) -> Vec<Vec<
             .enumerate()
             .filter(|(_, (_, held))| item.part.is_none() || !held.iter().any(|other| other.name == item.name))
             .min_by_key(|(index, (load, _))| (*load, *index))
-            .map(|(index, _)| index)
-            .unwrap_or(0);
+            .map_or(0, |(index, _)| index);
         shards[target].0 += item.weight;
         shards[target].1.push(item);
     }
