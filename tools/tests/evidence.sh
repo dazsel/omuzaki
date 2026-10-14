@@ -30,9 +30,22 @@ if grep -q 'identical | 0 |' "$work/same/comment.md"; then pass "identical rende
 
 echo 41 >"$work/head/level"
 python3 -I "$EVIDENCE" run --crates x --before "$work/base" --after "$work/head" --out "$work/diff" >/dev/null
-if grep -q '100.000 % | 1 |' "$work/diff/comment.md"; then pass "a one-level change shows in the table"; else fail "change: $(cat "$work/diff/comment.md")"; fi
+if grep -q '100.000 % (64 px) | 1 |' "$work/diff/comment.md"; then pass "a one-level change shows in the table"; else fail "change: $(cat "$work/diff/comment.md")"; fi
 if python3 -c "from PIL import Image; import sys; sys.exit(0 if Image.open('$work/diff/x/flat/p.diff.png').getpixel((0, 0))[0] > 0 else 1)"; then
   pass "the difference picture is lit"; else fail "difference picture is black"; fi
+
+# One changed pixel in a big picture must not round to "identical".
+mkdir -p "$work/sparse/crates/x"
+cat >"$work/sparse/crates/x/evidence.toml" <<'T'
+[[case]]
+name = "sparse"
+env = { OUT = "{out}" }
+steps = [{ run = ["python3", "-c", "import os; from PIL import Image; i = Image.new('RGB', (2048, 2048), (9, 9, 9)); i.putpixel((5, 5), (9, int(open('level').read()), 9)); i.save(os.environ['OUT'] + '/p.png')"] }]
+images = ["p.png"]
+T
+mkdir -p "$work/sparse-base"; echo 9 >"$work/sparse-base/level"; echo 10 >"$work/sparse/level"
+python3 -I "$EVIDENCE" run --crates x --before "$work/sparse-base" --after "$work/sparse" --out "$work/sparse-out" >/dev/null
+if grep -q '(1 px) | 1 |' "$work/sparse-out/comment.md"; then pass "one changed pixel is not rounded to identical"; else fail "sparse: $(cat "$work/sparse-out/comment.md")"; fi
 
 rm "$work/base/level"
 python3 -I "$EVIDENCE" run --crates x --before "$work/base" --after "$work/head" --out "$work/new" >/dev/null 2>&1
