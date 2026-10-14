@@ -11,6 +11,7 @@
 //! Subsystems keep typed views (serde structs) over their part of the tree; see [`DocReadExt::get_as`].
 #![deny(missing_docs)]
 
+pub mod merge;
 mod scratch;
 
 use std::fmt;
