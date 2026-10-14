@@ -20,7 +20,7 @@
 
 ## Where it stands
 
-- ✅ **Projects are plain files.** A project is a folder of TOML files that diff cleanly in git. Every change is an operation you can preview first and undo after.
+- ✅ **Projects are plain files.** A project is a folder of TOML files that diff cleanly in git. Every change is an operation you can preview before applying it, and undo within the same session.
 - ✅ **Agents can do everything.** Each operation is a command on the `omuzaki` CLI and a tool on its MCP server, both generated from one registry.
 - ✅ **A procedural character:** head, hair, body, outfit and accessories built from parameters, and a rig that poses any VRM humanoid skeleton.
 - ✅ **A painted 2D face** (eyes, brows, mouth, nose, marks and expressions) driven by the 52 ARKit face shapes.
@@ -46,7 +46,7 @@ Then:
 git clone https://github.com/dazsel/omuzaki
 cd omuzaki
 cargo run -p omuzaki-cli -- ops                    # every operation: name, scope and summary
-cargo run -p omuzaki-cli -- help face.set_profile  # one operation's arguments, with types and ranges
+cargo run -p omuzaki-cli -- help face.set_style    # one operation's arguments, with types and ranges
 ```
 
 ## Use it from an AI agent
@@ -59,8 +59,8 @@ cargo build --release -p omuzaki-cli
 claude mcp add omuzaki -- "$PWD/target/release/omuzaki" --project "$PWD/my-show" mcp
 ```
 
-The agent can then list, preview, apply and undo operations on that project, and each change is saved to the folder as
-it is made.
+The agent can then list, preview and apply operations on that project, and undo them within its session. Each change
+is saved to the folder as it is made.
 
 ## How it's built
 
