@@ -69,6 +69,13 @@ impl Hand {
     }
 }
 
+/// Whether a quaternion can be normalised and inverted: every component finite, and not (nearly) zero. A zero quaternion
+/// has no direction, and normalising or inverting it produces NaNs that would reach the pose.
+fn is_rotation(q: Quat) -> bool {
+    const MIN_LENGTH_SQUARED: f32 = 1e-12;
+    q.is_finite() && q.length_squared() > MIN_LENGTH_SQUARED
+}
+
 /// The inverse of a rigid transform.
 fn inverse(t: Transform) -> Transform {
     let rotation = t.rotation.inverse();
@@ -104,16 +111,16 @@ pub struct HandTarget {
 
 impl HandTarget {
     /// Solves the arm and turns the hand so the palm lands on the frame. Returns `false`, leaving the pose alone, if the
-    /// skeleton lacks the arm bones or any field is not finite.
+    /// skeleton lacks the arm bones, any field is not finite, or either rotation is zero (see [`is_rotation`]).
     ///
     /// The position error is that of the two-bone solve (inside 98% of the reach, under half a millimetre); an
     /// out-of-reach frame is approached with a straight arm. The angle is exact at full weight.
     pub fn solve(&self, skeleton: &Skeleton, pose: &mut Pose) -> bool {
         let Some([_, _, hand]) = self.hand.ids(skeleton) else { return false };
         let ok = self.frame.translation.is_finite()
-            && self.frame.rotation.is_finite()
+            && is_rotation(self.frame.rotation)
             && self.palm.translation.is_finite()
-            && self.palm.rotation.is_finite()
+            && is_rotation(self.palm.rotation)
             && self.pole.is_finite()
             && self.weight.is_finite();
         if !ok {

@@ -417,3 +417,37 @@ fn a_goal_with_a_non_finite_field_or_a_missing_arm_leaves_the_pose_alone() {
     let frame = Transform::from_translation(Vec3::new(0.1, 0.3, 0.1));
     assert!(HandTarget { frame, weight: 0.0, ..bad }.solve(&skeleton, &mut pose) && pose == start);
 }
+
+#[test]
+fn a_zero_rotation_on_the_frame_or_the_palm_leaves_the_pose_alone() {
+    // A zero quaternion passes the finite checks but has no direction: normalising or inverting it gives NaNs.
+    let body = soft_sd();
+    let skeleton = body.skeleton();
+    let start = skeleton.rest_pose();
+    let palm = Hand::Right.palm(body.to_palm);
+    let frame = Transform::from_translation(Vec3::new(0.1, 0.3, 0.1));
+    let zero = Quat::from_xyzw(0.0, 0.0, 0.0, 0.0);
+
+    let no_frame_turn = HandTarget {
+        hand: Hand::Right,
+        frame: Transform { translation: frame.translation, rotation: zero },
+        palm,
+        pole: Vec3::NEG_Y,
+        weight: 1.0,
+    };
+    let mut pose = start.clone();
+    assert!(!no_frame_turn.solve(&skeleton, &mut pose) && pose == start);
+
+    let no_palm_turn =
+        HandTarget { frame, palm: Transform { translation: palm.translation, rotation: zero }, ..no_frame_turn };
+    let mut pose = start.clone();
+    assert!(!no_palm_turn.solve(&skeleton, &mut pose) && pose == start);
+
+    // A tiny but non-zero quaternion is also rejected, not normalised into noise.
+    let tiny = HandTarget {
+        frame: Transform { translation: frame.translation, rotation: Quat::from_xyzw(1e-9, 0.0, 0.0, 0.0) },
+        ..no_frame_turn
+    };
+    let mut pose = start.clone();
+    assert!(!tiny.solve(&skeleton, &mut pose) && pose == start);
+}
