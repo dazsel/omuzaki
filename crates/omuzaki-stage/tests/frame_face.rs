@@ -19,7 +19,8 @@ mod double;
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use omuzaki_anim_api::Channel;
 use omuzaki_char::builder::CachingBuilder;
@@ -39,7 +40,7 @@ use omuzaki_render_api::{
     MeshOptions, Painter, Projection, Quality, RenderError, Renderer, ResourceRef, ResourceStats, Scene, TargetDesc,
     TargetId, TextureDesc, TextureId,
 };
-use omuzaki_stage::frame::face::{CharacterSource, FaceRig, SETTLE_STEPS};
+use omuzaki_stage::frame::face::{CharacterSource, FaceRig, InlineExecutor, Job, SETTLE_STEPS, SwitchExecutor};
 use omuzaki_stage::frame::{FrameInput, Stage, StageClock};
 use omuzaki_stage::{StageError, UploadOptions};
 
@@ -89,6 +90,15 @@ fn allocations_in<R>(f: impl FnOnce() -> R) -> (R, u64) {
     let result = f();
     ACTIVE.with(|active| active.set(false));
     (result, COUNT.with(Cell::get))
+}
+
+/// Runs `f` with counting paused on this thread.
+fn uncounted<R>(f: impl FnOnce() -> R) -> R {
+    let was = ACTIVE.with(Cell::get);
+    ACTIVE.with(|active| active.set(false));
+    let result = f();
+    ACTIVE.with(|active| active.set(was));
+    result
 }
 
 /// The recording renderer with the counters this task's acceptance reads, and a switch that makes painting fail.
@@ -153,7 +163,8 @@ impl Renderer for Spy {
         if self.fail_paints {
             return Err(RenderError::invalid("paint", "the painter was told to fail"));
         }
-        self.inner.paint_texture(texture, painter)
+        // The painter's own work is the painter's cost (the real one is pre-sized, the mock is not): not counted here.
+        uncounted(|| self.inner.paint_texture(texture, painter))
     }
     fn create_material(&mut self, material: &Material) -> Result<MaterialId, RenderError> {
         self.inner.create_material(material)
@@ -226,9 +237,44 @@ fn stage_on(renderer: &mut Spy, size: u32, with_source: bool) -> Stage {
 /// The mock painter's rig: the real painter's sections are still stubs, so only the mock reacts to the bus. It draws at
 /// a fixed density, so `resize_face` tests use [`FaceRig::standard`].
 fn mock_rig() -> FaceRig {
+    mock_rig_on(Box::new(InlineExecutor))
+}
+
+/// The mock rig with its variant builds run by `executor`; the default one would use a thread and make tests racy.
+fn mock_rig_on(executor: Box<dyn SwitchExecutor>) -> FaceRig {
     FaceRig::new(Box::new(|projection, _| {
         FaceSystem::new(Box::new(MockPainter::new(*projection)), Box::new(MockRasterizer))
     }))
+    .with_executor(executor)
+}
+
+/// An executor that parks its jobs until the test runs them: the build is "in flight" for as long as the test wants.
+#[derive(Clone, Default)]
+struct Deferred(Arc<Mutex<Vec<Job>>>);
+
+impl Deferred {
+    fn pending(&self) -> usize {
+        self.0.lock().unwrap().len()
+    }
+
+    fn run_all(&self) {
+        let jobs: Vec<Job> = self.0.lock().unwrap().drain(..).collect();
+        for job in jobs {
+            job();
+        }
+    }
+}
+
+impl SwitchExecutor for Deferred {
+    fn run(&self, job: Job) {
+        self.0.lock().unwrap().push(job);
+    }
+}
+
+/// One frame the way a live app runs it: the variant service, then the tick.
+fn frame(stage: &mut Stage, renderer: &mut Spy, input: &FrameInput) -> Result<(), StageError> {
+    stage.service_variants(renderer, input)?;
+    stage.tick(renderer, input).map(|_| ())
 }
 
 fn stage_with_rig(renderer: &mut Spy, size: u32, with_source: bool, rig: FaceRig) -> Stage {
@@ -330,7 +376,7 @@ fn a_zoom_sweep_switches_variants_at_the_two_crossings_and_uploads_only_what_cha
         stage.scene_mut().camera = camera_for(&stage, sweep(&mut rng, step));
         let (variant, before) = (stage.built().variant.clone(), renderer.mesh_creates);
         let old = stage.built().meshes.clone();
-        stage.tick(&mut renderer, &FrameInput::default()).expect("frame");
+        frame(&mut stage, &mut renderer, &FrameInput::default()).expect("frame");
         if stage.built().variant == variant {
             assert_eq!(renderer.mesh_creates, before, "frame {frame}: no switch, no new mesh");
             continue;
@@ -359,8 +405,9 @@ fn a_zoom_sweep_switches_variants_at_the_two_crossings_and_uploads_only_what_cha
 fn a_switched_character_matches_a_fresh_build_of_the_variant() {
     let mut renderer = Spy::new(false);
     let mut stage = stage_on(&mut renderer, 32, true);
-    stage.scene_mut().camera = camera_for(&stage, 0.8);
     stage.tick(&mut renderer, &FrameInput::default()).expect("frame");
+    stage.scene_mut().camera = camera_for(&stage, 0.8);
+    frame(&mut stage, &mut renderer, &FrameInput::default()).expect("frame");
     let fresh = {
         let (base, variants) = (mock_character().unwrap(), mock_variants().unwrap());
         let def = resolve_variant(&base, &variants, &id("close-up")).unwrap();
@@ -501,7 +548,7 @@ fn the_face_path_allocates_nothing_in_steady_state() {
 /// Ticks once at `coverage` and returns the result.
 fn tick_at(stage: &mut Stage, renderer: &mut Spy, coverage: f64) -> Result<(), StageError> {
     stage.scene_mut().camera = camera_for(stage, coverage);
-    stage.tick(renderer, &FrameInput::default()).map(|_| ())
+    frame(stage, renderer, &FrameInput::default())
 }
 
 #[test]
@@ -530,6 +577,109 @@ fn a_failed_dynamic_upload_during_a_variant_switch_leaves_the_stage_sound_and_a_
     tick_at(&mut stage, &mut renderer, 0.8).expect("the retry succeeds");
     assert_eq!(stage.built().variant, Some(id("close-up")));
     tick_at(&mut stage, &mut renderer, 0.8).expect("the new character runs");
+    stage.release(&mut renderer).expect("released");
+}
+
+/// A stage with a source and `rig`, warmed up at the start zoom.
+fn stage_about_to_zoom(renderer: &mut Spy, rig: FaceRig) -> Stage {
+    let mut stage = stage_with_rig(renderer, 32, true, rig);
+    for _ in 0..5 {
+        tick_at(&mut stage, renderer, START_COVERAGE).expect("warm-up frame");
+    }
+    stage
+}
+
+#[test]
+fn tick_allocates_nothing_across_a_variant_switch() {
+    let mut renderer = Spy::new(false);
+    let mut stage = stage_about_to_zoom(&mut renderer, mock_rig());
+    let input = FrameInput::default();
+    stage.scene_mut().camera = camera_for(&stage, 0.8);
+    // Everything that builds and allocates happens here, off the tick.
+    stage.service_variants(&mut renderer, &input).expect("the switch is built and staged");
+    assert_eq!(stage.built().variant, Some(id("game")), "staged, not yet swapped");
+
+    let (result, allocations) = allocations_in(|| {
+        for _ in 0..3 {
+            stage.tick(&mut renderer, &input)?;
+        }
+        Ok::<(), StageError>(())
+    });
+    result.expect("frames");
+    assert_eq!(stage.built().variant, Some(id("close-up")), "the first of these ticks swapped the variant in");
+    assert_eq!(allocations, 0, "the swapping tick and two after it allocated {allocations} times");
+    stage.service_variants(&mut renderer, &input).expect("the retired character is released");
+    stage.release(&mut renderer).expect("released");
+}
+
+#[test]
+fn the_old_variant_keeps_drawing_until_the_new_one_is_ready() {
+    let (mut renderer, deferred) = (Spy::new(true), Deferred::default());
+    let mut stage = stage_about_to_zoom(&mut renderer, mock_rig_on(Box::new(deferred.clone())));
+    let (variant, meshes, creates) =
+        (stage.built().variant.clone(), stage.built().meshes.clone(), renderer.mesh_creates);
+
+    // The head now fills the frame: the build is requested, and parked.
+    for n in 0..10 {
+        tick_at(&mut stage, &mut renderer, 0.8).expect("a frame while the build is in flight");
+        assert_eq!(deferred.pending(), 1, "frame {n}: one build requested, not one per frame");
+        assert_eq!(stage.built().variant, variant, "frame {n}: still the old variant");
+    }
+    assert_eq!(stage.built().meshes, meshes);
+    assert_eq!(renderer.mesh_creates, creates, "nothing is created before the build is done");
+
+    // The build finishes: the next service stages it, and only the tick after that swaps it in.
+    deferred.run_all();
+    stage.service_variants(&mut renderer, &FrameInput::default()).expect("staged");
+    assert_eq!(stage.built().variant, variant, "staged, but the old variant is still the live one");
+    stage.tick(&mut renderer, &FrameInput::default()).expect("the swapping frame");
+    assert_eq!(stage.built().variant, Some(id("close-up")));
+    assert_eq!(deferred.pending(), 0, "no second build: the head is where the new variant wants it");
+    tick_at(&mut stage, &mut renderer, 0.8).expect("and the new variant draws");
+    assert_eq!(deferred.pending(), 0);
+    stage.release(&mut renderer).expect("released");
+}
+
+#[test]
+fn a_lost_build_is_reported_and_asked_for_again() {
+    let (mut renderer, deferred) = (Spy::new(false), Deferred::default());
+    let mut stage = stage_about_to_zoom(&mut renderer, mock_rig_on(Box::new(deferred.clone())));
+    stage.scene_mut().camera = camera_for(&stage, 0.8);
+    stage.service_variants(&mut renderer, &FrameInput::default()).expect("requested");
+    // The executor drops the job without running it.
+    drop(deferred.0.lock().unwrap().drain(..).collect::<Vec<_>>());
+    let error = stage.service_variants(&mut renderer, &FrameInput::default()).expect_err("the build was lost");
+    assert!(matches!(error, StageError::Rebuild { .. }), "{error}");
+    stage.service_variants(&mut renderer, &FrameInput::default()).expect("asks again");
+    assert_eq!(deferred.pending(), 1);
+    stage.release(&mut renderer).expect("released");
+}
+
+#[test]
+fn the_swap_replaces_the_character_in_one_tick_and_the_next_service_releases_the_old_one() {
+    let mut renderer = Spy::new(false);
+    let mut stage = stage_about_to_zoom(&mut renderer, mock_rig());
+    let input = FrameInput::default();
+    stage.scene_mut().camera = camera_for(&stage, 0.8);
+
+    let started = Instant::now();
+    stage.service_variants(&mut renderer, &input).expect("staged");
+    let staged_in = started.elapsed();
+    let before_swap = renderer.stats();
+    stage.tick(&mut renderer, &input).expect("swap");
+    let latency = started.elapsed();
+    println!(
+        "variant switch, inline executor ({SETTLE_STEPS} warm-up steps): staged after {staged_in:?}, swapped after {latency:?} \
+         (1 service call + 1 tick)"
+    );
+    // A bound, not a benchmark: the switch is one service call and one tick, and finishes in seconds on any CI machine.
+    assert!(latency.as_secs() < 30, "the switch took {latency:?}");
+
+    assert_eq!(stage.built().variant, Some(id("close-up")));
+    assert_eq!(renderer.stats(), before_swap, "the swap itself creates and releases nothing on the renderer");
+    // The old resources go back with the next service, not in the swap.
+    stage.service_variants(&mut renderer, &input).expect("released");
+    assert!(renderer.stats().meshes <= before_swap.meshes, "the old meshes are gone: {:?}", renderer.stats());
     stage.release(&mut renderer).expect("released");
 }
 

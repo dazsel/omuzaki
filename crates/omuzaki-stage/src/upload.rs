@@ -344,6 +344,8 @@ struct Next {
     layers: BTreeMap<FaceLayerId, FaceLayerTexture>,
     materials: BTreeMap<MaterialName, MaterialId>,
     meshes: Vec<UploadedMesh>,
+    /// `meshes` by part and local index, built here so that [`StageCharacter::commit_sync`] only moves tables.
+    mesh_index: BTreeMap<PartId, BTreeMap<u16, usize>>,
     /// Materials whose renderer copy must change, before and after.
     updates: Vec<Repoint>,
     /// Handles of the old character that nothing in the new one uses.
@@ -492,17 +494,16 @@ impl StageCharacter {
         Ok(PreparedSync { next, created })
     }
 
-    /// Makes the prepared resources the character's own. Infallible: only tables are swapped. The old resources nothing
-    /// refers to any more come back in the [`Retired`] to be released.
+    /// Makes the prepared resources the character's own. Infallible and allocation-free: only tables are swapped (the
+    /// frame loop calls it inside `tick`, so everything that allocates happens in
+    /// [`prepare_sync`](Self::prepare_sync)). The old resources nothing refers to any more come back in the [`Retired`]
+    /// to be released.
     pub(crate) fn commit_sync(&mut self, prepared: PreparedSync) -> Retired {
         let next = prepared.next;
         self.textures = next.textures;
         self.face_layers = next.layers;
         self.materials = next.materials;
-        self.mesh_index = BTreeMap::new();
-        for (at, mesh) in next.meshes.iter().enumerate() {
-            self.mesh_index.entry(mesh.part.clone()).or_default().insert(mesh.local, at);
-        }
+        self.mesh_index = next.mesh_index;
         self.meshes = next.meshes;
         Retired {
             materials: next.stale_materials,
@@ -560,7 +561,22 @@ impl StageCharacter {
         let stale_meshes: Vec<_> =
             self.meshes.iter().map(|m| m.mesh).filter(|id| !meshes.iter().any(|m| m.mesh == *id)).collect();
         report.meshes_released = u32::try_from(stale_meshes.len()).unwrap_or(u32::MAX);
-        Ok(Next { textures, layers, materials, meshes, updates, stale_textures, stale_materials, stale_meshes, report })
+        let mut mesh_index: BTreeMap<PartId, BTreeMap<u16, usize>> = BTreeMap::new();
+        for (at, mesh) in meshes.iter().enumerate() {
+            mesh_index.entry(mesh.part.clone()).or_default().insert(mesh.local, at);
+        }
+        Ok(Next {
+            textures,
+            layers,
+            materials,
+            meshes,
+            mesh_index,
+            updates,
+            stale_textures,
+            stale_materials,
+            stale_meshes,
+            report,
+        })
     }
 
     /// The procedural textures of `new`: an equal texture keeps its handle, any other is created.

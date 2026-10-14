@@ -3,23 +3,44 @@
 //!
 //! A stage gets a [`FaceRig`] with [`Stage::set_face`]; from then on step 5 of the frame ([`Stage::tick`]) does, in order:
 //!
-//! 1. **variant**: the head's size on screen ([`head_coverage`](Stage::head_coverage)) goes through `select_variant`
-//!    (the rule behind `VariantSelector`, which borrows its set and so can't live in the stage). A new pick rebuilds
-//!    through the [`CachingBuilder`], syncs the renderer ([`StageCharacter::sync`]: only what differs is sent), resets
-//!    the runtimes and settles them;
+//! 1. **variant swap**: a variant prepared earlier (see below) replaces the character in one step, with pointer swaps
+//!    and nothing built, allocated or locked;
 //! 2. **map and paint**: [`FaceSystem::update`] maps the bus with the palette-resolved profile and says which layers
 //!    changed; exactly those are painted into their textures with [`FaceLayerPainter`].
+//!
+//! # Variant switches never run inside `tick`
+//!
+//! The head's size on screen ([`head_coverage`](Stage::head_coverage)) goes through `select_variant` (the rule behind
+//! `VariantSelector`, which borrows its set and so can't live in the stage). The frame thread calls
+//! [`Stage::service_variants`] once per frame, outside `tick` (before or after it), and that does the switch in three
+//! stages while the current variant keeps drawing:
+//!
+//! 1. **build** (off the frame thread): a new pick goes to the rig's [`SwitchExecutor`] as a job that builds the variant
+//!    through the [`CachingBuilder`], resets the part runtimes and takes the [`SETTLE_STEPS`] warm-up steps (480 steps
+//!    at once is far too long for a frame). [`ThreadExecutor`] is the default; tests use [`InlineExecutor`] or their own;
+//! 2. **stage** (frame thread, in `service_variants`, once the job is done): the renderer sync
+//!    (only what differs is sent to the renderer, as in [`StageCharacter::sync`]), the frame plans, the face system and a refresh of
+//!    the dynamic meshes' vertices are prepared beside the live ones, which are untouched;
+//! 3. **swap** (in the next `tick`): the staged character replaces the live one by moving tables and handles. The old one
+//!    goes to a retiring slot and is released by the next `service_variants`.
+//!
+//! The switch costs the frame thread the staging work in one `service_variants` call and a swap in the next `tick`. The
+//! warmed simulations are the ones of the request: hair and cloth are a few frames behind when the swap happens.
+//! A pending switch is dropped by [`Stage::apply_palette`] and [`Stage::resize_face`] (both change what a staged
+//! character was prepared against); the next `service_variants` asks again.
 //!
 //! A layer whose paint failed stays marked and is retried every frame until it succeeds, so a failing painter keeps the
 //! old pixels on screen and never leaves the layer stale for good.
 
+use std::mem;
 use std::sync::Arc;
+use std::sync::mpsc;
 
-use omuzaki_anim_api::Tick;
+use omuzaki_anim_api::{HumanoidPose, IkGoals, Tick};
 use omuzaki_char::builder::CachingBuilder;
 use omuzaki_char_api::{
-    BuildOptions, BuildServices, BuiltCharacter, CharacterBuilder, CharacterDef, JointRef, StepCtx, VariantId,
-    VariantSet, resolve_variant, select_variant,
+    BuildOptions, BuildServices, BuiltCharacter, CharId, CharacterBuilder, CharacterDef, CharacterRig, JointRef,
+    StepCtx, VariantId, VariantSet, resolve_variant, select_variant,
 };
 use omuzaki_core::glam::{Mat4, Vec2, Vec3};
 use omuzaki_core::time::Seconds;
@@ -33,7 +54,7 @@ use super::runtimes::DynamicMeshes;
 use super::scene::ScenePlan;
 use super::{FrameInput, Stage};
 use crate::error::StageError;
-use crate::upload::{MeshLookup, SyncReport};
+use crate::upload::{MeshLookup, PreparedSync, Retired, SyncReport};
 
 /// Steps [`Stage::settle`] takes to warm hair and cloth before a golden frame.
 pub const SETTLE_STEPS: u32 = 480;
@@ -43,6 +64,116 @@ pub const SETTLE_DT: f32 = 1.0 / 90.0;
 /// Makes the face system for a projection and a base density: called when the stage binds a face, when the head's
 /// projection changes with a variant, and when [`Stage::resize_face`] changes the density.
 pub type FaceFactory = Box<dyn Fn(&FaceProjection, f32) -> FaceSystem + Send>;
+
+/// A unit of work for a [`SwitchExecutor`].
+pub type Job = Box<dyn FnOnce() + Send + 'static>;
+
+/// Where a variant build runs. The stage hands it one [`Job`] per switch and polls for the result, so an executor only
+/// has to run the job somewhere, now or later.
+pub trait SwitchExecutor: Send {
+    /// Runs `job`, on this thread before returning or on another one. A job that is dropped without running makes the
+    /// switch fail with [`StageError::Rebuild`].
+    fn run(&self, job: Job);
+}
+
+/// Runs the job on the calling thread, before `run` returns: deterministic, for tests and offline renders.
+#[derive(Copy, Clone, Debug, Default)]
+pub struct InlineExecutor;
+
+impl SwitchExecutor for InlineExecutor {
+    fn run(&self, job: Job) {
+        job();
+    }
+}
+
+/// Runs each job on a new thread: the live default.
+#[derive(Copy, Clone, Debug, Default)]
+pub struct ThreadExecutor;
+
+impl SwitchExecutor for ThreadExecutor {
+    fn run(&self, job: Job) {
+        if let Err(error) = std::thread::Builder::new().name("omuzaki-variant-build".into()).spawn(job) {
+            // The job is gone with the failed spawn; its sender drops, which the stage reports as a failed switch.
+            tracing::warn!(%error, "starting the variant build thread failed");
+        }
+    }
+}
+
+/// What a build job answers: the warmed character, or why it could not be made.
+type BuildResult = Result<BuiltCharacter, String>;
+
+/// Everything a variant build needs, owned so it can run off the frame thread.
+struct WarmJob {
+    builder: Arc<CachingBuilder>,
+    id: CharId,
+    def: CharacterDef,
+    options: BuildOptions,
+    services: BuildServices,
+    /// The live character's rig: decides whether the new one needs its own solve to warm against.
+    old_rig: CharacterRig,
+    /// The live character's skinning matrices, for a new character with the same rig.
+    skin: Vec<Mat4>,
+    root: Mat4,
+    tick: Tick,
+    pose: HumanoidPose,
+    goals: IkGoals,
+    steps: u32,
+}
+
+impl WarmJob {
+    /// Builds the variant and warms its runtimes: reset under the pose, then `steps` steps.
+    fn run(self) -> BuildResult {
+        let mut built =
+            self.builder.build(&self.id, &self.def, &self.options, &self.services).map_err(|e| e.to_string())?;
+        // The same rule as the live install: a new rig is solved against the frame's pose, an equal one keeps the
+        // live skin (its spring bones carry state a fresh solve would lose).
+        let solved = if built.rig == self.old_rig {
+            None
+        } else {
+            let mut frame = RigFrame::new(&built.rig).map_err(|e| e.to_string())?;
+            frame.solve(self.tick, &self.pose, &self.goals);
+            Some(frame.skin().to_vec())
+        };
+        let skin = solved.as_deref().unwrap_or(&self.skin);
+        warm_runtimes(&mut built, skin, self.root, self.steps);
+        Ok(built)
+    }
+}
+
+/// How the face binds once a staged character is live.
+enum NextBound {
+    /// The projection is the live one's: the face system stays, with the new profile and head.
+    Keep(Box<Resolved>),
+    /// A new projection: a face system made while staging.
+    Fresh(Box<Bound>),
+    /// The new character has no face.
+    Unbound,
+}
+
+/// A variant fully prepared beside the live character: swapping it in only moves things.
+struct Staged {
+    new: BuiltCharacter,
+    new_rig: Option<RigFrame>,
+    bound: NextBound,
+    prepared: PreparedSync,
+    dynamic: DynamicMeshes,
+    plan: ScenePlan,
+    /// Face layers whose texture is new and so owed a paint.
+    fresh: [bool; FaceLayerId::COUNT],
+}
+
+/// What a swap replaced, kept until the next [`Stage::service_variants`] drops it and releases its renderer resources,
+/// so the swap itself calls no renderer release and frees no large table. The underscored fields are only kept alive
+/// (to be dropped off the tick); `retired` is read when its resources are released.
+#[derive(Default)]
+struct Retiring {
+    _built: Option<BuiltCharacter>,
+    _rig: Option<RigFrame>,
+    _dynamic: Option<DynamicMeshes>,
+    _plan: Option<ScenePlan>,
+    _bound: Option<Bound>,
+    retired: Option<Retired>,
+}
 
 /// What rebuilds the character: the builder with its cache, the character before any variant, and the variants.
 pub struct CharacterSource {
@@ -101,12 +232,32 @@ pub struct FaceRig {
     bound: Option<Bound>,
     /// Layers whose picture changed and whose texture was not painted yet (or failed to be).
     unpainted: [bool; FaceLayerId::COUNT],
+    /// Where variant builds run.
+    executor: Box<dyn SwitchExecutor>,
+    /// The tick of the last frame: the build job solves a changed rig at it.
+    last_tick: Option<Tick>,
+    /// The answer to the build job in flight, if any.
+    building: Option<mpsc::Receiver<BuildResult>>,
+    /// A prepared variant waiting for the next `tick` to swap it in.
+    staged: Option<Staged>,
+    retiring: Retiring,
 }
 
 impl FaceRig {
     /// A rig making its face systems with `factory`.
     pub fn new(factory: FaceFactory) -> Self {
-        Self { factory, source: None, settle_steps: SETTLE_STEPS, bound: None, unpainted: [false; FaceLayerId::COUNT] }
+        Self {
+            factory,
+            source: None,
+            settle_steps: SETTLE_STEPS,
+            bound: None,
+            unpainted: [false; FaceLayerId::COUNT],
+            executor: Box::new(ThreadExecutor),
+            last_tick: None,
+            building: None,
+            staged: None,
+            retiring: Retiring::default(),
+        }
     }
 
     /// The production rig: the real painter and the CPU rasteriser (the GPU one registers on the system later).
@@ -127,6 +278,13 @@ impl FaceRig {
     #[must_use]
     pub fn with_settle_steps(mut self, steps: u32) -> Self {
         self.settle_steps = steps;
+        self
+    }
+
+    /// Runs variant builds on `executor` instead of a new thread per switch ([`ThreadExecutor`], the default).
+    #[must_use]
+    pub fn with_executor(mut self, executor: Box<dyn SwitchExecutor>) -> Self {
+        self.executor = executor;
         self
     }
 
@@ -188,6 +346,35 @@ fn step_runtimes(built: &mut BuiltCharacter, skin: &[Mat4], root: Mat4, steps: u
     }
 }
 
+/// Resets every runtime to the rest shape under the given pose, then steps them `steps` times ([`step_runtimes`]).
+fn warm_runtimes(built: &mut BuiltCharacter, skin: &[Mat4], root: Mat4, steps: u32) {
+    let pose = SkinPose { character: &built.rig, skin, root };
+    for slot in &mut built.runtimes {
+        slot.runtime.reset(&pose);
+    }
+    step_runtimes(built, skin, root, steps);
+}
+
+/// Throws away a pending variant switch: aborts what was staged on the renderer and releases what a swap retired.
+pub(super) fn discard_switch(renderer: &mut dyn Renderer, rig: &mut FaceRig) {
+    rig.building = None;
+    if let Some(staged) = rig.staged.take() {
+        staged.prepared.abort(renderer);
+    }
+    release_retiring(renderer, rig);
+}
+
+/// Drops what the last swap replaced and gives its renderer resources back. A failed release is logged: the new
+/// character is long in place and there is no one left to tell.
+fn release_retiring(renderer: &mut dyn Renderer, rig: &mut FaceRig) {
+    let retiring = mem::take(&mut rig.retiring);
+    if let Some(retired) = retiring.retired
+        && let Err(error) = retired.release(renderer)
+    {
+        tracing::warn!(%error, "releasing the old variant's resources failed");
+    }
+}
+
 impl Stage {
     /// Attaches the face system and binds it to the current character. Replaces an earlier rig.
     ///
@@ -211,6 +398,10 @@ impl Stage {
     /// # Errors
     /// As [`StageCharacter::resize_face`], and [`StageError::Face`] if the profile can't be resolved.
     pub fn resize_face(&mut self, renderer: &mut dyn Renderer, px_per_m: f32) -> Result<(), StageError> {
+        if let Some(rig) = self.face.as_mut() {
+            // A staged character was prepared against the old density.
+            discard_switch(renderer, rig);
+        }
         let before = self.character.face_px_per_m();
         let resized = self.character.resize_face(renderer, &self.built, px_per_m);
         // A failed release of the old textures comes back after the new ones are in force: the face system must follow
@@ -239,6 +430,8 @@ impl Stage {
     /// palette took effect.
     pub fn apply_palette(&mut self, renderer: &mut dyn Renderer, palette: &Palette) -> Result<SyncReport, StageError> {
         let mut rig = self.face.take().ok_or_else(|| rebuild_error("no face rig attached: call set_face first"))?;
+        // A staged variant was built with the old palette.
+        discard_switch(renderer, &mut rig);
         let result = self.rebuild_for_palette(renderer, &mut rig, palette);
         self.face = Some(rig);
         result
@@ -255,7 +448,7 @@ impl Stage {
         def.palette = palette.clone();
         let options = BuildOptions { variant: self.built.variant.clone(), ..source.options.clone() };
         let new = source.builder.build(&self.built.id, &def, &options, &source.services).map_err(rebuild_error)?;
-        let (report, cleanup) = self.install(renderer, rig, new, None)?;
+        let (report, cleanup) = self.install(renderer, rig, new)?;
         // Only now is the palette the character's: a rejected install must not leak it into the next variant switch.
         if let Some(source) = rig.source.as_mut() {
             source.base.palette = palette.clone();
@@ -284,9 +477,8 @@ impl Stage {
         tick: Tick,
         input: &FrameInput,
     ) -> Result<(), StageError> {
-        if let Some(target) = self.variant_to_switch_to(rig) {
-            self.switch_variant(renderer, rig, &target, tick, input)?;
-        }
+        rig.last_tick = Some(tick);
+        self.swap_in_staged(renderer, rig)?;
         let Some(bound) = rig.bound.as_mut() else { return Ok(()) };
         // The gaze module's pure highlight shift is not available yet: no shift.
         let view = FaceView { highlight_shift: Vec2::ZERO };
@@ -344,22 +536,176 @@ impl Stage {
         (frame_height > f32::EPSILON).then(|| f64::from(head_height / frame_height))
     }
 
-    fn switch_variant(
+    /// Moves a variant switch along; call it once per frame, before or after [`tick`](Stage::tick), never inside it.
+    /// This is where everything that builds, allocates or waits happens (see the module docs): it releases what the last
+    /// swap retired, asks the rig's [`SwitchExecutor`] for a build when the head's size calls for another variant,
+    /// and, once the build is done, prepares the renderer side. The next `tick` then swaps the new variant in; until
+    /// then the current one keeps drawing. A no-op without a face rig, a [`CharacterSource`] or a frame run yet.
+    ///
+    /// # Errors
+    /// [`StageError::Rebuild`] if the variant can't be built or the build job was lost, [`StageError::Render`] or
+    /// others from preparing the renderer side. On an error nothing has changed and the next call asks again.
+    pub fn service_variants(&mut self, renderer: &mut dyn Renderer, input: &FrameInput) -> Result<(), StageError> {
+        let Some(mut rig) = self.face.take() else { return Ok(()) };
+        let result = self.service(renderer, &mut rig, input);
+        self.face = Some(rig);
+        result
+    }
+
+    fn service(
         &mut self,
         renderer: &mut dyn Renderer,
         rig: &mut FaceRig,
-        target: &VariantId,
-        tick: Tick,
         input: &FrameInput,
+    ) -> Result<(), StageError> {
+        release_retiring(renderer, rig);
+        let Some(tick) = rig.last_tick else { return Ok(()) };
+        if rig.building.is_none()
+            && rig.staged.is_none()
+            && let Some(target) = self.variant_to_switch_to(rig)
+        {
+            self.request_switch(rig, &target, input, tick)?;
+        }
+        let Some(answer) = rig.building.take() else { return Ok(()) };
+        let built = match answer.try_recv() {
+            Ok(result) => result.map_err(rebuild_error)?,
+            Err(mpsc::TryRecvError::Empty) => {
+                rig.building = Some(answer);
+                return Ok(());
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+                return Err(rebuild_error("the variant build ended without a result"));
+            }
+        };
+        rig.staged = Some(self.stage_switch(renderer, rig, built, input, tick)?);
+        Ok(())
+    }
+
+    /// Hands the build of `target` to the executor.
+    fn request_switch(
+        &self,
+        rig: &mut FaceRig,
+        target: &VariantId,
+        input: &FrameInput,
+        tick: Tick,
     ) -> Result<(), StageError> {
         let source = rig.source.as_ref().ok_or_else(|| rebuild_error("the face rig has no CharacterSource"))?;
         let def = resolve_variant(&source.base, &source.variants, target).map_err(rebuild_error)?;
-        let options = BuildOptions { variant: Some(target.clone()), ..source.options.clone() };
-        let new = source.builder.build(&self.built.id, &def, &options, &source.services).map_err(rebuild_error)?;
-        let (_, cleanup) = self.install(renderer, rig, new, Some((tick, input)))?;
-        if let Err(error) = cleanup {
-            // The switch happened and the stage is coherent; the frame goes on, and the leak is only reported.
-            tracing::warn!(%error, "releasing the old variant's resources failed");
+        let job = WarmJob {
+            builder: Arc::clone(&source.builder),
+            id: self.built.id.clone(),
+            def,
+            options: BuildOptions { variant: Some(target.clone()), ..source.options.clone() },
+            services: source.services.clone(),
+            old_rig: self.built.rig.clone(),
+            skin: self.rig.skin().to_vec(),
+            root: self.root,
+            tick,
+            pose: input.pose,
+            goals: input.goals,
+            steps: rig.settle_steps,
+        };
+        let (sender, answer) = mpsc::channel();
+        rig.executor.run(Box::new(move || {
+            // A receiver that is gone means the switch was discarded: nobody wants the answer.
+            let _ = sender.send(job.run());
+        }));
+        rig.building = Some(answer);
+        Ok(())
+    }
+
+    /// Prepares `new` (built and warmed by the job) beside the live character: everything that can fail or allocate.
+    /// On an error nothing is left on the renderer and the live character is untouched.
+    fn stage_switch(
+        &self,
+        renderer: &mut dyn Renderer,
+        rig: &FaceRig,
+        new: BuiltCharacter,
+        input: &FrameInput,
+        tick: Tick,
+    ) -> Result<Staged, StageError> {
+        let mut new_rig = (new.rig != self.built.rig).then(|| RigFrame::new(&new.rig)).transpose()?;
+        if let Some(frame) = new_rig.as_mut() {
+            frame.solve(tick, &input.pose, &input.goals);
+        }
+        let bound = match FaceRig::resolve(&new)? {
+            None => NextBound::Unbound,
+            Some(next) if rig.bound.as_ref().is_some_and(|live| live.projection == next.projection) => {
+                NextBound::Keep(Box::new(next))
+            }
+            Some(Resolved { profile, projection, head }) => NextBound::Fresh(Box::new(Bound {
+                system: (rig.factory)(&projection, self.character.face_px_per_m()),
+                profile,
+                projection,
+                head,
+            })),
+        };
+        let prepared = self.character.prepare_sync(renderer, &self.built, &new)?;
+        let frames = DynamicMeshes::new(&new, &prepared).and_then(|dynamic| {
+            let plan = ScenePlan::new(&new, &prepared)?;
+            Ok((dynamic, plan))
+        });
+        let (dynamic, plan) = match frames {
+            Ok(frames) => frames,
+            Err(error) => {
+                prepared.abort(renderer);
+                return Err(error);
+            }
+        };
+        let mut fresh = [false; FaceLayerId::COUNT];
+        for layer in prepared.fresh_face_layers(&self.character) {
+            fresh[layer as usize] = true;
+        }
+        Ok(Staged { new, new_rig, bound, prepared, dynamic, plan, fresh })
+    }
+
+    /// The swap: makes a staged variant the stage's character. Allocates and builds nothing: it sends the new
+    /// character's current vertices to the renderer (a call per dynamic mesh), then only moves tables and handles; what
+    /// it replaces waits in the retiring slot for [`service_variants`](Self::service_variants).
+    ///
+    /// # Errors
+    /// [`StageError::Render`] if the renderer refuses the vertex refresh. The staged variant is then abandoned (its
+    /// renderer resources are given back), the live character resends all its meshes, and the next
+    /// `service_variants` asks again.
+    fn swap_in_staged(&mut self, renderer: &mut dyn Renderer, rig: &mut FaceRig) -> Result<(), StageError> {
+        let Some(staged) = rig.staged.take() else { return Ok(()) };
+        // A mesh kept across the switch is shared with the live character: this is the first write of the new simulation.
+        if let Err(error) = refresh_dynamic(&staged.new, &staged.prepared, renderer) {
+            staged.prepared.abort(renderer);
+            // The refresh may have rewritten meshes the live character shares: have its next step resend them.
+            self.dynamic.resend_all();
+            return Err(error);
+        }
+        let Staged { new, new_rig, bound, prepared, dynamic, plan, fresh } = staged;
+        rig.retiring.retired = Some(self.character.commit_sync(prepared));
+        rig.retiring._built = Some(mem::replace(&mut self.built, new));
+        if let Some(frame) = new_rig {
+            rig.retiring._rig = Some(mem::replace(&mut self.rig, frame));
+        }
+        rig.retiring._dynamic = Some(mem::replace(&mut self.dynamic, dynamic));
+        rig.retiring._plan = Some(mem::replace(&mut self.plan, plan));
+        match bound {
+            NextBound::Keep(next) => {
+                if let Some(live) = rig.bound.take() {
+                    rig.bound = Some(Bound {
+                        system: live.system,
+                        profile: next.profile,
+                        projection: next.projection,
+                        head: next.head,
+                    });
+                } else {
+                    // Staged against a face that has since gone: cannot be made here without allocating.
+                    tracing::error!("a staged variant kept a face system the rig no longer has; the face is unbound");
+                }
+            }
+            NextBound::Fresh(next) => rig.retiring._bound = rig.bound.replace(*next),
+            NextBound::Unbound => rig.retiring._bound = rig.bound.take(),
+        }
+        // A new layer texture is empty, and the face system's fingerprints still say its picture was shown.
+        for layer in FaceLayerId::ALL {
+            if fresh[layer as usize] {
+                rig.unpainted[layer as usize] = true;
+            }
         }
         Ok(())
     }
@@ -369,30 +715,25 @@ impl Stage {
     /// Everything that can fail runs first, against the prospective state: the rig, the profile, the renderer sync
     /// ([`StageCharacter::prepare_sync`]), the dynamic-mesh refresh, the frame plans. Then the commit swaps tables and
     /// cannot fail. On an `Err` the previous character is untouched and coherent (its handles live, its plans current),
-    /// so a later retry starts from a sound stage. `solve` re-solves the new rig when the skeleton changed.
+    /// so a later retry starts from a sound stage.
     ///
     /// Returns the sync report and the outcome of releasing what the old character alone used: a failure there is
     /// reported but the new character is already in place.
+    ///
+    /// Only the palette change installs this way, off the frame thread's real-time path; variant switches are prepared
+    /// by the build job and [`stage_switch`](Self::stage_switch) and swapped in by `tick`.
     fn install(
         &mut self,
         renderer: &mut dyn Renderer,
         rig: &mut FaceRig,
         mut new: BuiltCharacter,
-        solve: Option<(Tick, &FrameInput)>,
     ) -> Result<(SyncReport, Result<(), StageError>), StageError> {
-        let mut new_rig = (new.rig != self.built.rig).then(|| RigFrame::new(&new.rig)).transpose()?;
-        if let (Some(frame), Some((tick, input))) = (new_rig.as_mut(), solve) {
-            frame.solve(tick, &input.pose, &input.goals);
-        }
+        let new_rig = (new.rig != self.built.rig).then(|| RigFrame::new(&new.rig)).transpose()?;
         let resolved = FaceRig::resolve(&new)?;
         let prepared = self.character.prepare_sync(renderer, &self.built, &new)?;
 
         let skin = new_rig.as_ref().map_or_else(|| self.rig.skin(), RigFrame::skin);
-        let pose = SkinPose { character: &new.rig, skin, root: self.root };
-        for slot in &mut new.runtimes {
-            slot.runtime.reset(&pose);
-        }
-        step_runtimes(&mut new, skin, self.root, rig.settle_steps);
+        warm_runtimes(&mut new, skin, self.root, rig.settle_steps);
         let staged = DynamicMeshes::new(&new, &prepared).and_then(|dynamic| {
             let plan = ScenePlan::new(&new, &prepared)?;
             refresh_dynamic(&new, &prepared, renderer)?;

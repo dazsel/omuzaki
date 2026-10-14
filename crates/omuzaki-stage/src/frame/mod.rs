@@ -12,7 +12,9 @@
 //! 6. the [`Scene`] is refilled with instances in render order and the joint runs ([`scene`]), and rendered.
 //!
 //! After construction nothing in steps 1 to 6 allocates in stage-owned code; the renderer and the runtimes cost what
-//! they cost.
+//! they cost. That includes the frame that swaps in a new face variant: variants are built, warmed and prepared off
+//! the frame path by [`Stage::service_variants`], which the frame thread calls once per frame outside `tick`
+//! ([`face`] has the stages).
 
 pub mod face;
 pub mod pose;
@@ -171,7 +173,7 @@ impl Stage {
     /// Runs one frame and renders it into the stage's target.
     ///
     /// # Errors
-    /// [`StageError::Render`] if the renderer refuses a vertex update or the frame, or whatever the face update reports (a layer that fails to paint, a variant that fails to rebuild).
+    /// [`StageError::Render`] if the renderer refuses a vertex update or the frame, or whatever the face update reports (a layer that fails to paint, a staged variant whose vertex refresh the renderer refuses).
     /// The simulations have already stepped; the next call carries on from there.
     pub fn tick(&mut self, renderer: &mut dyn Renderer, input: &FrameInput) -> Result<FrameOutput, StageError> {
         let tick = self.clock.next(input.dt);
@@ -224,7 +226,11 @@ impl Stage {
     ///
     /// # Errors
     /// [`StageError::Render`] with the first release the renderer refused.
-    pub fn release(self, renderer: &mut dyn Renderer) -> Result<(), StageError> {
+    pub fn release(mut self, renderer: &mut dyn Renderer) -> Result<(), StageError> {
+        if let Some(rig) = self.face.as_mut() {
+            // A staged variant or a retired character still holds renderer resources.
+            face::discard_switch(renderer, rig);
+        }
         self.character.release(renderer)
     }
 }
