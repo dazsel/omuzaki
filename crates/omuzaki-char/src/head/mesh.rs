@@ -261,7 +261,7 @@ fn grid_indices(resolution: Resolution) -> Vec<u32> {
 }
 
 /// Smooth vertex normals: each triangle adds its (unnormalised, so area-weighted) face normal to its three corners.
-fn vertex_normals(positions: &[Vec3], indices: &[u32]) -> Vec<Vec3> {
+pub(crate) fn vertex_normals(positions: &[Vec3], indices: &[u32]) -> Vec<Vec3> {
     let mut sums = vec![DVec3::ZERO; positions.len()];
     for tri in indices.as_chunks::<3>().0 {
         let [a, b, c] = tri.map(|i| positions[i as usize].as_dvec3());
