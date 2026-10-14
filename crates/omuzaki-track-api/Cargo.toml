@@ -1,0 +1,22 @@
+[package]
+name = "omuzaki-track-api"
+description = "Contract for live trackers: cameras and their frames, the Tracker device trait, clock mapping and the newest-wins frame mailbox (spec v3 §8, §10, §22 PF-01)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+schemars.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+omuzaki-anim-api = { path = "../omuzaki-anim-api" }
+omuzaki-core = { path = "../omuzaki-core" }
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

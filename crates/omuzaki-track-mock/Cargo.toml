@@ -1,0 +1,17 @@
+[package]
+name = "omuzaki-track-mock"
+description = "Deterministic stand-ins for the tracker contract: FakeCamera (scripted or synthetic frames) and FakeTracker (scripted TrackFrames with lost gaps) (spec v3 §39 rule 6)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+omuzaki-anim-api = { path = "../omuzaki-anim-api" }
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-track-api = { path = "../omuzaki-track-api" }
+
+[lints]
+workspace = true
