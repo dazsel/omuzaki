@@ -11,7 +11,7 @@ use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, UNIX_EPOCH};
 
-use common::{change, exists, p, read, snapshot, write};
+use common::{change, exists, p, read, snapshot_except, write};
 use omuzaki_doc::{Project, ProjectLock};
 use omuzaki_doc_api::{DocWrite, Patch};
 use serde_json::{Value, json};
@@ -22,14 +22,24 @@ fn mia() -> Value {
     json!({"face": {"smile": 5, "name": "Mia"}, "variants": {"game": {"scale": 2}}})
 }
 
-/// Runs the system `git` in `dir` with the runner's configuration kept out: an empty global config, no system config
-/// and a fixed identity. Panics with git's error output if it fails.
+/// Runs the system `git` in `dir` with the runner's configuration kept out: an empty global config, no system config,
+/// a fixed identity and no automatic maintenance (newer git may detach it after a commit, and it then changes files
+/// under `.git` while the test reads the folder). Panics with git's error output if it fails.
 fn git(dir: &Path, args: &[&str]) -> String {
     // Beside the project, not in it, so the snapshots of the project never see it.
     let config = dir.parent().unwrap().join("empty-gitconfig");
     fs::write(&config, "").unwrap();
     let output = Command::new("git")
-        .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid"])
+        .args([
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.invalid",
+            "-c",
+            "gc.auto=0",
+            "-c",
+            "maintenance.auto=false",
+        ])
         .args(args)
         .current_dir(dir)
         .env("GIT_CONFIG_GLOBAL", &config)
@@ -47,9 +57,12 @@ fn init_and_commit(dir: &Path, message: &str) {
     git(dir, &["commit", "-q", "-m", message]);
 }
 
-/// The `.toml` files under `dir` (relative paths), with their bytes.
+/// The `.toml` files under `dir` (relative paths), with their bytes; `.git` is git's and is not read.
 fn toml_files(dir: &Path) -> Vec<(String, Vec<u8>)> {
-    snapshot(dir).into_iter().filter(|(rel, _)| Path::new(rel).extension().is_some_and(|ext| ext == "toml")).collect()
+    snapshot_except(dir, &[".git"])
+        .into_iter()
+        .filter(|(rel, _)| Path::new(rel).extension().is_some_and(|ext| ext == "toml"))
+        .collect()
 }
 
 #[test]
