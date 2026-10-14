@@ -153,26 +153,15 @@ jobs:
           status=0
           features_for() { [[ " $* " == *" omuzaki-cli "* ]] && echo --features omuzaki-cli/test-fixtures; return 0; }
 
-          # A partition of a heavy crate often holds one single-threaded test that runs for minutes while the other
-          # cores idle. Start the partitions first and run the whole crates beside them (builds queue on cargo's
-          # lock, tests overlap); each partition's output goes to a file and is printed after, so logs stay readable.
-          part_pids=(); part_logs=()
-          for part in $PARTS; do
-            name=${part%@*}; slice=${part#*@}; log="$RUNNER_TEMP/part-${name}-${slice//\//-}.log"
-            # shellcheck disable=SC2046
-            cargo nextest run --profile ci --locked -p "$name" $(features_for "$name") --partition "hash:$slice" >"$log" 2>&1 &
-            part_pids+=($!); part_logs+=("$log")
-          done
-
           if [[ -n $CRATES ]]; then
             packages=(); for name in $CRATES; do packages+=(-p "$name"); done
             # shellcheck disable=SC2046
             cargo nextest run --profile ci --locked "${packages[@]}" $(features_for $CRATES) || status=1
           fi
-
-          for index in "${!part_pids[@]}"; do
-            wait "${part_pids[$index]}" || status=1
-            echo "::group::${part_logs[$index]##*/}"; cat "${part_logs[$index]}"; echo "::endgroup::"
+          for part in $PARTS; do
+            name=${part%@*}; slice=${part#*@}
+            # shellcheck disable=SC2046
+            cargo nextest run --profile ci --locked -p "$name" $(features_for "$name") --partition "hash:$slice" || status=1
           done
 
           # Doctests, once per crate: a split crate's doctests run with its first part.
