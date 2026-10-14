@@ -106,6 +106,9 @@ pub struct DistArgs {
 }
 
 /// Runs `cargo xtask dist` from the workspace at `root` and returns the zip's path.
+///
+/// # Errors
+/// An unsupported target, a failed build or notices step, an input that can't be read, or any error of [`write_zip`].
 pub fn run(root: &Path, args: &DistArgs) -> Result<PathBuf, DistError> {
     if args.target != TARGET && args.target != TARGET_MSVC {
         return Err(DistError::Input(format!("unsupported target {}: use {TARGET}", args.target)));
@@ -169,6 +172,10 @@ fn spawn_error(command: &str, source: &io::Error) -> DistError {
 
 /// Checks a models folder against its `manifest.json`: every file the manifest lists exists and its SHA-256 matches,
 /// and the files the zip ships are among them.
+///
+/// # Errors
+/// A missing or unreadable `manifest.json`, a required model it does not list, a listed file that is missing, or a hash
+/// that does not match.
 pub fn verify_models(dir: &Path) -> Result<(), DistError> {
     let listed = read_manifest(dir)?;
     for name in MODEL_FILES {
@@ -217,6 +224,9 @@ fn read_manifest(dir: &Path) -> Result<BTreeMap<String, String>, DistError> {
 
 /// Writes `<out>/omuzaki-<version>-windows-x64.zip` and returns its path. Models and the ORT archive are verified
 /// first; nothing is written when a check fails.
+///
+/// # Errors
+/// A model or ORT check fails, an input can't be read, or the zip can't be written.
 pub fn write_zip(inputs: &DistInputs, out: &Path) -> Result<PathBuf, DistError> {
     let mut entries: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     entries.insert("omuzaki.exe".to_owned(), read(&inputs.exe)?);
@@ -310,11 +320,20 @@ fn read(path: &Path) -> Result<Vec<u8>, DistError> {
     fs::read(path).map_err(|source| DistError::Io { path: path.to_owned(), source })
 }
 
+/// Lower-case hex of `bytes`.
+fn hex(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    bytes.iter().fold(String::with_capacity(bytes.len() * 2), |mut text, byte| {
+        let _ = write!(text, "{byte:02x}");
+        text
+    })
+}
+
 /// Lower-case hex SHA-256 of a file, streamed.
 fn sha256_file(path: &Path) -> Result<String, DistError> {
     let io_error = |source| DistError::Io { path: path.to_owned(), source };
     let mut file = File::open(path).map_err(io_error)?;
     let mut hasher = Sha256::new();
     io::copy(&mut file, &mut hasher).map_err(io_error)?;
-    Ok(hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect())
+    Ok(hex(&hasher.finalize()))
 }

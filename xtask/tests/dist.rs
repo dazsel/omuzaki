@@ -21,7 +21,11 @@ const MODEL_FILES: [&str; 4] = [
 ];
 
 fn hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+    use std::fmt::Write as _;
+    Sha256::digest(bytes).iter().fold(String::new(), |mut text, b| {
+        write!(text, "{b:02x}").unwrap();
+        text
+    })
 }
 
 /// A models folder of stand-in files plus the `manifest.json` that lists their hashes.
@@ -243,7 +247,7 @@ fn the_command_exits_2_with_one_line_when_it_refuses() {
     let stderr = String::from_utf8(run.stderr).unwrap();
     assert_eq!(stderr.trim().lines().count(), 1, "{stderr}");
     assert!(stderr.contains("pinned build"), "{stderr}");
-    assert!(run.stdout.is_empty());
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "");
 }
 
 #[test]
