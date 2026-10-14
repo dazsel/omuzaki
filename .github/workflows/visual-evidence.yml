@@ -19,8 +19,9 @@ on:
     branches: [main]
     types: [opened, synchronize, reopened, labeled, ready_for_review]
 
+# Another label being added starts a run that skips; it gets its own group so it cannot cancel a render in progress.
 concurrency:
-  group: visual-evidence-${{ github.event.pull_request.number }}
+  group: visual-evidence-${{ github.event.pull_request.number }}-${{ github.event.action == 'labeled' && github.event.label.name != 'visual' && 'other' || 'render' }}
   cancel-in-progress: true
 
 permissions:
