@@ -134,6 +134,13 @@ pub enum ErrorDetail {
         /// The document version after that change.
         version: DocVersion,
     },
+    /// An agent's edit lies outside its fence (`holder: None`) or inside another session's (`holder: Some`).
+    Fenced {
+        /// The path of the refused edit.
+        path: DocPath,
+        /// Whose fence the path lies in; `None` when the agent's own fence does not reach it.
+        holder: Option<Actor>,
+    },
     /// A job was cancelled.
     Cancelled {
         /// Which job.
@@ -223,6 +230,22 @@ impl OpError {
             .with_detail(ErrorDetail::PersonOnly { reason })
     }
 
+    /// An agent's edit at `path` is outside its fence (`holder: None`) or inside `holder`'s (`Denied`, detail
+    /// [`ErrorDetail::Fenced`]). The message names the holder.
+    pub fn fenced(path: DocPath, holder: Option<Actor>) -> Self {
+        let (message, hint) = match &holder {
+            Some(actor) => (
+                format!("`{path}` is fenced by {}", actor_name(actor)),
+                "work on another part, or ask a person to change the fence",
+            ),
+            None => (
+                format!("`{path}` is outside this session's fence"),
+                "edit only inside the fence, or ask a person to widen it",
+            ),
+        };
+        Self::new(ErrorCode::Denied, message).hint(hint).with_detail(ErrorDetail::Fenced { path, holder })
+    }
+
     /// The job `job` was cancelled (code [`Cancelled`](ErrorCode::Cancelled)). The executor attaches the
     /// [`ErrorDetail::Cancelled`] naming who and why; an op only gets this from [`JobCtx::checkpoint`](crate::JobCtx).
     pub fn cancelled(job: JobId) -> Self {
@@ -265,3 +288,13 @@ impl OpError {
 /// Opens the hint of every argument-decode error. [`OpError::is_decode_error`] matches on it; the wording is free to
 /// change as long as both sides use this constant.
 const DECODE_HINT_START: &str = "ask for the schema of ";
+
+/// Who `actor` is, for a message.
+fn actor_name(actor: &Actor) -> String {
+    match actor {
+        Actor::Person { name } => name.clone(),
+        Actor::Agent { id, .. } => id.clone(),
+        Actor::Plugin { id } => format!("plugin {id}"),
+        Actor::System => "Omuzaki".to_owned(),
+    }
+}

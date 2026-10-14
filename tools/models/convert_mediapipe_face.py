@@ -14,7 +14,7 @@ Run it in a throwaway venv, never the repo's (it pulls in TensorFlow):
 
     uv venv $TMPDIR/webcam-track-venv && uv pip install --python $TMPDIR/webcam-track-venv/bin/python \
         "tensorflow-cpu==2.16.2" "tf2onnx==1.16.1" "onnx==1.16.2" "numpy<2" onnxruntime "protobuf<5"
-    $TMPDIR/webcam-track-venv/bin/python -I tools/convert_models.py \
+    $TMPDIR/webcam-track-venv/bin/python -I tools/models/convert_mediapipe_face.py \
         --task face_landmarker.task --out $OMUZAKI_ASSETS/models/mediapipe-face
 """
 import argparse

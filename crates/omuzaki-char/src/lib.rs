@@ -24,7 +24,8 @@
 //! | [`accessory`] | attachment, rigid jewellery, hats, glasses, wings, tails |
 //! | [`cloth`] | the XPBD sheet solver, contacts, runtime, quality modes, bake (garment presets live in `outfit/*/cloth.rs`) |
 //! | [`palette`] | palette ops, colourways, contrast checks, skin tones |
-//! | [`ops`] | the registered character, part, variant, body, face, layout, weights and hair ops |
+//! | [`look`] | the look presets of `library/looks/` (LK-06), registered from data |
+//! | [`ops`] | the registered character, part, variant, body, face, layout, weights, hair and look ops |
 //! | [`builder`] | the registry and caching character builders |
 //!
 //! Benchmarks sit in `benches/` (one pre-declared target per hot path) and each change adds its own files under `tests/`.
@@ -38,6 +39,7 @@ pub mod fit;
 pub mod hair;
 pub mod head;
 pub mod kit;
+pub mod look;
 pub mod ops;
 pub mod outfit;
 pub mod palette;

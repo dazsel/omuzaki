@@ -29,6 +29,10 @@ omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 omuzaki-face-mock = { path = "../omuzaki-face-mock" }
 
 [[bench]]
+name = "animator"
+harness = false
+
+[[bench]]
 name = "retarget"
 harness = false
 
