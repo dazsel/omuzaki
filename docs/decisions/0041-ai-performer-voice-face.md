@@ -41,11 +41,12 @@ blend order already puts a human tracker above the score layer.
 7. **Speech-to-speech in AP-02** means ML-14 voice conversion of the streamer (cover mode). Without a shippable model
    the person gets BR-24 and their own model (ADR 0016); an end-to-end speech model for the performer is rejected.
 8. **Face:** the pump hands the mouth drive (`omuzaki-voice`) each slice up to 100 ms ahead of playback, stamped with its
-   program time (`VoiceLead`); the drive runs `voice_to_face@1` paced on those stamps, falls back to visemes per missed
-   block (50 ms crossfades), releases results only when the program clock reaches them (so a cut never has to take
-   one back), drops the pending ones on a cut and filters late model results by a cut generation (with a stream
-   restart), and writes a `Source::Audio` `Max` layer on
-   the mouth stamped `program_time − D`. A turn's first chunk starts up to 100 ms later to make room. Private speech
+   program time (`VoiceLead`); the drive runs `voice_to_face@1` paced on those stamps, keys each block's frame at the
+   start of the input interval it depicts (latency and per-reply sequence origin included), falls back to visemes per
+   missed block (50 ms crossfades), interpolates its own 10 ms ticks and releases a tick only when the program clock
+   reaches it and the audio thread's cut state allows (so a cut never has to take one back), filters late model results
+   by a cut generation (with a stream restart), and writes a `Source::Audio` `Max` layer on the mouth stamped
+   `program_time − D`. A turn's first chunk starts up to 100 ms later to make room. Private speech
    leaves the face at rest, mouth and big moves alike.
 9. **Big moves:** a `BigMovePlanner` trait in `omuzaki-performer-api`, rules first (`omuzaki-performer`): look away while
    thinking, lean in on a question, turn to the co-host, a laugh bob. It writes head, lean, body turn and gaze into the

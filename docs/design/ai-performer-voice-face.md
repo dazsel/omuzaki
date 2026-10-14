@@ -224,70 +224,85 @@ The `ai_voice` bus tap (audio-api §1) delivers samples as they play, so a model
 `L` late: audio leading video is the most visible sync error (ITU-R BT.1359 puts detectability at about 45 ms of audio
 lead; unverified, unreachable from the build box). TTS audio exists before it plays, so the pump calls
 `VoiceLead::push(at, 24_000 × r, pcm, private)` with each slice **`lead` ahead** of the playhead, `at` its program time
-(§3.3). `lead = min(added_latency(queue) + block + 10 ms, 100 ms)`; a model needing more is allowed, its extra lag is
+(§3.3). `lead = min(added_latency(queue) + B/f + 10 ms, 100 ms)` (`B/f` is the model's block, so the key after any 10 ms tick is decided before the tick is due, §4.2); a model needing more is allowed, its extra lag is
 shown on the health meter ("mouth 40 ms late"). On a turn's **first** chunk the pump starts the feed `lead` late, so the
 mouth's first frame is ready: that adds ≤ 100 ms to ADR 0031 §5.3 (2,396 + 100 ≤ 2,500 ms p95). On a cut the pump calls
 `VoiceLead::cut(at)`, which only tidies: the drive's release and drop decisions never wait for it (§4.2).
 
 ### 4.2 The mouth drive (`omuzaki-voice`)
 
-- **Model:** one `voice_to_face@1` stream session (`ai-api.md` §10). The drive resamples the lead to the model's 16 kHz,
-  cuts blocks, pushes block `k` and takes `k − queue` in the same call, paced by the lead's `at` against the clock, on
-  its own thread. Output: ARKit-52 per block.
-- **Output time is not input time; frames are keys, stamped by sequence.** `StreamSpec::latency` (`ai-api.md` §10) says
-  input sample `n` comes out as output sample `n + latency` (`L`), and the slot returns **one frame per block** (block
-  `B` samples at model rate `f`), so a frame is a key for the input interval its block depicts, and the stage's
-  `PlayoutDelay` interpolates linearly between keys (anim-api §6.1). Rules:
-  - **Origin per generation.** `BlockSink::push` returns the block's sequence number, and `restart` keeps counting
-    (`stream.rs`: "Sequence numbers keep counting"), while `take(seq, out)` answers only `Ready` or `Missed`. So the
-    drive keeps, for each generation `g`, `seq₀(g)`, the number `push` returned for the first block after the restart,
-    and `at₀(g)`, the program time of that block's first sample (the `at` of the first lead slice). It also remembers
-    the `(seq, generation)` of every block in flight, and `take` is always called with a `seq` the drive chose, so the
-    block is known without any index from the slot.
-  - **Stamp.** Result `q` of generation `g` is the key `s_q = at₀(g) + ((q − seq₀(g))·B − L) / f`: the start of the
-    input interval `[(q−seq₀)·B − L, (q−seq₀+1)·B − L)` its output samples depict (the same start-of-block
-    convention as at `L = 0`). It is **never** the `at` of the push that returned it, and never `j·B` with `j` counted
-    from the first reply (that would offset every later reply by the blocks before it).
-  - **Warm-up.** A block with `(q − seq₀)·B < L` depicts part of the model's silent pre-roll, so its value is wrong;
-    **drop it (`⌈L/B⌉` blocks)**, do not clip a stamp. The first key of the generation is then a **fallback
-    (viseme) key at `at₀(g)`** computed from the lead PCM `[0, ⌈L/B⌉·B − L)`, so the layer has a key at `at₀` and
-    linear interpolation joins it to the first model key. At `L = 0` nothing is dropped and there is no extra key.
-  - **Fallback alignment.** A `Missed` block `q` is replaced by the viseme frame of the **same depicted interval** of the
-    lead PCM, stamped with the same `s_q`, so a model key and its fallback occupy the same slot, and the 50 ms
-    crossfade between them needs no shift.
-  - **Tail.** After a chunk's last sample the drive pushes silent blocks (`queue + ⌈L/B⌉`) so the last real audio
-    comes out; the pad the pump writes after a sentence (§3.1) is part of the lead and keeps the model fed.
-  - `lead` already pays for the model's trailing through `added_latency` (§4.1). `L` in the stamp is what keeps the
-    mouth from trailing the voice by `L / f` (10 ms per 160 samples at 16 kHz). A worked example with numbers is §6.3.
-- **Fallback (FE-08):** visemes from the same lead PCM (energy and spectral tilt per 10 ms), computed every block, so
-  switching is instant. `Block::Missed` uses the viseme frame for that block; `stalled` stays on visemes until the
-  stream restarts ("voice to face stalled: visemes"). Every switch crossfades over **50 ms** in channel space.
-- **Output:** a `Source::Audio` layer, mode `Max` (anim-api §6), mask `MOUTH` plus `jawOpen` and `tongueOut`; brows and
-  eyes stay with emotes and life (a manifest may opt in later). Each frame is stamped `at − D` (anim-api §6.1: AI
-  layers are `program_time − D`), so after the one A/V delay it lands with the voice.
-- **Released only for audio that played; the cut is read, not told.** Program time alone does not prove the audio
-  played: audio closes directly through the `FeedCloser` flag (§3.2), but `VoiceLead::cut` travels through the pump. A
-  pump stalled across a cut would let the release thread keep handing out frames for a feed that is already silent, and
-  a frame in `PlayoutDelay` cannot be taken back. So the release thread holds the feed's `CutProbe` (§2, attached with
-  each chunk) and, **immediately before each handoff** to the stage's `PlayoutDelay`, checks `probe.state()`:
-  1. `Raised`: release nothing; frames stay in the drive's ring.
-  2. `Cut { at: t }`, where `t = time_of(cut_at_sample)` is the audio thread's own number, not the pump's: release the
-     held frames with `at ≤ t` (they did play), drop the rest, push the close (below).
-  3. `Live`: release a frame once the program clock has reached its `at` and the playhead shows its sample consumed
-     (`at ≤ time_of(at_sample)`), stamped `at − D` (sampled at `now − D`, so due at once).
-  *Why no lock is needed:* the audio thread reads the flag at the start of a block and the release thread reads it just
-  before releasing. A frame released while the flag read `Live` at time `T` has `at ≤ T`; a flag raised after `T` can
-  only be seen by a block that starts after `T`, so that frame's audio was already in a block that played. Frames leave
-  only in states 3 and 2, so nothing in `PlayoutDelay` is ever past the cut, whatever the pump does. The close (mouth to
-  rest over 60 ms) is pushed with the stamp `max(t, last released at + 1 µs) − D`, so it is after the newest stamp and
-  `PlayoutDelay::push` accepts it. `D` only ramps at most 10 % (anim-api §6.1), so `at − D` still rises when `D`
-  changes. The pump's `VoiceLead::cut(at)` may arrive first, last or late; the outcome is the same.
-- **Results still in the model after a cut are filtered, not trusted.** The drive keeps a `generation` (a `u32`
-  bumped at each cut, by whichever of the probe or the pump reports it first) and a persistent cutoff `t`. Each pushed block records its generation and `seq` (above), and a result from an older generation, or with `at > t` of the generation that was cut, is thrown
-  away however late it arrives. The cut also calls `BlockSink::restart` (`ai-api.md` §10), so the queue is emptied
-  and the next reply does not inherit the cut word's model state; the next reply starts a new generation with its own
-  `seq₀` and `at₀` (above), because `restart` keeps the sequence counting. The next reply's first `at` is at least `lead` after
-  the restart, so its frames always stamp after the close.
+One thread, one model session, and **one timeline** in which stamping, interpolation and release are defined together
+(rounds of review found each of them wrong when it was specified apart from the others). Everything below is in
+program time; `f` is the model rate, `B` its block in samples, `L` = `StreamSpec::latency` in samples, `W = ⌈L/B⌉`.
+
+**Model.** One `voice_to_face@1` stream session (`ai-api.md` §10). The drive resamples the lead to `f`, cuts blocks,
+pushes block `k` and takes `k − queue` in the same call, paced by the lead's `at` against the clock. The slot returns
+**one ARKit-52 frame per block**; `Block::Missed` means "use the fallback for this block".
+
+**1. Keys: where a block's frame sits in time.**
+- *Origin per generation.* `BlockSink::push` returns the block's sequence number and `restart` keeps counting
+  (`stream.rs`), while `take(seq, out)` answers only `Ready` or `Missed`. For each generation `g` (one per reply after a
+  cut) the drive keeps `seq₀(g)`, the number `push` returned for its first block, and `at₀(g)`, the program time of that
+  block's first sample (the `at` of the first lead slice). It records `(seq, generation)` of each block in flight and
+  calls `take` only with a `seq` it chose.
+- *Stamp.* Block `q` is the **key** `s_q = at₀ + ((q − seq₀)·B − L) / f`: the start of the input interval
+  `[(q−seq₀)·B − L, (q−seq₀+1)·B − L)` its output depicts (the same start-of-block convention as at `L = 0`). Never
+  the `at` of the push that returned it, and never a count from the first reply.
+- *Warm-up.* The first `W` blocks (`(q − seq₀)·B < L`) depict model pre-roll: **drop them**. The first retained block
+  `r = seq₀ + W` has `s_r = at₀ + (W·B − L)/f ≥ at₀`. If `W·B − L > 0` the generation also gets a **head key** at
+  `at₀`, a viseme frame from the lead PCM `[0, W·B − L)`; if `W·B − L = 0` (`L = B`, `2B`, ...) the head interval is
+  empty, **there is no head key**, and the first retained key (the model frame, or its fallback if `Missed`) sits at
+  `at₀` itself. So keys of a generation are strictly increasing: no two share a stamp and `PlayoutDelay::push` can
+  never see a duplicate. At `L = 0` nothing is dropped and `s_q = at₀ + (q − seq₀)·B/f`.
+- *Fallback.* A `Missed` block's key is the viseme frame (FE-08: energy and spectral tilt) of the **same depicted
+  interval** of the lead PCM, at the same `s_q`. Key value `= w_q·model + (1 − w_q)·viseme`; `w` moves toward 1 on a
+  `Ready` block and toward 0 on a `Missed` one by `B/f / 50 ms` per block (a 50 ms crossfade), and starts at 1;
+  `stalled` pins `w = 0` until the stream restarts ("voice to face stalled: visemes").
+- *Tail.* After the last real sample the drive pushes `queue + W` silent blocks so the last audio comes out.
+- *Lead.* `lead` (§4.1) is at least `added_latency(queue) + B/f`, so the key after any tick (at most one block ahead)
+  has been decided (`Ready` or `Missed`) before the tick is due.
+
+**2. Ticks: the drive evaluates the curve; the stage only holds it.** `PlayoutDelay` interpolates only between stamps
+it has been given, so a key not yet released cannot shape the output between two earlier ones. The drive therefore
+interpolates **itself**, in its own buffer, on a fixed **tick of 10 ms** anchored at `at₀`: tick `n` is
+`τ_n = at₀ + n·10 ms`, and its frame is the **linear interpolation of the keys at `τ_n`**: the two keys around it,
+the first key held before it and the last key held after it. A tick may use a key up to one block after it. That is
+audio that has not played yet, which is the point of the lead and is accepted; what a cut bounds is the tick's
+**stamp**, not what its value was computed from. Ticks are `Copy` 52-wide `Layer`s in a ring of 64, which holds 640 ms
+at 100 Hz (anim-api §6.1 sizes the stage's ring the same way).
+
+**3. Release: a tick leaves the buffer only for audio that played.** Tick `τ` is handed to the stage's `PlayoutDelay`
+with the stamp `τ − D` (anim-api §6.1: AI layers are `program_time − D`), so it is due at once when sampled at
+`now − D` and the layer lands with the voice. Program time alone does not prove the audio played: audio closes
+directly through the `FeedCloser` flag (§3.2), but `VoiceLead::cut` travels through the pump, and a frame in
+`PlayoutDelay` cannot be taken back. So the release thread holds the feed's `CutProbe` (§2, attached with each chunk)
+and, **immediately before each handoff**, checks `probe.state()`:
+1. `Raised`: release nothing; ticks stay in the buffer.
+2. `Cut { at: t }`, `t = time_of(cut_at_sample)` (the audio thread's own number, not the pump's): release held ticks
+   with `τ ≤ t` (they did play), drop the rest, push the close.
+3. `Live`: release tick `τ` once the program clock has reached `τ` and the playhead shows its sample consumed
+   (`τ ≤ time_of(at_sample)`).
+*Why no lock is needed:* the audio thread reads the flag at the start of a block and the release thread reads it just
+before releasing. A tick released while the flag read `Live` at time `T` has `τ ≤ T`; a flag raised after `T` can only
+be seen by a block that starts after `T`, so that tick's audio was already in a block that played. Ticks leave only in
+states 3 and 2, so no stamp in `PlayoutDelay` is ever past the cut, whatever the pump does. *Sampling:* the stage
+reads at `now − D`, which is at or after the newest released tick by less than one tick, so it holds the newest tick
+for at most 10 ms of the curve and never reads ahead of the clock. **The close** (mouth to rest over 60 ms) is two
+ticks: one at `c = max(t, last released τ + 1 µs)` holding the last released value, one at `c + 60 ms` at rest, both
+stamped `− D`. `D` ramps at most 10 % (anim-api §6.1), so `τ − D` still rises when `D` changes. `VoiceLead::cut(at)`
+may arrive first, last or late; the outcome is the same.
+
+**4. After a cut, stale results are filtered.** The drive keeps a `generation` (a `u32` bumped at each cut, by
+whichever of the probe or the pump reports it first) and a persistent cutoff `t`. Each pushed block records its
+generation and `seq`, and a result from an older generation, or with stamp `> t` of the generation that was cut, is
+thrown away however late it arrives. The cut also calls `BlockSink::restart`, so the queue is emptied and the next
+reply does not inherit the cut word's model state; the next reply starts a new generation with its own `seq₀` and
+`at₀` because `restart` keeps the sequence counting. Its first `at₀` is at least `lead` after the restart, so its ticks
+stamp after the close.
+
+**Output layer:** a `Source::Audio` layer, mode `Max` (anim-api §6), mask `MOUTH` plus `jawOpen` and `tongueOut`; brows
+and eyes stay with emotes and life (a manifest may opt in later). §6.3 walks stamping, interpolation and release
+through one timeline.
 
 ### 4.3 Privacy and the human's mouth
 
@@ -368,11 +383,11 @@ outputs `jawOpen = min(1, 2.5 × block RMS)`, so a vowel gives 0.53 and a conson
 | 1250 | | 60 | `!` 0 |
 | 1310 | `Done { at: 1.310 }` | 0 | closed, mouth at rest by 1370 |
 
-Every mouth frame is due at its `at`, 70 ms after the model saw its audio: none is late, none is early. A cut at 1000
+The mouth column gives key values (`L` = 0, keys every 20 ms at 830, 850, ...); between keys the drive interpolates (§4.2, §6.3 has the 10 ms ticks). Every tick is due at its program time, 70 ms after the model saw its audio: none is late, none is early. A cut at 1000
 would raise the closer; the next block starts at 1005 and the fade makes `ai_voice` silent by 1007.5 (one block plus
 2.5 ms). From the raise the drive releases nothing, whether or not the pump has said anything; once the audio thread
-publishes the cutoff it releases held frames up to it, drops later ones and closes the mouth by 1060. This example has
-latency 0; §6.3 repeats its first frames with a model of 160 samples (10 ms) of latency.
+publishes the cutoff it releases held ticks up to it, drops later ones and closes the mouth by 1060. This example has
+latency 0; §6.3 walks the ticks around one key boundary with `L` = 0 and `L` = 160 samples (10 ms), and a cut.
 
 ### 6.2 A planned look-away and lean-in (golden channel trace)
 
@@ -402,32 +417,52 @@ toward the character's left), angles in radians; the golden file is JSON Lines a
 (`out_cubic(u) = 1 − (1 − u)³`, `smooth(u) = 3u² − 2u³`; natural knobs give lean 0.08 × (0.5 + 0.5) and an energy factor
 of 1.0.) The same script on a member whose `HEAD` a tracker owns resolves to the tracker's values on every row.
 
-### 6.3 The same sentence with a model of latency 160 samples
+### 6.3 One timeline through stamping, interpolation and release
 
-`FakeVoiceToFace` with `latency` `L` = 160 samples (10 ms) delays its output by `L`: output sample `m` is the §6 envelope
-of input sample `m − L`, zero before; block 320 (20 ms), `f` = 16 kHz, queue 2. Block `q` (generation start `seq₀` = 0,
-`at₀` = 830) depicts program times `830 + 20q − 10 ... 830 + 20q + 10` ms, so its key is `s_q = 830 + 20q − 10`. The text
-is "Hi chat!" (`H` 0 to 60 ms of the voice, `i` 60 to 120, space 120 to 180); `jawOpen` = 2.5 × the RMS of the depicted
-interval (vowel 0.3 → 0.53, consonant 0.08 → 0.141, half and half: RMS² is the mean of the two squares):
+Same fakes as above, `f` = 16 kHz, `B` = 320 (20 ms), queue 2, `at₀` = 830, `seq₀` = 0, "Hi chat!" as in §6.1 (`H` is voice
+time 0 to 60 ms, `i` 60 to 120, space 120 to 180). `jawOpen` of a key = 2.5 × the RMS of the interval it depicts
+(vowel 0.530, consonant 0.141; a half-and-half interval has RMS² = the mean of the two squares; the viseme fallback
+uses the same envelope in this example). Two fakes: **A**, `L` = 0; **B**, `L` = 160 samples (10 ms): its output sample
+`m` is the envelope of input sample `m − 160`, zero before.
 
-| q | depicted voice time (ms) | `jawOpen` | stamp `s_q` (ms) | note |
+**Keys** (stamp `s_q = 830 + 20(q − seq₀) − L/f`):
+
+| fake | stamp (ms) → key value |
+|---|---|
+| A | 830, 850, 870 → 0.141; 890, 910, 930 → 0.530; 950 → 0 |
+| B | **830 (head, viseme of voice time 0..10) → 0.141**; q1 840 → 0.141; q2 860 → 0.141; q3 880 → 0.388 (`√((0.0032+0.045)/2)·2.5`); q4 900 → 0.530; q5 920 → 0.530; q6 940 → 0.375 (`√(0.045/2)·2.5`); q7 960 → 0. Block q0 depicts −10..10 ms (0.100) and is dropped: `0·B < L` |
+
+**Ticks** (every 10 ms from 830; the value is the linear interpolation of the keys around it) and **release**
+(a tick is handed to the stage at program time `τ`, stamped `τ − D`):
+
+| program time (ms) | tick A | tick B | stamp for B, `D` = 0 / 200 | what the stage has at this instant |
 |---|---|---|---|---|
-| 0 | −10 .. 10 (10 ms of pre-roll, 10 of `H`) | 0.100 | none | dropped: `0·B < L` |
-| (head) | 0 .. 10, `H`, from the lead PCM | viseme `H` | 830 | the fallback key at `at₀` |
-| 1 | 10 .. 30, `H` | 0.141 | 840 | |
-| 2 | 30 .. 50, `H` | 0.141 | 860 | |
-| 3 | 50 .. 70, half `H`, half `i`: √((0.0032 + 0.045) / 2) × 2.5 | 0.388 | 880 | |
-| 4 | 70 .. 90, `i` | 0.530 | 900 | |
-| 5 | 90 .. 110, `i` | 0.530 | 920 | |
-| 6 | 110 .. 130, half `i`, half space: √(0.045 / 2) × 2.5 | 0.375 | 940 | |
-| 7 | 130 .. 150, space | 0 | 960 | |
+| 860 | 0.141 | 0.141 | 860 / 660 | tick 860 released |
+| 870 | 0.141 | 0.265 (between key 860 and key 880) | 870 / 670 | B: key 880 is not released; the **drive** used it |
+| 880 | 0.336 (870→890) | 0.388 | 880 / 680 | |
+| 890 | 0.530 | **0.459** (key 880 → key 900, halfway) | 890 / 690 | B: the 900 key is withheld, tick 890 is not: sampling at 890 gives 0.459, not 0.388 |
+| 900 | 0.530 | 0.530 | 900 / 700 | |
+| 910 | 0.530 | 0.530 | 910 / 710 | |
+| 920 | 0.530 | 0.530 | 920 / 720 | |
 
-The keys are 10 ms before the zero-latency ones of §6.1 at 20 ms steps, so after interpolation the mouth reaches 0.53
-at 900 ms rather than 890 or 910: the frame lands on the audio it describes. Dropping the stamp's `− L` would put every
-key 10 ms late (840 → 850, ...); that is what the test of §7 detects. The resume case: after a cut at the end of block 6
-(seqs 0 to 6 pushed), `restart` leaves the counter at 7; the next reply's first push returns 7, so `seq₀` = 7 and
-`at₀` is its own first slice's program time. Its first kept key is `at₀ + 10 ms` for seq 8, `s = at₀ + 20·(8 − 7) − 10`,
-exactly the pattern above shifted by `at₀(B) − 830`, and nothing about the first reply's 7 blocks leaks in.
+Between ticks the stage holds the newest one (sampling B at 895 gives 0.459, the curve there is 0.494: under one tick of
+the curve). With `D` = 200 the same ticks carry the stamps in the right column and are sampled at `now − 200`, so the
+output is the same curve 200 ms later.
+
+**A cut** raised at 893 ms: the engine blocks are 5 ms, the next starts at 895 and the fade ends at 897.5, so the audio
+thread publishes `t` = 897.5. Tick 890 was released at 890 (state `Live`); between 893 and the publication nothing is
+released (state `Raised`); tick 900 is dropped (`900 > t`); the close is a tick at `c = max(897.5, 890 + 1 µs) = 897.5`
+holding the last released value (A: 0.530, B: 0.459) and one at 957.5 at rest, stamped `− D`. If the pump stalls and
+never says `cut`, nothing changes. A key for block q8 or later arriving from the model after the cut belongs to the
+old generation and is dropped.
+
+**Whole-block latency.** `L` = 320 (`W` = 1, `W·B − L` = 0): block 0 is dropped, **no head key**, block 1 is the key at
+`at₀` = 830 (value 0.141, its own depicted interval 0..20 ms). `L` = 640 (`W` = 2): blocks 0 and 1 dropped, block 2 at
+830. `L` = 480 (`W` = 2): the head interval is `[0, 160)` samples = 10 ms, so a head key at 830 and block 2 at 840.
+
+**Resume.** After a cut at the end of block 6 (seqs 0 to 6 pushed) `restart` leaves the counter at 7. The next reply's
+first `push` returns 7, so `seq₀` = 7 and `at₀` is its own first slice's program time: its keys are the table above
+shifted by `at₀(B) − 830` (seq 8 is its block 1, stamp `at₀ + 10`), nothing of the first reply's seven blocks leaks in.
 
 ## 7. Tests (D6)
 
@@ -441,11 +476,26 @@ exactly the pattern above shifted by `at₀(B) − 830`, and nothing about the f
   flight, puts zero private samples on `program` (the fake engine's program tap) while `monitor_out` plays them.
 - **Voices:** **one file, two schemas:** a character with both `voice.toml` (an `FxPreset` chain) and `voice-assignment.toml`: `voice.assign` leaves the bytes of `voice.toml` unchanged and `audio.fx` saves leave the assignment unchanged, and both round-trip; unknown id, out-of-range speed or pitch, a cloned voice without consent, a revoked consent at start, a
   public-figure name warns; a hosted assign without `spend` is denied; the preview number for a dated price.
-- **Mouth drive:** §6.1 as a golden (stamps and values); a `Missed` block switches to visemes with the 50 ms crossfade;
-  stalled stays on visemes; a cut drops pending frames; **a delayed-pump cut:** the fake pump stalls 300 ms across a cut at 1000 (no `VoiceLead::cut`, no new `push`): zero frames past the audio thread's published cutoff reach `PlayoutDelay`, none are released between the raise and the cutoff publication, held frames up to the cutoff are then released in order, and the close is accepted (run with the stall ending before and after the publication); **nonzero latency:** a `FakeVoiceToFace` with `latency` = 160 samples (the §6 envelope delayed by that many samples, zero before) must produce **the §6.3 table exactly** (stamps in integer samples at 16 kHz: 0, 160, 480, 800, ...; values to 3 decimals), the block-0 frame is dropped and the head fallback key sits at `at₀`, a `Missed` block 3 is replaced by the viseme of the same depicted interval at the same stamp 880, the same fake with the `− L` removed fails the table by 10 ms (proof the test sees it), and nothing is stamped before `at₀`; **cut and resume, exact alignment:** reply A (seqs 0 to 6, cut after block 6, a late result for seq 6 arriving after the cut, dropped), then reply B (first push returns seq 7): B's keys, as `stamp − at₀(B)`, equal the §6.3 table's `stamp − at₀(A)` row for row (sample-exact), and for both replies every key minus the program time its depicted audio plays at is zero, so the check is on alignment, not on stamps merely rising; private leads leave the layer clear; the §6.1 golden again with `D` = 200 ms (every stamp
-  200 ms earlier, nothing released before its program time, a cut at 1000 pushes an accepted close); **across a cut:** a result for a block before the cut, scripted to
-  arrive after it, is dropped and the mouth stays closed; the next reply right after the cut, with `D` = 200 ms,
-  releases its frames in order, all stamped after the close.
+- **Mouth drive** (the sampled-output tests read the stage's `PlayoutDelay` at 5 ms steps, not only the ticks):
+  §6.1 as a golden (key values and ticks); **§6.3 exactly** for fake A and fake B (`FakeVoiceToFace` with a `latency`
+  field: output = the envelope delayed by that many samples, zero before): keys in integer samples at 16 kHz, tick
+  values to 3 decimals, and the sampled output between 860 and 920 for `D` = 0 and `D` = 200 ms, where the value at
+  890 ms is 0.459 and at 895 ms is 0.459 (the held tick), never 0.388; the same fake with the `− L` removed fails the
+  table by 10 ms (proof the test sees it); **warm-up:** `L` = 160 drops block 0 and starts with the head key at `at₀`;
+  `L` = `B` (320) and `L` = `2B` (640) have **no head key**, the first retained key sits at `at₀`, and no push to
+  `PlayoutDelay` is refused; `L` = 480 has a 10 ms head key; a `Missed` block 3 is replaced by the viseme of the same
+  depicted interval at the same stamp 880; the 50 ms crossfade ramps `w` by 0.4 per block; `stalled` stays on visemes;
+  **cuts** (each with `D` = 0 and 200): a cut raised at 893 ms between ticks, one exactly on a tick (900), and one
+  during the head interval: ticks past the published cutoff are dropped, the close is accepted and stamps after the
+  newest tick, and the sampled output after the close decays to rest over 60 ms; **a delayed-pump cut:** the fake pump
+  stalls 300 ms across a cut at 1000 (no `VoiceLead::cut`, no new `push`): zero stamps past the audio thread's published
+  cutoff reach `PlayoutDelay`, nothing is released between the raise and the publication, held ticks up to the cutoff
+  are then released in order (run with the stall ending before and after the publication); **cut and resume, exact
+  alignment:** reply A (seqs 0 to 6, cut after block 6, a late result for seq 6 arriving after the cut, dropped), then
+  reply B (first push returns seq 7): B's keys as `stamp − at₀(B)` equal A's as `stamp − at₀(A)` row for row
+  (sample-exact), and for both replies every key minus the program time its depicted audio plays at is zero, so the
+  check is on alignment, not on stamps merely rising; the next reply right after a cut with `D` = 200 ms releases its
+  ticks in order, all stamped after the close; private leads leave the layer clear.
 - **Planner:** §6.2 as a golden channel trace; determinism (two runs, same bits; another seed, other side); a tracked
   `HEAD` wins on every frame; a score key on `lean` beats the planner; `look_held` leaves gaze alone; **a private turn** (the §6.2 script with
   `private`) gives an all-rest trace, and a private turn starting mid look-away eases back with no new move; the bench.
