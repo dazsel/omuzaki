@@ -1,0 +1,27 @@
+[package]
+name = "omuzaki-assets-lock"
+description = "The project's assets.lock file: one reader and one canonical writer for the asset list, text in and text out (spec v3 §7, git design §3.2)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# A format library (ADR 0011): omuzaki-doc re-exports it for the project loader, and implementations such as
+# omuzaki-git-ops read and write the same file through it. It depends on contracts only.
+[package.metadata.omuzaki]
+layer = "lib"
+
+[dependencies]
+schemars.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+omuzaki-store-api = { path = "../omuzaki-store-api" }
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

@@ -3393,6 +3393,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-assets-lock"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-store-api",
+ "proptest",
+ "schemars",
+ "serde",
+ "thiserror 2.0.21",
+ "toml",
+]
+
+[[package]]
 name = "omuzaki-audio"
 version = "0.0.0"
 dependencies = [
@@ -3531,6 +3543,7 @@ version = "0.0.0"
 dependencies = [
  "criterion",
  "inventory",
+ "omuzaki-assets-lock",
  "omuzaki-core",
  "omuzaki-doc-api",
  "omuzaki-doc-mock",
@@ -4054,6 +4067,9 @@ dependencies = [
  "omuzaki-ai-mock",
  "omuzaki-anim-api",
  "omuzaki-core",
+ "serde_json",
+ "sha2",
+ "tempfile",
  "thiserror 2.0.21",
 ]
 
