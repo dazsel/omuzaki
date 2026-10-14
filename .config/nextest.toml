@@ -1,0 +1,20 @@
+# cargo-nextest settings for CI (`.github/workflows/ci.yml`) and for running the suite by hand with
+# `cargo nextest run --profile ci`. nextest runs tests from every binary in parallel; `cargo test` runs binaries one
+# after another, which made one crate's 17 minutes the critical path of the whole run.
+#
+# nextest does not run doctests: CI runs `cargo test --doc` for the same packages beside it.
+
+[test-groups]
+# Render, UI and stage tests open a software Vulkan adapter (lavapipe), which itself runs two rasteriser threads
+# (LP_NUM_THREADS=2 in setup-linux). Two such tests at a time keep a 4-vCPU runner from oversubscribing.
+gpu = { max-threads = 2 }
+
+[[profile.default.overrides]]
+filter = 'package(omuzaki-render) | package(omuzaki-ui) | package(omuzaki-stage)'
+test-group = 'gpu'
+
+[profile.ci]
+# Report every failing test, not just the first, and repeat the failure output at the end where it is easy to find.
+fail-fast = false
+failure-output = "immediate-final"
+final-status-level = "fail"
