@@ -94,11 +94,18 @@ fn an_invalid_name_is_a_clear_error() {
 }
 
 #[test]
-fn a_file_and_a_folder_with_the_same_name_are_an_error() {
-    let dir = fixture();
-    write(dir.path(), "group.rs");
-    let err = omuzaki_embed::module_list(dir.path(), "pub").unwrap_err();
-    assert!(err.to_string().contains("declared twice"), "{err}");
+fn a_file_beside_a_folder_of_the_same_name_is_an_error_naming_both_and_the_fix() {
+    // `group/` holds a `mod.rs` here; the error must not depend on that.
+    for with_mod in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "group.rs");
+        write(dir.path(), if with_mod { "group/mod.rs" } else { "group/inner.rs" });
+        let err = omuzaki_embed::module_list(dir.path(), "pub").unwrap_err().to_string();
+        let r = dir.path();
+        assert!(err.contains(&r.join("group.rs").display().to_string()), "{err}");
+        assert!(err.contains(&r.join("group").display().to_string()), "{err}");
+        assert!(err.contains(&r.join("group").join("mod.rs").display().to_string()), "{err}");
+    }
 }
 
 #[test]
