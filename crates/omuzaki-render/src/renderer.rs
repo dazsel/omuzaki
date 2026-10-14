@@ -5,11 +5,11 @@
 
 use std::time::Instant;
 
-use omuzaki_core::glam::UVec2;
+use omuzaki_core::glam::{UVec2, Vec3};
 use omuzaki_render_api::{
     Capabilities, EnvironmentDesc, EnvironmentId, FrameReport, Image, Material, MaterialId, MeshData, MeshId,
-    MtoonSupport, Painter, Quality, RenderError, Renderer, ResourceRef, ResourceStats, Scene, TargetDesc, TargetId,
-    TextureDesc, TextureId, TextureUsage,
+    MeshOptions, MtoonSupport, Painter, Quality, RenderError, Renderer, ResourceRef, ResourceStats, Scene, TargetDesc,
+    TargetId, TextureDesc, TextureId, TextureUsage,
 };
 
 use crate::caps::{self, CapabilityProfile};
@@ -106,7 +106,7 @@ impl WgpuRenderer {
             shading_programs: material::known_programs(),
             gpu_timings: graph.measures_gpu(),
             bit_exact: false,
-            dynamic_meshes: false,
+            dynamic_meshes: true,
             morph_targets: false,
             max_morph_targets: 0,
             mtoon: MtoonSupport::NONE,
@@ -190,11 +190,44 @@ impl Renderer for WgpuRenderer {
     }
 
     fn create_mesh(&mut self, mesh: &MeshData) -> Result<MeshId, RenderError> {
+        self.create_mesh_with(mesh, &MeshOptions::default())
+    }
+
+    fn create_mesh_with(&mut self, mesh: &MeshData, options: &MeshOptions) -> Result<MeshId, RenderError> {
         mesh.validate()?;
+        if options.morphs.is_some() {
+            return Err(RenderError::Unsupported("morph targets"));
+        }
         let gpu = &self.shared.gpu;
-        let uploaded = gpu.scoped("a mesh", || GpuMesh::upload(gpu, mesh))?;
+        let uploaded = gpu.scoped("a mesh", || GpuMesh::upload(gpu, mesh, options))?;
         let (index, generation) = self.resources.meshes.insert(uploaded);
         Ok(MeshId::from_parts(index, generation))
+    }
+
+    fn update_vertices(&mut self, mesh: MeshId, positions: &[Vec3], normals: &[Vec3]) -> Result<(), RenderError> {
+        let gpu = &self.shared.gpu;
+        gpu.check_alive()?;
+        let entry = self
+            .resources
+            .meshes
+            .get_mut(mesh.index(), mesh.generation())
+            .ok_or(RenderError::UnknownHandle { what: "mesh" })?;
+        if !entry.is_dynamic() {
+            return Err(RenderError::invalid("vertex update", "the mesh is static; create it with MeshUsage::Dynamic"));
+        }
+        let count = entry.vertex_count();
+        if positions.len() != count || normals.len() != count {
+            let reason =
+                format!("{} positions and {} normals for a mesh of {count} vertices", positions.len(), normals.len());
+            return Err(RenderError::invalid("vertex update", reason));
+        }
+        if positions.iter().chain(normals).any(|v| !v.is_finite()) {
+            return Err(RenderError::invalid("vertex update", "positions and normals must be finite"));
+        }
+        gpu.scoped("a vertex update", || {
+            entry.update_vertices(&gpu.queue, positions, normals);
+            Ok(())
+        })
     }
 
     fn create_texture(&mut self, desc: &TextureDesc, rgba: Option<&[u8]>) -> Result<TextureId, RenderError> {
@@ -325,6 +358,12 @@ impl Renderer for WgpuRenderer {
         scene.validate()?;
         quality.validate()?;
         let Self { shared, capabilities, resources, frame, graph, paints, .. } = self;
+        // The refresh writes GPU buffers (staging memory can run out), so it sits in an error scope like every other
+        // GPU call: a failure is a `RenderError`, not wgpu's uncaptured-error panic.
+        shared.gpu.scoped("a mesh refresh", || {
+            resources.refresh_dynamic(&shared.gpu.queue, scene);
+            Ok(())
+        })?;
         let (scene_resources, targets) = resources.split();
         let entry = targets
             .get_mut(target.index(), target.generation())
@@ -444,5 +483,26 @@ mod tests {
             Err(RenderError::DeviceLost)
         );
         assert_eq!(r.read_target(target).unwrap_err(), RenderError::DeviceLost);
+    }
+
+    #[test]
+    fn refreshing_a_dynamic_mesh_on_a_lost_device_is_device_lost_and_never_a_panic() {
+        use omuzaki_render_api::{MeshOptions, MeshUsage, Outline};
+        let mut r = renderer();
+        let quad = omuzaki_render_mock::shapes::quad(omuzaki_core::glam::Vec2::ONE);
+        let mesh = r.create_mesh_with(&quad, &MeshOptions { usage: MeshUsage::Dynamic, morphs: None }).unwrap();
+        let mut outlined = Material::unlit(Colour::WHITE);
+        outlined.outline = Some(Outline { colour: Colour::BLACK, width: 0.01 });
+        let material = r.create_material(&outlined).unwrap();
+        let target = r.create_target(&TargetDesc { size: UVec2::splat(8), alpha: AlphaEncoding::Straight }).unwrap();
+        // A stale mesh, so the next frame has an outline buffer to write before it draws anything.
+        r.update_vertices(mesh, &quad.positions, &quad.normals).unwrap();
+
+        r.shared.gpu.device.destroy();
+        r.wait_idle().unwrap();
+
+        let mut scene = Scene::new(Camera::default());
+        scene.instances.push(Instance::new(mesh, material, omuzaki_core::glam::Mat4::IDENTITY));
+        assert_eq!(r.render(target, &scene, &Quality::live()).unwrap_err(), RenderError::DeviceLost);
     }
 }

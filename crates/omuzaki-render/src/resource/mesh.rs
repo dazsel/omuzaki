@@ -1,4 +1,4 @@
-//! Mesh upload: one interleaved vertex buffer with a fixed layout, and a `u32` index buffer.
+//! Mesh upload: two vertex streams with a fixed layout (what moves, and what does not), and a `u32` index buffer.
 //!
 //! A single fixed layout (with neutral defaults for what a mesh lacks) lets every pass share one vertex input and one
 //! set of pipelines. The spike proved this for the whole character, hair included.
@@ -12,41 +12,52 @@ use std::collections::HashMap;
 use bytemuck::{Pod, Zeroable};
 use omuzaki_core::glam::{Vec2, Vec3};
 use omuzaki_core::id::Slug;
-use omuzaki_render_api::{MeshData, RenderError};
+use omuzaki_render_api::{MeshData, MeshOptions, MeshUsage, RenderError};
 use wgpu::util::DeviceExt;
 
 use crate::gpu::Gpu;
 use crate::program::AttributeSpec;
 use crate::shadow::bounds::MeshBounds;
 
-/// One vertex as the shaders read it (`Vertex` in `shader/common.wgsl`). 72 bytes, no padding.
+/// The part of a vertex that moves: what `update_vertices` and morph targets rewrite. Vertex buffer slot 0, 24 bytes.
+///
+/// A vertex is read from two streams (`Vertex` in `shader/common.wgsl`) so that rewriting a mesh uploads only these 24
+/// bytes of its 72, a third of the traffic, and a morphed copy of a mesh shares the rest ([`Surface`]) with the original.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
-struct Vertex {
-    position: [f32; 3],
-    normal: [f32; 3],
-    uv: [f32; 2],
-    colour: [f32; 4],
-    joints: [u16; 4],
-    weights: [f32; 4],
+pub(crate) struct Shape {
+    pub(crate) position: [f32; 3],
+    pub(crate) normal: [f32; 3],
 }
 
-const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![
-    0 => Float32x3, 1 => Float32x3, 2 => Float32x2, 3 => Float32x4, 4 => Uint16x4, 5 => Float32x4
-];
+/// The part of a vertex that stays put: UVs, colours and skin data, with neutral defaults for what a mesh lacks. Vertex
+/// buffer slot 1, 48 bytes.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub(crate) struct Surface {
+    uv: [f32; 2],
+    colour: [f32; 4],
+    pub(crate) joints: [u16; 4],
+    pub(crate) weights: [f32; 4],
+}
 
-/// The vertex buffer layout every scene pipeline uses.
-pub(crate) fn vertex_layout() -> wgpu::VertexBufferLayout<'static> {
-    wgpu::VertexBufferLayout {
-        array_stride: size_of::<Vertex>() as wgpu::BufferAddress,
+const SHAPE_ATTRIBUTES: [wgpu::VertexAttribute; 2] = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3];
+const SURFACE_ATTRIBUTES: [wgpu::VertexAttribute; 4] =
+    wgpu::vertex_attr_array![2 => Float32x2, 3 => Float32x4, 4 => Uint16x4, 5 => Float32x4];
+
+/// The two vertex buffer layouts (slots 0 and 1) every scene pipeline starts with.
+pub(crate) fn vertex_layouts() -> [Option<wgpu::VertexBufferLayout<'static>>; 2] {
+    let stream = |stride: usize, attributes| wgpu::VertexBufferLayout {
+        array_stride: stride as wgpu::BufferAddress,
         step_mode: wgpu::VertexStepMode::Vertex,
-        attributes: &VERTEX_ATTRIBUTES,
-    }
+        attributes,
+    };
+    [Some(stream(size_of::<Shape>(), &SHAPE_ATTRIBUTES)), Some(stream(size_of::<Surface>(), &SURFACE_ATTRIBUTES))]
 }
 
 const SMOOTH_NORMAL_ATTRIBUTES: [wgpu::VertexAttribute; 1] = wgpu::vertex_attr_array![6 => Float32x3];
 
-/// The layout of the smooth-normal stream (vertex buffer slot 1, shader location 6). Only the outline pass binds it.
+/// The layout of the smooth-normal stream (vertex buffer slot 2, shader location 6). Only the outline pass binds it.
 pub(crate) fn smooth_normal_layout() -> wgpu::VertexBufferLayout<'static> {
     wgpu::VertexBufferLayout {
         array_stride: size_of::<[f32; 3]>() as wgpu::BufferAddress,
@@ -55,10 +66,16 @@ pub(crate) fn smooth_normal_layout() -> wgpu::VertexBufferLayout<'static> {
     }
 }
 
-/// Where the extra streams start: vertex buffer slot 1 and shader location 6, then upward (`Extras` in
+/// The vertex buffer slot after the two vertex streams: where the extra streams (and the smooth normals) start.
+const FIRST_FREE_SLOT: u32 = 2;
+/// Where the extra streams start: [`FIRST_FREE_SLOT`] and shader location 6, then upward (`Extras` in
 /// `shader/toon.wgsl`).
-const EXTRA_FIRST_SLOT: u32 = 1;
+const EXTRA_FIRST_SLOT: u32 = FIRST_FREE_SLOT;
 const EXTRA_FIRST_LOCATION: u32 = 6;
+
+/// Vertex buffers a scene pipeline binds at most: the two vertex streams and every extra attribute stream. The device
+/// must allow this many (`caps::REQUIREMENTS`); the outline pass binds fewer.
+pub(crate) const MAX_VERTEX_BUFFERS: usize = FIRST_FREE_SLOT as usize + crate::program::MAX_ATTRIBUTES;
 
 /// The vertex attribute of extra stream `slot` (0-based) holding `components` floats.
 pub(crate) fn extra_attribute(slot: usize, components: u8) -> wgpu::VertexAttribute {
@@ -96,11 +113,38 @@ struct ExtraStream {
     buffer: wgpu::Buffer,
 }
 
+/// The CPU copy of a dynamic mesh's vertices, which [`GpuMesh::update_vertices`] rewrites.
+struct Shadow {
+    shapes: Vec<Shape>,
+    /// The skin data, for refitting the shadow bounds; empty for a rigid mesh.
+    skin: Vec<Surface>,
+    /// [`GpuMesh::smooth_normals`]'s contents.
+    smooth: Vec<[f32; 3]>,
+    /// Scratch for welding again from the current positions ([`GpuMesh::refresh`]).
+    welder: Welder,
+    /// The weld slot of every vertex at the positions of the last refresh: vertices at one point share a slot, exactly
+    /// as in a mesh created from the same geometry.
+    welds: Vec<usize>,
+    /// How many welded points there are, for the scratch below.
+    weld_count: usize,
+    /// Scratch for the per-point sums of [`resmooth`], sized once so a refresh allocates nothing.
+    sums: Vec<Vec3>,
+    /// `smooth` (and its GPU buffer) lags the vertices; the outline pass is the only reader ([`GpuMesh::refresh`]).
+    smooth_stale: bool,
+    /// The mesh's shadow bounds lag the vertices; shadow fitting and the blended sort are the readers.
+    bounds_stale: bool,
+}
+
 /// A mesh on the GPU.
 pub(crate) struct GpuMesh {
-    vertices: wgpu::Buffer,
-    /// One unit vector per vertex, in the order of `vertices` ([`smooth_normals`]).
+    shapes: wgpu::Buffer,
+    surface: wgpu::Buffer,
+    /// One unit vector per vertex, in the order of `shapes` ([`smooth_by_slots`]).
     smooth_normals: wgpu::Buffer,
+    shadow: Option<Shadow>,
+    /// Created with [`MeshUsage::Dynamic`].
+    dynamic: bool,
+
     indices: wgpu::Buffer,
     /// The mesh's `extra` attributes, which shading programs read (`program/mod.rs`).
     extras: Vec<ExtraStream>,
@@ -116,23 +160,34 @@ pub(crate) struct GpuMesh {
 }
 
 impl GpuMesh {
-    /// Uploads `mesh`, which the caller has validated.
-    pub(crate) fn upload(gpu: &Gpu, mesh: &MeshData) -> Result<Self, RenderError> {
+    /// Uploads `mesh`, which the caller has validated along with `options`.
+    pub(crate) fn upload(gpu: &Gpu, mesh: &MeshData, options: &MeshOptions) -> Result<Self, RenderError> {
         let index_count = u32::try_from(mesh.indices.len())
             .map_err(|_| RenderError::LimitExceeded { what: "indices in a mesh", limit: u64::from(u32::MAX) })?;
         let skinned = mesh.is_skinned();
         let joints_needed = joints_needed(mesh);
-        let vertices: Vec<Vertex> = (0..mesh.positions.len())
-            .map(|i| Vertex {
-                position: mesh.positions[i].to_array(),
-                normal: mesh.normals[i].to_array(),
+        let shapes: Vec<Shape> = mesh
+            .positions
+            .iter()
+            .zip(&mesh.normals)
+            .map(|(position, normal)| Shape { position: position.to_array(), normal: normal.to_array() })
+            .collect();
+        let surface: Vec<Surface> = (0..mesh.positions.len())
+            .map(|i| Surface {
                 uv: mesh.uvs.get(i).map_or([0.0; 2], Vec2::to_array),
                 colour: mesh.colours.get(i).copied().unwrap_or([1.0; 4]),
                 joints: mesh.joints.get(i).copied().unwrap_or([0; 4]),
                 weights: mesh.weights.get(i).copied().unwrap_or([1.0, 0.0, 0.0, 0.0]),
             })
             .collect();
-        let smooth: Vec<[f32; 3]> = smooth_normals(mesh).iter().map(Vec3::to_array).collect();
+        let dynamic = options.usage == MeshUsage::Dynamic;
+        let mut welder = Welder::with_capacity(mesh.positions.len());
+        let mut welds = Vec::with_capacity(mesh.positions.len());
+        let weld_count = welder.weld(mesh.positions.iter().copied(), &mut welds);
+        let smooth: Vec<[f32; 3]> =
+            smooth_by_slots(&welds, weld_count, &mesh.normals).iter().map(Vec3::to_array).collect();
+        // A dynamic mesh's vertex buffers are rewritten by `queue.write_buffer`; the rest never are.
+        let rewritable = if dynamic { wgpu::BufferUsages::COPY_DST } else { wgpu::BufferUsages::empty() };
         let buffer = |contents: &[u8], usage| {
             gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("mesh"), contents, usage })
         };
@@ -146,9 +201,24 @@ impl GpuMesh {
             })
             .collect();
         let extra_bytes: usize = mesh.extra.iter().map(|a| a.data.len() * size_of::<f32>()).sum();
+        // A dynamic mesh rewrites its vertices, so it keeps them on the CPU; a static one keeps nothing.
+        let shadow = dynamic.then(|| Shadow {
+            shapes: shapes.clone(),
+            skin: if skinned { surface.clone() } else { Vec::new() },
+            smooth: smooth.clone(),
+            welder,
+            welds,
+            weld_count,
+            sums: Vec::with_capacity(shapes.len()),
+            smooth_stale: false,
+            bounds_stale: false,
+        });
         Ok(Self {
-            vertices: buffer(bytemuck::cast_slice(&vertices), wgpu::BufferUsages::VERTEX),
-            smooth_normals: buffer(bytemuck::cast_slice(&smooth), wgpu::BufferUsages::VERTEX),
+            shapes: buffer(bytemuck::cast_slice(&shapes), wgpu::BufferUsages::VERTEX | rewritable),
+            surface: buffer(bytemuck::cast_slice(&surface), wgpu::BufferUsages::VERTEX),
+            smooth_normals: buffer(bytemuck::cast_slice(&smooth), wgpu::BufferUsages::VERTEX | rewritable),
+            shadow,
+            dynamic,
             indices: buffer(bytemuck::cast_slice(&mesh.indices), wgpu::BufferUsages::INDEX),
             extras,
             index_count,
@@ -156,10 +226,53 @@ impl GpuMesh {
             joints_needed,
             bounds: MeshBounds::of(mesh, joints_needed),
             triangles: mesh.triangle_count() as u64,
-            bytes: (vertices.len() * (size_of::<Vertex>() + size_of::<[f32; 3]>())
+            bytes: (shapes.len() * (size_of::<Shape>() + size_of::<Surface>() + size_of::<[f32; 3]>())
                 + mesh.indices.len() * size_of::<u32>()
                 + extra_bytes) as u64,
         })
+    }
+
+    /// Whether [`update_vertices`](Self::update_vertices) is allowed.
+    pub(crate) fn is_dynamic(&self) -> bool {
+        self.dynamic
+    }
+
+    /// How many vertices the mesh has.
+    pub(crate) fn vertex_count(&self) -> usize {
+        self.shadow.as_ref().map_or(0, |s| s.shapes.len())
+    }
+
+    /// Replaces the positions and normals of a dynamic mesh with one `queue.write_buffer` of its shape stream (24 bytes
+    /// a vertex: the UVs, colours and skin data are another stream and stay). The caller has checked that the mesh is
+    /// dynamic, that both slices have [`vertex_count`](Self::vertex_count) elements and that all are finite.
+    ///
+    /// The shadow bounds and the outline directions (welding included) follow when a frame draws the mesh ([`refresh`](Self::refresh)).
+    pub(crate) fn update_vertices(&mut self, queue: &wgpu::Queue, positions: &[Vec3], normals: &[Vec3]) {
+        let Some(shadow) = self.shadow.as_mut() else { return };
+        for ((shape, position), normal) in shadow.shapes.iter_mut().zip(positions).zip(normals) {
+            *shape = Shape { position: position.to_array(), normal: normal.to_array() };
+        }
+        queue.write_buffer(&self.shapes, 0, bytemuck::cast_slice(&shadow.shapes));
+        shadow.smooth_stale = true;
+        shadow.bounds_stale = true;
+    }
+
+    /// Brings what an update left behind up to date: the shadow bounds, and the outline directions if `hull` (an
+    /// outline will draw the mesh).
+    pub(crate) fn refresh(&mut self, queue: &wgpu::Queue, hull: bool) {
+        let Some(shadow) = self.shadow.as_mut() else { return };
+        let Shadow { shapes, skin, smooth, welder, welds, weld_count, sums, smooth_stale, bounds_stale } = shadow;
+        if hull && *smooth_stale {
+            // An update can pull welded vertices apart or push separate ones together, so the seams are found again.
+            *weld_count = welder.weld(shapes.iter().map(|v| Vec3::from(v.position)), welds);
+            resmooth(welds, *weld_count, sums, shapes, smooth);
+            queue.write_buffer(&self.smooth_normals, 0, bytemuck::cast_slice(smooth));
+            *smooth_stale = false;
+        }
+        if *bounds_stale {
+            self.bounds.refit(self.joints_needed, shapes, skin);
+            *bounds_stale = false;
+        }
     }
 
     /// The extra stream called `name` with exactly `components` floats per vertex, if the mesh has one. A stream with
@@ -180,7 +293,7 @@ impl GpuMesh {
 
     /// Draws the mesh as instance number `instance` of the frame's instance buffer.
     pub(crate) fn draw(&self, pass: &mut wgpu::RenderPass<'_>, instance: u32) {
-        pass.set_vertex_buffer(0, self.vertices.slice(..));
+        self.bind_vertices(pass);
         self.draw_indexed(pass, instance);
     }
 
@@ -193,7 +306,7 @@ impl GpuMesh {
         attributes: &[AttributeSpec],
         zeros: &wgpu::Buffer,
     ) {
-        pass.set_vertex_buffer(0, self.vertices.slice(..));
+        self.bind_vertices(pass);
         for slot in 0..crate::program::MAX_ATTRIBUTES {
             let buffer = attributes.get(slot).and_then(|a| self.extra(a.name, a.components)).unwrap_or(zeros);
             pass.set_vertex_buffer(EXTRA_FIRST_SLOT + u32::try_from(slot).unwrap_or(0), buffer.slice(..));
@@ -203,9 +316,15 @@ impl GpuMesh {
 
     /// Like [`draw`](Self::draw), with the smooth-normal stream bound to vertex buffer slot 1.
     pub(crate) fn draw_with_smooth_normals(&self, pass: &mut wgpu::RenderPass<'_>, instance: u32) {
-        pass.set_vertex_buffer(0, self.vertices.slice(..));
-        pass.set_vertex_buffer(1, self.smooth_normals.slice(..));
+        self.bind_vertices(pass);
+        pass.set_vertex_buffer(FIRST_FREE_SLOT, self.smooth_normals.slice(..));
         self.draw_indexed(pass, instance);
+    }
+
+    /// Binds the two vertex streams to slots 0 and 1.
+    fn bind_vertices(&self, pass: &mut wgpu::RenderPass<'_>) {
+        pass.set_vertex_buffer(0, self.shapes.slice(..));
+        pass.set_vertex_buffer(1, self.surface.slice(..));
     }
 
     fn draw_indexed(&self, pass: &mut wgpu::RenderPass<'_>, instance: u32) {
@@ -220,16 +339,38 @@ impl GpuMesh {
 /// hull.
 const WELD_TOLERANCE: f32 = 1e-6;
 
-/// Each vertex's normal averaged with those of every vertex at the same point (within [`WELD_TOLERANCE`]), so a
-/// hard-edged mesh (a cube has three normals per corner) keeps one direction per corner and an outline pushed along it
-/// stays closed. A vertex whose neighbours cancel it out (two sheets back to back) keeps its own normal.
-fn smooth_normals(mesh: &MeshData) -> Vec<Vec3> {
-    let slots = weld_slots(&mesh.positions);
-    let mut sums = vec![Vec3::ZERO; slots.iter().max().map_or(0, |last| last + 1)];
-    for (&slot, &normal) in slots.iter().zip(&mesh.normals) {
-        sums[slot] += normal;
+/// Each vertex's normal averaged with those of every vertex at the same point (see [`Welder`]), so a hard-edged
+/// mesh (a cube has three normals per corner) keeps one direction per corner and an outline pushed along it stays
+/// closed. A vertex whose neighbours cancel it out (two sheets back to back) keeps its own normal.
+fn smooth_by_slots(slots: &[usize], count: usize, normals: &[Vec3]) -> Vec<Vec3> {
+    let mut sums = Vec::with_capacity(count);
+    sum_by_slot(slots, count, normals.iter().copied(), &mut sums);
+    slots.iter().zip(normals).map(|(&slot, &own)| smoothed(&sums, slot, own)).collect()
+}
+
+/// [`smooth_by_slots`] over a dynamic mesh's current vertices into `out`, with `sums` as scratch: no allocation once
+/// `sums` has grown to `count`.
+fn resmooth(slots: &[usize], count: usize, sums: &mut Vec<Vec3>, shapes: &[Shape], out: &mut [[f32; 3]]) {
+    sum_by_slot(slots, count, shapes.iter().map(|v| Vec3::from(v.normal)), sums);
+    for ((&slot, shape), out) in slots.iter().zip(shapes).zip(out) {
+        *out = smoothed(sums, slot, Vec3::from(shape.normal)).to_array();
     }
-    slots.iter().zip(&mesh.normals).map(|(&slot, &own)| sums[slot].try_normalize().unwrap_or(own)).collect()
+}
+
+/// Adds every vertex's normal to the sum of its point.
+fn sum_by_slot(slots: &[usize], count: usize, normals: impl Iterator<Item = Vec3>, sums: &mut Vec<Vec3>) {
+    sums.clear();
+    sums.resize(count, Vec3::ZERO);
+    for (&slot, normal) in slots.iter().zip(normals) {
+        if let Some(sum) = sums.get_mut(slot) {
+            *sum += normal;
+        }
+    }
+}
+
+/// The unit direction of point `slot`, or `own` if the normals there cancel out.
+fn smoothed(sums: &[Vec3], slot: usize, own: Vec3) -> Vec3 {
+    sums.get(slot).and_then(|sum| sum.try_normalize()).unwrap_or(own)
 }
 
 /// The grid cell holding coordinate `v`, for cells [`WELD_CELL`] wide. A float too large for a cell number saturates:
@@ -243,34 +384,74 @@ fn cell_of(v: f32) -> i64 {
 /// (at most eight cells in all, usually one).
 const WELD_CELL: f32 = 2.0 * WELD_TOLERANCE;
 
-/// The slot of every vertex: vertices within [`WELD_TOLERANCE`] of one another share a slot, and slots are numbered in
+/// Marks the end of a chain of slots in [`Welder::grid`].
+const NO_SLOT: usize = usize::MAX;
+
+/// Welds vertices into slots: vertices within [`WELD_TOLERANCE`] of one another share a slot, and slots are numbered in
 /// order of first appearance. A vertex joins the slot of the first vertex found within the tolerance (the nearest, if
-/// several), so a chain of points each within tolerance of the next does not collapse into one.
-fn weld_slots(positions: &[Vec3]) -> Vec<usize> {
-    let tolerance = Vec3::splat(WELD_TOLERANCE);
-    // Where each slot's first vertex is, and which slots have their first vertex in each cell.
-    let mut firsts: Vec<Vec3> = Vec::new();
-    let mut grid: HashMap<[i64; 3], Vec<usize>> = HashMap::with_capacity(positions.len());
-    positions
-        .iter()
-        .map(|&position| {
+/// several; the lower slot on a tie), so a chain of points each within tolerance of the next does not collapse into one.
+///
+/// The buffers are sized once for the mesh and reused, so welding again after an update allocates nothing.
+struct Welder {
+    /// Where each slot's first vertex is.
+    firsts: Vec<Vec3>,
+    /// The newest slot whose first vertex is in each cell; [`next`](Self::next) chains to the older ones.
+    grid: HashMap<[i64; 3], usize>,
+    /// For each slot, the next older slot in the same cell, or [`NO_SLOT`].
+    next: Vec<usize>,
+}
+
+impl Welder {
+    /// A welder for meshes of up to `vertices` vertices.
+    fn with_capacity(vertices: usize) -> Self {
+        Self {
+            firsts: Vec::with_capacity(vertices),
+            grid: HashMap::with_capacity(vertices),
+            next: Vec::with_capacity(vertices),
+        }
+    }
+
+    /// Fills `slots` with the slot of every position and returns how many slots there are.
+    fn weld(&mut self, positions: impl Iterator<Item = Vec3>, slots: &mut Vec<usize>) -> usize {
+        let tolerance = Vec3::splat(WELD_TOLERANCE);
+        self.firsts.clear();
+        self.grid.clear();
+        self.next.clear();
+        slots.clear();
+        for position in positions {
             let [lo, hi] = [position - tolerance, position + tolerance].map(|corner| corner.to_array().map(cell_of));
-            let cells = (lo[0]..=hi[0])
-                .flat_map(|x| (lo[1]..=hi[1]).flat_map(move |y| (lo[2]..=hi[2]).map(move |z| [x, y, z])));
-            let nearest = cells
-                .filter_map(|cell| grid.get(&cell))
-                .flatten()
-                .map(|&slot| (slot, firsts[slot] - position))
-                .filter(|(_, offset)| offset.abs().max_element() <= WELD_TOLERANCE)
-                .min_by(|(_, a), (_, b)| a.length_squared().total_cmp(&b.length_squared()))
-                .map(|(slot, _)| slot);
-            nearest.unwrap_or_else(|| {
-                firsts.push(position);
-                grid.entry(position.to_array().map(cell_of)).or_default().push(firsts.len() - 1);
-                firsts.len() - 1
-            })
-        })
-        .collect()
+            let mut best: Option<(usize, f32)> = None;
+            for x in lo[0]..=hi[0] {
+                for y in lo[1]..=hi[1] {
+                    for z in lo[2]..=hi[2] {
+                        let mut slot = self.grid.get(&[x, y, z]).copied().unwrap_or(NO_SLOT);
+                        while slot != NO_SLOT {
+                            let offset = self.firsts[slot] - position;
+                            let distance = offset.length_squared();
+                            let closer =
+                                best.is_none_or(|(held, d)| distance.total_cmp(&d).then(slot.cmp(&held)).is_lt());
+                            if offset.abs().max_element() <= WELD_TOLERANCE && closer {
+                                best = Some((slot, distance));
+                            }
+                            slot = self.next[slot];
+                        }
+                    }
+                }
+            }
+            let slot = best.map_or_else(
+                || {
+                    let slot = self.firsts.len();
+                    self.firsts.push(position);
+                    let head = self.grid.insert(position.to_array().map(cell_of), slot).unwrap_or(NO_SLOT);
+                    self.next.push(head);
+                    slot
+                },
+                |(slot, _)| slot,
+            );
+            slots.push(slot);
+        }
+        self.firsts.len()
+    }
 }
 
 /// One past the highest joint any vertex gives weight to. Joints with zero weight are ignored: exporters often leave
@@ -290,10 +471,23 @@ fn joints_needed(mesh: &MeshData) -> u32 {
 mod tests {
     use super::*;
 
+    fn weld_slots(positions: &[Vec3]) -> Vec<usize> {
+        let mut slots = Vec::new();
+        Welder::with_capacity(positions.len()).weld(positions.iter().copied(), &mut slots);
+        slots
+    }
+
+    fn smooth_normals(mesh: &MeshData) -> Vec<Vec3> {
+        let slots = weld_slots(&mesh.positions);
+        smooth_by_slots(&slots, slots.iter().max().map_or(0, |last| last + 1), &mesh.normals)
+    }
+
     #[test]
-    fn the_vertex_is_seventy_two_bytes_with_no_padding() {
-        assert_eq!(size_of::<Vertex>(), 72);
-        assert_eq!(vertex_layout().array_stride, 72);
+    fn the_vertex_is_seventy_two_bytes_in_two_streams_with_no_padding() {
+        let [shape, surface] = vertex_layouts().map(|l| l.map_or(0, |l| l.array_stride));
+        assert_eq!((shape, surface), (24, 48));
+        assert_eq!(size_of::<Shape>() as u64, shape);
+        assert_eq!(size_of::<Surface>() as u64, surface);
     }
 
     #[test]
@@ -381,6 +575,21 @@ mod tests {
         // Each point is within the tolerance of the next, but the third is 1.6e-6 from the first.
         let positions: Vec<Vec3> = [0.0, 0.8e-6, 1.6e-6].map(|x| Vec3::new(x, 0.0, 0.0)).to_vec();
         assert_eq!(weld_slots(&positions), [0, 0, 1]);
+    }
+
+    #[test]
+    #[allow(clippy::cast_possible_truncation)]
+    fn welding_again_with_the_same_welder_starts_from_scratch_and_keeps_its_buffers() {
+        let cube = omuzaki_render_mock::shapes::cuboid(Vec3::splat(0.5));
+        let mut welder = Welder::with_capacity(cube.positions.len());
+        let mut slots = Vec::with_capacity(cube.positions.len());
+        let (cap_slots, cap_firsts) = (slots.capacity(), welder.firsts.capacity());
+        assert_eq!(welder.weld(cube.positions.iter().copied(), &mut slots), 8);
+        let apart: Vec<Vec3> = (0..cube.positions.len() as u8).map(|i| Vec3::splat(f32::from(i))).collect();
+        assert_eq!(welder.weld(apart.iter().copied(), &mut slots), apart.len());
+        assert_eq!(welder.weld(cube.positions.iter().copied(), &mut slots), 8);
+        assert_eq!(slots, weld_slots(&cube.positions));
+        assert_eq!((slots.capacity(), welder.firsts.capacity()), (cap_slots, cap_firsts), "no growth");
     }
 
     #[test]
