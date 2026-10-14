@@ -132,6 +132,7 @@ Format rule (the repo licence gate will parse this): one row per item, with colu
 | v4l2loopback | tool | Linux virtual camera | external | user installs it; we only write frames | B4 |
 | OBS plugin linked to libobs | code | BR-03 | NO | a closed plugin is impossible; never link libobs into the app | B4 |
 | Omuzaki OBS plugin (separate GPL-licensed project, IPC to the app) | code | BR-03 | conditions | ships (decision 2026-10-11); own repository and download; GPL text and source offer; legal review reviews the boundary | B4 |
+| Text-safety rule layer: Unicode normalisation, per-language word lists, regex for links and personal data, character-run limits (own code) | code | AP-07 filter before speech, in-process and fail-closed (`docs/research/2026-10-text-safety-filters.md`) | yes | written by us, no weights and no training data; the word lists are written by us with their provenance recorded; the Aho-Corasick and regex crates get their own rows when the code lands | research 2026-10-text-safety-filters.md |
 | Texture watermark: keyed spread spectrum on a 512×512 canonical grid (own code) | code | SE-07 optional creator mark in exported textures (`omuzaki-export`, not yet built) | yes | written by us, std only; keys come from `blake3` (row above); the technique family is academic (Cox et al. 1997), patents for legal review (research note section 8) | (research note) |
 
 ## Planned: models, data and services (spec §14, §16)

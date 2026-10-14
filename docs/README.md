@@ -22,6 +22,7 @@ Dated notes. Licences and facts go stale, so always check the date.
 - `research/2026-10-crdt-fit.md`: can loro carry the project document and our patches? A three-peer spike: convergence, last-writer-wins conflicts, costs, alternatives (automerge, yrs, a sequencer), recommendation.
 - `research/2026-10-vts-shim-terms.md`: answering the VTube Studio API as a server (PL-05): terms, wire identity, what stream tools send, safety, which requests to answer or refuse, naming rules.
 - `research/2026-10-model-watermarking.md`: watermark and theft-protection techniques for exported avatars (what survives Blender re-export, JPEG, resize, decimation), a measured recommended texture mark, the attack model and the open legal points.
+- `research/2026-10-text-safety-filters.md`: text-safety filters for the AI performer's speech (AP-07): eleven candidates with the three licence checks, language coverage and claimed latency, the recommended fail-closed chain and a licence-clean test-set plan.
 
 ## Decisions
 - `decisions/`: one short record per architectural decision (context, decision, consequences).
