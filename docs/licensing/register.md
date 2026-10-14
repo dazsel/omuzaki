@@ -12,13 +12,13 @@ Format rule (the repo licence gate will parse this): one row per item, with colu
 | @pixiv/three-vrm 3.5.5 | js | prototype VRM loading | yes | keep notice | A1 |
 | @mediapipe/tasks-vision 0.10.14 | js+wasm | prototype webcam tracking | conditions | ship Apache text + notices ourselves; self-host; pin 0.10.14 (later versions plan telemetry) | A1 |
 | MediaPipe face_landmarker.task | model | 478 landmarks + 52 blendshapes | conditions | Apache-2.0 per the three model cards; archive cards + hashes; GHUM licence and Google ToS with legal review | A1 |
-| ONNX conversions of face_landmarker.task (`face_detector.onnx`, `face_landmarks_detector.onnx`, `face_blendshapes.onnx`) | model | webcam tracking spike: the same networks as ONNX, run by `ort` | conditions | derived from the MediaPipe row, so Apache-2.0 per the model cards; keep `manifest.json` and the numeric check (`tools/convert_models.py`) with the files; GHUM licence and Google ToS with legal review | A1, derived |
+| ONNX conversions of face_landmarker.task (`face_detector.onnx`, `face_landmarks_detector.onnx`, `face_blendshapes.onnx`) | model | webcam tracking (the spike, then `omuzaki-track`): the same networks as ONNX; the files ship in the V0 zip | conditions | derived from the MediaPipe row, so Apache-2.0 per the model cards; keep `manifest.json` and the numeric check (`tools/models/convert_mediapipe_face.py`, run by `tools/models/mediapipe-face.sh`) with the files; GHUM licence and Google ToS with legal review | A1, derived |
 | Google Fonts (Cormorant Garamond, Nunito Sans, Bricolage Grotesque, Instrument Sans, JetBrains Mono) | font | prototype UI | conditions | OFL-1.1: ship notice; self-host | A1 |
 | mediapipe (Python) 1.1.0 | python | the earlier prototype's `track_face.py` (not published), local dev only | conditions | dev only; versions ≥ 0.10.35 send telemetry; nothing shipped | A2 |
 | opencv-python-headless 5.0.0.93 | python | video decode in tooling | conditions | dev only; bundles LGPL FFmpeg | A2 |
 | opencv_contrib_python 5.0.0.93 | python | pulled in by mediapipe | conditions | dev only; bundles LGPL Qt: never ship | A2 |
 | numpy, Pillow, matplotlib and the other venv packages | python | tooling | yes | dev only | A2 |
-| tf2onnx 1.16.1 | python | converts the spike's TFLite models to ONNX (`tools/convert_models.py`) | yes | dev only, throwaway venv; never shipped | (PyPI: Apache-2.0) |
+| tf2onnx 1.16.1 | python | converts the spike's TFLite models to ONNX (`tools/models/convert_mediapipe_face.py`) | yes | dev only, throwaway venv; never shipped | (PyPI: Apache-2.0) |
 | TensorFlow 2.16.2 | python | reads the TFLite models in the conversion tooling | yes | dev only, throwaway venv; never shipped | (PyPI: Apache-2.0) |
 | onnx 1.16.2 | python | ONNX graph handling in the conversion tooling | yes | dev only, throwaway venv; never shipped | (PyPI: Apache-2.0) |
 | onnxruntime 1.26.0 (Python) | python | ONNX side of the conversion tooling; the shipped runtime is 1.28.3 (ONNX Runtime row) | yes | dev only, throwaway venv; never shipped | (PyPI: MIT) |
