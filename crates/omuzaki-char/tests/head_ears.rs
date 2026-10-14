@@ -5,7 +5,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)] // helpers build fixtures; a bad one should stop the test with its reason
 #![allow(clippy::float_cmp)] // exact values that were copied, not computed
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
 
 use omuzaki_char::head::cranium;
@@ -150,15 +150,14 @@ fn a_human_ear_is_the_prototypes_grid_at_every_size() {
     // Clear of the head (as the prototype's own root is), so nothing is pushed out of it and only the size acts.
     let root = head_and_root(&params).1 + Vec3::X * 0.5;
     let unit = build(&ears_of(EarKind::Human, 1.0), Side::Left, root).unwrap().expect("a human ear");
-    // The prototype's 369 vertices and 640 triangles come first; the outer skin that closes the shell follows.
-    assert_eq!((unit.positions.len(), unit.triangle_count()), (369 + 328, 640 * 2));
+    assert_eq!((unit.positions.len(), unit.triangle_count()), (369, 640));
     assert!(unit.normals.iter().all(|n| (n.length() - 1.0).abs() < 1e-4), "every vertex has a unit normal");
     for size in [0.2, 0.5, 1.0, 2.0, 3.0] {
         let ear = build(&ears_of(EarKind::Human, size), Side::Left, root).unwrap().expect("an ear");
         ear.validate().unwrap();
-        assert_eq!((ear.positions.len(), ear.indices.as_slice()), (697, unit.indices.as_slice()), "size {size}");
-        // The grid grows about its root: every vertex is `size` times as far from it.
-        for (a, b) in ear.positions.iter().zip(&unit.positions).take(369) {
+        assert_eq!((ear.positions.len(), ear.indices.as_slice()), (369, unit.indices.as_slice()), "size {size}");
+        // The shell grows about its root: every vertex is `size` times as far from it.
+        for (a, b) in ear.positions.iter().zip(&unit.positions) {
             assert!(((*a - root).length() - (*b - root).length() * narrow(size)).abs() < 1e-5, "size {size}");
         }
     }
@@ -181,8 +180,11 @@ fn weld(positions: &[Vec3]) -> Vec<usize> {
         .collect()
 }
 
+/// The ear is a thin sheet (its material is double-sided), so it is watertight when it has no hole but the rim: after
+/// welding, every interior edge has two triangles, the open edges are one closed loop (the rim) and no directed edge
+/// is used twice.
 #[test]
-fn every_edge_of_the_welded_ear_shell_belongs_to_exactly_two_triangles() {
+fn the_welded_ear_shell_is_a_sheet_with_no_hole_but_its_rim() {
     let params = HeadParams::default();
     let (_, root) = head_and_root(&params);
     for kind in [EarKind::Human, EarKind::Elf] {
@@ -191,28 +193,61 @@ fn every_edge_of_the_welded_ear_shell_belongs_to_exactly_two_triangles() {
                 let ears = Ears { kind, size, flare_deg: flare, tilt_deg: tilt, ..Ears::default() };
                 for side in Side::BOTH {
                     let root = if side == Side::Left { root } else { mirror_x(root) };
+                    let what = format!("{kind:?} size {size} flare {flare} tilt {tilt} {side:?}");
                     let ear = build(&ears, side, root).unwrap().expect("an ear");
                     let welded = weld(&ear.positions);
-                    let mut edges: HashMap<(usize, usize), u32> = HashMap::new();
+                    let mut directed: HashMap<(usize, usize), u32> = HashMap::new();
                     for tri in ear.indices.as_chunks::<3>().0 {
                         let w = tri.map(|i| welded[i as usize]);
                         if w[0] == w[1] || w[1] == w[2] || w[2] == w[0] {
                             continue; // the collapsed cells at the concha's centre
                         }
                         for (a, b) in [(w[0], w[1]), (w[1], w[2]), (w[2], w[0])] {
-                            *edges.entry((a.min(b), a.max(b))).or_default() += 1;
+                            *directed.entry((a, b)).or_default() += 1;
                         }
                     }
-                    let mut bad: Vec<_> = edges.iter().filter(|(_, n)| **n != 2).collect();
-                    bad.sort();
+                    // (3) consistent orientation.
+                    let twice: Vec<_> = directed.iter().filter(|(_, n)| **n > 1).collect();
                     assert!(
-                        bad.is_empty(),
-                        "{kind:?} size {size} flare {flare} tilt {tilt} {side:?}: {} of {} edges are not shared by \
-                         two triangles, first {:?} (edge, triangles)",
-                        bad.len(),
-                        edges.len(),
-                        &bad[..bad.len().min(5)]
+                        twice.is_empty(),
+                        "{what}: directed edges used twice, first {:?}",
+                        &twice[..twice.len().min(5)]
                     );
+                    // (1) every undirected edge has one or two triangles; the single ones are the open edges.
+                    let mut open: Vec<(usize, usize)> = Vec::new();
+                    for &(a, b) in directed.keys() {
+                        if !directed.contains_key(&(b, a)) {
+                            open.push((a, b));
+                        }
+                    }
+                    open.sort_unstable();
+                    // (2) the open edges are exactly one closed loop: every vertex on them has one edge in and one
+                    // out, and walking from any of them returns after visiting them all.
+                    let next: HashMap<usize, usize> = open.iter().copied().collect();
+                    assert_eq!(
+                        next.len(),
+                        open.len(),
+                        "{what}: a vertex starts two open edges, first {:?}",
+                        &open[..open.len().min(5)]
+                    );
+                    let heads: HashSet<usize> = open.iter().map(|e| e.1).collect();
+                    assert_eq!(heads.len(), open.len(), "{what}: a vertex ends two open edges");
+                    let start = open[0].0;
+                    let (mut at, mut steps) = (start, 0);
+                    loop {
+                        at = next[&at];
+                        steps += 1;
+                        if at == start || steps > open.len() {
+                            break;
+                        }
+                    }
+                    assert!(
+                        at == start && steps == open.len(),
+                        "{what}: the open edges are not one loop ({steps} of {})",
+                        open.len()
+                    );
+                    // The rim is the grid's last row, once round: 40 edges for either kind.
+                    assert_eq!(open.len(), 40, "{what}: rim edges");
                 }
             }
         }
@@ -296,8 +331,8 @@ fn the_elf_shell_is_the_human_shell_away_from_the_tip() {
     let human = build(&ears_of(EarKind::Human, 1.0), Side::Left, root).unwrap().unwrap();
     let elf = build(&ears_of(EarKind::Elf, 1.0), Side::Left, root).unwrap().unwrap();
     assert_eq!(human.indices, elf.indices);
-    // The grid's 369 vertices; the outer skin rides on them.
-    let moved: Vec<_> = (0..369).filter(|&i| (human.positions[i] - elf.positions[i]).length() > 1e-6).collect();
+    let moved: Vec<_> =
+        (0..human.positions.len()).filter(|&i| (human.positions[i] - elf.positions[i]).length() > 1e-6).collect();
     // Only the columns near the top (a = pi / 2 is column 10) and only the rows towards the rim move.
     assert!(!moved.is_empty() && moved.len() < 369 / 3, "{} vertices moved", moved.len());
     assert!(moved.iter().all(|i| (i / 9).abs_diff(10) <= 5 && i % 9 > 0));

@@ -94,7 +94,7 @@ pub(super) fn shell(
             positions.push(cleared(head, at + displace(angle(column), rim(row))).as_vec3());
         }
     }
-    shell_mesh(positions, head, size)
+    shell_mesh(positions)
 }
 
 /// The human ear of `ears.size` and orientation on the `side` of the head, rooted at `root` and kept out of `head`.
