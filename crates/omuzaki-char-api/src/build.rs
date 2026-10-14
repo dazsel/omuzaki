@@ -37,8 +37,8 @@ use crate::error::BuildError;
 use crate::geometry::{MaterialSpec, PartMesh, TextureData, face_texture_desc};
 use crate::ids::{AnchorId, CharId, MaterialName, PartId, PartKindId, TextureName, VariantId};
 use crate::kind::{
-    Anchor, BuildCtx, PartCategory, PartKindRegistration, PartOutput, Published, Quality, RecolourCtx, Recoloured,
-    find_kind, requires_of,
+    Anchor, AnchorsFact, BuildCtx, CollidersFact, FaceFact, FitFact, PartCategory, PartKindRegistration, PartOutput,
+    Published, Quality, RecolourCtx, Recoloured, StatureFact, find_kind, requires_of,
 };
 use crate::look::{LookError, LookParams, MaterialClass};
 use crate::rig::{self, CharacterRig, RigContribution};
@@ -400,8 +400,8 @@ pub fn build_part(
 /// are authored against the template; every other kind builds against what they published, already in metres.
 fn authored_scale(reg: &PartKindRegistration, output: &PartOutput, published: &Published) -> Option<f32> {
     match (reg.meta)().category {
-        PartCategory::Body => output.publishes.stature.map(|s| s.scale),
-        PartCategory::Head => published.stature.map(|s| s.scale),
+        PartCategory::Body => output.publishes.values::<StatureFact>().next().map(|s| s.scale),
+        PartCategory::Head => published.get::<StatureFact>().map(|s| s.scale),
         _ => None,
     }
 }
@@ -516,7 +516,7 @@ impl<'a> Assembler<'a> {
                 message: "the part was added twice: add each part of the plan once".to_owned(),
             });
         }
-        self.check_stature_order(part, &kind, output.publishes.stature.is_some())?;
+        self.check_stature_order(part, &kind, output.publishes.values::<StatureFact>().next().is_some())?;
         let counts = self.add_meshes(part, output.meshes)?;
         self.add_materials(part, &kind, output.materials, &output.material_classes)?;
         self.add_textures(part, output.textures)?;
@@ -532,9 +532,11 @@ impl<'a> Assembler<'a> {
             warnings: output.warnings,
         });
         // Published colliders are also rig colliders: one declaration serves later parts and the spring set.
-        rig::check_published_joints(part, output.publishes.fit.as_deref())?;
-        rig::check_published_colliders(part, &output.publishes.colliders)?;
-        let mut collider_groups = output.publishes.colliders.clone();
+        for fit in output.publishes.values::<FitFact>() {
+            rig::check_published_joints(part, Some(fit.as_ref()))?;
+        }
+        let mut collider_groups: Vec<_> = output.publishes.values::<CollidersFact>().cloned().collect();
+        rig::check_published_colliders(part, &collider_groups)?;
         collider_groups.extend(output.rig.collider_groups);
         self.rigs.push((part.clone(), RigContribution { collider_groups, ..output.rig }));
         self.published.absorb(part, output.publishes)?;
@@ -550,7 +552,7 @@ impl<'a> Assembler<'a> {
         publishes_stature: bool,
     ) -> Result<(), BuildError> {
         let is_head = find_kind(kind.as_str()).is_some_and(|reg| (reg.meta)().category == PartCategory::Head);
-        if is_head && self.published.stature.is_none() && self.unscaled_head.is_none() {
+        if is_head && self.published.get::<StatureFact>().is_none() && self.unscaled_head.is_none() {
             self.unscaled_head = Some(part.clone());
         }
         match (&self.unscaled_head, publishes_stature) {
@@ -653,11 +655,14 @@ impl<'a> Assembler<'a> {
             material_classes: self.material_classes,
             look: LookParams::default(),
             textures: self.textures,
-            face: self.published.face.map(|projection| FaceBinding { projection, profile: self.def.face.clone() }),
-            anchors: self.published.anchors,
+            face: self
+                .published
+                .get::<FaceFact>()
+                .map(|projection| FaceBinding { projection, profile: self.def.face.clone() }),
+            anchors: self.published.get::<AnchorsFact>().clone(),
             runtimes: self.runtimes,
             rig,
-            stature: self.published.stature,
+            stature: *self.published.get::<StatureFact>(),
             report: self.report,
         })
     }

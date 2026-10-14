@@ -26,6 +26,7 @@ use serde::de::DeserializeOwned;
 
 use crate::character::Attach;
 use crate::error::BuildError;
+use crate::fact::{Append, Cell, Fact, Keyed, Last, Slot, default_of};
 use crate::geometry::{FaceOverlay, MaterialSpec, PartMesh, TextureData};
 use crate::ids::{AnchorId, BodyTemplateId, JointRef, MaterialName, PartId, PartKindId, TextureName};
 use crate::rig::RigContribution;
@@ -368,45 +369,168 @@ pub struct Anchor {
     pub rotation: Quat,
 }
 
-/// What one part makes available to the parts after it.
-#[derive(Clone, Debug, Default)]
+/// What one part makes available to the parts after it: a [`Fact`] value per [`Publishes::put`]. The facts of this
+/// crate are [`HeadFact`], [`FaceFact`], [`FitFact`], [`AnchorsFact`], [`CollidersFact`] and [`StatureFact`]; any crate
+/// may define more ([`fact!`](crate::fact)).
+#[derive(Clone, Default)]
 pub struct Publishes {
-    /// The head surface (published by `head`).
-    pub head: Option<Arc<dyn HeadSurface>>,
-    /// Where painted face layers land on the head (published by `head`).
-    pub face: Option<FaceProjection>,
-    /// The part's outer envelope, for garments built over it.
-    pub fit: Option<Arc<dyn BodyFit>>,
-    /// Anchors for accessories.
-    pub anchors: Vec<(AnchorId, Anchor)>,
-    /// Collider groups later parts may use ([`BuildCtx::colliders`]): hair and cloth keep out of the head and
-    /// shoulders. They also join the rig's spring set. Colliders must sit on humanoid bones (provisional ids from
-    /// [`humanoid_id`](crate::humanoid_id)): the only bones another part can locate.
-    pub colliders: Vec<ColliderGroup>,
-    /// The character's real-world stature, published by the body part (`None` for a body authored in metres). The
-    /// build scales the body and the head by [`Stature::scale`] before any later part is built
-    /// ([`scale_output`](crate::scale_output)); what the body publishes here is therefore the size it already has.
-    pub stature: Option<Stature>,
+    /// By fact name, so the merge order is deterministic.
+    slots: BTreeMap<&'static str, Slot>,
+}
+
+impl Publishes {
+    /// Publishes one value of fact `F`. An [`Append`] or [`Keyed`] fact takes several `put`s, merged in the order they
+    /// were made.
+    pub fn put<F: Fact>(&mut self, value: F::Value)
+    where
+        F::Value: Clone,
+        F::Merged: Clone,
+    {
+        self.slots.entry(F::NAME).or_insert_with(Slot::new::<F>).values.push(Cell::new(value));
+    }
+
+    /// [`Publishes::put`] for building a value in one expression.
+    #[must_use]
+    pub fn with<F: Fact>(mut self, value: F::Value) -> Self
+    where
+        F::Value: Clone,
+        F::Merged: Clone,
+    {
+        self.put::<F>(value);
+        self
+    }
+
+    /// The values of fact `F` put so far, in order (what the part itself published, before any merge).
+    pub fn values<F: Fact>(&self) -> impl Iterator<Item = &F::Value> {
+        self.slots.get(F::NAME).into_iter().flat_map(|slot| slot.values.iter()).filter_map(Cell::get::<F::Value>)
+    }
+
+    /// The values of fact `F` put so far, in order, to change in place (the build scales them to real size).
+    pub fn values_mut<F: Fact>(&mut self) -> impl Iterator<Item = &mut F::Value> {
+        self.slots
+            .get_mut(F::NAME)
+            .into_iter()
+            .flat_map(|slot| slot.values.iter_mut())
+            .filter_map(Cell::get_mut::<F::Value>)
+    }
+
+    /// Whether nothing was put: the part is silent to the parts after it.
+    pub fn is_empty(&self) -> bool {
+        self.slots.is_empty()
+    }
+}
+
+impl Debug for Publishes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut facts = f.debug_map();
+        for (name, slot) in &self.slots {
+            facts.entry(name, &slot.values.len());
+        }
+        facts.finish()
+    }
 }
 
 /// Everything published so far during one build. Later parts read it; [`Published::absorb`] is the only writer.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct Published {
-    /// The head surface, if a head part built.
-    pub head: Option<Arc<dyn HeadSurface>>,
-    /// The face projection, if a head part built.
-    pub face: Option<FaceProjection>,
+    /// The merged value of every fact published so far, by fact name.
+    merged: BTreeMap<&'static str, Cell>,
+}
+
+impl Debug for Published {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(self.merged.keys()).finish()
+    }
+}
+
+// ------------------------------------------------------------------------------------------------ facts
+
+crate::fact! {
+    /// The head surface (published by `head`); the last part that publishes one wins.
+    pub HeadFact = "head", Last<Arc<dyn HeadSurface>>;
+}
+crate::register_fact!(HeadFact);
+
+crate::fact! {
+    /// Where painted face layers land on the head (published by `head`); the last part that publishes one wins.
+    pub FaceFact = "face", Last<FaceProjection>;
+}
+crate::register_fact!(FaceFact);
+
+crate::fact! {
+    /// Anchors for accessories, keyed by the publishing part and the anchor name.
+    pub AnchorsFact = "anchors", Keyed<AnchorId, Anchor>;
+}
+crate::register_fact!(AnchorsFact);
+
+crate::fact! {
+    /// Collider groups later parts may use ([`BuildCtx::colliders`]): hair and cloth keep out of the head and
+    /// shoulders. They also join the rig's spring set. Colliders must sit on humanoid bones (provisional ids from
+    /// [`humanoid_id`](crate::humanoid_id)): the only bones another part can locate. Appended in part order.
+    pub CollidersFact = "colliders", Append<ColliderGroup>;
+}
+crate::register_fact!(CollidersFact);
+
+/// A part's outer envelope, for garments built over it ([`FitFact`]).
+#[derive(Clone, Debug, Default)]
+pub struct Fits {
     /// Fit surfaces, innermost first: the bare body, then each garment's envelope in build order.
-    pub fit: Vec<Arc<dyn BodyFit>>,
-    /// Anchors by `(part, name)`.
-    pub anchors: BTreeMap<(PartId, AnchorId), Anchor>,
-    /// Every collider group published so far, in build order.
-    pub colliders: Vec<ColliderGroup>,
+    pub fits: Vec<Arc<dyn BodyFit>>,
     /// The first part that published a fit bound in anything but the T-pose, and that pose ([`Published::bind`]).
     pub bound_by: Option<(PartId, HumanoidPose)>,
-    /// The stature the body published, once it has built. Parts built after it see everything in metres.
-    pub stature: Option<Stature>,
 }
+
+/// The fit surfaces parts publish, appended in part order. Every fit not in the T-pose must share one bind pose
+/// (decision 0014): a character has one, so the build refuses instead of picking one. Fits that agree within 1e-6 per
+/// component, or that are in the T-pose, are fine.
+pub struct FitFact;
+
+impl Fact for FitFact {
+    const NAME: &'static str = "fit";
+    type Value = Arc<dyn BodyFit>;
+    type Merged = Fits;
+
+    fn merge(merged: &mut Fits, part: &PartId, fit: Arc<dyn BodyFit>) -> Result<(), String> {
+        let bind = fit.bind();
+        if bind != HumanoidPose::REST {
+            match &merged.bound_by {
+                Some((first, pose)) if !same_bind(pose, &bind) => {
+                    return Err(format!(
+                        "its fit is bound in a different pose than the fit of part '{first}': a character has one \
+                         bind pose (decision 0014), so both parts must sculpt in the same one"
+                    ));
+                }
+                Some(_) => {}
+                None => merged.bound_by = Some((part.clone(), bind)),
+            }
+        }
+        merged.fits.push(fit);
+        Ok(())
+    }
+}
+crate::register_fact!(FitFact);
+
+/// The character's real-world stature, published by the body part (nothing for a body authored in metres). The build
+/// scales the body and the head by [`Stature::scale`] before any later part is built
+/// ([`scale_output`](crate::scale_output)); what the body publishes here is therefore the size it already has. It must
+/// pass [`Stature::check`], and a second, different stature is an error (an equal one is fine).
+pub struct StatureFact;
+
+impl Fact for StatureFact {
+    const NAME: &'static str = "stature";
+    type Value = Stature;
+    type Merged = Option<Stature>;
+
+    fn merge(merged: &mut Option<Stature>, _part: &PartId, stature: Stature) -> Result<(), String> {
+        stature.check()?;
+        if merged.is_some_and(|first| first != stature) {
+            return Err("it publishes a different stature than an earlier part: a character has one stature".to_owned());
+        }
+        *merged = Some(stature);
+        Ok(())
+    }
+}
+crate::register_fact!(StatureFact);
 
 /// How far two bind poses may differ, per quaternion component and per axis of the hips offset, and still be the same
 /// pose: the rounding of two parts that each computed it.
@@ -424,51 +548,23 @@ fn same_bind(a: &HumanoidPose, b: &HumanoidPose) -> bool {
 }
 
 impl Published {
-    /// Adds what `part` published. A later head or face replaces an earlier one (a character has one head).
+    /// What fact `F` has merged so far: its `Default` when no part published it.
+    pub fn get<F: Fact>(&self) -> &F::Merged {
+        self.merged.get(F::NAME).and_then(Cell::get::<F::Merged>).unwrap_or_else(|| default_of::<F::Merged>())
+    }
+
+    /// Adds what `part` published, merging each fact in name order and each fact's values in the order they were put.
     ///
     /// # Errors
-    /// [`BuildError::Part`] if `part`'s fit is bound in a pose that differs from the one an earlier part's fit is bound
-    /// in (neither being the T-pose): a character has one bind pose, so the build refuses instead of picking one.
-    /// Nothing is absorbed then. Fits that agree within 1e-6 per component, or that are in the T-pose, are fine.
+    /// [`BuildError::Part`] with the message of the first fact that refuses a value, for example a fit bound in a pose
+    /// that differs from the one an earlier part's fit is bound in (neither being the T-pose), or a second, different
+    /// stature. Nothing is absorbed then.
     pub fn absorb(&mut self, part: &PartId, p: Publishes) -> Result<(), BuildError> {
-        let bind = p.fit.as_ref().map(|f| f.bind()).filter(|b| *b != HumanoidPose::REST);
-        if let Some(bind) = bind {
-            match &self.bound_by {
-                Some((first, pose)) if !same_bind(pose, &bind) => {
-                    return Err(BuildError::Part {
-                        part: part.clone(),
-                        message: format!(
-                            "its fit is bound in a different pose than the fit of part '{first}': a character has one \
-                             bind pose (decision 0014), so both parts must sculpt in the same one"
-                        ),
-                    });
-                }
-                Some(_) => {}
-                None => self.bound_by = Some((part.clone(), bind)),
-            }
+        let mut next = self.merged.clone();
+        for slot in p.slots.into_values() {
+            slot.merge_into(&mut next, part).map_err(|message| BuildError::Part { part: part.clone(), message })?;
         }
-        if let Some(stature) = p.stature {
-            stature.check().map_err(|message| BuildError::Part { part: part.clone(), message })?;
-            if self.stature.is_some_and(|first| first != stature) {
-                return Err(BuildError::Part {
-                    part: part.clone(),
-                    message: "it publishes a different stature than an earlier part: a character has one stature"
-                        .to_owned(),
-                });
-            }
-            self.stature = Some(stature);
-        }
-        if p.head.is_some() {
-            self.head = p.head;
-        }
-        if p.face.is_some() {
-            self.face = p.face;
-        }
-        self.fit.extend(p.fit);
-        self.colliders.extend(p.colliders);
-        for (name, anchor) in p.anchors {
-            self.anchors.insert((part.clone(), name), anchor);
-        }
+        self.merged = next;
         Ok(())
     }
 
@@ -476,17 +572,22 @@ impl Published {
     /// T-pose ([`BodyFit::bind`]), the T-pose when none is. The rig is bound in it. [`Published::absorb`] refuses two
     /// fits that disagree, so there is only one to find.
     pub fn bind(&self) -> HumanoidPose {
-        self.fit.iter().map(|f| f.bind()).find(|b| *b != HumanoidPose::REST).unwrap_or(HumanoidPose::REST)
+        self.get::<FitFact>()
+            .fits
+            .iter()
+            .map(|f| f.bind())
+            .find(|b| *b != HumanoidPose::REST)
+            .unwrap_or(HumanoidPose::REST)
     }
 
     /// The factor the body and head were scaled by to reach real size (`1` when the body published no stature).
     pub fn scale(&self) -> f32 {
-        self.stature.map_or(1.0, |s| s.scale)
+        self.get::<StatureFact>().map_or(1.0, |s| s.scale)
     }
 
     /// The outermost fit that garments wrap ([`BodyFit::envelope`]).
     pub fn outer_fit(&self) -> Option<&Arc<dyn BodyFit>> {
-        self.fit.iter().rev().find(|f| f.envelope())
+        self.get::<FitFact>().fits.iter().rev().find(|f| f.envelope())
     }
 
     /// Where `joint` is in the rig: fits that only move joints ([`JointFit`](crate::JointFit), `!envelope()`) are asked
@@ -494,12 +595,12 @@ impl Published {
     /// therefore wins over the body it moves it on whatever the build order, and over a garment envelope that merely
     /// repeats the body's joints. The rig is assembled from this.
     pub fn joint(&self, joint: &JointRef) -> Option<Vec3> {
-        self.fit
-            .iter()
+        let fits = &self.get::<FitFact>().fits;
+        fits.iter()
             .rev()
             .filter(|f| !f.envelope())
             .find_map(|f| f.joint(joint))
-            .or_else(|| self.fit.iter().filter(|f| f.envelope()).find_map(|f| f.joint(joint)))
+            .or_else(|| fits.iter().filter(|f| f.envelope()).find_map(|f| f.joint(joint)))
     }
 }
 
@@ -575,7 +676,7 @@ impl BuildCtx<'_> {
     /// `Missing` if no head part built before this one.
     pub fn head(&self) -> Result<Arc<dyn HeadSurface>, BuildError> {
         self.published
-            .head
+            .get::<HeadFact>()
             .clone()
             .ok_or_else(|| BuildError::Missing { part: self.part.clone(), needs: "a head surface" })
     }
@@ -588,9 +689,7 @@ impl BuildCtx<'_> {
     /// `Missing` if no head part built before this one.
     pub fn face_overlay(&self, layer: FaceLayerId) -> Result<FaceOverlay, BuildError> {
         let head = self.head()?;
-        let projection = self
-            .published
-            .face
+        let projection = (*self.published.get::<FaceFact>())
             .ok_or_else(|| BuildError::Missing { part: self.part.clone(), needs: "a face projection" })?;
         // The projection is in the painter's head-local units; the head centre is in metres at the character's real
         // size, so the window is scaled to match (the same scaling `scale_output` applies to the head's own overlay).
@@ -606,7 +705,7 @@ impl BuildCtx<'_> {
 
     /// The collider groups earlier parts published, to point a spring chain at by name or to keep geometry clear of.
     pub fn colliders(&self) -> &[ColliderGroup] {
-        &self.published.colliders
+        self.published.get::<CollidersFact>()
     }
 
     /// The outermost fit garments wrap ([`Published::outer_fit`]), or [`BuildError::Missing`]. A shared handle, like [`BuildCtx::head`].
