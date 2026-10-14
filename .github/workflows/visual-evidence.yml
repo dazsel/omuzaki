@@ -1,0 +1,159 @@
+# Before/after renders for pull requests labelled `visual`, so a visual change is reviewed from pictures CI made and
+# nobody has to build anything locally.
+#
+#   render   builds each affected crate's declared cases (crates/*/evidence.toml) at the PR's merge base and at the PR's
+#            head, also those whose sheet tool or example changed, compares the pictures and uploads them. Read-only token.
+#   comment  posts the statistics table and the artifact links as ONE comment, found by its hidden marker and updated on
+#            later pushes. The only job with `pull-requests: write`; it checks out and runs no PR code.
+#
+# Runs on `pull_request` (never `pull_request_target`: the render job executes the PR's own code). Unlabelled pull
+# requests, and drafts, skip it. Images stay in artifacts: GitHub cannot embed artifact images in a comment, and nothing
+# is committed to the repo. The contact sheet is uploaded unzipped (`archive: false`), so its link opens as a picture in
+# the browser for anyone signed in with access to the repository.
+#
+# To add a case, see tools/ci/evidence.py and crates/omuzaki-char/evidence.toml.
+name: Visual evidence
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, labeled, ready_for_review]
+
+# Another label being added starts a run that skips; it gets its own group so it cannot cancel a render in progress.
+concurrency:
+  group: visual-evidence-${{ github.event.pull_request.number }}-${{ github.event.action == 'labeled' && github.event.label.name != 'visual' && 'other' || 'render' }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  RUST_BACKTRACE: "1"
+  # One target directory (the default one, so the restored cache applies) for the base and the PR: dependencies are
+  # built once, only the workspace crates twice.
+  CARGO_TARGET_DIR: ${{ github.workspace }}/target
+
+jobs:
+  render:
+    name: render
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: >-
+      github.event.pull_request.draft != true
+      && contains(github.event.pull_request.labels.*.name, 'visual')
+      && (github.event.action != 'labeled' || github.event.label.name == 'visual')
+    outputs:
+      sheet_url: ${{ steps.sheet.outputs.artifact-url }}
+      all_url: ${{ steps.all.outputs.artifact-url }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The PR's own head, not the merge result: "after" is the PR, "before" its merge base, so a main that moved
+          # on since the branch was cut does not show up as a difference.
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0   # the merge base and the affected-crate diff need history
+      - uses: ./.github/actions/setup-linux
+        with:
+          cache-key: test
+          gpu: true
+      - name: Merge base and affected crates
+        id: scope
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          base=$(git merge-base "origin/$BASE_REF" HEAD)
+          echo "base=$base" >>"$GITHUB_OUTPUT"
+          git diff --name-only "$base" HEAD >"$RUNNER_TEMP/changed.txt"
+          cargo run --locked --quiet -p xtask -- check --format json --base "$base" >"$RUNNER_TEMP/report.json"
+          python3 -I - "$RUNNER_TEMP/report.json" >>"$GITHUB_OUTPUT" <<'PY'
+          import json, sys
+          r = json.load(open(sys.argv[1]))
+          print("crates=" + " ".join(sorted(set(r["full"] + r["link_only"]))))
+          PY
+      # The merge base, side by side with the checkout: "before" is what the PR branched from.
+      - name: Base checkout
+        env:
+          BASE_SHA: ${{ steps.scope.outputs.base }}
+        run: git worktree add --detach "$RUNNER_TEMP/base" "$BASE_SHA"
+      # Exact versions, so the sheet tools draw the same pixels on every run.
+      - name: Python packages
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet pillow==12.3.0 numpy==2.5.4 matplotlib==3.11.2
+          echo "$RUNNER_TEMP/venv/bin" >>"$GITHUB_PATH"
+      - name: Render before and after
+        id: run
+        continue-on-error: true
+        env:
+          CRATES: ${{ steps.scope.outputs.crates }}
+          TITLE: "(PR #${{ github.event.pull_request.number }})"
+        run: |
+          python3 -I tools/ci/evidence.py run --crates "$CRATES" --changed "$RUNNER_TEMP/changed.txt" --before "$RUNNER_TEMP/base" --after "$GITHUB_WORKSPACE" \
+            --out "$RUNNER_TEMP/evidence" --title "$TITLE"
+      - name: All images
+        id: all
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: visual-evidence
+          path: ${{ runner.temp }}/evidence
+          if-no-files-found: ignore
+      # Unzipped, so the link opens the picture itself.
+      - name: Is there a contact sheet
+        id: have
+        if: always()
+        run: '[[ -f "$RUNNER_TEMP/evidence/sheet.png" ]] && echo "sheet=true" >>"$GITHUB_OUTPUT" || true'
+      - name: Contact sheet
+        id: sheet
+        if: always() && steps.have.outputs.sheet == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          path: ${{ runner.temp }}/evidence/sheet.png
+          archive: false
+      - name: Fail if a case failed
+        if: steps.run.outcome == 'failure'
+        run: exit 1
+
+  comment:
+    name: comment
+    needs: render
+    if: always() && needs.render.result != 'skipped' && needs.render.result != 'cancelled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Fetch the evidence
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          name: visual-evidence
+          path: evidence
+      - name: Post or update the comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SHEET_URL: ${{ needs.render.outputs.sheet_url }}
+          ALL_URL: ${{ needs.render.outputs.all_url }}
+        run: |
+          marker='<!-- visual-evidence -->'
+          if [[ -f evidence/comment.md ]]; then
+            body=$(<evidence/comment.md)
+          else
+            body="$marker"$'\n'"### Visual evidence"$'\n\n'"The render job failed before it produced a report: see the [run]($RUN_URL)."
+          fi
+          links="[Contact sheet: before, after, difference]($SHEET_URL) (opens as a picture) · [all images (zip)]($ALL_URL) · [run]($RUN_URL)"
+          [[ -n $SHEET_URL ]] || links="[all images (zip)]($ALL_URL) · [run]($RUN_URL)"
+          body=${body//'{{LINKS}}'/$links}
+          id=$(gh api --paginate "repos/$REPO/issues/$PR/comments" \
+            --jq ".[] | select(.body | startswith(\"$marker\")) | .id" | head -n 1)
+          if [[ -n $id ]]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$id" -f body="$body" >/dev/null
+          else
+            gh api -X POST "repos/$REPO/issues/$PR/comments" -f body="$body" >/dev/null
+          fi

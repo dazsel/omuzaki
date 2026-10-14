@@ -44,6 +44,10 @@ slug_id!(
     GroupId
 );
 slug_id!(
+    /// A look preset (LK-06): `soft-sd`, `cel-flat`, `figure`. It is also the preset's file name.
+    LookPresetId
+);
+slug_id!(
     /// A body template (CB-01): `soft-sd`, `mini`, `standard`. The template fixes the skeleton and its default sizes.
     BodyTemplateId
 );
