@@ -239,7 +239,7 @@ pub struct Ears {
 
 impl Default for Ears {
     fn default() -> Self {
-        Self { kind: EarKind::Human, size: 1.0, position: [0.184, -0.066, -0.012], flare_deg: 42.0, tilt_deg: 7.0 }
+        Self { kind: EarKind::Human, size: 1.0, position: [0.190, -0.066, -0.012], flare_deg: 42.0, tilt_deg: 7.0 }
     }
 }
 
