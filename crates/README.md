@@ -156,3 +156,4 @@ dependencies against it. Dev-dependencies follow the same table plus one widenin
 ## Fixtures
 
 Golden files and parity fixtures are checked in. Several were made once by generator scripts from the earlier JavaScript prototype, which is not published; the tests compare against the checked-in files and never run those scripts.
+| `omuzaki-take-api` | API | takes (SH-01, ADR 0052): the `.input` format's constants, `RecordKind`, `ChunkFlags` and `ChunkHeader`, `TakeHeader`, the `State` and `Event` records, the `TakeSource` reader trait with `TakeReport` and `TakeError`, and `register_take_state!` for live-state providers; types only, the codec is `omuzaki-take`; design in `docs/design/takes.md` §5 |

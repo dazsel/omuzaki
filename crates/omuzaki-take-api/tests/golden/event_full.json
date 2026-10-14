@@ -1,0 +1,24 @@
+{
+  "lsn": 42,
+  "applied_frame": 90,
+  "entry": {
+    "form": "full",
+    "entry": {
+      "entry": "op",
+      "record": {
+        "seq": 7,
+        "op": "expression.hold",
+        "args": { "name": "smile" },
+        "actor": { "kind": "person", "name": "host" },
+        "cause": { "kind": "chat", "text": null },
+        "tx": 3,
+        "at": 3.0,
+        "patch": { "changes": [] },
+        "version": 18,
+        "on_behalf_of": null,
+        "approval": null
+      },
+      "commits": true
+    }
+  }
+}

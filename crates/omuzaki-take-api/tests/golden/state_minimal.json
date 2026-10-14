@@ -1,0 +1,17 @@
+{
+  "doc_version": 17,
+  "project": "demo",
+  "scene": null,
+  "camera": null,
+  "cast": [],
+  "sources": [],
+  "voices": [],
+  "models": {},
+  "delay_s": 0.0,
+  "after_lsn": 41,
+  "withheld": [],
+  "omitted": [],
+  "omitted_more": 0,
+  "overflow": true,
+  "live": {}
+}
