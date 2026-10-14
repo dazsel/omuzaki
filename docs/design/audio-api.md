@@ -429,7 +429,7 @@ pub trait AudioEngine: Send + Sync {
 - **Lifetimes:**
   - dropping a `TapHandle` or a `TapReader` closes its tap;
   - dropping a `FeedWriter` closes its feed, and its source plays silence;
-  - a closing feed fades out over 2.5 ms; `FeedWriter::closer()` raises the close flag from another thread, and `FeedWriter::playhead()` says which feed sample enters the bus at which engine sample and at which engine sample a closed feed went silent (`cut_at_sample`, the authority on what played) (`ai-performer-voice-face.md` §3.2, §3.3, ADR 0041);
+  - a closing feed fades out over 2.5 ms; `FeedWriter::closer()` raises the close flag from another thread, and `FeedWriter::playhead()` is a bounded log (about 2 s) of per-block records saying which feed samples entered the bus at which engine sample, plus the engine sample where a closed feed went silent (`cut_at_sample`, the authority on what played) (`ai-performer-voice-face.md` §3.2, §3.3, ADR 0041);
   - closing sets a flag the audio thread reads at the next block and never waits for it. The slot is reclaimed at the
     next compile.
 - **Events:** each `subscribe()` gets its own bounded queue of 256 that drops the oldest event and counts drops, so

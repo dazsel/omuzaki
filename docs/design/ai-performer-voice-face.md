@@ -120,14 +120,37 @@ of the `ai_voice` bus. 1 s holds the 500 ms lead plus a 500 ms pump stall.
   formants move with it, so `pitch_semitones` is limited to **−4..+4**, and `speed` to **0.7..1.4** (`s / r` must stay in
   the model's own range, Kokoro 0.5..2.0). A model with no speed control ignores `speed`, and pitch then changes tempo by
   `r` (≤ 26 %); the assignment op warns.
-- **The playhead (new in `omuzaki-audio-api`):** `FeedWriter::playhead() -> FeedPlayhead { consumed: u64, at_sample: u64, cut_at_sample: u64 }`,
-  written once per block by the audio thread (atomics, read wait-free): feed samples consumed so far,
-  the engine sample where the next one enters the bus, after the resampler's delay, and `cut_at_sample`, the engine
-  sample where a closed feed went silent (`u64::MAX` while open), set by the audio thread when the close fade ends, so
-  it is **the authority on what played**. `FeedCloser` and the playhead are `Clone` as read-only probes
-  (`is_raised()`, `read()`). This is a contract change: it lands first and alone (`CLAUDE.md`, how work flows, step 3). Then
-  `from = clock.time_of(at_sample) + (chunk_start − consumed) / rate`. ADR 0031's `Playing { from }` needs exactly this,
-  and the audio contract had no way to say it.
+- **The playhead (new in `omuzaki-audio-api`)** is a **bounded log of what each audio block consumed**, not a latest
+  snapshot, so a reader that looks late can still place every sample. `FeedWriter::playhead() -> FeedPlayhead`, `Clone`
+  as a read-only probe, offers `latest() -> PlayRecord`, `records_since(cursor) -> Records` and `cut_at_sample() -> u64`.
+  ```rust
+  pub struct PlayRecord { pub index: u64,     // 0, 1, 2, ... one per recorded block, never reused
+                          pub consumed: u64,  // feed sample index of the first sample this block consumed
+                          pub n: u32,         // feed samples consumed in this block, 1..=block (n < block: underrun inside it)
+                          pub at_sample: u64 }// engine sample where that first sample enters the bus (after the resampler's delay)
+  ```
+  - **What is recorded.** The audio thread appends one record per block **in which the feed consumed at least one
+    sample**; a block that consumed none (a stall) records nothing, and a partial block (an underrun part-way) records
+    the `n` it did consume. Sample `s` of the feed that lies in record `r` plays at engine sample
+    `r.at_sample + (s − r.consumed)·(engine rate / feed rate)`, so `time_of` of that is its program time **exactly**; a
+    gap shows as a jump of `at_sample` between consecutive records beyond `n` samples. Nothing is extrapolated across
+    records, only inside one.
+  - **History kept.** A ring of `⌈2 s / engine block⌉` records per feed (about 400 at 5.3 ms, 2,048 at most; 32 bytes
+    each), written by the audio thread with a per-slot sequence (seqlock): `index` is stored last, and a reader that
+    sees `index` change while copying retries that slot. 2 s covers the 1 s feed capacity (§3.1) plus a scheduling
+    hiccup of the reader.
+  - **A reader that misses records.** Readers keep a cursor and ask `records_since(cursor)`. If the ring was lapped
+    (`cursor` older than the oldest record), the call says how many records were lost. The samples of the lost records
+    **cannot be placed and are never extrapolated**: the mouth drive drops the ticks whose feed samples lie there
+    (`mouth_history_lost` counts them, the health meter shows it), the stage interpolates across, and the next tick is
+    stamped from the first surviving record. `Playing.from` of the speech host uses the same log and can only be wrong
+    by a lapped record, never by a guess.
+  - **The cut.** `cut_at_sample` is the engine sample where a closed feed went silent (`u64::MAX` while open), set by
+    the audio thread when the close fade ends; the last record's `n` ends at the cut. It is **the authority on what
+    played**. `FeedCloser` is `Clone` as a read-only probe too (`is_raised()`).
+  This is a contract change to `omuzaki-audio-api`: it lands first and alone (`CLAUDE.md`, how work flows, step 3).
+  ADR 0031's `Playing { from }` is `time_of(record at the chunk's first sample)`, with the sample placed as above, and
+  the audio contract had no way to say it.
 
 ### 3.4 Voices and where the assignment lives
 
@@ -275,37 +298,47 @@ held before it, the last held after it). A tick may use a key up to one block af
 which is the point of the lead and is accepted; what a cut bounds is the tick's **stamp**, not what it was computed
 from. Ticks are `Copy` 52-wide `Layer`s in a ring of 64 (640 ms at 100 Hz, as anim-api §6.1 sizes the stage's ring).
 
-**3. Release: a tick leaves only for audio that played.** Tick `v` is handed to the stage's `PlayoutDelay` with the
-stamp `P_g(v) − D` (anim-api §6.1: AI layers are `program_time − D`, so it is due at once when sampled at `now − D`).
-Program time does not prove the audio played: audio closes through the `FeedCloser` flag (§3.2), while `VoiceLead::cut`
-travels through the pump, and a frame in `PlayoutDelay` cannot be taken back. So the release thread holds the feed's
-`CutProbe` (§2) and polls it and the playhead at least twice per engine block; **immediately before each handoff** it
-checks `probe.state()`:
-1. `Raised`: release nothing; ticks stay in the buffer.
-2. `Cut { at: t }`, `t = time_of(cut_at_sample)` (the audio thread's number, with `consumed` frozen at the cut): release
-   held ticks with `P_g(v) ≤ t` (they did play), drop the rest, start the close.
-3. `Live`: release tick `v` once the playhead shows the sample at `v` consumed (`consumed > v·rate`), with the stamp
-   `P_g(v)` read from the playhead records (`time_of(at_sample) + (v·rate − consumed)/rate` for the block it fell in).
+**3. Release: one ordered queue of ticks, released for audio that played.** The queue holds, in voice order, the
+evaluated ticks and the rest ticks of §4 below. **Release is in queue order, one item at a time, so stamps rise by
+construction**: no item is released before the one ahead of it, and `PlayoutDelay::push` is never offered an older
+stamp. An item is stamped `P_g(v) − D` (anim-api §6.1: AI layers are `program_time − D`, so it is due at once when
+sampled at `now − D`). Program time does not prove the audio played: audio closes through the `FeedCloser` flag (§3.2),
+while `VoiceLead::cut` travels through the pump, and a frame in `PlayoutDelay` cannot be taken back. So the release
+thread holds the feed's `CutProbe` (§2) and its play log (§3.3) and polls them at least twice per engine block;
+**immediately before each handoff** it checks `probe.state()`:
+1. `Raised`: release nothing; the queue waits.
+2. `Cut { at: t }`, `t = time_of(cut_at_sample)`: release the items with `P_g ≤ t` (they did play), drop the rest,
+   start the close.
+3. `Live`: the head item `v` is released when the log shows its feed sample consumed (a record with
+   `consumed ≤ s < consumed + n` for `s = fs(v)`, the feed index of voice time `v`), stamped from **that record**, not
+   from the latest one: `P_g(v) = time_of(r.at_sample + (s − r.consumed)·ratio)`. If the log was lapped over `s` the tick
+   is dropped (§3.3). Reading records late changes nothing: the stamp depends on the record, not on when it was read.
 *Why no lock is needed:* the audio thread reads the flag at the start of a block and the release thread reads it just
-before releasing. A tick released while the flag read `Live` at time `T` has `P(v) ≤ T`; a flag raised after `T` can only
-be seen by a block that starts after `T`, so that tick's audio was already in a block that played. Ticks leave only in
-states 3 and 2, so no stamp in `PlayoutDelay` is ever past the cut, whatever the pump does. *Sampling:* the stage reads at
-`now − D`, at or after the newest tick by less than one tick, so it holds the newest tick for at most 10 ms of the curve
-and never reads ahead of the clock. `D` ramps at most 10 % (anim-api §6.1), so `P − D` still rises when `D` changes.
+before releasing. An item released while the flag read `Live` at time `T` has `P(v) ≤ T`; a flag raised after `T` can
+only be seen by a block that starts after `T`, so that item's audio was already in a block that played. Items leave
+only in states 3 and 2, so no stamp in `PlayoutDelay` is ever past the cut, whatever the pump does. *Sampling:* the
+stage reads at `now − D`, at or after the newest item by less than one tick, so it holds the newest tick for at most
+10 ms of the curve and never reads ahead of the clock. `D` ramps at most 10 % (anim-api §6.1), so `P − D` still rises.
+*A tick is never late, only coarser.* A tick is evaluated **when it reaches the head of the queue**, from the keys
+decided by then; a key not decided yet (the lead was capped below `lead_min`, §4.1, or the model is slow) is replaced by
+its viseme key (`w = 0` for it) and counted in `late_keys`. So a model that is late costs fidelity, never ordering or a
+refused push.
 
-**4. Stalls: the mouth follows the audio, not the plan.** If `consumed` stops advancing while a chunk is `Playing`
-for one engine block (an underrun, §3.2, or a late chunk), the voice is silent: no tick is released for it, since
-`P_g` is read, not predicted, and the keys (on the voice axis) are unaffected. The mouth closes: a **rest tick** is
-released at `g₀ + 60 ms` (`g₀` the program time consumption stopped) if still stalled. When consumption resumes at `g₁`, a
-rest tick at `g₁ − 10 ms` (if after the last released stamp) is released and the ticks continue, so the mouth does not
-drift open through the silence. A stall under 60 ms inserts nothing.
+**4. Stalls: the mouth follows the audio, not the plan.** From the log: a stall begins at `g₀ = time_of(r.at_sample +
+r.n·ratio)` for the last record `r`, and ends at `g₁ = time_of(r'.at_sample)` of the next. The drive sees the stall
+begin when the engine clock has passed `g₀` by one block with no new record. **Rest ticks are items in the same queue**,
+placed right after the last tick with `v` ≤ the last consumed sample: at `g₀ + 60 ms` (if the stall lasts that long)
+and, when it resumes, at `g₁ − 10 ms` (if later than the previous item). Because the queue is ordered, a tick whose
+sample was consumed before `g₀` is always ahead of the rest tick: it is released first (it is never late, above), and
+nothing is stamped before it afterwards. Ticks for samples after the stall are released at their record's time,
+`g₁` and later. A stall under 60 ms inserts nothing. The voice axis is unchanged by a stall.
 
-**5. The close, cancellable.** After a cut at `t` the close is a run of ticks `c + 10 ms·k`, `k = 1..6`, with
-`c = max(t, last released stamp + 1 µs)`, easing the last released value to rest; they are **released one at a time as
-the clock reaches them**, never published ahead. A new generation's tick is released when the playhead shows its sample
-consumed, and when it is about to be, every close tick with a stamp `≥` it is dropped (the new tick wins a tie): so a reply
+**5. The close, cancellable.** After a cut at `t` the close is a run of items `c + 10 ms·k`, `k = 1..6`, with
+`c = max(t, last released stamp + 1 µs)`, easing the last released value to rest; they are queue items released **one at a time as
+the clock reaches them**, never published ahead. A new generation's first tick is queued behind the close; when it
+would be released, every unreleased close item with a stamp `≥` it is dropped (the new tick wins a tie), so a reply
 that starts at once (a 50 ms lead after the restart, inside the 60 ms close) cannot make `PlayoutDelay::push` refuse
-anything, and the stage interpolates from the last close tick to the new reply's first tick.
+anything, and the stage interpolates from the last close item to the new reply's first tick.
 
 **6. After a cut, stale results are filtered.** The drive keeps a `generation` (a `u32` bumped at each cut, by whichever
 of the probe or the pump reports it first) and a persistent cutoff `t`. Each pushed block records its generation and
@@ -475,12 +508,29 @@ the close runs to 957.5. The close ticks released by then are 897.5, 907.5, 917.
 957.5 are dropped because the new reply's first tick has the stamp 947.5 (a tie goes to the new reply). Every stamp
 the stage sees rises, nothing is refused, and the mouth is at 0.177 (A, a third of 0.530) at 937.5, then the stage interpolates to the new reply's first tick at 947.5.
 
-**Stall (underrun).** Fake A; the pump starves so consumption stops at voice time 60 ms (program 890) and resumes
-100 ms later at 990. The voice axis is unchanged: keys at v = 0, 20, 40 → 0.141, v = 60, 80, 100 → 0.530. Released ticks:
-v = 40 at 870 (0.141), v = 50 at 880 (0.336), then the stall: nothing is released for it, a rest tick 0 at 950 (`g₀ + 60`,
-`g₀` = 890), and at the resume a rest tick 0 at 980 (`g₁ − 10`), then v = 60 at **990** (0.530), v = 70 at 1000 (0.530).
-`P(v) = 830 + v + 100` for `v ≥ 60`. Without the playhead mapping the tick for v = 60 would be stamped 890, 100 ms
-before the audio it describes, and the mouth would open in silence.
+**Stall (underrun), partial block, missed records.** Fake A, fake engine blocks of 5 ms (120 feed samples at 24 kHz),
+`at₀` = 830. The pump starves: the block starting at 890 consumes only 60 samples (2.5 ms), then nothing until a full
+block at 990, so the log has:
+
+| record | `consumed` (feed samples) | `n` | `at_sample` as program time (ms) |
+|---|---|---|---|
+| r12 | 1,440 (voice 60.0 ms) | 60 | 890.0 |
+| r13 | 1,500 (voice 62.5 ms) | 120 | 990.0 |
+| r14 | 1,620 (voice 67.5 ms) | 120 | 995.0 |
+
+(blocks starting 895 to 985 consumed nothing and recorded nothing). The jump 890.0 + 2.5 = 892.5 → 990.0 is the gap:
+`g₀` = 892.5, `g₁` = 990. **The release thread is descheduled from 900 to 1,010 and sees r12, r13, r14 at once.** Tick v = 60
+(feed 1,440) is in r12: stamp 890.0 (released, correct). Tick v = 70 (feed 1,680) is in r14 at offset 60 samples = 2.5 ms:
+**997.5**, not the 1,000 that extrapolating from the latest record would give (and not the 890 + 10 of a gap-free plan). The
+queue is: tick 60, rest tick 952.5 (`g₀ + 60`), rest tick 980 (`g₁ − 10`), tick 70 at 997.5, tick 80 at 1,007.5, ...,
+all rising. If the log had been lapped over r12 and r13 (a reader away for more than 2 s), ticks 60 and 62.5 would be
+dropped and counted, tick 70 would still be stamped 997.5 from r14.
+
+**Capped lead plus underrun.** A model whose `lead_min` is 130 ms but whose lead is capped at 100 ms: when tick v = 50
+reaches the head of the queue, the key at v = 60 is not decided (it is decided 30 ms late), so tick 50 is evaluated
+with the viseme key there (`late_keys` + 1). The stall above begins at 892.5: tick 60 (stamp 890) is **still ahead of
+the rest tick at 952.5** in the queue, so it is released (as a viseme-weighted tick) before the rest tick, and the rest
+tick at 952.5 cannot overtake it. Sampled at 890 the output is the viseme value, at 960 it is 0 (rest).
 
 **Whole-block latency.** `L` = 320 (`W` = 1, `W·B − L` = 0): block 0 is dropped, **no head key**, block 1 is the key at
 `at₀` = 830 (value 0.141, its own depicted interval 0..20 ms). `L` = 640 (`W` = 2): blocks 0 and 1 dropped, block 2 at
@@ -524,9 +574,19 @@ shifted by `at₀(B) − 830` (seq 8 is its block 1, stamp `at₀ + 10`), nothin
   ticks in order, all stamped after the close; private leads leave the layer clear.
   **immediate resume:** a 10 ms-block, queue-2, `L` = 0 fake (`lead_min` 50 ms) restarted at once after a cut: the close
   ticks and the new reply's ticks are all accepted, strictly rising, the tie goes to the new reply (§6.3), with `D` = 0
-  and 200; **stall and resume:** a pump stalled 100 ms mid-word (§6.3): every key's stamp minus the program time its
+  and 200; **stall and resume (play log):** a pump stalled 100 ms mid-word (§6.3): every key's stamp minus the program time its
   depicted audio plays at is zero on both sides of the gap, the rest ticks sit at `g₀ + 60` and `g₁ − 10`, a 40 ms stall
   inserts nothing, and a stall during a chunk that is then cut behaves as the cut tests.
+  **play log:** the audio thread under test writes records for a gap including a **partial-block underrun** (n < block) and
+  a full-block stall; a reader that polls only every 100 ms (skipping the observations in between) must stamp every
+  tick from its record exactly as a reader that polls every block (§6.3: 890.0 and 997.5), never from the latest; a
+  reader that is lapped (ring of 16 records in the test) drops precisely the ticks of the lost records, counts them
+  (`mouth_history_lost`), stamps the next tick from the first surviving record and is never offered a refused push;
+  the seqlock test hammers one slot while the reader copies it and never returns a torn record; **ordering under
+  lateness:** a capped-lead (100 ms) model with `lead_min` 130 ms plus an underrun (§6.3): accepted pushes only, stamps
+  strictly rising, tick 60 released before the rest tick, `late_keys` > 0, and the sampled output between 880 and 960 ms
+  with `D` = 0 and 200 equal to the specified curve (viseme-weighted before the rest tick, 0 after it).
+
 - **Planner:** §6.2 as a golden channel trace; determinism (two runs, same bits; another seed, other side); a tracked
   `HEAD` wins on every frame; a score key on `lean` beats the planner; `look_held` leaves gaze alone; **a private turn** (the §6.2 script with
   `private`) gives an all-rest trace, and a private turn starting mid look-away eases back with no new move; the bench.

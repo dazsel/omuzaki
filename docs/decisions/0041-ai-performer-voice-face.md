@@ -21,8 +21,8 @@ blend order already puts a human tracker above the score layer.
    split); a late chunk lengthens the pause and is counted. A cut is silent within one block plus a 2.5 ms fade, so
    ADR 0031's barge-in becomes 167.6 ms worst case on `R` (budget 200). Private speech goes to a third feed on an
    `ai_voice_private` bus whose only output is `monitor_out`, so leaving `CohostOnly` mid-turn can't put it on stream.
-2. **`omuzaki-audio-api` gains three things:** `FeedWriter::playhead()` (samples consumed and the engine sample where the
-   next enters the bus, written once per block), `FeedWriter::closer()` (a flag the performer thread raises directly on
+2. **`omuzaki-audio-api` gains three things:** `FeedWriter::playhead()` (a bounded log, 2 s of per-block records: first
+   sample consumed, how many, and the engine sample where it enters the bus; plus the cut sample), `FeedWriter::closer()` (a flag the performer thread raises directly on
    a cut) and a 2.5 ms fade when a feed closes. `Playing { from }` is computed from the playhead.
 3. **Pitch is the declared feed rate** (`24 kHz × 2^(p/12)`, synthesis at `speed / r`), limited to ±4 semitones; speed
    0.7 to 1.4. `tts@1` is fixed as `text`, `voice`, `speed`, `expressiveness` → `pcm` (24 kHz); style tags are a closed
