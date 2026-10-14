@@ -4030,7 +4030,10 @@ version = "0.0.0"
 dependencies = [
  "blake3",
  "clap",
+ "criterion",
  "image",
+ "omuzaki-ai-api",
+ "omuzaki-ai-ort",
  "omuzaki-anim",
  "omuzaki-anim-api",
  "omuzaki-char",
@@ -4047,6 +4050,7 @@ dependencies = [
  "omuzaki-render-api",
  "omuzaki-rig",
  "omuzaki-store-api",
+ "omuzaki-track",
  "schemars",
  "serde",
  "serde_json",
