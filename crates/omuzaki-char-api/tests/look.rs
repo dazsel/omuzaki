@@ -295,9 +295,8 @@ fn a_look_whose_computed_values_overflow_is_refused_and_changes_nothing() {
     assert!(matches!(&err, LookError::Invalid { path, .. } if path.starts_with("materials.look-")), "{err:?}");
     assert_eq!((built.look(), &built.materials), (&look, &materials), "the character is as it was");
     // A rim scale that overflows the strength is refused the same way.
-    let rim =
+    let big_rim =
         LookParams { all: ClassLook { rim_scale: Some(f32::MAX), ..ClassLook::default() }, ..LookParams::default() };
-    let big_rim = LookParams { all: ClassLook { rim_scale: Some(f32::MAX), ..rim.all.clone() }, ..rim };
     let mut loud = self::built();
     for spec in loud.part_materials.values_mut() {
         if let Shading::Toon(t) = &mut spec.shading {
