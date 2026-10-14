@@ -82,6 +82,10 @@ pub struct Weights {
     /// Weight of a crate that is not listed.
     default: u64,
     crates: BTreeMap<String, u64>,
+    /// Crates split into exactly this many partitions regardless of weight. nextest's `hash:k/n` partition is a pure
+    /// function of the test name, so a count that happens to separate a crate's slowest tests stays good.
+    #[serde(default)]
+    parts: BTreeMap<String, usize>,
 }
 
 impl Weights {
@@ -93,13 +97,24 @@ impl Weights {
 
     /// Every crate weighs the same, which makes [`shard`] an even split by count.
     pub fn uniform() -> Self {
-        Self { default: 1, crates: BTreeMap::new() }
+        Self { default: 1, crates: BTreeMap::new(), parts: BTreeMap::new() }
     }
 
     /// Build weights from explicit pairs (tests).
     #[cfg(test)]
     fn from_pairs(default: u64, pairs: &[(&str, u64)]) -> Self {
-        Self { default, crates: pairs.iter().map(|(name, weight)| ((*name).to_owned(), *weight)).collect() }
+        Self {
+            default,
+            crates: pairs.iter().map(|(name, weight)| ((*name).to_owned(), *weight)).collect(),
+            parts: BTreeMap::new(),
+        }
+    }
+
+    /// Pin the partition count of `name` (tests).
+    #[cfg(test)]
+    fn with_parts(mut self, name: &str, parts: usize) -> Self {
+        self.parts.insert(name.to_owned(), parts);
+        self
     }
 
     /// The weight of `name`, never zero so every shard attracts work.
@@ -141,8 +156,13 @@ pub fn shard(names: &[String], max_shards: usize, weights: &Weights) -> Vec<Vec<
     let mut items = Vec::new();
     for name in names {
         let weight = weights.of(name);
-        if weight > share && max_shards > 1 {
-            let parts = usize::try_from(weight.div_ceil(share)).unwrap_or(max_shards).min(max_shards);
+        let wanted = match weights.parts.get(name) {
+            Some(&fixed) => fixed,
+            None if weight > share => usize::try_from(weight.div_ceil(share)).unwrap_or(max_shards),
+            None => 1,
+        };
+        let parts = wanted.min(max_shards);
+        if parts > 1 {
             for index in 1..=parts {
                 items.push(Item {
                     name: name.clone(),
@@ -268,6 +288,19 @@ mod tests {
     }
 
     #[test]
+    fn a_pinned_partition_count_wins_over_the_weight_rule_and_is_capped_by_the_shards() {
+        let all = names(&["pinned", "x", "y"]);
+        let weights = Weights::from_pairs(10, &[("pinned", 50)]).with_parts("pinned", 3);
+        let items = flat(&shard(&all, 6, &weights));
+        assert_eq!(items, names(&["pinned@1/3", "pinned@2/3", "pinned@3/3", "x", "y"]));
+        let capped = flat(&shard(&all, 2, &weights));
+        assert!(
+            capped.contains(&"pinned@2/2".to_owned()) && !capped.iter().any(|item| item.ends_with("/3")),
+            "{capped:?}"
+        );
+    }
+
+    #[test]
     fn a_light_workload_is_never_split() {
         let weights = Weights::from_pairs(20, &[("a", 100)]);
         let shards = shard(&names(&["a"]), 6, &weights);
@@ -278,6 +311,7 @@ mod tests {
     fn the_checked_in_weights_parse_and_name_the_known_heavy_crate() {
         let weights = Weights::embedded();
         assert!(weights.of("omuzaki-char") > MIN_SPLIT_SECONDS, "weights.json failed to parse or lost omuzaki-char");
+        assert!(weights.parts.get("omuzaki-char").is_some_and(|&parts| parts > 1), "omuzaki-char is pinned to a split");
         assert!(weights.of("not-a-crate") >= 1);
     }
 

@@ -17,7 +17,7 @@ run 38589415493 for `omuzaki-char`'s per-binary times):
 
 Two measured corrections after the first full-workspace runs on this branch:
 
-- `omuzaki-char` is 760, not the 582 the formula gives. Its slowest single tests take 287 s and 264 s
+- `omuzaki-char` is 1100, not the 582 the formula gives, and is pinned to 4 partitions (`parts`). Hash partitioning is a pure function of the test name: 2 partitions put both slow tests in one job (14 minutes), 4 separate them (a partition's tests took 60 to 295 s). Its slowest single tests take 287 s and 264 s
   (`cloth_contact::a_million_random_steps_produce_no_nan`, `body_shape::every_corner_at_the_slider_extremes...`), so a
   partition can never finish in under about 5 minutes plus compile; it must not share a job with much else.
 - `omuzaki-ui` is 400, not 158: a job holding it spent 7 minutes compiling (the egui/wgpu test dependencies are not in
