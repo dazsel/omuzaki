@@ -1,7 +1,8 @@
 //! Benchmarks for the caching character builder against the reference one: a full build, an edit of one hair
 //! parameter (only the hair may rebuild), an edit that does not reach the hair (only the vest rebuilds; the hair's
 //! simulation is forked from the cache), the price of that fork against the hair's generator, an unchanged character,
-//! a palette change through `rebuild_materials`, and how a wide character scales with threads. Run with
+//! a palette change through `rebuild_materials`, how a wide character scales with threads, and a look switch on a
+//! 40-material character (`BuiltCharacter::apply_look`: <= 0.2 ms, no geometry rebuilt). Run with
 //! `cargo bench -p omuzaki-char --bench builder`.
 //!
 //! Building runs on every parameter edit, not every frame, so the targets are interactivity: a hair edit costs at most
@@ -27,8 +28,9 @@ use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_ma
 use omuzaki_char::builder::{BuildTimings, CachingBuilder};
 use omuzaki_char_api::{
     Assembler, BuildCtx, BuildError, BuildOptions, BuildServices, BuiltCharacter, CharId, CharacterBuilder,
-    CharacterDef, MaterialName, MaterialSpec, MeshData, PartCategory, PartDef, PartId, PartKind, PartKindId, PartMesh,
-    PartMeta, PartOutput, RecolourCtx, Recoloured, RegistryBuilder, TextureName, build_part, plan,
+    CharacterDef, ClassLook, LookParams, MaterialClass, MaterialName, MaterialSpec, MeshData, OutlineColour,
+    PartCategory, PartDef, PartId, PartKind, PartKindId, PartMesh, PartMeta, PartOutput, RecolourCtx, Recoloured,
+    RegistryBuilder, SceneLook, TextureName, build_part, plan,
 };
 use omuzaki_char_mock::mock_character;
 use omuzaki_core::colour::Colour;
@@ -524,6 +526,45 @@ fn fork_benches(c: &mut Criterion) {
     group.finish();
 }
 
+/// A look switch: the mock character with materials added until it has 40, spread over the five classes, drawn
+/// in one look and then the other. Nothing is built: the look is a materials-only step on the built character, and its
+/// budget is 0.2 ms.
+fn look_benches(c: &mut Criterion) {
+    let mut character =
+        RegistryBuilder.build(&id(), &mock(), &BuildOptions::default(), &BuildServices::default()).expect("builds");
+    let template = character.part_materials.values().next().cloned().expect("the mock has materials");
+    for i in character.part_materials.len()..40 {
+        let name = MaterialName::new(format!("extra-{i}")).expect("a slug");
+        character.part_materials.insert(name.clone(), template.clone());
+        character.materials.insert(name.clone(), template.clone());
+        character.material_classes.insert(name, MaterialClass::ALL[i % MaterialClass::ALL.len()]);
+    }
+    let hard = LookParams {
+        all: ClassLook {
+            softness_scale: Some(0.0),
+            rim_scale: Some(0.0),
+            outline_width: Some(0.002),
+            outline_colour: Some(OutlineColour::Flat(Colour::rgb(40, 30, 30))),
+            ..ClassLook::default()
+        },
+        scene: SceneLook { bloom: Some(false), ..SceneLook::default() },
+        ..LookParams::default()
+    };
+    let soft = LookParams {
+        all: ClassLook { softness_scale: Some(1.0), rim_scale: Some(1.0), ..ClassLook::default() },
+        ..LookParams::default()
+    };
+    let mut group = c.benchmark_group("builder/look");
+    let mut flip = false;
+    group.bench_function("switch/40-materials", |b| {
+        b.iter(|| {
+            flip = !flip;
+            black_box(character.apply_look(if flip { &hard } else { &soft }).expect("a valid look"))
+        });
+    });
+    group.finish();
+}
+
 fn thread_benches(c: &mut Criterion) {
     let (options, services) = (BuildOptions::default(), BuildServices::default());
     let def = dressed(8, 96);
@@ -545,6 +586,6 @@ fn thread_benches(c: &mut Criterion) {
 criterion_group! {
     name = builder;
     config = Criterion::default().warm_up_time(Duration::from_secs(1)).measurement_time(Duration::from_secs(3)).sample_size(40);
-    targets = edit_benches, fork_benches, thread_benches
+    targets = edit_benches, fork_benches, thread_benches, look_benches
 }
 criterion_main!(builder);

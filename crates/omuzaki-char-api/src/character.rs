@@ -72,6 +72,11 @@ pub mod paths {
         colourways(id).join(name.as_str())
     }
 
+    /// `characters/<id>/look`: the [`LookDef`](crate::LookDef) (`look.toml`), the preset and the person's overrides.
+    pub fn look(id: &CharId) -> DocPath {
+        character(id).join("look")
+    }
+
     /// `characters/<id>/variants`: every [`VariantDef`](crate::VariantDef) (`variants/<name>.toml`).
     pub fn variants(id: &CharId) -> DocPath {
         character(id).join("variants")
@@ -248,21 +253,26 @@ pub enum TreeError {
 /// The message for a key of a character node that no file of the character owns: the key, and the nearest valid one if
 /// it is close enough to be a typo, otherwise the definition keys.
 fn unknown_key_message(key: &str) -> String {
-    let close = key.chars().count() / 3 + 1;
-    let nearest = CharacterDef::NODE_KEYS
-        .into_iter()
-        .chain(CharacterDef::SIBLING_KEYS)
-        .map(|candidate| (edit_distance(key, candidate), candidate))
-        .min();
-    match nearest {
-        Some((distance, near)) if distance <= close => {
-            format!("unknown field `{key}` in the character, did you mean `{near}`?")
-        }
-        _ => format!(
+    match nearest_name(key, CharacterDef::NODE_KEYS.into_iter().chain(CharacterDef::SIBLING_KEYS)) {
+        Some(near) => format!("unknown field `{key}` in the character, did you mean `{near}`?"),
+        None => format!(
             "unknown field `{key}` in the character, expected one of {}",
             CharacterDef::NODE_KEYS.map(|k| format!("`{k}`")).join(", ")
         ),
     }
+}
+
+/// The candidate nearest to `key` if it is close enough to be a typo (at most a third of `key`'s length plus one edit
+/// away); ties go to the first name in sort order. The did-you-mean of character keys and of look presets and
+/// parameters, on `omuzaki-core`'s edit distance.
+pub(crate) fn nearest_name<'a>(key: &str, candidates: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
+    let close = key.chars().count() / 3 + 1;
+    candidates
+        .into_iter()
+        .map(|candidate| (edit_distance(key, candidate), candidate))
+        .min()
+        .filter(|(distance, _)| *distance <= close)
+        .map(|(_, near)| near)
 }
 
 impl CharacterDef {

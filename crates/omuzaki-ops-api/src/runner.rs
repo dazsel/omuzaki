@@ -4,7 +4,7 @@
 use std::sync::mpsc::Receiver;
 
 use omuzaki_core::time::Seconds;
-use omuzaki_doc_api::{DocVersion, Patch, Value};
+use omuzaki_doc_api::{DocPath, DocVersion, Patch, Value};
 use schemars::{JsonSchema, Schema};
 use serde::{Deserialize, Serialize};
 
@@ -177,6 +177,24 @@ pub enum Event {
         /// What it did.
         result: SessionUndo,
     },
+    /// An agent's edit was refused, or found stale, because of a fence or a newer change. The Theatre's review items
+    /// and the status bar read it.
+    Clash {
+        /// The session that was refused.
+        session: SessionId,
+        /// Its agent actor.
+        actor: Actor,
+        /// The op that was refused.
+        op: String,
+        /// Where.
+        path: DocPath,
+        /// Why.
+        kind: ClashKind,
+        /// The other side: the fence's holder, or whoever changed the path.
+        other: Option<Actor>,
+        /// When, on the runner's clock.
+        at: Seconds,
+    },
     /// A request or session is waiting for a person.
     ApprovalRequested {
         /// The pending approval.
@@ -201,6 +219,17 @@ pub enum Event {
         /// How far along, 0 to 1.
         fraction: f32,
     },
+}
+
+/// Why an agent's edit clashed with someone else's work.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum ClashKind {
+    /// The edit lay outside the agent's fence or inside another session's.
+    Fenced,
+    /// The path changed since the agent last read it (the stale-write guard).
+    Stale,
 }
 
 /// Everything a surface needs to present one op: generated from the registry, never written by hand.
