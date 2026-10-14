@@ -10,6 +10,7 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Instant;
 
 use omuzaki_anim::neutral::{MAX_NEUTRAL_FRAMES, MIN_NEUTRAL_FRAMES, NeutralCapture, NeutralError};
 use omuzaki_anim_api::{Calibration, Channel, ChannelRange, DeviceProfile, HeadPose, TrackFrame};
@@ -195,6 +196,16 @@ fn the_target_is_clamped_to_the_allowed_range() {
     assert_eq!(NeutralCapture::new(10_000).progress(), (0, MAX_NEUTRAL_FRAMES));
 }
 
+/// A frame with every `ARKit` channel present at `level`, and a head pose with position at `head`.
+fn full_frame(seq: u64, level: f32, head: f32) -> TrackFrame {
+    let mut f = tracked(seq);
+    for info in Channel::arkit() {
+        f.set(info.channel, level);
+    }
+    f.head = Some(HeadPose { yaw: head, pitch: head, roll: head, position: Some(Vec3::splat(head)) });
+    f
+}
+
 #[test]
 fn reset_forgets_the_held_frames() {
     let mut cap = NeutralCapture::new(20);
@@ -205,6 +216,39 @@ fn reset_forgets_the_held_frames() {
     assert_eq!(cap.progress(), (0, 20));
     let base = Calibration::identity(DeviceProfile::Webcam);
     assert_eq!(cap.finish(&base), Err(NeutralError::TooFewFrames { got: 0, need: MIN_NEUTRAL_FRAMES }));
+}
+
+#[test]
+fn after_a_reset_only_the_new_samples_decide_the_calibration() {
+    let base = Calibration::identity(DeviceProfile::Webcam);
+    let mut cap = NeutralCapture::new(20);
+    // First take: every channel and the full head pose at 0.8.
+    for seq in 0..20 {
+        assert_eq!(cap.push(&full_frame(seq, 0.8, 0.8)), seq == 19);
+    }
+    cap.reset();
+    // Second take: only jawOpen and the head angles (no position), at 0.2. Stale counts or samples would show as
+    // other channels or a position still fitted from the first take, or as a median pulled towards 0.8.
+    for seq in 0..20 {
+        let mut f = with_head(seq, 0.2, 0.2, 0.2);
+        f.set(Channel::JAW_OPEN, 0.2);
+        cap.push(&f);
+    }
+    let fitted = cap.finish(&base).unwrap();
+    assert_eq!(fitted.range(Channel::JAW_OPEN).lo, 0.2);
+    assert_eq!(fitted.range(Channel::CHEEK_PUFF), base.range(Channel::CHEEK_PUFF), "absent in the second take");
+    assert_eq!((fitted.head_rest.yaw, fitted.head_rest.pitch, fitted.head_rest.roll), (0.2, 0.2, 0.2));
+    assert_eq!(fitted.head_rest.position, base.head_rest.position, "no position in the second take");
+
+    // A third take refills the capture: it matches a capture that never saw the first take.
+    cap.reset();
+    let mut fresh = NeutralCapture::new(20);
+    for seq in 0..20 {
+        let f = full_frame(seq, 0.1 + 0.01 * (seq % 7) as f32, 0.05 * (seq % 5) as f32);
+        cap.push(&f);
+        fresh.push(&f);
+    }
+    assert_eq!(cap.finish(&base).unwrap(), fresh.finish(&base).unwrap());
 }
 
 #[test]
@@ -285,4 +329,55 @@ fn push_and_finish_allocate_nothing() {
     assert!(fitted.is_ok());
     assert_eq!(cap.progress(), (MAX_NEUTRAL_FRAMES, MAX_NEUTRAL_FRAMES));
     assert_eq!(allocations, 0, "{allocations} allocations over 600 pushes and a finish");
+}
+
+/// The `push`/`finish` cost at the largest capture, every channel and the whole head pose present, against the live
+/// frame (spec §10: 60 fps is 16.67 ms; `cpu.total` allows 8 ms of CPU per frame at 30 fps, tracker included).
+///
+/// Wall time is a stopwatch, not the CPU-time counters §10 asks for, so the bounds are loose: a thousandth of a frame
+/// for `push` and a tenth for `finish` (a whole frame in a debug build). Run `cargo test -p omuzaki-anim --release --test neutral
+/// push_and_finish_fit_the_frame_budget -- --nocapture` to print the numbers.
+#[test]
+fn push_and_finish_fit_the_frame_budget() {
+    const FRAME_MS: f64 = 1000.0 / 60.0;
+    const RUNS: usize = 200;
+    let frames: Vec<TrackFrame> = (0..MAX_NEUTRAL_FRAMES as u64)
+        .map(|seq| full_frame(seq, 0.1 + 0.001 * (seq % 17) as f32, 0.01 * (seq % 11) as f32))
+        .collect();
+    let base = Calibration::identity(DeviceProfile::Webcam);
+    let mut cap = NeutralCapture::new(MAX_NEUTRAL_FRAMES);
+    let mut pushes = Vec::with_capacity(RUNS * MAX_NEUTRAL_FRAMES);
+    let mut finishes = Vec::with_capacity(RUNS);
+    for _ in 0..RUNS {
+        cap.reset();
+        for frame in &frames {
+            let start = Instant::now();
+            std::hint::black_box(cap.push(std::hint::black_box(frame)));
+            pushes.push(start.elapsed().as_secs_f64() * 1000.0);
+        }
+        let start = Instant::now();
+        let fitted = cap.finish(std::hint::black_box(&base));
+        finishes.push(start.elapsed().as_secs_f64() * 1000.0);
+        assert!(fitted.is_ok());
+    }
+    let (push_mean, push_p95) = mean_and_p95(&mut pushes);
+    let (finish_mean, finish_p95) = mean_and_p95(&mut finishes);
+    println!("push   (52 channels + head + position): mean {:.2} us, p95 {:.2} us", push_mean * 1e3, push_p95 * 1e3);
+    println!(
+        "finish (600 frames, 58 columns):        mean {:.1} us, p95 {:.1} us",
+        finish_mean * 1e3,
+        finish_p95 * 1e3
+    );
+    println!("a 60 fps frame is {FRAME_MS:.2} ms");
+    assert!(push_p95 < FRAME_MS / 1000.0, "push p95 {push_p95} ms");
+    // An unoptimised build runs this about 35 times slower, so it is held to a whole frame instead.
+    let finish_limit = if cfg!(debug_assertions) { FRAME_MS } else { FRAME_MS / 10.0 };
+    assert!(finish_p95 < finish_limit, "finish p95 {finish_p95} ms");
+}
+
+/// `(mean, p95)` of `samples`, which it sorts.
+fn mean_and_p95(samples: &mut [f64]) -> (f64, f64) {
+    samples.sort_by(f64::total_cmp);
+    let mean = samples.iter().sum::<f64>() / samples.len() as f64;
+    (mean, samples[(samples.len() * 95 / 100).min(samples.len() - 1)])
 }
