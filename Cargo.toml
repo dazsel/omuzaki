@@ -74,6 +74,7 @@ wgpu = "30"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem"] } # the Windows side of the same: reparse-point-aware opens, final-path checks
 zip = { version = "9", default-features = false, features = ["deflate-flate2"] } # unpacks the ONNX Runtime Windows.zip archives (MIT), omuzaki-ai-ort
 whisper-rs = "0.16"   # whisper.cpp built from source (Unlicense crate, MIT library); omuzaki-audio
+zune-jpeg = "0.5"   # pure-Rust JPEG decoder (MIT OR Apache-2.0 OR Zlib), MJPG webcam frames, omuzaki-pixfmt
 
 [workspace.lints.rust]
 unsafe_code = "deny"            # a crate that needs it (GPU/OS shims) allows it locally, with a why-comment

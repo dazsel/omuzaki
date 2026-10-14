@@ -7,7 +7,7 @@ use std::collections::{BTreeSet, HashMap};
 
 use omuzaki_core::time::Seconds;
 use omuzaki_doc_api::{DocPath, DocRead, DocWrite, Patch, Value};
-use omuzaki_ops_api::{Actor, Cause, Event, Grants, OpError, OpRecord, Scope, TxId};
+use omuzaki_ops_api::{Actor, Cause, Event, Grants, OpError, OpRecord, Scope, TxId, Undo};
 
 use crate::error;
 
@@ -21,23 +21,33 @@ struct Step {
     patch: Patch,
     /// The scopes of the ops that changed the document: undoing or redoing needs the same permissions.
     scopes: BTreeSet<Scope>,
+    /// The first op with effects outside the document (`Undo::Explicit`). Undo and redo can't revert those yet, so
+    /// they refuse the step.
+    explicit: Option<&'static str>,
 }
 
 impl Step {
     fn new(tx: TxId, label: &str) -> Self {
-        Self { tx, label: label.to_owned(), patch: Patch::new(), scopes: BTreeSet::new() }
+        Self { tx, label: label.to_owned(), patch: Patch::new(), scopes: BTreeSet::new(), explicit: None }
     }
 
-    /// Adds one applied op. Ops that changed nothing (queries inside a transaction, no-op edits) add no scope.
-    fn absorb(&mut self, scope: Scope, patch: &Patch) {
-        if !patch.is_empty() {
+    /// Adds one applied op. Ops that changed nothing (queries inside a transaction, no-op edits) add no scope. An
+    /// `Explicit` op is recorded even with an empty patch: its effect outside the document still needs reversing, and
+    /// its scope must still gate the refusal, so a caller without it gets `Denied` and the step stays.
+    fn absorb(&mut self, op: &'static str, scope: Scope, undo: Undo, patch: &Patch) {
+        if !patch.is_empty() || undo == Undo::Explicit {
             self.scopes.insert(scope);
+        }
+        if undo == Undo::Explicit && self.explicit.is_none() {
+            self.explicit = Some(op);
         }
         self.patch.extend(patch.clone());
     }
 
+    /// Whether the step belongs in history: a step with an effect outside the document does, even if its patch is
+    /// empty, so that undo can refuse it instead of silently skipping it.
     fn changes_document(&self) -> bool {
-        !self.patch.is_empty()
+        !self.patch.is_empty() || self.explicit.is_some()
     }
 
     fn require(&self, actor: &Actor, grants: &Grants, verb: &str) -> Result<(), OpError> {
@@ -96,6 +106,7 @@ impl Direction {
 pub(crate) struct Edit<'a> {
     pub(crate) op: &'static str,
     pub(crate) scope: Scope,
+    pub(crate) undo: Undo,
     pub(crate) args: Value,
     pub(crate) patch: &'a Patch,
     pub(crate) actor: Actor,
@@ -152,7 +163,7 @@ impl State {
     /// The transaction isn't open or isn't `actor`'s; or the patch no longer applies (`Conflict`). On error nothing
     /// has changed.
     pub(crate) fn apply_edit(&mut self, edit: Edit<'_>) -> Result<OpRecord, OpError> {
-        let Edit { op, scope, args, patch, actor, cause, tx, at } = edit;
+        let Edit { op, scope, undo, args, patch, actor, cause, tx, at } = edit;
         // Borrowing the open transaction first checks it *before* the document changes, and lets us add to it after
         // without a lookup that could fail.
         let joined = tx.map(|id| Self::open_tx(&mut self.open, id, &actor)).transpose()?;
@@ -175,15 +186,16 @@ impl State {
             version,
             on_behalf_of: None,
             approval: None,
+            effect: None,
         };
         self.log.push(record.clone());
         self.outbox.push(Event::OpApplied { record: record.clone() });
 
         if let Some(open) = joined {
-            open.step.absorb(scope, patch);
+            open.step.absorb(op, scope, undo, patch);
         } else {
             let mut step = Step::new(tx, op);
-            step.absorb(scope, patch);
+            step.absorb(op, scope, undo, patch);
             self.finish(&record.actor, step);
         }
         Ok(record)
@@ -268,6 +280,10 @@ impl State {
             from.push(step);
             return Err(denied);
         }
+        // Refused and dropped, not pushed back: the document is untouched, and the next call reaches the step before.
+        if let Some(op) = step.explicit {
+            return Err(error::explicit_refused(verb, &step.label, op));
+        }
         let patch = match direction {
             Direction::Undo => step.patch.inverse(),
             Direction::Redo => step.patch.clone(),
@@ -305,4 +321,32 @@ fn last_changer<'a>(log: &'a [OpRecord], path: &DocPath) -> Option<&'a Actor> {
 fn next_tx(last: &mut u64) -> TxId {
     *last += 1;
     TxId(*last)
+}
+
+#[cfg(test)]
+mod tests {
+    use omuzaki_doc_mock::MemDoc;
+    use omuzaki_ops_api::ErrorCode;
+    use serde_json::json;
+
+    use super::*;
+
+    /// A step with an `Explicit` op that changed `/a`, put on `actor`'s redo stack directly. Undo never leaves such a
+    /// step there, so this stands for a history restored from another build.
+    #[test]
+    fn redo_refuses_an_explicit_step_and_drops_it_without_touching_the_document() {
+        let actor = Actor::Person { name: "alice".into() };
+        let mut state = State::new(Box::new(MemDoc::from_value(json!({}))));
+        let path = DocPath::parse("a").unwrap();
+        let change = Patch::new().with(path.clone(), None, Some(json!(1)));
+        let mut step = Step::new(TxId(1), "explicit op");
+        step.absorb("test.explicit", Scope::EditCharacter, Undo::Explicit, &change);
+        state.history(&actor).redo.push(step);
+
+        let e = state.redo(&actor, &Grants::person()).unwrap_err();
+        assert_eq!(e.code, ErrorCode::Unsupported);
+        assert!(e.message.contains("test.explicit"), "{e}");
+        assert_eq!(state.doc().get(&path), None, "the document is untouched");
+        assert_eq!(state.redo(&actor, &Grants::person()).unwrap(), None, "the refused step is gone");
+    }
 }

@@ -10,13 +10,15 @@ use std::sync::Arc;
 
 use omuzaki_ai::{CACHE_DIR, Registry, RegistrySettings, VerifiedCache, model_ref};
 use omuzaki_ai_api::{
-    CatalogueEntry, ImportError, ModelEntry, ModelRef, ModelRegistry, ModelStatus, NoProgress, Origin, RegistryError,
-    Requester, Sha256, SlotRef, Version,
+    CatalogueEntry, ImportError, ModelEntry, ModelId, ModelRef, ModelRegistry, ModelStatus, NoProgress, Origin,
+    RegistryError, Requester, Sha256, SlotRef, Version,
 };
 use omuzaki_ai_mock::MemFetcher;
 use sha2::{Digest, Sha256 as Hasher};
 
 const ID: &str = "silero-vad";
+/// An id no `register_model!` in the app or the fixtures uses: its first import is a brand-new model.
+const UNSHIPPED: &str = "unshipped-vad";
 const VERSIONS: [&str; 4] = ["1.0.0", "1.1.0", "1.2.0", "4294967295.0.0"];
 const TAGS: [&str; 3] = ["a", "b", "c"];
 
@@ -87,9 +89,11 @@ struct Rig {
 impl Rig {
     fn new() -> Self {
         let mut net = MemFetcher::new();
-        for v in VERSIONS {
-            for tag in TAGS {
-                net = net.serving(url(ID, v, tag), model_file(&format!("{ID} {v} {tag}")));
+        for id in [ID, UNSHIPPED] {
+            for v in VERSIONS {
+                for tag in TAGS {
+                    net = net.serving(url(id, v, tag), model_file(&format!("{id} {v} {tag}")));
+                }
             }
         }
         // The shipped 1.0.0 is variant "a" of the same family; the app registers it with `register_model!`.
@@ -181,6 +185,33 @@ fn a_catalogue_only_id_installs_and_survives_a_restart() {
     assert_eq!(active(&registry), Some(model(&extra)));
     assert_eq!(listed(&registry, &model(&extra)).origin, Origin::Catalogue);
     assert_eq!(listed(&registry, &model(&extra)).status, ModelStatus::Ready);
+}
+
+#[test]
+fn a_first_import_of_an_unshipped_id_is_listed_as_catalogue_and_survives_a_restart() {
+    let rig = Rig::new();
+    let registry = rig.open("1.0.0");
+    let unshipped: ModelId = UNSHIPPED.parse().unwrap();
+    let new = entry_of(&manifest_text(UNSHIPPED, "test_echo@1", "1.0.0", "a", "0.1.0"));
+
+    let report = registry.sync_catalogue(1, 1, std::slice::from_ref(&new)).unwrap();
+
+    assert_eq!(report.imported, vec![model(&new)], "the unknown id is imported, not refused or ignored");
+    assert_eq!(listed(&registry, &model(&new)).origin, Origin::Catalogue);
+    assert!(
+        registry.models(None).iter().all(|e| e.origin != Origin::Shipped || e.model.id != unshipped),
+        "an id no shipped registration uses is not in the shipped list"
+    );
+    registry.install(&model(&new), &NoProgress).unwrap();
+    registry.select(&echo_slot(), Some(&model(&new)), Requester::Person).unwrap();
+    assert_eq!(selected(&registry), Some(model(&new)));
+    drop(registry);
+
+    let registry = rig.open("1.0.0");
+    assert_eq!(listed(&registry, &model(&new)).origin, Origin::Catalogue);
+    assert_eq!(listed(&registry, &model(&new)).status, ModelStatus::Ready);
+    assert_eq!(selected(&registry), Some(model(&new)), "still selectable after the restart");
+    assert_eq!(active(&registry), Some(model(&new)));
 }
 
 #[test]

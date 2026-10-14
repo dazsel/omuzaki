@@ -230,14 +230,16 @@ impl Replay {
                 Event::TxRolledBack { tx, .. } => self.replay_tx(tx, true, None)?,
                 Event::Undone { tx, .. } => self.replay_tx(tx, true, Some(acting))?,
                 Event::Redone { tx, .. } => self.replay_tx(tx, false, Some(acting))?,
-                // This executor has no sessions or approvals yet, so these never arrive, and none of
-                // them changes the document.
+                // This executor has no sessions, approvals or jobs yet, so these never arrive, and
+                // none of them changes the document (a job's edits arrive as `OpApplied`).
                 Event::SessionOpened { .. }
                 | Event::SessionChanged { .. }
                 | Event::SessionEnded { .. }
                 | Event::SessionUndone { .. }
                 | Event::ApprovalRequested { .. }
-                | Event::ApprovalResolved { .. } => {}
+                | Event::ApprovalResolved { .. }
+                | Event::JobChanged { .. }
+                | Event::JobProgress { .. } => {}
             }
         }
         Ok(())

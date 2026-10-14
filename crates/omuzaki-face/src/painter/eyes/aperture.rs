@@ -214,6 +214,11 @@ impl Eye {
         self.lid() == Lid::Open
     }
 
+    /// Half the eye's width in metres: one eye unit.
+    pub(super) fn width(&self) -> f32 {
+        self.width
+    }
+
     /// The face-plane point at eye coordinates `(u, v)`.
     pub(super) fn point(&self, u: f32, v: f32) -> Vec2 {
         let outward = match self.side {

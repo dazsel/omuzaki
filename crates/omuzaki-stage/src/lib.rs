@@ -40,9 +40,12 @@
 //! wgpu backend (R1) is not linked here: only the `wgpu` feature pulls it in.
 #![deny(missing_docs)]
 
+/// Stage effects: the chat-emote atlas (D13) now, and the particle service and its parts as they land.
+pub mod effects;
 pub mod error;
 pub mod frame;
 pub mod ops;
+pub mod perform;
 pub mod recipe;
 mod release;
 pub mod scene;

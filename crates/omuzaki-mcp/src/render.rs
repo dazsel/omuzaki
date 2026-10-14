@@ -219,6 +219,9 @@ fn default_hint(code: ErrorCode) -> &'static str {
         ErrorCode::Internal => "this is a bug in Omuzaki; tell the user and don't retry unchanged",
         ErrorCode::Waiting => "nothing ran: a person must decide in Omuzaki first; don't retry, wait for the result",
         ErrorCode::Limited => "this session hit a rate limit; wait the time in the detail, then retry",
+        ErrorCode::Cancelled => {
+            "the job was cancelled, by a person or a limit named in the detail; don't retry unchanged"
+        }
     }
 }
 
@@ -330,6 +333,7 @@ mod tests {
             version: DocVersion(12),
             on_behalf_of: None,
             approval: None,
+            effect: None,
         }
     }
 

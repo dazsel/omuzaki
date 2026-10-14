@@ -75,6 +75,7 @@ fn record() -> impl Strategy<Value = OpRecord> {
             version: DocVersion(version),
             on_behalf_of,
             approval,
+            effect: None,
         })
 }
 

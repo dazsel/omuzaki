@@ -190,6 +190,7 @@ a warning on the status.
 | 8 | `dropped` | actor, tx, stack (undo or redo) | a step is dropped after a conflict (the executor's no-wedge rule) |
 | 9 | `close` | the close snapshot id | a clean shutdown, last record of the session |
 | 10 | reserved | | a branch switch that replaces the history stacks, if the branches design chooses that (section 9) |
+| 11 | `audit` (skippable) | one `AuditFact`: session opened or ended, grants or budget changed, paused, resumed, approval requested or resolved | the executor changes a session or resolves an approval, under its lock (`team-review.md` §9) |
 
 Queries are not journalled, as they are not logged today. Failed applies and refused undos never reach the
 journal: the executor appends only after a change succeeded.

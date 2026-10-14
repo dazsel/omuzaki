@@ -53,11 +53,14 @@ pub enum Scope {
     /// Separate from `native`, so launching a program (OBS, say) does not allow loading plugins or native code.
     #[serde(rename = "process")]
     Process,
+    /// Start a script run or save a script. Inner requests of a run are still checked against their own scopes.
+    #[serde(rename = "script")]
+    Script,
 }
 
 impl Scope {
     /// Every scope, in a stable order (for docs and grant UIs).
-    pub const ALL: [Scope; 14] = [
+    pub const ALL: [Scope; 15] = [
         Scope::Read,
         Scope::EditCharacter,
         Scope::EditScene,
@@ -72,6 +75,7 @@ impl Scope {
         Scope::Native,
         Scope::Input,
         Scope::Process,
+        Scope::Script,
     ];
 
     /// Whether this scope reaches outside the project. A grant prompt and a scope badge show these as risky (warning
@@ -103,6 +107,7 @@ impl Scope {
             Scope::Native => "native",
             Scope::Input => "input",
             Scope::Process => "process",
+            Scope::Script => "script",
         }
     }
 }

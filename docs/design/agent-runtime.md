@@ -47,7 +47,7 @@ This page says how that host works. Type sketches are the contract; their doc co
 
 | Crate | Kind | Holds |
 |---|---|---|
-| `omuzaki-agent-api` | API | `Assistant` (the panel-facing trait), `UserMessage`, `ContextChip`, `AssistantEvent`, `HostError`, `Cap`, `PlanItem`, `QuestionId`, `ConversationId`, `Rationale`, `RationaleSource`. Depends on `omuzaki-core`, `omuzaki-ops-api` (`Spend`, `Budget`, `ApprovalId`, `TxId`, `SessionId`) |
+| `omuzaki-agent-api` | API | `Assistant` (the panel-facing trait), `UserMessage`, `ContextChip`, `AssistantEvent`, `HostError`, `Cap`, `PlanItem`, `QuestionId`, `ConversationId`, `Rationale`, `RationaleSource`, `PromptInfo`, `PromptArgInfo`, `PromptsState` (§7). Depends on `omuzaki-core`, `omuzaki-ops-api` (`Spend`, `Budget`, `ApprovalId`, `TxId`, `SessionId`) |
 | `omuzaki-agent-mock` | Mock | `ScriptedAssistant`: plays an event script on `FakeClock`, records what the panel sent. For panel tests and the UI gallery |
 | `omuzaki-agent` | Implementation | `AssistantHost`, `McpClientLink`, `HostConfig`, the loop, the context builder, the host-local tools, the conversation store. Depends on API crates and `rmcp`'s client only; it never links `omuzaki-mcp` or `omuzaki-ops` (lint-deps) |
 
@@ -58,6 +58,9 @@ pub trait Assistant: Send + Sync {                       // omuzaki-agent-api
     fn answer(&self, q: QuestionId, text: String) -> Result<(), HostError>; // ask_person (D9)
     fn events(&self) -> EventReceiver;                           // the one consumer; a later call detaches the earlier
     fn transcript(&self) -> Vec<Entry>;                          // the conversation so far, for a panel opened late
+    fn prompts(&self) -> PromptsState;                           // the `/` menu (D9, §7); the host's cached list
+    fn refresh_prompts(&self);                                   // marks the list stale and refetches on the host thread (§7)
+    fn prompt(&self, name: &str, args: BTreeMap<String, String>) -> Result<String, HostError>; // `prompts/get` text (§7)
 }
 impl AssistantHost {                                     // omuzaki-agent
     pub fn start(link: McpClientLink, llm: Arc<dyn LlmClient>, sessions: Arc<dyn Sessions>,
@@ -374,11 +377,12 @@ document.
 
 **MCP prompts** ("Set up my first stream", spec §11): the panel's `/` menu lists `prompts/list`. Picking one shows a
 form for its arguments, then `prompts/get` fills the **message box** with the prompt's text. The person reads it, can
-edit it, and sends it as their own message. A prompt never runs by itself.
+edit it, and sends it as their own message. A prompt never runs by itself. How the panel reaches `prompts/list` and
+`prompts/get`, and what the menu does in each state: §7.
 
 ### D10. The panel contract
 
-**The panel sends:** `send(UserMessage { text, chips })`; `stop()`; `answer(question, text)`. Approval cards resolve
+**The panel sends:** `send(UserMessage { text, chips })`; `stop()`; `answer(question, text)`; and, for the `/` menu, `prompts()`, `refresh_prompts()` and `prompt(name, args)` (§7). Approval cards resolve
 through `Sessions::resolve` as the person, never through the host. Pause and revoke are the Agent panel's
 controls.
 
@@ -476,14 +480,14 @@ These are filed after acceptance.
 
 | # | Task |
 |---|---|
-| T1 | `omuzaki-agent-api` and `omuzaki-agent-mock` (D1, D10 types; `ScriptedAssistant`) |
+| T1 | `omuzaki-agent-api` and `omuzaki-agent-mock` (D1, D10 types; `ScriptedAssistant`; with §7's `prompts` / `prompt` and types) |
 | T2 | `omuzaki-agent` skeleton and the turn loop on `FakeLlm` (D2, D3, D4) |
 | T3 | MCP-to-model content mapping in the host (`<data>` wrapping, size rules; D5, D6) |
 | T4 | Context builder and compaction (D5) |
 | T5 | Conversation store (D7) |
 | T6 | Assistant settings keys (D8) |
 | T7 | No-model, needs-key, unpriced and needs-consent states (D8) |
-| T8 | The chat panel in `omuzaki-ui` (D10; visual) |
+| T8 | The chat panel in `omuzaki-ui` (D10; visual; with §7's `/` menu) |
 | T9 | The `assistant` driver in `omuzaki-test`, and §4 as its first golden (D11) |
 | T10 | `omuzaki-mcp`: `tx_begin { cause }`, `"omuzaki/kind"` in tool `_meta`, plain jobs without the transaction (D2.5, D7) |
 | T11 | `llm.assistant.model` to `Never`: folded into the provider settings keys task |
@@ -491,3 +495,106 @@ These are filed after acceptance.
 | T13 | Real-model acceptance run (needs a maintainer decision on spend) |
 
 If this page must split, D7 (persistence) and D10 (the panel) move to their own page; the loop stays.
+
+## 7. Addendum: how the panel reaches MCP prompts
+
+D9 says the `/` menu lists the server's prompts; D1 says the panel sees `dyn Assistant` only; the trait had no way to
+ask. **Decision: Option A, three methods on `Assistant`.** The host already owns the one MCP link (D1, Wiring), so
+it answers; the panel gains no second object, no MCP client and no `rmcp` dependency (`omuzaki-ui` never links it).
+
+- **Why not B** (a `PromptSource` trait the app hands the panel): a second object to wire in the UI, the eval driver
+  and `omuzaki ask`, a second mock for every panel test, and a second place to say "no host" (D8). It buys nothing:
+  prompts are served by the same session and catalog as tools, so only the host's link can answer. **Why not C**
+  (the app talks to the server for the panel): it breaks "the panel sees one thing" and splits one link's state.
+  A's cost is three more methods on the trait, an API diff on T1 (list it for the Director); T1 is unbuilt, so they are
+  required methods, not defaults, and a forgotten implementation fails to compile.
+
+```rust
+// omuzaki-agent-api
+pub struct PromptInfo { pub name: String, pub title: String, pub description: String, pub arguments: Vec<PromptArgInfo> }
+pub struct PromptArgInfo { pub name: String, pub description: String, pub required: bool }
+// on Assistant (D1):
+pub enum PromptsState { Loading, Ready(Vec<PromptInfo>), Failed(HostError) }
+fn prompts(&self) -> PromptsState;       // never blocks: the host's cached list (sorted by name), or why there is none
+fn refresh_prompts(&self);               // never blocks: marks the cache stale; the host thread refetches; `Loading` until it answers
+fn prompt(&self, name: &str, args: BTreeMap<String, String>) -> Result<String, HostError>; // one round trip, 2 s at most
+```
+
+- **`PromptInfo`** mirrors MCP's `Prompt`: `title` falls back to `name` when the server sends none; `description`
+  falls back to `""`. Arguments are all text (`omuzaki-mcp` refuses anything else), in the server's order. The list
+  holds what this session is offered (`omuzaki-mcp` hides a recipe whose ops the session's grants lack).
+- **Host side.** `prompts()` reads a cache; the host thread fills it at `start`, refetches on
+  `notifications/prompts/list_changed`, after each `Done` and on `refresh_prompts()`, and no call from the panel
+  waits on I/O. A failed fetch is cached as `Failed`, so Retry is `refresh_prompts()` (it shows `Loading` at once), not a
+  wait for a notification or an answer. `prompt()`
+  sends `prompts/get` over the link (an in-process duplex: well under 2 s; past 2 s it returns `Mcp("timed out")`) and
+  returns the first message's text. It is not a tool call, opens no transaction, charges nothing, sends nothing to the
+  model, and is allowed in any state the link is up, including while an answer runs. Errors: `SessionEnded` (from `prompts()` as `Failed(SessionEnded)`) (revoked
+  or closed, D4); `Mcp(text)` for the server's `invalid_params` (unknown prompt, missing argument, with its own
+  hint) or a text over **16 KiB** (`Mcp("prompt text too long")`); the host builds no `NoModel` or `NeedsKey` here,
+  the link needs no model.
+- **Lifecycle: opening `/` is first use.** A new conversation has no host and no session until its first use,
+  and first use is the first message **or** the first time the person opens the `/` menu. Opening it asks the app
+  to start the host exactly as a first `send` would (a `Transport::InApp` session, `role = "assistant"`, the
+  person as principal; Wiring, D1), then the menu shows `Loading` until the host's first fetch answers. Nothing is
+  sent to the model, no tool is called and no transaction opens: `prompts/list` and `prompts/get` are read-only
+  protocol calls. It still happens only on a person's action, so the session stays lazy. This refines ADR 0040
+  decision 2 ("opened by the app at the first message"; the ADR text stays) and agent-sessions §10.1, whose sentence
+  now reads "at first use: the first message, or opening the prompt menu". With no model set up (D8) there is no
+  host and the menu shows that state instead; the host needs no model to list prompts, but the panel offers none
+  without one.
+- **The form** is built from `arguments` in order: one single-line text box per argument, labelled with the name
+  (underscores shown as spaces), the description as its helper text, and "required" written in words on required
+  ones. "Insert" stays disabled until every required box is non-empty. A prompt with no arguments skips the form and
+  is fetched at once. Values go through `prompt` as typed, untrimmed except that empty optional boxes are left out.
+- **Into the box.** The panel runs `prompt` on the app's worker (it must not block a frame, D10), shows "Getting
+  prompt…" in the menu, and on `Ok(text)` puts the text in the message box: replacing it when empty, otherwise added
+  after a blank line, as one undoable edit of the box. Focus moves to the box with the caret at the end, and a polite
+  live region says "Prompt added to the message box". **The panel never calls `send` for a prompt.** The person reads
+  it, edits it, then Enter or Send as for any message. Chips are unchanged by it.
+- **Menu states.**
+
+| State | `/` menu |
+|---|---|
+| An answer runs (`send` until `Done`), or between `stop()` and `Done` | Disabled, "Wait for the answer, or Stop": the box is disabled too, so there is nowhere to put the text |
+| No model, needs key, unpriced, needs consent (D8), or revoked or ended (D4) | No host call is made (the panel has none, or `prompts()` gives `Failed(SessionEnded)`); the menu shows that state's one-line text and its action |
+| After Stop | Enabled again at `Done`; Stop changes nothing in the list |
+| `prompts()` is `Ready([])` | One row, "No prompts yet. Describe what you want in your own words." Not an error |
+| `prompts()` is `Loading` | One row, "Loading prompts…" (the panel polls `prompts()` once per frame, D10) |
+| `prompts()` is `Failed(Mcp(text))` | One row, "Prompts unavailable: <text>", with Retry, which calls `refresh_prompts()`. A `prompt` error stays under the form, and the panel calls `refresh_prompts()` |
+
+- **Trust.** The text is the server's, but nothing reaches the model until the person has read it in the box and
+  sent it. Then it is their `UserMessage.text`, so the host does **not** wrap it in `<data>` (D6 wraps only what the
+  person did not type); `Cause::Prompt` carries its first line like any message (ADR 0040, decision 2). If the server
+  changes a prompt between listing and getting, the form shows the listed description, but `prompt` returns the
+  current text and the person sees exactly that in the box before sending; if it is gone or its arguments changed,
+  the server's error shows and the menu is refreshed. Nothing is ever sent unseen.
+- **Worked example: "Set up my first stream"** (the recipe is fixed; names below are illustrative).
+  1. Opening the conversation's panel and the first `/` started the host, which listed `prompts/list` and cached `[set_up_first_stream "Set up my first stream", args:
+     character (required, "Which character goes live"), platform (optional, "Where you stream")]`.
+  2. The person types `/` in an empty box. The panel calls `prompts()` (no I/O) and shows the row (§7 Lifecycle: the first use started the host).
+  3. They pick it. The form shows "Character (required)" and "Platform"; they type "Mira", leave Platform empty,
+     and press Insert.
+  4. The panel calls `prompt("set_up_first_stream", {"character": "Mira"})` on the worker. The host sends
+     `prompts/get`; the server fills its template and returns one user message; the host returns its text.
+  5. The box now holds that text. The caret is at its end; the live region announces it. Nothing was sent: the
+     transcript is unchanged and `ScriptedAssistant` records no `send`.
+  6. They change one line and press Enter. `send(UserMessage { text: <edited text>, chips: [] })` starts the answer
+     as any message does (D2), and the menu disables until `Done`.
+- **What changes where.**
+  - **`Assistant`:** the three methods and three types above; nothing else in D1, D4 or D10.
+  - **`AssistantHost` (T2):** the prompt cache, the refetch rules, `prompt()` with its 2 s and 16 KiB limits.
+    Tested on the scripted rmcp server of D11: the cache gives a second `prompts()` with 0 MCP calls; with the first
+    fetch failing, `refresh_prompts()` gives `Loading` and then `Ready` with no `list_changed` and no answer run; a
+    `list_changed` is reflected by the next `prompts()` within one host tick; `prompt` passes the arguments
+    unchanged; the 16 KiB boundary (16,384 bytes passes, 16,385 fails); a revoked session gives `SessionEnded`.
+  - **`ScriptedAssistant` (T1):** `with_prompts(Vec<PromptInfo>)` and `with_prompt_text(name, text)` answer
+    `prompts` and `prompt` from tables, with `fail_prompts(HostError)` (then `refresh_prompts` clears it, after one
+    `Loading`) for the error rows; it counts `refresh_prompts` calls too; it records every
+    `prompt` call (name, args) beside the `send` log, so a test asserts a pick sent nothing. No clock is involved.
+  - **Chat panel (T8):** the `/` menu, the form, the insert step, the state rows above. Panel tests on
+    `ScriptedAssistant`: in a fresh conversation, opening `/` and inserting a prompt sends no message and no tool call
+    (`sent()` empty); Retry after a failure calls `refresh_prompts()` once and the menu recovers to the list;
+    pick, form and insert leave the box equal to the text; Enter then sends
+    exactly the edited text; one gallery screenshot per row of the state table, plus the form.
+  - **`omuzaki-agent` stays free of `omuzaki-mcp`** (lint-deps); the CLI and eval driver need no change.

@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::approval::{ApprovalRef, PendingApproval, Resolution};
 use crate::session::{Ended, SessionChange, SessionId, SessionInfo, SessionUndo};
-use crate::{Actor, Cause, Grants, OpError, OpKind, OpMeta, Plan, Scope, Undo};
+use crate::{Actor, Cause, Effect, Grants, JobId, JobInfo, OpError, OpKind, OpMeta, Plan, Scope, Undo};
 
 /// Plan only, or plan and apply.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -91,6 +91,9 @@ pub struct OpRecord {
     /// The approval that allowed this op, and its approver. Stamped by the executor when a person approved the run.
     #[serde(default)]
     pub approval: Option<ApprovalRef>,
+    /// What an [`Undo::Explicit`] op changed outside the document, so the step can be undone and redone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effect: Option<Effect>,
 }
 
 /// Something that happened, streamed to subscribers (UI, Build Theatre, MCP notifications).
@@ -184,6 +187,20 @@ pub enum Event {
         /// The resolution.
         resolution: Resolution,
     },
+    /// A job changed state (every change, in order).
+    JobChanged {
+        /// Its snapshot after the change.
+        job: JobInfo,
+    },
+    /// A job reported progress. Coalesced: at most 10 a second per job.
+    JobProgress {
+        /// Which job.
+        job: JobId,
+        /// What it is doing.
+        stage: String,
+        /// How far along, 0 to 1.
+        fraction: f32,
+    },
 }
 
 /// Everything a surface needs to present one op: generated from the registry, never written by hand.
@@ -201,12 +218,31 @@ pub struct OpInfo {
     pub undo: Undo,
     /// The arguments' JSON Schema (inlined).
     pub schema: Schema,
+    /// Whether consecutive calls with only number values changed can be coalesced
+    /// ([`Op::coalesces`](crate::Op::coalesces)). Omitted from the JSON when false.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub coalesces: bool,
 }
 
 impl OpInfo {
     /// Builds the info from static facts and a schema.
     pub fn new(meta: OpMeta, schema: Schema) -> Self {
-        Self { name: meta.name, summary: meta.summary, kind: meta.kind, scope: meta.scope, undo: meta.undo, schema }
+        Self {
+            name: meta.name,
+            summary: meta.summary,
+            kind: meta.kind,
+            scope: meta.scope,
+            undo: meta.undo,
+            schema,
+            coalesces: false,
+        }
+    }
+
+    /// The same info with [`coalesces`](Self::coalesces) set.
+    #[must_use]
+    pub fn with_coalesces(mut self, coalesces: bool) -> Self {
+        self.coalesces = coalesces;
+        self
     }
 }
 

@@ -72,6 +72,24 @@ pub(crate) struct Gpu {
     lost: Arc<AtomicBool>,
 }
 
+/// The MSAA sample counts a device may use for [`SCENE_FORMAT`], as a set of the values 1, 2, 4 and 8 or'd together.
+///
+/// 1 is always there and 4 whenever the adapter offers it (the WebGPU guarantee). 2 and 8 are adapter-specific: wgpu
+/// only lets a device use them when it was opened with `TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES`, and picking 8 on a
+/// device without it makes `create_texture` fail. So they are kept only with that feature on the device and the
+/// flags offering the count.
+fn sample_count_mask(features: wgpu::Features, flags: wgpu::TextureFormatFeatureFlags) -> u32 {
+    let adapter_specific = features.contains(wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES);
+    [1u32, 2, 4, 8]
+        .into_iter()
+        .filter(|&n| match n {
+            1 => true,
+            4 => flags.sample_count_supported(4),
+            _ => adapter_specific && flags.sample_count_supported(n),
+        })
+        .fold(0, |set, n| set | n)
+}
+
 /// Whether an adapter is Mesa's lavapipe, which reports itself as a CPU adapter named or driven by "llvmpipe".
 fn is_lavapipe(kind: wgpu::DeviceType, name: &str, driver: &str) -> bool {
     let says = |text: &str| {
@@ -86,10 +104,7 @@ impl Gpu {
     pub(crate) fn from_parts(adapter: &wgpu::Adapter, device: wgpu::Device, queue: wgpu::Queue) -> Self {
         let info = adapter.get_info();
         let formats = adapter.get_texture_format_features(SCENE_FORMAT);
-        let sample_counts = [1u32, 2, 4, 8]
-            .into_iter()
-            .filter(|&n| n == 1 || formats.flags.sample_count_supported(n))
-            .fold(0, |set, n| set | n);
+        let sample_counts = sample_count_mask(device.features(), formats.flags);
         let wanted = wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
         Self {
             max_texture_size: device.limits().max_texture_dimension_2d,
@@ -317,6 +332,34 @@ mod tests {
             Candidate { name: "NVIDIA GeForce RTX 4090".into(), kind: wgpu::DeviceType::DiscreteGpu },
             Candidate { name: "llvmpipe (LLVM 15.0.7, 256 bits)".into(), kind: wgpu::DeviceType::Cpu },
         ]
+    }
+
+    #[test]
+    fn the_sample_count_mask_keeps_1_and_4_and_offers_8_only_with_the_adapter_specific_feature() {
+        use wgpu::TextureFormatFeatureFlags as Flags;
+        let all = Flags::MULTISAMPLE_X2 | Flags::MULTISAMPLE_X4 | Flags::MULTISAMPLE_X8;
+        let with = wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
+        let without = wgpu::Features::empty();
+
+        // Without the device feature 8 is never offered, even when the adapter's flags have it.
+        let mask = sample_count_mask(without, all);
+        assert_eq!(mask & 8, 0, "8 must not be used without the device feature");
+        assert_eq!(mask, 0b0101, "1 and 4 only: {mask:#b}");
+
+        // With the feature and the flags, 8 is in (and 2 with it).
+        let mask = sample_count_mask(with, all);
+        assert_eq!(mask, 0b1111, "{mask:#b}");
+        assert_eq!(sample_count_mask(with, Flags::MULTISAMPLE_X4 | Flags::MULTISAMPLE_X8) & 8, 8);
+        assert_eq!(sample_count_mask(with, Flags::MULTISAMPLE_X4) & 8, 0, "8 needs the flags too");
+    }
+
+    #[test]
+    fn the_sample_count_mask_always_holds_1_even_with_no_flags() {
+        use wgpu::TextureFormatFeatureFlags as Flags;
+        for features in [wgpu::Features::empty(), wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES] {
+            assert_eq!(sample_count_mask(features, Flags::empty()), 0b0001);
+            assert_eq!(sample_count_mask(features, Flags::MULTISAMPLE_X8) & 1, 1);
+        }
     }
 
     #[test]

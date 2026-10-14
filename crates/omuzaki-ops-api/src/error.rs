@@ -3,13 +3,13 @@
 
 use std::fmt;
 
-use omuzaki_doc_api::{DocPath, DocVersion};
+use omuzaki_doc_api::{DocPath, DocVersion, Value};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::approval::{ApprovalId, Need};
 use crate::session::{EndReason, PauseReason};
-use crate::{Actor, Scope};
+use crate::{Actor, CancelReason, JobId, Scope};
 
 /// Broad class of an op failure; stable, so agents and scripts can branch on it.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
@@ -34,6 +34,9 @@ pub enum ErrorCode {
     Waiting,
     /// A session limit (rate or queue) was hit. Retry after the time in the detail.
     Limited,
+    /// A job was cancelled (by a person, a stop, a cap or shutdown). Not a failure of the op: the detail says who
+    /// and why.
+    Cancelled,
 }
 
 impl fmt::Display for ErrorCode {
@@ -48,6 +51,7 @@ impl fmt::Display for ErrorCode {
             ErrorCode::Internal => "internal",
             ErrorCode::Waiting => "waiting",
             ErrorCode::Limited => "limited",
+            ErrorCode::Cancelled => "cancelled",
         })
     }
 }
@@ -130,6 +134,41 @@ pub enum ErrorDetail {
         /// The document version after that change.
         version: DocVersion,
     },
+    /// A job was cancelled.
+    Cancelled {
+        /// Which job.
+        job: JobId,
+        /// Why.
+        reason: CancelReason,
+    },
+    /// Where in the source text an op was given the error is (for ops that take source, such as `script.run`).
+    Position {
+        /// The line, 1-based.
+        line: u32,
+        /// The column, 1-based.
+        column: u32,
+    },
+    /// A driver job joined a transaction and was cancelled or failed, but reverting its edits conflicted with later
+    /// changes. A revert is all or nothing, so it reverted **nothing**: every edit the job made stays in the document.
+    Unreverted {
+        /// The conflicts that stopped the revert.
+        conflicts: Vec<RevertConflict>,
+        /// The paths the job edited that did not conflict. They stay too, because nothing was reverted.
+        retained: Vec<DocPath>,
+    },
+}
+
+/// One path where a driver job's revert conflicted with a later change.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct RevertConflict {
+    /// The path.
+    pub path: DocPath,
+    /// The value the job left there.
+    pub job_value: Value,
+    /// The value there now; `None` if it was removed.
+    pub current: Option<Value>,
+    /// Who made the later change.
+    pub actor: Actor,
 }
 
 impl OpError {
@@ -182,6 +221,12 @@ impl OpError {
         Self::new(ErrorCode::Denied, format!("only a person can do this: {reason}"))
             .hint("only a person can do this, in the Omuzaki window")
             .with_detail(ErrorDetail::PersonOnly { reason })
+    }
+
+    /// The job `job` was cancelled (code [`Cancelled`](ErrorCode::Cancelled)). The executor attaches the
+    /// [`ErrorDetail::Cancelled`] naming who and why; an op only gets this from [`JobCtx::checkpoint`](crate::JobCtx).
+    pub fn cancelled(job: JobId) -> Self {
+        Self::new(ErrorCode::Cancelled, format!("job {} was cancelled", job.0))
     }
 
     /// A bug.

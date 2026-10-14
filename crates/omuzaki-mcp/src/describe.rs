@@ -63,13 +63,14 @@ fn kind_line(info: &OpInfo) -> &'static str {
             "Long-running job (it may take a while). Its result in the document is undoable with history_undo."
         }
         (OpKind::Job, Undo::Explicit) => {
-            "Long-running job (it may take a while) with effects beyond the document; history_undo reverses them."
+            "Long-running job (it may take a while) with effects beyond the document. Not undoable yet: history_undo \
+             refuses to undo it, so be sure before applying."
         }
         (OpKind::Job, Undo::None) => "Long-running job (it may take a while). Not undoable.",
         (OpKind::Edit, Undo::Auto) => "Changes the project. Undoable with history_undo.",
         (OpKind::Edit, Undo::Explicit) => {
-            "Changes the project and has effects beyond the document (files, devices, streams); history_undo \
-             reverses them."
+            "Changes the project and has effects beyond the document (files, devices, streams). Not undoable yet: \
+             history_undo refuses to undo it, so be sure before applying."
         }
         (OpKind::Edit, Undo::None) => "Changes the project. Not undoable: be sure before applying.",
     }
@@ -207,6 +208,7 @@ mod tests {
         let publish =
             tool_description(&info(OpKind::Job, Scope::Publish, Undo::Explicit), &Grants::agent_default(), &guidance());
         assert!(publish.contains("NOT granted") && publish.contains("Long-running"));
+        assert!(publish.contains("refuses to undo") && !publish.contains("reverses them"), "{publish}");
         let query =
             tool_description(&info(OpKind::Query, Scope::Read, Undo::None), &Grants::agent_default(), &guidance());
         assert!(query.contains("Read-only") && !query.contains("dry_run") && !query.contains("Afterwards"));

@@ -103,6 +103,7 @@ documented in the code; section 11 lists them exactly once, for the contract tas
   "for this session" or "for this project" (7.1) or the grants popover (`Sessions::set_grants`).
 - **Principal's grants** come from a `Principals` source the app registers with the executor (contract, section 11).
   Phase 1 has one local person holding `Grants::person()`. VC-10 roles narrow it later without touching sessions.
+  (`team.md` §3, §6.5: `TeamPrincipals` gives a member `Role::grants()`, a non-member `read`, a revoked key nothing.)
   Scopes intersect. File roots are not intersected (a person holds `fs` with no roots, ADR 0013); instead only a
   person can add a root to a session, and only roots ADR 0013 allows.
 - **Who may change a session's grants:** its principal (later, a VC-10 admin), only up to their own grants. Never an
@@ -123,7 +124,7 @@ documented in the code; section 11 lists them exactly once, for the contract tas
                                   Ended   (kept in the registry for History, Theatre and per-principal undo)
 ```
 
-- **Opens** when a transport admits a client: MCP `initialize`; the in-app assistant's first message; a plugin load.
+- **Opens** when a transport admits a client: MCP `initialize`; the in-app assistant's first use (its first message, or opening the prompt menu); a plugin load.
   A bridge connection with a credential the studio has not paired yet opens `Paused { reason: Pairing }` (10.2).
 - **Ends** on: stdio EOF or HTTP `DELETE` (`Disconnected`), the HTTP idle timeout (`IdleTimeout`, 30 min), the
   client closing it (`Closed`), a person's revoke (`Revoked { by }`), or the project closing (`ProjectClosed`).
@@ -263,7 +264,7 @@ A request from a session is **queued** instead of refused when a person could al
 | `Person { reason }` | The op called `ctx.require_person(reason)` and no person is acting or confirming (7.3, 7.4) | Approve, Reject with comment |
 | `Budget { needed, left }` | Running it, or the session's spend or time, would pass its budget (8.1). The session is paused too | Approve once, Raise budget, Reject (the session stays paused) |
 | `Pairing { client }` | A bridge connection presents a credential the studio has not paired (10.2). No request; the session waits paused | Approve = Pair (remembered for that credential), Reject = Refuse (the session ends, revoked) |
-| `Review { policy }` | VC-11 (phase 5): a team policy needs a reviewer for `publish` or a `broadcast` grant. Reserved now | Approve, Reject (by a person with the reviewer role) |
+| `Review { policy }` | VC-11 (phase 5): a team policy needs a reviewer for `publish` or a `broadcast` grant. Reserved now | Approve, Reject (by a person with the reviewer role; `team-review.md` §8.3: N distinct reviewer, admin or owner keys, never the requester; §8.2: `PendingApproval.own` marks a person's own request) |
 
 How it runs:
 1. Before queueing, the executor **dry-runs** the request (that needs only `read`). If the dry-run fails
@@ -318,10 +319,10 @@ ADR 0018 keeps its checks in the ops "until ops-api grows a declared person-only
 - Phase 1: an agent without `publish` or `broadcast` gets a `Scope` approval. Granting either, for a request or a
   session, uses the two-step confirm (`shell.md` §10). "Go live" by an agent needs a per-session `broadcast` grant
   from a person, always.
-- Phase 5 (VC-11): a team policy adds the `Review` need for `publish` ops and `broadcast` grants, for agents and
-  people alike. The licence gate runs first (in the dry-run, step 1 of 7.1). VC-11's "approvals are ops with a log"
-  is met by the journalled approval events plus `OpRecord.approval`, which links the applied op to its approval and
-  approver (9.1).
+- Phase 5 (VC-11, `team-review.md` §8): a team policy adds the `Review` need for `publish` ops and `broadcast` grants,
+  for agents and people alike. The licence gate runs first (in the dry-run, step 1 of 7.1). VC-11's "approvals are ops
+  with a log" is met by the journalled approval events plus `OpRecord.approval`, which links the applied op to its
+  approval and approver (9.1).
 
 ### 7.6 No approver present (headless)
 
@@ -376,6 +377,9 @@ person's frame time.
 
 ### 9.1 What is recorded
 
+`team-review.md` §9 decides where these land: the journal's `audit` record (kind 11) for session and approval facts,
+and the signed membership log in the document for role changes.
+
 The **runner's event stream is the audit log.** The VC-08 journal writer already persists it, in order, next
 to the op log. After this change it holds:
 - every document change: `OpApplied` (the record now with `on_behalf_of` and `approval`), `TxCommitted`,
@@ -414,8 +418,8 @@ limits, with no second implementation. Its host adds only what an external clien
 charging tokens and money to the session (`Sessions::charge`), and waiting on an approval inside a tool call, since it
 controls its own loop. Sub-agents (AG-03) are more in-process sessions with `parent` set.
 
-*Amended by ADR 0040:* the session's role is `assistant`, and one conversation is one session: the app opens it at the
-first message, and New conversation ends it (`Closed`). Stop (section 6) becomes `Sessions::stop`: it pauses and
+*Amended by ADR 0040:* the session's role is `assistant`, and one conversation is one session: the app opens it at first use
+(the first message, or opening the prompt menu), and New conversation ends it (`Closed`). Stop (section 6) becomes `Sessions::stop`: it pauses and
 cancels jobs atomically, lets cancelled driver jobs revert their edits, then commits the open transaction in any
 state, a paused one included (`agent-runtime.md` D4).
 

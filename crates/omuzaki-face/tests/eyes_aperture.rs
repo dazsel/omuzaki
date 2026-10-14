@@ -69,20 +69,27 @@ fn paint_eyes_into(painter: &mut RealPainter, profile: &FaceProfile, params: &Pa
     painter.paint_section(Section::Eyes, &input, out).unwrap();
 }
 
-/// The `(Fill, PushClip, PopClip)` triples of the base layer, one per open eye, as the clip path's elements and the
-/// fill's paint. Panics if the list is not made of such triples.
+/// The eye whites of the base layer, one per open eye: each fill outside every clip that is followed by a clip of the
+/// same path (the clip the iris and highlights of draw inside; the iris is filled inside it), as the clip path's
+/// elements, the fill's elements and its paint.
 fn open_eyes(list: &DrawList) -> Vec<(Vec<PathEl>, Vec<PathEl>, Paint)> {
-    assert_eq!(list.cmds().len() % 3, 0, "an open eye is a fill, a clip and the end of the clip: {:?}", list.cmds());
-    list.cmds()
-        .chunks(3)
-        .map(|c| {
-            let (Cmd::Fill { path, paint, opacity }, Cmd::PushClip(clip), Cmd::PopClip) = (c[0], c[1], c[2]) else {
-                panic!("not a clipped fill: {c:?}")
-            };
-            assert!((opacity - 1.0).abs() < f32::EPSILON);
-            (list.elements(clip).to_vec(), list.elements(path).to_vec(), paint)
-        })
-        .collect()
+    let mut depth = 0_usize;
+    let mut eyes = Vec::new();
+    for (i, cmd) in list.cmds().iter().enumerate() {
+        match *cmd {
+            Cmd::PushClip(_) => depth += 1,
+            Cmd::PopClip => depth -= 1,
+            Cmd::Fill { path, paint, opacity } if depth == 0 => {
+                if let Some(Cmd::PushClip(clip)) = list.cmds().get(i + 1).copied() {
+                    assert_eq!(list.elements(path), list.elements(clip), "a white is followed by its own clip");
+                    assert!((opacity - 1.0).abs() < f32::EPSILON);
+                    eyes.push((list.elements(clip).to_vec(), list.elements(path).to_vec(), paint));
+                }
+            }
+            _ => {}
+        }
+    }
+    eyes
 }
 
 fn bounds(els: &[PathEl]) -> (Vec2, Vec2) {
