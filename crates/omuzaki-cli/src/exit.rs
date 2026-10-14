@@ -52,6 +52,9 @@ const fn describe(code: ErrorCode) -> Row {
         ErrorCode::Limited => {
             Row { code: 10, meaning: "a session limit was hit; wait the time the error gives, then retry" }
         }
+        ErrorCode::Cancelled => {
+            Row { code: 11, meaning: "a job was cancelled (by a person, a stop or a limit); do not retry unchanged" }
+        }
     }
 }
 
@@ -130,6 +133,6 @@ mod tests {
     fn help_lists_the_codes_in_numeric_order() {
         let numbers: Vec<u8> =
             help_text().lines().skip(1).filter_map(|l| l.split_whitespace().next()?.parse().ok()).collect();
-        assert_eq!(numbers, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+        assert_eq!(numbers, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
     }
 }

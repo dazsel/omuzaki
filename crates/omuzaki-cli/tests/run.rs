@@ -47,9 +47,10 @@ fn edit_outcome(applied: bool) -> Outcome {
         version: DocVersion(7),
         on_behalf_of: None,
         approval: None,
+        effect: None,
     });
     let cost = Some(CostHint { seconds: Some(2.5), gpu_mib: Some(4096), usd: Some(0.1) });
-    Outcome { plan: Plan { patch, output: None, cost }, applied }
+    Outcome { plan: Plan { patch, output: None, cost, effect: None }, applied }
 }
 
 fn omuzaki(runner: &Arc<FakeRunner>, args: &[&str]) -> Result<String, OpError> {

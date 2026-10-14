@@ -1,0 +1,27 @@
+[package]
+name = "omuzaki-pixfmt"
+description = "Camera pixel formats (NV12, YUY2, BGRA, MJPG) to packed RGB8: integer fixed-point, safe Rust, no allocation per frame (PF-01)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[package.metadata.omuzaki]
+layer = "lib"
+
+[dependencies]
+thiserror.workspace = true
+zune-jpeg.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+proptest.workspace = true
+
+[[bench]]
+name = "convert"
+harness = false
+
+[lints]
+workspace = true

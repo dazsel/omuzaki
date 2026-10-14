@@ -7,6 +7,7 @@
 
 mod adversarial;
 mod events;
+mod explicit;
 mod file_access;
 mod ops;
 mod props;

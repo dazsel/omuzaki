@@ -10,7 +10,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::approval::{ApprovalId, Decision, PendingApproval, Resolution};
-use crate::{Actor, Grants, OpError, TxId};
+use crate::{Actor, Grants, JobId, OpError, TxId};
 
 /// Identifies one session. Allocated by the executor and unique within the project's history.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
@@ -268,6 +268,9 @@ pub struct Ended {
     pub kept: Vec<KeptTx>,
     /// Pending approvals that were withdrawn.
     pub withdrawn: Vec<ApprovalId>,
+    /// Jobs that were cancelled, their results discarded.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cancelled: Vec<JobId>,
 }
 
 /// What undoing a whole session did (design §6).
@@ -283,6 +286,28 @@ pub struct SessionUndo {
     pub abandoned: Vec<TxId>,
     /// Steps with effects outside the document ([`Undo::Explicit`](crate::Undo::Explicit)) that cannot be undone yet.
     pub outside: Vec<TxId>,
+}
+
+/// What happens to a stopped session's open transaction.
+#[non_exhaustive]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StopStep {
+    /// Cancelled jobs are still ending; the executor commits the transaction by itself and emits the event.
+    Pending,
+    /// The transaction was committed, as this undo step.
+    Committed(TxId),
+    /// There was no open transaction (or this was a repeated stop).
+    None,
+}
+
+/// What [`Sessions::stop`] did when it returned.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Stopped {
+    /// What happens to the open transaction.
+    pub step: StopStep,
+    /// The jobs that were cancelled.
+    pub jobs: Vec<JobId>,
 }
 
 /// Where the executor finds a person's grants (design §3.3). The app registers one; phase 1 has a single local person
@@ -365,4 +390,48 @@ pub trait Sessions: Send + Sync {
     /// `NotFound` if the approval is gone (resolved or withdrawn); `Denied` if `by` is not a person, not the
     /// session's principal, or lacks the needed scope; `Invalid` if `decision` does not fit the need.
     fn resolve(&self, id: ApprovalId, decision: Decision, by: &Actor) -> Result<Resolution, OpError>;
+
+    /// Asks before running out: a session that knows it will need more money or time asks first. When `needed` fits
+    /// the budget it returns `Ok(())` and nothing changes. Otherwise it pauses the session
+    /// ([`PauseReason::Budget`]) and queues a [`Need::Budget`](crate::Need::Budget) approval through the normal
+    /// queue and the Theatre (there is no panel-only path), and returns `Waiting` with
+    /// [`ErrorDetail::Queued`](crate::ErrorDetail::Queued) naming the approval.
+    ///
+    /// The pause is session state, so the agent sees it: its next request gets `Waiting` with
+    /// [`ErrorDetail::Paused`](crate::ErrorDetail::Paused) `{ reason: Budget }`, and [`session`](Self::session)
+    /// shows [`SessionState::Paused`] `{ reason: Budget }`. A person's `RaiseBudget` decision resumes the session; a
+    /// rejection leaves it paused.
+    ///
+    /// # Errors
+    /// `Waiting` as above; `NotFound` for an unknown session; `Conflict` if it has ended; `Unsupported` from an
+    /// executor that has no budgets (the default).
+    fn request_budget(&self, id: SessionId, needed: Spend) -> Result<(), OpError> {
+        let _ = (id, needed);
+        Err(OpError::unsupported("this executor does not support Sessions::request_budget"))
+    }
+
+    /// The person's Stop. Person-only: `by` must be the session's principal, as for every control. In this order,
+    /// under the executor:
+    /// 1. **Pause and cancel.** Under the lock, atomically: pause the session ([`PauseReason::Person`], or keep a
+    ///    pause already there, such as `Budget`) and cancel its jobs (`Jobs::cancel_session`). `stop` returns after
+    ///    this step with [`Stopped`]: the cancelled job ids and what happens to the open transaction.
+    /// 2. **Jobs end.** Cancelled jobs end by their next checkpoint, at most 10 s. A driver job joined to the
+    ///    session's open transaction reverts only its own inner edits from it; if that revert conflicts
+    ///    (`Unreverted`) it reverts nothing and Stop keeps the edits ("commit as is").
+    /// 3. **Close the transaction.** Once no joined job runs, under the lock again: commit the open transaction as
+    ///    it now stands, with " (stopped)" added to its label, **in any session state** (a paused session refuses its
+    ///    own `commit`; this is the person-authorised close). A transaction left empty closes with no step.
+    ///
+    /// [`StopStep::Pending`] means the executor finishes step 3 by itself and emits `TxCommitted` or `TxRolledBack`;
+    /// the stop is final once [`SessionInfo::open_tx`] is `None`. The behaviours the executor guarantees: Stop after a
+    /// budget pause leaves exactly one undo step; Stop works in each session state (idle, running, waiting for
+    /// approval, budget pause); and a second `stop` is a no-op `Ok` (`step: None`, no event, no new step).
+    ///
+    /// # Errors
+    /// `NotFound` for an unknown session; `Denied` if `by` is not its principal; `Unsupported` from an executor
+    /// without stop (the default).
+    fn stop(&self, id: SessionId, by: &Actor) -> Result<Stopped, OpError> {
+        let _ = (id, by);
+        Err(OpError::unsupported("this executor does not support Sessions::stop"))
+    }
 }

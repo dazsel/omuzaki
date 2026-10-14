@@ -15,12 +15,14 @@ pub struct OpRegistration {
     pub schema: fn() -> Schema,
     /// Decodes arguments into a runnable op.
     pub decode: fn(Value) -> Result<Box<dyn DynOp>, OpError>,
+    /// See [`Op::coalesces`].
+    pub coalesces: fn() -> bool,
 }
 
 impl OpRegistration {
     /// The registration for op type `T`. A `const fn` so [`register_op!`](crate::register_op) works at link time.
     pub const fn of<T: Op>() -> Self {
-        Self { meta: T::meta, schema: schema_of::<T>, decode: decode_as::<T> }
+        Self { meta: T::meta, schema: schema_of::<T>, decode: decode_as::<T>, coalesces: T::coalesces }
     }
 }
 

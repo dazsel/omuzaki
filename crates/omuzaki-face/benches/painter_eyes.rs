@@ -1,13 +1,15 @@
-//! Benchmark: the eyes section of the real painter (aperture and eye white; later pieces add to
-//! what it measures). Face-paint budget: 0.5 ms for the whole face (spec v3 §10).
+//! Benchmark: the eyes section of the real painter (aperture and eye white, iris, pupil, catchlights and
+//! shimmer; later pieces add to what it measures). Face-paint budget: 0.5 ms for the whole face (spec v3 §10).
 
 use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
+use omuzaki_core::glam::Vec2;
 use omuzaki_core::time::Seconds;
 use omuzaki_face::{RealPainter, Section};
 use omuzaki_face_api::{
-    DEFAULT_PX_PER_M, EyeParams, FaceDrawing, FaceInput, FaceMapping, FaceProfile, FaceView, PaintParams,
+    CatchlightShape, DEFAULT_PX_PER_M, EyeParams, FaceDrawing, FaceInput, FaceMapping, FaceProfile, FaceView,
+    PaintParams, PupilShape,
 };
 use omuzaki_face_mock::mock_projection;
 
@@ -26,6 +28,24 @@ fn bench_eyes(c: &mut Criterion) {
         group
             .bench_function(name, |b| b.iter(|| black_box(painter.paint_section(Section::Eyes, &input, &mut drawing))));
     }
+    // Everything of on: shimmer, heart catchlight, slit pupil, the sparkle effect, a gaze and a view shift, the
+    // clock moving each frame (as in a running shot).
+    let mut busy = FaceProfile::default();
+    busy.eyes.highlights.shimmer = 1.0;
+    busy.eyes.highlights.shape = CatchlightShape::Heart;
+    busy.eyes.iris.pupil.shape = PupilShape::Slit;
+    let mut params = face(1.0, 0.0);
+    params.gaze = Vec2::new(0.6, -0.3);
+    params.effects.sparkle = 0.8;
+    let view = FaceView { highlight_shift: Vec2::new(0.2, 0.1) };
+    let mut t = 0.0;
+    group.bench_function("open_shimmer_heart_slit", |b| {
+        b.iter(|| {
+            t += 1.0 / 60.0;
+            let input = FaceInput { profile: &busy, params: &params, time: Seconds(t), view };
+            black_box(painter.paint_section(Section::Eyes, &input, &mut drawing))
+        });
+    });
     group.finish();
 }
 

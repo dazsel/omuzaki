@@ -26,7 +26,7 @@ pub const PROFILE_ENV: &str = "OMUZAKI_RENDER_PROFILE";
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub enum CapabilityProfile {
     /// The desktop application: WebGPU's default limits (the same floor as [`WebGpu`](Self::WebGpu), so any adapter that meets them
-    /// opens), plus GPU timestamps when the adapter has them.
+    /// opens), plus GPU timestamps and adapter-specific texture format features when the adapter has them.
     #[default]
     Native,
     /// A browser with WebGPU: exactly `wgpu::Limits::default()`, the set every WebGPU browser guarantees, and only the
@@ -65,7 +65,11 @@ impl CapabilityProfile {
     #[must_use]
     pub const fn features(self) -> wgpu::Features {
         match self {
-            Self::Native => wgpu::Features::TIMESTAMP_QUERY.union(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS),
+            // The adapter-specific format features let the device use the sample counts the adapter offers beyond
+            // the WebGPU guarantee (8x on a 4090); without them, `gpu.rs` offers only 1 and 4.
+            Self::Native => wgpu::Features::TIMESTAMP_QUERY
+                .union(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)
+                .union(wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES),
             Self::WebGpu => wgpu::Features::TIMESTAMP_QUERY,
             Self::WebGl2 => wgpu::Features::empty(),
         }

@@ -1,0 +1,19 @@
+{
+  "patch": {
+    "changes": [
+      {
+        "path": "character/face/blend",
+        "before": 0.25,
+        "after": 0.5
+      }
+    ]
+  },
+  "output": {
+    "ok": true
+  },
+  "cost": {
+    "seconds": 1.5,
+    "gpu_mib": null,
+    "usd": null
+  }
+}

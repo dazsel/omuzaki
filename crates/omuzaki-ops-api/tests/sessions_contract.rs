@@ -12,9 +12,9 @@ use omuzaki_doc_api::{DocPath, DocVersion, Patch};
 use omuzaki_doc_mock::MemDoc;
 use omuzaki_ops_api::{
     Actor, ApprovalId, ApprovalRef, ApprovalRequest, Budget, Decision, EndReason, Ended, ErrorCode, ErrorDetail, Event,
-    Grants, KeptTx, Limits, Mode, Need, OpCtx, OpError, OpRecord, Outcome, PauseReason, PendingApproval, Plan,
+    Grants, JobId, KeptTx, Limits, Mode, Need, OpCtx, OpError, OpRecord, Outcome, PauseReason, PendingApproval, Plan,
     Principals, Request, Resolution, Resolved, Scope, SessionChange, SessionId, SessionInfo, SessionSpec, SessionState,
-    SessionTx, SessionUndo, Sessions, Spend, Transport, TxId,
+    SessionTx, SessionUndo, Sessions, Spend, StopStep, Stopped, Transport, TxId,
 };
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -52,7 +52,7 @@ fn undo_result() -> SessionUndo {
 }
 
 fn ended() -> Ended {
-    Ended { abandoned: vec![TxId(5)], kept: vec![kept()], withdrawn: vec![ApprovalId(2)] }
+    Ended { abandoned: vec![TxId(5)], kept: vec![kept()], withdrawn: vec![ApprovalId(2)], cancelled: vec![] }
 }
 
 fn info() -> SessionInfo {
@@ -109,6 +109,7 @@ fn record() -> OpRecord {
         version: DocVersion(3),
         on_behalf_of: Some(person()),
         approval: Some(ApprovalRef { id: ApprovalId(2), by: person() }),
+        effect: None,
     }
 }
 
@@ -436,4 +437,80 @@ fn a_request_without_base_serialises_it_as_null() {
         base: Some(DocVersion(4)),
     };
     assert_eq!(serde_json::to_value(&request).unwrap()["base"], json!(4));
+}
+
+/// A `Sessions` that overrides neither `request_budget` nor `stop`: both must come back `Unsupported`.
+struct Bare;
+
+impl Sessions for Bare {
+    fn open(&self, _: SessionSpec) -> Result<SessionInfo, OpError> {
+        Err(OpError::internal("unused"))
+    }
+    fn sessions(&self) -> Vec<SessionInfo> {
+        Vec::new()
+    }
+    fn session(&self, _: SessionId) -> Option<SessionInfo> {
+        None
+    }
+    fn session_of(&self, _: &Actor) -> Option<SessionInfo> {
+        None
+    }
+    fn pause(&self, _: SessionId, _: &Actor) -> Result<SessionInfo, OpError> {
+        Err(OpError::internal("unused"))
+    }
+    fn resume(&self, _: SessionId, _: &Actor) -> Result<SessionInfo, OpError> {
+        Err(OpError::internal("unused"))
+    }
+    fn set_grants(&self, _: SessionId, _: Grants, _: &Actor) -> Result<SessionInfo, OpError> {
+        Err(OpError::internal("unused"))
+    }
+    fn set_budget(&self, _: SessionId, _: Budget, _: &Actor) -> Result<SessionInfo, OpError> {
+        Err(OpError::internal("unused"))
+    }
+    fn charge(&self, _: SessionId, _: Spend) -> Result<SessionInfo, OpError> {
+        Err(OpError::internal("unused"))
+    }
+    fn end(&self, _: SessionId, _: EndReason) -> Result<Ended, OpError> {
+        Err(OpError::internal("unused"))
+    }
+    fn undo_session(&self, _: SessionId, _: &Actor) -> Result<SessionUndo, OpError> {
+        Err(OpError::internal("unused"))
+    }
+    fn approvals(&self) -> Vec<PendingApproval> {
+        Vec::new()
+    }
+    fn resolve(&self, _: ApprovalId, _: Decision, _: &Actor) -> Result<Resolution, OpError> {
+        Err(OpError::internal("unused"))
+    }
+}
+
+#[test]
+fn request_budget_and_stop_default_to_unsupported() {
+    let err = Bare.request_budget(SessionId(1), spend()).unwrap_err();
+    assert_eq!(err.code, ErrorCode::Unsupported);
+    let err = Bare.stop(SessionId(1), &person()).unwrap_err();
+    assert_eq!(err.code, ErrorCode::Unsupported);
+}
+
+fn stopped_golden(name: &str) -> (String, Stopped) {
+    let text =
+        std::fs::read_to_string(format!("{}/tests/golden/stopped/{name}.json", env!("CARGO_MANIFEST_DIR"))).unwrap();
+    let value = serde_json::from_str(&text).unwrap();
+    (text, value)
+}
+
+#[test]
+fn stopped_round_trips_and_its_goldens_are_byte_stable() {
+    for (name, expected) in [
+        ("pending", Stopped { step: StopStep::Pending, jobs: vec![JobId(1), JobId(2)] }),
+        ("committed", Stopped { step: StopStep::Committed(TxId(7)), jobs: vec![] }),
+        ("none", Stopped { step: StopStep::None, jobs: vec![] }),
+    ] {
+        round_trips(&expected);
+        let (text, value) = stopped_golden(name);
+        assert_eq!(value, expected, "{name}.json decodes to the same value");
+        let mut back = serde_json::to_string_pretty(&value).unwrap();
+        back.push('\n');
+        assert_eq!(back, text, "{name}.json no longer serialises byte for byte");
+    }
 }

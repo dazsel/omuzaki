@@ -30,8 +30,9 @@
 //! The log and the undo/redo stacks live in memory without a cap: persisting and trimming them is the store's job.
 //!
 //! `Job` ops are planned and applied like edits here; running their long work is the job manager's concern.
-//! Ops marked [`Undo::Explicit`](omuzaki_ops_api::Undo::Explicit) have only their document change reverted: the contract
-//! gives the executor no hook to undo their effects outside the document.
+//! Undo and redo refuse a step that holds an op marked [`Undo::Explicit`](omuzaki_ops_api::Undo::Explicit): the executor
+//! has no hook to revert that op's effects outside the document, so it drops the step and leaves the document alone
+//! (ADR 0036 decision 9). Rollback doesn't check for such ops yet: its effects arrive with the effects task.
 #![deny(missing_docs)]
 
 mod bus;

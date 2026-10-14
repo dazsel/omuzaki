@@ -249,6 +249,7 @@ mod tests {
             version: DocVersion(1),
             on_behalf_of: None,
             approval: None,
+            effect: None,
         };
         Event::OpApplied { record }
     }

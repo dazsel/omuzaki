@@ -56,7 +56,7 @@ rest.
    `AgentWrite::Never`, like `llm.providers`. With no model set, nothing is built, no session opens, and nothing
    touches the network.
 10. **Host-local tools:** `ask_person` (a question card, not an approval), `update_plan`, `discard_changes`,
-    `read_resource`. MCP prompts fill the message box; the person sends them.
+    `read_resource`. MCP prompts fill the message box; the person sends them; the panel reaches them through `Assistant::prompts` and `prompt` (design §7).
 
 ## Consequences
 

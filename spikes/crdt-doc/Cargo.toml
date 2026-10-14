@@ -1,0 +1,49 @@
+# Spike: can loro carry the project document and our patches? (three-peer convergence, conflicts, costs).
+# Its own workspace root on purpose: the spike (and loro's dependency tree) stays out of the main workspace and its
+# lockfile, like the other spikes.
+[workspace]
+members = ["."]
+resolver = "3"
+
+[package]
+name = "crdt-doc-spike"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+loro = "=1.16.2"
+serde_json = { version = "1", features = ["float_roundtrip"] }
+
+[dev-dependencies]
+proptest = { version = "1", default-features = false, features = ["std"] }
+
+# The same lint table as the main workspace (Cargo.toml at the repo root).
+[lints.rust]
+unsafe_code = "deny"
+unused_must_use = "deny"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+many_single_char_names = "allow"
+return_self_not_must_use = "allow"
+unwrap_used = "deny"
+expect_used = "deny"
+dbg_macro = "deny"
+todo = "deny"
+
+# Spike-only: a seeded test generator and f64 conversions do these casts on purpose.
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_precision_loss = "allow"
+should_implement_trait = "allow"
+match_wildcard_for_single_variants = "allow"
+
+[profile.release]
+lto = "thin"
+codegen-units = 16

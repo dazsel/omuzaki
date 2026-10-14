@@ -1,0 +1,14 @@
+{
+  "character": {
+    "face": {
+      "blend": 0.25
+    },
+    "name": "Mika"
+  },
+  "scene": {
+    "lights": [
+      1,
+      2
+    ]
+  }
+}

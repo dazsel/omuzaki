@@ -121,6 +121,7 @@ impl Executor {
         let record = state.apply_edit(Edit {
             op: meta.name,
             scope: meta.scope,
+            undo: meta.undo,
             args: op.args()?,
             patch: &plan.patch,
             actor: req.actor.clone(),

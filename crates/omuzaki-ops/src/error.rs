@@ -67,6 +67,18 @@ pub(crate) fn revert_failed(what: &str, error: &PatchError, changed_by: Option<&
     OpError::conflict(format!("can't {what}: {} was changed since{by}", patch_error_path(error))).hint(hint)
 }
 
+/// A step holds `op`, which has effects outside the document. Undo and redo can't revert those yet, so they refuse the
+/// whole step rather than revert only its document part (ADR 0036 decision 9).
+pub(crate) fn explicit_refused(verb: &str, label: &str, op: &str) -> OpError {
+    OpError::unsupported(format!(
+        "can't {verb} {label:?}: {op} has effects outside the document, and that effect was not reverted"
+    ))
+    .hint(format!(
+        "that step is dropped from your {verb} history, so the next {verb} reaches the step before it; \
+         reverse the effect of {op} by hand"
+    ))
+}
+
 /// `tx` isn't an open transaction.
 pub(crate) fn tx_not_open(tx: TxId) -> OpError {
     OpError::not_found(format!("transaction {} isn't open", tx.0)).hint("begin a transaction first, or omit `tx`")

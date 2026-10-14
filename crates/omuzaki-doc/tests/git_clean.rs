@@ -9,8 +9,9 @@ mod common;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
+use std::time::{Duration, UNIX_EPOCH};
 
-use common::{change, p, read, snapshot, write};
+use common::{change, exists, p, read, snapshot, write};
 use omuzaki_doc::{Project, ProjectLock};
 use omuzaki_doc_api::{DocWrite, Patch};
 use serde_json::{Value, json};
@@ -65,11 +66,41 @@ fn the_lock_folder_is_ignored_and_stays_out_of_the_tree() {
 }
 
 #[test]
-fn an_existing_omuzaki_gitignore_is_left_byte_for_byte() {
+fn an_empty_omuzaki_gitignore_is_repaired_on_acquire() {
     let tmp = TempDir::new().unwrap();
-    write(tmp.path(), ".omuzaki/.gitignore", "custom\r\n# kept\n");
+    write(tmp.path(), ".omuzaki/.gitignore", "");
     let _lock = ProjectLock::acquire(tmp.path()).unwrap();
-    assert_eq!(read(tmp.path(), ".omuzaki/.gitignore"), "custom\r\n# kept\n");
+    assert_eq!(read(tmp.path(), ".omuzaki/.gitignore"), "*\n");
+}
+
+#[test]
+fn a_wrong_omuzaki_gitignore_is_repaired_on_acquire() {
+    let tmp = TempDir::new().unwrap();
+    write(tmp.path(), ".omuzaki/.gitignore", "custom\r\n# gone\n");
+    let _lock = ProjectLock::acquire(tmp.path()).unwrap();
+    assert_eq!(read(tmp.path(), ".omuzaki/.gitignore"), "*\n");
+}
+
+#[test]
+fn a_correct_omuzaki_gitignore_is_left_byte_identical_with_its_mtime() {
+    let tmp = TempDir::new().unwrap();
+    write(tmp.path(), ".omuzaki/.gitignore", "*\n");
+    // An old mtime, so a rewrite in this test would show even on a coarse filesystem clock.
+    let path = tmp.path().join(".omuzaki/.gitignore");
+    let old = UNIX_EPOCH + Duration::from_secs(1_000_000_000);
+    fs::OpenOptions::new().write(true).open(&path).unwrap().set_modified(old).unwrap();
+    let _lock = ProjectLock::acquire(tmp.path()).unwrap();
+    assert_eq!(read(tmp.path(), ".omuzaki/.gitignore"), "*\n");
+    assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), old);
+}
+
+#[test]
+fn a_leftover_temp_file_from_an_interrupted_write_is_replaced_and_gone() {
+    let tmp = TempDir::new().unwrap();
+    write(tmp.path(), ".omuzaki/.gitignore.tmp", "*");
+    let _lock = ProjectLock::acquire(tmp.path()).unwrap();
+    assert_eq!(read(tmp.path(), ".omuzaki/.gitignore"), "*\n");
+    assert!(!exists(tmp.path(), ".omuzaki/.gitignore.tmp"), "the temp file was left behind");
 }
 
 #[test]

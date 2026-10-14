@@ -29,8 +29,13 @@ const LOCK_FILE: &str = "lock";
 /// The holder's details, inside [`LOCK_DIR`]. Unlocked, so a refused process can read it on every platform.
 const OWNER_FILE: &str = "lock.owner";
 /// What `ProjectLock::acquire` leaves in `.omuzaki/` besides `lock` and `lock.owner`: a `.gitignore` holding exactly `*\n`, so git never
-/// sees the folder and nothing is added to the person's own ignore file. An existing `.gitignore` there is never rewritten.
+/// sees the folder and nothing is added to the person's own ignore file. Any other content there is replaced.
 const GITIGNORE_FILE: &str = ".gitignore";
+/// The exact bytes of [`GITIGNORE_FILE`]. A file with anything else in it is repaired on acquire.
+const GITIGNORE_CONTENT: &[u8] = b"*\n";
+/// Where the new `.gitignore` is written before it is renamed over [`GITIGNORE_FILE`], so no reader sees a partial file.
+/// A leftover from an interrupted write is removed first.
+const GITIGNORE_TEMP: &str = ".gitignore.tmp";
 /// Reported when the holder's host can't be named.
 const UNKNOWN_HOST: &str = "unknown";
 
@@ -73,15 +78,27 @@ impl ProjectLock {
     }
 }
 
-/// Writes `.omuzaki/.gitignore` when the folder has none. Called only by the lock holder, so nothing races it;
-/// `create_new` still refuses to follow a link or to replace a file the person put there.
+/// Makes `.omuzaki/.gitignore` hold exactly [`GITIGNORE_CONTENT`]. A correct file is left alone, so its bytes and mtime
+/// don't change; anything else (missing, empty, or the person's own text) is replaced by writing a temp file in
+/// `.omuzaki/` and renaming it into place. Called only by the lock holder, so nothing races it.
 fn write_gitignore(lock_dir: &Path) -> Result<(), StoreError> {
     let path = lock_dir.join(GITIGNORE_FILE);
-    match OpenOptions::new().write(true).create_new(true).open(&path) {
-        Ok(mut file) => file.write_all(b"*\n").map_err(|source| StoreError::io(&path, source)),
-        Err(source) if source.kind() == ErrorKind::AlreadyExists => Ok(()),
-        Err(source) => Err(StoreError::io(&path, source)),
+    if fs::read(&path).is_ok_and(|bytes| bytes == GITIGNORE_CONTENT) {
+        return Ok(());
     }
+    let temp = lock_dir.join(GITIGNORE_TEMP);
+    // Removed first, so `create_new` below never follows a link someone left at the temp name.
+    match fs::remove_file(&temp) {
+        Ok(()) => {}
+        Err(source) if source.kind() == ErrorKind::NotFound => {}
+        Err(source) => return Err(StoreError::io(&temp, source)),
+    }
+    let mut file =
+        OpenOptions::new().write(true).create_new(true).open(&temp).map_err(|source| StoreError::io(&temp, source))?;
+    // Synced before the rename, so a crash leaves either the old file or the whole new one.
+    file.write_all(GITIGNORE_CONTENT).and_then(|()| file.sync_all()).map_err(|source| StoreError::io(&temp, source))?;
+    drop(file);
+    fs::rename(&temp, &path).map_err(|source| StoreError::io(&path, source))
 }
 
 /// The `pid`, `host` and `since` lines a holder writes for a refused process to read.

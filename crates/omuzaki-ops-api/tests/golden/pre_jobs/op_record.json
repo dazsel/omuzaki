@@ -1,0 +1,30 @@
+{
+  "seq": 1,
+  "op": "face.set_blend",
+  "args": {
+    "blend": 0.5
+  },
+  "actor": {
+    "kind": "agent",
+    "id": "claude-code#1",
+    "model": "claude-opus-5-5"
+  },
+  "cause": null,
+  "tx": 1,
+  "at": 0.5,
+  "patch": {
+    "changes": [
+      {
+        "path": "character/face/blend",
+        "before": 0.25,
+        "after": 0.5
+      }
+    ]
+  },
+  "version": 3,
+  "on_behalf_of": {
+    "kind": "person",
+    "name": "alice"
+  },
+  "approval": null
+}

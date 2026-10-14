@@ -1,10 +1,12 @@
 //! Ops the tests run. Each exercises one path through the executor; they register like production ops.
 
 use omuzaki_doc_api::{DocPath, Patch, Value};
-use omuzaki_ops_api::{Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op};
+use omuzaki_ops_api::{Op, OpCtx, OpError, OpKind, OpMeta, Plan, Runner, Scope, Undo, register_op};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+
+use super::rig;
 
 const fn meta(name: &'static str, summary: &'static str, kind: OpKind, scope: Scope) -> OpMeta {
     let undo = if matches!(kind, OpKind::Query) { Undo::None } else { Undo::Auto };
@@ -40,6 +42,30 @@ impl Op for Set {
     }
 }
 register_op!(Set);
+
+/// Sets the value at a path, as an absolute setter that opts in to coalescing (`Op::coalesces`).
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct Setpoint {
+    pub path: DocPath,
+    pub value: Value,
+}
+
+impl Op for Setpoint {
+    fn meta() -> OpMeta {
+        meta("test.setpoint", "Set the value at a path; repeated calls coalesce.", OpKind::Edit, Scope::EditCharacter)
+    }
+
+    fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
+        check_parent(ctx, &self.path)?;
+        let before = ctx.doc.get(&self.path).cloned();
+        Ok(Plan::edit(Patch::new().with(self.path.clone(), before, Some(self.value.clone()))))
+    }
+
+    fn coalesces() -> bool {
+        true
+    }
+}
+register_op!(Setpoint);
 
 /// Removes the value at a path.
 #[derive(Serialize, Deserialize, JsonSchema)]
@@ -213,3 +239,11 @@ impl Op for Explode {
     }
 }
 register_op!(Explode);
+
+#[test]
+fn ops_report_whether_they_coalesce() {
+    let ops = rig(json!({})).exec.ops();
+    let coalesces = |name: &str| ops.iter().find(|o| o.name == name).unwrap().coalesces;
+    assert!(coalesces("test.setpoint"));
+    assert!(!coalesces("test.set"));
+}

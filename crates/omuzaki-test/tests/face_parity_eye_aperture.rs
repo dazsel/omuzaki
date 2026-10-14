@@ -191,12 +191,22 @@ fn copy_path(src: &DrawList, path: PathRef, out: &mut DrawList) -> PathRef {
 /// other tests.
 fn eye_whites(src: &DrawList) -> DrawList {
     let mut out = DrawList::new();
-    for pair in src.cmds().windows(2) {
-        if let (Cmd::Fill { path, paint, opacity }, Cmd::PushClip(clip)) = (pair[0], pair[1])
-            && src.elements(path) == src.elements(clip)
-        {
-            let path = copy_path(src, path, &mut out);
-            out.push(Cmd::Fill { path, paint, opacity });
+    let mut depth = 0_usize;
+    for (i, cmd) in src.cmds().iter().enumerate() {
+        match *cmd {
+            Cmd::PushClip(_) => depth += 1,
+            Cmd::PopClip => depth -= 1,
+            // The iris is filled inside the clip too, with a clip of its own right after; only a fill outside every
+            // clip is a white.
+            Cmd::Fill { path, paint, opacity } if depth == 0 => {
+                if let Some(Cmd::PushClip(clip)) = src.cmds().get(i + 1).copied()
+                    && src.elements(path) == src.elements(clip)
+                {
+                    let path = copy_path(src, path, &mut out);
+                    out.push(Cmd::Fill { path, paint, opacity });
+                }
+            }
+            _ => {}
         }
     }
     out

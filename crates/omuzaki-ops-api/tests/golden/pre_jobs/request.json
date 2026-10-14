@@ -1,0 +1,25 @@
+{
+  "op": "face.set_blend",
+  "args": {
+    "blend": 0.5
+  },
+  "mode": "apply",
+  "actor": {
+    "kind": "agent",
+    "id": "claude-code#1",
+    "model": "claude-opus-5-5"
+  },
+  "grants": {
+    "scopes": [
+      "read",
+      "edit:character",
+      "edit:scene",
+      "edit:library",
+      "render"
+    ],
+    "fs_roots": []
+  },
+  "cause": null,
+  "tx": 2,
+  "base": 3
+}

@@ -20,12 +20,14 @@
 //! | [`convert::material`], [`convert::texture`] | toon and `MToon` materials, PNG textures |
 //! | [`gather::scene`], [`gather::skeleton`] | a built character into an `IoScene` |
 //! | [`gather::springs`], [`gather::avatar`] | the VRM avatar block and spring bones |
+//! | [`fit_bones`] | `reduce_bones`: cut a skin's joints to a budget, the `fit.bones` stage |
 //!
 //! Ops register themselves with `omuzaki_ops_api::register_op!` next to their definition, so nothing here lists them.
 //! A binary keeps them only if it links this crate, so an app that wants the ops calls [`link`] at startup (ADR 0015).
 #![deny(missing_docs)]
 
 pub mod convert;
+pub mod fit_bones;
 pub mod gather;
 pub mod ops;
 pub mod vrchat_rank;

@@ -437,6 +437,7 @@ impl Runner for FakeRunner {
             version,
             on_behalf_of: None,
             approval: None,
+            effect: None,
         };
         inner.log.push(record.clone());
         inner.emit(&Event::OpApplied { record: record.clone() });

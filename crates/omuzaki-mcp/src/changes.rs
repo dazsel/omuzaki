@@ -312,15 +312,17 @@ fn describe<'a>(entries: &'a VecDeque<Entry>, event: &'a Event, own: &OwnTxs) ->
             of_transaction(entries, own, *tx, Action::Redid, plain(label, MAX_NAME_CHARS))
         }
         Event::TxRolledBack { tx, .. } => of_transaction(entries, own, *tx, Action::RolledBack, tx.0.to_string()),
-        // Committing only groups edits that were each reported when they were applied. Session and approval events
-        // change no document value; the Agent panel shows them.
+        // Committing only groups edits that were each reported when they were applied. Session, approval and job
+        // events change no document value (a job's edits arrive as `OpApplied`); the Agent panel shows them.
         Event::TxCommitted { .. }
         | Event::SessionOpened { .. }
         | Event::SessionChanged { .. }
         | Event::SessionEnded { .. }
         | Event::SessionUndone { .. }
         | Event::ApprovalRequested { .. }
-        | Event::ApprovalResolved { .. } => None,
+        | Event::ApprovalResolved { .. }
+        | Event::JobChanged { .. }
+        | Event::JobProgress { .. } => None,
     }
 }
 
@@ -464,6 +466,7 @@ mod tests {
                 version: DocVersion(1),
                 on_behalf_of: None,
                 approval: None,
+                effect: None,
             };
             self.push(Event::OpApplied { record })
         }
