@@ -24,6 +24,7 @@
 //! | [`blend`] | the blending order ([`LayerStack`]), ownership ([`Ownership`]), hand-off ([`Fade`]) |
 //! | [`life`] | the [`LifeLayer`] trait, seeds ([`LifeStreams`]) and every tuning number ([`LifeParams`]) |
 //! | [`skeleton`] | VRM humanoid bones, [`Skeleton`] (a humanoid, or generic for creatures), [`HumanoidPose`], [`Pose`], the [`Rig`] and [`Animator`] traits |
+//! | [`humanoid_frames`] | [`HumanoidFrames`]: the normalised-pose maths, [`HumanoidPose`] to and from a skeleton's own bone axes |
 //! | [`ik`] | [`IkGoals`] (look-at and hand/foot targets) and the [`IkSolver`] trait |
 //! | [`spring`] | VRM-compatible spring bones, colliders and the [`SpringSolver`] trait |
 //! | [`score`] | [`Score`] (keys per channel and cues) and its allocation-free [`CompiledScore`] |
@@ -49,6 +50,7 @@
 pub mod blend;
 pub mod channel;
 pub mod frame;
+pub mod humanoid_frames;
 pub mod ik;
 pub mod life;
 pub mod playout;
@@ -64,6 +66,7 @@ pub use channel::{
     Region, Unit,
 };
 pub use frame::{DeviceProfile, EyeAngles, FrameSource, HeadPose, NotArkit, Tick, TrackFrame, TrackStatus};
+pub use humanoid_frames::HumanoidFrames;
 pub use ik::{IkGoals, IkSolver, Limb, LookAt};
 pub use life::{
     BlinkParams, Cues, Dynamics, FaceParams, GazeParams, HeadParams, LifeConfig, LifeDynamics, LifeLayer, LifeParams,
