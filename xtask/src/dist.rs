@@ -199,12 +199,16 @@ pub fn verify_models(dir: &Path) -> Result<(), DistError> {
     Ok(())
 }
 
-/// The `files` table of `manifest.json`: file name to SHA-256. A value is the hash itself or an object with a `sha256`.
-fn read_manifest(dir: &Path) -> Result<BTreeMap<String, String>, DistError> {
+/// `manifest.json` of a models folder, parsed.
+fn load_manifest(dir: &Path) -> Result<serde_json::Value, DistError> {
     let path = dir.join("manifest.json");
     let text = fs::read_to_string(&path).map_err(|source| DistError::Io { path: path.clone(), source })?;
-    let json: serde_json::Value =
-        serde_json::from_str(&text).map_err(|e| DistError::Models(format!("manifest.json is not JSON: {e}")))?;
+    serde_json::from_str(&text).map_err(|e| DistError::Models(format!("manifest.json is not JSON: {e}")))
+}
+
+/// The `files` table of `manifest.json`: file name to SHA-256. A value is the hash itself or an object with a `sha256`.
+fn read_manifest(dir: &Path) -> Result<BTreeMap<String, String>, DistError> {
+    let json = load_manifest(dir)?;
     let files = json
         .get("files")
         .and_then(serde_json::Value::as_object)
@@ -222,6 +226,30 @@ fn read_manifest(dir: &Path) -> Result<BTreeMap<String, String>, DistError> {
     Ok(listed)
 }
 
+/// The manifest the zip carries: the converter's, cut down to the files the zip ships. The converter also lists the source
+/// `.tflite` files, which stay out of the zip, so copying its manifest would leave the unpacked folder failing
+/// [`verify_models`]. Every other key (`source_url`, `bundle`, `tools`: the source `.task` hash and the tool versions)
+/// and each shipped file's own entry are kept, so the provenance survives.
+fn distribution_manifest(dir: &Path) -> Result<Vec<u8>, DistError> {
+    let mut manifest = load_manifest(dir)?;
+    let listed = manifest.get("files").and_then(serde_json::Value::as_object).cloned().unwrap_or_default();
+    let mut shipped = serde_json::Map::new();
+    for name in MODEL_FILES {
+        let entry = match listed.get(name) {
+            Some(entry) if entry.is_object() => entry.clone(),
+            Some(hash) => serde_json::json!({ "sha256": hash }),
+            None => return Err(DistError::Models(format!("manifest.json does not list {name}"))),
+        };
+        shipped.insert(name.to_owned(), entry);
+    }
+    let table =
+        manifest.as_object_mut().ok_or_else(|| DistError::Models("manifest.json is not an object".to_owned()))?;
+    table.insert("files".to_owned(), serde_json::Value::Object(shipped));
+    let mut text = serde_json::to_string_pretty(&manifest).map_err(|e| DistError::Models(e.to_string()))?;
+    text.push('\n');
+    Ok(text.into_bytes())
+}
+
 /// Writes `<out>/omuzaki-<version>-windows-x64.zip` and returns its path. Models and the ORT archive are verified
 /// first; nothing is written when a check fails.
 ///
@@ -236,9 +264,10 @@ pub fn write_zip(inputs: &DistInputs, out: &Path) -> Result<PathBuf, DistError> 
     entries.insert("notices/Apache-2.0.txt".to_owned(), APACHE_NOTICE.as_bytes().to_vec());
     if let Some(models) = &inputs.models {
         verify_models(models)?;
-        for name in MODEL_FILES.iter().copied().chain(["manifest.json"]) {
+        for name in MODEL_FILES {
             entries.insert(format!("{MODELS_DIR}/{name}"), read(&models.join(name))?);
         }
+        entries.insert(format!("{MODELS_DIR}/manifest.json"), distribution_manifest(models)?);
     }
     if let Some(archive) = &inputs.ort_archive {
         let ort = read_ort(archive)?;

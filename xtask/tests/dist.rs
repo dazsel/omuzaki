@@ -28,17 +28,29 @@ fn hex(bytes: &[u8]) -> String {
     })
 }
 
-/// A models folder of stand-in files plus the `manifest.json` that lists their hashes.
+/// The three source networks the converter unpacks from the `.task` bundle; they stay out of the zip.
+const SOURCE_FILES: [&str; 3] = ["face_detector.tflite", "face_landmarks_detector.tflite", "face_blendshapes.tflite"];
+
+/// A models folder of stand-in files plus a `manifest.json` shaped like the converter's
+/// (`tools/models/convert_mediapipe_face.py`): the provenance keys, and a `files` table that lists the source `.tflite`
+/// files as well as the shipped ones.
 fn models_dir(root: &Path) -> PathBuf {
     let dir = root.join("models");
     fs::create_dir_all(&dir).unwrap();
     let mut files = serde_json::Map::new();
-    for name in MODEL_FILES {
+    for name in SOURCE_FILES.into_iter().chain(MODEL_FILES) {
         let bytes = format!("stand-in for {name}").into_bytes();
         fs::write(dir.join(name), &bytes).unwrap();
-        files.insert(name.to_owned(), serde_json::json!({ "sha256": hex(&bytes) }));
+        let from = if name.ends_with(".onnx") { "tf2onnx" } else { "bundle" };
+        files.insert(name.to_owned(), serde_json::json!({ "sha256": hex(&bytes), "bytes": bytes.len(), "from": from }));
     }
-    fs::write(dir.join("manifest.json"), serde_json::json!({ "files": files }).to_string()).unwrap();
+    let manifest = serde_json::json!({
+        "source_url": "https://example.invalid/face_landmarker.task",
+        "bundle": { "file": "face_landmarker.task", "sha256": hex(b"bundle"), "bytes": 6 },
+        "tools": { "tensorflow": "2.16.2", "tf2onnx": "1.16.1", "onnx": "1.16.2", "onnxruntime": "1.26.0" },
+        "files": files,
+    });
+    fs::write(dir.join("manifest.json"), manifest.to_string()).unwrap();
     dir
 }
 
@@ -115,6 +127,46 @@ fn the_layout_adds_the_runtime_and_its_notices_with_the_ort_archive() {
     assert_eq!(listed.len(), 13);
     assert_eq!(member(&zip, "onnxruntime.dll"), "stand-in for lib/onnxruntime.dll");
     assert_eq!(member(&zip, "notices/onnxruntime-LICENSE.txt"), "stand-in for LICENSE");
+}
+
+/// Unpacks the zip's `models/mediapipe-face` folder into `dest`.
+fn extract_models(zip: &Path, dest: &Path) {
+    let mut archive = ZipArchive::new(File::open(zip).unwrap()).unwrap();
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).unwrap();
+        let name = entry.name().unwrap().into_owned();
+        if let Some(file) = name.strip_prefix("models/mediapipe-face/") {
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes).unwrap();
+            fs::write(dest.join(file), bytes).unwrap();
+        }
+    }
+}
+
+#[test]
+fn the_shipped_models_verify_after_extraction_and_keep_their_provenance() {
+    let root = TempDir::new().unwrap();
+    let zip = write_zip(&inputs(root.path(), true, false), &root.path().join("out")).unwrap();
+    let unpacked = root.path().join("unpacked");
+    fs::create_dir(&unpacked).unwrap();
+    extract_models(&zip, &unpacked);
+    verify_models(&unpacked).unwrap();
+
+    let shipped: serde_json::Value =
+        serde_json::from_str(&member(&zip, "models/mediapipe-face/manifest.json")).unwrap();
+    let listed: Vec<&str> = shipped["files"].as_object().unwrap().keys().map(String::as_str).collect();
+    let mut expected = MODEL_FILES.to_vec();
+    expected.sort_unstable();
+    assert_eq!(listed, expected, "the manifest lists exactly the shipped files");
+    let source: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(root.path().join("models/manifest.json")).unwrap()).unwrap();
+    for key in ["source_url", "bundle", "tools"] {
+        assert_eq!(shipped[key], source[key], "{key} is kept");
+    }
+    assert_eq!(
+        shipped["files"]["face_detector.onnx"], source["files"]["face_detector.onnx"],
+        "per-file entries are kept"
+    );
 }
 
 #[test]
