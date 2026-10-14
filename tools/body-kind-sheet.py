@@ -16,7 +16,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-SKIN, SHADE, LINE, PAPER = (249, 211, 197), (232, 168, 160), (150, 90, 84), (246, 246, 244)
+SKIN, SHADE, LINE, PAPER = (229, 211, 197), (232, 168, 160), (150, 90, 84), (246, 246, 244)
 INK = (20, 20, 20)
 SQ = 0.5**0.5  # sin and cos of the three-quarter view's 45 degrees
 UNIT = [1.0]  # the body's size over soft-sd's, for the depth jump that draws an outline
