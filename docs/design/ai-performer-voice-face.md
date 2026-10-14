@@ -135,10 +135,34 @@ of the `ai_voice` bus. 1 s holds the 500 ms lead plus a 500 ms pump stall.
     `r.at_sample + (s − r.consumed)·(engine rate / feed rate)`, so `time_of` of that is its program time **exactly**; a
     gap shows as a jump of `at_sample` between consecutive records beyond `n` samples. Nothing is extrapolated across
     records, only inside one.
-  - **History kept.** A ring of `⌈2 s / engine block⌉` records per feed (about 400 at 5.3 ms, 2,048 at most; 32 bytes
-    each), written by the audio thread with a per-slot sequence (seqlock): `index` is stored last, and a reader that
-    sees `index` change while copying retries that slot. 2 s covers the 1 s feed capacity (§3.1) plus a scheduling
-    hiccup of the reader.
+  - **History kept, and how a slot is published (a sequence lock, as `EngineClock` in `clock.rs`).** A ring of
+    `⌈2 s / engine block⌉` slots per feed (about 400 at 5.3 ms, 2,048 at most), each slot:
+    `seq: AtomicU64`, and the four record fields as `AtomicU64` (`n` widened), so **no field is ever read or written
+    non-atomically** (no data race, no `unsafe`). A feed-wide `head: AtomicU64` counts the records published.
+    *Writer* (the audio thread, the only writer; wait-free, never retries or blocks), for record number `i` in slot
+    `i mod R`:
+    1. `s = slot.seq.load(Relaxed)` (even); `slot.seq.store(s + 1, Relaxed)` (odd: write in progress);
+    2. `fence(Release)`;
+    3. `store(Relaxed)` of each of the four fields;
+    4. `slot.seq.store(s + 2, Release)` (even: complete);
+    5. `head.store(i + 1, Release)`.
+    The fence in 2 orders the odd `seq` before the field stores, so a reader that sees any new field value also sees the
+    odd (or later) `seq` on its second read. *Reader* (a non-real-time thread), for record `i`:
+    1. `h = head.load(Acquire)`; if `i ≥ h` the record is not there yet; if `i + R < h` the slot is already reused: **lapped**;
+    2. `a = slot.seq.load(Acquire)`; if `a` is odd, retry;
+    3. load the four fields (`Relaxed`);
+    4. `fence(Acquire)`; `b = slot.seq.load(Relaxed)`;
+    5. accept only if `a == b` **and** the record's `index == i`; otherwise retry. A mismatched `index` with `a == b`
+       means the slot holds a later record: **lapped**.
+    *Why a torn record is never accepted:* the writer changes `seq` to odd before any field and back to even (a
+    different value, `+2`) after all of them. A reader that copied fields while the writer was between those two points
+    either saw an odd `a`, or saw `b ≠ a` (the Acquire fence pairs with the Release fence/store: if a field load
+    observed a value stored after the odd `seq`, the following `seq` load observes the odd value or later), so it
+    retries. A reader that sees `a == b` even read between two complete writes of the same slot. *Bound:* the writer
+    needs `R ≥ 400` records to come back to a slot, which is at least 2 s, so a reader needs to be preempted for a whole
+    lap to fail twice. The reader retries **at most 4 times** per slot, then reports the record **lapped** and the
+    drive drops its ticks (below), so a reader never spins unbounded and never blocks the audio thread.
+    2 s covers the 1 s feed capacity (§3.1) plus a scheduling hiccup of the reader.
   - **A reader that misses records.** Readers keep a cursor and ask `records_since(cursor)`. If the ring was lapped
     (`cursor` older than the oldest record), the call says how many records were lost. The samples of the lost records
     **cannot be placed and are never extrapolated**: the mouth drive drops the ticks whose feed samples lie there
@@ -249,8 +273,11 @@ lead; unverified, unreachable from the build box). TTS audio exists before it pl
 `VoiceLead::push(at, 24_000 × r, pcm, private)` with each slice **`lead` ahead** of the playhead, `at` its program time
 (§3.3). `lead = min(lead_min, 100 ms)` with
 `lead_min = (queue + 2)·B/f + L/f + 10 ms` (`B` the model's block, `L` its latency, both in samples at its rate `f`; §4.2
-derives it). If `lead_min` exceeds 100 ms the drive releases its ticks `lead_min − 100 ms` late and the health meter says
-so ("mouth 40 ms late"). On a turn's **first** chunk the pump starts the feed `lead` late, so the
+derives it). **One policy when `lead_min` exceeds 100 ms (the lead stays at 100 ms): ticks are never delayed; they are released on time
+(`P_g(v) − D`) and a key not yet decided when its tick reaches the head of the queue is replaced by its viseme key
+(§4.2 3). The cost is fidelity, not timing, and the health meter says "mouth: visemes 30 %" with the share of ticks
+that used one (`late_keys` / ticks).** Delaying ticks instead would put the mouth behind the voice, the worse error
+(above). On a turn's **first** chunk the pump starts the feed `lead` late, so the
 mouth's first frame is ready: that adds ≤ 100 ms to ADR 0031 §5.3 (2,396 + 100 ≤ 2,500 ms p95). On a cut the pump calls
 `VoiceLead::cut(at)`, which only tidies: the drive's release and drop decisions never wait for it (§4.2).
 
@@ -526,11 +553,15 @@ queue is: tick 60, rest tick 952.5 (`g₀ + 60`), rest tick 980 (`g₁ − 10`),
 all rising. If the log had been lapped over r12 and r13 (a reader away for more than 2 s), ticks 60 and 62.5 would be
 dropped and counted, tick 70 would still be stamped 997.5 from r14.
 
-**Capped lead plus underrun.** A model whose `lead_min` is 130 ms but whose lead is capped at 100 ms: when tick v = 50
-reaches the head of the queue, the key at v = 60 is not decided (it is decided 30 ms late), so tick 50 is evaluated
-with the viseme key there (`late_keys` + 1). The stall above begins at 892.5: tick 60 (stamp 890) is **still ahead of
-the rest tick at 952.5** in the queue, so it is released (as a viseme-weighted tick) before the rest tick, and the rest
-tick at 952.5 cannot overtake it. Sampled at 890 the output is the viseme value, at 960 it is 0 (rest).
+**Capped lead plus underrun.** A model whose `lead_min` is 130 ms but whose lead stays at 100 ms (§4.1: ticks on time,
+undecided keys become visemes). In this example the fake's viseme frame is 0.8 × the model's value (a coarser mouth), so
+the two differ. Key v = 60 (model 0.530, viseme 0.424) is decided 30 ms late, at 920. Tick v = 50 reaches the head of
+the queue at 880 and tick 60 at 890, so both are evaluated before it exists: tick 50 uses the key at v = 40 (model
+0.141) and the **viseme** key at v = 60 (0.424): 0.283 (it would be 0.336 with the model key); tick 60 is 0.424
+(`late_keys` = 2). They are released at 880 and 890, on time. The stall above begins at 892.5, so tick 60 is **ahead of
+the rest tick at 952.5** in the queue. Sampled output (`D` = 0; with `D` = 200 the same values 200 ms later): 880 →
+0.283, 890 → 0.424, then linear to the rest tick, `0.424·(1 − (t − 890)/62.5)`: 920 → 0.220, 952.5 → 0, 960 → 0. Every push
+is accepted, stamps 880, 890, 952.5, 980, 997.5 rise, no tick was delayed.
 
 **Whole-block latency.** `L` = 320 (`W` = 1, `W·B − L` = 0): block 0 is dropped, **no head key**, block 1 is the key at
 `at₀` = 830 (value 0.141, its own depicted interval 0..20 ms). `L` = 640 (`W` = 2): blocks 0 and 1 dropped, block 2 at
@@ -555,7 +586,7 @@ shifted by `at₀(B) − 830` (seq 8 is its block 1, stamp `at₀ + 10`), nothin
 - **Mouth drive** (the sampled-output tests read the stage's `PlayoutDelay` at 5 ms steps, not only the ticks):
   §6.1 as a golden (key values and ticks); **§6.3 exactly** for fake A and fake B (`FakeVoiceToFace` with a `latency`
   field: output = the envelope delayed by that many samples, zero before): keys in integer samples at 16 kHz, tick
-  values to 3 decimals, and the sampled output between 860 and 920 for `D` = 0 and `D` = 200 ms, **the lead:** a fake with `L` = 80 samples (5 ms), queue 2, B = 320: `lead_min` = 95 ms, every tick's bracketing key is decided before the tick is due (the tick at `at₀+20` needs the key at `at₀+35`, decided at `at₀+5`, or `at₀+15` with the pump's 10 ms rounding), and with the lead forced to 75 ms the test sees the tick evaluated before its key and the drive reports `late` = 20 ms instead of silently stamping early; where the value at
+  values to 3 decimals, and the sampled output between 860 and 920 for `D` = 0 and `D` = 200 ms, **the lead:** a fake with `L` = 80 samples (5 ms), queue 2, B = 320: `lead_min` = 95 ms, every tick's bracketing key is decided before the tick is due (the tick at `at₀+20` needs the key at `at₀+35`, decided at `at₀+5`, or `at₀+15` with the pump's 10 ms rounding), and with the lead forced to 75 ms the tick is still released on time and evaluated with the viseme key (`late_keys` > 0 and the sampled value differs from the model's, never an early or delayed stamp); where the value at
   890 ms is 0.459 and at 895 ms is 0.459 (the held tick), never 0.388; the same fake with the `− L` removed fails the
   table by 10 ms (proof the test sees it); **warm-up:** `L` = 160 drops block 0 and starts with the head key at `at₀`;
   `L` = `B` (320) and `L` = `2B` (640) have **no head key**, the first retained key sits at `at₀`, and no push to
@@ -582,10 +613,13 @@ shifted by `at₀(B) − 830` (seq 8 is its block 1, stamp `at₀ + 10`), nothin
   tick from its record exactly as a reader that polls every block (§6.3: 890.0 and 997.5), never from the latest; a
   reader that is lapped (ring of 16 records in the test) drops precisely the ticks of the lost records, counts them
   (`mouth_history_lost`), stamps the next tick from the first surviving record and is never offered a refused push;
-  the seqlock test hammers one slot while the reader copies it and never returns a torn record; **ordering under
-  lateness:** a capped-lead (100 ms) model with `lead_min` 130 ms plus an underrun (§6.3): accepted pushes only, stamps
-  strictly rising, tick 60 released before the rest tick, `late_keys` > 0, and the sampled output between 880 and 960 ms
-  with `D` = 0 and 200 equal to the specified curve (viseme-weighted before the rest tick, 0 after it).
+  the seqlock hammer test (one writer lapping a 16-slot ring while readers copy every slot) never returns a record whose fields come from two writes; **ordering under
+  lateness:** a capped-lead (100 ms) model with `lead_min` 130 ms plus an underrun (§6.3): release **times** equal the stamps plus `D` (880, 890, 952.5, 980, 997.5, none delayed), accepted pushes only, stamps
+  strictly rising, tick 60 released before the rest tick, `late_keys` = 2, and the **values** match §6.3 (0.283 at 880, 0.424 at 890, 0.220 at 920, 0 at 952.5 and after) with `D` = 0 and 200;
+  the health meter reads the viseme share; **torn records:** a test hook pauses the writer **between steps 3 and 4** of the
+  slot write (some fields new, `seq` odd, then again after step 4 with `seq` even), and a reader copying that slot never
+  accepts it before step 4 completes, accepts the complete record after, and for a slot reused during a read reports it
+  lapped after at most 4 retries.
 
 - **Planner:** §6.2 as a golden channel trace; determinism (two runs, same bits; another seed, other side); a tracked
   `HEAD` wins on every frame; a score key on `lean` beats the planner; `look_held` leaves gaze alone; **a private turn** (the §6.2 script with
