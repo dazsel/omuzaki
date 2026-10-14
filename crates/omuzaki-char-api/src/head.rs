@@ -259,7 +259,7 @@ pub struct Neck {
 
 impl Default for Neck {
     fn default() -> Self {
-        Self { radius_top: 0.03, radius_bottom: 0.038, height: 0.11, drop: 0.016 }
+        Self { radius_top: 0.036, radius_bottom: 0.038, height: 0.11, drop: 0.016 }
     }
 }
 
