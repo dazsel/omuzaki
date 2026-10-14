@@ -9,6 +9,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+base64.workspace = true
 blake3.workspace = true
 bytes.workspace = true
 constant_time_eq.workspace = true
@@ -27,6 +28,7 @@ tracing.workspace = true
 omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-doc-api = { path = "../omuzaki-doc-api" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
+omuzaki-store-api = { path = "../omuzaki-store-api" }
 
 [dev-dependencies]
 # The clients the integration tests talk to the server with: in-process, and over a real loopback port.
@@ -36,6 +38,7 @@ reqwest.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
+omuzaki-store-mock = { path = "../omuzaki-store-mock" }
 
 [lints]
 workspace = true

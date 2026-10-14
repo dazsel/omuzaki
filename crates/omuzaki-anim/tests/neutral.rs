@@ -331,19 +331,45 @@ fn push_and_finish_allocate_nothing() {
     assert_eq!(allocations, 0, "{allocations} allocations over 600 pushes and a finish");
 }
 
-/// The `push`/`finish` cost at the largest capture, every channel and the whole head pose present, against the live
-/// frame (spec §10: 60 fps is 16.67 ms; `cpu.total` allows 8 ms of CPU per frame at 30 fps, tracker included).
-///
-/// Wall time is a stopwatch, not the CPU-time counters §10 asks for, so the bounds are loose: a thousandth of a frame
-/// for `push` and a tenth for `finish` (a whole frame in a debug build). Run `cargo test -p omuzaki-anim --release --test neutral
-/// push_and_finish_fit_the_frame_budget -- --nocapture` to print the numbers.
+/// Frames covering every channel and the whole head pose, for the largest capture.
+fn full_capture_frames() -> Vec<TrackFrame> {
+    (0..MAX_NEUTRAL_FRAMES as u64)
+        .map(|seq| full_frame(seq, 0.1 + 0.001 * (seq % 17) as f32, 0.01 * (seq % 11) as f32))
+        .collect()
+}
+
 #[test]
+fn the_largest_capture_fits_every_channel_and_the_head() {
+    let frames = full_capture_frames();
+    let base = Calibration::identity(DeviceProfile::Webcam);
+    let mut cap = NeutralCapture::new(MAX_NEUTRAL_FRAMES);
+    for (seq, frame) in frames.iter().enumerate() {
+        assert_eq!(cap.push(frame), seq + 1 == MAX_NEUTRAL_FRAMES);
+    }
+    let fitted = cap.finish(&base).unwrap();
+    for info in Channel::arkit() {
+        let lo = fitted.range(info.channel).lo;
+        assert!((0.1..=0.117).contains(&lo), "{:?}: {lo}", info.channel);
+    }
+    assert!(fitted.head_rest.position.is_some());
+    // Resetting and refilling the largest capture gives the same result.
+    cap.reset();
+    frames.iter().for_each(|f| _ = cap.push(f));
+    assert_eq!(cap.finish(&base).unwrap(), fitted);
+}
+
+/// The `push`/`finish` cost at the largest capture, against the live frame (spec §10: 60 fps is 16.67 ms; `cpu.total`
+/// allows 8 ms of CPU per frame at 30 fps, tracker included).
+///
+/// Report-only: §10 says measurements on hosted CI are reported, never a gate, so this is `#[ignore]`d and runs only on
+/// the measurement machine: `cargo test -p omuzaki-anim --release --test neutral -- --ignored --nocapture`. The bounds
+/// are a thousandth of a frame for `push` and a tenth for `finish`.
+#[test]
+#[ignore = "perf measurement (spec §10): run with --ignored on the measurement machine"]
 fn push_and_finish_fit_the_frame_budget() {
     const FRAME_MS: f64 = 1000.0 / 60.0;
     const RUNS: usize = 200;
-    let frames: Vec<TrackFrame> = (0..MAX_NEUTRAL_FRAMES as u64)
-        .map(|seq| full_frame(seq, 0.1 + 0.001 * (seq % 17) as f32, 0.01 * (seq % 11) as f32))
-        .collect();
+    let frames = full_capture_frames();
     let base = Calibration::identity(DeviceProfile::Webcam);
     let mut cap = NeutralCapture::new(MAX_NEUTRAL_FRAMES);
     let mut pushes = Vec::with_capacity(RUNS * MAX_NEUTRAL_FRAMES);
@@ -370,9 +396,7 @@ fn push_and_finish_fit_the_frame_budget() {
     );
     println!("a 60 fps frame is {FRAME_MS:.2} ms");
     assert!(push_p95 < FRAME_MS / 1000.0, "push p95 {push_p95} ms");
-    // An unoptimised build runs this about 35 times slower, so it is held to a whole frame instead.
-    let finish_limit = if cfg!(debug_assertions) { FRAME_MS } else { FRAME_MS / 10.0 };
-    assert!(finish_p95 < finish_limit, "finish p95 {finish_p95} ms");
+    assert!(finish_p95 < FRAME_MS / 10.0, "finish p95 {finish_p95} ms");
 }
 
 /// `(mean, p95)` of `samples`, which it sorts.

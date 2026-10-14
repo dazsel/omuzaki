@@ -3,6 +3,7 @@
 //! Each subsystem is one module, added by its own task (one `mod` line here), so parallel PRs never edit the same code.
 #![deny(missing_docs)]
 
+pub mod animator;
 pub mod gaze;
 pub mod grammar;
 pub mod hands;
@@ -13,6 +14,7 @@ pub mod poses;
 pub mod retarget;
 pub mod score_templates;
 
+pub use animator::{BusAnimator, BusAnimatorParams};
 pub use neutral::{MAX_NEUTRAL_FRAMES, MIN_NEUTRAL_FRAMES, NeutralCapture, NeutralError};
 
 omuzaki_core::define_link!();
