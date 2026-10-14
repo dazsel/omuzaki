@@ -7,9 +7,14 @@
 //!    context that carries what earlier parts [`Published`], the [`BuildServices`] the app injected and the part's own
 //!    random stream ([`part_rng`]). A builder that already has the part's [`PartOutput`] (a cache) skips this step;
 //! 3. [`Assembler`]: [`add`](Assembler::add) each part's output in order (validate every mesh and texture, apply the
-//!    character's weight brushes, collect meshes, materials, textures, runtimes and the report, absorb what the part
-//!    publishes and contributes to the rig), then [`finish`](Assembler::finish) (check every mesh's material, assemble
-//!    the [`CharacterRig`] from what the parts published and contributed, check every skinned bone).
+//!    character's weight brushes, collect meshes, materials and their classes, textures, runtimes and the report,
+//!    absorb what the part publishes and contributes to the rig), then [`finish`](Assembler::finish) (check every
+//!    mesh's material, assemble the [`CharacterRig`] from what the parts published and contributed, check every
+//!    skinned bone).
+//!
+//! A built character is in the parts' own look (soft SD). The caller draws it in the character's look (LK-06) with
+//! [`BuiltCharacter::apply_look`], a materials-only step that never rebuilds geometry and can be repeated with another
+//! look at any time (the stage on a look switch, the exports before they gather): see [`crate::look`].
 //!
 //! A builder that keeps an earlier part's output may also [`recolour_part`] it: when only the palette changed, the kind
 //! brings the output up to the new colours without rebuilding geometry ([`PartKind::recolour`](crate::PartKind::recolour)).
@@ -35,6 +40,7 @@ use crate::kind::{
     Anchor, BuildCtx, PartCategory, PartKindRegistration, PartOutput, Published, Quality, RecolourCtx, Recoloured,
     find_kind, requires_of,
 };
+use crate::look::{LookError, LookParams, MaterialClass};
 use crate::rig::{self, CharacterRig, RigContribution};
 use crate::runtime::PartRuntime;
 use crate::services::BuildServices;
@@ -142,8 +148,17 @@ pub struct BuiltCharacter {
     pub palette: Palette,
     /// Every mesh, in build order.
     pub meshes: Vec<BuiltMesh>,
-    /// Materials by id.
+    /// Materials by id, as they are drawn: [`part_materials`](Self::part_materials) in [`look`](Self::look).
     pub materials: BTreeMap<MaterialName, MaterialSpec>,
+    /// Materials by id as the parts built them, before any look: what [`apply_look`](Self::apply_look) starts from, so
+    /// looks never compound.
+    pub part_materials: BTreeMap<MaterialName, MaterialSpec>,
+    /// The class of every material (LK-06): declared by its part
+    /// ([`PartOutput::material_classes`](crate::PartOutput::material_classes)) or inferred ([`MaterialClass::infer`]).
+    pub material_classes: BTreeMap<MaterialName, MaterialClass>,
+    /// The look `materials` are drawn in ([`look`](Self::look)). Private, so it is always one that validated: only
+    /// [`apply_look`](Self::apply_look) sets it, which is what makes [`inherit_look`](Self::inherit_look) infallible.
+    look: LookParams,
     /// Procedural textures by id.
     pub textures: BTreeMap<TextureName, TextureData>,
     /// How the painted face attaches; `None` if the character has no head part.
@@ -163,6 +178,54 @@ pub struct BuiltCharacter {
 }
 
 impl BuiltCharacter {
+    /// Draws the character in `look` (LK-06, [`crate::look`]): every material becomes its part's material with its
+    /// class's settings applied ([`LookParams::class`], [`ClassLook::apply`](crate::ClassLook::apply)), and `look` is
+    /// kept in [`look`](Self::look). Meshes, textures, the rig and the runtimes are not touched.
+    ///
+    /// It always starts from [`part_materials`](Self::part_materials), so applying one look after another gives exactly
+    /// what applying the last one alone gives, and the empty look gives back the parts' materials byte for byte. Pure in
+    /// the parts' materials, their classes and `look`.
+    ///
+    /// Returns the names of the materials whose spec changed, in name order: what a stage must update on the renderer.
+    ///
+    /// # Errors
+    /// [`LookError::Invalid`] if `look` does not validate; the character is then unchanged.
+    pub fn apply_look(&mut self, look: &LookParams) -> Result<Vec<MaterialName>, LookError> {
+        look.validate()?;
+        self.look = look.clone();
+        Ok(self.redraw())
+    }
+
+    /// The look the materials are drawn in. Empty after a build: the parts' own materials, the soft-SD look.
+    pub fn look(&self) -> &LookParams {
+        &self.look
+    }
+
+    /// Draws this character in the look `previous` is drawn in, for a rebuild of the same character (a palette change
+    /// rebuilds it whole), so the look survives the rebuild. Returns the materials that changed, as
+    /// [`apply_look`](Self::apply_look) does. It can't fail: a character's look validated when it was applied.
+    pub fn inherit_look(&mut self, previous: &Self) -> Vec<MaterialName> {
+        self.look.clone_from(&previous.look);
+        self.redraw()
+    }
+
+    /// Draws every part material in the current look; returns the names whose drawn material changed.
+    fn redraw(&mut self) -> Vec<MaterialName> {
+        let look = &self.look;
+        let by_class: BTreeMap<MaterialClass, _> = MaterialClass::ALL.into_iter().map(|c| (c, look.class(c))).collect();
+        let mut changed = Vec::new();
+        for (name, part) in &self.part_materials {
+            let class = self.material_classes.get(name).copied().unwrap_or(MaterialClass::Cloth);
+            let Some(settings) = by_class.get(&class) else { continue };
+            let drawn = settings.apply(part);
+            if self.materials.get(name) != Some(&drawn) {
+                changed.push(name.clone());
+                self.materials.insert(name.clone(), drawn);
+            }
+        }
+        changed
+    }
+
     /// The painted-face textures the stage must create: one per face layer that some material composites (`Base` for
     /// the head, `Brows` when hair shows them through), with the spec the face painter fills and the renderer texture
     /// description. Empty if the character has no face. `base_px_per_m` is the quality knob
@@ -382,6 +445,7 @@ pub struct Assembler<'a> {
     meshes: Vec<BuiltMesh>,
     runtimes: Vec<RuntimeSlot>,
     materials: BTreeMap<MaterialName, MaterialSpec>,
+    material_classes: BTreeMap<MaterialName, MaterialClass>,
     textures: BTreeMap<TextureName, TextureData>,
     report: BuildReport,
     rigs: Vec<(PartId, RigContribution)>,
@@ -400,6 +464,7 @@ impl<'a> Assembler<'a> {
             meshes: Vec::new(),
             runtimes: Vec::new(),
             materials: BTreeMap::new(),
+            material_classes: BTreeMap::new(),
             textures: BTreeMap::new(),
             report: BuildReport::default(),
             rigs: Vec::new(),
@@ -416,12 +481,14 @@ impl<'a> Assembler<'a> {
     /// Merges the output of `part`, which must be the next part of the [`plan`].
     ///
     /// In this order: validates each mesh and applies the character's weight brushes to it, collects the materials
-    /// (ids are unique across parts), validates and collects the textures, keeps the runtime, adds the part to the
+    /// (ids are unique across parts) and their classes (declared, else inferred from the kind's category and the
+    /// material), validates and collects the textures, keeps the runtime, adds the part to the
     /// report, checks what the part publishes (finite joints, colliders on humanoid bones), records what it contributes
     /// to the rig and absorbs what it publishes into [`published`](Self::published). The first failure is returned.
     ///
     /// # Errors
-    /// [`BuildError::Part`] if `part` isn't in the character, was added already, or published something unusable;
+    /// [`BuildError::Part`] if `part` isn't in the character, was added already, published something unusable or
+    /// declared a class for a material it doesn't build;
     /// [`BuildError::Mesh`] for a broken mesh; [`BuildError::Duplicate`] for a material or texture id another part
     /// defined.
     pub fn add(&mut self, part: &PartId, output: PartOutput) -> Result<(), BuildError> {
@@ -434,7 +501,7 @@ impl<'a> Assembler<'a> {
         }
         self.check_stature_order(part, &kind, output.publishes.stature.is_some())?;
         let counts = self.add_meshes(part, output.meshes)?;
-        self.add_materials(output.materials)?;
+        self.add_materials(part, &kind, output.materials, &output.material_classes)?;
         self.add_textures(part, output.textures)?;
         if let Some(runtime) = output.runtime {
             self.runtimes.push(RuntimeSlot { part: part.clone(), runtime });
@@ -499,11 +566,31 @@ impl<'a> Assembler<'a> {
         Ok(counts)
     }
 
-    fn add_materials(&mut self, materials: Vec<(MaterialName, MaterialSpec)>) -> Result<(), BuildError> {
+    /// Collects a part's materials and their classes. A kind that isn't registered (only a hand-fed assembly has one)
+    /// counts as an accessory, so its unmarked materials are cloth.
+    fn add_materials(
+        &mut self,
+        part: &PartId,
+        kind: &PartKindId,
+        materials: Vec<(MaterialName, MaterialSpec)>,
+        declared: &[(MaterialName, MaterialClass)],
+    ) -> Result<(), BuildError> {
+        if let Some((name, _)) = declared.iter().find(|(name, _)| !materials.iter().any(|(own, _)| own == name)) {
+            return Err(BuildError::Part {
+                part: part.clone(),
+                message: format!("it declares a class for material '{name}', which it does not build"),
+            });
+        }
+        let category = find_kind(kind.as_str()).map_or(PartCategory::Accessory, |reg| (reg.meta)().category);
         for (id, spec) in materials {
+            let class = declared
+                .iter()
+                .find(|(name, _)| *name == id)
+                .map_or_else(|| MaterialClass::infer(category, &spec), |(_, class)| *class);
             if self.materials.insert(id.clone(), spec).is_some() {
                 return Err(BuildError::Duplicate { what: "material", id: id.to_string() });
             }
+            self.material_classes.insert(id, class);
         }
         Ok(())
     }
@@ -544,7 +631,10 @@ impl<'a> Assembler<'a> {
             def: self.def.clone(),
             palette: self.def.palette.clone(),
             meshes: self.meshes,
+            part_materials: self.materials.clone(),
             materials: self.materials,
+            material_classes: self.material_classes,
+            look: LookParams::default(),
             textures: self.textures,
             face: self.published.face.map(|projection| FaceBinding { projection, profile: self.def.face.clone() }),
             anchors: self.published.anchors,
