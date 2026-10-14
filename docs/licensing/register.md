@@ -42,6 +42,7 @@ Format rule (the repo licence gate will parse this): one row per item, with colu
 | nalgebra 0.35.0 | crate | matrix and rotation maths of the head-pose fit in `omuzaki-track` (shipped; `default-features = false`, `std`), and in the webcam tracking spike (`spikes/webcam-track`) it was ported from | yes | | (crates.io: Apache-2.0) |
 | windows, windows-core (windows-rs 0.62) | crate | Win32 and COM bindings in the broadcast spike (`spikes/broadcast-out`: D3D11On12, Media Foundation, registry reads); the spike's own workspace keeps them out of the main lockfile | yes | | (crates.io: windows 0.62.2 and windows-core 0.62.2, both MIT OR Apache-2.0) |
 | cc | crate | build script of the broadcast spike: compiles the C++ shim and the Spout2 SDK | yes | | (crates.io: MIT OR Apache-2.0) |
+| semver | crate | versions in the updater contract (`omuzaki-update-api`); ADR 0026 also plans it | yes | | (crates.io: MIT OR Apache-2.0) |
 | toml, toml_edit | crate | project files | yes | | (crates.io: MIT OR Apache-2.0) |
 | clap | crate | CLI | yes | | (crates.io: MIT OR Apache-2.0) |
 | blake3 | crate | content hashes for the asset store | yes | | (crates.io: CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception) |

@@ -1,0 +1,68 @@
+src/clock.rs: pub struct Timestamp(pub i64);
+src/clock.rs: pub trait WallClock: Send + Sync {
+src/disk.rs: pub struct DirEntry {
+src/disk.rs: pub trait Disk: Send + Sync {
+src/error.rs: pub enum UpdateError {
+src/event.rs: pub const EVENT_QUEUE_CAPACITY: usize = 64;
+src/event.rs: pub enum UpdateEvent {
+src/event.rs: pub struct EventSender {
+src/event.rs: pub struct UpdateEvents {
+src/event.rs: pub fn event_queue() -> (EventSender, UpdateEvents) {
+src/event.rs: pub fn send(&self, event: UpdateEvent) {
+src/event.rs: pub fn is_subscribed(&self) -> bool {
+src/event.rs: pub fn next(&self) -> Option<UpdateEvent> {
+src/event.rs: pub fn dropped(&self) -> u64 {
+src/hold.rs: pub enum HoldReason {
+src/hold.rs: pub struct Hold {
+src/hold.rs: pub fn new(release: impl FnOnce() + Send + 'static) -> Self {
+src/hold.rs: pub fn none() -> Self {
+src/layout.rs: pub struct Layout {
+src/layout.rs: pub fn new(root: impl Into<PathBuf>) -> Self {
+src/layout.rs: pub fn root(&self) -> &Path {
+src/layout.rs: pub fn state(&self) -> PathBuf {
+src/layout.rs: pub fn lock(&self) -> PathBuf {
+src/layout.rs: pub fn healthy_marker(&self) -> PathBuf {
+src/layout.rs: pub fn version_dir(&self, version: &Version) -> PathBuf {
+src/layout.rs: pub fn staging_dir(&self, version: &Version) -> PathBuf {
+src/layout.rs: pub fn downloads(&self) -> PathBuf {
+src/layout.rs: pub fn backup_dir(&self, version: &Version) -> PathBuf {
+src/lib.rs: pub mod clock;
+src/lib.rs: pub mod disk;
+src/lib.rs: pub mod error;
+src/lib.rs: pub mod event;
+src/lib.rs: pub mod hold;
+src/lib.rs: pub mod layout;
+src/lib.rs: pub mod progress;
+src/lib.rs: pub mod release;
+src/lib.rs: pub mod state;
+src/lib.rs: pub mod status;
+src/lib.rs: pub mod updater;
+src/lib.rs: pub use clock::{Timestamp, WallClock};
+src/lib.rs: pub use disk::{DirEntry, Disk};
+src/lib.rs: pub use error::UpdateError;
+src/lib.rs: pub use event::{EVENT_QUEUE_CAPACITY, EventSender, UpdateEvent, UpdateEvents, event_queue};
+src/lib.rs: pub use hold::{Hold, HoldReason};
+src/lib.rs: pub use layout::Layout;
+src/lib.rs: pub use progress::Progress;
+src/lib.rs: pub use release::{Channel, PackageKind, Release, Url};
+src/lib.rs: pub use semver::Version;
+src/lib.rs: pub use state::{State, StateError, Watermark};
+src/lib.rs: pub use status::{CatalogueStatus, CheckFailure, RollbackReason, Unavailable, UpdateStatus};
+src/lib.rs: pub use updater::{ModelCatalogue, Updater};
+src/progress.rs: pub trait Progress: Send + Sync {
+src/release.rs: pub struct Url(pub String);
+src/release.rs: pub enum Channel {
+src/release.rs: pub enum PackageKind {
+src/release.rs: pub struct Release {
+src/state.rs: pub struct Watermark {
+src/state.rs: pub struct StateError(pub String);
+src/state.rs: pub struct State {
+src/state.rs: pub fn from_toml(text: &str) -> Result<Self, StateError> {
+src/state.rs: pub fn to_toml(&self) -> String {
+src/status.rs: pub enum Unavailable {
+src/status.rs: pub enum CheckFailure {
+src/status.rs: pub enum RollbackReason {
+src/status.rs: pub enum UpdateStatus {
+src/status.rs: pub enum CatalogueStatus {
+src/updater.rs: pub trait Updater: Send + Sync {
+src/updater.rs: pub trait ModelCatalogue: Send + Sync {
