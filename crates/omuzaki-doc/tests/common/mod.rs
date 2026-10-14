@@ -37,11 +37,20 @@ pub fn change(path: &str, before: Option<Value>, after: Option<Value>) -> Patch 
 
 /// Every file under `dir` (relative paths, sorted) with its bytes.
 pub fn snapshot(dir: &Path) -> Vec<(String, Vec<u8>)> {
-    fn walk(dir: &Path, base: &Path, out: &mut Vec<(String, Vec<u8>)>) {
+    snapshot_except(dir, &[])
+}
+
+/// Like [`snapshot`], but never enters the top-level folders named in `skip`: `.git`, for one, is git's to change
+/// while a test looks.
+pub fn snapshot_except(dir: &Path, skip: &[&str]) -> Vec<(String, Vec<u8>)> {
+    fn walk(dir: &Path, base: &Path, skip: &[&str], out: &mut Vec<(String, Vec<u8>)>) {
         for entry in fs::read_dir(dir).unwrap() {
             let path = entry.unwrap().path();
             if path.is_dir() {
-                walk(&path, base, out);
+                let skipped = dir == base && path.file_name().is_some_and(|name| skip.iter().any(|s| name == *s));
+                if !skipped {
+                    walk(&path, base, skip, out);
+                }
             } else {
                 let rel = path.strip_prefix(base).unwrap().to_string_lossy().replace('\\', "/");
                 out.push((rel, fs::read(&path).unwrap()));
@@ -49,7 +58,7 @@ pub fn snapshot(dir: &Path) -> Vec<(String, Vec<u8>)> {
         }
     }
     let mut out = Vec::new();
-    walk(dir, dir, &mut out);
+    walk(dir, dir, skip, &mut out);
     out.sort();
     out
 }
