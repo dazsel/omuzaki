@@ -12,7 +12,7 @@ use std::sync::Arc;
 use common::FakeRunner;
 use omuzaki_mcp::{McpOptions, McpServer, ServerError};
 use rmcp::ClientLifecycleMode;
-use rmcp::model::{ClientCapabilities, ClientConfig, Implementation, ProtocolVersion, SubscriptionFilter};
+use rmcp::model::{ClientCapabilities, ClientConfig, Implementation, ProtocolVersion};
 use rmcp::service::{RoleClient, RunningService};
 use rmcp::{ClientHandler, ClientServiceExt};
 use serde_json::{Value, json};
@@ -90,17 +90,15 @@ async fn a_connected_client_is_named_and_counted() {
     for lifecycle in Lifecycle::ALL {
         let mcp = server();
         let connection = connect(&mcp, lifecycle).await;
-        // Under `discover` nothing has been asked yet, so the session is counted but not named: the first request names
-        // it. Under `initialize` the handshake has already named it.
-        if let Lifecycle::Discover = lifecycle {
-            assert_eq!(mcp.connection(), json!({"connected": false, "sessions": 1}), "{lifecycle:?} before a request");
-            connection.client.list_all_tools().await.expect("lists tools");
-        }
+        // Both lifecycles name the client at startup (the `initialize` handshake, or the identity `discover` carries),
+        // so an idle client is connected before it asks anything.
         assert_eq!(
             mcp.connection(),
             json!({"connected": true, "client_name": "claude-code", "sessions": 1}),
-            "{lifecycle:?} after the first request"
+            "{lifecycle:?} straight after connecting"
         );
+        // rmcp ends a `discover` session that closes before its first request as a failed handshake, so ask once.
+        connection.client.list_all_tools().await.expect("lists tools");
         disconnect(connection).await;
     }
 }
@@ -131,48 +129,4 @@ async fn the_answer_never_carries_a_credential() {
         }
         disconnect(connection).await;
     }
-}
-
-/// Under `discover`, the first request of any identity-bearing kind names the session: a client may start with a
-/// resource or a prompt request and never list tools.
-#[tokio::test]
-async fn a_discover_client_is_named_by_its_first_resource_or_prompt_request() {
-    for first in ["resources", "prompts"] {
-        let mcp = server();
-        let connection = connect(&mcp, Lifecycle::Discover).await;
-        assert_eq!(mcp.connection(), json!({"connected": false, "sessions": 1}), "{first} before a request");
-        match first {
-            "resources" => {
-                connection.client.list_all_resources().await.expect("lists resources");
-            }
-            _ => {
-                connection.client.list_all_prompts().await.expect("lists prompts");
-            }
-        }
-        assert_eq!(
-            mcp.connection(),
-            json!({"connected": true, "client_name": "claude-code", "sessions": 1}),
-            "named after a {first} request"
-        );
-        disconnect(connection).await;
-        assert_eq!(mcp.connection(), json!({"connected": false, "sessions": 0}), "{first} after disconnect");
-    }
-}
-
-/// Under `discover`, a client whose first request is a subscription (`subscriptions/listen`) is named by it.
-#[tokio::test]
-async fn a_discover_client_is_named_by_its_first_subscription() {
-    let mcp = server();
-    let connection = connect(&mcp, Lifecycle::Discover).await;
-    assert_eq!(mcp.connection(), json!({"connected": false, "sessions": 1}), "before a subscription");
-    let filter = SubscriptionFilter::builder().resource_subscription("omuzaki://log").build();
-    let mut subscription = connection.client.listen(filter).await.expect("subscribes");
-    assert_eq!(
-        mcp.connection(),
-        json!({"connected": true, "client_name": "claude-code", "sessions": 1}),
-        "named by the subscription"
-    );
-    subscription.cancel().await.expect("cancels");
-    disconnect(connection).await;
-    assert_eq!(mcp.connection(), json!({"connected": false, "sessions": 0}), "after disconnect");
 }

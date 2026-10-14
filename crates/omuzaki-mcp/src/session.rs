@@ -98,15 +98,6 @@ impl Session {
         uri == LOG_URI || self.shared.providers.serving(uri).is_some()
     }
 
-    /// Names this session's client from the request, when the request says who it is. The `initialize` handshake does
-    /// this once; under the `discover` lifecycle (protocol 2026-07-28) there is no handshake, and each request carries
-    /// the client's identity instead, so the first request that does names the session.
-    fn note_client(&self, context: &RequestContext<RoleServer>) {
-        if let Some(info) = context.client_info() {
-            self.shared.connections.name(self.serial, &info.name);
-        }
-    }
-
     fn actor(&self, context: &RequestContext<RoleServer>) -> &Actor {
         self.actor.get_or_init(|| {
             let client = context.client_info().map_or_else(|| "mcp-client".to_owned(), |info| info.name);
@@ -444,9 +435,14 @@ impl ServerHandler for Session {
 
     /// Over HTTP, answered as a server without a stateless mode would (clients then fall back to `initialize`); over
     /// other transports, the default.
-    async fn discover(&self, _context: RequestContext<RoleServer>) -> Result<DiscoverResult, McpError> {
+    async fn discover(&self, context: RequestContext<RoleServer>) -> Result<DiscoverResult, McpError> {
         if self.http {
             return Err(McpError::method_not_found::<DiscoverRequestMethod>());
+        }
+        // rmcp's discovery request carries the client's identity and completes its startup, so an idle client is
+        // already connected. Over HTTP it is refused above and the client falls back to `initialize`.
+        if let Some(info) = context.client_info() {
+            self.shared.connections.name(self.serial, &info.name);
         }
         Ok(DiscoverResult::from_server_info(self.supported_protocol_versions().into_owned(), self.get_info()))
     }
@@ -466,9 +462,8 @@ impl ServerHandler for Session {
     async fn list_tools(
         &self,
         _request: Option<PaginatedRequestParams>,
-        context: RequestContext<RoleServer>,
+        _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
-        self.note_client(&context);
         Ok(ListToolsResult::with_all_items(self.view.catalog.tools().cloned().collect()))
     }
 
@@ -481,7 +476,6 @@ impl ServerHandler for Session {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
-        self.note_client(&context);
         // Matched on the resolved route, so the dotted alias (`history.log`) counts as the same tool.
         let reads_log = self
             .view
@@ -505,27 +499,24 @@ impl ServerHandler for Session {
     async fn list_prompts(
         &self,
         _request: Option<PaginatedRequestParams>,
-        context: RequestContext<RoleServer>,
+        _context: RequestContext<RoleServer>,
     ) -> Result<ListPromptsResult, McpError> {
-        self.note_client(&context);
         Ok(ListPromptsResult::with_all_items(self.shared.prompts.list(&self.view.catalog)))
     }
 
     async fn get_prompt(
         &self,
         request: GetPromptRequestParams,
-        context: RequestContext<RoleServer>,
+        _context: RequestContext<RoleServer>,
     ) -> Result<GetPromptResponse, McpError> {
-        self.note_client(&context);
         Ok(self.shared.prompts.get(&self.view.catalog, &request.name, request.arguments)?.into())
     }
 
     async fn list_resources(
         &self,
         _request: Option<PaginatedRequestParams>,
-        context: RequestContext<RoleServer>,
+        _context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, McpError> {
-        self.note_client(&context);
         let mut resources = vec![log_resource()];
         // Listing reads the document, so it needs `read` like reading does; without it only the log (which names
         // nothing from the document) is listed, as before.
@@ -546,18 +537,16 @@ impl ServerHandler for Session {
     async fn list_resource_templates(
         &self,
         _request: Option<PaginatedRequestParams>,
-        context: RequestContext<RoleServer>,
+        _context: RequestContext<RoleServer>,
     ) -> Result<ListResourceTemplatesResult, McpError> {
-        self.note_client(&context);
         Ok(ListResourceTemplatesResult::with_all_items(self.shared.providers.templates()))
     }
 
     async fn read_resource(
         &self,
         request: ReadResourceRequestParams,
-        context: RequestContext<RoleServer>,
+        _context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, McpError> {
-        self.note_client(&context);
         if request.uri == LOG_URI {
             return self.read_log();
         }
@@ -583,7 +572,6 @@ impl ServerHandler for Session {
         request: SubscribeRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<(), McpError> {
-        self.note_client(&context);
         let uri = request.uri;
         let what =
             if uri == LOG_URI { "subscribing to the op log".to_owned() } else { format!("subscribing to {uri}") };
@@ -614,9 +602,8 @@ impl ServerHandler for Session {
     async fn unsubscribe(
         &self,
         request: UnsubscribeRequestParams,
-        context: RequestContext<RoleServer>,
+        _context: RequestContext<RoleServer>,
     ) -> Result<(), McpError> {
-        self.note_client(&context);
         self.require_read(&format!("unsubscribing from {}", request.uri))?;
         if !self.subscribable(&request.uri) {
             return Err(unknown_resource(&request.uri, &self.shared.providers.templates()));
@@ -652,7 +639,6 @@ impl ServerHandler for Session {
     }
 
     async fn listen(&self, context: SubscriptionContext) -> Result<(), McpError> {
-        self.note_client(context.request_context());
         let wanted: BTreeSet<String> = context.accepted().resource_subscriptions.iter().flatten().cloned().collect();
         // `accepted_subscription_filter` already refuses everything without `read`; checking again keeps this loop safe
         // on its own.
