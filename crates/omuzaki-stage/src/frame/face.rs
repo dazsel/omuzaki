@@ -153,7 +153,7 @@ enum NextBound {
 /// A variant fully prepared beside the live character: swapping it in only moves things.
 struct Staged {
     new: BuiltCharacter,
-    newrig: Option<RigFrame>,
+    new_rig: Option<RigFrame>,
     bound: NextBound,
     prepared: PreparedSync,
     dynamic: DynamicMeshes,
