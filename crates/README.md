@@ -121,10 +121,11 @@ App's `Services`.
     cargo xtask check --all            # the whole workspace
     cargo xtask lint-deps              # only the layering rule above
     cargo xtask lint-links             # only the link() wiring (ADR 0015)
+    cargo xtask models                 # only the shipped-model licence gate (ML-01, ADR 0017)
 
 `check` maps the files that differ from `--base` (default `origin/main`, via the merge-base; uncommitted and untracked
 files count) to crates, adds every crate that depends on them (dev-dependencies too), then runs in order: `fmt --check`,
-`clippy -D warnings`, `test`, `cargo deny check licenses bans sources`, `lint-deps`, `lint-links`. A change to `Cargo.toml`,
+`clippy -D warnings`, `test`, `cargo deny check licenses bans sources`, `lint-deps`, `lint-links`, `models` (every shipped model has an allowed register row). A change to `Cargo.toml`,
 `Cargo.lock`, `deny.toml`, `clippy.toml`, `rustfmt.toml`, `rust-toolchain.toml` or `.cargo/` checks everything; a change
 outside every crate (docs, tools) runs nothing. It always runs every step and ends with a one-screen summary; the exit
 code is non-zero if any step failed.

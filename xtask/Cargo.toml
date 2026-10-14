@@ -17,6 +17,8 @@ thiserror.workspace = true
 toml.workspace = true
 # The library contract: `lint-seed` reads manifests and compares their canonical form exactly as the library hashes them.
 omuzaki-library-api = { path = "../crates/omuzaki-library-api" }
+# The model manifest contract the models gate reads (ML-01, ADR 0017).
+omuzaki-ai-api = { path = "../crates/omuzaki-ai-api" }
 
 [dev-dependencies]
 tempfile.workspace = true
