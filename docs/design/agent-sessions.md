@@ -480,7 +480,8 @@ All in `omuzaki-ops-api`, one change, reviewed by a maintainer. Names are bindin
 **New `session` module.**
 - `SessionId(pub u64)`; `Transport { Stdio, Http { token: String }, InApp, Plugin, Automation, Replay }`.
 - `SessionSpec { transport, client: String, model: Option<String>, on_behalf_of: Actor, grants: Grants, budget:
-  Budget, limits: Limits, parent: Option<SessionId>, role: Option<String> }`.
+  Budget, limits: Limits, parent: Option<SessionId>, role: Option<String>, fence: Vec<DocPath> }` (`fence` is serde
+  default, empty claims nothing; 5.3).
 - `SessionInfo` with the fields of 3.1; `SessionState { Active, Paused { by: Actor, reason: PauseReason }, Ended {
   reason: EndReason, at: Seconds } }`; `PauseReason { Person, Budget, Undo, Step, Pairing }`; `EndReason {
   Disconnected, IdleTimeout, Closed, Revoked { by: Actor, credential: bool }, ProjectClosed }` (`credential`: the
@@ -529,10 +530,12 @@ All in `omuzaki-ops-api`, one change, reviewed by a maintainer. Names are bindin
 - `Event::TxCommitted { tx, label, actor }`, `TxRolledBack { tx, actor, version }`, `Undone { tx, label, actor,
   owner, version }`, `Redone { tx, label, actor, owner, version }` (`actor` did it; `owner` owns the step).
 - New events: `SessionOpened { session: SessionInfo }`, `SessionChanged { session: SessionInfo, change:
-  SessionChange }` with `SessionChange { Grants { by }, Budget { by }, Paused, Resumed { by }, Spent }`,
+  SessionChange }` with `SessionChange { Grants { by }, Budget { by }, Paused, Resumed { by }, Spent, Fence { by } }`,
   `SessionEnded { session: SessionInfo, ended: Ended }`, `SessionUndone { session: SessionId, by: Actor, result:
   SessionUndo }`, `Clash { session, actor, op, path, kind: ClashKind, other: Option<Actor>, at }`,
   `ApprovalRequested { approval: PendingApproval }`, `ApprovalResolved { resolution: Resolution }`.
+- `ClashKind { Fenced, Stale }`: `Fenced` is an agent's edit outside its own fence or inside another session's (5.3);
+  `Stale` is the stale-write guard of 5.1 (a person changed the path since the agent's base version).
 - `Runner::get(&self, path, grants: &Grants) -> Result<Option<Value>, OpError>`, `Runner::subscribe(&self,
   grants: &Grants) -> Result<Receiver<Event>, OpError>` and a new `Runner::log(&self, after_seq: u64, limit: usize,
   grants: &Grants) -> Result<Vec<OpRecord>, OpError>`, each `Denied` without `read`.
