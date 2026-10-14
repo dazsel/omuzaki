@@ -354,7 +354,9 @@ fn the_largest_capture_fits_every_channel_and_the_head() {
     assert!(fitted.head_rest.position.is_some());
     // Resetting and refilling the largest capture gives the same result.
     cap.reset();
-    frames.iter().for_each(|f| _ = cap.push(f));
+    for frame in &frames {
+        cap.push(frame);
+    }
     assert_eq!(cap.finish(&base).unwrap(), fitted);
 }
 
