@@ -1,6 +1,7 @@
 {
   "default": 20,
   "parts": { "omuzaki-char": 4 },
+  "part_weights": { "omuzaki-char@1/4": 455, "omuzaki-char@2/4": 210, "omuzaki-char@3/4": 266, "omuzaki-char@4/4": 172 },
   "crates": {
     "omuzaki-char": 1100,
     "omuzaki-ui": 400,

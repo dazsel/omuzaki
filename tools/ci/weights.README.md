@@ -23,4 +23,8 @@ Two measured corrections after the first full-workspace runs on this branch:
 - `omuzaki-ui` is 400, not 158: a job holding it spent 7 minutes compiling (the egui/wgpu test dependencies are not in
   the shared cache), against 2 to 3 minutes for jobs without it.
 
+- `part_weights` gives the four `omuzaki-char` partitions their measured wall seconds (65 s compile plus the partition's
+  test time in a full run: 390, 144, 201, 107 s). The first holds `cloth_contact::a_million_random_steps_produce_no_nan`
+  (287 to 419 s, one thread), so it should get a job almost to itself. They sum to the crate's 1100.
+
 The weights are estimates. Refresh them from a full-workspace run when the per-job durations drift apart.

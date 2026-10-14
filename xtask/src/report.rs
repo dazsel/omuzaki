@@ -86,6 +86,10 @@ pub struct Weights {
     /// function of the test name, so a count that happens to separate a crate's slowest tests stays good.
     #[serde(default)]
     parts: BTreeMap<String, usize>,
+    /// Measured weights of individual partitions, keyed by their label (`name@k/n`). Hash partitions are uneven when a
+    /// crate has a few very slow tests; a partition not listed weighs an equal share of the crate's weight.
+    #[serde(default)]
+    part_weights: BTreeMap<String, u64>,
 }
 
 impl Weights {
@@ -97,7 +101,7 @@ impl Weights {
 
     /// Every crate weighs the same, which makes [`shard`] an even split by count.
     pub fn uniform() -> Self {
-        Self { default: 1, crates: BTreeMap::new(), parts: BTreeMap::new() }
+        Self { default: 1, crates: BTreeMap::new(), parts: BTreeMap::new(), part_weights: BTreeMap::new() }
     }
 
     /// Build weights from explicit pairs (tests).
@@ -107,7 +111,15 @@ impl Weights {
             default,
             crates: pairs.iter().map(|(name, weight)| ((*name).to_owned(), *weight)).collect(),
             parts: BTreeMap::new(),
+            part_weights: BTreeMap::new(),
         }
+    }
+
+    /// Set the weight of one partition label (tests).
+    #[cfg(test)]
+    fn with_part_weight(mut self, label: &str, weight: u64) -> Self {
+        self.part_weights.insert(label.to_owned(), weight);
+        self
     }
 
     /// Pin the partition count of `name` (tests).
@@ -164,11 +176,10 @@ pub fn shard(names: &[String], max_shards: usize, weights: &Weights) -> Vec<Vec<
         let parts = wanted.min(max_shards);
         if parts > 1 {
             for index in 1..=parts {
-                items.push(Item {
-                    name: name.clone(),
-                    weight: weight.div_ceil(u64::try_from(parts).unwrap_or(1)),
-                    part: Some((index, parts)),
-                });
+                let label = format!("{name}@{index}/{parts}");
+                let even = weight.div_ceil(u64::try_from(parts).unwrap_or(1));
+                let part_weight = weights.part_weights.get(&label).copied().unwrap_or(even).max(1);
+                items.push(Item { name: name.clone(), weight: part_weight, part: Some((index, parts)) });
             }
         } else {
             items.push(Item { name: name.clone(), weight, part: None });
@@ -297,6 +308,22 @@ mod tests {
         assert!(
             capped.contains(&"pinned@2/2".to_owned()) && !capped.iter().any(|item| item.ends_with("/3")),
             "{capped:?}"
+        );
+    }
+
+    #[test]
+    fn a_measured_partition_weight_decides_how_much_shares_its_shard() {
+        let all = names(&["pinned", "a", "b", "c", "d"]);
+        let weights = Weights::from_pairs(60, &[("pinned", 200)])
+            .with_parts("pinned", 2)
+            .with_part_weight("pinned@1/2", 150)
+            .with_part_weight("pinned@2/2", 50);
+        let shards = shard(&all, 2, &weights);
+        let heavy = shards.iter().find(|held| held.contains(&"pinned@1/2".to_owned()));
+        assert_eq!(
+            heavy.map(Vec::len),
+            Some(2),
+            "the 150 s partition takes one light crate, the 50 s one takes the rest: {shards:?}"
         );
     }
 
