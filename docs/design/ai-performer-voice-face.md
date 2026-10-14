@@ -14,7 +14,7 @@ keeping 300 to 500 ms ahead. A cut closes the feed through a flag the audio thre
 hands the **mouth drive** each slice **ahead of playback**, stamped with the program time it will play at, so the
 `voice_to_face@1` model's latency is hidden instead of making the mouth late; visemes (FE-08) cover a stalled model. A
 rule-based **big-moves planner** turns the floor state and the speech into lean, head, body-turn and gaze keys inside the
-score layer, so a human tracker above it always wins. A voice belongs to the character (`characters/<id>/voice.toml`),
+score layer, so a human tracker above it always wins. A voice belongs to the character (`characters/<id>/voice-assignment.toml`),
 is validated against the model's or connector's voice list, and a cloned voice needs a consent record.
 
 ```text
@@ -45,7 +45,11 @@ pub struct StyleKnobs { pub energy: f32, pub gaze_aversion: f32, pub lean: f32, 
 pub trait BigMovePlanner: Send { fn plan(&mut self, tick: Tick, ctx: &MoveContext, talk: &TalkState,
                                          knobs: &StyleKnobs, rng: &mut Rng, out: &mut Layer); }
 /// The TTS host's view of the mouth drive: PCM ahead of playback, stamped with its program time.
-pub trait VoiceLead: Send { fn push(&mut self, at: Seconds, rate: u32, pcm: &[f32], private: bool); fn cut(&mut self, at: Seconds); }
+pub trait VoiceLead: Send { fn attach(&mut self, probe: CutProbe); fn push(&mut self, at: Seconds, rate: u32, pcm: &[f32], private: bool);
+                            fn cut(&mut self, at: Seconds); }
+/// The drive's own, pump-independent view of one feed: read-only clones of its `FeedCloser` flag and playhead (§4.2).
+pub struct CutProbe { /* closer, playhead */ }   // state() -> CutState
+pub enum CutState { Live, Raised, Cut { at: Seconds } }   // Raised: close requested; Cut: the audio thread went silent at `at`
 pub trait VoiceCatalog: Send + Sync { fn voices(&self, provider: &VoiceProvider) -> Result<Vec<VoiceInfo>, VoiceError>; }
 pub struct VoiceInfo { pub id: VoiceId, pub languages: Vec<LanguageTag>, pub imitates: Option<String>, pub cloned: bool }
 /// One per performer, shared by its LLM brain and its TTS host: bounds reserved together never pass the cap (§3.6).
@@ -91,7 +95,9 @@ of the `ai_voice` bus. 1 s holds the 500 ms lead plus a 500 ms pump stall.
   fades out over **2.5 ms** (120 samples, the model node's crossfade, audio-api §4.5), so the cut never clicks. Worst
   case on `R`: a block (5.3 ms) plus the fade (2.5 ms), 7.8 ms. ADR 0031 §5.4's "feed closed at the next block" row
   counted 5.3 ms, so **barge-in becomes 167.6 ms** (157.6 ms with headphones), still under the 200 ms budget; a fade
-  inside the block would keep 165.1 ms but clicks on short blocks, so the fade is taken. The pump then drops the queued chunks; a synthesis already
+  inside the block would keep 165.1 ms but clicks on short blocks, so the fade is taken. The audio thread publishes the cut
+  (`FeedPlayhead.cut_at_sample`, §3.3) when the fade ends; the mouth drive reads that and the closer itself (§4.2),
+  never the pump. The pump then drops the queued chunks; a synthesis already
   running finishes and is thrown away (a `Call` cannot be interrupted, `ai-api.md` §3).
 - **Two alternating feeds:** after a cut, the next speech goes to the **other** feed, which is open and silent, while
   the cut one is re-opened off-thread (a structural compile, audio-api §3.7). A cut never waits for that compile. A
@@ -114,15 +120,22 @@ of the `ai_voice` bus. 1 s holds the 500 ms lead plus a 500 ms pump stall.
   formants move with it, so `pitch_semitones` is limited to **−4..+4**, and `speed` to **0.7..1.4** (`s / r` must stay in
   the model's own range, Kokoro 0.5..2.0). A model with no speed control ignores `speed`, and pitch then changes tempo by
   `r` (≤ 26 %); the assignment op warns.
-- **The playhead (new in `omuzaki-audio-api`):** `FeedWriter::playhead() -> FeedPlayhead { consumed: u64, at_sample: u64 }`,
-  written once per block by the audio thread (one 128-bit atomic pair, read wait-free): feed samples consumed so far and
-  the engine sample where the next one enters the bus, after the resampler's delay. Then
+- **The playhead (new in `omuzaki-audio-api`):** `FeedWriter::playhead() -> FeedPlayhead { consumed: u64, at_sample: u64, cut_at_sample: u64 }`,
+  written once per block by the audio thread (atomics, read wait-free): feed samples consumed so far,
+  the engine sample where the next one enters the bus, after the resampler's delay, and `cut_at_sample`, the engine
+  sample where a closed feed went silent (`u64::MAX` while open), set by the audio thread when the close fade ends, so
+  it is **the authority on what played**. `FeedCloser` and the playhead are `Clone` as read-only probes
+  (`is_raised()`, `read()`). This is a contract change: it lands first and alone (`CLAUDE.md`, how work flows, step 3). Then
   `from = clock.time_of(at_sample) + (chunk_start − consumed) / rate`. ADR 0031's `Playing { from }` needs exactly this,
   and the audio contract had no way to say it.
 
 ### 3.4 Voices and where the assignment lives
 
-- **The character owns its voice:** `characters/<id>/voice.toml` (one `VoiceAssignment`), not the persona. The voice is
+- **The character owns its voice:** `characters/<id>/voice-assignment.toml` (one `VoiceAssignment`), not the persona.
+  **Not `voice.toml`:** audio-api §6.2 and `omuzaki-audio-api/src/preset.rs` already keep the character's effect presets
+  there, owned by `audio.fx.*`. Two writers with two schemas in one file would clobber each other, so the assignment gets
+  its own file next to it, and each op reads and writes only its own file. If the two are ever merged, the merge must
+  give each a namespaced table (`[assignment]`, `[[presets]]`) and keep the round-trip test of §7 passing. The voice is
   also what scratch voiceover (CN-10) and score lines (§5.6) use, and ADR 0031 lets `performer.start` borrow another
   character's persona for tests, which must not borrow its voice. **Where docs disagree:** `ai-performer.md` §4 has
   `voice = "voices/mochi"` in `persona.toml`. This design drops that field (unlocked task T7).
@@ -214,28 +227,48 @@ lead; unverified, unreachable from the build box). TTS audio exists before it pl
 (§3.3). `lead = min(added_latency(queue) + block + 10 ms, 100 ms)`; a model needing more is allowed, its extra lag is
 shown on the health meter ("mouth 40 ms late"). On a turn's **first** chunk the pump starts the feed `lead` late, so the
 mouth's first frame is ready: that adds ≤ 100 ms to ADR 0031 §5.3 (2,396 + 100 ≤ 2,500 ms p95). On a cut the pump calls
-`VoiceLead::cut(at)`.
+`VoiceLead::cut(at)`, which only tidies: the drive's release and drop decisions never wait for it (§4.2).
 
 ### 4.2 The mouth drive (`omuzaki-voice`)
 
 - **Model:** one `voice_to_face@1` stream session (`ai-api.md` §10). The drive resamples the lead to the model's 16 kHz,
   cuts blocks, pushes block `k` and takes `k − queue` in the same call, paced by the lead's `at` against the clock, on
   its own thread. Output: ARKit-52 per block.
+- **Output time is not input time.** `StreamSpec::latency` (`ai-api.md` §10) says input sample `n` comes out as output
+  sample `n + latency`, and `take` returns the block of an earlier push (`queue` blocks behind). So a result is **never
+  stamped with the `at` of the push that returned it**. The drive numbers samples from the first pushed lead sample
+  (index 0 at program time `at₀`, model rate `f`, block `B`). Output sample `m` depicts input sample `m − latency`, so
+  result block `j` (output samples `j·B .. (j+1)·B`) has `at_j = at₀ + (j·B − latency) / f`, taken from the block
+  *index* `take` reports, not from when it returned. Frames whose `at` falls before `at₀` (the first `latency` samples
+  are warm-up) are clipped. `lead` already pays for `latency` through `added_latency` (§4.1); the mapping puts each
+  frame on the sample it describes. Without it the mouth would trail the voice by `latency / f` (10 ms per 160 samples
+  at 16 kHz). Fallback viseme frames come from the lead PCM and carry its own `at`, so both sources share one timeline
+  and a switch needs no correction.
 - **Fallback (FE-08):** visemes from the same lead PCM (energy and spectral tilt per 10 ms), computed every block, so
   switching is instant. `Block::Missed` uses the viseme frame for that block; `stalled` stays on visemes until the
   stream restarts ("voice to face stalled: visemes"). Every switch crossfades over **50 ms** in channel space.
 - **Output:** a `Source::Audio` layer, mode `Max` (anim-api §6), mask `MOUTH` plus `jawOpen` and `tongueOut`; brows and
   eyes stay with emotes and life (a manifest may opt in later). Each frame is stamped `at − D` (anim-api §6.1: AI
   layers are `program_time − D`), so after the one A/V delay it lands with the voice.
-- **Released at program time, never early:** results wait in the drive's own ring until the **program clock reaches
-  their `at`**, then go to the stage's `PlayoutDelay` with the stamp `at − D` (sampled at `now − D`, so due at once).
-  Every released frame is therefore audio that already entered the bus, and a cut at `t` (the program time the feed
-  goes silent, never before now) only has to drop the pending frames with `at > t`: nothing in `PlayoutDelay` is past
-  the cut. The close (mouth to rest over 60 ms) is pushed with the stamp `max(t, last released at + 1 µs) − D`, so it
-  is always after the newest stamp and `PlayoutDelay::push` accepts it. `D` only ramps at most 10 % (anim-api §6.1),
-  so `at − D` still rises when `D` changes.
+- **Released only for audio that played; the cut is read, not told.** Program time alone does not prove the audio
+  played: audio closes directly through the `FeedCloser` flag (§3.2), but `VoiceLead::cut` travels through the pump. A
+  pump stalled across a cut would let the release thread keep handing out frames for a feed that is already silent, and
+  a frame in `PlayoutDelay` cannot be taken back. So the release thread holds the feed's `CutProbe` (§2, attached with
+  each chunk) and, **immediately before each handoff** to the stage's `PlayoutDelay`, checks `probe.state()`:
+  1. `Raised`: release nothing; frames stay in the drive's ring.
+  2. `Cut { at: t }`, where `t = time_of(cut_at_sample)` is the audio thread's own number, not the pump's: release the
+     held frames with `at ≤ t` (they did play), drop the rest, push the close (below).
+  3. `Live`: release a frame once the program clock has reached its `at` and the playhead shows its sample consumed
+     (`at ≤ time_of(at_sample)`), stamped `at − D` (sampled at `now − D`, so due at once).
+  *Why no lock is needed:* the audio thread reads the flag at the start of a block and the release thread reads it just
+  before releasing. A frame released while the flag read `Live` at time `T` has `at ≤ T`; a flag raised after `T` can
+  only be seen by a block that starts after `T`, so that frame's audio was already in a block that played. Frames leave
+  only in states 3 and 2, so nothing in `PlayoutDelay` is ever past the cut, whatever the pump does. The close (mouth to
+  rest over 60 ms) is pushed with the stamp `max(t, last released at + 1 µs) − D`, so it is after the newest stamp and
+  `PlayoutDelay::push` accepts it. `D` only ramps at most 10 % (anim-api §6.1), so `at − D` still rises when `D`
+  changes. The pump's `VoiceLead::cut(at)` may arrive first, last or late; the outcome is the same.
 - **Results still in the model after a cut are filtered, not trusted.** The drive keeps a `generation` (a `u32`
-  bumped at each cut) and a persistent cutoff `t`. Each pushed block records its generation; `take` returns the
+  bumped at each cut, by whichever of the probe or the pump reports it first) and a persistent cutoff `t`. Each pushed block records its generation; `take` returns the
   block index, and a result from an older generation, or with `at > t` of the generation that was cut, is thrown
   away however late it arrives. The cut also calls `BlockSink::restart` (`ai-api.md` §10), so the queue is emptied
   and the next reply does not inherit the cut word's model state. The next reply's first `at` is at least `lead` after
@@ -322,8 +355,9 @@ outputs `jawOpen = min(1, 2.5 × block RMS)`, so a vowel gives 0.53 and a conson
 
 Every mouth frame is due at its `at`, 70 ms after the model saw its audio: none is late, none is early. A cut at 1000
 would raise the closer; the next block starts at 1005 and the fade makes `ai_voice` silent by 1007.5 (one block plus
-2.5 ms), drop the mouth's pending frames
-after 1000 and close it by 1060.
+2.5 ms). From the raise the drive releases nothing, whether or not the pump has said anything; once the audio thread
+publishes the cutoff it releases held frames up to it, drops later ones and closes the mouth by 1060. This example has
+latency 0; §7 repeats it with a model of 160 samples (10 ms) of latency, and the mapping of §4.2 keeps these stamps.
 
 ### 6.2 A planned look-away and lean-in (golden channel trace)
 
@@ -363,10 +397,10 @@ of 1.0.) The same script on a member whose `HEAD` a tracker owns resolves to the
   one block of the fake engine's truth; pitch +4 gives a declared rate of 30,238 Hz and the same duration at speed 1;
   **private routing:** leaving `CohostOnly` for `Muted` with private PCM buffered, and again with a private synthesis in
   flight, puts zero private samples on `program` (the fake engine's program tap) while `monitor_out` plays them.
-- **Voices:** unknown id, out-of-range speed or pitch, a cloned voice without consent, a revoked consent at start, a
+- **Voices:** **one file, two schemas:** a character with both `voice.toml` (an `FxPreset` chain) and `voice-assignment.toml`: `voice.assign` leaves the bytes of `voice.toml` unchanged and `audio.fx` saves leave the assignment unchanged, and both round-trip; unknown id, out-of-range speed or pitch, a cloned voice without consent, a revoked consent at start, a
   public-figure name warns; a hosted assign without `spend` is denied; the preview number for a dated price.
 - **Mouth drive:** §6.1 as a golden (stamps and values); a `Missed` block switches to visemes with the 50 ms crossfade;
-  stalled stays on visemes; a cut drops pending frames; private leads leave the layer clear; the §6.1 golden again with `D` = 200 ms (every stamp
+  stalled stays on visemes; a cut drops pending frames; **a delayed-pump cut:** the fake pump stalls 300 ms across a cut at 1000 (no `VoiceLead::cut`, no new `push`): zero frames past the audio thread's published cutoff reach `PlayoutDelay`, none are released between the raise and the cutoff publication, held frames up to the cutoff are then released in order, and the close is accepted (run with the stall ending before and after the publication); **nonzero latency:** a `FakeVoiceToFace` with `latency` = 160 samples (the §6 envelope delayed by that many samples, zero before) reproduces the §6.1 stamps and values exactly, the same fake with the mapping disabled misses by 10 ms (proof the test sees it), and warm-up frames are clipped, never stamped before `at₀`; private leads leave the layer clear; the §6.1 golden again with `D` = 200 ms (every stamp
   200 ms earlier, nothing released before its program time, a cut at 1000 pushes an accepted close); **across a cut:** a result for a block before the cut, scripted to
   arrive after it, is dropped and the mouth stays closed; the next reply right after the cut, with `D` = 200 ms,
   releases its frames in order, all stamped after the close.

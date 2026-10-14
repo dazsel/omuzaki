@@ -27,7 +27,7 @@ blend order already puts a human tracker above the score layer.
 3. **Pitch is the declared feed rate** (`24 kHz × 2^(p/12)`, synthesis at `speed / r`), limited to ±4 semitones; speed
    0.7 to 1.4. `tts@1` is fixed as `text`, `voice`, `speed`, `expressiveness` → `pcm` (24 kHz); style tags are a closed
    set mapped to speed, expressiveness and gain.
-4. **The voice belongs to the character:** `characters/<id>/voice.toml` holds a `VoiceAssignment`; `persona.toml`'s
+4. **The voice belongs to the character:** `characters/<id>/voice-assignment.toml` holds a `VoiceAssignment` (`voice.toml` stays the effect presets, audio-api §6.2); `persona.toml`'s
    `voice` field is dropped. `VoiceId` is `<model>/<voice>` or `<connector>/<voice>`, validated against a
    `VoiceCatalog` (model manifests' `[[voices]]` tables and connectors' lists) at assign and at start, with no silent
    fallback to another voice.

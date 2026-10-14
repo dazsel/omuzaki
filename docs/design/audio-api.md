@@ -429,7 +429,7 @@ pub trait AudioEngine: Send + Sync {
 - **Lifetimes:**
   - dropping a `TapHandle` or a `TapReader` closes its tap;
   - dropping a `FeedWriter` closes its feed, and its source plays silence;
-  - a closing feed fades out over 2.5 ms; `FeedWriter::closer()` raises the close flag from another thread, and `FeedWriter::playhead()` says which feed sample enters the bus at which engine sample (`ai-performer-voice-face.md` §3.2, §3.3, ADR 0041);
+  - a closing feed fades out over 2.5 ms; `FeedWriter::closer()` raises the close flag from another thread, and `FeedWriter::playhead()` says which feed sample enters the bus at which engine sample and at which engine sample a closed feed went silent (`cut_at_sample`, the authority on what played) (`ai-performer-voice-face.md` §3.2, §3.3, ADR 0041);
   - closing sets a flag the audio thread reads at the next block and never waits for it. The slot is reclaimed at the
     next compile.
 - **Events:** each `subscribe()` gets its own bounded queue of 256 that drops the oldest event and counts drops, so
@@ -757,7 +757,7 @@ no clicks, block-size invariance, no allocation, and CPU.
 ### 6.2 Presets per character
 
 A preset is data: a name and the chain (`NodeSpec`s with parameters).
-- **Storage:** with the character (`characters/<id>/voice.toml`), so a character's voice travels with it. The active
+- **Storage:** with the character (`characters/<id>/voice.toml`), so a character's voice travels with it (the TTS voice assignment is a separate `voice-assignment.toml`, `ai-performer-voice-face.md` §3.4). The active
   preset is a perform setting.
 - **Switching:** by hotkey, scene or op. Each is a call to `audio.fx.apply`, which is a parameter change when the
   chain's shape matches and a structural one otherwise (section 3.3).
