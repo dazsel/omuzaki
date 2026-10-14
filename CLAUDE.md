@@ -12,7 +12,7 @@ organisation, follow `AGENTS.md` only: pull requests from outside the organisati
   reviews outcomes and merges.
 - **Lanes:** the local lane runs on a maintainer's machine (visual sign-off, contract design, work that needs local
   hardware). The cloud lane (`lane:cloud` issues) is led by a cloud lead session, which runs its own implementer
-  sessions.
+  sessions; its operating manual and handover steps are in `docs/maintainers/cloud-lane.md`.
 - **Coordination happens in one place:** the pinned issue [#2](https://github.com/dazsel/omuzaki/issues/2). It is for
   routine coordination inside the rules in this file: assignments, fix rounds, rulings, the current limit on open PRs.
 
