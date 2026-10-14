@@ -230,6 +230,25 @@ AG-04's fences are the only exclusive claims, and they bind agents only:
 - the person sees a **non-blocking inline note** where they edit a fenced part ("an agent is working on this part;
   your edit takes precedence and it will be told"), never a modal. It can be dismissed for the rest of that session.
 
+#### Fences
+
+The rules AG-04 builds on (contract in `omuzaki-ops-api`, `fence.rs`):
+- A fence names **document paths**. The project folder maps its files one to one onto the tree, so a path is also a
+  file. Files outside the tree stay under ADR 0013's roots and are not claimable.
+- Paths compare segment-wise: `a/bc` is not under `a/b`. A fence is stored normalised (sorted, no duplicates, nothing
+  under another entry) and never names the root: a fence of the whole project is an empty fence, which claims nothing
+  and does not bind the session.
+- Fences bind **agents only**. Reads are never fenced. A person is never stopped by one.
+- A claim lasts as long as its session. It is derived from the live sessions' fences, so nothing expires and nothing
+  needs cleaning up.
+- `Sessions::set_fence` is person only, like `set_grants`. It is refused with `Conflict` (detail `Fenced`) when the
+  new fence overlaps a live session's, except on the session's own ancestor chain and below it: a sub-agent works
+  inside its parent's claim.
+- A branch's focus becomes the default fence (`branches.md` §3.1). Once branches land, claims are per lane (ADR 0025).
+- An edit outside the agent's own fence, or inside another session's, is `Denied` with detail `Fenced` (`holder` is
+  `None` for the agent's own fence) and emits `Event::Clash { kind: Fenced }`. `ClashKind::Stale` is for the
+  stale-write guard of 5.1. The Theatre's review items and the status bar read `Event::Clash`.
+
 ### 5.4 Undo across actors
 
 - **Agents undo their own steps only** (`history_undo` over MCP), as now.
@@ -479,7 +498,8 @@ All in `omuzaki-ops-api`, one change, reviewed by a maintainer. Names are bindin
   `pause(SessionId, by: &Actor) -> Result<SessionInfo, OpError>`, `resume(..)`,
   `set_grants(SessionId, Grants, by: &Actor) -> Result<SessionInfo, OpError>`, `set_budget(SessionId, Budget, by)`,
   `charge(SessionId, Spend) -> Result<SessionInfo, OpError>`, `end(SessionId, EndReason) -> Result<Ended, OpError>`,
-  `undo_session(SessionId, by: &Actor) -> Result<SessionUndo, OpError>`, `approvals() -> Vec<PendingApproval>`,
+  `set_fence(SessionId, Vec<DocPath>, by: &Actor) -> Result<SessionInfo, OpError>` (added; a default body
+  returns `Unsupported`), `undo_session(SessionId, by: &Actor) -> Result<SessionUndo, OpError>`, `approvals() -> Vec<PendingApproval>`,
   `resolve(ApprovalId, Decision, by: &Actor) -> Result<Resolution, OpError>`.
 
 **New `approval` module.**
@@ -499,7 +519,8 @@ All in `omuzaki-ops-api`, one change, reviewed by a maintainer. Names are bindin
 - `OpError.detail: Option<ErrorDetail>` (serde default, skipped when empty), `ErrorDetail { MissingScope { scope },
   NeedsPerson { reason }, PersonOnly { reason }, Queued { approval: ApprovalId, need: Need }, Paused { by: Actor,
   reason: PauseReason }, Ended { reason: EndReason }, NoSession, RetryAfter { seconds: f32, limit: String },
-  Changed { path: DocPath, by: Actor, version: DocVersion } }`.
+  Changed { path: DocPath, by: Actor, version: DocVersion } }` adds `Fenced { path: DocPath, holder:
+  Option<Actor> }` and `OpError::fenced`.
 - Constructors `OpError::needs_person(reason)`, `OpError::person_only(reason)`, `OpError::with_detail(detail)`.
 
 **Runner, records and events.**
@@ -510,7 +531,8 @@ All in `omuzaki-ops-api`, one change, reviewed by a maintainer. Names are bindin
 - New events: `SessionOpened { session: SessionInfo }`, `SessionChanged { session: SessionInfo, change:
   SessionChange }` with `SessionChange { Grants { by }, Budget { by }, Paused, Resumed { by }, Spent }`,
   `SessionEnded { session: SessionInfo, ended: Ended }`, `SessionUndone { session: SessionId, by: Actor, result:
-  SessionUndo }`, `ApprovalRequested { approval: PendingApproval }`, `ApprovalResolved { resolution: Resolution }`.
+  SessionUndo }`, `Clash { session, actor, op, path, kind: ClashKind, other: Option<Actor>, at }`,
+  `ApprovalRequested { approval: PendingApproval }`, `ApprovalResolved { resolution: Resolution }`.
 - `Runner::get(&self, path, grants: &Grants) -> Result<Option<Value>, OpError>`, `Runner::subscribe(&self,
   grants: &Grants) -> Result<Receiver<Event>, OpError>` and a new `Runner::log(&self, after_seq: u64, limit: usize,
   grants: &Grants) -> Result<Vec<OpRecord>, OpError>`, each `Denied` without `read`.
