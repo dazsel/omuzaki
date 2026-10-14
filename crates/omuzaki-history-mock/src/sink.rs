@@ -105,10 +105,13 @@ impl JournalSink for RecordingSink {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::sync::Arc;
 
-    use omuzaki_history_api::HistoryExport;
-    use omuzaki_ops_api::TxId;
+    use omuzaki_core::time::Seconds;
+    use omuzaki_doc_api::{Patch, Value};
+    use omuzaki_history_api::{HistoryExport, OpenTxExport};
+    use omuzaki_ops_api::{Actor, JobId, JobState, TxId};
 
     use super::*;
 
@@ -142,5 +145,32 @@ mod tests {
         assert_eq!(sink.sync(Duration::ZERO), Err(SyncError::Timeout { durable: Lsn(0) }));
         sink.script_status(JournalStatus::Behind { pending: 3 });
         assert_eq!(sink.status(), JournalStatus::Behind { pending: 3 });
+    }
+
+    #[test]
+    fn job_and_revert_entries_are_kept_in_order_and_unchanged() {
+        let sink = RecordingSink::new();
+        let remaining = OpenTxExport::new(Actor::System, TxId(4), "open", Patch::default(), BTreeSet::new());
+        let started = HistoryEntry::JobStarted {
+            job: JobId(1),
+            op: "render".into(),
+            args: Value::from(1),
+            actor: Actor::System,
+            on_behalf_of: None,
+            at: Seconds(0.5),
+        };
+        let ended = HistoryEntry::JobEnded { job: JobId(1), state: JobState::Done { tx: TxId(5), seq: Some(12) } };
+        let revert = HistoryEntry::TxRevert {
+            tx: TxId(4),
+            seqs: vec![11],
+            patch: Patch::default(),
+            remaining: remaining.clone(),
+        };
+        for entry in [started.clone(), ended.clone(), revert.clone()] {
+            sink.append(entry);
+        }
+        assert_eq!(sink.entries(), vec![started, ended, revert]);
+        let HistoryEntry::TxRevert { remaining: back, .. } = &sink.entries()[2] else { panic!("not a tx_revert") };
+        assert_eq!(back, &remaining);
     }
 }
