@@ -234,16 +234,31 @@ mouth's first frame is ready: that adds ≤ 100 ms to ADR 0031 §5.3 (2,396 + 10
 - **Model:** one `voice_to_face@1` stream session (`ai-api.md` §10). The drive resamples the lead to the model's 16 kHz,
   cuts blocks, pushes block `k` and takes `k − queue` in the same call, paced by the lead's `at` against the clock, on
   its own thread. Output: ARKit-52 per block.
-- **Output time is not input time.** `StreamSpec::latency` (`ai-api.md` §10) says input sample `n` comes out as output
-  sample `n + latency`, and `take` returns the block of an earlier push (`queue` blocks behind). So a result is **never
-  stamped with the `at` of the push that returned it**. The drive numbers samples from the first pushed lead sample
-  (index 0 at program time `at₀`, model rate `f`, block `B`). Output sample `m` depicts input sample `m − latency`, so
-  result block `j` (output samples `j·B .. (j+1)·B`) has `at_j = at₀ + (j·B − latency) / f`, taken from the block
-  *index* `take` reports, not from when it returned. Frames whose `at` falls before `at₀` (the first `latency` samples
-  are warm-up) are clipped. `lead` already pays for `latency` through `added_latency` (§4.1); the mapping puts each
-  frame on the sample it describes. Without it the mouth would trail the voice by `latency / f` (10 ms per 160 samples
-  at 16 kHz). Fallback viseme frames come from the lead PCM and carry its own `at`, so both sources share one timeline
-  and a switch needs no correction.
+- **Output time is not input time; frames are keys, stamped by sequence.** `StreamSpec::latency` (`ai-api.md` §10) says
+  input sample `n` comes out as output sample `n + latency` (`L`), and the slot returns **one frame per block** (block
+  `B` samples at model rate `f`), so a frame is a key for the input interval its block depicts, and the stage's
+  `PlayoutDelay` interpolates linearly between keys (anim-api §6.1). Rules:
+  - **Origin per generation.** `BlockSink::push` returns the block's sequence number, and `restart` keeps counting
+    (`stream.rs`: "Sequence numbers keep counting"), while `take(seq, out)` answers only `Ready` or `Missed`. So the
+    drive keeps, for each generation `g`, `seq₀(g)`, the number `push` returned for the first block after the restart,
+    and `at₀(g)`, the program time of that block's first sample (the `at` of the first lead slice). It also remembers
+    the `(seq, generation)` of every block in flight, and `take` is always called with a `seq` the drive chose, so the
+    block is known without any index from the slot.
+  - **Stamp.** Result `q` of generation `g` is the key `s_q = at₀(g) + ((q − seq₀(g))·B − L) / f`: the start of the
+    input interval `[(q−seq₀)·B − L, (q−seq₀+1)·B − L)` its output samples depict (the same start-of-block
+    convention as at `L = 0`). It is **never** the `at` of the push that returned it, and never `j·B` with `j` counted
+    from the first reply (that would offset every later reply by the blocks before it).
+  - **Warm-up.** A block with `(q − seq₀)·B < L` depicts part of the model's silent pre-roll, so its value is wrong;
+    **drop it (`⌈L/B⌉` blocks)**, do not clip a stamp. The first key of the generation is then a **fallback
+    (viseme) key at `at₀(g)`** computed from the lead PCM `[0, ⌈L/B⌉·B − L)`, so the layer has a key at `at₀` and
+    linear interpolation joins it to the first model key. At `L = 0` nothing is dropped and there is no extra key.
+  - **Fallback alignment.** A `Missed` block `q` is replaced by the viseme frame of the **same depicted interval** of the
+    lead PCM, stamped with the same `s_q`, so a model key and its fallback occupy the same slot, and the 50 ms
+    crossfade between them needs no shift.
+  - **Tail.** After a chunk's last sample the drive pushes silent blocks (`queue + ⌈L/B⌉`) so the last real audio
+    comes out; the pad the pump writes after a sentence (§3.1) is part of the lead and keeps the model fed.
+  - `lead` already pays for the model's trailing through `added_latency` (§4.1). `L` in the stamp is what keeps the
+    mouth from trailing the voice by `L / f` (10 ms per 160 samples at 16 kHz). A worked example with numbers is §6.3.
 - **Fallback (FE-08):** visemes from the same lead PCM (energy and spectral tilt per 10 ms), computed every block, so
   switching is instant. `Block::Missed` uses the viseme frame for that block; `stalled` stays on visemes until the
   stream restarts ("voice to face stalled: visemes"). Every switch crossfades over **50 ms** in channel space.
@@ -268,10 +283,10 @@ mouth's first frame is ready: that adds ≤ 100 ms to ADR 0031 §5.3 (2,396 + 10
   `PlayoutDelay::push` accepts it. `D` only ramps at most 10 % (anim-api §6.1), so `at − D` still rises when `D`
   changes. The pump's `VoiceLead::cut(at)` may arrive first, last or late; the outcome is the same.
 - **Results still in the model after a cut are filtered, not trusted.** The drive keeps a `generation` (a `u32`
-  bumped at each cut, by whichever of the probe or the pump reports it first) and a persistent cutoff `t`. Each pushed block records its generation; `take` returns the
-  block index, and a result from an older generation, or with `at > t` of the generation that was cut, is thrown
+  bumped at each cut, by whichever of the probe or the pump reports it first) and a persistent cutoff `t`. Each pushed block records its generation and `seq` (above), and a result from an older generation, or with `at > t` of the generation that was cut, is thrown
   away however late it arrives. The cut also calls `BlockSink::restart` (`ai-api.md` §10), so the queue is emptied
-  and the next reply does not inherit the cut word's model state. The next reply's first `at` is at least `lead` after
+  and the next reply does not inherit the cut word's model state; the next reply starts a new generation with its own
+  `seq₀` and `at₀` (above), because `restart` keeps the sequence counting. The next reply's first `at` is at least `lead` after
   the restart, so its frames always stamp after the close.
 
 ### 4.3 Privacy and the human's mouth
@@ -357,7 +372,7 @@ Every mouth frame is due at its `at`, 70 ms after the model saw its audio: none 
 would raise the closer; the next block starts at 1005 and the fade makes `ai_voice` silent by 1007.5 (one block plus
 2.5 ms). From the raise the drive releases nothing, whether or not the pump has said anything; once the audio thread
 publishes the cutoff it releases held frames up to it, drops later ones and closes the mouth by 1060. This example has
-latency 0; §7 repeats it with a model of 160 samples (10 ms) of latency, and the mapping of §4.2 keeps these stamps.
+latency 0; §6.3 repeats its first frames with a model of 160 samples (10 ms) of latency.
 
 ### 6.2 A planned look-away and lean-in (golden channel trace)
 
@@ -387,6 +402,33 @@ toward the character's left), angles in radians; the golden file is JSON Lines a
 (`out_cubic(u) = 1 − (1 − u)³`, `smooth(u) = 3u² − 2u³`; natural knobs give lean 0.08 × (0.5 + 0.5) and an energy factor
 of 1.0.) The same script on a member whose `HEAD` a tracker owns resolves to the tracker's values on every row.
 
+### 6.3 The same sentence with a model of latency 160 samples
+
+`FakeVoiceToFace` with `latency` `L` = 160 samples (10 ms) delays its output by `L`: output sample `m` is the §6 envelope
+of input sample `m − L`, zero before; block 320 (20 ms), `f` = 16 kHz, queue 2. Block `q` (generation start `seq₀` = 0,
+`at₀` = 830) depicts program times `830 + 20q − 10 ... 830 + 20q + 10` ms, so its key is `s_q = 830 + 20q − 10`. The text
+is "Hi chat!" (`H` 0 to 60 ms of the voice, `i` 60 to 120, space 120 to 180); `jawOpen` = 2.5 × the RMS of the depicted
+interval (vowel 0.3 → 0.53, consonant 0.08 → 0.141, half and half: RMS² is the mean of the two squares):
+
+| q | depicted voice time (ms) | `jawOpen` | stamp `s_q` (ms) | note |
+|---|---|---|---|---|
+| 0 | −10 .. 10 (10 ms of pre-roll, 10 of `H`) | 0.100 | none | dropped: `0·B < L` |
+| (head) | 0 .. 10, `H`, from the lead PCM | viseme `H` | 830 | the fallback key at `at₀` |
+| 1 | 10 .. 30, `H` | 0.141 | 840 | |
+| 2 | 30 .. 50, `H` | 0.141 | 860 | |
+| 3 | 50 .. 70, half `H`, half `i`: √((0.0032 + 0.045) / 2) × 2.5 | 0.388 | 880 | |
+| 4 | 70 .. 90, `i` | 0.530 | 900 | |
+| 5 | 90 .. 110, `i` | 0.530 | 920 | |
+| 6 | 110 .. 130, half `i`, half space: √(0.045 / 2) × 2.5 | 0.375 | 940 | |
+| 7 | 130 .. 150, space | 0 | 960 | |
+
+The keys are 10 ms before the zero-latency ones of §6.1 at 20 ms steps, so after interpolation the mouth reaches 0.53
+at 900 ms rather than 890 or 910: the frame lands on the audio it describes. Dropping the stamp's `− L` would put every
+key 10 ms late (840 → 850, ...); that is what the test of §7 detects. The resume case: after a cut at the end of block 6
+(seqs 0 to 6 pushed), `restart` leaves the counter at 7; the next reply's first push returns 7, so `seq₀` = 7 and
+`at₀` is its own first slice's program time. Its first kept key is `at₀ + 10 ms` for seq 8, `s = at₀ + 20·(8 − 7) − 10`,
+exactly the pattern above shifted by `at₀(B) − 830`, and nothing about the first reply's 7 blocks leaks in.
+
 ## 7. Tests (D6)
 
 - **Fakes in `omuzaki-ai-mock`:** `FakeTts` (the §6 waveform, deterministic, scripted latency per chunk and scripted
@@ -400,7 +442,7 @@ of 1.0.) The same script on a member whose `HEAD` a tracker owns resolves to the
 - **Voices:** **one file, two schemas:** a character with both `voice.toml` (an `FxPreset` chain) and `voice-assignment.toml`: `voice.assign` leaves the bytes of `voice.toml` unchanged and `audio.fx` saves leave the assignment unchanged, and both round-trip; unknown id, out-of-range speed or pitch, a cloned voice without consent, a revoked consent at start, a
   public-figure name warns; a hosted assign without `spend` is denied; the preview number for a dated price.
 - **Mouth drive:** §6.1 as a golden (stamps and values); a `Missed` block switches to visemes with the 50 ms crossfade;
-  stalled stays on visemes; a cut drops pending frames; **a delayed-pump cut:** the fake pump stalls 300 ms across a cut at 1000 (no `VoiceLead::cut`, no new `push`): zero frames past the audio thread's published cutoff reach `PlayoutDelay`, none are released between the raise and the cutoff publication, held frames up to the cutoff are then released in order, and the close is accepted (run with the stall ending before and after the publication); **nonzero latency:** a `FakeVoiceToFace` with `latency` = 160 samples (the §6 envelope delayed by that many samples, zero before) reproduces the §6.1 stamps and values exactly, the same fake with the mapping disabled misses by 10 ms (proof the test sees it), and warm-up frames are clipped, never stamped before `at₀`; private leads leave the layer clear; the §6.1 golden again with `D` = 200 ms (every stamp
+  stalled stays on visemes; a cut drops pending frames; **a delayed-pump cut:** the fake pump stalls 300 ms across a cut at 1000 (no `VoiceLead::cut`, no new `push`): zero frames past the audio thread's published cutoff reach `PlayoutDelay`, none are released between the raise and the cutoff publication, held frames up to the cutoff are then released in order, and the close is accepted (run with the stall ending before and after the publication); **nonzero latency:** a `FakeVoiceToFace` with `latency` = 160 samples (the §6 envelope delayed by that many samples, zero before) must produce **the §6.3 table exactly** (stamps in integer samples at 16 kHz: 0, 160, 480, 800, ...; values to 3 decimals), the block-0 frame is dropped and the head fallback key sits at `at₀`, a `Missed` block 3 is replaced by the viseme of the same depicted interval at the same stamp 880, the same fake with the `− L` removed fails the table by 10 ms (proof the test sees it), and nothing is stamped before `at₀`; **cut and resume, exact alignment:** reply A (seqs 0 to 6, cut after block 6, a late result for seq 6 arriving after the cut, dropped), then reply B (first push returns seq 7): B's keys, as `stamp − at₀(B)`, equal the §6.3 table's `stamp − at₀(A)` row for row (sample-exact), and for both replies every key minus the program time its depicted audio plays at is zero, so the check is on alignment, not on stamps merely rising; private leads leave the layer clear; the §6.1 golden again with `D` = 200 ms (every stamp
   200 ms earlier, nothing released before its program time, a cut at 1000 pushes an accepted close); **across a cut:** a result for a block before the cut, scripted to
   arrive after it, is dropped and the mouth stays closed; the next reply right after the cut, with `D` = 200 ms,
   releases its frames in order, all stamped after the close.
