@@ -1,8 +1,8 @@
 {
   "default": 20,
   "crates": {
-    "omuzaki-char": 582,
-    "omuzaki-ui": 158,
+    "omuzaki-char": 760,
+    "omuzaki-ui": 400,
     "omuzaki-cli": 154,
     "omuzaki-render": 107,
     "omuzaki-test": 83,
