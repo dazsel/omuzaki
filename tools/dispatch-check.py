@@ -8,16 +8,21 @@
 Why a script: conflicts are decided when a task starts, not when it merges (ADR 0053 sections 1.2 and 2.1). The
 Director or the cloud lead runs it once before starting work. Standard library plus `gh`; it only reads GitHub.
 
-The fence is read from the issue body: the `Fence:` line (or `**Fence:**` section) up to the next blank line. Its
-backtick-quoted paths and globs count; `{a,b}` braces expand. A task with no fence waits. Checks, for each task:
+The fence is read from the issue body: the `Fence:` line (or `**Fence:**` section) up to the next blank line. Each
+entry is a path or glob: backtick-quoted or bare, comma- or space-separated, one per bullet or several on a line.
+`{a,b}` groups expand, and commas inside them do not split. A task with no fence waits. Checks, for each task:
 
 - overlap: an open, non-draft PR changes a file inside the fence. Allowed when that PR closes this issue (it is the
   task's own PR), or when the work is chained: the PR closes an issue that blocks this one, or this issue blocks the
   issue the PR closes. The native dependency links (`.../dependencies/blocked_by` and `.../dependencies/blocking`)
   count; so does a `Blocked by:` line in the body, as a fallback.
-- crate cap: the crates the fence names already have `--crate-cap` or more open PRs touching them.
+- crate cap: the crates the fence names already have `--crate-cap` or more open PRs touching them. A wildcard crate
+  (`crates/*-api/...`) names every matching folder under `crates/`.
 - total cap: `--total-cap` or more open PRs in total.
 - contract first: the fence names an `*-api` crate or `omuzaki-core` and another open PR touches that crate.
+
+Fail closed: `gh pr list` returns at most 100 files per PR, so a PR with more reads its full list from the REST API. If
+that list cannot be read, every task waits. If the `crates/` folder cannot be read, a task with a wildcard crate waits.
 
 Open PRs are listed in one call with a limit of PR_LIMIT. Reaching the limit means the list may be cut, so the script
 stops rather than guess.
@@ -40,25 +45,55 @@ CLOSES = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+#(\d+)"
 FENCE_HEADER = re.compile(r"^\s*\*{0,2}(?:fence|may touch)\*{0,2}\s*:\*{0,2}(.*)$", re.IGNORECASE)
 BLOCKED_BY = re.compile(r"blocked[- ]by", re.IGNORECASE)
 ISSUE_REF = re.compile(r"#(\d+)")
+# The crate a path lies in: `crates/<name>/...`. Crate names have no dots, so `crates/README.md` is not a crate.
 CRATE = re.compile(r"crates/([A-Za-z0-9_-]+)(?:/|$)")
+# The crate segment of a fence entry, which may be a wildcard such as `*-api`.
+CRATE_SEGMENT = re.compile(r"crates/([^/]+)(?:/|$)")
+WILDCARD_CRATE = re.compile(r"crates/[^/]*[*?\[]")
+CRATE_NAME = re.compile(r"[A-Za-z0-9_-]+")
+TRUNCATED_FILES = "cannot read the changed files of #{n}; waiting until they can be read"
+UNRESOLVED_WILDCARD = "cannot resolve {entry}: the crates/ folder could not be read"
 
 
 class GhError(Exception):
     """A `gh` call failed or printed something that is not JSON."""
 
 
-def gh_json(args):
-    """Run `gh ARGS` and return its parsed JSON output."""
+def run_gh(args):
+    """Run `gh ARGS` and return its standard output."""
     try:
         proc = subprocess.run(["gh", *args], capture_output=True, text=True, timeout=120, check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise GhError(f"gh {args[0]} {args[1]}: {exc}") from exc
     if proc.returncode != 0:
         raise GhError(f"gh {args[0]} {args[1]} failed: {proc.stderr.strip()}")
+    return proc.stdout
+
+
+def gh_json(args):
+    """Run `gh ARGS` and return its parsed JSON output."""
     try:
-        return json.loads(proc.stdout)
+        return json.loads(run_gh(args))
     except json.JSONDecodeError as exc:
         raise GhError(f"gh {args[0]} {args[1]} printed no JSON: {exc}") from exc
+
+
+def gh_json_pages(args):
+    """Run `gh ARGS` for a paginated list endpoint and return every item.
+
+    `gh api --paginate` prints one JSON array per page, back to back rather than as one array, so each is decoded in turn.
+    """
+    items = []
+    rest = run_gh(args).lstrip()
+    decoder = json.JSONDecoder()
+    try:
+        while rest:
+            value, end = decoder.raw_decode(rest)
+            items.extend(value if isinstance(value, list) else [value])
+            rest = rest[end:].lstrip()
+    except json.JSONDecodeError as exc:
+        raise GhError(f"gh {args[0]} {args[1]} printed no JSON: {exc}") from exc
+    return items
 
 
 def load_issue(number):
@@ -69,21 +104,44 @@ def load_issue(number):
 def load_dependencies(number):
     """The native blocked-by and blocking links of an issue, as two sets of issue numbers.
 
-    `blocked_by` are the issues that block this one; `blocking` are the issues this one blocks. Both come from the
-    GitHub dependencies API, which is paginated, hence `--paginate`.
+    `blocked_by` are the issues that block this one; `blocking` are the issues this one blocks.
     """
     links = {}
     for kind in ("blocked_by", "blocking"):
-        data = gh_json(["api", "--paginate", f"repos/{REPO}/issues/{number}/dependencies/{kind}"])
-        links[kind] = {int(item["number"]) for item in data}
+        items = gh_json_pages(["api", "--paginate", f"repos/{REPO}/issues/{number}/dependencies/{kind}"])
+        links[kind] = {int(item["number"]) for item in items}
     return links["blocked_by"], links["blocking"]
+
+
+def load_crates():
+    """The names of the folders under crates/ on the default branch."""
+    entries = gh_json(["api", f"repos/{REPO}/contents/crates"])
+    return [entry["name"] for entry in entries if entry.get("type") == "dir"]
+
+
+def pr_files(number, listed, changed):
+    """The changed paths of a pull request, or None when they cannot be read in full.
+
+    `gh pr list` lists at most 100 files; `changed` is the true count. A PR with more reads the full list from the REST
+    API. None means the list is incomplete, and the caller must wait rather than assume no overlap.
+    """
+    paths = [f["path"] for f in listed]
+    total = len(paths) if changed is None else changed
+    if total <= len(paths):
+        return paths
+    try:
+        files = gh_json_pages(["api", "--paginate", f"repos/{REPO}/pulls/{number}/files"])
+    except GhError:
+        return None
+    paths = [f["filename"] for f in files]
+    return paths if len(paths) >= total else None
 
 
 def load_prs():
     """Every open pull request, with its draft flag, branch, creation time, changed paths and the issues it closes."""
     raw = gh_json(
         ["pr", "list", "-R", REPO, "--state", "open", "--limit", str(PR_LIMIT),
-         "--json", "number,headRefName,isDraft,createdAt,files,body"]
+         "--json", "number,headRefName,isDraft,createdAt,files,changedFiles,body"]
     )
     if len(raw) >= PR_LIMIT:
         raise GhError(f"{len(raw)} open pull requests reached the list limit of {PR_LIMIT}; the list may be cut")
@@ -93,7 +151,7 @@ def load_prs():
             "branch": pr["headRefName"],
             "draft": bool(pr["isDraft"]),
             "created": pr.get("createdAt") or "",
-            "files": [f["path"] for f in pr.get("files") or []],
+            "files": pr_files(pr["number"], pr.get("files") or [], pr.get("changedFiles")),
             "closes": {int(n) for n in CLOSES.findall(pr.get("body") or "")},
         }
         for pr in raw
@@ -111,8 +169,27 @@ def expand_braces(pattern):
     return expanded
 
 
-def fence_entries(body):
-    """The fence's paths and globs, from the `Fence:` section of an issue body. Empty when there is no fence."""
+def split_entries(text):
+    """Split on commas and whitespace outside braces, so `crates/{a,b}/src` stays one entry."""
+    parts, current, depth = [], "", 0
+    for char in text:
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth = max(0, depth - 1)
+        if depth == 0 and (char == "," or char.isspace()):
+            if current:
+                parts.append(current)
+            current = ""
+        else:
+            current += char
+    if current:
+        parts.append(current)
+    return parts
+
+
+def fence_section(body):
+    """The lines of the `Fence:` section of an issue body, the header's own text first. Empty when there is none."""
     lines = body.splitlines()
     for start, line in enumerate(lines):
         header = FENCE_HEADER.match(line)
@@ -126,19 +203,26 @@ def fence_entries(body):
         if not line.strip() or re.match(r"^\s*(?:#|\*\*\w)", line):
             break
         section.append(line)
-    text = "\n".join(section)
-    # Prefer backtick-quoted paths. Without any, take each bullet's text up to its first ':', ';' or '('.
-    spans = re.findall(r"`([^`]+)`", text)
-    if not spans:
-        spans = [re.split(r"[:;(]", re.sub(r"^\s*[-*]\s*", "", s), maxsplit=1)[0] for s in section]
+    return section
+
+
+def fence_entries(body):
+    """The fence's paths and globs. Each line contributes its backtick-quoted entries and its bare ones.
+
+    A bare entry is cut at the first ':', ';' or '(' on its line, so a trailing note is not read as a path. Entries
+    without a slash or a dot are prose ("none") and are dropped.
+    """
     entries = []
-    for span in spans:
-        for pattern in expand_braces(span.strip()):
-            pattern = pattern.strip()
-            # A path has a slash or a dot; a bare word such as "none" is prose, not a fence.
-            if ("/" in pattern or "." in pattern) and pattern not in entries:
-                entries.append(pattern)
-    return [e.removeprefix("./").rstrip("/") for e in entries]
+    for line in fence_section(body):
+        line = re.sub(r"^\s*[-*]\s+", "", line)
+        quoted = re.findall(r"`([^`]+)`", line)
+        bare = re.split(r"[:;(]", re.sub(r"`[^`]*`", " ", line), maxsplit=1)[0]
+        for token in [t for span in quoted for t in split_entries(span)] + split_entries(bare):
+            for pattern in expand_braces(token.strip().strip("\"'`")):
+                pattern = pattern.strip().removeprefix("./").rstrip("/")
+                if ("/" in pattern or "." in pattern) and pattern not in entries:
+                    entries.append(pattern)
+    return entries
 
 
 def covers(entry, path):
@@ -150,15 +234,29 @@ def covers(entry, path):
 
 
 def crate_of(path):
-    """The crate a path or fence entry lies in (`crates/<name>/...`), or None. Crate names have no dots, so a
-    file such as `crates/README.md` is not a crate."""
+    """The crate a changed path lies in, or None."""
     match = CRATE.match(path)
     return match.group(1) if match else None
 
 
+def crates_named(entry, crate_names):
+    """The crates a fence entry names: its literal crate, or every crate folder its wildcard matches.
+
+    `crate_names` is None when the crates/ folder could not be read; a wildcard then names nothing here, and the caller
+    reports it.
+    """
+    match = CRATE_SEGMENT.match(entry)
+    if not match:
+        return []
+    segment = match.group(1)
+    if re.search(r"[*?\[]", segment):
+        return sorted(name for name in (crate_names or []) if fnmatch.fnmatchcase(name, segment))
+    return [segment] if CRATE_NAME.fullmatch(segment) else []
+
+
 def crates_touched(pr):
-    """The set of crates whose folders a pull request changes."""
-    return {c for c in (crate_of(path) for path in pr["files"]) if c}
+    """The set of crates whose folders a pull request changes. Empty when its file list is unknown."""
+    return {c for c in (crate_of(path) for path in pr["files"] or []) if c}
 
 
 def blocked_by(body):
@@ -175,23 +273,28 @@ def refs(prs):
     return ", ".join(f"#{p['number']}" for p in sorted(prs, key=lambda p: p["number"]))
 
 
-def check_issue(issue, prs, crate_cap, total_cap, native_blocked=frozenset(), native_blocking=frozenset()):
+def check_issue(issue, prs, crate_cap, total_cap, native_blocked=frozenset(), native_blocking=frozenset(),
+                crate_names=None):
     """The reasons a task must wait; an empty list means go.
 
     `native_blocked` and `native_blocking` are the issue's dependency links from load_dependencies. The body's
-    `Blocked by:` line is read too, as a fallback for issues without native links.
+    `Blocked by:` line is read too, as a fallback for issues without native links. `crate_names` are the folders under
+    crates/, or None when they could not be read.
     """
     number = issue["number"]
     body = issue.get("body") or ""
     fence = fence_entries(body)
     if not fence:
         return ["no fence"]
+    reasons = [UNRESOLVED_WILDCARD.format(entry=e) for e in fence if WILDCARD_CRATE.match(e) and crate_names is None]
     blocked = blocked_by(body) | set(native_blocked)
     # Drafts don't count, and the task's own pull request (the one that closes it) is not a conflict with itself.
     others = [p for p in prs if not p["draft"] and number not in p["closes"]]
-    crates = sorted({c for c in map(crate_of, fence) if c})
-    reasons = []
+    reasons += [TRUNCATED_FILES.format(n=p["number"]) for p in others if p["files"] is None]
+    crates = sorted({c for entry in fence for c in crates_named(entry, crate_names)})
     for pr in others:
+        if pr["files"] is None:
+            continue
         hit = next((path for path in pr["files"] if any(covers(e, path) for e in fence)), None)
         if hit is None:
             continue
@@ -239,7 +342,10 @@ def report(prs):
     lines.append("oldest first:")
     for pr in sorted(prs, key=lambda p: p["created"]):
         state = " draft" if pr["draft"] else ""
-        crates = ", ".join(sorted(crates_touched(pr))) or "-"
+        if pr["files"] is None:
+            crates = "file list unreadable"
+        else:
+            crates = ", ".join(sorted(crates_touched(pr))) or "-"
         lines.append(f"  #{pr['number']} {pr['branch']} {pr['created'][:10]}{state}  crates: {crates}")
     return "\n".join(lines)
 
@@ -273,11 +379,15 @@ def main(argv):
             print(report(prs))
         if not numbers:
             return 0
+        try:
+            crate_names = load_crates()
+        except GhError:
+            crate_names = None  # a wildcard fence then waits; see check_issue
         results = []
         for number in numbers:
             issue = load_issue(number)
             blocked, blocking = load_dependencies(number)
-            reasons = check_issue(issue, prs, args.crate_cap, args.total_cap, blocked, blocking)
+            reasons = check_issue(issue, prs, args.crate_cap, args.total_cap, blocked, blocking, crate_names)
             results.append({"issue": issue["number"], "go": not reasons, "reasons": reasons})
     except GhError as exc:
         print(f"dispatch-check: {exc}", file=sys.stderr)

@@ -12,8 +12,8 @@ failures=0
 fail() { echo "FAIL: $*" >&2; failures=$((failures + 1)); }
 pass() { echo "ok: $*"; }
 
-# The stub: answers `gh issue view N`, `gh pr list` and the native dependency links (`gh api`) from
-# $DISPATCH_FIXTURES, and refuses anything else. An issue without dependency fixtures has none.
+# The stub: answers `gh issue view N`, `gh pr list` and `gh api` from $DISPATCH_FIXTURES, and refuses anything else.
+# A fixture that is missing is a failed call (exit 1), except dependency links, which default to none.
 mkdir -p "$work/bin"
 cat >"$work/bin/gh" <<'S'
 #!/usr/bin/env bash
@@ -22,12 +22,18 @@ case "$1 $2" in
   "pr list") cat "$DISPATCH_FIXTURES/prs.json" ;;
   "api "*)
     case "$*" in
-      *"/dependencies/blocked_by"*) kind=blocked_by ;;
-      *"/dependencies/blocking"*) kind=blocking ;;
+      *"/dependencies/blocked_by"*|*"/dependencies/blocking"*)
+        kind=$(sed -n 's#.*/dependencies/\([a-z_]*\).*#\1#p' <<<"$*")
+        number=$(sed -n 's#.*/issues/\([0-9]*\)/dependencies/.*#\1#p' <<<"$*")
+        cat "$DISPATCH_FIXTURES/deps-$kind-$number.json" 2>/dev/null || echo '[]'
+        ;;
+      *"/pulls/"*"/files"*)
+        number=$(sed -n 's#.*/pulls/\([0-9]*\)/files.*#\1#p' <<<"$*")
+        cat "$DISPATCH_FIXTURES/files-$number.json" || exit 1
+        ;;
+      *"/contents/crates"*) cat "$DISPATCH_FIXTURES/crates.json" || exit 1 ;;
       *) echo "stub gh: unexpected api call: $*" >&2; exit 3 ;;
     esac
-    number=$(sed -n 's#.*/issues/\([0-9]*\)/dependencies/.*#\1#p' <<<"$*")
-    cat "$DISPATCH_FIXTURES/deps-$kind-$number.json" 2>/dev/null || echo '[]'
     ;;
   *) echo "stub gh: unexpected call: $*" >&2; exit 3 ;;
 esac
@@ -131,6 +137,95 @@ J
 run 9011
 expect_line "go #9011" "native blocking: an overlap with the PR for the issue this task blocks is go"
 expect_code 0 "native blocking: exit 0"
+
+# fence parsing: entries on one line, bullets quoted and bare mixed, and brace groups kept whole.
+scenario one-line
+issue 9020 <<'B'
+**Fence:** tools/x.py, tools/y.py
+B
+cat >"$FX/prs.json" <<'J'
+[{"number":641,"headRefName":"cloud/641","isDraft":false,"createdAt":"2026-10-10T10:00:00Z","files":[{"path":"tools/y.py"}],"body":""}]
+J
+run 9020
+expect_line "wait #9020: overlap with #641 (tools/y.py)" "fence: comma-separated entries on one line are each read"
+
+scenario mixed
+issue 9021 <<'B'
+**Fence:**
+- `tools/a.py`
+- tools/b.py: the other one
+B
+cat >"$FX/prs.json" <<'J'
+[{"number":642,"headRefName":"cloud/642","isDraft":false,"createdAt":"2026-10-10T11:00:00Z","files":[{"path":"tools/b.py"}],"body":""}]
+J
+run 9021
+expect_line "wait #9021: overlap with #642 (tools/b.py)" "fence: a bare bullet beside a quoted one is still read"
+
+scenario braces
+issue 9022 <<'B'
+**Fence:**
+- `crates/{omuzaki-io-ops,omuzaki-ops}/src/a.rs`
+- `crates/omuzaki-git/{src/a.rs,tests/b.rs}`
+B
+cat >"$FX/prs.json" <<'J'
+[{"number":643,"headRefName":"cloud/643","isDraft":false,"createdAt":"2026-10-10T12:00:00Z","files":[{"path":"crates/omuzaki-ops/src/a.rs"}],"body":""},
+ {"number":644,"headRefName":"cloud/644","isDraft":false,"createdAt":"2026-10-10T13:00:00Z","files":[{"path":"crates/omuzaki-git/tests/b.rs"}],"body":""}]
+J
+run 9022
+expect_line "wait #9022: overlap with #643 (crates/omuzaki-ops/src/a.rs); overlap with #644 (crates/omuzaki-git/tests/b.rs)" "fence: brace groups expand and commas inside them do not split"
+
+# wildcard crate: crates/*-api/... names every matching folder, so contract-first applies to them.
+scenario wildcard
+issue 9023 <<'B'
+**Fence:** `crates/*-api/src/types.rs`
+B
+cat >"$FX/crates.json" <<'J'
+[{"name":"omuzaki-ops-api","type":"dir"},{"name":"omuzaki-core","type":"dir"},{"name":"README.md","type":"file"}]
+J
+cat >"$FX/prs.json" <<'J'
+[{"number":645,"headRefName":"cloud/645","isDraft":false,"createdAt":"2026-10-10T14:00:00Z","files":[{"path":"crates/omuzaki-ops-api/src/lib.rs"}],"body":""}]
+J
+run 9023
+expect_line "wait #9023: contract first: omuzaki-ops-api has open PR(s) #645; a contract lands alone" "wildcard: names the matching crate for contract first"
+
+# wildcard crate, crates/ unreadable: the task waits rather than assume no crate matches.
+scenario wildcard-unreadable
+issue 9024 <<'B'
+**Fence:** `crates/*-api/src/types.rs`
+B
+echo '[]' >"$FX/prs.json"
+run 9024
+expect_line "wait #9024: cannot resolve crates/*-api/src/types.rs: the crates/ folder could not be read" "wildcard: waits when crates/ cannot be read"
+
+# truncated file list: the PR has 101 files, gh lists 100, and the REST list (two pages) has the 101st in the fence.
+scenario truncated
+issue 9025 <<'B'
+**Fence:** `tools/t.py`
+B
+python3 -I -c '
+import json
+listed = [{"path": f"docs/f-{i}.md"} for i in range(100)]
+print(json.dumps([{"number": 646, "headRefName": "cloud/646", "isDraft": False, "createdAt": "2026-10-10T15:00:00Z",
+                   "files": listed, "changedFiles": 101, "body": ""}]))' >"$FX/prs.json"
+python3 -I -c '
+import json
+page1 = [{"filename": f"docs/f-{i}.md"} for i in range(100)]
+page2 = [{"filename": "tools/t.py"}]
+print(json.dumps(page1) + json.dumps(page2))' >"$FX/files-646.json"
+run 9025
+expect_line "wait #9025: overlap with #646 (tools/t.py)" "truncated: the full file list is read from the API, pages included"
+
+# truncated file list, unreadable: every task waits rather than assume no overlap.
+scenario truncated-unreadable
+issue 9026 <<'B'
+**Fence:** `tools/t.py`
+B
+python3 -I -c '
+import json
+print(json.dumps([{"number": 647, "headRefName": "cloud/647", "isDraft": False, "createdAt": "2026-10-10T16:00:00Z",
+                   "files": [{"path": f"docs/f-{i}.md"} for i in range(100)], "changedFiles": 150, "body": ""}]))' >"$FX/prs.json"
+run 9026
+expect_line "wait #9026: cannot read the changed files of #647; waiting until they can be read" "truncated: waits when the full list cannot be read"
 
 # own PR: the PR that closes this task is not a conflict with it.
 scenario own
