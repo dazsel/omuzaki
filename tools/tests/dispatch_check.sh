@@ -12,13 +12,23 @@ failures=0
 fail() { echo "FAIL: $*" >&2; failures=$((failures + 1)); }
 pass() { echo "ok: $*"; }
 
-# The stub: answers `gh issue view N` and `gh pr list` from $DISPATCH_FIXTURES, and refuses anything else.
+# The stub: answers `gh issue view N`, `gh pr list` and the native dependency links (`gh api`) from
+# $DISPATCH_FIXTURES, and refuses anything else. An issue without dependency fixtures has none.
 mkdir -p "$work/bin"
 cat >"$work/bin/gh" <<'S'
 #!/usr/bin/env bash
 case "$1 $2" in
   "issue view") cat "$DISPATCH_FIXTURES/issue-$3.json" ;;
   "pr list") cat "$DISPATCH_FIXTURES/prs.json" ;;
+  "api "*)
+    case "$*" in
+      *"/dependencies/blocked_by"*) kind=blocked_by ;;
+      *"/dependencies/blocking"*) kind=blocking ;;
+      *) echo "stub gh: unexpected api call: $*" >&2; exit 3 ;;
+    esac
+    number=$(sed -n 's#.*/issues/\([0-9]*\)/dependencies/.*#\1#p' <<<"$*")
+    cat "$DISPATCH_FIXTURES/deps-$kind-$number.json" 2>/dev/null || echo '[]'
+    ;;
   *) echo "stub gh: unexpected call: $*" >&2; exit 3 ;;
 esac
 S
@@ -93,6 +103,34 @@ J
 run 9003
 expect_line "go #9003" "chained: an overlap with the blocking work is go"
 expect_code 0 "chained: exit 0"
+
+# native links, blocked by: this task is blocked by 9004 (a native link, no body line), and PR 606 closes 9004.
+scenario native-blocked-by
+issue 9010 <<'B'
+**Fence:** `crates/omuzaki-ops/src/a.rs`
+B
+echo '[{"number":9004}]' >"$FX/deps-blocked_by-9010.json"
+cat >"$FX/prs.json" <<'J'
+[{"number":606,"headRefName":"cloud/606-ops","isDraft":false,"createdAt":"2026-10-04T11:00:00Z",
+  "files":[{"path":"crates/omuzaki-ops/src/a.rs"}],"body":"Closes #9004"}]
+J
+run 9010
+expect_line "go #9010" "native blocked-by: an overlap with the blocker's PR is go"
+expect_code 0 "native blocked-by: exit 0"
+
+# native links, blocking: this task blocks 9012, and PR 607 closes 9012, so the overlap is chained.
+scenario native-blocking
+issue 9011 <<'B'
+**Fence:** `crates/omuzaki-ops/src/a.rs`
+B
+echo '[{"number":9012}]' >"$FX/deps-blocking-9011.json"
+cat >"$FX/prs.json" <<'J'
+[{"number":607,"headRefName":"cloud/607-ops","isDraft":false,"createdAt":"2026-10-04T12:00:00Z",
+  "files":[{"path":"crates/omuzaki-ops/src/a.rs"}],"body":"Closes #9012"}]
+J
+run 9011
+expect_line "go #9011" "native blocking: an overlap with the PR for the issue this task blocks is go"
+expect_code 0 "native blocking: exit 0"
 
 # own PR: the PR that closes this task is not a conflict with it.
 scenario own

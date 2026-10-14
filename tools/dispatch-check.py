@@ -12,7 +12,9 @@ The fence is read from the issue body: the `Fence:` line (or `**Fence:**` sectio
 backtick-quoted paths and globs count; `{a,b}` braces expand. A task with no fence waits. Checks, for each task:
 
 - overlap: an open, non-draft PR changes a file inside the fence. Allowed when that PR closes this issue (it is the
-  task's own PR), or when this issue is blocked by it (`Blocked by:` names the PR or the issue it closes).
+  task's own PR), or when the work is chained: the PR closes an issue that blocks this one, or this issue blocks the
+  issue the PR closes. The native dependency links (`.../dependencies/blocked_by` and `.../dependencies/blocking`)
+  count; so does a `Blocked by:` line in the body, as a fallback.
 - crate cap: the crates the fence names already have `--crate-cap` or more open PRs touching them.
 - total cap: `--total-cap` or more open PRs in total.
 - contract first: the fence names an `*-api` crate or `omuzaki-core` and another open PR touches that crate.
@@ -62,6 +64,19 @@ def gh_json(args):
 def load_issue(number):
     """The issue's number, title and body."""
     return gh_json(["issue", "view", str(number), "-R", REPO, "--json", "number,title,body"])
+
+
+def load_dependencies(number):
+    """The native blocked-by and blocking links of an issue, as two sets of issue numbers.
+
+    `blocked_by` are the issues that block this one; `blocking` are the issues this one blocks. Both come from the
+    GitHub dependencies API, which is paginated, hence `--paginate`.
+    """
+    links = {}
+    for kind in ("blocked_by", "blocking"):
+        data = gh_json(["api", "--paginate", f"repos/{REPO}/issues/{number}/dependencies/{kind}"])
+        links[kind] = {int(item["number"]) for item in data}
+    return links["blocked_by"], links["blocking"]
 
 
 def load_prs():
@@ -160,14 +175,18 @@ def refs(prs):
     return ", ".join(f"#{p['number']}" for p in sorted(prs, key=lambda p: p["number"]))
 
 
-def check_issue(issue, prs, crate_cap, total_cap):
-    """The reasons a task must wait; an empty list means go."""
+def check_issue(issue, prs, crate_cap, total_cap, native_blocked=frozenset(), native_blocking=frozenset()):
+    """The reasons a task must wait; an empty list means go.
+
+    `native_blocked` and `native_blocking` are the issue's dependency links from load_dependencies. The body's
+    `Blocked by:` line is read too, as a fallback for issues without native links.
+    """
     number = issue["number"]
     body = issue.get("body") or ""
     fence = fence_entries(body)
     if not fence:
         return ["no fence"]
-    blocked = blocked_by(body)
+    blocked = blocked_by(body) | set(native_blocked)
     # Drafts don't count, and the task's own pull request (the one that closes it) is not a conflict with itself.
     others = [p for p in prs if not p["draft"] and number not in p["closes"]]
     crates = sorted({c for c in map(crate_of, fence) if c})
@@ -176,8 +195,9 @@ def check_issue(issue, prs, crate_cap, total_cap):
         hit = next((path for path in pr["files"] if any(covers(e, path) for e in fence)), None)
         if hit is None:
             continue
-        if pr["number"] in blocked or pr["closes"] & blocked:
-            continue  # chained: this task is blocked by that work, so it is meant to build on it
+        # Chained: this task is blocked by the work (it closes a blocker), or this task blocks the work it closes.
+        if pr["number"] in blocked or pr["closes"] & blocked or pr["closes"] & set(native_blocking):
+            continue
         reasons.append(f"overlap with #{pr['number']} ({hit})")
     for crate in crates:
         touching = [p for p in others if crate in crates_touched(p)]
@@ -256,7 +276,8 @@ def main(argv):
         results = []
         for number in numbers:
             issue = load_issue(number)
-            reasons = check_issue(issue, prs, args.crate_cap, args.total_cap)
+            blocked, blocking = load_dependencies(number)
+            reasons = check_issue(issue, prs, args.crate_cap, args.total_cap, blocked, blocking)
             results.append({"issue": issue["number"], "go": not reasons, "reasons": reasons})
     except GhError as exc:
         print(f"dispatch-check: {exc}", file=sys.stderr)
