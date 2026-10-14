@@ -1,12 +1,13 @@
 //! The face system's per-frame update: layer painting, variant selection by head coverage, settling for goldens, and
 //! palette changes (#201).
 //!
-//! A stage gets a [`FaceRig`] with [`Stage::set_face`]; from then on step 5 of the frame ([`Stage::tick`]) does, in order:
+//! A stage gets a [`FaceRig`] with [`Stage::set_face`]; from then on [`Stage::tick`] does two things for it:
 //!
-//! 1. **variant swap**: a variant prepared earlier (see below) replaces the character in one step, with pointer swaps
-//!    and nothing built, allocated or locked;
-//! 2. **map and paint**: [`FaceSystem::update`] maps the bus with the palette-resolved profile and says which layers
-//!    changed; exactly those are painted into their textures with [`FaceLayerPainter`].
+//! 1. **variant swap**, first, before the rig solve: a variant prepared earlier (see below) replaces the character in
+//!    one step, with pointer swaps and nothing built, allocated or locked. The frame then solves, steps and draws the
+//!    new character with its own input, so the swapping frame shows no skeleton or simulation from an earlier frame;
+//! 2. **map and paint**, in step 5: [`FaceSystem::update`] maps the bus with the palette-resolved profile and says which
+//!    layers changed; exactly those are painted into their textures with [`FaceLayerPainter`].
 //!
 //! # Variant switches never run inside `tick`
 //!
@@ -20,14 +21,16 @@
 //!    at once is far too long for a frame). [`ThreadExecutor`] is the default; tests use [`InlineExecutor`] or their own;
 //! 2. **stage** (frame thread, in `service_variants`, once the job is done): the renderer sync
 //!    (only what differs is sent to the renderer, as in [`StageCharacter::sync`]), the frame plans, the face system and a refresh of
-//!    the dynamic meshes' vertices are prepared beside the live ones, which are untouched;
-//! 3. **swap** (in the next `tick`): the staged character replaces the live one by moving tables and handles. The old one
-//!    goes to a retiring slot and is released by the next `service_variants`.
+//!    the dynamic meshes' vertices are prepared beside the live ones, which are untouched. The scene's instance and joint
+//!    buffers grow here to the new character's size, so the swapping frame's scene fill doesn't;
+//! 3. **swap** (at the start of the next `tick`): the staged character replaces the live one by moving tables and
+//!    handles. The old one goes to a retiring slot and is released by the next `service_variants`.
 //!
 //! The switch costs the frame thread the staging work in one `service_variants` call and a swap in the next `tick`. The
 //! warmed simulations are the ones of the request: hair and cloth are a few frames behind when the swap happens.
 //! A pending switch is dropped by [`Stage::apply_palette`] and [`Stage::resize_face`] (both change what a staged
-//! character was prepared against); the next `service_variants` asks again.
+//! character was prepared against); the next `service_variants` asks again. [`Stage::set_face`] drops the old rig's
+//! pending switch and releases what its last swap retired.
 //!
 //! A layer whose paint failed stays marked and is retried every frame until it succeeds, so a failing painter keeps the
 //! old pixels on screen and never leaves the layer stale for good.
@@ -377,13 +380,18 @@ fn release_retiring(renderer: &mut dyn Renderer, rig: &mut FaceRig) {
 }
 
 impl Stage {
-    /// Attaches the face system and binds it to the current character. Replaces an earlier rig.
+    /// Attaches the face system and binds it to the current character. Replaces an earlier rig: its pending variant
+    /// switch is aborted on `renderer` (staged resources given back, repointed materials restored) and what its last
+    /// swap retired is released.
     ///
     /// # Errors
-    /// [`StageError::Face`] if the face profile names a palette slot the palette lacks.
-    pub fn set_face(&mut self, mut rig: FaceRig) -> Result<(), StageError> {
+    /// [`StageError::Face`] if the face profile names a palette slot the palette lacks; the earlier rig then stays,
+    /// with its pending switch.
+    pub fn set_face(&mut self, renderer: &mut dyn Renderer, mut rig: FaceRig) -> Result<(), StageError> {
         rig.bind(&self.built, self.character.face_px_per_m())?;
-        self.face = Some(Box::new(rig));
+        if let Some(mut old) = self.face.replace(Box::new(rig)) {
+            discard_switch(renderer, &mut old);
+        }
         Ok(())
     }
 
@@ -458,7 +466,20 @@ impl Stage {
         cleanup.map(|()| report)
     }
 
-    /// The face half of step 5 of [`tick`](Stage::tick): variant, then map and paint. A no-op without a rig.
+    /// The start of [`tick`](Stage::tick): swaps in a variant staged by [`service_variants`](Self::service_variants),
+    /// before the rig solve, so the frame solves, steps and draws the new character with this frame's input. A no-op
+    /// without a rig or a staged variant.
+    ///
+    /// # Errors
+    /// As [`swap_in_staged`](Self::swap_in_staged); the live character then stays, untouched.
+    pub(super) fn swap_variant(&mut self, renderer: &mut dyn Renderer) -> Result<(), StageError> {
+        let Some(mut rig) = self.face.take() else { return Ok(()) };
+        let result = self.swap_in_staged(renderer, &mut rig);
+        self.face = Some(rig);
+        result
+    }
+
+    /// Step 5 of [`tick`](Stage::tick): map and paint. A no-op without a rig.
     pub(super) fn update_face(
         &mut self,
         renderer: &mut dyn Renderer,
@@ -479,7 +500,6 @@ impl Stage {
         input: &FrameInput,
     ) -> Result<(), StageError> {
         rig.last_tick = Some(tick);
-        self.swap_in_staged(renderer, rig)?;
         let Some(bound) = rig.bound.as_mut() else { return Ok(()) };
         // The gaze module's pure highlight shift is not available yet: no shift.
         let view = FaceView { highlight_shift: Vec2::ZERO };
@@ -578,7 +598,10 @@ impl Stage {
                 return Err(rebuild_error("the variant build ended without a result"));
             }
         };
-        rig.staged = Some(self.stage_switch(renderer, rig, built, input, tick)?);
+        let staged = self.stage_switch(renderer, rig, built, input, tick)?;
+        // The swapping frame fills the scene with the new plan: room for it is made here, not in that frame.
+        staged.plan.reserve(&mut self.scene);
+        rig.staged = Some(staged);
         Ok(())
     }
 
@@ -627,6 +650,7 @@ impl Stage {
     ) -> Result<Staged, StageError> {
         let mut new_rig = (new.rig != self.built.rig).then(|| RigFrame::new(&new.rig)).transpose()?;
         if let Some(frame) = new_rig.as_mut() {
+            // A first solve off the frame path; the swapping frame solves it again with its own input.
             frame.solve(tick, &input.pose, &input.goals);
         }
         let bound = match FaceRig::resolve(&new)? {
@@ -664,7 +688,8 @@ impl Stage {
 
     /// The swap: makes a staged variant the stage's character. Allocates and builds nothing: it sends the new
     /// character's current vertices to the renderer (a call per dynamic mesh), then only moves tables and handles; what
-    /// it replaces waits in the retiring slot for [`service_variants`](Self::service_variants).
+    /// it replaces waits in the retiring slot for [`service_variants`](Self::service_variants). Runs before the frame's
+    /// rig solve ([`swap_variant`](Self::swap_variant)).
     ///
     /// # Errors
     /// [`StageError::Render`] if the renderer refuses the vertex refresh. The staged variant is then abandoned (its
@@ -760,6 +785,7 @@ impl Stage {
             self.rig = frame;
         }
         self.dynamic = dynamic;
+        plan.reserve(&mut self.scene);
         self.plan = plan;
         rig.commit_bound(resolved, self.character.face_px_per_m());
         // A new layer texture is empty, and the face system's fingerprints still say its picture was shown.

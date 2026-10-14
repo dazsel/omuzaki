@@ -3,6 +3,7 @@
 //!
 //! [`Stage::tick`] runs one frame in that order:
 //!
+//! 0. a face variant staged by [`Stage::service_variants`] is swapped in ([`face`]), so the rest of the frame runs on it;
 //! 1. the [`StageClock`] gives the frame's [`Tick`] (fixed `dt` and time, so a replay is exact, decision 0009);
 //! 2. the pose in the [`FrameInput`] goes through the character's composed rig (humanoid pose, IK, spring bones) and
 //!    out as skinning matrices ([`rig`]);
@@ -173,9 +174,12 @@ impl Stage {
     /// Runs one frame and renders it into the stage's target.
     ///
     /// # Errors
-    /// [`StageError::Render`] if the renderer refuses a vertex update or the frame, or whatever the face update reports (a layer that fails to paint, a staged variant whose vertex refresh the renderer refuses).
-    /// The simulations have already stepped; the next call carries on from there.
+    /// [`StageError::Render`] if the renderer refuses a vertex update or the frame, or whatever the face update reports
+    /// (a layer that fails to paint). The simulations have already stepped; the next call carries on from there. A
+    /// staged variant whose vertex refresh the renderer refuses fails the call before anything steps: the variant is
+    /// abandoned and the live character stays.
     pub fn tick(&mut self, renderer: &mut dyn Renderer, input: &FrameInput) -> Result<FrameOutput, StageError> {
+        self.swap_variant(renderer)?;
         let tick = self.clock.next(input.dt);
         self.root = input.root;
         self.rig.solve(tick, &input.pose, &input.goals);
