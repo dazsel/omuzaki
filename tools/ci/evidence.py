@@ -113,14 +113,14 @@ def padded(images):
 
 
 def compare(before, after):
-    """(before, after, diff, changed fraction, max level difference) of two RGB images on a common canvas."""
+    """(before, after, diff, changed pixel count, max level difference) of two RGB images on a common canvas."""
     before, after = padded([before, after])
     delta = ImageChops.difference(before, after)
     r, g, b = delta.split()
     level = ImageChops.lighter(ImageChops.lighter(r, g), b)
     histogram = level.histogram()
     total = level.width * level.height
-    changed = (total - histogram[0]) / total
+    changed = total - histogram[0]  # pixels that differ at all, counted before any rounding for display
     peak = max((i for i, n in enumerate(histogram) if n), default=0)
     diff = level.point(lambda v: min(255, v * AMPLIFY)).convert("RGB")
     return before, after, diff, changed, peak
@@ -185,7 +185,13 @@ def evaluate(crate, case, before_root, after_root, scratch_root, out_root):
         row = sheet_row(f"{name}" + ("" if base_ok else "   (the base could not render this: before is blank)"), [b, a, d])
         rows.append(row)
         record["images"].append(
-            {"name": name, "size": list(a.size), "changed_percent": round(changed * 100, 4), "max_diff": peak}
+            {
+                "name": name,
+                "size": list(a.size),
+                "changed_pixels": changed,
+                "changed_percent": changed * 100 / (a.width * a.height),
+                "max_diff": peak,
+            }
         )
     sheet = stack(rows, f"{crate} / {case['name']}", f"before | after | difference.  {case.get('description', '')}")
     sheet.save(folder / "sheet.png", optimize=True)
@@ -207,7 +213,8 @@ def comment(records, title, note):
                 lines.append(f"| `{r['crate']}/{r['name']}` | | | **failed after the change:** {r['after_error']} | |")
                 continue
             for i in r["images"]:
-                verdict = "identical" if i["changed_percent"] == 0 else f"{i['changed_percent']:.3f} %"
+                # "identical" only when no pixel differs; a lone changed pixel in a big picture still reads as a change.
+                verdict = "identical" if i["changed_pixels"] == 0 else f"{max(i['changed_percent'], 0.001):.3f} % ({i['changed_pixels']} px)"
                 lines.append(
                     f"| `{r['crate']}/{r['name']}` | {i['name']} | {i['size'][0]}x{i['size'][1]} | {verdict} | {i['max_diff']} |"
                 )
