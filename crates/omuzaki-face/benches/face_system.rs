@@ -30,6 +30,31 @@ fn blinking(value: f32) -> ChannelBuf {
     buf
 }
 
+fn brow_raised(value: f32) -> ChannelBuf {
+    let mut buf = ChannelBuf::NEUTRAL;
+    buf.set(Channel::BROW_INNER_UP, value);
+    buf
+}
+
+/// The real painter with a brow that moves every frame: the brows section repaints both layers each time.
+fn bench_brows(c: &mut Criterion) {
+    let profile = mock_profile();
+    let (down, up) = (brow_raised(0.0), brow_raised(1.0));
+    let painter = RealPainter::new(mock_projection(), DEFAULT_PX_PER_M);
+    let mut system = FaceSystem::new(Box::new(painter), Box::new(NullRasterizer));
+    for buf in [&down, &up] {
+        system.update(buf, &profile, Seconds(0.0), FaceView::default()).ok();
+    }
+    let mut frame = 0_u32;
+    c.bench_function("face_system_update/real-painter-moving-brows-null-raster", |b| {
+        b.iter(|| {
+            frame += 1;
+            let buf = if frame.is_multiple_of(2) { &up } else { &down };
+            black_box(system.update(buf, &profile, Seconds(0.0), FaceView::default()))
+        });
+    });
+}
+
 fn bench_update(c: &mut Criterion) {
     let profile = mock_profile();
     let (open, shut) = (blinking(0.0), blinking(1.0));
@@ -59,5 +84,5 @@ fn bench_update(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_update);
+criterion_group!(benches, bench_update, bench_brows);
 criterion_main!(benches);
