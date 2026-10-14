@@ -256,7 +256,7 @@ mod tests {
         }
         let parts: Vec<&String> = items.iter().filter(|item| item.starts_with("huge@")).collect();
         let n = parts.len();
-        assert!(n >= 2 && n <= 5);
+        assert!((2..=5).contains(&n));
         for index in 1..=n {
             assert!(parts.contains(&&format!("huge@{index}/{n}")), "{items:?}");
         }
