@@ -26,14 +26,21 @@ cat >"$work/docs.json" <<'J'
 J
 
 out=$(python3 -I "$PLAN" "$work/leaf.json" pull_request)
-expect test_matrix '{"include":[{"name":"1","crates":"a-api"}]}' "a PR tests only the changed crate"
+expect test_matrix '{"include":[{"name":"1","crates":"a-api","parts":""}]}' "a PR tests only the changed crate"
 expect lint_crates 'a-api a-impl' "a PR lints the changed crate and its direct dependents"
 expect link_crates 'a-cli' "a PR still runs the link gates"
 expect cross_crates 'a-api a-app a-cli a-impl' "the cross-build set is everything affected"
 
 out=$(python3 -I "$PLAN" "$work/leaf.json" merge_group)
-expect test_matrix '{"include":[{"name":"1","crates":"a-api a-app"},{"name":"2","crates":"a-impl"}]}' "the queue tests everything affected, sharded"
+expect test_matrix '{"include":[{"name":"1","crates":"a-api a-app","parts":""},{"name":"2","crates":"a-impl","parts":""}]}' "the queue tests everything affected, sharded"
 expect lint_crates 'a-api a-app a-cli a-impl' "the queue lints everything affected, link-only crates included"
+
+cat >"$work/split.json" <<'J'
+{"mode":"workspace","trigger":"Cargo.lock","empty":false,"changed":[],"direct":[],"full":["a-api","a-big"],"link_only":[],
+ "shards_changed":[],"shards_full":[["a-api","a-big@1/2"],["a-big@2/2"]]}
+J
+out=$(python3 -I "$PLAN" "$work/split.json" merge_group)
+expect test_matrix '{"include":[{"name":"1","crates":"a-api","parts":"a-big@1/2"},{"name":"2","crates":"","parts":"a-big@2/2"}]}' "a partitioned crate keeps its partitions apart from whole crates"
 
 out=$(python3 -I "$PLAN" "$work/docs.json" merge_group)
 expect has_tests false "a docs-only change has no tests"

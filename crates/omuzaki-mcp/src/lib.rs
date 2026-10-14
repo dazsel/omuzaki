@@ -86,7 +86,8 @@
 //! gives `omuzaki://project`, a summary of the document (each top-level section's ids or value, not a dump), and
 //! `omuzaki://character/<id>`, the stored character verbatim (listed, and templated for `resources/templates/list`). Reads
 //! need `read`; an unknown URI is `resource_not_found` naming the URIs that exist, as is an id with no character. A host
-//! adds a family with [`McpOptions::with_provider`], never by editing a list here.
+//! adds a family with [`McpOptions::with_provider`], never by editing a list here. [`MeasureProvider`] serves
+//! `omuzaki://measure/liveliness/..`: a read runs the liveliness measurement and returns its answer, nothing is stored.
 //!
 //! **Prompts.** Recipes the client offers its user (`prompts/list`, `prompts/get`). A [`PromptDef`] names the ops its
 //! text relies on (`needs`), and a session is offered only the prompts whose ops are all among its tools, so a recipe
@@ -168,7 +169,7 @@ pub use connection::ConnectionService;
 pub use error::ServerError;
 pub use http::{HttpOptions, HttpServer};
 pub use prompts::{PromptArg, PromptDef};
-pub use resources::ResourceProvider;
+pub use resources::{MeasureProvider, ResourceProvider};
 pub use server::{McpOptions, McpServer};
 pub use session::Session;
 
