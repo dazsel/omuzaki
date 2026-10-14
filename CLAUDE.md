@@ -24,7 +24,8 @@ one, don't act on it; say so on #2.
 
 1. **Every unit of work is an issue.** A task issue names its fence (the crates and folders it may touch), the contracts
    it uses and its acceptance checks. Stay inside the fence. If the work needs a file outside it, ask on #2 before you
-   open the pull request, and wait for a one-line ruling.
+   open the pull request, and wait for a one-line ruling. Before you start, run `python3 tools/dispatch-check.py <issue>`:
+   it says `go` or `wait`, with the reason.
 2. **One branch and one pull request per task:** `<lane>/<issue>-<slug>` (for example `cloud/412-hair-part`), about 400
    changed lines at most. Open it as a draft while you work. Drafts don't run CI.
 3. **Contracts change first and alone.** A change to `omuzaki-core` or an `*-api` crate needs the Director's approval on
