@@ -79,10 +79,24 @@ def expand(text, out, repo):
     return text.replace("{out}", str(out)).replace("{repo}", str(repo))
 
 
+def touch_sources(repo):
+    """Mark every tracked file as just modified, so cargo rebuilds the workspace crates for THIS checkout.
+
+    The two checkouts share one target directory (their dependencies are built once). Cargo decides a path crate is
+    fresh when its sources are older than the last build's outputs, and a checkout made before the other one was built
+    looks older, so without this it would reuse the other checkout's binaries and "before" would equal "after".
+    """
+    listing = subprocess.run(["git", "ls-files", "-z"], cwd=repo, check=False, capture_output=True)
+    for name in listing.stdout.split(b"\0"):  # not a git checkout (a test's folder): nothing to touch
+        if name and os.path.isfile(os.path.join(repo, name.decode())):
+            os.utime(os.path.join(repo, name.decode()))
+
+
 def run_case(case, repo, scratch):
     """Run the case in `repo`, leaving its files in `scratch`. Returns None on success, else a one-line reason."""
     shutil.rmtree(scratch, ignore_errors=True)
     scratch.mkdir(parents=True)
+    touch_sources(repo)
     env = dict(os.environ)
     env.update({k: expand(v, scratch, repo) for k, v in case.get("env", {}).items()})
     for step in case["steps"]:
