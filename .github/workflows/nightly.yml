@@ -32,7 +32,7 @@ jobs:
       contents: read
       issues: write
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Everything the full matrix needs: system libraries, MinGW, lavapipe (software Vulkan, so the render tests run for
       # real) and a prebuilt cargo-deny. No dependency cache: the nightly builds more than the caches hold and would
@@ -69,6 +69,6 @@ jobs:
     if: github.repository == 'dazsel/omuzaki'
     timeout-minutes: 180
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Test (all targets)
         run: cargo test --locked --workspace --all-targets

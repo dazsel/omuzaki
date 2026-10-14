@@ -55,7 +55,7 @@ jobs:
       cross_crates: ${{ steps.outputs.outputs.cross_crates }}
       has_cross: ${{ steps.outputs.outputs.has_cross }}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0   # the affected-crate diff needs the base branch's history
       - uses: ./.github/actions/setup-linux
@@ -82,7 +82,7 @@ jobs:
       LINT_CRATES: ${{ needs.plan.outputs.lint_crates }}
       BASE: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || format('origin/{0}', github.base_ref) }}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - uses: ./.github/actions/setup-linux
@@ -135,7 +135,7 @@ jobs:
     env:
       CRATES: ${{ matrix.crates }}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-linux
         with:
           cache-key: test
@@ -159,7 +159,7 @@ jobs:
     env:
       LINK_CRATES: ${{ needs.plan.outputs.link_crates }}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-linux
         with:
           cache-key: test
@@ -178,7 +178,7 @@ jobs:
     env:
       CROSS_CRATES: ${{ needs.plan.outputs.cross_crates }}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-linux
         with:
           cache-key: win-cross
