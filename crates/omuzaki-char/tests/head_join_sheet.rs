@@ -102,6 +102,7 @@ fn render_the_head_join_when_asked() {
             .iter()
             .filter(|p| (p.y - join.y).abs() < JOIN_SLAB)
             .fold((f32::MAX, f32::MIN), |(lo, hi), p| (lo.min(p.x), hi.max(p.x)));
+        assert!(hi > lo, "{id}: no part of the head at its join {join:?}");
         let half = HALF_FRAME_PER_WIDTH * (hi - lo);
         let distance = half / (fov_y_deg.to_radians() / 2.0).tan();
         for (view, azimuth_deg) in VIEWS {
