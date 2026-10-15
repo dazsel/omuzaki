@@ -273,15 +273,10 @@ impl MockLibrary {
         !e.item.manifest.listed || e.item.manifest.deprecated.is_some()
     }
 
-    /// The versions of one (id, scope, publisher) that search may show, for a query with or without a character: the
-    /// single place visibility and compatibility are decided, so no path can apply one without the other. A hidden
-    /// newest release hides the whole item (a retired item must not resurface as an older release); otherwise a
-    /// version is a candidate when it is not hidden itself and, given a character, does not refuse it.
+    /// The versions of one (id, scope, publisher) that search may show, for a query with or without a character: each
+    /// version is judged on its own, first for visibility and then, given a character, for compatibility, so an
+    /// unlisted or deprecated release never hides a listed older one and never gets picked as a fallback.
     fn visible_candidates<'a>(group: &[&'a Entry], facts: Option<&CharacterFacts>) -> Vec<&'a Entry> {
-        let Some(newest) = group.iter().copied().max_by(|a, b| a.version.cmp(&b.version)) else { return Vec::new() };
-        if Self::hidden_from_search(newest) {
-            return Vec::new();
-        }
         group
             .iter()
             .copied()
@@ -337,27 +332,37 @@ impl MockLibrary {
         SearchPage { total: rows.len(), items, facets }
     }
 
-    /// The entry of `item` matching `req` in the first tier that has any, by resolution order. A tier is judged as a
-    /// whole: two teams holding the item are one tier, so the newest version wins across them and two publishers are
-    /// ambiguous, whatever the teams are called.
-    fn pick(&self, item: &ItemId, req: &VersionReq) -> Result<&Entry, LibraryError> {
+    /// The one pipeline every version lookup goes through: the item's precedence tier, then its publisher, then the
+    /// caller's filter. The publisher is the one holding the item in the first tier that has it (`Ambiguous` when that
+    /// tier holds several), and only that publisher's versions, in any tier, are its history: two publishers'
+    /// histories are never merged, so no caller can reach the other's version by number. All teams are one tier.
+    fn lineage(&self, item: &ItemId) -> Result<Vec<&Entry>, LibraryError> {
         let held: Vec<&Entry> = self.entries.iter().filter(|e| &e.id == item).collect();
-        if held.is_empty() {
+        let Some(first) = held.iter().map(|e| tier(&e.scope)).min() else {
             return Err(LibraryError::NotFound(item.to_string()));
-        }
+        };
+        let leading: Vec<&Entry> = held.iter().copied().filter(|e| tier(&e.scope) == first).collect();
+        ensure_one_publisher(item, &leading)?;
+        let key = |e: &Entry| e.item.manifest.publisher.as_ref().map(|p| p.key.clone());
+        let publisher = leading.first().and_then(|e| key(e));
+        Ok(held.into_iter().filter(|e| key(e) == publisher).collect())
+    }
+
+    /// The entry of `item` matching `req`: through [`lineage`](Self::lineage), then the first tier with a match, then
+    /// the newest version in it. The same version in two scopes of a tier is the same content (D11), so the scope
+    /// only breaks the tie.
+    fn pick(&self, item: &ItemId, req: &VersionReq) -> Result<&Entry, LibraryError> {
+        let held = self.lineage(item)?;
         let tiers: BTreeSet<u8> = held.iter().map(|e| tier(&e.scope)).collect();
         for t in tiers {
-            let matching: Vec<&Entry> =
-                held.iter().copied().filter(|e| tier(&e.scope) == t && req.matches(&e.version)).collect();
-            if matching.is_empty() {
-                continue;
+            let best = held
+                .iter()
+                .copied()
+                .filter(|e| tier(&e.scope) == t && req.matches(&e.version))
+                .max_by(|a, b| a.version.cmp(&b.version).then_with(|| b.scope.cmp(&a.scope)));
+            if let Some(best) = best {
+                return Ok(best);
             }
-            ensure_one_publisher(item, &matching)?;
-            // The same version in two scopes of a tier is the same content (D11), so the scope only breaks the tie.
-            return matching
-                .into_iter()
-                .max_by(|a, b| a.version.cmp(&b.version).then_with(|| b.scope.cmp(&a.scope)))
-                .ok_or_else(|| LibraryError::NotFound(item.to_string()));
         }
         let mut installed: Vec<Version> = held.iter().map(|e| e.version).collect();
         installed.sort();
@@ -476,17 +481,7 @@ impl Library for MockLibrary {
     }
 
     fn versions(&self, item: &ItemId) -> Result<Vec<Version>, LibraryError> {
-        let held: Vec<&Entry> = self.entries.iter().filter(|e| &e.id == item).collect();
-        if held.is_empty() {
-            return Err(LibraryError::NotFound(item.to_string()));
-        }
-        // Ambiguity is judged where `resolve` would look first: the earliest tier that holds the item.
-        let first = held.iter().map(|e| tier(&e.scope)).min();
-        ensure_one_publisher(
-            item,
-            &held.iter().copied().filter(|e| Some(tier(&e.scope)) == first).collect::<Vec<_>>(),
-        )?;
-        let mut all: Vec<Version> = held.iter().map(|e| e.version).collect();
+        let mut all: Vec<Version> = self.lineage(item)?.iter().map(|e| e.version).collect();
         all.sort();
         all.dedup();
         Ok(all)

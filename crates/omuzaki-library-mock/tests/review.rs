@@ -64,7 +64,8 @@ fn search_and_list_hide_unlisted_and_deprecated_items_before_paging_and_facets_b
     let mut retired = old.clone();
     retired.version = "2.0.0".into();
     retired.deprecated = Some("replaced".into());
-    for m in [hidden.clone(), old, retired] {
+    let _ = old;
+    for m in [hidden.clone(), retired] {
         library.insert(m, ItemScope::FirstParty).unwrap();
     }
     let search = library.search(&Query { limit: 100, ..Query::default() }).unwrap();
@@ -425,11 +426,11 @@ fn the_compatibility_fallback_never_picks_a_hidden_version() {
         library.insert(m, ItemScope::FirstParty).unwrap();
     }
     assert_eq!(shown_version(&library, "test/colourways/history").as_deref(), Some("1.0.0"));
-    // An unlisted release is just as hidden, and a hidden newest release hides the item.
+    // An unlisted release is just as hidden, and neither a hidden newest release nor a hidden middle one hides the
+    // listed 1.0.0 or lets itself be picked.
     library.insert(version("1.5.0", &|m| m.listed = false), ItemScope::FirstParty).unwrap();
-    assert_eq!(shown_version(&library, "test/colourways/history").as_deref(), Some("1.0.0"));
     library.insert(version("4.0.0", &|m| m.listed = false), ItemScope::FirstParty).unwrap();
-    assert_eq!(shown_version(&library, "test/colourways/history"), None);
+    assert_eq!(shown_version(&library, "test/colourways/history").as_deref(), Some("1.0.0"));
     // Hidden versions still resolve and list, for pins.
     let id = "test/colourways/history".parse().unwrap();
     assert_eq!(library.versions(&id).unwrap().len(), 5);
@@ -549,4 +550,61 @@ fn a_bundle_is_publishable_only_if_everything_it_applies_is() {
     assert!(!publish_ok("anon/colourways/mint"));
     assert!(!publish_ok("test/outfits/with-mint"), "it applies a non-commercial item");
     assert!(publish_ok("test/outfits/casual"));
+}
+
+// --- Round 4: per-version visibility, one lineage for every version lookup, bounded part ids ---
+
+#[test]
+fn an_unlisted_newest_version_does_not_hide_a_listed_older_one() {
+    let mut library = MockLibrary::new();
+    let mut older = fixtures::setting();
+    older.id = "test/colourways/draft".into();
+    let mut newer = older.clone();
+    newer.version = "2.0.0".into();
+    newer.listed = false;
+    library.insert(older, ItemScope::FirstParty).unwrap();
+    library.insert(newer, ItemScope::FirstParty).unwrap();
+    for page in [library.list(None, None, 0, 100).unwrap(), library.search(&Query::default()).unwrap()] {
+        let rows: Vec<String> = page.items.iter().map(|i| format!("{}@{}", i.id, i.version)).collect();
+        assert_eq!(rows, ["test/colourways/draft@1.0.0"], "the listed release stays, the unlisted one stays out");
+        assert_eq!(page.total, 1);
+    }
+}
+
+#[test]
+fn versions_describe_and_resolve_never_merge_two_publishers_histories() {
+    let mut library = MockLibrary::new();
+    // Mine holds publisher A's 1.0.0; a team holds publisher B's 2.0.0 under the same id.
+    let a = fixtures::shared_bow(fixtures::SIGNER_SEED);
+    let mut b = fixtures::shared_bow(fixtures::RIVAL_SEED);
+    b.version = "2.0.0".into();
+    library.insert(a, ItemScope::Mine).unwrap();
+    library.insert(b, ItemScope::Team("studio".into())).unwrap();
+    let bow = "shared/colourways/bow".parse().unwrap();
+    let two = omuzaki_library_api::Version::new(2, 0, 0);
+    let versions = library.versions(&bow).unwrap();
+    assert_eq!(versions, [omuzaki_library_api::Version::new(1, 0, 0)], "only the publisher precedence selects");
+    assert_eq!(library.describe(&bow, None).unwrap().versions, versions);
+    // B's 2.0.0 can't be reached by number either; it is still reachable by its hash.
+    assert!(matches!(library.resolve(&bow, &VersionReq::Exact(two)), Err(LibraryError::NoMatchingVersion { .. })));
+    assert!(matches!(library.describe(&bow, Some(&two)), Err(LibraryError::NoMatchingVersion { .. })));
+    // One publisher across tiers is one history, as before.
+    let mut library = MockLibrary::new();
+    library.insert(fixtures::signed_ember("1.0.0"), ItemScope::Mine).unwrap();
+    library.insert(fixtures::signed_ember("1.2.0"), ItemScope::Team("studio".into())).unwrap();
+    assert_eq!(library.versions(&"signer/colourways/ember".parse().unwrap()).unwrap().len(), 2);
+}
+
+#[test]
+fn a_create_key_as_long_as_a_part_id_still_gets_a_valid_seed_binding() {
+    let key = "k".repeat(64);
+    let part = item(
+        "omuzaki/hair/seed-longkey",
+        "hair",
+        "part",
+        &format!("slot = \"hairstyle\"\ncreates.{key} = {{ kind = \"hair\", id = \"ribbon\", layer = 5 }}\n"),
+        &RIBBON.replace("$parts.ribbon", &format!("$parts.{key}")),
+    );
+    assert_eq!(part.check(), vec![]);
+    assert_eq!(seed::check_source(&Source(vec![part]), &support::doc()), vec![]);
 }
