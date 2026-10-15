@@ -1,0 +1,6 @@
+section = "rust"
+item = "raw-window-handle"
+kind = "crate"
+used_for = "native window handles for the per-OS window code in `spikes/mascot-window`"
+status = "yes"
+audit = "(crates.io: raw-window-handle 0.6.2, MIT OR Apache-2.0 OR Zlib)"

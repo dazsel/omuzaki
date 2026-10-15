@@ -9,6 +9,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+base64.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 omuzaki-http-api = { path = "../omuzaki-http-api" }
