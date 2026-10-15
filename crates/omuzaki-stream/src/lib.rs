@@ -8,7 +8,8 @@
 //! # Module map
 //!
 //! The whole tree exists from the start, so parallel tasks never edit this file or `Cargo.toml`: each stub file starts
-//! with a `//!` line naming its purpose and the task that fills it, and each folder's `mod.rs` lists its submodules.
+//! with a `//!` line naming its purpose, the table below names the task that fills each module, and each folder's
+//! `mod.rs` lists its submodules.
 //!
 //! | Module | Holds | Filled by |
 //! |---|---|---|

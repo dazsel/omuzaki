@@ -10,8 +10,12 @@ use crate::timeline::AudioSource;
 ///
 /// A run's `len` is set from its samples when it is read, so a script states only the position and flags. A run longer
 /// than the caller's buffer is read in pieces: the first piece carries the run's gap and flags, the rest carry neither.
+/// A read into an empty buffer returns an empty result and leaves the pending run, its gap included, as it was.
 pub struct ScriptedSource {
+    /// The pending runs; the front one has its first `offset` samples already returned.
     runs: VecDeque<(TapRead, Vec<f32>)>,
+    /// Samples of the front run already returned, so a piece costs its own length and not the run's.
+    offset: usize,
     /// The stream position just after the last sample returned.
     pos: u64,
 }
@@ -20,7 +24,7 @@ impl ScriptedSource {
     /// A source that plays `runs` in order.
     pub fn new(runs: Vec<(TapRead, Vec<f32>)>) -> Self {
         let pos = runs.first().map_or(0, |(run, _)| run.start_sample);
-        Self { runs: runs.into(), pos }
+        Self { runs: runs.into(), offset: 0, pos }
     }
 
     /// A source with one run of `frames` samples from stream position `start_sample`. Each sample holds its own stream
@@ -37,8 +41,12 @@ impl AudioSource for ScriptedSource {
         let Some((run, samples)) = self.runs.front_mut() else {
             return TapRead { start_sample: self.pos, ..TapRead::default() };
         };
-        let len = out.len().min(samples.len());
-        out[..len].copy_from_slice(&samples[..len]);
+        if out.is_empty() {
+            return TapRead { start_sample: self.pos, ..TapRead::default() };
+        }
+        let rest = &samples[self.offset..];
+        let len = out.len().min(rest.len());
+        out[..len].copy_from_slice(&rest[..len]);
         let read = TapRead {
             len,
             start_sample: run.start_sample,
@@ -46,10 +54,11 @@ impl AudioSource for ScriptedSource {
             muted: run.muted,
             private: run.private,
         };
-        if len == samples.len() {
+        if len == rest.len() {
             self.runs.pop_front();
+            self.offset = 0;
         } else {
-            samples.drain(..len);
+            self.offset += len;
             run.start_sample += len as u64;
             run.gap_before = 0;
         }
@@ -98,6 +107,18 @@ mod tests {
         let b = source.read(&mut buf);
         assert_eq!((b.len, b.start_sample, b.gap_before, b.muted, b.private), (32, 192, 96, true, false));
         assert_eq!(source.read(&mut buf).len, 0);
+    }
+
+    #[test]
+    fn a_read_into_an_empty_buffer_leaves_the_pending_run_untouched() {
+        let run = (TapRead { start_sample: 10, gap_before: 4, muted: true, ..TapRead::default() }, vec![1.0; 5]);
+        let mut source = ScriptedSource::new(vec![run]);
+        let empty = source.read(&mut []);
+        assert_eq!((empty.len, empty.gap_before, empty.muted), (0, 0, false));
+        let mut buf = [0.0; 8];
+        let a = source.read(&mut buf);
+        assert_eq!((a.len, a.start_sample, a.gap_before, a.muted), (5, 10, 4, true));
+        assert_eq!(source.read(&mut []).len, 0);
     }
 
     #[test]
