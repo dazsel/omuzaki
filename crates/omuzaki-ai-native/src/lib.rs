@@ -63,6 +63,9 @@ impl<T: Clone, E: Clone> LoadOnce<T, E> {
     /// Runs `init` if this is the first call and keeps its result under the identity `name` and `sha256`; otherwise
     /// returns the kept result and drops `init`. Callers racing the first call wait for it and share its result.
     ///
+    /// If `init` panics, nothing is kept, so the next call runs `init` again; the panic reaches the caller whose `init`
+    /// panicked.
+    ///
     /// # Errors
     /// The error `init` returned, now and for every later call.
     pub fn get_or_init(&self, name: &str, sha256: &str, init: impl FnOnce() -> Result<T, E>) -> Result<T, E> {
@@ -118,6 +121,11 @@ impl<'a> Unpack<'a> {
     /// Unpacks the wanted files of `archive` (already verified by the caller) to [`unpack_dir`] and returns that
     /// folder. Written to a temporary sibling and renamed, so an interrupted unpack never leaves a half-filled folder
     /// under the final name; a folder that already holds the main library is reused as it is.
+    ///
+    /// The reuse check looks only at the main library, and the folder's name comes from `archive`'s path. That is safe
+    /// only because the path is content-addressed, named by the archive's SHA-256 as the `FileSource` store names its
+    /// blobs: a re-pinned archive has another hash, so another path and folder, and never reuses a stale one. A caller
+    /// that passes a path that is not content-addressed breaks this rule.
     ///
     /// # Errors
     /// An I/O error when the archive can't be read or the folder can't be written, [`io::ErrorKind::NotFound`] when the
@@ -182,6 +190,9 @@ impl<'a> Unpack<'a> {
 }
 
 /// The folder next to `archive` that holds its unpacked libraries: deterministic, so a second run reuses it.
+///
+/// The name is `archive`'s path plus `.lib`, so it is per archive only when that path is content-addressed (see
+/// [`Unpack::run`]).
 pub fn unpack_dir(archive: &Path) -> PathBuf {
     let mut name = archive.as_os_str().to_owned();
     name.push(".lib");
