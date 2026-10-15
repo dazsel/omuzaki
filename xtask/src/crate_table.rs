@@ -22,6 +22,8 @@ const README: &str = "crates/README.md";
 pub struct Row {
     /// Package name.
     pub name: String,
+    /// `description` under `[package]`, if declared.
+    pub description: Option<String>,
     /// `kind` under `[package.metadata.omuzaki]`, if declared.
     pub kind: Option<String>,
     /// `summary` under `[package.metadata.omuzaki]`, if declared.
@@ -45,10 +47,12 @@ fn row(workspace: &Workspace, package: &Package) -> Result<Row> {
         command: format!("parse {}", path.display()),
         stderr: error.to_string(),
     })?;
-    let ours = manifest.get("package").and_then(|p| p.get("metadata")).and_then(|m| m.get("omuzaki"));
+    let package_table = manifest.get("package");
+    let ours = package_table.and_then(|p| p.get("metadata")).and_then(|m| m.get("omuzaki"));
     let text_of = |key: &str| ours.and_then(|table| table.get(key)?.as_str()).map(str::to_owned);
     Ok(Row {
         name: package.name.clone(),
+        description: package_table.and_then(|p| p.get("description")?.as_str()).map(str::to_owned),
         kind: text_of("kind"),
         summary: text_of("summary"),
         layering: CrateKind::of_package(package).ok(),
@@ -81,6 +85,9 @@ pub fn table(rows: &[Row]) -> String {
 pub fn violations(rows: &[Row], readme: &str) -> Vec<String> {
     let mut found = Vec::new();
     for row in rows {
+        if row.description.as_deref().is_none_or(|description| description.trim().is_empty()) {
+            found.push(format!("{}: no `description` under [package]", row.name));
+        }
         match (&row.kind, row.layering) {
             (None, _) => found.push(format!("{}: no `kind` under [package.metadata.omuzaki]", row.name)),
             (Some(kind), Some(layering)) if kind != kind_name(layering) => found.push(format!(
@@ -153,6 +160,7 @@ mod tests {
     fn row(name: &str, kind: Option<&str>, summary: Option<&str>, layering: CrateKind) -> Row {
         Row {
             name: name.to_owned(),
+            description: Some("described".to_owned()),
             kind: kind.map(str::to_owned),
             summary: summary.map(str::to_owned),
             layering: Some(layering),
@@ -187,6 +195,16 @@ mod tests {
                 "omuzaki-b-api: no `summary` under [package.metadata.omuzaki]",
             ]
         );
+    }
+
+    #[test]
+    fn a_missing_or_blank_description_is_caught() {
+        let described = row("omuzaki-ok", Some("API"), Some("fine"), CrateKind::Api);
+        let missing = Row { description: None, ..described.clone() };
+        let blank = Row { description: Some("  ".to_owned()), ..described.clone() };
+        assert_eq!(violations(&[described], ""), Vec::<String>::new());
+        assert_eq!(violations(&[missing], ""), ["omuzaki-ok: no `description` under [package]"]);
+        assert_eq!(violations(&[blank], ""), ["omuzaki-ok: no `description` under [package]"]);
     }
 
     #[test]
