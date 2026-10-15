@@ -258,3 +258,42 @@ fn the_tube_surface_stays_outside_the_head_for_the_defaults_and_for_offsets_of_0
         }
     }
 }
+
+/// A sphere of radius 0.11 centred at the origin: the deep review's head.
+#[derive(Debug)]
+struct Ball;
+
+impl HeadSurface for Ball {
+    fn centre(&self) -> Vec3 {
+        Vec3::ZERO
+    }
+    fn radius(&self, _dir: Vec3) -> f32 {
+        0.11
+    }
+}
+
+#[test]
+fn the_resampled_points_keep_the_thickness_clearance_at_the_extremes_of_hook_and_sweep() {
+    let layer = BangLayer {
+        count: 2,
+        spread_deg: 5.0,
+        hook_deg: 90.0,
+        root_offset: 0.002,
+        tip_offset: 0.002,
+        ..BangLayer::default()
+    };
+    let g = BangsGen { layers: vec![layer], wisps: vec![], sweep_deg: 90.0 };
+    let (id, dynamics, palette) = (GroupId::new("bangs").unwrap(), Dynamics::default(), Palette::default());
+    let mut stream = Counting::default();
+    let mut ctx = HairGenCtx::new(&Ball, &palette, Quality::Live, &id, &dynamics, &mut stream);
+    let clumps = bangs::compile(&g, &mut ctx).clumps;
+    assert_eq!(clumps.len(), 2);
+    for clump in &clumps {
+        for (k, p) in clump.rest.iter().enumerate() {
+            let t = k as f32 / (REST_POINTS - 1) as f32;
+            let need = clump.thickness.at(t) * 0.5;
+            let gap = p.length() - 0.11;
+            assert!(gap >= need - 1e-6, "point {k}: {gap} m out, the tube needs {need}");
+        }
+    }
+}

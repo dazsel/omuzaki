@@ -16,6 +16,10 @@
 //! prototype's fixed `hj(k) = 0.5 sin(12.9898 k + 1.7)`; the generator draws no random numbers, so the long hair's
 //! stream is untouched.
 //!
+//! **Clearance.** After the resample, every point stands off the head by at least half the lock's thickness there plus
+//! 1 mm ([`SURFACE_CLEARANCE`]), pushed out along the line from the head's centre; the spline can cut inside the head
+//! where a large hook or sweep turns the lock sharply. The offsets are limited the same way at the ends.
+//!
 //! **Width.** The prototype's outline `lerp(0.040, w, ss(t, 0, 0.45)) (1 - ss(t, 0.5, 1))^0.7 + 0.0015` is not a
 //! [`Taper`]. This uses the closest current `Taper`: [`ROOT_WIDTH`] at the root, `MID_GAIN w + FLOOR` at `TIP_AT`,
 //! [`FLOOR`] at the tip. The exact outline waits for #842; [`outline`] is the prototype's formula, and the tests print the
@@ -76,7 +80,9 @@ const MAX_OFFSET: f64 = 0.2;
 /// The least distance from the skull at either end: half the lock's thickness there ([`THICKNESS`] is `base` at both ends)
 /// plus 1 mm, so the tube's surface, not just its centreline, stays outside the head. Mid-lock the belly lifts the
 /// centreline by far more than the swell (16 mm against 2.5 mm). The prototype's offsets (4 mm and more) are above it.
-const MIN_OFFSET: f64 = THICKNESS.base * 0.5 + 0.001;
+const MIN_OFFSET: f64 = THICKNESS.base * 0.5 + SURFACE_CLEARANCE;
+/// How far the tube's surface stays off the head beyond its own half-thickness, metres.
+pub const SURFACE_CLEARANCE: f64 = 0.001;
 /// Thickness of every lock (the prototype's `0.005 + 0.005 sin(pi t)`).
 pub const THICKNESS: Bulge = Bulge { base: 0.005, swell: 0.005 };
 /// Width fit: the outline's width at the root, metres, including [`FLOOR`].
@@ -225,7 +231,29 @@ fn rest_points(g: &BangsGen, head: &dyn HeadSurface, lock: &Lock) -> [Vec3; REST
             *p = controls[(k * (CONTROL_POINTS - 1) + REST_POINTS / 2) / (REST_POINTS - 1)];
         }
     }
+    for (k, point) in spaced.iter_mut().enumerate() {
+        keep_clear(head, k, point);
+    }
     spaced.map(DVec3::as_vec3)
+}
+
+/// Pushes the resampled point `k` out along the line from the head's centre until it stands at least half the lock's
+/// thickness there plus [`SURFACE_CLEARANCE`] off the head. The Catmull-Rom between control points can cut inside the
+/// head where the lock turns sharply (a large hook or sweep); the control points alone are clear, the curve between them
+/// need not be. A point already clear is not moved, so the points keep their order.
+#[allow(clippy::cast_precision_loss)] // point indices are tiny
+fn keep_clear(head: &dyn HeadSurface, k: usize, point: &mut DVec3) {
+    let t = k as f32 / (REST_POINTS - 1) as f32;
+    let wanted = f64::from(THICKNESS.at(t)) * 0.5 + SURFACE_CLEARANCE;
+    let from_centre = *point - head.centre().as_dvec3();
+    let dir = from_centre.normalize_or_zero();
+    if dir == DVec3::ZERO {
+        return;
+    }
+    let surface = f64::from(head.radius(dir.as_vec3()));
+    if from_centre.length() < surface + wanted {
+        *point = head.centre().as_dvec3() + dir * (surface + wanted);
+    }
 }
 
 /// The control points of `lock`, root first. Allocates nothing.
