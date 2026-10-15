@@ -4,12 +4,14 @@
 //! never half of one. It is the shared form of the save that project files use; the callers decide what the path
 //! means and whether links in it are allowed.
 
-use std::ffi::OsString;
-#[cfg(unix)]
-use std::fs::File;
-use std::fs::{self, OpenOptions};
+use std::collections::hash_map::RandomState;
+use std::ffi::{OsStr, OsString};
+use std::fs::{self, File, OpenOptions};
+use std::hash::{BuildHasher, Hasher};
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(windows)]
 use std::{thread, time::Duration};
 
@@ -23,23 +25,39 @@ const RENAME_RETRY_DELAYS: [Duration; 3] =
 #[cfg(windows)]
 const ERROR_SHARING_VIOLATION: i32 = 32;
 
+/// How many names to try for a temporary file before giving up. A name is taken only by a file that already has it,
+/// which the process id, the per-run nonce and the counter make very unlikely, so one try is almost always enough.
+const TEMP_NAME_ATTEMPTS: u32 = 100;
+
+/// Counts the temporary names handed out, so two saves in one process never ask for the same name.
+static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// A value that differs between runs of the process, so two processes saving the same file never share a name even
+/// when the operating system reuses a process id. The standard library seeds its hash maps from the operating system,
+/// which gives a value nobody else can predict; no extra dependency is needed.
+fn run_nonce() -> u64 {
+    static NONCE: OnceLock<u64> = OnceLock::new();
+    *NONCE.get_or_init(|| RandomState::new().build_hasher().finish())
+}
+
 /// Replaces the file at `path` with `text`, creating any missing folders first.
 ///
-/// The text goes to a hidden temporary file (`.<name>.tmp`) next to the target. That file is flushed to disk, then
-/// renamed over the target. The rename replaces the target in one step on unix and on Windows (`std::fs::rename`
-/// over an existing file, never a remove followed by a rename), so no reader ever finds the file missing. A stale
-/// temporary file from an earlier save is replaced. If the write or the rename fails, the temporary file is removed
-/// and the old file, if there was one, is left as it was.
+/// The text goes to a new temporary file next to the target, named `.<name>.<pid>-<nonce>-<n>.tmp`. Each call makes
+/// its own, so concurrent saves of one path never write into each other's file. The temporary file is flushed to
+/// disk, then renamed over the target. The rename replaces the target in one step on unix and on Windows
+/// (`std::fs::rename` over an existing file, never a remove followed by a rename), so no reader ever finds the file
+/// missing or half written. If the write or the rename fails, the temporary file this call created is removed and the
+/// old file, if there was one, is left as it was.
 ///
 /// On unix the parent folder is flushed after the rename, so the new name survives a crash too. Windows does not offer
 /// that, so only the file's own contents are flushed there. Folders created on the way are not flushed.
 ///
-/// A crash can leave the temporary file behind; the next save replaces it. The new file gets the default permissions
-/// of the process (the umask on unix), not those of the file it replaces, and it is a new file for any other process
-/// that has the old one open.
+/// A crash can leave a temporary file behind, and nothing removes it: a later save makes its own name and leaves that
+/// file alone. The new file gets the default permissions of the process (the umask on unix), not those of the file it
+/// replaces, and it is a new file for any other process that has the old one open.
 ///
-/// What it does not do: take a lock. Two writers of the same path in different processes can interleave, and the last
-/// rename wins. Links are not refused here (a symlink at `path` is replaced, and a symlinked folder is followed); a
+/// What it does not do: take a lock. Concurrent saves each leave a complete version, and the last rename wins; nothing
+/// orders them. Links are not refused here (a symlink at `path` is replaced, and a symlinked folder is followed); a
 /// caller that needs that check makes it before calling. The temporary file is created with `create_new`, so an
 /// existing link under its name is never written through.
 ///
@@ -54,20 +72,11 @@ pub fn write_atomic(path: &Path, text: &str) -> io::Result<()> {
         _ => Path::new("."),
     };
     fs::create_dir_all(parent)?;
-    let mut tmp_name = OsString::from(".");
-    tmp_name.push(name);
-    tmp_name.push(".tmp");
-    let tmp = parent.join(tmp_name);
-
-    // Removed first so that `create_new` below can succeed; this never touches `path` itself.
-    match fs::remove_file(&tmp) {
-        Ok(()) => {}
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e),
-    }
-    let staged = write_and_sync(&tmp, text).and_then(|()| rename_over(&tmp, path));
+    let (tmp, file) = create_temp(parent, name)?;
+    let staged = write_and_sync(file, text).and_then(|()| rename_over(&tmp, path));
     if let Err(e) = staged {
-        // Best effort: the original error is the one worth reporting.
+        // Only the file this call created, so removing it cannot touch another save's work. Best effort: the original
+        // error is the one worth reporting.
         drop(fs::remove_file(&tmp));
         return Err(e);
     }
@@ -77,9 +86,33 @@ pub fn write_atomic(path: &Path, text: &str) -> io::Result<()> {
     Ok(())
 }
 
-/// Writes `text` into a new file at `tmp` and flushes it to disk.
-fn write_and_sync(tmp: &Path, text: &str) -> io::Result<()> {
-    let mut file = OpenOptions::new().write(true).create_new(true).open(tmp)?;
+/// Creates a new temporary file for a save of `name` in `parent`, and returns its path with the open file.
+///
+/// `create_new` never opens an existing file, so a name that is already taken is skipped and the next one is tried.
+fn create_temp(parent: &Path, name: &OsStr) -> io::Result<(PathBuf, File)> {
+    for _ in 0..TEMP_NAME_ATTEMPTS {
+        let tmp = parent.join(temp_name(name));
+        match OpenOptions::new().write(true).create_new(true).open(&tmp) {
+            Ok(file) => return Ok((tmp, file)),
+            Err(e) if e.kind() != io::ErrorKind::AlreadyExists => return Err(e),
+            Err(_) => {}
+        }
+    }
+    Err(io::Error::new(io::ErrorKind::AlreadyExists, "no free name for a temporary file"))
+}
+
+/// The file name for one save: a hidden name built from the target's name, the process id, the run's nonce and a
+/// counter that never repeats in this process.
+fn temp_name(name: &OsStr) -> OsString {
+    let n = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let mut tmp_name = OsString::from(".");
+    tmp_name.push(name);
+    tmp_name.push(format!(".{}-{:016x}-{n}.tmp", std::process::id(), run_nonce()));
+    tmp_name
+}
+
+/// Writes `text` into `file` and flushes it to disk. Taking the file by value closes it before the rename.
+fn write_and_sync(mut file: File, text: &str) -> io::Result<()> {
     file.write_all(text.as_bytes())?;
     // Flushed before the rename, so the new name never points at contents that are not yet on disk.
     file.sync_all()
@@ -194,13 +227,15 @@ mod tests {
     }
 
     #[test]
-    fn replaces_a_stale_temporary_file() {
+    fn leaves_a_stale_temporary_file_alone() {
+        // A temporary file left by a crash belongs to that crash: the save makes its own name and does not remove it.
         let scratch = Scratch::new("stale_tmp");
         let path = scratch.dir.join("doc.toml");
         fs::write(scratch.dir.join(".doc.toml.tmp"), "left over by a crash").unwrap();
         write_atomic(&path, "fresh\n").unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), "fresh\n");
-        assert_eq!(names(&scratch.dir), vec!["doc.toml"]);
+        assert_eq!(fs::read_to_string(scratch.dir.join(".doc.toml.tmp")).unwrap(), "left over by a crash");
+        assert_eq!(names(&scratch.dir), vec![".doc.toml.tmp", "doc.toml"]);
     }
 
     #[test]
@@ -233,6 +268,38 @@ mod tests {
         assert!(write_atomic(&target, "new\n").is_err());
         assert_eq!(fs::read(&target).unwrap(), b"old\n");
         assert_eq!(names(&locked), vec!["doc.toml"]);
+    }
+
+    #[test]
+    fn concurrent_saves_never_show_a_mixed_file() {
+        // Writers share one target and each writes a different, repeated text many times. A reader running alongside
+        // must always see one whole text, never a prefix of one save and the rest of another.
+        const WRITERS: usize = 4;
+        const WRITES: usize = 50;
+        const REPEATS: usize = 400;
+        let scratch = Scratch::new("concurrent");
+        let path = scratch.dir.join("doc.toml");
+        write_atomic(&path, &"writer 9 write 000\n".repeat(REPEATS)).unwrap();
+        let finished = AtomicU64::new(0);
+        std::thread::scope(|s| {
+            for w in 0..WRITERS {
+                let (path, finished) = (&path, &finished);
+                s.spawn(move || {
+                    for seq in 0..WRITES {
+                        let text = format!("writer {w} write {seq:03}\n").repeat(REPEATS);
+                        write_atomic(path, &text).unwrap();
+                    }
+                    finished.fetch_add(1, Ordering::SeqCst);
+                });
+            }
+            while finished.load(Ordering::SeqCst) < WRITERS as u64 {
+                let seen = fs::read_to_string(&path).unwrap();
+                let first = seen.split_inclusive('\n').next().unwrap_or("");
+                assert!(first.starts_with("writer "), "unexpected contents: {first:?}");
+                assert_eq!(seen, first.repeat(REPEATS), "a read saw parts of two saves");
+            }
+        });
+        assert_eq!(names(&scratch.dir), vec!["doc.toml"]);
     }
 
     #[test]
