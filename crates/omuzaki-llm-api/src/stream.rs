@@ -1,0 +1,601 @@
+//! Events, the pull-based [`TurnStream`] and [`Cancel`] (llm-api D1, D3, D5).
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+use crate::error::LlmError;
+use crate::message::{ContentBlock, Message, Role};
+use crate::usage::Usage;
+
+/// A cancel handle. Clones share one flag, so a caller keeps a clone and the stream holds another.
+#[derive(Clone, Debug, Default)]
+pub struct Cancel(Arc<AtomicBool>);
+
+impl Cancel {
+    /// A handle that is not cancelled.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Cancels every clone. It cannot be undone.
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+
+    /// True once any clone has been cancelled.
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+}
+
+/// Why a turn stopped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
+pub enum StopReason {
+    /// The model finished.
+    EndTurn,
+    /// The model wants tool results.
+    ToolUse,
+    /// The turn hit `max_output`.
+    MaxOutput,
+    /// The model refused. The turn may carry partial text, and its usage costs money.
+    Refused,
+    /// The provider paused the turn (`pause_turn`); send it back to continue.
+    Paused,
+}
+
+/// One event of a turn. Order: `Retrying`*, `Start`, content events, `Usage`, `Stop`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub enum LlmEvent {
+    /// The client is retrying; only before `Start`.
+    #[non_exhaustive]
+    Retrying {
+        /// Which retry this is, from 1.
+        attempt: u8,
+        /// How long it waits first.
+        wait: Duration,
+        /// Why, without any key or header.
+        cause: String,
+    },
+    /// The turn started; the id is the model that serves it.
+    #[non_exhaustive]
+    Start {
+        /// The served model id.
+        model: String,
+    },
+    /// More text. Consecutive deltas form one `Text` block.
+    TextDelta(String),
+    /// A tool call begins.
+    #[non_exhaustive]
+    ToolUseStart {
+        /// The call id.
+        id: String,
+        /// The tool name.
+        name: String,
+    },
+    /// A raw JSON fragment of the open call's arguments.
+    ToolUseInput(String),
+    /// The call's arguments are complete.
+    #[non_exhaustive]
+    ToolUseEnd {
+        /// The call id.
+        id: String,
+    },
+    /// One complete provider block.
+    #[non_exhaustive]
+    Opaque {
+        /// The provider that made it.
+        provider: String,
+        /// The block.
+        block: Value,
+    },
+    /// Cumulative usage; the last one is final.
+    Usage(Usage),
+    /// The turn is over.
+    Stop(StopReason),
+}
+
+impl LlmEvent {
+    /// The client waits `wait` before retry number `attempt`, because of `cause`.
+    pub fn retrying(attempt: u8, wait: Duration, cause: impl Into<String>) -> Self {
+        Self::Retrying { attempt, wait, cause: cause.into() }
+    }
+
+    /// The turn started on the model `model`.
+    pub fn start(model: impl Into<String>) -> Self {
+        Self::Start { model: model.into() }
+    }
+
+    /// A tool call `id` to the tool `name` begins.
+    pub fn tool_use_start(id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self::ToolUseStart { id: id.into(), name: name.into() }
+    }
+
+    /// The arguments of the call `id` are complete.
+    pub fn tool_use_end(id: impl Into<String>) -> Self {
+        Self::ToolUseEnd { id: id.into() }
+    }
+
+    /// One complete block that `provider` made.
+    pub fn opaque(provider: impl Into<String>, block: Value) -> Self {
+        Self::Opaque { provider: provider.into(), block }
+    }
+}
+
+/// What [`TurnStream::try_next`] found.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
+pub enum Next {
+    /// An event.
+    Event(LlmEvent),
+    /// Nothing yet.
+    Wait,
+    /// The stream is over.
+    End,
+}
+
+/// A finished turn, folded from its events.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
+pub struct Turn {
+    /// The model that served it.
+    pub model: String,
+    /// The assistant message to append to the history.
+    pub message: Message,
+    /// The final usage.
+    pub usage: Usage,
+    /// Why it stopped.
+    pub stop: StopReason,
+    /// How many `Retrying` events came first.
+    pub retries: u8,
+}
+
+impl Turn {
+    /// A turn served by `model` that ended with `stop`, with no retries.
+    pub fn new(model: impl Into<String>, message: Message, usage: Usage, stop: StopReason) -> Self {
+        Self { model: model.into(), message, usage, stop, retries: 0 }
+    }
+
+    /// Sets how many `Retrying` events came first.
+    #[must_use]
+    pub fn with_retries(mut self, retries: u8) -> Self {
+        self.retries = retries;
+        self
+    }
+}
+
+/// Where a [`TurnStream`] gets events: a provider's turn task, or a script. Implementations never see `Cancel`
+/// and never repeat an event after `Stop` or an error.
+pub trait EventSource: Send {
+    /// The next event, waiting at most `wait` (zero never blocks). Errors end the source.
+    ///
+    /// # Errors
+    /// The turn's failure; the stream passes it on once and then reports `End`.
+    fn poll(&mut self, wait: Duration) -> Result<Next, LlmError>;
+}
+
+/// The events of one turn, pulled by the caller. Dropping it drops the source, which cancels the turn.
+pub struct TurnStream {
+    /// `None` once the stream is cancelled, so the provider's task or connection stops at once.
+    source: Option<Box<dyn EventSource>>,
+    cancel: Cancel,
+    usage: Option<Usage>,
+    done: bool,
+    /// An event has been handed to the caller, so [`collect`](TurnStream::collect) can no longer see them all.
+    taken: bool,
+}
+
+impl TurnStream {
+    /// A stream over `source` that obeys `cancel` on every call.
+    pub fn new(source: Box<dyn EventSource>, cancel: &Cancel) -> Self {
+        Self { source: Some(source), cancel: cancel.clone(), usage: None, done: false, taken: false }
+    }
+
+    /// The next event if one is ready; never blocks. Once it has returned an event, [`collect`](Self::collect) refuses
+    /// the stream: pull events one by one or fold them all, not both.
+    ///
+    /// # Errors
+    /// The turn's error, once; `Cancelled` on the first call after `cancel()`. Every later call returns `End`.
+    pub fn try_next(&mut self) -> Result<Next, LlmError> {
+        self.next_timeout(Duration::ZERO)
+    }
+
+    /// The next event, blocking up to `wait`. As with [`try_next`](Self::try_next), an event returned here rules out
+    /// [`collect`](Self::collect) on this stream.
+    ///
+    /// # Errors
+    /// As [`try_next`](Self::try_next).
+    pub fn next_timeout(&mut self, wait: Duration) -> Result<Next, LlmError> {
+        if self.done {
+            return Ok(Next::End);
+        }
+        if self.cancel.is_cancelled() {
+            self.finish();
+            return Err(LlmError::Cancelled);
+        }
+        let Some(source) = self.source.as_mut() else {
+            return Ok(Next::End);
+        };
+        match source.poll(wait) {
+            Ok(Next::Event(event)) => {
+                match &event {
+                    // Reports are cumulative, so a smaller one is a glitch; keep the largest of each counter so what is
+                    // charged never drops.
+                    LlmEvent::Usage(u) => self.usage = Some(self.usage.map_or(*u, |old| keep_largest(old, *u))),
+                    LlmEvent::Stop(_) => self.finish(),
+                    _ => {}
+                }
+                // A source that sends `Stop` ends the stream after it; the caller sees `End` next.
+                self.taken = true;
+                Ok(Next::Event(event))
+            }
+            Ok(Next::End) => {
+                self.finish();
+                Ok(Next::End)
+            }
+            Ok(Next::Wait) => Ok(Next::Wait),
+            Err(e) => {
+                self.finish();
+                Err(e)
+            }
+        }
+    }
+
+    /// The one place a stream ends. Dropping the source is what stops the provider's task or connection, so it
+    /// happens here and not when the stream itself is dropped; `usage` stays readable.
+    fn finish(&mut self) {
+        self.done = true;
+        self.source = None;
+    }
+
+    /// The usage seen so far: the largest report of each counter. A provider bills it even when the turn then fails, so the caller charges it.
+    pub fn usage_so_far(&self) -> Option<Usage> {
+        self.usage
+    }
+
+    /// Reads to the end and folds the events into a [`Turn`]. It borrows the stream, so
+    /// [`usage_so_far`](Self::usage_so_far) survives an error.
+    ///
+    /// It must see every event of the turn, so it is for a stream nobody has pulled from: once
+    /// [`try_next`](Self::try_next) or [`next_timeout`](Self::next_timeout) has returned an event, or an earlier
+    /// `collect` has read some, it refuses and changes nothing.
+    ///
+    /// # Errors
+    /// `Unsupported` if an event was already taken from the stream; the turn's error; `Network` if nothing arrives within `idle`; `Malformed` if the events break the order of
+    /// llm-api D3 (no `Stop`, no `Usage`, an unclosed or nested call, invalid JSON arguments).
+    pub fn collect(&mut self, idle: Duration) -> Result<Turn, LlmError> {
+        if self.taken {
+            return Err(LlmError::Unsupported(
+                "collect needs every event of the turn, but some were already taken with try_next or next_timeout"
+                    .into(),
+            ));
+        }
+        let mut fold = Fold::default();
+        let result = loop {
+            match self.next_timeout(idle) {
+                Ok(Next::Event(event)) => {
+                    if let Err(e) = fold.push(event) {
+                        break Err(e);
+                    }
+                }
+                Ok(Next::Wait) => break Err(LlmError::Network(format!("no event within {} ms", idle.as_millis()))),
+                Ok(Next::End) => break fold.finish(self.usage),
+                Err(e) => break Err(e),
+            }
+        };
+        // Whatever collect fails on ends the stream, as an error from the source does.
+        if result.is_err() {
+            self.finish();
+        }
+        result
+    }
+}
+
+/// The component-wise maximum of two cumulative usage reports.
+fn keep_largest(a: Usage, b: Usage) -> Usage {
+    Usage {
+        input: a.input.max(b.input),
+        output: a.output.max(b.output),
+        cache_read: a.cache_read.max(b.cache_read),
+        cache_write: a.cache_write.max(b.cache_write),
+    }
+}
+
+/// An open tool call: id, name and the raw argument text so far.
+struct OpenCall {
+    id: String,
+    name: String,
+    json: String,
+}
+
+#[derive(Default)]
+struct Fold {
+    model: String,
+    blocks: Vec<ContentBlock>,
+    text: String,
+    call: Option<OpenCall>,
+    stop: Option<StopReason>,
+    retries: u8,
+}
+
+impl Fold {
+    fn flush_text(&mut self) {
+        if !self.text.is_empty() {
+            self.blocks.push(ContentBlock::Text(std::mem::take(&mut self.text)));
+        }
+    }
+
+    fn push(&mut self, event: LlmEvent) -> Result<(), LlmError> {
+        match event {
+            LlmEvent::Retrying { .. } => self.retries = self.retries.saturating_add(1),
+            LlmEvent::Start { model, .. } => self.model = model,
+            LlmEvent::TextDelta(t) => self.text.push_str(&t),
+            LlmEvent::ToolUseStart { id, name, .. } => {
+                if let Some(open) = &self.call {
+                    return Err(LlmError::Malformed(format!("tool call {id} starts inside open call {}", open.id)));
+                }
+                self.flush_text();
+                self.call = Some(OpenCall { id, name, json: String::new() });
+            }
+            LlmEvent::ToolUseInput(fragment) => match &mut self.call {
+                Some(call) => call.json.push_str(&fragment),
+                None => return Err(LlmError::Malformed("tool input outside a tool call".into())),
+            },
+            LlmEvent::ToolUseEnd { id, .. } => {
+                let call = self.call.take().filter(|c| c.id == id);
+                let Some(call) = call else {
+                    return Err(LlmError::Malformed(format!("tool call end for unopened id {id}")));
+                };
+                // A call with no arguments sends no fragments; its input is the empty object.
+                let source = if call.json.trim().is_empty() { "{}" } else { call.json.as_str() };
+                let input = serde_json::from_str(source)
+                    .map_err(|e| LlmError::Malformed(format!("tool call {id} has invalid JSON arguments: {e}")))?;
+                self.blocks.push(ContentBlock::tool_use(call.id, call.name, input));
+            }
+            LlmEvent::Opaque { provider, block, .. } => {
+                self.flush_text();
+                self.blocks.push(ContentBlock::opaque(provider, block));
+            }
+            LlmEvent::Usage(_) => {}
+            LlmEvent::Stop(reason) => self.stop = Some(reason),
+        }
+        Ok(())
+    }
+
+    fn finish(mut self, usage: Option<Usage>) -> Result<Turn, LlmError> {
+        self.flush_text();
+        if self.call.is_some() {
+            return Err(LlmError::Malformed("the stream ended inside a tool call".into()));
+        }
+        let stop = self.stop.ok_or_else(|| LlmError::Malformed("the stream ended without a stop".into()))?;
+        let usage = usage.ok_or_else(|| LlmError::Malformed("the turn stopped without reporting usage".into()))?;
+        let message = Message { role: Role::Assistant, content: self.blocks };
+        Ok(Turn { model: self.model, message, usage, stop, retries: self.retries })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A source that plays a fixed list, then ends.
+    struct List(std::collections::VecDeque<Result<Next, LlmError>>);
+
+    fn stream(items: Vec<Result<Next, LlmError>>, cancel: &Cancel) -> TurnStream {
+        TurnStream::new(Box::new(List(items.into())), cancel)
+    }
+
+    impl EventSource for List {
+        fn poll(&mut self, _wait: Duration) -> Result<Next, LlmError> {
+            self.0.pop_front().unwrap_or(Ok(Next::End))
+        }
+    }
+
+    #[allow(clippy::unnecessary_wraps)] // the list holds `Result`s
+    fn event(e: LlmEvent) -> Result<Next, LlmError> {
+        Ok(Next::Event(e))
+    }
+
+    fn empty_object() -> Value {
+        Value::Object(serde_json::Map::new())
+    }
+
+    type Flag = std::sync::Arc<std::sync::atomic::AtomicBool>;
+
+    /// A source that plays a list, then waits forever, and sets a flag when dropped.
+    struct Watched(std::collections::VecDeque<Result<Next, LlmError>>, Flag);
+
+    impl EventSource for Watched {
+        fn poll(&mut self, _wait: Duration) -> Result<Next, LlmError> {
+            self.0.pop_front().unwrap_or(Ok(Next::Wait))
+        }
+    }
+
+    impl Drop for Watched {
+        fn drop(&mut self) {
+            self.1.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    fn watched(items: Vec<Result<Next, LlmError>>, cancel: &Cancel) -> (TurnStream, Flag) {
+        let flag = Flag::default();
+        (TurnStream::new(Box::new(Watched(items.into(), flag.clone())), cancel), flag)
+    }
+
+    fn dropped(flag: &Flag) -> bool {
+        flag.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    #[test]
+    fn cancelling_drops_the_source_while_the_stream_is_alive() {
+        let cancel = Cancel::new();
+        let (mut s, flag) = watched(Vec::new(), &cancel);
+        assert!(matches!(s.try_next(), Ok(Next::Wait)));
+        assert!(!dropped(&flag));
+        cancel.cancel();
+        assert!(matches!(s.try_next(), Err(LlmError::Cancelled)));
+        assert!(dropped(&flag), "source must drop on the cancelling call");
+        assert!(matches!(s.try_next(), Ok(Next::End)));
+    }
+
+    #[test]
+    fn an_idle_timeout_drops_the_source_and_keeps_the_usage() {
+        let usage = Usage { input: 3, output: 2, cache_read: 0, cache_write: 0 };
+        let (mut s, flag) = watched(vec![event(LlmEvent::Usage(usage))], &Cancel::new());
+        assert!(matches!(s.collect(Duration::ZERO), Err(LlmError::Network(_))));
+        assert!(dropped(&flag));
+        assert_eq!(s.usage_so_far(), Some(usage));
+    }
+
+    #[test]
+    fn a_fold_error_drops_the_source_and_keeps_the_usage() {
+        let usage = Usage { input: 3, output: 2, cache_read: 0, cache_write: 0 };
+        let items = vec![
+            event(LlmEvent::Usage(usage)),
+            event(LlmEvent::Stop(StopReason::EndTurn)),
+            event(LlmEvent::Stop(StopReason::EndTurn)),
+        ];
+        let (mut s, flag) = watched(items, &Cancel::new());
+        // A second `Stop` is never read: the stream ended at the first, so the fold sees a turn without content and
+        // the source is gone either way.
+        let _ = s.collect(Duration::ZERO);
+        assert!(dropped(&flag));
+        assert_eq!(s.usage_so_far(), Some(usage));
+        let (mut bad, flag) = watched(vec![event(LlmEvent::Stop(StopReason::EndTurn))], &Cancel::new());
+        assert!(matches!(bad.collect(Duration::ZERO), Err(LlmError::Malformed(_))));
+        assert!(dropped(&flag));
+    }
+
+    #[test]
+    fn the_provider_ending_or_failing_drops_the_source() {
+        let (mut s, flag) = watched(vec![Ok(Next::End)], &Cancel::new());
+        assert!(matches!(s.try_next(), Ok(Next::End)));
+        assert!(dropped(&flag));
+        let (mut s, flag) = watched(vec![Err(LlmError::Auth)], &Cancel::new());
+        assert!(s.try_next().is_err());
+        assert!(dropped(&flag));
+        let (mut s, flag) = watched(vec![event(LlmEvent::Stop(StopReason::EndTurn))], &Cancel::new());
+        assert!(matches!(s.try_next(), Ok(Next::Event(_))));
+        assert!(dropped(&flag), "a Stop ends the stream, so the source is released");
+    }
+
+    #[test]
+    fn collect_refuses_a_stream_that_was_already_pulled_from() {
+        let items = vec![
+            event(LlmEvent::start("m")),
+            event(LlmEvent::TextDelta("hi".into())),
+            event(LlmEvent::Usage(Usage::new(1, 1))),
+            event(LlmEvent::Stop(StopReason::EndTurn)),
+        ];
+        let mut s = stream(items, &Cancel::new());
+        assert!(matches!(s.try_next(), Ok(Next::Event(LlmEvent::Start { .. }))));
+        assert!(matches!(s.collect(Duration::ZERO), Err(LlmError::Unsupported(_))));
+        // The refusal changes nothing: the rest of the events are still there to pull.
+        assert!(matches!(s.try_next(), Ok(Next::Event(LlmEvent::TextDelta(_)))));
+        assert!(matches!(s.next_timeout(Duration::ZERO), Ok(Next::Event(LlmEvent::Usage(_)))));
+        assert!(matches!(s.collect(Duration::ZERO), Err(LlmError::Unsupported(_))));
+    }
+
+    #[test]
+    fn collect_on_a_fresh_stream_still_folds_the_whole_turn() {
+        let items = vec![
+            event(LlmEvent::start("m")),
+            event(LlmEvent::TextDelta("hi".into())),
+            event(LlmEvent::Usage(Usage::new(1, 1))),
+            event(LlmEvent::Stop(StopReason::EndTurn)),
+        ];
+        let turn = stream(items, &Cancel::new()).collect(Duration::ZERO).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(turn.message.content, vec![ContentBlock::Text("hi".into())]);
+    }
+
+    #[test]
+    fn a_smaller_usage_report_never_lowers_what_is_charged() {
+        let big = Usage::new(10, 5).with_cache_read(3).with_cache_write(2);
+        let small = Usage::new(4, 9).with_cache_read(1);
+        let items = || {
+            vec![event(LlmEvent::Usage(big)), event(LlmEvent::Usage(small)), event(LlmEvent::Stop(StopReason::EndTurn))]
+        };
+        let want = Usage::new(10, 9).with_cache_read(3).with_cache_write(2);
+        let mut pulled = stream(items(), &Cancel::new());
+        assert!(matches!(pulled.try_next(), Ok(Next::Event(_))));
+        assert!(matches!(pulled.try_next(), Ok(Next::Event(_))));
+        assert_eq!(pulled.usage_so_far(), Some(want));
+        let mut folded = stream(items(), &Cancel::new());
+        let turn = folded.collect(Duration::ZERO).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(turn.usage, want);
+    }
+
+    #[test]
+    fn nothing_follows_stop() {
+        let items = vec![event(LlmEvent::Stop(StopReason::EndTurn)), event(LlmEvent::TextDelta("late".into()))];
+        let mut s = stream(items, &Cancel::new());
+        assert_eq!(s.try_next(), event(LlmEvent::Stop(StopReason::EndTurn)));
+        assert_eq!(s.try_next(), Ok(Next::End));
+    }
+
+    fn usage() -> LlmEvent {
+        LlmEvent::Usage(Usage { input: 1, output: 1, cache_read: 0, cache_write: 0 })
+    }
+
+    #[test]
+    fn a_stop_without_usage_is_malformed() {
+        let mut s = stream(vec![event(LlmEvent::Stop(StopReason::EndTurn))], &Cancel::new());
+        assert!(matches!(s.collect(Duration::ZERO), Err(LlmError::Malformed(_))));
+    }
+
+    #[test]
+    fn a_failed_collect_ends_the_stream() {
+        let items =
+            vec![event(LlmEvent::ToolUseInput("{".into())), event(usage()), event(LlmEvent::Stop(StopReason::EndTurn))];
+        let mut s = stream(items, &Cancel::new());
+        assert!(matches!(s.collect(Duration::ZERO), Err(LlmError::Malformed(_))));
+        assert_eq!(s.try_next(), Ok(Next::End));
+        let mut idle = stream(vec![Ok(Next::Wait)], &Cancel::new());
+        assert!(matches!(idle.collect(Duration::ZERO), Err(LlmError::Network(_))));
+        assert_eq!(idle.try_next(), Ok(Next::End));
+    }
+
+    #[test]
+    fn a_second_call_inside_an_open_call_is_malformed() {
+        let start = |id: &str| event(LlmEvent::tool_use_start(id, "n"));
+        let items = vec![start("a"), start("b"), event(usage()), event(LlmEvent::Stop(StopReason::ToolUse))];
+        assert!(matches!(stream(items, &Cancel::new()).collect(Duration::ZERO), Err(LlmError::Malformed(_))));
+    }
+
+    #[test]
+    fn a_stream_without_a_stop_is_malformed() {
+        let mut s = stream(vec![event(LlmEvent::TextDelta("a".into()))], &Cancel::new());
+        assert!(matches!(s.collect(Duration::ZERO), Err(LlmError::Malformed(_))));
+    }
+
+    #[test]
+    fn text_around_a_call_stays_in_order_and_empty_arguments_are_an_empty_object() {
+        let items = vec![
+            event(LlmEvent::TextDelta("a".into())),
+            event(LlmEvent::TextDelta("b".into())),
+            event(LlmEvent::tool_use_start("t", "n")),
+            event(LlmEvent::tool_use_end("t")),
+            event(LlmEvent::TextDelta("c".into())),
+            event(usage()),
+            event(LlmEvent::Stop(StopReason::ToolUse)),
+        ];
+        let turn = stream(items, &Cancel::new()).collect(Duration::ZERO).unwrap_or_else(|e| panic!("{e}"));
+        let call = ContentBlock::tool_use("t", "n", empty_object());
+        let want = vec![ContentBlock::Text("ab".into()), call, ContentBlock::Text("c".into())];
+        assert_eq!(turn.message.content, want);
+    }
+
+    #[test]
+    fn an_error_ends_the_stream_once() {
+        let mut s = stream(vec![Err(LlmError::Overloaded), event(LlmEvent::TextDelta("x".into()))], &Cancel::new());
+        assert_eq!(s.try_next(), Err(LlmError::Overloaded));
+        assert_eq!(s.try_next(), Ok(Next::End));
+    }
+}

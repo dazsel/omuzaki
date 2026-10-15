@@ -1,0 +1,14 @@
+# Render case for `tools/ci/evidence.py`: CI renders it at the PR's base and at the PR, for pull requests labelled
+# `visual` (.github/workflows/visual-evidence.yml). The format is documented at the top of tools/ci/evidence.py.
+#
+# The framing contact sheet: every template in every framing preset, at 16:9 and at 9:16, on the mock renderer (no GPU).
+# It is the picture the Director signs the framing off on (`frame`, D5).
+
+[[case]]
+name = "framing"
+description = "frame(): soft-sd, mini, standard and tall (rows) at face, bust, full and hands (columns), 16:9 and 9:16, mock renderer."
+env = { OMUZAKI_FRAMING_PNG = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-stage", "--test", "scene_framing_sheet", "write_the_framing_sheet_when_asked", "--", "--exact"] },
+]
+images = ["framing-16x9.png", "framing-9x16.png"]
