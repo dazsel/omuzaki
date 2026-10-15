@@ -345,6 +345,8 @@ impl MorphPool {
         if self.slots.capacity() > 2 * self.slots.len() {
             self.slots.shrink_to_fit();
         }
+        // The dispatch list holds at most a blend and a weld for each slot.
+        self.pending.shrink_to(2 * self.slots.len());
         // Capacity follows what the slots keep, not this frame's use: a slot that alternates between a large and a small
         // mesh keeps the large one's room, so the scratch must too, or it would be reallocated every large frame.
         let largest = self.slots.iter().map(|s| s.blended.capacity()).max().unwrap_or(0);
@@ -411,6 +413,9 @@ impl MorphPool {
         let usage = wgpu::BufferUsages::VERTEX
             | wgpu::BufferUsages::COPY_DST
             | if gpu.is_some() { wgpu::BufferUsages::STORAGE } else { wgpu::BufferUsages::empty() };
+        // The unit tests read the streams back to compare the two paths; nothing else ever does.
+        #[cfg(test)]
+        let usage = usage | wgpu::BufferUsages::COPY_SRC;
         for (index, (slot, instance)) in
             slots.iter_mut().zip(scene.instances.iter().map(Some).chain(std::iter::repeat(None))).enumerate()
         {
@@ -780,7 +785,17 @@ mod tests {
     }
 
     #[test]
-    fn a_scripted_run_reuses_every_buffer_and_ends_with_nothing_held() {
+    fn a_scripted_run_reuses_every_buffer_and_ends_with_nothing_held_on_the_cpu_path() {
+        scripted_run(false);
+    }
+
+    #[test]
+    fn a_scripted_run_reuses_every_buffer_and_ends_with_nothing_held_on_the_gpu_path() {
+        scripted_run(true);
+    }
+
+    /// The scripted scenes through `MorphPool::prepare` twice, on the GPU path or the CPU path.
+    fn scripted_run(on_gpu: bool) {
         use omuzaki_core::glam::Mat4;
         use omuzaki_render_api::{Camera, MaterialId, MeshId, MeshOptions, MorphRange};
 
@@ -789,6 +804,8 @@ mod tests {
         })
         .unwrap();
         let mut meshes = Arena::default();
+        let mut pool = if on_gpu { MorphPool::new(&gpu.device) } else { MorphPool::default() };
+        assert_eq!(pool.path(), if on_gpu { MorphPath::Gpu } else { MorphPath::Cpu });
         let ids: Vec<MeshId> = [
             omuzaki_render_mock::shapes::cuboid(Vec3::ONE),
             omuzaki_render_mock::shapes::quad(omuzaki_core::glam::Vec2::ONE),
@@ -800,6 +817,7 @@ mod tests {
             let set = MorphSet::from_dense(n, &[(Slug::new("a").unwrap(), &deltas, &[])], 0.0).unwrap();
             let options = MeshOptions { morphs: Some(set), ..MeshOptions::default() };
             let (index, generation) = meshes.insert(GpuMesh::upload(&gpu, mesh, &options).unwrap());
+            pool.attach(&gpu.device, index, generation, meshes.get(index, generation).unwrap()).unwrap();
             MeshId::from_parts(index, generation)
         })
         .collect();
@@ -820,37 +838,58 @@ mod tests {
             })
             .collect();
         let outlined = |instance: &Instance| instance.material.index() == 1;
-        let mut pool = MorphPool::default();
         let held = |pool: &MorphPool| -> Vec<_> {
-            pool.slots.iter().map(|s| (s.shapes.buffer.clone(), s.smooth.buffer.clone())).collect()
+            pool.slots
+                .iter()
+                .map(|s| (s.shapes.buffer.clone(), s.smooth.buffer.clone(), s.gpu.as_ref().map(|g| g.params.clone())))
+                .collect()
         };
         for scene in &scenes {
             pool.prepare(&gpu.device, &gpu.queue, &meshes, scene, outlined).unwrap();
         }
         let warmed = held(&pool);
         // Everything that can allocate: the vectors' capacities, which must not change once warmed.
-        let capacities = |pool: &MorphPool| -> (Vec<usize>, [usize; 3]) {
+        let capacities = |pool: &MorphPool| -> (Vec<usize>, [usize; 5]) {
             let per_slot = pool
                 .slots
                 .iter()
                 .flat_map(|s| [s.blended.capacity(), s.smooth_cpu.capacity(), s.weights.capacity()])
                 .collect();
-            (per_slot, [pool.slots.capacity(), pool.flags.capacity(), pool.sums.capacity()])
+            let pool_wide = [
+                pool.slots.capacity(),
+                pool.flags.capacity(),
+                pool.sums.capacity(),
+                pool.pending.capacity(),
+                pool.meshes_gpu.capacity(),
+            ];
+            (per_slot, pool_wide)
         };
         for scene in &scenes {
             let before = capacities(&pool);
             pool.prepare(&gpu.device, &gpu.queue, &meshes, scene, outlined).unwrap();
             assert_eq!(capacities(&pool), before, "a capacity changed in the second pass");
             for (slot, was) in pool.slots.iter().zip(&warmed) {
-                assert!(slot.shapes.buffer == was.0 && slot.smooth.buffer == was.1, "a buffer was replaced");
+                let now = (&slot.shapes.buffer, &slot.smooth.buffer, slot.gpu.as_ref().map(|g| &g.params));
+                assert!(now.0 == &was.0 && now.1 == &was.1 && now.2 == was.2.as_ref(), "a buffer was replaced");
             }
         }
         let empty = Scene::new(Camera::default());
         for _ in 0..=IDLE_FRAMES {
             pool.prepare(&gpu.device, &gpu.queue, &meshes, &empty, outlined).unwrap();
         }
-        let kept = (pool.slots.len(), pool.bytes(), pool.flags.capacity(), pool.sums.capacity());
-        assert_eq!(kept, (0, 0, 0, 0), "slots, buffers and scratch are all given back");
+        // What is left is the meshes' own GPU data (nothing on the CPU path), which lives as long as the meshes.
+        let mesh_data: u64 = pool.meshes_gpu.iter().flatten().map(|(_, data)| data.bytes).sum();
+        assert_eq!(mesh_data > 0, on_gpu);
+        let kept = (
+            pool.slots.len(),
+            pool.bytes() - mesh_data,
+            pool.flags.capacity(),
+            pool.sums.capacity(),
+            pool.pending.capacity(),
+        );
+        assert_eq!(kept, (0, 0, 0, 0, 0), "slots, buffers, scratch and the dispatch list are all given back");
+        let attached = pool.meshes_gpu.len();
+        assert_eq!(attached > 0, on_gpu);
         // With the pool empty, instances whose weights are all zero need no slot: nothing is created, let alone
         // created and dropped again every frame.
         for scene in &scenes {
@@ -859,5 +898,10 @@ mod tests {
             pool.prepare(&gpu.device, &gpu.queue, &meshes, &zeroed, outlined).unwrap();
             assert_eq!((pool.slots.len(), pool.slots.capacity()), (0, 0), "zero weights made a slot");
         }
+        // Releasing the meshes frees their data and the table that held it.
+        for id in &ids {
+            pool.forget(id.index(), id.generation());
+        }
+        assert_eq!((pool.bytes(), pool.meshes_gpu.len(), pool.meshes_gpu.capacity()), (0, 0, 0));
     }
 }

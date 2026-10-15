@@ -391,3 +391,190 @@ pub(super) fn record<'a>(
         pass.dispatch_workgroups(mesh.vertices.div_ceil(WORKGROUP).max(1), 1, 1);
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss, clippy::cast_sign_loss, clippy::too_many_lines)]
+mod tests {
+    use omuzaki_core::glam::Mat4;
+    use omuzaki_core::glam::Vec3;
+    use omuzaki_core::id::Slug;
+    use omuzaki_render_api::{
+        Camera, Instance, MaterialId, MeshData, MeshId, MeshOptions, MorphRange, MorphSet, Scene, SparseMorph,
+    };
+
+    use super::super::MorphPool;
+    use crate::arena::Arena;
+    use crate::gpu::{AdapterPreference, Gpu, HeadlessOptions, WAIT_LIMIT};
+    use crate::resource::mesh::GpuMesh;
+
+    /// A deterministic stream of floats in `-1..1` (a small LCG; nothing here may depend on a platform's `rand`).
+    struct Noise(u64);
+
+    impl Noise {
+        fn next(&mut self) -> f32 {
+            self.0 = self.0.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+            ((self.0 >> 40) as f32 / (1_u64 << 23) as f32) - 1.0
+        }
+
+        fn vec3(&mut self) -> Vec3 {
+            Vec3::new(self.next(), self.next(), self.next())
+        }
+    }
+
+    /// The synthetic head of `docs/design/byom.md` D2: random positions and normals, skinned to four joints, with every
+    /// fourth vertex a copy of the one before at the same point (a seam, so the weld table has groups), and 52 targets,
+    /// each a contiguous region of 3 to 25 % of the head with one vertex in eight skipped, normal deltas on the odd ones.
+    fn head(n: usize, targets: usize) -> (MeshData, MorphSet) {
+        let mut noise = Noise(0x6d6f_7270);
+        let mut mesh = MeshData::default();
+        for i in 0..n {
+            if i % 4 == 3 {
+                let previous = mesh.positions[i - 1];
+                mesh.positions.push(previous);
+            } else {
+                mesh.positions.push(noise.vec3() * 0.15 + Vec3::new(0.0, 1.6, 0.0));
+            }
+            mesh.normals.push(noise.vec3().normalize_or(Vec3::Z));
+            mesh.joints.push([(i % 4) as u16, 0, 0, 0]);
+            mesh.weights.push([1.0, 0.0, 0.0, 0.0]);
+        }
+        mesh.indices = (0..n as u32 - 2).step_by(3).flat_map(|i| [i, i + 1, i + 2]).collect();
+        let sparse = (0..targets)
+            .map(|t| {
+                let share = 0.03 + 0.22 * (t % 12) as f32 / 11.0;
+                let len = (n as f32 * share) as usize;
+                let start = (t * 7_919) % (n - len);
+                let indices: Vec<u32> = (start..start + len).filter(|i| i % 8 != 0).map(|i| i as u32).collect();
+                let positions = indices.iter().map(|_| noise.vec3() * 0.01).collect();
+                let normals =
+                    if t % 2 == 1 { indices.iter().map(|_| noise.vec3() * 0.2).collect() } else { Vec::new() };
+                SparseMorph { name: Slug::new(format!("t{t}")).unwrap(), indices, positions, normals }
+            })
+            .collect();
+        (mesh, MorphSet::from_targets(n, sparse).unwrap())
+    }
+
+    fn open() -> Gpu {
+        Gpu::open_headless(HeadlessOptions { adapter: AdapterPreference::Software }).unwrap()
+    }
+
+    /// Records `pool`'s dispatches, then reads back the first `bytes` of each of `buffers`.
+    fn run_and_read(gpu: &Gpu, pool: &MorphPool, buffers: &[(&wgpu::Buffer, u64)]) -> Vec<Vec<f32>> {
+        let mut encoder = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        pool.record(&mut encoder);
+        let staging: Vec<wgpu::Buffer> = buffers
+            .iter()
+            .map(|(buffer, bytes)| {
+                let staging = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("morph test read-back"),
+                    size: *bytes,
+                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                    mapped_at_creation: false,
+                });
+                encoder.copy_buffer_to_buffer(buffer, 0, &staging, 0, *bytes);
+                staging
+            })
+            .collect();
+        gpu.queue.submit([encoder.finish()]);
+        for staging in &staging {
+            staging.slice(..).map_async(wgpu::MapMode::Read, |result| result.unwrap());
+        }
+        gpu.wait_idle(WAIT_LIMIT).unwrap();
+        staging.iter().map(|s| bytemuck::cast_slice(&s.slice(..).get_mapped_range().unwrap()).to_vec()).collect()
+    }
+
+    /// One scene with one morphing instance of `mesh`, weights `weights`.
+    fn scene_of(mesh: MeshId, weights: &[f32]) -> Scene {
+        let mut scene = Scene::new(Camera::default());
+        let mut instance = Instance::new(mesh, MaterialId::from_parts(0, 0), Mat4::IDENTITY);
+        instance.morph = Some(MorphRange { start: 0, len: weights.len() as u32 });
+        scene.instances.push(instance);
+        scene.morph_weights = weights.to_vec();
+        scene
+    }
+
+    /// Both paths blend the 20 000-vertex, 52-target head at the weights of `docs/design/byom.md` D2's check (0, 0.25,
+    /// 0.5 and 1 on every target) and at mixed and negative ones; the GPU result is within 1e-4 m of the CPU's, its
+    /// outline directions are within 1e-4, and its bounds contain the CPU path's exact ones.
+    #[test]
+    fn the_gpu_path_matches_the_cpu_path_on_a_20_000_vertex_52_target_head() {
+        let gpu = open();
+        let (mesh, set) = head(20_000, 52);
+        let n = mesh.positions.len();
+        let mut meshes = Arena::default();
+        let upload =
+            GpuMesh::upload(&gpu, &mesh, &MeshOptions { morphs: Some(set), ..MeshOptions::default() }).unwrap();
+        let (index, generation) = meshes.insert(upload);
+        let id = MeshId::from_parts(index, generation);
+        let (mut gpu_pool, mut cpu_pool) = (MorphPool::new(&gpu.device), MorphPool::default());
+        assert_eq!(gpu_pool.path().name(), "gpu", "this adapter has compute");
+        gpu_pool.attach(&gpu.device, index, generation, meshes.get(index, generation).unwrap()).unwrap();
+
+        let mut noise = Noise(7);
+        let mixed: Vec<f32> = (0..52).map(|_| noise.next() * 1.5).collect();
+        let cases: [(&str, Vec<f32>); 6] = [
+            ("0", vec![0.0; 52]),
+            ("0.25", vec![0.25; 52]),
+            ("0.5", vec![0.5; 52]),
+            ("1", vec![1.0; 52]),
+            ("-1", vec![-1.0; 52]),
+            ("mixed in -1.5..1.5", mixed),
+        ];
+        let (mut worst_position, mut worst_normal, mut worst_direction) = (0.0_f32, 0.0_f32, 0.0_f32);
+        for (name, weights) in &cases {
+            let scene = scene_of(id, weights);
+            let outlined = |_: &Instance| true;
+            cpu_pool.prepare(&gpu.device, &gpu.queue, &meshes, &scene, outlined).unwrap();
+            gpu_pool.prepare(&gpu.device, &gpu.queue, &meshes, &scene, outlined).unwrap();
+            if weights.iter().all(|w| *w == 0.0) {
+                assert!(
+                    gpu_pool.shapes(0).is_none() && cpu_pool.shapes(0).is_none(),
+                    "zero weights draw the mesh's own stream"
+                );
+                continue;
+            }
+            let slot = &gpu_pool.slots[0];
+            let (shapes, smooth) = (slot.shapes.buffer.as_ref().unwrap(), slot.smooth.buffer.as_ref().unwrap());
+            let [blended, directions] =
+                &run_and_read(&gpu, &gpu_pool, &[(shapes, (n * 24) as u64), (smooth, (n * 12) as u64)])[..]
+            else {
+                unreachable!("two buffers were read")
+            };
+            let reference = &cpu_pool.slots[0];
+            let (mut position_error, mut normal_error, mut direction_error) = (0.0_f32, 0.0_f32, 0.0_f32);
+            for (v, shape) in reference.blended.iter().enumerate() {
+                for axis in 0..3 {
+                    position_error = position_error.max((blended[v * 6 + axis] - shape.position[axis]).abs());
+                    normal_error = normal_error.max((blended[v * 6 + 3 + axis] - shape.normal[axis]).abs());
+                    direction_error =
+                        direction_error.max((directions[v * 3 + axis] - reference.smooth_cpu[v][axis]).abs());
+                }
+            }
+            println!(
+                "weights {name}: max position error {position_error:e} m, normal {normal_error:e}, outline direction {direction_error:e}"
+            );
+            (worst_position, worst_normal, worst_direction) = (
+                worst_position.max(position_error),
+                worst_normal.max(normal_error),
+                worst_direction.max(direction_error),
+            );
+
+            // The conservative bounds contain the exact ones, whole and per joint.
+            let (exact, grown) = (&reference.bounds, &slot.bounds);
+            let palette = [Mat4::IDENTITY; 4];
+            for palette in [None, Some(&palette[..])] {
+                let (e, g) = (exact.instance(&Mat4::IDENTITY, palette), grown.instance(&Mat4::IDENTITY, palette));
+                assert!(
+                    g.min.cmple(e.min).all() && g.max.cmpge(e.max).all(),
+                    "weights {name}: {g:?} must contain {e:?}"
+                );
+            }
+        }
+        println!(
+            "worst over every case: position {worst_position:e} m, normal {worst_normal:e}, outline {worst_direction:e}"
+        );
+        assert!(worst_position <= 1e-4, "position error {worst_position}");
+        assert!(worst_normal <= 1e-4, "normal error {worst_normal}");
+        assert!(worst_direction <= 1e-4, "outline direction error {worst_direction}");
+    }
+}
