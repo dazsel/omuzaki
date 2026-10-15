@@ -134,6 +134,30 @@ fn feature_keys_are_kept_byte_identically_and_reported_unchecked() {
     );
 }
 
+/// The owner's check of `live-api-probe`, a key this test binary registers as its owner would.
+fn probe_check(value: &Value) -> Vec<Finding> {
+    if value.is_object() { Vec::new() } else { vec![Finding::note(omuzaki_live_api::l10n::params_not_object())] }
+}
+
+omuzaki_live_api::register_show_key!("live-api-probe", check = probe_check);
+
+#[test]
+fn a_registered_key_is_checked_by_its_owner() {
+    use omuzaki_live_api::show::keys::{self, KeyKind};
+    assert!(keys::registered().contains("live-api-probe") && keys::refused().is_empty());
+    assert!(matches!(keys::classify("live-api-probe"), Ok(KeyKind::Registered(_))));
+    let node = json!({"show": {"name": "x"}, "live-api-probe": 3});
+    let show = ShowDef::from_node(&node).unwrap();
+    let checked = show.check();
+    assert_eq!(checked.len(), 1);
+    assert_eq!(
+        (checked[0].key.as_deref(), checked[0].text.id.as_ref()),
+        (Some("live-api-probe"), "live-api-params-not-object")
+    );
+    let fine = ShowDef::from_node(&json!({"show": {"name": "x"}, "live-api-probe": {"a": 1}})).unwrap();
+    assert_eq!(fine.check(), []);
+}
+
 #[test]
 fn a_misspelt_key_names_the_one_it_resembles() {
     let (doc, id) = main_show();

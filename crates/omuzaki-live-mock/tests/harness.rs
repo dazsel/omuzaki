@@ -511,3 +511,72 @@ fn node_errors_are_recorded_as_faults() {
     assert_eq!(h.faults()[0].error.code, NodeErrorCode::Type);
     assert!(h.fired().is_empty() && h.calls().is_empty());
 }
+
+// ── design D4's `flow.wait`, verbatim, through the harness (#952) ─────────────────────────────────────────────
+
+/// Parameters of `flow.wait`: none; the duration is an input so it can vary per event.
+#[derive(Serialize, Deserialize, JsonSchema, Default)]
+#[serde(deny_unknown_fields)]
+pub struct WaitParams {}
+
+/// Delays each event on `in` by `seconds`; every event waits on its own, and `cancel` drops the waiting ones.
+pub struct Wait {
+    pending: Vec<omuzaki_live_api::node::WakeId>,
+}
+
+impl NodeKind for Wait {
+    type Params = WaitParams;
+    fn meta() -> NodeMeta {
+        NodeMeta::new("flow.wait", "Wait, then pass the event on.", NodeClass::Active, Category::Flow)
+    }
+    fn ports(_: &WaitParams) -> Ports {
+        Ports::new()
+            .event_in("in", "Each event to delay.")
+            .event_in("cancel", "Drops every event still waiting.")
+            .value_in("seconds", PortType::Number, Val::Number(1.0), "How long to wait.")
+            .event_out("out", "The event, after the wait.")
+    }
+    fn new(_: WaitParams) -> Self {
+        Self { pending: Vec::new() }
+    }
+}
+
+impl Node for Wait {
+    fn handle(&mut self, input: Input<'_>, cx: &mut NodeCx<'_>) -> Result<(), NodeError> {
+        match input {
+            Input::Event { port: "in", .. } => {
+                let seconds = cx.input_number("seconds")?.max(0.0);
+                self.pending.push(cx.wake_after(Seconds(seconds))?);
+                Ok(())
+            }
+            Input::Event { port: "cancel", .. } => {
+                self.pending.drain(..).for_each(|id| cx.cancel_wake(id));
+                Ok(())
+            }
+            Input::Event { port, .. } => Err(NodeError::unknown_port(port)),
+            Input::Wake { id, .. } => {
+                self.pending.retain(|p| *p != id);
+                cx.fire("out")
+            }
+            Input::Start | Input::Stop | Input::Trigger { .. } | Input::Reply { .. } => Ok(()), // not used here
+            other => Err(NodeError::unhandled(&other)), // an input added after this node (D21)
+        }
+    }
+}
+omuzaki_live_api::register_node!(Wait);
+
+#[test]
+fn the_designs_flow_wait_runs_in_the_harness() {
+    let mut h = NodeHarness::by_id("flow.wait", json!({})).unwrap();
+    h.set_input("seconds", 2.0);
+    h.send("in");
+    h.advance(Seconds(1.0));
+    h.set_input("seconds", 0.5);
+    h.send("in");
+    h.advance(Seconds(0.5));
+    assert_eq!(h.fired().iter().map(|f| f.at).collect::<Vec<_>>(), [Seconds(1.5)]);
+    h.send("cancel");
+    h.advance(Seconds(5.0));
+    assert_eq!(h.fired().len(), 1, "cancel drops the event still waiting");
+    assert_eq!(h.faults(), []);
+}
