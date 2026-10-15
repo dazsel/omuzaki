@@ -49,6 +49,7 @@
 
 pub mod blend;
 pub mod channel;
+pub mod constraint;
 pub mod frame;
 pub mod humanoid_frames;
 pub mod ik;
@@ -65,6 +66,7 @@ pub use channel::{
     ARKIT_COUNT, CHANNEL_CAPACITY, CHANNELS, CUSTOM_COUNT, Channel, ChannelBuf, ChannelInfo, ChannelMask, Mirror,
     Region, Unit,
 };
+pub use constraint::{Axis, BoneConstraint, ConstraintError, ConstraintKind, ConstraintSet, SignedAxis};
 pub use frame::{DeviceProfile, EyeAngles, FrameSource, HeadPose, NotArkit, Tick, TrackFrame, TrackStatus};
 pub use humanoid_frames::HumanoidFrames;
 pub use ik::{IkGoals, IkSolver, Limb, LookAt};

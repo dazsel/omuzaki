@@ -31,5 +31,9 @@ harness = false
 name = "ik"
 harness = false
 
+[[bench]]
+name = "constraint"
+harness = false
+
 [lints]
 workspace = true
