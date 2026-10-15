@@ -9,7 +9,7 @@
 //! | [`packet`] | packets, side data and the [`ByteMeter`](packet::ByteMeter) |
 //! | [`encoder`] | stream and encoder specs, [`Frame`](encoder::Frame), the [`Encoder`](encoder::Encoder) traits |
 //! | [`mux`] | [`Container`](mux::Container) and the [`Muxer`](mux::Muxer) traits |
-//! | [`input`] | the [`InputTap`](input::InputTap) trait, [`FrameStamp`](input::FrameStamp) and the tail contract |
+//! | [`input`] | the [`InputTap`] trait, [`FrameStamp`] and the tail contract |
 //! | [`output`] | the [`Output`](output::Output) trait and its config and status |
 //! | [`error`] | [`StreamError`](error::StreamError) |
 
