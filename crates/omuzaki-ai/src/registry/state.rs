@@ -49,6 +49,28 @@ pub(super) struct Import {
     pub revoked: bool,
 }
 
+/// A model the person added. A failed one is kept too, with its `problem`, so it is listed as disabled with the reason.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(super) struct UserModel {
+    pub model: ModelRef,
+    pub manifest: ModelManifest,
+    /// Why it can't be used, if it can't.
+    #[serde(default)]
+    pub problem: Option<String>,
+    pub eval: Option<EvalReport>,
+}
+
+/// A person's acknowledgement of the disclaimer for one digest (ADR 0016 rule 2).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(super) struct Acknowledgement {
+    pub digest: Sha256,
+    pub person: String,
+    /// The `DISCLAIMER_VERSION` whose words were accepted. A later version doesn't void this.
+    pub disclaimer_version: u32,
+    /// Seconds since the Unix epoch.
+    pub at: u64,
+}
+
 /// The whole file.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub(super) struct State {
@@ -64,6 +86,12 @@ pub(super) struct State {
     /// The highest catalogue epoch seen.
     #[serde(default)]
     pub catalogue_epoch: u32,
+    /// Models the person added, failed ones included.
+    #[serde(default)]
+    pub user: Vec<UserModel>,
+    /// One acknowledgement per model digest.
+    #[serde(default)]
+    pub acknowledgements: Vec<Acknowledgement>,
 }
 
 impl State {
@@ -75,6 +103,14 @@ impl State {
     pub fn revoked(&self, model: &ModelRef) -> bool {
         let mut records = self.imports.iter().filter(|i| &i.model == model).peekable();
         records.peek().is_some() && records.all(|i| i.revoked)
+    }
+
+    pub fn user(&self, model: &ModelRef) -> Option<&UserModel> {
+        self.user.iter().find(|u| &u.model == model)
+    }
+
+    pub fn acknowledged(&self, model: &ModelRef) -> bool {
+        self.acknowledgements.iter().any(|a| a.digest == model.digest)
     }
 
     pub fn health(&self, model: &ModelRef) -> Option<&Health> {

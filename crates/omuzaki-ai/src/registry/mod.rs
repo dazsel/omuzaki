@@ -15,6 +15,7 @@ mod install;
 mod state;
 #[cfg(test)]
 mod tests;
+mod user;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -228,12 +229,14 @@ impl Registry {
         let status = match self.disabled(state, entry) {
             _ if state.revoked(&entry.model) => ModelStatus::Revoked,
             Some(reason) => ModelStatus::Disabled { reason },
+            None if entry.origin == Origin::User => user::status(state, &entry.model),
             None if state.installed(&entry.model).is_some() => ModelStatus::Ready,
             None => ModelStatus::NotInstalled,
         };
         let eval = state
             .installed(&entry.model)
             .and_then(|i| i.eval.clone())
+            .or_else(|| state.user(&entry.model).and_then(|u| u.eval.clone()))
             .or_else(|| state.health(&entry.model).and_then(|h| h.eval.clone()));
         entry_of(&entry.manifest, &entry.model, entry.origin, status, active == Some(&entry.model), eval)
     }
@@ -242,6 +245,7 @@ impl Registry {
     /// of the same model never hides them), then installed versions nothing else lists.
     fn known(&self, state: &State) -> Vec<Registered> {
         let mut out: Vec<Registered> = self.catalogue.clone();
+        out.extend(Self::user_models(state));
         let imports = state.imports.iter().filter(|i| !i.revoked).chain(state.imports.iter().filter(|i| i.revoked));
         for import in imports {
             if !out.iter().any(|r| r.model == import.model) {
@@ -370,10 +374,9 @@ impl ModelRegistry for Registry {
     fn add(
         &self,
         request: omuzaki_ai_api::AddModel,
-        _progress: &dyn omuzaki_ai_api::Progress,
+        progress: &dyn omuzaki_ai_api::Progress,
     ) -> Result<ModelEntry, RegistryError> {
-        let what = request.manifest.map_or_else(|| request.slot.to_string(), |m| m.id.to_string());
-        Err(RegistryError::UnknownModel(format!("{what}: adding your own models isn't available yet")))
+        self.add_user_model(request, progress)
     }
 
     fn acknowledge(&self, model: &ModelRef, _person: &str) -> Result<(), RegistryError> {
