@@ -116,7 +116,11 @@ impl Withheld {
 /// Later fields are added with `#[serde(default)]`, so an older reader keeps reading the record. Empty and default
 /// fields are not written, so the minimal State serialises to exactly `doc_version`, `after_lsn`, `withheld` and
 /// `overflow` (T2); `overflow` is always written.
+///
+/// Reading checks what the constructors guarantee: `project` may be absent or empty only in the minimal State
+/// (`overflow: true`); any other State without one is an error, not a full State with no name.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "RawState")]
 #[non_exhaustive]
 pub struct StateRecord {
     /// The document version.
@@ -162,6 +166,65 @@ pub struct StateRecord {
     /// it does not know and reports it.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub live: BTreeMap<String, Value>,
+}
+
+/// What serde reads before [`StateRecord`] checks it: the same fields, no rules.
+#[derive(Deserialize)]
+struct RawState {
+    doc_version: DocVersion,
+    #[serde(default)]
+    project: String,
+    #[serde(default)]
+    scene: Option<SceneId>,
+    #[serde(default)]
+    camera: Option<String>,
+    #[serde(default)]
+    cast: Vec<CastEntry>,
+    #[serde(default)]
+    sources: Vec<SourceEntry>,
+    #[serde(default)]
+    voices: Vec<VoiceEntry>,
+    #[serde(default)]
+    models: BTreeMap<String, String>,
+    #[serde(default)]
+    delay_s: f32,
+    after_lsn: Lsn,
+    withheld: Vec<Withheld>,
+    #[serde(default)]
+    omitted: Vec<String>,
+    #[serde(default)]
+    omitted_more: u32,
+    #[serde(default)]
+    overflow: bool,
+    #[serde(default)]
+    live: BTreeMap<String, Value>,
+}
+
+impl TryFrom<RawState> for StateRecord {
+    type Error = String;
+
+    fn try_from(raw: RawState) -> Result<Self, Self::Error> {
+        if raw.project.is_empty() && !raw.overflow {
+            return Err("a State without `overflow: true` needs a non-empty `project` (T2)".to_owned());
+        }
+        Ok(Self {
+            doc_version: raw.doc_version,
+            project: raw.project,
+            scene: raw.scene,
+            camera: raw.camera,
+            cast: raw.cast,
+            sources: raw.sources,
+            voices: raw.voices,
+            models: raw.models,
+            delay_s: raw.delay_s,
+            after_lsn: raw.after_lsn,
+            withheld: raw.withheld,
+            omitted: raw.omitted,
+            omitted_more: raw.omitted_more,
+            overflow: raw.overflow,
+            live: raw.live,
+        })
+    }
 }
 
 // `skip_serializing_if` passes the field by reference.

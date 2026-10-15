@@ -173,3 +173,18 @@ fn a_full_state_written_by_new_contains_the_project() {
     assert_eq!(value["project"], "demo");
     assert_eq!(value["overflow"], false);
 }
+
+#[test]
+fn a_state_without_a_project_reads_only_as_the_overflow_fallback() {
+    // The overflow fallback may omit the project (T2); every other shape without one is malformed.
+    let overflow = r#"{"doc_version":17,"after_lsn":41,"withheld":[],"overflow":true}"#;
+    assert!(serde_json::from_str::<StateRecord>(overflow).is_ok());
+    for malformed in [
+        r#"{"doc_version":17,"after_lsn":41,"withheld":[]}"#,
+        r#"{"doc_version":17,"after_lsn":41,"withheld":[],"overflow":false}"#,
+        r#"{"doc_version":17,"project":"","after_lsn":41,"withheld":[]}"#,
+    ] {
+        let err = serde_json::from_str::<StateRecord>(malformed).expect_err("a full State needs its project");
+        assert!(err.to_string().contains("project"), "{err}");
+    }
+}
