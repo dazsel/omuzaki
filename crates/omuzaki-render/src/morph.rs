@@ -128,6 +128,11 @@ impl Stream {
     }
 }
 
+/// Frames a slot may go unused before its buffers are released: long enough that a scene which toggles an instance's
+/// morph, or alternates between a few scenes, keeps its buffers, short enough that a scene that stopped morphing
+/// (or got smaller) does not hold its memory for good.
+const IDLE_FRAMES: u32 = 120;
+
 /// The stream of one instance slot.
 struct Slot {
     shapes: Stream,
@@ -145,6 +150,8 @@ struct Slot {
     smooth_stale: bool,
     /// The instance morphs this frame, so the passes bind the slot's streams.
     active: bool,
+    /// Frames since the slot was last active, for [`IDLE_FRAMES`].
+    idle: u32,
 }
 
 impl Default for Slot {
@@ -159,6 +166,7 @@ impl Default for Slot {
             bounds: MeshBounds::empty(),
             smooth_stale: true,
             active: false,
+            idle: 0,
         }
     }
 }
@@ -205,6 +213,15 @@ impl MorphPool {
             if slot.source.is_some_and(|s| s.mesh == (index, generation)) {
                 *slot = Slot::default();
             }
+        }
+        self.release_scratch_if_unused();
+    }
+
+    /// Gives back the scratch (sized for the largest mesh blended) once no slot holds a blend.
+    fn release_scratch_if_unused(&mut self) {
+        if self.slots.iter().all(|s| s.source.is_none()) {
+            self.flags = Vec::new();
+            self.sums = Vec::new();
         }
     }
 
@@ -261,13 +278,19 @@ impl MorphPool {
             self.slots.iter_mut().zip(scene.instances.iter().map(Some).chain(std::iter::repeat(None)))
         {
             slot.active = false;
-            let Some(instance) = instance else { continue };
-            let Some(weights) = weights_of(instance) else { continue };
-            let Some(mesh) = meshes.get(instance.mesh.index(), instance.mesh.generation()) else { continue };
-            let Some(input) = mesh.morph_input() else { continue };
-            if weights.iter().all(|w| *w == 0.0) {
+            let morphing = instance.and_then(|instance| {
+                let weights = weights_of(instance).filter(|w| w.iter().any(|w| *w != 0.0))?;
+                let mesh = meshes.get(instance.mesh.index(), instance.mesh.generation())?;
+                Some((instance, weights, mesh, mesh.morph_input()?))
+            });
+            let Some((instance, weights, mesh, input)) = morphing else {
+                slot.idle = slot.idle.saturating_add(1);
+                if slot.idle > IDLE_FRAMES {
+                    *slot = Slot::default();
+                }
                 continue;
-            }
+            };
+            slot.idle = 0;
             let source =
                 Source { mesh: (instance.mesh.index(), instance.mesh.generation()), version: mesh.vertex_version() };
             if slot.shapes.reserve(device, "morphed shapes", std::mem::size_of_val(input.base) as u64) {
@@ -291,6 +314,7 @@ impl MorphPool {
             }
             slot.active = true;
         }
+        self.release_scratch_if_unused();
         Ok(())
     }
 }
@@ -442,5 +466,60 @@ mod tests {
         }
         // Frame 0 sized the buffer for the cube; every later frame, on either mesh, reuses it.
         assert!(buffers.iter().all(|b| b == &buffers[0]), "a slot alternating between meshes reallocated");
+    }
+
+    /// A pool with one morphed cube in slot 0 of `scene`, blended once, and an empty scene.
+    fn warmed_pool(gpu: &crate::gpu::Gpu) -> (MorphPool, Arena<GpuMesh>, (u32, u32), Scene) {
+        use omuzaki_core::glam::Mat4;
+        use omuzaki_render_api::{Camera, MaterialId, MeshId, MeshOptions, MorphRange};
+
+        let cube = omuzaki_render_mock::shapes::cuboid(Vec3::ONE);
+        let n = cube.positions.len();
+        let deltas = vec![Vec3::X; n];
+        let set = MorphSet::from_dense(n, &[(Slug::new("a").unwrap(), &deltas, &[])], 0.0).unwrap();
+        let mut meshes = Arena::default();
+        let (index, generation) = meshes
+            .insert(GpuMesh::upload(gpu, &cube, &MeshOptions { morphs: Some(set), ..MeshOptions::default() }).unwrap());
+        let mut scene = Scene::new(Camera::default());
+        let mut instance =
+            Instance::new(MeshId::from_parts(index, generation), MaterialId::from_parts(0, 0), Mat4::IDENTITY);
+        instance.morph = Some(MorphRange { start: 0, len: 1 });
+        scene.instances.push(instance);
+        scene.morph_weights.push(0.5);
+        let mut pool = MorphPool::default();
+        pool.prepare(&gpu.device, &gpu.queue, &meshes, &scene, |_| true).unwrap();
+        (pool, meshes, (index, generation), scene)
+    }
+
+    #[test]
+    fn forgetting_a_mesh_frees_its_slots_and_the_scratch() {
+        let gpu = crate::gpu::Gpu::open_headless(crate::gpu::HeadlessOptions {
+            adapter: crate::gpu::AdapterPreference::Software,
+        })
+        .unwrap();
+        let (mut pool, _meshes, (index, generation), _scene) = warmed_pool(&gpu);
+        assert!(pool.bytes() > 0 && !pool.flags.is_empty(), "the blend holds buffers and scratch");
+        pool.forget(index, generation);
+        assert_eq!((pool.bytes(), pool.flags.capacity(), pool.sums.capacity()), (0, 0, 0));
+    }
+
+    #[test]
+    fn a_slot_unused_for_a_while_gives_its_buffers_back() {
+        let gpu = crate::gpu::Gpu::open_headless(crate::gpu::HeadlessOptions {
+            adapter: crate::gpu::AdapterPreference::Software,
+        })
+        .unwrap();
+        let (mut pool, meshes, _, scene) = warmed_pool(&gpu);
+        let empty = Scene::new(omuzaki_render_api::Camera::default());
+        for _ in 0..IDLE_FRAMES {
+            pool.prepare(&gpu.device, &gpu.queue, &meshes, &empty, |_| true).unwrap();
+        }
+        assert!(pool.bytes() > 0, "a short pause keeps the buffers");
+        pool.prepare(&gpu.device, &gpu.queue, &meshes, &scene, |_| true).unwrap();
+        assert_eq!(pool.slots[0].idle, 0, "use resets the count");
+        for _ in 0..=IDLE_FRAMES {
+            pool.prepare(&gpu.device, &gpu.queue, &meshes, &empty, |_| true).unwrap();
+        }
+        assert_eq!((pool.bytes(), pool.flags.capacity()), (0, 0), "a long one frees them, scratch included");
     }
 }
