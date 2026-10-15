@@ -16,11 +16,12 @@ use std::time::Duration;
 use omuzaki_char::builder::PartSource::{Built, Cached};
 use omuzaki_char::builder::{BuildTimings, CachingBuilder};
 use omuzaki_char_api::{
-    Anchor, AnchorId, Attach, AttachOffset, BrushFalloff, BuildCtx, BuildError, BuildOptions, BuildServices,
-    BuiltCharacter, CharId, CharacterBuilder, CharacterDef, ContentHash, DynamicMesh, JointRef, MaterialName,
-    MaterialSpec, MeshData, PartCategory, PartDef, PartId, PartKind, PartKindId, PartMesh, PartMeta, PartOutput,
-    PartRuntime, PoseSource, Publishes, Quality, RecolourCtx, Recoloured, RegistryBuilder, RuntimeCost, StepCtx,
-    TextureData, TextureName, VariantId, VariantSet, WeightBrush, find_kind, resolve_variant,
+    Anchor, AnchorId, AnchorsFact, Attach, AttachOffset, BrushFalloff, BuildCtx, BuildError, BuildOptions,
+    BuildServices, BuiltCharacter, CharId, CharacterBuilder, CharacterDef, CollidersFact, ContentHash, DynamicMesh,
+    FitFact, HeadFact, JointRef, MaterialName, MaterialSpec, MeshData, PartCategory, PartDef, PartId, PartKind,
+    PartKindId, PartMesh, PartMeta, PartOutput, PartRuntime, PoseSource, Publishes, Quality, RecolourCtx, Recoloured,
+    RegistryBuilder, RuntimeCost, StepCtx, TextureData, TextureName, VariantId, VariantSet, WeightBrush, find_kind,
+    resolve_variant,
 };
 use omuzaki_char_mock::{MemAssets, RestPose, mock_character, mock_variants};
 use omuzaki_core::colour::Colour;
@@ -198,18 +199,24 @@ impl PartKind for Lamp {
 
     fn build(params: &LampParams, ctx: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
         let p = ctx.published;
-        let seen = p.anchors.len() + p.fit.len() + p.colliders.len() + usize::from(p.head.is_some());
+        let seen = p.get::<AnchorsFact>().len()
+            + p.get::<FitFact>().fits.len()
+            + p.get::<CollidersFact>().len()
+            + usize::from(p.get::<HeadFact>().is_some());
         let id = material_name(ctx, "t-lamp")?;
         let mut mesh = grid_mesh("lamp", &id, 2 + seen as u32, &mut ctx.rng);
         mesh.render_order = (ctx.face.layout.mouth_y * 1000.0) as i32; // parts read the face profile
         let material = MaterialSpec::toon(Colour::rgb(seen as u8 * 20, 0, 0));
         let anchor =
             Anchor { bone: JointRef::HEAD, position: Vec3::ZERO, rotation: omuzaki_core::glam::Quat::IDENTITY };
-        let anchors = if params.publish { vec![(AnchorId::new("light").unwrap(), anchor)] } else { Vec::new() };
+        let mut publishes = Publishes::default();
+        if params.publish {
+            publishes.put::<AnchorsFact>((AnchorId::new("light").unwrap(), anchor));
+        }
         Ok(PartOutput {
             meshes: vec![mesh],
             materials: vec![(id, material)],
-            publishes: Publishes { anchors, ..Publishes::default() },
+            publishes,
             warnings: if ctx.rig_export { vec!["built for export".to_owned()] } else { Vec::new() },
             ..PartOutput::default()
         })

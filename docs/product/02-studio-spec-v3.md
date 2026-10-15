@@ -408,7 +408,7 @@ Omuzaki is an MCP **server** (agents drive it) and an MCP **client** (it drives 
 | `library.*` | `search`, `apply`, `publish`, `install` |
 | `measure.*` | `face_outline`, `feature_spacing`, `likeness` (vs reference), `liveliness`, `readability`, `silhouette`, `palette_contrast`, `perf` |
 | `render.*` | `preview` (view, pose, expression, light), `turnaround`, `contact_sheet`, `compare` (side by side + diff), `golden.check` |
-| `review.*` | `comment.add`, `approve`, `reject`, `request_changes` |
+| `review.*` | `comment.add`, `approve`, `reject`, `request_changes` (amended: only `comment.add` is a new op; `approve`, `reject` and `request_changes` are the decisions of the existing approval card and branch review, not new ops, per the Director's ruling on #1535 and ADR 0056) |
 
 **Resources** (readable by URI):
 - `omuzaki://project`, `omuzaki://character/<id>` (structured description, parameters, part tree)

@@ -1,0 +1,7 @@
+section = "in-use"
+item = "opencv_contrib_python 5.0.0.93"
+kind = "python"
+used_for = "pulled in by mediapipe"
+status = "conditions"
+condition = "dev only; bundles LGPL Qt: never ship"
+audit = "A2"
