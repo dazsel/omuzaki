@@ -20,7 +20,7 @@
 //! a face is flat where the head curves, so vertices that are only just clear leave the middle of a face inside it.
 //! Vertices that would fall short are lifted ([`fill_shell`]); at the prototype's offsets none is.
 //!
-//! **Attributes.** `hair-uv` is `(3 sin phi, theta / reach)`, `reach` being the larger hairline angle (the back one
+//! **Attributes.** `hair-uv` is `(sin phi, theta / reach)` (`across` in `-1..=1` as the renderer's contract says; the prototype scaled it by 3), `reach` being the larger hairline angle (the back one
 //! by default), and `hair-info` is `(0.37, 0.93, theta)`: a fixed strand seed and an underlayer shade, with the polar
 //! angle the angel ring reads. Normals are the area-weighted average of the faces at each vertex (three.js
 //! `computeVertexNormals`), seam and pole vertices kept separate as in the prototype.
@@ -50,8 +50,6 @@ pub const NOTCH_WIDTH: f64 = 0.10;
 pub const NOTCH_EDGES: (f64, f64) = (-0.6, 0.2);
 /// How much higher the shell stands at the crown than at the hairline, as a fraction of [`CapGen::thickness`].
 pub const CROWN_RISE: f64 = 0.625;
-/// Scale of `hair-uv.x` round the head: the strand lines repeat three times across the shell's half width.
-const UV_ACROSS: f64 = 3.0;
 /// `hair-info.x`, the cap's strand seed.
 const SEED: f32 = 0.37;
 /// `hair-info.y`, the shade of the underlayer (it sits in the shadow of the locks).
@@ -128,7 +126,7 @@ pub fn fill_shell(g: &CapGen, head: &dyn HeadSurface, out: &mut MeshData) {
             let t = theta.min(hairline(g, back, phi));
             let offset = g.thickness * (1.0 + CROWN_RISE * (1.0 - t / reach));
             positions.push(head.point(direction(t, phi), offset as f32));
-            uv.data.extend([(phi.sin() * UV_ACROSS) as f32, (t / reach) as f32]);
+            uv.data.extend([phi.sin() as f32, (t / reach) as f32]);
             info.data.extend([SEED, SHADE, t as f32]);
         }
     }

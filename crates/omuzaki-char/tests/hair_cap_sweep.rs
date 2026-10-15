@@ -110,6 +110,10 @@ fn the_cap_is_a_96_by_48_grid_with_its_two_attributes() {
     assert_eq!((uv.components, uv.data.len()), (2, 2 * n));
     assert_eq!((info.components, info.data.len()), (3, 3 * n));
     assert!(info.data.chunks(3).all(|c| c[0] == 0.37 && c[1] == 0.93));
+    assert!(
+        uv.data.chunks(2).all(|c| (-1.0..=1.0).contains(&c[0]) && (0.0..=1.0).contains(&c[1])),
+        "hair-uv in contract"
+    );
     assert!(m.normals.iter().all(|v| (v.length() - 1.0).abs() < 1e-4), "unit normals");
     assert_eq!(cap::clump_count(&CapGen::default()), 0);
 }
@@ -166,6 +170,8 @@ fn the_cap_is_finite_and_deterministic_and_a_refill_equals_a_fresh_build() {
     for g in cap_extremes() {
         let fresh = shell(&g, &head);
         assert!(fresh.positions.iter().chain(&fresh.normals).all(|v| v.is_finite()));
+        let uv = fresh.extra_attribute(HAIR_UV).expect("hair-uv");
+        assert!(uv.data.chunks(2).all(|c| (-1.0..=1.0).contains(&c[0]) && (0.0..=1.0).contains(&c[1])), "{g:?}");
         cap::fill_shell(&g, &head, &mut reused);
         assert_eq!(reused.positions, fresh.positions);
         assert_eq!(reused.normals, fresh.normals);

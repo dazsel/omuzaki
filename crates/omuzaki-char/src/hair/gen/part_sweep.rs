@@ -18,8 +18,9 @@
 //! **Units.** The braid line's heights are metres above the head centre, which are the character's own data
 //! (`end_height_front`, `end_height_back`; the contract's defaults are 0.04 and -0.04, not the prototype's). The angle
 //! they stand for is `acos(height / crown radius)` with the crown radius the head's radius straight up, so a style
-//! keeps its shape when the head is scaled. (The prototype divides by its own fixed head radius, a per-character
-//! constant; the crown radius is the same thing for a head of that size.)
+//! keeps its shape when the head is scaled. (The prototype does the same sum with one fixed head radius, a per-character
+//! constant, on purpose: a height names a ring round the head, found as if the head were a sphere, and the lock then rides
+//! the real surface at that direction. The crown radius stands in for that constant.)
 //!
 //! The generator draws no random numbers.
 

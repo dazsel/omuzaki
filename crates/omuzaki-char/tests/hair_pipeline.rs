@@ -217,9 +217,9 @@ fn the_kind_is_registered_project_owned_and_needs_the_head() {
 }
 
 #[test]
-fn the_real_kind_builds_the_default_style_on_the_template_body_with_a_cap_and_part_sweep() {
-    // The cap and the part sweep are real generators: the default style's static mesh holds their shell and locks, and
-    // neither is reported as a stub.
+fn the_real_kind_builds_the_default_style_on_the_template_body_with_its_cap_shell() {
+    // The cap is a real generator: the default style's static mesh holds its shell, and it is no longer reported as a
+    // stub. (The default style has no part sweep.)
     let mut def = character(&HairParams::default());
     def.parts.insert(pid("hair"), part("hair", json!({})));
     let out = hair_output(&def).unwrap();
