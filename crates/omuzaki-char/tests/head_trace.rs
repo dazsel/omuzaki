@@ -144,6 +144,22 @@ fn a_non_finite_value_names_its_grid_row_and_column() {
 }
 
 #[test]
+fn a_weight_outside_zero_to_one_is_an_error_and_its_bounds_parse() {
+    for weight in [-1e-6_f32, 1.0 + 1e-6] {
+        let mut weights = vec![1.0_f32; NT * NP];
+        weights[2 * NP + 4] = weight;
+        let bytes = grid_bytes(&vec![0.1; NT * NP], &weights);
+        let err = HeadTrace::from_bytes(NT as u16, NP as u16, &bytes).unwrap_err();
+        assert_eq!(err, HeadTraceError::WeightOutOfRange { row: 2, column: 4, weight });
+        assert!(err.to_string().contains("row 2, column 4"), "{err}");
+    }
+    for weight in [0.0_f32, 1.0] {
+        let bytes = grid_bytes(&vec![0.1; NT * NP], &vec![weight; NT * NP]);
+        assert!(HeadTrace::from_bytes(NT as u16, NP as u16, &bytes).is_ok(), "weight {weight} should parse");
+    }
+}
+
+#[test]
 fn an_empty_grid_is_an_error() {
     assert!(matches!(HeadTrace::from_bytes(0, 4, &[]), Err(HeadTraceError::Empty { theta_steps: 0, phi_steps: 4 })));
     assert!(matches!(HeadTrace::from_bytes(4, 0, &[]), Err(HeadTraceError::Empty { theta_steps: 4, phi_steps: 0 })));

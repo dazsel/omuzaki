@@ -33,8 +33,9 @@ impl HeadTrace {
     ///
     /// # Errors
     /// [`HeadTraceError::Empty`] for a grid with no rows or no columns, [`HeadTraceError::TooLarge`] when the byte
-    /// length cannot be represented, [`HeadTraceError::Length`] when `bytes` is not exactly two grids long, and
-    /// [`HeadTraceError::NotFinite`] for a radius or weight that is NaN or infinite.
+    /// length cannot be represented, [`HeadTraceError::Length`] when `bytes` is not exactly two grids long,
+    /// [`HeadTraceError::NotFinite`] for a radius or weight that is NaN or infinite, and
+    /// [`HeadTraceError::WeightOutOfRange`] for a weight outside `0..=1`.
     pub fn from_bytes(theta_steps: u16, phi_steps: u16, bytes: &[u8]) -> Result<Self, HeadTraceError> {
         if theta_steps == 0 || phi_steps == 0 {
             return Err(HeadTraceError::Empty { theta_steps, phi_steps });
@@ -51,6 +52,7 @@ impl HeadTrace {
         let columns = usize::from(phi_steps);
         check_finite("radius", &radii, columns)?;
         check_finite("weight", &weights, columns)?;
+        check_weights(&weights, columns)?;
         Ok(Self { theta_steps, phi_steps, radii, weights })
     }
 
@@ -76,6 +78,16 @@ fn check_finite(grid: &'static str, values: &[f32], columns: usize) -> Result<()
     match values.iter().position(|v| !v.is_finite()) {
         None => Ok(()),
         Some(i) => Err(HeadTraceError::NotFinite { grid, row: i / columns, column: i % columns }),
+    }
+}
+
+/// The first weight outside `0..=1`, named by its row and column. The blend in the cranium assumes that range, so a
+/// weight outside it would push the head past the traced radius rather than toward it. Runs after [`check_finite`], so
+/// every weight compared here is a number.
+fn check_weights(weights: &[f32], columns: usize) -> Result<(), HeadTraceError> {
+    match weights.iter().enumerate().find(|(_, w)| !(0.0..=1.0).contains(*w)) {
+        None => Ok(()),
+        Some((i, &weight)) => Err(HeadTraceError::WeightOutOfRange { row: i / columns, column: i % columns, weight }),
     }
 }
 
@@ -161,5 +173,15 @@ pub enum HeadTraceError {
         row: usize,
         /// Column of phi, from the front.
         column: usize,
+    },
+    /// A weight is outside `0..=1`, the range the blend in the cranium assumes.
+    #[error("the weight at row {row}, column {column} of the radius map is {weight}, outside 0 to 1")]
+    WeightOutOfRange {
+        /// Row of theta, from the top pole.
+        row: usize,
+        /// Column of phi, from the front.
+        column: usize,
+        /// The weight given.
+        weight: f32,
     },
 }
