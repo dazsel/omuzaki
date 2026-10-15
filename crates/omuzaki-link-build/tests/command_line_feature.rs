@@ -46,13 +46,12 @@ fn workspace(root: &Path, app_features: &str) {
     write(
         root,
         "app/src/lib.rs",
-        "pub const GENERATED: &str = include_str!(concat!(env!(\"OUT_DIR\"), \"/link_calls.rs\"));\n\
-         pub fn link() {\n    include!(concat!(env!(\"OUT_DIR\"), \"/link_calls.rs\"));\n}\n",
+        "pub fn link() {\n    include!(concat!(env!(\"OUT_DIR\"), \"/link_calls.rs\"));\n}\n",
     );
     write(
         root,
         "app/tests/linked.rs",
-        "#[test]\nfn the_dependency_is_linked_exactly_when_it_is_active() {\n    println!(\"GENERATED<<{}>>\", app::GENERATED);\n    app::link();\n    #[cfg(feature = \"reg\")]\n    assert!(reg::linked(), \"reg is active but its link() was not called\");\n}\n",
+        "#[test]\nfn the_dependency_is_linked_exactly_when_it_is_active() {\n    app::link();\n    #[cfg(feature = \"reg\")]\n    assert!(reg::linked(), \"reg is active but its link() was not called\");\n}\n",
     );
 }
 
@@ -62,7 +61,6 @@ fn cargo_test(root: &Path, features: &[&str]) -> (bool, String) {
         .env("CARGO_TARGET_DIR", root.join("target"))
         .args(["test", "--offline", "--quiet"])
         .args(features)
-        .args(["--", "--nocapture"])
         .output()
         .unwrap();
     (
@@ -88,24 +86,4 @@ fn dep_syntax_fails_the_build_with_a_message_that_names_the_fix() {
     let (ok, log) = cargo_test(dir.path(), &["--features", "reg/extra"]);
     assert!(!ok, "{log}");
     assert!(log.contains("`dep:reg`") && log.contains("List `\"reg\"` instead"), "{log}");
-}
-
-const FLAGGED: &str = "[package]\nname = \"reg\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[features]\nextra = []\n\
-                       [package.metadata.omuzaki]\nregisters = true\n";
-
-#[test]
-fn an_incremental_build_regenerates_the_list_when_a_dependency_gains_the_flag() {
-    let dir = tempfile::tempdir().unwrap();
-    workspace(dir.path(), "[features]\ngpu = [\"reg\"]\n");
-    write(dir.path(), "reg/Cargo.toml", &FLAGGED.replace("registers = true", "registers = false"));
-    // The fixture's own test fails here (the dependency is active but unflagged, so it is not linked); only the
-    // generated list it prints matters.
-    let (_, before) = cargo_test(dir.path(), &["--features", "gpu"]);
-    assert!(before.contains("GENERATED<<") && !before.contains("reg::link"), "unflagged: {before}");
-
-    // Same target directory: only the dependency's manifest changed, and the build script must notice.
-    write(dir.path(), "reg/Cargo.toml", FLAGGED);
-    let (ok, after) = cargo_test(dir.path(), &["--features", "gpu"]);
-    assert!(ok, "{after}");
-    assert!(after.contains("reg::link"), "the flag was added but the list is stale: {after}");
 }

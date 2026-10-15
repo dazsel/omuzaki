@@ -284,104 +284,25 @@ impl Sources {
         Ok(all)
     }
 
-    /// `app` and everything it links with these features on, each crate once.
-    ///
-    /// `features` are what a command line passes: `name` for a feature of `app`, or `package/feature` for a feature of
-    /// any crate in the graph (`omuzaki-stage/wgpu`). They switch on optional dependencies the way Cargo does: a
-    /// feature that lists `dep:x`, `x` or `x/feature` activates dependency `x` (and `x/feature` enables `feature`
-    /// there), `x?/feature` only enables it if `x` is active anyway, and an optional dependency's implicit feature
-    /// is on exactly when the dependency is. `app`'s `default` feature is on.
+    /// `app` and everything it depends on, each crate once.
     fn closure<'a>(&'a self, app: &'a ScannedCrate, features: &[&str]) -> Result<Vec<&'a ScannedCrate>, Error> {
-        let mut graph = FeatureGraph::default();
-        graph.activate(&app.krate.name);
-        graph.enable(&app.krate.name, "default");
-        for feature in features {
-            match feature.split_once('/') {
-                Some((package, name)) if self.get(package).is_ok() => {
-                    graph.activate(package);
-                    graph.enable(package, name);
-                }
-                _ => graph.enable(&app.krate.name, feature),
+        let mut seen: Vec<&ScannedCrate> = Vec::new();
+        let mut todo = vec![app];
+        for (feature, dep) in &app.krate.optional_deps {
+            if features.contains(&feature.as_str()) {
+                todo.push(self.get(dep)?);
             }
         }
-        loop {
-            let before = graph.size();
-            for package in graph.active.clone() {
-                let krate = self.get(&package)?;
-                for dep in &krate.krate.deps {
-                    graph.activate(dep);
-                }
-                for feature in graph.enabled.get(&package).cloned().unwrap_or_default() {
-                    let listed =
-                        krate.krate.features.iter().find(|(name, _)| *name == feature).map(|(_, l)| l.as_slice());
-                    for item in listed.unwrap_or_default() {
-                        graph.apply(&krate.krate, item);
-                    }
-                }
-                for (key, dep) in &krate.krate.optional_deps {
-                    if graph.enabled.get(&package).is_some_and(|set| set.contains(key)) {
-                        graph.activate(dep);
-                    }
-                }
+        while let Some(next) = todo.pop() {
+            if seen.iter().any(|c| c.krate.name == next.krate.name) {
+                continue;
             }
-            if graph.size() == before {
-                break;
+            for dep in &next.krate.deps {
+                todo.push(self.get(dep)?);
             }
+            seen.push(next);
         }
-        graph.active.iter().map(|package| self.get(package)).collect()
-    }
-}
-
-/// Which crates are linked and which of their features are on, while the closure is being worked out.
-#[derive(Default)]
-struct FeatureGraph {
-    active: BTreeSet<String>,
-    enabled: BTreeMap<String, BTreeSet<String>>,
-}
-
-impl FeatureGraph {
-    fn size(&self) -> usize {
-        self.active.len() + self.enabled.values().map(BTreeSet::len).sum::<usize>()
-    }
-
-    fn activate(&mut self, package: &str) {
-        self.active.insert(package.to_owned());
-    }
-
-    fn enable(&mut self, package: &str, feature: &str) {
-        self.enabled.entry(package.to_owned()).or_default().insert(feature.to_owned());
-    }
-
-    /// Applies one entry of a feature list of `krate`.
-    fn apply(&mut self, krate: &Crate, item: &str) {
-        let package_of = |key: &str| krate.dep_keys.iter().find(|(k, _)| k == key).map(|(_, p)| p.clone());
-        if let Some(key) = item.strip_prefix("dep:") {
-            self.activate_key(krate, key);
-        } else if let Some((key, feature)) = item.split_once('/') {
-            let weak = key.ends_with('?');
-            let key = key.trim_end_matches('?');
-            let Some(package) = package_of(key) else { return };
-            if weak && !self.active.contains(&package) {
-                return;
-            }
-            self.activate_key(krate, key);
-            self.enable(&package, feature);
-        } else if krate.features.iter().any(|(name, _)| name == item) {
-            self.enable(&krate.name, item);
-        } else {
-            // An optional dependency's implicit feature.
-            self.activate_key(krate, item);
-        }
-    }
-
-    /// Activates the dependency declared under `key`, and turns on its implicit feature if it is optional.
-    fn activate_key(&mut self, krate: &Crate, key: &str) {
-        if let Some((_, package)) = krate.dep_keys.iter().find(|(k, _)| k == key) {
-            self.activate(package);
-            if krate.optional_deps.iter().any(|(k, _)| k == key) {
-                self.enable(&krate.name, key);
-            }
-        }
+        Ok(seen)
     }
 }
 
@@ -588,8 +509,6 @@ mod tests {
             generates_links: false,
             lists_link_build: false,
             optional_deps: Vec::new(),
-            dep_keys: Vec::new(),
-            features: Vec::new(),
             dep_syntax: Vec::new(),
         };
         assert_eq!(owning_bin(&krate, Path::new("src/main.rs")).as_deref(), Some("omuzaki"));
