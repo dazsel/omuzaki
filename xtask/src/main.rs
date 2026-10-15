@@ -2,6 +2,7 @@
 //!
 //! - `lint-deps`: enforce the crate layering table (`crates/README.md`).
 //! - `lint-links`: enforce the `link()` wiring that keeps self-registrations in binaries (ADR 0015).
+//! - `lint-net`: a capture crate (`privacy = "capture"`) reaches no network crate, and a network user declares `net` (SE-04).
 //! - `lint-registers`: a crate that registers sets `registers = true`, which Apps generate their `link()` calls from (ADR 0054).
 //! - `lint-licences`: one licence file per dependency, tool and asset; `--print` prints the register made from them.
 //! - `lint-ui-writes`: UI code changes the document only through the `Runner` (QG-11).
@@ -27,6 +28,7 @@ mod links;
 mod lint_deps;
 mod lint_licences;
 mod lint_mods;
+mod lint_net;
 mod lint_registers;
 mod lint_seed;
 mod lint_ui_writes;
@@ -60,6 +62,10 @@ enum Command {
     LintDeps,
     /// Fail on a crate that registers without a `link()`, or depends on one without calling it (ADR 0015).
     LintLinks,
+    /// Fail on a `privacy = "capture"` crate that reaches a network crate or names a socket, or a crate that depends on a
+    /// network crate without `net = "<why>"` under `[package.metadata.omuzaki]` (SE-04). `--list` prints the crates
+    /// that declare `net`, with their reasons.
+    LintNet(lint_net::LintNetArgs),
     /// Fail on a crate that makes a registration without `registers = true` in its manifest (ADR 0054).
     LintRegisters,
     /// Fail on a dependency, tool or asset in use without a file in `docs/licensing/deps/`, or an orphaned file.
@@ -120,6 +126,7 @@ fn run(cli: &Cli) -> Result<ExitCode> {
     match &cli.command {
         Command::LintDeps => Ok(lint_deps::run(&workspace)),
         Command::LintLinks => links::run(&workspace),
+        Command::LintNet(args) => lint_net::run(&workspace, args),
         Command::LintRegisters => lint_registers::run(&workspace),
         Command::LintLicences(args) => Ok(lint_licences::run(&workspace, args)),
         Command::LintUiWrites => lint_ui_writes::run(&workspace),

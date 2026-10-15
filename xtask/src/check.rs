@@ -16,6 +16,7 @@ use crate::links;
 use crate::lint_deps;
 use crate::lint_licences;
 use crate::lint_mods;
+use crate::lint_net;
 use crate::lint_registers;
 use crate::lint_seed;
 use crate::lint_ui_writes;
@@ -75,6 +76,8 @@ enum Action {
     Cargo(Vec<String>),
     /// The layering lint, run in this process.
     LintDeps,
+    /// The capture-crate network lint (SE-04), run in this process.
+    LintNet,
     /// The `link()` wiring lint (ADR 0015), run in this process.
     LintLinks,
     /// The `registers` flag lint (ADR 0054), run in this process.
@@ -109,6 +112,7 @@ impl Step {
         match &self.action {
             Action::Cargo(args) => format!("cargo {}", args.join(" ")),
             Action::LintDeps => "lint-deps".to_owned(),
+            Action::LintNet => "lint-net".to_owned(),
             Action::LintLinks => "lint-links".to_owned(),
             Action::LintRegisters => "lint-registers".to_owned(),
             Action::LintLicences => "lint-licences".to_owned(),
@@ -151,6 +155,7 @@ fn plan(scope: &Scope) -> Vec<Step> {
     steps.extend([
         Step::cargo("deny", &["deny", "--log-level", "error", "check", "licenses", "bans", "sources"], &[], &[]),
         Step { name: "lint-deps", action: Action::LintDeps },
+        Step { name: "lint-net", action: Action::LintNet },
         Step { name: "lint-links", action: Action::LintLinks },
         Step { name: "models", action: Action::Models },
         Step { name: "lint-registers", action: Action::LintRegisters },
@@ -296,6 +301,10 @@ fn run_step(workspace: &Workspace, step: &Step, base: &str) -> bool {
     println!("==> {}: {}", step.name, step.describe());
     match &step.action {
         Action::LintDeps => lint_deps::report(workspace),
+        Action::LintNet => lint_net::report(workspace).unwrap_or_else(|error| {
+            eprintln!("lint-net: {error}");
+            false
+        }),
         Action::LintLinks => links::report(workspace).unwrap_or_else(|error| {
             eprintln!("lint-links: {error}");
             false
@@ -364,6 +373,7 @@ mod tests {
         match &step.action {
             Action::Cargo(args) => args.join(" "),
             Action::LintDeps => "<lint-deps>".to_owned(),
+            Action::LintNet => "<lint-net>".to_owned(),
             Action::LintLinks => "<lint-links>".to_owned(),
             Action::LintRegisters => "<lint-registers>".to_owned(),
             Action::LintLicences => "<lint-licences>".to_owned(),
@@ -392,6 +402,7 @@ mod tests {
                 ("test", "test -p omuzaki-cli -p omuzaki-render --features omuzaki-cli/test-fixtures".to_owned()),
                 ("deny", "deny --log-level error check licenses bans sources".to_owned()),
                 ("lint-deps", "<lint-deps>".to_owned()),
+                ("lint-net", "<lint-net>".to_owned()),
                 ("lint-links", "<lint-links>".to_owned()),
                 ("models", "<models>".to_owned()),
                 ("lint-registers", "<lint-registers>".to_owned()),
@@ -418,7 +429,7 @@ mod tests {
                 ("link-gate", "test -p omuzaki-cli --test registrations".to_owned()),
             ]
         );
-        assert_eq!(got.len(), 15, "the same trailing steps as ever: {got:?}");
+        assert_eq!(got.len(), 16, "the same trailing steps as ever: {got:?}");
     }
 
     #[test]
@@ -459,6 +470,7 @@ mod tests {
                 "test",
                 "deny",
                 "lint-deps",
+                "lint-net",
                 "lint-links",
                 "models",
                 "lint-registers",

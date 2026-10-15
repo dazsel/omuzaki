@@ -21,6 +21,7 @@ workspace = true
 
 # Native only: whisper.cpp builds from source with CMake and ONNX Runtime has no wasm32 build
 [package.metadata.omuzaki]
+privacy = "capture"
 kind = "Implementation"
 summary = "the speech host (ML-03): `SpeechHost` takes 16 kHz mono samples through a lock-free ring (`AudioInput::push` never allocates), runs Silero VAD (`ort`, `load-dynamic`) and a streaming segmenter on a VAD thread, and transcribes utterances with Whisper (`whisper-rs`) on an ASR thread; bounded drop-oldest queues, events (speech start/end, partial and final transcripts, drops, errors), a configurable language, and a model catalogue (URL, size, SHA-256; never committed). Models via `OMUZAKI_SPEECH_MODELS` in tests"
 wasm = false
