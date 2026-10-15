@@ -111,10 +111,25 @@ fn facts_are_listed_by_name_and_the_publishes_of_a_part_know_if_they_are_silent(
 }
 
 #[test]
-fn registered_facts_are_listed_with_their_types_and_the_built_ins_are_not_registered_yet() {
+fn registered_facts_are_listed_with_their_types_with_the_built_ins() {
     let facts = omuzaki_char_api::facts().expect("no two registered facts share a name");
     let listed: Vec<_> = facts.iter().map(|r| r.name).collect();
-    assert_eq!(listed, ["test-agree", "test-append", "test-keyed", "test-last", "test-perch"]);
+    assert_eq!(
+        listed,
+        [
+            "anchors",
+            "colliders",
+            "face",
+            "fit",
+            "head",
+            "stature",
+            "test-agree",
+            "test-append",
+            "test-keyed",
+            "test-last",
+            "test-perch"
+        ]
+    );
     let last = facts.iter().find(|r| r.name == "test-last").unwrap();
     assert_eq!((last.type_id)(), std::any::TypeId::of::<LastFact>());
     assert!((last.type_name)().ends_with("LastFact"));

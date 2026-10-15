@@ -6864,6 +6864,7 @@ version = "0.0.0"
 dependencies = [
  "clap",
  "flate2",
+ "omuzaki-core",
  "omuzaki-library-api",
  "omuzaki-link-build",
  "serde",
