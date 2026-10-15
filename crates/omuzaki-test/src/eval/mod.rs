@@ -13,13 +13,18 @@
 //! The two files `defaults.toml` and `private.toml` at the top of an `evals/` folder are configuration, not tasks.
 //! Adding a task never edits another file (spec §39 rule 2).
 
+pub mod build;
 pub mod check;
+pub mod clock;
 pub mod driver;
 pub mod fixture;
+pub mod gc;
+pub mod history;
 pub mod host;
 pub mod lint;
 mod placeholder;
 pub mod provenance;
+pub mod run;
 pub mod script;
 pub mod task;
 pub mod transcript;

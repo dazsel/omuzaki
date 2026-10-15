@@ -30,8 +30,15 @@ pub const START: &str = "start";
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CallStep {
-    /// The MCP tool name.
+    /// The MCP tool name (`face_set_profile`); an op name (`face.set_profile`) is accepted too and found in the catalog.
     pub call: String,
+    /// The turn of the recorded attempt the line came from. Informational: the driver does not read it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn: Option<u64>,
+    /// Shorthand for `"expect": {"applied": ...}`: whether the call changed the project. Folded into `expect` when the
+    /// script is read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applied: Option<bool>,
     /// Its arguments.
     #[serde(default)]
     pub args: Map<String, Value>,
@@ -76,6 +83,8 @@ pub struct Line {
 /// A parsed script.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Script {
+    /// Where `eval promote` took it from, as `<run>/<task>/<attempt>`: `eval gc` keeps a run folder a script names.
+    pub promoted_from: Option<String>,
     /// The steps, in order.
     pub lines: Vec<Line>,
 }
@@ -97,14 +106,38 @@ impl Script {
     /// The first line that is not a call or an assert, names something twice, or asserts about a name nothing saved.
     pub fn parse(text: &str) -> Result<Self, ScriptError> {
         let mut lines = Vec::new();
+        let mut promoted_from = None;
         let mut saved: BTreeSet<String> = BTreeSet::new();
         for (index, raw) in text.lines().enumerate().filter(|(_, l)| !l.trim().is_empty()) {
             let number = index + 1;
             let fail = |reason: String| ScriptError { line: number, reason };
             let value: Value = serde_json::from_str(raw).map_err(|e| fail(e.to_string()))?;
             let Value::Object(mut map) = value else { return Err(fail("a script line is a JSON object".to_owned())) };
+            if let Some(source) = map.remove("promoted_from") {
+                let Value::String(source) = source else {
+                    return Err(fail("`promoted_from` is the text `<run>/<task>/<attempt>`".to_owned()));
+                };
+                if !map.is_empty() || promoted_from.replace(source).is_some() {
+                    return Err(fail("`promoted_from` stands alone on one line, once".to_owned()));
+                }
+                continue;
+            }
             let step = if map.contains_key("call") {
-                let call: CallStep = serde_json::from_value(Value::Object(map)).map_err(|e| fail(e.to_string()))?;
+                let mut call: CallStep = serde_json::from_value(Value::Object(map)).map_err(|e| fail(e.to_string()))?;
+                if let Some(applied) = call.applied.take() {
+                    let mut expect = match call.expect.take() {
+                        None => Map::new(),
+                        Some(Value::Object(map)) => map,
+                        Some(_) => return Err(fail("`expect` is an object of keys the answer must have".to_owned())),
+                    };
+                    if expect
+                        .insert("applied".to_owned(), Value::Bool(applied))
+                        .is_some_and(|old| old != Value::Bool(applied))
+                    {
+                        return Err(fail("`applied` and `expect.applied` disagree".to_owned()));
+                    }
+                    call.expect = Some(Value::Object(expect));
+                }
                 if call.call.trim().is_empty() {
                     return Err(fail("`call` names no tool".to_owned()));
                 }
@@ -145,7 +178,7 @@ impl Script {
             };
             lines.push(Line { number, step });
         }
-        Ok(Self { lines })
+        Ok(Self { promoted_from, lines })
     }
 
     /// The script as JSON lines.
@@ -154,6 +187,10 @@ impl Script {
     /// A serialisation error, which the step types cannot produce; returned rather than hidden.
     pub fn to_jsonl(&self) -> Result<String, serde_json::Error> {
         let mut out = String::new();
+        if let Some(source) = &self.promoted_from {
+            out.push_str(&serde_json::to_string(&serde_json::json!({ "promoted_from": source }))?);
+            out.push('\n');
+        }
         for line in &self.lines {
             let value = match &line.step {
                 Step::Call(call) => serde_json::to_value(call)?,
@@ -176,11 +213,31 @@ impl Script {
                 let Value::Object(args) = unfill(args, &exports) else { continue };
                 lines.push(Line {
                     number: lines.len() + 1,
-                    step: Step::Call(CallStep { call: tool.clone(), args, expect: None, save: None }),
+                    step: Step::Call(CallStep {
+                        call: tool.clone(),
+                        turn: None,
+                        applied: None,
+                        args,
+                        expect: None,
+                        save: None,
+                    }),
                 });
             }
         }
-        Self { lines }
+        Self { promoted_from: None, lines }
+    }
+
+    /// The same script, marked as taken from the attempt folder `source` (`<run>/<task>/<attempt>`).
+    #[must_use]
+    pub fn promoted_from(mut self, source: impl Into<String>) -> Self {
+        self.promoted_from = Some(source.into());
+        self
+    }
+
+    /// The run a promoted script was taken from.
+    #[must_use]
+    pub fn promoted_run(&self) -> Option<&str> {
+        self.promoted_from.as_deref().and_then(|s| s.split('/').next())
     }
 }
 
@@ -262,6 +319,21 @@ mod tests {
     }
 
     #[test]
+    fn the_older_line_shape_is_read_with_applied_folded_into_expect() {
+        let script = Script::parse(
+            "{\"turn\":1,\"call\":\"character.rename\",\"args\":{\"name\":\"M\"},\"applied\":true}\n\
+             {\"call\":\"a\",\"applied\":true,\"expect\":{\"ok\":true}}\n",
+        )
+        .unwrap();
+        let Step::Call(first) = &script.lines[0].step else { panic!("a call") };
+        assert_eq!((first.turn, first.applied, first.expect.clone()), (Some(1), None, Some(json!({"applied": true}))));
+        let Step::Call(second) = &script.lines[1].step else { panic!("a call") };
+        assert_eq!(second.expect, Some(json!({"applied": true, "ok": true})));
+        let clash = Script::parse("{\"call\":\"a\",\"applied\":true,\"expect\":{\"applied\":false}}").unwrap_err();
+        assert!(clash.reason.contains("disagree"), "{clash}");
+    }
+
+    #[test]
     fn a_script_round_trips_through_json_lines() {
         let script = Script::parse(SCRIPT).unwrap();
         let again = Script::parse(&script.to_jsonl().unwrap()).unwrap();
@@ -289,6 +361,19 @@ mod tests {
             assert_eq!(error.line, line, "{text}: {error}");
             assert!(error.reason.contains(word), "{text}: {error}");
         }
+    }
+
+    #[test]
+    fn a_promoted_script_remembers_the_run_it_came_from() {
+        let script = Script::from_log(&EventLog::new()).promoted_from("2026-10-13T10:00Z-nightly/t.x/2");
+        assert_eq!(script.promoted_run(), Some("2026-10-13T10:00Z-nightly"));
+        let text = script.to_jsonl().unwrap();
+        assert_eq!(text, "{\"promoted_from\":\"2026-10-13T10:00Z-nightly/t.x/2\"}\n");
+        assert_eq!(Script::parse(&text).unwrap().promoted_from, script.promoted_from);
+        for bad in ["{\"promoted_from\": 3}", "{\"promoted_from\": \"a\", \"call\": \"x\"}"] {
+            assert!(Script::parse(bad).is_err(), "{bad}");
+        }
+        assert!(Script::parse("{\"promoted_from\": \"a\"}\n{\"promoted_from\": \"b\"}").is_err());
     }
 
     #[test]
@@ -322,7 +407,7 @@ mod tests {
         let script = Script::from_log(&log);
         assert_eq!(
             script.to_jsonl().unwrap(),
-            "{\"call\":\"face_set\",\"args\":{\"blend\":0.5,\"character\":\"{main}\"}}\n"
+            "{\"args\":{\"blend\":0.5,\"character\":\"{main}\"},\"call\":\"face_set\"}\n"
         );
     }
 }

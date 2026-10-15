@@ -32,6 +32,7 @@ use serde_json::{Map, Value};
 
 pub use self::report::{CheckReport, CheckResult, Outcome, Verdict};
 use self::resolve::Names;
+pub(crate) use self::value::glob_match;
 use super::task::{Check, CheckKind, Task};
 use super::transcript::{ToolCall, ToolNames, Transcript};
 

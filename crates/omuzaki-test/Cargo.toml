@@ -22,6 +22,8 @@ serde_json.workspace = true
 thiserror.workspace = true
 toml.workspace = true
 omuzaki-core = { path = "../omuzaki-core" }
+# Fixtures start from an empty project folder: `Project::create` makes it.
+omuzaki-doc = { path = "../omuzaki-doc" }
 # The in-process host builds the runner with the constructor `omuzaki mcp` uses (`session::open_runner`), so an eval
 # cannot drift from the product (design 6.1), and calls `link()` so the ops are linked in.
 omuzaki-cli = { path = "../omuzaki-cli" }
@@ -36,7 +38,6 @@ omuzaki-store-api = { path = "../omuzaki-store-api" }
 [dev-dependencies]
 tempfile.workspace = true
 # The eval check library's tests (tests/eval_checks.rs): the shared mock runner over an in-memory document, with demo ops.
-omuzaki-doc = { path = "../omuzaki-doc" }
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 omuzaki-ops-mock = { path = "../omuzaki-ops-mock" }
 # The render checks fetch the renders both projects made from one asset store (tests/eval_checks_render.rs).

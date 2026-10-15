@@ -14,9 +14,10 @@ use std::time::{Duration, SystemTime};
 use clap::{Args, Parser, Subcommand};
 use omuzaki_test::compare::{CompareError, Tolerance, compare};
 use omuzaki_test::dirs::Dirs;
+use omuzaki_test::eval::run::{self, Options, RunReport, Selection};
 use omuzaki_test::eval::script::{self, Script};
 use omuzaki_test::eval::transcript::EventLog;
-use omuzaki_test::eval::{self, lint};
+use omuzaki_test::eval::{self, gc as run_gc, lint};
 use omuzaki_test::gc::{self, MIN_AGE, Object, Plan, Removal, total_bytes};
 use omuzaki_test::goldens::{GoldenId, Goldens, Mode, Outcome, load_png, save_png};
 use omuzaki_test::migrate::migrate;
@@ -148,6 +149,68 @@ enum EvalCommand {
         #[command(flatten)]
         root: RootArg,
     },
+    /// Play tasks, grade them and keep the evidence (design 6.4, 7).
+    ///
+    /// Each fixture is built once, copied for every attempt and the copy deleted afterwards. The scripted driver records
+    /// `--attempts` attempts of each task's pass script and also plays its other scripts and the empty script once
+    /// (they must end as their names say). Exits 1 when any does not, or when a task is refused before it runs. With
+    /// `--record` one line per attempt goes to `eval-history.jsonl` and one for the run to `eval-runs.jsonl`.
+    ///
+    /// Selectors (`--tasks`, `--tags`, `--crates`) add up: a task any of them picks is played; none given plays all.
+    Run {
+        /// Who plays the attempts. The reference-model driver spends money and arrives with its own task.
+        #[arg(long, value_enum, default_value = "scripted")]
+        driver: DriverArg,
+        /// Task id globs, comma-separated (`face.*`).
+        #[arg(long, value_delimiter = ',', value_name = "GLOB")]
+        tasks: Vec<String>,
+        /// Tags, comma-separated: a task with any of them is played (`starter`).
+        #[arg(long, value_delimiter = ',')]
+        tags: Vec<String>,
+        /// Crates, comma-separated: every task of their `evals/` folders is played (a pull request's affected crates).
+        #[arg(long, value_delimiter = ',')]
+        crates: Vec<String>,
+        /// Recorded attempts of each task.
+        #[arg(long, default_value_t = 1)]
+        attempts: u32,
+        /// Attempts played at once.
+        #[arg(long, default_value_t = 4)]
+        jobs: usize,
+        /// Append the attempts and the run to the history in the status folder.
+        #[arg(long)]
+        record: bool,
+        /// Play through `omuzaki mcp` as a child process instead of in this process. The binary is `--omuzaki-bin`,
+        /// else `$OMUZAKI_BIN`.
+        #[arg(long)]
+        binary: bool,
+        /// The `omuzaki` binary for `--binary`.
+        #[arg(long, value_name = "PATH")]
+        omuzaki_bin: Option<PathBuf>,
+        /// The most the run may spend, in dollars. Only the reference driver spends.
+        #[arg(long, value_name = "USD")]
+        spend_usd: Option<f64>,
+        /// What kind of run this is: pr, nightly, weekly or manual.
+        #[arg(long, default_value = "manual")]
+        kind: String,
+        /// The run's id (default: the minute it began, then the kind).
+        #[arg(long)]
+        run_id: Option<String>,
+        #[command(flatten)]
+        root: RootArg,
+    },
+    /// Remove run folders older than 90 days, unless an open issue or a promoted script names them.
+    ///
+    /// A dry run unless given `--apply`. The open issues are read with `gh`; if that fails nothing is removed.
+    Gc {
+        /// Remove what the plan lists.
+        #[arg(long)]
+        apply: bool,
+        /// Read the open issues' text from this file instead of asking `gh` (for offline use and tests).
+        #[arg(long, value_name = "FILE")]
+        issues: Option<PathBuf>,
+        #[command(flatten)]
+        root: RootArg,
+    },
     /// Print every task as JSON: `[{id, feature, crate, tags, version, hash}]`.
     List {
         /// The only output format; spelled out so scripts say what they expect.
@@ -156,6 +219,15 @@ enum EvalCommand {
         #[command(flatten)]
         root: RootArg,
     },
+}
+
+/// Who plays the attempts of a run.
+#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum DriverArg {
+    /// Replays scripts: no model, deterministic, free.
+    Scripted,
+    /// A pinned model through our own agent loop. Not built yet.
+    Reference,
 }
 
 /// What a promoted script must do.
@@ -300,6 +372,29 @@ fn run(cli: Cli) -> Verdict {
             Ok(true)
         }
         Command::Eval(EvalCommand::Lint { root, tools }) => eval_lint(&workspace_root(root.root)?, tools.as_deref()),
+        Command::Eval(EvalCommand::Run {
+            driver,
+            tasks,
+            tags,
+            crates,
+            attempts,
+            jobs,
+            record,
+            binary,
+            omuzaki_bin,
+            spend_usd,
+            kind,
+            run_id,
+            root,
+        }) => {
+            let root = workspace_root(root.root)?;
+            let select = Selection { tasks, tags, crates };
+            let plan = RunArgs { driver, attempts, jobs, record, binary, omuzaki_bin, spend_usd, kind, run_id };
+            eval_run(&root, select, plan)
+        }
+        Command::Eval(EvalCommand::Gc { apply, issues, root }) => {
+            eval_gc(&workspace_root(root.root)?, apply, issues.as_deref())
+        }
         Command::Eval(EvalCommand::Promote { transcript, task, name, expect, root }) => {
             eval_promote(&workspace_root(root.root)?, &transcript, &task, &name, matches!(expect, Expectation::Pass))
         }
@@ -357,11 +452,153 @@ fn eval_lint(root: &Path, tools: Option<&Path>) -> Verdict {
     Ok(findings.is_empty())
 }
 
+/// The settings of `eval run` besides what to play.
+struct RunArgs {
+    driver: DriverArg,
+    attempts: u32,
+    jobs: usize,
+    record: bool,
+    binary: bool,
+    omuzaki_bin: Option<PathBuf>,
+    spend_usd: Option<f64>,
+    kind: String,
+    run_id: Option<String>,
+}
+
+/// The folder a setting names: the variable `own`, else `sub` under `$OMUZAKI_ASSETS`.
+fn assets_folder(own: &str, sub: &str) -> Result<PathBuf, Box<dyn Error>> {
+    if let Some(dir) = std::env::var_os(own) {
+        return Ok(PathBuf::from(dir));
+    }
+    match std::env::var_os("OMUZAKI_ASSETS") {
+        Some(assets) => Ok(PathBuf::from(assets).join(sub)),
+        None => Err(format!("set {own} (or OMUZAKI_ASSETS, whose `{sub}` folder is the default)").into()),
+    }
+}
+
+/// `eval run`: plays the selected tasks and prints how each attempt ended.
+fn eval_run(root: &Path, select: Selection, args: RunArgs) -> Verdict {
+    if args.driver == DriverArg::Reference {
+        return Err("the reference-model driver is a separate task: it needs the LLM providers and the maintainers' spend decision; use --driver scripted".into());
+    }
+    if args.spend_usd.is_some() {
+        return Err("--spend-usd caps what a run spends, and the scripted driver spends nothing".into());
+    }
+    let binary = if args.binary {
+        let bin = args
+            .omuzaki_bin
+            .or_else(|| std::env::var_os("OMUZAKI_BIN").map(PathBuf::from))
+            .ok_or("--binary needs the `omuzaki` binary: pass --omuzaki-bin or set OMUZAKI_BIN")?;
+        Some(bin)
+    } else {
+        None
+    };
+    let discovery = eval::discover(root)?;
+    // A file that does not parse would silently be left out of the run: refuse, and let `eval lint` say which.
+    if let Some(bad) = discovery.unparsed.first() {
+        return Err(format!("{}: does not parse: {} (run `eval lint`)", bad.path.display(), bad.reason).into());
+    }
+    let defaults = eval::load_defaults(root)?;
+    let private = eval::load_private(root)?;
+    let now = SystemTime::now();
+    let run_id = args.run_id.unwrap_or_else(|| run::default_run_id(now, &args.kind));
+    let status = if args.record { Some(assets_folder("OMUZAKI_EVAL_STATUS", "status")?) } else { None };
+    let item_path = |item: &eval::fixture::SetItemRef| -> Result<String, String> {
+        Err(format!("eval set `{}` has no content store here (item {})", item.set, item.item))
+    };
+    let options = Options {
+        select,
+        attempts: args.attempts,
+        jobs: args.jobs,
+        binary,
+        kind: args.kind,
+        run_id,
+        commit: run::head_commit(root),
+        out: assets_folder("OMUZAKI_EVAL_OUT", "evals")?,
+        status,
+        scratch: std::env::temp_dir().join("scratch").join("evals"),
+        item_path: &item_path,
+    };
+    let report = run::run_scripted(&discovery, defaults, &private, &options)?;
+    print_run(&report);
+    Ok(report.ok())
+}
+
+fn print_run(report: &RunReport) {
+    for attempt in &report.attempts {
+        let reason = attempt.reason.as_deref().map_or_else(String::new, |r| format!(": {r}"));
+        println!(
+            "{:<7} {} #{} ({}){reason}",
+            attempt.outcome.word(),
+            attempt.task,
+            attempt.attempt,
+            attempt.script.as_deref().unwrap_or("-")
+        );
+    }
+    for refused in &report.refused {
+        println!("REFUSED {}: {}", refused.task, refused.why);
+    }
+    for d in &report.deviations {
+        println!(
+            "DEVIATION {} [{}] {}: expected {}, got {}: {}",
+            d.task,
+            d.label,
+            d.script,
+            d.expected.word(),
+            d.got.word(),
+            d.reason
+        );
+    }
+    let run = &report.run;
+    println!(
+        "run {}: {} attempts ({} pass, {} fail, {} error); {} oracle scripts played, {} off; {} tasks refused; {}",
+        run.run,
+        run.attempts.total(),
+        run.attempts.pass,
+        run.attempts.fail,
+        run.attempts.error,
+        run.oracles.played,
+        run.oracles.deviations,
+        report.refused.len(),
+        if run.valid { "valid" } else { "NOT valid: more than 10% of the attempts errored" },
+    );
+}
+
+/// `eval gc`: lists what would go, and removes it with `--apply`.
+fn eval_gc(root: &Path, apply: bool, issues: Option<&Path>) -> Verdict {
+    let discovery = eval::discover(root)?;
+    let bodies = match issues {
+        Some(file) => vec![std::fs::read_to_string(file).map_err(|e| format!("{}: {e}", file.display()))?],
+        None => run_gc::open_issue_bodies()?,
+    };
+    let named = run_gc::Named { issues: bodies, scripts: Vec::new() }.with_scripts_of(&discovery);
+    let out = assets_folder("OMUZAKI_EVAL_OUT", "evals")?;
+    let plan = run_gc::plan(&out, SystemTime::now(), &named)?;
+    for entry in &plan.entries {
+        match &entry.kept {
+            Some(why) => println!("keep   {}: {why}", entry.run),
+            None => println!("remove {}", entry.run),
+        }
+    }
+    let going = plan.removals().count();
+    if apply {
+        let removed = plan.apply()?;
+        println!("removed {} run folder(s).", removed.len());
+    } else {
+        println!("{going} run folder(s) would be removed; pass --apply to remove them.");
+    }
+    Ok(true)
+}
+
 /// `eval promote`: writes the recorded attempt's calls as a script beside its task.
 fn eval_promote(root: &Path, transcript: &Path, task: &str, name: &str, expect_pass: bool) -> Verdict {
     let text = std::fs::read_to_string(transcript).map_err(|e| format!("{}: {e}", transcript.display()))?;
     let log = EventLog::from_jsonl(&text).map_err(|e| format!("{}: {e}", transcript.display()))?;
     let script = Script::from_log(&log);
+    let script = match attempt_folder(transcript) {
+        Some(source) => script.promoted_from(source),
+        None => script,
+    };
     if script.lines.is_empty() {
         return Err(format!(
             "{}: the attempt made no tool calls, so there is nothing to promote",
@@ -386,6 +623,15 @@ fn eval_promote(root: &Path, transcript: &Path, task: &str, name: &str, expect_p
         .map_err(|e| format!("{}: {e}", path.display()))?;
     println!("wrote {} ({} calls)", path.display(), script.lines.len());
     Ok(true)
+}
+
+/// `<run>/<task>/<attempt>` of a `transcript.jsonl` that lies in a run folder (`.../runs/<run>/<task>/<attempt>/`).
+fn attempt_folder(transcript: &Path) -> Option<String> {
+    let folder = transcript.parent()?;
+    let parts: Vec<&str> = folder.components().filter_map(|c| c.as_os_str().to_str()).collect();
+    let runs = parts.iter().rposition(|p| *p == "runs")?;
+    let tail = parts.get(runs + 1..)?;
+    (tail.len() == 3).then(|| tail.join("/"))
 }
 
 /// One row of `eval list --json`.

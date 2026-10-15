@@ -155,7 +155,21 @@ impl Scripted {
             Ok(_) => return Ok(Some(Halt::Failed("the arguments are not an object".to_owned()))),
             Err(reason) => return Ok(Some(Halt::Failed(reason))),
         };
-        let reply = run.call(&step.call, args.clone())?;
+        // A script may name an op (`character.rename`) as well as a tool (`character_rename`): find the tool in the catalog.
+        let tool = if step.call.contains('.') {
+            match run.host.tool_names().tool_of(&step.call) {
+                Some(tool) => tool.to_owned(),
+                None => {
+                    return Ok(Some(Halt::Failed(format!(
+                        "`{}` is not an op this server offers as a tool",
+                        step.call
+                    ))));
+                }
+            }
+        } else {
+            step.call.clone()
+        };
+        let reply = run.call(&tool, args.clone())?;
         if let Some(expect) = &step.expect {
             let filled = match fill(expect, &self.exports) {
                 Ok(filled) => filled,
@@ -169,8 +183,7 @@ impl Scripted {
         }
         if let Some(name) = &step.save {
             let document = run.host.document()?;
-            run.saved
-                .insert(name.clone(), Saved { tool: step.call.clone(), args, structured: reply.structured, document });
+            run.saved.insert(name.clone(), Saved { tool, args, structured: reply.structured, document });
         }
         Ok(None)
     }

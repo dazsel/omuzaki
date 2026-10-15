@@ -1,0 +1,634 @@
+//! The runner (design 6.2, 6.4, 7): plays tasks, grades them, keeps the evidence and appends the history.
+//!
+//! One run builds each fixture once, copies it for every attempt into a scratch folder, plays the attempt on a host,
+//! grades the result with the check library on **separate** runners (the pristine fixture and the result folder), keeps
+//! the transcript and the check report, and deletes the scratch. With `record` it then appends one line per attempt to
+//! `eval-history.jsonl` and one for the run to `eval-runs.jsonl`.
+//!
+//! A scripted run records `attempts` attempts of each task's pass script, and also plays, once, every other pass script,
+//! every fail script and the empty script (the oracles of design 5.4). The oracles are never in the history, because
+//! a script that must fail would lower the pass rate; they are in the run record, and any that does not end as it must
+//! fails the run. The reference driver is a separate task and plugs in through [`Driver`](super::driver::Driver).
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Instant, SystemTime};
+
+use omuzaki_ops_api::Grants;
+
+use super::build::{Built, build, copy_dir};
+use super::check::{CheckReport, Checker, Outcome, glob_match};
+use super::driver::scripted::Scripted;
+use super::driver::{Driver, Stop};
+use super::fixture::SetItemRef;
+use super::history::{
+    self, AttemptOutcome, AttemptRecord, CheckRecord, Counts, FAMILY_TASK, HISTORY_FILE, HistoryError, Oracles,
+    RUNS_FILE, RunRecord, SCHEMA, Skipped, Spend, Usage,
+};
+use super::host::{Host, open_project_runner};
+use super::provenance::{PrivateList, fixture_refusals};
+use super::script::Script;
+use super::task::Caps;
+use super::{Discovery, TaskFile};
+
+/// The harness version recorded with every attempt.
+pub const HARNESS: &str = env!("CARGO_PKG_VERSION");
+/// The kinds of run (design 7.2).
+pub const KINDS: [&str; 4] = ["pr", "nightly", "weekly", "manual"];
+
+/// Which tasks a run plays: those any selector picks. No selector at all means every task.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Selection {
+    /// Task id globs (`*` stands for any run of characters).
+    pub tasks: Vec<String>,
+    /// Tags: a task with any of them is picked (`starter`).
+    pub tags: Vec<String>,
+    /// Crates: every task whose `evals/` folder is in one of them is picked (the affected crates of a pull request).
+    pub crates: Vec<String>,
+}
+
+impl Selection {
+    fn picks(&self, file: &TaskFile) -> bool {
+        if self.tasks.is_empty() && self.tags.is_empty() && self.crates.is_empty() {
+            return true;
+        }
+        self.tasks.iter().any(|glob| glob_match(glob, &file.task.id))
+            || self.tags.iter().any(|tag| file.task.tags.contains(tag))
+            || self.crates.contains(&file.crate_name)
+    }
+}
+
+/// Turns a reference to an eval-set item into the path of its verified file.
+pub type ItemPath<'a> = &'a (dyn Fn(&SetItemRef) -> Result<String, String> + Sync);
+
+/// Everything a run is told.
+pub struct Options<'a> {
+    /// The tasks to play.
+    pub select: Selection,
+    /// Recorded attempts of each task (scripted: of its pass script).
+    pub attempts: u32,
+    /// Attempts played at once.
+    pub jobs: usize,
+    /// The `omuzaki` binary to play through (`--binary`), instead of the in-process host.
+    pub binary: Option<PathBuf>,
+    /// `pr`, `nightly`, `weekly` or `manual`.
+    pub kind: String,
+    /// The run's id; it begins with the minute the run began (see [`super::clock`]).
+    pub run_id: String,
+    /// The commit the run is made at.
+    pub commit: String,
+    /// Where run folders go: `<out>/runs/<run>/<task>/<attempt>/`.
+    pub out: PathBuf,
+    /// The status folder to append the history to, when recording.
+    pub status: Option<PathBuf>,
+    /// Where attempts are copied to and played: deleted when the run ends.
+    pub scratch: PathBuf,
+    /// How a fixture's reference to an eval-set item becomes a file path.
+    pub item_path: ItemPath<'a>,
+}
+
+/// Why a run could not be made at all: harness trouble, not a result.
+#[derive(Debug, thiserror::Error)]
+pub enum RunError {
+    /// A file or folder could not be read or written.
+    #[error("{}: {source}", path.display())]
+    Io {
+        /// The file.
+        path: PathBuf,
+        /// The OS error.
+        source: io::Error,
+    },
+    /// The history could not be written.
+    #[error(transparent)]
+    History(#[from] HistoryError),
+    /// The options are not usable.
+    #[error("{0}")]
+    Options(String),
+}
+
+/// An attempt that did not end as it must.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Deviation {
+    /// The task.
+    pub task: String,
+    /// The script that was played.
+    pub script: String,
+    /// The attempt's folder name: its number, or `oracle-<script>`.
+    pub label: String,
+    /// What it had to be.
+    pub expected: AttemptOutcome,
+    /// What it was.
+    pub got: AttemptOutcome,
+    /// Why.
+    pub reason: String,
+}
+
+/// What a run did.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RunReport {
+    /// The run's record.
+    pub run: RunRecord,
+    /// The recorded attempts, by task then attempt number.
+    pub attempts: Vec<AttemptRecord>,
+    /// Attempts, recorded or oracle, that did not end as they must.
+    pub deviations: Vec<Deviation>,
+    /// Tasks refused before any attempt: a fixture that is not allowed or does not build.
+    pub refused: Vec<Skipped>,
+}
+
+impl RunReport {
+    /// Whether everything ended as it must: no deviation and no refused task.
+    #[must_use]
+    pub fn ok(&self) -> bool {
+        self.deviations.is_empty() && self.refused.is_empty()
+    }
+}
+
+/// What a job is for.
+enum Label {
+    /// Recorded attempt number `n`.
+    Attempt(u32),
+    /// An oracle, named after its script.
+    Oracle(String),
+}
+
+impl Label {
+    fn folder(&self) -> String {
+        match self {
+            Self::Attempt(n) => n.to_string(),
+            Self::Oracle(name) => format!("oracle-{name}"),
+        }
+    }
+}
+
+/// One attempt to play.
+struct Job<'a> {
+    file: &'a TaskFile,
+    label: Label,
+    /// The script's file name, or `<null>`.
+    script_name: String,
+    script: Result<Script, String>,
+    expected: AttemptOutcome,
+}
+
+/// One attempt, played.
+struct Done {
+    record: AttemptRecord,
+    recorded: bool,
+    label: String,
+    transcript: String,
+    checks: String,
+    deviation: Option<Deviation>,
+}
+
+/// A fixture, built once for the run.
+type BuiltFixture = Result<(PathBuf, Built), String>;
+
+/// Plays the selected tasks with the scripted driver.
+///
+/// # Errors
+/// [`RunError`] when the harness itself fails: a folder cannot be written, the history cannot be appended, the options
+/// are unusable. A task that fails, or a script that does not end as it must, is in the [`RunReport`], not an error.
+pub fn run_scripted(
+    discovery: &Discovery,
+    defaults: Caps,
+    private: &PrivateList,
+    options: &Options<'_>,
+) -> Result<RunReport, RunError> {
+    if options.attempts == 0 {
+        return Err(RunError::Options("--attempts must be at least 1".to_owned()));
+    }
+    if !KINDS.contains(&options.kind.as_str()) {
+        return Err(RunError::Options(format!("run kind `{}` is not one of {}", options.kind, KINDS.join(", "))));
+    }
+    let started = Instant::now();
+    let mut selected: Vec<&TaskFile> = discovery.tasks.iter().filter(|f| options.select.picks(f)).collect();
+    selected.sort_by(|a, b| a.task.id.cmp(&b.task.id));
+
+    let mut refused = Vec::new();
+    let mut skipped = Vec::new();
+    let mut runnable = Vec::new();
+    for file in selected {
+        match refusal(discovery, private, file, options) {
+            Some(Refusal::Refused(why)) => refused.push(Skipped { task: file.task.id.clone(), why }),
+            Some(Refusal::Skipped(why)) => skipped.push(Skipped { task: file.task.id.clone(), why }),
+            None => runnable.push(file),
+        }
+    }
+
+    let scratch = options.scratch.join(&options.run_id);
+    let (done, tasks_run) = play(discovery, defaults, &scratch, options, runnable, &mut refused);
+    // The scratch is deleted whether the run worked or not; a leftover would only be the previous run's copies.
+    let cleanup = match fs::remove_dir_all(&scratch) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => Err(RunError::Io { path: scratch, source: e }),
+        _ => Ok(()),
+    };
+    cleanup?;
+
+    let mut counts = Counts::default();
+    let mut oracles = Oracles::default();
+    let mut attempts = Vec::new();
+    let mut deviations = Vec::new();
+    for item in done {
+        write_evidence(&options.out, &options.run_id, &item)?;
+        if item.recorded {
+            counts.add(item.record.outcome);
+            attempts.push(item.record);
+        } else {
+            oracles.played += 1;
+        }
+        if let Some(deviation) = item.deviation {
+            if !item.recorded {
+                oracles.deviations += 1;
+            }
+            deviations.push(deviation);
+        }
+    }
+    let mut tasks_skipped = skipped;
+    tasks_skipped.extend(refused.iter().cloned());
+    let run = RunRecord {
+        v: SCHEMA,
+        run: options.run_id.clone(),
+        kind: options.kind.clone(),
+        driver: "scripted".to_owned(),
+        model: None,
+        commit: options.commit.clone(),
+        tasks_run,
+        tasks_skipped,
+        attempts: counts,
+        oracles,
+        spend: Spend::default(),
+        wall_ms: millis(started),
+        valid: history::valid(&counts),
+    };
+    if let Some(status) = &options.status {
+        for record in &attempts {
+            history::append(&status.join(HISTORY_FILE), record)?;
+        }
+        history::append(&status.join(RUNS_FILE), &run)?;
+    }
+    Ok(RunReport { run, attempts, deviations, refused })
+}
+
+/// Why a task is not played.
+enum Refusal {
+    /// A fault in the task or its fixture: the run fails.
+    Refused(String),
+    /// A limit of this run, such as the binary host's grants: the task is reported and the run goes on.
+    Skipped(String),
+}
+
+fn refusal(discovery: &Discovery, private: &PrivateList, file: &TaskFile, options: &Options<'_>) -> Option<Refusal> {
+    let Some(fixture) = discovery.fixture(&file.task.fixture) else {
+        return Some(Refusal::Refused(format!("unknown fixture `{}`", file.task.fixture)));
+    };
+    let problems = fixture_refusals(&fixture.fixture, &discovery.sets, private);
+    if !problems.is_empty() {
+        return Some(Refusal::Refused(format!("its fixture is refused: {}", problems.join("; "))));
+    }
+    if !file.scripts.iter().any(|s| s.expect_pass) {
+        return Some(Refusal::Refused("no pass script to play".to_owned()));
+    }
+    if options.binary.is_some() && Grants::of(file.task.scopes.iter().copied()) != Grants::agent_default() {
+        return Some(Refusal::Skipped(
+            "its scopes are not the agent default, which is all `omuzaki mcp` grants".to_owned(),
+        ));
+    }
+    None
+}
+
+/// Builds the fixtures, plays every job and returns what happened, in a fixed order, with the tasks that ran.
+fn play<'a>(
+    discovery: &'a Discovery,
+    defaults: Caps,
+    scratch: &Path,
+    options: &Options<'_>,
+    runnable: Vec<&'a TaskFile>,
+    refused: &mut Vec<Skipped>,
+) -> (Vec<Done>, Vec<String>) {
+    let mut fixtures: BTreeMap<String, BuiltFixture> = BTreeMap::new();
+    for file in &runnable {
+        let id = &file.task.fixture;
+        if fixtures.contains_key(id) {
+            continue;
+        }
+        let Some(fixture) = discovery.fixture(id) else { continue };
+        let dir = scratch.join("fixtures").join(id);
+        let built =
+            build(&fixture.fixture, &dir, options.item_path).map(|built| (dir, built)).map_err(|e| e.to_string());
+        fixtures.insert(id.clone(), built);
+    }
+    let mut jobs = Vec::new();
+    let mut tasks_run = Vec::new();
+    for file in runnable {
+        if let Some(Err(why)) = fixtures.get(&file.task.fixture) {
+            refused.push(Skipped { task: file.task.id.clone(), why: format!("its fixture did not build: {why}") });
+            continue;
+        }
+        tasks_run.push(file.task.id.clone());
+        jobs.extend(plan(file, options.attempts));
+    }
+    let next = AtomicUsize::new(0);
+    let finished: Mutex<Vec<(usize, Done)>> = Mutex::new(Vec::new());
+    let workers = options.jobs.clamp(1, jobs.len().max(1));
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| {
+                loop {
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(job) = jobs.get(index) else { break };
+                    let built = fixtures.get(&job.file.task.fixture).and_then(|b| b.as_ref().ok());
+                    let done = built.map(|(dir, built)| {
+                        let caps = job.file.task.caps.over(defaults);
+                        execute(discovery, job, dir, built, caps, scratch, options)
+                    });
+                    if let Some(done) = done {
+                        finished.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((index, done));
+                    }
+                }
+            });
+        }
+    });
+    let mut done = finished.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
+    // Jobs finish in any order; the report and the history do not.
+    done.sort_by_key(|(index, _)| *index);
+    (done.into_iter().map(|(_, d)| d).collect(), tasks_run)
+}
+
+/// The jobs of one task: its recorded attempts, then its oracles.
+fn plan(file: &TaskFile, attempts: u32) -> Vec<Job<'_>> {
+    let passes: Vec<&super::Script> = file.scripts.iter().filter(|s| s.expect_pass).collect();
+    let fails: Vec<&super::Script> = file.scripts.iter().filter(|s| !s.expect_pass).collect();
+    let job = |script: &super::Script, label: Label, expected: AttemptOutcome| Job {
+        file,
+        label,
+        script_name: script.file_name.clone(),
+        script: parse_script(script),
+        expected,
+    };
+    let mut jobs = Vec::new();
+    let mut used = BTreeSet::new();
+    for n in 1..=attempts {
+        let index = usize::try_from(n - 1).unwrap_or(0) % passes.len().max(1);
+        if let Some(script) = passes.get(index) {
+            used.insert(index);
+            jobs.push(job(script, Label::Attempt(n), AttemptOutcome::Pass));
+        }
+    }
+    for script in passes.iter().enumerate().filter(|(i, _)| !used.contains(i)).map(|(_, s)| s) {
+        jobs.push(job(script, Label::Oracle(label_of(&script.file_name)), AttemptOutcome::Pass));
+    }
+    for script in fails {
+        jobs.push(job(script, Label::Oracle(label_of(&script.file_name)), AttemptOutcome::Fail));
+    }
+    let null_expected = if file.task.null_passes { AttemptOutcome::Pass } else { AttemptOutcome::Fail };
+    jobs.push(Job {
+        file,
+        label: Label::Oracle("null".to_owned()),
+        script_name: "<null>".to_owned(),
+        script: Ok(Script::default()),
+        expected: null_expected,
+    });
+    jobs
+}
+
+/// `task.name.pass.jsonl` as `name`.
+fn label_of(file_name: &str) -> String {
+    let without = file_name.trim_end_matches(".jsonl").trim_end_matches(".pass").trim_end_matches(".fail");
+    without.rsplit('.').next().unwrap_or(without).to_owned()
+}
+
+fn parse_script(script: &super::Script) -> Result<Script, String> {
+    let text = std::str::from_utf8(&script.bytes).map_err(|e| format!("{}: not UTF-8: {e}", script.file_name))?;
+    Script::parse(text).map_err(|e| format!("{}: {e}", script.file_name))
+}
+
+/// Plays one job: copy the fixture, play, grade, classify.
+fn execute(
+    discovery: &Discovery,
+    job: &Job<'_>,
+    fixture_dir: &Path,
+    built: &Built,
+    caps: Caps,
+    scratch: &Path,
+    options: &Options<'_>,
+) -> Done {
+    let task = &job.file.task;
+    let label = job.label.folder();
+    let work = scratch.join("attempts").join(&task.id).join(&label).join("project");
+    let started = Instant::now();
+    let played = match &job.script {
+        Ok(script) => play_one(job, script, fixture_dir, &work, built, caps, options),
+        Err(why) => Err(why.clone()),
+    };
+    let (outcome, reason, report, log, tool_calls, tools_hash) = match played {
+        Ok(p) => {
+            let (outcome, reason) = classify(&p.stop, &p.report);
+            (outcome, reason, Some(p.report), p.log, p.tool_calls, p.tools_hash)
+        }
+        Err(why) => (AttemptOutcome::Error, Some(why), None, super::transcript::EventLog::new(), 0, String::new()),
+    };
+    let transcript = log.transcript();
+    let tool_errors = transcript.calls.iter().filter(|c| !c.ok).count();
+    let record = AttemptRecord {
+        v: SCHEMA,
+        run: options.run_id.clone(),
+        commit: options.commit.clone(),
+        family: FAMILY_TASK.to_owned(),
+        driver: "scripted".to_owned(),
+        model: None,
+        effort: None,
+        task: task.id.clone(),
+        task_version: task.version,
+        task_hash: discovery.task_hash(job.file),
+        feature: task.feature.clone(),
+        attempt: match job.label {
+            Label::Attempt(n) => n,
+            Label::Oracle(_) => 0,
+        },
+        outcome,
+        reason: reason.clone(),
+        checks: report.as_ref().map(CheckRecord::of_report).unwrap_or_default(),
+        turns: 0,
+        tool_calls,
+        tool_errors: u64::try_from(tool_errors).unwrap_or(u64::MAX),
+        retries: 0,
+        usage: Usage::default(),
+        usd_micros: 0,
+        wall_ms: millis(started),
+        tools_hash,
+        prompt_hash: format!("b3:{}", blake3::hash(task.prompt.as_bytes()).to_hex()),
+        harness: HARNESS.to_owned(),
+        transcript: format!("evals/runs/{}/{}/{}/", options.run_id, task.id, label),
+        script: Some(job.script_name.clone()),
+    };
+    let deviation = (outcome != job.expected).then(|| Deviation {
+        task: task.id.clone(),
+        script: job.script_name.clone(),
+        label: label.clone(),
+        expected: job.expected,
+        got: outcome,
+        reason: reason.unwrap_or_else(|| "it ended otherwise".to_owned()),
+    });
+    // The scratch of this attempt is deleted now, to keep the disk small while others run; the evidence is in the run
+    // folder. A folder that stays is removed with the whole run's scratch when the run ends, and reported there.
+    drop(fs::remove_dir_all(work.parent().unwrap_or(&work)));
+    Done {
+        record,
+        recorded: matches!(job.label, Label::Attempt(_)),
+        label,
+        transcript: log.to_jsonl(true).unwrap_or_else(|e| format!("the transcript could not be written: {e}\n")),
+        checks: report.map_or_else(String::new, |r| r.to_json().unwrap_or_else(|e| format!("{{\"error\": \"{e}\"}}"))),
+        deviation,
+    }
+}
+
+/// The parts of a played attempt.
+struct Played {
+    log: super::transcript::EventLog,
+    stop: Stop,
+    tool_calls: u64,
+    tools_hash: String,
+    report: CheckReport,
+}
+
+fn play_one(
+    job: &Job<'_>,
+    script: &Script,
+    fixture_dir: &Path,
+    work: &Path,
+    built: &Built,
+    caps: Caps,
+    options: &Options<'_>,
+) -> Result<Played, String> {
+    let task = &job.file.task;
+    copy_dir(fixture_dir, work).map_err(|e| format!("couldn't copy the fixture: {e}"))?;
+    let grants = Grants::of(task.scopes.iter().copied());
+    let host = match &options.binary {
+        Some(bin) => Host::binary(bin, work, &grants),
+        None => Host::in_process(work, grants),
+    }
+    .map_err(|e| e.to_string())?;
+    let driver = Scripted::new(script.clone(), built.exports.clone());
+    let attempt = driver.run(task, &host, &caps).map_err(|e| e.to_string())?;
+    let names = host.tool_names().clone();
+    let tools_hash = host.tools_hash().to_owned();
+    host.finish().map_err(|e| e.to_string())?;
+    // The checker's own runners: one on the pristine fixture, one on the result folder, reopened from disk.
+    let fixture_runner = open_project_runner(fixture_dir).map_err(|e| e.to_string())?;
+    let result_runner = open_project_runner(work).map_err(|e| e.to_string())?;
+    let report = Checker::new(fixture_runner, result_runner, attempt.log.transcript())
+        .with_exports(built.exports.clone())
+        .with_tool_names(names)
+        .grade(task);
+    Ok(Played { log: attempt.log, stop: attempt.stop, tool_calls: attempt.tool_calls, tools_hash, report })
+}
+
+/// How an attempt ended (design 7.1): a cap on tool calls is a fail, a wall-clock timeout and any trouble of the
+/// harness's own an error.
+fn classify(stop: &Stop, report: &CheckReport) -> (AttemptOutcome, Option<String>) {
+    match stop {
+        Stop::ScriptFailed { line, reason } => {
+            (AttemptOutcome::Error, Some(format!("the script failed at line {line}: {reason}")))
+        }
+        Stop::WallClock => (AttemptOutcome::Error, Some("the wall-clock cap was reached".to_owned())),
+        Stop::ToolCallCap => (AttemptOutcome::Fail, Some("the tool-call cap was reached".to_owned())),
+        Stop::Finished => {
+            if let Some(broken) = report.results.iter().find(|r| r.outcome == Outcome::Error) {
+                return (AttemptOutcome::Error, Some(format!("check `{}` errored: {}", broken.id, broken.detail)));
+            }
+            match report.results.iter().find(|r| r.hard && r.outcome != Outcome::Pass) {
+                None => (AttemptOutcome::Pass, None),
+                Some(failed) => {
+                    (AttemptOutcome::Fail, Some(format!("check `{}` failed: {}", failed.id, failed.detail)))
+                }
+            }
+        }
+    }
+}
+
+/// Writes `<out>/runs/<run>/<task>/<label>/{transcript.jsonl,checks.json}`.
+fn write_evidence(out: &Path, run: &str, done: &Done) -> Result<(), RunError> {
+    let dir = out.join("runs").join(run).join(&done.record.task).join(&done.label);
+    let io = |path: &Path| {
+        let path = path.to_owned();
+        move |source| RunError::Io { path: path.clone(), source }
+    };
+    fs::create_dir_all(&dir).map_err(io(&dir))?;
+    for (name, text) in [("transcript.jsonl", &done.transcript), ("checks.json", &done.checks)] {
+        let path = dir.join(name);
+        fs::write(&path, text).map_err(io(&path))?;
+    }
+    Ok(())
+}
+
+fn millis(since: Instant) -> u64 {
+    u64::try_from(since.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+/// The commit `root` is at, as seven hex digits, or `unknown` when git cannot say.
+#[must_use]
+pub fn head_commit(root: &Path) -> String {
+    std::process::Command::new("git")
+        .args(["rev-parse", "--short=7", "HEAD"])
+        .current_dir(root)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map_or_else(|| "unknown".to_owned(), |s| s.trim().to_owned())
+}
+
+/// A run id for a run that begins at `now`: the minute, then the kind (`2026-10-13T10:00Z-nightly`).
+#[must_use]
+pub fn default_run_id(now: SystemTime, kind: &str) -> String {
+    format!("{}-{kind}", super::clock::utc_minute(now))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_script_file_name_gives_its_label() {
+        assert_eq!(label_of("face-more-oval.rounder.fail.jsonl"), "rounder");
+        assert_eq!(label_of("sample-rename.extra-edit.fail.jsonl"), "extra-edit");
+        assert_eq!(label_of("t.run-1.pass.jsonl"), "run-1");
+    }
+
+    #[test]
+    fn a_run_id_begins_with_the_minute_and_ends_with_the_kind() {
+        let id = default_run_id(SystemTime::UNIX_EPOCH, "nightly");
+        assert_eq!(id, "1970-01-01T00:00Z-nightly");
+    }
+
+    #[test]
+    fn selectors_are_a_union_and_no_selector_picks_everything() {
+        let file = |id: &str, tags: &[&str], krate: &str| TaskFile {
+            path: PathBuf::from("x"),
+            crate_name: krate.to_owned(),
+            task: toml::from_str(&format!(
+                "id='{id}'\nfeature='QG-03'\ntitle='t'\nprompt='p'\nfixture='f'\nscopes=['read']\ntags={tags:?}\n"
+            ))
+            .unwrap(),
+            bytes: Vec::new(),
+            scripts: Vec::new(),
+        };
+        let face = file("face.rounder", &["starter"], "omuzaki-face");
+        let hair = file("hair.silver", &[], "omuzaki-char");
+        let none = Selection::default();
+        assert!(none.picks(&face) && none.picks(&hair));
+        let glob = Selection { tasks: vec!["face.*".to_owned()], ..Selection::default() };
+        assert!(glob.picks(&face) && !glob.picks(&hair));
+        let union = Selection {
+            tags: vec!["starter".to_owned()],
+            crates: vec!["omuzaki-char".to_owned()],
+            ..Selection::default()
+        };
+        assert!(union.picks(&face) && union.picks(&hair));
+    }
+}

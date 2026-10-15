@@ -96,6 +96,13 @@ impl ToolNames {
         self.ops.get(tool).map(String::as_str)
     }
 
+    /// The tool that stands for the op (or built-in) `op`, if the server lists one: the other way round from
+    /// [`ToolNames::op_of`], for scripts that name an op.
+    #[must_use]
+    pub fn tool_of(&self, op: &str) -> Option<&str> {
+        self.ops.iter().find(|(_, o)| o.as_str() == op).map(|(tool, _)| tool.as_str())
+    }
+
     /// Whether `name` is an op or built-in name the map knows (as a target).
     #[must_use]
     pub fn knows_op(&self, name: &str) -> bool {

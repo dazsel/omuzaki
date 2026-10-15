@@ -1,0 +1,402 @@
+//! The runner end to end on demo ops linked into this test binary: tasks play on real project folders opened by
+//! `omuzaki-cli`'s constructor, are graded on separate runners, and leave a history, a run record and evidence folders.
+#![allow(clippy::unwrap_used)]
+
+mod common;
+
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use omuzaki_doc_api::{DocPath, Patch};
+use omuzaki_ops_api::{Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo};
+use omuzaki_test::eval::history::{self, AttemptOutcome, AttemptRecord, HISTORY_FILE, RUNS_FILE};
+use omuzaki_test::eval::provenance::PrivateList;
+use omuzaki_test::eval::run::{Options, RunReport, Selection, run_scripted};
+use omuzaki_test::eval::task::Caps;
+use omuzaki_test::eval::{self};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+
+/// Where the demo ops keep their note: a key in `project.toml`.
+fn note_path() -> DocPath {
+    DocPath::root().join("project").join("note")
+}
+
+#[derive(Serialize, Deserialize, JsonSchema)]
+struct SetNote {
+    text: String,
+}
+impl Op for SetNote {
+    fn meta() -> OpMeta {
+        OpMeta {
+            name: "evaltest.set_note",
+            summary: "Set the project's note.",
+            kind: OpKind::Edit,
+            scope: Scope::EditScene,
+            undo: Undo::Auto,
+        }
+    }
+    fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
+        let at = note_path();
+        Ok(Plan::edit(Patch::new().with(at.clone(), ctx.doc.get(&at).cloned(), Some(json!(self.text)))))
+    }
+}
+omuzaki_ops_api::register_op!(SetNote);
+
+fn write(path: &Path, text: &str) {
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, text).unwrap();
+}
+
+const FIXTURE: &str = "id = 'fx'\nsummary = 's'\nsteps = [{ op = 'evaltest.set_note', args = { text = 'start' } }]\n";
+
+/// A task that sets the note to `want`, with a pass script that does and a fail script that sets `wrong`.
+fn task(ws: &Path, name: &str, want: &str, wrong: &str) {
+    let dir = ws.join("crates/c/evals");
+    write(
+        &dir.join(format!("{name}.toml")),
+        &format!(
+            "id = 'demo.{name}'\nfeature = 'QG-03'\ntitle = 't'\nprompt = 'Make the note say {want}.'\nfixture = 'fx'\n\
+             scopes = ['read', 'edit:scene']\n\
+             [[check]]\nid = 'note'\nkind = 'doc.equals'\npath = 'project/note'\nvalue = '{want}'\n\
+             [[check]]\nid = 'only-the-note'\nkind = 'doc.changed_only'\npaths = ['project/note']\n"
+        ),
+    );
+    let call = |text: &str| format!("{{\"call\": \"evaltest_set_note\", \"args\": {{\"text\": \"{text}\"}}}}\n");
+    write(&dir.join(format!("{name}.good.pass.jsonl")), &call(want));
+    write(&dir.join(format!("{name}.nope.fail.jsonl")), &call(wrong));
+}
+
+fn workspace() -> tempfile::TempDir {
+    let ws = tempfile::tempdir().unwrap();
+    write(&ws.path().join("crates/c/evals/fixtures/fx.toml"), FIXTURE);
+    task(ws.path(), "up", "up", "nope");
+    task(ws.path(), "down", "down", "nope");
+    ws
+}
+
+fn caps() -> Caps {
+    Caps { turns: 10, tool_calls: 20, wall_s: 60, tokens: 1000 }
+}
+
+struct Folders {
+    out: PathBuf,
+    status: PathBuf,
+    scratch: PathBuf,
+}
+
+impl Folders {
+    fn new(root: &Path) -> Self {
+        Self { out: root.join("out"), status: root.join("status"), scratch: root.join("scratch") }
+    }
+}
+
+fn play(ws: &Path, folders: &Folders, run_id: &str, attempts: u32, jobs: usize, record: bool) -> RunReport {
+    play_with(ws, folders, run_id, Selection::default(), attempts, jobs, record)
+}
+
+fn play_with(
+    ws: &Path,
+    folders: &Folders,
+    run_id: &str,
+    select: Selection,
+    attempts: u32,
+    jobs: usize,
+    record: bool,
+) -> RunReport {
+    let discovery = eval::discover(ws).unwrap();
+    let private = PrivateList { prefixes: vec!["example-clip/".to_owned()], hashes: vec![] };
+    let no_items = |item: &eval::fixture::SetItemRef| Err(format!("no store for {}", item.set));
+    let options = Options {
+        select,
+        attempts,
+        jobs,
+        binary: None,
+        kind: "manual".to_owned(),
+        run_id: run_id.to_owned(),
+        commit: "abc1234".to_owned(),
+        out: folders.out.clone(),
+        status: record.then(|| folders.status.clone()),
+        scratch: folders.scratch.clone(),
+        item_path: &no_items,
+    };
+    run_scripted(&discovery, caps(), &private, &options).unwrap()
+}
+
+#[test]
+fn two_tasks_three_attempts_recorded_give_six_history_lines_and_a_run_record() {
+    let ws = workspace();
+    let tmp = tempfile::tempdir().unwrap();
+    let folders = Folders::new(tmp.path());
+    let report = play(ws.path(), &folders, "2026-10-13T10:00Z-manual", 3, 4, true);
+    assert!(report.ok(), "{:?}", report.deviations);
+
+    let history = history::read_attempts(&folders.status.join(HISTORY_FILE)).unwrap();
+    assert_eq!(history.len(), 6);
+    assert!(history.iter().all(|r| r.outcome == AttemptOutcome::Pass && r.family == "task" && r.v == 1));
+    let keys: Vec<(&str, u32)> = history.iter().map(|r| (r.task.as_str(), r.attempt)).collect();
+    assert_eq!(
+        keys,
+        [("demo.down", 1), ("demo.down", 2), ("demo.down", 3), ("demo.up", 1), ("demo.up", 2), ("demo.up", 3)]
+    );
+    let first = &history[0];
+    assert_eq!(first.checks.len(), 2);
+    assert_eq!(first.checks[0].id, "note");
+    assert_eq!((first.checks[0].passed, first.checks[0].after.clone()), (Some(true), Some(json!("down"))));
+    assert_eq!((first.tool_calls, first.tool_errors, first.turns, first.usd_micros), (1, 0, 0, 0));
+    assert_eq!(first.commit, "abc1234");
+    assert_eq!(first.transcript, "evals/runs/2026-10-13T10:00Z-manual/demo.down/1/");
+    assert!(
+        first.tools_hash.starts_with("b3:")
+            && first.prompt_hash.starts_with("b3:")
+            && first.task_hash.starts_with("b3:")
+    );
+
+    let runs = history::read_runs(&folders.status.join(RUNS_FILE)).unwrap();
+    assert_eq!(runs.len(), 1);
+    let run = &runs[0];
+    assert_eq!((run.attempts.pass, run.attempts.total(), run.valid), (6, 6, true));
+    assert_eq!(run.tasks_run, ["demo.down", "demo.up"]);
+    // Per task: the fail script and the empty script, each of which must fail.
+    assert_eq!((run.oracles.played, run.oracles.deviations), (4, 0));
+
+    // Evidence for every attempt and oracle; nothing left in the scratch.
+    let task_dir = folders.out.join("runs/2026-10-13T10:00Z-manual/demo.up");
+    for folder in ["1", "2", "3", "oracle-nope", "oracle-null"] {
+        assert!(task_dir.join(folder).join("transcript.jsonl").is_file(), "{folder}");
+        assert!(task_dir.join(folder).join("checks.json").is_file(), "{folder}");
+    }
+    assert!(!folders.scratch.join("2026-10-13T10:00Z-manual").exists(), "the scratch is gone");
+}
+
+#[test]
+fn nothing_is_recorded_without_record() {
+    let ws = workspace();
+    let tmp = tempfile::tempdir().unwrap();
+    let folders = Folders::new(tmp.path());
+    let report = play(ws.path(), &folders, "2026-10-13T10:00Z-manual", 1, 2, false);
+    assert!(report.ok());
+    assert!(!folders.status.exists());
+    assert_eq!(report.attempts.len(), 2);
+}
+
+#[test]
+fn the_order_of_the_history_does_not_depend_on_how_many_jobs_run_at_once() {
+    let ws = workspace();
+    let lines = |jobs: usize| -> Vec<AttemptRecord> {
+        let tmp = tempfile::tempdir().unwrap();
+        let folders = Folders::new(tmp.path());
+        play(ws.path(), &folders, "2026-10-13T10:00Z-manual", 2, jobs, true);
+        let mut records = history::read_attempts(&folders.status.join(HISTORY_FILE)).unwrap();
+        for record in &mut records {
+            record.wall_ms = 0;
+        }
+        records
+    };
+    assert_eq!(lines(1), lines(4));
+}
+
+#[test]
+fn an_oracle_that_does_not_end_as_it_must_fails_the_run() {
+    let ws = workspace();
+    // The "fail" script now does the right thing: the task cannot tell it from the pass script.
+    write(
+        &ws.path().join("crates/c/evals/up.nope.fail.jsonl"),
+        "{\"call\": \"evaltest_set_note\", \"args\": {\"text\": \"up\"}}\n",
+    );
+    let tmp = tempfile::tempdir().unwrap();
+    let folders = Folders::new(tmp.path());
+    let report = play_with(
+        ws.path(),
+        &folders,
+        "2026-10-13T10:00Z-manual",
+        Selection { tasks: vec!["demo.up".to_owned()], ..Selection::default() },
+        1,
+        1,
+        true,
+    );
+    assert!(!report.ok());
+    let [deviation] = report.deviations.as_slice() else { panic!("{:?}", report.deviations) };
+    assert_eq!(
+        (deviation.task.as_str(), deviation.expected, deviation.got),
+        ("demo.up", AttemptOutcome::Fail, AttemptOutcome::Pass)
+    );
+    assert_eq!(report.run.oracles.deviations, 1);
+    // The oracle is never in the history: a script that must fail would lower the pass rate.
+    assert_eq!(history::read_attempts(&folders.status.join(HISTORY_FILE)).unwrap().len(), 1);
+}
+
+#[test]
+fn a_script_that_cannot_run_is_an_error_attempt_and_too_many_make_the_run_invalid() {
+    let ws = workspace();
+    write(
+        &ws.path().join("crates/c/evals/up.good.pass.jsonl"),
+        // The script expects a preview and gets an apply: the script is wrong, which is the harness's trouble.
+        "{\"call\": \"evaltest_set_note\", \"args\": {\"text\": \"up\"}, \"expect\": {\"mode\": \"dry_run\"}}\n",
+    );
+    let tmp = tempfile::tempdir().unwrap();
+    let folders = Folders::new(tmp.path());
+    let report = play(ws.path(), &folders, "2026-10-13T10:00Z-manual", 1, 2, true);
+    assert!(!report.ok());
+    let up = report.attempts.iter().find(|a| a.task == "demo.up").unwrap();
+    assert_eq!(up.outcome, AttemptOutcome::Error);
+    assert!(up.reason.as_deref().unwrap().contains("line 1"), "{:?}", up.reason);
+    // One of two recorded attempts errored: more than 10%.
+    assert!(!report.run.valid);
+    let runs = history::read_runs(&folders.status.join(RUNS_FILE)).unwrap();
+    assert!(!runs[0].valid);
+}
+
+#[test]
+fn a_caps_override_reaches_the_attempt() {
+    let ws = workspace();
+    // Two calls where one is allowed: the cap stops the attempt, which is a fail.
+    write(
+        &ws.path().join("crates/c/evals/up.good.pass.jsonl"),
+        "{\"call\": \"evaltest_set_note\", \"args\": {\"text\": \"up\"}}\n{\"call\": \"evaltest_set_note\", \"args\": {\"text\": \"up\"}}\n",
+    );
+    let toml = fs::read_to_string(ws.path().join("crates/c/evals/up.toml")).unwrap();
+    write(
+        &ws.path().join("crates/c/evals/up.toml"),
+        &toml.replacen("[[check]]", "[caps]\ntool_calls = 1\n[[check]]", 1),
+    );
+    let tmp = tempfile::tempdir().unwrap();
+    let folders = Folders::new(tmp.path());
+    let report = play_with(
+        ws.path(),
+        &folders,
+        "2026-10-13T10:00Z-manual",
+        Selection { tasks: vec!["demo.up".to_owned()], ..Selection::default() },
+        1,
+        1,
+        false,
+    );
+    let up = &report.attempts[0];
+    assert_eq!(up.outcome, AttemptOutcome::Fail);
+    assert!(up.reason.as_deref().unwrap().contains("tool-call cap"), "{:?}", up.reason);
+}
+
+#[test]
+fn a_task_whose_fixture_is_on_the_private_list_is_refused_before_any_attempt() {
+    let ws = workspace();
+    write(
+        &ws.path().join("crates/c/evalsets/clips.toml"),
+        "id = 'clips'\nkind = 'synthetic'\nsplit = 'dev'\nsummary = 's'\n[[item]]\nhash = 'b3:aa'\npath = 'example-clip/a.png'\n\
+         [item.provenance]\nsource = 'synthetic'\ncommercial = 'yes'\ngenerator = 'abc1234'\n",
+    );
+    write(
+        &ws.path().join("crates/c/evals/fixtures/private.toml"),
+        "id = 'private'\nsummary = 's'\nsteps = [{ op = 'evaltest.set_note', args = { text = { set = 'clips', item = 'b3:aa' } } }]\n",
+    );
+    task(ws.path(), "clip", "up", "nope");
+    let clip = fs::read_to_string(ws.path().join("crates/c/evals/clip.toml")).unwrap();
+    write(&ws.path().join("crates/c/evals/clip.toml"), &clip.replace("fixture = 'fx'", "fixture = 'private'"));
+    let tmp = tempfile::tempdir().unwrap();
+    let folders = Folders::new(tmp.path());
+    let report = play(ws.path(), &folders, "2026-10-13T10:00Z-manual", 1, 2, true);
+    assert!(!report.ok());
+    let [refused] = report.refused.as_slice() else { panic!("{:?}", report.refused) };
+    assert_eq!(refused.task, "demo.clip");
+    assert!(refused.why.contains("private list"), "{}", refused.why);
+    assert!(report.attempts.iter().all(|a| a.task != "demo.clip"), "no attempt of a refused task");
+    assert!(!folders.out.join("runs/2026-10-13T10:00Z-manual/demo.clip").exists());
+    // The other two tasks still ran, and the refused task is in the run record with why.
+    assert_eq!(report.run.tasks_run, ["demo.down", "demo.up"]);
+    assert_eq!(report.run.tasks_skipped.len(), 1);
+}
+
+#[test]
+fn a_fixture_that_does_not_build_refuses_its_tasks() {
+    let ws = workspace();
+    write(
+        &ws.path().join("crates/c/evals/fixtures/fx.toml"),
+        "id = 'fx'\nsummary = 's'\nsteps = [{ op = 'evaltest.no_such_op' }]\n",
+    );
+    let tmp = tempfile::tempdir().unwrap();
+    let folders = Folders::new(tmp.path());
+    let report = play(ws.path(), &folders, "2026-10-13T10:00Z-manual", 1, 1, false);
+    assert!(!report.ok());
+    assert_eq!(report.refused.len(), 2);
+    assert!(report.refused[0].why.contains("did not build"), "{}", report.refused[0].why);
+    assert_eq!(report.attempts.len(), 0);
+}
+
+#[test]
+fn selectors_add_up() {
+    let ws = workspace();
+    let tmp = tempfile::tempdir().unwrap();
+    let folders = Folders::new(tmp.path());
+    let one = Selection { tasks: vec!["demo.d*".to_owned()], ..Selection::default() };
+    let report = play_with(ws.path(), &folders, "2026-10-13T10:00Z-manual", one, 1, 1, false);
+    assert_eq!(report.run.tasks_run, ["demo.down"]);
+    let both = Selection { tasks: vec!["demo.d*".to_owned()], crates: vec!["c".to_owned()], ..Selection::default() };
+    let report = play_with(ws.path(), &folders, "2026-10-13T10:00Z-manual", both, 1, 1, false);
+    assert_eq!(report.run.tasks_run, ["demo.down", "demo.up"]);
+}
+
+/// `eval run` and `eval gc` through the binary, on the sample task that ships with the harness and its real ops.
+#[test]
+fn the_command_line_plays_the_sample_task_and_gc_keeps_what_an_issue_names() {
+    let ws = tempfile::tempdir().unwrap();
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("evals");
+    let target = ws.path().join("crates/omuzaki-test/evals");
+    omuzaki_test::eval::build::copy_dir(&source, &target).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let (out, status) = (tmp.path().join("out"), tmp.path().join("status"));
+    let envs = [("OMUZAKI_EVAL_OUT", common::arg(&out)), ("OMUZAKI_EVAL_STATUS", common::arg(&status))];
+    let root = common::arg(ws.path());
+    let old = "2026-01-01T00:00Z-manual";
+    let run = |args: &[&str]| common::run(&[&["eval"], args, &["--root", root]].concat(), &envs);
+
+    let done = run(&["run", "--attempts", "2", "--record", "--run-id", old]);
+    assert_eq!(common::code(&done), 0, "{}{}", common::text(&done.stdout), common::text(&done.stderr));
+    assert!(common::text(&done.stdout).contains("2 attempts (2 pass"), "{}", common::text(&done.stdout));
+    assert_eq!(history::read_attempts(&status.join(HISTORY_FILE)).unwrap().len(), 2);
+
+    // An old run folder: kept while an issue body names it, gone once nothing does.
+    let issues = tmp.path().join("issues.txt");
+    fs::write(&issues, format!("Eval regression: transcripts in {old}/sample.rename-character/1")).unwrap();
+    let kept = run(&["gc", "--apply", "--issues", common::arg(&issues)]);
+    assert_eq!(common::code(&kept), 0, "{}", common::text(&kept.stderr));
+    assert!(common::text(&kept.stdout).contains("keep   2026-01-01T00:00Z-manual: named in an open issue"));
+    assert!(out.join("runs").join(old).is_dir());
+    fs::write(&issues, "nothing here").unwrap();
+    let dry = run(&["gc", "--issues", common::arg(&issues)]);
+    assert!(common::text(&dry.stdout).contains("remove 2026-01-01T00:00Z-manual"), "{}", common::text(&dry.stdout));
+    assert!(out.join("runs").join(old).is_dir(), "a dry run removes nothing");
+    let applied = run(&["gc", "--apply", "--issues", common::arg(&issues)]);
+    assert_eq!(common::code(&applied), 0);
+    assert!(!out.join("runs").join(old).exists());
+
+    // The reference driver is a later task, and `gh` failing keeps everything (no issues file, no usable `gh`).
+    let reference = run(&["run", "--driver", "reference"]);
+    assert_eq!(common::code(&reference), 2);
+    assert!(common::text(&reference.stderr).contains("reference"), "{}", common::text(&reference.stderr));
+}
+
+#[test]
+fn options_that_make_no_sense_are_refused_before_anything_runs() {
+    let ws = workspace();
+    let tmp = tempfile::tempdir().unwrap();
+    let discovery = eval::discover(ws.path()).unwrap();
+    let no_items = |_: &eval::fixture::SetItemRef| Err(String::new());
+    let options = |attempts: u32, kind: &str| Options {
+        select: Selection::default(),
+        attempts,
+        jobs: 1,
+        binary: None,
+        kind: kind.to_owned(),
+        run_id: "r".to_owned(),
+        commit: "c".to_owned(),
+        out: tmp.path().join("out"),
+        status: None,
+        scratch: tmp.path().join("scratch"),
+        item_path: &no_items,
+    };
+    for (attempts, kind, word) in [(0, "manual", "--attempts"), (1, "sometimes", "run kind")] {
+        let error = run_scripted(&discovery, caps(), &PrivateList::default(), &options(attempts, kind)).unwrap_err();
+        assert!(error.to_string().contains(word), "{error}");
+    }
+    assert!(!tmp.path().join("out").exists() && !tmp.path().join("scratch").exists());
+}

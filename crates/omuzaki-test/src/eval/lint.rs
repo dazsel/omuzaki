@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use serde_json::Value;
 
-use super::provenance::{PrivateList, refusals};
+use super::provenance::{PrivateList, fixture_refusals, refusals};
 use super::{Discovery, TaskFile};
 
 /// The shortest run of shared words that counts as a prompt appearing in a tool description.
@@ -188,15 +188,7 @@ fn provenance_findings(d: &Discovery, private: &PrivateList) -> Vec<Finding> {
         }
     }
     for fixture in &d.fixtures {
-        for reference in fixture.fixture.set_items() {
-            let found = d.sets.get(&reference.set).map(|set| set.items.iter().find(|i| i.hash == reference.item));
-            let problems = match found {
-                None => vec![format!("refers to unknown eval set `{}`", reference.set)],
-                Some(None) => vec![format!("item {} is not in eval set `{}`", reference.item, reference.set)],
-                Some(Some(item)) => refusals(item, private),
-            };
-            out.extend(problems.into_iter().map(|m| finding(&fixture.path, m)));
-        }
+        out.extend(fixture_refusals(&fixture.fixture, &d.sets, private).into_iter().map(|m| finding(&fixture.path, m)));
     }
     out
 }

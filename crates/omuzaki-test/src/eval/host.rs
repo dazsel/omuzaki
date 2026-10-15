@@ -21,7 +21,7 @@ use omuzaki_doc_api::DocPath;
 use omuzaki_mcp::{Connections, McpOptions, McpServer, ServerError};
 use omuzaki_ops_api::{Grants, Runner, Scope};
 use rmcp::ServiceExt;
-use rmcp::model::{CallToolRequestParams, CallToolResult};
+use rmcp::model::{CallToolRequestParams, CallToolResult, Tool};
 use rmcp::service::{RoleClient, RunningService};
 use serde_json::{Map, Value};
 use tokio::runtime::Runtime;
@@ -99,6 +99,7 @@ pub struct Host {
     child: Option<tokio::process::Child>,
     reader: Reader,
     tool_names: ToolNames,
+    tools_hash: String,
     start_doc: Value,
 }
 
@@ -126,13 +127,23 @@ impl Host {
         let options = McpOptions::with_grants(grants).with_connections(connections);
         let server = McpServer::new(runner.clone(), options).map_err(|e| HostError::Connection(e.to_string()))?;
         let tool_names = ToolNames::of_server(&server);
+        let tools_hash = hash_tools(&server.tools());
         let (server_io, client_io) = tokio::io::duplex(PIPE_BYTES);
         let serving = server.clone();
         let task = runtime.spawn(async move { serving.serve(server_io).await });
         let client = runtime.block_on(().serve(client_io)).map_err(|e| HostError::Connection(e.to_string()))?;
         let reader = Reader::Runner(runner);
         let start_doc = read_document(&reader)?;
-        Ok(Self { runtime, client: Some(client), server: Some(task), child: None, reader, tool_names, start_doc })
+        Ok(Self {
+            runtime,
+            client: Some(client),
+            server: Some(task),
+            child: None,
+            reader,
+            tool_names,
+            tools_hash,
+            start_doc,
+        })
     }
 
     /// Runs `omuzaki mcp --project <project>` from the binary at `omuzaki` and connects to it over stdio.
@@ -178,6 +189,7 @@ impl Host {
             child: Some(child),
             reader,
             tool_names: ToolNames::of_tools(&tools),
+            tools_hash: hash_tools(&tools),
             start_doc,
         })
     }
@@ -186,6 +198,13 @@ impl Host {
     #[must_use]
     pub fn tool_names(&self) -> &ToolNames {
         &self.tool_names
+    }
+
+    /// A hash of the tool list the server offers (names, descriptions and schemas), as `b3:<hex>`: a changed tool surface
+    /// is a different measurement, and the history keeps the hash beside every attempt.
+    #[must_use]
+    pub fn tools_hash(&self) -> &str {
+        &self.tools_hash
     }
 
     /// The document as the fixture built it, before any call.
@@ -265,6 +284,15 @@ impl Drop for Host {
     }
 }
 
+/// The hash of a `tools/list` answer: the tools sorted by name, as JSON.
+fn hash_tools(tools: &[Tool]) -> String {
+    let mut sorted: Vec<&Tool> = tools.iter().collect();
+    sorted.sort_by(|a, b| a.name.cmp(&b.name));
+    // A tool serialises to JSON without failing; if it somehow did not, the empty hash would show the fault in history.
+    let bytes = serde_json::to_vec(&sorted).unwrap_or_default();
+    format!("b3:{}", blake3::hash(&bytes).to_hex())
+}
+
 fn runtime() -> Result<Runtime, HostError> {
     tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| HostError::Runtime(e.to_string()))
 }
@@ -272,6 +300,15 @@ fn runtime() -> Result<Runtime, HostError> {
 fn cli_for(project: &Path) -> Result<Cli, HostError> {
     let args: [OsString; 4] = ["omuzaki".into(), "--project".into(), project.into(), "mcp".into()];
     cli::try_parse_from(args).map_err(|e| HostError::Open(e.to_string()))
+}
+
+/// Opens the runner `omuzaki mcp --project <dir>` would serve, with the ops linked into this binary: the fixture builder
+/// and the checker open projects through it as well, so every runner in an eval is built by the product's constructor.
+///
+/// # Errors
+/// [`HostError::Open`] when the folder is not a project this build can open.
+pub fn open_project_runner(project: &Path) -> Result<Arc<dyn Runner>, HostError> {
+    open_runner(project, &Connections::default())
 }
 
 fn open_runner(project: &Path, connections: &Connections) -> Result<Arc<dyn Runner>, HostError> {
@@ -284,7 +321,7 @@ fn read_document(reader: &Reader) -> Result<Value, HostError> {
     let document_error = |e: &dyn std::fmt::Display| HostError::Document(e.to_string());
     let runner = match reader {
         Reader::Runner(runner) => runner.clone(),
-        Reader::Project(dir) => open_runner(dir, &Connections::default())?,
+        Reader::Project(dir) => open_project_runner(dir)?,
     };
     let doc = runner.get(&DocPath::root(), &Grants::of([Scope::Read])).map_err(|e| document_error(&e))?;
     Ok(doc.unwrap_or(Value::Null))

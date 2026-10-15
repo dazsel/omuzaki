@@ -117,7 +117,7 @@ pub(super) fn pointer_all<'a>(value: &'a Value, pointer: &str) -> Result<Vec<&'a
 }
 
 /// Whether `text` matches `pattern`, where `*` stands for any run of characters (an op name or a name glob).
-pub(super) fn glob_match(pattern: &str, text: &str) -> bool {
+pub(crate) fn glob_match(pattern: &str, text: &str) -> bool {
     let Some((head, rest)) = pattern.split_once('*') else { return pattern == text };
     let Some(tail) = text.strip_prefix(head) else { return false };
     (0..=tail.len()).filter(|&i| tail.is_char_boundary(i)).any(|i| glob_match(rest, &tail[i..]))

@@ -174,6 +174,24 @@ fn record_problems(hash: &str, record: &Provenance) -> Vec<String> {
     reasons
 }
 
+/// Every reason the eval sets `fixture` refers to may not be used: an unknown set, an item the set does not hold, or an
+/// item that is refused ([`refusals`]). Empty when the fixture may be built.
+///
+/// The lint reports these by file; the runner refuses the task before any attempt.
+#[must_use]
+pub fn fixture_refusals(fixture: &super::fixture::Fixture, sets: &EvalSets, private: &PrivateList) -> Vec<String> {
+    let mut out = Vec::new();
+    for reference in fixture.set_items() {
+        let found = sets.get(&reference.set).map(|set| set.items.iter().find(|i| i.hash == reference.item));
+        match found {
+            None => out.push(format!("refers to unknown eval set `{}`", reference.set)),
+            Some(None) => out.push(format!("item {} is not in eval set `{}`", reference.item, reference.set)),
+            Some(Some(item)) => out.extend(refusals(item, private)),
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
