@@ -8,9 +8,10 @@ version = "2.3.0"
 repository = "https://github.com/google-ai-edge/LiteRT.git"
 tag = "v2.3.0"
 commit = "4352e261d3f1b3cda00345db5dbd75859d3bf0d3"
-# What `TfLiteVersion()` returns at this tag: LiteRT 2.3.0 still reports the TensorFlow-style string in
-# tflite/version.h, not its own version.
-tflite_version = "2.19.0"
+# What `TfLiteVersion()` returns at this tag, as the check read it from the built library: not LiteRT's own version
+# but TensorFlow's (2.22.0 at the commit LiteRT's workspace pins, through //tensorflow/core/public's TF_*_VERSION
+# defines), with the "-dev0+selfbuilt" suffix that a build without ML_WHEEL_TYPE gets (third_party/py/python_wheel.bzl).
+tflite_version = "2.22.0-dev0+selfbuilt"
 
 [shim]
 # OMZ_LITERT_ABI in omz_litert_shim.c.

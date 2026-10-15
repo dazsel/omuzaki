@@ -6,7 +6,7 @@
 
 use egui::{Align2, Color32, Context, Response, Sense, Stroke, StrokeKind, Ui, Widget, vec2};
 
-use super::keycap::{CapStyle, KeyCaps};
+use super::keycap::{CapStyle, KeyCaps, Shortcut};
 use super::tooltip::{Tip, TipExt as _};
 use crate::ds::a11y;
 use crate::ds::contrast::{Rule, Table};
@@ -41,7 +41,7 @@ pub struct Button<'a> {
     label: &'a str,
     kind: ButtonKind,
     icon: Option<&'a str>,
-    shortcut: Option<&'a str>,
+    shortcut: Option<Shortcut>,
     hint_only: bool,
     op: Option<&'a str>,
     disabled: Option<&'a str>,
@@ -93,15 +93,15 @@ impl<'a> Button<'a> {
         self
     }
 
-    /// The shortcut, as key caps ("Ctrl Enter"); also shown in the tooltip.
-    pub const fn shortcut(mut self, keys: &'a str) -> Self {
-        self.shortcut = Some(keys);
+    /// The shortcut, as key caps; also shown in the tooltip.
+    pub fn shortcut(mut self, shortcut: impl Into<Shortcut>) -> Self {
+        self.shortcut = Some(shortcut.into());
         self
     }
 
     /// The shortcut, shown in the tooltip only: for a button too crowded to carry key caps.
-    pub const fn shortcut_hint(mut self, keys: &'a str) -> Self {
-        self.shortcut = Some(keys);
+    pub fn shortcut_hint(mut self, shortcut: impl Into<Shortcut>) -> Self {
+        self.shortcut = Some(shortcut.into());
         self.hint_only = true;
         self
     }
@@ -141,7 +141,7 @@ impl<'a> Button<'a> {
         self.measure(ctx, &ds(ctx)).width
     }
 
-    fn measure(&self, ctx: &Context, ds: &Ds) -> Measure<'a> {
+    fn measure(&self, ctx: &Context, ds: &Ds) -> Measure {
         let label_w = paint::text_width(ctx, self.label, &ds.text.strong);
         let icon_w = if self.icon.is_some() { 16.0 + space::S6 } else { 0.0 };
         let caps = self.shortcut.filter(|_| !self.hint_only).map(KeyCaps::new);
@@ -157,12 +157,12 @@ const PAD: f32 = 12.0;
 const MIN_LABEL: f32 = 16.0;
 
 /// The parts of a button's width.
-struct Measure<'a> {
+struct Measure {
     label_w: f32,
     icon_w: f32,
     content_w: f32,
     width: f32,
-    caps: Option<KeyCaps<'a>>,
+    caps: Option<KeyCaps>,
 }
 
 /// The resting, hovered and pressed colours of a button face. Shared with the other controls that look like a button
@@ -233,7 +233,7 @@ impl Widget for Button<'_> {
     }
 }
 
-impl<'a> Button<'a> {
+impl Button<'_> {
     /// Shows the button in `rect`, wherever the layout's cursor is, as the widget `id`.
     ///
     /// For a composite that places its own parts (a job row's Cancel, a step card's actions): it takes no layout, so a
@@ -249,7 +249,7 @@ impl<'a> Button<'a> {
 
     /// Paints the button into `rect` and describes it. The room the label gets is what `rect` leaves after the
     /// padding, icon and key caps; less than the label needs means it is cut, and the tooltip says it whole.
-    fn finish(self, ui: &mut Ui, ds: &Ds, measure: &Measure<'a>, rect: egui::Rect, response: Response) -> Response {
+    fn finish(self, ui: &mut Ui, ds: &Ds, measure: &Measure, rect: egui::Rect, response: Response) -> Response {
         let (t, ctx) = (&ds.theme, ui.ctx().clone());
         let enabled = ui.is_enabled() && self.disabled.is_none();
         let (icon_w, caps) = (measure.icon_w, measure.caps);

@@ -142,23 +142,40 @@ impl Edges {
     }
 }
 
-/// The numbers every shape starts from: the prototype's first lines of `mouth()`.
-struct Frame {
+/// Which of the three shapes the mouth takes, chosen the way the prototype chose it.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(super) enum Kind {
+    /// Pushed-forward lips, barely open.
+    Kiss,
+    /// A thin line.
+    Closed,
+    /// A lens.
+    Open,
+}
+
+/// The numbers every shape starts from: the prototype's first lines of `mouth()`. The pieces that paint on a closed
+/// mouth or a kiss (gloss, the closed smile's fang) are built from it too.
+pub(super) struct Frame {
     /// Opening after the press has closed some of it.
-    open: f32,
-    press: f32,
-    pucker: f32,
+    pub(super) open: f32,
+    pub(super) press: f32,
+    pub(super) pucker: f32,
     /// The performance scale.
-    grow: f32,
+    pub(super) grow: f32,
     /// The mouth centre.
-    centre: Vec2,
+    pub(super) centre: Vec2,
     /// Half the closed width.
-    half_width: f32,
+    pub(super) half_width: f32,
     /// Corner lift per side: `[left, right]`.
-    smile: [f32; 2],
+    pub(super) smile: [f32; 2],
 }
 
 impl Frame {
+    /// The frame of the mouth this context paints.
+    pub(super) fn of(ctx: &PaintCtx<'_>) -> Self {
+        Self::new(&ctx.profile.mouth, &ctx.params.mouth, narrow(ctx.profile.layout.mouth_y))
+    }
+
     fn new(style: &MouthStyle, mouth: &MouthParams, mouth_y: f32) -> Self {
         let press = mouth.press.clamp(0.0, 1.0);
         let pucker = mouth.pucker.clamp(0.0, 1.0);
@@ -182,18 +199,24 @@ impl Frame {
         }
     }
 
-    fn is_kiss(&self) -> bool {
-        self.pucker > KISS_ABOVE && self.open < KISS_OPEN_BELOW
+    pub(super) fn kind(&self) -> Kind {
+        if self.pucker > KISS_ABOVE && self.open < KISS_OPEN_BELOW {
+            Kind::Kiss
+        } else if self.open < CLOSED_BELOW {
+            Kind::Closed
+        } else {
+            Kind::Open
+        }
     }
 }
 
-/// A fixed colour as a `Paint`.
-fn solid((colour, alpha): (Colour, f32)) -> Paint {
+/// `colour` at `alpha` as a solid paint.
+pub(super) fn solid(colour: Colour, alpha: f32) -> Paint {
     Paint::Solid(colour.faded(alpha))
 }
 
 /// A style colour, or `fallback` for a palette slot nobody resolved (which a painter should never see).
-fn resolve(colour: &ColourRef, fallback: Colour) -> Colour {
+pub(super) fn resolve(colour: &ColourRef, fallback: Colour) -> Colour {
     match colour {
         ColourRef::Fixed(c) => *c,
         ColourRef::Slot(_) => fallback,
@@ -201,7 +224,7 @@ fn resolve(colour: &ColourRef, fallback: Colour) -> Colour {
 }
 
 /// Position along a path of sample `i` out of `n`, from `-1` to `1`.
-fn along(i: usize, n: usize) -> f32 {
+pub(super) fn along(i: usize, n: usize) -> f32 {
     // Sample counts are a few dozen at most, exact in f32.
     #[allow(clippy::cast_precision_loss)]
     let (i, n) = (i as f32, n as f32);
@@ -210,23 +233,19 @@ fn along(i: usize, n: usize) -> f32 {
 
 /// Paints the mouth's shape (never the lower lip, interior, teeth, rim or tongue: those belong to the other mouth pieces).
 pub(super) fn paint(ctx: &mut PaintCtx<'_>) {
-    let style = &ctx.profile.mouth;
-    let frame = Frame::new(style, &ctx.params.mouth, narrow(ctx.profile.layout.mouth_y));
-    if frame.is_kiss() {
-        kiss(ctx, &frame);
-    } else if frame.open < CLOSED_BELOW {
-        closed_line(ctx, &frame);
-    } else {
-        open_shape(ctx, &frame);
+    let frame = Frame::of(ctx);
+    match frame.kind() {
+        Kind::Kiss => kiss(ctx, &frame),
+        Kind::Closed => closed_line(ctx, &frame),
+        Kind::Open => open_shape(ctx, &frame),
     }
 }
 
 /// Records the open mouth's outline in [`PaintCtx::open_mouth`] without painting anything, for the pieces that clip
 /// against it when the shape itself is not drawn. Does nothing for a closed mouth or a kiss.
 pub(super) fn record_outline(ctx: &mut PaintCtx<'_>) {
-    let style = &ctx.profile.mouth;
-    let frame = Frame::new(style, &ctx.params.mouth, narrow(ctx.profile.layout.mouth_y));
-    if !frame.is_kiss() && frame.open >= CLOSED_BELOW {
+    let frame = Frame::of(ctx);
+    if frame.kind() == Kind::Open {
         open_outline(ctx, &frame);
     }
 }
@@ -254,7 +273,7 @@ fn closed_line(ctx: &mut PaintCtx<'_>, f: &Frame) {
             .move_to(Vec2::new(f.centre.x - f.half_width * 0.35, y))
             .line_to(Vec2::new(f.centre.x + f.half_width * 0.35, y))
             .finish();
-        list.stroke(tick, solid(UNDER_LINE), UNDER_LINE_WIDTH);
+        list.stroke(tick, solid(UNDER_LINE.0, UNDER_LINE.1), UNDER_LINE_WIDTH);
     }
 }
 
@@ -268,15 +287,15 @@ fn kiss(ctx: &mut PaintCtx<'_>, f: &Frame) {
     }
     let list = ctx.list(FaceLayerId::Base);
     let slit = list.path().polyline(&points).finish();
-    list.stroke(slit, solid(KISS_SHADE), KISS_SHADE_WIDTH);
-    list.stroke(slit, solid(KISS_RIM), KISS_RIM_WIDTH);
+    list.stroke(slit, solid(KISS_SHADE.0, KISS_SHADE.1), KISS_SHADE_WIDTH);
+    list.stroke(slit, solid(KISS_RIM.0, KISS_RIM.1), KISS_RIM_WIDTH);
     list.stroke(slit, Paint::Solid(KISS_CORE), KISS_CORE_WIDTH);
     let arc = list
         .path()
         .move_to(f.centre + Vec2::new(-f.half_width * 0.7, 0.0022))
         .quad_to(f.centre + Vec2::new(0.0, 0.0048), f.centre + Vec2::new(f.half_width * 0.7, 0.0022))
         .finish();
-    list.stroke(arc, solid(UPPER_LIP), UPPER_LIP_WIDTH);
+    list.stroke(arc, solid(UPPER_LIP.0, UPPER_LIP.1), UPPER_LIP_WIDTH);
 }
 
 /// The open mouth: a lens filled with the interior gradient, kept for the pieces that draw into it.
