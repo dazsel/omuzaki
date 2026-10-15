@@ -34,7 +34,7 @@ fn set_counter(ctx: &OpCtx<'_>, value: i64) -> Patch {
 }
 
 /// The summary is the name: the executor labels a one-op undo step with the op's name and the mock with its summary,
-/// a difference these tests leave aside so that every answer, error text included, compares whole.
+/// a difference these tests leave aside (#1662) so that every answer, error text included, compares whole.
 const fn meta(name: &'static str, kind: OpKind, scope: Scope, undo: Undo) -> OpMeta {
     OpMeta { name, summary: name, kind, scope, undo }
 }

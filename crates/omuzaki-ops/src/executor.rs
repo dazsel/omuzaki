@@ -264,7 +264,7 @@ impl Drop for Executor {
 
 /// The actor needs `scope` to run `op`.
 pub(crate) fn require(grants: &Grants, actor: &Actor, scope: Scope, op: &str) -> Result<(), OpError> {
-    checks::require_scope(grants, actor, scope, &format!("run {op}"))
+    checks::require_run(grants, actor, scope, op)
 }
 
 impl Runner for Executor {

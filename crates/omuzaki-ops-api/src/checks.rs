@@ -3,7 +3,7 @@
 //! are refused, what the log records and which steps undo reaches.
 //!
 //! A run checks in this order, and [`plan`] keeps the middle of it in one place:
-//! 1. `read`, before the op is looked up ([`require_scope`] with [`Scope::Read`]): plans and conflict messages carry
+//! 1. `read`, before the op is looked up ([`require_run`] with [`Scope::Read`]): plans and conflict messages carry
 //!    document values, so nothing runs without it, not even a dry-run.
 //! 2. The transaction, which only the runner can check.
 //! 3. The op's own scope ([`authorize`]), before the op is asked for a plan.
@@ -32,18 +32,18 @@ fn who(actor: &Actor) -> String {
     }
 }
 
-/// `Denied`: `actor` lacks `scope` for `doing` (for example "run face.set_profile"). The hint names the scope to grant.
+/// `Denied`: `actor` lacks `scope` for `doing` (for example `run face.set_profile`). The hint names the scope to grant.
 pub fn denied(actor: &Actor, doing: &str, scope: Scope) -> OpError {
     OpError::denied(format!("{} may not {doing}: it needs the `{scope}` scope", who(actor)))
         .hint(format!("grant the `{scope}` scope for this session, then retry"))
 }
 
-/// `actor` needs `scope` to do `doing`.
+/// `actor` needs `scope` to run the op called `op`. The refusal's text is built only when it refuses.
 ///
 /// # Errors
 /// [`denied`] when `grants` lack `scope`.
-pub fn require_scope(grants: &Grants, actor: &Actor, scope: Scope, doing: &str) -> Result<(), OpError> {
-    if grants.allows(scope) { Ok(()) } else { Err(denied(actor, doing, scope)) }
+pub fn require_run(grants: &Grants, actor: &Actor, scope: Scope, op: &str) -> Result<(), OpError> {
+    if grants.allows(scope) { Ok(()) } else { Err(denied(actor, &format!("run {op}"), scope)) }
 }
 
 /// A read that carries no actor (the document, the log, events, jobs) needs `read`; the grants alone say who asks.
@@ -67,7 +67,7 @@ pub fn require_read(grants: &Grants, doing: &str) -> Result<(), OpError> {
 /// [`denied`] when the op's scope is needed and `grants` lack it.
 pub fn authorize(grants: &Grants, actor: &Actor, meta: OpMeta, mode: Mode) -> Result<(), OpError> {
     if mode == Mode::Apply || meta.kind == OpKind::Query {
-        require_scope(grants, actor, meta.scope, &format!("run {}", meta.name))
+        require_run(grants, actor, meta.scope, meta.name)
     } else {
         Ok(())
     }
@@ -128,11 +128,11 @@ pub fn op_info(registration: &OpRegistration) -> OpInfo {
     OpInfo::new((registration.meta)(), (registration.schema)()).with_coalesces((registration.coalesces)())
 }
 
-/// The scope an applied op adds to its undo step, which undo and redo then need. An op that changed nothing (a query
-/// inside a transaction, a no-op edit) adds none. An [`Undo::Explicit`] op adds its scope even with an empty patch:
+/// The scope an applied op adds to its undo step (its own `scope`, given its `undo` mode), which undo and redo then
+/// need. An op that changed nothing (a query inside a transaction, a no-op edit) adds none. An [`Undo::Explicit`] op adds its scope even with an empty patch:
 /// its effect outside the document still needs reversing, and its scope must still gate the refusal.
-pub fn step_scope(meta: OpMeta, patch: &Patch) -> Option<Scope> {
-    (!patch.is_empty() || meta.undo == Undo::Explicit).then_some(meta.scope)
+pub fn step_scope(scope: Scope, undo: Undo, patch: &Patch) -> Option<Scope> {
+    (!patch.is_empty() || undo == Undo::Explicit).then_some(scope)
 }
 
 /// Whether a finished step belongs in its owner's history (and so clears their redo). `patch` is the step's whole

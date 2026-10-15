@@ -40,7 +40,7 @@ impl Step {
 
     /// Adds one applied op to the step.
     fn absorb(&mut self, meta: OpMeta, patch: &Patch) {
-        self.scopes.extend(checks::step_scope(meta, patch));
+        self.scopes.extend(checks::step_scope(meta.scope, meta.undo, patch));
         if meta.undo == Undo::Explicit && self.explicit.is_none() {
             self.explicit = Some(meta.name);
         }
@@ -182,7 +182,7 @@ impl<D: DocWrite + Send> Runner for MockRunner<D> {
 
     fn run(&self, req: Request) -> Result<Outcome, OpError> {
         // The executor's order of checks (`checks` module docs). Nothing runs without `read`, not even a dry-run.
-        checks::require_scope(&req.grants, &req.actor, Scope::Read, &format!("run {}", req.op))?;
+        checks::require_run(&req.grants, &req.actor, Scope::Read, &req.op)?;
         let reg = find(&req.op).ok_or_else(|| OpError::invalid("op", format!("unknown op {}", req.op)))?;
         let op = (reg.decode)(req.args.clone())?;
         let meta = op.meta();
