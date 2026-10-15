@@ -25,6 +25,10 @@ fn send(f: &mut SetupFlow, events: &[Event]) -> Vec<Effect> {
     events.iter().flat_map(|e| f.handle(*e, 0)).collect()
 }
 
+fn no_effects() -> Vec<Effect> {
+    Vec::new()
+}
+
 fn to_input(f: &mut SetupFlow) {
     send(f, &[Event::Next, Event::ChooseCharacter(CharacterChoice::Sample)]);
     assert_eq!(f.view().step, Step::Input);
@@ -98,8 +102,8 @@ fn no_camera_reaches_the_end_through_the_life_layer_and_lists_calibrate_as_skipp
     let mut f = flow(Probes { cameras: Cameras::None, ..probes() });
     to_input(&mut f);
     assert!(f.view().notes.contains(&Note::NoCamera));
-    assert!(send(&mut f, &[Event::ChooseInput(InputChoice::Webcam)]).is_empty(), "webcam is not on offer");
-    assert!(send(&mut f, &[Event::Next]).is_empty(), "no choice, no Next");
+    assert_eq!(send(&mut f, &[Event::ChooseInput(InputChoice::Webcam)]), no_effects(), "webcam is not on offer");
+    assert_eq!(send(&mut f, &[Event::Next]), no_effects(), "no choice, no Next");
     send(&mut f, &[Event::ChooseInput(InputChoice::LifeLayerOnly), Event::Next]);
     assert_eq!(f.view().step, Step::Output);
     assert!(!f.view().shown.contains(&Step::Calibrate));
@@ -111,7 +115,7 @@ fn permission_denied_offers_the_other_paths() {
     let mut f = flow(Probes { cameras: Cameras::One(Permission::Denied), iphone: IPhone::Paired, ..probes() });
     to_input(&mut f);
     assert!(f.view().notes.contains(&Note::PermissionDenied));
-    assert!(send(&mut f, &[Event::ChooseInput(InputChoice::Webcam), Event::Next]).is_empty());
+    assert_eq!(send(&mut f, &[Event::ChooseInput(InputChoice::Webcam), Event::Next]), no_effects());
     send(&mut f, &[Event::ChooseInput(InputChoice::Iphone), Event::Next]);
     assert_eq!(f.view().step, Step::Calibrate, "a paired iPhone calibrates without the webcam");
     let mut g = flow(Probes { cameras: Cameras::One(Permission::Denied), ..probes() });
@@ -126,7 +130,7 @@ fn undecided_permission_is_asked_once_on_input_and_blocks_until_granted() {
     let fx = send(&mut f, &[Event::Next, Event::ChooseCharacter(CharacterChoice::Sample)]);
     assert!(!fx.contains(&Effect::RequestCameraPermission), "nothing is asked before Input");
     assert_eq!(send(&mut f, &[Event::ChooseInput(InputChoice::Webcam)]), [Effect::RequestCameraPermission]);
-    assert!(send(&mut f, &[Event::ChooseInput(InputChoice::Webcam), Event::Next]).is_empty());
+    assert_eq!(send(&mut f, &[Event::ChooseInput(InputChoice::Webcam), Event::Next]), no_effects());
     f.handle(Event::Probed(probes()), 0);
     send(&mut f, &[Event::Next]);
     assert_eq!(f.view().step, Step::Calibrate);
@@ -145,7 +149,7 @@ fn tracker_downloading_continues_with_life_layer() {
     f.handle(Event::Probed(probes()), 0);
     assert_eq!(f.view().step, Step::Output);
     assert!(f.view().shown.contains(&Step::Calibrate));
-    assert!(f.progress().skipped.is_empty());
+    assert_eq!(f.progress().skipped, Vec::<Step>::new());
 }
 
 #[test]
@@ -175,7 +179,7 @@ fn back_lands_on_the_previous_shown_step() {
     send(&mut f, &[Event::Back, Event::Back]);
     assert_eq!(f.view().step, Step::Welcome);
     assert!(!f.view().can_back);
-    assert!(send(&mut f, &[Event::Back]).is_empty());
+    assert_eq!(send(&mut f, &[Event::Back]), no_effects());
 }
 
 #[test]
@@ -189,7 +193,7 @@ fn skip_setup_from_every_step_finishes_skipped_and_persists() {
             [Effect::EnsureProject, Effect::Persist(finished), Effect::Finished { skipped: true, total_ms: 0 }],
             "{step:?}"
         );
-        assert!(f.handle(Event::Next, 8).is_empty(), "finished flows ignore events");
+        assert_eq!(f.handle(Event::Next, 8), no_effects(), "finished flows ignore events");
     }
 }
 
@@ -208,9 +212,9 @@ fn resume_from_calibrate() {
 #[test]
 fn calibration_needs_a_start_and_skip_records_it() {
     let mut f = SetupFlow::new(probes(), Progress { step: Step::Calibrate, ..Progress::default() });
-    assert!(send(&mut f, &[Event::CalibrationDone]).is_empty(), "never started");
+    assert_eq!(send(&mut f, &[Event::CalibrationDone]), no_effects(), "never started");
     assert_eq!(send(&mut f, &[Event::Next]), [Effect::StartCalibration]);
-    assert!(send(&mut f, &[Event::Next]).is_empty());
+    assert_eq!(send(&mut f, &[Event::Next]), no_effects());
     let fx = send(&mut f, &[Event::CalibrationDone]);
     assert_eq!(fx[0], Effect::Show(Step::Output));
     let mut g = SetupFlow::new(probes(), Progress { step: Step::Calibrate, ..Progress::default() });
@@ -221,15 +225,19 @@ fn calibration_needs_a_start_and_skip_records_it() {
 #[test]
 fn input_skip_output_choice_and_finish_rules() {
     let mut f = flow(probes());
-    assert!(send(&mut f, &[Event::Finish, Event::Skip, Event::ChooseOutput(OutputKind::Spout)]).is_empty());
+    assert_eq!(send(&mut f, &[Event::Finish, Event::Skip, Event::ChooseOutput(OutputKind::Spout)]), no_effects());
     to_input(&mut f);
     send(&mut f, &[Event::Skip]);
     assert_eq!(f.progress().skipped, [Step::Input, Step::Calibrate]);
     assert_eq!(f.view().step, Step::Output);
-    assert!(send(&mut f, &[Event::ChooseOutput(OutputKind::Ndi)]).is_empty(), "only the recommended output is offered");
+    assert_eq!(
+        send(&mut f, &[Event::ChooseOutput(OutputKind::Ndi)]),
+        no_effects(),
+        "only the recommended output is offered"
+    );
     assert_eq!(send(&mut f, &[Event::ChooseOutput(OutputKind::Spout)]), [Effect::ShowTestPattern(OutputKind::Spout)]);
     send(&mut f, &[Event::Next]);
-    assert!(send(&mut f, &[Event::Next]).is_empty());
+    assert_eq!(send(&mut f, &[Event::Next]), no_effects());
     let fx = send(&mut f, &[Event::Finish]);
     let last = Progress { step: Step::GoLive, skipped: vec![Step::Input, Step::Calibrate], finished: true };
     assert_eq!(fx, [Effect::Persist(last), Effect::Finished { skipped: false, total_ms: 0 }]);
@@ -239,7 +247,7 @@ fn input_skip_output_choice_and_finish_rules() {
 fn keep_needs_an_open_project() {
     let mut f = flow(probes());
     send(&mut f, &[Event::Next]);
-    assert!(send(&mut f, &[Event::ChooseCharacter(CharacterChoice::Keep)]).is_empty());
+    assert_eq!(send(&mut f, &[Event::ChooseCharacter(CharacterChoice::Keep)]), no_effects());
     let mut g = flow(Probes { project_open: true, ..probes() });
     send(&mut g, &[Event::Next, Event::ChooseCharacter(CharacterChoice::Keep)]);
     assert_eq!(g.view().step, Step::Input);
