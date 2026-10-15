@@ -237,10 +237,18 @@ fn mean_cost(records: &[&AttemptRecord]) -> f64 {
 /// Reads the history and runs the gate over it.
 #[must_use]
 pub fn gate(attempts: &[AttemptRecord], runs: &[RunRecord]) -> GateReport {
-    let reference: Vec<&AttemptRecord> = attempts.iter().filter(|a| a.driver == REFERENCE).collect();
+    // Only attempts of a run that finished and can be trusted count: a run whose record is missing was cut short, and one
+    // that is not `valid` had too many errors for its rates to mean anything (design 7.2).
+    let trusted: std::collections::BTreeSet<&str> = runs.iter().filter(|r| r.valid).map(|r| r.run.as_str()).collect();
+    let reference: Vec<&AttemptRecord> =
+        attempts.iter().filter(|a| a.driver == REFERENCE && trusted.contains(a.run.as_str())).collect();
     let mut series: BTreeMap<SeriesKey, Vec<&AttemptRecord>> = BTreeMap::new();
     for record in &reference {
         series.entry(key(record)).or_default().push(record);
+    }
+    // Runs that overlap append in the order they finish, not the order they began: the window is the latest by time.
+    for records in series.values_mut() {
+        records.sort_by(|a, b| (time_of(a), &a.run, a.attempt).cmp(&(time_of(b), &b.run, b.attempt)));
     }
     let mut tasks = Vec::new();
     let mut warnings = Vec::new();

@@ -79,6 +79,17 @@ fn history_at_ninety_percent(window_passes: usize) -> Vec<AttemptRecord> {
     all
 }
 
+/// Runs the gate with a valid run record for every run of `all` that `runs` does not already name.
+fn gate_of(all: &[AttemptRecord], runs: &[RunRecord]) -> GateReport {
+    let mut every = runs.to_vec();
+    for id in all.iter().map(|a| a.run.as_str()).collect::<std::collections::BTreeSet<_>>() {
+        if !every.iter().any(|r| r.run == id) {
+            every.push(RunRecord { run: id.to_owned(), ..run_record(0, "m") });
+        }
+    }
+    gate(all, &every)
+}
+
 fn only(report: &GateReport) -> &TaskGate {
     assert_eq!(report.tasks.len(), 1);
     &report.tasks[0]
@@ -108,13 +119,13 @@ fn a_wilson_interval_widens_for_few_attempts_and_covers_the_rate() {
 
 #[test]
 fn at_ninety_percent_five_of_ten_regresses_and_six_of_ten_does_not() {
-    let low = gate(&history_at_ninety_percent(5), &[]);
+    let low = gate_of(&history_at_ninety_percent(5), &[]);
     let task = only(&low);
     assert_eq!(task.status, Status::Regression);
     assert_eq!(task.baseline.map(|b| (b.passes, b.n)), Some((27, 30)));
     assert!(task.probability.unwrap() < ALPHA);
     assert!(low.failed());
-    let fine = gate(&history_at_ninety_percent(6), &[]);
+    let fine = gate_of(&history_at_ninety_percent(6), &[]);
     assert_eq!(only(&fine).status, Status::Ok);
     assert!(!fine.failed());
 }
@@ -129,16 +140,16 @@ fn a_perfect_baseline_does_not_make_one_miss_a_regression_but_two_are() {
         all.extend(night(30, "t", window_passes, 10));
         all
     };
-    let report = gate(&history(9), &[]);
+    let report = gate_of(&history(9), &[]);
     assert_eq!(only(&report).baseline.map(|b| b.rate), Some(1.0));
     assert_eq!(only(&report).status, Status::Ok);
     assert!(!report.failed());
-    assert_eq!(only(&gate(&history(8), &[])).status, Status::Regression);
+    assert_eq!(only(&gate_of(&history(8), &[])).status, Status::Regression);
 }
 
 #[test]
 fn a_regression_names_the_window_the_commits_and_the_transcripts_to_read() {
-    let report = gate(&history_at_ninety_percent(5), &[]);
+    let report = gate_of(&history_at_ninety_percent(5), &[]);
     let task = only(&report);
     assert_eq!(task.window_runs, [run_id(30, 0)]);
     assert_eq!(task.window_commits.len(), 1);
@@ -156,7 +167,7 @@ fn a_series_under_twenty_scored_attempts_is_provisional_and_never_flags() {
         all.extend(night(day, "t", 3, 3));
     }
     all.extend(night(30, "t", 0, 4));
-    let report = gate(&all, &[]);
+    let report = gate_of(&all, &[]);
     let task = only(&report);
     assert_eq!((task.scored, task.status), (19, Status::Provisional));
     // The number is reported (the page shows it), but the verdict is not drawn from it.
@@ -164,7 +175,7 @@ fn a_series_under_twenty_scored_attempts_is_provisional_and_never_flags() {
     assert!(!report.failed());
     // The twentieth scored attempt makes it a series the gate may flag.
     all.extend(night(30, "t", 0, 1));
-    let report = gate(&all, &[]);
+    let report = gate_of(&all, &[]);
     assert_eq!((only(&report).scored, only(&report).status), (20, Status::Regression));
     assert!(report.failed());
 }
@@ -179,7 +190,7 @@ fn attempts_that_are_not_scored_stay_out_of_the_rates() {
             all.push(attempt(&run, "t", outcome));
         }
     }
-    let report = gate(&all, &[]);
+    let report = gate_of(&all, &[]);
     let task = only(&report);
     assert_eq!((task.scored, task.window.n, task.window.passes), (40, 10, 5));
     assert_eq!(task.status, Status::Regression);
@@ -193,7 +204,7 @@ fn without_a_baseline_in_the_twenty_eight_days_the_window_is_not_judged() {
         all.extend(night(day, "t", 3 - usize::from(day < 3), 3));
     }
     all.extend(night(50, "t", 0, 10));
-    let report = gate(&all, &[]);
+    let report = gate_of(&all, &[]);
     let task = only(&report);
     assert_eq!((task.status, task.baseline, task.probability), (Status::NoBaseline, None, None));
     assert!(!report.failed());
@@ -217,7 +228,7 @@ fn series_are_split_by_version_model_and_effort_and_scripted_attempts_are_not_sc
     all.extend(other_model);
     all.extend(newer);
     all.extend(scripted);
-    let report = gate(&all, &[]);
+    let report = gate_of(&all, &[]);
     assert_eq!(report.tasks.len(), 3);
     let regressions: Vec<(u32, Option<&str>)> = report
         .tasks
@@ -235,7 +246,7 @@ fn a_task_whose_baseline_is_under_half_is_weak_without_being_a_regression() {
         all.extend(night(day, "t", 1, 3));
     }
     all.extend(night(30, "t", 4, 10));
-    let report = gate(&all, &[]);
+    let report = gate_of(&all, &[]);
     let task = only(&report);
     assert!(task.weak);
     assert_eq!(task.status, Status::Ok);
@@ -270,7 +281,7 @@ fn the_latest_nightly_suite_is_judged_from_the_task_rates_of_that_night() {
         all.extend(night(day, "t", passes, 10));
         runs.push(run_record(day, "m"));
     }
-    let report = gate(&all, &runs);
+    let report = gate_of(&all, &runs);
     let [suite] = report.suites.as_slice() else { panic!("{:?}", report.suites) };
     assert_eq!((suite.model.as_str(), suite.run.as_str()), ("m", run_id(14, 0).as_str()));
     assert_eq!(suite.rate, Some(0.7));
@@ -278,14 +289,14 @@ fn the_latest_nightly_suite_is_judged_from_the_task_rates_of_that_night() {
     assert!(suite.regression);
     assert!(report.failed());
     // A model with too few nights is reported without a verdict.
-    let few = gate(&all[..30], &runs[..3]);
+    let few = gate_of(&all[..30], &runs[..3]);
     assert_eq!((few.suites[0].median, few.suites[0].regression), (None, false));
     // Only nightly reference runs make a suite.
     let mut weekly = runs.clone();
     for run in &mut weekly {
         run.kind = "weekly".to_owned();
     }
-    assert_eq!(gate(&all, &weekly).suites.len(), 0);
+    assert_eq!(gate_of(&all, &weekly).suites.len(), 0);
 }
 
 #[test]
@@ -296,7 +307,7 @@ fn a_provisional_task_does_not_count_in_the_nights_suite_rate() {
         all.extend(night(day, "old", 4, 4));
     }
     let runs = vec![run_record(0, "m")];
-    let report = gate(&all, &runs);
+    let report = gate_of(&all, &runs);
     assert_eq!(report.suites[0].rate, Some(1.0), "`young` has five scored attempts and is left out");
 }
 
@@ -309,16 +320,16 @@ fn cost_per_attempt_up_by_a_quarter_at_the_same_pass_rate_is_a_warning() {
     };
     let mut all = history_at_ninety_percent(9);
     cost(&mut all, 1400);
-    let report = gate(&all, &[]);
+    let report = gate_of(&all, &[]);
     assert_eq!(report.warnings.len(), 1);
     assert!(report.warnings[0].message.contains("1000 to 1400"), "{}", report.warnings[0].message);
     assert!(!report.failed(), "a warning never fails the gate");
     cost(&mut all, 1200);
-    assert_eq!(gate(&all, &[]).warnings.len(), 0);
+    assert_eq!(gate_of(&all, &[]).warnings.len(), 0);
     // A fall in the pass rate is a different story from a heavier tool list.
     let mut worse = history_at_ninety_percent(5);
     cost(&mut worse, 2000);
-    assert_eq!(gate(&worse, &[]).warnings.len(), 0);
+    assert_eq!(gate_of(&worse, &[]).warnings.len(), 0);
 }
 
 #[test]
@@ -329,7 +340,7 @@ fn an_attempt_of_several_turns_that_read_nothing_from_the_cache_is_a_warning() {
     let one_turn = all.len() - 2;
     all[one_turn].usage.cache_read = 0;
     all[one_turn].turns = 1;
-    let report = gate(&all, &[]);
+    let report = gate_of(&all, &[]);
     let warnings: Vec<&str> = report.warnings.iter().map(|w| w.message.as_str()).collect();
     assert_eq!(warnings.len(), 1, "{warnings:?}");
     assert!(warnings[0].contains("cache") && warnings[0].contains("3 turns"));
@@ -339,6 +350,32 @@ fn an_attempt_of_several_turns_that_read_nothing_from_the_cache_is_a_warning() {
 fn the_report_is_the_same_bytes_every_time() {
     let json = |report: &GateReport| serde_json::to_string(report).unwrap();
     let all = history_at_ninety_percent(5);
-    assert_eq!(json(&gate(&all, &[])), json(&gate(&all, &[])));
-    assert!(json(&gate(&all, &[])).contains("\"status\":\"regression\""));
+    assert_eq!(json(&gate_of(&all, &[])), json(&gate_of(&all, &[])));
+    assert!(json(&gate_of(&all, &[])).contains("\"status\":\"regression\""));
+}
+
+#[test]
+fn attempts_of_a_run_that_is_invalid_or_has_no_record_are_not_scored() {
+    let mut all = history_at_ninety_percent(10);
+    // Ten failing attempts a day later, in a run with too many errors: the gate would call it a regression.
+    all.extend(night(31, "t", 0, 10));
+    let invalid = RunRecord { valid: false, ..run_record(31, "m") };
+    let report = gate_of(&all, &[invalid]);
+    assert_eq!(only(&report).status, Status::Ok, "{:?}", only(&report));
+    // The same attempts with no record at all (the process stopped before it wrote one) are left out as well.
+    let runs: Vec<RunRecord> = (20..=30).map(|d| run_record(d, "m")).collect();
+    let report = gate(&all, &runs);
+    assert_eq!(only(&report).status, Status::Ok, "{:?}", only(&report));
+    // With a valid record they count.
+    let runs: Vec<RunRecord> = (20..=31).map(|d| run_record(d, "m")).collect();
+    assert_eq!(only(&gate(&all, &runs)).status, Status::Regression);
+}
+
+#[test]
+fn the_window_is_the_latest_attempts_by_time_not_by_where_they_sit_in_the_file() {
+    // The night of day 30 passes ten of ten, but an older, slower run (day 5, all failing) appended after it.
+    let mut all = history_at_ninety_percent(10);
+    all.extend(night(5, "t", 0, 10));
+    let report = gate_of(&all, &[]);
+    assert_eq!(only(&report).status, Status::Ok, "{:?}", only(&report));
 }

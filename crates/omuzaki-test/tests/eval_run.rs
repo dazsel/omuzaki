@@ -494,6 +494,17 @@ fn history_line(run: &str, outcome: &str) -> String {
     .to_string()
 }
 
+/// One run line of the history: a finished run, `valid` or not.
+fn run_line(run: &str, valid: bool) -> String {
+    json!({
+        "v": 1, "run": run, "kind": "nightly", "driver": "reference", "model": "m", "commit": "abc1234",
+        "tasks_run": ["t"], "tasks_skipped": [],
+        "attempts": {"pass": 0, "fail": 0, "refusal": 0, "error": 0, "skipped": 0},
+        "oracles": {"played": 0, "deviations": 0}, "spend": {"usd_micros": 0}, "wall_ms": 1, "valid": valid
+    })
+    .to_string()
+}
+
 /// `eval gate` exits 1 on a regression and 0 otherwise, and `--json` carries what a report needs.
 #[test]
 fn the_gate_command_reads_the_history_and_exits_by_what_it_finds() {
@@ -513,6 +524,10 @@ fn the_gate_command_reads_the_history_and_exits_by_what_it_finds() {
             lines.push(history_line("2026-09-12T0000Z-nightly", if i < window_passes { "pass" } else { "fail" }));
         }
         fs::write(status.join(HISTORY_FILE), lines.join("\n") + "\n").unwrap();
+        // Every night's run is finished and valid; a run that is not never reaches the gate.
+        let mut runs: Vec<String> = (1..=10).map(|d| run_line(&format!("2026-09-{d:02}T0000Z-nightly"), true)).collect();
+        runs.push(run_line("2026-09-12T0000Z-nightly", true));
+        fs::write(status.join(RUNS_FILE), runs.join("\n") + "\n").unwrap();
     };
     let gate =
         |extra: &[&str]| common::run(&[&["eval", "gate", "--status", common::arg(&status)], extra].concat(), &[]);

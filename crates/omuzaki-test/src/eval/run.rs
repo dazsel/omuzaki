@@ -110,6 +110,17 @@ pub enum RunError {
     /// The options are not usable.
     #[error("{0}")]
     Options(String),
+    /// The evidence of an attempt could not be made: a transcript or a report that will not serialise, or a render that the
+    /// store does not hold. The run stops rather than keep an attempt whose evidence disagrees with its record.
+    #[error("evidence of {task}/{label}: {reason}")]
+    Evidence {
+        /// The task.
+        task: String,
+        /// The attempt's folder name.
+        label: String,
+        /// What went wrong.
+        reason: String,
+    },
     /// Another run has the run id: its folder exists or its record is in the history. Nothing was written.
     #[error("run `{0}` already has a folder or a record; give --run-id another name")]
     Taken(String),
@@ -185,8 +196,10 @@ struct Done {
     record: AttemptRecord,
     recorded: bool,
     label: String,
-    transcript: String,
-    checks: String,
+    transcript: Result<String, String>,
+    checks: Result<String, String>,
+    /// `(file name, bytes)` of the renders the checks made, fetched from the store while it was at hand.
+    pictures: Result<Vec<(String, Vec<u8>)>, String>,
     deviation: Option<Deviation>,
 }
 
@@ -332,6 +345,15 @@ fn task_id_is_a_folder_name(id: &str) -> bool {
         && id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '-'))
 }
 
+/// Whether a fixture id can name a folder under the run's scratch: no path separator, no `..`, no leading dot.
+fn fixture_id_is_a_folder_name(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 100
+        && !id.starts_with('.')
+        && !id.contains("..")
+        && id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+}
+
 /// Why a task is not played.
 enum Refusal {
     /// A fault in the task or its fixture: the run fails.
@@ -345,6 +367,12 @@ fn refusal(discovery: &Discovery, private: &PrivateList, file: &TaskFile, option
         return Some(Refusal::Refused(format!(
             "task id `{}` cannot name a folder (lowercase letters, digits, dots, dashes)",
             file.task.id
+        )));
+    }
+    if !fixture_id_is_a_folder_name(&file.task.fixture) {
+        return Some(Refusal::Refused(format!(
+            "fixture id `{}` cannot name a folder (letters, digits, dots, dashes, underscores)",
+            file.task.fixture
         )));
     }
     let Some(fixture) = discovery.fixture(&file.task.fixture) else {
@@ -549,14 +577,38 @@ fn execute(
     // The scratch of this attempt is deleted now, to keep the disk small while others run; the evidence is in the run
     // folder. A folder that stays is removed with the whole run's scratch when the run ends, and reported there.
     drop(fs::remove_dir_all(work.parent().unwrap_or(&work)));
+    let pictures = report.as_ref().map_or_else(|| Ok(Vec::new()), |r| pictures_of(r, options.store.as_deref()));
     Done {
         record,
         recorded: matches!(job.label, Label::Attempt(_)),
         label,
-        transcript: log.to_jsonl(true).unwrap_or_else(|e| format!("the transcript could not be written: {e}\n")),
-        checks: report.map_or_else(String::new, |r| r.to_json().unwrap_or_else(|e| format!("{{\"error\": \"{e}\"}}"))),
+        transcript: log.to_jsonl(true).map_err(|e| format!("the transcript cannot be written: {e}")),
+        checks: report.map_or_else(
+            || Ok(String::new()),
+            |r| r.to_json().map_err(|e| format!("the check report cannot be written: {e}")),
+        ),
+        pictures,
         deviation,
     }
+}
+
+/// The renders the checks of a report made, as the files the rating page looks for: the first render check's pair is
+/// `before.png` and `after.png`, a later one's `<check id>.before.png` and `<check id>.after.png`.
+fn pictures_of(
+    report: &CheckReport,
+    store: Option<&dyn omuzaki_store_api::Store>,
+) -> Result<Vec<(String, Vec<u8>)>, String> {
+    let mut pictures = Vec::new();
+    for (n, result) in report.results.iter().filter(|r| !r.renders.is_empty()).enumerate() {
+        let store = store.ok_or_else(|| format!("check `{}` made renders, and there is no store to fetch them from", result.id))?;
+        for (hash, side) in result.renders.iter().zip(["before", "after"]) {
+            let parsed = hash.parse::<omuzaki_store_api::ContentHash>().map_err(|e| format!("render hash `{hash}`: {e}"))?;
+            let bytes = store.get(&parsed).map_err(|e| format!("render {hash} of check `{}`: {e}", result.id))?;
+            let name = if n == 0 { format!("{side}.png") } else { format!("{}.{side}.png", result.id) };
+            pictures.push((name, bytes));
+        }
+    }
+    Ok(pictures)
 }
 
 /// The parts of a played attempt.
@@ -634,10 +686,21 @@ fn write_evidence(out: &Path, run: &str, done: &Done) -> Result<(), RunError> {
         let path = path.to_owned();
         move |source| RunError::Io { path: path.clone(), source }
     };
+    let evidence = |reason: &String| RunError::Evidence {
+        task: done.record.task.clone(),
+        label: done.label.clone(),
+        reason: reason.clone(),
+    };
+    let transcript = done.transcript.as_ref().map_err(evidence)?;
+    let checks = done.checks.as_ref().map_err(evidence)?;
+    let pictures = done.pictures.as_ref().map_err(evidence)?;
     fs::create_dir_all(&dir).map_err(io(&dir))?;
-    for (name, text) in [("transcript.jsonl", &done.transcript), ("checks.json", &done.checks)] {
+    for (name, bytes) in [("transcript.jsonl", transcript.as_bytes()), ("checks.json", checks.as_bytes())]
+        .into_iter()
+        .chain(pictures.iter().map(|(name, bytes)| (name.as_str(), bytes.as_slice())))
+    {
         let path = dir.join(name);
-        fs::write(&path, text).map_err(io(&path))?;
+        fs::write(&path, bytes).map_err(io(&path))?;
     }
     Ok(())
 }
