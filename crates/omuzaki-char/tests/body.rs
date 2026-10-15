@@ -555,23 +555,22 @@ fn the_front_silhouette_has_no_step_at_any_junction_on_any_template_or_preset() 
 }
 
 /// The live mesh (what viewers see while streaming, with half the rings) holds the ankle to the same turn as the
-/// offline one.
+/// offline one, on the ten presets and the 32 corners of the shape cube: a corner's shin can end outside the foot's dome,
+/// where a coarse end cap would cut across it.
 #[test]
 fn the_live_ankle_turns_no_more_than_the_offline_limit() {
     let limit = FRONT_LIMITS.iter().find(|l| l.0 == "ankle").unwrap().1;
+    let shapes: Vec<(String, BodyShape)> = shape::presets()
+        .unwrap()
+        .iter()
+        .map(|p| (p.id.as_str().to_string(), p.shape.clone()))
+        .chain(shape_cube_corners())
+        .collect();
     for template in registry::templates() {
-        for preset in shape::presets().unwrap() {
-            let turn = junction_turns(template.id(), &preset.shape, Detail::LIVE)
-                .into_iter()
-                .find(|j| j.0 == "ankle")
-                .unwrap()
-                .1;
-            assert!(
-                turn <= limit,
-                "{} {}: the live ankle turns {turn:.1} degrees (limit {limit})",
-                template.id(),
-                preset.id.as_str()
-            );
+        for (name, shape) in &shapes {
+            let turn =
+                junction_turns(template.id(), shape, Detail::LIVE).into_iter().find(|j| j.0 == "ankle").unwrap().1;
+            assert!(turn <= limit, "{} {name}: the live ankle turns {turn:.1} degrees (limit {limit})", template.id());
         }
     }
 }
@@ -658,6 +657,39 @@ fn shape_cube_corners() -> Vec<(String, BodyShape)> {
             (format!("corner{c}"), shape)
         })
         .collect()
+}
+
+/// The ankle's tail follows the dome down, and the leg's end cap lies past it: neither pokes out of the sole, on every
+/// template and on both meshes, over the ten presets and the 32 corners of the shape cube.
+#[test]
+fn the_leg_stays_above_the_sole() {
+    let shapes: Vec<(String, BodyShape)> = shape::presets()
+        .unwrap()
+        .iter()
+        .map(|p| (p.id.as_str().to_string(), p.shape.clone()))
+        .chain(shape_cube_corners())
+        .collect();
+    let mut worst = (f64::MAX, String::new());
+    for template in registry::templates() {
+        for (name, shape) in &shapes {
+            for (detail, label) in [(Detail::LIVE, "live"), (Detail::OFFLINE, "offline")] {
+                let lowest = body(template.id(), shape, detail)
+                    .iter()
+                    .filter(|(r, _)| matches!(r, BodyRegion::LegL | BodyRegion::LegR))
+                    .flat_map(|(_, m)| m.geometry.positions.iter().map(|p| f64::from(p.y)))
+                    .fold(f64::MAX, f64::min);
+                assert!(
+                    lowest >= -1e-6,
+                    "{} {name} {label}: the leg reaches {lowest} m, below the sole",
+                    template.id()
+                );
+                if lowest < worst.0 {
+                    worst = (lowest, format!("{} {name} {label}", template.id()));
+                }
+            }
+        }
+    }
+    eprintln!("lowest leg vertex {:.4} m ({})", worst.0, worst.1);
 }
 
 /// Prints the ankle's worst front turn and waist over the ten presets and the 32 corners of the shape cube, per template.

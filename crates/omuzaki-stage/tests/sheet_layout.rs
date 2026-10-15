@@ -7,6 +7,7 @@
 //! an intended change (look at the picture first). Set `OMUZAKI_SHEET_PNG=/some/dir` to write the A4 150 / 300 dpi sheets
 //! and the 16:9 board there as PNGs.
 
+#![allow(clippy::disallowed_methods, reason = "a test reading and writing its own fixtures and evidence; not an op")]
 // Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 // Drawing helpers: coordinates are small pixel values, colours are written as plain 0xrrggbb, and the shape code reads

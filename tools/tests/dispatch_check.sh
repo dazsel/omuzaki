@@ -19,6 +19,7 @@ mkdir -p "$work/bin"
 cat >"$work/bin/gh" <<'S'
 #!/usr/bin/env bash
 refused() { [[ -e "$DISPATCH_FIXTURES/graphql-refused" ]] && { echo "HTTP 403: GraphQL refused" >&2; return 0; }; return 1; }
+echo "$*" >>"$DISPATCH_FIXTURES/gh-calls"
 case "$1 $2" in
   "issue view") refused && exit 1; cat "$DISPATCH_FIXTURES/issue-$3.json" ;;
   "pr list") refused && exit 1; cat "$DISPATCH_FIXTURES/prs.json" ;;
@@ -53,9 +54,14 @@ scenario() { FX="$work/$1"; mkdir -p "$FX"; }
 issue() {
   python3 -I -c 'import json,sys; print(json.dumps({"number": int(sys.argv[1]), "title": "t", "body": sys.stdin.read()}))' "$1" >"$FX/issue-$1.json"
 }
-# run ARGS...: the check against the current scenario, with the stub first on PATH. Sets $out and $code.
+# snapshot AGE: the scenario's open-prs.json from stdin ({"prs": [...], "claimed": [...]}), stamped AGE seconds ago.
+snapshot() {
+  python3 -I -c 'import datetime,json,sys; t = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=int(sys.argv[1])); body = json.load(sys.stdin); body.update(repo="dazsel/omuzaki", generated_at=t.strftime("%Y-%m-%dT%H:%M:%SZ")); print(json.dumps(body))' "$1" >"$FX/open-prs.json"
+}
+# run ARGS...: the check against the current scenario, with the stub first on PATH. Sets $out and $code. The snapshot
+# is the scenario's open-prs.json, a file:// URL, so a case without one falls back and no case reads the network.
 run() {
-  out=$(PATH="$work/bin:$PATH" DISPATCH_FIXTURES="$FX" timeout 120 python3 -I "$CHECK" "$@" 2>"$work/err")
+  out=$(PATH="$work/bin:$PATH" DISPATCH_FIXTURES="$FX" DISPATCH_CHECK_SNAPSHOT="file://$FX/open-prs.json" timeout 120 python3 -I "$CHECK" "$@" 2>"$work/err")
   code=$?
 }
 # expect_line TEXT DESCRIPTION: the output has a line exactly TEXT.
@@ -64,6 +70,10 @@ expect_line() {
 }
 expect_code() {
   if [[ $code == "$1" ]]; then pass "$2"; else fail "$2: exit $code, wanted $1 ($(cat "$work/err"))"; fi
+}
+# expect_err TEXT DESCRIPTION: stderr names TEXT (the source line, or why the snapshot was not used).
+expect_err() {
+  if grep -qF -- "$1" "$work/err"; then pass "$2"; else fail "$2: no '$1' in stderr: $(cat "$work/err")"; fi
 }
 
 # go: a fence nothing open touches; a draft that touches it doesn't count.
@@ -284,6 +294,16 @@ B
 echo '[]' >"$FX/prs.json"
 run 9008
 expect_line "wait #9008: no fence" "no fence: waits"
+
+# help: each cap option's help shows the default from its constant (the help wraps, so the text is joined first).
+scenario help
+run --help
+flat=$(tr -s '[:space:]' ' ' <<<"$out")
+if [[ $code == 0 && $flat == *"(default 3)"* && $flat == *"(default 40)"* && $flat == *"open PRs per omuzaki-char or omuzaki-face crate (default 12)"* ]]; then
+  pass "help: each cap option shows its constant's default"
+else
+  fail "help: a cap option's default is missing from --help (exit $code): $flat"
+fi
 
 # contract first: the fence names an *-api crate that another open PR also touches.
 scenario contract
@@ -696,7 +716,8 @@ rm "$FX/graphql-refused"
 echo '[]' >"$FX/prs.json"
 DISPATCH_CHECK_REST=1 run 9101
 expect_line "wait #9101: overlap with #611 (crates/omuzaki-io-ops/src/b.rs)" "rest only: verdict from REST"
-[[ ! -s "$work/err" ]] && pass "rest only: GraphQL not tried, no notice" || fail "rest only: stderr: $(cat "$work/err")"
+{ ! grep -q "GraphQL" "$work/err" && grep -q "open PRs from REST" "$work/err"; } && pass "rest only: GraphQL not tried, no notice" \
+  || fail "rest only: stderr: $(cat "$work/err")"
 
 # one fetch per PR: a REST run reads each open PR's file list once, drafts included.
 scenario rest-once
@@ -745,5 +766,346 @@ expect_line "wait #9103: cannot read the changed files of #615; waiting until th
 big_pr 615 2999
 run 9103
 expect_line "go #9103" "rest cap: 2,999 files is read in full"
+
+
+# per-module buckets (ADR 0062): every TEST_MODULES entry maps to its module, as a file and (for a folder) inside it;
+# the ADR's own examples; and a fence's literal prefix names its module, or every bucket when it could reach several.
+python3 -I - "$CHECK" <<'P'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("dc", sys.argv[1])
+dc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(dc)
+bad = 0
+def want(got, expected, label):
+    global bad
+    if got != expected:
+        bad += 1
+        print(f"FAIL: {label}: got {got!r}, wanted {expected!r}", file=sys.stderr)
+    else:
+        print(f"ok: {label}")
+# the intended mapping, written out a second time here rather than read from TEST_MODULES: an entry that is changed to
+# the wrong module or deleted in the table fails, and so does one missing here. Each entry is then checked through
+# bucket_of: a file key is its own path, a folder key holds files and is itself the folder.
+EXPECTED = {
+    "omuzaki-char": {
+        "tests/accessory_rigid.rs": "accessory",
+        "tests/body.rs": "body",
+        "tests/body_shape.rs": "body",
+        "tests/builder.rs": "builder",
+        "tests/cloth_contact.rs": "cloth",
+        "tests/cloth_contact_replay.rs": "cloth",
+        "tests/cloth_live.rs": "cloth",
+        "tests/cloth_solver": "cloth",
+        "tests/hair_bangs.rs": "hair",
+        "tests/hair_braid.rs": "hair",
+        "tests/hair_cap_sweep.rs": "hair",
+        "tests/hair_curtain.rs": "hair",
+        "tests/hair_pipeline.rs": "hair",
+        "tests/head_ears.rs": "head",
+        "tests/head_part.rs": "head",
+        "tests/head_quality": "head",
+        "tests/head_shape.rs": "head",
+        "tests/head_trace.rs": "head",
+        "tests/kit_builder.rs": "kit",
+        "tests/kit_parity.rs": "kit",
+        "tests/kit_sweep.rs": "kit",
+        "tests/look_ops.rs": "ops",
+        "tests/op_layout.rs": "ops",
+        "tests/op_part_sources.rs": "ops",
+        "tests/op_variant.rs": "ops",
+        "tests/op_weights.rs": "ops",
+        "tests/ops_body.rs": "ops",
+        "tests/ops_character.rs": "ops",
+        "tests/ops_part_param.rs": "ops",
+        "tests/palette_contrast.rs": "palette",
+        "tests/palette_independence.rs": "palette",
+        "tests/palette_ops.rs": "palette",
+        "tests/skin_tone.rs": "palette",
+        "tests/template_soft_sd.rs": "template",
+        "tests/template_soft_sd.proptest-regressions": "template",
+        "tests/templates.rs": "template",
+        "benches/builder.rs": "builder",
+        "benches/cloth_contact.rs": "cloth",
+        "benches/cloth_runtime.rs": "cloth",
+        "benches/cloth_solver.rs": "cloth",
+        "benches/hair_cap_sweep.rs": "hair",
+        "benches/hair_runtime.rs": "hair",
+        "benches/hair_verlet.rs": "hair",
+        "benches/kit.rs": "kit",
+    },
+    "omuzaki-face": {
+        "tests/brows.rs": "painter",
+        "tests/cheeks_nose_marks.rs": "painter",
+        "tests/eyes_aperture.rs": "painter",
+        "tests/eyes_iris.rs": "painter",
+        "tests/mouth_interior.rs": "painter",
+        "tests/mouth_shape.rs": "painter",
+        "tests/op_expression.rs": "ops",
+        "tests/op_mapping.rs": "ops",
+        "tests/op_style.rs": "ops",
+        "tests/raster_subpixel.rs": "raster",
+        "tests/raster_unit.rs": "raster",
+        "tests/system.rs": "system",
+        "tests/underlay.rs": "underlay",
+        "benches/cheeks_nose_marks.rs": "painter",
+        "benches/face_system.rs": "system",
+        "benches/mouth_interior.rs": "painter",
+        "benches/mouth_shape.rs": "painter",
+        "benches/painter_eyes.rs": "painter",
+    },
+}
+got = {(c, k): m for c, keys in dc.TEST_MODULES.items() for k, m in keys.items()}
+intended = {(c, k): m for c, keys in EXPECTED.items() for k, m in keys.items()}
+differ = sorted((c, k, got.get((c, k)), intended.get((c, k))) for c, k in set(got) | set(intended)
+                if got.get((c, k)) != intended.get((c, k)))
+want(differ, [], "TEST_MODULES holds exactly the intended mapping")
+for crate, keys in EXPECTED.items():
+    for key, module in keys.items():
+        if "." in key.rsplit("/", 1)[-1]:
+            want(dc.bucket_of(crate, key, True), module, f"{crate}/{key} -> {module}")
+        else:
+            want(dc.bucket_of(crate, key + "/main.rs", True), module, f"{crate}/{key}/main.rs -> {module}")
+            want(dc.bucket_of(crate, key, False), module, f"{crate}/{key} (folder) -> {module}")
+S, B = dc.SHARED, dc.BROAD
+# a changed file: the ADR's examples and the shared files
+paths = [
+    ("omuzaki-face", "src/layer.rs", "layer"), ("omuzaki-face", "tests/brows.rs", "painter"),
+    ("omuzaki-face", "src/painter/brows.rs", "painter"), ("omuzaki-face", "src/ops_shared/check.rs", "ops_shared"),
+    ("omuzaki-face", "src/ops/expression/set.rs", "ops"), ("omuzaki-face", "tests/hot_loop.rs", S),
+    ("omuzaki-face", "benches/gpu_face.rs", S), ("omuzaki-char", "src/hair/tube.rs", "hair"),
+    ("omuzaki-char", "src/hair.rs", "hair"), ("omuzaki-char", "src/builder.rs", "builder"),
+    ("omuzaki-char", "src/lib.rs", S), ("omuzaki-char", "src/main.rs", S), ("omuzaki-char", "src/NOTICES.md", S),
+    ("omuzaki-char", "src/kit/NOTICES.md", "kit"), ("omuzaki-char", "Cargo.toml", S), ("omuzaki-char", "build.rs", S),
+    ("omuzaki-char", "tests/common/mod.rs", S), ("omuzaki-char", "tests/fixtures/kit/pchip.json", S),
+    ("omuzaki-char", "tests/skin.rs", S), ("omuzaki-char", "tests/cloth_solver/suite.rs", "cloth"),
+    ("omuzaki-char", "tests/head_quality/anchors.rs", "head"), ("omuzaki-char", "benches/kit.rs", "kit"),
+    ("omuzaki-char", "examples/stature_lineup.rs", S),
+]
+for crate, rel, expected in paths:
+    want(dc.bucket_of(crate, rel, True), expected, f"file {crate}/{rel} -> {expected}")
+# a fence entry: its literal prefix names its bucket; a glob or a folder holding several names every bucket
+fences = [
+    ("omuzaki-char", "src/hair/**", {"hair"}), ("omuzaki-char", "src/hair/", {"hair"}),
+    ("omuzaki-char", "src/hair.rs", {"hair"}), ("omuzaki-char", "src/kit/NOTICES.md", {"kit"}),
+    ("omuzaki-char", "src/", {B}), ("omuzaki-char", "src", {B}), ("omuzaki-char", "src/*.rs", {B}),
+    ("omuzaki-char", "src/hair*/x.rs", {B}), ("omuzaki-char", "", {B}), ("omuzaki-char", "*.toml", {B}),
+    ("omuzaki-char", "tests/", {B}), ("omuzaki-char", "tests/*.rs", {B}), ("omuzaki-char", "tests/brows*.rs", {B}),
+    ("omuzaki-char", "tests/cloth_solver/**", {"cloth"}), ("omuzaki-char", "tests/cloth_solver", {"cloth"}),
+    ("omuzaki-char", "Cargo.toml", {S}), ("omuzaki-char", "src/lib.rs", {S}), ("omuzaki-char", "tests/common/**", {S}),
+]
+for crate, rel, expected in fences:
+    want(dc.fence_buckets(crate, rel), expected, f"fence {crate}/{rel} -> {sorted(expected)}")
+sys.exit(1 if bad else 0)
+P
+if [[ $? == 0 ]]; then pass "module buckets: the table, the ADR examples and the fence rules"; else fail "module buckets table"; fi
+
+# module cap: a full module waits and is named; a free module in the same crate goes; a fence naming both waits on the full one.
+scenario module
+issue 9201 <<'B'
+**Fence:** `crates/omuzaki-char/src/hair/tube.rs`
+B
+issue 9202 <<'B'
+**Fence:** `crates/omuzaki-char/src/head/mesh.rs`
+B
+issue 9203 <<'B'
+**Fence:** `crates/omuzaki-char/src/{hair,head}/x.rs`
+B
+cat >"$FX/prs.json" <<'J'
+[{"number":701,"headRefName":"cloud/701-hair","isDraft":false,"createdAt":"2026-10-01T10:00:00Z","files":[{"path":"crates/omuzaki-char/src/hair/a.rs"}],"body":""},
+ {"number":702,"headRefName":"cloud/702-hair","isDraft":false,"createdAt":"2026-10-01T11:00:00Z","files":[{"path":"crates/omuzaki-char/src/hair/b.rs"}],"body":""},
+ {"number":703,"headRefName":"local/703-hair","isDraft":false,"createdAt":"2026-10-01T12:00:00Z","files":[{"path":"crates/omuzaki-char/src/hair/c.rs"}],"body":""}]
+J
+run 9201 9202 9203
+expect_line "wait #9201: module cap: omuzaki-char/hair has 3 open PRs (#701, #702, #703) (cap 3)" "module cap: a full module waits and is named"
+expect_line "go #9202" "module cap: a free module in the same crate is go"
+expect_line "wait #9203: module cap: omuzaki-char/hair has 3 open PRs (#701, #702, #703) (cap 3)" "module cap: a fence naming a full and a free module names the full one"
+expect_code 1 "module cap: exit 1"
+run 9201 --module-cap 4
+expect_line "go #9201" "module cap: a higher --module-cap lets it go"
+
+# ceiling: 12 open PRs in the crate (the default, ADR 0062) wait, though no module is full and the crate cap (3) would
+# bite any other crate. Twelve modules, one PR each, so no module is full; the fence is a thirteenth, empty module.
+scenario ceiling
+issue 9204 <<'B'
+**Fence:** `crates/omuzaki-char/src/template/layout.rs`
+B
+python3 -I -c '
+import json
+mods = ["accessory", "body", "builder", "cloth", "fit", "head", "kit", "look", "hair", "ops", "palette", "rig"]
+print(json.dumps([{"number": 800 + i, "headRefName": f"cloud/{800 + i}", "isDraft": False,
+                   "createdAt": "2026-10-08T10:00:00Z", "files": [{"path": f"crates/omuzaki-char/src/{m}/x.rs"}], "body": ""}
+                  for i, m in enumerate(mods)]))' >"$FX/prs.json"
+run 9204
+expect_line "wait #9204: crate ceiling: omuzaki-char has 12 open PRs (#800, #801, #802, #803, #804, #805, #806, #807, #808, #809, #810, #811) (ceiling 12)" "ceiling: the default waits at 12 open PRs, and the crate cap does not count char"
+run 9204 --module-ceiling 13
+expect_line "go #9204" "ceiling: a higher --module-ceiling lets it go"
+
+# shared slot: a root file, lib.rs, tests/common and an unlisted test take the one slot; a task that does not need it goes.
+scenario shared
+issue 9205 <<'B'
+**Fence:** `crates/omuzaki-char/src/head/mesh.rs`
+B
+issue 9206 <<'B'
+**Fence:** `crates/omuzaki-char/Cargo.toml`
+B
+issue 9207 <<'B'
+**Fence:** `crates/omuzaki-char/tests/common/mod.rs`
+B
+issue 9208 <<'B'
+**Fence:** `crates/omuzaki-char/tests/skin.rs`
+B
+issue 9209 <<'B'
+**Fence:** `crates/omuzaki-char/tests/hair_pipeline.rs`
+B
+cat >"$FX/prs.json" <<'J'
+[{"number":811,"headRefName":"cloud/811-lib","isDraft":false,"createdAt":"2026-10-11T10:00:00Z","files":[{"path":"crates/omuzaki-char/src/lib.rs"}],"body":""}]
+J
+run 9205 9206 9207 9208 9209
+expect_line "go #9205" "shared: a task that does not need the shared slot is go"
+expect_line "wait #9206: shared slot: omuzaki-char is taken by #811" "shared: a root file waits while the slot is taken"
+expect_line "wait #9207: shared slot: omuzaki-char is taken by #811" "shared: tests/common waits while the slot is taken"
+expect_line "wait #9208: shared slot: omuzaki-char is taken by #811" "shared: an unlisted test takes the slot"
+expect_line "go #9209" "shared: a listed test counts against its module, not the slot"
+echo '[]' >"$FX/prs.json"
+run 9206
+expect_line "go #9206" "shared: a free slot lets the root file go"
+
+# face: tests/brows.rs counts against painter, so a third painter PR fills it; layer is its own module and stays free.
+scenario face
+issue 9210 <<'B'
+**Fence:** `crates/omuzaki-face/src/painter/marks.rs`
+B
+issue 9211 <<'B'
+**Fence:** `crates/omuzaki-face/src/layer.rs`
+B
+cat >"$FX/prs.json" <<'J'
+[{"number":821,"headRefName":"cloud/821-brows","isDraft":false,"createdAt":"2026-10-12T10:00:00Z","files":[{"path":"crates/omuzaki-face/tests/brows.rs"}],"body":""},
+ {"number":822,"headRefName":"cloud/822-iris","isDraft":false,"createdAt":"2026-10-12T11:00:00Z","files":[{"path":"crates/omuzaki-face/src/painter/eyes/iris.rs"}],"body":""},
+ {"number":823,"headRefName":"local/823-system","isDraft":false,"createdAt":"2026-10-12T12:00:00Z","files":[{"path":"crates/omuzaki-face/src/system.rs"}],"body":""},
+ {"number":824,"headRefName":"local/824-eyes","isDraft":false,"createdAt":"2026-10-12T13:00:00Z","files":[{"path":"crates/omuzaki-face/tests/eyes_iris.rs"}],"body":""}]
+J
+run 9210 9211
+expect_line "wait #9210: module cap: omuzaki-face/painter has 3 open PRs (#821, #822, #824) (cap 3)" "face: tests/brows.rs and tests/eyes_iris.rs count against painter"
+expect_line "go #9211" "face: layer stays free while system has a PR"
+
+# broad fence: a glob that could reach any module waits on a full one, though it names no folder.
+scenario broad
+issue 9212 <<'B'
+**Fence:** `crates/omuzaki-char/*.toml`
+B
+issue 9213 <<'B'
+**Fence:** `crates/omuzaki-char/src/hair*/x.rs`
+B
+issue 9214 <<'B'
+**Fence:** `crates/omuzaki-char/src/head/`
+B
+cat >"$FX/prs.json" <<'J'
+[{"number":701,"headRefName":"cloud/701-hair","isDraft":false,"createdAt":"2026-10-01T10:00:00Z","files":[{"path":"crates/omuzaki-char/src/hair/a.rs"}],"body":""},
+ {"number":702,"headRefName":"cloud/702-hair","isDraft":false,"createdAt":"2026-10-01T11:00:00Z","files":[{"path":"crates/omuzaki-char/src/hair/b.rs"}],"body":""},
+ {"number":703,"headRefName":"local/703-hair","isDraft":false,"createdAt":"2026-10-01T12:00:00Z","files":[{"path":"crates/omuzaki-char/src/hair/c.rs"}],"body":""}]
+J
+run 9212 9213 9214
+expect_line "wait #9212: module cap: omuzaki-char/hair has 3 open PRs (#701, #702, #703) (cap 3)" "broad: a glob over the crate root may reach the full module"
+expect_line "wait #9213: module cap: omuzaki-char/hair has 3 open PRs (#701, #702, #703) (cap 3)" "broad: a glob folder may reach the full module"
+expect_line "go #9214" "broad: a literal folder with a free module is go"
+
+# snapshot, fresh: the overlap comes from the snapshot, and no PR list is read from GitHub. prs.json is absent, so
+# reading it would fail the run.
+scenario snap-fresh
+issue 9301 <<'B'
+**Fence:** `crates/omuzaki-ops/src/a.rs`
+B
+snapshot 60 <<'J'
+{"prs": [{"number":801,"headRefName":"local/801-ops","isDraft":false,"createdAt":"2026-10-01T10:00:00Z",
+  "files":[{"path":"crates/omuzaki-ops/src/a.rs"}],"closingIssuesReferences":[]}], "claimed": []}
+J
+run 9301
+expect_line "wait #9301: overlap with #801 (crates/omuzaki-ops/src/a.rs)" "snapshot: a fresh snapshot gives the overlap"
+expect_err "open PRs from the snapshot" "snapshot: the source is printed"
+if grep -q "pr list\|pulls" "$FX/gh-calls" 2>/dev/null; then fail "snapshot: a fresh snapshot reads no PR list from GitHub"; else pass "snapshot: a fresh snapshot reads no PR list from GitHub"; fi
+
+# snapshot, stale: older than 600 seconds, so GraphQL is read instead. The snapshot's overlap is not used.
+scenario snap-stale
+issue 9302 <<'B'
+**Fence:** `crates/omuzaki-ops/src/a.rs`
+B
+snapshot 3600 <<'J'
+{"prs": [{"number":802,"headRefName":"local/802-ops","isDraft":false,"createdAt":"2026-10-01T10:00:00Z",
+  "files":[{"path":"crates/omuzaki-ops/src/a.rs"}],"closingIssuesReferences":[]}], "claimed": []}
+J
+echo '[]' >"$FX/prs.json"
+run 9302
+expect_line "go #9302" "snapshot: a stale snapshot is not used, so its overlap is ignored"
+expect_err "not within 600" "snapshot: the stale snapshot is named"
+expect_err "open PRs from GraphQL" "snapshot: the fallback source is printed"
+
+# claims: the snapshot's list waits a task unless --mine; an unclaimed task beside it is still go.
+scenario claims
+issue 9303 <<'B'
+**Fence:** `crates/omuzaki-ops/src/b.rs`
+B
+issue 9304 <<'B'
+**Fence:** `crates/omuzaki-ops/src/c.rs`
+B
+snapshot 60 <<'J'
+{"prs": [], "claimed": [9303]}
+J
+run 9303 9304
+expect_line "wait #9303: claimed" "claimed: a task on the snapshot's claimed list waits"
+expect_line "go #9304" "claimed: an unclaimed task is go"
+expect_code 1 "claimed: exit 1 while a task waits"
+run --mine 9303
+expect_line "go #9303" "claimed: --mine lets the holder start its own claimed task"
+
+# claims without a snapshot: the issue's own `claimed` label is the only sign of a claim.
+scenario label-claim
+echo '{"number":9305,"title":"t","body":"**Fence:** `tools/x.py`","labels":[{"name":"claimed"}]}' >"$FX/issue-9305.json"
+echo '[]' >"$FX/prs.json"
+run 9305
+expect_line "wait #9305: claimed" "claimed: the claimed label makes a task wait without a snapshot"
+expect_err "snapshot not used" "claimed: the missing snapshot is named"
+
+# snapshot, renames: a publisher's `previous_filename` keeps a rename's old path, so a task on that path waits.
+scenario snap-rename
+issue 9306 <<'B'
+**Fence:** `crates/omuzaki-ops/src/old.rs`
+B
+snapshot 60 <<'J'
+{"prs": [{"number":806,"headRefName":"local/806-ops","isDraft":false,"createdAt":"2026-10-01T10:00:00Z",
+  "files":[{"path":"crates/omuzaki-ops/src/new.rs","previous_filename":"crates/omuzaki-ops/src/old.rs"}],
+  "closingIssuesReferences":[]}], "claimed": []}
+J
+run 9306
+expect_line "wait #9306: overlap with #806 (crates/omuzaki-ops/src/old.rs)" "snapshot: a renamed file's old path is checked"
+
+# snapshot, at the list limit: the list may be cut, so the check stops rather than trust it.
+scenario snap-limit
+issue 9307 <<'B'
+**Fence:** `crates/omuzaki-ops/src/d.rs`
+B
+python3 -I -c 'import json; print(json.dumps({"prs": [{"number": n, "headRefName": "b", "isDraft": False, "createdAt": "",
+  "files": [], "closingIssuesReferences": []} for n in range(1, 1001)], "claimed": []}))' | snapshot 60
+run 9307
+expect_code 2 "snapshot: a snapshot at the list limit stops the check"
+expect_err "list limit" "snapshot: the list limit is named"
+
+# snapshot, interrupted: a truncated read falls back instead of crashing. The read is mocked, so no network is used.
+scenario snap-torn
+python3 -I - "$CHECK" <<'PYTEST' >"$work/torn.out" 2>"$work/torn.err"
+import http.client, importlib.util, io, sys, urllib.request
+spec = importlib.util.spec_from_file_location("dispatch_check", sys.argv[1])
+dc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(dc)
+class Torn(io.BytesIO):
+    def read(self, *args):
+        raise http.client.IncompleteRead(b'{"prs": [')
+urllib.request.urlopen = lambda *args, **kwargs: Torn()
+print("fallback" if dc.load_snapshot() is None else "used")
+PYTEST
+if grep -qx fallback "$work/torn.out" && grep -q "snapshot not used" "$work/torn.err"; then
+  pass "snapshot: a truncated read falls back"
+else
+  fail "snapshot: a truncated read falls back: $(cat "$work/torn.out" "$work/torn.err")"
+fi
 
 ((failures == 0)) || exit 1

@@ -51,57 +51,7 @@ impl Expected {
 /// The known failures, each named exactly. Every entry is expected at every scale in [`SCALES`]: a matching finding
 /// is allowed, any other finding fails, and an entry that stops appearing fails too, so it is removed the moment its
 /// fix lands. Entries with the same text and overlap are one entry, since they are one defect.
-const EXPECTED_FAILURES: &[Expected] = &[
-    Expected {
-        story: "tab",
-        problem: LayoutProblem::Overlap,
-        what: "Library",
-        with: Some("Close Library"),
-        defect: "a tab label overlaps its close button's label",
-    },
-    Expected {
-        story: "tab",
-        problem: LayoutProblem::Overlap,
-        what: "History",
-        with: Some("Close History"),
-        defect: "a tab label overlaps its close button's label",
-    },
-    Expected {
-        story: "approval",
-        problem: LayoutProblem::Overlap,
-        what: "~40 s",
-        with: Some("reversible: yes"),
-        defect: "the approval card's chips and warning glyph overlap its reversibility line",
-    },
-    Expected {
-        story: "approval",
-        problem: LayoutProblem::Overlap,
-        what: " · ",
-        with: Some("reversible: yes"),
-        defect: "the approval card's chips and warning glyph overlap its reversibility line",
-    },
-    Expected {
-        story: "approval",
-        problem: LayoutProblem::Overlap,
-        what: "1.2 GB GPU",
-        with: Some("reversible: yes"),
-        defect: "the approval card's chips and warning glyph overlap its reversibility line",
-    },
-    Expected {
-        story: "approval",
-        problem: LayoutProblem::Overlap,
-        what: "$0",
-        with: Some("reversible: yes"),
-        defect: "the approval card's chips and warning glyph overlap its reversibility line",
-    },
-    Expected {
-        story: "approval",
-        problem: LayoutProblem::Overlap,
-        what: "\u{e4e0}",
-        with: Some("Can't be undone"),
-        defect: "the approval card's chips and warning glyph overlap its reversibility line",
-    },
-];
+const EXPECTED_FAILURES: &[Expected] = &[];
 
 /// Draws `draw` in a gallery-style card at `scale` and returns every layout problem the frame has.
 fn audit(scale: u16, draw: impl FnMut(&mut Ui) + 'static) -> Vec<LayoutFinding> {
@@ -138,20 +88,33 @@ fn card(ui: &mut Ui, draw: &mut impl FnMut(&mut Ui)) {
 /// ancestor. The rule is the accessibility lint's in `ds::testing`: an interactive role, or Focus or Click.
 fn controls<S>(harness: &Harness<'_, S>) -> Vec<Control> {
     let mut out = Vec::new();
+    let mut ids = Vec::new();
     for child in harness.root().children() {
-        collect(child, None, &mut out);
+        collect(child, None, &mut out, &mut ids);
+    }
+    // A control that says it controls another operable control (a tab's close button, its tab) is linked to it.
+    for (index, (_, controlled)) in ids.iter().enumerate() {
+        out[index].controls = controlled.iter().find_map(|id| ids.iter().position(|(own, _)| own == id));
     }
     out
 }
 
-fn collect(node: Node<'_>, parent: Option<usize>, out: &mut Vec<Control>) {
+fn collect(node: Node<'_>, parent: Option<usize>, out: &mut Vec<Control>, ids: &mut Vec<(String, Vec<String>)>) {
     let mut operable_parent = parent;
     if operable(&node) {
-        out.push(Control { name: node.accesskit_node().label().unwrap_or_default(), rect: node.rect(), parent });
+        let ak = node.accesskit_node();
+        out.push(Control {
+            name: ak.label().unwrap_or_default(),
+            role: ak.role(),
+            rect: node.rect(),
+            controls: None,
+            parent,
+        });
+        ids.push((format!("{:?}", ak.id()), ak.controls().map(|c| format!("{:?}", c.id())).collect()));
         operable_parent = Some(out.len() - 1);
     }
     for child in node.children() {
-        collect(child, operable_parent, out);
+        collect(child, operable_parent, out, ids);
     }
 }
 
@@ -235,9 +198,80 @@ fn a_planted_fixed_width_label_that_overflows_at_200_fails_and_is_named() {
     );
 }
 
+/// A fixed-size box then a label in a wrapped row: the label's galley starts at the row's left edge with an indent the
+/// width of the box, though its glyphs sit right of the box (the approval card's cost chips and its reversibility line).
+fn box_then_label(ui: &mut Ui, label: &str) {
+    ui.horizontal_wrapped(|ui| {
+        ui.allocate_exact_size(vec2(120.0, 15.0), egui::Sense::hover());
+        ui.label(label);
+    });
+}
+
+#[test]
+fn a_label_after_a_box_in_a_wrapped_row_is_not_an_overlap() {
+    let draw = |ui: &mut Ui| {
+        ui.horizontal_wrapped(|ui| {
+            ui.label("cost");
+            ui.allocate_exact_size(vec2(120.0, 15.0), egui::Sense::hover());
+            ui.label("reversible: yes");
+        });
+    };
+    for scale in SCALES {
+        let found = audit(scale, draw);
+        assert!(found.is_empty(), "the indent of a wrapped label is not painted text at {scale}%: {found:?}");
+    }
+}
+
+#[test]
+fn text_painted_over_a_wrapped_label_is_still_an_overlap() {
+    let draw = |ui: &mut Ui| {
+        let top = ui.cursor().min;
+        box_then_label(ui, "reversible: yes");
+        // Drawn on top of the label's glyphs, which start right of the 120 pt box.
+        let at = top + vec2(130.0, 0.0);
+        ui.painter().text(at, egui::Align2::LEFT_TOP, "stray", egui::FontId::proportional(14.0), egui::Color32::WHITE);
+    };
+    let found = audit(100, draw);
+    assert!(
+        found
+            .iter()
+            .any(|f| f.problem == LayoutProblem::Overlap && (f.what == "stray" || f.with.as_deref() == Some("stray"))),
+        "text drawn over the label's glyphs must still be reported: {found:?}"
+    );
+}
+
+#[test]
+fn text_touching_only_a_glyphs_left_overhang_is_still_an_overlap() {
+    // A "j" reaches left of its layout position (a negative left-side bearing), so a glyph whose layout rectangle ends
+    // exactly at the "j"'s layout position can still paint into the "j"'s overhang. The stray is the ASCII glyph with
+    // the least room on its right. Measured, not assumed, so the test says so if the bundled font changes.
+    let font = egui::FontId::proportional(200.0);
+    let draw = move |ui: &mut Ui| {
+        let white = egui::Color32::WHITE;
+        let layout = |text: String| ui.painter().layout_no_wrap(text, font.clone(), white);
+        let j = layout("j".to_owned());
+        let stray = ('!'..='~')
+            .map(|c| layout(c.to_string()))
+            .min_by(|a, b| (a.rect.max.x - a.mesh_bounds.max.x).total_cmp(&(b.rect.max.x - b.mesh_bounds.max.x)))
+            .expect("ASCII glyphs");
+        let origin = pos2(300.0, 100.0);
+        let stray_at = pos2(origin.x - stray.rect.max.x, origin.y);
+        // Their layout rectangles only touch, yet the drawn stray reaches into the "j"'s overhang past the slack.
+        let shared = (stray_at.x + stray.mesh_bounds.max.x) - (origin.x + j.mesh_bounds.min.x);
+        assert!(shared > 1.0, "the bundled glyphs must overlap in ink alone: {shared}");
+        ui.painter().galley(origin, j, white);
+        ui.painter().galley(stray_at, stray, white);
+    };
+    let found = audit(100, draw);
+    assert!(
+        found.iter().any(|f| f.problem == LayoutProblem::Overlap),
+        "text touching only the overhang of a glyph must be reported: {found:?}"
+    );
+}
+
 /// A control with no children, for the synthetic cases below.
 fn leaf(name: &str, rect: Rect, parent: Option<usize>) -> Control {
-    Control { name: name.to_owned(), rect, parent }
+    Control { name: name.to_owned(), role: Role::Unknown, rect, controls: None, parent }
 }
 
 fn square(x: f32, y: f32) -> Rect {
@@ -279,4 +313,49 @@ fn an_off_screen_parent_is_flagged_even_when_its_child_is_visible() {
     assert_eq!(found.len(), 1, "only the parent is outside the window: {found:?}");
     assert_eq!(found[0].what, "parent");
     assert_eq!(found[0].problem, LayoutProblem::OutsideWindow);
+}
+
+/// Two tabs and their close buttons, as the tab bar exposes them: all siblings in the tree, each button inside its
+/// own tab's rectangle and saying it controls that tab.
+fn tabs_and_closes() -> Vec<Control> {
+    let tab = |x: f32| Rect::from_min_size(pos2(x, 0.0), vec2(100.0, 28.0));
+    let close = |x: f32| Rect::from_min_size(pos2(x + 74.0, 2.0), vec2(24.0, 24.0));
+    let control =
+        |name: &str, role, rect, controls| Control { name: name.to_owned(), role, rect, controls, parent: None };
+    vec![
+        control("Library", Role::Tab, tab(0.0), None),
+        control("Close Library", Role::Button, close(0.0), Some(0)),
+        control("History", Role::Tab, tab(100.0), None),
+        control("Close History", Role::Button, close(100.0), Some(2)),
+    ]
+}
+
+#[test]
+fn a_tabs_own_close_button_inside_the_tab_is_its_affordance_not_a_collision() {
+    assert!(control_overlaps(&tabs_and_closes()).is_empty());
+}
+
+#[test]
+fn a_close_button_that_runs_out_of_its_tab_is_a_collision() {
+    let mut controls = tabs_and_closes();
+    controls[1].rect = Rect::from_min_size(pos2(90.0, 2.0), vec2(24.0, 24.0));
+    assert!(!control_overlaps(&controls).is_empty());
+}
+
+#[test]
+fn close_library_placed_inside_the_history_tab_is_still_reported() {
+    let mut controls = tabs_and_closes();
+    controls[1].rect = Rect::from_min_size(pos2(174.0, 2.0), vec2(24.0, 24.0));
+    let found = control_overlaps(&controls);
+    assert!(
+        found.iter().any(|f| f.what == "Close Library" && f.with.as_deref() == Some("History")),
+        "another tab's close button must not be exempt: {found:?}"
+    );
+}
+
+#[test]
+fn a_button_inside_a_tab_that_does_not_control_it_is_still_a_collision() {
+    let mut controls = tabs_and_closes();
+    controls[1].controls = None;
+    assert_eq!(control_overlaps(&controls).len(), 1);
 }
