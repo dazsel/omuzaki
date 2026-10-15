@@ -33,7 +33,7 @@ pub fn execute(cli: &Cli, runner: Arc<dyn Runner>, session: &Session, stdin: &mu
         }
         Command::Undo => report_history(&UNDO, runner.undo(&session.actor, &session.grants)?, cli.json),
         Command::Redo => report_history(&REDO, runner.redo(&session.actor, &session.grants)?, cli.json),
-        Command::Mcp => mcp::serve_stdio(runner).map(|()| String::new()),
+        Command::Mcp => mcp::serve_stdio(runner, session.connections.clone()).map(|()| String::new()),
         Command::Registrations => Ok(registrations()),
         // `app::run` calls `store::run` itself so the exit code survives; this arm keeps the match whole and serves
         // callers that only want the text.

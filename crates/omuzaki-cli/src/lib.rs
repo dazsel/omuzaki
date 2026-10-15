@@ -48,4 +48,5 @@ omuzaki_core::define_link! {
     omuzaki_io_ops::link();
     omuzaki_io_gltf::link();
     omuzaki_io_vrm::link();
+    omuzaki_mcp::link();
 }

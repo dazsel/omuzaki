@@ -1,3 +1,9 @@
+---
+title: "0021: Changes are journalled ahead of the files; snapshots are content-addressed manifests that backups reuse (2026-10-12)"
+summary: "Changes are journalled ahead of the files; snapshots are content-addressed manifests that backups reuse"
+area: decisions
+---
+
 # 0021: Changes are journalled ahead of the files; snapshots are content-addressed manifests that backups reuse (2026-10-12)
 
 **Status:** accepted (2026-10-12). It adds a new API crate, `omuzaki-history-api`, and a `omuzaki-store-api`

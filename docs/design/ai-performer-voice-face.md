@@ -1,3 +1,9 @@
+---
+title: "The AI performer's voice and face: TTS into the feed, voices and consent, voice to face, big moves"
+summary: "the AI performer's voice and face: the TTS host and its two `ai_voice` feeds, voices, consent and hosted TTS, voice to face ahead of playback with the viseme fallback, and the big-moves planner (ADR 0041)."
+area: design
+---
+
 # The AI performer's voice and face: TTS into the feed, voices and consent, voice to face, big moves
 
 **Status:** proposed (, 2026-10-13). **Features:** AP-02, AP-05, with CN-10, ML-04, ML-05, ML-07, ML-14,
