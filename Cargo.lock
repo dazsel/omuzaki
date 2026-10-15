@@ -3989,6 +3989,7 @@ dependencies = [
  "omuzaki-core",
  "omuzaki-render-api",
  "omuzaki-render-mock",
+ "proptest",
  "thiserror 2.0.21",
 ]
 
