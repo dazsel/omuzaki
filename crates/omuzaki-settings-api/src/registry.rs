@@ -65,7 +65,8 @@ impl SettingRegistration {
         (self.schema)()
     }
 
-    /// The default value as JSON.
+    /// The default value as JSON. A default that cannot be serialised reads as `null`, which TOML cannot write, so
+    /// [`check_crate!`](crate::check_crate) fails it: it is never silently accepted.
     #[must_use]
     pub fn default_json(&self) -> Value {
         (self.default_json)()

@@ -127,7 +127,8 @@ impl SettingChange {
 pub const CHANGE_LOG_CAPACITY: usize = 200;
 
 /// One subscriber's queue of events, oldest first. Each subscriber has its own, so the UI and the renderer never
-/// steal each other's events. The queue is unbounded: settings change at human speed.
+/// steal each other's events. The queue is unbounded because settings change at human speed, so a subscriber that
+/// stays alive must drain it; dropping the `Subscription` ends delivery and frees the queue.
 #[derive(Debug)]
 pub struct Subscription<T> {
     rx: Receiver<T>,

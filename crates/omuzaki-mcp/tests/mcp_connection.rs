@@ -9,7 +9,7 @@ mod common;
 
 use std::sync::Arc;
 
-use common::FakeRunner;
+use common::fake_runner;
 use omuzaki_mcp::{Connections, McpOptions, McpServer, ServerError};
 use rmcp::ClientLifecycleMode;
 use rmcp::model::{CallToolRequestParams, ClientCapabilities, ClientConfig, Implementation, ProtocolVersion};
@@ -77,7 +77,7 @@ async fn disconnect(mut connection: Connection) {
 }
 
 fn server() -> McpServer {
-    McpServer::new(Arc::new(FakeRunner::new()), McpOptions::default()).expect("server builds")
+    McpServer::new(Arc::new(fake_runner()), McpOptions::default()).expect("server builds")
 }
 
 #[tokio::test]
@@ -235,7 +235,7 @@ async fn the_op_is_neither_listed_nor_callable_without_its_service() {
 #[tokio::test]
 async fn the_op_is_listed_once_its_service_is_wired() {
     let options = McpOptions::default().with_connections(Connections::default());
-    let mcp = McpServer::new(Arc::new(FakeRunner::new()), options).expect("server builds");
+    let mcp = McpServer::new(Arc::new(fake_runner()), options).expect("server builds");
     assert!(mcp.tools().iter().any(|tool| tool.name == "agent_connection"));
     let other = mcp.with_grants(omuzaki_ops_api::Grants::agent_default()).expect("rebuilds");
     assert!(other.tools().iter().any(|tool| tool.name == "agent_connection"));
@@ -245,7 +245,7 @@ async fn the_op_is_listed_once_its_service_is_wired() {
 #[tokio::test]
 async fn the_wired_handle_sees_the_servers_sessions() {
     let connections = Connections::default();
-    let mcp = McpServer::new(Arc::new(FakeRunner::new()), McpOptions::default().with_connections(connections.clone()))
+    let mcp = McpServer::new(Arc::new(fake_runner()), McpOptions::default().with_connections(connections.clone()))
         .expect("server builds");
     let connection = connect(&mcp, Lifecycle::Initialize).await;
     connection.client.list_all_tools().await.expect("lists tools");

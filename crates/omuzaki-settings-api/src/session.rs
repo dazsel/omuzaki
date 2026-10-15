@@ -122,11 +122,12 @@ impl SessionState {
     }
 
     /// Records a dismissed version, but never lowers it: after a rollback the higher value stays so the roll-forward
-    /// does not show the notes twice. Compared as dotted numbers; anything the comparison cannot read replaces it.
+    /// does not show the notes twice. Compared as the leading `major.minor.patch` numbers; an equal version replaces
+    /// the old text (so the stable `0.9.0` replaces a recorded `0.9.0-beta.2`), and anything unreadable replaces it.
     pub fn mark_version_seen(&mut self, version: &str) {
         let key = |v: &str| -> Option<Vec<u64>> { v.split(['.', '-']).take(3).map(|p| p.parse().ok()).collect() };
         let keep = match (self.last_seen_version.as_deref().and_then(key), key(version)) {
-            (Some(old), Some(new)) => old >= new,
+            (Some(old), Some(new)) => old > new,
             _ => false,
         };
         if !keep {
@@ -202,5 +203,8 @@ mod tests {
         assert_eq!(s.last_seen_version.as_deref(), Some("0.9.0"));
         s.mark_version_seen("0.10.0");
         assert_eq!(s.last_seen_version.as_deref(), Some("0.10.0"));
+        s.mark_version_seen("0.11.0-beta.2");
+        s.mark_version_seen("0.11.0");
+        assert_eq!(s.last_seen_version.as_deref(), Some("0.11.0"), "stable replaces the beta of the same number");
     }
 }
