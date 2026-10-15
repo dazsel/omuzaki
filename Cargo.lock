@@ -3678,6 +3678,7 @@ dependencies = [
  "omuzaki-render-api",
  "omuzaki-render-mock",
  "omuzaki-store-api",
+ "omuzaki-store-mock",
  "proptest",
  "schemars",
  "serde",

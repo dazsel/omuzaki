@@ -334,6 +334,7 @@ fn errors_name_the_field_at_fault() -> Result<(), Box<dyn std::error::Error>> {
         asset: ContentHash([0; 32]),
         opacity,
         align,
+        sheet_face: None,
     };
     assert_eq!(request(1.5, IDENTITY).validate().unwrap_err().field.as_deref(), Some("opacity"));
     let nan_offset = UnderlayAlign { offset: [f64::NAN, 0.0], ..IDENTITY };

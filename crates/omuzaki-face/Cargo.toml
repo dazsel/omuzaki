@@ -37,6 +37,7 @@ proptest.workspace = true
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 omuzaki-face-mock = { path = "../omuzaki-face-mock" }
 omuzaki-render-mock = { path = "../omuzaki-render-mock" }
+omuzaki-store-mock = { path = "../omuzaki-store-mock" }
 
 # One bench target per hot path. A target needs its file to exist, so the skeleton declares them up front; the task named
 # in each file's `//!` line fills it.

@@ -9,8 +9,10 @@
 //! Opacity is the overlay's strength: changing it is a material update, never a repaint. Alignment changes the pixels, so
 //! it rebuilds the layer. That rebuild runs on change, not per frame, and is the only place this module allocates.
 //!
-//! `face.underlay.set` is view state, not a document edit. Its op registration and the stage wiring are separate work; the request
-//! and view types land here, so the op is a thin wrapper over them.
+//! `face.underlay.set` is view state, not a document edit (`ops/underlay`). The op reads the sheet from the asset store,
+//! asks the app for the head ([`UnderlayTarget::head`]), builds the layer and hands it to the app
+//! ([`UnderlayTarget::show`]); what the app does with it (the dynamic texture, the overlay before the Base overlay on the
+//! head material) is the stage's.
 
 use omuzaki_char_api::{CharId, face_texture_desc};
 use omuzaki_core::glam::{UVec2, Vec3};
@@ -375,6 +377,10 @@ pub struct UnderlaySet {
     pub opacity: f64,
     /// Fine registration of the sheet over the face.
     pub align: UnderlayAlign,
+    /// The sheet's face rectangle, in sheet pixels. Left out, the app's own rectangle for the character's locked sheet
+    /// is used ([`UnderlayHead::sheet_face`]); the op refuses when there is neither.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sheet_face: Option<PixelRect>,
 }
 
 impl UnderlaySet {
@@ -391,4 +397,34 @@ impl UnderlaySet {
         }
         self.align.check()
     }
+}
+
+/// The head an underlay lands on, as the app knows it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct UnderlayHead {
+    /// Where the painted face layers land on the head.
+    pub projection: FaceProjection,
+    /// The head centre in bind space.
+    pub head_centre: Vec3,
+    /// The face layers' density, pixels per metre: the underlay is built at the Base layer's resolution.
+    pub px_per_m: f32,
+    /// The face rectangle of the character's locked sheet, in sheet pixels, when the app has one.
+    pub sheet_face: Option<PixelRect>,
+}
+
+/// What `face.underlay.set` needs from the app, injected as a service (`OpCtx::service::<dyn UnderlayTarget>()`). The
+/// stage implements it: it owns the head material and the textures.
+pub trait UnderlayTarget: Send + Sync {
+    /// The head of `character` as it is on screen now.
+    ///
+    /// # Errors
+    /// [`OpError`] (`NotFound`) when the app shows no such character.
+    fn head(&self, character: &CharId) -> Result<UnderlayHead, OpError>;
+
+    /// Shows `layer` under the Base layer of `character`'s face, replacing the one shown before. Opacity is the layer's
+    /// own ([`UnderlayLayer::opacity`]); the pixels are new only when the density or the alignment changed.
+    ///
+    /// # Errors
+    /// [`OpError`] when the app cannot show it.
+    fn show(&self, character: &CharId, layer: UnderlayLayer) -> Result<(), OpError>;
 }
