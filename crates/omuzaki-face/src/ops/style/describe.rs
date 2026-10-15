@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::ops_shared::edit::{effective, stored_face, to_json};
-use crate::ops_shared::path::{SECTIONS, section};
+use crate::ops_shared::path::{Section, section};
 
 /// Describes the face sections of a character: for each, its path, its JSON Schema (inlined), its defaults, its current
 /// values and the `ranges` of its numeric fields (`path`, `lo`, `hi`, and a `note` for a rule between fields). Marks are
@@ -41,13 +41,13 @@ impl Op for DescribeStyle {
     fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
         let stored = stored_face(ctx, &self.character)?;
         let profile = effective(stored.as_ref())?;
-        let wanted: Vec<&str> = match &self.section {
+        let wanted: Vec<Section> = match &self.section {
             Some(name) => vec![section(name)?],
-            None => SECTIONS.to_vec(),
+            None => Section::ALL.to_vec(),
         };
         let mut sections = Map::new();
-        for name in wanted {
-            sections.insert(name.to_owned(), describe(name, &profile)?);
+        for wanted in wanted {
+            sections.insert(wanted.name().to_owned(), describe(wanted, &profile)?);
         }
         Ok(Plan::answer(json!({
             "character": self.character.to_string(),
@@ -58,16 +58,16 @@ impl Op for DescribeStyle {
 
 register_op!(DescribeStyle);
 
-/// One section's description, for a section name that [`section`] has already accepted.
-fn describe(name: &str, profile: &FaceProfile) -> Result<Value, OpError> {
-    let path = format!("face/{name}");
-    let entry = match name {
-        "eyes" => section_entry::<EyeStyle>(&path, &profile.eyes)?,
-        "brows" => section_entry::<BrowStyle>(&path, &profile.brows)?,
-        "mouth" => section_entry::<MouthStyle>(&path, &profile.mouth)?,
-        "nose" => section_entry::<NoseStyle>(&path, &profile.nose)?,
-        "cheeks" => section_entry::<CheekStyle>(&path, &profile.cheeks)?,
-        _ => {
+/// One section's description.
+fn describe(section: Section, profile: &FaceProfile) -> Result<Value, OpError> {
+    let path = format!("face/{}", section.name());
+    let entry = match section {
+        Section::Eyes => section_entry::<EyeStyle>(&path, &profile.eyes)?,
+        Section::Brows => section_entry::<BrowStyle>(&path, &profile.brows)?,
+        Section::Mouth => section_entry::<MouthStyle>(&path, &profile.mouth)?,
+        Section::Nose => section_entry::<NoseStyle>(&path, &profile.nose)?,
+        Section::Cheeks => section_entry::<CheekStyle>(&path, &profile.cheeks)?,
+        Section::Marks => {
             let mut entry = list_entry(&path, &profile.marks)?;
             if let Value::Object(fields) = &mut entry {
                 fields.insert("item_defaults".to_owned(), to_json(&FaceMark::default())?);

@@ -9,7 +9,7 @@ use omuzaki_ops_api::OpError;
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
-use crate::ops_shared::edit::diff;
+use crate::ops_shared::edit::{diff, working_copy};
 
 /// The expression library inside a stored face: `None` when the face has no `expressions` yet.
 ///
@@ -67,7 +67,7 @@ pub(super) fn edited_face(
     stored: Option<&Value>,
     edit: impl FnOnce(&mut Map<String, Value>),
 ) -> Result<Value, OpError> {
-    let mut face = stored.cloned().unwrap_or_else(|| Value::Object(Map::new()));
+    let mut face = working_copy(stored);
     let entries = face
         .as_object_mut()
         .ok_or_else(|| OpError::internal("a face is an object"))?

@@ -496,3 +496,41 @@ fn the_add_mark_hint_is_shown_only_for_the_marks_list() {
     let mark = run(&doc, "face.set_style", set_args("face/marks/9/size", json!(0.01))).unwrap_err();
     assert!(mark.hint.unwrap_or_default().contains("face.add_mark"));
 }
+
+/// The three repro paths of #125: a bad enum name, colour and integer are named at their leaf, not at the section.
+#[test]
+fn enum_colour_and_integer_errors_name_their_leaf() {
+    let doc = doc_with_face(full_face());
+    for (path, value, leaf, text) in [
+        ("face/nose/kind", json!("dott"), "face/nose/kind", "unknown variant `dott`"),
+        ("face/eyes/lash/colour", json!("#zzzzzz"), "face/eyes/lash/colour", ""),
+        ("face/marks/0/count", json!(300), "face/marks/0/count", "300"),
+    ] {
+        let err = run(&doc, "face.set_style", set_args(path, value)).unwrap_err();
+        assert_eq!(err.field.as_deref(), Some(leaf), "{err:?}");
+        assert!(err.message.contains(text) && err.message.contains(leaf), "{err:?}");
+    }
+}
+
+#[test]
+fn every_unreadable_leaf_is_listed_with_the_others() {
+    let doc = doc_with_face(full_face());
+    let value = json!({ "lash": { "colour": "#zzzzzz" }, "iris": { "pupil": { "shape": "roung", "size": 5.0 } } });
+    let err = run(&doc, "face.set_style", set_args("face/eyes", value)).unwrap_err();
+    for expected in ["face/eyes/lash/colour", "face/eyes/iris/pupil/shape", "face/eyes/iris/pupil/size"] {
+        assert!(err.message.contains(expected), "{expected} missing: {}", err.message);
+    }
+    assert!(err.message.starts_with("3 fields are invalid"), "{}", err.message);
+}
+
+#[test]
+fn a_suggestion_is_made_only_when_a_name_is_close() {
+    let doc = doc_with_face(full_face());
+    let far = run(&doc, "face.set_style", set_args("face/eyes/iris/bogus", json!(1))).unwrap_err();
+    assert!(!far.hint.as_deref().unwrap_or_default().contains("did you mean"), "{far:?}");
+    let near = run(&doc, "face.set_style", set_args("face/eyes/iris/widht", json!(0.5))).unwrap_err();
+    assert!(near.hint.as_deref().unwrap_or_default().contains("did you mean `face/eyes/iris/width`"), "{near:?}");
+    let layout = run(&doc, "face.set_style", set_args("face/layout/eye_y", json!(0.0))).unwrap_err();
+    assert!(layout.message.contains("not a style section"), "{layout:?}");
+    assert!(!layout.hint.as_deref().unwrap_or_default().contains("did you mean"), "{layout:?}");
+}

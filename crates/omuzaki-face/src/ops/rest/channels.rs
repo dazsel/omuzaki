@@ -12,7 +12,7 @@ use serde_json::{Map, Number, Value, json};
 
 use crate::ops::mapping::repaint_report;
 use crate::ops_shared::check::check_edit;
-use crate::ops_shared::edit::{changed, diff, stored_face};
+use crate::ops_shared::edit::{changed, diff, stored_face, working_copy};
 use crate::ops_shared::path::{channel, template};
 
 /// Sets channel values in a character's `rest` layer, the face's resting bus: a name of a channel and its number. Channels
@@ -41,7 +41,7 @@ impl Op for SetRestChannels {
     fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
         let stored = stored_face(ctx, &self.character)?;
         let defaults = template()?;
-        let mut working = stored.clone().unwrap_or_else(|| Value::Object(Map::new()));
+        let mut working = working_copy(stored.as_ref());
         let Some(face) = working.as_object_mut() else {
             return Err(OpError::internal("a face is an object"));
         };
