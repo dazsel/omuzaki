@@ -668,9 +668,7 @@ fn eval_run(root: &Path, select: Selection, args: RunArgs) -> Verdict {
     };
     let discovery = eval::discover(root)?;
     // A file that does not parse would silently be left out of the run: refuse, and let `eval lint` say which.
-    if let Some(bad) = discovery.unparsed.first() {
-        return Err(format!("{}: does not parse: {} (run `eval lint`)", bad.path.display(), bad.reason).into());
-    }
+    refuse_unparsed(&discovery)?;
     let defaults = eval::load_defaults(root)?;
     let private = eval::load_private(root)?;
     let now = SystemTime::now();
@@ -718,6 +716,15 @@ fn eval_run(root: &Path, select: Selection, args: RunArgs) -> Verdict {
     };
     print_run(&report);
     Ok(report.ok())
+}
+
+/// Refuses to go on when a task, fixture or set file did not parse: it would be left out without a word, and an unparsed
+/// set manifest is a set whose items nothing protects.
+fn refuse_unparsed(discovery: &eval::Discovery) -> Result<(), Box<dyn Error>> {
+    match discovery.unparsed.first() {
+        Some(bad) => Err(format!("{}: does not parse: {} (run `eval lint`)", bad.path.display(), bad.reason).into()),
+        None => Ok(()),
+    }
 }
 
 fn print_run(report: &RunReport) {
@@ -774,7 +781,7 @@ fn eval_rate(root: &Path, set: &str, sample: usize, rater: &str, port: u16) -> V
         println!("Nothing to rate: this week's limit of {} results is reached (or --sample is 0).", rate::WEEKLY_ITEMS);
         return Ok(true);
     }
-    let items = rate::sample::sample(&discovery, &history, &ratings, count);
+    let items = rate::sample::sample(&discovery, &eval::load_private(root)?, &history, &ratings, count);
     if items.is_empty() {
         println!("Nothing to rate: no unrated reference result of a task with questions for people.");
         return Ok(true);
@@ -835,6 +842,7 @@ fn eval_sets(command: SetsCommand) -> Verdict {
     match command {
         SetsCommand::Verify { root } => {
             let discovery = eval::discover(&workspace_root(root.root)?)?;
+            refuse_unparsed(&discovery)?;
             let result = sets::verify::verify(&discovery, &SetStore::locate()?)?;
             for f in &result.findings {
                 println!("{}: set `{}` item {}: {}", f.manifest.display(), f.set, f.item, f.problem.describe());
@@ -862,9 +870,7 @@ fn eval_sets(command: SetsCommand) -> Verdict {
             let root = workspace_root(root.root)?;
             let discovery = eval::discover(&root)?;
             // A manifest that does not parse could be the very set being added to, or one that shares its id.
-            if let Some(bad) = discovery.unparsed.first() {
-                return Err(format!("{}: does not parse: {} (run `eval lint`)", bad.path.display(), bad.reason).into());
-            }
+            refuse_unparsed(&discovery)?;
             let new_set = match new_in {
                 Some(crate_name) => Some(sets::add::NewSet {
                     crate_name,
@@ -889,7 +895,8 @@ fn eval_sets(command: SetsCommand) -> Verdict {
         }
         SetsCommand::HoldoutCheck { manifests, root } => {
             let discovery = eval::discover(&workspace_root(root.root)?)?;
-            // Without a store only the BLAKE3 names can be looked for; with one, an item's SHA-256 is looked for too.
+            // A manifest that does not parse is a set whose items cannot be protected: it must not pass as no set.
+            refuse_unparsed(&discovery)?;
             let store = SetStore::locate().ok();
             let leaks = sets::holdout::holdout_check(&discovery, &manifests, store.as_ref())?;
             for leak in &leaks {

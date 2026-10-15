@@ -27,17 +27,18 @@ pub struct Leak {
 struct Protected {
     set: String,
     item: String,
-    /// The hashes the item can be named by: its BLAKE3 name, and its SHA-256 when the store has the item (the model
-    /// contract pins items by SHA-256, ADR 0017).
+    /// The hashes the item can be named by: its BLAKE3 name and its SHA-256 (the model contract pins items by SHA-256,
+    /// ADR 0017).
     hexes: Vec<String>,
     why: &'static str,
 }
 
-/// Names the protected items `manifests` contain, by their BLAKE3 hash or, for an item `store` holds, their SHA-256.
+/// Names the protected items `manifests` contain, by their BLAKE3 hash or their SHA-256.
 ///
 /// # Errors
 /// [`SetsError::Io`] when a manifest cannot be read; [`SetsError::Invalid`] when a protected set holds an item whose hash
-/// is malformed, since such an item cannot be searched for and a check that skipped it would pass for the wrong reason.
+/// is malformed, is missing or damaged in the store, or when there is no store to read the SHA-256 from: such an item
+/// cannot be searched for by every name, and a check that skipped it would pass for the wrong reason.
 pub fn holdout_check(
     discovery: &Discovery,
     manifests: &[PathBuf],
@@ -58,10 +59,24 @@ pub fn holdout_check(
                     item.hash
                 ))
             })?;
-            let mut hexes = vec![hash.to_string()];
-            if let Some(store) = store {
-                hexes.extend(store.sha256_hex(&hash)?);
-            }
+            // Both names of the item must be known, or a manifest that pins it by SHA-256 would pass for the wrong reason.
+            let sha256 = match store {
+                Some(store) => store.sha256_hex(&hash)?.ok_or_else(|| {
+                    SetsError::Invalid(format!(
+                        "set `{}` is test-only and its item {} is missing or damaged in the store, so its SHA-256 is not \
+                         known; run `eval sets verify`",
+                        set.id, item.hash
+                    ))
+                })?,
+                None => {
+                    return Err(SetsError::Invalid(format!(
+                        "set `{}` is test-only and holds items: the store is needed to know their SHA-256 \
+                         (set OMUZAKI_EVAL_SETS or OMUZAKI_ASSETS)",
+                        set.id
+                    )));
+                }
+            };
+            let hexes = vec![hash.to_string(), sha256];
             protected.push(Protected { set: set.id.clone(), item: item.hash.clone(), hexes, why });
         }
     }

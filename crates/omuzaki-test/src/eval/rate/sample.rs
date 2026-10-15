@@ -5,7 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, SystemTime};
 
 use super::{Rating, WEEK_SECS, WEEKLY_ITEMS};
-use crate::eval::Discovery;
+use crate::eval::provenance::{PrivateList, fixture_refusals};
+use crate::eval::{Discovery, TaskFile};
 use crate::eval::clock::run_started;
 use crate::eval::history::{AttemptOutcome, AttemptRecord};
 
@@ -50,8 +51,18 @@ pub fn budget_left(ratings: &[Rating], now: SystemTime) -> usize {
 ///
 /// Considered are scored (`pass`/`fail`) attempts of the reference driver whose task has `rubric_for_people` and
 /// whose item has no rating in `ratings`. `count` is held to the weekly budget by the caller ([`budget_left`]).
+///
+/// Left out are attempts whose task has changed since (its hash is not the one the attempt was made with: the page would
+/// show today's prompt and questions for a result of another), and tasks whose fixture is unresolved, refused, or built
+/// from a `real` set or a `holdout` split: those are test-only material and are not put in front of a rater.
 #[must_use]
-pub fn sample(discovery: &Discovery, history: &[AttemptRecord], ratings: &[Rating], count: usize) -> Vec<Item> {
+pub fn sample(
+    discovery: &Discovery,
+    private: &PrivateList,
+    history: &[AttemptRecord],
+    ratings: &[Rating],
+    count: usize,
+) -> Vec<Item> {
     let rated: BTreeSet<&str> = ratings.iter().map(|r| r.item.as_str()).collect();
     let mut per_task: BTreeMap<&str, Vec<Item>> = BTreeMap::new();
     for record in history.iter().rev() {
@@ -59,7 +70,10 @@ pub fn sample(discovery: &Discovery, history: &[AttemptRecord], ratings: &[Ratin
             continue;
         }
         let Some(file) = discovery.tasks.iter().find(|t| t.task.id == record.task) else { continue };
-        if file.task.rubric_for_people.is_empty() {
+        if file.task.rubric_for_people.is_empty() || record.task_hash != discovery.task_hash(file) {
+            continue;
+        }
+        if !fixture_may_be_shown(discovery, private, file) {
             continue;
         }
         let id = item_id(&record.run, &record.task, record.attempt);
@@ -89,6 +103,18 @@ pub fn sample(discovery: &Discovery, history: &[AttemptRecord], ratings: &[Ratin
         }
     }
     chosen
+}
+
+/// Whether a task's results may be shown to a rater: the fixture resolves, none of its set items is refused, and none is
+/// in a protected (`real` or `holdout`) set.
+fn fixture_may_be_shown(discovery: &Discovery, private: &PrivateList, file: &TaskFile) -> bool {
+    let Some(fixture) = discovery.fixture(&file.task.fixture) else { return false };
+    fixture_refusals(&fixture.fixture, &discovery.sets, private).is_empty()
+        && fixture
+            .fixture
+            .set_items()
+            .iter()
+            .all(|item| discovery.sets.get(&item.set).is_some_and(|set| !set.is_protected()))
 }
 
 #[cfg(test)]
