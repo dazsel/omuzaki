@@ -238,9 +238,8 @@ pub(crate) enum Replace {
 /// **Retention (the Director's ruling on #1468).** An editor may still hold the original file open and write into it
 /// after the displaced bytes were verified, and no hash check can see that. So the displaced file is not deleted: its
 /// backup (the same inode, for a hard link) stays in the replaced folder as `<name>.retained-<hash>`, the hash being
-/// that of the verified bytes. A save then deletes (at most once a minute per process, and at most [`PRUNE_PER_CALL`] per call) only retained
-/// files of
-/// the same target that are older than [`RETAIN_UNCHANGED`] (10 minutes) and still hash to the recorded value. A
+/// that of the verified bytes. A save then deletes only retained files of the
+/// same target (at most once a minute per process, and at most [`PRUNE_PER_CALL`] per call) that are older than [`RETAIN_UNCHANGED`] (10 minutes) and still hash to the recorded value. A
 /// retained file that was written to is never deleted by a save. The residual window: an editor that keeps the old
 /// file open for over ten minutes and then writes into it loses that write. A write made before the check is never
 /// lost: the check fails, the swap is undone and our file is kept. On Windows the swap is not available (a plain
