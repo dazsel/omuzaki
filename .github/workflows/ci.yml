@@ -110,7 +110,7 @@ jobs:
       - uses: ./.github/actions/setup-linux
         with:
           cache-key: lint
-          tools: cargo-deny
+          tools: cargo-deny,cargo-nextest
           free-disk: ${{ needs.plan.outputs.mode == 'workspace' }}
       - name: Cargo.lock is current
         run: cargo metadata --locked --format-version 1 >/dev/null
@@ -201,9 +201,17 @@ jobs:
           for part in $PARTS; do
             name=${part%@*}
             # The item says which tests it runs: a partition, a partition outside isolated binaries, or one isolated
-            # binary (tools/ci/nextest-args.py). A malformed item fails the job rather than run nothing.
-            mapfile -t selection < <(python3 -I tools/ci/nextest-args.py "$part")
-            if ((${#selection[@]} == 0)); then echo "::error::not a shard item: $part"; status=1; continue; fi
+            # binary (tools/ci/nextest-args.py). nextest refuses a filter naming a binary that no longer exists, so the
+            # script drops those, after reading the crate's real binaries from nextest.
+            # shellcheck disable=SC2046
+            if ! cargo nextest list --profile ci --locked -p "$name" $(features_for "$name") \
+                 --list-type binaries-only --message-format json >"$RUNNER_TEMP/binaries.json"; then
+              echo "::error::cannot list the test binaries of $name"; status=1; continue
+            fi
+            rc=0; selection=$(python3 -I tools/ci/nextest-args.py "$part" --list "$RUNNER_TEMP/binaries.json") || rc=$?
+            if ((rc == 10)); then echo "::notice::$part: its test binary is gone, the partitions run its tests"; continue; fi
+            if ((rc != 0)); then echo "::error::not a shard item: $part"; status=1; continue; fi
+            mapfile -t selection <<<"$selection"
             # shellcheck disable=SC2046
             cargo nextest run --profile ci --locked "${selection[@]}" $(features_for "$name") || status=1
           done

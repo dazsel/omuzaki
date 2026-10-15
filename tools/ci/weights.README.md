@@ -33,6 +33,28 @@ keep the old estimate scaled by the same factor as the groups together (1.65), a
   Partition 2/4 without those three tests ended about 270 s after it started. `part_weights` are each partition's
   compile plus run on that basis: 465, 340, 245, 415 (sum 1465); `omuzaki-char` is 2011 = 1465 + 546.
 
+### Per-binary times behind the `omuzaki-char` split
+
+Every test that took 10 s or more in the four `omuzaki-char` calls of run 38810711080 (`PASS [secs]` lines, summed per
+binary and partition; four tests run at once on the 4-vCPU runner, so these include contention). The three
+`palette_independence` tests are the only ones above 320 s; nextest hashes the rest across the four partitions.
+
+| Binary | partition (call) | tests of 10 s or more | sum, s | longest, s |
+| --- | --- | ---: | ---: | ---: |
+| `palette_independence` | 2/4 | 3 | 1335 | 466 |
+| `cloth_contact` | 1/4 | 2 | 390 | 372 |
+| `body` | 4/4 | 2 | 417 | 317 |
+| `body` | 2/4 | 2 | 196 | 175 |
+| `body_shape` | 3/4 | 2 | 191 | 170 |
+| `body` | 1/4 | 2 | 168 | 91 |
+| `head_ears` | 2/4 | 1 | 146 | 146 |
+| `cloth_live` | 3/4, 2/4 | 2 + 1 | 105 + 61 | 91, 61 |
+| `cloth_solver` | 3/4, 2/4 | 2 + 2 | 95 + 87 | 77, 76 |
+
+With `palette_independence` taken out, the partitions' run times are 395, about 270, 173 and 345 s, and the plan packs
+the 24 crates of that run into six shards of 538 to 550 s (slowest over mean 1.01; the unit test
+`the_recorded_run_packs_into_six_shards_with_the_slowest_within_20_percent_of_the_mean`).
+
 Refresh the table from a full-workspace merge-queue run whenever the shard durations drift apart (the slowest shard more
 than 20% over the mean).
 
