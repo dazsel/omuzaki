@@ -36,10 +36,11 @@ struct RawPackage {
 }
 
 impl RawPackage {
-    /// Whether this package is a workspace member: one of `members` by name, and a path package. A registry or git
-    /// package that shares a member's name is a different package.
-    fn is_member(&self, members: &BTreeSet<String>) -> bool {
-        self.source.is_none() && members.contains(&self.name)
+    /// Whether this package is a workspace member: a path package (no `source`) with the name and version of one of
+    /// `members`. A registry or git package, or an external path package of another version, that shares a member's
+    /// name is a different package.
+    fn is_member(&self, members: &Members) -> bool {
+        self.source.is_none() && members.contains(&(self.name.clone(), self.version.clone()))
     }
 
     /// Whether the lock entry `dep` (`name`, `name version` or `name version (source)`) names this package.
@@ -54,12 +55,14 @@ impl RawPackage {
     }
 }
 
+/// The workspace's own crates, each as `(name, version)`.
+pub type Members = BTreeSet<(String, String)>;
+
 impl Lock {
     /// Reads a `Cargo.lock`. `members` are the workspace's own crates, matched by identity: a path package (no
-    /// `source`) with a member's name. A package without a `source` that is not one of them is an external path
-    /// dependency, and an external package that shares a member's name is not a member; both need a file like any
-    /// other.
-    pub fn parse(text: &str, members: &BTreeSet<String>) -> Result<Self, String> {
+    /// `source`) with a member's name and version. A package that is not one of them is external, even if it shares a
+    /// member's name (from a registry, or a path package of another version); it needs a file like any other.
+    pub fn parse(text: &str, members: &Members) -> Result<Self, String> {
         let raw: RawLock = toml::from_str(text).map_err(|e: toml::de::Error| e.message().to_owned())?;
         let mut lock = Self::default();
         for package in &raw.package {
@@ -239,11 +242,48 @@ mod tests {
             source = "registry+https://github.com/rust-lang/crates.io-index"
             dependencies = ["serde_derive"]
             "#,
-            &["app", "core"].map(str::to_owned).into(),
+            &members(&[("app", "0.1.0"), ("core", "0.1.0")]),
         )
         .unwrap_or_default();
         assert_eq!(lock.direct.keys().collect::<Vec<_>>(), ["serde", "toml", "vendored"]);
         assert!(lock.packages.contains("core") && !lock.direct.contains_key("serde_derive"));
+    }
+
+    fn members(list: &[(&str, &str)]) -> Members {
+        list.iter().map(|(name, version)| ((*name).to_owned(), (*version).to_owned())).collect()
+    }
+
+    #[test]
+    fn an_external_path_package_of_another_version_is_not_the_member() {
+        let lock = Lock::parse(
+            r#"
+            [[package]]
+            name = "app"
+            version = "0.1.0"
+            dependencies = ["foo 0.2.0"]
+            [[package]]
+            name = "foo"
+            version = "0.1.0"
+            dependencies = ["member-only"]
+            [[package]]
+            name = "foo"
+            version = "0.2.0"
+            dependencies = ["transitive"]
+            [[package]]
+            name = "member-only"
+            version = "1.0.0"
+            source = "registry+https://example.test/index"
+            [[package]]
+            name = "transitive"
+            version = "1.0.0"
+            source = "registry+https://example.test/index"
+            "#,
+            &members(&[("app", "0.1.0"), ("foo", "0.1.0")]),
+        )
+        .unwrap_or_default();
+        let direct: Vec<_> =
+            lock.direct.iter().map(|(k, v)| (k.as_str(), v.iter().map(String::as_str).collect::<Vec<_>>())).collect();
+        assert_eq!(direct, [("foo", vec!["app"]), ("member-only", vec!["foo"])], "no `transitive`: {direct:?}");
     }
 
     #[test]
@@ -266,13 +306,13 @@ mod tests {
             name = "core"
             version = "0.1.0"
             "#,
-            &["app", "core", "foo"].map(str::to_owned).into(),
+            &members(&[("app", "0.1.0"), ("core", "0.1.0"), ("foo", "0.1.0")]),
         )
         .unwrap_or_default();
         assert_eq!(lock.direct.keys().collect::<Vec<_>>(), ["foo"], "the registry `foo` is external");
         let only_member = Lock::parse(
             "[[package]]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\"foo\"]\n[[package]]\nname = \"foo\"\nversion = \"0.1.0\"\n",
-            &["app", "foo"].map(str::to_owned).into(),
+            &members(&[("app", "0.1.0"), ("foo", "0.1.0")]),
         )
         .unwrap_or_default();
         assert!(only_member.direct.is_empty());
@@ -291,7 +331,7 @@ mod tests {
             name = "bar"
             version = "1.0.0"
             "#,
-            &["foo"].map(str::to_owned).into(),
+            &members(&[("foo", "0.1.0")]),
         )
         .unwrap_or_default();
         assert!(lock.direct.is_empty(), "the external `foo` is no workspace crate: {:?}", lock.direct);
