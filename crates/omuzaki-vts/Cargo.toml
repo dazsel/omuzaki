@@ -8,10 +8,20 @@ publish.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+# An in-process mock VTube Studio server for tests (`testing`): off in every normal build.
+testing = ["dep:tungstenite"]
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+tungstenite = { workspace = true, optional = true }
+
+[dev-dependencies]
+# The tests drive the mock with a raw WebSocket client and need the feature on.
+omuzaki-vts = { path = ".", features = ["testing"] }
+tungstenite.workspace = true
 
 [lints]
 workspace = true

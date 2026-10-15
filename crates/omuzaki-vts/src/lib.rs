@@ -19,6 +19,8 @@
 
 pub mod limits;
 pub mod protocol;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 
 /// The plugin name shown in the user's permission popup (3 to 32 characters on the wire).
 ///
