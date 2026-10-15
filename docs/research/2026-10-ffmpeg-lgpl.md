@@ -90,7 +90,7 @@ Notes:
 
 ## 5. Encode timing
 
-Machine: Intel Xeon (Intel(R) Xeon(R) Processor @ 2.80GHz), 4 vCPUs, one thread per core, no GPU. Release build. Time is
+Machine: a 4-core cloud VM without a GPU and without hardware encoders. Release build. Time is
 `send_frame` plus draining packets; the RGBA to YUVA conversion (swscale) is counted apart. Per-frame lines are printed by the
 binary.
 
@@ -99,7 +99,7 @@ binary.
 | `prores_ks` 4444 | 212.6 ms | 209.1 ms | 240.1 ms | 245.6 ms | 8.5 ms |
 | `libvpx-vp9` realtime, `cpu-used=5`, `row-mt` | 50.2 ms | 33.4 ms | 98.1 ms | 924.2 ms | 7.0 ms |
 
-Both are over the 33.3 ms frame period of 30 fps on 4 shared vCPUs. ProRes by `prores_ks` is about 6x too slow for real time
+Both are over the 33.3 ms frame period of 30 fps on this VM. ProRes by `prores_ks` is about 6x too slow for real time
 here (it is a software encoder with no `slices` or thread tuning in this spike), and the VP9 median is inside the period but the tail is not.
 The VP9 maximum (about 0.9 s in both runs) is the first frame (856 ms in the printed run; frames 1 and 2 take 1.4 ms because libvpx buffers
 ahead, so the cost lands later in the stream), so a record worker should warm the encoder before the first real frame. These are one machine's numbers; the measurement run (D12)

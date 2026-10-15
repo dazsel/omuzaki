@@ -250,12 +250,23 @@ fn drain(
     stream_tb: Rational,
 ) -> Result<(), SpikeError> {
     let mut packet = ffmpeg::Packet::empty();
-    while enc.receive_packet(&mut packet).is_ok() {
-        packet.set_stream(0);
-        packet.rescale_ts(enc_tb, stream_tb);
-        packet.write_interleaved(octx)?;
+    loop {
+        match enc.receive_packet(&mut packet) {
+            Ok(()) => {
+                packet.set_stream(0);
+                packet.rescale_ts(enc_tb, stream_tb);
+                packet.write_interleaved(octx)?;
+            }
+            Err(e) if is_drained(e) => return Ok(()),
+            // Any other failure is a failed encode: report it, never write a trailer over it.
+            Err(e) => return Err(e.into()),
+        }
     }
-    Ok(())
+}
+
+/// True for the two normal ends of draining: the encoder wants more input (`EAGAIN`) or has flushed everything (EOF).
+fn is_drained(error: ffmpeg::Error) -> bool {
+    matches!(error, ffmpeg::Error::Eof | ffmpeg::Error::Other { errno: ffmpeg::error::EAGAIN })
 }
 
 /// Prints the timing summary for one clip.
@@ -323,6 +334,14 @@ mod tests {
         assert_eq!(a, b);
         fill_frame(&mut b, &Look::from_seed(8), 12);
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn only_eagain_and_eof_end_draining() {
+        assert!(is_drained(ffmpeg::Error::Eof));
+        assert!(is_drained(ffmpeg::Error::Other { errno: ffmpeg::error::EAGAIN }));
+        assert!(!is_drained(ffmpeg::Error::InvalidData));
+        assert!(!is_drained(ffmpeg::Error::Other { errno: 5 }));
     }
 
     #[test]
