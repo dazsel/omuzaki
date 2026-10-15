@@ -29,3 +29,12 @@ steps = [
     { run = ["cargo", "run", "--locked", "-p", "omuzaki-ui", "--bin", "gallery", "--", "--pseudo", "--scale", "200", "--group", "composites", "--screenshot", "{out}/pseudo-200-composites.png"] },
 ]
 images = ["pseudo-200-foundations.png", "pseudo-200-controls-1of4.png", "pseudo-200-controls-2of4.png", "pseudo-200-controls-3of4.png", "pseudo-200-controls-4of4.png", "pseudo-200-display-1of2.png", "pseudo-200-display-2of2.png", "pseudo-200-feedback-1of3.png", "pseudo-200-feedback-2of3.png", "pseudo-200-feedback-3of3.png", "pseudo-200-composites.png"]
+
+[[case]]
+name = "edit-panels"
+description = "The Build workspace's edit panels (#2043): the outliner, the viewport and the inspector docked as shell.md section 2 lays them out, at 1920x1080 and 1366x768, dark palette, the mock character open with its head selected. The viewport is the stage's render on the shared wgpu device."
+env = { OMUZAKI_EVIDENCE_OUT = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-ui", "--test", "viewport", "--", "--ignored", "--exact", "edit_panels_evidence"] },
+]
+images = ["build-1920x1080.png", "build-1366x768.png"]

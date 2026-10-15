@@ -239,3 +239,76 @@ fn the_picture_is_the_still_from_the_same_camera() {
     eprintln!("viewport on screen vs still: largest channel difference {worst}, {differing} pixels differ");
     assert!(worst <= 2, "the viewport's picture on screen is not the still's: a channel differs by {worst}");
 }
+
+// ---- evidence ----
+
+/// The three edit panels as the Build workspace docks them (`shell.md` section 2: the outliner on the left, the
+/// viewport in the centre, the inspector on the right), with the mock character open and its head selected.
+struct Build {
+    outliner: omuzaki_ui::panels::outliner::Outliner,
+    viewport: Viewport,
+    inspector: omuzaki_ui::panels::inspector::Inspector,
+    runner: MockRunner<MemDoc>,
+    actor: Actor,
+}
+
+/// Renders the Build workspace's edit panels at 1920×1080 and 1366×768 into the folder `OMUZAKI_EVIDENCE_OUT` names
+/// (the `edit-panels` case of `evidence.toml`). Ignored in the gate: it writes files.
+#[test]
+#[ignore = "evidence: run by tools/ci/evidence.py with OMUZAKI_EVIDENCE_OUT set"]
+fn edit_panels_evidence() {
+    let Ok(out) = std::env::var("OMUZAKI_EVIDENCE_OUT") else { panic!("set OMUZAKI_EVIDENCE_OUT to a folder") };
+    for (width, height) in [(1920.0, 1080.0), (1366.0, 768.0)] {
+        omuzaki_char::link();
+        omuzaki_char_mock::link();
+        let state = create_render_state(default_wgpu_setup(), egui_wgpu::RendererOptions::default());
+        let focus = EditFocus::new(mock());
+        focus.select(omuzaki_char_api::PartId::new("head").unwrap_or_else(|_| panic!("an id")));
+        let services = ViewportServices {
+            gpu: Some(state.clone()),
+            builder: Arc::new(omuzaki_char_api::RegistryBuilder),
+            build: BuildServices::default(),
+        };
+        let build = Build {
+            outliner: omuzaki_ui::panels::outliner::Outliner::new(focus.clone()),
+            viewport: Viewport::new(focus.clone(), services),
+            inspector: omuzaki_ui::panels::inspector::Inspector::new(focus),
+            runner: MockRunner::new(MemDoc::from_value(json!({"characters": {"mock": node()}}))),
+            actor: Actor::Person { name: "kit".to_owned() },
+        };
+        let mut h = Harness::builder()
+            .with_size(vec2(width, height))
+            .with_pixels_per_point(1.0)
+            .renderer(WgpuTestRenderer::from_render_state(state))
+            .build_ui_state(
+                |ui, b: &mut Build| {
+                    omuzaki_ui::ds::apply_settings(ui.ctx(), omuzaki_ui::ds::Settings::default());
+                    let ds = omuzaki_ui::ds::ds(ui.ctx());
+                    let full = ui.max_rect();
+                    ui.painter().rect_filled(full, 0.0, ds.theme.bg0);
+                    let io = Io::new(&b.runner, &b.actor, &[]);
+                    let gap = 2.0;
+                    let left = egui::Rect::from_min_size(full.min, vec2(280.0, full.height()));
+                    let right = egui::Rect::from_min_max(egui::pos2(full.right() - 360.0, full.top()), full.max);
+                    let centre = egui::Rect::from_min_max(
+                        egui::pos2(left.right() + gap, full.top()),
+                        egui::pos2(right.left() - gap, full.bottom()),
+                    );
+                    let mut dock = |rect: egui::Rect, draw: &mut dyn FnMut(&mut egui::Ui)| {
+                        ui.painter().rect_filled(rect, 0.0, ds.theme.bg1);
+                        let mut panel = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink(8.0)));
+                        panel.set_clip_rect(rect);
+                        draw(&mut panel);
+                    };
+                    dock(left, &mut |ui| b.outliner.ui(ui, io));
+                    dock(centre, &mut |ui| b.viewport.ui(ui, io));
+                    dock(right, &mut |ui| b.inspector.ui(ui, io));
+                },
+                build,
+            );
+        h.run_steps(4);
+        let image = h.render().unwrap_or_else(|e| panic!("{e}"));
+        let path = format!("{out}/build-{width}x{height}.png");
+        image.save(&path).unwrap_or_else(|e| panic!("writing {path}: {e}"));
+    }
+}

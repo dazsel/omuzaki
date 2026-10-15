@@ -1,0 +1,7 @@
+# omuzaki-ui: the edit panels (viewport, outliner, inspector) and `ds::schema_form` complete
+
+- `ds::schema_form` gains the colour (`ColourField`) and curve (`CurveEditor`) controls, `x-ui.unit`, `step` and `decimals`, a reset after every row with a declared default, and `FormOutput::edit` (the field and its gesture phase) with `Form::pointer`, `Form::field` and `Form::field_value`. An integer field that can pass ±2^53 is typed as text and parsed exactly; an integer a float can't hold stays `Raw` in a `number` field; equal inclusive bounds allow their one value (#1920, #2030's verification findings).
+- `panels::outliner`: the part tree from the document, virtualised rows, enable/disable, reorder, duplicate and remove through the `part.*` ops, a keyboard-only flow and a fuzzy filter (#218).
+- `panels::inspector`: the selected part's form from `part.describe` (its probed ranges and defaults), edits through `part.set_param`, one gesture one transaction (#219).
+- `panels::viewport`: the stage on the app's wgpu device through an `egui_wgpu` callback, an orbit camera, rendering only when something changed; its picture is `render_stills`' for the same camera (#217).
+- `panels::edit::EditFocus` (the open character and the selection) and `panels::io::Io` (what a panel reads and runs each frame) are shared by the three panels.

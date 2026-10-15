@@ -11,4 +11,8 @@ pub mod shell;
 #[doc(hidden)]
 pub use omuzaki_core::__record_registration;
 
-omuzaki_core::define_link!();
+omuzaki_core::define_link! {
+    omuzaki_char_api::link();
+    omuzaki_render::link();
+    omuzaki_stage::link();
+}
