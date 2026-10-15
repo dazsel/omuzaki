@@ -229,7 +229,7 @@ impl Ledger {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CachePlan, Effort, Message, Role, SystemBlock, ToolChoice};
+    use crate::message::{CachePlan, Effort, Message, Role, SystemBlock, ToolChoice};
 
     fn flat(rate: u64) -> PriceTable {
         let rates = Rates { input: rate, output: 0, cache_read: 0, cache_write: 0 };

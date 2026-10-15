@@ -4,10 +4,11 @@
 
 use std::time::Duration;
 
-use omuzaki_llm_api::{
-    CachePlan, Cancel, ContentBlock, Effort, LlmClient, LlmError, LlmEvent, Message, Role, StopReason, SystemBlock,
-    ToolChoice, TurnRequest, Usage,
-};
+use omuzaki_llm_api::LlmClient;
+use omuzaki_llm_api::error::LlmError;
+use omuzaki_llm_api::message::{CachePlan, ContentBlock, Effort, Message, Role, SystemBlock, ToolChoice, TurnRequest};
+use omuzaki_llm_api::stream::{Cancel, LlmEvent, Next, StopReason, Turn};
+use omuzaki_llm_api::usage::Usage;
 
 use crate::{Injected, Script, ScriptTurn};
 
@@ -72,7 +73,7 @@ fn script(chunk: Option<usize>, events: Vec<LlmEvent>) -> Script {
     Script { model: "m".into(), turns: vec![ScriptTurn { events, chunk, ..ScriptTurn::default() }] }
 }
 
-fn play(make: Make<'_>, s: Script) -> Result<omuzaki_llm_api::Turn, String> {
+fn play(make: Make<'_>, s: Script) -> Result<Turn, String> {
     let client = make(s);
     let mut stream = client.stream(request(), &Cancel::new()).map_err(|e| e.to_string())?;
     stream.collect(IDLE).map_err(|e| e.to_string())
@@ -164,7 +165,7 @@ fn cancel_mid_stream(make: Make<'_>) -> Result<(), String> {
     stream.try_next().map_err(|e| e.to_string())?;
     cancel.cancel();
     same(stream.try_next(), Err(LlmError::Cancelled))?;
-    same(stream.try_next(), Ok(omuzaki_llm_api::Next::End))
+    same(stream.try_next(), Ok(Next::End))
 }
 
 fn chunking_is_invisible(make: Make<'_>) -> Result<(), String> {
