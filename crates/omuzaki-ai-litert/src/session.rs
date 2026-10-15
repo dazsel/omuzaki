@@ -56,8 +56,9 @@ struct Dims {
 impl Dims {
     const EMPTY: Self = Self { dims: [0; MAX_RANK], rank: 0 };
 
-    /// `shape`, which callers have checked is at most `MAX_RANK` long.
+    /// `shape`, which callers have checked is at most `MAX_RANK` long (`Signature::check_inputs` refuses longer).
     fn of(shape: &[usize]) -> Self {
+        debug_assert!(shape.len() <= MAX_RANK, "a shape over MAX_RANK reached the session");
         let mut dims = Self::EMPTY;
         let rank = shape.len().min(MAX_RANK);
         dims.dims[..rank].copy_from_slice(&shape[..rank]);
