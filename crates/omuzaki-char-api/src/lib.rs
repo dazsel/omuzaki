@@ -43,6 +43,8 @@ pub mod skin;
 pub mod stature;
 pub mod variant;
 
+omuzaki_core::define_link!();
+
 #[doc(hidden)]
 pub use inventory as __inventory;
 #[doc(hidden)]

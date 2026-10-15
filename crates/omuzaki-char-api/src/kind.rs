@@ -464,15 +464,21 @@ crate::fact! {
     pub HeadFact = "head", Last<Arc<dyn HeadSurface>>;
 }
 
+crate::register_fact!(HeadFact);
+
 crate::fact! {
     /// Where painted face layers land on the head (published by `head`); the last part that publishes one wins.
     pub FaceFact = "face", Last<FaceProjection>;
 }
 
+crate::register_fact!(FaceFact);
+
 crate::fact! {
     /// Anchors for accessories, keyed by the publishing part and the anchor name.
     pub AnchorsFact = "anchors", Keyed<AnchorId, Anchor>;
 }
+
+crate::register_fact!(AnchorsFact);
 
 crate::fact! {
     /// Collider groups later parts may use ([`BuildCtx::colliders`]): hair and cloth keep out of the head and
@@ -480,6 +486,8 @@ crate::fact! {
     /// [`humanoid_id`](crate::humanoid_id)): the only bones another part can locate. Appended in part order.
     pub CollidersFact = "colliders", Append<ColliderGroup>;
 }
+
+crate::register_fact!(CollidersFact);
 
 /// A part's outer envelope, for garments built over it ([`FitFact`]).
 #[derive(Clone, Debug, Default)]
@@ -519,6 +527,8 @@ impl Fact for FitFact {
     }
 }
 
+crate::register_fact!(FitFact);
+
 /// The character's real-world stature, published by the body part (nothing for a body authored in metres). The build
 /// scales the body and the head by [`Stature::scale`] before any later part is built
 /// ([`scale_output`](crate::scale_output)); what the body publishes here is therefore the size it already has. It must
@@ -539,6 +549,8 @@ impl Fact for StatureFact {
         Ok(())
     }
 }
+
+crate::register_fact!(StatureFact);
 
 /// How far two bind poses may differ, per quaternion component and per axis of the hips offset, and still be the same
 /// pose: the rounding of two parts that each computed it.

@@ -34,3 +34,4 @@ workspace = true
 [package.metadata.omuzaki]
 kind = "API"
 summary = "the procedural character (§18): ids, the part tree (`CharacterDef`), self-registering `PartKind`s, what parts publish to each other, `BuiltCharacter` with renderer-typed materials, the `PartRuntime` contract, variants as path overrides, the look (LK-06: a preset plus overrides, self-registering presets, the build-time material transform), and the head, hair and body parameters"
+registers = true

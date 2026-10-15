@@ -138,7 +138,8 @@ macro_rules! fact {
 }
 
 /// Records a fact, with its name and its type, so the link gate and the describe ops can list it ([`facts`]). Put it
-/// next to a fact that a crate other than this one defines; the facts of this crate are not registered yet.
+/// next to the fact's definition; the built-in facts of this crate are registered in `kind.rs`, and the listing only
+/// needs `omuzaki_char_api::link()` (the build never does: [`Published`](crate::Published) reads facts by type).
 ///
 /// ```ignore
 /// omuzaki_char_api::register_fact!(HatFact);
