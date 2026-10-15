@@ -217,3 +217,26 @@ fn a_cut_cost_marks_its_cut_when_a_part_ends_at_the_edge_of_the_room() {
     assert!(shown.iter().any(|p| p.text == "\u{2026}"), "the cut is marked with an ellipsis: {shown:?}");
     assert!(shown.iter().all(|p| p.text != "1.2 GB"), "nothing after the cut is drawn");
 }
+
+#[test]
+fn a_tooltip_dismissed_with_escape_comes_back_on_the_next_focus() {
+    let shows_whole = |h: &egui_kittest::Harness<'_>| painted(h.output()).iter().any(|p| p.text == NAME70 && !p.elided);
+    let mut h = panel(|ui| {
+        ui.add(Button::new("Approve"));
+        ui.add(GateChip::failed(NAME70, "0.81", "0.85"));
+    });
+    // Tab to the button, then to the gate chip, which shows its whole name on focus.
+    press(&mut h, Modifiers::NONE, Key::Tab);
+    press(&mut h, Modifiers::NONE, Key::Tab);
+    h.run_steps(8);
+    assert!(shows_whole(&h), "focus shows the whole name");
+    press(&mut h, Modifiers::NONE, Key::Escape);
+    h.run_steps(8);
+    assert!(!shows_whole(&h), "Escape dismisses the tooltip");
+    // Tab away (round to the button) and back to the chip: the dismissal must not outlive the focus it belonged to.
+    press(&mut h, Modifiers::NONE, Key::Tab);
+    h.run_steps(8);
+    press(&mut h, Modifiers::NONE, Key::Tab);
+    h.run_steps(8);
+    assert!(shows_whole(&h), "the next focus shows the tooltip again");
+}

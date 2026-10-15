@@ -5,7 +5,9 @@
 
 use std::borrow::Cow;
 
-use egui::{Align2, Rect, Response, Sense, Stroke, StrokeKind, Ui, Widget, WidgetInfo, WidgetType, pos2, vec2};
+use egui::{
+    Align2, EventFilter, Rect, Response, Sense, Stroke, StrokeKind, Ui, Widget, WidgetInfo, WidgetType, pos2, vec2,
+};
 
 use crate::ds::a11y;
 use crate::ds::contrast::{Rule, Table};
@@ -31,9 +33,23 @@ fn label_room(fit: f32, fixed: f32) -> f32 {
 }
 
 /// Completes a cut label with its tooltip: the whole text, shown on hover or on keyboard focus. `whole` builds it only
-/// then, so a chip that is neither hovered nor focused allocates nothing.
+/// when the tooltip is shown, so a chip that stays idle allocates nothing.
+///
+/// `tip` is also called on the frame the chip stops being active: that call is what clears an Esc dismissal, and an
+/// idle chip would otherwise never make it, so the tooltip would stay hidden on the next focus.
 fn cut_tip<'a>(response: Response, cut: bool, whole: impl FnOnce() -> Cow<'a, str>) -> Response {
-    if cut && (response.hovered() || response.has_focus()) {
+    let active = cut && (response.hovered() || response.has_focus());
+    if cut && response.has_focus() {
+        // Escape is the tooltip's to dismiss, so a focused cut chip keeps its focus when Escape is pressed.
+        let keep_on_escape = EventFilter { escape: true, ..EventFilter::default() };
+        response.ctx.memory_mut(|m| m.set_focus_lock_filter(response.id, keep_on_escape));
+    }
+    let key = response.id.with("cut_tip_active");
+    let was_active = response.ctx.data(|d| d.get_temp::<bool>(key)).unwrap_or(false);
+    if active != was_active {
+        response.ctx.data_mut(|d| d.insert_temp(key, active));
+    }
+    if active || was_active {
         let whole = whole();
         response.tip(Tip::new(&whole))
     } else {
@@ -77,7 +93,7 @@ impl ActorKind {
 
 /// "● Designer": a circle with the initial plus the name. Always includes the name.
 ///
-/// A name too long for the room the layout gives ends in an ellipsis. The tooltip, on hover or keyboard focus, gives the whole name.
+/// It caps its width at the room the layout gives, cuts a long name with an ellipsis, and its tooltip shows the whole name on hover or keyboard focus.
 #[derive(Clone, Copy, Debug)]
 #[must_use = "a chip does nothing until it is added to a Ui"]
 pub struct ActorChip<'a> {
@@ -134,7 +150,7 @@ impl Widget for ActorChip<'_> {
 
 /// `edit:character`: what an op or an agent may touch. `broadcast`, `publish`, `spend`, `native`, `input` and `process` get a warning icon.
 ///
-/// A name too long for the room the layout gives ends in an ellipsis. The tooltip, on hover or keyboard focus, gives the whole name.
+/// It caps its width at the room the layout gives, cuts a long name with an ellipsis, and its tooltip shows the whole name on hover or keyboard focus.
 #[derive(Clone, Copy, Debug)]
 #[must_use = "a chip does nothing until it is added to a Ui"]
 pub struct ScopeBadge<'a> {
@@ -201,7 +217,7 @@ impl Widget for ScopeBadge<'_> {
 
 /// `~40 s · 1.2 GB · $0.12`: what running an op will cost, before it runs (P2). Omit it when the cost is trivial.
 ///
-/// A cost too long for the room the layout gives is cut at the end with an ellipsis. The tooltip, on hover or keyboard focus, gives the whole cost.
+/// It caps its width at the room the layout gives, cuts a long cost with an ellipsis, and its tooltip shows the whole cost on hover or keyboard focus.
 #[derive(Clone, Copy, Debug)]
 #[must_use = "a chip does nothing until it is added to a Ui"]
 pub struct CostChip<'a> {
@@ -329,7 +345,7 @@ fn pill(ui: &Ui, ds: &Ds, rect: egui::Rect, status: Status, hover: f32) -> egui:
 
 /// A status as an icon, a word and a colour: "✓ Connected".
 ///
-/// A text too long for the room the layout gives ends in an ellipsis. The tooltip, on hover or keyboard focus, gives the whole text.
+/// It caps its width at the room the layout gives, cuts a long text with an ellipsis, and its tooltip shows the whole text on hover or keyboard focus.
 #[derive(Clone, Copy, Debug)]
 #[must_use = "a chip does nothing until it is added to a Ui"]
 pub struct StatusChip<'a> {
@@ -383,7 +399,7 @@ impl Widget for StatusChip<'_> {
 
 /// A measured number next to what it checks: `✓ likeness 0.88` or `▲ likeness 0.81 < 0.85`. Click opens the evidence.
 ///
-/// A metric too long for the room the layout gives ends in an ellipsis; the value and the limit stay whole. The tooltip, on hover or keyboard focus, gives the whole metric.
+/// It caps its width at the room the layout gives and cuts a long metric with an ellipsis (the value and the limit stay whole); its tooltip shows the whole metric on hover or keyboard focus.
 #[derive(Clone, Copy, Debug)]
 #[must_use = "a chip does nothing until it is added to a Ui"]
 pub struct GateChip<'a> {
