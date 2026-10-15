@@ -190,9 +190,16 @@ fn lineage_problems(manifest: &ModelManifest) -> Vec<String> {
         ));
     }
     for link in lineage {
-        let named = format!("model `{id}`: lineage link `{}` ({})", link.name, kind_name(link.kind));
+        let shown: String = link
+            .name
+            .chars()
+            .map(|c| if matches!(c, ' '..='~') { c.to_string() } else { format!("\\u{{{:x}}}", u32::from(c)) })
+            .collect();
+        let named = format!("model `{id}`: lineage link `{shown}` ({})", kind_name(link.kind));
         if link.name.trim().is_empty() {
             out.push(format!("model `{id}`: a {} lineage link has a blank `name`", kind_name(link.kind)));
+        } else if !link.name.chars().all(|c| matches!(c, ' '..='~')) {
+            out.push(format!("{named} has a `name` with characters other than printable ASCII"));
         }
         let url = link.url.as_deref().filter(|url| !url.trim().is_empty());
         match url {
@@ -226,12 +233,14 @@ fn kind_name(kind: LineageKind) -> &'static str {
 }
 
 /// Whether `url` is `https://`, then a host of two or more dot-separated labels of letters, digits and inner `-`, an
-/// optional `:port` (1 to 65535), and nothing or a `/`, `?` or `#` and the rest. Userinfo and IPv6 literals fail.
+/// optional `:port` (1 to 65535), and nothing or a `/`, `?` or `#` and the rest. It may hold only printable ASCII
+/// without spaces (0x21 to 0x7E). Userinfo and IPv6 literals fail.
 fn is_https_url(url: &str) -> bool {
-    let Some(rest) = url.strip_prefix("https://") else { return false };
-    if url.contains(char::is_whitespace) {
+    // Printable ASCII without spaces (0x21 to 0x7E), checked first: any other character anywhere fails.
+    if !url.chars().all(|c| matches!(c, '!'..='~')) {
         return false;
     }
+    let Some(rest) = url.strip_prefix("https://") else { return false };
     let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     let (host, port) = match rest[..end].split_once(':') {
         Some((host, port)) => (host, Some(port)),
@@ -1033,6 +1042,48 @@ url = "https://data.example/tiny-corpus"
         let text = manifest("tiny", HTTPS).replace("CC0-1.0", "Apache-2.0 WITH LLVM-exception");
         let found = problems(FILE, &text, &register(), &good_source("tiny"));
         assert!(found.is_empty(), "{found:?}");
+    }
+
+    /// `value` as the inside of a TOML basic string, with every character other than printable ASCII escaped, so a
+    /// control or non-ASCII character reaches the gate as a value instead of breaking the TOML.
+    fn toml_escaped(value: &str) -> String {
+        value
+            .chars()
+            .map(|c| match c {
+                ' '..='~' if c != '"' && c != '\\' => c.to_string(),
+                _ => format!("\\u{:04X}", u32::from(c)),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_lineage_url_holds_only_printable_ascii_without_spaces() {
+        let bad = [
+            " https://data.example/x",
+            "https://data.example/x ",
+            "https://data.example/x\n",
+            "https://data.example/x\u{0}",
+            "https://data.example/\u{7f}",
+            "https://data.example/é",
+            "https://dаta.example/x",
+        ];
+        for url in bad {
+            assert!(!is_https_url(url), "{url:?}");
+            let text = manifest("tiny", HTTPS).replace("https://data.example/tiny-corpus", &toml_escaped(url));
+            let found = problems(FILE, &text, &register(), &good_source("tiny"));
+            assert_eq!(found.len(), 1, "{url:?}: {found:?}");
+            assert!(found[0].contains("not an `https://` URL"), "{found:?}");
+        }
+    }
+
+    #[test]
+    fn a_lineage_name_is_printable_ascii() {
+        for name in ["Tiny\u{0}corpus", "Tiny\u{7f}", "Tiny corpus é", "Tiny\ncorpus"] {
+            let text = manifest("tiny", HTTPS).replace("Tiny corpus 1", &toml_escaped(name));
+            let found = problems(FILE, &text, &register(), &good_source("tiny"));
+            assert_eq!(found.len(), 1, "{name:?}: {found:?}");
+            assert!(found[0].contains("printable ASCII") && !found[0].contains(name), "{found:?}");
+        }
     }
 
     #[test]
