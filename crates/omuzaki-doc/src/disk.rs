@@ -269,13 +269,15 @@ struct Hooks<'a> {
     verified: &'a dyn Fn(),
     /// After the swap is undone, before the file that was exposed at the target is preserved.
     undone: &'a dyn Fn(),
+    /// After a deletion renamed the target aside, before the file is checked.
+    quarantined: &'a dyn Fn(),
 }
 
 fn noop() {}
 
 impl Default for Hooks<'_> {
     fn default() -> Self {
-        Self { staged: &noop, backed_up: &noop, swapped: &noop, verified: &noop, undone: &noop }
+        Self { staged: &noop, backed_up: &noop, swapped: &noop, verified: &noop, undone: &noop, quarantined: &noop }
     }
 }
 
@@ -677,32 +679,42 @@ fn rename_no_replace(_: &Path, to: &Path) -> Result<bool, StoreError> {
 }
 
 /// Deletes the file for the document path `segs` if its bytes are `expected`, then any folders it leaves empty (never
-/// `dir` itself); false if it holds anything else, in which case nothing is touched. A file that is already gone is
-/// fine.
+/// `dir` itself); false if it holds anything else, in which case nothing is lost. A file that is already gone is fine.
 ///
 /// Like a replacement, a deletion keeps what it removes: the file is backed up first into the replaced folder (see
 /// [`replace_checked`], step 3), so an editor that still holds it open can't lose what it writes there, and pruning
-/// deletes the backup later only while it is unchanged. The bytes are hashed before the backup is made; a change
-/// between that check and the unlink is a race of microseconds, and for a linked backup an in-place edit in it lands
-/// in the kept entry.
+/// deletes the backup later only while it is unchanged.
+///
+/// The name is never unlinked directly, because an editor's atomic save may land between the backup and the unlink
+/// and the unlink would delete its new file. Instead the target is renamed to a unique hidden name beside it, which
+/// is atomic and takes whatever file is there at that instant, and that file is checked against the backup (same
+/// inode and the hashed bytes, see [`Held::is_file_at`]). If it is the backed-up file it is deleted. If not, it is
+/// the editor's: it is renamed back, or, if the name has been taken again, moved into the replaced folder as
+/// `.displaced`, and the result is false (a conflict) either way.
 pub(crate) fn remove_checked(dir: &Path, segs: &[String], expected: Option<ContentHash>) -> Result<bool, StoreError> {
+    remove_checked_with(dir, segs, expected, &Hooks::default())
+}
+
+fn remove_checked_with(
+    dir: &Path,
+    segs: &[String],
+    expected: Option<ContentHash>,
+    hooks: &Hooks<'_>,
+) -> Result<bool, StoreError> {
     let path = file_path(dir, segs);
     refuse_links(dir, &path)?;
     match back_up(dir, &path, expected)? {
         Backup::Mismatch => return Ok(false),
         Backup::Absent => {}
-        Backup::Held(held) => match fs::remove_file(&path) {
-            Ok(()) => {
-                if held.linked.is_none() {
-                    sync_folder(held.path.parent())?;
-                }
+        Backup::Held(held) => {
+            (hooks.backed_up)();
+            if !unlink_held(dir, &path, &held, hooks)? {
+                return Ok(false);
             }
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-            Err(e) => {
-                drop(fs::remove_file(&held.path));
-                return Err(StoreError::io(&path, e));
+            if held.linked.is_none() {
+                sync_folder(held.path.parent())?;
             }
-        },
+        }
     }
     let mut folder = path.parent();
     while let Some(f) = folder.filter(|f| *f != dir) {
@@ -713,6 +725,32 @@ pub(crate) fn remove_checked(dir: &Path, segs: &[String], expected: Option<Conte
         folder = f.parent();
     }
     Ok(true)
+}
+
+/// Removes the file at `path` if it is the backed-up one; false if another file was there, which is kept.
+fn unlink_held(dir: &Path, path: &Path, held: &Held, hooks: &Hooks<'_>) -> Result<bool, StoreError> {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let mut name = std::ffi::OsString::from(".");
+    name.push(path.file_name().unwrap_or_default());
+    name.push(format!(".{}-{}.del", std::process::id(), COUNTER.fetch_add(1, Ordering::Relaxed)));
+    let quarantine = path.with_file_name(name);
+    match fs::rename(path, &quarantine) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(true),
+        Err(e) => {
+            drop(fs::remove_file(&held.path));
+            return Err(StoreError::io(path, e));
+        }
+    }
+    (hooks.quarantined)();
+    if held.is_file_at(&quarantine) {
+        return fs::remove_file(&quarantine).map(|()| true).map_err(|e| StoreError::io(&quarantine, e));
+    }
+    // An editor's file: put it back unless something took the name again, and never delete it.
+    if !place_no_replace(&quarantine, path).unwrap_or(false) {
+        preserve(dir, &quarantine)?;
+    }
+    Ok(false)
 }
 
 #[cfg(test)]
@@ -1291,5 +1329,43 @@ mod tests {
         assert!(remove_checked(d, &segs, Some(ContentHash::of(b"x = 1\n"))).unwrap());
         assert!(!d.join("a.toml").exists());
         assert_eq!(texts(&kept(d)), ["x = 1\n"]);
+    }
+
+    #[test]
+    fn a_save_between_the_backup_and_the_deletion_survives_and_is_a_conflict() {
+        let tmp = TempDir::new().unwrap();
+        let d = tmp.path();
+        write(d, "a.toml", "x = 1\n");
+        let path = d.join("a.toml");
+        let save = || {
+            fs::write(d.join(".a.toml.editor"), "theirs = 2\n").unwrap();
+            fs::rename(d.join(".a.toml.editor"), &path).unwrap();
+        };
+        let hooks = Hooks { backed_up: &save, ..Hooks::default() };
+        let segs = ["a".to_owned()];
+        assert!(!remove_checked_with(d, &segs, Some(ContentHash::of(b"x = 1\n")), &hooks).unwrap());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "theirs = 2\n");
+        assert_eq!(texts(&kept(d)), ["x = 1\n"]);
+        let names: Vec<_> = fs::read_dir(d).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert!(names.iter().all(|n| !n.to_string_lossy().ends_with(".del")), "{names:?}");
+    }
+
+    #[test]
+    fn a_name_taken_again_during_a_conflicting_deletion_keeps_both_files() {
+        let tmp = TempDir::new().unwrap();
+        let d = tmp.path();
+        write(d, "a.toml", "x = 1\n");
+        let path = d.join("a.toml");
+        let swap = || {
+            fs::remove_file(&path).unwrap();
+            fs::write(&path, "theirs = 2\n").unwrap();
+        };
+        let retake = || fs::write(&path, "newer = 3\n").unwrap();
+        let hooks = Hooks { backed_up: &swap, quarantined: &retake, ..Hooks::default() };
+        let segs = ["a".to_owned()];
+        assert!(!remove_checked_with(d, &segs, Some(ContentHash::of(b"x = 1\n")), &hooks).unwrap());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "newer = 3\n");
+        let items = kept(d);
+        assert!(items.iter().any(|(n, t)| n.ends_with(".displaced") && t == "theirs = 2\n"), "{items:?}");
     }
 }
