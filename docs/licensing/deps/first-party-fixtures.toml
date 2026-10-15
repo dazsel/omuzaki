@@ -11,6 +11,7 @@ paths = [
   "crates/omuzaki-ai-ort/tests/fixtures/custom_op.onnx",
   "crates/omuzaki-ai-ort/tests/fixtures/external_data.onnx",
   "crates/omuzaki-ai-ort/tests/fixtures/identity.onnx",
+  "crates/omuzaki-ai-ort/tests/fixtures/identity_f16.onnx",
   "crates/omuzaki-ai-ort/tests/fixtures/long_names.onnx",
   "crates/omuzaki-ai-ort/tests/fixtures/many.onnx",
   "crates/omuzaki-ai-ort/tests/fixtures/stage_a.onnx",

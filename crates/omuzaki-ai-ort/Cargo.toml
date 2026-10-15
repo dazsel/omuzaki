@@ -11,7 +11,9 @@ repository.workspace = true
 [dependencies]
 # The provider features only compile ort's CUDA / DirectML / Core ML / WebGPU option types; `load-dynamic` (the workspace
 # setting) means no ONNX Runtime is linked or downloaded at build time.
-ort = { workspace = true, features = ["cuda", "directml", "coreml", "webgpu"] }
+# `half` makes `ort` carry float16 tensors; this crate names the same type to move their raw bits.
+ort = { workspace = true, features = ["cuda", "directml", "coreml", "webgpu", "half"] }
+half = { version = "2.1", default-features = false }
 tracing.workspace = true
 omuzaki-ai-api = { path = "../omuzaki-ai-api" }
 omuzaki-ai-native = { path = "../omuzaki-ai-native" }
