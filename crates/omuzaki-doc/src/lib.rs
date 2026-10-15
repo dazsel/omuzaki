@@ -64,6 +64,7 @@
 
 mod disk;
 mod error;
+pub mod journal;
 mod layout;
 mod lock;
 mod migrate;
