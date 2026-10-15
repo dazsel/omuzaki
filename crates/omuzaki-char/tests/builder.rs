@@ -22,7 +22,7 @@ use omuzaki_char_api::{
     FitFact, HeadFact, JointRef, Last, MaterialName, MaterialSpec, MeshData, PartCategory, PartDef, PartId, PartKind,
     PartKindId, PartMesh, PartMeta, PartOutput, PartRuntime, PoseSource, Publishes, Quality, RecolourCtx, Recoloured,
     RegistryBuilder, RuntimeCost, StepCtx, TextureData, TextureName, VariantId, VariantSet, WeightBrush, find_kind,
-    resolve_variant,
+    part_rng, resolve_variant,
 };
 use omuzaki_char_mock::{MemAssets, RestPose, mock_character, mock_variants};
 use omuzaki_core::colour::Colour;
@@ -732,11 +732,24 @@ omuzaki_char_api::register_fact!(NoteFact);
 
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
+#[allow(clippy::struct_excessive_bools)] // each flag picks one fact the conformance tests exercise
 struct NoterParams {
     /// Publish the red channel of `tint` instead of 7: a fact that depends on the palette (what the kind does by default).
     from_palette: bool,
     /// Publish how many entries the palette has: a fact that depends on the slot set, not on any colour.
     from_len: bool,
+    /// Publish 1 while the palette still has the slot `named` names, else 0: a fact that depends on a referenced slot
+    /// being present. `named` is only read as a reference (it is never resolved as a colour), so the build survives
+    /// the slot's removal.
+    from_slot: bool,
+    /// A slot reference (`@slot`) for `from_slot` to look for.
+    named: String,
+    /// Fail to build when the palette has more than this many entries: a kind that breaks when a slot is added.
+    slot_limit: usize,
+    /// Fail to build while the palette has the slot `named` names: a kind that breaks when a slot of that name appears.
+    fails_when_named: bool,
+    /// Publish `tint`'s red channel only when the part's first random draw is under 0.2: a fact that depends on the seed.
+    gated: bool,
     /// Publish `tint`'s red channel only in an offline build.
     offline_only: bool,
     tint: ColourRef,
@@ -747,6 +760,11 @@ impl Default for NoterParams {
         Self {
             from_palette: true,
             from_len: false,
+            from_slot: false,
+            named: String::new(),
+            slot_limit: usize::MAX,
+            fails_when_named: false,
+            gated: false,
             offline_only: false,
             tint: ColourRef::slot_or("outfit", ColourRef::rgb(200, 200, 200)),
         }
@@ -768,9 +786,25 @@ impl PartKind for Noter {
     }
 
     fn build(params: &NoterParams, ctx: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
+        let named_present =
+            params.named.strip_prefix('@').is_some_and(|name| ctx.palette.0.keys().any(|s| s.as_str() == name));
+        if params.fails_when_named && named_present {
+            return Err(ctx.fail(format!("the palette has the slot '{}'", params.named)));
+        }
+        if ctx.palette.0.len() > params.slot_limit {
+            return Err(ctx.fail(format!(
+                "the palette has {} entries, more than {}",
+                ctx.palette.0.len(),
+                params.slot_limit
+            )));
+        }
         let tint = ctx.colour(&params.tint)?;
         let note = if params.from_len {
             u8::try_from(ctx.palette.0.len()).unwrap_or(u8::MAX)
+        } else if params.from_slot {
+            u8::from(named_present)
+        } else if params.gated {
+            if ctx.rng.next_f32() < 0.2 { tint.r } else { 7 }
         } else if params.offline_only {
             if ctx.quality == Quality::Offline { tint.r } else { 7 }
         } else if params.from_palette {
@@ -919,6 +953,79 @@ fn a_palette_independent_fact_gives_the_same_cached_build_after_a_palette_change
     let t = same_as_reference("after a palette change", &builder, &def, &options, &services).unwrap();
     assert!(built(&t).contains("noter"), "the publisher names the slot: {:?}", built(&t));
     assert!(!built(&t).contains("reader") && !recoloured(&t).contains("reader"), "Q6: the reader is served");
+}
+
+#[test]
+fn a_fact_read_only_at_some_seeds_is_caught_by_the_seed_sweep_and_names_the_seed() {
+    // Seed 0 draws 0.2 or more, so the palette is not read there; the first swept seed (0 + the step) draws under 0.2.
+    let mut def = noted_with(json!({ "gated": true }));
+    def.seed = 0;
+    assert!(part_rng(def.seed, &pid("noter")).next_f32() >= 0.2, "the base seed must not show it");
+    let probes = conformance::Probes::default().fact::<NoteFact>();
+    let report = conformance::check(&def, Some(&["t-noter"]), &probes, &BuildServices::default());
+    let violation = only_violation(&report);
+    let swept = 0x9e37_79b9_u32;
+    assert!(violation.contains("fact 't-note' depends on the palette"), "{violation}");
+    assert!(violation.contains(&format!("seed {swept}")), "{violation}");
+}
+
+#[test]
+fn a_fact_that_depends_on_a_referenced_slot_being_present_is_caught_under_the_removal_alternative() {
+    // The part names `accent` without resolving it, and no other part needs it: removing it changes the fact, though no
+    // colour and no slot count does.
+    let mut def =
+        noted_with(json!({ "from_palette": false, "from_slot": true, "named": "@accent", "tint": "#102030" }));
+    def.palette.0.insert(slot("accent"), Colour::rgb(1, 2, 3));
+    let probes = conformance::Probes::default().fact::<NoteFact>();
+    let report = conformance::check(&def, Some(&["t-noter"]), &probes, &BuildServices::default());
+    let violation = only_violation(&report);
+    assert!(
+        violation.contains("kind 't-noter'") && violation.contains("fact 't-note' depends on the palette"),
+        "{violation}"
+    );
+    assert!(violation.contains("alternative"), "{violation}");
+}
+
+#[test]
+fn a_build_that_fails_when_the_palette_gains_a_slot_is_a_violation_naming_the_kind_and_alternative() {
+    // The limit is the base's own entry count: only the extra-slot alternative goes over it.
+    let limit = mock_character().unwrap().palette.0.len();
+    let def = noted_with(json!({ "from_palette": false, "slot_limit": limit }));
+    let probes = conformance::Probes::default().fact::<NoteFact>();
+    let report = conformance::check(&def, Some(&["t-noter"]), &probes, &BuildServices::default());
+    let violation = only_violation(&report);
+    assert!(violation.contains("kind 't-noter'") && violation.contains("does not build"), "{violation}");
+    assert!(violation.contains("alternative") && violation.contains("more than"), "{violation}");
+}
+
+#[test]
+fn a_part_of_another_kind_that_fails_when_a_slot_is_added_leaves_the_checked_kind_unreached_not_clean() {
+    // The noter (kind `t-noter`) fails with one more slot; the check runs only the reader, so the failure is another
+    // kind's. The reader must come back unreached, not pass with nothing compared.
+    let limit = mock_character().unwrap().palette.0.len();
+    let mut def = noted_with(json!({ "from_palette": false, "slot_limit": limit }));
+    add(&mut def, "reader", "t-note-reader", 40, json!({ "publish": false }));
+    let probes = conformance::Probes::default().fact::<NoteFact>();
+    let report = conformance::check(&def, Some(&["t-note-reader"]), &probes, &BuildServices::default());
+    assert!(report.violations.is_empty(), "{report:?}");
+    let [(kind, why)] = report.unreached.as_slice() else { panic!("one unreached kind expected: {report:?}") };
+    assert_eq!(kind, "t-note-reader");
+    assert!(why.contains("part 'noter' does not build") && why.contains("alternative"), "{why}");
+}
+
+#[test]
+fn the_extra_slot_is_never_a_name_a_part_references() {
+    // The part references the check's extra-slot name and fails while the palette has it. The extra slot must take
+    // another name: one a part names would enter that part's cache key, so its failure proves nothing and is no violation.
+    let def = noted_with(json!({
+        "from_palette": false,
+        "named": "@unused_probe_slot",
+        "fails_when_named": true,
+        "tint": "#102030",
+    }));
+    let probes = conformance::Probes::default().fact::<NoteFact>();
+    let report = conformance::check(&def, Some(&["t-noter"]), &probes, &BuildServices::default());
+    assert!(report.violations.is_empty() && report.unreached.is_empty(), "{report:?}");
 }
 
 /// A pose that never moves: the simulations here ignore it.

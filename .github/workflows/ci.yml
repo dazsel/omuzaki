@@ -114,6 +114,7 @@ jobs:
         run: |
           cargo xtask lint-deps
           cargo xtask lint-links
+          cargo xtask models
           cargo xtask lint-registers
           cargo xtask lint-ui-writes
           cargo xtask lint-crate-table

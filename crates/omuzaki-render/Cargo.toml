@@ -30,6 +30,10 @@ omuzaki-char-mock = { path = "../omuzaki-char-mock" }
 omuzaki-face-api = { path = "../omuzaki-face-api" }
 omuzaki-render-mock = { path = "../omuzaki-render-mock" }
 
+[[bench]]
+name = "morph"
+harness = false
+
 [lints]
 workspace = true
 

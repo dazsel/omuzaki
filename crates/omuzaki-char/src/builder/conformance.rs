@@ -9,9 +9,12 @@
 //! (`HeadFact` and `FitFact`, which hold trait objects with no equality, compare their `Debug` text). A kind that
 //! publishes something different under another palette is a [`Report::violations`] entry naming the kind, the part and the fact.
 //!
-//! The palettes also differ in their slot set (one with an extra slot, one without the slots no part names), and the
-//! whole comparison runs under each of the [`OPTIONS`] (both qualities, with and without `rig_export`), because a fact
-//! may depend on either; a violation names the options it showed under.
+//! The palettes also differ in their slot set (one with an extra slot, one without the slots no part names, and one
+//! without each slot a part names), and the whole comparison runs under each of the [`OPTIONS`] (both qualities, with
+//! and without `rig_export`), because a fact may depend on either; a violation names the options and the seed it showed
+//! under. The seeds ([`SEEDS`]) are swept with the base's palette against the first colour alternative only, so a fact
+//! that depends on the seed and on a slot set (or on a colour that is not the first alternative) is not caught at the
+//! other seeds: the known gap, accepted for the build cost.
 //!
 //! Facts are compared by [`Probes::registered`], read from the registry: a crate that adds a fact adds
 //! `register_fact_probe!` beside it, and [`Probes::unprobed_facts`] and [`Probes::probe_problems`] are what a gate test
@@ -37,8 +40,14 @@ use omuzaki_face_api::{Palette, PaletteSlot};
 use super::named_slots;
 
 /// How many palettes of other colours each kind is built under, besides the character's own: the inverted one and
-/// generated ones. [`alternatives`] adds one with an extra slot and, if the palette has unreferenced slots, one without them.
+/// generated ones. [`alternatives`] adds the slot-set ones after them.
 pub const PALETTES: usize = 5;
+/// How many seeds each base is checked at: its own, then `SEEDS - 1` more. A fact can read the palette only on the
+/// draws some seeds give (a kind that chooses through `ctx.rng` whether to), so one seed is not enough.
+pub const SEEDS: usize = 5;
+/// The step from one swept seed to the next: added, not `XORed`, since XOR with the same constant twice returns to the
+/// start, so a chain of two would check one seed twice.
+const SEED_STEP: u32 = 0x9e37_79b9;
 /// The build options every palette is compared under: both qualities, each with and without `rig_export`. (`variant`
 /// stays `None`: variants are resolved into the definition before a build.)
 pub const OPTIONS: [(Quality, bool); 4] =
@@ -48,7 +57,7 @@ const SEED: u64 = 0x1598_fac7;
 
 /// The id of the part the check adds for a kind the character has no part of (a suffix is added if `base` has it).
 const PROBE: &str = "palette-probe";
-/// The slot of the alternative that has one more entry than the palette (a suffix is added if the palette has it).
+/// The slot of the alternative that has one more entry than the palette (a suffix is added if the palette or a part names it).
 const EXTRA_SLOT: &str = "unused_probe_slot";
 
 /// How facts are compared, by fact name.
@@ -159,16 +168,19 @@ fn unused_name(base: &str, sep: char, taken: impl Fn(&str) -> bool) -> String {
 }
 
 /// The palettes [`check`] compares `palette` against: [`flipped`], then generated ones, each differing from `palette`
-/// in every channel of every entry; then one with an extra slot no part references, and (if `palette` has slots
-/// outside `referenced`) one without them, both with the colours of `palette`, so a fact that depends on the slot set
-/// is caught. The same for the same input.
+/// in every channel of every entry (the [`PALETTES`] colour alternatives). Then the slot-set ones, all with the colours
+/// of `palette`, so a fact that depends on the slot set is caught: one with an extra slot no part references; one
+/// without the slots no part names (when `palette` has any); and one per slot a part names, without only that slot.
+/// Only the palettes that remove slots may fail to build (see [`check_seed`]). The same for the same input.
 pub fn alternatives(palette: &Palette, referenced: &BTreeSet<String>) -> Vec<Palette> {
     let mut rng = Rng::new(SEED);
     let mut all = vec![flipped(palette)];
     while all.len() < PALETTES {
         all.push(Palette(palette.0.iter().map(|(slot, c)| (slot.clone(), other(*c, &mut rng))).collect()));
     }
-    let free = unused_name(EXTRA_SLOT, '_', |n| palette.0.keys().any(|s| s.as_str() == n));
+    // A name a part references is no free name: the slot would enter that part's cache key, and a build error on it
+    // would prove nothing about the cache.
+    let free = unused_name(EXTRA_SLOT, '_', |n| referenced.contains(n) || palette.0.keys().any(|s| s.as_str() == n));
     if let Ok(slot) = PaletteSlot::new(&free) {
         let mut extra = palette.clone();
         extra.0.insert(slot, Colour::rgb(1, 2, 3));
@@ -178,6 +190,11 @@ pub fn alternatives(palette: &Palette, referenced: &BTreeSet<String>) -> Vec<Pal
     fewer.0.retain(|slot, _| referenced.contains(slot.as_str()));
     if fewer != *palette {
         all.push(fewer);
+    }
+    for slot in palette.0.keys().filter(|slot| referenced.contains(slot.as_str())) {
+        let mut without = palette.clone();
+        without.0.remove(slot);
+        all.push(without);
     }
     all
 }
@@ -199,6 +216,11 @@ fn referenced_slots(def: &CharacterDef) -> BTreeSet<String> {
     named.into_iter().map(|s| s.trim_start_matches('@').to_owned()).collect()
 }
 
+/// The kind of `part` when it is one of `run_kinds`, the kinds a run checks.
+fn run_kind<'a>(def: &'a CharacterDef, part: &PartId, run_kinds: &[String]) -> Option<&'a str> {
+    def.parts.get(part).map(|p| p.kind.as_str()).filter(|k| run_kinds.iter().any(|w| w == k))
+}
+
 /// The names of the facts `publishes` holds (its `Debug` is a map from fact name to value count).
 fn fact_names(publishes: &Publishes) -> Vec<String> {
     let text = format!("{publishes:?}");
@@ -211,22 +233,31 @@ fn fact_names(publishes: &Publishes) -> Vec<String> {
 /// What every part of a character published, in build order.
 type PartsPublished = [(PartId, Publishes)];
 
+/// A build that failed: the part it failed on (none when the plan itself fails), and why.
+type BuildFailure = (Option<PartId>, String);
+
 /// What every part of `def` published, in build order, built with `quality` and `rig_export`.
 fn publishes_of(
     def: &CharacterDef,
     quality: Quality,
     rig_export: bool,
     services: &BuildServices,
-) -> Result<Vec<(PartId, Publishes)>, String> {
+) -> Result<Vec<(PartId, Publishes)>, BuildFailure> {
     let options = BuildOptions { quality, rig_export, ..BuildOptions::default() };
     let mut published = Published::default();
     let mut all = Vec::new();
-    for part in plan(def).map_err(|e| e.to_string())? {
-        let output = build_part(def, &part, &options, services, &published).map_err(|e| format!("{part}: {e}"))?;
-        published.absorb(&part, output.publishes.clone()).map_err(|e| e.to_string())?;
+    for part in plan(def).map_err(|e| (None, e.to_string()))? {
+        let output = build_part(def, &part, &options, services, &published)
+            .map_err(|e| (Some(part.clone()), format!("{part}: {e}")))?;
+        published.absorb(&part, output.publishes.clone()).map_err(|e| (Some(part.clone()), e.to_string()))?;
         all.push((part, output.publishes));
     }
     Ok(all)
+}
+
+/// The seeds a base at `seed` is checked at: `seed`, then each one [`SEED_STEP`] on from the last.
+fn seeds_of(seed: u32) -> impl Iterator<Item = u32> {
+    std::iter::successors(Some(seed), |last| Some(last.wrapping_add(SEED_STEP))).take(SEEDS)
 }
 
 /// The kinds a check is asked for: `kinds`, or every registered kind.
@@ -308,40 +339,72 @@ pub fn check(base: &CharacterDef, kinds: Option<&[&str]>, probes: &Probes, servi
     report
 }
 
-/// Builds `def` under every option set and alternative palette and reports what `run_kinds` published differently.
+/// Builds `def` at each of its [`SEEDS`] under every option set and alternative palette and reports what `run_kinds`
+/// published differently. A base that doesn't build stops the run: its kinds are unreached, not clean.
+///
+/// The base seed gets every alternative. The other seeds get only the first colour alternative: a slot-set dependence
+/// does not depend on the seed, so the rest of the slot-set palettes need one seed only (the cost is in the module doc).
 fn check_run(def: &CharacterDef, run_kinds: &[String], probes: &Probes, services: &BuildServices) -> Report {
     let mut report = Report::default();
     let alternatives = alternatives(&def.palette, &referenced_slots(def));
+    for (i, seed) in seeds_of(def.seed).enumerate() {
+        let mut seeded = def.clone();
+        seeded.seed = seed;
+        let these = if i == 0 { &alternatives[..] } else { &alternatives[..alternatives.len().min(1)] };
+        if let Err(why) = check_seed(&seeded, run_kinds, these, probes, services, &mut report) {
+            report.unreached.extend(run_kinds.iter().map(|k| (k.clone(), why.clone())));
+            break;
+        }
+    }
+    report
+}
+
+/// Adds to `report` what `run_kinds` published differently between `def`'s own palette and each of `alternatives`, under
+/// every option set, at `def`'s seed. `Err` says why `def` itself doesn't build under some option set.
+fn check_seed(
+    def: &CharacterDef,
+    run_kinds: &[String],
+    alternatives: &[Palette],
+    probes: &Probes,
+    services: &BuildServices,
+    report: &mut Report,
+) -> Result<(), String> {
     for (quality, rig_export) in OPTIONS {
-        let under_own = match publishes_of(def, quality, rig_export, services) {
-            Ok(own) => own,
-            Err(e) => {
-                let why = format!("does not build ({quality:?}, rig_export {rig_export}): {e}");
-                report.unreached.extend(run_kinds.iter().map(|k| (k.clone(), why.clone())));
-                break;
-            }
-        };
-        let options = format!("{quality:?} quality, rig_export {rig_export}");
+        let options = format!("{quality:?} quality, rig_export {rig_export}, seed {}", def.seed);
+        let under_own = publishes_of(def, quality, rig_export, services).map_err(|(_, e)| {
+            format!("does not build ({quality:?}, rig_export {rig_export}, seed {}): {e}", def.seed)
+        })?;
         for (n, palette) in alternatives.iter().enumerate() {
             let mut changed = def.clone();
             changed.palette = palette.clone();
             match publishes_of(&changed, quality, rig_export, services) {
                 Ok(under_other) => {
-                    compare(def, run_kinds, (&under_own, &under_other), (n, &options), probes, &mut report);
+                    compare(def, run_kinds, (&under_own, &under_other), (n, &options), probes, report);
                 }
-                // The extra-slot and fewer-slot palettes are the only ones with a different slot set: a character
-                // that needs a slot they lack hides a reference from the parameters, and the colour palettes
-                // (every slot present) stay the judge of the rest.
-                Err(_) if n >= PALETTES => {}
-                Err(e) => {
-                    let why = format!("does not build ({options}): {e}");
-                    report.unreached.extend(run_kinds.iter().map(|k| (k.clone(), why.clone())));
-                    break;
+                // A palette with fewer slots may lack one a part needs, so its build can fail where a fact would be
+                // read. That is the known gap of a removal alternative (no fact is compared at it); every colour
+                // alternative still compares the rest, since it keeps every slot.
+                Err(_) if palette.0.len() < def.palette.0.len() => {}
+                // An extra slot is in no part's cache key, so a part that fails when it appears would be served its
+                // old output. A part of a checked kind is a violation; a part of another kind fails the run instead,
+                // so this run's kinds are listed unreached rather than passing with nothing compared.
+                Err((Some(part), e)) if palette.0.len() > def.palette.0.len() => {
+                    let why = format!(
+                        "part '{part}' does not build under alternative {n}, which adds a slot ({options}): {e}"
+                    );
+                    let Some(kind) = run_kind(def, &part, run_kinds) else {
+                        return Err(why);
+                    };
+                    let prefix = format!("kind '{kind}': part '{part}' does not build");
+                    if !report.violations.iter().any(|v| v.starts_with(&prefix)) {
+                        report.violations.push(format!("kind '{kind}': {why}"));
+                    }
                 }
+                Err((_, e)) => return Err(format!("does not build ({options}): {e}")),
             }
         }
     }
-    report
+    Ok(())
 }
 
 /// [`check`] against several bases (the kit characters that have the parts different kinds need): a kind counts as reached
@@ -382,7 +445,8 @@ fn compare(
     report: &mut Report,
 ) {
     for ((part, under_a), (_, under_b)) in a.iter().zip(b) {
-        let Some(kind) = def.parts.get(part).map(|p| p.kind.as_str()).filter(|k| kinds.iter().any(|w| w == k)) else {
+        // A part of another kind is another run's to check.
+        let Some(kind) = run_kind(def, part, kinds) else {
             continue;
         };
         // Reported once per part and fact, however many palettes show it.
@@ -399,6 +463,7 @@ fn compare(
                     "publishes {under_a:?} under the character's palette and {under_b:?} under alternative {n} ({options})"
                 ),
             );
+            // The violation names the part; its facts are not compared on top of it.
             continue;
         }
         for name in fact_names(under_a) {
