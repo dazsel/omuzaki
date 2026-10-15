@@ -33,8 +33,10 @@ pub(super) const JOIN_GRACE: Duration = Duration::from_millis(100);
 // for it is 200 ms.
 const _: () = assert!(JOIN_GRACE.as_millis() + 2 * POLL.as_millis() <= 200);
 
-/// How long a thread blocks on an empty channel to warm up its blocking path (see the tracker thread's loop).
-const WARM_UP: Duration = Duration::from_micros(1);
+/// How long a thread blocks on an empty channel to warm up its blocking path (see the tracker thread's loop). std checks
+/// the deadline before it first blocks, so the wait must outlast a thread being descheduled or page-faulting there
+/// (a microsecond did not, on a loaded machine); a couple of milliseconds, once per start, does.
+const WARM_UP: Duration = Duration::from_millis(2);
 
 /// Width of one latency bucket, in microseconds.
 const BUCKET_US: u64 = 100;
@@ -183,7 +185,7 @@ impl Worker {
             Box::new(move || {
                 let mut tracker = cell.lock().unwrap_or_else(PoisonError::into_inner).take()?;
                 // The first time a thread blocks on a channel, std allocates (a per-thread wait context and the
-                // channel's list of waiters). Block once now, for a microsecond, so that happens before the first
+                // channel's list of waiters). Block once now, for [`WARM_UP`], so that happens before the first
                 // frame whatever the timing, and the steady state allocates nothing.
                 let mut pending = match job_rx.recv_timeout(WARM_UP) {
                     Ok(job) => Some(job),
@@ -339,7 +341,7 @@ impl Run {
         let (mut device_clock, mut scratch) = (ClockMap::new(), PreviewFrame::default());
         let mut camera_seq = None::<u64>;
         let mut accepted = 0_u64;
-        // The same warm-up as the tracker's thread: nothing is waiting yet, so this times out at once.
+        // The same warm-up as the tracker's thread: nothing is waiting yet, so this times out after [`WARM_UP`].
         worker.done.recv_timeout(WARM_UP).ok();
         let fail = |why: TrackError| *error.lock().unwrap_or_else(PoisonError::into_inner) = Some(why);
         'frames: while !stop.load(Ordering::Relaxed) {
