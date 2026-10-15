@@ -4145,6 +4145,7 @@ name = "omuzaki-test-face"
 version = "0.0.0"
 dependencies = [
  "image",
+ "omuzaki-anim-api",
  "omuzaki-core",
  "omuzaki-face",
  "omuzaki-face-api",
@@ -4154,6 +4155,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+ "toml",
 ]
 
 [[package]]

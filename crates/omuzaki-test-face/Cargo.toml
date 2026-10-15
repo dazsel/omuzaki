@@ -22,6 +22,9 @@ omuzaki-test = { path = "../omuzaki-test" }
 
 [dev-dependencies]
 tempfile.workspace = true
+# The score templates' sheets read the library's score files (`score_template_sheets`).
+omuzaki-anim-api = { path = "../omuzaki-anim-api" }
+toml.workspace = true
 
 # The generator behind `build.rs`: the `link()` calls come from the dependencies' `registers` flags.
 [build-dependencies]
