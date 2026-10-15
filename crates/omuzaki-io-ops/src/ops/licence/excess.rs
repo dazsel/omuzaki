@@ -60,15 +60,16 @@ fn written(status: Commercial) -> String {
     .to_owned()
 }
 
-/// The fields on which `record` grants more than the join of the parts in `derived`, in the order the record lists
+/// The fields on which `record` grants more than the join of the parts and applications in `derived`, in the order the record lists
 /// them (private test, commercial status, attribution, then the flags of the file's terms). Empty when it grants no
 /// more.
 pub(crate) fn against_parts(record: &LicenceRecord, derived: &DerivedLicence) -> Vec<Excess> {
     let limit = &derived.record;
+    let contributions = derived.contributions();
     let mut found = Vec::new();
 
     if derived.private_test && !record.provenance.private_test {
-        let rows: Vec<&PartRow> = derived.parts.iter().filter(|r| r.private_test).collect();
+        let rows: Vec<&PartRow> = contributions.iter().filter(|r| r.private_test).collect();
         found.push(Excess {
             field: "provenance/private_test".to_owned(),
             record: "false".to_owned(),
@@ -85,7 +86,7 @@ pub(crate) fn against_parts(record: &LicenceRecord, derived: &DerivedLicence) ->
 
     let (kept, needed) = (&record.provenance.source, &limit.provenance.source);
     if source_rank(kept) < source_rank(needed) {
-        let rows: Vec<&PartRow> = derived.parts.iter().filter(|r| r.source.as_ref() == Some(needed)).collect();
+        let rows: Vec<&PartRow> = contributions.iter().filter(|r| r.source.as_ref() == Some(needed)).collect();
         found.push(Excess {
             field: "provenance/source".to_owned(),
             record: source_name(kept).to_owned(),
@@ -106,7 +107,7 @@ pub(crate) fn against_parts(record: &LicenceRecord, derived: &DerivedLicence) ->
             because: format!(
                 "the parts allow only `{}` (limited by {})",
                 written(allowed),
-                naming(&derived.parts.iter().filter(|r| r.commercial == allowed).collect::<Vec<_>>())
+                naming(&contributions.iter().filter(|r| r.commercial == allowed).collect::<Vec<_>>())
             ),
             waivable: true,
         });
@@ -116,7 +117,7 @@ pub(crate) fn against_parts(record: &LicenceRecord, derived: &DerivedLicence) ->
     let dropped: Vec<&String> = derived.attributions.iter().filter(|credit| !keeps_credit(kept, credit)).collect();
     if !dropped.is_empty() {
         let rows: Vec<&PartRow> =
-            derived.parts.iter().filter(|r| r.attribution.as_ref().is_some_and(|a| dropped.contains(&a))).collect();
+            contributions.iter().filter(|r| r.attribution.as_ref().is_some_and(|a| dropped.contains(&a))).collect();
         let credits: Vec<String> = dropped.iter().map(|c| format!("\"{c}\"")).collect();
         found.push(Excess {
             field: "provenance/attribution".to_owned(),
@@ -133,7 +134,7 @@ pub(crate) fn against_parts(record: &LicenceRecord, derived: &DerivedLicence) ->
         licence_terms(&limit.provenance.licence).into_iter().filter(|term| !has_term(&kept_terms, term)).collect();
     if !missing.is_empty() {
         let rows: Vec<&PartRow> =
-            derived.parts.iter().filter(|r| licence_terms(&r.licence).iter().any(|t| has_term(&missing, t))).collect();
+            contributions.iter().filter(|r| licence_terms(&r.licence).iter().any(|t| has_term(&missing, t))).collect();
         let who = if rows.is_empty() { "the character has no parts".to_owned() } else { naming(&rows) };
         found.push(Excess {
             field: "provenance/licence".to_owned(),
@@ -148,12 +149,12 @@ pub(crate) fn against_parts(record: &LicenceRecord, derived: &DerivedLicence) ->
 
     for axis in exceeding(&record.meta.terms, &limit.meta.terms) {
         let allowed = axis.rank_of(&limit.meta.terms);
-        let by_terms: Vec<&PartRow> = derived.parts.iter().filter(|r| axis.rank_of(&r.terms) == allowed).collect();
+        let by_terms: Vec<&PartRow> = contributions.iter().filter(|r| axis.rank_of(&r.terms) == allowed).collect();
         let reason = if by_terms.is_empty() {
             // No part holds the flag back by itself: it is held back because a commercial status that is not `ok` allows
             // no permission at all.
             let rows: Vec<&PartRow> =
-                derived.parts.iter().filter(|r| r.commercial == limit.provenance.commercial).collect();
+                contributions.iter().filter(|r| r.commercial == limit.provenance.commercial).collect();
             format!(
                 "commercial status `{}` of {} allows no permission",
                 written(limit.provenance.commercial),
