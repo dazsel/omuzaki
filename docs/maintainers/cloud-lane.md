@@ -106,8 +106,15 @@ least every few hours and before stopping:
 3. Post on #2: "taken over", what you found, and anything inconsistent.
 4. Resume fix rounds first, then the next tasks from the state issue.
 
-**For the outgoing lead**, when its account is near its limits: update the state issue completely, post on #2 that a
-handover is due, and stop starting new sessions.
+**For the outgoing lead**, when its account is near its limits:
+1. Stop starting new sessions.
+2. **Stop every implementer session:** send each one a message to stop and push nothing more (its sessions live on
+   this account, and a new lead on another account can't see, message or archive them).
+3. Update the state issue completely, including any session that was mid-task: its branch and last pushed head.
+4. Post on #2 that a handover is due, and stop. The owner then archives this account's sessions.
+
+**For a new lead inheriting branches:** start your own session on an inherited branch only after it has been quiet
+(nothing pushed for 30 minutes), so two sessions never push to the same branch.
 
 ## Appendix: the launch brief (v4)
 
