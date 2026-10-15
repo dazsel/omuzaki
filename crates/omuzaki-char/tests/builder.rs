@@ -737,9 +737,12 @@ struct NoterParams {
     from_palette: bool,
     /// Publish how many entries the palette has: a fact that depends on the slot set, not on any colour.
     from_len: bool,
-    /// Publish 1 while the palette still has `outfit` (the slot `tint` names by default), else 0: a fact that depends on
-    /// a referenced slot being present.
+    /// Publish 1 while the palette still has the slot `named` names, else 0: a fact that depends on a referenced slot
+    /// being present. `named` is only read as a reference (it is never resolved as a colour), so the build survives
+    /// the slot's removal.
     from_slot: bool,
+    /// A slot reference (`@slot`) for `from_slot` to look for.
+    named: String,
     /// Fail to build when the palette has more than this many entries: a kind that breaks when a slot is added.
     slot_limit: usize,
     /// Publish `tint`'s red channel only when the part's first random draw is under 0.2: a fact that depends on the seed.
@@ -755,6 +758,7 @@ impl Default for NoterParams {
             from_palette: true,
             from_len: false,
             from_slot: false,
+            named: String::new(),
             slot_limit: usize::MAX,
             gated: false,
             offline_only: false,
@@ -779,13 +783,18 @@ impl PartKind for Noter {
 
     fn build(params: &NoterParams, ctx: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
         if ctx.palette.0.len() > params.slot_limit {
-            return Err(ctx.fail(format!("the palette has {} entries, more than {}", ctx.palette.0.len(), params.slot_limit)));
+            return Err(ctx.fail(format!(
+                "the palette has {} entries, more than {}",
+                ctx.palette.0.len(),
+                params.slot_limit
+            )));
         }
         let tint = ctx.colour(&params.tint)?;
         let note = if params.from_len {
             u8::try_from(ctx.palette.0.len()).unwrap_or(u8::MAX)
         } else if params.from_slot {
-            u8::from(ctx.palette.0.contains_key(&slot("outfit")))
+            let present = params.named.strip_prefix('@').is_some_and(|name| ctx.palette.0.keys().any(|s| s.as_str() == name));
+            u8::from(present)
         } else if params.gated {
             if ctx.rng.next_f32() < 0.2 { tint.r } else { 7 }
         } else if params.offline_only {
@@ -940,23 +949,31 @@ fn a_palette_independent_fact_gives_the_same_cached_build_after_a_palette_change
 
 #[test]
 fn a_fact_read_only_at_some_seeds_is_caught_by_the_seed_sweep_and_names_the_seed() {
-    // The base's own seed draws 0.2 or more, so the palette is only read at a swept seed.
-    let def = noted_with(json!({ "gated": true }));
+    // Seed 0 draws 0.2 or more, so the palette is not read there; the first swept seed (0 + the step) draws under 0.2.
+    let mut def = noted_with(json!({ "gated": true }));
+    def.seed = 0;
     assert!(part_rng(def.seed, &pid("noter")).next_f32() >= 0.2, "the base seed must not show it");
     let probes = conformance::Probes::default().fact::<NoteFact>();
     let report = conformance::check(&def, Some(&["t-noter"]), &probes, &BuildServices::default());
     let violation = only_violation(&report);
-    assert!(violation.contains("fact 't-note' depends on the palette") && violation.contains("seed "), "{violation}");
+    let swept = 0x9e37_79b9_u32;
+    assert!(violation.contains("fact 't-note' depends on the palette"), "{violation}");
+    assert!(violation.contains(&format!("seed {swept}")), "{violation}");
 }
 
 #[test]
 fn a_fact_that_depends_on_a_referenced_slot_being_present_is_caught_under_the_removal_alternative() {
-    // `tint` names `outfit`: removing it changes the fact, though no colour and no slot count does.
-    let def = noted_with(json!({ "from_palette": false, "from_slot": true, "tint": "@outfit" }));
+    // The part names `accent` without resolving it, and no other part needs it: removing it changes the fact, though no
+    // colour and no slot count does.
+    let mut def = noted_with(json!({ "from_palette": false, "from_slot": true, "named": "@accent", "tint": "#102030" }));
+    def.palette.0.insert(slot("accent"), Colour::rgb(1, 2, 3));
     let probes = conformance::Probes::default().fact::<NoteFact>();
     let report = conformance::check(&def, Some(&["t-noter"]), &probes, &BuildServices::default());
     let violation = only_violation(&report);
-    assert!(violation.contains("kind 't-noter'") && violation.contains("fact 't-note' depends on the palette"), "{violation}");
+    assert!(
+        violation.contains("kind 't-noter'") && violation.contains("fact 't-note' depends on the palette"),
+        "{violation}"
+    );
     assert!(violation.contains("alternative"), "{violation}");
 }
 
