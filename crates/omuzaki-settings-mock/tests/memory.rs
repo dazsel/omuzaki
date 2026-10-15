@@ -5,12 +5,12 @@
 
 use std::path::Path;
 
-use omuzaki_ops_api::Actor;
+use omuzaki_ops_api::{Actor, Mode};
 use omuzaki_settings_api::error::SettingErrorKind;
 use omuzaki_settings_api::event::{CHANGE_LOG_CAPACITY, ChangeCause};
 use omuzaki_settings_api::meta::{AgentWrite, Apply, InProfile, SettingMeta, SettingScope};
 use omuzaki_settings_api::profile::ProfileSource;
-use omuzaki_settings_api::service::{Layer, ListFilter, Settings, SettingsExt, Source};
+use omuzaki_settings_api::service::{Layer, ListFilter, Settings, SettingsExt, Snapshot, Source};
 use omuzaki_settings_api::setting::Setting;
 use omuzaki_settings_api::{check_crate, error::SettingError, register_setting};
 use omuzaki_settings_mock::MemorySettings;
@@ -152,12 +152,12 @@ fn a_fresh_service_reads_defaults() {
 fn a_wrong_type_or_range_is_rejected_with_the_key_named_and_nothing_changes() {
     let s = MemorySettings::default();
     let events = s.subscribe();
-    let e = s.set_raw("ui.scale", json!("big"), Layer::Auto, &person()).unwrap_err();
+    let e = s.set_raw("ui.scale", json!("big"), Layer::Auto, Mode::Apply, &person()).unwrap_err();
     assert!(matches!(e.kind, SettingErrorKind::WrongType { .. }) && e.key == "ui.scale");
-    let e = s.set::<UiScale>(&900, Layer::Auto, &person()).unwrap_err();
+    let e = s.set::<UiScale>(&900, Layer::Auto, Mode::Apply, &person()).unwrap_err();
     assert!(e.to_string().contains("`ui.scale`") && matches!(e.kind, SettingErrorKind::OutOfRange { .. }));
     assert!(matches!(
-        s.set_raw("nope.key", json!(1), Layer::Auto, &person()).unwrap_err().kind,
+        s.set_raw("nope.key", json!(1), Layer::Auto, Mode::Apply, &person()).unwrap_err().kind,
         SettingErrorKind::UnknownKey
     ));
     assert_eq!(s.get::<UiScale>().unwrap(), 100);
@@ -168,7 +168,7 @@ fn a_wrong_type_or_range_is_rejected_with_the_key_named_and_nothing_changes() {
 fn a_set_emits_one_event_and_is_logged_with_its_actor() {
     let s = MemorySettings::default();
     let events = s.subscribe();
-    let change = s.set::<UiScale>(&125, Layer::Auto, &agent()).unwrap();
+    let change = s.set::<UiScale>(&125, Layer::Auto, Mode::Apply, &agent()).unwrap();
     assert_eq!((change.before, change.after), (json!(100), json!(125)));
     let got = events.drain();
     assert_eq!(got.len(), 1);
@@ -176,16 +176,16 @@ fn a_set_emits_one_event_and_is_logged_with_its_actor() {
     assert_eq!(got[0].change_of("ui.scale").unwrap().after, json!(125));
     assert_eq!(s.changes(5)[0].actor, agent());
     // Writing the same value again is no change and no event.
-    s.set::<UiScale>(&125, Layer::Auto, &agent()).unwrap();
+    s.set::<UiScale>(&125, Layer::Auto, Mode::Apply, &agent()).unwrap();
     assert!(events.drain().is_empty());
 }
 
 #[test]
 fn reset_falls_back_and_says_when_there_was_nothing_to_reset() {
     let s = MemorySettings::default();
-    assert_eq!(s.reset("ui.scale", Layer::Auto, &person()).unwrap(), None);
-    s.set::<UiScale>(&125, Layer::Auto, &person()).unwrap();
-    let c = s.reset("ui.scale", Layer::Auto, &person()).unwrap().unwrap();
+    assert_eq!(s.reset("ui.scale", Layer::Auto, Mode::Apply, &person()).unwrap(), None);
+    s.set::<UiScale>(&125, Layer::Auto, Mode::Apply, &person()).unwrap();
+    let c = s.reset("ui.scale", Layer::Auto, Mode::Apply, &person()).unwrap().unwrap();
     assert_eq!((c.before, c.after), (json!(125), json!(100)));
     assert_eq!(s.get::<UiScale>().unwrap(), 100);
 }
@@ -193,38 +193,38 @@ fn reset_falls_back_and_says_when_there_was_nothing_to_reset() {
 #[test]
 fn a_profile_overlays_the_base_and_writes_go_to_the_active_profile() {
     let s = MemorySettings::default();
-    s.set::<UiScale>(&125, Layer::Auto, &person()).unwrap();
-    s.set::<QualityTier>(&Tier::High, Layer::Auto, &person()).unwrap();
+    s.set::<UiScale>(&125, Layer::Auto, Mode::Apply, &person()).unwrap();
+    s.set::<QualityTier>(&Tier::High, Layer::Auto, Mode::Apply, &person()).unwrap();
     // "Current" captures what differs from base-or-default: here both keys (base = effective, so only defaults differ).
-    let stream = s.save_profile("Stream", ProfileSource::Current, false, &person()).unwrap();
+    let stream = s.save_profile("Stream", ProfileSource::Current, false, Mode::Apply, &person()).unwrap();
     assert_eq!(stream.keys, 0, "values equal to the base are omitted");
-    s.switch_profile(Some(&stream.id), &person()).unwrap();
-    s.set::<UiScale>(&90, Layer::Auto, &person()).unwrap();
+    s.switch_profile(Some(&stream.id), Mode::Apply, &person()).unwrap();
+    s.set::<UiScale>(&90, Layer::Auto, Mode::Apply, &person()).unwrap();
     assert_eq!(s.resolve("ui.scale").unwrap().source, Source::Profile(stream.id.clone()));
     // An explicit base write hidden by the override is no change, and the base keeps it.
     let events = s.subscribe();
-    s.set::<UiScale>(&110, Layer::Base, &person()).unwrap();
+    s.set::<UiScale>(&110, Layer::Base, Mode::Apply, &person()).unwrap();
     assert!(events.drain().is_empty());
-    s.switch_profile(None, &person()).unwrap();
+    s.switch_profile(None, Mode::Apply, &person()).unwrap();
     assert_eq!(s.get::<UiScale>().unwrap(), 110);
     // A machine key never goes to a profile even while one is active.
-    s.switch_profile(Some(&stream.id), &person()).unwrap();
-    s.set_raw("update.channel", json!("beta"), Layer::Auto, &person()).unwrap();
+    s.switch_profile(Some(&stream.id), Mode::Apply, &person()).unwrap();
+    s.set_raw("update.channel", json!("beta"), Layer::Auto, Mode::Apply, &person()).unwrap();
     assert_eq!(s.resolve("update.channel").unwrap().source, Source::Base);
 }
 
 #[test]
 fn a_profile_switch_is_one_event_listing_only_what_changed_and_restarts_pending() {
     let s = MemorySettings::default();
-    s.set::<UiScale>(&125, Layer::Auto, &person()).unwrap();
-    let stream = s.save_profile("Stream", ProfileSource::Current, false, &person()).unwrap();
-    s.switch_profile(Some(&stream.id), &person()).unwrap();
-    s.set::<QualityTier>(&Tier::High, Layer::Auto, &person()).unwrap();
-    s.set::<Density>(&2, Layer::Auto, &person()).unwrap();
+    s.set::<UiScale>(&125, Layer::Auto, Mode::Apply, &person()).unwrap();
+    let stream = s.save_profile("Stream", ProfileSource::Current, false, Mode::Apply, &person()).unwrap();
+    s.switch_profile(Some(&stream.id), Mode::Apply, &person()).unwrap();
+    s.set::<QualityTier>(&Tier::High, Layer::Auto, Mode::Apply, &person()).unwrap();
+    s.set::<Density>(&2, Layer::Auto, Mode::Apply, &person()).unwrap();
     assert_eq!(s.profiles()[0].keys, 2);
 
     let events = s.subscribe();
-    let report = s.switch_profile(None, &agent()).unwrap();
+    let report = s.switch_profile(None, Mode::Apply, &agent()).unwrap();
     let got = events.drain();
     assert_eq!(got.len(), 1, "one event for the whole switch");
     assert_eq!(got[0].cause, ChangeCause::ProfileSwitched { from: Some(stream.id.clone()), to: None });
@@ -235,20 +235,20 @@ fn a_profile_switch_is_one_event_listing_only_what_changed_and_restarts_pending(
     assert_eq!(s.changes(10).len(), 3 + 2, "three sets, then the switch logs once per changed key");
 
     // Switching to the profile we are in does nothing.
-    s.switch_profile(Some(&stream.id), &person()).unwrap();
+    s.switch_profile(Some(&stream.id), Mode::Apply, &person()).unwrap();
     let _ = events.drain();
-    assert_eq!(s.switch_profile(Some(&stream.id), &person()).unwrap().changed, 0);
+    assert_eq!(s.switch_profile(Some(&stream.id), Mode::Apply, &person()).unwrap().changed, 0);
     assert!(events.drain().is_empty());
 }
 
 #[test]
 fn a_switch_to_an_unknown_profile_changes_nothing() {
     let s = MemorySettings::default();
-    s.set::<UiScale>(&125, Layer::Auto, &person()).unwrap();
+    s.set::<UiScale>(&125, Layer::Auto, Mode::Apply, &person()).unwrap();
     let before = s.snapshot();
     let events = s.subscribe();
     let ghost = omuzaki_settings_api::profile::ProfileId::new("ghost-0001").unwrap();
-    let e = s.switch_profile(Some(&ghost), &person()).unwrap_err();
+    let e = s.switch_profile(Some(&ghost), Mode::Apply, &person()).unwrap_err();
     assert!(matches!(e.kind, SettingErrorKind::UnknownProfile { .. }));
     assert_eq!(*s.snapshot(), *before);
     assert!(events.drain().is_empty() && s.active_profile().is_none());
@@ -257,55 +257,55 @@ fn a_switch_to_an_unknown_profile_changes_nothing() {
 #[test]
 fn switching_there_and_back_restores_the_exact_snapshot() {
     let s = MemorySettings::default();
-    s.set::<UiScale>(&125, Layer::Auto, &person()).unwrap();
-    let p = s.save_profile("Alt", ProfileSource::Current, false, &person()).unwrap();
-    s.switch_profile(Some(&p.id), &person()).unwrap();
-    s.set::<UiScale>(&80, Layer::Auto, &person()).unwrap();
-    s.set::<QualityTier>(&Tier::High, Layer::Auto, &person()).unwrap();
+    s.set::<UiScale>(&125, Layer::Auto, Mode::Apply, &person()).unwrap();
+    let p = s.save_profile("Alt", ProfileSource::Current, false, Mode::Apply, &person()).unwrap();
+    s.switch_profile(Some(&p.id), Mode::Apply, &person()).unwrap();
+    s.set::<UiScale>(&80, Layer::Auto, Mode::Apply, &person()).unwrap();
+    s.set::<QualityTier>(&Tier::High, Layer::Auto, Mode::Apply, &person()).unwrap();
     let in_profile = s.snapshot();
-    s.switch_profile(None, &person()).unwrap();
-    s.switch_profile(Some(&p.id), &person()).unwrap();
+    s.switch_profile(None, Mode::Apply, &person()).unwrap();
+    s.switch_profile(Some(&p.id), Mode::Apply, &person()).unwrap();
     assert_eq!(*s.snapshot(), *in_profile);
 }
 
 #[test]
 fn profile_names_ids_and_overwrite() {
     let s = MemorySettings::default();
-    let a = s.save_profile("  Stream ", ProfileSource::Current, false, &person()).unwrap();
+    let a = s.save_profile("  Stream ", ProfileSource::Current, false, Mode::Apply, &person()).unwrap();
     assert_eq!(a.name, "Stream");
     assert!(a.id.as_str().starts_with("stream-"));
-    let e = s.save_profile("Stream", ProfileSource::Current, false, &person()).unwrap_err();
+    let e = s.save_profile("Stream", ProfileSource::Current, false, Mode::Apply, &person()).unwrap_err();
     assert!(matches!(e.kind, SettingErrorKind::ProfileExists { .. }));
-    assert_eq!(s.save_profile("Stream", ProfileSource::Current, true, &person()).unwrap().id, a.id);
-    assert!(s.save_profile("", ProfileSource::Current, false, &person()).is_err());
-    let jp = s.save_profile("配信", ProfileSource::Profile(a.id.clone()), false, &person()).unwrap();
+    assert_eq!(s.save_profile("Stream", ProfileSource::Current, true, Mode::Apply, &person()).unwrap().id, a.id);
+    assert!(s.save_profile("", ProfileSource::Current, false, Mode::Apply, &person()).is_err());
+    let jp = s.save_profile("配信", ProfileSource::Profile(a.id.clone()), false, Mode::Apply, &person()).unwrap();
     assert!(jp.id.as_str().starts_with("profile-"));
-    let renamed = s.rename_profile(&jp.id, "Live").unwrap();
+    let renamed = s.rename_profile(&jp.id, "Live", Mode::Apply, &person()).unwrap();
     assert_eq!((renamed.id, renamed.name.as_str()), (jp.id.clone(), "Live"));
-    assert!(s.rename_profile(&jp.id, "Stream").is_err());
+    assert!(s.rename_profile(&jp.id, "Stream", Mode::Apply, &person()).is_err());
     assert_eq!(s.profiles().len(), 2);
 }
 
 #[test]
 fn deleting_the_active_profile_switches_to_none_first() {
     let s = MemorySettings::default();
-    let p = s.save_profile("Alt", ProfileSource::Current, false, &person()).unwrap();
-    s.switch_profile(Some(&p.id), &person()).unwrap();
-    s.set::<UiScale>(&80, Layer::Auto, &person()).unwrap();
+    let p = s.save_profile("Alt", ProfileSource::Current, false, Mode::Apply, &person()).unwrap();
+    s.switch_profile(Some(&p.id), Mode::Apply, &person()).unwrap();
+    s.set::<UiScale>(&80, Layer::Auto, Mode::Apply, &person()).unwrap();
     let events = s.subscribe();
-    s.delete_profile(&p.id).unwrap();
+    s.delete_profile(&p.id, Mode::Apply, &agent()).unwrap();
     assert_eq!(s.active_profile(), None);
     assert_eq!(s.get::<UiScale>().unwrap(), 100);
     assert_eq!(events.drain().len(), 1);
     assert!(s.profiles().is_empty());
-    assert!(s.delete_profile(&p.id).is_err());
+    assert!(s.delete_profile(&p.id, Mode::Apply, &agent()).is_err());
 }
 
 #[test]
 fn the_change_log_is_newest_first_and_capped() {
     let s = MemorySettings::default();
     for i in 0..u16::try_from(CHANGE_LOG_CAPACITY + 50).unwrap() {
-        s.set::<UiScale>(&(75 + i % 100 + 1), Layer::Auto, &person()).unwrap();
+        s.set::<UiScale>(&(75 + i % 100 + 1), Layer::Auto, Mode::Apply, &person()).unwrap();
     }
     let log = s.changes(1000);
     assert_eq!(log.len(), CHANGE_LOG_CAPACITY);
@@ -319,7 +319,8 @@ fn session_state_is_kept_and_the_opening_guard_survives_until_opened() {
     let session = s.session();
     session.begin_open(Path::new("/p/a")).unwrap();
     assert_eq!(session.state().opening.as_deref(), Some(Path::new("/p/a")));
-    session.opened(Path::new("/p/a"), "A");
+    session.opened(Path::new("/p/a"), "A").unwrap();
+    session.flush().unwrap();
     session.mark_version_seen("0.9.0");
     session.mark_version_seen("0.9.0-beta.1");
     assert_eq!(session.state().last_seen_version.as_deref(), Some("0.9.0"), "a beta never replaces its release");
@@ -328,4 +329,198 @@ fn session_state_is_kept_and_the_opening_guard_survives_until_opened() {
     assert!(state.opening.is_none() && state.recent.len() == 1 && state.windows.contains_key("main"));
     session.forget(Path::new("/p/a"));
     assert!(session.state().recent.is_empty());
+}
+
+// --- dry runs, actors and reload ------------------------------------------------------------------------------
+
+/// Everything a caller can observe of a service that a dry run must leave alone.
+#[derive(Debug, PartialEq)]
+struct Observed {
+    snapshot: Snapshot,
+    changes: Vec<omuzaki_settings_api::event::SettingChange>,
+    profiles: Vec<omuzaki_settings_api::profile::ProfileInfo>,
+    findings: Vec<omuzaki_settings_api::error::SettingFinding>,
+    active: Option<omuzaki_settings_api::profile::ProfileId>,
+}
+
+fn observed(s: &MemorySettings) -> Observed {
+    Observed {
+        snapshot: (*s.snapshot()).clone(),
+        changes: s.changes(CHANGE_LOG_CAPACITY),
+        profiles: s.profiles(),
+        findings: s.findings(),
+        active: s.active_profile(),
+    }
+}
+
+/// Runs `op` as a dry run and then as an apply on the same store, and checks the two returned the same thing, that the
+/// dry run changed nothing anyone can see (no snapshot swap, no log entry, no event, no profile), and that the apply
+/// then did what it said. Returns the apply's result for further checks.
+fn dry_run_then_apply<R: PartialEq + std::fmt::Debug>(
+    s: &MemorySettings,
+    op: impl Fn(&MemorySettings, Mode) -> Result<R, SettingError>,
+) -> Result<R, SettingError> {
+    let events = s.subscribe();
+    let before = observed(s);
+    let snapshot_before = s.snapshot();
+    let dry = op(s, Mode::DryRun);
+    assert_eq!(observed(s), before, "a dry run changed the store");
+    assert!(std::sync::Arc::ptr_eq(&snapshot_before, &s.snapshot()), "a dry run swapped the snapshot");
+    assert!(events.drain().is_empty(), "a dry run emitted an event");
+    let applied = op(s, Mode::Apply);
+    assert_eq!(dry, applied, "a dry run returns what the apply returns");
+    applied
+}
+
+/// A store where profile `P` is active and holds `ui.scale = 100` over a base of `125`.
+fn hidden_base() -> (MemorySettings, omuzaki_settings_api::profile::ProfileId) {
+    let s = MemorySettings::default();
+    s.set::<UiScale>(&125, Layer::Base, Mode::Apply, &person()).unwrap();
+    let p = s.save_profile("P", ProfileSource::Current, false, Mode::Apply, &person()).unwrap();
+    s.switch_profile(Some(&p.id), Mode::Apply, &person()).unwrap();
+    s.set::<UiScale>(&100, Layer::Auto, Mode::Apply, &person()).unwrap();
+    assert_eq!(s.resolve("ui.scale").unwrap().value, json!(100), "resolve shows only the override");
+    (s, p.id)
+}
+
+#[test]
+fn a_dry_run_set_returns_the_change_and_changes_nothing() {
+    let s = MemorySettings::default();
+    let c = dry_run_then_apply(&s, |s, m| s.set::<UiScale>(&125, Layer::Auto, m, &agent())).unwrap();
+    assert_eq!((c.before, c.after), (json!(100), json!(125)));
+    assert_eq!(s.get::<UiScale>().unwrap(), 125);
+    // A rejected value is rejected the same way in both modes, and the key is named.
+    let e = dry_run_then_apply(&s, |s, m| s.set::<UiScale>(&900, Layer::Auto, m, &agent())).unwrap_err();
+    assert!(e.to_string().contains("`ui.scale`"));
+    // A base write hidden by an override is a change with no effective difference, in both modes.
+    let (s, _) = hidden_base();
+    let hidden = dry_run_then_apply(&s, |s, m| s.set::<UiScale>(&110, Layer::Base, m, &person())).unwrap();
+    assert_eq!((hidden.before, hidden.after), (json!(100), json!(100)));
+}
+
+#[test]
+fn a_dry_run_reset_previews_the_fallback_a_resolve_cannot_see() {
+    let (s, _) = hidden_base();
+    let c = dry_run_then_apply(&s, |s, m| s.reset("ui.scale", Layer::Auto, m, &person())).unwrap().unwrap();
+    assert_eq!((c.before, c.after), (json!(100), json!(125)), "profile 100 over base 125 falls back to 125");
+    assert_eq!(s.get::<UiScale>().unwrap(), 125);
+    // Nothing to reset is nothing in both modes.
+    assert_eq!(dry_run_then_apply(&s, |s, m| s.reset("ui.scale", Layer::Auto, m, &person())).unwrap(), None);
+    assert!(dry_run_then_apply(&s, |s, m| s.reset("nope.key", Layer::Auto, m, &person())).is_err());
+}
+
+#[test]
+fn a_dry_run_save_returns_the_profile_an_apply_creates_without_using_up_its_id() {
+    let s = MemorySettings::default();
+    s.set::<UiScale>(&125, Layer::Auto, Mode::Apply, &person()).unwrap();
+    let a =
+        dry_run_then_apply(&s, |s, m| s.save_profile("Stream", ProfileSource::Current, false, m, &person())).unwrap();
+    assert!(a.id.as_str().starts_with("stream-") && s.profiles().len() == 1);
+    // The same name without overwrite fails identically; with it, the same profile is replaced.
+    let e = dry_run_then_apply(&s, |s, m| s.save_profile("Stream", ProfileSource::Current, false, m, &person()));
+    assert!(matches!(e.unwrap_err().kind, SettingErrorKind::ProfileExists { .. }));
+    let again =
+        dry_run_then_apply(&s, |s, m| s.save_profile("Stream", ProfileSource::Current, true, m, &person())).unwrap();
+    assert_eq!(again.id, a.id);
+    // Saving over the active profile changes effective values: previewed by the dry run, then one event on apply.
+    let other = s.save_profile("Other", ProfileSource::Current, false, Mode::Apply, &person()).unwrap();
+    s.switch_profile(Some(&other.id), Mode::Apply, &person()).unwrap();
+    s.set::<UiScale>(&90, Layer::Auto, Mode::Apply, &person()).unwrap();
+    s.switch_profile(Some(&a.id), Mode::Apply, &person()).unwrap();
+    s.set::<UiScale>(&80, Layer::Auto, Mode::Apply, &person()).unwrap();
+    let events = s.subscribe();
+    dry_run_then_apply(&s, |s, m| {
+        s.save_profile("Stream", ProfileSource::Profile(other.id.clone()), true, m, &agent())
+    })
+    .unwrap();
+    assert_eq!(s.get::<UiScale>().unwrap(), 90);
+    assert_eq!(s.changes(1)[0].actor, agent(), "the change is stamped with the actor who saved");
+    assert_eq!(events.drain().len(), 1);
+}
+
+#[test]
+fn a_dry_run_rename_and_delete_and_switch_return_what_the_apply_returns() {
+    let (s, p) = hidden_base();
+    let renamed = dry_run_then_apply(&s, |s, m| s.rename_profile(&p, "Renamed", m, &agent())).unwrap();
+    assert_eq!(renamed.name, "Renamed");
+    assert!(dry_run_then_apply(&s, |s, m| s.rename_profile(&p, "", m, &agent())).is_err());
+
+    // Switching away from the profile: ui.scale 100 -> 125.
+    let switched = dry_run_then_apply(&s, |s, m| s.switch_profile(None, m, &agent())).unwrap();
+    assert_eq!(switched.changed, 1);
+    let ghost = omuzaki_settings_api::profile::ProfileId::new("ghost-0001").unwrap();
+    assert!(dry_run_then_apply(&s, |s, m| s.switch_profile(Some(&ghost), m, &agent())).is_err());
+
+    // Deleting a profile that is not active reports no change; deleting the active one reports the switch.
+    let other = s.save_profile("Other", ProfileSource::Current, false, Mode::Apply, &person()).unwrap();
+    assert_eq!(dry_run_then_apply(&s, |s, m| s.delete_profile(&other.id, m, &agent())).unwrap().changed, 0);
+    s.switch_profile(Some(&p), Mode::Apply, &person()).unwrap();
+    let deleted = dry_run_then_apply(&s, |s, m| s.delete_profile(&p, m, &agent())).unwrap();
+    assert_eq!(deleted.changed, 1, "deleting the active profile lets ui.scale fall back from 100 to 125");
+    assert!(dry_run_then_apply(&s, |s, m| s.delete_profile(&p, m, &agent())).is_err());
+}
+
+#[test]
+fn deleting_the_active_profile_is_one_event_attributed_to_the_actor_who_asked() {
+    let (s, p) = hidden_base();
+    let events = s.subscribe();
+    s.delete_profile(&p, Mode::Apply, &agent()).unwrap();
+    let got = events.drain();
+    assert_eq!(got.len(), 1, "one swap and one event for the switch and the delete together");
+    assert_eq!(got[0].cause, ChangeCause::ProfileSwitched { from: Some(p), to: None });
+    assert!(s.changes(5).iter().take(1).all(|c| c.actor == agent()), "never attributed to the system");
+}
+
+#[test]
+fn reload_applies_hand_edits_as_one_event_with_the_reloaded_cause() {
+    let s = MemorySettings::default();
+    s.set::<UiScale>(&125, Layer::Auto, Mode::Apply, &person()).unwrap();
+    s.hand_edit_base("ui.scale", Some(json!(150)));
+    s.hand_edit_base("quality.tier", Some(json!("high")));
+    let events = s.subscribe();
+    let report = dry_run_then_apply(&s, |s, m| s.reload(m, &agent())).unwrap();
+    assert_eq!(report.changed, 2);
+    let got = events.drain();
+    assert_eq!(got.len(), 1, "both keys arrive in one event");
+    assert_eq!(got[0].cause, ChangeCause::Reloaded);
+    let keys: Vec<_> = got[0].changes.iter().map(|c| c.key.as_str()).collect();
+    assert_eq!(keys, ["quality.tier", "ui.scale"]);
+    assert_eq!((s.get::<UiScale>().unwrap(), s.get::<QualityTier>().unwrap()), (150, Tier::High));
+    assert!(s.changes(2).iter().all(|c| c.actor == agent()));
+    // Reloading again, with the files as they were read, changes nothing: no swap, no event.
+    let snapshot = s.snapshot();
+    assert_eq!(s.reload(Mode::Apply, &agent()).unwrap().changed, 0);
+    assert!(std::sync::Arc::ptr_eq(&snapshot, &s.snapshot()) && events.drain().is_empty());
+}
+
+#[test]
+fn reload_falls_back_on_values_it_cannot_use_and_reports_them_as_findings() {
+    let s = MemorySettings::default();
+    s.hand_edit_base("ui.scale", Some(json!(900)));
+    s.hand_edit_base("quality.tier", Some(json!("ultra")));
+    s.hand_edit_base("removed.key", Some(json!(1)));
+    let report = dry_run_then_apply(&s, |s, m| s.reload(m, &person())).unwrap();
+    assert_eq!(report.changed, 0, "nothing usable differs, so the values stay at their defaults");
+    assert_eq!((s.get::<UiScale>().unwrap(), s.get::<QualityTier>().unwrap()), (100, Tier::Live));
+    let found = s.findings();
+    let mut keys: Vec<_> = found.iter().map(|f| f.error.key.as_str()).collect();
+    keys.sort_unstable();
+    assert_eq!(keys, ["quality.tier", "removed.key", "ui.scale"]);
+    assert!(found.iter().all(|f| f.from == "base"));
+    // A profile's "file" is read too, and the active profile's usable values apply.
+    let p = s.save_profile("P", ProfileSource::Current, false, Mode::Apply, &person()).unwrap();
+    s.switch_profile(Some(&p.id), Mode::Apply, &person()).unwrap();
+    s.hand_edit_profile(&p.id, "ui.scale", Some(json!(90)));
+    assert_eq!(dry_run_then_apply(&s, |s, m| s.reload(m, &person())).unwrap().changed, 1);
+    assert_eq!(s.resolve("ui.scale").unwrap().source, Source::Profile(p.id));
+}
+
+#[test]
+fn the_session_store_reports_the_durable_clear_and_flushes() {
+    let s = MemorySettings::default();
+    let session = s.session();
+    session.begin_open(Path::new("/p/a")).unwrap();
+    session.opened(Path::new("/p/a"), "A").unwrap();
+    assert!(session.state().opening.is_none());
+    session.flush().unwrap();
 }
