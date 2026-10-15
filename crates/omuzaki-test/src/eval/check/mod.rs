@@ -14,8 +14,10 @@
 mod bind;
 mod gate;
 mod log;
+mod number;
 mod query;
 mod report;
+mod resolve;
 mod value;
 
 use std::collections::BTreeMap;
@@ -25,6 +27,7 @@ use omuzaki_ops_api::Runner;
 use serde_json::{Map, Value};
 
 pub use self::report::{CheckReport, CheckResult, Outcome, Verdict};
+use self::resolve::Names;
 use super::task::{Check, CheckKind, Task};
 use super::transcript::Transcript;
 
@@ -63,9 +66,8 @@ impl Checker {
     }
 
     /// Every name the checks of `task` may use: the fixture's exports, then the task's bindings.
-    fn names(&self, task: &Task) -> BTreeMap<String, Result<String, Verdict>> {
-        let mut names: BTreeMap<String, Result<String, Verdict>> =
-            self.exports.iter().map(|(name, id)| (name.clone(), Ok(id.clone()))).collect();
+    fn names(&self, task: &Task) -> Names {
+        let mut names: Names = self.exports.iter().map(|(name, id)| (name.clone(), Ok(id.clone()))).collect();
         for (name, resolved) in bind::resolve(&*self.fixture, &*self.result, &task.bind) {
             let resolved = if names.contains_key(&name) {
                 Err(Verdict::error(format!("`{name}` is both a fixture export and a [bind] name")))
@@ -77,16 +79,9 @@ impl Checker {
         names
     }
 
-    /// One check, with the names it uses filled in.
-    fn run(&self, check: &Check, bound: &BTreeMap<String, Result<String, Verdict>>) -> Verdict {
-        let kind = match serde_json::to_value(&check.kind) {
-            Ok(mut value) => bind::substitute(&mut value, bound).map(|()| value),
-            Err(e) => Err(Verdict::error(format!("check cannot be serialised: {e}"))),
-        };
-        let kind = match kind.and_then(|v| {
-            serde_json::from_value::<CheckKind>(v)
-                .map_err(|e| Verdict::error(format!("check with bindings filled in is invalid: {e}")))
-        }) {
+    /// One check, resolved first: a check that does not resolve is broken, and never reaches its grader.
+    fn run(&self, check: &Check, bound: &Names) -> Verdict {
+        let kind = match resolve::check(&check.kind, bound) {
             Ok(kind) => kind,
             Err(verdict) => return verdict,
         };

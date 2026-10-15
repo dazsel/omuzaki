@@ -4,8 +4,9 @@ use omuzaki_ops_api::{OpInfo, Runner, Scope};
 use serde_json::{Map, Value};
 
 use super::Checker;
+use super::number::{Num, in_range, moved, same_value};
 use super::report::Verdict;
-use super::value::{call, moved, pointer_all, result_failure, same_value};
+use super::value::{call, pointer_all, result_failure};
 use crate::eval::task::QueryExpect;
 
 /// The single value at `at` in an op's output. `on_miss` makes the verdict when it is not exactly one value: a `fail`
@@ -75,21 +76,21 @@ fn judge(expect: &QueryExpect, before: Option<&Value>, after: &Value) -> Verdict
         return Verdict::fail(format!("expected {want}, found {after}"));
     }
     if let Some([min, max]) = expect.range {
-        match after.as_f64() {
-            Some(n) if (min..=max).contains(&n) => {}
-            Some(n) => return Verdict::fail(format!("{n} is outside {min}..={max}")),
+        match Num::of(after) {
+            Some(n) if in_range(n, min, max) => {}
+            Some(_) => return Verdict::fail(format!("{after} is outside {min}..={max}")),
             None => return Verdict::fail(format!("expected a number in {min}..={max}, found {after}")),
         }
     }
     if let (Some(change), Some(before)) = (expect.change, before) {
-        let Some(b) = before.as_f64() else {
+        let Some(b) = Num::of(before) else {
             return Verdict::error(format!("change needs a number on the fixture, found {before}"));
         };
-        let Some(a) = after.as_f64() else {
+        let Some(a) = Num::of(after) else {
             return Verdict::fail(format!("change needs a number, found {before} then {after}"));
         };
         if !moved(b, a, change, expect.at_least, expect.relative) {
-            return Verdict::fail(format!("{b} to {a} is not {change:?} by the amount asked"));
+            return Verdict::fail(format!("{before} to {after} is not {change:?} by the amount asked"));
         }
     }
     Verdict::pass("the value meets every condition")

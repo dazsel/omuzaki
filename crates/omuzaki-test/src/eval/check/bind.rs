@@ -46,24 +46,3 @@ pub(super) fn resolve(
 ) -> BTreeMap<String, Result<String, Verdict>> {
     binds.iter().map(|(name, bind)| (name.clone(), resolve_one(fixture, result, bind))).collect()
 }
-
-/// Replaces `{name}` in every string of `value` with the bound id.
-///
-/// # Errors
-/// The verdict of the first binding used here that did not resolve.
-pub(super) fn substitute(value: &mut Value, bound: &BTreeMap<String, Result<String, Verdict>>) -> Result<(), Verdict> {
-    match value {
-        Value::String(text) => {
-            for (name, id) in bound {
-                let placeholder = format!("{{{name}}}");
-                if text.contains(&placeholder) {
-                    *text = text.replace(&placeholder, id.as_ref().map_err(Clone::clone)?);
-                }
-            }
-            Ok(())
-        }
-        Value::Array(items) => items.iter_mut().try_for_each(|v| substitute(v, bound)),
-        Value::Object(map) => map.values_mut().try_for_each(|v| substitute(v, bound)),
-        _ => Ok(()),
-    }
-}

@@ -421,3 +421,68 @@ fn checks_can_name_the_fixtures_exports_and_a_name_cannot_be_both_an_export_and_
         report.results[0].detail
     );
 }
+
+/// Grades one query on a fixture and a result whose counters are given.
+fn counters(before: &Value, after: &Value, expect: &str) -> Outcome {
+    let report = Checker::new(
+        runner(&json!({ "counter": before })),
+        runner(&json!({ "counter": after })),
+        Transcript::default(),
+    )
+    .grade(&task(&doc_query("/counter", expect)));
+    report.results[0].outcome
+}
+
+#[test]
+fn change_checks_measure_integers_exactly_and_relative_change_from_any_nonzero_baseline() {
+    let (low, high) = (json!(9_007_199_254_740_992_i64), json!(9_007_199_254_740_993_i64));
+    assert_eq!(counters(&low, &high, "{ change = 'up' }"), Outcome::Pass);
+    assert_eq!(counters(&low, &high, "{ change = 'none' }"), Outcome::Fail);
+    assert_eq!(counters(&low, &low, "{ change = 'none' }"), Outcome::Pass);
+    assert_eq!(counters(&high, &low, "{ change = 'down', at_least = 1.0 }"), Outcome::Pass);
+    assert_eq!(counters(&low, &high, "{ change = 'up', at_least = 2.0 }"), Outcome::Fail);
+    // 1e-20 to 1.1e-20 is a 10% move, not an infinite one.
+    let (tiny, more) = (json!(1.0e-20), json!(1.1e-20));
+    assert_eq!(counters(&tiny, &more, "{ change = 'up', relative = true, at_least = 1.0 }"), Outcome::Fail);
+    assert_eq!(counters(&tiny, &more, "{ change = 'up', relative = true, at_least = 0.09 }"), Outcome::Pass);
+    // Only an exact zero baseline is infinite.
+    assert_eq!(
+        counters(&json!(0), &json!(0.1), "{ change = 'up', relative = true, at_least = 1000.0 }"),
+        Outcome::Pass
+    );
+}
+
+#[test]
+fn a_placeholder_nothing_defines_is_a_broken_check_for_every_kind_that_can_carry_one() {
+    let exports = std::collections::BTreeMap::from([("main".to_owned(), "a".to_owned())]);
+    let fixture = runner(&json!({"counter": 1, "chars": {"a": {"name": "A"}}}));
+    let result = runner(&json!({"counter": 5, "chars": {"a": {"name": "A"}}}));
+    let grade_with = |toml: &str| {
+        Checker::new(fixture.clone(), result.clone(), Transcript::default())
+            .with_exports(exports.clone())
+            .grade(&task(toml))
+            .results[0]
+            .clone()
+    };
+    // A misspelt export in a query's arguments, in its pointer and in its expected value.
+    for misspelt in [
+        "[[check]]\nid='c'\nkind='query'\nop='evaltest.char'\nargs={ id = '{mian}' }\nat='/name'\nexpect={ equals = 'A' }\n",
+        "[[check]]\nid='c'\nkind='query'\nop='evaltest.doc'\nat='/chars/{mian}/name'\nexpect={ equals = 'A' }\n",
+        "[[check]]\nid='c'\nkind='query'\nop='evaltest.doc'\nat='/chars/a/name'\nexpect={ equals = '{mian}' }\n",
+        // The log checks and gates carry names too, and a placeholder left there is no more the agent's fault.
+        "[[check]]\nid='c'\nkind='log.applied'\nop='{mian}'\n",
+        "[[check]]\nid='c'\nkind='log.within'\nops=['{mian}']\n",
+        "[[check]]\nid='c'\nkind='gate'\nops=['{mian}']\n",
+        "[[check]]\nid='c'\nkind='doc.exists'\npath='chars/{mian}'\n",
+    ] {
+        let result = grade_with(misspelt);
+        assert_eq!(result.outcome, Outcome::Error, "{misspelt}");
+        assert!(result.detail.contains("{mian}") && result.detail.contains("main"), "{}", result.detail);
+    }
+    // The right name passes, and braces that are not a plain name are left alone.
+    let right = "[[check]]\nid='c'\nkind='query'\nop='evaltest.char'\nargs={ id = '{main}' }\nat='/name'\nexpect={ equals = 'A' }\n";
+    assert_eq!(grade_with(right).outcome, Outcome::Pass);
+    let json_text =
+        "[[check]]\nid='c'\nkind='query'\nop='evaltest.doc'\nat='/chars/a/name'\nexpect={ equals = '{\"a\": 1}' }\n";
+    assert_eq!(grade_with(json_text).outcome, Outcome::Fail);
+}
