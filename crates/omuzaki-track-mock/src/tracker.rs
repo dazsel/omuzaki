@@ -21,10 +21,13 @@ use crate::FakeCamera;
 /// camera frame exists) — the same signal a real tracker gives when its camera stalls.
 ///
 /// [`latency`](Tracker::latency) counts frames **published**, as a real tracker's `frames` does: every scripted entry
-/// once it is due, and every lost frame, including ones a slow poller never sees.
+/// once it is due, and every lost frame, including ones a slow poller never sees. Each session has its own count:
+/// the running one's, or after [`stop`](Tracker::stop) the last one's.
 pub struct FakeTracker {
     script: Arc<[(Duration, TrackFrame)]>,
     running: Option<Arc<AtomicBool>>,
+    /// The current (or last) session's publication count. A new session gets a new counter, so a source from an
+    /// earlier session, even one mid-poll when the restart happened, can never count into it.
     published: Arc<AtomicU64>,
 }
 
@@ -33,6 +36,25 @@ impl FakeTracker {
     pub fn scripted(mut script: Vec<(Duration, TrackFrame)>) -> Self {
         script.sort_by_key(|(at, _)| *at);
         Self { script: script.into(), running: None, published: Arc::new(AtomicU64::new(0)) }
+    }
+}
+
+impl FakeTracker {
+    /// A new session's source, with its own running flag and publication counter.
+    fn session(&mut self, config: &TrackerConfig) -> ScriptedSource {
+        let running = Arc::new(AtomicBool::new(true));
+        let published = Arc::new(AtomicU64::new(0));
+        self.running = Some(Arc::clone(&running));
+        self.published = Arc::clone(&published);
+        ScriptedSource {
+            script: Arc::clone(&self.script),
+            next: 0,
+            lost_after: config.lost_after.as_secs_f64(),
+            last: None,
+            lost_sent: false,
+            running,
+            published,
+        }
     }
 }
 
@@ -51,18 +73,7 @@ impl Tracker for FakeTracker {
         if config.camera.pick(&self.devices()[0].formats).is_none() {
             return Err(TrackError::FormatUnsupported(config.camera));
         }
-        let running = Arc::new(AtomicBool::new(true));
-        self.running = Some(Arc::clone(&running));
-        self.published.store(0, Ordering::Relaxed);
-        Ok(Box::new(ScriptedSource {
-            script: Arc::clone(&self.script),
-            next: 0,
-            lost_after: config.lost_after.as_secs_f64(),
-            last: None,
-            lost_sent: false,
-            running,
-            published: Arc::clone(&self.published),
-        }))
+        Ok(Box::new(self.session(config)))
     }
 
     fn stop(&mut self) {
@@ -95,6 +106,14 @@ impl FrameSource for ScriptedSource {
         if !self.running.load(Ordering::Acquire) {
             return None;
         }
+        self.replay(now)
+    }
+}
+
+impl ScriptedSource {
+    /// Publishes what is due by `now` and returns the newest. Split from [`poll`](FrameSource::poll)'s running
+    /// check so a test can replay a poll that passed the check just before a restart.
+    fn replay(&mut self, now: Seconds) -> Option<TrackFrame> {
         // Replay everything due since the last poll in time order, as a tracker would have published it; the
         // mailbox keeps only the newest.
         let mut newest = None;
@@ -126,11 +145,34 @@ impl FrameSource for ScriptedSource {
         self.published.fetch_add(published, Ordering::Relaxed);
         newest
     }
-}
 
-impl ScriptedSource {
     /// When the current gap's lost frame falls due, or `None` if it has been sent or nothing was tracked yet.
     fn lost_due(&self) -> Option<f64> {
         self.last.filter(|_| !self.lost_sent).map(|last| last.time.0 + self.lost_after)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tracked(seq: u64) -> TrackFrame {
+        TrackFrame::empty(seq, Seconds(0.0), omuzaki_anim_api::DeviceProfile::Webcam)
+    }
+
+    #[test]
+    fn a_stale_source_publishing_after_a_restart_does_not_count_into_the_new_session() {
+        let mut tracker =
+            FakeTracker::scripted(vec![(Duration::ZERO, tracked(1)), (Duration::from_millis(10), tracked(2))]);
+        let config = TrackerConfig::default();
+        let mut old = tracker.session(&config);
+        let mut new = tracker.start(&FakeCamera::id(), &config).unwrap();
+        // The old source's poll passed its running check just before the restart and publishes now.
+        assert!(old.replay(Seconds(0.05)).is_some());
+        assert_eq!(tracker.latency().frames, 0, "the new session has published nothing");
+        assert!(new.poll(Seconds(0.05)).is_some());
+        assert_eq!(tracker.latency().frames, 2, "only the new session's own frames");
+        tracker.stop();
+        assert_eq!(tracker.latency().frames, 2, "after stop, the last session's count");
     }
 }

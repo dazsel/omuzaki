@@ -166,3 +166,50 @@ fn a_gap_inside_one_poll_gives_the_newest_frame() {
     assert_eq!((f.status, f.seq), (TrackStatus::Tracking, 2), "the frame at 1 s is newer than the lost one at 0.2 s");
     assert_eq!(tracker.latency().frames, 3, "two entries and the lost frame between them were published");
 }
+
+/// Whether a synthetic camera in this mode opens.
+fn synthetic_opens(width: u32, height: u32, fps: u32, pixel: PixelFormat) -> Result<(), TrackError> {
+    let mut camera = FakeCamera::synthetic(CameraFormat::new(width, height, fps, pixel), 1);
+    camera.open(&FakeCamera::id(), &CameraFormatRequest::default()).map(drop)
+}
+
+fn refused(result: &Result<(), TrackError>) -> bool {
+    matches!(result, Err(TrackError::FormatUnsupported(_)))
+}
+
+#[test]
+fn a_synthetic_camera_refuses_a_zero_width() {
+    assert!(refused(&synthetic_opens(0, 4, 30, PixelFormat::Rgb8)));
+}
+
+#[test]
+fn a_synthetic_camera_refuses_a_zero_height() {
+    assert!(refused(&synthetic_opens(8, 0, 30, PixelFormat::Rgb8)));
+}
+
+#[test]
+fn a_synthetic_camera_refuses_a_zero_rate() {
+    assert!(refused(&synthetic_opens(8, 4, 0, PixelFormat::Rgb8)));
+}
+
+#[test]
+fn a_synthetic_camera_refuses_an_odd_nv12_width() {
+    assert!(refused(&synthetic_opens(7, 4, 30, PixelFormat::Nv12)));
+}
+
+#[test]
+fn a_synthetic_camera_refuses_an_odd_yuy2_width() {
+    assert!(refused(&synthetic_opens(7, 4, 30, PixelFormat::Yuy2)));
+}
+
+#[test]
+fn a_synthetic_camera_refuses_an_odd_nv12_height() {
+    assert!(refused(&synthetic_opens(8, 3, 30, PixelFormat::Nv12)));
+}
+
+#[test]
+fn odd_sizes_open_where_the_layout_allows_them() {
+    assert_eq!(synthetic_opens(8, 3, 30, PixelFormat::Yuy2), Ok(()), "YUY2 pairs only horizontally");
+    assert_eq!(synthetic_opens(7, 3, 30, PixelFormat::Rgb8), Ok(()));
+    assert_eq!(synthetic_opens(7, 3, 30, PixelFormat::Bgra8), Ok(()));
+}

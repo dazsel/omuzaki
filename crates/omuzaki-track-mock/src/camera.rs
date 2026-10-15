@@ -40,9 +40,11 @@ impl FakeCamera {
         Self::new(format, Script::Frames(frames.into()))
     }
 
-    /// Serves `frames` test-pattern frames at `format.fps`, frame `i` captured at exactly `i / fps` seconds. NV12,
-    /// YUY2, RGB8 and BGRA8 (any other layout fails to open with [`TrackError::FormatUnsupported`]); the luma of
-    /// each pixel is [`synthetic_luma`](Self::synthetic_luma), chroma is neutral.
+    /// Serves `frames` test-pattern frames at `format.fps`, frame `i` captured at exactly `i / fps` seconds, in NV12,
+    /// YUY2, RGB8 or BGRA8. A mode no real stream could have fails to open with [`TrackError::FormatUnsupported`]:
+    /// another layout, a zero width, height or rate, an odd width in NV12 or YUY2, or an odd height in NV12 (what
+    /// `omuzaki-pixfmt` accepts). The luma of each pixel is [`synthetic_luma`](Self::synthetic_luma), chroma is
+    /// neutral.
     pub fn synthetic(format: CameraFormat, frames: u64) -> Self {
         Self::new(format, Script::Synthetic(frames))
     }
@@ -70,7 +72,7 @@ impl Camera for FakeCamera {
         }
         let format = request.pick(&self.info.formats).ok_or(TrackError::FormatUnsupported(*request))?;
         let synthetic = matches!(self.script, Script::Synthetic(_));
-        if synthetic && !drawable(format.pixel) {
+        if synthetic && !synthesizable(format) {
             return Err(TrackError::FormatUnsupported(*request));
         }
         if self.in_use.swap(true, Ordering::AcqRel) {
@@ -122,7 +124,8 @@ impl CameraStream for FakeStream {
                     return Err(TrackError::Lost);
                 }
                 draw(&mut self.buffer, self.format, self.stride, i);
-                let nanos = u128::from(i) * 1_000_000_000 / u128::from(self.format.fps.max(1));
+                // `open` refused fps 0, so the division always succeeds.
+                let nanos = (u128::from(i) * 1_000_000_000).checked_div(u128::from(self.format.fps)).unwrap_or(0);
                 (DeviceTime(u64::try_from(nanos).unwrap_or(u64::MAX)), self.buffer.as_slice())
             }
         };
@@ -142,6 +145,20 @@ impl Drop for FakeStream {
 /// refused at `open` until the pattern learns it.
 fn drawable(pixel: PixelFormat) -> bool {
     matches!(pixel, PixelFormat::Nv12 | PixelFormat::Yuy2 | PixelFormat::Rgb8 | PixelFormat::Bgra8)
+}
+
+/// Whether a synthetic stream can run in `format`: a drawable layout, a non-zero rate, and a size `omuzaki-pixfmt`
+/// accepts (non-zero; NV12 and YUY2 share chroma across horizontal pairs, so an even width; NV12 also across row
+/// pairs, so an even height).
+fn synthesizable(format: CameraFormat) -> bool {
+    let even_width = matches!(format.pixel, PixelFormat::Nv12 | PixelFormat::Yuy2);
+    let even_height = format.pixel == PixelFormat::Nv12;
+    drawable(format.pixel)
+        && format.width > 0
+        && format.height > 0
+        && format.fps > 0
+        && (!even_width || format.width.is_multiple_of(2))
+        && (!even_height || format.height.is_multiple_of(2))
 }
 
 /// Draws test-pattern frame `i` into `buf` (sized by [`PixelFormat::frame_len`]).
