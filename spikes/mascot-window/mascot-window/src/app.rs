@@ -161,10 +161,16 @@ pub struct App {
     failure: Option<RunError>,
 }
 
+/// The frame rate the loop runs at: the configured one, with a zero (which the command line refuses) read as 1, so the
+/// schedule and the sample buffers are sized from the same number.
+fn effective_fps(config: &Config) -> u32 {
+    config.fps.max(1)
+}
+
 /// Samples the frame series hold: a run with a deadline records every frame; one without keeps the most recent ones (the
 /// series are rings, so recording allocates nothing however long the run lasts).
 fn expected_frames(config: &Config) -> usize {
-    config.seconds.map_or(4096, |s| (s.max(0.0) * f64::from(config.fps)).ceil() as usize + 64)
+    config.seconds.map_or(4096, |s| (s.max(0.0) * f64::from(effective_fps(config))).ceil() as usize + 64)
 }
 
 impl App {
@@ -353,7 +359,7 @@ impl App {
             }
         }
         let now = Instant::now();
-        let interval = Duration::from_secs_f64(1.0 / f64::from(self.config.fps.max(1)));
+        let interval = Duration::from_secs_f64(1.0 / f64::from(effective_fps(&self.config)));
         if now >= self.next_frame {
             self.draw(event_loop);
             self.report_if_due();
@@ -483,5 +489,48 @@ impl<T: 'static> ApplicationHandler<T> for App {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.tick(event_loop, false);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::platform::{HitTestBackend, Level};
+
+    fn config(fps: u32, seconds: Option<f64>) -> Config {
+        Config {
+            mode: Mode::Run,
+            gpu: gpu::Options {
+                backends: wgpu::Backends::empty(),
+                alpha: None,
+                output: None,
+                fallback_adapter: false,
+                dx12_visual: false,
+                animate: false,
+                timestamps: false,
+            },
+            platform: platform::Options {
+                level: Level::Normal,
+                hide_from_switcher: false,
+                click_through: ClickThrough::Off,
+                hit_test: HitTestBackend::Winit,
+            },
+            size: (1280, 720),
+            fps,
+            seconds,
+            opacity: 1.0,
+        }
+    }
+
+    #[test]
+    fn a_finite_run_is_sized_for_every_frame_at_the_rate_the_loop_runs() {
+        assert_eq!(expected_frames(&config(30, Some(60.0))), 1800 + 64);
+        // The loop reads a zero rate as 1, so a 100 s run holds 100 frames, not the 64 spare slots alone.
+        assert_eq!(expected_frames(&config(0, Some(100.0))), 100 + 64);
+    }
+
+    #[test]
+    fn a_run_without_a_deadline_gets_a_fixed_ring() {
+        assert_eq!(expected_frames(&config(30, None)), 4096);
     }
 }

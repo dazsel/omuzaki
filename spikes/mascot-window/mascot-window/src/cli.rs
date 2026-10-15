@@ -185,8 +185,8 @@ pub struct WindowArgs {
     /// Window size in physical pixels, `WIDTHxHEIGHT` (at least 1024x256).
     #[arg(long, default_value = DEFAULT_SIZE, value_parser = parse_size)]
     pub size: (u32, u32),
-    /// Target frames per second.
-    #[arg(long, default_value_t = 30)]
+    /// Target frames per second (at least 1).
+    #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u32).range(1..))]
     fps: u32,
     /// Stop after this many seconds (default: run until closed or Esc).
     #[arg(long)]
@@ -240,6 +240,18 @@ mod tests {
         assert!(parse_opacity("-0.1").is_err());
         assert!(parse_opacity("NaN").is_err());
         assert!(parse_opacity("half").is_err());
+    }
+
+    #[test]
+    fn a_zero_frame_rate_is_refused() {
+        #[derive(clap::Parser)]
+        struct Wrapper {
+            #[command(flatten)]
+            window: WindowArgs,
+        }
+        use clap::Parser as _;
+        assert!(Wrapper::try_parse_from(["wrapper", "--fps", "0"]).is_err());
+        assert!(Wrapper::try_parse_from(["wrapper", "--fps", "1"]).is_ok());
     }
 
     #[test]

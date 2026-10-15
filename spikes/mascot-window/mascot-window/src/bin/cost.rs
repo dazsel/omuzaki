@@ -19,8 +19,8 @@ struct Cli {
     /// Window size in physical pixels.
     #[arg(long, default_value = "1920x1080", value_parser = parse_size)]
     size: (u32, u32),
-    /// Target frames per second.
-    #[arg(long, default_value_t = 30)]
+    /// Target frames per second (at least 1).
+    #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u32).range(1..))]
     fps: u32,
 }
 
