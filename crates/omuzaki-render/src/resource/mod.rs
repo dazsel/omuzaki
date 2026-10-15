@@ -15,7 +15,7 @@ use crate::arena::Arena;
 use crate::environment::GpuEnvironment;
 use material::GpuMaterial;
 use mesh::GpuMesh;
-use omuzaki_render_api::ResourceStats;
+use omuzaki_render_api::{ResourceStats, Scene};
 use target::GpuTarget;
 use texture::GpuTexture;
 
@@ -49,6 +49,22 @@ impl Resources {
             environments: &self.environments,
         };
         (scene, &mut self.targets)
+    }
+
+    /// Brings the outline directions and shadow bounds of every dynamic mesh `scene` draws up to date. The bounds are
+    /// read by shadow fitting (casters and receivers alike) and the blended sort, the directions only by the outline
+    /// pass, so a mesh that is not outlined never pays for its directions. Handles that miss are left for
+    /// [`FrameState::prepare`](crate::frame::FrameState::prepare) to report.
+    pub(crate) fn refresh_dynamic(&mut self, queue: &wgpu::Queue, scene: &Scene) {
+        for instance in &scene.instances {
+            let outlined = self
+                .materials
+                .get(instance.material.index(), instance.material.generation())
+                .is_some_and(|m| m.material.outline.is_some());
+            if let Some(mesh) = self.meshes.get_mut(instance.mesh.index(), instance.mesh.generation()) {
+                mesh.refresh(queue, outlined);
+            }
+        }
     }
 
     /// Counts and estimated GPU memory of everything live.
