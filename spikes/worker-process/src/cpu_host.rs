@@ -17,7 +17,7 @@ use spout_out::frame_tag;
 
 use crate::Error;
 use crate::analysis::{self, Analysis, Present};
-use crate::options::HostOptions;
+use crate::options::{self, HostOptions};
 use crate::pacing;
 use crate::proc_stats::{self, ProcSample};
 use crate::protocol::Msg;
@@ -105,18 +105,18 @@ fn present_loop(store: &Store, shared: &Shared, stop: &AtomicBool, period: Durat
         thread::sleep(Duration::from_millis(1));
     }
     let mut shown: Option<Held> = None;
-    let mut next = Instant::now();
+    let mut deadline = Instant::now();
     let mut skipped_ticks = 0;
     while !stop.load(Ordering::Acquire) {
+        thread::sleep(deadline.saturating_duration_since(Instant::now()));
+        let (following, missed) = pacing::advance(deadline, period, Instant::now());
+        deadline = following;
+        skipped_ticks += missed;
         let fresh = store.take_newest(&mut shown);
         let now_ms = shared.now_ms();
         if let Some(held) = &shown {
             presents.push(Present { t_ms: now_ms, index: held.index, fresh, age_ms: now_ms - held.arrived_ms });
         }
-        let (following, skipped) = pacing::advance(next, period, Instant::now());
-        next = following;
-        skipped_ticks += skipped;
-        thread::sleep(next.saturating_duration_since(Instant::now()));
     }
     (presents, skipped_ticks)
 }
@@ -260,7 +260,7 @@ pub fn run(options: &HostOptions) -> Result<Report, Error> {
         schedule: KillSchedule::new(options.seed, options.kill_window_ms.0, options.kill_window_ms.1),
     };
 
-    let period = Duration::from_secs_f64(1.0 / options.fps);
+    let period = options::period_for(options.fps)?;
     let presents = thread::scope(|scope| {
         let supervisor = scope.spawn(|| {
             let mark = |at: Mark| {

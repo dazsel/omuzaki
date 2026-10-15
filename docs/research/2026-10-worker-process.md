@@ -21,11 +21,11 @@ The raw reports are in `spikes/worker-process/results/`.
 
 | Question (from #1022) | Answer |
 |---|---|
-| Does a separate output-owner process hold the last frame for under 2 s while the renderer is killed and restarted? | **Yes on this lane, with a wide margin: longest hold 0.71 s over 600 kills (0.38 s in the main run).** The margin is mostly the lavapipe worker's tiny cold start (about 0.14 s). A real DX12 renderer's cold start is **unmeasured**, and it is the term that decides this on Windows. |
-| Did the output ever go without presenting? | Held frames count as presented, so the presenter never stops. Three runs, about 6 minutes of presenting: **longest interval between presents 107.6 ms (3.2 periods), 136 ms after a kill; 1 interval above two periods (66.7 ms) in the three runs.** See "Present gaps". |
-| Kill to first new frame | p50 142 ms, p95 201 ms, max 358 ms (200 kills, warm Mesa cache). |
-| Hand-off cost at 1080p | CPU lane: worker copy-in 3.2 ms, host read 3.1 ms per frame (p50). The GPU-lane figure against the 1.5 ms budget is **pending an owner run**. |
-| Leaks | Host open descriptors 5 before and 5 after 200 kills; host RSS did not grow (28.8 MB peak). GPU memory and Windows handles: pending. |
+| Does a separate output-owner process hold the last frame for under 2 s while the renderer is killed and restarted? | **Yes on this lane, with a wide margin: longest hold 0.74 s over 600 kills (0.37 s in the main run).** The margin is mostly the lavapipe worker's tiny cold start (about 0.13 s). A real DX12 renderer's cold start is **unmeasured**, and it is the term that decides this on Windows. |
+| Did the output ever go without presenting? | Held frames count as presented, so the presenter never stops. Three runs, about 6 minutes of presenting: **longest interval between presents 78.6 ms (2.4 periods); one interval above two periods (66.7 ms) in the three runs, and it ended at the moment of a kill, so it began before that kill.** No two presents were closer than 31.2 ms. See "Present gaps". |
+| Kill to first new frame | p50 141 ms, p95 212 ms, max 355 ms (200 kills, warm Mesa cache). |
+| Hand-off cost at 1080p | CPU lane: worker copy-in 3.0 ms, host read 3.2 ms per frame (p50). The GPU-lane figure against the 1.5 ms budget is **pending an owner run**. |
+| Leaks | Host open descriptors 5 before and 5 after 200 kills; host RSS did not grow (29.0 MB peak). GPU memory and Windows handles: pending. |
 | In-process device re-creation | **Not measured** (not in the Linux split). |
 
 ## Prior art, in one paragraph
@@ -48,8 +48,8 @@ read (see open questions).
 Two processes, `wp-spike host` and `wp-spike worker` (the host starts the worker from the same executable).
 
 - **Host** owns the output. It keeps the newest complete frame in its own memory (the *last-frame slot*) and presents at a
-  steady 30 fps from a plain `sleep` loop (a tick that runs late skips the deadlines it missed instead of catching up in a
-  burst, and the skips are counted): each tick shows the newest complete frame, or the previous one again when none arrived.
+  steady 30 fps from a plain `sleep` loop (each deadline is `max(previous deadline, now) + period`, the worker loop's rule, so
+  no present follows the previous one by less than a full period; the whole periods a tick was late are counted): each tick shows the newest complete frame, or the previous one again when none arrived.
   Presenting here records a timestamp and the frame's age; the real output call (Spout, NDI) is the other spike's subject.
 - **Worker** renders the broadcast-out test picture (`scene.wgsl`, via `SceneRenderer`) with wgpu on lavapipe, reads it
   back, writes it into one of 3 slots in a POSIX shared-memory file (`/dev/shm`, positioned reads and writes rather than
@@ -62,12 +62,12 @@ Two processes, `wp-spike host` and `wp-spike worker` (the host starts the worker
   a worker died (those were never posted).
 - **Kills.** The host sends SIGKILL (`Child::kill`) at seeded random moments: a SplitMix64 sequence from seed 1022 (the
   other runs say theirs), uniform 20 to 1500 ms after the worker was spawned, then reaps, respawns at once and repeats. 200 kills per
-  run. Kills before a worker's first frame are *startup kills* (14 of 200 in the main run). A final worker is left alone
+  run. Kills before a worker's first frame are *startup kills* (15 of 200 in the main run). A final worker is left alone
   until its first frame so the 200th kill has something to measure to. A worker that dies **by itself** (not by our
   kill) fails the run at once with the time and exit status, so it can never be counted as an injected kill; none did. The run ends with no worker left (checked).
 - **Main run:** 30 s of one undisturbed worker (per-frame costs), then 30 cold starts (a worker left alone until its first frame,
   then stopped), then 200 kills. **Start-up timings come only from the workers nothing interrupted** (baseline, cold-start and
-  probe workers, n = 32); workers the kill schedule started are censored for start-up (14 of 200 never posted a frame) and are
+  probe workers, n = 32); workers the kill schedule started are censored for start-up (15 of 200 never posted a frame) and are
   not in the cold-start tables. Two more runs: Mesa's shader cache
   disabled (`MESA_SHADER_CACHE_DISABLE=true`, "cold"), and a startup-heavy run (kills 20 to 250 ms after spawn, seed 77).
 - **Definitions.** *Kill to first new frame*: the kill call to the first frame, usable by the output, from a later worker.
@@ -80,64 +80,65 @@ Two processes, `wp-spike host` and `wp-spike worker` (the host starts the worker
 
 | ms | warm cache (main) | Mesa cache off | startup-heavy kills |
 |---|---|---|---|
-| kill to first new frame, p50 / p95 / max | 142 / 201 / 358 | 260 / 478 / 691 | 146 / 381 / 528 |
-| of which kills before the worker's first frame (n) | 14 | 35 | 84 |
-| hold, p50 / p95 / max | 158 / 295 / **376** | 281 / 626 / **709** | 227 / 538 / **541** |
-| frame age at present, p95 / max | 125 / 374 | 265 / 707 | 293 / 526 |
-| host respawn latency (kill to next process creation), p50 / p95 / max | 12.7 / 17.9 / 36.0 | 12.2 / 18.2 / 171 | 10.3 / 15.8 / 33.0 |
+| kill to first new frame, p50 / p95 / max | 141 / 212 / 355 | 260 / 474 / 736 | 161 / 438 / 720 |
+| of which kills before the worker's first frame (n) | 15 | 35 | 93 |
+| hold, p50 / p95 / max | 155 / 285 / **368** | 283 / 578 / **740** | 262 / 579 / **734** |
+| frame age at present, p95 / max | 123 / 342 | 262 / 714 | 370 / 719 |
+| host respawn latency (kill to next process creation), p50 / p95 / max | 13.1 / 20.2 / 43.4 | 11.9 / 18.1 / 35.2 | 10.2 / 17.7 / 57.7 |
 
-Against 2.0 s, the worst hold of any run is 0.71 s. A previous, equivalent run of the main configuration (before the
-fixes in this round) gave kill to first frame 142 / 200 / 376 ms and a longest hold of 392 ms, so run to run spread at the
-tail is a few tens of ms.
+Against 2.0 s, the worst hold of any run is 0.74 s. Earlier runs of the same configurations, before the fixes of rounds 1 and 2,
+had a longest hold of 392 ms (main) and 1.05 s then 0.54 s (startup-heavy), so the tail of the runs that kill during start-up
+varies by several hundred ms between runs.
 
 ### Worker cold start (process creation to a usable first frame), uncensored
 
 Workers left alone until their first frame: the baseline worker, 30 cold starts and the probe worker (n = 32; n = 31 without a
 baseline). Workers started by the kill schedule are not in these tables because a kill before the first frame hides exactly
-the slow starts.
+the slow starts. The "very first worker" row is reported only when worker 1 was one of those uninterrupted workers.
 
 | ms | warm cache | Mesa cache off |
 |---|---|---|
-| spawn to `Ready` (device and pipeline exist), p50 / p95 / max | 86 / 105 / 140 | 97 / 134 / 136 |
-| spawn to first frame the host can use, p50 / p95 / max | 140 / 161 / 256 | 240 / 286 / 363 |
-| the very first worker of the run | 256 | 363 |
-| inside the worker: instance + adapter + device, p50 / max | 75 / 127 | 87 / 125 |
-| inside the worker: pipeline build, p50 / max | 8.1 / 12.6 | 6.0 / 11.1 |
+| spawn to `Ready` (device and pipeline exist), p50 / p95 / max | 78 / 104 / 137 | 101 / 132 / 136 |
+| spawn to first frame the host can use, p50 / p95 / max | 125 / 153 / 268 | 255 / 305 / 338 |
+| the very first worker of the run | 268 | 338 |
+| inside the worker: instance + adapter + device, p50 / max | 68 / 127 | 92 / 124 |
+| inside the worker: pipeline build, p50 / max | 6.5 / 11.4 | 6.4 / 10.3 |
 
-Shader caching matters even for software Vulkan: turning it off added about 100 ms to the first frame. Whether wgpu's own pipeline cache
+Shader caching matters even for software Vulkan: turning it off added about 130 ms to the first frame. Whether wgpu's own pipeline cache
 (on or off) changes anything was **not tested**.
 
 ### Present gaps (held frames count as presented)
 
-| main run, kill phase (4,494 presents) | |
+| main run, kill phase (4,459 presents) | |
 |---|---|
-| presents that re-showed the previous frame | 886 (20 percent) |
-| interval between presents, p50 / p95 / p99 / max | 33.3 / 34.2 / 37.1 / **107.6** ms |
-| intervals above 66.7 ms (two periods): "real gaps" | 1 (107.6 ms, 136 ms after a kill) |
-| deadlines skipped after a late tick (not caught up in a burst) | 3 |
-| same, 30 s undisturbed baseline (899 presents) | max 58.2 ms, 0 gaps |
+| presents that re-showed the previous frame | 768 (17 percent) |
+| interval between presents, min / p50 / p95 / p99 / max | 31.2 / 33.5 / 34.2 / 37.2 / **78.6** ms |
+| intervals above 66.7 ms (two periods): "real gaps" | 1 (78.6 ms, ending at the moment of a kill) |
+| whole periods a tick was late | 1 |
+| same, 30 s undisturbed baseline (892 presents) | min 33.4, max 41.8 ms, 0 gaps |
 
-Cache-off run: max 64.5 ms, 0 gaps, 1 skipped deadline. Startup-heavy run: max 47.1 ms, 0 gaps, 0 skipped. So in the three runs the
-output went without a present for more than two periods once, for 107.6 ms, and that interval began 136 ms after a kill. The 4-core
-VM runs lavapipe on all cores next to the host, so scheduler contention around the respawn is the likely cause, but **that was
-not tested**, and a gap near a kill cannot be ruled out as caused by the kill. The earlier run of the same configuration (before
-the presenter skipped missed deadlines) had its worst interval at 83.7 ms, 669 ms after a kill.
+Cache-off run: min 31.9, max 53.9 ms, 0 gaps. Startup-heavy run: min 33.4, max 40.8 ms, 0 gaps. In the three runs the output went
+without a present for more than two periods once, for 78.6 ms; that interval ended at a kill, so it started before it. The 4-core
+VM runs lavapipe on all cores next to the host, so scheduler contention is the likely cause, but **that was not tested**. The
+median interval is 33.5 ms, not 33.3: the deadline rule adds the wake-up overshoot to each period, so the output ran at about
+29.7 fps (mean interval 33.65 ms). Before round 2 the presenter caught up after a late tick, and the reports then showed
+intervals as short as 1.6 to 2.2 ms; none remain.
 
 ### What the host costs
 
 | 1080p BGRA, 30 fps | per frame, p50 / p95 / p99 / max | |
 |---|---|---|
-| worker draw + readback (lavapipe) | 18.2 / 24.6 / 34.9 / 97.5 ms | not the host's cost |
-| worker copy into the slot | 3.2 / 4.4 / 7.5 / 16.5 ms | pwrite into tmpfs |
-| host read of the slot + tag check | 3.1 / 4.4 / 7.3 / 25.2 ms | the host's hand-off cost |
+| worker draw + readback (lavapipe) | 18.4 / 23.2 / 30.6 / 110.4 ms | not the host's cost |
+| worker copy into the slot | 3.0 / 3.8 / 5.3 / 6.8 ms | pwrite into tmpfs |
+| host read of the slot + tag check | 3.2 / 4.2 / 6.4 / 17.3 ms | the host's hand-off cost |
 
 | host process | undisturbed 30 s | kill phase, 150 s |
 |---|---|---|
-| CPU, share of one core | 9.5 % | 8.4 % |
-| resident memory (peak) | 28.8 MB | 28.8 MB (21 MB at the end) |
+| CPU, share of one core | 9.9 % | 8.5 % |
+| resident memory (peak) | 28.7 MB | 29.0 MB (21 MB at the end) |
 | open descriptors, start / end | 5 / 5 | 5 / 5 |
 
-The host's CPU is almost all the 8.29 MB read per frame (3.1 ms times 30). That is the cost of a CPU-lane hand-off, not of the GPU
+The host's CPU is almost all the 8.29 MB read per frame (3.2 ms times 30). That is the cost of a CPU-lane hand-off, not of the GPU
 lane; it is far above the 1.5 ms GPU budget and is not comparable to it. The host does no real output call here.
 
 ## The Windows lane (pending an owner run)
@@ -177,16 +178,16 @@ cache comparison; those are in #1022's list and still to be written. Paste the J
 ## What it means for the supervisor design (#1023)
 
 1. **A separate output-owner process is enough to keep the output alive through `kill -9` of the renderer on this lane.** The
-   output kept presenting through all 600 kills (one interval above two periods, 107.6 ms, which began 136 ms after a kill), and the
-   picture was held for at most 0.71 s, 0.38 s with a warm cache. The restart machinery costs about 13 ms (reap and respawn) plus
+   output kept presenting through all 600 kills (one interval above two periods, 78.6 ms, which ended at a kill), and the
+   picture was held for at most 0.74 s, 0.37 s with a warm cache. The restart machinery costs about 13 ms (reap and respawn) plus
    about 3 ms of host read per frame; nearly all the hold is the worker's own cold start.
 2. **The 2 s budget is therefore a budget for the real renderer's cold start**: roughly 1.9 s minus the 13 ms respawn and the
-   time to render the first frame. Lavapipe's device creation is 75 ms; D3D12 device creation, shader compile and model/asset
+   time to render the first frame. Lavapipe's device creation is 68 ms; D3D12 device creation, shader compile and model/asset
    re-upload on a real GPU are **not measured** and may be much larger. The Windows run answers this.
-3. **Cold caches matter**: with Mesa's cache off the first frame took about 100 ms longer (240 ms against 140 ms at p50), and the very first
-   worker of a run is slower than the rest (256 ms and 363 ms). A supervisor should keep the driver caches warm and not wipe them on restart.
+3. **Cold caches matter**: with Mesa's cache off the first frame took about 100 ms longer (255 ms against 125 ms at p50), and the very first
+   worker of a run is slower than the rest (268 ms and 338 ms). A supervisor should keep the driver caches warm and not wipe them on restart.
 4. **Do not render in the host.** The host stayed at about 9 percent of one core and 29 MB while a worker burned about 1.6 cores
-   rendering, and its tick held through the kills (the single interval above two periods was 107.6 ms).
+   rendering, and its tick held through the kills (the single interval above two periods was 78.6 ms).
 5. **Recommended process model (for #1023, from this data plus reasoning, not a measurement):** a small, long-lived *output host*
    that owns the outputs, the last-frame slot and the supervisor, and never loads the renderer, driver, tracker or encoder
    libraries; the renderer in a worker the host can kill and restart. Processes should be given to the parts that load native

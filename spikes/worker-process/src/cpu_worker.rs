@@ -3,7 +3,7 @@
 
 use std::io::Write;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use spout_out::clock::Clock;
 use spout_out::frame_tag::FrameTag;
@@ -12,6 +12,7 @@ use spout_out::scene::{SceneParams, SceneRenderer};
 
 use crate::Error;
 use crate::ack::SlotGate;
+use crate::options;
 use crate::protocol::Msg;
 use crate::shm::{SLOTS, SlotFile};
 
@@ -51,7 +52,7 @@ pub fn run(args: &WorkerArgs) -> Result<(), Error> {
     post(Msg::Ready { gpu_ns, scene_ns: ns(scene_started) })?;
 
     let clock = Clock::new();
-    let period = Duration::from_secs_f64(1.0 / args.fps);
+    let period = options::period_for(args.fps)?;
     let mut deadline = Instant::now();
     for index in 0u64.. {
         // A frame that took longer than the period does not make the next one start early.

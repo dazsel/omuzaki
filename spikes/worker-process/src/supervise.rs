@@ -251,15 +251,40 @@ impl Worker {
     }
 
     /// SIGKILLs the worker, reaps it and waits for its reader to see the pipe close.
+    ///
+    /// A worker that ended by itself in the moment between the schedule firing and the kill is a crash, not an injected
+    /// kill: it is caught if its pipe had already closed, or, after the fact, if the status the reap returns is not our signal.
     fn stop(&mut self, shared: &Shared, counted: bool) -> Result<(), Error> {
         let t_ms = shared.now_ms();
+        if self.has_exited(shared) {
+            return Err(self.exited_early(shared));
+        }
         self.child.kill().map_err(Error::io("killing the worker"))?;
-        self.child.wait().map_err(Error::io("reaping the worker"))?;
+        let status = self.child.wait().map_err(Error::io("reaping the worker"))?;
+        if !killed_by_us(status) {
+            // Its reader ends by itself now that the process is gone.
+            return Err(Error::WorkerExited { worker: self.number, at_ms: t_ms, reason: status.to_string() });
+        }
         shared.update(|t| t.kills.push(Kill { worker: self.number, t_ms, counted }));
         match self.reader.take() {
             Some(reader) => reader.join().map_err(|_| Error::Panicked)?,
             None => Ok(()),
         }
+    }
+}
+
+/// Whether `status` is the end our SIGKILL causes. Windows `TerminateProcess` leaves no signal to tell it from an exit code,
+/// so there the pipe check in `stop` is the only guard.
+fn killed_by_us(status: std::process::ExitStatus) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        status.signal() == Some(9)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = status;
+        true
     }
 }
 
@@ -406,5 +431,26 @@ mod tests {
             other => panic!("wrong error: {other}"),
         }
         assert!(shared.take().kills.is_empty(), "an early exit must not be recorded as an injected kill");
+    }
+
+    #[test]
+    fn a_worker_that_exited_just_before_the_kill_is_a_crash_not_a_kill() {
+        let shared = Arc::new(Shared::new());
+        let mut spawn =
+            |_| Command::new("sh").args(["-c", "exit 4"]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn();
+        let on_frame: OnFrame = Arc::new(|_, _| true);
+        let mut worker = Worker::start(1, Phase::Kill, &mut spawn, &shared, &on_frame).unwrap();
+        // Let it exit by itself, then stop it as the schedule would, without having noticed the exit first.
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(matches!(worker.stop(&shared, true), Err(Error::WorkerExited { worker: 1, .. })));
+        assert!(shared.take().kills.is_empty());
+    }
+
+    #[test]
+    fn a_status_that_is_not_our_signal_is_not_a_kill() {
+        use std::os::unix::process::ExitStatusExt;
+        assert!(killed_by_us(std::process::ExitStatus::from_raw(9)));
+        assert!(!killed_by_us(std::process::ExitStatus::from_raw(4 << 8)));
+        assert!(!killed_by_us(std::process::ExitStatus::from_raw(11)));
     }
 }

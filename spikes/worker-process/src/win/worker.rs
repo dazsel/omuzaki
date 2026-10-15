@@ -3,7 +3,7 @@
 #![allow(unsafe_code)]
 
 use std::io::Write;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use spout_out::clock::Clock;
 use spout_out::frame_tag::FrameTag;
@@ -14,6 +14,7 @@ use super::shared::{create_shared_fence, create_shared_texture, raw_device_and_q
 use super::{SLOTS, object_name};
 use crate::Error;
 use crate::ack::SlotGate;
+use crate::options;
 use crate::protocol::Msg;
 
 /// What the worker is told on its command line.
@@ -98,7 +99,7 @@ pub fn run(args: &WorkerArgs) -> Result<(), Error> {
     let mut gate = SlotGate::<{ SLOTS as usize }>::new();
     let mut acks = std::io::stdin().lock();
     let clock = Clock::new();
-    let period = Duration::from_secs_f64(1.0 / args.fps);
+    let period = options::period_for(args.fps)?;
     let mut deadline = Instant::now();
     for index in 0u64.. {
         std::thread::sleep(deadline.saturating_duration_since(Instant::now()));

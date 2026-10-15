@@ -96,9 +96,7 @@ fn host_args(command: Command) -> Result<HostArgs, Error> {
                 .ok_or_else(|| Error::Config(format!("--worker-env wants KEY=VALUE, got {pair:?}")))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    if !(fps.is_finite() && fps > 0.0) {
-        return Err(Error::Config(format!("--fps must be a positive number, got {fps}")));
-    }
+    worker_process::options::period_for(fps)?;
     let options = worker_process::options::HostOptions {
         kills,
         seed,

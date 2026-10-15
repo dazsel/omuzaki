@@ -20,7 +20,7 @@ use super::shared::{open_by_name, raw_device_and_queue};
 use super::{SLOTS, object_name};
 use crate::Error;
 use crate::analysis::{self, Analysis, Present};
-use crate::options::HostOptions;
+use crate::options::{self, HostOptions};
 use crate::pacing;
 use crate::protocol::Msg;
 use crate::schedule::KillSchedule;
@@ -141,8 +141,12 @@ fn present_loop(
     while frames_taken.load(Ordering::Acquire) == 0 && !stop.load(Ordering::Acquire) {
         thread::sleep(Duration::from_millis(1));
     }
-    let (mut seen, mut next) = (0u64, Instant::now());
+    let (mut seen, mut deadline) = (0u64, Instant::now());
     while !stop.load(Ordering::Acquire) {
+        thread::sleep(deadline.saturating_duration_since(Instant::now()));
+        let (following, missed) = pacing::advance(deadline, period, Instant::now());
+        deadline = following;
+        out.skipped_ticks += missed;
         let (count, arrived_ms) = *last_arrival_ms.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if sender.send().and_then(|()| bridge.wait_gpu().map_err(|_| spout_out::spout::SpoutError::Send)).is_err() {
             out.send_errors += 1;
@@ -151,10 +155,6 @@ fn present_loop(
         let now_ms = shared.now_ms();
         out.presents.push(Present { t_ms: now_ms, index: count, fresh: count != seen, age_ms: now_ms - arrived_ms });
         seen = count;
-        let (following, skipped) = pacing::advance(next, period, Instant::now());
-        next = following;
-        out.skipped_ticks += skipped;
-        thread::sleep(next.saturating_duration_since(Instant::now()));
     }
     out
 }
@@ -254,7 +254,7 @@ pub fn run(options: &HostOptions) -> Result<Report, Error> {
         schedule: KillSchedule::new(options.seed, options.kill_window_ms.0, options.kill_window_ms.1),
     };
 
-    let period = Duration::from_secs_f64(1.0 / options.fps);
+    let period = options::period_for(options.fps)?;
     let presented = thread::scope(|scope| {
         let supervisor = scope.spawn(|| {
             let result = supervise::run(&shared, config, spawn, &on_frame, |_| {});

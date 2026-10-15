@@ -72,7 +72,8 @@ pub struct Analysis {
     pub spawn_to_ready_ms: Summary,
     /// Process creation to the first frame the host could use, ms; the same uncensored workers.
     pub spawn_to_first_frame_ms: Summary,
-    /// The same for the very first worker of the run (nothing of the worker was in the page cache).
+    /// The same for the very first worker of the run (nothing of the worker was in the page cache); `None` when that
+    /// worker was a kill-phase one (no baseline and no cold starts), whose start-up the kill schedule may have cut short.
     pub first_worker_spawn_to_first_frame_ms: Option<f64>,
     /// Inside the worker: instance, adapter and device, ms; the same uncensored workers.
     pub worker_gpu_init_ms: Summary,
@@ -169,7 +170,11 @@ pub fn analyse(timeline: &Timeline, presents: &[Present], host_ingest_ms: &[f64]
                 .filter_map(|s| Some(timeline.readies.iter().find(|r| r.worker == s.worker)?.t_ms - s.t_ms)),
         ),
         spawn_to_first_frame_ms: summary(spawn_to_first.iter().copied()),
-        first_worker_spawn_to_first_frame_ms: spawn_to_first.first().copied(),
+        first_worker_spawn_to_first_frame_ms: timeline
+            .spawns
+            .first()
+            .filter(|s| s.phase != Phase::Kill)
+            .and_then(|s| Some(first_frame_of(s.worker)? - s.t_ms)),
         worker_gpu_init_ms: summary(uncensored_readies(timeline, &uncensored).map(|r| r.gpu_ms)),
         worker_scene_build_ms: summary(uncensored_readies(timeline, &uncensored).map(|r| r.scene_ms)),
         kill_phase_workers: kill_spawns.len(),
@@ -221,7 +226,7 @@ mod tests {
         assert_eq!(a.hold_ms.max, 500.0);
         assert_eq!(a.respawn_latency_ms.max, 10.0);
         assert_eq!(a.spawn_to_ready_ms.max, 290.0);
-        assert_eq!(a.first_worker_spawn_to_first_frame_ms, Some(390.0));
+        assert_eq!(a.first_worker_spawn_to_first_frame_ms, None);
     }
 
     #[test]
@@ -234,6 +239,17 @@ mod tests {
         let mut t = timeline();
         t.arrivals.retain(|a| a.worker != 1);
         assert_eq!(analyse(&t, &[], &[], 33.3).kill_phase_workers_without_a_frame, 1);
+    }
+
+    #[test]
+    fn the_first_worker_is_a_start_up_sample_only_if_nothing_could_interrupt_it() {
+        // With `--baseline-s 0 --cold-starts 0` worker 1 is a kill-phase worker: no first-worker figure at all.
+        let a = analyse(&timeline(), &[], &[], 33.3);
+        assert_eq!(a.first_worker_spawn_to_first_frame_ms, None);
+        // With a baseline worker first, it is reported.
+        let mut t = timeline();
+        t.spawns[0].phase = Phase::Baseline;
+        assert_eq!(analyse(&t, &[], &[], 33.3).first_worker_spawn_to_first_frame_ms, Some(100.0));
     }
 
     #[test]
