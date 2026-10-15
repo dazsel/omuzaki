@@ -28,7 +28,7 @@ same stages); `scenes.md` D7 (props). Pages named alone are in `docs/design/`.
 | D5 | **Motion is pose layers plus IK goals in the §8 order:** after the animator, before the rig. Typing, pointer, pen and gamepad are device motions sharing one hand allocator; each hand belongs to one device at a time. A tracked bone wins (PF-23) through a `tracked` bone mask, with a 0.3 s hand-over. No `omuzaki-anim-api` change. | §6 |
 | D6 | **Locomotion** is a state machine (idle, walk, run, jump, sit, emote) over a 1-D speed blend; walk and run are a procedural gait (licence-clean by construction), jump, sit and emotes are pose clips (#223). The root moves procedurally, matched to stride; foot planting (`omuzaki-rig`) removes the rest of the slide. A set is a library item that materialises its values and clips into the character and pins itself (ADR 0019 §4). | §7 |
 | D7 | **Props** are five ST-03 prop kinds with named anchors (key plane, pad plane, tablet plane, grips). Hands use the anchors whether the prop is drawn or hidden. A desk is placed from the character's own proportions. | §8 |
-| D8 | **A take stores what the video showed:** zone and button edges, coarse pointer and pen, pad state, locomotion intents and the root, all at frame resolution, as a new additive `Motion` record kind (a minor version, ADR 0052 rules), with a complete motion checkpoint at every group start so a clip cut there replays exactly. Never a key code, a chord or a sub-frame time. | §9 |
+| D8 | **A take stores what the video showed:** zone and button edges, coarse pointer and pen, pad state, locomotion intents and the root, all at frame resolution, as a new additive `Motion` record kind (a minor version, ADR 0052 rules), with a complete motion checkpoint at every group start so a clip cut there replays exactly. Never a key code, a chord or a sub-frame time; zone edges never leave the machine unless the person opts in for that take (exports carry the resolved motion instead). | §9 |
 | D9 | **Budget on `R`:** input plus motion at most 0.6 ms of CPU per 30 fps frame (7.5 % of `cpu.total`'s 8 ms), split as capture 0.5 ms (0.2 % of 8 cores) and frame-thread motion 0.1 ms p95. Estimates until measured. | §10 |
 
 ## 1. What this covers
@@ -791,7 +791,7 @@ the virtual mouse and the hand states persist through idle stretches), fixed lit
 
 ```
 member u8 | flags u8 (HAS_KEYS, HAS_BUTTONS, HAS_POINTER, HAS_PEN, HAS_PAD, HAS_LOCO, HAND_ONLY, CHECKPOINT)
-  | aux u8 (bit 0 HAS_SETTINGS, bit 1 HAS_RESET, bit 2 HAS_SOURCES) | reserved u8
+  | aux u8 (bit 0 HAS_SETTINGS, bit 1 HAS_RESET, bit 2 HAS_SOURCES, bit 3 RESOLVED) | reserved u8
 reset:    u64 (SourceMask: the sources whose held state ended before this frame's edges, §5a; HAS_RESET)
 sources:  n u8 | n × (src u8 | class u8 | up u8)              // SourceUp and SourceGone in this frame (HAS_SOURCES)
 keys:     n u8 | n × (src u8 | zone u8 | down u8)             // edges, in drained order within the frame (§2); no times
@@ -802,6 +802,7 @@ pen:      u u8 | v u8 | pressure u8 | flags u8 (IN_RANGE, CONTACT) | tilt i8 × 
 pad:      pad u8 | sticks i8 × 4 | triggers u8 × 2 | reserved u8               // levels of the active pad; zones are pad_edges
 loco:     state u8 | flags u8 (RUN, JUMP, SIT) | emote u8 | reserved u8 | move i8 × 2 | 2 reserved | root x, y, z f32 | yaw f32
 settings: len u16 | the motion settings (§6.5) as written, when they changed this frame (HAS_SETTINGS)
+resolved: len u16 | the frame's motion result: layer poses and palm and look goals (RESOLVED; only in exported takes)
 checkpoint (group-start chunks only): len u16 | MotionCheckpoint bytes (below)
 ```
 
@@ -843,6 +844,14 @@ left out of the motion too.
 - **Hand-only** frames carry `HAND_ONLY` and zone values reduced to their side.
 - The record is personal data under T5: off with the input track (`record.input`), deleted with the take, and never
   picked up by publish or upload ops unless the person names the file.
+- **Zone edges stay on this machine** (the Director's condition on ADR 0060 decision 6). A take that leaves the
+  machine (an export, a collaborator send, a share link) has its `Motion` records rewritten on the way out: the `keys`
+  and `pad_edges` entries and the checkpoint's held-zone sets are dropped, and a `RESOLVED` block takes their place
+  per frame, the motion result (the three layer poses and the palm and look goals, as sparse rotations and
+  transforms), so the receiver re-renders the same body without ever seeing which zones were pressed. The person can
+  opt in to keep zone edges for one take (`take.share { keep_zone_edges: true }`, a person-only choice made at the
+  share step, never a setting). Why: a zone stream resembles keypad input (§3), and a frame-rate record of zone edges
+  is enough for a dictionary attack on what was typed, which is more than the video shows.
 
 ## 10. D9: budgets on `R`
 
@@ -1472,7 +1481,10 @@ row without both ends inside a task would be an interface nobody owns; there is 
 ### ST-4: `omuzaki-stage`: the take's `Motion` records and the motion provider
 
 - **Fence:** `crates/omuzaki-stage/src/take/motion.rs` and its `mod` line in `src/take/mod.rs` (#1357 creates that
-  folder), `crates/omuzaki-stage/tests/take_motion.rs`.
+  folder), `crates/omuzaki-stage/tests/take_motion.rs`; the export rewrite of `Motion` records (drop zone edges, write
+  `RESOLVED`) where the take leaves the machine, `crates/omuzaki-take/src/export_motion.rs` with its `mod` line (the
+  `omuzaki-take` lib of #1318 and #1355; Runtime area, its lead signs off), and the `keep_zone_edges` choice on the
+  share or export op that #1381 and #1382 own.
 - **Contract:** ST-4A; takes.md T2, T3 and T5; §9; the `motion` live-state provider (`register_take_state!`: the seed
   and the motion settings) and the per-frame data ST-1 and ST-2 already hold.
 - **Acceptance:** the records hold only the fields of §9's layout (a decoder check over the whole take: every byte is
@@ -1482,7 +1494,10 @@ row without both ends inside a task would be an interface nobody owns; there is 
   later `locomotion.set`, one mid-transition, one during a typing burst, and one in an idle stretch after walking);
   **short edges:** a click, a key tap and a pad tap whose down and up fall in the same frame replay as strikes;
   **resets and settings:** a pause with keys held, a device unplugged, and a `detail` switch, recorded mid-take, replay
-  with the same fingers lifting in the same frame; check green.
+  with the same fingers lifting in the same frame; **zone edges stay local:** exporting or sharing the 120 s take
+  without the opt-in writes no `keys` or `pad_edges` entry and no held-zone set (checked by decoding every record of the
+  exported file), and the exported take re-renders to the same frames from its `RESOLVED` blocks; with the opt-in for
+  that take the zone edges are kept; check green.
 
 ### EV-1: the evidence cases for typing, pointer, pad and locomotion
 

@@ -33,7 +33,7 @@ the feature. The spec forbids game hooks and injection, and gates the capture be
    screen position; pen position is coarsened to a 32 x 32 grid. A property test proves two key streams that differ
    only inside zones give byte-identical output on every surface, and capture code never puts a key value in a panic
    message.
-3. **Rings, epochs and holders keep held state honest.** Backends register themselves and are known to the contract
+   **Rings, epochs and holders keep held state honest.** Backends register themselves and are known to the contract
    only by an opaque `BackendId`; each owns its rings (one producer each), consumers drain them in turn, and takes and
    replays record the drained order. Every entry carries its device's `SourceTag` and two epoch stamps (capture and
    backend); a pause, a stop or a backend exiting closes its epoch, so nothing read after it reaches a consumer, and
@@ -41,10 +41,10 @@ the feature. The spec forbids game hooks and injection, and gates the capture be
    press started, whatever the table, chord or modifiers say by then; an action held by several sources ends only when
    the last lets go; a full ring keeps releases, and per-source snapshots reconcile after any drop. The control thread,
    which runs the indicator check and the kill switch, never waits on a consumer, a backend or a surface.
-4. **Chords stay out of the executor.** Binding chords live in a machine-local store held by the desktop UI and never
+3. **Chords stay out of the executor.** Binding chords live in a machine-local store held by the desktop UI and never
    inserted into `Services`; ops, events, MCP and agents see binding ids, names and actions only. Learning a chord is a UI
    call, not an op, and reads OS input only while capture is on with its indicator shown.
-5. **Capture is a person's act, shown while it runs.** `input.capture.start` needs scope `input` and is `person_only`;
+4. **Capture is a person's act, shown while it runs.** `input.capture.start` needs scope `input` and is `person_only`;
    `input.capture.pause` and `input.capture.stop` are registered with `read`, so any actor can turn capture off. A
    surface installs its indicator with the hub (a hub API, never an op or a service) and writes a heartbeat the hub only
    reads; start fails with `NoIndicator` unless it is shown (an installed indicator is visible in every state, `Off` included), capture pauses when it stops
@@ -52,13 +52,18 @@ the feature. The spec forbids game hooks and injection, and gates the capture be
    runs, with the others listed as degraded, and is `Failed` only when none runs. No new scope: `input` already exists. The
    protected-program kill switch checks whether named programs run, which `Scope::Process` governs: its list is set
    only with `process` (or by the person in Settings), and the pause reason is shown only to actors with `process`.
-6. **Motion is pose layers and IK goals after the animator and before the rig** (spec §8 order: humanoid, IK, node
+5. **Motion is pose layers and IK goals after the animator and before the rig** (spec §8 order: humanoid, IK, node
    constraints, springs), masked by the bones a tracker owns, so a tracked arm wins with a 0.3 s hand-over. No
    `omuzaki-anim-api` change: palm orientation goes through `omuzaki-rig`'s hand targets in the stage.
-7. **Takes store what the video showed:** zone and button edges, coarse pointer and pen, pad state, locomotion intents
+6. **Takes store what the video showed:** zone and button edges, coarse pointer and pen, pad state, locomotion intents
    and the root, at frame resolution, in a new additive `Motion` record (a minor version of the take format, ADR 0052),
-   with a complete motion checkpoint at each group start so a replay clip can start at any group.
-8. **Locomotion sets are library items that materialise** (ADR 0019 §4): applying one writes its values and its clips'
+   with a complete motion checkpoint at each group start so a replay clip can start at any group. **Zone edges stay
+   on this machine** (the Director's condition): exporting or sharing a take outside the machine (an export, a
+   collaborator send, a share link) drops the `Motion` records' zone edges (keys and pad zones) and keeps the motion
+   result (the resolved layer poses and IK goals) in their place, unless the person opts in for that take. The reason:
+   a zone stream resembles keypad input, and a frame-rate record of zone edges is enough for a dictionary attack on what
+   was typed, which is more than the video shows.
+7. **Locomotion sets are library items that materialise** (ADR 0019 §4): applying one writes its values and its clips'
    poses into the character with a pinned `applied/<app>` record; the runtime never reads the library.
 
 ## Consequences
