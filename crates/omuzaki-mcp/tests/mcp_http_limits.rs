@@ -222,7 +222,9 @@ fn answer_has_started(stream: &TcpStream) -> bool {
     match peek.as_mut().poll(&mut context) {
         std::task::Poll::Pending => false,
         std::task::Poll::Ready(Ok(_)) => true,
-        std::task::Poll::Ready(Err(error)) => panic!("the stalled connection failed before the answer started: {error}"),
+        std::task::Poll::Ready(Err(error)) => {
+            panic!("the stalled connection failed before the answer started: {error}")
+        }
     }
 }
 
