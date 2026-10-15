@@ -80,7 +80,7 @@ pub(crate) struct Edit {
 }
 
 /// The map of files; see the module docs.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct Layout {
     files: BTreeMap<Segs, Entry>,
     /// Files on disk whose node is gone; `save` deletes them after writing the new ones.
@@ -114,6 +114,11 @@ impl Layout {
     /// True if `save` has anything to do.
     pub(crate) fn is_dirty(&self) -> bool {
         !self.deleted.is_empty() || self.files.values().any(|e| e.pending != Pending::Clean)
+    }
+
+    /// Every file in the layout, in path order.
+    pub(crate) fn entries(&self) -> impl Iterator<Item = (&Segs, &Entry)> {
+        self.files.iter()
     }
 
     /// The files `save` must write, in path order.

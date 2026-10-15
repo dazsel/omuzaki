@@ -1,0 +1,231 @@
+src/check.rs: pub fn assert_crate(package: &str, link: fn())
+src/check.rs: #[macro_export] macro_rules! check_crate
+src/check.rs: macro_rules! check_crate: ($krate:ident)
+src/check.rs: #[must_use] pub fn problems(all: &[&SettingRegistration], package: &str) -> Vec<String>
+src/check.rs: #[macro_export] macro_rules! check_app
+src/check.rs: macro_rules! check_app: ($app:ident)
+src/check.rs: pub fn assert_app(link: fn())
+src/check.rs: #[must_use] pub fn registry_problems(all: &[&SettingRegistration]) -> Vec<String>
+src/error.rs: #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error, Serialize, Deserialize, JsonSchema)] #[non_exhaustive] pub struct SettingError
+src/error.rs: struct SettingError: pub key: String
+src/error.rs: struct SettingError: pub kind: SettingErrorKind
+src/error.rs: #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)] #[serde(tag = "kind", rename_all = "snake_case")] #[non_exhaustive] pub enum SettingErrorKind
+src/error.rs: enum SettingErrorKind: UnknownKey
+src/error.rs: enum SettingErrorKind: WrongType { reason: String }
+src/error.rs: enum SettingErrorKind: OutOfRange { got: String, min: String, max: String }
+src/error.rs: enum SettingErrorKind: Invalid { reason: String }
+src/error.rs: enum SettingErrorKind: NotInProfile
+src/error.rs: enum SettingErrorKind: BadSecretRef { reason: String }
+src/error.rs: enum SettingErrorKind: Migration { from: u32, reason: String }
+src/error.rs: enum SettingErrorKind: UnknownProfile { id: String }
+src/error.rs: enum SettingErrorKind: ProfileExists { name: String }
+src/error.rs: enum SettingErrorKind: BadProfileName { reason: String }
+src/error.rs: enum SettingErrorKind: Storage { reason: String }
+src/error.rs: impl SettingErrorKind: #[must_use] pub const fn id(&self) -> &'static str
+src/error.rs: impl SettingError: #[must_use] pub fn new(key: impl Into<String>, kind: SettingErrorKind) -> Self
+src/error.rs: impl SettingError: #[must_use] pub fn for_key(mut self, key: impl Into<String>) -> Self
+src/error.rs: impl SettingError: #[must_use] pub fn unknown_key(key: impl Into<String>) -> Self
+src/error.rs: impl SettingError: #[must_use] pub fn wrong_type(key: impl Into<String>, reason: impl fmt::Display) -> Self
+src/error.rs: impl SettingError: #[must_use] pub fn invalid(key: impl Into<String>, reason: impl Into<String>) -> Self
+src/error.rs: impl SettingError: pub fn range<T: Copy + PartialOrd + fmt::Display>(key: &str, value: T, min: T, max: T) -> Result<(), Self>
+src/error.rs: #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)] #[non_exhaustive] pub struct SettingFinding
+src/error.rs: struct SettingFinding: pub error: SettingError
+src/error.rs: struct SettingFinding: pub stored: Value
+src/error.rs: struct SettingFinding: pub from: String
+src/error.rs: impl SettingFinding: #[must_use] pub fn new(error: SettingError, stored: Value, from: impl Into<String>) -> Self
+src/event.rs: #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)] #[non_exhaustive] pub struct Change
+src/event.rs: struct Change: pub key: String
+src/event.rs: struct Change: pub before: Value
+src/event.rs: struct Change: pub after: Value
+src/event.rs: struct Change: pub apply: Apply
+src/event.rs: impl Change: #[must_use] pub fn new(key: impl Into<String>, before: Value, after: Value, apply: Apply) -> Self
+src/event.rs: #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)] #[serde(tag = "cause", rename_all = "snake_case")] #[non_exhaustive] pub enum ChangeCause
+src/event.rs: enum ChangeCause: Set
+src/event.rs: enum ChangeCause: Reset
+src/event.rs: enum ChangeCause: ProfileSwitched { from: Option<ProfileId>, to: Option<ProfileId> }
+src/event.rs: enum ChangeCause: Reloaded
+src/event.rs: enum ChangeCause: Migrated
+src/event.rs: #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)] #[non_exhaustive] pub struct SettingsEvent
+src/event.rs: struct SettingsEvent: pub cause: ChangeCause
+src/event.rs: struct SettingsEvent: pub changes: Vec<Change>
+src/event.rs: impl SettingsEvent: #[must_use] pub fn new(cause: ChangeCause, changes: Vec<Change>) -> Self
+src/event.rs: impl SettingsEvent: #[must_use] pub fn change_of(&self, key: &str) -> Option<&Change>
+src/event.rs: #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)] #[non_exhaustive] pub struct SwitchReport
+src/event.rs: struct SwitchReport: pub changed: u32
+src/event.rs: struct SwitchReport: pub pending_restart: Vec<String>
+src/event.rs: impl SwitchReport: #[must_use] pub fn new(changed: u32, pending_restart: Vec<String>) -> Self
+src/event.rs: #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)] #[non_exhaustive] pub struct SettingChange
+src/event.rs: struct SettingChange: pub change: Change
+src/event.rs: struct SettingChange: pub actor: Actor
+src/event.rs: struct SettingChange: pub at: Seconds
+src/event.rs: impl SettingChange: #[must_use] pub fn new(change: Change, actor: Actor, at: Seconds) -> Self
+src/event.rs: pub const CHANGE_LOG_CAPACITY: usize = 200
+src/event.rs: #[derive(Debug)] pub struct Subscription<T>
+src/event.rs: impl<T> Subscription<T>: #[must_use] pub fn next(&self) -> Option<T>
+src/event.rs: impl<T> Subscription<T>: #[must_use] pub fn drain(&self) -> Vec<T>
+src/event.rs: #[derive(Debug)] pub struct Publisher<T>
+src/event.rs: impl<T> Default for Publisher<T>
+src/event.rs: impl<T: Clone> Publisher<T>: #[must_use] pub fn subscribe(&self) -> Subscription<T>
+src/event.rs: impl<T: Clone> Publisher<T>: pub fn publish(&self, event: &T)
+src/lib.rs: pub mod check
+src/lib.rs: pub mod error
+src/lib.rs: pub mod event
+src/lib.rs: pub mod meta
+src/lib.rs: pub mod profile
+src/lib.rs: pub mod registry
+src/lib.rs: pub mod secret
+src/lib.rs: pub mod service
+src/lib.rs: pub mod session
+src/lib.rs: pub mod setting
+src/lib.rs: #[doc(hidden)] pub use inventory as __inventory
+src/lib.rs: #[doc(hidden)] pub use omuzaki_core::__record_registration
+src/meta.rs: #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)] #[serde(rename_all = "snake_case")] pub enum SettingScope
+src/meta.rs: enum SettingScope: User
+src/meta.rs: enum SettingScope: Machine
+src/meta.rs: #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)] #[serde(rename_all = "snake_case")] pub enum AgentWrite
+src/meta.rs: enum AgentWrite: Free
+src/meta.rs: enum AgentWrite: Confirm
+src/meta.rs: enum AgentWrite: Never
+src/meta.rs: #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)] #[serde(rename_all = "snake_case")] pub enum InProfile
+src/meta.rs: enum InProfile: Member
+src/meta.rs: enum InProfile: Excluded
+src/meta.rs: #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)] #[serde(rename_all = "snake_case")] pub enum Apply
+src/meta.rs: enum Apply: Live
+src/meta.rs: enum Apply: NextStart
+src/meta.rs: #[derive(Copy, Clone, Debug, PartialEq, Eq)] #[non_exhaustive] pub struct SettingMeta
+src/meta.rs: struct SettingMeta: pub key: &'static str
+src/meta.rs: struct SettingMeta: pub summary: &'static str
+src/meta.rs: struct SettingMeta: pub scope: SettingScope
+src/meta.rs: struct SettingMeta: pub agent: AgentWrite
+src/meta.rs: struct SettingMeta: pub profile: InProfile
+src/meta.rs: struct SettingMeta: pub apply: Apply
+src/meta.rs: struct SettingMeta: pub version: u32
+src/meta.rs: impl SettingMeta: #[must_use] pub const fn new(key: &'static str, summary: &'static str, scope: SettingScope, agent: AgentWrite, profile: InProfile, apply: Apply, version: u32) -> Self
+src/meta.rs: impl SettingMeta: #[must_use] pub fn area(&self) -> &'static str
+src/profile.rs: slug_id!(ProfileId)
+src/profile.rs: impl ProfileId: pub const SUFFIX_LEN: usize = 4
+src/profile.rs: impl ProfileId: pub fn from_name(name: &str, suffix: &str) -> Result<Self, SettingError>
+src/profile.rs: #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)] #[non_exhaustive] pub struct ProfileInfo
+src/profile.rs: struct ProfileInfo: pub id: ProfileId
+src/profile.rs: struct ProfileInfo: #[schemars(length(min = 1, max = NAME_MAX))] pub name: String
+src/profile.rs: struct ProfileInfo: pub keys: u32
+src/profile.rs: struct ProfileInfo: pub active: bool
+src/profile.rs: impl ProfileInfo: #[must_use] pub fn new(id: ProfileId, name: impl Into<String>, keys: u32, active: bool) -> Self
+src/profile.rs: #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)] #[serde(rename_all = "snake_case")] #[non_exhaustive] pub enum ProfileSource
+src/profile.rs: enum ProfileSource: Current
+src/profile.rs: enum ProfileSource: Profile(ProfileId)
+src/profile.rs: pub const NAME_MAX: usize = 48
+src/profile.rs: pub fn validate_name(name: &str) -> Result<String, SettingError>
+src/registry.rs: #[derive(Debug)] pub struct SettingRegistration
+src/registry.rs: struct SettingRegistration: pub package: &'static str
+src/registry.rs: struct SettingRegistration: pub meta: SettingMeta
+src/registry.rs: struct SettingRegistration: pub renamed_from: &'static [&'static str]
+src/registry.rs: impl SettingRegistration: #[must_use] pub const fn of<S: Setting>(package: &'static str) -> Self
+src/registry.rs: impl SettingRegistration: #[must_use] pub fn schema(&self) -> Schema
+src/registry.rs: impl SettingRegistration: #[must_use] pub fn default_json(&self) -> Value
+src/registry.rs: impl SettingRegistration: pub fn validate(&self, value: &Value) -> Result<(), SettingError>
+src/registry.rs: impl SettingRegistration: pub fn migrate(&self, from: u32, old: Value) -> Result<Value, SettingError>
+src/registry.rs: pub fn registrations() -> impl Iterator<Item = &'static SettingRegistration>
+src/registry.rs: #[must_use] pub fn find(key: &str) -> Option<&'static SettingRegistration>
+src/registry.rs: #[macro_export] macro_rules! register_setting
+src/registry.rs: macro_rules! register_setting: ($ty:ty)
+src/secret.rs: #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)] #[serde(try_from = "String", into = "String")] pub struct SecretRef(String)
+src/secret.rs: impl SecretRef: pub const MAX_LEN: usize = 128
+src/secret.rs: impl SecretRef: pub fn new(label: impl Into<String>) -> Result<Self, SettingError>
+src/secret.rs: impl SecretRef: #[must_use] pub fn pattern() -> String
+src/secret.rs: impl SecretRef: #[must_use] pub fn label(&self) -> &str
+src/secret.rs: impl TryFrom<String> for SecretRef
+src/secret.rs: impl From<SecretRef> for String
+src/secret.rs: impl fmt::Debug for SecretRef
+src/secret.rs: impl JsonSchema for SecretRef
+src/service.rs: #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)] #[serde(tag = "from", content = "profile", rename_all = "snake_case")] #[non_exhaustive] pub enum Source
+src/service.rs: enum Source: Default
+src/service.rs: enum Source: Base
+src/service.rs: enum Source: Profile(ProfileId)
+src/service.rs: #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)] #[serde(rename_all = "snake_case")] #[non_exhaustive] pub enum Layer
+src/service.rs: enum Layer: Auto
+src/service.rs: enum Layer: Base
+src/service.rs: #[derive(Clone, Debug, PartialEq)] #[non_exhaustive] pub struct Resolved
+src/service.rs: struct Resolved: pub key: String
+src/service.rs: struct Resolved: pub value: Value
+src/service.rs: struct Resolved: pub default: Value
+src/service.rs: struct Resolved: pub source: Source
+src/service.rs: struct Resolved: pub meta: SettingMeta
+src/service.rs: impl Resolved: #[must_use] pub fn new(key: impl Into<String>, value: Value, default: Value, source: Source, meta: SettingMeta) -> Self
+src/service.rs: impl Resolved: #[must_use] pub fn is_modified(&self) -> bool
+src/service.rs: #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)] #[non_exhaustive] pub struct ListFilter
+src/service.rs: struct ListFilter: pub area: Option<String>
+src/service.rs: struct ListFilter: pub changed: bool
+src/service.rs: impl ListFilter: #[must_use] pub fn all() -> Self
+src/service.rs: impl ListFilter: #[must_use] pub fn with_area(mut self, area: impl Into<String>) -> Self
+src/service.rs: impl ListFilter: #[must_use] pub fn only_changed(mut self) -> Self
+src/service.rs: #[derive(Clone, Debug, PartialEq)] pub struct Snapshot
+src/service.rs: impl Default for Snapshot
+src/service.rs: impl Snapshot: #[must_use] pub fn new(entries: BTreeMap<String, (Value, Source)>) -> Self
+src/service.rs: impl Snapshot: #[must_use] pub fn defaults() -> Self
+src/service.rs: impl Snapshot: #[must_use] pub fn value(&self, key: &str) -> Option<&Value>
+src/service.rs: impl Snapshot: #[must_use] pub fn source(&self, key: &str) -> Option<&Source>
+src/service.rs: impl Snapshot: pub fn iter(&self) -> impl Iterator<Item = (&str, &Value, &Source)>
+src/service.rs: impl Snapshot: pub fn get<S: Setting>(&self) -> Result<S::Value, SettingError>
+src/service.rs: pub trait Settings: Send + Sync
+src/service.rs: trait Settings: fn snapshot(&self) -> Arc<Snapshot>
+src/service.rs: trait Settings: fn resolve(&self, key: &str) -> Result<Resolved, SettingError>
+src/service.rs: trait Settings: fn list(&self, filter: &ListFilter) -> Vec<Resolved>
+src/service.rs: trait Settings: fn set_raw(&self, key: &str, value: Value, layer: Layer, mode: Mode, by: &Actor) -> Result<Change, SettingError>
+src/service.rs: trait Settings: fn reset(&self, key: &str, layer: Layer, mode: Mode, by: &Actor) -> Result<Option<Change>, SettingError>
+src/service.rs: trait Settings: fn profiles(&self) -> Vec<ProfileInfo>
+src/service.rs: trait Settings: fn save_profile(&self, name: &str, from: ProfileSource, overwrite: bool, mode: Mode, by: &Actor) -> Result<ProfileInfo, SettingError>
+src/service.rs: trait Settings: fn rename_profile(&self, id: &ProfileId, name: &str, mode: Mode, by: &Actor) -> Result<ProfileInfo, SettingError>
+src/service.rs: trait Settings: fn delete_profile(&self, id: &ProfileId, mode: Mode, by: &Actor) -> Result<SwitchReport, SettingError>
+src/service.rs: trait Settings: fn switch_profile(&self, to: Option<&ProfileId>, mode: Mode, by: &Actor) -> Result<SwitchReport, SettingError>
+src/service.rs: trait Settings: fn reload(&self, mode: Mode, by: &Actor) -> Result<SwitchReport, SettingError>
+src/service.rs: trait Settings: fn changes(&self, limit: usize) -> Vec<SettingChange>
+src/service.rs: trait Settings: fn findings(&self) -> Vec<SettingFinding>
+src/service.rs: trait Settings: fn subscribe(&self) -> Subscription<SettingsEvent>
+src/service.rs: trait Settings: fn session(&self) -> &dyn SessionStore
+src/service.rs: pub trait SettingsExt: Settings
+src/service.rs: trait SettingsExt: fn get<S: Setting>(&self) -> Result<S::Value, SettingError>
+src/service.rs: trait SettingsExt: fn set<S: Setting>(&self, value: &S::Value, layer: Layer, mode: Mode, by: &Actor) -> Result<Change, SettingError>
+src/service.rs: impl<T: Settings + ?Sized> SettingsExt for T {}
+src/session.rs: pub const MAX_RECENT: usize = 20
+src/session.rs: #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)] #[non_exhaustive] pub struct RecentProject
+src/session.rs: struct RecentProject: pub path: PathBuf
+src/session.rs: struct RecentProject: pub name: String
+src/session.rs: struct RecentProject: pub opened: i64
+src/session.rs: impl RecentProject: #[must_use] pub fn new(path: impl Into<PathBuf>, name: impl Into<String>, opened: i64) -> Self
+src/session.rs: #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)] #[non_exhaustive] pub struct WindowGeometry
+src/session.rs: struct WindowGeometry: pub x: i32
+src/session.rs: struct WindowGeometry: pub y: i32
+src/session.rs: struct WindowGeometry: pub w: u32
+src/session.rs: struct WindowGeometry: pub h: u32
+src/session.rs: struct WindowGeometry: pub maximised: bool
+src/session.rs: struct WindowGeometry: pub monitor: Option<String>
+src/session.rs: impl WindowGeometry: #[must_use] pub fn new(x: i32, y: i32, w: u32, h: u32) -> Self
+src/session.rs: impl WindowGeometry: #[must_use] pub fn maximised(mut self, maximised: bool) -> Self
+src/session.rs: impl WindowGeometry: #[must_use] pub fn on_monitor(mut self, monitor: impl Into<String>) -> Self
+src/session.rs: #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)] #[non_exhaustive] pub struct SessionState
+src/session.rs: struct SessionState: pub last_project: Option<PathBuf>
+src/session.rs: struct SessionState: pub recent: Vec<RecentProject>
+src/session.rs: struct SessionState: pub windows: BTreeMap<String, WindowGeometry>
+src/session.rs: struct SessionState: pub last_seen_version: Option<String>
+src/session.rs: struct SessionState: pub opening: Option<PathBuf>
+src/session.rs: impl SessionState: pub fn begin_open(&mut self, project: &Path)
+src/session.rs: impl SessionState: pub fn opened(&mut self, project: &Path, name: &str, at: i64)
+src/session.rs: impl SessionState: pub fn forget(&mut self, project: &Path)
+src/session.rs: impl SessionState: pub fn set_window(&mut self, id: &str, geometry: WindowGeometry)
+src/session.rs: impl SessionState: pub fn mark_version_seen(&mut self, version: &str)
+src/session.rs: pub trait SessionStore: Send + Sync
+src/session.rs: trait SessionStore: fn state(&self) -> SessionState
+src/session.rs: trait SessionStore: fn begin_open(&self, project: &Path) -> Result<(), SettingError>
+src/session.rs: trait SessionStore: fn opened(&self, project: &Path, name: &str) -> Result<(), SettingError>
+src/session.rs: trait SessionStore: fn forget(&self, project: &Path)
+src/session.rs: trait SessionStore: fn set_window(&self, id: &str, geometry: WindowGeometry)
+src/session.rs: trait SessionStore: fn mark_version_seen(&self, version: &str)
+src/session.rs: trait SessionStore: fn flush(&self) -> Result<(), SettingError>
+src/setting.rs: pub trait Setting: 'static
+src/setting.rs: trait Setting: type Value: Clone + PartialEq + fmt::Debug + Serialize + DeserializeOwned + JsonSchema + Send + Sync + 'static
+src/setting.rs: trait Setting: const META: SettingMeta
+src/setting.rs: trait Setting: const RENAMED_FROM: &'static [&'static str] = &[]
+src/setting.rs: trait Setting: fn default() -> Self::Value
+src/setting.rs: trait Setting: fn check(_value: &Self::Value) -> Result<(), SettingError>
+src/setting.rs: trait Setting: fn migrate(_from: u32, old: Value) -> Result<Value, SettingError>
