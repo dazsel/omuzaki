@@ -1,3 +1,9 @@
+---
+title: "UX direction"
+summary: "UX direction"
+area: design
+---
+
 # UX direction
 
 The design brief: "an amazing, easy-to-use interface for both agents and humans". This folder sets the direction for the `omuzaki-ui` desktop app (spec v3, phase 1: viewport, part tree, inspector, command palette, history) before anyone builds panels.

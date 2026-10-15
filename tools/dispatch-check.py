@@ -259,7 +259,7 @@ def fence_entries(body, top_level=None):
     Each line contributes its backtick-quoted entries and its bare ones. A bare entry is cut at the first ':', ';' or
     '(' on its line, so a trailing note is not read as a path. A token is a path when it has a '/', a '.' or a glob
     character, judged before any trailing slash is removed, so `tools/` stays. A slashless token (`tools`,
-    `LICENSE-MIT`) is a path only when it names an entry in `top_level`, the set of root names; other tokens are prose
+    `LICENSE-MIT`) is a path when it is backtick-quoted, or names an entry in `top_level`, the set of root names; other tokens are prose
     ("none") and are dropped. When `top_level` is None (the root could not be read) a slashless token cannot be told
     from prose, so it is reported in `bad`. `bad` lists entries that fence_matches rejects; the caller must wait on
     them (fail closed).
@@ -270,11 +270,16 @@ def fence_entries(body, top_level=None):
         quoted = re.findall(r"`([^`]+)`", line)
         bare = re.split(r"[:;(]", re.sub(r"`[^`]*`", " ", line), maxsplit=1)[0]
         # A backtick span is one path even with spaces in it (`docs/My File.md`); commas still separate entries.
+        explicit = {t.strip().strip("\"'`") for span in quoted for t in split_entries(span, spaces=False)}
         for token in [t for span in quoted for t in split_entries(span, spaces=False)] + split_entries(bare):
             token = token.strip().strip("\"'`")
             if not token:
                 continue
-            if not re.search(r"[/.*?\[{}]", token) and token not in (top_level or ()):
+            # A backtick-quoted slashless token is an explicit path even when `main` does not have it yet (an open PR
+            # may add it); only unquoted plain words are judged against the root.
+            if token in explicit:
+                pass
+            elif not re.search(r"[/.*?\[{}]", token) and token not in (top_level or ()):
                 if top_level is None and token not in bad:
                     bad.append(token)
                 continue
@@ -437,7 +442,9 @@ def check_issue(issue, prs, crate_cap, total_cap, native_blocked=frozenset(), na
     # Drafts don't count, and the task's own pull request (the one that closes it) is not a conflict with itself.
     others = [p for p in prs if not p["draft"] and number not in p["closes"]]
     reasons += [TRUNCATED_FILES.format(n=p["number"]) for p in others if p["files"] is None]
-    crates = sorted({c for entry in fence for c in crates_named(entry, crate_names)})
+    # Crates that open PRs add do not exist on the default branch yet, so a wildcard also resolves against them.
+    known = sorted(set(crate_names or []) | {c for p in others for c in crates_touched(p)}) if crate_names is not None else None
+    crates = sorted({c for entry in fence for c in crates_named(entry, known)})
     for pr in others:
         if pr["files"] is None:
             continue

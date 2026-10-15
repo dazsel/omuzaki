@@ -11,9 +11,11 @@ use crate::approval::{ApprovalId, Need};
 use crate::session::{EndReason, PauseReason};
 use crate::{Actor, CancelReason, JobId, Scope};
 
-/// Broad class of an op failure; stable, so agents and scripts can branch on it.
+/// Broad class of an op failure; stable, so agents and scripts can branch on it. `#[non_exhaustive]`: a `match` outside
+/// this crate needs a wildcard arm.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ErrorCode {
     /// The arguments are wrong (out of range, malformed).
     Invalid,

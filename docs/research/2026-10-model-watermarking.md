@@ -1,3 +1,9 @@
+---
+title: "Model watermarking and theft protection for exported avatars (2026-10-13)"
+summary: "watermark and theft-protection techniques for exported avatars (what survives Blender re-export, JPEG, resize, decimation), a measured recommended texture mark, the attack model and the open legal points."
+area: research
+---
+
 # Model watermarking and theft protection for exported avatars (2026-10-13)
 
 > Research (SE-07). Spec: v3 §27 (EX-01, EX-02), §31 (SE-07), §37 (exports carry no watermark and no revenue cap), §40 (licences). **This is an engineering reading, not legal advice; open legal points are listed in the licence register.** The mark is the **creator's own and opt-in**, never Omuzaki's branding (§37).

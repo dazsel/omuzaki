@@ -1,3 +1,9 @@
+---
+title: "Omuzaki Studio: spec v3, the Rust studio"
+summary: "**the Rust studio spec**. Architecture, MCP/AI core, Build Theatre, connectors, 250 numbered features (P0/P1/P2 is build order; every one ships), library, craft, implementation plan."
+area: product
+---
+
 # Omuzaki Studio: spec v3, the Rust studio
 
 > **Status:** draft 2 (2026-10-11).

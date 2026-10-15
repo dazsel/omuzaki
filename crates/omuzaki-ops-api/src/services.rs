@@ -68,6 +68,13 @@ pub trait Service: Send + Sync + 'static {}
 
 impl<T: ?Sized + Send + Sync + 'static> Service for T {}
 
+/// What `agent.connection` reads from the host: the connection state of the agent server it runs under. The app
+/// inserts an implementation into its [`Services`]; `omuzaki-mcp` provides one.
+pub trait ConnectionService: Send + Sync + 'static {
+    /// The `{connected, client_name?, sessions}` answer for the sessions live now. It never carries a credential.
+    fn connection(&self) -> serde_json::Value;
+}
+
 /// One injected implementation. The name is kept for error messages and `Debug`.
 #[derive(Clone)]
 struct Entry {

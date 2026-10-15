@@ -26,7 +26,7 @@ use omuzaki_store_api::{ContentHash, Store, StoreError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::error::from_io;
+use crate::error::from_io;
 use super::sidecar::DirResolver;
 
 /// Reads a model file and reports what is in it, without importing it.

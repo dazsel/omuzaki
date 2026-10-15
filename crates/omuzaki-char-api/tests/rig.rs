@@ -93,12 +93,11 @@ impl PartKind for RigBody {
             bone: humanoid_id(HumanoidBone::Head),
             shape: ColliderShape::Sphere { offset: Vec3::ZERO, radius: 0.12 },
         };
-        Ok(PartOutput {
-            publishes: Publishes::default()
+        Ok(PartOutput::new().with_publishes(
+            Publishes::default()
                 .with::<FitFact>(Arc::new(Torso))
                 .with::<CollidersFact>(ColliderGroup { name: "body".to_owned(), colliders: vec![head] }),
-            ..PartOutput::default()
-        })
+        ))
     }
 }
 omuzaki_char_api::register_part_kind!(RigBody);
@@ -113,7 +112,7 @@ fn head_drop() -> PartOutput {
         (HumanoidBone::Jaw, Vec3::new(0.0, 1.62, 0.05)),
     ];
     let fit = JointFit::new(joints.map(|(b, p)| (JointRef::Humanoid(b), p)));
-    PartOutput { publishes: Publishes::default().with::<FitFact>(Arc::new(fit)), ..PartOutput::default() }
+    PartOutput::new().with_publishes(Publishes::default().with::<FitFact>(Arc::new(fit)))
 }
 
 struct RigHead;
@@ -174,7 +173,7 @@ impl PartKind for RigCoat {
 
     fn build(_: &NoParams, ctx: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
         let envelope = Arc::new(Coat { inner: ctx.fit()? });
-        Ok(PartOutput { publishes: Publishes::default().with::<FitFact>(envelope), ..PartOutput::default() })
+        Ok(PartOutput::new().with_publishes(Publishes::default().with::<FitFact>(envelope)))
     }
 }
 omuzaki_char_api::register_part_kind!(RigCoat);
@@ -192,7 +191,7 @@ impl PartKind for RigReader {
     fn build(_: &NoParams, ctx: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
         let rig = ctx.joint(&JointRef::HEAD).map(|p| p.y);
         let envelope = ctx.fit()?.joint(&JointRef::HEAD).map(|p| p.y);
-        Ok(PartOutput { warnings: vec![format!("rig={rig:?} envelope={envelope:?}")], ..PartOutput::default() })
+        Ok(PartOutput::new().with_warnings(vec![format!("rig={rig:?} envelope={envelope:?}")]))
     }
 }
 omuzaki_char_api::register_part_kind!(RigReader);
@@ -210,7 +209,7 @@ impl PartKind for RigGarment {
 
     fn build(_: &NoParams, ctx: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
         let torso = ctx.fit()?.section(BodyRegion::Torso, 0.5).is_some();
-        Ok(PartOutput { warnings: vec![format!("torso={torso}")], ..PartOutput::default() })
+        Ok(PartOutput::new().with_warnings(vec![format!("torso={torso}")]))
     }
 }
 omuzaki_char_api::register_part_kind!(RigGarment);
@@ -406,11 +405,9 @@ impl PartKind for RigSkinned {
             render_order: 0,
             dynamic: false,
         };
-        Ok(PartOutput {
-            meshes: vec![mesh],
-            materials: vec![(material, MaterialSpec::toon("#ffffff".parse().unwrap()))],
-            ..PartOutput::default()
-        })
+        Ok(PartOutput::new()
+            .with_meshes(vec![mesh])
+            .with_materials(vec![(material, MaterialSpec::toon("#ffffff".parse().unwrap()))]))
     }
 }
 omuzaki_char_api::register_part_kind!(RigSkinned);
@@ -422,16 +419,13 @@ fn part(kind: &str, layer: i32, params: serde_json::Value) -> PartDef {
 }
 
 fn character(parts: &[(&str, PartDef)]) -> CharacterDef {
-    CharacterDef {
-        name: "Test".to_owned(),
-        template: omuzaki_char_api::BodyTemplateId::new("soft-sd").unwrap(),
-        seed: 1,
-        palette: Palette::default(),
-        skin_tone: None,
-        parts: parts.iter().map(|(n, p)| (PartId::new(*n).unwrap(), p.clone())).collect(),
-        face: FaceProfile::default(),
-        weight_brushes: BTreeMap::new(),
-    }
+    CharacterDef::new("Test".to_owned(), omuzaki_char_api::BodyTemplateId::new("soft-sd").unwrap())
+        .with_seed(1)
+        .with_palette(Palette::default())
+        .with_skin_tone(None)
+        .with_parts(parts.iter().map(|(n, p)| (PartId::new(*n).unwrap(), p.clone())).collect())
+        .with_face(FaceProfile::default())
+        .with_weight_brushes(BTreeMap::new())
 }
 
 fn with_probe(mode: &str) -> CharacterDef {

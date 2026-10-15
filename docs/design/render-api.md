@@ -1,3 +1,9 @@
+---
+title: "Render API: `omuzaki-render-api` and `omuzaki-render-mock`"
+summary: "`omuzaki-render-api` and `omuzaki-render-mock`"
+area: design
+---
+
 # Render API: `omuzaki-render-api` and `omuzaki-render-mock`
 
 **Status:** proposed. **Spec:** v3 §8 runtime model, §9 crate map, §10 budgets, §21 Look, §26 renders, §39.1 rules 1 and 6.
