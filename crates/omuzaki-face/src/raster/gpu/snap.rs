@@ -8,6 +8,9 @@
 //! Not reproduced: the rule that rounds a long, steep quad step to a whole row (`quad_chain`'s), which only matters for
 //! quads taller than two rows per segment; the face painter builds cubics.
 
+// The fixed-point setup follows Skia's own short names (`a`..`d` are the four control coordinates), as `raster::scan` does.
+#![allow(clippy::many_single_char_names)]
+
 use omuzaki_face_api::PathEl;
 use vello::kurbo::{Affine, BezPath, Point};
 

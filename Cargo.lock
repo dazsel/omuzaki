@@ -3698,6 +3698,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tiny-skia",
  "toml",
+ "tracing",
  "vello",
  "wgpu",
 ]
@@ -4349,11 +4350,14 @@ name = "omuzaki-test-face"
 version = "0.0.0"
 dependencies = [
  "image",
+ "omuzaki-anim-api",
+ "omuzaki-char-api",
  "omuzaki-core",
  "omuzaki-face",
  "omuzaki-face-api",
  "omuzaki-face-mock",
  "omuzaki-link-build",
+ "omuzaki-render-api",
  "omuzaki-render-mock",
  "omuzaki-test",
  "pollster",

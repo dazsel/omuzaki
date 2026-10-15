@@ -17,16 +17,21 @@ use omuzaki_test_face::probes::straight_image;
 /// The device and queue the GPU tests draw with.
 pub type Gpu = (wgpu::Device, wgpu::Queue);
 
-/// A device and queue, or `None` after printing why there is none.
-pub fn device() -> Option<Gpu> {
+/// An adapter, or `None` after printing why there is none.
+pub fn adapter() -> Option<wgpu::Adapter> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-    let adapter = match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())) {
-        Ok(adapter) => adapter,
+    match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())) {
+        Ok(adapter) => Some(adapter),
         Err(e) => {
             eprintln!("skipped: no GPU adapter ({e}); install mesa-vulkan-drivers for lavapipe");
-            return None;
+            None
         }
-    };
+    }
+}
+
+/// A device and queue, or `None` after printing why there is none.
+pub fn device() -> Option<Gpu> {
+    let adapter = adapter()?;
     let descriptor = wgpu::DeviceDescriptor { required_limits: adapter.limits(), ..wgpu::DeviceDescriptor::default() };
     match pollster::block_on(adapter.request_device(&descriptor)) {
         Ok(pair) => Some(pair),

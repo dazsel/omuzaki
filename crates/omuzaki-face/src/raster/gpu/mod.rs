@@ -10,6 +10,8 @@ mod snap;
 pub mod stroke;
 
 use std::any::Any;
+use std::future::Future;
+use std::task::{Context, Poll, Waker};
 
 use omuzaki_core::glam::Affine2;
 use omuzaki_face_api::{Cap, Cmd, DrawList, FaceError, FaceLayerSpec, Join};
@@ -167,6 +169,14 @@ impl SceneEncoder {
     }
 }
 
+/// The output of `future` if it is ready now, which wgpu's error scopes are on native targets; `None` if it is not.
+fn ready<T>(future: impl Future<Output = T>) -> Option<T> {
+    match std::pin::pin!(future).poll(&mut Context::from_waker(Waker::noop())) {
+        Poll::Ready(value) => Some(value),
+        Poll::Pending => None,
+    }
+}
+
 /// What the native handle of a face layer downcasts to: the renderer's `NativePaintTarget`, which this crate can't name.
 type Native = (wgpu::Device, wgpu::Queue, wgpu::Texture);
 
@@ -190,11 +200,18 @@ struct Gpu {
 ///
 /// Keep one per layer, and use it with one device only: the Vello renderer and the private texture belong to the device
 /// of the first paint.
+///
+/// It returns `Ok(false)`, so the CPU raster draws, when `native` is not the renderer's `(Device, Queue, Texture)` (the
+/// mock renderer's targets, another backend) and when Vello's renderer can't be created on the device: that is logged once
+/// and never retried. Don't register it on a software adapter such as lavapipe: those check correctness only and are far
+/// slower than the CPU raster (decision 7.3). Registering it is the stage's job.
 #[derive(Default)]
 pub struct VelloRasterizer {
     encoder: SceneEncoder,
     scene: Scene,
     gpu: Option<Gpu>,
+    /// Vello's renderer could not be created: every paint declines.
+    unavailable: bool,
 }
 
 impl VelloRasterizer {
@@ -205,31 +222,37 @@ impl VelloRasterizer {
 }
 
 impl Gpu {
-    /// The device state in `slot`, built on first use. The resolve is rebuilt if the target's format changes.
-    fn get<'a>(
-        slot: &'a mut Option<Self>,
-        device: &wgpu::Device,
-        format: wgpu::TextureFormat,
-    ) -> Result<&'a mut Self, FaceError> {
-        if slot.is_none() {
-            let options = RendererOptions {
-                use_cpu: false,
-                antialiasing_support: AaSupport::area_only(),
-                num_init_threads: std::num::NonZeroUsize::new(1),
-                pipeline_cache: None,
-            };
-            let renderer = Renderer::new(device, options)
-                .map_err(|e| FaceError::Raster(format!("the Vello renderer could not be created: {e}")))?;
-            *slot = Some(Self { renderer, resolve: Resolve::new(device, format), private: None });
+    /// The device state for targets of `format`. Compiles Vello's pipelines, so it runs once per rasteriser.
+    ///
+    /// wgpu reports a device too weak for Vello (too few storage buffers per stage, say) as a validation error, not as an
+    /// `Err` from `Renderer::new`, so the creation runs in an error scope and either counts as a failure.
+    fn create(device: &wgpu::Device, format: wgpu::TextureFormat) -> Result<Self, String> {
+        let options = RendererOptions {
+            use_cpu: false,
+            antialiasing_support: AaSupport::area_only(),
+            num_init_threads: std::num::NonZeroUsize::new(1),
+            pipeline_cache: None,
+        };
+        let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let made = Renderer::new(device, options).map(|renderer| Self {
+            renderer,
+            resolve: Resolve::new(device, format),
+            private: None,
+        });
+        let rejected = ready(scope.pop()).flatten();
+        match (made, rejected) {
+            (Ok(_), Some(error)) => Err(error.to_string()),
+            (Ok(gpu), None) => Ok(gpu),
+            (Err(error), _) => Err(error.to_string()),
         }
-        let gpu = slot
-            .as_mut()
-            .ok_or_else(|| FaceError::Raster("the Vello state is missing after it was made".to_owned()))?;
-        if gpu.resolve.format() != format {
-            gpu.resolve = Resolve::new(device, format);
-            gpu.private = None;
+    }
+
+    /// Rebuilds the resolve if the target's format changed.
+    fn fit_format(&mut self, device: &wgpu::Device, format: wgpu::TextureFormat) {
+        if self.resolve.format() != format {
+            self.resolve = Resolve::new(device, format);
+            self.private = None;
         }
-        Ok(gpu)
     }
 
     /// Makes the private texture for a `width` x `height` layer if there is none of that size.
@@ -262,6 +285,9 @@ impl GpuRasterizer for VelloRasterizer {
         let Some((device, queue, target)) = native.downcast_mut::<Native>().map(|n| (&n.0, &n.1, &n.2)) else {
             return Ok(false);
         };
+        if self.unavailable {
+            return Ok(false);
+        }
         let (width, height) = spec.size_px();
         if (target.width(), target.height()) != (width, height) {
             return Err(FaceError::Raster(format!(
@@ -273,7 +299,20 @@ impl GpuRasterizer for VelloRasterizer {
         }
         self.scene.reset();
         self.encoder.encode(spec, list, spec.px_per_m, &mut self.scene)?;
-        let gpu = Gpu::get(&mut self.gpu, device, target.format())?;
+        if self.gpu.is_none() {
+            match Gpu::create(device, target.format()) {
+                Ok(gpu) => self.gpu = Some(gpu),
+                Err(e) => {
+                    tracing::warn!("the face falls back to the CPU raster: Vello can't run on this device ({e})");
+                    self.unavailable = true;
+                    return Ok(false);
+                }
+            }
+        }
+        let Some(gpu) = self.gpu.as_mut() else {
+            return Err(FaceError::Raster("the Vello state is missing after it was made".to_owned()));
+        };
+        gpu.fit_format(device, target.format());
         gpu.ensure_private(device, width, height);
         let Gpu { renderer, resolve, private } = gpu;
         let Some(private) = private.as_ref() else {
