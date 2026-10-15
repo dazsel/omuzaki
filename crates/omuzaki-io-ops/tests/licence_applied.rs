@@ -39,6 +39,7 @@ fn application(item: &str, rights: ItemRights) -> ApplicationRecord {
         params: BTreeMap::new(),
         deps: BTreeMap::new(),
         rights,
+        receipt: None,
         created: Vec::new(),
         wrote: BTreeMap::new(),
     }

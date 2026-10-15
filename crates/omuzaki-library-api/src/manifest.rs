@@ -8,7 +8,7 @@ use serde_json::Value;
 
 use crate::migrations::{self, CURRENT_SCHEMA, SchemaError};
 use crate::publisher::Publisher;
-use crate::{IdError, ItemId, ItemKind, ItemRights, Section, Target, Version, VersionError};
+use crate::{AssetInfo, IdError, ItemId, ItemKind, ItemRights, Section, Target, Version, VersionError};
 
 /// Why a manifest couldn't be read. Semantic problems are not parse errors: [`ItemManifest::check`] reports those,
 /// each naming its field.
@@ -395,6 +395,10 @@ pub struct ItemManifest {
     /// Store hashes of binaries the item needs; never in first-party items.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub assets: BTreeMap<String, ContentHash>,
+    /// What the manifest says about each asset before it is requested: its size and its own rights. When present it
+    /// has exactly the keys of `assets` ([`check`](Self::check) says which are missing or extra).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub asset_info: BTreeMap<String, AssetInfo>,
     /// The recipe, in order (`[[step]]`).
     #[serde(default, rename = "step")]
     pub steps: Vec<Step>,

@@ -7,8 +7,12 @@
 use std::collections::BTreeMap;
 
 use omuzaki_char_api::{CharId, PartId};
-use omuzaki_library_api::{Bindings, ItemManifest, Params, Problem, RecipeError, StepRequest, check_ops, expand};
+use omuzaki_library_api::{
+    AssetInfo, Attestation, Bindings, ItemManifest, ItemRights, Params, Problem, RecipeError, StepRequest, check_ops,
+    expand,
+};
 use omuzaki_ops_api::{OpKind, OpMeta, Scope, Undo};
+use omuzaki_store_api::ContentHash;
 use proptest::prelude::*;
 use serde_json::{Value, json};
 
@@ -404,19 +408,97 @@ fn canonical_json_is_plain_json_with_sorted_keys() {
     assert!(positions.windows(2).all(|w| w[0] < w[1]), "{text}");
 }
 
+/// The hash of `twintails()` before the marketplace fields existed: a manifest without them must keep it.
+const TWINTAILS_HASH: &str = "81a9390005eabaf68a5dd699bbcd0c29a2f8aaf93d65955f78daa96bf8a79a70";
+
+#[test]
+fn a_manifest_without_the_marketplace_fields_keeps_its_hash_and_bytes() {
+    let manifest = ItemManifest::parse(&twintails()).unwrap();
+    assert_eq!(manifest.hash().to_string(), TWINTAILS_HASH);
+    let text = String::from_utf8(manifest.canonical_bytes()).unwrap();
+    for absent in ["asset_info", "attestation", "terms_hash"] {
+        assert!(!text.contains(absent), "{absent} is skipped when absent: {text}");
+    }
+}
+
+/// `twintails()` with a binary asset, declared with the marketplace fields.
+fn with_asset(info: &str) -> String {
+    let hash = ContentHash::of(b"binary");
+    let rights = "[rights]\nauthor = \"Omuzaki\"";
+    twintails()
+        .replace("origin = \"generator defaults\"\n", "")
+        .replace("omuzaki/hair/twintails", "someone/hair/twintails")
+        .replace(rights, &format!("assets.cap = \"{hash}\"\n{info}\n{rights}"))
+}
+
+#[test]
+fn asset_info_round_trips_with_the_items_own_rights_type() {
+    let info = "[asset_info.cap]\nsize = 1024\n[asset_info.cap.rights]\nlicence = \"CC-BY-4.0\"\ncommercial = \"ok\"\n\
+                terms_hash = \"\"\n";
+    // `terms_hash` must be a real hash: an empty one is refused rather than ignored.
+    assert!(ItemManifest::parse(&with_asset(info)).is_err());
+    let hash = ContentHash::of(b"terms");
+    let info = info.replace(
+        "terms_hash = \"\"",
+        &format!("terms_hash = \"{hash}\"\n[asset_info.cap.rights.attestation]\nby = \"them\"\nclaim = \"own-work\""),
+    );
+    let manifest = ItemManifest::parse(&with_asset(&info)).unwrap();
+    let AssetInfo { size, rights } = &manifest.asset_info["cap"];
+    assert_eq!(*size, 1024);
+    let expected = ItemRights {
+        licence: "CC-BY-4.0".into(),
+        author: None,
+        owned: false,
+        terms_hash: Some(hash),
+        attestation: Some(Attestation { by: "them".into(), claim: "own-work".into() }),
+        ..ItemRights::first_party()
+    };
+    assert_eq!(rights, &expected);
+    assert_eq!(fields(&problems_of(&with_asset(&info))), Vec::<&str>::new());
+    let reparsed: ItemManifest = serde_json::from_slice(&manifest.canonical_bytes()).unwrap();
+    assert_eq!(reparsed.hash(), manifest.hash(), "the new fields are part of the hash and survive canonical JSON");
+}
+
+#[test]
+fn asset_info_has_exactly_the_keys_of_assets() {
+    let entry = "[asset_info.{}]\nsize = 1\n[asset_info.{}.rights]\nlicence = \"CC0-1.0\"\ncommercial = \"ok\"\n";
+    let both = format!("{}{}", entry.replace("{}", "cap"), entry.replace("{}", "extra"));
+    assert_eq!(fields(&problems_of(&with_asset(&both))), ["asset_info/extra"], "an entry for nothing");
+    let none_for_cap = entry.replace("{}", "extra");
+    let mut fields_found =
+        fields(&problems_of(&with_asset(&none_for_cap))).iter().map(|f| (*f).to_owned()).collect::<Vec<_>>();
+    fields_found.sort();
+    assert_eq!(fields_found, ["asset_info/cap", "asset_info/extra"], "an asset with no entry");
+    assert_eq!(
+        fields(&problems_of(&with_asset(""))),
+        Vec::<&str>::new(),
+        "manifests from before asset_info stay valid"
+    );
+}
+
+#[test]
+fn unknown_fields_are_still_refused_in_the_new_types() {
+    let info =
+        "[asset_info.cap]\nsize = 1\nextra = 2\n[asset_info.cap.rights]\nlicence = \"CC0-1.0\"\ncommercial = \"ok\"\n";
+    assert!(ItemManifest::parse(&with_asset(info)).is_err());
+    let rights = twintails().replace("owned = true", "owned = true\nterms_hash_typo = 1");
+    assert!(ItemManifest::parse(&rights).is_err());
+}
+
 /// A compile-time list of the public names other crates build on. Removing or renaming any of them breaks it.
 #[test]
 fn the_public_api_snapshot() {
     #[allow(unused_imports)]
     use omuzaki_library_api::{
-        APPLIED_KEY, ApplicationRecord, Bindings, BodyKind, Compat, CompatStatus, CompatTarget, Creates, Dep,
-        FIRST_PARTY_LICENCE, FIRST_PARTY_PUBLISHER, FIXTURE_PUBLISHER, Facets, Framing, IdError, ItemDetail, ItemId,
-        ItemInfo, ItemKind, ItemManifest, ItemRights, ItemScope, ItemSource, ItemStep, Library, LibraryError, Migrate,
-        OMUZAKI_PUBLISHER_KEY, OpStep, Origin, ParamSpec, ParamType, Params, ParseError, PreviewSpec, Problem,
-        Publisher, PublisherCheck, PublisherKey, Query, RECORD_SCHEMA, RecipeError, RecordBindings, RecordError,
-        Resolved, ResolvedItem, RightsBadge, SearchPage, Section, SourceRegistration, Step, StepRequest, Target, Turn,
-        UnknownSection, Usage, Version, VersionError, VersionReq, When, check_ops, expand, migrations, record_path,
-        sources,
+        APPLIED_KEY, AXES, ApplicationRecord, AssetInfo, Attestation, Axis, Bindings, BodyKind, Compat, CompatStatus,
+        CompatTarget, Creates, Dep, FIRST_PARTY_LICENCE, FIRST_PARTY_PUBLISHER, FIXTURE_PUBLISHER, Facets, Framing,
+        IdError, ItemDetail, ItemId, ItemInfo, ItemKind, ItemManifest, ItemRights, ItemScope, ItemSource, ItemStep,
+        JoinedRights, JointConsent, Library, LibraryError, Migrate, OMUZAKI_PUBLISHER_KEY, OpStep, Origin, ParamSpec,
+        ParamType, Params, ParseError, PreviewSpec, Problem, Publisher, PublisherCheck, PublisherKey, Query,
+        RECORD_SCHEMA, RecipeError, RecordBindings, RecordError, Resolved, ResolvedItem, RightsBadge, RightsRow,
+        SearchPage, Section, SourceRegistration, Step, StepRequest, Target, Turn, UNKNOWN_LICENCE, UnknownSection,
+        Usage, Version, VersionError, VersionReq, When, check_ops, commercial_rank, exceeding, expand, join_rights,
+        join_terms, migrations, record_path, sources,
     };
     assert_eq!(migrations::CURRENT_SCHEMA, 1);
     assert_eq!(Section::ALL.len(), 25);

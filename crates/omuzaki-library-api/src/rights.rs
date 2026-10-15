@@ -1,13 +1,24 @@
 //! What an item records about rights (design D8).
 
 use omuzaki_io_api::UseTerms;
-use omuzaki_store_api::{Commercial, Consent, Provenance, Source};
+use omuzaki_store_api::{Commercial, Consent, ContentHash, Provenance, Source};
 use serde::{Deserialize, Serialize};
 
 use crate::{ItemId, Version};
 
 /// The licence of every first-party item (a project decision: free to use for any purpose).
 pub const FIRST_PARTY_LICENCE: &str = "CC0-1.0";
+
+/// Who asserts an item's rights, and the claim they stand on (marketplace design D5). It is signed with the rest of the
+/// manifest, so a client can show who vouched for the rights without trusting anything outside the signature.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Attestation {
+    /// Who asserts the rights: the publisher or person the claim is made in the name of.
+    pub by: String,
+    /// The id of the shipped claim (the wording the asserter agreed to) the rights stand on.
+    pub claim: String,
+}
 
 /// The rights of an item: the [`Provenance`] fields a part source row holds, so apply writes rows without
 /// translating them. The `source` is implied: `Source::Library { item: "id@version" }`.
@@ -36,6 +47,24 @@ pub struct ItemRights {
     /// The result belongs to whoever applies it (the part rows carry `owned { asserted_by }`).
     #[serde(default)]
     pub owned: bool,
+    /// Who asserts these rights and on which shipped claim. Absent for rights nobody has attested.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attestation: Option<Attestation>,
+    /// The hash of the custom terms text a `LicenseRef-` licence points at, so the text a person read is the text that
+    /// applies. Absent when the licence needs no custom text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terms_hash: Option<ContentHash>,
+}
+
+/// What the manifest records about one binary asset before it is requested: its size and its own rights, so a client can
+/// join the rights and bound the sizes first. The key is the asset's key in `assets`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssetInfo {
+    /// The asset's size in bytes.
+    pub size: u64,
+    /// The asset's own rights: the same type an item carries, joined with the item's by the rights join.
+    pub rights: ItemRights,
 }
 
 impl ItemRights {
@@ -51,6 +80,8 @@ impl ItemRights {
             private_test: false,
             terms: None,
             owned: true,
+            attestation: None,
+            terms_hash: None,
         }
     }
 
@@ -81,6 +112,30 @@ mod tests {
         let p = rights.to_provenance(&id, &Version::new(1, 0, 0));
         assert_eq!(p.source, Source::Library { item: "omuzaki/hair/twintails@1.0.0".into() });
         assert_eq!(licence_gate(&p, false), Ok(()));
+    }
+
+    #[test]
+    fn attestation_and_terms_hash_round_trip_and_are_skipped_when_absent() {
+        let plain = toml::to_string(&ItemRights::first_party()).unwrap();
+        assert!(!plain.contains("attestation") && !plain.contains("terms_hash"), "{plain}");
+        let rights = ItemRights {
+            attestation: Some(Attestation { by: "someone".into(), claim: "own-work-v1".into() }),
+            terms_hash: Some(ContentHash::of(b"terms")),
+            ..ItemRights::first_party()
+        };
+        let text = toml::to_string(&rights).unwrap();
+        assert!(text.contains("[attestation]") && text.contains("terms_hash"), "{text}");
+        assert_eq!(toml::from_str::<ItemRights>(&text).unwrap(), rights);
+        assert_eq!(toml::from_str::<ItemRights>(&plain).unwrap(), ItemRights::first_party());
+    }
+
+    #[test]
+    fn asset_info_carries_the_items_own_rights_type_and_refuses_unknown_keys() {
+        let info = AssetInfo { size: 42, rights: ItemRights::first_party() };
+        let text = toml::to_string(&info).unwrap();
+        assert_eq!(toml::from_str::<AssetInfo>(&text).unwrap(), info);
+        assert!(toml::from_str::<AssetInfo>(&format!("{text}\nextra = 1")).is_err());
+        assert!(toml::from_str::<Attestation>("by = 'x'\nclaim = 'y'\nextra = 1").is_err());
     }
 
     #[test]

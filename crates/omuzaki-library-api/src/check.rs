@@ -72,6 +72,7 @@ impl Checker<'_> {
                 self.add(field, "can't be empty");
             }
         }
+        self.asset_info();
         if let Some(slot) = &m.slot {
             self.slug("slot", slot);
         }
@@ -82,6 +83,21 @@ impl Checker<'_> {
             if tag.is_empty() || *tag != tag.to_lowercase() || tag.contains(char::is_whitespace) {
                 self.add(format!("tags/{i}"), format!("{tag:?} is not a lowercase word"));
             }
+        }
+    }
+
+    /// `asset_info`, when given, describes exactly the assets the manifest declares: a client joins rights and bounds
+    /// sizes from it, so a missing entry would be an unchecked asset and an extra one a description of nothing.
+    fn asset_info(&mut self) {
+        let m = self.m;
+        if m.asset_info.is_empty() {
+            return;
+        }
+        for key in m.assets.keys().filter(|k| !m.asset_info.contains_key(*k)) {
+            self.add(format!("asset_info/{key}"), format!("`assets.{key}` has no entry; give its size and rights"));
+        }
+        for key in m.asset_info.keys().filter(|k| !m.assets.contains_key(*k)) {
+            self.add(format!("asset_info/{key}"), format!("`{key}` is not declared in `assets`; remove the entry"));
         }
     }
 

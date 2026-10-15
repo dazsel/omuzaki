@@ -2,138 +2,21 @@
 //!
 //! The join of the parts' terms is "each flag the most restrictive of the parts" and `licence.set`'s check is "no flag
 //! of the record grants more than the join". Both are the same question asked of one flag at a time, so each flag is
-//! one [`Axis`]: its name in the file (the key a person sees in the record), its rank (0 is the most restrictive
+//! one axis: its name in the file (the key a person sees in the record), its rank (0 is the most restrictive
 //! value), and how to copy it. `UseTerms::is_within` answers the same question as a yes or no; the axes also say
 //! *which* flag, which is what an error has to name, and a test checks that the two agree.
+//!
+//! The axes and the join live in `omuzaki-library-api` (the one rights join the marketplace client shares); this module
+//! is the names `licence.set` and the excess findings use.
 
-use omuzaki_io_api::{AvatarPermission, CommercialUsage, CreditNotation, Modification, UseTerms};
-use omuzaki_store_api::Commercial;
-use serde::Serialize;
-
-/// One permission flag of [`UseTerms`].
-pub(crate) struct Axis {
-    /// The key in the `meta` table of a record (`commercialUsage`), which is how the file and the schema spell it.
-    pub key: &'static str,
-    /// How much the flag grants: 0 is the most restrictive value, higher grants more.
-    rank: fn(&UseTerms) -> u8,
-    /// Sets this flag of `to` to the one of `from`.
-    copy: fn(&mut UseTerms, &UseTerms),
-    /// The flag's value as the record writes it (`personalProfit`, `true`), for messages.
-    show: fn(&UseTerms) -> String,
-}
-
-impl Axis {
-    /// How much this flag of `terms` grants; 0 is the most restrictive value.
-    pub fn rank_of(&self, terms: &UseTerms) -> u8 {
-        (self.rank)(terms)
-    }
-
-    /// This flag of `terms`, as the record writes it.
-    pub fn show_of(&self, terms: &UseTerms) -> String {
-        (self.show)(terms)
-    }
-}
-
-fn avatar_rank(value: AvatarPermission) -> u8 {
-    match value {
-        AvatarPermission::OnlyAuthor => 0,
-        AvatarPermission::OnlySeparatelyLicensedPerson => 1,
-        AvatarPermission::Everyone => 2,
-    }
-}
-
-fn commercial_usage_rank(value: CommercialUsage) -> u8 {
-    match value {
-        CommercialUsage::PersonalNonProfit => 0,
-        CommercialUsage::PersonalProfit => 1,
-        CommercialUsage::Corporation => 2,
-    }
-}
-
-fn modification_rank(value: Modification) -> u8 {
-    match value {
-        Modification::Prohibited => 0,
-        Modification::AllowModification => 1,
-        Modification::AllowModificationRedistribution => 2,
-    }
-}
-
-/// Omitting the credit grants more than requiring it.
-fn credit_rank(value: CreditNotation) -> u8 {
-    match value {
-        CreditNotation::Required => 0,
-        CreditNotation::Unnecessary => 1,
-    }
-}
-
-/// Allowing a use grants more than forbidding it.
-fn flag_rank(value: bool) -> u8 {
-    u8::from(value)
-}
-
-/// A value as the record writes it: a string without its quotes, anything else as JSON.
-fn written<T: Serialize>(value: &T) -> String {
-    match serde_json::to_value(value) {
-        Ok(serde_json::Value::String(text)) => text,
-        Ok(other) => other.to_string(),
-        Err(_) => String::new(),
-    }
-}
-
-macro_rules! axis {
-    ($key:literal, $field:ident, $rank:path) => {
-        Axis {
-            key: $key,
-            rank: |terms| $rank(terms.$field),
-            copy: |to, from| to.$field = from.$field,
-            show: |terms| written(&terms.$field),
-        }
-    };
-}
-
-/// Every flag of [`UseTerms`], in the order the file lists them.
-pub(crate) const AXES: [Axis; 9] = [
-    axis!("avatarPermission", avatar_permission, avatar_rank),
-    axis!("allowExcessivelyViolentUsage", allow_excessively_violent_usage, flag_rank),
-    axis!("allowExcessivelySexualUsage", allow_excessively_sexual_usage, flag_rank),
-    axis!("commercialUsage", commercial_usage, commercial_usage_rank),
-    axis!("allowPoliticalOrReligiousUsage", allow_political_or_religious_usage, flag_rank),
-    axis!("allowAntisocialOrHateUsage", allow_antisocial_or_hate_usage, flag_rank),
-    axis!("creditNotation", credit_notation, credit_rank),
-    axis!("allowRedistribution", allow_redistribution, flag_rank),
-    axis!("modification", modification, modification_rank),
-];
-
-/// The terms that grant least on every flag across `terms`: each flag is the most restrictive value any of them has.
-/// Nothing at all joins to the spec defaults (the most restrictive value of every flag), never to something looser.
-pub(crate) fn join<'a>(terms: impl IntoIterator<Item = &'a UseTerms>) -> UseTerms {
-    let terms: Vec<&UseTerms> = terms.into_iter().collect();
-    let mut joined = UseTerms::default();
-    for axis in &AXES {
-        if let Some(strictest) = terms.iter().min_by_key(|t| axis.rank_of(t)) {
-            (axis.copy)(&mut joined, strictest);
-        }
-    }
-    joined
-}
-
-/// The flags on which `terms` grants more than `limit` does.
-pub(crate) fn exceeding(terms: &UseTerms, limit: &UseTerms) -> Vec<&'static Axis> {
-    AXES.iter().filter(|axis| axis.rank_of(terms) > axis.rank_of(limit)).collect()
-}
-
-/// How much a commercial status grants: `No` is a known restriction, `Unknown` is one nobody has established yet (the
-/// licence gate treats it as `No`, but a person can clear it by reading the licence), `Ok` grants the most.
-pub(crate) fn commercial_rank(status: Commercial) -> u8 {
-    match status {
-        Commercial::No => 0,
-        Commercial::Unknown => 1,
-        Commercial::Ok => 2,
-    }
-}
+pub(crate) use omuzaki_library_api::{commercial_rank, exceeding};
 
 #[cfg(test)]
 mod tests {
+    use omuzaki_io_api::{AvatarPermission, CommercialUsage, CreditNotation, Modification, UseTerms};
+    use omuzaki_library_api::{AXES, join_terms as join};
+    use omuzaki_store_api::Commercial;
+
     use super::*;
 
     fn with(change: impl FnOnce(&mut UseTerms)) -> UseTerms {

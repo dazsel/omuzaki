@@ -10,6 +10,8 @@
 //! - [`Section`], [`ItemKind`], [`Target`]: the 25 sections, what applying does, what it applies to (only the
 //!   character target is open until the scene contract)
 //! - [`ItemRights`]: the provenance fields, and the one constant every first-party item carries
+//! - [`join_rights`]: the pure join of many rows of rights into the strictest record (what `licence.derive` and the
+//!   marketplace client both apply)
 //! - [`Publisher`] and [`ItemManifest::verify`]: ed25519 verification; a name is never trusted without its key
 //! - [`expand`]: bindings and parameters to concrete [`StepRequest`]s, pure
 //! - [`ApplicationRecord`]: the pin and what an application wrote, stored in the document (the records are the lock)
@@ -32,6 +34,7 @@ mod publisher;
 mod recipe;
 mod record;
 mod rights;
+mod rights_join;
 mod section;
 mod service;
 mod source;
@@ -47,7 +50,11 @@ pub use recipe::{Bindings, Params, RecipeError, StepRequest, expand};
 pub use record::{
     APPLIED_KEY, ApplicationRecord, Dep, RECORD_SCHEMA, RecordBindings, RecordError, Resolved, record_path,
 };
-pub use rights::{FIRST_PARTY_LICENCE, ItemRights};
+pub use rights::{AssetInfo, Attestation, FIRST_PARTY_LICENCE, ItemRights};
+pub use rights_join::{
+    AXES, Axis, JoinedRights, JointConsent, RightsRow, UNKNOWN_LICENCE, commercial_rank, exceeding, join_rights,
+    join_terms,
+};
 pub use section::{ItemKind, Section, Target, UnknownSection};
 pub use service::{
     CompatStatus, CompatTarget, Facets, ItemDetail, ItemInfo, ItemScope, Library, LibraryError, Query, ResolvedItem,

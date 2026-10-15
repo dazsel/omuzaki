@@ -140,6 +140,10 @@ pub struct ApplicationRecord {
     pub deps: BTreeMap<String, Dep>,
     /// The item's rights as a source row.
     pub rights: ItemRights,
+    /// The hash of the signed receipt for the item, when it came from the marketplace. Only the hash is kept here; the
+    /// receipt itself is stored with the installed item.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receipt: Option<ContentHash>,
     /// The paths it created, relative to the target node.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub created: Vec<String>,
@@ -198,6 +202,7 @@ mod tests {
             )]
             .into(),
             rights: ItemRights::first_party(),
+            receipt: None,
             created: vec!["parts/skirt".into(), "sources/skirt".into()],
             wrote: [
                 ("parts/skirt/params/length".to_owned(), json!(0.8)),
