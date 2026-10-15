@@ -427,11 +427,54 @@ fn file_state_with(path: &Path, expected: Option<ContentHash>, hooks: &Hooks<'_>
         Err(e) => return Err(StoreError::io(path, e)),
     }
     (hooks.stat_done)();
-    match fs::read(path) {
-        Ok(bytes) if Some(ContentHash::of(&bytes)) == expected => Ok(FileState::Same),
+    // The type and the bytes come from one handle opened without following a link, so a link swapped in after the
+    // look above is seen as what it is, never read through.
+    let mut file = match open_no_follow(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(FileState::Vanished),
+        Err(e) if is_link_error(&e) => return Ok(FileState::Different),
+        Err(e) => return Err(StoreError::io(path, e)),
+    };
+    if !file.metadata().map_err(|e| StoreError::io(path, e))?.is_file() {
+        return Ok(FileState::Different);
+    }
+    let mut bytes = Vec::new();
+    match file.read_to_end(&mut bytes) {
+        Ok(_) if Some(ContentHash::of(&bytes)) == expected => Ok(FileState::Same),
         Ok(_) => Ok(FileState::Different),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(FileState::Vanished),
         Err(e) => Err(StoreError::io(path, e)),
+    }
+}
+
+/// Opens `path` for reading without following a link at its last component: `O_NOFOLLOW` (Linux, macOS), where a
+/// link fails to open ([`is_link_error`]); `FILE_FLAG_OPEN_REPARSE_POINT` (Windows), where the link itself opens and
+/// its metadata says it isn't a file.
+fn open_no_follow(path: &Path) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(rustix::fs::OFlags::NOFOLLOW.bits().cast_signed());
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        /// `FILE_FLAG_OPEN_REPARSE_POINT` (`WinBase.h`): open a link itself, never what it points to.
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    options.open(path)
+}
+
+/// True for the error opening a link without following it gives (`ELOOP`).
+fn is_link_error(e: &io::Error) -> bool {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    return e.raw_os_error() == Some(rustix::io::Errno::LOOP.raw_os_error());
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = e;
+        false
     }
 }
 
@@ -1741,6 +1784,22 @@ mod tests {
         fs::remove_file(&path).unwrap();
         fs::create_dir(&path).unwrap();
         assert_eq!(file_state_with(&path, expected, &Hooks::default()).unwrap(), FileState::Different);
+    }
+
+    /// A link swapped in after the path was looked at is never read through: the file opened without following links
+    /// is the link, so it is different, even though what it points to has the expected bytes.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_swapped_in_before_the_read_is_different() {
+        let tmp = TempDir::new().unwrap();
+        let (dir, (path, expected)) = (tmp.path(), with_file(tmp.path()));
+        write(dir, "elsewhere.toml", MINE);
+        let swap = || {
+            fs::remove_file(dir.join("f.toml")).unwrap();
+            std::os::unix::fs::symlink(dir.join("elsewhere.toml"), dir.join("f.toml")).unwrap();
+        };
+        let hooks = Hooks { stat_done: &swap, ..Hooks::default() };
+        assert_eq!(file_state_with(&path, expected, &hooks).unwrap(), FileState::Different);
     }
 
     /// Every path that places our file over an existing one keeps the original as the `.kept` entry: the swap with a
