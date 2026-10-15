@@ -59,6 +59,38 @@ pub(crate) fn jpeg_frame(bytes: &[u8]) -> Option<JpegFrame> {
     }
 }
 
+/// The length of a JPEG's embedded ICC profile as its APP2 chunks declare it, summed, read before any of the profile is
+/// copied. `None` when there is no profile or the segments are cut short.
+pub(crate) fn jpeg_icc_declared_len(bytes: &[u8]) -> Option<u64> {
+    if bytes.get(..2)? != [0xFF, 0xD8] {
+        return None;
+    }
+    let (mut at, mut total, mut found) = (2, 0_u64, false);
+    loop {
+        while *bytes.get(at)? == 0xFF {
+            at += 1;
+        }
+        let marker = *bytes.get(at)?;
+        at += 1;
+        match marker {
+            0x00 | 0x01 | 0xD0..=0xD8 => continue,
+            0xD9 | 0xDA => return found.then_some(total),
+            _ => {}
+        }
+        let length = usize::from(u16::from_be_bytes([*bytes.get(at)?, *bytes.get(at + 1)?]));
+        if length < 2 {
+            return None;
+        }
+        let segment = bytes.get(at + 2..at + length)?;
+        // An APP2 chunk: `ICC_PROFILE\0`, its sequence number and count (14 bytes), then its share of the profile.
+        if marker == 0xE2 && segment.starts_with(b"ICC_PROFILE\0") && segment.len() >= 14 {
+            total += (segment.len() - 14) as u64;
+            found = true;
+        }
+        at += length;
+    }
+}
+
 /// The colour a PNG declares before its pixels: the `sRGB` chunk, the gamma and the primaries, when the file has them.
 #[derive(Default)]
 pub(crate) struct PngColour {

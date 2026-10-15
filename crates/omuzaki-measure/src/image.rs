@@ -152,13 +152,14 @@ pub fn decode(bytes: &[u8], hash: ContentHash, field: &str) -> Result<Rgba8, OpE
     let mut input = reader(bytes).map_err(|error| unreadable(field, &error))?;
     input.limits(limits());
     let mut decoder = input.into_decoder().map_err(|error| unreadable(field, &error))?;
+    // A JPEG's declared profile length is read before `icc_profile` copies any of it.
+    if let Some(declared) = header::jpeg_icc_declared_len(bytes)
+        && !fits(plan.width, plan.height, peak_with_profile(plan.peak, declared))
+    {
+        return Err(too_large(field, plan.width, plan.height));
+    }
     let icc = decoder.icc_profile().map_err(|error| unreadable(field, &error))?;
-    // The decoder keeps its own copy of the profile, and `icc_profile` returns another, so two copies are live while
-    // the profile is held. Both are counted, since the decoder's copy cannot be released from here. The arithmetic
-    // is stated here because a test cannot reach it: a JPEG's profile is at most 255 APP2 chunks of 65 519 bytes
-    // (about 15.9 MiB), and two copies exceed the 64 MiB budget only from a profile over 32 MiB.
-    let icc_copies = 2 * icc.as_ref().map_or(0, |profile| profile.len() as u64);
-    if !fits(plan.width, plan.height, plan.peak + icc_copies) {
+    if !fits(plan.width, plan.height, peak_with_profile(plan.peak, icc.as_ref().map_or(0, |p| p.len() as u64))) {
         return Err(too_large(field, plan.width, plan.height));
     }
     if let Some(found) = header::non_srgb(bytes, format, icc.as_deref()) {
@@ -172,6 +173,16 @@ pub fn decode(bytes: &[u8], hash: ContentHash, field: &str) -> Result<Rgba8, OpE
     let rgba = dynamic.into_rgba8();
     let (width, height) = rgba.dimensions();
     Ok(Rgba8 { width, height, pixels: rgba.into_raw(), hash })
+}
+
+/// The peak of a decode that holds an embedded profile of `profile` bytes, over `base`, the decode's peak without it. The
+/// profile lives twice while `icc_profile` returns its copy: the decoder keeps its own, and the returned copy is the
+/// other. Then the returned copy is dropped, and the pixel decode holds the decoder's copy alone. The peak is the larger
+/// of the two phases: `base + 2 * profile` while copying, `base + profile` while decoding. The declared length is checked
+/// before the copy for a JPEG; a PNG profile is inflated by the `png` crate while its header is read, under the budget
+/// as its own limit, before this crate sees it.
+fn peak_with_profile(base: u64, profile: u64) -> u64 {
+    (base + 2 * profile).max(base + profile)
 }
 
 /// The predicted peak of decoding `bytes`, from the header alone: the decoder's scratch, its output and the RGBA8 the
@@ -285,4 +296,29 @@ fn colour_unsupported(field: &str, found: &str) -> OpError {
 fn at(field: &str, mut error: OpError) -> OpError {
     error.field = Some(field.to_owned());
     error
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MAX_SIDE, fits, max_decoded_bytes, peak_with_profile};
+
+    #[test]
+    fn a_profile_counts_twice_while_it_is_copied() {
+        // Two copies are live while the returned copy exists: the copying phase is the larger, so it sets the peak.
+        assert_eq!(peak_with_profile(1_000, 10), 1_020);
+    }
+
+    #[test]
+    fn the_budget_accepts_the_exact_cap_and_refuses_one_byte_over_with_two_copies() {
+        let cap = max_decoded_bytes();
+        let base = 1 << 20;
+        // The largest profile whose two copies fit: 2 * profile = cap - base.
+        let fits_exactly = (cap - base) / 2;
+        assert!(fits(1, 1, peak_with_profile(base, fits_exactly)));
+        // One byte more and the copies are over the cap, even though one copy alone would fit.
+        assert!(!fits(1, 1, peak_with_profile(base, fits_exactly + 1)));
+        assert!(fits(1, 1, base + fits_exactly + 1), "one copy alone fits, so the second copy is what refuses it");
+        // The side limit is unaffected by the profile.
+        assert!(!fits(MAX_SIDE + 1, 1, 0));
+    }
 }

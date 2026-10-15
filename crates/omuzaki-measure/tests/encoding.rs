@@ -182,3 +182,20 @@ fn a_jpeg_with_a_display_p3_profile_is_refused_naming_the_profile() {
     let jpeg = with_icc_jpeg(include_bytes!("fixtures/baseline_444.jpg"), &p3);
     assert!(refusal(&jpeg).contains("an embedded colour profile that is not sRGB"));
 }
+
+#[test]
+fn a_jpeg_whose_declared_profile_would_exceed_the_budget_is_refused_before_it_is_copied() {
+    // 510 APP2 chunks of 65 519 profile bytes each: about 33 MB declared. Two copies of it are over the 64 MiB budget,
+    // so the refusal comes from the declared length, before `icc_profile` copies any of it.
+    let fixture = include_bytes!("fixtures/baseline_444.jpg");
+    let mut jpeg = fixture[..2].to_vec();
+    for _ in 0..510 {
+        jpeg.extend([0xFF, 0xE2]);
+        jpeg.extend(u16::try_from(2 + 14 + 65_519).unwrap().to_be_bytes());
+        jpeg.extend(b"ICC_PROFILE\0\x01\x01");
+        jpeg.extend(vec![0_u8; 65_519]);
+    }
+    jpeg.extend(&fixture[2..]);
+    let message = refusal(&jpeg);
+    assert!(message.starts_with("The image is 96 × 64"), "{message}");
+}
