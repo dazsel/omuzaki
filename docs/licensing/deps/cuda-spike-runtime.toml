@@ -1,0 +1,7 @@
+section = "rust"
+item = "CUDA 12.8 runtime (cudart, cuBLAS, cuFFT, cuRAND) and cuDNN 9.10 files, spike measurement only"
+kind = "native"
+used_for = "GPU run of the webcam tracking spike, local measurement"
+status = "conditions"
+condition = "redistribution grant, \"case by case\" in the policy; taken from the `nvidia-*-cu12` PyPI wheels in an existing conda env, not copied, not shipped; CUDA is not planned for the product (recommendation)"
+audit = "(PyPI `nvidia-*-cu12`: NVIDIA terms)"

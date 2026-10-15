@@ -1,0 +1,7 @@
+section = "models"
+item = "Stability AI Stable Image API"
+kind = "service"
+used_for = "CN-06 hosted image adapter candidate"
+status = "unverified"
+condition = "output: ToS (effective 2026-09-30) 4(a) \"we assign to you all of our right, title, and interest (if any) in the Outputs\" (https://stability.ai/terms-of-service, checked 2026-10-13); training on Content unless the account opts out; pricing, API shape unread (docs/research/2026-10-hosted-image-apis.md)"
+audit = "CN-06"

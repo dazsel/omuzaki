@@ -1,0 +1,7 @@
+section = "in-use"
+item = "Poly Haven HDRIs"
+kind = "asset"
+used_for = "lighting in synthetic renders"
+status = "yes"
+condition = "CC0; keep local copies, don't scrape"
+audit = "A5"
