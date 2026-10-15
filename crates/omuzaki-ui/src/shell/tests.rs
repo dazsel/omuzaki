@@ -395,3 +395,46 @@ fn the_history_panel_keeps_the_newest_records_of_a_long_log() {
         assert_eq!(records.last().map_or(0, |r| r.seq), total, "{total}: the last record is the newest");
     }
 }
+
+#[test]
+fn a_compact_layout_survives_a_resize_even_when_its_save_has_not_landed() {
+    // A store that cannot write or read: the edit can only come back from memory.
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let blocked = dir.path().join("layouts");
+    std::fs::write(&blocked, "a file where the folder should be").expect("write");
+    let mut harness = shell_at(vec2(1366.0, 768.0), Some(LayoutStore::new(blocked)), Arc::new(NullRunner));
+    let default = harness.state().shown_layout();
+    drag(&mut harness, &[egui::pos2(1058.0, 500.0), egui::pos2(1000.0, 500.0)]);
+    let edited = harness.state().shown_layout();
+    assert_ne!(edited, default, "the drag changed the compact layout");
+    harness.set_size(vec2(1280.0, 720.0));
+    harness.run_steps(3);
+    harness.set_size(vec2(1366.0, 768.0));
+    harness.run_steps(3);
+    assert_eq!(harness.state().shown_layout(), edited, "back at the first size the edit is still there");
+}
+
+#[test]
+fn reset_removes_every_compact_layout_of_the_workspace_and_the_ones_held_in_memory() {
+    let (_keep, store) = store();
+    let layout =
+        Layout::new(Node::split(Dir::Horizontal, vec![Node::pane("viewport"), Node::pane("inspector")], &[3.0, 1.0]));
+    for key in ["build", "build-compact-a", "build-compact-la", "build-compact-lar", "probe-compact-a"] {
+        store.save(key, &layout).expect("saves");
+    }
+    let mut harness = shell_at(vec2(1366.0, 768.0), Some(store.clone()), Arc::new(NullRunner));
+    drag(&mut harness, &[egui::pos2(1058.0, 500.0), egui::pos2(1000.0, 500.0)]);
+    harness.state_mut().reset_layout();
+    harness.run_steps(3);
+    harness.state().flush();
+    let left: Vec<_> = std::fs::read_dir(store.dir()).expect("dir").flatten().map(|e| e.file_name()).collect();
+    assert_eq!(left, [std::ffi::OsString::from("probe-compact-a.toml")], "only the other workspace's file is left");
+    let fresh = plain(vec2(1366.0, 768.0));
+    assert_eq!(harness.state().shown_layout(), fresh.state().shown_layout(), "the edit held in memory is gone too");
+    // Resizing to another fold and back does not bring the old arrangement back.
+    harness.set_size(vec2(1280.0, 720.0));
+    harness.run_steps(3);
+    harness.set_size(vec2(1366.0, 768.0));
+    harness.run_steps(3);
+    assert_eq!(harness.state().shown_layout(), fresh.state().shown_layout());
+}

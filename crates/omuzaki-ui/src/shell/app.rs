@@ -9,6 +9,7 @@
 //! Inspector's, the left dock a rail), the folded form is shown, and what the person changes there is saved under its
 //! own name (`Fold::key`), so a small window never overwrites the layout made on a big one and each is remembered.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use egui::{
@@ -61,6 +62,15 @@ impl Fold {
         }
     }
 
+    /// Every fold there is, the one with nothing folded first.
+    fn all() -> impl Iterator<Item = Self> {
+        (0..8_u8).map(|bits| Self {
+            library_as_tab: bits & 1 != 0,
+            agent_history_merged: bits & 2 != 0,
+            left_rail: bits & 4 != 0,
+        })
+    }
+
     /// The name a layout is saved under: the workspace's own for the full arrangement, and one per fold for the
     /// arrangements of smaller windows, so each is kept apart from the others.
     fn key(self, workspace: &str) -> String {
@@ -102,6 +112,9 @@ pub struct Shell {
     runner: Arc<dyn Runner>,
     store: Option<LayoutStore>,
     saver: Option<Saver>,
+    /// The compact layouts changed this session, by name. A save is queued, not done, so a view rebuilt before the
+    /// writer catches up reads these and not the older file.
+    compact: HashMap<String, Layout>,
     workspaces: Vec<&'static WorkspaceDef>,
     views: Vec<Option<View>>,
     active: usize,
@@ -134,6 +147,7 @@ impl Shell {
             runner,
             store,
             saver,
+            compact: HashMap::new(),
             views: workspaces.iter().map(|_| None).collect(),
             workspaces,
             active: 0,
@@ -296,7 +310,9 @@ impl Shell {
             saved.clone()
         } else {
             let derived = self.folded_layout(&saved, fold, &rail, plan);
-            let stored = from_disk.then(|| self.stored(&fold.key(workspace.id), &derived)).flatten();
+            let key = fold.key(workspace.id);
+            let stored =
+                from_disk.then(|| self.compact.get(&key).cloned().or_else(|| self.stored(&key, &derived))).flatten();
             stored.map_or(derived, |l| l.without(&rail.iter().map(|p| p.id).collect::<Vec<_>>()))
         };
         // What was focused, maximised or open as a drawer may not be in the arrangement that is shown now.
@@ -391,18 +407,26 @@ impl Shell {
         if view.fold == Fold::NONE {
             view.saved = current.clone();
         }
+        let key = view.fold.key(workspace.id);
+        if view.fold != Fold::NONE {
+            self.compact.insert(key.clone(), current.clone());
+        }
         if let Some(saver) = &self.saver {
-            saver.save(&view.fold.key(workspace.id), &current);
+            saver.save(&key, &current);
         }
     }
 
-    /// Forgets the saved layouts of the active workspace; the default is built on the next frame.
+    /// Forgets every saved layout of the active workspace, the compact ones included; the default is built on the
+    /// next frame.
     pub fn reset_layout(&mut self) {
         let Some(&workspace) = self.workspaces.get(self.active) else { return };
-        if let (Some(saver), Some(view)) = (&self.saver, self.views.get(self.active).and_then(Option::as_ref)) {
-            saver.reset(workspace.id);
-            saver.reset(&view.fold.key(workspace.id));
+        if let Some(saver) = &self.saver {
+            for fold in Fold::all() {
+                saver.reset(&fold.key(workspace.id));
+            }
         }
+        let own = Fold::key(Fold::NONE, workspace.id);
+        self.compact.retain(|key, _| !key.starts_with(&own));
         self.views[self.active] = None;
         self.fresh = true;
         self.maximised = false;
