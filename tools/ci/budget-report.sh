@@ -7,8 +7,8 @@
 # --previous  last night's report.json, for the regression check (more than 10% worse is a regression)
 # --class     what the numbers are, in the spec's §10 sense: reported (default) or relative. measured and scaled are
 #             refused until reports carry the tier provenance §10 requires.
-# --strict    exit non-zero on the findings the class gates on (relative: more than 10% worse than --previous, and an
-#             error without a comparable --previous). Without it the run only reports. Numbers of class `reported`
+# --strict    exit non-zero on the findings the class gates on (relative: a budgeted metric more than 10% worse than
+#             --previous, and an error without a comparable --previous). Without it the run only reports. Numbers of class `reported`
 #             (any cloud runner) never gate, so --strict with the default class cannot fail on a slow machine (§10).
 #
 # The nightly step calls this script with --previous pointing at the artifact of the last green night.

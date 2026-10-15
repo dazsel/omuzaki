@@ -197,11 +197,11 @@ mod tests {
     }
 
     #[test]
-    fn strict_runs_fail_on_a_regression_only_for_a_gating_class() {
+    fn a_strict_relative_run_with_a_baseline_reports_an_unbudgeted_slowdown_without_failing() {
         let dir = tempfile::tempdir().unwrap();
         let mut c = config(dir.path());
         let mut previous = measure(&c).unwrap();
-        // Pretend last night's busy-wait was twice as fast: today is a 100% slowdown.
+        // Pretend last night's busy-wait was twice as fast: today is a 100% slowdown of a metric with no budget.
         for row in &mut previous.rows {
             if row.metric.key == SYNTHETIC_KEY {
                 row.metric.stats.p95 /= 2.0;
@@ -210,11 +210,9 @@ mod tests {
         let prev_path = dir.path().join("previous.json");
         std::fs::write(&prev_path, previous.to_json().unwrap()).unwrap();
         c.previous = Some(prev_path);
-        assert!(matches!(run(&c), Err(BudgetError::Violations(_))));
-        c.strict = false;
-        assert!(run(&c).is_ok());
-        // Reported numbers never gate, however much slower than last night.
-        c.strict = true;
+        // Spec §10 gates a relative run on budgeted metrics only: the slowdown is in the report, not an error.
+        let report = run(&c).unwrap();
+        assert!(report.rows.iter().any(|r| r.metric.key == SYNTHETIC_KEY && r.regression));
         c.class = Class::Reported;
         assert!(run(&c).is_ok());
     }

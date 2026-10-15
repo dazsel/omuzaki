@@ -27,7 +27,8 @@ pub enum Class {
     /// Taken on another machine and converted by a spec rule: judged against the budget directly. Refused by the runner
     /// for the same reason as [`Class::Measured`].
     Scaled,
-    /// A PR against main on the same machine, alternating runs in one session: a metric more than 10% worse fails.
+    /// A PR against main on the same machine, alternating runs in one session: a budgeted metric more than 10% worse
+    /// fails.
     Relative,
 }
 
@@ -202,21 +203,22 @@ impl Report {
     /// Every finding: rows over budget, with a unit mismatch, truncated, or more than [`REGRESSION_LIMIT`] worse than the
     /// previous run. Whether a finding fails a run is [`Report::failures`].
     pub fn violations(&self) -> Vec<String> {
-        self.findings(true, true)
+        self.findings(true, true, false)
     }
 
     /// The findings that fail a gating run of this report's class. `reported` numbers never gate; `measured` and
     /// `scaled` ones are judged against the budget; `relative` ones against the previous run. A truncated run or a unit
-    /// mismatch is a harness fault and fails every class but `reported`.
+    /// mismatch is a harness fault and fails every class but `reported`. A `relative` run fails only on a budgeted
+    /// metric (spec §10); a change in any other metric is printed and not gated.
     pub fn failures(&self) -> Vec<String> {
         match self.class {
             Class::Reported => Vec::new(),
-            Class::Measured | Class::Scaled => self.findings(true, false),
-            Class::Relative => self.findings(false, true),
+            Class::Measured | Class::Scaled => self.findings(true, false, false),
+            Class::Relative => self.findings(false, true, true),
         }
     }
 
-    fn findings(&self, budget: bool, regressions: bool) -> Vec<String> {
+    fn findings(&self, budget: bool, regressions: bool, budgeted_only: bool) -> Vec<String> {
         let mut out = Vec::new();
         for r in &self.rows {
             let key = &r.metric.key;
@@ -228,7 +230,7 @@ impl Report {
             if r.metric.dropped > 0 {
                 out.push(format!("{key}: {} samples dropped", r.metric.dropped));
             }
-            if regressions && r.regression {
+            if regressions && r.regression && (!budgeted_only || r.budget.is_some()) {
                 out.push(format!("{key}: regression of {:.1}%", r.change_pct.unwrap_or(f64::NAN)));
             }
         }
@@ -408,6 +410,16 @@ mod tests {
         r.schema = SCHEMA + 1;
         let err = Report::from_json(&r.to_json().unwrap()).unwrap_err();
         assert!(matches!(err, BudgetError::Schema { found, supported } if found == SCHEMA + 1 && supported == SCHEMA));
+    }
+
+    #[test]
+    fn a_relative_run_gates_only_budgeted_metrics() {
+        // `other` has no budget and 100 samples: it is 10x slower than last time, which is reported, not gated.
+        let previous = report(vec![us("other", 1000)], None);
+        let judged = report(vec![us("other", 10_000)], Some(&previous));
+        assert!(judged.rows[0].regression, "the change is still reported");
+        assert_eq!(judged.failures(), Vec::<String>::new());
+        assert_eq!(judged.violations(), ["other: regression of 900.0%"]);
     }
 
     #[test]
