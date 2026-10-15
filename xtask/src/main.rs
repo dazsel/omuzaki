@@ -12,6 +12,8 @@
 //! - `lint-docs-index`: every doc under `docs/` has front matter, and `docs/README.md` has no index list (ADR 0053).
 //! - `docs-index`: print the docs index generated from that front matter (ADR 0053).
 //! - `registry`: print the self-registrations the source declares, the expected side of the link gate.
+//! - `wasm-link-proof`: build a wasm32 App that links a `registers` crate, run it in node, and check the registrations
+//!   survived (ADR 0015); `--unlinked` proves the check can fail.
 //! - `dist`: pack the Windows zip (`omuzaki.exe`, models, notices).
 //! - `check`: run the CI gates on the crates a change affects (`--json` prints the scope for the CI plan job).
 
@@ -29,6 +31,7 @@ mod lint_seed;
 mod lint_ui_writes;
 mod process;
 mod report;
+mod wasm_link_proof;
 mod workspace;
 
 use std::path::PathBuf;
@@ -78,6 +81,8 @@ enum Command {
     /// Run fmt, clippy, tests, cargo-deny, lint-deps, lint-links, lint-registers, lint-licences, lint-ui-writes and the docs and crate lints on the crates a change affects, through the build
     /// queue.
     Check(check::CheckArgs),
+    /// Build a wasm32 App that links a `registers` crate, run it in node and fail on a lost registration (ADR 0015).
+    WasmLinkProof(wasm_link_proof::WasmLinkProofArgs),
     /// Pack the Windows zip: omuzaki.exe, the models, the notices (and the ONNX Runtime DLL), deterministically.
     Dist(xtask::dist::DistArgs),
 }
@@ -122,6 +127,7 @@ fn run(cli: &Cli) -> Result<ExitCode> {
         Command::DocsIndex => docs_index::print(&workspace),
         Command::Registry(args) => links::registry(&workspace, args),
         Command::Check(args) => check::run(&workspace, args),
+        Command::WasmLinkProof(args) => wasm_link_proof::run(&workspace, args),
         Command::Dist(_) => unreachable!("handled above"),
     }
 }
