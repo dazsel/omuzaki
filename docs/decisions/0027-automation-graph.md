@@ -95,6 +95,11 @@ tasks were filed without a contract. Five facts shape the answer:
   4. AP-11's speech is an op;
   5. CN-05's secret store lands no later than the first node that needs a secret, so it moves into Phase 2.
   The design's §8 records each answer with its reason.
+- **Revised 2026-10-15 for ADR 0054** (design D21): `omuzaki-live-api` exports by path; node and op folders get
+  generated module lists; the event, payload, need and input types and their struct-like variants are
+  `#[non_exhaustive]` with constructors (`PortType`, `Val` and `NodeClass` stay closed on purpose); keys other
+  features add to a show register with `register_show_key!`; tests across the live crates go in `omuzaki-test-live`;
+  the crates set `registers = true` and opt out of wasm.
 - Spec §6 lists `edit:show` (with `input` and `process`), §7 the show folder, §9 the four crates.
 - **Rejected:**
   - **Latched outputs only (the Blueprint model):** overlapping events overwrite each other's data after any wait.
