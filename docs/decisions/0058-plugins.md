@@ -1,6 +1,6 @@
 # 0058: Plugins are wasmtime components that call ops through one generic bridge, as their own sessioned actor, under fuel and memory caps (2026-10-15)
 
-**Status:** proposed. It adds two `omuzaki-ops-api` variants. **Context:** PL-01, PL-03, PL-04; spec v3 §6, §9, §10,
+**Status:** proposed. It adds two approved `omuzaki-ops-api` variants. **Context:** PL-01, PL-03, PL-04; spec v3 §6, §9, §10,
 §30, §39 rules 1, 2, 6, 10; ADR 0009, 0015, 0016, 0020, 0034, 0042. Design: `docs/design/plugins.md`.
 
 ## Context
@@ -18,9 +18,11 @@ manifest, rights, and how plugins relate to scripts (ADR 0034).
    `Plugins` trait; no wasmtime), `omuzaki-plugin-mock`, and `omuzaki-plugin` (wasmtime 49, native only, the
    `plugin.*` ops, linked by the desktop App and the CLI through `link()`). wasmtime directly: extism has no
    component model, so no WIT and no versioned imports.
-2. **The WIT package `omuzaki:plugin@0.1.0`** has the base world `plugin` (imports `ops`, `host`, and `data` and
-   `http` when requested; exports `lifecycle`: `init`, `approval-resolved`, `shutdown`). Each extension world
-   includes it. A 0.x host serves its own minor and the one before through an adapter; from 1.0, semver.
+2. **The WIT package `omuzaki:plugin@0.1.0`** has the base world `plugin` (imports `ops`, `host`, `data` and `http`,
+   the last two linked to refusals unless requested; exports `lifecycle`: `init`, `approval-resolved`,
+   `shutdown`). Each extension world includes it. A 0.x host serves its own minor and the one before through an adapter; from 1.0, semver. A node
+   activation gets refusals for `ops`, `data` and `http`; its only effect is an asynchronous `run-op` in the show's
+   session, within the plugin's ceiling and the needs that show approved (automation D15).
 3. **The op bridge is generic:** `call`, `plan` (dry run), `describe` (the JSON Schema) and `list`. A WIT function per
    op would need a central list (§39 rule 2) and would break every plugin whenever any op changed. `op-error` maps
    `OpError` one to one.
@@ -33,15 +35,20 @@ manifest, rights, and how plugins relate to scripts (ADR 0034).
    Approvals attach to the content hash and the publisher key, never the name.
 6. **Sandbox:** no WASI except a fixed stub subset that grants nothing (so `std` guests link); 64 MiB memory, one
    table of 10,000 elements, 32 instances, a 512 KiB stack; fuel and an epoch deadline per call kind (`init` 10⁹
-   fuel and 5 s; node activations 10⁶ fuel, about 1 ms on `R`, and 2 ms); a host-call bucket of 10,000 a second. A
+   fuel and 5 s; node activations 10⁶ fuel, about 1 ms on `R`, and 2 ms); a host-call bucket of 10,000 a second; `ops.call` and `plan` bytes capped at 1 MiB in and out; each call's fuel is the smaller of its cap and the plugin's remaining CPU share. A
    trap faults the plugin and ends its session with the new `EndReason::Faulted { reason }`; three faults in ten
-   minutes disable it.
+   minutes disable it. Every import charges fuel (2,000 plus 1 per byte), so caps and the 100 ms a second CPU share
+   count host work. Blocking host calls carry the deadline: `fetch` is cancelled at it, and nothing is called after
+   it. `wasi:random/random` is OS entropy; only the `insecure` interfaces are seeded. `.zip` packages refuse absolute
+   and `..` paths, links, duplicate normalised names and oversize, and the hash is over the staged files.
 7. **Threads:** one worker thread per plugin; node activations only on the engine thread in a second 16 MiB
    instance; never the render, audio or tracking thread unless an extension design adds a number. Every path has a
    budget and a gate (design §5.2).
 8. **Lifecycle:** installed per machine, enabled per machine or per (machine, project) in a person-only `Machine`
    setting; nothing loads unless enabled (SE-04). Reload swaps by content hash, drains, and hands over no state.
-   Every mutating `plugin.*` op is `person_only` and never queued; `plugin.list` and `plugin.describe` are `read`
+   The management ops (install, enable, disable, grant, reload, remove) are `person_only` and never queued;
+   `plugin.run` is a driver job (as `script.run`), `read` statically, whose driver checks the command's declared scope with `JobCtx::authorize` before the guest starts and runs every inner call inside
+   `caller's grants ∩ declared scope ∩ plugin ceiling`, as `script.run` does; `plugin.list` and `plugin.describe` are `read`
    queries agents may use.
 9. **Rights:** the card shows the licence and the "not from Omuzaki" line (ADR 0016's pattern). A non-commercial or
    unknown licence is shown, not refused, for a plugin the person installs; the store (PL-04) refuses it. The licence
@@ -49,11 +56,19 @@ manifest, rights, and how plugins relate to scripts (ADR 0034).
 10. **Scripts and plugins share one grants model and one journal.** They differ on identity (scripts run as their
     caller), ceiling source (a script's syntax tree, a plugin's manifest), queueing (scripts never queue, plugins
     receive the outcome later) and limit units, each for a stated reason (design §10).
+11. **Plugin-defined ops** go through one static op, `plugin.run {id, command, args}`, with each command's schema
+    through `describe` and its scope declared in the manifest; there is no run-time op table. A command never acts
+    beyond its caller's grants.
+12. **Development builds** are signed automatically with a per-person dev key that never leaves the machine; an
+    approval against it covers that machine only, and anything published is signed with the publisher key.
+13. **Performance-mode plugin memory** is capped at 128 MiB inside `ram.runtime`, provisionally; the first
+    node-plugin task measures it and states the number.
 
 ## Consequences
 
-- `omuzaki-ops-api` gains `CauseKind::Plugin` and `EndReason::Faulted { reason }`, additive, each needing the
-  Director's approval on its task first. `Actor::Plugin` and `Transport::Plugin` already exist.
+- `omuzaki-ops-api` gains `CauseKind::Plugin` and `EndReason::Faulted { reason }` (approved by the Runtime lead), in
+  one task with #1535's `CauseKind::Review` that also marks both enums `#[non_exhaustive]` (ADR 0054 §4).
+  `Actor::Plugin` and `Transport::Plugin` already exist.
 - The executor gains one plugin rule: per-use queueing of `publish`, `broadcast` and `spend` for plugin sessions.
 - The tasks of design §12 and the unlocked work (hot reload, the manager panel, the mutating ops and their cards,
   settings and the data folder, log lines in the Theatre, localisation, the SDK example and guide, the web opt-out
@@ -64,6 +79,5 @@ manifest, rights, and how plugins relate to scripts (ADR 0034).
   - typed WIT per op;
   - plugins running as the person, like scripts: third-party code that acts later must have its own kill switch;
   - full WASI, or WASI filesystem with a preopen: the data interface is smaller and its quota checkable;
-  - handing state over on reload.
-- Open questions for the Director and the owner are in design §14: plugin-defined ops, unsigned plugins under
-  development, and the performance-mode memory cap.
+  - handing state over on reload;
+  - a run-time op table, and "developer folders" that carry unsigned approvals forward (design §14).

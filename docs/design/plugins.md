@@ -47,6 +47,10 @@ version it was built against, so the binary, not the manifest, is the authority.
 - **One world per extension kind.** The base world is `plugin` (below). Each extension world (`node`, `tracker`,
   `exporter`, `part-generator`, `adapter`) `include`s it and adds its own exports, so every plugin speaks the same base
   interfaces and a host checks one world per kind. The manifest's `worlds` key (§7) says which a component targets.
+- **Node activations never reach the base imports** (automation D15). The engine instance (§5.1) links `ops`, `data`
+  and `http` to refusals (`denied`, detail "not in a node activation"); a node's only effect is the node world's
+  `run-op`, which mirrors `NodeCx::run_op`: asynchronous, in the show's session, with the ceiling show session ∩ the
+  plugin's ceiling ∩ the needs that show approved for that node.
 
 ```wit
 package omuzaki:plugin@0.1.0;
@@ -78,11 +82,11 @@ interface host {
 }
 
 interface data {
-    /// The plugin's own folder: flat names `[a-z0-9._-]{1,64}`, no paths. Only linked when the manifest says `data = true`.
+    /// The plugin's own folder: flat names `[a-z0-9._-]{1,64}`, no paths. Refusals unless the manifest says `data = true`.
     read: func(name: string) -> option<list<u8>>;
-    write: func(name: string, bytes: list<u8>) -> result<_, string>;   // "over quota" past the quota (§7)
+    write: func(name: string, bytes: list<u8>) -> result<_, string>;   // "over quota" past the byte or file quota (§4.2)
     remove: func(name: string) -> bool;
-    list: func() -> list<string>;
+    list: func() -> list<string>;   // at most 4,096 names (§4.2)
 }
 
 interface http {
@@ -104,8 +108,8 @@ interface lifecycle {
 world plugin {
     import ops;
     import host;
-    import data;   // refused at load unless the manifest asks for `data`
-    import http;   // refused at load unless the manifest asks for `net`
+    import data;   // linked to refusals unless the manifest asks for `data`
+    import http;   // linked to refusals unless the manifest asks for `net`
     export lifecycle;
 }
 ```
@@ -116,15 +120,12 @@ The Rust guest SDK gives `approval-resolved` and `shutdown` empty defaults, so t
 
 ### 2.1 Generic `call`, not a WIT function per op
 
-- **A typed WIT function per op means a WIT file listing every op.** Someone would have to keep it, which is the
-  central list §39 rule 2 forbids, or generate it, which makes the WIT package change whenever any op's arguments
-  change: every plugin would be rebuilt for a field it never uses, and the compatibility window (1.1) would mean
-  nothing.
+- **A typed WIT function per op means a WIT file listing every op:** kept by hand, it is the central list §39 rule 2
+  forbids; generated, it changes the package whenever any op's arguments change, voiding the window (1.1).
 - **Op schemas are JSON Schema already** (spec §6). `describe` hands the same schema to a plugin that MCP hands to an
   agent, so the two can't drift, and a plugin can check its arguments before it calls.
-- **Typing lives in the guest, where it is optional.** The SDK's `omuzaki-plugin-sdk ops` command writes typed Rust
-  wrappers from a `describe` dump at build time. A plugin pinned to those wrappers still runs against a host whose op
-  gained an optional field.
+- **Typing lives in the guest, where it is optional:** `omuzaki-plugin-sdk ops` writes typed Rust wrappers from a
+  `describe` dump at build time, which still run against a host whose op gained an optional field.
 - **Cost:** one JSON encode and decode per call. The budget (§5.2) is 20 µs round trip for 1 KiB of arguments, small
   next to the op itself; the bench gates it.
 - `list` names only ops whose scope is inside the plugin's ceiling, so a plugin can't map ops it may never use.
@@ -154,8 +155,7 @@ The Rust guest SDK gives `approval-resolved` and `shutdown` empty defaults, so t
 - **Queued requests.** A request that waits for a person (`publish`, `broadcast`, `spend`, an op that calls
   `require_person`) is queued and runs, once approved, as its own transaction (ADR 0020 4.4); the entry call has
   long returned, so the host delivers the outcome later through `approval-resolved`.
-- **Undo.** Each entry's transaction is one step in the plugin's history; a person's Ctrl+Z covers it (ADR 0020 5.4)
-  and "Undo session" reverts the whole session, as for an agent.
+- **Undo.** Each entry is one step; Ctrl+Z covers it and "Undo session" reverts the session (ADR 0020 5.4).
 
 ## 3. Identity and grants
 
@@ -183,8 +183,7 @@ ends with a named reason: `Closed` on disable, unload or reload, `Revoked` by th
 
 - **Never granted to a plugin:** `native`, `fs`, `process`, `input`, `script`. A manifest that requests one is
   refused at install (`PluginError::Manifest`). `fs` is replaced by the plugin's own data folder (`data`), which is
-  not a file root and reaches nothing else; `script` would let a plugin run Rhai as itself, a second door with no
-  extra value.
+  not a file root and reaches nothing else; `script` would let a plugin run Rhai as itself, a second door.
 - **`net` is never in the session's grants.** It means "may use `http.fetch`" and is approved per host (3.3), so the
   plugin's only network path is the host function, never an op of scope `net` and never a socket.
 - **`publish`, `broadcast` and `spend` are per use.** They can be in the ceiling, but for a `Transport::Plugin`
@@ -194,6 +193,12 @@ ends with a named reason: `Closed` on disable, unload or reload, `Revoked` by th
 - **Approvals attach to the content hash and the publisher key** (agent-sessions 3.3: a name is chosen by its
   author). An update with a new hash signed by the same key keeps the approval for the scopes and hosts it already
   covers; anything new shows a card with only the difference. An unsigned plugin's approval covers its one hash.
+- **Dev keys** (14.2): a person's own development key, which the build script signs with, never leaves their machine;
+  an approval made against it covers that machine only, and anything published is signed with the publisher key.
+- **A command runs inside its caller's grants.** `plugin.run` carries the caller's effective grants into the
+  invocation; every inner `ops.call` and `plan`, queued ones included, is checked against `caller's grants ∩ the
+  command's declared scope ∩ the plugin's ceiling`, as `script.run` is (`scripting.md` §3), and `list` shows that
+  set. `fetch` also needs a declared `net` and the caller holding it; `data` writes need a declared `data`.
 - **Changing a plugin's grants** is `plugin.grant`, person only (§9).
 
 ### 3.3 Network: hosts, not sockets
@@ -222,7 +227,8 @@ exactly these, and refuses a component that imports any other (`PluginError::Imp
 | `wasi:io/streams`, `error`, `poll` | what the three streams above need |
 | `wasi:clocks/monotonic-clock` | the runner's clock, as `monotonic-seconds` |
 | `wasi:clocks/wall-clock` | the runner's clock since 1970-01-01 at session start, so tests stay deterministic |
-| `wasi:random/random`, `insecure`, `insecure-seed` | a ChaCha stream seeded from the content hash and the session id (deterministic, ADR 0009) |
+| `wasi:random/random` | OS entropy: it backs the guest's `getrandom`, so keys and nonces must not be predictable |
+| `wasi:random/insecure`, `insecure-seed` | a ChaCha stream seeded from the content hash and the session id (deterministic, ADR 0009); tests also seed `random` through a test-only host option |
 | `wasi:filesystem/types`, `preopens` | no preopens: every file call fails cleanly; files go through `data` |
 
 `wasi:sockets` and `wasi:http` are never linked.
@@ -237,13 +243,22 @@ exactly these, and refuses a component that imports any other (`PluginError::Imp
 | Instances | 32 core instances per component | `StoreLimits` (`instances`) |
 | Wasm stack | 512 KiB | `Config::max_wasm_stack`; deep recursion traps |
 | Host-call rate | 10,000 a second, burst 1,000, across every import | a token bucket on the runner's clock, like #244's; over it, `call` and `plan` return `limited` and other imports trap |
-| Export lists | `list()` results and `describe` strings over 1 MiB, an `init` config over 64 KiB | the bridge; a bad or oversized return value faults the plugin |
+| Data folder | `data_quota_mb` bytes and 4,096 files (flat names); a `write` past either is "over quota" | `data`: both checked and updated under one lock; `list` is bounded by the count |
+| Export lists, op bytes | `list()` results and `describe` strings over 1 MiB, an `init` config over 64 KiB; `ops.call` arguments and `plan` input over 1 MiB (before decoding) and results over 1 MiB (before returning) are refused with a fault | the bridge; a bad or oversized return value faults the plugin |
 
 ### 4.3 Fuel and deadlines per call kind
 
 Fuel counts work deterministically (wasmtime's fuel is close to one unit per instruction), so the same plugin on the
-same input stops at the same point on every machine. An epoch deadline is the wall-clock backstop for time spent in
-host calls that fuel can't see. The epoch ticks every 1 ms on a host timer thread.
+same input stops at the same point on every machine. An epoch deadline is the wall-clock backstop; it ticks every
+1 ms on a host timer thread. **Fuel counts host work too:** each import charges a fixed 2,000 fuel (about 2 µs on
+`R`) plus 1 per byte passed either way, so the caps and the CPU share (§5.2) see host calls deterministically; the
+bench fails if a charge falls below that import's measured p95.
+
+An epoch is only seen when control is back in wasm, so **blocking host calls carry the deadline themselves**: the
+bridge refuses every import once the entry's deadline has passed; `fetch` runs with timeout min(10 s, time left) and a
+`CancelFlag` the timer thread sets at the deadline (`HttpTransport` stops within 50 ms); an `ops.call` can't be
+cancelled mid-op, so it is checked on return, and the overrun is at most one op, which its own budget bounds. Node
+activations make no blocking call: `run-op` only enqueues (1.1).
 
 | Call kind | Fuel | Epoch deadline | On breach |
 |---|---|---|---|
@@ -272,11 +287,10 @@ by the §10 single-thread ratio (1.43), and fails if 10⁶ fuel is outside 0.5 t
 - **The plugin worker:** one thread per running plugin (`plugin:<id>`), owning its `Store`. Every entry call runs
   there, in order; a queue of 64 waiting calls, beyond which new ones are refused `limited`.
 - **The automation engine thread** runs node activations only (PL-03, automation D15), in a second instance of the
-  same compiled component with its own `Store` and a 16 MiB memory cap. The two instances share the session and the
-  data folder, nothing else; node activations have no `http` and no `data` (D15: only `NodeCx`).
+  same compiled component with its own `Store` and a 16 MiB memory cap. They share only the compiled code: a node
+  activation acts in the show's session, never the plugin's, and has no `ops`, `http` or `data` (1.1; D15).
 - **Never on the render, audio or tracking thread.** An extension design may allow one exception only with its own
-  number and gate on the §10 table (for example, a part generator at build time, never per frame).
-- The compile runs on the worker, never on the UI thread.
+  number and gate on the §10 table (say, a build-time part generator). Compiling runs on the worker, not the UI thread.
 
 ### 5.2 The budget table
 
@@ -290,9 +304,9 @@ Measured on `R` unless the row says otherwise; the plugin bench (§12) runs nigh
 | Host-call overhead, `call` round trip with 1 KiB of JSON each way, excluding the op | ≤ 20 µs | p95 | bench `call_1kib`, nightly; same-session A/B on bridge PRs | reported |
 | `log`, `monotonic-seconds` | ≤ 2 µs, ≤ 0.5 µs | p95 | bench `host_small` | reported |
 | A node activation (engine thread) | 10⁶ fuel ≈ 1 ms, 2 ms deadline | per activation | §4.3, calibration test | node fault |
-| A plugin's CPU share, all its calls | ≤ 100 ms of work a second (10 % of one core, 1.25 % of `cpu.total`'s 8 cores) | per second, fuel-counted | conformance test on `FakeClock` | further entry calls `limited` until the next second |
+| A plugin's CPU share, all its calls | ≤ 100 ms of work a second (10 % of one core, 1.25 % of `cpu.total`'s 8 cores) | per second, fuel-counted, host-call charges included (§4.3) | conformance test on `FakeClock` | an entry call's fuel is the smaller of its cap and the remaining budget, so a long call is interrupted at the share; later calls `limited` until the next second |
 | Memory per plugin | 64 MiB worker + 16 MiB engine instance + ≤ 8 MiB host side (code, store) | max | conformance test (`memory.grow` past the cap fails) | trap: fault |
-| Memory, all plugins | ≤ 256 MiB in the editor (of `ram.editor`'s 1.5 GB), ≤ 128 MiB in performance mode (of `ram.runtime`'s 400 MB) | linear memory in use, summed | the host, on every `memory.grow` | that grow fails (the plugin faults); the manager names the largest plugins |
+| Memory, all plugins | ≤ 256 MiB in the editor (of `ram.editor`'s 1.5 GB), ≤ 128 MiB in performance mode (of `ram.runtime`'s 400 MB; provisional, 14.3) | linear memory in use, summed | the host, on every `memory.grow` | that grow fails (the plugin faults); the manager names the largest plugins |
 | Reload: drain and swap | ≤ the running call's deadline + 1 s shutdown + load | per reload | conformance test | the old instance is dropped |
 
 The §10 budget scene has no plugins, so these rows add to it and never move its numbers; the Performance HUD shows
@@ -361,9 +375,12 @@ agent = "confirm"              # free, confirm or never; default never
   against the registry at install. Two plugins with one id can't both be installed.
 - **Package:** a folder or a `.zip` of one: `plugin.toml`, the component, `l10n/<locale>/*.ftl`, `plugin.sig`. The
   content hash is BLAKE3 over the sorted (path, bytes) list without `plugin.sig`; the signature is an ADR 0042
-  envelope over that hash with the domain tag `omuzaki/plugin/v1`.
-- **Settings** register at enable under `plugin.<id>.*` with the manifest's scope and agent rule (default `never`),
-  and leave at disable; `init` receives them as JSON.
+  envelope over that hash with the domain tag `omuzaki/plugin/v1`. **Extraction** is into a fresh staging folder and
+  refuses the whole package on: an absolute path, a drive prefix or a `..` component; a symlink, hardlink or any entry
+  that is not a regular file or folder; two entries equal after normalising (Unicode NFC, case-folded, `/` only); more
+  than 256 entries or 32 MiB uncompressed. The hash is taken over the staged files, so what is hashed is what loads.
+- **Settings** (at most 64, as are commands) register at enable under `plugin.<id>.*` with the manifest's scope and
+  agent rule (default `never`), and leave at disable; `init` receives them as JSON.
 - **Log lines:** `log` and stdout/stderr, at most 1 KiB each (longer is cut), 20 a second with a burst of 100, then
   one "N lines dropped" line. They appear in the Theatre and the plugin's page under its actor chip, never as raw
   stdout, and every refused call adds one `warn` line.
@@ -392,10 +409,12 @@ agent = "confirm"              # free, confirm or never; default never
 | `plugin.grant {id, scopes?, hosts?, data?}` | Edit | `edit:settings` | person only | sets what the person approves, never beyond the requests |
 | `plugin.reload {id}` | Edit | `edit:settings` | person only | 6.3 |
 | `plugin.remove {id, data}` | Edit | `edit:settings` | person only | 6.3 |
+| `plugin.run {id, command, args}` | Driver job (as `script.run`) | `read`; the driver checks the command's declared scope first | anyone holding that scope | runs a plugin command (14.1) inside the caller's grants (3.2); the guest runs off the document lock and its inner calls go through `JobCtx::call` in one executor-owned transaction |
 
-The mutating ops return `OpError::person_only` to any agent or plugin and are **never queued**: an agent that
-installs, enables or grants a plugin hands its own work to an actor whose grants it chose, which is escalating its own
-privileges with extra steps.
+The management ops (install, enable, disable, grant, reload, remove) return `OpError::person_only` to any agent or
+plugin and are **never queued**: an agent that installs, enables or grants a plugin hands its own work to an actor
+whose grants it chose, which is escalating its own privileges with extra steps. `plugin.run` is not one: before
+starting the guest the driver calls `JobCtx::authorize(scope)` (additive, `omuzaki-ops-api`) for the command's declared scope and refuses if the caller's grants don't cover it.
 
 ## 10. Scripts (PL-02) and plugins
 
@@ -412,9 +431,8 @@ per-use rule of 3.2. They differ where the two kinds of code differ:
 | Limits | Rhai operations (10⁶ console, 10⁷ job), 10 s or 120 s wall clock | wasm fuel, epoch deadlines (§4.3) | each engine's own deterministic counter |
 | Consent | per (project, script hash) card | per (hash, publisher key) card | both pin approval to content, never to a name |
 
-**What decides:** ADR 0020's executor. If PL-02 changes how a ceiling is computed or recorded, plugins follow by
-construction, because neither has a private door; only the rows above may differ, and a change to one of them needs
-this page amended.
+**What decides:** ADR 0020's executor; neither has a private door, so only the rows above may differ, and a change to
+one of them amends this page.
 
 ## 11. Contract
 
@@ -435,9 +453,10 @@ pub trait Plugins: Send + Sync {
 }
 ```
 
-**`omuzaki-ops-api`** (additive, needs the Director's approval on its own task first): `CauseKind::Plugin` and
-`EndReason::Faulted { reason: String }`. Nothing else changes: `Actor::Plugin`, `Transport::Plugin` and the session
-types exist.
+**`omuzaki-ops-api`** (approved by the Runtime lead on #1537): `CauseKind::Plugin` and `EndReason::Faulted { reason:
+String }`. One task adds them with `CauseKind::Review` (#1535), so the hub file changes once, and marks both enums
+`#[non_exhaustive]` (ADR 0054 §4). Nothing else changes: `Actor::Plugin`, `Transport::Plugin` and the session types
+exist.
 
 ## 12. Tests
 
@@ -449,35 +468,35 @@ types exist.
 
 | Plugin | Expected |
 |---|---|
-| infinite loop in `init` | out of fuel at 10⁹, `Faulted { "out of fuel in init" }`, session `Faulted` |
+| infinite loop in `init`; a command call that would run 500 ms of fuel | out of fuel at 10⁹, `Faulted { "out of fuel in init" }`, session `Faulted`; the call's fuel is the smaller of its cap and the remaining share, so it is interrupted at 100 ms, not only refused next time |
 | loop around a slow host call | epoch deadline at 5 s |
 | `memory.grow` to 1 GiB | grow fails at 64 MiB; the guest's abort traps |
 | deep recursion | stack overflow trap at 512 KiB |
 | host-call flood (10⁶ `log` calls) | 100 lines then "N lines dropped"; the bucket traps at 10,000 a second |
 | `call` flood | `limited` with `RetryAfter`; the person's edits are never slowed |
-| bad return (invalid UTF-8, a `list` of 10⁶ names) | fault "bad return value" |
+| bad return (invalid UTF-8, a `list` of 10⁶ names); `ops.call` with 2 MiB of arguments, or an op result over 1 MiB | fault "bad return value"; refused with a fault before decoding or before the result is returned |
 | trap at start | `Faulted`; restart after 1 s, 10 s; disabled at the third |
 | imports `wasi:sockets` | refused at install, `Imports { unexpected: ["wasi:sockets/tcp"] }` |
 | `fetch` to a host not approved | `err("host not approved")`, one `warn` line |
+| `read`-only agent runs a `read` command that calls `edit:scene` | refused `MissingScope`, nothing changed, one `warn` line |
+| 10⁶ zero-length `data.write`s | the 4,097th is "over quota"; `list` returns at most 4,096 names |
+| `fetch` that outlives `init`'s 5 s | cancelled at the deadline, fault "deadline in init" |
+| `.zip` with `../x`, a symlink, or `A.wasm` beside `a.wasm` | refused at install, nothing written outside staging |
 
 - **Bench** `crates/omuzaki-plugin/benches/call.rs`: `call_1kib`, `host_small`, `load_cached`, `install_2mib` and the
   fuel calibration, with the gates of §5.2.
-- **Authoring path.** Guests are Rust with `wit-bindgen` on the `wasm32-wasip2` target. CI never needs that toolchain
-  at test time: the tests use WAT, and the example plugin is built by `tools/plugins/build-example.sh` and committed
-  (under 200 KB) with its source, so a test checks that the committed binary still loads. The docs page is
-  `docs/plugins/authoring.md` (the SDK task).
-- **The web build:** `omuzaki-plugin` is native only, so `omuzaki-web` registers no `plugin.*` op, lists no plugin,
-  and shows a project's plugin nodes inert with the finding "plugins run in the desktop studio".
+- **Authoring path.** Guests are Rust with `wit-bindgen` on `wasm32-wasip2`. CI needs no such toolchain: tests use
+  WAT, and the example plugin is built by `tools/plugins/build-example.sh` and committed (under 200 KB) with its
+  source, so a test checks it still loads. The docs page is `docs/plugins/authoring.md` (the SDK task).
+- **The web build:** `omuzaki-plugin` is native only: no `plugin.*` op, no plugin, and plugin nodes show inert with
+  the finding "plugins run in the desktop studio".
 
 ## 13. Worked example
 
 On disk, after install and enable:
 
 ```
-<local data dir>/plugins/example/9f2c…e1/plugin.toml      # the manifest of §7
-                                       /plugin.wasm        # 41 KiB
-                                       /l10n/en/example.ftl   # plugin-example-name = Example
-<local data dir>/plugin-data/example/                     # empty
+<local data dir>/plugins/example/9f2c…e1/{plugin.toml, plugin.wasm}   # the manifest of §7; 41 KiB
 machine.toml: [plugins] enabled = [{ id = "example", on = "all" }]
 ```
 
@@ -519,19 +538,17 @@ begin  {"tx":42,"actor":"plugin example#8","label":"Example: init"}
 audit  {"fact":"session_ended","session":8,"reason":{"faulted":"out of fuel in init"},"abandoned":[42]}   # 0.1.1 loops in init
 ```
 
-A refused call changes nothing, so the journal has no record of it; the host's `warn` line is the trace. The
-rejected or approved publish lands as `approval_resolved` and, if approved, its own one-op transaction.
+A refused call has no journal record; the `warn` line is the trace.
 
-## 14. Open questions
+## 14. Decided questions
 
-1. **A `command` world: plugin-defined ops.** Scripts and agents would see `plugin.<id>.<name>` ops, but the op
-   registry is static (`inventory`). Options: (a) a run-time op table in `omuzaki-ops-api` beside the static one;
-   (b) one static op `plugin.run {id, command, args}` with per-plugin schemas through `describe`; (c) none in 0.1.
-   **Recommend (b)**: no contract change, and the schemas still reach MCP. Needs the Director.
-2. **Unsigned plugins under development.** Every rebuild is a new hash and, per 3.2, a new card. Options: (a) accept
-   the card (one click when nothing changed); (b) a person-only Machine setting "developer folders" whose unsigned
-   rebuilds carry their approval forward; (c) a local per-person dev key, signed automatically by the build script.
-   **Recommend (c)**: it reuses the signed rule and ADR 0042's keys with no exception to explain. Needs the owner.
-3. **Plugin memory in performance mode.** 128 MiB of `ram.runtime`'s 400 MB is a guess with no measurement behind it.
-   Options: keep it and measure with the first node plugin, or count plugins outside `ram.runtime` and report them.
-   **Recommend** keep the cap and measure. Needs the owner, since §10 is theirs.
+Ruled by the Runtime lead on #1537.
+
+1. **Plugin-defined ops: one static op, `plugin.run {id, command, args}`.** The op registry stays static; there is
+   no run-time op table. Each command's schema reaches scripts, agents and MCP through `describe`, and its scope is
+   declared in the manifest; the caller needs that scope, and the command runs in the plugin's session, but every
+   inner call is limited to the caller's grants as well (3.2). The `command` world itself is PL-03's.
+2. **Unsigned plugins under development: a per-person dev key** (3.2), signed by the build script; it never
+   leaves the machine and an approval against it covers only that machine.
+3. **Plugin memory in performance mode: 128 MiB inside `ram.runtime`, provisional.** The first node-plugin task
+   measures and states it.
