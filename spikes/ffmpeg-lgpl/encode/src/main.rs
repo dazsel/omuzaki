@@ -3,11 +3,19 @@
 //!
 //! Usage: `ffmpeg-lgpl-encode <output-dir> [seed]`. The clips are not committed (`docs/decisions/0003-assets-outside-git.md`).
 
+// Pixel and timing maths on small, bounded values (1080p, 90 frames): the casts cannot lose anything that matters here.
+#![allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap
+)]
+
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use ffmpeg_next as ffmpeg;
 use ffmpeg::{Dictionary, Rational, codec, encoder, format, frame, software::scaling};
+use ffmpeg_next as ffmpeg;
 
 /// Clip width in pixels.
 const WIDTH: u32 = 1920;
@@ -109,27 +117,23 @@ struct Look {
 impl Look {
     fn from_seed(seed: u64) -> Self {
         let mut rng = Rng(seed);
-        Self {
-            hue_phase: rng.unit() * 6.0,
-            speed: 0.5 + rng.unit(),
-            radius: 0.30 + 0.10 * rng.unit(),
-        }
+        Self { hue_phase: rng.unit() * 6.0, speed: 0.5 + rng.unit(), radius: 0.30 + 0.10 * rng.unit() }
     }
 }
 
 /// Fills `buf` (tightly packed RGBA, straight alpha) with frame `index`: a diagonal gradient that drifts over time, inside
 /// a disc whose edge fades over about 4% of the height, so alpha takes every value from 0 to 255.
 fn fill_frame(buf: &mut [u8], look: &Look, index: i64) {
-    let t = index as f32 / FPS as f32;
-    let (w, h) = (WIDTH as f32, HEIGHT as f32);
-    let cx = w * (0.5 + 0.2 * (t * look.speed).sin());
-    let cy = h * 0.5;
-    let feather = h * 0.04;
-    let radius = h * look.radius;
-    for (i, px) in buf.chunks_exact_mut(4).enumerate() {
+    let time = index as f32 / FPS as f32;
+    let (width, height) = (WIDTH as f32, HEIGHT as f32);
+    let cx = width * (0.5 + 0.2 * (time * look.speed).sin());
+    let cy = height * 0.5;
+    let feather = height * 0.04;
+    let radius = height * look.radius;
+    for (i, px) in buf.as_chunks_mut::<4>().0.iter_mut().enumerate() {
         let x = (i as u32 % WIDTH) as f32;
         let y = (i as u32 / WIDTH) as f32;
-        let phase = look.hue_phase + (x + y) / (w + h) * 3.0 + t * look.speed;
+        let phase = look.hue_phase + (x + y) / (width + height) * 3.0 + time * look.speed;
         let dist = ((x - cx).powi(2) + (y - cy).powi(2)).sqrt();
         let alpha = ((radius + feather - dist) / (2.0 * feather)).clamp(0.0, 1.0);
         px[0] = to_u8(0.5 + 0.5 * phase.sin());
@@ -325,7 +329,7 @@ mod tests {
     fn alpha_has_a_soft_edge() {
         let mut buf = vec![0_u8; WIDTH as usize * HEIGHT as usize * 4];
         fill_frame(&mut buf, &Look::from_seed(DEFAULT_SEED), 0);
-        let alphas: Vec<u8> = buf.chunks_exact(4).map(|p| p[3]).collect();
+        let alphas: Vec<u8> = buf.iter().skip(3).step_by(4).copied().collect();
         assert!(alphas.contains(&0) && alphas.contains(&255));
         assert!(alphas.iter().any(|&a| a > 0 && a < 255));
     }
