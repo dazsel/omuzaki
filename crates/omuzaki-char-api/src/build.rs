@@ -134,6 +134,10 @@ impl BuildReport {
 }
 
 /// A built character: static data for the renderer plus the simulations the frame loop steps.
+///
+/// `#[non_exhaustive]`: other crates read the public fields and make one with [`BuiltCharacter::new`], never a struct
+/// literal, so a field added here edits only this crate.
+#[non_exhaustive]
 pub struct BuiltCharacter {
     /// Which character.
     pub id: CharId,
@@ -178,9 +182,66 @@ pub struct BuiltCharacter {
     pub stature: Option<Stature>,
     /// What it cost.
     pub report: BuildReport,
+    /// Growth probe (feature `growth-probe`): a field no other crate knows about. See `tests/growth_probe.rs`.
+    #[cfg(feature = "growth-probe")]
+    pub growth_probe: u8,
 }
 
 impl BuiltCharacter {
+    /// A character with no parts: `def` as built, its palette, `rig` as the skeleton, and nothing else. The builder fills
+    /// the rest; a test double sets the public fields it needs, or uses the `with_*` methods.
+    pub fn new(id: CharId, def: CharacterDef, rig: CharacterRig) -> Self {
+        Self {
+            id,
+            variant: None,
+            palette: def.palette.clone(),
+            def,
+            meshes: Vec::new(),
+            materials: BTreeMap::new(),
+            part_materials: BTreeMap::new(),
+            material_classes: BTreeMap::new(),
+            material_owners: BTreeMap::new(),
+            look: LookParams::default(),
+            textures: BTreeMap::new(),
+            face: None,
+            anchors: BTreeMap::new(),
+            runtimes: Vec::new(),
+            rig,
+            stature: None,
+            report: BuildReport::default(),
+            #[cfg(feature = "growth-probe")]
+            growth_probe: 0,
+        }
+    }
+
+    /// Sets the variant that was applied.
+    #[must_use]
+    pub fn with_variant(mut self, variant: Option<VariantId>) -> Self {
+        self.variant = variant;
+        self
+    }
+
+    /// Sets how the painted face attaches.
+    #[must_use]
+    pub fn with_face(mut self, face: Option<FaceBinding>) -> Self {
+        self.face = face;
+        self
+    }
+
+    /// Sets the real-world stature.
+    #[must_use]
+    pub fn with_stature(mut self, stature: Option<Stature>) -> Self {
+        self.stature = stature;
+        self
+    }
+
+    /// Sets what the build cost.
+    #[must_use]
+    pub fn with_report(mut self, report: BuildReport) -> Self {
+        self.report = report;
+        self
+    }
+
     /// Draws the character in `look` (LK-06, [`crate::look`]): every material becomes its part's material with its
     /// class's settings applied ([`LookParams::class`], [`ClassLook::apply`](crate::ClassLook::apply)), and `look` is
     /// kept in [`look`](Self::look). Meshes, textures, the rig and the runtimes are not touched.
@@ -398,18 +459,18 @@ pub fn build_part(
     let part_def = def.parts.get(part).ok_or_else(|| no_such_part(part))?;
     let reg = find_kind(part_def.kind.as_str())
         .ok_or_else(|| BuildError::UnknownKind { part: part.clone(), kind: part_def.kind.clone() })?;
-    let mut ctx = BuildCtx {
+    let mut ctx = BuildCtx::new(
         part,
-        template: &def.template,
-        palette: &def.palette,
-        face: &def.face,
-        rng: part_rng(def.seed, part),
+        &def.template,
+        &def.palette,
+        &def.face,
+        part_rng(def.seed, part),
         published,
-        quality: options.quality,
+        options.quality,
         services,
-        rig_export: options.rig_export,
-        attach: part_def.attach.as_ref(),
-    };
+    )
+    .with_rig_export(options.rig_export)
+    .with_attach(part_def.attach.as_ref());
     let mut output = (reg.build)(&part_def.params, &mut ctx)?;
     if let Some(scale) = authored_scale(reg, &output, published) {
         scale_output(part, &mut output, scale)?;
@@ -689,6 +750,8 @@ impl<'a> Assembler<'a> {
             rig,
             stature: *self.published.get::<StatureFact>(),
             report: self.report,
+            #[cfg(feature = "growth-probe")]
+            growth_probe: 0,
         })
     }
 }

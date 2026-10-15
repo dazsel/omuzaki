@@ -206,8 +206,12 @@ pub struct PartDef {
 
 /// A character: everything in `character.toml` and `face.toml`. Rig, look and variants live in their own files
 /// (`rig.toml`, `look.toml`, `variants/<name>.toml`) and their own contracts.
+///
+/// `#[non_exhaustive]`: other crates make one with [`CharacterDef::new`] and the `with_*` methods (or assign the public
+/// fields), never a struct literal or an exhaustive pattern, so a field added here edits only this crate.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct CharacterDef {
     /// Display name (free text).
     pub name: String,
@@ -232,6 +236,71 @@ pub struct CharacterDef {
     /// Skin-weight corrections (RG-02) the builder applies to each part's skinned meshes after the part builds.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub weight_brushes: BTreeMap<PartId, Vec<WeightBrush>>,
+    /// Growth probe (feature `growth-probe`): a field no other crate knows about. See `tests/growth_probe.rs`.
+    #[cfg(feature = "growth-probe")]
+    #[serde(skip)]
+    // a saved field would also need the closed document-key lists (ADR 0054 §5), which this probe doesn't test
+    pub growth_probe: u8,
+}
+
+impl CharacterDef {
+    /// A character with a name and a body template: seed 0, the empty palette, no parts, the default face.
+    pub fn new(name: impl Into<String>, template: BodyTemplateId) -> Self {
+        Self {
+            name: name.into(),
+            template,
+            seed: 0,
+            palette: Palette::default(),
+            skin_tone: None,
+            parts: BTreeMap::new(),
+            face: FaceProfile::default(),
+            weight_brushes: BTreeMap::new(),
+            #[cfg(feature = "growth-probe")]
+            growth_probe: 0,
+        }
+    }
+
+    /// Sets the seed.
+    #[must_use]
+    pub fn with_seed(mut self, seed: u32) -> Self {
+        self.seed = seed;
+        self
+    }
+
+    /// Sets the palette.
+    #[must_use]
+    pub fn with_palette(mut self, palette: Palette) -> Self {
+        self.palette = palette;
+        self
+    }
+
+    /// Sets the skin tone chosen from the library.
+    #[must_use]
+    pub fn with_skin_tone(mut self, skin_tone: Option<SkinToneId>) -> Self {
+        self.skin_tone = skin_tone;
+        self
+    }
+
+    /// Sets the parts.
+    #[must_use]
+    pub fn with_parts(mut self, parts: BTreeMap<PartId, PartDef>) -> Self {
+        self.parts = parts;
+        self
+    }
+
+    /// Sets the face design.
+    #[must_use]
+    pub fn with_face(mut self, face: FaceProfile) -> Self {
+        self.face = face;
+        self
+    }
+
+    /// Sets the skin-weight corrections.
+    #[must_use]
+    pub fn with_weight_brushes(mut self, weight_brushes: BTreeMap<PartId, Vec<WeightBrush>>) -> Self {
+        self.weight_brushes = weight_brushes;
+        self
+    }
 }
 
 /// Why the parts don't form a buildable tree.
@@ -447,16 +516,9 @@ mod tests {
     }
 
     fn def(parts: &[(&str, PartDef)]) -> CharacterDef {
-        CharacterDef {
-            name: "Test".to_owned(),
-            template: BodyTemplateId::new("soft-sd").unwrap(),
-            seed: 1,
-            palette: Palette::default(),
-            skin_tone: None,
-            parts: parts.iter().map(|(n, p)| (id(n), p.clone())).collect(),
-            face: FaceProfile::default(),
-            weight_brushes: BTreeMap::new(),
-        }
+        CharacterDef::new("Test", BodyTemplateId::new("soft-sd").unwrap())
+            .with_seed(1)
+            .with_parts(parts.iter().map(|(n, p)| (id(n), p.clone())).collect())
     }
 
     fn no_requirements(_: &PartKindId) -> Vec<PartKindId> {

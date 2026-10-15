@@ -103,7 +103,7 @@ pub fn build_with(
         if params.shading.brows_through { Ok(vec![ctx.face_overlay(FaceLayerId::Brows)?]) } else { Ok(Vec::new()) }
     };
     let material = hair_material(ctx.part, params, ctx.palette, overlays)?;
-    let mut out = PartOutput { materials: vec![(material_name.clone(), material)], warnings, ..PartOutput::default() };
+    let mut out = PartOutput::new().with_materials(vec![(material_name.clone(), material)]).with_warnings(warnings);
     let part_mesh = |suffix: &str, geometry: MeshData, dynamic: bool| {
         let joint_bones = if dynamic { Vec::new() } else { vec![JointRef::HEAD] };
         PartMesh {
