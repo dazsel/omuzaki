@@ -17,6 +17,8 @@ libloading = "0.9"
 omuzaki-ai-api = { path = "../omuzaki-ai-api" }
 omuzaki-ai-native = { path = "../omuzaki-ai-native" }
 omuzaki-core = { path = "../omuzaki-core" }
+# LiteRT's own error text when a load or run fails (src/session.rs); the run returns a fixed message.
+tracing.workspace = true
 # Stages the copy of the archive under its digest's folder (src/library.rs).
 tempfile.workspace = true
 

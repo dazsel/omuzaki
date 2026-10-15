@@ -1,5 +1,5 @@
-//! The `tflite` runtime through `omuzaki-ai-api`: found by its id, `probe` is the scan alone, and `load` refuses
-//! until the session arrives (#1750).
+//! The `tflite` runtime through `omuzaki-ai-api`: found by its id, `probe` is the scan alone, and `load` scans first
+//! and refuses while no library is loaded. This binary never calls `load_archive`, so none is.
 #![allow(clippy::doc_markdown, clippy::unwrap_used)] // product names are prose; panics are test failures
 
 mod common;
@@ -49,12 +49,12 @@ fn probe_and_load_refuse_what_the_scan_refuses() {
 }
 
 #[test]
-fn load_refuses_until_the_session_arrives() {
+fn load_refuses_until_a_library_is_loaded() {
     let dir = tempfile::tempdir().unwrap();
     let path = write(&dir, &bytes(&add_graph()));
     let options = SessionOptions::default();
     let loaded = with_model(&path, &[], |s| LiteRtRuntime.load(s, &Signature::default(), &BTreeMap::new(), &options));
-    assert!(matches!(&loaded, Err(LoadError::Runtime(why)) if why.contains("#1750")));
+    assert!(matches!(&loaded, Err(LoadError::Runtime(why)) if why.contains("load_archive")));
 }
 
 #[test]
