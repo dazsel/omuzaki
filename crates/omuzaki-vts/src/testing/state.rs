@@ -172,7 +172,8 @@ impl State {
         self.sessions.values_mut().for_each(|s| s.authenticated = false);
     }
 
-    /// Lapses every parameter not fed for [`KEEPALIVE`] by `now`.
+    /// Lapses every parameter not fed for [`KEEPALIVE`] by `now` (research line 63, README "Feeding in data for default
+    /// or custom parameters": re-send "at least once every second").
     pub fn settle(&mut self, now: Duration) {
         let lapsed: Vec<_> = self
             .last_fed
@@ -317,6 +318,8 @@ impl State {
         self.custom.contains_key(name) || self.model.as_ref().is_some_and(|m| m.parameters.iter().any(|p| p == name))
     }
 
+    /// At most 100 custom parameters per plugin: research `docs/research/2026-10-vts-plugin-api-terms.md` line 60,
+    /// from the public `DenchiSoft/VTubeStudio` README ("Adding new tracking parameters").
     fn create_param(&mut self, session: u64, request: &ParameterCreationRequest) -> Reply {
         let owner = self.sessions.get(&session).map(|s| s.plugin.clone()).unwrap_or_default();
         let name = request.parameter_name.as_str();
@@ -339,6 +342,9 @@ impl State {
         ok(&ParameterValueResponse(self.input(&request.name, "", range)))
     }
 
+    /// A parameter not fed for 1 s reverts: research line 63, README "Feeding in data for default or custom
+    /// parameters" (see [`State::settle`]). `set` on a parameter another plugin controls errors, `add` stacks: line 62.
+    ///
     /// All-or-nothing: one bad value, unknown parameter or claimed parameter in `set` mode rejects the request.
     fn inject(&mut self, data: Value, now: Duration) -> Reply {
         let out_of_range = data["parameterValues"].as_array().is_some_and(|values| {
@@ -390,7 +396,8 @@ impl State {
         })
     }
 
-    /// Refuses a hotkey inside its 5-frame cooldown, and any trigger when 32 are queued. VTS plays one per frame.
+    /// Refuses a hotkey inside its 5-frame cooldown at the reported framerate, and any trigger when 32 are queued
+    /// (research line 66, README "Requesting execution of hotkeys"). VTS plays one per frame.
     fn trigger(&mut self, request: &HotkeyTriggerRequest, now: Duration) -> Reply {
         let id = &request.hotkey_id;
         if !self.loaded_model(NO_MODEL)?.hotkeys.contains(id) {

@@ -8,7 +8,7 @@ use std::net::TcpStream;
 use std::sync::Arc;
 use std::time::Duration;
 
-use omuzaki_vts::testing::{Event, FakeClock, MockConfig, MockModel, MockVts};
+use super::{Event, FakeClock, MockConfig, MockModel, MockVts};
 use serde_json::{Value, json};
 use tungstenite::{Message, WebSocket};
 

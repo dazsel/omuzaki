@@ -9,6 +9,8 @@
 
 mod clock;
 mod state;
+#[cfg(test)]
+mod tests;
 
 use std::io::{self, ErrorKind};
 use std::net::{Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream};

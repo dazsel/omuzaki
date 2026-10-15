@@ -72,7 +72,6 @@ unicode-normalization = "0.1"   # NFC before font selection so a base and its ma
 unicode-bidi = "0.3"   # visual order of mixed right-to-left and left-to-right sheet text (MIT OR Apache-2.0), omuzaki-stage
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tungstenite = "0.30"   # sync WebSocket for the in-process mock servers of the connector crates (MIT OR Apache-2.0), omuzaki-vts
 wgpu = "30"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem"] } # the Windows side of the same: reparse-point-aware opens, final-path checks
 zip = { version = "9", default-features = false, features = ["deflate-flate2"] } # unpacks the ONNX Runtime Windows.zip archives (MIT), omuzaki-ai-native
