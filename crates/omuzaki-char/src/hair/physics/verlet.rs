@@ -30,6 +30,10 @@
 //! Not in the prototype: wind (beside gravity), [`ChainSet::reset`] also clearing the carried time (#68), the repeated
 //! collider passes, and a particle at a collider's exact centre leaving along its segment instead of staying inside.
 //!
+//! Every rest point and collider centre is within [`MAX_COORDINATE`], every segment within [`MIN_SEGMENT`] and
+//! [`MAX_SEGMENT`], and every skinning and root matrix entry and the wind within [`MAX_TRANSFORM`], all checked where
+//! they enter: so no target, collider centre or step can overflow `f32`.
+//!
 //! Nothing here allocates or locks after [`ChainSet::from_clumps`]: every buffer is sized there.
 
 use omuzaki_char_api::{Follow, HairClump, HairPhysics, JointRef, PoseSource, SphereCollider};
@@ -48,6 +52,16 @@ pub const COLLIDER_PASSES: u32 = 4;
 /// How deep inside a collider a particle may sit before a pass counts it as pushed, metres: the rounding of a push
 /// that put it exactly on the surface.
 const SURFACE_TOLERANCE: f32 = 1e-6;
+/// The largest rest-point or collider-centre coordinate accepted, metres (bind space): far beyond any character.
+pub const MAX_COORDINATE: f32 = 1e3;
+/// The shortest rest distance between neighbouring particles accepted, metres.
+pub const MIN_SEGMENT: f32 = 1e-6;
+/// The longest rest distance between neighbouring particles, and the largest collider radius, accepted, metres.
+pub const MAX_SEGMENT: f32 = 10.0;
+/// The largest entry a skinning or root matrix may have, and the largest wind speed (metres per second). With every
+/// accepted point within [`MAX_COORDINATE`], a transformed point stays within `4 * MAX_TRANSFORM * (MAX_COORDINATE + 1)`,
+/// so no target or collider centre can overflow `f32`.
+pub const MAX_TRANSFORM: f32 = 1e6;
 /// Gravity, metres per second squared, before `HairPhysics::gravity_scale`.
 pub const GRAVITY: f32 = 9.8;
 /// The rate the stiffness numbers were tuned at: a spring factor `k` pulls by `k` per step at this rate.
@@ -90,10 +104,23 @@ pub enum VerletError {
         /// The joint.
         joint: JointRef,
     },
-    /// A frame time that is negative or not finite, a wind that is not finite, or a root that is not invertible.
-    #[error("{what} must be finite (a frame time not negative, a root invertible)")]
+    /// A value outside the range the simulation accepts ([`MAX_COORDINATE`], [`MIN_SEGMENT`], [`MAX_SEGMENT`]).
+    #[error("{field} of item {index} is outside {min}..={max}")]
+    OutOfRange {
+        /// What is out of range: `"rest point"`, `"segment length"`, `"collider centre"` or `"collider radius"`.
+        field: &'static str,
+        /// The clump's or collider's index.
+        index: usize,
+        /// The smallest value accepted.
+        min: f32,
+        /// The largest value accepted.
+        max: f32,
+    },
+    /// A frame time that is negative or not finite, a wind that is not finite or faster than [`MAX_TRANSFORM`], or a
+    /// root that is not invertible or has an entry beyond [`MAX_TRANSFORM`].
+    #[error("{what} must be finite and within range (a frame time not negative, a root invertible)")]
     BadInput {
-        /// `"dt"`, `"wind"`, `"root"` or `"collider position"`.
+        /// `"dt"`, `"wind"` or `"root"`.
         what: &'static str,
     },
 }
@@ -173,6 +200,13 @@ impl ChainSet {
             if !(centre.is_finite() && base.is_finite() && base > 0.0 && radius.is_finite()) {
                 return Err(VerletError::BadCollider { collider: n });
             }
+            if centre.abs().max_element() > MAX_COORDINATE {
+                let (min, max) = (-MAX_COORDINATE, MAX_COORDINATE);
+                return Err(VerletError::OutOfRange { field: "collider centre", index: n, min, max });
+            }
+            if base > MAX_SEGMENT {
+                return Err(VerletError::OutOfRange { field: "collider radius", index: n, min: 0.0, max: MAX_SEGMENT });
+            }
             colliders.push((c.bone.clone(), centre, radius));
         }
         let h = 1.0 / narrow(physics.fixed_hz);
@@ -205,16 +239,20 @@ impl ChainSet {
             if rest.len() < 2 || !rest.iter().all(|p| p.is_finite()) {
                 return Err(VerletError::BadClump { clump: n });
             }
+            if rest.iter().any(|p| p.abs().max_element() > MAX_COORDINATE) {
+                let (min, max) = (-MAX_COORDINATE, MAX_COORDINATE);
+                return Err(VerletError::OutOfRange { field: "rest point", index: n, min, max });
+            }
             let last = rest.len() - 1;
             let start = set.rest.len();
             let indices = (0..last).step_by(SUBSAMPLE).chain(std::iter::once(last));
             for i in indices {
                 let p = rest[i];
                 let segment = if set.rest.len() == start { 0.0 } else { set.rest[set.rest.len() - 1].distance(p) };
-                // A derived length can overflow (two far-apart finite points) or vanish (two equal ones); either
-                // breaks the distance pass, so it is refused here.
-                if set.rest.len() > start && !(segment.is_finite() && segment > 0.0) {
-                    return Err(VerletError::BadClump { clump: n });
+                // A vanishing length has no direction to restore, and a huge one is no hair; both are refused here.
+                if set.rest.len() > start && !(MIN_SEGMENT..=MAX_SEGMENT).contains(&segment) {
+                    let (min, max) = (MIN_SEGMENT, MAX_SEGMENT);
+                    return Err(VerletError::OutOfRange { field: "segment length", index: n, min, max });
                 }
                 set.segment.push(segment);
                 set.rest.push(p);
@@ -268,14 +306,12 @@ impl ChainSet {
         let head = skin(pose, &JointRef::HEAD)?;
         let chest = if self.needs_chest { skin(pose, &JointRef::CHEST)? } else { head };
         let root = pose.root();
-        if !(root.is_finite() && root.determinant().abs() > f32::EPSILON) {
+        if !(bounded(root) && root.determinant().abs() > f32::EPSILON) {
             return Err(VerletError::BadInput { what: "root" });
         }
         // Every collider is placed and checked before anything is written, so a failed call leaves the set as it was.
-        for (bone, centre, _) in &self.colliders {
-            if !skin(pose, bone)?.transform_point3(*centre).is_finite() {
-                return Err(VerletError::BadInput { what: "collider position" });
-            }
+        for (bone, _, _) in &self.colliders {
+            skin(pose, bone)?;
         }
         for (sphere, (bone, centre, radius)) in self.spheres.iter_mut().zip(&self.colliders) {
             *sphere = (skin(pose, bone)?.transform_point3(*centre), *radius);
@@ -295,9 +331,9 @@ impl ChainSet {
     /// acceleration on every free particle.
     ///
     /// # Errors
-    /// [`VerletError::BadInput`] when it is not finite; the wind is then unchanged.
+    /// [`VerletError::BadInput`] when it is not finite or faster than [`MAX_TRANSFORM`]; the wind is then unchanged.
     pub fn set_wind(&mut self, wind: Vec3) -> Result<(), VerletError> {
-        if !wind.is_finite() {
+        if !(wind.is_finite() && wind.length() <= MAX_TRANSFORM) {
             return Err(VerletError::BadInput { what: "wind" });
         }
         self.wind = wind;
@@ -377,11 +413,19 @@ impl ChainSet {
         for i in chain.start + 1..chain.end {
             let d = self.pos[i] - self.pos[i - 1];
             let len = d.length();
-            if len <= f32::EPSILON {
-                continue; // coincident particles have no direction to place along; the spring separates them
-            }
-            self.pos[i] = self.pos[i - 1] + d * (self.segment[i] / len);
+            // Coincident particles have no direction of their own: the child goes back along the fallback direction.
+            let dir = if len > f32::EPSILON { d / len } else { self.fallback_direction(i) };
+            self.pos[i] = self.pos[i - 1] + dir * self.segment[i];
         }
+    }
+
+    /// Where particle `i` goes when its own position gives no direction (on its parent, or at a collider's centre):
+    /// along the segment from its parent, else along its styled segment (the targets), else straight up.
+    fn fallback_direction(&self, i: usize) -> Vec3 {
+        (self.pos[i] - self.pos[i - 1])
+            .try_normalize()
+            .or_else(|| (self.target[i] - self.target[i - 1]).try_normalize())
+            .unwrap_or(Vec3::Y)
     }
 
     /// After the capped passes: each particle still inside a sphere `a` goes to the nearest point of the circle where
@@ -431,8 +475,7 @@ impl ChainSet {
                 pushed |= radius - len > SURFACE_TOLERANCE;
                 // A particle at the very centre has no direction of its own (the prototype then leaves it inside):
                 // it leaves along the segment from its parent, or straight up if that is degenerate too.
-                let dir =
-                    if len > f32::EPSILON { d / len } else { (p - self.pos[i - 1]).try_normalize().unwrap_or(Vec3::Y) };
+                let dir = if len > f32::EPSILON { d / len } else { self.fallback_direction(i) };
                 p = centre + dir * radius;
             }
             self.pos[i] = p;
@@ -493,5 +536,10 @@ fn spring_factor(k: f32, h: f32) -> f32 {
 
 /// The skinning matrix of `joint`, checked finite.
 fn skin(pose: &dyn PoseSource, joint: &JointRef) -> Result<Mat4, VerletError> {
-    pose.skin_matrix(joint).filter(Mat4::is_finite).ok_or_else(|| VerletError::MissingJoint { joint: joint.clone() })
+    pose.skin_matrix(joint).filter(|m| bounded(*m)).ok_or_else(|| VerletError::MissingJoint { joint: joint.clone() })
+}
+
+/// Whether every entry of `m` is finite and within [`MAX_TRANSFORM`], so transforming an accepted point cannot overflow.
+fn bounded(m: Mat4) -> bool {
+    m.to_cols_array().iter().all(|v| v.abs() <= MAX_TRANSFORM)
 }

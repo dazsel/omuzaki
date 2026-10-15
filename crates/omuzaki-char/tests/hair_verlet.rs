@@ -12,7 +12,9 @@ use std::cell::Cell;
 use std::f32::consts::TAU;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use omuzaki_char::hair::physics::verlet::{ChainSet, MAX_DT, MAX_STEPS, VerletError};
+use omuzaki_char::hair::physics::verlet::{
+    ChainSet, MAX_COORDINATE, MAX_DT, MAX_SEGMENT, MAX_STEPS, MIN_SEGMENT, VerletError,
+};
 use omuzaki_char_api::{
     Bulge, Falloff, Follow, GroupId, HairClump, HairPhysics, JointRef, PoseSource, SphereCollider, Taper,
 };
@@ -186,15 +188,32 @@ fn rigid_clumps_are_skipped_and_bad_input_is_refused() {
     let bare = HairPhysics { collider_margin: 0.0, ..HairPhysics::default() };
     assert_eq!(ChainSet::from_clumps(&[], &bare, &[tiny]).unwrap_err(), VerletError::BadCollider { collider: 0 });
     // Particles at one place, or too far apart for an f32 distance, make no segment.
+    let out = |field, min, max| VerletError::OutOfRange { field, index: 0, min, max };
     let doubled = clump(vec![HEAD, HEAD + Vec3::Y * 0.01, HEAD, HEAD], Follow::Head);
-    assert_eq!(ChainSet::from_clumps(&[doubled], &physics, &[]).unwrap_err(), VerletError::BadClump { clump: 0 });
-    let huge = clump(vec![Vec3::splat(-3e38), Vec3::splat(3e38)], Follow::Head);
-    assert_eq!(ChainSet::from_clumps(&[huge], &physics, &[]).unwrap_err(), VerletError::BadClump { clump: 0 });
+    let err = ChainSet::from_clumps(&[doubled], &physics, &[]).unwrap_err();
+    assert_eq!(err, out("segment length", MIN_SEGMENT, MAX_SEGMENT));
+    let long = clump(vec![HEAD, HEAD - Vec3::Y * 20.0], Follow::Head);
+    let err = ChainSet::from_clumps(&[long], &physics, &[]).unwrap_err();
+    assert_eq!(err, out("segment length", MIN_SEGMENT, MAX_SEGMENT));
+    // Coordinates are bounded so no finite skin matrix within range can overflow a target.
+    let far = clump(vec![Vec3::splat(3e38), Vec3::splat(3e38) + Vec3::Y], Follow::Head);
+    let err = ChainSet::from_clumps(&[far], &physics, &[]).unwrap_err();
+    assert_eq!(err, out("rest point", -MAX_COORDINATE, MAX_COORDINATE));
+    let away = SphereCollider { bone: JointRef::HEAD, centre: [2e3, 0.0, 0.0], radius: 0.1 };
+    let err = ChainSet::from_clumps(&[], &physics, &[away]).unwrap_err();
+    assert_eq!(err, out("collider centre", -MAX_COORDINATE, MAX_COORDINATE));
+    let big = SphereCollider { bone: JointRef::HEAD, centre: [0.0; 3], radius: 20.0 };
+    assert_eq!(ChainSet::from_clumps(&[], &physics, &[big]).unwrap_err(), out("collider radius", 0.0, MAX_SEGMENT));
 
     let mut set = ChainSet::from_clumps(&[lock(0.0, 5, Follow::Head)], &physics, &[]).unwrap();
     assert_eq!(set.step(-0.1).unwrap_err(), VerletError::BadInput { what: "dt" });
     assert_eq!(set.step(f32::NAN).unwrap_err(), VerletError::BadInput { what: "dt" });
     assert_eq!(set.set_wind(Vec3::NAN).unwrap_err(), VerletError::BadInput { what: "wind" });
+    assert_eq!(set.set_wind(Vec3::X * 2e6).unwrap_err(), VerletError::BadInput { what: "wind" });
+    let huge = Pose { head: Mat4::from_translation(Vec3::X * 1e38), ..Pose::REST };
+    assert_eq!(set.targets(&huge).unwrap_err(), VerletError::MissingJoint { joint: JointRef::HEAD });
+    let scaled_root = Pose { root: Mat4::from_scale(Vec3::splat(2e6)), ..Pose::REST };
+    assert_eq!(set.targets(&scaled_root).unwrap_err(), VerletError::BadInput { what: "root" });
     let flat = Pose { root: Mat4::ZERO, ..Pose::REST };
     assert_eq!(set.targets(&flat).unwrap_err(), VerletError::BadInput { what: "root" });
 }
@@ -385,6 +404,22 @@ fn the_first_targets_snap_to_the_pose_and_the_distance_pass_is_one_sided() {
     for (j, seg) in stretched.segment_lengths().iter().enumerate().skip(1) {
         assert!((p[j].distance(p[j - 1]) - seg).abs() < 1e-6, "segment {j} at rest length after a step");
     }
+}
+
+#[test]
+fn a_child_that_lands_on_its_parent_gets_its_rest_length_back() {
+    // Gravity over one 1/30 s step moves the loose child exactly onto the root (the review's two-particle case).
+    let h = 1.0 / 30.0_f32;
+    let drop = 9.8 * 1.0 * (h * h);
+    let physics = HairPhysics { fixed_hz: 30.0, gravity_scale: 1.0, iterations: 1, ..HairPhysics::default() };
+    let mut set =
+        ChainSet::from_clumps(&[clump(vec![Vec3::ZERO, Vec3::Y * drop], Follow::Head)], &physics, &[]).unwrap();
+    set.set_stiffness(&[1.0, 0.0]).unwrap();
+    set.reset(&Pose::REST).unwrap();
+    set.settle(1);
+    let (root, child) = (set.positions()[0], set.positions()[1]);
+    assert!((child.distance(root) - drop).abs() < 1e-7, "rest length restored: {root} {child}");
+    assert!(child.y > root.y, "along the styled segment (up): {child}");
 }
 
 #[test]
