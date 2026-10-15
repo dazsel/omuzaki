@@ -17,6 +17,7 @@ repository = "https://github.com/dazsel/omuzaki"
 # Pre-declared early so parallel changes don't collide on this file. Unused entries cost nothing.
 ab_glyph = "0.2"   # text rasteriser for character sheets (Apache-2.0; pure Rust, no shaping), omuzaki-stage
 base64 = "0.23"   # standard base64 for MCP blob resources (MIT OR Apache-2.0), omuzaki-mcp; already in the lock through rmcp
+crc32fast = "1.5"   # CRC-32 of journal frames (MIT OR Apache-2.0), omuzaki-doc; already in the lock
 blake3 = "1.8"
 bytemuck = { version = "1.25", features = ["derive"] }
 bytes = "1"
@@ -54,6 +55,7 @@ reqwest = { version = "0.13", default-features = false }
 rhai = { version = "=1.26.1", default-features = false, features = ["std", "serde", "sync", "internals"] }   # the script runtime (MIT OR Apache-2.0); exact pin because `internals` is unstable API, omuzaki-script
 rmcp = { version = "3.5", features = ["server", "transport-io", "transport-streamable-http-server"] }
 rustix = { version = "1.1", default-features = false, features = ["std", "fs"] } # opens beneath a folder handle, never through a link (openat2, O_NOFOLLOW), omuzaki-ops-api; safe renameat2(RENAME_EXCHANGE), omuzaki-doc (Linux)
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] } # TLS with `ring` as its one crypto provider (rustls MIT OR Apache-2.0 OR ISC; ring Apache-2.0 AND ISC), omuzaki-http; omuzaki-mcp tests (llm-api D11)
 schemars = "1.2"
 semver = { version = "1", features = ["serde"] } # versions in the updater contract (MIT OR Apache-2.0), omuzaki-update-api
 serde = { version = "1", features = ["derive"] }
@@ -78,6 +80,7 @@ windows = { version = "0.62", features = ["Win32_Media_MediaFoundation", "Win32_
 windows-core = "0.62"   # the `implement` macro for the camera's COM callback (MIT OR Apache-2.0), omuzaki-camera-mf
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem"] } # the Windows side of the same: reparse-point-aware opens, final-path checks
 zip = { version = "9", default-features = false, features = ["deflate-flate2"] } # unpacks the ONNX Runtime Windows.zip archives (MIT), omuzaki-ai-native
+vello = { version = "=0.11.0", default-features = false, features = ["wgpu"] }   # GPU vector face painter (Apache-2.0 OR MIT), omuzaki-face's GPU rasteriser (#1433)
 whisper-rs = "0.16"   # whisper.cpp built from source (Unlicense crate, MIT library); omuzaki-audio
 zune-jpeg = "0.5"   # pure-Rust JPEG decoder (MIT OR Apache-2.0 OR Zlib), MJPG webcam frames, omuzaki-pixfmt
 
