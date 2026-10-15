@@ -34,7 +34,7 @@ fn kit_characters() -> Vec<CharacterDef> {
 #[test]
 fn every_registered_kind_publishes_the_same_facts_under_any_palette() {
     omuzaki_char::link();
-    let report = check_all(&kit_characters(), None, &Probes::built_in(), &BuildServices::default());
+    let report = check_all(&kit_characters(), None, &Probes::registered(), &BuildServices::default());
     assert!(report.violations.is_empty(), "facts depend on the palette:\n{}", report.violations.join("\n"));
     assert!(report.unprobed.is_empty(), "facts nothing compares (add a probe): {:?}", report.unprobed);
     assert!(report.unreached.is_empty(), "kinds the check cannot build: {:?}", report.unreached);
@@ -54,13 +54,35 @@ fn the_check_reaches_the_kit_characters_parts_and_sees_what_they_publish() {
 #[test]
 fn a_check_with_no_base_character_reaches_nothing_and_says_so() {
     omuzaki_char::link();
-    let asked = check_all(&[], Some(&["body", "head"]), &Probes::built_in(), &BuildServices::default());
+    let asked = check_all(&[], Some(&["body", "head"]), &Probes::registered(), &BuildServices::default());
     let kinds: Vec<_> = asked.unreached.iter().map(|(kind, _)| kind.as_str()).collect();
     assert_eq!(kinds, ["body", "head"]);
     assert!(asked.violations.is_empty() && asked.unprobed.is_empty());
 
-    let everything = check_all(&[], None, &Probes::built_in(), &BuildServices::default());
+    let everything = check_all(&[], None, &Probes::registered(), &BuildServices::default());
     assert_eq!(everything.unreached.len(), omuzaki_char_api::kinds().count(), "every registered kind");
     let order: Vec<_> = everything.unreached.iter().map(|(kind, _)| kind.clone()).collect();
     assert!(order.is_sorted(), "kinds are reported in sorted order: {order:?}");
+}
+
+// A fact and its probe, defined here: `Probes::registered()` compares it with no edit to `conformance.rs`.
+omuzaki_char_api::fact! {
+    /// A fact defined by a test.
+    TestFact = "test-registered-probe", omuzaki_char_api::Last<u32>;
+}
+omuzaki_char_api::register_fact!(TestFact);
+omuzaki_char_api::register_fact_probe!(TestFact);
+
+#[test]
+fn every_registered_fact_has_a_probe() {
+    let missing = Probes::registered().unprobed_facts().expect("fact names are unique");
+    assert!(missing.is_empty(), "facts with no `register_fact_probe!` beside their `register_fact!`: {missing:?}");
+}
+
+#[test]
+fn the_gate_names_a_fact_without_a_probe() {
+    let missing = Probes::default().unprobed_facts().expect("fact names are unique");
+    for name in ["head", "face", "fit", "anchors", "colliders", "stature", "test-registered-probe"] {
+        assert!(missing.contains(&name), "{name} not reported: {missing:?}");
+    }
 }

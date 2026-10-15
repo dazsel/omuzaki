@@ -895,7 +895,7 @@ fn a_kind_that_needs_build_services_is_checked_when_they_are_supplied_and_unreac
     let hash = assets.put(&[200, 30, 30]);
     let mut def = mock_character().unwrap();
     add(&mut def, "stripe", "t-stripe", 5, json!({ "asset": hash.to_string(), "tint": "@outfit" }));
-    let probes = conformance::Probes::built_in();
+    let probes = conformance::Probes::registered();
 
     let bare = conformance::check(&def, Some(&["t-stripe"]), &probes, &BuildServices::default());
     assert_eq!(bare.unreached.len(), 1, "without the asset and the rasteriser it can't build: {bare:?}");

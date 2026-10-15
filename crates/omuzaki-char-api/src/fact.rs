@@ -10,10 +10,12 @@
 
 use std::any::{Any, TypeId};
 use std::collections::BTreeMap;
+use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::OnceLock;
 
 use crate::ids::PartId;
+use crate::kind::Publishes;
 
 /// A typed value a part publishes for later parts, and the builder, to read.
 ///
@@ -191,6 +193,99 @@ pub fn facts() -> Result<Vec<&'static FactRegistration>, String> {
         }
     }
     Ok(all)
+}
+
+/// Records how fact `F`'s values are compared, for the palette-independence check (`omuzaki_char::builder::conformance`):
+/// the check reads every probe through [`probes`], so a fact needs no entry in a shared list. Put it next to
+/// [`register_fact!`]; a registered fact with no probe fails the check's gate test.
+///
+/// `register_fact_probe!(F)` compares the values with `==` (`F::Value: PartialEq + Debug`). `register_fact_probe!(F,
+/// same)` takes a `fn(&F::Value, &F::Value) -> bool`, for a value that cannot use `==` (a trait object) or that is
+/// compared with a tolerance; `F::Value` must still be `Debug`, to word a failure.
+///
+/// ```ignore
+/// omuzaki_char_api::register_fact!(HatFact);
+/// omuzaki_char_api::register_fact_probe!(HatFact);
+///
+/// // A value with no equality:
+/// omuzaki_char_api::register_fact_probe!(SurfaceFact, same_surface);
+/// fn same_surface(a: &Arc<dyn Surface>, b: &Arc<dyn Surface>) -> bool {
+///     format!("{a:?}") == format!("{b:?}")
+/// }
+/// ```
+#[macro_export]
+macro_rules! register_fact_probe {
+    ($ty:ty) => {
+        $crate::__inventory::submit! { $crate::fact::FactProbe::by_eq::<$ty>() }
+    };
+    ($ty:ty, $same:expr) => {
+        $crate::__inventory::submit! {
+            $crate::fact::FactProbe::new::<$ty>({
+                fn differs(a: &$crate::Publishes, b: &$crate::Publishes) -> ::core::option::Option<::std::string::String> {
+                    $crate::fact::differs_by::<$ty>(a, b, $same)
+                }
+                differs
+            })
+        }
+    };
+}
+
+/// How one fact of two builds is compared: `None` when equal, else a description of both for the failure message.
+pub type Differs = fn(&Publishes, &Publishes) -> Option<String>;
+
+/// How a fact's values are compared, recorded with [`register_fact_probe!`].
+#[non_exhaustive]
+pub struct FactProbe {
+    /// [`Fact::NAME`].
+    pub name: &'static str,
+    /// The fact's type, matched against its [`FactRegistration`].
+    pub type_id: fn() -> TypeId,
+    /// Compares what two parts published for the fact.
+    pub differs: Differs,
+}
+
+impl FactProbe {
+    /// The probe of fact `F` with its own comparison.
+    #[must_use]
+    pub const fn new<F: Fact>(differs: Differs) -> Self {
+        Self { name: F::NAME, type_id: TypeId::of::<F>, differs }
+    }
+
+    /// The probe of fact `F` that compares values with `==`.
+    #[must_use]
+    pub const fn by_eq<F: Fact>() -> Self
+    where
+        F::Value: PartialEq + Debug,
+    {
+        Self::new::<F>(differs_by_eq::<F>)
+    }
+}
+
+inventory::collect!(FactProbe);
+
+/// Every registered probe, in no particular order.
+pub fn probes() -> impl Iterator<Item = &'static FactProbe> {
+    inventory::iter::<FactProbe>.into_iter()
+}
+
+/// Compares the values of `F` in `a` and `b` with `==`. For [`register_fact_probe!`].
+#[doc(hidden)]
+pub fn differs_by_eq<F: Fact>(a: &Publishes, b: &Publishes) -> Option<String>
+where
+    F::Value: PartialEq + Debug,
+{
+    differs_by::<F>(a, b, |x, y| x == y)
+}
+
+/// Compares the values of `F` in `a` and `b`, element by element, with `same`. For [`register_fact_probe!`].
+#[doc(hidden)]
+pub fn differs_by<F: Fact>(a: &Publishes, b: &Publishes, same: fn(&F::Value, &F::Value) -> bool) -> Option<String>
+where
+    F::Value: Debug,
+{
+    let (x, y): (Vec<&F::Value>, Vec<&F::Value>) = (a.values::<F>().collect(), b.values::<F>().collect());
+    let equal = x.len() == y.len() && x.iter().zip(&y).all(|(p, q)| same(p, q));
+    (!equal).then(|| format!("{x:?} under one palette, {y:?} under another"))
 }
 
 /// The error for two different facts called `name`.

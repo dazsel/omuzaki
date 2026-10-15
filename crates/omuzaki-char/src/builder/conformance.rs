@@ -5,25 +5,27 @@
 //! palette. `Fact` values are type-erased and have no equality, so the rule is enforced here instead: [`check`] builds a
 //! part of each kind under the character's own palette and [`PALETTES`] others (each differing from it in *every*
 //! entry, so a kind that only reacts past a threshold is still caught) and compares what it published, fact by fact.
-//! Values are compared with `==`; only [`HeadFact`] and [`FitFact`], which hold trait objects with no equality, are
-//! compared through their `Debug` text ([`Probes::fact_by_debug`]). A kind that publishes something different under
-//! another palette is a [`Report::violations`] entry naming the kind, the part and the fact.
+//! Each fact says how its values are compared, beside the fact (`register_fact_probe!`): with `==`, or with a function
+//! (`HeadFact` and `FitFact`, which hold trait objects with no equality, compare their `Debug` text). A kind that
+//! publishes something different under another palette is a [`Report::violations`] entry naming the kind, the part and the fact.
 //!
 //! The palettes also differ in their slot set (one with an extra slot, one without the slots no part names), and the
 //! whole comparison runs under each of the [`OPTIONS`] (both qualities, with and without `rig_export`), because a fact
 //! may depend on either; a violation names the options it showed under.
 //!
-//! Facts are compared by [`Probes`]: the built-in ones are registered, and a crate that adds a fact adds
-//! [`Probes::fact`] for it in the test that runs the check. A fact a kind publishes that no probe covers is listed in
-//! [`Report::unprobed`] instead of passing unseen. Any crate can run the check over its own kinds and characters.
+//! Facts are compared by [`Probes::registered`], read from the registry: a crate that adds a fact adds
+//! `register_fact_probe!` beside it, and [`Probes::unprobed_facts`] is what a gate test keeps empty. A fact a kind
+//! publishes that no probe covers is listed in [`Report::unprobed`] instead of passing unseen. Any crate can run the check over its own kinds and characters.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
 use std::thread;
 
+use omuzaki_char_api::Fact;
+use omuzaki_char_api::fact::Differs;
 use omuzaki_char_api::{
-    AnchorsFact, BuildOptions, BuildServices, CharacterDef, CollidersFact, FaceFact, Fact, FitFact, HeadFact, PartDef,
-    PartId, PartKindId, Published, Publishes, Quality, StatureFact, build_part, find_kind, plan,
+    BuildOptions, BuildServices, CharacterDef, PartDef, PartId, PartKindId, Published, Publishes, Quality, build_part,
+    fact, find_kind, plan,
 };
 use omuzaki_core::colour::Colour;
 use omuzaki_core::rng::Rng;
@@ -47,55 +49,42 @@ const PROBE: &str = "palette-probe";
 /// The slot of the alternative that has one more entry than the palette (a suffix is added if the palette has it).
 const EXTRA_SLOT: &str = "unused_probe_slot";
 
-/// How one fact of two builds is compared: `None` when equal, else a description of both for the failure message.
-type Compare = fn(&Publishes, &Publishes) -> Option<String>;
-
 /// How facts are compared, by fact name.
 #[derive(Default)]
 pub struct Probes {
-    facts: BTreeMap<&'static str, Compare>,
+    facts: BTreeMap<&'static str, Differs>,
 }
 
 impl Probes {
-    /// The facts of `omuzaki-char-api`. [`HeadFact`] and [`FitFact`] hold trait objects with no equality, so they are
-    /// compared by their `Debug` text ([`Probes::fact_by_debug`]); the others by value.
-    pub fn built_in() -> Self {
-        Self::default()
-            .fact_by_debug::<HeadFact>()
-            .fact_by_debug::<FitFact>()
-            .fact::<FaceFact>()
-            .fact::<AnchorsFact>()
-            .fact::<CollidersFact>()
-            .fact::<StatureFact>()
+    /// The probes every linked crate registered with `register_fact_probe!`, beside its facts: no list is kept here.
+    /// Values compare with `==`, or with the function the fact's own registration names (`HeadFact` and `FitFact`, which
+    /// hold trait objects, compare their `Debug` text).
+    pub fn registered() -> Self {
+        let mut probes = Self::default();
+        for probe in fact::probes() {
+            probes.facts.insert(probe.name, probe.differs);
+        }
+        probes
     }
 
-    /// Compares fact `F` by value: the values a part publishes must be `==` under both palettes. `Debug` only words the
-    /// failure.
+    /// Adds a comparison of fact `F` by value, for a fact registered without one (a test's own): the values a part
+    /// publishes must be `==` under both palettes. `Debug` only words the failure.
     #[must_use]
     pub fn fact<F: Fact>(mut self) -> Self
     where
         F::Value: PartialEq + Debug,
     {
-        self.facts.insert(F::NAME, |a, b| {
-            let (a, b): (Vec<&F::Value>, Vec<&F::Value>) = (a.values::<F>().collect(), b.values::<F>().collect());
-            (a != b).then(|| format!("{a:?} under one palette, {b:?} under another"))
-        });
+        self.facts.insert(F::NAME, fact::differs_by_eq::<F>);
         self
     }
 
-    /// Compares fact `F` by the `Debug` text of its values, for a value with no equality (a trait object). A value
-    /// whose `Debug` hides data is under-checked, so prefer [`Probes::fact`].
-    #[must_use]
-    pub fn fact_by_debug<F: Fact>(mut self) -> Self
-    where
-        F::Value: Debug,
-    {
-        self.facts.insert(F::NAME, |a, b| {
-            let text = |p: &Publishes| p.values::<F>().map(|v| format!("{v:?}")).collect::<Vec<_>>();
-            let (a, b) = (text(a), text(b));
-            (a != b).then(|| format!("{a:?} under one palette, {b:?} under another"))
-        });
-        self
+    /// The registered facts that have no probe here, named: what the gate test keeps empty. A fact registered twice
+    /// under one name is a clash.
+    ///
+    /// # Errors
+    /// Two registered facts share a name ([`omuzaki_char_api::facts`]).
+    pub fn unprobed_facts(&self) -> Result<Vec<&'static str>, String> {
+        Ok(fact::facts()?.into_iter().map(|f| f.name).filter(|n| !self.facts.contains_key(n)).collect())
     }
 }
 

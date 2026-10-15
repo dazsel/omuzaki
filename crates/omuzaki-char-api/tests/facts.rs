@@ -301,3 +301,57 @@ fn a_fact_and_kinds_defined_outside_the_api_crate_publish_and_read_through_a_bui
         "the bird sees both ledges, in build order (part id within a layer)"
     );
 }
+
+// ---- probes: a fact's comparison is registered beside it, from the fact's own crate
+
+omuzaki_char_api::fact! {
+    /// Compared with `==`.
+    ProbedEqFact = "test-probed-eq", Last<u32>;
+}
+omuzaki_char_api::fact! {
+    /// Compared by a function (within a tolerance).
+    ProbedFnFact = "test-probed-fn", Last<f32>;
+}
+omuzaki_char_api::register_fact_probe!(ProbedEqFact);
+omuzaki_char_api::register_fact_probe!(ProbedFnFact, within_tolerance);
+
+fn within_tolerance(a: &f32, b: &f32) -> bool {
+    (a - b).abs() < 0.01
+}
+
+fn probe(name: &str) -> &'static omuzaki_char_api::fact::FactProbe {
+    omuzaki_char_api::fact::probes().find(|p| p.name == name).expect("the probe is registered")
+}
+
+fn publishes<F: Fact>(value: F::Value) -> Publishes
+where
+    F::Value: Clone,
+    F::Merged: Clone,
+{
+    let mut p = Publishes::default();
+    p.put::<F>(value);
+    p
+}
+
+#[test]
+fn a_probe_registered_beside_a_fact_compares_by_equality() {
+    let differs = probe("test-probed-eq").differs;
+    assert!(differs(&publishes::<ProbedEqFact>(1), &publishes::<ProbedEqFact>(1)).is_none());
+    assert!(differs(&publishes::<ProbedEqFact>(1), &publishes::<ProbedEqFact>(2)).is_some());
+    // A fact published by only one side differs too.
+    assert!(differs(&publishes::<ProbedEqFact>(1), &Publishes::default()).is_some());
+}
+
+#[test]
+fn a_probe_with_a_function_uses_it() {
+    let differs = probe("test-probed-fn").differs;
+    assert!(differs(&publishes::<ProbedFnFact>(1.0), &publishes::<ProbedFnFact>(1.001)).is_none());
+    assert!(differs(&publishes::<ProbedFnFact>(1.0), &publishes::<ProbedFnFact>(1.5)).is_some());
+}
+
+#[test]
+fn every_built_in_fact_has_a_probe() {
+    for name in ["head", "face", "fit", "anchors", "colliders", "stature"] {
+        probe(name);
+    }
+}
