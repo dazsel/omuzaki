@@ -346,6 +346,8 @@ struct Hooks<'a> {
     windows_shaped: Cell<bool>,
     /// Pretend the system has no file identities, as on Windows: a linked backup records none (tests only).
     ids_off: Cell<bool>,
+    /// Make writing a copied backup fail after the file was created (tests only).
+    copy_fails: Cell<bool>,
     /// The backup this call made, if any: the public functions register it for pruning if it is still there.
     made: RefCell<Option<PathBuf>>,
 }
@@ -449,6 +451,7 @@ impl Default for Hooks<'_> {
             sync_off: Cell::new(faults::sync_off()),
             windows_shaped: Cell::new(false),
             ids_off: Cell::new(false),
+            copy_fails: Cell::new(false),
             made: RefCell::new(None),
         }
     }
@@ -505,7 +508,8 @@ fn replace_checked_with(
     hooks: &Hooks<'_>,
 ) -> Result<Replace, StoreError> {
     refuse_links(dir, path)?;
-    let tmp = stage(dir, path, text, hooks)?;
+    let staged = stage(dir, path, text, hooks)?;
+    let tmp = staged.path().to_path_buf();
     (hooks.staged)();
     let mut outcome = match back_up(dir, path, expected, hooks)? {
         Backup::Absent => {
@@ -531,6 +535,9 @@ fn replace_checked_with(
     if matches!(outcome, Ok(Replace::Refused) | Err(StoreError::NoSafeChange { .. })) {
         tidy(&mut outcome, &tmp);
     }
+    // Every outcome has now dealt with the staged file (placed it, tidied it, or left what it holds for the next save
+    // to move aside); only an early return above leaves it to the guard.
+    staged.keep();
     outcome
 }
 
@@ -704,7 +711,7 @@ fn exchange(_: &Path, _: &Path) -> io::Result<()> {
 }
 
 /// Writes `text` to the hidden temporary file beside `path` and flushes it; returns the temporary file's path.
-fn stage(dir: &Path, path: &Path, text: &str, hooks: &Hooks<'_>) -> Result<PathBuf, StoreError> {
+fn stage(dir: &Path, path: &Path, text: &str, hooks: &Hooks<'_>) -> Result<Artifact, StoreError> {
     let io_err = |e| StoreError::io(path, e);
     let Some(parent) = path.parent() else { return Err(io_err(io::ErrorKind::InvalidInput.into())) };
     fs::create_dir_all(parent).map_err(io_err)?;
@@ -717,17 +724,63 @@ fn stage(dir: &Path, path: &Path, text: &str, hooks: &Hooks<'_>) -> Result<PathB
     if fs::symlink_metadata(&tmp).is_ok() {
         preserve(dir, &tmp, hooks)?;
     }
-    let written = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&tmp)
-        .and_then(|mut f| f.write_all(text.as_bytes()).and_then(|()| f.sync_all()));
-    written.map_err(|e| {
-        // Best effort: the original error is the one worth reporting. The file is ours and incomplete.
-        drop(fs::remove_file(&tmp));
-        io_err(e)
-    })?;
-    Ok(tmp)
+    let file = OpenOptions::new().write(true).create_new(true).open(&tmp).map_err(io_err)?;
+    // From here the file is ours; the guard removes it if the save doesn't get as far as keeping it.
+    let mut staged = Artifact::new(tmp);
+    (&file).write_all(text.as_bytes()).and_then(|()| file.sync_all()).map_err(io_err)?;
+    // Complete and flushed: if it ever can't be removed, it can go where pruning deletes it once it is old.
+    staged.prunable = replaced_name(dir, path, &format!(".{}{KEPT}", ContentHash::of(text.as_bytes()))).ok();
+    Ok(staged)
+}
+
+/// A file a save created that must not outlive the save unless the save keeps it. Dropping the guard without
+/// [`Artifact::keep`] removes the file, so every early return (`?`) cleans up. If the removal fails and `prunable`
+/// names a `.kept` slot (the file is complete and has that hash), the file is moved there, where pruning deletes it
+/// once it is old; otherwise it stays where it is, and each use says what then happens to it.
+struct Artifact {
+    /// The file.
+    path: PathBuf,
+    /// Where it may go if it can't be removed.
+    prunable: Option<PathBuf>,
+    /// Whether dropping the guard still removes the file.
+    armed: bool,
+}
+
+impl Artifact {
+    fn new(path: PathBuf) -> Self {
+        Self { path, prunable: None, armed: true }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// The save keeps the file, or has dealt with it itself: the guard lets it be.
+    fn keep(mut self) -> PathBuf {
+        self.armed = false;
+        std::mem::take(&mut self.path)
+    }
+}
+
+impl Drop for Artifact {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        match fs::remove_file(&self.path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            // A destructor can't report; this is the most it can do, and what stays is only ours.
+            Err(_) => {
+                if let Some(slot) = &self.prunable {
+                    if let Some(parent) = slot.parent() {
+                        drop(fs::create_dir_all(parent));
+                    }
+                    drop(fs::rename(&self.path, slot));
+                }
+            }
+        }
+    }
 }
 
 /// A fresh name for `path` in the replaced folder: `<path relative to dir>.<time>-<pid>-<n><suffix>`.
@@ -807,35 +860,47 @@ pub(crate) const PRUNE_CATCH_UP: usize = 16;
 /// a pass costs a small fixed amount on top of what it deletes.
 const PRUNE_EXAMINE_SLACK: usize = 16;
 
-/// Retention of a project's replaced folder: which `.kept` entries exist, and since when each has been known, on a
-/// monotonic clock. A `Project` keeps one and runs [`Retention::prune`] on every save.
+/// Retention of a project's replaced folder: which `.kept` entries exist and how old each is. A `Project` keeps one
+/// and runs [`Retention::prune`] on every save.
 ///
-/// An entry may be deleted only once **both** its age on the monotonic clock and its age on the wall clock (the time
-/// in its name) are at least [`RETAIN_UNCHANGED`], and its bytes still have the hash in its name. The monotonic age
-/// counts from when this process created the entry or, for one it didn't create, from when a pass first found it, so
-/// a wall clock that jumps forward never makes an entry old early, and an entry whose wall time is in the future
-/// waits for the wall clock too.
+/// An entry may be deleted only once it is at least [`RETAIN_UNCHANGED`] old and its bytes still have the hash in its
+/// name. Its age is its wall-clock age, from the time in its name; a time in the future counts as age 0 until the
+/// clock passes it. An entry this process made also has a monotonic age, from when it was made, and both must pass,
+/// so a wall clock that jumps forward can't make it old early. An entry an earlier process left keeps its real age:
+/// it is aged by its name alone and never reset to the moment it was found.
 ///
 /// Not `Clone`: a copy would stop seeing what the other registers. `Project` clones share one through an `Arc`.
 #[derive(Debug, Default)]
 pub(crate) struct Retention {
-    /// Entries waiting to be old enough, each with the monotonic time its age counts from, oldest first (an entry
-    /// that wasn't yet old on the wall clock goes to the back again).
-    queue: VecDeque<(PathBuf, Instant)>,
-    /// Every entry in `queue`, and those found written to (never deleted), so a walk doesn't add one twice.
+    /// Entries this process made, with the monotonic time each was made, oldest first (one not yet old on the wall
+    /// clock goes to the back again).
+    made: VecDeque<(PathBuf, Instant)>,
+    /// Entries an earlier process left, aged by their names alone, in the order they were found.
+    found: VecDeque<PathBuf>,
+    /// Every entry in either queue, and those found written to (never deleted), so a walk doesn't add one twice.
     known: HashSet<PathBuf>,
-    /// Entries created since the last pass: the least the next pass may delete.
+    /// Entries made since the last pass: the least the next pass may delete.
     owed: usize,
     /// Whether the folder was walked for the entries earlier processes left. Entries this process makes are
     /// registered as they are made, and the project lock keeps other Omuzaki processes out, so one walk is enough.
     scanned: bool,
 }
 
+/// What a pass decided about one entry.
+enum Verdict {
+    /// Deleted.
+    Pruned,
+    /// Not old enough on the wall clock yet, or couldn't be read or deleted: try again later.
+    Later,
+    /// Gone, or never to be deleted (written to, not a plain file, not a `.kept` name): stop tracking it.
+    Done,
+}
+
 impl Retention {
-    /// Registers `entry`, a `.kept` entry this process just created at `now` (monotonic).
+    /// Registers `entry`, a `.kept` entry this process just made at `now` (monotonic).
     pub(crate) fn created(&mut self, entry: PathBuf, now: Instant) {
         if self.known.insert(entry.clone()) {
-            self.queue.push_back((entry, now));
+            self.made.push_back((entry, now));
             self.owed += 1;
         }
     }
@@ -843,70 +908,91 @@ impl Retention {
     /// One pruning pass over the replaced folder of the project `dir` at the wall time `wall` and monotonic time
     /// `mono`; returns how many entries it deleted.
     ///
-    /// It deletes at most the entries created since the last pass plus [`PRUNE_CATCH_UP`], so pruning keeps pace with
+    /// It deletes at most the entries made since the last pass plus [`PRUNE_CATCH_UP`], so pruning keeps pace with
     /// saves and works off a backlog, and looks at no more than [`PRUNE_EXAMINE_SLACK`] entries beyond that. The first
-    /// pass also walks the folder once for entries earlier processes left. An entry that was written to after its save no
-    /// longer matches its hash and is never deleted, nor is a `.displaced` entry or anything else in the folder. Best
-    /// effort: what can't be read or deleted is tried again later, and nothing is touched if the folder is reached
-    /// through a symbolic link.
+    /// pass also walks the folder once for entries earlier processes left. An entry that was written to after its save
+    /// no longer matches its hash and is never deleted, nor is a `.displaced` entry or anything else in the folder.
+    /// Best effort: what can't be read or deleted is tried again later, and nothing is touched if the folder is
+    /// reached through a symbolic link.
     pub(crate) fn prune(&mut self, dir: &Path, wall: SystemTime, mono: Instant) -> usize {
         let root = dir.join(REPLACED_DIR);
         if refuse_links(dir, &root).is_err() {
             return 0;
         }
         if !self.scanned {
-            self.scan(&root, mono);
+            self.scan(&root);
         }
         let budget = self.owed + PRUNE_CATCH_UP;
         self.owed = 0;
         let wall_now = wall.duration_since(UNIX_EPOCH).unwrap_or_default();
-        let mut pruned = 0;
-        let mut examined = 0;
-        while pruned < budget && examined < budget + PRUNE_EXAMINE_SLACK {
-            let Some((entry, since)) = self.queue.pop_front() else { break };
+        let limit = budget + PRUNE_EXAMINE_SLACK;
+        let (mut pruned, mut examined) = (0, 0);
+        // Entries this process made: in monotonic order, so the first one not old enough ends this part.
+        while pruned < budget && examined < limit {
+            let Some((entry, since)) = self.made.pop_front() else { break };
             if mono.saturating_duration_since(since) < RETAIN_UNCHANGED {
-                // The queue is in monotonic order, so nothing behind it is old enough either.
-                self.queue.push_front((entry, since));
+                self.made.push_front((entry, since));
                 break;
             }
             examined += 1;
-            let Some((saved, hash)) = entry.file_name().and_then(|n| n.to_str()).and_then(kept_stamp) else {
-                self.known.remove(&entry);
-                continue;
-            };
-            // Not old on the wall clock (or stamped in the future): it waits.
-            if wall_now.checked_sub(saved).is_none_or(|age| age < RETAIN_UNCHANGED) {
-                self.queue.push_back((entry, since));
-                continue;
+            match self.judge(&entry, wall_now) {
+                Verdict::Pruned => pruned += 1,
+                Verdict::Later => self.made.push_back((entry, since)),
+                Verdict::Done => {}
             }
-            match fs::symlink_metadata(&entry) {
-                Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                    self.known.remove(&entry);
-                    continue;
-                }
-                Ok(meta) if meta.is_file() => {}
-                // Not a plain file any more, or can't be looked at: never ours to delete.
-                _ => continue,
-            }
-            match fs::read(&entry) {
-                Ok(bytes) if ContentHash::of(&bytes) == hash => {
-                    if fs::remove_file(&entry).is_ok() {
-                        self.known.remove(&entry);
-                        pruned += 1;
-                    } else {
-                        self.queue.push_back((entry, since));
-                    }
-                }
-                // Written to after its save: someone's edits, which only a person deletes. It stays known.
-                Ok(_) => {}
-                Err(_) => self.queue.push_back((entry, since)),
+        }
+        // Entries earlier processes left: each looked at once per pass at most.
+        let mut left = self.found.len();
+        while pruned < budget && examined < limit && left > 0 {
+            let Some(entry) = self.found.pop_front() else { break };
+            left -= 1;
+            examined += 1;
+            match self.judge(&entry, wall_now) {
+                Verdict::Pruned => pruned += 1,
+                Verdict::Later => self.found.push_back(entry),
+                Verdict::Done => {}
             }
         }
         pruned
     }
 
-    /// Walks the replaced folder at `root` and queues every `.kept` entry not known yet, counting its age from `mono`.
-    fn scan(&mut self, root: &Path, mono: Instant) {
+    /// Deletes `entry` if it is old on the wall clock (`wall_now` since the epoch) and unchanged.
+    fn judge(&mut self, entry: &Path, wall_now: Duration) -> Verdict {
+        let Some((saved, hash)) = entry.file_name().and_then(|n| n.to_str()).and_then(kept_stamp) else {
+            self.known.remove(entry);
+            return Verdict::Done;
+        };
+        // A time in the future is age 0.
+        if wall_now.saturating_sub(saved) < RETAIN_UNCHANGED {
+            return Verdict::Later;
+        }
+        match fs::symlink_metadata(entry) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                self.known.remove(entry);
+                return Verdict::Done;
+            }
+            Ok(meta) if meta.is_file() => {}
+            // Not a plain file any more: never ours to delete. It stays known so a walk doesn't add it again.
+            Ok(_) => return Verdict::Done,
+            Err(_) => return Verdict::Later,
+        }
+        match fs::read(entry) {
+            Ok(bytes) if ContentHash::of(&bytes) == hash => {
+                if fs::remove_file(entry).is_ok() {
+                    self.known.remove(entry);
+                    Verdict::Pruned
+                } else {
+                    Verdict::Later
+                }
+            }
+            // Written to after its save: someone's edits, which only a person deletes. It stays known.
+            Ok(_) => Verdict::Done,
+            Err(_) => Verdict::Later,
+        }
+    }
+
+    /// Walks the replaced folder at `root` and queues every `.kept` entry not known yet, aged by its name.
+    fn scan(&mut self, root: &Path) {
         self.scanned = true;
         let mut found = Vec::new();
         let mut folders = vec![root.to_path_buf()];
@@ -925,7 +1011,7 @@ impl Retention {
         found.sort();
         for entry in found {
             if self.known.insert(entry.clone()) {
-                self.queue.push_back((entry, mono));
+                self.found.push_back(entry);
             }
         }
     }
@@ -1007,7 +1093,7 @@ fn back_up(dir: &Path, path: &Path, expected: Option<ContentHash>, hooks: &Hooks
         // The file system has no links (or won't make this one): copy instead.
         Err(e) if links_unsupported(&e) => {
             *hooks.made.borrow_mut() = Some(backup.clone());
-            copy_backup(path, &bytes, backup)
+            copy_backup(path, &bytes, backup, hooks)
         }
         Err(e) => Err(StoreError::io(path, e)),
     }
@@ -1022,24 +1108,26 @@ fn links_unsupported(e: &io::Error) -> bool {
 ///
 /// The folder is not synced here: until the swap the target still holds these bytes, and after a placement the
 /// displaced file takes this name and the folder is synced once then.
-fn copy_backup(path: &Path, bytes: &[u8], backup: PathBuf) -> Result<Backup, StoreError> {
+fn copy_backup(path: &Path, bytes: &[u8], backup: PathBuf, hooks: &Hooks<'_>) -> Result<Backup, StoreError> {
     let found = ContentHash::of(bytes);
     if let Some(parent) = backup.parent() {
         fs::create_dir_all(parent).map_err(|e| StoreError::io(parent, e))?;
     }
-    OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&backup)
-        .and_then(|mut f| f.write_all(bytes).and_then(|()| f.sync_all()))
-        .map_err(|e| StoreError::io(&backup, e))?;
-    let copied = fs::read(&backup).map_err(|e| StoreError::io(&backup, e))?;
+    let file = OpenOptions::new().write(true).create_new(true).open(&backup).map_err(|e| StoreError::io(&backup, e))?;
+    // Ours from here, and incomplete until checked: any failure below drops the guard, which removes it. (A copy that
+    // can't be removed stays; its bytes don't match the hash in its name, so pruning never takes it for a backup.)
+    let copy = Artifact::new(backup);
+    let written = if hooks.copy_fails.get() {
+        Err(io::Error::other("writing the copy failed (forced by a test)"))
+    } else {
+        (&file).write_all(bytes).and_then(|()| file.sync_all())
+    };
+    written.map_err(|e| StoreError::io(copy.path(), e))?;
+    let copied = fs::read(copy.path()).map_err(|e| StoreError::io(copy.path(), e))?;
     if ContentHash::of(&copied) != found {
-        // Our own bad copy: nothing of the user's is in it.
-        drop(fs::remove_file(&backup));
         return Err(StoreError::Internal(format!("the backup of {} didn't read back identical", path.display())));
     }
-    Ok(Backup::Held(Held { path: backup, found, linked: None, by_link: false }))
+    Ok(Backup::Held(Held { path: copy.keep(), found, linked: None, by_link: false }))
 }
 
 /// Gives the file `from` the name `to` unless `to` exists; true if it was placed. `from`'s old name is removed.
@@ -1523,7 +1611,9 @@ mod tests {
         let (dir, (path, _)) = (tmp.path(), with_file(tmp.path()));
         let backup = dir.join(REPLACED_DIR).join("f.toml.copy");
         let bytes = fs::read(&path).unwrap();
-        let Backup::Held(held) = copy_backup(&path, &bytes, backup.clone()).unwrap() else { panic!("no backup") };
+        let Backup::Held(held) = copy_backup(&path, &bytes, backup.clone(), &Hooks::default()).unwrap() else {
+            panic!("no backup")
+        };
         assert!(held.linked.is_none() && held.found == ContentHash::of(MINE.as_bytes()));
         assert_eq!(fs::read_to_string(&backup).unwrap(), MINE);
         assert!(held.is_file_at(&path));
@@ -1924,7 +2014,7 @@ mod tests {
     fn prune_later(dir: &Path) -> usize {
         let (wall, mono) = (SystemTime::now(), Instant::now());
         let mut retention = Retention::default();
-        assert_eq!(retention.prune(dir, wall, mono), 0, "nothing is old when first found");
+        assert_eq!(retention.prune(dir, wall, mono), 0, "nothing is old yet");
         retention.prune(dir, wall + past(), mono + past())
     }
 
@@ -2029,31 +2119,77 @@ mod tests {
         assert_eq!(kept(dir), []);
     }
 
-    /// The wall clock alone never makes an entry old: a forward jump doesn't, and neither does an old wall time while
-    /// the monotonic age is short. An entry stamped in the future waits for the wall clock as well.
+    /// For an entry this process made, the wall clock alone never makes it old: a forward jump doesn't, and neither
+    /// does an old wall time while the monotonic age is short.
     #[test]
-    fn a_wall_clock_jump_never_prunes_an_entry_early() {
+    fn a_wall_clock_jump_never_prunes_an_entry_this_process_made_early() {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
-        replace_once(dir, "a.toml");
-        write(
-            dir,
-            &format!(".omuzaki/replaced/b.toml.{}-1-0.{}.kept", u64::MAX / 2, ContentHash::of(b"b = 1\n")),
-            "b = 1\n",
-        );
-        let (wall, mono) = (SystemTime::now(), Instant::now());
+        write(dir, "a.toml", MINE);
         let mut retention = Retention::default();
+        let path = dir.join("a.toml");
+        super::replace_checked(dir, &path, "ours = 3\n", Some(ContentHash::of(MINE.as_bytes())), &mut retention)
+            .unwrap();
+        let (wall, mono) = (SystemTime::now(), Instant::now());
         let jumped = wall + Duration::from_hours(24);
         // The clock jumped a day forward, but no time has passed.
         assert_eq!(retention.prune(dir, jumped, mono), 0);
         assert_eq!(retention.prune(dir, jumped, mono + RETAIN_UNCHANGED / 2), 0);
-        assert_eq!(kept(dir).len(), 2);
         // Enough time has passed on the monotonic clock, but the wall clock went back.
-        assert_eq!(retention.prune(dir, wall - Duration::from_secs(60), mono + past()), 0);
-        assert_eq!(kept(dir).len(), 2);
-        // Both are old for the entry stamped now; the one stamped far in the future stays.
+        assert_eq!(retention.prune(dir, wall - Duration::from_mins(1), mono + past()), 0);
+        assert_eq!(kept(dir).len(), 1);
+        // Old on both.
         assert_eq!(retention.prune(dir, wall + past(), mono + past()), 1);
-        assert_eq!(texts(&kept(dir)), ["b = 1\n"]);
+        assert_eq!(kept(dir), []);
+    }
+
+    /// An entry an earlier process left keeps its real age: a short-lived process that kept it 11 minutes ago has its
+    /// entry pruned by the next process's first pass. One stamped in the future is age 0 until the clock passes it.
+    #[test]
+    fn an_entry_an_earlier_process_left_is_aged_by_its_name() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let wall = SystemTime::now();
+        let stamp = |at: SystemTime| at.duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let hash = ContentHash::of(b"old = 1\n");
+        let eleven_ago = wall - Duration::from_mins(11);
+        write(dir, &format!(".omuzaki/replaced/a.toml.{}-7-0.{hash}.kept", stamp(eleven_ago)), "old = 1\n");
+        let ahead = wall + Duration::from_hours(1);
+        write(dir, &format!(".omuzaki/replaced/b.toml.{}-7-1.{hash}.kept", stamp(ahead)), "old = 1\n");
+        let mut retention = Retention::default();
+        assert_eq!(retention.prune(dir, wall, Instant::now()), 1);
+        let left = kept(dir);
+        assert_eq!(left.len(), 1);
+        assert!(left[0].0.starts_with("b.toml."), "{left:?}");
+        // Once the clock is past its time by the retention, the one from the future goes too.
+        assert_eq!(retention.prune(dir, ahead + past(), Instant::now()), 1);
+        assert_eq!(kept(dir), []);
+    }
+
+    /// A save that fails after staging (here the target is a folder, which can't be read as a file) leaves no
+    /// temporary file: the guard removes it.
+    #[test]
+    fn a_failure_after_staging_leaves_no_temporary_file() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        fs::create_dir(dir.join("f.toml")).unwrap();
+        let err = replace_with(dir, Some(ContentHash::of(MINE.as_bytes())), &Hooks::default()).unwrap_err();
+        assert!(matches!(err, StoreError::Io { .. }), "{err}");
+        assert!(no_temporary_file(dir));
+        assert!(dir.join("f.toml").is_dir());
+    }
+
+    /// A copied backup whose write fails after the file was created leaves no `.kept` entry: the guard removes it.
+    #[test]
+    fn a_copy_that_fails_after_it_was_created_leaves_no_kept_entry() {
+        let tmp = TempDir::new().unwrap();
+        let (dir, (path, expected)) = (tmp.path(), with_file(tmp.path()));
+        let hooks = Hooks { links_off: true.into(), copy_fails: true.into(), ..Hooks::default() };
+        let err = replace_with(dir, expected, &hooks).unwrap_err();
+        assert!(err.to_string().contains("forced by a test"), "{err}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), MINE);
+        assert_eq!(kept(dir), []);
+        assert!(no_temporary_file(dir));
     }
 
     #[test]

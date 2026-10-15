@@ -227,8 +227,9 @@ impl Project {
     ///
     /// Each file a save replaces is kept for a while under `.omuzaki/replaced/`, so an editor that still holds the
     /// old file open can't lose what it writes there. Every save then deletes some of those that nothing wrote to
-    /// since and that are at least 10 minutes old on both the monotonic clock and the wall clock: at least as many as
-    /// it kept, plus a share of any backlog (see `docs/design/journal.md` section 6.1).
+    /// since and that are at least 10 minutes old (by the time in their name and, for those this process made, on the
+    /// monotonic clock too): at least as many as it kept, plus a share of any backlog (see `docs/design/journal.md`
+    /// section 6.1).
     ///
     /// # Errors
     /// A file can't be read, written or deleted; a file about to be edited was broken by hand and is no longer valid
