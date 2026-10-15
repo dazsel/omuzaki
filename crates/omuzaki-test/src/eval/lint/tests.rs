@@ -44,7 +44,7 @@ fn private() -> PrivateList {
 fn run(d: &Discovery, texts: Option<&[ToolText]>) -> Vec<String> {
     let features = features();
     let private = private();
-    lint(&Inputs { discovery: d, features: &features, private: &private, tool_texts: texts })
+    lint(&Inputs { discovery: d, features: &features, private: &private, tool_texts: texts, ops: None })
         .into_iter()
         .map(|f| f.message)
         .collect()
@@ -226,4 +226,90 @@ fn feature_ids_come_from_full_table_rows_only() {
     let spec = "| QG-03 | Name | P0 | notes |\n| CB-10 | x | P1 | y |\nQG-04 in prose\n| QG-05 | no closing pipe\n| xx-01 | lower | P0 | n |\n";
     let ids = spec_feature_ids(spec);
     assert_eq!(ids.into_iter().collect::<Vec<_>>(), vec!["CB-10", "QG-03"]);
+}
+
+// ---- the op-scope rule (design 3.3) ----
+
+use omuzaki_ops_api::{OpInfo, OpKind, OpMeta, Scope, Undo};
+
+fn info(name: &'static str, kind: OpKind, scope: Scope) -> OpInfo {
+    OpInfo::new(OpMeta { name, summary: "s", kind, scope, undo: Undo::None }, schemars::Schema::default())
+}
+
+fn registry() -> Vec<OpInfo> {
+    vec![
+        info("measure.outline", OpKind::Query, Scope::Read),
+        info("render.preview", OpKind::Query, Scope::Render),
+        info("face.set_profile", OpKind::Edit, Scope::EditCharacter),
+        info("render.sheet", OpKind::Job, Scope::Render),
+        info("character.list", OpKind::Query, Scope::Read),
+        info("secrets.peek", OpKind::Query, Scope::Spend),
+    ]
+}
+
+/// A task whose first check is the given TOML check, over the standard clean workspace.
+fn with_check(toml_check: &str) -> Discovery {
+    let mut d = clean();
+    let text = format!(
+        "id = 'a.one'\nfeature = 'QG-03'\ntitle = 't'\nprompt = 'p'\nfixture = 'f'\nscopes = ['read']\n{toml_check}"
+    );
+    d.tasks[0].task = toml::from_str(&text).unwrap();
+    d
+}
+
+fn op_findings(d: &Discovery) -> Vec<String> {
+    registry::op_findings(d, &registry()).into_iter().map(|f| f.message).collect()
+}
+
+#[test]
+fn checks_that_call_read_only_queries_pass_the_op_scope_rule() {
+    let d = with_check(
+        "[bind]\nfox = { op = 'character.list', at = '/ids/*', pick = 'new' }\n\
+         [[check]]\nid = 'q'\nkind = 'query'\nop = 'measure.outline'\nat = '/a'\nexpect = { equals = 1 }\n\
+         [[check]]\nid = 'g'\nkind = 'gate'\nops = ['measure.outline']\n\
+         [[check]]\nid = 'd'\nkind = 'render.diff'\nrender = { op = 'render.preview' }\nregion = { op = 'measure.outline', at = '/rect' }\nexpect = { changed_fraction_at_least = 0.1 }\n\
+         [[check]]\nid = 's'\nkind = 'render.same'\nrender = { op = 'render.preview' }\n\
+         [[check]]\nid = 'p'\nkind = 'query'\nop = '{op}'\nat = '/a'\nexpect = { equals = 1 }\n",
+    );
+    assert_eq!(op_findings(&d), Vec::<String>::new());
+}
+
+#[test]
+fn a_check_that_calls_an_edit_a_job_a_wide_scope_or_an_unknown_op_is_found() {
+    for (check, needle) in [
+        (
+            "kind = 'query'\nop = 'face.set_profile'\nat = '/a'\nexpect = { equals = 1 }",
+            "`face.set_profile` is Edit, not a query",
+        ),
+        ("kind = 'render.same'\nrender = { op = 'render.sheet' }", "`render.sheet` is Job, not a query"),
+        ("kind = 'gate'\nops = ['secrets.peek']", "scope Spend"),
+        (
+            "kind = 'query'\nop = 'no.such_op'\nat = '/a'\nexpect = { equals = 1 }",
+            "`no.such_op` is not a registered op",
+        ),
+        (
+            "kind = 'render.diff'\nrender = { op = 'render.preview' }\nregion = { op = 'face.set_profile', at = '/r' }\nexpect = { changed_fraction_at_least = 0.1 }",
+            "`face.set_profile`",
+        ),
+        ("kind = 'judge'\nrubric = ['q']\nrender = { op = 'face.set_profile' }", "`face.set_profile`"),
+    ] {
+        let found = op_findings(&with_check(&format!("[[check]]\nid = 'c'\n{check}\n")));
+        assert_eq!(found.len(), 1, "{check}: {found:?}");
+        assert!(found[0].contains(needle) && found[0].contains("check `c`"), "{check}: {found:?}");
+    }
+}
+
+#[test]
+fn a_binding_that_calls_an_edit_is_found_by_its_name() {
+    let d = with_check(
+        "[bind]\nfox = { op = 'face.set_profile', at = '/ids/*', pick = 'new' }\n[[check]]\nid = 'c'\nkind = 'doc.exists'\npath = 'a'\n",
+    );
+    let found = op_findings(&d);
+    assert!(found.len() == 1 && found[0].contains("binding `fox` calls `face.set_profile` is Edit"), "{found:?}");
+}
+
+#[test]
+fn without_the_registry_the_op_scope_rule_does_not_run() {
+    let d = with_check("[[check]]\nid = 'c'\nkind = 'query'\nop = 'no.such_op'\nat = '/a'\nexpect = { equals = 1 }\n");
+    assert_eq!(run(&d, None), Vec::<String>::new(), "`Inputs::ops` is `None`");
 }

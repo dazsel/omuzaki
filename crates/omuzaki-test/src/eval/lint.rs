@@ -5,8 +5,12 @@ use std::path::PathBuf;
 
 use serde_json::Value;
 
+use omuzaki_ops_api::OpInfo;
+
 use super::provenance::{PrivateList, fixture_refusals, refusals};
 use super::{Discovery, TaskFile};
+
+pub mod registry;
 
 /// The shortest run of shared words that counts as a prompt appearing in a tool description.
 pub const LEAK_WORDS: usize = 8;
@@ -95,6 +99,8 @@ pub struct Inputs<'a> {
     pub private: &'a PrivateList,
     /// Tool descriptions and instructions, or `None` when the prompt-leak check cannot run.
     pub tool_texts: Option<&'a [ToolText]>,
+    /// The registered ops, or `None` when the op-scope rule cannot run.
+    pub ops: Option<&'a [OpInfo]>,
 }
 
 /// Runs every rule; the result is sorted by file, then message.
@@ -110,6 +116,9 @@ pub fn lint(inputs: &Inputs<'_>) -> Vec<Finding> {
     out.extend(provenance_findings(d, inputs.private));
     if let Some(texts) = inputs.tool_texts {
         out.extend(leak_findings(d, texts));
+    }
+    if let Some(ops) = inputs.ops {
+        out.extend(registry::op_findings(d, ops));
     }
     out.sort();
     out

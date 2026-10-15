@@ -181,3 +181,47 @@ fn list_fails_and_prints_no_catalogue_when_a_task_file_is_malformed() {
     assert!(text(&out.stdout).is_empty(), "{}", text(&out.stdout));
     assert!(text(&out.stderr).contains("broken.toml: does not parse"), "{}", text(&out.stderr));
 }
+
+#[test]
+fn lint_with_no_flags_reads_the_linked_registry_and_says_so() {
+    let dir = workspace();
+    let (status, out) = lint(dir.path(), &[]);
+    assert_eq!(status, 0, "{out}");
+    assert!(out.contains("prompt-leak check ran against the linked registry"), "{out}");
+}
+
+#[test]
+fn a_prompt_that_quotes_a_tool_description_is_a_leak_found_without_any_dump() {
+    // Take the opening words of a real tool's description from the registry the lint itself reads.
+    let linked = omuzaki_test::eval::lint::registry::linked().unwrap();
+    let quoted: String = linked
+        .texts
+        .iter()
+        .filter(|t| t.source.starts_with("tool "))
+        .map(|t| t.text.split_whitespace().collect::<Vec<_>>())
+        .find(|words| words.len() >= 12)
+        .map(|words| words[..10].join(" ").replace('\'', ""))
+        .unwrap();
+    let dir = workspace();
+    write(dir.path(), "crates/c/evals/a.one.toml", &TASK.replace("Make her hair shorter", &quoted));
+    let (status, out) = lint(dir.path(), &[]);
+    assert_eq!(status, 1, "{out}");
+    assert!(out.contains("a.one.toml") && out.contains("shares 8+ words with tool "), "{out}");
+}
+
+#[test]
+fn a_check_that_calls_an_edit_op_or_an_unknown_op_is_found_through_the_linked_registry() {
+    let dir = workspace();
+    let task = TASK.replace(
+        "[[check]]\nid = 'c'\nkind = 'doc.exists'\npath = 'a'\n",
+        "[[check]]\nid = 'edits'\nkind = 'query'\nop = 'character.rename'\nat = '/a'\nexpect = { equals = 1 }\n\
+         [[check]]\nid = 'ghost'\nkind = 'query'\nop = 'no.such_op'\nat = '/a'\nexpect = { equals = 1 }\n\
+         [[check]]\nid = 'reads'\nkind = 'query'\nop = 'colourway.list'\nat = '/a'\nexpect = { equals = 1 }\n",
+    );
+    write(dir.path(), "crates/c/evals/a.one.toml", &task);
+    let (status, out) = lint(dir.path(), &[]);
+    assert_eq!(status, 1, "{out}");
+    assert!(out.contains("check `edits` calls `character.rename` is Edit"), "{out}");
+    assert!(out.contains("check `ghost` calls `no.such_op` is not a registered op"), "{out}");
+    assert!(!out.contains("check `reads`"), "a read-only query is fine: {out}");
+}

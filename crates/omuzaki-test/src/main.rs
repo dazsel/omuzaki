@@ -122,13 +122,13 @@ enum EvalCommand {
     /// Check every task, fixture and eval set under `crates/*/evals`; lists each finding by file and exits 1 if any.
     ///
     /// Rules: duplicate ids, unknown fixture, unknown spec feature, unknown check kind, missing `.pass.jsonl` or
-    /// `.fail.jsonl` script, provenance and private-list refusals, and prompts that share 8+ words with a tool
-    /// description or server instruction. Exits 2 when the harness itself cannot run (unreadable folder, no spec).
+    /// `.fail.jsonl` script, provenance and private-list refusals, a check or binding that calls an op that is not a registered
+    /// read-only query, and prompts that share 8+ words with a tool description or server instruction. Exits 2 when the harness itself cannot run (unreadable folder, no spec).
     Lint {
         #[command(flatten)]
         root: RootArg,
         /// A JSON dump of the MCP tools (an array of `{name, description}`, or `{tools, instructions}`) to check the
-        /// prompts against. Without it the prompt-leak rule is skipped, and the lint says so.
+        /// prompts against. Without it the lint reads the tool texts and server instructions from the linked registry.
         #[arg(long, value_name = "JSON")]
         tools: Option<PathBuf>,
     },
@@ -598,18 +598,25 @@ fn eval_lint(root: &Path, tools: Option<&Path>) -> Verdict {
     if features.is_empty() {
         return Err(format!("{}: no feature IDs found", spec_path.display()).into());
     }
+    // The registry is the one `omuzaki mcp` serves: the ops a check may call, and (unless a dump is given) the texts an
+    // agent reads, so the prompt-leak rule runs with nothing to dump.
+    let linked = lint::registry::linked()?;
     let texts = if let Some(path) = tools {
         let json = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        Some(lint::tool_texts_from_json(&json).map_err(|e| format!("{}: {e}", path.display()))?)
+        lint::tool_texts_from_json(&json).map_err(|e| format!("{}: {e}", path.display()))?
     } else {
-        eprintln!("note: prompt-leak check skipped: no tool descriptions given (--tools <json>)");
-        None
+        println!(
+            "note: prompt-leak check ran against the linked registry ({} tools and the server instructions)",
+            linked.ops.len()
+        );
+        linked.texts.clone()
     };
     let findings = lint::lint(&lint::Inputs {
         discovery: &discovery,
         features: &features,
         private: &private,
-        tool_texts: texts.as_deref(),
+        tool_texts: Some(&texts),
+        ops: Some(&linked.ops),
     });
     for finding in &findings {
         println!("{}: {}", finding.file.display(), finding.message);

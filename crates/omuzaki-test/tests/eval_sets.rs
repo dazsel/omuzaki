@@ -319,8 +319,13 @@ fn the_lint_flags_a_kind_or_split_the_model_contract_does_not_know() {
     let discovery = eval::discover(world.ws.path()).unwrap();
     let features: BTreeSet<String> = BTreeSet::new();
     let private = PrivateList::default();
-    let findings =
-        lint::lint(&Inputs { discovery: &discovery, features: &features, private: &private, tool_texts: None });
+    let findings = lint::lint(&Inputs {
+        discovery: &discovery,
+        features: &features,
+        private: &private,
+        tool_texts: None,
+        ops: None,
+    });
     let messages: Vec<String> = findings.iter().map(|f| format!("{}: {}", f.file.display(), f.message)).collect();
     assert_eq!(messages.len(), 2, "{messages:?}");
     assert!(
