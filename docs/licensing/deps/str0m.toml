@@ -1,0 +1,7 @@
+section = "rust"
+item = "str0m"
+kind = "crate"
+used_for = "WHIP"
+status = "yes"
+condition = "check crypto backend"
+audit = "B4"

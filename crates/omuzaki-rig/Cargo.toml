@@ -37,3 +37,7 @@ harness = false
 
 [lints]
 workspace = true
+
+[package.metadata.omuzaki]
+kind = "Implementation"
+summary = "the rig (§8, §20): `HumanoidRig` solves VRM normalised humanoid poses onto any skeleton, whatever its bone axes (and reads them back), `RigSkeleton` holds the tables derived from the rest pose, `Skinner` fills `Scene::joints` with skinning matrices; no allocation per frame"

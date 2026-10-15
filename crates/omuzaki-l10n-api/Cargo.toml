@@ -31,3 +31,7 @@ harness = false
 
 [lints]
 workspace = true
+
+[package.metadata.omuzaki]
+kind = "API"
+summary = "localised text (SE-03, ADR 0023): `Text` and `Arg` (a message id with typed arguments), `Message`, `Locale` with the shipped list, derived message ids, the `messages!` and `register_locales!` macros, and the pseudo-locale transform"

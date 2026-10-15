@@ -1,0 +1,8 @@
+section = "rust"
+item = "ort"
+kind = "crate"
+used_for = "ONNX inference"
+status = "conditions"
+condition = "release candidate; don't use Pyke's unlicensed prebuilt ORT binaries in releases; build ORT ourselves"
+audit = "B2"
+crates = ["ort"]

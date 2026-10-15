@@ -1,0 +1,7 @@
+section = "rust"
+item = "Texture watermark: keyed spread spectrum on a 512×512 canonical grid (own code)"
+kind = "code"
+used_for = "SE-07 optional creator mark in exported textures (`omuzaki-export`, not yet built)"
+status = "yes"
+condition = "written by us, std only; keys come from `blake3` (row above); the technique family is academic (Cox et al. 1997), patents for legal review (research note section 8)"
+audit = "(research note)"

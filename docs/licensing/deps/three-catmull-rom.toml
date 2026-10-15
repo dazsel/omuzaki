@@ -1,0 +1,8 @@
+section = "rust"
+item = "three.js `CatmullRomCurve3` and `Curve` length mapping (ported in `omuzaki-char/src/kit/catmull.rs`)"
+kind = "code"
+used_for = "arc-length-spaced centripetal Catmull-Rom points that match the prototype's hair and sweeps"
+status = "yes"
+condition = "MIT: a step-by-step port; notice in `crates/omuzaki-char/src/kit/NOTICES.md`"
+audit = "(three 0.170.0 LICENSE)"
+paths = ["crates/omuzaki-char/src/kit/NOTICES.md"]

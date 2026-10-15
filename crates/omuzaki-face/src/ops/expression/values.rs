@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use super::store::missing;
-use crate::ops::shared::edit::{effective, stored_face};
+use crate::ops_shared::edit::{effective, stored_face};
 
 /// Previews a named expression at a weight: the channel values it blends to on a neutral bus (clamped to their ranges),
 /// and the paint parameters the character's mapping makes of them. The output's `channels` lists only the non-zero

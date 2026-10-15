@@ -1,0 +1,7 @@
+section = "rust"
+item = "tempfile, proptest, criterion"
+kind = "crate"
+used_for = "tests and benchmarks (dev only)"
+status = "yes"
+audit = "(crates.io: MIT OR Apache-2.0)"
+crates = ["criterion", "proptest", "tempfile"]

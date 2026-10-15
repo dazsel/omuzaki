@@ -28,3 +28,7 @@ harness = false
 
 [lints]
 workspace = true
+
+[package.metadata.omuzaki]
+kind = "API"
+summary = "the audio engine contract (§8, §9, §10; ADR 0018): devices and roles, the mixer `GraphSpec` with validation and the `egress_pairs` privacy closure, the `Node` / `NodeKind` contract, the exact fader, mute and mono-to-stereo semantics, taps and feeds over one SPSC ring, the engine clock, latency and health reports, the `AudioEngine` service and `OfflineRender`, and the conformance checks"

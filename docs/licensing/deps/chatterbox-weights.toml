@@ -1,0 +1,7 @@
+section = "models"
+item = "Chatterbox weights"
+kind = "model"
+used_for = "TTS, voice cloning"
+status = "conditions"
+condition = "MIT; keep Perth watermark; training data unverified; consent for cloning"
+audit = "B5"
