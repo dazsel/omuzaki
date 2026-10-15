@@ -73,6 +73,9 @@ impl Checker<'_> {
             }
         }
         self.asset_info();
+        if let Some(why) = m.attestation_binding_fault() {
+            self.add("rights/attestation/by", why);
+        }
         if let Some(slot) = &m.slot {
             self.slug("slot", slot);
         }

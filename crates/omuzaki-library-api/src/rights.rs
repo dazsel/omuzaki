@@ -51,7 +51,8 @@ pub struct ItemRights {
     /// The result belongs to whoever applies it (the part rows carry `owned { asserted_by }`).
     #[serde(default)]
     pub owned: bool,
-    /// Who asserts these rights and on which shipped claim. Absent for rights nobody has attested.
+    /// Who asserts these rights and on which shipped claim. At item level `by` must equal the manifest's
+    /// `publisher.key` ([`check`](crate::ItemManifest::check) and `verify` reject a mismatch). Absent for rights nobody has attested.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attestation: Option<Attestation>,
     /// The hash of the custom terms text a `LicenseRef-` licence points at, so the text a person read is the text that
@@ -67,7 +68,9 @@ pub struct ItemRights {
 pub struct AssetInfo {
     /// The asset's size in bytes.
     pub size: u64,
-    /// The asset's own rights: the same type an item carries, joined with the item's by the rights join.
+    /// The asset's own rights: the same type an item carries, joined with the item's by the rights join. An
+    /// `attestation` here is ignored (never joined, never shown, not compared with the publisher key); only the
+    /// item-level one is, and its `by` must be the manifest's `publisher.key`.
     pub rights: ItemRights,
 }
 
