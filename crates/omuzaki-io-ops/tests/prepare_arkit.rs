@@ -137,10 +137,10 @@ fn presets_compose() {
         ("mouthSmileRight", PresetExpression::Happy, 0.5),
         ("eyeBlinkLeft", PresetExpression::BlinkLeft, 1.0),
         ("eyeBlinkRight", PresetExpression::BlinkRight, 1.0),
-        ("eyeLookUpLeft", PresetExpression::LookUp, 1.0),
-        ("eyeLookUpRight", PresetExpression::LookUp, 1.0),
-        ("eyeLookDownLeft", PresetExpression::LookDown, 1.0),
-        ("eyeLookDownRight", PresetExpression::LookDown, 1.0),
+        ("eyeLookUpLeft", PresetExpression::LookUp, 0.5),
+        ("eyeLookUpRight", PresetExpression::LookUp, 0.5),
+        ("eyeLookDownLeft", PresetExpression::LookDown, 0.5),
+        ("eyeLookDownRight", PresetExpression::LookDown, 0.5),
     ];
     for (channel, preset, gain) in rules {
         assert_eq!(outcome(&report, channel), &Synthesis::FromPreset { preset, gain }, "{channel}");
@@ -204,6 +204,71 @@ fn synthesis_is_idempotent() {
     let report = synthesise(&mut scene);
     assert_eq!(scene, once);
     assert_eq!(outcome(&report, "jawOpen"), &Synthesis::Present);
+}
+
+/// The weight a morph target gets when every listed channel is driven at 1: the sum over their binds on it.
+fn combined_weight(scene: &IoScene, channels: &[&str], node: NodeIx, index: u32) -> f32 {
+    channels.iter().flat_map(|c| binds(scene, c)).filter(|b| b.node == node && b.index == index).map(|b| b.weight).sum()
+}
+
+#[test]
+fn the_combined_blink_is_the_symmetric_fallback() {
+    let (mut scene, face) = scene_with_targets(&["Lids"]);
+    let av = scene.avatar.as_mut().unwrap();
+    av.expressions.insert(ExpressionName::Preset(PresetExpression::Blink), morph_expression(face, 0, 1.0));
+    let report = synthesise(&mut scene);
+    let want = Synthesis::FromPreset { preset: PresetExpression::Blink, gain: 0.5 };
+    assert_eq!(outcome(&report, "eyeBlinkLeft"), &want);
+    assert_eq!(outcome(&report, "eyeBlinkRight"), &want);
+    assert_eq!(binds(&scene, "eyeBlinkLeft"), [MorphBind { node: face, index: 0, weight: 0.5 }]);
+    assert_eq!(
+        combined_weight(&scene, &["eyeBlinkLeft", "eyeBlinkRight"], face, 0),
+        1.0,
+        "both eyes at 1 are one blink"
+    );
+    let note = report.channels.iter().find(|c| c.channel == "eyeBlinkLeft").unwrap().note();
+    assert!(note.is_some_and(|n| n.contains("symmetric")));
+}
+
+#[test]
+fn per_side_blink_presets_win_over_the_combined_one() {
+    let (mut scene, face) = scene_with_targets(&["Lids", "LidL"]);
+    let av = scene.avatar.as_mut().unwrap();
+    av.expressions.insert(ExpressionName::Preset(PresetExpression::Blink), morph_expression(face, 0, 1.0));
+    av.expressions.insert(ExpressionName::Preset(PresetExpression::BlinkLeft), morph_expression(face, 1, 1.0));
+    let report = synthesise(&mut scene);
+    let left = Synthesis::FromPreset { preset: PresetExpression::BlinkLeft, gain: 1.0 };
+    assert_eq!(outcome(&report, "eyeBlinkLeft"), &left);
+    assert_eq!(binds(&scene, "eyeBlinkLeft"), [MorphBind { node: face, index: 1, weight: 1.0 }]);
+    let right = Synthesis::FromPreset { preset: PresetExpression::Blink, gain: 0.5 };
+    assert_eq!(outcome(&report, "eyeBlinkRight"), &right, "only the missing side falls back");
+}
+
+#[test]
+fn symmetric_gaze_presets_bind_both_eyes_at_half_gain() {
+    // Looking left is the left eye out and the right eye in; the mirror for right.
+    let cases = [
+        (PresetExpression::LookUp, ["eyeLookUpLeft", "eyeLookUpRight"]),
+        (PresetExpression::LookDown, ["eyeLookDownLeft", "eyeLookDownRight"]),
+        (PresetExpression::LookLeft, ["eyeLookOutLeft", "eyeLookInRight"]),
+        (PresetExpression::LookRight, ["eyeLookInLeft", "eyeLookOutRight"]),
+    ];
+    for (preset, channels) in cases {
+        let (mut scene, face) = scene_with_targets(&["Gaze"]);
+        let av = scene.avatar.as_mut().unwrap();
+        av.expressions.insert(ExpressionName::Preset(preset), morph_expression(face, 0, 0.8));
+        let report = synthesise(&mut scene);
+        for channel in channels {
+            assert_eq!(outcome(&report, channel), &Synthesis::FromPreset { preset, gain: 0.5 }, "{channel}");
+            assert_eq!(binds(&scene, channel), [MorphBind { node: face, index: 0, weight: 0.4 }], "{channel}");
+        }
+        let sum = combined_weight(&scene, &channels, face, 0);
+        assert!((sum - 0.8).abs() < 1e-6, "{preset:?}: both channels at 1 give the preset's own weight, got {sum}");
+        let others = ARKIT_52.iter().filter(|c| c.starts_with("eyeLook") && !channels.contains(c));
+        for channel in others {
+            assert_eq!(outcome(&report, channel), &Synthesis::Missing, "{channel}");
+        }
+    }
 }
 
 /// A valid VRM scene whose body mesh carries `VRoid`-like morph targets and whose avatar has two presets bound to them.

@@ -37,8 +37,11 @@ const VROID_MORPHS: [(&str, &str, f32); 12] = [
     ("Fcl_BRW_Sorrow", "browInnerUp", 1.0),
 ];
 
-/// `(channel, source preset, gain)`: which VRM preset composes a channel.
-const PRESET_RULES: [(&str, PresetExpression, f32); 16] = [
+/// `(channel, source preset, gain)`: which VRM preset composes a channel. A channel's rules are tried in table order,
+/// so a specific preset listed first wins over a symmetric fallback. A preset that feeds both sides of a pair binds at
+/// 0.5 each (smile, stretch, brow down, the combined blink, the gaze presets), so both channels at 1 reproduce the
+/// preset at 1 and not at 2 (`docs/design/byom.md` D3). For gaze, looking left is the left eye out and the right eye in.
+const PRESET_RULES: [(&str, PresetExpression, f32); 22] = [
     ("jawOpen", PresetExpression::Aa, 1.0),
     ("mouthFunnel", PresetExpression::Oh, 1.0),
     ("mouthPucker", PresetExpression::Ou, 1.0),
@@ -47,11 +50,17 @@ const PRESET_RULES: [(&str, PresetExpression, f32); 16] = [
     ("mouthSmileLeft", PresetExpression::Happy, 0.5),
     ("mouthSmileRight", PresetExpression::Happy, 0.5),
     ("eyeBlinkLeft", PresetExpression::BlinkLeft, 1.0),
+    ("eyeBlinkLeft", PresetExpression::Blink, 0.5),
     ("eyeBlinkRight", PresetExpression::BlinkRight, 1.0),
-    ("eyeLookUpLeft", PresetExpression::LookUp, 1.0),
-    ("eyeLookUpRight", PresetExpression::LookUp, 1.0),
-    ("eyeLookDownLeft", PresetExpression::LookDown, 1.0),
-    ("eyeLookDownRight", PresetExpression::LookDown, 1.0),
+    ("eyeBlinkRight", PresetExpression::Blink, 0.5),
+    ("eyeLookUpLeft", PresetExpression::LookUp, 0.5),
+    ("eyeLookUpRight", PresetExpression::LookUp, 0.5),
+    ("eyeLookDownLeft", PresetExpression::LookDown, 0.5),
+    ("eyeLookDownRight", PresetExpression::LookDown, 0.5),
+    ("eyeLookOutLeft", PresetExpression::LookLeft, 0.5),
+    ("eyeLookInRight", PresetExpression::LookLeft, 0.5),
+    ("eyeLookInLeft", PresetExpression::LookRight, 0.5),
+    ("eyeLookOutRight", PresetExpression::LookRight, 0.5),
     ("browDownLeft", PresetExpression::Angry, 0.5),
     ("browDownRight", PresetExpression::Angry, 0.5),
     ("browInnerUp", PresetExpression::Sad, 1.0),
@@ -91,7 +100,7 @@ pub struct ChannelOutcome {
 
 impl ChannelOutcome {
     /// A note for the user when the channel shares its source with its mirror image, as one symmetric shape drives
-    /// both sides (smile, stretch, brow down, look up and down). `None` otherwise.
+    /// both sides (smile, stretch, brow down, the combined blink, gaze). `None` otherwise.
     pub fn note(&self) -> Option<&'static str> {
         let shared = match &self.how {
             Synthesis::FromPreset { preset, .. } => PRESET_RULES.iter().filter(|r| r.1 == *preset).count() > 1,
@@ -173,10 +182,10 @@ fn build(
     if let Some((m, weight)) = alias {
         return Some((Synthesis::FromMorph { target: m.name.to_owned() }, Some(bind_morph(m, weight))));
     }
-    let &(_, preset, gain) = PRESET_RULES.iter().find(|r| r.0 == channel)?;
-    let source = expressions.get(&ExpressionName::Preset(preset))?;
-    let expression = scale(source, gain)?;
-    Some((Synthesis::FromPreset { preset, gain }, Some(expression)))
+    PRESET_RULES.iter().filter(|r| r.0 == channel).find_map(|&(_, preset, gain)| {
+        let expression = scale(expressions.get(&ExpressionName::Preset(preset))?, gain)?;
+        Some((Synthesis::FromPreset { preset, gain }, Some(expression)))
+    })
 }
 
 /// An expression driving `morph` at `weight`.
