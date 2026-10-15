@@ -19,7 +19,7 @@
 use std::ops::Range;
 
 use omuzaki_char_api::{
-    BodyRegion, BuildCtx, BuildError, FaceOverlay, GroupId, HAIR_UV, HairParams, JointRef, KindProvenance,
+    BodyRegion, BuildCtx, BuildError, FaceOverlay, Generator, GroupId, HAIR_UV, HairParams, JointRef, KindProvenance,
     MaterialName, MaterialSpec, PartCategory, PartId, PartKind, PartMesh, PartMeta, PartOutput, RecolourCtx,
     Recoloured,
 };
@@ -272,10 +272,13 @@ pub fn recolour_with(
     let layout = layout(params, generators);
     let groups: Vec<&GroupId> = layout.iter().map(|s| s.group).collect();
     let tints = params.shading.streak_tints(ctx.palette, &groups).map_err(|e| ctx.fail(e.to_string()))?;
-    // A mesh the layout says holds tubes must exist: without it there is nothing to tint, and `Done` would be a lie.
+    // A mesh the layout says holds tubes, or a cap's shell (which has no clumps, so the layout cannot see it), must
+    // exist: without it there is nothing to tint or keep, and `Done` would be a lie.
     for dynamic in [false, true] {
         let expects_tubes = layout.iter().any(|s| s.tube && s.simulate == dynamic);
-        if expects_tubes && !output.meshes.iter().any(|m| m.dynamic == dynamic) {
+        let expects_shell =
+            enabled(params).any(|(_, g)| matches!(g.generator, Generator::Cap(_)) && g.dynamics.simulate == dynamic);
+        if (expects_tubes || expects_shell) && !output.meshes.iter().any(|m| m.dynamic == dynamic) {
             return Ok(Recoloured::NeedsRebuild);
         }
     }
