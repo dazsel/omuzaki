@@ -375,8 +375,13 @@ check; no check can see a write through a handle that is already open. So the di
 - **No atomic swap, no save over a file.** A file that exists is replaced only by an atomic swap (`RENAME_EXCHANGE`
   on Linux, `RENAME_SWAP` on macOS); where the system or file system has none, the save refuses with
   `StoreError::NoSafeChange` before the file is touched, never falling back to a plain rename. A new file needs a hard
-  link or a rename that won't replace, and a deletion the same, or it is refused the same way. Today that refuses
-  replacing a file on Windows; the capability table is in the `omuzaki-doc` `disk` module.
+  link or a rename that won't replace, and a deletion the same, or it is refused the same way. The capability table is
+  in the `omuzaki-doc` `disk` module.
+- **Windows, the one non-atomic cell.** Windows has no atomic swap, so on NTFS a save keeps the original by hard link
+  and then replaces it with `std::fs::rename`; an editor's atomic save in the same instant can be overwritten (the
+  checked file survives in the `.kept` entry), and the first use in a process says so on standard error. A writer
+  holding the file open without delete sharing (most editors) makes the rename fail, and the save reports it. On FAT
+  and exFAT (no hard links) the save is refused.
 - **What is tested where.** CI (Linux) tests a write through a handle opened before the save: made before the check
   it is refused and nothing is lost, made after the check its bytes are in the `.kept` entry and pruning keeps it. It
   also tests the pruning rules: young entries, changed entries,

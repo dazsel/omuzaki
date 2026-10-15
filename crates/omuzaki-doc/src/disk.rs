@@ -27,7 +27,15 @@
 //! |---|---|---|---|
 //! | Linux | yes where the file system supports the flag (ext4, XFS, Btrfs, tmpfs); otherwise the kernel says `EINVAL` and the change is refused | the same | yes, except FAT and exFAT |
 //! | macOS | yes on APFS and HFS+ (macOS 10.12 or later); a file system without it says `ENOTSUP` and the change is refused | the same | yes on APFS and HFS+ |
-//! | Windows | no (Windows has no atomic exchange): replacing a file is refused | no (`MoveFileExW` without `MOVEFILE_REPLACE_EXISTING` is not reached yet) | yes on NTFS, no on FAT and exFAT |
+//! | Windows | no (Windows has no atomic exchange); see below | no (`MoveFileExW` without `MOVEFILE_REPLACE_EXISTING` is not reached yet) | yes on NTFS, no on FAT and exFAT |
+//!
+//! **The one non-atomic cell: replacing a file on Windows with hard links (NTFS).** Refusing it would stop every
+//! ordinary save on Windows, so the target, already kept by hard link, is replaced by `std::fs::rename`. That is not
+//! atomic against a racing save: std (1.99, `library/std/src/sys/fs/windows.rs`, `rename`) calls `MoveFileExW` with
+//! `MOVEFILE_REPLACE_EXISTING`, and uses `SetFileInformationByHandle` with `FileRenameInfoEx` and
+//! `FILE_RENAME_FLAG_POSIX_SEMANTICS` only when that fails with access denied. An editor's atomic save in the
+//! microseconds between the hash check and the rename is overwritten; the checked file survives in the kept entry. The
+//! first use in a process says so on standard error. Without hard links (FAT, exFAT) Windows refuses as the table says.
 //!
 //! Each cell of the first table is tested with the capabilities forced off through the test seam (`Hooks`).
 
@@ -400,8 +408,14 @@ fn replace_checked_with(
 /// Steps 4 and 5 for a target that has a backup.
 fn replace_held(dir: &Path, path: &Path, tmp: &Path, held: &Held, hooks: &Hooks<'_>) -> Result<Replace, StoreError> {
     (hooks.backed_up)();
-    // Without a swap nothing has moved yet, and nothing will: see the module's table.
-    hooks.exchange(tmp, path).map_err(|e| capability_error(path, NO_EXCHANGE, e))?;
+    match hooks.exchange(tmp, path) {
+        Ok(()) => {}
+        // Windows has no swap; its one documented non-atomic cell (see the module's table).
+        #[cfg(windows)]
+        Err(e) if e.kind() == io::ErrorKind::Unsupported && held.by_link => return replace_over_linked(path, tmp),
+        // Without a swap nothing has moved yet, and nothing will: see the module's table.
+        Err(e) => return Err(capability_error(path, NO_EXCHANGE, e)),
+    }
     (hooks.swapped)();
     // The file we displaced is at `tmp`, and it must still hold the bytes that were hashed. An in-place edit after
     // they were hashed fails the check (even for a link, whose inode is unchanged) and falls through to the undo below.
@@ -430,6 +444,24 @@ fn replace_held(dir: &Path, path: &Path, tmp: &Path, held: &Held, hooks: &Hooks<
     // it later, through a handle no hash check can see. It is therefore always kept, even if it still reads as ours.
     preserve(dir, tmp)?;
     Ok(Replace::Refused)
+}
+
+/// Windows's replacement: the target, already kept by hard link, is replaced with `std::fs::rename` (`MoveFileExW`
+/// with `MOVEFILE_REPLACE_EXISTING`). This is the one non-atomic cell of the module's table: Windows has no atomic
+/// swap, so an editor's atomic save in the microseconds between the hash check and the rename is overwritten. The
+/// file the save checked survives in the kept entry, but the editor's newer one does not. The first use in a process
+/// says so on standard error. A writer holding the file open without delete sharing (most editors) makes the rename
+/// fail with a sharing violation, which the save reports.
+#[cfg(windows)]
+fn replace_over_linked(path: &Path, tmp: &Path) -> Result<Replace, StoreError> {
+    static WARNED: std::sync::Once = std::sync::Once::new();
+    WARNED.call_once(|| {
+        eprintln!(
+            "omuzaki-doc: Windows has no atomic swap of two files, so saves replace a file by renaming over it; an \
+             editor's save made in the same instant can be overwritten (the replaced file is kept in .omuzaki/replaced)"
+        );
+    });
+    fs::rename(tmp, path).map(|()| Replace::Placed).map_err(|e| StoreError::io(path, e))
 }
 
 /// A backup of the file at the target.
@@ -1039,6 +1071,7 @@ mod tests {
     }
 
     /// What an editor's atomic save does: a new file renamed over the target.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn atomic_save(dir: &Path, text: &str) {
         fs::write(dir.join("editor.tmp"), text).unwrap();
         fs::rename(dir.join("editor.tmp"), dir.join("f.toml")).unwrap();
@@ -1258,7 +1291,10 @@ mod tests {
     /// Matrix, no exchange (every combination of the others): replacing is refused before anything moves.
     #[test]
     fn without_exchange_a_replacement_is_refused_and_the_file_is_untouched() {
-        for (links_off, no_replace_off) in [(false, false), (false, true), (true, false), (true, true)] {
+        // On Windows the cell with links is the documented non-atomic one, pinned by its own test.
+        let all: &[(bool, bool)] = &[(false, false), (false, true), (true, false), (true, true)];
+        let cases = if cfg!(windows) { &all[2..] } else { all };
+        for &(links_off, no_replace_off) in cases {
             let tmp = TempDir::new().unwrap();
             let (dir, (path, expected)) = (tmp.path(), with_file(tmp.path()));
             let inode_before = file_id(&fs::metadata(&path));
@@ -1276,6 +1312,21 @@ mod tests {
             assert_eq!(kept(dir), [], "links off: {links_off}, no-replace off: {no_replace_off}");
             assert!(no_temporary_file(dir));
         }
+    }
+
+    /// Matrix, Windows with links and no exchange: the one non-atomic cell. The target is replaced by a rename over it
+    /// and the original stays in the replaced folder as the kept entry, the same file (a hard link).
+    #[cfg(windows)]
+    #[test]
+    fn on_windows_with_links_a_replacement_renames_over_the_target_and_keeps_the_original() {
+        let tmp = TempDir::new().unwrap();
+        let (dir, (path, expected)) = (tmp.path(), with_file(tmp.path()));
+        assert_eq!(replace_with(dir, expected, &Hooks::default()).unwrap(), Replace::Placed);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "ours = 3\n");
+        let items = kept(dir);
+        assert_eq!(texts(&items), [MINE]);
+        assert!(items[0].0.ends_with(KEPT), "{items:?}");
+        assert!(no_temporary_file(dir));
     }
 
     /// Matrix, a new file: a hard link alone or a no-replace rename alone places it; neither refuses.
