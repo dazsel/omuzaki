@@ -34,8 +34,9 @@ impl HeadTrace {
     /// # Errors
     /// [`HeadTraceError::Empty`] for a grid with no rows or no columns, [`HeadTraceError::TooLarge`] when the byte
     /// length cannot be represented, [`HeadTraceError::Length`] when `bytes` is not exactly two grids long,
-    /// [`HeadTraceError::NotFinite`] for a radius or weight that is NaN or infinite, and
-    /// [`HeadTraceError::WeightOutOfRange`] for a weight outside `0..=1`.
+    /// [`HeadTraceError::NotFinite`] for a radius or weight that is NaN or infinite,
+    /// [`HeadTraceError::NegativeRadius`] for a radius below zero, and [`HeadTraceError::WeightOutOfRange`] for a weight
+    /// outside `0..=1`.
     pub fn from_bytes(theta_steps: u16, phi_steps: u16, bytes: &[u8]) -> Result<Self, HeadTraceError> {
         if theta_steps == 0 || phi_steps == 0 {
             return Err(HeadTraceError::Empty { theta_steps, phi_steps });
@@ -51,6 +52,7 @@ impl HeadTrace {
         let weights = decode(weight_bytes);
         let columns = usize::from(phi_steps);
         check_finite("radius", &radii, columns)?;
+        check_radii(&radii, columns)?;
         check_finite("weight", &weights, columns)?;
         check_weights(&weights, columns)?;
         Ok(Self { theta_steps, phi_steps, radii, weights })
@@ -78,6 +80,15 @@ fn check_finite(grid: &'static str, values: &[f32], columns: usize) -> Result<()
     match values.iter().position(|v| !v.is_finite()) {
         None => Ok(()),
         Some(i) => Err(HeadTraceError::NotFinite { grid, row: i / columns, column: i % columns }),
+    }
+}
+
+/// The first radius below zero, named by its row and column. A radius is a distance from the head centre, so a negative
+/// one with a positive weight would put the vertex on the far side of the centre. Runs after [`check_finite`].
+fn check_radii(radii: &[f32], columns: usize) -> Result<(), HeadTraceError> {
+    match radii.iter().enumerate().find(|(_, r)| **r < 0.0) {
+        None => Ok(()),
+        Some((i, &radius)) => Err(HeadTraceError::NegativeRadius { row: i / columns, column: i % columns, radius }),
     }
 }
 
@@ -173,6 +184,16 @@ pub enum HeadTraceError {
         row: usize,
         /// Column of phi, from the front.
         column: usize,
+    },
+    /// A radius is below zero, which would place the surface on the far side of the head centre.
+    #[error("the radius at row {row}, column {column} of the radius map is {radius}, below zero")]
+    NegativeRadius {
+        /// Row of theta, from the top pole.
+        row: usize,
+        /// Column of phi, from the front.
+        column: usize,
+        /// The radius given, in metres.
+        radius: f32,
     },
     /// A weight is outside `0..=1`, the range the blend in the cranium assumes.
     #[error("the weight at row {row}, column {column} of the radius map is {weight}, outside 0 to 1")]

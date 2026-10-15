@@ -160,6 +160,19 @@ fn a_weight_outside_zero_to_one_is_an_error_and_its_bounds_parse() {
 }
 
 #[test]
+fn a_negative_radius_is_an_error_and_zero_parses() {
+    let mut radii = vec![0.1_f32; NT * NP];
+    radii[5 * NP + 1] = -1e-6;
+    let bytes = grid_bytes(&radii, &vec![1.0; NT * NP]);
+    let err = HeadTrace::from_bytes(NT as u16, NP as u16, &bytes).unwrap_err();
+    assert_eq!(err, HeadTraceError::NegativeRadius { row: 5, column: 1, radius: -1e-6 });
+    assert!(err.to_string().contains("row 5, column 1"), "{err}");
+
+    let bytes = grid_bytes(&vec![0.0; NT * NP], &vec![1.0; NT * NP]);
+    assert!(HeadTrace::from_bytes(NT as u16, NP as u16, &bytes).is_ok(), "a radius of zero should parse");
+}
+
+#[test]
 fn an_empty_grid_is_an_error() {
     assert!(matches!(HeadTrace::from_bytes(0, 4, &[]), Err(HeadTraceError::Empty { theta_steps: 0, phi_steps: 4 })));
     assert!(matches!(HeadTrace::from_bytes(4, 0, &[]), Err(HeadTraceError::Empty { theta_steps: 4, phi_steps: 0 })));
