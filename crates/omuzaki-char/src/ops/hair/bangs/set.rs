@@ -7,7 +7,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::access::{self, MAX_LAYERS};
+use super::access::{self, MAX_CLUMPS, MAX_LAYERS};
 use crate::ops::character::access as character;
 
 /// Sets one field of a bangs group of a hair part: how many layers it has, each layer's clumps, tip heights and hook,
@@ -124,7 +124,7 @@ impl Target {
     /// Writes `value` into `bangs`. Range checks are the fringe's, made by [`access::changes`].
     fn write(self, bangs: &mut BangsGen, value: &Value, field: &str) -> Result<(), OpError> {
         match self {
-            Self::Layers => resize(bangs, whole(value, field, MAX_LAYERS as u64)?),
+            Self::Layers => resize(bangs, whole(value, field, 1, MAX_LAYERS)?),
             Self::Sweep => bangs.sweep_deg = number(value, field)?,
             Self::Wisps => {
                 bangs.wisps = serde_json::from_value::<Vec<Wisp>>(value.clone()).map_err(|e| {
@@ -157,7 +157,7 @@ impl LayerField {
     fn write(self, layer: &mut BangLayer, value: &Value, field: &str) -> Result<(), OpError> {
         match self {
             Self::Clumps => {
-                let count = whole(value, field, u64::from(u8::MAX))?;
+                let count = whole(value, field, 1, usize::from(MAX_CLUMPS))?;
                 layer.count = u8::try_from(count).map_err(|_| OpError::internal("a checked count left u8"))?;
             }
             Self::Hook => layer.hook_deg = number(value, field)?,
@@ -193,13 +193,14 @@ fn number(value: &Value, field: &str) -> Result<f64, OpError> {
     })
 }
 
-/// `value` as a whole number no larger than `max` (a larger one is refused naming the limit).
-fn whole(value: &Value, field: &str, max: u64) -> Result<usize, OpError> {
+/// `value` as a whole number within `lo..=hi`, the range `access::check` enforces (a number outside it is refused
+/// naming the range).
+fn whole(value: &Value, field: &str, lo: usize, hi: usize) -> Result<usize, OpError> {
     let n = value.as_u64().ok_or_else(|| {
         OpError::invalid("value", format!("`{field}` takes a whole number, but {value} was given"))
     })?;
-    if n > max {
-        return Err(OpError::invalid("value", format!("`{field}`: {n} is out of range: use at most {max}")));
+    match usize::try_from(n) {
+        Ok(n) if (lo..=hi).contains(&n) => Ok(n),
+        _ => Err(OpError::invalid("value", format!("`{field}`: {n} is out of range: use {lo} to {hi}"))),
     }
-    usize::try_from(n).map_err(|_| OpError::internal("a checked count left usize"))
 }

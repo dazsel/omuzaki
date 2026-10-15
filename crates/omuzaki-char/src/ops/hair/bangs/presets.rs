@@ -5,6 +5,8 @@
 
 use omuzaki_char_api::{BangLayer, BangsGen, Wisp};
 
+use super::access::WIDTH;
+
 /// One preset: its id, a line saying what it looks like, and how to make its `BangsGen`.
 #[derive(Clone, Copy, Debug)]
 pub struct BangsPreset {
@@ -88,7 +90,8 @@ fn wispy() -> BangsGen {
 }
 
 fn none() -> BangsGen {
-    // The generator needs one lock (`layers` is never empty), so "none" is the thinnest one, tipped far above the brow.
-    let hidden = BangLayer { width: 0.01, hook_deg: 0.0, ..layer(1, 5.0, &[0.4], 1.0) };
+    // The generator needs one lock (`layers` is never empty), so "none" is the thinnest one (the lowest width
+    // `access::check` accepts), tipped far above the brow.
+    let hidden = BangLayer { width: WIDTH.0, hook_deg: 0.0, ..layer(1, 5.0, &[0.4], 1.0) };
     BangsGen { layers: vec![hidden], wisps: Vec::new(), sweep_deg: 0.0 }
 }

@@ -195,3 +195,54 @@ fn an_unknown_character_part_or_group_is_refused() {
     let e = refused(&doc, "hair.bangs.set", ask("mock", "body", "b-bangs"));
     assert_error(&e, ErrorCode::Invalid, "part", &["body", "not hair"], &["fringe"]);
 }
+
+/// Each field's accepted range, as the refusals report it: the edge values are accepted and the values just outside
+/// are refused with the range in the message, so a suggestion can be followed back into `set`.
+#[test]
+fn the_ranges_the_refusals_suggest_are_the_ranges_set_accepts() {
+    use access::{HOOK_LIMIT_DEG, MAX_CLUMPS, MAX_LAYERS, MAX_TIP_HEIGHTS, MAX_WISPS, SWEEP_LIMIT_DEG};
+    let doc = bangs_project();
+    let accepted = |field: &str, value: Value| {
+        plan(&doc, "hair.bangs.set", set(field, &value)).unwrap_or_else(|e| panic!("{field} = {value}: {e:?}"));
+    };
+    let refused_with = |field: &str, value: Value, range: &str| {
+        let e = refused(&doc, "hair.bangs.set", set(field, &value));
+        assert_eq!((e.code, e.field.as_deref()), (ErrorCode::Invalid, Some("value")), "{field} = {value}: {e:?}");
+        assert!(e.message.contains(range), "{field} = {value} should suggest {range}: {}", e.message);
+    };
+    let ints =
+        [("layers", MAX_LAYERS), ("clumps", usize::from(MAX_CLUMPS)), ("layers/0/clumps", usize::from(MAX_CLUMPS))];
+    for (field, hi) in ints {
+        let range = format!("use 1 to {hi}");
+        accepted(field, json!(1));
+        accepted(field, json!(hi));
+        refused_with(field, json!(0), &range);
+        refused_with(field, json!(hi + 1), &range);
+    }
+    for (field, limit) in [("sweep_deg", SWEEP_LIMIT_DEG), ("hook_deg", HOOK_LIMIT_DEG)] {
+        let range = format!("use {} to {limit}", -limit);
+        accepted(field, json!(-limit));
+        accepted(field, json!(limit));
+        refused_with(field, json!(limit + 0.5), &range);
+        refused_with(field, json!(-limit - 0.5), &range);
+    }
+    let height = access::HEIGHT_LIMIT;
+    let range = format!("use {} to {height}", -height);
+    accepted("tip_heights", json!([-height, height]));
+    refused_with("tip_heights", json!([height + 0.01]), &range);
+    refused_with("tip_heights", json!([-height - 0.01]), &range);
+    accepted("tip_heights", json!(vec![0.0; MAX_TIP_HEIGHTS]));
+    refused_with("tip_heights", json!(vec![0.0; MAX_TIP_HEIGHTS + 1]), &format!("use 1 to {MAX_TIP_HEIGHTS}"));
+    refused_with("tip_heights", json!([]), &format!("use 1 to {MAX_TIP_HEIGHTS}"));
+    accepted("wisps", json!(vec![json!({}); MAX_WISPS]));
+    refused_with("wisps", json!(vec![json!({}); MAX_WISPS + 1]), &format!("use 0 to {MAX_WISPS}"));
+    let phi = access::WISP_PHI_LIMIT_DEG;
+    accepted("wisps", json!([{ "phi_deg": phi }, { "phi_deg": -phi }]));
+    refused_with("wisps", json!([{ "phi_deg": phi + 0.5 }]), &format!("use {} to {phi}", -phi));
+}
+
+#[test]
+fn the_none_preset_uses_the_lowest_width_the_check_accepts() {
+    let none = (find("none").expect("the none preset").make)();
+    assert_eq!(none.layers[0].width, access::WIDTH.0);
+}
