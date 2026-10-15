@@ -8,23 +8,26 @@
 //! resolved where the fixture is built, so the caller hands the resolved map to [`Checker::with_exports`]; a name that
 //! is both an export and a bind is a broken task and grades as an `error`.
 //!
-//! Not graded yet, and reported as an `error` outcome rather than skipped: the `doc.*` and `render.*` kinds and
-//! `judge`.
+//! Not graded yet, and reported as an `error` outcome rather than skipped: `judge`.
 
 mod bind;
+mod doc;
+mod docglob;
 mod gate;
 mod log;
 mod number;
 mod query;
+mod render;
 mod report;
 mod resolve;
 mod validate;
 mod value;
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use omuzaki_ops_api::Runner;
+use omuzaki_store_api::Store;
 use serde_json::{Map, Value};
 
 pub use self::report::{CheckReport, CheckResult, Outcome, Verdict};
@@ -42,12 +45,26 @@ pub struct Checker {
     /// "Before" values of read-only ops on the fixture, by op and arguments: the fixture does not change, so each is
     /// asked once per checker.
     before: Mutex<BTreeMap<String, Result<Value, Verdict>>>,
+    /// The whole document of the fixture and of the result, each read once (the `doc.*` checks).
+    fixture_doc: OnceLock<Result<Value, Verdict>>,
+    result_doc: OnceLock<Result<Value, Verdict>>,
+    /// The asset store the render ops write to, when the caller has one (the `render.*` checks).
+    store: Option<Arc<dyn Store>>,
 }
 
 impl Checker {
     /// A checker over the runner on the pristine fixture, the runner on the result and the attempt's transcript.
     pub fn new(fixture: Arc<dyn Runner>, result: Arc<dyn Runner>, transcript: Transcript) -> Self {
-        Self { fixture, result, transcript, exports: BTreeMap::new(), before: Mutex::new(BTreeMap::new()) }
+        Self {
+            fixture,
+            result,
+            transcript,
+            exports: BTreeMap::new(),
+            before: Mutex::new(BTreeMap::new()),
+            fixture_doc: OnceLock::new(),
+            result_doc: OnceLock::new(),
+            store: None,
+        }
     }
 
     /// The same checker, with the fixture's exports (`{main}` and the rest) resolved to ids for the checks to use.
@@ -87,6 +104,17 @@ impl Checker {
             Err(verdict) => return verdict,
         };
         match &kind {
+            CheckKind::DocEquals { path, value } => self.doc_equals(path, value),
+            CheckKind::DocRange { path, min, max } => self.doc_range(path, *min, *max),
+            CheckKind::DocExists { path } => self.doc_exists(path, true),
+            CheckKind::DocAbsent { path } => self.doc_exists(path, false),
+            CheckKind::DocChange { path, change, at_least, relative } => {
+                self.doc_change(path, *change, *at_least, *relative)
+            }
+            CheckKind::DocChangedOnly { paths } => self.doc_changed_only(paths),
+            CheckKind::DocUnchanged { paths } => self.doc_unchanged(paths),
+            CheckKind::RenderDiff { render, region, expect } => self.render_diff(render, region, expect),
+            CheckKind::RenderSame { render } => self.render_same(render),
             CheckKind::Query { op, args, at, expect } => self.query(op, args, at, expect),
             CheckKind::Gate { ops, declared } => self.gate(ops, *declared),
             CheckKind::LogApplied { op } => self.log_applied(op, true),
@@ -94,7 +122,9 @@ impl Checker {
             CheckKind::LogWithin { ops } => self.log_within(ops),
             CheckKind::LogPreviewed {} => self.log_previewed(),
             CheckKind::LogMaxErrors { n } => self.log_max_errors(*n),
-            other => Verdict::error(format!("check kind `{}` is not graded by this library yet", kind_name(other))),
+            other @ CheckKind::Judge { .. } => {
+                Verdict::error(format!("check kind `{}` is not graded by this library yet", kind_name(other)))
+            }
         }
     }
 

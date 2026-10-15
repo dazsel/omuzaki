@@ -18,15 +18,18 @@ serde_json.workspace = true
 thiserror.workspace = true
 toml.workspace = true
 omuzaki-core = { path = "../omuzaki-core" }
+# `Runner::get` takes a `DocPath`, which `omuzaki-ops-api` does not re-export: the `doc.*` checks read snapshots with it.
+omuzaki-doc-api = { path = "../omuzaki-doc-api" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-store-api = { path = "../omuzaki-store-api" }
 
 [dev-dependencies]
 tempfile.workspace = true
 # The eval check library's tests (tests/eval_checks.rs): the shared mock runner over an in-memory document, with demo ops.
-omuzaki-doc-api = { path = "../omuzaki-doc-api" }
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 omuzaki-ops-mock = { path = "../omuzaki-ops-mock" }
+# The render checks fetch the renders both projects made from one asset store (tests/eval_checks_render.rs).
+omuzaki-store-mock = { path = "../omuzaki-store-mock" }
 # The real-format round trip (tests/gather_real_gltf.rs): the gather of `omuzaki-io-ops` through omuzaki-io-gltf, which no
 # implementation crate may test against.
 omuzaki-char-api = { path = "../omuzaki-char-api" }
