@@ -136,17 +136,26 @@ fn names_licence(condition: &str, spdx: &str) -> bool {
         })
 }
 
-/// Whether an SPDX expression names a non-commercial licence (`CC-BY-NC-4.0`): nothing non-commercial ships.
+/// Whether an SPDX expression names a non-commercial licence (`CC-BY-NC-4.0`, `PolyForm-Noncommercial-1.0.0`, in any
+/// case): nothing non-commercial ships.
 fn is_non_commercial(spdx: &str) -> bool {
-    spdx_tokens(spdx).iter().any(|token| token.split('-').any(|part| part == "NC" || part == "NonCommercial"))
+    spdx_tokens(spdx).iter().map(|token| token.to_ascii_lowercase()).any(|token| {
+        token.contains("noncommercial") || token.contains("non-commercial") || token.split('-').any(|part| part == "nc")
+    })
 }
 
 /// Every problem with the `register_model!` calls of one crate that no manifest check can see: a call whose literals
 /// can't be read, and one that includes anything but `<crate>/models/<name>.model.toml`, the only files the gate scans.
-/// `dir` is the crate's workspace-relative folder; `sources` the `(path, text)` of its `.rs` files.
+/// An `include!` of a source file outside `<crate>/src/` is a problem too: the gate never reads it, so it could hide a
+/// registration. `include!(concat!(env!("OUT_DIR"), …))` (a file `build.rs` generates) is the one include it allows.
+/// `dir` is the crate's workspace-relative folder; `sources` the `(path, text)` of its `.rs` files. Either separator
+/// (`/` or `\`) may be used, since Windows paths come back with `\`.
 fn unchecked_registrations(dir: &str, sources: &[(String, String)]) -> Vec<String> {
+    let dir = normalise(dir);
     let mut out = Vec::new();
     for (path, source) in sources {
+        let path = path.replace('\\', "/");
+        let from = path.rsplit_once('/').map_or("", |(parent, _)| parent);
         for registration in registrations(source) {
             let include = match registration {
                 Ok((_, include)) => include,
@@ -155,9 +164,8 @@ fn unchecked_registrations(dir: &str, sources: &[(String, String)]) -> Vec<Strin
                     continue;
                 }
             };
-            let from = path.rsplit_once('/').map_or("", |(parent, _)| parent);
             let resolved = normalise(&format!("{from}/{include}"));
-            let name = resolved.strip_prefix(&format!("{}/models/", normalise(dir)));
+            let name = resolved.strip_prefix(&format!("{dir}/models/"));
             if !name.is_some_and(|name| name.ends_with(".model.toml") && !name.contains('/')) {
                 out.push(format!(
                     "{path}: `register_model!` includes `{include}`, which is not a `models/*.model.toml` of its own \
@@ -165,12 +173,59 @@ fn unchecked_registrations(dir: &str, sources: &[(String, String)]) -> Vec<Strin
                 ));
             }
         }
+        for include in source_includes(source) {
+            match include {
+                Err(reason) => out.push(format!("{path}: {reason}")),
+                Ok(None) => {}
+                Ok(Some(include)) => {
+                    let resolved = normalise(&format!("{from}/{include}"));
+                    if !resolved.starts_with(&format!("{dir}/src/")) {
+                        out.push(format!(
+                            "{path}: `include!` reads `{include}`, outside the crate's `src/`, which the gate doesn't scan \
+                             for `register_model!`"
+                        ));
+                    }
+                }
+            }
+        }
     }
     out
 }
 
-/// A `/`-separated path with its `.` and `..` segments resolved (a `..` past the start stays, so it never matches).
+/// What each `include!` in one Rust source reads: `Ok(Some(path))` for a string literal, `Ok(None)` for the generated
+/// `concat!(env!("OUT_DIR"), …)` form, `Err` for anything else (the gate can't tell what it includes).
+fn source_includes(source: &str) -> Vec<Result<Option<String>, String>> {
+    let toks = tokens(source);
+    let mut found = Vec::new();
+    for at in 0..toks.len() {
+        if !toks[at].is_ident("include") || !is_punct(&toks, at + 1, '!') || toks.get(at + 2).and_then(closer).is_none()
+        {
+            continue;
+        }
+        let line = toks[at].line;
+        if let Some(path) = toks.get(at + 3).and_then(string_value) {
+            found.push(path.map(Some).map_err(|reason| format!("line {line}: {reason}")));
+            continue;
+        }
+        let generated = toks.get(at + 3).is_some_and(|t| t.is_ident("concat"))
+            && is_punct(&toks, at + 4, '!')
+            && toks.get(at + 5).and_then(closer).is_some()
+            && toks.get(at + 6).is_some_and(|t| t.is_ident("env"))
+            && is_punct(&toks, at + 7, '!')
+            && toks.get(at + 8).and_then(closer).is_some()
+            && toks.get(at + 9).and_then(string_value).is_some_and(|name| name.as_deref() == Ok("OUT_DIR"));
+        found.push(if generated {
+            Ok(None)
+        } else {
+            Err(format!("line {line}: `include!` isn't a string literal or `concat!(env!(\"OUT_DIR\"), …)`"))
+        });
+    }
+    found
+}
+
+/// A path with `\` read as `/` and its `.` and `..` segments resolved (a `..` past the start stays, so it never matches).
 fn normalise(path: &str) -> String {
+    let path = path.replace('\\', "/");
     let mut parts: Vec<&str> = Vec::new();
     for part in path.split('/').filter(|part| !part.is_empty() && *part != ".") {
         if part == ".." && parts.last().is_some_and(|last| *last != "..") {
@@ -683,6 +738,63 @@ spdx = "MIT OR Apache-2.0"
         let mut ws = workspace(&[("omuzaki-tiny", &[])]);
         ws.root = root.to_path_buf();
         assert!(!report(&ws));
+    }
+
+    #[test]
+    fn every_non_commercial_spelling_is_refused() {
+        for spdx in [
+            "CC-BY-NC-4.0",
+            "cc-by-nc-sa-4.0",
+            "PolyForm-Noncommercial-1.0.0",
+            "polyform-noncommercial-1.0.0",
+            "LicenseRef-Non-Commercial",
+            "MIT OR PolyForm-NonCommercial-1.0.0",
+            "CC-BY-NC-ND-3.0",
+        ] {
+            assert!(is_non_commercial(spdx), "{spdx}");
+        }
+        for spdx in ["MIT", "Apache-2.0 WITH LLVM-exception", "CC-BY-4.0", "BSD-3-Clause", "ONC-1.0"] {
+            assert!(!is_non_commercial(spdx), "{spdx}");
+        }
+    }
+
+    #[test]
+    fn windows_paths_resolve_like_unix_ones() {
+        let call = r#"register_model!("x", include_str!("../models/x.model.toml"));"#;
+        let sources = [("crates\\omuzaki-tiny\\src\\lib.rs".to_owned(), call.to_owned())];
+        assert_eq!(unchecked_registrations("crates\\omuzaki-tiny", &sources), Vec::<String>::new());
+        let back = r#"register_model!("x", include_str!("..\\models\\x.model.toml"));"#;
+        let sources = [("crates\\omuzaki-tiny\\src\\lib.rs".to_owned(), back.to_owned())];
+        assert_eq!(unchecked_registrations("crates/omuzaki-tiny", &sources), Vec::<String>::new());
+        let outside = r#"register_model!("x", include_str!("..\\assets\\x.toml"));"#;
+        let sources = [("crates\\omuzaki-tiny\\src\\lib.rs".to_owned(), outside.to_owned())];
+        assert_eq!(unchecked_registrations("crates\\omuzaki-tiny", &sources).len(), 1);
+    }
+
+    #[test]
+    fn an_include_outside_src_fails_the_gate() {
+        for text in [
+            r#"include!("../registration.rs");"#,
+            r#"include!("../../omuzaki-other/src/lib.rs");"#,
+            r#"include! { "..\\registration.rs" }"#,
+            "include!(REGISTRATION);",
+            r#"include!(concat!(env!("CARGO_MANIFEST_DIR"), "/registration.rs"));"#,
+        ] {
+            assert_eq!(unchecked(text).len(), 1, "{text}: {:?}", unchecked(text));
+        }
+    }
+
+    #[test]
+    fn an_include_inside_src_or_generated_by_build_rs_is_allowed() {
+        for text in [
+            r#"include!("registrations.rs");"#,
+            r#"include!("./sub/registrations.rs");"#,
+            r#"include!(concat!(env!("OUT_DIR"), "/ops_mods.rs"));"#,
+            r#"// include!("../registration.rs");"#,
+            r#"include_str!("../README.md");"#,
+        ] {
+            assert_eq!(unchecked(text), Vec::<String>::new(), "{text}");
+        }
     }
 
     #[test]
