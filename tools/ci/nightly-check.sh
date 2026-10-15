@@ -26,6 +26,8 @@ stage "link gate (release)" cargo test --locked --release --workspace --test reg
 # The full check includes `advisories`, which fetches the RustSec database; PRs skip it so they stay offline-fast.
 stage "deny (licences, bans, sources, advisories)" cargo deny check
 stage "Windows cross-build (all targets)" cargo build --locked --workspace --all-targets --target x86_64-pc-windows-gnu
+# The Windows zip, then its smoke test under Wine (the script skips with a printed reason when Wine is absent).
+stage "Windows zip + Wine smoke" bash -c 'cargo xtask dist --target x86_64-pc-windows-gnu --no-models && tools/ci/wine-smoke.sh'
 
 mapfile -t wasm_crates < <(python3 -I "$CI_DIR/crates.py" wasm)
 if [[ -z ${wasm_crates[0]:-} ]]; then

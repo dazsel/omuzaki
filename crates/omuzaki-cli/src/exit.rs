@@ -16,6 +16,11 @@ pub const OK: u8 = 0;
 /// The command line is wrong (unknown command, missing argument). clap exits with it before any op runs.
 pub const USAGE: u8 = 2;
 
+/// A store check ran and found something a person must look at (`store verify` found a problem, or `store repair`
+/// left one alone). Not an [`ErrorCode`]: the command succeeded and printed its report, so there is no error to name.
+/// Its number is the first unused one after [`ErrorCode::Cancelled`]'s 11, so no code means two things.
+pub const FOUND_PROBLEMS: u8 = 12;
+
 /// An exit code and what it means.
 struct Row {
     code: u8,
@@ -86,6 +91,7 @@ pub fn help_text() -> String {
         .collect();
     rows.push((OK, "ok".to_owned(), "the command succeeded"));
     rows.push((USAGE, "usage".to_owned(), "the command line is wrong; see --help"));
+    rows.push((FOUND_PROBLEMS, "problems".to_owned(), "a store check ran and found problems; its report says which"));
     rows.sort_unstable();
     let width = rows.iter().map(|(_, name, _)| name.len()).max().unwrap_or(0);
     let mut text = String::from("Exit codes:\n");
@@ -122,7 +128,7 @@ mod tests {
     #[test]
     fn exit_codes_are_unique_and_do_not_reuse_ok_or_usage() {
         let mut seen: Vec<u8> = error_codes().into_iter().map(for_error).collect();
-        seen.extend([OK, USAGE]);
+        seen.extend([OK, USAGE, FOUND_PROBLEMS]);
         let total = seen.len();
         seen.sort_unstable();
         seen.dedup();
@@ -133,6 +139,6 @@ mod tests {
     fn help_lists_the_codes_in_numeric_order() {
         let numbers: Vec<u8> =
             help_text().lines().skip(1).filter_map(|l| l.split_whitespace().next()?.parse().ok()).collect();
-        assert_eq!(numbers, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+        assert_eq!(numbers, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
     }
 }

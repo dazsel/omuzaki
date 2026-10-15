@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use omuzaki_anim_api::Pose;
+use omuzaki_anim_api::{BoneId, Pose};
 use omuzaki_core::glam::Mat4;
 use omuzaki_render_api::JointRange;
 
@@ -67,6 +67,33 @@ impl Skinner {
         JointRange {
             start: u32::try_from(start).unwrap_or(u32::MAX),
             len: u32::try_from(self.skeleton.len()).unwrap_or(u32::MAX),
+        }
+    }
+
+    /// Appends one mesh's joint run: for each `i`, `world(bones[i]) × inverse_bind[i]`. `world` is the final world pose of
+    /// the frame (as [`skin_from_world`](Self::skin_from_world) takes it). Returns the run for
+    /// [`Instance::skin`](omuzaki_render_api::Instance). A mesh has its own inverse bind matrices, so a joint may get a
+    /// different matrix in each run that names it. Once the palette has grown to its working size this allocates nothing.
+    ///
+    /// The caller checks that `bones` and `inverse_bind` pair up. A debug build panics if they don't; a release build
+    /// uses the shorter of the two.
+    pub fn push_run_from_world(
+        &self,
+        world: &Pose,
+        bones: &[BoneId],
+        inverse_bind: &[Mat4],
+        joints: &mut Vec<Mat4>,
+    ) -> JointRange {
+        debug_assert_eq!(
+            bones.len(),
+            inverse_bind.len(),
+            "push_run_from_world: one inverse bind matrix per bone (the run uses the shorter of the two)"
+        );
+        let start = joints.len();
+        joints.extend(bones.iter().zip(inverse_bind).map(|(bone, ib)| world.local[bone.index()].to_mat4() * *ib));
+        JointRange {
+            start: u32::try_from(start).unwrap_or(u32::MAX),
+            len: u32::try_from(joints.len() - start).unwrap_or(u32::MAX),
         }
     }
 }
