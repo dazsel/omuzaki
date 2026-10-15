@@ -306,10 +306,25 @@ impl Project {
                     continue;
                 }
                 report.written += 1;
+            } else if entry.pending == Pending::Edit && self.differs_on_disk(&segs)? {
+                // An edit that was undone renders the text the file had, but the file was changed behind our back since:
+                // it is not ours to mark as written, and it stays owed.
+                refused.get_or_insert(disk::why_changed(disk::file_path(&self.dir, &segs)));
+                continue;
             }
             self.layout.mark_written(&segs);
         }
         Ok(())
+    }
+
+    /// True if a file exists at the path of `segs` and its bytes are not the last-known ones.
+    fn differs_on_disk(&self, segs: &[String]) -> Result<bool, StoreError> {
+        let path = disk::file_path(&self.dir, segs);
+        match fs::read(&path) {
+            Ok(bytes) => Ok(Some(ContentHash::of(&bytes)) != self.known.hash(segs)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(StoreError::io(&path, e)),
+        }
     }
 
     /// True if nothing exists at the path of the file `segs` (not even a broken link).

@@ -271,3 +271,16 @@ fn an_edit_undone_before_saving_still_rewrites_a_file_deleted_meanwhile() {
     assert_eq!(read(tmp.path(), "characters/mia/face.toml"), FACE);
     assert!(!project.is_dirty());
 }
+
+#[test]
+fn an_edit_undone_before_saving_does_not_hide_an_external_change() {
+    let tmp = folder();
+    let mut project = Project::open(tmp.path()).unwrap();
+    edit_blend(&mut project, 0.5, 0.9);
+    edit_blend(&mut project, 0.9, 0.5);
+    write(tmp.path(), "characters/mia/face.toml", "profile = \"edited by hand\"\n");
+    let err = project.save().unwrap_err();
+    assert!(matches!(&err, StoreError::ChangedOnDisk { path } if path.ends_with("face.toml")), "{err}");
+    assert_eq!(read(tmp.path(), "characters/mia/face.toml"), "profile = \"edited by hand\"\n");
+    assert!(project.is_dirty());
+}

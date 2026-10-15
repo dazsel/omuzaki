@@ -241,7 +241,10 @@ pub(crate) enum Replace {
 ///    deletes (its bytes no longer match the hash).
 ///
 /// If the kernel or file system can't exchange names (EINVAL, ENOSYS), and on macOS and Windows, step 4 is a
-/// plain `rename` over the target, with a one-time warning on Linux. That leaves a race of microseconds: an editor's
+/// plain `rename` over the target when the backup is a hard link (with a one-time warning on Linux). When the backup
+/// is only a copy, the original file is instead renamed into the backup slot and the new file is placed with a
+/// rename that won't replace, so the original inode is never unlinked; if it can't be moved there the save fails.
+/// For the plain rename: That leaves a race of microseconds: an editor's
 /// atomic save between steps 3 and 4 is overwritten, though the backup still holds what was validated. A new file (no
 /// target) is placed with a no-replace `hard_link`, or where links fail a no-replace rename (`RENAME_NOREPLACE` on
 /// Linux; an error if that is unsupported), so a file that appeared is never replaced.
@@ -271,13 +274,26 @@ struct Hooks<'a> {
     undone: &'a dyn Fn(),
     /// After a deletion renamed the target aside, before the file is checked.
     quarantined: &'a dyn Fn(),
+    /// Pretend the file system has no hard links (tests only).
+    links_off: bool,
+    /// Pretend the file system can't swap names atomically (tests only).
+    exchange_off: bool,
 }
 
 fn noop() {}
 
 impl Default for Hooks<'_> {
     fn default() -> Self {
-        Self { staged: &noop, backed_up: &noop, swapped: &noop, verified: &noop, undone: &noop, quarantined: &noop }
+        Self {
+            staged: &noop,
+            backed_up: &noop,
+            swapped: &noop,
+            verified: &noop,
+            undone: &noop,
+            quarantined: &noop,
+            links_off: false,
+            exchange_off: false,
+        }
     }
 }
 
@@ -291,10 +307,11 @@ fn replace_checked_with(
     refuse_links(dir, path)?;
     let tmp = stage(dir, path, text)?;
     (hooks.staged)();
-    let outcome = match back_up(dir, path, expected)? {
+    let outcome = match back_up(dir, path, expected, hooks.links_off)? {
         Backup::Absent => {
             (hooks.backed_up)();
-            place_no_replace(&tmp, path).map(|placed| if placed { Replace::Placed } else { Replace::Refused })
+            place_no_replace_with(&tmp, path, &|a, b| link_or_off(hooks, a, b))
+                .map(|placed| if placed { Replace::Placed } else { Replace::Refused })
         }
         Backup::Mismatch => Ok(Replace::Refused),
         Backup::Held(held) => {
@@ -318,13 +335,14 @@ fn replace_checked_with(
 /// Steps 4 and 5 for a target that has a backup.
 fn replace_held(dir: &Path, path: &Path, tmp: &Path, held: &Held, hooks: &Hooks<'_>) -> Result<Replace, StoreError> {
     (hooks.backed_up)();
-    if !exchange(tmp, path).map_err(|e| StoreError::io(path, e))? {
-        fs::rename(tmp, path).map_err(|e| StoreError::io(path, e))?;
-        if held.linked.is_none() {
-            // The copy is now the only one of the replaced bytes.
-            sync_folder(held.path.parent())?;
-        }
-        return Ok(Replace::Placed);
+    let exchanged = !hooks.exchange_off && exchange(tmp, path).map_err(|e| StoreError::io(path, e))?;
+    if !exchanged {
+        return if held.linked.is_some() {
+            // The backup is the target's own inode, so a plain rename leaves it intact.
+            fs::rename(tmp, path).map(|()| Replace::Placed).map_err(|e| StoreError::io(path, e))
+        } else {
+            place_displacing_original(dir, path, tmp, held, hooks)
+        };
     }
     (hooks.swapped)();
     // The file we displaced is at `tmp`, and it must still hold the bytes that were hashed. An in-place edit after
@@ -353,6 +371,60 @@ fn replace_held(dir: &Path, path: &Path, tmp: &Path, held: &Held, hooks: &Hooks<
     // it later, through a handle no hash check can see. It is therefore always kept, even if it still reads as ours.
     preserve(dir, tmp)?;
     Ok(Replace::Refused)
+}
+
+/// A hard link, unless a test turned links off.
+fn link_or_off(hooks: &Hooks<'_>, from: &Path, to: &Path) -> io::Result<()> {
+    if hooks.links_off { Err(io::ErrorKind::Unsupported.into()) } else { fs::hard_link(from, to) }
+}
+
+/// Step 4 without a swap and without a linked backup: `held` is only a copy, so a plain rename over the target would
+/// unlink the original inode, and an editor writing in place or through an open handle would lose its edit. Instead
+/// the original itself is renamed into the backup slot (replacing the copy, which holds the same bytes), and the
+/// staged file is then placed with a rename that refuses to replace. If the original can't be moved there, the save
+/// fails with the target untouched.
+fn place_displacing_original(
+    dir: &Path,
+    path: &Path,
+    tmp: &Path,
+    held: &Held,
+    hooks: &Hooks<'_>,
+) -> Result<Replace, StoreError> {
+    fs::rename(path, &held.path).map_err(|e| {
+        StoreError::io(
+            path,
+            io::Error::new(
+                e.kind(),
+                format!("can't keep the file being replaced intact on this file system ({e}); the save was not made"),
+            ),
+        )
+    })?;
+    // The original is now the backup. If it no longer holds the hashed bytes an editor wrote into it first: give it
+    // back its name, or keep it, and refuse.
+    if !held.is_file_at(&held.path) {
+        if !place_no_replace(&held.path, path).unwrap_or(false) {
+            preserve(dir, &held.path)?;
+        }
+        return Ok(Replace::Refused);
+    }
+    match place_no_replace_with(tmp, path, &|a, b| link_or_off(hooks, a, b)) {
+        Ok(true) => {
+            sync_folder(held.path.parent())?;
+            Ok(Replace::Placed)
+        }
+        // An editor saved a new file into the gap: it stays, and the original is kept beside it.
+        Ok(false) => {
+            preserve(dir, &held.path)?;
+            Ok(Replace::Refused)
+        }
+        Err(e) => {
+            // Put the original back if the name is still free; otherwise it stays in the replaced folder.
+            if !place_no_replace(&held.path, path).unwrap_or(false) && held.path.exists() {
+                preserve(dir, &held.path)?;
+            }
+            Err(e)
+        }
+    }
 }
 
 /// A backup of the file at the target.
@@ -558,7 +630,7 @@ enum Backup {
 /// The bytes are read before the link is made, so the backup itself is never read back. An editor's save in between
 /// links its file instead; the check after the swap (same inode and the hashed bytes) refuses that, and with no swap
 /// the backup keeps the editor's bytes under a hash they don't match, so pruning never deletes them.
-fn back_up(dir: &Path, path: &Path, expected: Option<ContentHash>) -> Result<Backup, StoreError> {
+fn back_up(dir: &Path, path: &Path, expected: Option<ContentHash>, no_links: bool) -> Result<Backup, StoreError> {
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Backup::Absent),
@@ -570,13 +642,16 @@ fn back_up(dir: &Path, path: &Path, expected: Option<ContentHash>) -> Result<Bac
     }
     let backup = replaced_name(dir, path, &format!(".{found}{KEPT}"))?;
     // The folder usually exists already, so link first and make folders only when that says they are missing.
-    let mut linked = fs::hard_link(path, &backup);
+    let link = |from: &Path, to: &Path| {
+        if no_links { Err(io::ErrorKind::Unsupported.into()) } else { fs::hard_link(from, to) }
+    };
+    let mut linked = link(path, &backup);
     if linked.as_ref().is_err_and(|e| e.kind() == io::ErrorKind::NotFound)
         && let Some(parent) = backup.parent()
         && path.exists()
     {
         fs::create_dir_all(parent).map_err(|e| StoreError::io(parent, e))?;
-        linked = fs::hard_link(path, &backup);
+        linked = link(path, &backup);
     }
     match linked {
         // Without an identity the link can't be trusted as the same file, so it is checked like a copy.
@@ -703,7 +778,7 @@ fn remove_checked_with(
 ) -> Result<bool, StoreError> {
     let path = file_path(dir, segs);
     refuse_links(dir, &path)?;
-    match back_up(dir, &path, expected)? {
+    match back_up(dir, &path, expected, hooks.links_off)? {
         Backup::Mismatch => return Ok(false),
         Backup::Absent => {}
         Backup::Held(held) => {
@@ -744,7 +819,12 @@ fn unlink_held(dir: &Path, path: &Path, held: &Held, hooks: &Hooks<'_>) -> Resul
     }
     (hooks.quarantined)();
     if held.is_file_at(&quarantine) {
-        return fs::remove_file(&quarantine).map(|()| true).map_err(|e| StoreError::io(&quarantine, e));
+        if held.linked.is_some() {
+            return fs::remove_file(&quarantine).map(|()| true).map_err(|e| StoreError::io(&quarantine, e));
+        }
+        // The backup is only a copy, so the original inode (which an editor may still hold open) is renamed over it
+        // and kept, not unlinked.
+        return fs::rename(&quarantine, &held.path).map(|()| true).map_err(|e| StoreError::io(&quarantine, e));
     }
     // An editor's file: put it back unless something took the name again, and never delete it.
     if !place_no_replace(&quarantine, path).unwrap_or(false) {
@@ -1138,6 +1218,44 @@ mod tests {
         assert_eq!(texts(&items), ["ours = 3\n"]);
         assert!(items[0].0.ends_with(".displaced"), "{items:?}");
         assert!(no_temporary_file(dir));
+    }
+
+    /// A write through a handle opened before the save lands in the kept original, with no hard links and no swap.
+    #[cfg(unix)]
+    #[test]
+    fn without_links_or_swap_the_original_inode_is_kept_for_a_held_handle() {
+        use std::io::Write as _;
+
+        let tmp = TempDir::new().unwrap();
+        let (dir, (path, expected)) = (tmp.path(), with_file(tmp.path()));
+        let mut handle = OpenOptions::new().append(true).open(&path).unwrap();
+        let hooks = Hooks { links_off: true, exchange_off: true, ..Hooks::default() };
+        assert_eq!(replace_with(dir, expected, &hooks).unwrap(), Replace::Placed);
+        handle.write_all(b"late = 9\n").unwrap();
+        handle.sync_all().unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "ours = 3\n");
+        assert_eq!(texts(&kept(dir)), ["mine = 1\nlate = 9\n"]);
+        assert!(no_temporary_file(dir));
+        assert_eq!(prune_replaced(dir, later()), 0);
+    }
+
+    /// The same for a deletion: the quarantined original is renamed over the copy, not unlinked.
+    #[cfg(unix)]
+    #[test]
+    fn without_links_a_deleted_file_keeps_its_inode_for_a_held_handle() {
+        use std::io::Write as _;
+
+        let tmp = TempDir::new().unwrap();
+        let d = tmp.path();
+        write(d, "a.toml", "x = 1\n");
+        let mut handle = OpenOptions::new().append(true).open(d.join("a.toml")).unwrap();
+        let hooks = Hooks { links_off: true, ..Hooks::default() };
+        let segs = ["a".to_owned()];
+        assert!(remove_checked_with(d, &segs, Some(ContentHash::of(b"x = 1\n")), &hooks).unwrap());
+        handle.write_all(b"late = 9\n").unwrap();
+        handle.sync_all().unwrap();
+        assert!(!d.join("a.toml").exists());
+        assert_eq!(texts(&kept(d)), ["x = 1\nlate = 9\n"]);
     }
 
     /// Just past the retention time from now.
