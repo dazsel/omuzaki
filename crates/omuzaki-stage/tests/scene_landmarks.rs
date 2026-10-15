@@ -101,3 +101,25 @@ fn width_follows_the_camera_yaw() {
     assert!((b.width_at(90.0) - 1.0).abs() < 1e-6, "from the side it is the z extent");
     assert!((b.width_at(-90.0) - 1.0).abs() < 1e-6, "left and right see the same width");
 }
+
+#[test]
+fn a_zero_or_negative_height_is_a_framing_error() {
+    for height_m in [0.0, -1.66] {
+        let mut built = templates::build("standard");
+        built.stature.as_mut().unwrap().height_m = height_m;
+        let Err(StageError::Framing { reason }) = Landmarks::measure(&built) else {
+            panic!("{height_m}: expected a framing error")
+        };
+        assert!(reason.contains("above zero"), "{reason}");
+    }
+}
+
+#[test]
+fn a_flat_body_without_a_stature_is_a_framing_error() {
+    let mut built = templates::build("standard");
+    built.stature = None;
+    for mesh in &mut built.meshes {
+        mesh.mesh.geometry.positions.iter_mut().for_each(|p| p.y = 0.5);
+    }
+    assert!(matches!(Landmarks::measure(&built), Err(StageError::Framing { .. })));
+}

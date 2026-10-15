@@ -12,6 +12,7 @@ repository.workspace = true
 # Impl crates may not depend on `omuzaki-test`, an App crate.
 [dependencies]
 inventory.workspace = true
+libm.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
