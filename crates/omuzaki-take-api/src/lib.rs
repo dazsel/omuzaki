@@ -22,4 +22,8 @@ pub use inventory as __inventory;
 #[doc(hidden)]
 pub use omuzaki_core::__record_registration;
 
-omuzaki_core::define_link!();
+// Forwards to the scene contract, which forwards to the character contract (ADR 0015): an App that links the takes
+// reaches every registration it builds on.
+omuzaki_core::define_link! {
+    omuzaki_stage_api::link();
+}
