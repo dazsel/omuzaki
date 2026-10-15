@@ -11,7 +11,9 @@ use serde_json::Value;
 
 /// A cast member as the take found it.
 ///
-/// Later fields are added with `#[serde(default)]`, so an older reader keeps reading the record.
+/// Later fields are added with `#[serde(default)]`, so an older reader keeps reading the record. Empty and default
+/// fields are not written, so the minimal State serialises to exactly `doc_version`, `after_lsn`, `withheld` and
+/// `overflow` (T2); `overflow` is always written.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct CastEntry {
@@ -32,7 +34,9 @@ impl CastEntry {
 
 /// A tracker source: the index `Track` records use.
 ///
-/// Later fields are added with `#[serde(default)]`, so an older reader keeps reading the record.
+/// Later fields are added with `#[serde(default)]`, so an older reader keeps reading the record. Empty and default
+/// fields are not written, so the minimal State serialises to exactly `doc_version`, `after_lsn`, `withheld` and
+/// `overflow` (T2); `overflow` is always written.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct SourceEntry {
@@ -55,7 +59,9 @@ impl SourceEntry {
 
 /// An audio voice: the index `Voice`, `Cue` and `Withheld` records use.
 ///
-/// Later fields are added with `#[serde(default)]`, so an older reader keeps reading the record.
+/// Later fields are added with `#[serde(default)]`, so an older reader keeps reading the record. Empty and default
+/// fields are not written, so the minimal State serialises to exactly `doc_version`, `after_lsn`, `withheld` and
+/// `overflow` (T2); `overflow` is always written.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct VoiceEntry {
@@ -91,7 +97,9 @@ pub enum WithheldCause {
 
 /// A muted or private run: the gap is shown, never silent. Open (`to` is `None`) at the start of a run.
 ///
-/// Later fields are added with `#[serde(default)]`, so an older reader keeps reading the record.
+/// Later fields are added with `#[serde(default)]`, so an older reader keeps reading the record. Empty and default
+/// fields are not written, so the minimal State serialises to exactly `doc_version`, `after_lsn`, `withheld` and
+/// `overflow` (T2); `overflow` is always written.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct Withheld {
@@ -121,7 +129,9 @@ impl Withheld {
 /// The start state, repeated at every group start so any keyframe starts a clip. Bounded: at most 16 KiB serialised
 /// (T2); providers that would pass the cap are named in `omitted`, and on overflow only the minimal fields remain.
 ///
-/// Later fields are added with `#[serde(default)]`, so an older reader keeps reading the record.
+/// Later fields are added with `#[serde(default)]`, so an older reader keeps reading the record. Empty and default
+/// fields are not written, so the minimal State serialises to exactly `doc_version`, `after_lsn`, `withheld` and
+/// `overflow` (T2); `overflow` is always written.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct StateRecord {
@@ -131,43 +141,54 @@ pub struct StateRecord {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub project: String,
     /// The active scene.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scene: Option<SceneId>,
     /// The active camera.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub camera: Option<String>,
     /// The cast.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cast: Vec<CastEntry>,
     /// The tracker sources.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sources: Vec<SourceEntry>,
     /// The audio voices.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub voices: Vec<VoiceEntry>,
     /// Registry slot to model ref, for the tracker and lip sync in use.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub models: BTreeMap<String, String>,
     /// The playout delay `D`, in seconds.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_zero_f32")]
     pub delay_s: f32,
     /// The last journal entry already reflected.
     pub after_lsn: Lsn,
     /// The muted or private runs open at this frame.
     pub withheld: Vec<Withheld>,
     /// Providers left out by the size cap: at most 32 names.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub omitted: Vec<String>,
     /// How many more were left out beyond the names listed.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub omitted_more: u32,
     /// True for the minimal State: the cast and live state are unknown for this group.
     #[serde(default)]
     pub overflow: bool,
     /// Live state by provider name (see [`register_take_state!`](crate::register_take_state!)). A reader skips a name
     /// it does not know and reports it.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub live: BTreeMap<String, Value>,
+}
+
+// `skip_serializing_if` passes the field by reference.
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_zero_f32(v: &f32) -> bool {
+    *v == 0.0
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_zero_u32(v: &u32) -> bool {
+    *v == 0
 }
 
 impl StateRecord {

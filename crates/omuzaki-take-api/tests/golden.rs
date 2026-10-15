@@ -84,6 +84,18 @@ fn unknown_state_fields_are_ignored() {
 }
 
 #[test]
+fn the_minimal_state_serialises_exactly_the_overflow_fields() {
+    let built =
+        StateRecord::minimal(DocVersion(17), Lsn(41), vec![Withheld::new(0, WithheldCause::Muted, Seconds(1.0))]);
+    let value = serde_json::to_value(&built).expect("serialises");
+    let mut keys: Vec<&str> = value.as_object().expect("an object").keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(keys, ["after_lsn", "doc_version", "overflow", "withheld"]);
+    let back: StateRecord = serde_json::from_value(value).expect("reads back");
+    assert_eq!(back, built);
+}
+
+#[test]
 fn the_minimal_state_builds_through_its_constructor() {
     // The overflow fallback is built by `StateRecord::minimal`, so the constructor and the golden must agree.
     let built = StateRecord::minimal(DocVersion(17), Lsn(41), Vec::new());
