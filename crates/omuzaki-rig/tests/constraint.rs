@@ -194,12 +194,14 @@ fn bad_sets_are_rejected_by_new() {
     assert!(VrmConstraintSolver::new(&ConstraintSet { constraints: vec![rot(1, 99)] }, &sk).is_err());
 }
 
-/// 32 mixed constraints on bones 1..=32 of the 128-bone character; every fourth follows the constraint before it.
+/// 32 mixed constraints on hair bones 65..=96 of the 128-bone character, following humanoid bones 1..=32; every
+/// fourth follows the constraint before it instead. (An aim on a humanoid bone at a hair bone below it would be a
+/// cycle: the aim would move its own source.)
 fn mixed_set() -> ConstraintSet {
     let constraints = (1_u16..=32)
         .map(|i| BoneConstraint {
-            bone: BoneId(i),
-            source: BoneId(if i % 4 == 0 { i - 1 } else { 64 + i }),
+            bone: BoneId(64 + i),
+            source: BoneId(if i % 4 == 0 { 63 + i } else { i }),
             kind: match i % 3 {
                 0 => ConstraintKind::Roll { axis: Axis::X },
                 1 => ConstraintKind::Aim { axis: SignedAxis::PositiveY },
