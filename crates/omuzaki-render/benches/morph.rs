@@ -1,5 +1,6 @@
-//! The CPU morph blend: 52 sparse targets over a 20 000-vertex mesh, measured through the renderer as the cost of a
-//! frame with new weights (blend and upload) over the cost of one with the same weights (both skipped).
+//! The morph blend on both paths: 52 sparse targets over a 20 000-vertex mesh, measured through the renderer as the cost
+//! of a frame with new weights (blend, upload and for the GPU path the dispatch) over the cost of one with the same
+//! weights (all skipped).
 //! `cargo bench -p omuzaki-render --bench morph`.
 
 // A benchmark may panic: a panic is a clear failure.
@@ -23,7 +24,18 @@ const TARGETS: usize = 52;
 const FRAMES: u32 = 200;
 
 fn main() {
+    for cpu in [false, true] {
+        bench(cpu);
+    }
+}
+
+/// The blend of 52 sparse targets over 20 000 vertices on the GPU path, or on the CPU path forced on the same adapter:
+/// the frame time with new weights every frame against the same weights (which skip the blend), median of five rounds.
+fn bench(cpu: bool) {
     let mut r = support::renderer();
+    if cpu {
+        r.force_cpu_morph().unwrap();
+    }
     let mesh = grid::grid(100, 200);
     let n = mesh.positions.len();
     // Each target moves a different 1/16th of the vertices (a face's blend shape touches a part of the head).
@@ -56,10 +68,13 @@ fn main() {
         start.elapsed().as_secs_f64() * 1e3 / f64::from(FRAMES)
     };
     run(true);
-    let (same, changing) = (run(false), run(true));
+    let mut rounds: Vec<(f64, f64)> = (0..5).map(|_| (run(false), run(true))).collect();
+    rounds.sort_by(|a, b| (a.1 - a.0).total_cmp(&(b.1 - b.0)));
+    let (same, changing) = rounds[rounds.len() / 2];
     println!(
-        "{TARGETS} targets x {n} vertices: {changing:.2} ms/frame with new weights, {same:.2} ms with unchanged; \
-         blend + upload = {:.2} ms",
+        "{} path, {TARGETS} targets x {n} vertices: {changing:.2} ms/frame with new weights, {same:.2} ms with unchanged; \
+         blend = {:.2} ms",
+        if cpu { "cpu" } else { "gpu" },
         changing - same
     );
 }

@@ -1,0 +1,5 @@
+# Tests may unwrap: a panic there is a clear test failure, and error plumbing would only obscure the intent.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+# Names this spike's docs use that are not code.
+doc-valid-idents = ["FFmpeg", "ProRes", "WebM", "RGBA", "YUVA", "libvpx", "libavcodec", "libavformat", "OpenType", ".."]

@@ -3,7 +3,7 @@
 //!
 //! Only the shape piece is painted ([`RealPainter::paint_mouth_piece`]), so these tests keep their meaning when the
 //! interior, rim and tongue arrive. The pictures and the match with the prototype are in
-//! `crates/omuzaki-test/tests/face_parity_mouth_shape.rs`.
+//! `crates/omuzaki-test-face/tests/face_parity_mouth_shape.rs`.
 
 // A counting allocator is the only way to *prove* "no allocation"; the workspace denies unsafe code by default. Test
 // helpers may panic: a panic is a clear test failure.
