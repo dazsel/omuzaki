@@ -33,6 +33,7 @@ pub mod convert;
 mod error;
 pub mod fit_bones;
 pub mod gather;
+pub mod limits;
 pub mod ops;
 pub mod prepare;
 pub mod vrchat_rank;

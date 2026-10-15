@@ -23,17 +23,30 @@ use omuzaki_io_ops::gather::{GatherOptions, GatherPurpose, gather};
 use omuzaki_io_ops::vrchat_rank::{AvatarStats, Platform, Rank, rank, stats_from_ioscene, texture_mib};
 use toml::Value;
 
-const LIMITS: &str = include_str!("../data/vrchat-performance.toml");
+const PC_LIMITS: &str = include_str!("../data/limits/vrchat-pc.toml");
+const ANDROID_LIMITS: &str = include_str!("../data/limits/vrchat-quest.toml");
 const MIB: f64 = 1024.0 * 1024.0;
 
 /// The stats the page disables on Android. They are Unsupported there and never count.
 const ANDROID_UNSUPPORTED: [&str; 6] =
     ["lights", "cloths", "cloth_vertices", "physics_colliders", "physics_rigidbodies", "audio_sources"];
 
-/// The rows of one platform's table, keyed by stat name.
+/// The rows of one platform's table, keyed by stat name: the supported rows only, with the three bounds axes put back
+/// together as one `bounds` row of `[x, y, z]` per tier.
 fn table(platform: &str) -> BTreeMap<String, Value> {
-    let file: Value = toml::from_str(LIMITS).unwrap();
-    file[platform].as_table().unwrap().iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+    let text = if platform == "pc" { PC_LIMITS } else { ANDROID_LIMITS };
+    let file: Value = toml::from_str(text).unwrap();
+    let mut rows: BTreeMap<String, Value> = file["stats"]
+        .as_table()
+        .unwrap()
+        .iter()
+        .filter(|(_, v)| v.is_array())
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    let axes = ["bounds_x", "bounds_y", "bounds_z"].map(|key| rows.remove(key).unwrap());
+    let per_tier = (0..4).map(|tier| Value::Array(axes.iter().map(|axis| axis[tier].clone()).collect())).collect();
+    rows.insert("bounds".to_string(), Value::Array(per_tier));
+    rows
 }
 
 /// A scalar row as four integers, or `None` for bounds (which are per axis).
