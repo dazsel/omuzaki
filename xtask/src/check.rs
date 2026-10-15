@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use clap::Args;
 
 use crate::affected::{self, Scope};
+use crate::crate_table;
 use crate::error::Result;
 use crate::links;
 use crate::lint_deps;
@@ -73,6 +74,8 @@ enum Action {
     LintLinks,
     /// The UI-writes lint (QG-11), run in this process.
     LintUiWrites,
+    /// The crate-table lint (ADR 0053), run in this process.
+    LintCrateTable,
     /// The seed lint (library D15, D16), run in this process when a file under `crates/*/library/` changed.
     LintSeed,
 }
@@ -93,6 +96,7 @@ impl Step {
             Action::LintDeps => "lint-deps".to_owned(),
             Action::LintLinks => "lint-links".to_owned(),
             Action::LintUiWrites => "lint-ui-writes".to_owned(),
+            Action::LintCrateTable => "lint-crate-table".to_owned(),
             Action::LintSeed => "lint-seed".to_owned(),
         }
     }
@@ -129,6 +133,7 @@ fn plan(scope: &Scope) -> Vec<Step> {
         Step { name: "lint-deps", action: Action::LintDeps },
         Step { name: "lint-links", action: Action::LintLinks },
         Step { name: "lint-ui-writes", action: Action::LintUiWrites },
+        Step { name: "lint-crate-table", action: Action::LintCrateTable },
         Step { name: "lint-seed", action: Action::LintSeed },
     ]);
     steps
@@ -272,6 +277,13 @@ fn run_step(workspace: &Workspace, step: &Step, base: &str) -> bool {
             eprintln!("lint-ui-writes: {error}");
             false
         }),
+        Action::LintCrateTable => crate_table::lint(workspace).map_or_else(
+            |error| {
+                eprintln!("lint-crate-table: {error}");
+                false
+            },
+            |code| code == ExitCode::SUCCESS,
+        ),
         Action::LintSeed => lint_seed::check(workspace, base),
         Action::Cargo(args) => {
             let mut command = Command::new(cargo());
@@ -307,6 +319,7 @@ mod tests {
             Action::LintDeps => "<lint-deps>".to_owned(),
             Action::LintLinks => "<lint-links>".to_owned(),
             Action::LintUiWrites => "<lint-ui-writes>".to_owned(),
+            Action::LintCrateTable => "<lint-crate-table>".to_owned(),
             Action::LintSeed => "<lint-seed>".to_owned(),
         }
     }
@@ -329,6 +342,7 @@ mod tests {
                 ("lint-deps", "<lint-deps>".to_owned()),
                 ("lint-links", "<lint-links>".to_owned()),
                 ("lint-ui-writes", "<lint-ui-writes>".to_owned()),
+                ("lint-crate-table", "<lint-crate-table>".to_owned()),
                 ("lint-seed", "<lint-seed>".to_owned()),
             ]
         );
@@ -347,7 +361,7 @@ mod tests {
                 ("link-gate", "test -p omuzaki-cli --test registrations".to_owned()),
             ]
         );
-        assert_eq!(got.len(), 9, "the same trailing steps as ever: {got:?}");
+        assert_eq!(got.len(), 10, "the same trailing steps as ever: {got:?}");
     }
 
     #[test]
@@ -373,7 +387,20 @@ mod tests {
         let steps = plan(&crates(&["omuzaki-core"]));
         let results = execute(&steps, |step| step.name != "clippy");
         let names: Vec<&str> = results.iter().map(|result| result.name).collect();
-        assert_eq!(names, ["fmt", "clippy", "test", "deny", "lint-deps", "lint-links", "lint-ui-writes", "lint-seed"]);
+        assert_eq!(
+            names,
+            [
+                "fmt",
+                "clippy",
+                "test",
+                "deny",
+                "lint-deps",
+                "lint-links",
+                "lint-ui-writes",
+                "lint-crate-table",
+                "lint-seed"
+            ]
+        );
         assert_eq!(results.iter().filter(|result| !result.passed).count(), 1);
     }
 

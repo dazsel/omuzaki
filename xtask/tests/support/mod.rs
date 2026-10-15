@@ -68,6 +68,15 @@ impl Fixture {
         self
     }
 
+    /// Declares `kind` and `summary` under `[package.metadata.omuzaki]` in the manifest of the fixture crate `name`.
+    pub fn describe(self, name: &str, kind: &str, summary: &str) -> Self {
+        let path = self.root().join(format!("crates/{name}/Cargo.toml"));
+        let manifest = fs::read_to_string(&path).unwrap();
+        let section = format!("\n[package.metadata.omuzaki]\nkind = \"{kind}\"\nsummary = \"{summary}\"\n");
+        fs::write(path, manifest + &section).unwrap();
+        self
+    }
+
     pub fn write(&self, relative: &str, content: &str) {
         let path: PathBuf = self.root().join(relative);
         fs::create_dir_all(path.parent().unwrap()).unwrap();

@@ -22,3 +22,7 @@ serde_json.workspace = true
 
 [lints]
 workspace = true
+
+[package.metadata.omuzaki]
+kind = "API"
+summary = "the model registry and runtime (§16 ML-01, ML-13, ML-14): self-registered slots (versioned tensor signatures, call or stream mode, smoke and full evaluation), `model.toml` manifests (multi-graph `[[stages]]`) and model cards, `Session` and the real-time `BlockSink` / `BlockSource`, runtimes, SHA-256 pins with ordered URLs, the resumable `Fetcher` and verified `FileSource`, the SE-05 `ConsentLookup`, and the `ModelRegistry` service; design in `docs/design/ai-api.md`, ADR 0017"
