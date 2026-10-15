@@ -12,16 +12,24 @@ repository.workspace = true
 blake3.workspace = true
 semver.workspace = true
 chacha20.workspace = true
+# Not used directly: zip's `deflate-flate2` feature picks no backend, the workspace entry supplies the pure-Rust one.
+flate2.workspace = true
 getrandom.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+unicode-normalization.workspace = true
 wasmtime.workspace = true
+zip.workspace = true
 omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-identity-api = { path = "../omuzaki-identity-api" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-plugin-api = { path = "../omuzaki-plugin-api" }
+omuzaki-store-api = { path = "../omuzaki-store-api" }
 
 [dev-dependencies]
 criterion.workspace = true
+ed25519-dalek.workspace = true
 tempfile.workspace = true
 wat.workspace = true
 omuzaki-plugin-mock = { path = "../omuzaki-plugin-mock" }
@@ -34,3 +42,7 @@ kind = "Implementation"
 summary = "the WASM plugin host (PL-01, ADR 0058): wasmtime 49 components with fuel and epoch deadlines per `CallKind`, the CPU share, the per-import fuel charge and host-call bucket, `StoreLimits`-style caps and the all-plugins memory reservation, the WASI stub subset, a worker thread per plugin, faults, restart backoff and auto-disable (`WasmPlugins`), the capped and rotated plugin log, and packages (folder or `.zip`), their content hash and signatures, installs and the compiled-code cache; native only"
 # A JIT host has no place in a browser: wasmtime compiles machine code at run time (ADR 0058, design §1).
 wasm = false
+
+[[bench]]
+name = "install"
+harness = false

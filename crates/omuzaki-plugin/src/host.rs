@@ -6,6 +6,7 @@
 //! reloading wait for the running call, end the session `Closed` and run `shutdown`.
 
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
 use omuzaki_core::time::Seconds;
@@ -18,10 +19,21 @@ use omuzaki_plugin_api::{
 use wasmtime::component::Component;
 
 use crate::bridge::{NoBridge, OpBridge};
+use crate::cache::CodeCache;
 use crate::engine::PluginEngine;
+use crate::install::InstallRoot;
 use crate::instance::{Fault, InstanceKind, InstanceSetup, insecure_seed};
 use crate::log::{LogWriter, PluginLog};
+use crate::package::{PackageLimits, PluginPackage, PublisherCheck};
 use crate::worker::{Failed, Worker};
+
+/// Where installs and compiled code go.
+pub struct Storage {
+    /// `<local data dir>/plugins/`.
+    pub install: InstallRoot,
+    /// `<cache dir>/plugins/`.
+    pub cache: CodeCache,
+}
 
 struct Entry {
     manifest: Manifest,
@@ -103,10 +115,39 @@ impl WasmPlugins {
     /// [`PluginError::Manifest`] when the manifest's check has errors or the id is taken; the errors of
     /// [`load::compile`](crate::load::compile) and [`load::check`](crate::load::check).
     pub fn add(&self, manifest: Manifest, component: &[u8], hash: [u8; 32]) -> Result<PluginId, PluginError> {
+        let compiled = crate::load::compile(&self.engine, component)?;
+        self.add_compiled(manifest, compiled, hash)
+    }
+
+    /// Installs a package from `path` (a folder or a `.zip`) for the person `by`: reads it as hostile input, checks its
+    /// signature against its publisher, copies its files into `storage`'s install folder (keeping the last two
+    /// versions), compiles it through the compiled-code cache and adds it, off and fully approved.
+    ///
+    /// # Errors
+    /// [`PluginError::Denied`] when `by` is not a person; [`PluginError::Package`] for a refused package;
+    /// [`PluginError::Signature`] when its signature does not hold; the errors of [`add`](Self::add).
+    pub fn install(&self, path: &Path, storage: &Storage, by: &Actor) -> Result<PluginInfo, PluginError> {
+        person_only(by)?;
+        let limits = PackageLimits::default();
+        let package = if path.is_dir() {
+            PluginPackage::open_folder(path, &limits)?
+        } else {
+            let bytes = std::fs::read(path).map_err(|e| PluginError::Io(e.to_string()))?;
+            PluginPackage::open_zip(&bytes, &limits)?
+        };
+        if package.publisher() == PublisherCheck::Mismatch {
+            return Err(PluginError::Signature("the signature does not match the package or its publisher".into()));
+        }
+        let installed = storage.install.install(&package)?;
+        let (component, _) = storage.cache.load(&self.engine, &installed.hash, package.component())?;
+        let id = self.add_compiled(package.manifest, component, installed.hash.0)?;
+        self.info(&id)
+    }
+
+    fn add_compiled(&self, manifest: Manifest, compiled: Component, hash: [u8; 32]) -> Result<PluginId, PluginError> {
         if let Some(error) = manifest.check().errors().next() {
             return Err(PluginError::Manifest(error.to_string()));
         }
-        let compiled = crate::load::compile(&self.engine, component)?;
         crate::load::check(&self.engine, &compiled, &manifest)?;
         let id = manifest.id.clone();
         let mut plugins = self.lock();
