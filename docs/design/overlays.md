@@ -113,7 +113,7 @@ shows/<show>/overlay/scenes/<scene>/<widget>.toml  a LayoutPatch: only the field
 | Key | File | Holds |
 |---|---|---|
 | `overlay` (a registered show key, D21 of automation) | `shows/<id>/overlay/` | the folder |
-| `settings` | `overlay/settings.toml` | `OverlaySettings`: `safe` (four fractions), `palette` (D4), `language`, `web_port` (D13) |
+| `settings` | `overlay/settings.toml` | `OverlaySettings`: `safe` (four fractions), `palette` (D4), `language`, `web_port` and `web_origins` (D13) |
 | `widgets` | `overlay/widgets/<widget>.toml` | one `WidgetDef` each |
 | `scenes` | `overlay/scenes/<scene>/<widget>.toml` | one `LayoutPatch` per (scene, widget) that differs from the default |
 
@@ -351,13 +351,20 @@ pub enum ImageRef { Asset(ContentHash), Emote(EmoteRef) }
 - **Why `Content::Message` and `Content::Plain`:** our own words ("Thanks for the raid!") are message ids with typed
   arguments, so they translate and pass the l10n check; a viewer's chat line or the performer's words are never run
   through Fluent. Resolving at paint time, not in `step`, keeps `step` free of formatting and allocation.
-- **Cross-fades are two layers.** A kind that declares `WidgetKindInfo::cross_fade` (the AI bubble) bumps
-  `revision` for the new content and sets `fade_out` to the outgoing content's opacity, lowering it to `None` over
-  the fade. The host keeps the previous picture in a second texture for such kinds, and `prepare` pushes two layers
-  for the widget while `fade_out` is set: the previous picture at `alpha × fade_out`, then the new one at
-  `alpha × (1 − fade_out)` within the same clip. Tests: during a 0.15 s cross-fade stepped at 30 Hz the widget
-  yields exactly two layers whose opacities sum to its alpha, and a mid-fade golden matches the reference composite
-  of both pictures.
+- **Cross-fades are mixed, then composited once.** A kind that declares `WidgetKindInfo::cross_fade` (the AI
+  bubble) bumps `revision` for the new content and sets `fade_out` to the outgoing content's weight, lowering it to
+  `None` over the fade. The overlay thread keeps the previous picture (a CPU copy) and, on every frame while
+  `fade_out` is set, writes the **mix** of the two premultiplied pictures into the widget's next picture: with
+  `f = round(fade_out × 255)`, each channel and alpha is `(old × f + new × (255 − f) + 127) / 255`. The widget is
+  then composited as one layer at `alpha`, as at any other time. **Why mix first:** compositing the two pictures as
+  two layers at `alpha × fade_out` and `alpha × (1 − fade_out)` lets the backdrop through mid-fade (at 0.5 over
+  opaque content it shows at 0.25), so the bubble would flicker; the mix keeps an opaque bubble opaque throughout.
+  The mix costs one pass over the widget's pixels and one upload per frame, for the fade's few frames only.
+  **A third line mid-fade:** the picture on screen at that moment (the current mix) becomes the new "old" picture
+  and a new fade starts from it, so nothing jumps and at most two pictures are ever kept. Tests: during a 0.15 s
+  cross-fade stepped at 30 Hz the widget yields exactly one layer at its `alpha`; a mid-fade golden equals the
+  formula above composited with D11's formula; a fully opaque bubble has alpha 255 in every pixel of its surface on
+  every fade frame; a third line at mid-fade starts from the current mix.
 - **Why `alpha` and `slide` are outside `revision`:** fades and slide-ins change every frame; they are applied when
   compositing (D11), so an animation costs no repaint and no upload.
 - **Why `StepCx` carries `content_px` and a `TextMeasure`:** captions must decide their own line breaks so a finished
@@ -712,22 +719,33 @@ and to a preview; native kinds draw in our output. The rest:
   served from **its own origin**, `http://w<token>.localhost:<port>/`, where the token is 128 random bits in 26
   lower-case base32 characters, kept in the machine-local approvals store and never in the document (a shared show
   must not carry working URLs). `*.localhost` resolves to loopback in Chromium, and so in OBS's browser source,
-  without DNS. **Why an origin per widget:** browser storage (`localStorage`, IndexedDB, cookies, caches, storage
+  without DNS; **change D's acceptance includes a test of exactly that** (a `w<token>.localhost` URL loaded in OBS's
+  browser source on each OS, receiving its feed). **The fallback is an origin per port:** with `web_origins =
+  "ports"` (in `OverlaySettings`; the default stays `"localhost"`), each widget gets its own port from
+  `web_port + 1` upward on `127.0.0.1`, which is also a distinct origin. The editor preview uses the same URL as OBS
+  and switches to the port form by itself when the person's default browser doesn't resolve `*.localhost` (the page
+  says so). **Why an origin per widget:** browser storage (`localStorage`, IndexedDB, cookies, caches, storage
   events) is per origin, so two widgets open at once can never read each other's storage; paths under one shared
   origin would share all of it. The editor's "Copy URL for OBS" gives the URL; "New URL" rotates the token, and with
   it the origin, so nothing stored under the old one is reachable again. Requests whose `Host` isn't exactly a live
-  widget's `w<token>.localhost:<port>` are refused (DNS rebinding, and no widget can name another's host), and the
+  widget's `w<token>.localhost:<port>` (or, in the port form, `127.0.0.1:<its port>`) are refused (DNS rebinding, and no widget can name another's host), and the
   server never binds anything but `127.0.0.1`.
 - **The feed:** Server-Sent Events at `/feed` on the widget's origin (one-way; a browser source needs nothing more, and SSE
   reconnects by itself). Messages: `hello` (the widget's settings, the palette, the language, the live scene), `event`
   (a `LiveEvent`'s kind, time and payload, only for kinds the manifest consumes, after `ChatFilter`), `scene` (the live
-  scene changed), `visible`, `clear`, `alert` (`overlay.alert` aimed at this widget), and `time` once a second. The
+  scene changed), `visible`, `clear`, `alert` (`overlay.alert` aimed at this widget; see below for packages without
+  `viewer_data`), and `time` once a second. The
   page script gets them through `omuzaki.js` (served by us), which also posts them with `postMessage` into the
   widget's frame in the preview.
 - **The sandbox:** every response carries `Content-Security-Policy: default-src 'none'; script-src 'self'; style-src
-  'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; media-src 'self'; connect-src 'self'` (plus each
+  'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; media-src 'self'; connect-src 'self'; worker-src 'none'` (plus each
   approved `network` host), `Permissions-Policy: camera=(), microphone=(), geolocation=(), display-capture=()`, and
-  `Cross-Origin-Resource-Policy: same-origin`. So a widget reads only its own files and its own feed, with no network
+  `Cross-Origin-Resource-Policy: same-origin`, and `Referrer-Policy: no-referrer`. `worker-src 'none'` blocks
+  workers of every kind, service workers included, so no script can sit in front of a page load and answer it from
+  its own cache before `Clear-Site-Data` runs. `no-referrer` keeps the widget's origin, which holds its token, out of
+  `Referer` on requests to an approved `network` host; the `Origin` header of a cross-origin `fetch` still carries it,
+  so approving a host means trusting it with that widget's URL (the approval card says so, and "New URL" revokes
+  it). So a widget reads only its own files and its own feed, with no network
   unless the person approved a host, no camera, no microphone and no file reads. Emote images and store assets are
   proxied under `/img/…` on the widget's origin so `img-src 'self'` holds. In the editor preview the page runs in an
   `<iframe sandbox="allow-scripts">` without `allow-same-origin` in addition.
@@ -743,8 +761,12 @@ and to a preview; native kinds draw in our output. The rest:
   amount}`; `redeem` → `{platform, reward: {id, title, cost}}` (never `input`); `raid` → `{platform, viewers}`;
   `chat.message`, `chat.*` moderation kinds, `ai.line` and `voice.transcript` have none and are withheld. A test
   serialises every projection from a fixture holding a distinctive name, login, id, message and input, and asserts
-  none of them appears. Each page load is served with `Clear-Site-Data: "storage", "cache",
-  "cookies"` and `Cache-Control: no-store`, so nothing a page stored survives a reload of the source; an approved page
+  none of them appears. **The `alert` message is held to the same rule:** an `overlay.alert`'s `title` and `text`
+  are free text that a graph or template can fill with a viewer's name, so without `viewer_data` the page gets
+  `alert {kind, duration_s}` only (it may show its own fixed wording for the kind), never the text; with the approval
+  it gets the text as sent. The preview's test-event panel sends synthetic names and messages only. Each page load is served with `Clear-Site-Data: "storage", "cache",
+  "cookies"` and `Cache-Control: no-store`, and with no service worker able to intercept the load (`worker-src
+  'none'`), what a page stored is cleared when the source reloads; an approved page
   can still keep data in its own origin while it stays open, which the approval card states, and no other widget
   can read it (its own origin, above).
 - **Packages:** a web widget is a package: `widget.toml` (id `<publisher>/<name>`, version, title, summary, entry
@@ -821,7 +843,7 @@ unknown widget is an error naming the nearest id; an unknown kind lists the regi
 | Widgets per show (`MAX_WIDGETS`) | 64 | `overlay.add` refused, naming the constant |
 | Visible widgets per scene | 16 | refused by `overlay.add`, `.set`, `.set_layout`, `overlay.show` and `overlay.toggle` when it would show (document and live visibility); a hand-edited show over it is a finding, and the host draws the 16 highest `z` (ties: the lower id first), so foreground widgets such as alerts and captions stay |
 | Scene patches per show | 64 × the show's scenes | (bounded by the two above) |
-| Widget picture memory per show | 128 MiB: four copies of every widget's largest box over all scenes at the program size, × 4 bytes (three CPU slots of the triple buffer and the GPU texture), five for a `cross_fade` kind (the previous picture's texture), so the boxes themselves total at most 32 MiB (about 3.8 full 1080p screens) | `overlay.add`, `.set` (a larger `layout.size`) and `.set_layout` refuse an edit over it; a hand-edited show over it is a finding, and the largest widgets above the cap are inert |
+| Widget picture memory per show | 128 MiB: four copies of every widget's largest box over all scenes at the program size, × 4 bytes (three CPU slots of the triple buffer and the GPU texture), five for a `cross_fade` kind (the previous picture's CPU copy), so the boxes themselves total at most 32 MiB (about 3.8 full 1080p screens) | `overlay.add`, `.set` (a larger `layout.size`) and `.set_layout` refuse an edit over it; a hand-edited show over it is a finding, and the largest widgets above the cap are inert |
 | Painter caches per show | glyphs 16 MiB; decoded store images 32 MiB (emotes are the emote cache's, below) | least recently used out |
 | Text: alert `text` and templates, chat `max_chars` | 500 characters | refused by the op or the params check |
 | Images per widget; one image | 64; 4,096 × 4,096 and 16 MiB decoded | refused at `check`; a bigger image is scaled down once on load |
