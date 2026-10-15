@@ -56,7 +56,7 @@ fn scene() -> SceneDef {
     l.rig = Some("viewer-studio".into());
     l.exposure = 0.9;
     l.background = Colour::rgb(0x4a, 0x3b, 0x31);
-    l.skin_floor = Some(0.48);
+    // No `skin_floor`: the golden recipe sets one, but the default scene's seed rigs never do (D11).
     l.ambient = Ambient { sky: Colour::rgb(0xf1, 0xee, 0xf8), ground: Colour::rgb(0x4a, 0x3e, 0x36), intensity: 0.75 };
     l.bloom = Some(BloomDef { strength: 0.32, radius: 0.5, threshold: 0.92 });
     for (name, rgb, intensity, shadow, angles, anchor) in [
