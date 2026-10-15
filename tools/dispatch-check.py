@@ -76,6 +76,9 @@ CRATE_NAME = re.compile(r"[A-Za-z0-9_-]+")
 MODULE_CAPPED = frozenset({"omuzaki-char", "omuzaki-face"})
 MODULE_CAP = 3
 MODULE_CEILING = 12
+# The caps for every crate other than the module-capped ones, and for the whole repository.
+CRATE_CAP = 3
+TOTAL_CAP = 40
 # The bucket of every file that belongs to no single module: the crate's one shared slot.
 SHARED = "shared"
 # The bucket a fence entry names when it could reach any module (a glob or a folder holding several): every bucket.
@@ -860,14 +863,16 @@ def main(argv):
     parser.add_argument("issues", nargs="*", help="issue numbers, with or without #")
     parser.add_argument("--report", action="store_true", help="print open PRs by crate and lane, oldest first")
     parser.add_argument("--json", action="store_true", help="print the check results as JSON")
-    parser.add_argument("--crate-cap", type=int, default=3,
+    # Every default in these help strings comes from its constant, so a changed cap cannot leave the help stale.
+    parser.add_argument("--crate-cap", type=int, default=CRATE_CAP,
                         help="open PRs per crate before a task waits, for crates other than omuzaki-char and "
-                             "omuzaki-face (default 3)")
-    parser.add_argument("--total-cap", type=int, default=40, help="open PRs in total before a task waits (default 40)")
+                             f"omuzaki-face (default {CRATE_CAP})")
+    parser.add_argument("--total-cap", type=int, default=TOTAL_CAP,
+                        help=f"open PRs in total before a task waits (default {TOTAL_CAP})")
     parser.add_argument("--module-cap", type=int, default=MODULE_CAP,
-                        help="open PRs per top-level module of omuzaki-char or omuzaki-face (default 3)")
+                        help=f"open PRs per top-level module of omuzaki-char or omuzaki-face (default {MODULE_CAP})")
     parser.add_argument("--module-ceiling", type=int, default=MODULE_CEILING,
-                        help="open PRs per omuzaki-char or omuzaki-face crate (default 8)")
+                        help=f"open PRs per omuzaki-char or omuzaki-face crate (default {MODULE_CEILING})")
     parser.add_argument("--mine", action="store_true", help="the claim on these tasks is yours: do not wait on it")
     args = parser.parse_args(argv)
     if not args.issues and not args.report:

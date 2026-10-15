@@ -295,6 +295,16 @@ echo '[]' >"$FX/prs.json"
 run 9008
 expect_line "wait #9008: no fence" "no fence: waits"
 
+# help: each cap option's help shows the default from its constant (the help wraps, so the text is joined first).
+scenario help
+run --help
+flat=$(tr -s '[:space:]' ' ' <<<"$out")
+if [[ $code == 0 && $flat == *"(default 3)"* && $flat == *"(default 40)"* && $flat == *"open PRs per omuzaki-char or omuzaki-face crate (default 12)"* ]]; then
+  pass "help: each cap option shows its constant's default"
+else
+  fail "help: a cap option's default is missing from --help (exit $code): $flat"
+fi
+
 # contract first: the fence names an *-api crate that another open PR also touches.
 scenario contract
 issue 9009 <<'B'
