@@ -5,7 +5,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use omuzaki_git_api::{Cancel, CancelFlag, NeverCancel};
+use omuzaki_git_api::cancel::{Cancel, CancelFlag, NeverCancel};
 
 #[test]
 fn a_fresh_flag_is_not_cancelled() {

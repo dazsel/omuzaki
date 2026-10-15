@@ -2,9 +2,10 @@
 #![allow(clippy::expect_used)] // tests may panic on a broken fixture
 
 use omuzaki_core::time::Seconds;
-use omuzaki_git_api::{
-    ChangeKind, ChangedFile, Commit, CommitDetail, CommitId, GitError, GitStatus, LogRange, PullOutcome, SkipReason,
-};
+use omuzaki_git_api::commit::{Commit, CommitDetail, CommitId, LogRange, SkipReason};
+use omuzaki_git_api::error::GitError;
+use omuzaki_git_api::git::PullOutcome;
+use omuzaki_git_api::status::{ChangeKind, ChangedFile, GitStatus};
 use schemars::{JsonSchema, schema_for};
 use serde::Serialize;
 use serde::de::DeserializeOwned;

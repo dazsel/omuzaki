@@ -1,3 +1,5 @@
+//! Commits: [`CommitId`], the [`LogRange`] a log walks, what a commit holds and the files of its tree.
+
 use omuzaki_core::time::Seconds;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -56,7 +58,7 @@ pub struct Commit {
     pub subject: String,
 }
 
-/// Which commits [`Git::log`](crate::Git::log) walks.
+/// Which commits [`Git::log`](crate::git::Git::log) walks.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum LogRange {
     /// Back from `HEAD`.
@@ -78,7 +80,7 @@ pub enum LogRange {
 pub struct CommitDetail {
     /// The commit.
     pub commit: Commit,
-    /// Changed files; never [`ChangeKind::Untracked`](crate::ChangeKind::Untracked) or `Conflicted`.
+    /// Changed files; never [`ChangeKind::Untracked`](crate::status::ChangeKind::Untracked) or `Conflicted`.
     pub files: Vec<ChangedFile>,
 }
 

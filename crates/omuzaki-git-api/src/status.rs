@@ -1,3 +1,5 @@
+//! The working tree: [`GitStatus`] and each [`ChangedFile`] with its [`ChangeKind`].
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 

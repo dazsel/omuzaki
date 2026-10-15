@@ -1,3 +1,5 @@
+//! The [`Git`] trait both implementations provide, and what a pull did ([`PullOutcome`]).
+
 use std::path::{Path, PathBuf};
 
 use schemars::JsonSchema;
@@ -37,7 +39,7 @@ pub enum PullOutcome {
 /// option. `--end-of-options` needs git 2.24 or later, which [`MIN_GIT_VERSION`] (2.30) covers. A revision that does
 /// not resolve to a commit is [`GitError::BadRev`].
 ///
-/// [`MIN_GIT_VERSION`]: crate::MIN_GIT_VERSION
+/// [`MIN_GIT_VERSION`]: crate::error::MIN_GIT_VERSION
 // One shared `# Errors` note on the trait stands in for the same sentence on nine methods.
 #[allow(clippy::missing_errors_doc)]
 pub trait Git: Send + Sync {
