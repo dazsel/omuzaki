@@ -18,7 +18,7 @@ use vello::peniko::{ColorStop, Fill};
 use vello::{AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene};
 
 use self::clip::{OpenStack, Transforms};
-use self::fill::{Bounds, fill_bez};
+use self::fill::{Bounds, fill_bez, fill_bez_snapped};
 use self::gradient::brush;
 use self::resolve::Resolve;
 use crate::layer::GpuRasterizer;
@@ -114,8 +114,8 @@ impl SceneEncoder {
                 self.transforms.pop(index, "Transform")?;
             }
             Cmd::PushClip(path) => {
-                fill_bez(list.elements(path), &mut self.path);
-                scene.push_clip_layer(Fill::NonZero, to_px, &self.path);
+                fill_bez_snapped(list.elements(path), to_px, &mut self.path);
+                scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &self.path);
                 self.clips.push(index, ());
             }
             Cmd::PopClip => {
@@ -123,9 +123,11 @@ impl SceneEncoder {
                 scene.pop_layer();
             }
             Cmd::Fill { path, ref paint, opacity } => {
-                fill_bez(list.elements(path), &mut self.path);
-                self.bounds.add(&self.path, to_px, 0.0);
-                scene.fill(Fill::NonZero, to_px, &brush(paint, opacity, &mut self.stops), None, &self.path);
+                fill_bez_snapped(list.elements(path), to_px, &mut self.path);
+                self.bounds.add(&self.path, Affine::IDENTITY, 0.0);
+                // The path is in pixels already; paint coordinates stay in the command's local space.
+                let paint = brush(paint, opacity, &mut self.stops);
+                scene.fill(Fill::NonZero, Affine::IDENTITY, &paint, Some(to_px), &self.path);
             }
             Cmd::Stroke { path, ref paint, width, cap, join, opacity } => {
                 fill_bez(list.elements(path), &mut self.path);
