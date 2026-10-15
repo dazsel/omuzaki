@@ -98,6 +98,8 @@ pub struct ChainSet {
     spring: Vec<f32>,
     /// How much of the head each particle follows (1 for [`Follow::Head`]).
     head_weight: Vec<f32>,
+    /// Whether any particle follows the chest at all (a body-following chain reaching below the blend's top).
+    needs_chest: bool,
     pos: Vec<Vec3>,
     prev: Vec<Vec3>,
     target: Vec<Vec3>,
@@ -149,6 +151,7 @@ impl ChainSet {
             stiffness: Vec::new(),
             spring: Vec::new(),
             head_weight: Vec::new(),
+            needs_chest: false,
             pos: Vec::new(),
             prev: Vec::new(),
             target: Vec::new(),
@@ -191,6 +194,7 @@ impl ChainSet {
             }
             set.chains.push(Chain { start, end: set.rest.len() });
         }
+        set.needs_chest = set.head_weight.iter().any(|&w| w < 1.0);
         set.pos.clone_from(&set.rest);
         set.prev.clone_from(&set.rest);
         set.target.clone_from(&set.rest);
@@ -221,7 +225,7 @@ impl ChainSet {
     /// collider's bone, [`VerletError::BadInput`] for a root that is not finite and invertible. Nothing changes then.
     pub fn targets(&mut self, pose: &dyn PoseSource) -> Result<(), VerletError> {
         let head = skin(pose, &JointRef::HEAD)?;
-        let chest = if self.head_weight.iter().any(|&w| w < 1.0) { skin(pose, &JointRef::CHEST)? } else { head };
+        let chest = if self.needs_chest { skin(pose, &JointRef::CHEST)? } else { head };
         let root = pose.root();
         if !(root.is_finite() && root.determinant().abs() > f32::EPSILON) {
             return Err(VerletError::BadInput { what: "root" });
@@ -343,6 +347,7 @@ impl ChainSet {
             for &(centre, radius) in &self.spheres {
                 let d = *p - centre;
                 let len = d.length();
+                // A particle exactly at a centre has no way out to pick; the next step's motion gives it one.
                 if len < radius && len > f32::EPSILON {
                     *p = centre + d * (radius / len);
                 }
