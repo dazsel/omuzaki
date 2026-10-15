@@ -4,8 +4,9 @@
 //! compiled with [`Score::compile`]. Five frames, at the start, a quarter, half, three quarters and the end of the
 //! score, are painted with the real face painter on the default face profile (a synthetic face), rasterised on the CPU
 //! as `face_parity` does, and written as one row per template. The caption under the row names the channels the
-//! score drives that the sheet does not show: head and body channels are "not painted", and the eye effects whose
-//! painters are still stubs ([`UNDRAWN`]) are "not drawn yet", so the reviewer knows what is missing.
+//! score drives that the sheet does not show: head and body channels are "not painted", the eye effects whose painters
+//! are still stubs ([`UNDRAWN`]) are "not drawn yet", and the clips and expressions that cues ask for are "not played",
+//! so the reviewer knows what is missing.
 //!
 //! `sheet` is ignored and writes `$OMUZAKI_SHEET_DIR/<id>.png` (the evidence case `score-templates` runs it).
 
@@ -17,7 +18,7 @@ use std::path::Path;
 
 use image::{Rgba, RgbaImage, imageops};
 use omuzaki_anim_api::channel::{Channel, ChannelBuf, Region};
-use omuzaki_anim_api::{BlendMode, CompiledScore, Layer, Score};
+use omuzaki_anim_api::{BlendMode, CompiledScore, Cue, CueKind, Layer, Score};
 use omuzaki_core::time::Seconds;
 use omuzaki_face::RealPainter;
 use omuzaki_face::raster::SkiaRasterizer;
@@ -47,6 +48,7 @@ const FRACTIONS: [f64; 5] = [0.0, 0.25, 0.5, 0.75, 1.0];
 const FRAME: u32 = 256;
 const GAP: u32 = 8;
 const MARGIN: u32 = 8;
+const SHEET_WIDTH: u32 = 2 * MARGIN + 5 * FRAME + 4 * GAP;
 /// Caption text: each glyph pixel is drawn this many pixels square.
 const TEXT_SCALE: u32 = 2;
 const PAPER: [u8; 4] = [250, 250, 248, 255];
@@ -87,9 +89,9 @@ fn px_per_m() -> f32 {
     frame / WINDOW_M
 }
 
-/// The face at `at` seconds into the score: the score's channels over the neutral face, painted and rasterised over
-/// the paper colour. Every value is a pure function of the score and the time, so equal inputs give equal pixels.
-fn paint_frame(score: &CompiledScore, at: Seconds, profile: &FaceProfile) -> RgbaImage {
+/// The face at `at` seconds into the score, rasterised: every layer the painter draws, at frame size, in the painter's
+/// order. Every value is a pure function of the score and the time, so equal inputs give equal pixels.
+fn rasterise_frame(score: &CompiledScore, at: Seconds, profile: &FaceProfile) -> Vec<(FaceLayerId, RgbaImage)> {
     let projection = projection();
     let mut painter = RealPainter::new(projection, px_per_m());
     // Channels the score does not drive stay at rest (`ChannelBuf::default` is neutral, not zero).
@@ -101,15 +103,10 @@ fn paint_frame(score: &CompiledScore, at: Seconds, profile: &FaceProfile) -> Rgb
     let mut drawing = FaceDrawing::new();
     painter.paint(&input, &mut drawing).expect("the default face paints");
 
-    let mut pixels: Vec<u8> = PAPER.repeat(FRAME as usize * FRAME as usize);
     let mut rasterizer = SkiaRasterizer::new();
     let mut raster = Raster::new(1, 1);
+    let mut layers = Vec::new();
     for spec in painter.layers() {
-        // The Brows layer is a second copy of the brows already on Base: hair composites it to show brows through the
-        // bangs, and these sheets have no hair. Compositing it would draw every brow twice, darker and harder-edged.
-        if spec.id == FaceLayerId::Brows {
-            continue;
-        }
         let list = &drawing[spec.id];
         if list.is_empty() {
             continue;
@@ -122,11 +119,28 @@ fn paint_frame(score: &CompiledScore, at: Seconds, profile: &FaceProfile) -> Rgb
         if (raster.width, raster.height) != (FRAME, FRAME) {
             image = imageops::resize(&image, FRAME, FRAME, imageops::FilterType::Triangle);
         }
+        layers.push((spec.id, image));
+    }
+    layers
+}
+
+/// The layers composited in the order given, over the paper colour.
+fn composite<'a>(layers: impl IntoIterator<Item = &'a (FaceLayerId, RgbaImage)>) -> RgbaImage {
+    let mut pixels: Vec<u8> = PAPER.repeat(FRAME as usize * FRAME as usize);
+    for (_, image) in layers {
         for (dst, src) in pixels.as_chunks_mut::<4>().0.iter_mut().zip(image.as_raw().as_chunks::<4>().0) {
             over(dst, *src);
         }
     }
     RgbaImage::from_raw(FRAME, FRAME, pixels).expect("the frame buffer has FRAME x FRAME pixels")
+}
+
+/// The sheet's frame: every layer but Brows. Brows is a second copy of the brows already on Base: hair composites it to
+/// show brows through the bangs, and these sheets have no hair. Compositing it would draw every brow twice, darker and
+/// harder-edged.
+fn paint_frame(score: &CompiledScore, at: Seconds, profile: &FaceProfile) -> RgbaImage {
+    let layers = rasterise_frame(score, at, profile);
+    composite(layers.iter().filter(|(id, _)| *id != FaceLayerId::Brows))
 }
 
 /// Premultiplied source-over: `dst = src + dst * (1 - src.alpha)`, per channel, rounded.
@@ -163,8 +177,33 @@ fn words(channel: Channel) -> String {
     words
 }
 
-/// The channels the score drives that the face does not paint, as words: head and body channels are "not painted", and
-/// the stubs in [`UNDRAWN`] are "not drawn yet".
+/// The clips and expressions that cues ask for, in time order, without repeats. The sheet samples the tracks and never
+/// runs cues, so each of these is missing from every frame. A marker names something other systems react to (a sound,
+/// a scene change), so it cannot change a face sheet and is not listed.
+fn not_played(score: &Score) -> (Vec<String>, Vec<String>) {
+    let mut cues: Vec<&Cue> = score.cues.iter().collect();
+    cues.sort_by(|a, b| a.time.0.total_cmp(&b.time.0));
+    let (mut clips, mut expressions) = (Vec::new(), Vec::new());
+    for cue in cues {
+        match &cue.kind {
+            CueKind::Clip { clip, .. } => push_once(&mut clips, clip.as_str()),
+            CueKind::Expression { expression, .. } => push_once(&mut expressions, expression.as_str()),
+            CueKind::Marker { .. } => {}
+            // The enum is non-exhaustive: a kind added later must be decided here, not skipped.
+            other => panic!("a cue kind the sheet does not decide on: {other:?}"),
+        }
+    }
+    (clips, expressions)
+}
+
+fn push_once(names: &mut Vec<String>, name: &str) {
+    if !names.iter().any(|n| n == name) {
+        names.push(name.to_string());
+    }
+}
+
+/// The channels the score drives that the face does not paint, as words: head and body channels are "not painted", the
+/// stubs in [`UNDRAWN`] are "not drawn yet", and the cues the sheet does not play are listed by [`not_played`].
 fn not_painted(score: &Score) -> String {
     let mut not_painted = Vec::new();
     let mut not_drawn_yet = Vec::new();
@@ -182,6 +221,13 @@ fn not_painted(score: &Score) -> String {
     if !not_drawn_yet.is_empty() {
         parts.push(format!("not drawn yet: {}", not_drawn_yet.join(", ")));
     }
+    let (clips, expressions) = not_played(score);
+    if !clips.is_empty() {
+        parts.push(format!("clips not played: {}", clips.join(", ")));
+    }
+    if !expressions.is_empty() {
+        parts.push(format!("expressions not played: {}", expressions.join(", ")));
+    }
     if parts.is_empty() { "nothing the score drives is left out".into() } else { parts.join("; ") }
 }
 
@@ -189,7 +235,7 @@ fn not_painted(score: &Score) -> String {
 fn sheet_row(id: &str, score: &Score, profile: &FaceProfile) -> RgbaImage {
     let compiled = score.compile().expect("the template compiles");
     let length = score.duration.0;
-    let width = 2 * MARGIN + 5 * FRAME + 4 * GAP;
+    let width = SHEET_WIDTH;
     let line = 7 * TEXT_SCALE;
     let height = MARGIN + FRAME + MARGIN + line + TEXT_SCALE * 3 + line + MARGIN;
     let mut row = RgbaImage::from_pixel(width, height, Rgba(PAPER));
@@ -241,9 +287,11 @@ const GLYPHS: [(char, [u8; 7]); 31] = [
     (';', [0b00000, 0b00100, 0b00100, 0b00000, 0b00100, 0b00100, 0b01000]),
 ];
 
-/// Draws `text` at `(x, y)` in ink, clipped to the image. A character without a glyph is a panic: a caption that drops
-/// a character would hide what it says, so the test fails instead.
+/// Draws `text` at `(x, y)` in ink. A character without a glyph is a panic, and so is a line that runs past the sheet: a
+/// caption that drops characters would hide what it says, so the test fails instead.
 fn draw_text(image: &mut RgbaImage, x: u32, y: u32, text: &str) {
+    let needed = x + u32::try_from(text.chars().count()).expect("a caption is short") * 6 * TEXT_SCALE;
+    assert!(needed <= image.width(), "{text:?} runs past the sheet: it needs {needed} px of {}", image.width());
     let mut pen = x;
     for c in text.chars() {
         let (_, rows) =
@@ -274,6 +322,42 @@ fn the_nine_templates_parse_and_compile() {
     for (id, text) in TEMPLATES {
         parse(text).compile().unwrap_or_else(|e| panic!("{id} does not compile: {e}"));
     }
+}
+
+#[test]
+fn captions_name_the_clips_the_sheet_does_not_play() {
+    let intro = not_painted(&parse(TEMPLATES[0].1));
+    assert!(intro.contains("clips not played: wave"), "{intro}");
+    let outro = not_painted(&parse(TEMPLATES[1].1));
+    assert!(outro.contains("clips not played: wave, bow"), "{outro}");
+}
+
+#[test]
+fn every_caption_draws_every_character() {
+    // draw_text panics on a character without a glyph and on a line that runs past the sheet.
+    let mut scratch = RgbaImage::new(SHEET_WIDTH, FRAME);
+    for (id, text) in TEMPLATES {
+        draw_text(&mut scratch, MARGIN, 0, &format!("{id}, frames from start to end"));
+        draw_text(&mut scratch, MARGIN, 0, &not_painted(&parse(text)));
+    }
+}
+
+#[test]
+fn a_brow_is_drawn_once_on_the_flat_sheet() {
+    let profile = default_profile();
+    let compiled = parse(TEMPLATES[0].1).compile().expect("intro-wave compiles");
+    let at = Seconds(0.0);
+    let layers = rasterise_frame(&compiled, at, &profile);
+    // The brow pixel the sheets were checked at: Base and Brows both paint it.
+    let (x, y) = (96, 100);
+    let alpha =
+        |id: FaceLayerId| layers.iter().find(|(l, _)| *l == id).map_or(0, |(_, image)| image.get_pixel(x, y)[3]);
+    assert!(alpha(FaceLayerId::Base) > 0 && alpha(FaceLayerId::Brows) > 0, "both layers paint the brow pixel");
+    let flat = composite(layers.iter().filter(|(id, _)| matches!(id, FaceLayerId::Base | FaceLayerId::Overlay)));
+    let doubled = composite(&layers);
+    assert_ne!(flat.get_pixel(x, y), doubled.get_pixel(x, y), "compositing Brows changes the brow pixel");
+    let frame = paint_frame(&compiled, at, &profile);
+    assert_eq!(frame.as_raw(), flat.as_raw(), "the sheet's frame is Base over Overlay, with Brows left out");
 }
 
 #[test]
