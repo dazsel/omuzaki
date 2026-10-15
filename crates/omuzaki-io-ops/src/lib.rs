@@ -32,6 +32,7 @@
 pub mod convert;
 mod error;
 pub mod fit_bones;
+pub mod fit_texture;
 pub mod gather;
 pub mod ops;
 pub mod prepare;
