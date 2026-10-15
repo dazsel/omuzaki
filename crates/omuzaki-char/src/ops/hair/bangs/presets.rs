@@ -1,7 +1,8 @@
 //! The five bangs presets: whole `BangsGen` values, in the order `hair.bangs.list_presets` shows them.
 //!
 //! The table is `pub` so the preset op and the preset renders read the same values. Heights are head-local, as in
-//! `BangLayer::tip_heights`: `0` is the brow line, negative falls toward the eyes.
+//! `BangLayer::tip_heights`: relative to the head's centre, not to the brow, so `0` is level with the centre and a
+//! lower tip is negative. A positive `hook_deg` hooks the tips inward, a negative one outward.
 
 use omuzaki_char_api::{BangLayer, BangsGen, Wisp};
 
@@ -69,8 +70,8 @@ fn side_swept() -> BangsGen {
 
 fn curtain() -> BangsGen {
     let edges = [0.05, 0.035, 0.02, 0.01, 0.01, 0.02, 0.035, 0.05];
-    let under = BangLayer { hook_deg: 10.0, ..layer(10, 48.0, &edges, 0.8) };
-    let top = BangLayer { hook_deg: 14.0, ..layer(8, 44.0, &edges, 1.0) };
+    let under = BangLayer { hook_deg: -10.0, ..layer(10, 48.0, &edges, 0.8) };
+    let top = BangLayer { hook_deg: -14.0, ..layer(8, 44.0, &edges, 1.0) };
     BangsGen { layers: vec![under, top], wisps: Vec::new(), sweep_deg: 0.0 }
 }
 
@@ -91,7 +92,7 @@ fn wispy() -> BangsGen {
 
 fn none() -> BangsGen {
     // The generator needs one lock (`layers` is never empty), so "none" is the thinnest one (the lowest width
-    // `access::check` accepts), tipped far above the brow.
+    // `access::check` accepts), tipped high on the head.
     let hidden = BangLayer { width: WIDTH.0, hook_deg: 0.0, ..layer(1, 5.0, &[0.4], 1.0) };
     BangsGen { layers: vec![hidden], wisps: Vec::new(), sweep_deg: 0.0 }
 }

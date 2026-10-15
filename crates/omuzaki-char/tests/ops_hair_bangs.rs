@@ -67,6 +67,15 @@ fn every_preset_validates_and_the_query_lists_them_in_order() {
 }
 
 #[test]
+fn the_curtain_hooks_its_tips_outward_and_the_others_do_not() {
+    let hooks = |id: &str| (find(id).unwrap().make)().layers.iter().map(|l| l.hook_deg).collect::<Vec<_>>();
+    assert!(hooks("curtain").iter().all(|h| *h < 0.0), "a negative hook is outward: {:?}", hooks("curtain"));
+    for id in ["blunt", "side-swept", "wispy", "none"] {
+        assert!(hooks(id).iter().all(|h| *h >= 0.0), "{id} hooks inward or not at all: {:?}", hooks(id));
+    }
+}
+
+#[test]
 fn the_presets_differ_from_each_other() {
     for (i, a) in PRESETS.iter().enumerate() {
         for b in &PRESETS[i + 1..] {

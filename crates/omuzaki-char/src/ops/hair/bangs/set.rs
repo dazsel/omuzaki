@@ -17,8 +17,8 @@ use crate::ops::character::access as character;
 /// `field` is one of `layers` (the number of layers; a new layer copies the top one, and fewer layers drop the top
 /// ones), `sweep_deg` (degrees toward the character's right; negative sweeps left), `wisps` (a list of
 /// `{phi_deg, tip_height, width}`), or a layer field: `clumps` (clumps in the layer), `tip_heights` (a list of
-/// head-local heights, left to right; a single number is one height) and `hook_deg`. A layer field alone applies to
-/// every layer; `layers/<i>/<field>` (`layers/1/hook_deg`) applies to layer `i`, counting from 0, the bottom layer.
+/// head-local heights, left to right, relative to the head's centre; a single number is one height) and `hook_deg`
+/// (positive hooks the tips inward, negative outward). A layer field alone applies to every layer; `layers/<i>/<field>` (`layers/1/hook_deg`) applies to layer `i`, counting from 0, the bottom layer.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct HairBangsSet {

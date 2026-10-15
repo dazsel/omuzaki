@@ -19,7 +19,7 @@ pub const MAX_CLUMPS: u8 = 30;
 pub const MAX_TIP_HEIGHTS: usize = MAX_CLUMPS as usize;
 /// Most wisps a fringe may have.
 pub const MAX_WISPS: usize = 8;
-/// Tip heights and wisp heights are head-local, within this distance of the brow line.
+/// Tip heights and wisp heights are head-local (relative to the head's centre), within this distance of it.
 pub const HEIGHT_LIMIT: f64 = 0.5;
 /// The fringe's sweep, either way, in degrees.
 pub const SWEEP_LIMIT_DEG: f64 = 60.0;
