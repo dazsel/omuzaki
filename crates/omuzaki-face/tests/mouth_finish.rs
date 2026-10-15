@@ -6,7 +6,13 @@
 
 // A counting allocator is the only way to *prove* "no allocation"; the workspace denies unsafe code by default. Test
 // helpers may panic: a panic is a clear test failure.
-#![allow(unsafe_code, clippy::unwrap_used, clippy::expect_used, clippy::cast_precision_loss)]
+#![allow(
+    unsafe_code,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation
+)]
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -190,7 +196,7 @@ fn the_closed_fang_stands_on_the_line_inside_its_extent_at_every_width() {
 /// The split line's effective alpha (colour alpha times command opacity) for `teeth_lower`, if there is a line.
 fn split_alpha(teeth_lower: f32) -> Option<f32> {
     let p = params(|m| {
-        (m.open, m.teeth_upper, m.teeth_lower, m.smile_left, m.smile_right) = (0.8, 1.0, teeth_lower, 1.5, 1.5)
+        (m.open, m.teeth_upper, m.teeth_lower, m.smile_left, m.smile_right) = (0.8, 1.0, teeth_lower, 1.5, 1.5);
     });
     piece(MouthPiece::Interior, &FaceProfile::default(), &p).cmds().iter().find_map(|c| match c {
         Cmd::Stroke { paint: Paint::Solid(colour), opacity, .. } => Some(f32::from(colour.a) / 255.0 * opacity),
