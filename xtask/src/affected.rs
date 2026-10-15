@@ -30,11 +30,21 @@ const WORKSPACE_WIDE_DIRS: &[&str] = &[".cargo"];
 /// The crate whose tests run the licence-file lint on the repository (`lint_licences`).
 const LICENCE_LINT_CRATE: &str = "xtask";
 
-/// The crates that own a changed file, plus `xtask` when a file is an input of the licence lint.
+/// CI files outside every crate that run a crate's check, so a change to one alone still brings that crate into
+/// scope: `ci.yml`'s WebAssembly link proof runs when `omuzaki-link-probe` is in the lint scope (ADR 0015).
+const CI_STEP_CRATES: &[(&str, &str)] = &[(".github/workflows/ci.yml", "omuzaki-link-probe")];
+
+/// The crates that own a changed file, plus `xtask` when a file is an input of the licence lint, plus the crate a
+/// changed CI file checks (`CI_STEP_CRATES`).
 fn changed_crates<'a>(workspace: &'a Workspace, files: &[PathBuf]) -> BTreeSet<&'a str> {
     let mut changed: BTreeSet<&str> = files.iter().filter_map(|file| owning_crate(workspace, file)).collect();
     if files.iter().any(|file| crate::lint_licences::is_input(file)) {
         changed.extend(workspace.package(LICENCE_LINT_CRATE).map(|package| package.name.as_str()));
+    }
+    for (ci_file, krate) in CI_STEP_CRATES {
+        if files.iter().any(|file| file.as_os_str() == *ci_file) {
+            changed.extend(workspace.package(krate).map(|package| package.name.as_str()));
+        }
     }
     changed
 }
@@ -408,6 +418,18 @@ mod tests {
             assert_eq!(analysis.changed, BTreeSet::from(["omuzaki-render".to_owned(), "xtask".to_owned()]), "{input}");
             assert!(analysis.direct.contains("xtask") && analysis.direct.contains("omuzaki-cli"), "{input}");
         }
+    }
+
+    #[test]
+    fn a_ci_workflow_change_brings_in_the_crate_its_step_checks() {
+        let ws =
+            workspace(&[("omuzaki-core", &[]), ("omuzaki-link-probe", &[("omuzaki-core", Normal)]), ("xtask", &[])]);
+        let analysis = analyse_files(&ws, &files(&[".github/workflows/ci.yml"]));
+        assert!(analysis.direct.contains("omuzaki-link-probe"), "{:?}", analysis.direct);
+        let other = analyse_files(&ws, &files(&[".github/workflows/nightly.yml"]));
+        assert!(!other.direct.contains("omuzaki-link-probe"), "{:?}", other.direct);
+        // A workspace without the probe is unaffected.
+        assert!(!analyse_files(&sample(), &files(&[".github/workflows/ci.yml"])).direct.contains("omuzaki-link-probe"));
     }
 
     #[test]

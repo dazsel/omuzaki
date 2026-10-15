@@ -44,6 +44,9 @@ def outputs(report, event):
         # The link gate tests (ADR 0015) protect the Apps that wire crates together; they run on PRs too.
         "link_crates": " ".join(report["link_only"]),
         "has_link_gates": str(bool(report["link_only"])).lower(),
+        # The CLI's product configuration (`omuzaki-stage/wgpu`) is link-gated whenever the CLI is in scope at all: in
+        # full scope its shard tests run default features only, so nothing else checks that configuration.
+        "cli_in_scope": str("omuzaki-cli" in report["full"] or "omuzaki-cli" in report["link_only"]).lower(),
         # Everything affected is cross-built, so a crate reached only through a link-only dependency still builds.
         "cross_crates": " ".join(sorted(set(report["full"] + report["link_only"]))),
         "has_cross": str(bool(report["full"] or report["link_only"])).lower(),

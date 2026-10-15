@@ -3446,6 +3446,7 @@ version = "0.0.0"
 dependencies = [
  "criterion",
  "inventory",
+ "libm",
  "omuzaki-anim-api",
  "omuzaki-char-api",
  "omuzaki-char-mock",
@@ -3514,6 +3515,7 @@ dependencies = [
  "omuzaki-io-gltf",
  "omuzaki-io-ops",
  "omuzaki-io-vrm",
+ "omuzaki-link-build",
  "omuzaki-mcp",
  "omuzaki-ops",
  "omuzaki-ops-api",
@@ -3816,6 +3818,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-link-build"
+version = "0.0.0"
+dependencies = [
+ "tempfile",
+ "toml",
+]
+
+[[package]]
+name = "omuzaki-link-probe"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-char",
+ "omuzaki-core",
+ "omuzaki-link-build",
+]
+
+[[package]]
 name = "omuzaki-mcp"
 version = "0.0.0"
 dependencies = [
@@ -3831,6 +3850,7 @@ dependencies = [
  "omuzaki-doc-api",
  "omuzaki-doc-mock",
  "omuzaki-ops-api",
+ "omuzaki-ops-mock",
  "omuzaki-store-api",
  "omuzaki-store-mock",
  "proptest",
@@ -3891,6 +3911,19 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "omuzaki-ops-mock"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-doc-mock",
+ "omuzaki-ops-api",
+ "schemars",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -3982,6 +4015,7 @@ dependencies = [
  "omuzaki-face-api",
  "omuzaki-face-mock",
  "omuzaki-io-api",
+ "omuzaki-link-build",
  "omuzaki-ops-api",
  "omuzaki-render",
  "omuzaki-render-api",
@@ -4114,6 +4148,7 @@ dependencies = [
  "omuzaki-core",
  "omuzaki-face",
  "omuzaki-face-api",
+ "omuzaki-link-build",
  "omuzaki-test",
  "serde",
  "serde_json",
@@ -6896,8 +6931,10 @@ version = "0.0.0"
 dependencies = [
  "clap",
  "flate2",
+ "omuzaki-core",
  "omuzaki-embed",
  "omuzaki-library-api",
+ "omuzaki-link-build",
  "serde",
  "serde_json",
  "sha2",

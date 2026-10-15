@@ -21,6 +21,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo xtask check --affected           # the CI gate on the crates you touched
 cargo xtask lint-deps                  # crate layering
 cargo xtask lint-links                 # link() wiring for registrations
+cargo xtask lint-registers             # a crate that registers sets `registers = true` in its manifest
 ```
 
 Optional heavy assets (models, audio) are not in the repository. If a test needs them, `OMUZAKI_ASSETS` points at the
@@ -46,6 +47,8 @@ The workspace is `crates/*` plus `xtask`. The full table is printed by `cargo xt
 ## Code standards
 
 - No `unwrap` or `expect` in library code; return errors explicitly.
+- No silent early return or ignored `Result` on a branch that "can't happen": return an error or `debug_assert!` it.
+  Error text derives from the constants it names (`MAX_TRIGGERS`, not a literal `16`).
 - Tests with every change: unit tests, plus golden-render or property tests where they help.
 - `cargo fmt` clean and `cargo clippy -D warnings` clean.
 - Docs on every public item; comments explain why, not what; no dead code.
@@ -84,15 +87,17 @@ Standing fence exceptions (`CLAUDE.md`, "Standing rulings"): a `Cargo.lock` upda
 one-line `link()` wiring an App needs are inside the fence, so they are not fence violations.
 
 1. **Correctness:** the change does what its task issue and contract say, including edge cases the tests miss; the
-   tests would fail without the change; output is deterministic.
+   tests would fail without the change, with no vacuous assertion (an `a || b` that holds whatever the code does);
+   output is deterministic.
 2. **Performance:** no allocation, locking or blocking I/O on the real-time path (render, tracking, audio, streaming);
    the spec's budgets hold; hot code has a benchmark.
 3. **Architecture** (ADR 0053, ADR 0054): the diff stays inside the paths its task issue allows; no new central list
    that every feature edits; no new field or variant on a shared contract type that forces other crates to change; no
-   implementation crate depending on another; no hand-edited generated file (`docs/README.md` and the licence register
-   stay hand-maintained until their generators land, #1501).
+   implementation crate depending on another; no hand-edited generated file (the docs index, the crate table and the licence register are generated,
+   #1501).
 4. **Good software practice:** small focused functions, clear names, no duplication, no dead code or TODOs, explicit
-   error handling (no `unwrap` or `expect` in library code), a licence-register row for any new dependency.
+   error handling (no `unwrap` or `expect` in library code, no silent early return on an "impossible" branch, error
+   text derived from the constants it names), a licence-register row for any new dependency.
 5. **Comments and documentation:** docs on every public item, comments that explain why, and docs updated with the
    behaviour they describe.
 
