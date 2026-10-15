@@ -41,7 +41,7 @@ fn models_dir(root: &Path) -> PathBuf {
     for name in SOURCE_FILES.into_iter().chain(MODEL_FILES) {
         let bytes = format!("stand-in for {name}").into_bytes();
         fs::write(dir.join(name), &bytes).unwrap();
-        let from = if name.ends_with(".onnx") { "tf2onnx" } else { "bundle" };
+        let from = if name.contains(".onnx") { "tf2onnx" } else { "bundle" };
         files.insert(name.to_owned(), serde_json::json!({ "sha256": hex(&bytes), "bytes": bytes.len(), "from": from }));
     }
     let manifest = serde_json::json!({
