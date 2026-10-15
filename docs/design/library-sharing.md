@@ -1,6 +1,6 @@
 # Shared library sources: the team library, the marketplace client and the signed index
 
-**Status:** awaiting acceptance. **Feature:** LB-07 (and the client half of LB-08). **Decision record:** `docs/decisions/0057-library-sharing.md`.
+**Status:** accepted in part: the crate placement and Q4 to Q9 of §6 are ruled (Runtime lead, on #1534); Q1 to Q3 stay open as the owner's. **Feature:** LB-07 (and the client half of LB-08). **Decision record:** `docs/decisions/0057-library-sharing.md`.
 **Spec:** v3 §28 (LB-02, LB-06, LB-07, LB-08), §29 (VC-10, VC-11), §37.
 **Builds on:** `docs/design/library.md` (D2 ids and publishers, D5 the record is the lock, D8 rights and the gate, D9 ops, D11 scopes, D16 version rules), `docs/design/identity.md` (D3 the envelope, D4 trust, D10 domains), `docs/design/team.md` (§3 roles, §6 the signed log, §11.2 library roles), `docs/design/team-review.md` (§8 review policy), ADR 0013 (file roots), ADR 0019, 0042, 0043.
 
@@ -20,7 +20,7 @@
 | Privacy, threats, tests | D12 to D14 |
 | Contract, crates, task cut | §5 |
 | A worked example | §3 |
-| Open questions for the owner and the cloud lead | §6 |
+| Open questions (owner's) and decisions | §6 |
 
 ## 2. The shape of it
 
@@ -48,9 +48,9 @@ acme-library/                          one folder: a NAS share, a synced folder 
   licence/<hash>.toml                  the team licence text (D7), named by its hash, set by SetLicence
   items/acme/hair/bob/1.0.0.toml       the manifest, signed by Ben (library.md D2 shape, D11 layout)
   reviews/acme/hair/bob/1.0.0/
-      000-<keyhex8>.json               Ben: request_review          (draft → in review)
-      001-<keyhex8>.json               Cleo: approve                (1 of 2)
-      002-<keyhex8>.json               Dev: approve                 (2 of 2: approved)
+      000-<keyhex8>.json               Ben: request                 (draft → in review; his seq 0)
+      000-<keyhex8>.json               Cleo: approve                (1 of 2; her seq 0)
+      000-<keyhex8>.json               Dev: approve                 (2 of 2: approved; his seq 0)
   store/ab/ab12…ef.bin                 assets, content-addressed (BLAKE3), as in the person's store/
   index/000003-9f2c1a7e.json           SignedIndex, seq 3, signed by Ben (the publisher), then 000004-… by Dev
 ```
@@ -119,13 +119,13 @@ The rule the whole page rests on: **a thing is used only if the client could re-
 ### D4. Versions are immutable, delete means deprecate, and writes never overwrite
 
 - **Create-if-absent for every file.** `put` of `items/<id>/<version>.toml` that already exists is `SourceError::Exists`, unless the bytes hash the same (then it succeeds, so a retried publish is harmless). A second publish of one `id@version` with different bytes is refused by the store and, if it arrives anyway (a merged copy), by the client as `Conflict { id, version, hashes }`: **both are ignored for that item** and the item shows as "conflicting versions; ask a designer to bump the version". The remaining items work.
-- **No delete in the protocol.** `ItemStore` has no `delete`. "Delete" is a signed `Deprecate` record (D8). A deprecated item stays resolvable for projects that pinned it (D5 of `library.md`: the record is the lock) and is hidden from search by default. Removing bytes is the storage owner's decision outside Omuzaki (§6, Q5).
+- **No delete in the protocol.** `ItemStore` has no `delete`. "Delete" is a signed `Deprecate` record (D8). A deprecated item stays resolvable for projects that pinned it (D5 of `library.md`: the record is the lock) and is hidden from search by default. Removing bytes is the storage owner's decision outside Omuzaki (§6, Q5: decided).
 - **A newer version, not an edit.** D16's rules apply: a patch is values only, a minor adds, a major breaks. `put` is preceded by the preflight diff (D10) so a team cannot publish a breaking change as a patch.
 - **Write conflicts in a synced folder.** The sync tool may make a "conflicted copy" of a file two machines created at the same path. Item and record paths include a content hash or a key (`000-<keyhex8>.json`, `<seq>-<hash8>.json`), so two machines almost never create the same path with different bytes. When they do, the client sees two verifying files where one was expected and treats them as above (item `Conflict`, index `Forked`). Nothing is overwritten, so nothing is lost, and the cure is one more snapshot.
 
 ### D5. Review records are files, not fields
 
-A `ReviewRecord` is `Signed<ReviewBody>` under `Domain::Approval` (identity D10 already lists it for item reviews): `ReviewBody { team, item, version, hash, decision, note: Option<String> }`, `decision` one of `Request`, `Withdraw`, `Approve`, `Reject`, `Deprecate { reason }`. Its fields are `deny_unknown_fields` with a required `decision` and `item`/`hash`, so it can never parse as team-review's `ApprovalStatement` (identity D3's rule for types that share a tag). It binds **team, id, version and hash**, so a record cannot be replayed on another team, another version, or a manifest with different content. Files live at `reviews/<id>/<version>/<n>-<keyhex8>.json`; `n` is only an ordering hint, the fold ignores it.
+A `ReviewRecord` is `Signed<ReviewBody>` under `Domain::Approval` (identity D10 already lists it for item reviews): `ReviewBody { team, item, version, hash, seq: u32, decision, note: Option<String> }`, `decision` one of `Request`, `Withdraw`, `Approve`, `Reject`, `Deprecate { reason }`. Its fields are `deny_unknown_fields` with a required `decision` and `item`/`hash`, so it can never parse as team-review's `ApprovalStatement` (identity D3's rule for types that share a tag). It binds **team, id, version and hash**, so a record cannot be replayed on another team, another version, or a manifest with different content. **Ordering is signed, per key.** `seq` is the signer's own counter for that `id@version@hash`, starting at 0 and rising by one with each record that key writes; it is inside the signed body, so no store, listing order or file name can change it. A key's **standing** is its record with the highest `seq`. Two different records from one key at the same `seq` are equivocation: that key's records are ignored for that hash and the client warns (`Tampered(Record)`). The fold (D8) never compares records of different keys, so it needs no global order and gives the same answer for any iteration order. Files live at `reviews/<id>/<version>/<seq:03>-<keyhex8>.json`; the name is a convenience and the fold reads `seq` from the body.
 
 ### D6. The cache is a verified copy; a project never needs the source
 
@@ -156,7 +156,7 @@ terms_url = ""                            # optional
 
 **The gate.** `licence.derive` already joins records as well as rows (D8), so `commercial: no|unknown` needs no new rule. The one additive rule is `team_only`: `io.check_export` for a `publish` target fails a character whose records carry it, like `private_test`. **"Outside the team" is any export whose target is `publish`**; sharing a project with teammates is not an export and is never gated. Because the record carries the effective rights and the licence hash, the answer does not depend on the source being reachable (D6). `team_only` is an additive field on `ItemRights` and the record (a contract change, human lane, task T6 in §5.4).
 
-**Later changes.** A new `SetLicence` affects *future* applies. An existing record keeps the rights it was applied with, as the lock principle says; the Library panel marks records whose licence hash is older than the roster's current one ("licence has changed since you applied this"). Whether a team can recall is Q7.
+**Later changes.** A new `SetLicence` affects *future* applies. An existing record keeps the rights it was applied with, as the lock principle says; the Library panel marks records whose licence hash is older than the roster's current one ("licence has changed since you applied this"). A team cannot recall silently (§6, Q6: decided).
 
 ### D8. Review state
 
@@ -164,12 +164,12 @@ terms_url = ""                            # optional
 
 | State | When |
 |---|---|
-| `Draft` | published, no `Request` from its publisher yet (visible to designers and above; hidden from others' search) |
-| `InReview` | a `Request` and fewer than `library.approvals` valid approvals |
-| `Approved { by }` | at least `LibraryPolicy.approvals` approvals from distinct keys that are eligible approvers (reviewer, admin, owner) at the roster head, not revoked, and **not the publisher of that hash** ("N other people", VC-11), with no later `Reject` from an eligible key and no `Deprecate` |
+| `Draft` | published, no `Request` from its publisher yet, or the publisher's standing is `Withdraw` (visible to designers and above; hidden from others' search) |
+| `InReview` | the publisher's standing is `Request`, and fewer than `library.approvals` valid approvals |
+| `Approved { by }` | at least `LibraryPolicy.approvals` approvals from distinct keys that are eligible approvers (reviewer, admin, owner) at the roster head, not revoked, and **not the publisher of that hash** ("N other people", VC-11), with no eligible key whose standing is `Reject`, and no `Deprecate` |
 | `Deprecated` | a valid `Deprecate` |
 
-Rules: an approval by a key that is later revoked stops counting. A `Reject` by an eligible key puts the state back to `InReview` until it is `Withdraw`n by its author or outweighed by a newer approval from the same key. `Approved` needs the hash, so a new version starts again at `Draft`. `Deprecated` is terminal for that version. Review records are authenticated one by one, so one forged record ignored does not hide the real ones.
+Rules: the fold uses each key's standing only (D5), so an `Approve` counts only while it is that key's latest record, and a key changes its mind by signing a higher `seq`. An approval by a key that is later revoked stops counting. A `Reject` standing from an eligible key puts the state back to `InReview` until that key signs a `Withdraw` or a new `Approve`. `Approved` needs the hash, so a new version starts again at `Draft`. `Deprecated` is terminal for that version. Review records are authenticated one by one, so one forged record ignored does not hide the real ones.
 
 **Policy** is `ReviewPolicy.library { approvals: u8, apply_only_approved: bool }` from the roster (team-review.md §8.1). With `apply_only_approved`, `library.apply` and `library.update` on a team item that is not `Approved` return a located refusal (`NotApproved`, with the state and what is missing) for **everyone, agents included**; the check lives in the op, not only in search. `library.search {usable_for}` gains the value `"apply"`, which also hides items the policy would refuse, so the list a person sees matches what will work; `ItemInfo` gains a `review` badge. With the policy off, unapproved items apply with a visible badge. The policy never applies to "my library" or first-party scopes.
 
@@ -279,7 +279,7 @@ Items are recipes of ops, never code (library.md D1), so the worst a trusted-but
 
 ```rust
 pub trait ItemStore: Send + Sync {                       // bytes in, bytes out: never decides
-    fn index(&self) -> Result<Option<SignedIndex>, SourceError>;                 // the head snapshot (or all heads on a fork)
+    fn index(&self) -> Result<Vec<SignedIndex>, SourceError>;                    // every head snapshot: empty = none yet, two or more = a fork
     fn fetch(&self, id: &ItemId, version: &Version) -> Result<Vec<u8>, SourceError>;   // the manifest bytes
     fn fetch_asset(&self, hash: &ContentHash) -> Result<Vec<u8>, SourceError>;         // assets by hash
     fn put(&self, item: &SignedItem) -> Result<PutReceipt, SourceError>;              // create-if-absent, manifest then assets
@@ -289,6 +289,7 @@ pub trait ItemStore: Send + Sync {                       // bytes in, bytes out:
     fn log(&self) -> Result<Vec<Signed<Statement>>, SourceError>;                    // team.md 6.2
     fn put_log(&self, entry: &Signed<Statement>) -> Result<(), SourceError>;         // for the owner's client
     fn licence(&self, hash: &ContentHash) -> Result<Vec<u8>, SourceError>;
+    fn put_licence(&self, hash: &ContentHash, text: &[u8]) -> Result<(), SourceError>;   // licence/<hash>.toml, create-if-absent, for the owner's client
 }
 pub enum ReviewState { Draft, InReview, Approved { by: Vec<KeyId> }, Deprecated }
 pub struct SignedIndex { pub team: TeamId, pub seq: u64, pub prev: Vec<ContentHash>, pub items: Vec<IndexEntry>,
@@ -296,7 +297,7 @@ pub struct SignedIndex { pub team: TeamId, pub seq: u64, pub prev: Vec<ContentHa
 pub struct IndexEntry { pub id: ItemId, pub version: Version, pub hash: ContentHash, pub publisher: KeyId, pub added_at: u64,
                         pub assets: Vec<(ContentHash, u64)>, pub review: ReviewState, pub reviews: Vec<ContentHash>,
                         pub listing: Option<Listing> }
-pub struct ReviewBody { pub team: TeamId, pub item: ItemId, pub version: Version, pub hash: ContentHash,
+pub struct ReviewBody { pub team: TeamId, pub item: ItemId, pub version: Version, pub hash: ContentHash, pub seq: u32,
                         pub decision: ReviewDecision, pub note: Option<String> }
 pub enum ReviewDecision { Request, Withdraw, Approve, Reject, Deprecate { reason: DeprecateReason } }
 pub struct SignedItem { pub manifest: Vec<u8>, pub assets: Vec<(ContentHash, Vec<u8>)> }   // the manifest carries its signature
@@ -312,7 +313,7 @@ pub struct Listing { pub creator: KeyId, pub title: String, pub summary: String,
                      pub commerce: Option<serde_json::Value> }                 // opaque until the owner decides (D11)
 ```
 
-Notes: `index()` returns every head so a fork is visible to the caller, not hidden by the store. `ItemStore` is `Send + Sync` and synchronous like `Store`; the job wrapper does the waiting. There is no `delete`. `SourcePin { team, root: KeyId, seq: u64, snapshot: ContentHash }` is the local `state.toml`.
+Notes: `index()` returns every head (a `Vec`) so a fork is visible to the caller, not hidden by the store. `put_licence` rejects bytes whose hash is not `hash`. `ItemStore` is `Send + Sync` and synchronous like `Store`; the job wrapper does the waiting. There is no `delete`. `SourcePin { team, root: KeyId, seq: u64, snapshot: ContentHash }` is the local `state.toml`.
 
 ### 5.2 Crates
 
@@ -345,25 +346,31 @@ The marketplace store, entitlements and any hosted piece are not in this cut: th
 
 ## 6. Open questions
 
-The first three are the owner's. They get options and no recommendation. The rest are for the cloud lead; each has a recommendation, and none is decided here.
+Q1 to Q3 are the owner's and stay open. Q4 to Q9 were ruled by the Runtime lead on #1534 and are decisions now (also recorded in ADR 0057).
 
-**Q1. Does Omuzaki run a hosted marketplace backend, and who operates it?** Options: (a) none: sharing stays team sources and self-hosted stores, and the marketplace client points at a third party; (b) the maintainers operate one; (c) a partner operates one to a published protocol. The protocol is the same in all three (D11).
+### Open (the owner's; options, no recommendation)
+
+**Q1. Does Omuzaki run a hosted marketplace backend, and who operates it?** Options: (a) none: sharing stays team sources and self-hosted stores, and the marketplace client points at a third party; (b) the maintainers operate one; (c) a partner operates one to a published protocol. The protocol is the same in all three (D11). Any task that needs a hosted backend is blocked on this decision.
 
 **Q2. Payments and pricing: whether the marketplace has paid items, who handles money, how receipts are issued.** Options: (a) free items only; (b) paid items through an outside payment provider with the hosted key issuing `Entitlement`s; (c) another model the owner defines. The client reserves `Listing.commerce` and `Domain::Entitlement` and verifies nothing about money.
 
 **Q3. Moderation and takedown policy for hosted items.** Options: (a) none, listings are the creator's responsibility; (b) the operator can deprecate by signed record (D11); (c) a report-and-review process. Who signs takedowns and what appeals exist are the owner's.
 
-**Q4. Are drafts mutable?** D4 keeps every published version immutable, so editing a draft means a new patch version. Options: (a) keep as is (simple, no exceptions); (b) a mutable `drafts/` area visible only to its publisher, never in the index. Recommendation: (a) until teams say patch numbers are noisy; (b) can be added without changing anything here.
+### Decided
 
-**Q5. Can a published byte range be purged (a leaked private file, a legal request)?** The protocol has no delete. Options: (a) deprecate and let the storage owner remove the files by hand (missing files then show as `Unavailable`, not `Tampered`, for entries already deprecated); (b) a signed `Purge` record that tells clients to drop their cache copies. Recommendation: (a) now; (b) is a later security-reviewed addition.
+**Q4. Drafts are immutable.** Every published version is immutable (D4); editing a draft is a new patch version. A mutable `drafts/` area is not part of this design.
 
-**Q6. Should a team's owner be able to recall an applied item whose licence tightened?** D7 leaves applied records with the rights they had. Options: (a) as is, with the "licence changed" marker; (b) a `recall` flag in `SetLicence` that makes the gate treat older records as the new licence. Recommendation: (a): a recall changes what a person already built on, so it should arrive as an explicit warning and a person's `library.update`, never silently.
+**Q5. Deprecate, and the storage owner removes files.** The protocol has no delete and no purge. Files removed by hand show as `Unavailable`, not `Tampered`, for entries already deprecated. A signed `Purge` record that tells clients to drop cache copies is a later addition with its own security review.
 
-**Q7. Encryption at rest on the shared place.** The design protects integrity, not confidentiality: whoever can read the bucket reads the items. Options: (a) rely on storage access controls; (b) per-team content keys wrapped to each member's key. Recommendation: (a); (b) needs a key-agreement scheme identity does not have and a second review.
+**Q6. No silent recall.** An applied record keeps the rights it had (D7). A tightened licence shows the "licence changed" marker, and the person runs `library.update`. There is no `recall` flag.
 
-**Q8. Sync on open default.** D9 defaults it off. Options: (a) off everywhere; (b) on for a folder, off for a bucket. Recommendation: (a), with a one-click toggle on the Team tab, until the Team tab has been used.
+**Q7. Storage access controls.** The design protects integrity, not confidentiality; whoever can read the shared place reads the items. Per-team content keys need a key-agreement design first, which is not started.
 
-**Q9. A git store's shape.** Options: (a) one repository per team, snapshots as commits; (b) the team folder inside an existing project repository. Recommendation: decide when T7 is done, since the layout already works as files; no protocol change either way.
+**Q8. Sync on open is off everywhere,** with a one-click toggle on the Team tab (D9).
+
+**Q9. The git store's shape is decided when T7 is done.** The layout already works as files, so the protocol is the same either way (one repository per team, or the team folder inside a project repository).
+
+**Crate placement: accepted.** The new `omuzaki-library-source-api` (§5.1). The task that adds it (T1) touches the root `Cargo.toml`, which needs the Director's hub sign-off on that PR.
 
 ## 7. Sources
 

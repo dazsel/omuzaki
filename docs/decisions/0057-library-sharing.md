@@ -1,6 +1,6 @@
 # 0057: A shared library source is a bag of immutable signed files; the client verifies everything (2026-10-15)
 
-**Status:** proposed (cloud lead to accept on the PR). It adds a new API crate, `omuzaki-library-source-api`, and later additive changes to `omuzaki-library-api`. **Context:** LB-07, LB-08, VC-10, VC-11; spec v3 §28, §29, §37; ADR 0019 (library items), ADR 0042 (identity), ADR 0043 (team). Design: `docs/design/library-sharing.md`.
+**Status:** proposed; the crate placement and Q4 to Q9 are ruled (Runtime lead, #1534); Q1 to Q3 remain the owner's. It adds a new API crate, `omuzaki-library-source-api`, and later additive changes to `omuzaki-library-api`. **Context:** LB-07, LB-08, VC-10, VC-11; spec v3 §28, §29, §37; ADR 0019 (library items), ADR 0042 (identity), ADR 0043 (team). Design: `docs/design/library-sharing.md`.
 
 ## Context
 
@@ -24,4 +24,15 @@
 - `identity.md` and `team.md` refer to this design as 0046 or "planned"; they should read 0057.
 - A removed member's earlier items stay valid, a revoked key's never are.
 - Integrity is protected, confidentiality is not: whoever can read the shared place reads the items.
-- Open questions (design §6) are for the owner (marketplace backend, payments and pricing, moderation) and the cloud lead (drafts, purge, recall, encryption, sync default, git shape).
+- Review records carry a signed per-key `seq`; the fold uses each key's latest record and never orders records of different keys. `ItemStore::index` returns every head, and `put_licence` lets the owner's client create the licence file.
+- Open, the owner's (design §6): Q1 hosted marketplace backend, Q2 payments and pricing, Q3 moderation. Tasks needing a hosted backend are blocked on them.
+
+## Rulings (Runtime lead, #1534)
+
+- **Q4:** drafts stay immutable; an edit is a new patch version.
+- **Q5:** deprecate, and the storage owner removes the files; a signed `Purge` record is a later, security-reviewed addition.
+- **Q6:** no silent recall; a tightened licence shows the "licence changed" marker and the person runs `library.update`.
+- **Q7:** storage access controls; per-team content keys need a key-agreement design first.
+- **Q8:** sync on open is off everywhere, with a one-click toggle.
+- **Q9:** the git store's shape is decided when T7 is done.
+- **Crate placement accepted:** `omuzaki-library-source-api`; its task touches the root `Cargo.toml`, which needs the Director's hub sign-off on that PR.
