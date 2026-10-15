@@ -7,9 +7,10 @@
 use std::collections::BTreeMap;
 
 use omuzaki_char_api::{CharId, PartId};
+use omuzaki_identity_api::key::KeyId;
+use omuzaki_library_api::rights::{AssetInfo, Attestation};
 use omuzaki_library_api::{
-    AssetInfo, Attestation, Bindings, ItemManifest, ItemRights, Params, Problem, RecipeError, StepRequest, check_ops,
-    expand,
+    Bindings, ItemManifest, ItemRights, Params, Problem, RecipeError, StepRequest, check_ops, expand,
 };
 use omuzaki_ops_api::{OpKind, OpMeta, Scope, Undo};
 use omuzaki_store_api::ContentHash;
@@ -409,6 +410,9 @@ fn canonical_json_is_plain_json_with_sorted_keys() {
 }
 
 /// The hash of `twintails()` before the marketplace fields existed: a manifest without them must keep it.
+/// A real key value for the attesting asserter (never a display name).
+const THEM: [u8; 32] = [9; 32];
+
 const TWINTAILS_HASH: &str = "81a9390005eabaf68a5dd699bbcd0c29a2f8aaf93d65955f78daa96bf8a79a70";
 
 #[test]
@@ -440,7 +444,10 @@ fn asset_info_round_trips_with_the_items_own_rights_type() {
     let hash = ContentHash::of(b"terms");
     let info = info.replace(
         "terms_hash = \"\"",
-        &format!("terms_hash = \"{hash}\"\n[asset_info.cap.rights.attestation]\nby = \"them\"\nclaim = \"own-work\""),
+        &format!(
+            "terms_hash = \"{hash}\"\n[asset_info.cap.rights.attestation]\nby = \"{}\"\nclaim = \"own-work\"",
+            KeyId(THEM).to_hex()
+        ),
     );
     let manifest = ItemManifest::parse(&with_asset(&info)).unwrap();
     let AssetInfo { size, rights } = &manifest.asset_info["cap"];
@@ -450,7 +457,7 @@ fn asset_info_round_trips_with_the_items_own_rights_type() {
         author: None,
         owned: false,
         terms_hash: Some(hash),
-        attestation: Some(Attestation { by: "them".into(), claim: "own-work".into() }),
+        attestation: Some(Attestation { by: KeyId(THEM), claim: "own-work".into() }),
         ..ItemRights::first_party()
     };
     assert_eq!(rights, &expected);
@@ -489,16 +496,22 @@ fn unknown_fields_are_still_refused_in_the_new_types() {
 #[test]
 fn the_public_api_snapshot() {
     #[allow(unused_imports)]
+    use omuzaki_library_api::rights::{AssetInfo, Attestation};
+    #[allow(unused_imports)]
+    use omuzaki_library_api::rights_join::{
+        AXES, Axis, JoinedRights, JointConsent, RightsRow, UNKNOWN_LICENCE, commercial_rank, exceeding, join_rights,
+        join_terms,
+    };
+    #[allow(unused_imports)]
     use omuzaki_library_api::{
-        APPLIED_KEY, AXES, ApplicationRecord, AssetInfo, Attestation, Axis, Bindings, BodyKind, Compat, CompatStatus,
-        CompatTarget, Creates, Dep, FIRST_PARTY_LICENCE, FIRST_PARTY_PUBLISHER, FIXTURE_PUBLISHER, Facets, Framing,
-        IdError, ItemDetail, ItemId, ItemInfo, ItemKind, ItemManifest, ItemRights, ItemScope, ItemSource, ItemStep,
-        JoinedRights, JointConsent, Library, LibraryError, Migrate, OMUZAKI_PUBLISHER_KEY, OpStep, Origin, ParamSpec,
-        ParamType, Params, ParseError, PreviewSpec, Problem, Publisher, PublisherCheck, PublisherKey, Query,
-        RECORD_SCHEMA, RecipeError, RecordBindings, RecordError, Resolved, ResolvedItem, RightsBadge, RightsRow,
-        SearchPage, Section, SourceRegistration, Step, StepRequest, Target, Turn, UNKNOWN_LICENCE, UnknownSection,
-        Usage, Version, VersionError, VersionReq, When, check_ops, commercial_rank, exceeding, expand, join_rights,
-        join_terms, migrations, record_path, sources,
+        APPLIED_KEY, ApplicationRecord, Bindings, BodyKind, Compat, CompatStatus, CompatTarget, Creates, Dep,
+        FIRST_PARTY_LICENCE, FIRST_PARTY_PUBLISHER, FIXTURE_PUBLISHER, Facets, Framing, IdError, ItemDetail, ItemId,
+        ItemInfo, ItemKind, ItemManifest, ItemRights, ItemScope, ItemSource, ItemStep, Library, LibraryError, Migrate,
+        OMUZAKI_PUBLISHER_KEY, OpStep, Origin, ParamSpec, ParamType, Params, ParseError, PreviewSpec, Problem,
+        Publisher, PublisherCheck, PublisherKey, Query, RECORD_SCHEMA, RecipeError, RecordBindings, RecordError,
+        Resolved, ResolvedItem, RightsBadge, SearchPage, Section, SourceRegistration, Step, StepRequest, Target, Turn,
+        UnknownSection, Usage, Version, VersionError, VersionReq, When, check_ops, expand, migrations, record_path,
+        sources,
     };
     assert_eq!(migrations::CURRENT_SCHEMA, 1);
     assert_eq!(Section::ALL.len(), 25);

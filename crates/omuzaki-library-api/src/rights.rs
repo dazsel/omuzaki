@@ -1,5 +1,6 @@
 //! What an item records about rights (design D8).
 
+use omuzaki_identity_api::key::KeyId;
 use omuzaki_io_api::UseTerms;
 use omuzaki_store_api::{Commercial, Consent, ContentHash, Provenance, Source};
 use serde::{Deserialize, Serialize};
@@ -14,8 +15,10 @@ pub const FIRST_PARTY_LICENCE: &str = "CC0-1.0";
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Attestation {
-    /// Who asserts the rights: the publisher or person the claim is made in the name of.
-    pub by: String,
+    /// The key that asserts the rights (design D7): it is the same key as the manifest's `publisher.key`, so the claim
+    /// is made in the name of the key that signs the manifest and a display name is never what vouches for it. Written
+    /// as 64 hex characters; anything else is refused when the manifest is read.
+    pub by: KeyId,
     /// The id of the shipped claim (the wording the asserter agreed to) the rights stand on.
     pub claim: String,
 }
@@ -104,6 +107,8 @@ mod tests {
     use super::*;
     use omuzaki_store_api::licence_gate;
 
+    const KEY: KeyId = KeyId([7; 32]);
+
     #[test]
     fn first_party_rights_are_cc0_owned_and_pass_the_gate() {
         let rights = ItemRights::first_party();
@@ -119,7 +124,7 @@ mod tests {
         let plain = toml::to_string(&ItemRights::first_party()).unwrap();
         assert!(!plain.contains("attestation") && !plain.contains("terms_hash"), "{plain}");
         let rights = ItemRights {
-            attestation: Some(Attestation { by: "someone".into(), claim: "own-work-v1".into() }),
+            attestation: Some(Attestation { by: KEY, claim: "own-work-v1".into() }),
             terms_hash: Some(ContentHash::of(b"terms")),
             ..ItemRights::first_party()
         };
@@ -135,7 +140,20 @@ mod tests {
         let text = toml::to_string(&info).unwrap();
         assert_eq!(toml::from_str::<AssetInfo>(&text).unwrap(), info);
         assert!(toml::from_str::<AssetInfo>(&format!("{text}\nextra = 1")).is_err());
-        assert!(toml::from_str::<Attestation>("by = 'x'\nclaim = 'y'\nextra = 1").is_err());
+        let by = KEY.to_hex();
+        assert!(toml::from_str::<Attestation>(&format!("by = '{by}'\nclaim = 'y'\nextra = 1")).is_err());
+    }
+
+    #[test]
+    fn the_attesting_key_round_trips_as_hex_and_a_malformed_key_is_refused() {
+        let attestation = Attestation { by: KEY, claim: "own-work-v1".into() };
+        let text = toml::to_string(&attestation).unwrap();
+        assert!(text.contains(&format!("by = \"{}\"", "07".repeat(32))), "{text}");
+        assert_eq!(toml::from_str::<Attestation>(&text).unwrap(), attestation);
+        for bad in ["them", "", &"07".repeat(31), &"zz".repeat(32), &"07".repeat(33)] {
+            let text = format!("by = '{bad}'\nclaim = 'y'");
+            assert!(toml::from_str::<Attestation>(&text).is_err(), "{bad:?} must not read as a key");
+        }
     }
 
     #[test]

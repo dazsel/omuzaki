@@ -3,7 +3,7 @@
 //! The record is the **join of the parts' source rows and the application records' rights** (`source.rs`), and it never guesses:
 //! - every permission is the **strictest** of the parts: the commercial status (`no`, then `unknown`, then `ok`), the
 //!   private-test flag (any part makes the character private test material) and each of the nine flags of the file's
-//!   terms (`omuzaki_library_api::AXES`);
+//!   terms (`omuzaki_library_api::rights_join::AXES`);
 //! - the licence is every distinct licence joined with SPDX `AND` (all of them apply), and the authors and attributions
 //!   are the **union** of the parts', in part-id order;
 //! - a part with **no source row counts as the most restrictive part possible**: commercial `unknown`, the default
@@ -20,7 +20,8 @@
 //! source row is, and it counts as the project's own only when its rights say `owned`.
 
 use omuzaki_char_api::{CharId, KindProvenance, PartId, find_kind, paths};
-use omuzaki_library_api::{ApplicationRecord, JointConsent, RightsRow, UNKNOWN_LICENCE, join_rights};
+use omuzaki_library_api::ApplicationRecord;
+use omuzaki_library_api::rights_join::{JointConsent, RightsRow, UNKNOWN_LICENCE, join_rights};
 use omuzaki_io_api::{CreditNotation, Finding, Report, UseTerms, VRM_LICENSE_URLS, VrmMeta};
 use omuzaki_ops_api::{Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op};
 use omuzaki_store_api::{Commercial, Consent, Provenance, Source};

@@ -9,12 +9,12 @@
 //! The axes and the join live in `omuzaki-library-api` (the one rights join the marketplace client shares); this module
 //! is the names `licence.set` and the excess findings use.
 
-pub(crate) use omuzaki_library_api::{commercial_rank, exceeding};
+pub(crate) use omuzaki_library_api::rights_join::{commercial_rank, exceeding};
 
 #[cfg(test)]
 mod tests {
     use omuzaki_io_api::{AvatarPermission, CommercialUsage, CreditNotation, Modification, UseTerms};
-    use omuzaki_library_api::{AXES, join_terms as join};
+    use omuzaki_library_api::rights_join::{AXES, join_terms as join};
     use omuzaki_store_api::Commercial;
 
     use super::*;

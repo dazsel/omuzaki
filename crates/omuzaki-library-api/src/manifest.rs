@@ -8,7 +8,8 @@ use serde_json::Value;
 
 use crate::migrations::{self, CURRENT_SCHEMA, SchemaError};
 use crate::publisher::Publisher;
-use crate::{AssetInfo, IdError, ItemId, ItemKind, ItemRights, Section, Target, Version, VersionError};
+use crate::rights::AssetInfo;
+use crate::{IdError, ItemId, ItemKind, ItemRights, Section, Target, Version, VersionError};
 
 /// Why a manifest couldn't be read. Semantic problems are not parse errors: [`ItemManifest::check`] reports those,
 /// each naming its field.

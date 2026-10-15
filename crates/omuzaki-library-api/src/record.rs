@@ -227,6 +227,25 @@ mod tests {
     }
 
     #[test]
+    fn a_populated_receipt_survives_the_node_round_trip() {
+        let r = ApplicationRecord { receipt: Some(ContentHash::of(b"receipt")), ..record() };
+        let node = r.to_node().unwrap();
+        assert_eq!(node["receipt"], json!(ContentHash::of(b"receipt").to_string()));
+        assert_eq!(ApplicationRecord::from_node(&node).unwrap(), r);
+        assert_eq!(ApplicationRecord::from_node(&node).unwrap().receipt, Some(ContentHash::of(b"receipt")));
+    }
+
+    #[test]
+    fn an_absent_receipt_is_omitted_and_legacy_records_without_it_still_read() {
+        let node = record().to_node().unwrap();
+        assert!(node.get("receipt").is_none(), "an absent receipt is not serialised: {node}");
+        // A record written before the field existed is exactly a node without the key.
+        let legacy = ApplicationRecord::from_node(&node).unwrap();
+        assert_eq!(legacy.receipt, None);
+        assert_eq!(legacy, record());
+    }
+
+    #[test]
     fn unknown_keys_and_other_schemas_are_refused() {
         let mut node = record().to_node().unwrap();
         node["extra"] = json!(1);
