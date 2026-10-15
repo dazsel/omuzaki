@@ -146,6 +146,9 @@ pub trait InputTap: Send {
     /// Runs one tail step: appends one whole TAIL chunk to `out` and returns [`TailStep::Chunk`], or reports
     /// [`TailStep::Pending`] or [`TailStep::Done`].
     ///
+    /// `out` is cleared by the host before every call and is never shrunk, so a step appends one whole chunk and
+    /// leaves earlier bytes alone, the same rule as [`InputTap::take`].
+    ///
     /// The host calls this until it returns `Done`. `cursor` is the host's position in the copy and starts at 0;
     /// the tap moves it past the bytes it copies, so a save never disturbs the live queue. The default writes no tail.
     fn tail(&mut self, _mode: &TailMode, _cursor: &mut u64, _out: &mut Vec<u8>) -> TailStep {
