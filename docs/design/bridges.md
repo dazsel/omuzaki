@@ -1,12 +1,12 @@
 ---
 title: "Compatibility bridges: the VTube Studio-compatible API shim, and how VMC and OSC fit (PL-05)"
-summary: "the VTube Studio-compatible API shim (ADR 0063): where it lives, which requests it answers or refuses and with which error ids, the tool's session, pairing, token and revocation, injected parameters in the tracker layer, safety caps, naming, ops and settings; how VMC (PF-04) and OSC (PF-05) fit; tests and the task cut."
+summary: "the VTube Studio-compatible API shim (ADR 0066): where it lives, which requests it answers or refuses and with which error ids, the tool's session, pairing, token and revocation, injected parameters in the tracker layer, safety caps, naming, ops and settings; how VMC (PF-04) and OSC (PF-05) fit; tests and the task cut."
 area: design
 ---
 
 # Compatibility bridges: the VTube Studio-compatible API shim, and how VMC and OSC fit (PL-05)
 
-**Status:** proposed. **Feature:** PL-05 (#529). **Decision record:** [ADR 0063](../decisions/0063-bridges.md).
+**Status:** proposed. **Feature:** PL-05 (#529). **Decision record:** [ADR 0066](../decisions/0066-bridges.md).
 **Spec:** v3 §30 (PL-05), §14 (CN-13), §22 (PF-04, PF-05, PF-23), §6 (ops, scopes), §31 (SE-04), QG-10.
 **Builds on:** ADR 0020 and `agent-sessions.md` (sessions, `Need::Pairing`, revocation), `plugins.md` §3
 (`Transport::Plugin` sessions, live revocation), `settings.md` (`SettingScope`, `AgentWrite`), `anim-api.md` and
@@ -324,7 +324,7 @@ nothing. `S` = session, `G` = effective grants.
 
 ## 13. Task cut
 
-Each task: Parent #529, `lane:cloud`, priority P1 unless stated. File when ADR 0063 is accepted; re-cut comments go on
+Each task: Parent #529, `lane:cloud`, priority P1 unless stated. File when ADR 0066 is accepted; re-cut comments go on
 #1086, #1212 and #1213.
 
 - **S1 (re-cut #1086), server core.** Fence: `crates/omuzaki-vts/src/server/{mod,listener,session,auth,pairing}.rs`,

@@ -1,10 +1,10 @@
 ---
-title: "0063: Compatibility bridges drive Omuzaki only through ops, in a paired session that holds `perform` (2026-10-15)"
+title: "0066: Compatibility bridges drive Omuzaki only through ops, in a paired session that holds `perform` (2026-10-15)"
 summary: "Compatibility bridges drive Omuzaki only through ops, in a paired session that holds perform"
 area: decisions
 ---
 
-# 0063: Compatibility bridges drive Omuzaki only through ops, in a paired session that holds `perform` (2026-10-15)
+# 0066: Compatibility bridges drive Omuzaki only through ops, in a paired session that holds `perform` (2026-10-15)
 
 **Status:** proposed (#1085); accepted by the cloud lead on the pull request. **Context:** PL-05 (#529), CN-13 (#717),
 PF-04 (#468), PF-05 (#469), PF-23 (#476); `docs/design/bridges.md`; `docs/research/2026-10-vts-shim-terms.md`.
