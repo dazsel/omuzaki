@@ -84,7 +84,7 @@ fn fenced_error_is_denied_names_the_holder_and_carries_the_detail() {
 /// Existing `Event` JSON is unchanged by the new variant: fixed expected text, not a round trip through the types.
 #[test]
 fn existing_event_json_is_byte_identical() {
-    let committed = Event::TxCommitted { tx: omuzaki_ops_api::TxId(1), label: "l".into(), actor: Actor::System };
+    let committed = Event::tx_committed(omuzaki_ops_api::TxId(1), "l", Actor::System);
     assert_eq!(
         serde_json::to_string(&committed).unwrap(),
         r#"{"event":"tx_committed","tx":1,"label":"l","actor":{"kind":"system"}}"#
@@ -97,15 +97,7 @@ fn existing_event_json_is_byte_identical() {
 
 #[test]
 fn clash_event_has_a_stable_shape_and_schema() {
-    let event = Event::Clash {
-        session: SessionId(2),
-        actor: agent(),
-        op: "x.y".into(),
-        path: p("a"),
-        kind: ClashKind::Stale,
-        other: None,
-        at: Seconds(1.0),
-    };
+    let event = Event::clash(SessionId(2), agent(), "x.y", p("a"), ClashKind::Stale, None, Seconds(1.0));
     let json = serde_json::to_value(&event).unwrap();
     assert_eq!(json["event"], "clash");
     assert_eq!(json["kind"], "stale");

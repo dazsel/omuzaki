@@ -38,6 +38,11 @@ More measurements:
    - The function is `#[inline(never)]` and ends in `core::hint::black_box(())`. An empty function would let link-time optimisation see that the call does nothing and delete it, and with the call goes the reference that keeps the crate's object file on wasm. `black_box` is opaque to the optimiser, so the call and the reference stay.
    - A crate that depends on such a crate calls `<crate>::link()`. A library that others link does this from its own `link()`, so the chain reaches every App.
    - Apps call their dependencies' `link()` once at startup. This replaces `use omuzaki_x as _;`.
+   - The calls are generated, not listed (ADR 0054 section 6). A crate sets `registers = true` under `[package.metadata.omuzaki]`
+     when it has a `link()` that others must call, and a crate whose `link()` forwards (an App) lists
+     `omuzaki-link-build` under `[build-dependencies]`: its `build.rs` writes one call per dependency with the flag, and
+     `define_link! { include!(concat!(env!("OUT_DIR"), "/link_calls.rs")); }` includes them. `cargo xtask lint-registers`
+     fails a crate that registers without the flag.
    - A crate may define `link()` before it registers anything, so the crates that link it are wired ahead of time.
 2. **One codegen unit per crate on wasm.** `.cargo/config.toml` sets `-C codegen-units=1` for `wasm32-unknown-unknown`. Each crate is then one object file, and the reference that `link()` makes keeps all of that crate's registrations. Native builds keep their default codegen units: there, naming the crate already keeps every registration.
 3. **The gate.**

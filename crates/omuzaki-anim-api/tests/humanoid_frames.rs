@@ -7,6 +7,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use omuzaki_anim_api::humanoid_frames::RestLengthMismatch;
 use omuzaki_anim_api::{BoneDef, BoneId, HumanoidBone, HumanoidFrames, HumanoidPose, Pose, Skeleton, Transform};
 use omuzaki_core::glam::{Quat, Vec3};
 use omuzaki_core::rng::Rng;
@@ -95,8 +96,8 @@ fn to_humanoid_inverts_apply_humanoid() {
         for _ in 0..64 {
             let pose = random_pose(&mut rng);
             let (mut local, mut back) = (Pose::IDENTITY, HumanoidPose::REST);
-            frames.apply_humanoid(&rest, &pose, &mut local);
-            frames.to_humanoid(&rest, &local, &mut back);
+            frames.apply_humanoid(&rest, &pose, &mut local).expect("rest_local has one entry per joint");
+            frames.to_humanoid(&rest, &local, &mut back).expect("rest_local has one entry per joint");
             for bone in HumanoidBone::ALL {
                 let present = skeleton.humanoid_bone(bone).is_some();
                 let want = if present { pose.get(bone) } else { Quat::IDENTITY };
@@ -118,7 +119,9 @@ fn a_generic_skeleton_has_no_frames_and_stays_at_rest() {
     assert!(frames.is_empty());
     let rest = rest_local(&generic);
     let mut local = Pose::IDENTITY;
-    frames.apply_humanoid(&rest, &random_pose(&mut Rng::new(3)), &mut local);
+    frames
+        .apply_humanoid(&rest, &random_pose(&mut Rng::new(3)), &mut local)
+        .expect("rest_local has one entry per joint");
     assert_eq!(&local.local[..rest.len()], &rest[..]);
 }
 
@@ -132,7 +135,7 @@ fn garbage_input_leaves_a_bone_at_rest() {
     pose.set(HumanoidBone::Chest, Quat::from_xyzw(f32::INFINITY, 0.0, 0.0, 1.0));
     pose.hips_offset = Vec3::new(f32::INFINITY, 0.0, 0.0);
     let mut local = Pose::IDENTITY;
-    frames.apply_humanoid(&rest, &pose, &mut local);
+    frames.apply_humanoid(&rest, &pose, &mut local).expect("rest_local has one entry per joint");
     for bone in [HumanoidBone::Head, HumanoidBone::Neck, HumanoidBone::Chest, HumanoidBone::Hips] {
         let id = skeleton.humanoid_bone(bone).unwrap().index();
         assert_eq!(local.local[id], rest[id], "{bone}");
@@ -141,7 +144,7 @@ fn garbage_input_leaves_a_bone_at_rest() {
     let hips = skeleton.humanoid_bone(HumanoidBone::Head).unwrap().index();
     local.local[hips].rotation = Quat::from_xyzw(f32::NAN, 0.0, 0.0, 1.0);
     let mut back = HumanoidPose::REST;
-    frames.to_humanoid(&rest, &local, &mut back);
+    frames.to_humanoid(&rest, &local, &mut back).expect("rest_local has one entry per joint");
     assert_eq!(back.get(HumanoidBone::Head), Quat::IDENTITY);
 }
 
@@ -154,10 +157,38 @@ fn the_conversions_allocate_nothing() {
     MEASURING.with(|m| m.set(true));
     let before = ALLOCATIONS.load(Ordering::Relaxed);
     for _ in 0..100 {
-        frames.apply_humanoid(&rest, &pose, &mut local);
-        frames.to_humanoid(&rest, &local, &mut back);
+        frames.apply_humanoid(&rest, &pose, &mut local).expect("rest_local has one entry per joint");
+        frames.to_humanoid(&rest, &local, &mut back).expect("rest_local has one entry per joint");
     }
     let after = ALLOCATIONS.load(Ordering::Relaxed);
     MEASURING.with(|m| m.set(false));
     assert_eq!(after - before, 0, "both conversions allocate nothing");
+}
+
+#[test]
+fn a_short_or_long_rest_local_is_an_error_and_writes_nothing() {
+    let (_, skeleton) = skeletons().remove(1);
+    let (frames, rest) = (HumanoidFrames::new(&skeleton), rest_local(&skeleton));
+    let joints = skeleton.len();
+    let pose = random_pose(&mut Rng::new(4));
+    let sentinel = Transform::from_translation(Vec3::splat(9.0));
+    let mut local = Pose { local: [sentinel; omuzaki_anim_api::MAX_BONES] };
+    let mut back = HumanoidPose::REST;
+    back.hips_offset = Vec3::splat(7.0);
+
+    let short = &rest[..joints - 1];
+    let long: Vec<Transform> = rest.iter().copied().chain([Transform::IDENTITY]).collect();
+    for given in [short, &long[..]] {
+        let want = RestLengthMismatch { expected: joints, actual: given.len() };
+        assert_eq!(frames.apply_humanoid(given, &pose, &mut local), Err(want));
+        assert_eq!(frames.to_humanoid(given, &local, &mut back), Err(want));
+    }
+    assert!(local.local.iter().all(|t| *t == sentinel), "apply_humanoid wrote into out on a mismatch");
+    assert_eq!(back.hips_offset, Vec3::splat(7.0), "to_humanoid wrote into out on a mismatch");
+}
+
+#[test]
+fn the_error_names_both_lengths() {
+    let err = RestLengthMismatch { expected: 55, actual: 54 };
+    assert_eq!(err.to_string(), "rest_local has 54 transforms, but the skeleton has 55 joints");
 }
