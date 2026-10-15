@@ -67,6 +67,14 @@ const J_TOP_TIP: usize = 7;
 const J_TOP_WIDTH: usize = 3;
 const J_TOP_HOOK: usize = 11;
 const J_UNDER_TIP: usize = 20;
+/// Limits applied to the unvalidated parameters (the [`Taper`] validation's width range, and generous angle and offset
+/// ranges): widths in metres, angles in degrees, offsets in metres.
+const MIN_WIDTH: f64 = 0.001;
+const MAX_WIDTH: f64 = 0.3;
+const MAX_ANGLE_DEG: f64 = 90.0;
+const MAX_OFFSET: f64 = 0.2;
+/// The least distance from the skull, so a clump never sits in it.
+const MIN_OFFSET: f64 = 0.002;
 /// Thickness of every lock (the prototype's `0.005 + 0.005 sin(pi t)`).
 pub const THICKNESS: Bulge = Bulge { base: 0.005, swell: 0.005 };
 /// Width fit: the outline's width at the root, metres, including [`FLOOR`].
@@ -77,6 +85,12 @@ pub const FLOOR: f64 = 0.0015;
 pub const MID_GAIN: f64 = 1.05;
 /// Width fit: where along the lock the widest part sits.
 pub const TIP_AT: f64 = 0.57;
+
+/// `x` limited to `lo..=hi`, or `fallback` if it is not finite. The contract's validation covers the counts, spread and
+/// shade only; the rest reaches the generator as it was typed, so it is checked where it is read.
+fn sane(x: f64, lo: f64, hi: f64, fallback: f64) -> f64 {
+    if x.is_finite() { x.clamp(lo, hi) } else { fallback }
+}
 
 /// The prototype's `hj(k)`: the fixed jitter in `-0.5..0.5` for index `k`.
 fn hj(k: usize) -> f64 {
@@ -140,8 +154,14 @@ pub fn clump_count(g: &BangsGen) -> usize {
 #[allow(clippy::cast_precision_loss)] // clump indices are small
 fn layer_lock(layer: &BangLayer, top: bool, i: usize) -> Lock {
     let n = usize::from(layer.count);
-    let tip = layer.tip_heights.get(i).or(layer.tip_heights.last()).copied().unwrap_or(0.0);
-    let spread = layer.spread_deg.to_radians();
+    let tip = sane(layer.tip_heights.get(i).or(layer.tip_heights.last()).copied().unwrap_or(0.0), -1.0, 1.0, 0.0);
+    let spread = sane(layer.spread_deg, 5.0, 90.0, 44.0).to_radians();
+    let (width, shade) = (sane(layer.width, MIN_WIDTH, MAX_WIDTH, 0.064), sane(layer.shade, 0.5, 1.0, 1.0));
+    let (hook_deg, root_offset, tip_offset) = (
+        sane(layer.hook_deg, -MAX_ANGLE_DEG, MAX_ANGLE_DEG, 0.0),
+        sane(layer.root_offset, MIN_OFFSET, MAX_OFFSET, 0.046),
+        sane(layer.tip_offset, MIN_OFFSET, MAX_OFFSET, 0.009),
+    );
     if top {
         let u = if n > 1 { i as f64 / (n - 1) as f64 * 2.0 - 1.0 } else { 0.0 };
         let drop = TOP_DROP * smoothstep(u.abs(), 0.5, 1.0);
@@ -149,11 +169,11 @@ fn layer_lock(layer: &BangLayer, top: bool, i: usize) -> Lock {
         Lock {
             phi,
             tip_height: tip - drop + TOP_TIP_JITTER * hj(i + J_TOP_TIP),
-            root_offset: layer.root_offset,
-            tip_offset: layer.tip_offset,
-            width: layer.width * (1.0 + WIDTH_JITTER * hj(i + J_TOP_WIDTH)),
-            shade: layer.shade * (1.0 - SHADE_STEP * (i % 2) as f64),
-            hook_deg: layer.hook_deg * (1.0 + hj(i + J_TOP_HOOK)),
+            root_offset,
+            tip_offset,
+            width: width * (1.0 + WIDTH_JITTER * hj(i + J_TOP_WIDTH)),
+            shade: shade * (1.0 - SHADE_STEP * (i % 2) as f64),
+            hook_deg: hook_deg * (1.0 + hj(i + J_TOP_HOOK)),
             u: ratio(phi, spread),
         }
     } else {
@@ -162,11 +182,11 @@ fn layer_lock(layer: &BangLayer, top: bool, i: usize) -> Lock {
         Lock {
             phi: u * spread,
             tip_height: tip - drop + UNDER_TIP_JITTER * hj(i + J_UNDER_TIP),
-            root_offset: layer.root_offset,
-            tip_offset: layer.tip_offset,
-            width: layer.width,
-            shade: layer.shade,
-            hook_deg: layer.hook_deg,
+            root_offset,
+            tip_offset,
+            width,
+            shade,
+            hook_deg,
             u,
         }
     }
@@ -175,11 +195,11 @@ fn layer_lock(layer: &BangLayer, top: bool, i: usize) -> Lock {
 /// A wisp: no hook, so the spread it is measured against does not matter.
 fn wisp_lock(w: &Wisp) -> Lock {
     Lock {
-        phi: w.phi_deg.to_radians(),
-        tip_height: w.tip_height,
+        phi: sane(w.phi_deg, -180.0, 180.0, 0.0).to_radians(),
+        tip_height: sane(w.tip_height, -1.0, 1.0, 0.0),
         root_offset: WISP_ROOT_OFFSET,
         tip_offset: WISP_TIP_OFFSET,
-        width: w.width,
+        width: sane(w.width, MIN_WIDTH, MAX_WIDTH, 0.022),
         shade: WISP_SHADE,
         hook_deg: 0.0,
         u: 0.0,
@@ -212,7 +232,7 @@ fn control_points(sweep_deg: f64, head: &dyn HeadSurface, lock: &Lock, out: &mut
     let crown = f64::from(head.radius(Vec3::Y)).max(1e-6);
     let tip_theta = (lock.tip_height / crown).clamp(-1.0, 1.0).acos();
     let root_theta = ROOT_THETA_DEG.to_radians();
-    let sweep = sweep_deg.to_radians();
+    let sweep = sane(sweep_deg, -MAX_ANGLE_DEG, MAX_ANGLE_DEG, 0.0).to_radians();
     let hook = lock.hook_deg.to_radians();
     for (k, point) in out.iter_mut().enumerate() {
         let t = k as f64 / (CONTROL_POINTS - 1) as f64;

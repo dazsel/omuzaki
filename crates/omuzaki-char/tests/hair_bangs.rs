@@ -147,3 +147,52 @@ fn the_width_fit_is_close_to_the_prototypes_outline() {
         assert!(worst < 0.01, "width {w}: {worst}");
     }
 }
+
+#[test]
+fn non_finite_and_extreme_parameters_still_make_finite_clumps_outside_the_head() {
+    let bad = BangLayer {
+        count: 4,
+        spread_deg: f64::NAN,
+        tip_heights: vec![f64::NAN, f64::INFINITY, -1e9],
+        width: f64::NEG_INFINITY,
+        hook_deg: 1e9,
+        root_offset: -1.0,
+        tip_offset: f64::NAN,
+        shade: f64::NAN,
+    };
+    let wisp = Wisp { phi_deg: f64::NAN, tip_height: f64::NAN, width: -3.0 };
+    let g = BangsGen { layers: vec![bad.clone(), bad], wisps: vec![wisp], sweep_deg: f64::INFINITY };
+    let group = compile(&g, &mut Counting::default());
+    assert_eq!(group.clumps.len(), bangs::clump_count(&g));
+    for clump in &group.clumps {
+        assert!(clump.rest.iter().all(|p| p.is_finite()));
+        assert!(clump.rest.iter().all(|p| (*p - Egg.centre()).length() >= Egg.radius((*p - Egg.centre()).normalize())));
+    }
+}
+
+#[test]
+fn layers_come_first_in_order_then_the_wisps() {
+    let mut g = style(2, 1);
+    g.layers[0].shade = 0.6;
+    g.layers[1].shade = 1.0;
+    let shades: Vec<f32> = compile(&g, &mut Counting::default()).clumps.iter().map(|c| c.shade).collect();
+    // 3 under-layer clumps (0.6), 4 top-layer clumps (1.0 or 0.965), 1 wisp (0.98).
+    assert!(shades[..3].iter().all(|s| (*s - 0.6).abs() < 1e-6), "{shades:?}");
+    assert!(shades[3..7].iter().all(|s| *s > 0.95), "{shades:?}");
+    assert!((shades[7] - 0.98).abs() < 1e-6, "{shades:?}");
+}
+
+#[test]
+fn an_under_layer_is_mirror_symmetric_without_the_sweep() {
+    let mut g = style(2, 0);
+    g.sweep_deg = 0.0;
+    g.layers[0] = layer(4, &[0.0]);
+    let clumps = compile(&g, &mut Counting::default()).clumps;
+    // The jitter is on the tip height only, and differs between mirrored locks, so compare the roots.
+    for i in 0..2 {
+        let (a, b) = (clumps[i].rest[0], clumps[3 - i].rest[0]);
+        assert!(
+            (a.x + b.x - 2.0 * Egg.centre().x).abs() < 1e-5 && (a.y - b.y).abs() < 1e-5 && (a.z - b.z).abs() < 1e-5
+        );
+    }
+}
