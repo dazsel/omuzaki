@@ -1,6 +1,6 @@
 //! [`MockLibrary`]: the naive oracle. Every question is answered by a linear scan over the held entries.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use omuzaki_library_api::{
     CompatStatus, Facets, ItemDetail, ItemId, ItemInfo, ItemKind, ItemManifest, ItemScope, Library, LibraryError,
@@ -43,12 +43,15 @@ impl MockLibrary {
     }
 
     /// A library holding [`fixtures::all`](crate::fixtures::all).
+    ///
+    /// # Panics
+    /// If a fixture is refused: the fixtures are valid by construction, so that is a bug in this crate, and a
+    /// library that silently lacked one would make the conformance suite pass or fail for the wrong reason.
     pub fn fixtures() -> Self {
         let mut library = Self::new();
         for f in crate::fixtures::all() {
-            // The fixtures are valid by construction; a refusal here is a bug the crate's tests catch.
             if let Err(e) = library.insert(f.manifest, f.scope) {
-                debug_assert!(false, "fixture refused: {e}");
+                panic!("fixture refused: {e}");
             }
         }
         library
@@ -59,11 +62,12 @@ impl MockLibrary {
         self.known_ops = ops.into_iter().collect();
     }
 
-    /// Adds an item to `scope`. Adding the same manifest twice changes nothing.
+    /// Adds an item to `scope`. Adding the same manifest to the same scope twice changes nothing.
     ///
     /// # Errors
     /// [`LibraryError::Storage`] when the id, version or section is malformed, when the publisher check refuses it,
-    /// or when the same publisher key already holds this id and version in the scope with a different hash.
+    /// or when the same publisher key already holds this id and version in *any* scope with a different hash: a
+    /// published `id@version` is immutable (D11), so Mine and Team can't disagree about it.
     pub fn insert(&mut self, manifest: ItemManifest, scope: ItemScope) -> Result<(), LibraryError> {
         let bad = |what: &dyn std::fmt::Display| LibraryError::Storage(format!("{}: {what}", manifest.id));
         let id = manifest.item_id().map_err(|e| bad(&e))?;
@@ -75,16 +79,17 @@ impl MockLibrary {
             return Err(bad(&format!("refused: {reason}")));
         }
         let hash = manifest.hash();
-        let same = |e: &&Entry| e.id == id && e.version == version && e.scope == scope;
-        for held in self.entries.iter().filter(same) {
-            let same_key =
-                held.item.manifest.publisher.as_ref().map(|p| &p.key) == manifest.publisher.as_ref().map(|p| &p.key);
-            if same_key && held.item.hash == hash {
-                return Ok(());
-            }
-            if same_key {
-                return Err(bad(&format!("{version} is already held with a different hash")));
-            }
+        let key = |m: &ItemManifest| m.publisher.as_ref().map(|p| p.key.clone());
+        let twins: Vec<&Entry> = self
+            .entries
+            .iter()
+            .filter(|e| e.id == id && e.version == version && key(&e.item.manifest) == key(&manifest))
+            .collect();
+        if let Some(held) = twins.iter().find(|e| e.item.hash != hash) {
+            return Err(bad(&format!("{version} is already held in {:?} with a different hash", held.scope)));
+        }
+        if twins.iter().any(|e| e.scope == scope) {
+            return Ok(());
         }
         self.entries.push(Entry {
             id,
@@ -135,13 +140,16 @@ impl MockLibrary {
         }
     }
 
-    /// The newest version per (id, scope, publisher key): the rows of a listing.
+    /// The newest version per (id, scope, publisher key) that search may show: the rows of a listing. `listed = false`
+    /// and deprecated items are hidden here, before ranking, paging and facets, but stay resolvable. The newest version
+    /// decides, so a deprecated release never lets an older one resurface.
     fn rows(&self) -> Vec<&Entry> {
         let key =
             |e: &Entry| (e.id.clone(), e.scope.clone(), e.item.manifest.publisher.as_ref().map(|p| p.key.clone()));
         self.entries
             .iter()
             .filter(|e| !self.entries.iter().any(|o| key(o) == key(e) && o.version > e.version))
+            .filter(|e| e.item.manifest.listed && e.item.manifest.deprecated.is_none())
             .collect()
     }
 
@@ -194,22 +202,31 @@ impl MockLibrary {
     }
 }
 
+/// Refuses with `Ambiguous` when `entries` come from more than one publisher key. The key is the identity; the name
+/// is only what is shown, so a publisher renaming itself between versions is still one publisher.
 fn ensure_one_publisher(item: &ItemId, entries: &[&Entry]) -> Result<(), LibraryError> {
-    let mut candidates: Vec<(String, String)> = entries
-        .iter()
-        .map(|e| match &e.item.manifest.publisher {
+    // Per key, the name its newest version shows (ties by name, so the choice never depends on insertion order).
+    let mut by_key: BTreeMap<String, (Version, String)> = BTreeMap::new();
+    for e in entries {
+        let (key, name) = match &e.item.manifest.publisher {
             Some(p) => (p.key.clone(), p.name.clone()),
             None => (String::new(), "unsigned".to_owned()),
-        })
-        .collect();
-    candidates.sort();
-    candidates.dedup();
-    if candidates.len() < 2 {
+        };
+        let shown = (e.version, name);
+        match by_key.get_mut(&key) {
+            Some(held) if shown > *held => *held = shown,
+            Some(_) => {}
+            None => {
+                by_key.insert(key, shown);
+            }
+        }
+    }
+    if by_key.len() < 2 {
         return Ok(());
     }
-    let named = candidates
+    let named = by_key
         .into_iter()
-        .map(|(key, name)| {
+        .map(|(key, (_, name))| {
             format!(
                 "{name} ({})",
                 PublisherKey::from_hex(&key).map_or_else(|_| "no key".to_owned(), |k| k.fingerprint())

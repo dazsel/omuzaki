@@ -1,9 +1,10 @@
 //! `apply_for_test`: a recipe planned step by step on a scratch copy, with nothing written anywhere.
 
+use omuzaki_char_api::paths;
 use omuzaki_core::time::{FakeClock, Seconds};
-use omuzaki_doc_api::{DocRead, DocWrite, Patch, Scratch};
+use omuzaki_doc_api::{DocPath, DocRead, DocWrite, Patch, Scratch};
 use omuzaki_library_api::{Bindings, ItemId, ItemManifest, Library, Params, StepRequest, VersionReq, expand};
-use omuzaki_ops_api::{Actor, OpCtx, OpError};
+use omuzaki_ops_api::{Actor, OpCtx, OpError, OpKind, Scope, find};
 
 /// How deep bundles may nest before the apply is refused as a cycle.
 const MAX_DEPTH: usize = 4;
@@ -15,10 +16,16 @@ const MAX_DEPTH: usize = 4;
 /// There are no records and no slots, and bundle steps are refused (see [`apply_with_library`]): this is what a
 /// seed test needs to dry-run an item without linking `omuzaki-library`.
 ///
+/// The recipe's safety rules (design D3) hold as in a real apply: each step must be a registered `Edit` op within the
+/// `edit:character`/`edit:scene` ceiling, an argument named `character` or `scene` must be its placeholder (the
+/// expansion refuses anything else), and every change must lie at or under the bound character's node, so an item
+/// can't touch another character. `bindings.character` is therefore required.
+///
 /// # Errors
-/// [`OpError`] on `step/<i>` for an expansion failure, a bundle step, or whatever the planned op returns.
+/// [`OpError`] on `step/<i>` for an expansion failure, a bundle step, a step outside the ceiling, a change outside
+/// the target, or whatever the planned op returns.
 pub fn apply_for_test(manifest: &ItemManifest, doc: &dyn DocRead, bindings: &Bindings) -> Result<Patch, OpError> {
-    run(None, manifest, doc, bindings, 0)
+    run(None, manifest, doc, bindings)
 }
 
 /// [`apply_for_test`] that resolves a bundle's item steps in `library`. A nested item shares the caller's
@@ -32,7 +39,7 @@ pub fn apply_with_library(
     doc: &dyn DocRead,
     bindings: &Bindings,
 ) -> Result<Patch, OpError> {
-    run(Some(library), manifest, doc, bindings, 0)
+    run(Some(library), manifest, doc, bindings)
 }
 
 fn run(
@@ -40,63 +47,109 @@ fn run(
     manifest: &ItemManifest,
     doc: &dyn DocRead,
     bindings: &Bindings,
-    depth: usize,
 ) -> Result<Patch, OpError> {
-    let mut scratch = Scratch::of(doc);
-    let mut combined = Patch::new();
-    steps(library, manifest, &Params::new(), bindings, &mut scratch, &mut combined, depth)?;
-    Ok(combined)
+    let character = bindings
+        .character
+        .as_ref()
+        .ok_or_else(|| OpError::invalid("character", "bind the character the recipe applies to"))?;
+    let mut apply =
+        Apply { library, target: paths::character(character), scratch: Scratch::of(doc), combined: Patch::new() };
+    apply.steps(manifest, &Params::new(), bindings, 0)?;
+    Ok(apply.combined)
 }
 
-fn steps(
-    library: Option<&dyn Library>,
-    manifest: &ItemManifest,
-    params: &Params,
-    bindings: &Bindings,
-    scratch: &mut Scratch,
-    combined: &mut Patch,
-    depth: usize,
-) -> Result<(), OpError> {
-    if depth > MAX_DEPTH {
-        return Err(OpError::invalid("step", format!("bundles nest deeper than {MAX_DEPTH}; is there a cycle?")));
-    }
-    let requests = expand(manifest, bindings, params).map_err(|e| OpError::invalid("step", e.to_string()))?;
-    let actor = Actor::System;
-    let clock = FakeClock::new(Seconds(0.0));
-    for request in requests {
-        match request {
-            StepRequest::Op { index, op, args } => {
-                // A dry-run context needs no grants: the step's scope is checked only on the real apply.
-                let patch = {
-                    let ctx = OpCtx::new(&*scratch, &actor, &clock).with_dry_run(true);
-                    ctx.plan_step(&op, args, &*scratch).map_err(|e| step_error(index, &e))?.1.patch
-                };
-                scratch.apply(&patch).map_err(|e| OpError::conflict(format!("step/{index}: {e}")))?;
-                combined.changes.extend(patch.changes);
-            }
-            StepRequest::Item { index, item, version, params, bind } => {
-                let field = format!("step/{index}");
-                let library = library.ok_or_else(|| {
-                    OpError::invalid(
-                        field.as_str(),
-                        "this applies a bundle; use apply_with_library to resolve its items",
-                    )
-                })?;
-                let nested = resolve(library, &item, &version, &field)?;
-                let mut inner = bindings.clone();
-                if let Some(target) = bind.get("target") {
-                    let part = omuzaki_char_api::PartId::new(target.as_str())
-                        .map_err(|e| OpError::invalid(format!("{field}/bind/target"), e.to_string()))?;
-                    inner.target = Some(part);
+/// One dry run in progress: the scratch copy every step plans against, and the patch collected so far.
+struct Apply<'a> {
+    library: Option<&'a dyn Library>,
+    /// `characters/<id>` of the bound character: every change must lie at or under it.
+    target: DocPath,
+    scratch: Scratch,
+    combined: Patch,
+}
+
+impl Apply<'_> {
+    fn steps(
+        &mut self,
+        manifest: &ItemManifest,
+        params: &Params,
+        bindings: &Bindings,
+        depth: usize,
+    ) -> Result<(), OpError> {
+        if depth > MAX_DEPTH {
+            return Err(OpError::invalid("step", format!("bundles nest deeper than {MAX_DEPTH}; is there a cycle?")));
+        }
+        let requests = expand(manifest, bindings, params).map_err(|e| OpError::invalid("step", e.to_string()))?;
+        let actor = Actor::System;
+        let clock = FakeClock::new(Seconds(0.0));
+        for request in requests {
+            match request {
+                StepRequest::Op { index, op, args } => {
+                    // A dry-run context needs no grants, so the recipe ceiling is enforced here, before planning.
+                    check_ceiling(index, &op)?;
+                    let patch = {
+                        let ctx = OpCtx::new(&self.scratch, &actor, &clock).with_dry_run(true);
+                        ctx.plan_step(&op, args, &self.scratch).map_err(|e| step_error(index, &e))?.1.patch
+                    };
+                    confine(index, &patch, &self.target)?;
+                    self.scratch.apply(&patch).map_err(|e| OpError::conflict(format!("step/{index}: {e}")))?;
+                    self.combined.changes.extend(patch.changes);
                 }
-                if let Some(name) = bind.get("as") {
-                    inner.name = Some(name.clone());
+                StepRequest::Item { index, item, version, params, bind } => {
+                    let field = format!("step/{index}");
+                    let library = self.library.ok_or_else(|| {
+                        OpError::invalid(
+                            field.as_str(),
+                            "this applies a bundle; use apply_with_library to resolve its items",
+                        )
+                    })?;
+                    let nested = resolve(library, &item, &version, &field)?;
+                    let mut inner = bindings.clone();
+                    if let Some(target) = bind.get("target") {
+                        let part = omuzaki_char_api::PartId::new(target.as_str())
+                            .map_err(|e| OpError::invalid(format!("{field}/bind/target"), e.to_string()))?;
+                        inner.target = Some(part);
+                    }
+                    if let Some(name) = bind.get("as") {
+                        inner.name = Some(name.clone());
+                    }
+                    self.steps(&nested, &params, &inner, depth + 1)?;
                 }
-                steps(Some(library), &nested, &params, &inner, scratch, combined, depth + 1)?;
             }
         }
+        Ok(())
+    }
+}
+
+/// Safety rule 1: a step names a registered op of kind `Edit` with scope `edit:character` or `edit:scene`.
+fn check_ceiling(index: usize, op: &str) -> Result<(), OpError> {
+    let field = format!("step/{index}/op");
+    let registration = find(op)
+        .ok_or_else(|| OpError::invalid(field.as_str(), format!("`{op}` is not a registered op in this build")))?;
+    let meta = (registration.meta)();
+    if meta.kind != OpKind::Edit {
+        return Err(OpError::denied(format!(
+            "step/{index}: `{op}` is a {:?}; recipes may only call edit ops",
+            meta.kind
+        )));
+    }
+    if !matches!(meta.scope, Scope::EditCharacter | Scope::EditScene) {
+        return Err(OpError::denied(format!(
+            "step/{index}: `{op}` needs the {} scope; recipes are limited to edit:character and edit:scene",
+            meta.scope
+        )));
     }
     Ok(())
+}
+
+/// Safety rule 2, patches: every change lies at or under the target node.
+fn confine(index: usize, patch: &Patch, target: &DocPath) -> Result<(), OpError> {
+    match patch.changes.iter().find(|c| !c.path.starts_with(target)) {
+        Some(stray) => Err(OpError::denied(format!(
+            "step/{index}: changes `{}`, outside the target `{target}`; a recipe can't touch anything else",
+            stray.path
+        ))),
+        None => Ok(()),
+    }
 }
 
 fn resolve(library: &dyn Library, item: &ItemId, req: &VersionReq, field: &str) -> Result<ItemManifest, OpError> {

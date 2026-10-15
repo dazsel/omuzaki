@@ -1,15 +1,17 @@
 //! What every [`Library`] must do on the fixture set (design section 6). The library under test is loaded with
 //! [`fixtures::all`](crate::fixtures::all), then handed to [`run`].
 
-// A conformance suite fails by panicking, with the check's name, like the store's.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
-
 use omuzaki_library_api::{ItemId, ItemScope, Library, LibraryError, Query, Section, Usage, Version, VersionReq};
 
 use crate::fixtures::{RIVAL_SEED, SIGNER_SEED, shared_bow};
 
+/// A suite fails by panicking, naming the check. This is the one place a failed call becomes that panic.
+fn must<T, E: std::fmt::Debug>(what: &str, result: Result<T, E>) -> T {
+    result.unwrap_or_else(|e| panic!("conformance: {what}: {e:?}"))
+}
+
 fn id(s: &str) -> ItemId {
-    ItemId::new(s).unwrap_or_else(|e| panic!("{s}: {e}"))
+    must(s, ItemId::new(s))
 }
 
 fn v(major: u32, minor: u32, patch: u32) -> Version {
@@ -33,24 +35,24 @@ pub fn run(library: &dyn Library) {
 /// has a match.
 fn resolution_order(library: &dyn Library) {
     let ember = id("signer/colourways/ember");
-    let got = library.resolve(&ember, &VersionReq::Any).expect("ember resolves");
+    let got = must("ember resolves", library.resolve(&ember, &VersionReq::Any));
     assert_eq!(
         (got.scope, got.manifest.version.as_str()),
         (ItemScope::Mine, "1.1.0"),
         "Mine beats Team even when Team is newer"
     );
-    let team = library.resolve(&ember, &VersionReq::Exact(v(1, 2, 0))).expect("only the team holds 1.2.0");
+    let team = must("only the team holds 1.2.0", library.resolve(&ember, &VersionReq::Exact(v(1, 2, 0))));
     assert_eq!(team.scope, ItemScope::Team("studio".to_owned()));
 }
 
 fn version_selection(library: &dyn Library) {
     let ember = id("signer/colourways/ember");
-    assert_eq!(library.versions(&ember).expect("versions"), vec![v(1, 0, 0), v(1, 1, 0), v(1, 2, 0)], "oldest first");
-    let compatible = VersionReq::parse("^1.0").expect("req");
-    assert_eq!(library.resolve(&ember, &compatible).expect("^1.0").manifest.version, "1.1.0");
-    let exact = library.describe(&ember, Some(&v(1, 0, 0))).expect("describe 1.0.0");
+    assert_eq!(must("versions", library.versions(&ember)), vec![v(1, 0, 0), v(1, 1, 0), v(1, 2, 0)], "oldest first");
+    let compatible = must("req ^1.0", VersionReq::parse("^1.0"));
+    assert_eq!(must("^1.0", library.resolve(&ember, &compatible)).manifest.version, "1.1.0");
+    let exact = must("describe 1.0.0", library.describe(&ember, Some(&v(1, 0, 0))));
     assert_eq!(exact.info.version, v(1, 0, 0));
-    assert_eq!(library.describe(&ember, None).expect("describe newest").info.version, v(1, 1, 0));
+    assert_eq!(must("describe newest", library.describe(&ember, None)).info.version, v(1, 1, 0));
     match library.resolve(&ember, &VersionReq::Exact(v(9, 0, 0))) {
         Err(LibraryError::NoMatchingVersion { installed, .. }) => {
             assert_eq!(installed, vec![v(1, 0, 0), v(1, 1, 0), v(1, 2, 0)]);
@@ -71,26 +73,26 @@ fn hash_clash_and_publishers(library: &dyn Library) {
     let (a, b) = (shared_bow(SIGNER_SEED), shared_bow(RIVAL_SEED));
     assert_ne!(a.hash(), b.hash());
     for m in [&a, &b] {
-        assert_eq!(library.by_hash(&m.hash()).expect("by hash").manifest, *m);
+        assert_eq!(must("by hash", library.by_hash(&m.hash())).manifest, *m);
     }
 }
 
 fn deterministic_search(library: &dyn Library) {
     let all = Query { limit: 100, ..Query::default() };
-    let first = library.search(&all).expect("search");
-    assert_eq!(first, library.search(&all).expect("search again"), "same query, same page");
+    let first = must("search", library.search(&all));
+    assert_eq!(first, must("search again", library.search(&all)), "same query, same page");
     assert_eq!(first.total, first.items.len());
     assert_eq!(first.facets.sections.values().sum::<usize>(), first.total, "facets count the whole result set");
     let order: Vec<_> = first.items.iter().map(|i| (i.section, i.id.clone())).collect();
     assert!(order.windows(2).all(|w| w[0] <= w[1]), "ties go by section order, then id: {order:?}");
-    let page = library.search(&Query { offset: 2, limit: 3, ..Query::default() }).expect("page");
+    let page = must("page", library.search(&Query { offset: 2, limit: 3, ..Query::default() }));
     assert_eq!((page.total, page.items), (first.total, first.items[2..5].to_vec()), "pages slice the same ranking");
-    let text = library.search(&Query { text: Some("RIBBON".into()), limit: 10, ..Query::default() }).expect("text");
+    let text = must("text", library.search(&Query { text: Some("RIBBON".into()), limit: 10, ..Query::default() }));
     assert_eq!(text.items.first().map(|i| i.id.as_str()), Some("test/hair/ribbon"), "case-insensitive text");
-    let section = library.list(Some(Section::Colourways), None, 0, 100).expect("list");
+    let section = must("list", library.list(Some(Section::Colourways), None, 0, 100));
     assert!(section.items.iter().all(|i| i.section == Section::Colourways) && section.total > 0);
     let publishable =
-        library.search(&Query { usable_for: Some(Usage::Publish), limit: 100, ..Query::default() }).expect("usable");
+        must("usable", library.search(&Query { usable_for: Some(Usage::Publish), limit: 100, ..Query::default() }));
     assert!(
         publishable.items.iter().all(|i| i.id.as_str() != "anon/colourways/mint"),
         "non-commercial items are hidden"
@@ -99,7 +101,7 @@ fn deterministic_search(library: &dyn Library) {
 }
 
 fn unavailable_with_reasons(library: &dyn Library) {
-    let reason = |item: &str| library.describe(&id(item), None).expect(item).info.unavailable;
+    let reason = |item: &str| must(item, library.describe(&id(item), None)).info.unavailable;
     assert!(reason("test/stages/lamp").is_some_and(|r| r.contains("scene")), "the scene target is reserved");
     assert!(reason("test/colourways/ghost").is_some_and(|r| r.contains("ghost.missing")), "names the missing op");
     assert_eq!(reason("test/hair/ribbon"), None);

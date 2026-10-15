@@ -93,6 +93,85 @@ impl Op for SetStyle {
     }
 }
 
+/// Sets a tint on an existing part: the shape of an op a `$target` item calls.
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct PartTint {
+    character: CharId,
+    part: PartId,
+    colour: String,
+}
+
+impl Op for PartTint {
+    fn meta() -> OpMeta {
+        meta("part.tint")
+    }
+
+    fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
+        let at = paths::part(&self.character, &self.part);
+        if ctx.doc.get(&at).is_none() {
+            return Err(OpError::invalid("part", "no such part"));
+        }
+        Ok(set(ctx, &at.join("tint"), json!(self.colour)))
+    }
+}
+
+/// An op that ignores its `character` argument and writes into another character: what containment must catch.
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct Stray {
+    character: CharId,
+}
+
+impl Op for Stray {
+    fn meta() -> OpMeta {
+        meta("mock.stray")
+    }
+
+    fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
+        let at = paths::character(&CharId::new("other").unwrap()).join("mark");
+        Ok(set(ctx, &at, json!(true)))
+    }
+}
+
+/// A query: its plan is its answer, and a recipe may not call it.
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct Peek {
+    character: CharId,
+}
+
+impl Op for Peek {
+    fn meta() -> OpMeta {
+        OpMeta { kind: OpKind::Query, scope: Scope::Read, ..meta("mock.peek") }
+    }
+
+    fn plan(&self, _ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
+        Ok(Plan::answer(json!({})))
+    }
+}
+
+/// An edit that needs `fs`, above the recipe ceiling.
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct Export {
+    character: CharId,
+}
+
+impl Op for Export {
+    fn meta() -> OpMeta {
+        OpMeta { scope: Scope::Fs, ..meta("mock.export") }
+    }
+
+    fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
+        Ok(set(ctx, &paths::character(&self.character).join("exported"), json!(true)))
+    }
+}
+
 register_op!(PartAdd);
+register_op!(PartTint);
+register_op!(Stray);
+register_op!(Peek);
+register_op!(Export);
 register_op!(PaletteSet);
 register_op!(SetStyle);
