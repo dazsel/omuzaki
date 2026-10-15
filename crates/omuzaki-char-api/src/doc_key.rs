@@ -148,6 +148,6 @@ mod tests {
         assert_eq!(&sibling_keys()[..BUILT_IN_SIBLING_KEYS.len()], &BUILT_IN_SIBLING_KEYS);
         assert!(!is_sibling_key("nope") && !is_node_key("nope"));
         assert_eq!(path("nope", &CharId::new("mira").expect("a valid id")), Ok(None));
-        assert!(collisions().is_empty());
+        assert_eq!(collisions(), [] as [&str; 0]);
     }
 }
