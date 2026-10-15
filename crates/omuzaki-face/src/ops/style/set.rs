@@ -7,9 +7,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
-use crate::ops::shared::check::check_edit;
-use crate::ops::shared::edit::{changed, diff, first_null, marks_len, put, stored_face};
-use crate::ops::shared::path::{canonical, chain, steps, template};
+use crate::ops_shared::check::check_edit;
+use crate::ops_shared::edit::{changed, diff, first_null, marks_len, put, stored_face};
+use crate::ops_shared::path::{canonical, chain, steps, template};
 
 /// Sets one field of a character's face: a key under `face/eyes`, `brows`, `mouth`, `nose` or `cheeks`, or a field of one
 /// mark (`face/marks/<i>/...`). An object value sets the fields it names and leaves the others. The marks list itself is
