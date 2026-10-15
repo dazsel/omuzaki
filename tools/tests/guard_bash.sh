@@ -18,7 +18,9 @@ export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 repo="$work/plain"; matching="$work/matching"; pushspec="$work/pushspec"; pushdefault="$work/pushdefault"
 layered="$work/layered"; lone="$work/lone"; upstream="$work/upstream"; upstreamsame="$work/upstreamsame"
-for dir in "$repo" "$matching" "$pushspec" "$pushdefault" "$layered" "$lone" "$upstream" "$upstreamsame"; do
+mirror="$work/mirror"; mirrorfalse="$work/mirrorfalse"
+for dir in "$repo" "$matching" "$pushspec" "$pushdefault" "$layered" "$lone" "$upstream" "$upstreamsame" "$mirror" \
+  "$mirrorfalse"; do
   git init -q -b cloud/mine "$dir" && git -C "$dir" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
 done
 git -C "$matching" config push.default matching
@@ -34,6 +36,9 @@ git -C "$upstream" config push.default upstream
 git -C "$upstream" config branch.cloud/mine.merge refs/heads/other
 git -C "$upstreamsame" config push.default upstream
 git -C "$upstreamsame" config branch.cloud/mine.merge refs/heads/cloud/mine
+# `remote.origin.mirror` is a bare key (true, which `--get-all` prints nothing for) in `mirror`, and false in `mirrorfalse`.
+printf '[remote "origin"]\n\tmirror\n' >> "$mirror/.git/config"
+git -C "$mirrorfalse" config remote.origin.mirror false
 # Secret paths, including the bare directories.
 check 2 'cat .env'
 check 2 'cat .env.local'
@@ -75,6 +80,12 @@ check 2 'FOO=x typeset -p gh_token'
 check 2 'FOO=1 BAR=2 declare -px API_KEY'
 check 2 'builtin declare -p GH_TOKEN'
 check 2 'command typeset -p GH_TOKEN'
+# The wrapper's own options come before the program: `command -p declare` runs `declare`.
+check 2 'command -p declare -p GH_TOKEN'
+check 2 'command -- typeset -p gh_token'
+check 2 'builtin command -p declare -p GH_TOKEN'
+check 2 'command -p env'
+check 0 'command -p echo ok'
 check 2 'FOO=x env'
 check 0 'FOO=x declare -p PATH'
 check 0 'FOO=x echo ok'
@@ -176,6 +187,17 @@ check 2 'git -c remote.origin.Push=refs/heads/cloud/mine:refs/heads/cloud/mine p
 check 2 'git -c remote.pushdefault=upstream -c remote.upstream.push=refs/heads/cloud/mine:refs/heads/cloud/mine push --force-with-lease' "$repo"
 check 2 'git push --force-with-lease' "$lone"
 check 2 'git push --force-with-lease upstream' "$lone"
+# A mirror remote (`remote.<name>.mirror`, here a bare key, which is true) makes every push a `--mirror` push; a
+# `mirror=false` remote doesn't.
+check 2 'git push --force-with-lease origin cloud/mine' "$mirror"
+check 2 'git push --force-with-lease' "$mirror"
+check 0 'git push --force-with-lease origin cloud/mine' "$mirrorfalse"
+# A remote set through `-c` or `--config-env` can widen a lease push the hook doesn't model, so it is refused;
+# other `-c` keys still pass.
+check 2 'git -c remote.origin.mirror=true push --force-with-lease origin cloud/mine' "$repo"
+check 2 'git -c remote.origin.push=refs/heads/cloud/mine:refs/heads/cloud/mine push --force-with-lease origin cloud/mine' "$repo"
+check 2 'git --config-env=remote.origin.mirror=MIRROR push --force-with-lease origin cloud/mine' "$repo"
+check 0 'git -c user.name=t push --force-with-lease origin cloud/mine' "$repo"
 # Long options not spelled in full are refused: git takes a unique prefix (`--recurse`, `--rep`, `--receive`), and a
 # `--opt=value` form counts by its name, so `--recurse=check` is refused too. Short letters the hook doesn't know are
 # refused as well.
@@ -200,6 +222,9 @@ check 0 'cargo xtask check --affected'
 check 0 'git push --set-upstream origin cloud/1234-thing'
 check 0 'git push --no-verify --dry-run origin cloud/1234-thing'
 check 0 'git push -4 origin cloud/1234-thing'
+# `git push -h` and `git push --help` only print usage or the manual.
+check 0 'git push -h'
+check 0 'git push --help'
 check 0 'git push --no-force-with-lease origin cloud/1234-thing'
 check 0 'gh api --silent --jq=.login -X GET user'
 check 0 'git push origin cloud/1234-thing'

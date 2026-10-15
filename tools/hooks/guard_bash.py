@@ -18,7 +18,8 @@ argument order, and blocks:
 - a `git push` that forces (`--force`, `-f`, a `+` refspec, `--mirror`) or deletes (`--delete`, `-d`, a `:` refspec,
   `--prune`), and a `--force-with-lease` push to any branch but the one checked out, or to many refs at once
   (`--all`, `--branches`, `--tags`, or no refspec where `push.default` is `matching`, or `upstream` to another branch
-  name, or a `remote.<name>.push` refspec adds refs).
+  name, or a `remote.<name>.push` refspec adds refs, or `remote.<name>.mirror` makes every push a mirror, and any
+  `-c remote.*` or `--config-env` remote setting, which the hook doesn't model).
 
 Backslash-newline continuations are joined first, as the shell joins them. It guards against a session's mistakes,
 not a determined bypass: a variable holding `merge`, a script file or `eval`
@@ -223,6 +224,14 @@ def config_key(key):
     return f"{head.lower()}.{subsection}.{variable.lower()}"
 
 
+def mirror_set(directory, name):
+    """Whether `remote.<name>.mirror` is true in the repository's config. Git reads a bare key as true, and `--get-all`
+    would print nothing for it, so the value is read as a boolean."""
+    out = git_output(directory, "config", "--type=bool", "--get-all", f"remote.{name}.mirror") or ""
+    values = out.split()
+    return bool(values) and values[-1] == "true"
+
+
 def git_config(directory, key, overrides=()):
     """The values of a git config key in git's precedence order, so the last one wins for a single-valued key: the
     repository's and the user's values, then the `git -c` overrides, which come after them."""
@@ -333,6 +342,10 @@ def lease_refusal(push_args, directory, overrides):
     remote = repo if repo is not None else next(iter(positional), None)
     refspecs = positional if repo is not None else positional[1:]
     branch = current_branch(directory)
+    name = remote or default_remote(directory, branch, overrides)
+    # A mirror remote makes every push a `--mirror` push, whatever refspecs are named.
+    if mirror_set(directory, name):
+        return f"a `--force-with-lease` push to `{name}`, which `remote.{name}.mirror` makes a `--mirror` push,"
     if not refspecs:
         return implicit_push_refusal(remote, directory, branch, overrides)
     for spec in refspecs:
@@ -345,7 +358,7 @@ def lease_refusal(push_args, directory, overrides):
 
 def git_refusal(args, cwd):
     """Why a git call is reserved, or None: it prints a credential, or it is a forcing or deleting push."""
-    i, directory, overrides, config_env = 0, cwd, [], False
+    i, directory, overrides, config_env, env_names = 0, cwd, [], False, []
     while i < len(args) and args[i].startswith("-"):
         if args[i] == "-C" and i + 1 < len(args):
             directory = os.path.join(directory, os.path.expanduser(args[i + 1]))
@@ -354,6 +367,8 @@ def git_refusal(args, cwd):
             overrides.append(args[i + 1].partition("="))
         # `--config-env=name=ENVVAR` sets a config value from the environment, which the hook can't read.
         config_env = config_env or args[i].startswith("--config-env")
+        if args[i].startswith("--config-env="):
+            env_names.append(args[i].split("=", 1)[1].partition("=")[0])
         i += 2 if args[i] in GIT_OPTIONS_WITH_VALUE else 1
     sub = args[i] if i < len(args) else ""
     if sub == "credential" or sub.startswith("credential-"):
@@ -361,6 +376,9 @@ def git_refusal(args, cwd):
     if sub != "push":
         return None
     push_args = args[i + 1:]
+    # `git push -h` and `git push --help` print usage or the manual and contact no remote.
+    if push_args in (["-h"], ["--help"]):
+        return None
     unknown = unknown_push_option(push_args)
     if unknown:
         return f"`git push {unknown.split('=', 1)[0]}`, an option the hook doesn't recognise spelled in full,"
@@ -377,6 +395,11 @@ def git_refusal(args, cwd):
         many = next((a for a in push_args if a in ("--all", "--branches", "--tags")), None)
         if many:
             return f"a `--force-with-lease` push with `{many}`, which reaches other branches,"
+        # A remote set through `-c` or `--config-env` (mirror, push, pushDefault...) can widen the push in ways the hook
+        # doesn't model, so the lease push is refused rather than read.
+        if any(config_key(name).startswith("remote.") for name, _, _ in overrides + [(n, "", "") for n in env_names]):
+            return ("a `--force-with-lease` push with a `-c` or `--config-env` remote setting, which the hook can't"
+                    " read,")
         positional, repo = push_words(push_args)
         refspecs = positional if repo is not None else positional[1:]
         if config_env and not refspecs:
@@ -391,8 +414,13 @@ def program_words(words):
     run nothing themselves, so `FOO=x declare -p GH_TOKEN` is the `declare` it names."""
     i = 0
     while i < len(words):
-        if re.match(r"^[A-Za-z_]\w*=", words[i]) or os.path.basename(words[i]) in ("builtin", "command"):
+        if re.match(r"^[A-Za-z_]\w*=", words[i]):
             i += 1
+        elif os.path.basename(words[i]) in ("builtin", "command"):
+            i += 1
+            # The wrapper's own options come before the program (`command -p declare`, `command -- declare`).
+            while i < len(words) and words[i].startswith("-"):
+                i += 1
         else:
             break
     return words[i:]
