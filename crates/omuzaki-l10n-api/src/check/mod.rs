@@ -4,11 +4,13 @@
 //! The module compiles always, with no cargo feature: `cargo xtask check` runs the workspace tests without per-crate
 //! features, so tests behind a feature would not run in the gate.
 
+mod english;
 mod messages;
 mod registered;
 
 use std::collections::BTreeSet;
 
+pub use english::english_current;
 use fluent_syntax::ast::{CallArguments, Expression, InlineExpression, Pattern, PatternElement};
 pub use messages::{messages, prefixes};
 pub use registered::registered;
