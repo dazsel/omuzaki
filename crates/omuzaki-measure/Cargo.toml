@@ -1,0 +1,35 @@
+[package]
+name = "omuzaki-measure"
+description = "Image measures for likeness (VF-01, ADR 0029): decodes PNG and JPEG reference and render images from the store or a file, and converts sRGB to CIELAB."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# The `jpeg` feature is enabled here only: the other crates that use `image` keep PNG alone. It decodes through
+# `zune-jpeg`, which the workspace already has for the webcam's MJPG frames (`omuzaki-pixfmt`).
+image = { workspace = true, features = ["jpeg"] }
+libm.workspace = true
+omuzaki-l10n-api = { path = "../omuzaki-l10n-api" }
+omuzaki-ops-api = { path = "../omuzaki-ops-api" }
+omuzaki-store-api = { path = "../omuzaki-store-api" }
+schemars.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+inventory.workspace = true
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
+omuzaki-store-mock = { path = "../omuzaki-store-mock" }
+serde_json.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true
+
+[package.metadata.omuzaki]
+kind = "Implementation"
+summary = "image measures for likeness (VF-01, ADR 0029): decodes PNG and JPEG references and renders from the store or a file under the file fence, refusing oversized images before allocating; sRGB to CIELAB (D65); the refusal messages of design 7.3; the likeness outline, spacing and score come with their tasks"
