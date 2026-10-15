@@ -108,13 +108,17 @@ least every few hours and before stopping:
 
 **For the outgoing lead**, when its account is near its limits:
 1. Stop starting new sessions.
-2. **Stop every implementer session:** send each one a message to stop and push nothing more (its sessions live on
-   this account, and a new lead on another account can't see, message or archive them).
+2. **Stop every implementer session:** each one first commits any uncommitted work as-is to a side branch
+   `<branch>-wip` (no PR, no comments, the PR's own head untouched), then stops and pushes nothing more. Its sessions
+   live on this account, and a new lead on another account can't see, message or archive them.
 3. Update the state issue completely, including any session that was mid-task: its branch and last pushed head.
 4. Post on #2 that a handover is due, and stop. The owner then archives this account's sessions.
 
-**For a new lead inheriting branches:** start your own session on an inherited branch only after it has been quiet
-(nothing pushed for 30 minutes), so two sessions never push to the same branch.
+**For a new lead inheriting branches:** wait for the outgoing lead's list of archived sessions on #2 (or 30 quiet
+minutes on a branch) before starting your own session on it, so two sessions never push to the same branch. For each
+branch `X` with an `X-wip`: read `git diff X...X-wip` (unsaved, never self-gated work), keep what's sound by merging it
+into `X`, finish and self-gate it, push to `X` as a fix round that says what was kept and dropped, then delete
+`X-wip`. Never open a pull request from a `-wip` branch.
 
 ## Appendix: the launch brief (v4)
 
