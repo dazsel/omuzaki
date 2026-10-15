@@ -8,3 +8,9 @@
 
 pub mod buffers;
 pub mod evaluator;
+
+// No registrations of its own; forwards to the contracts' (ADR 0015).
+omuzaki_core::define_link! {
+    omuzaki_avatar_api::link();
+    omuzaki_char_api::link();
+}

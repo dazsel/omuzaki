@@ -27,6 +27,11 @@ pub mod gaze;
 pub mod retained;
 pub mod summary;
 
+// No registrations of its own; forwards to char-api's, which a crate linking this one reaches through it (ADR 0015).
+omuzaki_core::define_link! {
+    omuzaki_char_api::link();
+}
+
 /// The names nearly every caller needs: the avatar, the body surface, the error.
 pub mod prelude {
     pub use crate::avatar::ImportedAvatar;
