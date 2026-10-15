@@ -11,11 +11,15 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use omuzaki_char::hair::compile::{Forked, GroupGeometry, HairGenCtx};
+use omuzaki_char::hair::compile::{
+    Dispatch, Forked, GroupGeometry, HairGenCtx, clumps_in, compile_groups, is_bilateral,
+};
 use omuzaki_char::hair::r#gen::cap::{self, MIN_CLEARANCE, RINGS, SEGMENTS};
 use omuzaki_char::hair::r#gen::part_sweep::{self, Lock, REST_POINTS};
 use omuzaki_char::hair::tube::{RING, TubeLook, TubeMesh};
-use omuzaki_char_api::{CapGen, Dynamics, GroupId, HAIR_INFO, HAIR_UV, HeadSurface, PartSweepGen, Quality};
+use omuzaki_char_api::{
+    CapGen, Dynamics, Generator, GroupId, HAIR_INFO, HAIR_UV, HairGroup, HairParams, HeadSurface, PartSweepGen, Quality,
+};
 use omuzaki_core::glam::Vec3;
 use omuzaki_core::mesh::MeshData;
 use omuzaki_core::rng::Rng;
@@ -307,6 +311,43 @@ fn compiling_the_sweep_makes_the_clumps_with_alternating_shade_and_the_groups_wi
     assert_eq!(shades[..4], shades[4..], "each side restarts the alternation");
     assert!(shades[0] < shades[1]);
     assert!(compiled.clumps.iter().all(|c| c.rest.len() == REST_POINTS && c.width == g.width));
+}
+
+// ------------------------------------------------------------------------------------------------ mirroring
+
+#[test]
+fn a_mirrored_cap_or_sweep_group_has_no_coincident_duplicates() {
+    let head = Egg { scale: 1.0 };
+    let sweep = PartSweepGen { count: 5, ..PartSweepGen::default() };
+    let make = |mirror: bool| {
+        let group = |generator| HairGroup { enabled: true, mirror, dynamics: Dynamics::default(), generator };
+        let mut params = HairParams::default();
+        params.groups.clear();
+        params.groups.insert(GroupId::new("a-cap").unwrap(), group(Generator::Cap(CapGen::default())));
+        params.groups.insert(GroupId::new("b-sweep").unwrap(), group(Generator::PartSweep(sweep.clone())));
+        params
+    };
+    let compile = |params: &HairParams| {
+        let mut forked = Rng::new(1);
+        let mut rng = Forked(&mut forked);
+        compile_groups(params, &Dispatch, &head, &Palette::default(), Quality::Live, &mut rng).unwrap()
+    };
+    let (plain, mirrored) = (compile(&make(false)), compile(&make(true)));
+    assert!(is_bilateral(&Generator::Cap(CapGen::default())) && is_bilateral(&Generator::PartSweep(sweep.clone())));
+    for (a, b) in plain.iter().zip(&mirrored) {
+        assert_eq!(a.group, b.group, "{}: the mirror flag changes nothing for a two-sided generator", a.id);
+    }
+    for (id, group) in &make(true).groups {
+        assert_eq!(clumps_in(group, &Dispatch), plain.iter().find(|e| &e.id == id).unwrap().group.clumps.len());
+    }
+    // And no two locks sit on top of each other.
+    let locks = &mirrored[1].group.clumps;
+    assert_eq!(locks.len(), 10);
+    for (i, a) in locks.iter().enumerate() {
+        for b in &locks[i + 1..] {
+            assert!(a.rest.iter().zip(&b.rest).any(|(p, q)| p.distance(*q) > 1e-4), "coincident locks");
+        }
+    }
 }
 
 // ------------------------------------------------------------------------------------------------ allocation
