@@ -15,7 +15,7 @@ use omuzaki_ops_api::find;
 fn bindings(m: &ItemManifest) -> Bindings {
     let mut b = Bindings { character: Some(support::character()), name: m.name.clone(), ..Bindings::default() };
     // The bundle's nested part item creates `ribbon`.
-    for key in m.creates.keys().map(String::as_str).chain(["ribbon"]) {
+    for key in m.creates.keys().map(String::as_str).chain(["ribbon", "layered"]) {
         b.parts.insert(key.to_owned(), PartId::new(format!("new-{key}")).unwrap());
     }
     b
@@ -57,6 +57,14 @@ fn every_fixture_checks_and_applies_on_the_mock_character_except_the_unavailable
         if let Ok(detail) = library.describe(&m.item_id().unwrap(), Some(&m.item_version().unwrap())) {
             let unavailable = detail.info.unavailable;
             assert_eq!(unavailable.is_some(), result.is_err(), "{}: {unavailable:?} vs {result:?}", m.id);
+            // Both come from the one validation, so the reason an item is unavailable is the error an apply returns.
+            if let (Some(why), Err(e)) = (&unavailable, &result) {
+                let said = match &e.field {
+                    Some(field) if !e.message.starts_with(field.as_str()) => format!("{field}: {}", e.message),
+                    _ => e.message.clone(),
+                };
+                assert_eq!(why, &said, "{}", m.id);
+            }
         }
         match m.id.as_str() {
             "test/stages/lamp" => {
@@ -65,7 +73,10 @@ fn every_fixture_checks_and_applies_on_the_mock_character_except_the_unavailable
             "test/colourways/ghost" => {
                 assert_eq!(check_ops(m, |n| find(n).map(|r| (r.meta)())).len(), 1, "unknown op");
             }
-            "test/outfits/dangling" | "test/outfits/ghosted" => {
+            "test/outfits/dangling"
+            | "test/outfits/ghosted"
+            | "test/outfits/undeclared-param"
+            | "test/outfits/out-of-range" => {
                 assert_eq!(m.check(), vec![], "{}: well-formed, only its dependency is missing", m.id);
             }
             _ => {

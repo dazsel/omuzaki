@@ -8,8 +8,8 @@ use omuzaki_char_api::{BodyTemplateId, CharId, PartId, paths};
 use omuzaki_doc_api::{DocPath, DocRead};
 use omuzaki_library_api::{Bindings, ItemManifest, ItemRights, ItemScope, ItemSource, check_ops};
 use omuzaki_ops_api::find;
-use omuzaki_store_api::ContentHash;
 
+use crate::apply::fresh_part_id;
 use crate::{MockLibrary, apply_with_library};
 
 /// One seed rule an item breaks.
@@ -107,13 +107,6 @@ fn check_item(m: &ItemManifest, library: &MockLibrary, doc: &dyn DocRead) -> Vec
         },
     }
     out
-}
-
-/// A fresh part id for a create key. A key may be as long as a part id itself, so the id is a short prefix and a hash of
-/// the key: bounded, deterministic, and one per key.
-fn fresh_part_id(key: &str) -> Result<PartId, String> {
-    let hash = ContentHash::of(key.as_bytes()).to_string();
-    PartId::new(format!("seed-{}", &hash[..16])).map_err(|e| format!("create key {key:?}: {e}"))
 }
 
 /// Bindings for a dry run on the first character in `doc`: a fresh id per part key, `$target` as the one part of a

@@ -193,6 +193,15 @@ fn unavailable_with_reasons(library: &dyn Library) {
         reason("test/outfits/ghosted").is_some_and(|r| r.contains("ghost.missing")),
         "a bundle is unavailable through its dependency's missing op"
     );
+    assert!(
+        reason("test/outfits/undeclared-param").is_some_and(|r| r.contains("nope")),
+        "a bundle step passing an undeclared parameter is unavailable, as applying it would fail"
+    );
+    assert!(
+        reason("test/outfits/out-of-range").is_some_and(|r| r.contains("layer")),
+        "a bundle step passing an out-of-range parameter is unavailable, as applying it would fail"
+    );
+    assert_eq!(reason("test/outfits/layered-ok"), None, "an in-range override is available");
     assert_eq!(reason("test/outfits/casual"), None, "a bundle whose items are all there is available");
     assert_eq!(reason("test/hair/ribbon"), None);
 }

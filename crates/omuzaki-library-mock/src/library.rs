@@ -2,16 +2,17 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use omuzaki_char_api::CharId;
+use omuzaki_char_api::{BodyTemplateId, CharId, PartId};
 use omuzaki_library_api::{
-    CompatStatus, CompatTarget, Facets, ItemDetail, ItemId, ItemInfo, ItemKind, ItemManifest, ItemScope, ItemStep,
-    Library, LibraryError, Origin, PublisherCheck, PublisherKey, Query, ResolvedItem, RightsBadge, SearchPage, Section,
-    Step, Usage, Version, VersionReq,
+    Bindings, CompatStatus, CompatTarget, Facets, ItemDetail, ItemId, ItemInfo, ItemKind, ItemManifest, ItemScope,
+    Library, LibraryError, Origin, Params, PublisherCheck, PublisherKey, Query, ResolvedItem, RightsBadge, SearchPage,
+    Section, Step, Usage, Version, VersionReq,
 };
-use omuzaki_ops_api::{OpKind, Scope, find};
+use omuzaki_ops_api::{OpError, find};
 use omuzaki_store_api::{ContentHash, licence_gate};
+use serde_json::Value;
 
-use crate::apply::MAX_DEPTH;
+use crate::apply::{MAX_DEPTH, OpVisitor, check_ceiling, fresh_part_id, walk};
 use crate::facts::{CharacterFacts, status};
 
 /// The most rows a page returns, and the page size when `limit` is 0.
@@ -22,6 +23,37 @@ const DEFAULT_OPS: [&str; 3] = ["part.add", "palette.set", "face.set_style"];
 
 /// The precedence tier of a scope when an id is resolved without a pin (D11): first-party, then my library, then
 /// team scopes. All teams share one tier, so no team wins by its name.
+/// An [`OpError`] as the one-line reason an item is unavailable: its message, led by its field unless the message
+/// already starts with it.
+fn reason(e: &OpError) -> String {
+    match &e.field {
+        Some(field) if !e.message.starts_with(field.as_str()) => format!("{field}: {}", e.message),
+        _ => e.message.clone(),
+    }
+}
+
+/// The availability check's view of an op step: the op must be one this library was told about and, where this
+/// binary registers it, within the recipe ceiling, which is the check an apply makes before it plans the step.
+struct Availability<'a> {
+    library: &'a MockLibrary,
+}
+
+impl OpVisitor for Availability<'_> {
+    fn op(&mut self, index: usize, op: &str, _args: Value) -> Result<(), OpError> {
+        if !self.library.known_ops.contains(op) {
+            return Err(OpError::invalid(
+                format!("step/{index}/op"),
+                format!("`{op}` is not a registered op in this build"),
+            ));
+        }
+        // An op the mock was told about but this binary doesn't register has no kind or scope to judge.
+        if find(op).is_some() {
+            check_ceiling(index, op)?;
+        }
+        Ok(())
+    }
+}
+
 fn tier(scope: &ItemScope) -> u8 {
     match scope {
         ItemScope::FirstParty => 0,
@@ -127,15 +159,27 @@ impl MockLibrary {
         Ok(())
     }
 
-    /// Why `m` can't be applied in this build, as `apply_with_library` would find out: a reserved target, an op that
-    /// isn't registered or is above the recipe ceiling, or a bundle item that doesn't resolve or is itself unavailable.
-    /// The first failure in step order is the reason.
+    /// Why `m` can't be applied in this build: the first failure of the same validation an apply runs ([`walk`]), with
+    /// every step expanded against sample bindings, so a reserved target, an undeclared or out-of-range parameter, a
+    /// dependency that is missing or unavailable, an op that isn't registered or is above the recipe ceiling, and
+    /// nesting past the limit are all found the way an apply finds them. Loading a bundle first refuses a part key
+    /// two of its items create, and a cycle ([`closure_keys`](Self::closure_keys)).
     fn unavailable(&self, m: &ItemManifest) -> Option<String> {
-        // Loading a bundle refuses a part key two of its items create, and a cycle, before any step is considered.
-        if let Err(why) = self.closure_keys(m) {
-            return Some(why);
+        let owners = match self.closure_keys(m) {
+            Ok(owners) => owners,
+            Err(why) => return Some(why),
+        };
+        let mut bindings = Bindings {
+            character: CharId::new("sample").ok(),
+            target: PartId::new("sample-target").ok(),
+            name: Some(m.name.clone().unwrap_or_else(|| "sample".to_owned())),
+            template: BodyTemplateId::new("sample").ok(),
+            ..Bindings::default()
+        };
+        for key in owners.keys() {
+            bindings.parts.extend(fresh_part_id(key).ok().map(|id| (key.clone(), id)));
         }
-        self.unavailable_at(m, 0)
+        walk(Some(self), m, &Params::new(), &bindings, 0, &mut Availability { library: self }).err().map(|e| reason(&e))
     }
 
     /// Who creates each `$parts.<key>` across `m` and every item its steps apply, nested and sibling alike (design D7):
@@ -193,48 +237,6 @@ impl MockLibrary {
                 };
                 self.pick(&id, &req).map_or(true, |found| self.publishable(found, depth + 1))
             })
-    }
-
-    fn unavailable_at(&self, m: &ItemManifest, depth: usize) -> Option<String> {
-        if depth > MAX_DEPTH {
-            return Some(format!("bundles nest deeper than {MAX_DEPTH}; is there a cycle?"));
-        }
-        if let Some(why) = m.target.reserved() {
-            return Some(why.to_owned());
-        }
-        m.steps.iter().enumerate().find_map(|(index, step)| match step {
-            Step::Op(op) => self.op_unavailable(&op.op),
-            Step::Item(nested) => self.item_unavailable(index, nested, depth),
-        })
-    }
-
-    fn op_unavailable(&self, name: &str) -> Option<String> {
-        if !self.known_ops.contains(name) {
-            return Some(format!("`{name}` is not a registered op in this build"));
-        }
-        // An op the mock was told about but this binary doesn't register has no kind or scope to judge.
-        let meta = (find(name)?.meta)();
-        if meta.kind != OpKind::Edit {
-            return Some(format!("`{name}` is a {:?}, and recipes may only call edit ops", meta.kind));
-        }
-        (!matches!(meta.scope, Scope::EditCharacter | Scope::EditScene)).then(|| {
-            format!("`{name}` needs the {} scope; recipes are limited to edit:character and edit:scene", meta.scope)
-        })
-    }
-
-    fn item_unavailable(&self, index: usize, nested: &ItemStep, depth: usize) -> Option<String> {
-        let at = format!("step/{index}");
-        let (id, req) = match (ItemId::new(&nested.item), VersionReq::parse(&nested.version)) {
-            (Ok(id), Ok(req)) => (id, req),
-            (Err(e), _) => return Some(format!("{at}: {e}")),
-            (_, Err(e)) => return Some(format!("{at}: {e}")),
-        };
-        match self.pick(&id, &req) {
-            Err(e) => Some(format!("{at}: {e}")),
-            Ok(found) => self
-                .unavailable_at(&found.item.manifest, depth + 1)
-                .map(|why| format!("{at}: `{}` is unavailable: {why}", nested.item)),
-        }
     }
 
     fn info(&self, e: &Entry, facts: Option<&CharacterFacts>) -> ItemInfo {
@@ -310,6 +312,14 @@ impl MockLibrary {
         offset: usize,
         limit: usize,
     ) -> SearchPage {
+        // D11: the same id@version with the same hash and publisher held in several scopes is one entry, shown under
+        // its first scope. A scope filter has already left only the rows of that scope, so a scoped query finds it.
+        rows.sort_by(|a, b| a.1.scope.cmp(&b.1.scope));
+        let mut seen = BTreeSet::new();
+        rows.retain(|(_, e)| {
+            let publisher = e.item.manifest.publisher.as_ref().map(|p| p.key.clone());
+            seen.insert((e.id.clone(), e.version, e.item.hash.0, publisher))
+        });
         // Ties go by section order, then id, then scope and hash, so the order never depends on insertion order.
         rows.sort_by(|(sa, a), (sb, b)| {
             sb.cmp(sa)

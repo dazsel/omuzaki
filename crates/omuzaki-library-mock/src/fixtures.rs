@@ -183,6 +183,35 @@ pub fn lantern() -> ItemManifest {
     )
 }
 
+/// A part item with a declared parameter, `layer`, an integer from 0 to 10: what bundle steps pass overrides to.
+pub fn layered() -> ItemManifest {
+    let extra = "slot = \"hairstyle\"\ncreates.layered = { kind = \"hair\", id = \"layered\", layer = 5 }\n\
+                 params.layer = { type = \"integer\", default = 5, min = 0, max = 10 }\n";
+    let step = "[[step]]\nop = \"part.add\"\n[step.args]\ncharacter = \"$character\"\nkind = \"mock-hair\"\n\
+                id = \"$parts.layered\"\nlayer = \"$params.layer\"\n";
+    parse(&(header("test/hair/layered", "1.0.0", "hair", "part", FIRST_PARTY, extra) + step))
+}
+
+fn layered_bundle(name: &str, params: &str) -> ItemManifest {
+    let steps = format!("[[step]]\nitem = \"test/hair/layered\"\nversion = \"^1\"\nparams = {{ {params} }}\n");
+    parse(&(header(&format!("test/outfits/{name}"), "1.0.0", "outfits", "bundle", FIRST_PARTY, "") + &steps))
+}
+
+/// A bundle passing [`layered`] a parameter it doesn't declare: unavailable, and an apply fails on it.
+pub fn undeclared_param_bundle() -> ItemManifest {
+    layered_bundle("undeclared-param", "nope = 1")
+}
+
+/// A bundle passing [`layered`] a `layer` outside its 0 to 10 range: unavailable, and an apply fails on it.
+pub fn out_of_range_param_bundle() -> ItemManifest {
+    layered_bundle("out-of-range", "layer = 99")
+}
+
+/// A bundle passing [`layered`] a valid `layer`: available.
+pub fn layered_bundle_ok() -> ItemManifest {
+    layered_bundle("layered-ok", "layer = 7")
+}
+
 /// A bundle that applies [`unverified`] (non-commercial), so what it makes can't be published either.
 pub fn bundle_with_mint() -> ItemManifest {
     let steps = "[[step]]\nitem = \"anon/colourways/mint\"\nversion = \"^1\"\n";
@@ -244,6 +273,10 @@ pub fn all() -> Vec<Fixture> {
         held(needs_wings(), ItemScope::FirstParty),
         held(gothic(), ItemScope::FirstParty),
         held(lantern(), ItemScope::FirstParty),
+        held(layered(), ItemScope::FirstParty),
+        held(undeclared_param_bundle(), ItemScope::FirstParty),
+        held(out_of_range_param_bundle(), ItemScope::FirstParty),
+        held(layered_bundle_ok(), ItemScope::FirstParty),
         held(bundle_with_mint(), ItemScope::FirstParty),
         held(dangling_bundle(), ItemScope::FirstParty),
         held(ghosted_bundle(), ItemScope::FirstParty),

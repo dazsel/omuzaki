@@ -1,12 +1,14 @@
 //! `apply_for_test`: a recipe planned step by step on a scratch copy, with nothing written anywhere.
 
-use omuzaki_char_api::paths;
+use omuzaki_char_api::{PartId, paths};
 use omuzaki_core::time::{FakeClock, Seconds};
 use omuzaki_doc_api::{DocPath, DocRead, DocWrite, Patch, PatchError, Scratch};
 use omuzaki_library_api::{
     Bindings, ItemId, ItemManifest, Library, LibraryError, Params, RecipeError, StepRequest, VersionReq, expand,
 };
 use omuzaki_ops_api::{Actor, OpCtx, OpError, OpKind, Scope, find};
+use omuzaki_store_api::ContentHash;
+use serde_json::Value;
 
 /// How deep bundles may nest before the apply is refused as a cycle.
 pub(crate) const MAX_DEPTH: usize = 4;
@@ -54,76 +56,92 @@ fn run(
         .character
         .as_ref()
         .ok_or_else(|| OpError::invalid("character", "bind the character the recipe applies to"))?;
-    let mut apply =
-        Apply { library, target: paths::character(character), scratch: Scratch::of(doc), combined: Patch::new() };
-    apply.steps(manifest, &Params::new(), bindings, 0)?;
+    let mut apply = Apply { target: paths::character(character), scratch: Scratch::of(doc), combined: Patch::new() };
+    walk(library, manifest, &Params::new(), bindings, 0, &mut apply)?;
     Ok(apply.combined)
 }
 
+/// What a walk does at each op step. The walk itself, which is everything an apply checks before it touches an op,
+/// is shared: [`Apply`] plans the step, and the library's availability check only asks whether the step could run.
+pub(crate) trait OpVisitor {
+    /// One op step of the manifest being walked, `index` being its position in that manifest, with its arguments
+    /// expanded.
+    ///
+    /// # Errors
+    /// Whatever stops the step.
+    fn op(&mut self, index: usize, op: &str, args: Value) -> Result<(), OpError>;
+}
+
+/// The one validation of a recipe tree, run by every apply and by the library's availability check, so the two can't
+/// disagree: it expands the manifest (reserved target, unbound placeholders, undeclared or out-of-range parameters,
+/// nesting depth), hands each op step to `visitor`, and for each item step resolves the dependency and walks it with
+/// the step's parameter overrides and bindings. The first failure ends the walk; one inside a nested item has the
+/// outer step put in front of its field or message.
+pub(crate) fn walk(
+    library: Option<&dyn Library>,
+    manifest: &ItemManifest,
+    params: &Params,
+    bindings: &Bindings,
+    depth: usize,
+    visitor: &mut dyn OpVisitor,
+) -> Result<(), OpError> {
+    if depth > MAX_DEPTH {
+        return Err(OpError::invalid("step", format!("bundles nest deeper than {MAX_DEPTH}; is there a cycle?")));
+    }
+    for request in expand(manifest, bindings, params).map_err(recipe_error)? {
+        match request {
+            StepRequest::Op { index, op, args } => visitor.op(index, &op, args)?,
+            StepRequest::Item { index, item, version, params, bind } => {
+                let field = format!("step/{index}");
+                let library = library.ok_or_else(|| {
+                    OpError::invalid(
+                        field.as_str(),
+                        "this applies a bundle; use apply_with_library to resolve its items",
+                    )
+                })?;
+                let nested = resolve(library, &item, &version, &field)?;
+                let mut inner = bindings.clone();
+                if let Some(target) = bind.get("target") {
+                    let part = PartId::new(target.as_str())
+                        .map_err(|e| OpError::invalid(format!("{field}/bind/target"), e.to_string()))?;
+                    inner.target = Some(part);
+                }
+                if let Some(name) = bind.get("as") {
+                    inner.name = Some(name.clone());
+                }
+                walk(Some(library), &nested, &params, &inner, depth + 1, visitor).map_err(|e| step_error(index, &e))?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// One dry run in progress: the scratch copy every step plans against, and the patch collected so far.
-struct Apply<'a> {
-    library: Option<&'a dyn Library>,
+struct Apply {
     /// `characters/<id>` of the bound character: every change must lie at or under it.
     target: DocPath,
     scratch: Scratch,
     combined: Patch,
 }
 
-impl Apply<'_> {
-    fn steps(
-        &mut self,
-        manifest: &ItemManifest,
-        params: &Params,
-        bindings: &Bindings,
-        depth: usize,
-    ) -> Result<(), OpError> {
-        if depth > MAX_DEPTH {
-            return Err(OpError::invalid("step", format!("bundles nest deeper than {MAX_DEPTH}; is there a cycle?")));
-        }
-        let requests = expand(manifest, bindings, params).map_err(recipe_error)?;
-        let actor = Actor::System;
-        let clock = FakeClock::new(Seconds(0.0));
-        for request in requests {
-            match request {
-                StepRequest::Op { index, op, args } => {
-                    // A dry-run context needs no grants, so the recipe ceiling is enforced here, before planning.
-                    check_ceiling(index, &op)?;
-                    let patch = {
-                        let ctx = OpCtx::new(&self.scratch, &actor, &clock).with_dry_run(true);
-                        ctx.plan_step(&op, args, &self.scratch).map_err(|e| step_error(index, &e))?.1.patch
-                    };
-                    confine(index, &patch, &self.target)?;
-                    self.scratch.apply(&patch).map_err(|e| patch_error(index, &e))?;
-                    self.combined.changes.extend(patch.changes);
-                }
-                StepRequest::Item { index, item, version, params, bind } => {
-                    let field = format!("step/{index}");
-                    let library = self.library.ok_or_else(|| {
-                        OpError::invalid(
-                            field.as_str(),
-                            "this applies a bundle; use apply_with_library to resolve its items",
-                        )
-                    })?;
-                    let nested = resolve(library, &item, &version, &field)?;
-                    let mut inner = bindings.clone();
-                    if let Some(target) = bind.get("target") {
-                        let part = omuzaki_char_api::PartId::new(target.as_str())
-                            .map_err(|e| OpError::invalid(format!("{field}/bind/target"), e.to_string()))?;
-                        inner.target = Some(part);
-                    }
-                    if let Some(name) = bind.get("as") {
-                        inner.name = Some(name.clone());
-                    }
-                    self.steps(&nested, &params, &inner, depth + 1)?;
-                }
-            }
-        }
+impl OpVisitor for Apply {
+    fn op(&mut self, index: usize, op: &str, args: Value) -> Result<(), OpError> {
+        // A dry-run context needs no grants, so the recipe ceiling is enforced here, before planning.
+        check_ceiling(index, op)?;
+        let (actor, clock) = (Actor::System, FakeClock::new(Seconds(0.0)));
+        let patch = {
+            let ctx = OpCtx::new(&self.scratch, &actor, &clock).with_dry_run(true);
+            ctx.plan_step(op, args, &self.scratch).map_err(|e| step_error(index, &e))?.1.patch
+        };
+        confine(index, &patch, &self.target)?;
+        self.scratch.apply(&patch).map_err(|e| patch_error(index, &e))?;
+        self.combined.changes.extend(patch.changes);
         Ok(())
     }
 }
 
 /// Safety rule 1: a step names a registered op of kind `Edit` with scope `edit:character` or `edit:scene`.
-fn check_ceiling(index: usize, op: &str) -> Result<(), OpError> {
+pub(crate) fn check_ceiling(index: usize, op: &str) -> Result<(), OpError> {
     let field = format!("step/{index}/op");
     let registration = find(op)
         .ok_or_else(|| OpError::invalid(field.as_str(), format!("`{op}` is not a registered op in this build")))?;
@@ -160,7 +178,7 @@ fn resolve(library: &dyn Library, item: &ItemId, req: &VersionReq, field: &str) 
 
 /// A planned op's own error with the step put in front of its field, or of its message when it names no field. The
 /// code, hint and detail are the op's, so a caller can still branch on them.
-fn step_error(index: usize, e: &OpError) -> OpError {
+pub(crate) fn step_error(index: usize, e: &OpError) -> OpError {
     let mut e = e.clone();
     match e.field.take() {
         Some(field) => e.field = Some(format!("step/{index}/{field}")),
@@ -209,4 +227,14 @@ fn patch_error(index: usize, e: &PatchError) -> OpError {
         PatchError::Conflict { .. } => OpError::conflict(message),
         PatchError::Unreachable { .. } => OpError::invalid(format!("step/{index}"), message),
     }
+}
+
+/// A fresh part id for a create key. A key may be as long as a part id itself, so the id is a short prefix and a hash of
+/// the key: bounded, deterministic, and one per key.
+///
+/// # Errors
+/// A sentence if the id still isn't valid, which would be a bug here.
+pub(crate) fn fresh_part_id(key: &str) -> Result<PartId, String> {
+    let hash = ContentHash::of(key.as_bytes()).to_string();
+    PartId::new(format!("seed-{}", &hash[..16])).map_err(|e| format!("create key {key:?}: {e}"))
 }

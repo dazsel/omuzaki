@@ -608,3 +608,83 @@ fn a_create_key_as_long_as_a_part_id_still_gets_a_valid_seed_binding() {
     assert_eq!(part.check(), vec![]);
     assert_eq!(seed::check_source(&Source(vec![part]), &support::doc()), vec![]);
 }
+
+// --- Round 5: one entry across scopes, and availability is the validation an apply runs ---
+
+#[test]
+fn the_same_manifest_in_two_scopes_is_one_entry_that_a_scoped_query_still_finds() {
+    let mut library = MockLibrary::new();
+    let team = ItemScope::Team("studio".into());
+    library.insert(fixtures::signed_ember("1.0.0"), ItemScope::Mine).unwrap();
+    library.insert(fixtures::signed_ember("1.0.0"), team.clone()).unwrap();
+    let ember = "signer/colourways/ember";
+    for page in [library.list(None, None, 0, 100).unwrap(), library.search(&Query::default()).unwrap()] {
+        assert_eq!(page.total, 1, "{page:?}");
+        assert_eq!(page.items.iter().filter(|i| i.id.as_str() == ember).count(), 1);
+        assert_eq!(page.facets.sections.values().sum::<usize>(), 1);
+        assert_eq!(page.facets.kinds.values().sum::<usize>(), 1);
+        assert_eq!(page.facets.scopes.values().sum::<usize>(), 1, "counted once in the scope facet too");
+        assert_eq!(page.items[0].scope, ItemScope::Mine, "shown under the first scope");
+    }
+    for scope in [ItemScope::Mine, team] {
+        let page = library.search(&Query { scope: Some(scope.clone()), ..Query::default() }).unwrap();
+        assert_eq!((page.total, page.items[0].scope.clone()), (1, scope.clone()), "{scope:?} still finds it");
+        assert_eq!(library.list(None, Some(&scope), 0, 100).unwrap().total, 1);
+    }
+    // Different content, or a different publisher, is not the same entry.
+    let mut other = MockLibrary::new();
+    other.insert(fixtures::shared_bow(fixtures::SIGNER_SEED), ItemScope::Mine).unwrap();
+    other.insert(fixtures::shared_bow(fixtures::RIVAL_SEED), ItemScope::Team("studio".into())).unwrap();
+    assert_eq!(other.search(&Query::default()).unwrap().total, 2);
+}
+
+/// Every dependency a bundle step can name, and every parameter override it can pass them.
+const DEPENDENCIES: [&str; 5] =
+    ["test/hair/layered", "test/hair/ribbon", "test/colourways/ghost", "test/hair/nonexistent", "test/outfits/casual"];
+const OVERRIDES: [&str; 6] = ["", "layer = 7", "layer = 99", "nope = 1", "layer = \"high\"", "layer = 7, nope = 1"];
+
+#[test]
+fn an_item_is_unavailable_exactly_when_the_validation_an_apply_runs_fails_and_for_the_same_reason() {
+    let mut library = MockLibrary::fixtures();
+    let doc = support::doc();
+    let (mut checked, mut unavailable_count) = (0, 0);
+    for (d, dependency) in DEPENDENCIES.iter().enumerate() {
+        for (o, params) in OVERRIDES.iter().enumerate() {
+            let steps = format!("[[step]]\nitem = \"{dependency}\"\nversion = \"^1\"\nparams = {{ {params} }}\n");
+            let id = format!("omuzaki/outfits/matrix-{d}-{o}");
+            let m = item(&id, "outfits", "bundle", "", &steps);
+            library.insert(m.clone(), ItemScope::FirstParty).unwrap();
+            let mut bindings = bound();
+            for key in ["ribbon", "layered"] {
+                bindings.parts.insert(key.into(), format!("new-{key}").parse().unwrap());
+            }
+            let applied = omuzaki_library_mock::apply_with_library(&library, &m, &doc, &bindings);
+            let why = library.describe(&id.parse().unwrap(), None).unwrap().info.unavailable;
+            assert_eq!(why.is_some(), applied.is_err(), "{dependency} with {{ {params} }}: {why:?} vs {applied:?}");
+            if let (Some(why), Err(e)) = (&why, &applied) {
+                assert!(why.contains(&e.message) || e.message.contains(why.as_str()), "{why:?} vs {e:?}");
+                unavailable_count += 1;
+            }
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 30);
+    assert!(unavailable_count >= 20, "the matrix must exercise failures, not just successes: {unavailable_count}");
+}
+
+#[test]
+fn a_parameter_override_is_validated_against_the_dependency_it_is_passed_to() {
+    let library = MockLibrary::fixtures();
+    let reason = |id: &str| library.describe(&id.parse().unwrap(), None).unwrap().info.unavailable;
+    assert!(reason("test/outfits/undeclared-param").is_some_and(|r| r.contains("step/0") && r.contains("nope")));
+    assert!(reason("test/outfits/out-of-range").is_some_and(|r| r.contains("step/0") && r.contains("layer")));
+    assert_eq!(reason("test/outfits/layered-ok"), None);
+    let e = omuzaki_library_mock::apply_with_library(
+        &library,
+        &fixtures::out_of_range_param_bundle(),
+        &support::doc(),
+        &bindings_for_bundle(),
+    )
+    .unwrap_err();
+    assert!(e.field.as_deref().is_some_and(|f| f.contains("step/0")), "{e:?}");
+}
