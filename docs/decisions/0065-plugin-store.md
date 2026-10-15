@@ -58,6 +58,8 @@ install, a signed repository, domain-verified publishers. The table and what we 
   signed body is `PackageStatement`, not the bare hash; an unsigned local package installs only with
   `plugin.developer_mode` on (0058 allowed it always). New ops: `plugin.update`, `plugin.pin`, `plugin.rollback`,
   `plugin.keep` and `plugin.store.*`, all person-only except `list` and `describe`.
+- **Open, with a recommendation (design §14.6):** the immutability record is capped at 50,000 entries and refuses past
+  it; a signed per-id commitment under a new `format` would let it compact. Recommended later, not in v1.
 - **Owner's, not decided here:** hosting and key custody, the default revocation cadence (`manual` against `daily`), a
   review service, a transparency log, and whether to keep the developer-mode tightening. None blocks a folder or static
   store.

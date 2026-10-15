@@ -149,16 +149,24 @@ pub type SignedIndex = Signed<IndexBody>;
 - **One file, not one per plugin.** At 10,000 entries of about 600 bytes it is 6 MB, fetched with a conditional GET
   (`ETag`) so an unchanged index costs a 304; it verifies in one pass and gives one `(epoch, sequence)` to pin. A
   store that outgrows it adds sharding under a new `format` (a per-id file listed by hash), not a different trust model.
-  A store keeps at most 20 versions per id in the list; older ones stay downloadable at their `url` for pins.
+  A store keeps at most 20 versions per id in the list; the oldest **retire** from it (see "Retirement" below).
 - **Versions are immutable,** within an index and across indexes. A second entry for one `id@version` with another
   hash makes the whole index `Tampered(Duplicate)`; the same bytes are idempotent. The client also persists, per
   store in the plugin state file, an append-only `id@version → hash` record of every entry in every accepted index,
   never evicted while the store stays configured, and rejects any later index, whatever its sequence, that maps a
   recorded `id@version` to another hash, the same `Tampered(Duplicate)`, so an entry that leaves the listing stays
   fixed. The record holds at most 50,000 entries (about 5 MB); an index that would exceed it is refused as `Tampered`
-  (history full) and offers nothing new until the person re-adds the store. Only an authenticated `Rotate` to a new key or the person's re-add of the store (§3) clears it; a higher `epoch` signed by the
-  pinned key moves the watermark but clears nothing. A fix is a new version. Delete is `yanked: true`, never removal,
-  so a pin or a rollback still resolves (crates.io's rule).
+  (`StoreError::Tampered(HistoryFull)`) and offers nothing new until the person re-adds the store. Only an
+  authenticated `Rotate` to a new key or the person's re-add of the store (§3) clears it; a higher `epoch` signed by the
+  pinned key moves the watermark but clears nothing. A fix is a new version. Delete is `yanked: true`, never removal
+  (crates.io's rule). The 50,000 cap is deliberately blunt; a compacting commitment is open question 6 (§14).
+- **Retirement.** `yanked` is how an author or store withdraws a version; it stays in the list. Only the cap above
+  removes an entry: when an id has more than 20 versions, the store may drop the oldest, preferring yanked ones. A
+  retired version is not offered in the panel and not an update target, and its hash stays in the client's record, so
+  it can never be redefined. It still resolves for a person who already has it: installing or pinning stores the full
+  `IndexEntry` (url, size, publisher, hash) in the plugin record, so a pin, a reinstall from cache and a rollback
+  work without the listing. A retired version the client holds no entry for is not installable from that store
+  (`install` by hash returns `ListingMismatch(entry)`); a person who wants it gets a fresh listing from the store.
 - **Replay and freeze are the updater's rules** (`updates.md` §4): the client stores the highest accepted
   `(epoch, sequence)` per store in the plugin state file and refuses a lower pair (`Replay`). The `expires` is 14
   days and a store re-signs daily. An expired index is "out of date" in the panel, never "no new plugins", and offers
@@ -359,7 +367,7 @@ pub trait PluginStore: Send + Sync {
 }
 ```
 
-`StoreError`: `Replay`, `Expired`, `BadSignature`, `Tampered(Duplicate|Fields)`, `ListingMismatch(field)`, `Licence`,
+`StoreError`: `Replay`, `Expired`, `BadSignature`, `Tampered(Duplicate|Fields|HistoryFull)`, `ListingMismatch(field)`, `Licence`,
 `Revoked`, `Package(refusal)`, `Offline`, `TooLarge`. Every variant derives its text from the constants it names.
 
 ## 12. Tests
@@ -374,7 +382,7 @@ All against `MemoryStore` on a `FakeClock`; no test touches the network. The hos
 | `signature_outside_hash` | listing `plugin.sig` as content is refused; changing only `plugin.sig` leaves the hash unchanged |
 | `wrong_domain_and_key` | a signature over the same hash under `Domain::Export`, `LibraryIndex` or `Plugin` fails as an index signature (and the reverse); an index signed by any key but the pinned one is `BadSignature` |
 | `publisher_key_continuity` | a package signed by a valid key other than `entry.publisher.key` is refused; an update whose entry and signer both carry a new key, without `Rotate`, reaches the card with `publisher_changed` and needs the typed confirmation, and declined changes nothing; a package `url` with a scheme, `//`, backslash or `..` is refused before any request |
-| `index_replay_expiry_epoch` | a lower `(epoch, sequence)` is `Replay`; past `expires` is `Expired` and offers nothing; a raised epoch resets the pin only after a verified `Rotate` or a person's re-add; one `id@version` with two hashes is `Tampered(Duplicate)`, in one file or in a higher-sequence index after a recorded lower-sequence one, including one omitted from an index in between; a record past 50,000 entries refuses the index |
+| `index_replay_expiry_epoch` | a lower `(epoch, sequence)` is `Replay`; past `expires` is `Expired` and offers nothing; a raised epoch resets the pin only after a verified `Rotate` or a person's re-add; one `id@version` with two hashes is `Tampered(Duplicate)`, in one file or in a higher-sequence index after a recorded lower-sequence one, including one omitted from an index in between; a record past 50,000 entries refuses the index as `Tampered(HistoryFull)`; a retired version still installs, pins and rolls back from its stored entry |
 | `listing_lies_refused` | an entry that understates `permissions` or shows another licence is `ListingMismatch` at install |
 | `nc_licence_refused` | `listing::check` refuses a non-commercial or unknown SPDX id; the client refuses a store entry with one |
 | `mid_run_revocation` | a running plugin with a `fetch` waiting; the list names its hash: `Disabled { StoreRevoked }`, the fetch is cancelled, the entry rolls back (the assertions of `plugins.md` §3.4) |
@@ -446,6 +454,10 @@ person who declines sees it disabled with the note and may confirm `plugin.keep`
 3. A review service: who runs it, what it promises, moderation and takedown. This design needs only §9.
 4. A transparency log for the store (Rekor's idea) as a later additive layer.
 5. Whether to ship the unsigned-package tightening (`plugin.developer_mode`, §7) or keep ADR 0058's rule.
+6. How the immutability record is bounded for a store that churns versions. This design keeps every `id@version → hash`
+   up to 50,000 and refuses past it (`Tampered(HistoryFull)`). Recommendation: ship that in v1, and add under a new
+   `format` a per-id signed commitment (a hash over the sorted version-hash pairs the store has ever listed, which the
+   client checks against what it has seen), so the record can compact without forgetting. Not needed until a store nears the cap.
 
 ## 15. Tasks (filed by the lead after review)
 
