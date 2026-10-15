@@ -25,7 +25,7 @@ use crate::shared::Shared;
 
 /// Chunks of each struct: vec4s in declaration order (matrices as four columns, arrays element by element).
 const FRAME_CHUNKS: usize = 12 + 3 + 32 + 4;
-const MATERIAL_CHUNKS: usize = 9 + 8 + 8;
+const MATERIAL_CHUNKS: usize = 9 + 8 + 8 + 1; // the UV transform is the last vec4
 const INSTANCE_CHUNKS: usize = 4 + 3 + 1;
 
 const PROBE: &str = r"
