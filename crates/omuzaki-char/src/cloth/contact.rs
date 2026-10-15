@@ -104,7 +104,7 @@ impl Shape {
     /// A rig collider placed by `to_solver`, its bone's space in the solver's (see `omuzaki_anim_api::Collider`). The
     /// radius scales by the transform's mean scale.
     pub fn from_collider(shape: &ColliderShape, to_solver: &Affine3A) -> Self {
-        let scale = to_solver.matrix3.determinant().abs().cbrt();
+        let scale = libm::cbrtf(to_solver.matrix3.determinant().abs());
         match *shape {
             ColliderShape::Sphere { offset, radius } => {
                 Self::sphere(to_solver.transform_point3(offset), radius * scale)
@@ -457,7 +457,7 @@ impl WindParams {
         let along = f64::from(position.dot(wind.normalize_or_zero()) * self.gust_phase_per_m);
         let phase = std::f64::consts::TAU * f64::from(self.gust_hz) * seconds - along;
         // Two incommensurate sines, so the gust never repeats on a visible period.
-        let wave = 0.6 * phase.sin() + 0.4 * (phase * 2.17 + 1.3).sin();
+        let wave = 0.6 * libm::sin(phase) + 0.4 * libm::sin(phase * 2.17 + 1.3);
         wind * (1.0 + self.gust * wave as f32)
     }
 }

@@ -4,6 +4,8 @@
 //! friction and sweeps, a hash of every particle and velocity each 20 frames. A change to the contact maths that is
 //! meant to change results must record new hashes and say so in its PR; `CLOTH_PRINT_HASHES=1` prints them.
 
+// The scenes' own sines and cosines go through `libm` too: the platform's `sinf` is not bit-identical across
+// platforms (#1585), and these hashes must hold on every one.
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::cast_precision_loss)]
 
 use omuzaki_char::cloth::contact::{ClothEnvironment, ContactParams, Shape};
@@ -60,10 +62,10 @@ fn resting_and_dragged() -> u64 {
     let sheet = sheet(25, 0.5, 0.2, |_, _| 0.0);
     replay(&sheet, 2, 600, |f| {
         let t = f as f32 * FRAME;
-        let slide = 0.08 * (t * 2.0).sin();
+        let slide = 0.08 * libm::sinf(t * 2.0);
         vec![
             Shape::capsule(Vec3::new(-0.3 + slide, 0.0, 0.0), Vec3::new(0.05 + slide, 0.0, 0.0), 0.05),
-            Shape::sphere(Vec3::new(0.14, -0.03 + 0.02 * (t * 3.0).cos(), 0.0), 0.08),
+            Shape::sphere(Vec3::new(0.14, -0.03 + 0.02 * libm::cosf(t * 3.0), 0.0), 0.08),
         ]
     })
 }
@@ -75,9 +77,9 @@ fn swept_and_swung() -> u64 {
     replay(&sheet, 2, 240, |f| {
         let t = f as f32 * FRAME;
         let ball_y = (-0.2 + 20.0 * t).min(0.04);
-        let angle = -1.2 * (std::f32::consts::TAU * 1.5 * t).cos();
+        let angle = -1.2 * libm::cosf(std::f32::consts::TAU * 1.5 * t);
         let pivot = Vec3::new(0.0, -0.3, 0.0);
-        let tip = pivot + Vec3::new(angle.sin(), angle.cos(), 0.0) * 0.4;
+        let tip = pivot + Vec3::new(libm::sinf(angle), libm::cosf(angle), 0.0) * 0.4;
         vec![Shape::sphere(Vec3::new(0.2, ball_y, 0.1), 0.02), Shape::capsule(pivot, tip, 0.03)]
     })
 }
@@ -91,13 +93,13 @@ fn skirt_against_legs() -> u64 {
         for c in 0..cols {
             let angle = std::f32::consts::TAU * c as f32 / cols as f32;
             let radius = 0.14 + 0.18 * t;
-            rest.push(Vec3::new(radius * angle.sin(), -0.42 * t, radius * angle.cos()));
+            rest.push(Vec3::new(radius * libm::sinf(angle), -0.42 * t, radius * libm::cosf(angle)));
         }
     }
     let pins = (0..rows * cols).map(|i| if i < cols { 1.0 } else { 0.0 }).collect();
     let skirt = ClothSheet::with_density(SheetShape { rows, cols, wrap: true }, rest, 0.2, pins).unwrap();
     replay(&skirt, 8, 300, |f| {
-        let swing = 0.25 * (f as f32 * FRAME * std::f32::consts::TAU).sin();
+        let swing = 0.25 * libm::sinf(f as f32 * FRAME * std::f32::consts::TAU);
         let leg = |x: f32, s: f32| {
             let knee = Vec3::new(x, -0.28, s);
             [
@@ -120,8 +122,9 @@ fn skirt_against_legs() -> u64 {
     })
 }
 
-/// The hashes recorded from the code before the rework.
-const RECORDED: [u64; 3] = [0x91d8_b55c_8950_7855, 0x591a_3b50_e0a5_1810, 0x2b6b_a07c_c068_88ab];
+/// The hashes recorded from the portable (`libm`) maths, once, on Linux (#1585). The rework's original hashes came
+/// from the platform's C library; the contact code itself is unchanged by the re-record.
+const RECORDED: [u64; 3] = [0x23f1_466c_81ab_7ee2, 0x3468_8c20_80fb_5c65, 0x6638_ab0b_96ef_4b6c];
 
 #[test]
 fn contacts_replay_bit_for_bit_against_the_recorded_history() {
