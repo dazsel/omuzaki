@@ -33,6 +33,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use cfg::Cfg;
+pub use cfg::Target;
 pub use crates::{Crate, Dependency};
 pub use gate::verify;
 pub use links::lint_links;
@@ -152,12 +153,12 @@ impl Condition {
     }
 }
 
-/// Whether every condition holds: `Ok(false)` as soon as one is false, otherwise `Err` with the undecided ones. With
-/// `any_target`, "holds" means "can hold on some target that ships" (`Cfg::can_be`) instead of "holds for this build".
-fn all_hold(conditions: &[Condition], any_target: bool) -> Result<bool, Vec<&Condition>> {
+/// Whether every condition holds: `Ok(false)` as soon as one is false, otherwise `Err` with the undecided ones. "Holds"
+/// means holds for `target`, or with `None` can hold on some target that ships (`Cfg::can_be`).
+fn all_hold<'a>(conditions: &'a [Condition], target: Option<&Target>) -> Result<bool, Vec<&'a Condition>> {
     let mut undecided = Vec::new();
     for condition in conditions {
-        match if any_target { condition.cfg.can_be(true) } else { condition.cfg.eval() } {
+        match target.map_or_else(|| condition.cfg.can_be(true), |target| condition.cfg.eval(target)) {
             Some(false) => return Ok(false),
             Some(true) => {}
             None => undecided.push(condition),
@@ -182,11 +183,11 @@ pub struct ScannedCrate {
     /// The crate.
     pub krate: Crate,
     files: Vec<ScannedFile>,
-    /// The registrations in its library.
+    /// The registrations in its library, for the target the scan was made for.
     lib: Vec<Registration>,
     /// The registrations in its library on every target that could ship, not just this build's (`Cfg::can_be`).
     lib_any_target: Vec<Registration>,
-    /// The registrations in each binary's own files.
+    /// The registrations in each binary's own files, for the target the scan was made for.
     bins: BTreeMap<String, Vec<Registration>>,
 }
 
@@ -216,12 +217,21 @@ pub struct Sources {
 }
 
 impl Sources {
-    /// Reads and scans the workspace at `root`.
+    /// Reads and scans the workspace at `root` for the host's own build ([`Target::host`]).
     ///
     /// # Errors
     /// An unreadable manifest, directory or source file, or [`Error::UndecidableCfg`] for a registration under a
     /// `cfg` the scan can't decide.
     pub fn scan(root: &Path) -> Result<Self, Error> {
+        Self::scan_for(root, &Target::host())
+    }
+
+    /// [`scan`](Self::scan) for a build of `target`: the `cfg`s on registrations are evaluated with its options, not the
+    /// host's, so a module built for another target is judged by what that target compiles.
+    ///
+    /// # Errors
+    /// As [`scan`](Self::scan).
+    pub fn scan_for(root: &Path, target: &Target) -> Result<Self, Error> {
         let mut read = Vec::new();
         let mut kinds = BTreeSet::new();
         for krate in crates::load(root)? {
@@ -238,7 +248,7 @@ impl Sources {
         }
         let crates = read
             .into_iter()
-            .map(|(krate, files)| compiled_registrations(krate, files, &kinds))
+            .map(|(krate, files)| compiled_registrations(krate, files, &kinds, target))
             .collect::<Result<_, _>>()?;
         Ok(Self { crates })
     }
@@ -467,32 +477,33 @@ impl FeatureGraph {
     }
 }
 
-/// The registrations `krate`'s build compiles, sorted into its library and its binaries: calls of the workspace's
-/// registration macros whose `cfg`s hold. The library's are also listed for every target that could ship
+/// The registrations `krate`'s build for `target` compiles, sorted into its library and its binaries: calls of the
+/// workspace's registration macros whose `cfg`s hold. The library's are also listed for every target that could ship
 /// (`lib_any_target`), which the lints use so that a registration behind `cfg(target_arch = "wasm32")` still counts on
 /// a Linux host.
 fn compiled_registrations(
     krate: Crate,
     files: Vec<ScannedFile>,
     kinds: &BTreeSet<String>,
+    target: &Target,
 ) -> Result<ScannedCrate, Error> {
     let conditions = file_conditions(&krate, &files);
-    let (lib, bins) = registrations_where(&krate, &files, &conditions, kinds, false)?;
-    let (lib_any_target, _) = registrations_where(&krate, &files, &conditions, kinds, true)?;
+    let (lib, bins) = registrations_where(&krate, &files, &conditions, kinds, Some(target))?;
+    let (lib_any_target, _) = registrations_where(&krate, &files, &conditions, kinds, None)?;
     Ok(ScannedCrate { krate, files, lib, lib_any_target, bins })
 }
 
 /// A crate's library registrations and each binary's.
 type Compiled = (Vec<Registration>, BTreeMap<String, Vec<Registration>>);
 
-/// The registration calls whose `cfg`s hold (for this build, or on some target with `any_target`), split into the
-/// library's and each binary's.
+/// The registration calls whose `cfg`s hold (for `target`, or on some target that ships when it is `None`), split into
+/// the library's and each binary's.
 fn registrations_where(
     krate: &Crate,
     files: &[ScannedFile],
     conditions: &BTreeMap<PathBuf, Vec<Condition>>,
     kinds: &BTreeSet<String>,
-    any_target: bool,
+    target: Option<&Target>,
 ) -> Result<Compiled, Error> {
     let mut lib = Vec::new();
     let mut bins: BTreeMap<String, Vec<Registration>> = BTreeMap::new();
@@ -501,7 +512,7 @@ fn registrations_where(
         for call in file.scan.calls.iter().filter(|call| kinds.contains(&call.kind)) {
             let mut all: Vec<Condition> = inherited.to_vec();
             all.extend(Condition::at(&file.name, &call.cfgs));
-            let compiled = all_hold(&all, any_target).map_err(|undecided| Error::UndecidableCfg {
+            let compiled = all_hold(&all, target).map_err(|undecided| Error::UndecidableCfg {
                 registration: format!("{}:{} register_{}!({})", file.name, call.line, call.kind, call.name),
                 conditions: undecided
                     .iter()
@@ -585,6 +596,19 @@ fn child_files(file: &Path, is_root: bool, decl: &ModDecl) -> Vec<PathBuf> {
 /// As those two.
 pub fn expected(root: &Path, package: &str, bin: Option<&str>) -> Result<Vec<Registration>, Error> {
     Sources::scan(root)?.expected(package, bin)
+}
+
+/// [`expected`] for a build of `target`: [`Sources::scan_for`] then [`Sources::expected`].
+///
+/// # Errors
+/// As those two.
+pub fn expected_for(
+    root: &Path,
+    target: &Target,
+    package: &str,
+    bin: Option<&str>,
+) -> Result<Vec<Registration>, Error> {
+    Sources::scan_for(root, target)?.expected(package, bin)
 }
 
 /// [`Sources::expected_with_features`] for the workspace at `root`.

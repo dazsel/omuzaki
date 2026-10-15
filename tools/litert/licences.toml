@@ -1,0 +1,137 @@
+# The reviewed licence map for the LiteRT build (ADR 0061 decisions 5 and 6, design §8.3).
+#
+# tools/litert/build.py's notices step asks Bazel which external repositories the library's sources come from, and
+# fails when one has no entry here, when an entry's licence file is missing from the tree that was built, or when its
+# `row` has no file in docs/licensing/deps/. So a dependency a LiteRT bump adds cannot ship without a register row.
+#
+#   [repo.<Bazel repository>]   `litert` is LiteRT's own (main) repository
+#   name   what THIRD_PARTY_NOTICES.md calls it
+#   spdx   its licence: an SPDX id, or LicenseRef-<name> for one with no id
+#   row    its file in docs/licensing/deps/, without `.toml`
+#   files  its licence files, relative to the repository root, copied into the archive's licences/ folder
+#
+# Each licence was read at the commit LiteRT v2.3.0 pins.
+
+[repo.litert]
+name = "LiteRT"
+spdx = "Apache-2.0"
+row = "litert"
+files = ["LICENSE"]
+
+[repo.org_tensorflow]
+name = "TensorFlow"
+spdx = "Apache-2.0"
+row = "litert-tensorflow"
+files = ["LICENSE"]
+
+[repo.xla]
+name = "XLA (vendored in TensorFlow)"
+spdx = "Apache-2.0"
+row = "litert-tensorflow"
+files = ["LICENSE"]
+
+[repo.tsl]
+name = "TSL (vendored in TensorFlow)"
+spdx = "Apache-2.0"
+row = "litert-tensorflow"
+files = ["LICENSE"]
+
+[repo.XNNPACK]
+name = "XNNPACK"
+spdx = "BSD-3-Clause"
+row = "litert-xnnpack"
+files = ["LICENSE"]
+
+[repo.pthreadpool]
+name = "pthreadpool"
+spdx = "BSD-2-Clause"
+row = "litert-pthreadpool"
+files = ["LICENSE"]
+
+[repo.cpuinfo]
+name = "cpuinfo"
+spdx = "BSD-2-Clause"
+row = "litert-cpuinfo"
+files = ["LICENSE"]
+
+[repo.FP16]
+name = "FP16"
+spdx = "MIT"
+row = "litert-fp16"
+files = ["LICENSE"]
+
+[repo.FXdiv]
+name = "FXdiv"
+spdx = "MIT"
+row = "litert-fxdiv"
+files = ["LICENSE"]
+
+[repo.slinky]
+name = "slinky"
+spdx = "MIT"
+row = "litert-slinky"
+files = ["LICENSE"]
+
+# arm64 only (macos-arm64). REUSE layout: its README says it is distributed under the licences in LICENSES/.
+[repo.KleidiAI]
+name = "KleidiAI"
+spdx = "Apache-2.0 AND BSD-3-Clause"
+row = "litert-kleidiai"
+files = ["LICENSES/Apache-2.0.txt", "LICENSES/BSD-3-Clause.txt"]
+
+[repo.ruy]
+name = "ruy"
+spdx = "Apache-2.0"
+row = "litert-ruy"
+files = ["LICENSE"]
+
+[repo.gemmlowp]
+name = "gemmlowp"
+spdx = "Apache-2.0"
+row = "litert-gemmlowp"
+files = ["LICENSE"]
+
+[repo.flatbuffers]
+name = "FlatBuffers"
+spdx = "Apache-2.0"
+row = "litert-flatbuffers"
+files = ["LICENSE"]
+
+[repo.com_google_absl]
+name = "Abseil"
+spdx = "Apache-2.0"
+row = "litert-abseil"
+files = ["LICENSE"]
+
+[repo.ml_dtypes_py]
+name = "ml_dtypes"
+spdx = "Apache-2.0"
+row = "litert-ml-dtypes"
+files = ["LICENSE", "LICENSE.eigen"]
+
+# Mostly MPL-2.0, used unmodified (policy); a few files carry the other licences, so all of them ship.
+[repo.eigen_archive]
+name = "Eigen"
+spdx = "MPL-2.0"
+row = "litert-eigen"
+files = ["COPYING.MPL2", "COPYING.BSD", "COPYING.APACHE", "COPYING.MINPACK", "COPYING.README"]
+
+[repo.farmhash_archive]
+name = "farmhash"
+spdx = "MIT"
+row = "litert-farmhash"
+files = ["COPYING"]
+
+# The terms are in the package's readme: use, copy and modify for any purpose without fee.
+[repo.fft2d]
+name = "OouraFFT (fft2d)"
+spdx = "LicenseRef-OouraFFT"
+row = "litert-ooura-fft"
+files = ["readme.txt"]
+
+# BSD-style: keep the notice, no endorsement; no SPDX id matches it exactly.
+[repo.arm_neon_2_x86_sse]
+name = "NEON_2_SSE"
+spdx = "LicenseRef-NEON2SSE"
+row = "litert-neon2sse"
+files = ["LICENSE"]

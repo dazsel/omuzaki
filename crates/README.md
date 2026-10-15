@@ -84,6 +84,12 @@ The other API crates (§39.1) arrive in later phases, each with its mock.
 `library.team.*` ops) and `omuzaki-library-source-s3` (Implementation: the bucket store, so the network dependency stays
 out of the rest).
 
+**Planned: plugins** (ADR 0058, `docs/design/plugins.md` §1). `omuzaki-plugin-api` (API: the WIT package `omuzaki:plugin`,
+`Manifest`, `PluginId`, `PluginInfo`, `PluginState`, `PluginError`, `DataOwner`, the per-call-kind budgets and the
+`Plugins` service; no wasmtime), `omuzaki-plugin-mock` (Mock: `MockPlugins`, `MockGuest` and the conformance suite) and
+`omuzaki-plugin` (Implementation: the wasmtime component host, the WASI stubs, limits, fuel and epochs, the op bridge,
+the compiled-code cache, reload and the `plugin.*` ops; native only).
+
 **Planned: connectors** (ADR 0030, `docs/design/connectors.md` D1 and D13). `omuzaki-connect-api` (API: manifests,
 requests, the `Connectors` service, the tray), `omuzaki-connect-mock` (Mock), `omuzaki-connect` (Implementation: the host
 and the `connect.*` ops) and one `omuzaki-connect-<family>` Implementation per adapter family. HTTP has one contract,
@@ -98,13 +104,14 @@ App's `Services`.
     cargo xtask check --all            # the whole workspace
     cargo xtask lint-deps              # only the layering rule above
     cargo xtask lint-links             # only the link() wiring (ADR 0015)
+    cargo xtask models                 # only the shipped-model licence gate (ML-01, ADR 0017)
     cargo xtask lint-crate-table       # only the crate metadata (ADR 0053)
 
 `check` maps the files that differ from `--base` (default `origin/main`, via the merge-base; uncommitted and untracked
 files count) to crates, adds every crate that depends on them (dev-dependencies too), then runs in order: `fmt --check`,
-`clippy -D warnings`, `test`, `cargo deny check licenses bans sources`, `lint-deps`, `lint-links`. A change to `Cargo.toml`,
+`clippy -D warnings`, `test`, `cargo deny check licenses bans sources`, `lint-deps`, `lint-links`, `models` (every shipped model has an allowed licence file). A change to `Cargo.toml`,
 `Cargo.lock`, `deny.toml`, `clippy.toml`, `rustfmt.toml`, `rust-toolchain.toml` or `.cargo/` checks everything; a change
-outside every crate (docs, tools) runs nothing. It always runs every step and ends with a one-screen summary; the exit
+outside every crate (docs, tools) runs only the `models` gate, since a licence-file change can break it. It always runs every step and ends with a one-screen summary; the exit
 code is non-zero if any step failed.
 
 **Link gate only.** An App such as `omuzaki-cli` links every op crate only to carry their registrations (ADR 0015), so a

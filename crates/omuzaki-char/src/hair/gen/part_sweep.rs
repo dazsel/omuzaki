@@ -107,7 +107,7 @@ pub fn control_points(
     let start =
         (part_direction(g, PART_START + (1.0 - PART_START) * s) + DVec3::new(side * PART_SPREAD, 0.0, 0.0)).normalize();
     let azimuth = side * (g.end_from_deg + (g.end_to_deg - g.end_from_deg) * s.powf(END_SPREAD)).to_radians();
-    let end = braid_direction(g, head, azimuth);
+    let end = braid_direction(g.end_height_front, g.end_height_back, head, azimuth);
     let alternate = if i.is_multiple_of(2) { 0.0 } else { ALTERNATE_STEP };
     for (k, point) in out.iter_mut().enumerate() {
         let t = k as f64 / (CONTROL_POINTS - 1) as f64;
@@ -122,11 +122,12 @@ fn part_direction(g: &PartSweepGen, s: f64) -> DVec3 {
     DVec3::new(0.0, a.cos(), -a.sin())
 }
 
-/// The unit direction of the braid line at azimuth `phi`: at that azimuth's height, round the head.
-fn braid_direction(g: &PartSweepGen, head: &dyn HeadSurface, phi: f64) -> DVec3 {
+/// The unit direction of the braid line at azimuth `phi` (radians from the front): at that azimuth's height, blended
+/// from `front` to `back` over [`HEIGHT_BLEND`], round the head. Shared with the braid-crown generator.
+pub fn braid_direction(front: f64, back: f64, head: &dyn HeadSurface, phi: f64) -> DVec3 {
     let a = phi.sin().atan2(phi.cos()).abs().to_degrees();
     let blend = smoothstep(a, HEIGHT_BLEND.0, HEIGHT_BLEND.1);
-    let height = g.end_height_front + (g.end_height_back - g.end_height_front) * blend;
+    let height = front + (back - front) * blend;
     let crown = f64::from(head.radius(Vec3::Y)).max(1e-6);
     let theta = (height / crown).clamp(-1.0, 1.0).acos();
     DVec3::new(theta.sin() * phi.sin(), theta.cos(), theta.sin() * phi.cos())
