@@ -5,7 +5,7 @@
 //! times (as in `omuzaki-rig/tests/hot_loop.rs`).
 
 // A counting allocator is the only way to *prove* "no allocation"; the workspace denies unsafe code by default.
-#![allow(unsafe_code, clippy::unwrap_used, clippy::cast_precision_loss)]
+#![allow(unsafe_code, clippy::unwrap_used, clippy::cast_precision_loss, clippy::cast_possible_truncation)]
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -79,6 +79,19 @@ impl PoseSource for Pose {
 
     fn root(&self) -> Mat4 {
         self.root
+    }
+}
+
+/// A pose with every joint: the head from `Pose`, everything else at rest.
+struct Rigged(Pose);
+
+impl PoseSource for Rigged {
+    fn skin_matrix(&self, joint: &JointRef) -> Option<Mat4> {
+        Some(self.0.skin_matrix(joint).unwrap_or(Mat4::IDENTITY))
+    }
+
+    fn root(&self) -> Mat4 {
+        self.0.root
     }
 }
 
@@ -159,6 +172,19 @@ fn rigid_clumps_are_skipped_and_bad_input_is_refused() {
     let sphere = SphereCollider { bone: JointRef::HEAD, centre: [0.0, f64::INFINITY, 0.0], radius: 0.1 };
     let err = ChainSet::from_clumps(&[], &physics, &[sphere]).unwrap_err();
     assert_eq!(err, VerletError::BadCollider { collider: 0 });
+    // Finite as f64 but not as f32: refused at the door instead of turning infinite in `targets`.
+    let wide = SphereCollider { bone: JointRef::HEAD, centre: [0.0, 0.7, 0.0], radius: 1e40 };
+    let far = SphereCollider { bone: JointRef::HEAD, centre: [f64::MAX, 0.7, 0.0], radius: 0.1 };
+    let ok = SphereCollider { bone: JointRef::HEAD, centre: [0.0, 0.7, 0.0], radius: 0.1 };
+    let err = ChainSet::from_clumps(&[], &physics, &[ok.clone(), wide]).unwrap_err();
+    assert_eq!(err, VerletError::BadCollider { collider: 1 });
+    let err = ChainSet::from_clumps(&[], &physics, &[far, ok]).unwrap_err();
+    assert_eq!(err, VerletError::BadCollider { collider: 0 });
+    // Particles at one place, or too far apart for an f32 distance, make no segment.
+    let doubled = clump(vec![HEAD, HEAD + Vec3::Y * 0.01, HEAD, HEAD], Follow::Head);
+    assert_eq!(ChainSet::from_clumps(&[doubled], &physics, &[]).unwrap_err(), VerletError::BadClump { clump: 0 });
+    let huge = clump(vec![Vec3::splat(-3e38), Vec3::splat(3e38)], Follow::Head);
+    assert_eq!(ChainSet::from_clumps(&[huge], &physics, &[]).unwrap_err(), VerletError::BadClump { clump: 0 });
 
     let mut set = ChainSet::from_clumps(&[lock(0.0, 5, Follow::Head)], &physics, &[]).unwrap();
     assert_eq!(set.step(-0.1).unwrap_err(), VerletError::BadInput { what: "dt" });
@@ -239,16 +265,65 @@ fn colliders_hold_after_settling() {
     let physics = HairPhysics { colliders: vec![ball], ..HairPhysics::default() };
     let set = settled(&clumps, &physics, &Pose::yawed(0.3));
     let centre = Vec3::new(0.0, 0.74, 0.0);
+    let reach = 0.11 + physics.collider_margin as f32; // the margin is part of the collider the hair keeps out of
     let mut deepest = f32::NEG_INFINITY;
     for range in set.chains() {
         for p in &set.positions()[range.start + 1..range.end] {
-            deepest = deepest.max(0.11 - p.distance(centre));
+            deepest = deepest.max(reach - p.distance(centre));
         }
     }
     eprintln!("deepest particle inside the collider: {deepest:.2e} m");
     assert!(deepest <= 1e-3, "{deepest} m inside");
     let inside_at_rest = set.rest().iter().filter(|p| p.distance(centre) < 0.11).count();
     assert!(inside_at_rest > 0, "the styled shape enters the collider, so the test is not vacuous");
+}
+
+#[test]
+fn overlapping_colliders_resolve_in_order_and_stay_within_the_margin() {
+    // The bench's colliders: head and neck overlap, as do the chest and shoulders.
+    let (clumps, mut physics) = mira();
+    physics.colliders = vec![
+        SphereCollider { bone: JointRef::HEAD, centre: [0.0, 0.778, 0.0], radius: 0.09 },
+        SphereCollider { bone: JointRef::NECK, centre: [0.0, 0.66, -0.01], radius: 0.045 },
+        SphereCollider { bone: JointRef::CHEST, centre: [0.0, 0.52, -0.02], radius: 0.11 },
+        SphereCollider { bone: JointRef::CHEST, centre: [0.12, 0.6, -0.02], radius: 0.06 },
+        SphereCollider { bone: JointRef::CHEST, centre: [-0.12, 0.6, -0.02], radius: 0.06 },
+    ];
+    let mut set = ChainSet::from_clumps(&clumps, &physics, &[]).unwrap();
+    let pose = Rigged(Pose::REST);
+    set.reset(&pose).unwrap();
+    set.settle(480);
+    let (margin, mut deepest) = (physics.collider_margin as f32, f32::NEG_INFINITY);
+    for i in 0..240 {
+        set.targets(&Rigged(Pose::yawed(0.52 * (i as f32 / 90.0 * TAU).sin()))).unwrap();
+        set.step(1.0 / 90.0).unwrap();
+        for range in set.chains() {
+            for p in &set.positions()[range.start + 1..range.end] {
+                for &(centre, reach) in set.spheres() {
+                    deepest = deepest.max(reach - margin - p.distance(centre));
+                }
+            }
+        }
+    }
+    eprintln!(
+        "overlapping colliders, head swinging: deepest particle {deepest:.2e} m inside a collider (margin excluded)"
+    );
+    assert!(deepest <= margin, "{deepest} m inside");
+}
+
+#[test]
+fn a_particle_at_a_collider_centre_leaves_along_its_segment() {
+    // The tip's styled place is the collider's centre and it is fully stiff: the spring puts it there every step.
+    let rest = vec![HEAD + Vec3::new(0.0, 0.2, 0.0), HEAD + Vec3::new(0.0, 0.1, 0.0), HEAD];
+    let ball = SphereCollider { bone: JointRef::HEAD, centre: [0.0, 0.778, 0.0], radius: 0.03 };
+    let physics = HairPhysics { gravity_scale: 0.0, iterations: 1, colliders: vec![ball], ..HairPhysics::default() };
+    let mut set = ChainSet::from_clumps(&[clump(rest, Follow::Head)], &physics, &[]).unwrap();
+    set.set_stiffness(&[1.0, 1.0]).unwrap();
+    set.reset(&Pose::REST).unwrap();
+    set.settle(3);
+    let tip = set.positions()[1];
+    assert!((tip.distance(HEAD) - set.spheres()[0].1).abs() < 1e-6, "pushed out to the surface: {tip}");
+    assert!(tip.y < HEAD.y && tip.x == 0.0 && tip.z == 0.0, "on along the segment from the parent above: {tip}");
 }
 
 #[test]

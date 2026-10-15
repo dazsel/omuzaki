@@ -18,8 +18,11 @@
 //! 3. `iterations` passes, each a one-sided distance pass root to tip (only the child moves, onto its rest length from
 //!    the parent, so the order matters), then a collider pass (every non-root particle against every collider in
 //!    order, pushed out to `radius + collider_margin`). A collider can leave a segment slightly off its rest length.
+//!    Overlapping colliders resolve in that fixed order, as in the prototype: a push out of a later collider can leave
+//!    a particle slightly inside an earlier one.
 //!
-//! Not in the prototype: wind (beside gravity), and [`ChainSet::reset`] also clearing the carried time (#68).
+//! Not in the prototype: wind (beside gravity), [`ChainSet::reset`] also clearing the carried time (#68), and a particle
+//! at a collider's exact centre leaving along its segment instead of staying inside.
 //!
 //! Nothing here allocates or locks after [`ChainSet::from_clumps`]: every buffer is sized there.
 
@@ -47,14 +50,18 @@ pub enum VerletError {
     /// The physics parameters are out of range.
     #[error("hair physics: {0}")]
     Physics(#[from] ParamErrors),
-    /// A simulated clump has fewer than two rest points, a non-finite one, or a stiffness outside `0..=1`.
-    #[error("clump {clump}: a simulated clump needs at least 2 finite rest points and a stiffness in 0..=1")]
+    /// A simulated clump has fewer than two rest points, a non-finite one, two particles at the same place or too far
+    /// apart for `f32`, or a stiffness outside `0..=1`.
+    #[error(
+        "clump {clump}: a simulated clump needs at least 2 finite rest points, particles apart by a finite non-zero \
+         distance, and a stiffness in 0..=1"
+    )]
     BadClump {
         /// The clump's index in the list.
         clump: usize,
     },
-    /// A collider's centre or radius is not finite or the radius is not positive.
-    #[error("collider {collider}: centre and radius must be finite, radius above 0")]
+    /// A collider's centre or radius is not finite as `f32`, or the radius is not positive.
+    #[error("collider {collider}: centre and radius must be finite as f32, radius above 0")]
     BadCollider {
         /// The collider's index in the list used.
         collider: usize,
@@ -74,7 +81,7 @@ pub enum VerletError {
     /// A frame time that is negative or not finite, a wind that is not finite, or a root that is not invertible.
     #[error("{what} must be finite (a frame time not negative, a root invertible)")]
     BadInput {
-        /// `"dt"`, `"wind"` or `"root"`.
+        /// `"dt"`, `"wind"`, `"root"` or `"collider position"`.
         what: &'static str,
     },
 }
@@ -107,7 +114,8 @@ pub struct ChainSet {
     pos: Vec<Vec3>,
     prev: Vec<Vec3>,
     target: Vec<Vec3>,
-    colliders: Vec<SphereCollider>,
+    /// The colliders as checked `f32`: bone, bind-space centre, radius plus margin.
+    colliders: Vec<(JointRef, Vec3, f32)>,
     /// Collider centres (world) and radii plus margin, refreshed by [`ChainSet::targets`].
     spheres: Vec<(Vec3, f32)>,
     root_inverse: Mat4,
@@ -120,7 +128,6 @@ pub struct ChainSet {
     gravity_scale: f32,
     wind_scale: f32,
     iterations: u8,
-    margin: f32,
 }
 
 /// three.js `MathUtils.smoothstep`: 0 at or below `lo`, 1 at or above `hi`.
@@ -142,11 +149,17 @@ impl ChainSet {
         rig_colliders: &[SphereCollider],
     ) -> Result<Self, VerletError> {
         physics.validate()?;
-        let colliders = if physics.colliders.is_empty() { rig_colliders } else { &physics.colliders };
-        for (n, c) in colliders.iter().enumerate() {
-            if !(c.centre.iter().all(|v| v.is_finite()) && c.radius.is_finite() && c.radius > 0.0) {
+        let source = if physics.colliders.is_empty() { rig_colliders } else { &physics.colliders };
+        let margin = narrow(physics.collider_margin);
+        let mut colliders = Vec::with_capacity(source.len());
+        for (n, c) in source.iter().enumerate() {
+            // Checked after narrowing: a finite `f64` beyond `f32`'s range would become infinite here.
+            let centre = Vec3::new(narrow(c.centre[0]), narrow(c.centre[1]), narrow(c.centre[2]));
+            let radius = narrow(c.radius) + margin;
+            if !(centre.is_finite() && radius.is_finite() && c.radius > 0.0) {
                 return Err(VerletError::BadCollider { collider: n });
             }
+            colliders.push((c.bone.clone(), centre, radius));
         }
         let h = 1.0 / narrow(physics.fixed_hz);
         let mut set = Self {
@@ -161,8 +174,8 @@ impl ChainSet {
             pos: Vec::new(),
             prev: Vec::new(),
             target: Vec::new(),
-            colliders: colliders.to_vec(),
             spheres: vec![(Vec3::ZERO, 0.0); colliders.len()],
+            colliders,
             root_inverse: Mat4::IDENTITY,
             wind: Vec3::ZERO,
             accumulator: 0.0,
@@ -172,7 +185,6 @@ impl ChainSet {
             gravity_scale: narrow(physics.gravity_scale),
             wind_scale: narrow(physics.wind_scale),
             iterations: physics.iterations,
-            margin: narrow(physics.collider_margin),
         };
         for (n, clump) in clumps.iter().enumerate().filter(|(_, c)| c.simulate) {
             let rest = &clump.rest;
@@ -184,7 +196,13 @@ impl ChainSet {
             let indices = (0..last).step_by(SUBSAMPLE).chain(std::iter::once(last));
             for i in indices {
                 let p = rest[i];
-                set.segment.push(if set.rest.len() == start { 0.0 } else { set.rest[set.rest.len() - 1].distance(p) });
+                let segment = if set.rest.len() == start { 0.0 } else { set.rest[set.rest.len() - 1].distance(p) };
+                // A derived length can overflow (two far-apart finite points) or vanish (two equal ones); either
+                // breaks the distance pass, so it is refused here.
+                if set.rest.len() > start && !(segment.is_finite() && segment > 0.0) {
+                    return Err(VerletError::BadClump { clump: n });
+                }
+                set.segment.push(segment);
                 set.rest.push(p);
                 set.rest_index.push(u32::try_from(i).map_err(|_| VerletError::BadClump { clump: n })?);
                 set.head_weight.push(match clump.follow {
@@ -239,14 +257,14 @@ impl ChainSet {
         if !(root.is_finite() && root.determinant().abs() > f32::EPSILON) {
             return Err(VerletError::BadInput { what: "root" });
         }
-        // Every collider bone is checked before anything is written, so a failed call leaves the set as it was.
-        for c in &self.colliders {
-            skin(pose, &c.bone)?;
+        // Every collider is placed and checked before anything is written, so a failed call leaves the set as it was.
+        for (bone, centre, _) in &self.colliders {
+            if !skin(pose, bone)?.transform_point3(*centre).is_finite() {
+                return Err(VerletError::BadInput { what: "collider position" });
+            }
         }
-        for (sphere, c) in self.spheres.iter_mut().zip(&self.colliders) {
-            let m = skin(pose, &c.bone)?;
-            let centre = Vec3::new(narrow(c.centre[0]), narrow(c.centre[1]), narrow(c.centre[2]));
-            *sphere = (m.transform_point3(centre), narrow(c.radius) + self.margin);
+        for (sphere, (bone, centre, radius)) in self.spheres.iter_mut().zip(&self.colliders) {
+            *sphere = (skin(pose, bone)?.transform_point3(*centre), *radius);
         }
         self.root_inverse = root.inverse();
         for ((t, &p), &w) in self.target.iter_mut().zip(&self.rest).zip(&self.head_weight) {
@@ -350,15 +368,21 @@ impl ChainSet {
     }
 
     fn collider_pass(&mut self, chain: Chain) {
-        for p in &mut self.pos[chain.start + 1..chain.end] {
+        for i in chain.start + 1..chain.end {
+            let mut p = self.pos[i];
             for &(centre, radius) in &self.spheres {
-                let d = *p - centre;
+                let d = p - centre;
                 let len = d.length();
-                // A particle exactly at a centre has no way out (the prototype's push is then zero too).
-                if len < radius && len > f32::EPSILON {
-                    *p = centre + d * (radius / len);
+                if len >= radius {
+                    continue;
                 }
+                // A particle at the very centre has no direction of its own (the prototype then leaves it inside):
+                // it leaves along the segment from its parent, or straight up if that is degenerate too.
+                let dir =
+                    if len > f32::EPSILON { d / len } else { (p - self.pos[i - 1]).try_normalize().unwrap_or(Vec3::Y) };
+                p = centre + dir * radius;
             }
+            self.pos[i] = p;
         }
     }
 
