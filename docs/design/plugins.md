@@ -84,9 +84,9 @@ interface host {
 interface data {
     /// The plugin's own folder: flat names `[a-z0-9._-]{1,64}`, no paths. Refusals unless the manifest says `data = true`.
     read: func(name: string) -> option<list<u8>>;
-    write: func(name: string, bytes: list<u8>) -> result<_, string>;   // "over quota" past the quota (§7)
+    write: func(name: string, bytes: list<u8>) -> result<_, string>;   // "over quota" past the byte or file quota (§4.2)
     remove: func(name: string) -> bool;
-    list: func() -> list<string>;
+    list: func() -> list<string>;   // at most 4,096 names (§4.2)
 }
 
 interface http {
@@ -183,8 +183,7 @@ ends with a named reason: `Closed` on disable, unload or reload, `Revoked` by th
 
 - **Never granted to a plugin:** `native`, `fs`, `process`, `input`, `script`. A manifest that requests one is
   refused at install (`PluginError::Manifest`). `fs` is replaced by the plugin's own data folder (`data`), which is
-  not a file root and reaches nothing else; `script` would let a plugin run Rhai as itself, a second door with no
-  extra value.
+  not a file root and reaches nothing else; `script` would let a plugin run Rhai as itself, a second door.
 - **`net` is never in the session's grants.** It means "may use `http.fetch`" and is approved per host (3.3), so the
   plugin's only network path is the host function, never an op of scope `net` and never a socket.
 - **`publish`, `broadcast` and `spend` are per use.** They can be in the ceiling, but for a `Transport::Plugin`
@@ -196,6 +195,10 @@ ends with a named reason: `Closed` on disable, unload or reload, `Revoked` by th
   covers; anything new shows a card with only the difference. An unsigned plugin's approval covers its one hash.
 - **Dev keys** (14.2): a person's own development key, which the build script signs with, never leaves their machine;
   an approval made against it covers that machine only, and anything published is signed with the publisher key.
+- **A command runs inside its caller's grants.** `plugin.run` carries the caller's effective grants into the
+  invocation; every inner `ops.call` and `plan`, queued ones included, is checked against `caller's grants ∩ the
+  command's declared scope ∩ the plugin's ceiling`, as `script.run` is (`scripting.md` §3), and `list` shows that
+  set. `fetch` also needs a declared `net` and the caller holding it; `data` writes need a declared `data`.
 - **Changing a plugin's grants** is `plugin.grant`, person only (§9).
 
 ### 3.3 Network: hosts, not sockets
@@ -240,6 +243,7 @@ exactly these, and refuses a component that imports any other (`PluginError::Imp
 | Instances | 32 core instances per component | `StoreLimits` (`instances`) |
 | Wasm stack | 512 KiB | `Config::max_wasm_stack`; deep recursion traps |
 | Host-call rate | 10,000 a second, burst 1,000, across every import | a token bucket on the runner's clock, like #244's; over it, `call` and `plan` return `limited` and other imports trap |
+| Data folder | `data_quota_mb` bytes and 4,096 files (flat names); a `write` past either is "over quota" | `data`: both checked and updated under one lock; `list` is bounded by the count |
 | Export lists | `list()` results and `describe` strings over 1 MiB, an `init` config over 64 KiB | the bridge; a bad or oversized return value faults the plugin |
 
 ### 4.3 Fuel and deadlines per call kind
@@ -286,8 +290,7 @@ by the §10 single-thread ratio (1.43), and fails if 10⁶ fuel is outside 0.5 t
   same compiled component with its own `Store` and a 16 MiB memory cap. They share only the compiled code: a node
   activation acts in the show's session, never the plugin's, and has no `ops`, `http` or `data` (1.1; D15).
 - **Never on the render, audio or tracking thread.** An extension design may allow one exception only with its own
-  number and gate on the §10 table (for example, a part generator at build time, never per frame).
-- The compile runs on the worker, never on the UI thread.
+  number and gate on the §10 table (say, a build-time part generator). Compiling runs on the worker, not the UI thread.
 
 ### 5.2 The budget table
 
@@ -376,8 +379,8 @@ agent = "confirm"              # free, confirm or never; default never
   refuses the whole package on: an absolute path, a drive prefix or a `..` component; a symlink, hardlink or any entry
   that is not a regular file or folder; two entries equal after normalising (Unicode NFC, case-folded, `/` only); more
   than 256 entries or 32 MiB uncompressed. The hash is taken over the staged files, so what is hashed is what loads.
-- **Settings** register at enable under `plugin.<id>.*` with the manifest's scope and agent rule (default `never`),
-  and leave at disable; `init` receives them as JSON.
+- **Settings** (at most 64, as are commands) register at enable under `plugin.<id>.*` with the manifest's scope and
+  agent rule (default `never`), and leave at disable; `init` receives them as JSON.
 - **Log lines:** `log` and stdout/stderr, at most 1 KiB each (longer is cut), 20 a second with a burst of 100, then
   one "N lines dropped" line. They appear in the Theatre and the plugin's page under its actor chip, never as raw
   stdout, and every refused call adds one `warn` line.
@@ -406,7 +409,7 @@ agent = "confirm"              # free, confirm or never; default never
 | `plugin.grant {id, scopes?, hosts?, data?}` | Edit | `edit:settings` | person only | sets what the person approves, never beyond the requests |
 | `plugin.reload {id}` | Edit | `edit:settings` | person only | 6.3 |
 | `plugin.remove {id, data}` | Edit | `edit:settings` | person only | 6.3 |
-| `plugin.run {id, command, args}` | Edit | the command's declared scope | anyone with it | runs a plugin command (14.1) |
+| `plugin.run {id, command, args}` | Edit | the command's declared scope | anyone with it | runs a plugin command (14.1) inside the caller's grants (3.2) |
 
 The management ops (install, enable, disable, grant, reload, remove) return `OpError::person_only` to any agent or
 plugin and are **never queued**: an agent that installs, enables or grants a plugin hands its own work to an actor
@@ -475,27 +478,25 @@ exist.
 | trap at start | `Faulted`; restart after 1 s, 10 s; disabled at the third |
 | imports `wasi:sockets` | refused at install, `Imports { unexpected: ["wasi:sockets/tcp"] }` |
 | `fetch` to a host not approved | `err("host not approved")`, one `warn` line |
+| `read`-only agent runs a `read` command that calls `edit:scene` | refused `MissingScope`, nothing changed, one `warn` line |
+| 10⁶ zero-length `data.write`s | the 4,097th is "over quota"; `list` returns at most 4,096 names |
 | `fetch` that outlives `init`'s 5 s | cancelled at the deadline, fault "deadline in init" |
 | `.zip` with `../x`, a symlink, or `A.wasm` beside `a.wasm` | refused at install, nothing written outside staging |
 
 - **Bench** `crates/omuzaki-plugin/benches/call.rs`: `call_1kib`, `host_small`, `load_cached`, `install_2mib` and the
   fuel calibration, with the gates of §5.2.
-- **Authoring path.** Guests are Rust with `wit-bindgen` on the `wasm32-wasip2` target. CI never needs that toolchain
-  at test time: the tests use WAT, and the example plugin is built by `tools/plugins/build-example.sh` and committed
-  (under 200 KB) with its source, so a test checks that the committed binary still loads. The docs page is
-  `docs/plugins/authoring.md` (the SDK task).
-- **The web build:** `omuzaki-plugin` is native only, so `omuzaki-web` registers no `plugin.*` op, lists no plugin,
-  and shows a project's plugin nodes inert with the finding "plugins run in the desktop studio".
+- **Authoring path.** Guests are Rust with `wit-bindgen` on `wasm32-wasip2`. CI needs no such toolchain: tests use
+  WAT, and the example plugin is built by `tools/plugins/build-example.sh` and committed (under 200 KB) with its
+  source, so a test checks it still loads. The docs page is `docs/plugins/authoring.md` (the SDK task).
+- **The web build:** `omuzaki-plugin` is native only: no `plugin.*` op, no plugin, and plugin nodes show inert with
+  the finding "plugins run in the desktop studio".
 
 ## 13. Worked example
 
 On disk, after install and enable:
 
 ```
-<local data dir>/plugins/example/9f2c…e1/plugin.toml      # the manifest of §7
-                                       /plugin.wasm        # 41 KiB
-                                       /l10n/en/example.ftl   # plugin-example-name = Example
-<local data dir>/plugin-data/example/                     # empty
+<local data dir>/plugins/example/9f2c…e1/{plugin.toml, plugin.wasm}   # the manifest of §7; 41 KiB
 machine.toml: [plugins] enabled = [{ id = "example", on = "all" }]
 ```
 
@@ -537,8 +538,7 @@ begin  {"tx":42,"actor":"plugin example#8","label":"Example: init"}
 audit  {"fact":"session_ended","session":8,"reason":{"faulted":"out of fuel in init"},"abandoned":[42]}   # 0.1.1 loops in init
 ```
 
-A refused call has no journal record; the `warn` line is the trace. The publish lands as `approval_resolved` and, if
-approved, its own one-op transaction.
+A refused call has no journal record; the `warn` line is the trace.
 
 ## 14. Decided questions
 
@@ -546,9 +546,9 @@ Ruled by the Runtime lead on #1537.
 
 1. **Plugin-defined ops: one static op, `plugin.run {id, command, args}`.** The op registry stays static; there is
    no run-time op table. Each command's schema reaches scripts, agents and MCP through `describe`, and its scope is
-   declared in the manifest; the caller needs that scope, and the command runs in the plugin's session under its
-   ceiling. The `command` world itself is PL-03's.
-2. **Unsigned plugins under development: a per-person dev key** (3.2), signed automatically by the build script. It
-   never leaves the machine, an approval against it covers only that machine, and nothing published carries it.
+   declared in the manifest; the caller needs that scope, and the command runs in the plugin's session, but every
+   inner call is limited to the caller's grants as well (3.2). The `command` world itself is PL-03's.
+2. **Unsigned plugins under development: a per-person dev key** (3.2), signed by the build script; it never
+   leaves the machine and an approval against it covers only that machine.
 3. **Plugin memory in performance mode: 128 MiB inside `ram.runtime`, provisional.** The first node-plugin task
-   measures it and states the number; it stays inside the spec's budget.
+   measures and states it.

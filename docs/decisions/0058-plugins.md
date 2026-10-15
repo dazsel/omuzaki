@@ -47,7 +47,8 @@ manifest, rights, and how plugins relate to scripts (ADR 0034).
 8. **Lifecycle:** installed per machine, enabled per machine or per (machine, project) in a person-only `Machine`
    setting; nothing loads unless enabled (SE-04). Reload swaps by content hash, drains, and hands over no state.
    The management ops (install, enable, disable, grant, reload, remove) are `person_only` and never queued;
-   `plugin.run` needs the command's declared scope; `plugin.list` and `plugin.describe` are `read`
+   `plugin.run` needs the command's declared scope and runs every inner call inside
+   `caller's grants ∩ declared scope ∩ plugin ceiling`, as `script.run` does; `plugin.list` and `plugin.describe` are `read`
    queries agents may use.
 9. **Rights:** the card shows the licence and the "not from Omuzaki" line (ADR 0016's pattern). A non-commercial or
    unknown licence is shown, not refused, for a plugin the person installs; the store (PL-04) refuses it. The licence
@@ -56,7 +57,8 @@ manifest, rights, and how plugins relate to scripts (ADR 0034).
     caller), ceiling source (a script's syntax tree, a plugin's manifest), queueing (scripts never queue, plugins
     receive the outcome later) and limit units, each for a stated reason (design §10).
 11. **Plugin-defined ops** go through one static op, `plugin.run {id, command, args}`, with each command's schema
-    through `describe` and its scope declared in the manifest; there is no run-time op table.
+    through `describe` and its scope declared in the manifest; there is no run-time op table. A command never acts
+    beyond its caller's grants.
 12. **Development builds** are signed automatically with a per-person dev key that never leaves the machine; an
     approval against it covers that machine only, and anything published is signed with the publisher key.
 13. **Performance-mode plugin memory** is capped at 128 MiB inside `ram.runtime`, provisionally; the first
