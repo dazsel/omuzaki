@@ -10,18 +10,20 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Barrier};
 
 use omuzaki_anim::life::Life;
 use omuzaki_anim::retarget::ArkitRetarget;
 use omuzaki_anim_api::{
-    Calibration, ChannelBuf, DeviceProfile, FrameSource, HumanoidPose, LifeConfig, RetargetConfig, TrackFrame,
+    Calibration, Channel, ChannelBuf, DeviceProfile, FrameSource, HumanoidPose, Layer, LifeConfig, Response, Retarget,
+    RetargetConfig, TrackFrame,
 };
 use omuzaki_anim_mock::animator::MockAnimator;
 use omuzaki_anim_mock::track::{SyntheticSpec, TrackReplay, synthetic_track};
 use omuzaki_core::time::Seconds;
 use omuzaki_stage::perform::host::{
-    COMMAND_QUEUE_LEN, CalibrationState, PerformControl, PerformError, PerformHandle, PerformHost, RetargetChange,
-    perform_channel,
+    COMMAND_QUEUE_LEN, CalibrationState, MAX_COMMANDS_PER_ADVANCE, PerformControl, PerformError, PerformHandle,
+    PerformHost, RetargetChange, perform_channel,
 };
 use omuzaki_stage::perform::{Performer, PerformerParts, STEP_HZ};
 
@@ -58,9 +60,13 @@ impl FrameSource for Silent {
 }
 
 fn performer_with(source: Box<dyn FrameSource>) -> Performer {
+    performer_on(source, Box::new(ArkitRetarget::new(DeviceProfile::Webcam)))
+}
+
+fn performer_on(source: Box<dyn FrameSource>, retarget: Box<dyn Retarget>) -> Performer {
     let parts = PerformerParts {
         source,
-        retarget: Box::new(ArkitRetarget::new(DeviceProfile::Webcam)),
+        retarget,
         life: Box::new(Life::new(LifeConfig::new(7))),
         animator: Box::new(MockAnimator),
     };
@@ -78,10 +84,49 @@ fn mid_step(i: u64) -> Seconds {
 
 /// A performer on `source` with its two channel ends, advanced once so the first status is published.
 fn rig(source: Box<dyn FrameSource>) -> (PerformHandle, PerformControl, Performer) {
+    rig_on(performer_with(source))
+}
+
+fn rig_on(mut performer: Performer) -> (PerformHandle, PerformControl, Performer) {
     let (handle, mut control) = perform_channel();
-    let mut performer = performer_with(source);
     control.advance(&mut performer, mid_step(0));
     (handle, control, performer)
+}
+
+/// A retarget whose `set_config` runs unmeasured: its contract lets it compile tables (and free the old config)
+/// between frames, so the allocation test counts the host's own work and not that.
+struct Quiet(ArkitRetarget);
+
+impl Retarget for Quiet {
+    fn apply(&mut self, frame: &TrackFrame, dt: f32, out: &mut Layer) {
+        self.0.apply(frame, dt, out);
+    }
+    fn calibration(&self) -> &Calibration {
+        self.0.calibration()
+    }
+    fn set_calibration(&mut self, calibration: Calibration) {
+        self.0.set_calibration(calibration);
+    }
+    fn config(&self) -> &RetargetConfig {
+        self.0.config()
+    }
+    fn set_config(&mut self, config: RetargetConfig) {
+        let was = MEASURING.with(Cell::get);
+        MEASURING.with(|m| m.set(false));
+        self.0.set_config(config);
+        MEASURING.with(|m| m.set(was));
+    }
+    fn reset(&mut self) {
+        self.0.reset();
+    }
+}
+
+/// A config that is not the default and has per-channel responses (so cloning it allocates).
+fn custom_config() -> RetargetConfig {
+    let mut config = RetargetConfig { smoothing: 0.9, ..RetargetConfig::default() };
+    config.responses.insert(Channel::JAW_OPEN, Response::built_in(Channel::JAW_OPEN));
+    config.responses.insert(Channel::EYE_BLINK_LEFT, Response::built_in(Channel::EYE_BLINK_LEFT));
+    config
 }
 
 fn step(control: &mut PerformControl, performer: &mut Performer, i: u64) {
@@ -181,18 +226,120 @@ fn a_control_dropped_mid_capture_frees_the_slot_so_the_handle_says_disconnected(
 }
 
 #[test]
-fn a_performer_reset_during_a_capture_does_not_break_the_stall_clock() {
+fn a_reset_late_in_a_session_still_fails_a_stalled_capture_after_600_steps() {
     let (host, mut control, mut performer) = rig(Box::new(Silent));
+    for i in 1..=60_000 {
+        step(&mut control, &mut performer, i);
+    }
     host.calibrate(150).unwrap();
-    for i in 1..=100 {
+    for i in 60_001..=60_100 {
         step(&mut control, &mut performer, i);
     }
+    // The performer's own tick index restarts at the next `advance`; the control counts its steps itself.
     performer.reset();
-    // The tick index restarts at 0, below the capture's anchor.
-    for i in 0..=700 {
+    for i in 60_101..=60_599 {
         step(&mut control, &mut performer, i);
+        assert!(matches!(host.status().calibration, CalibrationState::Capturing { .. }), "step {i}");
     }
-    assert!(matches!(host.status().calibration, CalibrationState::Failed { got: 0, need: 150 }));
+    step(&mut control, &mut performer, 60_600);
+    assert_eq!(host.status().calibration, CalibrationState::Failed { got: 0, need: 150 });
+}
+
+#[test]
+fn every_catch_up_step_feeds_the_capture_and_the_frame_rate() {
+    // 30 fps arrives on every other 60 Hz step; calls come every two steps, so each call's frame is on its FIRST step.
+    let (host, mut control, mut performer) = rig(replay(20.0));
+    host.calibrate(30).unwrap();
+    let mut done_at = None;
+    for k in 0..200_u64 {
+        let out = control.advance(&mut performer, mid_step(2 * k + 1)).expect("two steps due");
+        assert_eq!(out.tick.index, 2 * k + 1, "the call ran steps {} and {}", 2 * k, 2 * k + 1);
+        if matches!(host.status().calibration, CalibrationState::Done { .. }) {
+            done_at = Some(k);
+            break;
+        }
+    }
+    let done_at = done_at.expect("the capture sees the frames that arrive on the first step of each call");
+    assert!(done_at < 40, "30 frames at 30 fps take about 31 calls, took {done_at}");
+    let fps = host.status().source_fps;
+    assert!((fps - 30.0).abs() < 3.0, "frame rate {fps}");
+}
+
+#[test]
+fn a_request_before_the_first_sync_is_merged_into_the_performers_own_settings() {
+    let mut performer = performer_with(replay(5.0));
+    performer.retarget_mut().set_config(custom_config());
+    let (host, mut control) = perform_channel();
+    // Before the first `advance` the host cannot know the performer's settings.
+    host.set_retarget(RetargetChange { head_gain: Some(2.0), ..RetargetChange::default() }).unwrap();
+    control.advance(&mut performer, mid_step(0));
+    let mut want = custom_config();
+    want.head_gain = 2.0;
+    assert_eq!(*performer.retarget().config(), want, "the early change was merged into the performer's settings");
+    assert_eq!(host.status().retarget, want, "and the host now shows them, not defaults");
+    let next = host.set_retarget(RetargetChange { mirror: Some(true), ..RetargetChange::default() }).unwrap();
+    want.mirror = true;
+    assert_eq!(next, want, "later replies keep the performer's settings, responses included");
+    step(&mut control, &mut performer, 1);
+    assert_eq!(*performer.retarget().config(), want);
+}
+
+#[test]
+fn sync_at_setup_publishes_the_performers_calibration() {
+    let mut performer = performer_with(replay(5.0));
+    let own = *performer.retarget().calibration();
+    let (host, mut control) = perform_channel();
+    assert_ne!(host.calibration(), own, "before sync the host holds a stand-in");
+    control.sync(&mut performer);
+    assert_eq!(host.calibration(), own);
+}
+
+#[test]
+fn a_command_flood_cannot_starve_the_steps() {
+    let (host, mut control, mut performer) = rig(replay(5.0));
+    let change = RetargetChange { mirror: Some(true), ..RetargetChange::default() };
+    for _ in 0..COMMAND_QUEUE_LEN {
+        host.set_retarget(change).unwrap();
+    }
+    step(&mut control, &mut performer, 1);
+    for _ in 0..MAX_COMMANDS_PER_ADVANCE {
+        host.set_retarget(change).expect("one call took exactly its share and freed that many slots");
+    }
+    assert_eq!(host.set_retarget(change), Err(PerformError::QueueFull));
+
+    // And with a producer refilling the queue as fast as it can while the performer steps.
+    let stop = AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            while !stop.load(Ordering::Acquire) {
+                let _ = host.set_retarget(change);
+            }
+        });
+        for i in 2..800 {
+            let out = control.advance(&mut performer, mid_step(i)).expect("a step is due on every call");
+            assert_eq!(out.tick.index, i);
+        }
+        stop.store(true, Ordering::Release);
+    });
+}
+
+#[test]
+fn a_calibration_racing_the_drop_never_leaves_the_slot_taken() {
+    for round in 0..500 {
+        let (host, control, _performer) = rig(replay(1.0));
+        let barrier = Arc::new(Barrier::new(2));
+        let racer = {
+            let (host, barrier) = (host.clone(), Arc::clone(&barrier));
+            std::thread::spawn(move || {
+                barrier.wait();
+                let _ = host.calibrate(150);
+            })
+        };
+        barrier.wait();
+        drop(control);
+        racer.join().unwrap();
+        assert_eq!(host.calibrate(150), Err(PerformError::Disconnected), "round {round}");
+    }
 }
 
 #[test]
@@ -262,6 +409,14 @@ fn four_threads_reading_and_writing_while_the_performer_steps_neither_deadlock_n
     assert!(host.status().source_fps > 0.0);
 }
 
+/// Runs `f` with allocation counting off: the handle's side may allocate.
+fn unmeasured<T>(f: impl FnOnce() -> T) -> T {
+    MEASURING.with(|m| m.set(false));
+    let out = f();
+    MEASURING.with(|m| m.set(true));
+    out
+}
+
 #[test]
 fn advance_allocates_nothing_over_3600_quiet_steps() {
     let (_host, mut control, mut performer) = rig(replay(70.0));
@@ -276,4 +431,35 @@ fn advance_allocates_nothing_over_3600_quiet_steps() {
     let allocated = ALLOCATIONS.load(Ordering::Relaxed) - before;
     MEASURING.with(|m| m.set(false));
     assert_eq!(allocated, 0, "advance allocated {allocated} times");
+}
+
+#[test]
+fn advance_allocates_nothing_with_responses_configured_and_commands_arriving() {
+    let mut inner = ArkitRetarget::new(DeviceProfile::Webcam);
+    inner.set_config(custom_config());
+    let (host, mut control, mut performer) = rig_on(performer_on(replay(70.0), Box::new(Quiet(inner))));
+    for i in 1..10 {
+        step(&mut control, &mut performer, i);
+    }
+    let calibration = host.calibration();
+    MEASURING.with(|m| m.set(true));
+    let before = ALLOCATIONS.load(Ordering::Relaxed);
+    for i in 10..3610 {
+        match i % 300 {
+            // The handle builds and sends its requests off the perform thread.
+            0 => {
+                let smoothing = Some(if i % 600 == 0 { 0.3 } else { 0.7 });
+                unmeasured(|| host.set_retarget(RetargetChange { smoothing, ..RetargetChange::default() }).unwrap());
+            }
+            1 => unmeasured(|| host.set_calibration(calibration).unwrap()),
+            2 if i < 3000 => unmeasured(|| host.calibrate(30).unwrap()),
+            _ => {}
+        }
+        step(&mut control, &mut performer, i);
+    }
+    let allocated = ALLOCATIONS.load(Ordering::Relaxed) - before;
+    MEASURING.with(|m| m.set(false));
+    assert_eq!(allocated, 0, "advance allocated {allocated} times");
+    assert_eq!(host.status().calibration, CalibrationState::Done { frames: 30 }, "the capture ran in the window");
+    assert_eq!(performer.retarget().config().responses.len(), 2, "and the responses survived the changes");
 }
