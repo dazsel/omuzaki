@@ -62,8 +62,12 @@ fn check_op(item: &RegisteredText, failures: &mut Vec<Failure>) {
 
 /// A part kind needs a non-empty title and a one-line `summary` attribute.
 fn check_kind(item: &RegisteredText, failures: &mut Vec<Failure>) {
-    if item.value.trim().is_empty() {
-        failures.push(Failure::new(CHECK, &item.owner, "the title is empty"));
+    let name = item.owner.strip_prefix("kind-").unwrap_or(&item.owner);
+    if !valid_key(name) {
+        failures.push(Failure::new(CHECK, &item.owner, "the kind name must be letters, digits, `_` or a single `-`"));
+    }
+    if let Some(problem) = line_problem(&item.value) {
+        failures.push(Failure::new(CHECK, &item.owner, format!("the title {problem}")));
     }
     match item.attributes.iter().find(|(name, _)| name.as_str() == "summary") {
         None => failures.push(Failure::new(CHECK, &item.owner, "has no `summary` attribute")),
@@ -108,12 +112,17 @@ fn check_schema(
     }
 }
 
+/// Whether `c` ends a line: `\n`, `\r`, and the Unicode line and paragraph separators.
+fn is_line_break(c: char) -> bool {
+    matches!(c, '\n' | '\r' | '\u{0085}' | '\u{2028}' | '\u{2029}')
+}
+
 /// Why `text` is not a one-line, non-empty summary, or `None` when it is one.
 fn line_problem(text: &str) -> Option<&'static str> {
     let text = text.trim();
     if text.is_empty() {
         Some("is empty")
-    } else if text.contains('\n') {
+    } else if text.contains(is_line_break) {
         Some("spans more than one line")
     } else {
         None

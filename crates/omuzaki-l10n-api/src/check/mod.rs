@@ -28,9 +28,33 @@ impl Failure {
 }
 
 /// The failures as one message for a test assertion: one line each (`<check> <id>: <problem>`), sorted.
+///
+/// The id and the problem may hold text from a package, so they are escaped to keep each failure on one physical
+/// line: `\` becomes `\\`, a line feed becomes `\n`, a carriage return `\r`, a tab `\t`, and any other control
+/// character or Unicode line separator `\u{..}`.
 pub fn report(failures: &[Failure]) -> String {
-    let mut lines: Vec<String> =
-        failures.iter().map(|failure| format!("{} {}: {}", failure.check, failure.id, failure.problem)).collect();
+    let mut lines: Vec<String> = failures
+        .iter()
+        .map(|failure| format!("{} {}: {}", escape(failure.check), escape(&failure.id), escape(&failure.problem)))
+        .collect();
     lines.sort();
     lines.join("\n")
+}
+
+/// `text` with backslashes, control characters and line separators written as escapes, so it stays on one line.
+fn escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') => {
+                out.push_str(&c.escape_unicode().to_string());
+            }
+            c => out.push(c),
+        }
+    }
+    out
 }

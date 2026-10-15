@@ -191,3 +191,95 @@ fn an_ambiguous_argument_schema_fails_with_its_path() {
     let failures = run(vec![op("op-face-set_profile", "Set the face.", Some(schema))]);
     assert_one(&failures, "op-face-set_profile", "the argument schema is ambiguous at the root");
 }
+
+#[test]
+fn a_multi_line_kind_title_fails() {
+    let failures = run(vec![kind("kind-x", "First\nSecond", "Summary.")]);
+    assert_one(&failures, "kind-x", "the title spans more than one line");
+}
+
+#[test]
+fn an_empty_kind_title_fails() {
+    let failures = run(vec![kind("kind-x", " ", "Summary.")]);
+    assert_one(&failures, "kind-x", "the title is empty");
+}
+
+#[test]
+fn a_carriage_return_in_a_summary_fails() {
+    let failures = run(vec![op("op-face-set_profile", "Set.\rMore.", None)]);
+    assert_one(&failures, "op-face-set_profile", "more than one line");
+    let failures = run(vec![kind("kind-x", "Title", "One.\r\nTwo.")]);
+    assert_one(&failures, "kind-x", "more than one line");
+}
+
+#[test]
+fn a_kind_summary_with_a_line_break_fails() {
+    let failures = run(vec![kind("kind-x", "Title", "One.\nTwo.")]);
+    assert_one(&failures, "kind-x", "the summary spans more than one line");
+}
+
+#[test]
+fn a_kind_name_outside_the_key_grammar_fails() {
+    let failures = run(vec![kind("kind-a\nb", "Title", "Summary.")]);
+    assert_one(&failures, "kind-a\nb", "the kind name must be");
+}
+
+#[test]
+fn an_op_owner_with_a_line_break_fails() {
+    let failures = run(vec![op("op-face-set\nprofile", "Set.", None)]);
+    assert_one(&failures, "op-face-set\nprofile", "bad segment");
+}
+
+#[test]
+fn an_unchecked_owner_with_a_line_break_fails() {
+    let failures = run(vec![op("lib-x\ny", "Lib.", None)]);
+    assert_one(&failures, "lib-x\ny", "only `op-` and `kind-` owners");
+}
+
+#[test]
+fn a_schema_key_with_a_line_break_fails() {
+    let schema = Schema::try_from(json!({
+        "type": "object",
+        "properties": { "a\nb": { "type": "integer", "description": "One." } }
+    }))
+    .expect("a valid schema");
+    let failures = run(vec![op("op-face-set_profile", "Set the face.", Some(schema))]);
+    assert_one(&failures, "op-face-set_profile--a\nb", "key `a\nb` must be");
+}
+
+#[test]
+fn an_enum_value_with_a_line_break_fails() {
+    let schema = Schema::try_from(json!({
+        "oneOf": [{ "const": "A\tB\r", "description": "One." }]
+    }))
+    .expect("a valid schema");
+    let failures = run(vec![op("op-face-set_profile", "Set the face.", Some(schema))]);
+    assert_one(&failures, "op-face-set_profile--A\tB\r", "must be letters");
+}
+
+#[test]
+fn report_has_one_line_per_failure_whatever_the_ids_hold() {
+    let failures = vec![
+        Failure::new("registered", "op-a\nb", "first\r\nline"),
+        Failure::new("registered", "op-c\td", "tab\u{2028}sep\\"),
+        Failure::new("registered", "op-e", "plain"),
+    ];
+    let text = report(&failures);
+    assert_eq!(text.lines().count(), failures.len(), "{text}");
+    assert!(!text.contains('\r') && !text.contains('\t') && !text.contains('\u{2028}'));
+    assert_eq!(
+        text,
+        "registered op-a\\nb: first\\r\\nline\nregistered op-c\\td: tab\\u{2028}sep\\\\\nregistered op-e: plain"
+    );
+}
+
+#[test]
+fn report_of_planted_faults_with_line_breaks_is_one_line_each() {
+    let failures = run(vec![
+        op("op-face-set\nprofile", "Set.\nMore.", None),
+        kind("kind-x\r", "A\nB", "C\nD"),
+        op("lib\t-x", "Lib.", None),
+    ]);
+    let text = report(&failures);
+    assert_eq!(text.lines().count(), failures.len(), "{text}");
+}
