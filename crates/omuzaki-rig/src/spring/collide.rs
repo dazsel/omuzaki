@@ -11,8 +11,11 @@ use omuzaki_core::glam::Vec3;
 /// A collider placed in world space for this frame.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub(super) struct Collider {
-    /// Which side of the shape is solid.
-    kind: Kind,
+    /// `1` to stay outside a sphere or capsule, `-1` to stay inside it. Folding the side into the sign of the
+    /// distance keeps one code path (and the outside result bit-for-bit what it was) for all four shapes.
+    side: f32,
+    /// A plane: `start` is a point on it and `span` its unit normal.
+    plane: bool,
     /// Centre of the start cap (the centre, for a sphere; a point on the plane, for a plane).
     start: Vec3,
     /// From the start cap to the end cap; zero for a sphere. A plane's unit normal.
@@ -21,19 +24,6 @@ pub(super) struct Collider {
     inv_span_sq: f32,
     /// Radius of the caps and the cylinder (unused by a plane).
     radius: f32,
-}
-
-/// Which side of a collider the joint must stay on.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-enum Kind {
-    /// Outside a sphere or capsule.
-    Outside,
-    /// Inside a sphere or capsule.
-    Inside,
-    /// On the side of a plane its normal points to.
-    Plane,
-    /// Collides with nothing: a shape this solver doesn't know.
-    Inert,
 }
 
 /// Capsules shorter than this (squared, metres) are spheres: dividing by their length would only amplify rounding.
@@ -46,7 +36,7 @@ pub(super) const DEGENERATE_DISTANCE: f32 = 1e-5;
 impl Collider {
     /// A ball.
     pub(super) fn sphere(centre: Vec3, radius: f32) -> Self {
-        Self { kind: Kind::Outside, start: centre, span: Vec3::ZERO, inv_span_sq: 0.0, radius }
+        Self { side: 1.0, plane: false, start: centre, span: Vec3::ZERO, inv_span_sq: 0.0, radius }
     }
 
     /// The volume within `radius` of the segment `start` to `end`.
@@ -54,27 +44,28 @@ impl Collider {
         let span = end - start;
         let span_sq = span.length_squared();
         let inv_span_sq = if span_sq > MIN_SPAN_SQ { span_sq.recip() } else { 0.0 };
-        Self { kind: Kind::Outside, start, span, inv_span_sq, radius }
+        Self { side: 1.0, plane: false, start, span, inv_span_sq, radius }
     }
 
     /// The volume within `radius` of `centre`, which a joint must stay inside.
     pub(super) fn sphere_inside(centre: Vec3, radius: f32) -> Self {
-        Self { kind: Kind::Inside, ..Self::sphere(centre, radius) }
+        Self { side: -1.0, ..Self::sphere(centre, radius) }
     }
 
     /// The volume within `radius` of the segment `start` to `end`, which a joint must stay inside.
     pub(super) fn capsule_inside(start: Vec3, end: Vec3, radius: f32) -> Self {
-        Self { kind: Kind::Inside, ..Self::capsule(start, end, radius) }
+        Self { side: -1.0, ..Self::capsule(start, end, radius) }
     }
 
     /// A collider that touches nothing, standing in for a shape added to the contract after this solver.
     pub(super) fn inert() -> Self {
-        Self { kind: Kind::Inert, ..Self::sphere(Vec3::ZERO, 0.0) }
+        // Everything is inside a ball this large, so nothing is ever pushed.
+        Self::sphere_inside(Vec3::ZERO, f32::MAX)
     }
 
     /// The half-space on the side of `normal` (a unit vector in world space) from the plane through `point`.
     pub(super) fn plane(point: Vec3, normal: Vec3) -> Self {
-        Self { kind: Kind::Plane, start: point, span: normal, inv_span_sq: 0.0, radius: 0.0 }
+        Self { side: 1.0, plane: true, start: point, span: normal, inv_span_sq: 0.0, radius: 0.0 }
     }
 
     /// How far to move a sphere of `joint_radius` at `point` to get it out of this collider (back into it, for an
@@ -87,10 +78,7 @@ impl Collider {
     /// `fallback` is the one place this departs from the spec, and it is a choice the module docs record.
     pub(super) fn push_out(&self, point: Vec3, joint_radius: f32, fallback: Vec3) -> Option<Vec3> {
         let delta = point - self.start;
-        if self.kind == Kind::Inert {
-            return None;
-        }
-        if self.kind == Kind::Plane {
+        if self.plane {
             let distance = delta.dot(self.span) - joint_radius;
             return (distance < 0.0).then(|| self.span * -distance);
         }
@@ -98,18 +86,16 @@ impl Collider {
         let along = (self.span.dot(delta) * self.inv_span_sq).clamp(0.0, 1.0);
         let from_axis = delta - self.span * along;
         let length = from_axis.length();
-        let outward = || if length >= DEGENERATE_DISTANCE { from_axis / length } else { fallback };
-        if self.kind == Kind::Inside {
-            // Leaves the shape when the joint's far side passes the radius; pushed back toward the axis. A point on
-            // the axis (only possible when the joint is larger than the shape) is pushed against `fallback`.
-            let excess = length + joint_radius - self.radius;
-            return (excess > 0.0).then(|| outward() * -excess);
-        }
-        let distance = length - self.radius - joint_radius;
+        // Signed distance between the surfaces, negative when the joint is on the wrong side. For an inside shape it is
+        // the room left to the radius, and the push toward the axis is `outward * distance` (a negative scalar).
+        let distance = self.side * (length - self.radius) - joint_radius;
         if distance >= 0.0 {
             return None;
         }
-        Some(outward() * -distance)
+        // A point on the axis has no direction to leave it in: use `fallback`. (Only a joint larger than an inside
+        // shape can be both on its axis and past its radius.)
+        let outward = if length >= DEGENERATE_DISTANCE { from_axis / length } else { fallback };
+        Some(outward * (-self.side * distance))
     }
 }
 
