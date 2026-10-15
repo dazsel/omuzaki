@@ -177,6 +177,18 @@ fn render_same_as_reruns_the_call_and_compares_its_answer() {
 }
 
 #[test]
+fn render_same_as_needs_a_picture_both_times_so_two_identical_failures_do_not_pass() {
+    // An answer without an image, and a call that is an error: both answer the same twice, and neither is a picture.
+    let no_image = "{\"call\": \"evaltest_character\", \"args\": {\"id\": \"x\"}, \"save\": \"before\"}\n{\"assert\": {\"render_same_as\": \"before\"}}\n";
+    let (attempt, _) = play(no_image, &caps(), &[]);
+    let Stop::ScriptFailed { reason, .. } = attempt.stop else { panic!("{:?}", attempt.stop) };
+    assert!(reason.contains("image"), "{reason}");
+    let failing = "{\"call\": \"evaltest_shot\", \"args\": {\"nope\": 1}, \"save\": \"before\"}\n{\"assert\": {\"render_same_as\": \"before\"}}\n";
+    let (attempt, _) = play(failing, &caps(), &[]);
+    assert!(matches!(attempt.stop, Stop::ScriptFailed { line: 2, .. }), "{:?}", attempt.stop);
+}
+
+#[test]
 fn names_the_fixture_exports_are_filled_in_and_a_misspelt_one_stops_the_script() {
     let script = "{\"call\": \"evaltest_character\", \"args\": {\"id\": \"{main}\"}, \"expect\": {\"output\": {\"id\": \"c-1\"}}}\n";
     let (attempt, _) = play(script, &caps(), &[("main", "c-1")]);

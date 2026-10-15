@@ -105,7 +105,9 @@ impl Driver for Scripted {
             0,
             Event::Note {
                 text: "exports".to_owned(),
-                data: Some(serde_json::to_value(&self.exports).unwrap_or_default()),
+                data: Some(Value::Object(
+                    self.exports.iter().map(|(name, id)| (name.clone(), Value::String(id.clone()))).collect(),
+                )),
             },
         );
         let mut stop = Stop::Finished;
@@ -204,6 +206,13 @@ fn assert_step(run: &mut Run<'_>, step: &AssertStep, caps: &Caps) -> Result<Opti
         };
         let (tool, args, before) = (saved.tool.clone(), saved.args.clone(), saved.structured.clone());
         let again = run.call(&tool, args)?;
+        // Two identical failures are not two identical pictures: both answers must carry a rendered image.
+        let rendered = |v: Option<&Value>| v.is_some_and(has_image);
+        if again.is_error || !rendered(before.as_ref()) || !rendered(again.structured.as_ref()) {
+            return Ok(Some(Halt::Failed(format!(
+                "`render_same_as` needs `{tool}` to answer with an image both times (when `{name}` was saved and now)"
+            ))));
+        }
         if again.structured != before {
             return Ok(Some(Halt::Failed(format!(
                 "running `{tool}` again gave a different answer than when `{name}` was saved"
@@ -211,4 +220,16 @@ fn assert_step(run: &mut Run<'_>, step: &AssertStep, caps: &Caps) -> Result<Opti
         }
     }
     Ok(None)
+}
+
+/// Whether an answer holds a render's `image` link anywhere in it.
+fn has_image(value: &Value) -> bool {
+    match value {
+        Value::Object(map) => {
+            map.get("image").and_then(Value::as_str).is_some_and(|s| s.starts_with("omuzaki://render/"))
+                || map.values().any(has_image)
+        }
+        Value::Array(items) => items.iter().any(has_image),
+        _ => false,
+    }
 }
