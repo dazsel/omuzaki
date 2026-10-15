@@ -6,7 +6,9 @@
 
 use omuzaki_char::hair::compile::{Dispatch, HairGenCtx, UnitStream, compile_groups, is_bilateral, stream};
 use omuzaki_char::hair::r#gen::braid;
-use omuzaki_char_api::{BraidGen, Dynamics, Generator, GroupId, HairGroup, HairParams, HairRng, HeadSurface, Quality};
+use omuzaki_char_api::{
+    BangsGen, BraidGen, CurtainGen, Dynamics, Generator, GroupId, HairGroup, HairParams, HairRng, HeadSurface, Quality,
+};
 use omuzaki_core::glam::Vec3;
 use omuzaki_core::rng::Rng;
 use omuzaki_face_api::Palette;
@@ -147,4 +149,12 @@ fn a_mirrored_braid_group_makes_the_same_clumps_as_an_unmirrored_one() {
     let (plain, mirrored) = (clumps_of(false), clumps_of(true));
     assert_eq!(plain, 2 * usize::from(g.strands));
     assert_eq!(mirrored, plain);
+}
+
+#[test]
+fn the_generators_that_make_both_sides_are_bilateral() {
+    // Braid, curtain and bangs port prototype code that makes both sides, so `mirror` must not add a second copy.
+    assert!(is_bilateral(&Generator::Braid(BraidGen::default())));
+    assert!(is_bilateral(&Generator::Curtain(CurtainGen::default())));
+    assert!(is_bilateral(&Generator::Bangs(BangsGen::default())));
 }

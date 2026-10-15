@@ -331,13 +331,12 @@ pub fn enabled(params: &HairParams) -> impl Iterator<Item = (&GroupId, &HairGrou
 /// the first. The match has no wildcard: a new generator has to say which kind it is.
 pub fn is_bilateral(generator: &Generator) -> bool {
     match generator {
-        Generator::Cap(_) | Generator::PartSweep(_) | Generator::Braid(_) => true,
-        Generator::Framing(_)
+        Generator::Cap(_)
+        | Generator::PartSweep(_)
+        | Generator::Braid(_)
         | Generator::Curtain(_)
-        | Generator::Bangs(_)
-        | Generator::Tail(_)
-        | Generator::Bun(_)
-        | Generator::Guides(_) => false,
+        | Generator::Bangs(_) => true,
+        Generator::Framing(_) | Generator::Tail(_) | Generator::Bun(_) | Generator::Guides(_) => false,
     }
 }
 
