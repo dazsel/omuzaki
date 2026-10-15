@@ -32,11 +32,13 @@
 //! Left and right follow the T-pose's mirror rule (`HumanoidPose::mirrored`): the left version of a right-hand pose has
 //! the sides swapped, X kept and Y and Z negated, so a library may author only one side and mirror the other.
 
+mod clip;
 mod def;
 mod library;
 mod ops;
 mod posture;
 
+pub use clip::{ClipError, ClipKey, ClipLibrary, Easing, PoseClip};
 pub use def::{HandSlot, PoseDef, PoseError};
 pub use library::PoseLibrary;
 pub use posture::{BoneMix, Hand, PoseMask, Posture};

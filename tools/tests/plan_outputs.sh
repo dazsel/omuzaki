@@ -26,7 +26,8 @@ cat >"$work/docs.json" <<'J'
 J
 
 out=$(python3 -I "$PLAN" "$work/leaf.json" pull_request)
-expect test_matrix '{"include":[{"name":"1","crates":"a-api","parts":""}]}' "a PR tests only the changed crate"
+expect test_matrix '{"include":[]}' "a PR runs no tests: its session attests them"
+expect has_tests false "a PR has no test job"
 expect lint_crates 'a-api a-impl' "a PR lints the changed crate and its direct dependents"
 expect link_crates 'a-cli' "a PR still runs the link gates"
 expect cross_crates 'a-api a-app a-cli a-impl' "the cross-build set is everything affected"
@@ -41,6 +42,10 @@ cat >"$work/split.json" <<'J'
 J
 out=$(python3 -I "$PLAN" "$work/split.json" merge_group)
 expect test_matrix '{"include":[{"name":"1","crates":"a-api","parts":"a-big@1/2"},{"name":"2","crates":"","parts":"a-big@2/2"}]}' "a partitioned crate keeps its partitions apart from whole crates"
+
+expect has_tests true "the queue runs the test matrix"
+out=$(python3 -I "$PLAN" "$work/split.json" pull_request)
+expect has_tests false "a workspace-wide PR still runs no tests"
 
 out=$(python3 -I "$PLAN" "$work/docs.json" merge_group)
 expect has_tests false "a docs-only change has no tests"

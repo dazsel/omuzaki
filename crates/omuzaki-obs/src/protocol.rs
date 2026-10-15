@@ -6,6 +6,7 @@
 
 use crate::limits::{EventSubscription, RPC_VERSION};
 use serde::de::DeserializeOwned;
+use serde::ser::Error as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -238,11 +239,13 @@ pub struct RequestMsg {
 
 impl RequestMsg {
     /// The message for `request` under `request_id`. A request with no fields has no `requestData`.
-    #[must_use]
-    pub fn new<R: RequestType>(request_id: impl Into<String>, request: &R) -> Self {
-        // A derived `Serialize` of plain fields cannot fail; `None` is the harmless fallback.
-        let data = serde_json::to_value(request).ok().filter(|v| v.as_object().is_none_or(|o| !o.is_empty()));
-        Self { request_type: R::NAME.to_owned(), request_id: request_id.into(), request_data: data }
+    ///
+    /// # Errors
+    /// The serialisation error of `request`, passed on rather than sent without its data.
+    pub fn new<R: RequestType>(request_id: impl Into<String>, request: &R) -> Result<Self, serde_json::Error> {
+        let data = serde_json::to_value(request)?;
+        let request_data = Some(data).filter(|v| v.as_object().is_none_or(|o| !o.is_empty()));
+        Ok(Self { request_type: R::NAME.to_owned(), request_id: request_id.into(), request_data })
     }
 }
 
@@ -291,17 +294,20 @@ pub struct ResponseMsg {
 
 impl ResponseMsg {
     /// A response to the request `request_id` for `R`, with `data` as the typed fields.
-    #[must_use]
-    pub fn new<R: RequestType>(request_id: impl Into<String>, status: RequestStatus, data: Option<&R::Response>) -> Self
-    where
-        R::Response: Serialize,
-    {
-        Self {
+    ///
+    /// # Errors
+    /// The serialisation error of `data`, passed on rather than sent without its data.
+    pub fn new<R: RequestType>(
+        request_id: impl Into<String>,
+        status: RequestStatus,
+        data: Option<&R::Response>,
+    ) -> Result<Self, serde_json::Error> {
+        Ok(Self {
             request_type: R::NAME.to_owned(),
             request_id: request_id.into(),
             request_status: status,
-            response_data: data.and_then(|d| serde_json::to_value(d).ok()),
-        }
+            response_data: data.map(serde_json::to_value).transpose()?,
+        })
     }
 
     /// The typed response fields for request `R`. A response with no data reads as an empty object, so requests with
@@ -344,11 +350,6 @@ fn parse<T: DeserializeOwned>(op: u8, d: &Value) -> Result<T, ProtocolError> {
     serde_json::from_value(d.clone()).map_err(|_| ProtocolError::BadData { op })
 }
 
-fn data_of<T: Serialize>(value: &T) -> Value {
-    // A derived `Serialize` of plain fields cannot fail; `Null` is the harmless fallback.
-    serde_json::to_value(value).unwrap_or(Value::Null)
-}
-
 impl Message {
     /// Types a frame by its op. An unknown op is [`Message::Unknown`], not an error.
     ///
@@ -368,28 +369,52 @@ impl Message {
     }
 
     /// The frame for this message. [`Message::Unknown`] has no data, so it becomes an empty object.
-    #[must_use]
-    pub fn to_frame(&self) -> Frame {
+    ///
+    /// # Errors
+    /// The serialisation error of the message's data, passed on rather than sent as `null`.
+    pub fn to_frame(&self) -> Result<Frame, serde_json::Error> {
         let (op, d) = match self {
-            Self::Hello(m) => (op::HELLO, data_of(m)),
-            Self::Identify(m) => (op::IDENTIFY, data_of(m)),
-            Self::Identified(m) => (op::IDENTIFIED, data_of(m)),
-            Self::Reidentify(m) => (op::REIDENTIFY, data_of(m)),
-            Self::Event(m) => (op::EVENT, data_of(m)),
-            Self::Request(m) => (op::REQUEST, data_of(m)),
-            Self::RequestResponse(m) => (op::REQUEST_RESPONSE, data_of(m)),
+            Self::Hello(m) => (op::HELLO, serde_json::to_value(m)?),
+            Self::Identify(m) => (op::IDENTIFY, serde_json::to_value(m)?),
+            Self::Identified(m) => (op::IDENTIFIED, serde_json::to_value(m)?),
+            Self::Reidentify(m) => (op::REIDENTIFY, serde_json::to_value(m)?),
+            Self::Event(m) => (op::EVENT, serde_json::to_value(m)?),
+            Self::Request(m) => (op::REQUEST, serde_json::to_value(m)?),
+            Self::RequestResponse(m) => (op::REQUEST_RESPONSE, serde_json::to_value(m)?),
             Self::Unknown { op } => (*op, Value::Object(Map::new())),
         };
-        Frame { op, d }
+        Ok(Frame { op, d })
     }
 }
 
+/// Supertrait that seals [`RequestType`]: only the requests in this crate can implement it.
+///
+/// Sealing means every request and response type is one whose serialisation is known to succeed, so the constructors
+/// never see a request that cannot be sent. An outside type could carry a map with non-string keys, which
+/// `serde_json` refuses to serialise.
+mod private {
+    /// The seal.
+    pub trait Sealed {}
+}
+
 /// A request this crate knows: its wire name and the type of its response fields.
-pub trait RequestType: Serialize {
+///
+/// The trait is sealed: a request type outside this crate cannot implement it.
+///
+/// ```compile_fail,E0277
+/// #[derive(serde::Serialize)]
+/// struct Outside {}
+///
+/// impl omuzaki_obs::protocol::RequestType for Outside {
+///     const NAME: &'static str = "Outside";
+///     type Response = omuzaki_obs::protocol::Empty;
+/// }
+/// ```
+pub trait RequestType: Serialize + private::Sealed {
     /// The `requestType` on the wire.
     const NAME: &'static str;
     /// The `responseData` fields. A request with none uses [`Empty`].
-    type Response: DeserializeOwned;
+    type Response: Serialize + DeserializeOwned;
 }
 
 /// The response fields of a request that has none.
@@ -402,6 +427,7 @@ macro_rules! request {
         #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
         #[serde(rename_all = "camelCase")]
         pub struct $name { $($(#[$fdoc])* pub $field: $ty),* }
+        impl private::Sealed for $name {}
         impl RequestType for $name {
             const NAME: &'static str = stringify!($name);
             type Response = $resp;
@@ -757,19 +783,21 @@ impl ObsEvent {
     }
 
     /// The wire event. [`ObsEvent::Other`] keeps its name but has no data and no intent.
-    #[must_use]
-    pub fn to_msg(&self) -> EventMsg {
-        let intent = self.intent().0;
-        let mut tagged = serde_json::to_value(self).ok().and_then(|v| match v {
-            Value::Object(m) => Some(m),
-            _ => None,
-        });
-        let event_type = match (&tagged, self) {
-            (_, Self::Other { event_type }) => event_type.clone(),
-            (Some(m), _) => m.get("eventType").and_then(Value::as_str).unwrap_or_default().to_owned(),
-            (None, _) => String::new(),
+    ///
+    /// # Errors
+    /// The serialisation error of a typed event, passed on rather than sent with a blank name.
+    pub fn to_msg(&self) -> Result<EventMsg, serde_json::Error> {
+        let event_intent = self.intent().0;
+        if let Self::Other { event_type } = self {
+            return Ok(EventMsg { event_type: event_type.clone(), event_intent, event_data: None });
+        }
+        // Every typed variant serialises as `{"eventType": ..., "eventData": ...}`; anything else is a bug here.
+        let Value::Object(mut tagged) = serde_json::to_value(self)? else {
+            return Err(serde_json::Error::custom("a typed event does not serialise as an object"));
         };
-        let event_data = tagged.as_mut().and_then(|m| m.remove("eventData"));
-        EventMsg { event_type, event_intent: intent, event_data }
+        let Some(Value::String(event_type)) = tagged.remove("eventType") else {
+            return Err(serde_json::Error::custom("a typed event has no eventType"));
+        };
+        Ok(EventMsg { event_type, event_intent, event_data: tagged.remove("eventData") })
     }
 }

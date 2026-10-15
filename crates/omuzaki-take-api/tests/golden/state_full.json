@@ -1,0 +1,17 @@
+{
+  "doc_version": 17,
+  "project": "demo",
+  "scene": "main",
+  "camera": "bust",
+  "cast": [{ "member": "mira", "character": "mira", "hash": "ab12" }],
+  "sources": [{ "index": 0, "member": "mira", "profile": "arkit", "kind": "iphone" }],
+  "voices": [{ "index": 0, "member": "mira", "tap": "mic" }],
+  "models": { "tracker": "tracker-v2", "lipsync": "lipsync-v1" },
+  "delay_s": 0.25,
+  "after_lsn": 41,
+  "withheld": [{ "voice": 0, "cause": "muted", "from": 12.5, "to": null }],
+  "omitted": ["obs"],
+  "omitted_more": 3,
+  "overflow": false,
+  "live": { "expressions": { "held": ["smile"] } }
+}
