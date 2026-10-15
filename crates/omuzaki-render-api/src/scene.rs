@@ -456,7 +456,19 @@ impl Scene {
         }
     }
 
-    /// Empties the draw lists but keeps their allocations, ready to be refilled for the next frame.
+    /// Empties the per-frame lists (`lights`, `instances` and `joints`) but keeps their allocations, ready to be refilled
+    /// for the next frame.
+    ///
+    /// Everything else stays as it was: `camera`, `frame`, `background`, `fog`, `environment`, `outline_light` and `post`.
+    /// Lights do go, so
+    /// a scene that wants the same lights every frame must push them again after each `clear`. To keep lights across
+    /// frames, leave them out of the reset and clear only what changes:
+    ///
+    /// ```ignore
+    /// scene.instances.clear();
+    /// scene.joints.clear();
+    /// // `scene.lights` still holds last frame's lights; refill `scene.instances` and `scene.joints` as usual.
+    /// ```
     pub fn clear(&mut self) {
         self.lights.clear();
         self.instances.clear();

@@ -19,5 +19,9 @@ schemars.workspace = true
 serde_json.workspace = true
 omuzaki-library-api = { path = "../omuzaki-library-api" }
 
+[package.metadata.omuzaki]
+kind = "Mock"
+summary = "`MemorySigner::from_test_seed` and `MemoryTrust`; test seeds live only here, and the compatibility test against `omuzaki-library-api`"
+
 [lints]
 workspace = true
