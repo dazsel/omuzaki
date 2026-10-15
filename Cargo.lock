@@ -3441,6 +3441,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-camera-mf"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-track-api",
+ "windows",
+]
+
+[[package]]
 name = "omuzaki-char"
 version = "0.0.0"
 dependencies = [
