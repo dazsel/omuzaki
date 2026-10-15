@@ -200,7 +200,9 @@ fn draw(egui: &Context, panel: &mut dyn Panel, def: &PanelDef, ctx: &PanelCtx<'_
         .platform_output
         .accesskit_update
         .iter()
-        .flat_map(|update| update.nodes.iter().filter_map(|(_, node)| node.label().or_else(|| node.value()).map(str::to_owned)))
+        .flat_map(|update| {
+            update.nodes.iter().filter_map(|(_, node)| node.label().or_else(|| node.value()).map(str::to_owned))
+        })
         .filter(|label| !label.trim().is_empty())
         .collect();
     labels.sort_unstable();
