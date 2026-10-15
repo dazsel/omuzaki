@@ -36,6 +36,7 @@ mod def;
 mod library;
 mod ops;
 mod posture;
+mod set;
 
 pub use def::{HandSlot, PoseDef, PoseError};
 pub use library::PoseLibrary;
