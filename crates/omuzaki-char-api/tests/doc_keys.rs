@@ -5,16 +5,13 @@
 #![allow(clippy::expect_used)]
 
 use omuzaki_char_api::doc_key::{self, BUILT_IN_NODE_KEYS, BUILT_IN_SIBLING_KEYS};
-use omuzaki_char_api::{CharacterDef, paths, register_doc_key};
+use omuzaki_char_api::ids::CharId;
+use omuzaki_char_api::{CharacterDef, register_doc_key};
 use omuzaki_core::link::registered;
 use serde_json::json;
 
-fn hats_path(id: &omuzaki_char_api::ids::CharId) -> omuzaki_doc_api::DocPath {
-    paths::character(id).join("hats")
-}
-
-// A key of a feature that lives outside `omuzaki-char-api`.
-register_doc_key!("hats", hats_path);
+// A key of a feature that lives outside `omuzaki-char-api`. Its path is `characters/<id>/hats`.
+register_doc_key!("hats");
 
 fn base() -> serde_json::Value {
     json!({ "name": "Mira", "template": "kit-humanoid", "seed": 7 })
@@ -30,16 +27,31 @@ fn a_registered_key_is_validated_kept_and_saved() {
     def.to_node(&mut saved).expect("saves");
     assert_eq!(saved["hats"], json!({ "worn": "beret" }), "saving leaves the registered sub-tree alone");
     assert_eq!(CharacterDef::from_node(&saved).expect("reads back"), def);
-    assert!(doc_key::sibling_keys().contains(&"hats") && doc_key::collisions().is_empty());
+    assert!(doc_key::sibling_keys().contains(&"hats") && doc_key::refused().is_empty());
 }
 
 #[test]
-fn a_registered_key_gives_its_path_and_the_typo_hint() {
-    let id = omuzaki_char_api::ids::CharId::new("mira").expect("a valid id");
-    assert_eq!(
-        doc_key::path("hats", &id).expect("no collision").expect("registered").to_string(),
-        "characters/mira/hats"
-    );
+fn a_registered_key_is_its_own_path_under_the_character() {
+    for name in ["mira", "close-up", "a1"] {
+        let id = CharId::new(name).expect("a valid id");
+        assert_eq!(
+            doc_key::path("hats", &id).expect("not refused").expect("registered").to_string(),
+            format!("characters/{name}/hats")
+        );
+    }
+}
+
+#[test]
+fn a_built_in_name_with_no_registration_is_not_refused() {
+    // Only a built-in name with a colliding registration is refused; this crate registers `rig` nowhere.
+    let id = CharId::new("mira").expect("a valid id");
+    assert_eq!(doc_key::check("rig"), Ok(()));
+    assert_eq!(doc_key::path("rig", &id), Ok(None));
+    assert!(doc_key::sibling_keys().contains(&"rig"));
+}
+
+#[test]
+fn a_registered_key_gives_the_typo_hint() {
     let mut node = base();
     node["hat"] = json!({});
     let message = CharacterDef::from_node(&node).expect_err("a typo is refused").to_string();

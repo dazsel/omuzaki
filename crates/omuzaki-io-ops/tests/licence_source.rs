@@ -22,7 +22,7 @@ use omuzaki_io_ops::ops::licence::derive::DerivedLicence;
 use omuzaki_io_ops::ops::licence::describe::LicenceDescription;
 use omuzaki_io_ops::ops::licence::source::{Ownership, PartSource};
 use omuzaki_ops_api::{Actor, ErrorCode, OpCtx, OpError, OpKind, Plan, Scope, Undo, find};
-use omuzaki_store_api::{Commercial, Provenance, Source};
+use omuzaki_store_api::{Commercial, Consent, Provenance, Source};
 use serde_json::{Value, json};
 
 /// The mock character's parts, in id order.
@@ -215,6 +215,14 @@ fn a_row_the_file_format_would_refuse_is_refused_naming_the_field() {
     blank_licence.provenance.licence = "  ".into();
     let error = refusal(&doc, "hair", &blank_licence, ErrorCode::Invalid, "source/provenance/licence");
     assert!(error.message.contains("LicenseRef-Unknown"), "{}", error.message);
+
+    for (field, person, scope) in [("person", " ", "to be a mascot"), ("scope", "Ann", "\t")] {
+        let mut blank_consent = row(Commercial::Ok, "Ann", grants_profit());
+        blank_consent.provenance.consent = Some(Consent { person: person.into(), scope: scope.into(), document: None });
+        let want = format!("source/provenance/consent/{field}");
+        let error = refusal(&doc, "hair", &blank_consent, ErrorCode::Invalid, &want);
+        assert!(error.message.contains(&format!("consent.{field}")), "{}", error.message);
+    }
 
     let mut blank_owner = row(Commercial::Ok, "Ann", grants_profit());
     blank_owner.owned = Some(Ownership { asserted_by: " ".into() });

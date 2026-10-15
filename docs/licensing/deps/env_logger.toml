@@ -1,0 +1,6 @@
+section = "rust"
+item = "env_logger"
+kind = "crate"
+used_for = "log output of the egui viewport binary in `spikes/mascot-window`"
+status = "yes"
+audit = "(crates.io: env_logger 0.11.11, MIT OR Apache-2.0)"
