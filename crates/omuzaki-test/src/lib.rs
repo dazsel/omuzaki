@@ -18,6 +18,7 @@
 //! The `omuzaki-test` binary wraps these for scripts and CI; see the crate `README.md` for the workflow.
 #![deny(missing_docs)]
 
+pub mod budget;
 pub mod compare;
 pub mod dirs;
 pub mod error;
