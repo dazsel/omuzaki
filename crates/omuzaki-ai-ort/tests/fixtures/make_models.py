@@ -4,6 +4,7 @@
 
 Needs `onnx` (Apache-2.0; dev-only, never shipped). The models are checked in, so the tests don't run this.
   identity.onnx       x f32[1,4] -> y f32[1,4], one Identity node (opset 13)
+  identity_f16.onnx   x f16[1,4] -> y f16[1,4], one Identity node: the half-precision round trip
   add.onnx            a, b f32[batch,3] -> c, one Add node: a dynamic first dimension
   add_sub.onnx        a, b f32[batch,3] -> c = a + b, d = a - b: two outputs, for the "nothing is written on a rejection" test
   many.onnx           7 inputs x0..x6 f32[2] -> 5 outputs: more than ort keeps on the stack (6 inputs, 4 outputs)
@@ -46,6 +47,10 @@ def main():
 
     ident = helper.make_graph([helper.make_node("Identity", ["x"], ["y"])], "identity", [vi("x", [1, 4])], [vi("y", [1, 4])])
     save(model(ident), out, "identity.onnx")
+
+    half = lambda name: helper.make_tensor_value_info(name, TensorProto.FLOAT16, [1, 4])
+    ident_f16 = helper.make_graph([helper.make_node("Identity", ["x"], ["y"])], "identity_f16", [half("x")], [half("y")])
+    save(model(ident_f16), out, "identity_f16.onnx")
 
     add = helper.make_graph(
         [helper.make_node("Add", ["a", "b"], ["c"])], "add",
