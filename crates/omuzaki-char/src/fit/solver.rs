@@ -13,6 +13,8 @@
 //! and `hand_size` is not either until `hands::build` makes a mesh; both stay at their defaults. The search stops at
 //! [`MAX_EVALUATIONS`] or after two sweeps in a row that each gain under [`MIN_GAIN`] mean `IoU`.
 
+use std::cmp::Ordering;
+
 use omuzaki_core::mesh::MeshData;
 
 use super::{FitError, FitParams, FitView, Objective, Score, Target};
@@ -268,7 +270,11 @@ impl Keep {
 
     /// Whether the candidate at `t` with `cost` replaces the stored one (and then records it).
     fn replaces(&mut self, cost: f64, t: f64) -> bool {
-        let wins = cost < self.cost || (cost == self.cost && self.t.is_some_and(|held| t < held));
+        let wins = match cost.total_cmp(&self.cost) {
+            Ordering::Less => true,
+            Ordering::Equal => self.t.is_some_and(|held| t < held),
+            Ordering::Greater => false,
+        };
         if wins {
             (self.cost, self.t) = (cost, Some(t));
         }
