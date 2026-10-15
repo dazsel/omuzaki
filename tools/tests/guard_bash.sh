@@ -11,18 +11,24 @@ check() {  # check <want exit> <command> [cwd]
   run "$1" "$(python3 -I -c 'import json, sys; print(json.dumps({"cwd": sys.argv[2], "tool_input": {"command": sys.argv[1]}}))' "$2" "${3:-$PWD}")" "$2"
 }
 # Repositories with `cloud/mine` checked out, for the lease checks: plain, with `push.default=matching`, with a
-# `remote.origin.push` refspec, and with `remote.pushDefault` naming another remote. Global git config is off, so a
-# developer's own settings can't change a result.
+# `remote.origin.push` refspec, with `remote.pushDefault` naming another remote, with `matching` then `simple` in its own
+# config (the last value wins), and with one remote that isn't origin and widens its pushes. Global git config is off,
+# so a developer's own settings can't change a result.
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 repo="$work/plain"; matching="$work/matching"; pushspec="$work/pushspec"; pushdefault="$work/pushdefault"
-for dir in "$repo" "$matching" "$pushspec" "$pushdefault"; do
+layered="$work/layered"; lone="$work/lone"
+for dir in "$repo" "$matching" "$pushspec" "$pushdefault" "$layered" "$lone"; do
   git init -q -b cloud/mine "$dir" && git -C "$dir" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
 done
 git -C "$matching" config push.default matching
 git -C "$pushspec" config remote.origin.push 'refs/heads/cloud/mine:refs/heads/cloud/mine'
 git -C "$pushdefault" config remote.origin.push 'refs/heads/cloud/mine:refs/heads/cloud/mine'
 git -C "$pushdefault" config remote.pushDefault upstream
+git -C "$layered" config --add push.default matching
+git -C "$layered" config --add push.default simple
+git -C "$lone" remote add upstream https://example.invalid/up.git
+git -C "$lone" config remote.upstream.push 'refs/heads/cloud/mine:refs/heads/cloud/mine'
 # Secret paths, including the bare directories.
 check 2 'cat .env'
 check 2 'cat .env.local'
@@ -92,6 +98,9 @@ check 2 'gh api repos/o/r/issues/1/comments -pFbody=hi'
 check 2 'gh api graphql -Fquery=@payload.graphql'
 check 2 'gh api graphql -fquery=@-'
 check 2 'gh api graphql -f=@payload.graphql'
+check 2 'gh api graphql -F=query=@payload.graphql'
+check 2 'gh api graphql -f=query=@-'
+check 2 'gh api graphql --field==query=@payload.graphql'
 check 2 'gh api graphql --field=query=@payload.graphql'
 check 2 'gh api graphql --raw-field=query=@payload.graphql'
 check 2 'gh auth status --show-token=true'
@@ -131,6 +140,12 @@ check 2 'git push --repo=origin --force-with-lease' "$pushspec"
 check 2 'git push --force-with-lease origin' "$pushdefault"
 check 2 'git -c push.default=matching push --force-with-lease' "$repo"
 check 2 'git -c remote.origin.push=refs/heads/cloud/mine:refs/heads/cloud/mine push --force-with-lease' "$repo"
+# Config keys match whatever the spelling of their section and variable, and a lone remote is the default remote.
+check 2 'git -c PUSH.DEFAULT=matching push --force-with-lease' "$repo"
+check 2 'git -c remote.origin.Push=refs/heads/cloud/mine:refs/heads/cloud/mine push --force-with-lease' "$repo"
+check 2 'git -c remote.pushdefault=upstream -c remote.upstream.push=refs/heads/cloud/mine:refs/heads/cloud/mine push --force-with-lease' "$repo"
+check 2 'git push --force-with-lease' "$lone"
+check 2 'git push --force-with-lease upstream' "$lone"
 # Ordinary commands pass.
 check 0 'cargo xtask check --affected'
 check 0 'git push origin cloud/1234-thing'
@@ -144,6 +159,9 @@ check 0 'git push --force-with-lease origin HEAD' "$pushspec"
 check 0 'git -c push.default=simple push --force-with-lease' "$matching"
 check 0 'git push --force-with-lease' "$pushdefault"
 check 0 'git push --force-with-lease origin HEAD:refs/heads/cloud/mine' "$repo"
+check 0 'git push --force-with-lease' "$layered"
+check 0 'git -c PUSH.DEFAULT=simple push --force-with-lease' "$matching"
+check 0 'git -c push.default=matching -c push.default=simple push --force-with-lease' "$repo"
 check 0 'git -c core.hooksPath=/dev/null commit -m "merge main"'
 check 0 'git merge origin/main'
 check 0 'gh pr view 12 --json mergeable'
@@ -155,6 +173,7 @@ check 0 'gh auth status'
 check 0 'gh auth status --show-token=false'
 check 0 'git push --repo origin --force-with-lease HEAD:cloud/mine' "$repo"
 check 0 "gh api graphql -F owner=dazsel -f query='query { viewer { login } }'"
+check 0 "gh api graphql -F=owner=dazsel -f query='query { viewer { login } }'"
 check 0 'gh api -X GET search/issues -f q=is:open'
 check 0 'gh api -X GET search/issues -Fq=is:open'
 check 0 'gh api --paginate repos/o/r/pulls/12/merged'

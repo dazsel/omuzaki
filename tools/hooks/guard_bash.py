@@ -119,16 +119,20 @@ def body_flag(arg):
 
 
 def field_text(arg):
-    """A field word without its flag (`-Fname=v`, `-pFname=v`, `--field=name=v` give `name=v`), else the word itself."""
+    """A field word without its flag (`-Fname=v`, `-pFname=v`, `--field=name=v` give `name=v`), else the word itself.
+    gh drops one `=` between the flag and the field, so `-F=name=v` is `name=v` too."""
     if arg.startswith("--"):
-        return arg.split("=", 1)[1] if arg.startswith(("--field=", "--raw-field=")) else arg
-    match = GH_API_FIELD_FLAG.match(arg)
-    return match.group(1) if match else arg
+        text = arg.split("=", 1)[1] if arg.startswith(("--field=", "--raw-field=")) else arg
+    else:
+        match = GH_API_FIELD_FLAG.match(arg)
+        text = match.group(1) if match else arg
+    return text[1:] if text.startswith("=") else text
 
 
 def reads_file(arg):
-    """Whether a gh api word is a field read from a file (`name=@file`), bare or with its flag (`-Fname=@file`)."""
-    return any(re.match(r"^[\w.\[\]-]+=@", text) for text in (arg, field_text(arg)))
+    """Whether a gh api word is a field read from a file (`name=@file`, or `@file` with no name), bare or with its flag
+    (`-Fname=@file`, `-F=name=@file`)."""
+    return re.match(r"^[\w.\[\]-]+=@", arg) or re.match(r"^(?:[\w.\[\]-]+=)?@", field_text(arg))
 
 
 def gh_api_method(args):
@@ -187,11 +191,22 @@ def current_branch(directory):
     return (out.strip() or None) if out else None
 
 
+def config_key(key):
+    """A config key in git's canonical spelling: section and variable names are case-insensitive, a subsection
+    (`remote.<name>.push`) is not."""
+    head, _, rest = key.partition(".")
+    subsection, dot, variable = rest.rpartition(".")
+    if not dot:
+        return f"{head.lower()}.{rest.lower()}"
+    return f"{head.lower()}.{subsection}.{variable.lower()}"
+
+
 def git_config(directory, key, overrides=()):
-    """The values of a git config key: its `git -c` overrides when there are any, since they take precedence, else the
-    repository's and the user's values (none when unset)."""
-    given = [value for name, _, value in overrides if name == key]
-    return given or (git_output(directory, "config", "--get-all", key) or "").splitlines()
+    """The values of a git config key in git's precedence order, so the last one wins for a single-valued key: the
+    repository's and the user's values, then the `git -c` overrides, which come after them."""
+    wanted = config_key(key)
+    values = (git_output(directory, "config", "--get-all", key) or "").splitlines()
+    return values + [value for name, _, value in overrides if config_key(name) == wanted]
 
 
 def push_words(push_args):
@@ -214,7 +229,8 @@ def push_words(push_args):
 
 def default_remote(directory, branch, overrides):
     """The remote a push goes to when it names none, in git's order: the branch's pushRemote, remote.pushDefault, the
-    branch's remote, else origin."""
+    branch's remote, else the only remote when there is exactly one (git pushes there even when it isn't origin), else
+    origin."""
     keys = ["remote.pushDefault"]
     if branch:
         keys = [f"branch.{branch}.pushRemote", *keys, f"branch.{branch}.remote"]
@@ -222,14 +238,16 @@ def default_remote(directory, branch, overrides):
         values = git_config(directory, key, overrides)
         if values:
             return values[-1]
-    return "origin"
+    remotes = (git_output(directory, "remote") or "").split()
+    return remotes[0] if len(remotes) == 1 else "origin"
 
 
 def implicit_push_refusal(remote, directory, branch, overrides):
     """Why a `--force-with-lease` push with no refspec reaches other refs, or None. Under the default `push.default`
     (`simple`) git pushes only the checked-out branch; `matching` pushes every branch of that name, and a
     `remote.<name>.push` refspec adds refs of its own."""
-    if "matching" in git_config(directory, "push.default", overrides):
+    defaults = git_config(directory, "push.default", overrides)
+    if defaults and defaults[-1] == "matching":
         return ("a `--force-with-lease` push with no refspec under `push.default=matching`, which reaches other"
                 " branches,")
     name = remote or default_remote(directory, branch, overrides)
