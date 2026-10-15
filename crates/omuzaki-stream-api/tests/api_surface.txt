@@ -1,7 +1,55 @@
+src/encoder.rs: pub enum StreamKind {
+src/encoder.rs: pub enum CodecId {
+src/encoder.rs: pub enum AlphaKind {
+src/encoder.rs: pub struct VideoSpec {
+src/encoder.rs: pub fn validate(&self) -> Result<(), StreamError> {
+src/encoder.rs: pub struct AudioSpec {
+src/encoder.rs: pub fn validate(&self) -> Result<(), StreamError> {
+src/encoder.rs: pub struct StreamSpec {
+src/encoder.rs: pub fn video(
+src/encoder.rs: pub fn audio(
+src/encoder.rs: pub fn data(codec: CodecId, name: impl Into<String>, timebase: Timebase) -> Result<Self, StreamError> {
+src/encoder.rs: pub fn with_extradata(mut self, extradata: Bytes) -> Self {
+src/encoder.rs: pub fn validate(&self) -> Result<(), StreamError> {
+src/encoder.rs: pub fn serialize<S: Serializer>(bytes: &Bytes, s: S) -> Result<S::Ok, S::Error> {
+src/encoder.rs: pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Bytes, D::Error> {
+src/encoder.rs: pub struct Frame<'a> {
+src/encoder.rs: pub fn new(size: UVec2, index: u64, capture_time: Ticks) -> Self {
+src/encoder.rs: pub fn with_cpu(mut self, image: &'a Image) -> Self {
+src/encoder.rs: pub fn with_gpu(mut self, gpu: &'a mut dyn Any) -> Self {
+src/encoder.rs: pub struct EncodeConfig {
+src/encoder.rs: pub fn new(video: VideoSpec, codec: CodecId) -> Result<Self, StreamError> {
+src/encoder.rs: pub fn validate(&self) -> Result<(), StreamError> {
+src/encoder.rs: pub struct EncoderInfo {
+src/encoder.rs: pub fn new(codec: CodecId, name: impl Into<String>, hardware: bool, alpha: bool) -> Self {
+src/encoder.rs: pub trait Encoder: Send {
+src/encoder.rs: pub trait EncoderFactory: Send + Sync {
 src/error.rs: pub enum StreamError {
+src/lib.rs: pub mod encoder;
 src/lib.rs: pub mod error;
+src/lib.rs: pub mod mux;
+src/lib.rs: pub mod output;
 src/lib.rs: pub mod packet;
 src/lib.rs: pub mod time;
+src/mux.rs: pub enum Container {
+src/mux.rs: pub struct MuxReport {
+src/mux.rs: pub fn new(packets: u64, bytes: u64) -> Self {
+src/mux.rs: pub trait Muxer: Send {
+src/mux.rs: pub trait MuxerFactory: Send + Sync {
+src/output.rs: pub enum Feed {
+src/output.rs: pub enum AlphaNeed {
+src/output.rs: pub enum GpuBackend {
+src/output.rs: pub struct Lanes {
+src/output.rs: pub struct OutputInfo {
+src/output.rs: pub fn new(kind: &'static str, alpha: AlphaNeed, lanes: Lanes) -> Self {
+src/output.rs: pub struct OutputConfig {
+src/output.rs: pub fn new(name: impl Into<String>, size: UVec2, fps: (u32, u32)) -> Result<Self, StreamError> {
+src/output.rs: pub fn with_feed(mut self, feed: Feed) -> Self {
+src/output.rs: pub struct SubmitReport {
+src/output.rs: pub fn new(cpu_ms: f32, gpu_wait_ms: f32, dropped: u32) -> Self {
+src/output.rs: pub enum OutputState {
+src/output.rs: pub struct OutputStatus {
+src/output.rs: pub trait Output: Send {
 src/packet.rs: pub struct StreamId(pub u8);
 src/packet.rs: pub enum SideKind {
 src/packet.rs: pub struct SideData {

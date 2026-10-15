@@ -13,6 +13,11 @@ bytes = { workspace = true }
 schemars.workspace = true
 serde.workspace = true
 thiserror.workspace = true
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-render-api = { path = "../omuzaki-render-api" }
+
+[dev-dependencies]
+serde_json.workspace = true
 
 [lints]
 workspace = true
