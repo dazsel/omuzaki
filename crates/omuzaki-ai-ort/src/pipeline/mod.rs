@@ -65,7 +65,7 @@ fn create_all(graphs: &[Graph], options: &SessionOptions, build: &str) -> Result
 
 /// Loads every stage's graph on one provider, in run order. A stage whose provider fails would otherwise fall back to
 /// the CPU alone and leave the pipeline on a mix, so then every stage is loaded again on the best single provider that
-/// all of them accept, ending on the CPU, which always works.
+/// all of them accept, ending on the CPU, which always works. Only one set of sessions is alive at a time.
 fn open(source: &ModelSource<'_>, graphs: &[Graph], options: &SessionOptions) -> Result<Vec<Opened>, LoadError> {
     let loaded = library::ensure_loaded(source.natives, &options.providers)?;
     let build = loaded.build.id;
@@ -73,6 +73,10 @@ fn open(source: &ModelSource<'_>, graphs: &[Graph], options: &SessionOptions) ->
     if first.windows(2).all(|pair| pair[0].provider == pair[1].provider) {
         return Ok(first);
     }
+    // Release the first set before any retry: a session holds its device memory until it is dropped, and a GPU retry
+    // must not find the first set's still allocated. Each retry's set is likewise dropped at the end of its iteration,
+    // unless it is the one returned, so at most one set is alive while another is created.
+    drop(first);
     for &provider in options.providers.iter().filter(|p| **p != Provider::Cpu) {
         let mut only = options.clone();
         only.providers = vec![provider];
