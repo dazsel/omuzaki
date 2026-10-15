@@ -46,7 +46,8 @@ manifest, rights, and how plugins relate to scripts (ADR 0034).
    component model, so no WIT and no versioned imports.
 2. **The WIT package `omuzaki:plugin@0.1.0`** has the base world `plugin` (imports `ops`, `host`, `data` and `http`,
    the last two linked to refusals unless requested; exports `lifecycle`: `init`, `approval-resolved`,
-   `shutdown`). Each extension world includes it. A 0.x host serves its own minor and the one before through an adapter; from 1.0, semver. A node
+   `shutdown`). `init`, `approval-resolved` and worker entries are transactional entries; `shutdown` runs after the
+   session ends, with every effectful import denied. Each extension world includes it. A 0.x host serves its own minor and the one before through an adapter; from 1.0, semver. A node
    activation gets refusals for `ops`, `data` and `http`; its only effect is an asynchronous `run-op` in the show's
    session, within the plugin's ceiling and the needs that show approved (automation D15).
    A node instance gets its clock and randomness only through `NodeCx`: show time, the step's wall time, and the
@@ -76,12 +77,17 @@ manifest, rights, and how plugins relate to scripts (ADR 0034).
    until it (and never waits in a node instance), and nothing is called after it. In a worker, `wasi:random/random`
    is OS entropy and only the `insecure` interfaces are seeded; a random request over 4,096 bytes traps before the
    host allocates, in every instance. `.zip` packages refuse absolute
-   and `..` paths, links, duplicate normalised names and oversize, and the hash is over the staged files.
+   and `..` paths, links, duplicate normalised names and oversize, and the hash is over the staged files, as one
+   exact preimage (normalised `/` paths sorted by bytes, each path and content `u64`-LE length-prefixed) with a
+   cross-platform golden vector.
 7. **Threads:** one worker thread per plugin; node activations only on the engine thread in a second 16 MiB
    instance; never the render, audio or tracking thread unless an extension design adds a number. Every path has a
    budget and a gate (design §5.2).
 8. **Lifecycle:** installed per machine, enabled per machine or per (machine, project) in a person-only `Machine`
-   setting; nothing loads unless enabled (SE-04). Reload swaps by content hash, drains, and hands over no state.
+   setting; nothing loads unless enabled (SE-04). Reload swaps by content hash, drains, and hands over no state; it is a job, `Undo::None`.
+   Every `plugin.*` op drains guests and moves or deletes files off the edit lock (under it, at most an atomic rename
+   or flag flip), and is `Undo::Explicit` only with named paired undo and redo calls (enable and disable, grant);
+   migrating data is `Undo::None` and confirmed.
    **Kept data belongs to an identity:** a data folder is keyed by the verifying publisher key plus a per-install id,
    never the plugin id, so another publisher's plugin with the same id never sees it; moving data between identities
    is a person-only op the person confirms. Removing a plugin keeps the data but deletes the package, approvals and
@@ -124,6 +130,8 @@ manifest, rights, and how plugins relate to scripts (ADR 0034).
   or verifies anything, with test vectors for the new tag and a test that no two domain tags are prefixes of each
   other. This PR changes no identity-api code.
 - The executor gains one plugin rule: per-use queueing of `publish`, `broadcast` and `spend` for plugin sessions.
+  A request queued inside `plugin.run` keeps the originating caller session and its grant intersection, is
+  rechecked on approval and withdrawn when that session ends or its grants stop covering it.
 - `omuzaki-settings-api` gains the runtime settings registry (register, unregister, owner-tagged values), as its own
   contract task.
 - The tasks of design §12 and the unlocked work (hot reload, the manager panel, the mutating ops and their cards,

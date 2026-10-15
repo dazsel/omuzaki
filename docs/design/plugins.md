@@ -152,8 +152,14 @@ The Rust guest SDK gives `approval-resolved` and `shutdown` empty defaults, so t
 | `limited` | a rate limit (detail `RetryAfter`), the host-call budget, or the plugin's CPU share (§5.2) | wait `seconds` |
 
 - **Dry runs** are `plan`, which needs `read` only; an agent's dry-run rule (ADR 0020 7.1) is the same.
+- **Every lifecycle export is one of two kinds.** A *transactional entry* (`init`, `approval-resolved`, the
+  extension worlds' worker entries, and a `plugin.run` command, whose transaction the driver owns) runs as below.
+  `shutdown` is the only other export, and it runs with **effectful imports denied**: the host ends the session and
+  swaps `LiveGrants` to empty (3.4) before calling it, so `ops.call` and `plan` return `denied` (no session), and
+  `data` and `fetch` return the revoked values of 3.4 (`err("revoked")`, `none`, `false`, an empty list). `log`, the
+  clocks and randomness still work. A new export joins one of the two kinds in the world that adds it.
 - **One transaction per entry call.** The host `begin`s a transaction labelled `<plugin name>: <entry>` before the
-  first edit of an entry call (`init`, `approval-resolved`, and the extension worlds' worker entries), sends each
+  first edit of a transactional entry, sends each
   `call` in it, and commits when the entry returns `ok`. An `err`, a trap or a breached deadline rolls it back. The
   plugin has no `begin`, `commit` or `undo` of its own: one entry is one step, which is what a person can follow in
   History. **Node activations are the exception:** they follow automation, where every call is its own one-op
@@ -163,7 +169,12 @@ The Rust guest SDK gives `approval-resolved` and `shutdown` empty defaults, so t
   reusing `Script` would make every plugin call refuse to queue (§10), and `Rule` belongs to automation.
 - **Queued requests.** A request that waits for a person (`publish`, `broadcast`, `spend`, an op that calls
   `require_person`) is queued and runs, once approved, as its own transaction (ADR 0020 4.4); the entry call has
-  long returned, so the host delivers the outcome later through `approval-resolved`.
+  long returned, so the host delivers the outcome later through `approval-resolved`. A request queued inside
+  `plugin.run` keeps its caller's limit: the executor records the originating caller session and the intersection
+  `caller's grants ∩ declared scope ∩ ceiling` with the pending approval, rechecks it against that session's live
+  grants when the person approves, and withdraws the request (outcome `denied`) when the caller's session ends or its
+  grants stop covering it. The `approval-resolved` entry that delivers the outcome runs under the same recorded
+  intersection, rechecked live, never the plugin's whole ceiling (test `queued_command_call_keeps_caller_limit`).
 - **Undo.** Each entry is one step; Ctrl+Z covers it and "Undo session" reverts the session (ADR 0020 5.4).
 
 ## 3. Identity and grants
@@ -411,12 +422,18 @@ plugin CPU and memory as their own line.
   reuse.
 - **Update** installs the new hash beside the old, carries approvals per 3.2, and swaps with a reload.
 - **Hot reload** (`plugin.reload`, or the watcher of a plugin installed with `watch`, which re-reads its source folder): the trigger is a changed
-  content hash, never a timestamp. New entry calls queue; the running one finishes or meets its deadline; `shutdown`
-  runs (1 s); the old session ends `Closed`; the new instance starts with a new session and `init`. Node instances
+  content hash, never a timestamp. It is a job (`OpKind::Job`): `plan` checks under the lock and changes nothing;
+  `work`, on the plugin's worker thread and off the lock, does the drain and the instance work: new entry calls
+  queue; the running one finishes or meets its deadline; the old session ends `Closed`; `shutdown` runs (1 s, with
+  effectful imports denied, 2.2); the new instance starts with a new session and `init`. `finish` takes the lock
+  only to flip the record's active hash. It is `Undo::None`: the person confirms a manual reload, and the install
+  dialog of a `watch` plugin says that changes in its folder reload it without asking. Node instances
   swap between activations. **No state is handed over:** a hand-off needs a format both versions agree on, and a
   plugin that wants to keep something writes it to its data folder, which survives.
 - **Removal** (`plugin.remove {id}`) disables, ends the session (3.4) and deletes the packages; the data folder stays
-  under its owner (6.4). Its approvals and settings values are dropped; History keeps its steps under its actor. It
+  under its owner (6.4). Under the lock it only ends the session, marks the record removed and renames
+  `plugins/<id>/` to a tombstone; dropping the instance and deleting the files run as a job off the lock, and
+  start-up sweeps tombstones as for data (below). Its approvals and settings values are dropped; History keeps its steps under its actor. It
   is `Undo::None`, confirmed first like `plugin.remove_data`: deleted package files, approvals and settings are
   outside the document, so no inverse patch restores them. The dialog says so: reinstalling the package restores the
   plugin, and its approvals are asked for again on the card.
@@ -443,14 +460,18 @@ plugin CPU and memory as their own line.
   a reinstall of the same plugin after removal, gets a fresh owner and an empty folder. The `data` imports resolve
   only the current installation's owner; there is no lookup by id.
 - **Moving data between identities needs the person's consent.** `plugin.migrate_data {from, to}` (person only,
-  never queued, `Undo::Explicit`: undo moves it back) moves a kept folder to an installed plugin's owner. The manager
+  never queued, `Undo::None`, confirmed) moves a kept folder to an installed plugin's owner with one atomic rename
+  under the lock, refused if the target's folder holds any file. It is not `Undo::Explicit`: moving back after the
+  target plugin has written files would overwrite or strand them, so the way back is a second migration the person
+  starts. The manager
   offers it on the install card only when the new installation has the same publisher key as the kept folder ("Use the
   data kept from Example by Example, 12 MiB?", default off); a folder from another publisher is moved only from the
   kept-data list, where the dialog names both publishers. Nothing moves without that click.
 - **Tests:** `data_owner_is_identity` (remove with data kept, install a plugin with the same id signed by another key:
   its `list` is empty and the old folder is untouched); `reinstall_starts_empty_until_migrated` (same key: empty until
   `plugin.migrate_data`, then the old files); `update_same_key_keeps_data`, `update_other_key_gets_new_owner`;
-  `migrate_is_person_only` (an agent or plugin session gets `person_only`); `remove_data_is_undo_none` (the op's
+  `migrate_is_person_only` (an agent or plugin session gets `person_only`; the op is `Undo::None` and refuses a
+  target folder with files); `remove_data_is_undo_none` (the op's
   `OpMeta::undo` is `None`, it refuses an installed plugin's folder, and History shows no undo for it);
   `remove_data_tombstones_under_lock` (the lock is held only for the rename; the delete runs as a job; a tombstone
   left at start-up is swept).
@@ -486,7 +507,12 @@ agent = "confirm"              # free, confirm or never; default never
   reserved: `omuzaki`, `core`, `plugin`, `system`, and every first-party op family (`face`, `io`, ...), checked
   against the registry at install. Two plugins with one id can't both be installed.
 - **Package:** a folder or a `.zip` of one: `plugin.toml`, the component, `l10n/<locale>/*.ftl`, `plugin.sig`. The
-  content hash is BLAKE3 over the sorted (path, bytes) list without `plugin.sig`; the signature is an ADR 0042
+  content hash is BLAKE3 over every regular file except `plugin.sig`, fed as one exact preimage: each path is
+  relative to the package root, UTF-8 in NFC with `/` separators, under the component path's rules below (no root,
+  prefix, `.`, `..` or empty segment; folders are not entries); entries are sorted by path bytes; each is fed as a
+  `u64` little-endian path length, the path bytes, a `u64` little-endian content length, then the contents. The
+  install task's acceptance check `package_hash_golden` is a committed package (a nested path and a non-ASCII name
+  among its files) whose digest is committed and must match on Linux, macOS and Windows CI. The signature is an ADR 0042
   envelope over that hash under a new `Domain::Plugin`, tag `omuzaki-plugin-v1\0` (ADR 0042's `omuzaki-<use>-v<N>\0`
   shape). `Domain` is `omuzaki-identity-api`'s closed enum, so the variant is a cross-area contract change: an ADR 0042
   amendment the Director approved (§11), never a tag the plugin crates define. **Extraction** is into a fresh staging folder and
@@ -544,17 +570,25 @@ agent = "confirm"              # free, confirm or never; default never
 
 ## 9. Ops
 
+Two rules hold for every row:
+
+- **Off the lock:** an op that drains or calls into a guest instance, or moves or deletes files, does that work off
+  the edit lock, as a job or a step of the worker's lifecycle; under the lock it does at most an atomic rename or a
+  flag or pointer flip.
+- **Undo:** an op is `Undo::Explicit` only where its row names its paired idempotent undo and redo `OpCall`s and
+  their conflict policy (ADR 0036); every other mutating op is `Undo::None` and confirmed first.
+
 | Op | Kind | Scope | Who | What it does |
 |---|---|---|---|---|
 | `plugin.list {}` | Query | `read` | anyone, agents included | installed plugins: `PluginInfo` (id, version, hash, publisher, licence, state, grants, worlds) |
 | `plugin.describe {id}` | Query | `read` | anyone | one plugin: manifest, requests, approvals, last faults, memory and CPU |
 | `plugin.install {path, watch?}` | Job (`OpKind::Job`, `Undo::None`, confirmed first) | `edit:settings` | person only | checks and copies a package off the lock, then registers it (6.3); shows the card; does not enable; the way back is `plugin.remove` |
-| `plugin.enable {id, project?}` / `plugin.disable {id, project?}` | Edit | `edit:settings` | person only | writes `plugins.enabled`; starts or stops the instance |
-| `plugin.grant {id, scopes?, hosts?, data?}` | Edit | `edit:settings` | person only | sets what the person approves, never beyond the requests |
-| `plugin.reload {id}` | Edit | `edit:settings` | person only | 6.3 |
-| `plugin.remove {id}` | Edit (`Undo::None`, confirmed first) | `edit:settings` | person only | 6.3; the data folder stays; reinstalling restores the package, and approvals are asked again |
+| `plugin.enable {id, project?}` / `plugin.disable {id, project?}` | Edit (`Undo::Explicit`: each is the other's undo with the same `{id, project}`; both set a value, so they are idempotent; an undo whose plugin is no longer installed is skipped and reported) | `edit:settings` | person only | flips `plugins.enabled` under the lock; the worker starts or stops the instance off the lock (6.3's drain and `shutdown`) |
+| `plugin.grant {id, scopes?, hosts?, data?}` | Edit (`Undo::Explicit`: undo and redo are `plugin.grant` with the whole approval recorded before and after, so idempotent; an undo whose current approval is not the recorded "after" is skipped and reported) | `edit:settings` | person only | swaps the approval and `LiveGrants` under the lock, never beyond the requests; cancellations (3.4) follow off the lock |
+| `plugin.reload {id}` | Job (`OpKind::Job`, `Undo::None`, confirmed first) | `edit:settings` | person only | drain, `shutdown` and `init` in `work` off the lock; `finish` flips the active hash (6.3) |
+| `plugin.remove {id}` | Edit (`Undo::None`, confirmed first) | `edit:settings` | person only | 6.3: ends the session and renames the package folder to a tombstone under the lock; a job drops the instance and deletes it; the data folder stays; reinstalling restores the package, and approvals are asked again |
 | `plugin.remove_data {owner}` | Edit (`Undo::None`, confirmed first) | `edit:settings` | person only | renames a removed plugin's data folder to a tombstone under the lock; a job deletes it (6.3) |
-| `plugin.migrate_data {from, to}` | Edit (`Undo::Explicit`) | `edit:settings` | person only | moves a kept data folder to an installed plugin's owner (6.4) |
+| `plugin.migrate_data {from, to}` | Edit (`Undo::None`, confirmed first) | `edit:settings` | person only | one atomic rename of a kept data folder to an installed plugin's owner (6.4) |
 | `plugin.run {id, command, args}` | Driver job (as `script.run`) | `read`; the driver checks the command's declared scope first | anyone holding that scope | runs a plugin command (14.1) inside the caller's grants (3.2); the guest runs off the document lock and its inner calls go through `JobCtx::call` in one executor-owned transaction |
 
 The management ops (install, enable, disable, grant, reload, remove, remove_data, migrate_data) return
