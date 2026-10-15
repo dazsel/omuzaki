@@ -16,8 +16,13 @@
 )]
 
 use omuzaki_char_api::{BuildOptions, BuildServices, BuiltCharacter, CharId, CharacterBuilder, RegistryBuilder};
+use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::{UVec2, Vec3};
-use omuzaki_render_api::{AlphaEncoding, Camera, Image, Quality, Renderer, Scene, TargetDesc};
+use omuzaki_render_api::{
+    AlphaEncoding, Background, Camera, Capabilities, FrameReport, Image, Light, Material, MaterialId, MeshData, MeshId,
+    MeshOptions, Painter, Quality, RenderError, Renderer, ResourceRef, ResourceStats, Scene, TargetDesc, TargetId,
+    TextureDesc, TextureId,
+};
 use omuzaki_render_mock::MockRenderer;
 use omuzaki_stage::UploadOptions;
 use omuzaki_stage::frame::{Stage, StageClock};
@@ -50,6 +55,60 @@ fn stage_on(renderer: &mut dyn Renderer) -> Stage {
         StageClock::fixed(60.0),
     )
     .expect("the mock character uploads")
+}
+
+/// The mock renderer that can be told to refuse new targets.
+struct NoTargets {
+    inner: MockRenderer,
+    refuse: bool,
+}
+
+impl Renderer for NoTargets {
+    fn capabilities(&self) -> &Capabilities {
+        self.inner.capabilities()
+    }
+    fn stats(&self) -> ResourceStats {
+        self.inner.stats()
+    }
+    fn create_mesh(&mut self, mesh: &MeshData) -> Result<MeshId, RenderError> {
+        self.inner.create_mesh(mesh)
+    }
+    fn create_mesh_with(&mut self, mesh: &MeshData, options: &MeshOptions) -> Result<MeshId, RenderError> {
+        self.inner.create_mesh_with(mesh, options)
+    }
+    fn update_vertices(&mut self, mesh: MeshId, positions: &[Vec3], normals: &[Vec3]) -> Result<(), RenderError> {
+        self.inner.update_vertices(mesh, positions, normals)
+    }
+    fn create_texture(&mut self, desc: &TextureDesc, rgba: Option<&[u8]>) -> Result<TextureId, RenderError> {
+        self.inner.create_texture(desc, rgba)
+    }
+    fn paint_texture(&mut self, texture: TextureId, painter: &mut dyn Painter) -> Result<(), RenderError> {
+        self.inner.paint_texture(texture, painter)
+    }
+    fn create_material(&mut self, material: &Material) -> Result<MaterialId, RenderError> {
+        self.inner.create_material(material)
+    }
+    fn update_material(&mut self, id: MaterialId, material: &Material) -> Result<(), RenderError> {
+        self.inner.update_material(id, material)
+    }
+    fn create_target(&mut self, desc: &TargetDesc) -> Result<TargetId, RenderError> {
+        if self.refuse {
+            return Err(RenderError::Backend("refused by the test".to_owned()));
+        }
+        self.inner.create_target(desc)
+    }
+    fn resize_target(&mut self, target: TargetId, size: UVec2) -> Result<(), RenderError> {
+        self.inner.resize_target(target, size)
+    }
+    fn release(&mut self, resource: ResourceRef) -> Result<(), RenderError> {
+        self.inner.release(resource)
+    }
+    fn render(&mut self, target: TargetId, scene: &Scene, quality: &Quality) -> Result<FrameReport, RenderError> {
+        self.inner.render(target, scene, quality)
+    }
+    fn read_target(&mut self, target: TargetId) -> Result<Image, RenderError> {
+        self.inner.read_target(target)
+    }
 }
 
 fn spec() -> TurnaroundSpec {
@@ -187,6 +246,24 @@ fn the_long_lens_renders_and_the_scene_is_put_back() {
     });
     let (top, bottom) = extent(&sheet.views[0].image);
     assert!(top > 0 && bottom < CELL.y - 1, "the margin keeps the character inside the cell");
+}
+
+#[test]
+fn a_refused_target_leaves_the_callers_scene_alone() {
+    let mut renderer = NoTargets { inner: MockRenderer::new(), refuse: false };
+    let mut stage = stage_on(&mut renderer);
+    // Lights, post and background the sheet would replace, so a leak would show.
+    let scene = stage.scene_mut();
+    scene.lights = vec![Light::Hemisphere { sky: Colour::WHITE, ground: Colour::BLACK, intensity: 0.3 }];
+    scene.background = Background::Solid { colour: Colour::WHITE };
+    scene.post.exposure = 0.7;
+    let before = stage.scene().clone();
+    renderer.refuse = true;
+    let error = render_turnaround(&mut stage, &mut renderer, &spec()).expect_err("the target is refused");
+    assert!(matches!(error, TurnaroundError::Stage(_)), "{error}");
+    assert_eq!(*stage.scene(), before, "camera, lights, post and background come back unchanged");
+    renderer.refuse = false;
+    stage.release(&mut renderer).expect("the stage releases");
 }
 
 #[test]

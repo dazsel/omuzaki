@@ -37,7 +37,8 @@ pub const EYE_LINE_FRACTION: f32 = 0.6;
 /// Where the head centre sits between the head joint and the crown, as a fraction of that distance. A stand-in until
 /// `Landmarks::measure` (#131) measures the head.
 pub const HEAD_CENTRE_FRACTION: f32 = 0.5;
-/// The light rig a sheet is lit with unless the caller sets the lights on the stage.
+/// The light rig every sheet is lit with. The sheet always uses it, replacing whatever lights the stage's scene had
+/// (and its post settings and background); [`render_turnaround`] puts the caller's scene back afterwards.
 pub const LIGHT_RIG: &str = "viewer-studio";
 
 /// Which way the character faces the camera. The side and three-quarter views show the character's left.
@@ -334,15 +335,16 @@ pub fn render_turnaround(
         SheetPose::Hero => hero_pose(&stage.built().rig.bind),
     };
     let (lights, look) = LightRig::load(LIGHT_RIG).and_then(|rig| Ok((rig.to_lights()?, rig.post(false))))?;
+    // Everything that can fail comes before the scene is touched, so an error here leaves the caller's scene as it was.
+    let target = renderer
+        .create_target(&TargetDesc { size: UVec2::splat(1), alpha: AlphaEncoding::Straight })
+        .map_err(|e| StageError::render("the sheet's target", e))?;
     let saved = stage.scene().clone();
     let scene = stage.scene_mut();
     scene.lights = lights;
     scene.post = look;
     scene.background = spec.background;
     scene.camera = shot.camera;
-    let target = renderer
-        .create_target(&TargetDesc { size: UVec2::splat(1), alpha: AlphaEncoding::Straight })
-        .map_err(|e| StageError::render("the sheet's target", e))?;
     let run = Run { spec, subject, shot, pose, target, tile };
     let views = View::ALL.into_iter().map(|view| run.view(stage, renderer, view)).collect::<Result<Vec<_>, _>>();
     let released = renderer.release(ResourceRef::from(target));
