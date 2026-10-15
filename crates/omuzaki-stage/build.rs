@@ -9,5 +9,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let src = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR")?).join("src");
     omuzaki_embed::modules(&src, out.join("crate_mods.rs"), "pub")?;
     omuzaki_embed::modules(src.join("ops"), out.join("ops_mods.rs"), "pub")?;
+    omuzaki_link_build::emit();
     Ok(())
 }
