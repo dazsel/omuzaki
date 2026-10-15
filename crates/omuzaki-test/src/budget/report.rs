@@ -8,6 +8,9 @@ use super::table::{Budget, Statistic, Unit};
 
 /// Largest worsening against the previous run that still passes (§34: more than 10% fails).
 pub const REGRESSION_LIMIT: f64 = 0.10;
+/// Samples a metric without a budget needs before a change against the previous run counts as a regression: a single
+/// start-up or memory reading moves more than 10% from run to run on a shared runner.
+pub const MIN_REGRESSION_SAMPLES: u64 = 30;
 /// Layout version of the JSON, bumped when a field changes meaning.
 pub const SCHEMA: u32 = 1;
 /// Every number this harness takes is `reported` (§10, "Numbers from other hardware"): it names the box it ran on and
@@ -245,7 +248,8 @@ fn row(metric: Metric, budgets: &[Budget], previous: Option<&Report>) -> Row {
         .and_then(|r| r.value.or(Some(r.metric.stats.p95)))
         .filter(|&p| p > 0.0);
     let change_pct = prev.map(|p| (stat - p) / p * 100.0);
-    let regression = change_pct.is_some_and(|c| c > REGRESSION_LIMIT * 100.0);
+    let trusted = budget.is_some() || metric.samples >= MIN_REGRESSION_SAMPLES;
+    let regression = trusted && change_pct.is_some_and(|c| c > REGRESSION_LIMIT * 100.0);
     Row {
         budget: budget.map(|b| b.budget_text.clone()),
         verdict,
@@ -315,6 +319,14 @@ mod tests {
         let slow = report(vec![us("physics.step", 450)], Some(&before));
         assert!(slow.rows[0].regression);
         assert_eq!(slow.violations(), ["physics.step: regression of 12.5%"]);
+    }
+
+    #[test]
+    fn a_noisy_single_reading_without_a_budget_is_not_a_regression() {
+        let one = |v| Metric::single("harness.startup", Unit::Ms, v).unwrap();
+        let before = report(vec![one(1.0)], None);
+        let r = report(vec![one(2.0)], Some(&before));
+        assert!(!r.rows[0].regression && r.rows[0].change_pct.is_some());
     }
 
     #[test]
