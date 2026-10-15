@@ -3,7 +3,8 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::message::{ContentBlock, ImageMime, TurnRequest};
+use crate::message::{ContentBlock, ImageMime, Message, TurnRequest};
+use crate::stream::Turn;
 
 /// Tokens a turn used. `input` excludes the two cache counters.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -160,14 +161,15 @@ fn block_tokens(block: &ContentBlock, info: &ModelInfo) -> u64 {
 struct Measured {
     tokens: u64,
     messages: usize,
-    /// A fingerprint of the system, the tools and the request's own messages that the measurement covers.
+    /// A fingerprint of the system, the tools and every message the measurement covers, the answer included.
     prefix: u64,
 }
 
-/// FNV-1a over the JSON of the parts of `request` that the measured tokens cover: the system, the tools and the
-/// first `messages` messages. Fixed constants, so a stored ledger compares the same across runs.
-fn fingerprint(request: &TurnRequest, messages: usize) -> u64 {
-    let covered = request.messages.get(..messages).unwrap_or(&request.messages);
+/// FNV-1a over the JSON of the parts of the next request that the measured tokens cover: the system, the tools and
+/// the first `messages` messages, where `reply` stands for the one after `request`'s own when `messages` reaches past
+/// them. Fixed constants, so a stored ledger compares the same across runs.
+fn fingerprint(request: &TurnRequest, reply: Option<&Message>, messages: usize) -> u64 {
+    let covered: Vec<&Message> = request.messages.iter().chain(reply).take(messages).collect();
     let json = serde_json::to_vec(&(&request.system, &request.tools, covered)).unwrap_or_default();
     json.iter().fold(0xcbf2_9ce4_8422_2325, |hash, b| (hash ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3))
 }
@@ -184,26 +186,28 @@ impl Ledger {
         Self::default()
     }
 
-    /// Records a finished turn: its request and final usage. The next bound starts from the measured prompt and
-    /// the answer, and estimates only what is appended after them.
-    pub fn observe(&mut self, request: &TurnRequest, usage: &Usage) {
+    /// Records a finished turn: its request and the turn itself. The next bound starts from the measured prompt and
+    /// the answer, and estimates only what is appended after them; the answer is fingerprinted too, so a history
+    /// that swaps it for a different one is estimated afresh.
+    pub fn observe(&mut self, request: &TurnRequest, turn: &Turn) {
+        let messages = request.messages.len() + 1;
         self.measured = Some(Measured {
-            tokens: usage.prompt().saturating_add(usage.output),
-            messages: request.messages.len() + 1,
-            prefix: fingerprint(request, request.messages.len()),
+            tokens: turn.usage.prompt().saturating_add(turn.usage.output),
+            messages,
+            prefix: fingerprint(request, Some(&turn.message), messages),
         });
     }
 
     /// An upper estimate of the prompt of `request`, in tokens: the measured history plus an estimate of what was
     /// appended (1 token per byte of text and JSON, 8 per block, images from [`ModelInfo::image_cost`]), or an
     /// estimate of everything on a first turn, when the history is shorter than the ledger remembers, or when the
-    /// system, the tools or an earlier message changed since the measurement.
+    /// system, the tools or an earlier message (the answer included) changed since the measurement.
     pub fn prompt_estimate(&self, request: &TurnRequest, info: &ModelInfo) -> u64 {
         let messages = |from: usize| -> u64 {
             let appended = request.messages.iter().skip(from);
             appended.flat_map(|m| &m.content).map(|b| block_tokens(b, info)).sum()
         };
-        let same_prefix = |m: &Measured| fingerprint(request, m.messages - 1) == m.prefix;
+        let same_prefix = |m: &Measured| fingerprint(request, None, m.messages) == m.prefix;
         if let Some(m) = self.measured.filter(|m| m.messages <= request.messages.len() && same_prefix(m)) {
             return m.tokens.saturating_add(messages(m.messages));
         }
@@ -230,6 +234,7 @@ impl Ledger {
 mod tests {
     use super::*;
     use crate::message::{CachePlan, Effort, Message, Role, SystemBlock, ToolChoice};
+    use crate::stream::StopReason;
 
     fn flat(rate: u64) -> PriceTable {
         let rates = Rates { input: rate, output: 0, cache_read: 0, cache_write: 0 };
@@ -253,6 +258,11 @@ mod tests {
         }
     }
 
+    fn turn(answer: &str, usage: Usage) -> Turn {
+        let message = Message { role: Role::Assistant, content: vec![ContentBlock::Text(answer.into())] };
+        Turn { model: "m".into(), message, usage, stop: StopReason::EndTurn, retries: 0 }
+    }
+
     fn model() -> ModelInfo {
         ModelInfo {
             id: "m".into(),
@@ -270,14 +280,31 @@ mod tests {
     fn measured_tokens_hold_only_while_the_prefix_is_unchanged() {
         let first = request("sys", &["a"]);
         let mut ledger = Ledger::new();
-        ledger.observe(&first, &Usage { input: 5_000, output: 100, cache_read: 0, cache_write: 0 });
+        ledger.observe(&first, &turn("answer", Usage { input: 5_000, output: 100, cache_read: 0, cache_write: 0 }));
         let mut next = request("sys", &["a", "answer", "b"]);
+        next.messages[1].role = Role::Assistant;
         assert_eq!(ledger.prompt_estimate(&next, &model()), 5_100 + 1 + BLOCK_OVERHEAD);
         // A changed system prompt, or an edited earlier message, makes the measurement stale: estimate it all.
-        let edited = request("other", &["a", "answer", "b"]);
+        let mut edited = request("other", &["a", "answer", "b"]);
+        edited.messages[1].role = Role::Assistant;
         assert!(ledger.prompt_estimate(&edited, &model()) < 100);
         next.messages[0] = request("sys", &["changed"]).messages.remove(0);
         assert!(ledger.prompt_estimate(&next, &model()) < 100);
+    }
+
+    #[test]
+    fn a_swapped_assistant_reply_makes_the_measurement_stale() {
+        let first = request("sys", &["a"]);
+        let mut ledger = Ledger::new();
+        ledger.observe(&first, &turn("short", Usage { input: 5_000, output: 100, cache_read: 0, cache_write: 0 }));
+        let mut next = request("sys", &["a", "short", "b"]);
+        next.messages[1].role = Role::Assistant;
+        assert!(ledger.prompt_estimate(&next, &model()) >= 5_100, "the same reply keeps the measurement");
+        // Same history, but the answer is replaced by a much larger one: the old output count must not be reused.
+        let big = "x".repeat(20_000);
+        next.messages[1] = Message { role: Role::Assistant, content: vec![ContentBlock::Text(big)] };
+        let estimate = ledger.prompt_estimate(&next, &model());
+        assert!(estimate >= 20_000, "estimated afresh, got {estimate}");
     }
 
     #[test]

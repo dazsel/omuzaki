@@ -69,6 +69,6 @@ src/usage.rs: pub enum ImageCost {
 src/usage.rs: pub struct ModelInfo {
 src/usage.rs: pub struct Ledger {
 src/usage.rs: pub fn new() -> Self {
-src/usage.rs: pub fn observe(&mut self, request: &TurnRequest, usage: &Usage) {
+src/usage.rs: pub fn observe(&mut self, request: &TurnRequest, turn: &Turn) {
 src/usage.rs: pub fn prompt_estimate(&self, request: &TurnRequest, info: &ModelInfo) -> u64 {
 src/usage.rs: pub fn bound(&self, request: &TurnRequest, info: &ModelInfo, prices: &PriceTable) -> MicroUsd {

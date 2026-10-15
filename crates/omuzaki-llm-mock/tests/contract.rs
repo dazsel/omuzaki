@@ -110,7 +110,7 @@ fn the_ledger_bounds_turn_two_at_1176_micro_dollars() {
     let (llm, one, _) = play();
     let mut ledger = Ledger::new();
     let first = llm.requests().remove(0);
-    ledger.observe(&first, &one.usage);
+    ledger.observe(&first, &one);
     let req = turn_two(&one);
     assert_eq!(ledger.prompt_estimate(&req, llm.info()), 5309);
     assert_eq!(ledger.bound(&req, llm.info(), &haiku_prices()), MicroUsd(1176));

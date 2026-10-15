@@ -135,7 +135,8 @@ pub trait EventSource: Send {
 
 /// The events of one turn, pulled by the caller. Dropping it drops the source, which cancels the turn.
 pub struct TurnStream {
-    source: Box<dyn EventSource>,
+    /// `None` once the stream is cancelled, so the provider's task or connection stops at once.
+    source: Option<Box<dyn EventSource>>,
     cancel: Cancel,
     usage: Option<Usage>,
     done: bool,
@@ -144,7 +145,7 @@ pub struct TurnStream {
 impl TurnStream {
     /// A stream over `source` that obeys `cancel` on every call.
     pub fn new(source: Box<dyn EventSource>, cancel: &Cancel) -> Self {
-        Self { source, cancel: cancel.clone(), usage: None, done: false }
+        Self { source: Some(source), cancel: cancel.clone(), usage: None, done: false }
     }
 
     /// The next event if one is ready; never blocks.
@@ -165,9 +166,14 @@ impl TurnStream {
         }
         if self.cancel.is_cancelled() {
             self.done = true;
+            // Dropping the source is what stops the provider's work; do not wait for the stream itself to drop.
+            self.source = None;
             return Err(LlmError::Cancelled);
         }
-        match self.source.poll(wait) {
+        let Some(source) = self.source.as_mut() else {
+            return Ok(Next::End);
+        };
+        match source.poll(wait) {
             Ok(Next::Event(event)) => {
                 match &event {
                     // Reports are cumulative, so a smaller one is a glitch; keep the largest of each counter so what is
@@ -331,6 +337,34 @@ mod tests {
 
     fn empty_object() -> Value {
         Value::Object(serde_json::Map::new())
+    }
+
+    /// A source that sets a flag when dropped.
+    struct Watched(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+    impl EventSource for Watched {
+        fn poll(&mut self, _wait: Duration) -> Result<Next, LlmError> {
+            Ok(Next::Wait)
+        }
+    }
+
+    impl Drop for Watched {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn cancelling_drops_the_source_while_the_stream_is_alive() {
+        let dropped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancel = Cancel::new();
+        let mut s = TurnStream::new(Box::new(Watched(dropped.clone())), &cancel);
+        assert!(matches!(s.try_next(), Ok(Next::Wait)));
+        assert!(!dropped.load(std::sync::atomic::Ordering::SeqCst));
+        cancel.cancel();
+        assert!(matches!(s.try_next(), Err(LlmError::Cancelled)));
+        assert!(dropped.load(std::sync::atomic::Ordering::SeqCst), "source must drop on the cancelling call");
+        assert!(matches!(s.try_next(), Ok(Next::End)));
     }
 
     #[test]
