@@ -1267,6 +1267,9 @@ mod three_vrm {
         pose
     }
 
+    /// A collider set of `three_vrm_golden.mjs` (its `COLLIDER_SETS`): the one group, named `"body"`, a chain uses.
+    type ColliderSet = fn(&Fixture) -> Vec<ColliderGroup>;
+
     fn chain(ids: [BoneId; 4], centre: Option<BoneId>, colliders: bool) -> SpringChain {
         let params = SpringParams {
             hit_radius: 0.02,
@@ -1283,6 +1286,35 @@ mod three_vrm {
         chain
     }
 
+    /// One collider in the group the chain names.
+    fn body(collider: omuzaki_anim_api::Collider) -> Vec<ColliderGroup> {
+        vec![ColliderGroup { name: "body".into(), colliders: vec![collider] }]
+    }
+
+    /// `'sphere_inside'`: an inside sphere on the head, 0.1 below the root `h0`.
+    fn sphere_inside(fixture: &Fixture) -> Vec<ColliderGroup> {
+        let shape = ColliderShape::SphereInside { offset: Vec3::new(0.02, -0.16, 0.01), radius: 0.12 };
+        body(omuzaki_anim_api::Collider { bone: fixture.head, shape })
+    }
+
+    /// `'capsule_inside'`: an inside capsule on the head, from the root `h0` straight down.
+    fn capsule_inside(fixture: &Fixture) -> Vec<ColliderGroup> {
+        let shape = ColliderShape::CapsuleInside {
+            offset: Vec3::new(0.02, -0.06, 0.01),
+            radius: 0.05,
+            tail: Vec3::new(0.02, -0.26, 0.01),
+        };
+        body(omuzaki_anim_api::Collider { bone: fixture.head, shape })
+    }
+
+    /// `'plane'`: a plane on the spine, just behind it, facing forward.
+    fn plane(fixture: &Fixture) -> Vec<ColliderGroup> {
+        let spine = fixture.skeleton.humanoid_bone(HumanoidBone::Spine).unwrap();
+        let shape = ColliderShape::Plane { offset: Vec3::new(0.0, 0.0, -0.02), normal: Vec3::Z };
+        body(omuzaki_anim_api::Collider { bone: spine, shape })
+    }
+
+    /// `'body'`: a sphere on the head and a capsule on the spine.
     fn colliders(fixture: &Fixture) -> Vec<ColliderGroup> {
         let spine = fixture.skeleton.humanoid_bone(HumanoidBone::Spine).unwrap();
         vec![ColliderGroup {
@@ -1302,11 +1334,11 @@ mod three_vrm {
     }
 
     /// The largest rotation-component difference between the solver and three-vrm over the scenario.
-    fn worst_difference(scenario: &str, centre: bool, with_colliders: bool) -> f32 {
+    fn worst_difference(scenario: &str, centre: bool, collider_set: Option<ColliderSet>) -> f32 {
         let (fixture, ids) = scene();
         let set = set_of(
-            vec![chain(ids, centre.then_some(fixture.hips), with_colliders)],
-            if with_colliders { colliders(&fixture) } else { vec![] },
+            vec![chain(ids, centre.then_some(fixture.hips), collider_set.is_some())],
+            collider_set.map_or_else(Vec::new, |groups| groups(&fixture)),
         );
         let mut solver = VrmSpringSolver::new(&set, &fixture.skeleton).unwrap();
         let expected = recorded(scenario);
@@ -1319,35 +1351,57 @@ mod three_vrm {
                 worst = worst.max(distance(pose.local[bone.index()].rotation, *want));
             }
         }
+        println!("{scenario}: worst difference from three-vrm {worst:.1e}");
         worst
     }
 
     #[test]
     fn matches_three_vrm_on_a_free_chain() {
-        let worst = worst_difference("free", false, false);
+        let worst = worst_difference("free", false, None);
         assert!(worst < TOLERANCE as f32, "differs from three-vrm by {worst}");
     }
 
     #[test]
     fn matches_three_vrm_in_centre_space() {
-        let worst = worst_difference("centre", true, false);
+        let worst = worst_difference("centre", true, None);
         assert!(worst < TOLERANCE as f32, "differs from three-vrm by {worst}");
     }
 
     #[test]
     fn matches_three_vrm_with_a_sphere_and_a_capsule() {
-        let worst = worst_difference("colliders", false, true);
+        let worst = worst_difference("colliders", false, Some(colliders));
+        assert!(worst < TOLERANCE as f32, "differs from three-vrm by {worst}");
+    }
+
+    #[test]
+    fn matches_three_vrm_with_an_inside_sphere() {
+        let worst = worst_difference("sphere_inside", false, Some(sphere_inside));
+        assert!(worst < TOLERANCE as f32, "differs from three-vrm by {worst}");
+    }
+
+    #[test]
+    fn matches_three_vrm_with_an_inside_capsule() {
+        let worst = worst_difference("capsule_inside", false, Some(capsule_inside));
+        assert!(worst < TOLERANCE as f32, "differs from three-vrm by {worst}");
+    }
+
+    #[test]
+    fn matches_three_vrm_with_a_plane() {
+        let worst = worst_difference("plane", false, Some(plane));
         assert!(worst < TOLERANCE as f32, "differs from three-vrm by {worst}");
     }
 
     #[test]
     fn the_recorded_scenarios_differ_so_each_comparison_means_something() {
-        let (free, centre, colliders) = (recorded("free"), recorded("centre"), recorded("colliders"));
+        let free = recorded("free");
         let apart = |a: &[[Quat; 3]], b: &[[Quat; 3]]| {
             a.iter().zip(b).flat_map(|(x, y)| x.iter().zip(y)).map(|(p, q)| distance(*p, *q)).fold(0.0, f32::max)
         };
-        assert!(apart(&free, &centre) > 0.02, "the centre changes nothing");
-        assert!(apart(&free, &colliders) > 0.02, "the colliders change nothing");
+        for scenario in ["centre", "colliders", "sphere_inside", "capsule_inside", "plane"] {
+            let difference = apart(&free, &recorded(scenario));
+            println!("{scenario}: differs from free by {difference}");
+            assert!(difference > 0.02, "{scenario} changes nothing: {difference}");
+        }
     }
 }
 

@@ -18,7 +18,7 @@ if (!modules) throw new Error('usage: node three_vrm_golden.mjs <path to node_mo
 const THREE = await import(pathToFileURL(join(modules, 'three/build/three.module.js')).href);
 const {
   VRMSpringBoneJoint, VRMSpringBoneManager, VRMSpringBoneCollider,
-  VRMSpringBoneColliderShapeSphere, VRMSpringBoneColliderShapeCapsule,
+  VRMSpringBoneColliderShapeSphere, VRMSpringBoneColliderShapeCapsule, VRMSpringBoneColliderShapePlane,
 } = await import(pathToFileURL(join(modules, '@pixiv/three-vrm-springbone/lib/three-vrm-springbone.module.js')).href);
 
 const FRAMES = 100;
@@ -37,6 +37,40 @@ const HAIR = [
 ];
 const SETTINGS = { stiffness: 1.5, gravityPower: 1.0, gravityDir: v(0, -1, 0), dragForce: 0.4, hitRadius: 0.02 };
 
+// The collider sets a scenario can name, each a function of the bones returning the colliders of its one group. Each
+// is mirrored number for number in tests.rs (`mod three_vrm`). The chain hangs clear of every collider at rest and
+// meets it when it swings.
+const COLLIDER_SETS = {
+  none: () => [],
+  body: (bones) => {
+    const sphere = new VRMSpringBoneCollider(new VRMSpringBoneColliderShapeSphere({ offset: v(0, -0.12, 0), radius: 0.1 }));
+    bones.head.add(sphere);
+    const capsule = new VRMSpringBoneCollider(new VRMSpringBoneColliderShapeCapsule({ offset: v(0, 0, 0), radius: 0.06, tail: v(0, 0.15, 0.03) }));
+    bones.spine.add(capsule);
+    return [sphere, capsule];
+  },
+  // An inside sphere 0.1 below the root h0.
+  sphere_inside: (bones) => {
+    const shape = new VRMSpringBoneColliderShapeSphere({ offset: v(0.02, -0.16, 0.01), radius: 0.12, inside: true });
+    const collider = new VRMSpringBoneCollider(shape);
+    bones.head.add(collider);
+    return [collider];
+  },
+  // An inside capsule from the root h0 straight down.
+  capsule_inside: (bones) => {
+    const shape = new VRMSpringBoneColliderShapeCapsule({ offset: v(0.02, -0.06, 0.01), radius: 0.05, tail: v(0.02, -0.26, 0.01), inside: true });
+    const collider = new VRMSpringBoneCollider(shape);
+    bones.head.add(collider);
+    return [collider];
+  },
+  // A plane just behind the spine, facing forward.
+  plane: (bones) => {
+    const collider = new VRMSpringBoneCollider(new VRMSpringBoneColliderShapePlane({ offset: v(0, 0, -0.02), normal: v(0, 0, 1) }));
+    bones.spine.add(collider);
+    return [collider];
+  },
+};
+
 function build({ center, colliders }) {
   const bones = {};
   const add = (name, parent, position, rotation) => {
@@ -53,15 +87,8 @@ function build({ center, colliders }) {
   for (const [name, parent, position, rotation] of HAIR) add(name, parent, position, rotation);
 
   const groups = [];
-  const placed = [];
-  if (colliders) {
-    const sphere = new VRMSpringBoneCollider(new VRMSpringBoneColliderShapeSphere({ offset: v(0, -0.12, 0), radius: 0.1 }));
-    bones.head.add(sphere);
-    const capsule = new VRMSpringBoneCollider(new VRMSpringBoneColliderShapeCapsule({ offset: v(0, 0, 0), radius: 0.06, tail: v(0, 0.15, 0.03) }));
-    bones.spine.add(capsule);
-    groups.push({ colliders: [sphere, capsule] });
-    placed.push(sphere, capsule);
-  }
+  const placed = COLLIDER_SETS[colliders ?? 'none'](bones);
+  if (placed.length > 0) groups.push({ colliders: placed });
   const manager = new VRMSpringBoneManager();
   const names = HAIR.map(([name]) => name);
   for (let i = 0; i < names.length - 1; i++) {
@@ -107,8 +134,11 @@ function run(name, options) {
 const out = [
   `# three-vrm spring bone reference trajectories: @pixiv/three-vrm-springbone 3.5.5, three 0.170.0`,
   `# one line per 60 fps frame: the local quaternion (x y z w) of each swinging bone, h0 first`,
-  ...run('free', { center: null, colliders: false }),
-  ...run('centre', { center: 'hips', colliders: false }),
-  ...run('colliders', { center: null, colliders: true }),
+  ...run('free', { center: null, colliders: null }),
+  ...run('centre', { center: 'hips', colliders: null }),
+  ...run('colliders', { center: null, colliders: 'body' }),
+  ...run('sphere_inside', { center: null, colliders: 'sphere_inside' }),
+  ...run('capsule_inside', { center: null, colliders: 'capsule_inside' }),
+  ...run('plane', { center: null, colliders: 'plane' }),
 ];
 console.log(out.join('\n'));
