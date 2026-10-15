@@ -42,17 +42,27 @@ the model.
      pool), `runtime_flags = XNN_FLAG_DONT_SPIN_WORKERS`, `FORCE_FP16` cleared, and no weight cache or cache file.
    - **Never bound:** custom-op registration, op-resolver setters, Flex. That alone doesn't refuse a custom op: LiteRT
      2.3.0 keeps an unresolved custom op in the graph for a delegate to claim, so interpreter creation can succeed.
-   - **A model scan before LiteRT sees the bytes.** This is one bounded pass, in Rust, in `omuzaki-ai-litert/src/scan.rs`,
-     over the model's FlatBuffer. It reads the TFLite schema at the pinned tag with a minimal, hand-written reader: every
-     offset is checked, counts are capped and nothing recurses. In that pass it:
-     1. reads each graph input and output's name, type and `shape_signature`, with `-1` becoming `Dim::ANY`;
-     2. refuses a custom op, or any builtin not on the runtime's allow-list (the builtins the build registers, minus
-        `CUSTOM`, `DELEGATE` and the variable ops);
-     3. refuses any tensor with `is_variable`, so a no-op `reset` is sound;
-     4. refuses data in an `external_buffer`.
-
-     It runs at every probe and load, both cold, and is expected well under a millisecond for the face graphs (task 3a
-     measures it). Its tests build synthetic FlatBuffers in the test; no model files are committed.
+   - **A model scan before LiteRT sees the bytes, as an allow-list.** One bounded pass, in Rust, in
+     `omuzaki-ai-litert/src/scan.rs`, over the model's FlatBuffer, with a minimal hand-written reader of the TFLite
+     schema at the pinned tag: every offset is checked, counts are capped, and nothing recurses.
+     - **It accepts exactly what design §5's table lists and refuses everything else** with a named `LoadError`, so a
+       schema feature nobody listed fails closed. That includes a field newer than the pinned schema.
+     - **The table is the contract.** Changing it is a design change; corner cases found later become task 3a's tests,
+       not new design rounds.
+     - **In short, it accepts:**
+       - one subgraph;
+       - builtin ops on the allow-list (the build's builtins minus `CUSTOM`, `DELEGATE`, control flow and the variable
+         ops);
+       - tensors of the listed types, with no `is_variable`, sparsity, variant or external data;
+       - operators with no `mutating_variable_inputs` set, no intermediates and no custom options;
+       - graph ports of known rank, a `DType` type and unique, non-empty names;
+       - inline buffers only;
+       - only the descriptive metadata names.
+     - **What it gives:** the probe's signature (`shape_signature`'s `-1` becomes `Dim::ANY`) and a no-op `reset` that is
+       sound.
+     - **Checked against the shipped models:** all three face graphs were surveyed against it and must pass.
+     - **Cost and tests:** it runs at every probe and load, both cold, and is expected well under a millisecond (task 3a
+       measures it). Its tests build synthetic FlatBuffers in the test; no model files are committed.
    - **The newer CompiledModel C API** (`LiteRt*`) is the later path to LiteRT's GPU and NPU accelerators; no TFLite
      slot needs those yet.
    - **The crate:** a new implementation crate, `omuzaki-ai-litert`, `register_runtime!(LiteRtRuntime)`. It fits
@@ -220,9 +230,18 @@ Sizes are changed lines. Each task's acceptance includes `timeout 3600 cargo xta
        or URL until #1748), the model scan (`src/scan.rs`), the FFI table, library loading through
        `omuzaki-ai-native`, `probe`, refusals;
      - **Acceptance:**
-       - the scan's tests use **synthetic FlatBuffers built in the test**, with no downloaded or generated model files:
-         a dynamic input probes as `Dim::ANY`, and a custom op, an off-list builtin, a variable tensor, an external
-         buffer and truncated or out-of-range files are each refused with the right `LoadError`;
+       - the scan implements design §5's allow-list table, and refuses anything off it with a named `LoadError`;
+       - its tests use **synthetic FlatBuffers built in the test**, with no downloaded or generated model files: a
+         fixed-shape `ADD` graph is accepted, a dynamic input probes as `Dim::ANY`, and one case per table row is
+         refused. These include:
+         - a custom op, an off-list builtin and a second subgraph;
+         - a variable tensor, and an operator with a `mutating_variable_inputs` entry set;
+         - a duplicate port name and an empty port name;
+         - a port with `has_rank` false and an empty shape (unknown rank);
+         - an external buffer, and a buffer with an `offset` or `size`;
+         - sparsity, an unlisted metadata name, and a field newer than the pinned schema;
+         - truncated and out-of-range files;
+       - the gated tests scan the three face graphs, and all three are accepted;
        - the allow-list is checked against the build's registered builtins;
        - the scan's cost on the landmark graph is in the PR body;
        - the version and ABI checks refuse a mismatched library;

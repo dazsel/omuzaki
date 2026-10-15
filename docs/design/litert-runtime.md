@@ -216,18 +216,71 @@ hostile bytes:
 - it never recurses and never follows a buffer's data, only table fields, so the work is linear in the tables, not the
   weights.
 
-**What it decides, in that one pass:**
-1. **Shapes:** each graph input and output's `shape_signature` (or `shape`), with `-1` as `Dim::ANY`. This is the
-   probe's signature (section 3.4); `TfLiteTensorDim` would report only the current concrete size.
-2. **Operators:** every `OperatorCode` resolves to a builtin (`max(deprecated_builtin_code, builtin_code)`, the schema's
-   rule) on the runtime's **allow-list**: the builtin operators the archive's build registers, minus `CUSTOM`,
-   `DELEGATE` and the variable ops (`VAR_HANDLE`, `READ_VARIABLE`, `ASSIGN_VARIABLE`, `CALL_ONCE`). A custom op (any
-   `custom_code`) is `LoadError::Refused("custom op <name>")`; a builtin off the list is `Refused` with its name. Flex ops
-   are custom ops, so they fall under the same rule. The list is a constant in `scan.rs`, checked against the build by
-   task 3a.
-3. **State:** any tensor with `is_variable` is `Refused`, which is what makes a no-op `reset` sound.
-4. **Files:** any tensor with a non-zero `external_buffer` (data outside the model's bytes) is `Refused`, as ONNX
-   external data is.
+**The scan is an allow-list: it accepts exactly what is listed here and refuses everything else** with a named
+`LoadError` (`Refused` for a feature we don't run, `Format` for malformed bytes). A schema feature nobody listed fails
+closed. Each row was checked against the three shipped face graphs (section 9 survey), which it must accept.
+
+| Table | Field | Accepted |
+|---|---|---|
+| `Model` | `version` | 3 |
+| | `subgraphs` | exactly 1 (no control flow across subgraphs) |
+| | `operator_codes` | each as `OperatorCode` below; at most `MAX_OPERATORS` |
+| | `buffers` | at most `MAX_BUFFERS`; each as `Buffer` below |
+| | `metadata` | at most `MAX_METADATA` entries, each named `min_runtime_version`, `CONVERSION_METADATA` or `TFLITE_METADATA`, with a valid buffer index (descriptive only; any other name is refused, because a metadata entry such as `reduced_precision_support` changes how the interpreter computes) |
+| | `metadata_buffer` | valid buffer indices |
+| | `signature_defs` | at most 1, with valid tensor indices; not used for binding (ports are the subgraph's inputs and outputs) |
+| | `description` | any string within `MAX_NAME_BYTES` |
+| | `external_buffer_groups`, `external_buffers` | absent or empty |
+| `SubGraph` | `inputs`, `outputs` | 1 to `MAX_PORTS` each; valid, unique tensor indices; no tensor in both lists |
+| | `tensors` | at most `MAX_TENSORS`; each as `Tensor` below |
+| | `operators` | at most `MAX_OPERATORS`; each as `Operator` below |
+| | `name`, `debug_metadata_index` | any (not used) |
+| `Tensor` (every tensor) | `type` | `FLOAT32`, `FLOAT16`, `INT32`, `INT64`, `UINT8`, `INT8`, `INT16` or `BOOL` |
+| | `shape` | at most `MAX_RANK` entries, each ≥ 0 |
+| | `shape_signature` | absent, or the same length as `shape`, each entry -1 or equal to `shape`'s |
+| | `buffer` | a valid buffer index |
+| | `quantization` | absent, or affine only (`scale`, `zero_point`, `quantized_dimension`, with `min`/`max` allowed); `details` absent |
+| | `is_variable` | false |
+| | `sparsity` | absent |
+| | `variant_tensors` | empty |
+| | `external_buffer` | 0 |
+| | `has_rank` | any for internal tensors (the interpreter computes their shapes) |
+| `Tensor` (graph inputs and outputs) | `type` | `FLOAT32`, `INT32`, `INT64` or `UINT8` (the `DType`s) |
+| | rank | known: `has_rank` true, or `shape` non-empty. An empty `shape` with `has_rank` false is unknown rank and refused |
+| | `name` | non-empty, valid UTF-8, within `MAX_NAME_BYTES`, unique among the inputs and unique among the outputs |
+| | `quantization` | absent (no quantized ports) |
+| | `buffer` | no data (a port is not a constant) |
+| `Operator` | `opcode_index` | a valid index |
+| | `inputs`, `outputs` | valid tensor indices; -1 (an omitted optional input) only in `inputs` |
+| | `builtin_options` | any (the op's own options; LiteRT's verifier and the kernel check them) |
+| | `mutating_variable_inputs` | empty, or every entry false |
+| | `intermediates` | empty |
+| | `custom_options`, `custom_options_format`, `large_custom_options_offset`, `large_custom_options_size` | empty, default, 0, 0 |
+| | `debug_metadata_index` | any (not used) |
+| `OperatorCode` | `custom_code` | absent (a custom op, Flex included, is refused by name) |
+| | `builtin_code` | `max(deprecated_builtin_code, builtin_code)` (the schema's rule) on the operator allow-list below |
+| | `version` | ≥ 1 (LiteRT checks it against the kernel it registers) |
+| `Buffer` | `data` | inline, at most `MAX_MODEL_BYTES` in total |
+| | `offset`, `size` | 0 and 0 (no data outside the FlatBuffer) |
+
+**The operator allow-list** is the builtin operators the archive's build registers, minus `CUSTOM`, `DELEGATE`,
+`CALL`, `IF`, `WHILE`, `CALL_ONCE` (they need other subgraphs) and `VAR_HANDLE`, `READ_VARIABLE`, `ASSIGN_VARIABLE`
+(state). It is a constant in `scan.rs`, checked against the build by task 3a. It must contain the 22 builtins the face
+graphs use: `ADD`, `CONCATENATION`, `CONV_2D`, `DEPTHWISE_CONV_2D`, `DEQUANTIZE`, `DIV`, `LOGISTIC`, `MAX_POOL_2D`,
+`MEAN`, `MUL`, `NEG`, `PAD`, `PRELU`, `RELU`, `RESHAPE`, `RSQRT`, `SQRT`, `SQUARED_DIFFERENCE`, `STRIDED_SLICE`, `SUB`,
+`SUM`, `TRANSPOSE`.
+
+**Fields the reader doesn't know.** A table whose vtable is longer than the pinned schema's version of that table, with
+any of the extra slots set, is refused ("a field this runtime does not know"). So a model written with a newer schema
+fails closed instead of having a feature silently ignored.
+
+**What the allow-list gives:**
+- the probe's signature, with `-1` in `shape_signature` as `Dim::ANY` (section 3.4);
+- a no-op `reset` that is sound (no variable tensors, ops or mutating inputs);
+- no custom code, no data outside the model's bytes, and no second subgraph.
+
+**The allow-list is the contract.** A change to it is a design change recorded here, not a detail of the code.
+Corner cases found later in the implementation are covered by task 3a's tests against this table.
 
 **What it costs.** Once per probe and once per load, both cold. It reads only table fields, a few thousand for the face
 graphs, so it is expected well under a millisecond; task 3a measures it on the landmark graph and puts the number in its
@@ -237,10 +290,10 @@ pull request. About 250 lines with its unit tests.
 is built. A TFLite file can't name native code to load. User TFLite models run in the sandboxed worker like ONNX ones;
 the worker links `omuzaki-ai-litert`.
 
-**Tests use synthetic FlatBuffers built in the test** (a small builder in the test helpers): a fixed-shape `ADD` graph,
-a dynamic input (`shape_signature` `[1, -1, -1, 3]`, which must probe as `any`), a custom op, an off-list builtin, a
-variable tensor, an external buffer, and truncated or out-of-range files. No downloaded or generated model files are
-committed.
+**Tests use synthetic FlatBuffers built in the test** (a small builder in the test helpers): a fixed-shape `ADD` graph
+that is accepted, then one rejected case per allow-list row (task 3a lists them), and truncated or out-of-range files.
+No downloaded or generated model files are committed. The gated tests also scan the three real face graphs, which must
+be accepted.
 
 ## 6. Threads, and the tracking budget
 
@@ -524,6 +577,15 @@ thread) over the call. Two repetitions, `rep1 / rep2`. Nothing downloaded is com
 - **Determinism:** for each graph the output digest was the same on two interpreters at each thread count, and the same
   across 1, 2 and 4 threads (both repetitions).
 - **Kernels:** XNNPACK against LiteRT's builtin kernels on the landmark graph: max |difference| 5.6e-4.
+- **Schema survey of the three face graphs** (the wheel's schema bindings, for the scan's allow-list):
+  - one subgraph each, schema version 3, no custom ops;
+  - tensor types FLOAT32, FLOAT16 (the weights, before `DEQUANTIZE`) and INT32; ports all FLOAT32;
+  - no variable tensors, sparsity, quantization, mutating variable inputs, intermediates, custom options, external
+    buffers or out-of-FlatBuffer buffer data;
+  - metadata named only `min_runtime_version`, `CONVERSION_METADATA` and `TFLITE_METADATA`, and one signature def in
+    the blendshape graph;
+  - two internal blendshape tensors have `has_rank` false and an empty shape (shapes computed at run time), so the
+    known-rank rule applies to ports only.
 
 ## 10. What changes where
 
