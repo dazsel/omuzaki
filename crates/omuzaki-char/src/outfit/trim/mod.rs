@@ -221,8 +221,18 @@ fn surface_point(surface: &Surface, at: [f64; 2]) -> Result<DVec3, TrimError> {
 /// # Errors
 /// The surface's errors; [`TrimError::Invalid`] where the surface doesn't move along a coordinate.
 pub fn param_offset(surface: &Surface, at: [f64; 2], dir: DVec3, distance: f64) -> Result<[f64; 2], TrimError> {
-    const H: f64 = 1e-4;
     let frame = surface.at(at[0].clamp(0.0, 1.0), at[1])?;
+    let (per_t, per_phi) = rates(surface, at)?;
+    Ok([at[0] + distance * dir.dot(frame.along) / per_t, at[1] + distance * dir.dot(frame.around) / per_phi])
+}
+
+/// How fast the surface moves at `at`, metres per unit of `t` and per radian of `phi`: central differences (one-sided
+/// at the ends of the region).
+///
+/// # Errors
+/// The surface's errors; [`TrimError::Invalid`] where the surface doesn't move along a coordinate.
+pub fn rates(surface: &Surface, at: [f64; 2]) -> Result<(f64, f64), TrimError> {
+    const H: f64 = 1e-4;
     let (t0, t1) = ((at[0] - H).max(0.0), (at[0] + H).min(1.0));
     let per_t = surface_point(surface, [t1, at[1]])?.distance(surface_point(surface, [t0, at[1]])?) / (t1 - t0);
     let per_phi =
@@ -230,7 +240,7 @@ pub fn param_offset(surface: &Surface, at: [f64; 2], dir: DVec3, distance: f64) 
     if !(per_t > 0.0 && per_phi > 0.0) {
         return Err(TrimError::invalid("surface", format!("it doesn't move at t = {}, phi = {}", at[0], at[1])));
     }
-    Ok([at[0] + distance * dir.dot(frame.along) / per_t, at[1] + distance * dir.dot(frame.around) / per_phi])
+    Ok((per_t, per_phi))
 }
 
 /// The length on the surface of the step from `a` to `b`, from [`MEASURE_STEPS`] chords (the prototype's estimate).

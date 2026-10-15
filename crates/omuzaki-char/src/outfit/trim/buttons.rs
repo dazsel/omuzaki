@@ -36,8 +36,6 @@ pub const TIP: (f64, f64) = (0.0009, 0.0012);
 pub const TIP_LIFT: f64 = 0.0021;
 /// Segments round the tip.
 pub const TIP_SEGMENTS: usize = 8;
-/// A row's rail is sampled about this often to place its buttons, metres.
-const STEP: f64 = super::RAIL_STEP;
 
 /// The shape of a button.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -220,7 +218,7 @@ pub fn row_distances(length: f64, count: u32, spacing: Option<f64>) -> Result<Ve
 /// buttons that don't fit.
 pub fn build_row(surface: &Surface, spec: &ButtonRow) -> Result<MeshBuilder, TrimError> {
     checked(spec)?;
-    let rail = Rail::from_polyline_on_surface(surface, &spec.rail, STEP.min(spec.rail.step))?;
+    let rail = Rail::from_polyline_on_surface(surface, &spec.rail, spec.rail.step)?;
     let mut builder = MeshBuilder::new();
     for distance in row_distances(rail.length(), spec.count, spec.spacing)? {
         builder.merge(&button_at(surface, rail_position(&rail, distance), &spec.button)?)?;
