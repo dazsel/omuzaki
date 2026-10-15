@@ -121,7 +121,10 @@ mod loom_tests {
     /// read never sees an older value than the first.
     #[test]
     fn one_publish_against_two_reads_is_never_torn_or_backwards() {
-        loom::model(|| {
+        // Three preemptions find the interleavings that matter here; unbounded, the retry loop makes the model take minutes.
+        let mut builder = loom::model::Builder::new();
+        builder.preemption_bound = Some(3);
+        builder.check(|| {
             let cell = Arc::new(SeqCell::<2>::new());
             cell.store(&[1, 1]);
             let writer = {
