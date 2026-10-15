@@ -4,14 +4,14 @@
 //! The prototype's `face.js` paints the whole face into one canvas. A replay tool ran its Canvas 2D calls once per section
 //! and saved each section alone, for each golden case (an expression in a variant). This harness paints the same case
 //! with [`RealPainter::paint_section`], rasterises it on the CPU, and compares it with those PNGs inside the section's
-//! bounding rectangle ([`regioncmp`](crate::regioncmp)).
+//! bounding rectangle ([`regioncmp`](omuzaki_test::regioncmp)).
 //!
 //! - [`js_params`]: the crosswalk from the prototype's face record to the painter's inputs.
 //! - [`sections`]: which prototype tags each [`Section`] covers, one comparison per case, and the report.
 //!
 //! # Enforcement without a shared table
 //!
-//! Every section task adds its **own** `crates/omuzaki-test/tests/face_parity_<section>.rs`, calling [`check_section`]
+//! Every section task adds its **own** `crates/omuzaki-test-face/tests/face_parity_<section>.rs`, calling [`check_section`]
 //! with its tolerance, so section PRs never edit a common file. A section without such a test is only printed by
 //! [`report`] (`tools/face-parity-report.sh`). Every entry point skips, saying why, when the local assets are absent.
 //!
@@ -34,9 +34,9 @@ use std::path::PathBuf;
 use omuzaki_face_api::{DEFAULT_PX_PER_M, FaceError, FaceProfile, FaceProjection, FaceRect, Palette, ResolveError};
 use serde::Deserialize;
 
-use crate::compare::{CompareError, Tolerance};
-use crate::jsref::{JsRef, JsRefError};
-use crate::regioncmp::{RegionError, T_FACE, T_FACE_MIN_PSNR_DB};
+use omuzaki_test::compare::{CompareError, Tolerance};
+use omuzaki_test::jsref::{JsRef, JsRefError};
+use omuzaki_test::regioncmp::{RegionError, T_FACE, T_FACE_MIN_PSNR_DB};
 
 pub mod js_params;
 pub mod sections;
@@ -220,6 +220,6 @@ mod tests {
 
     #[test]
     fn the_looks_cover_the_two_golden_variants() {
-        assert_eq!(LOOKS.map(|(variant, _)| variant), crate::jsref::VARIANTS);
+        assert_eq!(LOOKS.map(|(variant, _)| variant), omuzaki_test::jsref::VARIANTS);
     }
 }

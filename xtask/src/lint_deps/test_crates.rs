@@ -6,12 +6,16 @@
 //! implementation put every parity test in scope for any change; per-area crates keep a face change from running the
 //! character's tests, and the other way round.
 
-use crate::workspace::{Dependency, Package};
+use crate::workspace::{DepKind, Dependency, Package};
 
 use super::{CrateKind, Violation};
 
 /// The harness: golden compare, bless, evidence. Every area test crate may use it.
 pub const HARNESS: &str = "omuzaki-test";
+
+/// The generator behind every App's `build.rs` (ADR 0054 section 6): it names no area, and an area test crate that
+/// links registering crates needs it under `[build-dependencies]` like any other App.
+const LINK_BUILD: &str = "omuzaki-link-build";
 
 /// The name prefix of an area test crate: `omuzaki-test-char` tests the `char` area.
 pub const AREA_PREFIX: &str = "omuzaki-test-";
@@ -44,6 +48,7 @@ pub fn violation(package: &Package, dependency: &Dependency, target: &Package, t
     let area = area_of(&package.name)?;
     let fine = match to {
         CrateKind::Api | CrateKind::Mock => true,
+        CrateKind::Lib if target.name == LINK_BUILD => dependency.kind == DepKind::Build,
         CrateKind::Implementation | CrateKind::Lib => in_area(&target.name, area),
         CrateKind::App => target.name == HARNESS,
     };
@@ -68,7 +73,7 @@ pub fn violation(package: &Package, dependency: &Dependency, target: &Package, t
 mod tests {
     use super::super::violations;
     use super::*;
-    use crate::workspace::DepKind::{self, Dev, Normal};
+    use crate::workspace::DepKind::{self, Build, Dev, Normal};
     use crate::workspace::testing::{with_layer, workspace};
 
     /// The violations in `crates`, with `omuzaki-gltf` a lib crate as in the real workspace.
@@ -94,6 +99,16 @@ mod tests {
 
     fn with_leaves<'a>(crates: &[(&'a str, &'a [(&'a str, DepKind)])]) -> Vec<(&'a str, &'a [(&'a str, DepKind)])> {
         crates.iter().chain(LEAVES).copied().collect()
+    }
+
+    #[test]
+    fn an_area_test_crate_may_build_depend_on_the_link_generator_only() {
+        let run = |kind| {
+            let crates = [("omuzaki-test-face", &[("omuzaki-link-build", kind)][..]), ("omuzaki-link-build", &[])];
+            violations(&with_layer(workspace(&crates), "omuzaki-link-build", "lib")).len()
+        };
+        assert_eq!(run(Build), 0);
+        assert_eq!(run(Normal), 1, "the generator belongs under [build-dependencies] only");
     }
 
     #[test]
