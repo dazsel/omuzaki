@@ -9,9 +9,10 @@
 //! [`CharacterDef::from_node`](crate::CharacterDef::from_node) and [`to_node`](crate::CharacterDef::to_node) leave
 //! sibling keys alone and read [`sibling_keys`] to accept them.
 //!
-//! A key can be registered once. A key that isn't a slug, a key registered twice and a key under the name of a built-in
-//! key are refused everywhere, with an error that names it ([`refused`]), so no binary picks a winner by link order.
-//! The refused keys share one list because they share one outcome: none of them is a sibling key, and each has a reason.
+//! A key can be registered once, and it must be a slug. A registration that breaks either rule is refused, with an error
+//! that names it ([`refused`]), so no binary picks a winner by link order. Only the refused registration is discarded: a
+//! built-in key that another crate registered under its name stays a sibling key, listed once by [`sibling_keys`]. The
+//! refused registrations share one list because they share one outcome: each has a reason, and none adds a sibling key.
 //!
 //! The keys this crate's own types own, and the sibling keys whose owners are not linked by every binary that parses a
 //! character, are the built-in table ([`BUILT_IN_NODE_KEYS`], [`BUILT_IN_SIBLING_KEYS`]), so validation never depends
@@ -28,7 +29,7 @@ use omuzaki_doc_api::DocPath;
 use crate::ids::CharId;
 use crate::paths;
 
-/// One registered document key, collected by [`register_doc_key!`]. A registered key is always a sibling key.
+/// One registered document key, collected by [`register_doc_key!`]. A registration that is not refused is a sibling key.
 pub struct DocKeyRegistration {
     /// The key, as it is spelt in the project and in saved files. Its path is `characters/<id>/<key>`.
     pub key: &'static str,
@@ -147,7 +148,8 @@ fn resolved() -> &'static Resolved {
     })
 }
 
-/// Every sibling key: the built-in ones, then the usable registered ones in sorted order. Refused keys are not in it.
+/// Every sibling key: the built-in ones, then the usable registered ones in sorted order. A refused registration adds
+/// nothing, and a built-in key stays listed once whatever is registered under its name.
 pub fn sibling_keys() -> &'static [&'static str] {
     &resolved().sibling_keys
 }
@@ -178,8 +180,9 @@ pub fn check(key: &str) -> Result<(), DocKeyError> {
     }
 }
 
-/// The path of the registered key `key` for character `id`: `characters/<id>/<key>`. `None` if no crate registered it
-/// (the built-in keys have their own functions in [`paths`](crate::paths)).
+/// The path of the registered key `key` for character `id`: `characters/<id>/<key>`. `None` if no crate registered it.
+/// A built-in name is refused here, so it gets the error, not a path; the built-in keys have their own functions in
+/// [`paths`](crate::paths).
 ///
 /// # Errors
 /// The [`DocKeyError`] if the key is refused.
