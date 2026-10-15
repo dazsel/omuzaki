@@ -40,6 +40,19 @@ ADR 0053's limits:
 **Priority:** fix rounds on open pull requests first; then V0 (milestone "V0: live slice"); then the redo list and the
 structure work (ADR 0054); then Phase 1.
 
+## Your watcher (set it up first)
+
+A lead runs one read-only watcher, so it hears the Director and its pull requests without anyone relaying. It wakes
+the lead only for:
+- a post on #2 starting `**Director` (rulings, priorities, handovers);
+- on the pull requests in its area: a comment starting `**Director`, a change in Codex's review state (the
+  `codex-review-state:v1` block in Codex's summary comment: a finished review, or new unresolved findings), and a
+  failed `gate` check;
+- a post from another area's lead on #2 that names this area.
+
+It ignores every other comment, polls every few minutes, never posts, and remembers what it has already shown so it
+doesn't wake twice for the same thing. Implementer sessions don't watch anything.
+
 ## One session, one task
 
 1. Read the task issue: goal, **fence**, contracts, acceptance checks. If the fence looks wrong, ask before starting.
@@ -102,7 +115,8 @@ least every few hours and before stopping:
    ```
 
 **For the new lead, first hour:**
-1. Read this file, `CLAUDE.md`, the state issue and the recent comments on #2.
+1. Set up your watcher ("Your watcher" above), then read this file, `CLAUDE.md`, the state issue and the recent
+   comments on #2.
 2. List **every** open pull request in **your area's crates** (`gh pr list --limit 200 --json number,headRefName,title`), not only `cloud/*`
    branches: the lane also owns `port/*` and `local/*` pull requests handed to it. Work in another area's crates stays with that
    area's lead, even if it was once this lane's. Reconcile ownership with the state
