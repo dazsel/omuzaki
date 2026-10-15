@@ -300,7 +300,10 @@ software rasteriser on X11. None of it says anything about Windows, macOS, Wayla
 | egui multi-viewport (section 6) | `egui-viewport --mode child` with an opaque root: the secondary viewport is a depth-32 window, `ABOVE`, and blends correctly. On X11 with Vulkan the root's flag did not stop it from being transparent. Windows and macOS are not verified. |
 | Cost (section 9 item 4) | The cost bin runs and times the GPU with timestamp queries on lavapipe: 1920x1080, 10 s, 26.8 fps achieved, GPU mean 15.2 ms (p95 18.0), `render()` CPU mean 15.9 ms, process CPU 168% of one core. This is a software rasteriser: it shows the bin works, not what `Dev` will do. |
 
-Builds (section 9.3): see the pull request for what linked.
+Builds: on Linux `cargo build --release --locked` links all four binaries (clippy `-D warnings` clean). For Windows,
+`cargo build --release --locked --target x86_64-pc-windows-gnu` through the repo's mingw linker script links all four
+`.exe` files, and clippy is clean on that target; they have not been run. For macOS, `cargo check` and `cargo clippy -D
+warnings` on `aarch64-apple-darwin` pass; nothing was linked or run there.
 
 ### 9.2 Still not verified (needs a machine)
 
