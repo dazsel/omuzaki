@@ -71,7 +71,8 @@ goes to the Director first.
 - **Start anything that isn't truly blocked.** Only a real blocker (a file another open pull request is changing, a
   contract not yet merged) holds a task back.
 - **Limits:** at most 3 open pull requests per crate; at most 40 open in total (raised as the merge rate rises);
-  check a task's fence against open pull requests before starting (`tools/dispatch-check.py`).
+  check a task's fence against open pull requests before starting (`tools/dispatch-check.py`). A pull request that
+  only adds new files under a crate's `tests/` doesn't count toward that crate's limit: they can't conflict.
 - **Freeze triggers** (ADR 0053 §1.3): the open total passes its limit, CI waits over 30 minutes, or opens exceed
   merges for two check-ins in a row while open pull requests pile up. While frozen, only fix rounds and merges.
 - **Priority:** unblock merges; fix rounds; the critical path (V0 now); the foundation; new tasks.
