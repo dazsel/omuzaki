@@ -329,3 +329,47 @@ fn a_limit_set_by_an_application_is_named_as_one_and_the_fix_is_to_reapply_it() 
     assert!(hint.contains("re-apply the limiting application"), "{hint}");
     assert!(!hint.contains("record the parts' real terms"), "{hint}");
 }
+
+/// `doc` with the hair part's kind renamed to `application` (a valid, unreserved part kind) and its source row from
+/// `rights`.
+fn with_hair_kind_application(mut root_doc: MemDoc, rights: &ItemRights) -> MemDoc {
+    let mut root = root_doc.root().clone();
+    root["characters"]["mira"]["parts"]["hair"]["kind"] = json!("application");
+    root["characters"]["mira"]["sources"]["hair"] = serde_json::to_value(row_of(rights)).unwrap();
+    root_doc = MemDoc::from_value(root);
+    root_doc
+}
+
+/// Asks `licence.set` to store the derived record with a commercial status and a licence it does not allow.
+fn refused_record(doc: &MemDoc) -> OpError {
+    let mut record = derive(doc).record;
+    record.provenance.commercial = Commercial::Ok;
+    record.provenance.licence = "CC0-1.0".into();
+    let args = json!({ "character": "mira", "record": serde_json::to_value(&record).unwrap() });
+    plan(doc, "licence.set", args).expect_err("the limit refuses the record")
+}
+
+#[test]
+fn a_part_whose_kind_is_application_is_still_a_part() {
+    let doc = with_hair_kind_application(doc(&ItemRights::first_party(), &[]), &non_commercial());
+    let error = refused_record(&doc);
+    assert!(error.message.contains("the parts allow only `no` (limited by `hair`)"), "{}", error.message);
+    let hint = error.hint.as_deref().unwrap_or_default();
+    assert!(hint.contains("licence.set_source") && !hint.contains("re-apply"), "{hint}");
+}
+
+#[test]
+fn a_limit_set_by_a_part_and_an_application_names_both_and_offers_both_fixes() {
+    let applied = [("face", node("test/face-style", non_commercial()))];
+    let doc = with_hair_kind_application(doc(&ItemRights::first_party(), &applied), &non_commercial());
+    let error = refused_record(&doc);
+    assert!(
+        error
+            .message
+            .contains("the parts and application records allow only `no` (limited by `hair`, `face` (application))"),
+        "{}",
+        error.message
+    );
+    let hint = error.hint.as_deref().unwrap_or_default();
+    assert!(hint.contains("licence.set_source") && hint.contains("re-apply each limiting application"), "{hint}");
+}

@@ -52,10 +52,26 @@ pub struct LicenceDerive {
     pub character: CharId,
 }
 
+/// Where a contribution to the join comes from. Decided where the row is built, so nothing downstream guesses it from a
+/// kind string, an id prefix or a path (`application` is a valid part kind).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Contribution {
+    /// A part of the character (the default).
+    #[default]
+    Part,
+    /// A library application record, by its key under `characters/<id>/applied/`.
+    Application(String),
+    /// The most restrictive floor a character with no parts joins to.
+    Floor,
+}
+
 /// One part's contribution to the join: what its source row says, or the most restrictive values when it has none.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[allow(clippy::struct_excessive_bools)] // the row is a flat report of independent facts about one part
 pub struct PartRow {
+    /// Where the row comes from. Not part of the answer: `parts` holds parts only.
+    #[serde(skip)]
+    pub origin: Contribution,
     /// The part's id.
     pub part: String,
     /// Its kind (`hair`, `mock-garment`).
@@ -140,6 +156,7 @@ impl ApplicationRow {
     /// is `applied/<app>`, the place it is recorded.
     pub(crate) fn as_row(&self) -> PartRow {
         PartRow {
+            origin: Contribution::Application(self.app.clone()),
             part: format!("applied/{}", self.app),
             kind: "application".to_owned(),
             enabled: true,
@@ -269,6 +286,7 @@ impl PartRow {
         let Some(source) = &input.source else {
             let owned = input.kind_owned;
             return Self {
+                origin: Contribution::Part,
                 part,
                 kind,
                 enabled,
@@ -302,6 +320,7 @@ fn rights_row(part: &str, kind: &str, provenance: &Provenance, terms: Option<&Us
         terms.credit_notation = CreditNotation::Required;
     }
     PartRow {
+        origin: Contribution::Part,
         part: part.to_owned(),
         kind: kind.to_owned(),
         enabled: true,
@@ -381,6 +400,7 @@ fn joint_consent(inputs: &[PartInput], applications: &[ApplicationInput], report
 /// The contribution of "no parts": nothing is known, so every value is the most restrictive possible and nobody owns it.
 fn no_parts_floor() -> PartRow {
     PartRow {
+        origin: Contribution::Floor,
         part: "(no parts)".to_owned(),
         kind: "floor".to_owned(),
         enabled: true,

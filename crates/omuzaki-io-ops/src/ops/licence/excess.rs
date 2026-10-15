@@ -7,7 +7,7 @@
 use omuzaki_io_api::UseTerms;
 use omuzaki_store_api::{Commercial, Source};
 
-use super::derive::{DerivedLicence, PartRow, source_rank};
+use super::derive::{Contribution, DerivedLicence, PartRow, source_rank};
 use super::terms::{commercial_rank, exceeding};
 use crate::gather::avatar::LicenceRecord;
 
@@ -40,7 +40,7 @@ pub(crate) enum Limiter {
 
 impl Limiter {
     fn of(rows: &[&PartRow]) -> Self {
-        let apps = rows.iter().filter(|r| is_application(r)).count();
+        let apps = rows.iter().filter(|r| application_of(r).is_some()).count();
         match (apps, rows.len()) {
             (0, _) => Self::Parts,
             (n, total) if n == total => Self::Applications,
@@ -87,8 +87,12 @@ impl Limiter {
     }
 }
 
-fn is_application(row: &PartRow) -> bool {
-    row.kind == "application"
+/// The application key of a row that came from an application record, decided by how the row was built.
+fn application_of(row: &PartRow) -> Option<&str> {
+    match &row.origin {
+        Contribution::Application(app) => Some(app),
+        Contribution::Part | Contribution::Floor => None,
+    }
 }
 
 impl Excess {
@@ -106,9 +110,8 @@ fn naming(rows: &[&PartRow]) -> String {
         .iter()
         .map(|r| {
             // An application row is named by its record (`applied/face`); beside parts it says what it is.
-            if is_application(r) {
-                let label = r.part.strip_prefix("applied/").unwrap_or(&r.part);
-                if mixed { format!("`{label}` (application)") } else { format!("`{label}`") }
+            if let Some(app) = application_of(r) {
+                if mixed { format!("`{app}` (application)") } else { format!("`{app}`") }
             } else if r.recorded {
                 format!("`{}`", r.part)
             } else {
