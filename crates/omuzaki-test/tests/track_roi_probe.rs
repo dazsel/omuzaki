@@ -2,6 +2,8 @@
 //! archive. A path would reach a public issue when the owner pastes the output. Both streams are checked: the table
 //! goes to stdout and the error to stderr, and `main` prints exactly what `run` writes and returns.
 
+#![allow(clippy::expect_used)]
+
 #[path = "../examples/track_roi_timing/percentile.rs"]
 mod percentile;
 #[path = "../examples/track_roi_timing/probe.rs"]
@@ -32,9 +34,13 @@ fn write_models(dir: &Path) {
     std::fs::create_dir_all(dir).expect("create the model folder");
     let mut files = serde_json::Map::new();
     for name in FILES {
-        let bytes = if name.ends_with(".onnx") { EMPTY_ONNX.to_vec() } else { b"geometry".to_vec() };
+        let bytes = if Path::new(name).extension().is_some_and(|e| e == "onnx") {
+            EMPTY_ONNX.to_vec()
+        } else {
+            b"geometry".to_vec()
+        };
         std::fs::write(dir.join(name), &bytes).expect("write a model file");
-        let sum: String = Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
+        let sum = format!("{:x}", Sha256::digest(&bytes));
         files.insert(name.to_owned(), serde_json::json!({ "sha256": sum }));
     }
     std::fs::write(dir.join("manifest.json"), serde_json::json!({ "files": files }).to_string()).expect("manifest");
@@ -54,7 +60,8 @@ fn assert_no_path(streams: &[&str], places: &[&Path]) {
             let name = place.file_name().expect("a named folder").to_string_lossy();
             assert!(
                 !stream.contains(&*name) && !stream.contains(&*place.to_string_lossy()),
-                "{stream:?} names {place:?}"
+                "{stream:?} names {}",
+                place.display()
             );
         }
     }
