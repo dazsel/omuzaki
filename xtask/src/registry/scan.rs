@@ -52,7 +52,8 @@ pub struct ModDecl {
 pub enum Unsupported {
     /// A `mod` inside a function, block or macro body.
     ModInBody,
-    /// An `include!`, which pulls in a file the scan never reads.
+    /// An `include!` other than the generated `include!(concat!(env!("OUT_DIR"), "/<name>.rs"))`, which pulls in a file
+    /// the scan never reads.
     Include,
     /// A `#[cfg_attr(..., path = ...)]` on a `mod`: whether the attribute applies, and so which file it names, is not
     /// known from the source.
@@ -69,10 +70,13 @@ impl Unsupported {
                 "a `mod` inside a function, block or macro body; declare it at the top level of the file or in an \
                  inline `mod` block"
             }
-            Self::Include => "`include!`, whose file the link gate doesn't read; declare the modules as `mod name;`",
+            Self::Include => {
+                "`include!` of a file the link gate doesn't read; only the generated \
+                 `include!(concat!(env!(\"OUT_DIR\"), \"/<name>.rs\"))` is allowed, so declare the modules as `mod name;`"
+            }
             Self::CfgAttrPath => {
-                "`#[cfg_attr(..., path = ...)]` on a `mod`; write `#[cfg(...)]` and `#[path = \"...\"]` as separate \
-                 attributes"
+                "`#[cfg_attr(..., path = ...)]` on a `mod`; write `#[cfg(p)] #[path = \"x.rs\"] mod m;` and \
+                 `#[cfg(not(p))] mod m;` as two declarations, so each build keeps its file"
             }
             Self::PathOnInlineMod => {
                 "`#[path]` on an inline `mod { }` block; put the `#[path]` on a `mod name;` declaration instead"
@@ -173,10 +177,11 @@ pub fn scan(source: &str) -> FileScan {
                 }
             }
             Tok::Ident(word) => {
-                if word == "include" && is_punct(&toks, i + 1, '!') {
+                if word == "include" && is_punct(&toks, i + 1, '!') && !is_generated_include(&toks, i) {
                     out.unsupported.push(UnsupportedAt { form: Unsupported::Include, line: token.line });
                 }
-                if word == "mod" && !item_level && ident_at(&toks, i + 1).is_some() {
+                // `mod $name;` in a macro body is still a module the scan can't name.
+                if word == "mod" && !item_level && (ident_at(&toks, i + 1).is_some() || is_punct(&toks, i + 1, '$')) {
                     out.unsupported.push(UnsupportedAt { form: Unsupported::ModInBody, line: token.line });
                 }
                 if word == "macro_rules" && is_punct(&toks, i + 1, '!') {
@@ -267,7 +272,7 @@ fn read_outer(attr: &[Token], line: u32, pending: &mut Pending) {
     if let Some(cfg) = cfg_of(attr) {
         pending.cfgs.push(CfgAt { cfg, line });
     }
-    if attr.first().is_some_and(|t| t.is_ident("cfg_attr")) && attr.iter().any(|t| t.is_ident("path")) {
+    if cfg_attr_applies_path(attr) {
         pending.cfg_attr_path = true;
     } else if attr.first().is_some_and(|t| t.is_ident("path"))
         && attr.get(1).is_some_and(|t| t.is_punct('='))
@@ -309,6 +314,58 @@ fn closing(toks: &[Token], open: usize) -> Option<usize> {
         }
     }
     None
+}
+
+/// Whether the `include!` at `at` is the generated `include!(concat!(env!("OUT_DIR"), "/<name>.rs"))`: the form the
+/// build scripts' module lists and link wiring use (ADR 0015, ADR 0054). The build scripts that write those files are
+/// checked by their own tests, so this is the one `include!` the scan accepts.
+fn is_generated_include(toks: &[Token], at: usize) -> bool {
+    const HEAD: [&str; 12] = ["include", "!", "(", "concat", "!", "(", "env", "!", "(", "\"OUT_DIR\"", ")", ","];
+    let head = HEAD.iter().enumerate().all(|(n, want)| toks.get(at + n).is_some_and(|t| t.text() == *want));
+    let tail = toks.get(at + HEAD.len() + 1).is_some_and(|t| t.is_punct(')'))
+        && toks.get(at + HEAD.len() + 2).is_some_and(|t| t.is_punct(')'));
+    let file = toks.get(at + HEAD.len()).and_then(|t| match &t.tok {
+        Tok::Literal(literal) => literal.strip_prefix("\"/")?.strip_suffix(".rs\""),
+        _ => None,
+    });
+    head && tail
+        && file.is_some_and(|name| !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || "_-".contains(c)))
+}
+
+/// Whether a `cfg_attr(predicate, ...)` applies a `path = ...` attribute: one of the attributes after the predicate is
+/// that meta item, possibly inside a nested `cfg_attr`. A predicate named `path` is not one.
+fn cfg_attr_applies_path(attr: &[Token]) -> bool {
+    let is_cfg_attr = attr.first().is_some_and(|t| t.is_ident("cfg_attr"))
+        && is_punct(attr, 1, '(')
+        && attr.last().is_some_and(|t| t.is_punct(')'));
+    is_cfg_attr && split_top_level(&attr[2..attr.len() - 1]).into_iter().skip(1).any(is_path_meta)
+}
+
+/// Whether one attribute is `path = ...`, or a `cfg_attr` that applies one.
+fn is_path_meta(item: &[Token]) -> bool {
+    match item {
+        [first, eq, ..] if first.is_ident("path") && eq.is_punct('=') => true,
+        [first, ..] if first.is_ident("cfg_attr") => cfg_attr_applies_path(item),
+        _ => false,
+    }
+}
+
+/// `toks` split at the commas outside any brackets.
+fn split_top_level(toks: &[Token]) -> Vec<&[Token]> {
+    let (mut parts, mut depth, mut start) = (Vec::new(), 0usize, 0usize);
+    for (at, token) in toks.iter().enumerate() {
+        match token.tok {
+            Tok::Punct('(' | '[' | '{') => depth += 1,
+            Tok::Punct(')' | ']' | '}') => depth = depth.saturating_sub(1),
+            Tok::Punct(',') if depth == 0 => {
+                parts.push(&toks[start..at]);
+                start = at + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&toks[start..]);
+    parts
 }
 
 fn is_punct(toks: &[Token], at: usize, c: char) -> bool {
@@ -544,10 +601,39 @@ mod outer { #[cfg(feature = "x")] mod inner; }
     }
 
     #[test]
-    fn include_is_refused_wherever_it_is_and_include_str_is_not() {
-        let source = "include!(\"gen.rs\");\nfn f() { include!(concat!(env!(\"OUT_DIR\"), \"/x.rs\")); }\n\
-                      const A: &str = include_str!(\"a.txt\");\nconst B: &[u8] = include_bytes!(\"b.bin\");\n";
-        assert_eq!(unsupported(source), [(Unsupported::Include, 1), (Unsupported::Include, 2)]);
+    fn include_of_a_file_is_refused_wherever_it_is_but_the_generated_out_dir_form_and_include_str_are_not() {
+        let source = r#"include!("gen.rs");
+fn f() { include!(concat!(env!("OUT_DIR"), "/x.rs")); }
+include!(concat!(env!("OUT_DIR"), "/../x.rs"));
+include!(concat!(env!("CARGO_MANIFEST_DIR"), "/x.rs"));
+include!(concat!(env!("OUT_DIR"), "/x.rs") );
+const A: &str = include_str!("a.txt");
+const B: &[u8] = include_bytes!("b.bin");
+"#;
+        assert_eq!(
+            unsupported(source),
+            [(Unsupported::Include, 1), (Unsupported::Include, 3), (Unsupported::Include, 4)]
+        );
+    }
+
+    #[test]
+    fn a_mod_named_by_a_macro_variable_in_a_macro_body_is_refused() {
+        let source = "macro_rules! declare {\n    ($name:ident) => {\n        mod $name;\n    };\n}\n";
+        assert_eq!(unsupported(source), [(Unsupported::ModInBody, 3)]);
+    }
+
+    #[test]
+    fn a_path_meta_item_in_cfg_attr_is_refused_even_nested_but_a_predicate_named_path_is_not() {
+        let source = r#"#[cfg_attr(path, allow(dead_code))]
+mod predicate;
+#[cfg_attr(unix, cfg_attr(x, path = "n.rs"))]
+mod nested;
+#[cfg_attr(unix, path = "u.rs")]
+mod direct;
+"#;
+        assert_eq!(unsupported(source), [(Unsupported::CfgAttrPath, 4), (Unsupported::CfgAttrPath, 6)]);
+        let names: Vec<String> = scan(source).mods.into_iter().map(|m| m.name).collect();
+        assert_eq!(names, ["predicate", "nested", "direct"]);
     }
 
     #[test]

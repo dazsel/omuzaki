@@ -18,8 +18,9 @@
 //! feature) is an error, never a guess. Binary targets (`src/main.rs`, `src/bin/`) count for their own binary only;
 //! `tests/`, `benches/` and `examples/` never ship.
 //!
-//! The module forms the scan can't follow are errors too, found anywhere in a `src/` tree: a `mod` inside a body,
-//! `include!`, a `#[cfg_attr(..., path = ...)]` on a `mod`, and a `#[path]` on an inline `mod` block
+//! The module forms the scan can't follow are errors too, found anywhere in a `src/` tree: a `mod` inside a body (a
+//! macro's `mod $name;` included), an `include!` other than the generated `include!(concat!(env!("OUT_DIR"), ...))`
+//! that the build scripts write (ADR 0015), a `#[cfg_attr(..., path = ...)]` on a `mod`, and a `#[path]` on an inline `mod` block
 //! ([`Error::UnsupportedModule`]). Each would compile files the scan can't name, so each is refused with its place and
 //! what to write instead.
 

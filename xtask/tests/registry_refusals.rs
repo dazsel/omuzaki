@@ -50,10 +50,14 @@ fn a_mod_inside_a_function_body_is_refused_and_a_file_level_mod_is_followed() {
 
 #[test]
 fn include_is_refused_and_a_plain_path_mod_is_followed() {
-    let refusal = workspace("include!(concat!(env!(\"OUT_DIR\"), \"/ops_mods.rs\"));\n", &[("ops.rs", OPS)]);
-    refused(&refusal, "lib.rs:1", "`include!`");
+    let refusal = workspace("include!(\"ops.rs\");\n", &[("ops.rs", OPS)]);
+    refused(&refusal, "lib.rs:1", "`include!` of a file the link gate doesn't read");
 
-    let allowed = workspace("#[path = \"elsewhere/ops.rs\"]\nmod ops;\n", &[("elsewhere/ops.rs", OPS)]);
+    // The generated form the build scripts write is allowed, next to a plain `#[path]` mod.
+    let allowed = workspace(
+        "include!(concat!(env!(\"OUT_DIR\"), \"/ops_mods.rs\"));\n#[path = \"elsewhere/ops.rs\"]\nmod ops;\n",
+        &[("elsewhere/ops.rs", OPS)],
+    );
     followed(&allowed, "elsewhere/ops.rs");
 }
 
@@ -65,7 +69,11 @@ fn a_cfg_attr_path_on_a_mod_is_refused_and_a_plain_path_mod_is_followed() {
     );
     refused(&refusal, "lib.rs:2", "`#[cfg_attr(..., path = ...)]` on a `mod`");
 
-    let allowed = workspace("#[path = \"elsewhere/ops.rs\"]\nmod ops;\n", &[("elsewhere/ops.rs", OPS)]);
+    // A predicate named `path` is not a `path = ...` attribute, so the mod next to it is followed.
+    let allowed = workspace(
+        "#[cfg_attr(path, allow(dead_code))]\n#[path = \"elsewhere/ops.rs\"]\nmod ops;\n",
+        &[("elsewhere/ops.rs", OPS)],
+    );
     followed(&allowed, "elsewhere/ops.rs");
 }
 
