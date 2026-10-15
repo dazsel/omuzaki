@@ -10,16 +10,21 @@
 
 use std::any::{Any, TypeId};
 use std::collections::BTreeMap;
+use std::fmt::Debug;
 use std::marker::PhantomData;
-use std::sync::{LazyLock, Mutex, PoisonError};
+use std::sync::OnceLock;
 
 use crate::ids::PartId;
+use crate::kind::Publishes;
 
 /// A typed value a part publishes for later parts, and the builder, to read.
 ///
 /// A fact's values are cloned when a part output is forked and for builder views; facts are build-time only.
 /// `Value` and `Merged` must therefore be `Clone` to be published ([`Publishes::put`](crate::Publishes::put) asks for
 /// it, not this trait).
+///
+/// A fact never depends on the palette (decision Q6: the caching builder keys readers on their publishers' geometry, not
+/// their colours); the palette-independence check (`omuzaki_char::builder::conformance`) enforces it.
 pub trait Fact: 'static {
     /// Stable, unique name: errors, describe output and the link gate use it.
     const NAME: &'static str;
@@ -138,7 +143,8 @@ macro_rules! fact {
 }
 
 /// Records a fact, with its name and its type, so the link gate and the describe ops can list it ([`facts`]). Put it
-/// next to a fact that a crate other than this one defines; the facts of this crate are not registered yet.
+/// next to the fact's definition; the built-in facts of this crate are registered in `kind.rs`, and the listing only
+/// needs `omuzaki_char_api::link()` (the build never does: [`Published`](crate::Published) reads facts by type).
 ///
 /// ```ignore
 /// omuzaki_char_api::register_fact!(HatFact);
@@ -187,6 +193,122 @@ pub fn facts() -> Result<Vec<&'static FactRegistration>, String> {
         }
     }
     Ok(all)
+}
+
+/// Records how fact `F`'s values are compared, for the palette-independence check (`omuzaki_char::builder::conformance`):
+/// the check reads every probe through [`probes`], so a fact needs no entry in a shared list. Put it next to
+/// [`register_fact!`]; a registered fact with no probe fails the check's gate test.
+///
+/// `register_fact_probe!(F)` compares the values with `==` (`F::Value: PartialEq + Debug`). `register_fact_probe!(F,
+/// same)` takes a `fn(&F::Value, &F::Value) -> bool`, for a value that cannot use `==` (a trait object) or that is
+/// compared with a tolerance; `F::Value` must still be `Debug`, to word a failure.
+///
+/// ```ignore
+/// omuzaki_char_api::register_fact!(HatFact);
+/// omuzaki_char_api::register_fact_probe!(HatFact);
+///
+/// // A value with no equality:
+/// omuzaki_char_api::register_fact_probe!(SurfaceFact, same_surface);
+/// fn same_surface(a: &Arc<dyn Surface>, b: &Arc<dyn Surface>) -> bool {
+///     format!("{a:?}") == format!("{b:?}")
+/// }
+/// ```
+#[macro_export]
+macro_rules! register_fact_probe {
+    ($ty:ty) => {
+        $crate::__inventory::submit! { $crate::fact::FactProbe::by_eq::<$ty>() }
+        $crate::__record_registration!("fact_probe", $ty);
+    };
+    ($ty:ty, $same:expr) => {
+        $crate::__inventory::submit! {
+            $crate::fact::FactProbe::new::<$ty>({
+                fn differs(a: &$crate::Publishes, b: &$crate::Publishes) -> ::core::option::Option<::std::string::String> {
+                    $crate::fact::differs_by::<$ty>(a, b, $same)
+                }
+                differs
+            })
+        }
+        $crate::__record_registration!("fact_probe", $ty);
+    };
+}
+
+/// How one fact of two builds is compared: `None` when equal, else a description of both for the failure message.
+pub type Differs = fn(&Publishes, &Publishes) -> Option<String>;
+
+/// How a fact's values are compared, recorded with [`register_fact_probe!`].
+#[non_exhaustive]
+pub struct FactProbe {
+    /// [`Fact::NAME`].
+    pub name: &'static str,
+    /// The fact's type, matched against its [`FactRegistration`].
+    pub type_id: fn() -> TypeId,
+    /// The fact's type name, for listings and to order them.
+    pub type_name: fn() -> &'static str,
+    /// Whether what a part published under [`FactProbe::name`] is this probe's fact: a fact of another type that
+    /// shares the name is not, and its values must never be handed to [`FactProbe::differs`].
+    pub holds: fn(&Publishes) -> bool,
+    /// Compares what two parts published for the fact.
+    pub differs: Differs,
+}
+
+impl FactProbe {
+    /// The probe of fact `F` with its own comparison.
+    #[must_use]
+    pub const fn new<F: Fact>(differs: Differs) -> Self {
+        Self {
+            name: F::NAME,
+            type_id: TypeId::of::<F>,
+            type_name: std::any::type_name::<F>,
+            holds: holds_fact::<F>,
+            differs,
+        }
+    }
+
+    /// The probe of fact `F` that compares values with `==`.
+    #[must_use]
+    pub const fn by_eq<F: Fact>() -> Self
+    where
+        F::Value: PartialEq + Debug,
+    {
+        Self::new::<F>(differs_by_eq::<F>)
+    }
+}
+
+inventory::collect!(FactProbe);
+
+/// Every registered probe, by fact name and then type name: `inventory` yields them in link order, which differs between
+/// builds, so what is built from them (a report, which of two doubled probes wins) never depends on it.
+pub fn probes() -> impl Iterator<Item = &'static FactProbe> {
+    let mut all: Vec<_> = inventory::iter::<FactProbe>.into_iter().collect();
+    all.sort_by_key(|p| (p.name, (p.type_name)()));
+    all.into_iter()
+}
+
+/// Whether `published` holds values of fact `F` itself (not of another fact that shares its name). For
+/// [`FactProbe::holds`].
+#[doc(hidden)]
+pub fn holds_fact<F: Fact>(published: &Publishes) -> bool {
+    published.values::<F>().next().is_some()
+}
+
+/// Compares the values of `F` in `a` and `b` with `==`. For [`register_fact_probe!`].
+#[doc(hidden)]
+pub fn differs_by_eq<F: Fact>(a: &Publishes, b: &Publishes) -> Option<String>
+where
+    F::Value: PartialEq + Debug,
+{
+    differs_by::<F>(a, b, |x, y| x == y)
+}
+
+/// Compares the values of `F` in `a` and `b`, element by element, with `same`. For [`register_fact_probe!`].
+#[doc(hidden)]
+pub fn differs_by<F: Fact>(a: &Publishes, b: &Publishes, same: fn(&F::Value, &F::Value) -> bool) -> Option<String>
+where
+    F::Value: Debug,
+{
+    let (x, y): (Vec<&F::Value>, Vec<&F::Value>) = (a.values::<F>().collect(), b.values::<F>().collect());
+    let equal = x.len() == y.len() && x.iter().zip(&y).all(|(p, q)| same(p, q));
+    (!equal).then(|| format!("{x:?} under one palette, {y:?} under another"))
 }
 
 /// The error for two different facts called `name`.
@@ -326,21 +448,107 @@ where
     Ok(())
 }
 
-/// The `Default` of a merged type, made once and kept for the life of the process: what a reader sees when nothing was
-/// published. One small allocation per fact type, at build time.
+/// The empty values of the facts nothing published, for one [`Published`](crate::Published): what a reader sees when a
+/// fact is missing. Each view makes its own, so a `Merged` with interior mutability can't carry a change from one build
+/// into another, or from one fact into another with the same merged type.
 ///
-/// The default is made outside the table's lock, so a `Default` that itself reads a fact that was never published
-/// doesn't deadlock. Two threads that both miss may each make one; the first one stored wins.
-pub(crate) fn default_of<M: Default + Send + Sync + 'static>() -> &'static M {
-    type Table = BTreeMap<TypeId, &'static (dyn Any + Send + Sync)>;
-    static DEFAULTS: LazyLock<Mutex<Table>> = LazyLock::new(|| Mutex::new(BTreeMap::new()));
-    let lock = || DEFAULTS.lock().unwrap_or_else(PoisonError::into_inner);
-    let stored = lock().get(&TypeId::of::<M>()).copied();
-    if let Some(m) = stored.and_then(|any| any.downcast_ref::<M>()) {
-        return m;
+/// An append-only list of cells, one per missing fact, keyed by the fact. A read walks the list and allocates only the
+/// first time a fact is missing here, never again. Published facts never reach it. Cloning gives the clone an empty
+/// list, so no default is ever shared between two views.
+///
+/// A `Default` may read the view it is made for (through a `static`), so it is made outside any cell, never inside a
+/// one-time initialiser that it could re-enter. Two threads that both miss a fact may each make one; the first one
+/// stored wins and the other is dropped. A `Default` that reads its own fact recurses forever: that is a bug in that
+/// `Default`, which nothing here guards against.
+#[derive(Default)]
+pub(crate) struct Defaults {
+    head: OnceLock<Box<Node>>,
+}
+
+struct Node {
+    fact: TypeId,
+    value: Box<dyn Any + Send + Sync>,
+    next: OnceLock<Box<Node>>,
+}
+
+impl Defaults {
+    /// The empty value of fact `F` in this view, made on the first read.
+    pub(crate) fn of<F: Fact>(&self) -> &F::Merged {
+        let key = TypeId::of::<F>();
+        // A default made for an empty cell that another reader filled first: kept for the next empty cell.
+        let mut spare: Option<Box<Node>> = None;
+        let mut link = &self.head;
+        loop {
+            let Some(node) = link.get() else {
+                let fresh = spare.take().unwrap_or_else(|| {
+                    Box::new(Node { fact: key, value: Box::new(F::Merged::default()), next: OnceLock::new() })
+                });
+                if let Err(lost) = link.set(fresh) {
+                    spare = Some(lost);
+                }
+                continue;
+            };
+            // The key is the fact's own type, so a match always has the fact's merged type; a miss moves on.
+            if node.fact == key
+                && let Some(m) = node.value.downcast_ref::<F::Merged>()
+            {
+                return m;
+            }
+            link = &node.next;
+        }
     }
-    let fresh: &'static M = Box::leak(Box::new(M::default()));
-    let any = *lock().entry(TypeId::of::<M>()).or_insert(fresh);
-    // The entry for `TypeId::of::<M>()` was made from an `M`.
-    any.downcast_ref::<M>().unwrap_or(fresh)
+}
+
+impl Clone for Defaults {
+    /// A clone starts empty: it makes its own defaults, sharing none with the original.
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::OnceLock;
+
+    use super::*;
+
+    struct Inner;
+    impl Fact for Inner {
+        const NAME: &'static str = "defaults-inner";
+        type Value = u8;
+        type Merged = u8;
+        fn merge(_: &mut u8, _: &PartId, _: u8) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    static VIEW: OnceLock<Defaults> = OnceLock::new();
+
+    #[derive(Default)]
+    struct Reader(u8);
+    impl Fact for Outer {
+        const NAME: &'static str = "defaults-outer";
+        type Value = u8;
+        type Merged = Reader;
+        fn merge(_: &mut Reader, _: &PartId, _: u8) -> Result<(), String> {
+            Ok(())
+        }
+    }
+    struct Outer;
+
+    // Nothing here reads the static from `Reader::default`; the nested read is made by hand below.
+    #[test]
+    fn a_nested_read_lands_first_and_the_outer_default_is_appended_after_it() {
+        let defaults = VIEW.get_or_init(Defaults::default);
+        // The outer default is "being made" while the inner fact is read: the inner node fills the empty head first.
+        let outer_spare =
+            Box::new(Node { fact: TypeId::of::<Outer>(), value: Box::new(Reader(1)), next: OnceLock::new() });
+        assert_eq!(*defaults.of::<Inner>(), 0);
+        // The outer's `set` at the head now loses; the node moves on to the next empty cell and stays.
+        let head = defaults.head.get().expect("the inner node is the head");
+        assert_eq!(head.fact, TypeId::of::<Inner>());
+        assert!(head.next.set(outer_spare).is_ok(), "the outer node goes after the inner one");
+        assert_eq!(defaults.of::<Outer>().0, 1);
+        assert_eq!(defaults.head.get().map(|n| n.fact), Some(TypeId::of::<Inner>()));
+    }
 }

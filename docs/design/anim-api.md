@@ -1,3 +1,9 @@
+---
+title: "`omuzaki-anim-api`: the animation and rig contract"
+summary: "the animation and rig contract"
+area: design
+---
+
 # `omuzaki-anim-api`: the animation and rig contract
 
 **Status:** reviewed; decisions are in §15. **Crates:** `crates/omuzaki-anim-api`, `crates/omuzaki-anim-mock`.
@@ -349,7 +355,7 @@ needs. `SpringSolver` is the boundary with the rig: fixed 120 Hz sub-steps (`PHY
 default, the remainder carried over so results do not depend on the frame rate, `warm_up` (hair settled before frame
 0), `reset`, `set_max_substeps` (the scheduler's way to degrade gracefully) and `stats` (sub-steps run, time dropped).
 
-Not included: VRM's extended colliders (plane, inside-out shapes) and cloth (RG-04, P0). Both are additive to this contract.
+Not included: cloth (RG-04, P0). VRM's extended colliders (`sphere_inside`, `capsule_inside`, `plane`) are in `ColliderShape`; `ColliderShape` is `#[non_exhaustive]`, so a further shape is additive.
 
 ## 10. Scores (spec §7 `performances/<id>/score.toml`, AP-04)
 

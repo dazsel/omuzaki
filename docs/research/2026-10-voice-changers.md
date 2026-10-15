@@ -1,3 +1,9 @@
+---
+title: "Voice changers and voice DSP (2026-10-12)"
+summary: "Voice changers and voice DSP (2026-10-12)"
+area: research
+---
+
 # Voice changers and voice DSP (2026-10-12)
 
 > Research pass for PF-12 (voice-changer input), BR-24 (voice effects) and ML-14 (voice-conversion slot). Checked 2026-10-12 against repos, licence files and Hugging Face metadata. "(?)" = unverified or vendor claim. Spec rows are from the approved edit to `docs/product/02-studio-spec-v3.md`.

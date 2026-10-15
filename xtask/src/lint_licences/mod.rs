@@ -5,10 +5,10 @@
 //! in use has no file: a direct dependency of a workspace crate (`Cargo.lock`), a tool a workflow installs, a committed
 //! font or `NOTICES.md`. It also fails on an orphaned file, one that claims a crate, tool or path that is gone.
 
-mod register;
+pub(crate) mod register;
 mod usage;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 use std::process::ExitCode;
@@ -45,7 +45,7 @@ fn lint(workspace: &Workspace) -> (Vec<String>, String, usize) {
         String::new()
     });
     let sections: Vec<&str> = page.lines().filter_map(register::marker).collect();
-    let members: BTreeSet<String> = workspace.packages.iter().map(|package| package.name.clone()).collect();
+    let members = members(workspace, &mut found);
     let lock = fs::read_to_string(root.join("Cargo.lock"))
         .map_err(|e| e.to_string())
         .and_then(|t| usage::Lock::parse(&t, &members));
@@ -98,6 +98,34 @@ fn lint(workspace: &Workspace) -> (Vec<String>, String, usize) {
     }
     let generated = register::render(&page, &entries);
     (found, generated, entries.len())
+}
+
+/// The workspace's crates as `(name, version)`, which is how the lockfile tells a member from an external package of
+/// the same name. The version comes from the member's manifest (`version.workspace = true` reads the root's
+/// `[workspace.package]`); one that cannot be read is a problem, and that member matches nothing.
+fn members(workspace: &Workspace, found: &mut Vec<String>) -> usage::Members {
+    let read = |path: std::path::PathBuf| fs::read_to_string(path).ok()?.parse::<toml::Table>().ok();
+    let inherited = read(workspace.root.join("Cargo.toml"))
+        .and_then(|root| root.get("workspace")?.get("package")?.get("version")?.as_str().map(str::to_owned));
+    let mut members = usage::Members::new();
+    for package in &workspace.packages {
+        let manifest = workspace.root.join(&package.dir).join("Cargo.toml");
+        let version = read(manifest).and_then(|table| match table.get("package")?.get("version")? {
+            toml::Value::String(version) => Some(version.clone()),
+            _ => inherited.clone(),
+        });
+        match version {
+            Some(version) => {
+                members.insert((package.name.clone(), version));
+            }
+            None => found.push(format!(
+                "{}/Cargo.toml: cannot read the version of `{}`",
+                package.dir.display(),
+                package.name
+            )),
+        }
+    }
+    members
 }
 
 /// Whether a change to `file` (relative to the root) can change the lint's result: the licence files, register and

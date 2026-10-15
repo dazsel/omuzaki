@@ -45,4 +45,5 @@ workspace = true
 [package.metadata.omuzaki]
 kind = "App"
 summary = "the desktop UI: `ds`, the design system (tokens and the three themes with a contrast test, fonts and Phosphor icons, the components with AccessKit labels and their own words in a `Strings` table with a pseudo-locale, a gallery binary that renders screenshots, runs in the pseudo-locale and measures frame time); panels and the shell arrive in their own modules"
+registers = true
 wasm = false

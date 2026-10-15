@@ -1,3 +1,9 @@
+---
+title: "0025: Branches are named heads over content-addressed points, each open branch runs in its own lane, and merges are three-way by unit with their bookkeeping in the tree (2026-10-12)"
+summary: "Branches are named heads over content-addressed points, each open branch runs in its own lane, and merges are three-way by unit with their bookkeeping in the tree"
+area: decisions
+---
+
 # 0025: Branches are named heads over content-addressed points, each open branch runs in its own lane, and merges are three-way by unit with their bookkeeping in the tree (2026-10-12)
 
 **Status:** accepted (2026-10-12). It adds to `omuzaki-history-api` and `omuzaki-ops-api`, and adds a

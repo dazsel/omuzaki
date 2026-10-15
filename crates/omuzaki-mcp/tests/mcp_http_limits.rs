@@ -10,10 +10,11 @@
 
 mod common;
 
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
-use common::FakeRunner;
+use common::fake_runner;
 use common::http::{Frozen, Port, Raw};
 use omuzaki_mcp::{AccessToken, HttpOptions, McpOptions, McpServer, ServerError};
 use reqwest::StatusCode;
@@ -207,6 +208,26 @@ fn drain_open(stream: &mut TcpStream) {
     }
 }
 
+/// The most real time a test waits for the server to get somewhere. A healthy run takes well under a second.
+const REAL_TIME_CEILING: Duration = Duration::from_secs(60);
+
+/// Whether the stalled client can stop waiting for the answer to start: a byte of it is actually waiting in the socket,
+/// found by peeking so that nothing is consumed, or the server has ended the stream (the test then fails further on,
+/// with the real reason). Readiness alone is not proof: tokio may report a socket readable when nothing is there, and a
+/// peek that would block is simply not ready yet. Any other error is a real failure and ends the test at once.
+fn answer_has_started(stream: &TcpStream) -> bool {
+    let mut byte = [0; 1];
+    let mut peek = std::pin::pin!(stream.peek(&mut byte));
+    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+    match peek.as_mut().poll(&mut context) {
+        std::task::Poll::Pending => false,
+        std::task::Poll::Ready(Ok(_)) => true,
+        std::task::Poll::Ready(Err(error)) => {
+            panic!("the stalled connection failed before the answer started: {error}")
+        }
+    }
+}
+
 /// Gives the server's tasks real time to run while the clock stays frozen: the server's I/O moves in real time, and
 /// tokio does not auto-advance the clock while a blocking task runs.
 async fn let_the_server_run() {
@@ -249,8 +270,20 @@ async fn a_client_that_never_reads_its_answer_loses_its_connection_at_the_write_
             async move { raw.stateless_call(Some(bearer.as_str()), "project_ping", &json!({})).await.status() },
         )
     };
+    // The write timeout starts only once the server's write is blocked, and building a 13 MB answer takes as long as
+    // the machine makes it take. So the clock stays still until the first bytes of the answer reach the stalled
+    // client (they are left unread): from then on the server fills the tiny buffers within moments and blocks.
+    let began = std::time::Instant::now();
+    while !answer_has_started(&stalled) {
+        assert!(began.elapsed() < REAL_TIME_CEILING, "the server never started to answer");
+        let_the_server_run().await;
+    }
+    // Move the clock in steps, giving the server real time between them. Only real time bounds the loop, by a ceiling
+    // a healthy run never nears, so a slow machine makes the test slower and never red. The virtual time is bounded
+    // too, as the failure of a server that never cuts the connection off.
     let mut advanced = Duration::ZERO;
     while !probe.is_finished() {
+        assert!(began.elapsed() < REAL_TIME_CEILING, "the stalled connection was never cut off (real time)");
         assert!(advanced < Duration::from_secs(60), "the stalled connection was never cut off");
         let_the_server_run().await;
         if probe.is_finished() {
@@ -310,7 +343,7 @@ fn the_defaults_are_the_documented_safe_ones() {
 
 #[tokio::test]
 async fn a_timeout_beyond_the_documented_maximum_is_refused_naming_the_field_and_the_maximum() {
-    let mcp = McpServer::new(Arc::new(FakeRunner::new()), McpOptions::default()).unwrap();
+    let mcp = McpServer::new(Arc::new(fake_runner()), McpOptions::default()).unwrap();
     let base = || HttpOptions::default().with_bind("127.0.0.1:0".parse().unwrap());
     let too_long = [Duration::MAX, HttpOptions::MAX_TIMEOUT + Duration::from_nanos(1)];
     for timeout in too_long {
@@ -342,7 +375,7 @@ async fn timeouts_at_the_maximum_are_accepted_and_requests_are_served() {
 
 #[tokio::test]
 async fn a_limit_that_would_refuse_every_client_is_an_error_naming_it() {
-    let mcp = McpServer::new(Arc::new(FakeRunner::new()), McpOptions::default()).unwrap();
+    let mcp = McpServer::new(Arc::new(fake_runner()), McpOptions::default()).unwrap();
     let base = || HttpOptions::default().with_bind("127.0.0.1:0".parse().unwrap());
     let cases: [(&str, HttpOptions); 4] = [
         ("max_sessions_per_token", base().with_max_sessions_per_token(0)),

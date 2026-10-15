@@ -1,3 +1,9 @@
+---
+title: "0039: Record and replay with LGPL FFmpeg in an encoder worker, encoded packets in a metered ring, saves by stream copy (2026-10-13)"
+summary: "Record and replay with LGPL FFmpeg in an encoder worker, encoded packets in a metered ring, saves by stream copy"
+area: decisions
+---
+
 # 0039: Record and replay with LGPL FFmpeg in an encoder worker, encoded packets in a metered ring, saves by stream copy (2026-10-13)
 
 **Status:** accepted (2026-10-13). **Context:** BR-17,

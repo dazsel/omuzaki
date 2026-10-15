@@ -222,6 +222,8 @@ fn default_hint(code: ErrorCode) -> &'static str {
         ErrorCode::Cancelled => {
             "the job was cancelled, by a person or a limit named in the detail; don't retry unchanged"
         }
+        // A code added later reads as a failure the caller can't act on until this table learns it.
+        _ => "check the error's message and hint, then retry or tell the user",
     }
 }
 
@@ -255,6 +257,20 @@ pub(crate) fn with_heads_up(mut result: CallToolResult, report: &Report) -> Call
     }
     if let Some(Value::Object(data)) = result.structured_content.as_mut() {
         data.insert("since_your_last_call".to_owned(), report.data());
+    }
+    result
+}
+
+/// Puts `warning` at the top of `result`'s text, as a `Warning:` line, and under `structuredContent.warning`. It goes
+/// in front of whatever is already there, the heads-up included, so it is the first line of the reply.
+pub(crate) fn with_warning(mut result: CallToolResult, warning: &str) -> CallToolResult {
+    let line = format!("Warning: {warning}");
+    match result.content.first().and_then(ContentBlock::as_text) {
+        Some(first) => result.content[0] = ContentBlock::text(format!("{line}\n\n{}", first.text)),
+        None => result.content.insert(0, ContentBlock::text(line)),
+    }
+    if let Some(Value::Object(data)) = result.structured_content.as_mut() {
+        data.insert("warning".to_owned(), json!(warning));
     }
     result
 }
@@ -321,20 +337,16 @@ mod tests {
     }
 
     fn record() -> OpRecord {
-        OpRecord {
-            seq: 7,
-            op: "face.set_profile".into(),
-            args: json!({}),
-            actor: Actor::System,
-            cause: None,
-            tx: TxId(4),
-            at: Seconds(0.0),
-            patch: Patch::new(),
-            version: DocVersion(12),
-            on_behalf_of: None,
-            approval: None,
-            effect: None,
-        }
+        OpRecord::new(
+            7,
+            "face.set_profile",
+            json!({}),
+            Actor::System,
+            TxId(4),
+            Seconds(0.0),
+            Patch::new(),
+            DocVersion(12),
+        )
     }
 
     fn call(mode: Mode) -> Call<'static> {
@@ -353,7 +365,7 @@ mod tests {
 
     #[test]
     fn dry_run_lists_changes_and_says_nothing_was_applied() {
-        let outcome = Outcome { plan: Plan::edit(patch(2)), applied: None };
+        let outcome = Outcome::new(Plan::edit(patch(2)));
         let result = success(&call(Mode::DryRun), &outcome);
         let text = text(&result);
         assert!(
@@ -368,7 +380,7 @@ mod tests {
 
     #[test]
     fn applied_edit_reports_the_log_entry_and_how_to_undo_and_verify() {
-        let outcome = Outcome { plan: Plan::edit(patch(1)), applied: Some(record()) };
+        let outcome = Outcome::new(Plan::edit(patch(1))).with_applied(record());
         let result = success(&call(Mode::Apply), &outcome);
         let text = text(&result);
         assert!(
@@ -382,7 +394,7 @@ mod tests {
     #[test]
     fn edits_inside_a_transaction_remind_the_agent_to_commit() {
         let tx = OpenTx { id: TxId(4), label: "oval face".into(), cause: None };
-        let outcome = Outcome { plan: Plan::edit(patch(1)), applied: Some(record()) };
+        let outcome = Outcome::new(Plan::edit(patch(1))).with_applied(record());
         let text = text(&success(&Call { tx: Some(&tx), ..call(Mode::Apply) }, &outcome));
         assert!(text.contains("open transaction 4 (\"oval face\")") && text.contains("tx_commit"));
         assert!(!text.contains("history_undo"));
@@ -393,18 +405,18 @@ mod tests {
         let job = Call { kind: OpKind::Job, ..call(Mode::DryRun) };
         let plan =
             Plan { cost: Some(CostHint { seconds: Some(12.0), gpu_mib: None, usd: Some(0.5) }), ..Plan::default() };
-        let preview = text(&success(&job, &Outcome { plan, applied: None }));
+        let preview = text(&success(&job, &Outcome::new(plan)));
         assert!(preview.starts_with("Dry run of face.set_profile: nothing was started."), "{preview}");
         assert!(preview.contains("Estimated cost: about 12 s, $0.50."));
 
         let query = Call { kind: OpKind::Query, ..call(Mode::DryRun) };
-        let answer = text(&success(&query, &Outcome { plan: Plan::answer(json!(1)), applied: None }));
+        let answer = text(&success(&query, &Outcome::new(Plan::answer(json!(1)))));
         assert_eq!(answer, "Ran face.set_profile (read-only).\nOutput:\n1", "dry_run changes nothing for a query");
     }
 
     #[test]
     fn queries_put_the_answer_in_the_text() {
-        let outcome = Outcome { plan: Plan::answer(json!({"outline": [1, 2]})), applied: None };
+        let outcome = Outcome::new(Plan::answer(json!({"outline": [1, 2]})));
         let query = Call { kind: OpKind::Query, ..call(Mode::Apply) };
         let text = text(&success(&query, &outcome));
         assert_eq!(text, "Ran face.set_profile (read-only).\nOutput:\n{\n  \"outline\": [\n    1,\n    2\n  ]\n}");
@@ -412,7 +424,7 @@ mod tests {
 
     #[test]
     fn queries_report_neither_mode_nor_applied() {
-        let outcome = Outcome { plan: Plan::answer(json!(1)), applied: None };
+        let outcome = Outcome::new(Plan::answer(json!(1)));
         let data = success(&Call { kind: OpKind::Query, ..call(Mode::Apply) }, &outcome).structured_content.unwrap();
         assert_eq!(data, json!({"ok": true, "op": "face.set_profile", "output": 1}));
     }
@@ -420,7 +432,7 @@ mod tests {
     #[test]
     fn answers_are_never_cut_and_a_huge_one_is_announced_in_the_first_line() {
         let big = json!({"parts": (0..20_000).map(|i| format!("part-{i:05}")).collect::<Vec<_>>()});
-        let outcome = Outcome { plan: Plan::answer(big.clone()), applied: None };
+        let outcome = Outcome::new(Plan::answer(big.clone()));
         let result = success(&Call { kind: OpKind::Query, ..call(Mode::Apply) }, &outcome);
         let text = text(&result);
         let first = text.lines().next().unwrap();
@@ -434,23 +446,23 @@ mod tests {
     }
 
     fn text_of_small_answer() -> String {
-        let outcome = Outcome { plan: Plan::answer(json!({"a": 1})), applied: None };
+        let outcome = Outcome::new(Plan::answer(json!({"a": 1})));
         text(&success(&Call { kind: OpKind::Query, ..call(Mode::Apply) }, &outcome))
     }
 
     #[test]
     fn a_patch_is_listed_in_full_and_oversized_values_get_a_full_second_block() {
-        let result = success(&call(Mode::DryRun), &Outcome { plan: Plan::edit(patch(30)), applied: None });
+        let result = success(&call(Mode::DryRun), &Outcome::new(Plan::edit(patch(30))));
         assert_eq!(result.content.len(), 1, "a short, small patch needs no second block");
         assert!(text(&result).contains("  a/29: 29 -> 30"));
 
         let big = Patch::new().with(DocPath::parse("x").unwrap(), None, Some(json!("y".repeat(500))));
-        let result = success(&call(Mode::DryRun), &Outcome { plan: Plan::edit(big), applied: None });
+        let result = success(&call(Mode::DryRun), &Outcome::new(Plan::edit(big)));
         assert!(text(&result).contains("... (502 chars)"));
         let full = result.content[1].as_text().unwrap().text.clone();
         assert!(full.starts_with("Full changes (the list above is shortened):") && full.contains(&"y".repeat(500)));
 
-        let long = success(&call(Mode::DryRun), &Outcome { plan: Plan::edit(patch(130)), applied: None });
+        let long = success(&call(Mode::DryRun), &Outcome::new(Plan::edit(patch(130))));
         assert!(text(&long).contains("... and 30 more changes (listed in full below)"));
         assert!(long.content[1].as_text().unwrap().text.contains("a/129"));
         assert_eq!(long.structured_content.unwrap()["changes"].as_array().unwrap().len(), 130);
@@ -521,14 +533,14 @@ mod tests {
 
     /// A report of one change by `Actor::System`, for a session that is somebody else.
     fn heads_up() -> Report {
-        let entries = VecDeque::from([Entry { n: 1, event: Event::OpApplied { record: record() } }]);
+        let entries = VecDeque::from([Entry { n: 1, event: Event::op_applied(record()) }]);
         let me = Actor::Agent { id: "claude#1".into(), model: None };
         summarise(&entries, 1, 0, &me, &crate::changes::OwnTxs::default()).unwrap()
     }
 
     #[test]
     fn the_heads_up_leads_the_text_and_joins_the_structured_result() {
-        let outcome = Outcome { plan: Plan::edit(patch(1)), applied: Some(record()) };
+        let outcome = Outcome::new(Plan::edit(patch(1))).with_applied(record());
         let plain = success(&call(Mode::Apply), &outcome);
         let result = with_heads_up(plain.clone(), &heads_up());
 

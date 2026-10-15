@@ -1,0 +1,7 @@
+section = "in-use"
+item = "Bazel 7.7.0, through Bazelisk"
+kind = "tool"
+used_for = "builds LiteRT in `runtime-litert.yml` (the version LiteRT's `.bazelversion` names)"
+status = "yes"
+condition = "Apache-2.0 (Bazel and Bazelisk); build tools, nothing of them ships. Both binaries are checked against SHA-256 pins in `tools/litert/pins.toml`"
+audit = "(github.com/bazelbuild/bazel, github.com/bazelbuild/bazelisk)"

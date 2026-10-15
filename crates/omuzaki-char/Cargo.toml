@@ -12,6 +12,7 @@ repository.workspace = true
 # Impl crates may not depend on `omuzaki-test`, an App crate.
 [dependencies]
 inventory.workspace = true
+libm.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -76,4 +77,6 @@ workspace = true
 
 [package.metadata.omuzaki]
 kind = "Implementation"
+generated-mods = ["src/ops"]
 summary = "the procedural character (§18): geometry kit, body templates, head, hair, outfit, accessories, cloth, palette and the character ops; module map in the crate docs (`crates/omuzaki-char/src/lib.rs`), over the API crates only"
+registers = true

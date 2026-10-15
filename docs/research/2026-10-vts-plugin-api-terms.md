@@ -1,3 +1,9 @@
+---
+title: "VTube Studio plugin API terms for the CN-13 bridge (2026-10-12)"
+summary: "VTube Studio plugin API terms for the CN-13 bridge (2026-10-12)"
+area: research
+---
+
 # VTube Studio plugin API terms for the CN-13 bridge (2026-10-12)
 
 > Research that CN-13 depends on, in `docs/product/02-studio-spec-v3.md`. Sources read 2026-10-12: the DenchiSoft/VTubeStudio README, `LICENSE` and `Permissions/` page, the VTS EULA v5.2 (2024-04-15), the branding page and the plugin wiki. This is an engineering reading, not legal advice.

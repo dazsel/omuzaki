@@ -41,6 +41,9 @@
 //!   expected call `signature` (nested shapes spelt out, e.g. `eye?: {size: number}`), and the text ends with
 //!   `Expected: ...`.
 //!   Unknown tool names get suggestions.
+//! - Unsaved change (optional, only with a journal): an applied change that the journal hasn't saved within five
+//!   seconds still succeeds, and its text opens with `Warning: applied, not yet saved: <status>`, before any heads-up.
+//!   `structuredContent.warning` carries the same text. See [`McpOptions::with_journal`].
 //!
 //! **Sessions.** The actor is `Actor::Agent { id: "<client name>#<n>" }` from the client's handshake; grants come from
 //! [`McpOptions`] (default `Grants::agent_default()`), or from the access token on the HTTP port, and the tool
@@ -148,6 +151,7 @@ mod access;
 mod builtin;
 mod catalog;
 mod changes;
+mod connection;
 mod describe;
 mod error;
 mod events;
@@ -166,9 +170,13 @@ mod signature;
 mod suggest;
 
 pub use access::{AccessToken, RECORD_VERSION, TokenId, TokenRecord};
+pub use connection::Connections;
 pub use error::ServerError;
 pub use http::{HttpOptions, HttpServer};
 pub use prompts::{PromptArg, PromptDef};
 pub use resources::{MeasureProvider, RenderProvider, ResourceProvider};
 pub use server::{McpOptions, McpServer};
 pub use session::Session;
+
+// This crate registers ops (`agent.connection`), so the app that calls it links them in (ADR 0015).
+omuzaki_core::define_link!();

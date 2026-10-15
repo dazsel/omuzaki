@@ -1,3 +1,9 @@
+---
+title: "0010: Live2D Cubism is not used; flat 2D is first-class through Inochi2D and the cel-flat style (2026-10-11)"
+summary: "Live2D Cubism is not used; flat 2D is first-class through Inochi2D and the cel-flat style"
+area: decisions
+---
+
 # 0010: Live2D Cubism is not used; flat 2D is first-class through Inochi2D and the cel-flat style (2026-10-11)
 
 **Context.**

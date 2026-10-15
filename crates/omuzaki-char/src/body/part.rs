@@ -59,7 +59,10 @@ impl PartKind for Body {
         if let Some(stature) = stature {
             publishes.put::<StatureFact>(stature);
         }
-        Ok(PartOutput { meshes, materials: vec![(material_id, material)], publishes, ..PartOutput::default() })
+        Ok(PartOutput::new()
+            .with_meshes(meshes)
+            .with_materials(vec![(material_id, material)])
+            .with_publishes(publishes))
     }
 }
 

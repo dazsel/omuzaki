@@ -1,3 +1,9 @@
+---
+title: "Character and face API: `omuzaki-char-api` and `omuzaki-face-api`"
+summary: "`omuzaki-char-api` and `omuzaki-face-api`"
+area: design
+---
+
 # Character and face API: `omuzaki-char-api` and `omuzaki-face-api`
 
 **Status:** proposed. **Crates:** `crates/omuzaki-face-api`, `crates/omuzaki-face-mock`, `crates/omuzaki-char-api`, `crates/omuzaki-char-mock`.
