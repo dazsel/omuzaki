@@ -483,8 +483,9 @@ open, there would be two writers and two documents. So:
 | Ends on | EOF, credential revoked | EOF | `DELETE`, idle 30 min, token revoked | project closed, person revokes |
 
 **VTube Studio-compatible tools (PL-05, `bridges.md` §4, ADR 0066)** pair the same way: the API's token request opens
-a `Transport::Plugin` session `Paused { reason: Pairing }` with `Need::Pairing { client: "vts:<name>/<developer>" }`,
-resolved only in Omuzaki's window. The paired credential is the token's keyed hash, kept machine-wide; the ceiling is
+a `Transport::Plugin` session and calls `Sessions::request_pairing` (added by `bridges.md` §4), which pauses it
+`Pairing` with `Need::Pairing { client: "vts-<name>" }`, resolved only in Omuzaki's window. The paired credential is
+the token's keyed hash, kept machine-wide with the person who paired it; the ceiling is
 `perform` only and is never widened, so no "for this project" grant is offered. Revoking the session revokes the token.
 
 ## 11. The contract change (for the contract task)

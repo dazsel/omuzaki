@@ -6,7 +6,8 @@ area: decisions
 
 # 0066: Compatibility bridges drive Omuzaki only through ops, in a paired session that holds `perform` (2026-10-15)
 
-**Status:** proposed (#1085); accepted by the cloud lead on the pull request. **Context:** PL-05 (#529), CN-13 (#717),
+**Status:** Proposed (#1085). It spans areas (Platform sessions and ops, the Runtime stage, UI wiring), so it needs
+the Director's acceptance. **Context:** PL-05 (#529), CN-13 (#717),
 PF-04 (#468), PF-05 (#469), PF-23 (#476); `docs/design/bridges.md`; `docs/research/2026-10-vts-shim-terms.md`.
 
 ## Context
@@ -19,17 +20,20 @@ Its parameter injection arrives every frame, faster than the executor's per-sess
 ## Decision
 
 1. **The shim is a module of `omuzaki-vts`** (`src/server/**`), sharing CN-13's message types and the one WebSocket
-   crate #726 picks (also BR-19's). No new crate and no contract change.
-2. **Every tool is a session.** One `Transport::Plugin` session per authenticated connection, actor
-   `Actor::Plugin { id: "vts:<name>#<n>" }`, principal the studio's person, ceiling `perform` and never more. Every
+   crate #726 picks (also BR-19's). No new crate.
+2. **Every tool is a session.** One `Transport::Plugin` session per connection that pairs or authenticates,
+   client `vts-<name>` and the actor the executor builds from it, principal the person who paired (stored with the
+   token), ceiling `perform` and never more. Every
    change it makes is an op through the `Runner` as that session: PF-25's live actions for hotkeys and expressions,
-   `vts_server.catalog` for what it may list, `vts_server.feed` to claim parameters.
-3. **Pairing is a person's click.** A token request opens the session `Paused { Pairing }` with `Need::Pairing`;
+   `vts_server.catalog` for what it may list, `vts_server.feed` to claim parameters, `vts_server.param_create` and
+   `param_delete` for custom parameters.
+3. **Pairing is a person's click.** A token request opens the session and calls `Sessions::request_pairing`, which
+   pauses it `Pairing` with `Need::Pairing`;
    only a person in Omuzaki's window pairs. The token is 32 random bytes; only its keyed hash is kept, machine-wide,
    outside settings and projects. Revoking deletes it and ends the tool's sessions.
 4. **Per-frame data flows under an op, not as ops.** `vts_server.feed` authorises a parameter set once; values then
-   pass through a wait-free table to the frame thread, gated by a live flag the shim clears before replying to a pause
-   or revoke. Injected values enter the existing `Source::Tracker` layer (PF-23), honouring set, add, weight,
+   pass through a wait-free table to the frame thread, gated by a `SessionGate` the executor clears before any pause,
+   stop, end or narrowing returns. Every value, `set` claim and `faceFound` expires 1 s after it arrives. Injected values enter the existing `Source::Tracker` layer (PF-23), honouring set, add, weight,
    `faceFound` and the 1 s keep-alive, in under 10 µs a frame with no allocation.
 5. **Safe by default.** Off until a person turns it on; person-only start, stop and revoke; loopback only with `Host`
    and `Origin` checks; no discovery broadcast; message, client and rate caps; a tool never reads the camera, files,
@@ -41,8 +45,10 @@ Its parameter injection arrives every frame, faster than the executor's per-sess
 
 ## Consequences
 
-- No new `Transport`, `Source` or scope: the contracts stay as they are, at the cost of `Transport::Plugin` covering
-  two kinds of outside code (WASM plugins and paired tools), told apart by the `vts:` client prefix.
+- One additive contract change to `omuzaki-ops-api` lands first and alone: `Sessions::request_pairing` and
+  `Sessions::gate`, both with default bodies, also usable by the MCP bridge's pairing (#405).
+- No new `Transport`, `Source` or scope, at the cost of `Transport::Plugin` covering two kinds of outside code (WASM
+  plugins and paired tools), told apart by the `vts-` client prefix.
 - The tracker layer can hold several producers; the stage owns the merge and its budget.
 - PF-25's live-action ops become a dependency of the shim's hotkeys; the shim's own tasks (#1086, #1212, #1213) are
   re-cut to this design.
