@@ -21,3 +21,8 @@ pub mod seed;
 
 pub use apply::{apply_for_test, apply_with_library};
 pub use library::MockLibrary;
+
+omuzaki_core::define_link! {
+    omuzaki_char_api::link();
+    omuzaki_library_api::link();
+}
