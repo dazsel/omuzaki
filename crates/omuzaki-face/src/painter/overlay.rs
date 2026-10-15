@@ -116,7 +116,8 @@ fn gloom_band(ctx: &mut PaintCtx<'_>, strength: f32) {
     let bounds = rect(ctx);
     let layout = &ctx.profile.layout;
     let brow = narrow(layout.eye_y + layout.brow_gap);
-    let (bottom, top) = ((brow + BAND_FROM).min(bounds.y1), (brow + BAND_REACH).min(bounds.y1));
+    let edge = |y: f32| y.clamp(bounds.y0, bounds.y1);
+    let (bottom, top) = (edge(brow + BAND_FROM), edge(brow + BAND_REACH));
     if top <= bottom {
         return;
     }

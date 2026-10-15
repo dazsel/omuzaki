@@ -95,9 +95,19 @@ fn finite(p: &PaintParams) -> bool {
         [p.left_eye, p.right_eye].iter().all(|e| [e.open, e.close, e.arc, e.lower_lid].iter().all(|v| v.is_finite()));
     let m = &p.mouth;
     eyes && p.gaze.is_finite()
-        && [m.open, m.wide, m.smile_left, m.smile_right, m.shift, p.blush, p.left_brow.height, p.right_brow.height]
-            .iter()
-            .all(|v| v.is_finite())
+        && [
+            m.open,
+            m.wide,
+            m.smile_left,
+            m.smile_right,
+            m.shift,
+            m.fangs,
+            p.blush,
+            p.left_brow.height,
+            p.right_brow.height,
+        ]
+        .iter()
+        .all(|v| v.is_finite())
 }
 
 impl FacePainter for MockPainter {
@@ -409,6 +419,18 @@ mod tests {
         let input = FaceInput { profile: &profile, params: &p, time: Seconds(0.0), view: FaceView::default() };
         let e = MockPainter::default().paint(&input, &mut FaceDrawing::new()).unwrap_err();
         assert!(matches!(e, FaceError::Invalid(_)));
+    }
+
+    #[test]
+    fn a_non_finite_fang_channel_is_an_error() {
+        for bad in [f32::NAN, f32::INFINITY] {
+            let mut p = FaceMapping::default().rest_params();
+            p.mouth.fangs = bad;
+            let profile = mock_profile();
+            let input = FaceInput { profile: &profile, params: &p, time: Seconds(0.0), view: FaceView::default() };
+            let e = MockPainter::default().paint(&input, &mut FaceDrawing::new()).unwrap_err();
+            assert!(matches!(e, FaceError::Invalid(_)));
+        }
     }
 
     #[test]

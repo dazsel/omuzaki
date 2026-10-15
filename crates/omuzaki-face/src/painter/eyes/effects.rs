@@ -193,7 +193,9 @@ fn star_iris(ctx: &mut PaintCtx<'_>, iris: &Iris, strength: f32) {
         #[allow(clippy::cast_precision_loss)]
         let angle = std::f32::consts::FRAC_PI_2 + std::f32::consts::PI * i as f32 / STAR_POINTS as f32;
         let reach = if i % 2 == 0 { STAR_OUTER } else { STAR_INNER };
-        *p = iris.at(reach * angle.cos() * iris.rx / iris.ry, reach * angle.sin());
+        // `at` scales x by `rx` and y by `ry`; the star's radii are measured from the iris half-width `rx`, so y is
+        // corrected by `rx / ry`.
+        *p = iris.at(reach * angle.cos(), reach * angle.sin() * iris.rx / iris.ry);
     }
     let list = ctx.list(FaceLayerId::Base);
     let path = list.path().polyline(&points).close().finish();

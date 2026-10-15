@@ -205,6 +205,17 @@ fn every_effect_changes_the_picture_and_stays_within_its_command_budget() {
     }
 }
 
+/// The sum of the opacities of a list's fills and strokes.
+fn opacity_sum(list: &DrawList) -> f32 {
+    list.cmds()
+        .iter()
+        .map(|c| match c {
+            Cmd::Fill { opacity, .. } | Cmd::Stroke { opacity, .. } => *opacity,
+            _ => 0.0,
+        })
+        .sum()
+}
+
 #[test]
 fn every_effect_scales_with_its_strength() {
     let profile = profile();
@@ -229,6 +240,17 @@ fn every_effect_scales_with_its_strength() {
         let (quarter, half, full) = (pixels(0.25), pixels(0.5), pixels(1.0));
         assert!(quarter > 0 && quarter <= half + half / 4, "{name}: {quarter} then {half}");
         assert!(half > 0 && full > 0, "{name}");
+        // The footprint of an opacity-only effect hardly changes, so also measure the ink: how far the summed command
+        // opacities move from the rest, which must grow with the strength.
+        let ink = |v: f32| {
+            let on = paint(&profile, &params(|e, s| edit(e, v, s)));
+            [FaceLayerId::Base, FaceLayerId::Overlay]
+                .into_iter()
+                .map(|layer| (opacity_sum(&on[layer]) - opacity_sum(&rest[layer])).abs())
+                .sum::<f32>()
+        };
+        let (quarter, half, full) = (ink(0.25), ink(0.5), ink(1.0));
+        assert!(quarter > 0.0 && quarter < half && half < full, "{name}: ink {quarter}, {half}, {full}");
     }
 }
 
@@ -253,8 +275,18 @@ fn effects_compose_and_stay_inside_the_face_rect() {
     let some = params(|e, _| (e.heart, e.tears) = (1.0, 1.0));
     let mut with_blush = some;
     with_blush.blush = 1.0;
-    let (a, b) = (paint(&profile, &some), paint(&profile, &with_blush));
-    assert_eq!(a[FaceLayerId::Base].cmds().len(), b[FaceLayerId::Base].cmds().len());
+    // Through the cheeks section as well as the eyes: the blush adds its own commands and leaves the eyes' alone.
+    let with_cheeks = |p: &PaintParams| {
+        let mut out = paint(&profile, p);
+        let input = FaceInput { profile: &profile, params: p, time: Seconds(0.0), view: FaceView::default() };
+        let mut cheeks = FaceDrawing::new();
+        painter().paint_section(Section::Cheeks, &input, &mut cheeks).unwrap();
+        (out[FaceLayerId::Base].cmds().len(), cheeks[FaceLayerId::Base].cmds().len(), std::mem::take(&mut out))
+    };
+    let (eyes_a, cheeks_a, _) = with_cheeks(&some);
+    let (eyes_b, cheeks_b, _) = with_cheeks(&with_blush);
+    assert_eq!(eyes_a, eyes_b, "blush leaves the eyes' commands alone");
+    assert!(cheeks_b > cheeks_a, "blush draws cheek commands ({cheeks_a} then {cheeks_b})");
 }
 
 // ------------------------------------------------------------------------------------------------ each design
@@ -376,6 +408,44 @@ fn the_sweat_drop_fits_a_small_rect_instead_of_panicking() {
             );
         }
     }
+}
+
+#[test]
+fn the_gloom_band_stays_inside_a_short_or_offset_rect() {
+    let profile = profile();
+    let p = params(|e, _| e.gloom = 1.0);
+    // Rects that end below, around and above the band's start.
+    for (y0, y1) in [(-0.3, -0.25), (-0.05, 0.0), (0.3, 0.4), (-0.26, 0.03)] {
+        let rect = FaceRect { x0: -0.2, x1: 0.2, y0, y1 };
+        let proj = FaceProjection { rect, front_fade: [0.0, 0.07] };
+        let input = FaceInput { profile: &profile, params: &p, time: Seconds(0.0), view: FaceView::default() };
+        let mut out = FaceDrawing::new();
+        RealPainter::new(proj, DEFAULT_PX_PER_M).paint_section(Section::Overlay, &input, &mut out).unwrap();
+        for pt in points(&out[FaceLayerId::Overlay]) {
+            assert!(pt.y >= y0 - 1e-6 && pt.y <= y1 + 1e-6, "rect {y0}..{y1}: a point at {pt:?} is outside");
+        }
+    }
+}
+
+#[test]
+fn the_star_is_as_wide_as_it_is_tall_in_iris_half_widths() {
+    // Radii are measured from the iris half-width `rx`: the star's physical extent is the same either way round
+    // (a stretched star would be `rx^2 / ry` wide against `rx` tall).
+    let profile = profile();
+    let list = paint(&profile, &params(|e, _| e.star = 1.0)).into_base();
+    let star = list
+        .cmds()
+        .iter()
+        .filter_map(|c| match c {
+            Cmd::Fill { path, .. } if list.elements(*path).len() == 11 => Some(points(&one(&list, *path))),
+            _ => None,
+        })
+        .next()
+        .expect("a ten-point star outline");
+    let (min, max) = star.iter().fold((Vec2::MAX, Vec2::MIN), |(lo, hi), p| (lo.min(*p), hi.max(*p)));
+    let (w, h) = (max.x - min.x, max.y - min.y);
+    // Five points: the height is the outer radius plus the lower points' reach, the width spans the side points.
+    assert!(w / h > 0.9 && w / h < 1.3, "star {w} x {h} m");
 }
 
 /// The opacity of the closed eye's curve and lashes: the strokes of the lash colour and widths that are not the
