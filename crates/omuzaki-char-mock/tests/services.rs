@@ -14,7 +14,7 @@ use omuzaki_char_api::{
 use omuzaki_char_mock::{MemAssets, mock_character};
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::{UVec2, Vec2, Vec3};
-use omuzaki_face_api::{Check, DrawList, FaceProfile, FaceRect, Paint, Validate};
+use omuzaki_face_api::{Check, DrawList, FaceRect, Paint, Validate};
 use omuzaki_face_mock::MockRasterizer;
 use omuzaki_render_api::TextureDesc;
 use schemars::JsonSchema;
@@ -75,8 +75,8 @@ impl PartKind for Striped {
         let material_name = MaterialName::new("mock-striped-material").map_err(|e| ctx.fail(e.to_string()))?;
         let mut material = MaterialSpec::toon(Colour::rgb(255, 255, 255));
         material.base_texture = Some(texture_name.clone());
-        Ok(PartOutput {
-            meshes: vec![PartMesh {
+        Ok(PartOutput::new()
+            .with_meshes(vec![PartMesh {
                 name: "cloth".to_owned(),
                 geometry: MeshData {
                     positions: vec![Vec3::ZERO, Vec3::X, Vec3::Y],
@@ -90,11 +90,9 @@ impl PartKind for Striped {
                 casts_shadow: true,
                 render_order: 0,
                 dynamic: false,
-            }],
-            materials: vec![(material_name, material)],
-            textures: vec![(texture_name, texture)],
-            ..PartOutput::default()
-        })
+            }])
+            .with_materials(vec![(material_name, material)])
+            .with_textures(vec![(texture_name, texture)]))
     }
 }
 omuzaki_char_api::register_part_kind!(Striped);
@@ -117,17 +115,11 @@ fn character(colour_asset: ContentHash) -> CharacterDef {
         attach: None,
         params: json!({}),
     };
-    CharacterDef {
-        name: "Stripes".to_owned(),
-        template: omuzaki_char_api::BodyTemplateId::new("soft-sd").unwrap(),
-        seed: 1,
-        // The mock body paints its skin from the mock character's palette slots.
-        palette: mock_character().unwrap().palette,
-        skin_tone: None,
-        parts: BTreeMap::from([(PartId::new("body").unwrap(), body), (PartId::new("shirt").unwrap(), part)]),
-        face: FaceProfile::default(),
-        weight_brushes: BTreeMap::new(),
-    }
+    // The mock body paints its skin from the mock character's palette slots.
+    CharacterDef::new("Stripes", omuzaki_char_api::BodyTemplateId::new("soft-sd").unwrap())
+        .with_seed(1)
+        .with_palette(mock_character().unwrap().palette)
+        .with_parts(BTreeMap::from([(PartId::new("body").unwrap(), body), (PartId::new("shirt").unwrap(), part)]))
 }
 
 fn build(def: &CharacterDef, services: &BuildServices) -> Result<BuiltCharacter, BuildError> {

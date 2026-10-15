@@ -65,12 +65,9 @@ impl PartKind for HeadCollider {
             position: head.point(Vec3::new(1.0, 0.15, 0.0).normalize(), 0.045),
             rotation: Quat::IDENTITY,
         };
-        Ok(PartOutput {
-            publishes: Publishes::default()
-                .with::<CollidersFact>(group)
-                .with::<AnchorsFact>(("ear".parse().unwrap(), ear)),
-            ..PartOutput::default()
-        })
+        Ok(PartOutput::new().with_publishes(
+            Publishes::default().with::<CollidersFact>(group).with::<AnchorsFact>(("ear".parse().unwrap(), ear)),
+        ))
     }
 }
 

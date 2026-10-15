@@ -55,7 +55,7 @@ impl PartKind for Undyed {
 
     fn build(params: &Plain, ctx: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
         let tint = params.tint.as_ref().map(|t| ctx.colour(t)).transpose()?.unwrap_or(Colour::WHITE);
-        Ok(PartOutput { materials: vec![(material(ctx)?, MaterialSpec::toon(tint))], ..PartOutput::default() })
+        Ok(PartOutput::new().with_materials(vec![(material(ctx)?, MaterialSpec::toon(tint))]))
     }
 }
 omuzaki_char_api::register_part_kind!(Undyed);
@@ -75,7 +75,7 @@ impl PartKind for Dyed {
     fn build(params: &Plain, ctx: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
         DYED_BUILDS.fetch_add(1, Ordering::SeqCst);
         let tint = params.tint.as_ref().map(|t| ctx.colour(t)).transpose()?.unwrap_or(Colour::WHITE);
-        Ok(PartOutput { materials: vec![(material(ctx)?, MaterialSpec::toon(tint))], ..PartOutput::default() })
+        Ok(PartOutput::new().with_materials(vec![(material(ctx)?, MaterialSpec::toon(tint))]))
     }
 
     fn recolour(params: &Plain, output: &mut PartOutput, ctx: &RecolourCtx<'_>) -> Result<Recoloured, BuildError> {
@@ -132,11 +132,7 @@ impl PartKind for Plaid {
         let tex = TextureName::new("probe-plaid-tex").map_err(|e| ctx.fail(e.to_string()))?;
         let mut spec = MaterialSpec::toon(cloth);
         spec.base_texture = Some(tex.clone());
-        Ok(PartOutput {
-            materials: vec![(material(ctx)?, spec)],
-            textures: vec![(tex, texture)],
-            ..PartOutput::default()
-        })
+        Ok(PartOutput::new().with_materials(vec![(material(ctx)?, spec)]).with_textures(vec![(tex, texture)]))
     }
 
     fn recolour(
@@ -198,16 +194,13 @@ fn palette(cloth: [u8; 3]) -> Palette {
 }
 
 fn character(kind: &str, params: serde_json::Value, palette: Palette) -> CharacterDef {
-    CharacterDef {
-        name: "Test".to_owned(),
-        template: omuzaki_char_api::BodyTemplateId::new("soft-sd").unwrap(),
-        seed: 7,
-        palette,
-        skin_tone: None,
-        parts: BTreeMap::from([(pid("body"), common::body_part()), (pid("probe"), part(kind, params))]),
-        face: omuzaki_face_api::FaceProfile::default(),
-        weight_brushes: BTreeMap::new(),
-    }
+    CharacterDef::new("Test".to_owned(), omuzaki_char_api::BodyTemplateId::new("soft-sd").unwrap())
+        .with_seed(7)
+        .with_palette(palette)
+        .with_skin_tone(None)
+        .with_parts(BTreeMap::from([(pid("body"), common::body_part()), (pid("probe"), part(kind, params))]))
+        .with_face(omuzaki_face_api::FaceProfile::default())
+        .with_weight_brushes(BTreeMap::new())
 }
 
 fn build_probe(def: &CharacterDef, services: &BuildServices) -> Result<PartOutput, BuildError> {
