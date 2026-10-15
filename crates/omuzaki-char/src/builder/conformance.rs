@@ -211,7 +211,10 @@ fn publishes_of(
 fn wanted_kinds(kinds: Option<&[&str]>) -> Vec<String> {
     match kinds {
         Some(kinds) => kinds.iter().map(|k| (*k).to_owned()).collect(),
-        None => omuzaki_char_api::kinds().map(|r| (r.meta)().id.to_owned()).collect(),
+        // Sorted: `inventory` yields kinds in link order, which differs between targets, and the report follows this order.
+        None => {
+            omuzaki_char_api::kinds().map(|r| (r.meta)().id.to_owned()).collect::<BTreeSet<_>>().into_iter().collect()
+        }
     }
 }
 

@@ -61,4 +61,6 @@ fn a_check_with_no_base_character_reaches_nothing_and_says_so() {
 
     let everything = check_all(&[], None, &Probes::built_in(), &BuildServices::default());
     assert_eq!(everything.unreached.len(), omuzaki_char_api::kinds().count(), "every registered kind");
+    let order: Vec<_> = everything.unreached.iter().map(|(kind, _)| kind.clone()).collect();
+    assert!(order.is_sorted(), "kinds are reported in sorted order: {order:?}");
 }
