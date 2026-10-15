@@ -78,6 +78,17 @@ impl NodeError {
         Self { code: NodeErrorCode::Unhandled, text: l10n::unhandled(input.name()) }
     }
 
+    /// A variable or group `name` the show doesn't declare. The engine keeps a node that names one inert, so a
+    /// running node meets this only through a host's misuse.
+    pub fn undeclared(name: &str) -> Self {
+        Self { code: NodeErrorCode::Internal, text: l10n::undeclared(name) }
+    }
+
+    /// An emitted payload for `kind` that doesn't fit it.
+    pub fn invalid_payload(kind: &str, reason: impl Into<String>) -> Self {
+        Self { code: NodeErrorCode::Type, text: l10n::payload_invalid(kind, reason) }
+    }
+
     /// A fault, with the reason.
     pub fn internal(reason: impl Into<String>) -> Self {
         Self { code: NodeErrorCode::Internal, text: l10n::internal(reason) }

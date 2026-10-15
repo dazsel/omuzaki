@@ -1,0 +1,30 @@
+[package]
+name = "omuzaki-live-mock"
+description = "The test kit for show automation: NodeHarness runs one node with scripted inputs, fake time and a fake Runner; FakeWall, MemoryVariables, FakeApprovals and synthetic events (design docs/design/automation.md D16)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-l10n-api = { path = "../omuzaki-l10n-api" }
+omuzaki-live-api = { path = "../omuzaki-live-api" }
+omuzaki-ops-api = { path = "../omuzaki-ops-api" }
+omuzaki-store-api = { path = "../omuzaki-store-api" }
+
+[dev-dependencies]
+schemars.workspace = true
+
+[lints]
+workspace = true
+
+# Native only, like the contract it tests (design D1).
+[package.metadata.omuzaki]
+kind = "Mock"
+summary = "show automation's test kit: `NodeHarness` (one node, scripted inputs, fake time, the engine's ordering, `log_json` for the determinism check), `FakeRunner`, `FakeWall`, `MemoryVariables`, `FakeApprovals` and synthetic event fixtures"
+wasm = false

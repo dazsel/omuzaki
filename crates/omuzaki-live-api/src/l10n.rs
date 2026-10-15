@@ -65,6 +65,12 @@ omuzaki_l10n_api::messages! {
     /// A node got an input it doesn't handle.
     pub unhandled = "live-api-unhandled" (input: Id)
         => "This node doesn't handle the { $input } input; update the node.";
+    /// A node named a variable or group the show doesn't declare.
+    pub undeclared = "live-api-undeclared" (name: Id)
+        => "The show doesn't declare { $name }.";
+    /// A node emitted an event whose payload doesn't fit its kind.
+    pub payload_invalid = "live-api-payload-invalid" (kind: Id, reason: Verbatim)
+        => "The payload for { $kind } can't be used: { $reason }";
     /// A fault inside a node or its host.
     pub internal = "live-api-internal" (reason: Verbatim)
         => "Something went wrong inside the node: { $reason }";
