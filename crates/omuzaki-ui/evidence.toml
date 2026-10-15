@@ -2,7 +2,7 @@
 # `visual` (.github/workflows/visual-evidence.yml). The format is documented at the top of tools/ci/evidence.py.
 #
 # Both cases run the design-system gallery headless (src/bin/gallery.rs): fixed size (the whole gallery, 1680 points
-# wide), one pixel per point (gallery-pseudo: fitted to its content at 0.32 pixels per point, see its description), the theme and scale named by the flags, so the pictures are the same on every run.
+# wide), the theme and scale named by the flags, so the pictures are the same on every run.
 
 [[case]]
 name = "gallery-themes"
@@ -14,8 +14,12 @@ images = ["dark.png", "light.png", "high-contrast.png"]
 
 [[case]]
 name = "gallery-pseudo"
-description = "The gallery in the pseudo-locale (accented, 40% longer text) at 200% UI scale, dark palette, the whole gallery (the content is 25094 points tall, so it is rendered at 0.32 pixels per point to stay under the GPU's 8192-pixel texture limit): finds hard-coded text and layouts that cannot take longer text or large scale."
+description = "The gallery in the pseudo-locale (accented, 40% longer text) at 200% UI scale, dark palette, one section per picture (Foundations, Controls, Display, Feedback, Composites): long text and large scale, section by section. The 200% layout is kept; the pictures are rendered at 0.8 pixels per point so the tallest section (Controls, 7674 px) fits one GPU texture."
 steps = [
-    { run = ["cargo", "run", "--locked", "-p", "omuzaki-ui", "--bin", "gallery", "--", "--pseudo", "--scale", "200", "--ppp", "0.32", "--screenshot", "{out}/pseudo-200.png"] },
+    { run = ["cargo", "run", "--locked", "-p", "omuzaki-ui", "--bin", "gallery", "--", "--pseudo", "--scale", "200", "--ppp", "0.8", "--group", "foundations", "--screenshot", "{out}/pseudo-200-foundations.png"] },
+    { run = ["cargo", "run", "--locked", "-p", "omuzaki-ui", "--bin", "gallery", "--", "--pseudo", "--scale", "200", "--ppp", "0.8", "--group", "controls", "--screenshot", "{out}/pseudo-200-controls.png"] },
+    { run = ["cargo", "run", "--locked", "-p", "omuzaki-ui", "--bin", "gallery", "--", "--pseudo", "--scale", "200", "--ppp", "0.8", "--group", "display", "--screenshot", "{out}/pseudo-200-display.png"] },
+    { run = ["cargo", "run", "--locked", "-p", "omuzaki-ui", "--bin", "gallery", "--", "--pseudo", "--scale", "200", "--ppp", "0.8", "--group", "feedback", "--screenshot", "{out}/pseudo-200-feedback.png"] },
+    { run = ["cargo", "run", "--locked", "-p", "omuzaki-ui", "--bin", "gallery", "--", "--pseudo", "--scale", "200", "--ppp", "0.8", "--group", "composites", "--screenshot", "{out}/pseudo-200-composites.png"] },
 ]
-images = ["pseudo-200.png"]
+images = ["pseudo-200-foundations.png", "pseudo-200-controls.png", "pseudo-200-display.png", "pseudo-200-feedback.png", "pseudo-200-composites.png"]

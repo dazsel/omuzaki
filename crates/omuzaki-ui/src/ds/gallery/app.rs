@@ -9,7 +9,7 @@ use std::sync::Arc;
 use egui::{Align, CentralPanel, Frame, Layout, Margin, Panel, RichText, ScrollArea, Stroke, Ui};
 
 use super::layout::raised;
-use super::story::{self, Story};
+use super::story::{self, Group, Story};
 use super::text::{tr, translate};
 use crate::ds::icons;
 use crate::ds::strings::{English, Msg, PSEUDO_LOCALE, Pseudo};
@@ -58,6 +58,15 @@ impl Gallery {
     #[must_use]
     pub const fn with_pseudo(mut self, pseudo: bool) -> Self {
         self.pseudo = pseudo;
+        self
+    }
+
+    /// Only the stories of one group (`None`: every group), for a screenshot of one section.
+    #[must_use]
+    pub fn with_group(mut self, group: Option<Group>) -> Self {
+        if let Some(group) = group {
+            self.stories.retain(|story| story.group == group);
+        }
         self
     }
 

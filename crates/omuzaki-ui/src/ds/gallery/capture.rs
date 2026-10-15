@@ -8,7 +8,7 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable as _;
 use omuzaki_core::colour::Colour;
 
-use super::Gallery;
+use super::{Gallery, Group};
 use crate::ds::theme::{Settings, apply_settings};
 use crate::ds::tokens::Theme;
 use crate::ds::widgets::{ColourField, PaletteSlot};
@@ -24,13 +24,39 @@ pub struct Shot {
     pub pixels_per_point: f32,
     /// Speak the pseudo-locale (accented, 40% longer) instead of English.
     pub pseudo: bool,
+    /// Only this group's stories (`None`: the whole gallery).
+    pub group: Option<Group>,
 }
 
 impl Shot {
-    /// A 1680 x 1050 pt window at 1 px per point.
+    /// A 1680 x 1050 pt window at 1 px per point, the whole gallery.
     pub fn new(settings: Settings) -> Self {
-        Self { settings, size: vec2(1680.0, 1050.0), pixels_per_point: 1.0, pseudo: false }
+        Self { settings, size: vec2(1680.0, 1050.0), pixels_per_point: 1.0, pseudo: false, group: None }
     }
+
+    /// The gallery this shot shows, before it is laid out.
+    fn gallery(self) -> Gallery {
+        Gallery::new(self.settings).with_pseudo(self.pseudo).with_group(self.group)
+    }
+}
+
+/// The window height a fitted gallery is first laid out in: taller than any section, so nothing is cut off while the
+/// content height is measured.
+const MEASURE_HEIGHT: f32 = 8000.0;
+
+/// The height, in points, that the gallery of `shot` needs to show every card (its settings, language and group;
+/// the window's own size and pixel density do not change it). Lays it out without a GPU, so tests can call it for
+/// every group.
+pub fn content_height(shot: Shot) -> f32 {
+    let mut harness = Harness::builder()
+        .with_size(vec2(shot.size.x, MEASURE_HEIGHT))
+        .with_pixels_per_point(shot.pixels_per_point)
+        .build_ui_state(|ui, gallery: &mut Gallery| gallery.ui(ui), shot.gallery());
+    harness.run_steps(4);
+    harness.run_ok();
+    harness.run_steps(2);
+    harness.run_ok();
+    harness.state().content_height().ceil()
 }
 
 /// Renders the gallery once the layout has settled.
@@ -42,12 +68,12 @@ impl Shot {
 /// Fails when no GPU adapter (hardware or software) is available, or the render fails.
 pub fn render(shot: Shot) -> Result<image::RgbaImage, String> {
     let fit = shot.size.y <= 0.0;
-    let size = if fit { vec2(shot.size.x, 8000.0) } else { shot.size };
-    let mut harness =
-        Harness::builder().with_size(size).with_pixels_per_point(shot.pixels_per_point).wgpu().build_ui_state(
-            |ui, gallery: &mut Gallery| gallery.ui(ui),
-            Gallery::new(shot.settings).with_pseudo(shot.pseudo),
-        );
+    let size = if fit { vec2(shot.size.x, MEASURE_HEIGHT) } else { shot.size };
+    let mut harness = Harness::builder()
+        .with_size(size)
+        .with_pixels_per_point(shot.pixels_per_point)
+        .wgpu()
+        .build_ui_state(|ui, gallery: &mut Gallery| gallery.ui(ui), shot.gallery());
     // Fonts and the first layout need a few passes; running to stability also finishes hover fades.
     harness.run_steps(4);
     harness.run_ok();
@@ -92,4 +118,38 @@ pub fn colour_popover(settings: Settings, pixels_per_point: f32) -> Result<image
     harness.get_by_label("Hair root colour").click();
     harness.run_steps(4);
     harness.render()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ds::tokens::Scale;
+
+    /// The largest texture every GPU takes, per side, in pixels: a longer capture is refused at render time.
+    const MAX_TEXTURE_SIDE: f32 = 8192.0;
+    /// The density the pseudo-locale sections are captured at: 200% is the UI scale (the zoom), and this is the pixels
+    /// per point on top of it (`tools/ci/evidence` gallery-pseudo). The 200% section at 1 px per point is 9594 px tall.
+    const PSEUDO_PIXELS_PER_POINT: f32 = 0.8;
+
+    #[test]
+    fn every_group_of_the_pseudo_gallery_at_200_percent_fits_one_texture() {
+        let settings = Settings { scale: Scale::nearest(200), ..Settings::default() };
+        for group in [Group::Foundations, Group::Controls, Group::Display, Group::Feedback, Group::Composites] {
+            let shot = Shot {
+                group: Some(group),
+                pseudo: true,
+                pixels_per_point: PSEUDO_PIXELS_PER_POINT,
+                ..Shot::new(settings)
+            };
+            // The texture is laid-out points x pixels per point x the zoom (the UI scale), as the renderer makes it.
+            let pixels = content_height(shot) * shot.pixels_per_point * shot.settings.scale.factor();
+            // A gallery that lays out to nothing would pass the limit for the wrong reason.
+            assert!(pixels > 0.0, "{}: nothing laid out", group.title());
+            assert!(
+                pixels <= MAX_TEXTURE_SIDE,
+                "{}: the pseudo-locale capture at 200% is {pixels} px tall, over the {MAX_TEXTURE_SIDE} px limit",
+                group.title()
+            );
+        }
+    }
 }
