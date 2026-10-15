@@ -190,30 +190,46 @@ impl Reference {
     }
 }
 
-/// The spec's sphere and capsule collider pseudocode: the direction from the collider to the joint, and the signed
-/// distance between their surfaces (negative when they overlap). Note the spec's capsule listing reads `delta` before it
-/// assigns it; the order here is the intended one.
+/// The spec's collider pseudocode: the direction from the collider to the joint, and the signed distance between their
+/// surfaces (negative when they overlap). Note the spec's capsule listing reads `delta` before it assigns it; the order
+/// here is the intended one. The extended colliders (`VRMC_springBone_extended_collider`) flip the sign of the distance
+/// for the inside shapes, and a plane's direction is its normal.
 fn collide(world: &DMat4, shape: ColliderShape, next_tail: DVec3, joint_radius: f64) -> (DVec3, f64) {
+    let capsule_delta = |offset: omuzaki_core::glam::Vec3, tail: omuzaki_core::glam::Vec3| {
+        let transformed_offset = world.transform_point3(offset.as_dvec3());
+        let transformed_tail = world.transform_point3(tail.as_dvec3());
+        let offset_to_tail = transformed_tail - transformed_offset;
+        let mut delta = next_tail - transformed_offset;
+        if offset_to_tail.length_squared() == 0.0 {
+            // The ends coincide: a ball. The spec's division by the span would be 0/0.
+            return delta;
+        }
+        let dot = offset_to_tail.dot(delta);
+        if dot < 0.0 {
+            // At the head side of the capsule: nothing to do.
+        } else if dot > offset_to_tail.length_squared() {
+            delta -= offset_to_tail;
+        } else {
+            delta -= offset_to_tail * (dot / offset_to_tail.length_squared());
+        }
+        delta
+    };
+    let sphere_delta = |offset: omuzaki_core::glam::Vec3| next_tail - world.transform_point3(offset.as_dvec3());
+    let outside =
+        |delta: DVec3, radius: f32| (delta.normalize_or_zero(), delta.length() - f64::from(radius) - joint_radius);
+    // Inside: the joint must stay within the radius, and is pushed back toward the axis.
+    let inside =
+        |delta: DVec3, radius: f32| (-delta.normalize_or_zero(), f64::from(radius) - delta.length() - joint_radius);
     match shape {
-        ColliderShape::Sphere { offset, radius } => {
-            let transformed_offset = world.transform_point3(offset.as_dvec3());
-            let delta = next_tail - transformed_offset;
-            (delta.normalize_or_zero(), delta.length() - f64::from(radius) - joint_radius)
+        ColliderShape::Sphere { offset, radius } => outside(sphere_delta(offset), radius),
+        ColliderShape::Capsule { offset, radius, tail } => outside(capsule_delta(offset, tail), radius),
+        ColliderShape::SphereInside { offset, radius } => inside(sphere_delta(offset), radius),
+        ColliderShape::CapsuleInside { offset, radius, tail } => inside(capsule_delta(offset, tail), radius),
+        ColliderShape::Plane { offset, normal } => {
+            let normal = world.transform_vector3(normal.as_dvec3()).normalize();
+            let delta = next_tail - world.transform_point3(offset.as_dvec3());
+            (normal, delta.dot(normal) - joint_radius)
         }
-        ColliderShape::Capsule { offset, radius, tail } => {
-            let transformed_offset = world.transform_point3(offset.as_dvec3());
-            let transformed_tail = world.transform_point3(tail.as_dvec3());
-            let offset_to_tail = transformed_tail - transformed_offset;
-            let mut delta = next_tail - transformed_offset;
-            let dot = offset_to_tail.dot(delta);
-            if dot < 0.0 {
-                // At the head side of the capsule: nothing to do.
-            } else if dot > offset_to_tail.length_squared() {
-                delta -= offset_to_tail;
-            } else {
-                delta -= offset_to_tail * (dot / offset_to_tail.length_squared());
-            }
-            (delta.normalize_or_zero(), delta.length() - f64::from(radius) - joint_radius)
-        }
+        _ => (DVec3::ZERO, 0.0),
     }
 }
