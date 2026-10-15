@@ -12,7 +12,7 @@ use serde::Serialize;
 
 use crate::cli::{self, Cli, Command};
 use crate::session::Session;
-use crate::{args, json, mcp, render};
+use crate::{args, json, mcp, render, store};
 
 /// Runs the parsed command line against `runner` and returns what to print on stdout. `stdin` is read only for
 /// `run --args @-`.
@@ -35,6 +35,9 @@ pub fn execute(cli: &Cli, runner: Arc<dyn Runner>, session: &Session, stdin: &mu
         Command::Redo => report_history(&REDO, runner.redo(&session.actor, &session.grants)?, cli.json),
         Command::Mcp => mcp::serve_stdio(runner).map(|()| String::new()),
         Command::Registrations => Ok(registrations()),
+        // `app::run` calls `store::run` itself so the exit code survives; this arm keeps the match whole and serves
+        // callers that only want the text.
+        Command::Store { action } => store::run(action, cli.json).map(|reply| reply.text),
     }
 }
 
