@@ -161,6 +161,43 @@ fn nearest(points: &[Seen; 8]) -> f32 {
     points.iter().map(|p| p.toward).fold(0.0, f32::max)
 }
 
+/// The lens of a shot: `t` is the tangent of half the field of view, `scale` the frame's size along the axis measured
+/// relative to its height (the aspect for across, 1 for up).
+#[derive(Clone, Copy)]
+struct Lens {
+    t: f32,
+    scale: f32,
+}
+
+impl Lens {
+    /// The size of a half-frame at `toward` in front of the camera, which is `d` from the anchor.
+    fn half(self, d: f32, toward: f32) -> f32 {
+        (d - toward) * self.t * self.scale
+    }
+}
+
+/// The projected extent of `points` along `value`'s axis, in frame units (the frame is 2 across), when the camera
+/// looks `slide` along that axis from the anchor at distance `d`.
+fn extent(points: &[Seen; 8], value: fn(&Seen) -> f32, lens: Lens, d: f32, slide: f32) -> f32 {
+    let projected = points.iter().map(|p| (value(p) - slide) / lens.half(d, p.toward));
+    let (low, high) = projected.fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), v| (lo.min(v), hi.max(v)));
+    high - low
+}
+
+/// How far along `value`'s axis the camera looks from the anchor: `wanted` (what puts the anchor where the preset
+/// aims), unless that pushes a projected corner past the frame's edge. Then it is the nearest slide that keeps every
+/// corner inside, so no part of the span is cut off by the aim. If the corners can't all fit at this distance, `wanted`.
+fn slide_into_frame(points: &[Seen; 8], value: fn(&Seen) -> f32, lens: Lens, d: f32, wanted: f32) -> f32 {
+    // A corner is inside when `-1 <= (value - slide) / half <= 1`, that is `value - half <= slide <= value + half`.
+    let (mut lowest, mut highest) = (f32::NEG_INFINITY, f32::INFINITY);
+    for p in points {
+        let half = lens.half(d, p.toward);
+        lowest = lowest.max(value(p) - half);
+        highest = highest.min(value(p) + half);
+    }
+    if lowest <= highest { wanted.clamp(lowest, highest) } else { wanted }
+}
+
 /// What the search for the distance that fits found.
 enum Fit {
     /// Even right in front of the box the extent is within what is wanted: it never binds.
@@ -258,14 +295,18 @@ pub fn frame(framing: Framing, landmarks: &Landmarks, def: &CameraDef, aspect: f
     let span = seen(&corners(Vec3::new(b.min.x, shot.lo, b.min.z), Vec3::new(b.max.x, shot.hi, b.max.z)), shot.anchor, axes);
     let width = seen(&corners(b.min, b.max), shot.anchor, axes);
     let floor = nearest(&span).max(nearest(&width));
-    let extent = |points: &[Seen; 8], value: fn(&Seen) -> f32, shift: f32, scale: f32, d: f32| {
-        let projected = points.iter().map(|p| (value(p) + shift) / ((d - p.toward) * t * scale));
-        let (low, high) = projected.fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), v| (lo.min(v), hi.max(v)));
-        high - low
-    };
-    // Taller: the anchor stays at `aim` as the camera backs off, so the whole span shifts with it.
-    let tall = distance_where_it_fits(floor, |d| extent(&span, |p| p.y, shot.aim * d * t, 1.0, d) - 2.0 * shot.fill);
-    let wide = distance_where_it_fits(floor, |d| extent(&width, |p| p.x, 0.0, aspect, d) - 2.0 * shot.fill);
+    // Where the corners land when the camera looks `slide` metres along `value`'s axis from the anchor: across or up
+    // over `(d - toward) * t * scale`, so -1 and 1 are the frame's edges.
+    let lens = Lens { t, scale: 1.0 };
+    let wide_lens = Lens { t, scale: aspect };
+    let tall = distance_where_it_fits(floor, |d| {
+        let slide = slide_into_frame(&span, |p| p.y, lens, d, -shot.aim * d * t);
+        extent(&span, |p| p.y, lens, d, slide) - 2.0 * shot.fill
+    });
+    let wide = distance_where_it_fits(floor, |d| {
+        let slide = slide_into_frame(&width, |p| p.x, wide_lens, d, 0.0);
+        extent(&width, |p| p.x, wide_lens, d, slide) - 2.0 * shot.fill
+    });
     let mut fit = 0.0_f32;
     for found in [tall, wide] {
         match found {
@@ -283,9 +324,12 @@ pub fn frame(framing: Framing, landmarks: &Landmarks, def: &CameraDef, aspect: f
         return Err(StageError::Framing { reason: format!("the {framing:?} span has no extent to frame") });
     }
 
-    // Looking at a point `aim * d * t` above the anchor, in the camera's up, puts the anchor at `aim` in the frame.
+    // Looking at a point `aim * d * t` above the anchor, in the camera's up, puts the anchor at `aim` in the frame,
+    // unless that would push a corner out of it: then the camera slides just far enough to bring the corner back.
     let h = 2.0 * d * t;
-    let target = shot.anchor - up * (shot.aim * d * t);
+    let rise = slide_into_frame(&span, |p| p.y, lens, d, -shot.aim * d * t);
+    let across = slide_into_frame(&width, |p| p.x, wide_lens, d, 0.0);
+    let target = shot.anchor + up * rise + right * across;
     let position = target + back * d;
     camera.transform.w_axis = position.extend(1.0);
     camera.projection = Projection::Perspective {

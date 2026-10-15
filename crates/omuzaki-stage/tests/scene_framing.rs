@@ -69,6 +69,25 @@ fn shares(camera: &Camera, aspect: f32, lo: f32, hi: f32, bounds: &Bounds) -> (f
     (tall, extent(corners(bounds.min, bounds.max), |p| p.0))
 }
 
+/// The range of heights (span corners) and of positions across (box corners) the projected corners cover, as
+/// `((lowest, highest), (leftmost, rightmost))` in frame units where the frame is -1 to 1.
+fn covered(camera: &Camera, aspect: f32, lo: f32, hi: f32, bounds: &Bounds) -> ((f32, f32), (f32, f32)) {
+    let range = |points: Vec<Vec3>, pick: fn((f32, f32)) -> f32| {
+        let values: Vec<f32> = points.into_iter().map(|p| pick(project(camera, aspect, p))).collect();
+        values.iter().fold((f32::MAX, f32::MIN), |(l, h), v| (l.min(*v), h.max(*v)))
+    };
+    let tall =
+        range(corners(Vec3::new(bounds.min.x, lo, bounds.min.z), Vec3::new(bounds.max.x, hi, bounds.max.z)), |p| p.1);
+    (tall, range(corners(bounds.min, bounds.max), |p| p.0))
+}
+
+/// Whether a corner of the preset's span sits on the frame's top or bottom edge: the aim gave way to keep it in.
+fn held_by_an_edge(camera: &Camera, aspect: f32, framing: Framing, l: &Landmarks) -> bool {
+    let (lo, hi, bounds, _) = span(framing, l);
+    let ((low, high), _) = covered(camera, aspect, lo, hi, &bounds);
+    high >= 1.0 - 1e-3 || low <= -1.0 + 1e-3
+}
+
 #[test]
 fn presets_fill_their_span() {
     for id in templates::TEMPLATES {
@@ -101,7 +120,8 @@ fn pitch_60_keeps_the_full_body_fill_and_the_bust_crown_position() {
         let (tall, wide) = shares(&bust, aspect, from, to, &bounds);
         assert!((tall.max(wide) - want).abs() <= 0.03 * want, "{id}: bust {tall} / {wide}");
         let crown = from_top(&bust, aspect, &bounds, l.crown().unwrap());
-        assert!((crown - BUST_CROWN_FROM_TOP).abs() < 0.02, "{id}: crown at {crown}");
+        let held = held_by_an_edge(&bust, aspect, Framing::Bust, &l);
+        assert!((crown - BUST_CROWN_FROM_TOP).abs() < 0.02 || held, "{id}: crown at {crown}");
     }
 }
 
@@ -131,21 +151,66 @@ fn the_pitch_range_includes_straight_down_and_up() {
 }
 
 #[test]
-fn presets_aim_where_the_table_says() {
+fn presets_aim_where_the_table_says_unless_an_edge_holds_them() {
     for id in templates::TEMPLATES {
         let l = landmarks(id);
         for aspect in ASPECTS {
             let at = |f: Framing| frame(f, &l, &CameraDef::preset(f), aspect).unwrap();
+            let held = |f: Framing| held_by_an_edge(&at(f), aspect, f, &l);
             let face = from_top(&at(Framing::Face), aspect, &l.head.unwrap(), l.eyes.unwrap());
-            assert!((face - FACE_EYES_FROM_TOP).abs() < 0.02, "{id} {aspect}: eyes at {face}");
+            eprintln!("{id} {aspect:.2}: eyes at {face:.3} (held by an edge: {})", held(Framing::Face));
+            assert!((face - FACE_EYES_FROM_TOP).abs() < 0.02 || held(Framing::Face), "{id} {aspect}: eyes at {face}");
             let bust = from_top(&at(Framing::Bust), aspect, &l.bust.unwrap(), l.crown().unwrap());
-            assert!((bust - BUST_CROWN_FROM_TOP).abs() < 0.02, "{id} {aspect}: crown at {bust}");
+            assert!((bust - BUST_CROWN_FROM_TOP).abs() < 0.02 || held(Framing::Bust), "{id} {aspect}: crown at {bust}");
             let full = from_top(&at(Framing::Full), aspect, &l.body, f32::midpoint(l.bottom(), l.top()));
             assert!((full - 0.5).abs() < 0.02, "{id} {aspect}: full centre at {full}");
             let hands = l.hands.unwrap();
             let h = from_top(&at(Framing::Hands), aspect, &hands, f32::midpoint(hands.min.y, hands.max.y));
             assert!((h - 0.5).abs() < 0.02, "{id} {aspect}: hands centre at {h}");
         }
+    }
+}
+
+#[test]
+fn every_projected_corner_stays_inside_the_frame() {
+    for id in templates::TEMPLATES {
+        let l = landmarks(id);
+        for aspect in ASPECTS {
+            for framing in PRESETS {
+                for pitch in [0.0, 60.0, -30.0] {
+                    let def = CameraDef { pitch, ..CameraDef::preset(framing) };
+                    let camera = frame(framing, &l, &def, aspect).unwrap();
+                    let (lo, hi, bounds, _) = span(framing, &l);
+                    let ((low, high), (left, right)) = covered(&camera, aspect, lo, hi, &bounds);
+                    let inside = |v: f32| v.abs() <= 1.0 + 1e-3;
+                    assert!(
+                        [low, high, left, right].into_iter().all(inside),
+                        "{id} {aspect} {framing:?} {pitch}: {low} {high} {left} {right}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// A bust 0.3 m tall and 0.4 m deep at the default lens: its near crown corner is higher on the screen than the crown
+/// at the box's centre, which used to put it at about 1.08.
+#[test]
+fn a_deep_bust_keeps_its_near_crown_corner_in_the_frame() {
+    let mut l = landmarks("standard");
+    l.head = Some(Bounds { min: Vec3::new(-0.1, 1.05, -0.1), max: Vec3::new(0.1, 1.2, 0.1) });
+    l.chest = Some(0.9);
+    l.bust = Some(Bounds { min: Vec3::new(-0.2, 0.9, -0.2), max: Vec3::new(0.2, 1.2, 0.2) });
+    for aspect in ASPECTS {
+        let camera = frame(Framing::Bust, &l, &CameraDef::preset(Framing::Bust), aspect).unwrap();
+        let bust = l.bust.unwrap();
+        let ((low, high), (left, right)) = covered(&camera, aspect, 0.9, 1.2, &bust);
+        assert!(
+            [low, high, left, right].into_iter().all(|v| v.abs() <= 1.0 + 1e-3),
+            "{aspect}: {low} {high} {left} {right}"
+        );
+        let (tall, wide) = shares(&camera, aspect, 0.9, 1.2, &bust);
+        assert!((tall.max(wide) - BUST_FILL).abs() <= 0.03 * BUST_FILL, "{aspect}: {tall} / {wide}");
     }
 }
 
