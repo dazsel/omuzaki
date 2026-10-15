@@ -1,3 +1,9 @@
+---
+title: "0040: The in-app assistant is a host thread over the shared MCP server: one message is one undo step, Stop is instant, conversations stay out of the project (2026-10-13)"
+summary: "The in-app assistant is a host thread over the shared MCP server: one message is one undo step, Stop is instant, conversations stay out of the project"
+area: decisions
+---
+
 # 0040: The in-app assistant is a host thread over the shared MCP server: one message is one undo step, Stop is instant, conversations stay out of the project (2026-10-13)
 
 **Status:** proposed. **Context:** AG-01, TH-08, TH-10,

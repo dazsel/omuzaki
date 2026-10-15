@@ -1,3 +1,9 @@
+---
+title: "0019: Library items are data-only recipes that apply as one op, materialise into the document and pin themselves there (2026-10-12)"
+summary: "Library items are data-only recipes that apply as one op, materialise into the document and pin themselves there"
+area: decisions
+---
+
 # 0019: Library items are data-only recipes that apply as one op, materialise into the document and pin themselves there (2026-10-12)
 
 **Status:** accepted (2026-10-12). **Context:** spec v3 §28 (LB-01 to LB-15), §7, §6, §39.1, §40; `docs/design/library.md` (the full contract); ADR 0015 (registration linking), ADR 0016 (user-supplied models); `docs/design/io-api.md` D10 (licence records, part source rows, the export gate).

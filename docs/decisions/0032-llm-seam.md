@@ -1,3 +1,9 @@
+---
+title: "0032: One LLM seam: a blocking pull stream, a provider-neutral append-only history, integer micro-dollars, no fallback (2026-10-13)"
+summary: "One LLM seam: a blocking pull stream, a provider-neutral append-only history, integer micro-dollars, no fallback"
+area: decisions
+---
+
 # 0032: One LLM seam: a blocking pull stream, a provider-neutral append-only history, integer micro-dollars, no fallback (2026-10-13)
 
 **Status:** proposed. **Context:** AG-01,

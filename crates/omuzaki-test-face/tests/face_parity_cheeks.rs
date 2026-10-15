@@ -1,5 +1,5 @@
 //! The cheeks and the nose against the prototype's `blush`, `fringe-shade` and `nose` sections: both variants,
-//! every golden expression. Skips without the local assets. See `omuzaki_test::face_parity` for what stays local.
+//! every golden expression. Skips without the local assets. See `omuzaki_test_face::face_parity` for what stays local.
 //!
 //! Blush and the fringe shade meet the face rule (T-FACE) as it stands: their gradients are smooth, and the worst
 //! premultiplied channel error over a whole texture is 2.
@@ -18,8 +18,8 @@
 
 use omuzaki_face::Section;
 use omuzaki_test::compare::Tolerance;
-use omuzaki_test::face_parity::{ParityError, SectionCheck, SectionTolerance, check_section};
 use omuzaki_test::regioncmp::{T_FACE, T_FACE_MIN_PSNR_DB};
+use omuzaki_test_face::face_parity::{ParityError, SectionCheck, SectionTolerance, check_section};
 
 fn assert_matches(section: Section, tolerance: SectionTolerance) -> Result<SectionCheck, ParityError> {
     let check = check_section(section, tolerance)?;
