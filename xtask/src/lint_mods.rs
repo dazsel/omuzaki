@@ -79,12 +79,14 @@ fn children(folder: &Path) -> Result<Vec<String>> {
 }
 
 /// `text` with its comments blanked (line breaks kept, so line numbers hold). String and character literals are
-/// skipped over, so a `//` inside a string is not a comment. A minimal scan, not a lexer.
-fn without_comments(text: &str) -> String {
+/// skipped over, so a `//` inside a string is not a comment; with `keep_strings` off their contents are blanked too, so
+/// a `mod a;` in a raw string is not a declaration. A minimal scan, not a lexer.
+fn without_comments(text: &str, keep_strings: bool) -> String {
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::with_capacity(text.len());
     let mut i = 0;
     let blank = |c: char| if c == '\n' { '\n' } else { ' ' };
+    let literal = |c: char| if keep_strings { c } else { blank(c) };
     while i < chars.len() {
         let c = chars[i];
         let next = chars.get(i + 1).copied();
@@ -123,15 +125,15 @@ fn without_comments(text: &str) -> String {
             while i < chars.len() {
                 let rest: String = chars[i..].iter().take(closing.len()).collect();
                 if !raw && chars[i] == '\\' {
-                    out.push(chars[i]);
-                    out.extend(chars.get(i + 1));
+                    out.push(literal(chars[i]));
+                    out.extend(chars.get(i + 1).copied().map(literal));
                     i += 2;
                 } else if rest == closing {
                     out.push_str(&closing);
                     i += closing.len();
                     break;
                 } else {
-                    out.push(chars[i]);
+                    out.push(literal(chars[i]));
                     i += 1;
                 }
             }
@@ -200,7 +202,8 @@ fn folder_violations(name: &str, crate_root: &Path, folder: &str) -> Result<Vec<
         return Ok(vec![format!("{name}: {declaring} is missing; it declares the modules of {folder}")]);
     }
     let text = fs::read_to_string(&path).map_err(|source| ReadError::Read { path: path.clone(), source })?;
-    let code = without_comments(&text);
+    let code = without_comments(&text, true);
+    let declarations = without_comments(&text, false);
     let mut found = Vec::new();
     if !has_generated_include(&code) {
         found.push(format!(
@@ -208,7 +211,7 @@ fn folder_violations(name: &str, crate_root: &Path, folder: &str) -> Result<Vec<
         ));
     }
     let children = children(&dir)?;
-    for (number, line) in code.lines().enumerate() {
+    for (number, line) in declarations.lines().enumerate() {
         if let Some(module) = bodyless_mod(line).filter(|module| children.iter().any(|child| child == module)) {
             found.push(format!(
                 "{name}: {declaring}:{}: hand-written `mod {module};`; {folder} generates its module list (`omuzaki_embed::modules`)",
@@ -316,6 +319,15 @@ mod tests {
         assert!(found[0].contains("no `include!"), "{found:?}");
         let hand = format!("{INCLUDE}/* a comment\n*/ \nmod a;\n");
         assert!(check(&krate(&hand, &["a.rs"]))[0].contains("mod.rs:4:"), "line numbers survive comments");
+    }
+
+    #[test]
+    fn a_mod_inside_a_string_is_not_a_declaration() {
+        let source = format!("const SAMPLE: &str = r#\"\nmod a;\n\"#;\nconst T: &str = \"\\\"\nmod a;\";\n{INCLUDE}");
+        assert_eq!(check(&krate(&source, &["a.rs"])), Vec::<String>::new());
+        let found = check(&krate(&format!("{source}mod a;\n"), &["a.rs"]));
+        assert_eq!(found.len(), 1, "a real `mod a;` still fails: {found:?}");
+        assert!(found[0].contains("mod.rs:7:"), "{found:?}");
     }
 
     #[test]
