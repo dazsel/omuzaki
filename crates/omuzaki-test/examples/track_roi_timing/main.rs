@@ -22,9 +22,12 @@ use omuzaki_ai_ort::{OrtRuntime, builds};
 use omuzaki_core::time::Seconds;
 use omuzaki_track::models::ModelDir;
 use omuzaki_track::{FaceTracker, FaceTrackerConfig, Mode, NormRect, RgbFrame};
+use percentile::nearest_rank;
 use track_support::DirSource;
 
-#[path = "../tests/track_support/mod.rs"]
+mod percentile;
+
+#[path = "../../tests/track_support/mod.rs"]
 mod track_support;
 
 const W: u32 = 640;
@@ -49,11 +52,6 @@ fn gradient() -> Vec<u8> {
         }
     }
     pixels
-}
-
-/// The value at nearest-rank percentile `pct` of the sorted `values`, or 0 for none.
-fn percentile(values: &[f64], pct: usize) -> f64 {
-    values.get(values.len() * pct / 100).or(values.last()).copied().unwrap_or(0.0)
 }
 
 fn run() -> Result<(), String> {
@@ -108,8 +106,8 @@ fn run() -> Result<(), String> {
     println!(
         "| total | {:.2} | {:.2} | {:.2} |\n",
         mean / 1e3,
-        percentile(&micros, 50) / 1e3,
-        percentile(&micros, 95) / 1e3
+        nearest_rank(&micros, 50) / 1e3,
+        nearest_rank(&micros, 95) / 1e3
     );
     println!("- ORT build: {runtime}");
     println!("- graph optimisation: ONNX Runtime's default (`omuzaki-ai-ort` sets no level)");
