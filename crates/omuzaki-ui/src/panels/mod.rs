@@ -4,6 +4,7 @@
 //! runner they are given ([`io::Io`]), as every panel does (`cargo xtask lint-ui-writes`).
 
 pub mod edit;
+pub mod inspector;
 pub mod io;
 pub mod outliner;
 pub mod text;

@@ -59,6 +59,8 @@ pub const MANY_HOW: &str = "Select one part to edit its settings.";
 pub const NO_SETTING: &str = "No setting matches \u{201c}{query}\u{201d}";
 /// The header's kind line.
 pub const KIND: &str = "Kind: {kind}";
+/// The undo step of an edit in the inspector.
+pub const SET: &str = "Set {name}";
 /// `part.describe` failed: the runner's message follows.
 pub const UNDESCRIBED: &str = "This part can't be described: {reason}";
 
