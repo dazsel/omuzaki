@@ -96,7 +96,13 @@ pub fn problems(file: &str, text: &str, register: &[Row], sources: &[(String, St
 /// `text` with every control character (a newline, an ESC) written as an escape, so a finding that quotes a manifest
 /// value stays exactly one line and can't move the terminal.
 fn one_line(text: &str) -> String {
-    text.chars().map(|c| if c.is_control() { c.escape_default().to_string() } else { c.to_string() }).collect()
+    escaped(text)
+}
+
+/// `value` with every character other than printable ASCII (0x20 to 0x7E) written as an escape (`\n`, `\u{1b}`). Every
+/// manifest-sourced value goes through this before it is quoted in a finding.
+fn escaped(value: &str) -> String {
+    value.chars().map(|c| if matches!(c, ' '..='~') { c.to_string() } else { c.escape_default().to_string() }).collect()
 }
 
 /// [`problems`] before its lines are made single-line.
@@ -204,11 +210,7 @@ fn lineage_problems(manifest: &ModelManifest) -> Vec<String> {
         ));
     }
     for link in lineage {
-        let shown: String = link
-            .name
-            .chars()
-            .map(|c| if matches!(c, ' '..='~') { c.to_string() } else { format!("\\u{{{:x}}}", u32::from(c)) })
-            .collect();
+        let shown = escaped(&link.name);
         let named = format!("model `{id}`: lineage link `{shown}` ({})", kind_name(link.kind));
         if link.name.trim().is_empty() {
             out.push(format!("model `{id}`: a {} lineage link has a blank `name`", kind_name(link.kind)));
@@ -219,16 +221,20 @@ fn lineage_problems(manifest: &ModelManifest) -> Vec<String> {
         match url {
             None => out.push(format!("{named} names no source `url`")),
             Some(url) if !is_https_url(url) => {
-                out.push(format!("{named} has the source `{url}`, which is not an `https://` URL with a host"));
+                out.push(format!(
+                    "{named} has the source `{}`, which is not an `https://` URL with a host",
+                    escaped(url)
+                ));
             }
             Some(_) => {}
         }
-        let at = url.map_or(String::new(), |url| format!(" ({url})"));
+        let at = url.map_or(String::new(), |url| format!(" ({})", escaped(url)));
         match link.licence.as_deref().filter(|licence| !licence.trim().is_empty()) {
             None => out.push(format!("{named} names no licence{at}")),
             Some(licence) if !ALLOWED_LICENCES.contains(&licence) => out.push(format!(
-                "{named} has the licence `{licence}`{at}; lineage licence must be one identifier from policy.md's \
-                 Allowed list (docs/licensing/policy.md)"
+                "{named} has the licence `{}`{at}; lineage licence must be one identifier from policy.md's \
+                 Allowed list (docs/licensing/policy.md)",
+                escaped(licence)
             )),
             Some(_) => {}
         }
@@ -246,7 +252,8 @@ fn kind_name(kind: LineageKind) -> &'static str {
     }
 }
 
-/// Whether `url` is `https://`, then a host of two or more dot-separated labels of letters, digits and inner `-`, an
+/// Whether `url` is `https://`, then a host of two or more dot-separated labels (at most 63 characters each) of
+/// letters, digits and inner `-`, the last holding a letter (no IP-address or all-numeric host), an
 /// optional `:port` (1 to 65535), and nothing or a `/`, `?` or `#` and the rest. It may hold only printable ASCII
 /// without spaces (0x21 to 0x7E). Userinfo and IPv6 literals fail.
 fn is_https_url(url: &str) -> bool {
@@ -264,6 +271,7 @@ fn is_https_url(url: &str) -> bool {
         !label.is_empty()
             && !label.starts_with('-')
             && !label.ends_with('-')
+            && label.len() <= 63
             && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
     };
     let port_ok = port.is_none_or(|port| {
@@ -271,7 +279,9 @@ fn is_https_url(url: &str) -> bool {
             && port.chars().all(|c| c.is_ascii_digit())
             && port.parse::<u32>().is_ok_and(|n| (1..=65535).contains(&n))
     });
-    host.contains('.') && host.split('.').all(label) && port_ok
+    // The last label (the top-level domain) holds a letter, so a dotted-decimal or all-numeric host is refused.
+    let tld_ok = host.rsplit('.').next().is_some_and(|last| last.chars().any(|c| c.is_ascii_alphabetic()));
+    host.contains('.') && host.split('.').all(label) && tld_ok && port_ok
 }
 
 /// The last segment of a path, with `\` read as `/` (Windows paths come back with `\`).
@@ -1132,6 +1142,22 @@ url = "https://data.example/tiny-corpus"
     }
 
     #[test]
+    fn a_rejected_url_or_licence_with_a_newline_and_esc_is_one_escaped_line() {
+        let hostile = "x\n\u{1b}[2J";
+        for (from, value, what) in [
+            ("https://data.example/tiny-corpus", format!("https://data.example/{hostile}"), "URL"),
+            ("CC0-1.0", format!("MIT{hostile}"), "licence"),
+        ] {
+            let text = manifest("tiny", HTTPS).replace(from, &toml_escaped(&value));
+            let found = problems(FILE, &text, &register(), &good_source("tiny"));
+            assert_eq!(found.len(), 1, "{what}: {found:?}");
+            assert!(!found[0].chars().any(char::is_control), "{what}: {:?}", found[0]);
+            assert!(found[0].contains("x\\n\\u{1b}[2J"), "{what}: {}", found[0]);
+        }
+        assert_eq!(escaped("a\n\u{1b}\u{202e}é~"), "a\\n\\u{1b}\\u{202e}\\u{e9}~");
+    }
+
+    #[test]
     fn a_disallowed_lineage_licence_names_the_link_and_the_policy() {
         for licence in ["research-only", "totally-made-up", "BUSL-1.1", "CC-BY-NC-4.0"] {
             let text = manifest("tiny", HTTPS).replace("CC0-1.0", licence);
@@ -1148,6 +1174,9 @@ url = "https://data.example/tiny-corpus"
 
     #[test]
     fn a_lineage_url_must_be_https_with_a_host() {
+        // A 63-character label and a digit-bearing last label that still holds a letter pass.
+        assert!(is_https_url("https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example.com"));
+        assert!(is_https_url("https://1.example.co2"));
         for url in ["https://data.example/tiny", "https://data.example:8443?q=1", "https://a-b.example.com#frag"] {
             assert!(is_https_url(url), "{url}");
         }
@@ -1169,6 +1198,11 @@ url = "https://data.example/tiny-corpus"
             "https://a-.example.com",
             "https://a..example.com",
             "https://example.com:",
+            "https://999.999.999.999/",
+            "https://127.0.0.1",
+            "https://example.123",
+            "https://12345",
+            "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example.com",
         ];
         for url in bad {
             let text = manifest("tiny", HTTPS).replace("https://data.example/tiny-corpus", url);
