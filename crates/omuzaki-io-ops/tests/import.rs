@@ -656,8 +656,9 @@ fn a_cancel_during_a_put_leaves_only_whole_objects_and_no_record() {
     let op = bytes_op(&file);
     rig.plan(&op).unwrap();
 
-    // `work` either stops or finishes the writes it started; the job manager discards its result once cancelled.
-    let _ = rig.work(&op, &signal);
+    // The manager applies `finish` for work that returns `Ok`, even after a cancel request, so `work` must not.
+    let error = rig.work(&op, &signal).unwrap_err();
+    assert_eq!(error.code, ErrorCode::Cancelled);
 
     assert!(omuzaki_ops_api::Cancel::is_cancelled(&signal.flag));
     let expected = [file.clone(), vec![0x89, b'P', 0], vec![0x89, b'P', 1]];
@@ -667,4 +668,31 @@ fn a_cancel_during_a_put_leaves_only_whole_objects_and_no_record() {
         assert_eq!(&rig.store.get(&ContentHash::of(bytes)).unwrap(), bytes, "every object present is whole");
     }
     assert!(rig.doc.get(&doc_path("assets")).is_none(), "no asset record unless `finish` is applied");
+}
+
+#[test]
+fn errors_blame_the_argument_the_file_came_from() {
+    let rig = Rig::new();
+    let mut malformed = tiny_glb();
+    malformed.truncate(40);
+
+    let from_bytes = rig.work(&bytes_op(&malformed), &Signal::new(None)).unwrap_err();
+    assert_eq!((from_bytes.code, from_bytes.field.as_deref()), (ErrorCode::Invalid, Some("bytes")));
+
+    std::fs::write(rig.dir.path().join("broken.glb"), &malformed).unwrap();
+    let from_path = rig.work(&Rig::op(json!({ "path": "broken.glb" })), &Signal::new(None)).unwrap_err();
+    assert_eq!((from_path.code, from_path.field.as_deref()), (ErrorCode::Invalid, Some("path")));
+
+    let file = probe(1, 1);
+    let options = ImportOptions::default().with_limits(Limits { max_input_bytes: 4, ..Limits::default() });
+    let over = bytes_op(&file).import_bytes("m.bin", &file, &options, &MemStore::new(), &omuzaki_io_api::NoProgress);
+    assert_eq!(over.unwrap_err().field.as_deref(), Some("bytes"));
+}
+
+#[test]
+fn a_conflict_names_the_consent_of_both_records() {
+    let mut rig = Rig::new();
+    rig.run(&bytes_op(&probe(1, 1))).unwrap();
+    let error = refused_without_a_trace(&mut rig, &restrictive_probe(1, 1));
+    assert_eq!(error.message.matches("consent None").count(), 2, "{}", error.message);
 }

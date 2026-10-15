@@ -16,9 +16,9 @@
 //! **Cancellation.** The import is cancellable at every checkpoint the importer reaches. The store phase is not
 //! interrupted: the last check comes before the first `put`. The guarantee:
 //! - a cancel seen before the first `put` stores nothing;
-//! - a cancel after it (the manager gives a job a grace period, and `work` keeps running) leaves only whole objects,
-//!   because `put` is atomic and content addressed, and no asset record, because the record exists only in the patch
-//!   `finish` returns, which a cancelled or shut-down job never has applied;
+//! - a cancel requested at any point before `work` returns, including while the objects are written, makes `work` return
+//!   `Cancelled`, so no asset record is written: the record exists only in the patch `finish` returns;
+//! - the objects already put are whole, because `put` is atomic and content addressed;
 //! - those objects are referenced by nothing, so garbage collection removes them (the `StoreGc` contract, ADR 0021).
 //!
 //! **Not here.** Importing as an editable part is CB-44 and answers `Unsupported`. Files a `.gltf` refers to are not
@@ -153,12 +153,13 @@ impl Import {
         store: &dyn Store,
         progress: &dyn Progress,
     ) -> Result<Imported, OpError> {
+        let field = self.source_field();
         let input = ImportInput::new(bytes).named(name);
         let importer = self.pick_importer(&input)?;
         let ctx = ImportCtx::new(options).with_resolver(&NoResolver).with_progress(progress);
-        let outcome = run_import(&*importer, &input, &ctx).map_err(import_error)?;
+        let outcome = run_import(&*importer, &input, &ctx).map_err(|e| import_error(e, field))?;
         // The last chance to stop: past this point the objects are written without further checks.
-        progress.checkpoint("storing", 0.9).map_err(|e| from_io(e, "path"))?;
+        progress.checkpoint("storing", 0.9).map_err(|e| from_io(e, field))?;
         let provenance = outcome
             .scene
             .provenance
@@ -195,7 +196,6 @@ impl Import {
         }
         let original = stored.remove(0);
         let images = stored;
-        progress.stage("done", 1.0);
         Ok(Imported {
             asset: AssetRecord {
                 original,
@@ -226,6 +226,11 @@ impl Import {
             .ok_or_else(|| OpError::internal(format!("importer {} vanished after sniffing", best.format)))
     }
 
+    /// The argument the bytes came from, which errors about the file blame.
+    fn source_field(&self) -> &'static str {
+        if self.path.is_some() { "path" } else { "bytes" }
+    }
+
     /// The file's name: `name`, else the last part of `path`, else [`DEFAULT_NAME`].
     fn file_name(&self) -> String {
         let from_path = self.path.as_deref().and_then(|p| std::path::Path::new(p).file_name()?.to_str());
@@ -240,26 +245,26 @@ impl Import {
         };
         let file = job.fs_access(path, FsMode::Read)?.open_read()?;
         let size = file.metadata().map_err(|e| OpError::invalid("path", format!("couldn't read the file: {e}")))?.len();
-        check_size(size, max_bytes)?;
+        check_size(size, max_bytes, "path")?;
         // The read still stops at the limit: the file may grow after the size was taken.
         let mut bytes = Vec::new();
         file.take(max_bytes.saturating_add(1))
             .read_to_end(&mut bytes)
             .map_err(|e| OpError::invalid("path", format!("couldn't read the file: {e}")))?;
-        check_size(bytes.len() as u64, max_bytes)?;
+        check_size(bytes.len() as u64, max_bytes, "path")?;
         Ok(Cow::Owned(bytes))
     }
 }
 
 /// The op error for a failed import. The job reads no other files, so a file the model refers to is a feature this op
 /// lacks, not a missing file.
-fn import_error(error: IoError) -> OpError {
+fn import_error(error: IoError, field: &str) -> OpError {
     match error {
         IoError::Resource { uri, .. } => OpError::unsupported(format!(
             "the model refers to another file ({uri}), and io.import reads a single file"
         ))
         .hint("import a .glb, which carries its buffers and images"),
-        other => from_io(other, "path"),
+        other => from_io(other, field),
     }
 }
 
@@ -278,8 +283,14 @@ fn strip_nulls(value: &mut Value) {
 /// One record on a line, for the error that names two of them.
 fn describe_record(record: &Provenance) -> String {
     format!(
-        "licence {}, commercial {:?}, attribution {:?}, private test {}, author {:?}, source {:?}",
-        record.licence, record.commercial, record.attribution, record.private_test, record.author, record.source
+        "licence {}, commercial {:?}, attribution {:?}, private test {}, author {:?}, consent {:?}, source {:?}",
+        record.licence,
+        record.commercial,
+        record.attribution,
+        record.private_test,
+        record.author,
+        record.consent,
+        record.source
     )
 }
 
@@ -302,9 +313,9 @@ fn require_same_record(store: &dyn Store, hash: &ContentHash, wanted: &Provenanc
 }
 
 /// `Invalid` over the input limit, the same error `run_import` gives, so a hostile file is refused before it is held.
-fn check_size(got: u64, max_bytes: u64) -> Result<(), OpError> {
+fn check_size(got: u64, max_bytes: u64, field: &str) -> Result<(), OpError> {
     if got > max_bytes {
-        return Err(from_io(IoError::Limit { what: "input size in bytes", limit: max_bytes, got }, "path"));
+        return Err(from_io(IoError::Limit { what: "input size in bytes", limit: max_bytes, got }, field));
     }
     Ok(())
 }
@@ -375,10 +386,7 @@ impl Op for Import {
                 if bytes.is_empty() {
                     return Err(OpError::invalid("bytes", "no bytes were given"));
                 }
-                check_size(bytes.len() as u64, max_bytes).map_err(|mut e| {
-                    e.field = Some("bytes".to_owned());
-                    e
-                })?;
+                check_size(bytes.len() as u64, max_bytes, "bytes")?;
             }
             _ => {
                 return Err(OpError::invalid("path", "pass exactly one of path or bytes")
@@ -408,6 +416,9 @@ impl Op for Import {
         });
         // A cancelled import surfaces from the importer as a plain conflict; the job reports it as cancelled.
         let imported = outcome.map_err(|e| if job.is_cancelled() { OpError::cancelled(job.id()) } else { e })?;
+        // The manager applies `finish` for work that succeeded even after a cancel request, so a cancel that came while
+        // the objects were written must not return the result: no asset record is written for a cancelled job.
+        job.checkpoint("done", 1.0)?;
         let mut result = serde_json::to_value(imported)
             .map_err(|e| OpError::internal(format!("serialising the import: {e}")))?;
         strip_nulls(&mut result);
