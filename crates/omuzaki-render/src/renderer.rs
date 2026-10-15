@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use omuzaki_core::glam::{UVec2, Vec3};
 use omuzaki_render_api::{
-    Capabilities, EnvironmentDesc, EnvironmentId, FrameReport, Image, Material, MaterialId, MeshData, MeshId,
+    Capabilities, EnvironmentDesc, EnvironmentId, FrameReport, Image, Instance, Material, MaterialId, MeshData, MeshId,
     MeshOptions, MtoonSupport, Painter, Quality, RenderError, Renderer, ResourceRef, ResourceStats, Scene, TargetDesc,
     TargetId, TextureDesc, TextureId, TextureUsage,
 };
@@ -18,6 +18,7 @@ use crate::frame::attachments::Attachments;
 use crate::frame::graph::FrameGraph;
 use crate::frame::{FrameState, FrameView};
 use crate::gpu::{Gpu, HeadlessOptions, scope_errors};
+use crate::morph;
 use crate::paint::{GpuPaintTarget, PaintLog, Staging};
 use crate::pass::{FrameStats, PassCx};
 use crate::program;
@@ -107,8 +108,8 @@ impl WgpuRenderer {
             gpu_timings: graph.measures_gpu(),
             bit_exact: false,
             dynamic_meshes: true,
-            morph_targets: false,
-            max_morph_targets: 0,
+            morph_targets: true,
+            max_morph_targets: morph::MAX_TARGETS,
             mtoon: MtoonSupport::NONE,
         };
         Ok(Self {
@@ -195,8 +196,11 @@ impl Renderer for WgpuRenderer {
 
     fn create_mesh_with(&mut self, mesh: &MeshData, options: &MeshOptions) -> Result<MeshId, RenderError> {
         mesh.validate()?;
-        if options.morphs.is_some() {
-            return Err(RenderError::Unsupported("morph targets"));
+        if let Some(set) = &options.morphs {
+            set.validate(mesh.positions.len())?;
+            if set.len() > morph::MAX_TARGETS as usize {
+                return Err(RenderError::LimitExceeded { what: "morph targets", limit: u64::from(morph::MAX_TARGETS) });
+            }
         }
         let gpu = &self.shared.gpu;
         let uploaded = gpu.scoped("a mesh", || GpuMesh::upload(gpu, mesh, options))?;
@@ -343,7 +347,12 @@ impl Renderer for WgpuRenderer {
         // The handle dies now. Dropping the wgpu objects frees them once the queue is done with them, which is the
         // deferred release the contract describes: a frame in flight keeps what it uses alive.
         match resource {
-            ResourceRef::Mesh(id) => resources.meshes.remove(id.index(), id.generation()).map(drop).ok_or_else(unknown),
+            ResourceRef::Mesh(id) => {
+                let removed = resources.meshes.remove(id.index(), id.generation()).map(drop).ok_or_else(unknown);
+                // The pooled morph streams sized for the mesh go with it.
+                resources.morphs.forget(id.index(), id.generation());
+                removed
+            }
             ResourceRef::Material(id) => {
                 resources.materials.remove(id.index(), id.generation()).map(drop).ok_or_else(unknown)
             }
@@ -374,6 +383,16 @@ impl Renderer for WgpuRenderer {
         shared.gpu.scoped("a mesh refresh", || {
             resources.refresh_dynamic(&shared.gpu.queue, scene);
             Ok(())
+        })?;
+        let gpu = &shared.gpu;
+        gpu.scoped("a morph blend", || {
+            let Resources { meshes, materials, morphs, .. } = resources;
+            let outlined = |instance: &Instance| {
+                materials
+                    .get(instance.material.index(), instance.material.generation())
+                    .is_some_and(GpuMaterial::draws_outline)
+            };
+            morphs.prepare(&gpu.device, &gpu.queue, meshes, scene, outlined)
         })?;
         let (scene_resources, targets) = resources.split();
         let entry = targets

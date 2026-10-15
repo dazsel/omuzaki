@@ -4,7 +4,7 @@
 //! `Invalid`, missing features are `Unsupported`, unreadable sidecars are `NotFound`, bugs stay `Internal`.
 
 use omuzaki_io_api::{Finding, IoError};
-use omuzaki_ops_api::OpError;
+use omuzaki_ops_api::{ErrorCode, OpError};
 
 /// Findings spelled out in the message of a rejection; the rest are counted. An `OpError` carries no report, so the
 /// message has to be enough to act on.
@@ -42,7 +42,16 @@ pub(crate) fn from_io(error: IoError, field: &str) -> OpError {
             }
         }
         IoError::Cancelled => {
-            OpError::conflict("cancelled before it finished").hint("nothing was changed; run it again")
+            // The job manager reads `Cancelled` as a cancellation, not a failure, and attaches the detail naming who and
+            // why. `OpError::cancelled` needs the job id, which this conversion does not have.
+            let error = OpError {
+                code: ErrorCode::Cancelled,
+                message: "cancelled before it finished".to_owned(),
+                field: None,
+                hint: None,
+                detail: None,
+            };
+            error.hint("nothing was changed; run it again")
         }
         IoError::Internal(message) => OpError::internal(message),
     }
@@ -72,7 +81,7 @@ mod tests {
             (rejected, ErrorCode::Invalid),
             (IoError::unsupported("sparse accessors", "densify them"), ErrorCode::Unsupported),
             (IoError::Resource { uri: "a.bin".into(), reason: "no such file".into() }, ErrorCode::NotFound),
-            (IoError::Cancelled, ErrorCode::Conflict),
+            (IoError::Cancelled, ErrorCode::Cancelled),
             (IoError::Internal("oops".into()), ErrorCode::Internal),
         ];
         for (error, code) in cases {
@@ -90,6 +99,13 @@ mod tests {
         assert!(malformed.hint.is_some());
         let unsupported = from_io(IoError::unsupported("sparse accessors", "densify them"), "path");
         assert_eq!(unsupported.hint.as_deref(), Some("densify them"));
+    }
+
+    #[test]
+    fn a_cancel_is_left_for_the_job_manager_to_name() {
+        let error = from_io(IoError::Cancelled, "path");
+        assert!(error.detail.is_none(), "the executor attaches who and why");
+        assert_eq!(error.hint.as_deref(), Some("nothing was changed; run it again"));
     }
 
     #[test]
