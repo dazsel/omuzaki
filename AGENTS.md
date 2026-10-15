@@ -37,6 +37,8 @@ The workspace is `crates/*` plus `xtask`. The full table is printed by `cargo xt
 - **Mock crates** (`*-mock`) depend only on API crates and are the independent test oracle for the real code.
 - **Implementation crates** depend on API crates and lib crates, with mocks as dev-dependencies.
 - **App crates** (`omuzaki-cli`, `omuzaki-ui`, `omuzaki-test`, `omuzaki-stage`, `xtask`) may depend on anything.
+  The area test crates (`omuzaki-test-<area>`, for tests across crates) are Apps too, but may depend only on API
+  crates, mocks, the harness `omuzaki-test` and their own area's crates (`cargo xtask lint-deps`, `crates/README.md`).
 - Registrations (operations, part kinds, formats) are made with `register_<kind>!` next to what they register. Never
   add a central list that every feature must edit.
 - Do not hand-edit generated files (MCP schemas, CLI help, docs indexes).
