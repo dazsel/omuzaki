@@ -16,7 +16,7 @@
 //! Everything is a negation, so the conversion is bit-exact and applying it twice gives the original back.
 
 use omuzaki_core::glam::{Mat4, Quat, Vec3};
-use omuzaki_io_api::{AimAxis, ColliderShape, ConstraintKind, IoScene};
+use omuzaki_io_api::{AimAxis, ColliderShape, ConstraintKind, IoScene, JointLimit};
 
 /// `R·v` for `R` = 180° about Y: negates X and Z.
 fn flip(v: Vec3) -> Vec3 {
@@ -26,6 +26,34 @@ fn flip(v: Vec3) -> Vec3 {
 /// `R·q·R⁻¹`: the rotation about the rotated axis by the same angle (negates the X and Z parts of the quaternion).
 fn flip_rotation(q: Quat) -> Quat {
     Quat::from_xyzw(-q.x, q.y, -q.z, q.w)
+}
+
+/// A joint limit after the turn: its axes are conjugated like any node rotation, its angles are unchanged.
+fn flip_limit(limit: JointLimit) -> JointLimit {
+    match limit {
+        JointLimit::Cone { angle, rotation } => JointLimit::Cone { angle, rotation: flip_rotation(rotation) },
+        JointLimit::Hinge { angle, rotation } => JointLimit::Hinge { angle, rotation: flip_rotation(rotation) },
+        JointLimit::Spherical { pitch, yaw, rotation } => {
+            JointLimit::Spherical { pitch, yaw, rotation: flip_rotation(rotation) }
+        }
+        other => other,
+    }
+}
+
+/// The shape after the turn: positions and the plane normal flip as vectors do.
+fn flip_shape(shape: ColliderShape) -> ColliderShape {
+    match shape {
+        ColliderShape::Sphere { offset, radius } => ColliderShape::Sphere { offset: flip(offset), radius },
+        ColliderShape::Capsule { offset, radius, tail } => {
+            ColliderShape::Capsule { offset: flip(offset), radius, tail: flip(tail) }
+        }
+        ColliderShape::SphereInside { offset, radius } => ColliderShape::SphereInside { offset: flip(offset), radius },
+        ColliderShape::CapsuleInside { offset, radius, tail } => {
+            ColliderShape::CapsuleInside { offset: flip(offset), radius, tail: flip(tail) }
+        }
+        ColliderShape::Plane { offset, normal } => ColliderShape::Plane { offset: flip(offset), normal: flip(normal) },
+        other => other,
+    }
 }
 
 /// `R·M·R⁻¹` for a 4x4 matrix: every element is multiplied by the signs of its row and column.
@@ -77,15 +105,11 @@ pub fn rotate_y180(scene: &mut IoScene) {
         look.offset_from_head_bone = flip(look.offset_from_head_bone);
     }
     for c in &mut av.spring_bones.colliders {
-        c.shape = match c.shape {
-            ColliderShape::Sphere { offset, radius } => ColliderShape::Sphere { offset: flip(offset), radius },
-            ColliderShape::Capsule { offset, radius, tail } => {
-                ColliderShape::Capsule { offset: flip(offset), radius, tail: flip(tail) }
-            }
-        };
+        c.shape = flip_shape(c.shape);
     }
     for j in av.spring_bones.chains.iter_mut().flat_map(|c| c.joints.iter_mut()) {
         j.gravity_dir = flip(j.gravity_dir);
+        j.limit = j.limit.map(flip_limit);
     }
     for c in &mut av.constraints {
         if let ConstraintKind::Aim { axis, .. } = &mut c.kind {
@@ -152,6 +176,37 @@ mod tests {
         assert_eq!(s.meshes[0].primitives[0].mesh.normals[0], Vec3::new(0.0, 0.6, -0.8));
         rotate_y180(&mut s);
         assert!((world(&s) - before).length() < 1e-5);
+    }
+
+    #[test]
+    fn flip_of_a_plane_normal_and_limit_rotation() {
+        let mut s = IoScene::new();
+        let node = s.add_node(Node::new("n"));
+        let about = |axis, degrees: f32| Quat::from_axis_angle(axis, degrees.to_radians());
+        let limit = |rotation| JointLimit::Cone { angle: 0.5, rotation };
+        let mut joint = omuzaki_io_api::SpringJoint::new(node);
+        joint.limit = Some(limit(about(Vec3::X, 90.0)));
+        let mut other = joint;
+        other.limit = Some(limit(about(Vec3::Y, 40.0)));
+        let mut av = Avatar::new();
+        av.spring_bones.colliders = vec![omuzaki_io_api::Collider {
+            node,
+            shape: ColliderShape::Plane { offset: Vec3::new(1.0, 2.0, 3.0), normal: Vec3::Z },
+        }];
+        av.spring_bones.chains = vec![omuzaki_io_api::SpringChain { joints: vec![joint, other], ..Default::default() }];
+        s.avatar = Some(av);
+        rotate_y180(&mut s);
+        let av = s.avatar.as_ref().unwrap();
+        assert_eq!(
+            av.spring_bones.colliders[0].shape,
+            ColliderShape::Plane { offset: Vec3::new(-1.0, 2.0, -3.0), normal: Vec3::NEG_Z }
+        );
+        let rotation = |j: usize| match av.spring_bones.chains[0].joints[j].limit {
+            Some(JointLimit::Cone { rotation, .. }) => rotation,
+            other => panic!("{other:?}"),
+        };
+        assert!(rotation(0).abs_diff_eq(about(Vec3::X, -90.0), 1e-6), "+90 about X becomes -90");
+        assert!(rotation(1).abs_diff_eq(about(Vec3::Y, 40.0), 1e-6), "about Y is unchanged");
     }
 
     #[test]
