@@ -19,9 +19,9 @@ use omuzaki_char_api::{BuildOptions, BuildServices, BuiltCharacter, CharId, Char
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::{UVec2, Vec3};
 use omuzaki_render_api::{
-    AlphaEncoding, Background, Camera, Capabilities, Fog, FrameReport, Image, Light, Material, MaterialId, MeshData,
-    MeshId, MeshOptions, Painter, Quality, RenderError, Renderer, ResourceRef, ResourceStats, Scene, TargetDesc,
-    TargetId, TextureDesc, TextureId,
+    AlphaEncoding, Background, Camera, Capabilities, EnvironmentDesc, EnvironmentUse, Fog, FrameReport, Image, Light,
+    Material, MaterialId, MeshData, MeshId, MeshOptions, Painter, Quality, RenderError, Renderer, ResourceRef,
+    ResourceStats, Scene, TargetDesc, TargetId, TextureDesc, TextureId,
 };
 use omuzaki_render_mock::MockRenderer;
 use omuzaki_stage::UploadOptions;
@@ -303,6 +303,28 @@ fn the_callers_fog_does_not_tint_the_sheet() {
     assert!(restored, "the caller's fog is back after the sheet");
     for (a, b) in clear.views.iter().zip(&foggy.views) {
         assert_eq!(a.image.rgba8, b.image.rgba8, "{:?} is shot without fog", a.view);
+    }
+}
+
+#[test]
+fn the_callers_environment_light_does_not_light_the_sheet() {
+    let clear = sheet(&spec());
+    let (lit, restored) = with_stage(|stage, renderer| {
+        let sky = EnvironmentDesc::Sky { zenith: Colour::WHITE, horizon: Colour::WHITE, ground: Colour::WHITE };
+        let id = renderer.create_environment(&sky).expect("the mock makes a sky");
+        let mut use_ = EnvironmentUse::new(id);
+        use_.intensity = 4.0;
+        stage.scene_mut().environment = Some(use_);
+        let before = stage.scene().clone();
+        let sheet = render_turnaround(stage, renderer, &spec()).expect("the sheet renders");
+        let restored = *stage.scene() == before;
+        stage.scene_mut().environment = None;
+        renderer.release(id.into()).expect("the sky is released");
+        (sheet, restored)
+    });
+    assert!(restored, "the caller's environment is back after the sheet");
+    for (a, b) in clear.views.iter().zip(&lit.views) {
+        assert_eq!(a.image.rgba8, b.image.rgba8, "{:?} is lit by the sheet's rig alone", a.view);
     }
 }
 
