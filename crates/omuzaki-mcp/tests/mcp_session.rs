@@ -674,7 +674,7 @@ async fn a_connection_asks_the_registry_for_its_session_and_runs_nothing_if_refu
     // Without a session the agent has no name that could match a registered one, so nothing reaches the runner.
     assert_eq!((result.is_error, again.is_error), (Some(true), Some(true)));
     assert!(text(&result).contains("not needed by this test"), "{}", text(&result));
-    assert!(h.runner.records().is_empty());
+    assert_eq!(h.runner.records().len(), 0);
     h.disconnect().await;
 }
 
