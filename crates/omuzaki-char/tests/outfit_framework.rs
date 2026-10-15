@@ -18,6 +18,7 @@ use omuzaki_char::outfit::common::{
     PlaidBand, StripeDirection, enclosing_scale, fabric_tile,
 };
 use omuzaki_char::outfit::loft::{RegionWeights, SOFT_SQUARE, Surface, ring_at};
+use omuzaki_char::outfit::trim::{TrimSpec, add_trim};
 use omuzaki_char_api::{
     BodyFit, BodyRegion, BuildCtx, BuildError, BuildServices, FitFact, JointRef, PartCategory, PartKind, PartMeta,
     PartOutput,
@@ -45,11 +46,21 @@ struct TubeParams {
     exponent: f64,
     /// How much closer than its ease it is built (a broken garment, for the suite to catch).
     sink: f64,
+    /// Trims on it, for the evidence sheet.
+    trims: Vec<TrimSpec>,
 }
 
 impl Default for TubeParams {
     fn default() -> Self {
-        Self { common: GarmentCommon::default(), span: [0.2, 0.55], rings: 24, segs: 48, exponent: 2.0, sink: 0.0 }
+        Self {
+            common: GarmentCommon::default(),
+            span: [0.2, 0.55],
+            rings: 24,
+            segs: 48,
+            exponent: 2.0,
+            sink: 0.0,
+            trims: Vec::new(),
+        }
     }
 }
 
@@ -81,6 +92,9 @@ impl PartKind for Tube {
         let mut builder = MeshBuilder::new();
         loft.add_to(&mut builder, out.tile()).map_err(fail)?;
         out.surface(ctx, "tube", builder)?;
+        for (k, trim) in p.trims.iter().enumerate() {
+            add_trim(&mut out, ctx, &surface, &format!("trim{k}"), trim)?;
+        }
         out.finish(ctx, &p.common, &[BodyRegion::Torso], p.exponent)
     }
 }
@@ -94,8 +108,8 @@ impl Garment for Tube {
         vec![BodyRegion::Torso]
     }
 
-    fn open_borders(_: &TubeParams) -> usize {
-        2
+    fn open_borders(p: &TubeParams) -> usize {
+        2 + p.trims.iter().map(TrimSpec::open_borders).sum::<usize>()
     }
 }
 
@@ -545,4 +559,239 @@ fn a_patterned_garment_without_a_rasteriser_names_what_is_missing() {
     );
     let error = conformance::build(def, &BuildServices::default()).err().expect("no rasteriser");
     assert!(matches!(error, BuildError::Missing { .. }), "{error}");
+}
+
+// ------------------------------------------------------------------------------------------------------- evidence
+
+/// Every trim of the library on a tube spanning `span` of the torso, placed by fractions of it.
+fn sheet_trims(span: [f64; 2]) -> Vec<TrimSpec> {
+    let t = |u: f64| span[0] + (span[1] - span[0]) * u;
+    use omuzaki_char::outfit::trim::braid::Braid;
+    use omuzaki_char::outfit::trim::buttons::{ButtonRow, ButtonShape, ButtonStyle};
+    use omuzaki_char::outfit::trim::chain::Chain;
+    use omuzaki_char::outfit::trim::clasp::{Clasp, ClaspStyle};
+    use omuzaki_char::outfit::trim::decal::{Decal, DecalAnchor, DecalSource};
+    use omuzaki_char::outfit::trim::lace::{Lace, LacePattern};
+    use omuzaki_char::outfit::trim::piping::Piping;
+    use omuzaki_char::outfit::trim::{Finish, LIFT, RailSpec};
+    let rail = |points: &[[f64; 2]], closed| RailSpec { points: points.to_vec(), closed, lift: LIFT };
+    let gold = |radius, shape| ButtonStyle { radius, shank: 0.001, shape, finish: Finish::default() };
+    let mut star = omuzaki_face_api::DrawList::new();
+    let points: Vec<omuzaki_core::glam::Vec2> = (0..10)
+        .map(|k| {
+            let a = std::f32::consts::TAU * k as f32 / 10.0;
+            let r = if k % 2 == 0 { 0.019 } else { 0.008 };
+            omuzaki_core::glam::Vec2::new(0.02 + r * a.sin(), 0.02 + r * a.cos())
+        })
+        .collect();
+    let path = star.path().polyline(&points).close().finish();
+    star.fill(path, omuzaki_face_api::Paint::Solid(Colour::rgb(0xe0, 0xc0, 0x40)));
+    vec![
+        TrimSpec::Piping(Piping {
+            rail: rail(&[[t(0.93), 0.25], [t(0.07), 0.25]], false),
+            width: 0.006,
+            thickness: 0.002,
+            bevel: 0.0005,
+            finish: Finish::cloth(ColourRef::rgb(0xf2, 0xea, 0xd8)),
+        }),
+        TrimSpec::Piping(Piping {
+            rail: rail(&[[t(0.93), 0.0], [t(0.93), 2.1], [t(0.93), 4.2]], true),
+            width: 0.008,
+            thickness: 0.004,
+            bevel: 0.002,
+            finish: Finish::cloth(ColourRef::rgb(0x8a, 0x1e, 0x2c)),
+        }),
+        TrimSpec::Braid(Braid {
+            rail: rail(&[[t(0.82), -0.3], [t(0.11), -0.35]], false),
+            strands: 3,
+            lobes: 10,
+            strand_width: 0.002,
+            finish: Finish::cloth(ColourRef::rgb(0xc8, 0x9a, 0x3c)),
+        }),
+        TrimSpec::ButtonRow(ButtonRow {
+            rail: rail(&[[t(0.82), 0.0], [t(0.14), 0.0]], false),
+            count: 4,
+            spacing: None,
+            button: gold(0.004, ButtonShape::Dome),
+        }),
+        TrimSpec::ButtonRow(ButtonRow {
+            rail: rail(&[[t(0.82), -0.7], [t(0.11), -0.7]], false),
+            count: 3,
+            spacing: None,
+            button: gold(0.0025, ButtonShape::Rivet),
+        }),
+        TrimSpec::Chain(Chain {
+            from: [t(0.64), -0.55],
+            to: [t(0.64), 0.55],
+            slack: 0.15,
+            link_size: 0.005,
+            link_count: None,
+            wire: None,
+            finish: Finish::default(),
+        }),
+        TrimSpec::Clasp(Clasp {
+            at: [t(0.71), 0.6],
+            style: ClaspStyle::Medallion,
+            size: 0.018,
+            jewel: ColourRef::rgb(0x30, 0x60, 0xd0),
+            finish: Finish::default(),
+        }),
+        TrimSpec::Clasp(Clasp {
+            at: [t(0.71), -0.6],
+            style: ClaspStyle::Cross,
+            size: 0.018,
+            jewel: ColourRef::rgb(0xd0, 0x20, 0x40),
+            finish: Finish::default(),
+        }),
+        TrimSpec::Decal(Decal {
+            source: DecalSource::Drawing {
+                list: star,
+                extent: omuzaki_face_api::FaceRect { x0: 0.0, x1: 0.04, y0: 0.0, y1: 0.04 },
+            },
+            anchor: DecalAnchor::Surface { at: [t(0.39), 0.9] },
+            size: [0.025, 0.025],
+            rotation: 10.0,
+            opacity: 1.0,
+        }),
+        TrimSpec::Lace(Lace {
+            rail: rail(&[[t(0.04), 0.0], [t(0.04), 2.1], [t(0.04), 4.2]], true),
+            scallop_radius: 0.005,
+            scallop_count: 48,
+            pattern: LacePattern::Picot,
+            colour: ColourRef::rgb(0xfa, 0xf6, 0xee),
+            flip: false,
+        }),
+    ]
+}
+
+/// Writes `image` as a binary PPM.
+#[allow(clippy::disallowed_methods, reason = "test evidence, written to a folder the developer names; not an op")]
+fn write_ppm(path: &std::path::Path, width: u32, height: u32, rgba: &[u8]) {
+    let mut ppm = format!("P6\n{width} {height}\n255\n").into_bytes();
+    for px in rgba.chunks_exact(4) {
+        ppm.extend(&px[..3]);
+    }
+    std::fs::write(path, ppm).unwrap();
+}
+
+/// Renders the parts of `stack` named `parts` through the mock toon renderer from `azimuth_deg` round `centre`.
+fn render(
+    stack: &conformance::Stack,
+    parts: &[&str],
+    centre: omuzaki_core::glam::Vec3,
+    distance: f32,
+    azimuth_deg: f32,
+) -> omuzaki_render_api::Image {
+    use omuzaki_core::glam::{Mat4, UVec2, Vec3};
+    use omuzaki_render_api::{
+        AlphaEncoding, Background, Camera, Instance, Light, Post, Quality, Renderer, RendererExt, Scene, Tonemap,
+    };
+    let mut renderer = omuzaki_render_mock::MockRenderer::new();
+    let eye = centre + Mat4::from_rotation_y(azimuth_deg.to_radians()).transform_vector3(Vec3::new(0.0, 0.0, distance));
+    let mut scene = Scene::new(Camera::look_at(eye, centre, Vec3::Y, Camera::default().projection));
+    scene.background = Background::Solid { colour: Colour::hex(0x001e_1c24) };
+    scene.lights = vec![
+        Light::Hemisphere { sky: Colour::hex(0x00f1_eef8), ground: Colour::hex(0x004a_3e36), intensity: 0.75 },
+        Light::Directional {
+            to_light: Vec3::new(1.6, 3.0, 2.4),
+            colour: Colour::hex(0x00ff_f6ec),
+            intensity: 1.7,
+            casts_shadow: false,
+        },
+    ];
+    scene.post = Post { exposure: 1.0, tonemap: Tonemap::None, ..Post::default() };
+    for (id, output) in &stack.outputs {
+        if !parts.contains(&id.as_str()) {
+            continue;
+        }
+        let textures: std::collections::HashMap<_, _> = output
+            .textures
+            .iter()
+            .map(|(name, data)| (name.clone(), renderer.create_texture(&data.desc, Some(&data.rgba8)).unwrap()))
+            .collect();
+        for mesh in &output.meshes {
+            let handle = renderer.create_mesh(&mesh.geometry).unwrap();
+            let spec = &output.materials.iter().find(|(m, _)| *m == mesh.material).unwrap().1;
+            let material = spec.to_material(&|name| textures.get(name).copied(), &|_| None).unwrap();
+            let material = renderer.create_material(&material).unwrap();
+            scene.instances.push(Instance::new(handle, material, Mat4::IDENTITY));
+        }
+    }
+    let quality = Quality { samples: 4, ..Quality::offline() };
+    renderer.render_image(UVec2::splat(512), AlphaEncoding::Straight, &scene, &quality).unwrap()
+}
+
+/// The evidence of the `garment-framework` case, written when `OMUZAKI_GARMENT_PPM=<directory>` is set: a shirt and a
+/// vest stacked on the body, and every trim on a tube, front and three-quarter, on `standard` and `soft-sd`; and each
+/// patterned fabric's tile at a 2 x 2 repeat.
+#[test]
+#[allow(clippy::disallowed_methods, reason = "test evidence, written to a folder the developer names; not an op")]
+fn render_the_garment_framework_when_asked() {
+    let Some(directory) = std::env::var_os("OMUZAKI_GARMENT_PPM") else { return };
+    let directory = std::path::PathBuf::from(directory);
+    std::fs::create_dir_all(&directory).unwrap();
+    let shirt =
+        TubeParams { common: GarmentCommon { fabric: plaid(), ..GarmentCommon::default() }, ..TubeParams::default() };
+    let vest = TubeParams {
+        common: GarmentCommon {
+            ease: 0.006,
+            fabric: FabricStyle::Weave {
+                warp: ColourRef::rgb(0x3a, 0x30, 0x2a),
+                weft: ColourRef::rgb(0x5a, 0x4a, 0x3a),
+                thread: 0.0015,
+            },
+            ..GarmentCommon::default()
+        },
+        ..TubeParams::default()
+    };
+    // Above the thigh caps, and on soft-sd above the hands, which stand out of the torso's fit below it.
+    for (template, span) in [("standard", [0.27, 0.55]), ("soft-sd", [0.38, 0.56])] {
+        let shirt = TubeParams { span, ..shirt.clone() };
+        let vest = TubeParams { span: [span[0] + 0.03, span[1] - 0.04], ..vest.clone() };
+        let trimmed = TubeParams { trims: sheet_trims(span), span, ..TubeParams::default() };
+        let shape = omuzaki_char_api::BodyShape::default();
+        let pair = conformance::build(
+            conformance::character(
+                template,
+                &shape,
+                &[
+                    ("shirt", "test-tube", LAYER_SHIRT, serde_json::to_value(&shirt).unwrap()),
+                    ("vest", "test-tube", LAYER_VEST, serde_json::to_value(&vest).unwrap()),
+                ],
+            ),
+            &services(),
+        )
+        .unwrap();
+        let sheet = conformance::build(
+            conformance::character(
+                template,
+                &shape,
+                &[("coat", "test-tube", LAYER_SHIRT, serde_json::to_value(&trimmed).unwrap())],
+            ),
+            &services(),
+        )
+        .unwrap();
+        let body = pair.published.get::<FitFact>().fits[0].clone();
+        let (low, high) =
+            (body.section(BodyRegion::Torso, 0.15).unwrap(), body.section(BodyRegion::Torso, 0.6).unwrap());
+        let centre = (low.centre + high.centre) / 2.0;
+        let distance = 3.6 * (high.centre - low.centre).length();
+        for (view, azimuth) in [("front", 0.0_f32), ("three-quarter", 35.0)] {
+            for (name, stack, parts) in
+                [("pair", &pair, &["body", "shirt", "vest"][..]), ("trims", &sheet, &["body", "coat"][..])]
+            {
+                let image = render(stack, parts, centre, distance, azimuth);
+                write_ppm(
+                    &directory.join(format!("{template}-{name}-{view}.ppm")),
+                    image.size.x,
+                    image.size.y,
+                    &image.rgba8,
+                );
+            }
+        }
+    }
+    for (name, fabric) in fabrics() {
+        let (px, pixels) = paint(&fabric, 2);
+        write_ppm(&directory.join(format!("tile-{}.ppm", name.replace(' ', "-"))), px, px, &pixels);
+    }
 }
