@@ -577,6 +577,29 @@ fn recolouring_is_building_with_the_new_palette_byte_for_byte() {
 }
 
 #[test]
+fn a_recolour_repaints_every_tubes_caps_with_its_tube() {
+    omuzaki_char::link();
+    let mut before = character(&streaked());
+    colourway(&mut before, 5);
+    let mut after = before.clone();
+    colourway(&mut after, 120);
+    let services = BuildServices::default();
+    let old = hair_output(&before).unwrap();
+    let mut recoloured = hair_output(&before).unwrap();
+    assert_eq!(recolour_part(&after, &pid("hair"), &services, &mut recoloured), Ok(Recoloured::Done));
+    let rebuilt = hair_output(&after).unwrap();
+    let (new, rebuilt) = (&static_mesh(&recoloured).geometry.colours, &static_mesh(&rebuilt).geometry.colours);
+    let stride = tube_mesh_vertices(1, 4);
+    let mut cap_changed = false;
+    for tube in 0..6 {
+        let caps = tube * stride + 4 * RING..(tube + 1) * stride;
+        assert_eq!(new[caps.clone()], rebuilt[caps.clone()], "tube {tube}: its caps take the new tint");
+        cap_changed |= new[caps.clone()] != static_mesh(&old).geometry.colours[caps];
+    }
+    assert!(cap_changed, "the palette really changes some cap's colour");
+}
+
+#[test]
 fn streaks_land_on_the_tubes_only_and_leave_shell_vertices_white() {
     let mut def = character(&streaked());
     colourway(&mut def, 40);

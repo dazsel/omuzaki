@@ -25,6 +25,9 @@ const RING_U32: u32 = 8;
 /// Vertices in one ring of a tube (the prototype's `K`).
 pub const RING: usize = RING_U32 as usize;
 
+/// The vertices a tube's two caps add after its rings: a centre and a rim copy per end (see `TubeMesh::push_cap`).
+pub const CAP_VERTICES: usize = 2 * (RING + 1);
+
 /// A smoothstep that is 0 at or below `lo`, 1 at or above `hi` (three.js `MathUtils.smoothstep`).
 fn smoothstep(x: f32, lo: f32, hi: f32) -> f32 {
     let t = ((x - lo) / (hi - lo)).clamp(0.0, 1.0);
@@ -300,19 +303,19 @@ impl TubeMesh {
         let tip_ring = base + RING_U32 * u32::try_from(last).map_err(|_| TubeError::TooMany)?;
         let root_axis = (points[0] - points[1]).normalize_or_zero();
         let tip_axis = (points[last] - points[last - 1]).normalize_or_zero();
-        self.push_cap(Cap { ring: base, centre: points[0], axis: root_axis, t: 0.0, flip_winding: true }, look);
-        self.push_cap(Cap { ring: tip_ring, centre: points[last], axis: tip_axis, t: 1.0, flip_winding: false }, look);
+        self.push_cap(&Cap { ring: base, centre: points[0], axis: root_axis, t: 0.0, flip_winding: true }, look);
+        self.push_cap(&Cap { ring: tip_ring, centre: points[last], axis: tip_axis, t: 1.0, flip_winding: false }, look);
         Ok(())
     }
 
     /// Closes the ring at `cap.ring` with a flat fan: a centre vertex and a copy of the rim, all with the axis as normal
     /// (a flat cap needs its own normals, so it cannot share the ring's vertices; the copies sit at the same positions,
     /// so the mesh is closed once vertices at one position are welded, as an exporter does).
-    fn push_cap(&mut self, cap: Cap, look: &TubeLook<'_>) {
+    fn push_cap(&mut self, cap: &Cap, look: &TubeLook<'_>) {
         let centre = u32::try_from(self.mesh.positions.len()).unwrap_or(u32::MAX);
         let colour = vertex_colour(look.tint);
         let rim = cap.ring as usize;
-        let mut add = |m: &mut Self, p: Vec3, across: f32| {
+        let add = |m: &mut Self, p: Vec3, across: f32| {
             m.mesh.positions.push(p);
             m.mesh.normals.push(cap.axis);
             m.uv.extend([across * look.flip, cap.t]);
@@ -331,10 +334,10 @@ impl TubeMesh {
         }
         for k in 0..RING_U32 {
             let (a, b) = (centre + 1 + k, centre + 1 + (k + 1) % RING_U32);
-            if !cap.flip_winding {
-                self.mesh.indices.extend([centre, b, a]);
-            } else {
+            if cap.flip_winding {
                 self.mesh.indices.extend([centre, a, b]);
+            } else {
+                self.mesh.indices.extend([centre, b, a]);
             }
         }
     }
@@ -439,7 +442,7 @@ mod tests {
         let axis = (points[3] - points[0]).normalize();
         for (cap, sign) in [(0, -1.0), (1, 1.0)] {
             let first = rings + cap * (RING + 1);
-            assert!(m.normals[first..first + RING + 1].iter().all(|n| n.dot(axis) * sign > 0.99));
+            assert!(m.normals[first..=first + RING].iter().all(|n| n.dot(axis) * sign > 0.99));
             for tri in m.indices.chunks_exact(3).skip(3 * RING * 2 + cap * RING).take(RING) {
                 assert!(tri.iter().all(|i| (first..=first + RING).contains(&(*i as usize))));
                 let [a, b, c] = [tri[0], tri[1], tri[2]].map(|i| m.positions[i as usize]);

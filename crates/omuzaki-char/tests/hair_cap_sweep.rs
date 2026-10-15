@@ -16,7 +16,7 @@ use omuzaki_char::hair::compile::{
 };
 use omuzaki_char::hair::r#gen::cap::{self, MIN_CLEARANCE, RINGS, SEGMENTS};
 use omuzaki_char::hair::r#gen::part_sweep::{self, Lock, REST_POINTS};
-use omuzaki_char::hair::tube::{RING, TubeLook, TubeMesh};
+use omuzaki_char::hair::tube::{TubeLook, TubeMesh};
 use omuzaki_char_api::{
     CapGen, Dynamics, Generator, GroupId, HAIR_INFO, HAIR_UV, HairGroup, HairParams, HeadSurface, PartSweepGen, Quality,
 };
