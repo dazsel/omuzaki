@@ -4,8 +4,6 @@
 //! The output is deterministic. Entries are sorted by group and id, so the same text in any input order gives the same
 //! bytes, and a blessed file never churns.
 
-use std::fmt::Write as _;
-
 use serde_json::{Map, Value};
 
 use crate::ids;
@@ -314,14 +312,14 @@ fn continuation(line: &str) -> String {
     let lead = &line[..line.len() - body.len()];
     let mut out = String::from("    ");
     if !lead.is_empty() {
-        let _ = write!(out, "{{\"{lead}\"}}");
+        out.push_str(&literal_placeable(lead));
     }
     if body.is_empty() {
         return out;
     }
     let mut rest = body;
     if let Some(first) = body.chars().next().filter(|c| matches!(c, '[' | '*' | '.')) {
-        let _ = write!(out, "{{\"{first}\"}}");
+        out.push_str(&literal_placeable(&first.to_string()));
         rest = &body[first.len_utf8()..];
     }
     out.push_str(&line_text(rest));
@@ -335,9 +333,15 @@ fn line_text(text: &str) -> String {
     let mut out = escape(body);
     let tail = &text[body.len()..];
     if !tail.is_empty() {
-        let _ = write!(out, "{{\"{tail}\"}}");
+        out.push_str(&literal_placeable(tail));
     }
     out
+}
+
+/// A placeable that holds `text` as a string literal, `{"text"}`. Fluent would drop or misread the whitespace or the
+/// character it wraps, so it is written as a literal.
+fn literal_placeable(text: &str) -> String {
+    ["{\"", text, "\"}"].concat()
 }
 
 /// Writes each brace as a string literal, so that a registered value cannot open a placeable.
