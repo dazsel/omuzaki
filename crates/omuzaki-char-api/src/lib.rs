@@ -28,6 +28,7 @@ pub mod build;
 pub mod character;
 pub mod drivers;
 pub mod error;
+pub mod fact;
 pub mod geometry;
 pub mod hair;
 pub mod head;
@@ -58,6 +59,7 @@ pub use drivers::{
     export_plan,
 };
 pub use error::BuildError;
+pub use fact::{Agree, Append, Fact, FactRegistration, Keyed, Last, Rule, facts};
 pub use geometry::{FaceOverlay, MaterialError, MaterialSpec, PartMesh, TextureData, face_texture_desc};
 pub use hair::{
     BangLayer, BangsGen, BraidGen, Bulge, BunGen, CapGen, CurtainGen, Dynamics, Falloff, Follow, FramingGen, Generator,
@@ -71,9 +73,9 @@ pub use ids::{
     MaterialName, PartId, PartKindId, ProfileId, SkinToneId, TextureName, VariantId,
 };
 pub use kind::{
-    Anchor, BodyFit, BodyRegion, BuildCtx, HeadSurface, KindProvenance, PartCategory, PartKind, PartKindRegistration,
-    PartMeta, PartOutput, Published, Publishes, Quality, RecolourCtx, Recoloured, Section, find_kind, kinds,
-    requires_of,
+    Anchor, AnchorsFact, BodyFit, BodyRegion, BuildCtx, CollidersFact, FaceFact, FitFact, Fits, HeadFact, HeadSurface,
+    KindProvenance, PartCategory, PartKind, PartKindRegistration, PartMeta, PartOutput, Published, Publishes, Quality,
+    RecolourCtx, Recoloured, Section, StatureFact, find_kind, kinds, requires_of,
 };
 pub use look::{
     ClassLook, DEFAULT_PRESET, DERIVED_LINE, GradeOverride, LookDef, LookError, LookParams, LookPreset,

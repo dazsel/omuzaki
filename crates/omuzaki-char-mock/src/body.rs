@@ -6,8 +6,9 @@ use std::sync::Arc;
 
 use omuzaki_anim_api::{Collider, ColliderGroup, ColliderShape, HumanoidBone};
 use omuzaki_char_api::{
-    BodyFit, BodyParams, BodyRegion, BuildCtx, BuildError, JointRef, MaterialName, MaterialSpec, PartCategory,
-    PartKind, PartMesh, PartMeta, PartOutput, Publishes, RecolourCtx, Recoloured, Section, humanoid_id,
+    BodyFit, BodyParams, BodyRegion, BuildCtx, BuildError, CollidersFact, FitFact, JointRef, MaterialName,
+    MaterialSpec, PartCategory, PartKind, PartMesh, PartMeta, PartOutput, Publishes, RecolourCtx, Recoloured, Section,
+    humanoid_id,
 };
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::{Vec2, Vec3};
@@ -188,7 +189,7 @@ impl PartKind for MockBody {
         Ok(PartOutput {
             meshes: vec![mesh],
             materials: vec![(id, material)],
-            publishes: Publishes { fit: Some(fit), colliders: vec![TorsoFit::colliders()], ..Publishes::default() },
+            publishes: Publishes::default().with::<FitFact>(fit).with::<CollidersFact>(TorsoFit::colliders()),
             ..PartOutput::default()
         })
     }
@@ -255,7 +256,7 @@ impl PartKind for MockGarment {
         Ok(PartOutput {
             meshes: vec![mesh],
             materials: vec![(id, material)],
-            publishes: Publishes { fit: Some(envelope), ..Publishes::default() },
+            publishes: Publishes::default().with::<FitFact>(envelope),
             ..PartOutput::default()
         })
     }
