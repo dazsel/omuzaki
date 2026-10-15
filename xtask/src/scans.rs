@@ -3,7 +3,8 @@
 //! Some integration tests read the whole workspace rather than their own crate: `omuzaki-ops-api`'s `fs_fence` checks
 //! every crate's `clippy.toml`, and the Apps' link gates read every crate's manifest and sources. A change in one
 //! crate can break them without touching their crate, so the affected-crate scope would never run them. This module
-//! lists those test targets explicitly. `check` runs them (so does the CI plan, through `Report::scans`), and
+//! lists those test targets explicitly. `check` runs them, and `Report::scans` carries the list for the CI plan to read
+//! (the CI wiring is a separate change), and
 //! [`unlisted`] fails when a new test reads the workspace without being listed here or exempted with a reason.
 
 use std::fs;
@@ -56,8 +57,11 @@ impl Scan {
         ["test", "-p", self.krate, "--test", self.test].map(str::to_owned).to_vec()
     }
 
+    /// The target's source: `tests/<test>.rs`, or `tests/<test>/main.rs` for a directory target.
     fn path(&self, root: &Path) -> PathBuf {
-        root.join("crates").join(self.krate).join("tests").join(format!("{}.rs", self.test))
+        let tests = root.join("crates").join(self.krate).join("tests");
+        let file = tests.join(format!("{}.rs", self.test));
+        if file.is_file() { file } else { tests.join(self.test).join("main.rs") }
     }
 }
 
@@ -70,29 +74,42 @@ pub fn problems(root: &Path) -> Vec<String> {
         .map(|scan| format!("{}: listed in scans.rs but the file does not exist", display(root, &scan.path(root))))
         .collect();
     let Ok(crates) = fs::read_dir(root.join("crates")) else { return found };
-    let mut tests: Vec<PathBuf> = Vec::new();
+    // (crate, test target, its source files): `tests/<test>.rs`, or every `.rs` file in `tests/<test>/`.
+    let mut tests: Vec<(String, String, Vec<PathBuf>)> = Vec::new();
     for entry in crates.flatten() {
-        if let Ok(files) = fs::read_dir(entry.path().join("tests")) {
-            tests.extend(
-                files.flatten().map(|file| file.path()).filter(|path| path.extension().is_some_and(|e| e == "rs")),
-            );
+        let krate = entry.file_name().to_string_lossy().into_owned();
+        let Ok(files) = fs::read_dir(entry.path().join("tests")) else { continue };
+        for path in files.flatten().map(|file| file.path()) {
+            let Some(test) = path.file_stem().map(|name| name.to_string_lossy().into_owned()) else { continue };
+            if path.extension().is_some_and(|e| e == "rs") {
+                tests.push((krate.clone(), test, vec![path]));
+            } else if path.join("main.rs").is_file() {
+                let mut sources: Vec<PathBuf> =
+                    fs::read_dir(&path).map(|dir| dir.flatten().map(|file| file.path()).collect()).unwrap_or_default();
+                sources.retain(|source| source.extension().is_some_and(|e| e == "rs"));
+                tests.push((krate.clone(), test, sources));
+            }
         }
     }
     tests.sort();
-    for path in tests {
-        let (Some(krate), Some(test)) = (
-            path.parent().and_then(Path::parent).and_then(Path::file_name).and_then(|n| n.to_str()),
-            path.file_stem().and_then(|n| n.to_str()),
-        ) else {
-            continue;
-        };
+    for (krate, test, sources) in tests {
         let listed = SCANS.iter().any(|scan| scan.krate == krate && scan.test == test)
             || NOT_SCANS.iter().any(|(k, t, _)| *k == krate && *t == test);
-        if !listed && fs::read_to_string(&path).is_ok_and(|text| reads_workspace(&text)) {
-            found.push(format!(
-                "{}: reads the workspace; add it to SCANS (or NOT_SCANS with a reason) in xtask/src/scans.rs",
-                display(root, &path)
-            ));
+        if listed {
+            continue;
+        }
+        for path in sources {
+            match fs::read_to_string(&path) {
+                Ok(text) if reads_workspace(&text) => {
+                    found.push(format!(
+                        "{}: reads the workspace; add it to SCANS (or NOT_SCANS with a reason) in xtask/src/scans.rs",
+                        display(root, &path)
+                    ));
+                    break;
+                }
+                Ok(_) => {}
+                Err(error) => found.push(format!("{}: cannot be read: {error}", display(root, &path))),
+            }
         }
     }
     found
@@ -136,5 +153,25 @@ mod tests {
         assert!(!found.iter().any(|line| line.contains("own.rs")), "{found:?}");
         // Every listed target is also missing from this throwaway tree.
         assert_eq!(found.iter().filter(|line| line.contains("does not exist")).count(), SCANS.len());
+    }
+
+    #[test]
+    fn a_directory_target_and_an_unreadable_source_are_found() {
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let target = dir.path().join("crates/omuzaki-new/tests/walk");
+        fs::create_dir_all(&target).unwrap_or_else(|error| panic!("{error}"));
+        fs::write(target.join("main.rs"), "mod helper;\n").unwrap_or_else(|error| panic!("{error}"));
+        fs::write(target.join("helper.rs"), "fn root() { crates_dir(); }\n").unwrap_or_else(|error| panic!("{error}"));
+        let bad = dir.path().join("crates/omuzaki-new/tests/bad.rs");
+        fs::write(bad, [0xff, 0xfe]).unwrap_or_else(|error| panic!("{error}"));
+        let found = problems(dir.path());
+        assert!(
+            found.iter().any(|line| line.starts_with("crates/omuzaki-new/tests/walk/helper.rs: reads")),
+            "{found:?}"
+        );
+        assert!(
+            found.iter().any(|line| line.starts_with("crates/omuzaki-new/tests/bad.rs: cannot be read")),
+            "{found:?}"
+        );
     }
 }
