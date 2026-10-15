@@ -98,7 +98,8 @@ impl Calls for RunnerCalls {
         let is_edit = request.mode == Mode::Apply && self.edits.contains(&request.op);
         request.tx = if is_edit { Some(self.tx_for_edit()) } else { self.open_tx() };
         request.actor = self.actor.clone();
-        request.grants = self.grants.clone();
+        // The host narrows a run's grants to the scopes the script names; the caller's own grants are the ceiling.
+        request.grants = self.grants.intersect(&request.grants);
         request.cause = Some(Cause { kind: CauseKind::Script, text: Some(self.name.clone()) });
         request.base = None;
         self.runner.run(request)

@@ -19,6 +19,7 @@ omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 
 [dev-dependencies]
 schemars.workspace = true
+proptest.workspace = true
 
 [lints]
 workspace = true

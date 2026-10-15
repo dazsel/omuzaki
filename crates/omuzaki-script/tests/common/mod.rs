@@ -8,7 +8,7 @@ use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 
 use omuzaki_core::time::{FakeClock, Seconds};
-use omuzaki_doc_api::{DocPath, Patch, Value};
+use omuzaki_doc_api::{DocPath, Patch, Value, lookup};
 use omuzaki_ops_api::{
     Actor, Event, Grants, OpError, OpInfo, OpKind, OpMeta, OpRecord, Outcome, Plan, Request, Runner, Scope, TxId, Undo,
 };
@@ -37,6 +37,8 @@ pub struct FakeRunner {
     pub fail_commit: AtomicBool,
     /// The next rollback fails (once) and leaves the transaction open, as the real runner does on a conflict.
     pub fail_rollback: AtomicBool,
+    /// What `get` reads; `Null` (nothing) until a test sets it.
+    pub document: Mutex<Value>,
 }
 
 impl FakeRunner {
@@ -81,14 +83,38 @@ fn info_with(name: &'static str, kind: OpKind, undo: Undo) -> OpInfo {
     OpInfo::new(meta, Schema::from(true))
 }
 
+/// An op with a real argument schema and a scope, so the check has fields and scopes to look at.
+fn info_schema(name: &'static str, kind: OpKind, scope: Scope, schema: Value) -> OpInfo {
+    let undo = if kind == OpKind::Edit { Undo::Auto } else { Undo::None };
+    let meta = OpMeta { name, summary: "a fake op", kind, scope, undo };
+    OpInfo::new(meta, Schema::try_from(schema).unwrap())
+}
+
 impl Runner for FakeRunner {
     fn ops(&self) -> Vec<OpInfo> {
         vec![
             info("face.fail", OpKind::Edit),
-            info("face.set_profile", OpKind::Edit),
+            info_schema(
+                "face.set_profile",
+                OpKind::Edit,
+                Scope::EditCharacter,
+                serde_json::json!({
+                    "type": "object",
+                    "properties": { "character": { "type": "string" }, "profile": { "type": "string" }, "blend": { "type": "number" } },
+                    "required": ["character"],
+                    "additionalProperties": false,
+                }),
+            ),
+            info_schema(
+                "export.publish_clip",
+                OpKind::Edit,
+                Scope::Publish,
+                serde_json::json!({ "type": "object", "properties": { "clip": { "type": "string" } } }),
+            ),
             info("measure.likeness", OpKind::Query),
             info("measure.report", OpKind::Query),
             info("render.video", OpKind::Job),
+            info("script.run", OpKind::Job),
             info_with("file.write", OpKind::Edit, Undo::Explicit),
         ]
     }
@@ -105,7 +131,7 @@ impl Runner for FakeRunner {
             hook(n);
         }
         match op.as_str() {
-            "face.set_profile" => {
+            "face.set_profile" | "export.publish_clip" => {
                 let mut plan = Plan::edit(Patch::default());
                 plan.output = Some(args);
                 Ok(Outcome::new(plan))
@@ -151,8 +177,8 @@ impl Runner for FakeRunner {
         Err(OpError::unsupported("fake"))
     }
 
-    fn get(&self, _: &DocPath, _: &Grants) -> Result<Option<Value>, OpError> {
-        Ok(None)
+    fn get(&self, path: &DocPath, _: &Grants) -> Result<Option<Value>, OpError> {
+        Ok(lookup(&self.document.lock().unwrap(), path).cloned())
     }
 
     fn log(&self, _: u64, _: usize, _: &Grants) -> Result<Vec<OpRecord>, OpError> {

@@ -44,12 +44,14 @@ pub(crate) struct Bindings {
 impl Bindings {
     /// The table and the modules for `ops`; ops without an `area.verb` name are not callable from scripts.
     pub(crate) fn new(ops: &[OpInfo], limits: &Limits) -> Self {
+        let probe = Engine::new_raw();
         let mut entries = BTreeMap::new();
         for info in ops {
             let Some((area, verb)) = info.name.split_once('.') else { continue };
+            let spelled = (spelled_in_script(&probe, area), spelled_in_script(&probe, verb));
             let schema = serde_json::to_value(&info.schema).unwrap_or(Value::Bool(true));
             let entry = OpEntry { name: info.name, scope: info.scope, refusal: refusal(info).map(Arc::new), schema };
-            entries.insert((area.to_owned(), verb.to_owned()), entry);
+            entries.insert(spelled, entry);
         }
         let mut areas: BTreeMap<String, Module> = BTreeMap::new();
         for ((area, verb), entry) in &entries {
@@ -91,6 +93,13 @@ impl Bindings {
         engine.register_fn("try_op", try_op);
         engine.register_fn("get", get);
     }
+}
+
+/// How a script spells one half of an op name. A word Rhai reserves (the keyword for writing a module's items out,
+/// `import`, `private`, `match` and the like) can't appear in a path, so it gets a trailing underscore, as in
+/// `ops::import_::clip`. Found by asking the parser, so it follows Rhai's own list.
+fn spelled_in_script(probe: &Engine, word: &str) -> String {
+    if probe.compile(format!("let {word} = 0;")).is_ok() { word.to_owned() } else { format!("{word}_") }
 }
 
 /// Why `info` can't be called from a script, if it can't: v1 runs `Query` ops and `Edit` ops that undo with their
@@ -153,6 +162,7 @@ fn call_of(
 
 /// `try_op(|| ops::area::verb(..))`: runs the closure and answers `#{ ok, value, error }`. Only a failed op is caught;
 /// a limit, a cancel, a refusal or a script error still ends the run.
+#[allow(clippy::needless_pass_by_value)] // Rhai registers a native function's arguments by value
 fn try_op(context: NativeCallContext<'_>, call: FnPtr) -> Result<Dynamic, Box<EvalAltResult>> {
     match call.call_within_context::<Dynamic>(&context, ()) {
         Ok(value) => Ok(outcome(true, value, Dynamic::UNIT)),
@@ -187,6 +197,7 @@ fn outcome(ok: bool, value: Dynamic, error: Dynamic) -> Dynamic {
 }
 
 /// `get("characters/aki/face")`: the document value at the path, or `()` when there is none.
+#[allow(clippy::needless_pass_by_value)] // as `try_op`
 fn get(context: NativeCallContext<'_>, path: ImmutableString) -> Result<Dynamic, Box<EvalAltResult>> {
     let run: Arc<Run> = run_of(&context)?;
     let at = context.call_position();
@@ -194,6 +205,7 @@ fn get(context: NativeCallContext<'_>, path: ImmutableString) -> Result<Dynamic,
 }
 
 /// `error` positioned at the call, for the ones (a limit, a cancel) that are raised without a place.
+#[allow(clippy::unnecessary_box_returns)] // Rhai's callbacks return `Box<EvalAltResult>`
 fn placed(mut error: Box<EvalAltResult>, at: rhai::Position) -> Box<EvalAltResult> {
     error.set_position(at);
     error

@@ -193,11 +193,10 @@ impl ScriptHost {
             Ok(ast) => {
                 let mut found = Found::default();
                 ast.walk(&mut |nodes: &[ASTNode<'_>]| {
-                    match nodes.last() {
-                        Some(ASTNode::Expr(Expr::FnCall(call, at))) | Some(ASTNode::Stmt(Stmt::FnCall(call, at))) => {
-                            found.call(&self.bindings, call, *at);
-                        }
-                        _ => {}
+                    if let Some(ASTNode::Expr(Expr::FnCall(call, at)) | ASTNode::Stmt(Stmt::FnCall(call, at))) =
+                        nodes.last()
+                    {
+                        found.call(&self.bindings, call, *at);
                     }
                     true
                 });
