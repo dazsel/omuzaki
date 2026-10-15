@@ -32,6 +32,21 @@ use serde_json::{Value, json};
 
 // ------------------------------------------------------------------------------------------------ the stub generator
 
+/// Vertices each tube's two caps add after its rings: a centre and a rim copy per end (`TubeMesh::push_cap`).
+const CAP_VERTICES: usize = 2 * (RING + 1);
+/// Indices each tube's two caps add after its tube faces: one fan triangle per rim segment at each end.
+const CAP_INDICES: usize = 2 * RING * 3;
+
+/// Vertices of `tubes` tubes of `rings` rings each, caps included.
+fn tube_mesh_vertices(tubes: usize, rings: usize) -> usize {
+    tubes * (rings * RING + CAP_VERTICES)
+}
+
+/// Indices of `tubes` tubes of `rings` rings each, caps included.
+fn tube_mesh_indices(tubes: usize, rings: usize) -> usize {
+    tubes * ((rings - 1) * RING * 6 + CAP_INDICES)
+}
+
 /// The shade a stub clump gets from draw `r`: so a test can read the random stream back out of the clumps.
 fn shade_of(draw: f64) -> f64 {
     0.5 + 0.5 * draw
@@ -373,9 +388,9 @@ fn static_groups_make_one_head_skinned_mesh_and_simulated_groups_a_second_one() 
         dynamic.geometry.joints.iter().all(|j| *j == [0; 4])
             && dynamic.geometry.weights.iter().all(|w| *w == [1.0, 0.0, 0.0, 0.0])
     );
-    // 4 static clumps (2 locks, mirrored), 1 dynamic, 4 rings of 8 each.
-    assert_eq!(stat.geometry.positions.len(), 4 * 4 * RING);
-    assert_eq!(dynamic.geometry.positions.len(), 4 * RING);
+    // 4 static clumps (2 locks, mirrored), 1 dynamic, 4 rings of 8 each, and each clump's two caps.
+    assert_eq!(stat.geometry.positions.len(), tube_mesh_vertices(4, 4));
+    assert_eq!(dynamic.geometry.positions.len(), tube_mesh_vertices(1, 4));
     assert!(stat.casts_shadow && stat.render_order == 1);
     assert!(out.runtime.is_none(), "the simulation is not built yet");
 }
@@ -415,7 +430,8 @@ fn mesh_attributes_validate_and_have_the_right_widths() {
 fn groups_are_meshed_in_id_order_and_a_mirrored_group_follows_its_originals() {
     let out = hair_output(&character(&two_group_style())).unwrap();
     let positions = &static_mesh(&out).geometry.positions;
-    let root = |clump: usize| positions[clump * 4 * RING..clump * 4 * RING + RING].iter().sum::<Vec3>() / RING as f32;
+    let stride = tube_mesh_vertices(1, 4);
+    let root = |clump: usize| positions[clump * stride..clump * stride + RING].iter().sum::<Vec3>() / RING as f32;
     // Clumps 0 and 1 are the locks at phi -30 and -70 (x < 0 on the character's right), 2 and 3 their mirrors.
     assert!(root(0).x < 0.0 && root(1).x < 0.0 && root(2).x > 0.0 && root(3).x > 0.0);
     assert!((root(0).x + root(2).x).abs() < 1e-5 && (root(1).x + root(3).x).abs() < 1e-5);
@@ -455,20 +471,23 @@ fn a_shell_follows_the_tubes_and_a_strip_is_reported_not_drawn() {
     let out = hair_output(&character(&style)).unwrap();
     let stat = static_mesh(&out);
     stat.validate().unwrap();
-    let tube_vertices = 4 * 4 * RING;
     assert_eq!(
         stat.geometry.positions.len(),
-        tube_vertices + 3,
+        tube_mesh_vertices(4, 4) + 3,
         "tubes first, the cap's triangle after, though the cap is group 0"
     );
     assert_eq!(
         stat.geometry.indices.len(),
-        4 * (4 - 1) * RING * 6 + 3,
+        tube_mesh_indices(4, 4) + 3,
         "the shell's triangle is renumbered after the tubes"
     );
     assert!(out.warnings.iter().any(|w| w.contains("z-curtain") && w.contains("strip")), "{:?}", out.warnings);
     let dynamic = out.meshes.iter().find(|m| m.name == "hair-dynamic").unwrap();
-    assert_eq!(dynamic.geometry.positions.len(), 4 * RING, "the strip's clumps add nothing to the tube mesh");
+    assert_eq!(
+        dynamic.geometry.positions.len(),
+        tube_mesh_vertices(1, 4),
+        "the strip's clumps add nothing to the tube mesh"
+    );
 }
 
 #[test]
@@ -563,7 +582,7 @@ fn streaks_land_on_the_tubes_only_and_leave_shell_vertices_white() {
     colourway(&mut def, 40);
     let out = hair_output(&def).unwrap();
     let stat = static_mesh(&out);
-    let tube_vertices = 6 * 4 * RING;
+    let tube_vertices = tube_mesh_vertices(6, 4);
     assert_eq!(stat.geometry.positions.len(), tube_vertices + 3);
     assert!(stat.geometry.colours[tube_vertices..].iter().all(|c| *c == [1.0; 4]), "the cap shell is untinted");
     assert!(stat.geometry.colours[..tube_vertices].iter().any(|c| *c != [1.0; 4]), "some tube is streaked");
