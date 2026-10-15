@@ -60,7 +60,7 @@ fn build(def: &CharacterDef) -> Result<BuiltCharacter, BuildError> {
 }
 
 /// The camera's frame, in metres, is this fraction of the built head's width on each side of the join.
-const HALF_FRAME_PER_WIDTH: f32 = 0.25;
+const HALF_FRAME_PER_WIDTH: f32 = 0.5;
 
 /// The views: a name and the azimuth of the camera around the join, in degrees.
 const VIEWS: [(&str, f32); 3] = [("front", 0.0), ("three-quarter", 35.0), ("side", 90.0)];
