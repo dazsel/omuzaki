@@ -534,7 +534,7 @@ fn what_the_import_writes_is_storable_in_a_toml_project() {
         let (actor, clock) = (Actor::Person { name: "tester".into() }, FakeClock::default());
         let ctx = OpCtx::new(&rig.doc, &actor, &clock).with_services(&rig.services);
         let plan = op.finish(&ctx, result).unwrap();
-        assert!(!plan.patch.changes.is_empty());
+        assert_eq!(plan.patch.changes.len(), 1, "one change records the asset");
         for change in &plan.patch.changes {
             change.before.iter().chain(&change.after).for_each(assert_storable);
         }
