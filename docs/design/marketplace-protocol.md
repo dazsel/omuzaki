@@ -6,7 +6,7 @@ area: design
 
 # The marketplace protocol: signed documents, freshness, HTTP shape and limits
 
-**Status:** proposed. **Part of:** `docs/design/marketplace.md` (decisions, contract, task cut) and ADR 0063. This page holds only the wire-level detail so the main design can stay about decisions. **Builds on:** `docs/design/identity.md` (D3 envelope, D4 trust, D5 key statements, D10 domains), `docs/design/library-sharing.md` (D9 limits, D11).
+**Status:** accepted. **Part of:** `docs/design/marketplace.md` (decisions, contract, task cut) and ADR 0063. This page holds only the wire-level detail so the main design can stay about decisions. **Builds on:** `docs/design/identity.md` (D3 envelope, D4 trust, D5 key statements, D10 domains), `docs/design/library-sharing.md` (D9 limits, D11).
 
 ## 1. Market-signed documents
 
@@ -95,6 +95,7 @@ Constants in `omuzaki-market-api`, tested at the limit and over; every read stop
 | manifest | the library's manifest limit |
 | custom licence text | 64 KiB, UTF-8, control characters other than newline and tab refused |
 | preview | 5 per listing, 5 MiB each |
+| attribution (effective rights) | 1 KiB a string, 8 KiB the joined set, 64 distinct strings; over any is `AttributionTooLarge`, never truncated (main D5) |
 | asset | 256 MiB each; **per item** at most 64 assets and 1 GiB in total, both read from the signed manifest before any download (main D5) |
 | pages or key-change links per call | 64 each, resumable; verified pages and links kept without a cap |
 | search page / review page | 50 listings / 50 reviews |
