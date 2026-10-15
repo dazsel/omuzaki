@@ -26,6 +26,7 @@ schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
+omuzaki-anim-api = { path = "../omuzaki-anim-api" }
 omuzaki-char-api = { path = "../omuzaki-char-api" }
 omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-doc-api = { path = "../omuzaki-doc-api" }

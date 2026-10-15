@@ -8,3 +8,4 @@ pub mod inspector;
 pub mod io;
 pub mod outliner;
 pub mod text;
+pub mod viewport;

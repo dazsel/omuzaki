@@ -4487,6 +4487,7 @@ dependencies = [
  "egui_tiles",
  "image",
  "inventory",
+ "omuzaki-anim-api",
  "omuzaki-char",
  "omuzaki-char-api",
  "omuzaki-char-mock",
