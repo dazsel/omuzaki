@@ -8,3 +8,7 @@
 - The kiss no longer jumps when the mouth opens past 0.25: over the openings 0.21 to 0.25 the slit fades out and the
   lens fades in on one width that moves from the slit's to the lens', and the lower-lip gloss moves with them. From
   0.25 up, and for a kiss below 0.21, the mouth is drawn as before.
+- Eyes draw their lids and lashes: the fine lower-lid line, the smiling lids with their soft rim (when the cheek raises the
+  lower lid), the crease, the lash line with the cat-eye flick, the small lower lash, the inner tick, and the closed
+  eyes (the happy `^` arc and the relaxed lash curve with its three lashes). `lash.thickness` is the thick end of the
+  lash line (0.0076 m in the prototype) and `lash.flick` 1 is the prototype's full flick.

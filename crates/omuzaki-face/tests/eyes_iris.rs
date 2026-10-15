@@ -332,7 +332,8 @@ fn eyes_outline(list: &DrawList) -> Vec<PathEl> {
 fn a_shut_eye_draws_no_iris() {
     let shut = EyeParams { close: 1.0, ..open() };
     let drawing = paint(&profile(), &PaintParams { left_eye: shut, right_eye: shut, ..base() });
-    assert!(drawing[FaceLayerId::Base].is_empty());
+    // A shut eye draws its closed curve (see `eyes_lash.rs`), and no iris: nothing is clipped to an aperture.
+    assert_eq!(inside(&drawing[FaceLayerId::Base]).len(), 0);
     let wink = paint(&profile(), &PaintParams { left_eye: shut, ..base() });
     assert_eq!(inside(&wink[FaceLayerId::Base]).len(), 1, "only the open eye has an iris");
 }
@@ -388,7 +389,9 @@ fn the_ring_is_a_stroke_of_the_iris_outline_in_the_ring_colour() {
         .cmds()
         .iter()
         .filter_map(|c| match *c {
-            Cmd::Stroke { path, paint, width, .. } => Some((list.elements(path).to_vec(), paint, width)),
+            Cmd::Stroke { path, paint, width, .. } if paint == Paint::Solid(Colour::rgba(9, 8, 7, 140)) => {
+                Some((list.elements(path).to_vec(), paint, width))
+            }
             _ => None,
         })
         .collect();

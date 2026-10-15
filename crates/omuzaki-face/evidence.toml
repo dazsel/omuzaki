@@ -39,3 +39,21 @@ steps = [
     { run = ["cargo", "test", "--locked", "-p", "omuzaki-face", "--test", "evidence", "--", "--exact", "render_the_smiling_mouth_switch_when_asked"] },
 ]
 images = ["mouth-switch-smiling-0.0599.png", "mouth-switch-smiling-0.0601.png"]
+
+[[case]]
+name = "eyes"
+description = "The eyes' lash line with the cat-eye flick, lower lid, crease and inner tick: open, angry, sad and wide, and a blink sweep (close 0 to 1 in 8 steps, the left eye)."
+env = { OMUZAKI_FACE_EVIDENCE_DIR = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-face", "--test", "evidence", "--", "--exact", "render_the_eyes_when_asked"] },
+]
+images = ["eyes-open.png", "eyes-angry.png", "eyes-sad.png", "eyes-wide.png", "eyes-blink-sweep.png"]
+
+[[case]]
+name = "eyes-closed"
+description = "Closed and smiling eyes: a wink and the happy ^^ (the arc), a plain blink (the relaxed lash curve with its three lashes), and the smiling lids as the cheek raises the lower lid (0, 0.2, 0.35, 0.6)."
+env = { OMUZAKI_FACE_EVIDENCE_DIR = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-face", "--test", "evidence", "--", "--exact", "render_the_closed_and_smiling_eyes_when_asked"] },
+]
+images = ["eyes-wink.png", "eyes-happy.png", "eyes-blink-closed.png", "eyes-smiling-lids.png"]

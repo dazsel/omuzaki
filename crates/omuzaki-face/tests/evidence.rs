@@ -67,6 +67,97 @@ fn mouth_picture(profile: &FaceProfile, edit: impl FnOnce(&mut MouthParams)) -> 
     image::imageops::crop_imm(&picture, x, y, at(2.0 * MOUTH_HALF[0]), at(2.0 * MOUTH_HALF[1])).to_image()
 }
 
+/// Half the width and height of an eye picture of both eyes, and of one eye, in metres.
+const EYES_HALF: [f32; 2] = [0.17, 0.06];
+const EYE_HALF: [f32; 2] = [0.06, 0.06];
+
+/// The face with `edit` applied to its paint parameters, cropped to `half` round `centre` (face-plane metres).
+fn crop_picture(
+    profile: &FaceProfile,
+    edit: impl FnOnce(&mut PaintParams),
+    centre: [f32; 2],
+    half: [f32; 2],
+) -> image::RgbaImage {
+    let mut params = profile.mapping.apply(&ChannelBuf::NEUTRAL);
+    edit(&mut params);
+    let picture = picture_of(profile, &params, FaceLayerId::Base);
+    let rect = mock_projection().rect;
+    let at = |metres: f32| (metres * DEFAULT_PX_PER_M).round().max(0.0) as u32;
+    let (x, y) = (at(centre[0] - half[0] - rect.x0), at(rect.y1 - centre[1] - half[1]));
+    image::imageops::crop_imm(&picture, x, y, at(2.0 * half[0]), at(2.0 * half[1])).to_image()
+}
+
+/// Both eyes, from the face with `edit` applied.
+fn eyes_picture(profile: &FaceProfile, edit: impl FnOnce(&mut PaintParams)) -> image::RgbaImage {
+    crop_picture(profile, edit, [0.0, narrow(profile.layout.eye_y)], EYES_HALF)
+}
+
+/// The character's left eye alone, for strips.
+fn eye_picture(profile: &FaceProfile, edit: impl FnOnce(&mut PaintParams)) -> image::RgbaImage {
+    let centre = [narrow(profile.layout.eye_spacing), narrow(profile.layout.eye_y)];
+    crop_picture(profile, edit, centre, EYE_HALF)
+}
+
+/// `images` side by side, left to right.
+fn strip(images: &[image::RgbaImage]) -> image::RgbaImage {
+    let (width, height) = (images.iter().map(image::RgbaImage::width).sum(), images[0].height());
+    let mut out = image::RgbaImage::new(width, height);
+    let mut x = 0;
+    for image in images {
+        image::imageops::replace(&mut out, image, i64::from(x), 0);
+        x += image.width();
+    }
+    out
+}
+
+/// The mock profile in the prototype's eye: the full cat-eye flick, so a lash reads as designed.
+fn eyes_profile() -> FaceProfile {
+    let mut profile = mock_profile();
+    profile.eyes.lash.flick = 1.0;
+    profile.eyes.lash.thickness = 0.0076;
+    profile
+}
+
+#[test]
+fn render_the_eyes_when_asked() {
+    let Some(dir) = evidence_dir() else {
+        return;
+    };
+    let profile = eyes_profile();
+    let save = |name: &str, image: image::RgbaImage| image.save(dir.join(name)).unwrap();
+    // The lash line with its flick, the lower lid, the crease and the inner tick, on an open eye.
+    save("eyes-open.png", eyes_picture(&profile, |_| {}));
+    // Angry, sad and wide: the lash and crease follow the lid.
+    save("eyes-angry.png", eyes_picture(&profile, |p| p.eye_tilt = 1.0));
+    save("eyes-sad.png", eyes_picture(&profile, |p| p.eye_tilt = -1.0));
+    save("eyes-wide.png", eyes_picture(&profile, |p| (p.left_eye.open, p.right_eye.open) = (1.9, 1.9)));
+    // A blink: `close` from 0 to 1 in 8 steps, the character's left eye (the last frames are the relaxed lash curve).
+    let blink: Vec<_> = (0..8_u8)
+        .map(|i| {
+            let close = f32::from(i) / 7.0;
+            eye_picture(&profile, |p| p.left_eye.close = close)
+        })
+        .collect();
+    save("eyes-blink-sweep.png", strip(&blink));
+}
+
+#[test]
+fn render_the_closed_and_smiling_eyes_when_asked() {
+    let Some(dir) = evidence_dir() else {
+        return;
+    };
+    let mut profile = eyes_profile();
+    profile.eyes.lower_lid.cheek_line = true;
+    let save = |name: &str, image: image::RgbaImage| image.save(dir.join(name)).unwrap();
+    // A wink (the left eye closes as the happy arc, the right stays open) and the happy `^^`.
+    save("eyes-wink.png", eyes_picture(&profile, |p| p.left_eye.arc = 1.0));
+    save("eyes-happy.png", eyes_picture(&profile, |p| (p.left_eye.arc, p.right_eye.arc) = (1.0, 1.0)));
+    save("eyes-blink-closed.png", eyes_picture(&profile, |p| (p.left_eye.close, p.right_eye.close) = (1.0, 1.0)));
+    // Smiling lids: the cheek raises the lower lid, 0 to 0.6 in four steps; the line and its rim fade in from 0.15.
+    let smile: Vec<_> = [0.0, 0.2, 0.35, 0.6].map(|lift| eye_picture(&profile, |p| p.left_eye.lower_lid = lift)).into();
+    save("eyes-smiling-lids.png", strip(&smile));
+}
+
 /// The directory a mouth case writes its pictures to, if it was asked for.
 fn evidence_dir() -> Option<std::path::PathBuf> {
     std::env::var_os("OMUZAKI_FACE_EVIDENCE_DIR").map(std::path::PathBuf::from)

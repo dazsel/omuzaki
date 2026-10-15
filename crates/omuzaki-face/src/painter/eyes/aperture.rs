@@ -90,7 +90,7 @@ const MAX_TAPER: f64 = 0.95;
 const TILT_SHEAR: f64 = 0.25;
 
 /// A smooth 0 to 1 ramp (`ss01` of the prototype).
-fn smooth01(x: f32) -> f32 {
+pub(super) fn smooth01(x: f32) -> f32 {
     let t = x.clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
 }
@@ -219,13 +219,22 @@ impl Eye {
         self.width
     }
 
-    /// The face-plane point at eye coordinates `(u, v)`.
-    pub(super) fn point(&self, u: f32, v: f32) -> Vec2 {
-        let outward = match self.side {
+    /// `+1` for the character's left eye, whose outer corner is toward +x, and `-1` for the right.
+    pub(super) fn outward(&self) -> f32 {
+        match self.side {
             Side::Left => 1.0,
             Side::Right => -1.0,
-        };
-        Vec2::new(self.centre.x + outward * u * self.width, self.centre.y + v * self.width)
+        }
+    }
+
+    /// How far the cheek raises the lower lid, `0..=1` (the eye's `lower_lid` channel).
+    pub(super) fn lower_lid(&self) -> f32 {
+        self.low_lid
+    }
+
+    /// The face-plane point at eye coordinates `(u, v)`.
+    pub(super) fn point(&self, u: f32, v: f32) -> Vec2 {
+        Vec2::new(self.centre.x + self.outward() * u * self.width, self.centre.y + v * self.width)
     }
 
     /// The lower lid at `u` (`bot0`): a bowl whose depth and fullness come from the profile, raised by the cheek.
