@@ -235,12 +235,18 @@ LITERAL_MARKDOWN = re.compile(
 )
 
 
+# Block-quote markers at the start of a line (`> `, nested `> > `). Removed before LITERAL_MARKDOWN, so code inside a
+# quote is recognised as it is at the margin.
+QUOTE_PREFIX = re.compile(r"^(?:[ \t]{0,3}>[ \t]?)+", re.MULTILINE)
+
+
 def closes_in_body(body):
     """The issue numbers in this repository a PR body closes, by GitHub's keyword rule (see CLOSING_REFERENCE).
 
-    Keywords inside literal Markdown (LITERAL_MARKDOWN) are examples, not references, so they are removed first.
+    Keywords inside literal Markdown (LITERAL_MARKDOWN) are examples, not references, so they are removed first, with
+    block-quote markers taken off so quoted code counts as code.
     """
-    prose = LITERAL_MARKDOWN.sub(" ", body or "")
+    prose = LITERAL_MARKDOWN.sub(" ", QUOTE_PREFIX.sub("", body or ""))
     return {int(number) for number in CLOSING_REFERENCE.findall(prose)}
 
 
