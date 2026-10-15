@@ -20,6 +20,7 @@ use egui::{
 
 use super::ids;
 use super::ime;
+use super::keycap::Shortcut;
 use super::tooltip::{Tip, TipExt as _};
 use crate::ds::a11y;
 use crate::ds::contrast::{Rule, Table};
@@ -803,7 +804,7 @@ impl<'a> Show<'a> {
                 let default_text = NumberBuf::new(self.p.default.unwrap_or(0.0), self.decimals);
                 let value = format!("{}{}", default_text.as_str(), self.p.unit);
                 let tip_text = self.ds.text_with(Msg::ParamResetTo, &[("value", &value)]);
-                return r.tip(Tip::new(&tip_text).shortcut(&self.ds.text(Msg::KeysReset)));
+                return r.tip(Tip::new(&tip_text).shortcut(Shortcut::command(Key::Backspace)));
             }
         }
         r

@@ -16,6 +16,7 @@ use std::borrow::Cow;
 use egui::{Align, Frame, Id, Key, Label, Layout, Margin, Modifiers, RichText, Sense, Stroke, Ui, vec2};
 
 use super::chip::{ActorChip, ActorKind, CostChip, ScopeBadge, is_risky_scope};
+use super::keycap::Shortcut;
 use super::text_field::TextField;
 use super::{Button, ButtonKind};
 use crate::ds::a11y;
@@ -478,8 +479,8 @@ impl<'a> ApprovalCard<'a> {
     ) -> Option<Decision> {
         let mut decision = None;
         let name = ds.text_with(Msg::ApprovalAcceptName, &[("agent", self.agent)]);
-        let (accept_label, enter) = (ds.text(Msg::ApprovalAccept), ds.text(Msg::KeyEnter));
-        let accept = ui.add(Button::new(&accept_label).primary().shortcut(&enter).accessible_label(&name));
+        let accept_label = ds.text(Msg::ApprovalAccept);
+        let accept = ui.add(Button::new(&accept_label).primary().shortcut(Key::Enter).accessible_label(&name));
         *focus_within |= accept.has_focus();
         if accept.clicked() {
             decision = Some(Decision::Accept(phase.choice.min(options.saturating_sub(1))));
@@ -521,10 +522,9 @@ impl<'a> ApprovalCard<'a> {
             |name: &str| ds.text_with(Msg::ApprovalAction, &[("action", name), ("what", self.what), ("agent", agent)]);
         let a11y_label = action(&label);
         let kind = if dangerous && armed { ButtonKind::Danger } else { ButtonKind::Primary };
-        let enter = ds.text(Msg::KeyEnter);
         let mut approve = Button::new(&label).kind(kind).accessible_label(&a11y_label);
         if !dangerous {
-            approve = approve.shortcut(&enter);
+            approve = approve.shortcut(Key::Enter);
         }
         let approve = ui.add(approve);
         *focus_within |= approve.has_focus();
@@ -550,17 +550,19 @@ impl<'a> ApprovalCard<'a> {
         if !dangerous {
             let session_label = ds.text(Msg::ApprovalSession);
             let session_name = action(&session_label);
-            let session_keys = ds.text(Msg::KeysApproveSession);
-            let session =
-                ui.add(Button::new(&session_label).shortcut_hint(&session_keys).accessible_label(&session_name));
+            let session = ui.add(
+                Button::new(&session_label)
+                    .shortcut_hint(Shortcut::command(Key::Enter))
+                    .accessible_label(&session_name),
+            );
             *focus_within |= session.has_focus();
             if session.clicked() {
                 decision = Some(Decision::ApproveForSession);
             }
         }
-        let (reject_label, reject_keys) = (ds.text(Msg::ApprovalReject), ds.text(Msg::KeyBackspace));
+        let reject_label = ds.text(Msg::ApprovalReject);
         let reject_name = action(&ds.text(Msg::ApprovalRejectName));
-        let reject = ui.add(Button::new(&reject_label).shortcut_hint(&reject_keys).accessible_label(&reject_name));
+        let reject = ui.add(Button::new(&reject_label).shortcut_hint(Key::Backspace).accessible_label(&reject_name));
         *focus_within |= reject.has_focus();
         if reject.clicked() {
             phase.rejecting = true;
