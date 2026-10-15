@@ -1,0 +1,624 @@
+//! Plain jobs through the executor: plan, work, finish; lanes, caps, cancel and the money reservation.
+//!
+//! Every test is driven by channels and the fake clock: a job's `work` waits on a gate the test opens, and time
+//! moves only when the test moves it (then calls `poll_jobs`). Nothing sleeps.
+
+use std::collections::HashMap;
+use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
+use std::sync::{Arc, LazyLock, Mutex};
+use std::time::{Duration, Instant};
+
+use omuzaki_core::time::{FakeClock, Seconds};
+use omuzaki_doc_api::Patch;
+use omuzaki_doc_mock::MemDoc;
+use omuzaki_ops::Executor;
+use omuzaki_ops_api::{
+    CancelFlag, CancelReason, CostHint, ErrorCode, ErrorDetail, Event, Grants, JobCtx, JobId, JobInfo, JobShape,
+    JobState, Jobs, Lane, Mode, Op, OpCtx, OpError, OpKind, OpMeta, Plan, Request, Runner, Scope, Undo, register_op,
+};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+
+use super::{Rig, agent, agent_request, drain, path, person, request, rig};
+
+/// What a test job's `work` does once it is running.
+#[derive(Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "snake_case")]
+enum How {
+    /// Returns at once with what the context offers.
+    #[default]
+    Echo,
+    /// Signals it is running, waits for the gate and ignores cancellation.
+    Block,
+    /// Like `Block`, but polls `checkpoint` and stops with `Cancelled`.
+    Coop,
+    /// Runs until cancelled, then returns what it completed.
+    Partial,
+    /// Spends `before`, signals, waits for the gate, then spends `after` (late, past any cancel).
+    Spend { before: u64, after: u64 },
+    /// Spends twice `each`, so the second report passes a cap of less than twice that.
+    Overspend { each: u64 },
+    /// Reports progress 100 times, signals, waits for the gate, reports once more.
+    Progress,
+    /// Fails with its own error.
+    Fail,
+    /// Panics.
+    Panic,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema)]
+struct TestJob {
+    /// Names the gate and the document path the finish writes.
+    key: String,
+    #[serde(default)]
+    how: How,
+    #[serde(default)]
+    usd: Option<f32>,
+    #[serde(default)]
+    seconds: Option<f32>,
+    #[serde(default)]
+    gpu: bool,
+    /// Plans a patch, which a job must not.
+    #[serde(default)]
+    bad_plan: bool,
+}
+
+struct WorkGate {
+    entered: Sender<()>,
+    release: Mutex<Receiver<()>>,
+}
+
+static GATES: LazyLock<Mutex<HashMap<String, Arc<WorkGate>>>> = LazyLock::new(Mutex::default);
+static FLAGS: LazyLock<Mutex<HashMap<String, CancelFlag>>> = LazyLock::new(Mutex::default);
+
+/// The test's side of a gate: `entered` hears `work` start, `release` lets it go (dropping it does too).
+struct Gate {
+    entered: Receiver<()>,
+    release: Sender<()>,
+}
+
+impl Gate {
+    fn new(key: &str) -> Self {
+        let (entered_tx, entered) = channel();
+        let (release, release_rx) = channel();
+        let gate = Arc::new(WorkGate { entered: entered_tx, release: Mutex::new(release_rx) });
+        GATES.lock().unwrap().insert(key.to_owned(), gate);
+        Self { entered, release }
+    }
+
+    fn wait_entered(&self) {
+        self.entered.recv().unwrap();
+    }
+}
+
+impl WorkGate {
+    fn announce(&self) {
+        self.entered.send(()).unwrap();
+    }
+
+    /// Waits for the test to open the gate; true if the gate is still open to wait on.
+    fn wait(&self) {
+        let _ = self.release.lock().unwrap().recv();
+    }
+
+    /// True once the test has released the gate or dropped it.
+    fn released(&self) -> bool {
+        !matches!(self.release.lock().unwrap().try_recv(), Err(TryRecvError::Empty))
+    }
+}
+
+impl Op for TestJob {
+    fn meta() -> OpMeta {
+        OpMeta {
+            name: "test.job",
+            summary: "A job the tests drive.",
+            kind: OpKind::Job,
+            scope: Scope::EditScene,
+            undo: Undo::Auto,
+        }
+    }
+
+    fn plan(&self, _ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
+        let patch = if self.bad_plan { Patch::new().with(path(&self.key), None, Some(json!(1))) } else { Patch::new() };
+        Ok(Plan {
+            patch,
+            output: Some(json!({"chose": self.key})),
+            cost: Some(CostHint { seconds: self.seconds, gpu_mib: self.gpu.then_some(512), usd: self.usd }),
+            effect: None,
+        })
+    }
+
+    fn work(&self, job: &JobCtx<'_>) -> Result<Value, OpError> {
+        let gate = GATES.lock().unwrap().get(&self.key).cloned();
+        match &self.how {
+            How::Echo => {
+                FLAGS.lock().unwrap().insert(self.key.clone(), job.cancel_flag());
+                Ok(json!({"output": job.plan_output(), "reserved": job.reserved_usd_micros()}))
+            }
+            How::Block => {
+                let gate = gate.unwrap();
+                gate.announce();
+                gate.wait();
+                Ok(json!("done"))
+            }
+            How::Coop => {
+                let gate = gate.unwrap();
+                gate.announce();
+                while !gate.released() {
+                    job.checkpoint("working", 0.5)?;
+                    std::thread::yield_now();
+                }
+                Ok(json!("done"))
+            }
+            How::Partial => {
+                gate.unwrap().announce();
+                while !job.is_cancelled() {
+                    std::thread::yield_now();
+                }
+                Ok(json!("partial"))
+            }
+            How::Spend { before, after } => {
+                let gate = gate.unwrap();
+                job.spend(*before)?;
+                gate.announce();
+                gate.wait();
+                job.spend(*after)?;
+                Ok(json!("done"))
+            }
+            How::Overspend { each } => {
+                job.spend(*each)?;
+                job.spend(*each)?;
+                Ok(json!("done"))
+            }
+            How::Progress => {
+                let gate = gate.unwrap();
+                for n in 0..100_u8 {
+                    job.progress("step", f32::from(n) / 100.0);
+                }
+                gate.announce();
+                gate.wait();
+                job.progress("last", 1.0);
+                Ok(json!("done"))
+            }
+            How::Fail => Err(OpError::invalid("key", "boom")),
+            How::Panic => panic!("the job's work panicked"),
+        }
+    }
+
+    fn finish(&self, _ctx: &OpCtx<'_>, result: Value) -> Result<Plan, OpError> {
+        Ok(Plan::edit(Patch::new().with(path(&self.key), None, Some(result))))
+    }
+}
+register_op!(TestJob);
+
+/// A job that declares itself a driver.
+#[derive(Serialize, Deserialize, JsonSchema)]
+struct TestDriver {}
+
+impl Op for TestDriver {
+    fn meta() -> OpMeta {
+        OpMeta {
+            name: "test.driver_job",
+            summary: "A driver job.",
+            kind: OpKind::Job,
+            scope: Scope::EditScene,
+            undo: Undo::Auto,
+        }
+    }
+
+    fn plan(&self, _ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
+        Ok(Plan::default())
+    }
+
+    fn job_shape() -> JobShape {
+        JobShape::Driver
+    }
+}
+register_op!(TestDriver);
+
+fn job(key: &str, how: &Value) -> Request {
+    request("test.job", json!({"key": key, "how": how}))
+}
+
+fn job_with(key: &str, how: &Value, extra: Value) -> Request {
+    let mut args = json!({"key": key, "how": how});
+    if let (Some(args), Some(extra)) = (args.as_object_mut(), extra.as_object()) {
+        args.extend(extra.clone());
+    }
+    request("test.job", args)
+}
+
+/// A rig whose jobs share a budget of `usd_micros`.
+fn budgeted(usd_micros: u64) -> Rig {
+    let clock = Arc::new(FakeClock::new(Seconds(0.0)));
+    let exec =
+        Executor::new(Box::new(MemDoc::from_value(json!({}))), clock.clone()).unwrap().with_job_budget(usd_micros);
+    Rig { exec, clock }
+}
+
+fn live(rig: &Rig, id: JobId) -> JobInfo {
+    rig.exec.job(id, &Grants::person()).unwrap().unwrap()
+}
+
+fn code(error: &OpError) -> ErrorCode {
+    error.code
+}
+
+/// Moves the fake clock and lets the manager see it.
+fn advance(rig: &Rig, secs: f64) {
+    rig.clock.advance(Seconds(secs));
+    rig.exec.poll_jobs();
+}
+
+#[test]
+fn a_running_job_does_not_block_another_actor_and_its_finish_is_one_undo_step() {
+    let rig = rig(json!({"other": 0}));
+    let gate = Gate::new("a1");
+    let info = rig.exec.start(job("a1", &json!("block"))).unwrap();
+    gate.wait_entered();
+    assert_eq!(live(&rig, info.id).state, JobState::Running);
+
+    let began = Instant::now();
+    rig.agent_set("other", json!(1));
+    assert!(began.elapsed() < Duration::from_millis(5), "an edit by another actor waited for the job");
+
+    gate.release.send(()).unwrap();
+    let ended = rig.exec.wait(info.id, None).unwrap();
+    assert!(matches!(ended.state, JobState::Done { seq: Some(_), .. }), "{:?}", ended.state);
+    assert_eq!(rig.at("a1"), Some(json!("done")));
+
+    // One undo step, on the requesting actor's history: the agent's edit is not touched.
+    assert_eq!(rig.undo().unwrap().as_deref(), Some("test.job"));
+    assert_eq!(rig.at("a1"), None);
+    assert_eq!(rig.at("other"), Some(json!(1)));
+    assert_eq!(rig.undo().unwrap(), None);
+}
+
+#[test]
+fn run_waits_for_a_job_and_returns_its_outcome() {
+    let rig = rig(json!({}));
+    let outcome = rig.exec.run(job_with("r1", &json!("echo"), json!({"usd": 0.5}))).unwrap();
+    assert_eq!(outcome.plan.patch.changes.len(), 1);
+    assert!(outcome.applied.is_some());
+    // `plan_output` and the reservation reach `work`.
+    assert_eq!(rig.at("r1"), Some(json!({"output": {"chose": "r1"}, "reserved": 500_000})));
+}
+
+#[test]
+fn a_job_plan_with_a_patch_is_internal_even_in_a_dry_run() {
+    let rig = rig(json!({}));
+    for mode in [Mode::Apply, Mode::DryRun] {
+        let req = Request { mode, ..job_with("b1", &json!("echo"), json!({"bad_plan": true})) };
+        assert_eq!(code(&rig.exec.run(req).unwrap_err()), ErrorCode::Internal);
+    }
+    assert_eq!(rig.exec.jobs(&Grants::person()).unwrap().len(), 0);
+}
+
+#[test]
+fn a_plain_job_cannot_join_a_transaction() {
+    let rig = rig(json!({}));
+    let tx = rig.exec.begin("t", &person());
+    let req = Request { tx: Some(tx), ..job("t1", &json!("echo")) };
+    let error = rig.exec.run(req.clone()).unwrap_err();
+    assert_eq!(code(&error), ErrorCode::Invalid);
+    assert_eq!(error.field.as_deref(), Some("tx"));
+    assert_eq!(code(&rig.exec.start(req).unwrap_err()), ErrorCode::Invalid);
+}
+
+#[test]
+fn a_dry_run_is_the_plan_alone_and_never_starts_work() {
+    let rig = rig(json!({}));
+    let gate = Gate::new("d1");
+    let req = Request { mode: Mode::DryRun, ..job_with("d1", &json!("block"), json!({"usd": 0.5})) };
+    let outcome = rig.exec.run(req.clone()).unwrap();
+    assert_eq!(outcome.plan.cost.and_then(|c| c.usd), Some(0.5));
+    assert!(outcome.applied.is_none());
+    assert_eq!(rig.exec.jobs(&Grants::person()).unwrap().len(), 0);
+    assert!(matches!(gate.entered.try_recv(), Err(TryRecvError::Empty)), "work ran");
+    assert_eq!(code(&rig.exec.start(req).unwrap_err()), ErrorCode::Invalid, "Jobs::start needs apply mode");
+}
+
+#[test]
+fn a_driver_op_is_refused_until_the_driver_task() {
+    let rig = rig(json!({}));
+    let error = rig.run("test.driver_job", json!({})).unwrap_err();
+    assert_eq!(code(&error), ErrorCode::Unsupported);
+    assert!(error.message.contains("driver jobs are not available yet"), "{error}");
+    assert_eq!(code(&rig.exec.start(request("test.driver_job", json!({}))).unwrap_err()), ErrorCode::Unsupported);
+}
+
+#[test]
+fn a_job_start_that_is_not_a_job_is_invalid() {
+    let rig = rig(json!({"a": 1}));
+    let error = rig.exec.start(request("test.set", json!({"path": "a", "value": 2}))).unwrap_err();
+    assert_eq!(code(&error), ErrorCode::Invalid);
+}
+
+#[test]
+fn the_cpu_lane_holds_its_width_and_the_next_job_waits_for_a_slot() {
+    let rig = rig(json!({}));
+    let cores = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    let width = (cores / 2).clamp(1, 4);
+    let gates: Vec<Gate> = (0..=width).map(|n| Gate::new(&format!("w{n}"))).collect();
+    let ids: Vec<JobId> =
+        (0..=width).map(|n| rig.exec.start(job(&format!("w{n}"), &json!("block"))).unwrap().id).collect();
+    assert!(ids[..width].iter().all(|id| live(&rig, *id).state == JobState::Running));
+    assert_eq!(live(&rig, ids[width]).state, JobState::Queued, "one past the lane width queues");
+    assert_eq!(live(&rig, ids[0]).lane, Lane::Cpu);
+
+    gates[0].release.send(()).unwrap();
+    rig.exec.wait(ids[0], None).unwrap();
+    assert_eq!(live(&rig, ids[width]).state, JobState::Running, "the freed slot starts the queued job");
+    for gate in &gates {
+        let _ = gate.release.send(());
+    }
+}
+
+#[test]
+fn the_257th_queued_job_is_limited() {
+    let rig = rig(json!({}));
+    let gate = Gate::new("q");
+    let gpu = json!({"gpu": true});
+    let first = rig.exec.start(job_with("q", &json!("block"), gpu.clone())).unwrap();
+    gate.wait_entered();
+    assert_eq!(first.lane, Lane::Gpu);
+    for _ in 0..256 {
+        assert_eq!(rig.exec.start(job_with("q", &json!("block"), gpu.clone())).unwrap().state, JobState::Queued);
+    }
+    let error = rig.exec.start(job_with("q", &json!("block"), gpu)).unwrap_err();
+    assert_eq!(code(&error), ErrorCode::Limited);
+    drop(gate);
+}
+
+#[test]
+fn a_job_past_its_time_cap_is_cancelled() {
+    let rig = rig(json!({}));
+    let gate = Gate::new("t1");
+    // An estimate of 1 s gives the 60 s minimum.
+    let info = rig.exec.start(job_with("t1", &json!("coop"), json!({"seconds": 1.0}))).unwrap();
+    gate.wait_entered();
+    advance(&rig, 59.0);
+    assert_eq!(live(&rig, info.id).state, JobState::Running);
+    advance(&rig, 2.0);
+    let ended = rig.exec.wait(info.id, None).unwrap();
+    assert_eq!(ended.state, JobState::Cancelled { by: None, reason: CancelReason::Timeout });
+    assert_eq!(rig.at("t1"), None);
+}
+
+#[test]
+fn a_job_without_an_estimate_gets_thirty_minutes() {
+    let rig = rig(json!({}));
+    let gate = Gate::new("t2");
+    let info = rig.exec.start(job("t2", &json!("coop"))).unwrap();
+    gate.wait_entered();
+    advance(&rig, 1_799.0);
+    assert_eq!(live(&rig, info.id).state, JobState::Running);
+    advance(&rig, 2.0);
+    assert!(matches!(rig.exec.wait(info.id, None).unwrap().state, JobState::Cancelled { .. }));
+}
+
+#[test]
+fn run_returns_the_cancelled_error_of_a_cancelled_job() {
+    let rig = rig(json!({}));
+    let gate = Gate::new("c1");
+    let error = std::thread::scope(|scope| {
+        let running = scope.spawn(|| rig.exec.run(job("c1", &json!("coop"))));
+        gate.wait_entered();
+        let id = rig.exec.jobs(&Grants::person()).unwrap()[0].id;
+        let info = rig.exec.cancel(id, &person()).unwrap();
+        assert!(matches!(info.state, JobState::Running), "cancel is cooperative: the job still runs");
+        running.join().unwrap().unwrap_err()
+    });
+    assert_eq!(code(&error), ErrorCode::Cancelled);
+    assert!(matches!(error.detail.as_deref(), Some(ErrorDetail::Cancelled { reason: CancelReason::Requested, .. })));
+    let ended = &rig.exec.jobs(&Grants::person()).unwrap()[0];
+    assert_eq!(ended.state, JobState::Cancelled { by: Some(person()), reason: CancelReason::Requested });
+}
+
+#[test]
+fn a_cancelled_job_may_return_what_it_completed_and_its_finish_applies() {
+    let rig = rig(json!({}));
+    let gate = Gate::new("p1");
+    let info = rig.exec.start(job("p1", &json!("partial"))).unwrap();
+    gate.wait_entered();
+    rig.exec.cancel(info.id, &person()).unwrap();
+    let ended = rig.exec.wait(info.id, None).unwrap();
+    assert!(matches!(ended.state, JobState::Done { .. }), "{:?}", ended.state);
+    assert_eq!(rig.at("p1"), Some(json!("partial")));
+}
+
+#[test]
+fn only_the_jobs_actor_or_a_person_may_cancel_it() {
+    let rig = rig(json!({}));
+    let gate = Gate::new("o1");
+    let info = rig
+        .exec
+        .start(Request { actor: agent(), ..agent_request("test.job", json!({"key": "o1", "how": "coop"})) })
+        .unwrap();
+    gate.wait_entered();
+    let other = omuzaki_ops_api::Actor::Plugin { id: "x".into() };
+    assert_eq!(code(&rig.exec.cancel(info.id, &other).unwrap_err()), ErrorCode::Denied);
+    assert_eq!(code(&rig.exec.cancel(JobId(999), &person()).unwrap_err()), ErrorCode::NotFound);
+    rig.exec.cancel(info.id, &agent()).unwrap();
+    rig.exec.cancel(info.id, &agent()).unwrap();
+    rig.exec.wait(info.id, None).unwrap();
+}
+
+#[test]
+fn a_job_that_ignores_cancel_is_ended_after_ten_seconds_and_the_third_detached_thread_closes_the_lane() {
+    let rig = rig(json!({}));
+    let gpu = json!({"gpu": true});
+    let gates: Vec<Gate> = (0..4).map(|n| Gate::new(&format!("x{n}"))).collect();
+    for (n, gate) in gates.iter().enumerate().take(3) {
+        let info = rig.exec.start(job_with(&format!("x{n}"), &json!("block"), gpu.clone())).unwrap();
+        gate.wait_entered();
+        rig.exec.cancel(info.id, &person()).unwrap();
+        advance(&rig, 9.9);
+        assert_eq!(live(&rig, info.id).state, JobState::Running, "inside the grace period");
+        advance(&rig, 0.2);
+        let ended = live(&rig, info.id);
+        assert_eq!(ended.state, JobState::Cancelled { by: Some(person()), reason: CancelReason::Requested });
+    }
+    let refused = rig.exec.start(job_with("x3", &json!("block"), gpu.clone())).unwrap_err();
+    assert_eq!(code(&refused), ErrorCode::Unavailable);
+
+    gates[0].release.send(()).unwrap();
+    rig.exec.wait_detached(2);
+    let accepted = rig.exec.start(job_with("x3", &json!("block"), gpu)).unwrap();
+    assert_eq!(accepted.state, JobState::Queued, "the third thread still holds the slot");
+    assert_eq!(rig.at("x0"), None, "a detached thread's late result is discarded");
+}
+
+#[test]
+fn spending_past_the_estimate_fails_and_cancels_the_job() {
+    let rig = rig(json!({}));
+    let error =
+        rig.exec.run(job_with("s1", &json!({"overspend": {"each": 300_000}}), json!({"usd": 0.5}))).unwrap_err();
+    assert_eq!(code(&error), ErrorCode::Limited);
+    let ended = &rig.exec.jobs(&Grants::person()).unwrap()[0];
+    assert_eq!(ended.state, JobState::Cancelled { by: None, reason: CancelReason::Budget });
+    assert_eq!(ended.spent_usd_micros, 300_000);
+    assert_eq!(rig.at("s1"), None);
+}
+
+#[test]
+fn progress_events_are_coalesced_to_ten_a_second() {
+    let rig = rig(json!({}));
+    let events = rig.subscribe();
+    let gate = Gate::new("g1");
+    let info = rig.exec.start(job("g1", &json!("progress"))).unwrap();
+    gate.wait_entered();
+    advance(&rig, 0.1);
+    gate.release.send(()).unwrap();
+    rig.exec.wait(info.id, None).unwrap();
+    let stages: Vec<String> = drain(&events)
+        .into_iter()
+        .filter_map(|e| match e {
+            Event::JobProgress { stage, .. } => Some(stage),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(stages, ["step", "last"], "100 reports in one instant make one event");
+}
+
+#[test]
+fn job_changes_arrive_in_order_around_the_edit_they_apply() {
+    let rig = rig(json!({}));
+    let events = rig.subscribe();
+    rig.exec.run(job("e1", &json!("echo"))).unwrap();
+    let seen: Vec<String> = drain(&events)
+        .into_iter()
+        .map(|e| match e {
+            Event::JobChanged { job } => match job.state {
+                JobState::Queued => "queued".to_owned(),
+                JobState::Running => "running".to_owned(),
+                JobState::Done { .. } => "done".to_owned(),
+                other => format!("{other:?}"),
+            },
+            Event::OpApplied { .. } => "applied".to_owned(),
+            Event::TxCommitted { .. } => "committed".to_owned(),
+            other => format!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(seen, ["queued", "running", "applied", "committed", "done"]);
+}
+
+#[test]
+fn a_reservation_of_a_detached_thread_stays_held_and_its_late_spend_is_charged() {
+    let rig = budgeted(1_000_000);
+    let gate = Gate::new("m1");
+    let paid = json!({"usd": 0.6});
+    let info =
+        rig.exec.start(job_with("m1", &json!({"spend": {"before": 100_000, "after": 400_000}}), paid.clone())).unwrap();
+    gate.wait_entered();
+    rig.exec.cancel(info.id, &person()).unwrap();
+    advance(&rig, 10.0);
+    assert!(matches!(live(&rig, info.id).state, JobState::Cancelled { .. }));
+
+    // The job is over, the thread is not: its money is still counted, so this would fit only in the released money.
+    let refused = rig.exec.start(job_with("m2", &json!("echo"), json!({"usd": 0.45}))).unwrap_err();
+    assert_eq!(code(&refused), ErrorCode::Limited);
+
+    gate.release.send(()).unwrap();
+    rig.exec.wait_detached(0);
+    // 100,000 + the late 400,000 are charged: 0.6 more does not fit, 0.5 does.
+    assert_eq!(code(&rig.exec.start(job_with("m3", &json!("echo"), paid)).unwrap_err()), ErrorCode::Limited);
+    rig.exec.run(job_with("m4", &json!("echo"), json!({"usd": 0.5}))).unwrap();
+}
+
+#[test]
+fn a_reservation_still_held_at_shutdown_is_charged_in_full() {
+    let rig = budgeted(10_000_000);
+    let gate = Gate::new("h1");
+    let info = rig
+        .exec
+        .start(job_with("h1", &json!({"spend": {"before": 100_000, "after": 0}}), json!({"usd": 0.5})))
+        .unwrap();
+    gate.wait_entered();
+    assert_eq!(rig.exec.shutdown_jobs(), 500_000);
+    assert_eq!(rig.exec.shutdown_jobs(), 500_000, "a second shutdown charges nothing more");
+    assert_eq!(code(&rig.exec.start(job("h2", &json!("echo"))).unwrap_err()), ErrorCode::Unavailable);
+    drop(gate);
+    let _ = rig.exec.wait(info.id, None);
+}
+
+#[test]
+fn the_reservation_is_released_on_every_exit_path() {
+    let rig = budgeted(1_000_000);
+    let half = json!({"usd": 0.5});
+    // A finished job, a failed one and a queued one that is cancelled each leave the money free.
+    rig.exec.run(job_with("z1", &json!("echo"), half.clone())).unwrap();
+    assert_eq!(code(&rig.exec.run(job_with("z2", &json!("fail"), half.clone())).unwrap_err()), ErrorCode::Invalid);
+    rig.exec.run(job_with("z3", &json!("echo"), json!({"usd": 1.0}))).unwrap();
+
+    let gate = Gate::new("z4");
+    let gpu_half = json!({"usd": 0.4, "gpu": true});
+    let running = rig.exec.start(job_with("z4", &json!("block"), gpu_half.clone())).unwrap();
+    gate.wait_entered();
+    let queued = rig.exec.start(job_with("z5", &json!("echo"), gpu_half)).unwrap();
+    assert_eq!(queued.state, JobState::Queued);
+    rig.exec.cancel(queued.id, &person()).unwrap();
+    assert!(matches!(live(&rig, queued.id).state, JobState::Cancelled { reason: CancelReason::Requested, .. }));
+    // 0.4 is still held by the running job; the cancelled queued job gave back its 0.4.
+    let rest = rig.exec.start(job_with("z6", &json!("echo"), json!({"usd": 0.6}))).unwrap();
+    rig.exec.wait(rest.id, None).unwrap();
+    gate.release.send(()).unwrap();
+    rig.exec.wait(running.id, None).unwrap();
+}
+
+#[test]
+fn a_panic_in_work_fails_the_job_and_charges_its_whole_reservation() {
+    let rig = budgeted(10_000_000);
+    let error = rig.exec.run(job_with("k1", &json!("panic"), json!({"usd": 0.5, "gpu": true}))).unwrap_err();
+    assert_eq!(code(&error), ErrorCode::Internal);
+    assert!(matches!(rig.exec.jobs(&Grants::person()).unwrap()[0].state, JobState::Failed { .. }));
+    // The lane is free again, and the unknown spend of the panicked call stays charged.
+    rig.exec.run(job_with("k2", &json!("echo"), json!({"gpu": true}))).unwrap();
+    assert_eq!(rig.exec.shutdown_jobs(), 500_000);
+}
+
+#[test]
+fn the_context_shows_the_plan_and_a_cloned_cancel_flag_sees_a_later_cancel() {
+    let rig = rig(json!({}));
+    let info = rig.exec.start(job_with("f1", &json!("echo"), json!({"usd": 0.25}))).unwrap();
+    rig.exec.wait(info.id, None).unwrap();
+    assert_eq!(rig.at("f1"), Some(json!({"output": {"chose": "f1"}, "reserved": 250_000})));
+
+    let flag = FLAGS.lock().unwrap().get("f1").cloned().unwrap();
+    assert!(!omuzaki_ops_api::Cancel::is_cancelled(&flag));
+    rig.exec.cancel(info.id, &person()).unwrap();
+    assert!(omuzaki_ops_api::Cancel::is_cancelled(&flag), "work has returned, and the flag is still the job's");
+}
+
+#[test]
+fn a_job_needs_read_to_be_listed_and_its_op_scope_to_start() {
+    let rig = rig(json!({}));
+    let none = Grants::of([]);
+    assert_eq!(code(&rig.exec.jobs(&none).unwrap_err()), ErrorCode::Denied);
+    assert_eq!(code(&rig.exec.job(JobId(1), &none).unwrap_err()), ErrorCode::Denied);
+    let mut read_only = job("n1", &json!("echo"));
+    read_only.grants = Grants::of([Scope::Read]);
+    assert_eq!(code(&rig.exec.start(read_only).unwrap_err()), ErrorCode::Denied);
+    assert_eq!(rig.exec.jobs(&Grants::person()).unwrap().len(), 0);
+}

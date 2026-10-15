@@ -283,7 +283,9 @@ impl Manager {
                 job.cancel.cancel();
                 job.cancelling = Some(Cancelling { by, reason, grace_until: now + GRACE_SECS });
             }
-            _ => {}
+            // The flag is the one handle work cloned out: flipping it still stops what outlived `work` (a stream), and
+            // changes no state.
+            Phase::Working | Phase::Finishing | Phase::Ended => job.cancel.cancel(),
         }
     }
 
@@ -473,7 +475,11 @@ impl Manager {
                 return Err(OpError::not_found(format!("job {} is unknown", id.0)));
             };
             if job.phase == Phase::Ended {
-                return Ok(job.info.clone());
+                let info = job.info.clone();
+                drop(inner);
+                // Whoever sees the job ended sees its events too: the worker may not have delivered them yet.
+                self.env.publish();
+                return Ok(info);
             }
             let info = job.info.clone();
             inner = match until {
@@ -559,7 +565,8 @@ fn settle(ledger: &mut Ledger, job: &mut Job, spent: u64) {
 
 /// Micro-dollars to reserve for `cost.usd`, rounded up; nothing without an estimate.
 fn reserve_micros(cost: Option<&CostHint>) -> u64 {
-    let usd = cost.and_then(|c| c.usd).map_or(0.0, f64::from);
+    // Through the shortest decimal form, so the 0.1 a plan wrote is 100,000 micro-dollars and not 100,001.
+    let usd = cost.and_then(|c| c.usd).and_then(|usd| usd.to_string().parse::<f64>().ok()).unwrap_or(0.0);
     if usd.is_finite() && usd > 0.0 {
         // `usd` is positive and finite; a huge one saturates, which is the right cap for "more than the budget".
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
