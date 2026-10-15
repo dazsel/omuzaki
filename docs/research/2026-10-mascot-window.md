@@ -310,8 +310,9 @@ warnings` on `aarch64-apple-darwin` pass; nothing was linked or run there.
 ### 9.2 Still not verified (needs a machine)
 
 Run each on its OS with the binaries from the `spike-build.yml` workflow (`workflow_dispatch`, `spike` =
-`mascot-window`; the Director has approved it and the broadcast lead is adding it, so it may not be on `main` yet; until
-it is, `cargo build --release --locked` in `spikes/mascot-window/` makes the same binaries) and record, per machine, the OS build, GPU and
+`mascot-window`; the Director has approved it and it is in the broadcast lead's branch `cloud/1925-spike-build`, so the
+owner run waits for that workflow to merge; until then `cargo build --release --locked` in `spikes/mascot-window/` makes
+the same binaries) and record, per machine, the OS build, GPU and
 driver, desktop and compositor and `XDG_SESSION_TYPE` (item 5), and screenshots of the window over solid white and solid
 black (item 6; `--probe` prints the OS state read back).
 

@@ -54,7 +54,7 @@ fn edit_ex_style(hwnd: HWND, edit: impl FnOnce(isize) -> isize) -> Result<(), St
     Ok(())
 }
 
-/// WS_EX_TOOLWINDOW removes the window from Alt-Tab (winit's skip_taskbar only hides the taskbar button).
+/// `WS_EX_TOOLWINDOW` removes the window from Alt-Tab (winit's `skip_taskbar` only hides the taskbar button).
 fn hide_from_switcher(hwnd: HWND) -> Result<(), String> {
     edit_ex_style(hwnd, |s| (s | WS_EX_TOOLWINDOW.0 as isize) & !(WS_EX_APPWINDOW.0 as isize))
 }

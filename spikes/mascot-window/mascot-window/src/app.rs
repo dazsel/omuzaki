@@ -11,7 +11,7 @@ use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 
 use crate::gpu::{self, Frame, Renderer};
-use crate::platform;
+use crate::platform::{self, ClickThrough};
 use crate::scene::{Fit, Mask, Scene};
 use crate::scene_pass::{self, ReferenceError};
 use crate::stats::{Series, Summary};
@@ -251,7 +251,12 @@ impl App {
             event_loop.exit();
             return Ok(());
         }
-        let scene = self.reference(window.inner_size())?;
+        // Only drawing and per-pixel click-through need the picture; any other probe reports the OS state without a GPU.
+        let scene = if self.config.mode == Mode::Probe && self.config.platform.click_through != ClickThrough::Pixel {
+            Scene { width: 1, height: 1, pixels: vec![0; 4] }
+        } else {
+            self.reference(window.inner_size())?
+        };
         let mask = mask(&window, &scene, self.opacity);
         let (mut state, features) = platform::State::new(&window, self.config.platform, &mask);
         println!(

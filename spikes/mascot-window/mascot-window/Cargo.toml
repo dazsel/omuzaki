@@ -12,7 +12,6 @@ bytemuck.workspace = true
 clap.workspace = true
 eframe = { version = "0.36", default-features = false, features = ["wgpu", "wayland", "x11", "default_fonts"] }
 env_logger = { version = "0.11", default-features = false }
-image.workspace = true
 pollster.workspace = true
 raw-window-handle.workspace = true
 thiserror.workspace = true
