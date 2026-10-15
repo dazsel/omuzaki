@@ -254,7 +254,7 @@ other people's items (`Role::library_rights()`). There is no shared team key: an
 key, and the roster says that key may publish for the team. An item's review state is its approval records:
 `Approved` means `ReviewRecord`s (signed under `Domain::Approval`) met the roster's
 `library.approvals`. `Roster.licence` is the team's
-licence text, by hash. The source format, index and sync are designed with the shared-library-sources design (planned).
+licence text, by hash. The source format, index and sync are designed with the shared-library-sources design (`docs/design/library-sharing.md`, ADR 0057).
 
 ### 11.3 Seams accepted by the cloud lead
 

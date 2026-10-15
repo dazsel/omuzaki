@@ -1,0 +1,6 @@
+section = "rust"
+item = "cc"
+kind = "crate"
+used_for = "build script of the broadcast spike: compiles the C++ shim and the Spout2 SDK"
+status = "yes"
+audit = "(crates.io: MIT OR Apache-2.0)"

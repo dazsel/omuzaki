@@ -171,14 +171,14 @@ The design reserves only the interface. The payload is `KeyId::mark_payload()`: 
 | Domain | Tag | Hash of | Signature stored | Owner |
 |---|---|---|---|---|
 | `LibraryItem` | `omuzaki-library-item-v1` | the manifest's canonical form, legacy: publisher and signature both excluded (D3) | the manifest's `signature` field | library.md D2; LB-07, LB-08 publish |
-| `LibraryIndex` | `omuzaki-library-index-v1` | a shared source's index snapshot, and the `Checkpoint` that binds the membership log's head | the index file | 0046 |
+| `LibraryIndex` | `omuzaki-library-index-v1` | a shared source's index snapshot, and the `Checkpoint` that binds the membership log's head | the index file | 0057 |
 | `Export` | `omuzaki-export-v1` | the export statement (D6) | `OMUZAKI_signed_export` or the `.omuzaki-sig.json` file | this design |
 | `AuditExport` | `omuzaki-audit-export-v1` | an audit-log export; its own tag, so it can never be replayed as a platform `Export` | the audit export file | 0043 |
 | `Membership` | `omuzaki-membership-v1` | 0043's `Signed<Statement>`, `Signed<Invite>` and `Signed<Acceptance>`, one per log entry (nothing signs a roster as a whole) | the membership log | 0043 |
-| `Approval` | `omuzaki-approval-v1` | 0043's `Signed<ApprovalStatement>` (VC-11) and 0046's `Signed<ReviewRecord>` (item reviews) | the approval log; the review records | 0043, 0046 |
+| `Approval` | `omuzaki-approval-v1` | 0043's `Signed<ApprovalStatement>` (VC-11) and 0057's `Signed<ReviewRecord>` (item reviews) | the approval log; the review records | 0043, 0057 |
 | `ReviewBundle` | `omuzaki-review-bundle-v1` | a review bundle's manifest | the bundle | review links |
 | `KeyStatement` | `omuzaki-key-statement-v1` | `Signed<KeyStatement>` | statement files, rosters | this design (D5) |
-| `Entitlement` | `omuzaki-entitlement-v1` | a signed receipt (reserved, not built) | the receipt | 0046, LB-08, a hosted key |
+| `Entitlement` | `omuzaki-entitlement-v1` | a signed receipt (reserved, not built) | the receipt | 0057, LB-08, a hosted key |
 
 Every tag above ends in `\0`. The other consumers:
 
@@ -274,7 +274,7 @@ Each task is filed with its fence, contract, acceptance and `Blocked by` when th
 - **0043:** asked for several identities per machine (D2) and the `AuditExport` tag; owns the `Statement`, `Invite`, `Acceptance` and `ApprovalStatement` bodies, the roster rules, who signs a team revocation list, and which keys may publish for a team. This design gives it `Signed<T>`, the tags and the trust outcomes.
 - **0044:** `Author::Person.key: Option<KeyId>` holds the full key.
 - **0045:** no git commit signing in v1. Signatures sit in fields of the files they sign, so a merge never rewrites one.
-- **0046:** the tags `LibraryIndex` and `Entitlement`, and `Approval` for item reviews.
+- **0057:** the tags `LibraryIndex` and `Entitlement`, and `Approval` for item reviews.
 
 ## 9. Sources
 

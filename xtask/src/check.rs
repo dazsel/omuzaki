@@ -14,6 +14,7 @@ use crate::docs_index;
 use crate::error::Result;
 use crate::links;
 use crate::lint_deps;
+use crate::lint_licences;
 use crate::lint_seed;
 use crate::lint_ui_writes;
 use crate::process::{cargo, describe};
@@ -73,6 +74,8 @@ enum Action {
     LintDeps,
     /// The `link()` wiring lint (ADR 0015), run in this process.
     LintLinks,
+    /// The licence-file lint (ADR 0053 §3), run in this process.
+    LintLicences,
     /// The UI-writes lint (QG-11), run in this process.
     LintUiWrites,
     /// The crate-table lint (ADR 0053), run in this process.
@@ -98,6 +101,7 @@ impl Step {
             Action::Cargo(args) => format!("cargo {}", args.join(" ")),
             Action::LintDeps => "lint-deps".to_owned(),
             Action::LintLinks => "lint-links".to_owned(),
+            Action::LintLicences => "lint-licences".to_owned(),
             Action::LintUiWrites => "lint-ui-writes".to_owned(),
             Action::LintCrateTable => "lint-crate-table".to_owned(),
             Action::LintDocsIndex => "lint-docs-index".to_owned(),
@@ -136,6 +140,7 @@ fn plan(scope: &Scope) -> Vec<Step> {
         Step::cargo("deny", &["deny", "--log-level", "error", "check", "licenses", "bans", "sources"], &[], &[]),
         Step { name: "lint-deps", action: Action::LintDeps },
         Step { name: "lint-links", action: Action::LintLinks },
+        Step { name: "lint-licences", action: Action::LintLicences },
         Step { name: "lint-ui-writes", action: Action::LintUiWrites },
         Step { name: "lint-crate-table", action: Action::LintCrateTable },
         Step { name: "lint-docs-index", action: Action::LintDocsIndex },
@@ -278,6 +283,7 @@ fn run_step(workspace: &Workspace, step: &Step, base: &str) -> bool {
             eprintln!("lint-links: {error}");
             false
         }),
+        Action::LintLicences => lint_licences::report(workspace),
         Action::LintUiWrites => lint_ui_writes::report(workspace).unwrap_or_else(|error| {
             eprintln!("lint-ui-writes: {error}");
             false
@@ -330,6 +336,7 @@ mod tests {
             Action::Cargo(args) => args.join(" "),
             Action::LintDeps => "<lint-deps>".to_owned(),
             Action::LintLinks => "<lint-links>".to_owned(),
+            Action::LintLicences => "<lint-licences>".to_owned(),
             Action::LintUiWrites => "<lint-ui-writes>".to_owned(),
             Action::LintCrateTable => "<lint-crate-table>".to_owned(),
             Action::LintDocsIndex => "<lint-docs-index>".to_owned(),
@@ -354,6 +361,7 @@ mod tests {
                 ("deny", "deny --log-level error check licenses bans sources".to_owned()),
                 ("lint-deps", "<lint-deps>".to_owned()),
                 ("lint-links", "<lint-links>".to_owned()),
+                ("lint-licences", "<lint-licences>".to_owned()),
                 ("lint-ui-writes", "<lint-ui-writes>".to_owned()),
                 ("lint-crate-table", "<lint-crate-table>".to_owned()),
                 ("lint-docs-index", "<lint-docs-index>".to_owned()),
@@ -410,6 +418,7 @@ mod tests {
                 "deny",
                 "lint-deps",
                 "lint-links",
+                "lint-licences",
                 "lint-ui-writes",
                 "lint-crate-table",
                 "lint-docs-index",

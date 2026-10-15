@@ -269,6 +269,8 @@ A bundle names other items as steps: `[[step]] item = "omuzaki/garments/pleated-
 | `library.render_previews {item?, templates?}` | job, `render` | renders and caches previews (D12) | yes | yes |
 | `library.publish {item, to}` | job, `publish` (LB-07/LB-08, later) | shares to a team or the marketplace | `needs_person` | yes |
 
+*Sharing design (ADR 0057): `library.publish {item, to}` runs a preflight and signs with the person's key; `library.team.sync`, `library.team.list` and `library.team.review` are in `docs/design/library-sharing.md` D10.*
+
 The principle, as in ADR 0016: **agents use and propose; people decide what enters a library and what rights are asserted.** Agents may apply, update and preview anything, because the document change is undoable and visible in history. Agents never assert ownership or rights, never add to a library except as candidates (proposals land for the person to accept, LB-03), and never remove anything outside the document. `needs_person` is the structured refusal an op returns when a person must decide; once the approval queue exists the request queues instead of failing.
 
 ### D10. Update is a three-way merge: the record is the base, the person's edits win by default
@@ -301,6 +303,7 @@ The dry-run is the **diff preview**: each changed path with before, after and wh
 | Team (LB-07, later) | a shared scope with roles (VC-10) and review state (VC-11) | a remote source with a local cache | **the only way to share a person's items with teammates**: no ad hoc path (no export of "my library" items, no promotion from a project's store); `ItemScope::Team(id)` is already in the contract so search and records have a place for it; its roles, membership log and review records are `team.md` §11.2 |
 
 - **Content addressing and dedupe:** manifests and assets are stored by hash, so the same bytes are stored once per store, whatever ids or projects use them. The same `id@version` with the same hash from two scopes is one entry. The same `id@version` with a **different** hash is a conflict: first-party wins for `omuzaki/`; otherwise install refuses ("already installed with different content; bump the version").
+- *A team source is a folder, a bucket or later a git repository holding signed, immutable files in this layout, verified by the client and cached under `teams/<id>/`: `docs/design/library-sharing.md` (ADR 0057).*
 - **Resolution order** for an id without a pin: first-party, then my library (newest compatible version), then team scopes. A project pin always wins (D5).
 - **The registry** is the `Library` service (`omuzaki-library-api`), implemented in `omuzaki-library` and injected by the app like the store. It loads the compiled-in sources at startup and the person's library from disk, and updates its index on install.
 

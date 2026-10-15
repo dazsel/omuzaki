@@ -17,8 +17,8 @@ use omuzaki_char::template::skeleton::TemplateFit;
 use omuzaki_char::template::soft_sd::SoftSd;
 use omuzaki_char_api::{
     BodyFit, BodyParams, BuildCtx, BuildError, BuildOptions, BuildServices, BuiltCharacter, CharId, CharacterBuilder,
-    CharacterDef, HeadParams, JointRef, KindProvenance, PartCategory, PartDef, PartId, PartKind, PartKindId, PartMeta,
-    PartOutput, Published, Publishes, RegistryBuilder, find_kind, plan,
+    CharacterDef, FitFact, HeadParams, JointRef, KindProvenance, PartCategory, PartDef, PartId, PartKind, PartKindId,
+    PartMeta, PartOutput, Published, Publishes, RegistryBuilder, find_kind, plan,
 };
 use omuzaki_char_mock::mock_character;
 use omuzaki_core::glam::Vec3;
@@ -45,7 +45,7 @@ impl PartKind for TemplateBody {
     fn build(p: &Self::Params, _: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
         let layout = SoftSd.layout(&p.proportions, &p.shape, &p.hand);
         let fit: Arc<dyn BodyFit> = Arc::new(TemplateFit::new(layout));
-        Ok(PartOutput { publishes: Publishes { fit: Some(fit), ..Publishes::default() }, ..PartOutput::default() })
+        Ok(PartOutput { publishes: Publishes::default().with::<FitFact>(fit), ..PartOutput::default() })
     }
 }
 
@@ -217,7 +217,7 @@ fn the_dropped_head_joint_wins_over_the_body_in_either_absorb_order() {
         let (b, h) = ((pid("body"), body.clone()), (pid("head"), head.clone()));
         let order = if head_first { [h, b] } else { [b, h] };
         for (part, fit) in order {
-            published.absorb(&part, Publishes { fit: Some(fit), ..Publishes::default() }).unwrap();
+            published.absorb(&part, Publishes::default().with::<FitFact>(fit)).unwrap();
         }
         assert_eq!(published.joint(&JointRef::HEAD), Some(dropped), "head first: {head_first}");
     }

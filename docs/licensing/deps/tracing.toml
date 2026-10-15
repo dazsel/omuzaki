@@ -1,0 +1,7 @@
+section = "rust"
+item = "tracing, tracing-subscriber"
+kind = "crate"
+used_for = "logging"
+status = "yes"
+audit = "(crates.io: MIT)"
+crates = ["tracing", "tracing-subscriber"]

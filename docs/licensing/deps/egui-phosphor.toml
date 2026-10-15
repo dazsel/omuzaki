@@ -1,0 +1,8 @@
+section = "rust"
+item = "egui-phosphor + Phosphor icons"
+kind = "crate+font"
+used_for = "editor icons"
+status = "yes"
+condition = "MIT OR Apache-2.0 (crate), MIT (icons): keep notices (text in `crates/omuzaki-ui/src/ds/fonts/NOTICES.md`)"
+audit = "(crates.io, phosphoricons.com)"
+crates = ["egui-phosphor"]

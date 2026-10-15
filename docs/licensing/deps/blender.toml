@@ -1,0 +1,7 @@
+section = "in-use"
+item = "Blender 5.2.2"
+kind = "tool"
+used_for = "headless renders, rig and VRM work"
+status = "external"
+condition = "separate program; scripts importing `bpy` stay internal"
+audit = "A4"

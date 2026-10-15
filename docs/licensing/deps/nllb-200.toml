@@ -1,0 +1,7 @@
+section = "models"
+item = "NLLB-200 (Meta)"
+kind = "model"
+used_for = "(not used)"
+status = "NO"
+condition = "weights CC-BY-NC 4.0: `fairseq` branch `nllb` README (\"All models are licensed under CC-BY-NC 4.0\") and `LICENSE.model.md` (\"Attribution-NonCommercial 4.0 International\"), both read 2026-10-13"
+audit = "research 2026-10-caption-translation.md"
