@@ -17,6 +17,7 @@ mod thread;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use omuzaki_anim_api::{FrameSource, TrackFrame};
 use omuzaki_core::time::{Clock, Seconds};
@@ -33,7 +34,7 @@ use crate::frame::RgbFrame;
 use crate::pipeline::FaceTracker;
 use crate::sample::{FaceSample, StageTimings};
 use preview::PreviewTap;
-use thread::{Outcome, Run, Stats};
+use thread::{JOIN_GRACE, Outcome, Run, Shared, Stats, watch};
 
 /// What turns an RGB frame into a face sample. [`FaceTracker`] implements it; tests script it.
 pub trait FrameTracker: Send {
@@ -86,7 +87,9 @@ pub struct WebcamConfig {
 
 impl Default for WebcamConfig {
     /// 1280 x 720 at 60 fps (as `CameraFormatRequest::default()`: a camera that offers 30 and 60 gives 60), the first
-    /// camera, and [Nv12, Yuy2, Mjpg, Bgra8, Rgb8] (the cheapest to convert first that webcams commonly offer).
+    /// camera, and [Nv12, Yuy2, Bgra8, Rgb8, Mjpg]: the raw formats first, cheapest to convert first. MJPG is last,
+    /// chosen only when the camera has no raw format for the requested mode, because decoding it allocates inside
+    /// the JPEG library on every frame (`FrameConverter`).
     fn default() -> Self {
         Self {
             camera: None,
@@ -96,9 +99,9 @@ impl Default for WebcamConfig {
             formats: vec![
                 PixelFormat::Nv12,
                 PixelFormat::Yuy2,
-                PixelFormat::Mjpg,
                 PixelFormat::Bgra8,
                 PixelFormat::Rgb8,
+                PixelFormat::Mjpg,
             ],
         }
     }
@@ -182,7 +185,9 @@ pub const fn tier_stride(tier: QualityTier) -> u32 {
 
 /// One running session: its thread and the flags that end it.
 struct Session {
-    handle: JoinHandle<Option<Outcome>>,
+    camera: JoinHandle<Option<Outcome>>,
+    watchdog: JoinHandle<()>,
+    shared: Arc<Shared>,
     stop: Arc<AtomicBool>,
     live: Arc<AtomicBool>,
 }
@@ -213,8 +218,13 @@ impl FrameSource for Source {
 /// [`WebcamConfig`] preference is tried in order), [`TrackerConfig::lost_after`] and [`TrackerConfig::tier`], which
 /// [`tier_camera`] and [`tier_stride`] map to concrete settings.
 ///
-/// If the camera thread panics, the [`FrameTracker`] it held is gone and every later `start` says so; a failure to
-/// open the camera or to start the thread, by contrast, hands the tracker back, so `start` can be retried.
+/// Two threads run: the camera thread, which captures, converts, tracks and publishes, and a watchdog, which
+/// publishes the one lost frame when nothing has gone out for [`TrackerConfig::lost_after`], also when the tracker is
+/// stuck inside `track`. A stalled lost frame repeats the last frame's `seq` (`track-api.md` §8). If the tracker
+/// does not return when `stop` asks, `stop` detaches the camera thread after a short grace period, reports it
+/// through [`error`](Self::error) and the tracker is lost, as it is if the thread panics: every later `start` says
+/// so. A failure to open the camera or to start a thread, by contrast, hands the tracker back, so `start` can be
+/// retried.
 pub struct WebcamTracker {
     camera: Box<dyn Camera>,
     /// `None` while a session runs, or for good if the camera thread panicked.
@@ -228,6 +238,8 @@ pub struct WebcamTracker {
     session: Option<Session>,
     /// Test seam: how many of the next thread spawns to fail.
     failing_spawns: u32,
+    /// How long `stop` waits for the camera thread before detaching it; [`JOIN_GRACE`] unless a test says otherwise.
+    join_grace: Duration,
 }
 
 impl WebcamTracker {
@@ -250,6 +262,7 @@ impl WebcamTracker {
             next_seq: 0,
             session: None,
             failing_spawns: 0,
+            join_grace: JOIN_GRACE,
         }
     }
 
@@ -266,6 +279,14 @@ impl WebcamTracker {
     /// A [`TrackerConfig`] asking for the mode in the [`WebcamConfig`], for `start`.
     pub fn tracker_config(&self) -> TrackerConfig {
         TrackerConfig::default().with_camera(self.config.request())
+    }
+
+    /// Sets how long `stop` waits for the camera thread to come back before it detaches it. The default is short
+    /// enough for `stop`'s 200 ms budget; a test on a loaded machine may want it long, so that a slow thread is not
+    /// mistaken for a stuck one.
+    #[doc(hidden)]
+    pub fn set_join_grace(&mut self, grace: Duration) {
+        self.join_grace = grace;
     }
 
     /// Makes the next `n` attempts to start the camera thread fail as if the OS refused, to test that `start` hands
@@ -291,9 +312,24 @@ impl WebcamTracker {
         self.preview.take(out)
     }
 
-    /// Why the last session's camera thread ended by itself, if it did: the stream error it stopped on.
+    /// Why the last session's camera thread ended by itself, if it did (the stream error it stopped on), or why it
+    /// was lost (a panic, or a tracker that did not return when `stop` asked, so that its thread was detached).
     pub fn error(&self) -> Option<TrackError> {
         self.error.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
+    /// Starts a named thread, unless a test has asked for the next spawn to fail.
+    fn spawn<T: Send + 'static>(
+        &mut self,
+        name: &str,
+        body: impl FnOnce() -> T + Send + 'static,
+    ) -> std::io::Result<JoinHandle<T>> {
+        if self.failing_spawns > 0 {
+            self.failing_spawns -= 1;
+            drop(body);
+            return Err(std::io::Error::other("injected spawn failure"));
+        }
+        std::thread::Builder::new().name(name.to_owned()).spawn(body)
     }
 
     /// Opens `device` as `request` asks: the format it names, or else the first of the preference the camera accepts.
@@ -319,7 +355,9 @@ impl Tracker for WebcamTracker {
     fn start(&mut self, device: &CameraId, config: &TrackerConfig) -> Result<Box<dyn FrameSource>, TrackError> {
         self.stop();
         let mut tracker = self.tracker.take().ok_or_else(|| {
-            TrackError::Backend("the face tracker was lost when the camera thread panicked".to_owned())
+            TrackError::Backend(
+                "the face tracker was lost: its camera thread panicked, or did not return when stopped".to_owned(),
+            )
         })?;
         let stream = match self.open(device, &tier_camera(config.tier, &config.camera)) {
             Ok(stream) => stream,
@@ -333,61 +371,83 @@ impl Tracker for WebcamTracker {
         let (stop, live) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(true)));
         self.stats = Arc::new(Stats::new());
         *self.error.lock().unwrap_or_else(PoisonError::into_inner) = None;
-        // The thread is handed its `Run` through a cell, so that if it cannot be started, the closure's drop does
-        // not take the tracker (or the camera stream) with it: both are recovered from the cell below.
+        let shared = Arc::new(Shared::new(writer, self.next_seq, Arc::clone(&self.clock), Arc::clone(&self.stats)));
+        // The camera thread is handed its `Run` through a cell, so that if it cannot be started, the closure's drop
+        // does not take the tracker (or the camera stream) with it: both are recovered from the cell below.
         let cell = Arc::new(Mutex::new(Some(Run {
             stream,
             tracker,
-            writer,
-            clock: Arc::clone(&self.clock),
-            first_seq: self.next_seq,
-            lost_after: config.lost_after,
+            shared: Arc::clone(&shared),
             stride: tier_stride(config.tier),
             stop: Arc::clone(&stop),
             preview: Arc::clone(&self.preview),
-            stats: Arc::clone(&self.stats),
             error: Arc::clone(&self.error),
         })));
-        let body = {
-            let cell = Arc::clone(&cell);
-            move || cell.lock().unwrap_or_else(PoisonError::into_inner).take().map(Run::run)
+        let give_back = |cell: &Mutex<Option<Run>>| cell.lock().unwrap_or_else(PoisonError::into_inner).take();
+        let watchdog = {
+            let (shared, stop, lost_after) = (Arc::clone(&shared), Arc::clone(&stop), config.lost_after);
+            self.spawn("omuzaki-webcam-watch", move || watch(&shared, lost_after, &stop))
         };
-        let spawned = if self.failing_spawns > 0 {
-            self.failing_spawns -= 1;
-            drop(body);
-            Err(std::io::Error::other("injected spawn failure"))
-        } else {
-            std::thread::Builder::new().name("omuzaki-webcam".to_owned()).spawn(body)
-        };
-        let handle = match spawned {
+        let watchdog = match watchdog {
             Ok(handle) => handle,
             Err(e) => {
                 // No thread ran: the tracker goes back where a camera-open failure puts it, and the stream with the
                 // rest of the run is dropped, which releases the camera.
-                let run = cell.lock().unwrap_or_else(PoisonError::into_inner).take();
-                self.tracker = run.map(|run| run.tracker);
+                self.tracker = give_back(&cell).map(|run| run.tracker);
+                return Err(TrackError::Backend(format!("watchdog thread: {e}")));
+            }
+        };
+        let body = {
+            let cell = Arc::clone(&cell);
+            move || give_back(&cell).map(Run::run)
+        };
+        let camera = match self.spawn("omuzaki-webcam", body) {
+            Ok(handle) => handle,
+            Err(e) => {
+                stop.store(true, Ordering::Relaxed);
+                watchdog.thread().unpark();
+                watchdog.join().ok();
+                self.tracker = give_back(&cell).map(|run| run.tracker);
                 return Err(TrackError::Backend(format!("camera thread: {e}")));
             }
         };
-        self.session = Some(Session { handle, stop, live: Arc::clone(&live) });
+        self.session = Some(Session { camera, watchdog, shared, stop, live: Arc::clone(&live) });
         Ok(Box::new(Source { reader, live }))
     }
 
     fn stop(&mut self) {
-        let Some(Session { handle, stop, live }) = self.session.take() else { return };
+        let Some(Session { camera, watchdog, shared, stop, live }) = self.session.take() else { return };
         stop.store(true, Ordering::Relaxed);
         live.store(false, Ordering::Relaxed);
-        match handle.join() {
-            Ok(Some(Outcome { tracker, next_seq })) => {
-                self.tracker = Some(tracker);
-                self.next_seq = next_seq;
-            }
-            // `None` cannot happen: the cell is only emptied by the thread that runs. Treated like a panic.
-            Ok(None) | Err(_) => {
-                *self.error.lock().unwrap_or_else(PoisonError::into_inner) =
-                    Some(TrackError::Backend("the camera thread panicked".to_owned()));
-            }
+        watchdog.thread().unpark();
+        watchdog.join().ok();
+        // The camera thread notices `stop` within a poll, unless it is inside a tracker that does not return.
+        let give_up = Instant::now() + self.join_grace;
+        while !camera.is_finished() && Instant::now() < give_up {
+            std::thread::sleep(Duration::from_millis(1));
         }
+        let failure = if camera.is_finished() {
+            match camera.join() {
+                Ok(Some(Outcome { tracker })) => {
+                    self.tracker = Some(tracker);
+                    None
+                }
+                // `None` cannot happen: the cell is only emptied by the thread that runs. Treated like a panic.
+                Ok(None) | Err(_) => Some("the camera thread panicked".to_owned()),
+            }
+        } else {
+            // Dropping the handle detaches the thread. It holds the camera and the tracker until `track` returns,
+            // and ends then, because `stop` is set.
+            drop(camera);
+            Some(format!(
+                "the face tracker did not return within {:?} of stop; its thread was detached",
+                self.join_grace
+            ))
+        };
+        if let Some(why) = failure {
+            *self.error.lock().unwrap_or_else(PoisonError::into_inner) = Some(TrackError::Backend(why));
+        }
+        self.next_seq = shared.next_seq();
     }
 
     fn latency(&self) -> LatencyStats {

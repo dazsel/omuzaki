@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use omuzaki_anim_api::{ARKIT_COUNT, ChannelMask, FrameSource, TrackFrame, TrackStatus};
-use omuzaki_core::time::{Clock, FakeClock, Seconds, SystemClock};
+use omuzaki_core::time::{Clock, FakeClock, Seconds};
 use omuzaki_track::webcam::{
     Failures, FrameConverter, FrameTracker, PreviewFrame, WebcamConfig, WebcamTracker, tier_camera, tier_stride,
 };
@@ -189,12 +189,31 @@ fn nv12(width: u32, height: u32) -> CameraFormat {
     CameraFormat::new(width, height, 30, PixelFormat::Nv12)
 }
 
+/// A stage clock that stands still unless a test moves it. A test that steps the camera thread by hand takes as long
+/// as the machine makes it, and on a real clock a slow one would see the watchdog's lost frame between its steps.
+fn standing_clock() -> Arc<dyn Clock> {
+    Arc::new(FakeClock::new(Seconds(100.0)))
+}
+
 fn webcam(camera: FakeCamera, tracker: Scripted, config: WebcamConfig) -> WebcamTracker {
-    webcam_on(camera, tracker, config, Arc::new(SystemClock::new()))
+    webcam_on(camera, tracker, config, standing_clock())
 }
 
 fn webcam_on(camera: FakeCamera, tracker: Scripted, config: WebcamConfig, clock: Arc<dyn Clock>) -> WebcamTracker {
-    WebcamTracker::new(Box::new(camera), Box::new(tracker), config, clock)
+    patient(Box::new(camera), Box::new(tracker), config, clock)
+}
+
+/// A tracker that waits `BACKSTOP` for its thread at `stop`: a thread that is merely slow, on a loaded machine, must
+/// not be taken for a stuck one. Only the test of a tracker that never returns asks for a short wait.
+fn patient(
+    camera: Box<dyn Camera>,
+    tracker: Box<dyn FrameTracker>,
+    config: WebcamConfig,
+    clock: Arc<dyn Clock>,
+) -> WebcamTracker {
+    let mut tracker = WebcamTracker::new(camera, tracker, config, clock);
+    tracker.set_join_grace(BACKSTOP);
+    tracker
 }
 
 /// Starts with the mode the tracker's own `WebcamConfig` describes.
@@ -371,44 +390,49 @@ fn stop_then_start_works_and_the_old_source_goes_quiet() {
     assert_eq!(resets.load(Ordering::Relaxed), 3);
 }
 
+/// One frame, then silence that costs no wall time: once `quiet` is set, each empty wait moves the stage clock on
+/// by the timeout. Before that the camera just has nothing yet, and time stands still.
+struct Stall {
+    data: Vec<u8>,
+    clock: Arc<FakeClock>,
+    idle: Arc<AtomicUsize>,
+    quiet: Arc<AtomicBool>,
+    /// Frames before the silence.
+    frames: u64,
+}
+struct StallStream(Stall, u64);
+impl Camera for Stall {
+    fn enumerate(&self) -> Vec<CameraInfo> {
+        vec![CameraInfo::new(FakeCamera::id(), "stall", vec![nv12(64, 48)])]
+    }
+
+    fn open(&mut self, _: &CameraId, _: &CameraFormatRequest) -> Result<Box<dyn CameraStream>, TrackError> {
+        let (clock, idle, quiet) = (Arc::clone(&self.clock), Arc::clone(&self.idle), Arc::clone(&self.quiet));
+        Ok(Box::new(StallStream(Stall { data: self.data.clone(), clock, idle, quiet, frames: self.frames }, 0)))
+    }
+}
+impl CameraStream for StallStream {
+    fn format(&self) -> CameraFormat {
+        nv12(64, 48)
+    }
+
+    fn next_frame(&mut self, timeout: Duration) -> Result<Option<CameraFrame<'_>>, TrackError> {
+        if self.1 >= self.0.frames {
+            if self.0.quiet.load(Ordering::Acquire) {
+                self.0.clock.advance(Seconds(timeout.as_secs_f64()));
+                self.0.idle.fetch_add(1, Ordering::Relaxed);
+            }
+            std::thread::yield_now();
+            return Ok(None);
+        }
+        self.1 += 1;
+        let seq = self.1 - 1;
+        Ok(Some(CameraFrame::new(&self.0.data, 64, 48, 64, PixelFormat::Nv12, DeviceTime(seq * 33_000_000), seq)))
+    }
+}
+
 #[test]
 fn a_camera_that_goes_quiet_gives_one_lost_frame_after_lost_after() {
-    /// One frame, then silence that costs no wall time: once `quiet` is set, each empty wait moves the stage clock on
-    /// by the timeout. Before that the camera just has nothing yet, and time stands still.
-    struct Stall {
-        data: Vec<u8>,
-        clock: Arc<FakeClock>,
-        idle: Arc<AtomicUsize>,
-        quiet: Arc<AtomicBool>,
-    }
-    struct StallStream(Stall, bool);
-    impl Camera for Stall {
-        fn enumerate(&self) -> Vec<CameraInfo> {
-            vec![CameraInfo::new(FakeCamera::id(), "stall", vec![nv12(64, 48)])]
-        }
-
-        fn open(&mut self, _: &CameraId, _: &CameraFormatRequest) -> Result<Box<dyn CameraStream>, TrackError> {
-            let (clock, idle, quiet) = (Arc::clone(&self.clock), Arc::clone(&self.idle), Arc::clone(&self.quiet));
-            Ok(Box::new(StallStream(Stall { data: self.data.clone(), clock, idle, quiet }, false)))
-        }
-    }
-    impl CameraStream for StallStream {
-        fn format(&self) -> CameraFormat {
-            nv12(64, 48)
-        }
-
-        fn next_frame(&mut self, timeout: Duration) -> Result<Option<CameraFrame<'_>>, TrackError> {
-            if std::mem::replace(&mut self.1, true) {
-                if self.0.quiet.load(Ordering::Acquire) {
-                    self.0.clock.advance(Seconds(timeout.as_secs_f64()));
-                    self.0.idle.fetch_add(1, Ordering::Relaxed);
-                }
-                std::thread::yield_now();
-                return Ok(None);
-            }
-            Ok(Some(CameraFrame::new(&self.0.data, 64, 48, 64, PixelFormat::Nv12, DeviceTime(0), 0)))
-        }
-    }
     let (clock, idle) = (Arc::new(FakeClock::new(Seconds(10.0))), Arc::new(AtomicUsize::new(0)));
     let quiet = Arc::new(AtomicBool::new(false));
     let camera = Stall {
@@ -416,11 +440,12 @@ fn a_camera_that_goes_quiet_gives_one_lost_frame_after_lost_after() {
         clock: Arc::clone(&clock),
         idle: Arc::clone(&idle),
         quiet: Arc::clone(&quiet),
+        frames: 1,
     };
     // Gated, and quiet only once the consumer has the first frame, which a lost frame would otherwise overwrite.
     let (scripted, tokens) = Scripted::gated(vec![true]);
     let mut tracker =
-        WebcamTracker::new(Box::new(camera), Box::new(scripted), WebcamConfig::default().with_mode(64, 48, 30), clock);
+        patient(Box::new(camera), Box::new(scripted), WebcamConfig::default().with_mode(64, 48, 30), clock);
     let config = TrackerConfig::default().with_lost_after(Duration::from_millis(30));
     let mut source = tracker.start(&FakeCamera::id(), &config).unwrap();
     tokens.send(()).unwrap();
@@ -435,19 +460,130 @@ fn a_camera_that_goes_quiet_gives_one_lost_frame_after_lost_after() {
     assert!(source.poll(Seconds(0.0)).is_none(), "only one lost frame per silence");
 }
 
+/// The stall rule's `seq`s, from the fake tracker and from the real one over a camera that goes quiet after two frames.
+#[test]
+fn a_stall_repeats_the_last_seq_as_the_fake_tracker_does() {
+    let lost_after = Duration::from_millis(30);
+    let profile = omuzaki_anim_api::DeviceProfile::Webcam;
+    let frame_at = |seq: u64, at: f64| TrackFrame::empty(seq, Seconds(at), profile);
+    let script = vec![(Duration::ZERO, frame_at(0, 0.0)), (Duration::from_millis(33), frame_at(1, 0.033))];
+    let mut oracle = omuzaki_track_mock::FakeTracker::scripted(script);
+    let config = TrackerConfig::default().with_lost_after(lost_after);
+    let mut oracle_source = oracle.start(&FakeCamera::id(), &config).expect("the fake tracker starts");
+    let want: Vec<u64> = [0.0, 0.033, 0.033 + lost_after.as_secs_f64() + 0.001]
+        .iter()
+        .map(|now| oracle_source.poll(Seconds(*now)).expect("a frame is due").seq)
+        .collect();
+    assert_eq!(want, [0, 1, 1], "the fake tracker repeats the last seq for the stall");
+
+    let (clock, quiet) = (Arc::new(FakeClock::new(Seconds(10.0))), Arc::new(AtomicBool::new(false)));
+    let camera = Stall {
+        data: picture(PixelFormat::Nv12, (64, 48)),
+        clock: Arc::clone(&clock),
+        idle: Arc::default(),
+        quiet: Arc::clone(&quiet),
+        frames: 2,
+    };
+    let (scripted, tokens) = Scripted::gated(vec![true]);
+    let mut tracker = patient(Box::new(camera), Box::new(scripted), WebcamConfig::default(), clock);
+    let mut source = tracker.start(&FakeCamera::id(), &config).unwrap();
+    let mut got = Vec::new();
+    for _ in 0..2 {
+        tokens.send(()).unwrap();
+        got.push(next(&mut *source).seq);
+    }
+    quiet.store(true, Ordering::Release);
+    let lost = next(&mut *source);
+    assert_eq!(lost.status, TrackStatus::Lost);
+    got.push(lost.seq);
+    assert_eq!(got, want, "the webcam tracker gives the same seqs for the same gap");
+    drop(tokens);
+}
+
+/// A tracker that does not return for twice `lost_after`: one lost frame with the last seq, then it carries on.
+#[test]
+fn a_slow_tracker_gives_one_lost_frame_then_resumes() {
+    let clock = Arc::new(FakeClock::new(Seconds(10.0)));
+    let lost_after = Duration::from_millis(50);
+    let (scripted, tokens) = Scripted::gated(vec![true]);
+    let camera = FakeCamera::synthetic(nv12(64, 48), 10_000_000);
+    let mut tracker = webcam_on(camera, scripted, WebcamConfig::default().with_mode(64, 48, 30), clock.clone());
+    let config = tracker.tracker_config().with_lost_after(lost_after);
+    let mut source = tracker.start(&FakeCamera::id(), &config).unwrap();
+    tokens.send(()).unwrap();
+    let first = next(&mut *source);
+    assert_eq!(first.status, TrackStatus::Tracking);
+    // The tracker is now inside `track` for the next frame, and stays there while the stage clock runs on.
+    clock.advance(Seconds(lost_after.as_secs_f64() * 2.0));
+    let lost = next(&mut *source);
+    assert_eq!((lost.status, lost.seq), (TrackStatus::Lost, first.seq));
+    // More silence, many times `lost_after`, gives no second notice.
+    clock.advance(Seconds(5.0));
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(source.poll(Seconds(0.0)).is_none(), "one notice per silence");
+    // The tracker comes back: the frame it was on goes out, after the notice.
+    tokens.send(()).unwrap();
+    let resumed = next(&mut *source);
+    assert_eq!((resumed.status, resumed.seq), (TrackStatus::Tracking, first.seq + 1));
+    assert!(resumed.time > lost.time);
+    drop(tokens);
+    tracker.stop();
+    assert_eq!(tracker.error(), None);
+}
+
+/// A tracker that never returns: a lost frame, and `stop` gives up on it instead of hanging.
+#[test]
+fn a_tracker_that_never_returns_gives_a_lost_frame_and_stop_detaches_it() {
+    let clock = Arc::new(FakeClock::new(Seconds(10.0)));
+    let (scripted, tokens) = Scripted::gated(vec![true]);
+    let camera = FakeCamera::synthetic(nv12(64, 48), 10_000_000);
+    let mut tracker = webcam_on(camera, scripted, WebcamConfig::default().with_mode(64, 48, 30), clock.clone());
+    tracker.set_join_grace(Duration::from_millis(50));
+    let config = tracker.tracker_config().with_lost_after(Duration::from_millis(50));
+    let mut source = tracker.start(&FakeCamera::id(), &config).unwrap();
+    tokens.send(()).unwrap();
+    assert_eq!(next(&mut *source).status, TrackStatus::Tracking);
+    clock.advance(Seconds(1.0));
+    assert_eq!(next(&mut *source).status, TrackStatus::Lost);
+    // No token will come: the thread is stuck in the tracker. `stop` must come back all the same; the bound is
+    // checked by construction, so the stopwatch is only a guard against a hang.
+    let stopping = Instant::now();
+    tracker.stop();
+    assert!(stopping.elapsed() < BACKSTOP / 4, "stop took {:?}", stopping.elapsed());
+    assert!(
+        matches!(tracker.error(), Some(TrackError::Backend(ref why)) if why.contains("detached")),
+        "{:?}",
+        tracker.error()
+    );
+    let restart = tracker.start(&FakeCamera::id(), &config);
+    assert!(
+        matches!(restart, Err(TrackError::Backend(ref why)) if why.contains("lost")),
+        "the tracker went with its thread"
+    );
+    // Let the detached thread go, so it ends and frees the camera.
+    drop(tokens);
+}
+
 #[test]
 fn the_preview_costs_nothing_while_off_and_scales_the_landmarks_while_on() {
+    let (arrived, at_gate) = channel();
     let (scripted, tokens) = Scripted::gated(vec![true, true, true, false]);
+    let scripted = Scripted { waiting: Some(arrived), ..scripted };
     let camera = FakeCamera::synthetic(nv12(1280, 720), 100);
     let mut tracker = webcam(camera, scripted, WebcamConfig::default());
     let mut source = start(&mut tracker);
     let mut out = PreviewFrame::default();
+    // The thread reports each frame as it arrives at the tracker: once frame n has arrived, frame n - 1 is done with,
+    // preview included, so what the reader sees below cannot depend on how fast the thread is.
+    let wait = || at_gate.recv_timeout(BACKSTOP).expect("the camera thread reached the next frame");
 
     // Off: two frames through, and nothing was ever copied.
     for _ in 0..2 {
+        wait();
         tokens.send(()).unwrap();
         next(&mut *source);
     }
+    wait(); // frame 2 has arrived, so frame 1 is done with
     assert!(!tracker.preview(&mut out));
 
     tracker.set_preview(true);
@@ -465,12 +601,14 @@ fn the_preview_costs_nothing_while_off_and_scales_the_landmarks_while_on() {
     assert!(!tracker.preview(&mut out), "nothing new since the last call");
 
     // A frame without a face has a preview without landmarks.
+    wait();
     tokens.send(()).unwrap();
-    next(&mut *source);
+    let frame = next(&mut *source);
     while !tracker.preview(&mut out) {
         assert!(Instant::now() < deadline, "no preview");
         std::thread::sleep(Duration::from_millis(1));
     }
+    assert_eq!(out.seq, frame.seq);
     assert!(out.landmarks.is_none());
     // The thread is waiting for the next token; with the sender gone the scripted tracker stops waiting.
     drop(tokens);
@@ -614,8 +752,7 @@ fn spy(config: WebcamConfig) -> (WebcamTracker, Arc<Mutex<Vec<CameraFormatReques
     let requests = Arc::new(Mutex::new(Vec::new()));
     let inner = FakeCamera::synthetic(CameraFormat::new(64, 48, 30, PixelFormat::Yuy2), 10_000_000);
     let camera = Spy { inner, requests: Arc::clone(&requests) };
-    let tracker =
-        WebcamTracker::new(Box::new(camera), Box::new(Scripted::new(vec![true])), config, Arc::new(SystemClock::new()));
+    let tracker = patient(Box::new(camera), Box::new(Scripted::new(vec![true])), config, standing_clock());
     (tracker, requests)
 }
 
@@ -700,7 +837,7 @@ fn a_failed_thread_start_hands_the_tracker_back_and_start_can_be_retried() {
     for _ in 0..2 {
         let config = tracker.tracker_config();
         let refused = tracker.start(&FakeCamera::id(), &config);
-        assert!(matches!(refused, Err(TrackError::Backend(ref e)) if e.contains("camera thread")), "refused");
+        assert!(matches!(refused, Err(TrackError::Backend(ref e)) if e.contains("thread")), "refused");
     }
     // The tracker came back each time, and the camera was released (the fake one answers `Busy` otherwise).
     let mut source = start(&mut tracker);
