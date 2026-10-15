@@ -89,10 +89,12 @@ fn files_under(root: &Path) -> BTreeMap<String, Vec<u8>> {
     fn walk(root: &Path, dir: &Path, into: &mut BTreeMap<String, Vec<u8>>) {
         for entry in std::fs::read_dir(dir).expect("list the folder") {
             let path = entry.expect("read the entry").path();
+            let name = path.strip_prefix(root).expect("under the root").to_string_lossy().into_owned();
             if path.is_dir() {
+                // A directory is recorded too (as a trailing-slash key with no bytes), so an empty one counts.
+                into.insert(format!("{name}/"), Vec::new());
                 walk(root, &path, into);
             } else {
-                let name = path.strip_prefix(root).expect("under the root").to_string_lossy().into_owned();
                 into.insert(name, std::fs::read(&path).expect("read the file"));
             }
         }
@@ -147,7 +149,16 @@ fn check_example(reg: &'static OpRegistration, kind: OpKind, undo: Undo, args: &
     }
     let after = rig.state();
     if after.tree != before.tree || after.files != before.files {
-        return Err("is not restored exactly by undo".to_owned());
+        let moved: Vec<&String> = before
+            .files
+            .keys()
+            .chain(after.files.keys())
+            .filter(|k| before.files.get(*k) != after.files.get(*k))
+            .collect();
+        return Err(format!(
+            "is not restored exactly by undo (tree changed: {}, files changed: {moved:?})",
+            after.tree != before.tree
+        ));
     }
     Ok(())
 }
@@ -220,7 +231,14 @@ fn every_registered_op_conforms() {
         registered.values().filter(|&&has| has).count(),
         allowed.len()
     );
-    assert!(found.is_empty(), "{}", found.join("\n"));
+    // `registrations()` iterates in linker order; sort so the report is the same on every platform.
+    assert!(found.is_empty(), "{}", sorted_report(found));
+}
+
+/// The failures one per line, in name order, so the report doesn't depend on the order the linker put registrations in.
+fn sorted_report(mut found: Vec<String>) -> String {
+    found.sort();
+    found.join("\n")
 }
 
 /// Planted ops, never registered: each breaks exactly one rule, and the suite must say so.
@@ -306,6 +324,44 @@ mod planted {
         }
     }
 
+    /// Creates an empty folder while planning a dry-run.
+    #[derive(Serialize, Deserialize, JsonSchema)]
+    #[schemars(extend("examples" = [{ "text": "hello" }]))]
+    pub struct MakesFolder {
+        text: String,
+    }
+
+    impl Op for MakesFolder {
+        fn meta() -> OpMeta {
+            meta("planted.makes_folder", Undo::Auto)
+        }
+
+        fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
+            ctx.fs_access("scratch", FsMode::Write)?.create_dir_all()?;
+            Ok(set_note(ctx, &self.text))
+        }
+    }
+
+    /// Creates an empty folder only when applied, which undoing the patch cannot take back.
+    #[derive(Serialize, Deserialize, JsonSchema)]
+    #[schemars(extend("examples" = [{ "text": "hello" }]))]
+    pub struct MakesFolderWhenApplied {
+        text: String,
+    }
+
+    impl Op for MakesFolderWhenApplied {
+        fn meta() -> OpMeta {
+            meta("planted.makes_folder_when_applied", Undo::Auto)
+        }
+
+        fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
+            if !ctx.dry_run {
+                ctx.fs_access("scratch", FsMode::Write)?.create_dir_all()?;
+            }
+            Ok(set_note(ctx, &self.text))
+        }
+    }
+
     /// An edit that says there is nothing to undo.
     #[derive(Serialize, Deserialize, JsonSchema)]
     pub struct EditWithoutUndo {}
@@ -363,6 +419,22 @@ fn a_dry_run_that_writes_fails() {
 #[test]
 fn a_wrong_inverse_fails() {
     assert_flagged(planted_reg!(planted::WrongInverse), "is not restored exactly by undo");
+}
+
+#[test]
+fn an_empty_folder_made_in_a_dry_run_fails() {
+    assert_flagged(planted_reg!(planted::MakesFolder), "changed the document, its files or the log in a dry-run");
+}
+
+#[test]
+fn an_empty_folder_left_after_undo_fails() {
+    assert_flagged(planted_reg!(planted::MakesFolderWhenApplied), "is not restored exactly by undo");
+}
+
+#[test]
+fn failures_are_reported_in_name_order() {
+    let found = vec!["b.op: second".to_owned(), "c.op: third".to_owned(), "a.op: first".to_owned()];
+    assert_eq!(sorted_report(found), "a.op: first\nb.op: second\nc.op: third");
 }
 
 #[test]
