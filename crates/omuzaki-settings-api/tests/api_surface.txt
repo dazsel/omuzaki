@@ -8,7 +8,7 @@ src/error.rs: pub fn new(key: impl Into<String>, kind: SettingErrorKind) -> Self
 src/error.rs: pub fn unknown_key(key: impl Into<String>) -> Self {
 src/error.rs: pub fn wrong_type(key: impl Into<String>, reason: impl fmt::Display) -> Self {
 src/error.rs: pub fn invalid(key: impl Into<String>, reason: impl Into<String>) -> Self {
-src/error.rs: pub fn range<T: PartialOrd + fmt::Display>(key: &str, value: T, min: T, max: T) -> Result<(), Self> {
+src/error.rs: pub fn range<T: Copy + PartialOrd + fmt::Display>(key: &str, value: T, min: T, max: T) -> Result<(), Self> {
 src/error.rs: pub struct SettingFinding {
 src/error.rs: pub fn new(error: SettingError, stored: Value, from: impl Into<String>) -> Self {
 src/event.rs: pub struct Change {
