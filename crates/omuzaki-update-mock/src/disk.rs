@@ -89,6 +89,15 @@ fn exists_already(path: &Path) -> io::Error {
     io::Error::new(io::ErrorKind::AlreadyExists, format!("{} exists", path.display()))
 }
 
+fn is_a_folder(path: &Path) -> io::Error {
+    io::Error::new(io::ErrorKind::IsADirectory, format!("{} is a folder", path.display()))
+}
+
+/// What the real disk answers when the root folder is renamed or removed (`EBUSY`).
+fn root_busy(path: &Path) -> io::Error {
+    io::Error::new(io::ErrorKind::ResourceBusy, format!("{} is the root folder", path.display()))
+}
+
 fn invalid(why: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, why.to_owned())
 }
@@ -122,8 +131,13 @@ impl Inner {
         Ok(())
     }
 
+    /// The root folder is implicit: it is not in `nodes`, and nothing may replace, move or remove it.
+    fn is_root(path: &Path) -> bool {
+        path.has_root() && path.parent().is_none()
+    }
+
     fn is_dir(&self, path: &Path) -> bool {
-        path.parent().is_none() || matches!(self.nodes.get(path), Some(Node::Dir))
+        Self::is_root(path) || matches!(self.nodes.get(path), Some(Node::Dir))
     }
 
     fn parent_dir(&self, path: &Path) -> io::Result<()> {
@@ -218,7 +232,9 @@ impl Disk for FakeDisk {
         inner.alive()?;
         match inner.nodes.get(path) {
             Some(Node::File { bytes, .. }) => Ok(bytes.clone()),
-            Some(_) => Err(invalid("not a file")),
+            Some(Node::Dir) => Err(is_a_folder(path)),
+            Some(Node::Link { .. }) => Err(invalid("not a file")),
+            None if Inner::is_root(path) => Err(is_a_folder(path)),
             None => Err(not_found(path)),
         }
     }
@@ -227,12 +243,16 @@ impl Disk for FakeDisk {
         let mut inner = locked(&self.inner);
         inner.tick(Op::Write)?;
         inner.parent_dir(path)?;
+        if Inner::is_root(path) {
+            return Err(is_a_folder(path));
+        }
         match inner.nodes.get_mut(path) {
             Some(Node::File { bytes: old, synced, .. }) => {
                 bytes.clone_into(old);
                 *synced = false;
             }
-            Some(_) => return Err(invalid("not a file")),
+            Some(Node::Dir) => return Err(is_a_folder(path)),
+            Some(Node::Link { .. }) => return Err(invalid("not a file")),
             None => {
                 inner
                     .nodes
@@ -256,10 +276,20 @@ impl Disk for FakeDisk {
         let mut inner = locked(&self.inner);
         inner.tick(Op::Rename)?;
         inner.parent_dir(to)?;
+        if Inner::is_root(from) {
+            return Err(root_busy(from));
+        }
+        if Inner::is_root(to) {
+            return Err(root_busy(to));
+        }
         if !inner.nodes.contains_key(from) {
             return Err(not_found(from));
         }
-        if to.starts_with(from) && to != from {
+        // Renaming a path onto itself changes nothing, for a file and for a folder with contents alike.
+        if from == to {
+            return Ok(());
+        }
+        if to.starts_with(from) {
             return Err(invalid("cannot move a folder into itself"));
         }
         let from_is_dir = matches!(inner.nodes.get(from), Some(Node::Dir));
@@ -271,12 +301,19 @@ impl Disk for FakeDisk {
             }
             _ => {}
         }
-        let mut moved = inner.descendants(from);
-        moved.push(from.to_path_buf());
-        for old in moved {
-            if let (Some(node), Ok(rest)) = (inner.nodes.remove(&old), old.strip_prefix(from)) {
-                inner.nodes.insert(to.join(rest), node);
-            }
+        // Every new name is worked out before anything moves, so a failure cannot leave half a folder behind.
+        let moves = inner
+            .nodes
+            .iter()
+            .filter(|(old, _)| old.starts_with(from))
+            .map(|(old, node)| {
+                let rest = old.strip_prefix(from).map_err(|e| invalid(&e.to_string()))?;
+                Ok((old.clone(), to.join(rest), node.clone()))
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+        for (old, new, node) in moves {
+            inner.nodes.remove(&old);
+            inner.nodes.insert(new, node);
         }
         Ok(())
     }
@@ -304,6 +341,9 @@ impl Disk for FakeDisk {
     fn remove_dir_all(&self, path: &Path) -> io::Result<()> {
         let mut inner = locked(&self.inner);
         inner.alive()?;
+        if Inner::is_root(path) {
+            return Err(root_busy(path));
+        }
         match inner.nodes.get(path) {
             Some(Node::Dir) => {}
             Some(_) => return Err(invalid("not a folder")),
@@ -346,7 +386,7 @@ impl Disk for FakeDisk {
         let mut inner = locked(&self.inner);
         inner.alive()?;
         inner.parent_dir(link)?;
-        if inner.nodes.contains_key(link) {
+        if Inner::is_root(link) || inner.nodes.contains_key(link) {
             return Err(exists_already(link));
         }
         inner.nodes.insert(link.to_path_buf(), Node::Link { target: target.to_owned() });
@@ -361,7 +401,9 @@ impl Disk for FakeDisk {
                 *executable = on;
                 Ok(())
             }
-            Some(_) => Err(invalid("not a file")),
+            Some(Node::Dir) => Ok(()),
+            Some(Node::Link { .. }) => Err(invalid("not a file")),
+            None if Inner::is_root(path) => Ok(()),
             None => Err(not_found(path)),
         }
     }

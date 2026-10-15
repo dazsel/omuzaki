@@ -148,11 +148,11 @@ impl Updater for MockUpdater {
     }
 
     fn download(&self, release: &Release, progress: &dyn Progress) -> Result<(), UpdateError> {
-        let mut inner = locked(&self.inner);
-        inner.scripts.download.pop_front().unwrap_or(Ok(()))?;
+        // The guard is gone before `report` runs: a callback may call back into this updater (`status()` to draw UI).
+        locked(&self.inner).scripts.download.pop_front().unwrap_or(Ok(()))?;
         let total = release.download_bytes;
         progress.report(total, total);
-        Self::emit(&mut inner, &UpdateEvent::Progress { done: total, total });
+        Self::emit(&mut locked(&self.inner), &UpdateEvent::Progress { done: total, total });
         Ok(())
     }
 

@@ -3,8 +3,10 @@
 // Test helpers may panic: a panic is a clear test failure.
 #![allow(clippy::unwrap_used)]
 
-use std::io::Read;
-use std::path::Path;
+use std::io::{ErrorKind, Read};
+use std::path::PathBuf;
+use std::sync::{Arc, mpsc};
+use std::time::Duration;
 
 use omuzaki_ai_api::{FetchError, Fetcher};
 use omuzaki_update_api::Version;
@@ -152,9 +154,23 @@ fn server_faults() {
     assert_eq!(server.calls().len(), 4);
 }
 
+/// An absolute folder on this platform: `/r` on unix, `C:\\r` on Windows, where a path without a drive is not absolute.
+fn root() -> PathBuf {
+    if cfg!(windows) { PathBuf::from(r"C:\r") } else { PathBuf::from("/r") }
+}
+
+fn p(rest: &str) -> PathBuf {
+    root().join(rest)
+}
+
+/// The root folder of the platform's file system.
+fn fs_root() -> PathBuf {
+    root().ancestors().last().unwrap().to_path_buf()
+}
+
 fn disk_with_dir() -> FakeDisk {
     let disk = FakeDisk::new();
-    disk.create_dir_all(Path::new("/r/sub")).unwrap();
+    disk.create_dir_all(&p("sub")).unwrap();
     disk
 }
 
@@ -162,52 +178,52 @@ fn disk_with_dir() -> FakeDisk {
 fn fail_after_fails_that_operation_and_every_later_call() {
     let disk = disk_with_dir();
     disk.fail_after(3, Op::Any);
-    disk.write(Path::new("/r/a"), b"1").unwrap();
-    disk.fsync(Path::new("/r/a")).unwrap();
-    assert!(disk.rename(Path::new("/r/a"), Path::new("/r/b")).is_err());
-    assert!(disk.write(Path::new("/r/c"), b"2").is_err());
-    assert!(disk.read(Path::new("/r/a")).is_err());
-    assert!(!disk.exists(Path::new("/r")));
+    disk.write(&p("a"), b"1").unwrap();
+    disk.fsync(&p("a")).unwrap();
+    assert!(disk.rename(&p("a"), &p("b")).is_err());
+    assert!(disk.write(&p("c"), b"2").is_err());
+    assert!(disk.read(&p("a")).is_err());
+    assert!(!disk.exists(&root()));
     // The failed rename did not happen.
     disk.revive();
-    assert_eq!(disk.read(Path::new("/r/a")).unwrap(), b"1");
+    assert_eq!(disk.read(&p("a")).unwrap(), b"1");
 }
 
 #[test]
 fn fail_after_counts_only_the_named_operation() {
     let disk = disk_with_dir();
     disk.fail_after(2, Op::Rename);
-    disk.write(Path::new("/r/a"), b"1").unwrap();
-    disk.rename(Path::new("/r/a"), Path::new("/r/b")).unwrap();
-    disk.write(Path::new("/r/c"), b"2").unwrap();
-    assert!(disk.rename(Path::new("/r/c"), Path::new("/r/d")).is_err());
+    disk.write(&p("a"), b"1").unwrap();
+    disk.rename(&p("a"), &p("b")).unwrap();
+    disk.write(&p("c"), b"2").unwrap();
+    assert!(disk.rename(&p("c"), &p("d")).is_err());
     assert_eq!((disk.count(Op::Write), disk.count(Op::Rename), disk.count(Op::Fsync)), (2, 2, 0));
 }
 
 #[test]
 fn revive_keeps_synced_files_and_empties_the_rest() {
     let disk = disk_with_dir();
-    let state = Path::new("/r/state.toml");
+    let state = &p("state.toml");
     disk.write_atomic(state, b"new").unwrap();
-    disk.write(Path::new("/r/loose"), b"unsynced").unwrap();
-    disk.write(Path::new("/r/half"), b"x").unwrap();
-    disk.fsync(Path::new("/r/half")).unwrap();
-    disk.write(Path::new("/r/half"), b"xy").unwrap();
+    disk.write(&p("loose"), b"unsynced").unwrap();
+    disk.write(&p("half"), b"x").unwrap();
+    disk.fsync(&p("half")).unwrap();
+    disk.write(&p("half"), b"xy").unwrap();
     disk.revive();
     assert_eq!(disk.read(state).unwrap(), b"new");
-    assert_eq!(disk.read(Path::new("/r/loose")).unwrap(), b"");
+    assert_eq!(disk.read(&p("loose")).unwrap(), b"");
     // A second write after the sync is unsynced again.
-    assert_eq!(disk.read(Path::new("/r/half")).unwrap(), b"");
+    assert_eq!(disk.read(&p("half")).unwrap(), b"");
 }
 
 #[test]
 fn a_kill_between_write_and_rename_leaves_the_old_file() {
     let disk = disk_with_dir();
-    let state = Path::new("/r/state.toml");
+    let state = &p("state.toml");
     disk.write_atomic(state, b"old").unwrap();
     for n in 1..=4 {
         let probe = FakeDisk::new();
-        probe.create_dir_all(Path::new("/r")).unwrap();
+        probe.create_dir_all(&root()).unwrap();
         probe.write_atomic(state, b"old").unwrap();
         probe.fail_after(n, Op::Any);
         probe.write_atomic(state, b"new").unwrap_err();
@@ -221,30 +237,29 @@ fn a_kill_between_write_and_rename_leaves_the_old_file() {
 #[test]
 fn tree_operations() {
     let disk = disk_with_dir();
-    disk.write(Path::new("/r/sub/f"), b"x").unwrap();
-    assert!(disk.write(Path::new("/nope/f"), b"x").is_err());
-    assert!(disk.create_dir_all(Path::new("/r/sub/f/deeper")).is_err());
+    disk.write(&p("sub/f"), b"x").unwrap();
+    assert!(disk.write(&fs_root().join("nope/f"), b"x").is_err());
+    assert!(disk.create_dir_all(&p("sub/f/deeper")).is_err());
 
-    disk.symlink("sub/f", Path::new("/r/link"), LinkKind::File).unwrap();
-    assert!(disk.symlink("x", Path::new("/r/link"), LinkKind::File).is_err());
-    disk.set_executable(Path::new("/r/sub/f"), true).unwrap();
-    assert!(disk.set_executable(Path::new("/r/none"), true).is_err());
+    disk.symlink("sub/f", &p("link"), LinkKind::File).unwrap();
+    assert!(disk.symlink("x", &p("link"), LinkKind::File).is_err());
+    disk.set_executable(&p("sub/f"), true).unwrap();
+    assert!(disk.set_executable(&p("none"), true).is_err());
 
-    disk.rename(Path::new("/r/sub"), Path::new("/r/moved")).unwrap();
-    assert!(!disk.exists(Path::new("/r/sub")));
+    disk.rename(&p("sub"), &p("moved")).unwrap();
+    assert!(!disk.exists(&p("sub")));
     let snap = disk.snapshot();
-    assert_eq!(snap[Path::new("/r/moved/f")], Entry::File { bytes: b"x".to_vec(), executable: true });
-    assert_eq!(snap[Path::new("/r/link")], Entry::Link { target: "sub/f".into() });
+    assert_eq!(snap[&p("moved/f")], Entry::File { bytes: b"x".to_vec(), executable: true });
+    assert_eq!(snap[&p("link")], Entry::Link { target: "sub/f".into() });
 
-    let names: Vec<_> =
-        disk.list_dir(Path::new("/r")).unwrap().into_iter().map(|e| (e.name, e.is_dir, e.is_symlink)).collect();
+    let names: Vec<_> = disk.list_dir(&root()).unwrap().into_iter().map(|e| (e.name, e.is_dir, e.is_symlink)).collect();
     assert_eq!(names, [("link".to_owned(), false, true), ("moved".to_owned(), true, false)]);
 
     disk.set_free_bytes(5);
-    assert_eq!(disk.free_bytes(Path::new("/r")).unwrap(), 5);
-    disk.remove_dir_all(Path::new("/r/moved")).unwrap();
-    assert!(!disk.exists(Path::new("/r/moved/f")));
-    assert!(disk.remove_dir_all(Path::new("/r/moved")).is_err());
+    assert_eq!(disk.free_bytes(&root()).unwrap(), 5);
+    disk.remove_dir_all(&p("moved")).unwrap();
+    assert!(!disk.exists(&p("moved/f")));
+    assert!(disk.remove_dir_all(&p("moved")).is_err());
 }
 
 #[test]
@@ -256,4 +271,84 @@ fn wall_clock_moves_only_when_told() {
     clock.set(Timestamp(10));
     clock.advance(i64::MAX);
     assert_eq!(clock.now(), Timestamp(i64::MAX));
+}
+
+#[test]
+fn a_progress_callback_may_call_back_into_the_updater() {
+    struct Redraw(Arc<MockUpdater>);
+    impl Progress for Redraw {
+        fn report(&self, _: u64, _: u64) {
+            // Re-entry: it deadlocks if `download` still holds the updater's lock while reporting.
+            drop(self.0.status());
+        }
+        fn cancelled(&self) -> bool {
+            false
+        }
+    }
+    let updater = Arc::new(MockUpdater::new());
+    let (done, finished) = mpsc::channel();
+    let worker = {
+        let updater = Arc::clone(&updater);
+        std::thread::spawn(move || {
+            let result = updater.download(&release(3), &Redraw(Arc::clone(&updater)));
+            done.send(result).unwrap();
+        })
+    };
+    let result = finished.recv_timeout(Duration::from_secs(10)).expect("download deadlocked in the progress callback");
+    assert_eq!(result, Ok(()));
+    worker.join().unwrap();
+}
+
+#[test]
+fn the_root_folder_cannot_be_written_moved_removed_or_linked() {
+    let disk = disk_with_dir();
+    let top = fs_root();
+    assert_eq!(disk.write(&top, b"x").unwrap_err().kind(), ErrorKind::IsADirectory);
+    assert_eq!(disk.read(&top).unwrap_err().kind(), ErrorKind::IsADirectory);
+    assert_eq!(disk.remove_dir_all(&top).unwrap_err().kind(), ErrorKind::ResourceBusy);
+    assert_eq!(disk.rename(&top, &p("moved")).unwrap_err().kind(), ErrorKind::ResourceBusy);
+    disk.write(&p("f"), b"x").unwrap();
+    assert_eq!(disk.rename(&p("f"), &top).unwrap_err().kind(), ErrorKind::ResourceBusy);
+    assert_eq!(disk.rename(&p("sub"), &top).unwrap_err().kind(), ErrorKind::ResourceBusy);
+    assert_eq!(disk.symlink("x", &top, LinkKind::Dir).unwrap_err().kind(), ErrorKind::AlreadyExists);
+    disk.set_executable(&top, true).unwrap();
+    // The root is still a folder: it exists, lists its children, and nothing was added under its own name.
+    assert!(disk.exists(&top));
+    assert!(disk.list_dir(&top).unwrap().iter().any(|e| e.is_dir));
+    assert!(!disk.snapshot().contains_key(&top));
+}
+
+#[test]
+fn writing_to_a_folder_is_refused_and_leaves_it_alone() {
+    let disk = disk_with_dir();
+    disk.write(&p("sub/f"), b"x").unwrap();
+    assert_eq!(disk.write(&p("sub"), b"y").unwrap_err().kind(), ErrorKind::IsADirectory);
+    assert_eq!(disk.read(&p("sub")).unwrap_err().kind(), ErrorKind::IsADirectory);
+    assert_eq!(disk.read(&p("sub/f")).unwrap(), b"x");
+}
+
+#[test]
+fn renaming_a_path_onto_itself_changes_nothing() {
+    let disk = disk_with_dir();
+    disk.write(&p("sub/f"), b"x").unwrap();
+    disk.write(&p("file"), b"y").unwrap();
+    disk.symlink("file", &p("link"), LinkKind::File).unwrap();
+    let before = disk.snapshot();
+    for path in [p("sub"), p("file"), p("link")] {
+        disk.rename(&path, &path).unwrap();
+    }
+    assert_eq!(disk.snapshot(), before);
+    assert_eq!(disk.rename(&p("none"), &p("none")).unwrap_err().kind(), ErrorKind::NotFound);
+}
+
+#[test]
+fn a_rejected_rename_moves_nothing() {
+    let disk = disk_with_dir();
+    disk.write(&p("sub/f"), b"x").unwrap();
+    disk.create_dir_all(&p("full")).unwrap();
+    disk.write(&p("full/g"), b"y").unwrap();
+    let before = disk.snapshot();
+    assert!(disk.rename(&p("sub"), &p("full")).is_err());
+    assert!(disk.rename(&p("sub"), &p("sub/inner")).is_err());
+    assert_eq!(disk.snapshot(), before);
 }

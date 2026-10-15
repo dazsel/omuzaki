@@ -1,36 +1,38 @@
 //! A settable wall clock.
 
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::Mutex;
 
 use omuzaki_update_api::clock::{Timestamp, WallClock};
+
+use crate::locked;
 
 /// Reports the time the test set. It only moves when told to, so expiry checks are deterministic.
 #[derive(Debug)]
 pub struct FakeWallClock {
-    now: AtomicI64,
+    now: Mutex<i64>,
 }
 
 impl FakeWallClock {
     /// A clock showing `now`.
     #[must_use]
     pub fn new(now: Timestamp) -> Self {
-        Self { now: AtomicI64::new(now.0) }
+        Self { now: Mutex::new(now.0) }
     }
 
     /// Jumps to `now`, forwards or back.
     pub fn set(&self, now: Timestamp) {
-        self.now.store(now.0, Ordering::SeqCst);
+        *locked(&self.now) = now.0;
     }
 
     /// Moves forward by `seconds` (back when negative). Saturates instead of wrapping.
     pub fn advance(&self, seconds: i64) {
-        // The closure always answers `Some`, so the update cannot fail and there is no error to report.
-        self.now.try_update(Ordering::SeqCst, Ordering::SeqCst, |t| Some(t.saturating_add(seconds))).ok();
+        let mut now = locked(&self.now);
+        *now = now.saturating_add(seconds);
     }
 }
 
 impl WallClock for FakeWallClock {
     fn now(&self) -> Timestamp {
-        Timestamp(self.now.load(Ordering::SeqCst))
+        Timestamp(*locked(&self.now))
     }
 }
