@@ -225,7 +225,8 @@ fn first_error<T>(outcome: Result<T, StageError>, cleanup: Result<(), StageError
 
 /// `image` as an 8-bit RGBA PNG (the `image` crate's encoder, default settings). The same image gives the same bytes.
 ///
-/// The pixels are written as `image.rgba8` holds them; stills are straight-alpha, which is what PNG stores.
+/// PNG stores straight alpha. A straight image is written as it is; a premultiplied one has each colour channel divided
+/// by its alpha first (rounded, and black where the alpha is 0), so a translucent pixel shows at its true brightness.
 ///
 /// # Errors
 /// `StageError::Render` (`RenderError::Invalid`) when `rgba8` doesn't hold `size.x * size.y * 4` bytes.
@@ -236,9 +237,32 @@ pub fn encode_png(image: &Image) -> Result<Vec<u8>, StageError> {
         let reason = format!("{} bytes for a {width}x{height} RGBA image (needs {expected:?})", image.rgba8.len());
         return Err(StageError::render("the PNG", RenderError::invalid("image", reason)));
     }
+    let straight = match image.alpha {
+        AlphaEncoding::Straight => image.rgba8.clone(),
+        AlphaEncoding::Premultiplied => unpremultiply(&image.rgba8),
+    };
     let mut bytes = Vec::new();
     PngEncoder::new(&mut bytes)
-        .write_image(&image.rgba8, width, height, ExtendedColorType::Rgba8)
+        .write_image(&straight, width, height, ExtendedColorType::Rgba8)
         .map_err(|error| StageError::render("the PNG", RenderError::invalid("image", error.to_string())))?;
     Ok(bytes)
+}
+
+/// The straight-alpha pixels of premultiplied `rgba8`: each colour channel `c` with alpha `a` becomes `c * 255 / a`,
+/// rounded and clamped to 255, and a pixel with alpha 0 becomes black, since its colour is lost.
+fn unpremultiply(rgba8: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(rgba8.len());
+    for pixel in rgba8.as_chunks::<4>().0 {
+        let alpha = u32::from(pixel[3]);
+        if alpha == 0 {
+            out.extend_from_slice(&[0, 0, 0, 0]);
+            continue;
+        }
+        for &channel in &pixel[..3] {
+            let straight = (u32::from(channel) * 255 + alpha / 2) / alpha;
+            out.push(u8::try_from(straight.min(255)).unwrap_or(u8::MAX));
+        }
+        out.push(pixel[3]);
+    }
+    out
 }

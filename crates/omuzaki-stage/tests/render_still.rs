@@ -164,3 +164,27 @@ fn a_short_image_is_refused() {
         "one byte short is refused"
     );
 }
+
+/// The pixels a PNG of `image` decodes to, as RGBA8.
+fn decoded(image: &Image) -> Vec<u8> {
+    let bytes = encode_png(image).expect("the PNG encodes");
+    image::load_from_memory_with_format(&bytes, image::ImageFormat::Png).expect("it is a PNG").to_rgba8().into_raw()
+}
+
+#[test]
+fn a_premultiplied_image_is_written_straight() {
+    // Half-transparent red: premultiplied, its red is 64 of 128; straight, it is 128.
+    let image = Image {
+        size: UVec2::new(3, 1),
+        alpha: AlphaEncoding::Premultiplied,
+        rgba8: vec![64, 0, 0, 128, 0, 0, 0, 0, 200, 100, 50, 255],
+    };
+    assert_eq!(decoded(&image), vec![128, 0, 0, 128, 0, 0, 0, 0, 200, 100, 50, 255]);
+}
+
+#[test]
+fn a_straight_image_is_written_as_it_is() {
+    let rgba8 = vec![64, 0, 0, 128, 10, 20, 30, 255];
+    let image = Image { size: UVec2::new(2, 1), alpha: AlphaEncoding::Straight, rgba8: rgba8.clone() };
+    assert_eq!(decoded(&image), rgba8);
+}
