@@ -369,8 +369,9 @@ check; no check can see a write through a handle that is already open. So the di
 - **Windows.** A save replaces a file by renaming over it. A writer that holds the file open without delete sharing
   (the default for most editors) makes that rename fail with a sharing violation, so the save reports an error and
   loses nothing. A writer that does allow delete sharing writes into the hard-linked `.kept` entry, as on Linux.
-- **What is tested where.** CI (Linux) tests a write through a handle opened before the save and made after the check
-  (the bytes are in the `.kept` entry and pruning keeps it), and the pruning rules: young entries, changed entries,
+- **What is tested where.** CI (Linux) tests a write through a handle opened before the save: made before the check
+  it is refused and nothing is lost, made after the check its bytes are in the `.kept` entry and pruning keeps it. It
+  also tests the pruning rules: young entries, changed entries,
   `.displaced` entries and other files stay, and one call deletes at most 64. The Windows behaviour is not tested in
   CI.
 - **Crash safety.** The hard-linked entry's folder is not flushed (that would add a folder sync to every save): after a
