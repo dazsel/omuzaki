@@ -7,18 +7,18 @@ use std::sync::Mutex;
 
 use omuzaki_ai_api::{FileSource, LoadError, NoProgress, Provider};
 
-use omuzaki_ai_native::{ArchiveKind, Unpack};
+use omuzaki_ai_native::{ArchiveKind, LoadOnce, Unpack};
 
 use crate::builds::{Archive, Build, select};
 
 /// What a process has settled about its ONNX Runtime: the app's provider preference (until something loads) and the
-/// library that loaded (final).
+/// library that loaded (final, held by the shared once-per-process guard).
 struct Process {
     preferred: Vec<Provider>,
-    loaded: Option<Loaded>,
+    loaded: LoadOnce<Loaded, LoadError>,
 }
 
-static PROCESS: Mutex<Process> = Mutex::new(Process { preferred: Vec::new(), loaded: None });
+static PROCESS: Mutex<Process> = Mutex::new(Process { preferred: Vec::new(), loaded: LoadOnce::new() });
 
 fn lock(process: &Mutex<Process>) -> std::sync::MutexGuard<'_, Process> {
     process.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -30,7 +30,7 @@ fn lock(process: &Mutex<Process>) -> std::sync::MutexGuard<'_, Process> {
 /// `false`, and changes nothing, when the library is already loaded (the flavour is then final).
 pub fn prefer_providers(providers: &[Provider]) -> bool {
     let mut process = lock(&PROCESS);
-    if process.loaded.is_some() {
+    if process.loaded.get().is_some() {
         return false;
     }
     process.preferred = providers.to_vec();
@@ -54,7 +54,7 @@ pub struct Loaded {
 
 /// The library this process loaded through this crate, once some probe or load has loaded it.
 pub fn loaded() -> Option<Loaded> {
-    lock(&PROCESS).loaded.clone()
+    lock(&PROCESS).loaded.get().and_then(Result::ok)
 }
 
 /// Loads ONNX Runtime once per process and returns what was loaded; later calls return the first result whatever
@@ -86,9 +86,9 @@ fn ensure_in(
     wanted: &[Provider],
     init: &dyn Fn(&Path) -> Result<bool, LoadError>,
 ) -> Result<Loaded, LoadError> {
-    let mut process = lock(process);
-    if let Some(loaded) = &process.loaded {
-        return Ok(loaded.clone());
+    let process = lock(process);
+    if let Some(settled) = process.loaded.get() {
+        return settled;
     }
     let no_build = || LoadError::Runtime(format!("there is no pinned ONNX Runtime build for {os}-{arch}"));
     let chosen = flavour_providers(&process.preferred, wanted);
@@ -105,10 +105,10 @@ fn ensure_in(
         }
     };
     let dir = unpack(build, &archive).map_err(|e| LoadError::Runtime(format!("unpacking {}: {e}", build.asset)))?;
-    let ours = init(&dir.join(build.library))?;
-    let loaded = Loaded { build, ours };
-    process.loaded = Some(loaded.clone());
-    Ok(loaded)
+    process.loaded.get_or_init(build.asset, &build.sha256.to_string(), || {
+        let ours = init(&dir.join(build.library))?;
+        Ok(Loaded { build, ours })
+    })
 }
 
 /// The libraries of `build` unpacked beside its verified `archive` (the shared loader, `omuzaki-ai-native`).
@@ -172,7 +172,7 @@ mod tests {
         calls: &[&[Provider]],
         natives: &FakeArchives,
     ) -> (Vec<Result<&'static str, String>>, Vec<String>) {
-        let process = Mutex::new(Process { preferred: preferred.to_vec(), loaded: None });
+        let process = Mutex::new(Process { preferred: preferred.to_vec(), loaded: LoadOnce::new() });
         let inits = std::cell::RefCell::new(Vec::new());
         let init = |library: &Path| {
             inits.borrow_mut().push(library.file_name().unwrap().to_string_lossy().into_owned());

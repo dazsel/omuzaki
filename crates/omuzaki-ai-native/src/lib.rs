@@ -4,10 +4,14 @@
 //! [`Unpack::run`] to get the wanted libraries as plain files in a folder beside the archive. The folder is
 //! deterministic (a second run reuses it) and appears atomically (an interrupted unpack leaves nothing under the final
 //! name). Selecting the build, choosing providers and handing the library to the runtime stay in the runtime's crate.
+//!
+//! A process loads one native library per runtime, once: [`LoadOnce`] is the guard that runs the runtime's init for the
+//! archive's pinned identity exactly once and gives every later caller the same result or error.
 
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use flate2::read::GzDecoder;
 
@@ -19,6 +23,64 @@ pub enum ArchiveKind {
     TarGz,
     /// A zip (`.zip`).
     Zip,
+}
+
+/// A once-per-process guard for handing a native library to its runtime.
+///
+/// The first [`get_or_init`](Self::get_or_init) runs its `init`; the result, success or error, is kept and every later
+/// call (from any thread) returns a clone of it without running `init` again. The guard is keyed by the archive's pinned
+/// identity (its name and SHA-256), recorded with the first result: a process holds one native library per runtime, so
+/// a later call that names another archive still gets the first result, which says what was really loaded.
+///
+/// Fetching and unpacking belong before the call, so a transient failure there (offline) can be retried; only the
+/// init, which a runtime cannot repeat, is guarded.
+pub struct LoadOnce<T, E> {
+    settled: Mutex<Option<Settled<T, E>>>,
+}
+
+struct Settled<T, E> {
+    name: String,
+    sha256: String,
+    result: Result<T, E>,
+}
+
+impl<T: Clone, E: Clone> LoadOnce<T, E> {
+    /// A guard that has not run yet.
+    pub const fn new() -> Self {
+        Self { settled: Mutex::new(None) }
+    }
+
+    /// The settled result, or `None` before the first [`get_or_init`](Self::get_or_init) has finished.
+    pub fn get(&self) -> Option<Result<T, E>> {
+        self.lock().as_ref().map(|settled| settled.result.clone())
+    }
+
+    /// The pinned identity (name, SHA-256) the settled result was loaded for, or `None` before it settled.
+    pub fn identity(&self) -> Option<(String, String)> {
+        self.lock().as_ref().map(|settled| (settled.name.clone(), settled.sha256.clone()))
+    }
+
+    /// Runs `init` if this is the first call and keeps its result under the identity `name` and `sha256`; otherwise
+    /// returns the kept result and drops `init`. Callers racing the first call wait for it and share its result.
+    ///
+    /// # Errors
+    /// The error `init` returned, now and for every later call.
+    pub fn get_or_init(&self, name: &str, sha256: &str, init: impl FnOnce() -> Result<T, E>) -> Result<T, E> {
+        let mut slot = self.lock();
+        let settled =
+            slot.get_or_insert_with(|| Settled { name: name.to_owned(), sha256: sha256.to_owned(), result: init() });
+        settled.result.clone()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<Settled<T, E>>> {
+        self.settled.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+impl<T: Clone, E: Clone> Default for LoadOnce<T, E> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// What to take out of one archive. Build it with [`Unpack::new`] and run it with [`Unpack::run`].
@@ -172,6 +234,57 @@ mod tests {
 
     fn providers(name: &str) -> bool {
         name.starts_with("libonnxruntime_providers") || name.starts_with("onnxruntime_providers")
+    }
+
+    #[test]
+    fn two_threads_loading_the_same_archive_run_init_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let once: LoadOnce<u32, String> = LoadOnce::new();
+        let inits = AtomicUsize::new(0);
+        let results: Vec<_> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..2)
+                .map(|_| {
+                    scope.spawn(|| {
+                        once.get_or_init("lib.tgz", "abc", || {
+                            inits.fetch_add(1, Ordering::SeqCst);
+                            std::thread::sleep(std::time::Duration::from_millis(50));
+                            Ok(7)
+                        })
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        assert_eq!(results, [Ok(7), Ok(7)]);
+        assert_eq!(inits.load(Ordering::SeqCst), 1);
+        assert_eq!(once.identity(), Some(("lib.tgz".into(), "abc".into())));
+    }
+
+    #[test]
+    fn a_failed_init_is_reported_to_every_caller_and_not_run_again() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let once: LoadOnce<u32, String> = LoadOnce::new();
+        assert_eq!(once.get(), None);
+        let inits = AtomicUsize::new(0);
+        let results: Vec<_> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..2)
+                .map(|_| {
+                    scope.spawn(|| {
+                        once.get_or_init("lib.tgz", "abc", || {
+                            inits.fetch_add(1, Ordering::SeqCst);
+                            std::thread::sleep(std::time::Duration::from_millis(50));
+                            Err("no such symbol".to_owned())
+                        })
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        assert_eq!(results, [Err("no such symbol".to_owned()), Err("no such symbol".to_owned())]);
+        // A later caller, even naming another archive, gets the same error and does not run its init.
+        assert_eq!(once.get_or_init("other.tgz", "def", || Ok(1)), Err("no such symbol".to_owned()));
+        assert_eq!(inits.load(Ordering::SeqCst), 1);
+        assert_eq!(once.identity(), Some(("lib.tgz".into(), "abc".into())));
     }
 
     #[test]
