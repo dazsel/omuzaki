@@ -28,6 +28,7 @@ use omuzaki_char_api::{
     KindProvenance, MaterialName, PartMesh, Proportions, Quality, RegistryBuilder, find_kind,
 };
 use omuzaki_core::glam::{DVec3, Vec3};
+use omuzaki_core::mesh::MeshData;
 use omuzaki_core::rng::Rng;
 
 /// The regions of a body of `template` shaped by `shape`, built at `detail`.
@@ -665,8 +666,8 @@ fn ankle_table() {
 
 /// The mesh twin of `shoulder_rise` in `tests/junctions.rs`, read from the `detail` mesh: how far the front-view top of
 /// the torso and the left arm climbs again after the outline has started down from the neck, as a fraction of the
-/// torso's greatest half-width. The layout's rise is the reference. The mesher does not reshape the torso's top corner
-/// yet, so this is reported here and not asserted; #799 asserts it once the mesher fixes the corner.
+/// torso's greatest half-width. The layout's rise is the reference. The rise is reported here and asserted by #799,
+/// which fixes the mesher's torso corner; until then the mesh shows no climb and this reads (about) zero.
 fn mesh_shoulder_rise(template: &str, shape: &BodyShape, detail: Detail) -> f64 {
     let layout = registry::find(template).unwrap().layout(&Proportions::default(), shape, &HandParams::default());
     let unit = layout.head_base().unwrap().y / 0.56;
@@ -678,12 +679,42 @@ fn mesh_shoulder_rise(template: &str, shape: &BodyShape, detail: Detail) -> f64 
     let chosen: Vec<&PartMesh> =
         meshes.iter().filter(|(k, _)| matches!(k, BodyRegion::Torso | BodyRegion::ArmL)).map(|(_, m)| m).collect();
     let far = chosen.iter().flat_map(|m| &m.geometry.positions).map(|p| f64::from(p.x)).fold(f64::MIN, f64::max);
+    rise_of(&top_edge(&chosen, neck, far, 0.000_25 * unit)) / r
+}
+
+/// The climb of a top edge sampled by [`top_edge`]: the most any sample rises above the lowest sample before it. NaN
+/// samples, where the meshes have nothing, are skipped.
+fn rise_of(tops: &[f64]) -> f64 {
     let (mut lowest, mut rise) = (f64::MAX, 0.0_f64);
-    for top in top_edge(&chosen, neck, far, 0.000_25 * unit).into_iter().filter(|t| !t.is_nan()) {
+    for top in tops.iter().copied().filter(|t| !t.is_nan()) {
         lowest = lowest.min(top);
         rise = rise.max(top - lowest);
     }
-    rise / r
+    rise
+}
+
+/// A flat quad over `x0..x1` at height `0..top`, as a mesh for the rise tests: its top edge is what [`top_edge`] reads.
+fn quad(x0: f32, x1: f32, top: f32) -> PartMesh {
+    let positions =
+        vec![Vec3::new(x0, 0.0, 0.0), Vec3::new(x1, 0.0, 0.0), Vec3::new(x1, top, 0.0), Vec3::new(x0, top, 0.0)];
+    PartMesh {
+        name: "quad".to_owned(),
+        geometry: MeshData { positions, indices: vec![0, 1, 2, 0, 2, 3], ..MeshData::default() },
+        joint_bones: Vec::new(),
+        material: MaterialName::new("body-skin").unwrap(),
+        casts_shadow: false,
+        render_order: 0,
+        dynamic: false,
+    }
+}
+
+#[test]
+fn a_step_up_in_the_top_edge_is_the_rise_and_a_flat_top_has_none() {
+    let (slab, block) = (quad(0.0, 1.0, 1.0), quad(1.0, 2.0, 1.1));
+    let step = 0.01;
+    let rise = rise_of(&top_edge(&[&slab, &block], 0.0, 2.0, step));
+    assert!((rise - 0.1).abs() <= step, "a step of 0.1 reads as {rise}");
+    assert!(rise_of(&top_edge(&[&slab], 0.0, 2.0, step)).abs() < 1e-12);
 }
 
 /// The largest mesh shoulder rise over `shapes` and the name of the shape it is on (0 and "" for none).
