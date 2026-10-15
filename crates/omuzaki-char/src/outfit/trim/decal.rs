@@ -17,7 +17,7 @@ use omuzaki_store_api::ContentHash;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::{TrimError, checked, feature, position};
+use super::{TrimError, checked, feature, position, rates};
 use crate::kit::curve::fraction;
 use crate::kit::grid::{Grid, GridOptions, MeshBuilder, Skin};
 use crate::outfit::common::GarmentOutput;
@@ -120,14 +120,7 @@ impl Validate for Decal {
 /// The surface's errors; [`TrimError::Invalid`] where the surface has no extent to lay the sheet on.
 pub fn sheet(surface: &Surface, at: [f64; 2], size: [f64; 2], rotation: f64) -> Result<MeshBuilder, TrimError> {
     // How far the surface moves per unit of t and of phi at the centre: the first-order map from the tangent plane.
-    let step = 1e-4;
-    let per_t = (surface.point((at[0] + step).min(1.0), at[1])? - surface.point((at[0] - step).max(0.0), at[1])?)
-        .length()
-        / ((at[0] + step).min(1.0) - (at[0] - step).max(0.0));
-    let per_phi = (surface.point(at[0], at[1] + step)? - surface.point(at[0], at[1] - step)?).length() / (2.0 * step);
-    if !(per_t > 0.0 && per_phi > 0.0) {
-        return Err(TrimError::invalid("decal", "the surface has no extent at its anchor"));
-    }
+    let (per_t, per_phi) = rates(surface, at)?;
     let (sin, cos) = rotation.to_radians().sin_cos();
     let local = |i: usize, j: usize| {
         let q = DVec2::new((fraction(j, CELLS) - 0.5) * size[0], (0.5 - fraction(i, CELLS)) * size[1]);
