@@ -27,20 +27,46 @@ fn the_mock_passes_its_own_conformance_suite() {
 }
 
 #[test]
-fn every_fixture_checks_and_applies_on_the_mock_character_except_the_refused_ones() {
+fn the_mock_passes_the_compat_conformance_on_the_fixture_character() {
+    let mut library = MockLibrary::fixtures();
+    library.set_characters(fixtures::characters());
+    conformance::compat(&library, &support::character());
+}
+
+#[test]
+fn the_fixture_character_facts_match_the_mock_character() {
+    let doc = support::doc();
+    let at = omuzaki_char_api::paths::character(&support::character());
+    let node = doc.get(&at).expect("mira");
+    let (_, facts) = fixtures::characters().remove(0);
+    assert_eq!(node["template"], facts.template);
+    let kinds: std::collections::BTreeSet<String> =
+        node["parts"].as_object().unwrap().values().map(|p| p["kind"].as_str().unwrap().to_owned()).collect();
+    assert_eq!(kinds, facts.part_kinds);
+}
+
+#[test]
+fn every_fixture_checks_and_applies_on_the_mock_character_except_the_unavailable_ones() {
     let library = MockLibrary::fixtures();
     let doc = support::doc();
     for f in fixtures::all() {
         let m = &f.manifest;
         let result = apply_with_library(&library, m, &doc, &bindings(m));
+        // The library reports an item unavailable exactly when applying it would fail for lack of the item itself.
+        // (Two publishers on one id can't be described by id; the conformance suite covers them.)
+        if let Ok(detail) = library.describe(&m.item_id().unwrap(), Some(&m.item_version().unwrap())) {
+            let unavailable = detail.info.unavailable;
+            assert_eq!(unavailable.is_some(), result.is_err(), "{}: {unavailable:?} vs {result:?}", m.id);
+        }
         match m.id.as_str() {
             "test/stages/lamp" => {
                 assert!(m.check().iter().any(|p| p.field == "target"), "the scene target is reserved");
-                assert!(result.is_err());
             }
             "test/colourways/ghost" => {
                 assert_eq!(check_ops(m, |n| find(n).map(|r| (r.meta)())).len(), 1, "unknown op");
-                assert!(result.is_err());
+            }
+            "test/outfits/dangling" | "test/outfits/ghosted" => {
+                assert_eq!(m.check(), vec![], "{}: well-formed, only its dependency is missing", m.id);
             }
             _ => {
                 assert_eq!(m.check(), vec![], "{}", m.id);

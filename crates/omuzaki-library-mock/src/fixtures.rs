@@ -9,8 +9,13 @@
 
 use std::fmt::Write as _;
 
+use std::collections::BTreeSet;
+
 use ed25519_dalek::{Signer, SigningKey};
-use omuzaki_library_api::{ItemManifest, ItemScope, Publisher, PublisherKey};
+use omuzaki_char_api::CharId;
+use omuzaki_library_api::{BodyKind, ItemManifest, ItemScope, Publisher, PublisherKey};
+
+use crate::CharacterFacts;
 
 /// The seed of the key that signs the `signer` fixtures.
 pub const SIGNER_SEED: u8 = 1;
@@ -119,6 +124,91 @@ pub fn shared_bow(seed: u8) -> ItemManifest {
     signed(parse(&toml), seed, if seed == SIGNER_SEED { "Signer" } else { "Rival" })
 }
 
+/// A setting item with the given `compat` table body (`kinds = [...]`, `templates = ...`), for the compat fixtures.
+fn compat_setting(name: &str, compat: &str) -> ItemManifest {
+    let extra = format!("compat = {{ {compat} }}\n");
+    parse(
+        &(header(&format!("test/colourways/{name}"), "1.0.0", "colourways", "setting", FIRST_PARTY, &extra)
+            + &palette("#445566")),
+    )
+}
+
+/// Fits the fixture character `mira` in every way, including its style.
+pub fn fits() -> ItemManifest {
+    compat_setting(
+        "fits",
+        "kinds = [\"humanoid\"], templates = [\"soft-sd\"], styles = [\"soft\"], requires = [\"mock-hair\"]",
+    )
+}
+
+/// Made for creature bodies: incompatible with `mira`.
+pub fn creature_only() -> ItemManifest {
+    compat_setting("creature-only", "kinds = [\"creature\"]")
+}
+
+/// Made for another template: incompatible with `mira`.
+pub fn other_template() -> ItemManifest {
+    compat_setting("other-template", "templates = [\"tall\"]")
+}
+
+/// Needs a part kind `mira` lacks: incompatible with `mira`.
+pub fn needs_wings() -> ItemManifest {
+    compat_setting("needs-wings", "requires = [\"mock-wing\"]")
+}
+
+/// Designed for another look style: it fits `mira` with a style warning.
+pub fn gothic() -> ItemManifest {
+    compat_setting("gothic", "styles = [\"gothic\"]")
+}
+
+/// A bundle whose item step names an item nobody holds.
+pub fn dangling_bundle() -> ItemManifest {
+    let steps = "[[step]]\nitem = \"test/hair/nonexistent\"\nversion = \"^1\"\n";
+    parse(&(header("test/outfits/dangling", "1.0.0", "outfits", "bundle", FIRST_PARTY, "") + steps))
+}
+
+/// A bundle whose dependency has an op that is not registered, so it is unavailable through the dependency.
+pub fn ghosted_bundle() -> ItemManifest {
+    let steps = "[[step]]\nitem = \"test/colourways/ghost\"\nversion = \"^1\"\n";
+    parse(&(header("test/outfits/ghosted", "1.0.0", "outfits", "bundle", FIRST_PARTY, "") + steps))
+}
+
+/// `signer/colourways/tide` at `version`, signed with [`SIGNER_SEED`]: held by two teams in [`all`].
+pub fn tide(version: &str) -> ItemManifest {
+    let toml = header("signer/colourways/tide", version, "colourways", "setting", PERMISSIVE, "");
+    signed(parse(&(toml + &palette("#224466"))), SIGNER_SEED, "Signer")
+}
+
+/// `shared/colourways/reef`, signed by `seed`: two publishers claiming one id in two different teams.
+pub fn reef(seed: u8) -> ItemManifest {
+    let colour = if seed == SIGNER_SEED { "#113311" } else { "#331133" };
+    let toml = header("shared/colourways/reef", "1.0.0", "colourways", "setting", PERMISSIVE, "") + &palette(colour);
+    signed(parse(&toml), seed, if seed == SIGNER_SEED { "Signer" } else { "Rival" })
+}
+
+/// The characters the compat fixtures are written against: `mira`, the character of `omuzaki-char-mock`. Hand them
+/// to [`MockLibrary::set_characters`](crate::MockLibrary::set_characters) (or to the library under test, however it
+/// learns of characters) to run [`conformance::compat`](crate::conformance::compat).
+///
+/// The style is the look style of `mira`'s face data, which the mock document does not carry.
+///
+/// # Panics
+/// If the fixture character id stops parsing, a bug in this crate.
+pub fn characters() -> Vec<(CharId, CharacterFacts)> {
+    let part_kinds: BTreeSet<String> =
+        ["mock-body", "mock-head", "mock-hair", "mock-garment"].iter().map(|k| (*k).to_owned()).collect();
+    let id = CharId::new("mira").unwrap_or_else(|e| panic!("fixture character id: {e}"));
+    vec![(
+        id,
+        CharacterFacts {
+            body_kind: BodyKind::Humanoid,
+            template: "soft-sd".to_owned(),
+            style: Some("soft".to_owned()),
+            part_kinds,
+        },
+    )]
+}
+
 /// The whole fixture set, in a fixed order.
 pub fn all() -> Vec<Fixture> {
     let held = |manifest, scope| Fixture { manifest, scope };
@@ -132,6 +222,17 @@ pub fn all() -> Vec<Fixture> {
         held(signed_ember("1.0.0"), ItemScope::Mine),
         held(signed_ember("1.1.0"), ItemScope::Mine),
         held(signed_ember("1.2.0"), ItemScope::Team("studio".to_owned())),
+        held(fits(), ItemScope::FirstParty),
+        held(creature_only(), ItemScope::FirstParty),
+        held(other_template(), ItemScope::FirstParty),
+        held(needs_wings(), ItemScope::FirstParty),
+        held(gothic(), ItemScope::FirstParty),
+        held(dangling_bundle(), ItemScope::FirstParty),
+        held(ghosted_bundle(), ItemScope::FirstParty),
+        held(tide("1.0.0"), ItemScope::Team("atelier".to_owned())),
+        held(tide("1.1.0"), ItemScope::Team("studio".to_owned())),
+        held(reef(SIGNER_SEED), ItemScope::Team("atelier".to_owned())),
+        held(reef(RIVAL_SEED), ItemScope::Team("studio".to_owned())),
         held(unverified(), ItemScope::Mine),
         held(shared_bow(SIGNER_SEED), ItemScope::Mine),
         held(shared_bow(RIVAL_SEED), ItemScope::Mine),

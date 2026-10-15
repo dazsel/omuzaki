@@ -1,7 +1,10 @@
 //! What every [`Library`] must do on the fixture set (design section 6). The library under test is loaded with
 //! [`fixtures::all`](crate::fixtures::all), then handed to [`run`].
 
-use omuzaki_library_api::{ItemId, ItemScope, Library, LibraryError, Query, Section, Usage, Version, VersionReq};
+use omuzaki_char_api::CharId;
+use omuzaki_library_api::{
+    CompatStatus, CompatTarget, ItemId, ItemScope, Library, LibraryError, Query, Section, Usage, Version, VersionReq,
+};
 
 use crate::fixtures::{RIVAL_SEED, SIGNER_SEED, shared_bow};
 
@@ -27,8 +30,66 @@ pub fn run(library: &dyn Library) {
     version_selection(library);
     hash_clash_and_publishers(library);
     deterministic_search(library);
+    team_scopes_are_one_tier(library);
     unavailable_with_reasons(library);
     refusals(library);
+}
+
+/// The compatibility filter (design D1, D13) on the fixture character from [`fixtures::characters`], which the
+/// library must be able to answer for. Incompatible items are filtered out, a style mismatch stays with its warning
+/// and ranks below an equally good match that fits, and a character the library doesn't know is an error rather than
+/// an unfiltered result.
+///
+/// # Panics
+/// With the failed check's name when the library disagrees with the contract.
+pub fn compat(library: &dyn Library, character: &CharId) {
+    let query =
+        Query { compatible_with: Some(CompatTarget::Character(character.clone())), limit: 100, ..Query::default() };
+    let page = must("compatible search", library.search(&query));
+    let status = |item: &str| page.items.iter().find(|i| i.id.as_str() == item).map(|i| i.compat.clone());
+    assert_eq!(status("test/colourways/fits"), Some(CompatStatus::Compatible), "an item that fits stays");
+    assert_eq!(status("test/colourways/dusk"), Some(CompatStatus::Compatible), "an item with no compat stays");
+    for gone in ["creature-only", "other-template", "needs-wings"] {
+        assert_eq!(status(&format!("test/colourways/{gone}")), None, "{gone}: incompatible items drop out");
+    }
+    assert!(
+        matches!(status("test/colourways/gothic"), Some(CompatStatus::StyleMismatch { .. })),
+        "a style mismatch stays, with its warning"
+    );
+    let all = must("unfiltered search", library.search(&Query { limit: 100, ..Query::default() }));
+    assert_eq!(page.total, page.items.len());
+    assert_eq!(page.total + 3, all.total, "exactly the three incompatible items are filtered");
+    assert!(all.items.iter().all(|i| i.compat == CompatStatus::Compatible), "with no target everything is compatible");
+    assert_eq!(page.facets.sections.values().sum::<usize>(), page.total, "facets count the filtered result set");
+    let styled = Query { text: Some("colourways".into()), ..query.clone() };
+    let order: Vec<_> = must("ranked search", library.search(&styled)).items.into_iter().map(|i| i.compat).collect();
+    let first_warning = order.iter().position(|c| matches!(c, CompatStatus::StyleMismatch { .. }));
+    assert!(
+        first_warning.is_none_or(|at| order[at..].iter().all(|c| matches!(c, CompatStatus::StyleMismatch { .. }))),
+        "an equally good match that fits ranks above a style mismatch: {order:?}"
+    );
+    let stranger = Query { compatible_with: Some(CompatTarget::Character(id_of("nobody"))), ..Query::default() };
+    assert!(matches!(library.search(&stranger), Err(LibraryError::NotFound(_))), "an unknown character is refused");
+}
+
+fn id_of(name: &str) -> CharId {
+    must(name, CharId::new(name))
+}
+
+/// All teams are one precedence tier: the newest matching version wins across them whatever the teams are called, and
+/// two publishers in different teams are ambiguous, in `resolve` and in `versions`.
+fn team_scopes_are_one_tier(library: &dyn Library) {
+    let tide = id("signer/colourways/tide");
+    let got = must("tide resolves", library.resolve(&tide, &VersionReq::Any));
+    assert_eq!(
+        (got.scope, got.manifest.version.as_str()),
+        (ItemScope::Team("studio".to_owned()), "1.1.0"),
+        "the newest across teams, not the first team by name"
+    );
+    assert_eq!(must("tide versions", library.versions(&tide)), vec![v(1, 0, 0), v(1, 1, 0)]);
+    let reef = id("shared/colourways/reef");
+    assert!(matches!(library.resolve(&reef, &VersionReq::Any), Err(LibraryError::Ambiguous { .. })));
+    assert!(matches!(library.versions(&reef), Err(LibraryError::Ambiguous { .. })));
 }
 
 /// First-party before the person's library before team scopes, and the newest version within the first scope that
@@ -104,6 +165,15 @@ fn unavailable_with_reasons(library: &dyn Library) {
     let reason = |item: &str| must(item, library.describe(&id(item), None)).info.unavailable;
     assert!(reason("test/stages/lamp").is_some_and(|r| r.contains("scene")), "the scene target is reserved");
     assert!(reason("test/colourways/ghost").is_some_and(|r| r.contains("ghost.missing")), "names the missing op");
+    assert!(
+        reason("test/outfits/dangling").is_some_and(|r| r.contains("step/0") && r.contains("nonexistent")),
+        "a bundle whose item is missing is unavailable, as applying it would fail"
+    );
+    assert!(
+        reason("test/outfits/ghosted").is_some_and(|r| r.contains("ghost.missing")),
+        "a bundle is unavailable through its dependency's missing op"
+    );
+    assert_eq!(reason("test/outfits/casual"), None, "a bundle whose items are all there is available");
     assert_eq!(reason("test/hair/ribbon"), None);
 }
 

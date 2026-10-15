@@ -9,7 +9,7 @@ mod support;
 use omuzaki_doc_api::DocRead;
 use omuzaki_library_api::{Bindings, ItemManifest, ItemScope, ItemSource, Library, LibraryError, Query, VersionReq};
 use omuzaki_library_mock::{MockLibrary, apply_for_test, fixtures, seed};
-use omuzaki_ops_api::ErrorCode;
+use omuzaki_ops_api::{ErrorCode, ErrorDetail};
 
 #[derive(Default)]
 struct Source(Vec<ItemManifest>);
@@ -242,4 +242,151 @@ fn a_change_outside_the_bound_character_fails_the_dry_run_and_the_seed_check() {
     assert!(problems.iter().any(|p| p.rule == "apply" && p.detail.contains("outside the target")), "{problems:?}");
     // The same recipe on its own character is fine.
     apply_for_test(&setting("omuzaki/colourways/seed-good", PALETTE), &doc, &bound()).unwrap();
+}
+
+// --- Round 2: errors keep their structure, availability agrees with apply ---
+
+fn refused_error(steps: &str, bindings: &Bindings) -> omuzaki_ops_api::OpError {
+    apply_for_test(&setting("omuzaki/colourways/seed-bad", steps), &support::doc(), bindings).unwrap_err()
+}
+
+#[test]
+fn a_planned_ops_error_keeps_its_code_hint_and_detail_with_only_the_step_put_in_front() {
+    let refuse = |how: &str| {
+        format!("[[step]]\nop = \"mock.refuse\"\n[step.args]\ncharacter = \"$character\"\nhow = \"{how}\"\n")
+    };
+    let missing = refused_error(&refuse("missing"), &bound());
+    assert_eq!(missing.code, ErrorCode::NotFound);
+    assert_eq!(missing.hint.as_deref(), Some("restore it first"));
+    assert_eq!(missing.message, "step/0: the thing is gone");
+    let person = refused_error(&refuse("person"), &bound());
+    assert_eq!(person.code, ErrorCode::Denied);
+    assert!(matches!(person.detail.as_deref(), Some(ErrorDetail::NeedsPerson { .. })), "{person:?}");
+    // An error that names a field gets the step in front of the field instead.
+    let tint = "[[step]]\nop = \"part.tint\"\n[step.args]\ncharacter = \"$character\"\npart = \"nowhere\"\ncolour = \"#000000\"\n";
+    let invalid = refused_error(tint, &bound());
+    assert_eq!((invalid.code, invalid.field.as_deref()), (ErrorCode::Invalid, Some("step/0/part")));
+}
+
+#[test]
+fn expansion_and_library_failures_keep_their_kind_field_and_hint() {
+    // An unbound placeholder keeps the hint saying what to pass.
+    let unbound = refused_error(RIBBON, &bound());
+    assert_eq!(unbound.code, ErrorCode::Invalid);
+    assert!(unbound.field.as_deref().is_some_and(|f| f.contains("step/0")) && unbound.hint.is_some(), "{unbound:?}");
+    let doc = support::doc();
+    let library = MockLibrary::fixtures();
+    let apply = |m: &ItemManifest| omuzaki_library_mock::apply_with_library(&library, m, &doc, &bound()).unwrap_err();
+    // A missing dependency is NotFound on its step, not Invalid.
+    let dangling = apply(&fixtures::dangling_bundle());
+    assert_eq!((dangling.code, dangling.field.as_deref()), (ErrorCode::NotFound, Some("step/0")));
+    // A range nothing matches says what is installed; a publisher clash says to name one.
+    let range = apply(&bundle_of("test/hair/ribbon", "^9"));
+    assert_eq!(range.code, ErrorCode::Invalid);
+    assert!(range.hint.as_deref().is_some_and(|h| h.contains("1.0.0")), "{range:?}");
+    let clash = apply(&bundle_of("shared/colourways/bow", "^1"));
+    assert_eq!((clash.code, clash.hint.as_deref()), (ErrorCode::Invalid, Some("name one publisher")));
+}
+
+fn bundle_of(dependency: &str, version: &str) -> ItemManifest {
+    item(
+        "omuzaki/outfits/seed-dep",
+        "outfits",
+        "bundle",
+        "",
+        &format!("[[step]]\nitem = \"{dependency}\"\nversion = \"{version}\"\n"),
+    )
+}
+
+// --- availability agrees with apply, and every resolution path uses one tiering ---
+
+#[test]
+fn a_bundle_is_unavailable_exactly_when_applying_it_fails_on_a_dependency() {
+    let mut library = MockLibrary::fixtures();
+    let doc = support::doc();
+    let nested = |item: &str| bundle_of(item, "^1");
+    // Missing, unavailable through a nested bundle two levels down, and available.
+    let mut cases = vec![
+        (nested("test/hair/nonexistent"), true),
+        (nested("test/outfits/ghosted"), true),
+        (nested("test/outfits/casual"), false),
+    ];
+    for (i, (m, _)) in cases.iter_mut().enumerate() {
+        m.id = format!("test/outfits/probe-{i}");
+    }
+    for (m, unavailable) in cases {
+        library.insert(m.clone(), ItemScope::FirstParty).unwrap();
+        let info = library.describe(&m.item_id().unwrap(), None).unwrap().info;
+        assert_eq!(info.unavailable.is_some(), unavailable, "{}: {:?}", m.id, info.unavailable);
+        let applied = omuzaki_library_mock::apply_with_library(&library, &m, &doc, &bindings_for_bundle());
+        assert_eq!(applied.is_err(), unavailable, "{}: {applied:?}", m.id);
+    }
+}
+
+#[test]
+fn a_dependency_cycle_is_unavailable_like_it_fails_to_apply() {
+    let mut library = MockLibrary::new();
+    let (a, b) = (bundle_of("test/outfits/b", "^1"), bundle_of("test/outfits/a", "^1"));
+    for (m, id) in [(a, "test/outfits/a"), (b, "test/outfits/b")] {
+        let mut m = m;
+        m.id = id.into();
+        library.insert(m, ItemScope::FirstParty).unwrap();
+    }
+    let a = "test/outfits/a".parse().unwrap();
+    let why = library.describe(&a, None).unwrap().info.unavailable.expect("a cycle is unavailable");
+    assert!(why.contains("cycle"), "{why}");
+}
+
+fn bindings_for_bundle() -> Bindings {
+    let mut b = bound();
+    b.parts.insert("ribbon".into(), "new-ribbon".parse().unwrap());
+    b
+}
+
+#[test]
+fn all_teams_are_one_tier_for_resolve_describe_and_versions() {
+    let mut library = MockLibrary::new();
+    // "atelier" sorts before "studio" and holds the older version.
+    library.insert(fixtures::tide("1.0.0"), ItemScope::Team("atelier".into())).unwrap();
+    library.insert(fixtures::tide("1.1.0"), ItemScope::Team("studio".into())).unwrap();
+    let tide = "signer/colourways/tide".parse().unwrap();
+    assert_eq!(library.resolve(&tide, &VersionReq::Any).unwrap().scope, ItemScope::Team("studio".into()));
+    assert_eq!(library.describe(&tide, None).unwrap().info.version.to_string(), "1.1.0");
+    assert_eq!(library.versions(&tide).unwrap().len(), 2);
+    // Two publishers in two teams are ambiguous in every path; Mine still beats both.
+    library.insert(fixtures::reef(fixtures::SIGNER_SEED), ItemScope::Team("atelier".into())).unwrap();
+    library.insert(fixtures::reef(fixtures::RIVAL_SEED), ItemScope::Team("studio".into())).unwrap();
+    let reef = "shared/colourways/reef".parse().unwrap();
+    assert!(matches!(library.resolve(&reef, &VersionReq::Any), Err(LibraryError::Ambiguous { .. })));
+    assert!(matches!(library.describe(&reef, None), Err(LibraryError::Ambiguous { .. })));
+    assert!(matches!(library.versions(&reef), Err(LibraryError::Ambiguous { .. })));
+}
+
+#[test]
+fn compatible_with_filters_by_body_template_and_parts_and_keeps_style_mismatches_with_the_warning() {
+    use omuzaki_library_api::{CompatStatus, CompatTarget};
+    let mut library = MockLibrary::fixtures();
+    library.set_characters(fixtures::characters());
+    let mira = support::character();
+    let query = Query { compatible_with: Some(CompatTarget::Character(mira)), limit: 100, ..Query::default() };
+    let page = library.search(&query).unwrap();
+    let ids: Vec<&str> = page.items.iter().map(|i| i.id.as_str()).collect();
+    for gone in ["creature-only", "other-template", "needs-wings"] {
+        assert!(!ids.contains(&format!("test/colourways/{gone}").as_str()), "{gone}");
+    }
+    let gothic = page.items.iter().find(|i| i.id.as_str() == "test/colourways/gothic").expect("a style mismatch stays");
+    assert!(matches!(gothic.compat, CompatStatus::StyleMismatch { .. }));
+    // Without the facts the mock refuses rather than answering unfiltered.
+    assert!(matches!(MockLibrary::fixtures().search(&query), Err(LibraryError::NotFound(_))));
+    // A newer incompatible version is skipped for the newest one that fits.
+    let mut older = fixtures::fits();
+    older.id = "test/colourways/versioned".into();
+    let mut newer = older.clone();
+    newer.version = "2.0.0".into();
+    newer.compat.templates = vec!["tall".into()];
+    library.insert(older, ItemScope::FirstParty).unwrap();
+    library.insert(newer, ItemScope::FirstParty).unwrap();
+    let page = library.search(&query).unwrap();
+    let row = page.items.iter().find(|i| i.id.as_str() == "test/colourways/versioned").unwrap();
+    assert_eq!(row.version.to_string(), "1.0.0", "the row shows the newest version that fits");
 }

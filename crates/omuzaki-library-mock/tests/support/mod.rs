@@ -168,7 +168,29 @@ impl Op for Export {
     }
 }
 
+/// An op that refuses in the ways whose structure a caller branches on.
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct Refuse {
+    character: CharId,
+    how: String,
+}
+
+impl Op for Refuse {
+    fn meta() -> OpMeta {
+        meta("mock.refuse")
+    }
+
+    fn plan(&self, _ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
+        Err(match self.how.as_str() {
+            "missing" => OpError::not_found("the thing is gone").hint("restore it first"),
+            _ => OpError::needs_person("a person must pick"),
+        })
+    }
+}
+
 register_op!(PartAdd);
+register_op!(Refuse);
 register_op!(PartTint);
 register_op!(Stray);
 register_op!(Peek);
