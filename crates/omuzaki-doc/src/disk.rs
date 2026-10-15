@@ -329,6 +329,8 @@ struct Hooks<'a> {
     /// Pretend the volume has no POSIX-semantics rename over a file (Windows; tests only).
     #[cfg_attr(not(windows), expect(dead_code, reason = "only Windows replaces by a rename over the target"))]
     posix_rename_off: Cell<bool>,
+    /// Make flushing a folder fail, where a step goes through [`Hooks::sync_folder`] (tests only).
+    sync_off: Cell<bool>,
 }
 
 fn noop() {}
@@ -346,6 +348,7 @@ impl Default for Hooks<'_> {
             exchange_off: Cell::new(false),
             no_replace_off: Cell::new(false),
             posix_rename_off: Cell::new(false),
+            sync_off: Cell::new(false),
         }
     }
 }
@@ -368,6 +371,16 @@ impl Hooks<'_> {
             return Err(io::ErrorKind::Unsupported.into());
         }
         rename_by_handle(from, to, OnExisting::ReplacePosix).map(|_| ())
+    }
+
+    /// [`sync_folder`], unless a test made it fail.
+    fn sync_folder(&self, folder: Option<&Path>) -> Result<(), StoreError> {
+        match folder {
+            Some(folder) if self.sync_off.get() => {
+                Err(StoreError::io(folder, io::Error::other("flushing the folder failed (forced by a test)")))
+            }
+            _ => sync_folder(folder),
+        }
     }
 
     /// [`rename_no_replace`], unless a test turned it off.
@@ -414,10 +427,12 @@ fn replace_checked_with(
         }
         Backup::Mismatch => Ok(Replace::Refused),
         Backup::Held(held) => {
-            let outcome = replace_held(dir, path, &tmp, &held, hooks);
-            // After a placement the backup is the kept entry (step 5). Otherwise the target is as it was (or the
-            // editor's) and any displaced file is kept separately by `preserve`, so the backup can go.
-            if !matches!(outcome, Ok(Replace::Placed)) {
+            let mut committed = false;
+            let outcome = replace_held(dir, path, &tmp, &held, &mut committed, hooks);
+            // Once our file is committed at the target the backup is the kept entry (step 5), even if a later step
+            // failed: it may already be the original itself. Otherwise the target is as it was (or the editor's) and
+            // any displaced file is kept separately by `preserve`, so the backup can go.
+            if !committed {
                 drop(fs::remove_file(&held.path));
             }
             outcome
@@ -433,17 +448,25 @@ fn replace_checked_with(
 }
 
 /// Steps 4 and 5 for a target that has a backup.
-fn replace_held(dir: &Path, path: &Path, tmp: &Path, held: &Held, hooks: &Hooks<'_>) -> Result<Replace, StoreError> {
+/// Sets `committed` once our file is at the target for good, after which the backup must be kept whatever happens.
+fn replace_held(
+    dir: &Path,
+    path: &Path,
+    tmp: &Path,
+    held: &Held,
+    committed: &mut bool,
+    hooks: &Hooks<'_>,
+) -> Result<Replace, StoreError> {
     (hooks.backed_up)();
     match hooks.exchange(tmp, path) {
         Ok(()) => {}
         // Windows has no swap: with a linked backup, an atomic rename over the target (see the module's table).
         #[cfg(windows)]
         Err(e) if e.kind() == io::ErrorKind::Unsupported && held.by_link => {
-            return hooks
-                .rename_over_posix(tmp, path)
-                .map(|()| Replace::Placed)
-                .map_err(|e| capability_error(path, NO_POSIX_RENAME, e));
+            hooks.rename_over_posix(tmp, path).map_err(|e| capability_error(path, NO_POSIX_RENAME, e))?;
+            // Our file is at the target: the linked backup is the kept entry.
+            *committed = true;
+            return Ok(Replace::Placed);
         }
         // Without a swap nothing has moved yet, and nothing will: see the module's table.
         Err(e) => return Err(capability_error(path, NO_EXCHANGE, e)),
@@ -452,17 +475,18 @@ fn replace_held(dir: &Path, path: &Path, tmp: &Path, held: &Held, hooks: &Hooks<
     // The file we displaced is at `tmp`, and it must still hold the bytes that were hashed. An in-place edit after
     // they were hashed fails the check (even for a link, whose inode is unchanged) and falls through to the undo below.
     if held.is_file_at(tmp) {
+        *committed = true;
         (hooks.verified)();
         if held.linked.is_some() {
             // The backup is the same file, so it is the kept entry and this second name can go.
             drop(fs::remove_file(tmp));
         } else {
             // A copy doesn't follow an editor that still holds the original open, so the original takes the copy's
-            // place (a rename over our own copy). Best effort: a failure leaves it at `tmp`, where the next save moves
-            // it, and the copy stays.
-            if fs::rename(tmp, &held.path).is_ok() {
-                drop(sync_folder(held.path.parent()));
-            }
+            // place (a rename over our own copy), and the folder is flushed so that survives a crash. Our file is
+            // already at the target, but if either step fails the save reports it: what it promised is not durable.
+            // A failed rename leaves the original at `tmp`, where the next save moves it into the replaced folder.
+            fs::rename(tmp, &held.path).map_err(|e| StoreError::io(tmp, e))?;
+            hooks.sync_folder(held.path.parent())?;
         }
         return Ok(Replace::Placed);
     }
@@ -1428,6 +1452,21 @@ mod tests {
             assert!(no_temporary_file(dir));
             assert_eq!(prune_replaced(dir, later()), 0);
         }
+    }
+
+    /// With a copied backup, a failure to flush the folder after the original takes the copy's place is reported, not
+    /// dropped: the new text is at the target, but the save no longer promises it is durable. The original is kept.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_failed_flush_after_a_copied_backup_is_reported() {
+        let tmp = TempDir::new().unwrap();
+        let (dir, (path, expected)) = (tmp.path(), with_file(tmp.path()));
+        let hooks = Hooks { links_off: true.into(), sync_off: true.into(), ..Hooks::default() };
+        let err = replace_with(dir, expected, &hooks).unwrap_err();
+        assert!(matches!(&err, StoreError::Io { .. }) && err.to_string().contains("flushing"), "{err}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "ours = 3\n");
+        assert_eq!(texts(&kept(dir)), [MINE]);
+        assert!(no_temporary_file(dir));
     }
 
     /// Matrix, no exchange (every combination of the others): replacing is refused before anything moves.
