@@ -1,7 +1,7 @@
 section = "rust"
 item = "ed25519-dalek 2 (with curve25519-dalek, ed25519, signature, subtle, zeroize)"
 kind = "crate"
-used_for = "verifies library item signatures against the publisher's key (`omuzaki-library-api`); signing happens only in tests until LB-03/LB-07"
+used_for = "verifies library item signatures against the publisher's key (`omuzaki-library-api`) and every identity signature (`omuzaki-identity-api`); signing happens only in tests (`omuzaki-identity-mock`) until LB-03/LB-07"
 status = "yes"
 condition = "BSD-3-Clause (ed25519-dalek, curve25519-dalek); keep notices; default features off"
 audit = "(crates.io: BSD-3-Clause)"

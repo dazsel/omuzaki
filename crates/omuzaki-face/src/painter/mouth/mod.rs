@@ -19,7 +19,8 @@ use crate::painter::PaintCtx;
 pub enum MouthPiece {
     /// The kiss, the closed line or the open shape with its fill.
     Shape,
-    /// The inside of an open mouth: tongue, teeth and fangs, clipped to the open shape.
+    /// The inside of an open mouth: tongue, teeth and fangs, clipped to the open shape. A closed smile paints its small
+    /// fang here too.
     Interior,
     /// The glossy lower lip under the mouth.
     Gloss,
