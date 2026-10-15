@@ -21,7 +21,8 @@ use omuzaki_render_mock::MockRenderer;
 const TILE: u32 = 256;
 
 /// The kinds on the sheets and the azimuths (degrees about the vertical) each is seen from.
-const KINDS: [(&str, &[f32]); 2] = [("horns", &[0.0, 35.0]), ("headphones", &[0.0, 35.0])];
+const KINDS: [(&str, &[f32]); 4] =
+    [("horns", &[0.0, 35.0]), ("headphones", &[0.0, 35.0]), ("hat", &[0.0, 35.0]), ("glasses", &[0.0, 35.0])];
 
 /// What a tile is framed on: the head for what sits on it, the accessory itself for what hangs on the body.
 fn frame(kind: &str, built: &BuiltCharacter, head: &dyn HeadSurface) -> (Vec3, f32) {
@@ -96,7 +97,12 @@ fn render_the_accessory_sheets_when_asked() {
             let (w, h) = (TILE as usize * azimuths.len(), TILE as usize * list.len());
             let mut sheet = vec![0_u8; w * h * 3];
             for (row, (name, params)) in list.iter().enumerate() {
-                let def = character_with(template, Some(&hair), &[(ACC, kind, params.clone(), None)]);
+                let mut params = params.clone();
+                if kind == "hat" {
+                    // The hat sits on the hair, which stands up to 5.4 cm off the head (the hair does not yield yet).
+                    params["lift"] = serde_json::json!(0.056);
+                }
+                let def = character_with(template, Some(&hair), &[(ACC, kind, params, None)]);
                 let s = scene(&def).unwrap_or_else(|e| panic!("{kind} {name} on {template}: {e}"));
                 let (target, half) = frame(kind, &s.built, s.head.as_ref());
                 for (col, azimuth) in azimuths.iter().enumerate() {

@@ -337,6 +337,23 @@ pub fn styles(kind: &str) -> Vec<(&'static str, Value)> {
             ("mic", json!({ "mic": true })),
             ("cat-ears-and-mic", json!({ "cat_ears": true, "mic": true, "clearance": 0.075 })),
         ],
+        "hat" => vec![
+            ("beret", json!({ "style": "beret", "tilt_deg": 8.0 })),
+            ("cap", json!({ "style": "cap" })),
+            ("witch", json!({ "style": "witch" })),
+            ("beanie", json!({ "style": "beanie" })),
+            ("crown", json!({ "style": "crown" })),
+            (
+                "witch-brim-down",
+                json!({ "style": "witch", "brim_down": true, "brim_tilt_deg": -20.0, "tilt_deg": 6.0 }),
+            ),
+        ],
+        "glasses" => vec![
+            ("round", json!({ "style": "round" })),
+            ("square", json!({ "style": "square" })),
+            ("cat-eye", json!({ "style": "cat_eye" })),
+            ("sunglasses", json!({ "style": "sunglasses" })),
+        ],
         other => panic!("no styles listed for {other}"),
     }
 }

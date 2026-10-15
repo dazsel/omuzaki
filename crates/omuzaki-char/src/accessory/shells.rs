@@ -183,3 +183,27 @@ pub(super) fn head_frames(ctx: &BuildCtx<'_>) -> Result<(ResolvedAttach, Resolve
     let placed = super::attach::attachment(ctx, |_| Ok(default.clone()))?;
     Ok((placed, default))
 }
+
+/// A closed ellipsoid of semi-axes `radii` centred on `centre`, as a grid (rows pole to pole, columns round).
+///
+/// # Errors
+/// [`KitError`] from the grid.
+pub(super) fn ellipsoid(centre: DVec3, radii: DVec3, rows: usize, cols: usize) -> Result<Grid, KitError> {
+    use crate::kit::curve::{TAU, fraction};
+    Grid::from_fn(rows + 1, cols + 1, |i, j| {
+        let (theta, phi) = (std::f64::consts::PI * fraction(i, rows), TAU * fraction(j, cols));
+        centre + DVec3::new(theta.sin() * phi.cos(), theta.cos(), theta.sin() * phi.sin()) * radii
+    })
+}
+
+/// The direction from the head centre at `theta` from straight up and `phi` round it (`0` is the front, `+Z`, and
+/// `pi / 2` the character's left, `+X`): the convention of [`loft_y`](crate::kit::loft::loft_y).
+pub(super) fn polar(theta: f64, phi: f64) -> DVec3 {
+    DVec3::new(theta.sin() * phi.sin(), theta.cos(), theta.sin() * phi.cos())
+}
+
+/// The point of the head's surface in direction `dir`, pushed `offset` metres out.
+pub(super) fn on_head(head: &dyn omuzaki_char_api::HeadSurface, dir: DVec3, offset: f64) -> DVec3 {
+    #[allow(clippy::cast_possible_truncation)] // the surface is in f32 metres
+    DVec3::from(head.point(dir.as_vec3(), offset as f32))
+}
