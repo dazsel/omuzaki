@@ -23,12 +23,12 @@ same stages); `scenes.md` D7 (props). Pages named alone are in `docs/design/`.
 |---|---|---|
 | D1 | A new contract, **`omuzaki-input-api`**, with `omuzaki-input-mock` and one implementation crate `omuzaki-input` that holds every OS backend. Not inside `omuzaki-track-api`. | §2 |
 | D2 | **Key identities exist in one module of one crate.** The capture thread turns a key into a *zone* (a cell of a fixed, coarse keyboard grid) and, only when it matches a configured binding, a *binding slot*. Neither the contract's hot types nor anything after the capture thread can hold a key code or a character. Pointer input is relative motion, never a screen position. | §3 |
-| D3 | **Capture is off by default, turned on only by a person** (`person_only`, scope `input`, which already exists on `main`: no `omuzaki-ops-api` change), **never restored** at start, and **runs only while an indicator is shown**: starting needs an `IndicatorLease` the surface mints, and the hub stops itself if the lease lapses. | §4 |
-| D4 | **Bindings and triggers share the source.** The same capture thread feeds two queues: zone events to the frame thread (motion), binding events to the binding dispatcher (PF-05 actions, PF-25 triggers, locomotion intents). Chords live in a machine-local store that `Services`, ops, MCP and agents never reach. | §5 |
+| D3 | **Capture is off by default, turned on only by a person** (`person_only`, scope `input`, which already exists on `main`: no `omuzaki-ops-api` change), **never restored** at start, and **runs only while an indicator is shown**: starting needs an `IndicatorLease` the surface mints, and the hub stops itself if the lease lapses. The protected-program kill switch is set only with `process`, and its pause reason is shown only to `process`. | §4 |
+| D4 | **Bindings and triggers share the source.** Each capture backend feeds its own SPSC rings: zone events to the frame thread (motion), binding events to the binding dispatcher (PF-05 actions, PF-25 triggers, locomotion intents), merged in a fixed backend order. Binding events carry their table generation; releases survive overflow, and held-state snapshots reconcile any loss. Chords live in a machine-local store that `Services`, ops, MCP and agents never reach. | §2, §5 |
 | D5 | **Motion is pose layers plus IK goals in the §8 order:** after the animator, before the rig. Typing, pointer, pen and gamepad are device motions sharing one hand allocator; each hand belongs to one device at a time. A tracked bone wins (PF-23) through a `tracked` bone mask, with a 0.3 s hand-over. No `omuzaki-anim-api` change. | §6 |
-| D6 | **Locomotion** is a state machine (idle, walk, run, jump, sit, emote) over a 1-D speed blend; walk and run are a procedural gait (licence-clean by construction), jump, sit and emotes are pose clips (#223). The root moves procedurally, matched to stride; foot planting (`omuzaki-rig`) removes the rest of the slide. A set is a library item; a character names one. | §7 |
+| D6 | **Locomotion** is a state machine (idle, walk, run, jump, sit, emote) over a 1-D speed blend; walk and run are a procedural gait (licence-clean by construction), jump, sit and emotes are pose clips (#223). The root moves procedurally, matched to stride; foot planting (`omuzaki-rig`) removes the rest of the slide. A set is a library item that materialises its values and clips into the character and pins itself (ADR 0019 §4). | §7 |
 | D7 | **Props** are four ST-03 prop kinds with named anchors (key plane, pad plane, tablet plane, grips). Hands use the anchors whether the prop is drawn or hidden. A desk is placed from the character's own proportions. | §8 |
-| D8 | **A take stores what the video showed:** zones, coarse pointer and pen, pad state, locomotion intents and the root, all at frame resolution, as a new additive `Motion` record kind (a minor version, ADR 0052 rules). Never a key code, a chord or a sub-frame time. | §9 |
+| D8 | **A take stores what the video showed:** zone and button edges, coarse pointer and pen, pad state, locomotion intents and the root, all at frame resolution, as a new additive `Motion` record kind (a minor version, ADR 0052 rules), with a complete motion checkpoint at every group start so a clip cut there replays exactly. Never a key code, a chord or a sub-frame time. | §9 |
 | D9 | **Budget on `R`:** input plus motion at most 0.6 ms of CPU per 30 fps frame (7.5 % of `cpu.total`'s 8 ms), split as capture 0.5 ms (0.2 % of 8 cores) and frame-thread motion 0.1 ms p95. Estimates until measured. | §10 |
 
 ## 1. What this covers
@@ -56,21 +56,29 @@ at has no section yet, so locomotion is kept world-agnostic (§7.6) and promises
 ## 2. D1: the contract and the crates
 
 ```text
- OS (Raw Input, CGEventTap, XI2, evdev, XInput/GameController via gilrs)
+ OS (Raw Input, CGEventTap, XI2, evdev, GlobalShortcuts portal, XInput/GameController via gilrs)
    │  omuzaki-input: one capture thread per backend; key codes live only in `normalise`
    ▼
- normalise ──► zone table ──► MotionEvent ring (SPSC, 512) ──► frame thread: MotionFeed::drain ──► omuzaki-anim
-     │                                                                    input_motion, pad_motion, locomotion
-     └──► binding matcher ──► BindingEvent ring (SPSC, 64) ──► binding dispatcher: PF-05 actions, PF-25 triggers,
-                                                               locomotion intents (by slot, never by chord)
- pad state ─────────────────► newest-wins PadState (triple buffer) ──► frame thread
+ per backend b:  normalise ──► zone table ──► motion ring[b] (SPSC, 512) ──┐ merged by (at, backend order)
+                     │                                                     └─► frame thread: MotionFeed::drain ──► omuzaki-anim
+                     └──► binding matcher ──► binding ring[b] (SPSC, 64) ──┐ merged by (at, backend order)
+                     └──► held slots[b] (atomic snapshot, generation)  ────┴─► binding dispatcher: PF-05 actions,
+                                                                               PF-25 triggers, locomotion intents
+ gamepad backend: newest-wins PadState (triple buffer) ──► frame thread
 ```
+
+**One producer per ring.** Every capture backend runs on its own thread and owns its own rings, so each ring has
+exactly one producer and one consumer and stays a plain SPSC ring with no lock. A consumer merges the rings of the
+running backends by `(at, backend order)`. `at` is quantised to 1/120 s (§3), so ties are common, and the tie-break is
+the fixed `Backend` order declared in `omuzaki-input-api` (`Windows`, `MacTap`, `X11`, `Evdev`, `Portal`, `Gamepad`),
+never thread scheduling. A replay (`ReplaySource`) carries the backend of each event, so it merges the same way and
+dispatches in the same order.
 
 | Crate | Kind | Holds |
 |---|---|---|
 | `omuzaki-input-api` | API (over `omuzaki-core`, `serde`, `schemars`, `thiserror`) | the event and state types of §3, the zone table, `BindingSlot`, `BindingId`, `KeyChord` (cold, binding store only), `CaptureState`, `CaptureCaps`, the traits `MotionFeed`, `BindingFeed`, `InputControl`, `Indicator` |
 | `omuzaki-input-mock` | Mock | `FakeInput` (scripted events on `FakeClock`), `ReplaySource` (recorded input from text, deterministic), the conformance suite every backend passes |
-| `omuzaki-input` | Implementation (`wasm = false`: OS input) | the hub, the normaliser and binding matcher, the rings, the indicator lease, the kill switch, the backends (`windows`, `macos`, `linux_x11`, `linux_evdev`, `gamepad`), the ops `input.capture.*` and `input.binding.*` |
+| `omuzaki-input` | Implementation (`wasm = false`: OS input) | the hub, the normaliser and binding matcher, the rings, the indicator lease, the kill switch, the backends (`windows`, `macos`, `linux_x11`, `linux_evdev`, `linux_portal`, `gamepad`), the ops `input.capture.*` and `input.binding.*` |
 
 **Why not inside `omuzaki-track-api`** (#1511). Its contract is a camera and a tracker that produce one newest-wins
 `TrackFrame` per camera frame, behind `FrameSource`, owned by the Runtime area; it has no events, no edges, no scope gate
@@ -116,16 +124,23 @@ pub enum MotionEvent {                        // Copy, at most 32 bytes; what th
 }
 pub struct PadState { pub pad: u8, pub sticks: [[i8; 2]; 2], pub triggers: [u8; 2], pub zones: PadZones, pub at: Seconds }
 pub struct PadZones(u16);                     // DPad, Face, LeftStick, RightStick, LeftShoulder, RightShoulder, LeftTrigger, RightTrigger, Centre
-pub struct BindingSlot(u8);                   // index into the active binding table, 0..MAX_BINDINGS (64)
-pub struct BindingEvent { pub slot: BindingSlot, pub edge: Edge, pub at: Seconds }
+pub struct BindingSlot(u8);                   // index into one generation of the binding table, 0..MAX_BINDINGS (64)
+pub struct TableGen(u32);                     // the binding table's generation; bumped on every swap
+pub enum Backend { Windows, MacTap, X11, Evdev, Portal, Gamepad }   // declaration order is the merge tie-break (§2)
+pub struct BindingEvent { pub gen: TableGen, pub slot: BindingSlot, pub edge: Edge, pub backend: Backend, pub at: Seconds }
 pub enum Edge { Press, Release, Repeat }
+pub struct HeldSlots { pub gen: TableGen, pub held: u64 }   // per backend: which slots are down now (bit per slot)
 
 pub trait MotionFeed: Send {                  // the frame thread's port; never blocks, never allocates
     fn drain(&mut self, up_to: Seconds, out: &mut MotionFrame);   // events with at <= up_to, in order
     fn pad(&self, pad: u8) -> Option<PadState>;                    // newest wins
 }
 pub struct MotionFrame { /* fixed array of MOTION_FRAME_MAX (128) events plus a dropped count */ }
-pub trait BindingFeed: Send { fn poll(&mut self) -> Option<BindingEvent>; }
+pub trait BindingFeed: Send {
+    fn poll(&mut self) -> Option<BindingEvent>;          // merged over the backends' rings by (at, backend order)
+    fn dropped(&self) -> u64;                             // edges dropped by any ring since start; a change triggers reconciliation
+    fn held(&self, backend: Backend) -> HeldSlots;       // the backend's held-state snapshot
+}
 ```
 
 **The zone grid.** Sixteen zones by *physical position* (USB HID usage), so AZERTY, QWERTZ and JIS hands land where the
@@ -181,11 +196,13 @@ an agent with `perform` drives the avatar, which must never imply reading anothe
 |---|---|---|---|
 | `input.capture.start { classes }` | `input` | `person_only` (an agent or automation gets `Denied`, never queued) | starts capture for the device classes asked, if an indicator lease is held |
 | `input.capture.stop` | `perform` | anyone (stopping only removes exposure) | stops capture; idempotent |
-| `input.capture.state` | `read` | anyone | `CaptureState` and `CaptureCaps`, no device names or counts of keys |
+| `input.capture.state` | `read` | anyone | `CaptureState` and `CaptureCaps`, no device names or counts of keys; the pause reason only with `process` (below) |
+| `input.capture.protect { programs }` | `process` | agent `Confirm` | sets the kill-switch list (below) |
 | `input.motion.*` settings keys | (settings registry) | agent `Confirm` | the motion settings of §6.5 |
 
 `CaptureState` is `Off`, `NeedsPermission { how: PermissionHow }` (macOS Input Monitoring, Linux `input` group for
-evdev), `On { classes }`, `Paused { why: PauseWhy }` (indicator lapsed, protected app running) or `Failed { reason }`.
+evdev), `On { classes }`, `Paused { why: Option<PauseWhy> }` (`IndicatorLost`, `ProtectedApp`) or `Failed { reason }`.
+Who sees `why` is limited by the kill-switch rule below.
 `CaptureCaps` says per class and OS what works (`pen_pressure: Unavailable`, `typing: NeedsOptIn` on Wayland), so the UI
 can say so (research §2).
 
@@ -200,14 +217,22 @@ surface dropped the lease) the hub pauses capture within a second and reports `P
 and X11 show the user nothing of their own (research §5), so this is the only signal the person has.
 
 **The kill switch.** An optional list of protected programs (default empty). While capture is on and the list is not
-empty, the control thread checks the running process names every 2 s and pauses capture while one runs. This is the
-hub's own behaviour on the person's own list, not an op that reads processes for an actor, so it does not need the
-`process` scope.
+empty, the control thread checks the running process names every 2 s and pauses capture while one runs. That check is
+"whether a named program is running", which `Scope::Process` governs, and an actor who could both set the list and read
+the pause reason could probe any program name. So, the safer of the two fixes:
+- **Setting the list** is `input.capture.protect { programs }`, scope `process` (agent `Confirm`), or the person's own
+  Settings page, which calls the hub directly. An actor without `process` can neither set nor read the list.
+- **The pause reason never names a program**, and is shown only to actors that hold `process`: `input.capture.state`
+  returns `Paused { why: Some(_) }` (`ProtectedApp` or `IndicatorLost`) to them and plain `Paused { why: None }` to
+  everyone else. Every reason is hidden, not only `ProtectedApp`, because showing `IndicatorLost` alone would let a
+  reader infer the other by elimination. The person's own indicator shows the full reason and the program, since it is
+  their list.
 
 **Platform gaps** stay visible: on Wayland typing and the pointer need the evdev opt-in (the `input` group, with the
-research's warning that it can read every keyboard), so the default there is gamepad and bindings (through the
-GlobalShortcuts portal) only. PF-29 on Wayland is partial; that is research risk 2 and goes to the owner (§12,
-question 2).
+research's warning that it can read every keyboard). Bindings there need the GlobalShortcuts portal backend (task IN-9,
+which waits on the owner's answer to §12 question 2). **Until IN-9 lands, the Wayland default is gamepad only**:
+`CaptureCaps` reports keyboard bindings and typing as `NeedsOptIn` and the UI says why. PF-29 on Wayland is partial;
+that is research risk 2.
 
 ## 5. D4: bindings, triggers and locomotion intents on the same source
 
@@ -227,8 +252,26 @@ source delivers them; the action catalogue and the dispatcher belong to #469 and
   (the same chord on two bindings) is reported, not overwritten.
 - **Matching.** On the capture thread, after the zone is computed, the raw event is compared with the active table (a
   fixed array of at most 64 chords, swapped in whole by the control thread when the store changes). A match pushes
-  `BindingEvent { slot, edge, at }` to the binding ring; the slot indexes the same table on the consumer side. Modifier
-  state is kept inside `normalise`. A non-match produces nothing on that ring.
+  `BindingEvent { gen, slot, edge, backend, at }` to that backend's binding ring. Modifier state is kept inside
+  `normalise`. A non-match produces nothing on that ring.
+- **Identity across table swaps.** Every swap bumps the table's generation (`TableGen`), and every event carries the
+  generation it was matched against. The dispatcher resolves `(gen, slot)` against **that** generation's table, never
+  the current one: it keeps each retired table (a fixed pool of 4 generations, recycled off the hot path) until the
+  last queued event of that generation has drained, so a queued slot can never index another binding. An event from a
+  retired generation whose binding (by its stable `BindingId`) is gone from the current table is dropped and counted;
+  so that this never strands a held action, the dispatcher ends every action held for a binding the new table removes
+  (a synthesised `Release`) when it takes the swap. A binding that still exists runs the action of the generation its
+  event was matched under, so its press and its release always meet the same action. If 4 generations are pending
+  (edits faster than the dispatcher drains), the control thread waits to swap instead of recycling a table that still
+  has queued events.
+- **A lost release is never permanent.** Edges can be dropped only when a ring is full (the dispatcher is stalled).
+  The ring keeps releases, as the motion ring keeps key-ups: a full binding ring drops its oldest `Repeat`, then its
+  oldest complete tap (a `Press` with its `Release` queued behind it, both together), then its oldest lone `Press`; it
+  drops a `Release` only if the ring holds nothing else. Each backend also publishes `HeldSlots`, the slots it holds
+  down now, as an atomic snapshot with its generation. Whenever `dropped()` has moved, the dispatcher reconciles: any
+  action it holds for a slot that the backend's snapshot says is up gets a synthesised `Release`; a slot held in the
+  snapshot but not active is left alone (a missed press is not replayed, since its moment has passed). So a stalled
+  dispatcher can delay a release but cannot leave movement or a held trigger stuck.
 - **Consumers.** The binding dispatcher (#469) polls `BindingFeed` on the ops side and runs the action; PF-25 triggers
   get slot presses as trigger slot presses; locomotion intents are turned into an `Intents` value per frame (§7.1).
   Gamepad bindings (`PadChord`: a button, a combination, or a stick past a threshold) match in the same place.
@@ -291,7 +334,7 @@ pub struct PalmGoal { pub frame: Transform, pub pole: Vec3, pub weight: f32 }
 - **Idle.** 0.4 s without a key on a hand: the hand drifts to its home-row zone. 1.5 s: the hand eases off the board to
   the character's rest (0.5 s blend, palm goal weight to 0). These are the numbers of #748, kept.
 - **Hand-only detail.** Zones arrive as their side only; the finger and the target cell within that side's half come
-  from a seeded `Rng` stream (seed per take), so the motion still reads as typing and carries no key information.
+  from counter-based draws (`Rng::new(mix(seed, frame, hand))`, seed per take, §9), so the motion still reads as typing and carries no key information.
 - **Mirroring (PF-27).** A mirrored preview mirrors the pose and swaps the hands as anim-api does for everything else;
   zones are physical and never mirrored themselves.
 
@@ -394,7 +437,8 @@ test: every allowed pair has a test, every other pair is refused.
 ### 7.4 Data format, and who owns it
 
 ```toml
-# library item, kind "locomotion" (ADR 0019); characters/<id>/character.toml names one: locomotion = "default"
+# the values materialised at characters/<id>/locomotion (ADR 0019 §4); the seed item omuzaki/locomotion/default
+# carries the same values in its recipe
 id = "default"
 walk_speed = 1.4            # m/s at average stature
 run_speed = 3.5
@@ -418,10 +462,24 @@ stand_up = "stand_up"
 emotes = ["cheer", "bow", "dance"]
 ```
 
-`LocomotionDef` is that file as a serde type with a JSON Schema (`omuzaki-anim`), validated on load (speeds positive,
-walk below run, clip ids that exist). A set is a library item so it is shared across characters and projects; a
-character only names it, and `locomotion.set { character, set }` (scope `edit:character`) changes the name.
-`locomotion.state` (scope `read`) reports state, speed and root position.
+`LocomotionDef` is that table as a serde type with a JSON Schema (`omuzaki-anim`), validated when written (speeds
+positive, walk below run, every clip it names present beside it).
+
+**A locomotion set is a library item, and applying it materialises it** (ADR 0019 §4). The item is of kind `setting`,
+and its recipe is one step, `locomotion.set { character: $character, def, clips }`, which carries the values, never a
+name to look up. `library.apply` therefore writes into the document:
+- `characters/<id>/locomotion`: the whole `LocomotionDef` (every number above);
+- `characters/<id>/locomotion/clips/<name>`: each clip the set uses, as its keys with their poses written out as
+  sparse `HumanoidPose` values (not pose-library ids), contact flags and loop flag;
+- `characters/<id>/applied/<app>`: ADR 0019's record, with the pin (`item`, `version`, `hash`), the values written and
+  the item's rights.
+
+The runtime reads only the document, so removing, replacing or updating an installed item never changes a project:
+an update is ADR 0019 §5's three-way merge, one undo step, and `library.lock` verifies the pin. `locomotion.set`
+(scope `edit:character`) is also the op a person or agent uses to edit the values directly. The first-party seed item,
+`omuzaki/locomotion/default`, lives in `crates/omuzaki-anim/library/seed/locomotion/default.toml` and registers through
+the crate's existing `register_library_source!` (ADR 0019 §8). `locomotion.state` (scope `read`) reports state, speed
+and root position.
 
 ### 7.5 Who authors the clip set
 
@@ -453,23 +511,47 @@ reach their keyboard. A person can move a prop (`stage.set_prop`); motion reads 
 
 One new record kind in `omuzaki-take-api`, `Motion = 12` (after `Watermark`), added in a minor version as T3 allows
 (an older reader skips it by `len` and counts it). One record per cast member per frame period while motion or
-locomotion is active, fixed little-endian layout, about 40 to 80 bytes:
+locomotion is active, fixed little-endian layout, about 40 to 80 bytes (plus the checkpoint at group starts):
 
 ```
-member u8 | flags u8 (HAS_KEYS, HAS_POINTER, HAS_PEN, HAS_PAD, HAS_LOCO, HAND_ONLY) | n_keys u8 | reserved u8
-keys:    n_keys × (zone u8 | down u8)                         // order of arrival within the frame; no times
-pointer: dx f32 | dy f32 | wheel f32 | buttons u8 | 3 reserved // summed over the frame (motion integrates per frame)
-pen:     u u8 | v u8 | pressure u8 | contact u8 | tilt i8 × 2 | 2 reserved
-pad:     sticks i8 × 4 | triggers u8 × 2 | zones u16
-loco:    state u8 | intents u8 | 2 reserved | root x, y, z f32 | yaw f32
+member u8 | flags u8 (HAS_KEYS, HAS_BUTTONS, HAS_POINTER, HAS_PEN, HAS_PAD, HAS_LOCO, HAND_ONLY, CHECKPOINT) | reserved u16
+keys:     n u8 | n × (zone u8 | down u8)                      // edges, in arrival order within the frame; no times
+buttons:  n u8 | n × (source u8 | button u8 | down u8)        // edges: source 0 mouse, 1 pen, 2 pad (a pad zone)
+pointer:  dx f32 | dy f32 | wheel f32                         // summed over the frame (motion integrates per frame)
+pen:      u u8 | v u8 | pressure u8 | contact u8 | tilt i8 × 2 | 2 reserved   // the frame's last sample
+pad:      sticks i8 × 4 | triggers u8 × 2 | 2 reserved                         // levels; pad zones are button edges
+loco:     state u8 | flags u8 (RUN, JUMP, SIT) | emote u8 | reserved u8 | move i8 × 2 | 2 reserved | root x, y, z f32 | yaw f32
+checkpoint (group-start chunks only): len u16 | MotionCheckpoint bytes (below)
 ```
+
+**Edges, not bitmaps.** Keys, mouse and pen buttons and pad zones are recorded as the edges that arrived in the frame,
+in order, so a click or a tap shorter than one frame (down and up in the same 33 ms) replays as the strike it was. A
+per-frame bitmap of what is held would lose it. Levels (pointer deltas, pen position, sticks, triggers, the move vector)
+are values, since motion samples them once per frame.
+
+**Checkpoints at group boundaries** (so a clip that starts mid-motion re-renders exactly). A replay clip can start at
+any group start (takes.md T2), but motion carries state across frames. So the group-start chunk's `Motion` record for
+each member carries `CHECKPOINT` and the member's whole motion state, `MotionCheckpoint` (`Copy`, fixed layout, about
+300 bytes; carried in the record rather than in `State` so the 16 KiB `State` cap can never omit it):
+- **randomness:** none to store. Motion's randomness (hand-only fingers, strike jitter) is counter-based, a fresh
+  `Rng::new(mix(seed, frame, hand))` per draw, so the "rng position" is the chunk's frame number and the seed is in
+  `State` (the `motion` live-state provider, `register_take_state!`, with the motion settings);
+- **hands:** per hand the allocator state, the dwell and transit timers, the palm spring's position and velocity, each
+  finger's strike phase, the keys held per zone, the tracked-bone fade weights;
+- **pointer and pen:** the virtual mouse position and its recentre state, the buttons held, the last pen sample;
+- **pad:** the last `PadState`, the stick-look smoothing value and its fade;
+- **locomotion:** the state and sub-phase (jump anticipate, air, land; sit down, seated, up), the transition in flight
+  (from, to, progress), speed, facing, the gait phase, the clip time, a queued intent, and the root.
+
+The rule that makes this complete is structural: the motion types keep their mutable state **only** in their
+`MotionCheckpoint` field, and `restore` replaces it whole, so nothing can be left out of the checkpoint without being
+left out of the motion too.
 
 - **Never stored:** a key code, a chord, a binding name or id, a sub-frame time, a cursor position. Binding events are
   stored only as their effect: an expression or op is already an `Event` record (T1), and a locomotion intent is in the
   `loco` bits.
-- **Re-rendering.** Motion is a pure function of these records, the desk rig, the props and the seed (a `motion` live-state provider,
-  `register_take_state!`, puts the seed and the motion settings in each `State`), so
-  both of T6's modes re-run it; the recorded root keeps the path exact even if bounds changed. A different character
+- **Re-rendering.** From a checkpoint, motion is a pure function of these records, the desk rig, the props and the
+  seed, so both of T6's modes re-run it; the recorded root keeps the path exact even if bounds changed. A different character
   re-solves the same zones with its own arms.
 - **Hand-only** frames carry `HAND_ONLY` and zone values reduced to their side.
 - The record is personal data under T5: off with the input track (`record.input`), deleted with the take, and never
@@ -511,8 +593,9 @@ scheduler's degrade step for this system is to drop finger strikes (keep palm go
 ## 12. Open questions for the maintainers and the owner
 
 1. **Zone detail by default** (§3): `zones` (recommended; what users of the incumbents expect) or `hand_only`.
-2. **Wayland** (§4): PF-29 typing and mouse only through the evdev opt-in. Owner to confirm P0 ships partial there
-   (research risk 2).
+2. **Wayland** (§4): PF-29 typing and mouse only through the evdev opt-in, and bindings only once IN-9 (the
+   GlobalShortcuts portal) lands; until then gamepad only. Owner to confirm P0 ships partial there (research risk 2),
+   and that IN-9 is wanted.
 3. **Budget rows** (§10): add `input.capture` (1 ms p95 delivery, 0.2 % CPU) and an `input.motion` frame row to §10, or
    keep them as design targets inside `cpu.total`.
 4. **Anti-cheat** (research risk 1): the vendor questions of research §7 spike 5 stay with the maintainers; the design
@@ -541,6 +624,7 @@ crate describes itself in its own `Cargo.toml` (`[package.metadata.omuzaki]` `ki
 | IN-6 | new | `omuzaki-input` (Linux) | sonnet | IN-3 |
 | IN-7 | new | `omuzaki-input` (macOS) | sonnet, local lane | IN-3 |
 | IN-8 | #939 (input half) | `omuzaki-input` (ops) | haiku | IN-3 |
+| IN-9 | new (Wayland bindings) | `omuzaki-input` (portal) | sonnet | IN-3; the owner's answer to §12 question 2 |
 | MO-1 | #748 (typing half) | `omuzaki-anim` | sonnet | IN-1 |
 | MO-2 | #748 (pointer half) | `omuzaki-anim` | sonnet | MO-1 |
 | MO-3 | #749 | `omuzaki-anim` | sonnet | MO-1 |
@@ -556,7 +640,7 @@ crate describes itself in its own `Cargo.toml` (`[package.metadata.omuzaki]` `ki
 | SP-1 | research spikes 1 to 4 | none (a report) | local lane | IN-4 |
 
 The table is each task's model and `Blocked by` line; the sections below give the title, crate, fence, contract and
-acceptance. Order: IN-1 → (IN-2, MO-1, LO-1 in parallel) → IN-3 → (IN-4 to IN-8, MO-2, MO-3, LO-2, LO-3, LO-4) → ST-1 → ST-2,
+acceptance. Order: IN-1 → (IN-2, MO-1, LO-1 in parallel) → IN-3 → (IN-4 to IN-9, MO-2, MO-3, LO-2, LO-3, LO-4) → ST-1 → ST-2,
 ST-3 → ST-4, EV-1. MO-1 and LO-1 need only the contract and the mock, so the motion work never waits on an OS backend.
 
 ### IN-1: `omuzaki-input-api`: events, zones, bindings, capture state and the traits (new API crate)
@@ -564,13 +648,14 @@ ST-3 → ST-4, EV-1. MO-1 and LO-1 need only the contract and the mock, so the m
 - **Fence:** `crates/omuzaki-input-api/**` (new: `Cargo.toml`, `src/lib.rs`, `src/event.rs`, `src/zones.rs`,
   `src/binding.rs`, `src/capture.rs`, `src/feed.rs`, `tests/zones.rs`, `tests/no_identity.rs`).
 - **Contract:** §3 and §5 as written: `KeyZone` and the 16-zone table by HID usage, `ZoneInfo`, `MotionEvent`,
-  `PadState`, `PadZones`, `BindingSlot`, `BindingId`, `BindingEvent`, `Edge`, `KeyChord` and `PadChord` (cold),
-  `CaptureState`, `CaptureCaps`, `PermissionHow`, `PauseWhy`, `MotionFrame` (`MOTION_FRAME_MAX` 128), `MAX_BINDINGS`
+  `PadState`, `PadZones`, `BindingSlot`, `BindingId`, `TableGen`, `Backend`, `BindingEvent`, `HeldSlots`, `Edge`,
+  `KeyChord` and `PadChord` (cold), `CaptureState`, `CaptureCaps`, `PermissionHow`, `PauseWhy`, `MotionFrame` (`MOTION_FRAME_MAX` 128), `MAX_BINDINGS`
   64, the traits `MotionFeed`, `BindingFeed`, `InputControl`, `Indicator`, `ChordStore`, and `IndicatorLease`. Needs the
   Director's approval as a new contract.
 - **Acceptance:** the zone table covers every usage of the ANSI (104), ISO (105) and JIS (109) boards, counted in a test;
   `MotionEvent` is `Copy` and at most 32 bytes (`size_of` test); serde round trip of every cold type; a test that no
-  public hot type has a field of a chord type (by `JsonSchema` walk); `#![deny(missing_docs)]`; `lint-deps` and
+  public hot type has a field of a chord type (by `JsonSchema` walk); the `Backend` order is pinned by a test (it is
+  the replay tie-break, §2); `#![deny(missing_docs)]`; `lint-deps` and
   `lint-crate-table` accept the crate; check green.
 
 ### IN-2: `omuzaki-input-mock`: `FakeInput`, `ReplaySource` and the conformance suite (new mock)
@@ -578,23 +663,32 @@ ST-3 → ST-4, EV-1. MO-1 and LO-1 need only the contract and the mock, so the m
 - **Fence:** `crates/omuzaki-input-mock/**` (new).
 - **Contract:** IN-1. `FakeInput` (scripted events and pad states on `FakeClock`, implements `MotionFeed`, `BindingFeed`
   and `InputControl`), `ReplaySource::from_text` (the recorded-input text format: one event per line, zone names, times
-  in seconds), `conformance::run(&mut dyn MotionFeed, …)`.
+  in seconds and the backend), `conformance::run(&mut dyn MotionFeed, …)`.
 - **Acceptance:** replay of a 60 s script is identical over two runs and after a text round trip; `drain` allocates 0
   bytes (counting allocator); `drain(up_to)` never returns an event after `up_to` (proptest); a dropped-event count when
-  more than `MOTION_FRAME_MAX` events arrive in one drain; check green.
+  more than `MOTION_FRAME_MAX` events arrive in one drain; events of several backends with equal `at` come out in
+  `Backend` order, on every run; check green.
 
 ### IN-3: `omuzaki-input`: the hub, the normaliser, the binding matcher, the gate and the zone-equivalence test (new crate)
 
 - **Fence:** `crates/omuzaki-input/**` except the backend folders: `Cargo.toml` (`wasm = false`, reason "OS input";
-  `registers = true`), `src/lib.rs`, `src/hub.rs`, `src/normalise.rs`, `src/matcher.rs`, `src/rings.rs`,
-  `src/indicator.rs`, `src/kill_switch.rs`, `src/store.rs`, and empty backend folders each with a `mod.rs` stub
-  (`windows`, `macos`, `linux_x11`, `linux_evdev`, `gamepad`) that later tasks fill without touching `lib.rs`;
-  `tests/privacy.rs`, `tests/gate.rs`, `benches/normalise.rs` and its `[[bench]]` entry.
+  `registers = true`; `generated-mods = ["src"]` with the `omuzaki-embed` build script, so each backend task adds its
+  own folder, gated inside by `#![cfg(target_os = …)]`, and nobody edits `lib.rs` again), `build.rs`, `src/lib.rs`,
+  `src/hub.rs`, `src/normalise.rs`, `src/matcher.rs`, `src/rings.rs`, `src/dispatch.rs` (the merge, the generation
+  pool and reconciliation), `src/indicator.rs`, `src/kill_switch.rs`, `src/store.rs`; `tests/privacy.rs`,
+  `tests/gate.rs`, `tests/bindings.rs`, `benches/normalise.rs` and its `[[bench]]` entry.
 - **Contract:** IN-1; ops-api `Scope::Input`; §3 (rules 1 to 5), §4 and §5. A `pub(crate)` `RawSink` the backends call.
 - **Acceptance:** the zone-equivalence proptest (§3 rule 5) over every output surface the crate has; capture refuses to
   start without a lease and pauses within 1.1 s of `Indicator::shown()` turning false (`FakeClock`); the binding table
   matches chords with modifiers and reports conflicts; a full ring drops the oldest motion event and counts it, and
-  never drops a key-up (a key-up displaces the oldest pointer event first); the forbidden-symbol test of §3 rule 4;
+  never drops a key-up (a key-up displaces the oldest pointer event first); **table swaps:** an edit that swaps the
+  table while events are queued runs no wrong action (queue presses on slots 0 to 3, swap in a table that removes
+  slot 1's binding and gives slot 2's chord another action, drain: slot 1's held action ends at the swap and its queued
+  release is dropped and counted, slot 2's press and release both run its old action, and no event runs an action of
+  another binding); **a lost release:** hold a movement binding,
+  overflow its backend's binding ring with repeats from a stalled dispatcher, release the key, resume the dispatcher:
+  the movement action ends (by the queued release or by reconciliation against `HeldSlots`) within one dispatch;
+  two backends' events with equal `at` dispatch in `Backend` order; the forbidden-symbol test of §3 rule 4;
   `normalise` plus `match` at most 1 µs per event on `Dev` (bench); check green.
 
 ### IN-4: `omuzaki-input`: the Windows keyboard, mouse and pen backend (Raw Input, no hooks)
@@ -641,12 +735,34 @@ ST-3 → ST-4, EV-1. MO-1 and LO-1 need only the contract and the mock, so the m
 
 - **Fence:** `crates/omuzaki-input/src/ops/**` (one file per op), `crates/omuzaki-input/tests/ops.rs`.
 - **Contract:** ops-api (`register_op!`, `Scope::Input`, `person_only`, `require_person`), `InputControl` as a service;
-  §4 and §5 tables: `input.capture.start`, `input.capture.stop`, `input.capture.state`, `input.binding.list`, `input.binding.set_action`,
-  `input.binding.remove`. No op takes or returns a chord.
+  §4 and §5 tables: `input.capture.start`, `input.capture.stop`, `input.capture.state`, `input.capture.protect`,
+  `input.binding.list`, `input.binding.set_action`, `input.binding.remove`. No op takes or returns a chord.
 - **Acceptance:** table tests with person, agent and automation actors (an agent's `input.capture.start` is `Denied`
   and never queued; anyone may stop; stopping is idempotent); a test that types a known string through
   `FakeInput` and scans every op result, event and journal record for any key code or character of it (none);
-  registrations found by the link gate; check green.
+  **the protected-program list:** `input.capture.protect` is refused without `process` (an actor with `input` and
+  `perform` only gets `Denied`); with capture paused by a protected program, `input.capture.state` returns
+  `Paused { why: None }` to an actor without `process`, and the same for a pause by a lost indicator, so the two cannot
+  be told apart; with `process` it returns `Paused { why: Some(ProtectedApp) }`; no result, event or journal record
+  names a program; registrations found by the link gate; check green.
+
+### IN-9: `omuzaki-input`: Wayland bindings through the GlobalShortcuts portal
+
+- **Waits on** the owner's answer to §12 question 2 (what PF-29 ships on Wayland). Until it lands, the Wayland default is
+  gamepad only (§4).
+- **Fence:** `crates/omuzaki-input/src/linux_portal/**`, `tests/portal.rs`, the `ashpd` dependency (its
+  `global_shortcuts` feature) in `crates/omuzaki-input/Cargo.toml` with its row in `docs/licensing/register.md` and its
+  file in `docs/licensing/deps/`.
+- **Contract:** `BindingFeed`, `HeldSlots`, `Backend::Portal` (IN-1); §5 ("Wayland"): the binding table is registered
+  as the portal's shortcut list (one shortcut per binding, described by its name, never by a chord we invent), and every
+  table swap re-registers it; `Activated` and `Deactivated` signals become `Press` and `Release` on the portal backend's
+  own binding ring; the portal gives no zones, so this backend produces no motion events. `CaptureCaps` reports
+  `bindings: Portal` and `typing: NeedsOptIn`.
+- **Acceptance:** against a fake portal on a private D-Bus session bus (`dbus-daemon --session` started by the test,
+  skipped with a message where the runner has none): registering a table of three bindings sends three shortcuts with
+  their names and no key codes; activation and deactivation signals arrive as `Press` and `Release` with the right
+  `(gen, slot)`; a table swap re-registers and stamps the new generation; a portal that refuses or is missing gives
+  `CaptureState::Failed` with a fixed reason and leaves the other backends running; check green.
 
 ### MO-1: `omuzaki-anim`: input motion, the desk rig, the hand allocator and typing
 
@@ -659,8 +775,10 @@ ST-3 → ST-4, EV-1. MO-1 and LO-1 need only the contract and the mock, so the m
 - **Acceptance (replay on mock humanoids at three statures):** the striking fingertip within 1 cm of its zone centre at
   the next frame; no fingertip more than 2 mm below the key plane over 60 s; home row after 0.4 s and rest after 1.5 s
   without keys (± one frame); `hand_only` output identical for two streams with the same sides; a `tracked` mask drops
-  the masked bones with a 0.3 s fade; deterministic; `step` allocates 0 bytes; at most 0.02 ms per frame on `Dev`
-  (bench); check green.
+  the masked bones with a 0.3 s fade; `InputMotion::checkpoint` and `restore` (§9): restoring the checkpoint taken at
+  any frame of a 60 s replay and stepping on gives bit-identical `MotionOut` to the uninterrupted run; the motion types
+  hold their mutable state only in `MotionCheckpoint`; deterministic; `step` allocates 0 bytes; at most 0.02 ms per frame
+  on `Dev` (bench); check green.
 
 ### MO-2: `omuzaki-anim`: mouse and pen motion
 
@@ -689,7 +807,9 @@ ST-3 → ST-4, EV-1. MO-1 and LO-1 need only the contract and the mock, so the m
   trait (`Gait`) with an in-place placeholder until LO-2.
 - **Acceptance:** a test per allowed state pair, and every other pair refused; no bone jumps more than 2 degrees between
   30 fps frames over a scripted 120 s run; speed respects the 6 m/s² limit; turn rate at most 360 degrees a second;
-  `LocomotionDef` validation errors name the field; deterministic, 0 allocations; at most 0.01 ms on `Dev`; check green.
+  `LocomotionDef` validation errors name the field; checkpoint and restore at any frame of the 120 s run (including
+  mid-transition and mid-jump) continue bit-identically (§9); deterministic, 0 allocations; at most 0.01 ms on `Dev`;
+  check green.
 
 ### LO-2: `omuzaki-anim`: the procedural walk and run gait
 
@@ -703,7 +823,9 @@ ST-3 → ST-4, EV-1. MO-1 and LO-1 need only the contract and the mock, so the m
 
 - **Fence:** `crates/omuzaki-anim/library/poses/clips/{jump,sit_down,sit_idle,stand_up,cheer,bow,dance}.toml`, the poses
   they key in `crates/omuzaki-anim/library/poses/`, `crates/omuzaki-anim/tests/locomotion_clips.rs`.
-- **Contract:** `PoseClip` (#223), the pose library, §7.2 (#751's list without walk and run, which LO-2 makes).
+- **Contract:** `PoseClip` (#223), the pose library, §7.2 (#751's list without walk and run, which LO-2 makes). These
+  are the authoring sources; a project never reads them at run time: LO-4's seed item writes their keys out as pose
+  values when it is applied (§7.4).
 - **Acceptance:** each clip loads, loops where marked with C1 seams, mirrors (`mirrored(mirrored(c)) == c`), and has
   contact flags; the dance loop is 8 beats at 120 bpm; licence notes cite only public biomechanics references; check
   green. Pictures come from EV-1.
@@ -711,13 +833,18 @@ ST-3 → ST-4, EV-1. MO-1 and LO-1 need only the contract and the mock, so the m
 ### LO-4: `locomotion.*` ops and the motion settings
 
 - **Fence:** `crates/omuzaki-anim/src/locomotion/ops.rs`, `crates/omuzaki-anim/src/input_motion/settings.rs`, their
-  `mod` lines in the two folders' `mod.rs`,
-  `crates/omuzaki-anim/tests/locomotion_ops.rs`.
-- **Contract:** ops-api; the settings registry (`settings.md`); `locomotion.set { character, set }` (`edit:character`),
+  `mod` lines in the two folders' `mod.rs`, the seed item `crates/omuzaki-anim/library/seed/locomotion/default.toml`
+  (registered by the crate's existing `register_library_source!`), `crates/omuzaki-anim/tests/locomotion_ops.rs`.
+- **Contract:** ops-api; ADR 0019 (§4 materialise and pin, §5 update, §8 seed); the settings registry
+  (`settings.md`); `locomotion.set { character, def, clips }` (`edit:character`, values only, never a name),
   `locomotion.state` (`read`), `locomotion.home` (`perform`), and the `input.motion.*` settings keys of §6.5 (User,
   agent `Confirm`).
-- **Acceptance:** undo of `locomotion.set` is exact; a set id that does not exist is a typed error; the settings keys
-  pass the registry's `tests/settings.rs` checks; check green.
+- **Acceptance:** undo of `locomotion.set` is exact; `library.apply` of the seed item writes the whole def and every
+  clip's keys as pose values under `characters/<id>/locomotion` plus an `applied/<app>` record with the pin, and
+  `library.lock` verifies it; after the item is uninstalled or replaced by another version, the project's locomotion
+  plays bit-identically (the runtime reads only the document); a def naming a clip that is not beside it is a typed
+  error that names it; the settings keys pass the registry's `tests/settings.rs` checks; the seed passes the crate's
+  seed test; check green.
 
 ### ST-1: `omuzaki-stage`: input motion in the frame, palm goals in the IK stage
 
@@ -756,7 +883,10 @@ ST-3 → ST-4, EV-1. MO-1 and LO-1 need only the contract and the mock, so the m
   that needs the Director's approval), `crates/omuzaki-stage/src/take/motion.rs`, `crates/omuzaki-stage/tests/take_motion.rs`.
 - **Contract:** takes.md T2, T3 and T5; §9.
 - **Acceptance:** a take recorded during a 120 s replay contains no key code (scan for every usage of the typed string),
-  re-renders to the same frames, and an older reader skips the record and counts it; check green.
+  re-renders to the same frames, and an older reader skips the record and counts it; **replay cuts:** for every group
+  boundary of that take, a clip cut there and re-rendered from its checkpoint gives frame digests equal to the uncut
+  run's from that frame on (the cuts include one inside a jump, one mid-transition and one during a typing burst);
+  **short edges:** a click and a key tap whose down and up fall in the same frame replay as a strike; check green.
 
 ### EV-1: the evidence cases for typing, pointer, pad and locomotion
 
