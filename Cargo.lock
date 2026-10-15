@@ -4087,7 +4087,6 @@ dependencies = [
  "omuzaki-io-gltf",
  "omuzaki-io-mock",
  "omuzaki-io-ops",
- "omuzaki-link-build",
  "omuzaki-ops-api",
  "omuzaki-store-api",
  "omuzaki-track",
