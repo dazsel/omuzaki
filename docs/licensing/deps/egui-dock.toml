@@ -1,0 +1,6 @@
+section = "rust"
+item = "egui_dock, egui-snarl"
+kind = "crate"
+used_for = "panels, node graphs"
+status = "yes"
+audit = "B1"

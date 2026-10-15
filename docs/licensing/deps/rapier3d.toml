@@ -1,0 +1,6 @@
+section = "rust"
+item = "rapier3d"
+kind = "crate"
+used_for = "physics"
+status = "yes"
+audit = "B3"

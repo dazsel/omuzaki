@@ -1,0 +1,7 @@
+section = "rust"
+item = "OBS plugin linked to libobs"
+kind = "code"
+used_for = "BR-03"
+status = "NO"
+condition = "a closed plugin is impossible; never link libobs into the app"
+audit = "B4"

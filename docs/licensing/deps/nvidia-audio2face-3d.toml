@@ -1,0 +1,7 @@
+section = "models"
+item = "NVIDIA Audio2Face-3D weights + SDK"
+kind = "model"
+used_for = "voice → face"
+status = "conditions"
+condition = "NVIDIA Open Model License (revocable); ship notice; legal review; keep an ort-only fallback"
+audit = "B5"

@@ -1,0 +1,8 @@
+section = "in-use"
+item = "cargo-about 0.9.2"
+kind = "tool"
+used_for = "builds the third-party notices bundle (`tools/release/notices.sh`)"
+status = "yes"
+condition = "build tool only, not shipped; MIT OR Apache-2.0"
+audit = "(crates.io: MIT OR Apache-2.0)"
+tools = ["cargo-about"]

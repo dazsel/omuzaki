@@ -221,6 +221,16 @@ pub(super) fn paint(ctx: &mut PaintCtx<'_>) {
     }
 }
 
+/// Records the open mouth's outline in [`PaintCtx::open_mouth`] without painting anything, for the pieces that clip
+/// against it when the shape itself is not drawn. Does nothing for a closed mouth or a kiss.
+pub(super) fn record_outline(ctx: &mut PaintCtx<'_>) {
+    let style = &ctx.profile.mouth;
+    let frame = Frame::new(style, &ctx.params.mouth, narrow(ctx.profile.layout.mouth_y));
+    if !frame.is_kiss() && frame.open >= CLOSED_BELOW {
+        open_outline(ctx, &frame);
+    }
+}
+
 /// The closed mouth: a line whose corners follow the smile, and the faint line under it on a flat face.
 fn closed_line(ctx: &mut PaintCtx<'_>, f: &Frame) {
     let style = &ctx.profile.mouth;
@@ -271,6 +281,24 @@ fn kiss(ctx: &mut PaintCtx<'_>, f: &Frame) {
 
 /// The open mouth: a lens filled with the interior gradient, kept for the pieces that draw into it.
 fn open_shape(ctx: &mut PaintCtx<'_>, f: &Frame) {
+    let open = open_outline(ctx, f);
+    let interior = &ctx.profile.mouth.interior;
+    let top = resolve(&interior.top, Colour::rgb(0x4a, 0x16, 0x22));
+    let bottom = resolve(&interior.bottom, Colour::rgb(0x6e, 0x24, 0x33));
+    let fill = Paint::Linear {
+        from: f.centre,
+        to: f.centre - Vec2::new(0.0, open.height),
+        stops: Stops::new(&[(0.0, top), (1.0, bottom)]),
+    };
+    ctx.list(FaceLayerId::Base).fill(open.path, fill);
+}
+
+/// The open mouth's outline, built once per frame: a piece that needs it before the shape paints (the lower-lip gloss)
+/// records it, and the shape then reuses it instead of adding the path again.
+fn open_outline(ctx: &mut PaintCtx<'_>, f: &Frame) -> OpenMouth {
+    if let Some(open) = ctx.open_mouth {
+        return open;
+    }
     let style = &ctx.profile.mouth;
     let scale = narrow(style.half_width) / PROTOTYPE_HALF_WIDTH;
     let height = HEIGHT_PER_OPEN * scale * f.open * f.grow;
@@ -284,8 +312,6 @@ fn open_shape(ctx: &mut PaintCtx<'_>, f: &Frame) {
         curve: narrow(style.corner_curve) * OPEN_CURVE_RATIO,
         drop: CENTRE_FOLLOWS_SMILE * f32::midpoint(f.smile[0], f.smile[1]),
     };
-    let top = resolve(&style.interior.top, Colour::rgb(0x4a, 0x16, 0x22));
-    let bottom = resolve(&style.interior.bottom, Colour::rgb(0x6e, 0x24, 0x33));
 
     let at = |u: f32, v: f32| f.centre + Vec2::new(u * half_width, v);
     let list = ctx.list(FaceLayerId::Base);
@@ -300,13 +326,9 @@ fn open_shape(ctx: &mut PaintCtx<'_>, f: &Frame) {
         outline = outline.line_to(at(u, edges.bottom(height, u)));
     }
     let path = outline.close().finish();
-    let fill = Paint::Linear {
-        from: f.centre,
-        to: f.centre - Vec2::new(0.0, height),
-        stops: Stops::new(&[(0.0, top), (1.0, bottom)]),
-    };
-    list.fill(path, fill);
-    ctx.open_mouth = Some(OpenMouth { path, centre: f.centre, half_width, height, grow: f.grow, edges });
+    let open = OpenMouth { path, centre: f.centre, half_width, height, grow: f.grow, edges };
+    ctx.open_mouth = Some(open);
+    open
 }
 
 #[cfg(test)]

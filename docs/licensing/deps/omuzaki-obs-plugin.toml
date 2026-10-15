@@ -1,0 +1,7 @@
+section = "rust"
+item = "Omuzaki OBS plugin (separate GPL-licensed project, IPC to the app)"
+kind = "code"
+used_for = "BR-03"
+status = "conditions"
+condition = "ships (decision 2026-10-11); own repository and download; GPL text and source offer; legal review reviews the boundary"
+audit = "B4"

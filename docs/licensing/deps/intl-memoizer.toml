@@ -1,0 +1,8 @@
+section = "rust"
+item = "intl-memoizer"
+kind = "crate"
+used_for = "per-language formatter cache of `fluent-bundle`, named directly for the `FluentType` signatures of the exact-integer argument (`omuzaki-l10n-api`)"
+status = "yes"
+condition = "Apache-2.0 OR MIT (its `Cargo.toml` `license` field): keep the notices; already shipped as a dependency of `fluent-bundle`"
+audit = "(crates.io)"
+crates = ["intl-memoizer"]

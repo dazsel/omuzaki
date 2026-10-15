@@ -26,8 +26,8 @@ use omuzaki_char::template::registry;
 use omuzaki_char::template::skeleton::{self, TemplateFit};
 use omuzaki_char_api::{
     BodyParams, BuildCtx, BuildError, BuildOptions, BuildServices, CharId, CharacterBuilder, CharacterDef,
-    CharacterRig, HandStyle, HeadParams, JointFit, JointRef, MeshData, PartCategory, PartKind, PartMeta, PartOutput,
-    Publishes, RegistryBuilder,
+    CharacterRig, FitFact, HandStyle, HeadParams, JointFit, JointRef, MeshData, PartCategory, PartKind, PartMeta,
+    PartOutput, Publishes, RegistryBuilder,
 };
 use omuzaki_core::glam::{Mat4, Quat, Vec3};
 use omuzaki_render_api::{Camera, Scene};
@@ -57,7 +57,7 @@ impl PartKind for TemplateBody {
         let template = registry::find("soft-sd").ok_or_else(|| ctx.fail("soft-sd is not registered"))?;
         let layout = template.try_layout(&p.proportions, &p.shape, &p.hand).map_err(|e| ctx.fail(e.to_string()))?;
         let fit = Arc::new(TemplateFit::new(layout));
-        Ok(PartOutput { publishes: Publishes { fit: Some(fit), ..Publishes::default() }, ..PartOutput::default() })
+        Ok(PartOutput { publishes: Publishes::default().with::<FitFact>(fit), ..PartOutput::default() })
     }
 }
 omuzaki_char_api::register_part_kind!(TemplateBody);
@@ -91,10 +91,7 @@ impl PartKind for TemplateHead {
     fn build(_: &HeadParams, ctx: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
         let base = ctx.joint(&JointRef::HEAD).ok_or_else(|| ctx.fail("the body published no head joint"))?;
         let fit = JointFit::new(head_joints(base).map(|(bone, at)| (JointRef::Humanoid(bone), at)));
-        Ok(PartOutput {
-            publishes: Publishes { fit: Some(Arc::new(fit)), ..Publishes::default() },
-            ..PartOutput::default()
-        })
+        Ok(PartOutput { publishes: Publishes::default().with::<FitFact>(Arc::new(fit)), ..PartOutput::default() })
     }
 }
 omuzaki_char_api::register_part_kind!(TemplateHead);
