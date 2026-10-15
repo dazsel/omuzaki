@@ -1,0 +1,7 @@
+section = "in-use"
+item = "Google Fonts (Cormorant Garamond, Nunito Sans, Bricolage Grotesque, Instrument Sans, JetBrains Mono)"
+kind = "font"
+used_for = "prototype UI"
+status = "conditions"
+condition = "OFL-1.1: ship notice; self-host"
+audit = "A1"

@@ -574,11 +574,10 @@ fn the_font_is_embedded_small_and_licensed() {
     assert!(size("Inter-Regular.subset.ttf") + size("Inter-SemiBold.subset.ttf") < 300 * 1024);
     let ofl = std::fs::read_to_string(dir.join("OFL.txt")).unwrap();
     assert!(ofl.contains("SIL OPEN FONT LICENSE Version 1.1") && ofl.contains("The Inter Project Authors"));
-    let register =
-        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/licensing/register.md"))
-            .unwrap();
-    for item in ["Inter", "ab_glyph"] {
-        assert!(register.lines().any(|l| l.starts_with(&format!("| {item}"))), "{item} has a register row");
+    for (file, item) in [("inter", "Inter"), ("ab-glyph", "ab_glyph")] {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../../docs/licensing/deps/{file}.toml"));
+        let text = std::fs::read_to_string(path).unwrap();
+        assert!(text.contains(&format!("item = \"{item}")), "{item} has a licence file");
     }
 }
 

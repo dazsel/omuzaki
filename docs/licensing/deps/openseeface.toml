@@ -1,0 +1,7 @@
+section = "models"
+item = "OpenSeeFace"
+kind = "model"
+used_for = "(not used)"
+status = "NO"
+condition = "non-commercial training data"
+audit = "B5"

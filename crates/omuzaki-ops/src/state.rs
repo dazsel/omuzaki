@@ -145,6 +145,11 @@ impl State {
         std::mem::take(&mut self.outbox)
     }
 
+    /// Queues an event that no edit produced (a job changed state), behind everything queued so far.
+    pub(crate) fn queue_event(&mut self, event: Event) {
+        self.outbox.push(event);
+    }
+
     /// Opens a transaction owned by `actor`.
     pub(crate) fn begin(&mut self, label: &str, actor: &Actor) -> TxId {
         let tx = next_tx(&mut self.last_tx);

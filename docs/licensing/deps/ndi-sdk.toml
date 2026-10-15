@@ -1,0 +1,7 @@
+section = "rust"
+item = "NDI SDK"
+kind = "native"
+used_for = "NDI output"
+status = "conditions"
+condition = "attribution, trademark line, EULA flow-down, SDK < 30 days old per release; legal review"
+audit = "B4"
