@@ -20,7 +20,6 @@ fn refuses_paths_outside_the_folder_or_in_private_places() {
         ".OMUZAKI/x",
         ".git/config",
         "a/.git/hooks/pre-commit",
-        ".",
         "",
     ] {
         assert_eq!(validate_commit_paths(&[PathBuf::from(path)]), bad(path), "{path}");
@@ -34,8 +33,14 @@ fn names_the_first_bad_path_among_good_ones() {
 
 #[test]
 fn accepts_names_that_look_like_pathspec_magic() {
-    let paths = [":(top)*", "dir/a b.txt", "ünï.txt", "[x].txt", "./a.txt", ".omuzaki-notes.txt"];
+    let paths = [":(top)*", "dir/a b.txt", "ünï.txt", "[x].txt", "./a.txt", ".omuzaki-notes.txt", ".", "./"];
     assert_eq!(validate_commit_paths(&paths), Ok(()));
+}
+
+#[test]
+fn the_project_root_selects_the_whole_project() {
+    assert_eq!(validate_commit_paths(&["."]), Ok(()));
+    assert_eq!(literal_pathspec(Path::new(".")), ":(literal).");
 }
 
 #[test]

@@ -11,7 +11,7 @@ const FORBIDDEN: [&str; 2] = [".omuzaki", ".git"];
 ///
 /// Each must be non-empty, relative, free of `..`, and must not have a `.omuzaki` or `.git` component (any case, so a
 /// case-insensitive disk cannot get around it). Anything else is [`GitError::BadPath`] naming that path. Text such as
-/// `:(top)*` passes: it is a legal file name, and [`literal_pathspec`] keeps git from reading it as magic.
+/// `:(top)*` passes, and so does `.`, the whole project (design §6): it is a legal file name, and [`literal_pathspec`] keeps git from reading it as magic.
 ///
 /// # Errors
 /// [`GitError::BadPath`] for the first path that breaks a rule; [`GitError::NothingToCommit`] for an empty list.
@@ -25,7 +25,6 @@ pub fn validate_commit_paths<P: AsRef<Path>>(paths: &[P]) -> Result<(), GitError
         if path.to_str().is_none_or(str::is_empty) {
             return Err(bad());
         }
-        let mut named = false;
         for part in path.components() {
             match part {
                 Component::Normal(name) => {
@@ -33,14 +32,10 @@ pub fn validate_commit_paths<P: AsRef<Path>>(paths: &[P]) -> Result<(), GitError
                     if FORBIDDEN.iter().any(|f| name.eq_ignore_ascii_case(f)) {
                         return Err(bad());
                     }
-                    named = true;
                 }
                 Component::CurDir => {}
                 Component::ParentDir | Component::RootDir | Component::Prefix(_) => return Err(bad()),
             }
-        }
-        if !named {
-            return Err(bad());
         }
     }
     Ok(())
