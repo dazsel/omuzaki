@@ -746,4 +746,170 @@ big_pr 615 2999
 run 9103
 expect_line "go #9103" "rest cap: 2,999 files is read in full"
 
+
+# per-module buckets (ADR 0062): every TEST_MODULES entry maps to its module, as a file and (for a folder) inside it;
+# the ADR's own examples; and a fence's literal prefix names its module, or every bucket when it could reach several.
+python3 -I - "$CHECK" <<'P'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("dc", sys.argv[1])
+dc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(dc)
+bad = 0
+def want(got, expected, label):
+    global bad
+    if got != expected:
+        bad += 1
+        print(f"FAIL: {label}: got {got!r}, wanted {expected!r}", file=sys.stderr)
+    else:
+        print(f"ok: {label}")
+# one test per table entry: a file key is its own path; a folder key holds files and is itself the folder.
+for crate, keys in dc.TEST_MODULES.items():
+    for key, module in keys.items():
+        if "." in key.rsplit("/", 1)[-1]:
+            want(dc.bucket_of(crate, key, True), module, f"{crate}/{key} -> {module}")
+        else:
+            want(dc.bucket_of(crate, key + "/main.rs", True), module, f"{crate}/{key}/main.rs -> {module}")
+            want(dc.bucket_of(crate, key, False), module, f"{crate}/{key} (folder) -> {module}")
+S, B = dc.SHARED, dc.BROAD
+# a changed file: the ADR's examples and the shared files
+paths = [
+    ("omuzaki-face", "src/layer.rs", "layer"), ("omuzaki-face", "tests/brows.rs", "painter"),
+    ("omuzaki-face", "src/painter/brows.rs", "painter"), ("omuzaki-face", "src/ops_shared/check.rs", "ops_shared"),
+    ("omuzaki-face", "src/ops/expression/set.rs", "ops"), ("omuzaki-face", "tests/hot_loop.rs", S),
+    ("omuzaki-face", "benches/gpu_face.rs", S), ("omuzaki-char", "src/hair/tube.rs", "hair"),
+    ("omuzaki-char", "src/hair.rs", "hair"), ("omuzaki-char", "src/builder.rs", "builder"),
+    ("omuzaki-char", "src/lib.rs", S), ("omuzaki-char", "src/main.rs", S), ("omuzaki-char", "src/NOTICES.md", S),
+    ("omuzaki-char", "src/kit/NOTICES.md", "kit"), ("omuzaki-char", "Cargo.toml", S), ("omuzaki-char", "build.rs", S),
+    ("omuzaki-char", "tests/common/mod.rs", S), ("omuzaki-char", "tests/fixtures/kit/pchip.json", S),
+    ("omuzaki-char", "tests/skin.rs", S), ("omuzaki-char", "tests/cloth_solver/suite.rs", "cloth"),
+    ("omuzaki-char", "tests/head_quality/anchors.rs", "head"), ("omuzaki-char", "benches/kit.rs", "kit"),
+    ("omuzaki-char", "examples/stature_lineup.rs", S),
+]
+for crate, rel, expected in paths:
+    want(dc.bucket_of(crate, rel, True), expected, f"file {crate}/{rel} -> {expected}")
+# a fence entry: its literal prefix names its bucket; a glob or a folder holding several names every bucket
+fences = [
+    ("omuzaki-char", "src/hair/**", {"hair"}), ("omuzaki-char", "src/hair/", {"hair"}),
+    ("omuzaki-char", "src/hair.rs", {"hair"}), ("omuzaki-char", "src/kit/NOTICES.md", {"kit"}),
+    ("omuzaki-char", "src/", {B}), ("omuzaki-char", "src", {B}), ("omuzaki-char", "src/*.rs", {B}),
+    ("omuzaki-char", "src/hair*/x.rs", {B}), ("omuzaki-char", "", {B}), ("omuzaki-char", "*.toml", {B}),
+    ("omuzaki-char", "tests/", {B}), ("omuzaki-char", "tests/*.rs", {B}), ("omuzaki-char", "tests/brows*.rs", {B}),
+    ("omuzaki-char", "tests/cloth_solver/**", {"cloth"}), ("omuzaki-char", "tests/cloth_solver", {"cloth"}),
+    ("omuzaki-char", "Cargo.toml", {S}), ("omuzaki-char", "src/lib.rs", {S}), ("omuzaki-char", "tests/common/**", {S}),
+]
+for crate, rel, expected in fences:
+    want(dc.fence_buckets(crate, rel), expected, f"fence {crate}/{rel} -> {sorted(expected)}")
+sys.exit(1 if bad else 0)
+P
+if [[ $? == 0 ]]; then pass "module buckets: the table, the ADR examples and the fence rules"; else fail "module buckets table"; fi
+
+# module cap: a full module waits and is named; a free module in the same crate goes; a fence naming both waits on the full one.
+scenario module
+issue 9201 <<'B'
+**Fence:** `crates/omuzaki-char/src/hair/tube.rs`
+B
+issue 9202 <<'B'
+**Fence:** `crates/omuzaki-char/src/head/mesh.rs`
+B
+issue 9203 <<'B'
+**Fence:** `crates/omuzaki-char/src/{hair,head}/x.rs`
+B
+cat >"$FX/prs.json" <<'J'
+[{"number":701,"headRefName":"cloud/701-hair","isDraft":false,"createdAt":"2026-10-01T10:00:00Z","files":[{"path":"crates/omuzaki-char/src/hair/a.rs"}],"body":""},
+ {"number":702,"headRefName":"cloud/702-hair","isDraft":false,"createdAt":"2026-10-01T11:00:00Z","files":[{"path":"crates/omuzaki-char/src/hair/b.rs"}],"body":""},
+ {"number":703,"headRefName":"local/703-hair","isDraft":false,"createdAt":"2026-10-01T12:00:00Z","files":[{"path":"crates/omuzaki-char/src/hair/c.rs"}],"body":""}]
+J
+run 9201 9202 9203
+expect_line "wait #9201: module cap: omuzaki-char/hair has 3 open PRs (#701, #702, #703) (cap 3)" "module cap: a full module waits and is named"
+expect_line "go #9202" "module cap: a free module in the same crate is go"
+expect_line "wait #9203: module cap: omuzaki-char/hair has 3 open PRs (#701, #702, #703) (cap 3)" "module cap: a fence naming a full and a free module names the full one"
+expect_code 1 "module cap: exit 1"
+run 9201 --module-cap 4
+expect_line "go #9201" "module cap: a higher --module-cap lets it go"
+
+# ceiling: 8 open PRs in the crate wait, though no module is full and the crate cap (3) would bite any other crate.
+scenario ceiling
+issue 9204 <<'B'
+**Fence:** `crates/omuzaki-char/src/template/layout.rs`
+B
+python3 -I -c '
+import json
+mods = ["accessory", "body", "builder", "cloth", "fit", "head", "kit", "look"]
+print(json.dumps([{"number": 800 + i, "headRefName": f"cloud/{800 + i}", "isDraft": False,
+                   "createdAt": "2026-10-08T10:00:00Z", "files": [{"path": f"crates/omuzaki-char/src/{m}/x.rs"}], "body": ""}
+                  for i, m in enumerate(mods)]))' >"$FX/prs.json"
+run 9204
+expect_line "wait #9204: crate ceiling: omuzaki-char has 8 open PRs (#800, #801, #802, #803, #804, #805, #806, #807) (ceiling 8)" "ceiling: waits at 8 open PRs, and the crate cap does not count char"
+run 9204 --module-ceiling 9
+expect_line "go #9204" "ceiling: a higher --module-ceiling lets it go"
+
+# shared slot: a root file, lib.rs, tests/common and an unlisted test take the one slot; a task that does not need it goes.
+scenario shared
+issue 9205 <<'B'
+**Fence:** `crates/omuzaki-char/src/head/mesh.rs`
+B
+issue 9206 <<'B'
+**Fence:** `crates/omuzaki-char/Cargo.toml`
+B
+issue 9207 <<'B'
+**Fence:** `crates/omuzaki-char/tests/common/mod.rs`
+B
+issue 9208 <<'B'
+**Fence:** `crates/omuzaki-char/tests/skin.rs`
+B
+issue 9209 <<'B'
+**Fence:** `crates/omuzaki-char/tests/hair_pipeline.rs`
+B
+cat >"$FX/prs.json" <<'J'
+[{"number":811,"headRefName":"cloud/811-lib","isDraft":false,"createdAt":"2026-10-11T10:00:00Z","files":[{"path":"crates/omuzaki-char/src/lib.rs"}],"body":""}]
+J
+run 9205 9206 9207 9208 9209
+expect_line "go #9205" "shared: a task that does not need the shared slot is go"
+expect_line "wait #9206: shared slot: omuzaki-char is taken by #811" "shared: a root file waits while the slot is taken"
+expect_line "wait #9207: shared slot: omuzaki-char is taken by #811" "shared: tests/common waits while the slot is taken"
+expect_line "wait #9208: shared slot: omuzaki-char is taken by #811" "shared: an unlisted test takes the slot"
+expect_line "go #9209" "shared: a listed test counts against its module, not the slot"
+echo '[]' >"$FX/prs.json"
+run 9206
+expect_line "go #9206" "shared: a free slot lets the root file go"
+
+# face: tests/brows.rs counts against painter, so a third painter PR fills it; layer is its own module and stays free.
+scenario face
+issue 9210 <<'B'
+**Fence:** `crates/omuzaki-face/src/painter/marks.rs`
+B
+issue 9211 <<'B'
+**Fence:** `crates/omuzaki-face/src/layer.rs`
+B
+cat >"$FX/prs.json" <<'J'
+[{"number":821,"headRefName":"cloud/821-brows","isDraft":false,"createdAt":"2026-10-12T10:00:00Z","files":[{"path":"crates/omuzaki-face/tests/brows.rs"}],"body":""},
+ {"number":822,"headRefName":"cloud/822-iris","isDraft":false,"createdAt":"2026-10-12T11:00:00Z","files":[{"path":"crates/omuzaki-face/src/painter/eyes/iris.rs"}],"body":""},
+ {"number":823,"headRefName":"local/823-system","isDraft":false,"createdAt":"2026-10-12T12:00:00Z","files":[{"path":"crates/omuzaki-face/src/system.rs"}],"body":""},
+ {"number":824,"headRefName":"local/824-eyes","isDraft":false,"createdAt":"2026-10-12T13:00:00Z","files":[{"path":"crates/omuzaki-face/tests/eyes_iris.rs"}],"body":""}]
+J
+run 9210 9211
+expect_line "wait #9210: module cap: omuzaki-face/painter has 3 open PRs (#821, #822, #824) (cap 3)" "face: tests/brows.rs and tests/eyes_iris.rs count against painter"
+expect_line "go #9211" "face: layer stays free while system has a PR"
+
+# broad fence: a glob that could reach any module waits on a full one, though it names no folder.
+scenario broad
+issue 9212 <<'B'
+**Fence:** `crates/omuzaki-char/*.toml`
+B
+issue 9213 <<'B'
+**Fence:** `crates/omuzaki-char/src/hair*/x.rs`
+B
+issue 9214 <<'B'
+**Fence:** `crates/omuzaki-char/src/head/`
+B
+cat >"$FX/prs.json" <<'J'
+[{"number":701,"headRefName":"cloud/701-hair","isDraft":false,"createdAt":"2026-10-01T10:00:00Z","files":[{"path":"crates/omuzaki-char/src/hair/a.rs"}],"body":""},
+ {"number":702,"headRefName":"cloud/702-hair","isDraft":false,"createdAt":"2026-10-01T11:00:00Z","files":[{"path":"crates/omuzaki-char/src/hair/b.rs"}],"body":""},
+ {"number":703,"headRefName":"local/703-hair","isDraft":false,"createdAt":"2026-10-01T12:00:00Z","files":[{"path":"crates/omuzaki-char/src/hair/c.rs"}],"body":""}]
+J
+run 9212 9213 9214
+expect_line "wait #9212: module cap: omuzaki-char/hair has 3 open PRs (#701, #702, #703) (cap 3)" "broad: a glob over the crate root may reach the full module"
+expect_line "wait #9213: module cap: omuzaki-char/hair has 3 open PRs (#701, #702, #703) (cap 3)" "broad: a glob folder may reach the full module"
+expect_line "go #9214" "broad: a literal folder with a free module is go"
+
 ((failures == 0)) || exit 1
