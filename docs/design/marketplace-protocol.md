@@ -1,0 +1,98 @@
+---
+title: "The marketplace protocol: signed documents, freshness, HTTP shape and limits"
+summary: "the marketplace wire detail: market-signed documents (receipt, head, append-only revocation and takedown pages, key changes), the freshness rule, the HTTP shape, the fixed header set, redirects, limits (ADR 0063)."
+area: design
+---
+
+# The marketplace protocol: signed documents, freshness, HTTP shape and limits
+
+**Status:** proposed. **Part of:** `docs/design/marketplace.md` (decisions, contract, task cut) and ADR 0063. This page holds only the wire-level detail so the main design can stay about decisions. **Builds on:** `docs/design/identity.md` (D3 envelope, D4 trust, D5 key statements, D10 domains), `docs/design/library-sharing.md` (D9 limits, D11).
+
+## 1. Market-signed documents
+
+Every document the market signs is `Signed<_>` under `Domain::Entitlement`, signed by the **current pinned market key** (or, for a receipt only, a retired one, §4). The domain set stays closed (identity D1); identity D3 allows several body types under one tag when each is `deny_unknown_fields` and has a required field no other has. Here that field is `doc`, a fixed string (`"receipt"`, `"head"`, `"revocations"`, `"takedowns"`), plus `market: KeyId` (the signer, so a document can't be lifted to another market that reuses text). A test proves no document parses as another.
+
+| `doc` | Body | Purpose |
+|---|---|---|
+| `receipt` | `EntitlementBody { listing, item, versions, holder, order, issued, terms_hash: Option<ContentHash> }` | one buyer's right to one item (main D3) |
+| `head` | `MarketHead { seq: u64, issued: u64, revocations: Tip, takedowns: Tip }`, `Tip { pages: u32, tip: Option<ContentHash> }` | the market's current state, small and cheap to fetch (§2) |
+| `revocations` | `MarketPage { index: u32, prev: Option<ContentHash>, entries: Revoked(Vec<ContentHash>) }` | receipt hashes that no longer count |
+| `takedowns` | `MarketPage { …, entries: Taken(Vec<Takedown>) }`, `Takedown { listing, item, version, manifest_hash, reason: TakedownReason }` | operator removals; `TakedownReason`: `Rights`, `Safety`, `Fraud`, `Legal` |
+
+**Pages are an append-only hash chain with no lifetime cap.** A page holds 1 to 4 096 entries (at most 256 KiB) and is never edited; `prev` is the `Signed::hash()` of the page before it and `index` is `prev.index + 1` (0 for the first). The head's `Tip` names the newest page and how many there are. The market appends a new page for each batch; there is no compaction, so a refund stays revoked forever (receipts never expire) at 32 bytes per entry. The client walks from the head's tip back until it reaches a page it already holds, verifying each (signature, `doc`, `market`, `index` and `prev` agree, the chain reaches index 0 or a held page, `pages` equals the tip's `index + 1`), then keeps every page it verified. It fetches at most 64 pages per call and resumes where it stopped. A held page the market no longer serves is kept and warned (`MissingRecord`, as sharing D9); a different page at a held `index` is `Tampered(Record)`. Takedown pages are the same, so the one verifier covers both.
+
+**What a takedown does:** it blocks **new installs and updates** of that `manifest_hash`, paid or free, with `TakenDown`. It never removes or disables an applied record (sharing Q6). A creator's own deprecation stays in the signed manifest (`deprecated`) and needs no page.
+
+## 2. Freshness: how the client knows the lists are current
+
+A cached `seq` cannot tell a fresh machine which list is newest, so freshness comes from the head. The client **establishes freshness** when, during this attempt, it fetched `GET /v1/head`, the head verifies under the pinned key, its `seq` is at least the cached head's, and its `issued` is within `library.market.head_max_age_h` (default 24) of the client's clock, after which it has synced every page the head names. `issued` is the market's claim and is used only as a **replay bound on a market-signed head**; it never accepts a key, a statement or a receipt (identity D4: no timestamps decide trust). A skewed clock gives `Stale` with the words "check your clock".
+
+| Situation | Paid item (`access = required`), install or update | Free item |
+|---|---|---|
+| Fresh head fetched | proceeds | proceeds |
+| Offline or head fetch fails, cached head fetched less than `library.market.offline_days` (default 14) ago by the local clock, and it was fresh when fetched | proceeds; the panel says "revocations checked <time>" | proceeds, labelled |
+| No cached head (fresh install, first use), or cache older, or head `issued` too old (a replayed list) | refused: `Stale` | proceeds, labelled "takedowns not checked" |
+
+So an old validly signed list served to a new machine can never clear a paid install, and a free install never depends on the market being reachable. A free item can be installed before a takedown the client has not yet seen; the label says so.
+
+## 3. HTTP shape
+
+JSON bodies, fixed paths so the loopback fake and any backend agree. The scheme is `https`; `http` is accepted only for a loopback address (the fixture).
+
+| Request | Response | Auth |
+|---|---|---|
+| `GET /v1/search?q&kind&target&page` | `ListingPage` (≤ 50 listings) | none |
+| `GET /v1/listings/{id}` | `Listing` | none |
+| `GET /v1/listings/{id}/preview/{n}` | image, `n` < 5 | none |
+| `GET /v1/listings/{id}/items/{version}/manifest` | manifest bytes | none |
+| `GET /v1/terms/{hash}` | custom licence text, UTF-8 | none |
+| `GET /v1/assets/{hash}` | asset bytes (streamed) | none |
+| `GET /v1/head` | `Signed<MarketHead>` | none |
+| `GET /v1/pages/{doc}/{hash}` | `Signed<MarketPage>`, `doc` is `revocations` or `takedowns` | none |
+| `GET /v1/key-changes` | `Vec<KeyChange>` (§4) | none |
+| `GET /v1/receipts/{listing}` | `Signed<EntitlementBody>` or 404 | token |
+| `PUT /v1/assets/{hash}`, `POST /v1/listings` (publish) | `ListingId` | token |
+| `POST /v1/listings/{id}/report`, `GET`/`POST /v1/listings/{id}/reviews` | report / review page (≤ 50) | token for `POST` |
+
+Everything the install and freshness checks need is unauthenticated, so checking for takedowns never ties a browsing session to an account. `{id}` is `[a-z0-9-]{1,64}`, `{hash}` 64 lowercase hex; a response that names any other path (a preview, a link) must start with `/v1/` and contain no `..`, `//`, `?`, `#` or scheme, or the listing is `Malformed`.
+
+**The fixed request-header set.** A request carries exactly these and no others:
+
+| Header | When | Value |
+|---|---|---|
+| `Host` | always | the pinned base host |
+| `Accept` | always | `application/json` for JSON routes; `application/octet-stream` for assets, manifests, terms and previews |
+| `Accept-Encoding` | always | `identity` (no compression, so limits count wire bytes) |
+| `User-Agent` | always | the constant `omuzaki-market` (no version, OS or machine) |
+| `Authorization` | only on the `token` rows | `Bearer <token>` from the secret store (CN-05) |
+| `Content-Type`, `Content-Length` | `PUT`/`POST` only | `application/json` (`application/octet-stream` for `PUT /v1/assets`), and the body length |
+
+Never sent: `Cookie`, `Referer`, `Origin`, `Range`, `If-*`, `Accept-Language`, any `X-*`, or anything naming the client, install, order or holder. Transport-level headers a library adds itself (`Connection`) carry no identifier. A response with `Content-Encoding` other than `identity` is `Malformed`; `Set-Cookie` is ignored and nothing is stored from it. T3's tests run against a recording server that asserts the exact header names per route.
+
+**Redirects.** A `301/302/307/308` to a path on the same scheme, host and port is followed at most twice, with the same fixed set (the `Authorization` header is sent again only on a `token` route to that same origin). A redirect to another host, port or scheme, an `https` to `http` downgrade, or a third hop is refused (`Rejected`).
+
+**Statuses:** 404 `NotFound`; 401/403 `Forbidden`; 413 `TooLarge`; 429 and 5xx `Unavailable`; any other 4xx `Rejected`.
+
+## 4. Market key changes
+
+A market key rotates by identity's own rule (D5): `KeyStatement::Rotate { old, new }` is valid only when **both** keys sign the same body (two `Signed` values, one body). The market publishes them at `GET /v1/key-changes` as `KeyChange { old: Signed<KeyStatement>, new: Signed<KeyStatement> }` (at most 8, 64 KiB). The client never swaps a pin by itself:
+1. a change is accepted only when `old` is the currently pinned key, both signatures verify under `Domain::KeyStatement`, and the bodies are equal;
+2. a document signed by a key that is not the pin makes the client look at `key-changes`; a valid change shows the person "<name> changed its key (old fingerprint → new fingerprint)" and the panel offers `library.market.rekey` (person-only), which writes the new pin and keeps the old as **retired** in `market.toml`;
+3. until the person confirms, paid installs from that market fail `MarketKeyChanged`; free installs and everything installed keep working;
+4. a **retired** key still verifies **receipts** signed while it was current (identity D5: a rotated key is retired, not revoked); heads, pages and takedowns must be signed by the current key;
+5. a statement can also be imported from a file (`trust.import`, identity D5). A compromised key is not a rotation: the person removes the market and adds it again with the new fingerprint.
+
+## 5. Limits
+
+Constants in `omuzaki-market-api`, tested at the limit and over; every read stops at the limit plus one, so an untrusted market cannot make a call allocate more (sharing D9).
+
+| Thing | Limit |
+|---|---|
+| any JSON response (except pages) | 1 MiB; a `Listing` 16 KiB (its `commerce` 4 KiB); a head 4 KiB; a page 256 KiB and 4 096 entries |
+| manifest | the library's manifest limit |
+| custom licence text | 64 KiB, UTF-8, control characters other than newline and tab refused |
+| preview | 5 per listing, 5 MiB each |
+| asset | 256 MiB each; **per item** at most 64 assets and 1 GiB in total, both read from the signed manifest before any download (main D5) |
+| pages per sync call | 64, resumable; verified pages kept without a cap |
+| search page / review page | 50 listings / 50 reviews |
+| timeouts | connect 10 s; any non-asset body 30 s in total; an asset stalls out after 30 s without a byte (no overall cap, cancellable) |

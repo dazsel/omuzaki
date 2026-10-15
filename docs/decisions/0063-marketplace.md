@@ -6,7 +6,7 @@ area: decisions
 
 # 0063: The marketplace client trusts signatures, not the store; listings are advice and receipts verify offline (2026-10-15)
 
-**Status:** proposed; the hosted backend, payments and moderation (Q1 to Q3) remain the owner's. It adds a new API crate, `omuzaki-market-api`, and later an additive `receipt` field on the library's application record. **Context:** LB-08, SE-07; spec v3 §28, §31, §37, §38; ADR 0042 (identity), ADR 0057 (library sharing). Design: `docs/design/marketplace.md`.
+**Status:** proposed; the hosted backend, payments and moderation (Q1 to Q3) remain the owner's. It adds a new API crate, `omuzaki-market-api`, and one additive contract task on `omuzaki-library-api` (signed `attestation` and `terms_hash` on `ItemRights`, `asset_info` on the manifest, `receipt` on the application record). **Context:** LB-08, SE-07; spec v3 §28, §31, §37, §38; ADR 0042 (identity), ADR 0057 (library sharing). Design: `docs/design/marketplace.md`; wire detail: `docs/design/marketplace-protocol.md`.
 
 ## Context
 
@@ -15,18 +15,19 @@ ADR 0057 D11 said the marketplace reuses the shared-source protocol as `MarketSt
 ## Decision
 
 1. **A market is not an `ItemStore`.** It has no log, roster, licence file or index, so `Market` (listing, manifest, asset, receipt, revocations, publish, report, reviews) is its own trait. The byte checks are the pure functions of `omuzaki-library-source-api::verify`, shared by both transports. This refines ADR 0057 D11.
-2. **A listing is advice.** The client re-derives hash, creator, id, version, rights, kind and requirements from the signed manifest; any mismatch is refused (`Tampered(Listing)`, `LicenceMismatch`). Listing text is plain, bounded and labelled "from the store".
-3. **A receipt is a `Signed<EntitlementBody>` under `Domain::Entitlement`**, checked offline against a pinned market key: holder equals the person's identity key, item and version in range, not in the newest signed revocation list. No expiry; `issued` is display only. A refund stops new installs and updates, never an applied record (ADR 0057 Q6).
-4. **Install order is fixed** (design D5): listing, manifest, item signature and trust, assets, compatibility, status, receipt, licence and gate, then write. Nothing is written on a refusal.
-5. **Licence enforcement is provenance plus the existing gate**, not copy protection. The record carries creator, licence, attribution, commercial, grant and the receipt hash; `io.check_export` and signed exports (SE-07) are unchanged. A Machine setting `library.market.publish_ready` (off) runs the gate at install.
-6. **`commerce` is opaque.** Prices and currencies, if a backend has them, live inside it; the client never reads it, never stores it in a project and never exports it.
-7. **The creator's preflight** adds to ADR 0057's six checks: `commercial: ok`, no `private_test`, provenance on every asset, a creator attestation, a chosen licence template; templates that forbid commercial use are not offered.
-8. **Privacy:** one pinned base address and key, added by a person; no telemetry, ids, cookies or referrers; listings hold paths, never hosts; redirects to another host are refused.
-9. **Tests use a `FakeMarket`** (in-process and over a loopback HTTP server) with a conformance suite; the real client never needs a network to be tested.
+2. **A listing is advice.** The client re-derives hash, creator, id, version, rights (including the asset rights) and kind from the signed manifest; any mismatch is refused (`Tampered(Listing)`, `LicenceMismatch`). Listing text is plain, bounded and labelled "from the store".
+3. **A receipt is a `Signed<EntitlementBody>` under `Domain::Entitlement`**, checked offline against a pinned market key (or a retired pin): holder equals the person's identity key, item and version in range, terms hash equals the manifest's, not in the revocation chain. No expiry; `issued` is display only. A refund stops new installs and updates, never an applied record (ADR 0057 Q6). Single items only: packs are a later extension.
+4. **Market-signed documents share the `Entitlement` domain** (receipt, head, revocation and takedown pages), told apart by a required `doc` field. Revocations and takedowns are **append-only signed page chains with no size cap**. A signed **head** gives freshness: a paid install needs a head fetched this attempt and recent, or a recent cached one; otherwise `Stale`. Free items install, labelled when takedowns are unchecked. A market key rotates only with both keys' signatures and the person's confirmation.
+5. **Install order is fixed** (design D5): listing, freshness, manifest, signature and trust, then every cheap refusal (compatibility, status, takedown, entitlement, item limits) and the rights join and item-level gate, all from signed metadata **before any asset is requested**; then streamed, hash-verified staging and one atomic promote. The signed receipt is stored with the installed item in user data; only its hash goes into an application record.
+6. **Licence enforcement is provenance plus the existing gate**, not copy protection. The record carries creator, licence, attribution, commercial, grant and the receipt hash; `io.check_export` and signed exports (SE-07) are unchanged. A Machine setting `library.market.publish_ready` (off) runs the gate at install.
+7. **`commerce` is opaque.** Prices and currencies, if a backend has them, live inside it; the client never reads it, never stores it in a project and never exports it.
+8. **The creator's preflight** adds to ADR 0057's six checks: `commercial: ok`, no `private_test`, provenance on every asset (copied into the signed manifest), a signed creator attestation, a licence template or custom terms by signed hash; templates that forbid commercial use are not offered.
+9. **Privacy:** one pinned base address and key, added by a person; no telemetry, ids, cookies or referrers; a fixed, enumerated request-header set; listings hold paths, never hosts; redirects to another origin are refused. Listings carry no app-version requirement (the signed manifest has none).
+10. **Tests use a `FakeMarket`** (in-process and over a loopback HTTP server) with a conformance suite; the real client never needs a network to be tested.
 
 ## Consequences
 
-- Five tasks follow (design §5.3); T1 needs the Director's approval of the new API crate and the root `Cargo.toml` hub sign-off, T3 of the additive record field.
+- Six tasks follow (design §5.3); T1 needs the Director's approval of the new API crate and the root `Cargo.toml` hub sign-off, T2 (the additive `omuzaki-library-api` contract) the Director's approval and lands first.
 - A hostile or buggy store can refuse to serve, but cannot substitute an item, a licence or a receipt.
 - A copied item file keeps its rights and provenance but is not protected from copying; the design says so.
-- Open, the owner's (design §8): Q1 hosted backend, Q2 payments, Q3 moderation, Q10 which licence templates ship. Tasks needing a real backend wait on them; the client is built and tested against `FakeMarket`.
+- Open, the owner's (design §8): Q1 hosted backend, Q2 payments, Q3 moderation, Q10 which licence templates ship, Q11 packs, Q12 an app-version requirement. Tasks needing a real backend wait on them; the client is built and tested against `FakeMarket`.
