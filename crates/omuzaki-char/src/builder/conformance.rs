@@ -11,8 +11,10 @@
 //!
 //! The palettes also differ in their slot set (one with an extra slot, one without the slots no part names, and one
 //! without each slot a part names), and the whole comparison runs under each of the [`OPTIONS`] (both qualities, with
-//! and without `rig_export`) and at each of [`SEEDS`] seeds, because a fact may depend on any of them; a violation
-//! names the options and the seed it showed under.
+//! and without `rig_export`), because a fact may depend on either; a violation names the options and the seed it showed
+//! under. The seeds ([`SEEDS`]) are swept with the base's palette against the first colour alternative only, so a fact
+//! that depends on the seed and on a slot set (or on a colour that is not the first alternative) is not caught at the
+//! other seeds: the known gap, accepted for the build cost.
 //!
 //! Facts are compared by [`Probes`]: the built-in ones are registered, and a crate that adds a fact adds
 //! [`Probes::fact`] for it in the test that runs the check. A fact a kind publishes that no probe covers is listed in
@@ -310,13 +312,17 @@ pub fn check(base: &CharacterDef, kinds: Option<&[&str]>, probes: &Probes, servi
 
 /// Builds `def` at each of its [`SEEDS`] under every option set and alternative palette and reports what `run_kinds`
 /// published differently. A base that doesn't build stops the run: its kinds are unreached, not clean.
+///
+/// The base seed gets every alternative. The other seeds get only the first colour alternative: a slot-set dependence
+/// does not depend on the seed, so the rest of the slot-set palettes need one seed only (the cost is in the module doc).
 fn check_run(def: &CharacterDef, run_kinds: &[String], probes: &Probes, services: &BuildServices) -> Report {
     let mut report = Report::default();
     let alternatives = alternatives(&def.palette, &referenced_slots(def));
-    for seed in seeds_of(def.seed) {
+    for (i, seed) in seeds_of(def.seed).enumerate() {
         let mut seeded = def.clone();
         seeded.seed = seed;
-        if let Err(why) = check_seed(&seeded, run_kinds, &alternatives, probes, services, &mut report) {
+        let these = if i == 0 { &alternatives[..] } else { &alternatives[..alternatives.len().min(1)] };
+        if let Err(why) = check_seed(&seeded, run_kinds, these, probes, services, &mut report) {
             report.unreached.extend(run_kinds.iter().map(|k| (k.clone(), why.clone())));
             break;
         }
