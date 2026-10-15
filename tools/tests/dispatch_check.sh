@@ -31,10 +31,12 @@ case "$1 $2" in
         ;;
       *"/pulls/"*"/files"*)
         number=$(sed -n 's#.*/pulls/\([0-9]*\)/files.*#\1#p' <<<"$*")
+        echo "$number" >>"$DISPATCH_FIXTURES/files-calls"
         cat "$DISPATCH_FIXTURES/files-$number.json" 2>/dev/null || echo '[]'
         ;;
       *"/pulls?state=open"*) cat "$DISPATCH_FIXTURES/pulls.json" || exit 1 ;;
       *"/issues/"*) cat "$DISPATCH_FIXTURES/issue-$(sed -n 's#.*/issues/\([0-9]*\)$#\1#p' <<<"$*").json" || exit 1 ;;
+      *"repos/dazsel/omuzaki") cat "$DISPATCH_FIXTURES/repo.json" || exit 1 ;;
       *"/contents/crates"*) cat "$DISPATCH_FIXTURES/crates.json" || exit 1 ;;
       *"/contents") cat "$DISPATCH_FIXTURES/root.json" || exit 1 ;;
       *) echo "stub gh: unexpected api call: $*" >&2; exit 3 ;;
@@ -539,6 +541,8 @@ cat >"$FX/files-663.json" <<'J'
 J
 run 9060
 expect_line "wait #9060: overlap with #663 (crates/a/x.rs)" "rename: the old path of a renamed file collides"
+[[ $(grep -cx 663 "$FX/files-calls") == 1 ]] && pass "one fetch: the rename list is read once" \
+  || fail "one fetch: #663 read $(grep -cx 663 "$FX/files-calls") times"
 
 # renamed files: an unreadable rename list makes the PR's files unknown, so the task waits.
 scenario rename-unreadable
@@ -648,10 +652,11 @@ B
 B
   echo '[{"name":"omuzaki-ops","type":"dir"},{"name":"omuzaki-io-ops","type":"dir"}]' >"$FX/crates.json"
   echo '[{"name":"crates","type":"dir"}]' >"$FX/root.json"
+  echo '{"default_branch":"main"}' >"$FX/repo.json"
   cat >"$FX/pulls.json" <<'J'
-[{"number":610,"head":{"ref":"cloud/610-own"},"draft":false,"created_at":"2026-10-11T10:00:00Z","body":"Fixes #9100"},
- {"number":611,"head":{"ref":"local/611-x"},"draft":false,"created_at":"2026-10-11T11:00:00Z","body":"Does not close #9101"},
- {"number":612,"head":{"ref":"local/612-draft"},"draft":true,"created_at":"2026-10-11T12:00:00Z","body":null}]
+[{"number":610,"head":{"ref":"cloud/610-own"},"draft":false,"created_at":"2026-10-11T10:00:00Z","base":{"ref":"main"},"body":"Fixes #9100"},
+ {"number":611,"head":{"ref":"local/611-x"},"draft":false,"created_at":"2026-10-11T11:00:00Z","base":{"ref":"main"},"body":"Does not close #9101"},
+ {"number":612,"head":{"ref":"local/612-draft"},"draft":true,"created_at":"2026-10-11T12:00:00Z","base":{"ref":"main"},"body":null}]
 J
   echo '[{"filename":"crates/omuzaki-ops/src/a.rs","status":"modified"}]' >"$FX/files-610.json"
   echo '[{"filename":"crates/omuzaki-io-ops/src/b.rs","status":"modified"}]' >"$FX/files-611.json"
@@ -679,5 +684,53 @@ echo '[]' >"$FX/prs.json"
 DISPATCH_CHECK_REST=1 run 9101
 expect_line "wait #9101: overlap with #611 (crates/omuzaki-io-ops/src/b.rs)" "rest only: verdict from REST"
 [[ ! -s "$work/err" ]] && pass "rest only: GraphQL not tried, no notice" || fail "rest only: stderr: $(cat "$work/err")"
+
+# one fetch per PR: a REST run reads each open PR's file list once, drafts included.
+scenario rest-once
+rest_fixtures
+run 9100
+for pr in 610 611 612; do
+  [[ $(grep -cx "$pr" "$FX/files-calls") == 1 ]] && pass "one fetch: REST reads #$pr once" \
+    || fail "one fetch: #$pr read $(grep -cx "$pr" "$FX/files-calls") times"
+done
+
+# base: closing keywords count only on a pull request into the default branch. The same "Fixes #9102" PR into release
+# does not close #9102, so its overlap counts; into main it closes #9102, so the task is its own and goes.
+one_pull() {
+  printf '[{"number":%s,"head":{"ref":"local/%s-x"},"draft":false,"created_at":"2026-10-11T13:00:00Z","base":{"ref":"%s"},"body":"Fixes #9102"}]\n' \
+    "$1" "$1" "$2" >"$FX/pulls.json"
+  echo '[{"filename":"crates/omuzaki-ops/src/c.rs","status":"modified"}]' >"$FX/files-$1.json"
+}
+scenario rest-base
+rest_fixtures
+issue 9102 <<'B'
+**Fence:** `crates/omuzaki-ops/src/c.rs`
+B
+one_pull 613 release
+run 9102
+expect_line "wait #9102: overlap with #613 (crates/omuzaki-ops/src/c.rs)" "rest base: a PR into a non-default branch does not close the task"
+one_pull 614 main
+run 9102
+expect_line "go #9102" "rest base: a PR into the default branch closes the task"
+
+# cap: the REST files endpoint returns at most 3,000 files. A PR with 3,000 is unreadable, so the task waits; 2,999 is read.
+# big_pr NUMBER COUNT: the only open PR, into main with no closing keyword, whose REST list has COUNT files.
+big_pr() {
+  printf '[{"number":%s,"head":{"ref":"local/%s-big"},"draft":false,"created_at":"2026-10-11T14:00:00Z","base":{"ref":"main"},"body":""}]\n' \
+    "$1" "$1" >"$FX/pulls.json"
+  python3 -I -c 'import json,sys; print(json.dumps([{"filename": f"crates/omuzaki-io-ops/src/f{i}.rs", "status": "modified"} for i in range(int(sys.argv[1]))]))' \
+    "$2" >"$FX/files-$1.json"
+}
+scenario rest-cap
+rest_fixtures
+issue 9103 <<'B'
+**Fence:** `tools/x.py`
+B
+big_pr 615 3000
+run 9103
+expect_line "wait #9103: cannot read the changed files of #615; waiting until they can be read" "rest cap: 3,000 files is unreadable"
+big_pr 615 2999
+run 9103
+expect_line "go #9103" "rest cap: 2,999 files is read in full"
 
 ((failures == 0)) || exit 1

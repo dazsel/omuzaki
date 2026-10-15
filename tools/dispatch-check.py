@@ -21,8 +21,8 @@ entry is a path or glob: backtick-quoted or bare, comma- or space-separated, one
 - total cap: `--total-cap` or more open PRs in total.
 - contract first: the fence names an `*-api` crate or `omuzaki-core` and another open PR touches that crate.
 
-Fail closed: a fence entry that cannot be understood makes the task wait. `gh pr list` returns at most 100 files per PR, so a PR with more reads its full list from the REST API. If
-that list cannot be read, every task waits. If the `crates/` folder cannot be read, a task with a wildcard crate waits.
+Fail closed: a fence entry that cannot be understood makes the task wait. `gh pr list` returns at most 100 files per PR, so a PR with more reads its full list from the REST API. That list
+holds at most 3,000 files, so a PR with 3,000 or more counts as unreadable. If that list cannot be read, every task waits. If the `crates/` folder cannot be read, a task with a wildcard crate waits.
 
 Open PRs are listed in one call with a limit of PR_LIMIT. Reaching the limit means the list may be cut, so the script
 stops rather than guess.
@@ -39,6 +39,8 @@ from collections import defaultdict
 
 REPO = "dazsel/omuzaki"
 PR_LIMIT = 1000
+# The REST files endpoint returns at most this many files; a list of this size or more may be cut short.
+REST_FILE_CAP = 3000
 LANES = ("cloud", "local", "port")
 # A brace group may expand to at most this many alternatives; a larger one makes its entry unreadable (fail closed).
 BRACE_LIMIT = 256
@@ -144,9 +146,22 @@ def load_crates():
 def pr_files(number, listed, changed):
     """The changed paths of a pull request, its renamed files' old paths included, or None when they cannot be read.
 
-    Only the file list can be incomplete; the rename check is a separate read, and if it fails the list is None too.
+    `gh pr list` lists at most 100 files; `changed` is the true count. Up to that count the listed paths are used; more
+    are read from the REST list. The REST list is fetched once and gives the renamed files' old paths too. None means
+    the list is incomplete, and the caller must wait rather than assume no overlap.
     """
-    return with_renamed_sources(number, listed_or_full_files(number, listed, changed))
+    files = rest_files(number)
+    if files is None:
+        return None
+    listed_paths = [f["path"] for f in listed]
+    total = len(listed_paths) if changed is None else changed
+    if total <= len(listed_paths):
+        paths = listed_paths
+    elif len(files) >= total:
+        paths = [f["filename"] for f in files]
+    else:
+        return None
+    return with_renamed_sources(paths, files)
 
 
 def rest_pr_files(number):
@@ -154,49 +169,35 @@ def rest_pr_files(number):
 
     REST has no 100-file cap, so this needs no `gh pr list` file list at all.
     """
-    return with_renamed_sources(number, full_pr_files(number))
+    files = rest_files(number)
+    return None if files is None else with_renamed_sources([f["filename"] for f in files], files)
 
 
-def with_renamed_sources(number, paths):
-    """`paths` plus the old paths of the PR's renamed files; None when `paths` is None or the rename read fails."""
-    if paths is None:
-        return None
+def rest_files(number):
+    """The REST file list of a pull request, one entry per changed file, or None when it cannot be read in full.
+
+    The files endpoint returns at most REST_FILE_CAP files, so a list that long may be cut short and counts as unreadable.
+    The paths and the renames both come from this one fetch, so each pull request is read once.
+    """
     try:
-        sources = renamed_sources(number)
+        files = gh_json_pages(["api", "--paginate", f"repos/{REPO}/pulls/{number}/files"])
     except GhError:
         return None
+    return None if len(files) >= REST_FILE_CAP else files
+
+
+def with_renamed_sources(paths, files):
+    """`paths` plus the old paths of the renamed files in `files`, a REST file list; each path is listed once."""
+    sources = [f["previous_filename"] for f in files if f.get("status") == "renamed" and f.get("previous_filename")]
     return paths + [source for source in sources if source not in paths]
 
 
-def full_pr_files(number):
-    """Every changed path of a pull request from the REST files list, or None when the list cannot be read."""
-    try:
-        return [f["filename"] for f in gh_json_pages(["api", "--paginate", f"repos/{REPO}/pulls/{number}/files"])]
-    except GhError:
-        return None
-
-
-def listed_or_full_files(number, listed, changed):
-    """The changed paths of a pull request, or None when they cannot be read in full.
-
-    `gh pr list` lists at most 100 files; `changed` is the true count. A PR with more reads the full list from the REST
-    API. None means the list is incomplete, and the caller must wait rather than assume no overlap.
-    """
-    paths = [f["path"] for f in listed]
-    total = len(paths) if changed is None else changed
-    if total <= len(paths):
-        return paths
-    paths = full_pr_files(number)
-    return paths if paths is not None and len(paths) >= total else None
-
-
-def renamed_sources(number):
-    """The previous paths of the files this PR renames, from the REST list. Raises GhError when it cannot be read.
-
-    `gh pr list` gives the new path only, so a rename out of a fenced folder would be missed without this.
-    """
-    files = gh_json_pages(["api", "--paginate", f"repos/{REPO}/pulls/{number}/files"])
-    return [f["previous_filename"] for f in files if f.get("status") == "renamed" and f.get("previous_filename")]
+def load_default_branch():
+    """The name of the repository's default branch. Raises GhError when it cannot be read."""
+    branch = gh_json(["api", f"repos/{REPO}"]).get("default_branch")
+    if not branch:
+        raise GhError(f"gh api repos/{REPO} gave no default_branch")
+    return branch
 
 
 def load_top_level():
@@ -265,8 +266,10 @@ def load_prs():
 def load_prs_rest():
     """The same list as load_prs, read from REST: `pulls` for the PRs and `pulls/N/files` for each one's paths.
 
-    REST has no closing references, so `closes` is read from the PR body by closes_in_body.
+    REST has no closing references, so `closes` is read from the PR body by closes_in_body. GitHub honours closing
+    keywords only on pull requests into the default branch, so a PR into any other base closes nothing.
     """
+    default = load_default_branch()
     raw = gh_json_pages(["api", "--paginate", f"repos/{REPO}/pulls?state=open&per_page=100"])
     check_list_limit(raw)
     return [
@@ -276,7 +279,7 @@ def load_prs_rest():
             "draft": bool(pr.get("draft")),
             "created": pr.get("created_at") or "",
             "files": rest_pr_files(pr["number"]),
-            "closes": closes_in_body(pr.get("body")),
+            "closes": closes_in_body(pr.get("body")) if (pr.get("base") or {}).get("ref") == default else set(),
         }
         for pr in raw
     ]
