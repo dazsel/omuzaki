@@ -43,7 +43,7 @@ fn names(fixture: &Fixture, app: &str, features: &[&str]) -> Vec<String> {
 #[test]
 fn a_feature_of_a_dependency_switches_on_its_optional_dependency() {
     let fixture = workspace();
-    assert!(names(&fixture, "omuzaki-cli", &[]).is_empty());
+    assert_eq!(names(&fixture, "omuzaki-cli", &[]), Vec::<String>::new());
     assert_eq!(names(&fixture, "omuzaki-cli", &["omuzaki-stage/wgpu"]), ["Shade"]);
     // The implicit feature of the optional dependency, named through the dependency that declares it.
     assert_eq!(names(&fixture, "omuzaki-cli", &["omuzaki-stage/omuzaki-render"]), ["Shade"]);
@@ -66,5 +66,5 @@ fn a_weak_feature_does_not_activate_a_dependency_nothing_else_needs() {
          omuzaki-stage = { path = \"../omuzaki-stage\", optional = true }\n\
          [features]\nweak = [\"omuzaki-stage?/wgpu\"]\n",
     );
-    assert!(names(&fixture, "omuzaki-cli", &["weak"]).is_empty());
+    assert_eq!(names(&fixture, "omuzaki-cli", &["weak"]), Vec::<String>::new());
 }
