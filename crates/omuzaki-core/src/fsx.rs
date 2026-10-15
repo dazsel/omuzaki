@@ -4,10 +4,10 @@
 //! never half of one. It is the shared form of the save that project files use; the callers decide what the path
 //! means and whether links in it are allowed.
 
-use std::collections::hash_map::RandomState;
+use std::collections::hash_map::{DefaultHasher, RandomState};
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
-use std::hash::{BuildHasher, Hasher};
+use std::hash::{BuildHasher, Hash, Hasher};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -42,7 +42,7 @@ fn run_nonce() -> u64 {
 
 /// Replaces the file at `path` with `text`, creating any missing folders first.
 ///
-/// The text goes to a new temporary file next to the target, named `.<name>.<pid>-<nonce>-<n>.tmp`. Each call makes
+/// The text goes to a new temporary file next to the target, named `.<hash of name>-<pid>-<nonce>-<n>.tmp`. Each call makes
 /// its own, so concurrent saves of one path never write into each other's file. The temporary file is flushed to
 /// disk, then renamed over the target. The rename replaces the target in one step on unix and on Windows
 /// (`std::fs::rename` over an existing file, never a remove followed by a rename), so no reader ever finds the file
@@ -101,14 +101,16 @@ fn create_temp(parent: &Path, name: &OsStr) -> io::Result<(PathBuf, File)> {
     Err(io::Error::new(io::ErrorKind::AlreadyExists, "no free name for a temporary file"))
 }
 
-/// The file name for one save: a hidden name built from the target's name, the process id, the run's nonce and a
-/// counter that never repeats in this process.
+/// The file name for one save: a hidden name made of a hash of the target's name, the process id, the run's nonce and
+/// a counter that never repeats in this process.
+///
+/// The target's own name is not copied in. A long target name plus the suffix could pass the 255-byte limit most file
+/// systems put on one name; the hash keeps the name short whatever the target's length, and the suffix keeps it unique.
 fn temp_name(name: &OsStr) -> OsString {
     let n = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let mut tmp_name = OsString::from(".");
-    tmp_name.push(name);
-    tmp_name.push(format!(".{}-{:016x}-{n}.tmp", std::process::id(), run_nonce()));
-    tmp_name
+    let mut hasher = DefaultHasher::new();
+    name.hash(&mut hasher);
+    format!(".{:016x}-{}-{:016x}-{n}.tmp", hasher.finish(), std::process::id(), run_nonce()).into()
 }
 
 /// Writes `text` into `file` and flushes it to disk. Taking the file by value closes it before the rename.
@@ -300,6 +302,18 @@ mod tests {
             }
         });
         assert_eq!(names(&scratch.dir), vec!["doc.toml"]);
+    }
+
+    #[test]
+    fn a_long_target_name_still_saves() {
+        // The temporary name must fit a file name (255 bytes on most systems) even when the target's name is close to
+        // that limit, so it cannot copy the target's name in.
+        let scratch = Scratch::new("long_name");
+        let long = "n".repeat(250);
+        let path = scratch.dir.join(&long);
+        write_atomic(&path, "ok\n").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "ok\n");
+        assert_eq!(names(&scratch.dir), vec![long]);
     }
 
     #[test]
