@@ -14,8 +14,26 @@
 //! a `register_model` token that isn't a direct `register_model!("<id>", include_str!("<path>"))` call (an alias, a
 //! re-export, a use inside another macro's definition), an `include!` whose path isn't a string literal or doesn't
 //! resolve to a file in the crate's `src/`, and a licence file that doesn't parse. Every `include!` is followed,
-//! whatever the extension of the file, and the file is scanned like any other source. The one exception is
-//! `include!(concat!(env!("OUT_DIR"), …))`, the file `build.rs` generates, which holds no source to read.
+//! whatever the extension of the file, and the file is scanned like any other source.
+//!
+//! A `#[path = "…"]` in a crate's `src/` is followed the same way: its target must resolve inside the crate's `src/`
+//! (where every file is scanned) and be a file the gate can read; one that leaves `src/`, or isn't a string literal,
+//! fails. A `[lib]` or `[[bin]]` `path` in the crate's `Cargo.toml` outside `src/` fails too, since the gate never
+//! reads those files. (`tests/` and `benches/` are not shipped code and are not scanned.)
+//!
+//! `include!(concat!(env!("OUT_DIR"), "/<file>"))` holds the file `build.rs` generates, which the gate can't read, so it
+//! is allowed only for a reviewed list of generators ([`REVIEWED_GENERATORS`]), by file name, and only in a crate that
+//! has a `build.rs`. Each is safe because its generator emits only `mod` / `#[path]` lines into the crate's own `src/`
+//! tree (every file there is scanned), `link()` calls, or data, and never a registration macro:
+//!
+//! - `ops_mods.rs`, `crate_mods.rs`: `omuzaki_embed::modules`, one `#[path = "<abs>"] pub mod <name>;` per file or
+//!   folder of the crate's `src/`;
+//! - `migrations.rs`: `omuzaki-doc`'s `module_decls`, the same `#[path]` + `mod` lines for `src/migrations/`;
+//! - `link_calls.rs`: `omuzaki_link_build::emit`, one `<crate>::link();` per flagged dependency;
+//! - `looks.rs`: `omuzaki-char`'s `build.rs`, a `static` table of `include_str!` of `library/looks/*.toml` (data);
+//! - `seed.rs`: `omuzaki_embed::embed_dir`, a table of `include_str!` of a folder's files (data; no crate uses it yet).
+//!
+//! Any other `OUT_DIR` include fails, so a new generator is added to the list in review, not by a crate on its own.
 //!
 //! Checked: every `models/*.model.toml` of a workspace crate whose name doesn't end in `-mock`. It runs no build, only
 //! parsing and reads. `cargo xtask check` runs it on the whole repo, since it is cheap.
@@ -36,10 +54,11 @@ const ALLOWED_STATUS: [&str; 2] = ["yes", "conditions"];
 /// The folder of licence files the register is generated from, relative to the workspace root.
 const REGISTER: &str = "docs/licensing/deps";
 
-/// One licence file: its `item`, `status` and `condition` (the last names the licence).
+/// One licence file: its `item`, `kind`, `status` and `condition` (the last names the licence).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
     item: String,
+    kind: String,
     status: String,
     condition: String,
 }
@@ -51,6 +70,7 @@ pub fn rows(entries: &[Named]) -> Vec<Row> {
         .iter()
         .map(|(_, entry)| Row {
             item: entry.item.clone(),
+            kind: entry.kind.clone(),
             status: entry.status.clone(),
             condition: entry.condition.clone(),
         })
@@ -69,8 +89,14 @@ pub fn problems(file: &str, text: &str, register: &[Row], sources: &[(String, St
         Err(errors) => errors.iter().map(ToString::to_string).collect(),
     };
     if let Some(item) = &manifest.card.register {
-        match register.iter().find(|row| &row.item == item) {
-            None => out.push(format!("no licence file for `{item}` in {REGISTER}/")),
+        let named: Vec<&Row> = register.iter().filter(|row| &row.item == item).collect();
+        match named.iter().find(|row| is_model_kind(&row.kind)) {
+            None if named.is_empty() => out.push(format!("no licence file for `{item}` in {REGISTER}/")),
+            None => out.push(format!(
+                "the licence file for `{item}` in {REGISTER}/ is kind `{}`, not a model; model `{}` needs a \
+                 `kind = \"model\"` entry",
+                named[0].kind, manifest.id
+            )),
             Some(row) if !ALLOWED_STATUS.contains(&row.status.as_str()) => out.push(format!(
                 "the licence file for `{item}` in {REGISTER}/ is `{}`; a shipped model needs `yes` or `conditions`",
                 row.status
@@ -102,6 +128,12 @@ pub fn problems(file: &str, text: &str, register: &[Row], sources: &[(String, St
         }
     }
     out
+}
+
+/// Whether a licence file's `kind` marks a model: `model`, or a `+` combination that includes it (`model+code`), the
+/// way `docs/licensing/deps/*.toml` marks one.
+fn is_model_kind(kind: &str) -> bool {
+    kind.split('+').any(|part| part.trim() == "model")
 }
 
 /// The SPDX tokens of `text`: runs of identifier characters (a trailing `.` or `:` is sentence punctuation) and the
@@ -150,15 +182,31 @@ fn is_non_commercial(spdx: &str) -> bool {
     })
 }
 
+/// The generators whose `include!(concat!(env!("OUT_DIR"), "/<file>"))` the gate allows, by file name. Each emits only
+/// `mod` / `#[path]` lines into the crate's own `src/`, `link()` calls, or data, never a registration macro (module doc).
+const REVIEWED_GENERATORS: [&str; 6] =
+    ["ops_mods.rs", "crate_mods.rs", "link_calls.rs", "migrations.rs", "looks.rs", "seed.rs"];
+
+/// A crate as [`unchecked_registrations`] sees it.
+struct Crate<'a> {
+    /// Its package name.
+    name: &'a str,
+    /// Its workspace-relative folder.
+    dir: &'a str,
+    /// Whether the folder holds a `build.rs`.
+    build_script: bool,
+}
+
 /// Every problem with the `register_model!` calls of one crate that no manifest check can see: a call whose literals
 /// can't be read, and one that includes anything but `<crate>/models/<name>.model.toml`, the only files the gate scans.
-/// An `include!` of a file outside `<crate>/src/`, or of one missing from `sources`, is a problem too: the gate never
-/// reads it, so it could hide a registration. `include!(concat!(env!("OUT_DIR"), …))` (a file `build.rs` generates) is
-/// the one include it allows. `dir` is the crate's workspace-relative folder; `sources` the `(path, text)` of its `.rs`
-/// files and of every file they `include!` ([`with_includes`]). Either separator
+/// An `include!` or `#[path]` of a file outside `<crate>/src/`, or of one missing from `sources`, is a problem too: the
+/// gate never reads it, so it could hide a registration. So is an `include!(concat!(env!("OUT_DIR"), …))` of a file
+/// that is not in [`REVIEWED_GENERATORS`], or in a crate with no `build.rs`. `sources` is the `(path, text)` of the
+/// crate's `.rs` files and of every file they `include!` or `#[path]` ([`with_includes`]). Either separator
 /// (`/` or `\`) may be used, since Windows paths come back with `\`.
-fn unchecked_registrations(dir: &str, sources: &[(String, String)]) -> Vec<String> {
-    let dir = normalise(dir);
+fn unchecked_registrations(krate: &Crate<'_>, sources: &[(String, String)]) -> Vec<String> {
+    let dir = normalise(krate.dir);
+    let in_src = |resolved: &str| resolved.starts_with(&format!("{dir}/src/"));
     let mut out = Vec::new();
     for (path, source) in sources {
         let path = path.replace('\\', "/");
@@ -183,10 +231,19 @@ fn unchecked_registrations(dir: &str, sources: &[(String, String)]) -> Vec<Strin
         for include in source_includes(source) {
             match include {
                 Err(reason) => out.push(format!("{path}: {reason}")),
-                Ok(None) => {}
-                Ok(Some(include)) => {
+                Ok(Include::Generated(file)) => {
+                    if !(krate.build_script && REVIEWED_GENERATORS.contains(&file.as_str())) {
+                        out.push(format!(
+                            "{path}: crate `{}` includes `{file}` from `OUT_DIR`, which the gate can't read and which \
+                             is not a reviewed generator of a crate with a `build.rs`; add the generator to \
+                             REVIEWED_GENERATORS in xtask/src/models.rs in review",
+                            krate.name
+                        ));
+                    }
+                }
+                Ok(Include::File(include)) => {
                     let resolved = normalise(&format!("{from}/{include}"));
-                    if !resolved.starts_with(&format!("{dir}/src/")) {
+                    if !in_src(&resolved) {
                         out.push(format!(
                             "{path}: `include!` reads `{include}`, outside the crate's `src/`, which the gate doesn't scan \
                              for `register_model!`"
@@ -200,13 +257,78 @@ fn unchecked_registrations(dir: &str, sources: &[(String, String)]) -> Vec<Strin
                 }
             }
         }
+        for attribute in path_attributes(source) {
+            match attribute {
+                Err(reason) => out.push(format!("{path}: {reason}")),
+                Ok((line, target)) => {
+                    let resolved = normalise(&format!("{from}/{target}"));
+                    if is_absolute(&target) || !in_src(&resolved) {
+                        out.push(format!(
+                            "{path}: line {line}: `#[path = \"{target}\"]` leaves the crate's `src/`, which the gate \
+                             doesn't scan for `register_model!`"
+                        ));
+                    } else if !sources.iter().any(|(other, _)| normalise(other) == resolved) {
+                        out.push(format!(
+                            "{path}: line {line}: `#[path = \"{target}\"]` is not a file the gate could read, so it can't \
+                             scan it for `register_model!`"
+                        ));
+                    }
+                }
+            }
+        }
     }
     out
 }
 
-/// What each `include!` in one Rust source reads: `Ok(Some(path))` for a string literal, `Ok(None)` for the generated
-/// `concat!(env!("OUT_DIR"), …)` form, `Err` for anything else (the gate can't tell what it includes).
-fn source_includes(source: &str) -> Vec<Result<Option<String>, String>> {
+/// Whether a path is absolute on Unix or Windows (a leading separator, or a drive such as `C:`).
+fn is_absolute(path: &str) -> bool {
+    path.starts_with(['/', '\\']) || path.as_bytes().get(1) == Some(&b':')
+}
+
+/// Every problem with the `[lib]` and `[[bin]]` targets of one `Cargo.toml`: a `path` outside `src/` holds library or
+/// binary code the gate never scans, and a manifest that doesn't parse can't be shown to have none.
+fn target_problems(text: &str) -> Vec<String> {
+    let table: toml::Table = match text.parse() {
+        Ok(table) => table,
+        Err(error) => return vec![format!("Cargo.toml cannot be read: {error}")],
+    };
+    let mut targets = Vec::new();
+    if let Some(lib) = table.get("lib") {
+        targets.push(("[lib]", lib));
+    }
+    if let Some(toml::Value::Array(bins)) = table.get("bin") {
+        targets.extend(bins.iter().map(|bin| ("[[bin]]", bin)));
+    }
+    let mut out = Vec::new();
+    for (section, target) in targets {
+        match target.get("path") {
+            None => {}
+            Some(toml::Value::String(path)) => {
+                if is_absolute(path) || !normalise(path).starts_with("src/") {
+                    out.push(format!(
+                        "Cargo.toml: {section} `path = \"{path}\"` is outside `src/`, which the gate scans"
+                    ));
+                }
+            }
+            Some(_) => {
+                out.push(format!("Cargo.toml: {section} `path` is not a string, so the gate can't tell where it is"));
+            }
+        }
+    }
+    out
+}
+
+/// What an `include!` reads: a file by path, or a file `build.rs` generates under `OUT_DIR`.
+#[derive(Debug, PartialEq, Eq)]
+enum Include {
+    /// A string-literal path, relative to the including file.
+    File(String),
+    /// The name of the file in `concat!(env!("OUT_DIR"), "/<name>")`.
+    Generated(String),
+}
+
+/// What each `include!` in one Rust source reads; `Err` for anything the gate can't tell the target of.
+fn source_includes(source: &str) -> Vec<Result<Include, String>> {
     let toks = tokens(source);
     let mut found = Vec::new();
     for at in 0..toks.len() {
@@ -216,21 +338,87 @@ fn source_includes(source: &str) -> Vec<Result<Option<String>, String>> {
         }
         let line = toks[at].line;
         if let Some(path) = toks.get(at + 3).and_then(string_value) {
-            found.push(path.map(Some).map_err(|reason| format!("line {line}: {reason}")));
+            found.push(path.map(Include::File).map_err(|reason| format!("line {line}: {reason}")));
             continue;
         }
-        let generated = toks.get(at + 3).is_some_and(|t| t.is_ident("concat"))
-            && is_punct(&toks, at + 4, '!')
-            && toks.get(at + 5).and_then(closer).is_some()
-            && toks.get(at + 6).is_some_and(|t| t.is_ident("env"))
-            && is_punct(&toks, at + 7, '!')
-            && toks.get(at + 8).and_then(closer).is_some()
-            && toks.get(at + 9).and_then(string_value).is_some_and(|name| name.as_deref() == Ok("OUT_DIR"));
-        found.push(if generated {
-            Ok(None)
-        } else {
-            Err(format!("line {line}: `include!` isn't a string literal or `concat!(env!(\"OUT_DIR\"), …)`"))
-        });
+        found.push(generated_include(&toks, at + 3).ok_or_else(|| {
+            format!("line {line}: `include!` isn't a string literal or `concat!(env!(\"OUT_DIR\"), \"/<file>\")`")
+        }));
+    }
+    found
+}
+
+/// The file name of `concat!(env!("OUT_DIR"), "/<file>")` starting at `at`, with nothing else in the call.
+fn generated_include(toks: &[Token], at: usize) -> Option<Include> {
+    let concat_close = (toks.get(at)?.is_ident("concat") && is_punct(toks, at + 1, '!'))
+        .then(|| toks.get(at + 2).and_then(closer))
+        .flatten()?;
+    let env_close = (toks.get(at + 3)?.is_ident("env") && is_punct(toks, at + 4, '!'))
+        .then(|| toks.get(at + 5).and_then(closer))
+        .flatten()?;
+    let var = toks.get(at + 6).and_then(string_value)?.ok()?;
+    if var != "OUT_DIR" || !is_punct(toks, at + 7, env_close) || !is_punct(toks, at + 8, ',') {
+        return None;
+    }
+    let file = toks.get(at + 9).and_then(string_value)?.ok()?;
+    let end = if is_punct(toks, at + 10, ',') { at + 11 } else { at + 10 };
+    let name = file.strip_prefix('/').unwrap_or(&file);
+    let closed = is_punct(toks, end, concat_close) && toks.get(end + 1).and_then(closer_of).is_some();
+    (closed && !name.is_empty() && !name.contains(['/', '\\'])).then(|| Include::Generated(name.to_owned()))
+}
+
+/// Whether the token closes any delimiter (`)`, `]` or `}`).
+fn closer_of(token: &Token) -> Option<char> {
+    [')', ']', '}'].into_iter().find(|&c| token.is_punct(c))
+}
+
+/// The `(line, path)` of every `#[path = "…"]` in one Rust source, including one inside `#[cfg_attr(…, path = "…")]`;
+/// `Err` for a `path =` that isn't a string literal, and for a relative `..` path inside an inline module, whose
+/// directory the gate doesn't track.
+fn path_attributes(source: &str) -> Vec<Result<(u32, String), String>> {
+    let toks = tokens(source);
+    let mut found = Vec::new();
+    let mut depth = 0usize;
+    let mut at = 0;
+    while at < toks.len() {
+        if toks[at].is_punct('{') {
+            depth += 1;
+        } else if toks[at].is_punct('}') {
+            depth = depth.saturating_sub(1);
+        }
+        let inner = is_punct(&toks, at + 1, '!');
+        if toks[at].is_punct('#') && is_punct(&toks, at + 1 + usize::from(inner), '[') {
+            let open = at + 1 + usize::from(inner);
+            let mut level = 0usize;
+            let mut end = toks.len();
+            for (index, token) in toks.iter().enumerate().skip(open) {
+                if closer(token).is_some() {
+                    level += 1;
+                } else if closer_of(token).is_some() {
+                    level = level.saturating_sub(1);
+                    if level == 0 {
+                        end = index;
+                        break;
+                    }
+                }
+            }
+            for index in open..end {
+                if !(toks[index].is_ident("path") && is_punct(&toks, index + 1, '=')) {
+                    continue;
+                }
+                let line = toks[index].line;
+                found.push(match toks.get(index + 2).and_then(string_value) {
+                    Some(Ok(path)) if depth > 0 && path.contains("..") => Err(format!(
+                        "line {line}: `#[path = \"{path}\"]` inside an inline module, where the gate can't resolve a `..`"
+                    )),
+                    Some(Ok(path)) => Ok((line, path)),
+                    Some(Err(reason)) => Err(format!("line {line}: {reason}")),
+                    None => Err(format!("line {line}: `#[path = …]` isn't a string literal")),
+                });
+            }
+            at = end;
+        }
+        at += 1;
     }
     found
 }
@@ -456,8 +644,8 @@ fn rust_sources(root: &Path, dir: &Path, out: &mut Vec<(String, String)>) {
     }
 }
 
-/// `sources` plus every file they `include!` (whatever its extension) that lies in the crate's `src/` and can be read,
-/// followed until no new file turns up. An include that can't be read is left out, and [`unchecked_registrations`]
+/// `sources` plus every file they `include!` or name in a `#[path]` (whatever its extension) that lies in the crate's `src/` and can be read,
+/// followed until no new file turns up. A file that can't be read is left out, and [`unchecked_registrations`]
 /// reports it.
 fn with_includes(root: &Path, dir: &str, sources: &mut Vec<(String, String)>) {
     let dir = normalise(dir);
@@ -465,9 +653,14 @@ fn with_includes(root: &Path, dir: &str, sources: &mut Vec<(String, String)>) {
     while next < sources.len() {
         let path = sources[next].0.replace('\\', "/");
         let from = path.rsplit_once('/').map_or("", |(parent, _)| parent);
-        let wanted: Vec<String> = source_includes(&sources[next].1)
+        let files = source_includes(&sources[next].1)
             .into_iter()
-            .filter_map(|include| include.ok().flatten())
+            .filter_map(|include| match include {
+                Ok(Include::File(path)) => Some(path),
+                _ => None,
+            })
+            .chain(path_attributes(&sources[next].1).into_iter().filter_map(|attribute| attribute.ok().map(|a| a.1)));
+        let wanted: Vec<String> = files
             .map(|include| normalise(&format!("{from}/{include}")))
             .filter(|resolved| resolved.starts_with(&format!("{dir}/src/")))
             .collect();
@@ -520,7 +713,14 @@ pub fn report(workspace: &Workspace) -> bool {
         let mut sources = Vec::new();
         rust_sources(&workspace.root, &workspace.root.join(&package.dir).join("src"), &mut sources);
         with_includes(&workspace.root, &package.dir.to_string_lossy(), &mut sources);
-        found.extend(unchecked_registrations(&package.dir.to_string_lossy(), &sources));
+        let dir = package.dir.to_string_lossy();
+        let cargo = workspace.root.join(&package.dir).join("Cargo.toml");
+        if let Ok(text) = fs::read_to_string(&cargo) {
+            found.extend(target_problems(&text).into_iter().map(|p| format!("{dir}/{p}")));
+        }
+        let build_script = workspace.root.join(&package.dir).join("build.rs").is_file();
+        let krate = Crate { name: &package.name, dir: &dir, build_script };
+        found.extend(unchecked_registrations(&krate, &sources));
         for (file, text) in &manifests {
             checked += 1;
             found.extend(problems(file, text, &register, &sources).into_iter().map(|p| format!("{file}: {p}")));
@@ -567,8 +767,17 @@ mod tests {
         }
     }
 
+    /// A crate in the fixture workspace, with a `build.rs`.
+    fn krate(dir: &str) -> Crate<'_> {
+        Crate { name: "omuzaki-tiny", dir, build_script: true }
+    }
+
     fn row(item: &str, status: &str, condition: &str) -> Row {
-        Row { item: item.to_owned(), status: status.to_owned(), condition: condition.to_owned() }
+        row_of_kind(item, "model", status, condition)
+    }
+
+    fn row_of_kind(item: &str, kind: &str, status: &str, condition: &str) -> Row {
+        Row { item: item.to_owned(), kind: kind.to_owned(), status: status.to_owned(), condition: condition.to_owned() }
     }
 
     /// A good shipped manifest, citing the `Tiny model` row, with the given `urls` and `id`.
@@ -788,7 +997,7 @@ spdx = "MIT OR Apache-2.0"
     /// What `unchecked_registrations` says about `text`, as if it were `crates/omuzaki-tiny/src/lib.rs`.
     fn unchecked(text: &str) -> Vec<String> {
         unchecked_registrations(
-            "crates/omuzaki-tiny",
+            &krate("crates/omuzaki-tiny"),
             &[("crates/omuzaki-tiny/src/lib.rs".to_owned(), text.to_owned())],
         )
     }
@@ -880,7 +1089,7 @@ spdx = "MIT OR Apache-2.0"
                 r#"register_model!("other", include_str!("../models/tiny.model.toml"));"#.to_owned(),
             ),
         ];
-        assert_eq!(unchecked_registrations("crates/omuzaki-tiny", &sources), Vec::<String>::new());
+        assert_eq!(unchecked_registrations(&krate("crates/omuzaki-tiny"), &sources), Vec::<String>::new());
         let found = problems(FILE, &manifest("tiny", HTTPS), &register(), &sources);
         assert_eq!(found.len(), 1, "{found:?}");
         assert!(found[0].contains("registrations.inc registers `other` for this file"), "{found:?}");
@@ -888,7 +1097,7 @@ spdx = "MIT OR Apache-2.0"
             sources[0].clone(),
             (sources[1].0.clone(), r#"register_model!("x", include_str!("../assets/x.toml"));"#.to_owned()),
         ];
-        assert_eq!(unchecked_registrations("crates/omuzaki-tiny", &outside).len(), 1);
+        assert_eq!(unchecked_registrations(&krate("crates/omuzaki-tiny"), &outside).len(), 1);
     }
 
     #[test]
@@ -976,13 +1185,13 @@ spdx = "MIT OR Apache-2.0"
     fn windows_paths_resolve_like_unix_ones() {
         let call = r#"register_model!("x", include_str!("../models/x.model.toml"));"#;
         let sources = [("crates\\omuzaki-tiny\\src\\lib.rs".to_owned(), call.to_owned())];
-        assert_eq!(unchecked_registrations("crates\\omuzaki-tiny", &sources), Vec::<String>::new());
+        assert_eq!(unchecked_registrations(&krate("crates\\omuzaki-tiny"), &sources), Vec::<String>::new());
         let back = r#"register_model!("x", include_str!("..\\models\\x.model.toml"));"#;
         let sources = [("crates\\omuzaki-tiny\\src\\lib.rs".to_owned(), back.to_owned())];
-        assert_eq!(unchecked_registrations("crates/omuzaki-tiny", &sources), Vec::<String>::new());
+        assert_eq!(unchecked_registrations(&krate("crates/omuzaki-tiny"), &sources), Vec::<String>::new());
         let outside = r#"register_model!("x", include_str!("..\\assets\\x.toml"));"#;
         let sources = [("crates\\omuzaki-tiny\\src\\lib.rs".to_owned(), outside.to_owned())];
-        assert_eq!(unchecked_registrations("crates\\omuzaki-tiny", &sources).len(), 1);
+        assert_eq!(unchecked_registrations(&krate("crates\\omuzaki-tiny"), &sources).len(), 1);
     }
 
     #[test]
@@ -1007,7 +1216,11 @@ spdx = "MIT OR Apache-2.0"
                 present("registrations.rs"),
                 present("sub/registrations.rs"),
             ];
-            assert_eq!(unchecked_registrations("crates/omuzaki-tiny", &sources), Vec::<String>::new(), "{text}");
+            assert_eq!(
+                unchecked_registrations(&krate("crates/omuzaki-tiny"), &sources),
+                Vec::<String>::new(),
+                "{text}"
+            );
         }
         for text in [
             r#"include!(concat!(env!("OUT_DIR"), "/ops_mods.rs"));"#,
@@ -1116,5 +1329,141 @@ const DOC: &str = "register_model!(\"tiny\", include_str!(\"../models/tiny.model
 
         fs::write(tiny.join("models/tiny.model.toml"), manifest("tiny", "")).unwrap();
         assert!(!report(&ws));
+    }
+
+    #[test]
+    fn a_row_that_is_not_a_model_fails_naming_the_row_and_the_model() {
+        for kind in ["crate", "native", "code"] {
+            let rows = vec![row_of_kind("Tiny model", kind, "yes", "MIT OR Apache-2.0")];
+            let found = problems(FILE, &manifest("tiny", HTTPS), &rows, &good_source("tiny"));
+            assert_eq!(found.len(), 1, "{kind}: {found:?}");
+            assert!(found[0].contains("`Tiny model`") && found[0].contains("model `tiny`"), "{found:?}");
+            assert!(found[0].contains(&format!("kind `{kind}`")), "{found:?}");
+        }
+        for kind in ["model", "model+code", "model+crate"] {
+            let rows = vec![row_of_kind("Tiny model", kind, "yes", "MIT OR Apache-2.0")];
+            assert!(problems(FILE, &manifest("tiny", HTTPS), &rows, &good_source("tiny")).is_empty(), "{kind}");
+        }
+        let both = vec![
+            row_of_kind("Tiny model", "crate", "yes", "MIT OR Apache-2.0"),
+            row_of_kind("Tiny model", "model", "yes", "MIT OR Apache-2.0"),
+        ];
+        assert_eq!(problems(FILE, &manifest("tiny", HTTPS), &both, &good_source("tiny")), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_path_attribute_leaving_src_fails_naming_the_file_and_the_attribute() {
+        for target in ["../build/gen.rs", "../../omuzaki-other/src/lib.rs", "/abs/src/gen.rs", "C:/gen.rs"] {
+            let found = unchecked(&format!("#[path = \"{target}\"]\nmod gen;"));
+            assert_eq!(found.len(), 1, "{target}: {found:?}");
+            assert!(found[0].contains("crates/omuzaki-tiny/src/lib.rs: line 1: `#[path"), "{found:?}");
+            assert!(found[0].contains("leaves the crate's `src/`"), "{found:?}");
+        }
+        let cfg = unchecked("#[cfg_attr(unix, path = \"../gen.rs\")]\nmod gen;");
+        assert_eq!(cfg.len(), 1, "{cfg:?}");
+        for text in ["#[path = GEN]\nmod gen;", "#[path = concat!(\"a\", \"b\")]\nmod gen;"] {
+            assert_eq!(unchecked(text).len(), 1, "{text}");
+        }
+        let inline = unchecked("mod outer {\n#[path = \"../x.rs\"]\nmod x;\n}");
+        assert_eq!(inline.len(), 1, "{inline:?}");
+        assert!(inline[0].contains("inline module"), "{inline:?}");
+    }
+
+    #[test]
+    fn a_path_attribute_inside_src_is_followed_and_must_be_readable() {
+        let sources = [
+            ("crates/omuzaki-tiny/src/lib.rs".to_owned(), "#[path = \"sub/inner.rs\"]\nmod inner;".to_owned()),
+            ("crates/omuzaki-tiny/src/sub/inner.rs".to_owned(), String::new()),
+        ];
+        assert_eq!(unchecked_registrations(&krate("crates/omuzaki-tiny"), &sources), Vec::<String>::new());
+        let found = unchecked_registrations(&krate("crates/omuzaki-tiny"), &sources[..1]);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("not a file the gate could read"), "{found:?}");
+        let hidden = [
+            sources[0].clone(),
+            (
+                "crates/omuzaki-tiny/src/sub/inner.rs".to_owned(),
+                r#"register_model!("x", include_str!("../assets/x.toml"));"#.to_owned(),
+            ),
+        ];
+        assert_eq!(unchecked_registrations(&krate("crates/omuzaki-tiny"), &hidden).len(), 1);
+    }
+
+    #[test]
+    fn a_path_attribute_target_is_read_from_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write_deps(root, "yes");
+        let tiny = root.join("crates/omuzaki-tiny");
+        fs::create_dir_all(tiny.join("models")).unwrap();
+        fs::create_dir_all(tiny.join("src/sub")).unwrap();
+        fs::write(tiny.join("models/tiny.model.toml"), manifest("tiny", HTTPS)).unwrap();
+        fs::write(tiny.join("src/lib.rs"), "#[path = \"sub/x.inc\"]\nmod x;").unwrap();
+        fs::write(tiny.join("src/sub/x.inc"), good_source("tiny")[0].1.replace("../models", "../../models")).unwrap();
+        let mut ws = workspace(&[("omuzaki-tiny", &[])]);
+        ws.root = root.to_path_buf();
+        assert!(report(&ws));
+        fs::write(tiny.join("src/sub/x.inc"), good_source("other")[0].1.replace("../models", "../../models")).unwrap();
+        assert!(!report(&ws), "the id registered in a `#[path]` file that isn't `.rs` is checked");
+    }
+
+    #[test]
+    fn a_lib_or_bin_path_outside_src_fails() {
+        for manifest in [
+            "[lib]\npath = \"gen/lib.rs\"\n",
+            "[lib]\npath = \"../elsewhere/lib.rs\"\n",
+            "[[bin]]\nname = \"a\"\npath = \"src/main.rs\"\n[[bin]]\nname = \"b\"\npath = \"tools/b.rs\"\n",
+            "[lib]\npath = 3\n",
+            "[lib\n",
+        ] {
+            assert_eq!(target_problems(manifest).len(), 1, "{manifest}: {:?}", target_problems(manifest));
+        }
+        for manifest in
+            ["[package]\nname = \"a\"\n", "[lib]\npath = \"src/lib.rs\"\n", "[[bin]]\npath = \"./src/bin/a.rs\"\n"]
+        {
+            assert_eq!(target_problems(manifest), Vec::<String>::new(), "{manifest}");
+        }
+        let found = target_problems("[lib]\npath = \"gen/lib.rs\"\n");
+        assert!(found[0].contains("[lib]") && found[0].contains("gen/lib.rs"), "{found:?}");
+    }
+
+    #[test]
+    fn a_custom_target_path_fails_the_gate_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write_deps(root, "yes");
+        let tiny = root.join("crates/omuzaki-tiny");
+        fs::create_dir_all(tiny.join("src")).unwrap();
+        fs::write(tiny.join("src/lib.rs"), "").unwrap();
+        fs::write(tiny.join("Cargo.toml"), "[lib]\npath = \"src/lib.rs\"\n").unwrap();
+        let mut ws = workspace(&[("omuzaki-tiny", &[])]);
+        ws.root = root.to_path_buf();
+        assert!(report(&ws));
+        fs::write(tiny.join("Cargo.toml"), "[lib]\npath = \"gen/lib.rs\"\n").unwrap();
+        assert!(!report(&ws));
+    }
+
+    #[test]
+    fn only_a_reviewed_generator_may_be_included_from_out_dir() {
+        for file in REVIEWED_GENERATORS {
+            let text = format!(r#"include!(concat!(env!("OUT_DIR"), "/{file}"));"#);
+            assert_eq!(unchecked(&text), Vec::<String>::new(), "{file}");
+            let none = Crate { build_script: false, ..krate("crates/omuzaki-tiny") };
+            let source = [("crates/omuzaki-tiny/src/lib.rs".to_owned(), text)];
+            assert_eq!(unchecked_registrations(&none, &source).len(), 1, "{file} needs a build.rs");
+        }
+        for text in [
+            r#"include!(concat!(env!("OUT_DIR"), "/registrations.rs"));"#,
+            r#"include!(concat!(env!("OUT_DIR"), "/sub/ops_mods.rs"));"#,
+            r#"include!(concat!(env!("OUT_DIR"), "/ops_mods.rs", "/extra"));"#,
+            r#"include!(concat!(env!("OUT_DIR"), NAME));"#,
+            r#"include!(concat!(env!("OUT_DIR")));"#,
+        ] {
+            let found = unchecked(text);
+            assert_eq!(found.len(), 1, "{text}: {found:?}");
+        }
+        let found = unchecked(r#"include!(concat!(env!("OUT_DIR"), "/registrations.rs"));"#);
+        assert!(found[0].contains("crate `omuzaki-tiny`") && found[0].contains("`registrations.rs`"), "{found:?}");
+        assert!(found[0].contains("REVIEWED_GENERATORS"), "{found:?}");
     }
 }
