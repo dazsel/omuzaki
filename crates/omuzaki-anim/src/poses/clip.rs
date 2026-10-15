@@ -59,7 +59,7 @@ pub enum ClipError {
     #[error("clip {0} has no summary")]
     EmptySummary(String),
     /// The length is not finite and above zero.
-    #[error("clip {id}: length {length} is not a finite number above zero and at most 3600 s")]
+    #[error("clip {id}: length {length} is not a finite number above zero and at most {} s", MAX_LENGTH)]
     BadLength {
         /// The clip.
         id: String,
@@ -253,7 +253,8 @@ struct ClipFile {
 }
 
 impl PoseClip {
-    /// Parses one clip file and checks it: a valid id and summary, a finite length above zero, at least one key, key
+    /// Parses one clip file and checks it: a valid id and summary, a finite length above zero and at most
+    /// [`MAX_LENGTH`] (3600 s), at least one key, key
     /// times finite, strictly increasing and inside `0..=length` (below `length` when looped), every pose in
     /// one of `libraries` (the first that has it wins), a known easing, and an easing that stops at the keys when
     /// looped. `label` names the file in error messages.

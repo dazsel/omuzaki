@@ -276,10 +276,15 @@ fn a_long_clip_with_a_late_first_key_blends_across_its_seam() {
     let keys = "[[keys]]\nt = 2000.0\npose = \"wave-right\"\n[[keys]]\nt = 2500.0\npose = \"wave-left\"\n";
     let c = parse(&file("length = 3600.0\nlooped = true\neasing = \"smooth\"", keys)).unwrap();
     let (right, left) = (c.keys()[0].posture, c.keys()[1].posture);
-    // The seam runs from 2500 s through the end to 2000 s of the next cycle: 3100 s, and 3050 s is the middle.
-    let mid = c.sample_posture(3050.0);
-    assert_ne!(mid, left);
-    assert_ne!(mid, right);
+    // The seam runs from 2500 s through the end of the clip to 2000 s of the next cycle: 1100 s + 2000 s = 3100 s long,
+    // so its midpoint is 1550 s in, at 4050 s, which wraps to 450 s. Its ends are the two keys.
+    assert_eq!(c.sample_posture(2500.0), left);
+    assert_eq!(c.sample_posture(5600.0), right);
+    assert_eq!(c.sample_posture(4050.0), Posture::blend(&left, &right, 0.5));
+    assert_eq!(c.sample_posture(450.0), Posture::blend(&left, &right, 0.5));
+    // A quarter and three quarters of the way, through the seam's two halves (`smooth` at 0.25 and 0.75).
+    assert_eq!(c.sample_posture(3275.0), Posture::blend(&left, &right, 0.15625));
+    assert_eq!(c.sample_posture(4825.0), Posture::blend(&left, &right, 0.84375));
     assert_same(&c.sample_posture(100.0).body, &c.sample_posture(100.0 + 3600.0).body, 1e-5);
     let after = c.sample_posture(1000.0);
     assert_ne!(after, left);
