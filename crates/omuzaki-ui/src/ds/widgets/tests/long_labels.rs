@@ -240,3 +240,44 @@ fn a_tooltip_dismissed_with_escape_comes_back_on_the_next_focus() {
     h.run_steps(8);
     assert!(shows_whole(&h), "the next focus shows the tooltip again");
 }
+
+#[test]
+fn a_hovered_cut_chip_whose_label_comes_to_fit_shows_no_tooltip() {
+    let mut h = crate::ds::testing::harness_state(Settings::default(), vec2(PANEL, 400.0), 120.0_f32, |ui, room| {
+        ui.set_max_width(*room);
+        ui.add(StatusChip::new(Status::Ok, NAME70));
+    });
+    h.run_steps(3);
+    let at = h.root().children_recursive().find(|n| n.accesskit_node().value().is_some_and(|v| v == NAME70));
+    let at = at.map(|n| n.rect().center());
+    assert!(at.is_some(), "the chip is in the panel");
+    h.hover_at(at.unwrap_or(pos2(0.0, 0.0)));
+    h.run_steps(8);
+    assert!(painted(h.output()).iter().filter(|p| p.text == NAME70).count() >= 2, "cut, it shows the tooltip");
+    // The room grows, so the label fits: the chip is still hovered, but the tooltip must go.
+    *h.state_mut() = 600.0;
+    h.run_steps(8);
+    let shown = painted(h.output());
+    assert_eq!(shown.iter().filter(|p| p.text == NAME70).count(), 1, "only the chip's own label is drawn");
+    assert!(shown.iter().all(|p| !(p.text == NAME70 && p.elided)), "and it is not cut");
+}
+
+#[test]
+fn a_focused_cut_chip_whose_label_comes_to_fit_shows_no_tooltip() {
+    let mut h = crate::ds::testing::harness_state(Settings::default(), vec2(PANEL, 400.0), 120.0_f32, |ui, room| {
+        ui.set_max_width(*room);
+        ui.add(GateChip::failed(NAME70, "0.81", "0.85"));
+    });
+    h.run_steps(3);
+    press(&mut h, Modifiers::NONE, Key::Tab);
+    h.run_steps(8);
+    assert!(
+        painted(h.output()).iter().filter(|p| p.text == NAME70).count() >= 2,
+        "cut and focused, it shows the tooltip"
+    );
+    // The room grows and the label fits: the chip keeps its focus, but its tooltip must go.
+    *h.state_mut() = 600.0;
+    h.run_steps(8);
+    let shown = painted(h.output());
+    assert_eq!(shown.iter().filter(|p| p.text == NAME70).count(), 1, "only the chip's own label is drawn");
+}

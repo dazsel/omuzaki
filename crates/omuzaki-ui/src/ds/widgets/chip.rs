@@ -35,8 +35,8 @@ fn label_room(fit: f32, fixed: f32) -> f32 {
 /// Completes a cut label with its tooltip: the whole text, shown on hover or on keyboard focus. `whole` builds it only
 /// when the tooltip is shown, so a chip that stays idle allocates nothing.
 ///
-/// `tip` is also called on the frame the chip stops being active: that call is what clears an Esc dismissal, and an
-/// idle chip would otherwise never make it, so the tooltip would stay hidden on the next focus.
+/// On the frame a chip stops being active (it lost its hover and focus, or its label now fits) the Esc dismissal is
+/// cleared directly, not through `tip`: `tip` on an idle chip would show the tooltip of a chip that now fits.
 fn cut_tip<'a>(response: Response, cut: bool, whole: impl FnOnce() -> Cow<'a, str>) -> Response {
     let active = cut && (response.hovered() || response.has_focus());
     if cut && response.has_focus() {
@@ -49,10 +49,14 @@ fn cut_tip<'a>(response: Response, cut: bool, whole: impl FnOnce() -> Cow<'a, st
     if active != was_active {
         response.ctx.data_mut(|d| d.insert_temp(key, active));
     }
-    if active || was_active {
+    if active {
         let whole = whole();
         response.tip(Tip::new(&whole))
     } else {
+        if was_active {
+            // The key is the one `TipExt::tip` keeps its Esc dismissal under (`tooltip.rs`).
+            response.ctx.data_mut(|d| d.remove::<bool>(response.id.with("tip_dismissed")));
+        }
         response
     }
 }
