@@ -361,7 +361,12 @@ fn widgets_of_different_kinds_can_share_a_salt_in_one_parent() {
             .filter(|(role, label)| h.get_by_role_and_label(*role, label).is_focused())
             .map(|(_, label)| *label)
             .collect();
-        assert_eq!(focused, [label], "focusing one of five widgets that share the salt \"x\" focuses only it");
+        assert_eq!(
+            focused,
+            [label],
+            "focusing one of the {} widgets that share the salt \"x\" focuses only it",
+            focusable.len()
+        );
     }
     h.get_by_role_and_label(Role::RadioGroup, "Mode");
 }
