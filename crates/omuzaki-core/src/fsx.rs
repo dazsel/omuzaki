@@ -1,7 +1,7 @@
 //! Crash-safe file writes.
 //!
 //! [`write_atomic`] replaces a whole file in one step, so a reader (or a crash) sees the old text or the new text,
-//! never half of one. It is the shared form of the save that project files use; the callers decide what the path
+//! never half of one. That holds on unix and macOS; on Windows it is best effort (see [`write_atomic`]). It is the shared form of the save that project files use; the callers decide what the path
 //! means and whether links in it are allowed.
 
 use std::collections::hash_map::{DefaultHasher, RandomState};
@@ -42,12 +42,17 @@ fn run_nonce() -> u64 {
 
 /// Replaces the file at `path` with `text`, creating any missing folders first.
 ///
-/// The text goes to a new temporary file next to the target, named `.<hash of name>-<pid>-<nonce>-<n>.tmp`. Each call makes
-/// its own, so concurrent saves of one path never write into each other's file. The temporary file is flushed to
-/// disk, then renamed over the target. The rename replaces the target in one step on unix and on Windows
-/// (`std::fs::rename` over an existing file, never a remove followed by a rename), so no reader ever finds the file
-/// missing or half written. If the write or the rename fails, the temporary file this call created is removed and the
-/// old file, if there was one, is left as it was.
+/// The text goes to a new temporary file next to the target, named `.<hash of name>-<pid>-<nonce>-<n>.tmp`. Each call
+/// makes its own, so concurrent saves of one path never write into each other's file. The temporary file is flushed to
+/// disk, then renamed over the target with `std::fs::rename`, never a remove followed by a rename.
+///
+/// On unix and macOS the rename replaces the target in one step, so no reader ever finds the file missing or half
+/// written. On Windows the rename is `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING`. Microsoft does not document that as
+/// atomic, although in practice it is one journaled operation on NTFS, so the Windows guarantee is best effort. Making
+/// it certain needs a POSIX-semantics rename, which #1757 tracks.
+///
+/// If the write or the rename fails, the temporary file this call created is removed and the old file, if there was
+/// one, is left as it was.
 ///
 /// On unix the parent folder is flushed after the rename, so the new name survives a crash too. Windows does not offer
 /// that, so only the file's own contents are flushed there. Folders created on the way are not flushed.
