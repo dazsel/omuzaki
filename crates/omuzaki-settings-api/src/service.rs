@@ -112,8 +112,10 @@ impl ListFilter {
 
 /// The effective values at one instant: immutable, shared by `Arc`, replaced as a whole on every change (D6).
 ///
-/// A read is an `Arc` clone plus a map lookup, with no lock beyond the pointer swap in the service. It holds every
-/// registered key, so a lookup of a registered key always succeeds.
+/// Taking the snapshot is an `Arc` clone with no lock beyond the pointer swap in the service, and [`value`](Self::value)
+/// is a map lookup. The typed [`get`](Self::get) clones and deserialises, so it allocates for strings and lists: a
+/// real-time consumer copies the value it needs when its key's event arrives and never calls it per frame (D6).
+/// A snapshot holds every registered key, so a lookup of a registered key always succeeds.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Snapshot {
     entries: BTreeMap<String, (Value, Source)>,
