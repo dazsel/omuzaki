@@ -17,7 +17,7 @@ use crate::{MockLibrary, apply_with_library};
 pub struct SeedProblem {
     /// The item's id.
     pub item: String,
-    /// The rule: `check`, `ops`, `rights`, `origin`, `assets`, `id`, `library` or `apply`.
+    /// The rule: `check`, `ops`, `rights`, `origin`, `assets`, `id`, `publisher`, `library` or `apply`.
     pub rule: &'static str,
     /// What is wrong.
     pub detail: String,
@@ -30,9 +30,10 @@ impl fmt::Display for SeedProblem {
 }
 
 /// Checks every item of `source`: it passes `check` and `check_ops` against the ops linked into this binary, carries
-/// exactly the first-party rights and a non-empty `origin`, has no `assets`, has an id no other item of the source
-/// uses (a repeat is reported whether or not it is identical, and whatever its version), and dry-runs with
-/// [`apply_with_library`] on the character in `doc` (bundles resolve in the source's own items).
+/// exactly the first-party rights and a non-empty `origin`, has no `assets`, no publisher and no signature, has an
+/// `omuzaki/` id that no other item of the source uses (a repeat is reported whether or not it is identical, and
+/// whatever its version), and dry-runs with [`apply_with_library`] on the character in `doc` (bundles resolve in the
+/// source's own items).
 ///
 /// `$target` is bound to the one part of a `target_part` kind, and the dry run fails naming the candidates when there
 /// is none or more than one. A bundle binds `$parts.<key>` only for the keys its own dependency closure creates, and
@@ -80,6 +81,13 @@ pub fn assert_source(source: &dyn ItemSource, doc: &dyn DocRead) {
 fn check_item(m: &ItemManifest, library: &MockLibrary, doc: &dyn DocRead) -> Vec<SeedProblem> {
     let found = |rule, detail: String| SeedProblem { item: m.id.clone(), rule, detail };
     let mut out: Vec<SeedProblem> = Vec::new();
+    // A seed item is first-party by construction: an `omuzaki/` id, and nothing claiming another publisher.
+    if !m.id.starts_with("omuzaki/") {
+        out.push(found("id", "seed ids are under `omuzaki/`".to_owned()));
+    }
+    if m.publisher.is_some() || m.signature.is_some() {
+        out.push(found("publisher", "seed items carry no publisher and no signature".to_owned()));
+    }
     // These three are rules of the seed, whatever the id's namespace; `check` reports them only for `omuzaki/`.
     let own = ["rights", "origin", "assets"];
     out.extend(

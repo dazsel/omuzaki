@@ -127,7 +127,7 @@ struct Apply {
 impl OpVisitor for Apply {
     fn op(&mut self, index: usize, op: &str, args: Value) -> Result<(), OpError> {
         // A dry-run context needs no grants, so the recipe ceiling is enforced here, before planning.
-        check_ceiling(index, op)?;
+        check_step(index, op, &args)?;
         let (actor, clock) = (Actor::System, FakeClock::new(Seconds(0.0)));
         let patch = {
             let ctx = OpCtx::new(&self.scratch, &actor, &clock).with_dry_run(true);
@@ -140,8 +140,23 @@ impl OpVisitor for Apply {
     }
 }
 
+/// What an apply requires of a step before it plans it, and so what availability requires: a registered `Edit` op
+/// within the recipe ceiling (safety rules 1 and 3), whose arguments decode into the op's schema. Nothing here reads
+/// the document, so it holds for every character; what a plan finds in the document is the apply's alone.
+///
+/// # Errors
+/// `Invalid` on `step/<i>/op` for an unregistered op, `Denied` above the ceiling, and the decoder's own error, with
+/// the step in front of its field, for missing, mistyped or unknown arguments.
+pub(crate) fn check_step(index: usize, op: &str, args: &Value) -> Result<(), OpError> {
+    check_ceiling(index, op)?;
+    match find(op) {
+        Some(registration) => (registration.decode)(args.clone()).map(drop).map_err(|e| step_error(index, &e)),
+        None => Ok(()),
+    }
+}
+
 /// Safety rule 1: a step names a registered op of kind `Edit` with scope `edit:character` or `edit:scene`.
-pub(crate) fn check_ceiling(index: usize, op: &str) -> Result<(), OpError> {
+fn check_ceiling(index: usize, op: &str) -> Result<(), OpError> {
     let field = format!("step/{index}/op");
     let registration = find(op)
         .ok_or_else(|| OpError::invalid(field.as_str(), format!("`{op}` is not a registered op in this build")))?;

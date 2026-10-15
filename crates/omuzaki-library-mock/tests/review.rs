@@ -688,3 +688,117 @@ fn a_parameter_override_is_validated_against_the_dependency_it_is_passed_to() {
     .unwrap_err();
     assert!(e.field.as_deref().is_some_and(|f| f.contains("step/0")), "{e:?}");
 }
+
+// --- Round 6: availability is the checks an apply makes, on every guard branch; seeds are first-party ---
+
+/// Steps whose validity differs: an op that is fine, and ones whose arguments or op an apply refuses.
+const STEP_VARIANTS: [(&str, &str); 7] = [
+    ("fine", "palette.set\"\n[step.args]\ncharacter = \"$character\"\nslot = \"outfit\"\ncolour = \"#112233\""),
+    ("missing-arg", "palette.set\"\n[step.args]\ncharacter = \"$character\"\nslot = \"outfit\""),
+    ("mistyped-arg", "palette.set\"\n[step.args]\ncharacter = \"$character\"\nslot = \"outfit\"\ncolour = 5"),
+    (
+        "unknown-arg",
+        "palette.set\"\n[step.args]\ncharacter = \"$character\"\nslot = \"outfit\"\ncolour = \"#112233\"\nzzz = 1",
+    ),
+    ("unregistered", "ghost.missing\"\n[step.args]\ncharacter = \"$character\""),
+    ("above-ceiling", "mock.export\"\n[step.args]\ncharacter = \"$character\""),
+    ("a-query", "mock.peek\"\n[step.args]\ncharacter = \"$character\""),
+];
+const GUARDS: [(&str, &str); 4] = [
+    ("always", ""),
+    ("soft", "when = { templates = [\"soft-sd\"] }\n"),
+    ("tall", "when = { templates = [\"tall\"] }\n"),
+    ("any", "when = { templates = [\"*\"] }\n"),
+];
+/// A template each guard names, and one none does.
+const TEMPLATES: [&str; 3] = ["soft-sd", "tall", "elsewhere"];
+
+fn library_knowing_the_test_ops() -> MockLibrary {
+    let mut library = MockLibrary::new();
+    library.set_known_ops(
+        [
+            "part.add",
+            "palette.set",
+            "face.set_style",
+            "part.tint",
+            "mock.stray",
+            "mock.peek",
+            "mock.export",
+            "mock.refuse",
+        ]
+        .map(String::from),
+    );
+    library
+}
+
+#[test]
+fn an_item_is_unavailable_exactly_when_a_dry_run_apply_fails_on_some_template() {
+    let mut library = library_knowing_the_test_ops();
+    let doc = support::doc();
+    let (mut unavailable_count, mut available_count) = (0, 0);
+    for (variant, step) in STEP_VARIANTS {
+        for (guard_name, guard) in GUARDS {
+            let id = format!("omuzaki/colourways/guard-{variant}-{guard_name}");
+            let m = setting(&id, &format!("[[step]]\n{guard}op = \"{step}\n"));
+            library.insert(m.clone(), ItemScope::FirstParty).unwrap();
+            let why = library.describe(&id.parse().unwrap(), None).unwrap().info.unavailable;
+            let applies = |template: &str| {
+                let bindings = Bindings { template: Some(template.parse().unwrap()), ..bound() };
+                apply_for_test(&m, &doc, &bindings)
+            };
+            let failing: Vec<&str> = TEMPLATES.iter().copied().filter(|t| applies(t).is_err()).collect();
+            assert_eq!(why.is_some(), !failing.is_empty(), "{id}: {why:?}, fails on {failing:?}");
+            if why.is_some() {
+                unavailable_count += 1;
+            } else {
+                available_count += 1;
+            }
+        }
+    }
+    assert_eq!((unavailable_count, available_count), (24, 4), "only the fine step is available, under any guard");
+}
+
+#[test]
+fn a_guarded_step_is_validated_whichever_template_the_item_is_applied_to() {
+    let mut library = library_knowing_the_test_ops();
+    // A missing op under a guard for one template and a fine step otherwise: unavailable, naming the op.
+    let guarded = setting(
+        "omuzaki/colourways/guarded-ghost",
+        &format!(
+            "{PALETTE}[[step]]\nwhen = {{ templates = [\"soft-sd\"] }}\nop = \"ghost.missing\"\n[step.args]\ncharacter = \"$character\"\n"
+        ),
+    );
+    library.insert(guarded.clone(), ItemScope::FirstParty).unwrap();
+    let why = library.describe(&guarded.item_id().unwrap(), None).unwrap().info.unavailable;
+    assert!(why.is_some_and(|w| w.contains("ghost.missing")));
+    // It is the same on a soft-sd character, where the step runs and an apply fails.
+    let bindings = Bindings { template: Some("soft-sd".parse().unwrap()), ..bound() };
+    assert!(apply_for_test(&guarded, &support::doc(), &bindings).is_err());
+    // Arguments that don't decode are named in the reason, the way the decoder names them.
+    let mistyped = setting(
+        "omuzaki/colourways/mistyped",
+        "[[step]]\nop = \"palette.set\"\n[step.args]\ncharacter = \"$character\"\nslot = \"outfit\"\ncolour = 5\n",
+    );
+    library.insert(mistyped.clone(), ItemScope::FirstParty).unwrap();
+    let why = library.describe(&mistyped.item_id().unwrap(), None).unwrap().info.unavailable.expect("refused");
+    assert!(why.contains("step/0") && why.contains("colour"), "{why}");
+}
+
+#[test]
+fn a_seed_item_must_be_first_party_by_id_publisher_and_signature() {
+    let doc = support::doc();
+    let good = setting("omuzaki/colourways/seed-ok", PALETTE);
+    assert_eq!(seed::check_source(&Source(vec![good.clone()]), &doc), vec![]);
+    let mut foreign = good.clone();
+    foreign.id = "acme/colourways/seed-ok".into();
+    let problems = seed::check_source(&Source(vec![foreign]), &doc);
+    assert!(problems.iter().any(|p| p.rule == "id" && p.detail.contains("omuzaki/")), "{problems:?}");
+    let mut published = good.clone();
+    published.publisher = Some(omuzaki_library_api::Publisher { name: "Acme".into(), key: "00".repeat(32) });
+    let mut signed = good;
+    signed.signature = Some("00".repeat(64));
+    for broken in [published, signed] {
+        let problems = seed::check_source(&Source(vec![broken]), &doc);
+        assert!(problems.iter().any(|p| p.rule == "publisher"), "{problems:?}");
+    }
+}

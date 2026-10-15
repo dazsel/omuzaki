@@ -12,13 +12,16 @@ use omuzaki_ops_api::{OpError, find};
 use omuzaki_store_api::{ContentHash, licence_gate};
 use serde_json::Value;
 
-use crate::apply::{MAX_DEPTH, OpVisitor, check_ceiling, fresh_part_id, walk};
+use crate::apply::{MAX_DEPTH, OpVisitor, check_step, fresh_part_id, walk};
 use crate::facts::{CharacterFacts, status};
 
 /// The most rows a page returns, and the page size when `limit` is 0.
 const MAX_LIMIT: usize = 100;
 
 /// The ops fixtures use; `ghost.missing` is deliberately absent. See [`MockLibrary::set_known_ops`].
+/// A body template no `when` guard names, to validate the steps that every guard excludes.
+const UNGUARDED_TEMPLATE: &str = "unguarded";
+
 const DEFAULT_OPS: [&str; 3] = ["part.add", "palette.set", "face.set_style"];
 
 /// The precedence tier of a scope when an id is resolved without a pin (D11): first-party, then my library, then
@@ -39,7 +42,7 @@ struct Availability<'a> {
 }
 
 impl OpVisitor for Availability<'_> {
-    fn op(&mut self, index: usize, op: &str, _args: Value) -> Result<(), OpError> {
+    fn op(&mut self, index: usize, op: &str, args: Value) -> Result<(), OpError> {
         if !self.library.known_ops.contains(op) {
             return Err(OpError::invalid(
                 format!("step/{index}/op"),
@@ -48,7 +51,7 @@ impl OpVisitor for Availability<'_> {
         }
         // An op the mock was told about but this binary doesn't register has no kind or scope to judge.
         if find(op).is_some() {
-            check_ceiling(index, op)?;
+            check_step(index, op, &args)?;
         }
         Ok(())
     }
@@ -159,27 +162,55 @@ impl MockLibrary {
         Ok(())
     }
 
-    /// Why `m` can't be applied in this build: the first failure of the same validation an apply runs ([`walk`]), with
-    /// every step expanded against sample bindings, so a reserved target, an undeclared or out-of-range parameter, a
-    /// dependency that is missing or unavailable, an op that isn't registered or is above the recipe ceiling, and
-    /// nesting past the limit are all found the way an apply finds them. Loading a bundle first refuses a part key
-    /// two of its items create, and a cycle ([`closure_keys`](Self::closure_keys)).
+    /// Why `m` can't be applied in this build: the first failure of the checks an apply makes before it plans a step
+    /// ([`walk`] with [`check_step`]: expansion, parameters, dependencies, the recipe ceiling, argument decoding), run
+    /// once per body template a `when` guard names and once for a template none does, so a guarded step is validated
+    /// whichever template the item is later applied to. What a plan finds in a particular document (a slot that isn't
+    /// there) is not availability. Loading a bundle first refuses a part key two of its items create, and a cycle
+    /// ([`closure_keys`](Self::closure_keys)).
     fn unavailable(&self, m: &ItemManifest) -> Option<String> {
         let owners = match self.closure_keys(m) {
             Ok(owners) => owners,
             Err(why) => return Some(why),
         };
-        let mut bindings = Bindings {
-            character: CharId::new("sample").ok(),
-            target: PartId::new("sample-target").ok(),
-            name: Some(m.name.clone().unwrap_or_else(|| "sample".to_owned())),
-            template: BodyTemplateId::new("sample").ok(),
-            ..Bindings::default()
-        };
-        for key in owners.keys() {
-            bindings.parts.extend(fresh_part_id(key).ok().map(|id| (key.clone(), id)));
+        // A template no guard names, so the steps every guard excludes are covered by it too.
+        let mut templates = self.guard_templates(m, 0);
+        templates.insert(UNGUARDED_TEMPLATE.to_owned());
+        templates.iter().find_map(|template| {
+            let mut bindings = Bindings {
+                character: CharId::new("sample").ok(),
+                target: PartId::new("sample-target").ok(),
+                name: Some(m.name.clone().unwrap_or_else(|| "sample".to_owned())),
+                template: BodyTemplateId::new(template.as_str()).ok(),
+                ..Bindings::default()
+            };
+            for key in owners.keys() {
+                bindings.parts.extend(fresh_part_id(key).ok().map(|id| (key.clone(), id)));
+            }
+            walk(Some(self), m, &Params::new(), &bindings, 0, &mut Availability { library: self })
+                .err()
+                .map(|e| reason(&e))
+        })
+    }
+
+    /// The body templates named by `when` guards in `m` and in every item its steps apply.
+    fn guard_templates(&self, m: &ItemManifest, depth: usize) -> BTreeSet<String> {
+        let mut templates = BTreeSet::new();
+        for step in &m.steps {
+            let (guard, nested) = match step {
+                Step::Op(op) => (op.when.as_ref(), None),
+                Step::Item(item) => (item.when.as_ref(), Some(item)),
+            };
+            templates.extend(guard.into_iter().flat_map(|w| w.templates.iter().filter(|t| *t != "*").cloned()));
+            let found = nested.and_then(|item| {
+                let (id, req) = (ItemId::new(&item.item).ok()?, VersionReq::parse(&item.version).ok()?);
+                self.pick(&id, &req).ok()
+            });
+            if let Some(found) = found.filter(|_| depth < MAX_DEPTH) {
+                templates.extend(self.guard_templates(&found.item.manifest, depth + 1));
+            }
         }
-        walk(Some(self), m, &Params::new(), &bindings, 0, &mut Availability { library: self }).err().map(|e| reason(&e))
+        templates
     }
 
     /// Who creates each `$parts.<key>` across `m` and every item its steps apply, nested and sibling alike (design D7):
