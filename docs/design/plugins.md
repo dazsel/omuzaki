@@ -16,6 +16,8 @@ contract), the licence register's wasmtime and extism row.
 
 No plugin code exists. This page fixes the base contract every plugin is built against; the extension worlds (nodes,
 trackers, exporters, part generators, adapters: PL-03) are the next design's and only their seam is fixed here.
+**Note (ADR 0064):** they are designed in `plugin-extensions.md`, which settles the worlds, the instance kinds, threads
+and budgets per extension, and the `command` world of 14.1.
 
 The decisions in brief are ADR 0058's; this page gives the reasons and the numbers.
 
@@ -52,8 +54,9 @@ version it was built against, so the binary, not the manifest, is the authority.
   imports); a minor only adds functions or interfaces; a major gets the same one-back window as 0.x.
 - **The manifest's `api`** (`"^0.1"`) must agree with the component's imports; a mismatch is `PluginError::Manifest`
   at install, so a wrong manifest can't hide what the binary imports.
-- **One world per extension kind.** The base world is `plugin` (below). Each extension world (`node`, `tracker`,
-  `exporter`, `part-generator`, `adapter`) `include`s it and adds its own exports, so every plugin speaks the same base
+- **One world per extension kind.** The base world is `plugin` (below). Each extension world (`node-plugin`,
+  `adapter-plugin`, `tracker-plugin`, `exporter-plugin`, `part-plugin`, `command-plugin`; manifest keys `node`,
+  `adapter`, `tracker`, `exporter`, `part`, `command`, per ADR 0064) `include`s it and adds its own exports, so every plugin speaks the same base
   interfaces and a host checks one world per kind. The manifest's `worlds` key (§7) says which a component targets.
 - **Node activations never reach the base imports** (automation D15). The engine instance (§5.1) links `ops`, `data`
   and `http` to refusals (`denied`, detail "not in a node activation"); a node's only effect is the node world's
@@ -365,8 +368,9 @@ by the §10 single-thread ratio (1.43), and fails if 10⁶ fuel is outside 0.5 t
   instance at all, so the same show, seed and items give the same effects (automation D6). Fuel is deterministic too,
   so a node that runs out does so at the same point in both runs. Only the 2 ms epoch backstop depends on the
   machine; it fires on a machine far slower than `R`, and the node then faults (D5), which the run reports.
-- **Never on the render, audio or tracking thread.** An extension design may allow one exception only with its own
-  number and gate on the §10 table (say, a build-time part generator). Compiling runs on the worker, not the UI thread.
+- **Never on the render, audio or tracking thread.** ADR 0064 adds no exception: trackers run on their own
+  `plugin-track:<id>` thread, exporters in a job, part generators on the character builder's thread, each with its
+  number and gate (`plugin-extensions.md` §3). Compiling runs on the worker, not the UI thread.
 
 ### 5.2 The budget table
 
@@ -485,7 +489,7 @@ api = "^0.1"                   # must agree with the component's imports (1.1)
 licence = "MIT"                # an SPDX expression
 name = "Example"               # fallback for the Fluent `plugin-example-name`
 description = "Waves when the project opens."
-worlds = ["plugin"]            # the base world; PL-03 adds "node", "tracker", ...
+worlds = ["plugin"]            # the base world; PL-03's keys and sections: plugin-extensions.md §4.7
 component = "plugin.wasm"
 publisher = { name = "Example", key = "ed25519:<fingerprint>" }   # optional: unsigned plugins omit it
 
@@ -758,7 +762,8 @@ Ruled by the Runtime lead on #1537.
 1. **Plugin-defined ops: one static op, `plugin.run {id, command, args}`.** The op registry stays static; there is
    no run-time op table. Each command's schema reaches scripts, agents and MCP through `describe`, and its scope is
    declared in the manifest; the caller needs that scope, and the command runs in the plugin's session, but every
-   inner call is limited to the caller's grants as well (3.2). The `command` world itself is PL-03's.
+   inner call is limited to the caller's grants as well (3.2). The `command` world itself is PL-03's (ADR 0064:
+   `command-plugin`).
 2. **Unsigned plugins under development: a per-person dev key** (3.2), signed by the build script; it never
    leaves the machine and an approval against it covers only that machine.
 3. **Plugin memory in performance mode: 128 MiB inside `ram.runtime`, provisional.** The first node-plugin task
