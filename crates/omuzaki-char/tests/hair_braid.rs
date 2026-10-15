@@ -4,9 +4,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)] // helpers build fixtures; a bad one should stop the test with its reason
 #![allow(clippy::float_cmp, clippy::cast_precision_loss)] // exact values that were copied, not computed; indices are small
 
-use omuzaki_char::hair::compile::{HairGenCtx, UnitStream, stream};
+use omuzaki_char::hair::compile::{Dispatch, HairGenCtx, UnitStream, compile_groups, is_bilateral, stream};
 use omuzaki_char::hair::r#gen::braid;
-use omuzaki_char_api::{BraidGen, Dynamics, GroupId, HairRng, HeadSurface, Quality};
+use omuzaki_char_api::{BraidGen, Dynamics, Generator, GroupId, HairGroup, HairParams, HairRng, HeadSurface, Quality};
 use omuzaki_core::glam::Vec3;
 use omuzaki_core::rng::Rng;
 use omuzaki_face_api::Palette;
@@ -127,4 +127,24 @@ fn the_mirror_side_is_the_other_side_mirrored_with_the_sideways_swing_negated() 
             assert!((q.x + p.x).abs() < 1e-6 && (q.y - p.y).abs() < 1e-6 && (q.z - p.z).abs() < 1e-6, "strand {k}");
         }
     }
+}
+
+#[test]
+fn a_mirrored_braid_group_makes_the_same_clumps_as_an_unmirrored_one() {
+    // The braid makes both sides itself, so `mirror` must not add a second pair of strand sets.
+    let g = BraidGen::default();
+    assert!(is_bilateral(&Generator::Braid(g.clone())));
+    let palette = Palette::default();
+    let head = Ball;
+    let clumps_of = |mirror: bool| {
+        let group =
+            HairGroup { enabled: true, mirror, dynamics: Dynamics::default(), generator: Generator::Braid(g.clone()) };
+        let params = HairParams { groups: [(GroupId::new("braid").unwrap(), group)].into(), ..HairParams::default() };
+        let mut rng = Counting::default();
+        let entries = compile_groups(&params, &Dispatch, &head, &palette, Quality::Live, &mut rng).unwrap();
+        entries[0].group.clumps.len()
+    };
+    let (plain, mirrored) = (clumps_of(false), clumps_of(true));
+    assert_eq!(plain, 2 * usize::from(g.strands));
+    assert_eq!(mirrored, plain);
 }
