@@ -1,3 +1,9 @@
+---
+title: "MCP resources: the provider contract and URI table"
+summary: "the MCP resource provider contract, the `omuzaki://` URI table and the `omuzaki://project` summary shape."
+area: design
+---
+
 # MCP resources: the provider contract and URI table
 
 Prompts (recipes) are a separate seam: `PromptDef` and `McpOptions::with_prompt` (`prompts.rs`); the recipes land with the features whose ops they need.

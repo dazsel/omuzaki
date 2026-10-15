@@ -1,3 +1,9 @@
+---
+title: "0005: Rust core with one operation layer; egui + wgpu (2026-10-11)"
+summary: "Rust core with one operation layer; egui + wgpu"
+area: decisions
+---
+
 # 0005: Rust core with one operation layer; egui + wgpu (2026-10-11)
 
 **Context.**

@@ -1,3 +1,9 @@
+---
+title: "0015: Self-registrations reach every binary through `link()`, and a gate proves it (2026-10-12)"
+summary: "Self-registrations reach every binary through `link()`, and a gate proves it"
+area: decisions
+---
+
 # 0015: Self-registrations reach every binary through `link()`, and a gate proves it (2026-10-12)
 
 **Status:** accepted (2026-10-12). **Context:** registries on wasm (where the problem was first reported), and the earlier choice of self-registration instead of central lists.
