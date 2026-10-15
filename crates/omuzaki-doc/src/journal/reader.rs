@@ -39,7 +39,9 @@ pub enum End {
     Damaged {
         /// Where the log ends.
         at: Position,
-        /// How many valid frames lie after `at`, in this and later segments.
+        /// How many valid frames lie after `at`, in this and later segments. A lower bound: the scan that looks past
+        /// the bad frame has a work budget, and when it runs out the log is still reported as damaged, with at least 1
+        /// here although none of the frame-looking data after `at` may be intact.
         later_valid: usize,
     },
 }
@@ -66,7 +68,19 @@ impl Reader {
     /// [`JournalError::Io`] for a folder or file that can't be read. [`JournalError::TooNew`] for a newer header or an
     /// unknown required kind: nothing is returned, because the project opens read-only (4.5).
     /// [`JournalError::BadPayload`] from [`decode`].
+    ///
+    /// Looking past a bad frame for valid ones has a fixed work budget. If it runs out, the result is
+    /// [`End::Damaged`] and its `later_valid` is a lower bound, at least 1.
     pub fn scan(dir: &Path, from: Lsn) -> Result<Scan, JournalError> {
+        Self::scan_with_budget(dir, from, RESYNC_BUDGET)
+    }
+
+    /// [`scan`](Self::scan) with `budget` bytes of work for looking past a bad frame, so a test can exhaust it.
+    ///
+    /// # Errors
+    /// As [`scan`](Self::scan).
+    #[doc(hidden)]
+    pub fn scan_with_budget(dir: &Path, from: Lsn, budget: usize) -> Result<Scan, JournalError> {
         let segments = list_segments(dir)?;
         let start = start_index(&segments, from);
         for segment in segments.iter().skip(start) {
@@ -81,7 +95,7 @@ impl Reader {
             after: from,
             next: from,
             done: false,
-            budget: RESYNC_BUDGET,
+            budget,
             exhausted: false,
         };
         let end = scanner.run(start)?;
@@ -138,23 +152,31 @@ fn start_index(segments: &[Segment], from: Lsn) -> usize {
     segments.iter().rposition(|s| s.header.is_ok_and(|h| !h.is_prepared() && h.first.0 <= wanted)).unwrap_or(0)
 }
 
-/// The most payload bytes one scan hashes while it looks past a bad frame (journal.md 8.2): 256 MiB, a fraction of a
-/// second of CRC work however much damaged data the folder holds.
+/// The most payload bytes one scan hashes or skims while it looks past a bad frame (journal.md 8.2): 256 MiB, a
+/// fraction of a second of work however much damaged data the folder holds.
 const RESYNC_BUDGET: usize = 256 * 1024 * 1024;
 
 /// How many valid frames `bytes` holds, trying every byte offset and chaining from each frame found.
 ///
 /// A candidate is hashed only if its length fits the data and its payload looks like what a record holds (a JSON
-/// object, 4.5), so noise costs a few byte reads per offset, not a CRC over a long payload. The payload bytes hashed
-/// are charged to `budget`; when it runs out the count stops (`exhausted` is then true) and is a lower bound.
+/// object, 4.5, possibly padded with JSON whitespace), so noise costs a few byte reads per offset, not a CRC over a long
+/// payload. The payload bytes hashed, and the padding skipped, are charged to `budget`; when it runs out the count stops (`exhausted` is then true) and is a lower bound.
 fn count_frames(bytes: &[u8], budget: &mut usize) -> (usize, bool) {
     let (mut count, mut offset) = (0, 0);
     while offset < bytes.len() {
         let rest = tail(bytes, offset);
-        let Some(len) = candidate_len(rest) else {
+        let Some(len) = frame_len(rest) else {
             offset += 1;
             continue;
         };
+        let Some((looks_like_object, padding)) = skim_payload(rest, len, *budget) else {
+            return (count, true);
+        };
+        *budget -= padding;
+        if !looks_like_object {
+            offset += 1;
+            continue;
+        }
         if len > *budget {
             return (count, true);
         }
@@ -170,16 +192,29 @@ fn count_frames(bytes: &[u8], budget: &mut usize) -> (usize, bool) {
     (count, false)
 }
 
-/// The payload length of a frame that could start `rest`: a length in `1..=MAX_PAYLOAD` that fits, and a payload that
-/// starts with `{` and ends with `}`. Cheap; it can say yes to a frame whose CRC then fails, never no to a real record.
-fn candidate_len(rest: &[u8]) -> Option<usize> {
+/// The payload length a frame at the start of `rest` would have: in `1..=MAX_PAYLOAD` and fitting the data.
+fn frame_len(rest: &[u8]) -> Option<usize> {
     let header = rest.first_chunk::<FRAME_HEADER_LEN>()?;
     let len = usize::try_from(u32::from_le_bytes([header[0], header[1], header[2], header[3]])).ok()?;
-    if len == 0 || len > MAX_PAYLOAD {
+    let fits = len != 0 && len <= MAX_PAYLOAD && rest.len() >= FRAME_HEADER_LEN.checked_add(len)?;
+    fits.then_some(len)
+}
+
+/// Whether the `len` payload bytes after the frame header in `rest` start with `{` and end with `}`, ignoring JSON
+/// whitespace, and how many padding bytes that took to see. `None` when that is more than `budget`.
+fn skim_payload(rest: &[u8], len: usize, budget: usize) -> Option<(bool, usize)> {
+    let payload = rest.get(FRAME_HEADER_LEN..FRAME_HEADER_LEN + len)?;
+    let blank = |b: &u8| matches!(b, b' ' | b'\t' | b'\n' | b'\r');
+    let lead = payload.iter().take(budget.saturating_add(1)).take_while(|b| blank(b)).count();
+    if lead > budget {
         return None;
     }
-    let payload = rest.get(FRAME_HEADER_LEN..FRAME_HEADER_LEN.checked_add(len)?)?;
-    (payload.first() == Some(&b'{') && payload.last() == Some(&b'}')).then_some(len)
+    let trail = payload.iter().rev().take(budget.saturating_add(1)).take_while(|b| blank(b)).count();
+    if lead.saturating_add(trail) > budget {
+        return None;
+    }
+    let object = lead < len && payload.get(lead) == Some(&b'{') && payload.get(len - 1 - trail) == Some(&b'}');
+    Some((object, lead + trail))
 }
 
 /// Why reading one segment's frames stopped.

@@ -9,7 +9,7 @@ use std::path::Path;
 
 use omuzaki_doc::journal::{
     End, HEADER_LEN, JournalError, Position, Reader, Record, SKIPPABLE, SegmentHeader, SessionInfo, encode, kind,
-    segment_name, write_frame,
+    read_frame, segment_name, write_frame,
 };
 use omuzaki_history_api::{HistoryEntry, Lsn, WallTime};
 use omuzaki_ops_api::TxId;
@@ -397,5 +397,66 @@ fn a_large_noisy_tail_is_scanned_in_bounded_work() {
     assert_eq!(lsns(&scan), [1]);
     // Frame 3 is intact after the bad frame 2, so this is damage with one later valid frame... unless the noise
     // overwrote it: the noise is appended, so frame 3 is still there.
+    assert_eq!(scan.end, End::Damaged { at: at(1, second, 1), later_valid: 1 });
+}
+
+/// Frame 2 of `commits(1, 3)` with a payload byte flipped, so its CRC fails.
+fn with_bad_second(records: &[(Lsn, Record)]) -> (Vec<u8>, usize) {
+    let mut bytes = segment(1, records);
+    let second = offset_of(records, 1);
+    bytes[second + 20] ^= 0x01;
+    (bytes, second)
+}
+
+/// A commit frame whose JSON payload is wrapped in `pad` on both sides.
+fn padded_commit(lsn: u64, pad: &[u8]) -> Vec<u8> {
+    let bytes = frame(&commit(lsn));
+    let inner = read_frame(&bytes).unwrap().payload.to_vec();
+    let payload = [pad, &inner, pad].concat();
+    let mut out = Vec::new();
+    write_frame(Lsn(lsn), kind::COMMIT, 0, &payload, &mut out).unwrap();
+    out
+}
+
+#[test]
+fn a_whitespace_padded_frame_after_a_bad_one_is_counted() {
+    let records = commits(1, 2);
+    let (mut bytes, second) = with_bad_second(&records);
+    bytes.extend(padded_commit(3, b" \t\r\n "));
+    let dir = tempfile::tempdir().unwrap();
+    put(dir.path(), 1, &bytes);
+    let scan = Reader::scan(dir.path(), Lsn(0)).unwrap();
+    assert_eq!(lsns(&scan), [1]);
+    assert_eq!(scan.end, End::Damaged { at: at(1, second, 1), later_valid: 1 });
+}
+
+#[test]
+fn a_huge_whitespace_payload_is_cheap_and_not_a_frame() {
+    let records = commits(1, 2);
+    let (mut bytes, second) = with_bad_second(&records);
+    // A header claiming 8 MiB of payload, then 8 MiB of spaces: skimmed once, then skipped.
+    let len = 8u32 * 1024 * 1024;
+    bytes.extend(len.to_le_bytes());
+    bytes.extend([0u8; 16]);
+    bytes.extend(std::iter::repeat_n(b' ', usize::try_from(len).unwrap()));
+    let dir = tempfile::tempdir().unwrap();
+    put(dir.path(), 1, &bytes);
+    let scan = Reader::scan(dir.path(), Lsn(0)).unwrap();
+    assert_eq!(scan.end, End::TornTail { at: at(1, second, 1) });
+}
+
+#[test]
+fn an_exhausted_resync_budget_reports_damage_with_at_least_one_frame() {
+    // Frames 2 and 3 are both bad, so nothing valid follows the first bad frame.
+    let records = commits(1, 3);
+    let (mut bytes, second) = with_bad_second(&records);
+    bytes[offset_of(&records, 2) + 24] ^= 0x01;
+    let dir = tempfile::tempdir().unwrap();
+    put(dir.path(), 1, &bytes);
+    let scan = Reader::scan(dir.path(), Lsn(0)).unwrap();
+    assert_eq!(scan.end, End::TornTail { at: at(1, second, 1) });
+    // With no budget the scan can't look, so it assumes the worst: damaged, "at least 1" later frame.
+    let scan = Reader::scan_with_budget(dir.path(), Lsn(0), 0).unwrap();
+    assert_eq!(lsns(&scan), [1]);
     assert_eq!(scan.end, End::Damaged { at: at(1, second, 1), later_valid: 1 });
 }
