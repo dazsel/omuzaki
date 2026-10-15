@@ -564,3 +564,46 @@ fn a_removed_variant_field_or_trait_method_changes_the_surface() {
     }
     assert_eq!(scan(&SAMPLE.replace("    hidden: u8,\n", "    hidden: u16,\n")), before, "a private field is not API");
 }
+
+/// The signatures of the methods of `trait_name` declared in `file`, as the scanner records them.
+fn trait_methods(file: &str, trait_name: &str) -> Vec<(String, String)> {
+    let source = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(file)).unwrap();
+    let label = format!("trait {trait_name}: fn ");
+    scan(&source)
+        .into_iter()
+        .filter_map(|line| line.strip_prefix(&label).map(str::to_owned))
+        .map(|sig| (sig.split(['(', '<']).next().unwrap().to_owned(), sig))
+        .collect()
+}
+
+#[test]
+fn every_mutating_settings_method_takes_a_mode_and_an_actor() {
+    // The methods that only read. A new method is mutating until it is added here on purpose.
+    const READS: [&str; 8] = ["snapshot", "resolve", "list", "profiles", "changes", "findings", "subscribe", "session"];
+    let methods = trait_methods("src/service.rs", "Settings");
+    assert!(methods.len() >= 15, "the scan found only {} methods: {methods:?}", methods.len());
+    for (name, sig) in &methods {
+        let reads = READS.contains(&name.as_str());
+        let mutating_shape = sig.contains("mode: Mode, by: &Actor");
+        assert!(reads != mutating_shape, "`{name}` must either be a read, or take `mode: Mode, by: &Actor`: {sig}");
+    }
+    for read in READS {
+        assert!(methods.iter().any(|(name, _)| name == read), "`{read}` is listed as a read but is not a method");
+    }
+}
+
+#[test]
+fn every_session_store_method_is_a_read_a_durable_write_with_a_result_or_a_named_debounced_write() {
+    const DEBOUNCED: [&str; 3] = ["forget", "set_window", "mark_version_seen"];
+    let methods = trait_methods("src/session.rs", "SessionStore");
+    assert!(methods.len() >= 6, "the scan found only {} methods: {methods:?}", methods.len());
+    for (name, sig) in &methods {
+        let returns_result = sig.contains("-> Result<");
+        let debounced = DEBOUNCED.contains(&name.as_str());
+        // `state` is the one read; a debounced write cannot fail the caller; everything else promises durability.
+        assert!(
+            name == "state" || (debounced != returns_result),
+            "`{name}` must return a Result (a durable write) or be one of the debounced writes {DEBOUNCED:?}: {sig}"
+        );
+    }
+}

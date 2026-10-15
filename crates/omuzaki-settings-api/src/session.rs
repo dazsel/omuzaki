@@ -142,6 +142,12 @@ impl SessionState {
 }
 
 /// The session store. Updates are applied by [`SessionState`]'s methods; the store decides when to write.
+///
+/// Its methods come in two durability classes, and the signature says which. A method that promises a durable write
+/// **returns a `Result`**: [`begin_open`](Self::begin_open) and [`opened`](Self::opened), the two halves of the
+/// crash-loop guard (D9). The others are debounced and cannot fail the caller: a failed flush is logged and retried,
+/// and [`flush`](Self::flush) reports it. Session state is not a setting, has no [`Mode`](omuzaki_ops_api::Mode) and no
+/// actor, and never enters the change log.
 pub trait SessionStore: Send + Sync {
     /// A copy of the state.
     fn state(&self) -> SessionState;
@@ -153,17 +159,33 @@ pub trait SessionStore: Send + Sync {
     /// [`SettingErrorKind::Storage`](crate::error::SettingErrorKind::Storage).
     fn begin_open(&self, project: &Path) -> Result<(), SettingError>;
 
-    /// The project is open and shown (see [`SessionState::opened`]).
-    fn opened(&self, project: &Path, name: &str);
+    /// The project is open and shown (see [`SessionState::opened`]): clears the `opening` guard and makes that
+    /// durable **now**, like [`begin_open`](Self::begin_open), because a guard that stays set makes the next launch
+    /// take a successful open for a crash. The in-memory state is updated either way. When the write fails the project
+    /// is open all the same: the caller reports the error, and may call this again or [`flush`](Self::flush).
+    ///
+    /// # Errors
+    /// [`SettingErrorKind::Storage`](crate::error::SettingErrorKind::Storage).
+    fn opened(&self, project: &Path, name: &str) -> Result<(), SettingError>;
 
-    /// Removes `project` from the recent list.
+    /// Removes `project` from the recent list. **Debounced**: `state()` shows the change at once and the store writes
+    /// it shortly after. A write that fails is logged as a warning and retried with the next change and by
+    /// [`flush`](Self::flush); it never fails the caller.
     fn forget(&self, project: &Path);
 
-    /// Remembers a window's geometry.
+    /// Remembers a window's geometry. Debounced, like [`forget`](Self::forget).
     fn set_window(&self, id: &str, geometry: WindowGeometry);
 
-    /// Remembers the dismissed release-notes version.
+    /// Remembers the dismissed release-notes version. Debounced, like [`forget`](Self::forget).
     fn mark_version_seen(&self, version: &str);
+
+    /// Writes any debounced state now. The app calls it at exit: it is the one place a failed debounced write reaches
+    /// a caller. A store with nothing pending, and a store with no files, return `Ok`.
+    ///
+    /// # Errors
+    /// [`SettingErrorKind::Storage`](crate::error::SettingErrorKind::Storage); the state stays in memory and is
+    /// retried by the next write.
+    fn flush(&self) -> Result<(), SettingError>;
 }
 
 #[cfg(test)]

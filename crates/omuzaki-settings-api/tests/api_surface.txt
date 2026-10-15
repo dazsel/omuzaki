@@ -169,20 +169,21 @@ src/service.rs: pub trait Settings: Send + Sync
 src/service.rs: trait Settings: fn snapshot(&self) -> Arc<Snapshot>
 src/service.rs: trait Settings: fn resolve(&self, key: &str) -> Result<Resolved, SettingError>
 src/service.rs: trait Settings: fn list(&self, filter: &ListFilter) -> Vec<Resolved>
-src/service.rs: trait Settings: fn set_raw(&self, key: &str, value: Value, layer: Layer, by: &Actor) -> Result<Change, SettingError>
-src/service.rs: trait Settings: fn reset(&self, key: &str, layer: Layer, by: &Actor) -> Result<Option<Change>, SettingError>
+src/service.rs: trait Settings: fn set_raw(&self, key: &str, value: Value, layer: Layer, mode: Mode, by: &Actor) -> Result<Change, SettingError>
+src/service.rs: trait Settings: fn reset(&self, key: &str, layer: Layer, mode: Mode, by: &Actor) -> Result<Option<Change>, SettingError>
 src/service.rs: trait Settings: fn profiles(&self) -> Vec<ProfileInfo>
-src/service.rs: trait Settings: fn save_profile(&self, name: &str, from: ProfileSource, overwrite: bool, by: &Actor) -> Result<ProfileInfo, SettingError>
-src/service.rs: trait Settings: fn rename_profile(&self, id: &ProfileId, name: &str) -> Result<ProfileInfo, SettingError>
-src/service.rs: trait Settings: fn delete_profile(&self, id: &ProfileId) -> Result<(), SettingError>
-src/service.rs: trait Settings: fn switch_profile(&self, to: Option<&ProfileId>, by: &Actor) -> Result<SwitchReport, SettingError>
+src/service.rs: trait Settings: fn save_profile(&self, name: &str, from: ProfileSource, overwrite: bool, mode: Mode, by: &Actor) -> Result<ProfileInfo, SettingError>
+src/service.rs: trait Settings: fn rename_profile(&self, id: &ProfileId, name: &str, mode: Mode, by: &Actor) -> Result<ProfileInfo, SettingError>
+src/service.rs: trait Settings: fn delete_profile(&self, id: &ProfileId, mode: Mode, by: &Actor) -> Result<SwitchReport, SettingError>
+src/service.rs: trait Settings: fn switch_profile(&self, to: Option<&ProfileId>, mode: Mode, by: &Actor) -> Result<SwitchReport, SettingError>
+src/service.rs: trait Settings: fn reload(&self, mode: Mode, by: &Actor) -> Result<SwitchReport, SettingError>
 src/service.rs: trait Settings: fn changes(&self, limit: usize) -> Vec<SettingChange>
 src/service.rs: trait Settings: fn findings(&self) -> Vec<SettingFinding>
 src/service.rs: trait Settings: fn subscribe(&self) -> Subscription<SettingsEvent>
 src/service.rs: trait Settings: fn session(&self) -> &dyn SessionStore
 src/service.rs: pub trait SettingsExt: Settings
 src/service.rs: trait SettingsExt: fn get<S: Setting>(&self) -> Result<S::Value, SettingError>
-src/service.rs: trait SettingsExt: fn set<S: Setting>(&self, value: &S::Value, layer: Layer, by: &Actor) -> Result<Change, SettingError>
+src/service.rs: trait SettingsExt: fn set<S: Setting>(&self, value: &S::Value, layer: Layer, mode: Mode, by: &Actor) -> Result<Change, SettingError>
 src/service.rs: impl<T: Settings + ?Sized> SettingsExt for T {}
 src/session.rs: pub const MAX_RECENT: usize = 20
 src/session.rs: #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)] #[non_exhaustive] pub struct RecentProject
@@ -214,10 +215,11 @@ src/session.rs: impl SessionState: pub fn mark_version_seen(&mut self, version: 
 src/session.rs: pub trait SessionStore: Send + Sync
 src/session.rs: trait SessionStore: fn state(&self) -> SessionState
 src/session.rs: trait SessionStore: fn begin_open(&self, project: &Path) -> Result<(), SettingError>
-src/session.rs: trait SessionStore: fn opened(&self, project: &Path, name: &str)
+src/session.rs: trait SessionStore: fn opened(&self, project: &Path, name: &str) -> Result<(), SettingError>
 src/session.rs: trait SessionStore: fn forget(&self, project: &Path)
 src/session.rs: trait SessionStore: fn set_window(&self, id: &str, geometry: WindowGeometry)
 src/session.rs: trait SessionStore: fn mark_version_seen(&self, version: &str)
+src/session.rs: trait SessionStore: fn flush(&self) -> Result<(), SettingError>
 src/setting.rs: pub trait Setting: 'static
 src/setting.rs: trait Setting: type Value: Clone + PartialEq + fmt::Debug + Serialize + DeserializeOwned + JsonSchema + Send + Sync + 'static
 src/setting.rs: trait Setting: const META: SettingMeta
