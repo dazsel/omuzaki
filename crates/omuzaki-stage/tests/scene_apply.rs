@@ -140,7 +140,7 @@ fn applying_allocates_nothing_for_a_value_edit_or_an_unchanged_scene() {
     resolved.resolve_into(CheckedScene::new(&def).unwrap(), &figures, ASPECT).unwrap();
     let (mut applier, mut target) = (Applier::new(), empty_scene());
     applier.apply(&resolved, &mut target);
-    def.cameras.get_mut(&CameraId::new("front").unwrap()).unwrap().yaw = 20.0;
+    def.cameras.get_mut(&CameraId::new("close").unwrap()).unwrap().yaw = 20.0;
     let proof = CheckedScene::new(&def).unwrap();
     let ((changes, owed), allocations) = counted(|| {
         let changes = resolved.resolve_into(proof, &figures, ASPECT).unwrap();
@@ -162,7 +162,7 @@ fn a_camera_yaw_edit_and_a_light_colour_edit_show_in_the_next_scene() {
     applier.apply(&resolved, &mut target);
     let (camera_before, lights_before) = (target.camera, target.lights.clone());
 
-    def.cameras.get_mut(&CameraId::new("front").unwrap()).unwrap().yaw = 25.0;
+    def.cameras.get_mut(&CameraId::new("close").unwrap()).unwrap().yaw = 25.0;
     def.lighting.lights.get_mut(&LightId::new("key").unwrap()).unwrap().colour = Colour::rgb(255, 0, 0);
     resolved.resolve_into(CheckedScene::new(&def).unwrap(), &figures, ASPECT).unwrap();
     applier.apply(&resolved, &mut target);
@@ -196,7 +196,7 @@ fn the_ground_and_the_skin_floor_are_owed_only_when_they_change() {
     resolved.ground.radius_m += 1.0;
     let grown = applier.apply(&resolved, &mut target);
     assert_eq!(grown.ground, Some(resolved.ground), "a new radius is a new disc");
-    resolved.ground.opacity = 0.25;
+    resolved.ground.opacity = 0.6;
     assert_eq!(applier.apply(&resolved, &mut target).ground, Some(resolved.ground), "so is a new opacity");
 
     resolved.skin_floor = Some(0.4);
