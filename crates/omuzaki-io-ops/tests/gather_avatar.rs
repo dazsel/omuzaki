@@ -336,6 +336,7 @@ fn set_from_io(sb: &SpringBones) -> SpringSet {
     let shape = |s: io::ColliderShape| match s {
         io::ColliderShape::Sphere { offset, radius } => ColliderShape::Sphere { offset, radius },
         io::ColliderShape::Capsule { offset, radius, tail } => ColliderShape::Capsule { offset, radius, tail },
+        other => panic!("the gather writes only spheres and capsules, got {other:?}"),
     };
     SpringSet {
         groups: sb
@@ -415,6 +416,7 @@ fn only_lengths_follow_the_scale() {
             io::ColliderShape::Capsule { offset, radius, tail } => {
                 io::ColliderShape::Capsule { offset: offset * scale, radius: radius * scale, tail: tail * scale }
             }
+            other => panic!("the gather writes only spheres and capsules, got {other:?}"),
         };
         assert_eq!((a.node, b.shape), (b.node, want));
     }

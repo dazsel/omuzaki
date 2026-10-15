@@ -39,15 +39,24 @@ pub(crate) fn body(av: &Avatar) -> Option<Value> {
     Some(out)
 }
 
-fn collider_json(c: &Collider) -> Value {
-    let shape = match c.shape {
+/// The base shape of a collider, or `None` for an extended shape, which the mock does not write.
+fn base_shape(shape: ColliderShape) -> Option<Value> {
+    match shape {
         ColliderShape::Sphere { offset, radius } => {
-            json!({ "sphere": { "offset": offset.to_array(), "radius": radius } })
+            Some(json!({ "sphere": { "offset": offset.to_array(), "radius": radius } }))
         }
         ColliderShape::Capsule { offset, radius, tail } => {
-            json!({ "capsule": { "offset": offset.to_array(), "radius": radius, "tail": tail.to_array() } })
+            Some(json!({ "capsule": { "offset": offset.to_array(), "radius": radius, "tail": tail.to_array() } }))
         }
-    };
+        _ => None,
+    }
+}
+
+/// An extended shape is written as the spec's fallback for a reader without the extension, an inert sphere of radius 0
+/// far below the model, which keeps the collider indices in the groups valid. `vrm_profile` reports the loss.
+fn collider_json(c: &Collider) -> Value {
+    let shape =
+        base_shape(c.shape).unwrap_or_else(|| json!({ "sphere": { "offset": [0.0, -10_000.0, 0.0], "radius": 0.0 } }));
     json!({ "node": c.node.index(), "shape": shape })
 }
 
@@ -186,5 +195,6 @@ fn joint(j: &Value, at: &str) -> Result<SpringJoint, IoError> {
         gravity_power: optional(j, "gravityPower", at, number, spec.gravity_power)?,
         gravity_dir: optional(j, "gravityDir", at, vec3, spec.gravity_dir)?,
         drag_force: optional(j, "dragForce", at, number, spec.drag_force)?,
+        limit: None,
     })
 }
