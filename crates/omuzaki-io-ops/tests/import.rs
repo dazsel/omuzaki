@@ -22,7 +22,7 @@ use omuzaki_ops_api::{
     Actor, CancelFlag, ErrorCode, Grants, JobCtx, JobDoc, JobId, JobSignal, Op, OpCtx, OpError, ProjectDir, Services,
     ServicesBuilder,
 };
-use omuzaki_store_api::{Commercial, ContentHash, Source, Store};
+use omuzaki_store_api::{Commercial, ContentHash, Provenance, Source, Store, StoreError};
 use omuzaki_store_mock::MemStore;
 use serde_json::{Value, json};
 
@@ -540,4 +540,52 @@ fn what_the_import_writes_is_storable_in_a_toml_project() {
         }
         rig.doc.apply(&plan.patch).unwrap();
     }
+}
+
+/// A store that flags the job cancelled when its first `put` begins, as a person pressing cancel mid-write would.
+struct CancelOnPut {
+    inner: Arc<MemStore>,
+    flag: CancelFlag,
+}
+
+impl Store for CancelOnPut {
+    fn put(&self, bytes: &[u8], provenance: Provenance) -> Result<ContentHash, StoreError> {
+        self.flag.cancel();
+        self.inner.put(bytes, provenance)
+    }
+
+    fn get(&self, hash: &ContentHash) -> Result<Vec<u8>, StoreError> {
+        self.inner.get(hash)
+    }
+
+    fn provenance(&self, hash: &ContentHash) -> Result<Provenance, StoreError> {
+        self.inner.provenance(hash)
+    }
+
+    fn contains(&self, hash: &ContentHash) -> bool {
+        self.inner.contains(hash)
+    }
+}
+
+#[test]
+fn a_cancel_during_a_put_leaves_only_whole_objects_and_no_record() {
+    let mut rig = Rig::new();
+    let signal = Signal::new(None);
+    let slow = CancelOnPut { inner: rig.store.clone(), flag: signal.flag.clone() };
+    rig.services = ServicesBuilder::new().insert::<dyn Store>(Arc::new(slow)).build();
+    let file = probe(2, 2);
+    let op = bytes_op(&file);
+    rig.plan(&op).unwrap();
+
+    // `work` either stops or finishes the writes it started; the job manager discards its result once cancelled.
+    let _ = rig.work(&op, &signal);
+
+    assert!(omuzaki_ops_api::Cancel::is_cancelled(&signal.flag));
+    let expected = [file.clone(), vec![0x89, b'P', 0], vec![0x89, b'P', 1]];
+    let present: Vec<&Vec<u8>> = expected.iter().filter(|bytes| rig.store.contains(&ContentHash::of(bytes))).collect();
+    assert_eq!(rig.store.len(), present.len(), "nothing else is in the store");
+    for bytes in present {
+        assert_eq!(&rig.store.get(&ContentHash::of(bytes)).unwrap(), bytes, "every object present is whole");
+    }
+    assert!(rig.doc.get(&doc_path("assets")).is_none(), "no asset record unless `finish` is applied");
 }

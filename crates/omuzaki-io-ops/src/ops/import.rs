@@ -12,7 +12,12 @@
 //! content addressed, so importing the same bytes again stores nothing new.
 //!
 //! **Cancellation.** The import is cancellable at every checkpoint the importer reaches. The store phase is not
-//! interrupted: the last check comes before the first `put`, so a cancelled job has stored nothing.
+//! interrupted: the last check comes before the first `put`. The guarantee:
+//! - a cancel seen before the first `put` stores nothing;
+//! - a cancel after it (the manager gives a job a grace period, and `work` keeps running) leaves only whole objects,
+//!   because `put` is atomic and content addressed, and no asset record, because the record exists only in the patch
+//!   `finish` returns, which a cancelled or shut-down job never has applied;
+//! - those objects are referenced by nothing, so garbage collection removes them (the `StoreGc` contract, ADR 0021).
 //!
 //! **Not here.** Importing as an editable part is CB-44 and answers `Unsupported`. Files a `.gltf` refers to are not
 //! read (the resolver needs the plan-time context): import a `.glb`, which carries its buffers and images.
