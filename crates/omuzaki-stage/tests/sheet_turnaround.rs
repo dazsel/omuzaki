@@ -17,6 +17,7 @@
 
 use std::sync::Arc;
 
+use omuzaki_anim_api::HumanoidBone;
 use omuzaki_char::builder::CachingBuilder;
 use omuzaki_char_api::{
     BuildOptions, BuildServices, BuiltCharacter, CharId, CharacterBuilder, DynamicMesh, JointRef, PartRuntime,
@@ -33,13 +34,13 @@ use omuzaki_render_api::{
     TextureId, Tonemap,
 };
 use omuzaki_render_mock::MockRenderer;
-use omuzaki_stage::UploadOptions;
 use omuzaki_stage::frame::face::{CharacterSource, FaceRig, InlineExecutor};
 use omuzaki_stage::frame::{FrameInput, Stage, StageClock};
 use omuzaki_stage::sheet::turnaround::{
     EYE_LINE_FRACTION, HEAD_CENTRE_FRACTION, Lens, MARGIN, SheetPose, TurnaroundError, TurnaroundSheet, TurnaroundSpec,
     View, hero_pose, render_turnaround,
 };
+use omuzaki_stage::{StageError, UploadOptions};
 
 const CELL: UVec2 = UVec2::new(120, 240);
 
@@ -129,26 +130,23 @@ impl PartRuntime for NoRuntime {
 }
 
 fn stage_of(renderer: &mut dyn Renderer, built: BuiltCharacter) -> Stage {
+    stage_clocked(renderer, built, StageClock::fixed(60.0))
+}
+
+fn stage_clocked(renderer: &mut dyn Renderer, built: BuiltCharacter, clock: StageClock) -> Stage {
     let target = renderer
         .create_target(&TargetDesc { size: UVec2::new(32, 32), alpha: AlphaEncoding::Straight })
         .expect("a target");
     let options = UploadOptions { face_px_per_m: 600.0 };
-    Stage::new(
-        renderer,
-        built,
-        options,
-        Scene::new(Camera::default()),
-        target,
-        Quality::live(),
-        StageClock::fixed(60.0),
-    )
-    .expect("the mock character uploads")
+    Stage::new(renderer, built, options, Scene::new(Camera::default()), target, Quality::live(), clock)
+        .expect("the mock character uploads")
 }
 
 /// The mock renderer that can be told to refuse new targets.
 struct NoTargets {
     inner: MockRenderer,
     refuse: bool,
+    refuse_release: bool,
 }
 
 impl Renderer for NoTargets {
@@ -189,6 +187,9 @@ impl Renderer for NoTargets {
         self.inner.resize_target(target, size)
     }
     fn release(&mut self, resource: ResourceRef) -> Result<(), RenderError> {
+        if self.refuse_release {
+            return Err(RenderError::Backend("release refused by the test".to_owned()));
+        }
         self.inner.release(resource)
     }
     fn render(&mut self, target: TargetId, scene: &Scene, quality: &Quality) -> Result<FrameReport, RenderError> {
@@ -266,7 +267,7 @@ fn framing_metadata_matches_the_pixels_and_the_known_head() {
         .iter()
         .flat_map(|m| m.mesh.geometry.positions.iter())
         .fold((f32::MAX, f32::MIN), |(lo, hi), p| (lo.min(p.y), hi.max(p.y)));
-    let head = built.rig.skeleton.humanoid_bone(omuzaki_anim_api::HumanoidBone::Head).expect("a head bone");
+    let head = built.rig.skeleton.humanoid_bone(HumanoidBone::Head).expect("a head bone");
     let joint = built.rig.inverse_bind()[head.index()].inverse().transform_point3(Vec3::ZERO);
     let ppm = CELL.y as f32 / ((crown - sole) * (1.0 + 2.0 * MARGIN));
     let mid = f32::midpoint(crown, sole);
@@ -375,7 +376,7 @@ fn the_long_lens_renders_and_the_scene_is_put_back() {
 
 #[test]
 fn a_refused_target_leaves_the_callers_scene_alone() {
-    let mut renderer = NoTargets { inner: MockRenderer::new(), refuse: false };
+    let mut renderer = NoTargets { inner: MockRenderer::new(), refuse: false, refuse_release: false };
     let mut stage = stage_on(&mut renderer);
     // Lights, post and background the sheet would replace, so a leak would show.
     let scene = stage.scene_mut();
@@ -696,6 +697,60 @@ fn a_spec_with_nothing_to_draw_is_refused_before_any_work() {
         });
     }
     assert!(spec().validate().is_ok());
+}
+
+#[test]
+fn a_cell_too_big_to_allocate_is_refused_with_checked_arithmetic() {
+    for cell in [UVec2::splat(u32::MAX), UVec2::new(u32::MAX, 2), UVec2::new(40_000, 40_000)] {
+        let spec = TurnaroundSpec::new(cell);
+        assert!(matches!(spec.validate(), Err(TurnaroundError::Invalid(_))), "{cell}");
+        with_stage(|stage, renderer| {
+            let error = render_turnaround(stage, renderer, &spec).expect_err("the cell is too big");
+            assert!(matches!(error, TurnaroundError::Invalid(_)), "{error}");
+        });
+    }
+    assert!(TurnaroundSpec::new(UVec2::new(3508, 2480)).validate().is_ok(), "a 300 dpi A4 cell is fine");
+}
+
+#[test]
+fn a_failed_release_never_hides_the_drawing_error() {
+    let mut renderer = NoTargets { inner: MockRenderer::new(), refuse: false, refuse_release: false };
+    let mut stage = stage_on(&mut renderer);
+    // Drawing fails (a telephoto cell that needs tiles) and the release fails too: the drawing error comes back.
+    let tiles = TurnaroundSpec::new(CELL).with_lens(Lens::Telephoto).with_max_tile(64);
+    renderer.refuse_release = true;
+    let error = render_turnaround(&mut stage, &mut renderer, &tiles).expect_err("drawing fails");
+    assert!(matches!(error, TurnaroundError::TilingNeedsOrthographic { .. }), "{error}");
+    // Drawing succeeds and the release fails: that failure is the result.
+    let error = render_turnaround(&mut stage, &mut renderer, &spec()).expect_err("the release fails");
+    assert!(matches!(error, TurnaroundError::Stage(StageError::Render { .. })), "{error}");
+    renderer.refuse_release = false;
+    stage.release(&mut renderer).expect("the stage releases");
+}
+
+#[test]
+fn settling_from_rest_advances_the_springs_by_the_requested_steps_whatever_the_clock() {
+    let skins = |clock: StageClock, steps: u32| {
+        let mut renderer = MockRenderer::new();
+        let mut stage = stage_clocked(&mut renderer, built(), clock);
+        let input = FrameInput { dt: 1.0 / 30.0, ..FrameInput::default() };
+        for _ in 0..3 {
+            stage.tick(&mut renderer, &input).expect("a frame");
+        }
+        stage.settle_from_rest(steps);
+        let skin = stage.skin().to_vec();
+        stage.release(&mut renderer).expect("released");
+        skin
+    };
+    for steps in [0, 1, 5] {
+        assert_eq!(
+            skins(StageClock::fixed(60.0), steps),
+            skins(StageClock::live(), steps),
+            "{steps} steps move the springs the same on a fixed and a live clock"
+        );
+    }
+    // The mock's hair chain is not inert: steps move it, so the equalities above are not vacuous.
+    assert_ne!(skins(StageClock::fixed(60.0), 0), skins(StageClock::fixed(60.0), 5));
 }
 
 #[test]

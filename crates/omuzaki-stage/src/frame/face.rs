@@ -443,8 +443,10 @@ impl Stage {
     /// the renderer: [`redraw`](Stage::redraw) or the next [`tick`](Stage::tick) uploads the meshes that moved.
     pub fn settle_from_rest(&mut self, steps: u32) {
         self.rig.reset();
-        // One solve at the last frame's pose: the springs start from rest and the runtimes reset against that skin.
-        self.rig.solve(self.tick, &self.pose, &self.goals);
+        // One solve at the last frame's pose, for no time at all: the springs start from rest and the runtimes reset
+        // against that skin, and only the requested steps advance anything, whatever the stage clock's frame time is.
+        let still = Tick { dt: 0.0, ..self.tick };
+        self.rig.solve(still, &self.pose, &self.goals);
         let pose = SkinPose { character: &self.built.rig, skin: self.rig.skin(), root: self.root };
         for slot in &mut self.built.runtimes {
             slot.runtime.reset(&pose);

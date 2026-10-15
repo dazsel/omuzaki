@@ -37,6 +37,9 @@ pub const EYE_LINE_FRACTION: f32 = 0.6;
 /// Where the head centre sits between the head joint and the crown, as a fraction of that distance. A stand-in until
 /// `Landmarks::measure` (#131) measures the head.
 pub const HEAD_CENTRE_FRACTION: f32 = 0.5;
+/// The most bytes one view's cell may take (RGBA8): a 300 dpi A4 page is 35 MB, so this is room for a poster while a
+/// mistyped size is refused before it asks the allocator for terabytes.
+pub const MAX_CELL_BYTES: u64 = 1 << 30;
 /// The light rig every sheet is lit with. The sheet always uses it, replacing whatever lights the stage's scene had
 /// and every other render setting of the stage's scene (post, background, fog, environment light, outline light and
 /// the rest, which the sheet draws from a fresh scene); [`render_turnaround`] puts the caller's settings back afterwards.
@@ -166,13 +169,20 @@ impl TurnaroundSpec {
         self
     }
 
-    /// Checks the spec, the one place its values are: a cell with pixels and a tile side of at least one pixel.
+    /// Checks the spec, the one place its values are: a cell with pixels that fits [`MAX_CELL_BYTES`] and a tile side
+    /// of at least one pixel.
     ///
     /// # Errors
     /// [`TurnaroundError::Invalid`] naming the first value that is unusable.
     pub fn validate(&self) -> Result<(), TurnaroundError> {
         if self.cell.x == 0 || self.cell.y == 0 {
             return Err(TurnaroundError::Invalid(format!("the cell is {}x{} pixels; it needs at least 1x1", self.cell.x, self.cell.y)));
+        }
+        if cell_bytes(self.cell).is_none() {
+            return Err(TurnaroundError::Invalid(format!(
+                "a {}x{} cell is more than the {MAX_CELL_BYTES} bytes a view may take",
+                self.cell.x, self.cell.y
+            )));
         }
         if self.max_tile == Some(0) {
             return Err(TurnaroundError::Invalid("the largest tile side is 0; it needs at least 1 pixel".to_owned()));
@@ -353,9 +363,26 @@ pub fn render_turnaround(
     let sheet = draw_sheet(stage, renderer, spec, target);
     let released = renderer.release(ResourceRef::from(target));
     restore_settings(stage.scene_mut(), saved);
-    let sheet = sheet?;
-    released.map_err(|e| StageError::render("the sheet's target", e))?;
-    Ok(sheet)
+    match (sheet, released) {
+        (Ok(sheet), Ok(())) => Ok(sheet),
+        (Ok(_), Err(e)) => Err(StageError::render("the sheet's target", e).into()),
+        // The drawing failure is the one to report; a failed cleanup behind it is logged, as the stage does.
+        (Err(error), released) => {
+            if let Err(cleanup) = released {
+                tracing::warn!(%cleanup, "releasing the turnaround sheet's target failed too");
+            }
+            Err(error)
+        }
+    }
+}
+
+/// The RGBA8 byte length of a cell, or `None` if it overflows or passes [`MAX_CELL_BYTES`].
+fn cell_bytes(cell: UVec2) -> Option<usize> {
+    let bytes = u64::from(cell.x).checked_mul(u64::from(cell.y))?.checked_mul(4)?;
+    if bytes > MAX_CELL_BYTES {
+        return None;
+    }
+    usize::try_from(bytes).ok()
 }
 
 /// Draws the four views from the stage's neutral scene.
@@ -461,7 +488,8 @@ impl Run<'_> {
     fn tiles(&self, stage: &mut Stage, renderer: &mut dyn Renderer) -> Result<Image, TurnaroundError> {
         let quality = Quality::offline();
         let cell = self.shot.cell;
-        let mut rgba8 = vec![0_u8; cell.x as usize * cell.y as usize * 4];
+        let bytes = cell_bytes(cell).ok_or_else(|| TurnaroundError::Invalid(format!("the cell is more than {MAX_CELL_BYTES} bytes")))?;
+        let mut rgba8 = vec![0_u8; bytes];
         for y0 in (0..cell.y).step_by(self.tile as usize) {
             for x0 in (0..cell.x).step_by(self.tile as usize) {
                 let origin = UVec2::new(x0, y0);
