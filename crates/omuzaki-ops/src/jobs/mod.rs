@@ -271,26 +271,34 @@ impl Manager {
     fn dispatch(self: &Arc<Self>, inner: &mut Inner) {
         while let Some((lane, id)) = inner.lanes.next_ready() {
             let now = self.now();
-            // A session paused while its job waited for a lane: the job never starts, so `work` has no effect.
-            let refused =
-                inner.jobs.get(&id).and_then(|job| lock(&self.env.state).sessions.check_active(&job.info.actor).err());
-            if let Some(error) = refused {
-                if let Some(job) = inner.jobs.get_mut(&id) {
-                    // The lane slot `next_ready` handed out is given back by `fail_start`, as for a failed spawn.
-                    job.phase = Phase::Working;
+            // The session is re-admitted and the job marked running under one hold of the state lock, so a pause lands
+            // either before (the job never starts and `work` has no effect) or after (a running job, whose `finish`
+            // is refused). The grants are narrowed again: roots revoked while the job waited are not readable by `work`.
+            let started = {
+                let mut state = lock(&self.env.state);
+                let Some(job) = inner.jobs.get_mut(&id) else {
+                    inner.lanes.finished(lane);
+                    continue;
+                };
+                // The lane slot `next_ready` handed out is given back by `fail_start`, as for a failed spawn.
+                job.phase = Phase::Working;
+                match state.sessions.admit(&job.info.actor, &job.grants, Seconds(now)) {
+                    Ok(grants) => {
+                        job.grants = grants;
+                        job.thread_live = true;
+                        job.info.state = JobState::Running;
+                        job.info.started_at = Some(Seconds(now));
+                        job.deadline = now + job.cap_secs;
+                        Ok(())
+                    }
+                    Err(error) => Err(error),
                 }
+            };
+            if let Err(error) = started {
                 self.fail_start(inner, id, error);
                 continue;
             }
-            let Some(job) = inner.jobs.get_mut(&id) else {
-                inner.lanes.finished(lane);
-                continue;
-            };
-            job.phase = Phase::Working;
-            job.thread_live = true;
-            job.info.state = JobState::Running;
-            job.info.started_at = Some(Seconds(now));
-            job.deadline = now + job.cap_secs;
+            let Some(job) = inner.jobs.get(&id) else { continue };
             self.announce(job);
             let mgr = Arc::clone(self);
             let spawned =

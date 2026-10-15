@@ -675,6 +675,10 @@ async fn a_connection_asks_the_registry_for_its_session_and_runs_nothing_if_refu
     assert_eq!((result.is_error, again.is_error), (Some(true), Some(true)));
     assert!(text(&result).contains("not needed by this test"), "{}", text(&result));
     assert_eq!(h.runner.records().len(), 0);
+    // Resources are closed too: they are authorised by the server's grants, which a refused session must not borrow.
+    let log = h.client.read_resource(ReadResourceRequestParams::new("omuzaki://log")).await;
+    assert!(log.is_err(), "the op log was readable without a session");
+    assert!(h.client.list_resources(None).await.is_err(), "resources were listed without a session");
     h.disconnect().await;
 }
 

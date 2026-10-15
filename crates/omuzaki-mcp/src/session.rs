@@ -147,6 +147,21 @@ impl Session {
             .as_ref()
     }
 
+    /// With a session registry, a connection reads nothing until its session is admitted: resources are authorised by
+    /// `view.grants` alone, so a refused `Sessions::open` (a principal narrowed below the view) must close them as
+    /// it closes the tools.
+    fn require_session(&self, context: &RequestContext<RoleServer>) -> Result<(), McpError> {
+        if self.shared.sessions.is_none() {
+            return Ok(());
+        }
+        self.actor(context).map(|_| ()).map_err(|e| {
+            McpError::invalid_request(
+                format!("this connection has no session: {}", e.message),
+                Some(json!({"code": "denied"})),
+            )
+        })
+    }
+
     /// The op log and its notifications carry document values (patches, arguments), so reading or being notified of
     /// them needs `read`, exactly like running a query. Anything else that exposes document state to the client
     /// (`Runner::get`, resource providers) must call this first.
@@ -624,6 +639,7 @@ impl ServerHandler for Session {
         context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, McpError> {
         self.name_client(&context);
+        self.require_session(&context)?;
         let mut resources = vec![log_resource()];
         // Listing reads the document, so it needs `read` like reading does; without it only the log (which names
         // nothing from the document) is listed, as before.
@@ -656,6 +672,7 @@ impl ServerHandler for Session {
         context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, McpError> {
         self.name_client(&context);
+        self.require_session(&context)?;
         if request.uri == LOG_URI {
             return self.read_log();
         }
@@ -682,6 +699,7 @@ impl ServerHandler for Session {
         context: RequestContext<RoleServer>,
     ) -> Result<(), McpError> {
         self.name_client(&context);
+        self.require_session(&context)?;
         let uri = request.uri;
         let what =
             if uri == LOG_URI { "subscribing to the op log".to_owned() } else { format!("subscribing to {uri}") };
@@ -759,8 +777,11 @@ impl ServerHandler for Session {
         self.name_client(context.request_context());
         let wanted: BTreeSet<String> = context.accepted().resource_subscriptions.iter().flatten().cloned().collect();
         // `accepted_subscription_filter` already refuses everything without `read`; checking again keeps this loop safe
-        // on its own.
-        if !self.view.grants.allows(Scope::Read) || wanted.is_empty() {
+        // on its own. A connection without a session is told nothing either.
+        if !self.view.grants.allows(Scope::Read)
+            || wanted.is_empty()
+            || self.require_session(context.request_context()).is_err()
+        {
             context.cancelled().await;
             return Ok(());
         }
