@@ -15,7 +15,7 @@ entry is a path or glob: backtick-quoted or bare, comma- or space-separated, one
 - overlap: an open, non-draft PR changes a file inside the fence. Allowed when that PR closes this issue (it is the
   task's own PR), or when the work is chained: the PR closes an issue that blocks this one, or this issue blocks the
   issue the PR closes. The native dependency links (`.../dependencies/blocked_by` and `.../dependencies/blocking`)
-  count; so does a `Blocked by:` line in the body, as a fallback.
+  count; so does a `Blocked by:` or `Depends on:` line in the body, as a fallback.
 - crate cap: the crates the fence names already have `--crate-cap` or more open PRs touching them. A wildcard crate
   (`crates/*-api/...`) names every matching folder under `crates/`.
 - total cap: `--total-cap` or more open PRs in total.
@@ -43,7 +43,8 @@ LANES = ("cloud", "local", "port")
 BRACE_LIMIT = 256
 # `Fence:` or `**Fence:**` (also `May touch:`) at the start of a line, with anything after the colon on the same line.
 FENCE_HEADER = re.compile(r"^\s*\*{0,2}(?:fence|may touch)\*{0,2}\s*:\*{0,2}(.*)$", re.IGNORECASE)
-BLOCKED_BY = re.compile(r"blocked[- ]by", re.IGNORECASE)
+# A fallback dependency line: `Blocked by: #N` or `Depends on: #N`, at the start of a line (bullets and bold allowed).
+BLOCKED_BY = re.compile(r"^\s*(?:[-*]\s+)?\*{0,2}(?:blocked[- ]by|depends on)\*{0,2}\s*:", re.IGNORECASE)
 ISSUE_REF = re.compile(r"#(\d+)")
 # The crate a path lies in: `crates/<name>/...`. Crate names have no dots, so `crates/README.md` is not a crate.
 CRATE = re.compile(r"crates/([A-Za-z0-9_-]+)(?:/|$)")
@@ -121,6 +122,21 @@ def load_crates():
 
 
 def pr_files(number, listed, changed):
+    """The changed paths of a pull request, its renamed files' old paths included, or None when they cannot be read.
+
+    Only the file list can be incomplete; the rename check is a separate read, and if it fails the list is None too.
+    """
+    paths = listed_or_full_files(number, listed, changed)
+    if paths is None:
+        return None
+    try:
+        sources = renamed_sources(number)
+    except GhError:
+        return None
+    return paths + [source for source in sources if source not in paths]
+
+
+def listed_or_full_files(number, listed, changed):
     """The changed paths of a pull request, or None when they cannot be read in full.
 
     `gh pr list` lists at most 100 files; `changed` is the true count. A PR with more reads the full list from the REST
@@ -138,9 +154,26 @@ def pr_files(number, listed, changed):
     return paths if len(paths) >= total else None
 
 
+def renamed_sources(number):
+    """The previous paths of the files this PR renames, from the REST list. Raises GhError when it cannot be read.
+
+    `gh pr list` gives the new path only, so a rename out of a fenced folder would be missed without this.
+    """
+    files = gh_json_pages(["api", "--paginate", f"repos/{REPO}/pulls/{number}/files"])
+    return [f["previous_filename"] for f in files if f.get("status") == "renamed" and f.get("previous_filename")]
+
+
 def load_top_level():
     """The names of the entries at the root of the default branch, files and folders alike."""
     return {entry["name"] for entry in gh_json(["api", f"repos/{REPO}/contents"])}
+
+
+def closing_numbers(refs):
+    """The numbers of the issues in REPO among GitHub's closing references (`number` and `repository`)."""
+    return {
+        int(ref["number"]) for ref in refs or []
+        if str((ref.get("repository") or {}).get("nameWithOwner", "")).lower() == REPO.lower()
+    }
 
 
 def load_prs():
@@ -158,8 +191,9 @@ def load_prs():
             "draft": bool(pr["isDraft"]),
             "created": pr.get("createdAt") or "",
             "files": pr_files(pr["number"], pr.get("files") or [], pr.get("changedFiles")),
-            # The issues GitHub itself says this PR closes; prose such as "Does not close #42" is not a reference.
-            "closes": {int(ref["number"]) for ref in pr.get("closingIssuesReferences") or []},
+            # The issues GitHub itself says this PR closes in this repository; prose such as "Does not close #42" is
+            # not a reference, and `Fixes other/repo#42` names another repository's issue 42.
+            "closes": closing_numbers(pr.get("closingIssuesReferences")),
         }
         for pr in raw
     ]
@@ -367,11 +401,15 @@ def crates_touched(pr):
 
 
 def blocked_by(body):
-    """The issue and PR numbers named on the `Blocked by:` line of an issue body."""
+    """The issue and PR numbers named on a `Blocked by:` or `Depends on:` line of an issue body.
+
+    Only the line's own label counts, so prose such as "This task is not blocked by #99" records nothing.
+    """
     numbers = set()
     for line in body.splitlines():
-        if BLOCKED_BY.search(line):
-            numbers.update(int(n) for n in ISSUE_REF.findall(line))
+        match = BLOCKED_BY.match(line)
+        if match:
+            numbers.update(int(n) for n in ISSUE_REF.findall(line[match.end():]))
     return numbers
 
 

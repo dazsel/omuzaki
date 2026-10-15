@@ -29,7 +29,7 @@ case "$1 $2" in
         ;;
       *"/pulls/"*"/files"*)
         number=$(sed -n 's#.*/pulls/\([0-9]*\)/files.*#\1#p' <<<"$*")
-        cat "$DISPATCH_FIXTURES/files-$number.json" || exit 1
+        cat "$DISPATCH_FIXTURES/files-$number.json" 2>/dev/null || echo '[]'
         ;;
       *"/contents/crates"*) cat "$DISPATCH_FIXTURES/crates.json" || exit 1 ;;
       *"/contents") cat "$DISPATCH_FIXTURES/root.json" || exit 1 ;;
@@ -73,7 +73,7 @@ issue 9001 <<'B'
 B
 cat >"$FX/prs.json" <<'J'
 [{"number":601,"headRefName":"cloud/601-audio","isDraft":false,"createdAt":"2026-10-01T10:00:00Z",
-  "files":[{"path":"crates/omuzaki-ops/src/a.rs"}],"closingIssuesReferences":[{"number":9100}]},
+  "files":[{"path":"crates/omuzaki-ops/src/a.rs"}],"closingIssuesReferences":[{"number":9100,"repository":{"nameWithOwner":"dazsel/omuzaki"}}]},
  {"number":602,"headRefName":"local/602-x","isDraft":true,"createdAt":"2026-10-02T10:00:00Z",
   "files":[{"path":"tools/x.py"}],"body":""}]
 J
@@ -89,7 +89,7 @@ issue 9002 <<'B'
 B
 cat >"$FX/prs.json" <<'J'
 [{"number":603,"headRefName":"local/603-ops","isDraft":false,"createdAt":"2026-10-03T10:00:00Z",
-  "files":[{"path":"crates/omuzaki-ops/src/a.rs"}],"closingIssuesReferences":[{"number":9101}]}]
+  "files":[{"path":"crates/omuzaki-ops/src/a.rs"}],"closingIssuesReferences":[{"number":9101,"repository":{"nameWithOwner":"dazsel/omuzaki"}}]}]
 J
 run 9002
 expect_line "wait #9002: overlap with #603 (crates/omuzaki-ops/src/a.rs)" "overlap: waits and names the PR"
@@ -105,7 +105,7 @@ issue 9003 <<'B'
 B
 cat >"$FX/prs.json" <<'J'
 [{"number":604,"headRefName":"cloud/604-ops","isDraft":false,"createdAt":"2026-10-04T10:00:00Z",
-  "files":[{"path":"crates/omuzaki-ops/src/a.rs"}],"closingIssuesReferences":[{"number":9004}]}]
+  "files":[{"path":"crates/omuzaki-ops/src/a.rs"}],"closingIssuesReferences":[{"number":9004,"repository":{"nameWithOwner":"dazsel/omuzaki"}}]}]
 J
 run 9003
 expect_line "go #9003" "chained: an overlap with the blocking work is go"
@@ -119,7 +119,7 @@ B
 echo '[{"number":9004}]' >"$FX/deps-blocked_by-9010.json"
 cat >"$FX/prs.json" <<'J'
 [{"number":606,"headRefName":"cloud/606-ops","isDraft":false,"createdAt":"2026-10-04T11:00:00Z",
-  "files":[{"path":"crates/omuzaki-ops/src/a.rs"}],"closingIssuesReferences":[{"number":9004}]}]
+  "files":[{"path":"crates/omuzaki-ops/src/a.rs"}],"closingIssuesReferences":[{"number":9004,"repository":{"nameWithOwner":"dazsel/omuzaki"}}]}]
 J
 run 9010
 expect_line "go #9010" "native blocked-by: an overlap with the blocker's PR is go"
@@ -133,7 +133,7 @@ B
 echo '[{"number":9012}]' >"$FX/deps-blocking-9011.json"
 cat >"$FX/prs.json" <<'J'
 [{"number":607,"headRefName":"cloud/607-ops","isDraft":false,"createdAt":"2026-10-04T12:00:00Z",
-  "files":[{"path":"crates/omuzaki-ops/src/a.rs"}],"closingIssuesReferences":[{"number":9012}]}]
+  "files":[{"path":"crates/omuzaki-ops/src/a.rs"}],"closingIssuesReferences":[{"number":9012,"repository":{"nameWithOwner":"dazsel/omuzaki"}}]}]
 J
 run 9011
 expect_line "go #9011" "native blocking: an overlap with the PR for the issue this task blocks is go"
@@ -235,7 +235,7 @@ issue 9005 <<'B'
 B
 cat >"$FX/prs.json" <<'J'
 [{"number":605,"headRefName":"port/605-y","isDraft":false,"createdAt":"2026-10-05T10:00:00Z",
-  "files":[{"path":"tools/y.py"}],"closingIssuesReferences":[{"number":9005}]}]
+  "files":[{"path":"tools/y.py"}],"closingIssuesReferences":[{"number":9005,"repository":{"nameWithOwner":"dazsel/omuzaki"}}]}]
 J
 run 9005
 expect_line "go #9005" "own PR: the task's own PR is go"
@@ -506,6 +506,76 @@ if [[ $code == 1 ]] && grep -q "^wait #9053: cannot understand the fence entry t
 else
   fail "invalid regex range: exit $code: $out $(cat "$work/err")"
 fi
+
+# closing references name a repository: `Fixes other/repo#42` is not this repository's issue 42.
+scenario other-repo
+issue 42 <<'B'
+**Fence:** `tools/o.py`
+B
+cat >"$FX/prs.json" <<'J'
+[{"number":662,"headRefName":"cloud/662","isDraft":false,"createdAt":"2026-10-12T12:00:00Z",
+  "files":[{"path":"tools/o.py"}],"body":"Fixes other/repo#42",
+  "closingIssuesReferences":[{"number":42,"repository":{"nameWithOwner":"other/repo"}}]}]
+J
+run 42
+expect_line "wait #42: overlap with #662 (tools/o.py)" "closing refs: another repository's #42 does not remove the PR"
+
+# renamed files: a rename out of a fenced folder collides through its old path.
+scenario rename
+issue 9060 <<'B'
+**Fence:** `crates/a`
+B
+cat >"$FX/prs.json" <<'J'
+[{"number":663,"headRefName":"cloud/663","isDraft":false,"createdAt":"2026-10-12T13:00:00Z",
+  "files":[{"path":"crates/b/x.rs"}],"body":""}]
+J
+cat >"$FX/files-663.json" <<'J'
+[{"filename":"crates/b/x.rs","status":"renamed","previous_filename":"crates/a/x.rs"}]
+J
+run 9060
+expect_line "wait #9060: overlap with #663 (crates/a/x.rs)" "rename: the old path of a renamed file collides"
+
+# renamed files: an unreadable rename list makes the PR's files unknown, so the task waits.
+scenario rename-unreadable
+issue 9061 <<'B'
+**Fence:** `crates/a`
+B
+cat >"$FX/prs.json" <<'J'
+[{"number":664,"headRefName":"cloud/664","isDraft":false,"createdAt":"2026-10-12T14:00:00Z",
+  "files":[{"path":"docs/other.md"}],"body":""}]
+J
+echo 'not json' >"$FX/files-664.json"
+run 9061
+expect_line "wait #9061: cannot read the changed files of #664; waiting until they can be read" "rename: waits when the rename list cannot be read"
+
+# dependencies: only an anchored `Blocked by:` or `Depends on:` line counts; prose about blocking does not.
+scenario prose-dependency
+issue 9062 <<'B'
+This task is not blocked by #99.
+
+**Fence:** `crates/a/x.rs`
+B
+cat >"$FX/prs.json" <<'J'
+[{"number":665,"headRefName":"cloud/665","isDraft":false,"createdAt":"2026-10-12T15:00:00Z",
+  "files":[{"path":"crates/a/x.rs"}],"body":"",
+  "closingIssuesReferences":[{"number":99,"repository":{"nameWithOwner":"dazsel/omuzaki"}}]}]
+J
+run 9062
+expect_line "wait #9062: overlap with #665 (crates/a/x.rs)" "dependencies: prose 'not blocked by #99' records nothing"
+
+scenario depends-on
+issue 9063 <<'B'
+- Depends on: #99
+
+**Fence:** `crates/a/x.rs`
+B
+cat >"$FX/prs.json" <<'J'
+[{"number":666,"headRefName":"cloud/666","isDraft":false,"createdAt":"2026-10-12T16:00:00Z",
+  "files":[{"path":"crates/a/x.rs"}],"body":"",
+  "closingIssuesReferences":[{"number":99,"repository":{"nameWithOwner":"dazsel/omuzaki"}}]}]
+J
+run 9063
+expect_line "go #9063" "dependencies: a 'Depends on:' line chains the overlap"
 
 # a missing fixture is a gh failure: exit 2 with a message, not a crash.
 scenario missing
