@@ -499,15 +499,21 @@ fn a_jaw_sweep_in_twenty_steps_grows_the_mouth_smoothly_across_the_switch() {
 #[test]
 fn a_fine_sweep_of_the_opening_has_no_step_that_differs_from_its_neighbour_by_more_than_the_bar() {
     let profile = glossy();
-    let heights: Vec<f32> =
-        (0..=80_u8).map(|i| height_px(&profile, &params(|m| m.open = f32::from(i) * 0.005))).collect();
-    let mut largest = 0.0_f32;
-    for (i, w) in heights.windows(3).enumerate() {
-        let change = ((w[2] - w[1]) - (w[1] - w[0])).abs();
-        largest = largest.max(change);
-        assert!(change <= SWITCH_JUMP_PX, "steps differ by {change} px, {} steps in", i + 1);
+    for smile in [0.0, 1.0] {
+        let heights: Vec<f32> = (0..=80_u8)
+            .map(|i| {
+                let open = f32::from(i) * 0.005;
+                height_px(&profile, &params(|m| (m.open, m.smile_left, m.smile_right) = (open, smile, smile)))
+            })
+            .collect();
+        let mut largest = 0.0_f32;
+        for (i, w) in heights.windows(3).enumerate() {
+            let change = ((w[2] - w[1]) - (w[1] - w[0])).abs();
+            largest = largest.max(change);
+            assert!(change <= SWITCH_JUMP_PX, "smile {smile}: steps differ by {change} px, {} steps in", i + 1);
+        }
+        println!("smile {smile}: largest step change in a sweep of the opening in steps of 0.005: {largest:.3} px");
     }
-    println!("largest step-to-step change in a sweep of the opening in steps of 0.005: {largest:.3} px");
 }
 
 /// Valid profiles away from the default: thin and thick closed lines on narrow and wide mouths.
@@ -520,6 +526,25 @@ fn odd_profiles() -> Vec<FaceProfile> {
             p
         })
         .collect()
+}
+
+/// The smiles the switch is checked with: none, half and full on both sides, and full on one side.
+const SMILES: [(f32, f32); 6] = [(0.0, 0.0), (0.5, 0.5), (1.0, 1.0), (1.0, 0.0), (0.0, 1.0), (-0.5, -0.5)];
+
+#[test]
+fn the_switch_is_continuous_for_smiling_mouths_on_the_default_and_odd_profiles() {
+    let mut profiles = odd_profiles();
+    profiles.push(glossy());
+    for profile in profiles {
+        for (left, right) in SMILES {
+            let height_at = |open: f32| {
+                height_px(&profile, &params(|m| (m.open, m.smile_left, m.smile_right) = (open, left, right)))
+            };
+            let jump = (height_at(0.0601) - height_at(0.0599)).abs();
+            let what = (profile.mouth.half_width, profile.mouth.line_width, left, right);
+            assert!(jump < 0.2, "{what:?}: the switch changes the height by {jump} px");
+        }
+    }
 }
 
 #[test]

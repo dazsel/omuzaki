@@ -26,7 +26,8 @@ const CLOSED_BELOW: f32 = 0.06;
 /// The open mouth's rim finishes becoming its own at this opening ([`OpenMouth::fade`]).
 const FADE_UNTIL: f32 = 0.2;
 /// The closed line is this much thinner at the switch than at rest, so the lens that replaces it keeps the same weight
-/// (the line is 5.8 px thick at the switch and the lens 3.9 px deep, at 3600 px per metre).
+/// (at 3600 px per metre the default line is 5.76 px thick at rest and 4.61 px at the switch, where the eased lens is
+/// 2.72 px deep and the open edge is the rest of the 4.61 px: its first moments are the closed line).
 const CLOSED_THIN: f32 = 0.2;
 /// At the switch the open lens is this share of the closed line's thickness deep (and at most all of its own depth),
 /// whatever the profile's line width and scale, so the rim has the rest to make up and the lens' depth eases in over
@@ -127,9 +128,16 @@ impl OpenMouth {
         self.edges.bottom(self.height, u)
     }
 
-    /// The lens' height at the middle, from the upper edge to the lower, in metres.
-    pub fn depth(&self) -> f32 {
-        self.top(0.0) - self.bottom(0.0)
+    /// The lens' vertical extent, from the highest point of the upper edge to the lowest of the lower, in metres: what
+    /// the lens covers, corners included, which is what the closed line it replaces covered too.
+    pub fn extent(&self) -> f32 {
+        let (mut hi, mut lo) = (f32::MIN, f32::MAX);
+        for i in 0..=OPEN_SEGMENTS {
+            let u = along(i, OPEN_SEGMENTS);
+            hi = hi.max(self.top(u));
+            lo = lo.min(self.bottom(u));
+        }
+        hi - lo
     }
 }
 
@@ -223,6 +231,14 @@ impl Frame {
     pub(super) fn line_width(&self, style: &MouthStyle) -> f32 {
         let thin = CLOSED_THIN * smoothstep(self.open / CLOSED_BELOW);
         narrow(style.line_width) * self.grow.sqrt() * (1.0 - PRESS_THINS * self.press) * (1.0 - thin)
+    }
+
+    /// The vertical extent of the closed line's centre line: from the centre, which stays on the line, to the corners,
+    /// which follow the smile, in metres.
+    pub(super) fn closed_extent(&self, style: &MouthStyle) -> f32 {
+        let lift = narrow(style.corner_curve) * self.grow;
+        let corners = [self.smile[0] * lift, self.smile[1] * lift];
+        corners[0].max(corners[1]).max(0.0) - corners[0].min(corners[1]).min(0.0)
     }
 
     /// How far the open shape has taken over from the closed line, `0..=1` over the openings [`CLOSED_BELOW`] to
@@ -369,11 +385,15 @@ fn open_outline(ctx: &mut PaintCtx<'_>, f: &Frame) -> OpenMouth {
         * (1.0 + OPEN_WIDENS * f.open)
         * (1.0 - ROUND_NARROWS * ctx.params.mouth.round)
         * (1.0 - PUCKER_NARROWS_OPEN * f.pucker);
+    // The corners start as the closed line's (its curve, no drop of the centre) and become the open shape's with the
+    // fade, so a smiling mouth keeps its height across the switch as a straight one does. Written so that a finished
+    // fade gives the open shape's own numbers exactly.
+    let blend = |closed: f32, open: f32| open * fade + closed * (1.0 - fade);
     let edges = Edges {
         round,
         smile: f.smile,
-        curve: narrow(style.corner_curve) * OPEN_CURVE_RATIO,
-        drop: CENTRE_FOLLOWS_SMILE * f32::midpoint(f.smile[0], f.smile[1]),
+        curve: blend(narrow(style.corner_curve) * f.grow, narrow(style.corner_curve) * OPEN_CURVE_RATIO),
+        drop: blend(0.0, CENTRE_FOLLOWS_SMILE * f32::midpoint(f.smile[0], f.smile[1])),
     };
 
     let at = |u: f32, v: f32| f.centre + Vec2::new(u * half_width, v);
