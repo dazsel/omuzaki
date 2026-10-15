@@ -9,6 +9,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use omuzaki_char::builder::conformance::{Probes, check, check_all};
+use omuzaki_char_api::fact::FactProbe;
 use omuzaki_char_api::{BuildServices, CharacterDef, PartDef, PartId, PartKindId};
 use omuzaki_char_mock::mock_character;
 use serde_json::json;
@@ -77,6 +78,44 @@ omuzaki_char_api::register_fact_probe!(TestFact);
 fn every_registered_fact_has_a_probe() {
     let missing = Probes::registered().unprobed_facts().expect("fact names are unique");
     assert!(missing.is_empty(), "facts with no `register_fact_probe!` beside their `register_fact!`: {missing:?}");
+}
+
+#[test]
+fn no_probe_is_stray_or_doubled() {
+    let problems = Probes::registered().probe_problems().expect("fact names are unique");
+    assert!(problems.is_empty(), "probes that match no registered fact, or a fact with two: {problems:?}");
+}
+
+// A fact that shares its name with `TestFact` but is another type: `TestFact`'s probe does not cover it.
+omuzaki_char_api::fact! {
+    /// A second fact with the name of `TestFact`, built by hand below (it is never registered).
+    NameClashFact = "test-registered-probe", omuzaki_char_api::Last<u32>;
+}
+
+#[test]
+fn a_probe_made_for_another_fact_with_the_same_name_covers_nothing() {
+    let wrong = Probes::default().fact::<NameClashFact>();
+    let missing = wrong.unprobed_facts().expect("fact names are unique");
+    assert!(missing.contains(&"test-registered-probe"), "the test fact counted as probed: {missing:?}");
+    // The right type does cover it.
+    let right = Probes::default().fact::<TestFact>();
+    assert!(!right.unprobed_facts().expect("fact names are unique").contains(&"test-registered-probe"));
+}
+
+static STRAY: FactProbe = FactProbe::by_eq::<NameClashFact>();
+static FIRST: FactProbe = FactProbe::by_eq::<TestFact>();
+static SECOND: FactProbe = FactProbe::by_eq::<TestFact>();
+
+#[test]
+fn a_probe_for_no_registered_fact_and_a_second_probe_for_one_fact_are_problems() {
+    let stray = Probes::from_probes([&STRAY]).probe_problems().expect("fact names are unique");
+    assert_eq!(stray.len(), 1, "{stray:?}");
+    assert!(stray[0].contains("test-registered-probe") && stray[0].contains("no registered fact"), "{stray:?}");
+    let doubled = Probes::from_probes([&FIRST, &SECOND]).probe_problems().expect("fact names are unique");
+    assert_eq!(doubled.len(), 1, "{doubled:?}");
+    assert!(doubled[0].contains("more than one probe"), "{doubled:?}");
+    let one = Probes::from_probes([&FIRST]).probe_problems().expect("fact names are unique");
+    assert_eq!(one, Vec::<String>::new());
 }
 
 #[test]

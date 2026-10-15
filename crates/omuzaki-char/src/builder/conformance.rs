@@ -14,15 +14,17 @@
 //! may depend on either; a violation names the options it showed under.
 //!
 //! Facts are compared by [`Probes::registered`], read from the registry: a crate that adds a fact adds
-//! `register_fact_probe!` beside it, and [`Probes::unprobed_facts`] is what a gate test keeps empty. A fact a kind
+//! `register_fact_probe!` beside it, and [`Probes::unprobed_facts`] and [`Probes::probe_problems`] are what a gate test
+//! keeps empty. A fact a kind
 //! publishes that no probe covers is listed in [`Report::unprobed`] instead of passing unseen. Any crate can run the check over its own kinds and characters.
 
+use std::any::TypeId;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
 use std::thread;
 
 use omuzaki_char_api::Fact;
-use omuzaki_char_api::fact::Differs;
+use omuzaki_char_api::fact::{Differs, FactProbe};
 use omuzaki_char_api::{
     BuildOptions, BuildServices, CharacterDef, PartDef, PartId, PartKindId, Published, Publishes, Quality, build_part,
     fact, find_kind, plan,
@@ -52,7 +54,10 @@ const EXTRA_SLOT: &str = "unused_probe_slot";
 /// How facts are compared, by fact name.
 #[derive(Default)]
 pub struct Probes {
-    facts: BTreeMap<&'static str, Differs>,
+    /// The comparison of each fact, with the type of the fact it was made for.
+    facts: BTreeMap<&'static str, (TypeId, Differs)>,
+    /// The probes read from the registry, for [`Probes::probe_problems`].
+    registered: Vec<&'static FactProbe>,
 }
 
 impl Probes {
@@ -60,11 +65,18 @@ impl Probes {
     /// Values compare with `==`, or with the function the fact's own registration names (`HeadFact` and `FitFact`, which
     /// hold trait objects, compare their `Debug` text).
     pub fn registered() -> Self {
-        let mut probes = Self::default();
-        for probe in fact::probes() {
-            probes.facts.insert(probe.name, probe.differs);
+        Self::from_probes(fact::probes())
+    }
+
+    /// The probes `probes`, as [`Probes::registered`] reads them from the registry (a later probe for the same fact
+    /// replaces an earlier one, and [`Probes::probe_problems`] reports it).
+    pub fn from_probes(probes: impl IntoIterator<Item = &'static FactProbe>) -> Self {
+        let mut all = Self::default();
+        for probe in probes {
+            all.facts.insert(probe.name, ((probe.type_id)(), probe.differs));
+            all.registered.push(probe);
         }
-        probes
+        all
     }
 
     /// Adds a comparison of fact `F` by value, for a fact registered without one (a test's own): the values a part
@@ -74,17 +86,38 @@ impl Probes {
     where
         F::Value: PartialEq + Debug,
     {
-        self.facts.insert(F::NAME, fact::differs_by_eq::<F>);
+        self.facts.insert(F::NAME, (TypeId::of::<F>(), fact::differs_by_eq::<F>));
         self
     }
 
-    /// The registered facts that have no probe here, named: what the gate test keeps empty. A fact registered twice
-    /// under one name is a clash.
+    /// The registered facts that have no probe here, named: what the gate test keeps empty. A probe counts only when
+    /// its name and its fact's type both match, so a probe made for another fact that shares the name covers nothing.
     ///
     /// # Errors
     /// Two registered facts share a name ([`omuzaki_char_api::facts`]).
     pub fn unprobed_facts(&self) -> Result<Vec<&'static str>, String> {
-        Ok(fact::facts()?.into_iter().map(|f| f.name).filter(|n| !self.facts.contains_key(n)).collect())
+        let probed = |f: &fact::FactRegistration| self.facts.get(f.name).is_some_and(|(id, _)| *id == (f.type_id)());
+        Ok(fact::facts()?.into_iter().filter(|f| !probed(f)).map(|f| f.name).collect())
+    }
+
+    /// What is wrong with the registered probes themselves, one line each, for the gate test to keep empty: a probe
+    /// that matches no registered fact (by name and type), and a second probe for one fact (only one would be used).
+    ///
+    /// # Errors
+    /// Two registered facts share a name ([`omuzaki_char_api::facts`]).
+    pub fn probe_problems(&self) -> Result<Vec<String>, String> {
+        let facts = fact::facts()?;
+        let mut problems = Vec::new();
+        let mut seen: BTreeSet<(&str, TypeId)> = BTreeSet::new();
+        for probe in &self.registered {
+            let id = (probe.type_id)();
+            if !facts.iter().any(|f| f.name == probe.name && (f.type_id)() == id) {
+                problems.push(format!("probe '{}' matches no registered fact of that name and type", probe.name));
+            } else if !seen.insert((probe.name, id)) {
+                problems.push(format!("fact '{}' has more than one probe", probe.name));
+            }
+        }
+        Ok(problems)
     }
 }
 
@@ -370,7 +403,7 @@ fn compare(
         }
         for name in fact_names(under_a) {
             match probes.facts.get(name.as_str()) {
-                Some(differs) => {
+                Some((_, differs)) => {
                     if let Some(what) = differs(under_a, under_b) {
                         violate(
                             format!(", fact '{name}'"),
