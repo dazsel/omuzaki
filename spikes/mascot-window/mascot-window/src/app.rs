@@ -149,6 +149,8 @@ pub struct App {
     render_ms: Series,
     gpu_ms: Series,
     opacity: f32,
+    /// The mask is the degraded one (every pixel takes input), so the display opacity must not thin it out.
+    mask_open: bool,
     started: Instant,
     next_frame: Instant,
     last_report: Instant,
@@ -180,6 +182,7 @@ impl App {
         let frames = expected_frames(&config);
         Self {
             opacity: config.opacity.clamp(0.0, 1.0),
+            mask_open: false,
             config,
             scene: None,
             window: None,
@@ -265,7 +268,7 @@ impl App {
         } else {
             self.reference(window.inner_size())?
         };
-        let mask = mask(&window, &scene, self.opacity);
+        let mask = mask(&window, &scene, mask_opacity(self.mask_open, self.opacity));
         let (mut state, features) = platform::State::new(&window, self.config.platform, &mask);
         println!(
             "window: {}x{} physical px, scale factor {}",
@@ -353,7 +356,7 @@ impl App {
             return;
         }
         if let Some(state) = self.platform.as_mut() {
-            state.tick(&window, &mask(&window, scene, self.opacity));
+            state.tick(&window, &mask(&window, scene, mask_opacity(self.mask_open, self.opacity)));
             if let Some(e) = state.take_poll_error() {
                 println!("[FAILED]      click_through_pixel toggle: {e}");
             }
@@ -389,8 +392,10 @@ impl App {
     /// Rebuilds the click-through mask after the window's size or the opacity changed, and tells the platform layer.
     fn refresh_mask(&mut self) {
         let (Some(window), Some(scene)) = (self.window.clone(), self.scene.as_ref()) else { return };
-        if let Some(feature) =
-            self.platform.as_mut().and_then(|p| p.refresh(&window, &mask(&window, scene, self.opacity)))
+        if let Some(feature) = self
+            .platform
+            .as_mut()
+            .and_then(|p| p.refresh(&window, &mask(&window, scene, mask_opacity(self.mask_open, self.opacity))))
         {
             println!("{feature}");
         }
@@ -415,6 +420,7 @@ impl App {
         let (scene, degraded) = scene_for_size(size, |size| {
             scene_pass::render_reference(self.config.gpu.backends, self.config.gpu.fallback_adapter, size)
         });
+        self.mask_open = degraded.is_some();
         if let Some(reason) = degraded {
             println!(
                 "[FAILED]      mask at {}x{}: {reason}; per-pixel click-through is off until the size changes",
@@ -472,6 +478,12 @@ fn scene_for_size(
         Ok(scene) => (scene, None),
         Err(e) => (Scene::opaque(size.0, size.1), Some(e.to_string())),
     }
+}
+
+/// The opacity the hit-test mask is built at: the display opacity, except that a degraded (fully opaque) mask must stay
+/// fully opaque whatever the window is shown at, or an opacity of 0 would empty it and make the whole window click-through.
+fn mask_opacity(open: bool, display: f32) -> f32 {
+    if open { 1.0 } else { display }
 }
 
 /// The hit-test mask for `scene` in `window` at `opacity`.
@@ -563,6 +575,20 @@ mod tests {
         let (scene, degraded) = scene_for_size((1280, 720), failed);
         assert_eq!(scene, Scene::opaque(1280, 720));
         assert!(degraded.is_some_and(|reason| reason.contains("lost")));
+    }
+
+    #[test]
+    fn a_degraded_mask_catches_every_pixel_at_any_display_opacity() {
+        let scene = Scene::opaque(40, 30);
+        let fit = Fit::new((40, 30), (40, 30));
+        for display in [0.0, 0.02, 1.0] {
+            let mask = Mask { fit, scene: &scene, opacity: mask_opacity(true, display) };
+            assert_eq!(mask.input_rects().len(), 1, "one full-window rectangle at opacity {display}");
+            assert!(mask.hit(5.5, 5.5));
+        }
+        assert_eq!(mask_opacity(false, 0.3), 0.3, "an ordinary mask follows the display opacity");
+        let thin = Mask { fit, scene: &scene, opacity: mask_opacity(false, 0.0) };
+        assert!(thin.input_rects().is_empty(), "without the override a degraded mask would vanish at opacity 0");
     }
 
     #[test]
