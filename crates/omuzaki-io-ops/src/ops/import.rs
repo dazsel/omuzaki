@@ -2,8 +2,11 @@
 //! the document. A job, so it reports progress and can be cancelled.
 //!
 //! **Three calls** (the job contract in `omuzaki-ops-api`):
-//! - `plan` validates the arguments and the access, under the lock, and changes nothing;
-//! - `work` runs off the lock: it reads the file, imports it, then stores the original and its images;
+//! - `plan` validates the arguments and the access, under the lock, and changes nothing. For a `.gltf` read from a
+//!   `path` it also reads the files the model names (buffers, images) through the confined [`DirResolver`] that
+//!   `io.inspect` uses, and hands them to `work` as the plan's output;
+//! - `work` runs off the lock: it reads the file, imports it (the files `plan` resolved are its only sidecars, so the
+//!   job reads no file the plan did not), then stores the original and its images;
 //! - `finish` runs under the lock and returns the patch that records the asset, so the document changes once.
 //!
 //! **What is stored.** The original file's bytes, unchanged, with the provenance `run_import` derived from the file's
@@ -23,22 +26,29 @@
 //! - the objects already put are whole, because `put` is atomic and content addressed;
 //! - those objects are referenced by nothing, so garbage collection removes them (the `StoreGc` contract, ADR 0021).
 //!
-//! **Not here.** Importing as an editable part is CB-44 and answers `Unsupported`. Files a `.gltf` refers to are not
-//! read (the resolver needs the plan-time context): import a `.glb`, which carries its buffers and images.
+//! **Sidecars.** Only a `path` has a folder, so only a `path` import resolves a `.gltf`'s external files; `bytes` of a
+//! model that names one are `Unsupported` (import a `.glb`, or pass the `path`). The input limit counts the file and
+//! every sidecar together. `plan` hands the files to `work` hex encoded in its output, which is the only channel a job
+//! has from `plan`.
+//!
+//! **Not here.** Importing as an editable part is CB-44 and answers `Unsupported`.
 
 use std::borrow::Cow;
 use std::io::Read;
 
 use omuzaki_doc_api::{DocPath, DocRead, Patch, Value};
 use omuzaki_io_api::{
-    FormatId, ImportCtx, ImportInput, ImportOptions, Importer, IoError, NoResolver, Progress, Report, SceneSummary,
-    find_importer, formats, run_import, sniff,
+    FormatId, ImportCtx, ImportInput, ImportOptions, Importer, IoError, NoResolver, Progress, Report, Resolver,
+    SceneSummary, find_importer, formats, run_import, sniff,
 };
-use omuzaki_ops_api::{FsMode, JobCtx, Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op};
+use omuzaki_ops_api::{
+    CanonicalPath, FsMode, JobCtx, Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op,
+};
 use omuzaki_store_api::{ContentHash, Provenance, Source, Store, StoreError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::sidecar::DirResolver;
 use crate::error::from_io;
 
 /// The name a byte import is given when the caller names none.
@@ -158,11 +168,43 @@ impl Import {
         store: &dyn Store,
         progress: &dyn Progress,
     ) -> Result<Imported, OpError> {
+        self.import_with(name, bytes, options, store, progress, None)
+    }
+
+    /// [`import_bytes`](Self::import_bytes) with `sidecars`, the files the model refers to, which are the only ones it
+    /// can read. A reference not among them is `NotFound`.
+    ///
+    /// # Errors
+    /// As `import_bytes`.
+    pub fn import_bytes_with(
+        &self,
+        name: &str,
+        bytes: &[u8],
+        sidecars: &[(String, Vec<u8>)],
+        options: &ImportOptions,
+        store: &dyn Store,
+        progress: &dyn Progress,
+    ) -> Result<Imported, OpError> {
+        self.import_with(name, bytes, options, store, progress, Some(sidecars))
+    }
+
+    /// The shared body; `sidecars` is `None` when the source has no folder to read them from.
+    fn import_with(
+        &self,
+        name: &str,
+        bytes: &[u8],
+        options: &ImportOptions,
+        store: &dyn Store,
+        progress: &dyn Progress,
+        sidecars: Option<&[(String, Vec<u8>)]>,
+    ) -> Result<Imported, OpError> {
         let field = self.source_field();
         let input = ImportInput::new(bytes).named(name);
         let importer = self.pick_importer(&input)?;
-        let ctx = ImportCtx::new(options).with_resolver(&NoResolver).with_progress(progress);
-        let outcome = run_import(&*importer, &input, &ctx).map_err(|e| import_error(e, field))?;
+        let planned = PlannedFiles(sidecars.unwrap_or_default());
+        let resolver: &dyn Resolver = if sidecars.is_some() { &planned } else { &NoResolver };
+        let ctx = ImportCtx::new(options).with_resolver(resolver).with_progress(progress);
+        let outcome = run_import(&*importer, &input, &ctx).map_err(|e| import_error(e, field, sidecars.is_some()))?;
         // The last chance to stop: past this point the objects are written without further checks.
         progress.checkpoint("storing", 0.9).map_err(|e| from_io(e, field))?;
         let provenance = outcome
@@ -242,7 +284,8 @@ impl Import {
         self.name.clone().or_else(|| from_path.map(str::to_owned)).unwrap_or_else(|| DEFAULT_NAME.to_owned())
     }
 
-    /// The read: `path` through the job's file access, refusing a file over the input limit before reading it.
+    /// The read: `path` through the job's file access, refusing a file over the input limit (`max_bytes`, what is left
+    /// after the sidecars) before reading it.
     fn read_source(&self, job: &JobCtx<'_>, max_bytes: u64) -> Result<Cow<'_, [u8]>, OpError> {
         let Some(path) = &self.path else {
             let bytes = self.bytes.as_deref();
@@ -261,16 +304,154 @@ impl Import {
     }
 }
 
-/// The op error for a failed import. The job reads no other files, so a file the model refers to is a feature this op
-/// lacks, not a missing file.
-fn import_error(error: IoError, field: &str) -> OpError {
+/// The op error for a failed import. Bytes have no folder, so a file the model refers to is a feature that source
+/// lacks, not a missing file; for a `path` (`planned`), a reference the plan did not resolve is an ordinary
+/// `NotFound`.
+fn import_error(error: IoError, field: &str, planned: bool) -> OpError {
     match error {
-        IoError::Resource { uri, .. } => OpError::unsupported(format!(
-            "the model refers to another file ({uri}), and io.import reads a single file"
+        IoError::Resource { uri, .. } if !planned => OpError::unsupported(format!(
+            "the model refers to another file ({uri}), and bytes have no folder to read it from"
         ))
-        .hint("import a .glb, which carries its buffers and images"),
+        .hint("import a .glb, which carries its buffers and images, or pass the model as a path"),
         other => from_io(other, field),
     }
+}
+
+/// The files `plan` resolved, served to the importer by the URI the model names. Nothing else is readable.
+struct PlannedFiles<'a>(&'a [(String, Vec<u8>)]);
+
+impl Resolver for PlannedFiles<'_> {
+    fn read(&self, uri: &str) -> Result<Vec<u8>, IoError> {
+        let found = self.0.iter().find(|(planned, _)| planned == uri);
+        found.map(|(_, bytes)| bytes.clone()).ok_or_else(|| IoError::Resource {
+            uri: uri.to_owned(),
+            reason: "the file was not resolved when the import was planned".to_owned(),
+        })
+    }
+}
+
+/// A glTF's sidecars: the `uri` the model names and the bytes read for it.
+pub type SidecarFiles = Vec<(String, Vec<u8>)>;
+
+/// The key of the sidecars in `plan`'s output.
+const SIDECARS: &str = "sidecars";
+
+/// The `uri`s of a glTF's buffers and images that name a file: `data:` URIs are decoded by the importer itself.
+/// Percent-decoded as the importer does before it asks the resolver, in file order, each once. A `uri` that is not
+/// valid after decoding is left out; the importer then reports it.
+fn sidecar_uris(gltf: &Value) -> Vec<String> {
+    let mut uris: Vec<String> = Vec::new();
+    for key in ["buffers", "images"] {
+        let items = gltf.get(key).and_then(Value::as_array).map_or(&[][..], Vec::as_slice);
+        for uri in items.iter().filter_map(|item| item.get("uri")?.as_str()) {
+            let is_data = uri.get(..5).is_some_and(|scheme| scheme.eq_ignore_ascii_case("data:"));
+            if let Some(decoded) = (!is_data).then(|| percent_decode(uri)).flatten()
+                && !uris.contains(&decoded)
+            {
+                uris.push(decoded);
+            }
+        }
+    }
+    uris
+}
+
+/// `text` with its `%XX` escapes decoded, or `None` when an escape is malformed or the result is not UTF-8.
+fn percent_decode(text: &str) -> Option<String> {
+    let raw = text.as_bytes();
+    let mut out = Vec::with_capacity(raw.len());
+    let mut at = 0;
+    while at < raw.len() {
+        if raw[at] == b'%' {
+            let pair = text.get(at + 1..at + 3)?;
+            out.push(u8::from_str_radix(pair, 16).ok()?);
+            at += 3;
+        } else {
+            out.push(raw[at]);
+            at += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+/// How many bytes of the file are read to tell JSON from a `.glb` or another binary format.
+const PEEK_BYTES: u64 = 64;
+
+/// Whether `head` starts like a JSON object: after an optional byte order mark and white space, a `{`.
+fn looks_like_json(head: &[u8]) -> bool {
+    let head = head.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(head);
+    head.iter().find(|b| !b.is_ascii_whitespace()) == Some(&b'{')
+}
+
+/// Reads the files the `.gltf` at `main` names, through the same confined resolver `io.inspect` uses, each counted
+/// with the file itself against `max_bytes`. `None` when the file is not a `.gltf` or names none.
+///
+/// # Errors
+/// `Invalid` for a file over the limit; `NotFound` for a sidecar that is missing, outside the file's folder or over
+/// what is left of the limit.
+fn resolve_sidecars(
+    ctx: &OpCtx<'_>,
+    main: &CanonicalPath,
+    typed: &str,
+    max_bytes: u64,
+) -> Result<Option<SidecarFiles>, OpError> {
+    let mut file = main.open_read()?;
+    let couldnt = |e: std::io::Error| OpError::invalid("path", format!("couldn't read the file: {e}"));
+    let mut bytes = Vec::new();
+    file.by_ref().take(PEEK_BYTES).read_to_end(&mut bytes).map_err(couldnt)?;
+    if !looks_like_json(&bytes) {
+        return Ok(None);
+    }
+    file.take(max_bytes.saturating_add(1)).read_to_end(&mut bytes).map_err(couldnt)?;
+    check_size(bytes.len() as u64, max_bytes, "path")?;
+    // A file that is not valid JSON is left for the importer to report.
+    let Ok(gltf) = serde_json::from_slice::<Value>(&bytes) else { return Ok(None) };
+    let mut used = bytes.len() as u64;
+    let mut files = Vec::new();
+    for uri in sidecar_uris(&gltf) {
+        let read = DirResolver::new(ctx, main, typed, max_bytes - used).read(&uri).map_err(|e| from_io(e, "path"))?;
+        used += read.len() as u64;
+        files.push((uri, read));
+    }
+    Ok((!files.is_empty()).then_some(files))
+}
+
+/// One sidecar as `plan`'s output carries it. Hex rather than a number per byte: a JSON number costs a few dozen bytes
+/// in memory, a hex digit pair costs two characters.
+#[derive(Serialize, Deserialize)]
+struct SidecarJson {
+    uri: String,
+    hex: String,
+}
+
+fn encode_sidecars(files: &[(String, Vec<u8>)]) -> Result<Value, OpError> {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let list: Vec<SidecarJson> = files
+        .iter()
+        .map(|(uri, bytes)| SidecarJson {
+            uri: uri.clone(),
+            hex: bytes.iter().flat_map(|b| [DIGITS[usize::from(b >> 4)], DIGITS[usize::from(b & 15)]]).map(char::from).collect(),
+        })
+        .collect();
+    serde_json::to_value(list).map_err(|e| OpError::internal(format!("serialising the sidecars: {e}")))
+}
+
+/// The sidecars `plan` resolved, from the job's plan output; empty when it resolved none.
+fn planned_sidecars(job: &JobCtx<'_>) -> Result<SidecarFiles, OpError> {
+    let malformed = |why: String| OpError::internal(format!("the planned sidecars are malformed: {why}"));
+    let Some(listed) = job.plan_output().and_then(|output| output.get(SIDECARS)) else { return Ok(Vec::new()) };
+    let list: Vec<SidecarJson> = serde_json::from_value(listed.clone()).map_err(|e| malformed(e.to_string()))?;
+    list.into_iter()
+        .map(|SidecarJson { uri, hex }| {
+            let digits = hex.as_bytes();
+            let bytes = digits
+                .chunks(2)
+                .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok())
+                .collect::<Option<Vec<u8>>>()
+                .filter(|_| digits.len() % 2 == 0)
+                .ok_or_else(|| malformed(format!("{uri} is not hex")))?;
+            Ok((uri, bytes))
+        })
+        .collect()
 }
 
 /// Removes every `null` from `value`: the result is shown in history and a stored document cannot hold one.
@@ -408,13 +589,15 @@ impl Op for Import {
                 .hint("import it as a reference"));
         }
         let max_bytes = ImportOptions::default().limits.max_input_bytes;
+        let mut sidecars = None;
         match (&self.path, &self.bytes) {
             (Some(path), None) => {
                 if path.is_empty() {
                     return Err(OpError::invalid("path", "the path is empty").hint("pass the path of a model file"));
                 }
                 // Fails now, not after the job is queued, when the actor may not read the file.
-                ctx.fs_access(path, FsMode::Read)?;
+                let main = ctx.fs_access(path, FsMode::Read)?;
+                sidecars = resolve_sidecars(ctx, &main, path, max_bytes)?;
             }
             (None, Some(bytes)) => {
                 if bytes.is_empty() {
@@ -438,15 +621,26 @@ impl Op for Import {
         }
         // The store is needed by `work`; its absence is better reported here.
         ctx.service::<dyn Store>()?;
-        Ok(Plan::default())
+        let output = sidecars
+            .map(|files| encode_sidecars(&files).map(|list| serde_json::json!({ SIDECARS: list })))
+            .transpose()?;
+        Ok(Plan { output, ..Plan::default() })
     }
 
     fn work(&self, job: &JobCtx<'_>) -> Result<Value, OpError> {
         let store = job.service::<dyn Store>()?;
         let options = ImportOptions::default();
         let outcome = job.checkpoint("reading", 0.0).and_then(|()| {
-            let bytes = self.read_source(job, options.limits.max_input_bytes)?;
-            self.import_bytes(&self.file_name(), &bytes, &options, store, &JobProgress(job))
+            let sidecars = planned_sidecars(job)?;
+            // The limit counts the file and its sidecars together.
+            let sidecar_bytes: u64 = sidecars.iter().map(|(_, bytes)| bytes.len() as u64).sum();
+            let bytes = self.read_source(job, options.limits.max_input_bytes.saturating_sub(sidecar_bytes))?;
+            let (name, progress) = (self.file_name(), JobProgress(job));
+            if self.path.is_some() {
+                self.import_bytes_with(&name, &bytes, &sidecars, &options, store, &progress)
+            } else {
+                self.import_bytes(&name, &bytes, &options, store, &progress)
+            }
         });
         // A cancelled import surfaces from the importer as a plain conflict; the job reports it as cancelled.
         let imported = outcome.map_err(|e| if job.is_cancelled() { OpError::cancelled(job.id()) } else { e })?;
@@ -483,6 +677,46 @@ mod tests {
     use omuzaki_doc_api::Change;
 
     use super::*;
+
+    #[test]
+    fn sidecar_uris_are_the_decoded_file_references_once_each() {
+        let gltf = serde_json::json!({
+            "buffers": [{ "uri": "a%20b.bin" }, { "uri": "data:application/octet-stream;base64,AA==" }, { "uri": "a b.bin" }],
+            "images": [{ "uri": "tex/x.png" }, { "bufferView": 0 }, { "uri": "DATA:image/png;base64,AA==" }, { "uri": "%zz" }],
+        });
+        assert_eq!(sidecar_uris(&gltf), ["a b.bin", "tex/x.png"]);
+    }
+
+    #[test]
+    fn json_is_told_from_a_glb_by_its_first_byte() {
+        assert!(looks_like_json(b"  \n{\"asset\""));
+        assert!(looks_like_json(b"\xEF\xBB\xBF{"));
+        assert!(!looks_like_json(b"glTF\x02\0\0\0"));
+        assert!(!looks_like_json(b""));
+    }
+
+    #[test]
+    #[allow(clippy::disallowed_methods, reason = "tests set up their fixtures on disk; the fence is for ops")]
+    fn sidecars_count_against_the_input_limit_with_the_file() {
+        use omuzaki_core::time::FakeClock;
+        use omuzaki_ops_api::{Actor, Grants, ProjectDir};
+        let dir = tempfile::tempdir().unwrap();
+        let gltf = br#"{"buffers":[{"uri":"a.bin"}],"images":[{"uri":"b.png"}]}"#;
+        std::fs::write(dir.path().join("m.gltf"), gltf).unwrap();
+        std::fs::write(dir.path().join("a.bin"), [0_u8; 10]).unwrap();
+        std::fs::write(dir.path().join("b.png"), [0_u8; 10]).unwrap();
+        let (doc, actor, clock) = (omuzaki_doc_mock::MemDoc::new(), Actor::Person { name: "t".into() }, FakeClock::default());
+        let (grants, project) = (Grants::person(), ProjectDir::open(dir.path()).unwrap());
+        let ctx = OpCtx::new(&doc, &actor, &clock).with_grants(&grants).with_project_dir(&project);
+        let main = ctx.fs_access("m.gltf", FsMode::Read).unwrap();
+        let total = gltf.len() as u64 + 20;
+        let files = resolve_sidecars(&ctx, &main, "m.gltf", total).unwrap().unwrap();
+        assert_eq!(files.iter().map(|(uri, _)| uri.as_str()).collect::<Vec<_>>(), ["a.bin", "b.png"]);
+        let error = resolve_sidecars(&ctx, &main, "m.gltf", total - 1).unwrap_err();
+        assert!(error.message.contains("b.png") && error.message.contains("byte limit"), "{}", error.message);
+        let error = resolve_sidecars(&ctx, &main, "m.gltf", gltf.len() as u64 - 1).unwrap_err();
+        assert_eq!(error.code, omuzaki_ops_api::ErrorCode::Invalid, "the file alone is over the limit");
+    }
 
     #[test]
     fn the_same_asset_recorded_twice_is_an_empty_patch() {
