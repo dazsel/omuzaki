@@ -4091,8 +4091,11 @@ name = "omuzaki-stream-api"
 version = "0.0.0"
 dependencies = [
  "bytes",
+ "omuzaki-core",
+ "omuzaki-render-api",
  "schemars",
  "serde",
+ "serde_json",
  "thiserror 2.0.21",
 ]
 
