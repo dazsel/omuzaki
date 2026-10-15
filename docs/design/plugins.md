@@ -489,7 +489,7 @@ agent = "confirm"              # free, confirm or never; default never
   content hash is BLAKE3 over the sorted (path, bytes) list without `plugin.sig`; the signature is an ADR 0042
   envelope over that hash under a new `Domain::Plugin`, tag `omuzaki-plugin-v1\0` (ADR 0042's `omuzaki-<use>-v<N>\0`
   shape). `Domain` is `omuzaki-identity-api`'s closed enum, so the variant is a cross-area contract change: an ADR 0042
-  amendment the Director approves (§11), never a tag the plugin crates define. **Extraction** is into a fresh staging folder and
+  amendment the Director approved (§11), never a tag the plugin crates define. **Extraction** is into a fresh staging folder and
   refuses the whole package on: an absolute path, a drive prefix or a `..` component; a symlink, hardlink or any entry
   that is not a regular file or folder; two entries equal after normalising (Unicode NFC, case-folded, `/` only); more
   than 256 entries or 32 MiB uncompressed. The hash is taken over the staged files, so what is hashed is what loads.
@@ -605,9 +605,10 @@ pub trait Plugins: Send + Sync {
 
 `DataOwner { publisher: Publisher, installation: InstallationId }` (6.4) and `KeptData` join the types above.
 
-**`omuzaki-identity-api`** (a cross-area contract change: an ADR 0042 amendment that needs the Director's approval
-before the install work signs or verifies anything): `Domain::Plugin`, tag `omuzaki-plugin-v1\0`, added to
-`Domain::ALL`, with ADR 0042's tag tests (unique, prefix-free). The plugin crates only call `verify(Domain::Plugin, …)`.
+**`omuzaki-identity-api`** (a cross-area contract change: an ADR 0042 amendment, approved by the Director on
+2026-10-15; its own contract task, landing before the install work signs or verifies anything): `Domain::Plugin`, tag
+`omuzaki-plugin-v1\0`, added to `Domain::ALL`, with test vectors for the new tag and a test that no two domain tags
+are prefixes of each other (ADR 0042's tag tests). The plugin crates only call `verify(Domain::Plugin, …)`.
 
 **`omuzaki-settings-api`** (its own contract task, approved by the Director before #1571): the runtime settings
 registry of §7.
