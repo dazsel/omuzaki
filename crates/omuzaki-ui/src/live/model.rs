@@ -170,9 +170,14 @@ impl LiveModel {
         matches!(self.calibration(), Some(CalibrationState::Capturing { .. }))
     }
 
-    /// Takes `status` in, as `perform.status` returned it; the slider follows the applied smoothing.
+    /// Takes `status` in, as `perform.status` returned it. The slider follows the applied smoothing when the first
+    /// status arrives and whenever the performer has applied a newer settings change, never in between: a status read
+    /// during a drag must not pull the handle back.
     pub fn set_status(&mut self, status: PerformStatus) {
-        self.smoothing = f64::from(status.retarget.smoothing);
+        let newer = self.status.as_ref().is_none_or(|old| status.retarget_seq != old.retarget_seq);
+        if newer {
+            self.smoothing = f64::from(status.retarget.smoothing);
+        }
         self.status = Some(status);
     }
 
@@ -255,4 +260,52 @@ fn run(runner: &dyn Runner, actor: &Actor, op: &str, args: Value) -> Result<Valu
 /// A JSON object of `pairs`.
 fn object(pairs: &[(&str, Value)]) -> Value {
     Value::Object(pairs.iter().map(|(key, value)| ((*key).to_owned(), value.clone())).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use omuzaki_anim_api::RetargetConfig;
+
+    use super::*;
+
+    fn status(seq: u64, smoothing: f32) -> PerformStatus {
+        PerformStatus {
+            tracking: Tracking::Tracking,
+            calibration: CalibrationState::Idle,
+            retarget: RetargetConfig { smoothing, ..RetargetConfig::default() },
+            retarget_seq: seq,
+            source_fps: 30.0,
+        }
+    }
+
+    #[test]
+    fn the_slider_follows_applied_changes_but_a_status_read_mid_drag_does_not_pull_it_back() {
+        let mut model = LiveModel::with_ops(Ops::default());
+        model.set_status(status(0, 0.25));
+        assert!((model.smoothing() - 0.25).abs() < 1e-6, "the first status sets the slider");
+        *model.smoothing_mut() = 0.8;
+        model.set_status(status(0, 0.25));
+        assert!((model.smoothing() - 0.8).abs() < 1e-6, "the same applied settings leave the drag alone");
+        model.set_status(status(1, 0.5));
+        assert!((model.smoothing() - 0.5).abs() < 1e-6, "a newer applied change (an agent's, say) shows");
+    }
+
+    #[test]
+    fn controls_follow_the_registered_ops_and_the_missing_ones_name_their_op() {
+        let ops = Ops { calibrate: true, ..Ops::default() };
+        assert_eq!(ops.calibrate(), Control::Ready);
+        assert_eq!(ops.smoothing(), Control::Missing(OP_SET_RETARGET));
+        assert_eq!(ops.import(), Control::Missing(OP_IMPORT));
+        assert_eq!((Ops::camera(), Ops::hotkeys()), (Control::NotYet, Control::NotYet));
+    }
+
+    #[test]
+    fn an_action_whose_op_is_not_registered_does_nothing() {
+        let mut model = LiveModel::with_ops(Ops::default());
+        let runner = crate::live::story::StoryRunner;
+        let actor = Actor::Person { name: "p".into() };
+        model.calibrate(&runner, &actor);
+        model.import(&runner, &actor, "x.vrm");
+        assert!(model.failure().is_none() && model.imported().is_none());
+    }
 }
