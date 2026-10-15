@@ -149,6 +149,8 @@ fn the_trace_through_the_mailbox_matches_the_perform_golden() {
         }
     }
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/golden/perform_trace.json");
+    // A test reads its own checked-in golden; no op runs here.
+    #[allow(clippy::disallowed_methods)]
     let text = std::fs::read_to_string(&path).expect("tests/golden/perform_trace.json");
     let golden: Vec<Sample> = serde_json::from_str(&text).unwrap();
     assert_eq!(golden.len(), seen.len());
