@@ -3,8 +3,12 @@
 #
 # Why: every lead and session shares one account's 5,000 REST calls an hour, and the fleet ran it out on 2026-10-15.
 # The read-only App has its own budget, so bulk reads (open pull requests, issues, CI runs) move to it; writes stay on
-# the session's normal GitHub access. The App can only read, and the repository is public, so a leaked token or key
-# exposes nothing that isn't already public.
+# the session's normal GitHub access. The token is scoped when it is minted: read-only permissions and this one
+# repository, whatever else the installation is later granted.
+#
+# SECRET: the App private key and the minted token are credentials. Never print, log, echo or commit either. The key
+# can sign for the App and mint tokens until it is rotated, so a disclosed key means rotate it, even though the
+# repository is public.
 #
 # Needs, from the cloud environment's settings (never from the repository):
 #   OMUZAKI_READ_APP_ID       the App's ID
@@ -15,44 +19,62 @@
 # Exit 1 with a message on stderr when the variables are missing or GitHub refuses.
 set -uo pipefail
 REPO=dazsel/omuzaki
-CACHE=${TMPDIR:-/tmp}/omuzaki-read-token
+CACHE=${TMPDIR:-/tmp}/omuzaki-read-token-$(id -u)
+# What the minted token may do. Edit here (and in the App's settings) if bulk reads need another read permission.
+BODY='{"repositories":["omuzaki"],"permissions":{"actions":"read","checks":"read","contents":"read","issues":"read","metadata":"read","pull_requests":"read","statuses":"read"}}'
+KEYFILE= CTMP=
+cleanup() { [ -n "$KEYFILE" ] && rm -f "$KEYFILE"; [ -n "$CTMP" ] && rm -f "$CTMP"; return 0; }
 api() { curl -sf --max-time 30 -H "Accept: application/vnd.github+json" "$@"; }
 b64() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+# A cache is only trusted when it is a regular file we own with mode 0600 (not a link, not readable by others).
+private() {
+  local m o
+  [ -f "$1" ] && [ ! -L "$1" ] || return 1
+  read -r m o < <(stat -c '%a %u' "$1" 2>/dev/null || stat -f '%Lp %u' "$1" 2>/dev/null) || return 1
+  [ "$m" = 600 ] && [ "$o" = "$(id -u)" ]
+}
 
 token() {
   local now exp tok
   now=$(date +%s)
-  if [ -f "$CACHE" ] && [ ! -L "$CACHE" ] && [ -O "$CACHE" ] && read -r exp tok < "$CACHE" && [ -n "${tok:-}" ] && [ "${exp:-0}" -gt $((now + 600)) ]; then
+  if private "$CACHE" && read -r exp tok < "$CACHE" && [ -n "${tok:-}" ] && [ "${exp:-0}" -gt $((now + 600)) ]; then
     printf '%s' "$tok"; return 0
   fi
   [ -n "${OMUZAKI_READ_APP_ID:-}" ] && [ -n "${OMUZAKI_READ_APP_KEY_B64:-}" ] \
     || { echo "gh-read-token: OMUZAKI_READ_APP_ID and OMUZAKI_READ_APP_KEY_B64 must be set" >&2; return 1; }
   local key b64 header payload sig jwt inst resp
-  # The key exists on disk only for the one signing call (no trap: bash runs RETURN traps when any function returns).
+  # The key exists on disk only for the one signing call; EXIT, INT and TERM remove it (and any half-written cache).
+  trap cleanup EXIT; trap 'exit 130' INT; trap 'exit 143' TERM
   key=$(umask 077; mktemp) || return 1
+  KEYFILE=$key
   if ! printf '%s' "$OMUZAKI_READ_APP_KEY_B64" | base64 -d > "$key" 2>/dev/null; then
-    rm -f "$key"; echo "gh-read-token: OMUZAKI_READ_APP_KEY_B64 is not valid base64" >&2; return 1
+    rm -f "$key"; KEYFILE=; echo "gh-read-token: OMUZAKI_READ_APP_KEY_B64 is not valid base64" >&2; return 1
   fi
   header=$(printf '{"alg":"RS256","typ":"JWT"}' | b64)
   payload=$(printf '{"iat":%d,"exp":%d,"iss":"%s"}' $((now - 60)) $((now + 540)) "$OMUZAKI_READ_APP_ID" | b64)
-  sig=$(printf '%s.%s' "$header" "$payload" | openssl dgst -sha256 -sign "$key" -binary | b64); rm -f "$key"
+  sig=$(printf '%s.%s' "$header" "$payload" | openssl dgst -sha256 -sign "$key" -binary | b64); rm -f "$key"; KEYFILE=
   [ -n "$sig" ] || { echo "gh-read-token: signing failed (is the key a PEM private key?)" >&2; return 1; }
   jwt="$header.$payload.$sig"
   inst=$(api -H "Authorization: Bearer $jwt" "https://api.github.com/repos/$REPO/installation" \
          | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["id"])') \
     || { echo "gh-read-token: GitHub refused the App (wrong ID or key, or not installed on $REPO)" >&2; return 1; }
-  resp=$(api -X POST -H "Authorization: Bearer $jwt" "https://api.github.com/app/installations/$inst/access_tokens") \
+  resp=$(api -X POST -H "Authorization: Bearer $jwt" -H "Content-Type: application/json" -d "$BODY" "https://api.github.com/app/installations/$inst/access_tokens") \
     || { echo "gh-read-token: GitHub refused to issue a token" >&2; return 1; }
   read -r tok exp < <(printf '%s' "$resp" | python3 -I -c '
 import json, sys, datetime
 d = json.load(sys.stdin)
+# Refuse a token that is not read-only on exactly this repository, whatever was asked for.
+bad = [k for k, v in d.get("permissions", {}).items() if v != "read"]
+repos = [r.get("full_name") for r in d.get("repositories", [])]
+if bad or repos != ["dazsel/omuzaki"]:
+    sys.exit("gh-read-token: the token is not read-only on only dazsel/omuzaki; refusing it")
 print(d["token"], int(datetime.datetime.fromisoformat(d["expires_at"].replace("Z", "+00:00")).timestamp()))') \
     || { echo "gh-read-token: unexpected token response" >&2; return 1; }
   # A fresh private file renamed over the cache: writing through `>` would follow a planted file or symlink and keep
   # its permissions. A failed cache write only costs a new token next time.
-  local tmp
-  if tmp=$(umask 077; mktemp "$CACHE.XXXXXX"); then
-    { printf '%s %s\n' "$exp" "$tok" > "$tmp" && mv -f "$tmp" "$CACHE"; } || rm -f "$tmp"
+  if CTMP=$(umask 077; mktemp "$CACHE.XXXXXX"); then
+    { printf '%s %s\n' "$exp" "$tok" > "$CTMP" && mv -f "$CTMP" "$CACHE"; } || rm -f "$CTMP"
+    CTMP=
   fi
   printf '%s' "$tok"
 }
@@ -62,7 +84,8 @@ if [ "${1:-}" = --check ]; then
   # Only an App token can list its installation's repositories; a token swapped for the user's on the way is refused.
   if api -H "Authorization: Bearer $tok" "https://api.github.com/installation/repositories" >/dev/null; then
     left=$(api -H "Authorization: Bearer $tok" https://api.github.com/rate_limit \
-           | python3 -I -c 'import json,sys; c=json.load(sys.stdin)["resources"]["core"]; print("%s/%s" % (c["remaining"], c["limit"]))')
+           | python3 -I -c 'import json,sys; c=json.load(sys.stdin)["resources"]["core"]; print("%s/%s" % (c["remaining"], c["limit"]))') \
+      && [ -n "$left" ] || { echo "gh-read-token: the rate-limit lookup failed; can't report the App budget" >&2; exit 1; }
     echo "ok: the token reaches GitHub as the App; App budget left: $left"
   else
     echo "not ok: GitHub didn't accept the token as the App (a proxy may be replacing the Authorization header)" >&2
