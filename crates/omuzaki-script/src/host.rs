@@ -81,27 +81,11 @@ struct Run {
     plans: Mutex<Vec<PlannedCall>>,
 }
 
-/// Clears the lent services when the run ends, on every path including a panic.
-struct Lease<'a>(&'a Run);
+/// Empties [`Run::lent`] when dropped. Private to [`Run::lend`], which owns the only one, so it can't be leaked
+/// with `mem::forget`; it exists so a panic in the run empties the slot too.
+struct Clear<'a>(&'a Run);
 
-impl<'a> Lease<'a> {
-    #[allow(unsafe_code)] // see the SAFETY comment
-    fn new(run: &'a Run, calls: &'a dyn Calls, cancel: &'a dyn Cancel) -> Self {
-        // SAFETY: Rhai's callbacks must be `'static`, but they only reach `calls` and `cancel` through
-        // `Run::lent`. This guard empties that slot in `drop`, before `run` returns and the borrows end, and every
-        // access holds the slot's lock while it uses the reference, so none outlives the borrow.
-        let lent = unsafe {
-            Lent {
-                calls: std::mem::transmute::<&'a dyn Calls, &'static dyn Calls>(calls),
-                cancel: std::mem::transmute::<&'a dyn Cancel, &'static dyn Cancel>(cancel),
-            }
-        };
-        *run.lent.write().unwrap_or_else(PoisonError::into_inner) = Some(lent);
-        Self(run)
-    }
-}
-
-impl Drop for Lease<'_> {
+impl Drop for Clear<'_> {
     fn drop(&mut self) {
         *self.0.lent.write().unwrap_or_else(PoisonError::into_inner) = None;
     }
@@ -118,6 +102,29 @@ fn runtime(message: impl Into<String>) -> Box<EvalAltResult> {
 }
 
 impl Run {
+    /// Lends `calls` and `cancel` to the engine's callbacks for the duration of `f`, and only that.
+    ///
+    /// A scoped closure rather than a returned guard: the slot is emptied before `lend` returns on every path (normal
+    /// return or unwind), and no caller can keep the borrow alive past it.
+    fn lend<'a, R>(&self, calls: &'a dyn Calls, cancel: &'a dyn Cancel, f: impl FnOnce() -> R) -> R {
+        #[allow(unsafe_code)] // see the SAFETY comment
+        // SAFETY: invariant: a `Lent` is reachable only through `self.lent`, and only while this call is on the
+        // stack. The two references are valid for `'a`, which outlives this call. The slot is filled here and
+        // emptied by `_clear` before this function returns or unwinds; `_clear` is a local that nothing else can
+        // see, so it can't be forgotten. Every reader (`invoke`, `progress`) holds the slot's read lock for as
+        // long as it uses a reference, and emptying takes the write lock, so no use overlaps the end of the
+        // borrow. After that the slot is `None`, and a callback that still holds the `Arc<Run>` gets `Cancelled`.
+        let lent = unsafe {
+            Lent {
+                calls: std::mem::transmute::<&'a dyn Calls, &'static dyn Calls>(calls),
+                cancel: std::mem::transmute::<&'a dyn Cancel, &'static dyn Cancel>(cancel),
+            }
+        };
+        *self.lent.write().unwrap_or_else(PoisonError::into_inner) = Some(lent);
+        let _clear = Clear(self);
+        f()
+    }
+
     /// The one call path the bindings use: stops on cancel and at the call limit, then sends the request.
     fn invoke(&self, op: &str, args: Value) -> Result<Value, Box<EvalAltResult>> {
         let lent = self.lent.read().unwrap_or_else(PoisonError::into_inner);
@@ -292,8 +299,7 @@ impl ScriptHost {
             output: Mutex::new(Output::default()),
             plans: Mutex::new(Vec::new()),
         });
-        let _lease = Lease::new(&run, calls, cancel);
-        let result = self.execute(&run, calls, cancel);
+        let result = run.lend(calls, cancel, || self.execute(&run, calls, cancel));
         let mut rolled = Ok(());
         if result.is_err() {
             rolled = calls.rollback();
@@ -409,4 +415,92 @@ fn op_error_of(payload: &Dynamic) -> Option<OpError> {
     map.contains_key("op").then_some(())?;
     drop(map);
     from_dynamic::<OpError>(payload).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    //! The lease's boundary: the borrowed services are reachable while `lend` runs and never after it.
+
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::sync::atomic::AtomicUsize;
+
+    use omuzaki_doc_api::DocPath;
+    use omuzaki_ops_api::Outcome;
+
+    use super::*;
+
+    /// Counts the calls that reached it, through a counter that outlives it.
+    struct Counting<'c>(&'c AtomicUsize);
+
+    impl Calls for Counting<'_> {
+        fn call(&self, _: Request) -> Result<Outcome, OpError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Err(OpError::unsupported("counted"))
+        }
+        fn get(&self, _: &DocPath) -> Result<Option<Value>, OpError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(None)
+        }
+    }
+
+    struct Never;
+
+    impl Cancel for Never {
+        fn is_cancelled(&self) -> bool {
+            false
+        }
+    }
+
+    fn run() -> Arc<Run> {
+        Arc::new(Run {
+            lent: RwLock::new(None),
+            limits: Limits::console(),
+            request: RunRequest {
+                name: "lease".into(),
+                source: String::new(),
+                actor: Actor::Person { name: "tester".into() },
+                grants: Grants::person(),
+                tx: None,
+                params: JsonMap::new(),
+                dry_run: false,
+            },
+            sent: AtomicU32::new(0),
+            output: Mutex::new(Output::default()),
+            plans: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn is_cancel(error: &EvalAltResult) -> bool {
+        matches!(error, EvalAltResult::ErrorTerminated(t, _) if matches!(t.clone().try_cast::<Stop>(), Some(Stop::Cancelled)))
+    }
+
+    #[test]
+    fn a_callback_that_outlives_the_lease_cannot_reach_the_services() {
+        let reached = AtomicUsize::new(0);
+        // A clone of the run, as an engine callback holds one; it lives on after the services are gone.
+        let kept = run();
+        {
+            let calls = Counting(&reached);
+            let inside = kept.lend(&calls, &Never, || kept.invoke("face.set_profile", Value::Null));
+            assert!(inside.is_err(), "the counted call answers an error");
+            assert_eq!(reached.load(Ordering::SeqCst), 1, "inside the lease the call reaches the services");
+        } // `calls` is dropped here; the lease ended before it.
+        assert!(kept.lent.read().unwrap().is_none(), "the slot is empty once `lend` returns");
+        let after = kept.invoke("face.set_profile", Value::Null).unwrap_err();
+        assert!(is_cancel(&after), "a late call stops as cancelled");
+        assert!(kept.progress(0.0, &SystemClock::new()).is_some(), "a late progress tick stops the engine");
+        assert_eq!(reached.load(Ordering::SeqCst), 1, "nothing reached the services after the lease");
+    }
+
+    #[test]
+    fn a_panic_inside_the_lease_still_empties_the_slot() {
+        let reached = AtomicUsize::new(0);
+        let kept = run();
+        let calls = Counting(&reached);
+        let panicked = catch_unwind(AssertUnwindSafe(|| kept.lend(&calls, &Never, || panic!("inside the run"))));
+        assert!(panicked.is_err());
+        assert!(kept.lent.read().unwrap().is_none(), "unwinding empties the slot too");
+        assert!(is_cancel(&kept.invoke("face.set_profile", Value::Null).unwrap_err()));
+        assert_eq!(reached.load(Ordering::SeqCst), 0);
+    }
 }
