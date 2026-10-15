@@ -202,6 +202,14 @@ impl ColliderShape {
     fn check(&self) -> Option<&'static str> {
         match *self {
             _ if !self.radius().is_none_or(|r| r >= 0.0 && r.is_finite()) => Some("radius must be 0 or more"),
+            Self::Sphere { offset, .. } | Self::SphereInside { offset, .. } if !offset.is_finite() => {
+                Some("offset must be finite")
+            }
+            Self::Capsule { offset, tail, .. } | Self::CapsuleInside { offset, tail, .. }
+                if !(offset.is_finite() && tail.is_finite()) =>
+            {
+                Some("offset and tail must be finite")
+            }
             Self::Plane { offset, normal }
                 if !offset.is_finite() || !normal.is_finite() || (normal.length() - 1.0).abs() > NORMAL_TOLERANCE =>
             {
@@ -557,6 +565,8 @@ mod tests {
             ColliderShape::Plane { offset: Vec3::ZERO, normal: Vec3::new(0.0, 2.0, 0.0) },
             ColliderShape::Plane { offset: Vec3::ZERO, normal: Vec3::ZERO },
             ColliderShape::Plane { offset: Vec3::ZERO, normal: Vec3::new(f32::NAN, 1.0, 0.0) },
+            ColliderShape::Sphere { offset: Vec3::new(f32::NAN, 0.0, 0.0), radius: 0.1 },
+            ColliderShape::CapsuleInside { offset: Vec3::ZERO, radius: 0.1, tail: Vec3::new(0.0, f32::INFINITY, 0.0) },
         ];
         for shape in bad {
             let (set, sk) = with_shape(shape);
