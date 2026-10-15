@@ -302,6 +302,80 @@ fn identical_frames_match_calibration_rest_at() {
     assert_eq!(cap.finish(&base).unwrap(), oracle);
 }
 
+/// Frame `seq` of a steady performer. With `dirty`, each class of frame carries one non-finite sample; without it, the
+/// same frame has that sample absent. Classes are `seq % 4`: 0 is clean in both, 1 damages two channels, 2 a position
+/// component, 3 the head angles (and the position, so the whole head is dropped).
+fn steady_frame(seq: u64, dirty: bool) -> TrackFrame {
+    let w = 0.01 * (seq % 4) as f32;
+    let (yaw, pitch, roll) = (0.2 + w, -0.1 + w, 0.05 + w);
+    let at = |position: Option<Vec3>| Some(HeadPose { yaw, pitch, roll, position });
+    let mut f = tracked(seq);
+    f.head = match (seq % 4, dirty) {
+        (2, false) => at(None),
+        (2, true) => at(Some(Vec3::new(0.1, f32::INFINITY, 0.6 + w))),
+        (3, false) => None,
+        (3, true) => Some(HeadPose { yaw: f32::NAN, pitch, roll, position: Some(Vec3::new(f32::NAN, 0.2, 0.6 + w)) }),
+        _ => at(Some(Vec3::new(0.1, 0.2, 0.6 + w))),
+    };
+    if seq % 4 != 1 {
+        f.set(Channel::JAW_OPEN, 0.10 + w);
+        f.set(Channel::CHEEK_PUFF, 0.30 + w);
+    } else if dirty {
+        f.set(Channel::JAW_OPEN, f32::NAN);
+        f.set(Channel::CHEEK_PUFF, f32::INFINITY);
+    }
+    f
+}
+
+#[test]
+fn non_finite_samples_are_dropped_before_the_median() {
+    // Both captures hold 40 tracked frames and keep the same finite samples, so every median is over the same values
+    // and the two calibrations must be equal, not merely close.
+    let base = Calibration::identity(DeviceProfile::Webcam);
+    let mut dirty = NeutralCapture::new(40);
+    let mut clean = NeutralCapture::new(40);
+    for seq in 0..40 {
+        dirty.push(&steady_frame(seq, true));
+        clean.push(&steady_frame(seq, false));
+    }
+    let fitted = dirty.finish(&base).unwrap();
+    assert_eq!(fitted, clean.finish(&base).unwrap());
+    // The test is not vacuous: the channels were fitted, not left at the base.
+    assert_ne!(fitted.range(Channel::JAW_OPEN), base.range(Channel::JAW_OPEN));
+    assert!(fitted.head_rest.position.is_some());
+}
+
+#[test]
+fn a_channel_non_finite_in_most_frames_keeps_its_base_and_the_rest_stays_finite() {
+    let mut base = Calibration::identity(DeviceProfile::Webcam);
+    base.set_range(Channel::JAW_OPEN, ChannelRange { lo: 0.0, hi: 0.5 });
+    let mut cap = NeutralCapture::new(40);
+    for seq in 0..40 {
+        let mut f = tracked(seq);
+        // Jaw is finite in 10 frames, which is under half of 40: it keeps the base. Cheek puff is finite in 30: it fits.
+        f.set(Channel::JAW_OPEN, if seq < 30 { f32::NAN } else { 0.9 });
+        f.set(Channel::CHEEK_PUFF, if seq < 10 { f32::INFINITY } else { 0.3 });
+        // The head's angles are finite in 10 frames, so they keep the base; its position is finite in all 40.
+        let yaw = if seq < 30 { f32::NAN } else { 0.2 };
+        f.head = Some(HeadPose { yaw, pitch: 0.1, roll: 0.0, position: Some(Vec3::new(0.0, 0.1, 0.6)) });
+        cap.push(&f);
+    }
+
+    let fitted = cap.finish(&base).unwrap();
+    assert_eq!(fitted.range(Channel::JAW_OPEN), base.range(Channel::JAW_OPEN), "non-finite in 30 of 40: base kept");
+    assert_eq!(fitted.range(Channel::CHEEK_PUFF).lo, 0.3, "finite in 30 of 40: fitted");
+    assert_eq!(
+        (fitted.head_rest.yaw, fitted.head_rest.pitch, fitted.head_rest.roll),
+        (base.head_rest.yaw, base.head_rest.pitch, base.head_rest.roll),
+        "angles finite in 10 of 40: base kept"
+    );
+    assert_eq!(fitted.head_rest.position, Some(Vec3::new(0.0, 0.1, 0.6)));
+    for info in Channel::arkit() {
+        let r = fitted.range(info.channel);
+        assert!(r.lo.is_finite() && r.hi.is_finite(), "{:?}: {r:?}", info.channel);
+    }
+}
+
 #[test]
 fn push_and_finish_allocate_nothing() {
     // Build every frame before counting, so only `push` and `finish` are measured.

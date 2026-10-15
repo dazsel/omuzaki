@@ -39,7 +39,8 @@ const HEAD_COLUMNS: usize = 6;
 /// Collects tracked frames, then moves each channel's rest to its median.
 ///
 /// Samples are stored column-major: each channel (and each head component) has its own contiguous column, so a median
-/// reads one run of memory. A channel's column holds only the frames where it was present.
+/// reads one run of memory. A channel's column holds only the frames where it was present with a finite value: a NaN
+/// or infinite sample from a source is dropped, so it cannot reach a median.
 pub struct NeutralCapture {
     /// Tracked frames to hold before [`push`](Self::push) reports done.
     target: usize,
@@ -47,9 +48,10 @@ pub struct NeutralCapture {
     held: usize,
     /// Channel `i`'s samples are `values[i * target..][..counts[i]]`.
     values: Vec<f32>,
-    /// How many held frames had each channel present.
+    /// How many held frames had each channel present with a finite value.
     counts: [usize; ARKIT_COUNT],
-    /// Head samples, one column per [`HEAD_COLUMNS`] entry: angles hold `head_count` samples, position `position_count`.
+    /// Head samples, one column per [`HEAD_COLUMNS`] entry: angles hold `head_count` samples (frames whose three angles
+    /// were all finite), position `position_count` (frames whose three components were all finite).
     head: Vec<f32>,
     head_count: usize,
     position_count: usize,
@@ -74,7 +76,8 @@ impl NeutralCapture {
         }
     }
 
-    /// Adds a frame. [`TrackStatus::Lost`] frames are ignored, and so are frames after the target is reached.
+    /// Adds a frame. [`TrackStatus::Lost`] frames are ignored, and so are frames after the target is reached. A value
+    /// that is not finite is not stored, but the frame still counts as held.
     /// Returns `true` once `target` tracked frames are held.
     pub fn push(&mut self, frame: &TrackFrame) -> bool {
         if self.held >= self.target {
@@ -95,10 +98,10 @@ impl NeutralCapture {
     /// `base` with each qualifying channel's `lo` moved to its median, and `hi` moved with it so the span is kept
     /// (as [`Calibration::rest_at`] does). `head_rest` takes the median head pose, component by component.
     ///
-    /// A channel qualifies if it is present in at least half the held frames and in at least
+    /// A channel qualifies if it has a finite value in at least half the held frames and in at least
     /// [`MIN_NEUTRAL_FRAMES`] of them; a channel that does not keeps `base`'s range. The head works the same way, and
-    /// its position is taken only when present in enough frames. Samples are kept, so calling this twice gives the
-    /// same result.
+    /// its position is taken only when enough frames had a finite one. Samples are kept, so calling this twice gives
+    /// the same result.
     ///
     /// # Errors
     ///
@@ -132,21 +135,28 @@ impl NeutralCapture {
         self.position_count = 0;
     }
 
-    /// Copies a tracked frame's present channels and head pose into the columns.
+    /// Copies a tracked frame's finite channel values and head pose into the columns. Each channel is judged alone. The
+    /// three angles are stored together or not at all, and so are the three position components, so every column
+    /// stays aligned with the others it is read against.
     fn store(&mut self, frame: &TrackFrame) {
         let t = self.target;
         for channel in frame.present.iter().filter(|c| c.is_arkit()) {
             let i = channel.index();
-            self.values[i * t + self.counts[i]] = frame.blend[i];
-            self.counts[i] += 1;
+            let value = frame.blend[i];
+            if value.is_finite() {
+                self.values[i * t + self.counts[i]] = value;
+                self.counts[i] += 1;
+            }
         }
         if let Some(head) = frame.head {
-            let n = self.head_count;
-            self.head[YAW * t + n] = head.yaw;
-            self.head[PITCH * t + n] = head.pitch;
-            self.head[ROLL * t + n] = head.roll;
-            self.head_count += 1;
-            if let Some(p) = head.position {
+            if head.yaw.is_finite() && head.pitch.is_finite() && head.roll.is_finite() {
+                let n = self.head_count;
+                self.head[YAW * t + n] = head.yaw;
+                self.head[PITCH * t + n] = head.pitch;
+                self.head[ROLL * t + n] = head.roll;
+                self.head_count += 1;
+            }
+            if let Some(p) = head.position.filter(|p| p.is_finite()) {
                 let m = self.position_count;
                 self.head[POS_X * t + m] = p.x;
                 self.head[POS_Y * t + m] = p.y;
@@ -179,8 +189,8 @@ impl NeutralCapture {
     }
 }
 
-/// Whether a value seen in `present` of `held` frames is trustworthy enough to fit: at least half the frames, and at
-/// least [`MIN_NEUTRAL_FRAMES`] of them, so one glitch cannot set a rest.
+/// Whether a value with `present` finite samples out of `held` frames is trustworthy enough to fit: at least half the
+/// frames, and at least [`MIN_NEUTRAL_FRAMES`] of them, so one glitch cannot set a rest.
 fn qualifies(present: usize, held: usize) -> bool {
     present >= MIN_NEUTRAL_FRAMES && present * 2 >= held
 }
@@ -200,7 +210,8 @@ fn median_of(scratch: &mut [f32], column: &[f32]) -> f32 {
 /// The median of `samples`, which it reorders. For an even count, the mean of the two middle values.
 fn median(samples: &mut [f32]) -> f32 {
     let len = samples.len();
-    // `total_cmp` gives a total order, so a NaN sample cannot break the selection.
+    // Every sample is finite (`store` drops the rest). `total_cmp` still gives the selection a total order without an
+    // unwrap.
     let (below, upper, _) = samples.select_nth_unstable_by(len / 2, f32::total_cmp);
     let upper = *upper;
     if len % 2 == 1 {
