@@ -24,8 +24,9 @@ the feature. The spec forbids game hooks and injection, and gates the capture be
    (implementation, every OS backend in one crate, `wasm = false`). It is not part of `omuzaki-track-api`: trackers give
    newest-wins frames with no identity; input gives edge events across a privacy boundary and pulls OS dependencies no
    tracker consumer should compile.
-2. **Key identities are confined to one module.** The raw key type is `pub(crate)` in `omuzaki-input`'s normaliser on
-   the capture thread. What leaves it is a zone of a fixed 16-cell keyboard grid (by physical position) for motion, and a
+2. **Key identities are confined to one module.** The raw key type, the map from HID usage to zone and every chord are
+   `pub(crate)` in `omuzaki-input`'s normaliser on the capture thread; the contract holds only the sixteen zones, and the
+   binding editor gets chords only as display labels. What leaves it is a zone of a fixed 16-cell keyboard grid (by physical position) for motion, and a
    binding slot for a configured binding. No public hot type can hold a key code; mouse input is relative motion, never a
    screen position; pen position is coarsened to a 32 x 32 grid. A property test proves two key streams that differ
    only inside zones give byte-identical output on every surface. Backends register themselves inside
@@ -34,9 +35,10 @@ the feature. The spec forbids game hooks and injection, and gates the capture be
    consumers drain them in turn, no global order across backends is promised, and takes and replays record the drained
    order. The feeds hand consumers resolved hits (the stable `BindingId` and its action; locomotion intents on their
    own frame-thread feed), and inside them binding entries carry the generation of the table they matched, a press owns its release (the release ends the
-   action the press started), and a release is never lost for good (rings keep releases; held-state snapshots
-   reconcile after any drop; every pause, stop or backend exit releases whatever is held, carried as an epoch so
-   every ring and snapshot keeps a single writer).
+   action the press started, and an action held by several sources ends only when the last one lets go), and a release is
+   never lost for good (rings keep releases; held-state snapshots
+   reconcile after any drop; every pause, stop or backend exit releases whatever is held, carried as an epoch that
+   closes, so every ring and snapshot keeps a single writer and nothing read after the pause reaches a consumer).
 3. **Chords stay out of the executor.** Binding chords live in a machine-local store held by the desktop UI and never
    inserted into `Services`; ops, events, MCP and agents see binding ids, names and actions only. Learning a chord is a UI
    call, not an op.
