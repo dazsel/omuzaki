@@ -14,7 +14,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use omuzaki_char::builder::PartSource::{Built, Cached};
-use omuzaki_char::builder::{BuildTimings, CachingBuilder, palette_facts};
+use omuzaki_char::builder::conformance;
+use omuzaki_char::builder::{BuildTimings, CachingBuilder};
 use omuzaki_char_api::{
     Anchor, AnchorId, AnchorsFact, Attach, AttachOffset, BrushFalloff, BuildCtx, BuildError, BuildOptions,
     BuildServices, BuiltCharacter, CharId, CharacterBuilder, CharacterDef, CollidersFact, ContentHash, DynamicMesh,
@@ -796,8 +797,8 @@ fn noted(from_palette: bool) -> CharacterDef {
 
 #[test]
 fn a_palette_dependent_fact_is_refused_by_the_conformance_check_naming_the_kind_and_the_fact() {
-    let probes = palette_facts::Probes::default().fact::<NoteFact>();
-    let report = palette_facts::check(&noted(true), Some(&["t-noter"]), &probes);
+    let probes = conformance::Probes::default().fact::<NoteFact>();
+    let report = conformance::check(&noted(true), Some(&["t-noter"]), &probes);
     let [violation] = report.violations.as_slice() else { panic!("one violation expected: {report:?}") };
     assert!(violation.contains("kind 't-noter'") && violation.contains("part 'noter'"), "{violation}");
     assert!(violation.contains("fact 't-note' depends on the palette"), "{violation}");
@@ -818,8 +819,9 @@ fn a_palette_dependent_fact_is_refused_by_the_conformance_check_naming_the_kind_
 
 #[test]
 fn a_palette_independent_fact_gives_the_same_cached_build_after_a_palette_change_and_never_rebuilds_the_reader() {
-    let probes = palette_facts::Probes::default().fact::<NoteFact>();
-    palette_facts::check(&noted(false), Some(&["t-noter", "t-note-reader"]), &probes).assert_independent();
+    let probes = conformance::Probes::default().fact::<NoteFact>();
+    let report = conformance::check(&noted(false), Some(&["t-noter", "t-note-reader"]), &probes);
+    assert!(report.violations.is_empty(), "{:?}", report.violations);
 
     let (options, services) = live();
     let (builder, mut def) = (CachingBuilder::new(), noted(false));

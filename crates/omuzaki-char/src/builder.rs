@@ -28,7 +28,7 @@
 //!    head, which name the skin slots, but not the garments after them, which only see the body's shape.
 //!
 //!    This is **enforced, not only stated**: facts are type-erased, so the builder can't see a colour in one, and a
-//!    palette-dependent fact would be served stale with no error. The conformance check in [`palette_facts`] builds a
+//!    palette-dependent fact would be served stale with no error. The conformance check in [`conformance`] builds a
 //!    part of every linked kind under several palettes that differ from the character's in every slot, and fails,
 //!    naming the kind, the part and the fact, if what it publishes differs. `tests/palette_independence.rs` runs it over
 //!    every kind the kit characters use, and `tests/builder.rs` shows it refusing a palette-dependent publisher. It is
@@ -68,7 +68,7 @@
 //! the first part after it) on scoped threads against one view, then merges in build order. If a guess was wrong, the
 //! parts built against a stale view are dropped and redone, so the thread count never changes the result.
 
-pub mod palette_facts;
+pub mod conformance;
 
 use std::collections::{BTreeSet, HashMap};
 use std::io::{self, Write};

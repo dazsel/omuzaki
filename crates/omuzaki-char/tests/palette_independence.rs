@@ -5,7 +5,7 @@
 // Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
-use omuzaki_char::builder::palette_facts::{Probes, check, check_all};
+use omuzaki_char::builder::conformance::{Probes, check, check_all};
 use omuzaki_char_api::{CharacterDef, PartDef, PartId, PartKindId};
 use omuzaki_char_mock::mock_character;
 use serde_json::json;
@@ -32,7 +32,7 @@ fn kit_characters() -> Vec<CharacterDef> {
 fn every_registered_kind_publishes_the_same_facts_under_any_palette() {
     omuzaki_char::link();
     let report = check_all(&kit_characters(), None, &Probes::built_in());
-    report.assert_independent();
+    assert!(report.violations.is_empty(), "facts depend on the palette:\n{}", report.violations.join("\n"));
     assert!(report.unprobed.is_empty(), "facts nothing compares (add a probe): {:?}", report.unprobed);
     assert!(report.unreached.is_empty(), "kinds the check cannot build: {:?}", report.unreached);
 }

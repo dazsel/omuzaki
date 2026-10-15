@@ -1,4 +1,4 @@
-//! The palette-independence check: the conformance rule that makes the caching builder's key sound.
+//! The palette-independence conformance check: the conformance rule that makes the caching builder's key sound.
 //!
 //! The caching builder keys a part that reads facts on the *geometry* keys of the parts that published them, never on
 //! their colours (decision Q6: a palette change never rebuilds geometry). That is exact only while no fact depends on the
@@ -31,32 +31,54 @@ const SEED: u64 = 0x1598_fac7;
 /// The part the check adds for a kind the character has no part of.
 const PROBE: &str = "palette-probe";
 
-/// How facts are compared: the `Debug` text of every value of a fact, by fact name.
+/// How one fact of two builds is compared: `None` when equal, else a description of both for the failure message.
+type Compare = fn(&Publishes, &Publishes) -> Option<String>;
+
+/// How facts are compared, by fact name.
 #[derive(Default)]
 pub struct Probes {
-    /// By fact name: the values of the fact in a part's `Publishes`, as text.
-    facts: BTreeMap<&'static str, fn(&Publishes) -> Vec<String>>,
+    facts: BTreeMap<&'static str, Compare>,
 }
 
 impl Probes {
-    /// The facts of `omuzaki-char-api`.
+    /// The facts of `omuzaki-char-api`. [`HeadFact`] and [`FitFact`] hold trait objects with no equality, so they are
+    /// compared by their `Debug` text ([`Probes::fact_by_debug`]); the others by value.
     pub fn built_in() -> Self {
         Self::default()
-            .fact::<HeadFact>()
+            .fact_by_debug::<HeadFact>()
+            .fact_by_debug::<FitFact>()
             .fact::<FaceFact>()
-            .fact::<FitFact>()
             .fact::<AnchorsFact>()
             .fact::<CollidersFact>()
             .fact::<StatureFact>()
     }
 
-    /// Compares fact `F` by the `Debug` text of its values.
+    /// Compares fact `F` by value: the values a part publishes must be `==` under both palettes. `Debug` only words the
+    /// failure.
     #[must_use]
     pub fn fact<F: Fact>(mut self) -> Self
     where
+        F::Value: PartialEq + Debug,
+    {
+        self.facts.insert(F::NAME, |a, b| {
+            let (a, b): (Vec<&F::Value>, Vec<&F::Value>) = (a.values::<F>().collect(), b.values::<F>().collect());
+            (a != b).then(|| format!("{a:?} under one palette, {b:?} under another"))
+        });
+        self
+    }
+
+    /// Compares fact `F` by the `Debug` text of its values, for a value with no equality (a trait object). A value
+    /// whose `Debug` hides data is under-checked, so prefer [`Probes::fact`].
+    #[must_use]
+    pub fn fact_by_debug<F: Fact>(mut self) -> Self
+    where
         F::Value: Debug,
     {
-        self.facts.insert(F::NAME, |p| p.values::<F>().map(|v| format!("{v:?}")).collect());
+        self.facts.insert(F::NAME, |a, b| {
+            let text = |p: &Publishes| p.values::<F>().map(|v| format!("{v:?}")).collect::<Vec<_>>();
+            let (a, b) = (text(a), text(b));
+            (a != b).then(|| format!("{a:?} under one palette, {b:?} under another"))
+        });
         self
     }
 }
@@ -70,16 +92,6 @@ pub struct Report {
     pub unprobed: BTreeSet<(String, String)>,
     /// `(kind, why)` for kinds that don't build with the parameters the check could give them.
     pub unreached: Vec<(String, String)>,
-}
-
-impl Report {
-    /// Panics with every violation, if there are any.
-    ///
-    /// # Panics
-    /// If any fact depends on the palette.
-    pub fn assert_independent(&self) {
-        assert!(self.violations.is_empty(), "facts depend on the palette:\n{}", self.violations.join("\n"));
-    }
 }
 
 /// `palette` with every slot changed: each channel inverted, so no colour equals its old self.
@@ -116,6 +128,9 @@ fn fact_names(publishes: &Publishes) -> Vec<String> {
         .filter_map(|entry| entry.split_once("\": ").map(|(name, _)| name.trim_start_matches('"').to_owned()))
         .collect()
 }
+
+/// What every part of a character published, in build order.
+type PartsPublished = [(PartId, Publishes)];
 
 /// What every part of `def` published, in build order.
 fn publishes_of(def: &CharacterDef) -> Result<Vec<(PartId, Publishes)>, String> {
@@ -177,11 +192,11 @@ pub fn check(base: &CharacterDef, kinds: Option<&[&str]>, probes: &Probes) -> Re
                 continue;
             }
         };
-        for palette in alternatives(&def.palette) {
+        for (n, palette) in alternatives(&def.palette).into_iter().enumerate() {
             let mut changed = def.clone();
             changed.palette = palette;
             match publishes_of(&changed) {
-                Ok(under_other) => compare(&def, &run_kinds, &under_own, &under_other, probes, &mut report),
+                Ok(under_other) => compare(&def, &run_kinds, (&under_own, &under_other), n, probes, &mut report),
                 Err(e) => {
                     // A palette the kind can't build under is not a fact that depends on it, but it is not checked either.
                     report.unreached.extend(run_kinds.iter().map(|k| (k.clone(), format!("does not build: {e}"))));
@@ -214,12 +229,13 @@ pub fn check_all(bases: &[CharacterDef], kinds: Option<&[&str]>, probes: &Probes
     merged
 }
 
-/// Adds to `report` what differs between the parts of `kinds` built under two palettes.
+/// Adds to `report` what differs between the parts of `kinds` built under the character's palette and alternative
+/// number `n`. Only the first palette that shows a difference is reported.
 fn compare(
     def: &CharacterDef,
     kinds: &[String],
-    a: &[(PartId, Publishes)],
-    b: &[(PartId, Publishes)],
+    (a, b): (&PartsPublished, &PartsPublished),
+    n: usize,
     probes: &Probes,
     report: &mut Report,
 ) {
@@ -235,20 +251,22 @@ fn compare(
             }
         };
         if format!("{under_a:?}") != format!("{under_b:?}") {
-            violate(String::new(), format!("publishes {under_a:?} under one palette and {under_b:?} under another"));
+            violate(
+                String::new(),
+                format!("publishes {under_a:?} under the character's palette and {under_b:?} under alternative {n}"),
+            );
             continue;
         }
         for name in fact_names(under_a) {
             match probes.facts.get(name.as_str()) {
-                Some(values) if values(under_a) != values(under_b) => violate(
-                    format!(", fact '{name}'"),
-                    format!(
-                        "fact '{name}' depends on the palette: {:?} under one palette, {:?} under another",
-                        values(under_a),
-                        values(under_b)
-                    ),
-                ),
-                Some(_) => {}
+                Some(differs) => {
+                    if let Some(what) = differs(under_a, under_b) {
+                        violate(
+                            format!(", fact '{name}'"),
+                            format!("fact '{name}' depends on the palette (alternative {n}): {what}"),
+                        );
+                    }
+                }
                 None => {
                     report.unprobed.insert((kind.to_owned(), name));
                 }

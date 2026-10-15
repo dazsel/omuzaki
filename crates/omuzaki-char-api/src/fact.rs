@@ -22,7 +22,7 @@ use crate::ids::PartId;
 /// it, not this trait).
 ///
 /// A fact never depends on the palette (decision Q6: the caching builder keys readers on their publishers' geometry, not
-/// their colours); the palette-independence check in `omuzaki-char`'s tests (`omuzaki_char::builder::palette_facts`) enforces it.
+/// their colours); the palette-independence check (`omuzaki_char::builder::conformance`) enforces it.
 pub trait Fact: 'static {
     /// Stable, unique name: errors, describe output and the link gate use it.
     const NAME: &'static str;
