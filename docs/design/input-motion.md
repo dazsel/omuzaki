@@ -126,14 +126,17 @@ impl KeyZone {
 pub struct ZoneInfo { pub side: Option<Side>, pub finger: Finger, pub band: Band, pub centre: [f32; 2] }
 
 pub enum MotionEvent {                        // Copy, at most 32 bytes; what the frame thread sees
-    Key { zone: KeyZone, down: bool, at: Seconds },
-    Buttons { device: DeviceClass, pressed: u8, released: u8, at: Seconds },   // mouse and pen buttons, bit per button
-    Pointer { dx: f32, dy: f32, wheel: f32, at: Seconds },                      // coalesced relative motion, metres on the pad
-    Pen { u: u8, v: u8, pressure: u8, tilt: [i8; 2], contact: bool, at: Seconds }, // 32 x 32 grid, coarse (below)
-}
+    Key { src: SourceTag, zone: KeyZone, down: bool, at: Seconds },
+    Buttons { src: SourceTag, device: DeviceClass, pressed: u8, released: u8, at: Seconds },  // mouse and pen buttons, bit per button
+    Pointer { src: SourceTag, dx: f32, dy: f32, wheel: f32, at: Seconds },    // coalesced relative motion, metres on the pad
+    Pen { src: SourceTag, u: u8, v: u8, pressure: u8, tilt: [i8; 2], contact: bool, at: Seconds }, // 32 x 32 grid, coarse
     PadEdges { pad: PadId, pressed: PadZones, released: PadZones, at: Seconds },  // queued, so a tap between drains is kept
+    SourceUp { src: SourceTag, class: DeviceClass, pad: Option<PadId>, at: Seconds },  // a device connected (pads: their id)
+    SourceGone { src: SourceTag, at: Seconds },   // that one device left: consumers drop what it held, and nothing else
 }
-pub struct PadId(u8);                         // a connected pad, stable while it stays connected
+pub struct SourceTag(u8);                     // opaque per connected device (a keyboard, a mouse, a pad); reused only after SourceGone
+pub struct PadId(u8);                         // a connected pad, stable while it stays connected (a pad's SourceTag maps to it)
+pub const MAX_PADS: usize = 4;
 pub struct PadState { pub pad: PadId, pub sticks: [[i8; 2]; 2], pub triggers: [u8; 2], pub zones: PadZones, pub at: Seconds }
 pub struct PadZones(u16);                     // DPad, Face, LeftStick, RightStick, LeftShoulder, RightShoulder, LeftTrigger, RightTrigger, Centre
 pub struct BackendId(u16);                    // opaque; the hub assigns it from the backend's registered stable name (§2)
@@ -152,11 +155,13 @@ pub struct IntentEvent { pub id: BindingId, pub intent: Intent, pub edge: Edge, 
 pub trait MotionFeed: Send {                  // the frame thread's port; never blocks, never allocates
     fn drain(&mut self, up_to: Seconds, out: &mut MotionFrame);   // events with at <= up_to: each ring in its order, rings in turn (§2)
     fn pad(&self, pad: PadId) -> Option<PadState>;                 // newest wins (levels only; edges are PadEdges)
+    fn pads(&self, out: &mut PadSet);                              // the connected pads, fixed array of MAX_PADS, no allocation
 }
-pub struct MotionFrame { /* fixed array of MOTION_FRAME_MAX (128) events, a dropped count, and
-                             reset: DeviceMask, the classes whose held state ended this frame (§4, §5a) */ }
+pub struct MotionFrame { /* fixed array of MOTION_FRAME_MAX (128) events, and reset: DeviceMask, the classes whose
+                             held state ended this frame (§4, §5a). Never drops: due events past 128 stay queued,
+                             in order, for the next drain (pointer motion is already coalesced, so this is rare) */ }
 pub trait IntentFeed: Send {                  // the frame thread's port for locomotion intents; never blocks, never allocates
-    fn drain(&mut self, up_to: Seconds, out: &mut IntentFrame);   // fixed array of IntentEvent, plus reset like MotionFrame
+    fn drain(&mut self, up_to: Seconds, out: &mut IntentFrame);   // fixed array of IntentEvent, plus reset; never drops (as MotionFrame)
 }
 pub trait BindingFeed: Send {                 // the binding dispatcher's port (ops side): resolved, ready to run
     fn poll(&mut self) -> Option<BindingHit<'_>>;   // a Release carries the action its press started (§5)
@@ -281,16 +286,23 @@ stops would otherwise never deliver its release. The control thread must not wri
 3. Each backend thread, on its own thread, discards what it has not pushed, clears its own held snapshot, and parks.
 4. On seeing a new epoch, each feed (`BindingFeed`, `IntentFeed`, `MotionFeed`) first ends everything it holds: the
    binding and intent feeds hand out a `Release` for every held-action record (§5), motion releases every zone,
-   button and pad zone it holds (fingers lift, locomotion intents fall to zero). `CaptureState` is published only
-   after every feed has acknowledged the new epoch, or after 100 ms if one is stalled, in which case it applies the
-   epoch on its next poll before anything else.
+   button and pad zone it holds (fingers lift, locomotion intents fall to zero). The control thread publishes the new
+   `CaptureState` right after the bump and never waits for a feed: from the bump on, no entry can reach a consumer
+   (step 2), and a stalled feed applies the epoch on its next poll before anything else.
 5. **Resuming starts with nothing held:** a key still physically down when capture resumes does nothing until it is
    released and pressed again (its release, matching no held-action record and no held count, is ignored).
 
-The same open-and-close epoch covers a **single backend** leaving while others keep running (a backend failure, a
-gamepad or keyboard unplugged, the portal session closed): that backend's own epoch (`BackendEpoch[b]`, same low-bit
-rule) closes, the feeds drop its entries and release what its events were holding, and nothing else; it opens again
-if the backend comes back. A change of `input.motion.detail` is applied on the capture threads (§6.2), so it is the
+The same open-and-close epoch covers a **single backend** exiting while others keep running (a backend failure, the
+portal session closed): that backend's own epoch (`BackendEpoch[b]`, same low-bit rule) closes, the feeds drop its
+entries and release what its sources were holding, and nothing else; it opens again if the backend comes back.
+
+**One device leaving is narrower still.** A keyboard, mouse or pad unplugged while its backend keeps running (and
+other devices of the same backend keep working) ends only that device's state. Every event carries its device's
+`SourceTag`, and every held count and holder set in the feeds and in motion is kept per source (§5, §5a). The backend
+pushes `SourceGone { src }` after the device's last event, on its own ring, so it is ordered after everything that
+device sent: on it the binding and intent feeds clear that source's holder bits (ending an action only if it empties
+the set), and motion clears that source's held zones and buttons, and for a pad its `PadState` and pad zones. Nothing
+of the other devices changes. A new device announces itself with `SourceUp`. A change of `input.motion.detail` is applied on the capture threads (§6.2), so it is the
 same kind of transition for the keyboard backends: their epochs close and reopen around the switch, and no event
 resolved under the old detail can meet a held count recorded under the new one. A change of `hand` is applied on the
 frame thread inside one frame, so it needs no epoch (motion resets the keyboard and mouse classes at the switch, §5a).
@@ -350,9 +362,11 @@ source delivers them; the action catalogue and the dispatcher belong to #469 and
 - **Identity across table swaps.** Every swap bumps the table's generation, and every entry carries the generation it
   was matched against. The feed resolves `(gen, slot)` against **that** generation's table, never the current one: it
   keeps each retired table (a fixed pool of 4 generations, recycled off the hot path) until the last queued entry of
-  that generation has drained, so a queued slot can never index another binding. If 4 generations are pending (edits
-  faster than the consumers drain), the control thread waits to swap instead of recycling a table that still has
-  queued entries. An entry from a retired generation whose binding (by its `BindingId`) is gone from the current table
+  that generation has drained, so a queued slot can never index another binding. The control thread never waits for
+  a feed: if 4 generations are still pending (edits faster than the consumers drain), a further edit is written to the
+  store and becomes the **pending table**, a later edit replaces it (edits coalesce), and it is swapped in when a
+  generation retires. So the indicator check and the kill switch, which run on the same control thread, keep their
+  one-second and two-second cadence even with every consumer stalled. An entry from a retired generation whose binding (by its `BindingId`) is gone from the current table
   is dropped and counted; so that this never strands a held action, the feed hands out a `Release` for every action
   held for a binding the new table removes when it takes the swap.
 - **A press owns its release.** A key can be held across a swap: pressed under the old table, released under the new
@@ -362,6 +376,10 @@ source delivers them; the action catalogue and the dispatcher belong to #469 and
   action was edited while it was held, the old action ends at the release and the new action never starts from that
   press; the next press starts the new one. A `Release` with no record (its press was dropped, or happened before a
   resume) is not handed out.
+- **A chord changed while it is held** (`ChordStore::learn`, or a preset applied) keeps matching the chord it was
+  pressed with until its release: each holder bit remembers the press's chord (`pub(crate)`), and a release is matched
+  against the held records' own chords before the current table. So the old action ends when the old keys come up,
+  and the new chord starts the action only on its own next press.
 - **Several sources can hold one binding.** Two pads, two keyboards, or a pad and a keyboard can be bound to the same
   binding and held at once. Each held-action record therefore keeps a set of holders, one bit per source (`SourceId`:
   the backend and its device index, at most 64 sources), not a flag. A press from a new holder adds its bit; the
@@ -403,8 +421,8 @@ one lets go:
 | Held state | Ended by | Test |
 |---|---|---|
 | A binding's action (an op held down, a held trigger) | the last holder's release (a holder set per binding, §5), through the press's held-action record, even across a table swap (§5); a removed binding at the swap (§5); reconciliation after a ring drop (§5); a capture epoch (pause, stop, indicator, protected program; §4); its backend's own epoch (failure, unplug, portal session closed; §4) | IN-3 |
-| A zone, mouse or pen button held in motion (a count per zone and per button) | its release edge, which decrements; `MotionFrame.reset` for its class on any capture or backend epoch; a change of `input.motion.detail` or `hand` (motion resets the keyboard and mouse classes at the switch, since zones and sides no longer match) | IN-3 (epochs), MO-1, MO-2 |
-| Pad zones and sticks (per `PadId`, so two pads never share) | `PadEdges` releases and the next `PadState`; on unplug the gamepad backend publishes a neutral `PadState` and its epoch resets the gamepad class | IN-5, MO-3 |
+| A zone, mouse or pen button held in motion (per zone and per button, a holder set by `SourceTag`) | its release edge, which decrements; `MotionFrame.reset` for its class on any capture or backend epoch; a change of `input.motion.detail` or `hand` (motion resets the keyboard and mouse classes at the switch, since zones and sides no longer match) | IN-3 (epochs), MO-1, MO-2 |
+| Pad zones and sticks (per `PadId`, so two pads never share) | `PadEdges` releases and the next `PadState`; on unplug `SourceGone` for that pad only clears its zones, sticks and holders | IN-5, MO-3 |
 | Locomotion intents (move, run) | the intent feed's holder set (as for bindings, §5) emptying, or a reset of the class that drove them; with no intent the machine decays to `Idle`; the `move` vector is the sum of the held move intents and the pad stick, clamped | LO-1, IN-3 |
 | A locomotion state mid-flight (jump, sit, emote) when `locomotion.set` changes the def | the state finishes under the def it started with (the old def is kept until the machine is next in `Idle` or `Move`), then the new def applies | LO-1, LO-4 |
 | A palm goal, posture or stick look | the hand allocator's rest timers, and the 0.3 s fade when a tracked bone takes over | MO-1, MO-3 |
@@ -420,6 +438,9 @@ a rule that closes the window:
 | resume or start | a key held across the gap releases after resume | a new open epoch; a release with no holder is ignored (§4) |
 | a binding-table swap | an entry matched under the old table drains after the swap; a press before, a release after | generation-stamped entries and the held-action record of the first press (§5) |
 | a change of `detail` | an event resolved on a capture thread under the old detail meets a count kept under the new one | the keyboard backends' epochs close and reopen around the switch (§4) |
+| one device unplugged (a pad, a keyboard) | its last events and its departure | `SourceGone` on that device's own ring, after its last event; only its source's state ends (§4) |
+| a chord changed while held (`learn`, a preset) | the press matched the old chord, the release comes under the new table | the holder remembers its press's chord and matches the release first (§5) |
+| a `MotionFrame` or `IntentFrame` past its capacity | due events that do not fit, releases among them | frames never drop: the rest stay queued, in order, for the next drain (§3) |
 | a change of `hand` | none across threads: applied on the frame thread inside one frame | motion resets the keyboard and mouse classes at the switch |
 | a `locomotion.set` during a jump | the machine mid-state under the old def | the old def is kept until the machine is next in `Idle` or `Move` |
 | a group start in a take | motion state carried across the cut | the checkpoint (§9) |
@@ -884,7 +905,7 @@ row without both ends inside a task would be an interface nobody owns; there is 
 - **Fence:** `crates/omuzaki-input-api/**` (new: `Cargo.toml`, `src/lib.rs`, `src/event.rs`, `src/zones.rs` (the
   sixteen zones only), `src/binding.rs`, `src/capture.rs`, `src/feed.rs`, `tests/zones.rs`, `tests/no_identity.rs`).
 - **Contract:** §3 and §5 as written: `KeyZone` and the 16-zone table by HID usage, `ZoneInfo`, `MotionEvent`,
-  `PadState`, `PadZones`, `PadId`, `BackendId`, `BindingId`, `BindingAction`, `Intent`, `BindingHit`, `IntentEvent`, `Edge`,
+  `PadState`, `PadZones`, `PadId`, `PadSet`, `MAX_PADS`, `SourceTag`, `BackendId`, `BindingId`, `BindingAction`, `Intent`, `BindingHit`, `IntentEvent`, `Edge`,
   `ChordLabel`, `CaptureState`, `BackendState`, `CaptureCaps`, `PermissionHow`, `PauseWhy`,
   `DeviceMask`, `MotionFrame` (`MOTION_FRAME_MAX` 128), `IntentFrame`, `MAX_BINDINGS` 64, `InputError` (with
   `NoIndicator`), the traits `MotionFeed`, `IntentFeed`, `BindingFeed`, `InputControl`, `Indicator`, `IndicatorHost`,
@@ -905,8 +926,9 @@ row without both ends inside a task would be an interface nobody owns; there is 
   tests against the mock before IN-3 lands), `ReplaySource::from_text` (the recorded-input text format: one event per line, zone names, times
   in seconds and the backend, in drained order), `conformance::run(&mut dyn MotionFeed, …)`.
 - **Acceptance:** replay of a 60 s script is identical over two runs and after a text round trip; `drain` allocates 0
-  bytes (counting allocator); `drain(up_to)` never returns an event after `up_to` (proptest); a dropped-event count when
-  more than `MOTION_FRAME_MAX` events arrive in one drain; a replay of events from several backends hands them out in
+  bytes (counting allocator); `drain(up_to)` never returns an event after `up_to` (proptest); when more than
+  `MOTION_FRAME_MAX` events are due in one drain, the rest arrive, in order, in the next drain, and no release is ever
+  lost (a stress test with 1,000 due events); a replay of events from several backends hands them out in
   exactly the recorded drained order, on every run; check green.
 
 ### IN-3: `omuzaki-input`: the hub, the normaliser, the binding matcher, the gate and the zone-equivalence test (new crate)
@@ -926,7 +948,11 @@ row without both ends inside a task would be an interface nobody owns; there is 
   feed, checked with a test hook that pauses the backend between read and push, both ways round; a `detail` switch with
   a key held leaves nothing held; **two holders:** two keyboard sources hold one binding, the first release does not
   end the action and the second does, and the same with two pad sources and with a pad and a keyboard (the pad case
-  runs again in IN-5 against the real backend); `start` fails with
+  runs again in IN-5 against the real backend); **no wait on consumers:** with every feed stalled and 4 generations
+  pending, 10 more table edits coalesce into one pending table, and the indicator check and the protected-program check
+  still pause capture within 1.1 s and 2.1 s; **a chord changed while held:** hold a binding, learn a new chord for it,
+  release the old keys: the action ends, and the new chord starts it only on its own press; **one keyboard of two
+  unplugged** with keys held on both: only its zones and its binding holders end; `start` fails with
   `NoIndicator` when no indicator is installed and when the installed one reports hidden, and capture pauses within
   1.1 s of `Indicator::shown()` turning false (`FakeClock`); **held across a pause:** hold a movement binding and a key,
   then pause (once each by `pause`, `stop`, a lost indicator and a protected program): the movement action ends and the
@@ -956,7 +982,8 @@ row without both ends inside a task would be an interface nobody owns; there is 
   and thread, buffered reads, no hooks; pen through the HID digitiser only if SP-1 confirms, otherwise
   `CaptureCaps::pen = Unavailable`.
 - **Acceptance (Windows-only tests, skipped elsewhere with a message):** `SendInput` into a test window gives the
-  expected zones and pointer deltas; delivery at most 2 ms p95 from `SendInput` to `drain`; capture-thread CPU at most
+  expected zones and pointer deltas; delivery at most 1 ms p95 from the OS event (the `SendInput` call) to the entry pushed on the ring, the §10 row's
+  measure (the time an entry then waits for the frame's `drain` is the frame period, not delivery); capture-thread CPU at most
   0.05 % of 8 cores idle over 60 s on `Dev` (#744's numbers); the `x86_64-pc-windows-gnu` cross-build and check green.
   (`SendInput` is used only by the test binary, never by the crate.)
 
@@ -970,8 +997,8 @@ row without both ends inside a task would be an interface nobody owns; there is 
   event list (a press and release between two drains arrive as two edges, with the pad id); dead zone
   and quantisation (i8, u8) exact at the edges; hot-plug of a second pad keeps pad indices stable; two pads holding
   the same pad binding end its action only when the second releases; the libudev link is
-  dynamic (recorded under the LGPL-shared rule); unplugging a pad with a stick deflected and a button held publishes a
-  neutral `PadState` and the backend's epoch, so nothing stays deflected or pressed; check green on Linux and the
+  dynamic (recorded under the LGPL-shared rule); unplugging one of two pads with a stick deflected and a button held on each pushes `SourceGone` for that pad only: its
+  sticks and buttons and the actions it held end, and the other pad's are untouched; check green on Linux and the
   Windows cross-build.
 
 ### IN-6: `omuzaki-input`: Linux X11 (XI2 raw events) and the evdev opt-in
@@ -1004,7 +1031,8 @@ row without both ends inside a task would be an interface nobody owns; there is 
 - **Acceptance:** table tests with person, agent and automation actors (an agent's `input.capture.start` is `Denied`
   and never queued; a person's `start` with no indicator installed fails with `NoIndicator`; **a read-only actor**
   (grants `read` only) stops and pauses capture; stopping and pausing are idempotent; `input.binding.set_action` with an
-  action whose op needs a scope the caller lacks is `Denied`); a test that types a known string through
+  action whose op needs a scope the caller lacks is `Denied`; `input.binding.apply_preset` that changes the chord of a
+  held binding: the held action ends when the old chord is released, as in IN-3); a test that types a known string through
   `FakeInput` and scans every op result, event and journal record for any key code or character of it (none);
   **the protected-program list:** `input.capture.protect` is refused without `process` (an actor with `input` and
   `perform` only gets `Denied`); with capture paused by a protected program, `input.capture.state` returns
@@ -1118,7 +1146,9 @@ row without both ends inside a task would be an interface nobody owns; there is 
 - **Fence:** `crates/omuzaki-anim/src/pad_motion/**` (a new top-level folder, so `input_motion` is not edited),
   `crates/omuzaki-anim/tests/pad_motion.rs`, `crates/omuzaki-anim/library/poses/hold-pad.toml`.
 - **Contract:** MO-1's `DeviceMotion`, `PadState` and `PadEdges` (IN-1), `TwoHandedProp` shape of goals (two palm
-  goals), §6.4.
+  goals), §6.4. The pads come from `MotionFeed::pads` (and `SourceUp` and `SourceGone`), so a pad whose first activity is
+  a stick move is found; the hands hold the **active pad**, the connected pad with the latest stick move past its dead
+  zone or the latest pad edge.
 - **Acceptance:** at three statures, thumb tips within 5 mm of the stick caps at full deflection in 8 directions; full
   right-stick deflection gives 35.0 ± 0.5 degrees of look yaw after settling; with the tracker owning a head channel
   the look goal's weight is 0 after 0.3 s; a face-button tap whose press and release fall between two frames still
@@ -1199,7 +1229,8 @@ row without both ends inside a task would be an interface nobody owns; there is 
   and yaw), which takes the live root instead of the authored one; `crates/omuzaki-stage/tests/locomotion_frame.rs`. A follow-lag field on `CameraDef` is an `omuzaki-stage-api` change:
   it needs the Director's approval on the task before work starts, and lands as its own PR first if approved.
 - **Contract:** `Locomotion`, `RootStep` (LO-1); `Intents` from `IntentFeed` (handed in through a new
-  `Stage::set_intent_feed` that WIRE-1 calls) and `PadState`; §7.3; `locomotion.home` (`perform`) and
+  `Stage::set_intent_feed` that WIRE-1 calls) and the active pad's `PadState` (found through `MotionFeed::pads`, as in
+  MO-3); §7.3; `locomotion.home` (`perform`) and
   `locomotion.state` (`read`).
 - **Acceptance:** added CPU at most 0.02 ms per frame on `Dev` (§10); the root stays inside the walk radius over a
   120 s random-intent run; `locomotion.home` returns within
