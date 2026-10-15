@@ -50,6 +50,9 @@ These apply to every pull request; reviews don't flag what they allow.
   are inside its fence. Version bumps it didn't ask for are not.
 - **Link wiring:** the one-line `link()` call an App needs for a crate that registers things (ADR 0015) is inside the
   fence.
+- **Enum variants in contracts:** every struct-like variant of a public enum in an `*-api` crate, error enums
+  included, is `#[non_exhaustive]` and has a constructor, so a field can be added without breaking implementers
+  (ruling on #1514).
 - **Rulings live on the pull request:** a fence extension, an approved API change or a deferral is posted by the
   Director on the pull request (or its issue), where reviews read it. A ruling only on #2 doesn't count for a review.
 
