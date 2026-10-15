@@ -31,16 +31,11 @@ struct State {
 impl FakeLlm {
     /// A fake that plays `script`.
     pub fn new(script: Script) -> Self {
-        let info = ModelInfo {
-            id: script.model.clone(),
-            context_window: 200_000,
-            max_output: 64_000,
-            vision: true,
-            tools: true,
-            effort: true,
-            caching: true,
-            image_cost: ImageCost::Tiles { px: 28 },
-        };
+        let info = ModelInfo::new(script.model.clone(), 200_000, 64_000, ImageCost::Tiles { px: 28 })
+            .with_vision(true)
+            .with_tools(true)
+            .with_effort(true)
+            .with_caching(true);
         Self { script, info, clock: Arc::new(FakeClock::default()), state: Mutex::new(State::default()) }
     }
 

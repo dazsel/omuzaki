@@ -35,7 +35,7 @@ impl TurnRequest {
             tool_choice: ToolChoice::Auto,
             max_output,
             effort: Effort::Default,
-            cache: CachePlan { conversation: false },
+            cache: CachePlan::new(false),
         }
     }
 
@@ -77,11 +77,26 @@ impl TurnRequest {
 
 /// One block of the system prompt.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct SystemBlock {
     /// The text.
     pub text: String,
     /// Put a cache breakpoint after this block (it covers the tools too).
     pub cache_after: bool,
+}
+
+impl SystemBlock {
+    /// A block of `text` with no cache breakpoint after it.
+    pub fn new(text: impl Into<String>) -> Self {
+        Self { text: text.into(), cache_after: false }
+    }
+
+    /// Sets whether a cache breakpoint sits after this block.
+    #[must_use]
+    pub fn with_cache_after(mut self, cache_after: bool) -> Self {
+        self.cache_after = cache_after;
+        self
+    }
 }
 
 /// Who wrote a message.
@@ -96,11 +111,19 @@ pub enum Role {
 
 /// One message.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct Message {
     /// Who wrote it.
     pub role: Role,
     /// Its blocks, in order.
     pub content: Vec<ContentBlock>,
+}
+
+impl Message {
+    /// A message by `role` with `content` blocks.
+    pub fn new(role: Role, content: Vec<ContentBlock>) -> Self {
+        Self { role, content }
+    }
 }
 
 /// An image format a model accepts.
@@ -175,6 +198,7 @@ pub enum ContentBlock {
 
 /// A tool the model may call.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct ToolDef {
     /// The name, `^[a-zA-Z0-9_-]{1,64}$`.
     pub name: String,
@@ -182,6 +206,13 @@ pub struct ToolDef {
     pub description: String,
     /// The JSON Schema of its arguments.
     pub input_schema: Value,
+}
+
+impl ToolDef {
+    /// A tool called `name`, described by `description`, whose arguments follow `input_schema`.
+    pub fn new(name: impl Into<String>, description: impl Into<String>, input_schema: Value) -> Self {
+        Self { name: name.into(), description: description.into(), input_schema }
+    }
 }
 
 /// Which tool the model may call.
@@ -216,7 +247,15 @@ pub enum Effort {
 
 /// What to cache besides the system blocks that ask for it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct CachePlan {
     /// Also cache the growing conversation (a breakpoint on the last message).
     pub conversation: bool,
+}
+
+impl CachePlan {
+    /// A plan that caches the growing conversation if `conversation` is set.
+    pub fn new(conversation: bool) -> Self {
+        Self { conversation }
+    }
 }

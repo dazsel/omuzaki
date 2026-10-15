@@ -15,15 +15,20 @@ src/message.rs: pub fn with_tool_choice(mut self, tool_choice: ToolChoice) -> Se
 src/message.rs: pub fn with_effort(mut self, effort: Effort) -> Self {
 src/message.rs: pub fn with_cache(mut self, cache: CachePlan) -> Self {
 src/message.rs: pub struct SystemBlock {
+src/message.rs: pub fn new(text: impl Into<String>) -> Self {
+src/message.rs: pub fn with_cache_after(mut self, cache_after: bool) -> Self {
 src/message.rs: pub enum Role {
 src/message.rs: pub struct Message {
+src/message.rs: pub fn new(role: Role, content: Vec<ContentBlock>) -> Self {
 src/message.rs: pub enum ImageMime {
 src/message.rs: pub enum ImageOrigin {
 src/message.rs: pub enum ContentBlock {
 src/message.rs: pub struct ToolDef {
+src/message.rs: pub fn new(name: impl Into<String>, description: impl Into<String>, input_schema: Value) -> Self {
 src/message.rs: pub enum ToolChoice {
 src/message.rs: pub enum Effort {
 src/message.rs: pub struct CachePlan {
+src/message.rs: pub fn new(conversation: bool) -> Self {
 src/provider.rs: pub struct SecretLabel(pub String);
 src/provider.rs: pub struct SecretRef(pub SecretLabel);
 src/provider.rs: pub struct SecretValue(String);
@@ -35,12 +40,21 @@ src/provider.rs: pub fn new<T: Any + Send + Sync>(handle: T) -> Self {
 src/provider.rs: pub fn none() -> Self {
 src/provider.rs: pub fn downcast_ref<T: Any>(&self) -> Option<&T> {
 src/provider.rs: pub struct ProviderConfig {
+src/provider.rs: pub fn new(id: impl Into<String>, kind: impl Into<String>, endpoint: impl Into<String>) -> Self {
+src/provider.rs: pub fn with_key(mut self, key: SecretRef) -> Self {
+src/provider.rs: pub fn with_allow_remote(mut self, allow_remote: bool) -> Self {
+src/provider.rs: pub fn with_prices(mut self, prices: PriceTable) -> Self {
+src/provider.rs: pub fn with_context_window(mut self, context_window: u64) -> Self {
+src/provider.rs: pub fn with_retry(mut self, retry: RetryPolicy) -> Self {
 src/provider.rs: pub struct RetryPolicy {
+src/provider.rs: pub fn new(max_retries: u8) -> Self {
 src/provider.rs: pub struct ProviderEnv {
+src/provider.rs: pub fn new(secrets: Arc<dyn SecretStore>, runtime: RuntimeHandle) -> Self {
 src/provider.rs: pub enum LlmCapability {
 src/provider.rs: pub enum Privacy {
 src/provider.rs: pub enum CostModel {
 src/provider.rs: pub struct ProviderManifest {
+src/provider.rs: pub fn new(
 src/provider.rs: pub type BuildFn = fn(&ProviderConfig, &ProviderEnv) -> Result<Box<dyn LlmClient>, LlmError>;
 src/provider.rs: pub type ListModelsFn = fn(&ProviderConfig, &ProviderEnv) -> Result<Vec<ModelInfo>, LlmError>;
 src/provider.rs: pub struct LlmProvider {
@@ -56,6 +70,8 @@ src/stream.rs: pub enum LlmEvent {
 src/stream.rs: pub enum Next {
 src/stream.rs: pub struct Turn {
 src/stream.rs: pub model: String,
+src/stream.rs: pub fn new(model: impl Into<String>, message: Message, usage: Usage, stop: StopReason) -> Self {
+src/stream.rs: pub fn with_retries(mut self, retries: u8) -> Self {
 src/stream.rs: pub trait EventSource: Send {
 src/stream.rs: pub struct TurnStream {
 src/stream.rs: pub fn new(source: Box<dyn EventSource>, cancel: &Cancel) -> Self {
@@ -64,15 +80,29 @@ src/stream.rs: pub fn next_timeout(&mut self, wait: Duration) -> Result<Next, Ll
 src/stream.rs: pub fn usage_so_far(&self) -> Option<Usage> {
 src/stream.rs: pub fn collect(&mut self, idle: Duration) -> Result<Turn, LlmError> {
 src/usage.rs: pub struct Usage {
+src/usage.rs: pub fn new(input: u64, output: u64) -> Self {
+src/usage.rs: pub fn with_cache_read(mut self, cache_read: u64) -> Self {
+src/usage.rs: pub fn with_cache_write(mut self, cache_write: u64) -> Self {
 src/usage.rs: pub fn prompt(&self) -> u64 {
 src/usage.rs: pub fn tokens(&self) -> u64 {
 src/usage.rs: pub struct MicroUsd(pub u64);
 src/usage.rs: pub struct Rates {
+src/usage.rs: pub fn new(input: u64, output: u64) -> Self {
+src/usage.rs: pub fn with_cache_read(mut self, cache_read: u64) -> Self {
+src/usage.rs: pub fn with_cache_write(mut self, cache_write: u64) -> Self {
 src/usage.rs: pub struct PriceTier {
+src/usage.rs: pub fn new(prompt_up_to: Option<u64>, rates: Rates) -> Self {
 src/usage.rs: pub struct PriceTable {
+src/usage.rs: pub fn new(as_of: impl Into<String>, source: impl Into<String>, tiers: Vec<PriceTier>) -> Self {
 src/usage.rs: pub fn rates_for(&self, prompt: u64) -> Rates {
+src/usage.rs: pub fn rates_up_to(&self, prompt: u64) -> Rates {
 src/usage.rs: pub enum ImageCost {
 src/usage.rs: pub struct ModelInfo {
+src/usage.rs: pub fn new(id: impl Into<String>, context_window: u64, max_output: u64, image_cost: ImageCost) -> Self {
+src/usage.rs: pub fn with_vision(mut self, vision: bool) -> Self {
+src/usage.rs: pub fn with_tools(mut self, tools: bool) -> Self {
+src/usage.rs: pub fn with_effort(mut self, effort: bool) -> Self {
+src/usage.rs: pub fn with_caching(mut self, caching: bool) -> Self {
 src/usage.rs: pub struct Ledger {
 src/usage.rs: pub fn new() -> Self {
 src/usage.rs: pub fn observe(&mut self, request: &TurnRequest, turn: &Turn) {

@@ -42,12 +42,12 @@ pub fn run(make: Make<'_>) -> Result<(), String> {
 }
 
 fn request() -> TurnRequest {
-    let messages = vec![Message { role: Role::User, content: vec![ContentBlock::Text("hi".into())] }];
-    TurnRequest::new(messages, 64).with_system(vec![SystemBlock { text: "You help.".into(), cache_after: false }])
+    let messages = vec![Message::new(Role::User, vec![ContentBlock::Text("hi".into())])];
+    TurnRequest::new(messages, 64).with_system(vec![SystemBlock::new("You help.")])
 }
 
 fn usage(input: u64, output: u64) -> LlmEvent {
-    LlmEvent::Usage(Usage { input, output, cache_read: 0, cache_write: 0 })
+    LlmEvent::Usage(Usage::new(input, output))
 }
 
 fn start() -> LlmEvent {

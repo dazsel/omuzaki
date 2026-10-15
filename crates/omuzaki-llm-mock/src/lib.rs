@@ -23,12 +23,7 @@ use omuzaki_llm_api::{LlmClient, register_llm_provider};
 omuzaki_core::define_link!();
 
 fn manifest() -> ProviderManifest {
-    ProviderManifest {
-        capabilities: vec![LlmCapability::Llm, LlmCapability::Vision],
-        privacy: Privacy::Loopback,
-        cost: CostModel::Free,
-        output_terms: String::new(),
-    }
+    ProviderManifest::new(vec![LlmCapability::Llm, LlmCapability::Vision], Privacy::Loopback, CostModel::Free, "")
 }
 
 fn fake(config: &ProviderConfig) -> Result<FakeLlm, LlmError> {

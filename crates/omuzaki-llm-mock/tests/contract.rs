@@ -31,14 +31,13 @@ const SCRIPT: &str = r#"{"model": "claude-haiku-5-5", "turns": [
 const IDLE: Duration = Duration::from_millis(10);
 
 fn text(role: Role, t: &str) -> Message {
-    Message { role, content: vec![ContentBlock::Text(t.into())] }
+    Message::new(role, vec![ContentBlock::Text(t.into())])
 }
 
 fn request(messages: Vec<Message>) -> TurnRequest {
-    let tool =
-        ToolDef { name: "render_preview".into(), description: "Render".into(), input_schema: "{}".parse().unwrap() };
+    let tool = ToolDef::new("render_preview", "Render", "{}".parse().unwrap());
     TurnRequest::new(messages, 1024)
-        .with_system(vec![SystemBlock { text: "You help.".into(), cache_after: true }])
+        .with_system(vec![SystemBlock::new("You help.").with_cache_after(true)])
         .with_tools(vec![tool])
 }
 
@@ -55,20 +54,12 @@ fn turn_two(first: &Turn) -> TurnRequest {
         ],
         is_error: false,
     };
-    request(vec![
-        text(Role::User, "show me the front"),
-        first.message.clone(),
-        Message { role: Role::User, content: vec![result] },
-    ])
+    request(vec![text(Role::User, "show me the front"), first.message.clone(), Message::new(Role::User, vec![result])])
 }
 
 fn haiku_prices() -> PriceTable {
-    let rates = Rates { input: 100_000, output: 500_000, cache_write: 125_000, cache_read: 10_000 };
-    PriceTable {
-        as_of: "2026-10-13".into(),
-        source: "test".into(),
-        tiers: vec![PriceTier { prompt_up_to: None, rates }],
-    }
+    let rates = Rates::new(100_000, 500_000).with_cache_write(125_000).with_cache_read(10_000);
+    PriceTable::new("2026-10-13", "test", vec![PriceTier::new(None, rates)])
 }
 
 fn play() -> (FakeLlm, Turn, Turn) {
@@ -83,7 +74,7 @@ fn play() -> (FakeLlm, Turn, Turn) {
 fn collect_folds_the_worked_example_into_two_turns() {
     let (_, one, two) = play();
     assert_eq!(one.stop, StopReason::ToolUse);
-    assert_eq!(one.usage, Usage { input: 37, output: 58, cache_read: 0, cache_write: 4800 });
+    assert_eq!(one.usage, Usage::new(37, 58).with_cache_write(4800));
     assert_eq!((one.usage.prompt(), one.usage.tokens()), (4837, 4895));
     let call = ContentBlock::ToolUse {
         id: "tu_1".into(),

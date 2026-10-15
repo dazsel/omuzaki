@@ -110,6 +110,7 @@ pub enum Next {
 
 /// A finished turn, folded from its events.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct Turn {
     /// The model that served it.
     pub model: String,
@@ -121,6 +122,20 @@ pub struct Turn {
     pub stop: StopReason,
     /// How many `Retrying` events came first.
     pub retries: u8,
+}
+
+impl Turn {
+    /// A turn served by `model` that ended with `stop`, with no retries.
+    pub fn new(model: impl Into<String>, message: Message, usage: Usage, stop: StopReason) -> Self {
+        Self { model: model.into(), message, usage, stop, retries: 0 }
+    }
+
+    /// Sets how many `Retrying` events came first.
+    #[must_use]
+    pub fn with_retries(mut self, retries: u8) -> Self {
+        self.retries = retries;
+        self
+    }
 }
 
 /// Where a [`TurnStream`] gets events: a provider's turn task, or a script. Implementations never see `Cancel`
@@ -140,15 +155,18 @@ pub struct TurnStream {
     cancel: Cancel,
     usage: Option<Usage>,
     done: bool,
+    /// An event has been handed to the caller, so [`collect`](TurnStream::collect) can no longer see them all.
+    taken: bool,
 }
 
 impl TurnStream {
     /// A stream over `source` that obeys `cancel` on every call.
     pub fn new(source: Box<dyn EventSource>, cancel: &Cancel) -> Self {
-        Self { source: Some(source), cancel: cancel.clone(), usage: None, done: false }
+        Self { source: Some(source), cancel: cancel.clone(), usage: None, done: false, taken: false }
     }
 
-    /// The next event if one is ready; never blocks.
+    /// The next event if one is ready; never blocks. Once it has returned an event, [`collect`](Self::collect) refuses
+    /// the stream: pull events one by one or fold them all, not both.
     ///
     /// # Errors
     /// The turn's error, once; `Cancelled` on the first call after `cancel()`. Every later call returns `End`.
@@ -156,7 +174,8 @@ impl TurnStream {
         self.next_timeout(Duration::ZERO)
     }
 
-    /// The next event, blocking up to `wait`.
+    /// The next event, blocking up to `wait`. As with [`try_next`](Self::try_next), an event returned here rules out
+    /// [`collect`](Self::collect) on this stream.
     ///
     /// # Errors
     /// As [`try_next`](Self::try_next).
@@ -181,6 +200,7 @@ impl TurnStream {
                     _ => {}
                 }
                 // A source that sends `Stop` ends the stream after it; the caller sees `End` next.
+                self.taken = true;
                 Ok(Next::Event(event))
             }
             Ok(Next::End) => {
@@ -210,10 +230,20 @@ impl TurnStream {
     /// Reads to the end and folds the events into a [`Turn`]. It borrows the stream, so
     /// [`usage_so_far`](Self::usage_so_far) survives an error.
     ///
+    /// It must see every event of the turn, so it is for a stream nobody has pulled from: once
+    /// [`try_next`](Self::try_next) or [`next_timeout`](Self::next_timeout) has returned an event, or an earlier
+    /// `collect` has read some, it refuses and changes nothing.
+    ///
     /// # Errors
-    /// The turn's error; `Network` if nothing arrives within `idle`; `Malformed` if the events break the order of
+    /// `Unsupported` if an event was already taken from the stream; the turn's error; `Network` if nothing arrives within `idle`; `Malformed` if the events break the order of
     /// llm-api D3 (no `Stop`, no `Usage`, an unclosed or nested call, invalid JSON arguments).
     pub fn collect(&mut self, idle: Duration) -> Result<Turn, LlmError> {
+        if self.taken {
+            return Err(LlmError::Unsupported(
+                "collect needs every event of the turn, but some were already taken with try_next or next_timeout"
+                    .into(),
+            ));
+        }
         let mut fold = Fold::default();
         let result = loop {
             match self.next_timeout(idle) {
@@ -424,20 +454,48 @@ mod tests {
     }
 
     #[test]
-    fn a_smaller_usage_report_never_lowers_what_is_charged() {
-        let big = Usage { input: 10, output: 5, cache_read: 3, cache_write: 2 };
-        let small = Usage { input: 4, output: 9, cache_read: 1, cache_write: 0 };
+    fn collect_refuses_a_stream_that_was_already_pulled_from() {
         let items = vec![
-            event(LlmEvent::Usage(big)),
-            event(LlmEvent::Usage(small)),
+            event(LlmEvent::Start { model: "m".into() }),
+            event(LlmEvent::TextDelta("hi".into())),
+            event(LlmEvent::Usage(Usage::new(1, 1))),
             event(LlmEvent::Stop(StopReason::EndTurn)),
         ];
         let mut s = stream(items, &Cancel::new());
-        let want = Usage { input: 10, output: 9, cache_read: 3, cache_write: 2 };
-        assert!(matches!(s.try_next(), Ok(Next::Event(_))));
-        assert!(matches!(s.try_next(), Ok(Next::Event(_))));
-        assert_eq!(s.usage_so_far(), Some(want));
-        let turn = s.collect(Duration::ZERO).unwrap_or_else(|e| panic!("{e}"));
+        assert!(matches!(s.try_next(), Ok(Next::Event(LlmEvent::Start { .. }))));
+        assert!(matches!(s.collect(Duration::ZERO), Err(LlmError::Unsupported(_))));
+        // The refusal changes nothing: the rest of the events are still there to pull.
+        assert!(matches!(s.try_next(), Ok(Next::Event(LlmEvent::TextDelta(_)))));
+        assert!(matches!(s.next_timeout(Duration::ZERO), Ok(Next::Event(LlmEvent::Usage(_)))));
+        assert!(matches!(s.collect(Duration::ZERO), Err(LlmError::Unsupported(_))));
+    }
+
+    #[test]
+    fn collect_on_a_fresh_stream_still_folds_the_whole_turn() {
+        let items = vec![
+            event(LlmEvent::Start { model: "m".into() }),
+            event(LlmEvent::TextDelta("hi".into())),
+            event(LlmEvent::Usage(Usage::new(1, 1))),
+            event(LlmEvent::Stop(StopReason::EndTurn)),
+        ];
+        let turn = stream(items, &Cancel::new()).collect(Duration::ZERO).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(turn.message.content, vec![ContentBlock::Text("hi".into())]);
+    }
+
+    #[test]
+    fn a_smaller_usage_report_never_lowers_what_is_charged() {
+        let big = Usage::new(10, 5).with_cache_read(3).with_cache_write(2);
+        let small = Usage::new(4, 9).with_cache_read(1);
+        let items = || {
+            vec![event(LlmEvent::Usage(big)), event(LlmEvent::Usage(small)), event(LlmEvent::Stop(StopReason::EndTurn))]
+        };
+        let want = Usage::new(10, 9).with_cache_read(3).with_cache_write(2);
+        let mut pulled = stream(items(), &Cancel::new());
+        assert!(matches!(pulled.try_next(), Ok(Next::Event(_))));
+        assert!(matches!(pulled.try_next(), Ok(Next::Event(_))));
+        assert_eq!(pulled.usage_so_far(), Some(want));
+        let mut folded = stream(items(), &Cancel::new());
+        let turn = folded.collect(Duration::ZERO).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(turn.usage, want);
     }
 

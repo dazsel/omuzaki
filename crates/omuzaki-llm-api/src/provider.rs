@@ -77,6 +77,7 @@ impl RuntimeHandle {
 
 /// What a provider is built from; one entry of the `llm.providers` setting.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct ProviderConfig {
     /// The entry's id, also the key label's last part.
     pub id: String,
@@ -96,26 +97,94 @@ pub struct ProviderConfig {
     pub retry: RetryPolicy,
 }
 
+impl ProviderConfig {
+    /// A configuration for the provider `kind` at `endpoint`, with no key, no remote endpoint allowed, the shipped
+    /// prices and context window, and the default retries.
+    pub fn new(id: impl Into<String>, kind: impl Into<String>, endpoint: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            kind: kind.into(),
+            endpoint: endpoint.into(),
+            key: None,
+            allow_remote: false,
+            prices: None,
+            context_window: None,
+            retry: RetryPolicy::default(),
+        }
+    }
+
+    /// Sets the key, by reference.
+    #[must_use]
+    pub fn with_key(mut self, key: SecretRef) -> Self {
+        self.key = Some(key);
+        self
+    }
+
+    /// Sets whether a non-loopback OpenAI-compatible endpoint is allowed.
+    #[must_use]
+    pub fn with_allow_remote(mut self, allow_remote: bool) -> Self {
+        self.allow_remote = allow_remote;
+        self
+    }
+
+    /// Sets prices that replace the shipped table.
+    #[must_use]
+    pub fn with_prices(mut self, prices: PriceTable) -> Self {
+        self.prices = Some(prices);
+        self
+    }
+
+    /// Sets a context window that replaces the probed one.
+    #[must_use]
+    pub fn with_context_window(mut self, context_window: u64) -> Self {
+        self.context_window = Some(context_window);
+        self
+    }
+
+    /// Sets how often to retry.
+    #[must_use]
+    pub fn with_retry(mut self, retry: RetryPolicy) -> Self {
+        self.retry = retry;
+        self
+    }
+}
+
 /// How often the client retries before the first event.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct RetryPolicy {
     /// At most this many retries; 0 turns retrying off.
     pub max_retries: u8,
 }
 
+impl RetryPolicy {
+    /// A policy of at most `max_retries` retries; 0 turns retrying off.
+    pub fn new(max_retries: u8) -> Self {
+        Self { max_retries }
+    }
+}
+
 impl Default for RetryPolicy {
     fn default() -> Self {
-        Self { max_retries: 4 }
+        Self::new(4)
     }
 }
 
 /// What a provider is built with besides its configuration.
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct ProviderEnv {
     /// Where keys are resolved, per request.
     pub secrets: Arc<dyn SecretStore>,
     /// The host's runtime.
     pub runtime: RuntimeHandle,
+}
+
+impl ProviderEnv {
+    /// An environment that resolves keys through `secrets` and runs on `runtime`.
+    pub fn new(secrets: Arc<dyn SecretStore>, runtime: RuntimeHandle) -> Self {
+        Self { secrets, runtime }
+    }
 }
 
 /// What a provider can do.
@@ -150,6 +219,7 @@ pub enum CostModel {
 
 /// What the connector framework reads about a provider.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct ProviderManifest {
     /// What it can do.
     pub capabilities: Vec<LlmCapability>,
@@ -159,6 +229,19 @@ pub struct ProviderManifest {
     pub cost: CostModel,
     /// A link to the provider's terms for its output.
     pub output_terms: String,
+}
+
+impl ProviderManifest {
+    /// A manifest for a provider with these `capabilities`, `privacy` and `cost`, whose output terms are at
+    /// `output_terms`.
+    pub fn new(
+        capabilities: Vec<LlmCapability>,
+        privacy: Privacy,
+        cost: CostModel,
+        output_terms: impl Into<String>,
+    ) -> Self {
+        Self { capabilities, privacy, cost, output_terms: output_terms.into() }
+    }
 }
 
 /// Builds a client from its configuration.
