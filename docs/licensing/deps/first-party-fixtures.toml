@@ -12,5 +12,5 @@ paths = [
   "crates/omuzaki-render-mock/tests/golden/",
   "crates/omuzaki-stage/tests/golden/",
   "crates/omuzaki-test/evals/",
-  "crates/omuzaki-test/fixtures/raster/",
+  "crates/omuzaki-test-face/fixtures/raster/",
 ]
