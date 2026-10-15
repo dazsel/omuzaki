@@ -168,7 +168,9 @@ impl TurnStream {
         match self.source.poll(wait) {
             Ok(Next::Event(event)) => {
                 match &event {
-                    LlmEvent::Usage(u) => self.usage = Some(*u),
+                    // Reports are cumulative, so a smaller one is a glitch; keep the largest of each counter so what is
+                    // charged never drops.
+                    LlmEvent::Usage(u) => self.usage = Some(self.usage.map_or(*u, |old| keep_largest(old, *u))),
                     LlmEvent::Stop(_) => self.done = true,
                     _ => {}
                 }
@@ -187,7 +189,7 @@ impl TurnStream {
         }
     }
 
-    /// The last usage seen. A provider bills it even when the turn then fails, so the caller charges it.
+    /// The usage seen so far: the largest report of each counter. A provider bills it even when the turn then fails, so the caller charges it.
     pub fn usage_so_far(&self) -> Option<Usage> {
         self.usage
     }
@@ -207,6 +209,16 @@ impl TurnStream {
                 Next::End => return fold.finish(self.usage),
             }
         }
+    }
+}
+
+/// The component-wise maximum of two cumulative usage reports.
+fn keep_largest(a: Usage, b: Usage) -> Usage {
+    Usage {
+        input: a.input.max(b.input),
+        output: a.output.max(b.output),
+        cache_read: a.cache_read.max(b.cache_read),
+        cache_write: a.cache_write.max(b.cache_write),
     }
 }
 
@@ -303,6 +315,24 @@ mod tests {
 
     fn empty_object() -> Value {
         Value::Object(serde_json::Map::new())
+    }
+
+    #[test]
+    fn a_smaller_usage_report_never_lowers_what_is_charged() {
+        let big = Usage { input: 10, output: 5, cache_read: 3, cache_write: 2 };
+        let small = Usage { input: 4, output: 9, cache_read: 1, cache_write: 0 };
+        let items = vec![
+            event(LlmEvent::Usage(big)),
+            event(LlmEvent::Usage(small)),
+            event(LlmEvent::Stop(StopReason::EndTurn)),
+        ];
+        let mut s = stream(items, &Cancel::new());
+        let want = Usage { input: 10, output: 9, cache_read: 3, cache_write: 2 };
+        assert!(matches!(s.try_next(), Ok(Next::Event(_))));
+        assert!(matches!(s.try_next(), Ok(Next::Event(_))));
+        assert_eq!(s.usage_so_far(), Some(want));
+        let turn = s.collect(Duration::ZERO).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(turn.usage, want);
     }
 
     #[test]

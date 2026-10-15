@@ -203,12 +203,12 @@ impl Ledger {
         system.saturating_add(tools).saturating_add(messages(0))
     }
 
-    /// The most `request` can cost: the whole prompt at the dearer of `input` and `cache_write` in the tier it falls
-    /// in, plus `max_output` at the output rate, rounded up to a micro-dollar. The host sends only if this fits.
+    /// The most `request` can cost: the whole prompt at the dearest of `input`, `cache_read` and `cache_write` in the
+    /// tier it falls in (any of them could bill a prompt token, so the bound never under-estimates), plus `max_output` at the output rate, rounded up to a micro-dollar. The host sends only if this fits.
     pub fn bound(&self, request: &TurnRequest, info: &ModelInfo, prices: &PriceTable) -> MicroUsd {
         let prompt = self.prompt_estimate(request, info);
         let rates = prices.rates_for(prompt);
-        let per_token = u128::from(rates.input.max(rates.cache_write));
+        let per_token = u128::from(rates.input.max(rates.cache_read).max(rates.cache_write));
         round_up(u128::from(prompt) * per_token + u128::from(request.max_output) * u128::from(rates.output))
     }
 }
@@ -248,6 +248,41 @@ mod tests {
         assert_eq!(table.rates_for(101), dear);
         assert_eq!(table.rates_for(9_999), dear);
         assert_eq!(PriceTable { tiers: Vec::new(), ..table }.rates_for(1), Rates::default());
+    }
+
+    #[test]
+    fn the_bound_prices_the_prompt_at_the_dearest_rate_even_when_cache_reads_cost_more() {
+        let rates = Rates { input: 1_000_000, output: 0, cache_read: 5_000_000, cache_write: 2_000_000 };
+        let prices = PriceTable {
+            as_of: "x".into(),
+            source: String::new(),
+            tiers: vec![PriceTier { prompt_up_to: None, rates }],
+        };
+        let info = ModelInfo {
+            id: "m".into(),
+            context_window: 1000,
+            max_output: 0,
+            vision: false,
+            tools: false,
+            effort: false,
+            caching: true,
+            image_cost: ImageCost::Flat(1),
+        };
+        let request = TurnRequest {
+            system: Vec::new(),
+            messages: vec![crate::Message {
+                role: crate::Role::User,
+                content: vec![ContentBlock::Text("abcd".into())],
+            }],
+            tools: Vec::new(),
+            tool_choice: crate::ToolChoice::Auto,
+            max_output: 0,
+            effort: crate::Effort::Default,
+            cache: crate::CachePlan { conversation: false },
+        };
+        let prompt = Ledger::new().prompt_estimate(&request, &info);
+        assert!(prompt > 0);
+        assert_eq!(Ledger::new().bound(&request, &info, &prices), MicroUsd(prompt * 5));
     }
 
     #[test]
