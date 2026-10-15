@@ -1,6 +1,6 @@
 ---
 title: "Which hosted music and sound-effect generators should CN-11 support first? (2026-10-15)"
-summary: "Compared ElevenLabs, Google Lyria, Stability AI, Mubert, Beatoven and Suno for bring-your-own-key music and SFX; ElevenLabs first (covers both kinds, terms read in full), Google Lyria second (music only, conditional on one clause)."
+summary: "Compared ElevenLabs, Google Lyria, Stability AI, Mubert, Beatoven and Suno for bring-your-own-key music and SFX; ElevenLabs first, conditional on the ElevenAPI Terms and resale question (covers both kinds; music terms read in full), Google Lyria second (music only, conditional on one clause and an OAuth contract gap)."
 area: research
 ---
 
@@ -12,15 +12,15 @@ Research for #1470. Source marks: **verified** = I read the vendor's own text an
 
 ## 1. The answer
 
-- **Support ElevenLabs first.** It is the only candidate that covers both `Music` and `Sfx` through one key, with an API that returns audio in one call. Its music terms are public, long and specific, and I read them in full. It has a looping flag for SFX, a seed for music, and a training opt-out. A paid plan gives commercial use.
-- **Support Google Lyria (Vertex AI, `lyria-002`) second, music only,** and only after a maintainer settles one clause: the Google Cloud terms bar use in "a Customer Application ... likely to be accessed by individuals under the age of 18" (section 3). Everything else about it is verified and clean: output is Customer Data, no training on it, fixed price, a seed.
+- **Support ElevenLabs first, on condition.** It is the only candidate that covers both `Music` and `Sfx` through one key, with an API that returns audio in one call. Its music terms are public, long and specific, and I read them in full. It has a looping flag for SFX, a seed for music, and a training opt-out. A paid plan gives commercial use. The condition: the ElevenAPI Terms (SFX limits) were not read and the Model Resale question (section 9) is open, so the register row stays `unverified`, which `docs/licensing/policy.md` treats as `NO`. CN-11 may build and test the adapter, but nothing ships on a shippable path until a maintainer clears both. This is a legal call for the owner.
+- **Support Google Lyria (Vertex AI, `lyria-002`) second, music only,** and only after a maintainer settles one clause and the OAuth gap (section 7, item 7): the Google Cloud terms bar use in "a Customer Application ... likely to be accessed by individuals under the age of 18" (section 3). Everything else about it is verified and clean: output is Customer Data, no training on it, fixed price, a seed.
 - **Do not build Mubert, Beatoven or Suno now.**
   - Suno has no public self-serve API (secondary) and its terms limit commercial use to what its own conditions allow.
   - Mubert's API is a B2B product with a sublicensing plan and a no-Content-ID rule; the cheapest plan is $49 a month.
   - Beatoven's API terms could not be reached.
 - **Stability AI is a credible third** (its terms assign outputs to the customer, verified) but I could not read its audio API page (JavaScript only), so its shape and price stay unverified. Read it before building.
 - **The risk that matters for streamers is not ownership, it is Content ID.** No vendor's terms promise that an AI track will not be matched or claimed. Only Mubert's terms say anything on registering (they forbid it). ElevenLabs is silent. Treat every generated track as claimable and keep provenance (section 8).
-- **What this decides:** CN-11 ships one adapter pair (ElevenLabs music and SFX), a second music adapter (Lyria) behind the age-clause answer, and a provenance record that carries plan tier, model and seed. Three contract gaps (section 7) need the maintainers.
+- **What this decides:** CN-11 ships one adapter pair (ElevenLabs music and SFX), a second music adapter (Lyria) behind the age-clause answer, and a provenance record that carries plan tier, model and seed. Seven items in section 7 need the maintainers: items 1 to 5 and 7 change the connector contract; item 6 (resale) is a legal question for the owner. Items 1 to 4 and 7 block the adapters; 5 only adds a warning.
 
 ## 2. Summary table
 
@@ -79,11 +79,11 @@ Research for #1470. Source marks: **verified** = I read the vendor's own text an
 ### Fit with the connector contract
 - **Fits:** blocking `run` (one POST returns the file). `Music` and `Sfx` both exist. `seconds` maps to `music_length_ms` or `duration_seconds`. `looping` maps to SFX `loop`. Output is MP3 or PCM bytes, so it becomes an `Output::Asset`.
 - **Does not fit cleanly:**
-  - `seed` on music is allowed only with `composition_plan`, not with a plain `prompt`. A prompt-only request cannot carry a seed. Record the seed as "none" and say so in provenance.
-  - `seed` on SFX is not documented. Same handling.
+  - `seed` on music is allowed only with `composition_plan`, not with a plain `prompt`. `check()` must fail a `prompt` request that sets `seed`, naming `seed`. Never drop it silently. A request with no seed records `seed: none` in provenance.
+  - `seed` on SFX is not documented. `check()` must fail any SFX request that sets `seed`, naming `seed`.
   - `looping` on music has no equivalent. `check()` should reject `looping: true` with `kind: Music` for this adapter, naming `looping`.
   - `count` has no field. The adapter must make `count` separate calls, so the cap check runs `count` times (or once for the sum).
-  - The price is per minute for music but unclear for SFX. The cap needs an estimated cost before each call. Use `seconds * 0.15 / 60` for music; for SFX use the higher of the two readings until settled.
+  - The price is per minute for music but unclear for SFX. The cap needs an estimated cost before each call. Use `seconds * 0.15 / 60` for music; for SFX there is no safe reading while the unit is unresolved: the per-minute and per-generation readings give no common per-call dollar amount, so the adapter must block SFX until a verified price or a user-set numeric upper bound exists (the contract needs a numeric reservation and `max_usd_micros`).
   - Concurrency 2 on most plans: the adapter should send `count` calls one at a time.
   - Model ids are an enum that changed within months (`music_v1`, `music_v2`, `music_v2_5`). Put `model_id` in `params` and declare the allowed values.
 
@@ -120,10 +120,10 @@ See section 9.
 - **Fits:** blocking `run`; a seed; `count` (through `sample_count`); WAV output.
 - **Does not fit:**
   - `kind: Sfx` is unsupported. `check()` must refuse it.
-  - `seconds` is fixed at 30 per clip. A longer request must either be refused or built from several clips, and joined clips have audible seams. Recommend refuse above 30, and bill `count * 0.06`.
+  - `seconds` is fixed at 30 per clip. A longer request must either be refused or built from several clips, and joined clips have audible seams. Recommend `check()` require `seconds == 30` exactly (shorter and longer both fail, naming `seconds`) unless the contract defines rounding, and bill `count * 0.06`.
   - `seed` and `count > 1` are mutually exclusive. A request with both must fail `check()` naming `seed`; or the adapter spends `count` calls with seeds `seed + i`. The second needs a maintainer decision.
   - `looping`: unsupported.
-  - Auth is a Google Cloud project, billing and OAuth. That is heavier than pasting a key, and the user must be eligible under the age clause.
+  - Auth is a Google Cloud project, billing and OAuth. Connectors D3 models only a static key (`Header` or `Env`) or the LLM seam (`Provider`); it has no ADC, OAuth refresh or project credential. Lyria has no supported auth path until the contract decides this (section 7, item 7). The user must also be eligible under the age clause.
 
 ### Open questions
 See section 9.
@@ -182,11 +182,12 @@ See section 9.
 These are for the maintainers; each is a place where `MusicRequest` or the connector contract does not match the vendors.
 
 1. **`seed` is optional and often unavailable.** ElevenLabs music allows it only with `composition_plan`; ElevenLabs SFX has none; Lyria forbids it with `count > 1`. The provenance record needs `seed: Option<u64>` plus a `seed_note`, and `check()` needs a rule per adapter.
-2. **`seconds` is not continuous.** Lyria is a fixed 30 seconds. The manifest should declare `seconds` min, max and step (or a fixed list) so `check()` fails with `Invalid` naming `seconds`.
+2. **`seconds` is not continuous.** Lyria is a fixed 30 seconds. The manifest should declare `seconds` min, max and step (or a fixed list) so `check()` fails with `Invalid` naming `seconds` for every value but 30.
 3. **`looping` applies to SFX only** in the one API that has it. The manifest should say which kinds support `looping`.
-4. **Cost is per second or per clip and sometimes unknown.** The cap check before each billable request needs `estimate(request) -> Money` with an `unknown` state that blocks the call until the user confirms.
+4. **Cost is per second or per clip and sometimes unknown.** The cap check before each billable request needs `estimate(request) -> Money` with an `unknown` state that blocks the call. Confirming an unknown estimate is not enough: a call needs a numeric reservation, so it waits for a verified price or a user-set numeric upper bound.
 5. **Output rights depend on the plan tier,** not just the vendor. Provenance should record `plan_tier` if the vendor exposes it (ElevenLabs' API exposes the subscription; I did not verify which endpoint). If it cannot be read, show a warning on the Connectors page naming the clauses (Free = non-commercial; Starter = no music-streaming distribution).
-6. **A "no resale" clause** (ElevenLabs 4.3) may apply to a host that lists several music vendors. Get written confirmation before shipping.
+6. **A "no resale" clause** (ElevenLabs 4.3) may apply to a host that lists several music vendors. Legal question, not a contract change. Open for the owner: get written confirmation before shipping.
+7. **Vertex AI auth is OAuth.** Connectors D3 has `Header`, `Env` and `Provider` delivery only; no ADC, token refresh or project id. Needs a contract decision (a new `Deliver` variant or a host-side token broker) before any Lyria adapter.
 
 ## 8. Content-ID risk, in plain words
 
@@ -243,6 +244,6 @@ The issue asks for register rows. `docs/licensing/register.md` is generated from
 1. Read the Stability audio API reference (a browser-rendered read of `platform.stability.ai` or its OpenAPI file) and update section 5.
 2. Send the section 9 questions to ElevenLabs and Google, and record the answers in this note.
 3. Add the six register files under `docs/licensing/deps/` (section 10).
-4. Decide the contract gaps in section 7, then write the `mock-music` cases that cover: seed unavailable, fixed duration, SFX-only loop and unknown price.
+4. Decide the contract gaps in section 7 (including OAuth), then write the `mock-music` cases that cover: seed rejected where unsupported, fixed 30 s duration, SFX-only loop and unknown price blocking.
 5. Build the ElevenLabs adapter (music and SFX) behind the cap check, with the Connectors page showing the plan-tier warning.
 6. Re-check Beatoven and Suno in one month; both are likely to change.
