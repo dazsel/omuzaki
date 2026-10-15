@@ -30,8 +30,7 @@ an external reviewer is untrusted and can reach an agent's prompt. The plan docu
    carries the person's authorisation to address the feedback, and still forbids anything beyond it). It is never put in labels,
    causes, plan items or the instruction part of a prompt. An external comment cannot start a task or an agent.
 7. **One mechanism:** `review.approve`, `reject` and `request_changes` are the approval card and the branch-review
-   decisions on the existing approval card and branch review, not new ops (the spec §11 amendment is pending the
-   Director, D3). VC-11's `no_open_threads` reads `summarise` over comment threads for the request's subject paths
+   decisions on the existing approval card and branch review, not new ops (spec §11 is amended with a one-line note, D3). VC-11's `no_open_threads` reads `summarise` over comment threads for the request's subject paths
    (patch paths plus the paths the op declares it reads).
 8. **MCP:** `omuzaki://comments` and `omuzaki://comments/<thread>` (a `ResourceProvider`) and the prompt
    `address_review_comments`; `resources/updated` through the path-to-URI mapping.
@@ -54,6 +53,6 @@ an external reviewer is untrusted and can reach an agent's prompt. The plan docu
 - **D2:** external comments come back as a comment file a person imports. A relay URL and a hosted inbox wait on the
   owner's hosted-service decision (#1051); nothing is built for them here.
 - **D3:** `approve`, `reject` and `request_changes` are decisions on the approval card and branch review. The spec
-  §11 amendment is pending the Director.
+  §11 is amended in this PR with a one-line note (Director's ruling).
 - **D4:** reviewers and up may comment; viewers may not (`team.md`).
 - **D5:** `CauseKind::Review` is approved, shipped as above.

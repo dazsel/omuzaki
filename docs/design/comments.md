@@ -295,7 +295,7 @@ there is no edit history to keep. Undoing a delete restores the file.
 
 So `review.approve`, `reject` and `request_changes` are **not new ops**: they are decisions on the existing approval
 card and branch review, and the spec's names are aliases of them, listed in the generated MCP docs as such. Spec §11
-still lists them as tools; its amendment is pending the Director (D3) (the spec §11 amendment is pending the Director, D3). Agents can only
+is amended with a one-line note saying so (D3). Agents can only
 comment: approving is never a scope (team.md 3).
 
 **Branch review and comments (the one line for branches.md 8.3):** "Send back" takes a comment; that comment is stored
@@ -308,7 +308,14 @@ patch paths **plus the paths the op declares it reads**. Review scope is not der
 publish or export op can write only outside the document (`io.export` reads a character and writes files; its
 `Plan::patch` is empty). The approval request therefore carries `subject: Vec<DocPath>`, filled from the plan's patch
 and the op's declared reads (for `io.export`, the character it exports; for a `Part` anchor, the character or part
-path matches); an op that declares neither makes the whole project its subject, so every open thread counts. A
+path matches); an op that declares neither makes the whole project its subject, so every open thread counts.
+
+**How an op declares reads (a contract shape).** `omuzaki-ops-api` gains an additive `OpMeta.reads: ReadDecl`, a list of
+path templates over the op's arguments (for `io.export`, `characters/{character}`), resolved against the call's
+arguments when the approval request is built. The default is empty, which means "whole project" for the approval
+subject only; no other behaviour changes. This is an API change, so it needs the Director's approval on its issue
+(CLAUDE.md, contracts first) and lands before the ops that use it; the publish and export ops (`io.export`, the
+`platform.*` exports, `broadcast`) then declare theirs. Both are tasks in section 16. A
 `Project` thread opened since the request was queued is always inside it. The approval card (team-review 8.4) lists
 the open ones and the resolved ones with who resolved. `ReviewPolicy.no_open_threads` (team-review 8.1) uses
 `omuzaki_review_api::summarise(threads, subject) -> ThreadSummary { open, resolved, external_open }`:
@@ -482,7 +489,7 @@ Synthetic project only (no real people's text or images).
 |---|---|---|
 | D1 (Q1) | Does assigning a task to an agent role start the agent? | **(a) No.** Assigning only records the assignment. A person presses Start, because starting spends their model budget. A per-project setting to auto-start can come later. |
 | D2 (Q2) | Where do external reviewers' comments get hosted for return? | **(a) The reviewer sends back a comment file**, which a person imports (`review.comment.import`). The relay URL (b) and the hosted inbox (c) wait on the owner's hosted-service decision in #1051. This design names #1051 and builds nothing for them. |
-| D3 (Q3) | Spec §11 lists `review.approve`, `reject`, `request_changes`. | `approve`, `reject` and `request_changes` are **decisions on the existing approval card and branch review**, not new ops (section 8). The amendment to spec §11 is **pending the Director** (on #2, with the recommendation to amend). Until it is ruled, this design only describes them that way. |
+| D3 (Q3) | Spec §11 lists `review.approve`, `reject`, `request_changes`. **Decided (Director, on #1535):** `approve`, `reject` and `request_changes` are **decisions on the existing approval card and branch review**, not new ops (section 8): one mechanism, not two. Spec §11 is amended in this PR with a one-line note pointing to the ruling. |
 | D4 (Q4) | May viewers comment? | **(a) Reviewers and up**, as `team.md` already rules. |
 | D5 (Q5) | `CauseKind::Review` in `omuzaki-ops-api`. | **(a) Approved.** In-area: every exhaustive match is in a Platform crate. It ships in one `omuzaki-ops-api` task together with `CauseKind::Plugin` and `EndReason::Faulted` from #1537, and that task makes both enums `#[non_exhaustive]` (ADR 0054 §4). |
 
@@ -509,7 +516,9 @@ Each: fence, contract, acceptance numbers, `Blocked by` (all blocked by this des
 | `review.task.create`, `assign`, `drop` | sonnet | `omuzaki-review` | fence from the anchor; `Project` refused without fence; title carries no text; external badge; assigning starts nothing | #1067, #971 (plan ops) |
 | Plan-item link and derived task state | haiku | `omuzaki-review` | `plan.link` to `comments/<id>`; `task_state` table; missing item reads Todo | #971 |
 | `CauseKind::Review` with `CauseKind::Plugin` and `EndReason::Faulted`, both enums `#[non_exhaustive]` (shared with #1537) | haiku | `omuzaki-ops-api` `actor.rs`; matches in Platform crates | enums non-exhaustive; every match compiles; `Review` carries an id only | none |
-| Subject paths on the approval request | sonnet | `omuzaki-review-api` `summarise`; approval request type | empty-patch `io.export` with an open thread on its character is refused | #1197, team-review 8 |
+| `OpMeta.reads` (additive contract: read-path templates; Director's approval first) | sonnet | `omuzaki-ops-api` `OpMeta` only | default empty; templates resolve against args; no behaviour change for existing ops | none |
+| Ops declare reads: `io.export`, `platform.*` exports, `broadcast` | haiku | `omuzaki-io-ops` and the broadcast op; tests | each op declares the paths it reads; an empty-patch export lists its character | the `OpMeta.reads` task |
+| Subject paths on the approval request | sonnet | `omuzaki-review-api` `summarise`; approval request type | empty-patch `io.export` with an open thread on its character is refused; path overlap in both directions (a leaf patch under an anchored part counts) | #1197, team-review 8, the two tasks above |
 | `render_for_agent` (read and task forms) and the hostile fixture | sonnet | `omuzaki-review-api` | all of 7.5 | #1197 |
 | `resources/updated` for comments | haiku | `omuzaki-mcp` | one notification per burst, thread taken from the reply id | #1068 |
 | Pins and the Comments panel | sonnet (visual) | `omuzaki-ui` | local lane sign-off | #1067 |
