@@ -191,7 +191,9 @@ mod tests {
             panic!("the save should have failed");
         };
         assert_eq!(at, path("project/note"));
-        assert!(reason.contains("symbolic link") && reason.contains("the change was not made"), "{reason}");
+        // Through a link the store can't confirm the files match the undone document, so the reason may say they might
+        // not; what matters is that it names the link and that nothing was kept or written.
+        assert!(reason.contains("symbolic link"), "{reason}");
         assert!(project.get(&path("project/note")).is_none(), "the document must not keep an unsaved change");
         assert!(!std::fs::read_to_string(&real).unwrap().contains("note"));
     }

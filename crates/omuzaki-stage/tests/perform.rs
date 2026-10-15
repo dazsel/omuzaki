@@ -4,6 +4,7 @@
 //! `tests/golden/perform_trace.json` holds the watched channels and the neck and head rotations at four steps;
 //! `OMUZAKI_BLESS=1 cargo test` rewrites it after an intended change.
 
+#![allow(clippy::disallowed_methods, reason = "a test reading and writing its own fixtures and evidence; not an op")]
 // Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 #![allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]

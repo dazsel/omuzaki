@@ -3357,12 +3357,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-ai-native"
+version = "0.0.0"
+dependencies = [
+ "flate2",
+ "tar",
+ "tempfile",
+ "zip",
+]
+
+[[package]]
 name = "omuzaki-ai-ort"
 version = "0.0.0"
 dependencies = [
  "flate2",
  "hound",
  "omuzaki-ai-api",
+ "omuzaki-ai-native",
  "omuzaki-core",
  "ort",
  "sha2",
@@ -3465,6 +3476,17 @@ dependencies = [
  "omuzaki-core",
  "omuzaki-render-api",
  "omuzaki-render-mock",
+]
+
+[[package]]
+name = "omuzaki-camera-mf"
+version = "0.0.0"
+dependencies = [
+ "criterion",
+ "omuzaki-track-api",
+ "tracing",
+ "windows",
+ "windows-core",
 ]
 
 [[package]]
@@ -3582,7 +3604,9 @@ dependencies = [
  "omuzaki-doc-api",
  "omuzaki-doc-mock",
  "omuzaki-stage-api",
+ "omuzaki-store-api",
  "proptest",
+ "rustix 1.1.5",
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
@@ -3794,6 +3818,7 @@ dependencies = [
  "omuzaki-face-api",
  "omuzaki-io-api",
  "omuzaki-io-mock",
+ "omuzaki-library-api",
  "omuzaki-ops-api",
  "omuzaki-render-api",
  "omuzaki-store-api",
@@ -4031,6 +4056,7 @@ dependencies = [
  "omuzaki-core",
  "omuzaki-render-api",
  "omuzaki-render-mock",
+ "proptest",
  "thiserror 2.0.21",
 ]
 

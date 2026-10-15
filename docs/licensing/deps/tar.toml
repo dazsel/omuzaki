@@ -1,7 +1,7 @@
 section = "rust"
 item = "tar 0.4.46"
 kind = "crate"
-used_for = "reads the entries of the ONNX Runtime `.tgz` archives in `omuzaki-ai-ort`; only bare file names from the archive's `lib/` folder are written"
+used_for = "reads the entries of the ONNX Runtime `.tgz` archives in `omuzaki-ai-native`; only bare file names from the archive's `lib/` folder are written"
 status = "yes"
 audit = "(crates.io: `license = \"MIT OR Apache-2.0\"`; `LICENSE-MIT`: \"Copyright (c) The tar-rs Project Contributors\", and `LICENSE-APACHE`)"
 crates = ["tar"]
