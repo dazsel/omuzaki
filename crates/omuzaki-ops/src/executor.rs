@@ -157,9 +157,10 @@ impl Executor {
     }
 
     /// The same executor, with `record` called for every job as it starts, with its snapshot and arguments (the
-    /// `JobStarted` entry of ADR 0036 decision 7). It runs before the job's thread exists, so the record is made
-    /// before `work` can have any effect; it must not block (hand the entry to the journal and return). If it
-    /// returns an error the job ends `Failed` with that error and its `work` never runs.
+    /// `JobStarted` entry of ADR 0036 decision 7). It runs as the job is admitted, before `start` returns and before
+    /// the job is queued or run, so every acknowledged start is recorded before `work` can have any effect; it must
+    /// not block (hand the entry to the journal and return). If it returns an error or panics, the job ends `Failed`
+    /// and its `work` never runs.
     #[must_use]
     pub fn with_job_journal(
         self,

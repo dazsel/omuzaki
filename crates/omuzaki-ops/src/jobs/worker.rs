@@ -1,7 +1,6 @@
 //! The job worker: runs `work` off the lock, then `finish` under it, and reports to the manager.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::thread::ThreadId;
 
@@ -52,9 +51,9 @@ pub(super) fn run(mgr: &Arc<Manager>, id: JobId) {
 fn finish(mgr: &Manager, id: JobId, task: &Task, value: Value) -> Result<Outcome, OpError> {
     let env: &Env = &mgr.env;
     let mut state = lock(&env.state);
-    // A shutdown that began while `work` ran must not see the document change after it: the result is discarded. The
-    // flag is read under the document lock, so a finish either applied before shutdown began or does not apply.
-    if mgr.shut.load(Ordering::Acquire) {
+    // A shutdown that began while `work` ran must not see the document change after it: the result is discarded.
+    // This first look only saves running `finish` for nothing; the check that counts is the one before the apply.
+    if *lock(&mgr.shut) {
         return Err(cancelled(id, CancelReason::Shutdown));
     }
     require(&task.grants, &task.actor, task.meta.scope, task.meta.name)?;
@@ -62,7 +61,14 @@ fn finish(mgr: &Manager, id: JobId, task: &Task, value: Value) -> Result<Outcome
         let ctx = env.op_ctx(&state, &task.actor, &task.grants, false);
         task.op.finish(&ctx, value)?
     };
+    // Shutdown may have begun while `finish` ran. The flag stays locked through the apply, so a shutdown either came
+    // first (nothing applies) or waits until the edit is in.
+    let shut = lock(&mgr.shut);
+    if *shut {
+        return Err(cancelled(id, CancelReason::Shutdown));
+    }
     let record = env.apply(&mut state, &*task.op, (&task.actor, &task.cause, None), &plan)?;
+    drop(shut);
     Ok(Outcome { plan, applied: Some(record) })
 }
 

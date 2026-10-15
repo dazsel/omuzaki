@@ -49,6 +49,8 @@ enum How {
     Nice,
     /// Reports progress and money from inside `JobCtx::read`, where the document lock is held.
     ReadSignals,
+    /// Returns at once; its `finish` signals, then holds the document lock until the job is cancelled.
+    SlowFinish,
 }
 
 #[derive(Serialize, Deserialize, JsonSchema)]
@@ -136,7 +138,7 @@ impl Op for TestJob {
     fn work(&self, job: &JobCtx<'_>) -> Result<Value, OpError> {
         let gate = GATES.lock().unwrap().get(&self.key).cloned();
         match &self.how {
-            How::Echo => {
+            How::Echo | How::SlowFinish => {
                 FLAGS.lock().unwrap().insert(self.key.clone(), job.cancel_flag());
                 Ok(json!({"output": job.plan_output(), "reserved": job.reserved_usd_micros()}))
             }
@@ -199,6 +201,13 @@ impl Op for TestJob {
     }
 
     fn finish(&self, _ctx: &OpCtx<'_>, result: Value) -> Result<Plan, OpError> {
+        if matches!(self.how, How::SlowFinish) {
+            let flag = FLAGS.lock().unwrap().get(&self.key).cloned().unwrap();
+            GATES.lock().unwrap().get(&self.key).unwrap().announce();
+            while !omuzaki_ops_api::Cancel::is_cancelled(&flag) {
+                std::thread::yield_now();
+            }
+        }
         Ok(Plan::edit(Patch::new().with(path(&self.key), None, Some(result))))
     }
 }
@@ -406,6 +415,9 @@ fn the_257th_queued_job_is_limited() {
     }
     let error = rig.exec.start(job_with("q", &json!("block"), gpu)).unwrap_err();
     assert_eq!(code(&error), ErrorCode::Limited);
+    // The full GPU queue does not hold up a job the idle CPU lane takes at once.
+    let cpu = rig.exec.start(job("q-cpu", &json!("echo"))).unwrap();
+    assert!(matches!(rig.exec.wait(cpu.id, None).unwrap().state, JobState::Done { .. }));
     drop(gate);
 }
 
@@ -788,4 +800,57 @@ fn a_job_start_is_recorded_before_its_work_runs_and_a_refused_record_stops_it() 
     assert_eq!(*seen.lock().unwrap(), vec![("recorded".to_owned(), false), ("refused".to_owned(), false)]);
     assert!(FLAGS.lock().unwrap().contains_key("recorded"));
     assert!(!FLAGS.lock().unwrap().contains_key("refused"), "work ran although the start was refused");
+}
+
+#[test]
+fn a_shutdown_during_a_slow_finish_leaves_the_document_unchanged() {
+    let rig = rig(json!({}));
+    let gate = Gate::new("sf");
+    let info = rig.exec.start(job("sf", &json!("slow_finish"))).unwrap();
+    // `finish` is running with the document lock held; it returns its plan only once shutdown has cancelled the job.
+    gate.wait_entered();
+    rig.exec.shutdown_jobs();
+    let ended = rig.exec.wait(info.id, None).unwrap();
+    assert_eq!(ended.state, JobState::Cancelled { by: None, reason: CancelReason::Shutdown });
+    assert_eq!(rig.at("sf"), None, "the finish applied after shutdown began");
+}
+
+/// An executor over a GPU lane one wide whose start journal logs each key, refuses `refused` and panics on `panics`.
+fn journalled(log: Arc<Mutex<Vec<String>>>) -> Executor {
+    let clock = Arc::new(FakeClock::new(Seconds(0.0)));
+    let exec = Executor::new(Box::new(MemDoc::from_value(json!({}))), clock).unwrap().with_job_budget(1_000_000);
+    exec.with_job_journal(move |_, args| {
+        let key = args["key"].as_str().unwrap_or_default().to_owned();
+        assert_ne!(key, "panics", "the journal panicked");
+        log.lock().unwrap().push(key);
+        Ok(())
+    })
+}
+
+#[test]
+fn a_queued_start_is_recorded_before_it_is_acknowledged() {
+    let seen: Arc<Mutex<Vec<String>>> = Arc::default();
+    let exec = journalled(Arc::clone(&seen));
+    let gate = Gate::new("jq1");
+    let gpu = json!({"gpu": true});
+    let first = exec.start(job_with("jq1", &json!("block"), gpu.clone())).unwrap();
+    gate.wait_entered();
+    let queued = exec.start(job_with("jq2", &json!("echo"), gpu)).unwrap();
+    assert_eq!(queued.state, JobState::Queued);
+    assert_eq!(*seen.lock().unwrap(), ["jq1", "jq2"], "the queued start was acknowledged before it was recorded");
+    gate.release.send(()).unwrap();
+    exec.wait(first.id, None).unwrap();
+    assert!(matches!(exec.wait(queued.id, None).unwrap().state, JobState::Done { .. }));
+}
+
+#[test]
+fn a_panicking_journal_fails_the_start_and_gives_back_its_place_and_money() {
+    let exec = journalled(Arc::default());
+    let whole = json!({"gpu": true, "usd": 1.0});
+    let failed = exec.start(job_with("panics", &json!("echo"), whole.clone())).unwrap();
+    assert!(matches!(failed.state, JobState::Failed { .. }), "{:?}", failed.state);
+    // The whole budget and the one GPU slot are free again.
+    let next = exec.start(job_with("jp-next", &json!("echo"), whole)).unwrap();
+    assert_eq!(next.state, JobState::Running);
+    assert!(matches!(exec.wait(next.id, None).unwrap().state, JobState::Done { .. }));
 }

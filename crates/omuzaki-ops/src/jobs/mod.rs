@@ -2,8 +2,9 @@
 //!
 //! One state machine under one mutex, `Inner`: the jobs, the lanes with their queues, and the ledger. The lock order
 //! is manager, then document state (to queue an event); the document lock is never held while the manager's is
-//! taken, and neither is held across `work`, an op callback or an event send (events are queued under the lock and
-//! delivered after it is released). Time reads the executor's clock; [`Manager::poll`] enforces the deadlines.
+//! taken, and neither is held across `work`, an op callback (but the start journal, which must not block) or an event
+//! send (events are queued under the lock and delivered after it is released). Time reads the executor's clock;
+//! [`Manager::poll`] enforces the deadlines.
 
 mod lanes;
 mod priority;
@@ -11,6 +12,7 @@ mod reservation;
 mod worker;
 
 use std::collections::{BTreeMap, VecDeque};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
@@ -112,8 +114,9 @@ pub(crate) struct Manager {
     /// Signalled on every job end and every returned thread.
     changed: Condvar,
     supervisor: AtomicBool,
-    /// Set when shutdown begins; read by a `finish` under the document lock, where the manager's lock is off limits.
-    shut: AtomicBool,
+    /// Set when shutdown begins. A `finish` holds it from its last check through its apply, so a shutdown lands
+    /// before the check (the result is discarded) or after the apply, never between. A leaf: nothing is locked under it.
+    shut: Mutex<bool>,
 }
 
 impl Manager {
@@ -132,7 +135,7 @@ impl Manager {
             inner: Mutex::new(inner),
             changed: Condvar::new(),
             supervisor: AtomicBool::new(false),
-            shut: AtomicBool::new(false),
+            shut: Mutex::new(false),
         })
     }
 
@@ -229,9 +232,19 @@ impl Manager {
                 outcome: None,
                 waiters: usize::from(awaited),
             };
-            self.announce(&job);
+            // Admission is recorded before anyone sees the job, so an acknowledged start, queued or running, is
+            // durable. A refused record fails the job before it can run.
+            let recorded = self.record_start(&job);
             inner.jobs.insert(id, job);
-            self.dispatch(&mut inner);
+            match recorded {
+                Ok(()) => {
+                    if let Some(job) = inner.jobs.get(&id) {
+                        self.announce(job);
+                    }
+                    self.dispatch(&mut inner);
+                }
+                Err(error) => self.fail_start(&mut inner, id, error),
+            }
             inner.jobs.get(&id).map(|job| job.info.clone())
         };
         self.env.publish();
@@ -252,27 +265,35 @@ impl Manager {
             job.info.state = JobState::Running;
             job.info.started_at = Some(Seconds(now));
             job.deadline = now + job.cap_secs;
-            // The start is recorded before `work` can have any effect: if the record is refused, the job fails
-            // without running.
-            let recorded = self.env.job_started.as_ref().map_or(Ok(()), |record| record(&job.info, &job.args));
             self.announce(job);
-            let started = recorded.and_then(|()| {
-                let mgr = Arc::clone(self);
-                std::thread::Builder::new()
-                    .name(format!("omuzaki-job-{}", id.0))
-                    .spawn(move || worker::run(&mgr, id))
-                    .map(drop)
-                    .map_err(|e| OpError::internal(format!("could not start a job thread: {e}")))
-            });
-            if let Err(error) = started {
-                if let Some(job) = inner.jobs.get_mut(&id) {
-                    job.thread_live = false;
-                    settle(&mut inner.ledger, job, 0);
-                }
-                inner.lanes.finished(lane);
-                self.end(inner, id, JobState::Failed { error: error.clone() }, Err(error));
+            let mgr = Arc::clone(self);
+            let spawned =
+                std::thread::Builder::new().name(format!("omuzaki-job-{}", id.0)).spawn(move || worker::run(&mgr, id));
+            if let Err(e) = spawned {
+                self.fail_start(inner, id, OpError::internal(format!("could not start a job thread: {e}")));
             }
         }
+    }
+
+    /// Calls the start journal for `job`. A panic in it is a refusal like an error: it must not strand the job.
+    fn record_start(&self, job: &Job) -> Result<(), OpError> {
+        let Some(record) = &self.env.job_started else { return Ok(()) };
+        catch_unwind(AssertUnwindSafe(|| record(&job.info, &job.args)))
+            .unwrap_or_else(|_| Err(OpError::internal("the job journal panicked")))
+    }
+
+    /// Fails a job whose `work` never ran: its queue place or lane slot and its whole reservation are given back.
+    fn fail_start(&self, inner: &mut Inner, id: JobId, error: OpError) {
+        let Some(job) = inner.jobs.get_mut(&id) else { return };
+        let lane = job.info.lane;
+        if job.phase == Phase::Queued {
+            inner.lanes.unqueue(lane, id);
+        } else {
+            inner.lanes.finished(lane);
+        }
+        job.thread_live = false;
+        settle(&mut inner.ledger, job, 0);
+        self.end(inner, id, JobState::Failed { error: error.clone() }, Err(error));
     }
 
     /// Moves a job to its final state, keeping the outcome for whoever waits on it.
@@ -569,7 +590,8 @@ impl Manager {
             let mut guard = lock(&self.inner);
             let inner = &mut *guard;
             inner.closed = true;
-            self.shut.store(true, Ordering::Release);
+            // Under the manager's lock too, so a finish that sees the flag completes into `cancelling` set below.
+            *lock(&self.shut) = true;
             let ids: Vec<JobId> = inner.jobs.keys().copied().collect();
             for id in ids {
                 self.cancel_job(inner, id, None, CancelReason::Shutdown);

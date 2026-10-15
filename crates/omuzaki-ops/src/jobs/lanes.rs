@@ -71,14 +71,17 @@ impl Lanes {
         self.cpu.queue.len() + self.gpu.queue.len() + self.net.queue.len()
     }
 
-    /// Queues `id`, or says why not.
+    /// Queues `id`, or says why not. The queue limit binds only a job that must wait: one an idle slot of its lane
+    /// takes at once is admitted however full the other lanes' queues are.
     pub(crate) fn admit(&mut self, lane: Lane, id: JobId) -> Result<(), Refusal> {
-        if self.queued() >= MAX_QUEUED {
-            return Err(Refusal::QueueFull);
-        }
+        let queued = self.queued();
         let slot = self.slot(lane);
         if slot.detached > MAX_LENT {
             return Err(Refusal::LaneExhausted);
+        }
+        let waits = slot.running >= slot.width || !slot.queue.is_empty();
+        if waits && queued >= MAX_QUEUED {
+            return Err(Refusal::QueueFull);
         }
         slot.queue.push_back(id);
         Ok(())
@@ -158,12 +161,15 @@ mod tests {
     }
 
     #[test]
-    fn the_queue_holds_256_over_all_lanes() {
+    fn the_queue_holds_256_over_all_lanes_but_an_idle_slot_still_takes_a_job() {
         let mut lanes = Lanes::new(2);
+        lanes.slot(Lane::Net).running = 8;
         for n in 0..MAX_QUEUED as u64 {
             assert!(lanes.admit(Lane::Net, JobId(n)).is_ok());
         }
-        assert!(matches!(lanes.admit(Lane::Cpu, JobId(999)), Err(Refusal::QueueFull)));
+        assert!(matches!(lanes.admit(Lane::Net, JobId(998)), Err(Refusal::QueueFull)));
+        assert!(lanes.admit(Lane::Cpu, JobId(999)).is_ok(), "the idle CPU slot runs it at once");
+        assert!(matches!(lanes.admit(Lane::Cpu, JobId(1000)), Err(Refusal::QueueFull)), "this one would wait");
     }
 
     #[test]
