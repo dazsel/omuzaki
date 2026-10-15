@@ -345,8 +345,9 @@ fn task_id_is_a_folder_name(id: &str) -> bool {
         && id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '-'))
 }
 
-/// Whether a fixture id can name a folder under the run's scratch: no path separator, no `..`, no leading dot.
-fn fixture_id_is_a_folder_name(id: &str) -> bool {
+/// Whether an id can be part of a path under the run's scratch or evidence: no path separator, no `..`, no leading dot.
+/// Fixture ids and check ids (a render check's pictures are named after it) must be.
+pub(crate) fn is_plain_name(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 100
         && !id.starts_with('.')
@@ -369,10 +370,16 @@ fn refusal(discovery: &Discovery, private: &PrivateList, file: &TaskFile, option
             file.task.id
         )));
     }
-    if !fixture_id_is_a_folder_name(&file.task.fixture) {
+    if !is_plain_name(&file.task.fixture) {
         return Some(Refusal::Refused(format!(
             "fixture id `{}` cannot name a folder (letters, digits, dots, dashes, underscores)",
             file.task.fixture
+        )));
+    }
+    if let Some(check) = file.task.checks.iter().find(|c| !is_plain_name(&c.id)) {
+        return Some(Refusal::Refused(format!(
+            "check id `{}` cannot name a file (letters, digits, dots, dashes, underscores)",
+            check.id
         )));
     }
     let Some(fixture) = discovery.fixture(&file.task.fixture) else {

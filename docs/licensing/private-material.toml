@@ -1,9 +1,8 @@
 # The private-material list: names, path prefixes and hashes of material that is not licensed for the product and must
-# never be committed, shipped, shown, used as training data or turned into an eval record. One file, meant to be read at
-# run time by both lints so that the two cannot drift:
+# never be committed, shipped, shown, used as training data or turned into an eval record. One file, read at run time by
+# both lints so that the two cannot drift:
 #   - `omuzaki-test eval` reads `prefixes`, `hashes` and `names` (crates/omuzaki-test/src/eval/provenance.rs);
-#   - `cargo xtask lint-seed` is to read `names` and `face_profile_ids` (xtask/src/lint_seed/private.rs), which still carries
-#     its own copy until #802's xtask change lands.
+#   - `cargo xtask lint-seed` reads `names` and `face_profile_ids` (xtask/src/lint_seed/private.rs).
 # Every entry names its source in `docs/licensing/policy.md`, "Private test material". Placeholders stand in for the real
 # names, prefixes and hashes until the owner supplies them; never write a real one in a public place.
 

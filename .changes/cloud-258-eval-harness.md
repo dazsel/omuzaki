@@ -7,5 +7,5 @@
 - **Eval sets (#922):** a content store verified on every read, `eval sets verify | add | holdout-check`, a `FileSource` over the store, and the lint's `kind` and `split` rules.
 - **Rating (#698):** `eval rate` (a local page, 20 results a week) and `eval agreement`.
 - **Lint (#796):** the prompt-leak rule reads the linked registry; a check or binding may call only registered read-only queries.
-- **Private list (#802):** one file, `docs/licensing/private-material.toml`, read by the eval loader (`omuzaki-test/evals/private.toml` is gone). `cargo xtask lint-seed` still carries its own copy until a ruling on its one-line change.
+- **Private list (#802):** one file, `docs/licensing/private-material.toml`, read by the eval loader (`omuzaki-test/evals/private.toml` is gone) and by `cargo xtask lint-seed` (its hard-coded copy is gone).
 - `omuzaki-test` now depends on `omuzaki-cli`, `omuzaki-mcp`, `omuzaki-doc`, `omuzaki-doc-api`, `omuzaki-ai-api`, `rmcp` (client), `tokio`, `sha2` and `getrandom` (all already in the workspace).

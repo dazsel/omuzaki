@@ -180,6 +180,12 @@ fn task_findings(inputs: &Inputs<'_>, file: &TaskFile) -> Vec<Finding> {
         if !ids.insert(check.id.as_str()) {
             say(format!("duplicate check id `{}`", check.id));
         }
+        if !crate::eval::run::is_plain_name(&check.id) {
+            say(format!(
+                "check id `{}` must be letters, digits, dots, dashes and underscores, not starting with a dot: the evidence is named after it",
+                check.id
+            ));
+        }
     }
     out
 }

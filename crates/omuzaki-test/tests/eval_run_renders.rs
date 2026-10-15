@@ -135,3 +135,75 @@ fn the_renders_a_check_compared_are_kept_beside_the_transcript() {
     assert_eq!(fs::read(kept.join("after.png")).unwrap(), after_bytes);
     assert!(kept.join("transcript.jsonl").is_file() && kept.join("checks.json").is_file());
 }
+
+#[test]
+fn a_check_id_that_could_leave_the_evidence_folder_is_refused_by_the_run_and_by_the_lint() {
+    let store = Arc::new(MemStore::new());
+    let (before, _) = store_png(&store, 40);
+    let (after, _) = store_png(&store, 200);
+    let ws = tempfile::tempdir().unwrap();
+    let dir = ws.path().join("crates/c/evals");
+    write(
+        &dir.join("fixtures/fx.toml"),
+        &format!(
+            "id = 'fx'\nsummary = 's'\nsteps = [{{ op = 'evaltest.set_shot', args = {{ address = '{before}' }} }}]\n"
+        ),
+    );
+    let render = |id: &str| {
+        format!(
+            "[[check]]\nid = '{id}'\nkind = 'render.diff'\nrender = {{ op = 'evaltest.shot' }}\n\
+             region = [0.0, 0.0, 8.0, 8.0]\nexpect = {{ changed_fraction_at_least = 0.5 }}\n"
+        )
+    };
+    write(
+        &dir.join("look.toml"),
+        &format!(
+            "id = 'demo.look'\nfeature = 'QG-03'\ntitle = 't'\nprompt = 'Make it brighter.'\nfixture = 'fx'\n\
+             scopes = ['read', 'edit:scene', 'render']\n{}{}",
+            render("brighter"),
+            render("../x")
+        ),
+    );
+    write(
+        &dir.join("look.good.pass.jsonl"),
+        &format!("{{\"call\": \"evaltest_set_shot\", \"args\": {{\"address\": \"{after}\"}}}}\n"),
+    );
+    let tmp = tempfile::tempdir().unwrap();
+    let discovery = eval::discover(ws.path()).unwrap();
+    let no_items = |_: &eval::fixture::SetItemRef| Err(String::new());
+    let options = Options {
+        select: Selection::default(),
+        attempts: 1,
+        jobs: 1,
+        binary: None,
+        kind: "manual".to_owned(),
+        run_id: "2026-10-13T1000Z-manual".to_owned(),
+        commit: "c".to_owned(),
+        out: tmp.path().join("out"),
+        status: None,
+        scratch: tmp.path().join("scratch"),
+        item_path: &no_items,
+        store: Some(store),
+    };
+    let caps = Caps { turns: 10, tool_calls: 20, wall_s: 60, tokens: 1000 };
+    let report = run_scripted(&discovery, caps, &PrivateList::default(), &options).unwrap();
+    assert_eq!(report.attempts.len(), 0);
+    assert!(
+        report.refused.iter().any(|r| r.why.contains("check id `../x` cannot name a file")),
+        "{:?}",
+        report.refused
+    );
+    assert!(!tmp.path().join("out/runs/2026-10-13T1000Z-manual/demo.look/x.before.png").exists());
+    assert!(!tmp.path().join("out/runs/2026-10-13T1000Z-manual/demo.look/1/../x.before.png").exists());
+    // The lint says the same.
+    let features = std::collections::BTreeSet::from(["QG-03".to_owned()]);
+    let private = PrivateList::default();
+    let found = eval::lint::lint(&eval::lint::Inputs {
+        discovery: &discovery,
+        features: &features,
+        private: &private,
+        tool_texts: None,
+        ops: None,
+    });
+    assert!(found.iter().any(|f| f.message.contains("check id `../x`")), "{found:?}");
+}
