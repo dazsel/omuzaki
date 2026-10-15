@@ -99,9 +99,9 @@ impl Session {
     }
 
     /// Names this session's client from the identity a request carries in its own metadata, which is what makes it
-    /// count as connected (`agent.connection`). Outside HTTP a session may start with `discover` or with any request,
-    /// skipping both `initialize` and `discover`, so every request handler calls this first. Over HTTP a session
-    /// starts with `initialize`, which names it.
+    /// count as connected (`agent.connection`). Outside HTTP a session may start with `discover` or with any request
+    /// (`subscriptions/listen` included), skipping both `initialize` and `discover`, so every request handler calls this
+    /// first. Over HTTP a session starts with `initialize`, which names it.
     fn name_client(&self, context: &RequestContext<RoleServer>) {
         if !self.http
             && let Some(info) = context.meta.client_info()
@@ -658,6 +658,7 @@ impl ServerHandler for Session {
     }
 
     async fn listen(&self, context: SubscriptionContext) -> Result<(), McpError> {
+        self.name_client(context.request_context());
         let wanted: BTreeSet<String> = context.accepted().resource_subscriptions.iter().flatten().cloned().collect();
         // `accepted_subscription_filter` already refuses everything without `read`; checking again keeps this loop safe
         // on its own.

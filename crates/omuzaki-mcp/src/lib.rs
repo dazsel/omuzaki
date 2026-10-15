@@ -167,7 +167,6 @@ mod signature;
 mod suggest;
 
 pub use access::{AccessToken, RECORD_VERSION, TokenId, TokenRecord};
-pub use connection::ConnectionService;
 pub use error::ServerError;
 pub use http::{HttpOptions, HttpServer};
 pub use prompts::{PromptArg, PromptDef};

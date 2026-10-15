@@ -16,7 +16,7 @@ use rmcp::model::{ClientCapabilities, ClientConfig, Implementation, ProtocolVers
 use rmcp::service::{RoleClient, RunningService};
 use rmcp::{ClientHandler, ClientServiceExt};
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream, Lines, ReadHalf, WriteHalf};
 use tokio::task::JoinHandle;
 
 /// The two ways an MCP client can start a session.
@@ -132,28 +132,82 @@ async fn the_answer_never_carries_a_credential() {
     }
 }
 
-/// A client may skip both `initialize` and `discover` and start with any request that carries its identity in its own
-/// metadata (protocol 2026-07-28). That request names the client, and the session stops counting once it hangs up.
+/// A client that skips both `initialize` and `discover` and writes its first request straight onto the wire, with its
+/// identity in the request's own metadata (protocol 2026-07-28).
+struct RawClient {
+    lines: Lines<BufReader<ReadHalf<DuplexStream>>>,
+    write: WriteHalf<DuplexStream>,
+    server: JoinHandle<Result<(), ServerError>>,
+}
+
+impl RawClient {
+    /// Connects to `mcp` and sends `method` with `params` as the session's first message.
+    async fn start(mcp: &McpServer, method: &str, mut params: Value) -> Self {
+        let (server_io, client_io) = tokio::io::duplex(64 * 1024);
+        let serving = mcp.clone();
+        let server = tokio::spawn(async move { serving.serve(server_io).await });
+        params["_meta"] = json!({
+            "io.modelcontextprotocol/protocolVersion": ProtocolVersion::V_2026_07_28,
+            "io.modelcontextprotocol/clientInfo": Implementation::new("claude-code", "1.0"),
+            "io.modelcontextprotocol/clientCapabilities": ClientCapabilities::default(),
+        });
+        let (read, write) = tokio::io::split(client_io);
+        let mut client = Self { lines: BufReader::new(read).lines(), write, server };
+        client.send(json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params})).await;
+        client
+    }
+
+    /// Writes one message.
+    async fn send(&mut self, message: Value) {
+        self.write.write_all(format!("{message}\n").as_bytes()).await.expect("sends");
+    }
+
+    /// The next message the server sends.
+    async fn next(&mut self) -> Value {
+        serde_json::from_str(&self.lines.next_line().await.expect("reads").expect("a message")).expect("json")
+    }
+
+    /// Hangs up and waits for the server to finish the session.
+    async fn hang_up(self) {
+        drop((self.lines, self.write));
+        self.server.await.expect("server task").expect("server ends cleanly");
+    }
+}
+
+/// A client may start with any request that carries its identity in its own metadata. That request names the client,
+/// and the session stops counting once it hangs up.
 #[tokio::test]
 async fn a_client_that_starts_with_a_request_is_named_by_its_metadata() {
     let mcp = server();
-    let (server_io, client_io) = tokio::io::duplex(64 * 1024);
-    let serving = mcp.clone();
-    let server = tokio::spawn(async move { serving.serve(server_io).await });
-    let meta = json!({
-        "io.modelcontextprotocol/protocolVersion": ProtocolVersion::V_2026_07_28,
-        "io.modelcontextprotocol/clientInfo": Implementation::new("claude-code", "1.0"),
-        "io.modelcontextprotocol/clientCapabilities": ClientCapabilities::default(),
-    });
-    let request = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {"_meta": meta}});
-    let (read, mut write) = tokio::io::split(client_io);
-    write.write_all(format!("{request}\n").as_bytes()).await.expect("sends");
-    let mut lines = BufReader::new(read).lines();
-    let reply: Value = serde_json::from_str(&lines.next_line().await.expect("reads").expect("a reply")).expect("json");
+    let mut client = RawClient::start(&mcp, "tools/list", json!({})).await;
+    let reply = client.next().await;
     assert!(reply["result"]["tools"].is_array(), "the request is answered: {reply}");
     assert_eq!(mcp.connection(), json!({"connected": true, "client_name": "claude-code", "sessions": 1}));
+    client.hang_up().await;
+    assert_eq!(mcp.connection(), json!({"connected": false, "sessions": 0}), "after the client hung up");
+}
 
-    drop((lines, write));
-    server.await.expect("server task").expect("server ends cleanly");
+/// `subscriptions/listen` may be a session's first request too. The subscription stays open, and its client counts as
+/// connected for as long as it does.
+#[tokio::test]
+async fn a_client_that_starts_by_listening_is_named_while_it_listens() {
+    let mcp = server();
+    let params = json!({"notifications": {"resourceSubscriptions": ["omuzaki://log"]}});
+    let mut client = RawClient::start(&mcp, "subscriptions/listen", params).await;
+    let ack = client.next().await;
+    assert_eq!(ack["method"], "notifications/subscriptions/acknowledged", "the subscription opens: {ack}");
+    // rmcp sends the acknowledgment before it calls the handler, so give the handler its turn (single-threaded runtime,
+    // bounded) rather than racing it.
+    for _ in 0..100 {
+        if mcp.connection()["connected"] == json!(true) {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(mcp.connection(), json!({"connected": true, "client_name": "claude-code", "sessions": 1}));
+    // Over stdio a client ends a subscription by cancelling it; rmcp would otherwise give the open handler a few
+    // seconds' grace after the hang-up before it ends the session.
+    client.send(json!({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 1}})).await;
+    client.hang_up().await;
     assert_eq!(mcp.connection(), json!({"connected": false, "sessions": 0}), "after the client hung up");
 }
