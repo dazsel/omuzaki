@@ -106,12 +106,12 @@ impl Runner for FakeRunner {
         }
         match op.as_str() {
             "face.set_profile" => {
-                Ok(Outcome { plan: Plan { output: Some(args), ..Plan::edit(Patch::default()) }, applied: None })
+                let mut plan = Plan::edit(Patch::default());
+                plan.output = Some(args);
+                Ok(Outcome::new(plan))
             }
-            "measure.likeness" => Ok(Outcome { plan: Plan::answer(Value::from(0.5)), applied: None }),
-            "measure.report" => {
-                Ok(Outcome { plan: Plan::answer(serde_json::json!({ "0123456789": 1 })), applied: None })
-            }
+            "measure.likeness" => Ok(Outcome::new(Plan::answer(Value::from(0.5)))),
+            "measure.report" => Ok(Outcome::new(Plan::answer(serde_json::json!({ "0123456789": 1 })))),
             "face.fail" => Err(OpError::invalid("blend", "blend must be between 0 and 1").hint("use 0.5")),
             _ => Err(OpError::not_found(format!("no op {op}"))),
         }

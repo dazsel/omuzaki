@@ -339,3 +339,80 @@ fn jobs_and_edits_with_outside_effects_are_refused_before_they_are_sent() {
         runner.assert_rolled_back();
     }
 }
+
+/// A script that wraps a value in `depth` arrays (or maps, with `open = "#{ a: "`) inside the operation limit.
+fn nested(depth: usize, open: &str, close: &str) -> String {
+    format!("let v = 1; for i in 0..{depth} {{ v = {open}v{close}; }}")
+}
+
+#[test]
+fn a_result_nested_past_the_depth_limit_fails_closed_instead_of_overflowing_the_stack() {
+    for (open, close) in [("[", "]"), ("#{ a: ", " }")] {
+        let (_, error) = fails(&format!("{EDIT}\n{}\nv", nested(5_000, open, close)));
+        assert_eq!(error.kind, limit(LimitKind::Depth), "{error}");
+    }
+}
+
+#[test]
+fn the_value_depth_limit_is_exact() {
+    let limits = Limits::console();
+    let at = limits.value_depth;
+    let (_, ok) = run(&format!("{}\nv", nested(at, "[", "]")));
+    assert!(ok.is_ok(), "{ok:?}");
+    let (_, error) = fails(&format!("{}\nv", nested(at + 1, "[", "]")));
+    assert_eq!(error.kind, limit(LimitKind::Depth));
+    let mut tight = Limits::console();
+    tight.value_depth = 0;
+    let (_, scalar) = run_with(request("1"), &Flag::default(), tight.clone(), FakeRunner::default());
+    assert!(scalar.is_ok());
+    let (runner, array) = run_with(request("[1]"), &Flag::default(), tight, FakeRunner::default());
+    runner.assert_rolled_back();
+    assert_eq!(array.expect_err("an array is one level").kind, limit(LimitKind::Depth));
+}
+
+#[test]
+fn op_arguments_nested_past_the_depth_limit_stop_the_run_before_the_call() {
+    let (runner, error) = fails(&format!("{}\nops::face::set_profile(#{{ character: v }});", nested(5_000, "[", "]")));
+    assert_eq!(error.kind, limit(LimitKind::Depth));
+    assert_eq!(runner.requests().len(), 0);
+}
+
+#[test]
+fn params_nested_past_the_depth_limit_are_refused_before_the_run() {
+    let depth = Limits::console().value_depth;
+    let mut value = serde_json::json!(1);
+    for _ in 0..depth {
+        value = serde_json::json!([value]);
+    }
+    let mut req = request("params");
+    req.params = serde_json::json!({ "deep": value }).as_object().expect("an object").clone();
+    let (runner, result) = run_with(req, &Flag::default(), Limits::console(), FakeRunner::default());
+    runner.assert_rolled_back();
+    assert_eq!(result.expect_err("one level too deep").kind, limit(LimitKind::Depth));
+}
+
+#[test]
+fn a_zero_engine_limit_is_refused_instead_of_lifting_the_limit() {
+    type Set = fn(&mut Limits);
+    let each: [(&str, Set); 7] = [
+        ("operations", |l| l.operations = 0),
+        ("call_depth", |l| l.call_depth = 0),
+        ("expr_depth", |l| l.expr_depth = 0),
+        ("fn_expr_depth", |l| l.fn_expr_depth = 0),
+        ("string_bytes", |l| l.string_bytes = 0),
+        ("array_len", |l| l.array_len = 0),
+        ("map_len", |l| l.map_len = 0),
+    ];
+    for (name, set) in each {
+        let mut limits = Limits::console();
+        set(&mut limits);
+        assert_eq!(limits.zero_engine_limit(), Some(name));
+        let (runner, result) =
+            run_with(request(&format!("{EDIT}\nloop {{ }}")), &Flag::default(), limits, FakeRunner::default());
+        let error = result.expect_err("a zero limit must not run the script");
+        assert_eq!(error.kind, ScriptErrorKind::Refused, "{name}: {error}");
+        assert!(error.message.contains(name), "{error}");
+        assert_eq!(runner.entries(), [], "{name}: nothing ran");
+    }
+    assert_eq!(Limits::console().zero_engine_limit(), None);
+}

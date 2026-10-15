@@ -244,7 +244,17 @@ impl ScriptHost {
                     if let Some(refusal) = &refusal {
                         return Err(EvalAltResult::ErrorTerminated(Dynamic::from(refusal.clone()), at).into());
                     }
-                    let args = from_dynamic::<Value>(&Dynamic::from_map(args)).map_err(|e| runtime(e.to_string()))?;
+                    let args = match to_json(Dynamic::from_map(args), limits.value_depth) {
+                        Ok(args) => args,
+                        Err(Convert::Depth) => {
+                            return Err(EvalAltResult::ErrorTerminated(
+                                Dynamic::from(Stop::Limit(LimitKind::Depth)),
+                                at,
+                            )
+                            .into());
+                        }
+                        Err(Convert::Other(message)) => return Err(runtime(message)),
+                    };
                     let value = run_of(&context)?.invoke(&name, args).map_err(|mut e| {
                         e.set_position(at);
                         e
@@ -346,6 +356,12 @@ impl ScriptHost {
             message: message.to_owned(),
             output: Vec::new(),
         };
+        if let Some(name) = self.limits.zero_engine_limit() {
+            return Err(fail(
+                ScriptErrorKind::Refused,
+                &format!("the limit `{name}` is 0, which the engine reads as no limit; a limit must be at least 1"),
+            ));
+        }
         let source = &run.request.source;
         if source.len() > self.limits.source_bytes {
             return Err(fail(ScriptErrorKind::Limit(LimitKind::Source), "the script is larger than the source limit"));
@@ -354,7 +370,7 @@ impl ScriptHost {
             return Err(fail(ScriptErrorKind::Cancelled, "the run was cancelled before it started"));
         }
         let params_break = map_breaks(&run.request.params, &self.limits)
-            .or_else(|| run.request.params.values().find_map(|value| oversized(value, &self.limits)));
+            .or_else(|| run.request.params.values().find_map(|value| oversized_in(value, &self.limits, 1)));
         if let Some(kind) = params_break {
             return Err(fail(ScriptErrorKind::Limit(kind), "`params` holds a value larger than the script limits"));
         }
@@ -372,8 +388,12 @@ impl ScriptHost {
         let params = to_dynamic(&run.request.params).map_err(|e| fail(ScriptErrorKind::Runtime, &e.to_string()))?;
         scope.push_constant_dynamic("params", params);
         let value = engine.eval_ast_with_scope::<Dynamic>(&mut scope, &ast).map_err(|e| classify(&e))?;
-        let value = from_dynamic::<Value>(&value)
-            .map_err(|e| fail(ScriptErrorKind::Runtime, &format!("the result is not JSON: {e}")))?;
+        let value = to_json(value, self.limits.value_depth).map_err(|e| match e {
+            Convert::Depth => {
+                fail(ScriptErrorKind::Limit(LimitKind::Depth), "the result is nested deeper than the limit")
+            }
+            Convert::Other(message) => fail(ScriptErrorKind::Runtime, &format!("the result is not JSON: {message}")),
+        })?;
         let too_big = serde_json::to_vec(&value).map_or(true, |json| json.len() > self.limits.result_bytes);
         if too_big {
             return Err(fail(ScriptErrorKind::Limit(LimitKind::Result), "the result is larger than the result limit"));
@@ -419,22 +439,132 @@ fn refusal(info: &OpInfo) -> Option<String> {
 /// are checked with this before conversion: Rhai doesn't size values pushed into the scope, and never checks map keys.
 /// Iterative, so a deeply nested value can't overflow the stack.
 fn oversized(value: &Value, limits: &Limits) -> Option<LimitKind> {
-    let mut pending = vec![value];
-    while let Some(value) = pending.pop() {
+    oversized_in(value, limits, 0)
+}
+
+/// [`oversized`] for a value that sits `outer` containers deep already (a `params` field is inside the `params` map).
+/// Nesting beyond [`Limits::value_depth`] is [`LimitKind::Depth`], so the recursive conversion into Rhai is bounded.
+fn oversized_in(value: &Value, limits: &Limits, outer: usize) -> Option<LimitKind> {
+    let mut pending = vec![(value, outer)];
+    while let Some((value, depth)) = pending.pop() {
         match value {
             Value::String(text) if text.len() > limits.string_bytes => return Some(LimitKind::StringSize),
+            Value::Array(_) | Value::Object(_) if depth >= limits.value_depth => return Some(LimitKind::Depth),
             Value::Array(items) if items.len() > limits.array_len => return Some(LimitKind::ArraySize),
-            Value::Array(items) => pending.extend(items),
+            Value::Array(items) => pending.extend(items.iter().map(|item| (item, depth + 1))),
             Value::Object(fields) => {
                 if let Some(kind) = map_breaks(fields, limits) {
                     return Some(kind);
                 }
-                pending.extend(fields.values());
+                pending.extend(fields.values().map(|field| (field, depth + 1)));
             }
             _ => {}
         }
     }
     None
+}
+
+/// Why [`to_json`] failed.
+enum Convert {
+    /// Arrays and maps nest deeper than [`Limits::value_depth`].
+    Depth,
+    /// A value with no JSON form.
+    Other(String),
+}
+
+/// One array or map being converted: what is left to visit and what has been converted so far.
+struct Frame {
+    rest: Box<dyn Iterator<Item = (String, Dynamic)>>,
+    key: String,
+    done: Done,
+}
+
+enum Done {
+    Array(Vec<Value>),
+    Object(JsonMap<String, Value>),
+}
+
+/// A script value as JSON, walked with an explicit stack: rhai's `from_dynamic` recurses once per level, so a script
+/// that wraps a value in an array in a loop could overflow the stack from inside the limits on size and operations.
+/// Fails with [`Convert::Depth`] beyond `max_depth` levels of arrays and maps. The value is consumed, and on failure
+/// whatever is left is taken apart without recursion as well, so dropping a deep value can't overflow either.
+fn to_json(root: Dynamic, max_depth: usize) -> Result<Value, Convert> {
+    let mut stack: Vec<Frame> = Vec::new();
+    let mut next = Some(root);
+    let mut finished: Option<Value> = None;
+    loop {
+        if let Some(item) = next.take() {
+            let item = item.flatten();
+            if item.is_array() || item.is_map() {
+                if stack.len() >= max_depth {
+                    abandon(stack, Some(item));
+                    return Err(Convert::Depth);
+                }
+                stack.push(open(item));
+            } else {
+                match from_dynamic::<Value>(&item) {
+                    Ok(value) => finished = Some(value),
+                    Err(e) => {
+                        abandon(stack, None);
+                        return Err(Convert::Other(e.to_string()));
+                    }
+                }
+            }
+        }
+        if let Some(value) = finished.take() {
+            let Some(top) = stack.last_mut() else { return Ok(value) };
+            match &mut top.done {
+                Done::Array(items) => items.push(value),
+                Done::Object(fields) => {
+                    fields.insert(std::mem::take(&mut top.key), value);
+                }
+            }
+        }
+        let Some(top) = stack.last_mut() else {
+            return Err(Convert::Other("the conversion lost its place".to_owned()));
+        };
+        match top.rest.next() {
+            Some((key, item)) => {
+                top.key = key;
+                next = Some(item);
+            }
+            None => {
+                finished = stack.pop().map(|frame| match frame.done {
+                    Done::Array(items) => Value::Array(items),
+                    Done::Object(fields) => Value::Object(fields),
+                });
+            }
+        }
+    }
+}
+
+/// Starts converting an array or map.
+fn open(container: Dynamic) -> Frame {
+    if container.is_array() {
+        let items = container.into_array().unwrap_or_default();
+        let done = Done::Array(Vec::with_capacity(items.len()));
+        Frame { rest: Box::new(items.into_iter().map(|item| (String::new(), item))), key: String::new(), done }
+    } else {
+        let fields = container.try_cast::<Map>().unwrap_or_default();
+        let done = Done::Object(JsonMap::new());
+        Frame { rest: Box::new(fields.into_iter().map(|(k, v)| (k.to_string(), v))), key: String::new(), done }
+    }
+}
+
+/// Drops what a failed conversion still holds, one level at a time, so no destructor recurses.
+fn abandon(stack: Vec<Frame>, extra: Option<Dynamic>) {
+    let mut pending: Vec<Dynamic> = extra.into_iter().collect();
+    for frame in stack {
+        pending.extend(frame.rest.map(|(_, item)| item));
+    }
+    while let Some(item) = pending.pop() {
+        let item = item.flatten();
+        if item.is_array() {
+            pending.extend(item.into_array().unwrap_or_default());
+        } else if item.is_map() {
+            pending.extend(item.try_cast::<Map>().unwrap_or_default().into_values());
+        }
+    }
 }
 
 /// The limit a map itself breaks: its size, or a key (which becomes a Rhai string) over the string limit.

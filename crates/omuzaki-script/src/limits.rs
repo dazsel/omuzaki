@@ -30,11 +30,35 @@ pub struct Limits {
     pub seconds: u32,
     /// Longest result, as JSON bytes.
     pub result_bytes: usize,
+    /// Deepest nesting of arrays and maps in a value that crosses the sandbox (a result, `params`, op arguments and
+    /// outputs); 0 allows scalars only. Checked without recursion, so a deep value can't overflow the stack.
+    pub value_depth: usize,
 }
 
 impl Limits {
     /// The most seconds a job may ask for.
     pub const MAX_JOB_SECONDS: u32 = 600;
+
+    /// The Rhai-enforced limits that Rhai reads 0 as "unlimited" for, so 0 would lift the limit instead of
+    /// tightening it. A run with any of them at 0 is refused ([`Limits::zero_engine_limit`]).
+    const ENGINE_FIELDS: [&'static str; 7] =
+        ["operations", "call_depth", "expr_depth", "fn_expr_depth", "string_bytes", "array_len", "map_len"];
+
+    /// The name of the first engine-enforced limit that is 0, if any: Rhai treats 0 there as no limit at all, which
+    /// is the opposite of what a caller tightening a limit means. [`ScriptHost::run`](crate::ScriptHost::run) fails
+    /// closed on it. The other limits (`calls`, `seconds`, the output and size caps) are ours and deny at 0.
+    pub fn zero_engine_limit(&self) -> Option<&'static str> {
+        let values = [
+            self.operations,
+            self.call_depth as u64,
+            self.expr_depth as u64,
+            self.fn_expr_depth as u64,
+            self.string_bytes as u64,
+            self.array_len as u64,
+            self.map_len as u64,
+        ];
+        Self::ENGINE_FIELDS.into_iter().zip(values).find_map(|(name, value)| (value == 0).then_some(name))
+    }
 
     /// What a person in the console or the CLI gets.
     pub fn console() -> Self {
@@ -52,6 +76,7 @@ impl Limits {
             output_bytes: 64 * 1024,
             seconds: 10,
             result_bytes: 64 * 1024,
+            value_depth: 64,
         }
     }
 
