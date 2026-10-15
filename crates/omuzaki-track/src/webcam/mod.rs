@@ -246,7 +246,7 @@ pub struct WebcamTracker {
     next_seq: u64,
     session: Option<Session>,
     /// Test seam: how many of the next thread spawns to fail.
-    failing_spawns: u32,
+    spawn_plan: std::collections::VecDeque<bool>,
     /// How long `stop` waits for the camera thread before detaching it; [`JOIN_GRACE`] unless a test says otherwise.
     join_grace: Duration,
 }
@@ -270,7 +270,7 @@ impl WebcamTracker {
             error: Arc::default(),
             next_seq: 0,
             session: None,
-            failing_spawns: 0,
+            spawn_plan: std::collections::VecDeque::new(),
             join_grace: JOIN_GRACE,
         }
     }
@@ -298,11 +298,11 @@ impl WebcamTracker {
         self.join_grace = grace;
     }
 
-    /// Makes the next `n` attempts to start the camera thread fail as if the OS refused, to test that `start` hands
-    /// everything back and can be retried.
+    /// Plans the next thread spawns: one entry per spawn, `true` to fail it as if the OS refused. A start makes two (the
+    /// tracker's thread, then the camera thread). To test that `start` hands everything back and can be retried.
     #[doc(hidden)]
-    pub fn fail_next_spawns(&mut self, n: u32) {
-        self.failing_spawns = n;
+    pub fn fail_spawns(&mut self, plan: impl IntoIterator<Item = bool>) {
+        self.spawn_plan = plan.into_iter().collect();
     }
 
     /// Frames discarded or lost to a failure in the current (or last) session.
@@ -333,8 +333,7 @@ impl WebcamTracker {
         name: &str,
         body: impl FnOnce() -> T + Send + 'static,
     ) -> std::io::Result<JoinHandle<T>> {
-        if self.failing_spawns > 0 {
-            self.failing_spawns -= 1;
+        if self.spawn_plan.pop_front() == Some(true) {
             drop(body);
             return Err(std::io::Error::other("injected spawn failure"));
         }
@@ -415,7 +414,8 @@ impl Tracker for WebcamTracker {
             Ok(handle) => handle,
             Err(e) => {
                 let run = cell.lock().unwrap_or_else(PoisonError::into_inner).take();
-                self.tracker = run.and_then(|run| run.worker.finish(self.join_grace));
+                // No job was given to the tracker's thread, so wait for it, however long: the tracker must come back.
+                self.tracker = run.and_then(|run| run.worker.recover());
                 return Err(TrackError::Backend(format!("camera thread: {e}")));
             }
         };

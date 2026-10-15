@@ -209,6 +209,15 @@ impl Worker {
         }
     }
 
+    /// Takes the tracker back from a worker that was given no job, however long it takes to notice. Nothing can be
+    /// running inside `track`, so this cannot hang, and the tracker must not be lost with a thread that never ran
+    /// a frame.
+    pub(super) fn recover(self) -> Option<Box<dyn FrameTracker>> {
+        let Self { handle, jobs, done } = self;
+        drop((jobs, done));
+        handle.join().ok().flatten()
+    }
+
     /// Ends the thread and takes the tracker back, if it comes within `grace`; otherwise lets the thread go.
     pub(super) fn finish(self, grace: Duration) -> Option<Box<dyn FrameTracker>> {
         let Self { handle, jobs, done } = self;
@@ -268,7 +277,18 @@ impl Publisher {
             }
             self.notified = true;
         }
-        let Some(seq) = self.last_seq.or_else(|| (!silent).then_some(self.seq)) else { return };
+        let seq = match self.last_seq {
+            Some(seq) => seq,
+            // Nothing has been published, so there is no face to clear: a stall says nothing. The camera being gone
+            // does, and the notice is then a publication of its own: it takes a `seq`, as `publish` does, and later
+            // notices repeat it, so the next session's first frame has another.
+            None if silent => return,
+            None => {
+                let seq = self.seq;
+                (self.last_seq, self.seq) = (Some(seq), seq + 1);
+                seq
+            }
+        };
         let time = Seconds(now.0.max(self.last_time + MIN_STEP));
         self.last_time = time.0;
         self.writer.publish(&to_track_frame(None, seq, time));

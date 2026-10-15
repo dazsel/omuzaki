@@ -908,19 +908,73 @@ fn a_failed_thread_start_hands_the_tracker_back_and_start_can_be_retried() {
     let scripted = Scripted { resets: Arc::clone(&resets), ..Scripted::new(vec![true]) };
     let camera = FakeCamera::synthetic(nv12(64, 48), 10_000_000);
     let mut tracker = webcam(camera, scripted, WebcamConfig::default().with_mode(64, 48, 30));
-    tracker.fail_next_spawns(2);
+    // The tracker's thread refused; then the camera thread refused, with the tracker's thread already running, and
+    // with no time to spare for it: the tracker must come back whatever the thread's pace.
+    tracker.set_join_grace(Duration::ZERO);
+    tracker.fail_spawns([true, false, true]);
     for _ in 0..2 {
         let config = tracker.tracker_config();
         let refused = tracker.start(&FakeCamera::id(), &config);
         assert!(matches!(refused, Err(TrackError::Backend(ref e)) if e.contains("thread")), "refused");
     }
     // The tracker came back each time, and the camera was released (the fake one answers `Busy` otherwise).
+    tracker.set_join_grace(BACKSTOP);
     let mut source = start(&mut tracker);
     assert_eq!(next(&mut *source).status, TrackStatus::Tracking);
     tracker.stop();
     assert_eq!(tracker.devices().len(), 1);
     drop(tracker);
     assert_eq!(resets.load(Ordering::Relaxed), 3);
+}
+
+/// A stream whose camera is gone.
+struct Gone;
+impl CameraStream for Gone {
+    fn format(&self) -> CameraFormat {
+        nv12(64, 48)
+    }
+
+    fn next_frame(&mut self, _: Duration) -> Result<Option<CameraFrame<'_>>, TrackError> {
+        Err(TrackError::Lost)
+    }
+}
+
+/// A camera whose first stream fails at once; the next ones are the fake's.
+struct FailsFirst {
+    inner: FakeCamera,
+    failed: bool,
+}
+
+impl Camera for FailsFirst {
+    fn enumerate(&self) -> Vec<CameraInfo> {
+        self.inner.enumerate()
+    }
+
+    fn open(&mut self, id: &CameraId, request: &CameraFormatRequest) -> Result<Box<dyn CameraStream>, TrackError> {
+        if std::mem::replace(&mut self.failed, true) {
+            return self.inner.open(id, request);
+        }
+        Ok(Box::new(Gone))
+    }
+}
+
+#[test]
+fn a_notice_before_the_first_frame_takes_a_seq_so_the_next_session_starts_after_it() {
+    let camera = FailsFirst { inner: FakeCamera::synthetic(nv12(64, 48), 10_000_000), failed: false };
+    let mut tracker =
+        patient(Box::new(camera), Box::new(Scripted::new(vec![true])), WebcamConfig::default(), standing_clock());
+    // The camera is gone before its first frame: one lost frame, which is a publication of its own.
+    let mut source = start(&mut tracker);
+    let gone = next(&mut *source);
+    assert_eq!(gone.status, TrackStatus::Lost);
+    assert_eq!(wait_for_error(&tracker), TrackError::Lost);
+    tracker.stop();
+    // A second session: its first real frame must not look like the lost one.
+    let mut source = start(&mut tracker);
+    let first = next(&mut *source);
+    assert_eq!(first.status, TrackStatus::Tracking);
+    assert_ne!(first.seq, gone.seq, "two publications share seq {}", gone.seq);
+    assert!(first.seq > gone.seq);
 }
 
 #[test]
