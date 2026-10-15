@@ -105,8 +105,9 @@ pub struct Renderer {
     report: SurfaceReport,
 }
 
-fn instance(options: &Options) -> wgpu::Instance {
-    let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+/// The window's display handle is given to the instance because the GL backend cannot make a surface without it.
+fn instance(options: &Options, window: &Arc<Window>) -> wgpu::Instance {
+    let mut descriptor = wgpu::InstanceDescriptor::new_with_display_handle(Box::new(window.clone()));
     descriptor.backends = options.backends;
     if options.dx12_visual {
         descriptor.backend_options.dx12.presentation_system = wgpu::Dx12SwapchainKind::DxgiFromVisual;
@@ -126,7 +127,7 @@ pub fn probe_backends(window: &Arc<Window>, base: &Options) -> Vec<String> {
     let mut lines = Vec::new();
     for (name, backends) in all {
         let options = Options { backends, ..base.clone() };
-        let instance = instance(&options);
+        let instance = instance(&options, window);
         let surface = match instance.create_surface(window.clone()) {
             Ok(s) => s,
             Err(e) => {
@@ -160,7 +161,7 @@ impl Renderer {
     /// # Errors
     /// See [`GpuError`].
     pub fn new(window: &Arc<Window>, options: &Options) -> Result<Self, GpuError> {
-        let instance = instance(options);
+        let instance = instance(options, window);
         let surface = instance.create_surface(window.clone())?;
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             compatible_surface: Some(&surface),
