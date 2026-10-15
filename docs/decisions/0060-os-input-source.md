@@ -32,7 +32,8 @@ the feature. The spec forbids game hooks and injection, and gates the capture be
    consumers drain them in turn, no global order across backends is promised, and takes and replays record the drained
    order. Binding events carry the generation of the table they matched, a press owns its release (the release ends the
    action the press started), and a release is never lost for good (rings keep releases; held-state snapshots
-   reconcile after any drop; every pause or stop releases whatever is held).
+   reconcile after any drop; every pause, stop or backend exit releases whatever is held, carried as an epoch so
+   every ring and snapshot keeps a single writer).
 3. **Chords stay out of the executor.** Binding chords live in a machine-local store held by the desktop UI and never
    inserted into `Services`; ops, events, MCP and agents see binding ids, names and actions only. Learning a chord is a UI
    call, not an op.

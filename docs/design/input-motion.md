@@ -130,16 +130,18 @@ pub struct PadState { pub pad: u8, pub sticks: [[i8; 2]; 2], pub triggers: [u8; 
 pub struct PadZones(u16);                     // DPad, Face, LeftStick, RightStick, LeftShoulder, RightShoulder, LeftTrigger, RightTrigger, Centre
 pub struct BindingSlot(u8);                   // index into one generation of the binding table, 0..MAX_BINDINGS (64)
 pub struct TableGen(u32);                     // the binding table's generation; bumped on every swap
-pub enum Backend { Windows, MacTap, X11, Evdev, Portal, Gamepad }   // declaration order is the merge tie-break (§2)
+pub enum Backend { Windows, MacTap, X11, Evdev, Portal, Gamepad }   // declaration order is only the drain turn (§2)
+pub struct CaptureEpoch(u32);                 // bumped on every transition out of On, and per backend on its exit (§4)
 pub struct BindingEvent { pub gen: TableGen, pub slot: BindingSlot, pub edge: Edge, pub backend: Backend, pub at: Seconds }
 pub enum Edge { Press, Release, Repeat }
 pub struct HeldSlots { pub gen: TableGen, pub held: u64 }   // per backend: which slots are down now (bit per slot)
 
 pub trait MotionFeed: Send {                  // the frame thread's port; never blocks, never allocates
-    fn drain(&mut self, up_to: Seconds, out: &mut MotionFrame);   // events with at <= up_to, in order
+    fn drain(&mut self, up_to: Seconds, out: &mut MotionFrame);   // events with at <= up_to: each ring in its order, rings in turn (§2)
     fn pad(&self, pad: u8) -> Option<PadState>;                    // newest wins
 }
-pub struct MotionFrame { /* fixed array of MOTION_FRAME_MAX (128) events plus a dropped count */ }
+pub struct MotionFrame { /* fixed array of MOTION_FRAME_MAX (128) events, a dropped count, and
+                             reset: DeviceMask, the classes whose held state ended this frame (§4, §5a) */ }
 pub trait BindingFeed: Send {
     fn poll(&mut self) -> Option<BindingEvent>;          // the backends' rings drained in turn; no global order (§2)
     fn dropped(&self) -> u64;                             // edges dropped by any ring since start; a change triggers reconciliation
@@ -233,13 +235,24 @@ and `Indicator::shown()` reads `true`; a headless process that installed none ca
 uninstalled or dropped it) the hub pauses capture within a second and reports `Paused { why: IndicatorLost }`. Windows
 and X11 show the user nothing of their own (research §5), so this is the only signal the person has.
 
-**Every pause and stop ends what is held.** A key held when capture pauses or stops would otherwise never deliver its
-release. So every transition out of `On` (an explicit `pause` or `stop`, a lost indicator, a protected program, a
-backend failure) does three things, atomically on the control thread before the state is published: each backend's
-`HeldSlots` is cleared, the dispatcher synthesises a `Release` for every action it holds (§5), and motion receives
-a release edge for every zone and button it holds, so fingers lift and locomotion stops. **Resuming starts with
-nothing held:** a key still physically down when capture resumes does nothing until it is released and pressed again
-(its release, matching no held action, is ignored).
+**Every pause and stop ends what is held, without breaking single ownership.** A key held when capture pauses or
+stops would otherwise never deliver its release. The control thread must not write into a backend's ring or snapshot
+(each has exactly one writer, §2), so the release travels as an **epoch**, not as injected events:
+1. Every transition out of `On` (an explicit `pause` or `stop`, a lost indicator, a protected program) bumps one atomic
+   `CaptureEpoch` and then tells each backend thread to stop reading.
+2. Each backend thread, on its own thread, discards what it has not pushed, clears its own `HeldSlots`, and parks.
+3. Each consumer (the dispatcher, the frame thread's `MotionFeed`) reads the epoch before every poll or drain. On a
+   change it first ends everything it holds: the dispatcher synthesises a `Release` for every held-action record
+   (§5), motion releases every zone, button and pad zone it holds (fingers lift, locomotion intents fall to zero), and
+   then it discards any ring entry stamped with an older epoch (every pushed event carries the epoch it was read in).
+   `CaptureState` is published only after both consumers have acknowledged the new epoch, or after 100 ms if one is
+   stalled, in which case it applies the epoch on its next poll before anything else.
+4. **Resuming starts with nothing held:** a key still physically down when capture resumes does nothing until it is
+   released and pressed again (its release, matching no held-action record and no held zone, is ignored).
+
+The same epoch path covers a **single backend** leaving while others keep running (a backend failure, a gamepad or
+keyboard unplugged, the portal session closed): that backend gets its own epoch bump (`BackendEpoch[b]`), and the
+consumers release what that backend's events were holding, and nothing else.
 
 **The kill switch.** An optional list of protected programs (default empty). While capture is on and the list is not
 empty, the control thread checks the running process names every 2 s and pauses capture while one runs. That check is
@@ -270,8 +283,11 @@ source delivers them; the action catalogue and the dispatcher belong to #469 and
   read only by the hub. It is not a settings key: settings are listed to agents (`settings.list`) and their values
   appear in events, and `SecretRef`-style hiding exists only for secrets. The store's API (`ChordStore`) is handed to the
   desktop UI directly and **never inserted into `Services`**, so no op, MCP tool or agent can reach it.
-- **What ops and agents see.** `input.binding.list` returns `{ id, name, device, action, conflict }`, never a chord;
-  `input.binding.set_action { id, action }` (scope `perform`, agent `Confirm`) and `input.binding.remove { id }`.
+- **What ops and agents see.** `input.binding.list` (scope `read`) returns `{ id, name, device, action, conflict }`,
+  never a chord; `input.binding.set_action { id, action }` and `input.binding.remove { id }` (scope `perform`, agent
+  `Confirm`). An action is itself an op request, so `set_action` also checks that the caller holds every scope the
+  action's op needs: a binding cannot become a way for an actor to make the person's key press run an op the actor
+  could not run itself. The dispatcher runs a binding's action as the person, with `cause: binding` in the journal.
   Learning a chord ("press the keys") is a UI call on `ChordStore::learn(id)`, a person's action by construction; its
   result is shown in the binding editor and written to the store, and nothing goes through the executor. A conflict
   (the same chord on two bindings) is reported, not overwritten.
@@ -314,6 +330,46 @@ source delivers them; the action catalogue and the dispatcher belong to #469 and
 
 Note for #469 (filed by the lead, not here): PF-05 consumes `BindingFeed` from `omuzaki-input` and adds no second OS
 capture path; OSC, MIDI and Stream Deck are other sources of the same `BindingEvent`.
+
+## 5a. Invariants: held state, ordering and scopes
+
+The review rounds found three classes of problem more than once. This section states each as one rule and lists every
+place in the design it applies, so the tasks test the class, not one instance.
+
+**1. Nothing stays held when its cause goes away.** Every piece of held state, what ends it, and the task that tests it:
+
+| Held state | Ended by | Test |
+|---|---|---|
+| A binding's action (move, run, a held trigger) | its release, through the press's held-action record, even across a table swap (§5); a removed binding at the swap (§5); reconciliation after a ring drop (§5); a capture epoch (pause, stop, indicator, protected program; §4); its backend's own epoch (failure, unplug, portal session closed; §4) | IN-3 |
+| A zone, mouse or pen button held in motion | its release edge; `MotionFrame.reset` for its class on any capture or backend epoch; a change of `input.motion.detail` or `hand` (motion resets the keyboard and mouse classes at the switch, since zones and sides no longer match) | IN-3 (epochs), MO-1, MO-2 |
+| Pad zones and sticks | the next `PadState`; on unplug the gamepad backend publishes a neutral `PadState` and its epoch resets the gamepad class | IN-5, MO-3 |
+| Locomotion intents (move, run) | their binding's release, or a reset of the class that drove them; with no intent the machine decays to `Idle` | LO-1 |
+| A locomotion state mid-flight (jump, sit, emote) when `locomotion.set` changes the def | the state finishes under the def it started with (the old def is kept until the machine is next in `Idle` or `Move`), then the new def applies | LO-1, LO-4 |
+| A palm goal, posture or stick look | the hand allocator's rest timers, and the 0.3 s fade when a tracked bone takes over | MO-1, MO-3 |
+| Held state inside a take | the checkpoint holds it (§9); a reset or settings change is recorded in the frame it happened (`reset`, `HAS_SETTINGS`), so replay ends the same things at the same frame | ST-4 |
+
+**2. Order is promised only where one writer makes it.** Each ring is in its producer's order; across rings and
+threads nothing is promised, and determinism comes from recording the drained order (§2). Every other order in the
+design is single-threaded and fixed: the frame stages (§6.1), the pose layers (`PoseLayers` lowest first), the IK stage
+(look-at, palms, limbs, feet), the take's chunk records (takes.md T2). Each piece of shared state has exactly one
+writer: a ring and a `HeldSlots` snapshot are written only by their backend's thread; the binding table and the epochs
+only by the control thread; consumers only read them. No step anywhere writes into another thread's ring.
+
+**3. Every op names its scope, and none widens what its caller can do.**
+
+| Op or key | Scope | Agent | Why |
+|---|---|---|---|
+| `input.capture.start` | `input` | never (`person_only`) | reads other apps' input |
+| `input.capture.pause`, `input.capture.stop` | `read` | free | only removes exposure |
+| `input.capture.state` | `read` | free | the pause reason only with `process` (§4) |
+| `input.capture.protect` | `process` | `Confirm` | checks whether named programs run |
+| `input.binding.list` | `read` | free | ids, names, actions; never a chord |
+| `input.binding.set_action`, `input.binding.remove` | `perform`, plus every scope of the action's op | `Confirm` | a binding cannot launder an op its setter could not run (§5) |
+| chord learning, indicator install | none: hub APIs handed to the surface, never ops or services | not reachable | identities and the indicator stay out of the executor |
+| `input.motion.*` settings keys | settings registry, `User` | `Confirm` | capture-adjacent, so never `Free` (settings.md rule) |
+| `locomotion.set` | `edit:character` | as the registry allows | writes document values (§7.4) |
+| `locomotion.home` | `perform` | free | moves the live root only |
+| `locomotion.state` | `read` | free | state, speed, root |
 
 ## 6. D5: the motion model
 
@@ -546,18 +602,20 @@ One new record kind in `omuzaki-take-api`, `Motion = 12` (after `Watermark`), ad
 locomotion is active, fixed little-endian layout, about 40 to 80 bytes (plus the checkpoint at group starts):
 
 ```
-member u8 | flags u8 (HAS_KEYS, HAS_BUTTONS, HAS_POINTER, HAS_PEN, HAS_PAD, HAS_LOCO, HAND_ONLY, CHECKPOINT) | reserved u16
+member u8 | flags u8 (HAS_KEYS, HAS_BUTTONS, HAS_POINTER, HAS_PEN, HAS_PAD, HAS_LOCO, HAND_ONLY, CHECKPOINT)
+  | reset u8 (DeviceMask: classes whose held state ended before this frame's edges, §5a) | aux u8 (bit 0 HAS_SETTINGS)
 keys:     n u8 | n × (zone u8 | down u8)                      // edges, in drained order within the frame (§2); no times
 buttons:  n u8 | n × (source u8 | button u8 | down u8)        // edges: source 0 mouse, 1 pen, 2 pad (a pad zone)
 pointer:  dx f32 | dy f32 | wheel f32                         // summed over the frame (motion integrates per frame)
 pen:      u u8 | v u8 | pressure u8 | contact u8 | tilt i8 × 2 | 2 reserved   // the frame's last sample
 pad:      sticks i8 × 4 | triggers u8 × 2 | 2 reserved                         // levels; pad zones are button edges
 loco:     state u8 | flags u8 (RUN, JUMP, SIT) | emote u8 | reserved u8 | move i8 × 2 | 2 reserved | root x, y, z f32 | yaw f32
+settings: len u16 | the motion settings (§6.5) as written, when they changed this frame (HAS_SETTINGS)
 checkpoint (group-start chunks only): len u16 | MotionCheckpoint bytes (below)
 ```
 
 **Edges, not bitmaps.** Keys, mouse and pen buttons and pad zones are recorded as the edges that arrived in the frame,
-in order, so a click or a tap shorter than one frame (down and up in the same 33 ms) replays as the strike it was. A
+in drained order, so a click or a tap shorter than one frame (down and up in the same 33 ms) replays as the strike it was. A
 per-frame bitmap of what is held would lose it. Levels (pointer deltas, pen position, sticks, triggers, the move vector)
 are values, since motion samples them once per frame.
 
@@ -716,8 +774,11 @@ ST-3 → ST-4, EV-1. MO-1 and LO-1 need only the contract and the mock, so the m
   `NoIndicator` when no indicator is installed and when the installed one reports hidden, and capture pauses within
   1.1 s of `Indicator::shown()` turning false (`FakeClock`); **held across a pause:** hold a movement binding and a key,
   then pause (once each by `pause`, `stop`, a lost indicator and a protected program): the movement action ends and the
-  key's release edge reaches motion before the state is published, and after resuming the still-held key does nothing
-  until pressed again; **a press owns its release:** press a binding, swap in a table that changes its action, release:
+  next `MotionFrame` carries `reset` for the keyboard class before the state is published, and after resuming the
+  still-held key does nothing until pressed again; **one backend leaves:** with keyboard and gamepad both capturing,
+  fail the gamepad backend while a pad binding and a key are held: the pad binding's action ends and the gamepad class
+  resets, while the key stays held; **single writers:** a debug-build check on every ring and `HeldSlots` records its
+  writer thread and fails if a second thread writes; **a press owns its release:** press a binding, swap in a table that changes its action, release:
   the old action ends and the new one never starts, and the next press starts the new one; the binding table
   matches chords with modifiers and reports conflicts; a full ring drops the oldest motion event and counts it, and
   never drops a key-up (a key-up displaces the oldest pointer event first); **table swaps:** an edit that swaps the
@@ -749,7 +810,9 @@ ST-3 → ST-4, EV-1. MO-1 and LO-1 need only the contract and the mock, so the m
 - **Contract:** `PadState`, `PadZones`, `PadChord` (IN-1); research §1.1, §1.2, §1.5, §4.
 - **Acceptance:** a mapping test from gilrs events to `PadState` and `PadZones` with a fake gilrs event list; dead zone
   and quantisation (i8, u8) exact at the edges; hot-plug of a second pad keeps pad indices stable; the libudev link is
-  dynamic (recorded under the LGPL-shared rule); check green on Linux and the Windows cross-build.
+  dynamic (recorded under the LGPL-shared rule); unplugging a pad with a stick deflected and a button held publishes a
+  neutral `PadState` and the backend's epoch, so nothing stays deflected or pressed; check green on Linux and the
+  Windows cross-build.
 
 ### IN-6: `omuzaki-input`: Linux X11 (XI2 raw events) and the evdev opt-in
 
@@ -779,7 +842,8 @@ ST-3 → ST-4, EV-1. MO-1 and LO-1 need only the contract and the mock, so the m
   returns a chord or an indicator.
 - **Acceptance:** table tests with person, agent and automation actors (an agent's `input.capture.start` is `Denied`
   and never queued; a person's `start` with no indicator installed fails with `NoIndicator`; **a read-only actor**
-  (grants `read` only) stops and pauses capture; stopping and pausing are idempotent); a test that types a known string through
+  (grants `read` only) stops and pauses capture; stopping and pausing are idempotent; `input.binding.set_action` with an
+  action whose op needs a scope the caller lacks is `Denied`); a test that types a known string through
   `FakeInput` and scans every op result, event and journal record for any key code or character of it (none);
   **the protected-program list:** `input.capture.protect` is refused without `process` (an actor with `input` and
   `perform` only gets `Denied`); with capture paused by a protected program, `input.capture.state` returns
@@ -840,7 +904,8 @@ ST-3 → ST-4, EV-1. MO-1 and LO-1 need only the contract and the mock, so the m
 - **Acceptance (replay on mock humanoids at three statures):** the striking fingertip within 1 cm of its zone centre at
   the next frame; no fingertip more than 2 mm below the key plane over 60 s; home row after 0.4 s and rest after 1.5 s
   without keys (± one frame); `hand_only` output identical for two streams with the same sides; a `tracked` mask drops
-  the masked bones with a 0.3 s fade; `InputMotion::checkpoint` and `restore` (§9): restoring the checkpoint taken at
+  the masked bones with a 0.3 s fade; `MotionFrame.reset` for the keyboard class lifts every held finger in that
+  frame, and so does switching `detail` or `hand` with keys held; `InputMotion::checkpoint` and `restore` (§9): restoring the checkpoint taken at
   any frame of a 60 s replay and stepping on gives bit-identical `MotionOut` to the uninterrupted run; the motion types
   hold their mutable state only in `MotionCheckpoint`; deterministic; `step` allocates 0 bytes; at most 0.02 ms per frame
   on `Dev` (bench); check green.
@@ -872,7 +937,9 @@ ST-3 → ST-4, EV-1. MO-1 and LO-1 need only the contract and the mock, so the m
   trait (`Gait`) with an in-place placeholder until LO-2.
 - **Acceptance:** a test per allowed state pair, and every other pair refused; no bone jumps more than 2 degrees between
   30 fps frames over a scripted 120 s run; speed respects the 6 m/s² limit; turn rate at most 360 degrees a second;
-  `LocomotionDef` validation errors name the field; checkpoint and restore at any frame of the 120 s run (including
+  `LocomotionDef` validation errors name the field; a def change during a jump finishes the jump under the old def and
+  applies the new one from the next `Idle` or `Move`; a reset of the class driving `move` brings the machine to `Idle`;
+  checkpoint and restore at any frame of the 120 s run (including
   mid-transition and mid-jump) continue bit-identically (§9); deterministic, 0 allocations; at most 0.01 ms on `Dev`;
   check green.
 
@@ -951,7 +1018,9 @@ ST-3 → ST-4, EV-1. MO-1 and LO-1 need only the contract and the mock, so the m
   re-renders to the same frames, and an older reader skips the record and counts it; **replay cuts:** for every group
   boundary of that take, a clip cut there and re-rendered from its checkpoint gives frame digests equal to the uncut
   run's from that frame on (the cuts include one inside a jump, one mid-transition and one during a typing burst);
-  **short edges:** a click and a key tap whose down and up fall in the same frame replay as a strike; check green.
+  **short edges:** a click and a key tap whose down and up fall in the same frame replay as a strike; **resets and
+  settings:** a pause with keys held, and a `detail` switch, recorded mid-take replay with the same fingers lifting in
+  the same frame; check green.
 
 ### EV-1: the evidence cases for typing, pointer, pad and locomotion
 
