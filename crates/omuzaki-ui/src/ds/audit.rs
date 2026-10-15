@@ -99,7 +99,7 @@ pub fn painted(output: &FullOutput) -> Vec<Painted> {
             rect,
             ink: base.gamma_multiply(text.opacity_factor),
             icon,
-            backdrop: backdrop(&shapes, index, rect.center()),
+            backdrop: backdrop(&shapes, index, painted_rect(text).center()),
             elided: text.galley.elided,
         });
     }
@@ -281,22 +281,16 @@ fn overlaps(a: Rect, b: Rect) -> bool {
     shared.width() > EDGE_SLACK && shared.height() > EDGE_SLACK
 }
 
-/// The area a galley's glyphs occupy, relative to its origin. A galley's own rectangle starts at its origin, but the
-/// first row of a label laid out after other widgets in a wrapped row begins with a leading indent (the width of what
-/// is already on the line), so the rectangle runs from the line's start to the end of the text while the glyphs sit
-/// at its right. Each row is taken from its first glyph, so that indent is not text that was drawn.
-fn ink_rect(galley: &egui::Galley) -> Rect {
-    galley
-        .rows
-        .iter()
-        .filter_map(|row| {
-            let rect = row.rect();
-            row.glyphs
-                .first()
-                .map(|glyph| Rect::from_min_max(egui::pos2(glyph.pos.x.max(rect.min.x), rect.min.y), rect.max))
-        })
-        .reduce(Rect::union)
-        .unwrap_or(galley.rect)
+/// Where `text` is painted: the bounds of the glyph quads egui drew, not the galley's layout rectangle.
+///
+/// The layout rectangle starts at the galley's origin, but the first row of a label laid out after other widgets in a
+/// wrapped row begins with a leading indent (the width of what is already on the line), so it reaches left of the
+/// glyphs. A glyph's quad can also reach past its layout position (a negative left-side bearing, an italic overhang).
+/// The mesh bounds are exact for both: they cover every drawn glyph, and neither leading space nor an indent.
+fn painted_rect(text: &egui::epaint::TextShape) -> Rect {
+    let galley = &text.galley;
+    let bounds = if galley.mesh_bounds.is_positive() { galley.mesh_bounds } else { galley.rect };
+    bounds.translate(text.pos.to_vec2())
 }
 
 /// Text that is clipped, lies outside `window`, or is drawn over other text in the frame.
@@ -316,7 +310,7 @@ pub fn layout_findings(output: &FullOutput, window: Rect) -> Vec<LayoutFinding> 
             if text.galley.job.text.trim().is_empty() {
                 continue;
             }
-            let rect = ink_rect(&text.galley).translate(text.pos.to_vec2());
+            let rect = painted_rect(text);
             texts.push((text.galley.job.text.clone(), rect, *clip_rect));
         }
     }

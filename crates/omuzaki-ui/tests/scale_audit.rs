@@ -240,6 +240,35 @@ fn text_painted_over_a_wrapped_label_is_still_an_overlap() {
     );
 }
 
+#[test]
+fn text_touching_only_a_glyphs_left_overhang_is_still_an_overlap() {
+    // A "j" reaches left of its layout position (a negative left-side bearing), so a glyph whose layout rectangle ends
+    // exactly at the "j"'s layout position can still paint into the "j"'s overhang. The stray is the ASCII glyph with
+    // the least room on its right. Measured, not assumed, so the test says so if the bundled font changes.
+    let font = egui::FontId::proportional(200.0);
+    let draw = move |ui: &mut Ui| {
+        let white = egui::Color32::WHITE;
+        let layout = |text: String| ui.painter().layout_no_wrap(text, font.clone(), white);
+        let j = layout("j".to_owned());
+        let stray = ('!'..='~')
+            .map(|c| layout(c.to_string()))
+            .min_by(|a, b| (a.rect.max.x - a.mesh_bounds.max.x).total_cmp(&(b.rect.max.x - b.mesh_bounds.max.x)))
+            .expect("ASCII glyphs");
+        let origin = pos2(300.0, 100.0);
+        let stray_at = pos2(origin.x - stray.rect.max.x, origin.y);
+        // Their layout rectangles only touch, yet the drawn stray reaches into the "j"'s overhang past the slack.
+        let shared = (stray_at.x + stray.mesh_bounds.max.x) - (origin.x + j.mesh_bounds.min.x);
+        assert!(shared > 1.0, "the bundled glyphs must overlap in ink alone: {shared}");
+        ui.painter().galley(origin, j, white);
+        ui.painter().galley(stray_at, stray, white);
+    };
+    let found = audit(100, draw);
+    assert!(
+        found.iter().any(|f| f.problem == LayoutProblem::Overlap),
+        "text touching only the overhang of a glyph must be reported: {found:?}"
+    );
+}
+
 /// A control with no children, for the synthetic cases below.
 fn leaf(name: &str, rect: Rect, parent: Option<usize>) -> Control {
     Control { name: name.to_owned(), role: Role::Unknown, rect, controls: None, parent }
