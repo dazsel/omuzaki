@@ -155,7 +155,10 @@ impl ScriptedServer {
     }
 
     pub fn add(&self, tool: Tool, behaviour: impl Fn(&JsonObject, usize) -> Outcome + Send + Sync + 'static) {
-        lock(&self.tools).push(ToolSpec { tool, behaviour: Arc::new(behaviour) });
+        let mut tools = lock(&self.tools);
+        // A tool added again replaces the earlier one of its name.
+        tools.retain(|t| t.tool.name != tool.name);
+        tools.push(ToolSpec { tool, behaviour: Arc::new(behaviour) });
     }
 
     pub fn add_fixed(&self, tool: Tool, outcome: Outcome) {
@@ -378,6 +381,26 @@ impl FakeSessions {
     }
 
     pub fn reject_budget(&self) {
+        self.st().approvals.clear();
+    }
+
+    /// An approval the person has not decided yet, for `approval_wait` to wait on.
+    pub fn queue_approval(&self, id: u64) {
+        let mut st = self.st();
+        let actor = st.info.actor.clone();
+        st.approvals.push(PendingApproval {
+            id: ApprovalId(id),
+            session: SessionId(1),
+            actor,
+            request: None,
+            need: Need::Person { reason: "r".into() },
+            batch: "b".into(),
+            requested_at: Seconds(0.0),
+        });
+    }
+
+    /// The person decides every pending approval.
+    pub fn resolve_approvals(&self) {
         self.st().approvals.clear();
     }
 
