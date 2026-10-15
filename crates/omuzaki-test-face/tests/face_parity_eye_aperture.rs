@@ -16,7 +16,9 @@ use std::path::PathBuf;
 
 use omuzaki_face::{RealPainter, Section};
 use omuzaki_face_api::{Cmd, DrawList, FaceDrawing, FaceInput, FaceLayerId, PathEl, PathRef};
-use omuzaki_test_face::face_parity::{SectionCheck, SectionTolerance, check_tags};
+use omuzaki_test::regioncmp::{compare_region, write_side_by_side};
+use omuzaki_test_face::face_parity::sections::table;
+use omuzaki_test_face::face_parity::{SectionCheck, SectionTolerance, check_tags, tag_images_painted};
 use serde::Deserialize;
 
 /// The tolerance this section is held to: the face rule. Measured first (see the PR): the worst case is far inside it.
@@ -65,13 +67,48 @@ fn eye_whites(src: &DrawList) -> DrawList {
     out
 }
 
+/// The prototype's tags of the eye whites.
+const TAGS: [&str; 2] = ["eye-L-sclera", "eye-R-sclera"];
+
 #[test]
 fn the_eye_whites_match_the_prototype() {
-    let check = check_tags(Section::Eyes, &["eye-L-sclera", "eye-R-sclera"], &eye_whites, TOLERANCE).unwrap();
+    let check = check_tags(Section::Eyes, &TAGS, &eye_whites, TOLERANCE).unwrap();
     if let SectionCheck::Ran { results, .. } = &check {
         assert!(!results.is_empty(), "no case could be compared");
     }
+    // The setup must give the projection and the profile: parity against a default face means nothing.
+    let setup = check.setup_problems(&["projection", "profile"]);
+    assert!(setup.is_none(), "{}", setup.unwrap_or_default());
     assert!(check.problems().is_none(), "{}", check.problems().unwrap_or_default());
+}
+
+/// Writes the reference / painter / diff picture of every compared case and the table, to `OMUZAKI_FACE_PARITY_OUT`
+/// (the evidence for the PR). `cargo test -p omuzaki-test-face --test face_parity_eye_aperture -- --ignored`.
+#[test]
+#[ignore = "writes evidence to a local assets folder"]
+fn write_the_evidence() {
+    let Some(out) = std::env::var_os("OMUZAKI_FACE_PARITY_OUT").map(PathBuf::from) else {
+        eprintln!("set OMUZAKI_FACE_PARITY_OUT to the output folder");
+        return;
+    };
+    let paint = |input: &FaceInput<'_>, projection, px_per_m| {
+        let mut painter = RealPainter::new(projection, px_per_m);
+        let mut drawing = FaceDrawing::new();
+        painter.paint_section(Section::Eyes, input, &mut drawing)?;
+        Ok(eye_whites(&drawing[FaceLayerId::Base]))
+    };
+    let Some(images) = tag_images_painted(Section::Eyes, &TAGS, &paint, TOLERANCE).unwrap() else { return };
+    for case in &images {
+        if let Some(actual) = &case.actual {
+            let report = compare_region(actual, &case.reference, case.rect, TOLERANCE.pixels).unwrap();
+            let path = out.join("golden").join(&case.variant).join(format!("{}.png", case.expression));
+            write_side_by_side(&path, actual, &case.reference, &report, 1).unwrap();
+        }
+    }
+    if let SectionCheck::Ran { results, .. } = check_tags(Section::Eyes, &TAGS, &eye_whites, TOLERANCE).unwrap() {
+        std::fs::create_dir_all(&out).unwrap();
+        std::fs::write(out.join("golden-table.md"), table(&results)).unwrap();
+    }
 }
 
 /// One parameter set of the extremes sweep (`extremes_js.json`, written by evaluating the prototype's own `aperture()`

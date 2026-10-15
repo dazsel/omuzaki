@@ -105,6 +105,11 @@ pub enum Outcome {
     },
     /// Neither painted anything.
     BothEmpty,
+    /// A tag-subset check found no reference for its tags in this case, but the painter drew: always a failure.
+    NoReference {
+        /// Pixels with ink in the painter's picture.
+        painted_pixels: u64,
+    },
     /// Both painted; the numbers are for the reference's rectangle.
     Compared {
         /// The rectangle compared.
@@ -140,7 +145,7 @@ impl CaseResult {
     pub fn passed(&self) -> bool {
         match &self.outcome {
             Outcome::BothEmpty => true,
-            Outcome::NotDrawn { .. } => false,
+            Outcome::NotDrawn { .. } | Outcome::NoReference { .. } => false,
             Outcome::Compared { passed, .. } => *passed,
         }
     }
@@ -157,10 +162,31 @@ pub enum SectionCheck {
         tolerance: SectionTolerance,
         /// One result per case.
         results: Vec<CaseResult>,
+        /// Per variant: the setup parts that fell back to defaults (see [`SectionCheck::setup_problems`]).
+        defaulted: BTreeMap<String, Vec<&'static str>>,
     },
 }
 
 impl SectionCheck {
+    /// `Some(what is wrong)` when a variant's setup file left out any of `required` (`projection`, `profile`,
+    /// `follow_weight`): parity against a default face means nothing. `None` when skipped or complete.
+    pub fn setup_problems(&self, required: &[&str]) -> Option<String> {
+        let Self::Ran { defaulted, .. } = self else { return None };
+        let lines: Vec<String> = defaulted
+            .iter()
+            .filter_map(|(variant, parts)| {
+                let missing: Vec<&str> = parts.iter().copied().filter(|p| required.contains(p)).collect();
+                (!missing.is_empty()).then(|| format!("{variant}: {}", missing.join(", ")))
+            })
+            .collect();
+        (!lines.is_empty()).then(|| {
+            format!(
+                "the setup files (face-sections/parity-setup) lack parts the comparison needs:\n{}",
+                lines.join("\n")
+            )
+        })
+    }
+
     /// The results that failed (none when skipped).
     pub fn failures(&self) -> Vec<&CaseResult> {
         match self {
@@ -426,6 +452,21 @@ const NO_STATE_EXPRESSIONS: [&str; 12] = [
     "tongue-closed-100",
 ];
 
+/// One case of a tag-subset check as pictures, for the local lane's evidence and noise-floor tools.
+#[derive(Debug, Clone)]
+pub struct CaseImages {
+    /// The golden variant.
+    pub variant: String,
+    /// The expression of the case.
+    pub expression: String,
+    /// The rectangle compared.
+    pub rect: Rect,
+    /// The painter's picture; `None` when it drew nothing.
+    pub actual: Option<RgbaImage>,
+    /// The listed tags' references, stacked.
+    pub reference: RgbaImage,
+}
+
 /// What [`run`] found.
 struct Run {
     results: Vec<CaseResult>,
@@ -454,6 +495,7 @@ fn run(
     jobs: &[Job<'_>],
     tolerance: SectionTolerance,
     evidence: Option<&Path>,
+    mut images: Option<&mut Vec<CaseImages>>,
 ) -> Result<Run, ParityError> {
     let mut missing_state = Vec::new();
     let mut variants: BTreeMap<String, Variant> = BTreeMap::new();
@@ -487,8 +529,28 @@ fn run(
             let entries: Vec<&IndexSection> = case.sections.iter().filter(|e| job.tags.contains(&e.tag)).collect();
             let reference = stack_reference(js, &entries, size)?;
             let rect = region(&entries, size);
-            let actual = paint_section(section, job.paint, &variant.setup, &input, size, &case.id)?;
-            let outcome = judge(actual.as_ref(), &reference, rect, tolerance, &case.id)?;
+            let mut actual = paint_section(section, job.paint, &variant.setup, &input, size, &case.id)?;
+            // A tag-subset check is strict: a list that rasterises to nothing is not drawn, and a side with nothing
+            // must meet a side with nothing. The whole canvas is never compared in place of a missing reference.
+            let strict = job.paint.is_some();
+            if strict {
+                actual = actual.filter(|a| ink(a) > 0);
+            }
+            let outcome = match (strict, entries.is_empty(), &actual) {
+                (true, true, Some(a)) => Outcome::NoReference { painted_pixels: ink(a) },
+                (true, true, None) => Outcome::BothEmpty,
+                (true, false, None) => Outcome::NotDrawn { reference_pixels: ink(&reference) },
+                _ => judge(actual.as_ref(), &reference, rect, tolerance, &case.id)?,
+            };
+            if let Some(images) = images.as_deref_mut() {
+                images.push(CaseImages {
+                    variant: case.variant.clone(),
+                    expression: case.expression.clone(),
+                    rect,
+                    actual: actual.clone(),
+                    reference: reference.clone(),
+                });
+            }
             if let (Some(dir), Outcome::Compared { .. }, Some(actual)) = (evidence, &outcome, &actual) {
                 write_evidence(dir, case, section, actual, &reference, rect, tolerance)?;
             }
@@ -671,17 +733,36 @@ pub fn check_tags_painted_in(
     check_jobs_in(js, &[job], tolerance)
 }
 
+/// The pictures behind [`check_tags_painted`], for the local lane's evidence and noise-floor tools. `None` when the
+/// references are absent.
+///
+/// # Errors
+/// As [`check_section`].
+pub fn tag_images_painted(
+    section: Section,
+    tags: &[&str],
+    paint: Paint<'_>,
+    tolerance: SectionTolerance,
+) -> Result<Option<Vec<CaseImages>>, ParityError> {
+    let Some(js) = JsRef::open() else { return Ok(None) };
+    let Some(index) = read_index(&js)? else { return Ok(None) };
+    let job = Job { section, tags: tags.iter().map(|t| (*t).to_owned()).collect(), paint: Some(paint) };
+    let mut images = Vec::new();
+    run(&js, &index, &[job], tolerance, None, Some(&mut images))?;
+    Ok(Some(images))
+}
+
 fn check_jobs_in(js: &JsRef, jobs: &[Job<'_>], tolerance: SectionTolerance) -> Result<SectionCheck, ParityError> {
     let Some(index) = read_index(js)? else {
         let reason = format!("no face-section references at {}/face-sections", js.root().display());
         eprintln!("skipped: {reason}");
         return Ok(SectionCheck::Skipped(reason));
     };
-    let Run { results, missing_state, .. } = run(js, &index, jobs, tolerance, None)?;
+    let Run { results, defaulted, missing_state } = run(js, &index, jobs, tolerance, None, None)?;
     if !missing_state.is_empty() {
         eprintln!("not compared, no face state in the dump: {}", missing_state.join(", "));
     }
-    Ok(SectionCheck::Ran { tolerance, results })
+    Ok(SectionCheck::Ran { tolerance, results, defaulted })
 }
 
 /// The whole picture: every section, whether or not it has an enforcement test.
@@ -721,7 +802,7 @@ pub fn report_in(js: &JsRef, out_dir: &Path) -> Result<SectionReport, ParityErro
         return Ok(SectionReport { skipped: Some(reason), markdown: String::new(), results: Vec::new() });
     };
     let Run { results, defaulted, missing_state } =
-        run(js, &index, &whole(&Section::ALL), REPORT_TOLERANCE, Some(out_dir))?;
+        run(js, &index, &whole(&Section::ALL), REPORT_TOLERANCE, Some(out_dir), None)?;
     let mut markdown = markdown(&results, &defaulted, REPORT_TOLERANCE);
     if !missing_state.is_empty() {
         let _ = write!(markdown, "\n## Not compared: no face state in the dump\n\n");
@@ -741,6 +822,9 @@ fn cells(r: &CaseResult) -> (String, String, String, String, String) {
     let tags = if r.tags.is_empty() { "none".to_owned() } else { r.tags.join(" ") };
     match &r.outcome {
         Outcome::BothEmpty => (tags, "both empty".into(), "-".into(), "-".into(), "-".into()),
+        Outcome::NoReference { painted_pixels } => {
+            (tags, format!("**no reference** ({painted_pixels} px painted)"), "-".into(), "-".into(), "-".into())
+        }
         Outcome::NotDrawn { reference_pixels } => {
             (tags, format!("**not drawn** ({reference_pixels} px expected)"), "-".into(), "-".into(), "-".into())
         }
@@ -1055,6 +1139,75 @@ mod tests {
         }
     }
 
+    /// A list with one small filled square centred at `(x, 0)` metres; far from the canvas it rasterises to nothing.
+    fn square(x: f32) -> DrawList {
+        let mut list = DrawList::new();
+        let path = list
+            .path()
+            .move_to(Vec2::new(x - 0.01, -0.01))
+            .line_to(Vec2::new(x + 0.01, -0.01))
+            .line_to(Vec2::new(x + 0.01, 0.01))
+            .line_to(Vec2::new(x - 0.01, 0.01))
+            .close()
+            .finish();
+        list.fill(path, omuzaki_face_api::Paint::Solid(Colour { r: 200, g: 90, b: 90, a: 255 }));
+        list
+    }
+
+    /// The outcomes of `check_tags_painted_in` on the nose case for `tags`, painting `list`.
+    fn tags_outcome(js: &JsRef, tags: &[&str], list: &DrawList) -> Outcome {
+        let paint = |_: &FaceInput<'_>, _: FaceProjection, _: f32| Ok(list.clone());
+        let check = check_tags_painted_in(js, Section::Nose, tags, &paint, TOL).unwrap();
+        let SectionCheck::Ran { results, .. } = &check else { panic!("skipped") };
+        results[0].outcome.clone()
+    }
+
+    #[test]
+    fn a_tag_check_never_compares_the_canvas_when_one_side_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        fake_dump(dir.path());
+        let js = JsRef::open_at(dir.path()).unwrap();
+        let empty = DrawList::new();
+        let off_canvas = square(50.0);
+        // No reference for the tags, one painted square: a failure, not a pass on 34 dB over the whole canvas.
+        let Outcome::NoReference { painted_pixels } = tags_outcome(&js, &[], &square(0.0)) else { panic!() };
+        assert!(painted_pixels > 0);
+        // A reference, nothing painted: an empty list, and a list that rasterises to nothing.
+        assert_eq!(tags_outcome(&js, &["nose"], &empty), Outcome::NotDrawn { reference_pixels: 60 });
+        assert_eq!(tags_outcome(&js, &["nose"], &off_canvas), Outcome::NotDrawn { reference_pixels: 60 });
+        // Both empty passes.
+        assert_eq!(tags_outcome(&js, &[], &empty), Outcome::BothEmpty);
+        assert_eq!(tags_outcome(&js, &[], &off_canvas), Outcome::BothEmpty);
+    }
+
+    #[test]
+    fn a_tag_check_names_the_setup_parts_the_setup_file_lacks() {
+        let dir = tempfile::tempdir().unwrap();
+        fake_dump(dir.path());
+        write(dir.path(), "face-sections/parity-setup/sheet.json", br#"{"follow_weight": 0.3, "profile": {}}"#);
+        let js = JsRef::open_at(dir.path()).unwrap();
+        let check = check_tags_in(&js, Section::Nose, &["nose"], &|l: &DrawList| l.clone(), TOL).unwrap();
+        let problems = check.setup_problems(&["projection", "profile"]).unwrap();
+        assert!(problems.contains("game: projection") && !problems.contains("profile,"), "{problems}");
+        assert!(check.setup_problems(&["profile", "follow_weight"]).is_none());
+    }
+
+    #[test]
+    fn the_pictures_of_a_tag_check_are_handed_back() {
+        let dir = tempfile::tempdir().unwrap();
+        fake_dump(dir.path());
+        let js = JsRef::open_at(dir.path()).unwrap();
+        let index = read_index(&js).unwrap().unwrap();
+        let paint = |_: &FaceInput<'_>, _: FaceProjection, _: f32| Ok(square(0.0));
+        let job = Job { section: Section::Nose, tags: vec!["nose".to_owned()], paint: Some(&paint) };
+        let mut images = Vec::new();
+        run(&js, &index, &[job], TOL, None, Some(&mut images)).unwrap();
+        let [case] = &images[..] else { panic!("one case") };
+        assert_eq!((case.variant.as_str(), case.expression.as_str()), ("game", "smile"));
+        assert!(case.actual.is_some());
+        assert_eq!(ink(&case.reference), 60);
+    }
+
     #[test]
     fn check_tags_compares_only_the_listed_tags() {
         let dir = tempfile::tempdir().unwrap();
@@ -1092,19 +1245,7 @@ mod tests {
         assert_eq!(both.failures()[0].tags, ["nose", "lip-rim"]);
         // A piece that no cut of the painter's Base list could give: `paint` ignores the painter and returns a square
         // of its own, so the nose (which the painter leaves empty here) is compared against a drawn list, and fails.
-        let paint = |_: &FaceInput<'_>, _: FaceProjection, _: f32| {
-            let mut list = DrawList::new();
-            let square = list
-                .path()
-                .move_to(Vec2::new(-0.01, -0.01))
-                .line_to(Vec2::new(0.01, -0.01))
-                .line_to(Vec2::new(0.01, 0.01))
-                .line_to(Vec2::new(-0.01, 0.01))
-                .close()
-                .finish();
-            list.fill(square, omuzaki_face_api::Paint::Solid(Colour { r: 200, g: 90, b: 90, a: 255 }));
-            Ok(list)
-        };
+        let paint = |_: &FaceInput<'_>, _: FaceProjection, _: f32| Ok(square(0.0));
         let painted = check_tags_painted_in(&js, Section::Nose, &["nose"], &paint, TOL).unwrap();
         assert!(matches!(painted.failures()[0].outcome, Outcome::Compared { passed: false, .. }), "{painted:?}");
         // None listed: an empty reference, which an empty painting matches.

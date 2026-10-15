@@ -13,6 +13,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::print_stderr, clippy::print_stdout)]
 
+use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use image::RgbaImage;
@@ -23,7 +24,11 @@ use omuzaki_face_api::{
     FaceProjection, FaceRasterizer, PaintParams, PathEl, PathRef, Raster,
 };
 use omuzaki_test::jsref::JsRef;
-use omuzaki_test_face::face_parity::{SectionCheck, SectionTolerance, check_tags_painted, load_setup};
+use omuzaki_test::regioncmp::{Rect, compare_region, write_side_by_side};
+use omuzaki_test_face::face_parity::sections::table;
+use omuzaki_test_face::face_parity::{
+    SectionCheck, SectionTolerance, check_tags_painted, load_setup, tag_images_painted,
+};
 
 /// One of the three isolated sections of the eye.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -198,11 +203,89 @@ fn the_iris_highlights_and_shimmer_match_the_prototype() {
         if let SectionCheck::Ran { results, .. } = &check {
             assert!(!results.is_empty(), "{}: no case could be compared", piece.name());
         }
+        // The setup must give the projection, the profile and the follow weight: parity against a default face means
+        // nothing.
+        let setup = check.setup_problems(&["projection", "profile", "follow_weight"]);
+        assert!(setup.is_none(), "{}: {}", piece.name(), setup.unwrap_or_default());
         assert!(check.problems().is_none(), "{}: {}", piece.name(), check.problems().unwrap_or_default());
         if piece.checks_ink() {
             let ink = check.ink_problems(MAX_CENTROID_SHIFT_PX, MAX_INK_DIFFERENCE);
             assert!(ink.is_none(), "{}: {}", piece.name(), ink.unwrap_or_default());
         }
+    }
+}
+
+/// Writes the reference / painter / diff picture of every compared case and the table, to `OMUZAKI_FACE_PARITY_OUT`
+/// (the evidence for the PR). `cargo test -p omuzaki-test-face --test face_parity_eye_iris -- --ignored`.
+#[test]
+#[ignore = "writes evidence to a local assets folder"]
+fn write_the_evidence() {
+    let Some(out) = std::env::var_os("OMUZAKI_FACE_PARITY_OUT").map(PathBuf::from) else {
+        eprintln!("set OMUZAKI_FACE_PARITY_OUT to the output folder");
+        return;
+    };
+    let mut tables = String::new();
+    for piece in Piece::ALL {
+        let paint = |input: &FaceInput<'_>, projection, px_per_m| paint_piece(piece, input, projection, px_per_m);
+        let Some(images) = tag_images_painted(Section::Eyes, &piece.tags(), &paint, piece.tolerance()).unwrap() else {
+            return;
+        };
+        for case in &images {
+            if let Some(actual) = &case.actual {
+                let report = compare_region(actual, &case.reference, case.rect, piece.tolerance().pixels).unwrap();
+                let path = out.join("golden").join(piece.name()).join(&case.variant);
+                write_side_by_side(&path.join(format!("{}.png", case.expression)), actual, &case.reference, &report, 1)
+                    .unwrap();
+            }
+        }
+        let check = check_tags_painted(Section::Eyes, &piece.tags(), &paint, piece.tolerance()).unwrap();
+        if let SectionCheck::Ran { results, .. } = check {
+            writeln!(tables, "## {}\n\n{}", piece.name(), table(&results)).unwrap();
+        }
+    }
+    std::fs::create_dir_all(&out).unwrap();
+    std::fs::write(out.join("golden-table.md"), tables).unwrap();
+}
+
+/// The noise floor: for each piece, the worst bad fraction at a range of per-channel limits over the goldens, and the
+/// lowest PSNR, largest ink shift and mass difference. The numbers the tolerances above are set from.
+#[test]
+#[ignore = "measures; prints a table"]
+fn measure_the_noise_floor() {
+    for piece in Piece::ALL {
+        let paint = |input: &FaceInput<'_>, projection, px_per_m| paint_piece(piece, input, projection, px_per_m);
+        let Some(images) = tag_images_painted(Section::Eyes, &piece.tags(), &paint, piece.tolerance()).unwrap() else {
+            return;
+        };
+        let mine: Vec<(&RgbaImage, &RgbaImage, Rect)> =
+            images.iter().filter_map(|c| c.actual.as_ref().map(|a| (a, &c.reference, c.rect))).collect();
+        let psnr = mine
+            .iter()
+            .filter_map(|(a, r, rect)| compare_region(a, r, *rect, piece.tolerance().pixels).unwrap().stats.psnr_db)
+            .fold(f64::INFINITY, f64::min);
+        let ink = check_tags_painted(Section::Eyes, &piece.tags(), &paint, piece.tolerance())
+            .unwrap()
+            .worst_ink()
+            .map_or((0.0, 0.0), |i| (i.centroid_shift_px, (i.mass_ratio - 1.0).abs()));
+        let bad: Vec<String> = [12_u8, 16, 24, 32, 48, 64]
+            .into_iter()
+            .map(|limit| {
+                let tolerance = omuzaki_test::compare::Tolerance { per_channel: limit, max_bad_fraction: 1.0 };
+                let worst = mine
+                    .iter()
+                    .map(|(a, r, rect)| compare_region(a, r, *rect, tolerance).unwrap().stats.bad_fraction)
+                    .fold(0.0, f64::max);
+                format!("{limit}: {:.2}%", worst * 100.0)
+            })
+            .collect();
+        println!(
+            "{}: {} cases, lowest PSNR {psnr:.2} dB, ink shift <= {:.3} px, ink mass within {:.2}%, worst bad fraction by per-channel limit: {}",
+            piece.name(),
+            mine.len(),
+            ink.0,
+            ink.1 * 100.0,
+            bad.join(", ")
+        );
     }
 }
 
