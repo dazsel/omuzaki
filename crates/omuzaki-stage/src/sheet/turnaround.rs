@@ -232,9 +232,10 @@ pub struct Framing {
     pub eye_line_row: f32,
     /// The head's centre ([`HEAD_CENTRE_FRACTION`] of the way from the head joint to the crown).
     pub head_centre: Vec2,
-    /// The row of the soles.
+    /// The row of the lowest point of the character: its meshes as built (the bind pose), turned with the view and
+    /// projected through its camera, so in a perspective lens a vertex nearer the camera counts where it lands.
     pub ground_row: f32,
-    /// The row of the crown in the rest pose.
+    /// The row of the highest point of the character, found the same way as [`ground_row`](Self::ground_row).
     pub crown_row: f32,
 }
 
@@ -535,11 +536,24 @@ fn framing(stage: &Stage, subject: &Subject, shot: &Shot, root: Mat4) -> Framing
     let up = skin.transform_vector3(Vec3::Y);
     let along = |fraction: f32| root.transform_point3(joint + up * ((subject.crown - subject.head_joint.y) * fraction));
     let head_centre = shot.pixel(along(HEAD_CENTRE_FRACTION));
+    let (crown_row, ground_row) = extreme_rows(stage.built(), shot, root);
     Framing {
         px_per_m: shot.px_per_m,
         eye_line_row: shot.pixel(along(EYE_LINE_FRACTION)).y,
         head_centre,
-        ground_row: shot.pixel(Vec3::new(0.0, subject.sole, 0.0)).y,
-        crown_row: shot.pixel(Vec3::new(0.0, subject.crown, 0.0)).y,
+        ground_row,
+        crown_row,
     }
+}
+
+/// The topmost and bottom-most rows any vertex of the character lands on in this view: every vertex is projected, so
+/// the rows are where the geometry is, not where a point on the character's axis would be (a crown that stands out
+/// toward the camera lands higher in a perspective lens).
+fn extreme_rows(built: &BuiltCharacter, shot: &Shot, root: Mat4) -> (f32, f32) {
+    built
+        .meshes
+        .iter()
+        .flat_map(|m| m.mesh.geometry.positions.iter())
+        .map(|p| shot.pixel(root.transform_point3(*p)).y)
+        .fold((f32::INFINITY, f32::NEG_INFINITY), |(top, bottom), row| (top.min(row), bottom.max(row)))
 }

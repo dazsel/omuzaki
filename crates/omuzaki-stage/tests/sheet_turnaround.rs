@@ -784,6 +784,68 @@ fn settling_from_rest_advances_the_springs_by_the_requested_steps_whatever_the_c
     assert_ne!(skins(StageClock::fixed(60.0), 0), skins(StageClock::fixed(60.0), 5));
 }
 
+/// The topmost and bottom-most rows of `built`'s vertices turned by `yaw_deg`, projected by hand through a camera
+/// `distance` metres in front of the middle of the character's height (`ortho` or the 12 degree lens), in a cell of
+/// `CELL`: an independent calculation of what the sheet reports.
+fn rows_by_hand(built: &BuiltCharacter, yaw_deg: f32, ortho: bool) -> (f32, f32) {
+    let points: Vec<Vec3> = built.meshes.iter().flat_map(|m| m.mesh.geometry.positions.iter().copied()).collect();
+    let (sole, crown) = points.iter().fold((f32::MAX, f32::MIN), |(lo, hi), p| (lo.min(p.y), hi.max(p.y)));
+    let framed = (crown - sole) * (1.0 + 2.0 * MARGIN);
+    let mid = f32::midpoint(crown, sole);
+    let half = 6.0_f32.to_radians().tan();
+    let distance = 0.5 * framed / half;
+    let turn = yaw_deg.to_radians();
+    let rows = points.iter().map(|p| {
+        let z = -p.x * turn.sin() + p.z * turn.cos();
+        let up = if ortho { (p.y - mid) / (0.5 * framed) } else { (p.y - mid) / ((distance - z) * half) };
+        0.5 * CELL.y as f32 * (1.0 - up)
+    });
+    rows.fold((f32::MAX, f32::MIN), |(top, bottom), r| (top.min(r), bottom.max(r)))
+}
+
+#[test]
+fn the_crown_and_soles_are_projected_where_the_geometry_is_in_every_lens() {
+    // The whole character stands a metre toward the camera, so its extremes are nowhere near the axis the camera
+    // looks along: points on the axis (z = 0) would be rows off in a perspective lens.
+    let shifted = || {
+        let mut character = built();
+        for mesh in &mut character.meshes {
+            for p in &mut mesh.mesh.geometry.positions {
+                p.z += 1.0;
+            }
+        }
+        character
+    };
+    let character = shifted();
+    let expected = |view: View, ortho: bool| rows_by_hand(&character, view.yaw_deg(), ortho);
+    let mut seen = Vec::new();
+    for lens in [Lens::Telephoto, Lens::Orthographic] {
+        let sheet = with_built(shifted(), |stage, renderer| {
+            render_turnaround(stage, renderer, &spec().with_lens(lens)).expect("the sheet renders")
+        });
+        for v in &sheet.views {
+            let (top, bottom) = expected(v.view, lens == Lens::Orthographic);
+            assert!(
+                (v.framing.crown_row - top).abs() < 0.05,
+                "{lens:?} {:?}: crown {} vs {top}",
+                v.view,
+                v.framing.crown_row
+            );
+            assert!(
+                (v.framing.ground_row - bottom).abs() < 0.05,
+                "{lens:?} {:?}: soles {} vs {bottom}",
+                v.view,
+                v.framing.ground_row
+            );
+            seen.push((lens, v.view, v.framing.crown_row));
+        }
+    }
+    // Not vacuous: the telephoto crown moves with the view's depth (front vs back differ), the orthographic one doesn't.
+    let crown = |lens, view| seen.iter().find(|s| s.0 == lens && s.1 == view).map(|s| s.2).expect("seen");
+    assert!((crown(Lens::Telephoto, View::Front) - crown(Lens::Telephoto, View::Back)).abs() > 2.0);
+    assert!((crown(Lens::Orthographic, View::Front) - crown(Lens::Orthographic, View::Back)).abs() < 0.05);
+}
+
 #[test]
 fn the_hero_pose_differs_from_the_rest_pose_and_is_stable() {
     let rest = sheet(&spec());
