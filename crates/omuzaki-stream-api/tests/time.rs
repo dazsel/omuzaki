@@ -27,22 +27,41 @@ fn rescale_is_exact_for_huge_values_and_rejects_zero() {
 }
 
 #[test]
+fn byte_meter_clones_share_one_count() {
+    let meter = ByteMeter::new();
+    let other = meter.clone();
+    other.add(7);
+    assert_eq!(meter.get(), 7, "a clone adds to the same count");
+    meter.sub(2);
+    assert_eq!(other.get(), 5);
+}
+
+#[test]
 fn byte_meter_balances_across_threads() {
     let meter = ByteMeter::new();
+    meter.add(100);
     std::thread::scope(|s| {
         for _ in 0..4 {
             let m = meter.clone();
             s.spawn(move || {
                 for _ in 0..1000 {
-                    m.add(3);
+                    m.add(5);
                     m.sub(3);
                 }
             });
         }
     });
+    assert_eq!(meter.get(), 100 + 4 * 1000 * 2, "every add and sub from every clone is counted");
+}
+
+#[test]
+fn byte_meter_sub_saturates_at_zero() {
+    let meter = ByteMeter::new();
     meter.add(5);
     meter.sub(10);
     assert_eq!(meter.get(), 0, "sub stops at zero");
+    meter.add(4);
+    assert_eq!(meter.get(), 4, "the meter counts again from zero");
 }
 
 #[test]

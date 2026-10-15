@@ -32,7 +32,10 @@ fn surface() -> String {
     sources(&root.join("src"), &mut files);
     let mut text = String::new();
     for file in files {
-        let rel = file.strip_prefix(root).unwrap().display().to_string();
+        // Joined with `/` on every platform, so the snapshot is the same on Windows.
+        let rel: Vec<_> =
+            file.strip_prefix(root).unwrap().components().map(|c| c.as_os_str().to_string_lossy()).collect();
+        let rel = rel.join("/");
         let source = std::fs::read_to_string(&file).unwrap();
         // Items inside `#[cfg(test)] mod tests` are not public API.
         let body = source.split("#[cfg(test)]").next().unwrap_or("");
