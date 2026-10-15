@@ -15,15 +15,18 @@
 //!
 //! **Sway.** The `wave` sways the tail points sideways by `sin(2 pi frequency t + phase + wv) * amplitude` growing in
 //! over `growth`. The amplitude is `wave.amplitude` scaled by the lock's `wa` over [`WAVE_UNIT`], the mean of `wa`'s
-//! range, so `wave.amplitude = 0.016` is the prototype's own `wa`; the default (no sway) still draws every number.
+//! range, so `wave.amplitude = 0.016` is the prototype's own `wa`; the default (no sway) still draws every number. A
+//! hanging lock also swings forward and back by the prototype's fixed 8 mm, whatever the amplitude. The tucked wave's
+//! phase is on the bind-space height, as in the prototype. `wave.curl` curls the tail's tip outward (squared
+//! smoothstep over the last 22 %; the prototype has none, so a zero curl is the prototype).
 //!
 //! **Randomness.** Two draws per lock, in this order and nothing between locks: `wv = rr(0, 6.28)`, then
 //! `wa = rr(0.012, 0.02)`. Locks run left side first, then the right.
 //!
 //! **Width and thickness.** The group's `width` with its `start` raised by `0.004 i` (the prototype's
 //! `taper(0.030 + 0.004 i, 0.050, 0.006, 0.80)` is exactly a [`Taper`](omuzaki_char_api::Taper)) and the group's
-//! `thickness`. The prototype's `0.006 + 0.004 sin(pi min(1, 1.2 t))` peaks at `t = 0.42` and is flat-zero past
-//! `t = 0.83`; a [`Bulge`](omuzaki_char_api::Bulge) is the closest shape (`base + swell sin(pi t)`, peak at the middle).
+//! `thickness`. The prototype's `0.006 + 0.004 sin(pi min(1, 1.2 t))` peaks at `t = 0.42` and settles at the
+//! base `0.006` past `t = 0.83`; a [`Bulge`](omuzaki_char_api::Bulge) is the closest shape (`base + swell sin(pi t)`, peak at the middle).
 //! The shade is `1 - 0.025 i`. Stiffness and follow are the group's [`Dynamics`](omuzaki_char_api::Dynamics).
 
 use omuzaki_char_api::{FramingGen, FramingLocks, HairSide, HeadSurface, Taper};
@@ -52,6 +55,10 @@ const START_STEP: f64 = 0.004;
 const SHADE_STEP: f64 = 0.025;
 /// The most a taper's width may reach (the contract's limit).
 const WIDTH_MAX: f64 = 0.3;
+/// The forward-back swing of a hanging lock, metres (the prototype's `0.008`, not drawn).
+const DEPTH_AMPLITUDE: f64 = 0.008;
+/// The tip curl starts here along the tail.
+const CURL_FROM: f64 = 0.78;
 /// Stand-in length of a lock whose path cannot be resampled.
 const FALLBACK_LENGTH: f64 = 0.3;
 
@@ -187,7 +194,10 @@ impl Lock<'_> {
             let last = locks.drop.len().saturating_sub(1);
             for (k, [px, py, pz]) in locks.drop.iter().copied().enumerate() {
                 let y = if k == last { py + 0.02 * lock } else { py };
-                pts.push(at(sign * (px + 0.012 * lock + sway.side(y * 40.0)), y, pz - 0.01 * lock));
+                // The prototype's phase is on the bind-space height.
+                let wave =
+                    sway.side((f64::from(centre.y) + y) * 40.0) + sway.tip(index(k + 1) / index(locks.drop.len()));
+                pts.push(at(sign * (px + 0.012 * lock + wave), y, pz - 0.01 * lock));
             }
             return;
         }
@@ -204,9 +214,9 @@ impl Lock<'_> {
             let x0 = fx + gap * 0.9 + 0.008;
             for step in 1..=6_u8 {
                 let t = f64::from(step) / 6.0;
-                let sideways = x0 + 0.03 * smoothstep(t, 0.0, 0.5) + sway.side(t * sway.turns) * sway.grow(t);
-                let depth =
-                    lerp(0.055, 0.085 - 0.006 * lock, smoothstep(t, 0.0, 0.4)) + sway.depth(t * sway.turns) * 0.5;
+                let sideways =
+                    x0 + 0.03 * smoothstep(t, 0.0, 0.5) + sway.side(t * sway.turns) * sway.grow(t) + sway.tip(t);
+                let depth = lerp(0.055, 0.085 - 0.006 * lock, smoothstep(t, 0.0, 0.4)) + sway.depth(t * sway.turns);
                 pts.push(at(sign * sideways, lerp(locks.cheek, end, t), depth));
             }
         }
@@ -219,7 +229,8 @@ impl Lock<'_> {
             let t = index(j + 1) / index(tail.len());
             let p = if self.side < 0.0 { p.mirrored() } else { *p };
             let shift = DVec3::new(
-                self.side * self.g.spread * self.i * 0.9 + self.side * sway.side(t * sway.turns) * sway.grow(t),
+                self.side * self.g.spread * self.i * 0.9
+                    + self.side * (sway.side(t * sway.turns) * sway.grow(t) + sway.tip(t)),
                 0.0,
                 -0.006 * self.i,
             );
@@ -243,6 +254,8 @@ struct Sway {
     turns: f64,
     /// Amplitude, metres.
     amplitude: f64,
+    /// The wave's tip curl, metres.
+    curl: f64,
     growth: [f64; 2],
 }
 
@@ -252,6 +265,7 @@ impl Sway {
             phase: wv + g.wave.phase,
             turns: std::f64::consts::TAU * g.wave.frequency,
             amplitude: g.wave.amplitude * wa / WAVE_UNIT,
+            curl: g.wave.curl,
             growth: g.wave.growth,
         }
     }
@@ -261,9 +275,15 @@ impl Sway {
         (arg + self.phase).sin() * self.amplitude
     }
 
-    /// The forward-back offset, a quarter turn behind [`side`](Self::side).
+    /// The forward-back offset, a quarter turn behind [`side`](Self::side), of the prototype's fixed size.
     fn depth(&self, arg: f64) -> f64 {
-        (arg + self.phase).cos() * self.amplitude
+        (arg + self.phase).cos() * DEPTH_AMPLITUDE
+    }
+
+    /// The outward curl of the last fifth of the tail, `wave.curl` at the tip (none in the prototype).
+    fn tip(&self, t: f64) -> f64 {
+        let curling = smoothstep(t, CURL_FROM, 1.0);
+        self.curl * curling * curling
     }
 
     /// How far the sway has grown in at `t`.

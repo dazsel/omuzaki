@@ -1,7 +1,13 @@
 //! The `framing` generator on a synthetic head: counts, the face-window keep-out, the random stream's order, and the
 //! contract (`FramingGen` files parse unchanged; the lock heights validate). Everything is synthetic.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::float_cmp, clippy::cast_precision_loss)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::float_cmp,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation
+)]
 
 use omuzaki_char::hair::compile::{
     CompiledGroup, Dispatch, Forked, HairGenCtx, UnitStream, clumps_in, compile_groups, is_bilateral,
@@ -118,18 +124,22 @@ fn no_lock_passes_through_the_face_window() {
         let d = p - Egg.centre();
         d.x.abs() < 0.11 && (-0.07..0.03).contains(&d.y) && d.z > 0.0
     };
-    for locks in [false, true] {
-        let g = swaying(HairSide::Both, 5, locks);
+    let styles = [
+        ("default", FramingGen::default()),
+        ("swaying, no heights", swaying(HairSide::Both, 5, false)),
+        ("swaying, with heights", swaying(HairSide::Both, 5, true)),
+    ];
+    for (name, g) in styles {
         let mut seen = 0;
         for (n, c) in compile_forked(&g, 6).clumps.iter().enumerate() {
             // Test the points and the middle of every segment.
             let samples = c.rest.iter().copied().chain(c.rest.windows(2).map(|w| (w[0] + w[1]) * 0.5));
             for p in samples.filter(|p| in_eyes(*p)) {
                 seen += 1;
-                assert!(gap(p) >= 0.003, "locks {locks} lock {n}: gap {}", gap(p));
+                assert!(gap(p) >= 0.003, "{name} lock {n}: gap {}", gap(p));
             }
         }
-        assert!(seen > 0, "the check must see points in front of the eyes (locks {locks})");
+        assert!(seen > 0, "the check must see points in front of the eyes ({name})");
     }
 }
 
@@ -299,10 +309,69 @@ fn each_out_of_range_lock_value_fails_naming_its_field() {
 }
 
 #[test]
-fn the_outline_and_spread_are_checked_too() {
-    let mut g = FramingGen::default();
-    g.edge[2][0] = f64::NAN;
-    g.spread = 9.0;
-    let named = failures(&g);
-    assert!(named.contains("generator/edge/2/y") && named.contains("generator/spread"), "{named}");
+fn values_accepted_before_the_locks_still_validate() {
+    let mut g = FramingGen { spread: 0.21, ..FramingGen::default() };
+    g.edge[2] = [f64::NAN, 5.0];
+    g.edge.push([9.0, -9.0]);
+    assert_eq!(failures(&g), "", "only the new `locks` field is bounded");
+}
+
+// ------------------------------------------------------------------------------------------ independent coordinates
+
+/// Where the last point of lock `i` of a side must be, from the prototype's formulas worked out by hand with
+/// `wv = u0 * 6.28`, `wa = 0.012 + 0.008 * u1`, on `Egg` with `wave = { amplitude: 0.016, frequency: 2, phase: 0 }`.
+#[allow(clippy::approx_constant)] // the prototype's literal 6.28
+fn wave_args(u0: f64, u1: f64) -> (f64, f64) {
+    (u0 * 6.28, 0.012 + 0.008 * u1)
+}
+
+#[test]
+fn a_hanging_lock_ends_where_the_formulas_put_it() {
+    let (u0, u1) = (0.2, 0.9);
+    let (wv, wa) = wave_args(u0, u1);
+    let g = swaying(HairSide::Right, 1, true);
+    let tip = compile_with(&g, &mut Script::new(&[u0, u1])).clumps[0].rest[HANGING_POINTS - 1];
+    // t = 1: x = x0 + 0.03 + sin(tau 2 + wv) wa, z = 0.085 + 0.008 cos(tau 2 + wv), y = end[0]; x0 = 0.192 + 0.008.
+    let arg = std::f64::consts::TAU * 2.0 + wv;
+    let want = Vec3::new(-(0.2 + 0.03 + arg.sin() * wa) as f32, 1.6 - 0.4, (0.085 + 0.008 * arg.cos()) as f32);
+    assert!(tip.distance(want) < 1e-4, "{tip} vs {want}");
+    // The depth swing is the fixed 8 mm: another amplitude moves x but not z.
+    let flat = FramingGen { wave: Wave { amplitude: 0.0, ..g.wave }, ..g.clone() };
+    let tip0 = compile_with(&flat, &mut Script::new(&[u0, u1])).clumps[0].rest[HANGING_POINTS - 1];
+    assert!((tip0.z - want.z).abs() < 1e-4, "z {} vs {}", tip0.z, want.z);
+    // Swapped draws land elsewhere.
+    let swapped = compile_with(&g, &mut Script::new(&[u1, u0])).clumps[0].rest[HANGING_POINTS - 1];
+    assert!(swapped.distance(want) > 1e-3);
+}
+
+#[test]
+fn a_tucked_lock_ends_where_the_formulas_put_it() {
+    // Left, lock 1 draws numbers 2 and 3 (lock 0 takes 0 and 1).
+    let (u0, u1) = (0.35, 0.6);
+    let (wv, wa) = wave_args(u0, u1);
+    let g = swaying(HairSide::Left, 2, true);
+    let tip = compile_with(&g, &mut Script::new(&[0.9, 0.9, u0, u1])).clumps[1].rest[TUCKED_POINTS - 1];
+    // The last drop point [0.16, -0.3, -0.12] of lock 1: y rises 0.02; the wave's phase is on the bind-space height.
+    let y = -0.3 + 0.02;
+    let x = 0.16 + 0.012 + ((1.6 + y) * 40.0 + wv).sin() * wa;
+    let want = Vec3::new(x as f32, (1.6 + y) as f32, (-0.12 - 0.01) as f32);
+    assert!(tip.distance(want) < 1e-4, "{tip} vs {want}");
+    let swapped = compile_with(&g, &mut Script::new(&[0.9, 0.9, u1, u0])).clumps[1].rest[TUCKED_POINTS - 1];
+    assert!(swapped.distance(want) > 1e-3);
+}
+
+#[test]
+fn the_tip_curl_moves_the_tail() {
+    for locks in [false, true] {
+        for side in [HairSide::Left, HairSide::Right] {
+            let plain = swaying(side, 2, locks);
+            let curled = FramingGen { wave: Wave { curl: 0.1, ..plain.wave }, ..plain.clone() };
+            let (a, b) = (compile_forked(&plain, 3), compile_forked(&curled, 3));
+            assert_ne!(a, b, "{side:?} locks {locks}: curl must change the geometry");
+            for (p, q) in a.clumps.iter().zip(&b.clumps) {
+                // The root is not moved.
+                assert!(p.rest[0].distance(q.rest[0]) < 1e-6);
+            }
+        }
+    }
 }

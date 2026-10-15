@@ -1230,11 +1230,6 @@ impl Validate for HairGroup {
                 if g.edge.len() < 2 {
                     c.fail("generator/edge", "needs at least two [y, x] points");
                 }
-                c.range("generator/spread", g.spread, 0.0, 0.2);
-                for (i, row) in g.edge.iter().enumerate() {
-                    c.range(&format!("generator/edge/{i}/y"), row[0], -1.5, 1.0);
-                    c.range(&format!("generator/edge/{i}/x"), row[1], -1.0, 1.0);
-                }
                 if let Some(locks) = &g.locks {
                     c.nested("generator/locks", locks);
                 }
