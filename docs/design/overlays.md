@@ -38,7 +38,7 @@ blocks bind the contract tasks; doc comments are the implementer's. Every struct
 | 8. Alerts (and the chat box and the AI bubble) | D8 | #1035 |
 | 9. Captions | D9 | #1187 |
 | 3. The native draw path: text, fonts, emoji, emotes, right to left | D10 | #1036 |
-| 3. The compositing step and the `omuzaki-render-api` ask | D11 | #1036, ask R1 |
+| 3. The compositing step and the `omuzaki-render-api` ask | D11 | #1036, asks R1a and R1b |
 | 4. Which outputs carry overlays | D12 | |
 | 5. Web widgets | D13 | new |
 | 10. Ops, scopes, agents; "no widget reads the camera or files without a scope" | D14 | #1034 |
@@ -238,6 +238,10 @@ pub fn worst_contrast(text: Colour, surface: Colour) -> f32;
 - **Why a fixed token set** (eight tokens, closed by decision, not `#[non_exhaustive]`): it is what a widget's style
   can name and what the contrast check walks. Kinds never take raw colours, so a palette change restyles every widget
   and a single changed token changes only the widgets that use it (#1036's golden check).
+- **Text tokens are opaque.** `text`, `text_muted`, `accent`, `positive`, `warning` and `danger` (every token any
+  kind may draw text in) must have alpha 255; `check_overlay` refuses a palette (default, character-derived or
+  explicit) that resolves one of them translucent, naming the token, so text is never see-through and the contrast
+  rule below compares the colour actually drawn. Only `surface` and `surface_alt` may be translucent.
 - **The contrast rule:** for each widget, `text` and `text_muted` against `surface` and `surface_alt` must reach 4.5:1
   (WCAG 2.x, normal text), and so must every extra token the kind draws text in (`WidgetKindInfo::text_tokens`: the
   chat box's role colours `accent`, `positive` and `warning`, D8); `accent` against `surface` must also reach 3:1
@@ -265,6 +269,7 @@ pub struct WidgetKindInfo {
     pub hides_on_panic: bool,                        // BR-14's panic hides it (the AI bubble)
     pub content_fit: bool,                           // supports Fit::Width (its View reports a height)
     pub text_tokens: &'static [PaletteToken],        // tokens it draws text in beyond the style's (D4's check)
+    pub cross_fade: bool,                            // keeps a second picture for `View::fade_out` (D5)
 }
 pub struct Needs { pub camera: bool, pub files: bool, pub network: bool, pub transcript: bool, pub viewer_data: bool }   // all false: none
 pub trait WidgetKind: Send + Sync + 'static {
@@ -308,7 +313,7 @@ pub trait TextMeasure: Send + Sync {
 pub struct MeasureStyle { pub px: f32, pub bold: bool, pub lang: Option<Locale> }   // Locale: omuzaki-l10n-api's
 pub enum Command { Clear, Alert(AlertRequest) }
 impl View {
-    /// Every number finite; `alpha` 0..=1; `slide` -1..=1; `content_aspect` 0.01..=100; image sizes and bar values
+    /// Every number finite; `alpha` and `fade_out` 0..=1 (`fade_out` only on a `cross_fade` kind); `slide` -1..=1; `content_aspect` 0.01..=100; image sizes and bar values
     /// 0..=1; at most `MAX_VIEW_ITEMS` (64) items, 512 spans and 4 KiB of plain text in all.
     pub fn validate(&self) -> Result<(), OverlayError>;
 }
@@ -318,6 +323,7 @@ pub struct View {
     pub items: Vec<ViewItem>,
     pub alpha: f32,                                  // whole-widget opacity, applied at composite: no repaint
     pub slide: [f32; 2],                             // offset as a fraction of the box, applied at composite
+    pub fade_out: Option<f32>,                       // a cross-fade: the previous picture's opacity (0..=1)
     pub content_aspect: Option<f32>,                 // for Fit::Width
     pub revision: u64,                               // bumps when items change; one input of the paint key (D10)
 }
@@ -345,6 +351,13 @@ pub enum ImageRef { Asset(ContentHash), Emote(EmoteRef) }
 - **Why `Content::Message` and `Content::Plain`:** our own words ("Thanks for the raid!") are message ids with typed
   arguments, so they translate and pass the l10n check; a viewer's chat line or the performer's words are never run
   through Fluent. Resolving at paint time, not in `step`, keeps `step` free of formatting and allocation.
+- **Cross-fades are two layers.** A kind that declares `WidgetKindInfo::cross_fade` (the AI bubble) bumps
+  `revision` for the new content and sets `fade_out` to the outgoing content's opacity, lowering it to `None` over
+  the fade. The host keeps the previous picture in a second texture for such kinds, and `prepare` pushes two layers
+  for the widget while `fade_out` is set: the previous picture at `alpha × fade_out`, then the new one at
+  `alpha × (1 − fade_out)` within the same clip. Tests: during a 0.15 s cross-fade stepped at 30 Hz the widget
+  yields exactly two layers whose opacities sum to its alpha, and a mid-fade golden matches the reference composite
+  of both pictures.
 - **Why `alpha` and `slide` are outside `revision`:** fades and slide-ins change every frame; they are applied when
   compositing (D11), so an animation costs no repaint and no upload.
 - **Why `StepCx` carries `content_px` and a `TextMeasure`:** captions must decide their own line breaks so a finished
@@ -413,7 +426,11 @@ pub trait OverlayFrame: Send {
 - **The frame seam:** `OverlayFrame::prepare` is the only thing the render thread calls. It takes the newest finished
   picture of each widget from a per-widget triple buffer (lock-free), uploads only changed ones, resolves each visible
   widget's `RectPx` for the target size and the live scene, and pushes one `Layer` per widget in (`z`, id) order with
-  `opacity = view.alpha` and the slide applied. `omuzaki-stage`'s frame loop then calls `Renderer::composite` (D11).
+  `opacity = view.alpha` and the slide applied. **The slid rectangle is clipped to the widget's region** (the safe
+  rectangle when `layout.safe`, else the output): `dst` is intersected with the region and `src` trimmed to match, so
+  a slide-in enters from the margin's edge and no pixel ever lands outside the safe rectangle mid-animation.
+  `omuzaki-stage`'s frame loop then calls `Renderer::composite` (D11). #1036's alpha scan runs on every frame of an
+  alert's slide-in and slide-out and of the bubble's cross-fade, not only on still frames.
 - **Determinism:** logic is a pure function of its params, the events with their times and the step times; the
   `KindHarness` runs a script twice and compares the `View`s byte for byte (ADR 0009).
 
@@ -480,8 +497,13 @@ The behaviour, parameters and acceptance of #1035 stand; the design fixes what t
   later.
 - **Text:** each alert kind has a message (`overlay-alert-raid`: "{ $name } is raiding with { $viewers } viewers!")
   with typed arguments; the person may replace the message per kind with their own template (`templates.raid =
-  "{name} brought {viewers} friends"`), whose placeholders are the payload's top-level fields, substituted as plain
-  text (never markup, never Fluent), so a viewer's name can't inject anything.
+  "{from.name} brought {viewers} friends"`), whose placeholders are **dotted paths into the kind's payload** to a
+  scalar leaf (`{viewers}`; `{from.name}` for `raid`, whose raider is `from: ChatUser` in automation D9;
+  `{user.name}` for `follow`, `{gifter.name}` for `sub_gift`, `{reward.title}` for `redeem`). Paths are checked at
+  `overlay.add` and `.set` against the kind's registered payload schema, so a misspelt or non-scalar path is refused
+  with the nearest valid one; an optional field that is absent at run time (an anonymous gifter) renders as the
+  message `overlay-alert-anonymous`. Values are substituted as plain text (never markup, never Fluent), so a viewer's
+  name can't inject anything. The built-in messages take the same paths as their typed arguments.
 - **Sounds and other effects are not the widget's** (#1031 item 8's soundboard hook): logic is pure, and effects go
   through ops. When an alert starts showing the host publishes `overlay.alert_started` (D7), and a graph `on.event →
   op.run(sound.play)` plays the sound (BR-21) in the show's session, with the show's grants and limits. The seed
@@ -541,7 +563,7 @@ pub struct CaptionParams { pub max_lines: u8 /* 2 */, pub hold_base_s: f32 /* 3.
   partials on an RVC-class changer (`D` = 200 ms). `D` comes from the perform settings through a read-only service the
   host is given: `omuzaki-overlay-api`'s `trait AvDelay: Send + Sync { fn current(&self) -> Seconds; }`, which the
   stage implements over the delay its frame loop already ramps (one atomic, written by the frame loop and read by the
-  overlay thread) and hands to the host as part of ask R1. Until R1 lands the host uses 0 and shows the finding
+  overlay thread) and hands to the host as part of ask R1b. Until R1b lands the host uses 0 and shows the finding
   `overlay-captions-not-delay-aligned` when the perform delay is above 0. Audio-api §5.2's "overlays and alerts are not delayed" still holds for
   everything except this alignment of captions to their own audio.
 - **Latency from speech to pixels:** the speech host's part is ML-03's (VAD end-of-speech plus the recogniser); the
@@ -614,9 +636,9 @@ impl TextMeasure for PainterMeasure { /* the same shaping, without rasterising *
   rounded edge; `max_lines` and the box height bound the text, and text that doesn't fit is cut at a line with an
   ellipsis, never clipped mid-glyph (#1036's "no text is clipped by its own box").
 
-### D11. The compositing step: one call after `Resolve`, in place, with a clean copy when needed (ask R1)
+### D11. The compositing step: one call after `Resolve`, in place, with a clean copy when needed (asks R1a, R1b)
 
-**The ask to the Render, stage and V0 lead** (R1, an `omuzaki-render-api` change of that area; this design doesn't edit
+**The ask to the Render, stage and V0 lead** (R1a, an `omuzaki-render-api` change of that area; this design doesn't edit
 it):
 
 ```rust
@@ -659,7 +681,7 @@ pub trait Renderer {
 - **The mock** implements the reference formula and `conformance` gains checks for it: order of layers, opacity,
   clipping at the target's edge, `src` sub-rectangles, a straight-alpha target, `copy_target`, and that `composite`
   leaves pixels outside every layer untouched.
-- **Ask R1 also covers the frame loop** in `omuzaki-stage` (V0 integration is that lead's): after `render`, when a
+- **Ask R1b covers the frame loop** in `omuzaki-stage` (V0 integration is that lead's): after `render`, when a
   clean feed is active `copy_target(program, clean)`, then `OverlayFrame::prepare(renderer, size, live_scene,
   &mut layers)` and `composite(program, &layers)`, then the outputs. The `Vec<Layer>` is the loop's, reused. It
   also publishes the ramped A/V delay through an `AvDelay` (D9) that the App hands to the overlay host.
@@ -687,11 +709,16 @@ and to a preview; native kinds draw in our output. The rest:
 
 - **The server:** `omuzaki-overlay/src/web` runs a local HTTP server on `127.0.0.1` (default port 7480,
   `OverlaySettings::web_port`), on the `hyper` stack already in the workspace for the MCP port. Each web widget is
-  served at `http://127.0.0.1:<port>/w/<token>/` with a 128-bit random **token per widget** kept in the machine-local
-  approvals store, never in the document (a shared show must not carry working URLs). The editor's "Copy URL for OBS"
-  gives it; "New URL" rotates it. Requests with a `Host` other than `127.0.0.1:<port>` or `localhost:<port>` are refused
-  (DNS rebinding), and the server never binds another interface.
-- **The feed:** Server-Sent Events at `/w/<token>/feed` (one-way; a browser source needs nothing more, and SSE
+  served from **its own origin**, `http://w<token>.localhost:<port>/`, where the token is 128 random bits in 26
+  lower-case base32 characters, kept in the machine-local approvals store and never in the document (a shared show
+  must not carry working URLs). `*.localhost` resolves to loopback in Chromium, and so in OBS's browser source,
+  without DNS. **Why an origin per widget:** browser storage (`localStorage`, IndexedDB, cookies, caches, storage
+  events) is per origin, so two widgets open at once can never read each other's storage; paths under one shared
+  origin would share all of it. The editor's "Copy URL for OBS" gives the URL; "New URL" rotates the token, and with
+  it the origin, so nothing stored under the old one is reachable again. Requests whose `Host` isn't exactly a live
+  widget's `w<token>.localhost:<port>` are refused (DNS rebinding, and no widget can name another's host), and the
+  server never binds anything but `127.0.0.1`.
+- **The feed:** Server-Sent Events at `/feed` on the widget's origin (one-way; a browser source needs nothing more, and SSE
   reconnects by itself). Messages: `hello` (the widget's settings, the palette, the language, the live scene), `event`
   (a `LiveEvent`'s kind, time and payload, only for kinds the manifest consumes, after `ChatFilter`), `scene` (the live
   scene changed), `visible`, `clear`, `alert` (`overlay.alert` aimed at this widget), and `time` once a second. The
@@ -702,15 +729,24 @@ and to a preview; native kinds draw in our output. The rest:
   approved `network` host), `Permissions-Policy: camera=(), microphone=(), geolocation=(), display-capture=()`, and
   `Cross-Origin-Resource-Policy: same-origin`. So a widget reads only its own files and its own feed, with no network
   unless the person approved a host, no camera, no microphone and no file reads. Emote images and store assets are
-  proxied under `/w/<token>/img/…` so `img-src 'self'` holds. In the editor preview the page runs in an
+  proxied under `/img/…` on the widget's origin so `img-src 'self'` holds. In the editor preview the page runs in an
   `<iframe sandbox="allow-scripts">` without `allow-same-origin` in addition.
 - **Viewer data and storage:** OBS loads the page as a normal origin, so the CSP can't stop its script from writing
   to `localStorage`, IndexedDB, cookies or caches. The design doesn't pretend otherwise: a package whose `consumes`
-  includes a kind carrying viewer names or messages declares the `viewer_data` need, and without the person's
-  approval for this show its feed carries those kinds with `user`, `name`, `login`, `message`, `text` and avatar
-  fields removed (counts and amounts stay). Each page load is served with `Clear-Site-Data: "storage", "cache",
-  "cookies"` and `Cache-Control: no-store`, so nothing a page stored survives a reload of the source; it can still
-  keep data for as long as the page stays open, which the approval card states.
+  includes a kind carrying viewer data declares the `viewer_data` need. **Without the person's approval for this
+  show, each event reaches the page only through a typed safe projection of its kind,** never a filtered payload:
+  `register_safe_projection!` (in `omuzaki-overlay-api`'s `web` module) maps a kind to a function from its typed
+  payload to a small struct holding only fields that identify nobody, and **a kind with no projection is withheld
+  whole** (default deny, which covers plugin kinds and fields added later). The first-party table (in
+  `omuzaki-overlay/src/web/projections/`, one file per kind): `follow` → `{platform}`; `sub` → `{platform, tier,
+  months, gift}`; `sub_gift` → `{platform, tier, count}`; `cheer` → `{platform, bits}`; `tip` → `{platform,
+  amount}`; `redeem` → `{platform, reward: {id, title, cost}}` (never `input`); `raid` → `{platform, viewers}`;
+  `chat.message`, `chat.*` moderation kinds, `ai.line` and `voice.transcript` have none and are withheld. A test
+  serialises every projection from a fixture holding a distinctive name, login, id, message and input, and asserts
+  none of them appears. Each page load is served with `Clear-Site-Data: "storage", "cache",
+  "cookies"` and `Cache-Control: no-store`, so nothing a page stored survives a reload of the source; an approved page
+  can still keep data in its own origin while it stays open, which the approval card states, and no other widget
+  can read it (its own origin, above).
 - **Packages:** a web widget is a package: `widget.toml` (id `<publisher>/<name>`, version, title, summary, entry
   file, `consumes`, `needs`, a JSON Schema for its settings, licence and provenance like library items, ADR 0019) and
   its files. Installed packages live in the store by content hash and are **pinned by hash** in the widget's params
@@ -783,9 +819,9 @@ unknown widget is an error naming the nearest id; an unknown kind lists the regi
 | Limit | Value | When it trips |
 |---|---|---|
 | Widgets per show (`MAX_WIDGETS`) | 64 | `overlay.add` refused, naming the constant |
-| Visible widgets per scene | 16 | refused by `overlay.add`, `.set`, `.set_layout` and `overlay.show` (document and live visibility); a hand-edited show over it is a finding, and the host draws the 16 highest `z` (ties: the lower id first), so foreground widgets such as alerts and captions stay |
+| Visible widgets per scene | 16 | refused by `overlay.add`, `.set`, `.set_layout`, `overlay.show` and `overlay.toggle` when it would show (document and live visibility); a hand-edited show over it is a finding, and the host draws the 16 highest `z` (ties: the lower id first), so foreground widgets such as alerts and captions stay |
 | Scene patches per show | 64 × the show's scenes | (bounded by the two above) |
-| Widget picture memory per show | 128 MiB: four copies of every widget's largest box over all scenes at the program size, × 4 bytes (three CPU slots of the triple buffer and the GPU texture), so the boxes themselves total at most 32 MiB (about 3.8 full 1080p screens) | `overlay.add` and `.set_layout` refuse an edit over it; a hand-edited show over it is a finding, and the largest widgets above the cap are inert |
+| Widget picture memory per show | 128 MiB: four copies of every widget's largest box over all scenes at the program size, × 4 bytes (three CPU slots of the triple buffer and the GPU texture), five for a `cross_fade` kind (the previous picture's texture), so the boxes themselves total at most 32 MiB (about 3.8 full 1080p screens) | `overlay.add`, `.set` (a larger `layout.size`) and `.set_layout` refuse an edit over it; a hand-edited show over it is a finding, and the largest widgets above the cap are inert |
 | Painter caches per show | glyphs 16 MiB; decoded store images 32 MiB (emotes are the emote cache's, below) | least recently used out |
 | Text: alert `text` and templates, chat `max_chars` | 500 characters | refused by the op or the params check |
 | Images per widget; one image | 64; 4,096 × 4,096 and 16 MiB decoded | refused at `check`; a bigger image is scaled down once on load |
@@ -904,7 +940,7 @@ duration_s = 5.0
 gap_s = 0.5
 dedupe_s = 10.0
 priority = { raid = 5, sub_gift = 4, sub = 3, cheer = 3, tip = 3, redeem = 2, follow = 1 }
-templates = { raid = "{name} brought {viewers} friends!" }
+templates = { raid = "{from.name} brought {viewers} friends!" }
 ```
 
 ```toml
@@ -982,8 +1018,8 @@ change (the captions re-break their lines once, for the new width).
 | `omuzaki-overlay` (new, implementation) | the host, kinds, ops, painter, web server, the `overlay` show key | Broadcast and live |
 | `omuzaki-speech` | `voice.transcript` (`Transcript`, `transcript_event`, feed-only) | Broadcast and live (audio) |
 | `omuzaki-live-api` (**ask L1**, into #773 and #774 before they land) | `EventFeed` and its `Subscription`; `EventKindRegistration::feed_only()` (the engine ignores such kinds); `Source::Overlay { widget }` with `Source::overlay(widget)`; the normalised kinds `chat.delete`, `chat.clear_user`, `chat.clear` | Broadcast and live (the area's own contract) |
-| `omuzaki-render-api`, `omuzaki-render-mock`, `omuzaki-render` (**ask R1**) | `Layer`, `LayerRect`, `CompositeReport`, `Renderer::composite`, `Renderer::copy_target`, `Capabilities::composite`, `MAX_LAYERS`; the mock's reference and conformance checks; the GPU implementation | Render, stage and V0 |
-| `omuzaki-stage` (**ask R1**) | the frame loop: clean copy, `OverlayFrame::prepare`, `composite`, before the outputs; an `AvDelay` over its delay ramp (D9) | Render, stage and V0 |
+| `omuzaki-render-api`, `omuzaki-render-mock`, `omuzaki-render` (**ask R1a**, before A) | `Layer`, `LayerRect`, `CompositeReport`, `Renderer::composite`, `Renderer::copy_target`, `Capabilities::composite`, `MAX_LAYERS`; the mock's reference and conformance checks; the GPU implementation | Render, stage and V0 |
+| `omuzaki-stage` (**ask R1b**, after A) | the frame loop: clean copy, `OverlayFrame::prepare`, `composite`, before the outputs; an `AvDelay` over its delay ramp (D9) | Render, stage and V0 |
 | `omuzaki-text` (new, lib; **ask R2**) | the sheet's shaping, fallback fonts, bidi, measuring and coverage rasterising, shared | Render, stage and V0 (or Broadcast, D10) |
 | `omuzaki-ops-api` | nothing new (`edit:show` is #951's) | |
 | Spec | §9's `omuzaki-live` row names the overlay crates; BR-20's note says web widgets are browser sources in v1 | the Director (outside this change's fence) |
@@ -999,12 +1035,15 @@ issues become four changes along the contract seams, plus the asks:
 
 | Change | Covers | Crates | Depends on |
 |---|---|---|---|
-| **A. The overlay contract** | #1032 (re-cut: the layout lives in the show's `overlay` key, D2, so no `omuzaki-stage-api` edit), #1033 (re-cut: `StepCx`, `Content`, `Command`, `OverlayFrame`; no stub files, D17) | `omuzaki-overlay-api`, `omuzaki-overlay-mock` (new), `crates/README.md` rows | #773, #952 (live-api), L1 |
-| **B. The overlay host, kinds and ops** | #1034 (re-cut: `edit:show`; the extra layout ops), #1035, #1187 (both halves; re-cut: no `private` field, feed-only, `follow_av_delay`) | `omuzaki-overlay` (all but `src/draw`, `src/web`), `omuzaki-speech/src/events.rs`, the alert-sounds seed template, `omuzaki-cli` link | A, #139, #951, L1; captions' delay alignment needs R1's `AvDelay` (0 with a finding until then) |
-| **C. The draw path** | #1036 (fence: `omuzaki-overlay/src/draw/**`, its tests, goldens, the contact sheet, the bench) | `omuzaki-overlay/src/draw`, `omuzaki-text` if R2 is declined | A, R1, R2 |
+| **A. The overlay contract** | #1032 (re-cut: the layout lives in the show's `overlay` key, D2, so no `omuzaki-stage-api` edit), #1033 (re-cut: `StepCx`, `Content`, `Command`, `OverlayFrame`; no stub files, D17) | `omuzaki-overlay-api`, `omuzaki-overlay-mock` (new), each with its `[package.metadata.omuzaki]` table (the crate table in `crates/README.md` is generated from it) | #773, #952 (live-api), L1, R1a (`Layer`) |
+| **B. The overlay host, kinds and ops** | #1034 (re-cut: `edit:show`; the extra layout ops), #1035, #1187 (both halves; re-cut: no `private` field, feed-only, `follow_av_delay`) | `omuzaki-overlay` (all but `src/draw`, `src/web`), `omuzaki-speech/src/events.rs`, the alert-sounds seed template, `omuzaki-cli` link | A, #139, #951, L1; captions' delay alignment needs R1b's `AvDelay` (0 with a finding until then) |
+| **C. The draw path** | #1036 (fence: `omuzaki-overlay/src/draw/**`, its tests, goldens, the contact sheet, the bench) | `omuzaki-overlay/src/draw`, `omuzaki-text` if R2 is declined | A, R1a, R1b, R2 |
 | **D. Web widgets** (new issue) | the server, the feed, the sandbox, packages and their licence gate, the browser preview | `omuzaki-overlay/src/web` | A |
 
-**Asks to file** (one issue each, on acceptance): **R1** (Render, stage and V0: the composite and the frame loop, D11),
+**Asks to file** (one issue each, on acceptance): **R1a** (Render, stage and V0: `Layer`, `composite`, `copy_target`,
+the mock and conformance, the GPU implementation; it lands **before A**, which names `Layer` in `OverlayFrame`),
+**R1b** (the same lead: the frame loop's clean copy, `OverlayFrame::prepare` and `composite`, and the `AvDelay`; it
+needs A's `OverlayFrame`, so it lands **after A**; D11),
 **R2** (the same lead: `omuzaki-text`, D10), **L1** (folded into #773 and #774 by this area's lead, D7).
 
 **What the design unlocks** (issues to file, each a change): the goal, timer, now-playing and sponsor-card kinds (one
