@@ -621,6 +621,39 @@ fn shape_cube_corners() -> Vec<(String, BodyShape)> {
         .collect()
 }
 
+/// The ankle's tail follows the dome down, and the leg's end cap lies past it: neither pokes out of the sole, on every
+/// template and on both meshes, over the ten presets and the 32 corners of the shape cube.
+#[test]
+fn the_leg_stays_above_the_sole() {
+    let shapes: Vec<(String, BodyShape)> = shape::presets()
+        .unwrap()
+        .iter()
+        .map(|p| (p.id.as_str().to_string(), p.shape.clone()))
+        .chain(shape_cube_corners())
+        .collect();
+    let mut worst = (f64::MAX, String::new());
+    for template in registry::templates() {
+        for (name, shape) in &shapes {
+            for (detail, label) in [(Detail::LIVE, "live"), (Detail::OFFLINE, "offline")] {
+                let lowest = body(template.id(), shape, detail)
+                    .iter()
+                    .filter(|(r, _)| matches!(r, BodyRegion::LegL | BodyRegion::LegR))
+                    .flat_map(|(_, m)| m.geometry.positions.iter().map(|p| f64::from(p.y)))
+                    .fold(f64::MAX, f64::min);
+                assert!(
+                    lowest >= -1e-6,
+                    "{} {name} {label}: the leg reaches {lowest} m, below the sole",
+                    template.id()
+                );
+                if lowest < worst.0 {
+                    worst = (lowest, format!("{} {name} {label}", template.id()));
+                }
+            }
+        }
+    }
+    eprintln!("lowest leg vertex {:.4} m ({})", worst.0, worst.1);
+}
+
 /// Prints the ankle's worst front turn and waist over the ten presets and the 32 corners of the shape cube, per template.
 #[test]
 #[ignore = "prints the ankle table"]

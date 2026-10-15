@@ -20,7 +20,7 @@
 use omuzaki_char_api::BodyRegion;
 use omuzaki_core::glam::{DVec2, DVec3};
 
-use super::mesh::Ring;
+use super::mesh::{Ring, caps_of};
 use crate::kit::curve::{TAU, fraction, lerp, sstep};
 
 /// The radius of the arc that bridges the hip, as a fraction of the torso's length.
@@ -39,6 +39,10 @@ const ANKLE_RHO: f64 = 0.11;
 const DOME_SAMPLES: usize = 24;
 /// How far round the widest section's lower half the leg follows the dome, as an angle from its widest point.
 const DOME_TAIL: f64 = 1.0;
+/// Bisection steps that find the deepest tail angle whose end cap clears the sole.
+const TAIL_BISECTIONS: usize = 24;
+/// The shallowest tail worth building, radians.
+const MIN_TAIL_ANGLE: f64 = 0.05;
 /// The narrowest a ring on the dome's lower outline gets, as a fraction of the widest section's half-width.
 const MIN_TAIL: f64 = 0.05;
 /// How far above the foot's top the leg's rings are dilated, in arc radii.
@@ -204,8 +208,9 @@ fn on_left(ring: &mut Ring, mirrored: bool, f: impl FnOnce(&mut Ring)) {
 /// (taken from its last two rings) and arrives vertical at the width of the foot's widest section, where the foot's own outline is
 /// vertical. The shin's outline then runs into the foot's as one smooth arc. `side` is +1 for the left leg and -1 for the
 /// right: the edge that has to meet the dome is the outer one, so the width is measured to it. Nothing if the foot's widest
-/// section is not below the leg's end.
-fn grow_ankle(leg: &[Ring], foot: &[Ring], count: usize, side: f64) -> Vec<Ring> {
+/// section is not below the leg's end. `angle` is how far round the widest section's lower half the tail goes (no tail
+/// at or below [`MIN_TAIL_ANGLE`]).
+fn grow_ankle(leg: &[Ring], foot: &[Ring], count: usize, side: f64, angle: f64) -> Vec<Ring> {
     let (Some(last), Some(widest)) = (leg.last(), foot.iter().max_by(|a, b| a.radii.x.total_cmp(&b.radii.x))) else {
         return Vec::new();
     };
@@ -224,21 +229,9 @@ fn grow_ankle(leg: &[Ring], foot: &[Ring], count: usize, side: f64) -> Vec<Ring>
     // The width that puts the shin's outer edge on the dome's widest point: the two centres need not share an x.
     let end_width = widest.radii.x + side * (widest.centre.x - (last.centre.x + last.axis.x * length));
     let drop = (widest.across.y * widest.radii.x).hypot(widest.through.y * widest.radii.y);
-    // The tail takes a quarter of the rings, so the leg's triangle count stays what it was.
-    let tail = if drop > 1e-9 { count.div_ceil(4).min(count.saturating_sub(1)) } else { 0 };
-    let reach = count - tail;
-    let upper = (1..=reach).map(|k| {
-        let s = fraction(k, reach);
-        let (s2, s3) = (s * s, s * s * s);
-        let width = last.radii.x * (2.0 * s3 - 3.0 * s2 + 1.0)
-            + slope * length * (s3 - 2.0 * s2 + s)
-            + end_width * (3.0 * s2 - 2.0 * s3);
-        Ring { centre: last.centre + last.axis * (s * length), radii: DVec2::new(width, last.radii.y), ..*last }
-    });
-    // Then on down the dome's lower outline, a quarter ellipse as wide as the widest section and as deep as its height,
-    // so the leg's end cap starts inside the foot and a coarse Live bevel never cuts across the dome.
-    let dome = (1..=tail).map(move |k| {
-        let angle = fraction(k, tail) * DOME_TAIL;
+    // The tail ring at `angle` round the widest section's lower half: as wide as the dome there, as thick as the shin
+    // scaled by the same cosine.
+    let ring_at = |angle: f64| {
         let (sin, cos) = angle.sin_cos();
         Ring {
             centre: last.centre + last.axis * (length + drop * sin / last.axis.y.abs()),
@@ -248,19 +241,59 @@ fn grow_ankle(leg: &[Ring], foot: &[Ring], count: usize, side: f64) -> Vec<Ring>
             ),
             ..*last
         }
+    };
+    // The tail takes a quarter of the rings, so the leg's triangle count stays what it was.
+    let tail = if drop > 1e-9 && angle > MIN_TAIL_ANGLE { count.div_ceil(4).min(count.saturating_sub(1)) } else { 0 };
+    let reach = count - tail;
+    let upper = (1..=reach).map(|k| {
+        let s = fraction(k, reach);
+        let (s2, s3) = (s * s, s * s * s);
+        let width = last.radii.x * (2.0 * s3 - 3.0 * s2 + 1.0)
+            + slope * length * (s3 - 2.0 * s2 + s)
+            + end_width * (3.0 * s2 - 2.0 * s3);
+        Ring { centre: last.centre + last.axis * (s * length), radii: DVec2::new(width, last.radii.y), ..*last }
     });
+    // Then on down the dome's lower outline, so the leg's end cap starts inside the foot and a coarse Live bevel never
+    // cuts across the dome.
+    let dome = (1..=tail).map(|k| ring_at(fraction(k, tail) * angle));
     upper.chain(dome).collect()
 }
 
-/// Appends [`grow_ankle`]'s rings to both legs.
+/// Appends [`grow_ankle`]'s rings to both legs. The tail goes as deep down the dome as the leg's end cap, built past the
+/// last ring once [`fill_ankle`] has widened it, still clears the foot's lowest point: the deepest such angle is found
+/// by bisection, since the clearance falls as the angle grows.
 fn grow_ankles(rings: &mut [(BodyRegion, Vec<Ring>)], count: usize) {
     for (leg_region, foot_region) in [(BodyRegion::LegL, BodyRegion::FootL), (BodyRegion::LegR, BodyRegion::FootR)] {
         let Some(foot) = rings.iter().find(|(r, _)| *r == foot_region).map(|(_, v)| v.clone()) else { continue };
         if let Some((_, leg)) = rings.iter_mut().find(|(r, _)| *r == leg_region) {
             let mirrored = leg_region == BodyRegion::LegR;
-            let ankle = grow_ankle(leg, &foot, count, if mirrored { -1.0 } else { 1.0 });
-            leg.extend(ankle);
-            fill_ankle(leg, &foot, mirrored);
+            let side = if mirrored { -1.0 } else { 1.0 };
+            let floor = foot
+                .iter()
+                .flat_map(|r| (0..DOME_SAMPLES).map(|k| r.point(TAU * fraction(k, DOME_SAMPLES)).y))
+                .fold(f64::MAX, f64::min);
+            let build = |angle: f64| {
+                let mut shaped = leg.clone();
+                shaped.extend(grow_ankle(leg, &foot, count, side, angle));
+                fill_ankle(&mut shaped, &foot, mirrored);
+                shaped
+            };
+            let clearance = |shaped: &[Ring]| {
+                shaped.last().map_or(f64::MAX, |end| {
+                    let cap = caps_of(leg_region, std::slice::from_ref(end), 1).1.length;
+                    end.centre.y - cap * end.axis.y.abs() - floor
+                })
+            };
+            let mut angle = DOME_TAIL;
+            if clearance(&build(angle)) < 0.0 {
+                let (mut lo, mut hi) = (0.0, DOME_TAIL);
+                for _ in 0..TAIL_BISECTIONS {
+                    let mid = f64::midpoint(lo, hi);
+                    if clearance(&build(mid)) >= 0.0 { lo = mid } else { hi = mid }
+                }
+                angle = lo;
+            }
+            *leg = build(angle);
         }
     }
 }
