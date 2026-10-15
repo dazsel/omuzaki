@@ -97,19 +97,26 @@ pub(super) fn entry_line(at: &str, entry: &Entry) -> Result<String, HostError> {
 
 /// Parses a whole log. A last line that does not parse is a torn write and is dropped; any other bad line is an
 /// error naming its (1-based) number.
-pub(super) fn parse(text: &str) -> Result<Parsed, HostError> {
-    let mut lines = text.lines().enumerate();
+///
+/// It reads bytes, not text: a crash can cut a multi-byte character in half, and that torn last line must be dropped
+/// like any other, not make the whole log unreadable.
+pub(super) fn parse(bytes: &[u8]) -> Result<Parsed, HostError> {
+    let mut all: Vec<&[u8]> = bytes.split(|b| *b == b'\n').collect();
+    if all.last().is_some_and(|last| last.is_empty()) {
+        all.pop(); // the file ends with a newline
+    }
+    let count = all.len();
+    let mut lines = all.into_iter().enumerate();
     let header = match lines.next() {
-        Some((_, first)) => serde_json::from_str::<Header>(first).map_err(|e| io_err("read the log header", e))?,
+        Some((_, first)) => serde_json::from_slice::<Header>(first).map_err(|e| io_err("read the log header", e))?,
         None => return Err(HostError::Store("the log is empty".into())),
     };
     if header.format != FORMAT {
         return Err(HostError::Store(format!("unsupported log format {}", header.format)));
     }
-    let count = text.lines().count();
     let mut entries = Vec::new();
     for (index, line) in lines {
-        match serde_json::from_str::<LineIn>(line) {
+        match serde_json::from_slice::<LineIn>(line) {
             Ok(LineIn { at, entry }) => entries.push(Stamped { at, entry }),
             Err(_) if index + 1 == count => {} // a crash mid-write
             Err(e) => return Err(io_err(&format!("read log line {}", index + 1), e)),
@@ -168,6 +175,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_character_cut_in_half_at_the_end_is_a_torn_line_not_a_corrupt_log() {
+        let head = header_line(&Header {
+            format: FORMAT,
+            project: "p".into(),
+            created: "2026-10-14T10:00:00Z".into(),
+            model: "m".into(),
+        })
+        .unwrap();
+        let good = entry_line("2026-10-14T10:00:01Z", &Entry::user("hi", Vec::new())).unwrap();
+        let mut bytes = format!("{head}{good}").into_bytes();
+        bytes.extend_from_slice(b"{\"at\":\"2026-10-14T10:00:02Z\",\"kind\":\"user\",\"text\":\"caf");
+        bytes.push(0xC3); // the first half of "\u{e9}"
+        let parsed = parse(&bytes).unwrap();
+        assert_eq!(parsed.entries.len(), 1);
+    }
+
+    #[test]
     fn the_header_has_the_documented_key_order() {
         let line = header_line(&Header::new("ab12", "2026-10-14T10:00:00Z", "m")).unwrap();
         assert_eq!(line, "{\"format\":1,\"project\":\"ab12\",\"created\":\"2026-10-14T10:00:00Z\",\"model\":\"m\"}\n");
@@ -175,17 +199,17 @@ mod tests {
 
     #[test]
     fn an_entry_line_carries_its_time_first() {
-        let line = entry_line("2026-10-14T10:00:01Z", &Entry::Stopped).unwrap();
+        let line = entry_line("2026-10-14T10:00:01Z", &Entry::stopped(None)).unwrap();
         assert_eq!(line, "{\"at\":\"2026-10-14T10:00:01Z\",\"kind\":\"stopped\"}\n");
     }
 
     #[test]
     fn a_torn_last_line_goes_and_a_torn_middle_line_is_an_error() {
         let head = header_line(&Header::new("p", "2026-10-14T10:00:00Z", "m")).unwrap();
-        let good = entry_line("2026-10-14T10:00:01Z", &Entry::Stopped).unwrap();
-        let torn = parse(&format!("{head}{good}{{\"at\":\"2026-10-14T10:0")).unwrap();
+        let good = entry_line("2026-10-14T10:00:01Z", &Entry::stopped(None)).unwrap();
+        let torn = parse(format!("{head}{good}{{\"at\":\"2026-10-14T10:0").as_bytes()).unwrap();
         assert_eq!(torn.entries.len(), 1);
-        let err = parse(&format!("{head}{{\"at\":\"x\n{good}")).unwrap_err();
+        let err = parse(format!("{head}{{\"at\":\"x\n{good}").as_bytes()).unwrap_err();
         assert!(matches!(err, HostError::Store(m) if m.contains("line 2")));
     }
 }

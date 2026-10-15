@@ -12,11 +12,15 @@ use crate::event::AssistantEvent;
 
 #[derive(Default)]
 struct Shared {
-    queue: VecDeque<AssistantEvent>,
+    /// Each event with, for text, the cumulative bytes of the answer's text up to and including it.
+    queue: VecDeque<(AssistantEvent, usize)>,
+    /// Bytes of this answer's text sent so far, whether or not anyone was subscribed.
+    text_sent: usize,
     /// The generation of the receiver that may read; 0 while nobody has subscribed.
     consumer: u64,
     stopped: bool,
-    /// Bytes of this answer's `TextDelta` text the consumer has read.
+    /// The most of this answer's text the person has been shown: the end of the last delta read, or everything sent
+    /// when a transcript was handed out.
     text_read: usize,
 }
 
@@ -65,8 +69,12 @@ impl EventHub {
         if shared.stopped && !matches!(event, AssistantEvent::Paused | AssistantEvent::Done) {
             return false;
         }
+        if let AssistantEvent::TextDelta(text) = &event {
+            shared.text_sent += text.len();
+        }
+        let end = shared.text_sent;
         if shared.consumer != 0 {
-            shared.queue.push_back(event);
+            shared.queue.push_back((event, end));
         }
         true
     }
@@ -79,7 +87,7 @@ impl EventHub {
         let mut shared = self.lock();
         shared.stopped = true;
         let before = shared.queue.len();
-        shared.queue.retain(|e| !e.is_withdrawn_by_stop());
+        shared.queue.retain(|(e, _)| !e.is_withdrawn_by_stop());
         StopReport { withdrawn: before - shared.queue.len(), text_read: shared.text_read }
     }
 
@@ -88,6 +96,15 @@ impl EventHub {
         let mut shared = self.lock();
         shared.stopped = false;
         shared.text_read = 0;
+        shared.text_sent = 0;
+    }
+
+    /// A transcript was handed out: everything sent so far is on the person's screen, whether or not it was read from
+    /// the queue. A panel opened late shows the transcript and never sees the earlier deltas, so without this Stop
+    /// would report zero bytes read and cut text the person was shown.
+    pub fn mark_sent_as_displayed(&self) {
+        let mut shared = self.lock();
+        shared.text_read = shared.text_read.max(shared.text_sent);
     }
 }
 
@@ -112,9 +129,10 @@ impl EventReceiver {
         if shared.consumer != self.generation {
             return None;
         }
-        let event = shared.queue.pop_front()?;
-        if let AssistantEvent::TextDelta(text) = &event {
-            shared.text_read += text.len();
+        let (event, end) = shared.queue.pop_front()?;
+        if matches!(event, AssistantEvent::TextDelta(_)) {
+            // The end offset, not a running sum: text a transcript already showed is not counted twice.
+            shared.text_read = shared.text_read.max(end);
         }
         Some(event)
     }
@@ -216,6 +234,25 @@ mod tests {
         assert!(hub.send(delta("a")));
         let rx = hub.subscribe();
         assert_eq!(rx.try_recv(), None);
+    }
+
+    #[test]
+    fn text_a_transcript_already_showed_is_not_counted_again_when_its_delta_is_read() {
+        let hub = EventHub::new();
+        let rx = hub.subscribe();
+        hub.send(delta("abc"));
+        hub.send(delta("de"));
+        hub.mark_sent_as_displayed();
+        assert_eq!(rx.try_recv(), Some(delta("abc")));
+        assert_eq!(hub.stop().text_read, 5, "five bytes were shown, not eight");
+    }
+
+    #[test]
+    fn a_transcript_shown_before_any_subscriber_counts_as_read() {
+        let hub = EventHub::new();
+        hub.send(delta("abcd"));
+        hub.mark_sent_as_displayed();
+        assert_eq!(hub.stop().text_read, 4);
     }
 
     #[test]

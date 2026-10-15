@@ -13,16 +13,14 @@ use crate::worker::Worker;
 
 /// How often the executor is asked whether the stopped step has closed (D4).
 const CLOSE_POLL: f64 = 0.05;
-/// How long the host waits for the stopped step to close before it says `Done` anyway: six times the 10 s deadline of a
-/// cancelled job (ADR 0036), so a stuck executor cannot leave the panel's box disabled for good.
-const CLOSE_GIVE_UP_S: f64 = 60.0;
 
 impl Worker {
     /// Cuts the answer's text in the model's history to what the person had read, so the next request agrees with the
     /// panel and the transcript.
     fn cut_history(&mut self, run: &AnswerRun, read: usize) {
+        // `msg_from` is rebased when the history is compacted, but a stale one must never index past the end.
         let turns =
-            self.messages[run.msg_from..].iter_mut().filter(|m| m.role == Role::Assistant).map(|m| &mut m.content);
+            self.messages.iter_mut().skip(run.msg_from).filter(|m| m.role == Role::Assistant).map(|m| &mut m.content);
         cut_text_blocks(turns, read);
     }
 
@@ -36,7 +34,7 @@ impl Worker {
         }
         let read = self.shared.lock().stop_text_read.unwrap_or(0);
         self.cut_history(run, read);
-        self.shared.record(Entry::Stopped);
+        self.shared.record(Entry::stopped(Some(read)));
         let step = match self.sessions.stop(self.session, &self.cfg.principal) {
             Ok(stopped) => Some(stopped.step),
             Err(_) => None,
@@ -62,7 +60,6 @@ impl Worker {
     /// Polls the session every 50 ms until its open transaction is closed: a joined driver job is still reverting its
     /// edits and the executor commits the rest when it has ended.
     fn wait_step_closed(&self) {
-        let give_up = self.now().0 + CLOSE_GIVE_UP_S;
         loop {
             match self.session_info() {
                 Some(info)
@@ -72,7 +69,7 @@ impl Worker {
                 }
                 _ => return,
             }
-            if self.shared.lock().shutdown || self.now().0 >= give_up {
+            if self.shared.lock().shutdown {
                 return;
             }
         }

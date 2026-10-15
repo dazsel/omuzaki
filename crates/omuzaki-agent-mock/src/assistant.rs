@@ -63,6 +63,8 @@ struct State {
     sent: Vec<UserMessage>,
     stop_count: usize,
     answered: Vec<(QuestionId, String)>,
+    /// Questions delivered and not yet answered: `answer` refuses any other id, as the real host does.
+    open_questions: Vec<QuestionId>,
     prompts: Vec<PromptInfo>,
     prompt_texts: BTreeMap<String, String>,
     prompt_failure: Option<HostError>,
@@ -153,6 +155,7 @@ impl ScriptedAssistant {
             return;
         }
         let mut finished = false;
+        let mut asked = Vec::new();
         if let Some(playing) = state.playing.as_mut() {
             while let Some(front) = playing.events.front() {
                 if now.0 < playing.started.0 + front.at.0 {
@@ -160,13 +163,18 @@ impl ScriptedAssistant {
                 }
                 let Some(timed) = playing.events.pop_front() else { break };
                 finished = timed.event == AssistantEvent::Done;
+                if let AssistantEvent::Question { id, .. } = &timed.event {
+                    asked.push(*id);
+                }
                 self.hub.send(timed.event);
                 if finished {
                     break;
                 }
             }
         }
+        state.open_questions.extend(asked);
         if finished {
+            state.open_questions.clear();
             state.playing = None;
             state.busy = false;
         }
@@ -225,6 +233,7 @@ impl Assistant for ScriptedAssistant {
             return;
         }
         self.hub.stop();
+        state.open_questions.clear();
         state.playing = None;
         self.hub.send(AssistantEvent::Paused);
         let delay = state.stop_delay;
@@ -236,9 +245,17 @@ impl Assistant for ScriptedAssistant {
         }
     }
 
-    /// Records the answer and returns `Ok`.
+    /// Records the answer to a question that was delivered and is still open.
+    ///
+    /// # Errors
+    /// [`HostError::Mcp`] for any other id, as the real host answers a stale card.
     fn answer(&self, q: QuestionId, text: String) -> Result<(), HostError> {
-        self.lock().answered.push((q, text));
+        let mut state = self.lock();
+        let Some(at) = state.open_questions.iter().position(|open| *open == q) else {
+            return Err(HostError::Mcp(format!("no open question {}", q.0)));
+        };
+        state.open_questions.remove(at);
+        state.answered.push((q, text));
         Ok(())
     }
 

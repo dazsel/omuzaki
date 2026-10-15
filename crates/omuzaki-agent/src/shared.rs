@@ -75,6 +75,15 @@ impl Shared {
         session: SessionId,
         transcript: Vec<Entry>,
     ) -> Self {
+        // Question ids are the conversation's: a continued one goes on from the highest already used.
+        let next_question = transcript
+            .iter()
+            .filter_map(|e| match e {
+                Entry::Question { id, .. } | Entry::Answer { id, .. } => Some(id.0),
+                _ => None,
+            })
+            .max()
+            .map_or(1, |highest| highest + 1);
         let ctl = Control {
             running: false,
             stopping: false,
@@ -86,7 +95,7 @@ impl Shared {
             live_text: String::new(),
             stop_text_read: None,
             question: None,
-            next_question: 1,
+            next_question,
             prompts: PromptsState::Loading,
             refresh_prompts: false,
         };
@@ -169,17 +178,30 @@ impl Shared {
     }
 
     /// Records the finished turn's entry and drops the live text it replaces in one step, so a panel reading the
-    /// transcript never sees the turn twice or not at all.
-    pub(crate) fn record_turn(&self, entry: Entry) {
-        let appended = self.sink.append(&entry);
-        {
+    /// transcript never sees the turn twice or not at all. If Stop was pressed meanwhile, the text is cut to what the
+    /// person had been shown before it is recorded or stored, so a turn that finishes after Stop cannot bring unread
+    /// text back. Returns the blocks as recorded.
+    pub(crate) fn record_turn(&self, mut blocks: Vec<ContentBlock>) -> Vec<ContentBlock> {
+        let entry = {
             let mut ctl = self.lock();
+            if let Some(read) = ctl.stop_text_read {
+                let shown_before: usize = ctl.transcript[ctl.answer_from..]
+                    .iter()
+                    .filter_map(|e| if let Entry::Assistant { blocks, .. } = e { Some(blocks) } else { None })
+                    .flatten()
+                    .map(|b| if let ContentBlock::Text(t) = b { t.len() } else { 0 })
+                    .sum();
+                cut_text_blocks([&mut blocks], read.saturating_sub(shown_before));
+            }
             ctl.live_text.clear();
-            ctl.transcript.push(entry);
-        }
-        if let Err(error) = appended {
+            let entry = Entry::assistant(blocks.clone());
+            ctl.transcript.push(entry.clone());
+            entry
+        };
+        if let Err(error) = self.sink.append(&entry) {
             self.emit(AssistantEvent::Error(error));
         }
+        blocks
     }
 
     /// The transcript for a panel opened late, with the turn in flight as it has been shown.
@@ -189,6 +211,8 @@ impl Shared {
         if !ctl.live_text.is_empty() {
             entries.push(Entry::assistant(vec![ContentBlock::text(ctl.live_text.clone())]));
         }
+        // What this hands out is what the person sees, so Stop must not cut it even if the queue never delivered it.
+        self.hub.mark_sent_as_displayed();
         entries
     }
 
@@ -208,17 +232,17 @@ impl Shared {
         }
     }
 
-    /// Records the person's reply to the open question `q` and wakes the call that asked.
+    /// Hands the person's reply to the open question `q` to the call that asked. Nothing is written here: the caller
+    /// is the panel's thread, and the call records the answer from the host thread.
     pub(crate) fn answer(&self, q: QuestionId, text: String) -> Result<(), HostError> {
-        {
-            let mut ctl = self.lock();
-            match ctl.question.as_mut() {
-                Some(open) if open.id == q && open.reply.is_none() => open.reply = Some(text.clone()),
-                _ => return Err(HostError::Mcp(format!("no open question {}", q.0))),
+        let mut ctl = self.lock();
+        match ctl.question.as_mut() {
+            Some(open) if open.id == q && open.reply.is_none() => {
+                open.reply = Some(text);
+                Ok(())
             }
+            _ => Err(HostError::Mcp(format!("no open question {}", q.0))),
         }
-        self.record(Entry::answer(q, text));
-        Ok(())
     }
 
     /// The error a refused `send` returns once the session has ended.

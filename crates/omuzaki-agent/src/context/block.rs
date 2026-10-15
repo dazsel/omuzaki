@@ -106,7 +106,12 @@ impl Worker {
             Ok(mut late) => std::mem::take(&mut *late),
             Err(_) => return Vec::new(),
         };
-        late.into_iter().map(|l| format!("[your call `{}` finished after the stop: {}]", l.tool, l.outcome)).collect()
+        // The outcome can carry the first line of a server's result, so the whole note is data like any tool result.
+        late.into_iter()
+            .map(|l| {
+                wrap_data("late_result", &format!("[your call `{}` finished after the stop: {}]", l.tool, l.outcome))
+            })
+            .collect()
     }
 
     fn chip_section(&mut self, chip: &ContextChip, sections: &mut Vec<String>, images: &mut Vec<ContentBlock>) {

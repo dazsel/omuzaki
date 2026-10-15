@@ -227,39 +227,58 @@ impl McpClientLink {
         let peer = self.inner.peer.clone();
         let mut params = CallToolRequestParams::new(name.to_owned());
         params.arguments = arguments;
-        self.spawn(async move {
-            let request = ClientRequest::CallToolRequest(CallToolRequest::new(params));
-            let mut handle = peer
-                .send_cancellable_request(request, PeerRequestOptions::no_options())
-                .await
-                .map_err(|e| link_error(&e))?;
-            let mut poll = tokio::time::interval(CANCEL_POLL);
-            let answer = loop {
-                tokio::select! {
-                    answer = &mut handle.rx => break answer,
-                    _ = poll.tick() => {
-                        if cancel.is_cancelled() {
-                            // Sent as the plain notification it is on the wire: rmcp's typed `CancelledNotification` also
-                            // drops the local responder, and a result that still arrives must reach `late`.
-                            let note = CustomNotification::new(
-                                "notifications/cancelled",
-                                Some(json!({"requestId": handle.id, "reason": "stopped by the person"})),
-                            );
-                            // The server may already have finished; a failed notification changes nothing for us.
-                            let _ = peer.send_notification(note.into()).await;
-                            if let Some(late) = late {
-                                let waited = tokio::time::timeout(LATE_WAIT, &mut handle.rx).await;
-                                if let Ok(answer) = waited {
-                                    late(reply_of(answer));
-                                }
+        let (tx, rx) = channel();
+        self.inner.rt.spawn(async move {
+            let mut late = late;
+            let result = Self::call_and_wait(&peer, params, &cancel, &mut late).await;
+            // Nobody is waiting any more (Stop, or the host moved on): a result that did come is not lost, it goes to
+            // `late` so the next message can tell the model what became of its call.
+            if let Err(std::sync::mpsc::SendError(undelivered)) = tx.send(result)
+                && let (Some(late), Ok(reply)) = (late.take(), undelivered)
+            {
+                late(Ok(reply));
+            }
+        });
+        Pending { rx }
+    }
+
+    async fn call_and_wait(
+        peer: &rmcp::service::Peer<RoleClient>,
+        params: CallToolRequestParams,
+        cancel: &Cancel,
+        late: &mut Option<LateFn>,
+    ) -> Result<ToolReply, LinkError> {
+        let request = ClientRequest::CallToolRequest(CallToolRequest::new(params));
+        let mut handle = peer
+            .send_cancellable_request(request, PeerRequestOptions::no_options())
+            .await
+            .map_err(|e| link_error(&e))?;
+        let mut poll = tokio::time::interval(CANCEL_POLL);
+        let answer = loop {
+            tokio::select! {
+                answer = &mut handle.rx => break answer,
+                _ = poll.tick() => {
+                    if cancel.is_cancelled() {
+                        // Sent as the plain notification it is on the wire: rmcp's typed `CancelledNotification` also
+                        // drops the local responder, and a result that still arrives must reach `late`.
+                        let note = CustomNotification::new(
+                            "notifications/cancelled",
+                            Some(json!({"requestId": handle.id, "reason": "stopped by the person"})),
+                        );
+                        // The server may already have finished; a failed notification changes nothing for us.
+                        let _ = peer.send_notification(note.into()).await;
+                        if let Some(late) = late.take() {
+                            let waited = tokio::time::timeout(LATE_WAIT, &mut handle.rx).await;
+                            if let Ok(answer) = waited {
+                                late(reply_of(answer));
                             }
-                            return Err(LinkError::Cancelled);
                         }
+                        return Err(LinkError::Cancelled);
                     }
                 }
-            };
-            reply_of(answer)
-        })
+            }
+        };
+        reply_of(answer)
     }
 
     /// `resources/read`, as blocks.
@@ -375,7 +394,7 @@ fn decode_image(data: &str, mime: &str) -> ReplyBlock {
     use base64::Engine;
     match (image_mime(mime), base64::engine::general_purpose::STANDARD.decode(data)) {
         (Some(mime), Ok(bytes)) => ReplyBlock::Image { mime, bytes },
-        _ => ReplyBlock::Note(format!("[image omitted: unreadable {mime}]")),
+        _ => ReplyBlock::Note("[image omitted: not a readable image]".to_owned()),
     }
 }
 

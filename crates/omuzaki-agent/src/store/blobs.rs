@@ -4,6 +4,7 @@
 //! show the same render keep one file, and it is deleted only when the last conversation naming it is gone. "Naming
 //! it" is found by looking for the hash in the remaining logs, which is cheap and cannot disagree with the entries.
 
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -57,8 +58,14 @@ pub(super) fn put(project_dir: &Path, bytes: &[u8], mime: ImageMime) -> Result<S
 }
 
 /// Deletes the blobs named in `removed_logs` (the text of conversations just deleted) that no log in `remaining`
-/// names. Blobs nobody ever referenced are left alone: one may have been put a moment before its entry is appended.
-pub(super) fn release(project_dir: &Path, removed_logs: &[String], remaining: &[String]) -> Result<(), HostError> {
+/// names. Blobs nobody ever referenced are left alone, and so are the `pinned` ones: written but not yet named by an
+/// appended entry.
+pub(super) fn release(
+    project_dir: &Path,
+    removed_logs: &[String],
+    remaining: &[String],
+    pinned: &HashSet<String>,
+) -> Result<(), HostError> {
     let Ok(files) = fs::read_dir(project_dir.join(DIR)) else {
         return Ok(()); // no blobs folder: nothing to release
     };
@@ -70,7 +77,7 @@ pub(super) fn release(project_dir: &Path, removed_logs: &[String], remaining: &[
         };
         let was_used = removed_logs.iter().any(|log| log.contains(hash));
         let still_used = remaining.iter().any(|log| log.contains(hash));
-        if was_used && !still_used {
+        if was_used && !still_used && !pinned.contains(hash) {
             fs::remove_file(file.path()).map_err(|e| io_err("delete a blob", e))?;
         }
     }

@@ -10,6 +10,7 @@ use std::sync::Arc;
 use common::*;
 use omuzaki_agent_api::Assistant;
 use omuzaki_agent_api::entry::Entry;
+use omuzaki_agent_api::error::HostError;
 use omuzaki_agent_api::event::AssistantEvent;
 use omuzaki_agent_api::message::UserMessage;
 use omuzaki_core::time::{Clock, Seconds};
@@ -245,7 +246,7 @@ fn stop_commits_the_step_with_stopped_in_its_label_and_charges_what_was_used() {
         .iter()
         .find_map(|e| if let Entry::Step { tx, label, .. } = e { Some((tx.0, label.clone())) } else { None });
     assert_eq!(step, Some((31, "Assistant: make it round (stopped)".to_owned())));
-    assert!(entries.iter().any(|e| matches!(e, Entry::Stopped)));
+    assert!(entries.iter().any(|e| matches!(e, Entry::Stopped { .. })));
     assert!(!rig.sessions.charges().is_empty());
 }
 
@@ -349,4 +350,155 @@ fn dropping_the_host_with_an_active_session_ends_it_closed_once() {
     let sessions = Arc::clone(&rig.sessions);
     drop(rig);
     assert_eq!(sessions.end_calls(), vec![omuzaki_ops_api::EndReason::Closed]);
+}
+
+/// The events of the first turn of `call_turn("", &[one call])` and of a summary turn, for holding the third stream.
+const HEAVY_TURN_EVENTS: usize = 5;
+const SUMMARY_TURN_EVENTS: usize = 4;
+
+#[test]
+fn stop_after_a_compaction_in_the_same_answer_does_not_panic_and_keeps_what_was_read() {
+    let heavy = ScriptTurn::new(vec![
+        LlmEvent::start("m"),
+        LlmEvent::tool_use_start("c1", "render_preview"),
+        LlmEvent::tool_use_end("c1"),
+        LlmEvent::Usage(omuzaki_llm_api::usage::Usage::new(15_001, 10)),
+        LlmEvent::Stop(StopReason::ToolUse),
+    ]);
+    let rig = Rig::with(
+        script(vec![heavy, say_turn("SUMMARY"), long_text(20)]),
+        RigOptions {
+            window: Some(20_000),
+            prices: free_prices(),
+            hold_after: Some(HEAVY_TURN_EVENTS + SUMMARY_TURN_EVENTS + 3),
+            ..RigOptions::default()
+        },
+        standard_server,
+    );
+    rig.host.send(UserMessage::new("go")).unwrap();
+    Rig::wait_for("the held stream", || {
+        rig.gate.delivered.load(std::sync::atomic::Ordering::Acquire) >= HEAVY_TURN_EVENTS + SUMMARY_TURN_EVENTS + 3
+    });
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    rig.host.stop();
+    let events = rig.until_done(0.0);
+    assert!(matches!(events.last(), Some(AssistantEvent::Done)));
+    assert_eq!(rig.sessions.stop_calls(), 1);
+}
+
+#[test]
+fn a_commit_the_executor_refuses_claims_no_step_and_shows_the_error() {
+    let rig = Rig::with(
+        script(vec![call_turn("", &[("c1", "face_set_profile", "{}")]), say_turn("done")]),
+        RigOptions::default(),
+        |sessions| {
+            let server = standard_server(sessions);
+            server.add_fixed(
+                tool("tx_commit", "tx.commit", "builtin", false),
+                Outcome::failure("the project changed; cannot commit"),
+            );
+            server
+        },
+    );
+    let events = rig.say("go", 0.0);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AssistantEvent::Error(HostError::Mcp(text)) if text.contains("cannot commit")))
+    );
+    assert!(rig.sink.entries().iter().all(|e| !matches!(e, Entry::Step { .. })), "no undo step was made");
+    assert!(matches!(events.last(), Some(AssistantEvent::Done)));
+}
+
+#[test]
+fn stop_pressed_while_the_answer_commits_still_stops_it() {
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let rig = Rig::with(
+        script(vec![call_turn("", &[("c1", "face_set_profile", "{}")]), say_turn("done")]),
+        RigOptions::default(),
+        |sessions| {
+            let server = standard_server(sessions);
+            server.add_fixed(tool("tx_commit", "tx.commit", "builtin", false), Outcome::text("committed").held(&gate));
+            server
+        },
+    );
+    rig.host.send(UserMessage::new("make it round")).unwrap();
+    Rig::wait_for("the commit", || rig.server.called("tx_commit") == 1);
+    rig.host.stop();
+    let events = rig.until_done(0.0);
+    assert!(events.iter().any(|e| matches!(e, AssistantEvent::Paused)));
+    assert_eq!(rig.sessions.stop_calls(), 1, "the executor, not the host, closes the step");
+    assert!(rig.sink.entries().iter().any(|e| matches!(e, Entry::Stopped { .. })));
+}
+
+#[test]
+fn done_is_never_sent_while_the_stopped_step_is_still_open() {
+    let rig = Rig::with(
+        script(vec![call_turn("", &[("c1", "face_set_profile", "{}")]), long_text(20)]),
+        RigOptions { hold_after: Some(FIRST_TURN_EVENTS + 2), ..RigOptions::default() },
+        standard_server,
+    );
+    rig.sessions.set_stop(StopBehaviour::Pending { close_after: 100.0 }, 0.0);
+    rig.host.send(UserMessage::new("go")).unwrap();
+    Rig::wait_for("the edit", || rig.server.called("face_set_profile") == 1);
+    rig.host.stop();
+    let mut done = false;
+    for _ in 0..7_000 {
+        rig.clock.advance(Seconds(0.01));
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        while let Some(event) = rig.rx.try_recv() {
+            done |= matches!(event, AssistantEvent::Done);
+        }
+    }
+    assert!(!done, "70 s on, the step is still open, so there is no Done");
+    for _ in 0..4_000 {
+        rig.clock.advance(Seconds(0.01));
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        while let Some(event) = rig.rx.try_recv() {
+            done |= matches!(event, AssistantEvent::Done);
+        }
+        if done {
+            break;
+        }
+    }
+    assert!(done, "Done follows the close");
+}
+
+#[test]
+fn text_a_transcript_showed_is_not_cut_by_stop() {
+    let rig = Rig::with(
+        script(vec![long_text(20)]),
+        RigOptions { hold_after: Some(8), ..RigOptions::default() },
+        standard_server,
+    );
+    rig.host.send(UserMessage::new("go")).unwrap();
+    Rig::wait_for("the held stream", || rig.gate.delivered.load(std::sync::atomic::Ordering::Acquire) >= 8);
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    // A panel opened late never reads the deltas; it shows the transcript.
+    let shown = assistant_text(&rig.host.transcript());
+    assert!(!shown.is_empty());
+    rig.host.stop();
+    assert_eq!(assistant_text(&rig.host.transcript()), shown);
+    rig.until_done(0.0);
+}
+
+#[test]
+fn a_charge_the_executor_refuses_ends_the_answer_as_session_ended_without_a_step() {
+    let rig = Rig::with(
+        script(vec![call_turn("", &[("c1", "face_set_profile", "{}")]), say_turn("last words")]),
+        RigOptions { hold_after: Some(FIRST_TURN_EVENTS + 2), ..RigOptions::default() },
+        standard_server,
+    );
+    rig.host.send(UserMessage::new("go")).unwrap();
+    Rig::wait_for("the edit", || rig.server.called("face_set_profile") == 1);
+    Rig::wait_for("the held stream", || {
+        rig.gate.delivered.load(std::sync::atomic::Ordering::Acquire) >= FIRST_TURN_EVENTS + 2
+    });
+    rig.sessions.revoke();
+    rig.gate.open();
+    let events = rig.until_done(0.0);
+    assert!(events.iter().any(|e| matches!(e, AssistantEvent::Error(HostError::SessionEnded))), "{events:?}");
+    let charges = rig.sink.entries().iter().filter(|e| matches!(e, Entry::Charge { .. })).count();
+    assert_eq!(charges, 1, "only the first turn's charge was accepted");
+    assert!(rig.sink.entries().iter().all(|e| !matches!(e, Entry::Step { .. })));
 }

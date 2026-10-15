@@ -84,18 +84,23 @@ impl Worker {
         Ok(None)
     }
 
-    /// Commits the answer's transaction at its end. After Stop the executor commits it, so this is not called then.
-    pub(crate) fn commit_tx(&mut self, run: &mut AnswerRun) {
+    /// Commits the answer's transaction at its end. `Ok(true)` means it closed. `Ok(false)` means the executor refused
+    /// (the error is shown and the transaction is still open, so no step may be claimed).
+    ///
+    /// # Errors
+    /// [`Flow::Stopped`] if Stop was pressed during the commit, so the executor's Stop closes it; `Revoked` or `Fail`
+    /// if the session or the link went away. The transaction stays marked open in each case.
+    pub(crate) fn commit_tx(&mut self, run: &mut AnswerRun) -> Result<bool, Flow> {
         if !run.tx_open {
-            return;
+            return Ok(true);
+        }
+        let reply = self.call_plain("tx_commit", None)?;
+        if reply.is_error {
+            self.shared.emit(AssistantEvent::Error(HostError::Mcp(crate::content::plain_text(&reply.blocks))));
+            return Ok(false);
         }
         run.tx_open = false;
-        let error = match self.call_plain("tx_commit", None) {
-            Ok(reply) if !reply.is_error => return,
-            Ok(reply) => HostError::Mcp(crate::content::plain_text(&reply.blocks)),
-            Err(_) => HostError::SessionEnded,
-        };
-        self.shared.emit(AssistantEvent::Error(error));
+        Ok(true)
     }
 
     /// `discard_changes`: rolls the answer's transaction back. `None` means none was open; a refusal comes back for the

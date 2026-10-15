@@ -57,9 +57,8 @@ impl AssistantHost {
             Arc::clone(&cfg.sink),
             Arc::clone(&sessions),
             session,
-            cfg.history.clone(),
+            crate::resume::apply_stop_cuts(cfg.history.clone()),
         ));
-        let messages = messages_from_entries_with(&cfg.history, cfg.sink.as_ref());
         let mut worker = Worker {
             shared: Arc::clone(&shared),
             link: link.clone(),
@@ -67,7 +66,8 @@ impl AssistantHost {
             sessions,
             session,
             cfg,
-            messages,
+            // Rebuilt on the host thread: it reads the stored images, which the caller must not wait for.
+            messages: Vec::new(),
             ledger: Ledger::new(),
             tools: None,
             late: Arc::default(),
@@ -97,6 +97,7 @@ impl AssistantHost {
 impl Worker {
     /// The host thread: records the session, then serves commands until told to stop.
     fn run(&mut self, commands: &Receiver<Cmd>) {
+        self.messages = messages_from_entries_with(&self.cfg.history, self.cfg.sink.as_ref());
         self.shared.record(Entry::session(self.session, SessionNote::Opened));
         loop {
             self.service_prompts();

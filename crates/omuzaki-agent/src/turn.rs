@@ -130,16 +130,17 @@ impl Worker {
         let now = self.cfg.clock.now();
         match failure {
             Some(LlmError::Cancelled) => {
-                self.charge(run, usage);
                 self.keep_partial_text(run);
+                // The answer is already ending; a refused charge changes nothing about how.
+                let _ = self.charge(run, usage);
                 Err(Flow::Stopped)
             }
             Some(error) => {
                 if mode == TurnMode::Answer {
                     self.flush(&mut buf, now);
                 }
-                self.charge(run, usage);
                 self.keep_partial_text(run);
+                let _ = self.charge(run, usage);
                 Err(llm_flow(error))
             }
             None => {
@@ -163,8 +164,8 @@ impl Worker {
         let (blocks, stop) = match fold.finish() {
             Ok(done) => done,
             Err(error) => {
-                self.charge(run, usage);
                 self.keep_partial_text(run);
+                let _ = self.charge(run, usage);
                 return Err(llm_flow(error));
             }
         };
@@ -172,40 +173,50 @@ impl Worker {
             self.keep_partial_text(run);
             return Err(llm_flow(LlmError::Malformed("the turn stopped without reporting usage".into())));
         };
-        self.charge(run, Some(usage));
         if mode == TurnMode::Summary {
+            self.charge(run, Some(usage))?;
             return Ok(TurnDone { blocks, stop });
         }
         self.measured = usage.prompt().saturating_add(usage.output);
         let message = Message::new(Role::Assistant, blocks.clone());
         self.ledger.observe(request, &Turn::new(model, message, usage, stop));
-        self.commit_assistant(run, blocks.clone());
+        // The turn first, then what it cost, so a log that ends on a charge ends a whole answer.
+        let blocks = self.commit_assistant(run, blocks);
+        self.charge(run, Some(usage))?;
         Ok(TurnDone { blocks, stop })
     }
 
     /// Charges the session once for `usage` and tells the panel the new total (D2.3).
-    pub(crate) fn charge(&mut self, run: &mut AnswerRun, usage: Option<Usage>) {
-        let Some(usage) = usage else { return };
+    ///
+    /// # Errors
+    /// [`Flow::Revoked`] if the executor refused because the session has ended, [`Flow::Fail`] for any other refusal.
+    /// A charge the executor did not accept is not recorded.
+    pub(crate) fn charge(&mut self, run: &mut AnswerRun, usage: Option<Usage>) -> Result<(), Flow> {
+        let Some(usage) = usage else { return Ok(()) };
         let usd_micros = cost(&usage, &self.cfg.prices);
         run.counters.tokens(usage.tokens());
-        self.shared.record(Entry::charge(usage, usd_micros));
         let spend = Spend { usd_micros, tokens: usage.tokens(), seconds: 0 };
-        // A charge that fails means the session ended; the next gate finds out why.
-        if let Ok(info) = self.sessions.charge(self.session, spend) {
-            self.shared.emit(AssistantEvent::budget(info.spent, info.budget));
+        match self.sessions.charge(self.session, spend) {
+            Ok(info) => {
+                self.shared.record(Entry::charge(usage, usd_micros));
+                self.shared.emit(AssistantEvent::budget(info.spent, info.budget));
+                Ok(())
+            }
+            Err(error) => Err(self.ended().map_or_else(|| Flow::Fail(HostError::Mcp(error.message)), Flow::Revoked)),
         }
     }
 
     /// Records the turn's blocks as the assistant's message and entry.
-    pub(crate) fn commit_assistant(&mut self, run: &mut AnswerRun, blocks: Vec<ContentBlock>) {
+    pub(crate) fn commit_assistant(&mut self, run: &mut AnswerRun, blocks: Vec<ContentBlock>) -> Vec<ContentBlock> {
+        let blocks = self.shared.record_turn(blocks);
         for block in &blocks {
             if let ContentBlock::Text(text) = block {
                 run.text.push_str(text);
                 run.text.push('\n');
             }
         }
-        self.shared.record_turn(Entry::assistant(blocks.clone()));
-        self.messages.push(Message::new(Role::Assistant, blocks));
+        self.messages.push(Message::new(Role::Assistant, blocks.clone()));
+        blocks
     }
 
     /// A turn that did not finish keeps the text the person was shown, and nothing else: a half-built tool call was
@@ -213,7 +224,7 @@ impl Worker {
     pub(crate) fn keep_partial_text(&mut self, run: &mut AnswerRun) {
         let text = self.shared.lock().live_text.clone();
         if !text.is_empty() {
-            self.commit_assistant(run, vec![ContentBlock::text(text)]);
+            let _ = self.commit_assistant(run, vec![ContentBlock::text(text)]);
         }
     }
 }

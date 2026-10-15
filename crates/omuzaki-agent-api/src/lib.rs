@@ -52,7 +52,7 @@ pub trait Assistant: Send + Sync {
     /// Answers an open [`event::AssistantEvent::Question`] (the `ask_person` tool, D9).
     ///
     /// # Errors
-    /// [`HostError::Busy`] if no such question is open.
+    /// [`HostError::Mcp`] if no such question is open (a stale card).
     fn answer(&self, q: QuestionId, text: String) -> Result<(), HostError>;
 
     /// The one consumer of the host's events. A later call detaches the earlier receiver, which then yields nothing.

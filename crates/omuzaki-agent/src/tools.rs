@@ -22,6 +22,8 @@ const ASK_PERSON: &str = "ask_person";
 const UPDATE_PLAN: &str = "update_plan";
 const DISCARD_CHANGES: &str = "discard_changes";
 const READ_RESOURCE: &str = "read_resource";
+/// A waiting `ask_person` looks at the session this often, in 1 ms steps.
+const ASK_SESSION_CHECK_EVERY: u32 = 25;
 
 /// The four definitions offered beside the MCP tools (the context builder sorts them in).
 pub(crate) fn host_tools() -> Vec<ToolDef> {
@@ -119,7 +121,7 @@ impl Worker {
         call: &ToolCall,
     ) -> Result<(Vec<ContentBlock>, bool), Flow> {
         match call.name.as_str() {
-            ASK_PERSON => Ok(self.ask_person(run, &call.input)),
+            ASK_PERSON => self.ask_person(run, &call.input),
             UPDATE_PLAN => Ok(self.update_plan(&call.input)),
             DISCARD_CHANGES => self.discard_changes(run),
             _ => self.read_resource(&call.input),
@@ -172,9 +174,9 @@ impl Worker {
     }
 
     /// `ask_person`: a question card, and the call waits for `answer` or Stop. The wait is not wall time.
-    fn ask_person(&mut self, run: &mut AnswerRun, input: &Value) -> (Vec<ContentBlock>, bool) {
+    fn ask_person(&mut self, run: &mut AnswerRun, input: &Value) -> Result<(Vec<ContentBlock>, bool), Flow> {
         let Some(question) = input.get("question").and_then(Value::as_str) else {
-            return text_result("`question` is required", true);
+            return Ok(text_result("`question` is required", true));
         };
         let choices: Vec<String> = input
             .get("choices")
@@ -195,11 +197,20 @@ impl Worker {
             let _ = self.shared.answer(id, reply);
         }
         let started = self.now();
+        let mut polls = 0_u32;
         let reply = loop {
             if self.shared.stopping() {
                 self.shared.lock().question = None;
                 run.counters.exclude_seconds(self.now().0 - started.0);
-                return text_result("stopped by the person", true);
+                return Ok(text_result("stopped by the person", true));
+            }
+            // A revoked session cannot be answered: look every so often, not every millisecond.
+            polls += 1;
+            if polls.is_multiple_of(ASK_SESSION_CHECK_EVERY)
+                && let Some(reason) = self.ended()
+            {
+                self.shared.lock().question = None;
+                return Err(Flow::Revoked(reason));
             }
             let taken = {
                 let mut ctl = self.shared.lock();
@@ -210,12 +221,13 @@ impl Worker {
             };
             if let Some(reply) = taken {
                 self.shared.lock().question = None;
+                self.shared.record(Entry::answer(id, reply.clone()));
                 break reply;
             }
             crate::wait::step();
         };
         run.counters.exclude_seconds(self.now().0 - started.0);
-        text_result(wrap_data(ASK_PERSON, &reply), false)
+        Ok(text_result(wrap_data(ASK_PERSON, &reply), false))
     }
 }
 

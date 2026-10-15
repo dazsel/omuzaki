@@ -95,7 +95,7 @@ fn every_entry(blob: StoredBlock) -> Vec<Entry> {
             SessionNote::Ended(EndReason::Revoked { by: Actor::Person { name: "sam".into() }, credential: true }),
         ),
         Entry::compacted("Summary: ..."),
-        Entry::Stopped,
+        Entry::stopped(None),
     ]
 }
 
@@ -127,7 +127,7 @@ fn the_first_line_is_the_header_and_every_entry_carries_its_time() {
     let f = fixture();
     let id = f.store.create("claude-haiku-5-5").unwrap();
     f.advance(61.0);
-    f.store.sink(id).append(&Entry::Stopped).unwrap();
+    f.store.sink(id).append(&Entry::stopped(None)).unwrap();
     let text = fs::read_to_string(f.log(id)).unwrap();
     let mut lines = text.lines();
     assert_eq!(
@@ -152,7 +152,7 @@ fn ids_count_up_from_one_and_the_layout_is_the_documented_one() {
 fn a_torn_last_line_is_dropped_and_the_earlier_entries_are_intact() {
     let f = fixture();
     let id = f.store.create("m").unwrap();
-    let entries = [Entry::user("hi", Vec::new()), Entry::Stopped];
+    let entries = [Entry::user("hi", Vec::new()), Entry::stopped(None)];
     append_all(&f.store, id, &entries);
     let mut text = fs::read_to_string(f.log(id)).unwrap();
     text.push_str(r#"{"at":"2026-10-14T10:00:0"#);
@@ -168,8 +168,8 @@ fn appending_after_a_torn_line_cuts_it_off_instead_of_gluing_to_it() {
     let mut text = fs::read_to_string(f.log(id)).unwrap();
     text.push_str(r#"{"at":"2026-10-14T10:00:0"#);
     fs::write(f.log(id), text).unwrap();
-    f.store.sink(id).append(&Entry::Stopped).unwrap();
-    assert_eq!(f.store.read(id).unwrap(), vec![Entry::user("hi", Vec::new()), Entry::Stopped]);
+    f.store.sink(id).append(&Entry::stopped(None)).unwrap();
+    assert_eq!(f.store.read(id).unwrap(), vec![Entry::user("hi", Vec::new()), Entry::stopped(None)]);
 }
 
 #[test]
@@ -179,15 +179,15 @@ fn a_whole_last_entry_that_only_lacks_its_newline_is_kept() {
     f.store.sink(id).append(&Entry::user("hi", Vec::new())).unwrap();
     let text = fs::read_to_string(f.log(id)).unwrap();
     fs::write(f.log(id), text.trim_end_matches('\n')).unwrap();
-    f.store.sink(id).append(&Entry::Stopped).unwrap();
-    assert_eq!(f.store.read(id).unwrap(), vec![Entry::user("hi", Vec::new()), Entry::Stopped]);
+    f.store.sink(id).append(&Entry::stopped(None)).unwrap();
+    assert_eq!(f.store.read(id).unwrap(), vec![Entry::user("hi", Vec::new()), Entry::stopped(None)]);
 }
 
 #[test]
 fn a_corrupt_line_before_the_last_names_its_number() {
     let f = fixture();
     let id = f.store.create("m").unwrap();
-    append_all(&f.store, id, &[Entry::Stopped, Entry::Stopped]);
+    append_all(&f.store, id, &[Entry::stopped(None), Entry::stopped(None)]);
     let text = fs::read_to_string(f.log(id)).unwrap();
     let mut lines: Vec<&str> = text.lines().collect();
     lines[1] = "not json";
@@ -203,7 +203,7 @@ fn an_unknown_conversation_is_a_store_error() {
     let f = fixture();
     assert!(is_store_error(f.store.read(ConversationId(9))));
     assert!(is_store_error(f.store.delete(ConversationId(9))));
-    assert!(is_store_error(f.store.sink(ConversationId(9)).append(&Entry::Stopped).map(|()| 0)));
+    assert!(is_store_error(f.store.sink(ConversationId(9)).append(&Entry::stopped(None)).map(|()| 0)));
     assert!(is_store_error(f.store.put_blob(ConversationId(9), b"x", ImageMime::Png)));
 }
 
@@ -226,7 +226,7 @@ fn purge_keeps_exactly_90_days_and_deletes_one_second_more() {
     let gone = f.store.create("m").unwrap();
     let blob = f.store.put_blob(gone, b"only in the old one", ImageMime::Png).unwrap();
     f.store.sink(gone).append(&Entry::tool_result("c", true, vec![blob])).unwrap();
-    f.store.sink(kept).append(&Entry::Stopped).unwrap();
+    f.store.sink(kept).append(&Entry::stopped(None)).unwrap();
     assert_eq!(f.blob_files().len(), 1);
 
     f.advance(90.0 * DAY);
@@ -244,7 +244,7 @@ fn purge_ages_a_conversation_by_its_last_entry_not_its_creation() {
     let f = fixture();
     let id = f.store.create("m").unwrap();
     f.advance(89.0 * DAY);
-    f.store.sink(id).append(&Entry::Stopped).unwrap();
+    f.store.sink(id).append(&Entry::stopped(None)).unwrap();
     f.advance(2.0 * DAY);
     assert_eq!(f.store.purge(90).unwrap(), vec![]);
     f.advance(89.0 * DAY);
@@ -269,6 +269,47 @@ fn a_blob_shared_by_two_conversations_survives_until_the_second_is_deleted() {
 }
 
 #[test]
+fn a_blob_put_for_another_conversation_is_not_collected_before_its_entry_is_appended() {
+    let f = fixture();
+    let (a, b) = (f.store.create("m").unwrap(), f.store.create("m").unwrap());
+    let shared = f.store.put_blob(a, b"the same render", ImageMime::Png).unwrap();
+    f.store.sink(a).append(&Entry::tool_result("c", true, vec![shared.clone()])).unwrap();
+    // b puts the same bytes, and a is deleted before b's entry is written.
+    assert_eq!(f.store.put_blob(b, b"the same render", ImageMime::Png).unwrap(), shared);
+    f.store.delete(a).unwrap();
+    assert_eq!(f.blob_files().len(), 1, "b is about to name it");
+    f.store.sink(b).append(&Entry::tool_result("c", true, vec![shared])).unwrap();
+    f.store.delete(b).unwrap();
+    assert!(f.blob_files().is_empty(), "once b named it and was deleted, it goes");
+}
+
+#[test]
+fn a_surviving_log_that_cannot_be_read_stops_the_delete_instead_of_losing_its_images() {
+    let f = fixture();
+    let (a, b) = (f.store.create("m").unwrap(), f.store.create("m").unwrap());
+    let shared = f.store.put_blob(a, b"render", ImageMime::Png).unwrap();
+    f.store.sink(a).append(&Entry::tool_result("c", true, vec![shared.clone()])).unwrap();
+    f.store.sink(b).append(&Entry::tool_result("c", true, vec![shared])).unwrap();
+    // b's log becomes unreadable (here: a folder where the file was).
+    fs::remove_file(f.log(b)).unwrap();
+    fs::create_dir(f.log(b)).unwrap();
+    assert!(is_store_error(f.store.delete(a).map(|()| 0)));
+    assert_eq!(f.blob_files().len(), 1, "the image b still shows is still there");
+}
+
+#[test]
+fn an_entry_cut_in_the_middle_of_a_character_is_a_torn_line_and_the_rest_reads() {
+    let f = fixture();
+    let id = f.store.create("m").unwrap();
+    f.store.sink(id).append(&Entry::user("caf\u{e9}", Vec::new())).unwrap();
+    let mut bytes = fs::read(f.log(id)).unwrap();
+    bytes.extend_from_slice(b"{\"at\":\"2026-10-14T10:00:01Z\",\"kind\":\"user\",\"text\":\"caf");
+    bytes.push(0xC3);
+    fs::write(f.log(id), bytes).unwrap();
+    assert_eq!(f.store.read(id).unwrap(), vec![Entry::user("caf\u{e9}", Vec::new())]);
+}
+
+#[test]
 fn a_blob_is_named_by_its_hash_and_encoding() {
     let f = fixture();
     let id = f.store.create("m").unwrap();
@@ -283,7 +324,7 @@ fn delete_all_removes_only_this_projects_conversations() {
     let f = fixture();
     let other = f.project("another-project");
     let other_id = other.create("m").unwrap();
-    other.sink(other_id).append(&Entry::Stopped).unwrap();
+    other.sink(other_id).append(&Entry::stopped(None)).unwrap();
     let mine = f.store.create("m").unwrap();
     let blob = f.store.put_blob(mine, b"img", ImageMime::Png).unwrap();
     f.store.sink(mine).append(&Entry::tool_result("c", true, vec![blob])).unwrap();
@@ -292,7 +333,7 @@ fn delete_all_removes_only_this_projects_conversations() {
     f.store.delete_all().unwrap();
     assert!(f.store.list().unwrap().is_empty());
     assert!(f.blob_files().is_empty());
-    assert_eq!(other.read(other_id).unwrap(), vec![Entry::Stopped]);
+    assert_eq!(other.read(other_id).unwrap(), vec![Entry::stopped(None)]);
     f.store.delete_all().unwrap(); // nothing left is not an error
 }
 
@@ -313,7 +354,7 @@ fn list_is_newest_first_with_a_cut_first_line_and_the_revoked_flag() {
         &[Entry::user("hello", Vec::new()), revoked, Entry::session(SessionId(2), SessionNote::Opened)],
     );
     f.advance(10.0);
-    f.store.sink(old).append(&Entry::Stopped).unwrap();
+    f.store.sink(old).append(&Entry::stopped(None)).unwrap();
 
     let rows = f.store.list().unwrap();
     assert_eq!(rows.iter().map(|r| r.id).collect::<Vec<_>>(), vec![old, new], "old was written last");

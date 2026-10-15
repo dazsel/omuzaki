@@ -31,6 +31,7 @@ mod rationale;
 mod resume;
 mod rfc3339;
 
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -67,6 +68,9 @@ struct Shared {
     clock: Arc<dyn Clock>,
     /// Serialises every change to the folder: create, append, blob writes, delete, purge.
     lock: Mutex<()>,
+    /// Blobs written whose entry has not been appended yet. A delete in the gap must not take a blob another
+    /// conversation is about to name again.
+    pinned: Mutex<HashSet<String>>,
 }
 
 impl std::fmt::Debug for ConversationStore {
@@ -80,7 +84,13 @@ impl ConversationStore {
     /// `clock` must return wall time in seconds since the Unix epoch (see the module docs). A `project` that is not
     /// a plain id makes every later call fail with [`HostError::Store`].
     pub fn open(root: &Path, project: &str, clock: Arc<dyn Clock>) -> Self {
-        let shared = Shared { root: root.to_path_buf(), project: project.to_owned(), clock, lock: Mutex::new(()) };
+        let shared = Shared {
+            root: root.to_path_buf(),
+            project: project.to_owned(),
+            clock,
+            lock: Mutex::new(()),
+            pinned: Mutex::new(HashSet::new()),
+        };
         Self { shared: Arc::new(shared) }
     }
 
@@ -174,7 +184,11 @@ impl ConversationStore {
         if !self.ids()?.contains(&id.0) {
             return Err(unknown(id));
         }
-        blobs::put(&self.project_dir()?, bytes, mime)
+        let block = blobs::put(&self.project_dir()?, bytes, mime)?;
+        if let StoredBlock::Image { blob, .. } = &block {
+            self.pins().insert(blob.clone());
+        }
+        Ok(block)
     }
 
     // ----- internals shared with the sibling modules -----
@@ -249,8 +263,8 @@ impl ConversationStore {
 
     /// Reads and parses one log.
     fn parse(&self, id: ConversationId) -> Result<log::Parsed, HostError> {
-        let text = fs::read_to_string(self.conversation_dir(id)?.join(LOG)).map_err(|e| io_err("read the log", e))?;
-        log::parse(&text).map_err(|e| match e {
+        let bytes = fs::read(self.conversation_dir(id)?.join(LOG)).map_err(|e| io_err("read the log", e))?;
+        log::parse(&bytes).map_err(|e| match e {
             HostError::Store(why) => HostError::Store(format!("conversation {}: {why}", id.0)),
             other => other,
         })
@@ -260,7 +274,17 @@ impl ConversationStore {
     fn append(&self, id: ConversationId, entry: &Entry) -> Result<(), HostError> {
         let line = log::entry_line(&self.now_string(), entry)?;
         let _guard = self.guard();
-        log::append(&self.conversation_dir(id)?.join(LOG), &line)
+        log::append(&self.conversation_dir(id)?.join(LOG), &line)?;
+        // The entry now names its blobs, so a delete can see them in a log and the pins are done.
+        let mut pins = self.pins();
+        for hash in blob_hashes(entry) {
+            pins.remove(hash);
+        }
+        Ok(())
+    }
+
+    fn pins(&self) -> MutexGuard<'_, HashSet<String>> {
+        self.shared.pinned.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Deletes the conversations `ids` and then the blobs that only they named. The caller holds the lock.
@@ -269,19 +293,41 @@ impl ConversationStore {
         let mut removed = Vec::new();
         for id in ids {
             let dir = project_dir.join(id.to_string());
-            removed.push(fs::read_to_string(dir.join(LOG)).unwrap_or_default());
+            removed.push(read_log_text(&dir)?);
             fs::remove_dir_all(&dir).map_err(|e| io_err("delete a conversation", e))?;
         }
+        // A log that cannot be read is not an empty one: treating it so would delete an image it still shows.
         let mut remaining = Vec::new();
         for id in self.ids()? {
-            remaining.push(fs::read_to_string(project_dir.join(id.to_string()).join(LOG)).unwrap_or_default());
+            remaining.push(read_log_text(&project_dir.join(id.to_string()))?);
         }
-        blobs::release(&project_dir, &removed, &remaining)
+        blobs::release(&project_dir, &removed, &remaining, &self.pins())
     }
 }
 
 /// The log file inside a conversation folder.
 const LOG: &str = "log.jsonl";
+
+/// A conversation's log as text for searching blob names; bytes that are not UTF-8 cannot hide a hash.
+fn read_log_text(dir: &Path) -> Result<String, HostError> {
+    let bytes = fs::read(dir.join(LOG)).map_err(|e| io_err("read a log to find the blobs it names", e))?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// The hashes of the images `entry` names.
+fn blob_hashes(entry: &Entry) -> Vec<&str> {
+    fn image(block: &StoredBlock) -> Option<&str> {
+        match block {
+            StoredBlock::Image { blob, .. } => Some(blob.as_str()),
+            _ => None,
+        }
+    }
+    match entry {
+        Entry::ToolResult { blocks, .. } => blocks.iter().filter_map(image).collect(),
+        Entry::Compacted { render, .. } => render.iter().filter_map(image).collect(),
+        _ => Vec::new(),
+    }
+}
 
 fn unknown(id: ConversationId) -> HostError {
     HostError::Store(format!("there is no conversation {}", id.0))

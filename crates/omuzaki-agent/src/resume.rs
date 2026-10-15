@@ -6,6 +6,7 @@ use omuzaki_agent_api::entry::{Entry, StoredBlock};
 use omuzaki_llm_api::message::{ContentBlock, ImageOrigin, Message, Role};
 
 use crate::context::person_text;
+use crate::shared::cut_text_blocks;
 use crate::sink::EntrySink;
 
 /// The result a trailing tool use gets when the studio closed before the call finished.
@@ -31,19 +32,24 @@ struct Rebuild<'a> {
     /// The tool-use ids of the last assistant message that still wait for their results, in order.
     open: Vec<String>,
     results: HashMap<String, (bool, Vec<StoredBlock>)>,
+    /// Where the answer in progress starts in `messages`, for a Stop to cut its text.
+    answer_from: usize,
 }
 
 impl<'a> Rebuild<'a> {
     fn new(sink: Option<&'a dyn EntrySink>) -> Self {
-        Self { sink, messages: Vec::new(), open: Vec::new(), results: HashMap::new() }
+        Self { sink, messages: Vec::new(), open: Vec::new(), results: HashMap::new(), answer_from: 0 }
     }
 
     fn run(mut self, entries: &[Entry]) -> Vec<Message> {
         let start = entries.iter().rposition(|e| matches!(e, Entry::Compacted { .. }));
         let tail = match start {
             Some(at) => {
-                if let Entry::Compacted { message, .. } = &entries[at] {
-                    self.push(Role::User, vec![ContentBlock::text(message.clone())]);
+                if let Entry::Compacted { message, render, .. } = &entries[at] {
+                    let mut blocks = vec![ContentBlock::text(message.clone())];
+                    // The render the rebuilt message kept comes back from its blob, after the text.
+                    blocks.extend(self.content(&render.iter().cloned().collect::<Vec<_>>()));
+                    self.push(Role::User, blocks);
                 }
                 &entries[at + 1..]
             }
@@ -54,6 +60,16 @@ impl<'a> Rebuild<'a> {
                 Entry::User { text, chips, .. } => {
                     self.close_open(false);
                     self.push(Role::User, vec![ContentBlock::text(person_text(text, chips))]);
+                    self.answer_from = self.messages.len();
+                }
+                // Stop cut the answer's text to what the person had seen; the turns stored before it were whole.
+                Entry::Stopped { text_read, .. } => {
+                    self.close_open(true);
+                    if let Some(read) = text_read {
+                        let turns =
+                            self.messages.iter_mut().skip(self.answer_from).filter(|m| m.role == Role::Assistant);
+                        cut_text_blocks(turns.map(|m| &mut m.content), *read);
+                    }
                 }
                 Entry::Assistant { blocks, .. } => {
                     self.close_open(stopped_before(tail, at));
@@ -122,7 +138,28 @@ fn stopped_before(tail: &[Entry], at: usize) -> bool {
         .iter()
         .rev()
         .take_while(|e| !matches!(e, Entry::User { .. } | Entry::Assistant { .. }))
-        .any(|e| matches!(e, Entry::Stopped))
+        .any(|e| matches!(e, Entry::Stopped { .. }))
+}
+
+/// The entries as the person saw them: where a Stop recorded how much of its answer was read, the text of that answer's
+/// earlier turns (stored whole, before the Stop) is cut to it.
+pub(crate) fn apply_stop_cuts(mut entries: Vec<Entry>) -> Vec<Entry> {
+    let mut answer_from = 0;
+    for at in 0..entries.len() {
+        match &entries[at] {
+            Entry::User { .. } => answer_from = at + 1,
+            Entry::Stopped { text_read: Some(read), .. } => {
+                let read = *read;
+                let turns = entries[answer_from..at].iter_mut().filter_map(|e| match e {
+                    Entry::Assistant { blocks, .. } => Some(blocks),
+                    _ => None,
+                });
+                cut_text_blocks(turns, read);
+            }
+            _ => {}
+        }
+    }
+    entries
 }
 
 #[cfg(test)]
@@ -201,7 +238,7 @@ mod tests {
             Entry::user("go", vec![]),
             Entry::assistant(vec![ContentBlock::tool_use("c1", "a", json!({}))]),
             Entry::tool_result("c1", false, vec![StoredBlock::Text("stopped".into())]),
-            Entry::Stopped,
+            Entry::stopped(None),
             Entry::tool_result("c1:late", true, vec![StoredBlock::Text("applied".into())]),
         ];
         let messages = messages_from_entries(&entries);
@@ -222,6 +259,63 @@ mod tests {
         let messages = messages_from_entries(&entries);
         assert_eq!(messages.len(), 1, "the summary and the new message are one user message");
         assert_eq!(text_of(&messages[0]), "summary two|new");
+    }
+
+    struct Blobs;
+
+    impl EntrySink for Blobs {
+        fn append(&self, _entry: &Entry) -> Result<(), omuzaki_agent_api::error::HostError> {
+            Ok(())
+        }
+
+        fn read_blob(&self, hash: &str, _mime: omuzaki_llm_api::message::ImageMime) -> Option<Vec<u8>> {
+            (hash == "aa").then(|| vec![137, 80, 78, 71])
+        }
+    }
+
+    #[test]
+    fn a_compaction_brings_its_render_back_from_the_blob() {
+        use omuzaki_llm_api::message::ImageMime;
+        let entries = vec![
+            Entry::compacted_with_render("summary", StoredBlock::image(ImageMime::Png, "aa")),
+            Entry::user("next", vec![]),
+        ];
+        let messages = messages_from_entries_with(&entries, &Blobs);
+        let kinds: Vec<&str> = messages[0]
+            .content
+            .iter()
+            .map(|b| match b {
+                ContentBlock::Text(_) => "text",
+                ContentBlock::Image { .. } => "image",
+                _ => "other",
+            })
+            .collect();
+        assert_eq!(kinds, ["text", "image", "text"]);
+    }
+
+    #[test]
+    fn a_stop_cuts_the_text_of_the_answers_earlier_turns_to_what_was_read() {
+        let entries = vec![
+            Entry::user("go", vec![]),
+            Entry::assistant(vec![ContentBlock::text("abcd"), ContentBlock::tool_use("c", "t", json!({}))]),
+            Entry::tool_result("c", true, vec![StoredBlock::Text("r".into())]),
+            Entry::assistant(vec![ContentBlock::text("efgh")]),
+            Entry::stopped(Some(6)),
+        ];
+        let text: String = messages_from_entries(&entries)
+            .iter()
+            .filter(|m| m.role == Role::Assistant)
+            .flat_map(|m| &m.content)
+            .filter_map(|b| if let ContentBlock::Text(t) = b { Some(t.as_str()) } else { None })
+            .collect();
+        assert_eq!(text, "abcdef");
+        let shown: String = apply_stop_cuts(entries)
+            .iter()
+            .filter_map(|e| if let Entry::Assistant { blocks, .. } = e { Some(blocks) } else { None })
+            .flatten()
+            .filter_map(|b| if let ContentBlock::Text(t) = b { Some(t.as_str()) } else { None })
+            .collect();
+        assert_eq!(shown, "abcdef", "the view agrees with the history");
     }
 
     #[test]

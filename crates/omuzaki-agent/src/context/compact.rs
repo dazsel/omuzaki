@@ -158,24 +158,45 @@ pub(crate) fn rebuild(input: &RebuildInput<'_>, info: &ModelInfo) -> Option<Vec<
     Some(blocks)
 }
 
-/// The digest the summary turn is given: step labels, the plan, what is pending, and as much of the person's and the
-/// model's text as fits under 40 % of the window, newest first. Images and tool results are left out.
+/// The digest the summary turn is given: what is pending, the plan, the step labels, and as much of the person's and
+/// the model's text as fits, all under 40 % of the window together, newest first. Images and tool results are left out.
+/// Every section is bounded, so a long conversation's labels cannot push the summary request past the window.
 pub(crate) fn digest(entries: &[Entry], plan: Option<&str>, pending: Option<&str>, window: u64) -> String {
     let limit = (window * DIGEST_PERCENT / 100).saturating_sub(u64::try_from(SUMMARY_ASK.len()).unwrap_or(0) + 64);
     let mut head = String::new();
-    let steps: Vec<&str> = entries
+    let mut used = 0_u64;
+    let fits = |used: u64, text: &str| used + u64::try_from(text.len()).unwrap_or(u64::MAX) <= limit;
+    // What is pending is mandatory and goes first; the plan and the labels take what is left of the budget.
+    for part in [pending, plan].into_iter().flatten() {
+        // Each takes at most a quarter, so neither can crowd out the labels and the conversation's own words.
+        let room = usize::try_from(limit.saturating_sub(used).min(limit / 4)).unwrap_or(usize::MAX);
+        let part = cut_to_bytes(part, room);
+        used += u64::try_from(part.len()).unwrap_or(u64::MAX) + 1;
+        head.push_str(&part);
+        head.push('\n');
+    }
+    let labels: Vec<&str> = entries
         .iter()
         .filter_map(|e| if let Entry::Step { label, .. } = e { Some(label.as_str()) } else { None })
         .collect();
-    if !steps.is_empty() {
-        let _ = writeln!(head, "Steps made: {}", steps.join("; "));
+    let mut kept_labels: Vec<&str> = Vec::new();
+    for label in labels.iter().rev() {
+        // `; ` between labels, and room for the heading.
+        if !fits(used, &format!("Steps made: {label}; ")) {
+            break;
+        }
+        used += u64::try_from(label.len()).unwrap_or(u64::MAX) + 2;
+        kept_labels.push(label);
     }
-    for part in [plan, pending].into_iter().flatten() {
-        head.push_str(part);
-        head.push('\n');
+    if !kept_labels.is_empty() {
+        kept_labels.reverse();
+        let older = labels.len() - kept_labels.len();
+        let more = if older > 0 { format!(" ({older} earlier not shown)") } else { String::new() };
+        let _ = writeln!(head, "Steps made: {}{more}", kept_labels.join("; "));
     }
     let mut used = u64::try_from(head.len()).unwrap_or(u64::MAX);
-    let mut picked: Vec<(usize, String)> = Vec::new();
+    // (entry, position within the entry, line): sorted back into the order things happened.
+    let mut picked: Vec<(usize, usize, String)> = Vec::new();
     let mut persons_open = true;
     for (at, entry) in entries.iter().enumerate().rev() {
         let (label, texts): (&str, Vec<String>) = match entry {
@@ -192,30 +213,37 @@ pub(crate) fn digest(entries: &[Entry], plan: Option<&str>, pending: Option<&str
         if label == "Person" && !persons_open {
             continue;
         }
-        for text in texts.into_iter().rev() {
+        for (position, text) in texts.into_iter().enumerate().rev() {
             let whole = format!("{label}: {text}\n");
             let cut = format!("{label}: {}\n", chars(&text, CUT_CHARS));
             // The person's words are cut to 200 characters when they do not fit whole; the model's text is whole or left out.
             let candidates = if label == "Person" { vec![whole, cut] } else { vec![whole] };
-            let choice = candidates
-                .into_iter()
-                .find(|candidate| used + u64::try_from(candidate.len()).unwrap_or(u64::MAX) <= limit);
+            let choice = candidates.into_iter().find(|candidate| fits(used, candidate));
             match choice {
                 Some(line) => {
                     used += u64::try_from(line.len()).unwrap_or(u64::MAX);
-                    picked.push((at, line));
+                    picked.push((at, position, line));
                 }
                 None if label == "Person" => persons_open = false,
                 None => {}
             }
         }
     }
-    picked.sort_by_key(|(at, _)| *at);
+    picked.sort_by_key(|(at, position, _)| (*at, *position));
     let mut out = head;
-    for (_, line) in picked {
+    for (_, _, line) in picked {
         out.push_str(&line);
     }
     out
+}
+
+/// `text` cut to at most `most` bytes at a character boundary.
+fn cut_to_bytes(text: &str, most: usize) -> String {
+    let mut end = most.min(text.len());
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_owned()
 }
 
 fn plan_text(plan: &[PlanItem]) -> Option<String> {
@@ -245,8 +273,13 @@ impl Worker {
     }
 
     fn pending_text(&self, entries: &[Entry]) -> Option<String> {
-        let mut lines: Vec<String> =
-            self.sessions.approvals().iter().map(|a| format!("Pending approval #{}: {:?}", a.id.0, a.need)).collect();
+        let mut lines: Vec<String> = self
+            .sessions
+            .approvals()
+            .iter()
+            .filter(|a| a.session == self.session)
+            .map(|a| format!("Pending approval #{}: {:?}", a.id.0, a.need))
+            .collect();
         let answered: Vec<_> =
             entries.iter().filter_map(|e| if let Entry::Answer { id, .. } = e { Some(*id) } else { None }).collect();
         for entry in entries {
@@ -324,11 +357,22 @@ impl Worker {
             .filter_map(|b| if let ContentBlock::Text(t) = b { Some(t.as_str()) } else { None })
             .collect::<Vec<_>>()
             .join("\n");
+        let rebuilt_render = rebuilt.iter().find_map(|b| match b {
+            ContentBlock::Image { bytes, mime, .. } => Some((bytes.clone(), *mime)),
+            _ => None,
+        });
         self.messages = vec![Message::new(Role::User, rebuilt)];
+        // The answer now starts after the rebuilt message; `msg_from` pointed into the history that is gone.
+        run.msg_from = 1;
         self.ledger = Ledger::new();
         self.measured = 0;
         run.compacted = true;
-        self.shared.record(Entry::compacted(message));
+        // A render the rebuilt message kept is stored as a blob, so a resume puts it back.
+        let render = rebuilt_render.and_then(|(bytes, mime)| self.cfg.sink.put_blob(&bytes, mime).ok());
+        self.shared.record(match render {
+            Some(block) => Entry::compacted_with_render(message, block),
+            None => Entry::compacted(message),
+        });
         Ok(())
     }
 }
@@ -438,6 +482,34 @@ mod tests {
         let mut big = input(&system, vec![], None);
         big.latest = "l".repeat(2_000);
         assert!(rebuild(&big, &info(10_000)).is_none(), "3,900 + 2,000 + 2,050 + 2,048 passes 10,000");
+    }
+
+    #[test]
+    fn every_section_of_the_digest_is_bounded_whatever_the_conversation_holds() {
+        let mut entries: Vec<Entry> = (0..2_000)
+            .map(|i| Entry::step(omuzaki_ops_api::TxId(i), format!("Assistant: a long step label number {i}"), "r"))
+            .collect();
+        entries.push(Entry::user("now", vec![]));
+        let plan = "p".repeat(20_000);
+        let pending = "q".repeat(20_000);
+        let text = digest(&entries, Some(&plan), Some(&pending), 10_000);
+        assert!(text.len() <= 4_000, "{} bytes is over 40 % of a 10,000-token window", text.len());
+        assert!(text.contains("earlier not shown"));
+        assert!(text.contains("number 1999"), "the newest labels are the ones kept");
+    }
+
+    #[test]
+    fn text_of_one_assistant_message_keeps_the_order_it_was_written_in() {
+        let entries = vec![
+            Entry::user("go", vec![]),
+            Entry::assistant(vec![
+                ContentBlock::text("first"),
+                ContentBlock::tool_use("c", "t", serde_json::json!({})),
+                ContentBlock::text("second"),
+            ]),
+        ];
+        let text = digest(&entries, None, None, 10_000);
+        assert!(text.find("first").unwrap() < text.find("second").unwrap(), "{text}");
     }
 
     #[test]

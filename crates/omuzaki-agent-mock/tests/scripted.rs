@@ -119,7 +119,12 @@ fn a_second_stop_changes_nothing_but_counts() {
 fn send_is_busy_until_done_then_starts_the_next_answer() {
     let (clock, a) = setup(vec![
         ScriptedAnswer::new(vec![at(1.0, delta("one")), at(2.0, AssistantEvent::Done)]),
-        ScriptedAnswer::new(vec![at(0.0, delta("two")), at(0.0, AssistantEvent::Done)]),
+        ScriptedAnswer::new(vec![
+            at(0.0, delta("two")),
+            at(0.0, AssistantEvent::question(QuestionId(1), "Which?", Vec::new())),
+            at(0.0, AssistantEvent::question(QuestionId(2), "And?", Vec::new())),
+            at(1.0, AssistantEvent::Done),
+        ]),
     ]);
     let rx = a.events();
     a.send(UserMessage::new("first")).unwrap();
@@ -130,10 +135,19 @@ fn send_is_busy_until_done_then_starts_the_next_answer() {
     clock.advance(Seconds(1.0));
     assert_eq!(drain(&a, &rx), vec![AssistantEvent::Done]);
     a.send(UserMessage::new("second")).unwrap();
-    assert_eq!(drain(&a, &rx), vec![delta("two"), AssistantEvent::Done]);
+    let second = drain(&a, &rx);
+    assert_eq!(second.len(), 3, "the text and the two questions; Done is a second away");
+    assert_eq!(a.answer(QuestionId(9), "never asked".into()), Err(HostError::Mcp("no open question 9".into())));
     a.answer(QuestionId(1), "yes".into()).unwrap();
     a.answer(QuestionId(2), "no".into()).unwrap();
+    assert_eq!(
+        a.answer(QuestionId(1), "again".into()),
+        Err(HostError::Mcp("no open question 1".into())),
+        "answered once"
+    );
     assert_eq!(a.answered(), vec![(QuestionId(1), "yes".to_string()), (QuestionId(2), "no".to_string())]);
+    clock.advance(Seconds(1.0));
+    assert_eq!(drain(&a, &rx), vec![AssistantEvent::Done]);
     let texts: Vec<_> = a.sent().into_iter().map(|m| m.text).collect();
     assert_eq!(texts, ["first", "second"]);
 }
@@ -186,7 +200,7 @@ fn from_json_round_trips_a_serialized_script() {
 fn the_transcript_is_what_was_given() {
     let (_c, a) = setup(Vec::new());
     assert_eq!(a.transcript().len(), 0);
-    let entries = vec![Entry::user("hi", Vec::new()), Entry::Stopped];
+    let entries = vec![Entry::user("hi", Vec::new()), Entry::stopped(None)];
     let a = a.with_transcript(entries.clone());
     assert_eq!(a.transcript(), entries);
 }

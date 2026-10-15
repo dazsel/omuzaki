@@ -20,7 +20,7 @@ pub enum StoredBlock {
     Image {
         /// Its encoding.
         mime: ImageMime,
-        /// The hash in lower-case hex; the bytes are in the conversation's `blobs/` folder.
+        /// The hash in lower-case hex; the bytes are in the project's `blobs/` folder, shared by its conversations.
         blob: String,
     },
 }
@@ -143,9 +143,18 @@ pub enum Entry {
     Compacted {
         /// The rebuilt message.
         message: String,
+        /// The latest render the rebuilt message kept, as a blob, so a resume can put it back.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        render: Option<StoredBlock>,
     },
     /// The person pressed Stop.
-    Stopped,
+    #[non_exhaustive]
+    Stopped {
+        /// How many bytes of the answer's text the person had been shown. The answer's earlier turns were stored
+        /// whole, so a replay cuts their text to this; `None` when it is not known.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text_read: Option<usize>,
+    },
 }
 
 impl Entry {
@@ -201,7 +210,17 @@ impl Entry {
 
     /// A compaction and the message it rebuilt.
     pub fn compacted(message: impl Into<String>) -> Self {
-        Self::Compacted { message: message.into() }
+        Self::Compacted { message: message.into(), render: None }
+    }
+
+    /// A compaction whose rebuilt message kept a render, stored as the blob `render`.
+    pub fn compacted_with_render(message: impl Into<String>, render: StoredBlock) -> Self {
+        Self::Compacted { message: message.into(), render: Some(render) }
+    }
+
+    /// The person pressed Stop after being shown `text_read` bytes of the answer's text.
+    pub fn stopped(text_read: Option<usize>) -> Self {
+        Self::Stopped { text_read }
     }
 }
 
@@ -244,7 +263,9 @@ mod tests {
                 SessionNote::Ended(EndReason::Revoked { by: Actor::Person { name: "sam".into() }, credential: true }),
             ),
             Entry::compacted("Summary: ..."),
-            Entry::Stopped,
+            Entry::compacted_with_render("Summary: ...", StoredBlock::image(ImageMime::Png, "cd".repeat(32))),
+            Entry::stopped(None),
+            Entry::stopped(Some(120)),
         ]
     }
 
@@ -263,6 +284,8 @@ mod tests {
             "session",
             "session",
             "compacted",
+            "compacted",
+            "stopped",
             "stopped",
         ];
         for (entry, kind) in every_entry().into_iter().zip(kinds) {

@@ -16,20 +16,23 @@ impl ConversationStore {
     pub fn resume(&self, id: ConversationId) -> Result<Resumed, HostError> {
         let entries = self.read(id)?;
         let interrupted = is_interrupted(&entries);
-        Ok(Resumed::new(entries, interrupted))
+        Ok(Resumed::new(crate::resume::apply_stop_cuts(entries), interrupted))
     }
 }
 
-/// D7 has no "end of answer" entry, so the rule is: an answer is closed when the last entry is a `Charge`, `Step`,
-/// `Stopped` or `Compacted` and the last `Assistant` entry has no tool use. Anything else, including a log that ends
-/// on the person's message, is interrupted. A conversation with no entries has no answer to interrupt.
+/// D7 has no "end of answer" entry, so the rule is: an answer is closed when the last entry is a `Charge`, `Step` or
+/// `Compacted` and the last `Assistant` entry has no tool use, or when it is `Stopped` (a stop closes the answer
+/// even with a call in flight). Anything else, including a log that ends on the person's message, is interrupted.
+/// Session notes after the last answer are not part of it. A conversation with no entries has no answer to interrupt.
 fn is_interrupted(entries: &[Entry]) -> bool {
-    let Some(last) = entries.last() else {
+    let Some(last) = entries.iter().rev().find(|e| !matches!(e, Entry::Session { .. })) else {
         return false;
     };
-    let ends_an_answer =
-        matches!(last, Entry::Charge { .. } | Entry::Step { .. } | Entry::Stopped | Entry::Compacted { .. });
-    !ends_an_answer || last_assistant_calls_a_tool(entries)
+    match last {
+        Entry::Stopped { .. } => false,
+        Entry::Charge { .. } | Entry::Step { .. } | Entry::Compacted { .. } => last_assistant_calls_a_tool(entries),
+        _ => true,
+    }
 }
 
 fn last_assistant_calls_a_tool(entries: &[Entry]) -> bool {
@@ -60,10 +63,35 @@ mod tests {
 
     #[test]
     fn closed_answers_are_not_interrupted() {
-        for last in [charge(), Entry::step(omuzaki_ops_api::TxId(1), "l", "r"), Entry::Stopped, Entry::compacted("s")] {
+        for last in
+            [charge(), Entry::step(omuzaki_ops_api::TxId(1), "l", "r"), Entry::stopped(None), Entry::compacted("s")]
+        {
             assert!(!is_interrupted(&[Entry::user("hi", Vec::new()), text(), last]));
         }
         assert!(!is_interrupted(&[]));
+    }
+
+    #[test]
+    fn the_order_the_host_writes_is_a_closed_answer() {
+        // The turn, then what it cost.
+        assert!(!is_interrupted(&[Entry::user("hi", Vec::new()), text(), charge()]));
+        // A session note after the last answer is not part of it.
+        let ended = Entry::session(
+            omuzaki_ops_api::SessionId(1),
+            omuzaki_agent_api::entry::SessionNote::Ended(omuzaki_ops_api::EndReason::Closed),
+        );
+        assert!(!is_interrupted(&[Entry::user("hi", Vec::new()), text(), charge(), ended]));
+    }
+
+    #[test]
+    fn a_stop_closes_the_answer_even_with_a_call_in_flight() {
+        let log = [
+            Entry::user("hi", Vec::new()),
+            calls(),
+            Entry::tool_result("c", false, Vec::new()),
+            Entry::stopped(Some(0)),
+        ];
+        assert!(!is_interrupted(&log));
     }
 
     #[test]

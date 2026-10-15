@@ -138,7 +138,7 @@ mod tests {
         let json = serde_json::to_string(&info).unwrap();
         assert_eq!(serde_json::from_str::<ConversationInfo>(&json).unwrap(), info);
 
-        let resumed = Resumed::new(vec![Entry::user("hi", Vec::new()), Entry::Stopped], true);
+        let resumed = Resumed::new(vec![Entry::user("hi", Vec::new()), Entry::stopped(None)], true);
         let json = serde_json::to_string(&resumed).unwrap();
         assert_eq!(serde_json::from_str::<Resumed>(&json).unwrap(), resumed);
     }

@@ -192,3 +192,43 @@ fn none_of_the_host_tools_opens_the_transaction() {
     rig.say("go", 0.0);
     assert_eq!(rig.server.called("tx_begin"), 0);
 }
+
+#[test]
+fn a_revoked_session_ends_an_open_question() {
+    let rig =
+        Rig::new(script(vec![call_turn("", &[("c1", "ask_person", "{\"question\":\"Which?\"}")]), say_turn("ok")]));
+    rig.host.send(UserMessage::new("go")).unwrap();
+    let mut seen = Vec::new();
+    Rig::wait_for("the question", || {
+        while let Some(e) = rig.rx.try_recv() {
+            seen.push(e);
+        }
+        !question_of(&seen).is_empty()
+    });
+    rig.sessions.revoke();
+    let rest = rig.until_done(0.0);
+    assert!(
+        rest.iter().any(|e| matches!(e, AssistantEvent::Error(omuzaki_agent_api::error::HostError::SessionEnded))),
+        "{rest:?}"
+    );
+    assert_eq!(rig.llm.requests().len(), 1);
+}
+
+#[test]
+fn question_ids_continue_from_a_resumed_conversation() {
+    use omuzaki_agent_api::entry::Entry;
+    let history = vec![
+        Entry::user("old", vec![]),
+        Entry::question(QuestionId(5), "Earlier?", vec![]),
+        Entry::answer(QuestionId(5), "yes"),
+        Entry::assistant(vec![ContentBlock::text("ok")]),
+        Entry::charge(omuzaki_llm_api::usage::Usage::new(1, 1), 1),
+    ];
+    let rig = Rig::with(
+        script(vec![call_turn("", &[("c1", "ask_person", "{\"question\":\"Now?\"}")]), say_turn("ok")]),
+        RigOptions { history, person_reply: Some("fine".into()), ..RigOptions::default() },
+        standard_server,
+    );
+    let events = rig.say("go", 0.0);
+    assert_eq!(question_of(&events)[0].0, QuestionId(6));
+}

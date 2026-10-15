@@ -115,7 +115,7 @@ fn section_4(f: &Fixture) -> ConversationId {
     log.push(charge(4, 40, 8_718, 141, 126));
     // Turn 6: the person presses Stop after three deltas.
     log.push(Entry::assistant(vec![ContentBlock::text(TURN_6)]));
-    log.push(Entry::Stopped);
+    log.push(Entry::stopped(None));
     log.push(charge(4, 18, 8_859, 426, 152));
     let rationale = cut_rationale(&[TURN_1, TURN_4, TURN_6].join("\n\n"));
     log.push(Entry::step(TxId(31), format!("{LABEL} (stopped)"), rationale));
@@ -224,7 +224,7 @@ fn a_corrupt_conversation_does_not_hide_a_good_one() {
     let f = fixture();
     let (good, bad) = (f.store.create("m").unwrap(), f.store.create("m").unwrap());
     append_ticking(&f, good, &[Entry::step(TxId(1), "l", "why")]);
-    append_ticking(&f, bad, &[Entry::Stopped, Entry::Stopped]);
+    append_ticking(&f, bad, &[Entry::stopped(None), Entry::stopped(None)]);
     let path = f.dir.path().join("assistant").join(PROJECT).join(bad.0.to_string()).join("log.jsonl");
     let text = fs::read_to_string(&path).unwrap();
     fs::write(&path, text.replacen("{\"at\"", "{", 1)).unwrap();
@@ -261,7 +261,7 @@ fn a_log_that_ends_mid_answer_resumes_interrupted() {
 fn a_log_that_ends_after_a_final_text_resumes_closed() {
     assert!(!resumed_interrupted(vec![charge(1, 1, 0, 0, 1)]));
     assert!(!resumed_interrupted(vec![charge(1, 1, 0, 0, 1), Entry::step(TxId(1), "l", "r")]));
-    assert!(!resumed_interrupted(vec![Entry::Stopped]));
+    assert!(!resumed_interrupted(vec![Entry::stopped(None)]));
     assert!(!resumed_interrupted(vec![Entry::compacted("summary")]));
 }
 
@@ -280,7 +280,7 @@ fn the_conversations_trait_lists_opens_deletes_and_writes_like_the_store() {
     let view: &dyn Conversations = &f.store;
     let other = ConversationStore::open(f.dir.path(), "other", f.clock.clone());
     let kept = other.create("m").unwrap();
-    other.sink(kept).append(&Entry::Stopped).unwrap();
+    other.sink(kept).append(&Entry::stopped(None)).unwrap();
 
     let quiet = f.store.create("m1").unwrap();
     append_ticking(&f, quiet, &[Entry::user("a".repeat(120), Vec::new())]);
@@ -313,5 +313,5 @@ fn the_conversations_trait_lists_opens_deletes_and_writes_like_the_store() {
     assert!(matches!(view.open(quiet), Err(HostError::Store(_))));
     view.delete_all().unwrap();
     assert!(view.list().unwrap().is_empty());
-    assert_eq!(other.read(kept).unwrap(), vec![Entry::Stopped]);
+    assert_eq!(other.read(kept).unwrap(), vec![Entry::stopped(None)]);
 }

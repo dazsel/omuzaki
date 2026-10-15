@@ -73,6 +73,7 @@ impl Worker {
     }
 
     fn drive(&mut self, run: &mut AnswerRun, msg: &UserMessage) -> Result<(), Flow> {
+        self.plan.clear();
         self.ensure_tools()?;
         self.admit(msg);
         loop {
@@ -201,9 +202,24 @@ impl Worker {
     }
 
     fn finish_committed(&mut self, run: &mut AnswerRun) {
-        self.commit_tx(run);
-        self.write_step(run, "");
-        self.done();
+        // Stop pressed while the answer was concluding still stops it.
+        if self.shared.stopping() {
+            return self.finish_stopped(run);
+        }
+        match self.commit_tx(run) {
+            Ok(true) => {
+                self.write_step(run, "");
+                self.done();
+            }
+            // The executor refused to close it: the error is shown, and no step is claimed.
+            Ok(false) => self.done(),
+            Err(Flow::Stopped) => self.finish_stopped(run),
+            Err(Flow::Revoked(reason)) => self.finish_revoked(run, reason),
+            Err(Flow::Fail(error)) => {
+                self.shared.emit(AssistantEvent::Error(error));
+                self.done();
+            }
+        }
     }
 
     pub(crate) fn finish_revoked(&mut self, run: &mut AnswerRun, reason: EndReason) {

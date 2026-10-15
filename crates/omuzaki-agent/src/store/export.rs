@@ -13,7 +13,7 @@ use omuzaki_agent_api::entry::{Entry, SessionNote, StoredBlock};
 use omuzaki_agent_api::error::HostError;
 use omuzaki_llm_api::message::ContentBlock;
 
-use super::log::{Parsed, Stamped};
+use super::log::{self, Parsed, Stamped};
 use super::{ConversationStore, LOG, blobs, io_err};
 
 impl ConversationStore {
@@ -23,7 +23,12 @@ impl ConversationStore {
     /// # Errors
     /// [`HostError::Store`] for an unknown id or a failed write.
     pub fn export(&self, id: ConversationId, dest: &Path) -> Result<(), HostError> {
-        let parsed = self.parse(id)?;
+        // One locked snapshot: the transcript and the copied log come from the same bytes, and a delete or an append
+        // cannot slip in between.
+        let _guard = self.guard();
+        let log_path = self.conversation_dir(id)?.join(LOG);
+        let bytes = fs::read(&log_path).map_err(|e| io_err("read the log", e))?;
+        let parsed = log::parse(&bytes)?;
         let project_dir = self.project_dir()?;
         fs::create_dir_all(dest).map_err(|e| io_err("create the export folder", e))?;
 
@@ -34,7 +39,7 @@ impl ConversationStore {
         }
         fs::write(dest.join(format!("conversation-{}.md", id.0)), markdown)
             .map_err(|e| io_err("write the transcript", e))?;
-        fs::copy(self.conversation_dir(id)?.join(LOG), dest.join(LOG)).map_err(|e| io_err("copy the log", e))?;
+        fs::write(dest.join(LOG), &bytes).map_err(|e| io_err("copy the log", e))?;
         Ok(())
     }
 }
@@ -112,7 +117,7 @@ fn render(stamped: &Stamped, missing: &[String]) -> String {
             _ => format!("\n- Session {} changed\n", id.0),
         },
         Entry::Compacted { .. } => "\n- The history was compacted.\n".to_owned(),
-        Entry::Stopped => "\n- Stopped by the person.\n".to_owned(),
+        Entry::Stopped { .. } => "\n- Stopped by the person.\n".to_owned(),
         _ => String::new(),
     }
 }

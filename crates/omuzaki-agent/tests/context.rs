@@ -215,6 +215,10 @@ fn a_result_that_arrived_after_stop_appears_once_in_the_next_message() {
     rig.say("next", 0.0);
     rig.say("and again", 0.0);
     let note = "[your call `render_preview` finished after the stop: applied]";
+    assert!(
+        texts(&user_message_blocks(&rig, 1)).contains("<data source=\"late_result\">"),
+        "server-derived text is data"
+    );
     assert!(texts(&user_message_blocks(&rig, 1)).contains(note));
     assert!(!texts(&user_message_blocks(&rig, 2)).contains(note), "once");
 }
@@ -319,4 +323,47 @@ fn a_prefix_of_forty_percent_or_more_of_the_window_is_unsupported() {
     } else {
         assert!(prefix < 4_000, "a prefix under 4,000 tokens never trips the 40 % rule at 10,000");
     }
+}
+
+#[test]
+fn the_previous_answers_plan_is_not_carried_into_the_next_answers_compaction() {
+    let item = "{\"items\":[{\"text\":\"STALE-PLAN-ITEM\",\"status\":\"doing\"}]}";
+    let rig = Rig::with(
+        script(vec![
+            call_turn("", &[("c1", "update_plan", item)]),
+            say_turn("first done"),
+            heavy_turn("c2", 15_001),
+            say_turn("SUMMARY"),
+            say_turn("second done"),
+        ]),
+        window(20_000),
+        standard_server,
+    );
+    rig.say("first", 0.0);
+    rig.say("second", 0.0);
+    let summary_input = texts(&rig.llm.requests()[3].messages[0].content);
+    assert!(!summary_input.contains("STALE-PLAN-ITEM"), "{summary_input}");
+}
+
+#[test]
+fn a_render_the_compaction_keeps_is_stored_so_a_resume_can_put_it_back() {
+    let rig = Rig::with(
+        script(vec![heavy_turn("c1", 15_001), say_turn("SUMMARY"), say_turn("done")]),
+        window(20_000),
+        |sessions| {
+            let server = standard_server(sessions);
+            server
+                .add_fixed(tool("render_preview", "Render preview", "query", true), Outcome::image(&[137, 80, 78, 71]));
+            server
+        },
+    );
+    rig.say("go", 0.0);
+    let rebuilt = &rig.llm.requests()[2].messages[0];
+    assert!(rebuilt.content.iter().any(|b| matches!(b, ContentBlock::Image { .. })), "the render was kept");
+    let stored = rig
+        .sink
+        .entries()
+        .into_iter()
+        .find_map(|e| if let Entry::Compacted { render, .. } = e { render } else { None });
+    assert!(stored.is_some(), "and named in the compaction entry");
 }

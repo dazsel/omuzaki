@@ -547,6 +547,15 @@ impl Sessions for FakeSessions {
 
     fn charge(&self, _id: SessionId, spend: Spend) -> Result<SessionInfo, OpError> {
         let mut st = self.st();
+        if matches!(st.info.state, SessionState::Ended { .. }) {
+            return Err(OpError {
+                code: ErrorCode::Conflict,
+                message: "the session has ended".into(),
+                field: None,
+                hint: None,
+                detail: None,
+            });
+        }
         st.charges.push(spend);
         st.info.spent.usd_micros += spend.usd_micros;
         st.info.spent.tokens += spend.tokens;

@@ -45,8 +45,11 @@ fn a_text_answer_emits_text_then_budget_then_done_and_records_user_assistant_and
     let entries = rig.sink.entries();
     assert!(matches!(entries[0], Entry::Session { .. }));
     assert!(matches!(&entries[1], Entry::User { text, .. } if text == "hi"));
-    assert!(matches!(&entries[2], Entry::Charge { .. }));
-    assert!(matches!(&entries[3], Entry::Assistant { .. }));
+    assert!(matches!(&entries[2], Entry::Assistant { .. }));
+    assert!(
+        matches!(&entries[3], Entry::Charge { .. }),
+        "the turn, then what it cost: a log that ends on a charge ends an answer"
+    );
 }
 
 #[test]
