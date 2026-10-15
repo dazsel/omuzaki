@@ -19,7 +19,8 @@
 //! A `#[path = "…"]` in a crate's `src/` is followed the same way: its target must resolve inside the crate's `src/`
 //! (where every file is scanned) and be a file the gate can read; one that leaves `src/`, or isn't a string literal,
 //! fails. A `[lib]` or `[[bin]]` `path` in the crate's `Cargo.toml` outside `src/` fails too, since the gate never
-//! reads those files. (`tests/` and `benches/` are not shipped code and are not scanned.)
+//! reads those files. The one exception is a short reviewed list of shared files ([`REVIEWED_PATHS`]), which are
+//! followed and scanned like `src/`. (`tests/` and `benches/` are not shipped code and are not scanned.)
 //!
 //! `include!(concat!(env!("OUT_DIR"), "/<file>"))` holds the file `build.rs` generates, which the gate can't read, so it
 //! is allowed only for a reviewed list of generators ([`REVIEWED_GENERATORS`]), by file name, and only in a crate that
@@ -187,6 +188,11 @@ fn is_non_commercial(spdx: &str) -> bool {
 const REVIEWED_GENERATORS: [&str; 6] =
     ["ops_mods.rs", "crate_mods.rs", "link_calls.rs", "migrations.rs", "looks.rs", "seed.rs"];
 
+/// Files outside a crate's `src/` that a `#[path]` may name, by workspace-relative path. A listed file is followed and
+/// scanned like one in `src/`, not exempted. `omuzaki-doc`'s `build_support/migration_files.rs` is shared by its
+/// `build.rs` (the migration module list) and its library; it registers nothing.
+const REVIEWED_PATHS: [&str; 1] = ["crates/omuzaki-doc/build_support/migration_files.rs"];
+
 /// A crate as [`unchecked_registrations`] sees it.
 struct Crate<'a> {
     /// Its package name.
@@ -262,7 +268,8 @@ fn unchecked_registrations(krate: &Crate<'_>, sources: &[(String, String)]) -> V
                 Err(reason) => out.push(format!("{path}: {reason}")),
                 Ok((line, target)) => {
                     let resolved = normalise(&format!("{from}/{target}"));
-                    if is_absolute(&target) || !in_src(&resolved) {
+                    let reviewed = REVIEWED_PATHS.contains(&resolved.as_str());
+                    if is_absolute(&target) || !(in_src(&resolved) || reviewed) {
                         out.push(format!(
                             "{path}: line {line}: `#[path = \"{target}\"]` leaves the crate's `src/`, which the gate \
                              doesn't scan for `register_model!`"
@@ -662,7 +669,9 @@ fn with_includes(root: &Path, dir: &str, sources: &mut Vec<(String, String)>) {
             .chain(path_attributes(&sources[next].1).into_iter().filter_map(|attribute| attribute.ok().map(|a| a.1)));
         let wanted: Vec<String> = files
             .map(|include| normalise(&format!("{from}/{include}")))
-            .filter(|resolved| resolved.starts_with(&format!("{dir}/src/")))
+            .filter(|resolved| {
+                resolved.starts_with(&format!("{dir}/src/")) || REVIEWED_PATHS.contains(&resolved.as_str())
+            })
             .collect();
         for resolved in wanted {
             if sources.iter().any(|(other, _)| normalise(other) == resolved) {
@@ -1465,5 +1474,26 @@ const DOC: &str = "register_model!(\"tiny\", include_str!(\"../models/tiny.model
         let found = unchecked(r#"include!(concat!(env!("OUT_DIR"), "/registrations.rs"));"#);
         assert!(found[0].contains("crate `omuzaki-tiny`") && found[0].contains("`registrations.rs`"), "{found:?}");
         assert!(found[0].contains("REVIEWED_GENERATORS"), "{found:?}");
+    }
+
+    #[test]
+    fn a_reviewed_path_outside_src_is_scanned_not_exempted() {
+        let krate = Crate { name: "omuzaki-doc", dir: "crates/omuzaki-doc", build_script: true };
+        let lib = (
+            "crates/omuzaki-doc/src/lib.rs".to_owned(),
+            "#[path = \"../build_support/migration_files.rs\"]\nmod m;".to_owned(),
+        );
+        let helper = |text: &str| (REVIEWED_PATHS[0].to_owned(), text.to_owned());
+        let clean = [lib.clone(), helper("fn f() {}")];
+        assert_eq!(unchecked_registrations(&krate, &clean), Vec::<String>::new());
+        let registering = [lib.clone(), helper(r#"register_model!("x", include_str!("../assets/x.toml"));"#)];
+        assert_eq!(unchecked_registrations(&krate, &registering).len(), 1);
+        let missing = unchecked_registrations(&krate, &[lib]);
+        assert!(missing[0].contains("not a file the gate could read"), "{missing:?}");
+        let other = [(
+            "crates/omuzaki-doc/src/lib.rs".to_owned(),
+            "#[path = \"../build_support/other.rs\"]\nmod m;".to_owned(),
+        )];
+        assert_eq!(unchecked_registrations(&krate, &other).len(), 1);
     }
 }
