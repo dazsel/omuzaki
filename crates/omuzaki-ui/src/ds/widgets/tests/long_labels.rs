@@ -2,7 +2,11 @@
 //! panel: they end in an ellipsis and the tooltip says the whole thing.
 
 use super::*;
+use std::sync::Arc;
+
 use crate::ds::audit::painted;
+use crate::ds::strings::{English, Pseudo};
+use crate::ds::theme::set_strings;
 
 const GERMAN: &str = "Donaudampfschifffahrtsgesellschaftskapitän bestätigen und fortfahren";
 /// An inspector column is 288 pt with 8 pt of padding on each side.
@@ -112,13 +116,17 @@ const NAME70: &str = "Donaudampfschifffahrtsgesellschaftskapitän bestätigen un
 
 /// Every chip in a 288 pt panel, each with [`NAME70`] as its name. The gate's value and limit are short numbers.
 fn chips() -> egui_kittest::Harness<'static> {
-    panel(|ui| {
+    let mut h = panel(|ui| {
         ui.add(ActorChip::new(NAME70, ActorKind::Agent));
         ui.add(StatusChip::new(Status::Warn, NAME70));
         ui.add(GateChip::failed(NAME70, "0.81", "0.85"));
         ui.add(ScopeBadge::new(NAME70));
         ui.add(CostChip::new(&[NAME70]));
-    })
+    });
+    // The pseudo-locale: the component's own words are the ones that change, so the cut has to hold with them too.
+    set_strings(&h.ctx, Arc::new(Pseudo(English)));
+    h.run_steps(3);
+    h
 }
 
 /// The chips' nodes, in the order they were added: those that carry [`NAME70`] as their label or value.
