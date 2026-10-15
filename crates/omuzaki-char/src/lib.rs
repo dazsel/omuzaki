@@ -45,4 +45,6 @@ pub mod outfit;
 pub mod palette;
 pub mod template;
 
-omuzaki_core::define_link!();
+omuzaki_core::define_link! {
+    omuzaki_char_api::link();
+}
