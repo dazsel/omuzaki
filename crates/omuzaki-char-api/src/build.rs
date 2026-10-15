@@ -156,6 +156,9 @@ pub struct BuiltCharacter {
     /// The class of every material (LK-06): declared by its part
     /// ([`PartOutput::material_classes`](crate::PartOutput::material_classes)) or inferred ([`MaterialClass::infer`]).
     pub material_classes: BTreeMap<MaterialName, MaterialClass>,
+    /// The part that defined each material, whether or not any mesh uses it: where [`inherit_look`](Self::inherit_look)
+    /// reports a material it could not draw.
+    material_owners: BTreeMap<MaterialName, PartId>,
     /// The look `materials` are drawn in ([`look`](Self::look)). Private, so it is always one that validated: only
     /// [`apply_look`](Self::apply_look) sets it, which is what makes [`inherit_look`](Self::inherit_look) infallible.
     look: LookParams,
@@ -206,16 +209,34 @@ impl BuiltCharacter {
 
     /// Draws this character in the look `previous` is drawn in, for a rebuild of the same character (a palette change
     /// rebuilds it whole), so the look survives the rebuild. Returns the materials that changed, as
-    /// [`apply_look`](Self::apply_look) does. It can't fail: a character's look validated when it was applied.
+    /// [`apply_look`](Self::apply_look) does. It can't fail: a material the look would make invalid on the rebuilt parts keeps its part's own spec, and a warning
+    /// naming the part, the material and the reason goes to that part's [`PartReport::warnings`].
     pub fn inherit_look(&mut self, previous: &Self) -> Vec<MaterialName> {
         self.look.clone_from(&previous.look);
         // The rebuilt parts can differ from the ones the look was checked on; a material the look would make invalid
         // keeps its part's own spec rather than failing the rebuild.
+        let mut warnings = Vec::new();
         let drawn = self
             .draw(&self.look)
             .into_iter()
-            .map(|(name, d)| (name.clone(), d.unwrap_or_else(|_| self.part_materials[&name].clone())))
+            .map(|(name, d)| match d {
+                Ok(spec) => (name, spec),
+                Err(e) => {
+                    warnings.push((name.clone(), e.to_string()));
+                    let part = self.part_materials[&name].clone();
+                    (name, part)
+                }
+            })
             .collect();
+        for (material, reason) in warnings {
+            let owner = self.material_owners.get(&material);
+            if let Some(report) = owner.and_then(|o| self.report.parts.iter_mut().find(|p| p.part == *o)) {
+                report.warnings.push(format!(
+                    "part '{}', material '{}': the inherited look was not applied, the part's own material is kept: {reason}",
+                    report.part, material.as_str()
+                ));
+            }
+        }
         self.commit(drawn)
     }
 
@@ -463,6 +484,7 @@ pub struct Assembler<'a> {
     runtimes: Vec<RuntimeSlot>,
     materials: BTreeMap<MaterialName, MaterialSpec>,
     material_classes: BTreeMap<MaterialName, MaterialClass>,
+    material_owners: BTreeMap<MaterialName, PartId>,
     textures: BTreeMap<TextureName, TextureData>,
     report: BuildReport,
     rigs: Vec<(PartId, RigContribution)>,
@@ -482,6 +504,7 @@ impl<'a> Assembler<'a> {
             runtimes: Vec::new(),
             materials: BTreeMap::new(),
             material_classes: BTreeMap::new(),
+            material_owners: BTreeMap::new(),
             textures: BTreeMap::new(),
             report: BuildReport::default(),
             rigs: Vec::new(),
@@ -607,6 +630,7 @@ impl<'a> Assembler<'a> {
             if self.materials.insert(id.clone(), spec).is_some() {
                 return Err(BuildError::Duplicate { what: "material", id: id.to_string() });
             }
+            self.material_owners.insert(id.clone(), part.clone());
             self.material_classes.insert(id, class);
         }
         Ok(())
@@ -651,6 +675,7 @@ impl<'a> Assembler<'a> {
             part_materials: self.materials.clone(),
             materials: self.materials,
             material_classes: self.material_classes,
+            material_owners: self.material_owners,
             look: LookParams::default(),
             textures: self.textures,
             face: self.published.face.map(|projection| FaceBinding { projection, profile: self.def.face.clone() }),
