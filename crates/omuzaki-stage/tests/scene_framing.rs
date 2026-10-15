@@ -14,7 +14,7 @@ use omuzaki_stage::scene::frame::{
     BUST_CROWN_FROM_TOP, BUST_FILL, FACE_EYES_FROM_TOP, FACE_FILL, FULL_FILL, HANDS_FILL, frame,
 };
 use omuzaki_stage::scene::landmarks::{Bounds, Landmarks};
-use omuzaki_stage_api::{CameraDef, Framing};
+use omuzaki_stage_api::{CameraDef, CameraId, CastMember, Framing, MemberId, SceneDef, SceneSettings};
 
 const ASPECTS: [f32; 2] = [16.0 / 9.0, 9.0 / 16.0];
 const PRESETS: [Framing; 4] = [Framing::Face, Framing::Bust, Framing::Full, Framing::Hands];
@@ -274,4 +274,59 @@ fn degenerate_landmarks_are_framing_errors() {
     assert!(is_framing(&with(|l| l.body.max.x = f32::INFINITY), Framing::Full), "an infinite box");
     assert!(is_framing(&with(|l| l.height_m = 0.0), Framing::Full), "no height for the far plane");
     assert!(is_framing(&with(|l| l.height_m = -1.0), Framing::Full), "a negative height");
+}
+
+#[test]
+fn the_poles_have_the_same_axes_as_just_short_of_them() {
+    let l = landmarks("standard");
+    let axes = |pitch: f32, yaw: f32| {
+        let def = CameraDef { pitch, yaw, ..CameraDef::preset(Framing::Full) };
+        let camera = frame(Framing::Full, &l, &def, 1.0).unwrap();
+        (camera.transform.x_axis.truncate(), camera.transform.y_axis.truncate())
+    };
+    for yaw in [0.0, 37.0, -120.0, 180.0] {
+        for (near, pole) in [(89.9999, 90.0), (-89.9999, -90.0)] {
+            let ((right_near, up_near), (right, up)) = (axes(near, yaw), axes(pole, yaw));
+            assert!((right - right_near).length() < 1e-3, "yaw {yaw} pitch {pole}: right {right} vs {right_near}");
+            assert!((up - up_near).length() < 1e-3, "yaw {yaw} pitch {pole}: up {up} vs {up_near}");
+        }
+    }
+}
+
+#[test]
+fn a_lens_too_narrow_to_fit_is_a_framing_error() {
+    let l = landmarks("standard");
+    for fov in [1e-37, 1e-30, 1e-18] {
+        let def = CameraDef { fov, ..CameraDef::preset(Framing::Full) };
+        if let Ok(camera) = frame(Framing::Full, &l, &def, 1.0) {
+            // A distance that does fit is allowed, but it must be a real one, never the end of a failed search.
+            assert!(camera.position().is_finite() && camera.position().length() > 1e6, "fov {fov}");
+        }
+    }
+    let def = CameraDef { fov: 1e-37, ..CameraDef::preset(Framing::Full) };
+    assert!(matches!(frame(Framing::Full, &l, &def, 1.0), Err(StageError::Framing { .. })));
+}
+
+/// `frame` takes exactly the camera values `SceneDef::check` takes, so the two ranges can't drift apart.
+#[test]
+fn frame_accepts_what_the_scene_check_accepts() {
+    let l = landmarks("standard");
+    let check = |camera: CameraDef| {
+        let mut scene = SceneDef::new(SceneSettings::named("Check"));
+        scene.cast.insert(MemberId::new("kiri").unwrap(), CastMember::new(omuzaki_char_api::CharId::new("t").unwrap()));
+        scene.cameras.insert(CameraId::new("main").unwrap(), camera.clone());
+        let checked = scene.check().is_ok();
+        let framed = frame(Framing::Full, &l, &camera, 1.0).is_ok();
+        assert_eq!(checked, framed, "{camera:?}: check {checked}, frame {framed}");
+    };
+    let base = CameraDef::preset(Framing::Full);
+    let nasty = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY];
+    for v in [0.0, 90.0, -90.0, 90.01, -90.01, 180.0, -180.0, 180.01, -180.01, 360.0].into_iter().chain(nasty) {
+        check(CameraDef { yaw: v, ..base.clone() });
+        check(CameraDef { pitch: v, ..base.clone() });
+        check(CameraDef { fov: v, ..base.clone() });
+        check(CameraDef { zoom: v, ..base.clone() });
+        check(CameraDef { shift: [v, 0.0], ..base.clone() });
+        check(CameraDef { shift: [0.0, v], ..base.clone() });
+    }
 }

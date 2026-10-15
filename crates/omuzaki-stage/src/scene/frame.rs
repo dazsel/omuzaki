@@ -3,7 +3,7 @@
 //! Scene cameras, `render.preview`, library previews and the sheet's turnaround all frame through [`frame`], so a
 //! preset means the same shot everywhere. Perspective only: `CameraDef` has no projection field.
 
-use omuzaki_core::glam::Vec3;
+use omuzaki_core::glam::{Mat4, Vec3, Vec4};
 use omuzaki_render_api::{Camera, Projection};
 use omuzaki_stage_api::{CameraDef, Framing};
 
@@ -23,12 +23,14 @@ pub const FACE_EYES_FROM_TOP: f32 = 0.45;
 /// The crown sits this share of the frame height below its top edge in a bust shot.
 pub const BUST_CROWN_FROM_TOP: f32 = 0.08;
 
-/// The largest pitch `CameraDef` allows, in degrees; straight down (or up) uses `Camera::look_at`'s fallback basis.
+/// The ranges `CameraDef` documents and `SceneDef::check` enforces, in degrees; `tests/scene_framing.rs` checks that
+/// `frame` accepts exactly what the check does, so the two can't drift apart.
+const MAX_YAW_DEG: f32 = 180.0;
 const MAX_PITCH_DEG: f32 = 90.0;
 /// How far in front of the nearest corner the distance search starts, in metres.
 const NEAREST_GAP: f32 = 1e-3;
-/// The distance search doubles its upper end at most this many times, then bisects this many times.
-const SEARCH_STEPS: u32 = 64;
+/// Once the distance is bracketed, bisect this many times: far more than f32 has bits, so it has converged.
+const BISECTIONS: u32 = 64;
 /// The near plane as a share of the camera distance, with a floor so a close shot keeps a usable depth range.
 const NEAR_SHARE: f32 = 0.02;
 const NEAR_FLOOR: f32 = 0.01;
@@ -119,8 +121,8 @@ fn check_inputs(def: &CameraDef, aspect: f32) -> Result<(), StageError> {
     if !def.pitch.is_finite() || def.pitch.abs() > MAX_PITCH_DEG {
         return bad("pitch", def.pitch, &format!("degrees from -{MAX_PITCH_DEG} to {MAX_PITCH_DEG}"));
     }
-    if !def.yaw.is_finite() {
-        return bad("yaw", def.yaw, "a finite number of degrees");
+    if !def.yaw.is_finite() || def.yaw.abs() > MAX_YAW_DEG {
+        return bad("yaw", def.yaw, &format!("degrees from -{MAX_YAW_DEG} to {MAX_YAW_DEG}"));
     }
     if !def.shift.iter().all(|s| s.is_finite()) {
         return bad("shift", f32::NAN, "finite fractions of the frame");
@@ -159,25 +161,40 @@ fn nearest(points: &[Seen; 8]) -> f32 {
     points.iter().map(|p| p.toward).fold(0.0, f32::max)
 }
 
+/// What the search for the distance that fits found.
+enum Fit {
+    /// Even right in front of the box the extent is within what is wanted: it never binds.
+    Never,
+    /// The distance at which the extent is what is wanted.
+    At(f32),
+    /// The extent was still too big at the farthest distance tried, so no distance was found.
+    Unreachable,
+}
+
 /// The distance past `floor` at which `excess` (the projected extent over what is wanted, falling as the camera backs
-/// off) reaches zero. `None` if even right in front of the box the extent is within what is wanted: it never binds.
-fn distance_where_it_fits(floor: f32, excess: impl Fn(f32) -> f32) -> Option<f32> {
+/// off) reaches zero.
+fn distance_where_it_fits(floor: f32, excess: impl Fn(f32) -> f32) -> Fit {
     let mut near = floor + NEAREST_GAP;
     let at_the_box = excess(near);
     // A NaN extent binds nothing here; the finished camera is checked at the end.
     if at_the_box.is_nan() || at_the_box <= 0.0 {
-        return None;
+        return Fit::Never;
     }
-    let (mut step, mut far) = (near.max(1.0), near);
-    for _ in 0..SEARCH_STEPS {
-        far = near + step;
+    // Double the step until the far end fits, so that the root lies between the ends.
+    let mut step = near.max(1.0);
+    let far = loop {
+        let far = near + step;
         if excess(far) <= 0.0 {
-            break;
+            break Some(far);
         }
         near = far;
         step *= 2.0;
-    }
-    for _ in 0..SEARCH_STEPS {
+        if !step.is_finite() {
+            break None;
+        }
+    };
+    let Some(mut far) = far else { return Fit::Unreachable };
+    for _ in 0..BISECTIONS {
         let mid = f32::midpoint(near, far);
         if excess(mid) > 0.0 {
             near = mid;
@@ -185,7 +202,7 @@ fn distance_where_it_fits(floor: f32, excess: impl Fn(f32) -> f32) -> Option<f32
             far = mid;
         }
     }
-    Some(far)
+    Fit::At(far)
 }
 
 /// The perspective camera a preset framing gives on a character with `landmarks`, in the character's frame, for a
@@ -200,7 +217,7 @@ fn distance_where_it_fits(floor: f32, excess: impl Fn(f32) -> f32) -> Option<f32
 /// # Errors
 /// [`StageError::Framing`] for [`Framing::Free`], which has its own position. Also for a landmark the framing needs and
 /// the character lacks: `face` without a head or eyes, `bust` without a chest or head, `hands` without hands. Also
-/// for a non-finite or out-of-range input: `aspect <= 0`, `fov` outside (0, 180), `zoom <= 0`, `|pitch| > 90`; for
+/// for a non-finite or out-of-range input: `aspect <= 0`, `fov` outside (0, 180), `zoom <= 0`, `|pitch| > 90`, `|yaw| > 180` (the ranges `SceneDef::check` enforces); for
 /// landmarks that aren't a finite, upright box or a character height that isn't finite and above zero; for a span
 /// with no height and no width, which has no distance to frame it from; and for a camera that comes out non-finite or
 /// with an unusable depth range.
@@ -217,14 +234,23 @@ pub fn frame(framing: Framing, landmarks: &Landmarks, def: &CameraDef, aspect: f
         });
     }
 
-    // The camera's axes depend only on where it looks from, not on how far, so take them from a camera at unit distance.
+    // The camera's axes depend only on where it looks from, not on how far. Built here, not by `Camera::look_at`:
+    // at the poles `cos(90°)` is not exactly zero in f32, so look_at would flip right and up between 89.9999° and 90°.
+    // The right axis is the horizontal one at every pitch, which is what look_at gives short of the poles.
     let (sin_yaw, cos_yaw) = def.yaw.to_radians().sin_cos();
-    let (sin_pitch, cos_pitch) = def.pitch.to_radians().sin_cos();
+    let (sin_pitch, cos_pitch) = if def.pitch.abs() == MAX_PITCH_DEG {
+        (def.pitch.signum(), 0.0)
+    } else {
+        def.pitch.to_radians().sin_cos()
+    };
     let back = Vec3::new(sin_yaw * cos_pitch, sin_pitch, cos_yaw * cos_pitch);
-    let lens = Projection::Perspective { fov_y_deg: def.fov, near: NEAR_FLOOR, far: 1.0 };
-    let mut camera = Camera::look_at(back, Vec3::ZERO, Vec3::Y, lens);
-    let axes = (camera.transform.x_axis.truncate(), camera.transform.y_axis.truncate(), camera.transform.z_axis.truncate());
-    let (right, up, back) = axes;
+    let right = Vec3::new(cos_yaw, 0.0, -sin_yaw);
+    let up = back.cross(right);
+    let axes = (right, up, back);
+    let mut camera = Camera {
+        transform: Mat4::from_cols(right.extend(0.0), up.extend(0.0), back.extend(0.0), Vec4::W),
+        projection: Projection::Perspective { fov_y_deg: def.fov, near: NEAR_FLOOR, far: 1.0 },
+    };
 
     // What the frame sees at distance `d` from the anchor: NDC = across or up over `(d - toward) * t`.
     let t = (def.fov.to_radians() * 0.5).tan();
@@ -240,7 +266,18 @@ pub fn frame(framing: Framing, landmarks: &Landmarks, def: &CameraDef, aspect: f
     // Taller: the anchor stays at `aim` as the camera backs off, so the whole span shifts with it.
     let tall = distance_where_it_fits(floor, |d| extent(&span, |p| p.y, shot.aim * d * t, 1.0, d) - 2.0 * shot.fill);
     let wide = distance_where_it_fits(floor, |d| extent(&width, |p| p.x, 0.0, aspect, d) - 2.0 * shot.fill);
-    let fit = tall.unwrap_or(0.0).max(wide.unwrap_or(0.0));
+    let mut fit = 0.0_f32;
+    for found in [tall, wide] {
+        match found {
+            Fit::At(d) => fit = fit.max(d),
+            Fit::Never => {}
+            Fit::Unreachable => {
+                return Err(StageError::Framing {
+                    reason: format!("no camera distance frames the {framing:?} shot with a {} degree lens", def.fov),
+                });
+            }
+        }
+    }
     let d = fit / def.zoom;
     if !(d.is_finite() && d > 0.0) {
         return Err(StageError::Framing { reason: format!("the {framing:?} span has no extent to frame") });
@@ -262,4 +299,18 @@ pub fn frame(framing: Framing, landmarks: &Landmarks, def: &CameraDef, aspect: f
     // Fail closed: landmarks that came from outside `Landmarks::measure` can still give a non-finite camera.
     camera.validate().map_err(|e| StageError::Framing { reason: format!("the {framing:?} camera isn't usable: {e}") })?;
     Ok(camera)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_search_finds_the_root_reports_a_shot_that_never_binds_and_gives_up_on_one_that_never_fits() {
+        // 10 / d - 1 is zero at d = 10.
+        assert!(matches!(distance_where_it_fits(0.0, |d| 10.0 / d - 1.0), Fit::At(d) if (d - 10.0).abs() < 1e-3));
+        assert!(matches!(distance_where_it_fits(0.0, |_| -1.0), Fit::Never));
+        // Too big at every distance, so the doubling runs out and no root is claimed.
+        assert!(matches!(distance_where_it_fits(0.0, |_| 1.0), Fit::Unreachable));
+    }
 }
