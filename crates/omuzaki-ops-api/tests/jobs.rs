@@ -122,8 +122,8 @@ fn job_types_round_trip_and_have_schemas() {
         conflicts: vec![conflict()],
         retained: vec![DocPath::parse("a/b").unwrap()],
     }));
-    round_trips(&Event::JobChanged { job: job_info(JobState::Running) });
-    round_trips(&Event::JobProgress { job: JobId(4), stage: "sampling".into(), fraction: 0.25 });
+    round_trips(&Event::job_changed(job_info(JobState::Running)));
+    round_trips(&Event::job_progress(JobId(4), "sampling", 0.25));
     round_trips(&Ended {
         abandoned: vec![TxId(5)],
         kept: vec![],
@@ -302,7 +302,7 @@ struct Calls(Mutex<Vec<(String, Value, Mode)>>);
 impl JobCalls for Calls {
     fn call(&self, op: &str, args: Value, mode: Mode) -> Result<Outcome, OpError> {
         self.0.lock().unwrap().push((op.to_owned(), args, mode));
-        Ok(Outcome { plan: Plan::default(), applied: None })
+        Ok(Outcome::new(Plan::default()))
     }
 }
 
