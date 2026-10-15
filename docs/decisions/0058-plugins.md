@@ -18,9 +18,9 @@ manifest, rights, and how plugins relate to scripts (ADR 0034).
    `Plugins` trait; no wasmtime), `omuzaki-plugin-mock`, and `omuzaki-plugin` (wasmtime 49, native only, the
    `plugin.*` ops, linked by the desktop App and the CLI through `link()`). wasmtime directly: extism has no
    component model, so no WIT and no versioned imports.
-2. **The WIT package `omuzaki:plugin@0.1.0`** has the base world `plugin` (imports `ops`, `host`, and `data` and
-   `http` when requested; exports `lifecycle`: `init`, `approval-resolved`, `shutdown`). Each extension world
-   includes it. A 0.x host serves its own minor and the one before through an adapter; from 1.0, semver. A node
+2. **The WIT package `omuzaki:plugin@0.1.0`** has the base world `plugin` (imports `ops`, `host`, `data` and `http`,
+   the last two linked to refusals unless requested; exports `lifecycle`: `init`, `approval-resolved`,
+   `shutdown`). Each extension world includes it. A 0.x host serves its own minor and the one before through an adapter; from 1.0, semver. A node
    activation gets refusals for `ops`, `data` and `http`; its only effect is an asynchronous `run-op` in the show's
    session, within the plugin's ceiling and the needs that show approved (automation D15).
 3. **The op bridge is generic:** `call`, `plan` (dry run), `describe` (the JSON Schema) and `list`. A WIT function per
@@ -46,7 +46,8 @@ manifest, rights, and how plugins relate to scripts (ADR 0034).
    budget and a gate (design §5.2).
 8. **Lifecycle:** installed per machine, enabled per machine or per (machine, project) in a person-only `Machine`
    setting; nothing loads unless enabled (SE-04). Reload swaps by content hash, drains, and hands over no state.
-   Every mutating `plugin.*` op is `person_only` and never queued; `plugin.list` and `plugin.describe` are `read`
+   The management ops (install, enable, disable, grant, reload, remove) are `person_only` and never queued;
+   `plugin.run` needs the command's declared scope; `plugin.list` and `plugin.describe` are `read`
    queries agents may use.
 9. **Rights:** the card shows the licence and the "not from Omuzaki" line (ADR 0016's pattern). A non-commercial or
    unknown licence is shown, not refused, for a plugin the person installs; the store (PL-04) refuses it. The licence

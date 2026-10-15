@@ -82,7 +82,7 @@ interface host {
 }
 
 interface data {
-    /// The plugin's own folder: flat names `[a-z0-9._-]{1,64}`, no paths. Only linked when the manifest says `data = true`.
+    /// The plugin's own folder: flat names `[a-z0-9._-]{1,64}`, no paths. Refusals unless the manifest says `data = true`.
     read: func(name: string) -> option<list<u8>>;
     write: func(name: string, bytes: list<u8>) -> result<_, string>;   // "over quota" past the quota (§7)
     remove: func(name: string) -> bool;
@@ -108,8 +108,8 @@ interface lifecycle {
 world plugin {
     import ops;
     import host;
-    import data;   // refused at load unless the manifest asks for `data`
-    import http;   // refused at load unless the manifest asks for `net`
+    import data;   // linked to refusals unless the manifest asks for `data`
+    import http;   // linked to refusals unless the manifest asks for `net`
     export lifecycle;
 }
 ```
@@ -408,9 +408,10 @@ agent = "confirm"              # free, confirm or never; default never
 | `plugin.remove {id, data}` | Edit | `edit:settings` | person only | 6.3 |
 | `plugin.run {id, command, args}` | Edit | the command's declared scope | anyone with it | runs a plugin command (14.1) |
 
-The mutating ops return `OpError::person_only` to any agent or plugin and are **never queued**: an agent that
-installs, enables or grants a plugin hands its own work to an actor whose grants it chose, which is escalating its own
-privileges with extra steps.
+The management ops (install, enable, disable, grant, reload, remove) return `OpError::person_only` to any agent or
+plugin and are **never queued**: an agent that installs, enables or grants a plugin hands its own work to an actor
+whose grants it chose, which is escalating its own privileges with extra steps. `plugin.run` is not one: it runs for
+any caller holding the command's declared scope.
 
 ## 10. Scripts (PL-02) and plugins
 
