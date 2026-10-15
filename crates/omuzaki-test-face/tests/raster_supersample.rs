@@ -1,8 +1,8 @@
 //! Chrome-canvas probes for how the CPU rasteriser covers a path whose edges share pixels or run long: a contour drawn
 //! twice, and paths with many points over a wide span (the case Skia's `SkScan::AntiFillPath` hands to its 4-sub-scanline
 //! supersampler when the build has one).
-//! Every Chrome value is asserted inline, measured with headless Chromium 141 (Playwright, `executablePath:
-//! /opt/pw-browsers/chromium`); each test's doc comment holds the script that draws it, so a run of it can be compared.
+//! Every Chrome value is asserted inline, measured with headless Chromium 141.0.7390.37 in software (through
+//! Playwright's `chromium.launch`); each test's doc comment holds the script that draws it, so a run of it can be compared.
 //! The rule is `raster_probes`'s: 6 levels per channel.
 //!
 //! What the sweep of point count against width found (#828): this Chromium fills such paths with the analytic coverage
@@ -176,4 +176,42 @@ fn a_46_point_sliver_matches_chrome_edge_for_edge() {
             (240, 36, 145),
         ],
     );
+}
+
+/// Same-winding layers whose edges cross one pixel at different places cover it from the outer edge. Chrome 141 reads
+/// 205 (0.8) where the left edges are at 5.2 and 5.8, and 204 where the right edges are at 17.2 and 17.8; the average
+/// of the layers would give 0.5, the sum 1.0. Drawn by
+///
+/// ```js
+/// const rect = (x0, y0, x1, y1) => [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];   // 40 x 30 canvas
+/// g.beginPath();
+/// for (const pts of [rect(5.2, 4, 17.2, 12), rect(5.8, 4, 17.8, 12)]) {
+///   g.moveTo(...pts[0]); for (const q of pts.slice(1)) g.lineTo(...q); g.closePath();
+/// }
+/// g.fill('nonzero');   // getImageData(5, 8) -> 205; (17, 8) -> 204; (6, 8) -> 255
+/// ```
+#[test]
+fn offset_same_winding_layers_cover_from_the_outer_edge() {
+    let first = [[5.2, 4.0], [17.2, 4.0], [17.2, 12.0], [5.2, 12.0]];
+    let second = [[5.8, 4.0], [17.8, 4.0], [17.8, 12.0], [5.8, 12.0]];
+    let image = alpha(40, 30, &[&first, &second]);
+    assert_matches_chrome(&image, 40, &[(5, 8, 205), (17, 8, 204), (6, 8, 255)]);
+}
+
+/// A hole stays a hole: an outer square and an opposite-wound inner one (counter-clockwise on screen). Chrome 141 reads
+/// 102 and 26 on the hole's left and right edge pixels (the ring covers 0.4 and 0.1 of them) and 0 inside. Drawn by
+///
+/// ```js
+/// const rect = (x0, y0, x1, y1) => [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];   // 40 x 30 canvas
+/// const contours = [rect(4, 4, 30, 25), rect(10.4, 10, 22.9, 19).reverse()];
+/// g.beginPath();
+/// for (const pts of contours) { g.moveTo(...pts[0]); for (const q of pts.slice(1)) g.lineTo(...q); g.closePath(); }
+/// g.fill('nonzero');   // getImageData(10, 12) -> 102; (22, 12) -> 26; (15, 12) -> 0
+/// ```
+#[test]
+fn an_opposite_wound_hole_stays_a_hole() {
+    let outer = [[4.0, 4.0], [30.0, 4.0], [30.0, 25.0], [4.0, 25.0]];
+    let inner = [[10.4, 19.0], [22.9, 19.0], [22.9, 10.0], [10.4, 10.0]];
+    let image = alpha(40, 30, &[&outer, &inner]);
+    assert_matches_chrome(&image, 40, &[(10, 12, 102), (22, 12, 26), (15, 12, 0)]);
 }
