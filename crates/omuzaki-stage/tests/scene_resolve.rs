@@ -11,12 +11,13 @@ use std::collections::BTreeMap;
 
 use omuzaki_char_api::{BuildOptions, BuildServices, CharId, CharacterBuilder, RegistryBuilder};
 use omuzaki_core::glam::Vec3;
-use omuzaki_render_api::Colour;
+use omuzaki_render_api::{Background, Bloom, Colour, ColourGrade, DepthOfField, FilmGrain, Tonemap};
 use omuzaki_stage::StageError;
 use omuzaki_stage::scene::landmarks::Landmarks;
 use omuzaki_stage::scene::resolve::{Changes, Figure, ResolvedScene};
 use omuzaki_stage_api::{
-    Anchor, CameraDef, CameraId, CastMember, Framing, LightDef, LightId, LightShape, MemberId, SceneDef, SceneSettings,
+    Anchor, Backdrop, BloomDef, CameraDef, CameraId, CastMember, DepthOfFieldDef, Focus, FocusSubject, Framing,
+    GradeDef, GroundKind, LightDef, LightId, LightShape, MemberId, SceneDef, SceneSettings,
 };
 
 thread_local! {
@@ -230,4 +231,118 @@ fn an_error_leaves_the_last_resolve_in_place() {
     def.cameras.get_mut(&camera("front")).unwrap().subject = Anchor::Member(member("nobody"));
     assert!(out.resolve_into(&def, &figures, ASPECT).is_err());
     assert_eq!(out, before);
+}
+
+fn dof(focus: Focus) -> DepthOfFieldDef {
+    DepthOfFieldDef { focus, range: 0.5, max_blur: 0.02 }
+}
+
+#[test]
+fn each_row_of_the_mapping() {
+    let (mut def, figures) = (scene(), figures([2.0, 0.0]));
+    let h = figures.values().next().unwrap().height_m;
+    def.scene.backdrop = Backdrop::Colour { colour: Colour::rgb(0, 177, 64) };
+    def.lighting.exposure = 1.5;
+    def.lighting.bloom = Some(BloomDef { strength: 0.4, radius: 0.3, threshold: 0.8 });
+    def.lighting.outline_light = 0.6;
+    def.lighting.skin_floor = Some(0.35);
+    def.scene.post.tonemap = Tonemap::None;
+    def.scene.post.grain = Some(0.1);
+    def.scene.post.grade = Some(GradeDef { saturation: 1.2, contrast: 0.9 });
+    def.scene.post.depth_of_field = Some(dof(Focus::Metres(3.0)));
+    def.scene.ground.radius = Some(2.0);
+    def.scene.ground.opacity = 0.5;
+    let out = resolved(&def, &figures);
+    assert_eq!(out.background, Background::Solid { colour: Colour::rgb(0, 177, 64) });
+    assert_eq!(out.post.exposure, 1.5);
+    assert_eq!(out.post.tonemap, Tonemap::None);
+    assert_eq!(out.post.bloom, Some(Bloom { strength: 0.4, radius: 0.3, threshold: 0.8 }));
+    assert_eq!(out.post.grain, Some(FilmGrain { strength: 0.1 }));
+    assert_eq!(out.post.grade, Some(ColourGrade { saturation: 1.2, contrast: 0.9 }));
+    assert_eq!(
+        out.post.depth_of_field,
+        Some(DepthOfField { focus_distance: 3.0, focus_range: 0.5 * h, max_blur: 0.02 })
+    );
+    assert_eq!(out.outline_light, 0.6);
+    assert_eq!(out.skin_floor, Some(0.35));
+    assert_eq!((out.ground.kind, out.ground.opacity, out.ground.radius_m), (GroundKind::Shadow, 0.5, 2.0 * h));
+
+    // The lighting's background, and bloom switched off by the scene.
+    def.scene.backdrop = Backdrop::Lighting {};
+    def.lighting.background = Colour::rgb(10, 20, 30);
+    def.scene.post.bloom = false;
+    let out = resolved(&def, &figures);
+    assert_eq!(out.background, Background::Solid { colour: Colour::rgb(10, 20, 30) });
+    assert_eq!(out.post.bloom, None);
+
+    // A subject focus is the distance from the active camera to the middle of the head box.
+    def.scene.post.depth_of_field = Some(dof(Focus::Subject(FocusSubject::Subject)));
+    def.scene.ground.radius = None;
+    let out = resolved(&def, &figures);
+    let figure = figures.values().next().unwrap();
+    let head = figure.landmarks.head.unwrap().centre();
+    let camera = out.cameras[out.active.unwrap()].1;
+    let expected = camera.position().distance(figure.root.transform_point3(head));
+    assert!((out.post.depth_of_field.unwrap().focus_distance - expected).abs() < 1e-5);
+    // The absent radius reaches the farthest member plus 0.83 subject units.
+    assert!((out.ground.radius_m - (2.0 + 0.83 * h)).abs() < 1e-5, "{}", out.ground.radius_m);
+}
+
+#[test]
+fn a_subject_focus_without_a_subject_is_a_scene_error() {
+    let mut def = SceneDef::new(SceneSettings::named("Empty"));
+    def.scene.post.depth_of_field = Some(dof(Focus::Subject(FocusSubject::Subject)));
+    let Err(StageError::Scene { source }) = ResolvedScene::new().resolve_into(&def, &BTreeMap::new(), ASPECT) else {
+        panic!("expected a scene error");
+    };
+    assert_eq!(source.path, "scene.post.depth_of_field.focus");
+}
+
+/// Edits `def` with `edit` and checks that only the flag `pick` reads is set, and that nothing was allocated.
+fn only_flag(edit: fn(&mut SceneDef), pick: fn(&Changes) -> bool) {
+    let (mut def, figures) = (scene(), figures([0.0, 0.0]));
+    let mut out = resolved(&def, &figures);
+    edit(&mut def);
+    let (changes, allocations) = counted(|| out.resolve_into(&def, &figures, ASPECT).unwrap());
+    assert!(pick(&changes), "{changes:?}");
+    let flags = [
+        changes.lights,
+        changes.cameras,
+        changes.structure,
+        changes.backdrop,
+        changes.post,
+        changes.ground,
+        changes.skin_floor,
+    ];
+    assert_eq!(flags.iter().filter(|f| **f).count(), 1, "only one flag: {changes:?}");
+    assert_eq!(allocations, 0);
+}
+
+#[test]
+fn a_post_edit_sets_only_post_and_allocates_nothing() {
+    only_flag(|d| d.lighting.exposure = 2.0, |c| c.post);
+    only_flag(|d| d.scene.post.grain = Some(0.2), |c| c.post);
+}
+
+#[test]
+fn a_backdrop_edit_sets_only_backdrop_and_allocates_nothing() {
+    only_flag(|d| d.scene.backdrop = Backdrop::Colour { colour: Colour::WHITE }, |c| c.backdrop);
+}
+
+#[test]
+fn a_ground_edit_sets_only_ground_and_allocates_nothing() {
+    only_flag(|d| d.scene.ground.opacity = 0.6, |c| c.ground);
+    only_flag(|d| d.scene.ground.radius = Some(4.0), |c| c.ground);
+}
+
+#[test]
+fn a_skin_floor_edit_sets_only_skin_floor_and_allocates_nothing() {
+    only_flag(|d| d.lighting.skin_floor = Some(0.4), |c| c.skin_floor);
+}
+
+#[test]
+fn a_transparent_backdrop_is_transparent() {
+    let (mut def, figures) = (scene(), figures([0.0, 0.0]));
+    def.scene.backdrop = Backdrop::Transparent {};
+    assert_eq!(resolved(&def, &figures).background, Background::Transparent);
 }
