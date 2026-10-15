@@ -50,18 +50,25 @@ fn sizes_outside_the_limits_are_refused() {
 }
 
 #[test]
-fn the_cost_hint_counts_the_attachments_at_the_preset_scale_and_samples() {
-    // High renders at 1.5 times the size, so 4096 by 4096 is 6144 by 6144 internal pixels; at 4 samples each pixel takes
-    // 8 + 8 * 4 + 4 * 4 = 56 bytes: 2016 MiB, and 64 MiB of meshes.
+fn the_cost_hint_counts_every_image_the_render_allocates() {
+    // High 4096 by 4096 at 4 samples: internal 6144 by 6144 at 8 + 8 * 4 + 4 * 4 = 56 bytes, 2016 MiB of attachments;
+    // a 2048 by 2048 shadow map at 4 bytes, 16 MiB; the 4096 by 4096 RGBA8 output, 64 MiB; the read-back, 64 MiB; and bloom
+    // at the target: the bright image at 2048 by 2048 and 2 images for each of 5 mips at 8 bytes, 117 MiB. The total is
+    // 2342 MiB with the meshes and textures.
     let hint = cost(UVec2::splat(4096), 1, RenderQuality::High);
-    assert_eq!(hint.gpu_mib, Some(2080), "2016 MiB of attachments plus the meshes");
+    assert_eq!(hint.gpu_mib, Some(2342));
     assert_eq!(hint.seconds, Some(0.5), "a high still takes half a second");
     assert_eq!(hint.usd, None, "no money is spent");
 
-    // Offline is 16 samples: 8 + 128 + 64 = 200 bytes a pixel, so 1024 by 1024 is 200 MiB, and 264 with the meshes.
+    // Offline is 16 samples (200 bytes a pixel) at 1024 by 1024: 200 MiB of attachments, 16 MiB of shadow map at high
+    // shadows, 4 MiB of output, 4 MiB of read-back and 7.3 MiB of bloom: 232 MiB, and 296 with the meshes.
     let offline = cost(UVec2::splat(1024), 1, RenderQuality::Offline);
-    assert_eq!(offline.gpu_mib, Some(264));
+    assert_eq!(offline.gpu_mib, Some(296));
     assert_eq!(offline.seconds, Some(2.0), "an offline still takes two seconds");
+
+    // Live is 4 samples at the target's size, with the low shadow map (4 MiB) and no bloom: 64 by 64 is 0.22 MiB of
+    // attachments, so 5 MiB with the shadow map and the output, and 69 with the meshes.
+    assert_eq!(cost(UVec2::splat(64), 1, RenderQuality::Live).gpu_mib, Some(69));
 }
 
 #[test]

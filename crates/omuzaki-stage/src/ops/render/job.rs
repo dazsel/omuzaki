@@ -11,7 +11,7 @@ use omuzaki_char_api::{
 use omuzaki_core::glam::UVec2;
 use omuzaki_doc_api::DocRead;
 use omuzaki_ops_api::{CostHint, JobCtx, OpError};
-use omuzaki_render_api::{Quality, Renderer};
+use omuzaki_render_api::{Quality, Renderer, ShadowQuality};
 use omuzaki_store_api::{Commercial, ContentHash, Provenance, Source, Store};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -79,26 +79,76 @@ pub fn check_size(size: [u32; 2]) -> Result<UVec2, OpError> {
 
 /// One mebibyte, in bytes.
 const MIB: u64 = 1 << 20;
-/// MiB the character's meshes take, added to a render's images. An allowance, not a measurement.
+/// MiB the character's own GPU data takes (meshes and textures), added to a render's images. An allowance, not a
+/// measurement.
 const CHARACTER_MIB: u64 = 64;
 
-/// The GPU bytes a pixel of a render's image attachments takes at `samples` samples: 8 of colour per sample, the
-/// resolved colour when multisampled, and 4 of depth per sample. This is what `omuzaki-render`'s `frame/attachments.rs`
-/// allocates for a target.
+// The sizes and formats below mirror `omuzaki-render`, which the stage does not depend on. Change them together with the
+// renderer: the test `the_cost_hint_counts_every_image_the_render_allocates` pins the arithmetic.
+/// Bytes of a pixel of an `Rgba16Float` image: the scene colour and the bloom images (`gpu.rs`, `SCENE_FORMAT`).
+const HALF_RGBA_BYTES: u64 = 8;
+/// Bytes of a pixel of the output: `Rgba8Unorm` (`gpu.rs`, `OUTPUT_FORMAT`).
+const OUTPUT_BYTES: u64 = 4;
+/// Bytes of a depth texel: `Depth32Float` (`gpu.rs`, `DEPTH_FORMAT`), for the scene depth and the shadow map.
+const DEPTH_BYTES: u64 = 4;
+/// Bloom's blurred mips (`pass/bloom.rs`, `MIPS`); each has a horizontal and a vertical image.
+const BLOOM_MIPS: u64 = 5;
+/// Rows of a read-back copy are padded to this many bytes (`wgpu::COPY_BYTES_PER_ROW_ALIGNMENT`).
+const COPY_ROW_ALIGNMENT: u64 = 256;
+
+/// The bytes a pixel of a render's scene attachments takes at `samples` samples: 8 of colour per sample, the resolved
+/// colour when multisampled, and 4 of depth per sample (`frame/attachments.rs`, `bytes`).
 fn attachment_bytes_per_pixel(samples: u64) -> u64 {
-    8 + if samples > 1 { 8 * samples } else { 0 } + 4 * samples
+    8 + if samples > 1 { 8 * samples } else { 0 } + DEPTH_BYTES * samples
 }
 
-/// The cost hint of `images` stills of `size`, as an upper bound for the images. The GPU figure is their attachments at
-/// the preset's internal size (`size` times the preset's render scale, rounded up) and the preset's sample count, plus
-/// [`CHARACTER_MIB`] for the meshes. The sample count is the most the preset asks for, so the renderer's own choice can
-/// only be lower. Post effects are not counted.
+/// The side, in texels, of the shadow map a shadow quality allocates (`shadow/map.rs`, `settings`). Zero when off.
+fn shadow_side(shadows: ShadowQuality) -> u64 {
+    match shadows {
+        ShadowQuality::Off => 0,
+        ShadowQuality::Low => 1024,
+        ShadowQuality::High => 2048,
+    }
+}
+
+/// Half of a side, rounded up and never below one (`pass/bloom.rs`, `half`).
+fn half(side: u64) -> u64 {
+    side.div_ceil(2).max(1)
+}
+
+/// The bloom chain's bytes at a target of `target` pixels (`pass/bloom.rs`): the bright image at half the target, then
+/// each of the five mips at half the one before, and two images per mip. Bloom works at the target's size, whatever the
+/// render scale.
+fn bloom_bytes(target: UVec2) -> u64 {
+    let (mut width, mut height) = (half(u64::from(target.x)), half(u64::from(target.y)));
+    let bright = width * height;
+    let mut mips = 0;
+    for _ in 0..BLOOM_MIPS {
+        mips += 2 * width * height;
+        (width, height) = (half(width), half(height));
+    }
+    (bright + mips) * HALF_RGBA_BYTES
+}
+
+/// The cost hint of `images` stills of `size`: an upper bound for the GPU memory a render's images take at peak, plus
+/// [`CHARACTER_MIB`] for the character's meshes and textures. It counts, at the preset's sizes and formats:
 ///
-/// Worked: a 4096 by 4096 high still at 4 samples has 6144 by 6144 internal pixels, at 56 bytes each: 2016 MiB of
-/// attachments, so 2080 MiB with the meshes. An offline 1024 by 1024 still has 16 samples: 200 bytes a pixel, 200 MiB,
-/// so 264 MiB.
+/// - the scene attachments at the internal size (`size` times the preset's render scale, rounded up), with the preset's
+///   sample count, the most it asks for, so the renderer's own choice can only be lower;
+/// - the shadow map, at the preset's shadow quality, though a still may have no casting light;
+/// - the output, RGBA8 at `size`;
+/// - the read-back staging buffer, RGBA8 at `size` with rows padded to 256 bytes;
+/// - bloom at `size`, on the presets with post effects on (High and Offline).
 ///
-/// Seconds per still: 0.2 live, 0.5 high, 2.0 offline. No money is spent. Setting `gpu_mib` puts the job on the GPU lane.
+/// Depth of field is not counted: a still's post settings never enable it (`LightRig::post`). Environment maps are not
+/// counted either: a still's scene names none.
+///
+/// Worked: a 4096 by 4096 high still at 4 samples. Its internal size is 6144 by 6144, at 56 bytes a pixel: 2016 MiB of
+/// attachments. The shadow map is 2048 by 2048 at 4 bytes: 16 MiB. The output is 64 MiB, the read-back 64 MiB, and the
+/// bloom chain 117 MiB. Together with the 64 MiB of meshes and textures, the total is 2342 MiB.
+///
+/// Seconds per still: 0.2 live, 0.5 high, 2.0 offline. No money is spent. Setting `gpu_mib` puts the job on the GPU
+/// lane.
 #[must_use]
 #[allow(
     clippy::cast_precision_loss,
@@ -109,8 +159,13 @@ fn attachment_bytes_per_pixel(samples: u64) -> u64 {
 pub fn cost(size: UVec2, images: u32, quality: RenderQuality) -> CostHint {
     let preset = quality.quality();
     let internal = |side: u32| (f64::from(side) * f64::from(preset.render_scale)).ceil() as u64;
-    let pixels = internal(size.x) * internal(size.y);
-    let bytes = pixels * attachment_bytes_per_pixel(u64::from(preset.samples));
+    let target = u64::from(size.x) * u64::from(size.y);
+    let attachments = internal(size.x) * internal(size.y) * attachment_bytes_per_pixel(u64::from(preset.samples));
+    let shadow = shadow_side(preset.shadows).pow(2) * DEPTH_BYTES;
+    let output = target * OUTPUT_BYTES;
+    let readback = (u64::from(size.x) * OUTPUT_BYTES).next_multiple_of(COPY_ROW_ALIGNMENT) * u64::from(size.y);
+    let bloom = if preset.post_effects { bloom_bytes(size) } else { 0 };
+    let bytes = attachments + shadow + output + readback + bloom;
     let mib = u32::try_from(bytes.div_ceil(MIB) + CHARACTER_MIB).unwrap_or(u32::MAX);
     let per_image = match quality {
         RenderQuality::Live => 0.2,
