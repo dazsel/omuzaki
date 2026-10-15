@@ -6,7 +6,8 @@
 use std::sync::Mutex;
 
 use omuzaki_doc_mock::MemDoc;
-use omuzaki_io_api::{IoError, Progress};
+use omuzaki_io_api::{ImportCtx, ImportInput, ImportOptions, IoError, Progress, run_import};
+use omuzaki_io_mock::MockGlbImporter;
 use omuzaki_io_ops::ops::progress::JobProgress;
 use omuzaki_ops_api::{Actor, Cancel, CancelFlag, JobCtx, JobDoc, JobId, JobSignal, OpError};
 
@@ -64,6 +65,21 @@ fn is_cancelled_follows_the_job_signal() {
     assert!(!progress.is_cancelled());
     signal.cancelled.cancel();
     assert!(progress.is_cancelled());
+}
+
+#[test]
+fn an_import_through_the_adapter_stops_at_a_cancelled_checkpoint() {
+    let actor = Actor::Person { name: "alice".into() };
+    let doc = Doc(MemDoc::new());
+    let signal = Signal::default();
+    let ctx = JobCtx::new(JobId(7), &actor, &doc, &signal);
+    signal.cancelled.cancel();
+    let progress = JobProgress(&ctx);
+    let options = ImportOptions::default();
+    let import = ImportCtx::new(&options).with_progress(&progress);
+    // The importer checks at its first checkpoint, before it reads any bytes.
+    let err = run_import(&MockGlbImporter, &ImportInput::new(&[]), &import).unwrap_err();
+    assert_eq!(err, IoError::Cancelled);
 }
 
 #[test]
