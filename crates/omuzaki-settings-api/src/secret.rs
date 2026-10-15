@@ -32,7 +32,7 @@ impl SecretRef {
         let label = label.into();
         let bad = |reason: &str| SettingError::new("", SettingErrorKind::BadSecretRef { reason: reason.into() });
         if label.is_empty() || label.len() > Self::MAX_LEN {
-            return Err(bad("a label is 1 to 128 characters"));
+            return Err(bad(&format!("a label is 1 to {} characters", Self::MAX_LEN)));
         }
         if !label.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "-_./".contains(c)) {
             return Err(bad("use a-z, 0-9, '-', '_', '.' and '/'"));
@@ -78,7 +78,7 @@ impl JsonSchema for SecretRef {
         json_schema!({
             "type": "string",
             "description": "The label of a secret held in the OS keychain, never the secret.",
-            "maxLength": 128,
+            "maxLength": Self::MAX_LEN,
             "pattern": "^[a-z0-9._-]+(/[a-z0-9._-]+)*$"
         })
     }
@@ -94,7 +94,7 @@ mod tests {
         for bad in ["", "A", "a b", "/a", "a//b", "a/../b", "sk-Abc"] {
             assert!(SecretRef::new(bad).is_err(), "{bad}");
         }
-        assert!(SecretRef::new("x".repeat(129)).is_err());
+        assert!(SecretRef::new("x".repeat(SecretRef::MAX_LEN + 1)).is_err());
     }
 
     #[test]

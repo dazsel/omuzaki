@@ -2,13 +2,19 @@
 //!
 //! ```ignore
 //! // crates/<crate>/tests/settings.rs
-//! omuzaki_settings_api::check_crate!();
+//! omuzaki_settings_api::check_crate!(my_crate);
 //! ```
 //!
-//! It fails a key with a bad name, a key that is a prefix of another, a default that fails its own `check` or does
-//! not round-trip through TOML, a missing or multi-line summary, a `Machine` key marked `Member`, a version of 0, a
-//! bad `RENAMED_FROM`, and a schema containing `format: "secret"`. The problems are plain strings, so
-//! [`problems`] is also how this crate tests the checker itself.
+//! The test names the crate (as l10n-ops §10.1 does), calls its `link()` (ADR 0015) before looking, so the registrations it checks are
+//! the ones a binary that links the crate gets, not whatever the test binary happened to pull in. It fails when the
+//! crate registers no settings at all: a checker that finds nothing has checked nothing, and an unlinked crate looks
+//! exactly like an empty one.
+//!
+//! It also fails a key with a bad name, a key that is a prefix of another or that another is a prefix of (either
+//! side, whichever crate owns it), a default that fails its own `check` or does not round-trip through TOML, a missing
+//! or multi-line summary, a `Machine` key marked `Member`, a version of 0, a bad `RENAMED_FROM`, and a schema
+//! containing `format: "secret"`. The problems are plain strings, so [`problems`] is also how this crate tests the
+//! checker itself.
 
 use std::fmt::Write as _;
 
@@ -17,37 +23,54 @@ use omuzaki_doc_api::Value;
 use crate::meta::{InProfile, SettingScope};
 use crate::registry::{self, SettingRegistration};
 
-/// Runs the checks for the settings registered by `package` (`env!("CARGO_PKG_NAME")`) and panics with every problem.
+/// Calls `link` (the owning crate's `link()`), then runs the checks for the settings registered by `package`
+/// (`env!("CARGO_PKG_NAME")`) and panics with every problem.
 ///
 /// # Panics
-/// When there is any problem: this is a test helper.
+/// When there is any problem, including when `package` has registered nothing: this is a test helper.
 #[allow(clippy::panic)]
-pub fn assert_crate(package: &str) {
+pub fn assert_crate(package: &str, link: fn()) {
+    link();
     let all: Vec<_> = registry::registrations().collect();
     let found = problems(&all, package);
     assert!(found.is_empty(), "settings problems in `{package}`:\n  {}", found.join("\n  "));
 }
 
-/// Expands to the test that checks the settings registered by the calling crate.
+/// Expands to the test that checks the settings registered by the calling crate. The argument names the crate (or any
+/// module with a `link()` function): `check_crate!(my_crate)` calls `my_crate::link()` before the check (see the
+/// module docs).
 #[macro_export]
 macro_rules! check_crate {
-    () => {
+    ($krate:ident) => {
         #[test]
         fn registered_settings_are_well_formed() {
-            $crate::check::assert_crate(::core::env!("CARGO_PKG_NAME"));
+            $crate::check::assert_crate(::core::env!("CARGO_PKG_NAME"), $krate::link);
         }
     };
 }
 
 /// Every problem with the registrations of `package` among `all` (which must hold every registration, since a prefix
-/// clash can be with another crate's key). Empty means well formed.
+/// clash can be with another crate's key). Empty means well formed, and a package with no registration is never well
+/// formed: see the module docs.
 #[must_use]
 pub fn problems(all: &[&SettingRegistration], package: &str) -> Vec<String> {
     let mut out = Vec::new();
-    for reg in all.iter().filter(|r| r.package == package) {
+    let mut own = all.iter().filter(|r| r.package == package).peekable();
+    if own.peek().is_none() {
+        out.push(format!(
+            "`{package}` registers no settings: its link() is not the one that reaches them, or it declares none"
+        ));
+    }
+    for reg in own {
         reg_problems(reg, all, &mut out);
     }
     out
+}
+
+/// Whether `outer` is a dotted ancestor of `inner` (`mascot.size` of `mascot.size.max`), which TOML cannot hold as
+/// both a value and a table.
+fn is_ancestor(outer: &str, inner: &str) -> bool {
+    inner.strip_prefix(outer).is_some_and(|rest| rest.starts_with('.'))
 }
 
 fn valid_key(key: &str) -> bool {
@@ -71,8 +94,10 @@ fn reg_problems(reg: &SettingRegistration, all: &[&SettingRegistration], out: &m
         let o = other.meta.key;
         if o == key {
             say("registered twice");
-        } else if o.strip_prefix(key).is_some_and(|rest| rest.starts_with('.')) {
+        } else if is_ancestor(key, o) {
             say(&format!("is a prefix of `{o}`"));
+        } else if is_ancestor(o, key) {
+            say(&format!("is under `{o}`, which is a setting itself"));
         }
     }
     if meta.summary.trim().is_empty() || meta.summary.contains('\n') {

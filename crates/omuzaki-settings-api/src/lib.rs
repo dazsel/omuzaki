@@ -40,6 +40,8 @@
 //! No `link()`: this crate registers nothing itself. Crates that call [`register_setting!`] are the registering ones
 //! (ADR 0015).
 
+#![deny(missing_docs)]
+
 pub mod check;
 pub mod error;
 pub mod event;

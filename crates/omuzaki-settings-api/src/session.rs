@@ -5,10 +5,12 @@
 //! [`SessionState`] carries its own transitions so every store (the file store and the mock) applies the same rules
 //! (newest first, at most [`MAX_RECENT`], one entry per path) and only decides when to write.
 
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use schemars::JsonSchema;
+use semver::Version;
 use serde::{Deserialize, Serialize};
 
 use crate::error::SettingError;
@@ -122,12 +124,15 @@ impl SessionState {
     }
 
     /// Records a dismissed version, but never lowers it: after a rollback the higher value stays so the roll-forward
-    /// does not show the notes twice. Compared as the leading `major.minor.patch` numbers; an equal version replaces
-    /// the old text (so the stable `0.9.0` replaces a recorded `0.9.0-beta.2`), and anything unreadable replaces it.
+    /// does not show the notes twice. Versions are compared by the full precedence rules of Semantic Versioning 2.0, so
+    /// a pre-release is below its release (`0.9.0-beta.1` never replaces a recorded `0.9.0`) and build metadata is
+    /// ignored. An equal version replaces the old text. A recorded value that is not a semantic version (a damaged
+    /// file) is replaced; a new value that is not one is ignored while a valid one is recorded, because it cannot be
+    /// ranked and must not lower the record.
     pub fn mark_version_seen(&mut self, version: &str) {
-        let key = |v: &str| -> Option<Vec<u64>> { v.split(['.', '-']).take(3).map(|p| p.parse().ok()).collect() };
-        let keep = match (self.last_seen_version.as_deref().and_then(key), key(version)) {
-            (Some(old), Some(new)) => old > new,
+        let keep = match (self.last_seen_version.as_deref().map(Version::parse), Version::parse(version)) {
+            (Some(Ok(old)), Ok(new)) => old.cmp_precedence(&new) == Ordering::Greater,
+            (Some(Ok(_)), Err(_)) => true,
             _ => false,
         };
         if !keep {
@@ -203,8 +208,34 @@ mod tests {
         assert_eq!(s.last_seen_version.as_deref(), Some("0.9.0"));
         s.mark_version_seen("0.10.0");
         assert_eq!(s.last_seen_version.as_deref(), Some("0.10.0"));
-        s.mark_version_seen("0.11.0-beta.2");
-        s.mark_version_seen("0.11.0");
-        assert_eq!(s.last_seen_version.as_deref(), Some("0.11.0"), "stable replaces the beta of the same number");
+    }
+
+    #[test]
+    fn a_pre_release_never_replaces_its_release_and_a_later_beta_replaces_an_earlier_one() {
+        let mut s = SessionState::default();
+        s.mark_version_seen("0.9.0");
+        s.mark_version_seen("0.9.0-beta.1");
+        assert_eq!(s.last_seen_version.as_deref(), Some("0.9.0"), "stable to beta");
+        let mut s = SessionState::default();
+        s.mark_version_seen("0.9.0-beta.2");
+        s.mark_version_seen("0.9.0-beta.1");
+        assert_eq!(s.last_seen_version.as_deref(), Some("0.9.0-beta.2"), "beta to an earlier beta");
+        s.mark_version_seen("0.9.0-beta.10");
+        assert_eq!(s.last_seen_version.as_deref(), Some("0.9.0-beta.10"), "numeric identifiers rank as numbers");
+        s.mark_version_seen("0.9.0");
+        assert_eq!(s.last_seen_version.as_deref(), Some("0.9.0"), "the release replaces its beta");
+    }
+
+    #[test]
+    fn build_metadata_is_ignored_and_unrankable_values_do_not_lower_the_record() {
+        let mut s = SessionState::default();
+        s.mark_version_seen("1.2.0+b9");
+        s.mark_version_seen("1.1.9+b10");
+        assert_eq!(s.last_seen_version.as_deref(), Some("1.2.0+b9"), "build metadata is not a downgrade route");
+        s.mark_version_seen("nightly");
+        assert_eq!(s.last_seen_version.as_deref(), Some("1.2.0+b9"), "a value that is not SemVer is ignored");
+        let mut s = SessionState { last_seen_version: Some("garbled".into()), ..SessionState::default() };
+        s.mark_version_seen("0.1.0");
+        assert_eq!(s.last_seen_version.as_deref(), Some("0.1.0"), "a damaged record is replaced");
     }
 }

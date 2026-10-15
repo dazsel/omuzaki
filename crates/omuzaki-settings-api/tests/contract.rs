@@ -87,7 +87,12 @@ impl Setting for Conn {
 }
 register_setting!(Conn);
 
-check_crate!();
+/// The settings above are registered by this test binary itself, so there is no other crate whose `link()` to call.
+mod this_binary {
+    pub fn link() {}
+}
+
+check_crate!(this_binary);
 
 #[test]
 fn a_declared_setting_appears_in_the_registry_sorted_by_key() {
@@ -211,6 +216,9 @@ fn the_checker_catches_each_bad_key_case() {
     has(found::<Secretive>(&[]), "format: \"secret\"");
     let child = SettingRegistration::of::<Child>("other");
     has(found::<Parent>(&[&child]), "is a prefix of `mascot.size.max`");
+    // The other direction: the package under test owns the descendant, and the ancestor belongs to another crate.
+    let parent = SettingRegistration::of::<Parent>("other");
+    has(found::<Child>(&[&parent]), "is under `mascot.size`, which is a setting itself");
     let fine = SettingRegistration::of::<Fine>("other");
     has(found::<BadRename>(&[&fine]), "RENAMED_FROM");
 }
@@ -229,4 +237,12 @@ fn registering_twice_is_a_problem() {
     let a = SettingRegistration::of::<Fine>("t");
     let b = SettingRegistration::of::<Fine>("t");
     assert!(problems(&[&a, &b], "t").iter().any(|m| m.contains("registered twice")));
+}
+
+#[test]
+fn a_package_that_registers_nothing_is_a_problem_not_a_pass() {
+    let other = SettingRegistration::of::<Fine>("other");
+    let p = problems(&[&other], "t");
+    assert!(p.iter().any(|m| m.contains("`t` registers no settings")), "{p:?}");
+    assert_eq!(problems(&[], "t").len(), 1, "an empty registry fails too");
 }
