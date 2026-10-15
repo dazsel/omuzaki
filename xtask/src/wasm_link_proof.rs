@@ -10,6 +10,12 @@
 //! `--unlinked` is the negative case: the probe's build script generates an empty `link()`, as it would if the crate
 //! lost its `registers` flag, and the command passes only if the module then holds none of those registrations. It
 //! shows that the positive run can fail.
+//!
+//! The expected side is read with the target's own `cfg` options (`Target::wasm32_unknown_unknown`), not the host's: a
+//! registration under `cfg(target_arch = "wasm32")` is expected, and one under `cfg(unix)` is not.
+//!
+//! `--release` builds the optimised profile the web player ships, where the linker drops unreferenced code hardest.
+//! It is slow, so the nightly workflow runs it, not pull requests.
 
 use std::collections::BTreeSet;
 use std::io::{BufRead, BufReader};
@@ -17,7 +23,7 @@ use std::path::Path;
 use std::process::{Command, ExitCode, Stdio};
 
 use clap::Args;
-use xtask::registry::{self, Registration};
+use xtask::registry::{self, Registration, Target};
 
 use crate::error::{Error, Result};
 use crate::process::{capture, cargo, describe};
@@ -36,6 +42,9 @@ pub struct WasmLinkProofArgs {
     /// Build the negative case (an empty generated `link()`) and pass only if its registrations are gone.
     #[arg(long)]
     unlinked: bool,
+    /// Build the probe with `--release`, as the web player ships, instead of the dev profile.
+    #[arg(long)]
+    release: bool,
 }
 
 /// Builds and runs the probe, then prints the verdict; `FAILURE` when the module lost a registration (or, with
@@ -44,7 +53,7 @@ pub struct WasmLinkProofArgs {
 /// # Errors
 /// When cargo or node can't run, the build fails, or the module prints something that isn't a registration.
 pub fn run(workspace: &Workspace, args: &WasmLinkProofArgs) -> Result<ExitCode> {
-    let module = build(workspace, args.unlinked)?;
+    let module = build(workspace, args)?;
     let mut node = Command::new("node");
     node.current_dir(&workspace.root).arg(RUNNER).arg(&module);
     let printed = String::from_utf8_lossy(&capture(&mut node)?).into_owned();
@@ -57,12 +66,13 @@ pub fn run(workspace: &Workspace, args: &WasmLinkProofArgs) -> Result<ExitCode> 
             })
         })
         .collect::<Result<Vec<_>>>()?;
-    let expected = registry::expected(&workspace.root, PROBE, None)?;
+    let expected = registry::expected_for(&workspace.root, &target(args.release), PROBE, None)?;
 
     if args.unlinked {
         return Ok(negative_verdict(&expected, &linked));
     }
-    Ok(match registry::verify(&format!("{PROBE} ({TARGET})"), &expected, &linked) {
+    let subject = format!("{PROBE} ({TARGET}, {})", profile(args.release));
+    Ok(match registry::verify(&subject, &expected, &linked) {
         Ok(summary) => {
             println!("{summary}");
             ExitCode::SUCCESS
@@ -72,6 +82,16 @@ pub fn run(workspace: &Workspace, args: &WasmLinkProofArgs) -> Result<ExitCode> 
             ExitCode::FAILURE
         }
     })
+}
+
+/// The cargo profile's name, for messages.
+fn profile(release: bool) -> &'static str {
+    if release { "release" } else { "dev" }
+}
+
+/// What the module is compiled for: [`TARGET`], with `debug_assertions` as the profile sets it.
+fn target(release: bool) -> Target {
+    Target::wasm32_unknown_unknown(!release)
 }
 
 /// The negative case passes when the module holds no registration of a package the probe should have linked, and
@@ -97,7 +117,7 @@ fn negative_verdict(expected: &[Registration], linked: &[Registration]) -> ExitC
 
 /// Builds the probe for wasm and returns the module's path, read from cargo's own artifact messages so a custom
 /// target directory works. Cargo's diagnostics and progress go to stderr as usual.
-fn build(workspace: &Workspace, unlinked: bool) -> Result<String> {
+fn build(workspace: &Workspace, args: &WasmLinkProofArgs) -> Result<String> {
     let mut command = Command::new(cargo());
     command.current_dir(&workspace.root).args([
         "build",
@@ -108,7 +128,10 @@ fn build(workspace: &Workspace, unlinked: bool) -> Result<String> {
         "-p",
         PROBE,
     ]);
-    if unlinked {
+    if args.release {
+        command.arg("--release");
+    }
+    if args.unlinked {
         command.args(["--features", &format!("{PROBE}/unlinked")]);
     }
     command.stdout(Stdio::piped());
