@@ -107,8 +107,40 @@ lane's or were handed to it on #2.
 - **Sessions report only on GitHub:** a fix round ends with one comment starting `fixed (head <sha7>)`; a question or
   blocker is one pull request comment starting `**<Area> (question):**`, for example `**Runtime (question):**`
   (opening a draft first if needed). A session
-  never calls `send_message` or `send_later`: started in `acceptEdits` mode, it waits on a permission prompt nobody can
-  approve, and its turn freezes.
+  never calls `send_message` or `send_later`: it can wait on a permission prompt nobody can approve, and its turn
+  freezes.
+- **Start every session in Auto mode** (owner, 2026-10-15), or in `acceptEdits` if its model doesn't offer Auto.
+  - Auto is the highest mode a cloud session has, and a session can't be more permissive than its lead.
+  - The mode is chosen when the session is created. A project file can't start a session in `auto` or
+    `bypassPermissions` (project settings ignore those two values), and a running session's mode changes only from
+    its own mode menu.
+- **The committed `.claude/settings.json` approves most commands** without a prompt: every shell command, file reads
+  and edits, web search and fetch. The GitHub tools are left to the session's mode, and merging through them is
+  denied.
+  - It denies what only the Director does or what can't be undone: merging pull requests, releases, repository
+    settings, secrets and variables, turning workflows on or off, `DELETE` API calls, deleting branches and plain
+    force-pushes. `--force-with-lease` on your own branch stays allowed.
+  - Deny rules win over allow rules, but a `Bash(...)` rule matches the command only as written: `gh pr -R o/r merge 1`
+    gets past `Bash(gh pr merge *)`. So a hook, `tools/hooks/guard_bash.py`, reads every shell command the way `gh`
+    and `git` parse it, in any argument order and inside `sh -c "..."`, and blocks the same operations. It also
+    blocks every `gh api` call that writes (any method but GET, fields without a method, GraphQL mutations): write
+    through `gh` subcommands such as `gh pr comment` and `gh pr edit`. A GraphQL body from a file (`--input`) is
+    blocked too, since the hook can't read it. A `--force-with-lease` push may only target the branch that's checked
+    out, never `--all`, `--branches` or `--tags`.
+  - A session only reads this file when this repository is its only repository. Give each session this repository
+    alone.
+  - **Secrets:** the `Read` denies stop Claude's file tools only, so the same hook refuses any shell command that
+    names a secret path (`.env`, `~/.ssh`, `~/.config`, `~/.cache` and the Hugging Face cache, `.netrc`, git
+    credentials, private keys), including the bare directories, and the commands that print a credential
+    (`gh auth token`, `gh auth status --show-token`, `git credential`), print the environment (`env`, `printenv`,
+    `export -p` on their own) or read a secret variable (`$GH_TOKEN`, any name with TOKEN, SECRET, PASSWORD, API_KEY
+    or CREDENTIAL in it).
+  - **The hook fails closed:** input it can't read blocks the call, and `onFailure: "block"` blocks the call if the hook
+    can't start (Claude Code 2.1.295 or later). Tests: `tools/tests/guard_bash.sh`.
+  - **It guards against mistakes, not a determined bypass.** A variable holding `merge`, a script file or `eval` gets
+    past any reading of a command line. The real boundaries are that a session VM holds no project secrets, and
+    GitHub's permissions and the ruleset on `main`.
+  - Auto still doesn't approve every call. That is why the ban on `send_message` and `send_later` above stays.
 - The lead answers a session with `send_message` (that direction works).
 - `interrupt_session` drops messages queued for that session: after interrupting, send again.
 - **A fresh session VM** needs `cargo install cargo-deny --locked`, and `mesa-vulkan-drivers` for render crates, before
@@ -245,7 +277,15 @@ Gate and review
 Never
 - Merge, enqueue or push to main. Force-push, except your own new branch with --force-with-lease.
 - Post secrets, personal details, unpublished plans, other repositories' issue numbers, or model identifiers beyond the commit attribution lines. Everything here is public.
-- Download or generate models or assets. Post on #2.
+- Download or generate models or assets, except the one case below. Post on #2.
+
+The one model exception (Director, 2026-10-15): when your task's tests or measurements need an upstream model, you may
+fetch it into a scratch folder in your VM if all of these hold:
+- its licence is recorded as permissive in docs/licensing/deps/;
+- you fetch it from the official URL recorded there;
+- its sha256 matches the pinned value, or your PR records it;
+- it loads only through the ONNX scan;
+- nothing is committed.
 
 Talk to your lead (GitHub only)
 - Never call send_message or send_later (they freeze your turn on a permission prompt).
