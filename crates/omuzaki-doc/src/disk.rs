@@ -1,5 +1,36 @@
 //! The project folder: reading it into a tree, and writing, replacing and deleting its files.
+//!
+//! # What each change needs, and what happens without it
+//!
+//! A change to a project file is made atomically or refused before the file is touched; there is no non-atomic
+//! fallback. A refusal is [`StoreError::NoSafeChange`] naming what is missing, and the save reports it. Three
+//! capabilities decide which; each depends on the system and on the file system:
+//!
+//! - **Exchange**: swap two names atomically (Linux `renameat2` with `RENAME_EXCHANGE`).
+//! - **No-replace rename**: rename only if the new name is free, atomically (Linux `renameat2` with
+//!   `RENAME_NOREPLACE`).
+//! - **Hard links**: `link` fails if the new name exists, so it is also a placement that never replaces.
+//!
+//! | Exchange | No-replace rename | Hard links | Replace a file ([`replace_checked`]) | Write a new file | Delete ([`remove_checked`]) |
+//! |---|---|---|---|---|---|
+//! | yes | either | yes | linked backup, swap, check, undo on a race | no-replace link | linked backup; move aside; delete, or put back by link |
+//! | yes | yes | no | copied backup, swap, check, undo on a race; the original then replaces the copy | no-replace rename | copied backup; move aside by no-replace rename; original over the copy, or put back by no-replace rename |
+//! | yes | no | no | as above | refused | refused |
+//! | no | either | yes | refused | no-replace link | as in the first row |
+//! | no | yes | no | refused | no-replace rename | as in the second row |
+//! | no | no | no | refused | refused | refused |
+//!
+//! Where each platform stands with what this crate's dependencies reach today:
+//!
+//! | Platform | Exchange | No-replace rename | Hard links |
+//! |---|---|---|---|
+//! | Linux | yes where the file system supports the flag (ext4, XFS, Btrfs, tmpfs); otherwise the kernel says `EINVAL` and the change is refused | the same | yes, except FAT and exFAT |
+//! | macOS | no (`renamex_np` with `RENAME_SWAP` is not reached yet): replacing a file is refused | no (`RENAME_EXCL` likewise) | yes on APFS and HFS+ |
+//! | Windows | no (Windows has no atomic exchange): replacing a file is refused | no (`MoveFileExW` without `MOVEFILE_REPLACE_EXISTING` is not reached yet) | yes on NTFS, no on FAT and exFAT |
+//!
+//! Each cell of the first table is tested with the capabilities forced off through the test seam (`Hooks`).
 
+use std::cell::Cell;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -228,26 +259,23 @@ pub(crate) enum Replace {
 ///    target never goes missing and an editor that writes in place afterwards writes into the backup too; if the file
 ///    system has no links (EPERM, EXDEV or EOPNOTSUPP), by a copy that is flushed and read back to verify its hash.
 ///    Any other failure is an error.
-/// 4. On Linux the temporary file and the target are swapped atomically (`renameat2` with `RENAME_EXCHANGE`). The file
-///    swapped out (now at the temporary path) must be the one hashed: the backup's inode with the hashed bytes, or for
-///    a copied backup the hashed bytes. If it isn't, an editor replaced or edited the target in the window: the swap
-///    is undone, the editor's file is back at the target, the backup is removed and the result is
-///    [`Replace::Refused`]. Whatever is found at the temporary path while undoing (the editor's file when the undo
-///    fails, or our file with edits written into it between the swap and the undo) is moved into the replaced folder
-///    as `<path>.<time>-<pid>-<n>.displaced`, flushed, never deleted.
+/// 4. The temporary file and the target are swapped atomically (see [`exchange`]). The file swapped out (now at the
+///    temporary path) must be the one hashed: the backup's inode with the hashed bytes, or for a copied backup the
+///    hashed bytes. If it isn't, an editor replaced or edited the target in the window: the swap is undone, the
+///    editor's file is back at the target, the backup is removed and the result is [`Replace::Refused`]. Whatever is
+///    found at the temporary path while undoing (the editor's file when the undo fails, or our file with edits written
+///    into it between the swap and the undo) is moved into the replaced folder as
+///    `<path>.<time>-<pid>-<n>.displaced`, flushed, never deleted.
 /// 5. After a placement the displaced file stays in the replaced folder as the `.kept` entry: for a hard-linked backup
-///    it already is that file; a copied backup is replaced by the displaced file itself (one rename). An editor that
-///    still holds the old file open and writes after the check writes into that entry, which pruning then never
-///    deletes (its bytes no longer match the hash).
+///    it already is that file; a copied backup is replaced by the displaced file itself (one rename over our own
+///    copy). An editor that still holds the old file open and writes after the check writes into that entry, which
+///    pruning then never deletes (its bytes no longer match the hash).
 ///
-/// If the kernel or file system can't exchange names (EINVAL, ENOSYS), and on macOS and Windows, step 4 is a
-/// plain `rename` over the target when the backup is a hard link (with a one-time warning on Linux). When the backup
-/// is only a copy, the original file is instead renamed into the backup slot and the new file is placed with a
-/// rename that won't replace, so the original inode is never unlinked; if it can't be moved there the save fails.
-/// For the plain rename: That leaves a race of microseconds: an editor's
-/// atomic save between steps 3 and 4 is overwritten, though the backup still holds what was validated. A new file (no
-/// target) is placed with a no-replace `hard_link`, or where links fail a no-replace rename (`RENAME_NOREPLACE` on
-/// Linux; an error if that is unsupported), so a file that appeared is never replaced.
+/// Where the swap isn't available (see the module's table) there is no safe way to replace a file that exists, so
+/// step 4 fails with [`StoreError::NoSafeChange`] before the target is touched: the target is as it was, and the
+/// backup and the temporary file (both only ours) are removed. A new file (no target) is placed with a no-replace
+/// `hard_link`, or where links fail with a rename that won't replace, so a file that appeared is never replaced;
+/// without either it is refused the same way.
 ///
 /// The target exists at every instant of a replacement, so a crash leaves the old file or the new one, plus at worst
 /// a backup, the hidden temporary file, or both.
@@ -275,9 +303,11 @@ struct Hooks<'a> {
     /// After a deletion renamed the target aside, before the file is checked.
     quarantined: &'a dyn Fn(),
     /// Pretend the file system has no hard links (tests only).
-    links_off: bool,
-    /// Pretend the file system can't swap names atomically (tests only).
-    exchange_off: bool,
+    links_off: Cell<bool>,
+    /// Pretend the system can't swap two names atomically (tests only).
+    exchange_off: Cell<bool>,
+    /// Pretend the system has no rename that refuses to replace (tests only).
+    no_replace_off: Cell<bool>,
 }
 
 fn noop() {}
@@ -291,9 +321,43 @@ impl Default for Hooks<'_> {
             verified: &noop,
             undone: &noop,
             quarantined: &noop,
-            links_off: false,
-            exchange_off: false,
+            links_off: Cell::new(false),
+            exchange_off: Cell::new(false),
+            no_replace_off: Cell::new(false),
         }
+    }
+}
+
+impl Hooks<'_> {
+    /// A hard link, unless a test turned links off.
+    fn link(&self, from: &Path, to: &Path) -> io::Result<()> {
+        if self.links_off.get() { Err(io::ErrorKind::Unsupported.into()) } else { fs::hard_link(from, to) }
+    }
+
+    /// [`exchange`], unless a test turned it off.
+    fn exchange(&self, a: &Path, b: &Path) -> io::Result<()> {
+        if self.exchange_off.get() { Err(io::ErrorKind::Unsupported.into()) } else { exchange(a, b) }
+    }
+
+    /// [`rename_no_replace`], unless a test turned it off.
+    fn rename_no_replace(&self, from: &Path, to: &Path) -> io::Result<bool> {
+        if self.no_replace_off.get() { Err(io::ErrorKind::Unsupported.into()) } else { rename_no_replace(from, to) }
+    }
+}
+
+/// What a refusal names as missing when there is no atomic swap.
+const NO_EXCHANGE: &str = "atomic exchange of two file names (renameat2 RENAME_EXCHANGE)";
+
+/// What a refusal names as missing when a file can't be placed without risking replacing another.
+const NO_NO_REPLACE: &str = "hard links and no rename that refuses to replace a file (renameat2 RENAME_NOREPLACE)";
+
+/// Maps an error of a capability-dependent call: [`io::ErrorKind::Unsupported`] (the capability is missing) becomes
+/// [`StoreError::NoSafeChange`] naming `missing`, anything else an I/O error for `path`.
+fn capability_error(path: &Path, missing: &'static str, e: io::Error) -> StoreError {
+    if e.kind() == io::ErrorKind::Unsupported {
+        StoreError::NoSafeChange { path: path.to_path_buf(), missing }
+    } else {
+        StoreError::io(path, e)
     }
 }
 
@@ -307,11 +371,10 @@ fn replace_checked_with(
     refuse_links(dir, path)?;
     let tmp = stage(dir, path, text)?;
     (hooks.staged)();
-    let outcome = match back_up(dir, path, expected, hooks.links_off)? {
+    let outcome = match back_up(dir, path, expected, hooks)? {
         Backup::Absent => {
             (hooks.backed_up)();
-            place_no_replace_with(&tmp, path, &|a, b| link_or_off(hooks, a, b))
-                .map(|placed| if placed { Replace::Placed } else { Replace::Refused })
+            place_no_replace(&tmp, path, hooks).map(|placed| if placed { Replace::Placed } else { Replace::Refused })
         }
         Backup::Mismatch => Ok(Replace::Refused),
         Backup::Held(held) => {
@@ -324,9 +387,10 @@ fn replace_checked_with(
             outcome
         }
     };
-    // Only a refusal leaves our own, unexposed temporary file behind. After an error it may hold a displaced file, so
-    // it stays until the next save moves it into the replaced folder.
-    if matches!(outcome, Ok(Replace::Refused)) {
+    // A refusal, or a missing capability (refused before anything moved), leaves our own, unexposed temporary file
+    // behind. After any other error it may hold a displaced file, so it stays until the next save moves it into the
+    // replaced folder.
+    if matches!(outcome, Ok(Replace::Refused) | Err(StoreError::NoSafeChange { .. })) {
         drop(fs::remove_file(&tmp));
     }
     outcome
@@ -335,15 +399,8 @@ fn replace_checked_with(
 /// Steps 4 and 5 for a target that has a backup.
 fn replace_held(dir: &Path, path: &Path, tmp: &Path, held: &Held, hooks: &Hooks<'_>) -> Result<Replace, StoreError> {
     (hooks.backed_up)();
-    let exchanged = !hooks.exchange_off && exchange(tmp, path).map_err(|e| StoreError::io(path, e))?;
-    if !exchanged {
-        return if held.linked.is_some() {
-            // The backup is the target's own inode, so a plain rename leaves it intact.
-            fs::rename(tmp, path).map(|()| Replace::Placed).map_err(|e| StoreError::io(path, e))
-        } else {
-            place_displacing_original(dir, path, tmp, held, hooks)
-        };
-    }
+    // Without a swap nothing has moved yet, and nothing will: see the module's table.
+    hooks.exchange(tmp, path).map_err(|e| capability_error(path, NO_EXCHANGE, e))?;
     (hooks.swapped)();
     // The file we displaced is at `tmp`, and it must still hold the bytes that were hashed. An in-place edit after
     // they were hashed fails the check (even for a link, whose inode is unchanged) and falls through to the undo below.
@@ -354,7 +411,8 @@ fn replace_held(dir: &Path, path: &Path, tmp: &Path, held: &Held, hooks: &Hooks<
             drop(fs::remove_file(tmp));
         } else {
             // A copy doesn't follow an editor that still holds the original open, so the original takes the copy's
-            // place. Best effort: a failure leaves it at `tmp`, where the next save moves it, and the copy stays.
+            // place (a rename over our own copy). Best effort: a failure leaves it at `tmp`, where the next save moves
+            // it, and the copy stays.
             if fs::rename(tmp, &held.path).is_ok() {
                 drop(sync_folder(held.path.parent()));
             }
@@ -362,69 +420,15 @@ fn replace_held(dir: &Path, path: &Path, tmp: &Path, held: &Held, hooks: &Hooks<
         return Ok(Replace::Placed);
     }
     // Someone replaced or edited the target: put their file back.
-    if let Err(e) = exchange(tmp, path) {
+    if let Err(e) = hooks.exchange(tmp, path) {
         preserve(dir, tmp)?;
-        return Err(StoreError::io(path, e));
+        return Err(capability_error(path, NO_EXCHANGE, e));
     }
     (hooks.undone)();
     // Our file was visible at the target between the swap and the undo, so an editor may have it open and write into
     // it later, through a handle no hash check can see. It is therefore always kept, even if it still reads as ours.
     preserve(dir, tmp)?;
     Ok(Replace::Refused)
-}
-
-/// A hard link, unless a test turned links off.
-fn link_or_off(hooks: &Hooks<'_>, from: &Path, to: &Path) -> io::Result<()> {
-    if hooks.links_off { Err(io::ErrorKind::Unsupported.into()) } else { fs::hard_link(from, to) }
-}
-
-/// Step 4 without a swap and without a linked backup: `held` is only a copy, so a plain rename over the target would
-/// unlink the original inode, and an editor writing in place or through an open handle would lose its edit. Instead
-/// the original itself is renamed into the backup slot (replacing the copy, which holds the same bytes), and the
-/// staged file is then placed with a rename that refuses to replace. If the original can't be moved there, the save
-/// fails with the target untouched.
-fn place_displacing_original(
-    dir: &Path,
-    path: &Path,
-    tmp: &Path,
-    held: &Held,
-    hooks: &Hooks<'_>,
-) -> Result<Replace, StoreError> {
-    fs::rename(path, &held.path).map_err(|e| {
-        StoreError::io(
-            path,
-            io::Error::new(
-                e.kind(),
-                format!("can't keep the file being replaced intact on this file system ({e}); the save was not made"),
-            ),
-        )
-    })?;
-    // The original is now the backup. If it no longer holds the hashed bytes an editor wrote into it first: give it
-    // back its name, or keep it, and refuse.
-    if !held.is_file_at(&held.path) {
-        if !place_no_replace(&held.path, path).unwrap_or(false) {
-            preserve(dir, &held.path)?;
-        }
-        return Ok(Replace::Refused);
-    }
-    match place_no_replace_with(tmp, path, &|a, b| link_or_off(hooks, a, b)) {
-        Ok(true) => {
-            sync_folder(held.path.parent())?;
-            Ok(Replace::Placed)
-        }
-        // An editor saved a new file into the gap: it stays, and the original is kept beside it.
-        Ok(false) => {
-            preserve(dir, &held.path)?;
-            Ok(Replace::Refused)
-        }
-        Err(e) => {
-            // Put the original back if the name is still free; otherwise it stays in the replaced folder.
-            if !place_no_replace(&held.path, path).unwrap_or(false) && held.path.exists() {
-                preserve(dir, &held.path)?;
-            }
-            Err(e)
-        }
-    }
 }
 
 /// A backup of the file at the target.
@@ -436,6 +440,9 @@ struct Held {
     found: ContentHash,
     /// For a hard link, the (device, inode) of the backup, which is the target's file; `None` for a verified copy.
     linked: Option<FileId>,
+    /// Whether the backup is a hard link (even where [`file_id`] can't confirm it is the same file), which shows that
+    /// this file system makes hard links.
+    by_link: bool,
 }
 
 /// A file's identity on its device.
@@ -469,32 +476,26 @@ fn file_id(_: &io::Result<fs::Metadata>) -> Option<FileId> {
     None
 }
 
-/// Swaps the names `a` and `b` atomically. False if this system can't (nothing was changed).
+/// Swaps the names `a` and `b` atomically. [`io::ErrorKind::Unsupported`] if this system or file system can't (then
+/// nothing was changed).
 #[cfg(target_os = "linux")]
-fn exchange(a: &Path, b: &Path) -> io::Result<bool> {
+fn exchange(a: &Path, b: &Path) -> io::Result<()> {
     use rustix::fs::{CWD, RenameFlags, renameat_with};
     use rustix::io::Errno;
 
     match renameat_with(CWD, a, CWD, b, RenameFlags::EXCHANGE) {
-        Ok(()) => Ok(true),
-        Err(Errno::INVAL | Errno::NOSYS) => {
-            static WARNED: std::sync::Once = std::sync::Once::new();
-            WARNED.call_once(|| {
-                eprintln!(
-                    "omuzaki-doc: this file system can't swap files atomically; saves fall back to a plain rename, \
-                     which can overwrite an editor's save made in the same instant (#789)"
-                );
-            });
-            Ok(false)
-        }
+        Ok(()) => Ok(()),
+        // The kernel or the file system doesn't know the flag.
+        Err(Errno::INVAL | Errno::NOSYS) => Err(io::ErrorKind::Unsupported.into()),
         Err(e) => Err(e.into()),
     }
 }
 
-/// No atomic swap here yet.
+/// No atomic swap is reachable here yet (macOS's `renamex_np` and Windows have none in this crate's dependencies), so
+/// replacing an existing file is refused; see the module's table.
 #[cfg(not(target_os = "linux"))]
-fn exchange(_: &Path, _: &Path) -> io::Result<bool> {
-    Ok(false)
+fn exchange(_: &Path, _: &Path) -> io::Result<()> {
+    Err(io::ErrorKind::Unsupported.into())
 }
 
 /// Writes `text` to the hidden temporary file beside `path` and flushes it; returns the temporary file's path.
@@ -604,6 +605,7 @@ fn kept_stamp(name: &str) -> Option<(Duration, ContentHash)> {
 }
 
 /// Flushes a folder so a rename into it survives a crash (Unix; other systems have no way to open one).
+#[cfg_attr(not(unix), expect(clippy::unnecessary_wraps, reason = "the Unix version can fail"))]
 fn sync_folder(folder: Option<&Path>) -> Result<(), StoreError> {
     #[cfg(unix)]
     if let Some(folder) = folder {
@@ -630,7 +632,7 @@ enum Backup {
 /// The bytes are read before the link is made, so the backup itself is never read back. An editor's save in between
 /// links its file instead; the check after the swap (same inode and the hashed bytes) refuses that, and with no swap
 /// the backup keeps the editor's bytes under a hash they don't match, so pruning never deletes them.
-fn back_up(dir: &Path, path: &Path, expected: Option<ContentHash>, no_links: bool) -> Result<Backup, StoreError> {
+fn back_up(dir: &Path, path: &Path, expected: Option<ContentHash>, hooks: &Hooks<'_>) -> Result<Backup, StoreError> {
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Backup::Absent),
@@ -642,9 +644,7 @@ fn back_up(dir: &Path, path: &Path, expected: Option<ContentHash>, no_links: boo
     }
     let backup = replaced_name(dir, path, &format!(".{found}{KEPT}"))?;
     // The folder usually exists already, so link first and make folders only when that says they are missing.
-    let link = |from: &Path, to: &Path| {
-        if no_links { Err(io::ErrorKind::Unsupported.into()) } else { fs::hard_link(from, to) }
-    };
+    let link = |from: &Path, to: &Path| hooks.link(from, to);
     let mut linked = link(path, &backup);
     if linked.as_ref().is_err_and(|e| e.kind() == io::ErrorKind::NotFound)
         && let Some(parent) = backup.parent()
@@ -657,7 +657,7 @@ fn back_up(dir: &Path, path: &Path, expected: Option<ContentHash>, no_links: boo
         // Without an identity the link can't be trusted as the same file, so it is checked like a copy.
         Ok(()) => {
             let linked = file_id(&fs::symlink_metadata(&backup));
-            Ok(Backup::Held(Held { path: backup, found, linked }))
+            Ok(Backup::Held(Held { path: backup, found, linked, by_link: true }))
         }
         // Deleted between the read and the link: nothing to protect.
         Err(e) if e.kind() == io::ErrorKind::NotFound && !path.exists() => Ok(Backup::Absent),
@@ -693,64 +693,52 @@ fn copy_backup(path: &Path, bytes: &[u8], backup: PathBuf) -> Result<Backup, Sto
         drop(fs::remove_file(&backup));
         return Err(StoreError::Internal(format!("the backup of {} didn't read back identical", path.display())));
     }
-    Ok(Backup::Held(Held { path: backup, found, linked: None }))
+    Ok(Backup::Held(Held { path: backup, found, linked: None, by_link: false }))
 }
 
 /// Gives the file `from` the name `to` unless `to` exists; true if it was placed. `from`'s old name is removed.
-fn place_no_replace(from: &Path, to: &Path) -> Result<bool, StoreError> {
-    place_no_replace_with(from, to, &|a, b| fs::hard_link(a, b))
-}
-
-/// [`place_no_replace`] with the hard link injectable, so a test can race the fallback.
-fn place_no_replace_with(
-    from: &Path,
-    to: &Path,
-    link: &dyn Fn(&Path, &Path) -> io::Result<()>,
-) -> Result<bool, StoreError> {
-    let placed = match link(from, to) {
+///
+/// A no-replace hard link, or where the file system has no links an atomic rename that won't replace. Without either
+/// it is [`StoreError::NoSafeChange`] and nothing was moved: checking for `to` and then renaming would replace a file
+/// created in between.
+fn place_no_replace(from: &Path, to: &Path, hooks: &Hooks<'_>) -> Result<bool, StoreError> {
+    let placed = match hooks.link(from, to) {
         Ok(()) => true,
         Err(e) if e.kind() == io::ErrorKind::AlreadyExists => false,
         // No hard links here (FAT, exFAT) or not allowed: an atomic rename that won't replace.
-        Err(e) if links_unsupported(&e) => rename_no_replace(from, to)?,
+        Err(e) if links_unsupported(&e) => {
+            hooks.rename_no_replace(from, to).map_err(|e| capability_error(to, NO_NO_REPLACE, e))?
+        }
         Err(e) => return Err(StoreError::io(to, e)),
     };
     if placed {
-        // After a hard link this drops the second name of the same file; after the rename fallback it is already gone.
+        // After a hard link this drops the second name of the same file; after the rename it is already gone.
         drop(fs::remove_file(from));
     }
     Ok(placed)
 }
 
 /// Renames `from` to `to` only if `to` doesn't exist, atomically (`renameat2` with `RENAME_NOREPLACE`); false if it
-/// does. A Linux file system that can't do this is an error: a file that appeared must never be replaced unseen.
+/// does. [`io::ErrorKind::Unsupported`] if the kernel or file system can't (then nothing was changed).
 #[cfg(target_os = "linux")]
-fn rename_no_replace(from: &Path, to: &Path) -> Result<bool, StoreError> {
+fn rename_no_replace(from: &Path, to: &Path) -> io::Result<bool> {
     use rustix::fs::{CWD, RenameFlags, renameat_with};
     use rustix::io::Errno;
 
     match renameat_with(CWD, from, CWD, to, RenameFlags::NOREPLACE) {
         Ok(()) => Ok(true),
         Err(Errno::EXIST) => Ok(false),
-        Err(e @ (Errno::INVAL | Errno::NOSYS)) => Err(StoreError::io(
-            to,
-            io::Error::new(io::ErrorKind::Unsupported, format!("this file system can't place a new file safely: {e}")),
-        )),
-        Err(e) => Err(StoreError::io(to, e.into())),
+        Err(Errno::INVAL | Errno::NOSYS) => Err(io::ErrorKind::Unsupported.into()),
+        Err(e) => Err(e.into()),
     }
 }
 
-/// Without `renameat2` there is no atomic rename that refuses to replace (`std::fs::rename` overwrites), and a check
-/// followed by a rename would lose a file created in between. So this is an error, not a guess; it is reached only on
-/// a file system without hard links (FAT, exFAT), where the caller's link already failed.
+/// No rename that refuses to replace is reachable here yet (`std::fs::rename` overwrites; macOS's `renamex_np` and
+/// Windows's `MoveFileExW` are not in this crate's dependencies), so this is always unsupported; it is reached only on
+/// a file system without hard links (FAT, exFAT).
 #[cfg(not(target_os = "linux"))]
-fn rename_no_replace(_: &Path, to: &Path) -> Result<bool, StoreError> {
-    Err(StoreError::io(
-        to,
-        io::Error::new(
-            io::ErrorKind::Unsupported,
-            "this file system has no hard links and this system has no atomic rename that won't replace a file",
-        ),
-    ))
+fn rename_no_replace(_: &Path, _: &Path) -> io::Result<bool> {
+    Err(io::ErrorKind::Unsupported.into())
 }
 
 /// Deletes the file for the document path `segs` if its bytes are `expected`, then any folders it leaves empty (never
@@ -763,9 +751,15 @@ fn rename_no_replace(_: &Path, to: &Path) -> Result<bool, StoreError> {
 /// The name is never unlinked directly, because an editor's atomic save may land between the backup and the unlink
 /// and the unlink would delete its new file. Instead the target is renamed to a unique hidden name beside it, which
 /// is atomic and takes whatever file is there at that instant, and that file is checked against the backup (same
-/// inode and the hashed bytes, see [`Held::is_file_at`]). If it is the backed-up file it is deleted. If not, it is
-/// the editor's: it is renamed back, or, if the name has been taken again, moved into the replaced folder as
-/// `.displaced`, and the result is false (a conflict) either way.
+/// inode and the hashed bytes, see [`Held::is_file_at`]). If it is the backed-up file it is deleted (or, for a copied
+/// backup, renamed over the copy). If not, it is the editor's: it is put back with a placement that won't replace, or,
+/// if the name has been taken again, moved into the replaced folder as `.displaced`, and the result is false (a
+/// conflict) either way. If putting it back fails, the error is returned and the file stays beside the target under
+/// the hidden name the error gives.
+///
+/// Putting a file back needs a hard link or a rename that won't replace. A hard-linked backup shows the file system
+/// has links; with only a copy, the move aside is itself made with the rename that won't replace, so a system without
+/// either refuses with [`StoreError::NoSafeChange`] before the target is touched.
 pub(crate) fn remove_checked(dir: &Path, segs: &[String], expected: Option<ContentHash>) -> Result<bool, StoreError> {
     remove_checked_with(dir, segs, expected, &Hooks::default())
 }
@@ -778,7 +772,7 @@ fn remove_checked_with(
 ) -> Result<bool, StoreError> {
     let path = file_path(dir, segs);
     refuse_links(dir, &path)?;
-    match back_up(dir, &path, expected, hooks.links_off)? {
+    match back_up(dir, &path, expected, hooks)? {
         Backup::Mismatch => return Ok(false),
         Backup::Absent => {}
         Backup::Held(held) => {
@@ -809,12 +803,20 @@ fn unlink_held(dir: &Path, path: &Path, held: &Held, hooks: &Hooks<'_>) -> Resul
     name.push(path.file_name().unwrap_or_default());
     name.push(format!(".{}-{}.del", std::process::id(), COUNTER.fetch_add(1, Ordering::Relaxed)));
     let quarantine = path.with_file_name(name);
-    match fs::rename(path, &quarantine) {
+    // With links an editor's file can be put back by a no-replace link. Without them it can only be put back by a
+    // rename that won't replace, so the move aside uses that rename too: where it is missing, nothing moves.
+    let moved = if held.by_link {
+        fs::rename(path, &quarantine).map(|()| true)
+    } else {
+        hooks.rename_no_replace(path, &quarantine)
+    };
+    let moved = moved.and_then(|placed| if placed { Ok(()) } else { Err(io::ErrorKind::AlreadyExists.into()) });
+    match moved {
         Ok(()) => {}
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(true),
         Err(e) => {
             drop(fs::remove_file(&held.path));
-            return Err(StoreError::io(path, e));
+            return Err(capability_error(path, NO_NO_REPLACE, e));
         }
     }
     (hooks.quarantined)();
@@ -827,10 +829,22 @@ fn unlink_held(dir: &Path, path: &Path, held: &Held, hooks: &Hooks<'_>) -> Resul
         return fs::rename(&quarantine, &held.path).map(|()| true).map_err(|e| StoreError::io(&quarantine, e));
     }
     // An editor's file: put it back unless something took the name again, and never delete it.
-    if !place_no_replace(&quarantine, path).unwrap_or(false) {
-        preserve(dir, &quarantine)?;
+    match place_no_replace(&quarantine, path, hooks) {
+        Ok(true) => Ok(false),
+        // The name was taken again: that file stays at the target and this one is kept in the replaced folder.
+        Ok(false) => {
+            preserve(dir, &quarantine)?;
+            Ok(false)
+        }
+        // It stays beside the target, where the error says, not out of sight in the replaced folder.
+        Err(e) => Err(StoreError::io(
+            &quarantine,
+            io::Error::other(format!(
+                "the file that took the place of {} was kept here because it couldn't be put back: {e}",
+                path.display()
+            )),
+        )),
     }
-    Ok(false)
 }
 
 #[cfg(test)]
@@ -953,7 +967,6 @@ mod tests {
         assert_eq!(fs::read_to_string(outside.path().join("kept.toml")).unwrap(), "a = 1\n");
     }
 
-    #[cfg(unix)]
     fn all_names(dir: &Path) -> Vec<String> {
         let mut names: Vec<String> =
             fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
@@ -1220,27 +1233,155 @@ mod tests {
         assert!(no_temporary_file(dir));
     }
 
-    /// A write through a handle opened before the save lands in the kept original, with no hard links and no swap.
-    #[cfg(unix)]
+    /// Matrix, exchange without links (with or without a no-replace rename): a write through a handle opened before
+    /// the save lands in the kept original, which replaced the copied backup.
+    #[cfg(target_os = "linux")]
     #[test]
-    fn without_links_or_swap_the_original_inode_is_kept_for_a_held_handle() {
+    fn with_exchange_but_no_links_the_original_inode_is_kept_for_a_held_handle() {
         use std::io::Write as _;
 
+        for no_replace_off in [false, true] {
+            let tmp = TempDir::new().unwrap();
+            let (dir, (path, expected)) = (tmp.path(), with_file(tmp.path()));
+            let mut handle = OpenOptions::new().append(true).open(&path).unwrap();
+            let hooks = Hooks { links_off: true.into(), no_replace_off: no_replace_off.into(), ..Hooks::default() };
+            assert_eq!(replace_with(dir, expected, &hooks).unwrap(), Replace::Placed);
+            handle.write_all(b"late = 9\n").unwrap();
+            handle.sync_all().unwrap();
+            assert_eq!(fs::read_to_string(&path).unwrap(), "ours = 3\n");
+            assert_eq!(texts(&kept(dir)), ["mine = 1\nlate = 9\n"]);
+            assert!(no_temporary_file(dir));
+            assert_eq!(prune_replaced(dir, later()), 0);
+        }
+    }
+
+    /// Matrix, no exchange (every combination of the others): replacing is refused before anything moves.
+    #[test]
+    fn without_exchange_a_replacement_is_refused_and_the_file_is_untouched() {
+        for (links_off, no_replace_off) in [(false, false), (false, true), (true, false), (true, true)] {
+            let tmp = TempDir::new().unwrap();
+            let (dir, (path, expected)) = (tmp.path(), with_file(tmp.path()));
+            let inode_before = file_id(&fs::metadata(&path));
+            let hooks = Hooks {
+                links_off: links_off.into(),
+                exchange_off: true.into(),
+                no_replace_off: no_replace_off.into(),
+                ..Hooks::default()
+            };
+            let err = replace_with(dir, expected, &hooks).unwrap_err();
+            assert!(matches!(err, StoreError::NoSafeChange { missing: NO_EXCHANGE, .. }), "{err}");
+            assert!(err.to_string().contains("exchange"), "{err}");
+            assert_eq!(fs::read_to_string(&path).unwrap(), MINE);
+            assert_eq!(file_id(&fs::metadata(&path)), inode_before);
+            assert_eq!(kept(dir), [], "links off: {links_off}, no-replace off: {no_replace_off}");
+            assert!(no_temporary_file(dir));
+        }
+    }
+
+    /// Matrix, a new file: a hard link alone or a no-replace rename alone places it; neither refuses.
+    #[test]
+    fn a_new_file_needs_links_or_a_no_replace_rename() {
+        let new_file = |links_off: bool, no_replace_off: bool| {
+            let tmp = TempDir::new().unwrap();
+            let hooks = Hooks {
+                links_off: links_off.into(),
+                exchange_off: true.into(),
+                no_replace_off: no_replace_off.into(),
+                ..Hooks::default()
+            };
+            let out = replace_with(tmp.path(), None, &hooks);
+            let text = fs::read_to_string(tmp.path().join("f.toml")).ok();
+            assert!(no_temporary_file(tmp.path()));
+            (out, text)
+        };
+        let (out, text) = new_file(false, true);
+        assert_eq!((out.unwrap(), text.as_deref()), (Replace::Placed, Some("ours = 3\n")));
+        #[cfg(target_os = "linux")]
+        {
+            let (out, text) = new_file(true, false);
+            assert_eq!((out.unwrap(), text.as_deref()), (Replace::Placed, Some("ours = 3\n")));
+        }
+        let (out, text) = new_file(true, true);
+        let err = out.unwrap_err();
+        assert!(matches!(err, StoreError::NoSafeChange { missing: NO_NO_REPLACE, .. }), "{err}");
+        assert_eq!(text, None);
+    }
+
+    /// Matrix, a deletion with links (no exchange, no no-replace rename needed).
+    #[test]
+    fn with_links_a_deletion_needs_nothing_else() {
         let tmp = TempDir::new().unwrap();
-        let (dir, (path, expected)) = (tmp.path(), with_file(tmp.path()));
-        let mut handle = OpenOptions::new().append(true).open(&path).unwrap();
-        let hooks = Hooks { links_off: true, exchange_off: true, ..Hooks::default() };
-        assert_eq!(replace_with(dir, expected, &hooks).unwrap(), Replace::Placed);
-        handle.write_all(b"late = 9\n").unwrap();
-        handle.sync_all().unwrap();
-        assert_eq!(fs::read_to_string(&path).unwrap(), "ours = 3\n");
-        assert_eq!(texts(&kept(dir)), ["mine = 1\nlate = 9\n"]);
-        assert!(no_temporary_file(dir));
-        assert_eq!(prune_replaced(dir, later()), 0);
+        let d = tmp.path();
+        write(d, "a.toml", "x = 1\n");
+        let hooks = Hooks { exchange_off: true.into(), no_replace_off: true.into(), ..Hooks::default() };
+        assert!(remove_checked_with(d, &["a".to_owned()], Some(ContentHash::of(b"x = 1\n")), &hooks).unwrap());
+        assert!(!d.join("a.toml").exists());
+        assert_eq!(texts(&kept(d)), ["x = 1\n"]);
+    }
+
+    /// Matrix, a deletion with neither links nor a no-replace rename: refused before the file moves.
+    #[test]
+    fn without_links_or_a_no_replace_rename_a_deletion_is_refused_and_the_file_is_untouched() {
+        for exchange_off in [false, true] {
+            let tmp = TempDir::new().unwrap();
+            let d = tmp.path();
+            write(d, "a.toml", "x = 1\n");
+            let inode_before = file_id(&fs::metadata(d.join("a.toml")));
+            let hooks = Hooks {
+                links_off: true.into(),
+                exchange_off: exchange_off.into(),
+                no_replace_off: true.into(),
+                ..Hooks::default()
+            };
+            let err = remove_checked_with(d, &["a".to_owned()], Some(ContentHash::of(b"x = 1\n")), &hooks).unwrap_err();
+            assert!(matches!(err, StoreError::NoSafeChange { missing: NO_NO_REPLACE, .. }), "{err}");
+            assert_eq!(fs::read_to_string(d.join("a.toml")).unwrap(), "x = 1\n");
+            assert_eq!(file_id(&fs::metadata(d.join("a.toml"))), inode_before);
+            assert_eq!(kept(d), []);
+            assert_eq!(all_names(d), [".omuzaki", "a.toml"]);
+        }
+    }
+
+    /// An editor's file found by a deletion that can't be put back is never hidden: the error is returned and the
+    /// file stays beside the target, where the error says. With links (the restore link fails) and without (the
+    /// no-replace rename fails).
+    #[test]
+    fn a_restore_that_fails_after_a_raced_deletion_is_an_error_and_the_file_stays_beside_the_target() {
+        let cases: &[bool] = if cfg!(target_os = "linux") { &[false, true] } else { &[false] };
+        for &links_off in cases {
+            let tmp = TempDir::new().unwrap();
+            let d = tmp.path();
+            write(d, "a.toml", "x = 1\n");
+            let path = d.join("a.toml");
+            let save = || {
+                fs::write(d.join("editor.tmp"), "theirs = 2\n").unwrap();
+                fs::rename(d.join("editor.tmp"), &path).unwrap();
+            };
+            let slot: std::cell::OnceCell<&Hooks<'_>> = std::cell::OnceCell::new();
+            // From here on the file can't be put back.
+            let break_restore = || {
+                let hooks = slot.get().unwrap();
+                hooks.links_off.set(true);
+                hooks.no_replace_off.set(true);
+            };
+            let hooks = Hooks {
+                links_off: links_off.into(),
+                backed_up: &save,
+                quarantined: &break_restore,
+                ..Hooks::default()
+            };
+            assert!(slot.set(&hooks).is_ok());
+            let err = remove_checked_with(d, &["a".to_owned()], Some(ContentHash::of(b"x = 1\n")), &hooks).unwrap_err();
+            let StoreError::Io { path: beside, .. } = &err else { panic!("{err}") };
+            assert_eq!(beside.parent(), Some(d), "{err}");
+            assert_eq!(fs::read_to_string(beside).unwrap(), "theirs = 2\n");
+            assert!(err.to_string().contains("couldn't be put back"), "{err}");
+            assert_eq!(texts(&kept(d)), ["x = 1\n"], "links off: {links_off}");
+        }
     }
 
     /// The same for a deletion: the quarantined original is renamed over the copy, not unlinked.
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[test]
     fn without_links_a_deleted_file_keeps_its_inode_for_a_held_handle() {
         use std::io::Write as _;
@@ -1249,7 +1390,7 @@ mod tests {
         let d = tmp.path();
         write(d, "a.toml", "x = 1\n");
         let mut handle = OpenOptions::new().append(true).open(d.join("a.toml")).unwrap();
-        let hooks = Hooks { links_off: true, ..Hooks::default() };
+        let hooks = Hooks { links_off: true.into(), ..Hooks::default() };
         let segs = ["a".to_owned()];
         assert!(remove_checked_with(d, &segs, Some(ContentHash::of(b"x = 1\n")), &hooks).unwrap());
         handle.write_all(b"late = 9\n").unwrap();
@@ -1350,54 +1491,17 @@ mod tests {
         assert!(!from.exists());
     }
 
-    #[cfg(not(target_os = "linux"))]
-    #[test]
-    fn without_an_atomic_no_replace_rename_a_linkless_placement_is_unsupported() {
-        let tmp = TempDir::new().unwrap();
-        let (dir, path) = (tmp.path(), tmp.path().join("f.toml"));
-        let from = dir.join(".f.toml.tmp");
-        fs::write(&from, "ours = 3\n").unwrap();
-        let no_links = |_: &Path, _: &Path| Err(io::ErrorKind::PermissionDenied.into());
-        let err = place_no_replace_with(&from, &path, &no_links).unwrap_err();
-        assert!(matches!(err, StoreError::Io { .. }), "{err}");
-        assert!(!path.exists());
-        assert_eq!(fs::read_to_string(&from).unwrap(), "ours = 3\n");
-    }
-
     #[cfg(target_os = "linux")]
     #[test]
     fn a_file_created_while_links_fail_is_never_replaced() {
         let tmp = TempDir::new().unwrap();
         let (dir, path) = (tmp.path(), tmp.path().join("f.toml"));
-        let from = dir.join(".f.toml.tmp");
-        fs::write(&from, "ours = 3\n").unwrap();
-        // The link fails, and an editor creates the target in the instant before the fallback runs.
-        let racing_link = |_: &Path, to: &Path| {
-            fs::write(to, "theirs = 1\n").unwrap();
-            Err(io::ErrorKind::PermissionDenied.into())
-        };
-        assert!(!place_no_replace_with(&from, &path, &racing_link).unwrap());
+        // Links fail, and an editor creates the target in the instant before the no-replace rename runs.
+        let create = || fs::write(dir.join("f.toml"), "theirs = 1\n").unwrap();
+        let hooks = Hooks { links_off: true.into(), backed_up: &create, ..Hooks::default() };
+        assert_eq!(replace_with(dir, None, &hooks).unwrap(), Replace::Refused);
         assert_eq!(fs::read_to_string(&path).unwrap(), "theirs = 1\n");
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn a_new_file_is_placed_by_rename_where_links_fail_and_other_link_errors_propagate() {
-        let tmp = TempDir::new().unwrap();
-        let (dir, path) = (tmp.path(), tmp.path().join("f.toml"));
-        let from = dir.join(".f.toml.tmp");
-        fs::write(&from, "ours = 3\n").unwrap();
-        let no_links = |_: &Path, _: &Path| Err(io::ErrorKind::PermissionDenied.into());
-        assert!(place_no_replace_with(&from, &path, &no_links).unwrap());
-        assert_eq!(fs::read_to_string(&path).unwrap(), "ours = 3\n");
-        assert!(!from.exists());
-
-        let other = dir.join("g.toml");
-        fs::write(dir.join(".g.toml.tmp"), "x = 1\n").unwrap();
-        let broken = |_: &Path, _: &Path| Err(io::ErrorKind::StorageFull.into());
-        let err = place_no_replace_with(&dir.join(".g.toml.tmp"), &other, &broken).unwrap_err();
-        assert!(matches!(err, StoreError::Io { .. }), "{err}");
-        assert!(!other.exists());
+        assert!(no_temporary_file(dir));
     }
 
     #[test]

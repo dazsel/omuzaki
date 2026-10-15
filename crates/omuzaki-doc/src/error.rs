@@ -88,6 +88,15 @@ pub enum StoreError {
         /// The link.
         path: PathBuf,
     },
+    /// This system or file system lacks an operation that changing `path` safely needs, so the change was refused
+    /// before the file was touched: without it an editor's save made in the same instant could be overwritten or lost.
+    #[error("{}: not changed: this system or file system has no {missing}, which changing it safely needs", path.display())]
+    NoSafeChange {
+        /// The file that was not changed.
+        path: PathBuf,
+        /// The missing operation, in words.
+        missing: &'static str,
+    },
     /// `project.toml` has no usable `schema = N`.
     #[error("project.toml: {0}")]
     BadSchema(String),

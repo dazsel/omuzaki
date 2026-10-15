@@ -372,9 +372,11 @@ check; no check can see a write through a handle that is already open. So the di
 - **The residual window.** An editor that holds the old file open for more than 10 minutes after a save and only then
   writes into it can lose that write, once a later save prunes the entry. Editors that write in place do so within
   seconds of a save; a longer grace time is a one-constant change (`RETAIN_UNCHANGED`).
-- **Windows.** A save replaces a file by renaming over it. A writer that holds the file open without delete sharing
-  (the default for most editors) makes that rename fail with a sharing violation, so the save reports an error and
-  loses nothing. A writer that does allow delete sharing writes into the hard-linked `.kept` entry, as on Linux.
+- **No atomic swap, no save over a file.** A file that exists is replaced only by an atomic swap (`renameat2` with
+  `RENAME_EXCHANGE`); where the system or file system has none, the save refuses with `StoreError::NoSafeChange`
+  before the file is touched, never falling back to a plain rename. A new file needs a hard link or a rename that
+  won't replace, and a deletion the same, or it is refused the same way. Today that refuses replacing a file on macOS
+  and Windows; the capability table is in the `omuzaki-doc` `disk` module.
 - **What is tested where.** CI (Linux) tests a write through a handle opened before the save: made before the check
   it is refused and nothing is lost, made after the check its bytes are in the `.kept` entry and pruning keeps it. It
   also tests the pruning rules: young entries, changed entries,
@@ -709,7 +711,7 @@ Fixtures are synthetic projects (never the sample character or private material)
 | Apply to durable | p50 ≤ 2 ms, p99 ≤ 10 ms at 60 commits/s on a local SSD (ext4, NTFS); drvfs recorded, not gated | journal writer bench |
 | Writer throughput | ≥ 20,000 records/s of 1 KiB with flushing | journal writer bench |
 | Recovery | a 5,000-record tail over a 500-file project in ≤ 1 s | recovery bench |
-| Save | one edited file of the 200-file benchmark project saved and saved back (two saves) under 2 ms on a CI-class 4-vCPU machine; no `fsync` traded for speed | `omuzaki-doc` `store` bench, `save` group |
+| Save | one edited file of the 200-file benchmark project saved and saved back (two saves) in ≤ 3.5 ms median on a CI-class 4-vCPU machine (measured 2.74 ms median, #1468; mostly the `fsync`s); no `fsync` traded for speed | `omuzaki-doc` `store` bench, `save` group |
 | Open without recovery | within 5% of today's `open` bench; the base snapshot adds ≤ 20 ms on a local SSD when files changed while closed, nothing when they didn't | `omuzaki-doc` `open` bench |
 | Snapshot (off-thread) | ≤ 50 ms for a 500-file project with 10 changed files on a local SSD | snapshot bench |
 | Apple (estimate until measured on an M-series machine) | interactive apply to ordered p99 ≤ 10 ms with `F_BARRIERFSYNC`; an external acknowledgement waits one group-committed `F_FULLFSYNC` | journal writer bench on macOS |
