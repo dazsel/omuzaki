@@ -27,7 +27,7 @@ use omuzaki_render_api::{AlphaMode, Light, Pass, RenderError};
 
 use super::{FramePass, Outcome, PassCx};
 use crate::gpu::DEPTH_FORMAT;
-use crate::resource::mesh::vertex_layout;
+use crate::resource::mesh::vertex_layouts;
 use crate::shadow::bounds::MeshBounds;
 use crate::shadow::fit::{self, Aabb};
 use crate::shadow::map::{self, NORMAL_BIAS};
@@ -90,7 +90,7 @@ impl Shadows {
                 module: &self.module,
                 entry_point: Some("vs_main"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[Some(vertex_layout())],
+                buffers: &vertex_layouts(),
             },
             primitive: wgpu::PrimitiveState {
                 front_face: if variant.mirrored { wgpu::FrontFace::Cw } else { wgpu::FrontFace::Ccw },
@@ -127,7 +127,11 @@ fn scene_bounds(cx: &PassCx<'_>) -> (Aabb, Aabb) {
             let start = range.start as usize;
             scene.joints.get(start..start + range.len as usize)
         });
-        Some(MeshBounds::instance(&mesh.bounds, &instance.transform, palette))
+        Some(MeshBounds::instance(
+            resources.morphs.bounds(draw.instance).unwrap_or(&mesh.bounds),
+            &instance.transform,
+            palette,
+        ))
     };
     let mut casters = Aabb::EMPTY;
     for draw in cx.frame.draws.for_pass(Pass::Shadows) {
@@ -208,7 +212,7 @@ impl FramePass for Shadows {
             let Some(pipeline) = self.pipelines.get(&variant) else { continue };
             pass.set_pipeline(pipeline);
             pass.set_bind_group(1, &material.bind_group, &[]);
-            mesh.draw(&mut pass, draw.instance);
+            mesh.draw(&mut pass, draw.instance, cx.resources.morphs.shapes(draw.instance));
             cx.stats.draw_calls += 1;
             cx.stats.triangles += mesh.triangles;
         }

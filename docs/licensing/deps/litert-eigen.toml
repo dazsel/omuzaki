@@ -1,0 +1,7 @@
+section = "rust"
+item = "Eigen"
+kind = "native"
+used_for = "linked into the `tflite` runtime's library (`omuzaki_litert`): TFLite's linear algebra"
+status = "conditions"
+condition = "MPL-2.0, unmodified (policy); a few files BSD-3-Clause, Apache-2.0 or MINPACK, so every COPYING file ships; ship the notice in the archive (its licence file in `licences/` and its entry in `THIRD_PARTY_NOTICES.md`). Pinned by LiteRT v2.3.0's Bazel workspace; mapped in `tools/litert/licences.toml`"
+audit = "(COPYING.* and LICENSE read at ea13a98d)"

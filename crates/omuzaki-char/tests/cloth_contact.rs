@@ -492,13 +492,18 @@ fn rig_colliders_are_placed_in_the_solvers_space() {
     );
     let sphere =
         Collider { bone: BoneId(3), shape: ColliderShape::Sphere { offset: Vec3::new(0.1, 0.0, 0.0), radius: 0.05 } };
-    let placed = Shape::from_collider(&sphere.shape, &to_solver);
+    let placed = Shape::from_collider(&sphere.shape, &to_solver).unwrap();
     assert!((placed.axis().0 - Vec3::new(1.0, 0.2, 0.0)).length() < 1e-6 && (placed.radius() - 0.1).abs() < 1e-6);
     let capsule = ColliderShape::Capsule { offset: Vec3::ZERO, radius: 0.04, tail: Vec3::new(0.0, 0.3, 0.0) };
-    let placed = Shape::from_collider(&capsule, &to_solver);
+    let placed = Shape::from_collider(&capsule, &to_solver).unwrap();
     let (a, b) = placed.axis();
     assert!((a - Vec3::new(1.0, 0.0, 0.0)).length() < 1e-6 && (b - Vec3::new(0.4, 0.0, 0.0)).length() < 1e-6);
     assert!((placed.radius() - 0.08).abs() < 1e-6);
+    // Spring-only shapes are not cloth contacts.
+    let inside = ColliderShape::SphereInside { offset: Vec3::ZERO, radius: 0.5 };
+    assert!(Shape::from_collider(&inside, &to_solver).is_none());
+    let plane = ColliderShape::Plane { offset: Vec3::ZERO, normal: Vec3::Y };
+    assert!(Shape::from_collider(&plane, &to_solver).is_none());
 }
 
 #[test]

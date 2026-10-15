@@ -146,6 +146,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5a15f179cd60c4584b8a8c596927aadc462e27f2ca70c04e0071964a73ba7a75"
 dependencies = [
  "cfg-if",
+ "const-random",
  "getrandom 0.3.4",
  "once_cell",
  "serde",
@@ -963,6 +964,26 @@ name = "const-oid"
 version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
+
+[[package]]
+name = "const-random"
+version = "0.1.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "87e00182fe74b066627d63b85fd550ac2998d4b0bd86bfed477a0ae4c7c71359"
+dependencies = [
+ "const-random-macro",
+]
+
+[[package]]
+name = "const-random-macro"
+version = "0.1.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f9d839f2a20b0aee515dc581a6172f2321f96cab76c1a38a4c584a194955390e"
+dependencies = [
+ "getrandom 0.2.17",
+ "once_cell",
+ "tiny-keccak",
+]
 
 [[package]]
 name = "constant_time_eq"
@@ -1794,6 +1815,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "futures-intrusive"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d930c203dd0b6ff06e0201a4a2fe9149b43c684fd4420555b26d21b1a02956f"
+dependencies = [
+ "futures-core",
+ "lock_api",
+ "parking_lot",
+]
+
+[[package]]
 name = "futures-io"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2073,6 +2105,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6b17e70c989c36bad147b27a58d148c0741c51448aa5653436547323e524d0ab"
 dependencies = [
  "euclid",
+ "svg_fmt",
 ]
 
 [[package]]
@@ -2886,6 +2919,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "no-std-compat"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b93853da6d84c2e3c7d730d6473e8817692dd89be387eb01b94d7f108ecb5b8c"
+dependencies = [
+ "spin",
+]
+
+[[package]]
 name = "nohash-hasher"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3319,6 +3361,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-ai-litert"
+version = "0.0.0"
+dependencies = [
+ "flate2",
+ "libloading 0.9.0",
+ "omuzaki-ai-api",
+ "omuzaki-ai-native",
+ "omuzaki-core",
+ "sha2",
+ "tar",
+ "tempfile",
+]
+
+[[package]]
 name = "omuzaki-ai-mock"
 version = "0.0.0"
 dependencies = [
@@ -3330,12 +3386,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-ai-native"
+version = "0.0.0"
+dependencies = [
+ "flate2",
+ "tar",
+ "tempfile",
+ "zip",
+]
+
+[[package]]
 name = "omuzaki-ai-ort"
 version = "0.0.0"
 dependencies = [
  "flate2",
  "hound",
  "omuzaki-ai-api",
+ "omuzaki-ai-native",
  "omuzaki-core",
  "ort",
  "sha2",
@@ -3356,6 +3423,7 @@ dependencies = [
  "omuzaki-anim-mock",
  "omuzaki-core",
  "omuzaki-doc-mock",
+ "omuzaki-embed",
  "omuzaki-face-api",
  "omuzaki-face-mock",
  "omuzaki-ops-api",
@@ -3440,17 +3508,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-camera-mf"
+version = "0.0.0"
+dependencies = [
+ "criterion",
+ "omuzaki-track-api",
+ "tracing",
+ "windows",
+ "windows-core",
+]
+
+[[package]]
 name = "omuzaki-char"
 version = "0.0.0"
 dependencies = [
  "criterion",
  "inventory",
+ "libm",
  "omuzaki-anim-api",
  "omuzaki-char-api",
  "omuzaki-char-mock",
  "omuzaki-core",
  "omuzaki-doc-api",
  "omuzaki-doc-mock",
+ "omuzaki-embed",
  "omuzaki-face-api",
  "omuzaki-face-mock",
  "omuzaki-ops-api",
@@ -3512,10 +3593,13 @@ dependencies = [
  "omuzaki-io-gltf",
  "omuzaki-io-ops",
  "omuzaki-io-vrm",
+ "omuzaki-link-build",
  "omuzaki-mcp",
  "omuzaki-ops",
  "omuzaki-ops-api",
  "omuzaki-stage",
+ "omuzaki-store",
+ "omuzaki-store-api",
  "schemars",
  "serde",
  "serde_json",
@@ -3531,6 +3615,7 @@ version = "0.0.0"
 dependencies = [
  "glam 0.34.1",
  "inventory",
+ "proptest",
  "schemars",
  "serde",
  "serde_json",
@@ -3548,7 +3633,9 @@ dependencies = [
  "omuzaki-doc-api",
  "omuzaki-doc-mock",
  "omuzaki-stage-api",
+ "omuzaki-store-api",
  "proptest",
+ "rustix 1.1.5",
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
@@ -3595,6 +3682,7 @@ dependencies = [
  "omuzaki-core",
  "omuzaki-doc-api",
  "omuzaki-doc-mock",
+ "omuzaki-embed",
  "omuzaki-face-api",
  "omuzaki-face-mock",
  "omuzaki-io-api",
@@ -3602,6 +3690,7 @@ dependencies = [
  "omuzaki-render-api",
  "omuzaki-render-mock",
  "omuzaki-store-api",
+ "pollster",
  "proptest",
  "schemars",
  "serde",
@@ -3609,6 +3698,8 @@ dependencies = [
  "thiserror 2.0.21",
  "tiny-skia",
  "toml",
+ "vello",
+ "wgpu",
 ]
 
 [[package]]
@@ -3636,6 +3727,17 @@ dependencies = [
  "omuzaki-face-api",
  "omuzaki-io-api",
  "omuzaki-io-mock",
+]
+
+[[package]]
+name = "omuzaki-git-api"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-core",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -3688,9 +3790,37 @@ dependencies = [
 name = "omuzaki-http-mock"
 version = "0.0.0"
 dependencies = [
+ "base64",
  "omuzaki-http-api",
  "serde_json",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "omuzaki-identity-api"
+version = "0.0.0"
+dependencies = [
+ "ed25519-dalek",
+ "omuzaki-store-api",
+ "proptest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "omuzaki-identity-mock"
+version = "0.0.0"
+dependencies = [
+ "ed25519-dalek",
+ "omuzaki-identity-api",
+ "omuzaki-library-api",
+ "omuzaki-store-api",
+ "proptest",
+ "schemars",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -3741,9 +3871,11 @@ dependencies = [
  "omuzaki-core",
  "omuzaki-doc-api",
  "omuzaki-doc-mock",
+ "omuzaki-embed",
  "omuzaki-face-api",
  "omuzaki-io-api",
  "omuzaki-io-mock",
+ "omuzaki-library-api",
  "omuzaki-ops-api",
  "omuzaki-render-api",
  "omuzaki-store-api",
@@ -3809,6 +3941,46 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-link-build"
+version = "0.0.0"
+dependencies = [
+ "tempfile",
+ "toml",
+]
+
+[[package]]
+name = "omuzaki-link-probe"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-char",
+ "omuzaki-core",
+ "omuzaki-link-build",
+]
+
+[[package]]
+name = "omuzaki-llm-api"
+version = "0.0.0"
+dependencies = [
+ "inventory",
+ "omuzaki-core",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "omuzaki-llm-mock"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-core",
+ "omuzaki-llm-api",
+ "schemars",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "omuzaki-mcp"
 version = "0.0.0"
 dependencies = [
@@ -3823,7 +3995,10 @@ dependencies = [
  "omuzaki-core",
  "omuzaki-doc-api",
  "omuzaki-doc-mock",
+ "omuzaki-history-api",
+ "omuzaki-history-mock",
  "omuzaki-ops-api",
+ "omuzaki-ops-mock",
  "omuzaki-store-api",
  "omuzaki-store-mock",
  "proptest",
@@ -3839,6 +4014,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-obs"
+version = "0.0.0"
+dependencies = [
+ "base64",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "omuzaki-ops"
 version = "0.0.0"
 dependencies = [
@@ -3847,6 +4033,7 @@ dependencies = [
  "omuzaki-doc-api",
  "omuzaki-doc-mock",
  "omuzaki-ops-api",
+ "omuzaki-ops-mock",
  "proptest",
  "schemars",
  "serde",
@@ -3873,6 +4060,19 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "omuzaki-ops-mock"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-doc-mock",
+ "omuzaki-ops-api",
+ "schemars",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -3935,7 +4135,39 @@ dependencies = [
  "omuzaki-core",
  "omuzaki-render-api",
  "omuzaki-render-mock",
+ "proptest",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "omuzaki-script"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-ops-api",
+ "rhai",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "omuzaki-settings-api"
+version = "0.0.0"
+dependencies = [
+ "inventory",
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-ops-api",
+ "schemars",
+ "semver",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "toml",
 ]
 
 [[package]]
@@ -3947,6 +4179,9 @@ dependencies = [
  "harfrust 0.14.0",
  "image",
  "inventory",
+ "omuzaki-ai",
+ "omuzaki-ai-api",
+ "omuzaki-ai-mock",
  "omuzaki-anim",
  "omuzaki-anim-api",
  "omuzaki-anim-mock",
@@ -3956,10 +4191,12 @@ dependencies = [
  "omuzaki-core",
  "omuzaki-doc-api",
  "omuzaki-doc-mock",
+ "omuzaki-embed",
  "omuzaki-face",
  "omuzaki-face-api",
  "omuzaki-face-mock",
  "omuzaki-io-api",
+ "omuzaki-link-build",
  "omuzaki-ops-api",
  "omuzaki-render",
  "omuzaki-render-api",
@@ -3968,6 +4205,8 @@ dependencies = [
  "omuzaki-stage-api",
  "omuzaki-store-api",
  "omuzaki-store-mock",
+ "omuzaki-track-api",
+ "omuzaki-track-mock",
  "proptest",
  "schemars",
  "serde",
@@ -4029,34 +4268,100 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-stream-api"
+version = "0.0.0"
+dependencies = [
+ "bytes",
+ "omuzaki-core",
+ "omuzaki-render-api",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "omuzaki-take-api"
+version = "0.0.0"
+dependencies = [
+ "inventory",
+ "omuzaki-anim-api",
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-history-api",
+ "omuzaki-stage-api",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "omuzaki-test"
 version = "0.0.0"
 dependencies = [
  "blake3",
  "clap",
+ "criterion",
  "image",
+ "omuzaki-ai-api",
+ "omuzaki-ai-ort",
+ "omuzaki-char-api",
+ "omuzaki-char-mock",
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-doc-mock",
+ "omuzaki-io-api",
+ "omuzaki-io-gltf",
+ "omuzaki-io-mock",
+ "omuzaki-io-ops",
+ "omuzaki-ops-api",
+ "omuzaki-ops-mock",
+ "omuzaki-store-api",
+ "omuzaki-track",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.21",
+ "toml",
+]
+
+[[package]]
+name = "omuzaki-test-char"
+version = "0.0.0"
+dependencies = [
  "omuzaki-anim",
  "omuzaki-anim-api",
  "omuzaki-char",
  "omuzaki-char-api",
  "omuzaki-char-mock",
  "omuzaki-core",
- "omuzaki-face",
- "omuzaki-face-api",
- "omuzaki-io-api",
- "omuzaki-io-gltf",
- "omuzaki-io-mock",
- "omuzaki-io-ops",
- "omuzaki-ops-api",
  "omuzaki-render-api",
  "omuzaki-rig",
- "omuzaki-store-api",
- "schemars",
+ "omuzaki-test",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "omuzaki-test-face"
+version = "0.0.0"
+dependencies = [
+ "image",
+ "omuzaki-core",
+ "omuzaki-face",
+ "omuzaki-face-api",
+ "omuzaki-face-mock",
+ "omuzaki-link-build",
+ "omuzaki-render-mock",
+ "omuzaki-test",
+ "pollster",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
- "toml",
+ "wgpu",
 ]
 
 [[package]]
@@ -4073,6 +4378,28 @@ dependencies = [
  "sha2",
  "tempfile",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "omuzaki-track-api"
+version = "0.0.0"
+dependencies = [
+ "criterion",
+ "omuzaki-anim-api",
+ "omuzaki-core",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "omuzaki-track-mock"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-anim-api",
+ "omuzaki-core",
+ "omuzaki-track-api",
 ]
 
 [[package]]
@@ -4099,6 +4426,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-update-api"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-core",
+ "schemars",
+ "semver",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "toml",
+]
+
+[[package]]
+name = "omuzaki-update-fs"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-update-api",
+ "rustix 1.1.5",
+ "tempfile",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "omuzaki-vts"
 version = "0.0.0"
 dependencies = [
@@ -4112,6 +4462,9 @@ name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
+dependencies = [
+ "portable-atomic",
+]
 
 [[package]]
 name = "once_cell_polyfill"
@@ -4778,6 +5131,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "rhai"
+version = "1.26.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0334639972c0ea5a3fd366aa36116754a11431b619fec3ed559b3f73bcbcebf5"
+dependencies = [
+ "ahash",
+ "bitflags 2.13.2",
+ "no-std-compat",
+ "num-traits",
+ "once_cell",
+ "rhai_codegen",
+ "serde",
+ "smallvec",
+ "smartstring",
+ "thin-vec",
+ "web-time",
+]
+
+[[package]]
+name = "rhai_codegen"
+version = "3.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3cd3a7535e50bf36857e7be7bec276d334e8c2dfa469c2201226fd01638ea5ca"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "rmcp"
 version = "3.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4916,6 +5299,7 @@ dependencies = [
  "dyn-clone",
  "ref-cast",
  "schemars_derive",
+ "semver",
  "serde",
  "serde_json",
 ]
@@ -4955,6 +5339,10 @@ name = "semver"
 version = "1.0.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
+dependencies = [
+ "serde",
+ "serde_core",
+]
 
 [[package]]
 name = "serde"
@@ -5167,6 +5555,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "smartstring"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3fb72c633efbaa2dd666986505016c32c3044395ceaf881518399d2f4127ee29"
+dependencies = [
+ "autocfg",
+ "static_assertions",
+ "version_check",
+]
+
+[[package]]
 name = "smithay-client-toolkit"
 version = "0.19.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5249,6 +5648,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "spin"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6e63cff320ae2c57904679ba7cb63280a3dc4613885beafb148ee7bf9aa9042d"
+
+[[package]]
 name = "spirv"
 version = "0.4.0+sdk-1.4.341.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5309,6 +5714,12 @@ name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
+
+[[package]]
+name = "svg_fmt"
+version = "0.4.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0193cc4331cfd2f3d2011ef287590868599a2f33c3e69bc22c1a3d3acf9e02fb"
 
 [[package]]
 name = "syn"
@@ -5394,6 +5805,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "thin-vec"
+version = "0.2.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d6a4b9ba8738cb4a4f399d37e266becfd475e75eb73425b87a05a2f2039ba63e"
+
+[[package]]
 name = "thiserror"
 version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5454,6 +5871,15 @@ dependencies = [
  "quick-error 2.0.1",
  "weezl",
  "zune-jpeg",
+]
+
+[[package]]
+name = "tiny-keccak"
+version = "2.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2c9d3793400a45f954c52e73d068316d76b6f4e36977e3fcebb13a2721e80237"
+dependencies = [
+ "crunchy",
 ]
 
 [[package]]
@@ -5868,6 +6294,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
+name = "vello"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "913abde56cab6131b62c0cc69b1a93b671d3c34b3097beb3714fd1dc93be8115"
+dependencies = [
+ "bytemuck",
+ "futures-intrusive",
+ "log",
+ "peniko",
+ "png",
+ "skrifa",
+ "static_assertions",
+ "thiserror 2.0.21",
+ "vello_encoding",
+ "vello_shaders",
+ "wgpu",
+]
+
+[[package]]
 name = "vello_common"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5892,6 +6337,32 @@ dependencies = [
  "glifo",
  "hashbrown 0.17.1",
  "vello_common",
+]
+
+[[package]]
+name = "vello_encoding"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b1fb9548d2b46b0f79137b5b1d208ecbd76d432f74e7a2ba838615d117f11532"
+dependencies = [
+ "bytemuck",
+ "guillotiere",
+ "peniko",
+ "skrifa",
+ "smallvec",
+]
+
+[[package]]
+name = "vello_shaders"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2e653222cee49f2571729c3e4b0fa99bc4f826c6bb9487dbb88b825d552b3a27"
+dependencies = [
+ "bytemuck",
+ "log",
+ "naga",
+ "thiserror 2.0.21",
+ "vello_encoding",
 ]
 
 [[package]]
@@ -6834,12 +7305,19 @@ name = "xtask"
 version = "0.0.0"
 dependencies = [
  "clap",
+ "flate2",
+ "omuzaki-ai-api",
+ "omuzaki-core",
+ "omuzaki-embed",
  "omuzaki-library-api",
+ "omuzaki-link-build",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "thiserror 2.0.21",
  "toml",
+ "zip",
 ]
 
 [[package]]

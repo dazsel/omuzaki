@@ -22,6 +22,10 @@
 mod check;
 mod id;
 mod manifest;
+omuzaki_core::define_link! {
+    omuzaki_char_api::link();
+}
+
 pub mod migrations;
 mod placeholder;
 mod publisher;

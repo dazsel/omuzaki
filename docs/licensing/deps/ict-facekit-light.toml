@@ -1,0 +1,7 @@
+section = "in-use"
+item = "ICT-FaceKit Light"
+kind = "dataset"
+used_for = "synthetic faces for the own webcam tracker (ML-08); private test renders for the webcam spike (kept local, untracked)"
+status = "unverified"
+condition = "scan consent + Basel/FaceWarehouse prior unknown; no shipped model trained on it; the spike renders are private test inputs only, and nothing trained on them ships"
+audit = "A5"

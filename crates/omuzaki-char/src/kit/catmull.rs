@@ -42,6 +42,19 @@ const REPEATED_POINT: f64 = 1e-4;
 /// - [`KitError::Degenerate`] if every point coincides, so the curve has no length to space points along.
 /// - [`KitError::Overflow`] if `n` points cannot be allocated.
 pub fn spaced_points(pts: &[DVec3], n: usize) -> Result<Vec<DVec3>, KitError> {
+    let mut out = vec_for(n)?;
+    out.resize(n, DVec3::ZERO);
+    spaced_points_into(pts, &mut out)?;
+    Ok(out)
+}
+
+/// [`spaced_points`] into a caller-owned slice: `out.len()` points, and no allocation (the chord lengths live on the
+/// stack), for generators that rebuild every time a slider moves. On an error `out` may be partly written.
+///
+/// # Errors
+/// As [`spaced_points`], except [`KitError::Overflow`] cannot happen.
+pub fn spaced_points_into(pts: &[DVec3], out: &mut [DVec3]) -> Result<(), KitError> {
+    let n = out.len();
     if pts.len() < 2 {
         return Err(KitError::TooFew { what: "points of a Catmull-Rom curve", need: 2, got: pts.len() });
     }
@@ -60,15 +73,13 @@ pub fn spaced_points(pts: &[DVec3], n: usize) -> Result<Vec<DVec3>, KitError> {
     if total <= 0.0 {
         return Err(KitError::Degenerate { what: "a Catmull-Rom curve of zero length" });
     }
-    let mut out = vec_for(n)?;
-    for d in 0..n {
-        let target = fraction(d, n - 1) * total;
-        out.push(curve.point(t_at(&lengths, target)));
+    let points = (0..n).map(|d| curve.point(t_at(&lengths, fraction(d, n - 1) * total)));
+    let mut finite = true;
+    for (slot, p) in out.iter_mut().zip(points) {
+        finite &= p.is_finite();
+        *slot = p;
     }
-    if out.iter().any(|p| !p.is_finite()) {
-        return Err(KitError::NonFinite { what: "a spaced point" });
-    }
-    Ok(out)
+    if finite { Ok(()) } else { Err(KitError::NonFinite { what: "a spaced point" }) }
 }
 
 /// The cumulative chord lengths of a curve at `t = k / 200`: entry `k` is the length up to that step.
@@ -205,6 +216,33 @@ mod tests {
 
     fn line(count: usize) -> Vec<DVec3> {
         (0..count).map(|i| DVec3::new(fraction(i, count - 1), 0.0, 0.0)).collect()
+    }
+
+    #[test]
+    fn spaced_points_into_is_spaced_points_on_every_input_good_or_bad() {
+        let curve = [DVec3::new(0.0, 1.0, 0.0), DVec3::new(0.1, 0.7, 0.2), DVec3::new(0.0, 0.4, 0.1)];
+        let inputs: Vec<(&str, Vec<DVec3>, usize)> = vec![
+            ("a curve", curve.to_vec(), 14),
+            ("two points", curve[..2].to_vec(), 5),
+            ("two output points", curve.to_vec(), 2),
+            ("one point", curve[..1].to_vec(), 5),
+            ("no points", Vec::new(), 5),
+            ("one output point", curve.to_vec(), 1),
+            ("no output points", curve.to_vec(), 0),
+            ("a NaN", vec![curve[0], DVec3::new(f64::NAN, 0.0, 0.0), curve[2]], 5),
+            ("an infinity", vec![curve[0], DVec3::new(0.0, f64::INFINITY, 0.0), curve[2]], 5),
+            ("coincident points", vec![curve[0]; 3], 5),
+            ("a repeated point", vec![curve[0], curve[0], curve[2]], 7),
+        ];
+        for (name, pts, n) in inputs {
+            let mut out = vec![DVec3::splat(7.0); n];
+            let into = spaced_points_into(&pts, &mut out);
+            match (spaced_points(&pts, n), into) {
+                (Ok(expected), Ok(())) => assert_eq!(out, expected, "{name}"),
+                (Err(expected), Err(got)) => assert_eq!(got, expected, "{name}"),
+                (a, b) => panic!("{name}: spaced_points gave {a:?} but spaced_points_into gave {b:?}"),
+            }
+        }
     }
 
     #[test]

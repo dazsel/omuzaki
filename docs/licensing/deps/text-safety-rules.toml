@@ -1,0 +1,7 @@
+section = "rust"
+item = "Text-safety rule layer: Unicode normalisation, per-language word lists, regex for links and personal data, character-run limits (own code)"
+kind = "code"
+used_for = "AP-07 filter before speech, in-process and fail-closed (`docs/research/2026-10-text-safety-filters.md`)"
+status = "yes"
+condition = "written by us, no weights and no training data; the word lists are written by us with their provenance recorded; its crates `aho-corasick` and `regex` have their own row below"
+audit = "research 2026-10-text-safety-filters.md"

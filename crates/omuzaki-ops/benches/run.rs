@@ -12,12 +12,16 @@
 //! executor that has a project folder and grants with file roots, which no op asks about (it must cost the same as
 //! `query/in_place_doc`: building the context passes two more references).
 //!
+//! `job_start/idle_cpu_lane` is the time from `Jobs::start` to the first line of a job's `work` on an idle lane
+//! (thread spawn included). The job is waited for between iterations, untimed, so the lane is idle at every start.
+//!
 //! Each sample runs a fresh executor for at most `CHUNK` ops, so the log and undo stacks (which grow with every
 //! applied op) stay small however long Criterion keeps sampling.
 #![allow(missing_docs, clippy::unwrap_used, clippy::expect_used)]
 
 use std::hint::black_box;
-use std::sync::Arc;
+use std::sync::mpsc::{Sender, channel};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use criterion::{Criterion, criterion_group, criterion_main};
@@ -26,8 +30,8 @@ use omuzaki_doc_api::{DocPath, DocRead, DocVersion, DocWrite, Patch, PatchError,
 use omuzaki_doc_mock::MemDoc;
 use omuzaki_ops::Executor;
 use omuzaki_ops_api::{
-    Actor, FsMode, Grants, Mode, Op, OpCtx, OpError, OpKind, OpMeta, Plan, ProjectDir, Request, Runner, Scope,
-    Services, ServicesBuilder, Undo, register_op,
+    Actor, FsMode, Grants, JobCtx, Jobs, Mode, Op, OpCtx, OpError, OpKind, OpMeta, Plan, ProjectDir, Request, Runner,
+    Scope, Services, ServicesBuilder, Undo, register_op,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -159,6 +163,38 @@ impl Op for Open {
 }
 register_op!(Open);
 
+/// Where `BenchJob::work` reports the moment it began.
+static WORK_ENTRY: Mutex<Option<Sender<Instant>>> = Mutex::new(None);
+
+/// A job that does nothing but say when it started.
+#[derive(Serialize, Deserialize, JsonSchema)]
+struct BenchJob {}
+
+impl Op for BenchJob {
+    fn meta() -> OpMeta {
+        OpMeta {
+            name: "bench.job",
+            summary: "A job that returns at once.",
+            kind: OpKind::Job,
+            scope: Scope::EditScene,
+            undo: Undo::Auto,
+        }
+    }
+
+    fn plan(&self, _ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
+        Ok(Plan::default())
+    }
+
+    fn work(&self, _job: &JobCtx<'_>) -> Result<Value, OpError> {
+        let entered = Instant::now();
+        if let Some(tx) = WORK_ENTRY.lock().unwrap().as_ref() {
+            tx.send(entered).unwrap();
+        }
+        Ok(Value::Null)
+    }
+}
+register_op!(BenchJob);
+
 fn tree() -> Value {
     let nodes: serde_json::Map<String, Value> =
         (0..NODES).map(|i| (format!("n{i}"), json!({"x": 0, "y": 0, "name": format!("node {i}")}))).collect();
@@ -236,6 +272,29 @@ fn time_runs(iters: u64, op: &str, mode: Mode, make_exec: &dyn Fn() -> Executor,
     total
 }
 
+/// Times `iters` job starts, each from `Jobs::start` to `work` entry, on a lane that is idle at every start.
+fn time_job_starts(iters: u64, make_exec: &dyn Fn() -> Executor, grants: &Grants) -> Duration {
+    let (tx, rx) = channel();
+    *WORK_ENTRY.lock().unwrap() = Some(tx);
+    let mut total = Duration::ZERO;
+    let mut done = 0;
+    while done < iters {
+        let n = CHUNK.min(iters - done);
+        let exec = make_exec();
+        for i in done..done + n {
+            let req = request("bench.job", Mode::Apply, i, grants);
+            let start = Instant::now();
+            let info = exec.start(req).unwrap();
+            let entered = rx.recv().unwrap();
+            total += entered.saturating_duration_since(start);
+            exec.wait(info.id, None).unwrap();
+        }
+        done += n;
+    }
+    *WORK_ENTRY.lock().unwrap() = None;
+    total
+}
+
 fn bench_run(c: &mut Criterion) {
     let mem = || Box::new(MemDoc::from_value(tree())) as Box<dyn DocWrite>;
     let in_place = || Box::new(InPlaceDoc { root: tree(), version: DocVersion(0) }) as Box<dyn DocWrite>;
@@ -278,6 +337,10 @@ fn bench_run(c: &mut Criterion) {
         b.iter_custom(|n| time_runs(n, "bench.open", Mode::Apply, &with_project, &agent));
     });
     group.finish();
+
+    c.benchmark_group("job_start").bench_function("idle_cpu_lane", |b| {
+        b.iter_custom(|n| time_job_starts(n, &plain, &agent));
+    });
 }
 
 criterion_group!(benches, bench_run);

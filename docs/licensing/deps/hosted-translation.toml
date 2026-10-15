@@ -1,0 +1,7 @@
+section = "models"
+item = "Hosted translation connectors (Google Cloud Translation and similar)"
+kind = "service"
+used_for = "opt-in caption translation"
+status = "conditions"
+condition = "paid (a free monthly allowance, then per-character pricing; pricing page read 2026-10-13), `spend` scope, off by default, never called in tests or CI; a `private` transcript never leaves the machine; vendor terms and output ownership unread"
+audit = "research 2026-10-caption-translation.md"

@@ -1,3 +1,9 @@
+---
+title: "Crash reports: what is collected, scrubbed and consented to (SE-04)"
+summary: "what is collected, scrubbed and consented to (SE-04)"
+area: design
+---
+
 # Crash reports: what is collected, scrubbed and consented to (SE-04)
 
 **Status:** proposed, awaiting maintainer decisions (§9). **Spec:** v3 §31 (SE-04: "no telemetry by default; opt-in crash reports (Sentry) with no images"), §40; SE-01 ("Telemetry is off").

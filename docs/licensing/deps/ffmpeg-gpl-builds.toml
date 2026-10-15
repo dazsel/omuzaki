@@ -1,0 +1,6 @@
+section = "rust"
+item = "FFmpeg GPL/nonfree builds, GStreamer \"ugly\"/GPL plugins"
+kind = "native"
+used_for = "(none)"
+status = "NO"
+audit = "B4"

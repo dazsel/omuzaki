@@ -20,3 +20,8 @@ omuzaki-io-mock = { path = "../omuzaki-io-mock" }
 
 [lints]
 workspace = true
+
+[package.metadata.omuzaki]
+kind = "Mock"
+summary = "a deterministic geometric `MockPainter`, a CPU scanline `MockRasterizer` (fills, clips, transforms, gradients, strokes), and an expression contact-sheet example"
+registers = true

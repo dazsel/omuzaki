@@ -1,0 +1,7 @@
+section = "rust"
+item = "flate2 1.1.10 (`rust_backend`: miniz_oxide)"
+kind = "crate"
+used_for = "gunzips the ONNX Runtime `.tgz` archives in `omuzaki-ai-native`"
+status = "yes"
+audit = "(crates.io: `license = \"MIT OR Apache-2.0\"`; `LICENSE-MIT`: \"Copyright (c) 2014-2026 Alex Crichton\", and `LICENSE-APACHE`)"
+crates = ["flate2"]

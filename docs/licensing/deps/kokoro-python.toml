@@ -1,0 +1,7 @@
+section = "models"
+item = "Kokoro / misaki / kokoro-onnx Python stacks"
+kind = "python"
+used_for = "TTS runtime"
+status = "NO"
+condition = "GPL phonemizer / espeak-ng"
+audit = "B5"

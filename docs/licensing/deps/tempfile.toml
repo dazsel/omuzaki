@@ -1,0 +1,7 @@
+section = "rust"
+item = "tempfile, proptest, criterion"
+kind = "crate"
+used_for = "tests and benchmarks; tempfile also stages the unpack of the AI runtime archives in `omuzaki-ai-native` (production)"
+status = "yes"
+audit = "(crates.io: MIT OR Apache-2.0)"
+crates = ["criterion", "proptest", "tempfile"]

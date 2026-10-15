@@ -2,7 +2,7 @@
 //! puts inside each eye's aperture clip, that it stays inside it at the extremes of the gaze, that the shimmer is a pure
 //! function of the clock, and that painting allocates nothing once the lists are warm.
 //!
-//! The comparison with the prototype's pixels is `omuzaki-test`'s `face_parity_eye_iris.rs`.
+//! The comparison with the prototype's pixels is `omuzaki-test-face`'s `face_parity_eye_iris.rs`.
 
 // A counting allocator is the only way to *prove* "no allocation"; the workspace denies unsafe code by default.
 #![allow(unsafe_code, clippy::unwrap_used, clippy::cast_possible_truncation, clippy::cast_precision_loss)]
@@ -193,6 +193,29 @@ fn the_gaze_moves_the_iris_by_its_travel_times_the_eye_scale() {
     assert!((d.x - 0.5 * 0.02 * 1.5).abs() < 2e-5 && (d.y + 0.01 * 1.5).abs() < 2e-5, "{d}");
 }
 
+#[test]
+fn convergence_moves_each_iris_toward_its_own_nose_by_the_gaze_travel_times_the_eye_scale() {
+    let mut profile = profile();
+    profile.eyes.scale = 1.5;
+    profile.eyes.iris.gaze_travel = [0.02, 0.01];
+    let at = |vergence: f32| {
+        let mut params = base();
+        params.vergence = vergence;
+        let eyes = inside(&paint(&profile, &params)[FaceLayerId::Base]);
+        (centre(iris_of(&eyes[0]).0), centre(iris_of(&eyes[1]).0))
+    };
+    let (rest_left, rest_right) = at(0.0);
+    // Positive converges: the left iris moves toward the nose (-x), the right one toward its own (+x).
+    let (left, right) = at(0.5);
+    let (dl, dr) = (left - rest_left, right - rest_right);
+    assert!((dl.x + 0.5 * 0.02 * 1.5).abs() < 2e-5 && dl.y.abs() < 1e-6, "left: {dl}");
+    assert!((dr.x - 0.5 * 0.02 * 1.5).abs() < 2e-5 && dr.y.abs() < 1e-6, "right: {dr}");
+    // Negative turns them apart by the same amount.
+    let (left, right) = at(-0.5);
+    assert!(((left - rest_left).x - 0.5 * 0.02 * 1.5).abs() < 2e-5, "left apart: {}", left - rest_left);
+    assert!(((right - rest_right).x + 0.5 * 0.02 * 1.5).abs() < 2e-5, "right apart: {}", right - rest_right);
+}
+
 /// `list` rasterised alone at 2000 px/m.
 fn rasterise(list: &DrawList) -> Raster {
     let painter = RealPainter::new(mock_projection(), 2000.0);
@@ -263,9 +286,10 @@ fn an_extreme_gaze_keeps_the_iris_inside_the_aperture() {
     // The shimmer is on so the whole eye is checked: its band and stars are drawn inside the aperture too.
     let profile = shimmering(1.0);
     for gaze in [Vec2::new(1.0, 1.0), Vec2::new(-1.0, 1.0), Vec2::new(1.0, -1.0), Vec2::new(-1.0, -1.0)] {
-        for open in [0.4, 1.0, 1.9] {
+        for (open, vergence) in [(0.4, -1.0), (1.0, 1.0), (1.9, 1.0), (1.9, -1.0)] {
             let mut params = base();
             params.gaze = gaze;
+            params.vergence = vergence;
             params.left_eye.open = open;
             let drawing = paint(&profile, &params);
             let list = &drawing[FaceLayerId::Base];
@@ -285,7 +309,10 @@ fn an_extreme_gaze_keeps_the_iris_inside_the_aperture() {
                     outside += usize::from(!near_white && alpha(&whole, x, y) > 0);
                 }
             }
-            assert_eq!(outside, 0, "gaze {gaze}, open {open}: {outside} pixels outside the aperture");
+            assert_eq!(
+                outside, 0,
+                "gaze {gaze}, open {open}, vergence {vergence}: {outside} pixels outside the aperture"
+            );
             // The iris really does reach the edge at the extremes (the test is not vacuous).
             let (iris, _) = iris_of(&eyes[0]);
             let (white_lo, white_hi) = bounds(&eyes_outline(list));

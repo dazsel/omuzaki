@@ -1,0 +1,7 @@
+section = "models"
+item = "Bergamot / Firefox Translations student models"
+kind = "model"
+used_for = "CPU-optimised translation candidate"
+status = "unverified"
+condition = "model files MPL-2.0 (`mozilla/translations` README); bergamot-translator MPL-2.0 (file-level copyleft); training-data lineage and whether non-commercial corpora were excluded not found"
+audit = "research 2026-10-caption-translation.md"

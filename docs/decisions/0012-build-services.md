@@ -1,3 +1,9 @@
+---
+title: "0012: Build services are injected into the character builder (2026-10-12)"
+summary: "Build services are injected into the character builder"
+area: decisions
+---
+
 # 0012: Build services are injected into the character builder (2026-10-12)
 
 **Status:** accepted. **Context:** `docs/design/char-face-api.md`; CONTRIBUTING (a breaking API change needs a decision record).

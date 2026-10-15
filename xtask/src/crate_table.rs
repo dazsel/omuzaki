@@ -1,0 +1,255 @@
+//! `cargo xtask crate-table` and `cargo xtask lint-crate-table`: the crate table, generated from each crate's own manifest
+//! (ADR 0053 §3).
+//!
+//! Why: the hand-written table in `crates/README.md` was edited by nearly every pull request that added or changed a
+//! crate, so parallel work collided on it. Each crate now describes itself under `[package.metadata.omuzaki]` (`kind`
+//! and `summary`), `crate-table` prints the table from those, and the lint keeps the README to the rules.
+
+use std::fs;
+use std::path::Path;
+use std::process::ExitCode;
+
+use xtask::registry::Error as ReadError;
+
+use crate::error::{Error, Result};
+use crate::lint_deps::CrateKind;
+use crate::workspace::{Package, Workspace};
+
+/// The README that keeps only the rules.
+const README: &str = "crates/README.md";
+
+/// One member under `crates/`, as its manifest describes it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Row {
+    /// Package name.
+    pub name: String,
+    /// `description` under `[package]`, if declared.
+    pub description: Option<String>,
+    /// `kind` under `[package.metadata.omuzaki]`, if declared.
+    pub kind: Option<String>,
+    /// `summary` under `[package.metadata.omuzaki]`, if declared.
+    pub summary: Option<String>,
+    /// What `lint-deps` makes of the crate (its name and `layer`), to check `kind` against; `None` if it can't say.
+    pub layering: Option<CrateKind>,
+}
+
+/// The rows for every member under `crates/`, sorted by name (the workspace is).
+///
+/// # Errors
+/// A manifest that can't be read or parsed.
+pub fn rows(workspace: &Workspace) -> Result<Vec<Row>> {
+    workspace.packages.iter().filter(|package| package.dir.starts_with("crates")).map(|p| row(workspace, p)).collect()
+}
+
+fn row(workspace: &Workspace, package: &Package) -> Result<Row> {
+    let path = workspace.root.join(&package.dir).join("Cargo.toml");
+    let text = fs::read_to_string(&path).map_err(|source| ReadError::Read { path: path.clone(), source })?;
+    let manifest: toml::Table = text.parse().map_err(|error: toml::de::Error| Error::Failed {
+        command: format!("parse {}", path.display()),
+        stderr: error.to_string(),
+    })?;
+    let package_table = manifest.get("package");
+    let ours = package_table.and_then(|p| p.get("metadata")).and_then(|m| m.get("omuzaki"));
+    let text_of = |key: &str| ours.and_then(|table| table.get(key)?.as_str()).map(str::to_owned);
+    Ok(Row {
+        name: package.name.clone(),
+        description: package_table.and_then(|p| p.get("description")?.as_str()).map(str::to_owned),
+        kind: text_of("kind"),
+        summary: text_of("summary"),
+        layering: CrateKind::of_package(package).ok(),
+    })
+}
+
+/// The `kind` value a manifest writes for each layering class.
+fn kind_name(kind: CrateKind) -> &'static str {
+    match kind {
+        CrateKind::Api => "API",
+        CrateKind::Mock => "Mock",
+        CrateKind::Lib => "Lib",
+        CrateKind::Implementation => "Implementation",
+        CrateKind::App => "App",
+    }
+}
+
+/// The Markdown table, one row per crate.
+pub fn table(rows: &[Row]) -> String {
+    let mut out = String::from("| Crate | Kind | What it is |\n|---|---|---|\n");
+    for row in rows {
+        let kind = cell(row.kind.as_deref().unwrap_or(""));
+        let summary = cell(row.summary.as_deref().unwrap_or(""));
+        out += &["| `", &row.name, "` | ", &kind, " | ", &summary, " |\n"].concat();
+    }
+    out
+}
+
+/// Text made safe for one table cell: a `|` would open a new column, and a line break would end the row.
+fn cell(text: &str) -> String {
+    text.replace('|', "\\|").replace(['\r', '\n'], " ")
+}
+
+/// Every problem: a crate without its metadata, a `kind` that disagrees with the layering, a table in the README.
+pub fn violations(rows: &[Row], readme: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    for row in rows {
+        if row.description.as_deref().is_none_or(|description| description.trim().is_empty()) {
+            found.push(format!("{}: no `description` under [package]", row.name));
+        }
+        match (&row.kind, row.layering) {
+            (None, _) => found.push(format!("{}: no `kind` under [package.metadata.omuzaki]", row.name)),
+            (Some(kind), Some(layering)) if kind != kind_name(layering) => found.push(format!(
+                "{}: kind {kind:?}, but lint-deps classifies it as {:?}",
+                row.name,
+                kind_name(layering)
+            )),
+            _ => {}
+        }
+        if row.summary.as_deref().is_none_or(|summary| summary.trim().is_empty()) {
+            found.push(format!("{}: no `summary` under [package.metadata.omuzaki]", row.name));
+        }
+    }
+    let names: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
+    for (number, line) in readme.lines().enumerate() {
+        if is_crate_row(line, &names) {
+            found.push(format!(
+                "{README}:{}: a crate table row; the table is generated (`cargo xtask crate-table`)",
+                number + 1
+            ));
+        }
+    }
+    found
+}
+
+/// A Markdown table row whose first cell is a crate name in backticks. Other tables (a `wasm32` target, say) stay allowed.
+fn is_crate_row(line: &str, names: &[&str]) -> bool {
+    let Some(rest) = line.trim_start().strip_prefix('|') else { return false };
+    let cell = rest.split('|').next().unwrap_or("").trim();
+    cell.strip_prefix('`').and_then(|quoted| quoted.strip_suffix('`')).is_some_and(|name| names.contains(&name))
+}
+
+/// The `crate-table` command: prints the crate table.
+///
+/// # Errors
+/// A manifest that can't be read or parsed.
+pub fn print(workspace: &Workspace) -> Result<ExitCode> {
+    print!("{}", table(&rows(workspace)?));
+    Ok(ExitCode::SUCCESS)
+}
+
+/// The README under the workspace `root`. It must exist: a missing file would read as an empty README and pass the
+/// lint.
+fn read_readme(root: &Path) -> Result<String> {
+    let path = root.join(README);
+    fs::read_to_string(&path).map_err(|source| ReadError::Read { path, source }.into())
+}
+
+/// The `lint-crate-table` command.
+///
+/// # Errors
+/// A manifest or the README that can't be read.
+pub fn lint(workspace: &Workspace) -> Result<ExitCode> {
+    let rows = rows(workspace)?;
+    let readme = read_readme(&workspace.root)?;
+    let found = violations(&rows, &readme);
+    for violation in &found {
+        println!("{violation}");
+    }
+    if found.is_empty() {
+        println!("lint-crate-table: ok ({} crates)", rows.len());
+        Ok(ExitCode::SUCCESS)
+    } else {
+        println!("lint-crate-table: {} violation(s); each crate describes itself in its Cargo.toml", found.len());
+        Ok(ExitCode::FAILURE)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(name: &str, kind: Option<&str>, summary: Option<&str>, layering: CrateKind) -> Row {
+        Row {
+            name: name.to_owned(),
+            description: Some("described".to_owned()),
+            kind: kind.map(str::to_owned),
+            summary: summary.map(str::to_owned),
+            layering: Some(layering),
+        }
+    }
+
+    #[test]
+    fn the_table_has_one_row_per_crate_in_order() {
+        let rows = [
+            row("omuzaki-core", Some("API"), Some("ids, `glam`"), CrateKind::Api),
+            row("omuzaki-gltf", Some("Lib"), Some("glTF 2.0"), CrateKind::Lib),
+        ];
+        assert_eq!(
+            table(&rows),
+            "| Crate | Kind | What it is |\n|---|---|---|\n\
+             | `omuzaki-core` | API | ids, `glam` |\n| `omuzaki-gltf` | Lib | glTF 2.0 |\n"
+        );
+    }
+
+    #[test]
+    fn missing_metadata_and_a_wrong_kind_are_caught() {
+        let rows = [
+            row("omuzaki-a", None, Some("x"), CrateKind::Implementation),
+            row("omuzaki-b-api", Some("Mock"), Some(" "), CrateKind::Api),
+            row("omuzaki-c", Some("Implementation"), Some("fine"), CrateKind::Implementation),
+        ];
+        assert_eq!(
+            violations(&rows, ""),
+            [
+                "omuzaki-a: no `kind` under [package.metadata.omuzaki]",
+                "omuzaki-b-api: kind \"Mock\", but lint-deps classifies it as \"API\"",
+                "omuzaki-b-api: no `summary` under [package.metadata.omuzaki]",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_missing_or_blank_description_is_caught() {
+        let described = row("omuzaki-ok", Some("API"), Some("fine"), CrateKind::Api);
+        let missing = Row { description: None, ..described.clone() };
+        let blank = Row { description: Some("  ".to_owned()), ..described.clone() };
+        assert_eq!(violations(&[described], ""), Vec::<String>::new());
+        assert_eq!(violations(&[missing], ""), ["omuzaki-ok: no `description` under [package]"]);
+        assert_eq!(violations(&[blank], ""), ["omuzaki-ok: no `description` under [package]"]);
+    }
+
+    #[test]
+    fn a_missing_readme_fails_instead_of_passing_as_empty() {
+        let root = tempfile::tempdir().expect("a temporary directory");
+        let error = read_readme(root.path()).expect_err("no README under the root");
+        assert!(error.to_string().contains("crates/README.md"), "{error}");
+        fs::create_dir_all(root.path().join("crates")).expect("the crates folder");
+        fs::write(root.path().join(README), "# Rules\n").expect("a README");
+        assert_eq!(read_readme(root.path()).expect("the README reads"), "# Rules\n");
+    }
+
+    #[test]
+    fn a_crate_row_in_the_readme_is_caught_but_the_rules_table_is_not() {
+        let readme = "# Rules\n\n| Kind | Names |\n|---|---|\n| **API** | `omuzaki-core`, `*-api` |\n\n\
+                      | Crate | Kind |\n|---|---|\n| `omuzaki-core` | API |\n";
+        let rows = [row("omuzaki-core", Some("API"), Some("ids"), CrateKind::Api)];
+        assert_eq!(
+            violations(&rows, readme),
+            ["crates/README.md:9: a crate table row; the table is generated (`cargo xtask crate-table`)"]
+        );
+        assert!(!is_crate_row("| `a b` | x |", &["omuzaki-core"]));
+        assert!(!is_crate_row("text with | `pipe` |", &["omuzaki-core"]));
+    }
+
+    #[test]
+    fn a_code_span_that_is_not_a_crate_name_is_not_a_crate_row() {
+        let names = ["omuzaki-core"];
+        assert!(!is_crate_row("| `wasm32` | supported |", &names));
+        assert!(is_crate_row("| `omuzaki-core` | API |", &names));
+    }
+
+    #[test]
+    fn a_pipe_or_line_break_in_a_summary_stays_inside_its_cell() {
+        let rows =
+            [Row { summary: Some("a | b\nc".to_owned()), ..row("omuzaki-x", Some("API"), None, CrateKind::Api) }];
+        assert_eq!(table(&rows), "| Crate | Kind | What it is |\n|---|---|---|\n| `omuzaki-x` | API | a \\| b c |\n");
+    }
+}

@@ -1,7 +1,7 @@
 //! Pose to skeleton to skinning matrices: the rig solve for one frame (humanoid pose, then IK, then spring bones, then
 //! one forward-kinematics pass) and the [`PoseSource`] the part runtimes follow it with.
 
-use omuzaki_anim_api::{HumanoidPose, IkGoals, IkSolver, MAX_BONES, Pose, Skeleton, Tick};
+use omuzaki_anim_api::{HumanoidPose, IkGoals, IkSolver, MAX_BONES, Pose, Rig, Skeleton, Tick};
 use omuzaki_char_api::{CharacterRig, JointRef, PoseSource};
 use omuzaki_core::glam::Mat4;
 use omuzaki_rig::full::FullRig;
@@ -62,6 +62,12 @@ impl RigFrame {
     pub(crate) fn solve(&mut self, tick: Tick, pose: &HumanoidPose, goals: &IkGoals) {
         self.rig.set_goals(goals);
         self.rig.solve_and_skin(tick, pose, &mut self.local, &mut self.skin);
+    }
+
+    /// Clears what the IK solvers and the spring bones carry from earlier frames (velocities, owed time); the goals
+    /// stay. The next solve starts the springs from rest.
+    pub(crate) fn reset(&mut self) {
+        self.rig.reset();
     }
 
     /// The skinning matrices of the last [`solve`](Self::solve), indexed by bone.

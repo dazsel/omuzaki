@@ -5,11 +5,11 @@
 
 use std::time::Instant;
 
-use omuzaki_core::glam::UVec2;
+use omuzaki_core::glam::{UVec2, Vec3};
 use omuzaki_render_api::{
-    Capabilities, EnvironmentDesc, EnvironmentId, FrameReport, Image, Material, MaterialId, MeshData, MeshId,
-    MtoonSupport, Painter, Quality, RenderError, Renderer, ResourceRef, ResourceStats, Scene, TargetDesc, TargetId,
-    TextureDesc, TextureId, TextureUsage,
+    Capabilities, EnvironmentDesc, EnvironmentId, FrameReport, Image, Instance, Material, MaterialId, MeshData, MeshId,
+    MeshOptions, MtoonSupport, Painter, Quality, RenderError, Renderer, ResourceRef, ResourceStats, Scene, TargetDesc,
+    TargetId, TextureDesc, TextureId, TextureUsage,
 };
 
 use crate::caps::{self, CapabilityProfile};
@@ -18,6 +18,7 @@ use crate::frame::attachments::Attachments;
 use crate::frame::graph::FrameGraph;
 use crate::frame::{FrameState, FrameView};
 use crate::gpu::{Gpu, HeadlessOptions, scope_errors};
+use crate::morph;
 use crate::paint::{GpuPaintTarget, PaintLog, Staging};
 use crate::pass::{FrameStats, PassCx};
 use crate::program;
@@ -43,6 +44,10 @@ pub struct WgpuRenderer {
     paints: PaintLog,
     /// Pixels staged by the current painter, kept between paints so repainting allocates nothing once warm.
     staging: Staging,
+    /// Makes the next frame lose its morph dispatches and fail its error scope, so a test can check what the morph pool
+    /// does with a frame that never got that far.
+    #[cfg(test)]
+    inject_frame_failure: bool,
 }
 
 impl std::fmt::Debug for WgpuRenderer {
@@ -92,11 +97,13 @@ impl WgpuRenderer {
         // A broken registration (a duplicate name, say) fails creation here rather than at the first draw.
         program::Registry::global()?;
         let device = gpu.device.clone();
-        let (shared, frame, graph) = scope_errors(&device, "the renderer", move || {
+        let (shared, frame, graph, morphs) = scope_errors(&device, "the renderer", move || {
             let shared = Shared::new(gpu);
             let frame = FrameState::new(&shared.gpu.device, &shared.layouts);
             let graph = FrameGraph::new(&shared);
-            Ok((shared, frame, graph))
+            // The morph path is chosen here, once: the GPU's where the device has compute, else the CPU's.
+            let morphs = morph::MorphPool::new(&shared.gpu.device);
+            Ok((shared, frame, graph, morphs))
         })?;
         let capabilities = Capabilities {
             backend: shared.gpu.backend_name.clone(),
@@ -106,20 +113,39 @@ impl WgpuRenderer {
             shading_programs: material::known_programs(),
             gpu_timings: graph.measures_gpu(),
             bit_exact: false,
-            dynamic_meshes: false,
-            morph_targets: false,
-            max_morph_targets: 0,
+            dynamic_meshes: true,
+            morph_targets: true,
+            max_morph_targets: morph::MAX_TARGETS,
             mtoon: MtoonSupport::NONE,
         };
         Ok(Self {
             shared,
             capabilities,
-            resources: Resources::default(),
+            resources: Resources { morphs, ..Resources::default() },
             frame,
             graph,
             paints: PaintLog::default(),
             staging: Staging::default(),
+            #[cfg(test)]
+            inject_frame_failure: false,
         })
+    }
+
+    /// Which path blends morph targets: `"gpu"` (a compute pass, where the device has compute) or `"cpu"`. It is chosen
+    /// when the renderer is created and never changes under a live mesh: there is no fallback mid-session.
+    #[must_use]
+    pub fn morph_path(&self) -> &'static str {
+        self.resources.morphs.path().name()
+    }
+
+    /// Switches morph blending to the CPU path on a device that has compute, so tests can check both paths on one
+    /// adapter. Not part of the renderer's contract.
+    ///
+    /// # Errors
+    /// `Invalid` once a mesh with morph targets has been created.
+    #[doc(hidden)]
+    pub fn force_cpu_morph(&mut self) -> Result<(), RenderError> {
+        self.resources.morphs.force_cpu()
     }
 
     /// The target's output texture: sRGB-encoded RGBA8 at the target's size, valid after a frame has been rendered.
@@ -190,11 +216,68 @@ impl Renderer for WgpuRenderer {
     }
 
     fn create_mesh(&mut self, mesh: &MeshData) -> Result<MeshId, RenderError> {
+        self.create_mesh_with(mesh, &MeshOptions::default())
+    }
+
+    fn create_mesh_with(&mut self, mesh: &MeshData, options: &MeshOptions) -> Result<MeshId, RenderError> {
         mesh.validate()?;
+        if let Some(set) = &options.morphs {
+            set.validate(mesh.positions.len())?;
+            if set.len() > morph::MAX_TARGETS as usize {
+                return Err(RenderError::LimitExceeded { what: "morph targets", limit: u64::from(morph::MAX_TARGETS) });
+            }
+        }
         let gpu = &self.shared.gpu;
-        let uploaded = gpu.scoped("a mesh", || GpuMesh::upload(gpu, mesh))?;
+        // The GPU morph path reads the mesh's own vertices from a compute shader, so only then do they need `STORAGE`.
+        let blend_on_gpu = self.resources.morphs.path() == morph::MorphPath::Gpu;
+        let uploaded = gpu.scoped("a mesh", || GpuMesh::upload(gpu, mesh, options, blend_on_gpu))?;
         let (index, generation) = self.resources.meshes.insert(uploaded);
+        // The GPU morph path uploads the mesh's targets once, here; a mesh it cannot hold is refused outright.
+        let attached = self.resources.meshes.get(index, generation).map_or(Ok(()), |m| {
+            gpu.scoped("morph targets", || self.resources.morphs.attach(&gpu.device, index, generation, m))
+        });
+        if let Err(error) = attached {
+            self.resources.meshes.remove(index, generation);
+            return Err(error);
+        }
         Ok(MeshId::from_parts(index, generation))
+    }
+
+    fn update_vertices(&mut self, mesh: MeshId, positions: &[Vec3], normals: &[Vec3]) -> Result<(), RenderError> {
+        let gpu = &self.shared.gpu;
+        gpu.check_alive()?;
+        let entry = self
+            .resources
+            .meshes
+            .get_mut(mesh.index(), mesh.generation())
+            .ok_or(RenderError::UnknownHandle { what: "mesh" })?;
+        if !entry.is_dynamic() {
+            return Err(RenderError::invalid("vertex update", "the mesh is static; create it with MeshUsage::Dynamic"));
+        }
+        let count = entry.vertex_count();
+        if positions.len() != count || normals.len() != count {
+            let reason =
+                format!("{} positions and {} normals for a mesh of {count} vertices", positions.len(), normals.len());
+            return Err(RenderError::invalid("vertex update", reason));
+        }
+        if positions.iter().chain(normals).any(|v| !v.is_finite()) {
+            return Err(RenderError::invalid("vertex update", "positions and normals must be finite"));
+        }
+        // A dynamic mesh's seams are found once, at creation (`resource/mesh.rs`). Tearing one apart is cheap to spot, so
+        // debug builds refuse it rather than draw an outline that still joins the torn copies.
+        if cfg!(debug_assertions)
+            && let Some(vertex) = entry.split_seam(positions)
+        {
+            let reason = format!(
+                "vertex {vertex} moved away from the vertex it was welded to when the mesh was created; a dynamic mesh's \
+                 seams are fixed at creation"
+            );
+            return Err(RenderError::invalid("vertex update", reason));
+        }
+        gpu.scoped("a vertex update", || {
+            entry.update_vertices(&gpu.queue, positions, normals);
+            Ok(())
+        })
     }
 
     fn create_texture(&mut self, desc: &TextureDesc, rgba: Option<&[u8]>) -> Result<TextureId, RenderError> {
@@ -299,7 +382,12 @@ impl Renderer for WgpuRenderer {
         // The handle dies now. Dropping the wgpu objects frees them once the queue is done with them, which is the
         // deferred release the contract describes: a frame in flight keeps what it uses alive.
         match resource {
-            ResourceRef::Mesh(id) => resources.meshes.remove(id.index(), id.generation()).map(drop).ok_or_else(unknown),
+            ResourceRef::Mesh(id) => {
+                let removed = resources.meshes.remove(id.index(), id.generation()).map(drop).ok_or_else(unknown);
+                // The pooled morph streams sized for the mesh go with it.
+                resources.morphs.forget(id.index(), id.generation());
+                removed
+            }
             ResourceRef::Material(id) => {
                 resources.materials.remove(id.index(), id.generation()).map(drop).ok_or_else(unknown)
             }
@@ -325,6 +413,22 @@ impl Renderer for WgpuRenderer {
         scene.validate()?;
         quality.validate()?;
         let Self { shared, capabilities, resources, frame, graph, paints, .. } = self;
+        // The refresh writes GPU buffers (staging memory can run out), so it sits in an error scope like every other
+        // GPU call: a failure is a `RenderError`, not wgpu's uncaptured-error panic.
+        shared.gpu.scoped("a mesh refresh", || {
+            resources.refresh_dynamic(&shared.gpu.queue, scene);
+            Ok(())
+        })?;
+        let gpu = &shared.gpu;
+        gpu.scoped("a morph blend", || {
+            let Resources { meshes, materials, morphs, .. } = resources;
+            let outlined = |instance: &Instance| {
+                materials
+                    .get(instance.material.index(), instance.material.generation())
+                    .is_some_and(GpuMaterial::draws_outline)
+            };
+            morphs.prepare(&gpu.device, &gpu.queue, meshes, scene, outlined)
+        })?;
         let (scene_resources, targets) = resources.split();
         let entry = targets
             .get_mut(target.index(), target.generation())
@@ -339,8 +443,10 @@ impl Renderer for WgpuRenderer {
         }
         let samples = shared.gpu.samples_for(quality.samples);
 
+        #[cfg(test)]
+        let inject_frame_failure = self.inject_frame_failure;
         let gpu = &shared.gpu;
-        gpu.scoped("a frame", || {
+        let report = gpu.scoped("a frame", || {
             // Everything that can fail on the caller's data happens before the GPU is touched, so on error the target
             // keeps its previous frame.
             frame.prepare(&gpu.device, &gpu.queue, &shared.layouts, scene, scene_resources, internal)?;
@@ -359,6 +465,21 @@ impl Renderer for WgpuRenderer {
             };
             let mut encoder =
                 gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
+            // The GPU morph blend runs first, so every pass that draws a morphed instance reads its finished stream.
+            #[cfg(test)]
+            if inject_frame_failure {
+                // A buffer that cannot exist: the frame's error scope fails, and the dispatches are never recorded.
+                let _ = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("injected scope error"),
+                    size: 4,
+                    usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::VERTEX,
+                    mapped_at_creation: false,
+                });
+            } else {
+                scene_resources.morphs.record(&mut encoder);
+            }
+            #[cfg(not(test))]
+            scene_resources.morphs.record(&mut encoder);
             let mut cx = PassCx {
                 shared,
                 resources: scene_resources,
@@ -389,7 +510,11 @@ impl Renderer for WgpuRenderer {
                 draw_calls: stats.draw_calls,
                 triangles: stats.triangles,
             })
-        })
+        })?;
+        // Only now, with the frame's error scopes passed, were its morph dispatches done: a scope that fails turns the
+        // submit into an error, and the next frame must queue them again.
+        scene_resources.morphs.submitted();
+        Ok(report)
     }
 
     fn read_target(&mut self, target: TargetId) -> Result<Image, RenderError> {
@@ -425,6 +550,46 @@ mod tests {
         assert_eq!(internal_size(UVec2::new(1, 1), 0.25), UVec2::ONE, "a one-pixel target still renders one pixel");
     }
 
+    /// A frame that fails its error scope after the morph blend was prepared never ran the blend, so the next frame with
+    /// the same weights must queue it again, whichever path blends.
+    #[test]
+    fn a_frame_whose_error_scope_fails_does_not_make_the_next_one_skip_its_morph_blend() {
+        use omuzaki_core::glam::{Mat4, Vec2, Vec3};
+        use omuzaki_core::id::Slug;
+        use omuzaki_render_api::{Background, MeshOptions, MorphRange, MorphSet, Projection, RendererExt, Tonemap};
+
+        let mut r = renderer();
+        let quad = omuzaki_render_mock::shapes::quad(Vec2::splat(0.25));
+        let slide = vec![Vec3::new(0.5, 0.0, 0.0); quad.positions.len()];
+        let set =
+            MorphSet::from_dense(quad.positions.len(), &[(Slug::new("slide").unwrap(), &slide, &[])], 0.0).unwrap();
+        let mesh = r.create_mesh_with(&quad, &MeshOptions { morphs: Some(set), ..MeshOptions::default() }).unwrap();
+        let material = r.create_material(&Material::unlit(Colour::WHITE)).unwrap();
+        let target = r.create_target(&TargetDesc { size: UVec2::splat(64), alpha: AlphaEncoding::Straight }).unwrap();
+        let camera = Camera::look_at(
+            Vec3::new(0.0, 0.0, 5.0),
+            Vec3::ZERO,
+            Vec3::Y,
+            Projection::Orthographic { height: 2.0, near: 0.1, far: 20.0 },
+        );
+        let mut scene = Scene::new(camera);
+        scene.background = Background::Solid { colour: Colour::BLACK };
+        scene.post.tonemap = Tonemap::None;
+        let mut instance = Instance::new(mesh, material, Mat4::IDENTITY);
+        instance.morph = Some(MorphRange { start: 0, len: 1 });
+        scene.instances.push(instance);
+        scene.morph_weights.push(0.5);
+        let quality = Quality { samples: 1, render_scale: 1.0, post_effects: false, ..Quality::offline() };
+
+        r.inject_frame_failure = true;
+        assert!(r.render(target, &scene, &quality).is_err(), "the injected scope error fails the frame");
+        r.inject_frame_failure = false;
+        // The quad slides half way: it covers columns 32 to 47 of the middle row.
+        let image = r.render_image(UVec2::splat(64), AlphaEncoding::Straight, &scene, &quality).unwrap();
+        assert_eq!(image.pixel(40, 32).map(|p| p[0]), Some(255), "the blend ran: the quad is where the weight puts it");
+        assert_eq!(image.pixel(28, 32).map(|p| p[0]), Some(0), "and not where the base mesh is");
+    }
+
     #[test]
     fn a_lost_device_is_device_lost_for_every_call_and_never_a_panic() {
         let mut r = renderer();
@@ -444,5 +609,26 @@ mod tests {
             Err(RenderError::DeviceLost)
         );
         assert_eq!(r.read_target(target).unwrap_err(), RenderError::DeviceLost);
+    }
+
+    #[test]
+    fn refreshing_a_dynamic_mesh_on_a_lost_device_is_device_lost_and_never_a_panic() {
+        use omuzaki_render_api::{MeshOptions, MeshUsage, Outline};
+        let mut r = renderer();
+        let quad = omuzaki_render_mock::shapes::quad(omuzaki_core::glam::Vec2::ONE);
+        let mesh = r.create_mesh_with(&quad, &MeshOptions { usage: MeshUsage::Dynamic, morphs: None }).unwrap();
+        let mut outlined = Material::unlit(Colour::WHITE);
+        outlined.outline = Some(Outline { colour: Colour::BLACK, width: 0.01 });
+        let material = r.create_material(&outlined).unwrap();
+        let target = r.create_target(&TargetDesc { size: UVec2::splat(8), alpha: AlphaEncoding::Straight }).unwrap();
+        // A stale mesh, so the next frame has an outline buffer to write before it draws anything.
+        r.update_vertices(mesh, &quad.positions, &quad.normals).unwrap();
+
+        r.shared.gpu.device.destroy();
+        r.wait_idle().unwrap();
+
+        let mut scene = Scene::new(Camera::default());
+        scene.instances.push(Instance::new(mesh, material, omuzaki_core::glam::Mat4::IDENTITY));
+        assert_eq!(r.render(target, &scene, &Quality::live()).unwrap_err(), RenderError::DeviceLost);
     }
 }

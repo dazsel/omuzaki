@@ -1,0 +1,7 @@
+section = "rust"
+item = "reqwest (no TLS, dev only)"
+kind = "crate"
+used_for = "HTTP client in the MCP HTTP tests (rmcp's client transport and raw requests); not in any shipped build"
+status = "yes"
+audit = "(crates.io: MIT OR Apache-2.0)"
+crates = ["reqwest"]

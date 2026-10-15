@@ -9,9 +9,14 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+base64.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 omuzaki-http-api = { path = "../omuzaki-http-api" }
 
 [lints]
 workspace = true
+
+[package.metadata.omuzaki]
+kind = "Mock"
+summary = "the scripted HTTP transport (connectors D13): `FakeHttp` answers from routes (`Reply`: response, error, hang or stream of `Chunk`s) and hand-written cassettes, logs every call, and never opens a socket or sleeps; the one fake every HTTP caller tests against"

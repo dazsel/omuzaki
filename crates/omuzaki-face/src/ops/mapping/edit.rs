@@ -8,9 +8,9 @@ use omuzaki_face_api::{FaceProfile, PaintParams};
 use omuzaki_ops_api::{OpCtx, OpError, Plan};
 use serde_json::{Map, Number, Value, json};
 
-use crate::ops::shared::check::check_edit;
-use crate::ops::shared::edit::{changed, diff, effective, first_null, put, stored_face};
-use crate::ops::shared::path::{canonical, chain, template};
+use crate::ops_shared::check::check_edit;
+use crate::ops_shared::edit::{changed, diff, effective, first_null, put, stored_face};
+use crate::ops_shared::path::{canonical, chain, template};
 
 /// The keys below the face that a mapping path names, with `mapping` first: `face/mapping/eyes/wide` gives
 /// `["mapping", "eyes", "wide"]`. The leading `face/` and `mapping/` may be left out.

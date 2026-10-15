@@ -1,3 +1,9 @@
+---
+title: "Settings: the registry, the store, profiles, session restore and release notes"
+summary: "the registry, the store, profiles, session restore and release notes"
+area: design
+---
+
 # Settings: the registry, the store, profiles, session restore and release notes
 
 **Status:** maintainer answers folded in (§9); awaiting acceptance. **Feature:** SE-10. **Decision record:** `docs/decisions/0026-settings.md`.
@@ -166,7 +172,7 @@ register_setting!(UiScale);
 Ops are pure functions of a *document* and return a `Patch` (`ops-api` lib docs). Settings are not in the document, and must not be: the journal, undo, branches (ADR 0025) and recovery replay would then capture and replay one person's taste inside a project another person opens. The precedent for state outside the document is the audio machine profile and the library (`Undo::Explicit` plus a service). So:
 
 - `omuzaki-settings-api` defines the service trait `Settings` (§5). `omuzaki-settings` implements it; the app wires it with `ServicesBuilder::insert::<dyn Settings>`; ops reach it with `ctx.service::<dyn Settings>()?`. A missing service is `Unavailable` (ops-api rule 4).
-- The `settings.*` ops are edits with `Undo::Explicit` and an empty patch. They call the service only when `!ctx.dry_run` (ops-api rule 6); a dry-run still validates and returns `before` and `after`.
+- The `settings.*` ops are edits with `Undo::Explicit` and an empty patch. They pass `Mode::DryRun` when `ctx.dry_run` is set and `Mode::Apply` otherwise (ops-api rule 6), and the service does the rest: under `DryRun` it runs the same validation and returns the same `Change`, `Option<Change>`, `ProfileInfo` or report as an apply, but writes nothing, swaps no snapshot, records nothing and emits no event. The ops do not work `before` and `after` out for themselves, because a reset's `after` can be a base value that `resolve` cannot see under a profile override. Every mutating method also takes the `Actor`, so a deleted active profile's side effect is attributed to the person who asked.
 - **No history.** A settings change is not an undo step (Ctrl+Z does not flip your theme while you edit a character). Each row has "reset to default"; the service keeps the last 200 changes in memory (`SettingChange { key, before, after, actor, at }`, read by `settings.changes`), which is how the UI shows "changed by an agent 2 min ago" (the violet marker of `shell.md` §7).
 - **Who may write what.**
   - A new scope `edit:settings` (`Scope::EditSettings`) is needed by `settings.set`, `settings.reset` and `settings.profile.*`. It joins `Grants::agent_default()` (spec §6: agents get `read`, `edit:*`, `render`), because the key's own `AgentWrite` is the real gate:
@@ -204,7 +210,7 @@ Ops are pure functions of a *document* and return a `Patch` (`ops-api` lib docs)
 - **Reads.** Loaded once at start. For each registered key present: deserialise into `Value`, run `check`. A value that fails is **not** deleted: the file keeps it, the key reads as its default, and a `SettingFinding` ("`ui.scale = 900` is out of range 75 to 200; using 100") goes to the log and the Settings page. A file that does not parse as TOML is renamed `settings.toml.broken-<utc>`, the defaults are used, and the person is told once. Nothing blocks start.
 - **Writes.** On a change the store marks the key dirty and a writer thread, 250 ms later (at most every 2 s under a burst, like the journal keeper), takes an **OS file lock** (advisory exclusive lock on a sibling `settings.toml.lock`, `flock`/`LockFileEx`, released on process death), and holds it across **re-read, merge of this process's dirty keys, and atomic replace**, so two processes can never both merge from the same old text and lose one update. The lock file is never the data file and is never deleted. The writer owns the temp file: a hidden `.settings.toml.<pid>.tmp` created under the lock with `create_new`, `sync_all`, `rename` over the target (the pattern of `omuzaki_doc::disk::write_atomic`, which moves into `omuzaki-core`; it gains a variant that takes the lock). A stale temp of a dead process is removed by the next lock holder. Lock wait is bounded (2 s, then keep the keys dirty and report); a lock that cannot be created (read-only dir) is reported, not ignored. Last writer wins per key, not per file. A clean exit flushes. Windows: a rename over a file another process holds open retries three times over 100 ms, then keeps the key dirty and reports.
 - **Per-key migrations.** `SettingMeta::version` is the key's current shape. The file has a `[versions]` table that lists only keys whose stored version is above 1 (absent means 1). On load, a key stored at an older version goes through `Setting::migrate(from, old)` once, in memory; the first write after a migration first copies the file to `settings.toml.bak-<app version>` (once per app version). A key stored at a **newer** version than the build knows is kept verbatim and reads as the default (never migrated down, never overwritten by a default). A renamed key lists `RENAMED_FROM`; on load the old key's value is moved to the new key unless the new key exists. Why per key and not one file version like `omuzaki-doc`: features ship and change independently, and a migration for `audio.bindings` must not need to know `ui.scale`.
-- **Why no file watcher in v1:** the app is the writer; hand edits are read at the next start. `settings.reload` (person) re-reads both files and emits one `Reloaded` event.
+- **Why no file watcher in v1:** the app is the writer; hand edits are read at the next start. `settings.reload` (person) calls `Settings::reload`, which re-reads both files and applies the difference as one snapshot swap and one `Reloaded` event (none when nothing differs); a file that cannot be read changes nothing.
 
 ### D6. Reading is cheap, and consumers react to events
 
@@ -275,7 +281,7 @@ pub struct WindowGeometry { pub x: i32, pub y: i32, pub w: u32, pub h: u32, pub 
 - **Remembered:** the last project; a recent list (File > Open Recent); window position and size per window id (main, mascot, each pop-out) with the monitor's name; the last version seen. The **workspace** stays in `project.toml` (`shell.md` §17: "last workspace"), so it reopens with the project on any computer; panel layouts per workspace stay in the config dir. Nothing is duplicated.
 - **Never restored:** anything that starts capture or output. Opening a project does not start the camera, the microphone, a stream, a recording, the virtual camera, an agent session or a paid job (SE-04: no capture the person did not start). The Welcome and Perform screens show the usual "Start" button.
 - **Windows.** A saved geometry is used only if it intersects a connected monitor by at least 120 by 80 points; otherwise the window opens centred on the primary monitor at its default size. Size is clamped to the work area.
-- **The `opening` marker is durable before the load starts.** `begin_open` writes `session.toml` synchronously (`write_atomic` with fsync, under the same lock as D5), returns the error if it fails, and the caller does not start loading when it fails (it opens the Welcome screen with the reason). Only the other session writes (recent, geometry) are debounced; `opened` clears the marker the same way. A crash between `begin_open` and the debounce interval therefore still leaves the marker.
+- **The `opening` marker is durable before the load starts.** `begin_open` writes `session.toml` synchronously (`write_atomic` with fsync, under the same lock as D5), returns the error if it fails, and the caller does not start loading when it fails (it opens the Welcome screen with the reason). Only the other session writes (recent, geometry) are debounced; `opened` clears the marker the same way and returns its error too (the project stays open; the caller reports it, and a stale marker is the worst case). A failed debounced write is logged and retried, and `flush` at exit reports it. A crash between `begin_open` and the debounce interval therefore still leaves the marker.
 - **Opt-out.** `startup.reopen` is a User setting, `last` (default) / `ask` (the Welcome screen offers "Reopen <name>") / `welcome` (nothing reopened). `session.recent` and `session.forget { path }` clear entries; "Clear recent" empties the list.
 - **What wins when both exist (VC-08).** Recovery always wins over the opt-out, because losing work is worse than an extra click. Order at start, as a pure function `startup_plan(session, settings, recovery_pending: &[PathBuf]) -> StartupPlan`:
   1. A project in `recent` (or `last_project`) whose folder has an unclean-shutdown marker (ADR 0021: a journal with no `close` record) goes to **Recover**: the recovery offer (restore to the last transaction, or open the files as they are) is shown first. With `ask` or `welcome`, the same offer appears on the Welcome screen as a card. Several crashed projects are listed, newest first. After the choice, that project opens and becomes `last_project`.
@@ -405,15 +411,20 @@ pub trait Settings: Send + Sync {
     fn snapshot(&self) -> Arc<Snapshot>;
     fn get(&self, key: &str) -> Result<Resolved, SettingError>;
     fn list(&self, filter: &ListFilter) -> Vec<Resolved>;
+    /// Every method that can change values, profiles or the log takes the ops layer's `Mode` and the `Actor`.
+    /// `Mode::DryRun` runs the same validation and returns the same value as `Apply`, and writes, swaps and emits nothing.
     /// Validates (schema, `check`, `Apply`), then updates the active profile or the base. One event.
-    fn set(&self, key: &str, value: Value, layer: Layer, by: &Actor) -> Result<Change, SettingError>;
-    fn reset(&self, key: &str, layer: Layer, by: &Actor) -> Result<Option<Change>, SettingError>;
+    fn set_raw(&self, key: &str, value: Value, layer: Layer, mode: Mode, by: &Actor) -> Result<Change, SettingError>;
+    fn reset(&self, key: &str, layer: Layer, mode: Mode, by: &Actor) -> Result<Option<Change>, SettingError>;
     fn profiles(&self) -> Vec<ProfileInfo>;
-    fn save_profile(&self, name: &str, from: ProfileSource, overwrite: bool, by: &Actor) -> Result<ProfileInfo, SettingError>;
-    fn rename_profile(&self, id: &ProfileId, name: &str) -> Result<ProfileInfo, SettingError>;
-    fn delete_profile(&self, id: &ProfileId) -> Result<(), SettingError>;
+    fn save_profile(&self, name: &str, from: ProfileSource, overwrite: bool, mode: Mode, by: &Actor) -> Result<ProfileInfo, SettingError>;
+    fn rename_profile(&self, id: &ProfileId, name: &str, mode: Mode, by: &Actor) -> Result<ProfileInfo, SettingError>;
+    /// Deleting the active profile switches to none in the same step; the report says what that changed.
+    fn delete_profile(&self, id: &ProfileId, mode: Mode, by: &Actor) -> Result<SwitchReport, SettingError>;
     /// Atomic: one snapshot swap, one event.
-    fn switch_profile(&self, to: Option<&ProfileId>, by: &Actor) -> Result<SwitchReport, SettingError>;
+    fn switch_profile(&self, to: Option<&ProfileId>, mode: Mode, by: &Actor) -> Result<SwitchReport, SettingError>;
+    /// Re-reads the files; atomic like a switch, with `ChangeCause::Reloaded`.
+    fn reload(&self, mode: Mode, by: &Actor) -> Result<SwitchReport, SettingError>;
     fn changes(&self, limit: usize) -> Vec<SettingChange>;
     fn subscribe(&self) -> Subscription<SettingsEvent>;
     fn session(&self) -> &dyn SessionStore;
@@ -425,15 +436,17 @@ pub enum Layer { Auto, Base }
 pub struct Change { pub key: String, pub before: Value, pub after: Value, pub apply: Apply }
 pub struct SettingsEvent { pub cause: ChangeCause, pub changes: Vec<Change> }
 pub enum ChangeCause { Set, Reset, ProfileSwitched { from: Option<ProfileId>, to: Option<ProfileId> }, Reloaded, Migrated }
-pub struct SwitchReport { pub changed: u32, pub pending_restart: Vec<String> }
+pub struct SwitchReport { pub changed: u32, pub pending_restart: Vec<String> } // also returned by delete_profile and reload
 
 pub trait SessionStore: Send + Sync {
     fn state(&self) -> SessionState;
     fn begin_open(&self, project: &Path) -> Result<(), SettingError>; // writes and fsyncs `opening` NOW, never debounced
-    fn opened(&self, project: &Path, name: &str);  // clears `opening`, updates last_project and recent
+    fn opened(&self, project: &Path, name: &str) -> Result<(), SettingError>; // clears `opening` durably NOW, updates last_project and recent
+    // Debounced: cannot fail the caller; a failed write is logged, retried, and reported by `flush`.
     fn forget(&self, project: &Path);
     fn set_window(&self, id: &str, geometry: WindowGeometry);
     fn mark_version_seen(&self, version: &str);
+    fn flush(&self) -> Result<(), SettingError>; // writes anything debounced now (at exit)
 }
 ```
 

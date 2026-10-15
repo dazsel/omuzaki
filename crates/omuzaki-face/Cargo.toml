@@ -18,6 +18,8 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 toml.workspace = true
+vello.workspace = true
+wgpu.workspace = true
 omuzaki-anim-api = { path = "../omuzaki-anim-api" }
 omuzaki-char-api = { path = "../omuzaki-char-api" }
 omuzaki-core = { path = "../omuzaki-core" }
@@ -33,6 +35,7 @@ criterion.workspace = true
 # The oracle the stroker's tests compare with (the port of Skia's stroker this one is a port of); tests only.
 tiny-skia.workspace = true
 proptest.workspace = true
+pollster.workspace = true
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 omuzaki-face-mock = { path = "../omuzaki-face-mock" }
 omuzaki-render-mock = { path = "../omuzaki-render-mock" }
@@ -55,6 +58,13 @@ harness = false
 name = "mouth_shape"
 harness = false
 
+[[bench]]
+name = "mouth_interior"
+harness = false
+
+[build-dependencies]
+omuzaki-embed = { path = "../omuzaki-embed" }
+
 [lints]
 workspace = true
 
@@ -62,3 +72,9 @@ workspace = true
 [[bench]]
 name = "painter_eyes"
 harness = false
+
+[package.metadata.omuzaki]
+kind = "Implementation"
+generated-mods = ["src/ops"]
+summary = "the procedural face (spec v3 §19, CB-20..25): turns the channel bus into painted face layers, on the contracts of `omuzaki-face-api` (what the face does) and `omuzaki-render-api` (where the pixels go)"
+registers = true

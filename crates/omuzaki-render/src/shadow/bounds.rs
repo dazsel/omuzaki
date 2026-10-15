@@ -5,12 +5,14 @@
 //! union over joints of each joint's box moved by that joint's matrix therefore holds the whole posed mesh, without
 //! touching a vertex at frame time.
 
-use omuzaki_core::glam::Mat4;
+use omuzaki_core::glam::{Mat4, Vec3};
 use omuzaki_render_api::MeshData;
 
 use super::fit::Aabb;
+use crate::resource::mesh::{Shape, Surface};
 
 /// A mesh's boxes in its own (bind-pose) space.
+#[derive(Clone)]
 pub(crate) struct MeshBounds {
     /// Every vertex.
     whole: Aabb,
@@ -19,6 +21,28 @@ pub(crate) struct MeshBounds {
 }
 
 impl MeshBounds {
+    /// No boxes yet: the starting point of a box that is only ever [`refit`](Self::refit).
+    pub(crate) fn empty() -> Self {
+        Self { whole: Aabb::EMPTY, joints: Vec::new() }
+    }
+
+    /// Overwrites `self` with `base`'s boxes grown by `down` below and `up` above on each axis: the conservative bounds
+    /// of an instance whose vertices may each have moved by up to that much from where `base` has them. Allocates only
+    /// if the joint count grew.
+    pub(crate) fn set_grown(&mut self, base: &Self, down: Vec3, up: Vec3) {
+        self.whole = Aabb { min: base.whole.min - down, max: base.whole.max + up };
+        self.joints.clear();
+        self.joints.extend(base.joints.iter().map(|b| Aabb { min: b.min - down, max: b.max + up }));
+    }
+
+    /// Overwrites `self` with `base`'s boxes moved by `by`: where a morph that translates the mesh puts them (exact for a
+    /// rigid translation, a good centre otherwise). Allocates only if the joint count grew.
+    pub(crate) fn set_shifted(&mut self, base: &Self, by: Vec3) {
+        self.whole = Aabb { min: base.whole.min + by, max: base.whole.max + by };
+        self.joints.clear();
+        self.joints.extend(base.joints.iter().map(|b| Aabb { min: b.min + by, max: b.max + by }));
+    }
+
     /// The boxes of `mesh`, whose joint count (one past the highest weighted joint) is `joints_needed`.
     pub(crate) fn of(mesh: &MeshData, joints_needed: u32) -> Self {
         let mut whole = Aabb::EMPTY;
@@ -36,6 +60,27 @@ impl MeshBounds {
             }
         }
         Self { whole, joints }
+    }
+
+    /// Recomputes the boxes from a mesh's `shapes` (after its vertices moved, or an instance's morphed copy) and its
+    /// `skin` data (empty for a rigid mesh), for `joints_needed` joints. Allocates only if the joint count grew.
+    pub(crate) fn refit(&mut self, joints_needed: u32, shapes: &[Shape], skin: &[Surface]) {
+        self.whole = Aabb::EMPTY;
+        for shape in shapes {
+            self.whole.include(Vec3::from(shape.position));
+        }
+        self.joints.clear();
+        self.joints.resize(joints_needed as usize, Aabb::EMPTY);
+        for (shape, skin) in shapes.iter().zip(skin) {
+            let p = Vec3::from(shape.position);
+            for (&id, &weight) in skin.joints.iter().zip(&skin.weights) {
+                if weight != 0.0
+                    && let Some(bounds) = self.joints.get_mut(usize::from(id))
+                {
+                    bounds.include(p);
+                }
+            }
+        }
     }
 
     /// The world-space box of an instance with model matrix `model`, posed by `palette` (the skin matrices of its joint

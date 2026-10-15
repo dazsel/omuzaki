@@ -7,6 +7,7 @@ rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
 repository.workspace = true
+build = "build.rs"
 
 # Every dependency the crate will need is declared here, so later work does not have to edit this file. A change that needs one that is missing adds it.
 [dependencies]
@@ -23,6 +24,7 @@ toml.workspace = true
 tracing.workspace = true
 unicode-bidi.workspace = true
 unicode-normalization.workspace = true
+omuzaki-ai-api = { path = "../omuzaki-ai-api" }
 omuzaki-anim-api = { path = "../omuzaki-anim-api" }
 omuzaki-char-api = { path = "../omuzaki-char-api" }
 omuzaki-core = { path = "../omuzaki-core" }
@@ -33,6 +35,7 @@ omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-render-api = { path = "../omuzaki-render-api" }
 omuzaki-stage-api = { path = "../omuzaki-stage-api" }
 omuzaki-store-api = { path = "../omuzaki-store-api" }
+omuzaki-track-api = { path = "../omuzaki-track-api" }
 # Linked for their self-registrations (part kinds, retargets, ...) and for the rig, which the frame loop calls directly.
 omuzaki-anim = { path = "../omuzaki-anim" }
 omuzaki-char = { path = "../omuzaki-char" }
@@ -44,18 +47,27 @@ omuzaki-render = { path = "../omuzaki-render", optional = true }
 [features]
 # The wgpu renderer. The stage is written against `dyn Renderer`, so nothing here needs it; the feature links the
 # `omuzaki-render` backend. Tests use the render mock.
-wgpu = ["dep:omuzaki-render"]
+wgpu = ["omuzaki-render"]
+
+# The build script declares the feature modules from their folders (ADR 0054 §1) and writes the `link()` calls from the
+# dependencies' `registers` flags (§6).
+[build-dependencies]
+omuzaki-embed = { path = "../omuzaki-embed" }
+omuzaki-link-build = { path = "../omuzaki-link-build" }
 
 [dev-dependencies]
 criterion.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
+omuzaki-ai = { path = "../omuzaki-ai" }
+omuzaki-ai-mock = { path = "../omuzaki-ai-mock" }
 omuzaki-anim-mock = { path = "../omuzaki-anim-mock" }
 omuzaki-char-mock = { path = "../omuzaki-char-mock" }
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 omuzaki-face-mock = { path = "../omuzaki-face-mock" }
 omuzaki-render-mock = { path = "../omuzaki-render-mock" }
 omuzaki-store-mock = { path = "../omuzaki-store-mock" }
+omuzaki-track-mock = { path = "../omuzaki-track-mock" }
 # The registration scan behind the link gate (`tests/registrations.rs`, ADR 0015).
 xtask = { path = "../../xtask" }
 
@@ -75,3 +87,9 @@ harness = false
 
 [lints]
 workspace = true
+
+[package.metadata.omuzaki]
+kind = "App"
+generated-mods = ["src", "src/ops"]
+summary = "not in the workspace yet: the character stage, which uploads a `BuiltCharacter` to the renderer and runs the rig, the runtimes and the face painter each frame. It is wiring, not an API+impl pair, because the UI, the CLI, the web player and the golden runner all link the same wiring"
+registers = true

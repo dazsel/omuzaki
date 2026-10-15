@@ -3,6 +3,9 @@
 //! Cassettes are written by hand from a vendor's public API documentation, never recorded, and they hold no keys,
 //! accounts or private material. Every problem is reported with the index of the route it is in.
 
+use base64::alphabet;
+use base64::engine::general_purpose::{GeneralPurpose, GeneralPurposeConfig};
+use base64::{DecodeError, Engine as _};
 use omuzaki_http_api::{HttpResponse, Method};
 use serde_json::{Map, Value};
 
@@ -154,76 +157,77 @@ fn text_value<'a>(value: &'a Value, what: &str) -> Result<&'a str, String> {
     value.as_str().ok_or_else(|| format!("{what} must be a string"))
 }
 
-/// Decodes standard base64 (RFC 4648 alphabet, `=` padding, length a multiple of four). Written here so the crate
-/// needs no dependency for it.
-pub(crate) fn decode_base64(text: &str) -> Result<Vec<u8>, String> {
-    let bytes = text.as_bytes();
-    if !bytes.len().is_multiple_of(4) {
-        return Err(format!("its length {} is not a multiple of 4", bytes.len()));
-    }
-    let (blocks, _) = bytes.as_chunks::<4>();
-    let mut out = Vec::with_capacity(blocks.len() * 3);
-    for (block_index, block) in blocks.iter().enumerate() {
-        let padding = block.iter().rev().take_while(|&&b| b == b'=').count();
-        let is_last = block_index + 1 == blocks.len();
-        if padding > 2 || (padding > 0 && !is_last) {
-            return Err("'=' may only pad the final four characters, at most twice".to_owned());
-        }
-        // The data characters pack into one 24-bit group. Padding contributes zero bits, so the group is shifted up as
-        // if the missing characters were there, and its top byte is dropped below.
-        let data_len = 4 - padding;
-        let mut group = 0_u32;
-        for &c in &block[..data_len] {
-            let value = sextet(c).ok_or_else(|| format!("{:?} is not a base64 character", char::from(c)))?;
-            group = (group << 6) | value;
-        }
-        for _ in 0..padding {
-            group <<= 6;
-        }
-        // The group sits in the low three bytes; the byte before them is zero, and so are the bytes padding left.
-        out.extend_from_slice(&group.to_be_bytes()[1..data_len]);
-    }
-    Ok(out)
-}
+/// Standard base64 with canonical padding. It also accepts non-zero bits left over after the last character (`"Zh=="`
+/// decodes to `f`), as the hand-written decoder it replaced did; the crate's `STANDARD` engine refuses those.
+const DECODER: GeneralPurpose =
+    GeneralPurpose::new(&alphabet::STANDARD, GeneralPurposeConfig::new().with_decode_allow_trailing_bits(true));
 
-/// The 6-bit value of one base64 character, or `None` for a character outside the alphabet.
-fn sextet(c: u8) -> Option<u32> {
-    match c {
-        b'A'..=b'Z' => Some(u32::from(c - b'A')),
-        b'a'..=b'z' => Some(u32::from(c - b'a') + 26),
-        b'0'..=b'9' => Some(u32::from(c - b'0') + 52),
-        b'+' => Some(62),
-        b'/' => Some(63),
-        _ => None,
-    }
+/// Decodes a cassette's base64 text, or says why it is not base64.
+pub(crate) fn decode_base64(text: &str) -> Result<Vec<u8>, DecodeError> {
+    DECODER.decode(text)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::decode_base64;
+    use std::io::Read;
+    use std::sync::Arc;
 
-    #[test]
-    fn decodes_the_rfc_4648_vectors() {
-        let cases = [
-            ("", ""),
-            ("Zg==", "f"),
-            ("Zm8=", "fo"),
-            ("Zm9v", "foo"),
-            ("Zm9vYg==", "foob"),
-            ("Zm9vYmE=", "fooba"),
-            ("Zm9vYmFy", "foobar"),
-            ("AAECAw==", "\u{0}\u{1}\u{2}\u{3}"),
-        ];
-        for (text, expected) in cases {
-            let decoded = decode_base64(text).unwrap_or_else(|why| panic!("{text:?} should decode: {why}"));
-            assert_eq!(decoded, expected.as_bytes(), "{text:?}");
-        }
+    use base64::DecodeError;
+    use omuzaki_http_api::{HttpBody, HttpRequest, HttpTransport, Method, NeverCancel};
+
+    use super::decode_base64;
+    use crate::{CassetteError, FakeHttp};
+
+    /// Loads a one-route cassette whose only reply is `reply`, and returns the body that reply serves.
+    fn served_body(reply: &str) -> Vec<u8> {
+        let json =
+            format!(r#"{{"routes":[{{"method":"GET","url":"https://api.example.com/a","replies":[{reply}]}}]}}"#);
+        let fake = FakeHttp::cassette(&json).expect("the cassette parses");
+        let request = HttpRequest {
+            method: Method::Get,
+            url: "https://api.example.com/a".to_owned(),
+            headers: vec![],
+            body: HttpBody::Empty,
+            timeout_s: 5,
+            max_response: 1_000,
+        };
+        let mut body = fake.open(&request, Arc::new(NeverCancel)).expect("opened").body;
+        let mut out = Vec::new();
+        body.read_to_end(&mut out).expect("the body reads");
+        out
     }
 
     #[test]
-    fn rejects_bad_base64() {
-        for text in ["Zm9", "Zm9*", "Z===", "Zg=x", "Zg==Zg=="] {
-            assert!(decode_base64(text).is_err(), "{text:?} should be rejected");
+    fn a_base64_body_serves_its_bytes() {
+        assert_eq!(served_body(r#"{"status":200,"body_base64":"Zm9vYmFy"}"#), b"foobar");
+        assert_eq!(served_body(r#"{"status":200,"body_base64":"AAEC/w=="}"#), [0, 1, 2, 255]);
+    }
+
+    #[test]
+    fn non_zero_trailing_bits_are_still_accepted() {
+        assert_eq!(served_body(r#"{"status":200,"body_base64":"Zh=="}"#), b"f");
+        assert_eq!(served_body(r#"{"status":200,"chunks":[{"base64":"Zh=="}]}"#), b"f");
+    }
+
+    #[test]
+    fn bad_base64_is_refused_with_the_crate_error() {
+        // The crate's own error values: an invalid symbol names its offset, and a missing pad is `InvalidPadding`.
+        assert_eq!(decode_base64("Zm9*"), Err(DecodeError::InvalidByte(3, b'*')));
+        assert_eq!(decode_base64("Zm9"), Err(DecodeError::InvalidPadding));
+    }
+
+    #[test]
+    fn bad_base64_is_refused_with_its_reason() {
+        for bad in ["Zm9*", "Zm9", "Z===", "Zg=x", "Zg==Zg=="] {
+            let json = format!(
+                r#"{{"routes":[{{"method":"GET","url":"https://api.example.com/a","replies":[{{"status":200,"body_base64":"{bad}"}}]}}]}}"#
+            );
+            match FakeHttp::cassette(&json) {
+                Err(CassetteError::Route { index: 0, problem }) => {
+                    assert!(problem.contains("\"body_base64\" is not valid base64: "), "{problem:?}");
+                }
+                other => panic!("{bad:?} should be refused as a route error, got {other:?}"),
+            }
         }
     }
 }

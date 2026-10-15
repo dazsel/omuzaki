@@ -1,0 +1,6 @@
+section = "models"
+item = "git2 crate, libgit2"
+kind = "code"
+used_for = "not used; evaluated as the git access layer (ADR 0045)"
+status = "conditions"
+condition = "`git2` is `MIT OR Apache-2.0` (git2-rs README); libgit2 is GPL-2.0-only with a linking exception that permits linking into other programs (`COPYING`, read 2026-10-13; the exception text was summarised, not read in full); would need the notice and a source offer for libgit2 if ever adopted"

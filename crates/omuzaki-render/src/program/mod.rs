@@ -128,6 +128,8 @@ inventory::collect!(ProgramSpec);
 macro_rules! register_shading_program {
     ($spec:expr) => {
         ::inventory::submit! { $spec }
+        // The link gate (ADR 0015) compares this record with the registration the scan reads from the source.
+        ::omuzaki_core::__record_registration!("shading_program", $spec);
     };
 }
 use register_shading_program;

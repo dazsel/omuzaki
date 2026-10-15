@@ -24,3 +24,7 @@ harness = false
 
 [lints]
 workspace = true
+
+[package.metadata.omuzaki]
+kind = "Mock"
+summary = "deterministic recorded-track replay, stand-in retarget, life layer and animator, fixtures (a humanoid with hair, a quadruped and a blob), and a wired `MockPerformer`"

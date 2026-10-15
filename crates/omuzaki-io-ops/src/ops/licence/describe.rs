@@ -9,7 +9,7 @@
 //! - **Every purpose:** a record exists and reads; it does not contradict itself; private test material is flagged.
 //! - **Any purpose but `private`** (today `publish`): the licence gate passes, a part that is private test material
 //!   fails it even if the record forgot the flag, every part has a recorded source, and the record grants no more than
-//!   the parts allow. For `private` these are warnings, except the private-test flag, which is an error in both.
+//!   the parts and application records allow. For `private` these are warnings, except the private-test flag, which is an error in both.
 //! - **A VRM file** also needs authors and the licence URL; those are warnings here (`ok_for_vrm` counts them), because
 //!   a plain glTF does not.
 
@@ -54,7 +54,7 @@ pub struct LicenceDescription {
     pub ok: bool,
     /// True when `ok` and a VRM file would not be missing its authors or licence URL either.
     pub ok_for_vrm: bool,
-    /// What the parts allow (`licence.derive` has the record itself).
+    /// What the parts and application records allow (`licence.derive` has the record itself).
     pub derived: DerivedSummary,
     /// The findings, errors first.
     pub report: Report,
@@ -94,7 +94,7 @@ impl LicenceDescribe {
             && record.provenance.author.as_deref().is_none_or(|a| a.trim().is_empty())
         {
             let msg = "a VRM file needs at least one author, and the record names none";
-            let hint = "set provenance.author or the meta authors; `licence.derive` unions the parts' authors";
+            let hint = "set provenance.author or the meta authors; `licence.derive` unions the authors of the parts and application records";
             report
                 .push(Finding::warning("vrm.meta_authors_missing", msg).at(format!("{base}/meta/authors")).hint(hint));
         }
@@ -136,7 +136,7 @@ impl Op for LicenceDescribe {
             Ok(Some(record)) => Some(record),
             Ok(None) => {
                 let hint = "run licence.derive and store its record with licence.set; rights are never guessed from \
-                            the parts";
+                            the parts or application records";
                 report.push(
                     Finding::error(
                         "rights.provenance_missing",

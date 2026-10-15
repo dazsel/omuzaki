@@ -26,4 +26,6 @@ workspace = true
 
 # Native only: stores assets on the local filesystem
 [package.metadata.omuzaki]
+kind = "Implementation"
+summary = "disk asset store: one atomic directory per object (data + provenance), first write wins, hash-verified reads, whole-store `verify` and a quarantining `repair`"
 wasm = false

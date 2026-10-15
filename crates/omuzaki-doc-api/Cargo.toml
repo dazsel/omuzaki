@@ -24,3 +24,7 @@ harness = false
 
 [lints]
 workspace = true
+
+[package.metadata.omuzaki]
+kind = "API"
+summary = "the project document as a tree; `Patch` (the only way to change it), exact `inverse()` undo, conflict detection"

@@ -1,3 +1,9 @@
+---
+title: "0026: Settings are self-registered typed keys in the user's own files, read and written through ops (2026-10-12)"
+summary: "Settings are self-registered typed keys in the user's own files, read and written through ops"
+area: decisions
+---
+
 # 0026: Settings are self-registered typed keys in the user's own files, read and written through ops (2026-10-12)
 
 **Status:** accepted (2026-10-12). It adds a new API crate (`omuzaki-settings-api`) and a `omuzaki-ops-api` scope. **Context:** SE-10, SE-08, CN-05, VC-08; spec v3 §4.1, §6, §7, §31, §39 rule 2; ADR 0013 (file roots), ADR 0021 (recovery), ADR 0023 (locale follows the reader). Design: `docs/design/settings.md`.
