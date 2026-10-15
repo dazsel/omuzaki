@@ -11,7 +11,7 @@ use reqwest::StatusCode;
 use serde_json::{Value, json};
 use tokio::net::TcpStream;
 
-use super::FakeRunner;
+use super::{FakeRunner, fake_runner};
 
 /// A server with the fake runner, listening on a free loopback port.
 pub struct Port {
@@ -32,7 +32,7 @@ impl Port {
 
     /// A port whose options `configure` adjusts from the defaults, still on a free loopback address.
     pub async fn start_with(configure: impl FnOnce(HttpOptions) -> HttpOptions) -> Self {
-        let runner = Arc::new(FakeRunner::new());
+        let runner = Arc::new(fake_runner());
         let mcp = McpServer::new(runner.clone(), McpOptions::default()).expect("server builds");
         let options = configure(HttpOptions::default().with_bind("127.0.0.1:0".parse().unwrap()));
         let server = mcp.serve_http(options).await.expect("port opens");

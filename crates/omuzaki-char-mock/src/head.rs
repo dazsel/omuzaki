@@ -131,15 +131,9 @@ impl PartKind for MockHead {
             rotation: Quat::IDENTITY,
         };
         let anchor = (util::anchor(ctx, "top")?, top);
-        Ok(PartOutput {
-            meshes: vec![mesh],
-            materials: vec![(material_name, material)],
-            publishes: Publishes::default()
-                .with::<HeadFact>(surface)
-                .with::<FaceFact>(projection)
-                .with::<AnchorsFact>(anchor),
-            ..PartOutput::default()
-        })
+        Ok(PartOutput::new().with_meshes(vec![mesh]).with_materials(vec![(material_name, material)]).with_publishes(
+            Publishes::default().with::<HeadFact>(surface).with::<FaceFact>(projection).with::<AnchorsFact>(anchor),
+        ))
     }
 
     fn recolour(params: &HeadParams, output: &mut PartOutput, ctx: &RecolourCtx<'_>) -> Result<Recoloured, BuildError> {

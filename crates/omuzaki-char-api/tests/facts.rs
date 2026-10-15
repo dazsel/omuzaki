@@ -111,10 +111,25 @@ fn facts_are_listed_by_name_and_the_publishes_of_a_part_know_if_they_are_silent(
 }
 
 #[test]
-fn registered_facts_are_listed_with_their_types_and_the_built_ins_are_not_registered_yet() {
+fn registered_facts_are_listed_with_their_types_with_the_built_ins() {
     let facts = omuzaki_char_api::facts().expect("no two registered facts share a name");
     let listed: Vec<_> = facts.iter().map(|r| r.name).collect();
-    assert_eq!(listed, ["test-agree", "test-append", "test-keyed", "test-last", "test-perch"]);
+    assert_eq!(
+        listed,
+        [
+            "anchors",
+            "colliders",
+            "face",
+            "fit",
+            "head",
+            "stature",
+            "test-agree",
+            "test-append",
+            "test-keyed",
+            "test-last",
+            "test-perch"
+        ]
+    );
     let last = facts.iter().find(|r| r.name == "test-last").unwrap();
     assert_eq!((last.type_id)(), std::any::TypeId::of::<LastFact>());
     assert!((last.type_name)().ends_with("LastFact"));
@@ -224,10 +239,7 @@ impl PartKind for LedgePart {
     }
 
     fn build(params: &Ledge, _: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
-        Ok(PartOutput {
-            publishes: Publishes::default().with::<PerchFact>(Perch { height: params.height }),
-            ..PartOutput::default()
-        })
+        Ok(PartOutput::new().with_publishes(Publishes::default().with::<PerchFact>(Perch { height: params.height })))
     }
 }
 omuzaki_char_api::register_part_kind!(LedgePart);
@@ -256,7 +268,7 @@ impl PartKind for BirdPart {
 
     fn build(_: &NoParams, ctx: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
         let heights: Vec<_> = ctx.published.get::<PerchFact>().iter().map(|p| p.height).collect();
-        Ok(PartOutput { warnings: vec![format!("perches at {heights:?}")], ..PartOutput::default() })
+        Ok(PartOutput::new().with_warnings(vec![format!("perches at {heights:?}")]))
     }
 }
 omuzaki_char_api::register_part_kind!(BirdPart);
@@ -267,21 +279,18 @@ fn part(kind: &str, layer: i32, params: serde_json::Value) -> PartDef {
 
 #[test]
 fn a_fact_and_kinds_defined_outside_the_api_crate_publish_and_read_through_a_build() {
-    let def = CharacterDef {
-        name: "Test".to_owned(),
-        template: omuzaki_char_api::BodyTemplateId::new("soft-sd").unwrap(),
-        seed: 1,
-        palette: Palette::default(),
-        skin_tone: None,
-        parts: BTreeMap::from([
+    let def = CharacterDef::new("Test".to_owned(), omuzaki_char_api::BodyTemplateId::new("soft-sd").unwrap())
+        .with_seed(1)
+        .with_palette(Palette::default())
+        .with_skin_tone(None)
+        .with_parts(BTreeMap::from([
             (pid("body"), common::body_part()),
             (pid("bird"), part("test-bird", 0, json!({}))),
             (pid("low"), part("test-ledge", 0, json!({"height": 0.5}))),
             (pid("high"), part("test-ledge", 0, json!({"height": 2.0}))),
-        ]),
-        face: FaceProfile::default(),
-        weight_brushes: BTreeMap::new(),
-    };
+        ]))
+        .with_face(FaceProfile::default())
+        .with_weight_brushes(BTreeMap::new());
     let built = RegistryBuilder
         .build(&CharId::new("mira").unwrap(), &def, &BuildOptions::default(), &BuildServices::default())
         .unwrap();

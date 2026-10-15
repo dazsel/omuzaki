@@ -1,3 +1,9 @@
+---
+title: "First run: the setup flow as a state machine over ops, probes and persisted state"
+summary: "the setup flow as a state machine over ops, probes and persisted state"
+area: design
+---
+
 # First run: the setup flow as a state machine over ops, probes and persisted state
 
 **Status:** proposed; awaiting acceptance. **Feature:** SE-01. **Tasks that follow it:** WZ2 to WZ6.
