@@ -26,6 +26,7 @@ async fn status(server: &HttpServer, authorization: &str) -> StatusCode {
         "jsonrpc": "2.0", "id": 1, "method": "initialize",
         "params": {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "raw", "version": "1"}}
     });
+    common::http::install_crypto_provider();
     reqwest::Client::new()
         .post(server.url())
         .header("accept", "application/json, text/event-stream")
