@@ -29,7 +29,7 @@ egui = "0.36"
 egui-phosphor = { version = "0.14", default-features = false, features = ["regular", "fill"] }   # Phosphor icon fonts (MIT), omuzaki-ui icons
 egui_tiles = { version = "0.17", features = ["serde"] }   # docking for the app shell (MIT OR Apache-2.0), omuzaki-ui
 egui_kittest = { version = "0.36", features = ["wgpu"] }   # headless render + AccessKit queries for UI tests and gallery screenshots
-flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] } # gunzips the ONNX Runtime archives (MIT OR Apache-2.0), omuzaki-ai-ort
+flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] } # gunzips the ONNX Runtime archives (MIT OR Apache-2.0), omuzaki-ai-native
 fluent-bundle = "0.16" # Fluent message formatting (Apache-2.0 OR MIT), omuzaki-l10n-api catalog
 fluent-langneg = "0.14" # locale negotiation (Apache-2.0), omuzaki-l10n-api
 fluent-syntax = "0.12" # Fluent parser for the l10n checks (Apache-2.0 OR MIT), omuzaki-l10n-api
@@ -58,7 +58,7 @@ semver = { version = "1", features = ["serde"] } # versions in the updater contr
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] } # recorded tracks must replay bit-identically after a save
 sha2 = "0.10"   # pins the lazily downloaded fallback fonts by SHA-256 (MIT OR Apache-2.0), omuzaki-stage
-tar = { version = "0.4", default-features = false } # unpacks the ONNX Runtime.tgz archives (MIT OR Apache-2.0), omuzaki-ai-ort
+tar = { version = "0.4", default-features = false } # unpacks the ONNX Runtime.tgz archives (MIT OR Apache-2.0), omuzaki-ai-native
 sys-locale = "0.3" # the OS language list (MIT OR Apache-2.0), omuzaki-l10n-api
 tempfile = "3.27"
 thiserror = "2"
@@ -74,7 +74,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 wgpu = "30"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem"] } # the Windows side of the same: reparse-point-aware opens, final-path checks
-zip = { version = "9", default-features = false, features = ["deflate-flate2"] } # unpacks the ONNX Runtime Windows.zip archives (MIT), omuzaki-ai-ort
+zip = { version = "9", default-features = false, features = ["deflate-flate2"] } # unpacks the ONNX Runtime Windows.zip archives (MIT), omuzaki-ai-native
 whisper-rs = "0.16"   # whisper.cpp built from source (Unlicense crate, MIT library); omuzaki-audio
 zune-jpeg = "0.5"   # pure-Rust JPEG decoder (MIT OR Apache-2.0 OR Zlib), MJPG webcam frames, omuzaki-pixfmt
 

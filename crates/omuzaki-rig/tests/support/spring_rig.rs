@@ -84,6 +84,30 @@ pub fn hair_rig(chains: usize, joints: usize) -> HairRig {
     HairRig { skeleton, set: SpringSet { chains, groups: vec![body] }, head, hips }
 }
 
+/// [`hair_rig`] whose chains also collide with an inside sphere, an inside capsule and a plane on the head, so the
+/// new shapes are measured and checked for allocation on the same rig as the old ones.
+pub fn extended_hair_rig(chains: usize, joints: usize) -> HairRig {
+    let mut rig = hair_rig(chains, joints);
+    let shape = |shape| Collider { bone: rig.head, shape };
+    let colliders = vec![
+        shape(ColliderShape::SphereInside { offset: Vec3::new(0.0, -0.1, 0.0), radius: 0.3 }),
+        shape(ColliderShape::CapsuleInside {
+            offset: Vec3::new(0.0, -0.05, 0.0),
+            radius: 0.25,
+            tail: Vec3::new(0.0, -0.3, 0.05),
+        }),
+        shape(ColliderShape::Plane {
+            offset: Vec3::new(0.0, -0.35, 0.0),
+            normal: Vec3::new(0.0, 1.0, 0.1).normalize(),
+        }),
+    ];
+    rig.set.groups.push(ColliderGroup { name: "extended".into(), colliders });
+    for chain in &mut rig.set.chains {
+        chain.collider_groups.push("extended".into());
+    }
+    rig
+}
+
 impl HairRig {
     /// The animated pose at `frame`: the hips travel and turn and the head nods, so the hair never rests.
     #[allow(clippy::cast_precision_loss)] // frame counts stay small
