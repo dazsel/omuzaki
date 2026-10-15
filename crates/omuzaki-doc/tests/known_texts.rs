@@ -272,6 +272,52 @@ fn an_edit_undone_before_saving_still_rewrites_a_file_deleted_meanwhile() {
     assert!(!project.is_dirty());
 }
 
+/// An undone edit whose file (or a folder above it) was replaced by a symbolic link is never marked clean: the link is
+/// not followed, the save reports it, and the edit stays owed. Covers a link to identical bytes, a broken link, and a
+/// folder swapped for a link to a copy of itself.
+#[cfg(unix)]
+#[test]
+fn an_edit_undone_before_saving_is_not_marked_clean_through_a_symbolic_link() {
+    use std::os::unix::fs::symlink;
+    use std::path::Path;
+
+    /// Replaces something in the project folder (first) with a link into the outside folder (second).
+    type Swap = fn(&Path, &Path);
+    let cases: [(&str, Swap); 3] = [
+        ("a link to identical bytes", |dir, outside| {
+            write(outside, "face.toml", FACE);
+            std::fs::remove_file(dir.join("characters/mia/face.toml")).unwrap();
+            symlink(outside.join("face.toml"), dir.join("characters/mia/face.toml")).unwrap();
+        }),
+        ("a broken link", |dir, outside| {
+            std::fs::remove_file(dir.join("characters/mia/face.toml")).unwrap();
+            symlink(outside.join("missing.toml"), dir.join("characters/mia/face.toml")).unwrap();
+        }),
+        ("a folder swapped for a link", |dir, outside| {
+            write(outside, "mia/face.toml", FACE);
+            write(outside, "mia/rig.toml", "template = \"humanoid\"\n");
+            std::fs::rename(dir.join("characters/mia"), dir.join("characters/.mia-moved")).unwrap();
+            symlink(outside.join("mia"), dir.join("characters/mia")).unwrap();
+        }),
+    ];
+    for (name, swap) in cases {
+        let tmp = folder();
+        let outside = TempDir::new().unwrap();
+        let mut project = Project::open(tmp.path()).unwrap();
+        edit_blend(&mut project, 0.5, 0.9);
+        edit_blend(&mut project, 0.9, 0.5);
+        swap(tmp.path(), outside.path());
+        let err = project.save().unwrap_err();
+        assert!(matches!(err, StoreError::Symlink { .. }), "{name}: {err}");
+        assert!(project.is_dirty(), "{name}");
+        // Nothing was written through the link.
+        assert!(!outside.path().join("mia/.face.toml.tmp").exists(), "{name}");
+        if let Ok(text) = std::fs::read_to_string(outside.path().join("face.toml")) {
+            assert_eq!(text, FACE, "{name}");
+        }
+    }
+}
+
 #[test]
 fn an_edit_undone_before_saving_does_not_hide_an_external_change() {
     let tmp = folder();
