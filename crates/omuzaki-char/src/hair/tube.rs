@@ -195,6 +195,16 @@ pub fn polar_angles(points: &[Vec3], head_centre: Vec3) -> Vec<f32> {
     points.iter().map(|p| (*p - head_centre).normalize_or_zero().y.clamp(-1.0, 1.0).acos()).collect()
 }
 
+/// Checks that a tube of `rings` rings, with its two caps, appended at vertex `first`, still gets `u32` indices. Every
+/// vertex of the tube is counted before anything is written, so an over-full mesh is refused, not saturated.
+fn vertices_fit(first: usize, rings: usize) -> Result<(), TubeError> {
+    let vertices = rings.checked_mul(RING).and_then(|n| n.checked_add(CAP_VERTICES)).and_then(|n| n.checked_add(first));
+    match vertices.map(u32::try_from) {
+        Some(Ok(_)) => Ok(()),
+        _ => Err(TubeError::TooMany),
+    }
+}
+
 /// One end of a tube to close.
 struct Cap {
     /// The index of the end ring's first vertex.
@@ -205,6 +215,8 @@ struct Cap {
     axis: Vec3,
     /// `hair-uv.y` there.
     t: f32,
+    /// `hair-info`'s polar angle there, the same as the end ring's.
+    polar: f32,
     /// Whether this is the root end, whose fan is wound to face back along the axis.
     flip_winding: bool,
 }
@@ -270,7 +282,15 @@ impl TubeMesh {
         }
         let count = points.len() * RING;
         let first = self.mesh.positions.len();
-        u32::try_from(first + count).map_err(|_| TubeError::TooMany)?;
+        // The caps come after the rings, so the caps' vertices count too, before anything is written.
+        vertices_fit(first, points.len())?;
+        let (Some(&root_polar), Some(&tip_polar)) = (look.polar.first(), look.polar.last()) else {
+            return Err(TubeError::WrongOutputLength {
+                points: points.len(),
+                expected: points.len(),
+                got: look.polar.len(),
+            });
+        };
         let base = u32::try_from(first).map_err(|_| TubeError::TooMany)?;
         self.mesh.positions.resize(first + count, Vec3::ZERO);
         self.mesh.normals.resize(first + count, Vec3::ZERO);
@@ -303,27 +323,27 @@ impl TubeMesh {
         let tip_ring = base + RING_U32 * u32::try_from(last).map_err(|_| TubeError::TooMany)?;
         let root_axis = (points[0] - points[1]).normalize_or_zero();
         let tip_axis = (points[last] - points[last - 1]).normalize_or_zero();
-        self.push_cap(&Cap { ring: base, centre: points[0], axis: root_axis, t: 0.0, flip_winding: true }, look);
-        self.push_cap(&Cap { ring: tip_ring, centre: points[last], axis: tip_axis, t: 1.0, flip_winding: false }, look);
-        Ok(())
+        let root =
+            Cap { ring: base, centre: points[0], axis: root_axis, t: 0.0, polar: root_polar, flip_winding: true };
+        self.push_cap(&root, look)?;
+        let tip =
+            Cap { ring: tip_ring, centre: points[last], axis: tip_axis, t: 1.0, polar: tip_polar, flip_winding: false };
+        self.push_cap(&tip, look)
     }
 
     /// Closes the ring at `cap.ring` with a flat fan: a centre vertex and a copy of the rim, all with the axis as normal
     /// (a flat cap needs its own normals, so it cannot share the ring's vertices; the copies sit at the same positions,
     /// so the mesh is closed once vertices at one position are welded, as an exporter does).
-    fn push_cap(&mut self, cap: &Cap, look: &TubeLook<'_>) {
-        let centre = u32::try_from(self.mesh.positions.len()).unwrap_or(u32::MAX);
+    fn push_cap(&mut self, cap: &Cap, look: &TubeLook<'_>) -> Result<(), TubeError> {
+        // Fails before anything is written, so a refused cap leaves no half-built fan behind.
+        let centre = u32::try_from(self.mesh.positions.len()).map_err(|_| TubeError::TooMany)?;
         let colour = vertex_colour(look.tint);
         let rim = cap.ring as usize;
         let add = |m: &mut Self, p: Vec3, across: f32| {
             m.mesh.positions.push(p);
             m.mesh.normals.push(cap.axis);
             m.uv.extend([across * look.flip, cap.t]);
-            m.info.extend([
-                look.seed,
-                look.shade,
-                look.polar.get(if cap.t > 0.0 { look.polar.len() - 1 } else { 0 }).copied().unwrap_or(0.0),
-            ]);
+            m.info.extend([look.seed, look.shade, cap.polar]);
             m.mesh.uvs.push(Vec2::new(0.5 + 0.5 * across * look.flip, cap.t));
             m.mesh.colours.push(colour);
         };
@@ -340,6 +360,7 @@ impl TubeMesh {
                 self.mesh.indices.extend([centre, b, a]);
             }
         }
+        Ok(())
     }
 
     /// Appends a finished mesh that already carries `hair-uv` and `hair-info` (a generator's shell), with white vertex
@@ -440,8 +461,12 @@ mod tests {
         let rings = 4 * RING;
         assert_eq!(m.positions.len(), rings + 2 * (RING + 1));
         let axis = (points[3] - points[0]).normalize();
+        let info = &m.extra_attribute(HAIR_INFO).unwrap().data;
         for (cap, sign) in [(0, -1.0), (1, 1.0)] {
             let first = rings + cap * (RING + 1);
+            // Each cap's centre carries its end ring's polar angle: the root's the first ring's, the tip's the last.
+            let end_ring = if cap == 0 { 0 } else { 3 * RING };
+            assert_eq!(info[3 * first + 2], info[3 * end_ring + 2], "cap {cap}: polar angle");
             assert!(m.normals[first..=first + RING].iter().all(|n| n.dot(axis) * sign > 0.99));
             for tri in m.indices.chunks_exact(3).skip(3 * RING * 2 + cap * RING).take(RING) {
                 assert!(tri.iter().all(|i| (first..=first + RING).contains(&(*i as usize))));
@@ -449,6 +474,18 @@ mod tests {
                 assert!((b - a).cross(c - a).dot(axis) * sign > 0.0, "cap {cap} faces into the tube");
             }
         }
+    }
+
+    #[test]
+    fn the_caps_count_against_the_index_limit_before_anything_is_written() {
+        let rings = 2;
+        let last_fit = u32::MAX as usize - rings * RING - CAP_VERTICES;
+        assert!(vertices_fit(last_fit, rings).is_ok(), "the rings and both caps end at the last index");
+        let ring_prefix = last_fit + 1;
+        assert!(
+            matches!(vertices_fit(ring_prefix, rings), Err(TubeError::TooMany)),
+            "the rings fit but the caps don't"
+        );
     }
 
     #[test]
