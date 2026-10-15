@@ -117,6 +117,19 @@ fn listing_the_generator_is_not_enough_the_build_script_must_call_it_and_the_lib
     let run = unused_emit.xtask(&["lint-links"]);
     assert!(!run.success, "an emit() nobody calls is not wiring: {}", run.stdout);
 
+    let disabled_main = workspace();
+    disabled_main.write(
+        "crates/omuzaki-cli/build.rs",
+        "#[cfg(any())]\nfn main() {\n    omuzaki_link_build::emit();\n}\nfn main() {}\n",
+    );
+    let run = disabled_main.xtask(&["lint-links"]);
+    assert!(!run.success, "a cfg-disabled main is not wiring: {}", run.stdout);
+    assert!(
+        run.stdout.contains("omuzaki-cli: lists `omuzaki-link-build`, but its generated link list is not wired"),
+        "{}",
+        run.stdout
+    );
+
     let no_include = workspace();
     no_include.write("crates/omuzaki-cli/src/lib.rs", "omuzaki_core::define_link!();\n");
     let run = no_include.xtask(&["lint-links"]);
