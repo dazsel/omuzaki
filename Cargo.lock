@@ -4127,6 +4127,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-take-api"
+version = "0.0.0"
+dependencies = [
+ "inventory",
+ "omuzaki-anim-api",
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-history-api",
+ "omuzaki-stage-api",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "omuzaki-test"
 version = "0.0.0"
 dependencies = [
