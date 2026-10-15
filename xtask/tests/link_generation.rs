@@ -97,6 +97,20 @@ fn listing_the_generator_is_not_enough_the_build_script_must_call_it_and_the_lib
     let run = commented.xtask(&["lint-links"]);
     assert!(!run.success, "a commented-out include is not wiring: {}", run.stdout);
 
+    let conditional = workspace();
+    conditional.write(
+        "crates/omuzaki-cli/src/lib.rs",
+        "omuzaki_core::define_link! {\n    #[cfg(any())]\n    include!(concat!(env!(\"OUT_DIR\"), \"/link_calls.rs\"));\n}\n",
+    );
+    let run = conditional.xtask(&["lint-links"]);
+    assert!(!run.success, "a cfg-disabled include is not wiring: {}", run.stdout);
+    assert!(
+        run.stdout.contains("omuzaki-cli: lists `omuzaki-link-build`, but its generated link list is not wired"),
+        "{}",
+        run.stdout
+    );
+    assert!(run.stdout.contains("omuzaki-cli → omuzaki-char: never calls"), "{}", run.stdout);
+
     let unused_emit = workspace();
     unused_emit
         .write("crates/omuzaki-cli/build.rs", "fn main() {}\nfn unused() {\n    omuzaki_link_build::emit();\n}\n");
