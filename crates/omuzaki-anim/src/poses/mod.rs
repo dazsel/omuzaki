@@ -37,6 +37,7 @@ mod def;
 mod library;
 mod ops;
 mod posture;
+mod set;
 
 pub use clip::{ClipError, ClipKey, ClipLibrary, Easing, PoseClip};
 pub use def::{HandSlot, PoseDef, PoseError};
