@@ -1,7 +1,7 @@
 //! The project folder: reading it into a tree, and writing, replacing and deleting its files.
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -226,6 +226,16 @@ pub(crate) enum Replace {
 /// target) is placed with a no-replace `hard_link`, or where links fail a no-replace rename (`RENAME_NOREPLACE` on
 /// Linux; an error if that is unsupported), so a file that appeared is never replaced.
 ///
+/// **Known limit (the Director's ruling on #1468: the backup is deleted after a clean save).** Once the displaced file
+/// has been verified as the last-known text, both of its names are deleted. An editor that still holds the *original*
+/// file open (not one that saves by rename, which is safe) and writes through that handle after the verification and
+/// before the deletion, or any time later, writes into a file nobody can reach, and the save has already reported
+/// success. Another hash check would only move that window. Closing it needs the displaced file kept for a while, and
+/// that was ruled out because it leaves files in the project folder after every save. A write made before the check
+/// is never lost: the check fails, the swap is undone and our file is kept. On Windows an editor that holds the file
+/// open usually makes the replace fail with a sharing violation, which is returned as an error and loses nothing; the
+/// swap itself is Linux-only.
+///
 /// The target exists at every instant of a replacement, so a crash leaves the old file or the new one, plus at worst
 /// a backup, the hidden temporary file, or both.
 pub(crate) fn replace_checked(
@@ -312,7 +322,7 @@ fn replace_held(
     // the original open, so that file is kept as well. An in-place edit after the backup was hashed fails the check
     // (even for a link, whose inode is unchanged) and falls through to the undo below.
     if held.is_file_at(tmp) {
-        if held.linked {
+        if held.linked.is_some() {
             drop(fs::remove_file(tmp));
         } else {
             // Best effort: a failure leaves it at `tmp`, where the next save moves it, and the new text is placed.
@@ -338,30 +348,38 @@ struct Held {
     path: PathBuf,
     /// The hash of its bytes when it was made; the displaced file must still hash to this.
     found: ContentHash,
-    /// True if it is a hard link (the same inode as the target was); false for a verified copy.
-    linked: bool,
+    /// For a hard link, the (device, inode) it shares with the target; `None` for a verified copy.
+    linked: Option<FileId>,
 }
+
+/// A file's identity on its device.
+type FileId = (u64, u64);
 
 impl Held {
     /// True if the file at `other` is the backed-up one with the bytes it had when backed up: for a link the same
-    /// inode (an in-place edit keeps the inode, so the bytes are checked too), for a copy the hash alone.
+    /// inode (an in-place edit keeps the inode, so the bytes are checked too), for a copy the hash alone. The file is
+    /// opened once, so the identity and the bytes are those of one file.
     fn is_file_at(&self, other: &Path) -> bool {
-        (!self.linked || same_inode(&self.path, other))
-            && fs::read(other).is_ok_and(|bytes| ContentHash::of(&bytes) == self.found)
+        let Ok(mut file) = File::open(other) else { return false };
+        if self.linked.is_some() && file_id(&file).is_none_or(|id| Some(id) != self.linked) {
+            return false;
+        }
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).is_ok() && ContentHash::of(&bytes) == self.found
     }
 }
 
+/// The identity of an open file; `None` where this system has no cheap one (then a link is never trusted by identity).
 #[cfg(unix)]
-fn same_inode(a: &Path, b: &Path) -> bool {
+fn file_id(file: &File) -> Option<FileId> {
     use std::os::unix::fs::MetadataExt;
-    let id = |p: &Path| fs::symlink_metadata(p).map(|m| (m.dev(), m.ino()));
-    matches!((id(a), id(b)), (Ok(x), Ok(y)) if x == y)
+    file.metadata().ok().map(|m| (m.dev(), m.ino()))
 }
 
 /// Hard links exist off Unix too, but the swap that needs this check is Linux-only.
 #[cfg(not(unix))]
-fn same_inode(_: &Path, _: &Path) -> bool {
-    false
+fn file_id(_: &File) -> Option<FileId> {
+    None
 }
 
 /// Swaps the names `a` and `b` atomically. False if this system can't (nothing was changed).
@@ -486,9 +504,15 @@ fn back_up(dir: &Path, path: &Path) -> Result<Backup, StoreError> {
     }
     match linked {
         Ok(()) => {
-            let found =
-                fs::read(&backup).map(|bytes| ContentHash::of(&bytes)).map_err(|e| StoreError::io(&backup, e))?;
-            Ok(Backup::Held(Held { path: backup, found, linked: true }))
+            // One open serves the identity and the bytes, which is one fewer path lookup than a stat and a read.
+            let io_err = |e| StoreError::io(&backup, e);
+            let mut file = File::open(&backup).map_err(io_err)?;
+            let id = file_id(&file);
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes).map_err(io_err)?;
+            let found = ContentHash::of(&bytes);
+            // Without an identity the backup can't be trusted as the same inode, so it counts as a copy.
+            Ok(Backup::Held(Held { path: backup, found, linked: id }))
         }
         // Deleted between the check and the link: nothing to protect.
         Err(e) if e.kind() == io::ErrorKind::NotFound && !path.exists() => Ok(Backup::Absent),
@@ -527,7 +551,7 @@ fn copy_backup(path: &Path, backup: PathBuf) -> Result<Backup, StoreError> {
         return Err(StoreError::Internal(format!("the backup of {} didn't read back identical", path.display())));
     }
     sync_folder(backup.parent())?;
-    Ok(Backup::Held(Held { path: backup, found, linked: false }))
+    Ok(Backup::Held(Held { path: backup, found, linked: None }))
 }
 
 /// Gives the file `from` the name `to` unless `to` exists; true if it was placed. `from`'s old name is removed.
@@ -885,13 +909,33 @@ mod tests {
         assert!(no_temporary_file(dir));
     }
 
+    /// An editor that holds the original file open and writes through that handle after the swap but before the check
+    /// is caught by the check: the write is not lost, because our file is undone and kept and the editor's is at the
+    /// target.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_write_through_an_open_handle_before_the_check_is_never_lost() {
+        let tmp = TempDir::new().unwrap();
+        let (dir, (path, expected)) = (tmp.path(), with_file(tmp.path()));
+        let handle = OpenOptions::new().write(true).open(&path).unwrap();
+        let write = || {
+            use std::os::unix::fs::FileExt;
+            handle.write_at(b"theirs = 2\n", 0).unwrap();
+        };
+        let out = replace_with(dir, expected, &Hooks { swapped: &write, ..Hooks::default() }).unwrap();
+        assert_eq!(out, Replace::Refused);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "theirs = 2\n");
+        assert_eq!(texts(&kept(dir)), ["ours = 3\n"]);
+        assert!(no_temporary_file(dir));
+    }
+
     #[test]
     fn a_copied_backup_is_flushed_and_verified() {
         let tmp = TempDir::new().unwrap();
         let (dir, (path, _)) = (tmp.path(), with_file(tmp.path()));
         let backup = dir.join(REPLACED_DIR).join("f.toml.copy");
         let Backup::Held(held) = copy_backup(&path, backup.clone()).unwrap() else { panic!("no backup") };
-        assert!(!held.linked && held.found == ContentHash::of(MINE.as_bytes()));
+        assert!(held.linked.is_none() && held.found == ContentHash::of(MINE.as_bytes()));
         assert_eq!(fs::read_to_string(&backup).unwrap(), MINE);
         assert!(held.is_file_at(&path));
         fs::write(&path, "changed = 1\n").unwrap();
