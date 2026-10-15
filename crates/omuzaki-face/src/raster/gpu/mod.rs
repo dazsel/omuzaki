@@ -1,20 +1,27 @@
-//! The GPU rasteriser: draws a `DrawList` through Vello. This module is the CPU half, [`SceneEncoder`], which turns a
-//! list into a `vello::Scene`; it does no GPU work. Strokes beyond the basic mapping (hairline parity) are [`stroke`]'s.
+//! The GPU rasteriser: draws a `DrawList` through Vello. [`SceneEncoder`] is the CPU half, which turns a list into a
+//! `vello::Scene` and does no GPU work; [`VelloRasterizer`] renders that scene and resolves it into the renderer's face
+//! texture. Strokes beyond the basic mapping (hairline parity) are [`stroke`]'s.
 
 pub mod clip;
 pub mod fill;
 pub mod gradient;
+pub mod resolve;
 pub mod stroke;
+
+use std::any::Any;
 
 use omuzaki_core::glam::Affine2;
 use omuzaki_face_api::{Cap, Cmd, DrawList, FaceError, FaceLayerSpec, Join};
-use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Cap as KCap, Join as KJoin, Rect, Stroke};
+use vello::peniko::Color;
 use vello::peniko::{ColorStop, Fill};
+use vello::{AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene};
 
 use self::clip::{OpenStack, Transforms};
 use self::fill::{Bounds, fill_bez};
 use self::gradient::brush;
+use self::resolve::Resolve;
+use crate::layer::GpuRasterizer;
 
 /// The most a layer may be per side, as in the CPU raster.
 const MAX_SIDE: u32 = 16_384;
@@ -150,5 +157,130 @@ impl SceneEncoder {
             Some(index) => Err(FaceError::Raster(format!("command {index}: PushTransform is never popped"))),
             None => Ok(()),
         }
+    }
+}
+
+/// What the native handle of a face layer downcasts to: the renderer's `NativePaintTarget`, which this crate can't name.
+type Native = (wgpu::Device, wgpu::Queue, wgpu::Texture);
+
+/// Vello's private render target, with the resolve's bind group for it. Reused until the layer changes size.
+struct Private {
+    size: (u32, u32),
+    view: wgpu::TextureView,
+    bind: wgpu::BindGroup,
+}
+
+/// Everything that needs a device. Created on the first paint, because Vello compiles its pipelines when its renderer is
+/// created.
+struct Gpu {
+    renderer: Renderer,
+    resolve: Resolve,
+    private: Option<Private>,
+}
+
+/// The Vello rasteriser: encodes a list with [`SceneEncoder`], renders it with Vello into a private straight-alpha
+/// texture, and resolves that into the renderer's face texture (level 0 only; the renderer rebuilds the mips).
+///
+/// Keep one per layer, and use it with one device only: the Vello renderer and the private texture belong to the device
+/// of the first paint.
+#[derive(Default)]
+pub struct VelloRasterizer {
+    encoder: SceneEncoder,
+    scene: Scene,
+    gpu: Option<Gpu>,
+}
+
+impl VelloRasterizer {
+    /// A rasteriser with nothing allocated on the GPU yet.
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl Gpu {
+    /// The device state in `slot`, built on first use. The resolve is rebuilt if the target's format changes.
+    fn get<'a>(
+        slot: &'a mut Option<Self>,
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+    ) -> Result<&'a mut Self, FaceError> {
+        if slot.is_none() {
+            let options = RendererOptions {
+                use_cpu: false,
+                antialiasing_support: AaSupport::area_only(),
+                num_init_threads: std::num::NonZeroUsize::new(1),
+                pipeline_cache: None,
+            };
+            let renderer = Renderer::new(device, options)
+                .map_err(|e| FaceError::Raster(format!("the Vello renderer could not be created: {e}")))?;
+            *slot = Some(Self { renderer, resolve: Resolve::new(device, format), private: None });
+        }
+        let gpu = slot
+            .as_mut()
+            .ok_or_else(|| FaceError::Raster("the Vello state is missing after it was made".to_owned()))?;
+        if gpu.resolve.format() != format {
+            gpu.resolve = Resolve::new(device, format);
+            gpu.private = None;
+        }
+        Ok(gpu)
+    }
+
+    /// Makes the private texture for a `width` x `height` layer if there is none of that size.
+    fn ensure_private(&mut self, device: &wgpu::Device, width: u32, height: u32) {
+        if self.private.as_ref().is_none_or(|p| p.size != (width, height)) {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("face-vello"),
+                size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let bind = self.resolve.bind(device, &view);
+            self.private = Some(Private { size: (width, height), view, bind });
+        }
+    }
+}
+
+impl GpuRasterizer for VelloRasterizer {
+    fn rasterize_native(
+        &mut self,
+        spec: &FaceLayerSpec,
+        list: &DrawList,
+        native: &mut dyn Any,
+    ) -> Result<bool, FaceError> {
+        let Some((device, queue, target)) = native.downcast_mut::<Native>().map(|n| (&n.0, &n.1, &n.2)) else {
+            return Ok(false);
+        };
+        let (width, height) = spec.size_px();
+        if (target.width(), target.height()) != (width, height) {
+            return Err(FaceError::Raster(format!(
+                "the {:?} layer is {width}x{height} px but its texture is {}x{}",
+                spec.id,
+                target.width(),
+                target.height()
+            )));
+        }
+        self.scene.reset();
+        self.encoder.encode(spec, list, spec.px_per_m, &mut self.scene)?;
+        let gpu = Gpu::get(&mut self.gpu, device, target.format())?;
+        gpu.ensure_private(device, width, height);
+        let Gpu { renderer, resolve, private } = gpu;
+        let Some(private) = private.as_ref() else {
+            return Err(FaceError::Raster("the private texture is missing after it was made".to_owned()));
+        };
+        let params =
+            RenderParams { base_color: Color::TRANSPARENT, width, height, antialiasing_method: AaConfig::Area };
+        renderer
+            .render_to_texture(device, queue, &self.scene, &private.view, &params)
+            .map_err(|e| FaceError::Raster(format!("Vello could not render the layer: {e}")))?;
+        let mut commands =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("face-resolve") });
+        resolve.encode(&mut commands, &private.bind, target);
+        queue.submit([commands.finish()]);
+        Ok(true)
     }
 }
