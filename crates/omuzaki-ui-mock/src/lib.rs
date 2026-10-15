@@ -129,7 +129,8 @@ impl MockHost {
     /// - it draws with no document: its body, or (when unavailable) a registered empty state;
     /// - it has a non-empty title (the panel's override, else the registered one) and, when it overrides the
     ///   screen-reader label, a non-empty label; its frame gives AccessKit something to announce;
-    /// - nothing panics at its minimum size, at half of it, or at 1 by 1 points.
+    /// - nothing panics at its minimum size, at half of it, or at 1 by 1 points (each size on a freshly built panel,
+    ///   as the shell builds one at whatever size it first shows it).
     pub fn check(&self, id: &str, ctx: &PanelCtx<'_>) -> Vec<String> {
         let mut problems = Vec::new();
         let valid = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-');
@@ -172,9 +173,11 @@ impl MockHost {
             Err(_) => problems.push(format!("{id}: panics at {w} by {h} points")),
         }
         for size in [[w / 2.0, h / 2.0], [1.0, 1.0]] {
-            // A fresh context each time, so a panic can't leave state behind for the next size.
+            // A fresh context and a freshly built panel each time: the shell builds a panel at whatever size it first
+            // shows it, so state set by an earlier draw must not hide a panic on this size's first draw.
             let egui = accessible_context();
-            let drawn = panic::catch_unwind(AssertUnwindSafe(|| draw(&egui, panel.as_mut(), def, ctx, size)));
+            let drawn =
+                panic::catch_unwind(AssertUnwindSafe(|| draw(&egui, (def.build)(ctx).as_mut(), def, ctx, size)));
             if drawn.is_err() {
                 problems.push(format!("{id}: panics at {w} by {h} points", w = size[0], h = size[1]));
             }

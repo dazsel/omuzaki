@@ -35,6 +35,21 @@ impl Panel for Narrow {
     }
 }
 
+/// Checks its width on its first draw only, so a panel reused across sizes would hide the check after the first.
+#[derive(Default)]
+struct FirstDrawOnly {
+    drawn: bool,
+}
+
+impl Panel for FirstDrawOnly {
+    fn ui(&mut self, ui: &mut egui::Ui, _ctx: &PanelCtx<'_>) {
+        if !std::mem::replace(&mut self.drawn, true) {
+            assert!(ui.available_width() >= 200.0, "too narrow on the first draw");
+        }
+        ui.label("First draw only");
+    }
+}
+
 /// Panics even at its minimum size.
 struct Tiny;
 
@@ -129,6 +144,10 @@ omuzaki_ui_api::register_panel! {
     build: |_| Box::new(Broken),
 }
 omuzaki_ui_api::register_panel! {
+    id: "first-draw-only", title: "First draw only", icon: "", region: Region::Left, min_size: [240.0, 160.0], order: 8,
+    build: |_| Box::new(FirstDrawOnly::default()),
+}
+omuzaki_ui_api::register_panel! {
     id: "narrow", title: "Narrow", icon: "", region: Region::Left, min_size: [240.0, 160.0], order: 2,
     build: |_| Box::new(Narrow),
 }
@@ -197,4 +216,16 @@ fn ui_runs_again_when_egui_discards_a_pass() {
     assert!(host.frame(panel.as_mut(), def, &ctx, def.min_size).body);
     // The host keeps egui's default passes, as the shell does: the discarded pass draws the panel a second time.
     assert_eq!(DISCARD_CALLS.load(Ordering::SeqCst), 2, "ui runs once per pass, and egui ran two");
+}
+
+#[test]
+fn every_size_is_drawn_on_a_freshly_built_panel() {
+    let runner = MockRunner::new(MemDoc::new());
+    let actor = Actor::System;
+    let ctx = PanelCtx::new(&runner, &actor);
+    let host = MockHost::new();
+    assert_eq!(
+        host.check("first-draw-only", &ctx),
+        ["first-draw-only: panics at 120 by 80 points", "first-draw-only: panics at 1 by 1 points"]
+    );
 }
