@@ -65,8 +65,9 @@ impl PixelFormat {
     }
 }
 
-/// One mode a camera can run in.
+/// One mode a camera can run in. Built with [`new`](Self::new), so a new field edits only this crate (ADR 0054 §4).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct CameraFormat {
     /// Width in pixels.
     pub width: u32,
@@ -78,8 +79,16 @@ pub struct CameraFormat {
     pub pixel: PixelFormat,
 }
 
-/// A camera in a device list.
+impl CameraFormat {
+    /// A mode of `width` x `height` pixels at a nominal `fps`, laid out as `pixel`.
+    pub const fn new(width: u32, height: u32, fps: u32, pixel: PixelFormat) -> Self {
+        Self { width, height, fps, pixel }
+    }
+}
+
+/// A camera in a device list. Built with [`new`](Self::new) (ADR 0054 §4).
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct CameraInfo {
     /// What to pass to [`Camera::open`].
     pub id: CameraId,
@@ -89,8 +98,17 @@ pub struct CameraInfo {
     pub formats: Vec<CameraFormat>,
 }
 
-/// The mode a person asked for; [`pick`](Self::pick) finds the closest one a camera has.
+impl CameraInfo {
+    /// The camera `id`, shown as `name`, offering `formats` in the backend's order.
+    pub fn new(id: CameraId, name: impl Into<String>, formats: Vec<CameraFormat>) -> Self {
+        Self { id, name: name.into(), formats }
+    }
+}
+
+/// The mode a person asked for; [`pick`](Self::pick) finds the closest one a camera has. Built from [`Default`] or
+/// [`new`](Self::new) and the `with_*` methods (ADR 0054 §4).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct CameraFormatRequest {
     /// Wanted width in pixels.
     pub width: u32,
@@ -106,11 +124,23 @@ pub struct CameraFormatRequest {
 impl Default for CameraFormatRequest {
     /// 1280 x 720 at 60 fps, any layout (PF-01: 60 fps when the camera allows).
     fn default() -> Self {
-        Self { width: 1280, height: 720, fps: 60, pixel: None }
+        Self::new(1280, 720, 60)
     }
 }
 
 impl CameraFormatRequest {
+    /// `width` x `height` pixels at `fps`, any layout.
+    pub const fn new(width: u32, height: u32, fps: u32) -> Self {
+        Self { width, height, fps, pixel: None }
+    }
+
+    /// Requiring the byte layout `pixel` (or any, with `None`).
+    #[must_use]
+    pub const fn with_pixel(mut self, pixel: Option<PixelFormat>) -> Self {
+        self.pixel = pixel;
+        self
+    }
+
     /// The closest format: nearest pixel count, then nearest frame rate, then the cheapest to convert, then the
     /// backend's order. Every backend picks with this, so one request means the same mode everywhere. `None` if no
     /// format has the required layout.
@@ -129,8 +159,10 @@ impl CameraFormatRequest {
 pub struct DeviceTime(pub u64);
 
 /// One captured frame, borrowed from the stream's own buffers until the next call to
-/// [`CameraStream::next_frame`], so steady-state capture allocates nothing.
+/// [`CameraStream::next_frame`], so steady-state capture allocates nothing. Built with [`new`](Self::new)
+/// (ADR 0054 §4).
 #[derive(Copy, Clone, Debug)]
+#[non_exhaustive]
 pub struct CameraFrame<'a> {
     /// The pixel bytes, laid out as [`PixelFormat`] says.
     pub data: &'a [u8],
@@ -146,6 +178,23 @@ pub struct CameraFrame<'a> {
     pub captured: DeviceTime,
     /// The device's frame counter; a gap means frames were skipped (the newest frame wins at capture too).
     pub seq: u64,
+}
+
+impl<'a> CameraFrame<'a> {
+    /// A frame of `data`, `width` x `height` pixels with rows `stride` bytes apart (0 for
+    /// [`PixelFormat::Mjpg`]), laid out as `pixel`, captured at `captured` as device frame `seq`. Hot path: no
+    /// allocation.
+    pub const fn new(
+        data: &'a [u8],
+        width: u32,
+        height: u32,
+        stride: usize,
+        pixel: PixelFormat,
+        captured: DeviceTime,
+        seq: u64,
+    ) -> Self {
+        Self { data, width, height, stride, pixel, captured, seq }
+    }
 }
 
 /// A source of cameras: one per OS backend, plus the fake.
@@ -179,23 +228,19 @@ pub trait CameraStream: Send {
 mod tests {
     use super::*;
 
-    fn fmt(width: u32, height: u32, fps: u32, pixel: PixelFormat) -> CameraFormat {
-        CameraFormat { width, height, fps, pixel }
-    }
-
     #[test]
     fn pick_prefers_size_then_rate_then_cheap_layouts() {
         let formats = [
-            fmt(640, 480, 30, PixelFormat::Yuy2),
-            fmt(1280, 720, 30, PixelFormat::Mjpg),
-            fmt(1280, 720, 60, PixelFormat::Mjpg),
-            fmt(1280, 720, 60, PixelFormat::Nv12),
+            CameraFormat::new(640, 480, 30, PixelFormat::Yuy2),
+            CameraFormat::new(1280, 720, 30, PixelFormat::Mjpg),
+            CameraFormat::new(1280, 720, 60, PixelFormat::Mjpg),
+            CameraFormat::new(1280, 720, 60, PixelFormat::Nv12),
         ];
         let request = CameraFormatRequest::default();
         assert_eq!(request.pick(&formats), Some(formats[3]));
-        let yuy2 = CameraFormatRequest { pixel: Some(PixelFormat::Yuy2), ..request };
+        let yuy2 = request.with_pixel(Some(PixelFormat::Yuy2));
         assert_eq!(yuy2.pick(&formats), Some(formats[0]));
-        let bgra = CameraFormatRequest { pixel: Some(PixelFormat::Bgra8), ..request };
+        let bgra = request.with_pixel(Some(PixelFormat::Bgra8));
         assert_eq!(bgra.pick(&formats), None);
     }
 

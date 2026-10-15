@@ -37,8 +37,29 @@ pub struct TrackerConfig {
     pub tier: QualityTier,
     /// With no frame published for this long (a stalled camera), the tracker publishes one
     /// [`TrackStatus::Lost`](omuzaki_anim_api::TrackStatus::Lost) frame, so the pipeline never holds a stale face.
-    #[serde(default = "default_lost_after")]
+    /// Saved as whole milliseconds, `lost_after_ms`, at least 1: a person edits it.
+    #[serde(rename = "lost_after_ms", with = "whole_millis", default = "default_lost_after")]
+    #[schemars(with = "u64", range(min = 1))]
     pub lost_after: Duration,
+}
+
+/// A [`Duration`] saved as whole milliseconds, at least 1 (sub-millisecond parts are dropped when saving).
+mod whole_millis {
+    use std::time::Duration;
+
+    use serde::de::Error as _;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub(super) fn serialize<S: Serializer>(value: &Duration, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_u64(u64::try_from(value.as_millis()).unwrap_or(u64::MAX))
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Duration, D::Error> {
+        match u64::deserialize(deserializer)? {
+            0 => Err(D::Error::custom("lost_after_ms must be at least 1")),
+            ms => Ok(Duration::from_millis(ms)),
+        }
+    }
 }
 
 /// 200 ms: six frames at 30 fps, well inside the retarget's grace period.
@@ -76,8 +97,10 @@ impl TrackerConfig {
 }
 
 /// Capture-to-publish latency of the running session: from the frame's capture time on the stage clock to the moment
-/// it went into the mailbox. Feeds the health meter (PF-26) and the `track.face` budget.
+/// it went into the mailbox. Feeds the health meter (PF-26) and the `track.face` budget. Built from [`Default`] or
+/// [`new`](Self::new) (ADR 0054 §4).
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct LatencyStats {
     /// Frames published.
     pub frames: u64,
@@ -89,6 +112,13 @@ pub struct LatencyStats {
     pub p95: Duration,
     /// Worst seen.
     pub max: Duration,
+}
+
+impl LatencyStats {
+    /// `frames` published and `dropped` skipped, with the median, 95th percentile and worst latency.
+    pub const fn new(frames: u64, dropped: u64, p50: Duration, p95: Duration, max: Duration) -> Self {
+        Self { frames, dropped, p50, p95, max }
+    }
 }
 
 /// A live tracker. It owns its thread and its camera between [`start`](Self::start) and [`stop`](Self::stop).
@@ -121,7 +151,7 @@ mod tests {
 
     #[test]
     fn with_methods_set_one_field_each() {
-        let camera = CameraFormatRequest { fps: 30, ..CameraFormatRequest::default() };
+        let camera = CameraFormatRequest::new(1280, 720, 30);
         let config = TrackerConfig::default()
             .with_camera(camera)
             .with_tier(QualityTier::Light)
@@ -130,5 +160,29 @@ mod tests {
         assert_eq!(config.tier, QualityTier::Light);
         assert_eq!(config.lost_after, Duration::from_millis(50));
         assert_eq!(TrackerConfig::default().lost_after, Duration::from_millis(200));
+    }
+
+    #[test]
+    fn lost_after_is_saved_as_whole_milliseconds() {
+        let json = serde_json::to_value(TrackerConfig::default()).unwrap();
+        assert_eq!(json["lost_after_ms"], 200);
+        assert!(json.get("lost_after").is_none());
+        let back: TrackerConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(back, TrackerConfig::default());
+
+        let read: TrackerConfig = serde_json::from_str(r#"{"lost_after_ms": 350}"#).unwrap();
+        assert_eq!(read.lost_after, Duration::from_millis(350));
+        assert_eq!(serde_json::from_str::<TrackerConfig>("{}").unwrap(), TrackerConfig::default());
+        assert!(serde_json::from_str::<TrackerConfig>(r#"{"lost_after_ms": 0}"#).is_err());
+        assert!(serde_json::from_str::<TrackerConfig>(r#"{"lost_after_ms": 0.5}"#).is_err());
+    }
+
+    #[test]
+    fn the_schema_shows_lost_after_ms_as_an_integer_of_at_least_1() {
+        let schema = serde_json::to_value(schemars::schema_for!(TrackerConfig)).unwrap();
+        let field = &schema["properties"]["lost_after_ms"];
+        assert_eq!(field["type"], "integer", "{field}");
+        assert_eq!(field["minimum"], 1, "{field}");
+        assert_eq!(field["default"], 200, "{field}");
     }
 }

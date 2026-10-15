@@ -22,6 +22,10 @@ pub const MAX_DRIFT: f64 = 1e-3;
 /// reset its clock forward).
 pub const RESYNC_GAP: f64 = 1.0;
 
+/// The smallest step between two mapped times, in seconds (1 µs): output is strictly increasing, so the
+/// retarget's filters never see `dt = 0`.
+pub const MIN_STEP: f64 = 1e-6;
+
 /// Pairs needed before the rate is fitted; with fewer it is 1.
 const MIN_FIT: usize = 8;
 
@@ -52,7 +56,7 @@ pub struct ClockMap {
     arrived: [f64; CLOCK_WINDOW],
     len: usize,
     head: usize,
-    /// The last mapped time, so output never goes backwards.
+    /// The last mapped time, so the next one is at least [`MIN_STEP`] later.
     last_out: f64,
 }
 
@@ -76,13 +80,15 @@ impl ClockMap {
         }
     }
 
-    /// Forgets the fit, for a reopened stream whose device clock has a new epoch. Output still never goes backwards.
+    /// Forgets the fit, for a reopened stream whose device clock has a new epoch. Output still strictly increases.
     pub fn reset(&mut self) {
         *self = Self { last_out: self.last_out, ..Self::new() };
     }
 
     /// The stage time at which the frame stamped `captured` was taken, given that it `arrived` (stage clock) now.
-    /// Equal device times are fine; the result is monotonic. Hot path: no allocation.
+    /// Equal device times are fine. The result is **strictly increasing**: at least [`MIN_STEP`] after the previous
+    /// one, also when the lower envelope drops (a frame that waited less than any before it) or the device repeats a
+    /// time, so no two frames share a stage time. Hot path: no allocation.
     ///
     /// # Errors
     /// [`ClockError::Backwards`] when `captured` is before the newest accepted time.
@@ -103,7 +109,7 @@ impl ClockMap {
 
         let rate = self.fit_rate();
         let offset = (0..self.len).map(|i| self.arrived[i] - rate * self.device[i]).fold(f64::INFINITY, f64::min);
-        let out = (offset + rate * d).max(self.last_out);
+        let out = (offset + rate * d).max(self.last_out + MIN_STEP);
         self.last_out = out;
         Ok(Seconds(out))
     }
@@ -166,7 +172,7 @@ mod tests {
             for i in 0..1800_u64 {
                 let t = i as f64 / 30.0;
                 let out = map.map(stamp(t, ppm), Seconds(t + LATENCY + jitter(i))).unwrap().0;
-                assert!(out >= previous, "monotonic at frame {i}");
+                assert!(out > previous, "strictly increasing at frame {i}");
                 previous = out;
                 if i >= 64 {
                     let error = out - (t + LATENCY);
@@ -174,6 +180,24 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_falling_delay_never_repeats_a_time() {
+        // Each frame waits less than the one before by more than the frame spacing, so every frame is a new lowest
+        // arrival and the envelope drops below the last output; then the device repeats a time.
+        let mut map = ClockMap::new();
+        let mut previous = f64::NEG_INFINITY;
+        for i in 0..20_u64 {
+            let t = i as f64 / 30.0;
+            let delay = 0.8 - i as f64 * 0.04;
+            let out = map.map(stamp(t, 0.0), Seconds(t + delay)).unwrap().0;
+            assert!(out >= previous + MIN_STEP * 0.999, "frame {i}: {out} after {previous}");
+            previous = out;
+        }
+        let same = stamp(19.0 / 30.0, 0.0);
+        let out = map.map(same, Seconds(previous)).unwrap().0;
+        assert!(out >= previous + MIN_STEP * 0.999, "a repeated device time: {out} after {previous}");
     }
 
     #[test]

@@ -35,8 +35,8 @@ impl FakeTracker {
 
 impl Tracker for FakeTracker {
     fn devices(&self) -> Vec<CameraInfo> {
-        let format = CameraFormat { width: 640, height: 480, fps: 30, pixel: PixelFormat::Rgb8 };
-        vec![CameraInfo { id: FakeCamera::id(), name: "Fake tracker".to_owned(), formats: vec![format] }]
+        let format = CameraFormat::new(640, 480, 30, PixelFormat::Rgb8);
+        vec![CameraInfo::new(FakeCamera::id(), "Fake tracker", vec![format])]
     }
 
     fn start(&mut self, device: &CameraId, config: &TrackerConfig) -> Result<Box<dyn FrameSource>, TrackError> {
@@ -69,7 +69,8 @@ impl Tracker for FakeTracker {
     }
 
     fn latency(&self) -> LatencyStats {
-        LatencyStats { frames: self.delivered.load(Ordering::Relaxed), ..LatencyStats::default() }
+        let zero = Duration::ZERO;
+        LatencyStats::new(self.delivered.load(Ordering::Relaxed), 0, zero, zero, zero)
     }
 }
 

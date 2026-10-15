@@ -18,7 +18,7 @@ const WAIT: Duration = Duration::from_millis(100);
 const TRANSPORT: f64 = 0.012;
 
 fn format(pixel: PixelFormat) -> CameraFormat {
-    CameraFormat { width: 8, height: 4, fps: 30, pixel }
+    CameraFormat::new(8, 4, 30, pixel)
 }
 
 /// What a tracker does per camera frame, minus the model: map the time, build a frame, publish it.
@@ -64,7 +64,7 @@ fn the_camera_reports_its_errors() {
     let request = CameraFormatRequest::default();
     let unknown = CameraId("usb:9".to_owned());
     assert_eq!(camera.open(&unknown, &request).err(), Some(TrackError::NoDevice(unknown)));
-    let bgra = CameraFormatRequest { pixel: Some(PixelFormat::Bgra8), ..request };
+    let bgra = request.with_pixel(Some(PixelFormat::Bgra8));
     assert_eq!(camera.open(&FakeCamera::id(), &bgra).err(), Some(TrackError::FormatUnsupported(bgra)));
 
     let stream = camera.open(&FakeCamera::id(), &request).unwrap();
@@ -127,7 +127,7 @@ fn a_slow_poller_gets_only_the_newest_scripted_frame() {
 #[test]
 fn start_rejects_a_camera_request_the_device_cannot_meet() {
     let mut tracker = FakeTracker::scripted(vec![]);
-    let camera = CameraFormatRequest { pixel: Some(PixelFormat::Bgra8), ..CameraFormatRequest::default() };
+    let camera = CameraFormatRequest::default().with_pixel(Some(PixelFormat::Bgra8));
     let config = TrackerConfig::default().with_camera(camera);
     assert_eq!(tracker.start(&FakeCamera::id(), &config).err(), Some(TrackError::FormatUnsupported(camera)));
 }

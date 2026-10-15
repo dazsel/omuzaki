@@ -54,7 +54,7 @@ impl FakeCamera {
     }
 
     fn new(format: CameraFormat, script: Script) -> Self {
-        let info = CameraInfo { id: Self::id(), name: "Fake camera".to_owned(), formats: vec![format] };
+        let info = CameraInfo::new(Self::id(), "Fake camera", vec![format]);
         Self { info, script, in_use: Arc::new(AtomicBool::new(false)) }
     }
 }
@@ -128,15 +128,7 @@ impl CameraStream for FakeStream {
         };
         self.next += 1;
         let f = self.format;
-        Ok(Some(CameraFrame {
-            data,
-            width: f.width,
-            height: f.height,
-            stride: self.stride,
-            pixel: f.pixel,
-            captured,
-            seq: i,
-        }))
+        Ok(Some(CameraFrame::new(data, f.width, f.height, self.stride, f.pixel, captured, i)))
     }
 }
 

@@ -37,24 +37,29 @@ Everything public, one line each (the PR summary repeats this list).
 |---|---|
 | `CameraId` | the backend's name for a camera; person settings only, never a project (it can name the machine) |
 | `PixelFormat` | `Nv12`, `Yuy2`, `Mjpg`, `Rgb8`, `Bgra8`, with `tight_stride` and `frame_len` |
-| `CameraFormat` | width, height, nominal fps, pixel format: one mode of a camera |
-| `CameraInfo` | id, OS name and the formats of one camera |
-| `CameraFormatRequest` | the wanted mode; `pick` chooses the closest one the same way on every backend |
+| `CameraFormat` | width, height, nominal fps, pixel format: one mode of a camera; `new` |
+| `CameraInfo` | id, OS name and the formats of one camera; `new` |
+| `CameraFormatRequest` | the wanted mode (`Default` 1280 x 720 at 60, `new`, `with_pixel`); `pick` chooses the closest one the same way on every backend |
 | `DeviceTime` | nanoseconds on the camera's own clock |
-| `CameraFrame<'a>` | borrowed bytes, width, height, stride, pixel format, capture time, device sequence number |
+| `CameraFrame<'a>` | borrowed bytes, width, height, stride, pixel format, capture time, device sequence number; `new` |
 | `Camera` | `enumerate`, `open(id, request) -> Box<dyn CameraStream>` |
 | `CameraStream` | `format`, `next_frame(timeout)`: the newest frame, borrowed until the next call |
 | `QualityTier` | `Full`, `Balanced`, `Light` (PF-01 tiers) |
-| `TrackerConfig` | camera request, tier, `lost_after` |
-| `LatencyStats` | frames, dropped, p50, p95, max of capture-to-publish |
+| `TrackerConfig` | camera request, tier, `lost_after` (saved as whole milliseconds, `lost_after_ms`, at least 1); `Default` and `with_*` |
+| `LatencyStats` | frames, dropped, p50, p95, max of capture-to-publish; `Default` and `new` |
 | `Tracker` | `devices`, `start(device, config) -> Box<dyn FrameSource>`, `stop`, `latency` |
 | `ClockMap` | `new`, `reset`, `map(captured, arrived) -> Seconds` |
 | `ClockError` | `Backwards { last, got }` |
-| `CLOCK_WINDOW`, `MAX_DRIFT`, `RESYNC_GAP` | the clock map's 64 pairs, 1000 ppm and 1 s |
+| `CLOCK_WINDOW`, `MAX_DRIFT`, `RESYNC_GAP`, `MIN_STEP` | the clock map's 64 pairs, 1000 ppm, 1 s and 1 µs |
 | `mailbox()` | a connected `MailboxWriter` and `MailboxReader` |
 | `MailboxWriter` | `publish(&TrackFrame)`: the newest wins |
 | `MailboxReader` | implements `FrameSource`: `poll` returns the newest unread frame or `None` |
 | `TrackError` | `NoDevice`, `Busy`, `FormatUnsupported`, `PermissionDenied`, `Lost`, `Backend` |
+
+The structs other crates build (`CameraFormat`, `CameraInfo`, `CameraFormatRequest`, `CameraFrame`, `TrackerConfig`,
+`LatencyStats`) and the enums that can grow (`PixelFormat`, `ClockError`, `TrackError`) are `#[non_exhaustive]`, built
+through the constructors above, so a new field or variant edits only this crate (ADR 0054 §4). `QualityTier` stays
+exhaustive: PF-01 fixes the three tiers.
 
 Mock: `FakeCamera` (`from_frames`, `synthetic`, `synthetic_luma`, `id`, `ID`) and `FakeTracker` (`scripted`).
 
@@ -130,7 +135,9 @@ filters and the A/V playout delay (anim-api `PlayoutDelay`) see the camera's rea
    because transport delay is never negative: the lower envelope is the best estimate of "capture plus the
    smallest delay". That smallest delay is constant and cannot be seen from timestamps; the tracker's measured
    latency (`LatencyStats`) reports it.
-3. **Monotonic output:** a mapped time never goes below the previous one, so a refit cannot make time step back.
+3. **Strictly increasing output:** a mapped time is at least `MIN_STEP` (1 µs) after the previous one, so a refit
+   cannot make time step back, and a drop of the lower envelope (each new lowest arrival, often in the first window)
+   or a repeated device time cannot give two frames the same stage time: the retarget's filters never see `dt = 0`.
 
 The rules for bad timestamps:
 
@@ -138,12 +145,13 @@ The rules for bad timestamps:
   drops the frame and the map is unchanged. Cameras do not reorder frames, so this is a driver fault or a device
   reset, and clamping it would give a frame a time that is a lie.
 - **A forward jump over `RESYNC_GAP` (1 s)**: the fit restarts from that frame (a paused stream, or a clock reset
-  forward). Output stays monotonic.
+  forward). Output stays strictly increasing.
 - **A reopened stream** calls `reset`, because a new session can have a new device epoch.
 
 Tests (`clock.rs`): a fixed offset maps exactly; ±200 ppm drift with 0 to 5 ms jitter over 60 s stays within 1 ms of
-the truth after the first window and stays monotonic (without the fit, 200 ppm is 12 ms off after a minute); a
-backwards jump is rejected and the next frame maps normally; a one-hour forward jump resyncs.
+the truth after the first window and strictly increases (without the fit, 200 ppm is 12 ms off after a minute); a
+backwards jump is rejected and the next frame maps normally; a one-hour forward jump resyncs; a falling delay (every
+frame a new lowest arrival) and a repeated device time never repeat a stage time.
 
 ## 7. The mailbox
 
