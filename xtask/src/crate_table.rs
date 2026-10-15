@@ -6,6 +6,7 @@
 //! and `summary`), `crate-table` prints the table from those, and the lint keeps the README to the rules.
 
 use std::fs;
+use std::path::Path;
 use std::process::ExitCode;
 
 use xtask::registry::Error as ReadError;
@@ -134,18 +135,20 @@ pub fn print(workspace: &Workspace) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// The README under the workspace `root`. It must exist: a missing file would read as an empty README and pass the
+/// lint.
+fn read_readme(root: &Path) -> Result<String> {
+    let path = root.join(README);
+    fs::read_to_string(&path).map_err(|source| ReadError::Read { path, source }.into())
+}
+
 /// The `lint-crate-table` command.
 ///
 /// # Errors
 /// A manifest or the README that can't be read.
 pub fn lint(workspace: &Workspace) -> Result<ExitCode> {
     let rows = rows(workspace)?;
-    let path = workspace.root.join(README);
-    let readme = match fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(source) => return Err(ReadError::Read { path, source }.into()),
-    };
+    let readme = read_readme(&workspace.root)?;
     let found = violations(&rows, &readme);
     for violation in &found {
         println!("{violation}");
@@ -211,6 +214,16 @@ mod tests {
         assert_eq!(violations(&[described], ""), Vec::<String>::new());
         assert_eq!(violations(&[missing], ""), ["omuzaki-ok: no `description` under [package]"]);
         assert_eq!(violations(&[blank], ""), ["omuzaki-ok: no `description` under [package]"]);
+    }
+
+    #[test]
+    fn a_missing_readme_fails_instead_of_passing_as_empty() {
+        let root = tempfile::tempdir().expect("a temporary directory");
+        let error = read_readme(root.path()).expect_err("no README under the root");
+        assert!(error.to_string().contains("crates/README.md"), "{error}");
+        fs::create_dir_all(root.path().join("crates")).expect("the crates folder");
+        fs::write(root.path().join(README), "# Rules\n").expect("a README");
+        assert_eq!(read_readme(root.path()).expect("the README reads"), "# Rules\n");
     }
 
     #[test]
