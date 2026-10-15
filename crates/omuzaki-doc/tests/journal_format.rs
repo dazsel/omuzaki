@@ -177,9 +177,60 @@ fn every_accepted_header_reads_back() {
 }
 
 #[test]
+fn segment_names_stop_at_twelve_digits() {
+    let last = segment_name(999_999_999_999).unwrap();
+    assert_eq!(last, "segment-999999999999.tjl");
+    assert_eq!(segment_seq(&last), Some(999_999_999_999));
+    assert_eq!(segment_name(1_000_000_000_000), None);
+    assert_eq!(segment_name(u64::MAX), None);
+}
+
+#[test]
+fn segment_names_sort_like_their_numbers() {
+    let seqs = [0u64, 1, 9, 10, 99, 100, 999_999_999_999];
+    let names: Vec<String> = seqs.iter().map(|&n| segment_name(n).unwrap()).collect();
+    let mut sorted = names.clone();
+    sorted.sort();
+    assert_eq!(names, sorted);
+    for (n, name) in seqs.iter().zip(&names) {
+        assert_eq!(segment_seq(name), Some(*n));
+    }
+}
+
+/// The frozen v1 segment (tests/fixtures/journal/v1/README.md): written once by a script that does not use the journal
+/// code, and never regenerated. Every expected value below is written out here, not computed by `write_frame`.
+#[test]
+fn the_frozen_v1_segment_reads() {
+    let bytes = include_bytes!("fixtures/journal/v1/segment-000000000001.tjl");
+    assert_eq!(bytes.len(), 131);
+
+    assert_eq!(&bytes[0..8], b"TUBRJNL\0");
+    assert_eq!(&bytes[28..32], &0xe82a_a879_u32.to_le_bytes(), "the header CRC");
+    let header = SegmentHeader::decode(bytes).unwrap();
+    assert_eq!(header, SegmentHeader { version: 1, first: Lsn(1) });
+
+    // (lsn, kind, flags, payload, CRC), in file order.
+    let expected: [(u64, u8, u8, &[u8], u32); 3] = [
+        (1, 2, 0, br#"{"a":1}"#, 0x40e0_f6a2),
+        (2, 200, SKIPPABLE, br#"{"skip":true}"#, 0x41f6_1cdb),
+        (300, 7, 0, br#"{"k":"v","n":[1,2]}"#, 0x8bab_b05f),
+    ];
+    let mut at = HEADER_LEN;
+    for (lsn, kind, flags, payload, crc) in expected {
+        assert_eq!(&bytes[at + 4..at + 8], &crc.to_le_bytes(), "the CRC of record {lsn}");
+        let frame = read_frame(&bytes[at..]).unwrap();
+        assert_eq!(frame, Frame { lsn: Lsn(lsn), kind, flags, payload });
+        assert_eq!(frame.skippable(), flags == SKIPPABLE);
+        at += frame.len();
+    }
+    assert_eq!(at, bytes.len());
+    assert_eq!(read_frame(&bytes[at..]), Err(FrameEnd::Short));
+}
+
+#[test]
 fn segment_names() {
-    assert_eq!(segment_name(42), "segment-000000000042.tjl");
-    assert_eq!(segment_seq(&segment_name(42)), Some(42));
+    assert_eq!(segment_name(42).as_deref(), Some("segment-000000000042.tjl"));
+    assert_eq!(segment_seq(&segment_name(42).unwrap()), Some(42));
     assert_eq!(segment_seq("segment-42.tjl"), None);
     assert_eq!(segment_seq("segment-000000000042.tmp"), None);
     assert_eq!(segment_seq("x.tjl"), None);

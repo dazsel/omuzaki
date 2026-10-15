@@ -223,10 +223,14 @@ pub fn read_frame(bytes: &[u8]) -> Result<Frame<'_>, FrameEnd> {
     Ok(Frame { lsn: Lsn(u64::from_le_bytes(lsn)), kind: rest[8], flags: rest[9], payload })
 }
 
-/// `segment-<12 digits>.tjl` (4.1). The sequence number must be below 10^12.
+/// The largest sequence number a segment file name holds: twelve digits.
+const MAX_SEGMENT_SEQ: u64 = 999_999_999_999;
+
+/// `segment-<12 digits>.tjl` (4.1); `None` when `seq` is over 999 999 999 999, which twelve digits can't hold. Every
+/// name this returns is one [`segment_seq`] reads back, and names sort in the order of their numbers.
 #[must_use]
-pub fn segment_name(seq: u64) -> String {
-    format!("segment-{seq:012}.tjl")
+pub fn segment_name(seq: u64) -> Option<String> {
+    (seq <= MAX_SEGMENT_SEQ).then(|| format!("segment-{seq:012}.tjl"))
 }
 
 /// The sequence number in a segment file name; `None` for any other name.
