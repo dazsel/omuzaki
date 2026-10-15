@@ -69,7 +69,7 @@ fn finish(mgr: &Manager, id: JobId, task: &Task, value: Value) -> Result<Outcome
     }
     let record = env.apply(&mut state, &*task.op, (&task.actor, &task.cause, None), &plan)?;
     drop(shut);
-    Ok(Outcome { plan, applied: Some(record) })
+    Ok(Outcome::new(plan).with_applied(record))
 }
 
 /// Which thread is inside [`JobCtx::read`] (the document lock held), and the progress it reported meanwhile.

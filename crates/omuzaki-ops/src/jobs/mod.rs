@@ -152,7 +152,7 @@ impl Manager {
 
     /// Queues `JobChanged` for `job`'s current snapshot and wakes waiters. Called with the manager lock held.
     fn announce(&self, job: &Job) {
-        lock(&self.env.state).queue_event(Event::JobChanged { job: job.info.clone() });
+        lock(&self.env.state).queue_event(Event::job_changed(job.info.clone()));
         self.changed.notify_all();
     }
 
@@ -473,7 +473,7 @@ impl Manager {
             // Coalesced: the snapshot always holds the latest, the event stream at most 10 a second.
             if job.last_progress.is_none_or(|at| now - at >= PROGRESS_INTERVAL - 1e-9) {
                 job.last_progress = Some(now);
-                lock(&self.env.state).queue_event(Event::JobProgress { job: id, stage: stage.to_owned(), fraction });
+                lock(&self.env.state).queue_event(Event::job_progress(id, stage, fraction));
             }
         }
         self.env.publish();
