@@ -364,7 +364,7 @@ fn open_outline(ctx: &mut PaintCtx<'_>, f: &Frame) -> OpenMouth {
     // The lens at the switch, whole: its depth from the upper edge to the lower, against the line's thickness there.
     let at_switch = full * CLOSED_BELOW * (1.0 + TOP_RISE * (1.0 - ROUND_FLATTENS_TOP * round));
     let share = (LENS_OF_LINE * f.line_width(style) / at_switch.max(f32::EPSILON)).min(1.0);
-    let height = full * f.open * (1.0 - share * (1.0 - fade));
+    let height = full * f.open * (1.0 - (1.0 - share) * (1.0 - fade));
     let half_width = f.half_width
         * (1.0 + OPEN_WIDENS * f.open)
         * (1.0 - ROUND_NARROWS * ctx.params.mouth.round)
