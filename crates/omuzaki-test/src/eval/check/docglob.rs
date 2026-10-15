@@ -11,20 +11,20 @@ use serde_json::Value;
 use super::number::same_value;
 
 /// A document path as segments.
-pub(super) type Segments = Vec<String>;
+pub(crate) type Segments = Vec<String>;
 
 /// Splits a pattern into segments; the empty pattern is the root.
-pub(super) fn split(pattern: &str) -> Segments {
+pub(crate) fn split(pattern: &str) -> Segments {
     if pattern.is_empty() { Vec::new() } else { pattern.split('/').map(str::to_owned).collect() }
 }
 
 /// The joined form of a path, for messages and reports.
-pub(super) fn join(path: &[String]) -> String {
+pub(crate) fn join(path: &[String]) -> String {
     path.join("/")
 }
 
 /// Every value `pattern` reaches in `root`, by path, in path order.
-pub(super) fn matches<'a>(root: &'a Value, pattern: &[String]) -> BTreeMap<Segments, &'a Value> {
+pub(crate) fn matches<'a>(root: &'a Value, pattern: &[String]) -> BTreeMap<Segments, &'a Value> {
     let mut found = BTreeMap::new();
     walk(root, pattern, &mut Vec::new(), &mut found);
     found
@@ -73,12 +73,12 @@ fn child<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
 }
 
 /// The value at an exact path, if any.
-pub(super) fn at<'a>(root: &'a Value, path: &[String]) -> Option<&'a Value> {
+pub(crate) fn at<'a>(root: &'a Value, path: &[String]) -> Option<&'a Value> {
     path.iter().try_fold(root, |v, key| child(v, key))
 }
 
 /// Whether `pattern` matches some prefix of `path`: `path` is at or below something the pattern names.
-pub(super) fn covers(pattern: &[String], path: &[String]) -> bool {
+pub(crate) fn covers(pattern: &[String], path: &[String]) -> bool {
     match pattern.split_first() {
         None => true,
         Some((head, rest)) if head == "**" => {
@@ -92,7 +92,7 @@ pub(super) fn covers(pattern: &[String], path: &[String]) -> bool {
 
 /// Every place two documents differ, as the shallowest path that tells it: a changed leaf, a key or item only one side
 /// has, or a value whose kind differs. Numbers compare as numbers (`1` is `1.0`). In path order.
-pub(super) fn differences(before: &Value, after: &Value) -> Vec<Segments> {
+pub(crate) fn differences(before: &Value, after: &Value) -> Vec<Segments> {
     let mut out = Vec::new();
     diff(Some(before), Some(after), &mut Vec::new(), &mut out);
     out

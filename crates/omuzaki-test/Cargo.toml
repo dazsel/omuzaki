@@ -12,13 +12,19 @@ repository.workspace = true
 blake3.workspace = true
 clap.workspace = true
 image.workspace = true
-rmcp = { workspace = true, features = ["client"] }
+# The scripted driver is an MCP client of the in-process (or spawned) server: the child-process pipes are plain async
+# streams, and the duplex pipe of the in-process host needs tokio's io utilities.
+rmcp = { workspace = true, features = ["client", "transport-async-rw"] }
+tokio = { workspace = true, features = ["io-util", "process", "time"] }
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 toml.workspace = true
 omuzaki-core = { path = "../omuzaki-core" }
+# The in-process host builds the runner with the constructor `omuzaki mcp` uses (`session::open_runner`), so an eval
+# cannot drift from the product (design 6.1), and calls `link()` so the ops are linked in.
+omuzaki-cli = { path = "../omuzaki-cli" }
 # `Runner::get` takes a `DocPath`, which `omuzaki-ops-api` does not re-export: the `doc.*` checks read snapshots with it.
 omuzaki-doc-api = { path = "../omuzaki-doc-api" }
 # The MCP catalog names every tool after its op (`face_set_profile` for `face.set_profile`): the transcript is read in op
@@ -30,6 +36,7 @@ omuzaki-store-api = { path = "../omuzaki-store-api" }
 [dev-dependencies]
 tempfile.workspace = true
 # The eval check library's tests (tests/eval_checks.rs): the shared mock runner over an in-memory document, with demo ops.
+omuzaki-doc = { path = "../omuzaki-doc" }
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 omuzaki-ops-mock = { path = "../omuzaki-ops-mock" }
 # The render checks fetch the renders both projects made from one asset store (tests/eval_checks_render.rs).

@@ -4,7 +4,8 @@
 //! - [`fixture`]: [`fixture::Fixture`], the starting project as an op script
 //! - [`provenance`]: the private list and the provenance rules for fixture and eval-set items
 //! - [`check`]: the check library that grades an attempt
-//! - [`transcript`]: the tool calls of an attempt, as the `log.*` checks read them
+//! - [`transcript`]: the record of an attempt, and its tool calls as the `log.*` checks read them
+//! - [`host`], [`script`], [`driver`]: the server an attempt talks to, the scripts that talk to it and the drivers that play them
 //! - [`lint`]: everything `omuzaki-test eval lint` fails on, as a list of findings
 //!
 //! Tasks live in `crates/<crate>/evals/**/*.toml` (never in a `fixtures/` folder), fixtures in
@@ -13,9 +14,13 @@
 //! Adding a task never edits another file (spec §39 rule 2).
 
 pub mod check;
+pub mod driver;
 pub mod fixture;
+pub mod host;
 pub mod lint;
+mod placeholder;
 pub mod provenance;
+pub mod script;
 pub mod task;
 pub mod transcript;
 

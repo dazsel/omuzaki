@@ -14,6 +14,8 @@ use std::time::{Duration, SystemTime};
 use clap::{Args, Parser, Subcommand};
 use omuzaki_test::compare::{CompareError, Tolerance, compare};
 use omuzaki_test::dirs::Dirs;
+use omuzaki_test::eval::script::{self, Script};
+use omuzaki_test::eval::transcript::EventLog;
 use omuzaki_test::eval::{self, lint};
 use omuzaki_test::gc::{self, MIN_AGE, Object, Plan, Removal, total_bytes};
 use omuzaki_test::goldens::{GoldenId, Goldens, Mode, Outcome, load_png, save_png};
@@ -127,6 +129,25 @@ enum EvalCommand {
         #[arg(long, value_name = "JSON")]
         tools: Option<PathBuf>,
     },
+    /// Write a script for a task from the tool calls of a recorded attempt (`transcript.jsonl` of a run folder).
+    ///
+    /// The script lands beside the task as `<task>.<name>.<pass|fail>.jsonl`; an existing script is never replaced.
+    /// An argument that is exactly an id the attempt's fixture exported is written back as `{name}`.
+    Promote {
+        /// The attempt's `transcript.jsonl`.
+        transcript: PathBuf,
+        /// The task the script is for, by id.
+        #[arg(long, value_name = "ID")]
+        task: String,
+        /// The script's name: lowercase words joined by dashes.
+        #[arg(long = "as", value_name = "NAME")]
+        name: String,
+        /// Whether the script must pass or must fail.
+        #[arg(long, value_enum)]
+        expect: Expectation,
+        #[command(flatten)]
+        root: RootArg,
+    },
     /// Print every task as JSON: `[{id, feature, crate, tags, version, hash}]`.
     List {
         /// The only output format; spelled out so scripts say what they expect.
@@ -135,6 +156,15 @@ enum EvalCommand {
         #[command(flatten)]
         root: RootArg,
     },
+}
+
+/// What a promoted script must do.
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum Expectation {
+    /// The task's checks must pass on it.
+    Pass,
+    /// The task's checks must fail on it.
+    Fail,
 }
 
 #[derive(Args)]
@@ -270,6 +300,9 @@ fn run(cli: Cli) -> Verdict {
             Ok(true)
         }
         Command::Eval(EvalCommand::Lint { root, tools }) => eval_lint(&workspace_root(root.root)?, tools.as_deref()),
+        Command::Eval(EvalCommand::Promote { transcript, task, name, expect, root }) => {
+            eval_promote(&workspace_root(root.root)?, &transcript, &task, &name, matches!(expect, Expectation::Pass))
+        }
         Command::Eval(EvalCommand::List { json: _, root }) => eval_list(&workspace_root(root.root)?),
         Command::Report { artifact_url, store } => {
             let dirs = store.dirs().locate_report()?;
@@ -322,6 +355,37 @@ fn eval_lint(root: &Path, tools: Option<&Path>) -> Verdict {
     }
     println!("{} tasks, {} fixtures, {} findings.", discovery.tasks.len(), discovery.fixtures.len(), findings.len());
     Ok(findings.is_empty())
+}
+
+/// `eval promote`: writes the recorded attempt's calls as a script beside its task.
+fn eval_promote(root: &Path, transcript: &Path, task: &str, name: &str, expect_pass: bool) -> Verdict {
+    let text = std::fs::read_to_string(transcript).map_err(|e| format!("{}: {e}", transcript.display()))?;
+    let log = EventLog::from_jsonl(&text).map_err(|e| format!("{}: {e}", transcript.display()))?;
+    let script = Script::from_log(&log);
+    if script.lines.is_empty() {
+        return Err(format!(
+            "{}: the attempt made no tool calls, so there is nothing to promote",
+            transcript.display()
+        )
+        .into());
+    }
+    let discovery = eval::discover(root)?;
+    let file = discovery
+        .tasks
+        .iter()
+        .find(|t| t.task.id == task)
+        .ok_or_else(|| format!("no task `{task}` under {}", root.display()))?;
+    let path = root.join(script::promoted_path(&file.path, name, expect_pass)?);
+    // `create_new` so a promoted script never replaces one that is already the oracle of a task.
+    let mut out = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    std::io::Write::write_all(&mut out, script.to_jsonl()?.as_bytes())
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    println!("wrote {} ({} calls)", path.display(), script.lines.len());
+    Ok(true)
 }
 
 /// One row of `eval list --json`.

@@ -12,7 +12,7 @@
 
 mod bind;
 mod doc;
-mod docglob;
+pub(crate) mod docglob;
 mod gate;
 mod log;
 mod number;

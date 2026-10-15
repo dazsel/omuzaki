@@ -4292,7 +4292,9 @@ dependencies = [
  "omuzaki-ai-ort",
  "omuzaki-char-api",
  "omuzaki-char-mock",
+ "omuzaki-cli",
  "omuzaki-core",
+ "omuzaki-doc",
  "omuzaki-doc-api",
  "omuzaki-doc-mock",
  "omuzaki-io-api",
@@ -4312,6 +4314,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "thiserror 2.0.21",
+ "tokio",
  "toml",
 ]
 
@@ -5921,6 +5924,7 @@ dependencies = [
  "libc",
  "mio",
  "pin-project-lite",
+ "signal-hook-registry",
  "socket2",
  "tokio-macros",
  "windows-sys 0.61.2",
