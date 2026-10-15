@@ -59,6 +59,9 @@ harness = false
 name = "mouth_interior"
 harness = false
 
+[build-dependencies]
+omuzaki-embed = { path = "../omuzaki-embed" }
+
 [lints]
 workspace = true
 
