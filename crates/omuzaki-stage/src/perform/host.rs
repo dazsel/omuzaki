@@ -54,8 +54,10 @@ const BOUNDARY_EPS: f64 = 1e-9;
 /// Weight of the newest arrival gap in the [`PerformStatus::source_fps`] average.
 const FPS_SMOOTHING: f32 = 0.1;
 
-/// What the ops (and the UI) can ask of the live performer. Requests are queued for the perform thread, so a reply
-/// means "accepted", not "applied"; [`status`](Self::status) shows what has happened since.
+/// What the ops (and the UI) can ask of the live performer. Requests are queued for the perform thread. For
+/// [`calibrate`](Self::calibrate) and [`set_calibration`](Self::set_calibration) a reply means "accepted", not
+/// "applied"; [`status`](Self::status) shows what has happened since. [`set_retarget`](Self::set_retarget) waits, and its
+/// reply is the configuration the performer has applied.
 pub trait PerformHost: Send + Sync {
     /// Starts a neutral capture of `frames` tracked frames (clamped to the capture's own limits); the result applies
     /// itself when done.
@@ -541,8 +543,10 @@ struct Running {
     frames: usize,
     /// Tracked frames held at the last step that made progress.
     held: usize,
-    /// The control-timeline tick (see [`PerformControl`]) at which the capture started or last made progress.
-    progress_tick: u64,
+    /// The control-timeline tick (see [`PerformControl`]) at which the capture last made progress, or started: `None`
+    /// until the first [`PerformControl::advance`] that has due steps takes it, because a request that arrives after a
+    /// pause must start at the current tick, not at the one before the catch-up.
+    progress_tick: Option<u64>,
     /// Whether the frames are all in and only the performer's calibration is left to set.
     full: bool,
 }
@@ -644,7 +648,7 @@ impl PerformControl {
             Command::Calibrate(frames) => {
                 let frames = frames.clamp(MIN_NEUTRAL_FRAMES, MAX_NEUTRAL_FRAMES);
                 self.capture.reset();
-                self.running = Some(Running { frames, held: 0, progress_tick: self.next_step, full: false });
+                self.running = Some(Running { frames, held: 0, progress_tick: None, full: false });
                 self.live.calibration = CalibrationState::Capturing { frames: 0, of: frames };
             }
             Command::Config { seq, config } => {
@@ -674,6 +678,7 @@ impl PerformControl {
 
     /// Pushes the step's tracked frame into the capture and watches for a stall.
     fn feed_capture(&mut self, out: &PerformOutput<'_>) {
+        let timeline_end = self.next_step;
         let Some(run) = self.running.as_mut().filter(|run| !run.full) else {
             return;
         };
@@ -686,8 +691,9 @@ impl PerformControl {
         if held >= run.frames {
             run.full = true;
         } else if held > run.held {
-            // Progress at step `index` means the timeline has covered `index + 1` ticks.
-            (run.held, run.progress_tick) = (held, out.tick.index + 1);
+            // Progress counts from the end of this call's timeline, not the executed step's own tick: when the loop
+            // fell behind, the steps run are the oldest due ones and the timeline is already past them.
+            (run.held, run.progress_tick) = (held, Some(timeline_end));
         }
     }
 
@@ -696,10 +702,13 @@ impl PerformControl {
     /// 10 s of waiting just as 600 stepped ticks are. Checked before the due steps run, so frames that arrive after a
     /// long gap do not rescue the capture.
     fn check_stall(&mut self) {
-        let Some(run) = self.running.as_ref().filter(|run| !run.full) else {
+        let Some(run) = self.running.as_mut().filter(|run| !run.full) else {
             return;
         };
-        if self.next_step.saturating_sub(run.progress_tick) >= CAPTURE_STALL_STEPS {
+        // `next_step` is the timeline's end after this call's catch-up (`due_steps` has moved it), so a capture asked
+        // for during a pause starts here, with its whole window ahead of it.
+        let anchor = *run.progress_tick.get_or_insert(self.next_step);
+        if self.next_step.saturating_sub(anchor) >= CAPTURE_STALL_STEPS {
             let (got, _) = self.capture.progress();
             self.live.calibration = CalibrationState::Failed { got, need: run.frames };
             self.running = None;

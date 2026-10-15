@@ -186,12 +186,12 @@ fn calibrate_takes_150_tracked_frames_then_applies_the_new_calibration() {
 fn a_lost_source_fails_the_capture_after_600_steps() {
     let (host, mut control, mut performer) = rig(Box::new(Silent));
     host.calibrate(150).unwrap();
-    // Step 0 ran before the request, so the capture's 600th step is step 600.
-    for i in 1..=599 {
+    // Step 0 ran before the request and step 1 took it, so the capture's 600 steps are steps 2 to 601.
+    for i in 1..=600 {
         step(&mut control, &mut performer, i);
         assert_eq!(host.status().calibration, CalibrationState::Capturing { frames: 0, of: 150 }, "step {i}");
     }
-    step(&mut control, &mut performer, 600);
+    step(&mut control, &mut performer, 601);
     assert_eq!(host.status().calibration, CalibrationState::Failed { got: 0, need: 150 });
     host.calibrate(150).expect("a failed capture can be asked for again");
 }
@@ -254,11 +254,11 @@ fn a_reset_late_in_a_session_still_fails_a_stalled_capture_after_600_steps() {
     }
     // The performer's own tick index restarts at the next `advance`; the control counts its steps itself.
     performer.reset();
-    for i in 60_101..=60_599 {
+    for i in 60_101..=60_600 {
         step(&mut control, &mut performer, i);
         assert!(matches!(host.status().calibration, CalibrationState::Capturing { .. }), "step {i}");
     }
-    step(&mut control, &mut performer, 60_600);
+    step(&mut control, &mut performer, 60_601);
     assert_eq!(host.status().calibration, CalibrationState::Failed { got: 0, need: 150 });
 }
 
@@ -270,13 +270,40 @@ fn a_loop_that_advances_once_a_second_still_fails_a_silent_capture_after_10_seco
     let call = |control: &mut PerformControl, performer: &mut Performer, second: u32| {
         control.advance(performer, Seconds(f64::from(second) + 0.5 / 60.0)).expect("steps are due");
     };
-    for second in 1..=9 {
+    // The capture starts in the first call (second 1), so its 10 s end in the call at second 11.
+    for second in 1..=10 {
         call(&mut control, &mut performer, second);
         assert!(matches!(host.status().calibration, CalibrationState::Capturing { .. }), "second {second}");
     }
-    call(&mut control, &mut performer, 10);
+    call(&mut control, &mut performer, 11);
     assert_eq!(host.status().calibration, CalibrationState::Failed { got: 0, need: 150 });
     assert!(control.skipped_steps() > 0, "the loop really skipped ticks");
+}
+
+#[test]
+fn a_capture_asked_for_during_a_pause_gets_its_full_window_when_the_loop_resumes() {
+    // Silent tracker: the window is the whole story.
+    let (host, mut control, mut performer) = rig(Box::new(Silent));
+    // The loop pauses for 10 s; the request arrives during the pause and is taken by the first call after it.
+    host.calibrate(150).unwrap();
+    let resume = |control: &mut PerformControl, performer: &mut Performer, seconds: f64| {
+        control.advance(performer, Seconds(seconds)).expect("steps are due");
+    };
+    resume(&mut control, &mut performer, 10.5);
+    assert!(matches!(host.status().calibration, CalibrationState::Capturing { .. }), "not failed at once");
+    resume(&mut control, &mut performer, 19.5);
+    assert!(matches!(host.status().calibration, CalibrationState::Capturing { .. }), "still inside its window");
+    resume(&mut control, &mut performer, 21.0);
+    assert_eq!(host.status().calibration, CalibrationState::Failed { got: 0, need: 150 }, "and 10 s later it ends");
+
+    // With a tracker that is there, the same pause leaves the capture its full window to finish in.
+    let (host, mut control, mut performer) = rig(replay(60.0));
+    host.calibrate(30).unwrap();
+    resume(&mut control, &mut performer, 10.5);
+    for i in 0..200_u32 {
+        resume(&mut control, &mut performer, 10.5 + f64::from(i + 1) / 60.0);
+    }
+    assert_eq!(host.status().calibration, CalibrationState::Done { frames: 30 });
 }
 
 #[test]
