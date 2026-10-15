@@ -23,8 +23,8 @@ same stages); `scenes.md` D7 (props). Pages named alone are in `docs/design/`.
 |---|---|---|
 | D1 | A new contract, **`omuzaki-input-api`**, with `omuzaki-input-mock` and one implementation crate `omuzaki-input` that holds every OS backend. Not inside `omuzaki-track-api`. | §2 |
 | D2 | **Key identities exist in one module of one crate.** The capture thread turns a key into a *zone* (a cell of a fixed, coarse keyboard grid) and, only when it matches a configured binding, a *binding slot*. Neither the contract's hot types nor anything after the capture thread can hold a key code or a character. Pointer input is relative motion, never a screen position. | §3 |
-| D3 | **Capture is off by default, turned on only by a person** (`person_only`, scope `input`, which already exists on `main`: no `omuzaki-ops-api` change), **never restored** at start, and **runs only while an indicator is shown**: starting needs an `IndicatorLease` the surface mints, and the hub stops itself if the lease lapses. The protected-program kill switch is set only with `process`, and its pause reason is shown only to `process`. | §4 |
-| D4 | **Bindings and triggers share the source.** Each capture backend feeds its own SPSC rings: zone events to the frame thread (motion), binding events to the binding dispatcher (PF-05 actions, PF-25 triggers, locomotion intents), merged in a fixed backend order. Binding events carry their table generation; releases survive overflow, and held-state snapshots reconcile any loss. Chords live in a machine-local store that `Services`, ops, MCP and agents never reach. | §2, §5 |
+| D3 | **Capture is off by default, turned on only by a person** (`person_only`, scope `input`, which already exists on `main`: no `omuzaki-ops-api` change), **never restored** at start, and **runs only while an indicator is shown**: a surface installs its indicator with the hub (not through an op), start fails with `NoIndicator` unless it is shown, and the hub pauses itself if it stops showing. Anyone may pause or stop (`read`), and every pause or stop releases whatever was held. The protected-program kill switch is set only with `process`, and its pause reason is shown only to `process`. | §4 |
+| D4 | **Bindings and triggers share the source.** Each capture backend feeds its own SPSC rings: zone events to the frame thread (motion), binding events to the binding dispatcher (PF-05 actions, PF-25 triggers, locomotion intents), drained in turn; the drained order is what takes and replays record. Binding events carry their table generation; releases survive overflow, and held-state snapshots reconcile any loss. Chords live in a machine-local store that `Services`, ops, MCP and agents never reach. | §2, §5 |
 | D5 | **Motion is pose layers plus IK goals in the §8 order:** after the animator, before the rig. Typing, pointer, pen and gamepad are device motions sharing one hand allocator; each hand belongs to one device at a time. A tracked bone wins (PF-23) through a `tracked` bone mask, with a 0.3 s hand-over. No `omuzaki-anim-api` change. | §6 |
 | D6 | **Locomotion** is a state machine (idle, walk, run, jump, sit, emote) over a 1-D speed blend; walk and run are a procedural gait (licence-clean by construction), jump, sit and emotes are pose clips (#223). The root moves procedurally, matched to stride; foot planting (`omuzaki-rig`) removes the rest of the slide. A set is a library item that materialises its values and clips into the character and pins itself (ADR 0019 §4). | §7 |
 | D7 | **Props** are four ST-03 prop kinds with named anchors (key plane, pad plane, tablet plane, grips). Hands use the anchors whether the prop is drawn or hidden. A desk is placed from the character's own proportions. | §8 |
@@ -59,26 +59,30 @@ at has no section yet, so locomotion is kept world-agnostic (§7.6) and promises
  OS (Raw Input, CGEventTap, XI2, evdev, GlobalShortcuts portal, XInput/GameController via gilrs)
    │  omuzaki-input: one capture thread per backend; key codes live only in `normalise`
    ▼
- per backend b:  normalise ──► zone table ──► motion ring[b] (SPSC, 512) ──┐ merged by (at, backend order)
+ per backend b:  normalise ──► zone table ──► motion ring[b] (SPSC, 512) ──┐ drained in turn (§2)
                      │                                                     └─► frame thread: MotionFeed::drain ──► omuzaki-anim
-                     └──► binding matcher ──► binding ring[b] (SPSC, 64) ──┐ merged by (at, backend order)
+                     └──► binding matcher ──► binding ring[b] (SPSC, 64) ──┐ drained in turn (§2)
                      └──► held slots[b] (atomic snapshot, generation)  ────┴─► binding dispatcher: PF-05 actions,
                                                                                PF-25 triggers, locomotion intents
  gamepad backend: newest-wins PadState (triple buffer) ──► frame thread
 ```
 
 **One producer per ring.** Every capture backend runs on its own thread and owns its own rings, so each ring has
-exactly one producer and one consumer and stays a plain SPSC ring with no lock. A consumer merges the rings of the
-running backends by `(at, backend order)`. `at` is quantised to 1/120 s (§3), so ties are common, and the tie-break is
-the fixed `Backend` order declared in `omuzaki-input-api` (`Windows`, `MacTap`, `X11`, `Evdev`, `Portal`, `Gamepad`),
-never thread scheduling. A replay (`ReplaySource`) carries the backend of each event, so it merges the same way and
-dispatches in the same order.
+exactly one producer and one consumer and stays a plain SPSC ring with no lock. Each ring is in order; **across rings
+no global order is promised.** Backends are scheduled independently, so an event stamped earlier on one backend can
+reach its ring after a later event on another has already been drained, and no barrier between them is worth a stall on
+the frame thread. A consumer drains the running backends' rings in turn (in the declaration order of `Backend`,
+`Windows`, `MacTap`, `X11`, `Evdev`, `Portal`, `Gamepad`, which only fixes whose ring is read first), and **the live
+order is the order it drained**. Determinism comes from recording that order, not from re-deriving it: a take's
+`Motion` records keep the drained order (§9), and `ReplaySource` keeps each event's backend and its position in the
+drained order, so a replay hands consumers exactly the same sequence. Cross-device order inside one 1/120 s window is
+not visible in the motion anyway (each device drives its own hand or layer).
 
 | Crate | Kind | Holds |
 |---|---|---|
 | `omuzaki-input-api` | API (over `omuzaki-core`, `serde`, `schemars`, `thiserror`) | the event and state types of §3, the zone table, `BindingSlot`, `BindingId`, `KeyChord` (cold, binding store only), `CaptureState`, `CaptureCaps`, the traits `MotionFeed`, `BindingFeed`, `InputControl`, `Indicator` |
 | `omuzaki-input-mock` | Mock | `FakeInput` (scripted events on `FakeClock`), `ReplaySource` (recorded input from text, deterministic), the conformance suite every backend passes |
-| `omuzaki-input` | Implementation (`wasm = false`: OS input) | the hub, the normaliser and binding matcher, the rings, the indicator lease, the kill switch, the backends (`windows`, `macos`, `linux_x11`, `linux_evdev`, `linux_portal`, `gamepad`), the ops `input.capture.*` and `input.binding.*` |
+| `omuzaki-input` | Implementation (`wasm = false`: OS input) | the hub, the normaliser and binding matcher, the rings, the indicator host, the kill switch, the backends (`windows`, `macos`, `linux_x11`, `linux_evdev`, `linux_portal`, `gamepad`), the ops `input.capture.*` and `input.binding.*` |
 
 **Why not inside `omuzaki-track-api`** (#1511). Its contract is a camera and a tracker that produce one newest-wins
 `TrackFrame` per camera frame, behind `FrameSource`, owned by the Runtime area; it has no events, no edges, no scope gate
@@ -137,7 +141,7 @@ pub trait MotionFeed: Send {                  // the frame thread's port; never 
 }
 pub struct MotionFrame { /* fixed array of MOTION_FRAME_MAX (128) events plus a dropped count */ }
 pub trait BindingFeed: Send {
-    fn poll(&mut self) -> Option<BindingEvent>;          // merged over the backends' rings by (at, backend order)
+    fn poll(&mut self) -> Option<BindingEvent>;          // the backends' rings drained in turn; no global order (§2)
     fn dropped(&self) -> u64;                             // edges dropped by any ring since start; a change triggers reconciliation
     fn held(&self, backend: Backend) -> HeldSlots;       // the backend's held-state snapshot
 }
@@ -194,10 +198,14 @@ an agent with `perform` drives the avatar, which must never imply reading anothe
 
 | Op | Scope | Who | Effect |
 |---|---|---|---|
-| `input.capture.start { classes }` | `input` | `person_only` (an agent or automation gets `Denied`, never queued) | starts capture for the device classes asked, if an indicator lease is held |
-| `input.capture.stop` | `perform` | anyone (stopping only removes exposure) | stops capture; idempotent |
+| `input.capture.start { classes }` | `input` | `person_only` (an agent or automation gets `Denied`, never queued) | starts or resumes capture for the device classes asked; fails with `NoIndicator` unless an installed indicator reports shown |
+| `input.capture.pause` | `read` | anyone | pauses capture (`Paused`), keeping the classes; only a person's `start` resumes; idempotent |
+| `input.capture.stop` | `read` | anyone | stops capture (`Off`); idempotent |
 | `input.capture.state` | `read` | anyone | `CaptureState` and `CaptureCaps`, no device names or counts of keys; the pause reason only with `process` (below) |
 | `input.capture.protect { programs }` | `process` | agent `Confirm` | sets the kill-switch list (below) |
+
+`input.capture.pause` exists so that the person, an automation or an agent can step capture aside (a password prompt, a
+private call) without losing the classes chosen; the hub's own pauses (indicator, protected program) use the same path.
 | `input.motion.*` settings keys | (settings registry) | agent `Confirm` | the motion settings of §6.5 |
 
 `CaptureState` is `Off`, `NeedsPermission { how: PermissionHow }` (macOS Input Monitoring, Linux `input` group for
@@ -209,12 +217,29 @@ can say so (research §2).
 **Off by default, never restored.** Capture state is not a setting and is not in the session file: settings.md D9
 already says session restore "never restarts capture or output". A crash or restart comes back `Off`.
 
-**The indicator is a precondition, not a courtesy.** `InputControl::start(classes, lease: IndicatorLease)`. A lease is
-minted only by an `Indicator` implementation that a surface installs: the desktop shell's status-bar badge and tray
-state ("Reading keyboard and mouse: zones only. Stop"), or the CLI's persistent stderr banner. The hub calls
-`Indicator::shown()` once a second on its control thread; if it reads `false` (the window was hidden by a bug, the
-surface dropped the lease) the hub pauses capture within a second and reports `Paused { why: IndicatorLost }`. Windows
+**Stopping and pausing are open to everyone.** Both only remove exposure, so they are registered with `read`, the
+scope every actor holds (the runner requires `read` plus the op's own scope, so `read` adds nothing). A read-only agent,
+an automation or a script can always turn capture off.
+
+**The indicator is a precondition, not a courtesy.** An op request cannot carry anything a surface holds, so the
+indicator is installed with the hub, not passed through an op. When a surface starts, it calls
+`IndicatorHost::install(Box<dyn Indicator>)` on the hub: a hub API that, like `ChordStore`, is handed to the surface
+directly and never inserted into `Services`, so no op, MCP tool or agent can install or replace an indicator. The two
+surfaces that install one are the desktop shell (its status-bar badge and tray state, "Reading keyboard and mouse:
+zones only. Stop"; task UI-1) and the CLI (a persistent stderr banner; task CLI-1). `input.capture.start` then calls
+`InputControl::start(classes)`, which fails with the typed `InputError::NoIndicator` unless an indicator is installed
+and `Indicator::shown()` reads `true`; a headless process that installed none can never start capture. The hub calls
+`shown()` once a second on its control thread; if it reads `false` (the window was hidden by a bug, the surface
+uninstalled or dropped it) the hub pauses capture within a second and reports `Paused { why: IndicatorLost }`. Windows
 and X11 show the user nothing of their own (research §5), so this is the only signal the person has.
+
+**Every pause and stop ends what is held.** A key held when capture pauses or stops would otherwise never deliver its
+release. So every transition out of `On` (an explicit `pause` or `stop`, a lost indicator, a protected program, a
+backend failure) does three things, atomically on the control thread before the state is published: each backend's
+`HeldSlots` is cleared, the dispatcher synthesises a `Release` for every action it holds (§5), and motion receives
+a release edge for every zone and button it holds, so fingers lift and locomotion stops. **Resuming starts with
+nothing held:** a key still physically down when capture resumes does nothing until it is released and pressed again
+(its release, matching no held action, is ignored).
 
 **The kill switch.** An optional list of protected programs (default empty). While capture is on and the list is not
 empty, the control thread checks the running process names every 2 s and pauses capture while one runs. That check is
@@ -260,11 +285,18 @@ source delivers them; the action catalogue and the dispatcher belong to #469 and
   last queued event of that generation has drained, so a queued slot can never index another binding. An event from a
   retired generation whose binding (by its stable `BindingId`) is gone from the current table is dropped and counted;
   so that this never strands a held action, the dispatcher ends every action held for a binding the new table removes
-  (a synthesised `Release`) when it takes the swap. A binding that still exists runs the action of the generation its
-  event was matched under, so its press and its release always meet the same action. If 4 generations are pending
+  (a synthesised `Release`) when it takes the swap.
+- **A press owns its release.** A key can be held across a swap: pressed under the old table, released under the new
+  one. So the dispatcher keeps a held-action record per `BindingId` (a fixed array of `MAX_BINDINGS`), written at the
+  press: the generation and the action the press started. A `Release` ends **the action in that record**, whatever the
+  release's own generation or the current table says, and clears it; a `Repeat` repeats the recorded action. If the
+  binding's action was edited while it was held, the old action ends at the release and the new action never starts
+  from that press; the next press starts the new one. A `Release` with no record (its press was dropped, or happened
+  before a resume) does nothing. If 4 generations are pending
   (edits faster than the dispatcher drains), the control thread waits to swap instead of recycling a table that still
   has queued events.
-- **A lost release is never permanent.** Edges can be dropped only when a ring is full (the dispatcher is stalled).
+- **A lost release is never permanent.** Inside a run of capture, edges can be dropped only when a ring is full (the
+  dispatcher is stalled); a pause or stop releases everything held (§4).
   The ring keeps releases, as the motion ring keeps key-ups: a full binding ring drops its oldest `Repeat`, then its
   oldest complete tap (a `Press` with its `Release` queued behind it, both together), then its oldest lone `Press`; it
   drops a `Release` only if the ring holds nothing else. Each backend also publishes `HeldSlots`, the slots it holds
@@ -515,7 +547,7 @@ locomotion is active, fixed little-endian layout, about 40 to 80 bytes (plus the
 
 ```
 member u8 | flags u8 (HAS_KEYS, HAS_BUTTONS, HAS_POINTER, HAS_PEN, HAS_PAD, HAS_LOCO, HAND_ONLY, CHECKPOINT) | reserved u16
-keys:     n u8 | n × (zone u8 | down u8)                      // edges, in arrival order within the frame; no times
+keys:     n u8 | n × (zone u8 | down u8)                      // edges, in drained order within the frame (§2); no times
 buttons:  n u8 | n × (source u8 | button u8 | down u8)        // edges: source 0 mouse, 1 pen, 2 pad (a pad zone)
 pointer:  dx f32 | dy f32 | wheel f32                         // summed over the frame (motion integrates per frame)
 pen:      u u8 | v u8 | pressure u8 | contact u8 | tilt i8 × 2 | 2 reserved   // the frame's last sample
@@ -625,6 +657,8 @@ crate describes itself in its own `Cargo.toml` (`[package.metadata.omuzaki]` `ki
 | IN-7 | new | `omuzaki-input` (macOS) | sonnet, local lane | IN-3 |
 | IN-8 | #939 (input half) | `omuzaki-input` (ops) | haiku | IN-3 |
 | IN-9 | new (Wayland bindings) | `omuzaki-input` (portal) | sonnet | IN-3; the owner's answer to §12 question 2 |
+| UI-1 | new (indicator) | `omuzaki-ui` | sonnet | IN-1 |
+| CLI-1 | new (indicator) | `omuzaki-cli` | haiku | IN-1 |
 | MO-1 | #748 (typing half) | `omuzaki-anim` | sonnet | IN-1 |
 | MO-2 | #748 (pointer half) | `omuzaki-anim` | sonnet | MO-1 |
 | MO-3 | #749 | `omuzaki-anim` | sonnet | MO-1 |
@@ -640,7 +674,7 @@ crate describes itself in its own `Cargo.toml` (`[package.metadata.omuzaki]` `ki
 | SP-1 | research spikes 1 to 4 | none (a report) | local lane | IN-4 |
 
 The table is each task's model and `Blocked by` line; the sections below give the title, crate, fence, contract and
-acceptance. Order: IN-1 → (IN-2, MO-1, LO-1 in parallel) → IN-3 → (IN-4 to IN-9, MO-2, MO-3, LO-2, LO-3, LO-4) → ST-1 → ST-2,
+acceptance. Order: IN-1 → (IN-2, MO-1, LO-1, UI-1, CLI-1 in parallel) → IN-3 → (IN-4 to IN-9, MO-2, MO-3, LO-2, LO-3, LO-4) → ST-1 → ST-2,
 ST-3 → ST-4, EV-1. MO-1 and LO-1 need only the contract and the mock, so the motion work never waits on an OS backend.
 
 ### IN-1: `omuzaki-input-api`: events, zones, bindings, capture state and the traits (new API crate)
@@ -650,12 +684,12 @@ ST-3 → ST-4, EV-1. MO-1 and LO-1 need only the contract and the mock, so the m
 - **Contract:** §3 and §5 as written: `KeyZone` and the 16-zone table by HID usage, `ZoneInfo`, `MotionEvent`,
   `PadState`, `PadZones`, `BindingSlot`, `BindingId`, `TableGen`, `Backend`, `BindingEvent`, `HeldSlots`, `Edge`,
   `KeyChord` and `PadChord` (cold), `CaptureState`, `CaptureCaps`, `PermissionHow`, `PauseWhy`, `MotionFrame` (`MOTION_FRAME_MAX` 128), `MAX_BINDINGS`
-  64, the traits `MotionFeed`, `BindingFeed`, `InputControl`, `Indicator`, `ChordStore`, and `IndicatorLease`. Needs the
+  64, `InputError` (with `NoIndicator`), the traits `MotionFeed`, `BindingFeed`, `InputControl`, `Indicator`,
+  `IndicatorHost` and `ChordStore`. Needs the
   Director's approval as a new contract.
 - **Acceptance:** the zone table covers every usage of the ANSI (104), ISO (105) and JIS (109) boards, counted in a test;
   `MotionEvent` is `Copy` and at most 32 bytes (`size_of` test); serde round trip of every cold type; a test that no
-  public hot type has a field of a chord type (by `JsonSchema` walk); the `Backend` order is pinned by a test (it is
-  the replay tie-break, §2); `#![deny(missing_docs)]`; `lint-deps` and
+  public hot type has a field of a chord type (by `JsonSchema` walk); `#![deny(missing_docs)]`; `lint-deps` and
   `lint-crate-table` accept the crate; check green.
 
 ### IN-2: `omuzaki-input-mock`: `FakeInput`, `ReplaySource` and the conformance suite (new mock)
@@ -663,23 +697,28 @@ ST-3 → ST-4, EV-1. MO-1 and LO-1 need only the contract and the mock, so the m
 - **Fence:** `crates/omuzaki-input-mock/**` (new).
 - **Contract:** IN-1. `FakeInput` (scripted events and pad states on `FakeClock`, implements `MotionFeed`, `BindingFeed`
   and `InputControl`), `ReplaySource::from_text` (the recorded-input text format: one event per line, zone names, times
-  in seconds and the backend), `conformance::run(&mut dyn MotionFeed, …)`.
+  in seconds and the backend, in drained order), `conformance::run(&mut dyn MotionFeed, …)`.
 - **Acceptance:** replay of a 60 s script is identical over two runs and after a text round trip; `drain` allocates 0
   bytes (counting allocator); `drain(up_to)` never returns an event after `up_to` (proptest); a dropped-event count when
-  more than `MOTION_FRAME_MAX` events arrive in one drain; events of several backends with equal `at` come out in
-  `Backend` order, on every run; check green.
+  more than `MOTION_FRAME_MAX` events arrive in one drain; a replay of events from several backends hands them out in
+  exactly the recorded drained order, on every run; check green.
 
 ### IN-3: `omuzaki-input`: the hub, the normaliser, the binding matcher, the gate and the zone-equivalence test (new crate)
 
 - **Fence:** `crates/omuzaki-input/**` except the backend folders: `Cargo.toml` (`wasm = false`, reason "OS input";
   `registers = true`; `generated-mods = ["src"]` with the `omuzaki-embed` build script, so each backend task adds its
   own folder, gated inside by `#![cfg(target_os = …)]`, and nobody edits `lib.rs` again), `build.rs`, `src/lib.rs`,
-  `src/hub.rs`, `src/normalise.rs`, `src/matcher.rs`, `src/rings.rs`, `src/dispatch.rs` (the merge, the generation
-  pool and reconciliation), `src/indicator.rs`, `src/kill_switch.rs`, `src/store.rs`; `tests/privacy.rs`,
+  `src/hub.rs`, `src/normalise.rs`, `src/matcher.rs`, `src/rings.rs`, `src/dispatch.rs` (draining the rings, the
+  generation pool, held actions and reconciliation), `src/indicator.rs`, `src/kill_switch.rs`, `src/store.rs`; `tests/privacy.rs`,
   `tests/gate.rs`, `tests/bindings.rs`, `benches/normalise.rs` and its `[[bench]]` entry.
 - **Contract:** IN-1; ops-api `Scope::Input`; §3 (rules 1 to 5), §4 and §5. A `pub(crate)` `RawSink` the backends call.
-- **Acceptance:** the zone-equivalence proptest (§3 rule 5) over every output surface the crate has; capture refuses to
-  start without a lease and pauses within 1.1 s of `Indicator::shown()` turning false (`FakeClock`); the binding table
+- **Acceptance:** the zone-equivalence proptest (§3 rule 5) over every output surface the crate has; `start` fails with
+  `NoIndicator` when no indicator is installed and when the installed one reports hidden, and capture pauses within
+  1.1 s of `Indicator::shown()` turning false (`FakeClock`); **held across a pause:** hold a movement binding and a key,
+  then pause (once each by `pause`, `stop`, a lost indicator and a protected program): the movement action ends and the
+  key's release edge reaches motion before the state is published, and after resuming the still-held key does nothing
+  until pressed again; **a press owns its release:** press a binding, swap in a table that changes its action, release:
+  the old action ends and the new one never starts, and the next press starts the new one; the binding table
   matches chords with modifiers and reports conflicts; a full ring drops the oldest motion event and counts it, and
   never drops a key-up (a key-up displaces the oldest pointer event first); **table swaps:** an edit that swaps the
   table while events are queued runs no wrong action (queue presses on slots 0 to 3, swap in a table that removes
@@ -688,7 +727,7 @@ ST-3 → ST-4, EV-1. MO-1 and LO-1 need only the contract and the mock, so the m
   another binding); **a lost release:** hold a movement binding,
   overflow its backend's binding ring with repeats from a stalled dispatcher, release the key, resume the dispatcher:
   the movement action ends (by the queued release or by reconciliation against `HeldSlots`) within one dispatch;
-  two backends' events with equal `at` dispatch in `Backend` order; the forbidden-symbol test of §3 rule 4;
+  the forbidden-symbol test of §3 rule 4;
   `normalise` plus `match` at most 1 µs per event on `Dev` (bench); check green.
 
 ### IN-4: `omuzaki-input`: the Windows keyboard, mouse and pen backend (Raw Input, no hooks)
@@ -736,9 +775,11 @@ ST-3 → ST-4, EV-1. MO-1 and LO-1 need only the contract and the mock, so the m
 - **Fence:** `crates/omuzaki-input/src/ops/**` (one file per op), `crates/omuzaki-input/tests/ops.rs`.
 - **Contract:** ops-api (`register_op!`, `Scope::Input`, `person_only`, `require_person`), `InputControl` as a service;
   §4 and §5 tables: `input.capture.start`, `input.capture.stop`, `input.capture.state`, `input.capture.protect`,
-  `input.binding.list`, `input.binding.set_action`, `input.binding.remove`. No op takes or returns a chord.
+  `input.capture.pause`, `input.binding.list`, `input.binding.set_action`, `input.binding.remove`. No op takes or
+  returns a chord or an indicator.
 - **Acceptance:** table tests with person, agent and automation actors (an agent's `input.capture.start` is `Denied`
-  and never queued; anyone may stop; stopping is idempotent); a test that types a known string through
+  and never queued; a person's `start` with no indicator installed fails with `NoIndicator`; **a read-only actor**
+  (grants `read` only) stops and pauses capture; stopping and pausing are idempotent); a test that types a known string through
   `FakeInput` and scans every op result, event and journal record for any key code or character of it (none);
   **the protected-program list:** `input.capture.protect` is refused without `process` (an actor with `input` and
   `perform` only gets `Denied`); with capture paused by a protected program, `input.capture.state` returns
@@ -763,6 +804,30 @@ ST-3 → ST-4, EV-1. MO-1 and LO-1 need only the contract and the mock, so the m
   their names and no key codes; activation and deactivation signals arrive as `Press` and `Release` with the right
   `(gen, slot)`; a table swap re-registers and stamps the new generation; a portal that refuses or is missing gives
   `CaptureState::Failed` with a fixed reason and leaves the other backends running; check green.
+
+### UI-1: `omuzaki-ui`: the capture indicator in the desktop shell
+
+- **Platform area** (the Platform lead signs off the shell files).
+- **Fence:** `crates/omuzaki-ui/src/shell/input_indicator.rs` and its `mod` line in `src/shell/mod.rs`,
+  `crates/omuzaki-ui/tests/input_indicator.rs`, the `omuzaki-input-api` dependency in `crates/omuzaki-ui/Cargo.toml`.
+- **Contract:** `Indicator`, `IndicatorHost`, `CaptureState` (IN-1); §4: the status-bar badge and tray state while
+  capture is `On` or `Paused` (the classes read, the detail, the full pause reason and program for the person, and a
+  one-click Stop that calls `input.capture.stop`); installed with the hub at shell start; `shown()` is true only while
+  the badge is actually drawn in a visible window.
+- **Acceptance:** with the shell's test harness, the badge appears within one frame of `On`, `shown()` turns false when
+  the window is hidden or the badge is removed, and Stop ends capture; strings go through the localisation pipeline;
+  check green.
+
+### CLI-1: `omuzaki-cli`: the capture banner
+
+- **Platform area.**
+- **Fence:** `crates/omuzaki-cli/src/input_banner.rs` and its `mod` line in `src/lib.rs`,
+  `crates/omuzaki-cli/tests/input_banner.rs`, the `omuzaki-input-api` dependency in `crates/omuzaki-cli/Cargo.toml`.
+- **Contract:** `Indicator`, `IndicatorHost` (IN-1); §4: a persistent stderr banner line while capture is on, reprinted
+  after other output, installed only when stderr is a terminal (`shown()` is false otherwise, so a piped or headless
+  run can never start capture).
+- **Acceptance:** with stderr a pseudo-terminal the banner prints on `On` and `shown()` is true; with stderr redirected
+  `start` fails with `NoIndicator`; check green.
 
 ### MO-1: `omuzaki-anim`: input motion, the desk rig, the hand allocator and typing
 
