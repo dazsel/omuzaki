@@ -3,7 +3,7 @@
 //! A chip is small, quiet text on a pill. Status chips always carry an icon and a word as well as a colour (P9), and
 //! the actor chip always carries the name: an initial alone is not an identity.
 
-use egui::{Align2, Response, Sense, Stroke, StrokeKind, Ui, Widget, WidgetInfo, WidgetType, pos2, vec2};
+use egui::{Align2, Rect, Response, Sense, Stroke, StrokeKind, Ui, Widget, WidgetInfo, WidgetType, pos2, vec2};
 
 use crate::ds::a11y;
 use crate::ds::contrast::{Rule, Table};
@@ -15,8 +15,18 @@ use crate::ds::tokens::{Status, mix, radius, space};
 use crate::register_contrast;
 use omuzaki_ops_api::Scope;
 
+use super::tooltip::{Tip, TipExt as _};
+
 const CHIP_HEIGHT: f32 = 20.0;
 const BADGE_HEIGHT: f32 = 18.0;
+/// The least room a chip's label keeps when the chip is squeezed: an ellipsis and a letter. Buttons keep the same.
+const MIN_LABEL: f32 = 16.0;
+
+/// The room a chip's label gets in a layout that offers `fit` pt, when the chip's other parts take `fixed` pt. A label
+/// that needs more than this is cut and its tooltip says the whole of it.
+fn label_room(fit: f32, fixed: f32) -> f32 {
+    (fit - fixed).max(MIN_LABEL)
+}
 
 /// Who did something. Agents are violet, people use the accent, plugins and the system stay neutral.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -73,9 +83,11 @@ impl Widget for ActorChip<'_> {
         let ds = ds(ui.ctx());
         let t = &ds.theme;
         let ctx = ui.ctx().clone();
-        let name_w = paint::text_width(&ctx, self.name, &ds.text.small);
-        let (rect, response) =
-            ui.allocate_exact_size(vec2(16.0 + space::S6 + name_w + space::S4, CHIP_HEIGHT), Sense::hover());
+        let fixed = 16.0 + space::S6 + space::S4;
+        let name_full = paint::text_width(&ctx, self.name, &ds.text.small);
+        let room = label_room(paint::fit_width(ui), fixed);
+        let name_w = name_full.min(room);
+        let (rect, response) = ui.allocate_exact_size(vec2(fixed + name_w, CHIP_HEIGHT), Sense::hover());
         if ui.is_rect_visible(rect) {
             let (fill, ink) = self.kind.disc(t);
             let painter = ui.painter();
@@ -90,14 +102,9 @@ impl Widget for ActorChip<'_> {
             if let Ok(letter) = std::str::from_utf8(&initial[..len]) {
                 paint::text(painter, dot, Align2::CENTER_CENTER, letter, &ds.text.micro, ink);
             }
-            paint::text(
-                painter,
-                pos2(rect.left() + 16.0 + space::S6, rect.center().y),
-                Align2::LEFT_CENTER,
-                self.name,
-                &ds.text.small,
-                t.text2,
-            );
+            let area =
+                Rect::from_min_size(pos2(rect.left() + 16.0 + space::S6, rect.top()), vec2(name_w, rect.height()));
+            paint::text_in(painter, area, Align2::LEFT_CENTER, self.name, &ds.text.small, t.text2);
         }
         a11y::describe(
             &response,
@@ -106,7 +113,7 @@ impl Widget for ActorChip<'_> {
                 node.set_description(ds.text(self.kind.word()).into_owned());
             },
         );
-        response
+        if name_full > room { response.tip(Tip::new(self.name)) } else { response }
     }
 }
 
@@ -143,10 +150,12 @@ impl Widget for ScopeBadge<'_> {
         let ctx = ui.ctx().clone();
         let risky = self.is_risky();
         let font = egui::FontId::monospace(11.0);
-        let text_w = paint::text_width(&ctx, self.scope, &font);
+        let text_full = paint::text_width(&ctx, self.scope, &font);
         let icon_w = if risky { 12.0 + space::S4 } else { 0.0 };
-        let (rect, response) =
-            ui.allocate_exact_size(vec2(text_w + icon_w + 2.0 * space::S6 + 2.0, BADGE_HEIGHT), Sense::hover());
+        let fixed = icon_w + 2.0 * space::S6 + 2.0;
+        let room = label_room(paint::fit_width(ui), fixed);
+        let text_w = text_full.min(room);
+        let (rect, response) = ui.allocate_exact_size(vec2(fixed + text_w, BADGE_HEIGHT), Sense::hover());
         if ui.is_rect_visible(rect) {
             let painter = ui.painter();
             // Neutral outlines are quiet; the warning ones are full strength so the icon and the border agree.
@@ -157,7 +166,8 @@ impl Widget for ScopeBadge<'_> {
                 paint::icon(painter, &ds, pos2(x + 6.0, rect.center().y), icons::WARNING, 12.0, t.warn, true);
                 x += icon_w;
             }
-            paint::text(painter, pos2(x, rect.center().y), Align2::LEFT_CENTER, self.scope, &font, t.text2);
+            let area = Rect::from_min_size(pos2(x, rect.top()), vec2(text_w, rect.height()));
+            paint::text_in(painter, area, Align2::LEFT_CENTER, self.scope, &font, t.text2);
         }
         a11y::describe(
             &response,
@@ -166,7 +176,7 @@ impl Widget for ScopeBadge<'_> {
                 node.set_description(ds.text(if risky { Msg::ScopeOutside } else { Msg::ScopeInside }).into_owned());
             },
         );
-        response
+        if text_full > room { response.tip(Tip::new(self.scope)) } else { response }
     }
 }
 
@@ -206,23 +216,56 @@ pub(super) fn cost_width(ctx: &egui::Context, parts: &[&str]) -> f32 {
 /// Paints the cost `parts` from `at`, the left end of their centre line: `~40 s · 1.2 GB · $0.12`. Shared by the chip
 /// and the rows that show a cost beside other things (a job row), which place it themselves.
 pub(super) fn paint_cost(painter: &egui::Painter, ds: &Ds, at: egui::Pos2, parts: &[&str]) {
+    paint_cost_in(painter, ds, at, parts, f32::INFINITY);
+}
+
+/// [`paint_cost`] cut at `room` pt from `at`: the run that runs over ends in an ellipsis and nothing after it is drawn.
+fn paint_cost_in(painter: &egui::Painter, ds: &Ds, at: egui::Pos2, parts: &[&str], room: f32) {
     let font = cost_font();
+    let end = at.x + room;
     let mut x = at.x;
     for (i, part) in parts.iter().enumerate() {
         if i > 0 {
-            x = paint::text(painter, pos2(x, at.y), Align2::LEFT_CENTER, COST_SEPARATOR, &font, ds.theme.text3).right();
+            let Some(right) = cost_run(painter, x, at.y, end, COST_SEPARATOR, &font, ds.theme.text3) else { return };
+            x = right;
         }
-        x = paint::text(painter, pos2(x, at.y), Align2::LEFT_CENTER, part, &font, ds.theme.text2).right();
+        let Some(right) = cost_run(painter, x, at.y, end, part, &font, ds.theme.text2) else { return };
+        x = right;
     }
+}
+
+/// Paints one run of cost text from `x`, or the part of it that fits before `end`. Returns where it ends, or `None`
+/// once it has been cut, so the caller draws nothing after it.
+fn cost_run(
+    painter: &egui::Painter,
+    x: f32,
+    cy: f32,
+    end: f32,
+    text: &str,
+    font: &egui::FontId,
+    colour: egui::Color32,
+) -> Option<f32> {
+    if x + paint::text_width(painter.ctx(), text, font) <= end {
+        return Some(paint::text(painter, pos2(x, cy), Align2::LEFT_CENTER, text, font, colour).right());
+    }
+    if end > x {
+        let area = Rect::from_min_max(pos2(x, cy - BADGE_HEIGHT / 2.0), pos2(end, cy + BADGE_HEIGHT / 2.0));
+        paint::text_in(painter, area, Align2::LEFT_CENTER, text, font, colour);
+    }
+    None
 }
 
 impl Widget for CostChip<'_> {
     fn ui(self, ui: &mut Ui) -> Response {
         let ds = ds(ui.ctx());
-        let width = cost_width(ui.ctx(), self.parts);
+        let whole = cost_width(ui.ctx(), self.parts);
+        let room = label_room(paint::fit_width(ui), 0.0);
+        let truncated = whole > room;
+        let width = whole.min(room);
         let (rect, response) = ui.allocate_exact_size(vec2(width.max(1.0), BADGE_HEIGHT), Sense::hover());
         if ui.is_rect_visible(rect) {
-            paint_cost(ui.painter(), &ds, rect.left_center(), self.parts);
+            let cut = if truncated { rect.width() } else { f32::INFINITY };
+            paint_cost_in(ui.painter(), &ds, rect.left_center(), self.parts, cut);
         }
         // A label's text is its value, so the name and the parts are one message ("Estimated cost: ~40 s, 1.2 GB").
         // Built inside the closure: it only runs when a screen reader is listening, so a frame pays nothing.
@@ -234,7 +277,7 @@ impl Widget for CostChip<'_> {
             },
             |_| {},
         );
-        response
+        if truncated { response.tip(Tip::new(&self.parts.join(COST_SEPARATOR))) } else { response }
     }
 }
 
@@ -274,9 +317,11 @@ impl Widget for StatusChip<'_> {
     fn ui(self, ui: &mut Ui) -> Response {
         let ds = ds(ui.ctx());
         let ctx = ui.ctx().clone();
-        let text_w = paint::text_width(&ctx, self.text, &ds.text.small);
-        let width = 2.0 * space::S8 + 14.0 + space::S4 + text_w;
-        let (rect, response) = ui.allocate_exact_size(vec2(width, CHIP_HEIGHT), Sense::hover());
+        let fixed = 2.0 * space::S8 + 14.0 + space::S4;
+        let text_full = paint::text_width(&ctx, self.text, &ds.text.small);
+        let room = label_room(paint::fit_width(ui), fixed);
+        let text_w = text_full.min(room);
+        let (rect, response) = ui.allocate_exact_size(vec2(fixed + text_w, CHIP_HEIGHT), Sense::hover());
         if ui.is_rect_visible(rect) {
             let inner = pill(ui, &ds, rect, self.status, 0.0);
             let colour = ds.theme.status(self.status);
@@ -289,14 +334,9 @@ impl Widget for StatusChip<'_> {
                 colour,
                 true,
             );
-            paint::text(
-                ui.painter(),
-                pos2(inner.left() + 14.0 + space::S4, inner.center().y),
-                Align2::LEFT_CENTER,
-                self.text,
-                &ds.text.small,
-                colour,
-            );
+            let area =
+                Rect::from_min_size(pos2(inner.left() + 14.0 + space::S4, inner.top()), vec2(text_w, inner.height()));
+            paint::text_in(ui.painter(), area, Align2::LEFT_CENTER, self.text, &ds.text.small, colour);
         }
         a11y::describe(
             &response,
@@ -305,7 +345,7 @@ impl Widget for StatusChip<'_> {
                 node.set_description(ds.status_word(self.status).into_owned());
             },
         );
-        response
+        if text_full > room { response.tip(Tip::new(self.text)) } else { response }
     }
 }
 
@@ -339,13 +379,16 @@ impl Widget for GateChip<'_> {
         let ctx = ui.ctx().clone();
         let status = if self.threshold.is_some() { Status::Warn } else { Status::Ok };
         let mono = egui::FontId::monospace(11.5);
-        let metric_w = paint::text_width(&ctx, self.metric, &ds.text.small);
+        let metric_full = paint::text_width(&ctx, self.metric, &ds.text.small);
         let value_w = paint::text_width(&ctx, self.value, &mono);
         let limit_w = self.threshold.map_or(0.0, |th| {
             space::S6 + paint::text_width(&ctx, "<", &mono) + space::S4 + paint::text_width(&ctx, th, &mono)
         });
-        let width = 2.0 * space::S8 + 14.0 + space::S4 + metric_w + space::S6 + value_w + limit_w;
-        let (rect, response) = ui.allocate_exact_size(vec2(width, CHIP_HEIGHT), Sense::click());
+        // The metric is the label that gives way: the value and the limit are the numbers, and stay whole.
+        let fixed = 2.0 * space::S8 + 14.0 + space::S4 + space::S6 + value_w + limit_w;
+        let room = label_room(paint::fit_width(ui), fixed);
+        let metric_w = metric_full.min(room);
+        let (rect, response) = ui.allocate_exact_size(vec2(fixed + metric_w, CHIP_HEIGHT), Sense::click());
         if ui.is_rect_visible(rect) {
             let hover = paint::fade(&ctx, &ds, response.id, paint::hot(&response));
             let inner = pill(ui, &ds, rect, status, hover);
@@ -362,7 +405,8 @@ impl Widget for GateChip<'_> {
                 true,
             );
             let mut x = inner.left() + 14.0 + space::S4;
-            x = paint::text(painter, pos2(x, cy), Align2::LEFT_CENTER, self.metric, &ds.text.small, t.text).right()
+            let area = Rect::from_min_size(pos2(x, inner.top()), vec2(metric_w, inner.height()));
+            x = paint::text_in(painter, area, Align2::LEFT_CENTER, self.metric, &ds.text.small, t.text).right()
                 + space::S6;
             x = paint::text(painter, pos2(x, cy), Align2::LEFT_CENTER, self.value, &mono, colour).right();
             if let Some(th) = self.threshold {
@@ -384,7 +428,7 @@ impl Widget for GateChip<'_> {
                 node.set_description(ds.text(Msg::GateOpens).into_owned());
             },
         );
-        response
+        if metric_full > room { response.tip(Tip::new(self.metric)) } else { response }
     }
 }
 

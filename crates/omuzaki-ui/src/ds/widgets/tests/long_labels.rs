@@ -106,3 +106,74 @@ fn an_icon_only_segment_is_completed_by_its_tooltip() {
     h.run_steps(8);
     assert!(painted(h.output()).iter().any(|p| p.text == "Front"), "the label appears in a tooltip");
 }
+
+/// A name of 70 characters, the length the chips are checked at: a German compound with an umlaut and an exclamation.
+const NAME70: &str = "Donaudampfschifffahrtsgesellschaftskapitän bestätigen und fortfahren!!";
+
+/// Every chip in a 288 pt panel, each with [`NAME70`] as its name. The gate's value and limit are short numbers.
+fn chips() -> egui_kittest::Harness<'static> {
+    panel(|ui| {
+        ui.add(ActorChip::new(NAME70, ActorKind::Agent));
+        ui.add(StatusChip::new(Status::Warn, NAME70));
+        ui.add(GateChip::failed(NAME70, "0.81", "0.85"));
+        ui.add(ScopeBadge::new(NAME70));
+        ui.add(CostChip::new(&[NAME70]));
+    })
+}
+
+/// The chips' nodes, in the order they were added: those that carry [`NAME70`] as their label or value.
+fn chip_nodes<'a>(h: &'a egui_kittest::Harness<'_>) -> Vec<egui_kittest::Node<'a>> {
+    h.root()
+        .children_recursive()
+        .filter(|n| {
+            let node = n.accesskit_node();
+            node.label().is_some_and(|l| l == NAME70) || node.value().is_some_and(|v| v.contains(NAME70))
+        })
+        .collect()
+}
+
+#[test]
+fn a_70_character_name_in_each_chip_stays_inside_the_panel() {
+    let h = chips();
+    let nodes = chip_nodes(&h);
+    assert_eq!(nodes.len(), 5, "the five chips are all there");
+    for node in &nodes {
+        let right = node.rect().right();
+        let role = node.accesskit_node().role();
+        assert!(right <= PANEL - 8.0 + 1.0, "{role:?} reaches {right}, past the panel's 280 pt content edge");
+    }
+}
+
+#[test]
+fn each_chip_cuts_its_name_with_an_ellipsis_and_its_tooltip_carries_the_whole_name() {
+    let mut h = chips();
+    let cut = |h: &egui_kittest::Harness<'_>| painted(h.output()).iter().filter(|p| p.text == NAME70).count();
+    assert_eq!(cut(&h), 5, "each chip paints its name");
+    assert!(painted(h.output()).iter().filter(|p| p.text == NAME70).all(|p| p.elided), "and every one is cut");
+
+    let centres: Vec<egui::Pos2> = chip_nodes(&h).iter().map(|n| n.rect().center()).collect();
+    for (i, at) in centres.into_iter().enumerate() {
+        h.hover_at(at);
+        h.run_steps(8);
+        assert!(
+            painted(h.output()).iter().any(|p| p.text == NAME70 && !p.elided),
+            "chip {i} shows the whole name in its tooltip"
+        );
+        h.hover_at(pos2(PANEL - 1.0, 390.0));
+        h.run_steps(8);
+    }
+}
+
+#[test]
+fn a_chip_whose_name_fits_is_not_cut_and_has_no_tooltip() {
+    let mut h = panel(|ui| {
+        ui.add(ActorChip::new("Ada", ActorKind::Person));
+        ui.add(StatusChip::new(Status::Ok, "Connected"));
+    });
+    let at = chip_nodes(&h).first().map_or(pos2(0.0, 0.0), |n| n.rect().center());
+    h.hover_at(at);
+    h.run_steps(8);
+    let shown = painted(h.output());
+    assert!(shown.iter().all(|p| !p.elided), "nothing is cut");
+    assert_eq!(shown.iter().filter(|p| p.text == "Ada").count(), 1, "and no tooltip repeats the name");
+}
