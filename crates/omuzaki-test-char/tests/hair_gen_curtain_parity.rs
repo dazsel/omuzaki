@@ -87,6 +87,31 @@ fn guides(local: &Local) -> CompiledGroup {
     curtain::compile(&local.curtain, &mut ctx)
 }
 
+/// The largest of a run of errors, with the guide and point it is at. Every error must be finite, and the run must not be
+/// empty: a NaN drops out of `>` and of `f32::max` without a trace, and an empty run compares nothing and passes.
+#[derive(Debug, Default)]
+struct Worst {
+    value: f32,
+    at: (usize, usize),
+    seen: usize,
+}
+
+impl Worst {
+    fn fold(&mut self, error: f32, at: (usize, usize)) {
+        assert!(error.is_finite(), "non-finite error at guide {}, point {}: {error}", at.0, at.1);
+        self.seen += 1;
+        if error > self.value {
+            (self.value, self.at) = (error, at);
+        }
+    }
+
+    /// The finished run, refusing one that compared nothing.
+    fn finish(self, what: &str) -> Self {
+        assert!(self.seen > 0, "{what}: nothing compared, so nothing was checked");
+        self
+    }
+}
+
 #[test]
 fn every_guide_matches_the_prototypes_rest_points_and_u() {
     let Some((js, local)) = private() else { return };
@@ -95,28 +120,60 @@ fn every_guide_matches_the_prototypes_rest_points_and_u() {
     let GroupGeometry::Strip { u: across, .. } = &group.geometry else { panic!("the curtain is a strip") };
     assert_eq!(group.clumps.len(), curtain::clump_count(&local.curtain), "guide count");
     assert_eq!(across.len(), group.clumps.len(), "one u per guide");
-    // The worst point of the whole curtain, with the guide and point it is at, so a bad run says where to look.
-    let (mut worst, mut worst_at) = (0.0_f32, (0, 0));
-    let mut worst_across = 0.0_f32;
+    let after = local.first_curtain_clump + group.clumps.len();
+    assert!(
+        dump.clumps.get(after).is_none_or(|c| !c.shell),
+        "the dump has more curtain guides than the generator makes ({})",
+        group.clumps.len()
+    );
+    let (mut points, mut across_worst) = (Worst::default(), Worst::default());
     for (n, (clump, u)) in group.clumps.iter().zip(across).enumerate() {
         let theirs = dump.clumps.get(local.first_curtain_clump + n).expect("the dump has every curtain clump");
         assert!(theirs.shell, "guide {n}: the dump's clump is a curtain guide");
         let their_u = theirs.u.expect("a curtain guide has its u");
-        worst_across = worst_across.max((u - their_u).abs());
+        across_worst.fold((u - their_u).abs(), (n, 0));
         assert_eq!(clump.rest.len(), theirs.rest.len(), "guide {n}: point counts");
         for (k, (a, b)) in clump.rest.iter().zip(&theirs.rest).enumerate() {
-            let d = a.distance(*b);
-            if d > worst {
-                (worst, worst_at) = (d, (n, k));
-            }
+            assert!(a.is_finite() && b.is_finite(), "guide {n} point {k}: non-finite rest point");
+            points.fold(a.distance(*b), (n, k));
         }
     }
+    let (points, across_worst) = (points.finish("rest points"), across_worst.finish("u"));
     eprintln!(
-        "curtain: {} guides, worst rest-point error {worst:.2e} m (guide {}, point {}), worst u error {worst_across:.2e}",
+        "curtain: {} guides, worst rest-point error {:.2e} m (guide {}, point {}), worst u error {:.2e}",
         group.clumps.len(),
-        worst_at.0,
-        worst_at.1
+        points.value,
+        points.at.0,
+        points.at.1,
+        across_worst.value
     );
-    assert!(worst_across <= ACROSS, "worst u error {worst_across:.2e} exceeds {ACROSS:.0e}");
-    assert!(worst <= REST, "worst rest-point error {worst:.2e} m exceeds {REST:.0e} m");
+    assert!(across_worst.value <= ACROSS, "worst u error {:.2e} exceeds {ACROSS:.0e}", across_worst.value);
+    assert!(points.value <= REST, "worst rest-point error {:.2e} m exceeds {REST:.0e} m", points.value);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Worst;
+
+    #[test]
+    fn the_worst_error_keeps_its_place() {
+        let mut worst = Worst::default();
+        for (k, e) in [0.5, 2.0, 1.0].into_iter().enumerate() {
+            worst.fold(e, (3, k));
+        }
+        let worst = worst.finish("test");
+        assert_eq!((worst.value, worst.at, worst.seen), (2.0, (3, 1), 3));
+    }
+
+    #[test]
+    #[should_panic(expected = "nothing compared")]
+    fn an_empty_comparison_fails() {
+        let _ = Worst::default().finish("rest points");
+    }
+
+    #[test]
+    #[should_panic(expected = "non-finite error at guide 2, point 5")]
+    fn a_nan_error_fails() {
+        Worst::default().fold(f32::NAN, (2, 5));
+    }
 }
