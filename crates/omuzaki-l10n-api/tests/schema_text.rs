@@ -758,3 +758,76 @@ fn a_constant_that_is_not_required_is_not_a_tag() {
         ]
     );
 }
+
+/// A tagged `oneOf` next to an `anyOf` that holds a `null`: the `null` belongs to the `anyOf`, so the variants stay.
+#[test]
+fn a_null_in_a_sibling_any_of_does_not_turn_off_the_one_of() {
+    let schema = Schema::try_from(json!({
+        "oneOf": [
+            {
+                "description": "A round one.",
+                "type": "object",
+                "properties": {
+                    "kind": { "const": "Circle" },
+                    "radius": { "type": "integer", "description": "Radius." }
+                },
+                "required": ["kind", "radius"]
+            }
+        ],
+        "anyOf": [{ "type": "null" }]
+    }))
+    .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        visited_in(&schema),
+        vec![
+            (String::new(), None),
+            ("Circle".into(), Some("A round one.".to_owned())),
+            ("Circle--radius".into(), Some("Radius.".to_owned())),
+        ]
+    );
+}
+
+/// An optional constant beside a required one: the required constant is the tag, and the optional one is a field.
+#[test]
+fn only_a_required_constant_is_the_tag() {
+    let schema = Schema::try_from(json!({
+        "oneOf": [
+            {
+                "description": "Tagged.",
+                "type": "object",
+                "properties": {
+                    "kind": { "const": "A" },
+                    "mode": { "const": "fast", "description": "Mode." }
+                },
+                "required": ["kind"]
+            }
+        ]
+    }))
+    .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        visited_in(&schema),
+        vec![
+            (String::new(), None),
+            ("A".into(), Some("Tagged.".to_owned())),
+            ("A--mode".into(), Some("Mode.".to_owned())),
+            ("A--mode--fast".into(), None),
+        ]
+    );
+}
+
+/// Two required constants on one branch are ambiguous, even when one of them is a field of the variant.
+#[test]
+fn two_required_constants_are_rejected_and_an_optional_one_is_not_counted() {
+    let schema = Schema::try_from(json!({
+        "oneOf": [
+            {
+                "type": "object",
+                "properties": { "kind": { "const": "A" }, "other": { "const": "B" } },
+                "required": ["kind", "other"]
+            }
+        ]
+    }))
+    .unwrap_or_else(|error| panic!("{error}"));
+    let error = read(&schema).expect_err("two required constants are ambiguous");
+    assert!(error.problem.contains("more than one constant"), "{}", error.problem);
+}

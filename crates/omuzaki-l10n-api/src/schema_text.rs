@@ -17,7 +17,7 @@ use serde_json::{Map, Value};
 /// Which branch is a variant, and so a key of its own, is decided here, and only here:
 /// - A constant, or an `enum` of one value, is a variant, wherever it sits.
 /// - An object branch of a `oneOf` with no `null` sibling is a variant. It is internally tagged when one of its
-///   properties has a `const` (keyed by that value, the tag itself not walked). Otherwise it is externally tagged when
+///   required property has a `const` (keyed by that value, the tag itself not walked). Otherwise it is externally tagged when
 ///   it has exactly one property, that property is required, and `additionalProperties` is `false` (keyed by the
 ///   property's name).
 /// - Every other branch is transparent: its keys are the parent's. That includes every `anyOf` entry, so `Option<T>`,
@@ -30,8 +30,10 @@ use serde_json::{Map, Value};
 /// `deny_unknown_fields` structs with other variants.
 ///
 /// # Errors
-/// [`WalkError`] at the first `oneOf` that mixes the two forms. The visitor has seen the nodes before that point, so
-/// the caller must treat the whole schema as unusable and report the error.
+/// [`WalkError`] at the first ambiguity, in either of two cases: a `oneOf` that mixes externally tagged branches with
+/// other object branches, or an object branch with more than one required `const` property, which could each be its
+/// tag. The visitor has seen the nodes before that point, so the caller must treat the whole schema as unusable and
+/// report the error.
 pub fn walk(schema: &Schema, visit: impl FnMut(&[&str], &Map<String, Value>)) -> Result<(), WalkError> {
     let Some(root) = schema.as_object() else {
         return Ok(());
@@ -168,7 +170,8 @@ impl<F: FnMut(&[&str], &Map<String, Value>)> Walker<F> {
             }
         }
         // A `null` branch makes the node an `Option`: its other branch is the value itself, never a variant.
-        let nullable = ["oneOf", "anyOf"].iter().any(|keyword| branches(node, keyword).iter().any(is_null_schema));
+        // Only the `oneOf`'s own list decides it: a `null` in a sibling `anyOf` does not turn the `oneOf`'s variants off.
+        let nullable = branches(node, "oneOf").iter().any(is_null_schema);
         for (keyword, variants_allowed) in [("oneOf", !nullable), ("anyOf", false)] {
             let list = branches(node, keyword);
             if variants_allowed {
@@ -243,7 +246,7 @@ impl<F: FnMut(&[&str], &Map<String, Value>)> Walker<F> {
         if variants_allowed {
             // Two constants could each be the tag, so the branch's key cannot be told apart. Fail closed, rather than
             // pick one.
-            if direct_constants(node).len() > 1 {
+            if tag_candidates(node).len() > 1 {
                 self.error = Some(WalkError::new(
                     &self.path,
                     "an object branch has more than one constant property, so its tag cannot be told apart",
@@ -320,12 +323,12 @@ fn properties(node: &Map<String, Value>) -> Vec<(&str, &Value)> {
     entries
 }
 
-/// The direct constants of an object: each property whose schema is a `const` other than `null`, in key order, with its
-/// name and value.
-fn direct_constants(node: &Map<String, Value>) -> Vec<(&str, String)> {
+/// The tag candidates of an object: its required properties whose schema is a `const` other than `null`, in key order,
+/// with their names and values. An optional constant is an ordinary field, so it is not a candidate.
+fn tag_candidates(node: &Map<String, Value>) -> Vec<(&str, String)> {
     properties(node)
         .into_iter()
-        .filter(|(_, schema)| !is_null_schema(schema))
+        .filter(|(key, schema)| is_required(node, key) && !is_null_schema(schema))
         .filter_map(|(key, schema)| Some((key, value_key(schema.as_object()?.get("const")?))))
         .collect()
 }
@@ -337,14 +340,14 @@ fn is_required(node: &Map<String, Value>, key: &str) -> bool {
         .is_some_and(|list| list.iter().any(|entry| entry.as_str() == Some(key)))
 }
 
-/// An internally tagged variant's tag: its one direct constant, when that property is required. Two constants are
-/// ambiguous, and [`WalkError`] reports them before this is asked.
+/// An internally tagged variant's tag: its one required constant. Two are ambiguous, and [`WalkError`] reports them
+/// before this is asked.
 fn internal_tag(node: &Map<String, Value>) -> Option<(String, String)> {
-    let constants = direct_constants(node);
-    let [(key, value)] = constants.as_slice() else {
+    let candidates = tag_candidates(node);
+    let [(key, value)] = candidates.as_slice() else {
         return None;
     };
-    is_required(node, key).then(|| ((*key).to_owned(), value.clone()))
+    Some(((*key).to_owned(), value.clone()))
 }
 
 /// An externally tagged variant: an object with exactly one property, which is required, and no other keys
