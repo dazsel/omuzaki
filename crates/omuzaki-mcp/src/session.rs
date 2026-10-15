@@ -2,7 +2,9 @@
 
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
+use omuzaki_history_api::JournalStatus;
 use omuzaki_ops_api::{Actor, Cause, CauseKind, Mode, OpError, OpKind, Request, Runner, Scope};
 use rmcp::ErrorData as McpError;
 use rmcp::handler::server::ServerHandler;
@@ -26,6 +28,9 @@ use crate::render::{self, Call, OpenTx};
 use crate::resources::protocol_error;
 use crate::schema::{DRY_RUN, check_args};
 use crate::server::{Shared, View};
+
+/// How long a reply to a change waits for the journal to save it (spec v3 §6, journal design §5.5).
+const SAVE_WAIT: Duration = Duration::from_secs(5);
 
 /// The handler for one client connection (an rmcp [`ServerHandler`]).
 ///
@@ -249,7 +254,20 @@ impl Session {
             lock(&self.state).own.remember(record.tx);
         }
         let call = Call { op: &entry.tool.name, kind, mode, tx: tx.as_ref(), verify: self.shared.guidance.verify() };
-        Ok(render::success(&call, &outcome))
+        let result = render::success(&call, &outcome);
+        Ok(if outcome.applied.is_some() { self.confirm_saved(result).await } else { result })
+    }
+
+    /// Waits until the journal has saved the change `result` reports, then returns it. A change that applied but isn't
+    /// saved yet (the wait timed out, or saving fails) still succeeds: the result carries a warning with the status.
+    async fn confirm_saved(&self, result: CallToolResult) -> CallToolResult {
+        let Some(journal) = self.shared.journal.clone() else { return result };
+        let waited = tokio::task::spawn_blocking(move || (journal.sync(SAVE_WAIT), journal.status())).await;
+        match waited {
+            Ok((Ok(_), _)) => result,
+            Ok((Err(_), status)) => with_warning(result, &format!("applied, not yet saved: {}", describe(&status))),
+            Err(_) => with_warning(result, "applied, not yet saved: the journal's status couldn't be read"),
+        }
     }
 
     async fn run_builtin(&self, builtin: Builtin, args: JsonObject, actor: Actor) -> Result<CallToolResult, OpError> {
@@ -262,7 +280,9 @@ impl Session {
                         _ => runner.redo(&actor, &grants),
                     })
                     .await??;
-                Ok(render::history(builtin, label.as_deref()))
+                let changed = label.is_some();
+                let result = render::history(builtin, label.as_deref());
+                Ok(if changed { self.confirm_saved(result).await } else { result })
             }
             Builtin::Log => self.history_log(&args),
             Builtin::TxBegin => self.begin_tx(args, actor).await,
@@ -326,7 +346,8 @@ impl Session {
             ("Rolled back", "Every edit made since tx_begin was reverted.")
         };
         let text = format!("{verb} transaction {} ({:?}). {tail}", id.0, open.label);
-        Ok(render::confirmation(text, json!({"ok": true, "tx": id.0, "label": open.label})))
+        let result = render::confirmation(text, json!({"ok": true, "tx": id.0, "label": open.label}));
+        Ok(self.confirm_saved(result).await)
     }
 }
 
@@ -342,6 +363,30 @@ impl Drop for Session {
             tracing::warn!(tx = open.id.0, label = %open.label, error = %e, "couldn't roll back an abandoned tx");
         }
     }
+}
+
+/// What the journal's status says about a save, for the warning.
+fn describe(status: &JournalStatus) -> String {
+    match status {
+        JournalStatus::Healthy => "the journal is healthy and should save it shortly".to_owned(),
+        JournalStatus::Behind { pending } => format!("saving is behind, with {pending} entries waiting"),
+        JournalStatus::Failing { reason } => format!("saving is failing: {reason}"),
+        _ => "the journal's status is unknown".to_owned(),
+    }
+}
+
+/// Puts `warning` at the top of `result`'s text, as a `Warning:` line, and under `structuredContent.warning`. It goes
+/// first, as the heads-up does, so a client showing only the first block still shows it.
+fn with_warning(mut result: CallToolResult, warning: &str) -> CallToolResult {
+    let line = format!("Warning: {warning}");
+    match result.content.first().and_then(ContentBlock::as_text) {
+        Some(first) => result.content[0] = ContentBlock::text(format!("{line}\n\n{}", first.text)),
+        None => result.content.insert(0, ContentBlock::text(line)),
+    }
+    if let Some(Value::Object(data)) = result.structured_content.as_mut() {
+        data.insert("warning".to_owned(), json!(warning));
+    }
+    result
 }
 
 /// The runner names ops with dots in its messages (`arguments for face.set_profile don't match ...`); the agent knows
