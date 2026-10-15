@@ -42,7 +42,8 @@ fn an_unknown_lineage_licence_fails() {
     let run = gate("unknown_licence");
     assert!(!run.success, "{}", run.stdout);
     assert!(
-        run.stdout.contains("lineage link `Mystery set 3`") && run.stdout.contains("not an allowed SPDX licence"),
+        run.stdout.contains("lineage link `Mystery set 3`")
+            && run.stdout.contains("must be one identifier from policy.md's Allowed list"),
         "{}",
         run.stdout
     );
