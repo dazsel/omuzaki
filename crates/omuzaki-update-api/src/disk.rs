@@ -73,7 +73,9 @@ pub trait Disk: Send + Sync {
     /// Replaces `path` whole or not at all: write `<path>.tmp`, fsync it, rename it over `path`, fsync the folder.
     ///
     /// # Errors
-    /// Any step failed; `path` then holds its old content.
+    /// Any step failed. Up to and including the rename, `path` then holds its old content (a stale `<path>.tmp` may
+    /// remain). If only the folder's fsync failed, the rename has already happened: `path` holds the new content, but
+    /// the replacement may not survive a power cut, so a caller retries or treats the write as not durable.
     fn write_atomic(&self, path: &Path, bytes: &[u8]) -> io::Result<()> {
         let mut tmp = path.as_os_str().to_owned();
         tmp.push(".tmp");

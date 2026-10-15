@@ -37,18 +37,7 @@ src/lib.rs: pub mod release;
 src/lib.rs: pub mod state;
 src/lib.rs: pub mod status;
 src/lib.rs: pub mod updater;
-src/lib.rs: pub use clock::{Timestamp, WallClock};
-src/lib.rs: pub use disk::{DirEntry, Disk};
-src/lib.rs: pub use error::UpdateError;
-src/lib.rs: pub use event::{EVENT_QUEUE_CAPACITY, EventSender, UpdateEvent, UpdateEvents, event_queue};
-src/lib.rs: pub use hold::{Hold, HoldReason};
-src/lib.rs: pub use layout::Layout;
-src/lib.rs: pub use progress::Progress;
-src/lib.rs: pub use release::{Channel, PackageKind, Release, Url};
 src/lib.rs: pub use semver::Version;
-src/lib.rs: pub use state::{State, StateError, Watermark};
-src/lib.rs: pub use status::{CatalogueStatus, CheckFailure, RollbackReason, Unavailable, UpdateStatus};
-src/lib.rs: pub use updater::{ModelCatalogue, Updater};
 src/progress.rs: pub trait Progress: Send + Sync {
 src/release.rs: pub struct Url(pub String);
 src/release.rs: pub enum Channel {

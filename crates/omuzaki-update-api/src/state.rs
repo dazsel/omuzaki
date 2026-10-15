@@ -67,32 +67,89 @@ impl State {
     /// Reads `state.toml`, keeping every key this build does not know.
     ///
     /// # Errors
-    /// The text is not valid TOML or lacks a valid `current`.
+    /// The text is not valid TOML, lacks a valid `current`, or has a sequence that is not a `u64`.
     pub fn from_toml(text: &str) -> Result<Self, StateError> {
         let raw: toml::Table = text.parse().map_err(|e: toml::de::Error| StateError(e.to_string()))?;
-        let mut state: Self = raw.clone().try_into().map_err(|e: toml::de::Error| StateError(e.to_string()))?;
+        // Sequences above `i64::MAX` are strings in the file; serde sees a placeholder and the real value goes back after.
+        let mut plain = raw.clone();
+        let keys_sequence = take_sequence(&mut plain, "keys_sequence")?;
+        let mut sequences = BTreeMap::new();
+        if let Some(toml::Value::Table(marks)) = plain.get_mut("watermarks") {
+            for (feed, mark) in marks.iter_mut() {
+                if let toml::Value::Table(mark) = mark
+                    && let Some(n) = take_sequence(mark, "sequence")?
+                {
+                    sequences.insert(feed.clone(), n);
+                }
+            }
+        }
+        let mut state: Self = plain.try_into().map_err(|e: toml::de::Error| StateError(e.to_string()))?;
+        if let Some(n) = keys_sequence {
+            state.keys_sequence = n;
+        }
+        for (feed, n) in sequences {
+            if let Some(mark) = state.watermarks.get_mut(&feed) {
+                mark.sequence = n;
+            }
+        }
         state.unknown = unknown_in(&raw, &state.known_table()?);
         Ok(state)
     }
 
-    /// The `state.toml` text: the known keys, then the unknown ones merged back in. TOML integers are signed 64-bit, so
-    /// a sequence above `i64::MAX` is written as `i64::MAX`.
+    /// The `state.toml` text: the known keys, then the unknown ones merged back in.
+    ///
+    /// TOML integers are signed 64-bit, so a sequence above `i64::MAX` is written as a decimal string
+    /// (`sequence = "18446744073709551615"`); [`State::from_toml`] reads either form, so every `u64` round-trips.
+    ///
+    /// A known key always wins over an unknown one at the same place. Unknown keys inside a `watermarks` entry belong to
+    /// that feed: removing the feed from [`State::watermarks`] removes them too, so a saved file never holds a feed
+    /// without its `epoch` and `sequence`. Every other unknown key is kept.
     #[must_use]
     pub fn to_toml(&self) -> String {
         let mut table = self.known_table().unwrap_or_default();
-        merge_missing(&mut table, &self.unknown);
+        let mut unknown = self.unknown.clone();
+        if let Some(toml::Value::Table(marks)) = unknown.get_mut("watermarks") {
+            marks.retain(|feed, _| self.watermarks.contains_key(feed));
+            if marks.is_empty() {
+                unknown.remove("watermarks");
+            }
+        }
+        merge_missing(&mut table, &unknown);
         table.to_string()
     }
 
     fn known_table(&self) -> Result<toml::Table, StateError> {
-        let mut clamped = self.clone();
-        let cap = |n: u64| n.min(i64::MAX as u64);
-        clamped.keys_sequence = cap(clamped.keys_sequence);
-        for mark in clamped.watermarks.values_mut() {
-            mark.sequence = cap(mark.sequence);
+        let mut plain = self.clone();
+        plain.keys_sequence = 0;
+        for mark in plain.watermarks.values_mut() {
+            mark.sequence = 0;
         }
-        toml::Table::try_from(&clamped).map_err(|e| StateError(e.to_string()))
+        let mut table = toml::Table::try_from(&plain).map_err(|e| StateError(e.to_string()))?;
+        table.insert("keys_sequence".into(), sequence_value(self.keys_sequence));
+        if let Some(toml::Value::Table(marks)) = table.get_mut("watermarks") {
+            for (feed, mark) in &self.watermarks {
+                if let Some(toml::Value::Table(entry)) = marks.get_mut(feed) {
+                    entry.insert("sequence".into(), sequence_value(mark.sequence));
+                }
+            }
+        }
+        Ok(table)
     }
+}
+
+/// A sequence as TOML: an integer while it fits in `i64`, else its decimal string.
+fn sequence_value(n: u64) -> toml::Value {
+    i64::try_from(n).map_or_else(|_| toml::Value::String(n.to_string()), toml::Value::Integer)
+}
+
+/// Replaces a string sequence at `key` with a placeholder integer and returns its value; an integer stays for serde.
+fn take_sequence(table: &mut toml::Table, key: &str) -> Result<Option<u64>, StateError> {
+    let Some(toml::Value::String(text)) = table.get(key) else {
+        return Ok(None);
+    };
+    let n = text.parse::<u64>().map_err(|_| StateError(format!("{key}: {text:?} is not a u64")))?;
+    table.insert(key.into(), toml::Value::Integer(0));
+    Ok(Some(n))
 }
 
 /// What `raw` has that `known` lacks, keeping the nesting.

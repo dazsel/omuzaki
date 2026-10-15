@@ -6,10 +6,14 @@
 
 use std::fmt::Write as _;
 
-use omuzaki_update_api::{
-    Channel, CheckFailure, HoldReason, PackageKind, Release, RollbackReason, State, Timestamp, UpdateError,
-    UpdateEvent, UpdateStatus, Version, Watermark,
-};
+use omuzaki_update_api::Version;
+use omuzaki_update_api::clock::Timestamp;
+use omuzaki_update_api::error::UpdateError;
+use omuzaki_update_api::event::UpdateEvent;
+use omuzaki_update_api::hold::HoldReason;
+use omuzaki_update_api::release::{Channel, PackageKind, Release};
+use omuzaki_update_api::state::{State, Watermark};
+use omuzaki_update_api::status::{CheckFailure, RollbackReason, UpdateStatus};
 use schemars::schema_for;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -61,11 +65,54 @@ fn bad_text_is_an_error_not_a_default() {
 }
 
 #[test]
-fn a_huge_sequence_is_written_saturated() {
+fn every_sequence_round_trips_exactly() {
+    let edges = [0, 1, i64::MAX as u64 - 1, i64::MAX as u64, i64::MAX as u64 + 1, u64::MAX - 1, u64::MAX];
+    for n in edges {
+        let mut state = State::from_toml(STATE).unwrap();
+        state.keys_sequence = n;
+        state.watermarks.insert("stable".into(), Watermark { epoch: u32::MAX, sequence: n });
+        state.watermarks.insert("beta".into(), Watermark { epoch: 0, sequence: n });
+        let text = state.to_toml();
+        let again = State::from_toml(&text).unwrap();
+        assert_eq!(again, state, "{n}: {text}");
+        assert_eq!(State::from_toml(&again.to_toml()).unwrap(), state, "{n}");
+    }
+}
+
+#[test]
+fn a_sequence_above_i64_is_a_string_and_a_bad_one_is_an_error() {
+    let text = "current = \"1.0.0\"\nkeys_sequence = \"18446744073709551615\"\n";
+    assert_eq!(State::from_toml(text).unwrap().keys_sequence, u64::MAX);
     let mut state = State::from_toml("current = \"1.0.0\"").unwrap();
-    state.watermarks.insert("stable".into(), Watermark { epoch: 0, sequence: u64::MAX });
+    state.keys_sequence = u64::MAX;
+    assert!(state.to_toml().contains("keys_sequence = \"18446744073709551615\""));
+    state.keys_sequence = 7;
+    assert!(state.to_toml().contains("keys_sequence = 7"));
+    assert!(State::from_toml("current = \"1.0.0\"\nkeys_sequence = \"18446744073709551616\"").is_err());
+    assert!(State::from_toml("current = \"1.0.0\"\nkeys_sequence = \"-1\"").is_err());
+    assert!(State::from_toml("current = \"1.0.0\"\n[watermarks.stable]\nepoch = 1\nsequence = \"x\"").is_err());
+}
+
+#[test]
+fn clearing_the_watermarks_drops_their_unknown_keys_and_reloads() {
+    let mut state = State::from_toml(STATE).unwrap();
+    state.watermarks.clear();
     let again = State::from_toml(&state.to_toml()).unwrap();
-    assert_eq!(again.watermarks["stable"].sequence, i64::MAX as u64);
+    assert!(again.watermarks.is_empty());
+    assert!(!again.unknown.contains_key("watermarks"));
+    assert_eq!(again.unknown["future_top_level"].as_str(), Some("kept"));
+    assert_eq!(again.unknown["future_table"]["a"].as_integer(), Some(1));
+}
+
+#[test]
+fn removing_one_feed_keeps_the_unknown_keys_of_another() {
+    let mut state =
+        State::from_toml(&format!("{STATE}\n[watermarks.beta]\nepoch = 2\nsequence = 3\nfuture_beta = 1\n")).unwrap();
+    state.watermarks.remove("stable");
+    let again = State::from_toml(&state.to_toml()).unwrap();
+    assert_eq!(again.watermarks.keys().collect::<Vec<_>>(), ["beta"]);
+    assert_eq!(again.unknown["watermarks"]["beta"]["future_beta"].as_integer(), Some(1));
+    assert!(again.unknown["watermarks"].get("stable").is_none());
 }
 
 #[test]

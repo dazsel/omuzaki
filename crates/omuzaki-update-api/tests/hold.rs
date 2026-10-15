@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use omuzaki_update_api::Hold;
+use omuzaki_update_api::hold::Hold;
 
 fn counted() -> (Arc<AtomicUsize>, Hold) {
     let released = Arc::new(AtomicUsize::new(0));

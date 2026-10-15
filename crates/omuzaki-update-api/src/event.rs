@@ -3,7 +3,7 @@
 //! `omuzaki-core` has no shared `Subscription<T>` yet; when it gains one, `UpdateEvents` can wrap it.
 
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -38,19 +38,24 @@ struct EventQueue {
 #[derive(Clone, Debug)]
 pub struct EventSender {
     queue: Arc<Mutex<EventQueue>>,
+    /// Dies with the receiver; sender clones never keep it alive.
+    receiver: Weak<()>,
 }
 
 /// One subscriber's queue (`Updater::subscribe`). When it is full, the oldest event is dropped and counted.
 #[derive(Debug)]
 pub struct UpdateEvents {
     queue: Arc<Mutex<EventQueue>>,
+    /// The only strong reference: senders see it go when the receiver is dropped.
+    _alive: Arc<()>,
 }
 
 /// A new queue: the updater keeps the sender, the subscriber gets the receiver.
 #[must_use]
 pub fn event_queue() -> (EventSender, UpdateEvents) {
     let queue = Arc::new(Mutex::new(EventQueue::default()));
-    (EventSender { queue: Arc::clone(&queue) }, UpdateEvents { queue })
+    let alive = Arc::new(());
+    (EventSender { queue: Arc::clone(&queue), receiver: Arc::downgrade(&alive) }, UpdateEvents { queue, _alive: alive })
 }
 
 fn locked(queue: &Mutex<EventQueue>) -> MutexGuard<'_, EventQueue> {
@@ -69,10 +74,10 @@ impl EventSender {
         queue.events.push_back(event);
     }
 
-    /// Whether the subscriber still exists, so the updater can prune senders.
+    /// Whether the subscriber still exists, so the updater can prune senders. Other clones of this sender do not count.
     #[must_use]
     pub fn is_subscribed(&self) -> bool {
-        Arc::strong_count(&self.queue) > 1
+        self.receiver.strong_count() > 0
     }
 }
 
@@ -114,5 +119,17 @@ mod tests {
         assert!(tx.is_subscribed());
         drop(rx);
         assert!(!tx.is_subscribed());
+    }
+
+    #[test]
+    fn sender_clones_do_not_keep_a_dropped_receiver_subscribed() {
+        let (tx, rx) = event_queue();
+        let clones = [tx.clone(), tx.clone()];
+        assert!(clones.iter().all(EventSender::is_subscribed));
+        drop(rx);
+        assert!(!tx.is_subscribed());
+        assert!(!clones.iter().any(EventSender::is_subscribed));
+        // Sending to a gone subscriber is harmless.
+        tx.send(UpdateEvent::Progress { done: 1, total: 1 });
     }
 }
