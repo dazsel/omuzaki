@@ -2,6 +2,7 @@
 
 use omuzaki_char_api::{MaterialError, MaterialName, PartId};
 use omuzaki_render_api::RenderError;
+use omuzaki_stage_api::SceneError;
 
 /// A stage operation failed. Whatever the operation had created on the renderer before failing is released again, so
 /// an error never leaves resources behind.
@@ -71,6 +72,12 @@ pub enum StageError {
     Framing {
         /// What is missing or unusable.
         reason: String,
+    },
+    /// The scene breaks a rule (D13).
+    #[error("the scene can't be resolved: {source}")]
+    Scene {
+        /// The rule and where it is broken.
+        source: SceneError,
     },
 }
 

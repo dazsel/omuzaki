@@ -15,9 +15,10 @@ use std::ops::RangeInclusive;
 
 use egui::{
     Align, Align2, EventFilter, Frame, Id, Key, Modifiers, Rect, Response, Sense, Stroke, StrokeKind, TextEdit, Ui,
-    UiBuilder, Widget, WidgetInfo, WidgetType, accesskit, vec2,
+    Widget, WidgetInfo, WidgetType, accesskit, vec2,
 };
 
+use super::ids;
 use super::ime;
 use crate::ds::a11y;
 use crate::ds::contrast::{Rule, Table};
@@ -28,6 +29,9 @@ use crate::ds::text::{NumberBuf, decimals_for_range};
 use crate::ds::theme::{Ds, ds};
 use crate::ds::tokens::{Theme, radius, size, space};
 use crate::register_contrast;
+
+/// What a number field's salt is namespaced by (see [`ids`]).
+const KIND: &str = "ds.number_field";
 
 /// What the field remembers while it is being typed into.
 #[derive(Clone, Default)]
@@ -187,7 +191,7 @@ impl<'a> Show<'a> {
             (rect, id)
         } else {
             let (rect, outer) = ui.allocate_exact_size(vec2(self.f.width, size::NUMERIC_FIELD.y), Sense::hover());
-            (rect, self.f.salt.map_or(outer.id.with("number"), |salt| ui.make_persistent_id(salt)))
+            (rect, self.f.salt.map_or(outer.id.with("number"), |salt| ids::salted(ui, KIND, salt)))
         };
         let sense = if self.enabled { Sense::click() } else { Sense::focusable_noninteractive() };
         let mut response = ui.interact(rect, id, sense);
@@ -229,6 +233,9 @@ impl<'a> Show<'a> {
                 self.error_bubble(&ctx, rect, id, error);
             }
         } else {
+            // The editor's child `Ui` takes an auto id while typing; a resting frame takes the same one, so the
+            // widgets after this field keep their ids whether or not it is being typed in.
+            ids::skip_editor_id(ui);
             self.paint_resting(ui, rect, &response, id);
         }
         if was_editing && edit.is_none() {
@@ -364,8 +371,7 @@ impl<'a> Show<'a> {
         let ime = ime::begin(ctx, text_id, &edit.text);
         ui.painter().rect_filled(rect, radius::CONTROL, t.bg2);
         // A child `Ui` that does not move the parent's cursor, centred whatever the parent lays out.
-        let child =
-            &mut ui.new_child(UiBuilder::new().max_rect(rect).layout(egui::Layout::left_to_right(Align::Center)));
+        let child = &mut ids::editor_ui(ui, rect);
         let mut composing_layout = ime.layouter(ds.text.mono.clone(), t.text, Align::RIGHT);
         let mut field_edit = TextEdit::singleline(&mut edit.text)
             .id(text_id)

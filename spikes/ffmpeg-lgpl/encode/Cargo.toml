@@ -1,0 +1,19 @@
+[package]
+name = "ffmpeg-lgpl-encode"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "Spike: encode a seeded synthetic alpha clip with a shared-library LGPL FFmpeg"
+
+[[bin]]
+name = "ffmpeg-lgpl-encode"
+path = "src/main.rs"
+
+[dependencies]
+ffmpeg-next.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

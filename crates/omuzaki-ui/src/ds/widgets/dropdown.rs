@@ -17,6 +17,7 @@ use egui::{
 };
 
 use super::button::{ButtonKind, face};
+use super::ids;
 use super::listbox::{self, ListItem, Listbox, Row, link_combobox};
 use super::tooltip::{Tip, TipExt as _};
 use crate::ds::a11y;
@@ -29,6 +30,9 @@ use crate::ds::strings::Msg;
 use crate::ds::theme::{Ds, ds};
 use crate::ds::tokens::{Theme, radius, space};
 use crate::register_contrast;
+
+/// What a dropdown's salt is namespaced by (see [`ids`]).
+const KIND: &str = "ds.dropdown";
 
 /// One option: the value it sets, and its row.
 #[derive(Clone, Copy, Debug)]
@@ -232,7 +236,7 @@ impl<T: Copy + PartialEq> Widget for Dropdown<'_, T> {
         };
         let width = self.width(&ctx, &ds, shown, ui);
         let (rect, _) = ui.allocate_exact_size(vec2(width, m.control_row), Sense::hover());
-        let id = self.salt.map_or_else(|| ui.next_auto_id().with("dropdown"), |salt| ui.make_persistent_id(salt));
+        let id = self.salt.map_or_else(|| ui.next_auto_id().with("dropdown"), |salt| ids::salted(ui, KIND, salt));
         let sense = if enabled { Sense::click() } else { Sense::focusable_noninteractive() };
         let mut response = ui.interact(rect, id, sense);
         let rect = paint::snap(&ctx, rect);
