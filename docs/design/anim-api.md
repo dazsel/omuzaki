@@ -1,3 +1,9 @@
+---
+title: "`omuzaki-anim-api`: the animation and rig contract"
+summary: "the animation and rig contract"
+area: design
+---
+
 # `omuzaki-anim-api`: the animation and rig contract
 
 **Status:** reviewed; decisions are in §15. **Crates:** `crates/omuzaki-anim-api`, `crates/omuzaki-anim-mock`.

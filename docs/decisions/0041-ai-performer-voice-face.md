@@ -1,3 +1,9 @@
+---
+title: "0041: The performer's voice is a two-feed TTS pump with a playhead; its face hears the voice ahead of playback; big moves are rules inside the score layer (2026-10-13)"
+summary: "The performer's voice is a two-feed TTS pump with a playhead; its face hears the voice ahead of playback; big moves are rules inside the score layer"
+area: decisions
+---
+
 # 0041: The performer's voice is a two-feed TTS pump with a playhead; its face hears the voice ahead of playback; big moves are rules inside the score layer (2026-10-13)
 
 **Status:** accepted (2026-10-15) by the Director. **Context:** AP-02, AP-05, CN-10,

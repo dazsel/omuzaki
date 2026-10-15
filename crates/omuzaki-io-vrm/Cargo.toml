@@ -24,3 +24,4 @@ workspace = true
 [package.metadata.omuzaki]
 kind = "Implementation"
 summary = "VRM 1.0 and 0.x as formats `vrm1` and `vrm0` (EX-01): the VRM layer (meta and rights, humanoid, expressions, spring bones, node constraints, `MToon`, the 0.x conversion) over `omuzaki-gltf`; messy files import with findings, not failures"
+registers = true

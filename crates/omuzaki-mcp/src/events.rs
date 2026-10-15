@@ -194,7 +194,7 @@ impl Updates {
         let mut paths: Vec<DocPath> = Vec::new();
         for (_, event) in &entries {
             match event {
-                Event::OpApplied { record } => paths.extend(record.patch.changes.iter().map(|c| c.path.clone())),
+                Event::OpApplied { record, .. } => paths.extend(record.patch.changes.iter().map(|c| c.path.clone())),
                 Event::TxRolledBack { .. } | Event::Undone { .. } | Event::Redone { .. } => everything = true,
                 _ => {}
             }
@@ -237,21 +237,17 @@ mod tests {
     use super::*;
 
     fn applied(path: &str) -> Event {
-        let record = OpRecord {
-            seq: 1,
-            op: "face.set_blend".to_owned(),
-            args: json!({}),
-            actor: Actor::System,
-            cause: None,
-            tx: TxId(1),
-            at: Seconds(0.0),
-            patch: Patch::new().with(DocPath::parse(path).unwrap(), None, Some(json!(1))),
-            version: DocVersion(1),
-            on_behalf_of: None,
-            approval: None,
-            effect: None,
-        };
-        Event::OpApplied { record }
+        let record = OpRecord::new(
+            1,
+            "face.set_blend",
+            json!({}),
+            Actor::System,
+            TxId(1),
+            Seconds(0.0),
+            Patch::new().with(DocPath::parse(path).unwrap(), None, Some(json!(1))),
+            DocVersion(1),
+        );
+        Event::op_applied(record)
     }
 
     fn wanted(uris: &[&str]) -> BTreeSet<String> {
@@ -291,7 +287,7 @@ mod tests {
         let hub = quiet_hub();
         let mut updates = Updates::new(&hub, &Providers::new(&[]));
         let mira = wanted(&["omuzaki://character/mira"]);
-        hub.push(Event::TxRolledBack { tx: TxId(1), actor: Actor::System, version: DocVersion(1) });
+        hub.push(Event::tx_rolled_back(TxId(1), Actor::System, DocVersion(1)));
         assert_eq!(updates.changed(&mira), ["omuzaki://character/mira"]);
         for _ in 0..=LOG_CAPACITY {
             hub.push(applied("characters/noor/x"));
@@ -300,7 +296,7 @@ mod tests {
     }
 
     fn committed(n: u64) -> Event {
-        Event::TxCommitted { tx: TxId(n), label: format!("step {n}"), actor: Actor::System }
+        Event::tx_committed(TxId(n), format!("step {n}"), Actor::System)
     }
 
     #[test]

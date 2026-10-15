@@ -53,6 +53,10 @@ tempfile.workspace = true
 # The registration scan behind the link gate (`tests/registrations.rs`, ADR 0015).
 xtask = { path = "../../xtask" }
 
+# The generator behind `build.rs`: the `link()` calls come from the dependencies' `registers` flags.
+[build-dependencies]
+omuzaki-link-build = { path = "../omuzaki-link-build" }
+
 [lints]
 workspace = true
 

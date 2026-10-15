@@ -1,0 +1,7 @@
+section = "in-use"
+item = "@pixiv/three-vrm 3.5.5"
+kind = "js"
+used_for = "prototype VRM loading"
+status = "yes"
+condition = "keep notice"
+audit = "A1"

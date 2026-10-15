@@ -5,6 +5,8 @@
 use std::path::PathBuf;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // First, so no early return can leave a stale `link_calls.rs` behind (`cargo xtask lint-links` checks this).
+    omuzaki_link_build::emit();
     let out = PathBuf::from(std::env::var("OUT_DIR")?);
     let src = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR")?).join("src");
     omuzaki_embed::modules(&src, out.join("crate_mods.rs"), "pub")?;

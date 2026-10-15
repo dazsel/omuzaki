@@ -10,9 +10,9 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use omuzaki_char_api::{
-    BuildCtx, BuildError, BuildOptions, BuildServices, CharId, CharacterBuilder, CharacterDef, FaceOverlay,
-    HeadSurface, MaterialSpec, MeshData, PartCategory, PartDef, PartId, PartKind, PartKindId, PartMesh, PartMeta,
-    PartOutput, Publishes, RegistryBuilder, find_kind, kinds,
+    BuildCtx, BuildError, BuildOptions, BuildServices, CharId, CharacterBuilder, CharacterDef, FaceFact, FaceOverlay,
+    HeadFact, HeadSurface, MaterialSpec, MeshData, PartCategory, PartDef, PartId, PartKind, PartKindId, PartMesh,
+    PartMeta, PartOutput, Publishes, RegistryBuilder, find_kind, kinds,
 };
 use omuzaki_core::glam::{Vec2, Vec3};
 use omuzaki_face_api::{Check, FaceLayerId, FaceProfile, FaceProjection, FaceRect, Palette, Validate, narrow};
@@ -92,20 +92,18 @@ impl PartKind for TestHead {
             FaceProjection { rect: FaceRect { x0: -0.1, x1: 0.1, y0: -0.1, y1: 0.1 }, front_fade: [0.0, 0.05] };
         // The head publishes the projection, so it builds its own Base overlay.
         let overlay = FaceOverlay::of(&projection, Ball(narrow(params.radius)).centre(), FaceLayerId::Base);
-        Ok(PartOutput {
-            meshes: vec![mesh("head", "test-head-skin", Vec3::ZERO)],
-            materials: vec![(
+        Ok(PartOutput::new()
+            .with_meshes(vec![mesh("head", "test-head-skin", Vec3::ZERO)])
+            .with_materials(vec![(
                 omuzaki_char_api::MaterialName::new("test-head-skin").unwrap(),
                 material("#f9d3c5", vec![overlay]),
-            )],
-            publishes: Publishes {
-                head: Some(Arc::new(Ball(narrow(params.radius)))),
-                face: Some(projection),
-                ..Publishes::default()
-            },
-            warnings: vec![format!("built by {}", ctx.part)],
-            ..PartOutput::default()
-        })
+            )])
+            .with_publishes(
+                Publishes::default()
+                    .with::<HeadFact>(Arc::new(Ball(narrow(params.radius))))
+                    .with::<FaceFact>(projection),
+            )
+            .with_warnings(vec![format!("built by {}", ctx.part)]))
     }
 }
 omuzaki_char_api::register_part_kind!(TestHead);
@@ -129,14 +127,10 @@ impl PartKind for TestHair {
         let jitter = ctx.rng.next_f32();
         let root = head.point(Vec3::Y, 0.01) + Vec3::new(jitter, 0.0, 0.0);
         let brows = ctx.face_overlay(FaceLayerId::Brows)?;
-        Ok(PartOutput {
-            meshes: vec![mesh("strand", "test-hair", root)],
-            materials: vec![(
-                omuzaki_char_api::MaterialName::new("test-hair").unwrap(),
-                material("#e6d2be", vec![brows]),
-            )],
-            ..PartOutput::default()
-        })
+        Ok(PartOutput::new().with_meshes(vec![mesh("strand", "test-hair", root)]).with_materials(vec![(
+            omuzaki_char_api::MaterialName::new("test-hair").unwrap(),
+            material("#e6d2be", vec![brows]),
+        )]))
     }
 }
 omuzaki_char_api::register_part_kind!(TestHair);
@@ -174,7 +168,7 @@ impl PartKind for TestOrphan {
     }
 
     fn build(_: &BallParams, _: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
-        Ok(PartOutput { meshes: vec![mesh("orphan", "ghost", Vec3::ZERO)], ..PartOutput::default() })
+        Ok(PartOutput::new().with_meshes(vec![mesh("orphan", "ghost", Vec3::ZERO)]))
     }
 }
 omuzaki_char_api::register_part_kind!(TestOrphan);
@@ -196,7 +190,7 @@ impl PartKind for TestBroken {
     fn build(_: &BallParams, _: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
         let mut m = mesh("oops", "test-hair", Vec3::ZERO);
         m.geometry.normals.pop();
-        Ok(PartOutput { meshes: vec![m], ..PartOutput::default() })
+        Ok(PartOutput::new().with_meshes(vec![m]))
     }
 }
 omuzaki_char_api::register_part_kind!(TestBroken);
@@ -211,16 +205,13 @@ fn part(kind: &str, layer: i32, params: serde_json::Value) -> PartDef {
 fn character(parts: &[(&str, PartDef)]) -> CharacterDef {
     let body = ("body", common::body_part());
     let parts: Vec<_> = std::iter::once(&body).chain(parts).collect();
-    CharacterDef {
-        name: "Test".to_owned(),
-        template: omuzaki_char_api::BodyTemplateId::new("soft-sd").unwrap(),
-        seed: 42,
-        palette: Palette::default(),
-        skin_tone: None,
-        parts: parts.iter().map(|(n, p)| (PartId::new(*n).unwrap(), p.clone())).collect(),
-        face: FaceProfile::default(),
-        weight_brushes: BTreeMap::new(),
-    }
+    CharacterDef::new("Test".to_owned(), omuzaki_char_api::BodyTemplateId::new("soft-sd").unwrap())
+        .with_seed(42)
+        .with_palette(Palette::default())
+        .with_skin_tone(None)
+        .with_parts(parts.iter().map(|(n, p)| (PartId::new(*n).unwrap(), p.clone())).collect())
+        .with_face(FaceProfile::default())
+        .with_weight_brushes(BTreeMap::new())
 }
 
 fn build(def: &CharacterDef) -> Result<omuzaki_char_api::BuiltCharacter, BuildError> {

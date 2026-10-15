@@ -8,7 +8,7 @@ mod common;
 use std::sync::Arc;
 use std::time::Duration;
 
-use common::FakeRunner;
+use common::fake_runner_with;
 use omuzaki_mcp::{McpOptions, McpServer, MeasureProvider, RenderProvider, ResourceProvider};
 use omuzaki_ops_api::{Actor, Grants, Op, OpCtx, OpError, OpKind, OpMeta, Plan, Runner, Scope, Undo};
 use omuzaki_store_api::{Commercial, ContentHash, Store};
@@ -38,7 +38,7 @@ impl ClientHandler for Client {
 }
 
 async fn connect(doc: Value, options: McpOptions) -> RunningService<RoleClient, Client> {
-    let server = McpServer::new(Arc::new(FakeRunner::with_doc(doc)), options).expect("server builds");
+    let server = McpServer::new(Arc::new(fake_runner_with(doc)), options).expect("server builds");
     let (server_io, client_io) = tokio::io::duplex(64 * 1024);
     tokio::spawn(async move { server.serve(server_io).await });
     Client.serve_with_lifecycle(client_io, ClientLifecycleMode::Initialize).await.expect("client connects")
@@ -213,7 +213,7 @@ impl Watching {
     }
 
     async fn connect_as(options: McpOptions, protocol: ProtocolVersion, mode: ClientLifecycleMode) -> Self {
-        let runner = Arc::new(FakeRunner::with_doc(two_characters()));
+        let runner = Arc::new(fake_runner_with(two_characters()));
         let server = McpServer::new(runner, options).expect("server builds");
         let (server_io, client_io) = tokio::io::duplex(64 * 1024);
         tokio::spawn(async move { server.serve(server_io).await });

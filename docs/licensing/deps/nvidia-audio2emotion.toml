@@ -1,0 +1,7 @@
+section = "models"
+item = "NVIDIA Audio2Emotion"
+kind = "model"
+used_for = "emotion for A2F"
+status = "unverified"
+condition = "gated licence, unread"
+audit = "B5"

@@ -1,3 +1,9 @@
+---
+title: "Connectors: the framework, rights, the tray, cost and privacy, keys and capabilities"
+summary: "the framework, rights, the tray, cost and privacy, keys and capabilities"
+area: design
+---
+
 # Connectors: the framework, rights, the tray, cost and privacy, keys and capabilities
 
 **Status:** proposed. **Decision record:**

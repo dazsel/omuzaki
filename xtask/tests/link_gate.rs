@@ -4,6 +4,8 @@
 
 mod support;
 
+use xtask::registry::Target;
+
 use support::{
     Fixture,
     Section::{Dev, Normal},
@@ -158,4 +160,49 @@ fn a_register_macro_the_workspace_does_not_define_is_not_a_registration() {
     let run = fixture.xtask(&["registry"]);
     assert!(run.success, "{}{}", run.stdout, run.stderr);
     assert!(!run.stdout.contains("NotARegistry"), "{}", run.stdout);
+}
+
+/// The op crate with one registration per platform branch: always, wasm only, native (unix) only.
+fn platform_workspace() -> Fixture {
+    let fixture = workspace();
+    fixture.write(
+        "crates/omuzaki-char/src/ops.rs",
+        "use omuzaki_ops_api::register_op;\n\nregister_op!(Always);\n\
+         #[cfg(target_arch = \"wasm32\")]\nregister_op!(WasmOnly);\n\
+         #[cfg(unix)]\nregister_op!(NativeOnly);\n\
+         #[cfg(all(target_family = \"wasm\", target_os = \"unknown\", target_pointer_width = \"32\"))]\n\
+         register_op!(WasmAll);\n\
+         #[cfg(all(debug_assertions, target_endian = \"little\"))]\nregister_op!(DevLittle);\n",
+    );
+    fixture
+}
+
+fn names(registrations: Vec<xtask::registry::Registration>) -> Vec<String> {
+    registrations.into_iter().map(|r| r.name).collect()
+}
+
+#[test]
+fn a_wasm_only_registration_is_expected_for_wasm32_and_a_native_only_one_is_not() {
+    let fixture = platform_workspace();
+    let wasm = Target::wasm32_unknown_unknown(true);
+    let expected = xtask::registry::expected_for(fixture.root(), &wasm, "omuzaki-stage", None).unwrap();
+    assert_eq!(names(expected), ["Always", "DevLittle", "WasmAll", "WasmOnly"]);
+}
+
+#[test]
+fn the_host_scan_expects_the_native_registration_and_not_the_wasm_only_ones() {
+    let fixture = platform_workspace();
+    let expected = xtask::registry::expected(fixture.root(), "omuzaki-stage", None).unwrap();
+    let names = names(expected);
+    assert_eq!(names.contains(&"NativeOnly".to_owned()), cfg!(unix), "{names:?}");
+    assert!(names.contains(&"Always".to_owned()), "{names:?}");
+    assert!(!names.contains(&"WasmOnly".to_owned()) && !names.contains(&"WasmAll".to_owned()), "{names:?}");
+}
+
+#[test]
+fn the_profile_decides_debug_assertions_for_the_target_not_the_host() {
+    let fixture = platform_workspace();
+    let release = Target::wasm32_unknown_unknown(false);
+    let expected = xtask::registry::expected_for(fixture.root(), &release, "omuzaki-stage", None).unwrap();
+    assert_eq!(names(expected), ["Always", "WasmAll", "WasmOnly"]);
 }
