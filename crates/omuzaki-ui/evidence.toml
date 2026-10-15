@@ -2,7 +2,7 @@
 # `visual` (.github/workflows/visual-evidence.yml). The format is documented at the top of tools/ci/evidence.py.
 #
 # Both cases run the design-system gallery headless (src/bin/gallery.rs): fixed size (the whole gallery, 1680 points
-# wide), one pixel per point (gallery-pseudo: 1680×4000, see its description), the theme and scale named by the flags, so the pictures are the same on every run.
+# wide), one pixel per point (gallery-pseudo: fitted to its content at 0.32 pixels per point, see its description), the theme and scale named by the flags, so the pictures are the same on every run.
 
 [[case]]
 name = "gallery-themes"
@@ -14,8 +14,8 @@ images = ["dark.png", "light.png", "high-contrast.png"]
 
 [[case]]
 name = "gallery-pseudo"
-description = "The gallery in the pseudo-locale (accented, 40% longer text) at 200% UI scale, dark palette, the top 4000 points (the whole gallery at this scale is over the GPU's texture limit): finds hard-coded text and layouts that cannot take longer text or large scale."
+description = "The gallery in the pseudo-locale (accented, 40% longer text) at 200% UI scale, dark palette, the whole gallery (the content is 25094 points tall, so it is rendered at 0.32 pixels per point to stay under the GPU's 8192-pixel texture limit): finds hard-coded text and layouts that cannot take longer text or large scale."
 steps = [
-    { run = ["cargo", "run", "--locked", "-p", "omuzaki-ui", "--bin", "gallery", "--", "--pseudo", "--scale", "200", "--size", "1680,4000", "--screenshot", "{out}/pseudo-200.png"] },
+    { run = ["cargo", "run", "--locked", "-p", "omuzaki-ui", "--bin", "gallery", "--", "--pseudo", "--scale", "200", "--ppp", "0.32", "--screenshot", "{out}/pseudo-200.png"] },
 ]
 images = ["pseudo-200.png"]
