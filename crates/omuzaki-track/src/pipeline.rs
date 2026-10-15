@@ -141,7 +141,7 @@ impl FaceTracker {
     /// [`FaceTrackError::Shape`] when one answers with the wrong number of values.
     pub fn track(&mut self, frame: &RgbFrame<'_>, time: Seconds) -> Result<(Option<FaceSample>, StageTimings)> {
         frame.validate()?;
-        let mut timings = StageTimings::default();
+        let timings = StageTimings::default();
         let video = self.mode == Mode::Video;
         let plan = if video { self.reuse.plan(frame, self.next_rect.as_ref()) } else { Plan::Detect };
         if plan == Plan::Skip {
@@ -149,6 +149,24 @@ impl FaceTracker {
             debug_assert!(self.last.is_some(), "a skip needs the last result");
             return Ok((self.last.clone(), timings));
         }
+        let result = self.full_pass(frame, time, plan);
+        if result.is_err() {
+            // A graph failed part-way: whatever it left (the ROI for the next frame, a reference taken before it) is
+            // unproven, so the next frame detects instead of repeating the old sample.
+            self.lose_face();
+        }
+        result
+    }
+
+    /// The detector (when `plan` asks for it), then the landmark pass and what follows it, for a video or image frame.
+    fn full_pass(
+        &mut self,
+        frame: &RgbFrame<'_>,
+        time: Seconds,
+        plan: Plan,
+    ) -> Result<(Option<FaceSample>, StageTimings)> {
+        let mut timings = StageTimings::default();
+        let video = self.mode == Mode::Video;
         let tracked = if video { self.next_rect.take() } else { None };
         let detected = plan == Plan::Detect;
         let rect = if detected {
@@ -179,6 +197,12 @@ impl FaceTracker {
         Ok((sample, timings))
     }
 
+    /// Drops the tracked face and what a skipped frame would repeat, so the next frame runs the detector.
+    fn lose_face(&mut self) {
+        self.next_rect = None;
+        self.forget_pass();
+    }
+
     /// Drops what a skipped frame would repeat.
     fn forget_pass(&mut self) {
         self.reuse.lost();
@@ -207,10 +231,16 @@ impl FaceTracker {
         frame.validate()?;
         self.forget_pass();
         let mut timings = StageTimings::default();
-        self.track_in(frame, roi, time, false, &mut timings)?.map_err(|lost| match lost {
-            Lost::NoArea => FaceTrackError::Shape { graph: "roi" },
-            Lost::LowPresence | Lost::NoPose => FaceTrackError::Shape { graph: "geometry" },
-        })
+        let result = self.track_in(frame, roi, time, false, &mut timings).and_then(|tracked| {
+            tracked.map_err(|lost| match lost {
+                Lost::NoArea => FaceTrackError::Shape { graph: "roi" },
+                Lost::LowPresence | Lost::NoPose => FaceTrackError::Shape { graph: "geometry" },
+            })
+        });
+        if result.is_err() {
+            self.lose_face();
+        }
+        result
     }
 
     /// Landmarks, smoothing, blendshapes and pose inside `rect`. `gate` applies the presence threshold.

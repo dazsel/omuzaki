@@ -3,13 +3,16 @@
 //! a frame sequence and allocates nothing.
 
 use crate::frame::RgbFrame;
-use crate::roi::{NormRect, roi_to_frame};
+use crate::roi::NormRect;
 
-/// Samples per side of the ROI signature.
+/// Cells per side of the ROI signature: the ROI is cut into `GRID` x `GRID` cells and every cell is averaged.
 const GRID: usize = 16;
-/// Samples per side of one block of the peak measure (the signature is `GRID / BLOCK` blocks wide).
-const BLOCK: usize = 4;
-/// Samples in a signature.
+/// Cells per side of one block of the peak measure (the signature is `GRID / BLOCK` blocks wide).
+const BLOCK: usize = 2;
+/// The most sample points per side of one cell: a cell of up to this many pixels is read pixel by pixel, a larger one
+/// (an ROI over `GRID * CELL_SAMPLES` = 512 pixels a side) at an even stride, which bounds the cost of a 4K frame.
+const CELL_SAMPLES: usize = 32;
+/// Cells in a signature.
 const SAMPLES: usize = GRID * GRID;
 /// The largest luma level.
 const LEVELS: f32 = 255.0;
@@ -65,7 +68,7 @@ pub(super) enum Plan {
     Detect,
 }
 
-/// The luma of the ROI sampled on a `GRID` x `GRID` lattice.
+/// The mean luma of each cell of the ROI's `GRID` x `GRID` cut.
 type Signature = [u8; SAMPLES];
 
 /// The reuse state machine: counts frames, remembers the ROI signature of the last full pass and decides each frame.
@@ -139,22 +142,33 @@ impl ReuseGate {
     }
 }
 
-/// `frame` sampled through `rect`: at each lattice point the mean luma of the 2x2 pixels there, which halves the
-/// sensor noise a single pixel carries.
+/// `frame` through `rect`: the mean luma of every cell of the ROI, each read at about one sample per frame pixel, so
+/// no pixel of the ROI falls between cells or inside a gap (a blink or a lip moving a few pixels changes its cell's
+/// mean) and the average of a cell's pixels takes the noise down by its square root. Past `CELL_SAMPLES` per cell side
+/// the stride grows with the ROI, so the cost is bounded.
 #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn signature(frame: &RgbFrame<'_>, rect: &NormRect) -> Signature {
-    let (fw, fh) = (frame.width as f32, frame.height as f32);
-    let roi = rect.to_pixels(fw, fh);
+    let roi = rect.to_pixels(frame.width as f32, frame.height as f32);
     let (max_x, max_y) = (frame.width as usize - 1, frame.height as usize - 1);
+    let (cos, sin) = (roi.rotation.cos(), roi.rotation.sin());
+    // Sample points per cell side: one per pixel of the longer side of a cell, at least 1.
+    let side = ((roi.width.max(roi.height) / GRID as f32).ceil().max(1.0) as usize).min(CELL_SAMPLES);
     let mut out = [0_u8; SAMPLES];
     for (i, level) in out.iter_mut().enumerate() {
-        let (u, v) = (((i % GRID) as f32 + 0.5) / GRID as f32, ((i / GRID) as f32 + 0.5) / GRID as f32);
-        let (x, y) = roi_to_frame(&roi, fw, fh, u, v);
-        // Out-of-frame points (an ROI hanging over the edge) clamp to the edge pixel, like the crop's replicate border.
-        let (px, py) = ((x * fw).clamp(0.0, max_x as f32) as usize, (y * fh).clamp(0.0, max_y as f32) as usize);
-        let (qx, qy) = ((px + 1).min(max_x), (py + 1).min(max_y));
-        let sum: u32 = [(px, py), (qx, py), (px, qy), (qx, qy)].iter().map(|&(x, y)| luma(frame, x, y)).sum();
-        *level = (sum / 4) as u8;
+        let (cell_x, cell_y) = ((i % GRID) as f32, (i / GRID) as f32);
+        let mut sum = 0_u32;
+        for j in 0..side * side {
+            let (a, b) = ((j % side) as f32 + 0.5, (j / side) as f32 + 0.5);
+            // The point in the ROI's own unit square, then in the frame (`roi::roi_to_frame` with the trig hoisted).
+            let (dx, dy) = (
+                ((cell_x + a / side as f32) / GRID as f32 - 0.5) * roi.width,
+                ((cell_y + b / side as f32) / GRID as f32 - 0.5) * roi.height,
+            );
+            let (x, y) = (roi.cx + cos * dx - sin * dy, roi.cy + sin * dx + cos * dy);
+            // Out-of-frame points (an ROI hanging over the edge) clamp to the edge pixel, like the crop's replicate border.
+            sum += luma(frame, x.clamp(0.0, max_x as f32) as usize, y.clamp(0.0, max_y as f32) as usize);
+        }
+        *level = (sum / (side * side) as u32) as u8;
     }
     out
 }
@@ -222,6 +236,32 @@ mod tests {
         }
         let (mean, peak) = difference(&signature(&frame(&base), &RECT), &signature(&frame(&changed), &RECT));
         assert!(peak > 5.0 * mean && peak > 0.3, "mean {mean} peak {peak}");
+    }
+
+    const BIG: u32 = 256;
+
+    fn big(px: &[u8]) -> RgbFrame<'_> {
+        RgbFrame { data: px, width: BIG, height: BIG, stride: BIG as usize * 3 }
+    }
+
+    #[test]
+    fn every_small_patch_inside_the_roi_changes_the_signature() {
+        // A 256 px frame and a 0.6 ROI: cells of about 10 px, which the old 2x2-per-cell sampling left 96% unread.
+        let base = vec![100_u8; (BIG * BIG * 3) as usize];
+        for rotation in [0.0, 0.4] {
+            let rect = NormRect { x_center: 0.5, y_center: 0.5, width: 0.6, height: 0.6, rotation };
+            let reference = signature(&big(&base), &rect);
+            // Patches of 3x3 pixels on a 4-pixel grid across the ROI's inner part.
+            for y in (80..176).step_by(4) {
+                for x in (80..176).step_by(4) {
+                    let mut changed = base.clone();
+                    for (py, px) in (y..y + 3).flat_map(|py| (x..x + 3).map(move |px| (py, px))) {
+                        changed[(py * BIG as usize + px) * 3..][..3].fill(255);
+                    }
+                    assert_ne!(signature(&big(&changed), &rect), reference, "rotation {rotation} patch at ({x},{y})");
+                }
+            }
+        }
     }
 
     #[test]

@@ -12,6 +12,8 @@ use common::{
 };
 use omuzaki_ai_api::TensorBuf;
 use omuzaki_core::time::Seconds;
+use std::sync::atomic::Ordering;
+
 use omuzaki_track::pipeline::ReuseConfig;
 use omuzaki_track::{FaceSample, FaceTracker, FaceTrackerConfig};
 
@@ -99,6 +101,62 @@ fn a_small_local_change_is_not_skipped_even_when_the_mean_barely_moves() {
     let mut rig = Rig::confident(blind);
     rig.step(&still);
     assert_eq!(rig.step(&mouth).1.landmarks, 0);
+}
+
+/// Paints `rows` x `cols` of white from `(x0, y0)`.
+fn paint(pixels: &[u8], x0: usize, y0: usize, cols: usize, rows: usize) -> Vec<u8> {
+    let mut out = pixels.to_vec();
+    for y in y0..y0 + rows {
+        for x in x0..x0 + cols {
+            out[(y * SIDE as usize + x) * 3..][..3].fill(255);
+        }
+    }
+    out
+}
+
+#[test]
+fn a_blink_between_the_old_lattice_rows_is_not_skipped() {
+    // 24x6 pixels at x 100..124, y 116..122 touched none of the old 2x2 lattice samples on a 256 px frame.
+    let still = textured_pixels(0, 2, 0);
+    for (x, y, cols, rows) in [(100, 116, 24, 6), (101, 117, 10, 6), (140, 90, 30, 6), (160, 150, 6, 30)] {
+        let mut rig = Rig::confident(ReuseConfig::default());
+        rig.step(&still);
+        let blink = paint(&still, x, y, cols, rows);
+        assert_eq!(rig.step(&blink).1.landmarks, 1, "patch {cols}x{rows} at ({x},{y})");
+    }
+}
+
+#[test]
+fn blendshape_failures_drop_the_reuse_state() {
+    let mut rig = Rig::confident(ReuseConfig::default());
+    let pixels = textured_pixels(0, 0, 0);
+    assert!(rig.step(&pixels).0.is_some());
+    assert_eq!(rig.step(&pixels).1.landmarks, 0, "a still face is skipped before the failure");
+    // Two full passes fail in a row (skips never reach the blendshapes, so force the passes with a changed frame).
+    rig.runs.fail_blendshapes.store(true, Ordering::Relaxed);
+    for i in 0..3 {
+        let time = Seconds(10.0 + f64::from(i));
+        assert!(rig.tracker.track(&frame(&paint(&pixels, 90, 90, 40, 40)), time).is_err(), "failure {i}");
+    }
+    rig.runs.fail_blendshapes.store(false, Ordering::Relaxed);
+    rig.seen = rig.runs.get();
+    // Pixels now match the reference the pass took before the failures; the old sample must not be repeated.
+    let (sample, work) = rig.step(&pixels);
+    assert_eq!(work, Work { detector: 1, landmarks: 1 }, "detects again instead of repeating the stale sample");
+    assert!(sample.is_some());
+    assert_eq!(rig.step(&pixels).1.landmarks, 0, "and skips again after a clean pass");
+}
+
+#[test]
+fn a_failed_track_roi_leaves_no_stale_reuse_state() {
+    let mut rig = Rig::confident(ReuseConfig::default());
+    let pixels = textured_pixels(0, 0, 0);
+    rig.step(&pixels);
+    rig.runs.fail_blendshapes.store(true, Ordering::Relaxed);
+    assert!(rig.tracker.track_roi(&frame(&pixels), FACE_ROI, Seconds(5.0)).is_err());
+    rig.runs.fail_blendshapes.store(false, Ordering::Relaxed);
+    rig.seen = rig.runs.get();
+    assert_eq!(rig.step(&pixels).1.detector, 1);
 }
 
 #[test]

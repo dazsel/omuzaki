@@ -59,17 +59,20 @@ filter keeps its state and carries on at the next full pass with the elapsed tim
 The test compares the ROI as it looks now with how it looked on the last full pass. It uses pixels, not landmarks, so
 it costs no model run and sees what the landmarks would have measured, a turn, a nod, a blink or a mouth opening.
 
-- The signature is the luma on a 16 x 16 lattice through the tracked ROI (rotation included), each point the mean of
-  the 2 x 2 pixels there. That is 256 bytes in a fixed array and about 1,000 pixel reads, a small fraction of one millisecond (`benches/pipeline.rs`, `video_reuse`).
+- The signature is the mean luma of each cell of a 16 x 16 cut of the tracked ROI (rotation included). Every cell is
+  read at about one sample per frame pixel (at most 32 x 32 samples a cell, so an ROI over 512 px a side is read at an
+  even stride and the cost stays bounded), so no pixel of the ROI sits in a gap between samples: a blink or a lip moving
+  a few pixels changes its cell's mean. That is 256 bytes in a fixed array and one pixel read per ROI pixel (a 0.6 ROI
+  of a 256 px frame is about 24,000, well under a millisecond; `benches/pipeline.rs`, `video_reuse`).
 - The reference signature is taken on the last full pass, from the frame that pass was run on, in the ROI that pass gave
   the next frame. It is **not** the previous frame's: a drift of a fraction of the threshold per frame adds up against
   the reference and ends the skips, so slow motion cannot hide.
-- Two measures, both fractions of full scale, both of the absolute difference: the **mean** over the lattice
-  (`skip_mean`, 0.02), and the largest **block mean** over the sixteen 4 x 4 blocks (`skip_peak`, 0.04). The mean
+- Two measures, both fractions of full scale, both of the absolute difference: the **mean** over the cells
+  (`skip_mean`, 0.02), and the largest **block mean** over the sixty-four 2 x 2-cell blocks (`skip_peak`, 0.04). The mean
   catches a turn or a lighting change; the peak catches a local change the mean averages away (a mouth opening is a few
   percent of the ROI). A frame is skipped only below both.
-- The thresholds sit above the noise and below any motion that matters. Sensor noise of a few levels per pixel, halved
-  by the 2 x 2 average and averaged again over 256 points, measures well under 1% (the tests use +-2 levels of
+- The thresholds sit above the noise and below any motion that matters. Sensor noise of a few levels per pixel, averaged
+  over the pixels of a cell and again over 256 cells, measures well under 1% (the tests use +-2 levels of
   noise on every frame and still skip). Noise too strong to stay under the thresholds just means no skips, which is
   the safe direction. A change of one pixel of a high-contrast edge in the ROI is already over the mean threshold; the tests
   pin a fast turn (36 levels a frame), slow drift (3 levels a frame) and a 24 x 24 pixel patch.

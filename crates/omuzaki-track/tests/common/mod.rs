@@ -13,7 +13,7 @@
 )]
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use nalgebra::{Rotation3, Vector3};
 use omuzaki_ai_api::{DType, RunError, Session, SessionInfo, Signature, TensorBuf, TensorRef};
@@ -213,13 +213,15 @@ pub fn blendshapes_script() -> Vec<Vec<TensorBuf>> {
 pub struct Counted {
     inner: FakeSession,
     runs: Arc<AtomicU64>,
+    fail: Arc<AtomicBool>,
 }
 
 impl Counted {
-    /// Wraps `inner`; the second value reads the count.
-    pub fn new(inner: FakeSession) -> (Self, Arc<AtomicU64>) {
+    /// Wraps `inner`; the second value reads the count and the third makes every run fail while it is set.
+    pub fn new(inner: FakeSession) -> (Self, Arc<AtomicU64>, Arc<AtomicBool>) {
         let runs = Arc::new(AtomicU64::new(0));
-        (Self { inner, runs: Arc::clone(&runs) }, runs)
+        let fail = Arc::new(AtomicBool::new(false));
+        (Self { inner, runs: Arc::clone(&runs), fail: Arc::clone(&fail) }, runs, fail)
     }
 }
 
@@ -229,6 +231,9 @@ impl Session for Counted {
     }
 
     fn run(&mut self, inputs: &[TensorRef<'_>], outputs: &mut [TensorBuf]) -> Result<(), RunError> {
+        if self.fail.load(Ordering::Relaxed) {
+            return Err(RunError::Failed("scripted failure".into()));
+        }
         self.inner.run(inputs, outputs)?;
         self.runs.fetch_add(1, Ordering::Relaxed);
         Ok(())
@@ -251,6 +256,8 @@ pub struct Runs {
     pub landmarks: Arc<AtomicU64>,
     /// The blendshape model.
     pub blendshapes: Arc<AtomicU64>,
+    /// While set, every blendshape run fails.
+    pub fail_blendshapes: Arc<AtomicBool>,
 }
 
 impl Runs {
@@ -270,12 +277,13 @@ pub fn counted_graphs(
     landmarks: Vec<Vec<TensorBuf>>,
     blendshapes: Vec<Vec<TensorBuf>>,
 ) -> (FaceGraphs, Runs) {
-    let (d, detector_runs) = Counted::new(FakeSession::scripted(detector_signature(), detector));
-    let (l, landmark_runs) = Counted::new(FakeSession::scripted(landmarks_signature(), landmarks));
-    let (b, blendshape_runs) = Counted::new(FakeSession::scripted(blendshapes_signature(), blendshapes));
+    let (d, detector_runs, _) = Counted::new(FakeSession::scripted(detector_signature(), detector));
+    let (l, landmark_runs, _) = Counted::new(FakeSession::scripted(landmarks_signature(), landmarks));
+    let (b, blendshape_runs, fail_blendshapes) =
+        Counted::new(FakeSession::scripted(blendshapes_signature(), blendshapes));
     (
         FaceGraphs { detector: Box::new(d), landmarks: Box::new(l), blendshapes: Box::new(b) },
-        Runs { detector: detector_runs, landmarks: landmark_runs, blendshapes: blendshape_runs },
+        Runs { detector: detector_runs, landmarks: landmark_runs, blendshapes: blendshape_runs, fail_blendshapes },
     )
 }
 
