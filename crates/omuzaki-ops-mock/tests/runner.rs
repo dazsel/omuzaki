@@ -108,6 +108,48 @@ impl Op for SetAliased {
     }
 }
 
+/// A query that wrongly plans a change.
+#[derive(Serialize, Deserialize, JsonSchema)]
+struct BadQuery;
+
+impl Op for BadQuery {
+    fn meta() -> OpMeta {
+        OpMeta {
+            name: "mocktest.bad_query",
+            summary: "A query that plans a patch.",
+            kind: OpKind::Query,
+            scope: Scope::Read,
+            undo: Undo::None,
+        }
+    }
+
+    fn plan(&self, _ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
+        Ok(Plan::edit(Patch::new().with(counter(), None, Some(json!(1)))))
+    }
+}
+
+/// An edit whose plan always fails, so only a check made before planning can refuse it as `Denied`.
+#[derive(Serialize, Deserialize, JsonSchema)]
+struct AlwaysFails;
+
+impl Op for AlwaysFails {
+    fn meta() -> OpMeta {
+        OpMeta {
+            name: "mocktest.always_fails",
+            summary: "An edit that cannot be planned.",
+            kind: OpKind::Edit,
+            scope: Scope::EditScene,
+            undo: Undo::Auto,
+        }
+    }
+
+    fn plan(&self, _ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
+        Err(OpError::invalid("value", "never plannable"))
+    }
+}
+
+omuzaki_ops_api::register_op!(BadQuery);
+omuzaki_ops_api::register_op!(AlwaysFails);
 omuzaki_ops_api::register_op!(SetAliased);
 omuzaki_ops_api::register_op!(SetCounter);
 omuzaki_ops_api::register_op!(Composite);
@@ -205,4 +247,34 @@ fn history_and_events_carry_the_decoded_ops_canonical_arguments() {
         Event::OpApplied { record, .. } => assert_eq!(record.args, canonical),
         other => panic!("expected OpApplied, got {other:?}"),
     }
+}
+
+#[test]
+fn a_query_that_plans_a_change_is_an_internal_error() {
+    let runner = runner();
+    let error = runner.run(request("mocktest.bad_query", json!(null), Mode::Apply, Grants::person())).unwrap_err();
+    assert_eq!(error.code, ErrorCode::Internal);
+    let dry = runner.run(request("mocktest.bad_query", json!(null), Mode::DryRun, Grants::person())).unwrap_err();
+    assert_eq!(dry.code, ErrorCode::Internal, "a dry-run plans it too");
+    assert_eq!(runner.get(&counter(), &Grants::person()).unwrap(), Some(json!(0)));
+}
+
+#[test]
+fn the_scope_is_checked_before_the_op_is_planned() {
+    let runner = runner();
+    let read_only = Grants::of([Scope::Read]);
+    let error = runner.run(request("mocktest.always_fails", json!(null), Mode::Apply, read_only.clone())).unwrap_err();
+    assert_eq!(error.code, ErrorCode::Denied, "an apply without the op's scope never reaches its plan");
+
+    // A dry-run of an edit needs only `read`, so it does reach the plan and reports what the plan says.
+    let dry = runner.run(request("mocktest.always_fails", json!(null), Mode::DryRun, read_only)).unwrap_err();
+    assert_eq!(dry.code, ErrorCode::Invalid);
+}
+
+#[test]
+fn nothing_runs_without_read_not_even_an_unknown_op() {
+    let runner = runner();
+    let none = Grants::of([]);
+    let error = runner.run(request("mocktest.no_such_op", json!(null), Mode::DryRun, none)).unwrap_err();
+    assert_eq!(error.code, ErrorCode::Denied, "`read` is checked before the op is looked up");
 }

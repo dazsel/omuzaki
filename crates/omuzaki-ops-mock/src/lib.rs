@@ -135,6 +135,16 @@ impl<D: DocWrite> Inner<D> {
     }
 }
 
+/// The refusal for a request without `read`, worded as the executor words it.
+fn require_read_for(grants: &Grants, op: &str) -> Result<(), OpError> {
+    if grants.allows(Scope::Read) {
+        Ok(())
+    } else {
+        Err(OpError::denied(format!("{op} needs the `read` scope"))
+            .hint("ask the user to grant the `read` scope for this session"))
+    }
+}
+
 fn require_read(grants: &Grants) -> Result<(), OpError> {
     if grants.allows(Scope::Read) { Ok(()) } else { Err(OpError::denied("needs the `read` scope")) }
 }
@@ -148,34 +158,43 @@ impl<D: DocWrite + Send> Runner for MockRunner<D> {
     }
 
     fn run(&self, req: Request) -> Result<Outcome, OpError> {
+        // The executor's order of checks. Nothing runs without `read`, not even a dry-run.
+        require_read_for(&req.grants, &req.op)?;
         let reg = find(&req.op).ok_or_else(|| OpError::invalid("op", format!("unknown op {}", req.op)))?;
         let op = (reg.decode)(req.args.clone())?;
         let meta = op.meta();
         // The log keeps the decoded op's canonical arguments (defaults filled, aliases resolved), as the executor does.
         let args = op.args()?;
-        if !req.grants.allows(Scope::Read) {
-            return Err(OpError::denied(format!("{} needs the `read` scope", meta.name))
-                .hint("ask the user to grant the `read` scope for this session"));
+        // A job is not part of a transaction. (The mock runs a job's plan as the whole job, with no worker thread.)
+        if meta.kind == OpKind::Job && req.tx.is_some() {
+            return Err(OpError::invalid("tx", "a job cannot join a transaction")
+                .hint("run the job without `tx`: its finish is one undo step of its own"));
         }
         let mut inner = self.inner();
+        if let Some(tx) = req.tx {
+            inner.check_open(tx, &req.actor)?;
+        }
+        // Applying needs the op's own scope, checked before the op is asked for a plan. A dry-run of an edit needs only
+        // `read`, but a query's plan *is* its answer, so a dry-run of one is gated like the real thing.
+        if (req.mode == Mode::Apply || meta.kind == OpKind::Query) && !req.grants.allows(meta.scope) {
+            return Err(OpError::denied(format!("{} needs the `{}` scope", meta.name, meta.scope))
+                .hint(format!("ask the user to grant the `{}` scope for this session", meta.scope)));
+        }
         // As the executor builds it: the request's grants (a composite op's `plan_step` checks them) and its mode.
         let ctx = OpCtx::new(&inner.doc, &req.actor, &inner.clock)
             .with_grants(&req.grants)
             .with_dry_run(req.mode == Mode::DryRun);
         let plan = op.plan(&ctx)?;
-        // A dry-run needs only `read`, except for queries, which have nothing to preview and are gated like a call.
-        if req.mode == Mode::DryRun && meta.kind != OpKind::Query {
+        if meta.kind == OpKind::Query && !plan.patch.changes.is_empty() {
+            return Err(OpError::internal(format!("{} is a query but planned a change to the document", meta.name))
+                .hint("this is a bug in the op: queries return an answer and no patch"));
+        }
+        if meta.kind == OpKind::Job && !plan.patch.changes.is_empty() {
+            return Err(OpError::internal(format!("{} is a job but planned a change to the document", meta.name))
+                .hint("this is a bug in the op: a job's plan returns no patch; its `finish` returns the change"));
+        }
+        if req.mode == Mode::DryRun || meta.kind == OpKind::Query {
             return Ok(Outcome::new(plan));
-        }
-        if !req.grants.allows(meta.scope) {
-            return Err(OpError::denied(format!("{} needs the `{}` scope", meta.name, meta.scope))
-                .hint(format!("ask the user to grant the `{}` scope for this session", meta.scope)));
-        }
-        if meta.kind == OpKind::Query {
-            return Ok(Outcome::new(plan));
-        }
-        if let Some(tx) = req.tx {
-            inner.check_open(tx, &req.actor)?;
         }
         let version =
             inner.doc.apply(&plan.patch).map_err(|e| OpError::conflict(e.to_string()).hint("re-plan and retry"))?;
