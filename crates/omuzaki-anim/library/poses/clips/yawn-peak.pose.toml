@@ -1,0 +1,17 @@
+# Key pose "yawn-peak" for the clips beside it (RG-06). Degrees, Euler XYZ, VRM normalised space; see src/poses/mod.rs.
+id = "yawn-peak"
+summary = "The yawn at its widest: head back, chest open and one hand raised toward the mouth."
+tags = ["clip-key"]
+mirrorable = true
+hips_offset = [0.0, 0.01, 0.0]
+
+[bones]
+leftUpperArm = [0.0, 0.0, -65.0]
+rightUpperArm = [-60.0, 0.0, 65.0]
+rightLowerArm = [0.0, 0.0, -110.0]
+spine = [-8.0, 0.0, 0.0]
+chest = [-8.0, 0.0, 0.0]
+head = [-16.0, 0.0, 0.0]
+
+[hands.right]
+shape = "rest"

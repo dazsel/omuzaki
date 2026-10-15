@@ -8,6 +8,7 @@
 //!
 //! Available to this crate's tests and, with the `capture` feature, to the panels' tests.
 
+use egui::accesskit::Role;
 use egui::epaint::ClippedShape;
 use egui::{Color32, FontFamily, FullOutput, Pos2, Rect, Shape};
 
@@ -98,7 +99,7 @@ pub fn painted(output: &FullOutput) -> Vec<Painted> {
             rect,
             ink: base.gamma_multiply(text.opacity_factor),
             icon,
-            backdrop: backdrop(&shapes, index, rect.center()),
+            backdrop: backdrop(&shapes, index, painted_rect(text).center()),
             elided: text.galley.elided,
         });
     }
@@ -280,6 +281,18 @@ fn overlaps(a: Rect, b: Rect) -> bool {
     shared.width() > EDGE_SLACK && shared.height() > EDGE_SLACK
 }
 
+/// Where `text` is painted: the bounds of the glyph quads egui drew, not the galley's layout rectangle.
+///
+/// The layout rectangle starts at the galley's origin, but the first row of a label laid out after other widgets in a
+/// wrapped row begins with a leading indent (the width of what is already on the line), so it reaches left of the
+/// glyphs. A glyph's quad can also reach past its layout position (a negative left-side bearing, an italic overhang).
+/// The mesh bounds are exact for both: they cover every drawn glyph, and neither leading space nor an indent.
+fn painted_rect(text: &egui::epaint::TextShape) -> Rect {
+    let galley = &text.galley;
+    let bounds = if galley.mesh_bounds.is_positive() { galley.mesh_bounds } else { galley.rect };
+    bounds.translate(text.pos.to_vec2())
+}
+
 /// Text that is clipped, lies outside `window`, or is drawn over other text in the frame.
 ///
 /// Text is the one thing every control shows, so this is the first layout check; controls are checked through
@@ -297,7 +310,7 @@ pub fn layout_findings(output: &FullOutput, window: Rect) -> Vec<LayoutFinding> 
             if text.galley.job.text.trim().is_empty() {
                 continue;
             }
-            let rect = text.galley.rect.translate(text.pos.to_vec2());
+            let rect = painted_rect(text);
             texts.push((text.galley.job.text.clone(), rect, *clip_rect));
         }
     }
@@ -324,8 +337,13 @@ pub fn layout_findings(output: &FullOutput, window: Rect) -> Vec<LayoutFinding> 
 pub struct Control {
     /// Its accessible name.
     pub name: String,
+    /// Its AccessKit role.
+    pub role: Role,
     /// Where it is on screen.
     pub rect: Rect,
+    /// The control it says it controls through AccessKit (a tab's close button controls its tab), as an index into the
+    /// same list.
+    pub controls: Option<usize>,
     /// The nearest operable node above it in the tree, as an index into the same list. Parents come before their
     /// children in the list, so the chain of parents always ends.
     pub parent: Option<usize>,
@@ -343,15 +361,30 @@ fn is_ancestor(controls: &[Control], ancestor: usize, node: usize) -> bool {
     false
 }
 
+/// A tab and its own close button, drawn inside it: the button says it controls that tab, and lies wholly inside it.
+/// AccessKit keeps the button a sibling of the tab (a button is not a child of a tab in ARIA), so the tree does not say
+/// it is nested, but it is drawn inside the tab on purpose and the tab bar keeps the tab's label clear of it. Another
+/// tab's button, or any other button that merely sits inside a tab's rectangle, is not exempt.
+fn is_tab_close(controls: &[Control], a: usize, b: usize) -> bool {
+    let owned = |tab: usize, button: usize| {
+        let (tab_control, button_control) = (&controls[tab], &controls[button]);
+        tab_control.role == Role::Tab
+            && button_control.role == Role::Button
+            && button_control.controls == Some(tab)
+            && tab_control.rect.expand(EDGE_SLACK).contains_rect(button_control.rect)
+    };
+    owned(a, b) || owned(b, a)
+}
+
 /// Controls drawn over one another. A control drawn over its own ancestor or descendant is nesting (a row's button
-/// sits inside the row, a curve's point handles on its curve), so it is not a collision. Any other pair that
-/// overlaps is: two controls with identical rectangles, or one inside the other as siblings, are both reported.
+/// sits inside the row, a curve's point handles on its curve), and a tab's own close button inside its tab is the same
+/// by design ([`is_tab_close`]), so neither is a collision. Any other pair that overlaps is: two controls with identical rectangles, or one inside the other as siblings, are both reported.
 pub fn control_overlaps(controls: &[Control]) -> Vec<LayoutFinding> {
     let mut out = Vec::new();
     for (index, control) in controls.iter().enumerate() {
         for (other, rival) in controls.iter().enumerate().skip(index + 1) {
             let nested = is_ancestor(controls, index, other) || is_ancestor(controls, other, index);
-            if !nested && overlaps(control.rect, rival.rect) {
+            if !nested && !is_tab_close(controls, index, other) && overlaps(control.rect, rival.rect) {
                 out.push(finding(LayoutProblem::Overlap, &control.name, control.rect, Some(&rival.name)));
             }
         }
