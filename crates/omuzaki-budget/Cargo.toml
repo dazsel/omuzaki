@@ -22,3 +22,7 @@ harness = false
 
 [lints]
 workspace = true
+
+[package.metadata.omuzaki]
+kind = "Implementation"
+summary = "the frame-budget scheduler (§8): smooths `FrameReport` times (EMA), compares them with the budget and steps `Quality` down the degrade ladder and back up with hysteresis, returning every change as a value; reports the face painter's budget pressure; allocation-free `observe`"
