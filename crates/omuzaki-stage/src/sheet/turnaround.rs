@@ -573,7 +573,7 @@ impl Run<'_> {
     /// cell's own: the shot frames height, and how wide a figure fits is the caller's cell shape.
     fn check_fits(&self, view: View, drawn: &[Vec3]) -> Result<(), TurnaroundError> {
         let (min, max) = pixel_bounds(drawn, &self.shot);
-        let rows = self.shot.cell.y as f32;
+        let rows = self.shot.cell.as_vec2().y;
         if min.y < 0.0 || max.y > rows {
             return Err(TurnaroundError::Unsupported(format!(
                 "the {view:?} view's pose spans rows {:.0} to {:.0}, outside the {} rows of the cell the shot was framed \
