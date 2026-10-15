@@ -89,6 +89,22 @@ impl Panel for Discards {
     }
 }
 
+/// Sets itself up on its first draw, and panics only when that first draw is narrow.
+#[derive(Default)]
+struct LateInit {
+    ready: bool,
+}
+
+impl Panel for LateInit {
+    fn ui(&mut self, ui: &mut egui::Ui, _ctx: &PanelCtx<'_>) {
+        if !self.ready {
+            assert!(ui.available_width() >= 200.0, "first draw too narrow");
+            self.ready = true;
+        }
+        ui.label("Late init");
+    }
+}
+
 /// A fine panel whose id two workspaces also use.
 struct Shared;
 
@@ -113,6 +129,10 @@ omuzaki_ui_api::register_panel! {
 omuzaki_ui_api::register_panel! {
     id: "discards", title: "Discards", icon: "", region: Region::Left, min_size: [240.0, 160.0], order: 7,
     build: |_| Box::new(Discards),
+}
+omuzaki_ui_api::register_panel! {
+    id: "late-init", title: "Late init", icon: "", region: Region::Left, min_size: [240.0, 160.0], order: 9,
+    build: |_| Box::new(LateInit::default()),
 }
 omuzaki_ui_api::register_panel! {
     id: "shared", title: "Shared", icon: "", region: Region::Left, min_size: [240.0, 160.0], order: 8,
@@ -197,4 +217,16 @@ fn ui_runs_again_when_egui_discards_a_pass() {
     assert!(host.frame(panel.as_mut(), def, &ctx, def.min_size).body);
     // The host keeps egui's default passes, as the shell does: the discarded pass draws the panel a second time.
     assert_eq!(DISCARD_CALLS.load(Ordering::SeqCst), 2, "ui runs once per pass, and egui ran two");
+}
+
+#[test]
+fn every_size_is_tried_on_a_freshly_built_panel() {
+    let runner = MockRunner::new(MemDoc::new());
+    let actor = Actor::System;
+    let ctx = PanelCtx::new(&runner, &actor);
+    let host = MockHost::new();
+    assert_eq!(
+        host.check("late-init", &ctx),
+        ["late-init: panics at 120 by 80 points", "late-init: panics at 1 by 1 points"]
+    );
 }

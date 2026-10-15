@@ -143,7 +143,7 @@ impl MockHost {
                 .filter(|d| d.kind == DefKind::Panel && d.id == id)
                 .map(ToString::to_string),
         );
-        let Some((def, mut panel)) = self.open(id, ctx) else {
+        let Some((def, panel)) = self.open(id, ctx) else {
             problems.push(format!("no panel is registered as {id:?}"));
             return problems;
         };
@@ -156,27 +156,24 @@ impl MockHost {
             problems.push(format!("{id}: the screen-reader label is empty"));
         }
         let [w, h] = def.min_size;
-        // A fresh context, so a panic can't leave state behind for the next draw.
-        let first = panic::catch_unwind(AssertUnwindSafe(|| {
-            draw(&accessible_context(), panel.as_mut(), def, ctx, def.min_size)
-        }));
-        match first {
-            Ok(frame) => {
-                if !frame.body && def.empty.is_none() {
-                    problems.push(format!("{id}: unavailable with no document, and registers no empty state"));
+        for size in [def.min_size, [w / 2.0, h / 2.0], [1.0, 1.0]] {
+            // A fresh panel and a fresh context for each size: a panel that sets itself up on its first draw must be
+            // tried narrow on that first draw, and a panic can't leave state behind for the next size.
+            let drawn = panic::catch_unwind(AssertUnwindSafe(|| {
+                let mut fresh = (def.build)(ctx);
+                draw(&accessible_context(), fresh.as_mut(), def, ctx, size)
+            }));
+            match drawn {
+                Ok(frame) if size == def.min_size => {
+                    if !frame.body && def.empty.is_none() {
+                        problems.push(format!("{id}: unavailable with no document, and registers no empty state"));
+                    }
+                    if frame.labels.is_empty() {
+                        problems.push(format!("{id}: its frame gives AccessKit nothing to announce"));
+                    }
                 }
-                if frame.labels.is_empty() {
-                    problems.push(format!("{id}: its frame gives AccessKit nothing to announce"));
-                }
-            }
-            Err(_) => problems.push(format!("{id}: panics at {w} by {h} points")),
-        }
-        for size in [[w / 2.0, h / 2.0], [1.0, 1.0]] {
-            // A fresh context each time, so a panic can't leave state behind for the next size.
-            let egui = accessible_context();
-            let drawn = panic::catch_unwind(AssertUnwindSafe(|| draw(&egui, panel.as_mut(), def, ctx, size)));
-            if drawn.is_err() {
-                problems.push(format!("{id}: panics at {w} by {h} points", w = size[0], h = size[1]));
+                Ok(_) => {}
+                Err(_) => problems.push(format!("{id}: panics at {w} by {h} points", w = size[0], h = size[1])),
             }
         }
         problems
