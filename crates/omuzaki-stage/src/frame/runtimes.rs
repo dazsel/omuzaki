@@ -5,7 +5,7 @@ use omuzaki_char_api::{BuiltCharacter, RuntimeSlot, StepCtx};
 use omuzaki_render_api::{MeshId, Renderer};
 
 use crate::error::StageError;
-use crate::upload::StageCharacter;
+use crate::upload::MeshLookup;
 
 /// One mesh a runtime rewrites, and the revision the renderer last saw of it.
 struct DynamicTarget {
@@ -15,6 +15,8 @@ struct DynamicTarget {
     index: usize,
     mesh: MeshId,
     seen: u64,
+    /// Send on the next upload whatever the revision says (see [`DynamicMeshes::resend_all`]).
+    stale: bool,
 }
 
 /// Which runtime meshes go to which renderer meshes, found once at construction so a frame only walks a short list.
@@ -30,7 +32,7 @@ impl DynamicMeshes {
     /// # Errors
     /// [`StageError::NotUploaded`] for a runtime mesh that was not uploaded, or was uploaded static (it could not take
     /// `update_vertices`).
-    pub(crate) fn new(built: &BuiltCharacter, uploaded: &StageCharacter) -> Result<Self, StageError> {
+    pub(crate) fn new(built: &BuiltCharacter, uploaded: &impl MeshLookup) -> Result<Self, StageError> {
         let mut targets = Vec::new();
         for (slot, entry) in built.runtimes.iter().enumerate() {
             for index in 0..entry.runtime.dynamic_count() {
@@ -38,10 +40,17 @@ impl DynamicMeshes {
                 let target = uploaded.mesh(&entry.part, view.mesh).filter(|mesh| mesh.dynamic).ok_or_else(|| {
                     StageError::NotUploaded { what: "dynamic mesh", name: format!("{}#{}", entry.part, view.mesh) }
                 })?;
-                targets.push(DynamicTarget { slot, index, mesh: target.mesh, seen: view.revision });
+                targets.push(DynamicTarget { slot, index, mesh: target.mesh, seen: view.revision, stale: false });
             }
         }
         Ok(Self { targets })
+    }
+
+    /// Makes the next [`upload`](Self::upload) resend every mesh, whatever the renderer last saw.
+    pub(crate) fn resend_all(&mut self) {
+        for target in &mut self.targets {
+            target.stale = true;
+        }
     }
 
     /// Steps every runtime by `ctx`. Hot path: whatever the runtimes cost, nothing more.
@@ -59,13 +68,14 @@ impl DynamicMeshes {
         let mut sent = 0;
         for target in &mut self.targets {
             let Some(view) = slots[target.slot].runtime.dynamic_mesh(target.index) else { continue };
-            if view.revision == target.seen {
+            if view.revision == target.seen && !target.stale {
                 continue;
             }
             renderer
                 .update_vertices(target.mesh, view.positions, view.normals)
                 .map_err(|source| StageError::render("a dynamic mesh's new vertices", source))?;
             target.seen = view.revision;
+            target.stale = false;
             sent += 1;
         }
         Ok(sent)
