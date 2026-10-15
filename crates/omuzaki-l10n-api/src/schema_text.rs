@@ -156,11 +156,15 @@ impl<F: FnMut(&[&str], &Map<String, Value>)> Walker<F> {
         if self.error.is_some() {
             return;
         }
-        if let Some(Value::Object(properties)) = node.get("properties") {
-            for (key, schema) in properties {
-                if Some(key.as_str()) != skip {
-                    self.property(key, schema);
-                }
+        // A node-level `const` is a sole value, visited as a one-value `enum` is. A `null` beside it is never a value.
+        if let Some(constant) = node.get("const").filter(|value| !value.is_null()) {
+            self.path.push(value_key(constant));
+            self.emit(&Map::new());
+            self.path.pop();
+        }
+        for (key, schema) in properties(node) {
+            if Some(key) != skip {
+                self.property(key, schema);
             }
         }
         // A `null` branch makes the node an `Option`: its other branch is the value itself, never a variant.
@@ -290,14 +294,23 @@ fn single_value(node: &Map<String, Value>) -> Option<&Value> {
     values.next().is_none().then_some(only)
 }
 
-/// An internally tagged variant's tag: the first property whose schema has a `const`, with its name and value.
-fn internal_tag(node: &Map<String, Value>) -> Option<(String, String)> {
-    let Value::Object(properties) = node.get("properties")? else {
-        return None;
+/// The properties of a node in sorted key order. The walk depends on that order, not on the order a JSON map happens
+/// to keep: `serde_json` keeps keys sorted by default, and with its `preserve_order` feature it keeps them as written.
+fn properties(node: &Map<String, Value>) -> Vec<(&str, &Value)> {
+    let Some(Value::Object(properties)) = node.get("properties") else {
+        return Vec::new();
     };
-    properties.iter().find_map(|(key, schema)| {
+    let mut entries: Vec<(&str, &Value)> = properties.iter().map(|(key, schema)| (key.as_str(), schema)).collect();
+    entries.sort_by(|a, b| a.0.cmp(b.0));
+    entries
+}
+
+/// An internally tagged variant's tag: the first property, in key order, whose schema has a `const`, with its name and
+/// value.
+fn internal_tag(node: &Map<String, Value>) -> Option<(String, String)> {
+    properties(node).into_iter().find_map(|(key, schema)| {
         let constant = schema.as_object()?.get("const")?;
-        Some((key.clone(), value_key(constant)))
+        Some((key.to_owned(), value_key(constant)))
     })
 }
 
@@ -307,14 +320,12 @@ fn external_variant(node: &Map<String, Value>) -> Option<(&str, &Value)> {
     if node.get("additionalProperties") != Some(&Value::Bool(false)) {
         return None;
     }
-    let properties = node.get("properties")?.as_object()?;
-    let mut entries = properties.iter();
-    let (name, schema) = entries.next()?;
-    if entries.next().is_some() {
-        return None;
-    }
+    let (name, schema) = match properties(node).as_slice() {
+        [(name, schema)] => (*name, *schema),
+        _ => return None,
+    };
     let required = node.get("required")?.as_array()?;
-    required.iter().any(|entry| entry.as_str() == Some(name.as_str())).then_some((name.as_str(), schema))
+    required.iter().any(|entry| entry.as_str() == Some(name)).then_some((name, schema))
 }
 
 /// The key a value contributes to a path: a string as it is, anything else as its JSON text.
