@@ -9,7 +9,7 @@ use serde_json::json;
 
 use super::rules::{check_curve, check_deltas, check_kind};
 use super::store::{edited_face, entry, library, patch_to, replace_entry};
-use crate::ops::shared::edit::{changed, stored_face, to_json};
+use crate::ops_shared::edit::{changed, stored_face, to_json};
 
 /// Creates a named expression in a character's face, or replaces it when the name is taken. An expression is a set of
 /// channel deltas (how far each channel moves at full weight), a kind and an intensity curve that shapes how the weight

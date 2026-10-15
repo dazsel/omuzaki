@@ -66,3 +66,7 @@ harness = false
 
 [lints]
 workspace = true
+
+[package.metadata.omuzaki]
+kind = "Implementation"
+summary = "the procedural character (§18): geometry kit, body templates, head, hair, outfit, accessories, cloth, palette and the character ops; module map in the crate docs (`crates/omuzaki-char/src/lib.rs`), over the API crates only"

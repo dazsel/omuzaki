@@ -24,3 +24,7 @@ harness = false
 
 [lints]
 workspace = true
+
+[package.metadata.omuzaki]
+kind = "API"
+summary = "the renderer contract (§9, §10, §21): `Scene`, toon `Material` with outlines, face `Overlay`s and named shading programs, `Quality` (live, high, offline), the fixed frame graph with `FrameReport` timings, headless `render_image`"
