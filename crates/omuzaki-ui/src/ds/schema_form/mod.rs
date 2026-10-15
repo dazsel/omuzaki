@@ -13,12 +13,10 @@
 //!
 //! | Schema | Control |
 //! |---|---|
-//! | `number`/`integer` with `minimum` and `maximum` | `ParamSlider` (`x-ui.step`, `x-ui.decimals`, `x-ui.unit`, a reset away from the default) |
+//! | `number`/`integer` with `minimum` and `maximum` | `ParamSlider` |
 //! | `integer` with five or fewer values; `enum`, or `oneOf` of `const`s, with two to five options | `Segmented` |
 //! | an enum with one option or more than five | `Dropdown` |
 //! | `boolean` | `Toggle` |
-//! | `string` with `format` or `x-ui.widget` `colour`, or the hex pattern `Colour` publishes | `ColourField` |
-//! | `number[]` with `x-ui.widget = "curve"`: x, y pairs over the unit square | `CurveEditor` |
 //! | `string` with a `pattern` | `TextField` that shows its pattern as the error while it does not match |
 //! | `string` | `TextField` |
 //! | `number`/`integer` missing a bound | `NumberField` |
@@ -29,10 +27,12 @@
 //!
 //! # `x-ui.*`
 //!
-//! `level` (`"essentials"`, the default, or `"advanced"`), `group` (fields of the same group share a section),
-//! `unit`, `step`, `decimals`, `default` (else the schema's `default`) and `widget`. At most [`MAX_ESSENTIALS`] fields
-//! are Essentials: the rest are listed under Advanced and counted in [`Form::demoted`]. A form with no Advanced field
-//! has no section headers. Nested objects are one section; their fields are listed in schema order.
+//! `level` (`"essentials"`, the default, or `"advanced"`), `group` (fields of the same group share a section) and
+//! `default` (else the schema's `default`, the field's first value). At most [`MAX_ESSENTIALS`] fields are Essentials: the rest
+//! are listed under Advanced and counted in [`Form::demoted`]. A form with no Advanced field has no section headers. Nested objects are one section; their fields are listed in schema order.
+//!
+//! `unit`, `step`, `decimals`, the reset away from the default, `ColourField` and `CurveEditor` arrive in the second part
+//! of #1920.
 //!
 //! # What it promises
 //!

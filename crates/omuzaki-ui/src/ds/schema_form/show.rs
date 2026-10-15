@@ -1,16 +1,14 @@
 //! Drawing a [`Form`]: one ds control per field, chosen by [`Kind`].
 
-use egui::{Align, Id, RichText, Sense, Ui, UiBuilder, WidgetInfo, WidgetType};
+use egui::{Id, RichText, Ui, WidgetInfo, WidgetType};
 
 use super::model::{Entry, Form, Kind, Layout, MAX_SEGMENTS, Node, Opt, UNBOUNDED};
 use super::value::FormValue;
 use crate::ds::a11y;
-use crate::ds::icons;
 use crate::ds::strings::Msg;
 use crate::ds::theme::{Ds, ds};
 use crate::ds::widgets::{
-    Button, Choice, ColourEvent, ColourField, CurveEditor, CurveEvent, Dropdown, FormRow, NumberField, ParamSlider,
-    Section, Segment, Segmented, TextField, Toggle,
+    Choice, Dropdown, FormRow, NumberField, ParamSlider, Section, Segment, Segmented, TextField, Toggle,
 };
 
 /// Options a dropdown holds without allocating; a longer list costs one `Vec` per frame.
@@ -151,8 +149,6 @@ fn field_at(ui: &mut Ui, cx: &mut Cx<'_>, children: &[Node], values: &mut [(Stri
 }
 
 fn field(ui: &mut Ui, cx: &mut Cx<'_>, node: &Node, value: &mut FormValue) {
-    let modified = node.default.as_ref().is_some_and(|d| d != value);
-    let mut reset = false;
     // Borrowed apart, so a control's closure can write `changed` while the row holds the buffer.
     let Cx { ds, changed, words } = &mut *cx;
     let ds: &Ds = ds;
@@ -161,7 +157,7 @@ fn field(ui: &mut Ui, cx: &mut Cx<'_>, node: &Node, value: &mut FormValue) {
             *changed |= slider(ui, node, n, *min..=*max, *integer);
         }
         (Kind::Number { integer }, FormValue::Number(n)) => {
-            row(ui, ds, words, node, modified, &mut reset, |ui, name, _| {
+            row(ui, node, |ui, name| {
                 *changed |=
                     NumberField::new(name, n, -UNBOUNDED..=UNBOUNDED).id_salt(&node.path).show(ui).response.changed();
                 if *integer {
@@ -170,7 +166,7 @@ fn field(ui: &mut Ui, cx: &mut Cx<'_>, node: &Node, value: &mut FormValue) {
             });
         }
         (Kind::Choice(opts), FormValue::Choice { index, value }) => {
-            row(ui, ds, words, node, modified, &mut reset, |ui, name, _| {
+            row(ui, node, |ui, name| {
                 if choice(ui, name, node, opts, index) {
                     if let Some(opt) = opts.get(*index) {
                         value.clone_from(&opt.value);
@@ -179,39 +175,12 @@ fn field(ui: &mut Ui, cx: &mut Cx<'_>, node: &Node, value: &mut FormValue) {
                 }
             });
         }
+        // A toggle draws its own label, so there is no row.
         (Kind::Toggle, FormValue::Bool(on)) => {
-            // A toggle draws its own label, so there is no row; the reset sits after it.
-            let toggle = Toggle::switch(&node.label, on).id_salt(&node.path);
-            *changed |= if modified {
-                beside(ui, |ui| {
-                    let changed = ui.add(toggle).changed();
-                    reset_button(ui, ds, words, &node.label, &mut reset);
-                    changed
-                })
-            } else {
-                ui.add(toggle).changed()
-            };
-        }
-        (Kind::Colour { alpha }, FormValue::Colour(colour)) => {
-            row(ui, ds, words, node, modified, &mut reset, |ui, name, _| {
-                let out = ColourField::new(name, colour).alpha(*alpha).id_salt(&node.path).show(ui);
-                let edited = matches!(
-                    out.event,
-                    Some(ColourEvent::Preview(_) | ColourEvent::Commit { .. } | ColourEvent::Cancel(_))
-                );
-                *changed |= out.response.changed() || edited;
-            });
-        }
-        (Kind::Curve, FormValue::Curve(curve)) => {
-            row(ui, ds, words, node, modified, &mut reset, |ui, name, _| {
-                let out = CurveEditor::new(name, curve).id_salt(&node.path).show(ui);
-                let edited =
-                    matches!(out.event, Some(CurveEvent::Preview | CurveEvent::Commit { .. } | CurveEvent::Rollback));
-                *changed |= out.response.changed() || edited;
-            });
+            *changed |= ui.add(Toggle::switch(&node.label, on).id_salt(&node.path)).changed();
         }
         (Kind::Text(pattern), FormValue::Text(text)) => {
-            row(ui, ds, words, node, modified, &mut reset, |ui, name, words| {
+            row(ui, node, |ui, name| {
                 let broken = pattern.as_ref().filter(|p| !p.is_match(text));
                 let mut field = TextField::new(name, text).id_salt(&node.path);
                 if let Some(pattern) = broken {
@@ -229,23 +198,13 @@ fn field(ui: &mut Ui, cx: &mut Cx<'_>, node: &Node, value: &mut FormValue) {
         }
         _ => read_only(ui, cx, node),
     }
-    if let (true, Some(default)) = (reset, &node.default) {
-        value.clone_from(default);
-        cx.changed = true;
-    }
 }
 
 fn slider(ui: &mut Ui, node: &Node, n: &mut f64, range: std::ops::RangeInclusive<f64>, integer: bool) -> bool {
-    let mut slider = ParamSlider::new(&node.label, n, range).unit(&node.unit).id_salt(&node.path);
-    if let Some(FormValue::Number(default)) = node.default {
-        slider = slider.default_value(default);
-    }
-    // A whole-number field steps by one and shows no decimals unless the schema says otherwise.
-    if let Some(step) = node.step.or(integer.then_some(1.0)) {
-        slider = slider.step(step);
-    }
-    if let Some(decimals) = node.decimals.or(integer.then_some(0)) {
-        slider = slider.decimals(decimals);
+    let mut slider = ParamSlider::new(&node.label, n, range).id_salt(&node.path);
+    // A whole-number field steps by one and shows no decimals.
+    if integer {
+        slider = slider.step(1.0).decimals(0);
     }
     let changed = slider.show(ui).response.changed();
     if integer {
@@ -275,47 +234,9 @@ fn choice(ui: &mut Ui, name: &str, node: &Node, opts: &[Opt], index: &mut usize)
     ui.add(Dropdown::new(name, index, &choices).id_salt(&node.path).stretch()).changed()
 }
 
-/// A labelled row; when the field is away from its default the control is followed by a reset button.
-fn row<R>(
-    ui: &mut Ui,
-    ds: &Ds,
-    words: &mut String,
-    node: &Node,
-    modified: bool,
-    reset: &mut bool,
-    control: impl FnOnce(&mut Ui, &str, &mut String) -> R,
-) -> R {
-    FormRow::new(&node.label)
-        .modified(modified)
-        .show(ui, |ui, name| {
-            if modified {
-                beside(ui, |ui| {
-                    let out = control(ui, name, words);
-                    reset_button(ui, ds, words, name, reset);
-                    out
-                })
-            } else {
-                control(ui, name, words)
-            }
-        })
-        .inner
-}
-
-/// `add` in a left-to-right row of the room that is left. Not `Ui::horizontal`, which boxes its closure: a form is drawn
-/// every frame.
-fn beside<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
-    let builder =
-        UiBuilder::new().max_rect(ui.available_rect_before_wrap()).layout(egui::Layout::left_to_right(Align::Center));
-    let mut row = ui.new_child(builder);
-    let out = add(&mut row);
-    ui.allocate_rect(row.min_rect(), Sense::hover());
-    out
-}
-
-fn reset_button(ui: &mut Ui, ds: &Ds, words: &mut String, label: &str, reset: &mut bool) {
-    let text = ds.text(Msg::ParamResetDefault);
-    let name = say(words, ds, Msg::ParamReset, "label", label);
-    *reset |= ui.add(Button::new(&text).ghost().icon(icons::ARROW_COUNTER_CLOCKWISE).accessible_label(name)).clicked();
+/// A row: the field's label, then its control.
+fn row(ui: &mut Ui, node: &Node, control: impl FnOnce(&mut Ui, &str)) {
+    FormRow::new(&node.label).show(ui, |ui, name| control(ui, name));
 }
 
 /// A shape no control handles, or a value that does not fit its field: say so, and leave the value alone.

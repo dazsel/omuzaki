@@ -46,10 +46,6 @@ pub(super) enum Kind {
     Choice(Vec<Opt>),
     /// A boolean: a `Toggle`.
     Toggle,
-    /// A colour string: a `ColourField`.
-    Colour { alpha: bool },
-    /// A `number[]` of x, y pairs: a `CurveEditor`.
-    Curve,
     /// A string, checked against its `pattern` when it has one: a `TextField`.
     Text(Option<Pattern>),
     /// A nested object: a section of fields.
@@ -72,9 +68,6 @@ pub(super) struct Node {
     pub(super) kind: Kind,
     pub(super) level: Level,
     pub(super) group: Option<String>,
-    pub(super) unit: String,
-    pub(super) step: Option<f64>,
-    pub(super) decimals: Option<usize>,
     /// The default as a typed value, when the schema gives one that fits the field.
     pub(super) default: Option<FormValue>,
 }
@@ -235,9 +228,6 @@ fn read_node(root: &Value, schema: &Value, key: &str, parent_path: &str) -> Node
         kind,
         level,
         group: view.ui("group").and_then(Value::as_str).map(str::to_owned),
-        unit: view.ui("unit").and_then(Value::as_str).unwrap_or_default().to_owned(),
-        step: view.ui("step").and_then(Value::as_f64).filter(|s| s.is_finite() && *s > 0.0),
-        decimals: view.ui("decimals").and_then(Value::as_u64).and_then(|d| usize::try_from(d).ok()),
         default: None,
     };
     let declared = view.ui("default").or_else(|| view.get("default"));
@@ -254,9 +244,6 @@ fn read_only(key: &str, path: &str, schema: &Value, type_name: &str) -> Node {
         kind: Kind::ReadOnly,
         level: Level::Essentials,
         group: None,
-        unit: String::new(),
-        step: None,
-        decimals: None,
         default: None,
     }
 }
@@ -322,15 +309,7 @@ fn read_number(view: &View<'_>, integer: bool) -> Kind {
 }
 
 fn read_string(view: &View<'_>) -> (Kind, String) {
-    let widget = view.ui("widget").and_then(Value::as_str);
-    let format = view.get("format").and_then(Value::as_str);
     let source = view.get("pattern").and_then(Value::as_str);
-    // `omuzaki_core::colour::Colour` publishes no widget hint, only its hex pattern.
-    let hex_pattern = source.is_some_and(|p| p.starts_with("^#[0-9a-fA-F]{6}"));
-    if matches!(widget, Some("colour" | "color")) || matches!(format, Some("colour" | "color")) || hex_pattern {
-        let alpha = source.is_none_or(|p| p.contains("{2})?"));
-        return (Kind::Colour { alpha }, "colour".to_owned());
-    }
     match source.map(Pattern::parse) {
         None => (Kind::Text(None), "string".to_owned()),
         Some(Some(pattern)) => (Kind::Text(Some(pattern)), "string".to_owned()),
@@ -343,11 +322,7 @@ fn read_array(root: &Value, view: &View<'_>) -> (Kind, String) {
         .get("items")
         .and_then(|items| self::view(root, items))
         .and_then(|v| v.get("type").and_then(Value::as_str).map(str::to_owned));
-    let name = format!("array of {}", item_type.as_deref().unwrap_or("any"));
-    if view.ui("widget").and_then(Value::as_str) == Some("curve") && item_type.as_deref() == Some("number") {
-        return (Kind::Curve, name);
-    }
-    (Kind::ReadOnly, name)
+    (Kind::ReadOnly, format!("array of {}", item_type.as_deref().unwrap_or("any")))
 }
 
 /// The options of a `oneOf` or `anyOf` whose every arm is a `const`, which is how documented enum variants are written.
@@ -396,8 +371,6 @@ impl Node {
                 opts.first().map_or(FormValue::Absent, |o| FormValue::Choice { index: 0, value: o.value.clone() })
             }
             Kind::Toggle => FormValue::Bool(false),
-            Kind::Colour { .. } => FormValue::Colour(omuzaki_core::colour::Colour::BLACK),
-            Kind::Curve => FormValue::Curve(super::value::straight_line()),
             Kind::Text(_) => FormValue::Text(String::new()),
             Kind::Section(children) => {
                 FormValue::Object(children.iter().map(|c| (c.key.clone(), c.default_value())).collect())
@@ -433,8 +406,6 @@ impl Node {
                 opts.iter().position(|o| &o.value == json).map(|index| FormValue::Choice { index, value: json.clone() })
             }
             (Kind::Toggle, Value::Bool(on)) => Some(FormValue::Bool(*on)),
-            (Kind::Colour { .. }, Value::String(text)) => text.parse().ok().map(FormValue::Colour),
-            (Kind::Curve, Value::Array(numbers)) => super::value::curve_from_json(numbers).map(FormValue::Curve),
             (Kind::Text(_), Value::String(text)) => Some(FormValue::Text(text.clone())),
             _ => None,
         }

@@ -1,5 +1,5 @@
 //! `ds::schema_form`: each row of the `shell.md` section 7 mapping, drawn and then edited with the keyboard alone, with the
-//! typed `FormValue` read back; nested sections, the read-only fallback, the Essentials cap, resets, validation messages
+//! typed `FormValue` read back; nested sections, the read-only fallback, the Essentials cap, validation messages
 //! from the `Strings` table, an accessible name on every generated control, and no allocation that grows with the form.
 //!
 //! The allocation test measures the way `tests/no_alloc.rs` does (a counting global allocator that counts only on the
@@ -16,16 +16,12 @@ use std::sync::Arc;
 use egui::accesskit::Role;
 use egui::{Context, Event, Key, Modifiers, Pos2, RawInput, Rect, vec2};
 use egui_kittest::Harness;
-use egui_kittest::kittest::{NodeT as _, Queryable as _};
-use omuzaki_core::colour::Colour;
+use egui_kittest::kittest::Queryable as _;
 use omuzaki_doc_api::Value;
 use omuzaki_ui::ds::schema_form::{Form, FormValue, MAX_ESSENTIALS, SchemaForm};
 use omuzaki_ui::ds::testing::{harness_state, press, unlabelled_interactive};
-use omuzaki_ui::ds::widgets::{
-    Button, Choice, ColourField, Curve, CurveEditor, Dropdown, FormRow, NumberField, Preset, Segment, Segmented,
-    TextField,
-};
-use omuzaki_ui::ds::{English, Pseudo, Settings, apply_settings, icons, set_strings};
+use omuzaki_ui::ds::widgets::{Choice, Dropdown, FormRow, NumberField, Segment, Segmented, TextField};
+use omuzaki_ui::ds::{English, Pseudo, Settings, apply_settings, set_strings};
 use schemars::{JsonSchema, Schema};
 use serde_json::json;
 
@@ -66,10 +62,10 @@ fn one_field(field: Value) -> Schema {
 // ---- the mapping, one test per row, each edited with the keyboard ----
 
 #[test]
-fn a_bounded_number_is_a_slider_with_its_unit_and_arrows_edit_it() {
+fn a_bounded_number_is_a_slider_and_arrows_edit_it() {
     let mut h = rig(&one_field(json!({
         "title": "Width", "type": "number", "minimum": 0.0, "maximum": 1.0,
-        "x-ui": {"unit": "%", "default": 0.5}
+        "x-ui": {"default": 0.5}
     })));
     assert_eq!(json_of(&h), json!({"field": 0.5}), "the default comes from x-ui.default");
     focus(&mut h, Role::Slider, "Width");
@@ -146,40 +142,6 @@ fn a_boolean_is_a_toggle() {
     focus(&mut h, Role::Switch, "Outlines");
     press(&mut h, Modifiers::NONE, Key::Space);
     assert_eq!(json_of(&h), json!({"field": true}));
-}
-
-#[test]
-fn a_colour_is_a_colour_field_whatever_way_the_schema_says_so() {
-    let hex = json!({"type": "string", "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$", "title": "Tint", "default": "#336699"});
-    for field in [
-        hex,
-        json!({"type": "string", "format": "color", "title": "Tint", "default": "#336699"}),
-        json!({"type": "string", "x-ui": {"widget": "colour"}, "title": "Tint", "default": "#336699"}),
-    ] {
-        let mut h = rig(&one_field(field));
-        assert_eq!(json_of(&h), json!({"field": "#336699"}));
-        focus(&mut h, Role::ColorWell, "Tint");
-        press(&mut h, Modifiers::NONE, Key::Enter);
-        h.run_steps(3);
-        focus(&mut h, Role::Slider, "Hue");
-        let before = json_of(&h);
-        press(&mut h, Modifiers::SHIFT, Key::ArrowRight);
-        press(&mut h, Modifiers::NONE, Key::Enter);
-        h.run_steps(3);
-        assert!(matches!(h.state().value, FormValue::Object(_)));
-        assert_ne!(json_of(&h), before, "a keyboard edit in the popover reaches the form's value");
-    }
-}
-
-#[test]
-fn a_curve_array_is_a_curve_editor_and_arrows_move_a_point() {
-    let mut h = rig(&one_field(json!({
-        "title": "Response", "type": "array", "items": {"type": "number"}, "x-ui": {"widget": "curve"}
-    })));
-    assert_eq!(json_of(&h), json!({"field": [0, 0, 1, 1]}), "the straight line, as x and y pairs");
-    focus(&mut h, Role::Slider, "Response, point 1 of 2");
-    press(&mut h, Modifiers::NONE, Key::ArrowUp);
-    assert_eq!(json_of(&h), json!({"field": [0, 0.01, 1, 1]}));
 }
 
 #[test]
@@ -338,32 +300,7 @@ fn x_ui_level_and_group_place_fields() {
     assert_eq!(h.state().form.demoted(), 0);
 }
 
-// ---- resets, accessible names ----
-
-#[test]
-fn a_reset_shows_only_away_from_the_default() {
-    let mut h = rig(&one_field(json!({"title": "Outlines", "type": "boolean", "default": true})));
-    assert_eq!(json_of(&h), json!({"field": true}));
-    assert!(
-        h.query_by_role_and_label(Role::Button, "Reset Outlines").is_none(),
-        "at the default there is nothing to reset"
-    );
-    focus(&mut h, Role::Switch, "Outlines");
-    press(&mut h, Modifiers::NONE, Key::Space);
-    assert_eq!(json_of(&h), json!({"field": false}));
-    h.get_by_role_and_label(Role::Button, "Reset Outlines").focus();
-    h.run();
-    press(&mut h, Modifiers::NONE, Key::Enter);
-    h.run_steps(3);
-    assert_eq!(json_of(&h), json!({"field": true}));
-    assert!(h.query_by_role_and_label(Role::Button, "Reset Outlines").is_none());
-
-    let mut h = rig(&one_field(json!({"title": "Style", "enum": ["flat", "soft"], "default": "soft"})));
-    focus(&mut h, Role::RadioButton, "soft");
-    press(&mut h, Modifiers::NONE, Key::ArrowLeft);
-    assert_eq!(json_of(&h), json!({"field": "flat"}));
-    assert!(h.query_by_role_and_label(Role::Button, "Reset Style").is_some(), "choice rows get the same reset");
-}
+// ---- accessible names ----
 
 #[test]
 fn every_generated_control_has_an_accessible_name_and_its_own_tab_stop() {
@@ -372,8 +309,6 @@ fn every_generated_control_has_an_accessible_name_and_its_own_tab_stop() {
         "count": {"title": "Count", "type": "integer", "minimum": 1, "maximum": 3},
         "shape": {"title": "Shape", "enum": ["a", "b", "c", "d", "e", "f"]},
         "on": {"title": "On", "type": "boolean"},
-        "tint": {"title": "Tint", "type": "string", "format": "color"},
-        "curve": {"title": "Curve", "type": "array", "items": {"type": "number"}, "x-ui": {"widget": "curve"}},
         "slug": {"title": "Slug", "type": "string", "pattern": "^[a-z]+$"},
         "free": {"title": "Free", "type": "number"},
         "nested": {"title": "Nested", "type": "object", "properties": {"inner": {"title": "Inner", "type": "boolean"}}},
@@ -389,7 +324,6 @@ fn every_generated_control_has_an_accessible_name_and_its_own_tab_stop() {
         (Role::RadioButton, "2"),
         (Role::ComboBox, "Shape"),
         (Role::Switch, "On"),
-        (Role::ColorWell, "Tint"),
         (Role::TextInput, "Slug"),
         (Role::SpinButton, "Free"),
         (Role::Switch, "Inner"),
@@ -404,16 +338,13 @@ fn defaults_and_json_round_trip() {
         "width": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.25},
         "style": {"enum": ["flat", "soft"]},
         "on": {"type": "boolean", "default": true},
-        "tint": {"type": "string", "format": "color", "default": "#ff0000"},
         "name": {"type": "string", "default": "x"}
     }}));
     let form = Form::from_schema(&schema);
     let value = form.default_value();
     let json = Value::from(&value);
-    assert_eq!(json, json!({"width": 0.25, "style": "flat", "on": true, "tint": "#ff0000", "name": "x"}));
+    assert_eq!(json, json!({"width": 0.25, "style": "flat", "on": true, "name": "x"}));
     assert_eq!(form.value_from_json(&json), value, "reading the JSON back gives the same typed value");
-    let FormValue::Object(fields) = &value else { panic!("an object") };
-    assert_eq!(fields[3].1, FormValue::Colour(Colour::rgb(255, 0, 0)));
 }
 
 // ---- no allocation that scales with the form ----
@@ -443,18 +374,16 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static GLOBAL: Counting = Counting;
 
-/// The kinds of field a form has, thirteen of them: one section's worth.
+/// The kinds of field a form has, eleven of them.
 fn section_fields() -> Value {
     json!({
         "a": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.5},
-        "b": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.5, "x-ui": {"unit": "%", "decimals": 1}},
+        "b": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.5},
         "c": {"type": "integer", "minimum": 1, "maximum": 3, "default": 1},
         "d": {"enum": ["p", "q", "r"], "default": "p"},
         "e": {"enum": ["p", "q", "r", "s", "t", "u"], "default": "p"},
         "f": {"type": "boolean", "default": false},
         "g": {"type": "boolean", "default": true},
-        "h": {"type": "string", "format": "color", "default": "#336699"},
-        "i": {"type": "array", "items": {"type": "number"}, "x-ui": {"widget": "curve"}},
         "j": {"type": "string", "default": "text"},
         "k": {"type": "string", "pattern": "^[a-z]+$", "default": "slug"},
         "l": {"type": "number", "default": 3},
@@ -477,7 +406,7 @@ fn four_sections(per_section: usize, keys: &[&str]) -> Form {
     Form::from_schema(&schema(json!({"type": "object", "properties": props})))
 }
 
-/// Moves every field away from its default, so every row shows its reset button and modified dot.
+/// Moves every field away from its default, so the rows are drawn with values other than their starting ones.
 fn perturb(value: &mut FormValue) {
     match value {
         FormValue::Object(fields) => fields.iter_mut().for_each(|(_, v)| perturb(v)),
@@ -488,8 +417,6 @@ fn perturb(value: &mut FormValue) {
             *index = 1;
             *value = json!("q");
         }
-        FormValue::Colour(colour) => *colour = Colour::rgb(1, 2, 3),
-        FormValue::Curve(curve) => *curve = Curve::unit(Preset::EaseIn),
         FormValue::Raw(_) | FormValue::Absent => {}
     }
 }
@@ -537,20 +464,11 @@ fn per_frame(form: &Form, modified: bool) -> f64 {
 /// Allocations per frame for `count` of the widget the form uses for the field `key`, drawn by hand in a `FormRow`.
 fn by_hand(key: &str, count: usize) -> f64 {
     let (mut texts, mut picks) = (vec![String::from("slug"); count], vec![0usize; count]);
-    let (mut colours, mut numbers) = (vec![Colour::rgb(51, 102, 153); count], vec![3.0; count]);
-    let mut curves = vec![Curve::linear(); count];
+    let mut numbers = vec![3.0; count];
     let (three, six) = ([("p", 0usize), ("q", 1), ("r", 2)], ["p", "q", "r", "s", "t", "u"]);
     measure(|ui| {
         for i in 0..count {
             FormRow::new("Field").show(ui, |ui, name| match key {
-                "reset" => {
-                    ui.add(
-                        Button::new("Reset to default")
-                            .ghost()
-                            .icon(icons::ARROW_COUNTER_CLOCKWISE)
-                            .accessible_label("Reset Field"),
-                    );
-                }
                 "segmented" => {
                     let segments = three.map(|(label, at)| Segment::new(at, label));
                     ui.add(Segmented::new(name, &mut picks[i], &segments).id_salt(i));
@@ -558,12 +476,6 @@ fn by_hand(key: &str, count: usize) -> f64 {
                 "dropdown" => {
                     let choices: Vec<_> = six.iter().enumerate().map(|(at, label)| Choice::new(at, label)).collect();
                     ui.add(Dropdown::new(name, &mut picks[i], &choices).id_salt(i).stretch());
-                }
-                "colour" => {
-                    ColourField::new(name, &mut colours[i]).alpha(true).id_salt(i).show(ui);
-                }
-                "curve" => {
-                    CurveEditor::new(name, &mut curves[i]).id_salt(i).show(ui);
                 }
                 "text" => {
                     ui.add(TextField::new(name, &mut texts[i]).id_salt(i));
@@ -581,7 +493,8 @@ const FLAT: [&str; 5] = ["a", "b", "m", "f", "g"];
 
 #[test]
 fn a_52_field_form_allocates_no_more_per_frame_than_a_24_field_one() {
-    for (keys, modified) in [(&FLAT[..], false), (&FLAT[..3], true)] {
+    for modified in [false, true] {
+        let keys = &FLAT[..];
         let (small, big) =
             (per_frame(&four_sections(6, keys), modified), per_frame(&four_sections(13, keys), modified));
         eprintln!(
@@ -604,12 +517,10 @@ fn row_of(key: &str, count: usize) -> Form {
 }
 
 /// What the form allocates per field beyond what the widget does by itself, which the form can't change: the `TextField`
-/// allocates a dozen times a frame inside egui's `TextEdit`, the `ColourField` formats its hex, and so on.
+/// allocates a dozen times a frame inside egui's `TextEdit`.
 #[test]
 fn the_form_adds_no_allocation_to_the_widgets_it_composes() {
     let marginal = |small: f64, big: f64| (big - small) / 4.0;
-    let reset = marginal(by_hand("reset", 2), by_hand("reset", 6));
-    eprintln!("a bare reset button: {reset:+.2} allocations per frame each");
     for (key, widget) in [
         ("a", ""),
         ("b", ""),
@@ -617,26 +528,16 @@ fn the_form_adds_no_allocation_to_the_widgets_it_composes() {
         ("c", "segmented"),
         ("e", "dropdown"),
         ("f", ""),
-        ("h", "colour"),
-        ("i", "curve"),
         ("j", "text"),
         ("k", "text"),
         ("l", "number"),
     ] {
         let at_default = marginal(per_frame(&row_of(key, 2), false), per_frame(&row_of(key, 6), false));
-        let moved = marginal(per_frame(&row_of(key, 2), true), per_frame(&row_of(key, 6), true));
         let own = if widget.is_empty() { 0.0 } else { marginal(by_hand(widget, 2), by_hand(widget, 6)) };
-        eprintln!("field {key}: form {at_default:+.2} at default, {moved:+.2} moved; the widget alone {own:+.2}");
+        eprintln!("field {key}: form {at_default:+.2}; the widget alone {own:+.2}");
         assert!(
             at_default <= own + 0.01,
             "field {key} allocates {at_default} per frame; its widget alone allocates {own}"
-        );
-        let has_own_reset = matches!(key, "a" | "b" | "m");
-        let allowed_reset = if has_own_reset || key == "i" { 0.0 } else { reset };
-        assert!(
-            moved <= at_default + allowed_reset + 0.01,
-            "field {key}: the reset costs {} per frame",
-            moved - at_default
         );
     }
 }
@@ -660,15 +561,7 @@ impl Keys {
     }
 }
 
-fn focused_label(h: &Harness<'_, Rig>) -> String {
-    h.root()
-        .children_recursive()
-        .find(|n| n.accesskit_node().is_focused())
-        .map(|n| n.accesskit_node().label().unwrap_or_default())
-        .unwrap_or_default()
-}
-
-/// The three fixture ops of the PR's usability table. Each edit starts with the form open and its field focused, which is
+/// The fixture ops of the PR's usability table. Each edit starts with the form open and its field focused, which is
 /// where the palette puts the keyboard (the palette's own Ctrl+K, query and Tab are the same for every op), and counts
 /// every key press and typed character until the value has changed. The table in the PR body quotes these numbers.
 #[test]
@@ -697,25 +590,7 @@ fn keyboard_steps_to_make_each_fixture_edit() {
     assert_eq!(json_of(&h), json!({"field": 0.55}));
     let (type_number, slider_steps) = ("eyes.set_size: size 0.42 to 0.55", keys.0);
 
-    // `hair.set_tint`: a colour, to #ff8800, typed as hex in the popover.
-    let mut h =
-        rig(&one_field(json!({"title": "Hair tint", "type": "string", "format": "color", "default": "#c9a0dc"})));
-    focus(&mut h, Role::ColorWell, "Hair tint");
-    let mut keys = Keys(0);
-    keys.press(&mut h, Key::Enter);
-    let mut tabs = 0;
-    while focused_label(&h) != "Hex colour" && tabs < 12 {
-        keys.press(&mut h, Key::Tab);
-        tabs += 1;
-    }
-    assert_eq!(focused_label(&h), "Hex colour", "the hex field is reachable by Tab");
-    keys.type_text(&mut h, "#ff8800");
-    keys.press(&mut h, Key::Enter);
-    assert_eq!(json_of(&h), json!({"field": "#ff8800"}));
-    let (type_hex, colour_steps) = ("hair.set_tint: tint to #ff8800", keys.0);
-
     eprintln!("{pick_enum}: {dropdown_steps} presses");
     eprintln!("{type_number}: {slider_steps} presses");
-    eprintln!("{type_hex}: {colour_steps} presses ({tabs} Tabs to reach the hex field)");
-    assert_eq!([dropdown_steps, slider_steps, colour_steps], [4, 6, 13]);
+    assert_eq!([dropdown_steps, slider_steps], [4, 6]);
 }
