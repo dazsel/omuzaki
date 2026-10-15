@@ -2,7 +2,7 @@
 //! PNG. Every `render.*` op renders through [`render_stills`] and [`encode_png`]; the ops add the asset store and the
 //! op results, nothing here knows about them.
 
-use omuzaki_anim_api::ChannelBuf;
+use omuzaki_anim_api::{ChannelBuf, HumanoidPose};
 use omuzaki_char_api::BuiltCharacter;
 use omuzaki_core::glam::UVec2;
 use omuzaki_face_api::ExpressionId;
@@ -14,6 +14,7 @@ use image::{ExtendedColorType, ImageEncoder, codecs::png::PngEncoder};
 
 use crate::error::StageError;
 use crate::frame::face::{FaceRig, SETTLE_STEPS};
+use crate::frame::pose::seed_base_pose;
 use crate::frame::{FrameInput, Stage, StageClock};
 use crate::upload::UploadOptions;
 
@@ -156,6 +157,10 @@ fn shoot_on(
     scene.outline_light = spec.light.outline_light;
     // Read before `built` moves into the stage.
     let has_face = built.face.is_some();
+    // With nothing animating it the stage shows the character as sculpted (decision 0014 §4), which is the pose the
+    // landmarks that framing reads are measured in; the T-pose of `FrameInput::default()` would put the hands elsewhere.
+    let mut base = HumanoidPose::REST;
+    seed_base_pose(&built.rig, &mut base);
     let mut stage = Stage::new(
         renderer,
         built,
@@ -165,7 +170,7 @@ fn shoot_on(
         spec.quality,
         StageClock::fixed(STILL_FPS),
     )?;
-    let outcome = render_shots(renderer, &mut stage, has_face, shots);
+    let outcome = render_shots(renderer, &mut stage, has_face, &base, shots);
     let released = stage.release(renderer);
     first_error(outcome, released)
 }
@@ -175,6 +180,7 @@ fn render_shots(
     renderer: &mut dyn Renderer,
     stage: &mut Stage,
     has_face: bool,
+    base: &HumanoidPose,
     shots: &[Shot],
 ) -> Result<Vec<Still>, StageError> {
     if has_face {
@@ -183,12 +189,12 @@ fn render_shots(
     stage.settle(SETTLE_STEPS);
     // One tick after the warm-up puts the rig and the face in their frame state; every shot then redraws that state, so
     // a shot's pixels don't depend on how many shots came before it.
-    stage.tick(renderer, &FrameInput::default())?;
+    stage.tick(renderer, &FrameInput { pose: *base, ..FrameInput::default() })?;
     let target = stage.target();
     let mut stills = Vec::with_capacity(shots.len());
     for shot in shots {
         stage.scene_mut().camera = shot.camera;
-        let input = FrameInput { channels: channels_of(stage, shot)?, ..FrameInput::default() };
+        let input = FrameInput { channels: channels_of(stage, shot)?, pose: *base, ..FrameInput::default() };
         let frame = stage.redraw(renderer, &input)?;
         let image = renderer.read_target(target).map_err(|source| StageError::render("the still", source))?;
         stills.push(Still { image, report: frame.report });
