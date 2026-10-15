@@ -4,6 +4,7 @@
 // Integration-test helpers may panic: a panic is a clear test failure.
 #![allow(clippy::unwrap_used)]
 
+use omuzaki_llm_api::LlmClient;
 use omuzaki_llm_api::error::LlmError;
 use omuzaki_llm_api::provider::{
     CostModel, LlmCapability, Privacy, ProviderConfig, ProviderEnv, ProviderManifest, RegistryError, check_providers,
@@ -11,7 +12,6 @@ use omuzaki_llm_api::provider::{
 };
 use omuzaki_llm_api::register_llm_provider;
 use omuzaki_llm_api::usage::ModelInfo;
-use omuzaki_llm_api::LlmClient;
 
 fn manifest() -> ProviderManifest {
     ProviderManifest::new(vec![LlmCapability::Llm], Privacy::Loopback, CostModel::Free, "")
@@ -21,6 +21,7 @@ fn build(_: &ProviderConfig, _: &ProviderEnv) -> Result<Box<dyn LlmClient>, LlmE
     Err(LlmError::Unsupported("test".into()))
 }
 
+#[allow(clippy::unnecessary_wraps)] // the registered fn type returns a Result
 fn list_models(_: &ProviderConfig, _: &ProviderEnv) -> Result<Vec<ModelInfo>, LlmError> {
     Ok(Vec::new())
 }

@@ -238,6 +238,7 @@ fn a_misspelled_field_in_a_script_fails_to_load_at_every_level() {
 
 #[test]
 fn a_correct_script_still_loads() {
-    let json = r#"{"model":"m","turns":[{"expect":{"user_contains":"x"},"events":[{"Start":{"model":"m"}}],"chunk":4}]}"#;
+    let json =
+        r#"{"model":"m","turns":[{"expect":{"user_contains":"x"},"events":[{"Start":{"model":"m"}}],"chunk":4}]}"#;
     assert!(FakeLlm::from_json(json).is_ok());
 }
