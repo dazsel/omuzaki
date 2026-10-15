@@ -70,8 +70,9 @@ impl McpOptions {
 
     /// Uses `journal` for the durability of changes: after a call applies an edit, commits or rolls back a transaction,
     /// or undoes or redoes, the reply waits until the journal has saved it (up to five seconds). A save that times out
-    /// or fails still succeeds, since the change did apply: the reply carries a `Warning` saying so, with the journal's
-    /// status. Queries and previews never wait. Without a journal, replies don't wait.
+    /// or fails still succeeds, since the change did apply: the reply's text opens with a `Warning` line saying so, with
+    /// the journal's status, and `structuredContent.warning` carries the same text. Queries and previews never wait.
+    /// Without a journal, replies don't wait.
     #[must_use]
     pub fn with_journal(mut self, journal: Arc<dyn JournalSink>) -> Self {
         self.journal = Some(Journal(journal));
