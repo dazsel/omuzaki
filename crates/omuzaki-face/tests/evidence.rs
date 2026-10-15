@@ -115,12 +115,15 @@ fn render_the_mouth_cases_when_asked() {
     let save = |name: &str, image: image::RgbaImage| image.save(dir.join(name)).unwrap();
     save("mouth-closed-smile-fang.png", mouth_picture(&profile, |m| (m.smile_left, m.fangs) = (0.8, 1.0)));
     save("mouth-kiss.png", mouth_picture(&profile, |m| (m.pucker, m.open) = (0.9, 0.05)));
-    // Clenched teeth: the split line, with the lower teeth either side of the strength at which the band deepens.
+    // Clenched teeth (the split line), with the lower teeth either side of two thresholds: `LOWER_MIN` (0.01), where
+    // the lower row and its split line first show, and `CLENCHED_ABOVE` (0.5), where the upper band deepens.
     let clenched = |lower: f32| {
         mouth_picture(&profile, move |m| {
             (m.open, m.smile_left, m.smile_right, m.teeth_upper, m.teeth_lower) = (0.5, 0.6, 0.6, 1.0, lower);
         })
     };
+    save("mouth-split-line-0.0100.png", clenched(0.01));
+    save("mouth-split-line-0.0101.png", clenched(0.0101));
     save("mouth-split-line-at-threshold.png", clenched(0.5));
     save("mouth-split-line-above-threshold.png", clenched(0.51));
     // A narrow mouth with the fangs at its very corners: they narrow instead of hanging past the corner.
