@@ -7,7 +7,7 @@ mod common;
 
 use std::sync::Arc;
 
-use common::{FakeRunner, fake_runner};
+use common::fake_runner;
 use omuzaki_mcp::{McpOptions, McpServer, PromptArg, PromptDef};
 use rmcp::model::{
     ClientCapabilities, ClientConfig, ContentBlock, ErrorCode, GetPromptRequestParams, Implementation, ProtocolVersion,

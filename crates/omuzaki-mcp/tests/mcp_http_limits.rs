@@ -13,8 +13,8 @@ mod common;
 use std::sync::Arc;
 use std::time::Duration;
 
+use common::fake_runner;
 use common::http::{Frozen, Port, Raw};
-use common::{FakeRunner, fake_runner};
 use omuzaki_mcp::{AccessToken, HttpOptions, McpOptions, McpServer, ServerError};
 use reqwest::StatusCode;
 use serde_json::json;

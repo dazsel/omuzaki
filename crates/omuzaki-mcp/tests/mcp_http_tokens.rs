@@ -8,7 +8,7 @@ mod common;
 
 use std::sync::Arc;
 
-use common::{FakeRunner, fake_runner};
+use common::fake_runner;
 use omuzaki_mcp::{HttpOptions, HttpServer, McpOptions, McpServer, ServerError, TokenRecord};
 use omuzaki_ops_api::{Actor, Grants};
 use reqwest::StatusCode;

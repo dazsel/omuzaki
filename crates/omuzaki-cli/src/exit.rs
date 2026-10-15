@@ -60,6 +60,9 @@ const fn describe(code: ErrorCode) -> Row {
         ErrorCode::Cancelled => {
             Row { code: 11, meaning: "a job was cancelled (by a person, a stop or a limit); do not retry unchanged" }
         }
+        // A code added to the contract exits like a bug until it gets its own row here; the uniqueness test below
+        // fails for it, so the missing row is noticed.
+        _ => Row { code: 1, meaning: "an error this version of the command line does not know; please report it" },
     }
 }
 

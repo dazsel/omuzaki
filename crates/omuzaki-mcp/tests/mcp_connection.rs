@@ -9,7 +9,7 @@ mod common;
 
 use std::sync::Arc;
 
-use common::{FakeRunner, fake_runner};
+use common::fake_runner;
 use omuzaki_mcp::{McpOptions, McpServer, ServerError};
 use rmcp::ClientLifecycleMode;
 use rmcp::model::{ClientCapabilities, ClientConfig, Implementation, ProtocolVersion};

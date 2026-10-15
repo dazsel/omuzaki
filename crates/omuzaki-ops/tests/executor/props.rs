@@ -221,7 +221,7 @@ impl Replay {
         let events: Vec<Event> = self.events.try_iter().collect();
         for event in events {
             match event {
-                Event::OpApplied { record } => {
+                Event::OpApplied { record, .. } => {
                     self.apply(&record.patch, &format!("logged op {} ({})", record.seq, record.op))?;
                     self.owners.insert(record.tx, record.actor.clone());
                     self.patches.entry(record.tx).or_default().extend(record.patch);

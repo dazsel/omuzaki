@@ -8,7 +8,7 @@ mod common;
 use std::sync::Arc;
 use std::time::Duration;
 
-use common::{FakeRunner, fake_runner_with};
+use common::fake_runner_with;
 use omuzaki_mcp::{McpOptions, McpServer, MeasureProvider, RenderProvider, ResourceProvider};
 use omuzaki_ops_api::{Actor, Grants, Op, OpCtx, OpError, OpKind, OpMeta, Plan, Runner, Scope, Undo};
 use omuzaki_store_api::{Commercial, ContentHash, Store};

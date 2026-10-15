@@ -7,7 +7,7 @@
 pub mod http;
 
 use omuzaki_core::id::Slug;
-use omuzaki_doc_api::{DocPath, DocRead, Patch, Value};
+use omuzaki_doc_api::{DocPath, Patch, Value};
 use omuzaki_doc_mock::MemDoc;
 use omuzaki_ops_api::{
     Actor, CostHint, Grants, Mode, Op, OpCtx, OpError, OpKind, OpMeta, Plan, Request, Runner, Scope, Undo,
