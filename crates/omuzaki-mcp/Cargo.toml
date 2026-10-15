@@ -35,7 +35,7 @@ omuzaki-store-api = { path = "../omuzaki-store-api" }
 proptest.workspace = true
 reqwest.workspace = true
 # reqwest is built without a crypto provider (see `omuzaki-http`), so the test helper installs `ring` before any client.
-rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rustls.workspace = true
 # `test-util` pauses tokio's clock, which is how the timeout tests run without sleeping (see `limits.rs`).
 tokio = { workspace = true, features = ["test-util"] }
 rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }

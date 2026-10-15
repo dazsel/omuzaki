@@ -1,7 +1,7 @@
 section = "rust"
 item = "reqwest 0.13"
 kind = "crate"
-used_for = "the HTTP client: `omuzaki-http`'s `HttpFetcher` (blocking, rustls, system proxy; the shipped download path) and, without TLS, the MCP HTTP tests"
+used_for = "the HTTP client: `omuzaki-http`'s `HttpFetcher` (blocking, rustls with the `ring` provider, system proxy; the shipped download path) and the MCP HTTP tests"
 status = "yes"
 audit = "(crates.io: MIT OR Apache-2.0)"
 crates = ["reqwest"]

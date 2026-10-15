@@ -1,6 +1,0 @@
-section = "rust"
-item = "quinn, quinn-proto, quinn-udp, lru-slab, rand_pcg, dunce, system-configuration(-sys), windows-registry"
-kind = "crate"
-used_for = "reqwest's own dependencies (QUIC types, system proxy lookup)"
-status = "yes"
-audit = "(crates.io: MIT OR Apache-2.0)"

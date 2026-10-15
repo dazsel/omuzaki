@@ -11,7 +11,7 @@ repository.workspace = true
 [dependencies]
 # `rustls-no-provider` leaves the crypto provider to us: `ring` below, installed in `HttpFetcherBuilder::build`.
 reqwest = { workspace = true, features = ["blocking", "rustls-no-provider", "system-proxy"] }
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls = { workspace = true, features = ["tls12", "logging"] }
 omuzaki-ai-api = { path = "../omuzaki-ai-api" }
 
 [dev-dependencies]
