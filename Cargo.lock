@@ -3968,6 +3968,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-live-api"
+version = "0.0.0"
+dependencies = [
+ "inventory",
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-doc-mock",
+ "omuzaki-l10n-api",
+ "omuzaki-ops-api",
+ "omuzaki-store-api",
+ "proptest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "serde_path_to_error",
+ "thiserror 2.0.21",
+ "toml",
+]
+
+[[package]]
+name = "omuzaki-live-mock"
+version = "0.0.0"
+dependencies = [
+ "inventory",
+ "omuzaki-core",
+ "omuzaki-l10n-api",
+ "omuzaki-live-api",
+ "omuzaki-ops-api",
+ "omuzaki-store-api",
+ "schemars",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "omuzaki-llm-api"
 version = "0.0.0"
 dependencies = [
