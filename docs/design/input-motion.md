@@ -108,7 +108,7 @@ impl KeyZone {
 }
 pub struct ZoneInfo { pub side: Option<Side>, pub finger: Finger, pub band: Band, pub centre: [f32; 2] }
 
-pub enum MotionEvent {                        // Copy, 16 bytes; what the frame thread sees
+pub enum MotionEvent {                        // Copy, at most 32 bytes; what the frame thread sees
     Key { zone: KeyZone, down: bool, at: Seconds },
     Buttons { device: DeviceClass, pressed: u8, released: u8, at: Seconds },   // mouse and pen buttons, bit per button
     Pointer { dx: f32, dy: f32, wheel: f32, at: Seconds },                      // coalesced relative motion, metres on the pad
@@ -164,10 +164,10 @@ hot types stay in memory.
 3. **No text path.** The crate has no `Display` or `Debug` for raw events (a manual `Debug` prints `<key>`), no logging
    of key codes, and panics inside the capture thread are caught and reported as `CaptureState::Failed { reason }` with a
    fixed reason string (the crash-report design keeps only registered templates and sends no memory, `privacy.md` §3, §4).
-4. **No injection or hooks.** No `SendInput`, `CGEventPost`, uinput, `SetWindowsHookEx` or DLL in the crate; a
-   `cargo xtask`-free test greps the crate's dependency tree for `rdev`, `device_query`, `inputbot`, `willhook` and the
-   crate's own source for those symbols, and fails.
-5. **The zone-equivalence test** (the acceptance of the hub task, §13 IN-2): two key streams that differ only in keys
+4. **No injection or hooks.** No `SendInput`, `CGEventPost`, uinput, `SetWindowsHookEx` or DLL in the crate. A test
+   in `omuzaki-input` fails if the crate's dependency tree in `Cargo.lock` holds `rdev`, `device_query`, `inputbot` or
+   `willhook`, or if its `src/` names any of those symbols.
+5. **The zone-equivalence test** (the acceptance of the hub task, §13 IN-3): two key streams that differ only in keys
    inside the same zones produce **byte-identical** output on every surface: the motion frames, the binding feed with
    no binding configured, `CaptureState`, op results and events, take `Motion` records and the hub's own diagnostics.
    It is the structural claim stated as a property test (proptest over random streams).
@@ -385,8 +385,8 @@ test: every allowed pair has a test, every other pair is refused.
   a head turn, not an edit). It is clamped to a walk radius around the authored placement (default 4 m, a
   `LocomotionDef` field; a per-scene floor area belongs to the worlds work), and `locomotion.home` returns it to the authored
   placement over 0.5 s. A take records it (§9).
-- **Cameras (ST-02).** Framings already follow the `Subject` anchor; anchors resolve against the member's live root, so
-  a framed camera follows the walker. Two additions, both owned by the stage area: a follow lag (critically damped,
+- **Cameras (ST-02).** Framings already follow the `Subject` anchor through its `AnchorFrame` (position and yaw of the
+  member); ST-2 builds that frame from the live root, so a framed camera follows the walker. Two additions, both owned by the stage area: a follow lag (critically damped,
   default 0.4 s) so a jump does not shake the frame, and `auto_full` (switch to the `Full` framing while moving, back
   after 1 s idle; off by default). Camera rotation never follows the character's yaw by default (a streamer's shot
   stays put); "behind" framing is left to the worlds work.
@@ -458,7 +458,7 @@ locomotion is active, fixed little-endian layout, about 40 to 80 bytes:
 ```
 member u8 | flags u8 (HAS_KEYS, HAS_POINTER, HAS_PEN, HAS_PAD, HAS_LOCO, HAND_ONLY) | n_keys u8 | reserved u8
 keys:    n_keys × (zone u8 | down u8)                         // order of arrival within the frame; no times
-pointer: dx f32 | dy f32 | wheel f32 | buttons u8 | 3 reserved // summed over the frame
+pointer: dx f32 | dy f32 | wheel f32 | buttons u8 | 3 reserved // summed over the frame (motion integrates per frame)
 pen:     u u8 | v u8 | pressure u8 | contact u8 | tilt i8 × 2 | 2 reserved
 pad:     sticks i8 × 4 | triggers u8 × 2 | zones u16
 loco:    state u8 | intents u8 | 2 reserved | root x, y, z f32 | yaw f32
@@ -467,7 +467,8 @@ loco:    state u8 | intents u8 | 2 reserved | root x, y, z f32 | yaw f32
 - **Never stored:** a key code, a chord, a binding name or id, a sub-frame time, a cursor position. Binding events are
   stored only as their effect: an expression or op is already an `Event` record (T1), and a locomotion intent is in the
   `loco` bits.
-- **Re-rendering.** Motion is a pure function of these records, the desk rig, the props and the seed (in `State`), so
+- **Re-rendering.** Motion is a pure function of these records, the desk rig, the props and the seed (a `motion` live-state provider,
+  `register_take_state!`, puts the seed and the motion settings in each `State`), so
   both of T6's modes re-run it; the recorded root keeps the path exact even if bounds changed. A different character
   re-solves the same zones with its own arms.
 - **Hand-only** frames carry `HAND_ONLY` and zone values reduced to their side.
@@ -568,7 +569,7 @@ ST-3 → ST-4, EV-1. MO-1 and LO-1 need only the contract and the mock, so the m
   64, the traits `MotionFeed`, `BindingFeed`, `InputControl`, `Indicator`, `ChordStore`, and `IndicatorLease`. Needs the
   Director's approval as a new contract.
 - **Acceptance:** the zone table covers every usage of the ANSI (104), ISO (105) and JIS (109) boards, counted in a test;
-  `MotionEvent` is `Copy` and at most 16 bytes (`size_of` test); serde round trip of every cold type; a test that no
+  `MotionEvent` is `Copy` and at most 32 bytes (`size_of` test); serde round trip of every cold type; a test that no
   public hot type has a field of a chord type (by `JsonSchema` walk); `#![deny(missing_docs)]`; `lint-deps` and
   `lint-crate-table` accept the crate; check green.
 
@@ -728,15 +729,17 @@ ST-3 → ST-4, EV-1. MO-1 and LO-1 need only the contract and the mock, so the m
 - **Contract:** `MotionFeed` (IN-1), `InputMotion` and `MotionOut` (MO-1), `HandTarget` and `FootPlanting` (rig), §6.1.
 - **Acceptance:** a 60 s replay (typing, mouse) on the mock character gives equal frame digests over two runs; the
   stage's zero-allocation frame test still passes; drain honours the A/V delay (events at `t` act at `t + D`); added
-  CPU at most 0.05 ms per frame on `Dev` (bench, `scaled`); check green.
+  CPU at most 0.08 ms per frame on `Dev` (drain, motion and palm IK, §10; bench, `scaled`); check green.
 
 ### ST-2: `omuzaki-stage`: locomotion, the live root and camera follow
 
-- **Fence:** `crates/omuzaki-stage/src/perform/locomotion.rs` and its `mod` line in `src/perform/mod.rs`, the live-root lookup where the stage resolves anchors,
-  `crates/omuzaki-stage/tests/locomotion_frame.rs`. A follow-lag field on `CameraDef` is an `omuzaki-stage-api` change:
+- **Fence:** `crates/omuzaki-stage/src/perform/locomotion.rs` and its `mod` line in `src/perform/mod.rs`; the place
+  where the stage builds each member's `AnchorFrame` (`omuzaki-stage-api` `resolve.rs`: `root` is the member's position
+  and yaw), which takes the live root instead of the authored one; `crates/omuzaki-stage/tests/locomotion_frame.rs`. A follow-lag field on `CameraDef` is an `omuzaki-stage-api` change:
   it needs the Director's approval on the task before work starts, and lands as its own PR first if approved.
 - **Contract:** `Locomotion`, `RootStep` (LO-1), `Intents` from `BindingFeed` and `PadState`, §7.3.
-- **Acceptance:** the root stays inside the walk radius over a 120 s random-intent run; `locomotion.home` returns within
+- **Acceptance:** added CPU at most 0.02 ms per frame on `Dev` (§10); the root stays inside the walk radius over a
+  120 s random-intent run; `locomotion.home` returns within
   0.5 s ± one frame; a `Subject`-framed camera follows with the configured lag; deterministic; check green.
 
 ### ST-3: `omuzaki-stage`: the input device props
