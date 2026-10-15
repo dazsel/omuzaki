@@ -339,6 +339,16 @@ fn crossed_arms_clear_the_torso_and_each_other_deterministically() {
         let (left, right) = (forearm(B::LeftLowerArm, B::LeftHand), forearm(B::RightLowerArm, B::RightHand));
         assert!((left.gap(&arms.torso).min(right.gap(&arms.torso)) - torso).abs() < 1e-5);
         assert!((left.gap(&right) - forearms).abs() < 1e-5);
+        // Clearance does not fix the order: the right forearm is the one over (`over: Hand::Right`), so it stacks higher.
+        let mid = |elbow: B, wrist: B| (at(&skeleton, &w, elbow) + at(&skeleton, &w, wrist)) * 0.5;
+        let (left_mid, right_mid) = (mid(B::LeftLowerArm, B::LeftHand), mid(B::RightLowerArm, B::RightHand));
+        assert!(
+            right_mid.y > left_mid.y,
+            "{}: right forearm midpoint y {} must stack over the left's {}",
+            body.name,
+            right_mid.y,
+            left_mid.y
+        );
 
         // A warm start from the last swings is the same pose in one attempt when it clears. When it cannot, the short climb
         // is no worse than the cold search's pose and still has the palms on their arms.
