@@ -19,8 +19,12 @@ tokio = { workspace = true, features = ["io-util", "process", "time"] }
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# `FileSource` pins are SHA-256 (ADR 0017): the eval-set store indexes its items by it.
+sha2.workspace = true
 thiserror.workspace = true
 toml.workspace = true
+# `TestSetKind` and `FileSource`: the eval sets are what a model suite (`Slot::evaluate`) reads its fixtures from.
+omuzaki-ai-api = { path = "../omuzaki-ai-api" }
 omuzaki-core = { path = "../omuzaki-core" }
 # Fixtures start from an empty project folder: `Project::create` makes it.
 omuzaki-doc = { path = "../omuzaki-doc" }
@@ -53,11 +57,8 @@ omuzaki-io-ops = { path = "../omuzaki-io-ops" }
 # The real-model tests and bench of the face tracker (tests/track_models.rs, benches/track.rs): an implementation crate
 # can't dev-depend on the `onnx` runtime, so the tracker meets it here. Gated on OMUZAKI_TRACK_MODELS + OMUZAKI_ORT_CACHE.
 criterion.workspace = true
-omuzaki-ai-api = { path = "../omuzaki-ai-api" }
 omuzaki-ai-ort = { path = "../omuzaki-ai-ort" }
 omuzaki-track = { path = "../omuzaki-track" }
-# The runtime-archive source of those tests checks the pinned SHA-256 (ADR 0017).
-sha2.workspace = true
 
 [[bench]]
 name = "track"

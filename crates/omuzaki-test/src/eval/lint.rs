@@ -183,6 +183,7 @@ fn stem(file: &TaskFile) -> String {
 fn provenance_findings(d: &Discovery, private: &PrivateList) -> Vec<Finding> {
     let mut out = Vec::new();
     for (path, set) in &d.set_files {
+        out.extend(kind_and_split(set).into_iter().map(|m| finding(path, format!("set `{}`: {m}", set.id))));
         for item in &set.items {
             out.extend(refusals(item, private).into_iter().map(|m| finding(path, format!("set `{}`: {m}", set.id))));
         }
@@ -190,6 +191,14 @@ fn provenance_findings(d: &Discovery, private: &PrivateList) -> Vec<Finding> {
     for fixture in &d.fixtures {
         out.extend(fixture_refusals(&fixture.fixture, &d.sets, private).into_iter().map(|m| finding(&fixture.path, m)));
     }
+    out
+}
+
+/// `kind` is `real` or `synthetic` and `split` is `dev` or `holdout` (the model contract's `TestSetKind`, design 11.3).
+fn kind_and_split(set: &super::provenance::EvalSet) -> Vec<String> {
+    let mut out = Vec::new();
+    out.extend(set.kind_of().err().map(|e| e.to_string()));
+    out.extend(set.is_holdout().err().map(|e| e.to_string()));
     out
 }
 

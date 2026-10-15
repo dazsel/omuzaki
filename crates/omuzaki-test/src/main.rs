@@ -14,8 +14,10 @@ use std::time::{Duration, SystemTime};
 use clap::{Args, Parser, Subcommand};
 use omuzaki_test::compare::{CompareError, Tolerance, compare};
 use omuzaki_test::dirs::Dirs;
+use omuzaki_test::eval::provenance::{Provenance, Source as ProvenanceSource};
 use omuzaki_test::eval::run::{self, Options, RunReport, Selection};
 use omuzaki_test::eval::script::{self, Script};
+use omuzaki_test::eval::sets::{self, SetStore};
 use omuzaki_test::eval::transcript::EventLog;
 use omuzaki_test::eval::{self, gate, gc as run_gc, history, lint};
 use omuzaki_test::gc::{self, MIN_AGE, Object, Plan, Removal, total_bytes};
@@ -212,6 +214,9 @@ enum EvalCommand {
         #[arg(long, value_name = "DIR")]
         status: Option<PathBuf>,
     },
+    /// Eval sets: manifests in git, items in the content store (design 11).
+    #[command(subcommand)]
+    Sets(SetsCommand),
     /// Remove run folders older than 90 days, unless an open issue or a promoted script names them.
     ///
     /// A dry run unless given `--apply`. The open issues are read with `gh`; if that fails nothing is removed.
@@ -233,6 +238,103 @@ enum EvalCommand {
         #[command(flatten)]
         root: RootArg,
     },
+}
+
+#[derive(Subcommand)]
+enum SetsCommand {
+    /// List the items the manifests name that the store lacks or holds damaged. Exits 1 if there are any.
+    ///
+    /// The store is `$OMUZAKI_EVAL_SETS`, else `$OMUZAKI_ASSETS/evals/sets`; every read of an item checks its bytes
+    /// against its hash.
+    Verify {
+        #[command(flatten)]
+        root: RootArg,
+    },
+    /// Store a file as an item of a set and write its manifest entry.
+    ///
+    /// The file is judged before it is stored: an item with no clean provenance record, or whose path or hash is on the
+    /// private list (`docs/licensing/private-material.toml`), is refused and never enters the store. The manifest records
+    /// the hash and the provenance, and no machine path. A set that does not exist yet is created with `--new-in`.
+    Add(Box<AddArgs>),
+    /// Fail when a training manifest names an item of a `real` set or a `holdout` split (ML-12).
+    HoldoutCheck {
+        /// The training manifests to look in (any text format that spells the item hashes).
+        #[arg(required = true)]
+        manifests: Vec<PathBuf>,
+        #[command(flatten)]
+        root: RootArg,
+    },
+}
+
+/// The arguments of `eval sets add`.
+#[derive(Args)]
+struct AddArgs {
+    /// The set's id.
+    set: String,
+    /// The file to store.
+    file: PathBuf,
+    /// Where the item came from.
+    #[arg(long, value_enum)]
+    source: SourceArg,
+    /// Whether commercial use is clear; must be `yes`.
+    #[arg(long, default_value = "yes")]
+    commercial: String,
+    /// A pointer to the consent record, for an `own` item that shows a person.
+    #[arg(long)]
+    consent: Option<String>,
+    /// The item shows a person.
+    #[arg(long)]
+    person: bool,
+    /// The licence, for a `licensed` item.
+    #[arg(long)]
+    licence: Option<String>,
+    /// The generator's commit, for a `synthetic` item.
+    #[arg(long)]
+    generator: Option<String>,
+    /// A relative origin path to record in the manifest (absolute paths are refused).
+    #[arg(long = "path", value_name = "RELATIVE")]
+    recorded_path: Option<String>,
+    /// Create the set in this crate's `evalsets/` folder (with --kind, --split and --summary).
+    #[arg(long, value_name = "CRATE")]
+    new_in: Option<String>,
+    /// The new set's kind: `real` or `synthetic`.
+    #[arg(long, requires = "new_in")]
+    kind: Option<String>,
+    /// The new set's split: `dev` or `holdout`.
+    #[arg(long, requires = "new_in")]
+    split: Option<String>,
+    /// One line about the new set.
+    #[arg(long, requires = "new_in")]
+    summary: Option<String>,
+    #[command(flatten)]
+    root: RootArg,
+}
+
+/// Where an eval-set item came from (design 11.2).
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum SourceArg {
+    /// Made by our code.
+    Synthetic,
+    /// Made for the project by its authors.
+    Own,
+    /// CC0.
+    Cc0,
+    /// Public domain.
+    PublicDomain,
+    /// Under a licence that allows commercial use and use in tests.
+    Licensed,
+}
+
+impl From<SourceArg> for ProvenanceSource {
+    fn from(arg: SourceArg) -> Self {
+        match arg {
+            SourceArg::Synthetic => Self::Synthetic,
+            SourceArg::Own => Self::Own,
+            SourceArg::Cc0 => Self::Cc0,
+            SourceArg::PublicDomain => Self::PublicDomain,
+            SourceArg::Licensed => Self::Licensed,
+        }
+    }
 }
 
 /// Who plays the attempts of a run.
@@ -406,6 +508,7 @@ fn run(cli: Cli) -> Verdict {
             let plan = RunArgs { driver, attempts, jobs, record, binary, omuzaki_bin, spend_usd, kind, run_id };
             eval_run(&root, select, plan)
         }
+        Command::Eval(EvalCommand::Sets(sets)) => eval_sets(sets),
         Command::Eval(EvalCommand::Gate { json, status }) => eval_gate(json, status),
         Command::Eval(EvalCommand::Gc { apply, issues, root }) => {
             eval_gc(&workspace_root(root.root)?, apply, issues.as_deref())
@@ -518,8 +621,14 @@ fn eval_run(root: &Path, select: Selection, args: RunArgs) -> Verdict {
     let now = SystemTime::now();
     let run_id = args.run_id.unwrap_or_else(|| run::default_run_id(now, &args.kind));
     let status = if args.record { Some(assets_folder("OMUZAKI_EVAL_STATUS", "status")?) } else { None };
+    // Only a fixture that refers to an eval-set item needs the store, so a store that is not configured is not yet a fault.
+    let store = SetStore::locate().ok();
     let item_path = |item: &eval::fixture::SetItemRef| -> Result<String, String> {
-        Err(format!("eval set `{}` has no content store here (item {})", item.set, item.item))
+        let store = store.as_ref().ok_or_else(|| {
+            format!("item {} of set `{}` needs the store: set OMUZAKI_EVAL_SETS or OMUZAKI_ASSETS", item.item, item.set)
+        })?;
+        let hash = sets::store::parse_hash(&item.item).map_err(|e| e.to_string())?;
+        store.verified_path(&hash).map(|path| path.display().to_string()).map_err(|e| e.to_string())
     };
     let options = Options {
         select,
@@ -577,6 +686,81 @@ fn print_run(report: &RunReport) {
         report.refused.len(),
         if run.valid { "valid" } else { "NOT valid: more than 10% of the attempts errored" },
     );
+}
+
+/// `eval sets ...`.
+fn eval_sets(command: SetsCommand) -> Verdict {
+    match command {
+        SetsCommand::Verify { root } => {
+            let discovery = eval::discover(&workspace_root(root.root)?)?;
+            let result = sets::verify::verify(&discovery, &SetStore::locate()?)?;
+            for f in &result.findings {
+                println!("{}: set `{}` item {}: {}", f.manifest.display(), f.set, f.item, f.problem.describe());
+            }
+            println!("{} item(s) checked, {} problem(s).", result.checked, result.findings.len());
+            Ok(result.findings.is_empty())
+        }
+        SetsCommand::Add(args) => {
+            let AddArgs {
+                set,
+                file,
+                source,
+                commercial,
+                consent,
+                person,
+                licence,
+                generator,
+                recorded_path,
+                new_in,
+                kind,
+                split,
+                summary,
+                root,
+            } = *args;
+            let root = workspace_root(root.root)?;
+            let discovery = eval::discover(&root)?;
+            // A manifest that does not parse could be the very set being added to, or one that shares its id.
+            if let Some(bad) = discovery.unparsed.first() {
+                return Err(format!("{}: does not parse: {} (run `eval lint`)", bad.path.display(), bad.reason).into());
+            }
+            let new_set = match new_in {
+                Some(crate_name) => Some(sets::add::NewSet {
+                    crate_name,
+                    kind: kind.ok_or("--new-in needs --kind")?,
+                    split: split.ok_or("--new-in needs --split")?,
+                    summary: summary.ok_or("--new-in needs --summary")?,
+                }),
+                None => None,
+            };
+            let record = Provenance { source: source.into(), commercial, consent, person, licence, generator };
+            let request = sets::add::Request { set, file, record, recorded_path, new_set };
+            let added = sets::add::add(&root, &discovery, &eval::load_private(&root)?, &SetStore::locate()?, &request)?;
+            let what = if added.created_set {
+                "created the set and stored"
+            } else if added.new_item {
+                "stored"
+            } else {
+                "already in"
+            };
+            println!("{what} b3:{} in {}", added.hash, added.manifest.display());
+            Ok(true)
+        }
+        SetsCommand::HoldoutCheck { manifests, root } => {
+            let discovery = eval::discover(&workspace_root(root.root)?)?;
+            let leaks = sets::holdout::holdout_check(&discovery, &manifests)?;
+            for leak in &leaks {
+                println!(
+                    "{}: names item {} of set `{}` ({}), which is test-only and must never be training data",
+                    leak.manifest.display(),
+                    leak.item,
+                    leak.set,
+                    leak.why
+                );
+            }
+            println!("{} training manifest(s) checked, {} leak(s).", manifests.len(), leaks.len());
+            Ok(leaks.is_empty())
+        }
+    }
 }
 
 /// `eval gate`: reads the history and prints what regressed.

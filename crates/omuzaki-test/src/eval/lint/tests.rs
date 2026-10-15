@@ -38,7 +38,7 @@ fn features() -> BTreeSet<String> {
 }
 
 fn private() -> PrivateList {
-    PrivateList { prefixes: vec!["characters/example-private/".into()], hashes: vec![] }
+    PrivateList { prefixes: vec!["characters/example-private/".into()], ..PrivateList::default() }
 }
 
 fn run(d: &Discovery, texts: Option<&[ToolText]>) -> Vec<String> {

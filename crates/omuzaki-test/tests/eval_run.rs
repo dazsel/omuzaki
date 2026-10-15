@@ -106,7 +106,7 @@ fn play_with(
     record: bool,
 ) -> RunReport {
     let discovery = eval::discover(ws).unwrap();
-    let private = PrivateList { prefixes: vec!["example-clip/".to_owned()], hashes: vec![] };
+    let private = PrivateList { prefixes: vec!["example-clip/".to_owned()], ..PrivateList::default() };
     let no_items = |item: &eval::fixture::SetItemRef| Err(format!("no store for {}", item.set));
     let options = Options {
         select,
@@ -342,6 +342,9 @@ fn the_command_line_plays_the_sample_task_and_gc_keeps_what_an_issue_names() {
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("evals");
     let target = ws.path().join("crates/omuzaki-test/evals");
     omuzaki_test::eval::build::copy_dir(&source, &target).unwrap();
+    // The one private-material list, as the loader finds it.
+    let list = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/licensing/private-material.toml");
+    write(&ws.path().join("docs/licensing/private-material.toml"), &fs::read_to_string(list).unwrap());
     let tmp = tempfile::tempdir().unwrap();
     let (out, status) = (tmp.path().join("out"), tmp.path().join("status"));
     let envs = [("OMUZAKI_EVAL_OUT", common::arg(&out)), ("OMUZAKI_EVAL_STATUS", common::arg(&status))];

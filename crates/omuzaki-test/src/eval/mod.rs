@@ -10,7 +10,8 @@
 //!
 //! Tasks live in `crates/<crate>/evals/**/*.toml` (never in a `fixtures/` folder), fixtures in
 //! `crates/<crate>/evals/fixtures/*.toml`, and a task's scripts beside it as `<task-stem>.<name>.{pass,fail}.jsonl`.
-//! The two files `defaults.toml` and `private.toml` at the top of an `evals/` folder are configuration, not tasks.
+//! The file `defaults.toml` at the top of an `evals/` folder is configuration, not a task. The private-material list is
+//! `docs/licensing/private-material.toml`, shared with `cargo xtask lint-seed`.
 //! Adding a task never edits another file (spec §39 rule 2).
 
 pub mod build;
@@ -27,6 +28,7 @@ mod placeholder;
 pub mod provenance;
 pub mod run;
 pub mod script;
+pub mod sets;
 pub mod task;
 pub mod transcript;
 
@@ -41,7 +43,7 @@ use self::provenance::{EvalSet, EvalSets, PrivateList};
 use self::task::{Caps, Defaults, Task};
 
 /// Files at the top of an `evals/` folder that configure the harness instead of describing a task.
-const CONFIG_FILES: [&str; 2] = ["defaults.toml", "private.toml"];
+const CONFIG_FILES: [&str; 1] = ["defaults.toml"];
 
 /// Harness trouble: something that is not a finding about a task (the CLI exits 2).
 #[derive(Debug, thiserror::Error)]
@@ -291,12 +293,12 @@ pub fn load_defaults(root: &Path) -> Result<Caps, EvalError> {
     Ok(defaults.caps)
 }
 
-/// Reads `crates/omuzaki-test/evals/private.toml`.
+/// Reads `docs/licensing/private-material.toml`, the one private-material list.
 ///
 /// # Errors
 /// [`EvalError`] when it is missing or does not parse: a missing private list must never mean "nothing is private".
 pub fn load_private(root: &Path) -> Result<PrivateList, EvalError> {
-    let path = root.join("crates/omuzaki-test/evals/private.toml");
+    let path = root.join(provenance::PRIVATE_LIST_FILE);
     let bytes = fs::read(&path).map_err(io_err(&path))?;
     parse(&bytes).map_err(|reason| EvalError::Config { path, reason })
 }
