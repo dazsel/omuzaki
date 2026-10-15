@@ -4101,6 +4101,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-plugin-mock"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-core",
+ "omuzaki-ops-api",
+ "omuzaki-plugin-api",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "omuzaki-render"
 version = "0.0.0"
 dependencies = [

@@ -1,0 +1,23 @@
+[package]
+name = "omuzaki-plugin-mock"
+description = "Mock of the plugin contract: MockPlugins (in-memory Plugins), MockGuest (a plugin as Rust closures), MockSessions and the conformance suite every plugin host passes (PL-01, ADR 0058)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-ops-api = { path = "../omuzaki-ops-api" }
+omuzaki-plugin-api = { path = "../omuzaki-plugin-api" }
+
+[lints]
+workspace = true
+
+[package.metadata.omuzaki]
+kind = "Mock"
+summary = "the plugin mock (PL-01, ADR 0058): `MockPlugins` (an in-memory `Plugins` running `MockGuest`s: lifecycle, ceiling, per-use queueing, faults, restart backoff, auto-disable, reload drain), `MockGuest` (a plugin as Rust closures, or a script of op calls), `MockSessions` and the public `conformance` suite the wasmtime host runs too"

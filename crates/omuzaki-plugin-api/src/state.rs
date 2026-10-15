@@ -87,6 +87,10 @@ pub enum FaultKind {
     HostCallFlood,
     /// The guest returned a value the host refuses (invalid UTF-8, over the size cap).
     BadReturn,
+    /// `init` returned an error; the fault's detail is its text.
+    InitError,
+    /// The guest called `wasi:cli/exit`.
+    Exited,
 }
 
 /// Where a plugin is in its life (design §6.2). Nothing loads at launch that the person has not enabled.
@@ -256,6 +260,8 @@ mod tests {
             FaultKind::Timeout,
             FaultKind::HostCallFlood,
             FaultKind::BadReturn,
+            FaultKind::InitError,
+            FaultKind::Exited,
         ];
         let mut states = vec![
             PluginState::Installed,
