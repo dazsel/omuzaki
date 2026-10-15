@@ -100,9 +100,9 @@ fn a_path_of_many_points_keeps_its_analytic_edge() {
 /// are not the quarters (64, 128, 192) a supersampler gives. Drawn by
 ///
 /// ```js
-/// const pts = [];   // 256 x 64 canvas; coordinates rounded to 2 decimals
-/// for (let i = 0; i < 23; i++) { const t = i / 22; pts.push([10.37 + 236 * t, 40.13 - 14 * Math.sin(Math.PI * t) - 6 * t]); }
-/// for (let i = 22; i >= 0; i--) { const t = i / 22; pts.push([10.37 + 236 * t, 40.13 - 14 * Math.sin(Math.PI * t) - 6 * t + 3 + 5 * Math.sin(Math.PI * t)]); }
+/// const pts = [], r = (v) => +v.toFixed(2);   // 256 x 64 canvas; both coordinates rounded to 2 decimals, as below
+/// for (let i = 0; i < 23; i++) { const t = i / 22; pts.push([r(10.37 + 236 * t), r(40.13 - 14 * Math.sin(Math.PI * t) - 6 * t)]); }
+/// for (let i = 22; i >= 0; i--) { const t = i / 22; pts.push([r(10.37 + 236 * t), r(40.13 - 14 * Math.sin(Math.PI * t) - 6 * t + 3 + 5 * Math.sin(Math.PI * t))]); }
 /// g.beginPath(); g.moveTo(...pts[0]); for (const p of pts.slice(1)) g.lineTo(...p); g.closePath(); g.fill();
 /// ```
 #[test]
@@ -214,4 +214,46 @@ fn an_opposite_wound_hole_stays_a_hole() {
     let inner = [[10.4, 19.0], [22.9, 19.0], [22.9, 10.0], [10.4, 10.0]];
     let image = alpha(40, 30, &[&outer, &inner]);
     assert_matches_chrome(&image, 40, &[(10, 12, 102), (22, 12, 26), (15, 12, 0)]);
+}
+
+/// Draws `contours` (rectangles as `[x0, y0, x1, y1]`, one path, non-zero) on a 40 x 30 canvas, as the scripts below do.
+fn rects(contours: &[[f32; 4]]) -> Vec<u8> {
+    let polygons: Vec<[[f32; 2]; 4]> =
+        contours.iter().map(|&[x0, y0, x1, y1]| [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]).collect();
+    let refs: Vec<&[[f32; 2]]> = polygons.iter().map(|p| p.as_slice()).collect();
+    alpha(40, 30, &refs)
+}
+
+/// A rectangle drawn twice with a partly covered left edge is half covered there, not opaque: summing the layers' area
+/// gives a whole number that is not full coverage. Chrome 141 reads 128 at (5, 8) and (17, 8). Drawn by
+///
+/// ```js
+/// const rect = (x0, y0, x1, y1) => [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];   // 40 x 30 canvas
+/// g.beginPath();
+/// for (const pts of [rect(5.5, 4, 17.5, 13), rect(5.5, 4, 17.5, 13)]) {
+///   g.moveTo(...pts[0]); for (const q of pts.slice(1)) g.lineTo(...q); g.closePath();
+/// }
+/// g.fill('nonzero');   // getImageData(5, 8) -> 128; (17, 8) -> 128; (10, 8) -> 255
+/// ```
+#[test]
+fn a_duplicated_half_covered_edge_stays_half_covered() {
+    let image = rects(&[[5.5, 4.0, 17.5, 13.0], [5.5, 4.0, 17.5, 13.0]]);
+    assert_matches_chrome(&image, 40, &[(5, 8, 128), (17, 8, 128), (10, 8, 255)]);
+}
+
+/// Two same-winding rectangles whose left edges (5.25, 5.5) cross one pixel cover it to the union, 0.75 (192), not the
+/// average 0.625. Drawn as above with `rect(5.25, 4, 17, 13)` and `rect(5.5, 4, 17, 13)`: getImageData(5, 8) -> 192.
+#[test]
+fn nested_left_edges_in_one_pixel_cover_to_the_outer_one() {
+    let image = rects(&[[5.25, 4.0, 17.0, 13.0], [5.5, 4.0, 17.0, 13.0]]);
+    assert_matches_chrome(&image, 40, &[(5, 8, 192), (10, 8, 255)]);
+}
+
+/// A sliver narrower than a pixel, drawn twice, has no fully covered pixel to clamp: both layers cover the same quarter
+/// of it, so Chrome 141 reads 64 (the single sliver reads 64 too), not 128. Drawn as above with
+/// `rect(5.125, 4, 5.375, 13)` twice: getImageData(5, 8) -> 64.
+#[test]
+fn a_duplicated_sliver_is_not_doubled() {
+    let image = rects(&[[5.125, 4.0, 5.375, 13.0], [5.125, 4.0, 5.375, 13.0]]);
+    assert_matches_chrome(&image, 40, &[(5, 8, 64)]);
 }

@@ -257,11 +257,12 @@ fn cubic_chain(p: [Vec2; 4]) -> Chain {
 struct Cell {
     /// The signed area delta.
     area: f32,
-    /// The edge count, one counter per quarter-row band: an edge adds its direction to the bands it crosses, in the cell
-    /// where it ends in the row. The prefix sum of a band is its winding, and where it goes from or to zero by more than
-    /// one in a cell, layers of one winding share that pixel (the area sum cannot tell: an edge that crosses half a row
-    /// adds half).
-    count: [i8; BANDS],
+    /// The edges that end in this cell, one counter per quarter-row band: an edge adds to the bands it crosses, in the
+    /// cell where it ends in the row. The low nibble counts edges that run down, the high nibble those that run up
+    /// (each saturates at 15). The prefix sum of the difference is the band's winding. Layers of one winding share this
+    /// pixel when a nibble passes 1, or when the winding goes from or to zero by more than one here; the area sum cannot
+    /// tell, since an edge that crosses half a row adds half, and a thin layer's two edges cancel.
+    count: [u8; BANDS],
 }
 
 /// One snapped, clipped edge as accumulated, kept so a row with overlapping layers can be resolved again: `a.y < b.y`
@@ -532,8 +533,12 @@ impl Scan {
             self.dirty.max_x = self.dirty.max_x.max(x1i + 1);
             add_span(&mut self.acc[row..row + self.stride], d, x0, x1);
             let counter = &mut self.acc[row + x1i].count;
+            let step = if count_dir > 0 { 0x01 } else { 0x10 };
+            let mask = if count_dir > 0 { 0x0F } else { 0xF0 };
             for count in &mut counter[first_band.saturating_sub(y * BANDS)..(last_band - y * BANDS).min(BANDS)] {
-                *count += count_dir;
+                if *count & mask != mask {
+                    *count += step;
+                }
             }
             x = x_next;
         }
@@ -604,9 +609,11 @@ impl Scan {
                 sum += cell.area;
                 if cell.count != [0; BANDS] {
                     for (w, c) in winding.iter_mut().zip(cell.count) {
-                        let next = *w + c;
-                        // Layers that enter (or leave) zero in one pixel share its partial coverage.
-                        overlap |= (*w == 0) != (next == 0) && (*w).abs().max(next.abs()) > 1;
+                        let (down, up) = (c & 0x0F, c >> 4);
+                        #[allow(clippy::cast_possible_wrap)] // nibbles, at most 15
+                        let next = *w + down as i8 - up as i8;
+                        // Layers that share a pixel share its partial coverage.
+                        overlap |= down > 1 || up > 1 || ((*w == 0) != (next == 0) && (*w).abs().max(next.abs()) > 1);
                         *w = next;
                     }
                 }
