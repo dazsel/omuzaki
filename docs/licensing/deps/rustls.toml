@@ -1,0 +1,8 @@
+section = "rust"
+item = "rustls (ring provider)"
+kind = "crate"
+used_for = "the TLS of the LLM providers' HTTP client (`omuzaki-llm`, llm-api D11); only the `ring` crypto provider is installed, once"
+status = "yes"
+condition = "Apache-2.0 OR ISC OR MIT (the `license` field of rustls 0.23, checked 2026-10-15). `ring` (its own ISC-style terms, allowed by deny.toml) is the one crypto provider in the workspace. Keep the notices"
+audit = "(crates.io: Apache-2.0 OR ISC OR MIT)"
+crates = ["rustls"]

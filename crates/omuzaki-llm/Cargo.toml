@@ -12,7 +12,10 @@ repository.workspace = true
 base64.workspace = true
 bytes.workspace = true
 futures-util.workspace = true
-reqwest = { workspace = true, features = ["rustls", "system-proxy", "stream", "http2"] }
+reqwest = { workspace = true, features = ["rustls-no-provider", "system-proxy", "stream", "http2"] }
+# The one crypto provider (ring, as in omuzaki-http, llm-api D11). Version and features match the workspace line #1504
+# adds; this becomes `rustls.workspace = true` once that is on main.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 serde.workspace = true
 serde_json.workspace = true
 sse-stream.workspace = true
@@ -34,7 +37,7 @@ omuzaki-llm-mock = { path = "../omuzaki-llm-mock" }
 workspace = true
 
 [package.metadata.omuzaki]
-# Native only: tokio, a TLS stack with a C crypto library and a socket per turn
+# Native only: tokio, a TLS stack and a socket per turn
 wasm = false
 kind = "Implementation"
 registers = true

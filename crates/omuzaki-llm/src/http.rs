@@ -171,6 +171,18 @@ impl Response {
     }
 }
 
+/// Installs `ring` as the process's rustls provider, once. Another installer winning the race is fine: any provider
+/// already installed (the same `ring`, by workspace rule) serves.
+fn install_crypto_provider() -> Result<(), LlmError> {
+    static INSTALLED: std::sync::Once = std::sync::Once::new();
+    INSTALLED.call_once(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+    rustls::crypto::CryptoProvider::get_default()
+        .map(|_| ())
+        .ok_or_else(|| LlmError::Unsupported("cannot start the HTTP client: no TLS crypto provider".into()))
+}
+
 /// The client of one provider: a connection pool for one endpoint.
 #[derive(Clone)]
 pub(crate) struct Http {
@@ -183,6 +195,7 @@ impl Http {
     /// # Errors
     /// `Unsupported` if the TLS stack or the platform verifier cannot start.
     pub(crate) fn new(endpoint: &Endpoint) -> Result<Self, LlmError> {
+        install_crypto_provider()?;
         let mut builder = reqwest::Client::builder()
             .user_agent(USER_AGENT)
             .connect_timeout(CONNECT_TIMEOUT)
