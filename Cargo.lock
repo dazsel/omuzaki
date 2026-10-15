@@ -3626,12 +3626,14 @@ dependencies = [
 name = "omuzaki-doc"
 version = "0.0.0"
 dependencies = [
+ "crc32fast",
  "criterion",
  "inventory",
  "omuzaki-assets-lock",
  "omuzaki-core",
  "omuzaki-doc-api",
  "omuzaki-doc-mock",
+ "omuzaki-history-api",
  "omuzaki-stage-api",
  "omuzaki-store-api",
  "proptest",
