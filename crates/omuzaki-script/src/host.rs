@@ -389,16 +389,7 @@ impl ScriptHost {
             };
             located(kind, e.0.to_string(), e.1, None)
         })?;
-        let mut scope = Scope::new();
-        let params = to_dynamic(&run.request.params).map_err(|e| fail(ScriptErrorKind::Runtime, &e.to_string()))?;
-        scope.push_constant_dynamic("params", params);
-        let value = engine.eval_ast_with_scope::<Dynamic>(&mut scope, &ast).map_err(|e| classify(&e))?;
-        let value = to_json(value, self.limits.value_depth).map_err(|e| match e {
-            Convert::Depth => {
-                fail(ScriptErrorKind::Limit(LimitKind::Depth), "the result is nested deeper than the limit")
-            }
-            Convert::Other(message) => fail(ScriptErrorKind::Runtime, &format!("the result is not JSON: {message}")),
-        })?;
+        let value = evaluate(&engine, &ast, &run.request.params, &self.limits)?;
         let too_big = serde_json::to_vec(&value).map_or(true, |json| json.len() > self.limits.result_bytes);
         if too_big {
             return Err(fail(ScriptErrorKind::Limit(LimitKind::Result), "the result is larger than the result limit"));
@@ -426,6 +417,35 @@ impl ScriptHost {
             plans: std::mem::take(&mut run.plans.lock().unwrap_or_else(PoisonError::into_inner)),
         })
     }
+}
+
+/// Evaluates `ast` and returns its result as JSON. The scope, the returned value and every local a script built are
+/// dropped before this returns, on success and on error alike, so dropping a deeply nested value happens before
+/// `Calls::commit` makes anything durable and before a limit error rolls back. The nesting bound itself (and a worker
+/// thread whose stack comes from the operation limit) is open in #1877.
+#[allow(clippy::result_large_err)] // as `ScriptHost::run`
+fn evaluate(
+    engine: &Engine,
+    ast: &rhai::AST,
+    params: &JsonMap<String, Value>,
+    limits: &Limits,
+) -> Result<Value, ScriptError> {
+    let fail = |kind, message: &str| ScriptError {
+        kind,
+        line: 1,
+        column: 1,
+        op_error: None,
+        message: message.to_owned(),
+        output: Vec::new(),
+    };
+    let mut scope = Scope::new();
+    let params = to_dynamic(params).map_err(|e| fail(ScriptErrorKind::Runtime, &e.to_string()))?;
+    scope.push_constant_dynamic("params", params);
+    let returned = engine.eval_ast_with_scope::<Dynamic>(&mut scope, ast).map_err(|e| classify(&e))?;
+    to_json(returned, limits.value_depth).map_err(|e| match e {
+        Convert::Depth => fail(ScriptErrorKind::Limit(LimitKind::Depth), "the result is nested deeper than the limit"),
+        Convert::Other(message) => fail(ScriptErrorKind::Runtime, &format!("the result is not JSON: {message}")),
+    })
 }
 
 /// Why `info` can't be called from a script, if it can't.
@@ -642,7 +662,7 @@ mod tests {
     //! The lease's boundary: the borrowed services are reachable while `lend` runs and never after it.
 
     use std::panic::{AssertUnwindSafe, catch_unwind};
-    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::{AtomicBool, AtomicUsize};
 
     use omuzaki_doc_api::DocPath;
     use omuzaki_ops_api::Outcome;
@@ -722,5 +742,41 @@ mod tests {
         assert!(kept.lent.read().unwrap().is_none(), "unwinding empties the slot too");
         assert!(is_cancel(&kept.invoke("face.set_profile", Value::Null).unwrap_err()));
         assert_eq!(reached.load(Ordering::SeqCst), 0);
+    }
+
+    /// Sets a flag when it is dropped; a script holds one in a local.
+    #[derive(Clone)]
+    struct Marker(Arc<AtomicBool>);
+
+    impl Drop for Marker {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    fn marked(source: &str) -> (Arc<AtomicBool>, Result<Value, ScriptError>) {
+        let dropped = Arc::new(AtomicBool::new(false));
+        let mut engine = Engine::new();
+        let held = dropped.clone();
+        engine.register_fn("marker", move || Dynamic::from(Marker(held.clone())));
+        let ast = engine.compile(source).unwrap();
+        let result = evaluate(&engine, &ast, &JsonMap::new(), &Limits::console());
+        (dropped, result)
+    }
+
+    #[test]
+    fn locals_nested_inside_the_limits_are_dropped_before_the_result_is_handed_back() {
+        // The returned value is a scalar, so the nested local only goes when the scope does.
+        let source = "let v = marker(); for i in 0..500 { v = [v]; } 0";
+        let (dropped, result) = marked(source);
+        assert_eq!(result.unwrap(), Value::from(0));
+        assert!(dropped.load(Ordering::SeqCst), "the scope is gone before `execute` can commit");
+    }
+
+    #[test]
+    fn locals_are_dropped_before_an_error_is_handed_back_for_rollback() {
+        let (dropped, result) = marked("let v = marker(); throw 1;");
+        assert!(result.is_err());
+        assert!(dropped.load(Ordering::SeqCst), "the scope is gone before `run` rolls back");
     }
 }
