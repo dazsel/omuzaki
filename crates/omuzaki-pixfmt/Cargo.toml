@@ -9,6 +9,8 @@ license.workspace = true
 repository.workspace = true
 
 [package.metadata.omuzaki]
+kind = "Lib"
+summary = "camera pixel formats to packed RGB8 (PF-01): NV12, YUY2, BGRA and strided RGB in Q14 integer maths (BT.601 or BT.709, limited or full range, nearest-neighbour chroma) and MJPG through `zune-jpeg`, written into a caller buffer; safe Rust, no allocation per raw frame; no `omuzaki-*` dependencies, so the camera, the tracker and the UI preview share it"
 layer = "lib"
 
 [dependencies]

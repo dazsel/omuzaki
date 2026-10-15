@@ -12,7 +12,9 @@ pub mod measure;
 pub mod poses;
 pub mod retarget;
 pub mod score_templates;
+pub mod triggers;
 
 pub use animator::{BusAnimator, BusAnimatorParams};
+pub use triggers::{MAX_TRIGGERS, TriggerError, TriggerFades, TriggerMode, TriggerSlot, Triggers, expression_slot};
 
 omuzaki_core::define_link!();
