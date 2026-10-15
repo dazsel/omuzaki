@@ -4037,6 +4037,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-stream"
+version = "0.0.0"
+dependencies = [
+ "bytes",
+ "criterion",
+ "hound",
+ "image",
+ "omuzaki-audio-api",
+ "omuzaki-core",
+ "omuzaki-ops-api",
+ "omuzaki-render-api",
+ "omuzaki-stream-api",
+ "proptest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "omuzaki-stream-api"
 version = "0.0.0"
 dependencies = [
