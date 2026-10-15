@@ -158,18 +158,19 @@ fn a_file_changed_into_broken_toml_is_reported_as_a_syntax_error() {
 }
 
 #[test]
-fn a_replaced_file_leaves_nothing_behind_in_the_project() {
+fn a_replaced_file_is_retained_in_the_replaced_folder_until_it_is_old() {
     let tmp = folder();
     let mut project = Project::open(tmp.path()).unwrap();
     edit_blend(&mut project, 0.5, 0.9);
     project.save().unwrap();
-    // The displaced bytes were the last-known text, so no copy of them is kept.
+    // The displaced bytes were the last-known text, kept (with their hash) in case an editor still writes to them.
     let files: Vec<_> = snapshot(tmp.path())
         .into_iter()
         .map(|(name, _)| name)
         .filter(|n| n.starts_with(".omuzaki/replaced/"))
         .collect();
-    assert_eq!(files, Vec::<String>::new());
+    assert_eq!(files.len(), 1, "{files:?}");
+    assert!(files[0].contains("face.toml.") && files[0].contains(".retained-"), "{files:?}");
 }
 
 /// The destination never goes missing during a replacement, so a reader opening the project while it is saved always

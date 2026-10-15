@@ -337,6 +337,17 @@ The keeper applies durable entries to its shadow `Project` and writes the files:
   functions of memory, and the "changed on disk" check is one hash comparison before a file is replaced: a file
   edited outside Omuzaki is never overwritten; the banner offers to read it back in through an ordinary op
   (`project.reload`), so the change is journalled and undoable.
+- **Replacing a file keeps the displaced one for a while.** A save puts a hard link to the target in
+  `.omuzaki/replaced/` before it swaps the new file in (`RENAME_EXCHANGE` on Linux; a plain rename elsewhere), and
+  refuses if the displaced bytes are not the expected ones. An editor may still hold the original file open and write
+  into it after that check, which no hash can see, so on success the link is kept as
+  `<name>.<time>-<pid>-<n>.retained-<hash>` (same file system, no copy; a file system without links gets a verified
+  copy). A later save of the same file, at most once a minute per process, deletes at most 64 such entries, and only those older than 10 minutes whose
+  bytes still hash to the recorded value; an entry that was written to is never deleted automatically. The
+  residual window: an editor that keeps the old file open for more than ten minutes and then writes into it loses
+  that write. On Windows an editor with the file open usually makes the replace fail with a sharing violation; the
+  save reports that error and loses nothing. Nothing in this rule depends on inodes, but the atomic swap is
+  Linux-only and CI covers only Linux. The folder is not part of the tree and is not read back.
 - **Open transactions are saved too.** The files show what the app shows. A snapshot records which transactions are
   open, so recovery can still roll them back (8.3).
 - **Durable before `close`.** Before the keeper asks the writer for the `close` record, it syncs the folders it renamed

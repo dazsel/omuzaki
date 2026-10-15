@@ -192,6 +192,15 @@ fn refuse_links(dir: &Path, path: &Path) -> Result<(), StoreError> {
 /// A file that was replaced as expected leaves nothing here: its bytes are the text this project last read or wrote.
 const REPLACED_DIR: &str = ".omuzaki/replaced";
 
+/// How long a retained file that nobody wrote to is kept (nanoseconds). See [`replace_checked`].
+const RETAIN_UNCHANGED: u128 = 10 * 60 * 1_000_000_000;
+
+/// The most retained files one save deletes, so a folder that has piled up is cleared over several saves.
+const PRUNE_PER_CALL: usize = 64;
+
+/// Marks a retained file's name; the file's hash follows it.
+const RETAINED: &str = ".retained-";
+
 /// What [`replace_checked`] did.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Replace {
@@ -226,15 +235,17 @@ pub(crate) enum Replace {
 /// target) is placed with a no-replace `hard_link`, or where links fail a no-replace rename (`RENAME_NOREPLACE` on
 /// Linux; an error if that is unsupported), so a file that appeared is never replaced.
 ///
-/// **Known limit (the Director's ruling on #1468: the backup is deleted after a clean save).** Once the displaced file
-/// has been verified as the last-known text, both of its names are deleted. An editor that still holds the *original*
-/// file open (not one that saves by rename, which is safe) and writes through that handle after the verification and
-/// before the deletion, or any time later, writes into a file nobody can reach, and the save has already reported
-/// success. Another hash check would only move that window. Closing it needs the displaced file kept for a while, and
-/// that was ruled out because it leaves files in the project folder after every save. A write made before the check
-/// is never lost: the check fails, the swap is undone and our file is kept. On Windows an editor that holds the file
-/// open usually makes the replace fail with a sharing violation, which is returned as an error and loses nothing; the
-/// swap itself is Linux-only.
+/// **Retention (the Director's ruling on #1468).** An editor may still hold the original file open and write into it
+/// after the displaced bytes were verified, and no hash check can see that. So the displaced file is not deleted: its
+/// backup (the same inode, for a hard link) stays in the replaced folder as `<name>.retained-<hash>`, the hash being
+/// that of the verified bytes. A save then deletes (at most once a minute per process, and at most [`PRUNE_PER_CALL`] per call) only retained
+/// files of
+/// the same target that are older than [`RETAIN_UNCHANGED`] (10 minutes) and still hash to the recorded value. A
+/// retained file that was written to is never deleted by a save. The residual window: an editor that keeps the old
+/// file open for over ten minutes and then writes into it loses that write. A write made before the check is never
+/// lost: the check fails, the swap is undone and our file is kept. On Windows the swap is not available (a plain
+/// rename is used), and an editor that holds the file open usually makes that rename fail with a sharing violation,
+/// which is returned as an error and loses nothing; the retention rename is by name only and assumes no inodes.
 ///
 /// The target exists at every instant of a replacement, so a crash leaves the old file or the new one, plus at worst
 /// a backup, the hidden temporary file, or both.
@@ -284,10 +295,18 @@ fn replace_checked_with(
         }
         Backup::Held(held) => {
             let outcome = replace_held(dir, path, &tmp, &held, expected, hooks);
-            // Deleted whatever happened. After a placement the displaced bytes were verified to be the last-known
-            // text, so nothing the person wrote is lost; after a refusal or an error the target is as it was (or the
-            // editor's) and any displaced file is kept separately by `preserve`.
-            drop(fs::remove_file(&held.path));
+            if matches!(outcome, Ok(Replace::Placed)) {
+                // The displaced file was verified as the last-known text, but an editor may still hold it open and
+                // write into it later, so the name is kept (with its hash) and pruned only once old and unchanged.
+                retain(&held);
+                if prune_due(now_nanos()) {
+                    prune(dir, path, now_nanos());
+                }
+            } else {
+                // After a refusal or an error the target is as it was (or the editor's) and any displaced file is
+                // kept separately by `preserve`.
+                drop(fs::remove_file(&held.path));
+            }
             outcome
         }
     };
@@ -318,8 +337,8 @@ fn replace_held(
     }
     (hooks.swapped)();
     // The file we displaced is at `tmp`, and it must still hold the bytes that were hashed. A hard-linked backup is
-    // the same file, so it keeps every byte and the name can go. A copy does not follow an editor that still holds
-    // the original open, so that file is kept as well. An in-place edit after the backup was hashed fails the check
+    // the same file, which the caller retains, so the temporary name can go. A copy does not follow an editor that
+    // still holds the original open, so that file is kept as well. An in-place edit after the backup was hashed fails the check
     // (even for a link, whose inode is unchanged) and falls through to the undo below.
     if held.is_file_at(tmp) {
         if held.linked.is_some() {
@@ -340,6 +359,67 @@ fn replace_held(
     // it later, through a handle no hash check can see. It is therefore always kept, even if it still reads as ours.
     preserve(dir, tmp)?;
     Ok(Replace::Refused)
+}
+
+/// The current time in nanoseconds since the epoch, as the names in the replaced folder record it.
+fn now_nanos() -> u128 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_nanos())
+}
+
+/// True at most once a minute per process, so a run of fast saves doesn't scan the replaced folder on every one. A
+/// file that is pruned late is still pruned: the next save of it after the minute does it.
+fn prune_due(now: u128) -> bool {
+    static LAST: AtomicU64 = AtomicU64::new(0);
+    const EVERY: u64 = 60;
+    let secs = u64::try_from(now / 1_000_000_000).unwrap_or(u64::MAX);
+    let last = LAST.load(Ordering::Relaxed);
+    secs >= last.saturating_add(EVERY)
+        && LAST.compare_exchange(last, secs, Ordering::Relaxed, Ordering::Relaxed).is_ok()
+}
+
+/// Renames the backup of a placed file to `<backup>.retained-<hash>`, keeping it where it is. For a hard link that is
+/// the displaced inode itself. Best effort: if the rename fails the backup keeps its plain name, which is still kept.
+fn retain(held: &Held) {
+    let mut name = held.path.clone().into_os_string();
+    name.push(format!("{RETAINED}{}", held.found));
+    drop(fs::rename(&held.path, PathBuf::from(name)));
+}
+
+/// Deletes retained files of `path` that are older than [`RETAIN_UNCHANGED`] at `now` and still hold the bytes they
+/// were retained with, at most [`PRUNE_PER_CALL`] of them. A file that was written to since, or whose name doesn't
+/// parse, is never touched. Best effort: nothing here fails a save.
+fn prune(dir: &Path, path: &Path, now: u128) {
+    let Ok(below) = path.strip_prefix(dir) else { return };
+    let (Some(parent), Some(file)) = (below.parent(), below.file_name().and_then(|n| n.to_str())) else { return };
+    let folder = dir.join(REPLACED_DIR).join(parent);
+    let Ok(entries) = fs::read_dir(&folder) else { return };
+    let mut names: Vec<String> = entries.filter_map(|e| e.ok()?.file_name().into_string().ok()).collect();
+    names.sort_unstable();
+    let mut deleted = 0;
+    for name in names {
+        if deleted == PRUNE_PER_CALL {
+            break;
+        }
+        // `<file>.<nanos>-<pid>-<n>.retained-<hash>`
+        let Some(rest) = name.strip_prefix(file).and_then(|r| r.strip_prefix('.')) else { continue };
+        let Some((stamp, hash)) = rest.split_once(RETAINED) else { continue };
+        let (Some(nanos), Ok(hash)) =
+            (stamp.split('-').next().and_then(|n| n.parse::<u128>().ok()), hash.parse::<ContentHash>())
+        else {
+            continue;
+        };
+        if now.saturating_sub(nanos) < RETAIN_UNCHANGED {
+            continue;
+        }
+        let entry = folder.join(&name);
+        let plain = fs::symlink_metadata(&entry).is_ok_and(|m| m.is_file());
+        if plain
+            && fs::read(&entry).is_ok_and(|bytes| ContentHash::of(&bytes) == hash)
+            && fs::remove_file(&entry).is_ok()
+        {
+            deleted += 1;
+        }
+    }
 }
 
 /// A backup of the file at the target.
@@ -783,7 +863,7 @@ mod tests {
     }
 
     #[test]
-    fn replace_checked_replaces_and_leaves_no_old_file_or_temporary_file() {
+    fn replace_checked_replaces_and_retains_the_old_file_but_no_temporary_file() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("a/b.toml");
         assert_eq!(replace_checked(tmp.path(), &path, "x = 1\n", None).unwrap(), Replace::Placed);
@@ -792,7 +872,60 @@ mod tests {
         assert_eq!(fs::read_to_string(&path).unwrap(), "x = 2\n");
         let names: Vec<_> = fs::read_dir(path.parent().unwrap()).unwrap().map(|e| e.unwrap().file_name()).collect();
         assert_eq!(names, ["b.toml"]);
-        assert_eq!(kept(tmp.path()), []);
+        let items = kept(tmp.path());
+        assert_eq!(texts(&items), ["x = 1\n"]);
+        assert!(items[0].0.contains(&format!("{RETAINED}{}", ContentHash::of(b"x = 1\n"))), "{items:?}");
+    }
+
+    /// Makes a retained file `age` nanoseconds old by writing it under a name stamped that long before `now`.
+    fn retained(dir: &Path, name: &str, text: &str, recorded: &str, stamp: u128) -> PathBuf {
+        let folder = dir.join(REPLACED_DIR);
+        fs::create_dir_all(&folder).unwrap();
+        let path = folder.join(format!("{name}.{stamp}-1-0{RETAINED}{}", ContentHash::of(recorded.as_bytes())));
+        fs::write(&path, text).unwrap();
+        path
+    }
+
+    #[test]
+    fn only_old_unchanged_retained_files_are_pruned_and_never_more_than_the_bound() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let target = dir.join("f.toml");
+        let now = 100 * RETAIN_UNCHANGED;
+        let old = now - RETAIN_UNCHANGED;
+        let old_unchanged = retained(dir, "f.toml", "a = 1\n", "a = 1\n", old);
+        let young_unchanged = retained(dir, "f.toml", "a = 1\n", "a = 1\n", old + 1);
+        let old_written_to = retained(dir, "f.toml", "a = 1\nplus an edit\n", "a = 1\n", old - 5);
+        let other_file = retained(dir, "g.toml", "a = 1\n", "a = 1\n", 0);
+        prune(dir, &target, now);
+        assert!(!old_unchanged.exists());
+        assert!(young_unchanged.exists() && old_written_to.exists() && other_file.exists());
+
+        let many: Vec<_> = (0..PRUNE_PER_CALL + 6).map(|i| retained(dir, "f.toml", "b\n", "b\n", i as u128)).collect();
+        prune(dir, &target, now);
+        assert_eq!(many.iter().filter(|p| !p.exists()).count(), PRUNE_PER_CALL);
+        prune(dir, &target, now);
+        assert!(many.iter().all(|p| !p.exists()));
+        assert!(young_unchanged.exists() && old_written_to.exists());
+    }
+
+    /// The write the finding was about: an editor holds the original open, the save places its text, and the editor
+    /// then writes. The write lands in the retained file, which a later save does not delete.
+    #[cfg(unix)]
+    #[test]
+    fn a_write_through_a_handle_after_the_check_survives_in_the_retained_file() {
+        use std::os::unix::fs::FileExt;
+        let tmp = TempDir::new().unwrap();
+        let (dir, (path, expected)) = (tmp.path(), with_file(tmp.path()));
+        let handle = OpenOptions::new().write(true).open(&path).unwrap();
+        assert_eq!(replace_checked(dir, &path, "ours = 3\n", expected).unwrap(), Replace::Placed);
+        handle.write_at(b"late = 9\n", 0).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "ours = 3\n");
+        let items = kept(dir);
+        assert_eq!(texts(&items), ["late = 9\n"]);
+        // Even long after, a save prunes only unchanged files, and this one no longer hashes as recorded.
+        prune(dir, &path, now_nanos() + 100 * RETAIN_UNCHANGED);
+        assert_eq!(texts(&kept(dir)), ["late = 9\n"]);
     }
 
     const MINE: &str = "mine = 1\n";
@@ -905,7 +1038,7 @@ mod tests {
         let items = kept(dir);
         let mut all = texts(&items);
         all.sort_unstable();
-        assert_eq!(all, ["displaced by a crash = 5\n"]);
+        assert_eq!(all, ["displaced by a crash = 5\n", MINE]);
         assert!(no_temporary_file(dir));
     }
 
