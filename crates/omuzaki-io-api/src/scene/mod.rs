@@ -35,9 +35,9 @@ use serde::{Deserialize, Serialize};
 
 pub use avatar::{
     AimAxis, Avatar, Collider, ColliderGroup, ColliderShape, ColorBind, ColorBindKind, ConstraintKind, CustomName,
-    CustomNameError, Expression, ExpressionName, FirstPerson, FirstPersonFlag, LookAt, LookAtKind, MeshAnnotation,
-    MorphBind, NodeConstraint, Override, PresetExpression, RangeMap, RollAxis, SpringBones, SpringChain, SpringJoint,
-    UvBind,
+    CustomNameError, Expression, ExpressionName, FirstPerson, FirstPersonFlag, JointLimit, LookAt, LookAtKind,
+    MeshAnnotation, MorphBind, NodeConstraint, Override, PresetExpression, RangeMap, RollAxis, SpringBones,
+    SpringChain, SpringJoint, UvBind,
 };
 pub use geometry::{ExtraAttribute, Mesh, MeshData, MorphTarget, Primitive, Skin};
 pub use humanoid::{BoneSpec, HUMAN_BONES, HumanBoneName, Humanoid, UnknownBone};
