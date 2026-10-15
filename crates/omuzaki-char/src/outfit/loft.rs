@@ -35,6 +35,10 @@ pub const MIN_RADIUS: f64 = 1e-4;
 pub const BLEND_HALF_WIDTH: f64 = 0.08;
 /// The most rings or segments a loft may have.
 pub const MAX_LOFT_SIZE: usize = 512;
+/// Rings sampled along a region to find where a point's section plane is ([`Surface::project`]).
+const PROJECT_SAMPLES: usize = 64;
+/// Bisections that refine it: far below a micrometre on any region.
+const PROJECT_BISECTIONS: usize = 40;
 /// The step of the finite differences that give a surface's tangents, in `t` and in radians.
 const STEP: f64 = 1e-4;
 
@@ -247,6 +251,17 @@ pub struct SurfacePoint {
     pub around: DVec3,
 }
 
+/// Where a point lies over a [`Surface`] ([`Surface::project`]).
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Projection {
+    /// Where along the region.
+    pub t: f64,
+    /// The angle round it.
+    pub phi: f64,
+    /// How far outside the plain ring, metres, along the ray from its centre (negative inside).
+    pub outside: f64,
+}
+
 /// One region of a fit wrapped by a garment: rings of `region` pushed out by `offset`, cut with `exponent`, optionally
 /// reshaped. Every point of a garment's surface, its lofted mesh and the trims on it come from here, so a trim placed by
 /// `(t, phi)` sits on the mesh.
@@ -357,6 +372,49 @@ impl Surface {
             normal = -normal;
         }
         Ok(SurfacePoint { point, normal, along, around })
+    }
+
+    /// Where `p` lies over the surface: of the places along the region whose section plane passes through `p`, the
+    /// one where `p` is nearest the plain ring, with the angle `p` is at in that plane and how far outside the ring it
+    /// is along the ray from the centre (negative inside). `None` if no section plane passes through `p`. The garment's
+    /// own shaping is not taken into account.
+    ///
+    /// # Errors
+    /// As [`ring_at`], for a section the region lacks.
+    #[allow(clippy::many_single_char_names)] // a point, two rings, their heights: the geometry's own names
+    pub fn project(&self, p: DVec3) -> Result<Option<Projection>, GarmentError> {
+        let height = |ring: &Ring| (p - ring.centre).dot(ring.axis);
+        let mut rings = Vec::with_capacity(PROJECT_SAMPLES + 1);
+        for k in 0..=PROJECT_SAMPLES {
+            rings.push(self.ring(crate::kit::curve::fraction(k, PROJECT_SAMPLES))?);
+        }
+        let mut best: Option<Projection> = None;
+        for pair in rings.windows(2) {
+            let (a, b) = (&pair[0], &pair[1]);
+            let (ha, hb) = (height(a), height(b));
+            if ha.signum() == hb.signum() && ha != 0.0 {
+                continue;
+            }
+            let (mut lo, mut hi) = (a.t, b.t);
+            for _ in 0..PROJECT_BISECTIONS {
+                let mid = f64::midpoint(lo, hi);
+                if height(&self.ring(mid)?).signum() == ha.signum() {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+            let t = f64::midpoint(lo, hi);
+            let ring = self.ring(t)?;
+            let d = p - ring.centre;
+            let q = DVec2::new(d.dot(ring.across), d.dot(ring.through));
+            let phi = (q.x / ring.radii.x).atan2(q.y / ring.radii.y);
+            let outside = q.length() - ring.local(phi).length();
+            if best.is_none_or(|b| outside.abs() < b.outside.abs()) {
+                best = Some(Projection { t, phi, outside });
+            }
+        }
+        Ok(best)
     }
 
     /// The surface between `t0` and `t1` as a grid of `rings` rows and `segs` segments round a full turn (the last

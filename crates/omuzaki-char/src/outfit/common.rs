@@ -642,6 +642,11 @@ impl GarmentOutput {
         Ok(id)
     }
 
+    /// Declares the class of `material` for the look (metal for a gold button; a material not declared is inferred).
+    pub fn classify(&mut self, material: &MaterialName, class: omuzaki_char_api::MaterialClass) {
+        self.output.material_classes.push((material.clone(), class));
+    }
+
     /// Adds a texture named `<part>-<name>`, and returns its name.
     ///
     /// # Errors
