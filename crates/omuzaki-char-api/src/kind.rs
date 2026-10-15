@@ -467,6 +467,13 @@ crate::fact! {
 }
 
 crate::register_fact!(HeadFact);
+crate::register_fact_probe!(HeadFact, same_head_debug);
+
+/// Whether two head surfaces print the same: a trait object has no equality, so the palette check compares `Debug` text
+/// (a `Debug` that hides data is under-checked).
+fn same_head_debug(a: &Arc<dyn HeadSurface>, b: &Arc<dyn HeadSurface>) -> bool {
+    format!("{a:?}") == format!("{b:?}")
+}
 
 crate::fact! {
     /// Where painted face layers land on the head (published by `head`); the last part that publishes one wins.
@@ -474,6 +481,7 @@ crate::fact! {
 }
 
 crate::register_fact!(FaceFact);
+crate::register_fact_probe!(FaceFact);
 
 crate::fact! {
     /// Anchors for accessories, keyed by the publishing part and the anchor name.
@@ -481,6 +489,7 @@ crate::fact! {
 }
 
 crate::register_fact!(AnchorsFact);
+crate::register_fact_probe!(AnchorsFact);
 
 crate::fact! {
     /// Collider groups later parts may use ([`BuildCtx::colliders`]): hair and cloth keep out of the head and
@@ -490,6 +499,7 @@ crate::fact! {
 }
 
 crate::register_fact!(CollidersFact);
+crate::register_fact_probe!(CollidersFact);
 
 /// A part's outer envelope, for garments built over it ([`FitFact`]).
 #[derive(Clone, Debug, Default)]
@@ -530,6 +540,12 @@ impl Fact for FitFact {
 }
 
 crate::register_fact!(FitFact);
+crate::register_fact_probe!(FitFact, same_fit_debug);
+
+/// Whether two fit surfaces print the same, as for [`same_head_debug`].
+fn same_fit_debug(a: &Arc<dyn BodyFit>, b: &Arc<dyn BodyFit>) -> bool {
+    format!("{a:?}") == format!("{b:?}")
+}
 
 /// The character's real-world stature, published by the body part (nothing for a body authored in metres). The build
 /// scales the body and the head by [`Stature::scale`] before any later part is built
@@ -553,6 +569,7 @@ impl Fact for StatureFact {
 }
 
 crate::register_fact!(StatureFact);
+crate::register_fact_probe!(StatureFact);
 
 /// How far two bind poses may differ, per quaternion component and per axis of the hips offset, and still be the same
 /// pose: the rounding of two parts that each computed it.
