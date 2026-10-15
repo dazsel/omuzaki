@@ -3,7 +3,9 @@
 use std::path::{Path, PathBuf};
 
 use omuzaki_git_api::error::GitError;
-use omuzaki_git_api::paths::{literal_pathspec, validate_commit_paths};
+use omuzaki_git_api::paths::{
+    PRIVATE_EXCLUDES, commit_pathspecs, literal_pathspec, project_pathspecs, validate_commit_paths,
+};
 
 fn bad(path: &str) -> Result<(), GitError> {
     Err(GitError::BadPath { path: path.to_owned() })
@@ -52,4 +54,23 @@ fn an_empty_list_is_nothing_to_commit() {
 fn magic_stays_literal() {
     assert_eq!(literal_pathspec(Path::new(":(top)*")), ":(literal):(top)*");
     assert_eq!(literal_pathspec(Path::new("dir/a.txt")), ":(literal)dir/a.txt");
+}
+
+#[test]
+fn every_commit_selection_carries_the_private_exclusion() {
+    let tail = PRIVATE_EXCLUDES.map(str::to_owned);
+    assert_eq!(commit_pathspecs(&["."]), Ok([vec![":(literal).".to_owned()], tail.to_vec()].concat()));
+    assert_eq!(commit_pathspecs(&["./"]).map(|specs| specs[1..].to_vec()), Ok(tail.to_vec()));
+    assert_eq!(
+        commit_pathspecs(&["a.txt", "dir"]),
+        Ok([vec![":(literal)a.txt".to_owned(), ":(literal)dir".to_owned()], tail.to_vec()].concat())
+    );
+}
+
+#[test]
+fn reads_are_scoped_to_the_folder_without_private_state() {
+    assert_eq!(
+        project_pathspecs(),
+        [vec![":(literal).".to_owned()], PRIVATE_EXCLUDES.map(str::to_owned).to_vec()].concat()
+    );
 }
