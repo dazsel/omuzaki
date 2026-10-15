@@ -388,11 +388,12 @@ writes them declares next to its code with `register_derived_path!("<glob>")` in
   session = "5f0c…"            # the session it was taken in
   created = 2026-10-12T14:32:05Z
   trigger = "auto"             # session, auto, close, pre-migration, pre-restore, pre-recovery,
-                               # pre-agent-session, manual or named
+                               # pre-agent-session, manual, named or take
   label = "Hair › bangs 9 locks"   # the last transaction's label
   history = "…"                # the history export at lsn (local only; not mirrored by default)
   thumbnail = "…" # optional: the last transaction's thumbnail, for the restore preview
   name = "before the oval face"    # named versions only (VC-01)
+  stem = "…"                   # takes only (ADR 0052): the take's stem; never `name`, which pins a named version
   keep_until = 2027-01-10      # pins: pre-migration +90 days, pre-recovery +30 days; absent: retention decides
   [verified]
   at = 2026-10-12T14:32:06Z
@@ -442,6 +443,7 @@ manifest's `assets` list, the commit view's units and missing blobs, the push ad
 | recovery | raw, before writing anything | pinned 30 days |
 | bulk agent session | on request (`backup.snapshot`) | the session controls call it (VC-09) |
 | named version | on request | pinned until the name is removed (VC-01) |
+| take | the state a recording or replay save pins, at the take's start (recording) or its save (replay), ADR 0052 | pinned until the take is deleted; the take's stem is `stem`, not `name` |
 
 VC-09's "hourly" and "daily" are retention buckets over these: the 10-minute cadence guarantees at least one
 snapshot in every hour with changes.
