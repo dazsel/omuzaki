@@ -2,7 +2,7 @@
 //! to the prototype's outline. Everything is synthetic.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
-#![allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+#![allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 
 use omuzaki_char::hair::compile::{
     Dispatch, GroupGenerator, HairGenCtx, UnitStream, clumps_in, compile_groups, is_bilateral,
@@ -220,8 +220,8 @@ fn a_mirrored_bangs_group_compiles_to_clump_count_clumps() {
     assert_eq!(clumps_in(&group, &Dispatch), entries[0].group.clumps.len());
 }
 
-/// The smallest distance from the head to any vertex, or any triangle or edge midpoint, of the lock's tube
-/// (negative: inside).
+/// The smallest distance from the head to the lock's tube surface (negative: inside), sampled at every vertex and on a
+/// barycentric grid of spacing [`bangs::SAMPLE_SPACING`] over every triangle, as the generator measures it.
 fn surface_gap(head: &dyn HeadSurface, clump: &HairClump) -> f32 {
     let centre = head.centre();
     let gap = |p: Vec3| (p - centre).length() - head.radius((p - centre).normalize());
@@ -229,12 +229,17 @@ fn surface_gap(head: &dyn HeadSurface, clump: &HairClump) -> f32 {
     let polar = vec![0.5; clump.rest.len()];
     let look = TubeLook { seed: 0.5, shade: 1.0, polar: &polar, tint: None, flip: 1.0 };
     mesh.push(&clump.rest, &clump.width, &clump.thickness, |p| (p - centre).normalize_or_zero(), &look).unwrap();
-    let m = mesh.finish().unwrap();
+    let tube = mesh.finish().unwrap();
     let mut worst = f32::MAX;
-    for t in m.indices.chunks(3) {
-        let [a, b, c] = [0, 1, 2].map(|k| m.positions[t[k] as usize]);
-        for p in [a, b, c, (a + b + c) / 3.0, (a + b) / 2.0, (b + c) / 2.0, (c + a) / 2.0] {
-            worst = worst.min(gap(p));
+    for tri in tube.indices.chunks(3) {
+        let [p0, p1, p2] = [0, 1, 2].map(|k| tube.positions[tri[k] as usize]);
+        let longest = (p1 - p0).length().max((p2 - p1).length()).max((p0 - p2).length());
+        let steps = ((longest / bangs::SAMPLE_SPACING as f32).ceil() as usize).max(1);
+        for first in 0..=steps {
+            for second in 0..=(steps - first) {
+                let p = p0 + (p1 - p0) * (first as f32 / steps as f32) + (p2 - p0) * (second as f32 / steps as f32);
+                worst = worst.min(gap(p));
+            }
         }
     }
     worst
@@ -269,6 +274,29 @@ impl HeadSurface for Ball {
     }
     fn radius(&self, _dir: Vec3) -> f32 {
         0.11
+    }
+}
+
+/// The wide under-layer that put the inside of a triangle into the ellipsoid between the old samples.
+#[test]
+fn the_inside_of_a_wide_triangle_clears_the_head() {
+    let under = BangLayer {
+        count: 2,
+        spread_deg: 5.0,
+        width: 0.3,
+        hook_deg: -90.0,
+        tip_heights: vec![0.1],
+        root_offset: 0.0,
+        tip_offset: 0.0,
+        ..BangLayer::default()
+    };
+    let g = BangsGen { layers: vec![under, BangLayer::default()], wisps: vec![], sweep_deg: 90.0 };
+    let (id, dynamics, palette) = (GroupId::new("bangs").unwrap(), Dynamics::default(), Palette::default());
+    let mut stream = Counting::default();
+    let mut ctx = HairGenCtx::new(&Egg, &palette, Quality::Live, &id, &dynamics, &mut stream);
+    for (n, clump) in bangs::compile(&g, &mut ctx).clumps.iter().enumerate() {
+        let gap = surface_gap(&Egg, clump);
+        assert!(gap >= 0.0, "clump {n} is {gap} m inside");
     }
 }
 

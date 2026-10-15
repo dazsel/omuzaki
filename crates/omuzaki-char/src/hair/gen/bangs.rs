@@ -17,7 +17,7 @@
 //! stream is untouched.
 //!
 //! **Clearance.** After the resample, the lock's tube (built as the mesh builder builds it) is measured against the head
-//! at every ring vertex and at the middle of every edge and triangle, and the rest points are pushed out along the line
+//! at every ring vertex and on a grid over every triangle ([`SAMPLE_SPACING`]), and the rest points are pushed out along the line
 //! from the head's centre until all stand at least 1 mm ([`SURFACE_CLEARANCE`]) off it; the spline can cut inside the
 //! head where a large hook or sweep turns the lock sharply. The offsets are limited at the ends the same way.
 //!
@@ -89,6 +89,12 @@ const MIN_OFFSET: f64 = THICKNESS.base * 0.5 + SURFACE_CLEARANCE;
 pub const SURFACE_CLEARANCE: f64 = 0.001;
 /// How many times the clearance pass re-measures the tube and pushes it out.
 const CLEARANCE_PASSES: usize = 16;
+/// Spacing of the clearance samples over a triangle of the tube, metres. A chord of this length over a surface of
+/// curvature radius `R` sags `s^2 / (8 R)` below it; with the smallest radius of curvature a head has here, 50 mm (the
+/// ellipsoid test head's is 58 mm), that is `0.015^2 / (8 x 0.05)` = 0.56 mm, under the 1 mm [`SURFACE_CLEARANCE`].
+pub const SAMPLE_SPACING: f64 = 0.015;
+/// Most grid steps along a triangle's longest side (a triangle of the widest lock, 0.3 m across, needs about 10).
+const MAX_STEPS: usize = 64;
 /// Thickness of every lock (the prototype's `0.005 + 0.005 sin(pi t)`).
 pub const THICKNESS: Bulge = Bulge { base: 0.005, swell: 0.005 };
 /// Width fit: the outline's width at the root, metres, including [`FLOOR`].
@@ -243,12 +249,15 @@ fn rest_points(g: &BangsGen, head: &dyn HeadSurface, lock: &Lock) -> [Vec3; REST
 }
 
 /// Pushes the rest points out along the lines from the head's centre until the lock's tube, as [`tube_vertices`] builds
-/// it, stands at least [`SURFACE_CLEARANCE`] off the head at every ring vertex and at the middle of every edge and
-/// triangle of its surface. The tube is measured in the mesh builder's own frame, so the cross-section's inward reach
-/// (it is not along the radius where the lock turns) and the head's curve between rings are both included. The
-/// Catmull-Rom between control points can cut inside the head where a large hook or sweep turns the lock sharply. A
-/// ring that is already clear is not moved, so the points keep their order. Runs [`CLEARANCE_PASSES`] times at most: a
-/// push changes the frames of its neighbours, so the passes converge on a clear tube rather than reach it in one step.
+/// it, stands at least [`SURFACE_CLEARANCE`] off the head at every sample of its surface: all ring vertices and a
+/// barycentric grid over every triangle ([`SAMPLE_SPACING`] 15 mm). Between samples a flat triangle sags below a surface
+/// of curvature radius `R` by at most `s^2 / (8 R)`; for the smallest radius a head has here, 50 mm, that is
+/// `0.015^2 / 0.4` = 0.56 mm, under the 1 mm target, so a tube clear at the samples is clear everywhere. The tube is
+/// measured in the mesh builder's own frame, so the cross-section's inward reach (it is not along the radius where the
+/// lock turns) and the head's curve between rings are both included. The Catmull-Rom between control points can cut
+/// inside the head where a large hook or sweep turns the lock sharply. A ring that is already clear is not moved, so the
+/// points keep their order. Runs [`CLEARANCE_PASSES`] times at most: a push changes the frames of its neighbours, so
+/// the passes converge on a clear tube rather than reach it in one step.
 #[allow(clippy::cast_possible_truncation)] // a millimetre fits an f32
 fn keep_clear(head: &dyn HeadSurface, width: Taper, rest: &mut [Vec3; REST_POINTS]) {
     let centre = head.centre();
@@ -257,7 +266,7 @@ fn keep_clear(head: &dyn HeadSurface, width: Taper, rest: &mut [Vec3; REST_POINT
         let d = p - centre;
         d.length() - head.radius(d.normalize_or_zero())
     };
-    let target = SURFACE_CLEARANCE as f32;
+    let (target, spacing) = (SURFACE_CLEARANCE as f32, SAMPLE_SPACING as f32);
     let mut positions = [Vec3::ZERO; REST_POINTS * RING];
     let mut normals = [Vec3::ZERO; REST_POINTS * RING];
     for _ in 0..CLEARANCE_PASSES {
@@ -269,20 +278,13 @@ fn keep_clear(head: &dyn HeadSurface, width: Taper, rest: &mut [Vec3; REST_POINT
             for k in 0..RING {
                 let at = |r: usize, k: usize| positions[r * RING + k % RING];
                 let (a, b, c, d) = (at(ring, k), at(ring, k + 1), at(ring + 1, k), at(ring + 1, k + 1));
-                let samples = [
-                    a,
-                    b,
-                    c,
-                    d,
-                    (a + b) / 2.0,
-                    (c + d) / 2.0,
-                    (a + c) / 2.0,
-                    (b + d) / 2.0,
-                    (b + c) / 2.0,
-                    (a + b + c) / 3.0,
-                    (b + c + d) / 3.0,
-                ];
-                let worst = samples.iter().map(|p| target - gap(*p)).fold(f32::MIN, f32::max);
+                // The two triangles of the quad, as `tube_indices` winds them.
+                let worst = triangle_deficit([a, c, b], spacing, target, &gap).max(triangle_deficit(
+                    [b, c, d],
+                    spacing,
+                    target,
+                    &gap,
+                ));
                 deficit[ring] = deficit[ring].max(worst);
                 deficit[ring + 1] = deficit[ring + 1].max(worst);
             }
@@ -296,6 +298,24 @@ fn keep_clear(head: &dyn HeadSurface, width: Taper, rest: &mut [Vec3; REST_POINT
             }
         }
     }
+}
+
+/// How far the worst of the samples over the triangle `tri` stands short of `target` off the head: its three corners
+/// and a barycentric grid whose spacing is at most `spacing` (so the points between samples sag under 1 mm, see
+/// [`SAMPLE_SPACING`]). Negative when every sample clears it.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)] // a few dozen steps
+fn triangle_deficit(tri: [Vec3; 3], spacing: f32, target: f32, gap: &impl Fn(Vec3) -> f32) -> f32 {
+    let [p0, p1, p2] = tri;
+    let longest = (p1 - p0).length().max((p2 - p1).length()).max((p0 - p2).length());
+    let steps = ((longest / spacing).ceil() as usize).clamp(1, MAX_STEPS);
+    let mut worst = f32::MIN;
+    for first in 0..=steps {
+        for second in 0..=(steps - first) {
+            let p = p0 + (p1 - p0) * (first as f32 / steps as f32) + (p2 - p0) * (second as f32 / steps as f32);
+            worst = worst.max(target - gap(p));
+        }
+    }
+    worst
 }
 
 /// The control points of `lock`, root first. Allocates nothing.
