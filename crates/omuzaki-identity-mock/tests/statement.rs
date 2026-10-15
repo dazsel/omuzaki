@@ -36,7 +36,7 @@ fn a_two_key_statement_needs_both_keys_to_sign_the_same_body() {
     let held = check_statement(&[by_old.clone(), by_new.clone()], &trust);
     assert!(matches!(held, Check::Valid { trust: Trust::Trusted { .. }, .. }), "{held:?}");
 
-    assert!(matches!(check_statement(&[by_old.clone()], &trust), Check::Malformed(m) if m.contains("missing")));
+    assert!(matches!(check_statement(std::slice::from_ref(&by_old), &trust), Check::Malformed(m) if m.contains("missing")));
     assert!(matches!(check_statement(&[by_old.clone(), by_old.clone()], &trust), Check::Malformed(_)));
     let other = sign(&new, Domain::KeyStatement, &KeyStatement::rotate(new.key_id(), old.key_id()));
     assert!(matches!(check_statement(&[by_old, other], &trust), Check::Malformed(m) if m.contains("different")));
