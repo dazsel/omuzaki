@@ -9,7 +9,10 @@ use std::path::{Component, Path, PathBuf};
 
 use toml::{Table, Value};
 
-use super::Error;
+use super::{Error, wiring};
+
+/// The build-dependency that generates a crate's `link()` calls.
+const LINK_BUILD: &str = "omuzaki-link-build";
 
 /// One workspace member.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,6 +28,39 @@ pub struct Crate {
     pub deps: Vec<String>,
     /// Its binaries: name and root file relative to `dir`.
     pub bins: Vec<(String, PathBuf)>,
+    /// Whether its manifest sets `registers = true` under `[package.metadata.omuzaki]`: Apps generate a `link()` call
+    /// for it (ADR 0054 section 6).
+    pub registers: bool,
+    /// Whether its `link()` calls are generated from the `registers` flags of its dependencies and appear in no source
+    /// file: it lists `omuzaki-link-build`, its `build.rs` calls `emit` from `main`, and its library's `define_link!`
+    /// includes `link_calls.rs` (read as tokens, so a commented-out include does not count).
+    pub generates_links: bool,
+    /// Whether it lists `omuzaki-link-build` under `[build-dependencies]`, wired or not.
+    pub lists_link_build: bool,
+    /// The members it depends on optionally, by the name of the implicit feature that switches each on (the
+    /// dependency's key) and the package.
+    pub optional_deps: Vec<(String, String)>,
+    /// Every member it depends on under `[dependencies]`, optional or not, as declared.
+    pub dependencies: Vec<Dependency>,
+    /// Its `[features]`: each feature and what it lists.
+    pub features: Vec<(String, Vec<String>)>,
+    /// The optional dependencies some feature lists as `dep:<key>`, which removes their implicit feature.
+    pub dep_syntax: Vec<String>,
+}
+
+/// A member one crate depends on under `[dependencies]`, with what the declaration asks of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Dependency {
+    /// The key it is declared under: the name `dep/feature` items use, and its implicit feature if it is optional.
+    pub key: String,
+    /// The package.
+    pub package: String,
+    /// Whether it is `optional = true`.
+    pub optional: bool,
+    /// The features the declaration turns on (`features = [...]`, the workspace entry's and the member's).
+    pub features: Vec<String>,
+    /// Whether its `default` feature is on: `default-features` is not `false`.
+    pub default_features: bool,
 }
 
 /// Every member of the workspace at `root`, sorted by name.
@@ -53,21 +89,45 @@ pub fn load(root: &Path) -> Result<Vec<Crate>, Error> {
         by_dir.push((normalise(dir), name.clone()));
         crates.push((dir.clone(), name, manifest));
     }
-    let mut out: Vec<Crate> = crates
-        .into_iter()
-        .map(|(dir, name, manifest)| {
-            let deps = path_deps(&dir, &manifest)
-                .filter_map(|target| by_dir.iter().find(|(d, _)| *d == target).map(|(_, n)| n.clone()))
-                .collect();
-            Crate {
-                lib: library(&dir, &name, &manifest),
-                bins: binaries(&dir, &name, &manifest),
-                dir: dir.strip_prefix(root).unwrap_or(&dir).to_path_buf(),
-                name,
-                deps,
+    let workspace_deps = workspace.get("workspace").and_then(|w| w.get("dependencies")).and_then(Value::as_table);
+    let mut out: Vec<Crate> = Vec::new();
+    for (dir, name, manifest) in crates {
+        let (mut deps, mut optional_deps, mut dependencies) = (Vec::new(), Vec::new(), Vec::new());
+        for entry in path_deps(root, &dir, &manifest, workspace_deps)? {
+            let Some(package) = by_dir.iter().find(|(d, _)| *d == entry.dir).map(|(_, n)| n.clone()) else { continue };
+            if entry.optional {
+                optional_deps.push((entry.key.clone(), package.clone()));
+            } else {
+                deps.push(package.clone());
             }
-        })
-        .collect();
+            dependencies.push(Dependency {
+                key: entry.key,
+                package,
+                optional: entry.optional,
+                features: entry.features,
+                default_features: entry.default_features,
+            });
+        }
+        let dep_syntax =
+            optional_deps.iter().map(|(key, _)| key).filter(|key| uses_dep_syntax(&manifest, key)).cloned().collect();
+        out.push(Crate {
+            lib: library(&dir, &name, &manifest),
+            bins: binaries(&dir, &name, &manifest),
+            registers: manifest
+                .get("package")
+                .and_then(|p| p.get("metadata")?.get("omuzaki")?.get("registers")?.as_bool())
+                .unwrap_or(false),
+            generates_links: generates_links(&dir, &manifest),
+            lists_link_build: lists_link_build(&manifest),
+            optional_deps,
+            dependencies,
+            features: feature_table(&manifest),
+            dep_syntax,
+            dir: dir.strip_prefix(root).unwrap_or(&dir).to_path_buf(),
+            name,
+            deps,
+        });
+    }
     out.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(out)
 }
@@ -89,14 +149,120 @@ fn subdirs_with_manifest(parent: &Path) -> Result<Vec<PathBuf>, Error> {
     Ok(dirs)
 }
 
-/// The directories of the non-optional `path` dependencies under `[dependencies]`.
-fn path_deps<'a>(dir: &'a Path, manifest: &'a Table) -> impl Iterator<Item = PathBuf> + 'a {
-    manifest.get("dependencies").and_then(Value::as_table).into_iter().flatten().filter_map(move |(_, spec)| {
-        let spec = spec.as_table()?;
+/// A workspace dependency under `[dependencies]`.
+struct DepEntry {
+    /// The key it is declared under, which is also the name of its implicit feature if it is optional.
+    key: String,
+    /// The directory of the crate.
+    dir: PathBuf,
+    /// Whether it is `optional = true`.
+    optional: bool,
+    /// Its `features = [...]`.
+    features: Vec<String>,
+    /// Whether `default-features` is not `false`.
+    default_features: bool,
+}
+
+/// The `[features]` table as written.
+fn feature_table(manifest: &Table) -> Vec<(String, Vec<String>)> {
+    manifest
+        .get("features")
+        .and_then(Value::as_table)
+        .into_iter()
+        .flatten()
+        .map(|(name, list)| {
+            (name.clone(), list.as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect())
+        })
+        .collect()
+}
+
+/// Whether some feature lists `dep:<key>`.
+fn uses_dep_syntax(manifest: &Table, key: &str) -> bool {
+    let hidden = format!("dep:{key}");
+    manifest
+        .get("features")
+        .and_then(Value::as_table)
+        .into_iter()
+        .flatten()
+        .any(|(_, list)| list.as_array().into_iter().flatten().filter_map(Value::as_str).any(|item| item == hidden))
+}
+
+/// The workspace dependencies under `[dependencies]`, optional ones marked: `path` entries, and
+/// `workspace = true` entries resolved through `[workspace.dependencies]` (their `path` is relative to the workspace
+/// root). A crate from a registry or git is not a member and is left out. A dependency in a form this does not know is an
+/// error: skipping it would hide a member from the link gate.
+fn path_deps(
+    root: &Path,
+    dir: &Path,
+    manifest: &Table,
+    workspace_deps: Option<&Table>,
+) -> Result<Vec<DepEntry>, Error> {
+    let manifest_path = dir.join("Cargo.toml");
+    let fail = |message: String| Error::Manifest { path: manifest_path.clone(), message };
+    let mut found = Vec::new();
+    for (key, entry) in manifest.get("dependencies").and_then(Value::as_table).into_iter().flatten() {
+        let Some(member) = entry.as_table() else { continue }; // `name = "1.2"`
+        let inherits = member.get("workspace").and_then(Value::as_bool) == Some(true);
+        let mut spec = Table::new();
+        if inherits {
+            match workspace_deps.and_then(|deps| deps.get(key)) {
+                Some(Value::Table(inherited)) => spec = inherited.clone(),
+                Some(_) => {}
+                None => {
+                    return Err(fail(format!(
+                        "`{key}` says `workspace = true`, but [workspace.dependencies] has no `{key}`"
+                    )));
+                }
+            }
+        }
+        let base = if inherits && !member.contains_key("path") { root } else { dir };
+        // An inheriting member adds its `features` to the workspace entry's; every other key it sets wins.
+        let mut features: Vec<String> = strings(spec.get("features")).map(str::to_owned).collect();
+        features.extend(strings(member.get("features")).map(str::to_owned));
+        for (name, value) in member {
+            if name != "workspace" {
+                spec.insert(name.clone(), value.clone());
+            }
+        }
         let optional = spec.get("optional").and_then(Value::as_bool).unwrap_or(false);
-        let path = spec.get("path").and_then(Value::as_str).filter(|_| !optional)?;
-        Some(normalise(&dir.join(path)))
-    })
+        let default_features = ["default-features", "default_features"]
+            .iter()
+            .find_map(|k| spec.get(*k).and_then(Value::as_bool))
+            .unwrap_or(true);
+        match spec.get("path").and_then(Value::as_str) {
+            Some(path) => found.push(DepEntry {
+                key: key.clone(),
+                dir: normalise(&base.join(path)),
+                optional,
+                features,
+                default_features,
+            }),
+            None if inherits || ["version", "git", "registry"].iter().any(|k| spec.contains_key(*k)) => {}
+            None => {
+                return Err(fail(format!(
+                    "`{key}` is a dependency form the link gate does not read (no `path`, `version`, `git` or `workspace`)"
+                )));
+            }
+        }
+    }
+    Ok(found)
+}
+
+/// Whether the manifest lists `omuzaki-link-build` under `[build-dependencies]`.
+fn lists_link_build(manifest: &Table) -> bool {
+    manifest.get("build-dependencies").and_then(Value::as_table).is_some_and(|table| table.contains_key(LINK_BUILD))
+}
+
+/// Whether the crate's `link()` calls really are generated: it lists `omuzaki-link-build` under `[build-dependencies]`,
+/// its build script calls `omuzaki_link_build::emit`, and its library includes the generated `link_calls.rs`. Any one
+/// missing leaves the list empty or unused, so the crate must not be credited with calls it does not make.
+fn generates_links(dir: &Path, manifest: &Table) -> bool {
+    let listed = lists_link_build(manifest);
+    let build = manifest.get("package").and_then(|p| p.get("build")).and_then(Value::as_str).unwrap_or("build.rs");
+    let lib = library(dir, "", manifest).map_or_else(|| PathBuf::from("src/lib.rs"), |(_, root)| root);
+    let holds =
+        |file: &Path, check: fn(&str) -> bool| fs::read_to_string(dir.join(file)).is_ok_and(|text| check(&text));
+    listed && holds(Path::new(build), wiring::build_script_emits) && holds(&lib, wiring::library_includes_generated)
 }
 
 /// `[lib]` as cargo reads it: a declared path or `src/lib.rs`, named after the package unless `[lib] name` says.

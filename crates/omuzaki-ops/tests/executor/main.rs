@@ -9,6 +9,7 @@ mod adversarial;
 mod events;
 mod explicit;
 mod file_access;
+mod jobs;
 mod ops;
 mod props;
 mod run;

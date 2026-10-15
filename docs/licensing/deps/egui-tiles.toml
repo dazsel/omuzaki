@@ -1,0 +1,7 @@
+section = "rust"
+item = "egui_tiles 0.17"
+kind = "crate"
+used_for = "docking for the app shell (`omuzaki-ui::shell`; MIT OR Apache-2.0, depends on egui 0.36, ahash, itertools, log, serde)"
+status = "yes"
+audit = "B1"
+crates = ["egui_tiles"]

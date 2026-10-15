@@ -1,3 +1,9 @@
+---
+title: "`omuzaki-anim-api`: the animation and rig contract"
+summary: "the animation and rig contract"
+area: design
+---
+
 # `omuzaki-anim-api`: the animation and rig contract
 
 **Status:** reviewed; decisions are in §15. **Crates:** `crates/omuzaki-anim-api`, `crates/omuzaki-anim-mock`.
@@ -384,7 +390,7 @@ type = "clip"
 clip = "wave"
 ```
 
-Live AI intents append one score fragment each to the member's live score; `look_at` and `move_to` go to IK goals and placement, not cues (`ai-performer.md` §7.2).
+Live AI intents append one score fragment each to the member's live score; `look_at` and `move_to` go to IK goals and placement, not cues (`ai-performer.md` §7.2). The performer's big moves (head, lean, body turn, gaze) fill the score layer's channels that no key drives, and its mouth is a `Source::Audio` layer (`ai-performer-voice-face.md` §4.2, §5.1, ADR 0041).
 
 ## 11. Port map from the prototype
 

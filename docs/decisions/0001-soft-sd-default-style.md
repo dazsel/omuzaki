@@ -1,3 +1,9 @@
+---
+title: "0001: Soft SD is the default character style (2026-10-10)"
+summary: "Soft SD is the default character style"
+area: decisions
+---
+
 # 0001: Soft SD is the default character style (2026-10-10)
 
 **Context.** Free-form 3D generation produced plastic toys, flat 2D or off-model results. Auto-rigging arbitrary meshes is unreliable.

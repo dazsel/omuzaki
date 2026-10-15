@@ -1,3 +1,9 @@
+---
+title: "Text-safety filters we can ship"
+summary: "text-safety filters for the AI performer's speech (AP-07): twelve candidates with the three licence checks, language coverage and claimed latency, the recommended fail-closed chain and a licence-clean test-set plan."
+area: research
+---
+
 # Text-safety filters we can ship
 
 Question (#972, AP-07): the AI performer needs a "text filter before speech" (`ai-performer.md` §5, the `Speak` hook). Which filters can we ship under `docs/licensing/policy.md` (weights licence, training data, runtime), in which of the six launch languages (English, Japanese, Korean, Chinese, Spanish, Portuguese), and within a 30 ms per-sentence budget? Not legal advice.

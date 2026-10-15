@@ -1,0 +1,7 @@
+section = "rust"
+item = "iroh, quinn"
+kind = "crate"
+used_for = "collab transport"
+status = "conditions"
+condition = "self-host relays in production (public relays are dev-only)"
+audit = "B3"

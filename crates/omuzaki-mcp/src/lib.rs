@@ -132,7 +132,8 @@
 //!    hold on to has a limit with a documented default in [`HttpOptions`]: sessions per token
 //!    (`max_sessions_per_token`, refused with 429 at the cap, never by closing a session in use), request body size
 //!    (`max_body_bytes`, 413) and time to deliver a whole body (`body_timeout`, 408), connections (`max_connections`),
-//!    time to send headers (`header_timeout`) and idle sessions (`idle_timeout`). A refusal names the limit and its
+//!    time to send headers (`header_timeout`), time a response may stay blocked on a client that stopped reading it
+//!    (`write_timeout`) and idle sessions (`idle_timeout`). A refusal names the limit and its
 //!    value, in the response and in the log.
 //!
 //! **Lifecycle.** The HTTP port speaks the `initialize` session lifecycle (protocol 2025-11-25 and earlier, which is
@@ -147,6 +148,7 @@ mod access;
 mod builtin;
 mod catalog;
 mod changes;
+mod connection;
 mod describe;
 mod error;
 mod events;
@@ -165,9 +167,13 @@ mod signature;
 mod suggest;
 
 pub use access::{AccessToken, RECORD_VERSION, TokenId, TokenRecord};
+pub use connection::Connections;
 pub use error::ServerError;
 pub use http::{HttpOptions, HttpServer};
 pub use prompts::{PromptArg, PromptDef};
 pub use resources::{MeasureProvider, RenderProvider, ResourceProvider};
 pub use server::{McpOptions, McpServer};
 pub use session::Session;
+
+// This crate registers ops (`agent.connection`), so the app that calls it links them in (ADR 0015).
+omuzaki_core::define_link!();

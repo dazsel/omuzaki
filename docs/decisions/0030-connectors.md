@@ -1,3 +1,9 @@
+---
+title: "0030: Connectors are self-registered manifests behind one host that previews, caps, records and trays every call (2026-10-13)"
+summary: "Connectors are self-registered manifests behind one host that previews, caps, records and trays every call"
+area: decisions
+---
+
 # 0030: Connectors are self-registered manifests behind one host that previews, caps, records and trays every call (2026-10-13)
 
 **Status:** proposed. It adds three new API crates

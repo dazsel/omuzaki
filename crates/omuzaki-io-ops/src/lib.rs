@@ -20,16 +20,22 @@
 //! | [`convert::material`], [`convert::texture`] | toon and `MToon` materials, PNG textures |
 //! | [`gather::scene`], [`gather::skeleton`] | a built character into an `IoScene` |
 //! | [`gather::springs`], [`gather::avatar`] | the VRM avatar block and spring bones |
+//! | [`prepare::humanoid`] | `auto_map`, `apply`: propose the humanoid bones of a skinned skeleton, with an override table |
 //! | [`fit_bones`] | `reduce_bones`: cut a skin's joints to a budget, the `fit.bones` stage |
 //!
 //! Ops register themselves with `omuzaki_ops_api::register_op!` next to their definition, so nothing here lists them.
 //! A binary keeps them only if it links this crate, so an app that wants the ops calls [`link`] at startup (ADR 0015).
 #![deny(missing_docs)]
 
+// How a failed import or export reaches a caller. Private: the ops use it, the public API does not show it.
 pub mod convert;
+mod error;
 pub mod fit_bones;
 pub mod gather;
 pub mod ops;
+pub mod prepare;
 pub mod vrchat_rank;
 
-omuzaki_core::define_link!();
+omuzaki_core::define_link! {
+    omuzaki_char_api::link();
+}

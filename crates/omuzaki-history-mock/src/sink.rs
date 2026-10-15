@@ -105,10 +105,12 @@ impl JournalSink for RecordingSink {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::sync::Arc;
 
-    use omuzaki_history_api::HistoryExport;
-    use omuzaki_ops_api::TxId;
+    use omuzaki_doc_api::{Patch, Value};
+    use omuzaki_history_api::{HistoryExport, OpenTxExport};
+    use omuzaki_ops_api::{Actor, JobId, JobState, TxId};
 
     use super::*;
 
@@ -142,5 +144,37 @@ mod tests {
         assert_eq!(sink.sync(Duration::ZERO), Err(SyncError::Timeout { durable: Lsn(0) }));
         sink.script_status(JournalStatus::Behind { pending: 3 });
         assert_eq!(sink.status(), JournalStatus::Behind { pending: 3 });
+    }
+
+    #[test]
+    fn job_and_revert_entries_are_kept_in_order_and_unchanged() {
+        let sink = RecordingSink::new();
+        let remaining = OpenTxExport::new(Actor::System, TxId(4), "open", Patch::default(), BTreeSet::new());
+        // Read from JSON so this crate needs no `omuzaki-core` for `Seconds` (a transparent `f64`).
+        let started: HistoryEntry = serde_json::from_value(serde_json::json!({
+            "entry": "job_started",
+            "job": 1,
+            "op": "render",
+            "args": Value::from(1),
+            "actor": Actor::System,
+            "on_behalf_of": null,
+            "at": 0.5,
+        }))
+        .unwrap();
+        assert!(matches!(&started, HistoryEntry::JobStarted { job: JobId(1), .. }));
+        assert_eq!(serde_json::to_value(&started).unwrap()["at"], 0.5);
+        let ended = HistoryEntry::JobEnded { job: JobId(1), state: JobState::Done { tx: TxId(5), seq: Some(12) } };
+        let revert = HistoryEntry::TxRevert {
+            tx: TxId(4),
+            seqs: vec![11],
+            patch: Patch::default(),
+            remaining: remaining.clone(),
+        };
+        for entry in [started.clone(), ended.clone(), revert.clone()] {
+            sink.append(entry);
+        }
+        assert_eq!(sink.entries(), vec![started, ended, revert]);
+        let HistoryEntry::TxRevert { remaining: back, .. } = &sink.entries()[2] else { panic!("not a tx_revert") };
+        assert_eq!(back, &remaining);
     }
 }

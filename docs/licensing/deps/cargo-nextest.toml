@@ -1,0 +1,8 @@
+section = "in-use"
+item = "cargo-nextest (prebuilt, through `taiki-e/install-action`)"
+kind = "tool"
+used_for = "the CI test runner (`ci.yml`, `.config/nextest.toml`)"
+status = "yes"
+condition = "Apache-2.0 OR MIT; a build tool, nothing of it ships"
+audit = "(github.com/nextest-rs/nextest, checked 2026-10-14)"
+tools = ["cargo-nextest"]

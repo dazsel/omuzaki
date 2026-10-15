@@ -1,0 +1,7 @@
+section = "rust"
+item = "FFmpeg (LGPL build)"
+kind = "native"
+used_for = "encode, decode, RTMP/SRT"
+status = "conditions"
+condition = "shared libs, no gpl/nonfree, source offer, hardware encoders"
+audit = "B4"

@@ -1,3 +1,9 @@
+---
+title: "The record pipeline: encoders, recording with alpha, the replay buffer"
+summary: "encoders, recording with alpha, the replay buffer"
+area: design
+---
+
 # The record pipeline: encoders, recording with alpha, the replay buffer
 
 **Status:** accepted (2026-10-13) with the default record format changed to WebM VP9 alpha

@@ -52,6 +52,7 @@ jobs:
       lint_crates: ${{ steps.outputs.outputs.lint_crates }}
       link_crates: ${{ steps.outputs.outputs.link_crates }}
       has_link_gates: ${{ steps.outputs.outputs.has_link_gates }}
+      cli_in_scope: ${{ steps.outputs.outputs.cli_in_scope }}
       cross_crates: ${{ steps.outputs.outputs.cross_crates }}
       has_cross: ${{ steps.outputs.outputs.has_cross }}
     steps:
@@ -113,8 +114,22 @@ jobs:
         run: |
           cargo xtask lint-deps
           cargo xtask lint-links
+          cargo xtask lint-registers
           cargo xtask lint-ui-writes
+          cargo xtask lint-crate-table
+          cargo xtask lint-mods
+          cargo xtask lint-docs-index
           cargo xtask lint-seed --base "$BASE"
+      # On wasm a `registers` crate keeps its registrations only through the App's generated `link()` call (ADR 0015),
+      # which no native gate can show. Build the test-only App for wasm32, run it in the runner's preinstalled node and
+      # compare with the source, then build it with an empty `link()` and require the registrations gone, so the proof
+      # can fail. In scope when the probe or a crate it links changes (it depends on them), when xtask's scan does, or
+      # when this workflow does (xtask/src/affected.rs maps a change to it to the probe).
+      - name: WebAssembly link proof
+        if: contains(format(' {0} ', needs.plan.outputs.lint_crates), ' omuzaki-link-probe ') || contains(format(' {0} ', needs.plan.outputs.lint_crates), ' xtask ')
+        run: |
+          cargo xtask wasm-link-proof
+          cargo xtask wasm-link-proof --unlinked
       # Licences, bans and sources only: advisories come from a database that changes daily, so they run in nightly.yml
       # and a new advisory never fails an unrelated pull request.
       - name: cargo-deny
@@ -184,11 +199,13 @@ jobs:
   link-gate:
     name: link gate
     needs: plan
-    if: needs.plan.outputs.has_link_gates == 'true'
+    # Also whenever the CLI is in scope, full or link-only, for its product configuration below.
+    if: needs.plan.outputs.has_link_gates == 'true' || needs.plan.outputs.cli_in_scope == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
       LINK_CRATES: ${{ needs.plan.outputs.link_crates }}
+      CLI_IN_SCOPE: ${{ needs.plan.outputs.cli_in_scope }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-linux
@@ -197,7 +214,13 @@ jobs:
           gpu: true
       - name: Link gate tests
         run: |
+          set -e
+          # An empty LINK_CRATES (the CLI in full scope only) runs no iteration.
           for name in $LINK_CRATES; do cargo test --locked -p "$name" --test registrations; done
+          # The product's configuration: the CLI with the stage's wgpu renderer; one value feeds the build and the gate.
+          if [ "$CLI_IN_SCOPE" = true ]; then
+            f=omuzaki-stage/wgpu; OMUZAKI_LINK_FEATURES=$f cargo test --locked -p omuzaki-cli --features $f --test registrations
+          fi
 
   # Merge queue only: ordinary pull requests don't pay for the Windows toolchain. Native Windows tests run nightly.
   win-cross:

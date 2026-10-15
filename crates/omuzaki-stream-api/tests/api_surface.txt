@@ -1,0 +1,16 @@
+src/error.rs: pub enum StreamError {
+src/lib.rs: pub mod error;
+src/lib.rs: pub mod packet;
+src/lib.rs: pub mod time;
+src/packet.rs: pub struct StreamId(pub u8);
+src/packet.rs: pub enum SideKind {
+src/packet.rs: pub struct SideData {
+src/packet.rs: pub struct Packet {
+src/packet.rs: pub struct ByteMeter(Arc<AtomicU64>);
+src/packet.rs: pub fn new() -> Self {
+src/packet.rs: pub fn add(&self, n: u64) {
+src/packet.rs: pub fn sub(&self, n: u64) {
+src/packet.rs: pub fn get(&self) -> u64 {
+src/time.rs: pub struct Ticks(pub i64);
+src/time.rs: pub struct Timebase {
+src/time.rs: pub fn rescale(self, value: i64, to: Timebase) -> Result<i64, StreamError> {

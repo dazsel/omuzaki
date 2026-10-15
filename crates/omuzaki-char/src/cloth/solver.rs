@@ -713,7 +713,7 @@ impl ClothSolver {
             max_substeps,
             gravity_dv: Vec3A::from(params.gravity * h),
             gravity: Vec3A::from(params.gravity),
-            decay: (-params.damping * h).exp(),
+            decay: libm::expf(-params.damping * h),
         })
     }
 

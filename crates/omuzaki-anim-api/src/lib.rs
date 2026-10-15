@@ -27,6 +27,7 @@
 //! | [`humanoid_frames`] | [`HumanoidFrames`]: the normalised-pose maths, [`HumanoidPose`] to and from a skeleton's own bone axes |
 //! | [`ik`] | [`IkGoals`] (look-at and hand/foot targets) and the [`IkSolver`] trait |
 //! | [`spring`] | VRM-compatible spring bones, colliders and the [`SpringSolver`] trait |
+//! | [`constraint`] | VRM node constraints (roll, aim, rotation): [`ConstraintSet`], its checks and run order |
 //! | [`score`] | [`Score`] (keys per channel and cues) and its allocation-free [`CompiledScore`] |
 //!
 //! ## Conventions (all stages obey them)
@@ -49,6 +50,7 @@
 
 pub mod blend;
 pub mod channel;
+pub mod constraint;
 pub mod frame;
 pub mod humanoid_frames;
 pub mod ik;
@@ -65,6 +67,7 @@ pub use channel::{
     ARKIT_COUNT, CHANNEL_CAPACITY, CHANNELS, CUSTOM_COUNT, Channel, ChannelBuf, ChannelInfo, ChannelMask, Mirror,
     Region, Unit,
 };
+pub use constraint::{Axis, BoneConstraint, ConstraintError, ConstraintKind, ConstraintSet, SignedAxis};
 pub use frame::{DeviceProfile, EyeAngles, FrameSource, HeadPose, NotArkit, Tick, TrackFrame, TrackStatus};
 pub use humanoid_frames::HumanoidFrames;
 pub use ik::{IkGoals, IkSolver, Limb, LookAt};

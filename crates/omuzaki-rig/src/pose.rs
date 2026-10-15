@@ -59,14 +59,21 @@ impl HumanoidRig {
     /// A rotation that is not finite (or is zero) leaves that bone at rest, and a non-finite hips offset is ignored, so
     /// a bad input never reaches the renderer as a NaN matrix.
     pub fn apply_humanoid(&self, pose: &HumanoidPose, out: &mut Pose) {
-        self.frames.apply_humanoid(self.skeleton.rest_local(), pose, out);
+        // `RigSkeleton` takes its rest transforms from the same skeleton `frames` was built from, so the length always
+        // matches and this error cannot happen. Should it, `out` is left as the contract leaves it: untouched.
+        if let Err(error) = self.frames.apply_humanoid(self.skeleton.rest_local(), pose, out) {
+            debug_assert!(false, "{error}");
+        }
     }
 
     /// The inverse of [`apply_humanoid`](Self::apply_humanoid): reads the humanoid rotations and the hips offset back
     /// out of a solved pose, in normalised space. Bones the skeleton lacks come out as the identity. This is how a
     /// pose on the rig is saved to the pose library (RG-06) or compared across characters. Hot path.
     pub fn to_humanoid(&self, local: &Pose, out: &mut HumanoidPose) {
-        self.frames.to_humanoid(self.skeleton.rest_local(), local, out);
+        // Unreachable for the same reason as in `apply_humanoid`: the rest transforms come from the same skeleton.
+        if let Err(error) = self.frames.to_humanoid(self.skeleton.rest_local(), local, out) {
+            debug_assert!(false, "{error}");
+        }
     }
 }
 
