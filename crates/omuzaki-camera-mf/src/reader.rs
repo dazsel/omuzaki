@@ -9,8 +9,11 @@
 //!
 //! - Media Foundation is started once and shared (`Arc<MfRuntime>`): the camera and every stream hold it, and it is
 //!   shut down when the last of them is gone. A stream declares it as its last field so it outlives every interface.
-//! - COM is per thread. Every entry point enters a [`ComScope`] first, and every interface is released while the
-//!   scope is still alive: streams drop their interfaces explicitly inside `Drop`, not as fields after it.
+//! - COM is per thread, and a stream may move between threads, so the apartment is a thread-local guard
+//!   ([`enter_com`]): every entry point calls it, the first call on a thread runs `CoInitializeEx` and the guard
+//!   keeps the apartment until the thread exits. `next_frame` therefore pays one thread-local read per frame, not an
+//!   apartment set-up and tear-down. Every interface is released on a thread whose guard is still alive: streams drop
+//!   their interfaces explicitly inside the reaper thread's work, never from a thread-local destructor.
 //! - The callback owns its own `Arc<Shared>`, so a late callback after the stream is gone touches only memory it owns.
 //!   The one thing it borrows, the reader it re-arms, is detached (and awaited) before the reader is released.
 //!
@@ -31,11 +34,12 @@
 //! grows a `Vec` or resizes anything.
 #![allow(unsafe_code)] // Win32/COM FFI has no safe binding; each block carries its own `// SAFETY:` comment.
 
+use std::cell::Cell;
 use std::ffi::c_void;
 use std::ptr::NonNull;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
-use std::time::Duration;
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use omuzaki_track_api::camera::{
     Camera, CameraFormat, CameraFormatRequest, CameraFrame, CameraId, CameraInfo, CameraStream, DeviceTime, PixelFormat,
@@ -68,6 +72,14 @@ use crate::modes::{
 const VIDEO: u32 = MF_SOURCE_READER_FIRST_VIDEO_STREAM.0.cast_unsigned();
 /// Sample times are in units of 100 ns.
 const NS_PER_TICK: u64 = 100;
+/// How long dropping a stream waits for its camera to be released before it returns anyway. A tracker has 100 ms to
+/// stop (`track-api.md` §9), so this stays well inside it: a healthy driver releases in a few milliseconds, and a stalled
+/// one is finished by the reaper thread while `open` of the same camera waits and then fails with [`TrackError::Busy`].
+const DROP_WAIT: Duration = Duration::from_millis(50);
+/// How long `open` waits for an earlier stream of the same camera, still being released, before it reports the camera
+/// busy. More than the two [`FLUSH_WAIT`]s (callbacks in flight, then the flush) that bound the reaper's work, so a
+/// release that is going to finish does so inside it.
+const REOPEN_WAIT: Duration = Duration::from_secs(5);
 /// How long a dropping stream waits for Media Foundation to confirm its flush. The camera is released either way;
 /// the wait only lets in-flight callbacks finish first.
 const FLUSH_WAIT: Duration = Duration::from_secs(2);
@@ -91,31 +103,149 @@ impl Drop for MfRuntime {
     }
 }
 
-/// Puts the calling thread in the multithreaded apartment for a scope. COM is per thread, so every entry point
-/// that touches Media Foundation holds one: the camera and its streams may move between threads. Declare it before
-/// every interface it must outlive.
-struct ComScope(bool);
+/// How a thread stands with COM.
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum Standing {
+    /// `CoInitializeEx` has not succeeded on this thread yet.
+    Outside,
+    /// This guard holds a `CoInitializeEx` reference, released when the thread exits.
+    Owner,
+    /// The thread was in another apartment at the last probe (`RPC_E_CHANGED_MODE`): usable as it is, nothing of ours
+    /// to release, and probed again on the next call because that apartment may be gone by then.
+    Guest,
+}
 
-impl ComScope {
-    fn enter() -> Result<Self, TrackError> {
+/// The calling thread's COM apartment, entered once and kept until the thread exits (see [`enter_com`]).
+struct Apartment {
+    standing: Cell<Standing>,
+    /// How many times `CoInitializeEx` ran on this thread: the counting seam behind the "once per thread" test (a guest
+    /// thread counts every probe).
+    inits: Cell<u32>,
+}
+
+impl Apartment {
+    const fn new() -> Self {
+        Self { standing: Cell::new(Standing::Outside), inits: Cell::new(0) }
+    }
+
+    fn enter(&self) -> Result<(), TrackError> {
+        // Only a reference of ours is cached. A guest apartment is somebody else's and can be torn down under us, so it
+        // is probed again every time: `CoInitializeEx` on a thread already in another apartment just returns
+        // `RPC_E_CHANGED_MODE`, and if that apartment is gone it now succeeds and the guard becomes the owner.
+        if self.standing.get() == Standing::Owner {
+            return Ok(());
+        }
+        self.inits.set(self.inits.get().saturating_add(1));
         // SAFETY: plain call. `S_OK` and `S_FALSE` both add a reference that `Drop` releases; a thread already in
         // another apartment (`RPC_E_CHANGED_MODE`) is usable as it is and takes no reference.
         let hr = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
         if hr == RPC_E_CHANGED_MODE {
-            return Ok(Self(false));
+            self.standing.set(Standing::Guest);
+            return Ok(());
         }
         hr.ok().map_err(|e| map_hresult(e.code().0, &CameraId(String::new())))?;
-        Ok(Self(true))
+        self.standing.set(Standing::Owner);
+        Ok(())
     }
 }
 
-impl Drop for ComScope {
+impl Drop for Apartment {
     fn drop(&mut self) {
-        if self.0 {
-            // SAFETY: pairs the `CoInitializeEx` that took a reference in `enter`, on the same thread.
+        if self.standing.get() == Standing::Owner {
+            // SAFETY: pairs the `CoInitializeEx` that took a reference in `enter`, on the same thread (a
+            // thread-local is destroyed on the thread that owns it).
             unsafe { CoUninitialize() };
         }
     }
+}
+
+thread_local! {
+    static APARTMENT: Apartment = const { Apartment::new() };
+}
+
+/// Puts the calling thread in the multithreaded apartment, once: the first call on a thread runs `CoInitializeEx`, every
+/// later call is a thread-local read, and the apartment lives until the thread exits. A thread that is a guest in someone else's apartment is probed on every call instead, because that apartment is not ours to keep alive. COM is per thread, so every entry
+/// point that touches Media Foundation calls this; the guard is thread-local rather than owned by the stream because a
+/// stream may be moved to another thread (`next_frame` on a capture loop's thread, the drop on the reaper's). A scope
+/// per call would tear the apartment down after every frame whenever the thread has no apartment of its own.
+fn enter_com() -> Result<(), TrackError> {
+    APARTMENT
+        .try_with(Apartment::enter)
+        .unwrap_or_else(|_| Err(TrackError::Backend("the thread is exiting; COM can no longer be entered".into())))
+}
+
+/// How many times `CoInitializeEx` ran on the calling thread.
+fn com_init_calls() -> u32 {
+    APARTMENT.try_with(|a| a.inits.get()).unwrap_or(0)
+}
+
+/// Says when a dropped stream's camera is released. Shared by the dropping thread, which waits a little, and the reaper,
+/// which finishes it; `open` of the same camera waits on it too.
+struct Release {
+    done: Mutex<bool>,
+    changed: Condvar,
+}
+
+impl Release {
+    /// Waits up to `timeout`; whether the camera was released by then.
+    fn wait(&self, timeout: Duration) -> bool {
+        let guard = self.done.lock().unwrap_or_else(PoisonError::into_inner);
+        let (done, _) =
+            self.changed.wait_timeout_while(guard, timeout, |done| !*done).unwrap_or_else(PoisonError::into_inner);
+        *done
+    }
+}
+
+/// The releases in progress, by camera id. A stream that is dropped adds one; its reaper's [`ReleaseGuard`] removes it.
+static RELEASING: Mutex<Vec<(CameraId, Arc<Release>)>> = Mutex::new(Vec::new());
+
+/// Held by whoever releases a camera; dropping it (when the release is done, or the work is abandoned or panics)
+/// finishes the release and wakes the waiters. If the reaper thread could not be started the guard is leaked with the
+/// stream and the camera stays "being released": `open` then reports it busy, which is the truth.
+struct ReleaseGuard {
+    id: CameraId,
+    release: Arc<Release>,
+}
+
+impl ReleaseGuard {
+    /// Registers a release of camera `id` as under way.
+    fn begin(id: &CameraId) -> Self {
+        let release = Arc::new(Release { done: Mutex::new(false), changed: Condvar::new() });
+        RELEASING.lock().unwrap_or_else(PoisonError::into_inner).push((id.clone(), Arc::clone(&release)));
+        Self { id: id.clone(), release }
+    }
+}
+
+impl Drop for ReleaseGuard {
+    fn drop(&mut self) {
+        RELEASING
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|(id, release)| !(*id == self.id && Arc::ptr_eq(release, &self.release)));
+        *self.release.done.lock().unwrap_or_else(PoisonError::into_inner) = true;
+        self.release.changed.notify_all();
+    }
+}
+
+/// Waits up to `timeout` for every release of camera `id` that is under way.
+///
+/// # Errors
+/// [`TrackError::Busy`] if one is still running at the deadline: the earlier stream's driver has not let go yet.
+fn await_released(id: &CameraId, timeout: Duration) -> Result<(), TrackError> {
+    let pending: Vec<Arc<Release>> = RELEASING
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .iter()
+        .filter(|(held, _)| held == id)
+        .map(|(_, release)| Arc::clone(release))
+        .collect();
+    let deadline = Instant::now() + timeout;
+    for release in pending {
+        if !release.wait(deadline.saturating_duration_since(Instant::now())) {
+            return Err(TrackError::Busy(id.clone()));
+        }
+    }
+    Ok(())
 }
 
 /// The Media Foundation camera source.
@@ -163,7 +293,7 @@ fn string_attr(attrs: &IMFAttributes, key: &GUID) -> Option<String> {
     Some(value)
 }
 
-/// Every video capture device present. Needs a [`ComScope`] that outlives the returned devices.
+/// Every video capture device present. Needs the thread to have entered COM ([`enter_com`]).
 fn devices() -> windows::core::Result<Vec<Device>> {
     let mut query = None;
     // SAFETY: `query` outlives the call and receives the new attribute store.
@@ -430,8 +560,9 @@ fn modes(reader: &IMFSourceReader) -> windows::core::Result<Vec<(ModeInfo, Nativ
 impl Camera for MfCamera {
     /// A device that cannot be probed (busy, or refusing access) is listed without formats.
     fn enumerate(&self) -> Vec<CameraInfo> {
-        // Declared first so it is released last: every interface below goes before it.
-        let Ok(_com) = ComScope::enter() else { return Vec::new() };
+        if enter_com().is_err() {
+            return Vec::new();
+        }
         let Ok(found) = devices() else { return Vec::new() };
         found
             .into_iter()
@@ -448,14 +579,15 @@ impl Camera for MfCamera {
     }
 
     fn open(&mut self, id: &CameraId, request: &CameraFormatRequest) -> Result<Box<dyn CameraStream>, TrackError> {
-        // Declared first so it is released last, after every interface `open_stream` created and dropped.
-        let _com = ComScope::enter()?;
+        enter_com()?;
+        // A stream of this camera dropped a moment ago may still be letting go of the device.
+        await_released(id, REOPEN_WAIT)?;
         let stream = open_stream(&self.runtime, id, request)?;
         Ok(Box::new(stream))
     }
 }
 
-/// Opens `id` in the mode `request` picks. Runs inside the caller's [`ComScope`]; everything it creates and does not
+/// Opens `id` in the mode `request` picks. Runs on a thread that has entered COM ([`enter_com`]); everything it creates and does not
 /// hand to the stream is released before it returns.
 fn open_stream(runtime: &Arc<MfRuntime>, id: &CameraId, request: &CameraFormatRequest) -> Result<MfStream, TrackError> {
     let device = devices()
@@ -558,7 +690,7 @@ fn default_stride(media: &IMFMediaType, mode: &ModeInfo) -> isize {
 enum Lock {
     /// `IMF2DBuffer2::Lock2DSize`: the real pitch and the real extent of the allocation.
     Sized(IMF2DBuffer2),
-    /// `IMF2DBuffer::Lock2D`: the real pitch, without the extent.
+    /// `IMF2DBuffer::Lock2D`: the real pitch, for an unpadded frame (see `unpadded_back`).
     Surface(IMF2DBuffer),
     /// `IMFMediaBuffer::Lock`: packed rows; may copy a padded surface, so it is the last resort for one.
     Packed,
@@ -619,6 +751,19 @@ impl Held {
     }
 }
 
+/// For a frame locked through `Lock2D` at `pitch`: how far the lowest row lies before the top row (0 unless the image is
+/// bottom-up) if the frame is one run of pixel bytes. `None` for padded rows, a zero pitch, a layout with no rows and
+/// every planar layout (NV12): `Lock2D` gives the first plane's pointer only, and `GetContiguousLength` is the size of
+/// a packed copy, not a promise that the planes sit next to each other, so a planar frame without an extent is read
+/// through the packed lock instead.
+fn unpadded_back(mode: &ModeInfo, pitch: isize) -> Option<usize> {
+    let step = pitch.unsigned_abs();
+    if mode.format == PixelFormat::Nv12 || mode.format.tight_stride(mode.width) != Some(step) || step == 0 {
+        return None;
+    }
+    if pitch < 0 { (mode.height as usize).checked_sub(1)?.checked_mul(step) } else { Some(0) }
+}
+
 /// What locking a buffer cost.
 #[derive(Copy, Clone, PartialEq, Eq)]
 enum Cost {
@@ -628,7 +773,7 @@ enum Cost {
     MayCopy,
 }
 
-/// Locks `buffer`'s pixels and checks them against the real allocation, in Microsoft's order: `Lock2DSize`, then
+/// Locks `buffer`'s pixels and checks them against the allocation, in Microsoft's order: `Lock2DSize`, then
 /// `Lock2D`, then the packed `Lock` as the last resort. The buffer stays locked until [`Held::unlock`].
 fn lock_buffer(
     buffer: IMFMediaBuffer,
@@ -671,13 +816,17 @@ fn lock_buffer(
             unsafe { surface.Lock2D(&raw mut top, &raw mut pitch) }.map_err(|e| err(&e, id))?;
             // SAFETY: plain call on a live buffer.
             let contiguous = unsafe { surface.GetContiguousLength() }.unwrap_or(0) as usize;
-            held.base = top;
-            held.pitch = pitch as isize;
             held.lock = Lock::Surface(surface);
-            // Without the allocation's extent only the packed size is known, so only an unpadded top-down frame
-            // is trusted; anything else is left to the packed lock below.
-            if held.pitch > 0 && held.fit(mode, can_flip, contiguous, 0).is_ok() {
-                return Ok((held, Cost::Free));
+            held.pitch = pitch as isize;
+            // `Lock2D` gives the top row and the pitch but not the allocation, and padding is not promised readable, so
+            // only an unpadded frame is borrowed: every byte of its span is pixel data, checked against the packed
+            // length. A padded frame (or a pitch that cannot describe one) takes the packed lock below, which hands
+            // over tight rows; `Lock2DSize`, above, is what borrows a padded frame, since it reports the extent.
+            if let Some(back) = unpadded_back(mode, held.pitch) {
+                held.base = top.wrapping_sub(back);
+                if held.fit(mode, can_flip, contiguous, back).is_ok() {
+                    return Ok((held, Cost::Free));
+                }
             }
             held.unlock();
             held.lock = Lock::Packed;
@@ -697,7 +846,7 @@ fn lock_buffer(
     }
 }
 
-/// The interfaces a stream owns. Dropped by `MfStream::drop` inside its [`ComScope`], never as a bare field.
+/// The interfaces a stream owns. Released by the reaper thread after it entered COM, never as a bare field.
 struct Live {
     reader: IMFSourceReader,
     /// Owns the camera; shut down on drop so it is released at once.
@@ -742,8 +891,7 @@ fn contiguous(
 }
 
 // SAFETY: the reader and activator are free-threaded (multithreaded-apartment) objects; `held` points into a buffer
-// that moves with them. All of it is touched only through `&mut MfStream`, one thread at a time, each time inside a
-// `ComScope`.
+// that moves with them. All of it is touched only through `&mut MfStream`, one thread at a time, each time after `enter_com`.
 unsafe impl Send for Live {}
 
 struct MfStream {
@@ -876,7 +1024,7 @@ impl CameraStream for MfStream {
     /// skipped capture is a gap. If the camera switches to a format that cannot be handed over, this and every later
     /// call return that error.
     fn next_frame(&mut self, timeout: Duration) -> Result<Option<CameraFrame<'_>>, TrackError> {
-        let _com = ComScope::enter()?;
+        enter_com()?;
         if let Some(e) = &self.failed {
             return Err(e.clone());
         }
@@ -904,25 +1052,48 @@ impl CameraStream for MfStream {
     }
 }
 
+/// Hands a camera's resources to a reaper thread and waits up to `wait` for it to finish: `work` must drop the
+/// [`ReleaseGuard`] that `make` puts in the resource once the camera is let go. Returns whether it had by then.
+/// Separate from the stream so the drop-then-reopen sequence can be tested with a fake source.
+fn release_and_wait<T: Send + 'static>(
+    id: &CameraId,
+    make: impl FnOnce(ReleaseGuard) -> T,
+    work: fn(T),
+    wait: Duration,
+) -> bool {
+    let release = ReleaseGuard::begin(id);
+    let waiter = Arc::clone(&release.release);
+    reap(make(release), work);
+    waiter.wait(wait)
+}
+
 /// Everything a dropped stream hands to its reaper thread.
 struct Reaped {
     live: Option<Live>,
     shared: Arc<Shared>,
     /// Kept so Media Foundation outlives the interfaces being released (and is never shut down under a leaked one).
     runtime: Arc<MfRuntime>,
+    /// Dropped last, when the camera is let go (or the release is abandoned).
+    release: ReleaseGuard,
 }
 
 impl Drop for MfStream {
-    /// Never waits. Releasing a camera can take as long as its driver likes (a read stalled inside the driver, a flush
-    /// that is never answered), and a tracker has 100 ms to stop (`track-api.md` §9), so the interfaces go to a
-    /// detached reaper thread (see [`reap`]) and this returns at once.
+    /// Waits up to [`DROP_WAIT`] for the camera to be released, so a drop followed by an `open` of the same camera
+    /// finds it free. The release itself runs on a detached reaper thread (see [`reap`]): releasing a camera can take
+    /// as long as its driver likes (a read stalled inside the driver, a flush that is never answered), and a tracker has
+    /// 100 ms to stop (`track-api.md` §9), so this never waits longer. If the driver is slower than that, the drop
+    /// returns, the reaper carries on, and `open` of the same camera waits for it (up to [`REOPEN_WAIT`]) and then
+    /// fails with [`TrackError::Busy`] instead of racing the driver.
     fn drop(&mut self) {
         if self.packed_locks > 0 {
             tracing::warn!(camera = %self.id.0, frames = self.packed_locks, "frames locked through the packed Lock fallback");
         }
-        let reaped =
-            Reaped { live: self.live.take(), shared: Arc::clone(&self.shared), runtime: Arc::clone(&self.runtime) };
-        reap(reaped, reap_stream);
+        let (live, shared, runtime) = (self.live.take(), Arc::clone(&self.shared), Arc::clone(&self.runtime));
+        let released =
+            release_and_wait(&self.id, |release| Reaped { live, shared, runtime, release }, reap_stream, DROP_WAIT);
+        if !released {
+            tracing::warn!(camera = %self.id.0, "the camera is still being released; reopening it waits for that");
+        }
     }
 }
 
@@ -930,9 +1101,11 @@ impl Drop for MfStream {
 /// (bounded) for the flush to finish, shut the source down, and release every interface while COM is initialised.
 /// If a callback is stuck inside the reader, releasing it would be a use after free, so it is leaked instead.
 fn reap_stream(reaped: Reaped) {
-    let Reaped { live, shared, runtime } = reaped;
-    // Entered first, dropped last: after every interface below. Without COM we still release what we can.
-    let _com = ComScope::enter().ok();
+    let Reaped { live, shared, runtime, release } = reaped;
+    // The reaper is a fresh thread whose apartment outlives everything below. Without COM we still release what we can.
+    if let Err(e) = enter_com() {
+        tracing::warn!(error = %e, "releasing a camera without COM");
+    }
     shared.slot.close();
     shared.reader.store(std::ptr::null_mut(), Ordering::SeqCst);
     // A callback that read the reader pointer before it was cleared is still using the reader: wait it out.
@@ -945,6 +1118,8 @@ fn reap_stream(reaped: Reaped) {
             // Leak the reader, and with it Media Foundation: shutting that down under a live reader is no better.
             std::mem::forget(live);
             std::mem::forget(runtime);
+            // The camera is still held, so the release never finishes: `open` of it reports it busy.
+            std::mem::forget(release);
             return;
         }
         if let Some(held) = live.held.take() {
@@ -971,13 +1146,18 @@ fn reap_stream(reaped: Reaped) {
 #[doc(hidden)]
 pub mod bench_support {
     use super::{
-        Arc, AtomicPtr, AtomicUsize, CameraId, ComScope, EventSignal, IMFMediaBuffer, IMFSample, MFCreateMemoryBuffer,
-        MfRuntime, ModeInfo, PixelFormat, RowFlip, Shared, Take, TokenSlot, TrackError, contiguous, err, into_token,
-        lock_buffer,
+        Arc, AtomicPtr, AtomicUsize, CameraId, EventSignal, IMFMediaBuffer, IMFSample, MFCreateMemoryBuffer, MfRuntime,
+        ModeInfo, PixelFormat, RowFlip, Shared, Take, TokenSlot, TrackError, com_init_calls, contiguous, enter_com,
+        err, into_token, lock_buffer,
     };
     use std::time::Duration;
 
     use windows::Win32::Media::MediaFoundation::MFCreateSample;
+
+    /// How many times `CoInitializeEx` ran on the calling thread.
+    pub fn com_inits() -> u32 {
+        com_init_calls()
+    }
 
     /// A synthetic one-buffer sample and everything the frame path needs around it.
     pub struct Harness {
@@ -989,9 +1169,8 @@ pub mod bench_support {
         stride: isize,
         flip: RowFlip,
         id: CameraId,
-        // Dropped last, in this order: Media Foundation after the interfaces, COM after Media Foundation.
+        // Dropped last: Media Foundation after the interfaces.
         _runtime: MfRuntime,
-        _com: ComScope,
     }
 
     impl Harness {
@@ -1001,7 +1180,7 @@ pub mod bench_support {
         /// If Media Foundation cannot start or build the sample.
         pub fn new(format: PixelFormat, width: u32, height: u32, stride: isize) -> Result<Self, TrackError> {
             let id = CameraId("bench".into());
-            let com = ComScope::enter()?;
+            enter_com()?;
             let runtime = MfRuntime::start().map_err(|e| err(&e, &id))?;
             let mode = ModeInfo { format, width, height, fps_num: 30, fps_den: 1 };
             let row = format.tight_stride(width).unwrap_or(0);
@@ -1031,7 +1210,20 @@ pub mod bench_support {
                 reader: AtomicPtr::new(std::ptr::null_mut()),
                 in_flight: AtomicUsize::new(0),
             });
-            Ok(Self { sample, gather, gather_len: len, shared, mode, stride, flip, id, _runtime: runtime, _com: com })
+            Ok(Self { sample, gather, gather_len: len, shared, mode, stride, flip, id, _runtime: runtime })
+        }
+
+        /// One `next_frame` without a device: enter COM as the real call does (a thread-local read once the thread
+        /// has an apartment), then the hand-off and the lock. Returns the bytes of the frame.
+        ///
+        /// # Errors
+        /// As `next_frame` would.
+        pub fn next_frame(&mut self) -> Result<usize, TrackError> {
+            enter_com()?;
+            if !self.hand_off() {
+                return Err(TrackError::Lost);
+            }
+            self.lock_and_read()
         }
 
         /// The callback's side and the caller's: put the sample in the slot (waking the event) and take it back.
@@ -1112,5 +1304,396 @@ mod tests {
         let Ok(mut stream) = camera.open(&info.id, &CameraFormatRequest::default()) else { return };
         drop(camera);
         let _ = stream.next_frame(Duration::from_millis(500));
+    }
+
+    /// A release that finishes lets a waiting `open` through; nothing releasing costs nothing.
+    #[test]
+    fn open_waits_for_a_release_in_progress() {
+        let id = CameraId("release-finishes".into());
+        assert!(await_released(&id, Duration::ZERO).is_ok(), "nothing is being released");
+        let guard = ReleaseGuard::begin(&id);
+        let worker = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            drop(guard);
+        });
+        assert!(await_released(&id, Duration::from_secs(10)).is_ok(), "the release finished inside the wait");
+        worker.join().expect("the worker finished");
+        assert!(RELEASING.lock().expect("registry").iter().all(|(held, _)| *held != id), "the entry is removed");
+    }
+
+    /// A release that does not finish within the wait is reported as a busy camera, after about the wait and no longer.
+    #[test]
+    fn open_reports_a_stuck_release_as_busy() {
+        let id = CameraId("release-stuck".into());
+        let _stuck = ReleaseGuard::begin(&id);
+        let started = Instant::now();
+        let result = await_released(&id, Duration::from_millis(100));
+        assert!(matches!(result, Err(TrackError::Busy(ref busy)) if *busy == id), "got {result:?}");
+        assert!(started.elapsed() < Duration::from_secs(5), "the wait is bounded");
+        // Another camera is not held up by it.
+        assert!(await_released(&CameraId("another".into()), Duration::ZERO).is_ok());
+    }
+
+    /// The drop waits for a quick release, and gives up at `DROP_WAIT` on a slow one.
+    #[test]
+    fn a_waiting_drop_is_bounded() {
+        let quick = ReleaseGuard::begin(&CameraId("drop-quick".into()));
+        let waiter = Arc::clone(&quick.release);
+        drop(quick);
+        assert!(waiter.wait(DROP_WAIT), "a finished release is seen at once");
+        let slow = ReleaseGuard::begin(&CameraId("drop-slow".into()));
+        let started = Instant::now();
+        assert!(!slow.release.wait(DROP_WAIT), "an unfinished release times out");
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    /// With a camera present: every drop-then-reopen of the same camera succeeds. The test skips only when there is
+    /// no camera or the first open is unavailable; after that a reopen that fails, `Busy` included, is a regression.
+    #[test]
+    fn a_dropped_camera_can_be_reopened_at_once() {
+        let mut camera = MfCamera::new().expect("Media Foundation starts");
+        let Some(info) = camera.enumerate().into_iter().find(|c| !c.formats.is_empty()) else { return };
+        let Ok(first) = camera.open(&info.id, &CameraFormatRequest::default()) else { return };
+        drop(first);
+        for round in 0..3 {
+            let stream = camera
+                .open(&info.id, &CameraFormatRequest::default())
+                .unwrap_or_else(|e| panic!("reopen {round} after a drop failed: {e}"));
+            drop(stream);
+        }
+    }
+
+    /// A fake source: `held` is true while it holds the device, and its reaper lets go after a delay.
+    struct FakeSource {
+        held: Arc<std::sync::atomic::AtomicBool>,
+        delay: Duration,
+        release: ReleaseGuard,
+    }
+
+    fn let_go(source: FakeSource) {
+        std::thread::sleep(source.delay);
+        source.held.store(false, Ordering::SeqCst);
+        drop(source.release);
+    }
+
+    /// Drop, then reopen at once, with a source that takes a little while to let go: the drop waits for it, so the
+    /// device is free when the reopen looks, and the reopen has nothing to wait for. No hardware needed.
+    #[test]
+    fn drop_then_reopen_finds_the_device_free() {
+        let id = CameraId("fake-quick".into());
+        let held = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let source = |release| FakeSource { held: Arc::clone(&held), delay: Duration::from_millis(20), release };
+        assert!(release_and_wait(&id, source, let_go, Duration::from_secs(10)), "the drop saw the release");
+        assert!(!held.load(Ordering::SeqCst), "the device was still held when the drop returned");
+        assert!(await_released(&id, Duration::ZERO).is_ok(), "nothing is left to wait for");
+    }
+
+    /// A source slower than the drop's wait: the drop returns without it, the reopen then waits and finds the device
+    /// free, and a reopen that cannot wait that long gets `Busy` rather than a racing open.
+    #[test]
+    fn a_slow_release_makes_the_reopen_wait_or_report_busy() {
+        let id = CameraId("fake-slow".into());
+        let held = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let source = |release| FakeSource { held: Arc::clone(&held), delay: Duration::from_millis(400), release };
+        assert!(!release_and_wait(&id, source, let_go, Duration::from_millis(10)), "the drop gave up at its bound");
+        assert!(held.load(Ordering::SeqCst), "the fake is still holding the device");
+        assert!(matches!(await_released(&id, Duration::from_millis(10)), Err(TrackError::Busy(ref b)) if *b == id));
+        assert!(await_released(&id, Duration::from_secs(10)).is_ok(), "a patient reopen is let through");
+        assert!(!held.load(Ordering::SeqCst), "the device is free once the reopen is let through");
+    }
+
+    /// A thread that is a guest in another apartment is probed again on every call, so when that apartment goes the
+    /// guard takes over instead of trusting a stale answer: STA up, use, STA down, use again.
+    #[test]
+    fn a_guest_thread_is_probed_again_after_its_apartment_goes() {
+        use windows::Win32::System::Com::COINIT_APARTMENTTHREADED;
+
+        std::thread::spawn(|| {
+            let standing = || APARTMENT.with(|a| a.standing.get());
+            // SAFETY: plain calls on this test's own thread; the STA is torn down below, once.
+            unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.ok().expect("the STA starts");
+            enter_com().expect("a guest thread is usable");
+            assert!(standing() == Standing::Guest, "the STA is not ours");
+            let before = com_init_calls();
+            enter_com().expect("still usable");
+            assert_eq!(com_init_calls(), before + 1, "a guest is probed on every call");
+            // SAFETY: pairs the `CoInitializeEx` above.
+            unsafe { CoUninitialize() };
+            enter_com().expect("the thread is usable once the STA is gone");
+            assert!(standing() == Standing::Owner, "the guard took over");
+            let mut harness =
+                bench_support::Harness::new(PixelFormat::Nv12, 64, 48, 64).expect("Media Foundation works again");
+            harness.next_frame().expect("a frame after the STA went");
+        })
+        .join()
+        .expect("the thread finished");
+    }
+
+    /// Two doubles of a 2-D buffer: both have `Lock2D`; `SizedSurface` also has `Lock2DSize` (the readable extent). The
+    /// packed `Lock` of a `Surface` hands over tight rows, as Media Foundation's does; a `SizedSurface` refuses it.
+    mod surface {
+        #![allow(clippy::ref_as_ptr, clippy::inline_always)] // the `implement` expansion
+
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use windows::Win32::Foundation::{E_FAIL, E_NOTIMPL};
+        use windows::Win32::Media::MediaFoundation::{
+            IMF2DBuffer, IMF2DBuffer_Impl, IMF2DBuffer2, IMF2DBuffer2_Impl, IMFMediaBuffer, IMFMediaBuffer_Impl,
+            MF2DBuffer_LockFlags,
+        };
+        use windows::core::{BOOL, Ref, implement};
+
+        /// The memory, where the top row starts and the signed pitch, the tight copy a packed `Lock` hands over (empty
+        /// to refuse it), and how many packed locks happened.
+        pub(super) struct Layout {
+            pub(super) memory: Vec<u8>,
+            pub(super) top: usize,
+            pub(super) pitch: i32,
+            pub(super) packed: Vec<u8>,
+            pub(super) packed_locks: Arc<AtomicUsize>,
+        }
+
+        macro_rules! buffer_impls {
+            ($ty:ident, $imp:ident) => {
+                impl IMFMediaBuffer_Impl for $imp {
+                    fn Lock(&self, start: *mut *mut u8, _: *mut u32, len: *mut u32) -> windows::core::Result<()> {
+                        self.0.packed_locks.fetch_add(1, Ordering::SeqCst);
+                        if self.0.packed.is_empty() {
+                            return Err(E_FAIL.into());
+                        }
+                        // SAFETY: the caller passes valid out-pointers; the copy is only read.
+                        unsafe {
+                            *start = self.0.packed.as_ptr().cast_mut();
+                            *len = u32::try_from(self.0.packed.len()).unwrap_or(u32::MAX);
+                        }
+                        Ok(())
+                    }
+                    fn Unlock(&self) -> windows::core::Result<()> {
+                        Ok(())
+                    }
+                    fn GetCurrentLength(&self) -> windows::core::Result<u32> {
+                        Ok(u32::try_from(self.0.memory.len()).unwrap_or(u32::MAX))
+                    }
+                    fn SetCurrentLength(&self, _: u32) -> windows::core::Result<()> {
+                        Ok(())
+                    }
+                    fn GetMaxLength(&self) -> windows::core::Result<u32> {
+                        Ok(u32::try_from(self.0.memory.len()).unwrap_or(u32::MAX))
+                    }
+                }
+
+                impl IMF2DBuffer_Impl for $imp {
+                    fn Lock2D(&self, scanline0: *mut *mut u8, pitch: *mut i32) -> windows::core::Result<()> {
+                        // SAFETY: valid out-pointers; `top` lies inside `memory`, which is only read.
+                        unsafe {
+                            *scanline0 = self.0.memory.as_ptr().add(self.0.top).cast_mut();
+                            *pitch = self.0.pitch;
+                        }
+                        Ok(())
+                    }
+                    fn Unlock2D(&self) -> windows::core::Result<()> {
+                        Ok(())
+                    }
+                    fn GetScanline0AndPitch(
+                        &self,
+                        scanline0: *mut *mut u8,
+                        pitch: *mut i32,
+                    ) -> windows::core::Result<()> {
+                        self.Lock2D(scanline0, pitch)
+                    }
+                    fn IsContiguousFormat(&self) -> windows::core::Result<BOOL> {
+                        Ok(BOOL(0))
+                    }
+                    fn GetContiguousLength(&self) -> windows::core::Result<u32> {
+                        Ok(u32::try_from(self.0.packed.len()).unwrap_or(u32::MAX))
+                    }
+                    fn ContiguousCopyTo(&self, _: *mut u8, _: u32) -> windows::core::Result<()> {
+                        Err(E_NOTIMPL.into())
+                    }
+                    fn ContiguousCopyFrom(&self, _: *const u8, _: u32) -> windows::core::Result<()> {
+                        Err(E_NOTIMPL.into())
+                    }
+                }
+            };
+        }
+
+        #[implement(IMFMediaBuffer, IMF2DBuffer)]
+        pub(super) struct Surface(pub(super) Layout);
+        buffer_impls!(Surface, Surface_Impl);
+
+        #[implement(IMFMediaBuffer, IMF2DBuffer, IMF2DBuffer2)]
+        pub(super) struct SizedSurface(pub(super) Layout);
+        buffer_impls!(SizedSurface, SizedSurface_Impl);
+
+        impl IMF2DBuffer2_Impl for SizedSurface_Impl {
+            fn Lock2DSize(
+                &self,
+                _: MF2DBuffer_LockFlags,
+                scanline0: *mut *mut u8,
+                pitch: *mut i32,
+                start: *mut *mut u8,
+                len: *mut u32,
+            ) -> windows::core::Result<()> {
+                self.Lock2D(scanline0, pitch)?;
+                // SAFETY: valid out-pointers; the whole of `memory` is the readable extent.
+                unsafe {
+                    *start = self.0.memory.as_ptr().cast_mut();
+                    *len = u32::try_from(self.0.memory.len()).unwrap_or(u32::MAX);
+                }
+                Ok(())
+            }
+            fn Copy2DTo(&self, _: Ref<'_, IMF2DBuffer2>) -> windows::core::Result<()> {
+                Err(E_NOTIMPL.into())
+            }
+        }
+    }
+
+    const IMAGE_ROWS: usize = 4;
+    /// 32 YUY2 pixels: a row of 64 pixel bytes.
+    const ROW_BYTES: usize = 64;
+
+    /// Row `row` of the test image: every pixel byte is `row + 1`, so a misplaced row or a padding byte shows.
+    fn marker(row: usize) -> u8 {
+        u8::try_from(row + 1).unwrap_or(u8::MAX)
+    }
+
+    /// A 32x4 YUY2 image in memory with rows `pitch` bytes apart (the padding 0xEE), bottom-up if asked, as a layout
+    /// whose packed copy has tight rows top-down.
+    fn layout(
+        pitch: usize,
+        bottom_up: bool,
+        packed_locks: &Arc<std::sync::atomic::AtomicUsize>,
+        offer_packed: bool,
+    ) -> surface::Layout {
+        let mut memory = vec![0xEE_u8; pitch * IMAGE_ROWS];
+        for r in 0..IMAGE_ROWS {
+            let image_row = if bottom_up { IMAGE_ROWS - 1 - r } else { r };
+            memory[r * pitch..r * pitch + ROW_BYTES].fill(marker(image_row));
+        }
+        let packed = if offer_packed {
+            (0..IMAGE_ROWS).flat_map(|r| std::iter::repeat_n(marker(r), ROW_BYTES)).collect()
+        } else {
+            Vec::new()
+        };
+        let signed = i32::try_from(pitch).expect("a small pitch");
+        let (top, signed) = if bottom_up { ((IMAGE_ROWS - 1) * pitch, -signed) } else { (0, signed) };
+        surface::Layout { memory, top, pitch: signed, packed, packed_locks: Arc::clone(packed_locks) }
+    }
+
+    /// Locks `buffer` the way `next_frame` does and returns the cost, the pitch of the lock and the image's rows
+    /// top-down, each only its pixel bytes (what a consumer reads through the stride).
+    fn read_rows(buffer: IMFMediaBuffer) -> (Cost, isize, Vec<Vec<u8>>) {
+        let mode = ModeInfo { format: PixelFormat::Yuy2, width: 32, height: 4, fps_num: 30, fps_den: 1 };
+        let id = CameraId("surface".into());
+        // The packed lock's default stride is the tight, top-down one.
+        let (held, cost) = lock_buffer(buffer, &mode, ROW_BYTES.cast_signed(), true, &id).expect("the buffer locks");
+        // SAFETY: the lock is held until `unlock` below, after the slice's last use.
+        let bytes = unsafe { held.bytes() };
+        let top_down: Vec<u8> = if held.pitch < 0 {
+            let mut flip = RowFlip::new(ROW_BYTES * IMAGE_ROWS);
+            flip.set_len(ROW_BYTES * IMAGE_ROWS).expect("the flip buffer is sized");
+            flip.fill(bytes, held.pitch, ROW_BYTES, IMAGE_ROWS).expect("the rows flip").to_vec()
+        } else {
+            let step = held.pitch.unsigned_abs();
+            (0..IMAGE_ROWS).flat_map(|r| bytes[r * step..r * step + ROW_BYTES].iter().copied()).collect()
+        };
+        let pitch = held.pitch;
+        held.unlock();
+        (cost, pitch, top_down.chunks(ROW_BYTES).map(<[u8]>::to_vec).collect())
+    }
+
+    fn assert_rows(rows: &[Vec<u8>]) {
+        assert_eq!(rows.len(), IMAGE_ROWS);
+        for (r, pixels) in rows.iter().enumerate() {
+            assert!(pixels.iter().all(|&b| b == marker(r)), "row {r} has foreign bytes: {pixels:?}");
+        }
+    }
+
+    /// A padded surface with a readable extent (`Lock2DSize`) is borrowed through its pitch: no packed lock, no copy,
+    /// right pixels, either way up.
+    #[test]
+    fn a_padded_sized_surface_is_borrowed_through_its_pitch() {
+        for bottom_up in [false, true] {
+            let packed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let buffer: IMFMediaBuffer = surface::SizedSurface(layout(80, bottom_up, &packed, false)).into();
+            let (cost, pitch, rows) = read_rows(buffer);
+            assert!(cost == Cost::Free);
+            assert_eq!(packed.load(Ordering::SeqCst), 0, "the packed Lock was used");
+            assert_eq!(pitch, if bottom_up { -80 } else { 80 });
+            assert_rows(&rows);
+        }
+    }
+
+    /// With `Lock2D` alone (no extent), padding is not promised readable: a padded surface takes the packed lock and
+    /// its tight rows, so no padding byte is ever read or handed over as a pixel.
+    #[test]
+    fn a_padded_surface_without_an_extent_takes_the_packed_lock() {
+        let packed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let buffer: IMFMediaBuffer = surface::Surface(layout(80, false, &packed, true)).into();
+        let (cost, pitch, rows) = read_rows(buffer);
+        assert!(cost == Cost::MayCopy, "the fallback is counted");
+        assert_eq!(packed.load(Ordering::SeqCst), 1);
+        assert_eq!(pitch, ROW_BYTES.cast_signed());
+        assert_rows(&rows);
+    }
+
+    /// An unpadded `Lock2D` surface is borrowed as it lies, either way up: no packed lock, no copy.
+    #[test]
+    fn an_unpadded_surface_is_borrowed_through_lock_2d() {
+        for bottom_up in [false, true] {
+            let packed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let buffer: IMFMediaBuffer = surface::Surface(layout(ROW_BYTES, bottom_up, &packed, true)).into();
+            let (cost, pitch, rows) = read_rows(buffer);
+            assert!(cost == Cost::Free);
+            assert_eq!(packed.load(Ordering::SeqCst), 0, "the packed Lock was used");
+            assert_eq!(pitch, if bottom_up { -(ROW_BYTES.cast_signed()) } else { ROW_BYTES.cast_signed() });
+            assert_rows(&rows);
+        }
+    }
+
+    /// Only unpadded rows are borrowed through `Lock2D` alone; a bottom-up one starts `height - 1` pitches back.
+    #[test]
+    fn unpadded_back_accepts_only_tight_rows() {
+        let yuy2 = ModeInfo { format: PixelFormat::Yuy2, width: 32, height: 4, fps_num: 30, fps_den: 1 };
+        assert_eq!(unpadded_back(&yuy2, 64), Some(0));
+        assert_eq!(unpadded_back(&yuy2, -64), Some(192));
+        assert_eq!(unpadded_back(&yuy2, 80), None);
+        assert_eq!(unpadded_back(&yuy2, 0), None);
+        assert_eq!(unpadded_back(&ModeInfo { format: PixelFormat::Mjpg, ..yuy2 }, 64), None);
+        // A planar frame is never one run of bytes behind a single pointer.
+        assert_eq!(unpadded_back(&ModeInfo { format: PixelFormat::Nv12, width: 64, ..yuy2 }, 64), None);
+    }
+
+    /// An NV12 surface with only `Lock2D`, whose Y pitch equals the width but whose UV plane is not next to the Y plane
+    /// in memory: it is not borrowed as one span (that would read the gap as chroma); the packed lock's copy is used.
+    #[test]
+    fn a_planar_surface_with_apart_planes_takes_the_packed_lock() {
+        const WIDTH: usize = 32;
+        const HEIGHT: usize = 4;
+        let mode = ModeInfo { format: PixelFormat::Nv12, width: 32, height: 4, fps_num: 30, fps_den: 1 };
+        let (y_len, uv_len, gap) = (WIDTH * HEIGHT, WIDTH * HEIGHT / 2, 64);
+        // Y, then a gap that is not chroma, then UV.
+        let mut memory = vec![0xEE_u8; y_len + gap + uv_len];
+        memory[..y_len].fill(0x10);
+        memory[y_len + gap..].fill(0x80);
+        let packed: Vec<u8> = std::iter::repeat_n(0x10, y_len).chain(std::iter::repeat_n(0x80, uv_len)).collect();
+        let locks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let layout = surface::Layout {
+            memory,
+            top: 0,
+            pitch: i32::try_from(WIDTH).expect("a small pitch"),
+            packed: packed.clone(),
+            packed_locks: Arc::clone(&locks),
+        };
+        let buffer: IMFMediaBuffer = surface::Surface(layout).into();
+        let id = CameraId("planar".into());
+        let (held, cost) = lock_buffer(buffer, &mode, WIDTH.cast_signed(), true, &id).expect("the buffer locks");
+        // SAFETY: the lock is held until `unlock` below, after the slice's last use.
+        let bytes = unsafe { held.bytes() }.to_vec();
+        held.unlock();
+        assert!(cost == Cost::MayCopy, "the fallback is counted");
+        assert_eq!(locks.load(Ordering::SeqCst), 1, "the packed Lock was not used");
+        assert_eq!(bytes, packed, "the chroma plane was read from the wrong place");
     }
 }
