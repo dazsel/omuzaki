@@ -64,6 +64,8 @@ Each crate describes itself in its own `Cargo.toml`, so adding a crate edits no 
 `cargo xtask crate-table` prints the table of every crate from those lines. `cargo xtask lint-crate-table` fails on a crate
 without them, on a `kind` that disagrees with `lint-deps`, and on a crate table in this file.
 
+A crate whose folder uses `omuzaki_embed::modules` (ADR 0054) lists that folder in `generated-mods = ["src/ops"]` under the same table (paths relative to the crate; `"src"` means `src/lib.rs`), and `cargo xtask lint-mods` then fails on a hand-written `mod` for a child of the folder or a missing generated `include!`.
+
 **Planned crates** (not in the workspace yet):
 
 - `omuzaki-llm-api` (API): not in the workspace yet (design): the LLM seam (CN-09, AG-01, AP-03): `LlmClient`, `TurnRequest` and the provider-neutral `ContentBlock`s, the pull-based `TurnStream` of `LlmEvent`s, `Usage` with `cost` in integer micro-dollars from a dated `PriceTable`, the offline pre-request `Ledger` bound, `LlmError`, `Cancel`, `register_llm_provider!`; design in `docs/design/llm-api.md`, ADR 0032

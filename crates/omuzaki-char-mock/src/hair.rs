@@ -292,12 +292,10 @@ impl PartKind for MockHair {
             if params.shading.brows_through { Ok(vec![ctx.face_overlay(FaceLayerId::Brows)?]) } else { Ok(Vec::new()) }
         };
         let material = hair_material(ctx.part, params, ctx.palette, overlays)?;
-        let mut out = PartOutput {
-            materials: vec![(material_id.clone(), material)],
-            rig: spring_chain(ctx, head.as_ref())?,
-            warnings,
-            ..PartOutput::default()
-        };
+        let mut out = PartOutput::new()
+            .with_materials(vec![(material_id.clone(), material)])
+            .with_rig(spring_chain(ctx, head.as_ref())?)
+            .with_warnings(warnings);
         let mesh = |name: &str, geometry: MeshData, dynamic: bool| PartMesh {
             name: name.to_owned(),
             geometry,

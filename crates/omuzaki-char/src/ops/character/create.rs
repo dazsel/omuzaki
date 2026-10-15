@@ -148,16 +148,13 @@ impl CharacterCreate {
             }
             StartingParts::Empty => BTreeMap::new(),
         };
-        Ok(CharacterDef {
-            name: self.name.trim().to_owned(),
-            template: self.template.clone(),
-            seed: self.seed,
-            palette: starting_palette(),
-            skin_tone: None,
-            parts,
-            face: defaults.face,
-            weight_brushes: BTreeMap::new(),
-        })
+        Ok(CharacterDef::new(self.name.trim().to_owned(), self.template.clone())
+            .with_seed(self.seed)
+            .with_palette(starting_palette())
+            .with_skin_tone(None)
+            .with_parts(parts)
+            .with_face(defaults.face)
+            .with_weight_brushes(BTreeMap::new()))
     }
 }
 

@@ -40,7 +40,7 @@ impl PartKind for TemplateBody {
     fn build(p: &Self::Params, _: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
         let layout = SoftSd.layout(&p.proportions, &p.shape, &p.hand);
         let fit: Arc<dyn BodyFit> = Arc::new(TemplateFit::new(layout));
-        Ok(PartOutput { publishes: Publishes::default().with::<FitFact>(fit), ..PartOutput::default() })
+        Ok(PartOutput::new().with_publishes(Publishes::default().with::<FitFact>(fit)))
     }
 }
 
