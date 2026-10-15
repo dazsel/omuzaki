@@ -13,6 +13,7 @@ omuzaki-track-api = { path = "../omuzaki-track-api" }
 
 [target.'cfg(windows)'.dependencies]
 windows.workspace = true
+windows-core.workspace = true
 
 # Native only: Media Foundation exists on Windows alone; the mode and error tables compile everywhere.
 [package.metadata.omuzaki]

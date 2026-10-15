@@ -2,8 +2,12 @@
 
 use omuzaki_camera_mf::modes::{
     E_ACCESSDENIED, MF_E_HW_MFT_FAILED_START_STREAMING, MF_E_VIDEO_RECORDING_DEVICE_INVALIDATED, MJPG, ModeInfo, NV12,
-    RGB32, YUY2, choose_mode, copy_top_down, map_hresult, subtype_format,
+    RGB32, YUY2, choose_mode, copy_top_down, frame_span, map_hresult, subtype_format,
 };
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use omuzaki_camera_mf::modes::{FrameSpan, SeqTracker, Slot, SlotFailure, Take};
 use omuzaki_track_api::camera::{CameraFormat, CameraFormatRequest, CameraId, PixelFormat};
 use omuzaki_track_api::error::TrackError;
 
@@ -119,4 +123,125 @@ fn bad_sizes_are_errors_and_leave_dst_alone() {
     assert!(copy_top_down(&BLOCK[..10], 4, 2, 3, &mut dst).is_err(), "short source");
     assert!(copy_top_down(&BLOCK, 4, 2, 3, &mut dst[..5]).is_err(), "short destination");
     assert_eq!(dst, [9; 6]);
+}
+
+#[test]
+fn nv12_frames_include_the_chroma_plane() {
+    let span = frame_span(PixelFormat::Nv12, 1280, 720, 1280, 0, 1_382_400).unwrap();
+    assert_eq!(span, FrameSpan { start: 0, len: 1_382_400 });
+    assert!(frame_span(PixelFormat::Nv12, 1280, 720, 1280, 0, 921_600).is_err(), "Y plane alone is too short");
+    assert!(frame_span(PixelFormat::Nv12, 1280, 720, -1280, 1_382_400, 2_000_000).is_err());
+}
+
+#[test]
+fn padded_rows_are_judged_by_their_real_extent() {
+    // 1280x720 BGRA with 64 bytes of padding per row is larger than the packed 3,686,400 bytes.
+    let pitch: usize = 4 * 1280 + 64;
+    let whole = 720 * pitch;
+    assert_eq!(frame_span(PixelFormat::Bgra8, 1280, 720, pitch.cast_signed(), 0, whole).unwrap().len, whole);
+    assert!(frame_span(PixelFormat::Bgra8, 1280, 720, pitch.cast_signed(), 0, whole - 1).is_err());
+    // YUY2 at 640x480 with 128 padding bytes per row, the top row 256 bytes into the allocation.
+    let pitch: usize = 2 * 640 + 128;
+    let span = frame_span(PixelFormat::Yuy2, 640, 480, pitch.cast_signed(), 256, 256 + 480 * pitch).unwrap();
+    assert_eq!(span, FrameSpan { start: 256, len: 480 * pitch });
+}
+
+#[test]
+fn bottom_up_frames_start_below_the_top_row() {
+    let pitch: usize = 4 * 4;
+    // 4x3 BGRA, top row last in memory: scanline0 is the third row.
+    let span = frame_span(PixelFormat::Bgra8, 4, 3, -(pitch.cast_signed()), 2 * pitch, 3 * pitch).unwrap();
+    assert_eq!(span, FrameSpan { start: 0, len: 3 * pitch });
+    assert!(frame_span(PixelFormat::Bgra8, 4, 3, -(pitch.cast_signed()), pitch, 3 * pitch).is_err(), "starts before");
+}
+
+#[test]
+fn degenerate_frames_are_refused() {
+    assert!(frame_span(PixelFormat::Mjpg, 4, 4, 0, 0, 100).is_err());
+    assert!(frame_span(PixelFormat::Bgra8, 4, 4, 0, 0, 100).is_err());
+    assert!(frame_span(PixelFormat::Bgra8, 4, 4, 8, 0, 1000).is_err(), "pitch below a row");
+    assert!(frame_span(PixelFormat::Bgra8, 4, 0, 16, 0, 1000).is_err());
+    assert!(frame_span(PixelFormat::Bgra8, u32::MAX, u32::MAX, isize::MAX, usize::MAX, usize::MAX).is_err());
+}
+
+#[test]
+fn sequence_numbers_show_skipped_captures() {
+    let mut seq = SeqTracker::new(30, 1);
+    let tick = 333_333;
+    let times = [0, tick, 2 * tick + 40, 3 * tick, 6 * tick, 7 * tick - 90];
+    let got: Vec<u64> = times.iter().map(|&t| seq.next(t, false)).collect();
+    assert_eq!(got, [0, 1, 2, 3, 6, 7], "two frames missing between 3 and 6");
+}
+
+#[test]
+fn sequence_ignores_a_slightly_fast_clock_and_honours_discontinuities() {
+    let mut seq = SeqTracker::new(30_000, 1001);
+    let tick = 333_667;
+    let mut last = 0;
+    for i in 0..1000_i64 {
+        last = seq.next(i * (tick - 300), false); // 0.1% fast: never a gap
+    }
+    assert_eq!(last, 999);
+    assert_eq!(seq.next(1000 * (tick - 300), true), 1001, "the driver says one was lost");
+    let mut none = SeqTracker::new(0, 0);
+    assert_eq!((none.next(5, false), none.next(5, false), none.next(1, false)), (0, 1, 2));
+}
+
+#[test]
+fn a_slot_times_out_then_delivers_the_newest() {
+    let slot = Slot::new();
+    assert_eq!(slot.take(Duration::ZERO), Take::Timeout);
+    let started = Instant::now();
+    assert_eq!(slot.take(Duration::from_millis(30)), Take::Timeout);
+    assert!(started.elapsed() >= Duration::from_millis(30));
+    assert_eq!(slot.put(1), None);
+    assert_eq!(slot.put(2), Some(1), "the older frame is handed back to be dropped");
+    assert_eq!(slot.take(Duration::ZERO), Take::Item(2));
+}
+
+#[test]
+fn a_waiting_taker_wakes_for_a_put_from_another_thread() {
+    let slot = Arc::new(Slot::new());
+    let producer = Arc::clone(&slot);
+    let thread = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(20));
+        producer.put(7);
+    });
+    assert_eq!(slot.take(Duration::from_secs(10)), Take::Item(7));
+    thread.join().unwrap();
+}
+
+#[test]
+fn failures_and_closing_end_the_wait() {
+    let slot = Slot::new();
+    slot.put(1);
+    slot.fail(SlotFailure::Hresult(-5));
+    assert_eq!(slot.take(Duration::ZERO), Take::Item(1), "a frame that arrived comes first");
+    assert_eq!(slot.take(Duration::ZERO), Take::Failed(SlotFailure::Hresult(-5)));
+    assert_eq!(slot.take(Duration::ZERO), Take::Failed(SlotFailure::Hresult(-5)), "and it stays failed");
+
+    let slot = Slot::new();
+    slot.close();
+    assert_eq!(slot.take(Duration::from_secs(10)), Take::Closed);
+    assert_eq!(slot.put(3), Some(3), "a late callback gets its frame back");
+}
+
+#[test]
+fn a_flush_can_be_waited_for() {
+    let slot: Slot<u8> = Slot::new();
+    assert!(!slot.wait_flushed(Duration::from_millis(10)));
+    slot.mark_flushed();
+    assert!(slot.wait_flushed(Duration::ZERO));
+}
+
+#[test]
+fn an_unrepresentable_timeout_does_not_panic() {
+    let slot = Arc::new(Slot::new());
+    let producer = Arc::clone(&slot);
+    let thread = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(10));
+        producer.put(1);
+    });
+    assert_eq!(slot.take(Duration::MAX), Take::Item(1));
+    thread.join().unwrap();
 }

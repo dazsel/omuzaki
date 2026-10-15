@@ -1,4 +1,8 @@
-//! Capture modes, media subtypes and error codes: the parts of the camera that need no Windows to build or test.
+//! Capture modes, media subtypes and error codes, plus the pieces of the reader that need no Windows to build or test:
+//! frame bounds, row flipping, the device sequence and the timed hand-off between the capture callback and the caller.
+
+use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
+use std::time::{Duration, Instant};
 
 use omuzaki_track_api::camera::{CameraFormat, CameraFormatRequest, CameraId, PixelFormat};
 use omuzaki_track_api::error::TrackError;
@@ -116,4 +120,223 @@ pub fn copy_top_down(
         out.copy_from_slice(&block[at..at + row_bytes]);
     }
     Ok(())
+}
+
+/// Where a raw frame's bytes lie within a locked allocation: `start..start + len`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct FrameSpan {
+    /// Offset of the frame's first byte (its lowest-addressed row) from the start of the allocation.
+    pub start: usize,
+    /// Bytes from there to the end of the last row.
+    pub len: usize,
+}
+
+/// Checks that a raw `format` frame of `width` x `height` pixels, whose top row starts `scanline0` bytes into an
+/// allocation of `alloc_len` bytes with rows `pitch` bytes apart, lies wholly inside it, and says where.
+///
+/// A negative `pitch` is a bottom-up image: the top row is the highest-addressed one. The length is
+/// [`PixelFormat::frame_len`], so NV12 counts its chroma plane (1,382,400 bytes at 1280x720). Padding after rows
+/// counts, so a padded BGRA or YUY2 frame is judged by its real extent and not by its packed size. Planar NV12 must
+/// be top-down.
+///
+/// # Errors
+/// If the frame has no size, the pitch is 0 or narrower than a row, the layout is MJPG (it has no rows), or the
+/// frame does not fit in the allocation.
+pub fn frame_span(
+    format: PixelFormat,
+    width: u32,
+    height: u32,
+    pitch: isize,
+    scanline0: usize,
+    alloc_len: usize,
+) -> Result<FrameSpan, &'static str> {
+    let step = pitch.unsigned_abs();
+    let Some(row_bytes) = format.tight_stride(width) else { return Err("this layout has no rows") };
+    if width == 0 || height == 0 || step == 0 || step < row_bytes {
+        return Err("row pitch is smaller than a row");
+    }
+    if pitch < 0 && format == PixelFormat::Nv12 {
+        return Err("planar frames cannot be bottom-up");
+    }
+    let rows = height as usize;
+    let len = format.frame_len(height, step).ok_or("frame size overflows")?;
+    let start = if pitch < 0 {
+        let back = (rows - 1).checked_mul(step).ok_or("frame size overflows")?;
+        scanline0.checked_sub(back).ok_or("frame starts before its allocation")?
+    } else {
+        scanline0
+    };
+    match start.checked_add(len) {
+        Some(end) if end <= alloc_len => Ok(FrameSpan { start, len }),
+        _ => Err("frame does not fit in its allocation"),
+    }
+}
+
+/// Numbers frames like a device counter would, from capture times: a gap in the numbers is a skipped capture.
+///
+/// Media Foundation gives no frame counter, so the step between two frames is their time apart in whole frame
+/// intervals (at least 1). Counting steps, not elapsed time from the start, keeps a camera whose real rate is a
+/// little off its nominal one from showing invented gaps.
+#[derive(Copy, Clone, Debug)]
+pub struct SeqTracker {
+    interval: i64,
+    last: Option<(u64, i64)>,
+}
+
+impl SeqTracker {
+    /// For a camera running at `fps_num / fps_den` frames per second; a rate of 0 steps by 1 per frame (a
+    /// discontinuity still skips one).
+    pub fn new(fps_num: u32, fps_den: u32) -> Self {
+        let interval = if fps_num == 0 { 0 } else { i64::from(fps_den) * 10_000_000 / i64::from(fps_num) };
+        Self { interval, last: None }
+    }
+
+    /// The number of the frame captured at `time` (100 ns units). The first is 0. `discontinuity` is the driver's
+    /// flag that frames were lost before this one, so it steps by at least 2 even if the times look regular.
+    pub fn next(&mut self, time: i64, discontinuity: bool) -> u64 {
+        let seq = match self.last {
+            None => 0,
+            Some((seq, before)) => {
+                let apart = time.saturating_sub(before);
+                let mut step = if self.interval > 0 && apart > 0 {
+                    u64::try_from(apart.saturating_add(self.interval / 2) / self.interval).unwrap_or(u64::MAX)
+                } else {
+                    1
+                };
+                step = step.max(if discontinuity { 2 } else { 1 });
+                seq.saturating_add(step)
+            }
+        };
+        self.last = Some((seq, time));
+        seq
+    }
+}
+
+/// Why a wait on a [`Slot`] ended without a frame.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum SlotFailure {
+    /// The stream ended or errored.
+    Lost,
+    /// Media Foundation reported this `HRESULT`.
+    Hresult(i32),
+}
+
+/// What [`Slot::take`] found.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Take<T> {
+    /// The newest item.
+    Item(T),
+    /// Nothing arrived within the time.
+    Timeout,
+    /// The producer failed; stays so until the slot is dropped.
+    Failed(SlotFailure),
+    /// The slot was closed.
+    Closed,
+}
+
+/// A one-item mailbox with a timed wait: the capture callback puts, the caller takes, the newest item wins.
+#[derive(Debug)]
+pub struct Slot<T> {
+    state: Mutex<SlotState<T>>,
+    signal: Condvar,
+}
+
+#[derive(Debug)]
+struct SlotState<T> {
+    item: Option<T>,
+    failure: Option<SlotFailure>,
+    closed: bool,
+    flushed: bool,
+}
+
+impl<T> Default for Slot<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T> Slot<T> {
+    /// An empty, open slot.
+    pub const fn new() -> Self {
+        Self {
+            state: Mutex::new(SlotState { item: None, failure: None, closed: false, flushed: false }),
+            signal: Condvar::new(),
+        }
+    }
+
+    fn lock(&self) -> MutexGuard<'_, SlotState<T>> {
+        // A panic elsewhere cannot leave this state half-written: every update is a single assignment.
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Stores `item` for the taker. Returns what the caller must drop: the item it replaced, or `item` itself if the
+    /// slot is closed. Dropping outside the lock keeps releases off the hand-off path.
+    pub fn put(&self, item: T) -> Option<T> {
+        let mut state = self.lock();
+        if state.closed {
+            return Some(item);
+        }
+        let old = state.item.replace(item);
+        drop(state);
+        self.signal.notify_all();
+        old
+    }
+
+    /// Records a failure for the taker.
+    pub fn fail(&self, failure: SlotFailure) {
+        self.lock().failure.get_or_insert(failure);
+        self.signal.notify_all();
+    }
+
+    /// Closes the slot: later puts are handed back and takes return [`Take::Closed`].
+    pub fn close(&self) {
+        self.lock().closed = true;
+        self.signal.notify_all();
+    }
+
+    /// Records that the producer finished flushing (see [`wait_flushed`](Self::wait_flushed)).
+    pub fn mark_flushed(&self) {
+        self.lock().flushed = true;
+        self.signal.notify_all();
+    }
+
+    /// Waits up to `timeout` for the producer's flush to finish; whether it did.
+    pub fn wait_flushed(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now().checked_add(timeout);
+        let mut state = self.lock();
+        while !state.flushed {
+            let Some(left) = remaining(deadline) else { return false };
+            state = self.signal.wait_timeout(state, left).unwrap_or_else(PoisonError::into_inner).0;
+        }
+        true
+    }
+
+    /// The newest item, waiting up to `timeout` for one. An item that arrived is returned before a failure or a
+    /// close. A zero `timeout` only looks.
+    pub fn take(&self, timeout: Duration) -> Take<T> {
+        let deadline = Instant::now().checked_add(timeout);
+        let mut state = self.lock();
+        loop {
+            if let Some(item) = state.item.take() {
+                return Take::Item(item);
+            }
+            if let Some(failure) = state.failure {
+                return Take::Failed(failure);
+            }
+            if state.closed {
+                return Take::Closed;
+            }
+            let Some(left) = remaining(deadline) else { return Take::Timeout };
+            state = self.signal.wait_timeout(state, left).unwrap_or_else(PoisonError::into_inner).0;
+        }
+    }
+}
+
+/// Time left until `deadline`, or `None` when it has passed. A deadline too far off to represent waits in one-hour
+/// pieces.
+fn remaining(deadline: Option<Instant>) -> Option<Duration> {
+    match deadline {
+        Some(at) => Some(at.saturating_duration_since(Instant::now())).filter(|d| !d.is_zero()),
+        None => Some(Duration::from_secs(3600)),
+    }
 }

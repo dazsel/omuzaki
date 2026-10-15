@@ -3446,6 +3446,7 @@ version = "0.0.0"
 dependencies = [
  "omuzaki-track-api",
  "windows",
+ "windows-core",
 ]
 
 [[package]]
