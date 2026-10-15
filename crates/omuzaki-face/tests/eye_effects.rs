@@ -91,6 +91,11 @@ fn paint(profile: &FaceProfile, p: &PaintParams) -> FaceDrawing {
                         let copied = copy_path(&part[layer], path, &mut out[layer]);
                         out[layer].push(Cmd::Stroke { path: copied, paint, width, cap, join, opacity });
                     }
+                    // A clip names a path of its own list too, so it moves with the copy.
+                    Cmd::PushClip(path) => {
+                        let copied = copy_path(&part[layer], path, &mut out[layer]);
+                        out[layer].push(Cmd::PushClip(copied));
+                    }
                     other => out[layer].push(other),
                 }
             }
@@ -351,6 +356,62 @@ fn gloom_draws_its_band_and_hatch_on_the_overlay() {
     let overlay = &drawing[FaceLayerId::Overlay];
     // The band, then nine hatch lines.
     assert_eq!(overlay.cmds().len(), 1 + 9);
+}
+
+#[test]
+fn the_sweat_drop_fits_a_small_rect_instead_of_panicking() {
+    let profile = profile();
+    let p = params(|_, s| *s = 1.0);
+    // From a normal rect down to ones narrower than 13 mm or shorter than 24 mm, and a degenerate one.
+    for (w, h) in [(0.4, 0.29), (0.02, 0.2), (0.2, 0.02), (0.005, 0.005), (0.0, 0.0)] {
+        let rect = FaceRect { x0: -w / 2.0, x1: w / 2.0, y0: -h / 2.0, y1: h / 2.0 };
+        let proj = FaceProjection { rect, front_fade: [0.0, 0.07] };
+        let input = FaceInput { profile: &profile, params: &p, time: Seconds(0.0), view: FaceView::default() };
+        let mut out = FaceDrawing::new();
+        RealPainter::new(proj, DEFAULT_PX_PER_M).paint_section(Section::Overlay, &input, &mut out).unwrap();
+        for pt in points(&out[FaceLayerId::Overlay]) {
+            assert!(
+                pt.x >= rect.x0 - 1e-6 && pt.x <= rect.x1 + 1e-6 && pt.y >= rect.y0 - 1e-6 && pt.y <= rect.y1 + 1e-6,
+                "{w} x {h}: a point at {pt:?} is outside the rect"
+            );
+        }
+    }
+}
+
+/// The opacity of the closed eye's curve and lashes: the strokes of the lash colour and widths that are not the
+/// chevron (three points, the same width as the curve).
+fn closed_opacity(list: &DrawList) -> f32 {
+    list.cmds()
+        .iter()
+        .filter_map(|c| match c {
+            Cmd::Stroke { path, width, opacity, .. }
+                if ((width - 0.0048).abs() < 1e-7 || (width - 0.0018).abs() < 1e-7)
+                    && list.elements(*path).len() != 3 =>
+            {
+                Some(*opacity)
+            }
+            _ => None,
+        })
+        .fold(0.0, f32::max)
+}
+
+#[test]
+fn a_squeeze_crossfades_the_closed_eye_into_the_chevron_with_no_jump() {
+    let profile = profile();
+    for arc in [0.0, 1.0] {
+        let mut last = 1.0;
+        for step in 0..=100_u8 {
+            let squeeze = f32::from(step) / 100.0;
+            let mut p = params(|e, _| e.squeeze = squeeze);
+            p.left_eye = omuzaki_face_api::EyeParams { open: 1.0, close: 1.0, arc, lower_lid: 0.0 };
+            p.right_eye = p.left_eye;
+            let drawn = paint(&profile, &p).into_base();
+            let closed = closed_opacity(&drawn);
+            assert!((closed - (1.0 - squeeze)).abs() < 1e-5, "arc {arc} squeeze {squeeze}: closed eye at {closed}");
+            assert!(last - closed < 0.011, "arc {arc}: the closed eye jumped from {last} to {closed} at {squeeze}");
+            last = closed;
+        }
+    }
 }
 
 // ------------------------------------------------------------------------------------------------ allocation

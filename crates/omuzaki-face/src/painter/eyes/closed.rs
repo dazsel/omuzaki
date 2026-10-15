@@ -5,7 +5,7 @@
 //! The two styles switch at `arc` 0.5, as the prototype's do; the face never invents an arc (the grammar stage does).
 
 use omuzaki_core::glam::Vec2;
-use omuzaki_face_api::{FaceLayerId, Paint};
+use omuzaki_face_api::{Cap, Cmd, FaceLayerId, Join, Paint};
 
 use super::aperture::{Eye, Lid};
 use super::{FALLBACK_COLOUR, Side};
@@ -32,19 +32,20 @@ const LASH_OUT: f32 = 0.003;
 const LASH_DOWN: f32 = 0.005;
 const LASH_WIDTH: f32 = 0.0018;
 
-/// A squeeze above this takes the place of the relaxed curve.
-const SQUEEZE_OFF: f32 = 0.01;
-
 /// Paints one eye if it is shut, as the happy arc or the relaxed curve.
 pub(super) fn paint(ctx: &mut PaintCtx<'_>, side: Side) {
     let eye = Eye::new(ctx.profile, ctx.params, side);
     let height: fn(f32) -> f32 = match eye.lid() {
         Lid::Open => return,
         Lid::Arc => |u| ARC_BASE + ARC_HEIGHT * (1.0 - u * u),
-        // A squeezed eye is the chevron of `effects`, not the relaxed curve.
-        Lid::Relaxed if ctx.params.effects.squeeze > SQUEEZE_OFF => return,
         Lid::Relaxed => |u| RELAXED_BASE - RELAXED_BOW * (1.0 - u * u) + RELAXED_SLOPE * u,
     };
+    // A squeeze turns the eye into the chevron of `effects`: the closed curve and its lashes fade out as the chevron
+    // fades in, so the two cross-fade without a jump at any squeeze.
+    let opacity = 1.0 - ctx.params.effects.squeeze.clamp(0.0, 1.0);
+    if opacity <= 0.0 {
+        return;
+    }
     let colour = fixed_colour(&ctx.profile.eyes.lash.colour, FALLBACK_COLOUR);
     let mut points = [Vec2::ZERO; POINTS];
     for (i, p) in points.iter_mut().enumerate() {
@@ -55,13 +56,27 @@ pub(super) fn paint(ctx: &mut PaintCtx<'_>, side: Side) {
     }
     let list = ctx.list(FaceLayerId::Base);
     let path = list.path().polyline(&points).finish();
-    list.stroke(path, Paint::Solid(colour), WIDTH);
+    list.push(Cmd::Stroke {
+        path,
+        paint: Paint::Solid(colour),
+        width: WIDTH,
+        cap: Cap::Round,
+        join: Join::Round,
+        opacity,
+    });
     if eye.lid() == Lid::Relaxed {
         for u in LASHES {
             let from = eye.point(u, height(u));
             let to = from + Vec2::new(eye.outward() * LASH_OUT, -LASH_DOWN);
             let lash = list.path().move_to(from).line_to(to).finish();
-            list.stroke(lash, Paint::Solid(colour), LASH_WIDTH);
+            list.push(Cmd::Stroke {
+                path: lash,
+                paint: Paint::Solid(colour),
+                width: LASH_WIDTH,
+                cap: Cap::Round,
+                join: Join::Round,
+                opacity,
+            });
         }
     }
 }

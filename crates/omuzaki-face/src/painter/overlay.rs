@@ -71,8 +71,11 @@ fn rect(ctx: &PaintCtx<'_>) -> FaceRect {
 /// The sweat drop at the character's left temple.
 fn sweat_drop(ctx: &mut PaintCtx<'_>, strength: f32) {
     let layout = &ctx.profile.layout;
-    let size = DROP_HALF * (DROP_SMALLEST + (1.0 - DROP_SMALLEST) * strength);
     let bounds = rect(ctx);
+    // The drop shrinks to fit a small rectangle, so the clamps below always have room (min <= max).
+    let fit =
+        ((bounds.x1 - bounds.x0) / (2.0 * DROP_HALF.x)).min((bounds.y1 - bounds.y0) / (2.0 * DROP_HALF.y)).min(1.0);
+    let size = DROP_HALF * (fit.max(0.0) * (DROP_SMALLEST + (1.0 - DROP_SMALLEST) * strength));
     // The outer corner of the eye on this side, out and up; kept clear of the rect's edges by the drop's own size.
     let outer = narrow(layout.eye_spacing + layout.eye_width * ctx.profile.eyes.scale);
     let at = Vec2::new(

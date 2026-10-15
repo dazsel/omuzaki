@@ -187,8 +187,43 @@ fn a_lowered_brow_drops_far_more_at_its_inner_end_than_at_its_outer_end() {
     let shift: Vec<f32> = rest.iter().zip(&lowered).map(|(a, b)| a - b).collect();
     let mid = shift.len() / 2;
     assert!((shift[0] - 0.031).abs() < 1e-5, "inner end dropped {}", shift[0]);
-    assert!((shift[mid] - 0.029).abs() < 1e-3, "middle dropped {}", shift[mid]);
+    // The lowered brow is straight, so the middle drops by the mean of the two ends.
+    assert!((shift[mid] - 0.0175).abs() < 1e-3, "middle dropped {}", shift[mid]);
     assert!((shift[shift.len() - 1] - 0.004).abs() < 1e-5, "outer end dropped {}", shift[shift.len() - 1]);
+}
+
+/// The largest distance of a centre line from the chord between its two ends.
+#[allow(clippy::cast_precision_loss)] // a few dozen stations
+fn bow(line: &[f32]) -> f32 {
+    let (first, last) = (line[0], line[line.len() - 1]);
+    let n = (line.len() - 1) as f32;
+    line.iter().enumerate().map(|(i, y)| (y - (first + (last - first) * i as f32 / n)).abs()).fold(0.0, f32::max)
+}
+
+#[test]
+fn a_brow_lowered_all_the_way_is_flat_against_its_chord() {
+    // With the style's own arch and the live arch parameter on, so neither can bring a bow back.
+    for arch in [0.0, 0.5, -0.5] {
+        let profile = mock_profile();
+        let mut params = neutral_params(&profile);
+        params.left_brow = BrowParams { height: -1.0, tilt: 0.0 };
+        params.brow_arch = arch;
+        let window =
+            FaceProjection { rect: FaceRect { x0: -0.2, x1: 0.2, y0: -0.3, y1: 1.0 }, front_fade: [0.0, 0.07] };
+        let drawing = paint_brows(&profile, &params, window);
+        let Some(Cmd::Fill { path, .. }) = drawing[FaceLayerId::Base].cmds().first() else { panic!("no brow") };
+        let pts: Vec<Vec2> = drawing[FaceLayerId::Base]
+            .elements(*path)
+            .iter()
+            .filter_map(|e| match e {
+                PathEl::Move(p) | PathEl::Line(p) => Some(*p),
+                _ => None,
+            })
+            .collect();
+        let n = pts.len() / 2;
+        let line: Vec<f32> = (0..n).map(|i| f32::midpoint(pts[i].y, pts[pts.len() - 1 - i].y)).collect();
+        assert!(bow(&line) < 1e-5, "arch {arch}: bow {} m", bow(&line));
+    }
 }
 
 #[test]

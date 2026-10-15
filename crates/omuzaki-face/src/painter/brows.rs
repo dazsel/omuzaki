@@ -103,12 +103,17 @@ fn outline(style: &Style, rect: &FaceRect, brow_y: f32, arch: f32, side: f32, br
 }
 
 /// How far a brow of `height` has moved at `t` along it, in metres: the height times the travel per unit there, which
-/// runs from the inner end through the middle to the outer end as the parabola through the three measured values.
+/// runs from the inner end through the middle to the outer end as the parabola through the three measured values. A
+/// lowered brow straightens as it comes down, like its arch (see [`arch_scale`]): the parabola's middle dips well below
+/// the chord between the ends, so the shift is blended to the straight line between the ends, and at -1 the brow is flat.
 fn height_shift(height: f32, t: f32) -> f32 {
     let [inner, middle, outer] = if height >= 0.0 { HEIGHT_RAISE } else { HEIGHT_LOWER };
     let bend = 4.0 * (middle - inner) - (outer - inner);
     let curve = (outer - inner) - bend;
-    height * (inner + bend * t + curve * t * t)
+    let line = inner + (outer - inner) * t;
+    let parabola = inner + bend * t + curve * t * t;
+    let straight = (-height).clamp(0.0, 1.0);
+    height * (parabola + (line - parabola) * straight)
 }
 
 /// The arch's scale for a brow of `height`: 1 at rest, [`ARCH_RAISED`] more raised by one unit, none left lowered by
