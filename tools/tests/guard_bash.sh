@@ -33,6 +33,15 @@ check 2 'gh auth token'
 check 2 'gh auth status --show-token'
 check 2 'gh auth status -t'
 check 2 'echo url=https://github.com | git credential fill'
+check 2 'printenv GH_TOKEN'
+check 2 'echo "$GITHUB_TOKEN"'
+check 2 'curl -H "Authorization: token ${HF_TOKEN}" https://example.com'
+check 2 'env'
+check 2 'env -0 | sort'
+check 2 'printenv'
+check 2 'export -p'
+check 2 'set'
+check 2 'cat /proc/self/environ'
 # Director-only gh commands, in every argument position.
 check 2 'gh pr merge 12'
 check 2 'gh pr -R dazsel/omuzaki merge 12'
@@ -57,6 +66,9 @@ check 2 'gh api repos/o/r/issues/1/comments -f body=hi'
 check 2 'gh api repos/o/r/issues/1/labels --input labels.json'
 check 2 'gh api --method=PATCH repos/o/r -F allow_auto_merge=true'
 check 2 "gh api graphql -f query='mutation { enqueuePullRequest(input: {pullRequestId: \"x\"}) { clientMutationId } }'"
+check 2 'gh api graphql --input payload.json'
+check 2 $'gh pr \\\nmerge 12'
+check 2 $'gh pr -R o/r \\\n  merge 12'
 check 2 'sh -c "gh pr merge 12"'
 check 2 'bash -c "cd x && gh pr -R o/r merge 12"'
 # Forcing or deleting pushes.
@@ -74,6 +86,9 @@ check 2 'git push --mirror origin'
 check 2 'git push --force-with-lease origin HEAD:cloud/other' "$repo"
 check 2 'git push --force-with-lease=cloud/other:abc123 origin HEAD:refs/heads/cloud/other' "$repo"
 check 2 'git -C not-a-repo push --force-with-lease origin cloud/mine' "$repo"
+check 2 'git push --force-with-lease --all origin' "$repo"
+check 2 'git push --force-with-lease --branches origin' "$repo"
+check 2 'git push --force-with-lease --tags origin' "$repo"
 # Ordinary commands pass.
 check 0 'cargo xtask check --affected'
 check 0 'git push origin cloud/1234-thing'
@@ -94,6 +109,12 @@ check 0 'gh api -X GET search/issues -f q=is:open'
 check 0 "gh api graphql -f query='query { viewer { login } }'"
 check 0 'cat .config/nextest.toml'
 check 0 'gh pr comment 12 --body-file fixed.md'
+check 0 'set -euo pipefail'
+check 0 'env RUST_LOG=debug cargo xtask check'
+check 0 'export PATH="$HOME/bin:$PATH"'
+check 0 'printenv PATH'
+check 0 'echo "$HOME"'
+check 0 $'cargo xtask check \\\n  --affected'
 check 0 'gh run view 123 --log-failed'
 check 0 'grep -rn environment crates/'
 check 0 'cat docs/maintainers/cloud-lane.md'

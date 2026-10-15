@@ -120,14 +120,17 @@ lane's or were handed to it on #2.
     gets past `Bash(gh pr merge *)`. So a hook, `tools/hooks/guard_bash.py`, reads every shell command the way `gh`
     and `git` parse it, in any argument order and inside `sh -c "..."`, and blocks the same operations. It also
     blocks every `gh api` call that writes (any method but GET, fields without a method, GraphQL mutations): write
-    through `gh` subcommands such as `gh pr comment` and `gh pr edit`. A `--force-with-lease` push may only target the
-    branch that's checked out.
+    through `gh` subcommands such as `gh pr comment` and `gh pr edit`. A GraphQL body from a file (`--input`) is
+    blocked too, since the hook can't read it. A `--force-with-lease` push may only target the branch that's checked
+    out, never `--all`, `--branches` or `--tags`.
   - A session only reads this file when this repository is its only repository. Give each session this repository
     alone.
   - **Secrets:** the `Read` denies stop Claude's file tools only, so the same hook refuses any shell command that
     names a secret path (`.env`, `~/.ssh`, `~/.config`, `~/.cache` and the Hugging Face cache, `.netrc`, git
     credentials, private keys), including the bare directories, and the commands that print a credential
-    (`gh auth token`, `gh auth status --show-token`, `git credential`).
+    (`gh auth token`, `gh auth status --show-token`, `git credential`), print the environment (`env`, `printenv`,
+    `export -p` on their own) or read a secret variable (`$GH_TOKEN`, any name with TOKEN, SECRET, PASSWORD, API_KEY
+    or CREDENTIAL in it).
   - **The hook fails closed:** input it can't read blocks the call, and `onFailure: "block"` blocks the call if the hook
     can't start (Claude Code 2.1.295 or later). Tests: `tools/tests/guard_bash.sh`.
   - **It guards against mistakes, not a determined bypass.** A variable holding `merge`, a script file or `eval` gets

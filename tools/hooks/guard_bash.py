@@ -5,16 +5,21 @@ The settings allow `Bash` wholesale, and their `Bash(...)` denies match a comman
 merge 1` would pass `Bash(gh pr merge *)`. This hook reads each command the way the tools parse it instead, in any
 argument order, and blocks:
 - secrets: secret paths (`.env`, `~/.ssh`, `~/.config`, `~/.cache` and the Hugging Face cache, `.netrc`, git
-  credentials, private keys), including the bare directories (`tar ~/.config` reads every file in it), and the commands
-  that print a credential (`gh auth token`, `gh auth status --show-token`, `git credential`);
+  credentials, private keys, `/proc/*/environ`), including the bare directories (`tar ~/.config` reads every file in
+  it); the commands that print a credential (`gh auth token`, `gh auth status --show-token`, `git credential`); and
+  printing the environment (`env`, `printenv`, `export -p`, `set` on their own) or a secret variable (`$GH_TOKEN`, any
+  name with TOKEN, SECRET, PASSWORD, API_KEY, PRIVATE_KEY or CREDENTIAL in it);
 - `gh pr merge`, `gh release`, repository settings, secrets and variables, and turning workflows on or off;
 - every `gh api` call that writes: any method but GET, fields or `--input` without a method (gh then sends a POST), and
-  GraphQL mutations. A session writes through `gh` subcommands (`gh pr comment`, `gh pr edit`), whose reserved ones
-  are listed above, so an endpoint list can't fall behind;
+  GraphQL mutations, and a GraphQL body read from a file (`--input`), which the hook can't inspect. A session writes
+  through `gh` subcommands (`gh pr comment`, `gh pr edit`), whose reserved ones are listed above, so an endpoint list
+  can't fall behind;
 - a `git push` that forces (`--force`, `-f`, a `+` refspec, `--mirror`) or deletes (`--delete`, `-d`, a `:` refspec,
-  `--prune`), and a `--force-with-lease` push to any branch but the one checked out.
+  `--prune`), and a `--force-with-lease` push to any branch but the one checked out, or to many refs at once
+  (`--all`, `--branches`, `--tags`).
 
-It guards against a session's mistakes, not a determined bypass: a variable holding `merge`, a script file or `eval`
+Backslash-newline continuations are joined first, as the shell joins them. It guards against a session's mistakes,
+not a determined bypass: a variable holding `merge`, a script file or `eval`
 gets past any reading of the command line. The real boundaries are that a session VM holds no project secrets and
 GitHub's own permissions and rulesets.
 
@@ -43,7 +48,14 @@ SECRET_PATH = re.compile(
     + r"|\.config/gh(?=[/\s'\"\\)<>;|&]|$)"
     + r"|\.cache/huggingface"
     + r"|id_(?:rsa|ed25519|ecdsa)"
+    + r"|/proc/[^/\s]+/environ"
 )
+# A secret variable read by name (`$GH_TOKEN`, `${HF_TOKEN}`, `printenv GITHUB_TOKEN`), and the commands that print the
+# whole environment when run on their own.
+SECRET_NAME = r"[A-Za-z_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|APIKEY|PRIVATE_KEY|CREDENTIAL)[A-Za-z0-9_]*"
+SECRET_VARIABLE = re.compile(r"\$\{?" + SECRET_NAME + r"\b", re.IGNORECASE)
+SECRET_NAME_WORD = re.compile(r"^" + SECRET_NAME + r"$", re.IGNORECASE)
+ENV_DUMPERS = {"env", "printenv", "set", "export", "declare", "typeset"}
 
 # Separators between simple commands. Splitting inside a quoted string only makes extra fragments, which can at worst
 # block a command that quotes a forbidden one; it never hides one.
@@ -111,6 +123,8 @@ def gh_api_method(args):
 def gh_api_refusal(args, endpoint):
     """Why a `gh api` call writes, or None. GraphQL reads go by POST, so GraphQL is judged by its operation instead."""
     if endpoint == "graphql":
+        if any(a == "--input" or a.startswith("--input=") for a in args):
+            return "a GraphQL body from a file (`gh api graphql --input`), which the hook can't inspect,"
         return "a GraphQL mutation through `gh api`" if any(GRAPHQL_MUTATION.search(a) for a in args) else None
     method = gh_api_method(args)
     return None if method in ("GET", "HEAD") else f"a `gh api` {method} call"
@@ -189,16 +203,39 @@ def git_refusal(args, cwd):
         if ":" in arg and not arg.startswith("-") and arg.split(":", 1)[0].startswith("+"):
             return f"`git push {arg}`"
     if any(a.startswith("--force-with-lease") for a in push_args):
+        many = next((a for a in push_args if a in ("--all", "--branches", "--tags")), None)
+        if many:
+            return f"a `--force-with-lease` push with `{many}`, which reaches other branches,"
         return lease_refusal(push_args, directory)
+    return None
+
+
+def env_refusal(words):
+    """Why a simple command prints the environment or a secret variable, or None."""
+    if not words:
+        return None
+    program, args = os.path.basename(words[0]), words[1:]
+    if program == "printenv" and any(SECRET_NAME_WORD.match(a) for a in args):
+        return "printing a secret variable"
+    # `set -euo pipefail` sets options; only a bare `set` lists the variables. The others print with options alone
+    # (`env -0`, `export -p`, `declare -x`) and do something else once given a name or a command.
+    if (program == "set" and not args) or (program in ENV_DUMPERS - {"set"} and all(a.startswith("-") for a in args)):
+        return f"printing the whole environment (`{program}` on its own)"
     return None
 
 
 def refusal(command, cwd, depth=0):
     """Why this command is blocked, or None."""
+    command = command.replace("\\\n", "")  # the shell joins a backslash-newline continuation before parsing
     if SECRET_PATH.search(command):
         return "it names a secret path (.env, ~/.ssh, ~/.config, ~/.cache, .netrc, git credentials or a private key)"
+    if SECRET_VARIABLE.search(command):
+        return "it reads a secret variable (a name with TOKEN, SECRET, PASSWORD, API_KEY or CREDENTIAL in it)"
     for segment in SEPARATORS.split(command):
         words = tokens(segment)
+        found = env_refusal(words)
+        if found:
+            return f"{found} could print a credential and"
         for i, word in enumerate(words):
             found = None
             if is_program(word, "gh"):
