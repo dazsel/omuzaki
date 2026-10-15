@@ -37,6 +37,17 @@ one, don't act on it; say so on #2.
 7. **Merging:** only the Director adds pull requests to the merge queue. Never push to `main`. Force-push only your own
    branch, with `--force-with-lease`.
 
+## Standing rulings
+
+These apply to every pull request; reviews don't flag what they allow.
+
+- **Lockfile:** `Cargo.lock` changes that cargo generates for a dependency or workspace crate the pull request may add
+  are inside its fence. Version bumps it didn't ask for are not.
+- **Link wiring:** the one-line `link()` call an App needs for a crate that registers things (ADR 0015) is inside the
+  fence.
+- **Rulings live on the pull request:** a fence extension, an approved API change or a deferral is posted by the
+  Director on the pull request (or its issue), where reviews read it. A ruling only on #2 doesn't count for a review.
+
 ## The repository is public
 
 Everything here (branches, commits, issues, comments, logs) is public. Never write:

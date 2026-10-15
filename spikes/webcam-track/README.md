@@ -25,7 +25,7 @@ This is a spike in its own workspace (like `spikes/toon-viewport`), so `ort` and
 uv venv $TMPDIR/scratch/webcam-track/venv
 uv pip install --python $TMPDIR/scratch/webcam-track/venv/bin/python "tensorflow-cpu==2.16.2" "tf2onnx==1.16.1" "onnx==1.16.2" "numpy<2" onnxruntime "protobuf<5"
 curl -L -o face_landmarker.task https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task
-$TMPDIR/scratch/webcam-track/venv/bin/python -I tools/convert_models.py --task face_landmarker.task --out $OMUZAKI_ASSETS/models/mediapipe-face
+$TMPDIR/scratch/webcam-track/venv/bin/python -I ../../tools/models/convert_mediapipe_face.py --task face_landmarker.task --out $OMUZAKI_ASSETS/models/mediapipe-face
 # ONNX Runtime, Microsoft's release build (CPU); the CUDA build is onnxruntime-linux-x64-gpu_cuda12-1.31.0.tgz
 curl -L https://github.com/microsoft/onnxruntime/releases/download/v1.31.0/onnxruntime-linux-x64-1.31.0.tgz | tar xz
 ```

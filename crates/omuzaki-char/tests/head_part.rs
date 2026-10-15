@@ -90,10 +90,10 @@ fn the_kind_is_registered_as_a_project_owned_head_that_needs_the_body() {
 }
 
 #[test]
-fn it_builds_a_head_and_a_neck_skinned_to_the_head_neck_and_chest() {
+fn it_builds_a_head_a_neck_and_two_ears_skinned_to_the_head_neck_and_chest() {
     let built = build(&character(&json!({}))).unwrap();
     let names: Vec<_> = built.meshes.iter().map(|m| m.mesh.name.as_str()).collect();
-    assert_eq!(names, ["head-head", "head-neck"]);
+    assert_eq!(names, ["head-head", "head-neck", "head-ear-l", "head-ear-r"]);
     let materials: BTreeSet<_> = built.materials.keys().map(|m| m.as_str().to_owned()).collect();
     assert!(["head-skin-head", "head-skin-ear", "head-skin-neck"].iter().all(|m| materials.contains(*m)));
     let head = &built.meshes[0].mesh;

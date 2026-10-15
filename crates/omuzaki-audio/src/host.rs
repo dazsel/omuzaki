@@ -550,12 +550,13 @@ fn guarded(name: &'static str, shared: &WorkerShared, body: impl FnOnce()) {
             .or_else(|| payload.downcast_ref::<String>().cloned())
             .unwrap_or_else(|| "unknown panic".to_owned());
         shared.counters.workers_failed.fetch_add(1, Ordering::Relaxed);
+        // Stop first, then report: whoever reads the error event must already see a stopped host (`is_running`
+        // false, no more utterances accepted). The other worker has nothing useful left to do.
+        shared.stop.store(true, Ordering::Release);
+        shared.jobs.close();
         shared
             .emitter
             .emit(SpeechEvent::Error { utterance: None, message: format!("{name} thread panicked: {reason}") });
-        // The other worker has nothing useful left to do: stop the VAD and refuse further utterances.
-        shared.stop.store(true, Ordering::Release);
-        shared.jobs.close();
     }
 }
 

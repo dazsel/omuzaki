@@ -9,8 +9,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::FakeRunner;
-use omuzaki_mcp::{McpOptions, McpServer, ResourceProvider};
-use omuzaki_ops_api::{Grants, OpError, Runner, Scope};
+use omuzaki_mcp::{McpOptions, McpServer, MeasureProvider, RenderProvider, ResourceProvider};
+use omuzaki_ops_api::{Actor, Grants, Op, OpCtx, OpError, OpKind, OpMeta, Plan, Runner, Scope, Undo};
+use omuzaki_store_api::{Commercial, ContentHash, Store};
+use omuzaki_store_mock::{MemStore, conformance::sample_provenance};
 use rmcp::model::{
     CallToolRequestParams, ErrorCode, ResourceContents, ResourceTemplate, ResourceUpdatedNotificationParam,
     ServerNotification, SubscribeRequestParams, SubscriptionFilter, UnsubscribeRequestParams,
@@ -21,6 +23,8 @@ use rmcp::model::{
 use rmcp::service::{NotificationContext, ServiceError};
 use rmcp::service::{RoleClient, RunningService};
 use rmcp::{ClientHandler, ClientLifecycleMode, ClientServiceExt};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
@@ -361,4 +365,238 @@ async fn protocol_2026_listen_covers_provider_resources() {
         assert_eq!(got, expected, "after an edit to {character}");
     }
     subscription.cancel().await.unwrap();
+}
+
+// ---- measure -----------------------------------------------------------------------------------------------------
+
+/// A stand-in for `measure.liveliness`, which lives in `omuzaki-anim` (this crate doesn't depend on it). It answers what
+/// it was given, and refuses one baseline, so the tests can see the arguments, the actor and a refusal.
+#[derive(Serialize, Deserialize, JsonSchema)]
+struct Liveliness {
+    /// A life run or a recording.
+    source: Value,
+    /// The baseline to judge against.
+    baseline: String,
+}
+
+impl Op for Liveliness {
+    fn meta() -> OpMeta {
+        OpMeta {
+            name: "measure.liveliness",
+            summary: "Judge a life run or a recording against a baseline.",
+            kind: OpKind::Query,
+            scope: Scope::Read,
+            undo: Undo::None,
+        }
+    }
+
+    fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
+        if self.baseline == "dancing" {
+            return Err(OpError::invalid("baseline", "unknown baseline `dancing`"));
+        }
+        let ran_as_system = matches!(ctx.actor, Actor::System);
+        Ok(Plan::answer(json!({"baseline": self.baseline, "source": self.source, "ran_as_system": ran_as_system})))
+    }
+}
+
+omuzaki_ops_api::register_op!(Liveliness);
+
+/// A server with the measure provider registered, as the App registers it.
+async fn connect_measuring(options: McpOptions) -> RunningService<RoleClient, Client> {
+    connect(two_characters(), options.with_provider(Arc::new(MeasureProvider))).await
+}
+
+const LIFE_TEMPLATE: &str = "omuzaki://measure/liveliness/life/{seed}/{seconds}/{baseline}{?personality}";
+const RECORDING_TEMPLATE: &str = "omuzaki://measure/liveliness/recording/{baseline}/{+path}";
+
+#[tokio::test]
+async fn the_measure_templates_are_advertised_and_nothing_is_listed() {
+    let client = connect_measuring(McpOptions::default()).await;
+    let templates = client.list_all_resource_templates().await.unwrap();
+    let advertised: Vec<_> = templates.iter().map(|t| t.uri_template.as_str()).collect();
+    assert_eq!(advertised, ["omuzaki://character/{id}", LIFE_TEMPLATE, RECORDING_TEMPLATE]);
+    for template in templates.iter().filter(|t| t.uri_template.contains("measure")) {
+        assert_eq!(template.mime_type.as_deref(), Some("application/json"), "{}", template.uri_template);
+    }
+    // A measurement is computed on read, so there is nothing stored to list.
+    assert_eq!(
+        uris(&client).await,
+        ["omuzaki://log", "omuzaki://project", "omuzaki://character/mira", "omuzaki://character/noor"]
+    );
+}
+
+/// The body a measure read returns: one text resource, as JSON.
+async fn measure_body(client: &RunningService<RoleClient, Client>, uri: &str) -> Value {
+    let read = client.read_resource(ReadResourceRequestParams::new(uri)).await.unwrap();
+    assert_eq!(read.contents.len(), 1, "{uri}");
+    read_json(client, uri).await
+}
+
+#[tokio::test]
+async fn a_life_run_is_measured_as_the_system_and_its_answer_returned() {
+    let client = connect_measuring(McpOptions::default()).await;
+    let body = measure_body(&client, "omuzaki://measure/liveliness/life/1/20/rest").await;
+    assert_eq!(
+        body,
+        json!({
+            "op": "measure.liveliness",
+            "args": {"source": {"life": {"seed": 1, "seconds": 20.0}}, "baseline": "rest"},
+            "result": {"baseline": "rest", "source": {"life": {"seed": 1, "seconds": 20.0}}, "ran_as_system": true},
+        })
+    );
+}
+
+#[tokio::test]
+async fn a_personality_is_passed_to_the_op() {
+    let client = connect_measuring(McpOptions::default()).await;
+    let body = measure_body(&client, "omuzaki://measure/liveliness/life/1/20/rest?personality=shy").await;
+    assert_eq!(body["args"]["source"]["life"]["personality"], "shy");
+    assert_eq!(body["result"]["source"]["life"]["personality"], "shy");
+}
+
+#[tokio::test]
+async fn a_recording_is_measured_by_its_path_against_its_baseline() {
+    let client = connect_measuring(McpOptions::default()).await;
+    let body = measure_body(&client, "omuzaki://measure/liveliness/recording/talking/takes/a-1.json").await;
+    assert_eq!(body["args"], json!({"source": {"recording": "takes/a-1.json"}, "baseline": "talking"}));
+    assert_eq!(body["result"]["ran_as_system"], true);
+}
+
+#[tokio::test]
+async fn a_malformed_measure_uri_is_not_found_naming_both_forms() {
+    let client = connect_measuring(McpOptions::default()).await;
+    let bad = [
+        "omuzaki://measure/liveliness",
+        "omuzaki://measure/likeness/x",
+        "omuzaki://measure/liveliness/life/x/20/rest",
+        "omuzaki://measure/liveliness/life/1/abc/rest",
+        "omuzaki://measure/liveliness/life/1/20",
+        "omuzaki://measure/liveliness/life/1/20/rest?color=red",
+        "omuzaki://measure/liveliness/recording/rest/a%20b.json",
+        "omuzaki://measure/liveliness/recording/rest/",
+    ];
+    for uri in bad {
+        assert_eq!(read_error_code(&client, uri).await, ErrorCode::RESOURCE_NOT_FOUND, "{uri}");
+        let message = read_error(&client, uri).await;
+        assert!(
+            message.contains("life/<seed>/<seconds>/<baseline>") && message.contains("recording/<baseline>/<path>"),
+            "{uri}: {message}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_baseline_the_op_refuses_is_not_found_naming_the_measurement() {
+    let client = connect_measuring(McpOptions::default()).await;
+    let uri = "omuzaki://measure/liveliness/life/1/20/dancing";
+    assert_eq!(read_error_code(&client, uri).await, ErrorCode::RESOURCE_NOT_FOUND);
+    let message = read_error(&client, uri).await;
+    assert!(message.contains("names no measurement") && message.contains("dancing"), "{message}");
+}
+
+#[tokio::test]
+async fn a_measurement_needs_the_read_scope() {
+    let options = McpOptions::with_grants(Grants::of([Scope::EditCharacter]));
+    let client = connect_measuring(options).await;
+    let error = read_error(&client, "omuzaki://measure/liveliness/life/1/20/rest").await;
+    assert!(error.contains("needs the `read` scope"), "{error}");
+}
+
+// ---- render ------------------------------------------------------------------------------------------------------
+
+/// A PNG for the tests: the eight signature bytes, then three more.
+const PNG: &[u8] = &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3];
+
+/// A server with the render provider over `store`, as the App registers it.
+async fn connect_rendering(store: &Arc<MemStore>, options: McpOptions) -> RunningService<RoleClient, Client> {
+    let store: Arc<dyn Store> = store.clone();
+    connect(two_characters(), options.with_provider(Arc::new(RenderProvider::new(store)))).await
+}
+
+fn render_uri(hash: &ContentHash) -> String {
+    format!("omuzaki://render/{hash}.png")
+}
+
+#[tokio::test]
+async fn a_stored_render_is_read_as_a_png_blob() {
+    let store = Arc::new(MemStore::new());
+    let hash = store.put(PNG, sample_provenance(Commercial::Ok)).expect("stores");
+    let client = connect_rendering(&store, McpOptions::default()).await;
+    let uri = render_uri(&hash);
+    let read = client.read_resource(ReadResourceRequestParams::new(uri.clone())).await.unwrap();
+    assert_eq!(read.contents.len(), 1);
+    match &read.contents[0] {
+        ResourceContents::BlobResourceContents { uri: got, mime_type, blob, .. } => {
+            assert_eq!(got, &uri);
+            assert_eq!(mime_type.as_deref(), Some("image/png"));
+            assert_eq!(blob, "iVBORw0KGgoBAgM=");
+        }
+        other => panic!("expected a blob, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn the_render_template_is_advertised_and_nothing_is_listed() {
+    let store = Arc::new(MemStore::new());
+    store.put(PNG, sample_provenance(Commercial::Ok)).expect("stores");
+    let client = connect_rendering(&store, McpOptions::default()).await;
+    let templates = client.list_all_resource_templates().await.unwrap();
+    let advertised: Vec<_> = templates.iter().map(|t| t.uri_template.as_str()).collect();
+    assert_eq!(advertised, ["omuzaki://character/{id}", "omuzaki://render/{id}.png"]);
+    assert_eq!(templates[1].mime_type.as_deref(), Some("image/png"));
+    // A render never changes and the store cannot tell renders from other assets, so none is listed.
+    assert_eq!(
+        uris(&client).await,
+        ["omuzaki://log", "omuzaki://project", "omuzaki://character/mira", "omuzaki://character/noor"]
+    );
+}
+
+#[tokio::test]
+async fn what_names_no_render_is_resource_not_found() {
+    let store = Arc::new(MemStore::new());
+    let hash = store.put(PNG, sample_provenance(Commercial::Ok)).expect("stores");
+    let client = connect_rendering(&store, McpOptions::default()).await;
+    let never_stored = render_uri(&ContentHash::of(b"never stored"));
+    assert_eq!(read_error_code(&client, &never_stored).await, ErrorCode::RESOURCE_NOT_FOUND);
+    assert!(read_error(&client, &never_stored).await.contains("no render"));
+    let hash = hash.to_string();
+    for uri in [
+        "omuzaki://render/zzz.png".to_owned(),
+        format!("omuzaki://render/{hash}"),
+        format!("omuzaki://render/{}.png", hash.to_uppercase()),
+    ] {
+        assert_eq!(read_error_code(&client, &uri).await, ErrorCode::RESOURCE_NOT_FOUND, "{uri}");
+        assert!(read_error(&client, &uri).await.contains("64 lowercase hex characters"), "{uri}");
+    }
+}
+
+#[tokio::test]
+async fn a_stored_asset_that_is_not_a_png_is_not_a_render() {
+    let store = Arc::new(MemStore::new());
+    let hash = store.put(b"not a png", sample_provenance(Commercial::Ok)).expect("stores");
+    let client = connect_rendering(&store, McpOptions::default()).await;
+    let uri = render_uri(&hash);
+    assert_eq!(read_error_code(&client, &uri).await, ErrorCode::RESOURCE_NOT_FOUND);
+    assert!(read_error(&client, &uri).await.contains("isn't a PNG"));
+}
+
+#[tokio::test]
+async fn a_damaged_render_is_an_internal_error() {
+    let store = Arc::new(MemStore::new());
+    let hash = store.put(PNG, sample_provenance(Commercial::Ok)).expect("stores");
+    assert!(store.flip_byte(&hash));
+    let client = connect_rendering(&store, McpOptions::default()).await;
+    let uri = render_uri(&hash);
+    assert_eq!(read_error_code(&client, &uri).await, ErrorCode::INTERNAL_ERROR);
+    assert!(read_error(&client, &uri).await.contains("damaged"));
+}
+
+#[tokio::test]
+async fn a_render_needs_the_read_scope() {
+    let store = Arc::new(MemStore::new());
+    let hash = store.put(PNG, sample_provenance(Commercial::Ok)).expect("stores");
+    let options = McpOptions::with_grants(Grants::of([Scope::EditCharacter]));
+    let client = connect_rendering(&store, options).await;
+    let error = read_error(&client, &render_uri(&hash)).await;
+    assert!(error.contains("needs the `read` scope"), "{error}");
 }

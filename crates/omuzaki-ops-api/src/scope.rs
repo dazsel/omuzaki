@@ -21,6 +21,9 @@ pub enum Scope {
     /// Edit the library.
     #[serde(rename = "edit:library")]
     EditLibrary,
+    /// Change the person's settings, profiles and session list (never project data).
+    #[serde(rename = "edit:settings")]
+    EditSettings,
     /// Render previews and offline renders.
     #[serde(rename = "render")]
     Render,
@@ -60,11 +63,12 @@ pub enum Scope {
 
 impl Scope {
     /// Every scope, in a stable order (for docs and grant UIs).
-    pub const ALL: [Scope; 15] = [
+    pub const ALL: [Scope; 16] = [
         Scope::Read,
         Scope::EditCharacter,
         Scope::EditScene,
         Scope::EditLibrary,
+        Scope::EditSettings,
         Scope::Render,
         Scope::Perform,
         Scope::Broadcast,
@@ -97,6 +101,7 @@ impl Scope {
             Scope::EditCharacter => "edit:character",
             Scope::EditScene => "edit:scene",
             Scope::EditLibrary => "edit:library",
+            Scope::EditSettings => "edit:settings",
             Scope::Render => "render",
             Scope::Perform => "perform",
             Scope::Broadcast => "broadcast",
@@ -142,6 +147,17 @@ mod tests {
     fn risky_scopes_are_exactly_the_ones_that_reach_outside() {
         let risky: Vec<&str> = Scope::ALL.into_iter().filter(|s| s.is_risky()).map(Scope::name).collect();
         assert_eq!(risky, ["broadcast", "publish", "spend", "native", "input", "process"]);
+    }
+
+    #[test]
+    fn edit_settings_round_trips_and_sits_after_edit_library() {
+        let names: Vec<&str> = Scope::ALL.iter().map(|s| s.name()).collect();
+        let at = names.iter().position(|n| *n == "edit:library").unwrap();
+        assert_eq!(names[at + 1], "edit:settings");
+        assert_eq!(names.iter().filter(|n| **n == "edit:settings").count(), 1);
+        assert_eq!("edit:settings".parse::<Scope>().unwrap(), Scope::EditSettings);
+        assert_eq!(serde_json::to_string(&Scope::EditSettings).unwrap(), "\"edit:settings\"");
+        assert!(!Scope::EditSettings.is_risky());
     }
 
     #[test]
