@@ -188,8 +188,13 @@ pub fn fit_ordered(input: &FitInput<'_>, order: &[Param]) -> Result<FitResult, F
     let objective = Objective::new(input.template, input.targets, input.fixed)?;
     let start = FitParams::default();
     let first = objective.evaluate(&start)?;
-    let mut search =
-        Search { objective: &objective, params: start, best: first.clone(), keep: Keep::new(first.cost), evaluations: 1 };
+    let mut search = Search {
+        objective: &objective,
+        params: start,
+        best: first.clone(),
+        keep: Keep::new(first.cost),
+        evaluations: 1,
+    };
     let mut width = WINDOW;
     let mut stalled = false;
     loop {

@@ -307,12 +307,16 @@ impl ViewObjective {
         Map { s, u0: f32::midpoint(b[0], b[1]) - centre / s, v0: b[3] + top as f32 / s }
     }
 
+    /// The pixels the body `tris` and the fixed parts cover, aligned to the target; `None` if there is nothing to draw.
+    fn model_pixels(&self, body: &[Tri]) -> Option<Vec<bool>> {
+        let b = bounds(self.fixed.iter().chain(body))?;
+        Some(raster(&[&self.fixed, body], &self.align(b), self.mask.width, self.mask.height))
+    }
+
     /// `(iou, boundary distance over height)` of the body `tris` plus the fixed parts against the target.
     fn score(&self, body: &[Tri]) -> (f64, f64) {
         let (w, h) = (self.mask.width, self.mask.height);
-        let merged = bounds(self.fixed.iter().chain(body));
-        let Some(b) = merged else { return (0.0, 1.0) };
-        let on = raster(&[&self.fixed, body], &self.align(b), w, h);
+        let Some(on) = self.model_pixels(body) else { return (0.0, 1.0) };
         let (mut inter, mut union) = (0usize, 0usize);
         for (&a, &t) in on.iter().zip(&self.mask.on) {
             inter += usize::from(a && t);
@@ -338,6 +342,30 @@ pub(crate) struct Score {
     pub iou: f64,
     /// `IoU` per view, in the order of the targets.
     pub per_view: Vec<f64>,
+}
+
+/// One view's body mask and target mask, the same size and aligned.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ViewMasks {
+    /// The view.
+    pub view: FitView,
+    /// The silhouette of the body (and the fixed parts) of the parameters.
+    pub model: Silhouette,
+    /// The target the fit compares it with (the denoised mask).
+    pub target: Silhouette,
+}
+
+/// The body of `params` against each of `targets`, as the fit sees them (see [`ViewMasks`]).
+///
+/// # Errors
+/// As [`solver::fit`]; also [`FitError::BadMesh`] if the body shows nothing in a view.
+pub fn view_masks(
+    template: &str,
+    targets: &[Target],
+    fixed: &[MeshData],
+    params: &FitParams,
+) -> Result<Vec<ViewMasks>, FitError> {
+    Objective::new(template, targets, fixed)?.masks(params)
 }
 
 /// Everything a fit evaluates a candidate against.
@@ -376,6 +404,21 @@ impl Objective {
     /// The targets' views, in order.
     pub(crate) fn views(&self) -> impl Iterator<Item = FitView> + '_ {
         self.views.iter().map(|v| v.view)
+    }
+
+    /// For each view, the body of `params` and the (denoised) target the fit compares it with, aligned and rasterised
+    /// exactly as the score does: what the difference heatmap draws.
+    pub(crate) fn masks(&self, params: &FitParams) -> Result<Vec<ViewMasks>, FitError> {
+        let meshes = body_geometry(self.template, params)?;
+        self.views
+            .iter()
+            .map(|v| {
+                let tris = meshes.iter().map(|m| project(v.view, m)).collect::<Result<Vec<_>, _>>()?.concat();
+                let on = v.model_pixels(&tris).ok_or_else(|| FitError::BadMesh("nothing to draw".to_owned()))?;
+                let model = Silhouette { width: v.mask.width, height: v.mask.height, on };
+                Ok(ViewMasks { view: v.view, model, target: v.mask.clone() })
+            })
+            .collect()
     }
 
     /// Scores a body of `params`.
