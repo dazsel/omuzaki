@@ -11,10 +11,10 @@ use omuzaki_core::time::{FakeClock, Seconds};
 use omuzaki_doc_api::{DocPath, DocVersion, Patch};
 use omuzaki_doc_mock::MemDoc;
 use omuzaki_ops_api::{
-    Actor, ApprovalId, ApprovalRef, ApprovalRequest, Budget, Decision, EndReason, Ended, ErrorCode, ErrorDetail, Event,
-    Grants, JobId, KeptTx, Limits, Mode, Need, OpCtx, OpError, OpRecord, Outcome, PauseReason, PendingApproval, Plan,
-    Principals, Request, Resolution, Resolved, Scope, SessionChange, SessionId, SessionInfo, SessionSpec, SessionState,
-    SessionTx, SessionUndo, Sessions, Spend, StopStep, Stopped, Transport, TxId,
+    Actor, ApprovalId, ApprovalRef, ApprovalRequest, Budget, ClashKind, Decision, EndReason, Ended, ErrorCode,
+    ErrorDetail, Event, Grants, JobId, KeptTx, Limits, Mode, Need, OpCtx, OpError, OpRecord, Outcome, PauseReason,
+    PendingApproval, Plan, Principals, Request, Resolution, Resolved, Scope, SessionChange, SessionId, SessionInfo,
+    SessionSpec, SessionState, SessionTx, SessionUndo, Sessions, Spend, StopStep, Stopped, Transport, TxId,
 };
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -145,6 +145,7 @@ fn session_types_round_trip_and_have_schemas() {
         limits: Limits::default(),
         parent: None,
         role: None,
+        fence: vec![DocPath::parse("characters/a").unwrap()],
     });
     round_trips(&info());
     for state in [
@@ -179,6 +180,7 @@ fn session_types_round_trip_and_have_schemas() {
         SessionChange::Paused,
         SessionChange::Resumed { by: person() },
         SessionChange::Spent,
+        SessionChange::Fence { by: person() },
     ] {
         round_trips(&change);
     }
@@ -230,6 +232,8 @@ fn error_detail_round_trips_and_is_absent_when_none() {
         ErrorDetail::NoSession,
         ErrorDetail::RetryAfter { seconds: 1.5, limit: "edits_per_minute=600".into() },
         ErrorDetail::Changed { path: DocPath::parse("a/b").unwrap(), by: agent(), version: DocVersion(8) },
+        ErrorDetail::Fenced { path: DocPath::parse("a/b").unwrap(), holder: Some(agent()) },
+        ErrorDetail::Fenced { path: DocPath::parse("a/b").unwrap(), holder: None },
     ];
     for detail in details {
         round_trips(&detail);
@@ -274,6 +278,22 @@ fn old_json_without_the_new_fields_still_decodes() {
     assert_eq!(request.base, None);
     assert_eq!(request.mode, Mode::Apply);
 
+    let mut spec = serde_json::to_value(SessionSpec {
+        transport: Transport::Stdio,
+        client: "c".into(),
+        model: None,
+        on_behalf_of: person(),
+        grants: Grants::agent_default(),
+        budget: Budget::default(),
+        limits: Limits::default(),
+        parent: None,
+        role: None,
+        fence: vec![],
+    })
+    .unwrap();
+    spec.as_object_mut().unwrap().remove("fence");
+    assert_eq!(serde_json::from_value::<SessionSpec>(spec).unwrap().fence, Vec::<DocPath>::new());
+
     let mut record = serde_json::to_value(record()).unwrap();
     for key in ["on_behalf_of", "approval"] {
         record.as_object_mut().unwrap().remove(key);
@@ -294,6 +314,15 @@ fn events_round_trip_and_the_schema_names_every_variant() {
         Event::SessionChanged { session: info(), change: SessionChange::Spent },
         Event::SessionEnded { session: info(), ended: ended() },
         Event::SessionUndone { session: SessionId(1), by: person(), result: undo_result() },
+        Event::Clash {
+            session: SessionId(1),
+            actor: agent(),
+            op: "hair.set_style".into(),
+            path: DocPath::parse("a/b").unwrap(),
+            kind: ClashKind::Fenced,
+            other: Some(person()),
+            at: Seconds(7.0),
+        },
         Event::ApprovalRequested { approval: pending() },
         Event::ApprovalResolved {
             resolution: Resolution {

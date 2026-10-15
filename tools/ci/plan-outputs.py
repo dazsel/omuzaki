@@ -16,8 +16,18 @@ import sys
 
 
 def shard_matrix(shards):
-    """The job matrix for a list of crate lists: one entry per shard, crates joined with spaces."""
-    return {"include": [{"name": str(index + 1), "crates": " ".join(crates)} for index, crates in enumerate(shards)]}
+    """The job matrix for a list of shards: one entry per shard.
+
+    A shard item is a package name, or `name@k/n` for partition k of n of a package too heavy for one job. `crates`
+    joins the whole packages with spaces; `parts` joins the partitioned ones (the test job runs those with
+    `cargo nextest run --partition hash:k/n`).
+    """
+    include = []
+    for index, items in enumerate(shards):
+        whole = [item for item in items if "@" not in item]
+        parts = [item for item in items if "@" in item]
+        include.append({"name": str(index + 1), "crates": " ".join(whole), "parts": " ".join(parts)})
+    return {"include": include}
 
 
 def outputs(report, event):

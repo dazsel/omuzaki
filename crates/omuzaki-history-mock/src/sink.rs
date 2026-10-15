@@ -108,7 +108,6 @@ mod tests {
     use std::collections::BTreeSet;
     use std::sync::Arc;
 
-    use omuzaki_core::time::Seconds;
     use omuzaki_doc_api::{Patch, Value};
     use omuzaki_history_api::{HistoryExport, OpenTxExport};
     use omuzaki_ops_api::{Actor, JobId, JobState, TxId};
@@ -151,14 +150,18 @@ mod tests {
     fn job_and_revert_entries_are_kept_in_order_and_unchanged() {
         let sink = RecordingSink::new();
         let remaining = OpenTxExport::new(Actor::System, TxId(4), "open", Patch::default(), BTreeSet::new());
-        let started = HistoryEntry::JobStarted {
-            job: JobId(1),
-            op: "render".into(),
-            args: Value::from(1),
-            actor: Actor::System,
-            on_behalf_of: None,
-            at: Seconds(0.5),
-        };
+        // Read from JSON so this crate needs no `omuzaki-core` for `Seconds` (a transparent `f64`).
+        let started: HistoryEntry = serde_json::from_value(serde_json::json!({
+            "entry": "job_started",
+            "job": 1,
+            "op": "render",
+            "args": Value::from(1),
+            "actor": Actor::System,
+            "on_behalf_of": null,
+            "at": 0.5,
+        }))
+        .unwrap();
+        assert!(matches!(&started, HistoryEntry::JobStarted { job: JobId(1), at, .. } if at.0 == 0.5));
         let ended = HistoryEntry::JobEnded { job: JobId(1), state: JobState::Done { tx: TxId(5), seq: Some(12) } };
         let revert = HistoryEntry::TxRevert {
             tx: TxId(4),

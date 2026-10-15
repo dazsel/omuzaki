@@ -39,8 +39,8 @@ The server enforces what the provider cannot:
 | `omuzaki://log` | `application/json` | built in (`events.rs`, `LOG_URI`) | available |
 | `omuzaki://project` | `application/json` | built in (`DocProvider`) | available |
 | `omuzaki://character/<id>` | `application/json` | built in (`DocProvider`) | available |
-| `omuzaki://render/<id>.png` | `image/png` (a blob) | `RenderProvider` (per-kind) | planned |
-| `omuzaki://measure/liveliness/..` | `application/json` | `MeasureProvider` (per-kind) | planned; computed when read: it runs `measure.liveliness` through `Runner::run`, and nothing is stored |
+| `omuzaki://render/<id>.png` | `image/png` (a blob) | `RenderProvider` (`resources/renders.rs`) | available; the id is the stored PNG's content hash, so it never changes and nothing is listed |
+| `omuzaki://measure/liveliness/..` | `application/json` | `MeasureProvider` (per-kind, `resources/measure.rs`) | available; computed when read: it runs `measure.liveliness` through `Runner::run`, and nothing is stored |
 | `omuzaki://track/<id>` | `application/json` (a summary) | `TrackProvider` (per-kind) | planned |
 | `omuzaki://metrics/live` | `application/json` | `MetricsProvider` (per-kind) | planned (its source is designed elsewhere) |
 | `omuzaki://library/<item>` | `application/json` | `LibraryProvider` (per-kind) | planned |

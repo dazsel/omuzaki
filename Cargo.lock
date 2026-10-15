@@ -3292,6 +3292,821 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-ai"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-ai-api",
+ "omuzaki-ai-mock",
+ "serde",
+ "sha2",
+ "tempfile",
+ "toml",
+ "tracing",
+]
+
+[[package]]
+name = "omuzaki-ai-api"
+version = "0.0.0"
+dependencies = [
+ "inventory",
+ "omuzaki-core",
+ "omuzaki-store-api",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "toml",
+]
+
+[[package]]
+name = "omuzaki-ai-mock"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-ai-api",
+ "omuzaki-core",
+ "serde",
+ "tempfile",
+ "toml",
+]
+
+[[package]]
+name = "omuzaki-ai-ort"
+version = "0.0.0"
+dependencies = [
+ "flate2",
+ "hound",
+ "omuzaki-ai-api",
+ "omuzaki-core",
+ "ort",
+ "sha2",
+ "tar",
+ "tempfile",
+ "tracing",
+ "zip",
+]
+
+[[package]]
+name = "omuzaki-anim"
+version = "0.0.0"
+dependencies = [
+ "criterion",
+ "image",
+ "inventory",
+ "omuzaki-anim-api",
+ "omuzaki-anim-mock",
+ "omuzaki-core",
+ "omuzaki-doc-mock",
+ "omuzaki-face-api",
+ "omuzaki-face-mock",
+ "omuzaki-ops-api",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "toml",
+]
+
+[[package]]
+name = "omuzaki-anim-api"
+version = "0.0.0"
+dependencies = [
+ "criterion",
+ "omuzaki-core",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "toml",
+]
+
+[[package]]
+name = "omuzaki-anim-mock"
+version = "0.0.0"
+dependencies = [
+ "criterion",
+ "omuzaki-anim-api",
+ "omuzaki-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "omuzaki-assets-lock"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-store-api",
+ "proptest",
+ "schemars",
+ "serde",
+ "thiserror 2.0.21",
+ "toml",
+]
+
+[[package]]
+name = "omuzaki-audio"
+version = "0.0.0"
+dependencies = [
+ "hound",
+ "ort",
+ "thiserror 2.0.21",
+ "whisper-rs",
+]
+
+[[package]]
+name = "omuzaki-audio-api"
+version = "0.0.0"
+dependencies = [
+ "criterion",
+ "inventory",
+ "omuzaki-core",
+ "omuzaki-ops-api",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "toml",
+]
+
+[[package]]
+name = "omuzaki-budget"
+version = "0.0.0"
+dependencies = [
+ "criterion",
+ "omuzaki-core",
+ "omuzaki-render-api",
+ "omuzaki-render-mock",
+]
+
+[[package]]
+name = "omuzaki-char"
+version = "0.0.0"
+dependencies = [
+ "criterion",
+ "inventory",
+ "omuzaki-anim-api",
+ "omuzaki-char-api",
+ "omuzaki-char-mock",
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-doc-mock",
+ "omuzaki-face-api",
+ "omuzaki-face-mock",
+ "omuzaki-ops-api",
+ "omuzaki-render-api",
+ "omuzaki-render-mock",
+ "omuzaki-store-api",
+ "proptest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "toml",
+]
+
+[[package]]
+name = "omuzaki-char-api"
+version = "0.0.0"
+dependencies = [
+ "criterion",
+ "inventory",
+ "omuzaki-anim-api",
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-face-api",
+ "omuzaki-render-api",
+ "omuzaki-store-api",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "omuzaki-char-mock"
+version = "0.0.0"
+dependencies = [
+ "image",
+ "omuzaki-anim-api",
+ "omuzaki-char-api",
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-face-api",
+ "omuzaki-face-mock",
+ "omuzaki-render-api",
+ "omuzaki-render-mock",
+ "schemars",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "omuzaki-cli"
+version = "0.0.0"
+dependencies = [
+ "clap",
+ "omuzaki-core",
+ "omuzaki-doc",
+ "omuzaki-doc-api",
+ "omuzaki-io-gltf",
+ "omuzaki-io-ops",
+ "omuzaki-io-vrm",
+ "omuzaki-mcp",
+ "omuzaki-ops",
+ "omuzaki-ops-api",
+ "omuzaki-stage",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing-subscriber",
+ "xtask",
+]
+
+[[package]]
+name = "omuzaki-core"
+version = "0.0.0"
+dependencies = [
+ "glam 0.34.1",
+ "inventory",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "omuzaki-doc"
+version = "0.0.0"
+dependencies = [
+ "criterion",
+ "inventory",
+ "omuzaki-assets-lock",
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-doc-mock",
+ "omuzaki-stage-api",
+ "proptest",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "toml_edit",
+]
+
+[[package]]
+name = "omuzaki-doc-api"
+version = "0.0.0"
+dependencies = [
+ "criterion",
+ "proptest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "omuzaki-doc-mock"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-doc-api",
+ "serde_json",
+]
+
+[[package]]
+name = "omuzaki-embed"
+version = "0.0.0"
+dependencies = [
+ "tempfile",
+]
+
+[[package]]
+name = "omuzaki-face"
+version = "0.0.0"
+dependencies = [
+ "criterion",
+ "image",
+ "inventory",
+ "libm",
+ "omuzaki-anim-api",
+ "omuzaki-char-api",
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-doc-mock",
+ "omuzaki-face-api",
+ "omuzaki-face-mock",
+ "omuzaki-io-api",
+ "omuzaki-ops-api",
+ "omuzaki-render-api",
+ "omuzaki-render-mock",
+ "omuzaki-store-api",
+ "proptest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tiny-skia",
+ "toml",
+]
+
+[[package]]
+name = "omuzaki-face-api"
+version = "0.0.0"
+dependencies = [
+ "inventory",
+ "omuzaki-anim-api",
+ "omuzaki-core",
+ "omuzaki-io-api",
+ "proptest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "omuzaki-face-mock"
+version = "0.0.0"
+dependencies = [
+ "image",
+ "omuzaki-anim-api",
+ "omuzaki-core",
+ "omuzaki-face-api",
+ "omuzaki-io-api",
+ "omuzaki-io-mock",
+]
+
+[[package]]
+name = "omuzaki-gltf"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-core",
+ "omuzaki-io-api",
+ "omuzaki-io-mock",
+ "omuzaki-store-api",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "omuzaki-history-api"
+version = "0.0.0"
+dependencies = [
+ "inventory",
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-ops-api",
+ "omuzaki-store-api",
+ "proptest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "omuzaki-history-mock"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-doc-api",
+ "omuzaki-history-api",
+ "omuzaki-ops-api",
+ "omuzaki-store-api",
+ "serde_json",
+]
+
+[[package]]
+name = "omuzaki-http-api"
+version = "0.0.0"
+dependencies = [
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "omuzaki-http-mock"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-http-api",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "omuzaki-io-api"
+version = "0.0.0"
+dependencies = [
+ "inventory",
+ "omuzaki-core",
+ "omuzaki-store-api",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "omuzaki-io-gltf"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-core",
+ "omuzaki-gltf",
+ "omuzaki-io-api",
+ "omuzaki-io-mock",
+ "serde_json",
+]
+
+[[package]]
+name = "omuzaki-io-mock"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-core",
+ "omuzaki-io-api",
+ "omuzaki-store-api",
+ "proptest",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "omuzaki-io-ops"
+version = "0.0.0"
+dependencies = [
+ "image",
+ "inventory",
+ "omuzaki-anim-api",
+ "omuzaki-char-api",
+ "omuzaki-char-mock",
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-doc-mock",
+ "omuzaki-face-api",
+ "omuzaki-io-api",
+ "omuzaki-io-mock",
+ "omuzaki-ops-api",
+ "omuzaki-render-api",
+ "omuzaki-store-api",
+ "omuzaki-store-mock",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "toml",
+]
+
+[[package]]
+name = "omuzaki-io-vrm"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-core",
+ "omuzaki-gltf",
+ "omuzaki-io-api",
+ "omuzaki-store-api",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "omuzaki-l10n-api"
+version = "0.0.0"
+dependencies = [
+ "criterion",
+ "fluent-bundle",
+ "fluent-syntax",
+ "intl-memoizer",
+ "inventory",
+ "omuzaki-core",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sys-locale",
+ "thiserror 2.0.21",
+ "tracing",
+ "unic-langid",
+]
+
+[[package]]
+name = "omuzaki-library-api"
+version = "0.0.0"
+dependencies = [
+ "ed25519-dalek",
+ "inventory",
+ "omuzaki-char-api",
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-doc-mock",
+ "omuzaki-io-api",
+ "omuzaki-ops-api",
+ "omuzaki-store-api",
+ "proptest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "toml",
+]
+
+[[package]]
+name = "omuzaki-mcp"
+version = "0.0.0"
+dependencies = [
+ "base64",
+ "blake3",
+ "bytes",
+ "constant_time_eq",
+ "getrandom 0.4.3",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-doc-mock",
+ "omuzaki-ops-api",
+ "omuzaki-store-api",
+ "omuzaki-store-mock",
+ "proptest",
+ "reqwest",
+ "rmcp",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "omuzaki-ops"
+version = "0.0.0"
+dependencies = [
+ "criterion",
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-doc-mock",
+ "omuzaki-ops-api",
+ "proptest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "omuzaki-ops-api"
+version = "0.0.0"
+dependencies = [
+ "getrandom 0.4.3",
+ "inventory",
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-doc-mock",
+ "proptest",
+ "rustix 1.1.5",
+ "schemars",
+ "serde",
+ "serde_json",
+ "serde_path_to_error",
+ "tempfile",
+ "thiserror 2.0.21",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "omuzaki-pixfmt"
+version = "0.0.0"
+dependencies = [
+ "criterion",
+ "proptest",
+ "thiserror 2.0.21",
+ "zune-jpeg",
+]
+
+[[package]]
+name = "omuzaki-render"
+version = "0.0.0"
+dependencies = [
+ "bytemuck",
+ "image",
+ "inventory",
+ "omuzaki-char-api",
+ "omuzaki-char-mock",
+ "omuzaki-core",
+ "omuzaki-face-api",
+ "omuzaki-render-api",
+ "omuzaki-render-mock",
+ "pollster",
+ "tempfile",
+ "wgpu",
+]
+
+[[package]]
+name = "omuzaki-render-api"
+version = "0.0.0"
+dependencies = [
+ "criterion",
+ "omuzaki-core",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "omuzaki-render-mock"
+version = "0.0.0"
+dependencies = [
+ "image",
+ "omuzaki-core",
+ "omuzaki-render-api",
+ "tempfile",
+]
+
+[[package]]
+name = "omuzaki-rig"
+version = "0.0.0"
+dependencies = [
+ "criterion",
+ "omuzaki-anim-api",
+ "omuzaki-anim-mock",
+ "omuzaki-core",
+ "omuzaki-render-api",
+ "omuzaki-render-mock",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "omuzaki-stage"
+version = "0.0.0"
+dependencies = [
+ "ab_glyph",
+ "criterion",
+ "harfrust 0.14.0",
+ "image",
+ "inventory",
+ "omuzaki-anim",
+ "omuzaki-anim-api",
+ "omuzaki-anim-mock",
+ "omuzaki-char",
+ "omuzaki-char-api",
+ "omuzaki-char-mock",
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-doc-mock",
+ "omuzaki-face",
+ "omuzaki-face-api",
+ "omuzaki-face-mock",
+ "omuzaki-io-api",
+ "omuzaki-ops-api",
+ "omuzaki-render",
+ "omuzaki-render-api",
+ "omuzaki-render-mock",
+ "omuzaki-rig",
+ "omuzaki-stage-api",
+ "omuzaki-store-api",
+ "omuzaki-store-mock",
+ "proptest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.21",
+ "toml",
+ "tracing",
+ "unicode-bidi",
+ "unicode-normalization",
+ "xtask",
+]
+
+[[package]]
+name = "omuzaki-stage-api"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-char-api",
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-render-api",
+ "proptest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "toml",
+]
+
+[[package]]
+name = "omuzaki-store"
+version = "0.0.0"
+dependencies = [
+ "criterion",
+ "omuzaki-store-api",
+ "omuzaki-store-mock",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "omuzaki-store-api"
+version = "0.0.0"
+dependencies = [
+ "blake3",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "omuzaki-store-mock"
+version = "0.0.0"
+dependencies = [
+ "blake3",
+ "omuzaki-store-api",
+]
+
+[[package]]
+name = "omuzaki-test"
+version = "0.0.0"
+dependencies = [
+ "blake3",
+ "clap",
+ "image",
+ "omuzaki-anim",
+ "omuzaki-anim-api",
+ "omuzaki-char",
+ "omuzaki-char-api",
+ "omuzaki-char-mock",
+ "omuzaki-core",
+ "omuzaki-face",
+ "omuzaki-face-api",
+ "omuzaki-io-api",
+ "omuzaki-io-gltf",
+ "omuzaki-io-mock",
+ "omuzaki-io-ops",
+ "omuzaki-ops-api",
+ "omuzaki-render-api",
+ "omuzaki-rig",
+ "omuzaki-store-api",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "toml",
+]
+
+[[package]]
+name = "omuzaki-track"
+version = "0.0.0"
+dependencies = [
+ "criterion",
+ "nalgebra",
+ "omuzaki-ai-api",
+ "omuzaki-ai-mock",
+ "omuzaki-anim-api",
+ "omuzaki-core",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "omuzaki-ui"
+version = "0.0.0"
+dependencies = [
+ "clap",
+ "eframe",
+ "egui",
+ "egui-phosphor",
+ "egui_kittest",
+ "egui_tiles",
+ "image",
+ "inventory",
+ "omuzaki-core",
+ "omuzaki-l10n-api",
+ "omuzaki-ops-api",
+ "rustix 1.1.5",
+ "serde",
+ "tempfile",
+ "toml",
+ "tracing",
+]
+
+[[package]]
+name = "omuzaki-vts"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4915,800 +5730,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d2df906b07856748fa3f6e0ad0cbaa047052d4a7dd609e231c4f72cee8c36f31"
 
 [[package]]
-name = "omuzaki-ai"
-version = "0.0.0"
-dependencies = [
- "serde",
- "sha2",
- "tempfile",
- "toml",
- "tracing",
- "omuzaki-ai-api",
- "omuzaki-ai-mock",
-]
-
-[[package]]
-name = "omuzaki-ai-api"
-version = "0.0.0"
-dependencies = [
- "inventory",
- "schemars",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "toml",
- "omuzaki-core",
- "omuzaki-store-api",
-]
-
-[[package]]
-name = "omuzaki-ai-mock"
-version = "0.0.0"
-dependencies = [
- "serde",
- "tempfile",
- "toml",
- "omuzaki-ai-api",
- "omuzaki-core",
-]
-
-[[package]]
-name = "omuzaki-ai-ort"
-version = "0.0.0"
-dependencies = [
- "flate2",
- "hound",
- "ort",
- "sha2",
- "tar",
- "tempfile",
- "tracing",
- "omuzaki-ai-api",
- "omuzaki-core",
- "zip",
-]
-
-[[package]]
-name = "omuzaki-anim"
-version = "0.0.0"
-dependencies = [
- "criterion",
- "image",
- "inventory",
- "schemars",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "toml",
- "omuzaki-anim-api",
- "omuzaki-anim-mock",
- "omuzaki-core",
- "omuzaki-doc-mock",
- "omuzaki-face-api",
- "omuzaki-face-mock",
- "omuzaki-ops-api",
-]
-
-[[package]]
-name = "omuzaki-anim-api"
-version = "0.0.0"
-dependencies = [
- "criterion",
- "schemars",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "toml",
- "omuzaki-core",
-]
-
-[[package]]
-name = "omuzaki-anim-mock"
-version = "0.0.0"
-dependencies = [
- "criterion",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "omuzaki-anim-api",
- "omuzaki-core",
-]
-
-[[package]]
-name = "omuzaki-audio"
-version = "0.0.0"
-dependencies = [
- "hound",
- "ort",
- "thiserror 2.0.21",
- "whisper-rs",
-]
-
-[[package]]
-name = "omuzaki-audio-api"
-version = "0.0.0"
-dependencies = [
- "criterion",
- "inventory",
- "schemars",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "toml",
- "omuzaki-core",
- "omuzaki-ops-api",
-]
-
-[[package]]
-name = "omuzaki-budget"
-version = "0.0.0"
-dependencies = [
- "criterion",
- "omuzaki-core",
- "omuzaki-render-api",
- "omuzaki-render-mock",
-]
-
-[[package]]
-name = "omuzaki-char"
-version = "0.0.0"
-dependencies = [
- "criterion",
- "inventory",
- "proptest",
- "schemars",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "toml",
- "omuzaki-anim-api",
- "omuzaki-char-api",
- "omuzaki-char-mock",
- "omuzaki-core",
- "omuzaki-doc-api",
- "omuzaki-doc-mock",
- "omuzaki-face-api",
- "omuzaki-face-mock",
- "omuzaki-ops-api",
- "omuzaki-render-api",
- "omuzaki-render-mock",
- "omuzaki-store-api",
-]
-
-[[package]]
-name = "omuzaki-char-api"
-version = "0.0.0"
-dependencies = [
- "criterion",
- "inventory",
- "schemars",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "omuzaki-anim-api",
- "omuzaki-core",
- "omuzaki-doc-api",
- "omuzaki-face-api",
- "omuzaki-render-api",
- "omuzaki-store-api",
-]
-
-[[package]]
-name = "omuzaki-char-mock"
-version = "0.0.0"
-dependencies = [
- "image",
- "schemars",
- "serde",
- "serde_json",
- "omuzaki-anim-api",
- "omuzaki-char-api",
- "omuzaki-core",
- "omuzaki-doc-api",
- "omuzaki-face-api",
- "omuzaki-face-mock",
- "omuzaki-render-api",
- "omuzaki-render-mock",
-]
-
-[[package]]
-name = "omuzaki-cli"
-version = "0.0.0"
-dependencies = [
- "clap",
- "schemars",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing-subscriber",
- "omuzaki-core",
- "omuzaki-doc",
- "omuzaki-doc-api",
- "omuzaki-io-gltf",
- "omuzaki-io-ops",
- "omuzaki-io-vrm",
- "omuzaki-mcp",
- "omuzaki-ops",
- "omuzaki-ops-api",
- "omuzaki-stage",
- "xtask",
-]
-
-[[package]]
-name = "omuzaki-core"
-version = "0.0.0"
-dependencies = [
- "glam 0.34.1",
- "inventory",
- "schemars",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "omuzaki-doc"
-version = "0.0.0"
-dependencies = [
- "criterion",
- "inventory",
- "proptest",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "toml_edit",
- "omuzaki-core",
- "omuzaki-doc-api",
- "omuzaki-doc-mock",
- "omuzaki-stage-api",
-]
-
-[[package]]
-name = "omuzaki-doc-api"
-version = "0.0.0"
-dependencies = [
- "schemars",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "omuzaki-doc-mock"
-version = "0.0.0"
-dependencies = [
- "serde_json",
- "omuzaki-doc-api",
-]
-
-[[package]]
-name = "omuzaki-embed"
-version = "0.0.0"
-dependencies = [
- "tempfile",
-]
-
-[[package]]
-name = "omuzaki-face"
-version = "0.0.0"
-dependencies = [
- "criterion",
- "image",
- "inventory",
- "libm",
- "proptest",
- "schemars",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "tiny-skia",
- "toml",
- "omuzaki-anim-api",
- "omuzaki-char-api",
- "omuzaki-core",
- "omuzaki-doc-api",
- "omuzaki-doc-mock",
- "omuzaki-face-api",
- "omuzaki-face-mock",
- "omuzaki-io-api",
- "omuzaki-ops-api",
- "omuzaki-render-api",
- "omuzaki-render-mock",
- "omuzaki-store-api",
-]
-
-[[package]]
-name = "omuzaki-face-api"
-version = "0.0.0"
-dependencies = [
- "inventory",
- "proptest",
- "schemars",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "omuzaki-anim-api",
- "omuzaki-core",
- "omuzaki-io-api",
-]
-
-[[package]]
-name = "omuzaki-face-mock"
-version = "0.0.0"
-dependencies = [
- "image",
- "omuzaki-anim-api",
- "omuzaki-core",
- "omuzaki-face-api",
- "omuzaki-io-api",
- "omuzaki-io-mock",
-]
-
-[[package]]
-name = "omuzaki-gltf"
-version = "0.0.0"
-dependencies = [
- "serde",
- "serde_json",
- "omuzaki-core",
- "omuzaki-io-api",
- "omuzaki-io-mock",
- "omuzaki-store-api",
-]
-
-[[package]]
-name = "omuzaki-history-api"
-version = "0.0.0"
-dependencies = [
- "inventory",
- "proptest",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "omuzaki-core",
- "omuzaki-doc-api",
- "omuzaki-ops-api",
- "omuzaki-store-api",
-]
-
-[[package]]
-name = "omuzaki-history-mock"
-version = "0.0.0"
-dependencies = [
- "serde_json",
- "omuzaki-core",
- "omuzaki-doc-api",
- "omuzaki-history-api",
- "omuzaki-ops-api",
- "omuzaki-store-api",
-]
-
-[[package]]
-name = "omuzaki-http-api"
-version = "0.0.0"
-dependencies = [
- "serde_json",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "omuzaki-http-mock"
-version = "0.0.0"
-dependencies = [
- "serde_json",
- "thiserror 2.0.21",
- "omuzaki-http-api",
-]
-
-[[package]]
-name = "omuzaki-io-api"
-version = "0.0.0"
-dependencies = [
- "inventory",
- "schemars",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "omuzaki-core",
- "omuzaki-store-api",
-]
-
-[[package]]
-name = "omuzaki-io-gltf"
-version = "0.0.0"
-dependencies = [
- "serde_json",
- "omuzaki-core",
- "omuzaki-gltf",
- "omuzaki-io-api",
- "omuzaki-io-mock",
-]
-
-[[package]]
-name = "omuzaki-io-mock"
-version = "0.0.0"
-dependencies = [
- "proptest",
- "serde",
- "serde_json",
- "omuzaki-core",
- "omuzaki-io-api",
- "omuzaki-store-api",
-]
-
-[[package]]
-name = "omuzaki-io-ops"
-version = "0.0.0"
-dependencies = [
- "image",
- "inventory",
- "schemars",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "toml",
- "omuzaki-anim-api",
- "omuzaki-char-api",
- "omuzaki-char-mock",
- "omuzaki-core",
- "omuzaki-doc-api",
- "omuzaki-doc-mock",
- "omuzaki-face-api",
- "omuzaki-io-api",
- "omuzaki-io-mock",
- "omuzaki-ops-api",
- "omuzaki-render-api",
- "omuzaki-store-api",
- "omuzaki-store-mock",
-]
-
-[[package]]
-name = "omuzaki-io-vrm"
-version = "0.0.0"
-dependencies = [
- "serde",
- "serde_json",
- "omuzaki-core",
- "omuzaki-gltf",
- "omuzaki-io-api",
- "omuzaki-store-api",
-]
-
-[[package]]
-name = "omuzaki-l10n-api"
-version = "0.0.0"
-dependencies = [
- "criterion",
- "fluent-bundle",
- "fluent-syntax",
- "intl-memoizer",
- "inventory",
- "schemars",
- "serde",
- "serde_json",
- "sys-locale",
- "thiserror 2.0.21",
- "tracing",
- "omuzaki-core",
- "unic-langid",
-]
-
-[[package]]
-name = "omuzaki-library-api"
-version = "0.0.0"
-dependencies = [
- "ed25519-dalek",
- "inventory",
- "proptest",
- "schemars",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "toml",
- "omuzaki-char-api",
- "omuzaki-core",
- "omuzaki-doc-api",
- "omuzaki-doc-mock",
- "omuzaki-io-api",
- "omuzaki-ops-api",
- "omuzaki-store-api",
-]
-
-[[package]]
-name = "omuzaki-mcp"
-version = "0.0.0"
-dependencies = [
- "blake3",
- "bytes",
- "constant_time_eq",
- "getrandom 0.4.3",
- "http-body-util",
- "hyper",
- "hyper-util",
- "proptest",
- "reqwest",
- "rmcp",
- "schemars",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "tokio",
- "tokio-util",
- "tracing",
- "omuzaki-core",
- "omuzaki-doc-api",
- "omuzaki-doc-mock",
- "omuzaki-ops-api",
-]
-
-[[package]]
-name = "omuzaki-ops"
-version = "0.0.0"
-dependencies = [
- "criterion",
- "proptest",
- "schemars",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "omuzaki-core",
- "omuzaki-doc-api",
- "omuzaki-doc-mock",
- "omuzaki-ops-api",
-]
-
-[[package]]
-name = "omuzaki-ops-api"
-version = "0.0.0"
-dependencies = [
- "getrandom 0.4.3",
- "inventory",
- "rustix 1.1.5",
- "schemars",
- "serde",
- "serde_json",
- "serde_path_to_error",
- "tempfile",
- "thiserror 2.0.21",
- "omuzaki-core",
- "omuzaki-doc-api",
- "omuzaki-doc-mock",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "omuzaki-pixfmt"
-version = "0.0.0"
-dependencies = [
- "criterion",
- "proptest",
- "thiserror 2.0.21",
- "zune-jpeg",
-]
-
-[[package]]
-name = "omuzaki-render"
-version = "0.0.0"
-dependencies = [
- "bytemuck",
- "image",
- "inventory",
- "pollster",
- "tempfile",
- "omuzaki-char-api",
- "omuzaki-char-mock",
- "omuzaki-core",
- "omuzaki-face-api",
- "omuzaki-render-api",
- "omuzaki-render-mock",
- "wgpu",
-]
-
-[[package]]
-name = "omuzaki-render-api"
-version = "0.0.0"
-dependencies = [
- "criterion",
- "schemars",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "omuzaki-core",
-]
-
-[[package]]
-name = "omuzaki-render-mock"
-version = "0.0.0"
-dependencies = [
- "image",
- "tempfile",
- "omuzaki-core",
- "omuzaki-render-api",
-]
-
-[[package]]
-name = "omuzaki-rig"
-version = "0.0.0"
-dependencies = [
- "criterion",
- "thiserror 2.0.21",
- "omuzaki-anim-api",
- "omuzaki-anim-mock",
- "omuzaki-core",
- "omuzaki-render-api",
- "omuzaki-render-mock",
-]
-
-[[package]]
-name = "omuzaki-stage"
-version = "0.0.0"
-dependencies = [
- "ab_glyph",
- "criterion",
- "harfrust 0.14.0",
- "image",
- "inventory",
- "proptest",
- "schemars",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror 2.0.21",
- "toml",
- "tracing",
- "omuzaki-anim",
- "omuzaki-anim-api",
- "omuzaki-anim-mock",
- "omuzaki-char",
- "omuzaki-char-api",
- "omuzaki-char-mock",
- "omuzaki-core",
- "omuzaki-doc-api",
- "omuzaki-doc-mock",
- "omuzaki-face",
- "omuzaki-face-api",
- "omuzaki-face-mock",
- "omuzaki-io-api",
- "omuzaki-ops-api",
- "omuzaki-render",
- "omuzaki-render-api",
- "omuzaki-render-mock",
- "omuzaki-rig",
- "omuzaki-stage-api",
- "omuzaki-store-api",
- "omuzaki-store-mock",
- "unicode-bidi",
- "unicode-normalization",
- "xtask",
-]
-
-[[package]]
-name = "omuzaki-stage-api"
-version = "0.0.0"
-dependencies = [
- "proptest",
- "schemars",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "toml",
- "omuzaki-char-api",
- "omuzaki-core",
- "omuzaki-doc-api",
- "omuzaki-render-api",
-]
-
-[[package]]
-name = "omuzaki-store"
-version = "0.0.0"
-dependencies = [
- "criterion",
- "serde_json",
- "tempfile",
- "omuzaki-store-api",
- "omuzaki-store-mock",
-]
-
-[[package]]
-name = "omuzaki-store-api"
-version = "0.0.0"
-dependencies = [
- "blake3",
- "schemars",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "omuzaki-store-mock"
-version = "0.0.0"
-dependencies = [
- "blake3",
- "omuzaki-store-api",
-]
-
-[[package]]
-name = "omuzaki-test"
-version = "0.0.0"
-dependencies = [
- "blake3",
- "clap",
- "image",
- "schemars",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "toml",
- "omuzaki-anim",
- "omuzaki-anim-api",
- "omuzaki-char",
- "omuzaki-char-api",
- "omuzaki-char-mock",
- "omuzaki-core",
- "omuzaki-face",
- "omuzaki-face-api",
- "omuzaki-io-api",
- "omuzaki-io-gltf",
- "omuzaki-io-mock",
- "omuzaki-io-ops",
- "omuzaki-ops-api",
- "omuzaki-render-api",
- "omuzaki-rig",
- "omuzaki-store-api",
-]
-
-[[package]]
-name = "omuzaki-track"
-version = "0.0.0"
-dependencies = [
- "criterion",
- "nalgebra",
- "thiserror 2.0.21",
- "omuzaki-ai-api",
- "omuzaki-ai-mock",
- "omuzaki-anim-api",
- "omuzaki-core",
-]
-
-[[package]]
-name = "omuzaki-ui"
-version = "0.0.0"
-dependencies = [
- "clap",
- "eframe",
- "egui",
- "egui-phosphor",
- "egui_kittest",
- "egui_tiles",
- "image",
- "inventory",
- "rustix 1.1.5",
- "serde",
- "tempfile",
- "toml",
- "tracing",
- "omuzaki-core",
- "omuzaki-l10n-api",
- "omuzaki-ops-api",
-]
-
-[[package]]
-name = "omuzaki-vts"
-version = "0.0.0"
-dependencies = [
- "serde",
- "serde_json",
- "thiserror 2.0.21",
-]
-
-[[package]]
 name = "type-map"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6812,12 +6833,12 @@ name = "xtask"
 version = "0.0.0"
 dependencies = [
  "clap",
+ "omuzaki-library-api",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
  "toml",
- "omuzaki-library-api",
 ]
 
 [[package]]

@@ -406,6 +406,24 @@ writes them declares next to its code with `register_derived_path!("<glob>")` in
 - **Loading one** reads the manifest and builds a `Project` from its file bytes through the same loader as a folder
   (a file source that is a map instead of a directory), so migrations, layout and validation are the same code.
 
+#### 7.1.1 The `assets.lock` file
+
+`assets.lock` is the project's asset list (spec v3 §7; git design §3.2): one row per asset the project uses, keyed by
+content hash, with the provenance that lets a reader check licences without opening the asset store. The snapshot
+manifest's `assets` list, the commit view's units and missing blobs, the push advisory and the asset sweep all read it.
+
+- **Format:** TOML, one `[[asset]]` table per row, with the keys in this order: `hash` (64 lowercase hex characters,
+  `omuzaki_store_api::ContentHash`), `name`, `licence` (SPDX), `commercial` (`ok`, `no` or `unknown`), `source`, and
+  `private_test` (written only when `true`; absent means `false`). Unknown keys are ignored when read and dropped when
+  written.
+- **Sort rule:** rows are sorted by hash, both when written and when read, so two people who add assets change
+  different lines and git merges them cleanly. Equal rows in any order give the same bytes.
+- **Text:** LF endings and one trailing newline; a file with CRLF endings reads the same as its LF form, and the
+  writer's output is LF, so a caller that must keep CRLF converts after writing (git design §3.3).
+- **One owner:** the `omuzaki-assets-lock` crate is this file's only reader and only canonical writer (`AssetsLock::parse`
+  and `AssetsLock::to_text`, re-exported by `omuzaki-doc`). Nothing else parses or formats it, so the format cannot drift
+  between the loader, git and the snapshot code. The crate does no I/O: callers read and write the text.
+
 ### 7.2 When
 
 | Trigger | Snapshot | Notes |

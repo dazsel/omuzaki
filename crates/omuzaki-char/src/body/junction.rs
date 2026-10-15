@@ -9,7 +9,9 @@
 //!
 //! **Ankle.** The shin keeps going into the foot and widens to the foot's width ([`grow_ankle`]), and the front outline
 //! of its lowest rings is then dilated over the foot's dome ([`fill_ankle`]), so the shin runs into the foot as one arc,
-//! not a stub sitting on a dome with a waist between.
+//! not a stub sitting on a dome with a waist between. The shin's width is measured to the outer edge, so it lands on
+//! the dome's widest point whether or not the leg's and foot's centres share an x; a step there reads as a notch on the
+//! Live mesh, whose end cap is a coarse bevel.
 //!
 //! **Hip.** Between the pelvis and the thighs the template's outline can dip (a thigh narrower at its top than the pelvis
 //! above it). [`fill_hip`] bridges the dip with a smooth arc, so the silhouette runs from the pelvis into the thigh.
@@ -194,9 +196,10 @@ fn on_left(ring: &mut Ring, mirrored: bool, f: impl FnOnce(&mut Ring)) {
 /// The rings that lead down from the end of a leg, ordered downwards: the shin keeps going straight down into the
 /// foot, its width following a cubic Hermite curve that leaves the leg's last ring at the shin's own slope (taken from
 /// its last two rings) and arrives vertical at the width of the foot's widest section, where the foot's own outline is
-/// vertical. The shin's outline then runs into the foot's as one smooth arc. Nothing if the foot's widest section is
-/// not below the leg's end.
-fn grow_ankle(leg: &[Ring], foot: &[Ring], count: usize) -> Vec<Ring> {
+/// vertical. The shin's outline then runs into the foot's as one smooth arc. `side` is +1 for the left leg and -1 for the
+/// right: the edge that has to meet the dome is the outer one, so the width is measured to it. Nothing if the foot's widest
+/// section is not below the leg's end.
+fn grow_ankle(leg: &[Ring], foot: &[Ring], count: usize, side: f64) -> Vec<Ring> {
     let (Some(last), Some(widest)) = (leg.last(), foot.iter().max_by(|a, b| a.radii.x.total_cmp(&b.radii.x))) else {
         return Vec::new();
     };
@@ -212,13 +215,15 @@ fn grow_ankle(leg: &[Ring], foot: &[Ring], count: usize) -> Vec<Ring> {
         }
         _ => 0.0,
     };
+    // The width that puts the shin's outer edge on the dome's widest point: the two centres need not share an x.
+    let end_width = widest.radii.x + side * (widest.centre.x - (last.centre.x + last.axis.x * length));
     (1..=count)
         .map(|k| {
             let s = fraction(k, count);
             let (s2, s3) = (s * s, s * s * s);
             let width = last.radii.x * (2.0 * s3 - 3.0 * s2 + 1.0)
                 + slope * length * (s3 - 2.0 * s2 + s)
-                + widest.radii.x * (3.0 * s2 - 2.0 * s3);
+                + end_width * (3.0 * s2 - 2.0 * s3);
             Ring { centre: last.centre + last.axis * (s * length), radii: DVec2::new(width, last.radii.y), ..*last }
         })
         .collect()
@@ -229,9 +234,10 @@ fn grow_ankles(rings: &mut [(BodyRegion, Vec<Ring>)], count: usize) {
     for (leg_region, foot_region) in [(BodyRegion::LegL, BodyRegion::FootL), (BodyRegion::LegR, BodyRegion::FootR)] {
         let Some(foot) = rings.iter().find(|(r, _)| *r == foot_region).map(|(_, v)| v.clone()) else { continue };
         if let Some((_, leg)) = rings.iter_mut().find(|(r, _)| *r == leg_region) {
-            let ankle = grow_ankle(leg, &foot, count);
+            let mirrored = leg_region == BodyRegion::LegR;
+            let ankle = grow_ankle(leg, &foot, count, if mirrored { -1.0 } else { 1.0 });
             leg.extend(ankle);
-            fill_ankle(leg, &foot, leg_region == BodyRegion::LegR);
+            fill_ankle(leg, &foot, mirrored);
         }
     }
 }

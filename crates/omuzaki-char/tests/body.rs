@@ -285,13 +285,19 @@ fn a_live_body_builds_within_the_budget() {
 }
 
 /// Writes every template and preset as an OBJ file per body, for `tools/body-kind-sheet.py`.
-/// `OMUZAKI_SHEET_DIR=<dir> cargo test -p omuzaki-char --test body -- --ignored dump`.
+/// `OMUZAKI_SHEET_DIR=<dir> cargo test -p omuzaki-char --test body -- --ignored dump`; the live mesh unless
+/// `OMUZAKI_SHEET_DETAIL=offline`.
 #[test]
 #[ignore = "writes the sheets' meshes to $OMUZAKI_SHEET_DIR"]
 #[allow(clippy::disallowed_methods, reason = "a developer tool writing to a directory the person named, not an op")]
 fn dump() {
     let dir = PathBuf::from(std::env::var("OMUZAKI_SHEET_DIR").expect("set OMUZAKI_SHEET_DIR to a directory"));
     fs::create_dir_all(&dir).unwrap();
+    let detail = if std::env::var("OMUZAKI_SHEET_DETAIL").is_ok_and(|d| d == "offline") {
+        Detail::OFFLINE
+    } else {
+        Detail::LIVE
+    };
     let presets = shape::presets().unwrap();
     for template in registry::templates() {
         for preset in presets {
@@ -313,7 +319,7 @@ fn dump() {
             }
             let head = layout.head_base().unwrap();
             writeln!(obj, "# joint head {} {} {}", head.x, head.y, head.z).unwrap();
-            for (region, m) in body(template.id(), &preset.shape, Detail::LIVE) {
+            for (region, m) in body(template.id(), &preset.shape, detail) {
                 let g = &m.geometry;
                 writeln!(obj, "g {region:?}").unwrap();
                 for p in &g.positions {
@@ -435,12 +441,13 @@ fn seam_height(
 
 /// The junction step in degrees within 2 cm (scaled by the body) of each junction's seam: the sharpest notch (a concave
 /// turn) in the outline, and where two regions meet only how much sharper the union's notch is than either region's own, front view then side
-/// view, measured on the offline mesh so facets do not read as corners.
-fn junction_turns(template: &str, shape: &BodyShape) -> Vec<(&'static str, f64, f64)> {
+/// view, measured on the `detail` mesh (the offline one is the reference where facets do not read as corners; the live
+/// one is what viewers see).
+fn junction_turns(template: &str, shape: &BodyShape, detail: Detail) -> Vec<(&'static str, f64, f64)> {
     let t = registry::find(template).unwrap();
     let layout = t.layout(&Proportions::default(), shape, &HandParams::default());
     let unit = layout.head_base().unwrap().y / 0.56;
-    let meshes = body(template, shape, Detail::OFFLINE);
+    let meshes = body(template, shape, detail);
     JUNCTIONS
         .iter()
         .map(|&(name, bone, regions)| {
@@ -481,7 +488,7 @@ const FRONT_LIMITS: [(&str, f64); 5] =
 fn the_front_silhouette_has_no_step_at_any_junction_on_any_template_or_preset() {
     for template in registry::templates() {
         for preset in shape::presets().unwrap() {
-            for (name, front, _) in junction_turns(template.id(), &preset.shape) {
+            for (name, front, _) in junction_turns(template.id(), &preset.shape, Detail::OFFLINE) {
                 let limit = FRONT_LIMITS.iter().find(|l| l.0 == name).unwrap().1;
                 assert!(
                     front <= limit,
@@ -494,6 +501,28 @@ fn the_front_silhouette_has_no_step_at_any_junction_on_any_template_or_preset() 
     }
 }
 
+/// The live mesh (what viewers see while streaming, with half the rings) holds the ankle to the same turn as the
+/// offline one.
+#[test]
+fn the_live_ankle_turns_no_more_than_the_offline_limit() {
+    let limit = FRONT_LIMITS.iter().find(|l| l.0 == "ankle").unwrap().1;
+    for template in registry::templates() {
+        for preset in shape::presets().unwrap() {
+            let turn = junction_turns(template.id(), &preset.shape, Detail::LIVE)
+                .into_iter()
+                .find(|j| j.0 == "ankle")
+                .unwrap()
+                .1;
+            assert!(
+                turn <= limit,
+                "{} {}: the live ankle turns {turn:.1} degrees (limit {limit})",
+                template.id(),
+                preset.id.as_str()
+            );
+        }
+    }
+}
+
 /// Prints the table of sharpest outline turns (front / side, degrees), the worst of the ten presets per template, and
 /// which preset it was.
 #[test]
@@ -502,7 +531,9 @@ fn junction_table() {
     for template in registry::templates() {
         let mut worst = vec![((0.0_f64, ""), (0.0_f64, "")); JUNCTIONS.len()];
         for preset in shape::presets().unwrap() {
-            for (k, (_, front, side)) in junction_turns(template.id(), &preset.shape).into_iter().enumerate() {
+            for (k, (_, front, side)) in
+                junction_turns(template.id(), &preset.shape, Detail::OFFLINE).into_iter().enumerate()
+            {
                 if front > worst[k].0.0 {
                     worst[k].0 = (front, preset.id.as_str());
                 }
@@ -521,12 +552,12 @@ fn junction_table() {
 }
 
 /// How far the front outline of the leg and foot dips at the top of the foot's dome: the outline's x there over the mean
-/// of its x a little above and below (1 for a straight or convex run, less for a waist), on the offline mesh.
-fn ankle_dip(template: &str, shape: &BodyShape) -> f64 {
+/// of its x a little above and below (1 for a straight or convex run, less for a waist), on the `detail` mesh.
+fn ankle_dip(template: &str, shape: &BodyShape, detail: Detail) -> f64 {
     let t = registry::find(template).unwrap();
     let layout = t.layout(&Proportions::default(), shape, &HandParams::default());
     let unit = layout.head_base().unwrap().y / 0.56;
-    let meshes = body(template, shape, Detail::OFFLINE);
+    let meshes = body(template, shape, detail);
     let foot: Vec<&PartMesh> = meshes.iter().filter(|(r, _)| *r == BodyRegion::FootL).map(|(_, m)| m).collect();
     let both: Vec<&PartMesh> =
         meshes.iter().filter(|(r, _)| matches!(r, BodyRegion::FootL | BodyRegion::LegL)).map(|(_, m)| m).collect();
@@ -544,13 +575,15 @@ const MAX_ANKLE_DIP: f64 = 0.05;
 fn the_front_outline_has_no_waist_at_the_foot_dome() {
     for template in registry::templates() {
         for preset in shape::presets().unwrap() {
-            let dip = 1.0 - ankle_dip(template.id(), &preset.shape);
-            assert!(
-                dip <= MAX_ANKLE_DIP,
-                "{} {}: the foot dome has a waist of {dip:.3}",
-                template.id(),
-                preset.id.as_str()
-            );
+            for (detail, name) in [(Detail::OFFLINE, "offline"), (Detail::LIVE, "live")] {
+                let dip = 1.0 - ankle_dip(template.id(), &preset.shape, detail);
+                assert!(
+                    dip <= MAX_ANKLE_DIP,
+                    "{} {}: the {name} foot dome has a waist of {dip:.3}",
+                    template.id(),
+                    preset.id.as_str()
+                );
+            }
         }
     }
 }
@@ -577,16 +610,34 @@ fn ankle_table() {
             .map(|p| (p.id.as_str().to_string(), p.shape.clone()))
             .chain((0..32).map(|c| (format!("corner{c}"), corner(c))))
             .collect();
-        let mut worst = vec![(0.0_f64, String::new()); 2];
-        for (name, shape) in &shapes {
-            let turn = junction_turns(template.id(), shape).into_iter().find(|j| j.0 == "ankle").unwrap().1;
-            let dip = 1.0 - ankle_dip(template.id(), shape);
-            for (w, v) in worst.iter_mut().zip([turn, dip]) {
-                if v > w.0 {
-                    *w = (v, name.clone());
+        for (detail, label) in [(Detail::OFFLINE, "offline"), (Detail::LIVE, "live")] {
+            let mut worst = vec![(0.0_f64, String::new()); 2];
+            for (name, shape) in &shapes {
+                let turn = junction_turns(template.id(), shape, detail).into_iter().find(|j| j.0 == "ankle").unwrap().1;
+                let dip = 1.0 - ankle_dip(template.id(), shape, detail);
+                for (w, v) in worst.iter_mut().zip([turn, dip]) {
+                    if v > w.0 {
+                        *w = (v, name.clone());
+                    }
                 }
             }
+            let presets: Vec<String> = shape::presets()
+                .unwrap()
+                .iter()
+                .map(|p| {
+                    let turn = junction_turns(template.id(), &p.shape, detail).into_iter().find(|j| j.0 == "ankle");
+                    format!("{} {:.1}", p.id.as_str(), turn.map_or(0.0, |j| j.1))
+                })
+                .collect();
+            println!("{:8} {label:7} presets: {}", template.id(), presets.join(", "));
+            println!(
+                "{:8} {label:7} turn {:.1} ({})  dip {:.3} ({})",
+                template.id(),
+                worst[0].0,
+                worst[0].1,
+                worst[1].0,
+                worst[1].1
+            );
         }
-        println!("{:8} turn {:.1} ({})  dip {:.3} ({})", template.id(), worst[0].0, worst[0].1, worst[1].0, worst[1].1);
     }
 }
