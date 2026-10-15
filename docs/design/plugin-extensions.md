@@ -59,7 +59,7 @@ interface node {
     }
 }
 interface adapter {
-    record event { kind: string, origin-id: string, utc: option<s64>, payload: string }
+    record event { kind: string, origin-id: option<string>, utc: option<s64>, payload: string }
     poll: func() -> result<list<event>, string>;
 }
 interface tracker {
@@ -302,7 +302,8 @@ Fluent id `plugin-<id>-<key>-<name>`.
 ## 5. Registration lifecycle
 
 Four run-time catalogues take plugin kinds: the engine's (node and event kinds, `omuzaki-live-api`), the stage's
-tracker sources (`omuzaki-track-api` taps), the exporters (`omuzaki-io-api`) and the part kinds (`omuzaki-char-api`).
+tracker sources (the registry that lets the stage find a plugin's mailbox is a Director item, ADR d.5; the
+`omuzaki-track-api` tap is only the input side), the exporters (`omuzaki-io-api`) and the part kinds (`omuzaki-char-api`).
 Each catalogue's `register_dyn(.., gate: &ActivationGate)` **reserves** (fallible: checks ids, collisions and schemas,
 holds the ids) and returns a `DynRegistration`. The gate is one shared `Arc<AtomicBool>` per enable; lookups skip
 entries whose gate is closed, and collision checks count them. Opening it is one release store that makes every kind of
@@ -315,11 +316,11 @@ the plugin visible at once. (The gate type's home is for the Director to place, 
   `Faulted { reason }` and the finding names the kind. Only when everything is ready does the host open the gate and
   unpark the tracker and poller; nothing after that can fail. A node may listen to the plugin's own event kind, so no
   order is needed: all appear together.
-- **Disable, unload, remove:** the reverse: stop polling (retained events are dropped and counted), stop the
-  tracker (the stage falls back as in §4.3), cancel a running plugin export (the job ends `cancelled`, writes
-  nothing), then close the gate (every kind vanishes at once) and drop the registrations. Events of a removed kind
-  still in the
-  inbox are dropped and counted. `shutdown` runs last (`plugins.md` §2.2).
+- **Disable, unload, remove:** the reverse, gate first: close it (every kind vanishes at once, so no new lookup can
+  start work), then stop polling (retained events are dropped and counted), stop the tracker (the stage falls back
+  as in §4.3), cancel a running plugin export (the job ends `cancelled`, writes nothing; it waits at most its
+  deadline, and nothing new can start), and drop the registrations. Events of a removed kind still in the inbox are
+  dropped and counted. `shutdown` runs last (`plugins.md` §2.2).
 - **Reload:** remove and add as above, the new hash's manifest deciding what comes back. A kind with the same id
   rebinds: nodes swap between activations, a running part build finishes on the old instance.
 
@@ -332,7 +333,7 @@ saving and syncing don't touch them, and a finding names the plugin by id and ve
 |---|---|
 | Node | inert with the finding (D15); the graph keeps its wires |
 | Event kind | triggers listening to `plugin.<id>.<kind>` stay and never fire; finding on each |
-| Part | not built; the character builds without it and shows the finding; `io.check_export` and `io.export` refuse with `plugin.part_missing`, so a character never ships silently without a part |
+| Part | not built; the character builds without it and shows the finding (needs a degraded-build contract in `omuzaki-char-api`: ADR d.10, for the Director); `io.check_export` and `io.export` refuse with `plugin.part_missing`, so a character never ships silently without a part |
 | Exporter | not listed; `io.export` with its id is `not_found`, hint "install or enable `<plugin>`" |
 | Tracker | the stage uses first-party channels; a finding in the tracking panel |
 
@@ -389,13 +390,13 @@ Filed by the lead after review. Each fence adds its tests; "pr-check" means `too
 | T4 | `omuzaki-plugin`: the event adapter and `fakechat` | `src/adapter.rs`, `tests/adapter.rs`, `examples/plugins/fakechat/` | §4.2 | §7's adapter rows; `fakechat` replays ten lines in order at 1 a second on `FakeClock`; bench `adapter_poll_256` ≤ 2 ms p95 | T1, T2, T13, #1330 | sonnet |
 | T5 | `omuzaki-track-api`: the frame tap (cross-area: Director) | `src/tap.rs` | `TapSpec { width ≤ 320, height ≤ 240, pixels }`, `TapReader` (triple buffer, newest wins) | 0 allocations after creation; the reader never sees a torn frame in 10⁶ swaps; the mock tracker honours it | — | sonnet |
 | T6 | `omuzaki-plugin`: the tracker adapter and its bench | `src/tracker.rs`, `benches/track.rs` | §4.3 | §7's tracker rows; `track_plugin_frame` ≤ 3.2 ms p95 on `R` (scaled from `Dev`) | T1, T5, T13 | sonnet |
-| T7 | `omuzaki-stage`: overlay plugin tracker frames | `src/track/overlay.rs` | claimed channels, 200 ms hold | a plugin frame overrides only its channels; the hold and fallback of §4.3 on `FakeClock`; no allocation per tick | T5 | sonnet |
+| T7 | `omuzaki-stage`: overlay plugin tracker frames | `src/track/overlay.rs` | claimed channels, 200 ms hold | a plugin frame overrides only its channels; the hold and fallback of §4.3 on `FakeClock`; no allocation per tick | T5, ADR d.5 registry ruling | sonnet |
 | T8 | `omuzaki-io-api`: the run-time exporter catalogue (human lane) | `src/format.rs` (additive), `src/format/dynamic.rs` | §4.4, §5 | `formats()` lists both kinds; reserved ids are invisible until the gate opens; a static id can't be shadowed; drop removes; pr-check | — | sonnet |
 | T9 | `omuzaki-plugin`: the exporter adapter | `src/exporter.rs`, `tests/exporter.rs` | §4.4 | §7's exporter rows; `export_plugin_20mib` host side ≤ 400 ms | T1, T8, T13 | sonnet |
 | T10 | `omuzaki-char-api`: `DynPartKind`, `PartKindRef`, `lookup_kind` and the run-time part-kind catalogue (human lane, Director) | `src/kind/dynamic.rs`, `src/kind.rs` (additive) | §4.5, §5 | `lookup_kind` finds static and dynamic kinds; `find_kind` unchanged and the workspace builds; reserved ids invisible until the gate opens; ids can't shadow; drop removes; pr-check | — | sonnet |
-| T11 | `omuzaki-char` and `omuzaki-io-ops`: missing plugin kinds and plugin provenance | `omuzaki-char` `src/build/missing.rs`; `omuzaki-io-ops` the export check and `licence.derive` | §4.5 provenance, §6 part row | a character with a missing kind builds without it, round-trips byte for byte and fails `io.check_export` naming the plugin; a part with no row derives the plugin's MIT record, an unknown licence stays most restrictive | T10, T16 | sonnet |
+| T11 | `omuzaki-char` and `omuzaki-io-ops`: missing plugin kinds and plugin provenance | `omuzaki-char` `src/build/missing.rs`; `omuzaki-io-ops` the export check and `licence.derive` | §4.5 provenance, §6 part row | a character with a missing kind builds without it, round-trips byte for byte and fails `io.check_export` naming the plugin; a part with no row derives the plugin's MIT record, an unknown licence stays most restrictive | T10, T16, ADR d.10 ruling | sonnet |
 | T12 | `omuzaki-plugin`: the part adapter | `src/part.rs`, `tests/part.rs` | §4.5 | §7's part rows; `part_lift_64k` ≤ 5 ms p95 | T1, T10, T13, T16 | sonnet |
-| T13 | `omuzaki-plugin`: the registration lifecycle | `src/extensions.rs` | §5 | §7's lifecycle rows with fake catalogues | T1, #1567 | sonnet |
+| T13 | `omuzaki-plugin`: the registration lifecycle | `src/extensions.rs` | §5 | §7's lifecycle rows with fake catalogues | T1, T2, T8, T10, #1567 | sonnet |
 | T14 | Example plugins and a golden show | `examples/plugins/{dice,blink,objexport,ring}/` (built and committed, each under 200 KB) and a golden show | one per kind | each loads in CI; the §8 show's trace and fuel report match the golden on two runs | T4, T6, T9, T12, #1366 | haiku |
 | T15 | Authoring docs, one page per kind | `docs/plugins/*.md` | — | each page builds its example; `lint-docs-index` passes | T14 | haiku |
 | T16 | `omuzaki-char`, `omuzaki-io-ops`, `omuzaki-stage`: callers of `find_kind` move to `lookup_kind`, then `find_kind` goes | the `find_kind` call sites in those crates; the old pair's removal in `omuzaki-char-api` | §4.5 | a dynamic kind builds, recolours, plans, describes and derives a licence through the existing ops; no behaviour change for static kinds; pr-check | T10 | sonnet |

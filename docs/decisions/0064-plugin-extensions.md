@@ -6,8 +6,9 @@ area: decisions
 
 # 0064: Plugin extensions are one world and one instance kind each, declared in the manifest, added to run-time catalogues all or nothing (2026-10-15)
 
-**Status:** proposed (#1083); accepted when merged. Decisions 4, 6, 7 and 9 change contracts other areas own and need
-the Director's sign-off. **Context:** PL-03, BR-10; spec v3 §10, §22, §25, §30, §39 rule 2; ADR 0015, 0054, 0058;
+**Status:** proposed (#1083); accepted when merged. Decisions 4 to 10 change contracts other areas own and need
+the Director's sign-off (5: the tracker-source registry the stage reads, not yet designed; 8: drops PL-03's outputs,
+an amendment to the product spec; 10: a degraded-build contract in `omuzaki-char-api`'s `CharacterBuilder`). **Context:** PL-03, BR-10; spec v3 §10, §22, §25, §30, §39 rule 2; ADR 0015, 0054, 0058;
 automation D9 and D15. Design, prior art and numbers: `docs/design/plugin-extensions.md`.
 
 ## Context
