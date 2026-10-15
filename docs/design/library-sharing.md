@@ -81,7 +81,7 @@ A **team source** is a place that holds the files below. Which place is a store 
 
 `SignedIndex` is a snapshot: `{ team, seq, prev, items: Vec<IndexEntry>, roster, signer, signature }`, signed under `Domain::LibraryIndex` by the member who wrote it (the hash covers everything except the signature, identity D3). Additions to the outline's four fields: `seq` and `prev` give the chain, `signer` says who (any member with the put, approve or deprecate right may write a snapshot, D3), and the three together are what makes rollback visible.
 
-- **`roster`** is the hash of the membership log's head entry. The client folds the log in the same source (team.md 6.2) against the root it pinned, and refuses a snapshot whose `roster` is not an entry of that log, or is older than the newest the client has seen.
+- **`roster`** is the hash of the membership log's head entry. The client folds the log in the same source (team.md 6.2) against the root it pinned, and refuses a snapshot whose `roster` is not an entry of that log, or is older than the roster of any snapshot in its `prev`.
 - **An `IndexEntry`** is `{ id, version, hash, publisher: KeyId, added_at: u64, assets: Vec<(ContentHash, u64)>, review: ReviewState, reviews: Vec<ContentHash>, listing: Option<Listing> }`. `added_at` is the log `seq` the snapshot's roster had when the entry first appeared (D3). `review` is the writer's summary for fast listing; **the client never trusts it**: it recomputes the state from the signed records (D8) before showing "approved" or applying anything. `listing` is the marketplace extension (D11) and absent for a team.
 - **Snapshots are separate files:** `index/<seq:06>-<hash8>.json`, created if absent, never edited. A **head** is a snapshot that no other snapshot lists in `prev`. Because every change is another snapshot and the content is hash-named, a synced folder cannot lose an update to a last-writer-wins overwrite.
 - **More than one head** (two people wrote offline, or a git merge; the heads may have different `seq`, e.g. one branch at 6 and another at 5) is a **fork**, not an error: the status is `Forked`, the items both agree on stay usable, and the next writer with put rights makes a **merge snapshot** (`prev` lists both). Merging is a union, since every file is immutable; a union that has one `id@version` with two hashes is refused for that item only (D4).
@@ -92,7 +92,7 @@ A **team source** is a place that holds the files below. Which place is a store 
 The rule the whole page rests on: **a thing is used only if the client could re-derive its validity from the pinned team root.** The checks, in order, all in `omuzaki-library-source-api::verify`:
 
 1. **The log.** Fold `team/log/` from the pinned root (team.md 6.2). A bad signature, chain, signer role or invariant makes the source `Invalid` and read-only, with team.md's message. The root is pinned on first use by a person, who is shown the owner's fingerprint (`team.pin_root`, person-only). Nothing in the source can pin itself.
-2. **The index** chain (every snapshot not yet verified, found by `index(have)`, not only the highest `seq`): signature valid, signer a member with a right to write (below), `seq` not below the pin, `prev` present in the chain the client holds or a first sync, `roster` an entry of the log and not older than the previous snapshot's. **Every child preserves its parents:** each parent entry's immutable fields (`id`, `version`, `hash`, `publisher`, `added_at`, `assets`) appear unchanged in the child, and a merge holds the union of all its parents; an omitted entry is `Tampered(DroppedEntry)`, so a snapshot can never delete an item (D4).
+2. **The index** chain, verified page by page in `(seq, hash8)` order (every snapshot not yet verified, found by `index(have, cursor)`, not only the highest `seq`): signature valid; the signer held a write right (below) **at the snapshot's own `roster`** and is not revoked at the head; `seq` above every `prev`'s (`Tampered(Seq)`); each `prev` already verified or earlier in the stream; `roster` an entry of the log, not older than its parents'. **Rollback is judged on the pinned ancestry, never on `seq`:** the pin holds the verified heads, and the client merges what is served into what it holds, so it never goes down. A snapshot below the pin's `seq` that is not an ancestor of a pinned head and verifies is a late fork, a second head (D2), not `Rollback`. `Rollback` is a store that no longer lists a pinned head (`IndexPage.missing`, an honest restore from backup): the client keeps its state and says so. The log follows the same rule: the served log must extend the pinned log head. **Every child preserves its parents:** each parent entry's immutable fields (`id`, `version`, `hash`, `publisher`, `added_at`, `assets`) appear unchanged in the child, and a merge holds the union of all its parents; an omitted entry is `Tampered(DroppedEntry)`, so a snapshot can never delete an item (D4).
 3. **Each item used** (only when listed, applied, searched with details, or installed; the client does not verify what it never opens):
    - the manifest parses (size-limited), and its canonical hash (`ItemManifest::hash()`, library.md D2: it excludes `publisher` and `signature` and normalises the TOML, so file formatting does not matter) equals the entry's `hash`. `IndexEntry.hash` is that canonical hash, never a hash of the file bytes;
    - the id begins with the team slug and `publisher.key` equals the entry's;
@@ -166,20 +166,20 @@ terms_url = ""                            # optional
 |---|---|
 | `Draft` | published, no `Request` from its publisher yet, or the publisher's standing is `Withdraw` (visible to designers and above; hidden from others' search) |
 | `InReview` | the publisher's standing is `Request`, and fewer than `library.approvals` valid approvals |
-| `Approved { by }` | at least `LibraryPolicy.approvals` approvals from distinct keys that are eligible approvers (reviewer, admin, owner) **both at the record's own `roster` and at the roster head** (so a viewer's pre-signed `Approve` does not start counting if that key is promoted later; the key must sign a new record, with a higher `seq`, after the promotion), not revoked, and **not the publisher of that hash** ("N other people", VC-11), with no eligible key whose standing is `Reject`, and no `Deprecate` |
-| `Deprecated` | a valid `Deprecate` |
+| `Approved { by }` | at least `LibraryPolicy.approvals` approvals from distinct keys that are eligible approvers (reviewer, admin, owner) **both at the record's own `roster` and at the roster head** (both read from the `RosterHistory` that `review_state` takes, §5.1) (so a viewer's pre-signed `Approve` does not start counting if that key is promoted later; the key must sign a new record, with a higher `seq`, after the promotion), not revoked, and **not the publisher of that hash** ("N other people", VC-11), with no eligible key whose standing is `Reject`, and no `Deprecate` |
+| `Deprecated` | a valid `Deprecate`: its signer is the publisher of that hash or an admin or owner at the record's own `roster`, and not revoked at the head. Checked first, outside per-key standing |
 
-Rules: the fold uses each key's standing only (D5), so an `Approve` counts only while it is that key's latest record, and a key changes its mind by signing a higher `seq`. An approval by a key that is later revoked stops counting. A `Reject` standing from an eligible key puts the state back to `InReview` until that key signs a `Withdraw` or a new `Approve`. `Approved` needs the hash, so a new version starts again at `Draft`. `Deprecated` is terminal for that version. Review records are authenticated one by one, so one forged record ignored does not hide the real ones.
+Rules: apart from `Deprecate`, the fold uses each key's standing only (D5), so an `Approve` counts only while it is that key's latest record, and a key changes its mind by signing a higher `seq`. An approval by a key that is later revoked stops counting. A `Reject` standing from an eligible key puts the state back to `InReview` until that key signs a `Withdraw` or a new `Approve`. `Approved` needs the hash, so a new version starts again at `Draft`. `Deprecated` is terminal: a valid `Deprecate` is exempt from standing and from equivocation, and no later record, from any key, revives the version. Review records are authenticated one by one, so one forged record ignored does not hide the real ones.
 
 **Policy** is `ReviewPolicy.library { approvals: u8, apply_only_approved: bool }` from the roster (team-review.md §8.1). With `apply_only_approved`, `library.apply` and `library.update` on a team item that is not `Approved` return a located refusal (`NotApproved`, with the state and what is missing) for **everyone, agents included**; the check lives in the op, not only in search. `library.search {usable_for}` gains the value `"apply"`, which also hides items the policy would refuse, so the list a person sees matches what will work; `ItemInfo` gains a `review` badge. With the policy off, unapproved items apply with a visible badge. The policy never applies to "my library" or first-party scopes.
 
 ### D9. Sync, cache and size limits
 
 - **Where.** `<data dir>/omuzaki/library/teams/<team-id>/` holds `source.toml` (kind, location, a secret-store label for bucket credentials), `state.toml` (pinned root, highest `seq` and snapshot hash, last sync time), the verified `log/`, `index/` head, `reviews/` and `items/` copies in D1's layout. Assets go into the person's content-addressed `store/`, shared with everything else (dedupe, library.md D11).
-- **`library.team.sync {team}`** pulls the log, the index head and the review records, verifies them (D3), and replaces the cached copies only if everything passed, atomically. Items and assets are **fetched on demand**: describing or applying fetches and verifies that manifest and its assets, nothing else. A "make available offline" action fetches a whole section.
+- **`library.team.sync {team}`** pulls the log, the index snapshots not yet held (in pages, resumable: a sync that stops at a limit keeps what it verified) and the review records, verifies them (D3), and replaces the cached copies only if everything passed, atomically. Items and assets are **fetched on demand**: describing or applying fetches and verifies that manifest and its assets, nothing else. A "make available offline" action fetches a whole section.
 - **When.** Manual by default; a Machine setting `library.team.sync_on_open` (default off) syncs when the app opens or the source is reached. Never in the background without it, and never for an agent session that has no `net` or `fs` grant (a folder needs only a file root under ADR 0013).
 - **Offline.** Everything cached and verified keeps working; the panel says "last synced <time>, seq N". A failed or invalid sync keeps the previous good state and reports why.
-- **Limits** (proposals, set as constants in the API crate and tested): index at most 20 000 entries and 8 MiB per snapshot, and per sync at most 256 unverified snapshots and 64 MiB of them in total; at most 1 000 review records and 4 MiB per `id@version`; manifest at most the library's manifest limit; asset at most 256 MiB each; a record at most 16 KiB; a cache budget `library.team.cache_mb` (default 2 048) with least-recently-used eviction of unreferenced assets only. Everything is checked before allocation, as `omuzaki-gltf` does. Over a limit is `SourceError::TooLarge`, not a truncated read.
+- **Limits** (proposals, set as constants in the API crate and tested): index at most 20 000 entries and 8 MiB per snapshot, 64 snapshots and 16 MiB per `IndexPage`, 16 heads, and per sync at most 4 096 snapshots and 1 GiB (the client keeps only the heads' entries and each snapshot's `seq` and `prev` while streaming); the log at most 10 000 entries and 16 MiB; at most 1 000 review records and 4 MiB per `id@version`; manifest at most the library's manifest limit; asset at most 256 MiB each; a record at most 16 KiB; a cache budget `library.team.cache_mb` (default 2 048) with least-recently-used eviction of unreferenced assets only. Everything is checked before allocation, as `omuzaki-gltf` does. Stores stop reading at the limit plus one, so an untrusted store cannot make a call allocate more. Over a limit is `SourceError::TooLarge`, not a truncated read.
 - **After apply** the project holds what it pinned (D6). Removing a team from the app deletes the cache and nothing in any project.
 
 ### D10. Ops and agents
@@ -188,12 +188,12 @@ Rules: the fold uses each key's standing only (D5), so an `Approve` counts only 
 |---|---|---|---|
 | `library.team.list {team?}` | query, `read` | yes | yes |
 | `library.team.sync {team}` | job, `fs`/`net` by store | yes, within its grants | yes |
-| `library.team.add_source {kind, location}` / `remove_source {team}` | edit, `person_only` | no | yes (shows the root fingerprint, then `team.pin_root`) |
-| `library.publish {item, to: team}` | job, `publish` + `edit:library`, `person_only` | `needs_person` | yes |
+| `library.team.add_source {kind, location}` / `remove_source {team}` | edit, `person_only` (`add_source` also the store scope, to read the log it pins) | no | yes (shows the root fingerprint, then `team.pin_root`) |
+| `library.publish {item, to: team}` | job, `publish` + `edit:library` + the store scope, `person_only` | `needs_person` | yes |
 | `library.team.review {item, version, decision, note?}` | edit, `review`, `person_only` | no | authorised by `decision`: `Request` and `Withdraw` by the item's publisher (designer and above); `Approve` and `Reject` by reviewer and above, never the publisher of that hash; needs the store's `fs`/`net` scope like `sync`. The scope is the person's machine grant for the source they added; the role only decides what they may sign |
-| `library.team.deprecate {item, version, reason}` | edit, `person_only` | no | yes (own, or admin) |
+| `library.team.deprecate {item, version, reason}` | edit, `person_only` + the store's `fs`/`net` scope like `review` | no | yes (own, or admin; the signer-role check is separate from the scope) |
 
-**Agents propose, people decide** (library.md D9). An agent prepares candidates with `library.save_as_item` and may describe, search, sync and apply team items; it never signs, publishes, approves or deprecates. Signing needs the person's key, which no agent op can reach (identity D8), so the refusal is structural, not a policy.
+**Scope on every op:** an op that reads or writes a store (an uncached fetch for `library.apply` too) needs the store's `fs`/`net` scope on top of its own; roles decide what a person may sign, scopes what the machine may reach. **Agents propose, people decide** (library.md D9). An agent prepares candidates with `library.save_as_item` and may describe, search, sync and apply team items; it never signs, publishes, approves or deprecates. Signing needs the person's key, which no agent op can reach (identity D8), so the refusal is structural, not a policy.
 
 **`library.publish` preflight** (a dry-run first, one finding list, nothing leaves the machine until the person confirms):
 1. the manifest passes `ItemManifest::check` and has all the rights fields;
@@ -218,7 +218,7 @@ LB-08's client is `MarketStore: ItemStore`, an HTTPS implementation. Everything 
 | Reviews and ratings by users | a `Listing` slot to display them; not signed by the client | storing, abuse handling |
 | Moderation and takedown | the client honours a hosted-key-signed `Deprecate { reason: takedown }` like any deprecation | policy, who signs, appeals |
 
-Nothing here sets what is sold, for how much, or whether anything is. The point of the table is that the client's trust code is written once for both cases and a `commerce` value changes no verification rule. The hosted backend, payments and pricing are open questions for the owner (§6, Q1 to Q3). Until they are decided `MarketStore` is not built.
+Nothing here sets what is sold, for how much, or whether anything is. The point of the table is that the client's trust code is written once for both cases and a `commerce` value changes no verification rule. The hosted backend, payments and pricing are open questions for the owner (§6, Q1 to Q3). Until they are decided `MarketStore` is not built; whether it shares a base store contract with the team-only methods (log, licence, roster) is decided when its design is written.
 
 ### D12. Privacy
 
@@ -254,19 +254,17 @@ Items are recipes of ops, never code (library.md D1), so the worst a trusted-but
 |---|---|
 | index entry `hash`, `roster`, `seq`, `signer`, an entry added or removed | `Tampered(IndexSignature)` |
 | index signed by a viewer or any key with no write right (a reviewer may write: approve is a write right, D3) | `NotAllowed` |
-| older snapshot served after a newer pin | `Rollback` |
+| store no longer lists a pinned head / a valid snapshot below the pin, not an ancestor of a pinned head | `Rollback`, cached state kept / `Forked`, a second head |
+| child omits a parent's entry / `seq` not above a `prev`'s / over a D9 limit | `Tampered(DroppedEntry)` / `Tampered(Seq)` / `TooLarge` |
 | log entry edited, reordered, root changed | `Invalid` with team.md's reasons |
 | manifest byte flipped / id outside the team slug / signature of another item | `Tampered(Content)` / `BadId` / `Tampered(ItemSignature)` |
 | asset replaced or truncated | `Tampered(Asset)` |
-| item signed by a removed member (valid at `added_at`) | accepted |
-| item signed by a revoked key | `RevokedKey` |
-| entry backdated with a removed key | `BackdatedEntry` |
+| item signed by a removed member (valid at `added_at`) / a revoked key / entry backdated with a removed key | accepted / `RevokedKey` / `BackdatedEntry` |
 | review record for another hash/version/team, replayed | `Tampered(Record)` |
-| approval signed by a viewer, key promoted later | not counted until re-signed at a roster where it is eligible |
-| fork with heads at different `seq` | `Forked`, both heads kept |
+| approval signed by a viewer, key promoted later (`review_state` given the history) | not counted until re-signed at a roster where it is eligible |
+| `Deprecate`, then a higher-`seq` `Request`/`Approve`/`Withdraw` / `deprecate` without the store scope | still `Deprecated` / refused before any I/O |
 | manifest reformatted (same canonical hash) | accepted |
-| review by the publisher, a viewer, a revoked key | not counted |
-| two approvals by one key | counted once |
+| review by the publisher, a viewer, a revoked key / two approvals by one key | not counted / counted once |
 | second manifest for one `id@version` | `Conflict`, item ignored, others usable |
 | two snapshots at one seq | `Forked`, merge snapshot resolves |
 | entry for a `private_test` item | refused at preflight; a signed one that arrives anyway is shown with a warning, never applied |
@@ -282,7 +280,7 @@ Items are recipes of ops, never code (library.md D1), so the worst a trusted-but
 
 ```rust
 pub trait ItemStore: Send + Sync {                       // bytes in, bytes out: never decides
-    fn index(&self, have: &[ContentHash]) -> Result<Vec<SignedIndex>, SourceError>;  // every snapshot whose hash is not in `have`; the client computes heads from `prev`
+    fn index(&self, have: &[ContentHash], cursor: Option<Cursor>) -> Result<IndexPage, SourceError>;  // one page of snapshots not in `have`, by (seq, hash8); the client computes heads from `prev`
     fn fetch(&self, id: &ItemId, version: &Version) -> Result<Vec<u8>, SourceError>;   // the manifest bytes
     fn fetch_asset(&self, hash: &ContentHash) -> Result<Vec<u8>, SourceError>;         // assets by hash
     fn put(&self, item: &SignedItem) -> Result<PutReceipt, SourceError>;              // create-if-absent, manifest then assets
@@ -294,6 +292,7 @@ pub trait ItemStore: Send + Sync {                       // bytes in, bytes out:
     fn licence(&self, hash: &ContentHash) -> Result<Vec<u8>, SourceError>;
     fn put_licence(&self, hash: &ContentHash, text: &[u8]) -> Result<(), SourceError>;   // licence/<hash>.toml, create-if-absent, for the owner's client
 }
+pub struct IndexPage { pub entries: Vec<SignedIndex>, pub next: Option<Cursor>, pub missing: Vec<ContentHash> }   // a page is inside D9's limits; `missing` is the part of `have` the store no longer lists
 pub enum ReviewState { Draft, InReview, Approved { by: Vec<KeyId> }, Deprecated }
 pub struct SignedIndex { pub team: TeamId, pub seq: u64, pub prev: Vec<ContentHash>, pub items: Vec<IndexEntry>,
                          pub roster: ContentHash, pub signer: Identity, pub signature: Signature }   // Domain::LibraryIndex
@@ -309,14 +308,15 @@ pub enum SourceError { NotFound, Exists, Forbidden, Conflict { id: ItemId, versi
                        Forked, NotAllowed(String), Malformed(String) }
 pub struct VerifiedSource { /* log fold, index head, per-item verified view */ }
 pub fn verify_source(store: &dyn ItemStore, pin: &SourcePin, trust: &dyn TrustStore) -> Result<VerifiedSource, SourceError>;
-pub fn review_state(roster: &Roster, records: &[Signed<ReviewBody>], entry: &IndexEntry) -> ReviewState;   // the D8 fold, pure
+pub struct RosterHistory { /* the verified log fold: the Roster at every entry hash, and the head */ }
+pub fn review_state(history: &RosterHistory, records: &[Signed<ReviewBody>], entry: &IndexEntry) -> ReviewState;   // the D8 fold, pure
 pub fn effective_rights(item: &ItemRights, licence: &TeamLicence) -> ItemRights;   // D7 join, pure
 pub struct TeamLicence { /* schema, name, spdx, commercial, attribution, grant, outside, terms_url */ }
 pub struct Listing { pub creator: KeyId, pub title: String, pub summary: String, pub licence_template: ContentHash,
                      pub commerce: Option<serde_json::Value> }                 // opaque until the owner decides (D11)
 ```
 
-Notes: `index(have)` returns every snapshot the client has not yet verified (by file name, `<seq>-<hash8>`, so known ones are not read), not a chosen head and not filtered by `seq`: a branch that arrives later with a lower `seq` than the pin is still returned, so a fork is always visible. `state.toml` keeps the hashes of verified snapshots. `put_licence` rejects bytes whose hash is not `hash`. `ItemStore` is `Send + Sync` and synchronous like `Store`; the job wrapper does the waiting. There is no `delete`. `SourcePin { team, root: KeyId, seq: u64, snapshot: ContentHash }` is the local `state.toml`.
+Notes: `index(have, cursor)` pages through the snapshots the client has not yet verified (by file name, `<seq>-<hash8>`, so known ones are not read; `Cursor` is opaque to the client), not a chosen head and not filtered by `seq`: a branch that arrives later with a lower `seq` than the pin is still returned, so a fork is always visible, and a source with any number of updates first-syncs in bounded pages. `state.toml` keeps the hashes of verified snapshots. `reviews` and `log` stop at their D9 limits. `put_licence` rejects bytes whose hash is not `hash`. `ItemStore` is `Send + Sync` and synchronous like `Store`; the job wrapper does the waiting. There is no `delete`. `SourcePin { team, root: KeyId, log: (u64, ContentHash), heads: Vec<(u64, ContentHash)> }` is the local `state.toml`.
 
 ### 5.2 Crates
 
@@ -336,10 +336,10 @@ Every task below is docs-complete here: a fence, its contract, its acceptance nu
 
 | # | Task | Model, lane | Fence | Acceptance | Blocked by |
 |---|---|---|---|---|---|
-| T1 | `omuzaki-library-source-api` (types, limits, `verify_source`, `review_state`, `effective_rights`) and `omuzaki-library-source-mock` (`FakeStore`, conformance suite) | sonnet, human lane | the two new crates, `crates/README.md` | the tamper matrix of D14 passes (every row has a test); the D8 fold has tests for each state transition and for approver rules; `FakeStore` passes the conformance suite; wasm32 check green | #1053 (`omuzaki-identity-api`), the team contract (`omuzaki-team-api`) |
+| T1 | `omuzaki-library-source-api` (types, limits, `verify_source`, `review_state`, `effective_rights`) and `omuzaki-library-source-mock` (`FakeStore`, conformance suite) | sonnet, human lane | the two new crates, `crates/README.md` | the tamper matrix of D14 passes (every row has a test); the D8 fold has tests for each state transition, for approver rules (an approval signed before promotion does not count) and for terminal `Deprecate`; a source with 1 000 index updates first-syncs in pages inside D9's limits; a late lower-`seq` fork becomes a second head; `FakeStore` passes the conformance suite; wasm32 check green | #1053 (`omuzaki-identity-api`), the team contract (`omuzaki-team-api`) |
 | T2 | the folder store and `SourceCache` | sonnet | `omuzaki-library-source` | the conformance suite green on a temp dir; a crash after the manifest and before the index leaves no listed broken entry; a conflicted-copy file is a `Forked` status, not a failure; sync atomically replaces or keeps; no network | T1 |
 | T3 | signed index writer and review record writer | sonnet | `omuzaki-library-source` | the §3 example is generated from test seeds and matches goldens byte for byte; draft → in review → approved with two reviewers; the publisher's own approval does not count; a merge snapshot resolves a fork | T1, T2 |
-| T4 | `library.publish` to a team, preflight, and `library.team.review`/`deprecate` | sonnet | `omuzaki-library-source` (op registrations), `omuzaki-library-ops` | all six preflight checks have a failing case; under-bumped version refused; `private_test` refused; agent call returns `needs_person`; one op record | T3, the library ops crate |
+| T4 | `library.publish` to a team, preflight, and `library.team.review`/`deprecate` | sonnet | `omuzaki-library-source` (op registrations), `omuzaki-library-ops` | all six preflight checks have a failing case; `review` and `deprecate` refused without the store scope; under-bumped version refused; `private_test` refused; agent call returns `needs_person`; one op record | T3, the library ops crate |
 | T5 | `library.team.sync`/`list`/`add_source`/`remove_source` ops | haiku | `omuzaki-library-source` | `add_source` shows the root fingerprint and needs `team.pin_root`; sync offline reports the cache age; limits tested at and over | T2 |
 | T6 | team licence in the gate (`team_only`, `effective_rights`, record fields, `licence.derive`) | sonnet, human lane | `omuzaki-library-api` (additive), `omuzaki-io-ops` (`licence.derive`, `io.check_export`) | the three §3 gate answers as tests (`ok`, `commercial: no`, `team_only`); personal use never blocked; a project opens with the source gone | T1; the Director's approval of the additive contract change on its issue |
 | T7 | bucket store against a fake object client | sonnet | `omuzaki-library-source-s3` | the same conformance suite and tamper matrix green with no network; create-if-absent maps to `If-None-Match`; credentials only from the secret store | T1, T2 |
