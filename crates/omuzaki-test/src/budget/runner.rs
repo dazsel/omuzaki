@@ -75,8 +75,12 @@ fn peak_rss_bytes() -> Option<f64> {
 /// Run the measurements and build the report, without touching the disk beyond reading the spec and the previous report.
 ///
 /// # Errors
-/// Any [`BudgetError`] from reading the spec or the previous report, or from the recorder.
+/// Any [`BudgetError`] from reading the spec or the previous report, or from the recorder;
+/// [`BudgetError::Provenance`] for the `measured` and `scaled` classes, whose tier claim a report cannot carry yet.
 pub fn measure(config: &Config) -> Result<Report, BudgetError> {
+    if let Class::Measured | Class::Scaled = config.class {
+        return Err(BudgetError::Provenance(format!("{:?}", config.class).to_lowercase()));
+    }
     let read = |p: &Path| std::fs::read_to_string(p).map_err(|source| BudgetError::Io { path: p.to_owned(), source });
     let mut startup = StartupTimer::begin();
     let budgets = parse_spec(&read(&config.spec)?)?;
@@ -111,7 +115,8 @@ pub fn measure(config: &Config) -> Result<Report, BudgetError> {
 /// Measure, write `report.md` and `report.json` into the output folder and print the markdown.
 ///
 /// # Errors
-/// Any [`BudgetError`] from measuring or writing; [`BudgetError::Violations`] when `strict` and the report has any.
+/// Any [`BudgetError`] from measuring or writing; [`BudgetError::Violations`] when `strict` and the report has any;
+/// [`BudgetError::NoBaseline`] when `strict` and `relative` found nothing to compare with.
 pub fn run(config: &Config) -> Result<Report, BudgetError> {
     let report = measure(config)?;
     let write = |name: &str, text: String| {
@@ -123,6 +128,10 @@ pub fn run(config: &Config) -> Result<Report, BudgetError> {
     write("report.md", markdown.clone())?;
     write("report.json", report.to_json()?)?;
     println!("{markdown}");
+    // Without a comparable baseline no row can regress, so a strict relative run would pass having compared nothing.
+    if config.strict && config.class == Class::Relative && !report.rows.iter().any(|r| r.previous.is_some()) {
+        return Err(BudgetError::NoBaseline);
+    }
     let failures = report.failures();
     if config.strict && !failures.is_empty() {
         return Err(BudgetError::Violations(failures.join("; ")));
@@ -155,7 +164,7 @@ mod tests {
     #[test]
     fn the_busy_wait_system_shows_up_and_the_report_is_written() {
         let dir = tempfile::tempdir().unwrap();
-        let report = run(&config(dir.path())).unwrap();
+        let report = run(&Config { strict: false, ..config(dir.path()) }).unwrap();
         let row = report.rows.iter().find(|r| r.metric.key == SYNTHETIC_KEY).unwrap();
         // A busy-wait never returns early, so 2 ms is a hard floor; the ceiling is loose for a loaded runner.
         assert!(row.metric.stats.p50 >= 2.0 && row.metric.stats.p50 < 50.0, "{:?}", row.metric.stats);
@@ -174,6 +183,17 @@ mod tests {
         c.previous = None;
         c.spec = dir.path().join("nope.md");
         assert!(matches!(measure(&c), Err(BudgetError::Io { .. })));
+    }
+
+    #[test]
+    fn a_strict_relative_run_needs_a_baseline_and_gating_tiers_need_provenance() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut c = config(dir.path());
+        assert!(matches!(run(&c), Err(BudgetError::NoBaseline)));
+        for class in [Class::Measured, Class::Scaled] {
+            c.class = class;
+            assert!(matches!(measure(&c), Err(BudgetError::Provenance(_))));
+        }
     }
 
     #[test]

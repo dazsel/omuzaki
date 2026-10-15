@@ -35,6 +35,12 @@ pub enum BudgetError {
     /// A gating run (class other than `reported`) had violations.
     #[error("{0}")]
     Violations(String),
+    /// A `measured` or `scaled` run was requested but the report cannot yet carry the provenance spec §10 requires.
+    #[error("class `{0}` needs tier, OS build, GPU and driver provenance (spec §10), which reports do not carry yet")]
+    Provenance(String),
+    /// A strict `relative` run had no comparable previous report, so nothing was compared.
+    #[error("a strict `relative` run needs a previous report from the same machine to compare against")]
+    NoBaseline,
     /// A measurement class name was not one of `reported`, `measured`, `scaled`, `relative`.
     #[error("unknown measurement class `{0}`")]
     Class(String),

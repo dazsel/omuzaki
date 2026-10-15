@@ -21,9 +21,11 @@ pub const SCHEMA: u32 = 1;
 pub enum Class {
     /// Taken on any other machine (a cloud runner, a laptop): printed with the machine, never gates.
     Reported,
-    /// Taken on the tier it is claimed for: judged against the budget directly.
+    /// Taken on the tier it is claimed for: judged against the budget directly. The runner refuses it until a report
+    /// carries the tier, OS build, GPU and driver provenance spec §10 requires.
     Measured,
-    /// Taken on another machine and converted by a spec rule: judged against the budget directly.
+    /// Taken on another machine and converted by a spec rule: judged against the budget directly. Refused by the runner
+    /// for the same reason as [`Class::Measured`].
     Scaled,
     /// A PR against main on the same machine, alternating runs in one session: a metric more than 10% worse fails.
     Relative,
@@ -41,6 +43,18 @@ impl Class {
             "scaled" => Ok(Self::Scaled),
             "relative" => Ok(Self::Relative),
             other => Err(BudgetError::Class(other.to_owned())),
+        }
+    }
+}
+
+impl Class {
+    /// What a reader may conclude from numbers of this class, for the report's heading.
+    fn meaning(self) -> &'static str {
+        match self {
+            Self::Reported => "never a tier's number",
+            Self::Measured => "taken on the tier it is claimed for, judged against the budget",
+            Self::Scaled => "converted from another machine by a spec rule, judged against the budget",
+            Self::Relative => "judged only against the previous run on the same machine, not against the budget",
         }
     }
 }
@@ -249,11 +263,12 @@ impl Report {
             "# Budget report".to_owned(),
             String::new(),
             format!(
-                "Class `{}`: measured on {} {} with {} vCPUs; never a tier's number.",
+                "Class `{}`: measured on {} {} with {} vCPUs; {}.",
                 format!("{:?}", self.class).to_lowercase(),
                 m.os,
                 m.arch,
-                m.vcpus
+                m.vcpus,
+                self.class.meaning()
             ),
             String::new(),
             "| Key | Samples | p50 | p95 | p99 | max | Budget | Verdict | Change |".to_owned(),
