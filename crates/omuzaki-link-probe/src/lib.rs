@@ -14,7 +14,6 @@
 // pointers and do nothing unsafe.
 #![allow(unsafe_code)]
 
-use std::fmt::Write as _;
 use std::sync::OnceLock;
 
 omuzaki_core::define_link! {
@@ -34,8 +33,8 @@ pub fn listing() -> &'static str {
         link();
         let mut listing = String::new();
         for registered in omuzaki_core::link::registered() {
-            // Writing to a String cannot fail.
-            let _ = writeln!(listing, "{registered}");
+            listing.push_str(&registered.to_string());
+            listing.push('\n');
         }
         listing
     })
