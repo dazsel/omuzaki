@@ -153,14 +153,18 @@ pub fn decode(bytes: &[u8], hash: ContentHash, field: &str) -> Result<Rgba8, OpE
     input.limits(limits());
     let mut decoder = input.into_decoder().map_err(|error| unreadable(field, &error))?;
     let icc = decoder.icc_profile().map_err(|error| unreadable(field, &error))?;
-    // The profile's bytes are part of what the decode holds, so they count against the same budget.
-    let icc_bytes = icc.as_ref().map_or(0, |profile| profile.len() as u64);
-    if !fits(plan.width, plan.height, plan.peak + icc_bytes) {
+    // The decoder keeps its own copy of the profile, and `icc_profile` returns another, so two copies are live while
+    // the profile is held. Both are counted, since the decoder's copy cannot be released from here. The arithmetic
+    // is stated here because a test cannot reach it: a JPEG's profile is at most 255 APP2 chunks of 65 519 bytes
+    // (about 15.9 MiB), and two copies exceed the 64 MiB budget only from a profile over 32 MiB.
+    let icc_copies = 2 * icc.as_ref().map_or(0, |profile| profile.len() as u64);
+    if !fits(plan.width, plan.height, plan.peak + icc_copies) {
         return Err(too_large(field, plan.width, plan.height));
     }
     if let Some(found) = header::non_srgb(bytes, format, icc.as_deref()) {
         return Err(colour_unsupported(field, &found));
     }
+    drop(icc);
     let dynamic = DynamicImage::from_decoder(decoder).map_err(|error| match error {
         ImageError::Limits(_) => too_large(field, plan.width, plan.height),
         other => unreadable(field, &other),
@@ -219,7 +223,8 @@ fn plan(bytes: &[u8], format: ImageFormat) -> Result<Plan, String> {
         (width, height, output, scratch)
     };
     let pixels = u64::from(width) * u64::from(height);
-    let peak = DECODER_STATE_BYTES + scratch + pixels * (output + RGBA_BYTES);
+    // The encoded input is held through the decode too, so it is part of the peak.
+    let peak = DECODER_STATE_BYTES + scratch + pixels * (output + RGBA_BYTES) + bytes.len() as u64;
     Ok(Plan { width, height, peak })
 }
 
