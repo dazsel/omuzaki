@@ -320,6 +320,8 @@ struct Hooks<'a> {
     undone: &'a dyn Fn(),
     /// After a deletion renamed the target aside, before the file is checked.
     quarantined: &'a dyn Fn(),
+    /// After [`file_state`] looked at the path, before it reads the file.
+    stat_done: &'a dyn Fn(),
     /// Pretend the file system has no hard links (tests only).
     links_off: Cell<bool>,
     /// Pretend the system can't swap two names atomically (tests only).
@@ -334,6 +336,76 @@ struct Hooks<'a> {
 
 fn noop() {}
 
+/// Faults a test elsewhere in the crate (which can't pass hooks through `Project`) sets for the default hooks of the
+/// calls made on its own thread. Compiled only into tests; elsewhere they are always off.
+pub(crate) mod faults {
+    #[cfg(test)]
+    thread_local! {
+        /// Pretend the file system has no hard links.
+        pub(crate) static LINKS_OFF: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        /// Make flushing a folder fail.
+        pub(crate) static SYNC_OFF: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// Whether this thread's test turned hard links off.
+    pub(super) fn links_off() -> bool {
+        #[cfg(test)]
+        return LINKS_OFF.with(std::cell::Cell::get);
+        #[cfg(not(test))]
+        false
+    }
+
+    /// Whether this thread's test made flushing a folder fail.
+    pub(super) fn sync_off() -> bool {
+        #[cfg(test)]
+        return SYNC_OFF.with(std::cell::Cell::get);
+        #[cfg(not(test))]
+        false
+    }
+}
+
+/// Marks an I/O error of a step after a change was committed as [`StoreError::NotDurable`].
+fn not_durable(e: StoreError) -> StoreError {
+    match e {
+        StoreError::Io { path, source } => StoreError::NotDurable { path, source },
+        other => other,
+    }
+}
+
+/// What is at a file's path, compared with the bytes last seen there.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum FileState {
+    /// Nothing is there.
+    Vanished,
+    /// A regular file with the expected bytes.
+    Same,
+    /// Anything else: other bytes, or something that isn't a regular file.
+    Different,
+}
+
+/// Looks at the file at `path` (whose path the caller has already checked for links) against the hash `expected`.
+/// Every absence it sees, at any step, is [`FileState::Vanished`]: a file deleted between looking at the path and
+/// reading it is gone, never "unchanged".
+pub(crate) fn file_state(path: &Path, expected: Option<ContentHash>) -> Result<FileState, StoreError> {
+    file_state_with(path, expected, &Hooks::default())
+}
+
+fn file_state_with(path: &Path, expected: Option<ContentHash>, hooks: &Hooks<'_>) -> Result<FileState, StoreError> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if !meta.is_file() => return Ok(FileState::Different),
+        Ok(_) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(FileState::Vanished),
+        Err(e) => return Err(StoreError::io(path, e)),
+    }
+    (hooks.stat_done)();
+    match fs::read(path) {
+        Ok(bytes) if Some(ContentHash::of(&bytes)) == expected => Ok(FileState::Same),
+        Ok(_) => Ok(FileState::Different),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(FileState::Vanished),
+        Err(e) => Err(StoreError::io(path, e)),
+    }
+}
+
 impl Default for Hooks<'_> {
     fn default() -> Self {
         Self {
@@ -343,10 +415,11 @@ impl Default for Hooks<'_> {
             verified: &noop,
             undone: &noop,
             quarantined: &noop,
-            links_off: Cell::new(false),
+            stat_done: &noop,
+            links_off: Cell::new(faults::links_off()),
             exchange_off: Cell::new(false),
             no_replace_off: Cell::new(false),
-            sync_off: Cell::new(false),
+            sync_off: Cell::new(faults::sync_off()),
             windows_shaped: Cell::new(false),
         }
     }
@@ -468,14 +541,14 @@ fn replace_held(
         (hooks.verified)();
         if held.linked.is_some() {
             // The backup is the same file, so it is the kept entry and this second name can go.
-            drop(fs::remove_file(tmp));
+            fs::remove_file(tmp).map_err(|e| StoreError::NotDurable { path: tmp.to_path_buf(), source: e })?;
         } else {
             // A copy doesn't follow an editor that still holds the original open, so the original takes the copy's
             // place (a rename over our own copy), and the folder is flushed so that survives a crash. Our file is
             // already at the target, but if either step fails the save reports it: what it promised is not durable.
             // A failed rename leaves the original at `tmp`, where the next save moves it into the replaced folder.
-            fs::rename(tmp, &held.path).map_err(|e| StoreError::io(tmp, e))?;
-            hooks.sync_folder(held.path.parent())?;
+            fs::rename(tmp, &held.path).map_err(|e| StoreError::NotDurable { path: tmp.to_path_buf(), source: e })?;
+            hooks.sync_folder(held.path.parent()).map_err(not_durable)?;
         }
         return Ok(Replace::Placed);
     }
@@ -906,7 +979,7 @@ fn remove_checked_with(
                 return Ok(false);
             }
             if held.linked.is_none() {
-                sync_folder(held.path.parent())?;
+                hooks.sync_folder(held.path.parent()).map_err(not_durable)?;
             }
         }
     }
@@ -946,12 +1019,15 @@ fn unlink_held(dir: &Path, path: &Path, held: &Held, hooks: &Hooks<'_>) -> Resul
     };
     (hooks.quarantined)();
     if held.is_file_at(&quarantine) {
-        if held.linked.is_some() {
-            return fs::remove_file(&quarantine).map(|()| true).map_err(|e| StoreError::io(&quarantine, e));
-        }
-        // The backup is only a copy, so the original inode (which an editor may still hold open) is renamed over it
-        // and kept, not unlinked.
-        return fs::rename(&quarantine, &held.path).map(|()| true).map_err(|e| StoreError::io(&quarantine, e));
+        // The target is gone from its name: the deletion has happened, and what follows only tidies up.
+        let tidied = if held.linked.is_some() {
+            fs::remove_file(&quarantine)
+        } else {
+            // The backup is only a copy, so the original inode (which an editor may still hold open) is renamed over
+            // it and kept, not unlinked.
+            fs::rename(&quarantine, &held.path)
+        };
+        return tidied.map(|()| true).map_err(|e| StoreError::NotDurable { path: quarantine, source: e });
     }
     // An editor's file: put it back unless something took the name again, and never delete it.
     match place_no_replace(&quarantine, path, hooks) {
@@ -1373,6 +1449,24 @@ mod tests {
         }
     }
 
+    /// A file deleted between looking at its path and reading it is vanished, never unchanged; a changed one and a
+    /// folder in its place are different.
+    #[test]
+    fn a_file_deleted_before_it_is_read_has_vanished() {
+        let tmp = TempDir::new().unwrap();
+        let (dir, (path, expected)) = (tmp.path(), with_file(tmp.path()));
+        assert_eq!(file_state_with(&path, expected, &Hooks::default()).unwrap(), FileState::Same);
+        let delete = || fs::remove_file(dir.join("f.toml")).unwrap();
+        let hooks = Hooks { stat_done: &delete, ..Hooks::default() };
+        assert_eq!(file_state_with(&path, expected, &hooks).unwrap(), FileState::Vanished);
+        assert_eq!(file_state_with(&path, expected, &Hooks::default()).unwrap(), FileState::Vanished);
+        fs::write(&path, "other = 1\n").unwrap();
+        assert_eq!(file_state_with(&path, expected, &Hooks::default()).unwrap(), FileState::Different);
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        assert_eq!(file_state_with(&path, expected, &Hooks::default()).unwrap(), FileState::Different);
+    }
+
     /// Every path that places our file over an existing one keeps the original as the `.kept` entry: the swap with a
     /// linked backup, the swap with a copied backup, and Windows's rename over the target (driven here on any system).
     #[test]
@@ -1411,7 +1505,7 @@ mod tests {
         let (dir, (path, expected)) = (tmp.path(), with_file(tmp.path()));
         let hooks = Hooks { links_off: true.into(), sync_off: true.into(), ..Hooks::default() };
         let err = replace_with(dir, expected, &hooks).unwrap_err();
-        assert!(matches!(&err, StoreError::Io { .. }) && err.to_string().contains("flushing"), "{err}");
+        assert!(matches!(&err, StoreError::NotDurable { .. }) && err.to_string().contains("flushing"), "{err}");
         assert_eq!(fs::read_to_string(&path).unwrap(), "ours = 3\n");
         assert_eq!(texts(&kept(dir)), [MINE]);
         assert!(no_temporary_file(dir));
