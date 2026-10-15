@@ -48,3 +48,40 @@ pub fn literal_pathspec(path: &Path) -> String {
     let text = path.to_string_lossy().replace('\\', "/");
     format!(":(literal){text}")
 }
+
+/// Pathspec magic that leaves out every `.omuzaki` folder (or file) at any depth, in any case. Git applies it
+/// after the positive pathspecs, so it also removes a tracked `.omuzaki/` file that was once added with `git add -f`,
+/// which `.omuzaki/.gitignore` does not stop (design §6).
+pub const PRIVATE_EXCLUDES: [&str; 2] = [":(exclude,glob,icase)**/.omuzaki", ":(exclude,glob,icase)**/.omuzaki/**"];
+
+/// The pathspec for the whole project folder: `.` read literally.
+pub const PROJECT_PATHSPEC: &str = ":(literal).";
+
+/// The pathspecs that select the project's files and nothing else: the project folder, without any private `.omuzaki`
+/// file. Git must be run in the project folder (`git -C <dir>`) and given these after `--`. [`Git::log`],
+/// [`Git::status`], [`Git::show`] and [`Git::tree_at`] use them, so a project inside a larger repository never reports
+/// another project's commits or files, and private state never leaves the folder in a result.
+///
+/// [`Git::log`]: crate::git::Git::log
+/// [`Git::status`]: crate::git::Git::status
+/// [`Git::show`]: crate::git::Git::show
+/// [`Git::tree_at`]: crate::git::Git::tree_at
+#[must_use]
+pub fn project_pathspecs() -> Vec<String> {
+    std::iter::once(PROJECT_PATHSPEC).chain(PRIVATE_EXCLUDES).map(str::to_owned).collect()
+}
+
+/// The pathspecs [`Git::commit`](crate::git::Git::commit) gives git after `--`, for both `git add` and `git commit`:
+/// each of `paths` as a literal pathspec, then [`PRIVATE_EXCLUDES`]. The excludes apply to every selection, not only
+/// to `.`, because a folder such as `sub` can hold a tracked `sub/.omuzaki/` file as well.
+///
+/// # Errors
+/// What [`validate_commit_paths`] reports, before any pathspec is built.
+pub fn commit_pathspecs<P: AsRef<Path>>(paths: &[P]) -> Result<Vec<String>, GitError> {
+    validate_commit_paths(paths)?;
+    Ok(paths
+        .iter()
+        .map(|path| literal_pathspec(path.as_ref()))
+        .chain(PRIVATE_EXCLUDES.iter().map(|spec| (*spec).to_owned()))
+        .collect())
+}

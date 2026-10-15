@@ -44,14 +44,29 @@ pub enum PullOutcome {
 #[allow(clippy::missing_errors_doc)]
 pub trait Git: Send + Sync {
     /// The folder's branch, ahead/behind, changed files and merge state.
+    ///
+    /// The changed files are those selected by [`project_pathspecs`] (the folder, never another project in the same
+    /// repository, and never a private `.omuzaki` file); `private_tracked` is the one list that names `.omuzaki` paths.
+    ///
+    /// [`project_pathspecs`]: crate::paths::project_pathspecs
     fn status(&self, dir: &Path, cancel: &dyn Cancel) -> Result<GitStatus, GitError>;
-    /// At most `limit` commits of `range`, newest first.
+    /// At most `limit` commits of `range`, newest first, that touch the project: git is given [`project_pathspecs`]
+    /// after `--`, so in a repository that holds several projects only this folder's history comes back, and a commit
+    /// that changed nothing but private `.omuzaki` files does not.
+    ///
+    /// [`project_pathspecs`]: crate::paths::project_pathspecs
     fn log(&self, dir: &Path, range: LogRange, limit: usize, cancel: &dyn Cancel) -> Result<Vec<Commit>, GitError>;
-    /// One commit and the files it changed against its first parent.
+    /// One commit and the files it changed against its first parent, limited to [`project_pathspecs`] with paths
+    /// relative to the folder.
+    ///
+    /// [`project_pathspecs`]: crate::paths::project_pathspecs
     ///
     /// `rev` goes to git after `--end-of-options`, never as an option; if it does not resolve, [`GitError::BadRev`].
     fn show(&self, dir: &Path, rev: &str, cancel: &dyn Cancel) -> Result<CommitDetail, GitError>;
-    /// The files of a commit, to import as a point.
+    /// The files of a commit, to import as a point: those selected by [`project_pathspecs`], with paths relative to
+    /// the folder, so another project's files and private `.omuzaki` files are never imported.
+    ///
+    /// [`project_pathspecs`]: crate::paths::project_pathspecs
     ///
     /// `rev` goes to git after `--end-of-options`, never as an option; if it does not resolve, [`GitError::BadRev`].
     fn tree_at(&self, dir: &Path, rev: &str, cancel: &dyn Cancel) -> Result<CommitTree, GitError>;
@@ -63,12 +78,16 @@ pub trait Git: Send + Sync {
     /// Commits `paths` with `message`. A person only: agents never reach it.
     ///
     /// Every path must be relative, stay inside `dir`, and never name `.omuzaki` or `.git`; otherwise the call fails
-    /// with [`GitError::BadPath`] before git runs. [`validate_commit_paths`] is that check, and both the real
-    /// implementation and the mock call it, so they cannot disagree. Each path reaches git as a literal pathspec
-    /// ([`literal_pathspec`]: the `:(literal)` prefix) after `--`, because `--` alone does not stop magic such as
-    /// `:(top)*`. The call, hooks included, is bounded by [`COMMIT_TIMEOUT`] and ends with [`GitError::Timeout`].
+    /// with [`GitError::BadPath`] before git runs. [`commit_pathspecs`] is that check and builds the pathspecs, and
+    /// both the real implementation and the mock call it, so they cannot disagree. Git gets exactly those pathspecs
+    /// after `--`, for staging and for committing: each path as a literal pathspec ([`literal_pathspec`]: the
+    /// `:(literal)` prefix, because `--` alone does not stop magic such as `:(top)*`), followed by
+    /// [`PRIVATE_EXCLUDES`]. The excludes apply to every selection, `.` (the whole project) included, because
+    /// `.omuzaki/.gitignore` does not stop a `.omuzaki/` file that was once added with `git add -f`. The call, hooks
+    /// included, is bounded by [`COMMIT_TIMEOUT`] and ends with [`GitError::Timeout`].
     ///
-    /// [`validate_commit_paths`]: crate::paths::validate_commit_paths
+    /// [`commit_pathspecs`]: crate::paths::commit_pathspecs
+    /// [`PRIVATE_EXCLUDES`]: crate::paths::PRIVATE_EXCLUDES
     /// [`literal_pathspec`]: crate::paths::literal_pathspec
     /// [`COMMIT_TIMEOUT`]: crate::error::COMMIT_TIMEOUT
     fn commit(&self, dir: &Path, message: &str, paths: &[PathBuf], cancel: &dyn Cancel) -> Result<CommitId, GitError>;
