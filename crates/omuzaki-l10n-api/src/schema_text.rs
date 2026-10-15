@@ -168,7 +168,7 @@ impl<F: FnMut(&[&str], &Map<String, Value>)> Walker<F> {
             }
         }
         // A `null` branch makes the node an `Option`: its other branch is the value itself, never a variant.
-        let nullable = ["oneOf", "anyOf"].iter().any(|keyword| branches(node, keyword).iter().any(is_null));
+        let nullable = ["oneOf", "anyOf"].iter().any(|keyword| branches(node, keyword).iter().any(is_null_schema));
         for (keyword, variants_allowed) in [("oneOf", !nullable), ("anyOf", false)] {
             let list = branches(node, keyword);
             if variants_allowed {
@@ -207,7 +207,7 @@ impl<F: FnMut(&[&str], &Map<String, Value>)> Walker<F> {
     fn check_agreement(&mut self, list: &[Value]) {
         let objects: Vec<&Map<String, Value>> = list
             .iter()
-            .filter(|branch| !is_null(branch))
+            .filter(|branch| !is_null_schema(branch))
             .filter_map(Value::as_object)
             .filter(|node| node.contains_key("properties") && internal_tag(node).is_none())
             .collect();
@@ -231,7 +231,7 @@ impl<F: FnMut(&[&str], &Map<String, Value>)> Walker<F> {
         let Some(node) = branch.as_object() else {
             return;
         };
-        if is_null(branch) {
+        if is_null_schema(branch) {
             return;
         }
         if let Some(value) = single_value(node) {
@@ -241,6 +241,15 @@ impl<F: FnMut(&[&str], &Map<String, Value>)> Walker<F> {
             return;
         }
         if variants_allowed {
+            // Two constants could each be the tag, so the branch's key cannot be told apart. Fail closed, rather than
+            // pick one.
+            if direct_constants(node).len() > 1 {
+                self.error = Some(WalkError::new(
+                    &self.path,
+                    "an object branch has more than one constant property, so its tag cannot be told apart",
+                ));
+                return;
+            }
             if let Some((tag, value)) = internal_tag(node) {
                 self.path.push(value);
                 self.emit(node);
@@ -276,14 +285,20 @@ fn has_branches(node: &Map<String, Value>) -> bool {
     node.contains_key("oneOf") || node.contains_key("anyOf")
 }
 
-/// Whether a branch is the `null` of an `Option`.
-fn is_null(branch: &Value) -> bool {
-    matches!(branch.get("type"), Some(Value::String(kind)) if kind == "null")
+/// Whether a schema is the `null` of an `Option`, in any of the forms schemars writes: `{"type": "null"}`,
+/// `{"const": null}`, or `{"enum": [null]}`. Every null check in this module goes through here.
+fn is_null_schema(schema: &Value) -> bool {
+    let Some(node) = schema.as_object() else {
+        return false;
+    };
+    matches!(node.get("type"), Some(Value::String(kind)) if kind == "null")
+        || node.get("const").is_some_and(Value::is_null)
+        || matches!(node.get("enum"), Some(Value::Array(values)) if values.len() == 1 && values[0].is_null())
 }
 
-/// The one value a branch stands for: its `const`, or the sole entry of its `enum`, not counting a `null`.
+/// The one value a branch stands for: its `const`, or the sole entry of its `enum`. A `null` is never a value here.
 fn single_value(node: &Map<String, Value>) -> Option<&Value> {
-    if let Some(constant) = node.get("const") {
+    if let Some(constant) = node.get("const").filter(|value| !value.is_null()) {
         return Some(constant);
     }
     let Some(Value::Array(values)) = node.get("enum") else {
@@ -305,13 +320,31 @@ fn properties(node: &Map<String, Value>) -> Vec<(&str, &Value)> {
     entries
 }
 
-/// An internally tagged variant's tag: the first property, in key order, whose schema has a `const`, with its name and
-/// value.
+/// The direct constants of an object: each property whose schema is a `const` other than `null`, in key order, with its
+/// name and value.
+fn direct_constants(node: &Map<String, Value>) -> Vec<(&str, String)> {
+    properties(node)
+        .into_iter()
+        .filter(|(_, schema)| !is_null_schema(schema))
+        .filter_map(|(key, schema)| Some((key, value_key(schema.as_object()?.get("const")?))))
+        .collect()
+}
+
+/// Whether `key` is in an object's `required` list.
+fn is_required(node: &Map<String, Value>, key: &str) -> bool {
+    node.get("required")
+        .and_then(Value::as_array)
+        .is_some_and(|list| list.iter().any(|entry| entry.as_str() == Some(key)))
+}
+
+/// An internally tagged variant's tag: its one direct constant, when that property is required. Two constants are
+/// ambiguous, and [`WalkError`] reports them before this is asked.
 fn internal_tag(node: &Map<String, Value>) -> Option<(String, String)> {
-    properties(node).into_iter().find_map(|(key, schema)| {
-        let constant = schema.as_object()?.get("const")?;
-        Some((key.to_owned(), value_key(constant)))
-    })
+    let constants = direct_constants(node);
+    let [(key, value)] = constants.as_slice() else {
+        return None;
+    };
+    is_required(node, key).then(|| ((*key).to_owned(), value.clone()))
 }
 
 /// An externally tagged variant: an object with exactly one property, which is required, and no other keys
@@ -324,8 +357,7 @@ fn external_variant(node: &Map<String, Value>) -> Option<(&str, &Value)> {
         [(name, schema)] => (*name, *schema),
         _ => return None,
     };
-    let required = node.get("required")?.as_array()?;
-    required.iter().any(|entry| entry.as_str() == Some(name)).then_some((name, schema))
+    is_required(node, name).then_some((name, schema))
 }
 
 /// The key a value contributes to a path: a string as it is, anything else as its JSON text.

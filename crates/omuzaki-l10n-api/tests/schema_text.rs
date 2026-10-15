@@ -691,3 +691,70 @@ struct OutOfOrder {
 fn properties_are_walked_in_key_order() {
     assert_eq!(paths::<OutOfOrder>(), vec!["", "alpha", "zeta"]);
 }
+
+/// The three forms of an optional `null` branch: each is skipped, and it does not make the other branch a variant.
+#[test]
+fn each_null_form_is_an_optional_branch_and_not_a_variant() {
+    let null_forms = [json!({ "type": "null" }), json!({ "const": null }), json!({ "enum": [null] })];
+    for null_form in null_forms {
+        let schema = Schema::try_from(json!({
+            "oneOf": [
+                {
+                    "description": "The variant.",
+                    "type": "object",
+                    "properties": { "Named": { "type": "integer", "description": "Inner." } },
+                    "required": ["Named"],
+                    "additionalProperties": false
+                },
+                null_form
+            ]
+        }))
+        .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(
+            visited_in(&schema),
+            vec![(String::new(), None), ("Named".into(), Some("Inner.".to_owned()))],
+            "{schema:?}"
+        );
+    }
+}
+
+#[test]
+fn a_branch_with_two_constants_is_rejected() {
+    let schema = Schema::try_from(json!({
+        "oneOf": [
+            {
+                "type": "object",
+                "properties": { "kind": { "const": "A" }, "other": { "const": "B" } },
+                "required": ["kind", "other"]
+            }
+        ]
+    }))
+    .unwrap_or_else(|error| panic!("{error}"));
+    let error = read(&schema).expect_err("two constants are ambiguous");
+    assert_eq!(error.path, "");
+    assert!(error.problem.contains("more than one constant"), "{}", error.problem);
+}
+
+#[test]
+fn a_constant_that_is_not_required_is_not_a_tag() {
+    let schema = Schema::try_from(json!({
+        "oneOf": [
+            {
+                "description": "Tagged.",
+                "type": "object",
+                "properties": { "kind": { "const": "A" }, "x": { "type": "integer", "description": "X." } },
+                "required": ["x"]
+            }
+        ]
+    }))
+    .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        visited_in(&schema),
+        vec![
+            (String::new(), None),
+            ("kind".into(), None),
+            ("kind--A".into(), None),
+            ("x".into(), Some("X.".to_owned())),
+        ]
+    );
+}
