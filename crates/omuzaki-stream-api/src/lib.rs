@@ -16,7 +16,10 @@
 
 pub mod encoder;
 pub mod error;
+pub mod input;
 pub mod mux;
 pub mod output;
 pub mod packet;
 pub mod time;
+
+pub use input::{FrameStamp, InputTap, TailMode, TailStep};
