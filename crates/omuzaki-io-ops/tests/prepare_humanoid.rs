@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 use omuzaki_core::glam::{Mat4, Vec3};
 use omuzaki_io_api::{HumanBoneName, IoScene, Node, NodeIx, Skin, VrmVersion, vrm_profile};
-use omuzaki_io_ops::prepare::humanoid::{Convention, HumanoidProposal, MatchHow, apply, auto_map};
+use omuzaki_io_ops::prepare::humanoid::{Convention, HumanoidProposal, MapError, MatchHow, apply, auto_map};
 
 const BONES: [&str; 25] = [
     "hips",
@@ -431,6 +431,59 @@ fn an_override_may_depend_on_an_inferred_parent() {
     assert_eq!(p.humanoid.node("upperChest"), nodes[3]);
     assert_eq!(how(&p, "upperChest"), Some(MatchHow::Override));
     assert_eq!(p.humanoid.node("chest"), nodes[2]);
+
+    // Every required bone named, only the optional chest not: the override still finds its parent.
+    let mut vroid = VROID;
+    vroid[2] = "bone_002";
+    let (mut scene, nodes) = rig(&vroid, &[], false);
+    let p = auto_map(&scene, &BTreeMap::from([(bone("upperChest"), nodes[3].unwrap())])).unwrap();
+    assert_eq!(how(&p, "upperChest"), Some(MatchHow::Override));
+    assert_eq!(p.humanoid.node("chest"), nodes[2]);
+    assert_eq!(how(&p, "chest"), Some(MatchHow::Inferred));
+    assert_eq!(profile_errors(&mut scene, &p), Vec::<String>::new());
+}
+
+/// Maps the nameless rig without the bones in `skip`.
+fn nameless_without(skip: &[usize]) -> (Result<HumanoidProposal, MapError>, Vec<Option<NodeIx>>) {
+    let owned = nameless();
+    let names: Vec<&str> = owned.iter().map(String::as_str).collect();
+    let (scene, nodes) = rig(&names, skip, false);
+    (auto_map(&scene, &BTreeMap::new()), nodes)
+}
+
+#[test]
+fn nameless_limbs_with_a_missing_joint_are_not_shifted() {
+    // The foot must not become the lower leg, nor a toe the foot, nor a hand the forearm.
+    for (skip, missing) in [(10, "leftLowerLeg"), (11, "leftFoot"), (19, "leftLowerArm"), (20, "leftHand")] {
+        let e = nameless_without(&[skip]).0.unwrap_err();
+        assert!(e.missing_required.contains(&bone(missing)), "{skip}: {:?}", e.missing_required);
+        assert!(e.report.has_rule("humanoid.required_missing"), "{skip}");
+    }
+    // Optional joints may be missing: no shoulder, no toes.
+    let (p, nodes) = nameless_without(&[17, 12]);
+    let p = p.unwrap();
+    assert_eq!(p.humanoid.node("leftUpperArm"), nodes[18]);
+    assert_eq!(p.humanoid.node("leftHand"), nodes[20]);
+    assert_eq!(p.humanoid.node("leftFoot"), nodes[11]);
+    assert!(p.humanoid.node("leftShoulder").is_none() && p.humanoid.node("leftToes").is_none());
+    assert_eq!(p.humanoid.node("rightShoulder"), nodes[21]);
+    assert_eq!(p.humanoid.node("rightToes"), nodes[16]);
+}
+
+#[test]
+fn nameless_fingers_do_not_shift_the_arm() {
+    let owned = nameless();
+    let names: Vec<&str> = owned.iter().map(String::as_str).collect();
+    let (mut scene, nodes) = rig(&names, &[17], false);
+    let mut tip = nodes[20].unwrap();
+    for i in 0..3 {
+        let finger = add_joint(&mut scene, tip, &format!("bone_1{i:02}"));
+        scene.nodes[finger.index()].transform.translation = Vec3::new(0.03, 0.0, 0.0);
+        tip = finger;
+    }
+    let p = auto_map(&scene, &BTreeMap::new()).unwrap();
+    assert_eq!(p.humanoid.node("leftUpperArm"), nodes[18]);
+    assert_eq!(p.humanoid.node("leftHand"), nodes[20]);
 }
 
 #[test]

@@ -9,10 +9,14 @@
 //!    generic aliases ([`MatchHow::Exact`]). The convention is the one most nodes carry a marker for.
 //! 2. **Topology.** Every candidate is checked against the parent rule of the VRM spec (`HUMAN_BONES`): a bone's
 //!    nearest humanoid ancestor must be its spec parent. Left and right limbs must lie on opposite sides.
-//! 3. **Structure.** Only if a required bone is still missing: the first node (from the roots, depth first) with two
-//!    steeply downward children and an upward one is the hips; the downward chains are the legs, the upward chain is
-//!    the spine up to the node that branches into two sideways chains (the arms), and the neck and head continue up.
-//!    The scene is in VRM space (+Z front), so the character's left is +X. These are [`MatchHow::Inferred`].
+//! 3. **Structure.** Only if a required bone is still missing, or an override waits on a parent bone no name matched:
+//!    the first node (from the roots, depth first) with two steeply downward children and an upward one is the hips;
+//!    the downward chains are the legs, the upward chain is the spine up to the node that branches into two sideways
+//!    chains (the arms), and the neck and head continue up. Leg and arm joints are told apart by rest positions, not
+//!    by their place in the chain: the knee lies about halfway down, the foot near the ground under the knee, the toes
+//!    forward of the foot; the upper arm and forearm are the two long segments. Where that evidence is missing the
+//!    bone stays missing. The scene is in VRM space (+Z front), so the character's left is +X. These are
+//!    [`MatchHow::Inferred`].
 //!
 //! The name tables list names only. Each comes from the public bone naming of its source: [`Convention::Vrm`] is the
 //! `J_Bip_*` naming of `VRoid` Studio's VRM export, [`Convention::Mixamo`] the `mixamorig:` rig of Adobe Mixamo,
@@ -497,9 +501,10 @@ impl<'a> Cx<'a> {
         put("hips".into(), hips);
         let kids = self.kids(hips);
         let downs: Vec<usize> = kids.iter().copied().filter(|&k| self.is_down(hips, k)).collect();
+        let ground = self.cand.iter().filter_map(|&c| self.world.get(c)).map(|p| p.y).fold(f32::INFINITY, f32::min);
         if let Some((l, r)) = self.extremes(&downs) {
             for (side, start) in [("left", l), ("right", r)] {
-                for (name, n) in ["UpperLeg", "LowerLeg", "Foot", "Toes"].iter().zip(self.chain(start)) {
+                for (name, n) in self.leg(&self.chain(start), ground, self.y(hips)) {
                     put(format!("{side}{name}"), n);
                 }
             }
@@ -541,13 +546,68 @@ impl<'a> Cx<'a> {
             };
         }
         for (side, start) in [("left", l), ("right", r)] {
-            let chain = self.chain(start);
-            let skip = usize::from(chain.len() >= 4);
-            if let (1, Some(&s)) = (skip, chain.first()) {
-                put(format!("{side}Shoulder"), s);
-            }
-            for (name, n) in ["UpperArm", "LowerArm", "Hand"].iter().zip(chain.into_iter().skip(skip)) {
+            for (name, n) in self.arm(&self.chain(start)) {
                 put(format!("{side}{name}"), n);
+            }
+        }
+        out
+    }
+
+    fn y(&self, n: usize) -> f32 {
+        self.world.get(n).map_or(0.0, |p| p.y)
+    }
+
+    /// The leg bones down `chain`, told apart by rest positions rather than by place in the chain. The hip and knee
+    /// stand clear of the ground (`ground` is the lowest joint); the knee is the joint nearest halfway down to the foot,
+    /// and must lie between a quarter and three quarters of the way. The foot is the first joint near the ground and
+    /// stands under the knee, and the toes point forward from it. Nothing is guessed past a joint the evidence does not
+    /// find, so a missing lower leg or foot stays missing.
+    fn leg(&self, chain: &[usize], ground: f32, hips_y: f32) -> Vec<(&'static str, usize)> {
+        let height = hips_y - ground;
+        let near_ground = |n: usize| self.y(n) - ground < 0.25 * height;
+        let (high, low) = chain.split_at(chain.iter().position(|&n| near_ground(n)).unwrap_or(chain.len()));
+        let Some((&upper, below)) = high.split_first().filter(|_| height > 0.0) else { return Vec::new() };
+        let mut out = vec![("UpperLeg", upper)];
+        let floor = low.first().map_or(ground, |&f| self.y(f));
+        let drop = self.y(upper) - floor;
+        let mid = |n: &usize| ((self.y(upper) - self.y(*n)) / drop - 0.5).abs();
+        let knees = below.iter().filter(|n| drop > 0.0 && mid(n) <= 0.25);
+        let Some(&knee) = knees.min_by(|a, b| mid(a).total_cmp(&mid(b))) else { return out };
+        out.push(("LowerLeg", knee));
+        // A joint forward of the knee is a toe, whatever its place: the foot is missing then.
+        let Some(&foot) = low.first().filter(|&&f| self.delta(knee, f).z.abs() <= 0.15 * (self.y(knee) - self.y(f)))
+        else {
+            return out;
+        };
+        out.push(("Foot", foot));
+        if let Some(&toes) = low.get(1).filter(|&&t| self.delta(foot, t).z > -self.delta(foot, t).y) {
+            out.push(("Toes", toes));
+        }
+        out
+    }
+
+    /// The arm bones along `chain`, told apart by segment lengths: the upper arm and forearm are the only two long
+    /// segments and follow each other (at least 0.6 of the longest); a short one before them comes from the shoulder,
+    /// short ones after them lead into the fingers. Without exactly that pair the arm is left unresolved.
+    fn arm(&self, chain: &[usize]) -> Vec<(&'static str, usize)> {
+        let segs: Vec<f32> = chain
+            .windows(2)
+            .map(|w| w.first().zip(w.last()).map_or(0.0, |(a, b)| self.delta(*a, *b).length()))
+            .collect();
+        let longest = segs.iter().copied().fold(0.0, f32::max);
+        let long: Vec<usize> =
+            (0..segs.len()).filter(|&i| segs.get(i).is_some_and(|&s| longest > 0.0 && s >= 0.6 * longest)).collect();
+        let &[i, j] = long.as_slice() else { return Vec::new() };
+        if j != i + 1 {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        if let Some(&s) = i.checked_sub(1).and_then(|s| chain.get(s)) {
+            out.push(("Shoulder", s));
+        }
+        for (k, name) in ["UpperArm", "LowerArm", "Hand"].into_iter().enumerate() {
+            if let Some(&n) = chain.get(i + k) {
+                out.push((name, n));
             }
         }
         out
@@ -607,8 +667,11 @@ pub fn auto_map(scene: &IoScene, overrides: &BTreeMap<HumanBoneName, NodeIx>) ->
             found.insert(bone, first);
         }
     }
-    let required_gap = |found: &Found| bones().any(|b| b.spec().required && !found.contains_key(&b));
-    if required_gap(&found) {
+    // Structure fills the gaps when a required bone is missing, and also when an override waits on a parent bone that no
+    // name matched (an `upperChest` override over an unnamed chest), so the override is judged with its parents in place.
+    let required_gap = bones().any(|b| b.spec().required && !found.contains_key(&b));
+    let override_gap = found.iter().any(|(b, (n, how))| *how == MatchHow::Override && !cx.fits(&found, *b, *n));
+    if required_gap || override_gap {
         let inferred = cx.infer();
         let mut added = Vec::new();
         let open: Vec<HumanBoneName> =
