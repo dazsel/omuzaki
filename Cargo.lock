@@ -4248,6 +4248,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-update-fs"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-update-api",
+ "omuzaki-update-mock",
+ "rustix 1.1.5",
+ "tempfile",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "omuzaki-update-mock"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-ai-api",
+ "omuzaki-update-api",
+]
+
+[[package]]
 name = "omuzaki-vts"
 version = "0.0.0"
 dependencies = [
