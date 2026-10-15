@@ -4,7 +4,8 @@
 //! expression to a [`TriggerSlot`] here, so the perform thread receives finished slots and only runs the fades
 //! ([`Triggers`](omuzaki_anim::Triggers)).
 
-use omuzaki_anim::{MAX_TRIGGERS, TriggerMode, TriggerSlot, expression_slot};
+use omuzaki_anim::{MAX_TRIGGERS, TriggerError, TriggerFades, TriggerMode, TriggerSlot, Triggers, expression_slot};
+use omuzaki_anim_api::Layer;
 use omuzaki_anim_api::ChannelBuf;
 use omuzaki_face_api::{ExpressionId, ExpressionSet};
 use schemars::JsonSchema;
@@ -38,6 +39,95 @@ impl Rebaked {
             self.changed |= 1 << index;
         } else {
             debug_assert!(false, "trigger slot {index} is out of range");
+        }
+    }
+}
+
+/// The perform thread's triggers: the fades ([`Triggers`]) plus the slots they were given and which slot a press
+/// wants, which `Triggers` keeps private. With them a rebake can keep a press across new values, and a reset can start
+/// the fades over and keep the bindings. Nothing here allocates.
+pub(super) struct TriggerLayer {
+    triggers: Triggers,
+    fades: TriggerFades,
+    /// The slots as last set, so a reset can put them back.
+    slots: [Option<TriggerSlot>; MAX_TRIGGERS],
+    /// The slot a press wants, as `Triggers` holds it: set by a press, cleared by a toggle off, a hold's release or
+    /// replacing the slot.
+    wanted: Option<usize>,
+}
+
+impl TriggerLayer {
+    /// No slots, nothing pressed.
+    pub(super) fn new(fades: TriggerFades) -> Self {
+        Self { triggers: Triggers::new(fades), fades, slots: [None; MAX_TRIGGERS], wanted: None }
+    }
+
+    /// Advances the fade by `dt` and writes the trigger layer.
+    pub(super) fn step(&mut self, dt: f32, out: &mut Layer) {
+        self.triggers.step(dt, out);
+    }
+
+    /// The slot being faded toward, else the one fading out.
+    pub(super) fn active(&self) -> Option<usize> {
+        self.triggers.active()
+    }
+
+    /// Key down on `index`: a toggle flips it, a hold shows it. An empty slot is ignored.
+    pub(super) fn press(&mut self, index: usize) {
+        let Some(Some(slot)) = self.slots.get(index) else { return };
+        self.wanted = match slot.mode {
+            TriggerMode::Toggle if self.wanted == Some(index) => None,
+            _ => Some(index),
+        };
+        self.triggers.press(index);
+    }
+
+    /// Key up on `index`: a hold hides it, a toggle does nothing.
+    pub(super) fn release(&mut self, index: usize) {
+        let held = matches!(self.slots.get(index), Some(Some(slot)) if slot.mode == TriggerMode::Hold);
+        if held && self.wanted == Some(index) {
+            self.wanted = None;
+        }
+        self.triggers.release(index);
+    }
+
+    /// Replaces slot `index` (`None` empties it). Replacing a slot ends the press that shows it, and what was shown
+    /// fades out first.
+    ///
+    /// # Errors
+    /// The slot errors of [`Triggers::set_slot`]; nothing changes then.
+    pub(super) fn set(&mut self, index: usize, slot: Option<&TriggerSlot>) -> Result<(), TriggerError> {
+        self.triggers.set_slot(index, slot.copied())?;
+        if let Some(entry) = self.slots.get_mut(index) {
+            *entry = slot.copied();
+        }
+        if self.wanted == Some(index) {
+            self.wanted = None;
+        }
+        Ok(())
+    }
+
+    /// Applies a rebake. A slot whose values changed fades its old values out and, if its key is still pressed, fades
+    /// the new ones in, so a held or toggled expression survives a reload that changes it.
+    pub(super) fn rebake(&mut self, changes: &Rebaked) {
+        for (index, slot) in changes.changes() {
+            let pressed = self.wanted == Some(index);
+            let result = self.set(index, slot);
+            debug_assert_eq!(result, Ok(()), "the control side sent a slot the table refuses");
+            if pressed && slot.is_some() {
+                self.press(index);
+            }
+        }
+    }
+
+    /// Starts the fades over with nothing pressed, keeping the slots: whatever was shown is gone at once, so the next
+    /// step writes no trigger layer.
+    pub(super) fn reset(&mut self) {
+        self.triggers = Triggers::new(self.fades);
+        self.wanted = None;
+        for (index, slot) in self.slots.iter().enumerate() {
+            let result = self.triggers.set_slot(index, *slot);
+            debug_assert_eq!(result, Ok(()), "a slot the table accepted is refused on reset");
         }
     }
 }

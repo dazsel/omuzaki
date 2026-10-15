@@ -231,6 +231,60 @@ fn a_rebake_keeps_a_toggled_expression_shown() {
     assert_eq!(rig.step().smile, Source::Trigger, "a reload with the same set leaves the toggle on");
 }
 
+/// The starter set with `name` showing what `like` shows, so a rebake changes that slot's values.
+fn with_values_of(name: &str, like: &str) -> ExpressionSet {
+    let mut set = ExpressionSet::starter();
+    let copy = set.0.get(&id(like)).expect("the starter set has the expression").clone();
+    set.0.insert(id(name), copy);
+    set
+}
+
+#[test]
+fn a_rebake_that_changes_a_held_expression_keeps_it_held() {
+    let mut rig = starter_rig();
+    rig.handle.press("F3", true).unwrap(); // `surprised`, held down for the rest of the test
+    rig.steps(40);
+    assert_eq!(rig.step().wide, Source::Trigger);
+    rig.handle.set_expressions(with_values_of("surprised", "angry"), ChannelBuf::NEUTRAL).unwrap();
+    rig.steps(60);
+    let owners = rig.step();
+    assert_eq!(owners.brow, Source::Trigger, "the held key shows the new values");
+    assert_ne!(owners.wide, Source::Trigger, "and no longer the old ones");
+    rig.handle.press("F3", false).unwrap();
+    rig.steps(40);
+    assert_ne!(rig.step().brow, Source::Trigger, "the release still hides it");
+}
+
+#[test]
+fn a_rebake_that_changes_a_toggled_expression_keeps_it_on() {
+    let mut rig = starter_rig();
+    rig.handle.press("F1", true).unwrap(); // `happy`, toggled on
+    rig.steps(20);
+    assert_eq!(rig.step().smile, Source::Trigger);
+    rig.handle.set_expressions(with_values_of("happy", "angry"), ChannelBuf::NEUTRAL).unwrap();
+    rig.steps(60);
+    let owners = rig.step();
+    assert_eq!(owners.brow, Source::Trigger, "the toggle stays on with the new values");
+    assert_ne!(owners.smile, Source::Trigger);
+    rig.tap("F1");
+    rig.steps(40);
+    assert_ne!(rig.step().brow, Source::Trigger, "the next press still toggles it off");
+}
+
+#[test]
+fn a_reset_drops_the_shown_expression_at_once_and_keeps_the_bindings() {
+    let mut rig = starter_rig();
+    rig.handle.press("F1", true).unwrap();
+    rig.steps(20);
+    assert_eq!(rig.step().smile, Source::Trigger);
+    rig.control.reset(&mut rig.performer);
+    assert_ne!(rig.step().smile, Source::Trigger, "tick zero after a reset carries no trigger");
+    assert_eq!(rig.handle.triggers().len(), 4, "the bindings stay");
+    rig.handle.press("F1", true).unwrap();
+    rig.steps(20);
+    assert_eq!(rig.step().smile, Source::Trigger, "a bound key works again after the reset");
+}
+
 #[test]
 fn the_seventeenth_binding_is_refused_and_a_repeated_key_replaces_its_binding() {
     let mut rig = starter_rig();
