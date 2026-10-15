@@ -1,5 +1,8 @@
 //! The static check: what it finds, where, and that it agrees with what a run sends.
 
+// A test file: a failed unwrap is the failure, and building a script as text is clearer with `format!`.
+#![allow(clippy::unwrap_used, clippy::format_push_string)]
+
 mod common;
 
 use common::{FakeRunner, Flag, request, run, run_with};
@@ -102,7 +105,7 @@ fn a_map_that_is_not_a_literal_is_not_checked_against_the_schema() {
 #[test]
 fn an_op_whose_schema_lists_no_fields_gets_no_field_errors() {
     let report = host().check("ops::measure::likeness(#{ anything: 1 });");
-    assert!(report.field_errors.is_empty());
+    assert_eq!(report.field_errors, vec![]);
 }
 
 #[test]
@@ -157,7 +160,7 @@ fn an_unreadable_ceiling_is_an_error_not_no_ceiling() {
         // A run refuses it too, rather than running with more than the author meant.
         let (runner, result) = run(source);
         assert_eq!(result.expect_err("refused").kind, ScriptErrorKind::Parse, "{source}");
-        assert!(runner.requests().is_empty());
+        assert_eq!(runner.requests(), vec![]);
     }
 }
 
@@ -243,7 +246,7 @@ fn jobs_effectful_edits_and_nested_script_runs_are_refused_in_the_check_and_in_a
 fn a_nested_script_run_inside_try_op_is_still_refused() {
     let (runner, result) = run("try_op(|| ops::script::run(#{ source: \"1\" }))");
     assert_eq!(result.expect_err("a refusal can't be caught").kind, ScriptErrorKind::Refused);
-    assert!(runner.requests().is_empty());
+    assert_eq!(runner.requests(), vec![]);
 }
 
 // -- the check agrees with the run ----------------------------------------------------------------------------------

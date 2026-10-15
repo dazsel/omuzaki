@@ -1,5 +1,8 @@
 //! The generated bindings: `try_op`, `get`, `params`, the error map, the dry run and the JSON round trip.
 
+// A test file: a failed unwrap is the failure, and building a script as text is clearer with `format!`.
+#![allow(clippy::unwrap_used, clippy::format_push_string)]
+
 mod common;
 
 use common::{FakeRunner, Flag, request, run, run_with};
