@@ -5,8 +5,10 @@
 //! and edge end to a quarter pixel, replaces a curve by line segments taken from fixed-point forward differencing, and
 //! rounds some positions to whole rows. To land on the same pixels this module repeats those steps, then sums the exact
 //! signed area of the resulting polygon per pixel by the accumulation-buffer method of `font-rs` (`add_row` is a port of
-//! its `draw_line`: each edge adds its trapezoid area to a row of deltas and a prefix sum turns the deltas into coverage). The non-zero rule is
-//! `min(|winding area|, 1)`.
+//! its `draw_line`: each edge adds its trapezoid area to a row of deltas and a prefix sum turns the deltas into coverage).
+//! Every edge end sits on a quarter row, so the buffer keeps one row of deltas per quarter-pixel band, and the non-zero
+//! rule is resolved in each band (`min(|winding area|, 1)`, with same-winding overlaps taken as a union, see
+//! [`Scan::sweep`]); a pixel's coverage is the mean of its four bands.
 //!
 //! The steps, each pinned by a comparison against Chrome (`crates/omuzaki-test-face/tests/raster_probes.rs`):
 //! - lines: clipped to the raster first, then both coordinates truncated to 1/256 px and `y` snapped to the nearest 1/4 px
@@ -44,6 +46,17 @@ const FIXED_RANGE: f32 = 1.0e6;
 
 /// A forward-differencing step this many rows long (16.16) is snapped to whole rows; a shorter one to quarter rows.
 const STEEP: i64 = 2 << 16;
+
+/// Bands per pixel row. Skia snaps every edge end to a quarter row (`snap_y_fixed`), so inside a band every edge that
+/// reaches it crosses it whole, and the non-zero rule can be resolved band by band.
+const BANDS: usize = 4;
+
+/// A band's share of its pixel row.
+const BAND_WEIGHT: f32 = 0.25;
+
+/// A prefix sum within this of a whole number is a settled winding (the pixel is fully inside or outside every edge that
+/// reaches it), not a partial coverage.
+const SETTLED: f32 = 1.0e-3;
 
 /// Edge vertices of one curve: at most `2^6` segments, so 65 points.
 const MAX_CHAIN: usize = 65;
@@ -251,13 +264,19 @@ fn cubic_chain(p: [Vec2; 4]) -> Chain {
 pub(super) struct Scan {
     width: usize,
     height: usize,
-    /// Cells per row: the raster width plus two, because an edge at the right border writes two cells.
+    /// Cells per band: the raster width plus two, because an edge at the right border writes two cells.
     stride: usize,
-    /// Signed area deltas, all zero between paths (the sweep clears what it reads).
-    acc: Vec<f32>,
+    /// Signed area deltas, the cell of each band side by side (`acc[row * stride + x][band]`), all zero between paths (the
+    /// sweep clears what it reads). An edge crossing a whole band adds 1 (winding units), so a band's prefix sum is the
+    /// winding area left of each pixel.
+    acc: Vec<[f32; BANDS]>,
     /// The rows and columns touched since the last sweep.
     dirty: Dirty,
-    /// One row of coverage, handed to the sweep's consumer.
+    /// The prefix sums of the pixels the sweep has not settled yet, scratch for the sweep.
+    prefix: Vec<[f32; BANDS]>,
+    /// One row of coverage (0 to 1), the mean of its bands.
+    coverage: Vec<f32>,
+    /// One row of alpha, handed to the sweep's consumer.
     row: Vec<u8>,
 }
 
@@ -282,12 +301,16 @@ impl Scan {
             self.height = height;
             self.stride = width + 2;
             self.acc.clear();
-            self.acc.resize(self.stride * height, 0.0);
+            self.acc.resize(self.stride * height, [0.0; BANDS]);
+            self.prefix.clear();
+            self.prefix.resize(self.stride, [0.0; BANDS]);
+            self.coverage.clear();
+            self.coverage.resize(width, 0.0);
             self.row.clear();
             self.row.resize(width, 0);
         } else if self.dirty.min_y < self.dirty.max_y {
             // A path was fed and never swept: start clean.
-            self.acc.fill(0.0);
+            self.acc.fill([0.0; BANDS]);
         }
         self.dirty = Dirty::NONE;
     }
@@ -425,7 +448,8 @@ impl Scan {
         self.accumulate(a, b);
     }
 
-    /// Adds the signed area of one edge (inside the raster, `y` increasing downward) to the accumulation buffer.
+    /// Adds the signed area of one edge (inside the raster, `y` increasing downward) to the accumulation buffer, one
+    /// quarter-row band at a time. The ends are on the quarter grid, so the pieces in a band are whole bands tall.
     fn accumulate(&mut self, a: Vec2, b: Vec2) {
         if a.y == b.y {
             return;
@@ -434,26 +458,26 @@ impl Scan {
         let dxdy = (b.x - a.x) / (b.y - a.y);
         let mut x = a.x;
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clipped: 0 <= y <= height
-        let (y_first, y_last) = (a.y.floor() as usize, (b.y.ceil() as usize).min(self.height));
-        for y in y_first..y_last {
-            #[allow(clippy::cast_precision_loss)] // rows are far below 2^24
-            let (top, bottom) = (y as f32, (y + 1) as f32);
+        let (band_first, band_last) =
+            ((a.y * 4.0).floor() as usize, ((b.y * 4.0).ceil() as usize).min(self.height * BANDS));
+        for band in band_first..band_last {
+            #[allow(clippy::cast_precision_loss)] // bands are far below 2^24
+            let (top, bottom) = (band as f32 * 0.25, (band + 1) as f32 * 0.25);
             let dy = bottom.min(b.y) - top.max(a.y);
             // The border is a hard limit: float error must not walk an edge out of the buffer.
             #[allow(clippy::cast_precision_loss)] // raster widths are far below 2^24
             let x_next = (x + dxdy * dy).clamp(0.0, self.width as f32);
-            let d = dy * dir;
+            let d = dy * 4.0 * dir;
             let (x0, x1) = if x < x_next { (x, x_next) } else { (x_next, x) };
-            let row = y * self.stride;
-            self.add_row(row, d, x0, x1);
+            self.add_row(band / BANDS * self.stride, band % BANDS, d, x0, x1);
             x = x_next;
         }
-        self.dirty.min_y = self.dirty.min_y.min(y_first);
-        self.dirty.max_y = self.dirty.max_y.max(y_last);
+        self.dirty.min_y = self.dirty.min_y.min(band_first / BANDS);
+        self.dirty.max_y = self.dirty.max_y.max(band_last.div_ceil(BANDS));
     }
 
-    /// Spreads `d` (a signed height) over the cells an edge piece crosses in one row, from `x0` to `x1` (x0 <= x1).
-    fn add_row(&mut self, row: usize, d: f32, x0: f32, x1: f32) {
+    /// Spreads `d` (a signed height) over the cells an edge piece crosses in one band, from `x0` to `x1` (x0 <= x1).
+    fn add_row(&mut self, row: usize, band: usize, d: f32, x0: f32, x1: f32) {
         let x0_floor = x0.floor();
         let x1_ceil = x1.ceil();
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clipped to 0 <= x <= width
@@ -463,75 +487,162 @@ impl Scan {
         let acc = &mut self.acc[row..row + self.stride];
         if x1i <= x0i + 1 {
             let xmf = 0.5 * (x0 + x1) - x0_floor;
-            acc[x0i] += d - d * xmf;
-            acc[x0i + 1] += d * xmf;
+            acc[x0i][band] += d - d * xmf;
+            acc[x0i + 1][band] += d * xmf;
         } else {
             let s = (x1 - x0).recip();
             let x0f = x0 - x0_floor;
             let a0 = 0.5 * s * (1.0 - x0f) * (1.0 - x0f);
             let x1f = x1 - x1_ceil + 1.0;
             let am = 0.5 * s * x1f * x1f;
-            acc[x0i] += d * a0;
+            acc[x0i][band] += d * a0;
             if x1i == x0i + 2 {
-                acc[x0i + 1] += d * (1.0 - a0 - am);
+                acc[x0i + 1][band] += d * (1.0 - a0 - am);
             } else {
                 let a1 = s * (1.5 - x0f);
-                acc[x0i + 1] += d * (a1 - a0);
+                acc[x0i + 1][band] += d * (a1 - a0);
                 for cell in &mut acc[x0i + 2..x1i - 1] {
-                    *cell += d * s;
+                    cell[band] += d * s;
                 }
                 #[allow(clippy::cast_precision_loss)] // the span is at most the raster width
                 let a2 = a1 + (x1i - x0i - 3) as f32 * s;
-                acc[x1i - 1] += d * (1.0 - a2 - am);
+                acc[x1i - 1][band] += d * (1.0 - a2 - am);
             }
-            acc[x1i] += d * am;
+            acc[x1i][band] += d * am;
         }
     }
 
     /// Turns the accumulated deltas into coverage, row by row, and clears them. `emit(y, x, alpha)` gets each row's
     /// alpha values (0 to 255) from column `x`; rows and runs with no coverage are skipped.
+    pub fn sweep(&mut self, mut emit: impl FnMut(usize, usize, &[u8])) {
+        let mut row_buf = std::mem::take(&mut self.row);
+        self.sweep_coverage(|y, x0, coverage| {
+            let alphas = &mut row_buf[x0..x0 + coverage.len()];
+            let mut any = false;
+            for (alpha, &c) in alphas.iter_mut().zip(coverage) {
+                *alpha = coverage_to_alpha(c);
+                any |= *alpha != 0;
+            }
+            if any {
+                emit(y, x0, alphas);
+            }
+        });
+        self.row = row_buf;
+    }
+
+    /// The sweep before the rounding to alpha: `emit(y, x, coverage)` gets each row's coverage (0 to 1) from column `x`.
     ///
-    /// This is the non-zero resolve, and the clamp sits after the sum, not per edge. Each edge adds a signed area, so
-    /// the prefix sum along a row is the winding area that lies left of each pixel. Two edges that share a pixel with
-    /// opposite windings therefore cancel: a ring's reversed inner contour removes the outer contour's fringe from the
-    /// hole. The magnitude (`abs`) is taken because the sign of the winding carries no coverage, and the clamp then
-    /// saturates a pixel that two same-winding layers fully cover.
+    /// This is the non-zero resolve, one quarter-row band at a time, and the clamp sits after the sum, not per edge.
+    /// Each edge adds a signed area, so the prefix sum along a band is the winding area that lies left of each pixel.
+    /// Two edges that share a pixel with opposite windings therefore cancel: a ring's reversed inner contour removes the
+    /// outer contour's fringe from the hole. The magnitude (`abs`) is taken because the sign of the winding carries no
+    /// coverage, and the clamp then saturates a pixel that two same-winding layers fully cover.
     ///
-    /// Known limit: the sum is over area, so two regions that share a pixel subtract when their windings are opposite,
-    /// and add when they are the same. A figure-8's crossing is the first case: its lobes are +1 and -1, so the pixel
-    /// gets |a - b| instead of the ideal a + b, a slight under-coverage notch. Skia's analytic AA does the same, so Chrome
-    /// parity holds. A partly covered pixel where two same-winding layers overlap adds their partial areas (0.35 + 0.35
-    /// = 0.70) instead of taking the single-layer value; whether Chrome does that too is open.
+    /// Same-winding layers that share a *partly* covered pixel do not add: Skia's analytic AA fills the span from its
+    /// first edge to its last, so a contour drawn twice is as covered as drawn once (Chrome's alpha for the doubled
+    /// square of #695 is the single square's). [`run_coverage`] divides such a pixel's sum by the winding on its
+    /// settled side.
+    ///
+    /// Known limit: the sum is over area, so two regions that share a pixel subtract when their windings are opposite.
+    /// A figure-8's crossing is the first case: its lobes are +1 and -1, so the pixel gets |a - b| instead of the ideal
+    /// a + b, a slight under-coverage notch. Skia's analytic AA does the same, so Chrome parity holds.
     /// The resolve follows the accumulation of Skia's analytic AA (`SkScan_AAAPath`, through tiny-skia's
     /// `scan/path_aa.rs`, BSD-3-Clause); the parity probes in `omuzaki-test-face` are the check against Chrome.
-    pub fn sweep(&mut self, mut emit: impl FnMut(usize, usize, &[u8])) {
+    fn sweep_coverage(&mut self, mut emit: impl FnMut(usize, usize, &[f32])) {
         let dirty = std::mem::replace(&mut self.dirty, Dirty::NONE);
         if dirty.min_y >= dirty.max_y {
             return;
         }
-        let mut row_buf = std::mem::take(&mut self.row);
+        let last = dirty.max_x.min(self.stride - 1);
+        let end = (last + 1).min(self.width);
         for y in dirty.min_y..dirty.max_y {
             let cells = &mut self.acc[y * self.stride..(y + 1) * self.stride];
-            let last = dirty.max_x.min(self.stride - 1);
-            let mut sum = 0.0_f32;
-            let mut any = false;
-            for x in dirty.min_x..=last {
-                sum += cells[x];
-                cells[x] = 0.0;
-                if x < self.width {
-                    let alpha = coverage_to_alpha(sum.abs());
-                    row_buf[x] = alpha;
-                    any |= alpha != 0;
-                }
-            }
-            if any {
-                let end = (last + 1).min(self.width);
-                if dirty.min_x < end {
-                    emit(y, dirty.min_x, &row_buf[dirty.min_x..end]);
-                }
+            sweep_row(&mut cells[..=last], dirty.min_x, &mut self.prefix, &mut self.coverage[..end]);
+            if dirty.min_x < end {
+                emit(y, dirty.min_x, &self.coverage[dirty.min_x..end]);
             }
         }
-        self.row = row_buf;
+    }
+}
+
+/// Whether a prefix sum is a whole number: the pixel is fully inside or outside every edge that reaches it.
+fn is_settled(sum: f32) -> bool {
+    (sum - sum.round()).abs() <= SETTLED
+}
+
+/// The state of one band while a row is swept.
+#[derive(Copy, Clone)]
+struct BandState {
+    /// The prefix sum, the winding area left of the next pixel.
+    sum: f32,
+    /// The winding of the last settled pixel.
+    before: f32,
+    /// The first pixel of the run of partly covered pixels the band is in, if it is in one.
+    run: Option<usize>,
+}
+
+/// Sweeps one row of cells (`cells[..=last]`, from column `from`): clears them and writes the row's coverage into
+/// `coverage` (whose length is the raster width; cells beyond it are cleared and not written). A pixel's coverage is the
+/// mean of its bands'. The non-zero resolve of a band is `min(|sum|, 1)` on a settled pixel; a run of partly covered
+/// pixels between two settled ones is an edge crossing, resolved when it ends (see [`run_coverage`]).
+fn sweep_row(cells: &mut [[f32; BANDS]], from: usize, prefix: &mut [[f32; BANDS]], coverage: &mut [f32]) {
+    let mut bands = [BandState { sum: 0.0, before: 0.0, run: None }; BANDS];
+    let mut runs = 0_usize;
+    // The coverage of a pixel no edge touches while no band is mid-edge: the one before it.
+    let mut steady = 0.0_f32;
+    for x in from..cells.len() {
+        if runs == 0 && cells[x] == [0.0; BANDS] {
+            if let Some(out) = coverage.get_mut(x) {
+                *out = steady;
+            }
+            continue;
+        }
+        let cell = std::mem::replace(&mut cells[x], [0.0; BANDS]);
+        let mut settled_sum = 0.0_f32;
+        for (b, state) in bands.iter_mut().enumerate() {
+            state.sum += cell[b];
+            if is_settled(state.sum) {
+                if let Some(start) = state.run.take() {
+                    runs -= 1;
+                    run_coverage(&prefix[start..x], b, state.before, state.sum.round(), start, coverage);
+                }
+                state.before = state.sum.round();
+                settled_sum += BAND_WEIGHT * state.sum.abs().min(1.0);
+            } else {
+                if state.run.is_none() {
+                    state.run = Some(x);
+                    runs += 1;
+                }
+                prefix[x][b] = state.sum;
+            }
+        }
+        if let Some(out) = coverage.get_mut(x) {
+            *out = settled_sum;
+        }
+        if runs == 0 {
+            steady = settled_sum;
+        }
+    }
+    // Closed shapes end outside; a run still open at the border ends there too.
+    for (b, state) in bands.iter().enumerate() {
+        if let Some(start) = state.run {
+            run_coverage(&prefix[start..cells.len()], b, state.before, 0.0, start, coverage);
+        }
+    }
+}
+
+/// Adds band `b`'s coverage (weighted by its share of the row) for a run of partly covered pixels starting at column
+/// `start`, between a settled winding `before` on its left and `after` on its right. `prefix` holds the run's sums.
+///
+/// Where one side is outside (winding 0) and the other holds `n >= 2` layers of one winding, every layer's edge crosses
+/// the same pixels, and Skia fills the span from the first edge to the last rather than the sum of the layers, so the sum
+/// is divided by `n`. A drawing of the same contour twice is as covered as drawn once.
+fn run_coverage(prefix: &[[f32; BANDS]], b: usize, before: f32, after: f32, start: usize, coverage: &mut [f32]) {
+    let layers = if before == 0.0 || after == 0.0 { before.abs().max(after.abs()).max(1.0) } else { 1.0 };
+    for (i, sums) in prefix.iter().enumerate() {
+        if let Some(out) = coverage.get_mut(start + i) {
+            *out += BAND_WEIGHT * (sums[b].abs() / layers).min(1.0);
+        }
     }
 }
 
@@ -564,18 +675,7 @@ mod tests {
     /// The coverage (0..=1, in floats, not rounded to alpha) of what has been fed, per pixel; clears the buffer.
     fn coverage(scan: &mut Scan) -> Vec<f32> {
         let mut out = vec![0.0; W * H];
-        let dirty = std::mem::replace(&mut scan.dirty, Dirty::NONE);
-        for y in dirty.min_y..dirty.max_y.min(H) {
-            let mut sum = 0.0_f32;
-            for x in dirty.min_x..=dirty.max_x.min(scan.stride - 1) {
-                let cell = &mut scan.acc[y * scan.stride + x];
-                sum += *cell;
-                *cell = 0.0;
-                if x < W {
-                    out[y * W + x] = sum.abs().min(1.0);
-                }
-            }
-        }
+        scan.sweep_coverage(|y, x0, row| out[y * W + x0..y * W + x0 + row.len()].copy_from_slice(row));
         out
     }
 
@@ -704,8 +804,9 @@ mod tests {
     }
 
     /// A self-overlapping contour (the same square traversed twice) has winding 2 in its interior. Non-zero clamps that to
-    /// full coverage, so the interior matches one layer; an even-odd rule would give 0. Partly covered edge pixels are not
-    /// asserted here: they add (see the known limit on `sweep`), and that is a known limit.
+    /// full coverage, so the interior matches one layer; an even-odd rule would give 0. A partly covered edge pixel is not
+    /// the sum of the two layers either: Chrome's analytic AA fills the span from the first edge to the last (#695), so
+    /// the whole picture is the single square's.
     #[test]
     fn self_overlap_clamps_to_one_not_even_odd() {
         let square = [(5.3, 4.6), (17.8, 4.6), (17.8, 12.9), (5.3, 12.9)];
@@ -716,11 +817,10 @@ mod tests {
         polygon(&mut twice, &square);
         let (one, two) = (coverage(&mut single), coverage(&mut twice));
         for i in 0..W * H {
-            if one[i] == 1.0 {
-                assert!((two[i] - 1.0).abs() < 1e-6, "interior pixel {i}: overlap {}", two[i]);
-            }
+            assert!((one[i] - two[i]).abs() < 1e-5, "pixel {i}: once {}, twice {}", one[i], two[i]);
         }
         assert!((two[8 * W + 10] - 1.0).abs() < 1e-6, "overlap interior {}", two[8 * W + 10]);
+        assert!(two[4 * W + 5] > 0.3 && two[4 * W + 5] < 0.4, "corner {}", two[4 * W + 5]);
     }
 
     /// A figure-8: its two lobes wind +1 and -1 and meet at a crossing. This pins the current behaviour, a known limit and
