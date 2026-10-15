@@ -3,15 +3,14 @@
 # symbols.txt, then builds `//omuzaki:omuzaki_litert`.
 #
 # It mirrors `//tflite/c:tensorflowlite_c` (the interpreter C API, its builtin kernels and the XNNPACK delegate), adds
-# the shim, and exports only the symbols in symbols.txt on Linux and macOS. On Windows the DLL exports what LiteRT
-# marks `TFL_CAPI_EXPORT`, plus the shim.
+# the shim, and exports only the symbols in symbols.txt: through a version script on Linux, an exported-symbols list
+# on macOS, and a .def file on Windows, where pins.toml's TFL_STATIC_LIBRARY_BUILD stops LiteRT's own dllexport marks.
 
 load("//tflite:build_def.bzl", "tflite_cc_shared_object", "tflite_copts", "tflite_linkopts_no_undefined")
 
 cc_library(
     name = "omz_litert_shim",
     srcs = ["omz_litert_shim.c"],
-    # Windows: TFL_COMPILE_LIBRARY, so TFL_CAPI_EXPORT marks the shim's functions for export.
     copts = tflite_copts(),
     deps = [
         "//tflite/c:c_api",
@@ -36,6 +35,10 @@ tflite_cc_shared_object(
         ],
     }),
     per_os_targets = True,
+    win_def_file = select({
+        "@org_tensorflow//tensorflow:windows": ":omuzaki_litert.def",
+        "//conditions:default": None,
+    }),
     deps = [
         ":exported_symbols.lds",
         ":omz_litert_shim",

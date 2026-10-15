@@ -48,7 +48,8 @@ glibc_max = "2.27"
 bazelisk_asset = "bazelisk-windows-amd64.exe"
 bazelisk_sha256 = "d4b5e1cea61fcdb0bed60f8868c2e37684221b65feae898d1124482cd39ec89e"
 bazel_sha256 = "36f82b752d59948a9b839738d7c96f1bcca384154619b3cdb041cabdbf105ae1"
-flags = ["--define=protobuf_allow_msvc=true"]
+# TFL_STATIC_LIBRARY_BUILD empties TFL_CAPI_EXPORT, so the DLL exports only the .def file's names (symbols.txt).
+flags = ["--define=protobuf_allow_msvc=true", "--copt=/DTFL_STATIC_LIBRARY_BUILD"]
 library = "omuzaki_litert.dll"
 archive = "zip"
 # Bazel's MSVC toolset, selected with BAZEL_VC_FULL_VERSION; setup fails when the image lacks it.

@@ -102,6 +102,49 @@ class ExportLists(unittest.TestCase):
         self.assertEqual(build.exported_symbols_list(["A", "B"]), "_A\n_B\n")
 
 
+def minimal_pe(names: list[str], magic: int = 0x20B) -> bytes:
+    """A PE image with one section holding an export directory that names `names` (enough for pe_exports)."""
+    pe, optional_size, section_rva, raw = 0x40, 240, 0x1000, 0x200
+    strings, name_rvas = b"", []
+    directory_size, pointers = 40, 4 * len(names)
+    for name in names:
+        name_rvas.append(section_rva + directory_size + pointers + len(strings))
+        strings += name.encode() + b"\0"
+    body = bytearray(directory_size)
+    body[24:28] = len(names).to_bytes(4, "little")
+    body[32:36] = (section_rva + directory_size).to_bytes(4, "little")
+    body += b"".join(rva.to_bytes(4, "little") for rva in name_rvas) + strings
+    image = bytearray(raw) + body
+    image[0:2], image[0x3C:0x40] = b"MZ", pe.to_bytes(4, "little")
+    image[pe:pe + 4] = b"PE\0\0"
+    image[pe + 6:pe + 8] = (1).to_bytes(2, "little")
+    image[pe + 20:pe + 22] = optional_size.to_bytes(2, "little")
+    optional = pe + 24
+    image[optional:optional + 2] = magic.to_bytes(2, "little")
+    image[optional + 112:optional + 116] = section_rva.to_bytes(4, "little")
+    section = optional + optional_size
+    image[section + 8:section + 12] = len(body).to_bytes(4, "little")
+    image[section + 12:section + 16] = section_rva.to_bytes(4, "little")
+    image[section + 16:section + 20] = len(body).to_bytes(4, "little")
+    image[section + 20:section + 24] = raw.to_bytes(4, "little")
+    return bytes(image)
+
+
+class WindowsExports(unittest.TestCase):
+    def test_the_def_file_lists_every_name(self):
+        self.assertEqual(build.module_definition(["A", "B"]), "EXPORTS\n    A\n    B\n")
+
+    def test_exported_names_read_back(self):
+        names = build.symbols()
+        self.assertEqual(build.pe_exports(minimal_pe(names)), names)
+
+    def test_other_files_are_refused(self):
+        with self.assertRaisesRegex(build.Mismatch, "not a PE32"):
+            build.pe_exports(minimal_pe(["A"], magic=0x10B))
+        with self.assertRaisesRegex(build.Mismatch, "not a PE file"):
+            build.pe_exports(b"\x7fELF" + bytes(0x100))
+
+
 class ReadBack(unittest.TestCase):
     def test_max_version_compares_numerically(self):
         text = "Name: GLIBC_2.2.5\nName: GLIBC_2.17\nName: GLIBC_2.9\nName: GLIBCXX_3.4.30"

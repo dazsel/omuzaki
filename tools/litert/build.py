@@ -89,6 +89,44 @@ def exported_symbols_list(names: list[str]) -> str:
     return "".join(f"_{name}\n" for name in names)
 
 
+def module_definition(names: list[str]) -> str:
+    """The MSVC module-definition (.def) file that exports `names` from the DLL."""
+    return "EXPORTS\n" + "".join(f"    {name}\n" for name in names)
+
+
+def pe_exports(data: bytes) -> list[str]:
+    """The names a PE32+ DLL exports, read from its export directory (so the check needs no Visual Studio tools)."""
+    def u16(at): return int.from_bytes(data[at:at + 2], "little")
+    def u32(at): return int.from_bytes(data[at:at + 4], "little")
+
+    pe = u32(0x3C)
+    if data[:2] != b"MZ" or data[pe:pe + 4] != b"PE\0\0":
+        raise Mismatch("not a PE file")
+    sections, optional = u16(pe + 6), pe + 24
+    if u16(optional) != 0x20B:
+        raise Mismatch("not a PE32+ (64-bit) image")
+    export_rva = u32(optional + 112)  # data directory 0 of a PE32+ optional header
+    table = optional + u16(pe + 20)
+
+    def offset(rva):
+        for index in range(sections):
+            header = table + 40 * index
+            start, size, raw = u32(header + 12), max(u32(header + 8), u32(header + 16)), u32(header + 20)
+            if start <= rva < start + size:
+                return rva - start + raw
+        raise Mismatch(f"RVA {rva:#x} is in no section")
+
+    if export_rva == 0:
+        return []
+    directory = offset(export_rva)
+    count, names = u32(directory + 24), offset(u32(directory + 32))
+    found = []
+    for index in range(count):
+        start = offset(u32(names + 4 * index))
+        found.append(data[start:data.index(b"\0", start)].decode("ascii"))
+    return found
+
+
 def shim_abi() -> int:
     source = (HERE / "omz_litert_shim.c").read_text(encoding="utf-8")
     found = re.search(r"#define OMZ_LITERT_ABI (\d+)u", source)
@@ -186,6 +224,7 @@ def cmd_setup(args):
         shutil.copy(HERE / name, overlay / name)
     (overlay / "version_script.lds").write_text(version_script(symbols()))
     (overlay / "exported_symbols.lds").write_text(exported_symbols_list(symbols()))
+    (overlay / "omuzaki_litert.def").write_text(module_definition(symbols()))
 
     plat = platform_pins(args.platform)
     tools.mkdir(parents=True, exist_ok=True)
@@ -247,6 +286,7 @@ def read_back(plat: str, library: Path, litert: Path, tools: Path) -> dict:
         exported = set(run(["nm", "-gU", "-j", library]).split())
         expect("exported symbols", sorted(exported), sorted(f"_{n}" for n in names))
         return {"xcode": pins["xcode"], "macos_minimum": pins["macos_minimum"]}
+    expect("exported symbols", sorted(pe_exports(library.read_bytes())), sorted(names))
     return {"msvc_toolset": pins["msvc_toolset"]}
 
 
