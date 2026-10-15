@@ -31,7 +31,7 @@ struct State {
 impl FakeLlm {
     /// A fake that plays `script`.
     pub fn new(script: Script) -> Self {
-        let info = ModelInfo::new(script.model.clone(), 200_000, 64_000, ImageCost::Tiles { px: 28 })
+        let info = ModelInfo::new(script.model.clone(), 200_000, 64_000, ImageCost::tiles(28))
             .with_vision(true)
             .with_tools(true)
             .with_effort(true)
@@ -171,9 +171,8 @@ impl Playback {
         if let Some(injected) = &turn.error {
             items.insert(injected.before.min(items.len()), Item::Fail(injected.error.clone()));
         }
-        let retries = (1..=turn.retries).map(|attempt| {
-            Item::Event(LlmEvent::Retrying { attempt, wait: Duration::ZERO, cause: "scripted retry".into() })
-        });
+        let retries = (1..=turn.retries)
+            .map(|attempt| Item::Event(LlmEvent::retrying(attempt, Duration::ZERO, "scripted retry")));
         let items: VecDeque<Item> = retries.chain(items).collect();
         let delay = Duration::from_millis(turn.delay_ms).as_secs_f64();
         let ready_at = clock.now().0;

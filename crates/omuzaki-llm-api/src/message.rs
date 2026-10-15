@@ -161,6 +161,7 @@ pub enum ContentBlock {
     /// Plain text.
     Text(String),
     /// An image, at most 768 px on the long side and 5 MB.
+    #[non_exhaustive]
     Image {
         /// The encoding of `bytes`.
         mime: ImageMime,
@@ -170,6 +171,7 @@ pub enum ContentBlock {
         origin: ImageOrigin,
     },
     /// The model asks for a tool call.
+    #[non_exhaustive]
     ToolUse {
         /// The call id the result answers.
         id: String,
@@ -179,6 +181,7 @@ pub enum ContentBlock {
         input: Value,
     },
     /// The answer to a [`ContentBlock::ToolUse`].
+    #[non_exhaustive]
     ToolResult {
         /// The id of the call it answers.
         id: String,
@@ -188,12 +191,45 @@ pub enum ContentBlock {
         is_error: bool,
     },
     /// A provider's own block (thinking, redacted thinking), returned untouched and only to that provider.
+    #[non_exhaustive]
     Opaque {
         /// The provider that made it.
         provider: String,
         /// The block, byte for byte.
         block: Value,
     },
+}
+
+impl ContentBlock {
+    /// A text block.
+    pub fn text(text: impl Into<String>) -> Self {
+        Self::Text(text.into())
+    }
+
+    /// An image of encoding `mime` from `origin`.
+    pub fn image(mime: ImageMime, bytes: Vec<u8>, origin: ImageOrigin) -> Self {
+        Self::Image { mime, bytes, origin }
+    }
+
+    /// A call to the tool `name` with the call id `id` and arguments `input`.
+    pub fn tool_use(id: impl Into<String>, name: impl Into<String>, input: Value) -> Self {
+        Self::ToolUse { id: id.into(), name: name.into(), input }
+    }
+
+    /// The successful answer `blocks` to the call `id`.
+    pub fn tool_result(id: impl Into<String>, blocks: Vec<ContentBlock>) -> Self {
+        Self::ToolResult { id: id.into(), blocks, is_error: false }
+    }
+
+    /// The failure `blocks` of the call `id`.
+    pub fn tool_error(id: impl Into<String>, blocks: Vec<ContentBlock>) -> Self {
+        Self::ToolResult { id: id.into(), blocks, is_error: true }
+    }
+
+    /// A block that `provider` made, byte for byte.
+    pub fn opaque(provider: impl Into<String>, block: Value) -> Self {
+        Self::Opaque { provider: provider.into(), block }
+    }
 }
 
 /// A tool the model may call.

@@ -46,14 +46,13 @@ fn turn_two(first: &Turn) -> TurnRequest {
     let mut png = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, b'I', b'H', b'D', b'R'];
     png.extend_from_slice(&512u32.to_be_bytes());
     png.extend_from_slice(&512u32.to_be_bytes());
-    let result = ContentBlock::ToolResult {
-        id: "tu_1".into(),
-        blocks: vec![
-            ContentBlock::Text("Rendered main, front, 512 px.".into()),
-            ContentBlock::Image { mime: ImageMime::Png, bytes: png, origin: ImageOrigin::Render },
+    let result = ContentBlock::tool_result(
+        "tu_1",
+        vec![
+            ContentBlock::text("Rendered main, front, 512 px."),
+            ContentBlock::image(ImageMime::Png, png, ImageOrigin::Render),
         ],
-        is_error: false,
-    };
+    );
     request(vec![text(Role::User, "show me the front"), first.message.clone(), Message::new(Role::User, vec![result])])
 }
 
@@ -76,11 +75,11 @@ fn collect_folds_the_worked_example_into_two_turns() {
     assert_eq!(one.stop, StopReason::ToolUse);
     assert_eq!(one.usage, Usage::new(37, 58).with_cache_write(4800));
     assert_eq!((one.usage.prompt(), one.usage.tokens()), (4837, 4895));
-    let call = ContentBlock::ToolUse {
-        id: "tu_1".into(),
-        name: "render_preview".into(),
-        input: serde_json::json!({"character": "main", "camera": "front", "size": 512}),
-    };
+    let call = ContentBlock::tool_use(
+        "tu_1",
+        "render_preview",
+        serde_json::json!({"character": "main", "camera": "front", "size": 512}),
+    );
     assert_eq!(one.message.content, vec![call]);
     assert_eq!(two.stop, StopReason::EndTurn);
     assert_eq!(two.message, text(Role::Assistant, "Here she is, from the front."));

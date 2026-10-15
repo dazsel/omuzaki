@@ -23,6 +23,12 @@ src/message.rs: pub fn new(role: Role, content: Vec<ContentBlock>) -> Self {
 src/message.rs: pub enum ImageMime {
 src/message.rs: pub enum ImageOrigin {
 src/message.rs: pub enum ContentBlock {
+src/message.rs: pub fn text(text: impl Into<String>) -> Self {
+src/message.rs: pub fn image(mime: ImageMime, bytes: Vec<u8>, origin: ImageOrigin) -> Self {
+src/message.rs: pub fn tool_use(id: impl Into<String>, name: impl Into<String>, input: Value) -> Self {
+src/message.rs: pub fn tool_result(id: impl Into<String>, blocks: Vec<ContentBlock>) -> Self {
+src/message.rs: pub fn tool_error(id: impl Into<String>, blocks: Vec<ContentBlock>) -> Self {
+src/message.rs: pub fn opaque(provider: impl Into<String>, block: Value) -> Self {
 src/message.rs: pub struct ToolDef {
 src/message.rs: pub fn new(name: impl Into<String>, description: impl Into<String>, input_schema: Value) -> Self {
 src/message.rs: pub enum ToolChoice {
@@ -69,6 +75,11 @@ src/stream.rs: pub fn cancel(&self) {
 src/stream.rs: pub fn is_cancelled(&self) -> bool {
 src/stream.rs: pub enum StopReason {
 src/stream.rs: pub enum LlmEvent {
+src/stream.rs: pub fn retrying(attempt: u8, wait: Duration, cause: impl Into<String>) -> Self {
+src/stream.rs: pub fn start(model: impl Into<String>) -> Self {
+src/stream.rs: pub fn tool_use_start(id: impl Into<String>, name: impl Into<String>) -> Self {
+src/stream.rs: pub fn tool_use_end(id: impl Into<String>) -> Self {
+src/stream.rs: pub fn opaque(provider: impl Into<String>, block: Value) -> Self {
 src/stream.rs: pub enum Next {
 src/stream.rs: pub struct Turn {
 src/stream.rs: pub model: String,
@@ -99,6 +110,7 @@ src/usage.rs: pub fn new(as_of: impl Into<String>, source: impl Into<String>, ti
 src/usage.rs: pub fn rates_for(&self, prompt: u64) -> Rates {
 src/usage.rs: pub fn rates_up_to(&self, prompt: u64) -> Rates {
 src/usage.rs: pub enum ImageCost {
+src/usage.rs: pub fn tiles(px: u32) -> Self {
 src/usage.rs: pub struct ModelInfo {
 src/usage.rs: pub fn new(id: impl Into<String>, context_window: u64, max_output: u64, image_cost: ImageCost) -> Self {
 src/usage.rs: pub fn with_vision(mut self, vision: bool) -> Self {

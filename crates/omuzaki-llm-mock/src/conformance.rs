@@ -51,15 +51,11 @@ fn usage(input: u64, output: u64) -> LlmEvent {
 }
 
 fn start() -> LlmEvent {
-    LlmEvent::Start { model: "m".into() }
+    LlmEvent::start("m")
 }
 
 fn call(id: &str, args: &str) -> Vec<LlmEvent> {
-    vec![
-        LlmEvent::ToolUseStart { id: id.into(), name: "t".into() },
-        LlmEvent::ToolUseInput(args.into()),
-        LlmEvent::ToolUseEnd { id: id.into() },
-    ]
+    vec![LlmEvent::tool_use_start(id, "t"), LlmEvent::ToolUseInput(args.into()), LlmEvent::tool_use_end(id)]
 }
 
 fn script(chunk: Option<usize>, events: Vec<LlmEvent>) -> Script {
@@ -100,7 +96,7 @@ fn one_tool_call(make: Make<'_>) -> Result<(), String> {
     events.extend(call("a", r#"{"x":1}"#));
     events.extend([usage(1, 1), stop(StopReason::ToolUse)]);
     let turn = play(make, script(None, events))?;
-    let want = ContentBlock::ToolUse { id: "a".into(), name: "t".into(), input: serde_json::json!({"x": 1}) };
+    let want = ContentBlock::tool_use("a", "t", serde_json::json!({"x": 1}));
     same(turn.message.content, vec![want])?;
     same(turn.stop, StopReason::ToolUse)
 }
@@ -124,13 +120,13 @@ fn opaque_round_trip(make: Make<'_>) -> Result<(), String> {
     let block = serde_json::json!({"type": "thinking", "signature": "s"});
     let events = vec![
         start(),
-        LlmEvent::Opaque { provider: "p".into(), block: block.clone() },
+        LlmEvent::opaque("p", block.clone()),
         LlmEvent::TextDelta("x".into()),
         usage(1, 1),
         stop(StopReason::EndTurn),
     ];
     let turn = play(make, script(None, events))?;
-    same(turn.message.content.first().cloned(), Some(ContentBlock::Opaque { provider: "p".into(), block }))
+    same(turn.message.content.first().cloned(), Some(ContentBlock::opaque("p", block)))
 }
 
 fn stop_reasons(make: Make<'_>) -> Result<(), String> {

@@ -154,6 +154,9 @@ pub enum LlmEvent {
     Stop(StopReason),
 }
 pub enum StopReason { EndTurn, ToolUse, MaxOutput, Refused, Paused }
+// Every struct-like variant above (of LlmEvent, ContentBlock and ImageCost) is #[non_exhaustive]: callers build them
+// with a constructor (LlmEvent::start(model), ContentBlock::tool_use(id, name, input), ImageCost::tiles(px), ...)
+// and match with `..`, so a field added later breaks no provider.
 ```
 
 Consecutive `TextDelta`s between other content events form one `Text` block. `ToolUseInput` carries raw JSON

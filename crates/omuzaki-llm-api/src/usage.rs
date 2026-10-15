@@ -184,6 +184,7 @@ fn round_up(sum: u128) -> MicroUsd {
 #[non_exhaustive]
 pub enum ImageCost {
     /// ⌈width / px⌉ × ⌈height / px⌉ tokens (Anthropic: 28).
+    #[non_exhaustive]
     Tiles {
         /// The tile side in pixels.
         px: u32,
@@ -193,9 +194,14 @@ pub enum ImageCost {
 }
 
 impl ImageCost {
+    /// Tiles of `px` pixels a side.
+    pub fn tiles(px: u32) -> Self {
+        Self::Tiles { px }
+    }
+
     fn tokens(self, (w, h): (u32, u32)) -> u64 {
         match self {
-            Self::Tiles { px } => u64::from(w.div_ceil(px.max(1))) * u64::from(h.div_ceil(px.max(1))),
+            Self::Tiles { px, .. } => u64::from(w.div_ceil(px.max(1))) * u64::from(h.div_ceil(px.max(1))),
             Self::Flat(n) => n,
         }
     }
@@ -292,7 +298,7 @@ fn block_tokens(block: &ContentBlock, info: &ModelInfo) -> u64 {
     let body = match block {
         ContentBlock::Text(t) => t.len() as u64,
         ContentBlock::Image { mime, bytes, .. } => info.image_cost.tokens(image_size(*mime, bytes)),
-        ContentBlock::ToolUse { id, name, input } => (id.len() + name.len() + input.to_string().len()) as u64,
+        ContentBlock::ToolUse { id, name, input, .. } => (id.len() + name.len() + input.to_string().len()) as u64,
         ContentBlock::ToolResult { id, blocks, .. } => {
             blocks.iter().fold(id.len() as u64, |sum, b| sum.saturating_add(block_tokens(b, info)))
         }
@@ -456,7 +462,7 @@ mod tests {
     #[test]
     fn a_tool_result_counts_the_id_of_the_call_it_answers() {
         let result = |id: &str| {
-            let block = ContentBlock::ToolResult { id: id.into(), blocks: Vec::new(), is_error: false };
+            let block = ContentBlock::tool_result(id, Vec::new());
             TurnRequest::new(vec![Message { role: Role::User, content: vec![block] }], 1)
         };
         let short = Ledger::new().prompt_estimate(&result("t"), &model());
@@ -588,7 +594,7 @@ mod tests {
     #[test]
     fn an_unreadable_image_is_bounded_at_the_contract_maximum() {
         assert_eq!(image_size(ImageMime::Jpeg, &[]), (768, 768));
-        assert_eq!(ImageCost::Tiles { px: 28 }.tokens((768, 768)), 784);
+        assert_eq!(ImageCost::tiles(28).tokens((768, 768)), 784);
         assert_eq!(ImageCost::Flat(5).tokens((1, 1)), 5);
     }
 }

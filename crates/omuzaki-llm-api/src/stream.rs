@@ -55,6 +55,7 @@ pub enum StopReason {
 #[non_exhaustive]
 pub enum LlmEvent {
     /// The client is retrying; only before `Start`.
+    #[non_exhaustive]
     Retrying {
         /// Which retry this is, from 1.
         attempt: u8,
@@ -64,6 +65,7 @@ pub enum LlmEvent {
         cause: String,
     },
     /// The turn started; the id is the model that serves it.
+    #[non_exhaustive]
     Start {
         /// The served model id.
         model: String,
@@ -71,6 +73,7 @@ pub enum LlmEvent {
     /// More text. Consecutive deltas form one `Text` block.
     TextDelta(String),
     /// A tool call begins.
+    #[non_exhaustive]
     ToolUseStart {
         /// The call id.
         id: String,
@@ -80,11 +83,13 @@ pub enum LlmEvent {
     /// A raw JSON fragment of the open call's arguments.
     ToolUseInput(String),
     /// The call's arguments are complete.
+    #[non_exhaustive]
     ToolUseEnd {
         /// The call id.
         id: String,
     },
     /// One complete provider block.
+    #[non_exhaustive]
     Opaque {
         /// The provider that made it.
         provider: String,
@@ -95,6 +100,33 @@ pub enum LlmEvent {
     Usage(Usage),
     /// The turn is over.
     Stop(StopReason),
+}
+
+impl LlmEvent {
+    /// The client waits `wait` before retry number `attempt`, because of `cause`.
+    pub fn retrying(attempt: u8, wait: Duration, cause: impl Into<String>) -> Self {
+        Self::Retrying { attempt, wait, cause: cause.into() }
+    }
+
+    /// The turn started on the model `model`.
+    pub fn start(model: impl Into<String>) -> Self {
+        Self::Start { model: model.into() }
+    }
+
+    /// A tool call `id` to the tool `name` begins.
+    pub fn tool_use_start(id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self::ToolUseStart { id: id.into(), name: name.into() }
+    }
+
+    /// The arguments of the call `id` are complete.
+    pub fn tool_use_end(id: impl Into<String>) -> Self {
+        Self::ToolUseEnd { id: id.into() }
+    }
+
+    /// One complete block that `provider` made.
+    pub fn opaque(provider: impl Into<String>, block: Value) -> Self {
+        Self::Opaque { provider: provider.into(), block }
+    }
 }
 
 /// What [`TurnStream::try_next`] found.
@@ -303,9 +335,9 @@ impl Fold {
     fn push(&mut self, event: LlmEvent) -> Result<(), LlmError> {
         match event {
             LlmEvent::Retrying { .. } => self.retries = self.retries.saturating_add(1),
-            LlmEvent::Start { model } => self.model = model,
+            LlmEvent::Start { model, .. } => self.model = model,
             LlmEvent::TextDelta(t) => self.text.push_str(&t),
-            LlmEvent::ToolUseStart { id, name } => {
+            LlmEvent::ToolUseStart { id, name, .. } => {
                 if let Some(open) = &self.call {
                     return Err(LlmError::Malformed(format!("tool call {id} starts inside open call {}", open.id)));
                 }
@@ -316,7 +348,7 @@ impl Fold {
                 Some(call) => call.json.push_str(&fragment),
                 None => return Err(LlmError::Malformed("tool input outside a tool call".into())),
             },
-            LlmEvent::ToolUseEnd { id } => {
+            LlmEvent::ToolUseEnd { id, .. } => {
                 let call = self.call.take().filter(|c| c.id == id);
                 let Some(call) = call else {
                     return Err(LlmError::Malformed(format!("tool call end for unopened id {id}")));
@@ -325,11 +357,11 @@ impl Fold {
                 let source = if call.json.trim().is_empty() { "{}" } else { call.json.as_str() };
                 let input = serde_json::from_str(source)
                     .map_err(|e| LlmError::Malformed(format!("tool call {id} has invalid JSON arguments: {e}")))?;
-                self.blocks.push(ContentBlock::ToolUse { id: call.id, name: call.name, input });
+                self.blocks.push(ContentBlock::tool_use(call.id, call.name, input));
             }
-            LlmEvent::Opaque { provider, block } => {
+            LlmEvent::Opaque { provider, block, .. } => {
                 self.flush_text();
-                self.blocks.push(ContentBlock::Opaque { provider, block });
+                self.blocks.push(ContentBlock::opaque(provider, block));
             }
             LlmEvent::Usage(_) => {}
             LlmEvent::Stop(reason) => self.stop = Some(reason),
@@ -457,7 +489,7 @@ mod tests {
     #[test]
     fn collect_refuses_a_stream_that_was_already_pulled_from() {
         let items = vec![
-            event(LlmEvent::Start { model: "m".into() }),
+            event(LlmEvent::start("m")),
             event(LlmEvent::TextDelta("hi".into())),
             event(LlmEvent::Usage(Usage::new(1, 1))),
             event(LlmEvent::Stop(StopReason::EndTurn)),
@@ -474,7 +506,7 @@ mod tests {
     #[test]
     fn collect_on_a_fresh_stream_still_folds_the_whole_turn() {
         let items = vec![
-            event(LlmEvent::Start { model: "m".into() }),
+            event(LlmEvent::start("m")),
             event(LlmEvent::TextDelta("hi".into())),
             event(LlmEvent::Usage(Usage::new(1, 1))),
             event(LlmEvent::Stop(StopReason::EndTurn)),
@@ -532,7 +564,7 @@ mod tests {
 
     #[test]
     fn a_second_call_inside_an_open_call_is_malformed() {
-        let start = |id: &str| event(LlmEvent::ToolUseStart { id: id.into(), name: "n".into() });
+        let start = |id: &str| event(LlmEvent::tool_use_start(id, "n"));
         let items = vec![start("a"), start("b"), event(usage()), event(LlmEvent::Stop(StopReason::ToolUse))];
         assert!(matches!(stream(items, &Cancel::new()).collect(Duration::ZERO), Err(LlmError::Malformed(_))));
     }
@@ -548,14 +580,14 @@ mod tests {
         let items = vec![
             event(LlmEvent::TextDelta("a".into())),
             event(LlmEvent::TextDelta("b".into())),
-            event(LlmEvent::ToolUseStart { id: "t".into(), name: "n".into() }),
-            event(LlmEvent::ToolUseEnd { id: "t".into() }),
+            event(LlmEvent::tool_use_start("t", "n")),
+            event(LlmEvent::tool_use_end("t")),
             event(LlmEvent::TextDelta("c".into())),
             event(usage()),
             event(LlmEvent::Stop(StopReason::ToolUse)),
         ];
         let turn = stream(items, &Cancel::new()).collect(Duration::ZERO).unwrap_or_else(|e| panic!("{e}"));
-        let call = ContentBlock::ToolUse { id: "t".into(), name: "n".into(), input: empty_object() };
+        let call = ContentBlock::tool_use("t", "n", empty_object());
         let want = vec![ContentBlock::Text("ab".into()), call, ContentBlock::Text("c".into())];
         assert_eq!(turn.message.content, want);
     }
