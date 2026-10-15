@@ -18,11 +18,9 @@ use omuzaki_core::glam::Vec3;
 /// arm); offline detail scales it with the rings. Before the change the shoulder reached the end of the arm.
 const ROOT_RINGS: usize = 7;
 
-/// How far mirrored vertices' weights may differ. The kit's smoothing visits vertices in mesh order, so the two sides
-/// settle apart by a little (before this change: 0.03 at most, 0.005 on average over the arm); the narrowed hand-over
-/// steepens that where the share crosses its band (0.12 at most, still 0.006 on average).
-const MIRROR_MAX: f32 = 0.15;
-const MIRROR_MEAN: f32 = 0.015;
+/// How far mirrored vertices' weights may differ: the right arm takes the left's weights, mirrored, so not at all
+/// beyond rounding.
+const MIRROR_MAX: f32 = 1e-6;
 
 fn arms(template: &str, detail: Detail) -> (PartMesh, PartMesh) {
     let t = registry::find(template).unwrap();
@@ -105,11 +103,6 @@ fn the_left_and_right_arms_mirror() {
                 count += 1.0;
             }
         }
-        let mean = total / count;
-        assert!(
-            worst <= MIRROR_MAX && mean <= MIRROR_MEAN,
-            "{}: mirrored weights differ by {worst} (mean {mean})",
-            t.id()
-        );
+        assert!(worst <= MIRROR_MAX, "{}: mirrored weights differ by {worst} (mean {})", t.id(), total / count);
     }
 }
