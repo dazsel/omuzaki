@@ -24,8 +24,9 @@ every vendor host below, so their terms and price pages were **not read at the p
 Reachable: `cloud.google.com/text-to-speech/pricing` and `cloud.google.com/terms/service-terms` (both read 2026-10-15).
 
 Rules used here: a **quote, price or licence verdict appears only for text read on the primary page**. For the other
-candidates, a web-search result snippet (2026-10-15) may support a one-line description, marked `unverified (snippet)`, and
-never a verdict. Every `unverified` item is a question for whoever finishes this note from an environment that allows
+candidates, a web-search result snippet (2026-10-15) may support a one-line description, only with its page title and URL
+recorded and labelled secondary. A claim whose source was not recorded is marked `unverified (source not recorded)` and
+is not used as support for any verdict or for the ranking. Every `unverified` item is a question for whoever finishes this note from an environment that allows
 those hosts (the follow-up list at the end).
 
 ## Summary
@@ -33,17 +34,18 @@ those hosts (the follow-up list at the end).
 | Candidate | Kind | Primary source read? | Price (dated) | Clone | First-adapter verdict |
 |---|---|---|---|---|---|
 | Google Cloud Text-to-Speech | large cloud TTS | partly (price, service terms) | Chirp 3 HD US$30 / 1M chars (verified) | Instant custom voice: price verified, terms `unverified` | candidate, pending output-ownership and cloning terms |
-| Amazon Polly | large cloud TTS | no | `unverified (snippet)` | Brand Voice only, `unverified` | cannot rank |
-| Azure AI Speech | large cloud TTS | no | `unverified` | Personal Voice, "limited access" `unverified (snippet)` | cannot rank |
-| ElevenLabs | voice specialist, TTS + voice changer | no | `unverified` | self-voice rules `unverified (snippet)` | candidate, pending terms |
-| Resemble AI | specialist, speech-to-speech | no | conflicting snippets, none usable | `unverified` | cannot rank (the voice-conversion candidate) |
+| Amazon Polly | large cloud TTS | no | `unverified` | Brand Voice only, `unverified (source not recorded)` | cannot rank |
+| Azure AI Speech | large cloud TTS | no | `unverified` | Personal Voice, "limited access" `unverified (source not recorded)` | cannot rank |
+| ElevenLabs | voice specialist, TTS + voice changer | no | `unverified` | `unverified (source not recorded)` | candidate to read first; no ranking reason yet |
+| Resemble AI | specialist, speech-to-speech | no | `unverified (source not recorded)`, none usable | `unverified` | cannot rank (the voice-conversion candidate) |
 
-**Ranked recommendation (provisional, at most two):** 1. Google Cloud, because it is the only candidate whose price is
-verified, it bills per character as the `SpendGate` bound needs, and it needs no cloning for a stock-voice first
-adapter. 2. ElevenLabs, as the voice specialist, **only after** its terms are read: its snippets describe a broad vendor
-licence on content and a self-voice-only rule for professional cloning, both of which decide the verdict. Voice
-conversion has no ranked pick: ML-14 ships empty and the hosted-conversion question needs a primary-source read first.
-Neither pick may be adopted until the open items below are closed.
+**Ranked recommendation (provisional):** 1. Google Cloud, because it is the only candidate whose price is verified, it
+bills per character as the `SpendGate` bound needs, and it needs no cloning for a stock-voice first adapter. 2. ElevenLabs
+is a candidate to read first, as the voice specialist, but **no ranking reason rests on it**: every claim about its terms
+comes from a search result whose page title and URL were not recorded, so those claims are `unverified (source not
+recorded)` and are left out of the ranking. Voice conversion has no pick: a hosted stream does not fit ML-14 and would
+need its own integration design (see the Resemble section). Neither pick may be adopted until the open items below are
+closed.
 
 ## Google Cloud Text-to-Speech
 
@@ -99,8 +101,16 @@ A per-token price does not give a per-character bound, so it does not fit the da
 (§3.6) without a conversion rule. Rate limits: unverified.
 
 ### Fit with the connector contract
-- **Cap before each billable request:** fits for per-character voices: `bound = chars × price`; a chunk is at most 220
-  chars, so Chirp 3 HD is at most 6,600 micro-dollars (US$0.0066) per chunk at the price above.
+- **Cap before each billable request:** fits for per-character voices, but the bound is computed from the **complete
+  serialized input sent to Google**, not from the 220-character text chunk. The pricing page (read 2026-10-15) counts
+  spaces, newlines and every SSML tag except `<mark>`, so the adapter builds the final request string first and then
+  reserves: `bound = billable_chars(serialized_input) × price_per_char`, where `billable_chars` counts every character of
+  the string (text after XML escaping, all tags and attributes, all whitespace) minus any `<mark>` tags (leaving them in
+  only over-reserves). Escaping counts: `&` becomes `&amp;` (5 characters). Whether Google counts code points or bytes is
+  `unverified`; until read, count the larger of the two. Worked example, Chirp 3 HD at US$0.00003 per character: a
+  220-character chunk wrapped as `<speak><prosody rate="slow">…</prosody></speak>` adds 7 + 21 + 10 + 8 = 46 characters, so
+  the serialized input is 266 characters and `bound = 266 × 0.00003 = US$0.00798` (7,980 micro-dollars), not the
+  6,600 micro-dollars that `220 × price` would give. The `SpendGate` reservation uses 7,980.
 - **Blocking `run`, whole chunks only:** fits; `ai-performer-voice-face.md` §3.1 wants whole chunks, no streamed synthesis.
 - **`Preset { id }`:** fits if the catalog lists the voice names (unverified). **`Clone { reference, person }`:** would
   need the Instant custom voice consent flow and the answer above; the reference audio leaves the machine, so a person
@@ -124,15 +134,15 @@ Unverified. Stock-voice licence, commercial use, live streaming: unverified.
 Unverified (AWS service terms on AI content use and opt-out were not read).
 
 ### Voice cloning and content rules
-Unverified. A search snippet suggests custom voices are a managed "Brand Voice" engagement, not self-service
-(`unverified (snippet)`).
+Unverified. A claim that custom voices are a managed "Brand Voice" engagement, not self-service, came from a search result whose
+title and URL I did not record: `unverified (source not recorded)`, not used for ranking.
 
 ### API shape
 Unverified. Polly's SSML, speech marks and streaming support is widely documented but was not read here.
 
 ### Price and limits
-Unverified. Search snippets for https://aws.amazon.com/polly/pricing/ (2026-10-15) disagree on the Neural rate (one
-mentions a GovCloud rate), so no number is recorded.
+Unverified. Search results naming https://aws.amazon.com/polly/pricing/ (2026-10-15; titles not recorded, secondary)
+disagreed on the Neural rate, so no number is recorded.
 
 ### Fit with the connector contract
 A per-character price would fit the cap bound if confirmed. Cloning is the gap: no self-service clone is established.
@@ -151,15 +161,16 @@ Unverified.
 Unverified.
 
 ### Voice cloning and content rules
-Unverified. A search snippet says Personal Voice is a "limited access" feature that needs an application and is restricted
-to approved use cases (`unverified (snippet)`). If true, it is not self-service for an open-source app and the
+Unverified. A claim that Personal Voice is a "limited access" feature that needs an application and is restricted to
+approved use cases came from a search result whose title and URL I did not record: `unverified (source not recorded)`,
+not used for ranking. If true, it is not self-service for an open-source app and the
 disclosure and consent rules apply.
 
 ### API shape
 Unverified.
 
 ### Price and limits
-Unverified. The price page's amounts did not appear in the snippet.
+Unverified. No price source was recorded.
 
 ### Fit with the connector contract
 Preset voices would fit if billed per character; clone fit depends on the limited-access answer.
@@ -169,21 +180,22 @@ Everything in the Google list, for Azure; plus the access-application terms for 
 
 ## ElevenLabs (voice specialist; TTS and voice changer)
 
-All `unverified`: `elevenlabs.io` was refused. The snippets below describe third-party summaries and are **not** terms
-text.
+All `unverified`: `elevenlabs.io` was refused. The claims below came from search results (2026-10-15) whose page titles
+and URLs I did not record. They are secondary, **not** terms text, and each is `unverified (source not recorded)`. None is
+used in the ranking; the follow-up must find and record real sources or read the primary terms.
 
 ### Ownership of outputs
-Unverified. Snippets (third-party blogs, 2026-10-15) say commercial use is not allowed on the free tier and is on paid
-tiers, and that ElevenLabs keeps a broad licence on content. If a vendor licence on our audio exists, it may conflict
-with the project's rules on what leaves the machine; this must be read, not assumed. Per the issue, a free tier that
-leaves rights with the vendor is out.
+Unverified. Open question: whether commercial use differs by plan, and whether the vendor keeps a licence on content
+(`unverified (source not recorded)` for both). A vendor licence on our audio, if one exists, may conflict with the
+project's rules on what leaves the machine; this must be read, not assumed. Per the issue, a free tier that leaves rights
+with the vendor is out.
 
 ### Prompts, uploads and reference audio
-Unverified. A snippet mentions a "Data use" opt-out of training in account settings. Retention and deletion: unverified.
+Unverified. A claim of a training opt-out in account settings is `unverified (source not recorded)`. Retention and deletion: unverified.
 
 ### Voice cloning and content rules
-Unverified. Snippets say a consent confirmation precedes cloning, professional cloning is self-voice only, and cloning
-public figures is prohibited with account suspension. None quoted.
+Unverified. Claims that a consent confirmation precedes cloning, that professional cloning is self-voice only, and
+that cloning public figures is prohibited are all `unverified (source not recorded)`. None quoted.
 
 ### API shape
 Unverified. (Widely described as HTTP and WebSocket streaming with API-key auth; not read here.)
@@ -192,9 +204,8 @@ Unverified. (Widely described as HTTP and WebSocket streaming with API-key auth;
 Unverified: no figure recorded.
 
 ### Fit with the connector contract
-Strong on voice quality by repute and on a voice-changer product that bears on ML-14, but the reference audio leaves the
-machine and a self-voice-only rule would make `Clone { person }` for anyone but the account holder a violation. Nothing
-else can be said until the terms are read.
+The reference audio would leave the machine, and a voice-changer product, if it exists, would face the hosted-conversion
+question under Resemble below (not an ML-14 fit). Nothing else can be said until the terms are read.
 
 ### Open questions
 Output ownership and the vendor licence on content per plan; training default and opt-out; self-voice rule and consent
@@ -202,8 +213,8 @@ verification; disclosure and watermark rules; streaming protocol and billing uni
 
 ## Resemble AI (hosted voice conversion)
 
-All `unverified`: `resemble.ai` was refused. Snippets from third-party price sites conflict by about twelvefold on the
-speech-to-speech rate (one says US$0.0005 per second, others US$0.006), so **no price is recorded**.
+All `unverified`: `resemble.ai` was refused. Price figures seen in search results conflicted by about twelvefold; their titles and URLs were not recorded
+(`unverified (source not recorded)`), so **no price is recorded**.
 
 ### Ownership of outputs
 Unverified.
@@ -223,11 +234,16 @@ Unverified.
 Unverified (see above).
 
 ### Fit with the connector contract
-Hosted conversion does not fit the performer path; it fits only ML-14's mic chain, with a person's confirmation and a
-consent record. The design says the ML-14 slot ships empty and is bridged like the local TTS bridge.
+Hosted conversion does not fit the performer path, and it does **not** fit the ML-14 slot either. ML-14 is the real-time
+registry slot for model files run through the sandbox (`docs/product/02-studio-spec-v3.md` line 634), and
+`docs/design/connectors.md` (lines 91-96) defines the reverse bridge only (a local registry slot exposed as a connector)
+and rejects making hosted connectors registry runtimes. A hosted conversion network stream would therefore need its own
+connector/audio integration design (consent record, a person's confirmation, latency and spend handling for a live audio
+stream). That design does not exist; it is an open question for a follow-up, not a recommendation.
 
 ### Open questions
-Whether streaming conversion exists with a latency that fits a live mic; output ownership; whether the audio is retained
+What connector/audio integration design a hosted conversion stream would need, given it cannot be an ML-14 registry
+runtime; whether streaming conversion exists with a latency that fits a live mic; output ownership; whether the audio is retained
 or trained on; whether anyone but the account holder can be the target voice.
 
 ## What local TTS cannot do (so we buy nothing we ship)
@@ -245,18 +261,19 @@ Stock voices at Google's Standard price (US$4 per 1M characters) are not worth b
 ## Comparison and recommendation
 
 See the summary table above. Provisional ranking: Google Cloud first (the only verified price and the per-character
-billing the `SpendGate` bound needs), ElevenLabs second (specialist), both conditional on the open questions. Voice
-conversion: no pick.
+billing the `SpendGate` bound needs), conditional on the open questions. ElevenLabs is the specialist to read next, with no
+ranking reason until its primary terms are read. Voice conversion: no pick.
 
 ## Follow-up tasks I would file (not filed)
 
 1. **Finish this note from an environment that allows the vendor hosts** (the list above): read and quote output
    ownership, data retention and training, cloning consent, content rules, API shape and price for all five candidates;
    re-verify Google's Instant custom voice terms.
-2. **Licence register rows** for each candidate (kind `service`, condition column with the ownership and cloning finding)
-   once the quotes are in (this PR adds none; the issue's fence names `docs/licensing/register.md`, but the lane's
-   conventions for this pass say findings live in the note).
+2. **Update the licence rows** in `docs/licensing/deps/` (added by this PR, status `unverified`) once the primary terms
+   are read, and move each to `conditions` or `cleared` with the quoted finding.
 3. **A hosted-TTS connector adapter** for the maintainer's pick, as its own task (an account, a key), per-character bound
    through `SpendGate`.
 4. **A conversion rule for per-token prices** (Gemini-TTS style) if a token-billed voice is ever wanted.
-5. **Hosted voice conversion for ML-14**, only if a streaming service with acceptable terms is found.
+5. **Design question (not a recommendation):** a hosted voice-conversion stream cannot be an ML-14 registry runtime
+   (`docs/design/connectors.md` lines 91-96; `docs/product/02-studio-spec-v3.md` line 634). It would need its own
+   connector/audio integration design, and only if a streaming service with acceptable terms is found.
