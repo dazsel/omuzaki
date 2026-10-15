@@ -3442,6 +3442,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-audio-mock"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-audio-api",
+ "omuzaki-core",
+]
+
+[[package]]
 name = "omuzaki-budget"
 version = "0.0.0"
 dependencies = [
