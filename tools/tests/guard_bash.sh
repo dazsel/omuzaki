@@ -163,8 +163,32 @@ check 2 'git -c remote.origin.Push=refs/heads/cloud/mine:refs/heads/cloud/mine p
 check 2 'git -c remote.pushdefault=upstream -c remote.upstream.push=refs/heads/cloud/mine:refs/heads/cloud/mine push --force-with-lease' "$repo"
 check 2 'git push --force-with-lease' "$lone"
 check 2 'git push --force-with-lease upstream' "$lone"
+# Long options not spelled in full are refused: git takes a unique prefix (`--recurse`, `--rep`, `--receive`), and a
+# `--opt=value` form counts by its name, so `--recurse=check` is refused too. Short letters the hook doesn't know are
+# refused as well.
+check 2 'git push --recurse check --force-with-lease' "$pushspec"
+check 2 'git push --recurse=check --force-with-lease' "$pushspec"
+check 2 'git push --receive foo --force-with-lease' "$pushspec"
+check 2 'git push --push-opt foo --force-with-lease' "$pushspec"
+check 2 'git push --rep origin --force-with-lease cloud/mine' "$repo"
+check 2 'git push --rep=origin --force-with-lease cloud/mine' "$repo"
+check 2 'git push --forc origin cloud/mine'
+check 2 'git push --dry origin cloud/mine'
+check 2 'git push -- origin cloud/mine'
+check 2 'git push -x origin cloud/mine'
+check 2 'git push -qx origin cloud/mine'
+check 2 'gh api --meth DELETE repos/o/r/git/refs/heads/x'
+check 2 'gh api --fie=body=hi repos/o/r/issues/1/comments'
+check 2 'gh api repos/o/r/issues --silen'
+check 2 'gh api --bogus repos/o/r'
+check 2 'gh api --meth=DELETE repos/o/r/git/refs/heads/x'
 # Ordinary commands pass.
 check 0 'cargo xtask check --affected'
+check 0 'git push --set-upstream origin cloud/1234-thing'
+check 0 'git push --no-verify --dry-run origin cloud/1234-thing'
+check 0 'git push -4 origin cloud/1234-thing'
+check 0 'git push --no-force-with-lease origin cloud/1234-thing'
+check 0 'gh api --silent --jq=.login -X GET user'
 check 0 'git push origin cloud/1234-thing'
 check 0 'git push -u origin HEAD:refs/heads/cloud/1234-thing'
 check 0 'git push --force-with-lease=cloud/mine:abc123 origin cloud/mine' "$repo"

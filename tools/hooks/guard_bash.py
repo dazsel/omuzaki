@@ -82,6 +82,22 @@ GIT_OPTIONS_WITH_VALUE = {"-C", "-c", "--git-dir", "--work-tree", "--namespace",
 # git push options that take a value as the next word (`--recurse-submodules check`), from `git push -h`. Their `=` or
 # attached forms (`--repo=x`, `-oopt`) take none, and `--no-` negations take none. `-o` is the only short one.
 PUSH_OPTIONS_WITH_VALUE = {"--repo", "--receive-pack", "--exec", "--recurse-submodules", "--push-option"}
+# git push options, from `git push -h`, spelled in full: each name takes `--no-` too, and the fixed ones are listed
+# apart. Git also takes any unique prefix of a long option (`--recurse` for `--recurse-submodules`, `--rep` for
+# `--repo`), so an option missing from these sets is refused rather than read as something it isn't.
+GIT_PUSH_LONG = {
+    "all", "atomic", "branches", "delete", "dry-run", "exec", "follow-tags", "force", "force-if-includes",
+    "force-with-lease", "mirror", "porcelain", "progress", "prune", "push-option", "quiet", "receive-pack",
+    "recurse-submodules", "repo", "set-upstream", "signed", "tags", "thin", "verbose",
+}
+GIT_PUSH_LONG_FIXED = {"--verify", "--no-verify", "--ipv4", "--ipv6"}
+# Short git push letters; `o` takes a value, which follows in the word or as the next one.
+GIT_PUSH_SHORT = set("vqdnfuo46")
+# gh api options, from `gh api --help`, spelled in full: gh's own parser refuses a prefix, the hook refuses it too.
+GH_API_LONG = {
+    "--cache", "--field", "--header", "--help", "--hostname", "--include", "--input", "--jq", "--method", "--paginate",
+    "--preview", "--raw-field", "--silent", "--slurp", "--template", "--verbose",
+}
 # Nesting depth for commands quoted inside commands (`sh -c "gh pr merge 1"`).
 MAX_DEPTH = 3
 
@@ -152,6 +168,10 @@ def gh_api_method(args):
 
 def gh_api_refusal(args, endpoint):
     """Why a `gh api` call writes, or None. GraphQL reads go by POST, so GraphQL is judged by its operation instead."""
+    # A long option not spelled in full (`--meth`, `--fie=x`) could mean a write the method and field checks miss.
+    unknown = next((a for a in args if a.startswith("--") and a.split("=", 1)[0] not in GH_API_LONG), None)
+    if unknown:
+        return f"`gh api {unknown.split('=', 1)[0]}`, a long option the hook doesn't recognise spelled in full,"
     if endpoint == "graphql":
         # A body or field read from a file or stdin (`--input`, `-F query=@file`) can't be inspected.
         if any(a == "--input" or a.startswith("--input=") or reads_file(a) for a in args):
@@ -219,6 +239,35 @@ def takes_next_word(arg):
     letters = arg[1:]
     at = letters.find("o")
     return arg.startswith("-") and at != -1 and at == len(letters) - 1
+
+
+def git_push_long_known(name):
+    """Whether a long git push option (without any `=value`) is spelled in full, with or without its `--no-`."""
+    if name in GIT_PUSH_LONG_FIXED:
+        return True
+    return name[2:] in GIT_PUSH_LONG or (name.startswith("--no-") and name[5:] in GIT_PUSH_LONG)
+
+
+def unknown_push_option(push_args):
+    """The first git push option word the hook doesn't recognise spelled in full, or None. Value words are skipped as
+    git reads them, so `--recurse-submodules check` is one option with its value, not an unknown `check`."""
+    skip = False
+    for arg in push_args:
+        if skip:
+            skip = False
+        elif arg.startswith("--"):
+            if not git_push_long_known(arg.split("=", 1)[0]):
+                return arg
+            skip = takes_next_word(arg)
+        elif arg.startswith("-") and arg != "-":
+            # A short group is known when each letter is, up to an `o`, whose value is the rest of the word.
+            for letter in arg[1:]:
+                if letter == "o":
+                    break
+                if letter not in GIT_PUSH_SHORT:
+                    return arg
+            skip = takes_next_word(arg)
+    return None
 
 
 def push_words(push_args):
@@ -310,6 +359,9 @@ def git_refusal(args, cwd):
     if sub != "push":
         return None
     push_args = args[i + 1:]
+    unknown = unknown_push_option(push_args)
+    if unknown:
+        return f"`git push {unknown.split('=', 1)[0]}`, an option the hook doesn't recognise spelled in full,"
     for arg in push_args:
         if arg in ("--force", "--delete", "--mirror", "--prune") or arg.startswith(("+", ":")):
             return f"`git push {arg}`"
