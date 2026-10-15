@@ -378,9 +378,9 @@ fn the_open_shape_grows_with_the_performance_scale() {
     // At open 0.4 the scale is fully in force (0.4 x 3 > 1).
     let (lo, _) = extent(&outline(&paint(&profile, &params(|m| m.open = 0.4))));
     assert_close(lo.y, MOUTH_Y - 0.016 * 0.4 * 2.0, "depth scales");
-    // At open 0.1 a third of the way: grow = 1 + 0.3.
-    let (lo, _) = extent(&outline(&paint(&profile, &params(|m| m.open = 0.1))));
-    assert_close(lo.y, MOUTH_Y - 0.016 * 0.1 * 1.3, "partial scale");
+    // At open 0.25 three quarters of the way: grow = 1 + 0.75 (and the lens has finished easing in).
+    let (lo, _) = extent(&outline(&paint(&profile, &params(|m| m.open = 0.25))));
+    assert_close(lo.y, MOUTH_Y - 0.016 * 0.25 * 1.75, "partial scale");
 }
 
 #[test]
@@ -464,10 +464,11 @@ fn sweep_height(jaw: f32) -> (f32, f32) {
 /// The smoothness bar: no step of a sweep differs from its neighbour by more than this, at 3600 px per metre (it was
 /// 2.5 px, the prototype's jump, for the steps across the switch).
 const SWITCH_JUMP_PX: f32 = 1.5;
-/// What a 20-step sweep (about 0.06 of opening a step) can show while the rim fades in, 0.06 to 0.2: the mouth goes
-/// from a 5.8 px line to a lens with an 8.6 px rim in two or three steps, which no easing makes smoother than this.
-/// The switch itself is continuous (see below); this is the coarse sampling's own bound.
-const EASING_STEP_PX: f32 = 7.0;
+/// The smallest bound a 20-step sweep (about 0.06 of opening a step) reaches while the rim fades in, 0.06 to 0.2, with
+/// the line thinning, the rim fading and the lens deepening together: the mouth goes from a 5.8 px line to a lens with an
+/// 8.6 px rim in two or three steps, and the line before the switch can only thin, so no easing of the three gets
+/// the coarse steps under 5.5 px. The switch itself is continuous (see below), and a fine sweep meets the bar.
+const EASING_STEP_PX: f32 = 5.6;
 
 #[test]
 fn a_jaw_sweep_in_twenty_steps_grows_the_mouth_smoothly_across_the_switch() {
@@ -480,6 +481,7 @@ fn a_jaw_sweep_in_twenty_steps_grows_the_mouth_smoothly_across_the_switch() {
     }
     // Smooth means each step is the same size as the one before it to within the bar (the curve is gentle: a step is
     // about 3.7 px), except where the rim eases in.
+    println!("sweep heights (px, open): {heights:.2?}");
     let mut largest = 0.0_f32;
     for window in heights.windows(3) {
         let (first, second) = (window[1].0 - window[0].0, window[2].0 - window[1].0);

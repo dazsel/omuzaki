@@ -6,7 +6,7 @@
 //!   short wavy slit with a light rim and a faint upper-lip arc.
 //! - **Closed line**, below an opening of [`CLOSED_BELOW`]: a thin line whose corners follow the smile of each side. It
 //!   thins towards the switch, so it meets the open shape's rim.
-//! - **Open shape**, otherwise: a lens that grows with the opening, rounder with `round`, filled with the interior
+//! - **Open shape**, otherwise: a lens that grows with the opening (eased in over the same range), rounder with `round`, filled with the interior
 //!   gradient. The rim round it starts as the closed line and becomes the open mouth's over the openings
 //!   [`CLOSED_BELOW`] to [`FADE_UNTIL`] ([`OpenMouth::fade`]). Its path is kept in [`PaintCtx::open_mouth`] so the interior, teeth and rim clip and stroke the
 //!   same outline instead of recomputing it.
@@ -28,6 +28,9 @@ const FADE_UNTIL: f32 = 0.2;
 /// The closed line is this much thinner at the switch than at rest, so the lens that replaces it keeps the same weight
 /// (the line is 5.8 px thick at the switch and the lens 3.9 px deep, at 3600 px per metre).
 const CLOSED_THIN: f32 = 0.2;
+/// The open lens is this share of its depth at the switch and eases to all of it over the fade, so the extra weight of
+/// the rim is not all added in the two or three steps of a coarse jaw sweep.
+const LENS_AT_SWITCH: f32 = 0.7;
 /// A pucker above this, with the mouth under [`KISS_OPEN_BELOW`], is a kiss.
 const KISS_ABOVE: f32 = 0.35;
 /// The kiss gives way to the open shape from this opening.
@@ -354,7 +357,8 @@ fn open_outline(ctx: &mut PaintCtx<'_>, f: &Frame) -> OpenMouth {
     }
     let style = &ctx.profile.mouth;
     let scale = narrow(style.half_width) / PROTOTYPE_HALF_WIDTH;
-    let height = HEIGHT_PER_OPEN * scale * f.open * f.grow;
+    let fade = f.fade();
+    let height = HEIGHT_PER_OPEN * scale * f.open * f.grow * (LENS_AT_SWITCH + (1.0 - LENS_AT_SWITCH) * fade);
     let half_width = f.half_width
         * (1.0 + OPEN_WIDENS * f.open)
         * (1.0 - ROUND_NARROWS * ctx.params.mouth.round)
@@ -379,7 +383,7 @@ fn open_outline(ctx: &mut PaintCtx<'_>, f: &Frame) -> OpenMouth {
         outline = outline.line_to(at(u, edges.bottom(height, u)));
     }
     let path = outline.close().finish();
-    let open = OpenMouth { path, centre: f.centre, half_width, height, grow: f.grow, fade: f.fade(), edges };
+    let open = OpenMouth { path, centre: f.centre, half_width, height, grow: f.grow, fade, edges };
     ctx.open_mouth = Some(open);
     open
 }
