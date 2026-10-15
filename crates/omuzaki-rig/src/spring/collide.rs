@@ -73,7 +73,7 @@ impl Collider {
     ///
     /// This is the spec's `distance < 0` test and `nextTail - direction * distance` push in one: the offset is along
     /// the line from the collider's nearest axis point to `point`. A point on that axis (within
-    /// [`DEGENERATE_DISTANCE`]) has no such line, so it is pushed along `fallback`, a unit vector the caller chooses
+    /// [`DEGENERATE_DISTANCE`] for an outside shape, exactly on it for an inside one) has no such line, so it is pushed along `fallback`, a unit vector the caller chooses
     /// deterministically. The spec's `normalized` of a zero vector would leave the point where it is; pushing along
     /// `fallback` is the one place this departs from the spec, and it is a choice the module docs record.
     pub(super) fn push_out(&self, point: Vec3, joint_radius: f32, fallback: Vec3) -> Option<Vec3> {
@@ -94,7 +94,13 @@ impl Collider {
         }
         // A point on the axis has no direction to leave it in: use `fallback`. (Only a joint larger than an inside
         // shape can be both on its axis and past its radius.)
-        let outward = if length >= DEGENERATE_DISTANCE { from_axis / length } else { fallback };
+        // An inside shape's push is toward the axis however small the offset, so a tiny shape is never pushed away
+        // from it; an outside shape keeps the threshold, so rounding residue cannot pick its direction.
+        let outward = if length >= DEGENERATE_DISTANCE || (self.side < 0.0 && length > 0.0) {
+            from_axis / length
+        } else {
+            fallback
+        };
         Some(outward * (-self.side * distance))
     }
 }
@@ -216,6 +222,26 @@ mod tests {
         let capsule = Collider::capsule(Vec3::ZERO, Vec3::new(0.0, 2.0, 0.0), 0.5);
         let push = capsule.push_out(Vec3::new(0.0, 1.0, 0.0), 0.0, Vec3::X).unwrap();
         assert!(close(push, Vec3::X * 0.5), "{push}");
+    }
+
+    #[test]
+    fn a_tiny_inside_shape_pushes_toward_its_axis_not_away_from_it() {
+        // Offsets far below `DEGENERATE_DISTANCE` still have a direction; only an exactly-zero offset uses the fallback.
+        let sphere = Collider::sphere_inside(Vec3::ZERO, 0.0);
+        let point = Vec3::new(1e-6, 0.0, 0.0);
+        let push = sphere.push_out(point, 0.0, Vec3::Y).unwrap();
+        assert!(push.x < 0.0 && push.y == 0.0, "{push}");
+        assert!(close(point + push, Vec3::ZERO), "{}", point + push);
+
+        let capsule = Collider::capsule_inside(Vec3::ZERO, Vec3::new(0.0, 1e-3, 0.0), 0.0);
+        let point = Vec3::new(1e-6, 5e-4, 0.0);
+        let push = capsule.push_out(point, 0.0, Vec3::Z).unwrap();
+        assert!(push.x < 0.0 && push.z == 0.0, "{push}");
+        assert!(close(point + push, Vec3::new(0.0, 5e-4, 0.0)), "{}", point + push);
+
+        // Exactly on the axis: the fallback, as before.
+        let push = sphere.push_out(Vec3::ZERO, 0.1, Vec3::Y).unwrap();
+        assert!(close(push, Vec3::Y * -0.1), "{push}");
     }
 
     mod push_properties {
