@@ -34,6 +34,8 @@ pub fn build_script_emits(source: &str) -> bool {
     let depth = depths(&toks);
     let Some((from, to)) = (0..toks.len())
         .find(|&at| depth[at] == 0 && toks[at].is_ident("fn") && toks.get(at + 1).is_some_and(|t| t.is_ident("main")))
+        // `#[cfg(any())] fn main() { emit } fn main() {}` builds the second, so the first `main` must carry no attribute.
+        .filter(|&at| !attribute_before(&toks, at))
         .and_then(|at| (at + 2..toks.len()).find(|&open| depth[open] == 0 && toks[open].is_punct('{')))
         .and_then(|open| group_at(&toks, open))
     else {
@@ -187,6 +189,10 @@ mod tests {
         // Work before `emit()` is fine as long as it cannot leave `main`.
         assert!(build_script_emits("fn main() {\n    println!(\"x\");\n    omuzaki_link_build::emit();\n}\n"));
         assert!(!build_script_emits("mod m { fn main() { omuzaki_link_build::emit(); } }\nfn other() {}\n"));
+        // The `main` the check selects must itself be unconditional: here the build runs the second one.
+        let disabled = "#[cfg(any())]\nfn main() {\n    omuzaki_link_build::emit();\n}\nfn main() {}\n";
+        assert!(!build_script_emits(disabled));
+        assert!(!build_script_emits("#[cfg(not(any()))]\nfn main() {\n    omuzaki_link_build::emit();\n}\n"));
     }
 
     #[test]

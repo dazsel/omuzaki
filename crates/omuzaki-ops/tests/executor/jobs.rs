@@ -280,7 +280,9 @@ fn ended_event(events: &Receiver<Event>, id: JobId, secs: u64) -> Option<JobInfo
     loop {
         let left = until.saturating_duration_since(Instant::now());
         match events.recv_timeout(left).ok()? {
-            Event::JobChanged { job } if job.id == id && !matches!(job.state, JobState::Queued | JobState::Running) => {
+            Event::JobChanged { job, .. }
+                if job.id == id && !matches!(job.state, JobState::Queued | JobState::Running) =>
+            {
                 return Some(job);
             }
             _ => {}
@@ -584,7 +586,7 @@ fn job_changes_arrive_in_order_around_the_edit_they_apply() {
     let seen: Vec<String> = drain(&events)
         .into_iter()
         .map(|e| match e {
-            Event::JobChanged { job } => match job.state {
+            Event::JobChanged { job, .. } => match job.state {
                 JobState::Queued => "queued".to_owned(),
                 JobState::Running => "running".to_owned(),
                 JobState::Done { .. } => "done".to_owned(),

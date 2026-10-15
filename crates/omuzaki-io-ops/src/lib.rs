@@ -36,4 +36,6 @@ pub mod ops;
 pub mod prepare;
 pub mod vrchat_rank;
 
-omuzaki_core::define_link!();
+omuzaki_core::define_link! {
+    omuzaki_char_api::link();
+}
