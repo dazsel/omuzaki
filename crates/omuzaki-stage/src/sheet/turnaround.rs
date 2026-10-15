@@ -38,7 +38,8 @@ pub const EYE_LINE_FRACTION: f32 = 0.6;
 /// `Landmarks::measure` (#131) measures the head.
 pub const HEAD_CENTRE_FRACTION: f32 = 0.5;
 /// The light rig every sheet is lit with. The sheet always uses it, replacing whatever lights the stage's scene had
-/// (and its post settings and background); [`render_turnaround`] puts the caller's scene back afterwards.
+/// (and its post settings, background, fog and environment light); [`render_turnaround`] puts the caller's scene back
+/// afterwards.
 pub const LIGHT_RIG: &str = "viewer-studio";
 
 /// Which way the character faces the camera. The side and three-quarter views show the character's left.
@@ -309,7 +310,7 @@ impl Shot {
 
 /// Renders the four views of `spec.pose` of the character on `stage`.
 ///
-/// The stage's scene is borrowed for the sheet (camera, lights from [`LIGHT_RIG`], background) and put back after.
+/// The stage's scene is borrowed for the sheet (camera, lights from [`LIGHT_RIG`], background, no fog or environment light) and put back after.
 /// The character is ticked at each yaw, settled, ticked again and then drawn offline from that one scene, tile by
 /// tile where the cell is too big for one target.
 ///
@@ -345,6 +346,9 @@ pub fn render_turnaround(
     scene.post = look;
     scene.background = spec.background;
     scene.camera = shot.camera;
+    // Neutral studio: the caller's fog and sky light would tint the sheet, so they are off for it.
+    scene.fog = None;
+    scene.environment = None;
     let run = Run { spec, subject, shot, pose, target, tile };
     let views = View::ALL.into_iter().map(|view| run.view(stage, renderer, view)).collect::<Result<Vec<_>, _>>();
     let released = renderer.release(ResourceRef::from(target));

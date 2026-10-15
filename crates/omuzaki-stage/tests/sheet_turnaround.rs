@@ -19,9 +19,9 @@ use omuzaki_char_api::{BuildOptions, BuildServices, BuiltCharacter, CharId, Char
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::{UVec2, Vec3};
 use omuzaki_render_api::{
-    AlphaEncoding, Background, Camera, Capabilities, FrameReport, Image, Light, Material, MaterialId, MeshData, MeshId,
-    MeshOptions, Painter, Quality, RenderError, Renderer, ResourceRef, ResourceStats, Scene, TargetDesc, TargetId,
-    TextureDesc, TextureId,
+    AlphaEncoding, Background, Camera, Capabilities, Fog, FrameReport, Image, Light, Material, MaterialId, MeshData,
+    MeshId, MeshOptions, Painter, Quality, RenderError, Renderer, ResourceRef, ResourceStats, Scene, TargetDesc,
+    TargetId, TextureDesc, TextureId,
 };
 use omuzaki_render_mock::MockRenderer;
 use omuzaki_stage::UploadOptions;
@@ -213,16 +213,40 @@ fn back_mirrors_front_and_the_front_mirrors_itself() {
     assert!(mirror_misses(front, front) <= limit, "left and right differ");
 }
 
+/// Pixels of `a` and `b` that differ by more than 2 in any channel, as `(all, away from tile borders)`. A pixel is on
+/// a border when it is within 2 pixels of a line where tiles of `tile` pixels meet.
+fn stitch_errors(a: &Image, b: &Image, tile: u32) -> (usize, usize) {
+    let border = |v: u32| v % tile < 2 || tile - v % tile <= 2;
+    let mut bad = (0, 0);
+    for y in 0..a.size.y {
+        for x in 0..a.size.x {
+            if a.pixel(x, y).zip(b.pixel(x, y)).is_some_and(|(p, q)| p.iter().zip(q).any(|(c, d)| c.abs_diff(d) > 2)) {
+                bad.0 += 1;
+                bad.1 += usize::from(!border(x) && !border(y));
+            }
+        }
+    }
+    bad
+}
+
+/// #203's limit: at most 0.1% bad pixels, none away from the tile borders.
+fn assert_stitched(single: &TurnaroundSheet, tiled: &TurnaroundSheet, tile: u32) {
+    for (a, b) in single.views.iter().zip(&tiled.views) {
+        let (all, inside) = stitch_errors(&a.image, &b.image, tile);
+        let limit = (CELL.x * CELL.y) as usize / 1000;
+        assert_eq!(inside, 0, "{:?}: {inside} bad pixels away from the tile borders", a.view);
+        assert!(all <= limit, "{:?}: {all} bad pixels (limit {limit})", a.view);
+    }
+}
+
 #[test]
 fn tiles_stitch_to_the_single_render() {
     let single = sheet(&spec());
     let tiled = sheet(&spec().with_max_tile(48));
     for (a, b) in single.views.iter().zip(&tiled.views) {
         assert_eq!(a.framing, b.framing, "tiling does not move the character");
-        let bad = a.image.rgba8.iter().zip(&b.image.rgba8).filter(|(p, q)| p.abs_diff(**q) > 2).count();
-        let limit = a.image.rgba8.len() / 1000;
-        assert!(bad <= limit, "{:?}: {bad} channels differ by more than 2 (limit {limit})", a.view);
     }
+    assert_stitched(&single, &tiled, 48);
 }
 
 #[test]
@@ -267,6 +291,21 @@ fn a_refused_target_leaves_the_callers_scene_alone() {
 }
 
 #[test]
+fn the_callers_fog_does_not_tint_the_sheet() {
+    let clear = sheet(&spec());
+    let (foggy, restored) = with_stage(|stage, renderer| {
+        stage.scene_mut().fog = Some(Fog { colour: Colour::WHITE, near: 0.0, far: 0.5 });
+        let before = stage.scene().clone();
+        let sheet = render_turnaround(stage, renderer, &spec()).expect("the sheet renders");
+        (sheet, *stage.scene() == before)
+    });
+    assert!(restored, "the caller's fog is back after the sheet");
+    for (a, b) in clear.views.iter().zip(&foggy.views) {
+        assert_eq!(a.image.rgba8, b.image.rgba8, "{:?} is shot without fog", a.view);
+    }
+}
+
+#[test]
 fn the_hero_pose_differs_from_the_rest_pose_and_is_stable() {
     let rest = sheet(&spec());
     let hero = sheet(&spec().with_pose(SheetPose::Hero));
@@ -292,8 +331,5 @@ fn the_sheet_renders_on_the_software_adapter() {
         sheet
     };
     let (single, tiled) = (render(&spec()), render(&spec().with_max_tile(48)));
-    for (a, b) in single.views.iter().zip(&tiled.views) {
-        let bad = a.image.rgba8.iter().zip(&b.image.rgba8).filter(|(p, q)| p.abs_diff(**q) > 2).count();
-        assert!(bad <= a.image.rgba8.len() / 1000, "{:?}: {bad} channels differ after stitching", a.view);
-    }
+    assert_stitched(&single, &tiled, 48);
 }
