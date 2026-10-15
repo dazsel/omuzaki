@@ -14,7 +14,7 @@ use omuzaki_core::time::{Clock, Seconds};
 use omuzaki_face::{FaceSystem, FaceUpdate, GpuRasterizer, RealPainter};
 use omuzaki_face_api::{
     DEFAULT_PX_PER_M, DrawList, FaceDrawing, FaceError, FaceInput, FaceLayerId, FaceLayerSpec, FacePainter,
-    FaceProfile, FaceRasterizer, FaceView, Raster,
+    FaceProfile, FaceRasterizer, FaceView, FangKind, Raster,
 };
 use omuzaki_face_mock::{MockPainter, MockRasterizer, mock_profile, mock_projection};
 use omuzaki_render_api::{PaintTarget, Painter, PixelRect, RenderError, Renderer};
@@ -75,6 +75,34 @@ fn the_real_painter_draws_every_layer_once_and_then_nothing_changes_while_the_fa
     update(&mut system, &profile, &moved);
     let later = update(&mut system, &profile, &moved);
     assert!(!later.any_changed(), "the sections are pure, so an unchanged face repaints identical lists");
+}
+
+/// The draw-list fingerprints after one update of `profile` with `buf`.
+fn fingerprints_after(profile: &FaceProfile, buf: &ChannelBuf) -> [u64; FaceLayerId::COUNT] {
+    let painter = RealPainter::new(mock_projection(), DEFAULT_PX_PER_M);
+    let mut system = FaceSystem::new(Box::new(painter), Box::new(MockRasterizer));
+    update(&mut system, profile, buf);
+    system.drawing().fingerprints()
+}
+
+#[test]
+fn a_profile_with_no_fangs_paints_none_whatever_drives_the_channel() {
+    let grin = [(Channel::MOUTH_SMILE_LEFT, 0.9), (Channel::MOUTH_SMILE_RIGHT, 0.9), (Channel::JAW_OPEN, 0.5)];
+    let (without, with) = (channels(&grin), channels(&[grin[0], grin[1], grin[2], (Channel::FANGS, 1.0)]));
+
+    let mut profile = mock_profile();
+    assert_ne!(
+        fingerprints_after(&profile, &without),
+        fingerprints_after(&profile, &with),
+        "fangs show for a profile with them"
+    );
+
+    profile.mouth.fang.kind = FangKind::None;
+    assert_eq!(
+        fingerprints_after(&profile, &without),
+        fingerprints_after(&profile, &with),
+        "the `fangs` channel at 1 paints nothing for a profile without fangs"
+    );
 }
 
 #[test]

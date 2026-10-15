@@ -125,7 +125,7 @@ impl FaceSystem {
         self.slots.get(at).filter(|slot| !slot.stale).map(|slot| &slot.raster)
     }
 
-    /// One frame: maps `channels` through `profile.mapping` once, paints, and rasterises the layers whose draw list
+    /// One frame: maps `channels` through `profile.mapping` once (a profile with no fangs maps to none), paints, and rasterises the layers whose draw list
     /// changed since the last update (or whose [`FaceLayerSpec`] did: a density change). `profile` must have its
     /// palette slots resolved (`FaceProfile::resolve_colours`).
     ///
@@ -140,7 +140,11 @@ impl FaceSystem {
         view: FaceView,
     ) -> Result<FaceUpdate, FaceError> {
         let t0 = self.clock.now();
-        let params = profile.mapping.apply(channels);
+        let mut params = profile.mapping.apply(channels);
+        if !profile.has_fangs() {
+            // The painter draws fangs from this number alone; a character that has none shows none, whatever drives it.
+            params.mouth.fangs = 0.0;
+        }
         let t1 = self.clock.now();
         self.painter.paint(&FaceInput { profile, params: &params, time, view }, &mut self.drawing)?;
         let t2 = self.clock.now();
