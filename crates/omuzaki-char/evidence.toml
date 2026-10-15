@@ -57,3 +57,19 @@ images = [
     "heart-front.ppm", "heart-three-quarter.ppm", "heart-side.ppm",
     "long-front.ppm", "long-three-quarter.ppm", "long-side.ppm",
 ]
+
+[[case]]
+name = "accessories"
+description = "Every style of the horns, headphones, hats, glasses, tails and wings on the standard and soft-sd templates, front and three-quarter (tails and wings also from the side and the back), 256 px per tile through the mock toon renderer. One sheet per kind and template, a row per style."
+env = { OMUZAKI_ACCESSORY_PPM = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-char", "--test", "accessory_sheet", "render_the_accessory_sheets_when_asked", "--", "--exact"] },
+]
+images = [
+    "horns-standard.ppm", "horns-soft-sd.ppm",
+    "headphones-standard.ppm", "headphones-soft-sd.ppm",
+    "hat-standard.ppm", "hat-soft-sd.ppm",
+    "glasses-standard.ppm", "glasses-soft-sd.ppm",
+    "tail-standard.ppm", "tail-soft-sd.ppm",
+    "wings-standard.ppm", "wings-soft-sd.ppm",
+]
