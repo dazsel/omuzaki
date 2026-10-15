@@ -135,7 +135,7 @@ fn track_roi_is_bit_identical_across_runs() {
 }
 
 /// A level above the default is allowed on a graph only while its runs repeat bit for bit; this holds for every graph
-/// at both levels (the numeric check against TFLite is what keeps the face slots on the default: #1730).
+/// at both levels (the numeric check against `TFLite` is what keeps the face slots on the default: #1730).
 #[test]
 fn track_roi_is_bit_identical_across_runs_at_every_graph_optimisation_level() {
     let Some((models, natives)) = env("track_roi_is_bit_identical_across_runs_at_every_graph_optimisation_level")
