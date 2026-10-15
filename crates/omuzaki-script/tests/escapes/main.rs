@@ -7,7 +7,7 @@
 //! script-ops changes.
 
 // A test file: a failed unwrap is the failure, and reading the corpus folder is what the test is for.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::disallowed_methods)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::disallowed_methods, clippy::unnecessary_wraps)]
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -212,7 +212,7 @@ fn every_script_in_the_corpus_has_a_row_and_every_row_a_script() {
     let on_disk: BTreeSet<String> = std::fs::read_dir(corpus())
         .unwrap()
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-        .filter(|name| name.ends_with(".rhai"))
+        .filter(|name| name.to_ascii_lowercase().ends_with(".rhai"))
         .collect();
     let in_table: BTreeSet<String> = TABLE.iter().map(|row| row.script.to_owned()).collect();
     assert_eq!(on_disk, in_table, "the corpus folder and the table disagree");
