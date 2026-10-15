@@ -43,17 +43,19 @@ trackers, outputs, exporters and part generators. Each plugs into a contract tha
    preflight unchanged, hands the scene over as GLB (≤ 128 MiB), checks the returned files (≤ 16, ≤ 256 MiB, flat
    names with declared extensions) and `io.export` writes them under its own checks; a plugin never writes. Format ids
    are `plugin-<plugin>-<name>`, since `FormatId` is a slug without dots.
-7. **Part generators:** `DynPartKind` and a run-time catalogue in `omuzaki-char-api` (human lane); `find_kind`
-   returns a `PartKindRef` over static and run-time kinds, so the existing build path finds both; ids
+7. **Part generators:** `DynPartKind` and a run-time catalogue in `omuzaki-char-api` (human lane); a `lookup_kind`
+   returning
+   a `PartKindRef` over static and run-time kinds, which the build path moves to (`find_kind` goes after its
+   callers move); ids
    `plugin-<plugin>-<name>`; schema-checked parameters, seeded and pure, so deterministic; part-local flat meshes
-   (≤ 8, 65,536 vertices and triangles; rigid in 0.1) the host places at the resolved attachment;
+   (≤ 8, 65,536 vertices and triangles; rigid in 0.1) the host places and skins to the resolved attachment joint;
    `KindProvenance::External`, with a source row `Generated { tool: "plugin <id>@<version>", model: <hash> }` and the
    manifest's licence, so the licence gate treats the plugin as any source.
 8. **No output world in 0.x:** video would copy about 249 MB/s into an instance with no shared memory, and data
    outputs need sockets, which plugins never get; protocol outputs are #1085's.
-9. **Registration is all or nothing:** each catalogue reserves (fallible, invisible to readers) then activates
-   (infallible, one atomic swap). Enable reserves every kind first, then activates event kinds, node kinds, part kinds,
-   exporters, the tracker and polling; disable is the reverse. A failed reservation faults the plugin unseen.
+9. **Registration is all or nothing:** each catalogue reserves under one shared activation gate (fallible, invisible to
+   readers); enable reserves every kind and prepares the tracker thread and instances, then opens the gate in one
+   store, so every kind appears together and nothing after can fail; disable closes it first.
 10. **A document naming a missing kind loses nothing:** parameters stay byte for byte, with a finding naming the plugin;
     nodes are inert, triggers never fire, parts don't build and their character can't be exported until the plugin is
     back, exporters are `not_found`, tracker channels fall back to first party.
@@ -65,7 +67,8 @@ trackers, outputs, exporters and part generators. Each plugs into a contract tha
 - Contract work, each its own task landing before its adapter (design §9): `omuzaki-plugin-api` gains the worlds and
   manifest sections (plugins area); `omuzaki-live-api` gains `DynEventKind` (automation, Director); `omuzaki-track-api`
   gains the frame tap (tracking, Director); `omuzaki-io-api` and `omuzaki-char-api` gain run-time catalogues (human
-  lane, Director). Only `find_kind`'s return type changes (decision 7; its callers move in their own task);
+  lane, Director). Only `lookup_kind` is added beside `find_kind` (decision 7; callers move in their own task, then
+  `find_kind` goes);
   `omuzaki-store-api` and `omuzaki-core` don't change.
 - `automation.md` D9's comment that plugin adapters use `Source::Platform` is corrected by the `DynEventKind` task.
 - #1366 keeps its names; its WIT moves to `omuzaki-plugin-api` (T1).

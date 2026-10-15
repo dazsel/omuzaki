@@ -110,7 +110,8 @@ interface http {
 
 interface lifecycle {
     use types.{op-error};
-    /// Called once per instance, with the plugin's settings as JSON (§7). An error faults the plugin with that text.
+    /// Called once per worker instance (ADR 0064: pure extension instances never run it), with the plugin's
+    /// settings as JSON (§7). An error faults the plugin with that text.
     init: func(config: string) -> result<_, string>;
     /// A queued request (§2.2) was decided: the op's output, or why it did not run.
     approval-resolved: func(approval: u64, outcome: result<string, op-error>);
