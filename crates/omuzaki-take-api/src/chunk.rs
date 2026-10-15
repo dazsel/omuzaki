@@ -2,6 +2,8 @@
 
 use omuzaki_core::time::Seconds;
 
+use crate::error::TakeError;
+
 /// The format's major version. A newer major is refused; an older one keeps its decoder (T3).
 pub const MAJOR: u8 = 1;
 /// The format's minor version. Minors are additive: new record kinds, longer bodies, new flags in bits 0 to 7.
@@ -120,6 +122,20 @@ pub struct ChunkHeader {
     pub len: u32,
 }
 
+impl ChunkHeader {
+    /// Whether this reader may decode the chunk (T3): a newer major, or a must-understand flag it does not know (it
+    /// knows none yet), is refused as [`TakeError::Newer`], the one upgrade path.
+    ///
+    /// # Errors
+    /// [`TakeError::Newer`], for a newer major or an unknown must-understand flag.
+    pub fn check(&self) -> Result<(), TakeError> {
+        if self.major > MAJOR || self.flags.must_understand() != 0 {
+            return Err(TakeError::newer((self.major.into(), self.minor.into())));
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,6 +147,26 @@ mod tests {
         assert!(flags.contains(ChunkFlags::GROUP_START));
         assert!(!flags.contains(ChunkFlags::TAIL));
         assert_eq!(flags.must_understand(), 0x0100);
+    }
+
+    fn header(major: u8, flags: u16) -> ChunkHeader {
+        ChunkHeader { major, minor: 1, flags: ChunkFlags(flags), frame: 0, tick: Seconds(0.0), len: 0 }
+    }
+
+    #[test]
+    fn an_unknown_must_understand_flag_is_the_newer_refusal() {
+        // T3: the high byte of the flag word and a newer major are the same refusal, `Newer`, with the one hint.
+        assert_eq!(header(1, ChunkFlags::GROUP_START | ChunkFlags::TAIL).check(), Ok(()));
+        for flags in [0x0100, 0x8000, 0xFF00 | ChunkFlags::GROUP_START] {
+            match header(1, flags).check() {
+                Err(TakeError::Newer { found, supported, hint }) => {
+                    assert_eq!((found, supported), ((1, 1), (MAJOR, MINOR)));
+                    assert_eq!(hint, crate::error::NEWER_HINT);
+                }
+                other => panic!("flags {flags:#06x}: expected Newer, got {other:?}"),
+            }
+        }
+        assert!(matches!(header(2, 0).check(), Err(TakeError::Newer { found: (2, 1), .. })));
     }
 
     #[test]

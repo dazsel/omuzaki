@@ -97,16 +97,53 @@ pub struct Withheld {
     pub to: Option<Seconds>,
 }
 
+fn finite(at: Seconds) -> Seconds {
+    if at.0.is_finite() { at } else { Seconds(0.0) }
+}
+
 impl Withheld {
-    /// A run that is open from `from`: `to` is `None` until [`Withheld::with_to`] closes it.
+    /// A run that is open from `from`: `to` is `None` until [`Withheld::with_to`] closes it. A time JSON cannot hold
+    /// (NaN or infinite) is stored as 0, so every run the constructors build reads back.
     pub fn new(voice: u8, cause: WithheldCause, from: Seconds) -> Self {
-        Self { voice, cause, from, to: None }
+        Self { voice, cause, from: finite(from), to: None }
     }
 
-    /// The same run, closed at `to`.
+    /// The same run, closed at `to` (stored as 0 if it is NaN or infinite).
     #[must_use]
     pub fn with_to(self, to: Seconds) -> Self {
-        Self { to: Some(to), ..self }
+        Self { to: Some(finite(to)), ..self }
+    }
+}
+
+/// A project's name: never empty or blank, so a full State always names its project (T2). The one check both the
+/// constructors and the reader go through.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
+#[serde(transparent)]
+pub struct ProjectName(String);
+
+impl ProjectName {
+    /// The name, or `None` if it is empty or only whitespace.
+    pub fn new(name: impl Into<String>) -> Option<Self> {
+        let name = name.into();
+        if name.trim().is_empty() { None } else { Some(Self(name)) }
+    }
+
+    /// The name as text.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for ProjectName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for ProjectName {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let name = String::deserialize(deserializer)?;
+        Self::new(name).ok_or_else(|| serde::de::Error::custom("`project` must not be empty or blank"))
     }
 }
 
@@ -117,17 +154,18 @@ impl Withheld {
 /// fields are not written, so the minimal State serialises to exactly `doc_version`, `after_lsn`, `withheld` and
 /// `overflow` (T2); `overflow` is always written.
 ///
-/// Reading checks what the constructors guarantee: `project` may be absent or empty only in the minimal State
-/// (`overflow: true`); any other State without one is an error, not a full State with no name.
+/// Reading checks what the constructors guarantee: `project` may be absent only in the minimal State
+/// (`overflow: true`); any other State without a non-blank one is an error, not a full State with no name.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "RawState")]
 #[non_exhaustive]
 pub struct StateRecord {
     /// The document version.
     pub doc_version: DocVersion,
-    /// The project's name; empty in the minimal State, which leaves it out (T2).
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub project: String,
+    /// The project's name. `None` only in the minimal State, which leaves it out (T2): every constructor but
+    /// [`StateRecord::minimal`] sets it, and the reader refuses a full State without one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<ProjectName>,
     /// The active scene.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scene: Option<SceneId>,
@@ -173,7 +211,7 @@ pub struct StateRecord {
 struct RawState {
     doc_version: DocVersion,
     #[serde(default)]
-    project: String,
+    project: Option<String>,
     #[serde(default)]
     scene: Option<SceneId>,
     #[serde(default)]
@@ -204,12 +242,14 @@ impl TryFrom<RawState> for StateRecord {
     type Error = String;
 
     fn try_from(raw: RawState) -> Result<Self, Self::Error> {
-        if raw.project.is_empty() && !raw.overflow {
-            return Err("a State without `overflow: true` needs a non-empty `project` (T2)".to_owned());
+        // The one rule: a name is kept only if it is a real one, and only the overflow fallback may go without.
+        let project = raw.project.and_then(ProjectName::new);
+        if project.is_none() && !raw.overflow {
+            return Err("a State without `overflow: true` needs a `project` that is not empty or blank (T2)".to_owned());
         }
         Ok(Self {
             doc_version: raw.doc_version,
-            project: raw.project,
+            project,
             scene: raw.scene,
             camera: raw.camera,
             cast: raw.cast,
@@ -241,10 +281,20 @@ fn is_zero_u32(v: &u32) -> bool {
 impl StateRecord {
     /// A full State with its required fields, the project's name among them; everything else is empty. Set the rest
     /// with `with_*`. Only [`StateRecord::minimal`] leaves the project out.
-    pub fn new(doc_version: DocVersion, project: impl Into<String>, after_lsn: Lsn, withheld: Vec<Withheld>) -> Self {
+    pub fn new(doc_version: DocVersion, project: ProjectName, after_lsn: Lsn, withheld: Vec<Withheld>) -> Self {
+        Self::base(doc_version, Some(project), after_lsn, withheld)
+    }
+
+    /// The minimal State the feed writes when the full one would pass 16 KiB (T2): the same required fields, with
+    /// `overflow` set and nothing else. Readers treat the cast and live state as unknown for that group.
+    pub fn minimal(doc_version: DocVersion, after_lsn: Lsn, withheld: Vec<Withheld>) -> Self {
+        Self { overflow: true, ..Self::base(doc_version, None, after_lsn, withheld) }
+    }
+
+    fn base(doc_version: DocVersion, project: Option<ProjectName>, after_lsn: Lsn, withheld: Vec<Withheld>) -> Self {
         Self {
             doc_version,
-            project: project.into(),
+            project,
             scene: None,
             camera: None,
             cast: Vec::new(),
@@ -259,12 +309,6 @@ impl StateRecord {
             overflow: false,
             live: BTreeMap::new(),
         }
-    }
-
-    /// The minimal State the feed writes when the full one would pass 16 KiB (T2): the same required fields, with
-    /// `overflow` set and nothing else. Readers treat the cast and live state as unknown for that group.
-    pub fn minimal(doc_version: DocVersion, after_lsn: Lsn, withheld: Vec<Withheld>) -> Self {
-        Self { overflow: true, ..Self::new(doc_version, String::new(), after_lsn, withheld) }
     }
 
     /// The same State with its active scene.
@@ -303,10 +347,11 @@ impl StateRecord {
         Self { models, ..self }
     }
 
-    /// The same State with the playout delay `D`, in seconds.
+    /// The same State with the playout delay `D`, in seconds. A value JSON cannot hold (NaN or infinite) is stored
+    /// as 0, so every State the constructors build reads back.
     #[must_use]
     pub fn with_delay_s(self, delay_s: f32) -> Self {
-        Self { delay_s, ..self }
+        Self { delay_s: if delay_s.is_finite() { delay_s } else { 0.0 }, ..self }
     }
 
     /// The same State with the providers the size cap left out: the names listed, and how many more there were.

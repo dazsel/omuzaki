@@ -13,10 +13,14 @@ use omuzaki_history_api::{HistoryEntry, Lsn, SnapshotId};
 use omuzaki_stage_api::SceneId;
 use omuzaki_take_api::header::{SnapshotAt, TakeHeader, TakeKind};
 use omuzaki_take_api::record::{EventRecord, TakeEntry};
-use omuzaki_take_api::state::{CastEntry, SourceEntry, StateRecord, VoiceEntry, Withheld, WithheldCause};
+use omuzaki_take_api::state::{CastEntry, ProjectName, SourceEntry, StateRecord, VoiceEntry, Withheld, WithheldCause};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
+
+fn name(text: &str) -> ProjectName {
+    ProjectName::new(text).expect("a real name")
+}
 
 fn round_trip<T: Serialize + DeserializeOwned + PartialEq + Debug>(golden: &str) -> T {
     let expected: Value = serde_json::from_str(golden).expect("golden is JSON");
@@ -72,7 +76,7 @@ fn the_minimal_state_as_t2_writes_it_reads() {
     // The overflow fallback writes only these four fields; it must stay readable, not become a JSON error.
     let state: StateRecord =
         serde_json::from_str(r#"{"doc_version":17,"after_lsn":41,"withheld":[],"overflow":true}"#).expect("reads");
-    assert!(state.overflow && state.project.is_empty() && state.cast.is_empty());
+    assert!(state.overflow && state.project.is_none() && state.cast.is_empty());
 }
 
 #[test]
@@ -80,7 +84,7 @@ fn unknown_state_fields_are_ignored() {
     let state: StateRecord =
         serde_json::from_str(r#"{"doc_version":1,"project":"p","after_lsn":0,"withheld":[],"future":true}"#)
             .expect("a newer minor's extra field is ignored");
-    assert_eq!(state.project, "p");
+    assert_eq!(state.project.as_ref().map(ProjectName::as_str), Some("p"));
 }
 
 #[test]
@@ -105,20 +109,24 @@ fn the_minimal_state_builds_through_its_constructor() {
 
 #[test]
 fn the_full_state_builds_through_its_constructors() {
-    let built =
-        StateRecord::new(DocVersion(17), "demo", Lsn(41), vec![Withheld::new(0, WithheldCause::Muted, Seconds(12.5))])
-            .with_scene(SceneId::new("main").expect("a slug"))
-            .with_camera("bust")
-            .with_cast(vec![CastEntry::new("mira", "mira", "ab12")])
-            .with_sources(vec![SourceEntry::new(0, "mira", "arkit", "iphone")])
-            .with_voices(vec![VoiceEntry::new(0, "mira", "mic")])
-            .with_models(BTreeMap::from([
-                ("tracker".to_owned(), "tracker-v2".to_owned()),
-                ("lipsync".to_owned(), "lipsync-v1".to_owned()),
-            ]))
-            .with_delay_s(0.25)
-            .with_omitted(vec!["obs".to_owned()], 3)
-            .with_live(BTreeMap::from([("expressions".to_owned(), json!({ "held": ["smile"] }))]));
+    let built = StateRecord::new(
+        DocVersion(17),
+        name("demo"),
+        Lsn(41),
+        vec![Withheld::new(0, WithheldCause::Muted, Seconds(12.5))],
+    )
+    .with_scene(SceneId::new("main").expect("a slug"))
+    .with_camera("bust")
+    .with_cast(vec![CastEntry::new("mira", "mira", "ab12")])
+    .with_sources(vec![SourceEntry::new(0, "mira", "arkit", "iphone")])
+    .with_voices(vec![VoiceEntry::new(0, "mira", "mic")])
+    .with_models(BTreeMap::from([
+        ("tracker".to_owned(), "tracker-v2".to_owned()),
+        ("lipsync".to_owned(), "lipsync-v1".to_owned()),
+    ]))
+    .with_delay_s(0.25)
+    .with_omitted(vec!["obs".to_owned()], 3)
+    .with_live(BTreeMap::from([("expressions".to_owned(), json!({ "held": ["smile"] }))]));
     let expected: Value = serde_json::from_str(include_str!("golden/state_full.json")).expect("golden is JSON");
     assert_eq!(serde_json::to_value(&built).expect("serialises"), expected);
 }
@@ -169,22 +177,56 @@ fn an_unknown_withheld_cause_reads_as_unknown() {
 #[test]
 fn a_full_state_written_by_new_contains_the_project() {
     let value =
-        serde_json::to_value(StateRecord::new(DocVersion(17), "demo", Lsn(41), Vec::new())).expect("serialises");
+        serde_json::to_value(StateRecord::new(DocVersion(17), name("demo"), Lsn(41), Vec::new())).expect("serialises");
     assert_eq!(value["project"], "demo");
     assert_eq!(value["overflow"], false);
 }
 
 #[test]
 fn a_state_without_a_project_reads_only_as_the_overflow_fallback() {
-    // The overflow fallback may omit the project (T2); every other shape without one is malformed.
+    // The overflow fallback may omit the project (T2); every other shape without a real one is malformed.
     let overflow = r#"{"doc_version":17,"after_lsn":41,"withheld":[],"overflow":true}"#;
     assert!(serde_json::from_str::<StateRecord>(overflow).is_ok());
     for malformed in [
         r#"{"doc_version":17,"after_lsn":41,"withheld":[]}"#,
         r#"{"doc_version":17,"after_lsn":41,"withheld":[],"overflow":false}"#,
         r#"{"doc_version":17,"project":"","after_lsn":41,"withheld":[]}"#,
+        r#"{"doc_version":17,"project":"  \t","after_lsn":41,"withheld":[],"overflow":false}"#,
+        r#"{"doc_version":17,"project":null,"after_lsn":41,"withheld":[]}"#,
     ] {
         let err = serde_json::from_str::<StateRecord>(malformed).expect_err("a full State needs its project");
         assert!(err.to_string().contains("project"), "{err}");
+    }
+}
+
+#[test]
+fn a_blank_project_name_is_refused_at_construction() {
+    assert!(ProjectName::new("").is_none());
+    assert!(ProjectName::new("   \n").is_none());
+    assert_eq!(ProjectName::new(" a ").map(|n| n.as_str().to_owned()).as_deref(), Some(" a "));
+    assert!(serde_json::from_str::<ProjectName>("\"\"").is_err());
+}
+
+#[test]
+fn every_state_the_constructors_build_reads_back_equal() {
+    // The constructors and the reader share one rule, so nothing a constructor accepts is unreadable.
+    let names = ["demo", "a", " padded ", "ünï\u{1F600}", "quote\"back\\slash", &"x".repeat(4096)];
+    let delays = [0.0, 0.25, -1.0, f32::NAN, f32::INFINITY, f32::MAX];
+    let times = [0.0, 12.5, -3.0, f64::NAN, f64::INFINITY, f64::MIN_POSITIVE];
+    for text in names {
+        for delay in delays {
+            for time in times {
+                let run = Withheld::new(1, WithheldCause::Private, Seconds(time)).with_to(Seconds(time));
+                let full = StateRecord::new(DocVersion(3), name(text), Lsn(9), vec![run])
+                    .with_delay_s(delay)
+                    .with_camera("bust")
+                    .with_omitted(vec!["obs".to_owned()], 2);
+                for state in [full, StateRecord::minimal(DocVersion(3), Lsn(9), vec![run])] {
+                    let json = serde_json::to_string(&state).expect("serialises");
+                    let back: StateRecord = serde_json::from_str(&json).expect("a built State reads back");
+                    assert_eq!(back, state, "{json}");
+                }
+            }
+        }
     }
 }

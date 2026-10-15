@@ -1,26 +1,22 @@
 //! What can go wrong reading a take (design T3, T4, T6).
 
+/// The hint a [`TakeError::Newer`] carries.
+pub const NEWER_HINT: &str = "update Omuzaki to read this take";
+
 /// A take could not be read.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum TakeError {
-    /// The file or a chunk is from a newer major than this reader decodes.
+    /// The file or a chunk is from a newer major than this reader decodes, or a chunk sets a must-understand flag
+    /// (bits 8 to 15) this reader does not know: one refusal and one upgrade path (T3).
     #[error("this take is newer than this reader supports ({found:?} against {supported:?}): {hint}")]
     Newer {
-        /// The (major, minor) the take carries.
+        /// The (major, minor) the take carries. The file header holds them as `u16`; a chunk's `u8` pair widens.
         found: (u16, u16),
         /// The newest (major, minor) this reader decodes.
         supported: (u8, u8),
         /// What to do about it: `update Omuzaki to read this take`.
         hint: String,
-    },
-    /// A chunk sets a must-understand flag (bits 8 to 15) this reader does not know, so it refuses the take (T3).
-    #[error(
-        "this take sets must-understand flag bits {flags:#06x}, which this reader does not know: update Omuzaki to read it"
-    )]
-    UnknownFlag {
-        /// The must-understand bits the chunk set (`flags & 0xFF00`).
-        flags: u16,
     },
     /// A file or chunk does not start with its magic.
     #[error("not a take: the magic bytes are wrong")]
@@ -54,6 +50,14 @@ pub enum TakeError {
     Io(String),
 }
 
+impl TakeError {
+    /// The refusal for a take written by a newer reader's format: the `(major, minor)` it carries, against the newest
+    /// this reader decodes, with the one upgrade hint.
+    pub fn newer(found: (u16, u16)) -> Self {
+        Self::Newer { found, supported: (crate::chunk::MAJOR, crate::chunk::MINOR), hint: NEWER_HINT.to_owned() }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -63,11 +67,5 @@ mod tests {
         let e = TakeError::Newer { found: (2, 0), supported: (1, 0), hint: "update Omuzaki to read this take".into() };
         let text = e.to_string();
         assert!(text.contains("(2, 0)") && text.contains("(1, 0)") && text.contains("update Omuzaki"), "{text}");
-    }
-
-    #[test]
-    fn unknown_flag_names_the_flag_bits() {
-        let text = TakeError::UnknownFlag { flags: 0x0200 }.to_string();
-        assert!(text.contains("0x0200") && text.contains("must-understand"), "{text}");
     }
 }
