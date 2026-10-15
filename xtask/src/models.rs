@@ -386,6 +386,7 @@ spdx = "MIT OR Apache-2.0"
             r#"register_model!["tiny", include_str!["../models/tiny.model.toml"]];"#,
             r#"register_model! { "tiny", include_str! { "../models/tiny.model.toml" } }"#,
             r#"register_model! { "tiny", include_str!("../models/tiny.model.toml"), }"#,
+            r#"register_model!["tiny", include_str!["../models/tiny.model.toml"],];"#,
         ];
         for form in forms {
             assert_eq!(registrations(form), [("tiny".to_owned(), "tiny.model.toml".to_owned())], "{form}");
@@ -394,8 +395,10 @@ spdx = "MIT OR Apache-2.0"
 
     #[test]
     fn a_mismatched_closer_is_not_a_registration() {
-        let text = r#"register_model! { "tiny", include_str!("../models/tiny.model.toml") )"#;
-        assert!(registrations(text).is_empty(), "{:?}", registrations(text));
+        let outer = r#"register_model! { "tiny", include_str!("../models/tiny.model.toml") )"#;
+        assert!(registrations(outer).is_empty(), "{:?}", registrations(outer));
+        let inner = r#"register_model!("tiny", include_str!["../models/tiny.model.toml"));"#;
+        assert!(registrations(inner).is_empty(), "{:?}", registrations(inner));
     }
 
     #[test]
