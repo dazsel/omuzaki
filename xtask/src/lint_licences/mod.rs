@@ -8,7 +8,7 @@
 mod register;
 mod usage;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 use std::process::ExitCode;
@@ -19,6 +19,10 @@ use crate::workspace::Workspace;
 
 /// The licence files, relative to the workspace root.
 const DEPS_DIR: &str = "docs/licensing/deps";
+/// All licensing material: the files, the register and the policy.
+const LICENSING_DIR: &str = "docs/licensing";
+/// The workflows whose `tools:` inputs the lint reads.
+const WORKFLOWS_DIR: &str = ".github/workflows";
 /// The register page: the prose and one marker per section table.
 const REGISTER: &str = "docs/licensing/register.md";
 
@@ -31,7 +35,8 @@ pub struct LintLicencesArgs {
 }
 
 /// Everything wrong, one message per line, and the generated register.
-fn lint(root: &Path) -> (Vec<String>, String, usize) {
+fn lint(workspace: &Workspace) -> (Vec<String>, String, usize) {
+    let root = workspace.root.as_path();
     let mut found = Vec::new();
     let (entries, broken) = register::load(&root.join(DEPS_DIR));
     found.extend(broken.into_iter().map(|(name, message)| format!("{DEPS_DIR}/{name}.toml: cannot read: {message}")));
@@ -40,8 +45,10 @@ fn lint(root: &Path) -> (Vec<String>, String, usize) {
         String::new()
     });
     let sections: Vec<&str> = page.lines().filter_map(register::marker).collect();
-    let lock =
-        fs::read_to_string(root.join("Cargo.lock")).map_err(|e| e.to_string()).and_then(|t| usage::Lock::parse(&t));
+    let members: BTreeSet<String> = workspace.packages.iter().map(|package| package.name.clone()).collect();
+    let lock = fs::read_to_string(root.join("Cargo.lock"))
+        .map_err(|e| e.to_string())
+        .and_then(|t| usage::Lock::parse(&t, &members));
     let lock = lock.unwrap_or_else(|message| {
         found.push(format!("Cargo.lock: cannot read: {message}"));
         usage::Lock::default()
@@ -93,9 +100,22 @@ fn lint(root: &Path) -> (Vec<String>, String, usize) {
     (found, generated, entries.len())
 }
 
+/// Whether a change to `file` (relative to the root) can change the lint's result: the licence files, register and
+/// policy, the workflows whose `tools:` it reads, and every asset it scans. `affected` calls this, so the lint and the
+/// affected-scope trigger share one list.
+pub fn is_input(file: &Path) -> bool {
+    file.starts_with(LICENSING_DIR) || file.starts_with(WORKFLOWS_DIR) || usage::is_scanned_asset(file)
+}
+
+/// The file extensions the lint treats as assets under `crates/`.
+#[cfg(test)]
+pub fn scanned_extensions() -> &'static [&'static str] {
+    usage::ASSET_EXTENSIONS
+}
+
 /// Prints every problem and a summary; returns whether there were none.
 pub fn report(workspace: &Workspace) -> bool {
-    let (found, _, files) = lint(&workspace.root);
+    let (found, _, files) = lint(workspace);
     summarise(&found, files, |line| println!("{line}"))
 }
 
@@ -114,7 +134,7 @@ fn summarise(found: &[String], files: usize, mut out: impl FnMut(&str)) -> bool 
 /// The `lint-licences` command.
 pub fn run(workspace: &Workspace, args: &LintLicencesArgs) -> ExitCode {
     let passed = if args.print {
-        let (found, generated, files) = lint(&workspace.root);
+        let (found, generated, files) = lint(workspace);
         print!("{generated}");
         summarise(&found, files, |line| eprintln!("{line}"))
     } else {
@@ -129,9 +149,21 @@ mod tests {
 
     #[test]
     fn the_repository_has_a_file_for_everything_it_uses() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-        let (found, generated, files) = lint(&root);
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("../Cargo.toml");
+        let workspace = Workspace::load(Some(&manifest)).expect("workspace");
+        let (found, generated, files) = lint(&workspace);
         assert!(found.is_empty(), "{}", found.join("\n"));
         assert!(files > 0 && !generated.contains("licence-table:"), "{files} files");
+    }
+
+    #[test]
+    fn every_scanned_input_schedules_the_lint() {
+        let mut files: Vec<String> = usage::ASSET_EXTENSIONS.iter().map(|ext| format!("crates/a/x.{ext}")).collect();
+        files.extend(["crates/a/NOTICES.md", ".github/assets/any.txt", ".github/workflows/ci.yml"].map(str::to_owned));
+        files.extend([format!("{DEPS_DIR}/serde.toml"), REGISTER.to_owned()]);
+        for file in &files {
+            assert!(is_input(Path::new(file)), "{file}");
+        }
+        assert!(!is_input(Path::new("crates/a/src/lib.rs")));
     }
 }

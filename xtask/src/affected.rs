@@ -30,21 +30,10 @@ const WORKSPACE_WIDE_DIRS: &[&str] = &[".cargo"];
 /// The crate whose tests run the licence-file lint on the repository (`lint_licences`).
 const LICENCE_LINT_CRATE: &str = "xtask";
 
-/// Whether `file` is an input of the licence-file lint (`xtask lint-licences`): the licence files and policy, the
-/// workflows whose `tools:` it reads, `.github/assets/`, and the fonts and `NOTICES.md` under `crates/`. Changing one
-/// of these can break the lint without touching any crate, so `xtask` joins the changed and test sets.
-fn is_licence_lint_input(file: &Path) -> bool {
-    let font = file.extension().is_some_and(|ext| ext == "ttf" || ext == "otf");
-    file.starts_with("docs/licensing")
-        || file.starts_with(".github/assets")
-        || file.starts_with(".github/workflows")
-        || (file.starts_with("crates") && (font || file.file_name().is_some_and(|name| name == "NOTICES.md")))
-}
-
 /// The crates that own a changed file, plus `xtask` when a file is an input of the licence lint.
 fn changed_crates<'a>(workspace: &'a Workspace, files: &[PathBuf]) -> BTreeSet<&'a str> {
     let mut changed: BTreeSet<&str> = files.iter().filter_map(|file| owning_crate(workspace, file)).collect();
-    if files.iter().any(|file| is_licence_lint_input(file)) {
+    if files.iter().any(|file| crate::lint_licences::is_input(file)) {
         changed.extend(workspace.package(LICENCE_LINT_CRATE).map(|package| package.name.as_str()));
     }
     changed
@@ -399,6 +388,15 @@ mod tests {
             assert_eq!(crates(&analysis.scope), ["xtask"], "{input}");
             assert_eq!(analysis.changed, BTreeSet::from(["xtask".to_owned()]), "{input}");
             assert_eq!(analysis.direct, BTreeSet::from(["xtask".to_owned()]), "{input}");
+        }
+    }
+
+    #[test]
+    fn every_asset_type_the_lint_scans_schedules_xtask() {
+        for ext in crate::lint_licences::scanned_extensions() {
+            let input = format!("crates/omuzaki-render/assets/x.{ext}");
+            let analysis = analyse_files(&sample(), &files(&[input.as_str()]));
+            assert!(analysis.changed.contains("xtask"), "{input}");
         }
     }
 

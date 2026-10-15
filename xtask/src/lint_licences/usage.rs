@@ -25,25 +25,24 @@ struct RawLock {
 #[derive(Deserialize)]
 struct RawPackage {
     name: String,
-    source: Option<String>,
     #[serde(default)]
     dependencies: Vec<String>,
 }
 
 impl Lock {
-    /// Reads a `Cargo.lock`. Packages without a `source` are the workspace's own.
-    pub fn parse(text: &str) -> Result<Self, String> {
+    /// Reads a `Cargo.lock`. `members` are the workspace's own crates: a package without a `source` that is not one of
+    /// them is an external path dependency and needs a file like any other.
+    pub fn parse(text: &str, members: &BTreeSet<String>) -> Result<Self, String> {
         let raw: RawLock = toml::from_str(text).map_err(|e: toml::de::Error| e.message().to_owned())?;
-        let own: BTreeSet<&str> = raw.package.iter().filter(|p| p.source.is_none()).map(|p| p.name.as_str()).collect();
         let mut lock = Self::default();
         for package in &raw.package {
             lock.packages.insert(package.name.clone());
-            if package.source.is_some() {
+            if !members.contains(&package.name) {
                 continue;
             }
             // A dependency is `name`, `name version` or `name version (source)`.
             for name in package.dependencies.iter().filter_map(|dep| dep.split(' ').next()) {
-                if !own.contains(name) {
+                if !members.contains(name) {
                     lock.direct.entry(name.to_owned()).or_default().insert(package.name.clone());
                 }
             }
@@ -68,9 +67,14 @@ fn tools_in(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// Where [`assets`] looks for binary assets and `NOTICES.md`.
+const CRATES_DIR: &str = "crates";
+/// Where [`assets`] takes every file.
+const GITHUB_ASSETS_DIR: &str = ".github/assets";
+
 /// File extensions of binary assets: fonts, images, models, audio, video and meshes. Source, config and text files are
 /// code, not assets; a third-party text file is declared by a `NOTICES.md` beside it.
-const ASSET_EXTENSIONS: &[&str] = &[
+pub const ASSET_EXTENSIONS: &[&str] = &[
     "ttf",
     "otf",
     "ttc",
@@ -124,12 +128,19 @@ fn is_asset(name: &str) -> bool {
     name == "NOTICES.md" || ext.is_some_and(|ext| ASSET_EXTENSIONS.iter().any(|known| ext == *known))
 }
 
+/// Whether `file` (relative to the root) is something [`assets`] scans: a binary asset or `NOTICES.md` under `crates/`,
+/// or anything under `.github/assets/`.
+pub fn is_scanned_asset(file: &Path) -> bool {
+    let named = file.file_name().is_some_and(|name| is_asset(&name.to_string_lossy()));
+    (file.starts_with(CRATES_DIR) && named) || file.starts_with(GITHUB_ASSETS_DIR)
+}
+
 /// The committed third-party material: binary assets (see [`ASSET_EXTENSIONS`]) and `NOTICES.md` under `crates/`, and
 /// everything under `.github/assets/`. Paths are relative to `root`, `/`-separated and sorted.
 pub fn assets(root: &Path) -> Vec<String> {
     let mut found = Vec::new();
-    walk(root, Path::new("crates"), &mut found, &is_asset);
-    walk(root, Path::new(".github/assets"), &mut found, &|_| true);
+    walk(root, Path::new(CRATES_DIR), &mut found, &is_asset);
+    walk(root, Path::new(GITHUB_ASSETS_DIR), &mut found, &|_| true);
     found.sort();
     found
 }
@@ -155,16 +166,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn direct_dependencies_are_the_external_ones_members_name() {
+    fn direct_dependencies_are_the_non_members_that_members_name() {
         let lock = Lock::parse(
             r#"
             version = 4
             [[package]]
             name = "app"
             version = "0.1.0"
-            dependencies = ["core", "serde 1.0.0", "toml"]
+            dependencies = ["core", "serde 1.0.0", "toml", "vendored"]
             [[package]]
             name = "core"
+            version = "0.1.0"
+            [[package]]
+            name = "vendored"
             version = "0.1.0"
             [[package]]
             name = "serde"
@@ -172,9 +186,10 @@ mod tests {
             source = "registry+https://github.com/rust-lang/crates.io-index"
             dependencies = ["serde_derive"]
             "#,
+            &["app", "core"].map(str::to_owned).into(),
         )
         .unwrap_or_default();
-        assert_eq!(lock.direct.keys().collect::<Vec<_>>(), ["serde", "toml"]);
+        assert_eq!(lock.direct.keys().collect::<Vec<_>>(), ["serde", "toml", "vendored"]);
         assert!(lock.packages.contains("core") && !lock.direct.contains_key("serde_derive"));
     }
 
