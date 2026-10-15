@@ -3533,6 +3533,7 @@ version = "0.0.0"
 dependencies = [
  "glam 0.34.1",
  "inventory",
+ "proptest",
  "schemars",
  "serde",
  "serde_json",
@@ -3949,6 +3950,9 @@ dependencies = [
  "harfrust 0.14.0",
  "image",
  "inventory",
+ "omuzaki-ai",
+ "omuzaki-ai-api",
+ "omuzaki-ai-mock",
  "omuzaki-anim",
  "omuzaki-anim-api",
  "omuzaki-anim-mock",

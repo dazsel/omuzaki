@@ -1,8 +1,11 @@
 //! The pinned list of fallback fonts: where each is fetched from and the SHA-256 it must have.
 //!
 //! Every file is Noto, SIL OFL 1.1 (`docs/licensing/register.md`, `assets/fonts/NOTICES.md`). None is committed:
-//! they are fetched on first need ([`super::CachedDownloader`]) because the CJK ones alone are 4-8 MB each and the
-//! repo takes nothing over about 2 MB. URLs name an exact commit, so a file never changes under its hash.
+//! they are fetched on first need through [`FontSpec::pin`] and the shared verified cache, because the CJK ones alone are
+//! 4-8 MB each and the repo takes nothing over about 2 MB. URLs name an exact commit, so a file never changes under its
+//! hash.
+
+use omuzaki_ai_api::{PinnedFile, Sha256};
 
 use crate::sheet::layout::text::Weight;
 
@@ -36,12 +39,27 @@ pub struct FontSpec {
     pub weight: Weight,
     /// The file name, also what a [`super::DirSource`] looks for.
     pub file_name: &'static str,
-    /// Where it is fetched from (an immutable commit URL).
-    pub url: &'static str,
-    /// The lower-case hex SHA-256 the bytes must have.
-    pub sha256: &'static str,
+    /// Where it is fetched from, in order (immutable commit URLs).
+    pub urls: &'static [&'static str],
+    /// The SHA-256 the bytes must have.
+    pub sha256: Sha256,
     /// The exact size in bytes; a download of any other length is refused before it is hashed.
     pub size: u64,
+}
+
+impl FontSpec {
+    /// The file as the shared verified cache pins it: the same URLs, hash and size.
+    pub fn pin(&self) -> PinnedFile {
+        PinnedFile::new(self.urls.iter().copied(), self.sha256, self.size)
+    }
+}
+
+/// Parses a catalogue hash at compile time: a malformed pin fails the build, not a download.
+const fn pinned_hash(hex: &str) -> Sha256 {
+    match Sha256::from_hex(hex) {
+        Some(hash) => hash,
+        None => panic!("a catalogue pin must be 64 lower-case hex characters"),
+    }
 }
 
 macro_rules! spec {
@@ -50,8 +68,8 @@ macro_rules! spec {
             family: Family::$family,
             weight: Weight::$weight,
             file_name: $file,
-            url: concat!($base, "/", $url_file),
-            sha256: $sha,
+            urls: &[concat!($base, "/", $url_file)],
+            sha256: pinned_hash($sha),
             size: $size,
         }
     };
@@ -223,16 +241,19 @@ mod tests {
             assert!(CATALOG.iter().any(|s| s.family == family && s.weight == Weight::Regular), "{family:?}");
         }
         for s in CATALOG {
-            assert_eq!(s.sha256.len(), 64, "{}", s.file_name);
-            assert!(s.sha256.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)), "{}", s.file_name);
-            assert!(s.url.starts_with("https://") && s.size > 0, "{}", s.file_name);
+            let pin = s.pin();
+            assert!(!pin.urls.is_empty() && s.size > 0, "{}", s.file_name);
+            assert!(pin.urls.iter().all(|url| url.starts_with("https://")), "{}", s.file_name);
+            assert_eq!((pin.sha256, pin.size), (s.sha256, s.size), "{}", s.file_name);
         }
     }
 
     #[test]
     fn urls_are_pinned_to_a_commit_not_a_branch() {
         for s in CATALOG {
-            assert!(!s.url.contains("/main/") && !s.url.contains("/master/"), "{} floats", s.file_name);
+            for url in s.urls {
+                assert!(!url.contains("/main/") && !url.contains("/master/"), "{} floats", s.file_name);
+            }
         }
     }
 
