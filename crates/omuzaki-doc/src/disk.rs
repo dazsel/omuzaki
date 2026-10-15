@@ -327,10 +327,11 @@ struct Hooks<'a> {
     /// Pretend the system has no rename that refuses to replace (tests only).
     no_replace_off: Cell<bool>,
     /// Pretend the volume has no POSIX-semantics rename over a file (Windows; tests only).
-    #[cfg_attr(not(windows), expect(dead_code, reason = "only Windows replaces by a rename over the target"))]
     posix_rename_off: Cell<bool>,
     /// Make flushing a folder fail, where a step goes through [`Hooks::sync_folder`] (tests only).
     sync_off: Cell<bool>,
+    /// Take Windows's replacement without a swap on any system (tests only).
+    windows_shaped: Cell<bool>,
 }
 
 fn noop() {}
@@ -349,6 +350,7 @@ impl Default for Hooks<'_> {
             no_replace_off: Cell::new(false),
             posix_rename_off: Cell::new(false),
             sync_off: Cell::new(false),
+            windows_shaped: Cell::new(false),
         }
     }
 }
@@ -364,13 +366,16 @@ impl Hooks<'_> {
         if self.exchange_off.get() { Err(io::ErrorKind::Unsupported.into()) } else { exchange(a, b) }
     }
 
-    /// A POSIX-semantics rename of `from` over `to`, unless a test turned it off.
-    #[cfg(windows)]
+    /// A POSIX-semantics rename of `from` over `to`, unless a test turned it off. Off Windows this is reached only
+    /// through [`Hooks::windows_shaped`], and a plain rename stands in for it.
     fn rename_over_posix(&self, from: &Path, to: &Path) -> io::Result<()> {
         if self.posix_rename_off.get() {
             return Err(io::ErrorKind::Unsupported.into());
         }
-        rename_by_handle(from, to, OnExisting::ReplacePosix).map(|_| ())
+        #[cfg(windows)]
+        return rename_by_handle(from, to, OnExisting::ReplacePosix).map(|_| ());
+        #[cfg(not(windows))]
+        fs::rename(from, to)
     }
 
     /// [`sync_folder`], unless a test made it fail.
@@ -393,7 +398,6 @@ impl Hooks<'_> {
 const NO_EXCHANGE: &str = "atomic exchange of two file names (RENAME_EXCHANGE, RENAME_SWAP)";
 
 /// What a refusal names as missing on a Windows volume that can't rename over a file atomically.
-#[cfg(windows)]
 const NO_POSIX_RENAME: &str =
     "rename over a file with POSIX semantics (FileRenameInfoEx: Windows 10 1607 or later, NTFS)";
 
@@ -461,8 +465,12 @@ fn replace_held(
     match hooks.exchange(tmp, path) {
         Ok(()) => {}
         // Windows has no swap: with a linked backup, an atomic rename over the target (see the module's table).
-        #[cfg(windows)]
-        Err(e) if e.kind() == io::ErrorKind::Unsupported && held.by_link => {
+        // Tests can take this path on any system.
+        Err(e)
+            if e.kind() == io::ErrorKind::Unsupported
+                && held.by_link
+                && (cfg!(windows) || hooks.windows_shaped.get()) =>
+        {
             hooks.rename_over_posix(tmp, path).map_err(|e| capability_error(path, NO_POSIX_RENAME, e))?;
             // Our file is at the target: the linked backup is the kept entry.
             *committed = true;
@@ -513,7 +521,6 @@ struct Held {
     linked: Option<FileId>,
     /// Whether the backup is a hard link (even where [`file_id`] can't confirm it is the same file), which shows that
     /// this file system makes hard links.
-    #[cfg_attr(not(windows), expect(dead_code, reason = "only Windows's replacement without a swap reads it"))]
     by_link: bool,
 }
 
@@ -1451,6 +1458,35 @@ mod tests {
             assert_eq!(texts(&kept(dir)), ["mine = 1\nlate = 9\n"]);
             assert!(no_temporary_file(dir));
             assert_eq!(prune_replaced(dir, later()), 0);
+        }
+    }
+
+    /// Every path that places our file over an existing one keeps the original as the `.kept` entry: the swap with a
+    /// linked backup, the swap with a copied backup, and Windows's rename over the target (driven here on any system).
+    #[test]
+    fn every_successful_replacement_keeps_the_backup() {
+        let exchange = cfg!(any(target_os = "linux", target_os = "macos"));
+        let cases = [
+            ("swap, linked backup", exchange, Hooks::default()),
+            ("swap, copied backup", exchange, Hooks { links_off: true.into(), ..Hooks::default() }),
+            (
+                "Windows-shaped",
+                true,
+                Hooks { exchange_off: true.into(), windows_shaped: true.into(), ..Hooks::default() },
+            ),
+        ];
+        for (name, reachable, hooks) in cases {
+            if !reachable {
+                continue;
+            }
+            let tmp = TempDir::new().unwrap();
+            let (dir, (path, expected)) = (tmp.path(), with_file(tmp.path()));
+            assert_eq!(replace_with(dir, expected, &hooks).unwrap(), Replace::Placed, "{name}");
+            assert_eq!(fs::read_to_string(&path).unwrap(), "ours = 3\n", "{name}");
+            let items = kept(dir);
+            assert_eq!(texts(&items), [MINE], "{name}");
+            assert!(items[0].0.ends_with(KEPT), "{name}: {items:?}");
+            assert!(no_temporary_file(dir), "{name}");
         }
     }
 
