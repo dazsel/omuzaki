@@ -1,8 +1,8 @@
 //! Medallion clasps: a stud on the surface, a bail, a ring with three jewelled beads and a collar bead, and a drop or
 //! a small pearled cross under it (#189's reference, A, B and D: the robe's clasp, as parameters).
 //!
-//! Every piece is one of the prototype's primitives placed in the clasp's frame at its anchor: `y` up the surface, `x`
-//! across it (`up x normal`), `z` out of it. At [`CLASP_SIZE`] the clasp is the prototype's; any other size scales all
+//! Every piece is one of the prototype's primitives placed in the clasp's frame at its anchor: `y` up (the world's, which
+//! is the prototype's surface up where the cloth is upright), `x = up x normal` across, `z = x x up` out. At [`CLASP_SIZE`] the clasp is the prototype's; any other size scales all
 //! of it. The hanging pieces stand off the surface as the prototype's do, and further where the garment would
 //! otherwise reach them, so the clasp never sinks into a garment that bulges below it.
 
@@ -103,15 +103,16 @@ pub fn frame(foot: DVec3, up: DVec3, normal: DVec3) -> Basis {
     Basis { origin: foot, x, y: up, z }
 }
 
-/// The clasp of `style` at `scale` of the prototype's, in the frame `at` (from [`frame`]), its hanging pieces a further
-/// `standoff` out. The jewelled beads go to `jewel` when given, else to `metal`.
+/// The clasp of `style` at `scale` of the prototype's: its stud in the surface's frame `on` and its hanging pieces in
+/// the level frame `at` (both from [`frame`], at the same anchor; one frame on upright cloth), the hanging pieces a
+/// further `standoff` out. The jewelled beads go to `jewel` when given, else to `metal`.
 ///
 /// # Errors
 /// The kit's errors for a degenerate piece.
 pub fn pieces(
     metal: &mut MeshBuilder,
     mut jewel: Option<&mut MeshBuilder>,
-    at: &Basis,
+    (on, at): (&Basis, &Basis),
     style: ClaspStyle,
     (scale, standoff): (f64, f64),
     skin: &[(JointRef, f32)],
@@ -150,7 +151,7 @@ pub fn pieces(
     let bail = centre.at(DVec3::new(0.0, ring_big + RING_HANG.0 * k * bail_up, bail_out * k)).turned_y(TAU / 4.0);
     torus(metal, &bail, (bail_big * k, bail_r * k), bail_segments, DVec3::ONE, skin)?;
     let (stud_r, flat, (ws, hs), stud_out) = STUD;
-    let stud = at.at(DVec3::new(0.0, 0.0, stud_out * k));
+    let stud = on.at(DVec3::new(0.0, 0.0, stud_out * k));
     sphere(metal, &stud, stud_r * k, DVec3::new(1.0, 1.0, flat), robe_segments(ws, hs), whole, skin)?;
     let ((rim_big, rim_r), rim_segments, rim_back) = STUD_RIM;
     let rim = stud.at(DVec3::new(0.0, 0.0, -rim_back * k));
@@ -182,6 +183,10 @@ pub const TOP_BEAD: (f64, (usize, usize), f64) = (0.0034, (10, 8), 0.0045);
 pub const CROSS_HANG: (f64, f64, f64) = (0.0055, 0.004, 0.004);
 /// How far each arm is pushed back to centre its thickness, metres.
 const ARM_BACK: f64 = 0.0011;
+/// How far an arm's root reaches past the centre, inside the centre box, metres. The prototype's arms all start at the
+/// centre, so opposite arms share their root edge; reaching a little further keeps each arm its own closed shell
+/// without changing anything outside the box.
+const ARM_ROOT_INSET: f64 = 0.0005;
 
 /// Adds the pendant cross (#189's reference, D) hanging from `at`'s origin (a chain's middle, or under a clasp's ring),
 /// in its frame (`y` up, `z` out), at `scale` of the prototype's.
@@ -211,8 +216,8 @@ pub fn pendant_cross(
     ] {
         // Counter-clockwise: the narrow root, then the flare out to the tip.
         let outline = [
-            DVec2::new(-ww, 0.0),
-            DVec2::new(ww, 0.0),
+            DVec2::new(-ww, -ARM_ROOT_INSET),
+            DVec2::new(ww, -ARM_ROOT_INSET),
             DVec2::new(ww, root),
             DVec2::new(tip, length),
             DVec2::new(-tip, length),
@@ -240,6 +245,45 @@ pub fn pendant_cross(
     sphere(builder, &bead, bead_r * k, DVec3::ONE, robe_segments(ws, hs), whole, skin)
 }
 
+/// How far along `at`'s `z` the points `probes` (local to `at`, each with how far its piece reaches back toward the
+/// surface) must move for every one of them to keep its reach clear of `surface`: 0 when they already do.
+///
+/// # Errors
+/// The surface's errors.
+pub fn clearance(surface: &Surface, at: &Basis, probes: &[(DVec3, f64)]) -> Result<f64, TrimError> {
+    let mut extra = 0.0;
+    for _ in 0..STANDOFF_PASSES {
+        let mut deficit = 0.0_f64;
+        for (local, reach) in probes {
+            let p = at.place(*local + DVec3::new(0.0, 0.0, extra));
+            if let Some(projection) = surface.project(p)? {
+                deficit = deficit.max(reach - projection.outside);
+            }
+        }
+        if deficit <= SETTLED {
+            break;
+        }
+        extra += deficit;
+    }
+    Ok(extra)
+}
+
+/// Points of the pendant cross hung from a frame's origin at `scale`, local to that frame, each with how far its piece
+/// reaches back: down its upright and out along its arms.
+pub fn cross_probes(scale: f64) -> Vec<(DVec3, f64)> {
+    let k = scale;
+    let (lv, down_share, lh) = CROSS_ARMS;
+    let (hang_top, hang_gap, hang_out) = CROSS_HANG;
+    let back = (ARM_DEPTH / 2.0 + ARM_BEVEL.0).max(PEARL.0) * k;
+    let centre = DVec3::new(0.0, -(hang_top + hang_gap + lv) * k, hang_out * k);
+    let reach = |x: f64, y: f64| (centre + DVec3::new(x, y, 0.0) * k, back);
+    let mut probes: Vec<(DVec3, f64)> = (0..=8)
+        .map(|i| reach(0.0, lv + TOP_BEAD.2 - (lv * (1.0 + down_share) + TOP_BEAD.2 + PEARL.2) * fraction(i, 8)))
+        .collect();
+    probes.extend((0..=4).map(|i| reach((lh + PEARL.2) * (2.0 * fraction(i, 4) - 1.0), 0.0)));
+    probes
+}
+
 /// The clasp `spec` describes on `surface`: its frame at the anchor, the hanging pieces pushed out further only where
 /// the garment would reach them.
 ///
@@ -248,14 +292,19 @@ pub fn pendant_cross(
 pub fn build(surface: &Surface, spec: &Clasp) -> Result<ClaspPieces, TrimError> {
     checked(spec)?;
     let anchor = surface.at(spec.at[0], spec.at[1])?;
-    let basis = frame(anchor.point, anchor.along, anchor.normal);
+    // Up is the world's, so the pieces hang straight down and stand off level: the prototype's surface up wherever the
+    // cloth is upright, and on a slope (a bust) they hang down rather than along it into the garment. A surface
+    // facing almost straight up or down has no level out, so there the clasp follows the surface.
+    let up = if anchor.normal.y.abs() < LEVEL_LIMIT { DVec3::Y } else { anchor.along };
+    let basis = frame(anchor.point, up, anchor.normal);
+    let on = frame(anchor.point, anchor.along, anchor.normal);
     let k = spec.size / CLASP_SIZE;
     let skin = surface.weights().at(spec.at[0]);
     let standoff = standoff(surface, &basis, spec.style, k)?;
     let mut metal = MeshBuilder::new();
     let mut jewel = MeshBuilder::new();
     let beads = spec.jewel.as_ref().map(|_| &mut jewel);
-    pieces(&mut metal, beads, &basis, spec.style, (k, standoff), &skin)?;
+    pieces(&mut metal, beads, (&on, &basis), spec.style, (k, standoff), &skin)?;
     Ok(ClaspPieces { metal, jewel })
 }
 
@@ -271,28 +320,30 @@ fn standoff(surface: &Surface, at: &Basis, style: ClaspStyle, k: f64) -> Result<
             (centre + DVec3::new(a.cos(), a.sin(), 0.0) * ring_big, ring_r.max(BEAD.0 * BEAD.1 * k))
         })
         .collect();
-    let lowest = match style {
-        ClaspStyle::Medallion => POINT.3 + POINT.1 / 2.0,
-        ClaspStyle::Cross => CROSS_HANG.0 + CROSS_HANG.1 + CROSS_ARMS.0 * (1.0 + CROSS_ARMS.1) + PEARL.2 + PEARL.0,
-    };
-    probes.extend((0..=4).map(|i| {
-        let down = ring_big + lowest * k * fraction(i, 4);
-        (centre - DVec3::new(0.0, down, 0.0), 2.0 * PEARL.0 * k)
-    }));
-    let mut extra = 0.0;
-    for _ in 0..STANDOFF_PASSES {
-        let mut deficit = 0.0_f64;
-        for (local, reach) in &probes {
-            let p = at.place(*local + DVec3::new(0.0, 0.0, extra));
-            if let Some(projection) = surface.project(p)? {
-                deficit = deficit.max(reach - projection.outside);
-            }
+    // The collar bead and the bail above the ring.
+    probes.push((centre + DVec3::new(0.0, ring_big, 0.0), COLLAR.0 * COLLAR.1[0] * k));
+    let ((bail_big, bail_r), _, bail_up, bail_out) = BAIL;
+    let bail = centre + DVec3::new(0.0, ring_big + RING_HANG.0 * k * bail_up, bail_out * k);
+    probes.push((bail, (bail_big + bail_r) * k));
+    match style {
+        ClaspStyle::Medallion => {
+            let lowest = POINT.3 + POINT.1 / 2.0;
+            probes.extend((0..=4).map(|i| {
+                let down = ring_big + lowest * k * fraction(i, 4);
+                (centre - DVec3::new(0.0, down, 0.0), DROP.0 * DROP.1 * k)
+            }));
         }
-        extra += deficit.max(0.0);
+        ClaspStyle::Cross => {
+            let hung = centre - DVec3::new(0.0, ring_big, 0.0);
+            probes.extend(cross_probes(k).into_iter().map(|(p, reach)| (hung + p, reach)));
+        }
     }
-    Ok(extra)
+    clearance(surface, at, &probes)
 }
 
-/// Passes that push the hanging pieces out: each moves them by the worst shortfall, which settles in two on a convex
-/// garment; the third covers a section that turns.
-const STANDOFF_PASSES: usize = 3;
+/// The most passes that push hanging pieces out: each moves them by the worst shortfall, until none is left.
+const STANDOFF_PASSES: usize = 16;
+/// A shortfall this small is none, metres.
+const SETTLED: f64 = 1e-6;
+/// Above this share of straight up or down, a surface has no level direction to hang a clasp from.
+const LEVEL_LIMIT: f64 = 0.95;

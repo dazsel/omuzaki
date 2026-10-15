@@ -3,7 +3,7 @@
 //! surface and never sunk into it; a store-image decal that needs an asset source; a deterministic lace texture.
 
 #![allow(clippy::expect_used, clippy::unwrap_used)] // test helpers: a panic is a clear failure
-#![allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)] // test arithmetic
+#![allow(clippy::cast_possible_truncation, clippy::cast_precision_loss, clippy::cast_sign_loss)] // test arithmetic
 #![allow(clippy::many_single_char_names, clippy::chunks_exact_to_as_chunks)] // geometry reads best as a, b, c
 
 #[path = "../../omuzaki-test-char/tests/support/outfit_conformance.rs"]
@@ -15,11 +15,11 @@ use std::sync::Arc;
 use omuzaki_char::kit::grid::MeshBuilder;
 use omuzaki_char::outfit::common::{Garment, GarmentCommon, GarmentOutput, LAYER_SHIRT};
 use omuzaki_char::outfit::loft::Surface;
-use omuzaki_char::outfit::trim::chain::{self, Chain};
+use omuzaki_char::outfit::trim::chain::{self, Chain, Hang};
 use omuzaki_char::outfit::trim::clasp::{Clasp, ClaspStyle};
 use omuzaki_char::outfit::trim::decal::{self, Decal, DecalAnchor, DecalSource, IMAGE_MAGIC};
 use omuzaki_char::outfit::trim::lace::{self, Lace, LacePattern};
-use omuzaki_char::outfit::trim::{Finish, LIFT, RailSpec, TrimSpec, add_trim};
+use omuzaki_char::outfit::trim::{Finish, RailSpec, TrimSpec, add_trim};
 use omuzaki_char_api::{
     Anchor, AnchorsFact, AssetError, AssetSource, BodyFit, BodyRegion, BodyShape, BuildCtx, BuildError, BuildServices,
     JointRef, PartCategory, PartKind, PartMeta, PartOutput, Publishes,
@@ -129,7 +129,7 @@ fn services() -> BuildServices {
 }
 
 fn rail(points: &[[f64; 2]], closed: bool) -> RailSpec {
-    RailSpec { points: points.to_vec(), closed, lift: LIFT }
+    RailSpec::new(points, closed)
 }
 
 /// A star, in a 4 cm square.
@@ -167,24 +167,25 @@ fn trims() -> Vec<TrimSpec> {
         TrimSpec::Chain(Chain {
             from: [0.45, -0.5],
             to: [0.45, 0.5],
-            slack: 0.15,
-            link_size: 0.006,
+            sag: 0.012,
+            bow: chain::SAG.1,
+            link_size: chain::LINK.0,
             link_count: None,
-            wire: None,
+            pendant: true,
             finish: Finish::default(),
         }),
         TrimSpec::Clasp(Clasp {
             at: [0.48, 0.6],
             style: ClaspStyle::Medallion,
             size: 0.02,
-            jewel: ColourRef::rgb(0x30, 0x60, 0xd0),
+            jewel: Some(ColourRef::rgb(0x30, 0x60, 0xd0)),
             finish: Finish::default(),
         }),
         TrimSpec::Clasp(Clasp {
             at: [0.48, -0.6],
             style: ClaspStyle::Cross,
             size: 0.02,
-            jewel: ColourRef::rgb(0xd0, 0x20, 0x40),
+            jewel: None,
             finish: Finish::default(),
         }),
         TrimSpec::Decal(Decal {
@@ -209,68 +210,54 @@ fn every_trim_passes_the_garment_suite_on_every_template_and_shape() {
 
 // --------------------------------------------------------------------------------------------------------- chains
 
-/// The sag of a catenary of `length` hung between two points `span` apart at one height, solved here by bisection on
-/// `L = 2c sinh(h / 2c)`, independently of the chain code.
-fn catenary_sag(span: f64, length: f64) -> f64 {
-    let curve = |c: f64| 2.0 * c * (span / (2.0 * c)).sinh();
-    let (mut lo, mut hi) = (span / 100.0, span * 1e4); // curve(lo) is far too long, curve(hi) about the span
-    for _ in 0..300 {
-        let mid = f64::midpoint(lo, hi);
-        if curve(mid) > length {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
-    let c = f64::midpoint(lo, hi);
-    c * ((span / (2.0 * c)).cosh() - 1.0)
-}
-
 #[test]
-fn a_chain_sags_as_its_catenary_within_3_percent_at_five_slacks() {
+fn a_chain_follows_its_parabola_within_3_percent_at_five_sags() {
     let (a, b) = (DVec3::new(-0.1, 1.0, 0.2), DVec3::new(0.1, 1.0, 0.2));
-    for slack in [0.02, 0.05, 0.1, 0.3, 0.8] {
-        let length = a.distance(b) * (1.0 + slack);
-        let points = chain::catenary(a, b, length, 64).unwrap();
-        let expected = catenary_sag(0.2, length);
-        let got = chain::sag(&points);
-        println!("slack {slack}: sag {:.2} mm, catenary {:.2} mm", got * 1e3, expected * 1e3);
-        assert!((got - expected).abs() <= 0.03 * expected, "slack {slack}: {got} against {expected}");
-        let along: f64 = points.windows(2).map(|w| w[0].distance(w[1])).sum();
-        assert!((along - length).abs() < 0.01 * length, "slack {slack}: the chain keeps its length");
-        assert!(points[0].distance(a) < 1e-9 && points[64].distance(b) < 1e-9, "it hangs from its ends");
+    for sag in [0.005, 0.015, 0.026, 0.05, 0.1] {
+        let hang = Hang { from: a, to: b, up: DVec3::Y, out: DVec3::Z, sag, bow: chain::SAG.1 };
+        let links = chain::links(&hang, chain::PITCH, None, 0.002).unwrap();
+        // Each link's centre lies on the parabola: its distance to the densely sampled curve.
+        let curve: Vec<DVec3> = (0..=4000).map(|i| hang.at(f64::from(i) / 4000.0)).collect();
+        let off = links
+            .iter()
+            .map(|l| curve.iter().map(|c| c.distance(l.centre)).fold(f64::INFINITY, f64::min))
+            .fold(0.0, f64::max);
+        // And the chain sags as deep as the parabola: the lowest link against the curve's lowest point.
+        let lowest = links.iter().map(|l| a.y - l.centre.y).fold(0.0, f64::max);
+        println!("sag {sag}: {} links, {:.3} mm off the curve, lowest {:.2} mm", links.len(), off * 1e3, lowest * 1e3);
+        assert!(off <= 0.03 * sag, "sag {sag}: a link is {off} m off its curve");
+        assert!((lowest - sag).abs() <= 0.03 * sag, "sag {sag}: the chain sags {lowest}, the curve {sag}");
+        assert!(links.len() >= chain::MIN_LINKS as usize);
+        let total: f64 = curve.windows(2).map(|w| w[0].distance(w[1])).sum();
+        let expected = (total / chain::PITCH).round().max(f64::from(chain::MIN_LINKS)) as usize;
+        assert_eq!(links.len(), expected, "one link per pitch");
     }
-    // Uneven ends hang too, and a taut chain is the straight line.
-    let low = DVec3::new(0.1, 0.95, 0.2);
-    let points = chain::catenary(a, low, a.distance(low) * 1.2, 32).unwrap();
-    assert!(points[32].distance(low) < 1e-9);
-    assert_eq!(chain::sag(&chain::catenary(a, b, 0.2, 8).unwrap()), 0.0);
-    assert!(chain::catenary(a, DVec3::new(-0.1, 0.8, 0.2), 0.3, 8).is_err(), "one end above the other");
+    let still = Hang { from: a, to: a, up: DVec3::Y, out: DVec3::Z, sag: 0.0, bow: 0.0 };
+    assert!(chain::links(&still, chain::PITCH, None, 0.002).is_err(), "no length");
 }
 
 #[test]
-fn a_draped_chain_rests_on_the_garment_where_it_would_pass_into_it() {
+fn a_draped_chain_rests_on_the_garment_and_carries_its_cross() {
     let fit: Arc<dyn BodyFit> = Arc::new(TorsoFit::new(&omuzaki_char_api::BodyParams::default()));
     let surface = Surface::new(fit, BodyRegion::Torso, 2.0, 0.004).unwrap();
     let spec = Chain {
         from: [0.6, -0.6],
         to: [0.6, 0.6],
-        slack: 0.2,
-        link_size: 0.006,
+        sag: chain::SAG.0,
+        bow: chain::SAG.1,
+        link_size: chain::LINK.0,
         link_count: Some(20),
-        wire: None,
+        pendant: false,
         finish: Finish::default(),
     };
-    let points = chain::drape(&surface, &spec).unwrap();
-    assert_eq!(points.len(), 21);
-    for p in &points {
-        let at = surface.project(*p).unwrap().expect("over the torso");
+    let plain = chain::build(&surface, &spec).unwrap();
+    for p in &plain.mesh().positions {
+        let at = surface.project(p.as_dvec3()).unwrap().expect("over the torso");
         assert!(at.outside >= 0.0, "a link inside the garment: {at:?}");
     }
-    assert!(chain::sag(&points) > 0.0, "it still hangs");
-    let mut bad = spec.clone();
-    bad.slack = 3.0;
-    assert!(chain::drape(&surface, &bad).is_err());
+    let with_cross = chain::build(&surface, &Chain { pendant: true, ..spec.clone() }).unwrap();
+    assert!(with_cross.vertex_count() > plain.vertex_count(), "the cross is added");
+    assert!(chain::build(&surface, &Chain { sag: 3.0, ..spec }).is_err());
 }
 
 // --------------------------------------------------------------------------------------------------------- decals
@@ -455,10 +442,11 @@ fn trim_specs_round_trip_and_validate() {
         TrimSpec::Chain(Chain {
             from: [0.4, 0.0],
             to: [0.4, 1.0],
-            slack: -0.1,
+            sag: -0.1,
+            bow: 0.0,
             link_size: 0.005,
             link_count: None,
-            wire: None,
+            pendant: false,
             finish: Finish::default(),
         }),
         TrimSpec::Lace(Lace {

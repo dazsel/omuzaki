@@ -3,7 +3,7 @@
 //! the cross-sections, profiles and metal material.
 
 #![allow(clippy::expect_used, clippy::unwrap_used)] // test helpers: a panic is a clear failure
-#![allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)] // test arithmetic
+#![allow(clippy::cast_possible_truncation, clippy::cast_precision_loss, clippy::cast_sign_loss)] // test arithmetic
 #![allow(clippy::many_single_char_names, clippy::chunks_exact_to_as_chunks)] // geometry reads best as a, b, c
 
 #[path = "../../omuzaki-test-char/tests/support/outfit_conformance.rs"]
