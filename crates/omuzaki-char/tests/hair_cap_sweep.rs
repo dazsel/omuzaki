@@ -206,9 +206,9 @@ fn locks(g: &PartSweepGen, head: &dyn HeadSurface) -> Vec<Lock> {
     l
 }
 
-/// Whether the tube along `lock` is closed along its length: every edge belongs to two triangles, except the open ring at
-/// each end.
-fn watertight_but_for_the_ends(lock: &Lock, head: &dyn HeadSurface, g: &PartSweepGen) -> bool {
+/// Whether the tube along `lock` is watertight: with vertices at one position welded (as an exporter does), every
+/// edge belongs to exactly two triangles, so there are no boundary edges. Collapsed edges are skipped.
+fn watertight(lock: &Lock, head: &dyn HeadSurface, g: &PartSweepGen) -> bool {
     let mut mesh = TubeMesh::new();
     let polar = vec![0.5; REST_POINTS];
     let tube_look = TubeLook { seed: 0.5, shade: 1.0, polar: &polar, tint: None, flip: 1.0 };
@@ -220,14 +220,25 @@ fn watertight_but_for_the_ends(lock: &Lock, head: &dyn HeadSurface, g: &PartSwee
     if m.positions.iter().any(|p| !p.is_finite()) {
         return false;
     }
+    let mut welded: HashMap<[u32; 3], u32> = HashMap::new();
+    let ids: Vec<u32> = m
+        .positions
+        .iter()
+        .map(|p| {
+            let next = welded.len() as u32;
+            *welded.entry(p.to_array().map(f32::to_bits)).or_insert(next)
+        })
+        .collect();
     let mut edges: HashMap<(u32, u32), u32> = HashMap::new();
     for t in m.indices.chunks(3) {
         for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
-            *edges.entry((a.min(b), a.max(b))).or_default() += 1;
+            let (a, b) = (ids[a as usize], ids[b as usize]);
+            if a != b {
+                *edges.entry((a.min(b), a.max(b))).or_default() += 1;
+            }
         }
     }
-    let open = edges.values().filter(|n| **n == 1).count();
-    edges.values().all(|n| *n <= 2) && open == 2 * RING
+    edges.values().all(|n| *n == 2)
 }
 
 #[test]
@@ -280,7 +291,7 @@ fn the_sweep_is_watertight_at_the_parameter_extremes() {
         assert_eq!(l.len(), part_sweep::clump_count(&g), "{g:?}");
         for lock in &l {
             assert!(lock.iter().all(|p| p.is_finite()), "{g:?}");
-            assert!(watertight_but_for_the_ends(lock, &head, &g), "{g:?}");
+            assert!(watertight(lock, &head, &g), "{g:?}");
         }
     }
 }

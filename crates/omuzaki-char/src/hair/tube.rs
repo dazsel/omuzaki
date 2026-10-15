@@ -192,6 +192,20 @@ pub fn polar_angles(points: &[Vec3], head_centre: Vec3) -> Vec<f32> {
     points.iter().map(|p| (*p - head_centre).normalize_or_zero().y.clamp(-1.0, 1.0).acos()).collect()
 }
 
+/// One end of a tube to close.
+struct Cap {
+    /// The index of the end ring's first vertex.
+    ring: u32,
+    /// The end point of the polyline.
+    centre: Vec3,
+    /// The outward unit direction along the tube axis, the cap's normal.
+    axis: Vec3,
+    /// `hair-uv.y` there.
+    t: f32,
+    /// Whether this is the root end, whose fan is wound to face back along the axis.
+    flip_winding: bool,
+}
+
 /// The per-clump data a tube mesh carries beside its geometry.
 #[derive(Clone, Copy, Debug)]
 pub struct TubeLook<'a> {
@@ -282,7 +296,47 @@ impl TubeMesh {
         }
         self.mesh.colours.extend(std::iter::repeat_n(vertex_colour(look.tint), count));
         self.mesh.indices.extend(tube_indices(base, points.len()));
+        // The caps come after every ring vertex, so the ring vertices keep their indices.
+        let tip_ring = base + RING_U32 * u32::try_from(last).map_err(|_| TubeError::TooMany)?;
+        let root_axis = (points[0] - points[1]).normalize_or_zero();
+        let tip_axis = (points[last] - points[last - 1]).normalize_or_zero();
+        self.push_cap(Cap { ring: base, centre: points[0], axis: root_axis, t: 0.0, flip_winding: true }, look);
+        self.push_cap(Cap { ring: tip_ring, centre: points[last], axis: tip_axis, t: 1.0, flip_winding: false }, look);
         Ok(())
+    }
+
+    /// Closes the ring at `cap.ring` with a flat fan: a centre vertex and a copy of the rim, all with the axis as normal
+    /// (a flat cap needs its own normals, so it cannot share the ring's vertices; the copies sit at the same positions,
+    /// so the mesh is closed once vertices at one position are welded, as an exporter does).
+    fn push_cap(&mut self, cap: Cap, look: &TubeLook<'_>) {
+        let centre = u32::try_from(self.mesh.positions.len()).unwrap_or(u32::MAX);
+        let colour = vertex_colour(look.tint);
+        let rim = cap.ring as usize;
+        let mut add = |m: &mut Self, p: Vec3, across: f32| {
+            m.mesh.positions.push(p);
+            m.mesh.normals.push(cap.axis);
+            m.uv.extend([across * look.flip, cap.t]);
+            m.info.extend([
+                look.seed,
+                look.shade,
+                look.polar.get(if cap.t > 0.0 { look.polar.len() - 1 } else { 0 }).copied().unwrap_or(0.0),
+            ]);
+            m.mesh.uvs.push(Vec2::new(0.5 + 0.5 * across * look.flip, cap.t));
+            m.mesh.colours.push(colour);
+        };
+        add(self, cap.centre, 0.0);
+        for k in 0..RING {
+            let p = self.mesh.positions[rim + k];
+            add(self, p, ring_angle(k).cos());
+        }
+        for k in 0..RING_U32 {
+            let (a, b) = (centre + 1 + k, centre + 1 + (k + 1) % RING_U32);
+            if !cap.flip_winding {
+                self.mesh.indices.extend([centre, b, a]);
+            } else {
+                self.mesh.indices.extend([centre, a, b]);
+            }
+        }
     }
 
     /// Appends a finished mesh that already carries `hair-uv` and `hair-info` (a generator's shell), with white vertex
@@ -354,8 +408,8 @@ mod tests {
     #[test]
     fn a_tube_has_a_ring_per_point_and_validates() {
         let m = mesh_of(&line(6));
-        assert_eq!(m.positions.len(), 6 * RING);
-        assert_eq!(m.triangle_count(), 5 * RING * 2);
+        assert_eq!(m.positions.len(), 6 * RING + 2 * (RING + 1), "ring vertices, then two caps");
+        assert_eq!(m.triangle_count(), 5 * RING * 2 + 2 * RING);
         assert_eq!(m.extra_attribute(HAIR_UV).unwrap().data.len(), 2 * m.positions.len());
         assert_eq!(m.extra_attribute(HAIR_INFO).unwrap().data.len(), 3 * m.positions.len());
         assert_eq!(m.colours.len(), m.positions.len());
@@ -366,7 +420,7 @@ mod tests {
     fn every_triangle_faces_out_of_the_closed_tube() {
         let points = line(9);
         let m = mesh_of(&points);
-        for tri in m.indices.chunks_exact(3) {
+        for tri in m.indices.chunks_exact(3).take(8 * RING * 2) {
             let [a, b, c] = [tri[0], tri[1], tri[2]].map(|i| m.positions[i as usize]);
             let normal = (b - a).cross(c - a);
             let ring = tri[0] as usize / RING;
@@ -377,10 +431,28 @@ mod tests {
     }
 
     #[test]
+    fn the_caps_are_flat_fans_facing_along_the_axis_after_the_rings() {
+        let points = line(4);
+        let m = mesh_of(&points);
+        let rings = 4 * RING;
+        assert_eq!(m.positions.len(), rings + 2 * (RING + 1));
+        let axis = (points[3] - points[0]).normalize();
+        for (cap, sign) in [(0, -1.0), (1, 1.0)] {
+            let first = rings + cap * (RING + 1);
+            assert!(m.normals[first..first + RING + 1].iter().all(|n| n.dot(axis) * sign > 0.99));
+            for tri in m.indices.chunks_exact(3).skip(3 * RING * 2 + cap * RING).take(RING) {
+                assert!(tri.iter().all(|i| (first..=first + RING).contains(&(*i as usize))));
+                let [a, b, c] = [tri[0], tri[1], tri[2]].map(|i| m.positions[i as usize]);
+                assert!((b - a).cross(c - a).dot(axis) * sign > 0.0, "cap {cap} faces into the tube");
+            }
+        }
+    }
+
+    #[test]
     fn vertex_normals_point_away_from_the_spine() {
         let points = line(5);
         let m = mesh_of(&points);
-        for (v, n) in m.positions.iter().zip(&m.normals) {
+        for (v, n) in m.positions.iter().zip(&m.normals).take(5 * RING) {
             let ring = points.iter().min_by(|a, b| a.distance(*v).total_cmp(&b.distance(*v))).unwrap();
             assert!((n.length() - 1.0).abs() < 1e-4);
             assert!(n.dot(*v - *ring) > 0.0);
