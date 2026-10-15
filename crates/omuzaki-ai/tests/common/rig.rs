@@ -5,10 +5,35 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use omuzaki_ai::sandbox::{DEFAULT_MEMORY_MIB, SandboxSettings};
 use omuzaki_ai::{CACHE_DIR, Registry, RegistrySettings, VerifiedCache};
 use omuzaki_ai_api::{AddModel, ModelEntry, ModelManifest, ModelRegistry, ModelStatus, NoProgress, SlotRef};
 use omuzaki_ai_mock::MemFetcher;
 use omuzaki_update_api::clock::{Timestamp, WallClock};
+
+/// Set in a test binary started as a model worker.
+const WORKER_ENV: &str = "OMUZAKI_TEST_MODEL_WORKER";
+
+/// Not a test of its own: a test binary started with [`WORKER_ENV`] serves the registry here and exits, so every test
+/// binary that includes this module stands in for `omuzaki-model-worker` with the runtimes it links (the mock's
+/// `fake`, and any it registers itself). Run normally, it does nothing.
+#[test]
+fn model_worker() {
+    if std::env::var_os(WORKER_ENV).is_some() {
+        let served = omuzaki_ai::sandbox::serve();
+        std::process::exit(i32::from(served != std::process::ExitCode::SUCCESS));
+    }
+}
+
+/// Starts this test binary as the model worker, capped at `memory_mib`.
+pub fn worker_settings(memory_mib: u64) -> SandboxSettings {
+    SandboxSettings {
+        program: std::env::current_exe().unwrap(),
+        args: ["common::rig::model_worker", "--exact", "--nocapture", "--test-threads=1"].map(Into::into).into(),
+        env: vec![(WORKER_ENV.into(), "1".into())],
+        memory_mib,
+    }
+}
 
 pub const PORTS_X_Y: &str = "[[inputs]]\nname = \"x\"\ndtype = \"f32\"\nshape = [\"any\"]\n\n\
                          [[outputs]]\nname = \"y\"\ndtype = \"f32\"\nshape = [\"any\"]\n";
@@ -44,6 +69,7 @@ impl Rig {
         let registry =
             Registry::with_models(self.data.path(), files, app, RegistrySettings::default(), Vec::new()).unwrap();
         registry.set_clock(Arc::new(At(1_700_000_000)));
+        registry.set_sandbox(worker_settings(DEFAULT_MEMORY_MIB));
         registry
     }
 

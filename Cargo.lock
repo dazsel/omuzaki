@@ -3341,11 +3341,14 @@ dependencies = [
  "omuzaki-ai-mock",
  "omuzaki-store-api",
  "omuzaki-update-api",
+ "rustix 1.1.5",
  "serde",
+ "serde_json",
  "sha2",
  "tempfile",
  "toml",
  "tracing",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

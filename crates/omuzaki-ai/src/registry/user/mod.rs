@@ -3,18 +3,19 @@
 //! (`Registry::select`) and `remove` forgets them and frees their files.
 //!
 //! A user model is checked in the order the design gives; the first stage that finds problems lists all of them, and
-//! the model is kept as disabled with those words.
+//! the model is kept as disabled with those words. Its runtime only ever sees it inside a sandboxed worker
+//! (`crate::sandbox`): the probe, the smoke test's session and every session `open` runs.
 
 mod import;
 mod manifest;
 #[cfg(test)]
 mod tests;
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use omuzaki_ai_api::{
-    AddModel, DISCLAIMER_VERSION, EvalLevel, EvalReport, LocalFile, ManifestError, ModelEntry, ModelManifest, ModelRef,
-    ModelSource, Origin, Progress, RegistryError, Session, Slot, SlotInfo, SlotMode, find_runtime, find_slot,
+    AddModel, DISCLAIMER_VERSION, EvalLevel, EvalReport, LoadError, LocalFile, ManifestError, ModelEntry,
+    ModelManifest, ModelRef, Origin, Progress, RegistryError, Session, Slot, SlotInfo, SlotMode, find_slot,
 };
 use omuzaki_update_api::clock::{Timestamp, WallClock};
 
@@ -23,6 +24,7 @@ use super::install::{Env, failure_reason};
 use super::state::{Acknowledgement, State, UserModel};
 use super::{CACHE_DIR, Registry};
 use crate::model_ref;
+use crate::sandbox::{self, LoadSpec};
 use import::{Imported, blob_path, import};
 
 /// Why a user model the person hasn't accepted can't be selected or opened yet.
@@ -158,7 +160,24 @@ impl Registry {
         info: &SlotInfo,
     ) -> Result<Box<dyn Session>, RegistryError> {
         let locals = self.user_files(manifest)?;
-        self.load_files(model, manifest, info, &locals)
+        Ok(self.load_sandboxed(model, manifest, info, &locals)?)
+    }
+
+    /// Loads a user model in a worker of its own, with the slot's run deadline.
+    fn load_sandboxed(
+        &self,
+        model: &ModelRef,
+        manifest: &ModelManifest,
+        info: &SlotInfo,
+        locals: &[LocalFile],
+    ) -> Result<Box<dyn Session>, LoadError> {
+        let slot = find_slot(&info.slot)
+            .ok_or_else(|| LoadError::Runtime(format!("no slot {} is registered", info.slot)))?
+            .signature();
+        let spec =
+            LoadSpec { slot: &slot, io: &manifest.io, options: self.options(manifest, info), stall: stall(info) };
+        let session = sandbox::load(&self.sandbox(), &sandboxed(model, manifest, locals), spec, &*self.files)?;
+        Ok(Box::new(session))
     }
 
     /// The verified cached copy of every file of a user model.
@@ -218,11 +237,9 @@ impl Registry {
         if let Some(reason) = self.disabled(&self.lock(), &registered) {
             return Err(vec![reason]);
         }
-        let runtime = find_runtime(&manifest.runtime)
-            .ok_or_else(|| vec![format!("this app has no `{}` runtime to read it with", manifest.runtime)])?;
         let slot = find_slot(&info.slot).ok_or_else(|| vec![format!("no slot {} is registered", info.slot)])?;
-        let source = ModelSource { model, files: locals, stages: &manifest.stages, natives: &*self.files };
-        let probe = runtime.probe(&source).map_err(|e| vec![e.to_string()])?;
+        let sandboxed = sandboxed(model, manifest, locals);
+        let probe = sandbox::probe(&self.sandbox(), &sandboxed, &*self.files).map_err(|e| vec![e.to_string()])?;
         let mut misfits: Vec<String> = slot
             .signature()
             .accepts(&probe.signature.with_slot_names(&manifest.io))
@@ -235,13 +252,36 @@ impl Registry {
         if !misfits.is_empty() {
             return Err(misfits);
         }
-        let mut session = self.load_files(model, manifest, info, locals).map_err(|e| vec![e.to_string()])?;
+        let mut session = self.load_sandboxed(model, manifest, info, locals).map_err(|e| vec![e.to_string()])?;
         let report = slot
             .evaluate(&mut *session, &Env { registry: self }, EvalLevel::Smoke)
             .map_err(|e| vec![format!("its smoke test could not run: {e}")])?;
         if report.passed() { Ok(report) } else { Err(vec![failure_reason(&report)]) }
     }
 }
+
+/// A user model as the worker gets it.
+fn sandboxed<'a>(model: &'a ModelRef, manifest: &'a ModelManifest, locals: &[LocalFile]) -> sandbox::Model<'a> {
+    sandbox::Model {
+        model,
+        runtime: &manifest.runtime,
+        files: locals.iter().map(|f| (f.name.clone(), f.path.clone())).collect(),
+        stages: &manifest.stages,
+    }
+}
+
+/// How long one run of a model in this slot may take before its worker counts as stalled: the slot's own deadline for
+/// a request/response slot. The stream host (C10) sets its block deadline; until then a stream slot's smoke test gets
+/// [`STREAM_RUN_LIMIT`] per block.
+fn stall(info: &SlotInfo) -> Duration {
+    match info.mode {
+        SlotMode::Call { stall_ms } => Duration::from_millis(u64::from(stall_ms)),
+        SlotMode::Stream { .. } => STREAM_RUN_LIMIT,
+    }
+}
+
+/// See [`stall`].
+const STREAM_RUN_LIMIT: Duration = Duration::from_secs(2);
 
 /// Records `person`'s acknowledgement of `model`'s digest, once: the first acceptance of a digest is the record.
 fn record(state: &mut State, model: &ModelRef, person: &str, clock: &dyn WallClock) {

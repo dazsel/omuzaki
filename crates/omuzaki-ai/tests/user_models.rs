@@ -276,6 +276,7 @@ fn an_acknowledged_user_model_runs_when_selected_and_remove_really_removes() {
     registry.select(&echo(), Some(&entry.model), Requester::Person).unwrap();
     let mut session = registry.open(&echo(), None).unwrap();
     assert_eq!(session.info().model, entry.model);
+    assert!(session.info().sandboxed, "a user model runs in its worker");
     let mut out = TensorBuf::for_outputs(session.signature());
     let x = [0.25f32, -1.0, 3.0];
     session.run(&[TensorRef::f32(&x, &[3])], &mut out).unwrap();

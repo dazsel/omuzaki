@@ -5,6 +5,7 @@
 
 mod fetch;
 mod registry;
+pub mod sandbox;
 mod slot_session;
 
 pub use fetch::{VerifiedCache, model_ref, sha256_file};

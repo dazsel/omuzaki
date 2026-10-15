@@ -33,6 +33,7 @@ use omuzaki_ai_api::{
 };
 use omuzaki_update_api::clock::WallClock;
 
+use crate::sandbox::SandboxSettings;
 use crate::slot_session::{self, Loader, SlotSession};
 use catalogue::Registered;
 pub use consent::IMPERSONATION_WARNING;
@@ -92,6 +93,8 @@ pub struct Shared {
     consent: RwLock<Arc<dyn ConsentLookup>>,
     /// The calendar time an acknowledgement records.
     clock: RwLock<Arc<dyn WallClock>>,
+    /// How user models' worker processes are started.
+    sandbox: RwLock<SandboxSettings>,
 }
 
 impl Drop for Shared {
@@ -177,6 +180,7 @@ impl Registry {
                 load_failures: Mutex::new(Vec::new()),
                 consent: RwLock::new(Arc::new(NoConsentRecords)),
                 clock: RwLock::new(Arc::new(user::SystemWallClock)),
+                sandbox: RwLock::new(SandboxSettings::default()),
             }),
         };
         registry.reinstall(&to_reinstall);
@@ -200,6 +204,16 @@ impl Registry {
     /// Sets the clock acknowledgements record their time by (the system's calendar clock by default).
     pub fn set_clock(&self, clock: Arc<dyn WallClock>) {
         *self.clock.write().unwrap_or_else(PoisonError::into_inner) = clock;
+    }
+
+    /// Sets how the worker processes that run user models are started (by default `omuzaki-model-worker` beside the
+    /// running executable, with [`DEFAULT_MEMORY_MIB`](crate::sandbox::DEFAULT_MEMORY_MIB)).
+    pub fn set_sandbox(&self, settings: SandboxSettings) {
+        *self.sandbox.write().unwrap_or_else(PoisonError::into_inner) = settings;
+    }
+
+    fn sandbox(&self) -> SandboxSettings {
+        self.sandbox.read().unwrap_or_else(PoisonError::into_inner).clone()
     }
 
     fn consent(&self) -> Arc<dyn ConsentLookup> {
