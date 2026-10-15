@@ -1,6 +1,6 @@
 [package]
 name = "omuzaki-test"
-description = "Test harness: tolerant golden-image comparison, per-branch golden manifests in git over a content-addressed image store, and the `omuzaki-test` CLI."
+description = "Test harness: tolerant golden-image comparison, per-branch golden manifests in git over a content-addressed image store, the agent eval harness, and the `omuzaki-test` CLI."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -72,5 +72,5 @@ workspace = true
 # Native only: test harness on the build machine
 [package.metadata.omuzaki]
 kind = "App"
-summary = "golden-image compare (tolerant, premultiplied), bless, evidence reports and PR comments, `verify` of manifests against the object store, and a branch-safe `gc` of unreferenced objects"
+summary = "golden-image compare (tolerant, premultiplied), bless, evidence reports and PR comments, `verify` of manifests against the object store, and a branch-safe `gc` of unreferenced objects; and the agent eval harness (`eval`): checks, scripted driver, runner, gate, eval sets, rating page and lint"
 wasm = false
