@@ -18,6 +18,10 @@ omuzaki-assets-lock = { path = "../omuzaki-assets-lock" }
 omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-doc-api = { path = "../omuzaki-doc-api" }
 omuzaki-history-api = { path = "../omuzaki-history-api" }
+omuzaki-store-api = { path = "../omuzaki-store-api" }
+
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+rustix.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
