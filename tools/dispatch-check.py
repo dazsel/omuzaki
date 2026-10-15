@@ -213,11 +213,12 @@ def closing_numbers(refs):
     }
 
 
-# GitHub's closing keywords as REST has them in a PR body (GraphQL gives closingIssuesReferences instead). The keyword
-# must start a word, must not follow "not " (a deliberately simple rule: "Does not close #42" is prose), and must be
-# followed by `#N` directly, so `Fixes owner/repo#N` names another repository and is not counted.
+# GitHub's closing keywords as REST has them in a PR body (GraphQL gives closingIssuesReferences instead). GitHub's
+# rule is lexical, so this one is too: the keyword must start a word and be followed by `#N` directly, and
+# "Does not close #42" still closes #42, as it does on GitHub. `Fixes owner/repo#N` names another repository and is
+# not counted.
 CLOSING_REFERENCE = re.compile(
-    r"(?<![\w-])(?<!not )(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?)[ \t]*:?[ \t]*#(\d+)(?!\d)", re.IGNORECASE
+    r"(?<![\w-])(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?)[ \t]*:?[ \t]*#(\d+)(?!\d)", re.IGNORECASE
 )
 
 
@@ -270,8 +271,8 @@ def load_prs():
             "draft": bool(pr["isDraft"]),
             "created": pr.get("createdAt") or "",
             "files": pr_files(pr["number"], pr.get("files") or [], pr.get("changedFiles")),
-            # The issues GitHub itself says this PR closes in this repository; prose such as "Does not close #42" is
-            # not a reference, and `Fixes other/repo#42` names another repository's issue 42.
+            # The issues GitHub itself says this PR closes in this repository; `Fixes other/repo#42` names another
+            # repository's issue 42.
             "closes": closing_numbers(pr.get("closingIssuesReferences")),
         }
         for pr in raw

@@ -463,7 +463,7 @@ sys.exit(1 if bad else 0)
 P
 if [[ $? == 0 ]]; then pass "fence_entries: slashless words by root name"; else fail "fence_entries: slashless table"; fi
 
-# closing references come from GitHub, not the body: "Does not close #42" is not a reference, so the PR is other.
+# closing references come from GitHub's list, not the body: a body keyword GitHub didn't list doesn't count.
 scenario not-closes
 issue 42 <<'B'
 **Fence:** `tools/n.py`
@@ -633,7 +633,7 @@ for body in ["Fixes #42", "Closes: #7", "Does not close #42", "Fixes other/repo#
 ' "$CHECK" 2>"$work/err")
   expect_line "Fixes #42 [42]" "keyword: Fixes #42 closes 42"
   expect_line "Closes: #7 [7]" "keyword: an optional colon is allowed"
-  expect_line "Does not close #42 []" "keyword: a negated keyword does not count"
+  expect_line "Does not close #42 [42]" "keyword: GitHub's rule is lexical, so a negated keyword still counts"
   expect_line "Fixes other/repo#42 []" "keyword: another repository's issue does not count"
   expect_line "prefix #9 []" "keyword: a keyword inside a word does not count"
   expect_line "bugfix #3 []" "keyword: a suffix of a word does not count"
@@ -649,7 +649,7 @@ for body in ["Fixes #42", "Closes: #7", "Does not close #42", "Fixes other/repo#
 parser_cases
 
 # REST path, with GraphQL refused: the same verdicts as the GraphQL path. #9100 is closed by its own PR 610 (go);
-# #9101 overlaps PR 611, whose body says "Does not close #9101", so it does not close it and the overlap counts.
+# #9101 overlaps PR 611, whose body only says "Related to #9101", so it does not close it and the overlap counts.
 rest_fixtures() {
   touch "$FX/graphql-refused"
   issue 9100 <<'B'
@@ -663,7 +663,7 @@ B
   echo '{"default_branch":"main"}' >"$FX/repo.json"
   cat >"$FX/pulls.json" <<'J'
 [{"number":610,"head":{"ref":"cloud/610-own"},"draft":false,"created_at":"2026-10-11T10:00:00Z","base":{"ref":"main"},"body":"Fixes #9100"},
- {"number":611,"head":{"ref":"local/611-x"},"draft":false,"created_at":"2026-10-11T11:00:00Z","base":{"ref":"main"},"body":"Does not close #9101"},
+ {"number":611,"head":{"ref":"local/611-x"},"draft":false,"created_at":"2026-10-11T11:00:00Z","base":{"ref":"main"},"body":"Related to #9101"},
  {"number":612,"head":{"ref":"local/612-draft"},"draft":true,"created_at":"2026-10-11T12:00:00Z","base":{"ref":"main"},"body":null}]
 J
   echo '[{"filename":"crates/omuzaki-ops/src/a.rs","status":"modified"}]' >"$FX/files-610.json"
@@ -680,7 +680,7 @@ expect_code 0 "rest fallback: exit 0 for go"
 grep -q "GraphQL refused, reading REST instead" "$work/err" && pass "rest fallback: says so on stderr" \
   || fail "rest fallback: no stderr notice: $(cat "$work/err")"
 run 9101
-expect_line "wait #9101: overlap with #611 (crates/omuzaki-io-ops/src/b.rs)" "rest fallback: negated keyword leaves the overlap"
+expect_line "wait #9101: overlap with #611 (crates/omuzaki-io-ops/src/b.rs)" "rest fallback: a mention without a keyword leaves the overlap"
 expect_code 1 "rest fallback: exit 1 for wait"
 
 # DISPATCH_CHECK_REST=1: GraphQL is not tried at all (no notice), and the verdicts match. The prs.json fixture is an
