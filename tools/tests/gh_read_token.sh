@@ -87,14 +87,15 @@ check "missing variables fail with a message" '[ $rc -ne 0 ] && grep -q "must be
 fresh; OMUZAKI_READ_APP_KEY_B64='!!notbase64' run; rc=$?
 check "bad key fails and leaves no key file" '[ $rc -ne 0 ] && [ -z "$(ls "$W/tmp")" ]'
 
-# Interrupt during signing: the fake openssl sends TERM to its parent, then exits; the key must not survive.
+# Interrupt during signing: the fake openssl sends TERM to the script (its grandparent), then exits; the key must not survive.
 cat > "$W/bin/openssl" <<FAKE
 #!/usr/bin/env bash
-if [ "\$1" = dgst ]; then kill -TERM \$PPID; cat >/dev/null; exit 0; fi
+if [ "\$1" = dgst ]; then kill -TERM \$(ps -o ppid= -p \$PPID); cat >/dev/null; exit 0; fi
 exec "$REAL_OPENSSL" "\$@"
 FAKE
 chmod +x "$W/bin/openssl"
-fresh; run; rc=$?
+# The runner may start us with TERM ignored or blocked (an ignored signal can't be trapped), so restore it first.
+fresh; python3 -I -c 'import os, signal, sys; signal.signal(signal.SIGTERM, signal.SIG_DFL); signal.pthread_sigmask(signal.SIG_UNBLOCK, [signal.SIGTERM]); os.execv(sys.argv[1], sys.argv[1:])' "$SCRIPT" 2>"$W/err" >"$W/out"; rc=$?
 check "TERM while the key is on disk: non-zero exit, no key file left" '[ $rc -ne 0 ] && [ -z "$(ls "$W/tmp")" ]'
 rm "$W/bin/openssl"
 
