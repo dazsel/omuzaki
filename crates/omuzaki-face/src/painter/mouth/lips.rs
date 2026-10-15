@@ -188,6 +188,10 @@ pub(super) fn paint_rim(ctx: &mut PaintCtx<'_>) {
 /// line's width less the part of its height the lens already covers beyond the line's own extent (its smile), so lens
 /// and rim together are as high as the line was.
 fn outer_width(ctx: &PaintCtx<'_>, open: &OpenMouth, full: f32) -> f32 {
+    // Most open mouths are past the fade, where none of the closed line is left to measure.
+    if open.fade >= 1.0 {
+        return full;
+    }
     let (frame, style) = (Frame::of(ctx), &ctx.profile.mouth);
     let from = (frame.line_width(style) + frame.closed_extent(style) - open.extent()).max(0.0);
     from + (full - from) * open.fade
