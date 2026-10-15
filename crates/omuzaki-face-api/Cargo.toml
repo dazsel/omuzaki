@@ -23,3 +23,7 @@ proptest.workspace = true
 
 [lints]
 workspace = true
+
+[package.metadata.omuzaki]
+kind = "API"
+summary = "the procedural face (§19, CB-20..25): `FaceMapping` (the ARKit-native bus to `PaintParams`, coefficients in the profile), `FaceProfile` and its eye, brow, mouth, nose and cheek designers, expressions and visemes, and the `FacePainter` contract with its vector `DrawList` and layer compositing"

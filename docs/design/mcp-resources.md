@@ -44,7 +44,7 @@ The server enforces what the provider cannot:
 | `omuzaki://track/<id>` | `application/json` (a summary) | `TrackProvider` (per-kind) | planned |
 | `omuzaki://metrics/live` | `application/json` | `MetricsProvider` (per-kind) | planned (its source is designed elsewhere) |
 | `omuzaki://library/<item>` | `application/json` | `LibraryProvider` (per-kind) | planned |
-| `omuzaki://comments` | `application/json` | per-kind provider | planned |
+| `omuzaki://comments`, `omuzaki://comments/<thread>` | `application/json` | `CommentsProvider` (per-kind, `docs/design/comments.md` 9) | planned |
 | `omuzaki://ui/context` | not yet set | per-kind provider | planned |
 
 Planned rows have no data source on main yet, so each one's MIME type and template are set by the provider that adds it. The per-kind provider issues are filed once the A1 trait is reviewed.
