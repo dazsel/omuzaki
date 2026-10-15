@@ -2,12 +2,15 @@
 
 use ed25519_dalek::VerifyingKey;
 use omuzaki_store_api::ContentHash;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 use crate::domain::{Domain, signing_message};
 use crate::key::{KeyId, Signature};
 
 /// Why a signature did not verify.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, thiserror::Error, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum VerifyError {
     /// The key is not a valid ed25519 public key.

@@ -9,6 +9,7 @@
 //! - [`verify`]: the strict ed25519 check
 //! - [`canonical`]: the canonical JSON form and [`canonical_hash`](canonical::canonical_hash)
 //! - [`signed`]: the [`Signed`](signed::Signed) envelope
+//! - [`statement`]: [`KeyStatement`](statement::KeyStatement), the signed rotate, link, revoke and bind claims
 //! - [`service`]: [`Signer`](service::Signer), [`TrustStore`](service::TrustStore) and the [`Check`](service::Check)
 //!   outcomes
 #![deny(missing_docs)]
@@ -18,6 +19,7 @@ pub mod domain;
 pub mod key;
 pub mod service;
 pub mod signed;
+pub mod statement;
 pub mod verify;
 
 /// The names most callers want.
@@ -26,4 +28,5 @@ pub mod prelude {
     pub use crate::key::{Identity, KeyId, Signature};
     pub use crate::service::{Check, Signer, Trust, TrustStore};
     pub use crate::signed::Signed;
+    pub use crate::statement::{KeyStatement, RevokeReason};
 }

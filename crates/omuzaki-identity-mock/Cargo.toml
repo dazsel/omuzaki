@@ -16,6 +16,7 @@ omuzaki-store-api = { path = "../omuzaki-store-api" }
 [dev-dependencies]
 proptest.workspace = true
 schemars.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 omuzaki-library-api = { path = "../omuzaki-library-api" }
 

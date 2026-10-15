@@ -1,10 +1,13 @@
 //! Domain separation: one tag per signing use, so a signature made for one use fails under every other (design D3).
 
 use omuzaki_store_api::ContentHash;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 /// What a signature is for. The set is closed on purpose: a new signing use is a security decision that passes
 /// review as an API change. `#[non_exhaustive]` keeps adding one non-breaking.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum Domain {
     /// A library item manifest (legacy canonical form; byte-compatible with `omuzaki-library-api`).

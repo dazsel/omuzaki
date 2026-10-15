@@ -7,7 +7,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Why a string isn't a [`KeyId`] or a [`Signature`].
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum KeyError {
     /// The text isn't exactly the expected number of characters.

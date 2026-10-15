@@ -3724,6 +3724,7 @@ dependencies = [
  "omuzaki-store-api",
  "proptest",
  "schemars",
+ "serde",
  "serde_json",
 ]
 

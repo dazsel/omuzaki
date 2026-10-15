@@ -2,15 +2,16 @@
 //! numbers as `serde_json` writes them with `float_roundtrip`. Not RFC 8785; this form is ours.
 
 use omuzaki_store_api::ContentHash;
+use schemars::JsonSchema;
 use serde::ser::{
     self, SerializeMap, SerializeSeq, SerializeStruct, SerializeStructVariant, SerializeTuple, SerializeTupleStruct,
     SerializeTupleVariant,
 };
-use serde::{Serialize, Serializer};
+use serde::{Deserialize, Serialize, Serializer};
 use serde_json::Value;
 
 /// A value that has no canonical JSON form (a map with non-string keys, a failing `Serialize`).
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error, Serialize, Deserialize, JsonSchema)]
 #[error("no canonical JSON form: {0}")]
 pub struct CanonicalError(pub String);
 

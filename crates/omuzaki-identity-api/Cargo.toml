@@ -21,7 +21,7 @@ proptest.workspace = true
 
 [package.metadata.omuzaki]
 kind = "API"
-summary = "identity (SE-07; `docs/design/identity.md`): `KeyId`, `Signature`, `Identity`, the `Domain` tags and `signing_message`, strict ed25519 `verify`, `canonical_json`, the `Signed<T>` envelope, the `Signer` and `TrustStore` services and the `Check` outcomes; pure and wasm-clean, byte-compatible with `omuzaki-library-api` signatures"
+summary = "identity (SE-07; `docs/design/identity.md`): `KeyId`, `Signature`, `Identity`, the `Domain` tags and `signing_message`, strict ed25519 `verify`, `canonical_json`, the `Signed<T>` envelope, the `KeyStatement` contract (`check_statement`), the `Signer` and `TrustStore` services and the serialisable `Check` outcomes; pure and wasm-clean, byte-compatible with `omuzaki-library-api` signatures"
 
 [lints]
 workspace = true

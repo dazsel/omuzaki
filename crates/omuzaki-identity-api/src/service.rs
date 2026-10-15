@@ -1,12 +1,15 @@
 //! The services and outcomes: [`Signer`], [`TrustStore`] and what verifying reports as [`Check`].
 
 use omuzaki_store_api::ContentHash;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 use crate::domain::Domain;
 use crate::key::{Identity, KeyId, Signature};
 
 /// Why signing failed. Never contains key bytes.
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum SignError {
     /// No key can be reached (for example no keychain), with a hint for the person.
@@ -34,7 +37,9 @@ pub trait Signer: Send + Sync {
 }
 
 /// What a person's trust list says about a key.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum Trust {
     /// On the list; `name` is the person's own label for the key, not the signer's claim.
     Trusted {
@@ -54,7 +59,9 @@ pub trait TrustStore: Send + Sync {
 }
 
 /// Why a signature did not hold.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum Mismatch {
     /// The signed bytes changed.
     Content,
@@ -63,7 +70,8 @@ pub enum Mismatch {
 }
 
 /// The outcome of checking a signed thing; every surface shows these the same way (design D4).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum Check {
     /// The signature holds. `trust` is what the person's list says about the key.
