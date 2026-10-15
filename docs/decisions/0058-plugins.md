@@ -6,7 +6,7 @@ area: decisions
 
 # 0058: Plugins are wasmtime components that call ops through one generic bridge, as their own sessioned actor, under fuel and memory caps (2026-10-15)
 
-**Status:** proposed. It adds two approved `omuzaki-ops-api` variants. **Context:** PL-01, PL-03, PL-04; spec v3 §6, §9, §10,
+**Status:** accepted (2026-10-15). It adds two approved `omuzaki-ops-api` variants. **Context:** PL-01, PL-03, PL-04; spec v3 §6, §9, §10,
 §30, §39 rules 1, 2, 6, 10; ADR 0009, 0015, 0016, 0020, 0034, 0042. Design: `docs/design/plugins.md`.
 
 ## Context
@@ -17,6 +17,25 @@ the automation engine thread with a 1 ms fuel cap (automation D15); plugins ship
 wasmtime and extism are cleared in the licence register. Open until now: the crates, the WIT contract and its
 versions, how ops are exposed, the ceiling, the sandbox's numbers, which thread runs what, the lifecycle, the
 manifest, rights, and how plugins relate to scripts (ADR 0034).
+
+## Prior art
+
+- **Zed's extension host** is the closest match: extensions are WebAssembly components run by wasmtime, its API is a
+  WIT package versioned per release, and the host keeps the bindings for older API versions so extensions built
+  against them still load. We take the versioned worlds and the host-side adapters for older versions (decision 2).
+  We differ in what crosses the boundary: Zed exposes a typed function per capability, where our plugins reach the
+  whole op registry through one generic bridge (decision 3), under the same grants as agents (decision 5) and with
+  fuel and deadlines per call (decision 6).
+- **Extism** wraps Wasm modules in its own byte-buffer ABI; decision 1 says why we don't build on it.
+- **Envoy's proxy-wasm** runs Wasm filters inside the host proxy process, called by the host per request event on
+  its worker threads, with only the host functions its ABI defines. We take that shape for node activations: the
+  host calls the guest per event on its own thread, and every capability is a host function. The per-call fuel and
+  deadline caps are ours (design §4.3).
+- **VS Code's extension host** is the contrast: extensions run in a separate Node.js process with Node's full access
+  to files, network and processes, so the process boundary keeps the editor responsive but doesn't limit what an
+  extension can reach. We chose a wasm sandbox because a plugin here acts unattended on a person's project and
+  stream: it starts with no ambient access, gets each capability by grant, counts its work deterministically, and
+  calls the host in microseconds rather than over a process channel.
 
 ## Decision
 
