@@ -74,8 +74,8 @@ pub struct SpendGate { /* session, outstanding µ$ */ }   // reserve(bound) -> R
   A chunk is what the chunker sends: one sentence, ≤ 220 chars (`ai-performer.md` §5.2). Whole chunks only, hosted
   included: ADR 0031 needs `Ready { duration }` before playback, which a streamed synthesis cannot give. Leading and
   trailing silence below −50 dBFS is trimmed to 40 ms; the pump then pads **180 ms** after `. ! ? …` and **80 ms** after
-  a first chunk cut at a comma. PCM buffers are allocated here, off the audio thread; at most 3 are live (≈ 3.8 MB at
-  220 chars).
+  a first chunk cut at a comma. PCM buffers are allocated here, off the audio thread; at most 3 are live (≈ 4.2 MB at
+  220 chars: 220 / 15 chars per s = 14.7 s × 24,000 × 4 bytes = 1.41 MB each).
 - **pump:** every **10 ms** (240 samples at 24 kHz) it tops the active feed up to **500 ms** of lead and never lets it
   fall under **300 ms** while a chunk is ready; it reads the playhead and moves each handle's state; it pushes the
   `VoiceLead` (§4.1).
@@ -326,7 +326,7 @@ which is the point of the lead and is accepted; what a cut bounds is the tick's 
 from. Ticks are `Copy` 52-wide `Layer`s in a ring of 64 (640 ms at 100 Hz, as anim-api §6.1 sizes the stage's ring).
 
 **3. Release: one ordered queue of ticks, released for audio that played.** The queue holds, in voice order, the
-evaluated ticks and the rest ticks of §4 below. **Release is in queue order, one item at a time, so stamps rise by
+evaluated ticks and the fade items of §4 and §5 below. **Release is in queue order, one item at a time, so stamps rise by
 construction**: no item is released before the one ahead of it, and `PlayoutDelay::push` is never offered an older
 stamp. An item is stamped `P_g(v) − D` (anim-api §6.1: AI layers are `program_time − D`, so it is due at once when
 sampled at `now − D`). Program time does not prove the audio played: audio closes through the `FeedCloser` flag (§3.2),
@@ -353,15 +353,19 @@ refused push.
 
 **4. Stalls: the mouth follows the audio, not the plan.** From the log: a stall begins at `g₀ = time_of(r.at_sample +
 r.n·ratio)` for the last record `r`, and ends at `g₁ = time_of(r'.at_sample)` of the next. The drive sees the stall
-begin when the engine clock has passed `g₀` by one block with no new record. **Rest ticks are items in the same queue**,
-placed right after the last tick with `v` ≤ the last consumed sample: at `g₀ + 60 ms` (if the stall lasts that long)
-and, when it resumes, at `g₁ − 10 ms` (if later than the previous item). Because the queue is ordered, a tick whose
-sample was consumed before `g₀` is always ahead of the rest tick: it is released first (it is never late, above), and
-nothing is stamped before it afterwards. Ticks for samples after the stall are released at their record's time,
-`g₁` and later. A stall under 60 ms inserts nothing. The voice axis is unchanged by a stall.
+begin when the engine clock has passed `g₀` by one block with no new record. The stage **holds** the newest stamped
+tick (anim-api §6.1: after the newest stamp the newest sample is held), so a mouth left open would stay open through the
+silence; the drive therefore **emits fade ticks as they become due, never in advance**: items in the same queue at
+`g₀ + 10 ms·k`, `k = 1..6`, each `last·(1 − k/6)` where `last` is the last released value (a linear fade to rest over
+60 ms), released one at a time when the clock reaches their stamp. When the audio resumes, the fade items not yet released
+are dropped, and a **resume tick** is queued at `g₁` with the curve's value at the voice time where the audio resumed;
+ticks for later samples follow at their records' times. Because the queue is ordered, a tick whose sample was consumed
+before `g₀` is always ahead of every fade item: it is released first (it is never late, above), and nothing is stamped
+before it afterwards. A stall shorter than one engine block is not a stall (no record is missing).
+The voice axis is unchanged by a stall.
 
 **5. The close, cancellable.** After a cut at `t` the close is a run of items `c + 10 ms·k`, `k = 1..6`, with
-`c = max(t, last released stamp + 1 µs)`, easing the last released value to rest; they are queue items released **one at a time as
+`c = max(t, last released stamp + 1 µs)`, easing the last released value to rest (`last·(1 − k/6)`; the same mechanism as the stall fade); they are queue items released **one at a time as
 the clock reaches them**, never published ahead. A new generation's first tick is queued behind the close; when it
 would be released, every unreleased close item with a stamp `≥` it is dropped (the new tick wins a tie), so a reply
 that starts at once (a 50 ms lead after the restart, inside the 60 ms close) cannot make `PlayoutDelay::push` refuse
@@ -459,7 +463,7 @@ outputs `jawOpen = min(1, 2.5 × block RMS)`, so a vowel gives 0.53 and a conson
 The mouth column gives key values (`L` = 0, keys every 20 ms at 830, 850, ...); between keys the drive interpolates (§4.2, §6.3 has the 10 ms ticks). Every tick is due at its program time, 70 ms after the model saw its audio: none is late, none is early. A cut at 1000
 would raise the closer; the next block starts at 1005 and the fade makes `ai_voice` silent by 1007.5 (one block plus
 2.5 ms). From the raise the drive releases nothing, whether or not the pump has said anything; once the audio thread
-publishes the cutoff it releases held ticks up to it, drops later ones and closes the mouth by 1060. This example has
+publishes the cutoff it releases held ticks up to it, drops later ones and closes the mouth by 1067.5 (`c` = 1007.5 plus 60 ms). This example has
 latency 0; §6.3 walks the ticks around one key boundary with `L` = 0 and `L` = 160 samples (10 ms), and a cut.
 
 ### 6.2 A planned look-away and lean-in (golden channel trace)
@@ -518,22 +522,24 @@ uses the same envelope in this example). Two fakes: **A**, `L` = 0; **B**, `L` =
 | 910 | 0.530 | 0.530 | 910 / 710 | |
 | 920 | 0.530 | 0.530 | 920 / 720 | |
 
-Between ticks the stage holds the newest one (sampling B at 895 gives 0.459, the curve there is 0.494: under one tick of
-the curve). With `D` = 200 the same ticks carry the stamps in the right column and are sampled at `now − 200`, so the
-output is the same curve 200 ms later.
+The stage **holds the newest released tick** between ticks and never reads ahead (sampling B at 895 gives 0.459, the curve
+there is 0.494: under one tick of the curve). With `D` = 200 the ticks carry the stamps in the right column and the stage
+samples at `now − 200`; a tick stamped `τ − 200` is released at program time `τ` and sampled at exactly its stamp, so
+the output is **identical at identical program times for `D` = 0 and `D` = 200** (the delay moves where the audio and the
+face are produced, not their alignment with each other). Every sampled value below is a hold of the newest tick with `τ ≤ t`.
 
 **A cut** raised at 893 ms: the engine blocks are 5 ms, the next starts at 895 and the fade ends at 897.5, so the audio
 thread publishes `t` = 897.5. Tick 890 was released at 890 (state `Live`); between 893 and the publication nothing is
-released (`Raised`); tick 900 is dropped (`900 > t`). The close is released one tick at a time: `c = max(897.5, 890 +
-1 µs)` = 897.5, then 907.5, 917.5, ... 957.5, each easing the last value (A: 0.530, B: 0.459) to rest and released when
-the clock reaches it, stamped `− D`. If the pump stalls and never says `cut`, nothing changes. A result for a block
+released (`Raised`); tick 900 is dropped (`900 > t`). The close starts at `c = max(897.5, 890 + 1 µs)` = 897.5 and is released one tick at a time at 907.5, 917.5, ..., 957.5 (`k` = 1..6), each
+`last·(1 − k/6)` with `last` = 0.530 (A) or 0.459 (B): A 0.442, 0.353, 0.265, 0.177, 0.088, 0; B 0.383, 0.306, 0.230, 0.153, 0.076, 0, released when
+the clock reaches it, stamped `− D`. Sampled (hold): 900 → tick 890 (A 0.530, B 0.459), 910 → tick 907.5, and so on. If the pump stalls and never says `cut`, nothing changes. A result for a block
 after the cut belongs to the old generation and is dropped.
 
 **Immediate resume.** A model with 10 ms blocks, `L` = 0, queue 2 has `lead_min` = (2+2)·10 + 0 + 10 = 50 ms. A new
 reply right after the cut above has its first sample on the bus at `restart + 50`, i.e. `P(0)` = 947.5 or later, while
-the close runs to 957.5. The close ticks released by then are 897.5, 907.5, 917.5, 927.5, 937.5; the ones at 947.5 and
+the close runs to 957.5. The close ticks released by then are 907.5, 917.5, 927.5, 937.5 (A: 0.442, 0.353, 0.265, 0.177); the ones at 947.5 and
 957.5 are dropped because the new reply's first tick has the stamp 947.5 (a tie goes to the new reply). Every stamp
-the stage sees rises, nothing is refused, and the mouth is at 0.177 (A, a third of 0.530) at 937.5, then the stage interpolates to the new reply's first tick at 947.5.
+the stage sees rises, nothing is refused, and the stage holds 0.177 from 937.5 until the new reply's first tick at 947.5.
 
 **Stall (underrun), partial block, missed records.** Fake A, fake engine blocks of 5 ms (120 feed samples at 24 kHz),
 `at₀` = 830. The pump starves: the block starting at 890 consumes only 60 samples (2.5 ms), then nothing until a full
@@ -549,8 +555,9 @@ block at 990, so the log has:
 `g₀` = 892.5, `g₁` = 990. **The release thread is descheduled from 900 to 1,010 and sees r12, r13, r14 at once.** Tick v = 60
 (feed 1,440) is in r12: stamp 890.0 (released, correct). Tick v = 70 (feed 1,680) is in r14 at offset 60 samples = 2.5 ms:
 **997.5**, not the 1,000 that extrapolating from the latest record would give (and not the 890 + 10 of a gap-free plan). The
-queue is: tick 60, rest tick 952.5 (`g₀ + 60`), rest tick 980 (`g₁ − 10`), tick 70 at 997.5, tick 80 at 1,007.5, ...,
-all rising. If the log had been lapped over r12 and r13 (a reader away for more than 2 s), ticks 60 and 62.5 would be
+queue is: tick 60 at 890 (0.530), fade items 902.5, 912.5, ..., 952.5 (0.442, 0.353, 0.265, 0.177, 0.088, 0), the resume tick at 990 (the curve
+at voice 62.5 ms: 0.530), tick 70 at 997.5 (0.530), tick 80 at 1,007.5, ..., all rising. Sampled (hold): 895 → 0.530, 910 → 0.442, 920 → 0.353
+(tick 912.5), 950 → 0.088, 960 → 0, 989 → 0, 990 → 0.530. If the log had been lapped over r12 and r13 (a reader away for more than 2 s), ticks 60 and 62.5 would be
 dropped and counted, tick 70 would still be stamped 997.5 from r14.
 
 **Capped lead plus underrun.** A model whose `lead_min` is 130 ms but whose lead stays at 100 ms (§4.1: ticks on time,
@@ -559,9 +566,18 @@ the two differ. Key v = 60 (model 0.530, viseme 0.424) is decided 30 ms late, at
 the queue at 880 and tick 60 at 890, so both are evaluated before it exists: tick 50 uses the key at v = 40 (model
 0.141) and the **viseme** key at v = 60 (0.424): 0.283 (it would be 0.336 with the model key); tick 60 is 0.424
 (`late_keys` = 2). They are released at 880 and 890, on time. The stall above begins at 892.5, so tick 60 is **ahead of
-the rest tick at 952.5** in the queue. Sampled output (`D` = 0; with `D` = 200 the same values 200 ms later): 880 →
-0.283, 890 → 0.424, then linear to the rest tick, `0.424·(1 − (t − 890)/62.5)`: 920 → 0.220, 952.5 → 0, 960 → 0. Every push
-is accepted, stamps 880, 890, 952.5, 980, 997.5 rise, no tick was delayed.
+the fade items** in the queue. The fade starts from the last released value, 0.424: items 902.5, 912.5, ..., 952.5 are
+0.353, 0.283, 0.212, 0.141, 0.071, 0. The resume tick at 990 is evaluated then, when key 60 (decided at 920) is long decided:
+the curve at voice 62.5 ms is the model's 0.530. **Sampled output, chronological (hold of the newest released tick; `D` = 0 and
+`D` = 200 give the same values at the same program times):**
+
+| program time (ms) | 880 | 890 | 900 | 910 | 920 | 930 | 940 | 950 | 952.5 | 960 | 989 | 990 | 997.5 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| newest tick released | 880 | 890 | 890 | 902.5 | 912.5 | 922.5 | 932.5 | 942.5 | 952.5 | 952.5 | 952.5 | 990 | 997.5 |
+| value | 0.283 | 0.424 | 0.424 | 0.353 | 0.283 | 0.212 | 0.141 | 0.071 | 0 | 0 | 0 | 0.530 | 0.530 |
+
+Release times are the stamps plus `D`: 880, 890, 902.5, ..., 952.5, 990, 997.5; every push is accepted, stamps rise, no
+tick was delayed.
 
 **Whole-block latency.** `L` = 320 (`W` = 1, `W·B − L` = 0): block 0 is dropped, **no head key**, block 1 is the key at
 `at₀` = 830 (value 0.141, its own depicted interval 0..20 ms). `L` = 640 (`W` = 2): blocks 0 and 1 dropped, block 2 at
@@ -586,7 +602,7 @@ shifted by `at₀(B) − 830` (seq 8 is its block 1, stamp `at₀ + 10`), nothin
 - **Mouth drive** (the sampled-output tests read the stage's `PlayoutDelay` at 5 ms steps, not only the ticks):
   §6.1 as a golden (key values and ticks); **§6.3 exactly** for fake A and fake B (`FakeVoiceToFace` with a `latency`
   field: output = the envelope delayed by that many samples, zero before): keys in integer samples at 16 kHz, tick
-  values to 3 decimals, and the sampled output between 860 and 920 for `D` = 0 and `D` = 200 ms, **the lead:** a fake with `L` = 80 samples (5 ms), queue 2, B = 320: `lead_min` = 95 ms, every tick's bracketing key is decided before the tick is due (the tick at `at₀+20` needs the key at `at₀+35`, decided at `at₀+5`, or `at₀+15` with the pump's 10 ms rounding), and with the lead forced to 75 ms the tick is still released on time and evaluated with the viseme key (`late_keys` > 0 and the sampled value differs from the model's, never an early or delayed stamp); where the value at
+  values to 3 decimals, and the sampled output (chronological, hold) between 860 and 920, identical at identical program times for `D` = 0 and `D` = 200 ms, **the lead:** a fake with `L` = 80 samples (5 ms), queue 2, B = 320: `lead_min` = 95 ms, every tick's bracketing key is decided before the tick is due (the tick at `at₀+20` needs the key at `at₀+35`, decided at `at₀+5`, or `at₀+15` with the pump's 10 ms rounding), and with the lead forced to 75 ms the tick is still released on time and evaluated with the viseme key (`late_keys` > 0 and the sampled value differs from the model's, never an early or delayed stamp); where the value at
   890 ms is 0.459 and at 895 ms is 0.459 (the held tick), never 0.388; the same fake with the `− L` removed fails the
   table by 10 ms (proof the test sees it); **warm-up:** `L` = 160 drops block 0 and starts with the head key at `at₀`;
   `L` = `B` (320) and `L` = `2B` (640) have **no head key**, the first retained key sits at `at₀`, and no push to
@@ -606,8 +622,8 @@ shifted by `at₀(B) − 830` (seq 8 is its block 1, stamp `at₀ + 10`), nothin
   **immediate resume:** a 10 ms-block, queue-2, `L` = 0 fake (`lead_min` 50 ms) restarted at once after a cut: the close
   ticks and the new reply's ticks are all accepted, strictly rising, the tie goes to the new reply (§6.3), with `D` = 0
   and 200; **stall and resume (play log):** a pump stalled 100 ms mid-word (§6.3): every key's stamp minus the program time its
-  depicted audio plays at is zero on both sides of the gap, the rest ticks sit at `g₀ + 60` and `g₁ − 10`, a 40 ms stall
-  inserts nothing, and a stall during a chunk that is then cut behaves as the cut tests.
+  depicted audio plays at is zero on both sides of the gap, the fade items sit at `g₀ + 10·k` and the resume tick at `g₁`, a 40 ms stall
+  releases three fade items and drops the rest when the resume tick is queued, and a stall during a chunk that is then cut behaves as the cut tests.
   **play log:** the audio thread under test writes records for a gap including a **partial-block underrun** (n < block) and
   a full-block stall; a reader that polls only every 100 ms (skipping the observations in between) must stamp every
   tick from its record exactly as a reader that polls every block (§6.3: 890.0 and 997.5), never from the latest; a
@@ -615,7 +631,8 @@ shifted by `at₀(B) − 830` (seq 8 is its block 1, stamp `at₀ + 10`), nothin
   (`mouth_history_lost`), stamps the next tick from the first surviving record and is never offered a refused push;
   the seqlock hammer test (one writer lapping a 16-slot ring while readers copy every slot) never returns a record whose fields come from two writes; **ordering under
   lateness:** a capped-lead (100 ms) model with `lead_min` 130 ms plus an underrun (§6.3): release **times** equal the stamps plus `D` (880, 890, 952.5, 980, 997.5, none delayed), accepted pushes only, stamps
-  strictly rising, tick 60 released before the rest tick, `late_keys` = 2, and the **values** match §6.3 (0.283 at 880, 0.424 at 890, 0.220 at 920, 0 at 952.5 and after) with `D` = 0 and 200;
+  strictly rising, tick 60 released before every fade item, `late_keys` = 2, and the **values** match the §6.3 table **sampled chronologically** (the test steps the clock and samples
+  `PlayoutDelay` at each program time, never preloading frames that are not yet due: 0.283 at 880, 0.424 at 890 and 900, 0.353 at 910, 0.283 at 920, 0 at 952.5, 0.530 at 990), **identical at identical program times for `D` = 0 and 200**;
   the health meter reads the viseme share; **torn records:** a test hook pauses the writer **between steps 3 and 4** of the
   slot write (some fields new, `seq` odd, then again after step 4 with `seq` even), and a reader copying that slot never
   accepts it before step 4 completes, accepts the complete record after, and for a slot reused during a read reports it
