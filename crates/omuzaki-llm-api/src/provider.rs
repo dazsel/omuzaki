@@ -207,6 +207,41 @@ pub enum Privacy {
     Loopback,
 }
 
+impl Privacy {
+    /// The class of a provider whose requests go to `endpoint`: `Loopback` only if the endpoint's host is a loopback
+    /// address or `localhost`, `Hosted` for any other host. An endpoint this cannot parse is `Hosted` too: when it
+    /// cannot be told, the stricter class applies (llm-api D7).
+    pub fn for_endpoint(endpoint: &str) -> Self {
+        if is_loopback_endpoint(endpoint) { Self::Loopback } else { Self::Hosted }
+    }
+}
+
+/// The host of an `http` or `https` endpoint URL, without brackets, userinfo or port; `None` if `endpoint` is not
+/// such a URL. Written here because this crate takes no URL dependency and the decision must be the same everywhere.
+pub fn endpoint_host(endpoint: &str) -> Option<&str> {
+    let rest = endpoint.trim().strip_prefix("https://").or_else(|| endpoint.trim().strip_prefix("http://"))?;
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    // Anything before the last `@` is userinfo: `http://127.0.0.1@evil.example/` is a request to evil.example.
+    let host_port = authority.rsplit('@').next().unwrap_or_default();
+    let host = if let Some(bracketed) = host_port.strip_prefix('[') {
+        bracketed.split_once(']').filter(|(_, after)| after.is_empty() || after.starts_with(':')).map(|(h, _)| h)?
+    } else {
+        host_port.split(':').next().unwrap_or_default()
+    };
+    (!host.is_empty()).then_some(host)
+}
+
+/// True if `endpoint` is an `http` or `https` URL whose host is `localhost`, an address in `127.0.0.0/8`, or `::1`
+/// (an IPv4-mapped loopback counts). False for a remote host and for anything that does not parse.
+pub fn is_loopback_endpoint(endpoint: &str) -> bool {
+    use std::net::IpAddr;
+    let Some(host) = endpoint_host(endpoint) else { return false };
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    host.parse::<IpAddr>().is_ok_and(|ip| ip.to_canonical().is_loopback())
+}
+
 /// How a provider charges.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[non_exhaustive]
@@ -253,8 +288,12 @@ pub type ListModelsFn = fn(&ProviderConfig, &ProviderEnv) -> Result<Vec<ModelInf
 pub struct LlmProvider {
     /// The kind a [`ProviderConfig`] names.
     pub kind: &'static str,
-    /// What the connector framework reads.
+    /// What the connector framework reads when no configuration is known: the stricter case.
     pub manifest: fn() -> ProviderManifest,
+    /// The privacy class of a provider built from this configuration, if it depends on the configuration (the
+    /// OpenAI-compatible provider on a local or a remote endpoint). `None` means [`manifest`](Self::manifest) is
+    /// always right.
+    pub privacy_for: Option<fn(&ProviderConfig) -> Privacy>,
     /// Builds a client.
     pub build: BuildFn,
     /// Lists models.
@@ -266,6 +305,17 @@ pub struct LlmProvider {
 }
 
 impl LlmProvider {
+    /// The manifest of the provider that `config` builds: [`manifest`](Self::manifest) with the privacy class
+    /// [`privacy_for`](Self::privacy_for) gives for it, so a local endpoint is never declared hosted and a remote one
+    /// is never declared local.
+    pub fn manifest_for(&self, config: &ProviderConfig) -> ProviderManifest {
+        let mut manifest = (self.manifest)();
+        if let Some(privacy_for) = self.privacy_for {
+            manifest.privacy = privacy_for(config);
+        }
+        manifest
+    }
+
     /// `package (file:line)`, for errors that name a registration.
     fn origin(&self) -> String {
         format!("{} ({})", self.package, self.site)
@@ -333,6 +383,9 @@ pub fn provider(kind: &str) -> Result<Option<&'static LlmProvider>, RegistryErro
 
 /// Registers an [`LlmProvider`] so [`providers`] finds it, and records it for the link gate (ADR 0015).
 ///
+/// A provider whose privacy depends on its configuration adds `privacy_for: fn(&ProviderConfig) -> Privacy` after
+/// `manifest`; [`LlmProvider::manifest_for`] then reads the class from it.
+///
 /// ```ignore
 /// omuzaki_llm_api::register_llm_provider! {
 ///     kind: "anthropic", manifest: manifest, build: build, list_models: list_models,
@@ -341,10 +394,17 @@ pub fn provider(kind: &str) -> Result<Option<&'static LlmProvider>, RegistryErro
 #[macro_export]
 macro_rules! register_llm_provider {
     (kind: $kind:literal, manifest: $manifest:expr, build: $build:expr, list_models: $list:expr $(,)?) => {
+        $crate::register_llm_provider!(@submit $kind, $manifest, ::core::option::Option::None, $build, $list);
+    };
+    (kind: $kind:literal, manifest: $manifest:expr, privacy_for: $privacy:expr, build: $build:expr, list_models: $list:expr $(,)?) => {
+        $crate::register_llm_provider!(@submit $kind, $manifest, ::core::option::Option::Some($privacy), $build, $list);
+    };
+    (@submit $kind:literal, $manifest:expr, $privacy:expr, $build:expr, $list:expr) => {
         $crate::__inventory::submit! {
             $crate::provider::LlmProvider {
                 kind: $kind,
                 manifest: $manifest,
+                privacy_for: $privacy,
                 build: $build,
                 list_models: $list,
                 package: ::core::env!("CARGO_PKG_NAME"),
@@ -353,4 +413,87 @@ macro_rules! register_llm_provider {
         }
         $crate::__record_registration!("llm_provider", $kind);
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hosted_manifest() -> ProviderManifest {
+        ProviderManifest::new(vec![LlmCapability::Llm], Privacy::Hosted, CostModel::Metered, "terms")
+    }
+
+    fn follows_the_endpoint(config: &ProviderConfig) -> Privacy {
+        Privacy::for_endpoint(&config.endpoint)
+    }
+
+    fn build(_: &ProviderConfig, _: &ProviderEnv) -> Result<Box<dyn LlmClient>, LlmError> {
+        Err(LlmError::Unsupported("test".into()))
+    }
+
+    #[allow(clippy::unnecessary_wraps)] // the signature of `ListModelsFn`
+    fn list(_: &ProviderConfig, _: &ProviderEnv) -> Result<Vec<ModelInfo>, LlmError> {
+        Ok(Vec::new())
+    }
+
+    fn provider_with(privacy_for: Option<fn(&ProviderConfig) -> Privacy>) -> LlmProvider {
+        LlmProvider {
+            kind: "t",
+            manifest: hosted_manifest,
+            privacy_for,
+            build,
+            list_models: list,
+            package: "test",
+            site: "provider.rs:1",
+        }
+    }
+
+    fn privacy(endpoint: &str) -> Privacy {
+        let config = ProviderConfig::new("p", "t", endpoint);
+        provider_with(Some(follows_the_endpoint)).manifest_for(&config).privacy
+    }
+
+    #[test]
+    fn a_loopback_endpoint_is_declared_loopback() {
+        for endpoint in [
+            "http://127.0.0.1:11434",
+            "http://127.1.2.3/v1",
+            "http://localhost:8080/v1",
+            "http://LOCALHOST/",
+            "http://[::1]:8000",
+            "https://[::ffff:127.0.0.1]/v1",
+            "http://user:pw@127.0.0.1:9/",
+        ] {
+            assert_eq!(privacy(endpoint), Privacy::Loopback, "{endpoint}");
+        }
+    }
+
+    #[test]
+    fn a_remote_endpoint_is_declared_hosted() {
+        for endpoint in [
+            "https://api.example.com/v1",
+            "http://192.168.1.20:8000",
+            "http://10.0.0.1",
+            "http://127.0.0.1@evil.example/",
+            "http://127.0.0.1.evil.example/",
+            "http://localhost.evil.example/",
+            "http://[2001:db8::1]/",
+        ] {
+            assert_eq!(privacy(endpoint), Privacy::Hosted, "{endpoint}");
+        }
+    }
+
+    #[test]
+    fn an_endpoint_that_does_not_parse_fails_closed_to_hosted() {
+        for endpoint in ["", "localhost:8080", "ftp://127.0.0.1/", "http://", "http://[::1", "http://:80/", "not a url"]
+        {
+            assert_eq!(privacy(endpoint), Privacy::Hosted, "{endpoint:?}");
+        }
+    }
+
+    #[test]
+    fn a_provider_without_a_privacy_hook_keeps_its_manifest() {
+        let config = ProviderConfig::new("p", "t", "http://127.0.0.1:1");
+        assert_eq!(provider_with(None).manifest_for(&config).privacy, Privacy::Hosted);
+    }
 }

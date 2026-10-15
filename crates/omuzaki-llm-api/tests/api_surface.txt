@@ -66,12 +66,16 @@ src/provider.rs: pub struct ProviderEnv {
 src/provider.rs: pub fn new(secrets: Arc<dyn SecretStore>, runtime: RuntimeHandle) -> Self {
 src/provider.rs: pub enum LlmCapability {
 src/provider.rs: pub enum Privacy {
+src/provider.rs: pub fn for_endpoint(endpoint: &str) -> Self {
+src/provider.rs: pub fn endpoint_host(endpoint: &str) -> Option<&str> {
+src/provider.rs: pub fn is_loopback_endpoint(endpoint: &str) -> bool {
 src/provider.rs: pub enum CostModel {
 src/provider.rs: pub struct ProviderManifest {
 src/provider.rs: pub fn new(
 src/provider.rs: pub type BuildFn = fn(&ProviderConfig, &ProviderEnv) -> Result<Box<dyn LlmClient>, LlmError>;
 src/provider.rs: pub type ListModelsFn = fn(&ProviderConfig, &ProviderEnv) -> Result<Vec<ModelInfo>, LlmError>;
 src/provider.rs: pub struct LlmProvider {
+src/provider.rs: pub fn manifest_for(&self, config: &ProviderConfig) -> ProviderManifest {
 src/provider.rs: pub enum RegistryError {
 src/provider.rs: pub fn providers() -> Vec<&'static LlmProvider> {
 src/provider.rs: pub fn duplicate_kind(kind: &'static str, first: impl Into<String>, second: impl Into<String>) -> Self {
