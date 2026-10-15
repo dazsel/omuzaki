@@ -100,7 +100,7 @@ fn markdown_files(dir: &Path, skip: &Path, found: &mut Vec<PathBuf>) -> Result<(
     for path in children {
         if path.is_dir() {
             markdown_files(&path, skip, found)?;
-        } else if path.extension().is_some_and(|ext| ext == "md") && path != skip {
+        } else if is_markdown(&path.to_string_lossy()) && path != skip {
             found.push(path);
         }
     }

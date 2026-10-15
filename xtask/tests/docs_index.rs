@@ -64,3 +64,12 @@ fn a_hand_written_index_in_the_readme_fails_the_lint() {
     assert!(run.stdout.contains("docs/README.md:6: a hand-written index entry"), "{}", run.stdout);
     assert!(run.stdout.contains("1 violation(s)"), "{}", run.stdout);
 }
+
+#[test]
+fn a_doc_with_an_uppercase_extension_is_found() {
+    let fixture = documented();
+    fixture.write("docs/design/Upper.MD", "# Upper\n");
+    let run = fixture.xtask(&["lint-docs-index"]);
+    assert!(!run.success, "{}", run.stdout);
+    assert!(run.stdout.contains("docs/design/Upper.MD: no front matter"), "{}", run.stdout);
+}
