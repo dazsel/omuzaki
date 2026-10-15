@@ -1,8 +1,10 @@
 //! The server: built once from a runner, then one [`Session`] per client connection.
 
+use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use omuzaki_history_api::JournalSink;
 use omuzaki_ops_api::{Grants, OpInfo, Runner};
 use rmcp::ServiceExt;
 use rmcp::model::Tool;
@@ -19,6 +21,16 @@ use crate::prompts::{PromptDef, Prompts};
 use crate::resources::{Providers, ResourceProvider};
 use crate::session::Session;
 
+/// The host's journal, wrapped so that [`McpOptions`] can stay `Debug`.
+#[derive(Clone)]
+struct Journal(Arc<dyn JournalSink>);
+
+impl fmt::Debug for Journal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("JournalSink")
+    }
+}
+
 /// How a server is set up.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
@@ -32,11 +44,13 @@ pub struct McpOptions {
     prompts: Vec<PromptDef>,
     /// The connection list the host wired into its runner's services, if it did.
     connections: Option<Connections>,
+    /// The journal the host runs, if it has one: a reply to a change waits for it (see [`McpOptions::with_journal`]).
+    journal: Option<Journal>,
 }
 
 impl Default for McpOptions {
     fn default() -> Self {
-        Self { grants: Grants::agent_default(), providers: Vec::new(), prompts: Vec::new(), connections: None }
+        Self::with_grants(Grants::agent_default())
     }
 }
 
@@ -44,13 +58,24 @@ impl McpOptions {
     /// Options with these grants.
     #[must_use]
     pub fn with_grants(grants: Grants) -> Self {
-        Self { grants, providers: Vec::new(), prompts: Vec::new(), connections: None }
+        Self { grants, providers: Vec::new(), prompts: Vec::new(), connections: None, journal: None }
     }
 
     /// Also serves the resources of `provider`: it is listed, templated and readable alongside the built-in ones.
     #[must_use]
     pub fn with_provider(mut self, provider: Arc<dyn ResourceProvider>) -> Self {
         self.providers.push(provider);
+        self
+    }
+
+    /// Uses `journal` for the durability of changes: after a call applies an edit, commits or rolls back a transaction,
+    /// or undoes or redoes, the reply waits until the journal has saved it (up to five seconds). A save that times out
+    /// or fails still succeeds, since the change did apply: the reply's text opens with a `Warning` line saying so, with
+    /// the journal's status, and `structuredContent.warning` carries the same text. Queries and previews never wait.
+    /// Without a journal, replies don't wait.
+    #[must_use]
+    pub fn with_journal(mut self, journal: Arc<dyn JournalSink>) -> Self {
+        self.journal = Some(Journal(journal));
         self
     }
 
@@ -83,6 +108,8 @@ pub(crate) struct Shared {
     pub connections: Connections,
     /// The host wired the connection service, so `agent.connection` is offered.
     pub connection_wired: bool,
+    /// The host's journal, which replies to changes wait for. `None` means replies don't wait.
+    pub journal: Option<Arc<dyn JournalSink>>,
     next_session: AtomicU64,
 }
 
@@ -143,6 +170,7 @@ impl McpServer {
             prompts: Prompts::new(&options.prompts),
             connections: options.connections.unwrap_or_default(),
             connection_wired,
+            journal: options.journal.map(|journal| journal.0),
             next_session: AtomicU64::new(1),
         };
         Ok(Self { shared: Arc::new(shared), view: Arc::new(view) })
