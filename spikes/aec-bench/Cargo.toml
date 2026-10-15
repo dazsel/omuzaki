@@ -1,0 +1,53 @@
+# Spike: echo cancellation candidates for `fx.aec` (research #920). Its own workspace root on purpose: the spike stays
+# out of the main workspace (members = crates/*, xtask), so the C/C++ build of the Speex candidate and the three AEC3
+# crates never touch the shared build slots' dependency set.
+[workspace]
+members = ["."]
+resolver = "3"
+
+[package]
+name = "aec-bench"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+# AEC3, pure-Rust port of WebRTC's echo canceller (BSD-3-Clause, `sonora*` crates).
+sonora = "=0.2.0"
+# AEC3, a second pure-Rust port (MIT OR BSD-3-Clause plus the WebRTC patent grant).
+aec3 = { version = "=0.4.0", default-features = false }
+# SpeexDSP's MDF echo canceller through a CMake build of the vendored C library (BSD-3-Clause C, MIT binding).
+aec-rs = "=1.0.0"
+# WebRTC's own C++ AEC3, built from the crate's bundled source with meson, ninja and abseil. Off by default because the
+# build needs those three on the machine (see README.md); `--features webrtc-cpp` adds it to the bench.
+webrtc-audio-processing = { version = "=2.1.0", features = ["bundled"], optional = true }
+# FFT for our own partitioned-block frequency-domain filter.
+rustfft = "6.4"
+
+# The same lint table as the main workspace (Cargo.toml at the repo root), except `unsafe_code`: none here either.
+[features]
+webrtc-cpp = ["dep:webrtc-audio-processing"]
+
+[lints.rust]
+unsafe_code = "deny"
+unused_must_use = "deny"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+cast_precision_loss = "allow"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+unwrap_used = "deny"
+expect_used = "deny"
+dbg_macro = "deny"
+todo = "deny"
+
+[profile.release]
+lto = "thin"
+codegen-units = 16
+debug = false
