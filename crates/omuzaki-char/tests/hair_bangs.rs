@@ -4,10 +4,12 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 #![allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
 
-use omuzaki_char::hair::compile::{Dispatch, GroupGenerator, HairGenCtx, UnitStream, compile_groups};
+use omuzaki_char::hair::compile::{
+    Dispatch, GroupGenerator, HairGenCtx, UnitStream, clumps_in, compile_groups, is_bilateral,
+};
 use omuzaki_char::hair::r#gen::bangs::{self, REST_POINTS};
 use omuzaki_char_api::{
-    BangLayer, BangsGen, Dynamics, Generator, GroupId, HairParams, HairRng, HeadSurface, Quality, Wisp,
+    BangLayer, BangsGen, Dynamics, Generator, GroupId, HairGroup, HairParams, HairRng, HeadSurface, Quality, Wisp,
 };
 use omuzaki_core::glam::Vec3;
 use omuzaki_face_api::Palette;
@@ -195,4 +197,22 @@ fn an_under_layer_is_mirror_symmetric_without_the_sweep() {
             (a.x + b.x - 2.0 * Egg.centre().x).abs() < 1e-5 && (a.y - b.y).abs() < 1e-5 && (a.z - b.z).abs() < 1e-5
         );
     }
+}
+
+#[test]
+fn a_mirrored_bangs_group_compiles_to_clump_count_clumps() {
+    let mut params = HairParams::default();
+    params.groups.clear();
+    let group = HairGroup {
+        enabled: true,
+        mirror: true,
+        dynamics: Dynamics::default(),
+        generator: Generator::Bangs(style(2, 2)),
+    };
+    params.groups.insert(GroupId::new("b-bangs").unwrap(), group.clone());
+    let entries =
+        compile_groups(&params, &Dispatch, &Egg, &Palette::default(), Quality::Live, &mut Counting::default()).unwrap();
+    assert!(is_bilateral(&group.generator), "the fringe already spans both sides");
+    assert_eq!(entries[0].group.clumps.len(), bangs::clump_count(&style(2, 2)));
+    assert_eq!(clumps_in(&group, &Dispatch), entries[0].group.clumps.len());
 }
