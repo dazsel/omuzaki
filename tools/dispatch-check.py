@@ -138,6 +138,11 @@ def pr_files(number, listed, changed):
     return paths if len(paths) >= total else None
 
 
+def load_top_level():
+    """The names of the entries at the root of the default branch, files and folders alike."""
+    return {entry["name"] for entry in gh_json(["api", f"repos/{REPO}/contents"])}
+
+
 def load_prs():
     """Every open pull request, with its draft flag, branch, creation time, changed paths and the issues it closes."""
     raw = gh_json(
@@ -207,13 +212,16 @@ def fence_section(body):
     return section
 
 
-def fence_entries(body):
+def fence_entries(body, top_level=None):
     """The fence's paths and globs, and the entries that cannot be understood, as `(entries, bad)`.
 
     Each line contributes its backtick-quoted entries and its bare ones. A bare entry is cut at the first ':', ';' or
     '(' on its line, so a trailing note is not read as a path. A token is a path when it has a '/', a '.' or a glob
-    character, judged before any trailing slash is removed, so `tools/` stays; other tokens are prose ("none") and
-    are dropped. `bad` lists entries that fence_matches rejects; the caller must wait on them (fail closed).
+    character, judged before any trailing slash is removed, so `tools/` stays. A slashless token (`tools`,
+    `LICENSE-MIT`) is a path only when it names an entry in `top_level`, the set of root names; other tokens are prose
+    ("none") and are dropped. When `top_level` is None (the root could not be read) a slashless token cannot be told
+    from prose, so it is reported in `bad`. `bad` lists entries that fence_matches rejects; the caller must wait on
+    them (fail closed).
     """
     entries, bad = [], []
     for line in fence_section(body):
@@ -222,7 +230,11 @@ def fence_entries(body):
         bare = re.split(r"[:;(]", re.sub(r"`[^`]*`", " ", line), maxsplit=1)[0]
         for token in [t for span in quoted for t in split_entries(span)] + split_entries(bare):
             token = token.strip().strip("\"'`")
-            if not re.search(r"[/.*?\[{}]", token):
+            if not token:
+                continue
+            if not re.search(r"[/.*?\[{}]", token) and token not in (top_level or ()):
+                if top_level is None and token not in bad:
+                    bad.append(token)
                 continue
             try:
                 patterns = expand_braces_checked(token)
@@ -358,16 +370,16 @@ def refs(prs):
 
 
 def check_issue(issue, prs, crate_cap, total_cap, native_blocked=frozenset(), native_blocking=frozenset(),
-                crate_names=None):
+                crate_names=None, top_level=None):
     """The reasons a task must wait; an empty list means go.
 
     `native_blocked` and `native_blocking` are the issue's dependency links from load_dependencies. The body's
     `Blocked by:` line is read too, as a fallback for issues without native links. `crate_names` are the folders under
-    crates/, or None when they could not be read.
+    crates/, or None when they could not be read. `top_level` are the root names, or None when they could not be read.
     """
     number = issue["number"]
     body = issue.get("body") or ""
-    fence, bad = fence_entries(body)
+    fence, bad = fence_entries(body, top_level)
     if not fence and not bad:
         return ["no fence"]
     reasons = [UNREADABLE_ENTRY.format(entry=e) for e in bad]
@@ -468,11 +480,16 @@ def main(argv):
             crate_names = load_crates()
         except GhError:
             crate_names = None  # a wildcard fence then waits; see check_issue
+        try:
+            top_level = load_top_level()
+        except GhError:
+            top_level = None  # a slashless fence word then waits; see fence_entries
         results = []
         for number in numbers:
             issue = load_issue(number)
             blocked, blocking = load_dependencies(number)
-            reasons = check_issue(issue, prs, args.crate_cap, args.total_cap, blocked, blocking, crate_names)
+            reasons = check_issue(issue, prs, args.crate_cap, args.total_cap, blocked, blocking, crate_names,
+                                  top_level)
             results.append({"issue": issue["number"], "go": not reasons, "reasons": reasons})
     except GhError as exc:
         print(f"dispatch-check: {exc}", file=sys.stderr)

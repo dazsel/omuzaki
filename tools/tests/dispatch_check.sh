@@ -32,6 +32,7 @@ case "$1 $2" in
         cat "$DISPATCH_FIXTURES/files-$number.json" || exit 1
         ;;
       *"/contents/crates"*) cat "$DISPATCH_FIXTURES/crates.json" || exit 1 ;;
+      *"/contents") cat "$DISPATCH_FIXTURES/root.json" || exit 1 ;;
       *) echo "stub gh: unexpected api call: $*" >&2; exit 3 ;;
     esac
     ;;
@@ -397,6 +398,62 @@ if python3 -I -c 'import json,sys; r=json.load(sys.stdin); sys.exit(0 if r == [{
 else
   fail "json: $out"
 fi
+
+# top-level names: a slashless fence word is a path only when it names a root entry (`tools`, `LICENSE-MIT`).
+scenario topwords
+issue 9030 <<'B'
+**Fence:** tools, CLAUDE.md
+B
+echo '[{"name":"tools","type":"dir"},{"name":"CLAUDE.md","type":"file"},{"name":"LICENSE-MIT","type":"file"}]' >"$FX/root.json"
+cat >"$FX/prs.json" <<'J'
+[{"number":651,"headRefName":"cloud/651","isDraft":false,"createdAt":"2026-10-11T10:00:00Z","files":[{"path":"tools/x.py"}],"body":""}]
+J
+run 9030
+expect_line "wait #9030: overlap with #651 (tools/x.py)" "top-level: a slashless root folder (tools) collides with its files"
+expect_code 1 "top-level: exit 1"
+
+scenario topfile
+issue 9031 <<'B'
+**Fence:** `LICENSE-MIT`
+B
+echo '[{"name":"tools","type":"dir"},{"name":"LICENSE-MIT","type":"file"}]' >"$FX/root.json"
+cat >"$FX/prs.json" <<'J'
+[{"number":652,"headRefName":"cloud/652","isDraft":false,"createdAt":"2026-10-11T11:00:00Z","files":[{"path":"LICENSE-MIT"}],"body":""}]
+J
+run 9031
+expect_line "wait #9031: overlap with #652 (LICENSE-MIT)" "top-level: a slashless root file collides with the same file"
+
+scenario topunreadable
+issue 9032 <<'B'
+**Fence:** tools
+B
+echo '[]' >"$FX/prs.json"
+run 9032
+if grep -q "^wait #9032: cannot understand the fence entry tools" <<<"$out"; then pass "top-level: a slashless word waits when the root cannot be read"; else fail "top-level unreadable: $out"; fi
+
+# fence_entries: the token rule, table-driven. Each row is (body, top-level names or None, entries, bad).
+python3 -I - "$CHECK" <<'P'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("dc", sys.argv[1])
+dc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(dc)
+root = {"tools", "LICENSE-MIT", "CLAUDE.md", "crates", "README.md"}
+table = [
+    ("Fence: tools, LICENSE-MIT, CLAUDE.md, only", root, ["tools", "LICENSE-MIT", "CLAUDE.md"], []),
+    ("Fence: `tools`, `only`", root, ["tools"], []),
+    ("Fence: none", root, [], []),
+    ("Fence: tools, LICENSE-MIT", None, [], ["tools", "LICENSE-MIT"]),
+    ("Fence: tools/x.py, only", None, ["tools/x.py"], ["only"]),
+]
+bad = 0
+for body, top, want_entries, want_bad in table:
+    got = dc.fence_entries(body, top)
+    if got != (want_entries, want_bad):
+        bad += 1
+        print(f"FAIL: fence_entries({body!r}) = {got}, wanted {(want_entries, want_bad)}", file=sys.stderr)
+sys.exit(1 if bad else 0)
+P
+if [[ $? == 0 ]]; then pass "fence_entries: slashless words by root name"; else fail "fence_entries: slashless table"; fi
 
 # a missing fixture is a gh failure: exit 2 with a message, not a crash.
 scenario missing
