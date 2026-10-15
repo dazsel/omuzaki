@@ -1,7 +1,5 @@
 //! Keys, signatures and identities, all written as lowercase hex (design D3).
 
-use std::fmt::Write as _;
-
 use omuzaki_store_api::ContentHash;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -25,10 +23,13 @@ pub enum KeyError {
 }
 
 pub(crate) fn to_hex(bytes: &[u8]) -> String {
-    bytes.iter().fold(String::with_capacity(2 * bytes.len()), |mut out, b| {
-        let _ = write!(out, "{b:02x}");
-        out
-    })
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(2 * bytes.len());
+    for byte in bytes {
+        out.push(char::from(DIGITS[usize::from(byte >> 4)]));
+        out.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
+    }
+    out
 }
 
 /// Reads exactly `2 * N` hex digits, either case.

@@ -3,12 +3,15 @@
 //! One body type for every consumer (`identity.rotate`, `identity.revoke`, `trust.import`, team rosters), so no crate
 //! defines a second serialisation under the same security domain.
 
+use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::domain::Domain;
-use crate::key::KeyId;
-use crate::service::{Check, TrustStore};
+use crate::key::{Identity, KeyId};
+use crate::service::{Check, Trust, TrustStore};
 use crate::signed::Signed;
 
 /// Why a key is revoked.
@@ -96,32 +99,115 @@ impl KeyStatement {
     }
 }
 
-/// Checks the `Signed` copies of one key statement under [`Domain::KeyStatement`]: every copy must verify, carry the
-/// same body, and together they must cover every key in [`KeyStatement::required_signers`]. Fails closed: the first
-/// copy that is not valid decides the outcome, differing bodies and a missing signer are `Malformed`, and no copies
-/// at all is `Unsigned`. On success the result is the first copy's `Valid`.
+/// Why a statement body is refused before any signature is looked at.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, thiserror::Error, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum StatementError {
+    /// A two-key statement (`Rotate`, `Also`) names one key twice, so one signature would stand for both roles.
+    #[error("a two-key statement needs two different keys")]
+    SameKey,
+}
+
+impl KeyStatement {
+    /// Refuses a body that cannot mean what it says: `Rotate` with `old == new` and `Also` with `a == b`.
+    ///
+    /// # Errors
+    /// [`StatementError::SameKey`] for equal keys in a two-key statement.
+    pub fn validate(&self) -> Result<(), StatementError> {
+        match self {
+            Self::Rotate { old: x, new: y } | Self::Also { a: x, b: y } if x == y => Err(StatementError::SameKey),
+            _ => Ok(()),
+        }
+    }
+}
+
+/// How bad a failed check is, so that of several the same one wins whatever the order of the copies.
+fn badness(check: &Check) -> u8 {
+    match check {
+        Check::Malformed(_) => 0,
+        Check::Tampered(_) => 1,
+        _ => 2,
+    }
+}
+
+/// Checks the `Signed` copies of one key statement under [`Domain::KeyStatement`]. The order and the repeats of
+/// `copies` never change the result: every copy is verified, and the result is read from the statement's roles and
+/// the set of keys that signed.
+///
+/// Fails closed. No copies is `Unsigned`. Differing bodies, an invalid body ([`KeyStatement::validate`], checked
+/// before signer coverage) and a missing signer are `Malformed`. Any copy that does not verify decides the result
+/// instead: the worst failure (`Malformed`, then `Tampered`), ties broken by the failure's text.
+///
+/// Otherwise the result is `Valid`, read by role: `Rotate` and `Bind` report the old (or bound) key and the trust in
+/// it; `Also` reports the lower key, `Revoked` if either key is revoked, else `Trusted` by the first key of the two
+/// that is, else `Unknown`; `Revoke` reports the revoked key if it signed, else the lowest signing key. Where one key
+/// signed under several names, the lowest name is reported.
 pub fn check_statement(copies: &[Signed<KeyStatement>], trust: &dyn TrustStore) -> Check {
     let Some(first) = copies.first() else {
         return Check::Unsigned;
     };
-    let mut result = None;
+    if copies.iter().any(|copy| copy.body != first.body) {
+        return Check::Malformed("the signed copies carry different statements".to_owned());
+    }
+    if let Err(e) = first.body.validate() {
+        return Check::Malformed(e.to_string());
+    }
+    let mut failure: Option<Check> = None;
+    let mut signers: BTreeMap<KeyId, Identity> = BTreeMap::new();
     for copy in copies {
-        if copy.body != first.body {
-            return Check::Malformed("the signed copies carry different statements".to_owned());
-        }
         match copy.check(KeyStatement::DOMAIN, trust) {
-            valid @ Check::Valid { .. } => {
-                result.get_or_insert(valid);
+            Check::Valid { identity, .. } => match signers.entry(identity.key) {
+                Entry::Vacant(slot) => {
+                    slot.insert(identity);
+                }
+                Entry::Occupied(mut slot) => {
+                    if identity.name < slot.get().name {
+                        slot.insert(identity);
+                    }
+                }
+            },
+            other => {
+                let worse = failure
+                    .as_ref()
+                    .is_none_or(|kept| (badness(&other), format!("{other:?}")) < (badness(kept), format!("{kept:?}")));
+                if worse {
+                    failure = Some(other);
+                }
             }
-            other => return other,
         }
     }
+    if let Some(failure) = failure {
+        return failure;
+    }
     for key in first.body.required_signers() {
-        if !copies.iter().any(|copy| copy.signer.key == key) {
+        if !signers.contains_key(&key) {
             return Check::Malformed(format!("missing the signature of key {}", key.fingerprint()));
         }
     }
-    result.unwrap_or(Check::Unsigned)
+    let (reported, standing) = match &first.body {
+        KeyStatement::Rotate { old, .. } => (*old, trust.trust(old)),
+        KeyStatement::Bind { key, .. } => (*key, trust.trust(key)),
+        KeyStatement::Also { a, b } => (*a.min(b), both_keys(trust.trust(a.min(b)), trust.trust(a.max(b)))),
+        KeyStatement::Revoke { key, .. } => {
+            let by = if signers.contains_key(key) { Some(*key) } else { signers.keys().next().copied() };
+            let Some(by) = by else { return Check::Malformed("a revocation has no valid signature".to_owned()) };
+            (by, trust.trust(&by))
+        }
+    };
+    match signers.remove(&reported) {
+        Some(identity) => Check::Valid { identity, trust: standing },
+        None => Check::Malformed("the reported key did not sign".to_owned()),
+    }
+}
+
+/// The standing of a pair of linked keys, lower key first: revoked if either is, else the first trusted one.
+fn both_keys(lower: Trust, higher: Trust) -> Trust {
+    match (lower, higher) {
+        (Trust::Revoked, _) | (_, Trust::Revoked) => Trust::Revoked,
+        (trusted @ Trust::Trusted { .. }, _) | (_, trusted @ Trust::Trusted { .. }) => trusted,
+        _ => Trust::Unknown,
+    }
 }
 
 #[cfg(test)]
@@ -142,9 +228,9 @@ mod tests {
         ];
         let names = ["rotate", "also", "revoke", "bind"];
         for (statement, name) in all.iter().zip(names) {
-            let value = serde_json::to_value(statement).unwrap_or_default();
+            let value = serde_json::to_value(statement).unwrap();
             assert_eq!(value["statement"], name);
-            assert_eq!(serde_json::from_value::<KeyStatement>(value).ok().as_ref(), Some(statement));
+            assert_eq!(&serde_json::from_value::<KeyStatement>(value).unwrap(), statement);
         }
     }
 

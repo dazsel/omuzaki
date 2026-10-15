@@ -107,3 +107,116 @@ fn the_schemas_exist_for_every_outcome() {
         assert!(schema.unwrap().is_object());
     }
 }
+
+fn permutations<T: Clone>(items: &[T]) -> Vec<Vec<T>> {
+    if items.len() <= 1 {
+        return vec![items.to_vec()];
+    }
+    let mut out = Vec::new();
+    for i in 0..items.len() {
+        let mut rest = items.to_vec();
+        let head = rest.remove(i);
+        for mut tail in permutations(&rest) {
+            tail.insert(0, head.clone());
+            out.push(tail);
+        }
+    }
+    out
+}
+
+#[test]
+fn equal_keys_in_a_two_key_statement_are_refused_before_coverage() {
+    let a = MemorySigner::from_test_seed([8; 32], "Mira");
+    let trust = MemoryTrust::new().trusted(a.key_id(), "Mira");
+    for body in [KeyStatement::rotate(a.key_id(), a.key_id()), KeyStatement::also(a.key_id(), a.key_id())] {
+        assert_eq!(body.validate(), Err(omuzaki_identity_api::statement::StatementError::SameKey));
+        let one = sign(&a, Domain::KeyStatement, &body);
+        let check = check_statement(&[one.clone(), one], &trust);
+        assert!(matches!(check, Check::Malformed(m) if m.contains("two different keys")), "{body:?}");
+    }
+    assert_eq!(KeyStatement::revoke(a.key_id(), RevokeReason::Lost).validate(), Ok(()));
+}
+
+#[test]
+fn the_outcome_does_not_depend_on_the_order_or_repeats_of_the_copies() {
+    let old = MemorySigner::from_test_seed([9; 32], "Mira");
+    let new = MemorySigner::from_test_seed([10; 32], "Mira");
+    let stray = MemorySigner::from_test_seed([11; 32], "Eve");
+    let body = KeyStatement::rotate(old.key_id(), new.key_id());
+    let copies = [
+        sign(&old, Domain::KeyStatement, &body),
+        sign(&new, Domain::KeyStatement, &body),
+        sign(&stray, Domain::KeyStatement, &body),
+    ];
+    let trusts = [
+        (MemoryTrust::new().trusted(old.key_id(), "Mira"), Trust::Trusted { name: "Mira".into() }),
+        (MemoryTrust::new().trusted(new.key_id(), "Mira"), Trust::Unknown),
+        (MemoryTrust::new().trusted(old.key_id(), "Mira").revoked(old.key_id()), Trust::Revoked),
+    ];
+    for (store, expected) in &trusts {
+        for order in permutations(&copies) {
+            let check = check_statement(&order, store);
+            assert!(
+                matches!(&check, Check::Valid { identity, trust } if identity.key == old.key_id() && trust == expected),
+                "{check:?}"
+            );
+            let mut repeated = order.clone();
+            repeated.extend(order.iter().cloned());
+            assert_eq!(check_statement(&repeated, store), check);
+        }
+    }
+}
+
+#[test]
+fn a_linked_pair_is_revoked_or_trusted_whichever_key_the_list_knows() {
+    let a = MemorySigner::from_test_seed([12; 32], "Mira");
+    let b = MemorySigner::from_test_seed([13; 32], "Mira");
+    let body = KeyStatement::also(a.key_id(), b.key_id());
+    let copies = [sign(&a, Domain::KeyStatement, &body), sign(&b, Domain::KeyStatement, &body)];
+    let cases = [
+        (MemoryTrust::new().trusted(a.key_id(), "A"), Trust::Trusted { name: "A".into() }),
+        (MemoryTrust::new().trusted(b.key_id(), "B"), Trust::Trusted { name: "B".into() }),
+        (MemoryTrust::new().trusted(a.key_id(), "A").revoked(b.key_id()), Trust::Revoked),
+        (MemoryTrust::new(), Trust::Unknown),
+    ];
+    for (store, expected) in &cases {
+        let results: Vec<_> = permutations(&copies).iter().map(|order| check_statement(order, store)).collect();
+        assert!(results.windows(2).all(|pair| pair[0] == pair[1]), "{results:?}");
+        assert!(matches!(&results[0], Check::Valid { trust, .. } if trust == expected), "{:?}", results[0]);
+    }
+}
+
+#[test]
+fn several_failures_report_the_same_one_in_every_order() {
+    let a = MemorySigner::from_test_seed([14; 32], "Mira");
+    let b = MemorySigner::from_test_seed([15; 32], "Mira");
+    let body = KeyStatement::also(a.key_id(), b.key_id());
+    let good = sign(&a, Domain::KeyStatement, &body);
+    let wrong_domain = sign(&b, Domain::Export, &body);
+    let mut renamed = sign(&b, Domain::KeyStatement, &body);
+    renamed.signer.name = "Other".into();
+    let copies = [good, wrong_domain, renamed];
+    let results: Vec<_> =
+        permutations(&copies).iter().map(|order| check_statement(order, &MemoryTrust::new())).collect();
+    assert!(results.windows(2).all(|pair| pair[0] == pair[1]), "{results:?}");
+    assert!(matches!(results[0], Check::Tampered(_)));
+}
+
+mod shuffled {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn any_shuffle_of_any_copies_gives_one_result(order in Just((0..6usize).collect::<Vec<_>>()).prop_shuffle(), keep in 1usize..=6) {
+            let signers: Vec<_> = (0..3u8).map(|n| MemorySigner::from_test_seed([40 + n; 32], "Mira")).collect();
+            let body = KeyStatement::rotate(signers[0].key_id(), signers[1].key_id());
+            let pool: Vec<_> = (0..6).map(|i| sign(&signers[i % 3], Domain::KeyStatement, &body)).collect();
+            let trust = MemoryTrust::new().trusted(signers[0].key_id(), "Mira");
+            let chosen: Vec<_> = order.iter().take(keep).map(|i| pool[*i].clone()).collect();
+            let mut sorted = chosen.clone();
+            sorted.sort_by_key(|c| c.signer.key);
+            prop_assert_eq!(check_statement(&chosen, &trust), check_statement(&sorted, &trust));
+        }
+    }
+}
