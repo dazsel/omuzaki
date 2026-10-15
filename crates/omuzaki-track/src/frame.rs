@@ -142,12 +142,17 @@ impl RgbFrame<'_> {
     }
 
     /// Whether every sample of a row between the snapped positions `a` and `b` has all four neighbours inside the
-    /// frame. A row's positions are monotone in x (float multiply and add keep the order), so its two ends bound
-    /// the rest.
+    /// frame and snapped coordinates that fit an `i32`, which [`sample_inside`](Self::sample_inside) takes. A row's
+    /// positions are monotone in x (float multiply and add keep the order), so its two ends bound the rest.
     fn row_is_inside(&self, a: (i64, i64), b: (i64, i64)) -> bool {
         let inside = |(qx, qy): (i64, i64)| {
             let (xi, yi) = (qx >> SUBPIXEL_BITS, qy >> SUBPIXEL_BITS);
-            xi >= 0 && yi >= 0 && xi + 1 < i64::from(self.width) && yi + 1 < i64::from(self.height)
+            xi >= 0
+                && yi >= 0
+                && xi + 1 < i64::from(self.width)
+                && yi + 1 < i64::from(self.height)
+                && qx <= i64::from(i32::MAX)
+                && qy <= i64::from(i32::MAX)
         };
         inside(a) && inside(b)
     }
@@ -437,6 +442,18 @@ mod tests {
                 Err(FaceTrackError::Shape { graph: "input" })
             );
         }
+    }
+
+    /// Frames wider than 2^26 pixels have snapped coordinates beyond `i32`: those rows must take the per-pixel path
+    /// (the predicate reads only the frame's size, so no pixels are needed).
+    #[test]
+    fn rows_beyond_the_i32_range_are_not_fast_path_rows() {
+        let wide = RgbFrame { data: &[], width: 1 << 27, height: 4, stride: 0 };
+        let snapped = |x: i64| (x << SUBPIXEL_BITS, 0);
+        assert!(wide.row_is_inside(snapped(0), snapped((1 << 26) - 2)));
+        assert!(!wide.row_is_inside(snapped(0), snapped(1 << 26)), "x = 2^26 snaps past i32::MAX");
+        assert!(!wide.row_is_inside(snapped(1 << 26), snapped(0)), "either end counts");
+        assert!(!wide.row_is_inside((0, i64::from(i32::MAX) + 1), (0, 0)), "y too");
     }
 
     #[test]
