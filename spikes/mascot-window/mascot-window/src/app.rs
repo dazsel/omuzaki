@@ -388,16 +388,18 @@ impl App {
         }
     }
 
-    /// The window changed size (a display scale change does this): the picture is drawn in window pixels, so it and the
-    /// mask built from it are redone at the new size. A size too small for the picture (a minimised window) is skipped.
+    /// The window changed size (a display scale change does this): the picture is drawn in window pixels, so it is redone
+    /// at the new size, and so is the click-through mask built from it. The mask only matters for per-pixel click-through,
+    /// and a size too small for the picture (a minimised window) is skipped.
     fn resized(&mut self, size: PhysicalSize<u32>) {
         if let Some(renderer) = self.renderer.as_mut() {
             renderer.resize(size.width, size.height);
         }
         let current = self.scene.as_ref().map(|s| (s.width, s.height));
-        if current == Some((size.width, size.height))
-            || size.width < scene_pass::MIN_SIZE.0
-            || size.height < scene_pass::MIN_SIZE.1
+        let too_small = size.width < scene_pass::MIN_SIZE.0 || size.height < scene_pass::MIN_SIZE.1;
+        if self.config.platform.click_through != ClickThrough::Pixel
+            || current == Some((size.width, size.height))
+            || too_small
         {
             return;
         }
