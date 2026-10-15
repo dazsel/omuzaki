@@ -1,0 +1,44 @@
+# Render cases for `tools/ci/evidence.py`: CI renders each at the PR's base and at the PR, for pull requests labelled
+# `visual` (.github/workflows/visual-evidence.yml). The format is documented at the top of tools/ci/evidence.py.
+#
+# Ears and brows: the human and elf ears are still stubs (src/head/ears) and the brows are painted by omuzaki-face, so
+# no case isolates them yet. `head-part` is the picture where they show once built; add `ears` and `brows` closeups
+# here with the change that makes them render.
+
+[[case]]
+name = "head-part"
+description = "The built head through the mock toon renderer: front, three-quarter and side, 512 px, fixed camera."
+env = { OMUZAKI_HEAD_PART_PPM = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-char", "--test", "head_part", "render_the_head_part_when_asked", "--", "--exact"] },
+]
+images = ["front.ppm", "three-quarter.ppm", "side.ppm"]
+
+[[case]]
+name = "body-kinds"
+description = "The ten body presets on the soft-sd template, front above side (tools/body-kind-sheet.py)."
+env = { OMUZAKI_SHEET_DIR = "{out}/obj" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-char", "--test", "body", "--", "--ignored", "--exact", "dump"] },
+    { run = ["python3", "-I", "tools/body-kind-sheet.py", "{out}/obj", "{out}", "soft-sd", "hip"] },
+]
+images = ["soft-sd-front-side.png", "soft-sd-hip.png"]
+
+[[case]]
+name = "body-shape"
+description = "Every body-shape axis at -1, 0 and +1 as silhouettes over the template (tools/body-shape-sheet.py)."
+env = { OMUZAKI_SHEET_DIR = "{out}/pics" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-char", "--test", "body_shape", "--", "--ignored", "--exact", "sheet"] },
+    { run = ["python3", "-I", "tools/body-shape-sheet.py", "{out}/pics", "{out}"] },
+]
+images = ["contact-sheet.png"]
+
+[[case]]
+name = "stature-lineup"
+description = "The templates side by side at their real-world heights (tools/stature_lineup.py)."
+steps = [
+    { run = ["cargo", "run", "--locked", "-q", "-p", "omuzaki-char", "--example", "stature_lineup"], stdout = "lineup.json" },
+    { run = ["python3", "-I", "tools/stature_lineup.py", "{out}/lineup.json", "{out}/lineup.png"] },
+]
+images = ["lineup.png"]

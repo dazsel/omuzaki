@@ -317,6 +317,7 @@ fn describe<'a>(entries: &'a VecDeque<Entry>, event: &'a Event, own: &OwnTxs) ->
         Event::TxCommitted { .. }
         | Event::SessionOpened { .. }
         | Event::SessionChanged { .. }
+        | Event::Clash { .. }
         | Event::SessionEnded { .. }
         | Event::SessionUndone { .. }
         | Event::ApprovalRequested { .. }

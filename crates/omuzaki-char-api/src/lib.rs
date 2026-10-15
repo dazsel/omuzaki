@@ -13,6 +13,8 @@
 //! - [`services`]: [`BuildServices`], the asset reader and rasteriser the app injects into a build
 //! - [`rig`], [`skin`]: the extra bones, spring chains and colliders parts contribute, the [`CharacterRig`] the builder
 //!   assembles from them, and weight brushes
+//! - [`look`]: the look node ([`LookDef`]: a preset plus overrides), self-registering presets
+//!   ([`register_look_presets!`]) and the build-time material transform ([`BuiltCharacter::apply_look`])
 //! - [`drivers`]: [`BoneDriver`]s, a custom channel or another bone posing an extra bone, and how they export
 //! - [`stature`]: [`Stature`], real-size scaling of the body and head before the parts that simulate
 //! - [`variant`]: per-use variants as path overrides, and automatic selection by shot
@@ -31,6 +33,7 @@ pub mod hair;
 pub mod head;
 pub mod ids;
 pub mod kind;
+pub mod look;
 pub mod rig;
 pub mod runtime;
 pub mod services;
@@ -64,13 +67,17 @@ pub use hair::{
 };
 pub use head::{Chin, Cranium, EarKind, Ears, FaceWindow, HeadOutline, HeadParams, Neck, SkinColours, TracedHead};
 pub use ids::{
-    AnchorId, BodyShapeId, BodyTemplateId, BoneName, CharId, ColourwayId, GroupId, JointRef, MaterialName, PartId,
-    PartKindId, ProfileId, SkinToneId, TextureName, VariantId,
+    AnchorId, BodyShapeId, BodyTemplateId, BoneName, CharId, ColourwayId, GroupId, JointRef, LookPresetId,
+    MaterialName, PartId, PartKindId, ProfileId, SkinToneId, TextureName, VariantId,
 };
 pub use kind::{
     Anchor, BodyFit, BodyRegion, BuildCtx, HeadSurface, KindProvenance, PartCategory, PartKind, PartKindRegistration,
     PartMeta, PartOutput, Published, Publishes, Quality, RecolourCtx, Recoloured, Section, find_kind, kinds,
     requires_of,
+};
+pub use look::{
+    ClassLook, DEFAULT_PRESET, DERIVED_LINE, GradeOverride, LookDef, LookError, LookParams, LookPreset,
+    LookPresetSource, MaterialClass, OutlineColour, ProgramLook, SceneLook, find_look_preset, look_presets,
 };
 pub use omuzaki_core::mesh::{ExtraAttribute, MeshData, MeshError};
 pub use omuzaki_store_api::ContentHash;

@@ -80,6 +80,7 @@ mod migration_files;
 pub use error::StoreError;
 pub use lock::ProjectLock;
 pub use migrate::{BASE_SCHEMA, Migration, MigrationError, supported_schema};
+pub use omuzaki_assets_lock::{AssetsLock, LockError, LockRow};
 pub use project::{Project, SaveReport};
 
 #[doc(hidden)]

@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use omuzaki_core::glam::{Vec2, Vec3, Vec4};
+use omuzaki_core::glam::{Quat, Vec2, Vec3, Vec4};
 use serde::{Deserialize, Serialize};
 
 use super::{Humanoid, MaterialIx, NodeIx};
@@ -410,18 +410,21 @@ pub struct FirstPerson {
     pub annotations: Vec<MeshAnnotation>,
 }
 
-/// A spring-bone collision shape in the local space of its node (`VRMC_springBone`, "colliders"). The inside-out and
-/// plane shapes of `VRMC_springBone_extended_collider` are not modelled; importers report them as dropped.
+/// A spring-bone collision shape in the local space of its node (`VRMC_springBone`, "colliders", and
+/// `VRMC_springBone_extended_collider-1.0`, "Shape").
+///
+/// `#[non_exhaustive]`: the VRM family keeps adding shapes, so a consumer's `match` needs a fallback arm.
 #[derive(Copy, Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum ColliderShape {
-    /// A sphere.
+    /// A sphere that keeps spring joints outside it.
     Sphere {
         /// Centre.
         offset: Vec3,
         /// Radius, metres.
         radius: f32,
     },
-    /// A capsule from `offset` to `tail`.
+    /// A capsule from `offset` to `tail` that keeps spring joints outside it.
     Capsule {
         /// Centre of the start cap.
         offset: Vec3,
@@ -429,6 +432,29 @@ pub enum ColliderShape {
         radius: f32,
         /// Centre of the end cap.
         tail: Vec3,
+    },
+    /// Keeps spring joints inside the ball (extended collider, `sphere.inside = true`).
+    SphereInside {
+        /// Centre.
+        offset: Vec3,
+        /// Radius, metres.
+        radius: f32,
+    },
+    /// Keeps spring joints inside the capsule (extended collider, `capsule.inside = true`).
+    CapsuleInside {
+        /// Centre of the start cap.
+        offset: Vec3,
+        /// Radius, metres.
+        radius: f32,
+        /// Centre of the end cap.
+        tail: Vec3,
+    },
+    /// An infinite plane through `offset`; joints stay on the side `normal` points to (extended collider, "plane").
+    Plane {
+        /// A point on the plane.
+        offset: Vec3,
+        /// The plane's normal, unit length.
+        normal: Vec3,
     },
 }
 
@@ -465,13 +491,56 @@ pub struct SpringJoint {
     pub gravity_dir: Vec3,
     /// Air resistance, 0..=1.
     pub drag_force: f32,
+    /// An angular limit on the joint (`VRMC_springBone_limit-1.0`). The spec ignores it on the last joint of a chain,
+    /// and exporters should not write it there.
+    pub limit: Option<JointLimit>,
 }
 
 impl SpringJoint {
-    /// A joint with the spec defaults: radius 0, stiffness 1, no gravity (pointing down), drag 0.5.
+    /// A joint with the spec defaults: radius 0, stiffness 1, no gravity (pointing down), drag 0.5, no limit.
     pub fn new(node: NodeIx) -> Self {
-        Self { node, hit_radius: 0.0, stiffness: 1.0, gravity_power: 0.0, gravity_dir: Vec3::NEG_Y, drag_force: 0.5 }
+        Self {
+            node,
+            hit_radius: 0.0,
+            stiffness: 1.0,
+            gravity_power: 0.0,
+            gravity_dir: Vec3::NEG_Y,
+            drag_force: 0.5,
+            limit: None,
+        }
     }
+}
+
+/// An angular limit on a spring joint (`VRMC_springBone_limit-1.0`). Angles are in radians; `rotation` orients the
+/// limit's axes in the joint's local space.
+///
+/// `#[non_exhaustive]`: further limit kinds may follow.
+#[derive(Copy, Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub enum JointLimit {
+    /// Keeps the bone within a cone of half-angle `angle` around the rotated axis (spec "cone").
+    Cone {
+        /// Half-angle of the cone.
+        angle: f32,
+        /// Orientation of the limit's axes.
+        rotation: Quat,
+    },
+    /// Rotation about one axis only, within `±angle` (spec "hinge").
+    Hinge {
+        /// Largest rotation either way.
+        angle: f32,
+        /// Orientation of the limit's axes.
+        rotation: Quat,
+    },
+    /// Independent pitch and yaw limits (spec "spherical").
+    Spherical {
+        /// Largest pitch either way.
+        pitch: f32,
+        /// Largest yaw either way.
+        yaw: f32,
+        /// Orientation of the limit's axes.
+        rotation: Quat,
+    },
 }
 
 /// A chain of joints, each a descendant of the one before. The last joint is only a tail: its own parameters are not
