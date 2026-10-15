@@ -29,7 +29,8 @@
 //! base `0.006` past `t = 0.83`; a [`Bulge`](omuzaki_char_api::Bulge) is the closest shape (`base + swell sin(pi t)`, peak at the middle).
 //! The shade is `1 - 0.025 i`. Stiffness and follow are the group's [`Dynamics`](omuzaki_char_api::Dynamics).
 
-use omuzaki_char_api::{FramingGen, FramingLocks, HairSide, HeadSurface, Taper};
+use omuzaki_char_api::hair::FramingLocks;
+use omuzaki_char_api::{FramingGen, HairSide, HeadSurface, Taper};
 use omuzaki_core::glam::{DVec3, Vec3};
 
 use super::cap::smoothstep;
@@ -152,7 +153,12 @@ impl Lock<'_> {
 
     /// `surfAt`: the point on the head at head-local `(x, y)` in front projection, pushed out by `off`.
     fn surf_at(&self, head: &dyn HeadSurface, x: f64, y: f64, off: f64) -> DVec3 {
-        let dx = x.abs().min(self.rh * SURFACE_X_LIMIT) * if x < 0.0 { -1.0 } else { 1.0 };
+        let mut dx = x.abs().min(self.rh * SURFACE_X_LIMIT);
+        // Where the point lies outside the front disc, slide it in along `x` so the authored height `y` is kept.
+        if dx * dx + y * y > self.rh * self.rh {
+            dx = (self.rh * self.rh - y * y).max(0.0).sqrt();
+        }
+        let dx = if x < 0.0 { -dx } else { dx };
         let dz = (self.rh * self.rh - dx * dx - y * y).max(0.0).sqrt();
         let dir = DVec3::new(dx, y, dz).normalize_or(DVec3::Z).as_vec3();
         head.point(dir, narrow(off)).as_dvec3()
@@ -206,8 +212,9 @@ impl Lock<'_> {
         }
         let fx = frame_x(edge, locks.cheek);
         if sign > 0.0 {
-            pts.push(at(sign * (fx + 0.006), locks.cheek - 0.005, 0.05));
-            pts.push(at(sign * (fx - 0.004), locks.cheek - 0.035, 0.07));
+            // The cheek lock takes the wave's tip curl at its two points, so `wave.curl` moves it too.
+            pts.push(at(sign * (fx + 0.006 + sway.tip(0.5)), locks.cheek - 0.005, 0.05));
+            pts.push(at(sign * (fx - 0.004 + sway.tip(1.0)), locks.cheek - 0.035, 0.07));
         } else {
             let end =
                 locks.end.get(self.i_usize().min(locks.end.len().saturating_sub(1))).copied().unwrap_or(locks.cheek);
@@ -302,4 +309,34 @@ fn straight_fall(head: &dyn HeadSurface, n: usize) -> Vec<Vec3> {
 #[allow(clippy::cast_possible_truncation)] // offsets and lengths are metres
 fn narrow(x: f64) -> f32 {
     x as f32
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A sphere of radius 0.2 at the origin.
+    #[derive(Debug)]
+    struct Ball;
+
+    impl HeadSurface for Ball {
+        fn centre(&self) -> Vec3 {
+            Vec3::ZERO
+        }
+        fn radius(&self, _dir: Vec3) -> f32 {
+            0.2
+        }
+    }
+
+    #[test]
+    fn surface_projection_keeps_the_authored_height() {
+        let g = FramingGen::default();
+        let lock = Lock { g: &g, side: 1.0, i: 0.0, rh: 0.2, tucked: false };
+        // Outside the front disc (0.18² + y² > 0.2²), and the default lower point y = -0.2 on the rim.
+        for y in [-0.15, -0.1, 0.0, 0.1, -0.2] {
+            let p = lock.surf_at(&Ball, 0.18, y, 0.0);
+            let dir = p.normalize();
+            assert!((dir.y - y / 0.2).abs() < 1e-5, "y {y}: {dir}");
+        }
+    }
 }

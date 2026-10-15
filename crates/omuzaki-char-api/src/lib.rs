@@ -67,10 +67,10 @@ pub use error::BuildError;
 pub use fact::{Agree, Append, Fact, FactRegistration, Keyed, Last, Rule, facts};
 pub use geometry::{FaceOverlay, MaterialError, MaterialSpec, PartMesh, TextureData, face_texture_desc};
 pub use hair::{
-    BangLayer, BangsGen, BraidGen, Bulge, BunGen, CapGen, CurtainGen, Dynamics, Falloff, Follow, FramingGen,
-    FramingLocks, Generator, GuideClump, GuidePoint, GuidesGen, HAIR_INFO, HAIR_PROGRAM, HAIR_UV, HairClump, HairGroup,
-    HairParams, HairPhysics, HairRng, HairShading, HairShadingError, HairSide, LegacyLcg, PartSweepGen, SphereCollider,
-    Streak, StreakBlend, TailGen, Taper, Wave, Wisp,
+    BangLayer, BangsGen, BraidGen, Bulge, BunGen, CapGen, CurtainGen, Dynamics, Falloff, Follow, FramingGen, Generator,
+    GuideClump, GuidePoint, GuidesGen, HAIR_INFO, HAIR_PROGRAM, HAIR_UV, HairClump, HairGroup, HairParams, HairPhysics,
+    HairRng, HairShading, HairShadingError, HairSide, LegacyLcg, PartSweepGen, SphereCollider, Streak, StreakBlend,
+    TailGen, Taper, Wave, Wisp,
 };
 pub use head::{Chin, Cranium, EarKind, Ears, FaceWindow, HeadOutline, HeadParams, Neck, SkinColours, TracedHead};
 pub use ids::{

@@ -13,8 +13,9 @@ use omuzaki_char::hair::compile::{
     CompiledGroup, Dispatch, Forked, HairGenCtx, UnitStream, clumps_in, compile_groups, is_bilateral,
 };
 use omuzaki_char::hair::r#gen::framing::{self, HANGING_POINTS, TUCKED_POINTS};
+use omuzaki_char_api::hair::FramingLocks;
 use omuzaki_char_api::{
-    Dynamics, FramingGen, FramingLocks, Generator, GroupId, HairGroup, HairParams, HairSide, HeadSurface, Quality, Wave,
+    Dynamics, FramingGen, Generator, GroupId, HairGroup, HairParams, HairSide, HeadSurface, Quality, Wave,
 };
 use omuzaki_core::glam::Vec3;
 use omuzaki_core::rng::Rng;
@@ -363,11 +364,18 @@ fn a_tucked_lock_ends_where_the_formulas_put_it() {
 #[test]
 fn the_tip_curl_moves_the_tail() {
     for locks in [false, true] {
-        for side in [HairSide::Left, HairSide::Right] {
-            let plain = swaying(side, 2, locks);
+        for (side, count) in [
+            (HairSide::Left, 1),
+            (HairSide::Left, 2),
+            (HairSide::Right, 1),
+            (HairSide::Right, 2),
+            (HairSide::Both, 1),
+            (HairSide::Both, 3),
+        ] {
+            let plain = swaying(side, count, locks);
             let curled = FramingGen { wave: Wave { curl: 0.1, ..plain.wave }, ..plain.clone() };
             let (a, b) = (compile_forked(&plain, 3), compile_forked(&curled, 3));
-            assert_ne!(a, b, "{side:?} locks {locks}: curl must change the geometry");
+            assert_ne!(a, b, "{side:?} x{count} locks {locks}: curl must change the geometry");
             for (p, q) in a.clumps.iter().zip(&b.clumps) {
                 // The root is not moved.
                 assert!(p.rest[0].distance(q.rest[0]) < 1e-6);
