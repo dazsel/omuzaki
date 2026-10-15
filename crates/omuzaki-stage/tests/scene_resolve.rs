@@ -231,3 +231,32 @@ fn an_error_leaves_the_last_resolve_in_place() {
     assert!(out.resolve_into(&def, &figures, ASPECT).is_err());
     assert_eq!(out, before);
 }
+
+#[test]
+fn a_free_camera_looking_at_itself_is_a_scene_error() {
+    let mut def = scene();
+    let free = CameraDef {
+        framing: Framing::Free,
+        position: Some([0.0, 1.0, 2.0]),
+        target: Some([0.0, 1.0, 2.0]),
+        ..CameraDef::preset(Framing::Free)
+    };
+    def.cameras.insert(camera("free"), free);
+    let Err(StageError::Scene { source }) = ResolvedScene::new().resolve_into(&def, &figures([0.0, 0.0]), ASPECT)
+    else {
+        panic!("expected a scene error");
+    };
+    assert_eq!(source.path, "cameras.free.target");
+}
+
+#[test]
+fn a_figure_with_no_usable_height_is_a_scene_error() {
+    for height_m in [0.0, -1.0, f32::NAN] {
+        let mut figures = figures([0.0, 0.0]);
+        figures.values_mut().next().unwrap().height_m = height_m;
+        let Err(StageError::Scene { source }) = ResolvedScene::new().resolve_into(&scene(), &figures, ASPECT) else {
+            panic!("{height_m}: expected a scene error");
+        };
+        assert_eq!(source.path, "cast.kiri");
+    }
+}

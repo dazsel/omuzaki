@@ -113,6 +113,7 @@ impl ResolvedScene {
         figures: &BTreeMap<MemberId, Figure>,
         aspect: f32,
     ) -> Result<Changes, StageError> {
+        check_figures(figures)?;
         let subject = def.scene.subject.as_ref().map_or_else(|| figures.values().next(), |id| figures.get(id));
         let frame_of = |anchor: &Anchor| match anchor {
             Anchor::Stage => None,
@@ -236,11 +237,31 @@ fn free_camera(
         });
     }
     let distance = eye.distance(at);
+    if distance <= 0.0 {
+        return Err(scene_error(SceneError::new(
+            format!("cameras.{id}.target"),
+            "a free camera's target is where it stands, so there is no direction to look in",
+        )));
+    }
     let height = subject.map_or(REFERENCE_HEIGHT_M, |f| f.height_m);
     let projection = Projection::Perspective {
         fov_y_deg: camera.fov,
         near: (FREE_NEAR_SHARE * distance).max(FREE_NEAR_FLOOR),
         far: distance + FREE_FAR_HEIGHTS * height,
     };
-    Ok(Camera::look_at(eye, at, Vec3::Y, projection))
+    let placed = Camera::look_at(eye, at, Vec3::Y, projection);
+    placed.validate().map_err(|e| StageError::Framing { reason: format!("camera '{id}' isn't usable: {e}") })?;
+    Ok(placed)
+}
+
+/// Refuses a figure whose placement or height isn't usable: the height scales every anchored length and the lights'
+/// intensities, so a zero or non-finite one would spread through the whole resolve.
+fn check_figures(figures: &BTreeMap<MemberId, Figure>) -> Result<(), StageError> {
+    match figures.iter().find(|(_, f)| !(f.height_m.is_finite() && f.height_m > 0.0 && f.root.is_finite())) {
+        None => Ok(()),
+        Some((id, f)) => Err(scene_error(SceneError::new(
+            format!("cast.{id}"),
+            format!("the figure's height {} m and placement must be finite, with a height above zero", f.height_m),
+        ))),
+    }
 }
