@@ -416,12 +416,12 @@ impl Op for Import {
         });
         // A cancelled import surfaces from the importer as a plain conflict; the job reports it as cancelled.
         let imported = outcome.map_err(|e| if job.is_cancelled() { OpError::cancelled(job.id()) } else { e })?;
-        // The manager applies `finish` for work that succeeded even after a cancel request, so a cancel that came while
-        // the objects were written must not return the result: no asset record is written for a cancelled job.
-        job.checkpoint("done", 1.0)?;
         let mut result = serde_json::to_value(imported)
             .map_err(|e| OpError::internal(format!("serialising the import: {e}")))?;
         strip_nulls(&mut result);
+        // The manager applies `finish` for work that succeeded even after a cancel request, so the cancel check is the
+        // last step before the result is returned: nothing may run between it and the return.
+        job.checkpoint("done", 1.0)?;
         Ok(result)
     }
 
