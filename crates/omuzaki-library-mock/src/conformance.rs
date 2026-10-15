@@ -35,7 +35,7 @@ pub fn run(library: &dyn Library) {
     refusals(library);
 }
 
-/// The compatibility filter (design D1, D13) on the fixture character from [`fixtures::characters`], which the
+/// The compatibility filter (design D1, D13) on the fixture character from [`fixtures::characters`](crate::fixtures::characters), which the
 /// library must be able to answer for. Incompatible items are filtered out, a style mismatch stays with its warning
 /// and ranks below an equally good match that fits, and a character the library doesn't know is an error rather than
 /// an unfiltered result.
