@@ -3875,6 +3875,7 @@ dependencies = [
  "omuzaki-doc-api",
  "omuzaki-doc-mock",
  "omuzaki-ops-api",
+ "omuzaki-ops-mock",
  "proptest",
  "schemars",
  "serde",
