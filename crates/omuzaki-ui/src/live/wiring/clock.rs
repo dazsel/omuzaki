@@ -55,7 +55,7 @@ impl PerformClock for RealClock {
                 return;
             }
             if left > SPIN_BEFORE {
-                std::thread::sleep(left - SPIN_BEFORE);
+                std::thread::sleep(left.saturating_sub(SPIN_BEFORE));
             } else {
                 std::thread::yield_now();
             }

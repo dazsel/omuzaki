@@ -75,8 +75,8 @@ mod tests {
     fn every_common_size_round_trips_at_every_quarter_scale_from_75_to_300_percent() {
         let sizes = [(1920, 1080), (1280, 720), (2560, 1440), (3840, 2160), (1080, 1920), (1366, 768), (1001, 997)];
         for (w, h) in sizes {
-            for quarter in 3..=12 {
-                let scale = quarter as f32 / 4.0;
+            for quarter in 3_u16..=12 {
+                let scale = f32::from(quarter) / 4.0;
                 let size = PhysicalSize::new(w, h);
                 let points = points_for(size, scale).expect("usable");
                 assert_eq!(PhysicalSize::of_points(points, scale), size, "{w}x{h} at {scale}");

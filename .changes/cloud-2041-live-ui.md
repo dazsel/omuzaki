@@ -1,0 +1,5 @@
+# omuzaki-ui: the Live UI (V0): the Live workspace, the clean output window and the live wiring
+
+- `live::wiring`: the perform loop on its own thread (`omuzaki-perform`) at the performer's fixed 60 Hz step, a lock-free newest-wins mailbox to the render side, `LiveScene` (the newest frame through `Stage::tick` into the renderer's `Scene`), and `LiveRig`, which owns the tracker and the perform thread and stops them in the documented quit order. A headless test runs `FakeCamera`'s tracker to scenes at 60 Hz for 10 s with no allocation on the perform thread after warm-up (#312).
+- `output_window` and `aux_window`: a borderless window exactly the output size in physical pixels at any scale, showing the program frame over the key colour, or over nothing where a transparent surface is verified (and saying `fallback` elsewhere); placement remembered per monitor arrangement (#299).
+- `live`: the Live workspace (health, output, character, camera, calibrate, smoothing, hotkeys) over the `perform.*` ops on main; controls whose ops are not on main yet are disabled and say so; its gallery story and the `live-workspace` evidence case (#305).

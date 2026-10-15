@@ -20,7 +20,7 @@ pub fn over_key(pixel: [u8; 4], key: Color32) -> [u8; 3] {
 
 /// A whole premultiplied RGBA8 image over `key`, as opaque RGB8 rows.
 pub fn image_over_key(rgba: &[u8], key: Color32) -> Vec<u8> {
-    rgba.chunks_exact(4).flat_map(|p| over_key([p[0], p[1], p[2], p[3]], key)).collect()
+    rgba.as_chunks::<4>().0.iter().flat_map(|pixel| over_key(*pixel, key)).collect()
 }
 
 #[cfg(test)]

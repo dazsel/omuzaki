@@ -258,7 +258,7 @@ impl Live {
     }
 
     fn status(&self) -> Value {
-        self.run("perform.status", Value::Object(Default::default()))
+        self.run("perform.status", args(&[]))
     }
 }
 
@@ -301,7 +301,9 @@ fn smoothing_calibrate_and_a_trigger_each_change_the_running_loop() {
     live.perform.press_trigger(TriggerPress::new(values, mask)).expect("queued");
     let reader = &mut live.reader;
     assert!(
-        eventually(Duration::from_secs(2), || reader.take_new().is_some_and(|f| f.channels[Channel::JAW_OPEN] == 1.0)),
+        eventually(Duration::from_secs(2), || reader
+            .take_new()
+            .is_some_and(|f| (f.channels[Channel::JAW_OPEN] - 1.0).abs() < 1e-6)),
         "the trigger reached the published frames"
     );
     live.perform.release_trigger().expect("queued");
@@ -317,7 +319,7 @@ fn smoothing_calibrate_and_a_trigger_each_change_the_running_loop() {
     // The ops see the stopped performer as unavailable, not as a hang.
     let request = Request {
         op: "perform.status".to_owned(),
-        args: Value::Object(Default::default()),
+        args: args(&[]),
         mode: Mode::Apply,
         actor: Actor::Person { name: "performer".into() },
         grants: Grants::person(),

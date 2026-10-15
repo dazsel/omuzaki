@@ -40,11 +40,11 @@ fn render(size: PhysicalSize, scale: f32, key: Color32) -> (image::RgbaImage, eg
 
 /// The largest per-channel difference between `image` and the card composited over `key` on the CPU.
 fn worst_difference(image: &image::RgbaImage, card: &egui::ColorImage, key: Color32) -> u8 {
-    let premultiplied: Vec<u8> = card.pixels.iter().flat_map(|p| p.to_array()).collect();
+    let premultiplied: Vec<u8> = card.pixels.iter().flat_map(Color32::to_array).collect();
     let reference = image_over_key(&premultiplied, key);
     image
         .pixels()
-        .zip(reference.chunks_exact(3))
+        .zip(reference.as_chunks::<3>().0)
         .flat_map(|(got, want)| (0..3).map(move |i| got.0[i].abs_diff(want[i])))
         .max()
         .unwrap_or(u8::MAX)

@@ -79,6 +79,8 @@ impl TriggerPress {
 }
 
 /// A request to the loop itself (the ops' requests go through the [`PerformHandle`]).
+// A press is large, but the queue's slots are allocated once with the channel: boxing it would allocate per press.
+#[allow(clippy::large_enum_variant)]
 enum LoopCommand {
     Source(Box<dyn FrameSource>),
     Press(TriggerPress),
@@ -232,14 +234,14 @@ struct PerformLoop {
 impl PerformLoop {
     /// Passes until `stop` is set: each one runs what is due, then waits for the next step boundary.
     fn run(&mut self, mut clock: Box<dyn PerformClock>, stop: &AtomicBool) {
-        let step = 1.0 / f64::from(STEP_HZ);
+        let period = 1.0 / f64::from(STEP_HZ);
         let origin = clock.now().0;
         while !stop.load(Ordering::Acquire) {
             let now = clock.now();
             self.pass(now);
             // The next boundary after `now`, on the grid that starts at the loop's origin.
-            let next = ((now.0 - origin) / step).floor() + 1.0;
-            clock.wait_until(Seconds(origin + next * step));
+            let next = ((now.0 - origin) / period).floor() + 1.0;
+            clock.wait_until(Seconds(origin + next * period));
         }
     }
 
