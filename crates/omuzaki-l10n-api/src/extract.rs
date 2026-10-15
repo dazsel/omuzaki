@@ -219,7 +219,7 @@ fn comment_lines(context: &str) -> Vec<String> {
         .collect()
 }
 
-/// The argument comment of design §11: the type without `null`, the range and the default, joined with `, `.
+/// The argument comment of design §11: the type without `null`, then the constraints and the default, joined with `, `.
 fn type_range_default(node: &Map<String, Value>) -> String {
     let kinds: Vec<&str> = match node.get("type") {
         Some(Value::String(kind)) => vec![kind.as_str()],
@@ -232,22 +232,58 @@ fn type_range_default(node: &Map<String, Value>) -> String {
     if !named.is_empty() {
         parts.push(named.join(" or "));
     }
-    match (node.get("minimum"), node.get("maximum")) {
-        (Some(min), Some(max)) => parts.push(format!("{} to {}", number(min), number(max))),
-        (Some(min), None) => parts.push(format!("at least {}", number(min))),
-        (None, Some(max)) => parts.push(format!("at most {}", number(max))),
-        (None, None) => {}
+    parts.extend(range(node));
+    if let Some(step) = node.get("multipleOf").filter(|value| value.is_number()) {
+        parts.push(format!("multiple of {}", literal(step)));
+    }
+    if let Some(min) = node.get("minLength").filter(|value| value.is_number()) {
+        parts.push(format!("length at least {}", literal(min)));
+    }
+    if let Some(max) = node.get("maxLength").filter(|value| value.is_number()) {
+        parts.push(format!("length at most {}", literal(max)));
+    }
+    // A `null` in an enum is the `Option`'s, not one of its values.
+    if let Some(Value::Array(values)) = node.get("enum") {
+        let values: Vec<String> = values.iter().filter(|value| !value.is_null()).map(literal).collect();
+        if !values.is_empty() {
+            parts.push(format!("one of {}", values.join(", ")));
+        }
+    }
+    if let Some(constant) = node.get("const").filter(|value| !value.is_null()) {
+        parts.push(format!("only {}", literal(constant)));
     }
     if let Some(default) = node.get("default") {
-        parts.push(format!("default {}", number(default)));
+        parts.push(format!("default {}", literal(default)));
     }
     parts.join(", ")
 }
 
-/// A bound or default as a comment shows it: a number as Rust prints it (`1`, not `1.0`), anything else as JSON.
-fn number(value: &Value) -> String {
+/// The numeric bounds as phrases. A closed pair reads "0 to 1"; any exclusive bound, or a half-open range, reads as
+/// phrases, in the order lower then upper, so the wording never claims an exclusive bound is inclusive.
+fn range(node: &Map<String, Value>) -> Vec<String> {
+    let bound = |keyword: &str| node.get(keyword).filter(|value| value.is_number());
+    let exclusive = bound("exclusiveMinimum").is_some() || bound("exclusiveMaximum").is_some();
+    if let (false, Some(min), Some(max)) = (exclusive, bound("minimum"), bound("maximum")) {
+        return vec![format!("{} to {}", literal(min), literal(max))];
+    }
+    [
+        ("minimum", "at least"),
+        ("exclusiveMinimum", "greater than"),
+        ("maximum", "at most"),
+        ("exclusiveMaximum", "less than"),
+    ]
+    .into_iter()
+    .filter_map(|(keyword, phrase)| bound(keyword).map(|value| format!("{phrase} {}", literal(value))))
+    .collect()
+}
+
+/// A bound, step, length, enum value, constant or default as a comment shows it. An integer prints exactly, at its full
+/// width; only a float is shown in its shortest form, so `1.0` reads as `1`.
+fn literal(value: &Value) -> String {
     match value {
-        Value::Number(n) => n.as_f64().map_or_else(|| n.to_string(), |float| float.to_string()),
+        Value::Number(number) if number.is_f64() => {
+            number.as_f64().map_or_else(|| number.to_string(), |float| float.to_string())
+        }
         other => other.to_string(),
     }
 }

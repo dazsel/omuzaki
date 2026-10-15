@@ -7,6 +7,7 @@ use fluent_syntax::parser::parse;
 use omuzaki_l10n_api::extract::{PackageText, english, english_of};
 use omuzaki_l10n_api::{ArgKind, MessageDecl, RegisteredText, TextSource};
 use schemars::{JsonSchema, Schema};
+use serde_json::json;
 
 /// The schema settings of `omuzaki-ops-api`'s `schema_of`: draft 2020-12, every subschema inlined.
 fn schema_of<T: JsonSchema>() -> Schema {
@@ -247,4 +248,38 @@ fn the_output_is_deterministic() {
     let first = english_of(&forward);
     assert_eq!(first, english_of(&forward));
     assert_eq!(first, english_of(&shuffled));
+}
+
+/// Each schema keyword the comment reads, with the comment it must produce. One row per keyword and per wording, so a
+/// bound that claims to be inclusive, or an integer that loses digits, fails by name.
+#[test]
+fn the_comment_renders_each_constraint() {
+    let rows = vec![
+        (json!({"type": "integer", "minimum": 0}), "integer, at least 0"),
+        (json!({"type": "integer", "maximum": 9}), "integer, at most 9"),
+        (json!({"type": "number", "minimum": 0, "maximum": 1}), "number, 0 to 1"),
+        (json!({"type": "number", "exclusiveMinimum": 0}), "number, greater than 0"),
+        (json!({"type": "number", "exclusiveMaximum": 1}), "number, less than 1"),
+        (json!({"type": "number", "minimum": 0, "exclusiveMaximum": 1}), "number, at least 0, less than 1"),
+        (json!({"type": "number", "multipleOf": 0.5}), "number, multiple of 0.5"),
+        (json!({"type": "string", "minLength": 1}), "string, length at least 1"),
+        (json!({"type": "string", "maxLength": 8}), "string, length at most 8"),
+        (json!({"type": "string", "enum": ["a", "b"]}), "string, one of \"a\", \"b\""),
+        (json!({"type": ["integer", "null"], "enum": [1, null]}), "integer, one of 1"),
+        (json!({"type": "string", "const": "x"}), "string, only \"x\""),
+        (json!({"type": "number", "default": 0.5}), "number, default 0.5"),
+        (json!({"type": "number", "minimum": 1.0}), "number, at least 1"),
+        (
+            json!({"type": "integer", "minimum": u64::MAX, "default": i64::MIN}),
+            "integer, at least 18446744073709551615, default -9223372036854775808",
+        ),
+    ];
+    for (node, expected) in rows {
+        let schema = Schema::try_from(json!({"type": "object", "properties": {"arg": node}}))
+            .unwrap_or_else(|error| panic!("{error}"));
+        let op = RegisteredText { schema: Some(schema), ..owner("op-x-y", "Op.") };
+        let out = english_of(&PackageText::new("omuzaki-x").with_registered(vec![op]));
+        let want = format!("# {expected}\nop-x-y--arg = Arg\n");
+        assert!(out.contains(&want), "expected `{expected}` before the argument, got:\n{out}");
+    }
 }
