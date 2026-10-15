@@ -1,0 +1,7 @@
+section = "rust"
+item = "CoreMediaIO camera extension"
+kind = "os"
+used_for = "macOS virtual camera"
+status = "conditions"
+condition = "paid Apple developer account; Apple terms with legal review"
+audit = "B4"

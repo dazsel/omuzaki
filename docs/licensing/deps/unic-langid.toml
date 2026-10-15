@@ -1,0 +1,8 @@
+section = "rust"
+item = "unic-langid, sys-locale"
+kind = "crate"
+used_for = "validated BCP 47 locale tags; the OS language list (`omuzaki-l10n-api`, ADR 0023)"
+status = "yes"
+condition = "MIT OR Apache-2.0: keep the notices"
+audit = "(crates.io)"
+crates = ["sys-locale", "unic-langid"]

@@ -1,0 +1,6 @@
+section = "rust"
+item = "wasmtime, extism"
+kind = "crate"
+used_for = "plugin host"
+status = "yes"
+audit = "B3"

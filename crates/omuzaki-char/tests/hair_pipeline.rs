@@ -217,14 +217,15 @@ fn the_kind_is_registered_project_owned_and_needs_the_head() {
 }
 
 #[test]
-fn the_real_kind_builds_the_default_style_on_the_template_body_with_no_stub_clumps_yet() {
-    // Every generator is a stub until they are written: the default style builds, empty, and says so.
+fn the_real_kind_builds_the_default_style_on_the_template_body_with_its_cap_shell() {
+    // The cap is a real generator: the default style's static mesh holds its shell, and it is no longer reported as a
+    // stub. (The default style has no part sweep.)
     let mut def = character(&HairParams::default());
     def.parts.insert(pid("hair"), part("hair", json!({})));
     let out = hair_output(&def).unwrap();
-    assert!(out.meshes.is_empty());
-    assert!(out.warnings.iter().any(|w| w.contains("a-cap")), "{:?}", out.warnings);
-    assert_eq!(out.materials.len(), 1, "the material is still there for a recolour");
+    assert!(out.meshes.iter().any(|m| !m.dynamic && !m.geometry.positions.is_empty()));
+    assert!(!out.warnings.iter().any(|w| w.contains("a-cap")), "{:?}", out.warnings);
+    assert_eq!(out.materials.len(), 1);
 }
 
 // ------------------------------------------------------------------------------------------------ compile
