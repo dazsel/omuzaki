@@ -7,7 +7,8 @@ use serde::{Deserialize, Serialize};
 pub const READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long a push or pull may run before [`GitError::Timeout`].
 pub const NETWORK_TIMEOUT: Duration = Duration::from_secs(600);
-/// The oldest git (major, minor) the contract supports.
+/// The oldest git (major, minor) the contract supports. It must stay at 2.24 or later: [`crate::Git`] passes caller
+/// revisions and remotes after `--end-of-options`, which git 2.24 added.
 pub const MIN_GIT_VERSION: (u32, u32) = (2, 30);
 
 /// Why a git call failed. The text says what to do.
