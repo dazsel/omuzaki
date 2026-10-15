@@ -368,8 +368,22 @@ pub struct EncoderInfo {
 
 impl EncoderInfo {
     /// Describes one encoder.
-    pub fn new(codec: CodecId, name: impl Into<String>, hardware: bool, alpha: bool) -> Self {
-        Self { codec, name: name.into(), hardware, alpha }
+    ///
+    /// # Errors
+    /// [`StreamError::Config`] if `codec` is not a video codec: an [`EncodeConfig`] can only select video codecs, so
+    /// an encoder for another kind could never be asked for.
+    pub fn new(codec: CodecId, name: impl Into<String>, hardware: bool, alpha: bool) -> Result<Self, StreamError> {
+        let info = Self { codec, name: name.into(), hardware, alpha };
+        info.validate()?;
+        Ok(info)
+    }
+
+    /// Checks an info built field by field: its codec is a video codec, as [`EncodeConfig::validate`] requires.
+    ///
+    /// # Errors
+    /// [`StreamError::Config`] naming the codec and its kind.
+    pub fn validate(&self) -> Result<(), StreamError> {
+        check_codec(self.codec, StreamKind::Video)
     }
 }
 
@@ -459,5 +473,16 @@ mod tests {
         assert!(text.contains("\"codec\":\"vp9_alpha\""), "{text}");
         assert!(text.contains("\"alpha\":\"straight\""), "{text}");
         assert_eq!(serde_json::from_str::<EncodeConfig>(&text).ok(), Some(cfg));
+    }
+
+    #[test]
+    fn encoder_info_requires_a_video_codec() {
+        assert!(EncoderInfo::new(CodecId::H264, "h264_nvenc", true, false).is_ok());
+        for codec in [CodecId::Opus, CodecId::PcmS24, CodecId::PcmF32, CodecId::InputRecords] {
+            assert!(matches!(EncoderInfo::new(codec, "x", false, false), Err(StreamError::Config(_))), "{codec:?}");
+        }
+        let Ok(mut info) = EncoderInfo::new(CodecId::Png, "png", false, true) else { panic!("valid info") };
+        info.codec = CodecId::Opus;
+        assert!(info.validate().is_err());
     }
 }

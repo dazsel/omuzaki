@@ -22,7 +22,8 @@ src/encoder.rs: pub struct EncodeConfig {
 src/encoder.rs: pub fn new(video: VideoSpec, codec: CodecId) -> Result<Self, StreamError> {
 src/encoder.rs: pub fn validate(&self) -> Result<(), StreamError> {
 src/encoder.rs: pub struct EncoderInfo {
-src/encoder.rs: pub fn new(codec: CodecId, name: impl Into<String>, hardware: bool, alpha: bool) -> Self {
+src/encoder.rs: pub fn new(codec: CodecId, name: impl Into<String>, hardware: bool, alpha: bool) -> Result<Self, StreamError> {
+src/encoder.rs: pub fn validate(&self) -> Result<(), StreamError> {
 src/encoder.rs: pub trait Encoder: Send {
 src/encoder.rs: pub trait EncoderFactory: Send + Sync {
 src/error.rs: pub enum StreamError {
