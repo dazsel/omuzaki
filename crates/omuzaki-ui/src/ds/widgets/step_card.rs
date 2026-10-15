@@ -25,6 +25,7 @@ use egui::{
 
 use super::button::Button;
 use super::chip::ActorKind;
+use super::ids;
 use super::thumbnail::{Thumb, paint_thumb};
 use super::tooltip::{Tip, TipExt as _};
 use crate::ds::a11y;
@@ -35,6 +36,9 @@ use crate::ds::strings::Msg;
 use crate::ds::theme::{Ds, ds};
 use crate::ds::tokens::{Status, Theme, radius, space};
 use crate::register_contrast;
+
+/// What a step card's salt is namespaced by (see [`ids`]).
+const KIND: &str = "ds.step_card";
 
 /// What a metric did to the result.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -245,7 +249,7 @@ impl<'a> StepCard<'a> {
         let width = ui.available_width();
         let layout = self.layout(&ctx, &ds, width);
         let (rect, outer) = ui.allocate_exact_size(vec2(width, layout.height), Sense::hover());
-        let id = self.salt.map_or(outer.id.with("step"), |salt| ui.make_persistent_id(salt));
+        let id = self.salt.map_or(outer.id.with("step"), |salt| ids::salted(ui, KIND, salt));
         let rect = paint::snap(&ctx, rect);
         let origin = rect.min;
         let on_screen = ui.is_rect_visible(rect);

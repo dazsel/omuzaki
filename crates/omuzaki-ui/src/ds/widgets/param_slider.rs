@@ -20,6 +20,7 @@ use egui::{
 
 use super::ids;
 use super::ime;
+use super::keycap::Shortcut;
 use super::tooltip::{Tip, TipExt as _};
 use crate::ds::a11y;
 use crate::ds::contrast::{Rule, Table};
@@ -662,7 +663,8 @@ impl<'a> Show<'a> {
         let act = self.ctx.input_mut(|i| {
             let shift = i.modifiers.shift;
             let unit = if shift { 10.0 * step } else { step };
-            if i.consume_key(Modifiers::CTRL, Key::Backspace) {
+            // The shown shortcut (Command: ⌘ on macOS, Ctrl elsewhere); a host that reports only a bare Ctrl is taken too.
+            if i.consume_key(Modifiers::COMMAND, Key::Backspace) || i.consume_key(Modifiers::CTRL, Key::Backspace) {
                 Some(Act::Reset)
             } else if self.p.op_call.is_some() && i.consume_key(Modifiers::CTRL | Modifiers::SHIFT, Key::C) {
                 Some(Act::CopyOpCall)
@@ -803,7 +805,7 @@ impl<'a> Show<'a> {
                 let default_text = NumberBuf::new(self.p.default.unwrap_or(0.0), self.decimals);
                 let value = format!("{}{}", default_text.as_str(), self.p.unit);
                 let tip_text = self.ds.text_with(Msg::ParamResetTo, &[("value", &value)]);
-                return r.tip(Tip::new(&tip_text).shortcut(&self.ds.text(Msg::KeysReset)));
+                return r.tip(Tip::new(&tip_text).shortcut(Shortcut::command(Key::Backspace)));
             }
         }
         r

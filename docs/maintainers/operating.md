@@ -27,16 +27,31 @@ to, where reviews can read it.
 ## Areas
 
 The work is split into areas that follow the crate graph, so their fences rarely overlap. Each area has one lead and
-one pinned state issue.
+one state issue (only three issues can be pinned, so the table is the index).
 
-| Area | Crates | Owns |
-|---|---|---|
-| Runtime and output | `render`, `stage`, `track`, `audio`, `stream`, `io` and the release zip | the V0 live slice end to end |
-| Character | `char`, `char-api`, `face`, `face-api`, `rig`, `anim` | the procedural character, the face, the rig |
-| Platform | `ops`, `mcp`, `doc`, `cli`, `ui`, agents and LLM, CI tooling | operations, agents, documents, the UI (with the Runtime lead until it gets its own lead) |
+| Area | State | Crates | Owns |
+|---|---|---|---|
+| Render, stage and V0 | #1498 | `render`, `stage`, `io` (`io-api`, `io-ops`, `io-gltf`, `io-vrm`, `gltf`), `pixfmt`, `budget`, `link-*`, the release zip | the V0 live slice end to end |
+| Character body | #1528 | `char`, `char-api`, `char-mock`, `rig`, `anim`, `anim-api`, `anim-mock`, `test-char` | the procedural body, hair, cloth, rig and animation |
+| Face | #1880 | `face`, `face-api`, `face-mock`, `test-face` | the painted face and its GPU rasteriser |
+| Tracking and AI | #1879 | `track`, `ai`, `ai-*`, `embed`, voice, LLM and performer crates | tracking, model runtimes and licences, voice-to-face, the AI performer |
+| Broadcast and live | #1885 | `live-*`, `stream`, `audio`, `obs`, `vts`, connectors, `secrets` | show automation, streaming and recording, audio, bridges, connectors |
+| Agents and ops | #1881 | `ops`, `mcp`, plugins, `script`, `cli`, `http`, `core`, `test`, CI tooling | the op runner, the agent surface, plugins, the CLI, the shared core and tooling |
+| Documents and versioning | #1886 | `doc`, `history`, `store`, settings, identity, `update`, `l10n-api`, `library-api`, `assets-lock` | saving, the journal, snapshots, history, storage, settings and identity |
+| UI and UX | #1882 | `ui`, `ui-api`, UX design docs | the studio's interface for people and for agents |
 
-Work that spans areas has one owner: the Runtime lead owns V0 integration. A change to a contract another area uses
-goes to the Director first.
+Work that spans areas has one owner: the Render, stage and V0 lead owns V0 integration. A new crate joins the area
+whose table row names its domain. Ask on #2 when that isn't clear.
+
+### Decision rights
+
+- **Leads decide inside their area,** without asking the Director: round-cap rulings, pull request size and splits,
+  how to read an acceptance check, follow-up issues, order, and fence extensions inside the area's crates. Each lead
+  keeps a **daily log of its rulings** on its state issue, and the Director spot-checks about 1 in 10.
+- **The Director decides** a change to a contract another area uses, architecture and ADRs, workspace hub files,
+  visual and art direction (`visual` pull requests), disagreements between leads, and anything for the owner.
+- **A blocking condition carries `hold`.** A Director or lead condition that must stop a merge goes with the `hold`
+  label, removed at sign-off. A comment alone gates nothing in the merge loop.
 
 ## The quality bar
 
@@ -62,11 +77,14 @@ goes to the Director first.
     review.
   - **Large pull requests** (over 400 lines, design docs or ADRs, `xtask/`, `.github/`, `tools/`) also get one deep
     local review.
-  - **Round cap: after 6 Codex rounds, a pull request goes to the Director** instead of a seventh round. Later
-    rounds tend to find narrower cases of classes already fixed, at the cost of a round each. The lead posts the open
-    findings and a recommendation on the pull request. The Director rules on them at the decision level: fix now,
-    move to the acceptance line of a follow-up task, or accept as out of scope. Design documents follow the same
-    rule, and a design pull request stays under about 400 lines of doc (larger designs are an ADR plus parts).
+  - **Round cap: after 6 Codex rounds, the area's lead rules** instead of a seventh round. Later rounds tend to find
+    narrower cases of classes already fixed, at the cost of a round each. The lead posts its ruling on the pull
+    request, at the decision level: fix now, move to the acceptance line of a follow-up task, or accept as out of
+    scope. It goes to the Director only when the findings touch a contract another area uses or an architecture
+    decision. Design documents follow the same rule, and a design pull request stays under about 400 lines of doc
+    (larger designs are an ADR plus parts).
+  - **What Codex is asked:** the first request asks for every finding in one pass, and fix rounds ask only whether the
+    earlier findings are fixed and what the changes broke (`pub-review-dispatch.sh`).
   - **The Director's process-doc pull requests** (label `director-docs`) merge on a green gate without a review.
   - Why, with the data, is in `lessons.md`.
 - **A sign-off is a decision check, not a second review.** A lead (or the Director) signing off a contract or hub
@@ -88,13 +106,26 @@ goes to the Director first.
 
 - **Start anything that isn't truly blocked.** Only a real blocker (a file another open pull request is changing, a
   contract not yet merged) holds a task back.
-- **Limits:** at most 3 open pull requests per crate; at most 40 open in total (raised as the merge rate rises);
-  check a task's fence against open pull requests before starting (`tools/dispatch-check.py`). A pull request that
-  only adds new files under a crate's `tests/` can't conflict with other work, so it is started first when a slot is
-  free; it still counts toward the cap of 3 per crate (ADR 0053 §1.1), which only a recorded decision can raise.
-- **Freeze triggers** (ADR 0053 §1.3): the open total passes its limit, CI waits over 30 minutes, or opens exceed
+- **Caps:** at most **150** open pull requests in total and **5** per crate. In `omuzaki-char` and `omuzaki-face`,
+  **3** per top-level module, with a crate ceiling of **12** and one shared slot for crate-level files (ADR 0062).
+  Check every fence before starting: `python3 tools/dispatch-check.py --crate-cap 5 --total-cap 150 <issue>`.
+- **File overlap is absolute:** two pull requests that change one file never run at once. **The one exception is a
+  pure addition of lines to a `Cargo.toml`** (any table), together with the `Cargo.lock` lines cargo generates. The
+  merge queue catches the rare clash. Editing or removing an existing line still counts as overlap.
+- **Claim before starting:** the `claimed` label on the issue, put on before the session starts. The earliest claim
+  wins, and `dispatch-check.py` treats a claimed issue as taken.
+- **Start sessions about one a minute.** The platform refuses a burst (`Sandbox allocation failed`, `rate_limited`);
+  a session left `PENDING` and disconnected was refused, so message it to retry.
+- **A split or follow-up issue gets its parent's milestone** when it's filed. GitHub doesn't copy it, and phase
+  progress is read from milestones.
+- **Merge `main` into a pull request only on a conflict.** When a failure in `main` itself is fixed, the Director
+  updates every pull request that was red on it, in the same check-in.
+- **Freeze triggers** (ADR 0053 §1.3): the open total passes its cap, CI waits over 30 minutes, or opens exceed
   merges for two check-ins in a row while open pull requests pile up. While frozen, only fix rounds and merges.
-- **Priority:** unblock merges; fix rounds; the critical path (V0 now); the foundation; new tasks.
+- **Start everything that's ready.** No rationing: every `ready` task starts as soon as its fence is free, V0 first,
+  then by how many tasks it unblocks (the Director posts a ranked blocker list). A lead runs as many implementer
+  sessions as it can direct well (10 to 15), and asks for its area to be split when its attention is the limit.
+- **Priority:** unblock merges; fix rounds; the critical path (V0 now); the most-blocking contracts; new tasks.
 
 ## Handoffs
 

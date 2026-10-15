@@ -3,15 +3,17 @@
 //!
 //! **Three calls** (the job contract in `omuzaki-ops-api`):
 //! - `plan` validates the arguments and the access, under the lock, and changes nothing;
-//! - `work` runs off the lock: it reads the file, imports it, then stores the original and its images;
+//! - `work` runs off the lock: it reads the file, imports it, then stores the original, its images and the files it
+//!   refers to;
 //! - `finish` runs under the lock and returns the patch that records the asset, so the document changes once.
 //!
 //! **What is stored.** The original file's bytes, unchanged, with the provenance `run_import` derived from the file's
 //! rights (io-api D5: the conservative mapping, `Unknown` wherever the file does not settle it), and each image of the
 //! scene under that same record, so an image never carries more rights than the model it came from. The store is
 //! content addressed, so importing the same bytes again stores nothing new.
-//! An asset already recorded is never overwritten: a re-import without a character, or with the same one, changes
-//! nothing, and one with a different character is a `Conflict` (several characters per asset is #1792).
+//! An asset already recorded is never overwritten: a re-import of the same files without a character, or with the same
+//! one, changes nothing; one with a different character is a `Conflict` (several characters per asset is #1792), and so
+//! is one whose images or sidecars differ from the recorded ones (a file the model refers to changed).
 //! An object is shared with another import only under an identical record; the check runs before the first write and again
 //! after each `put`, and any difference is a `Conflict` that names both records (joining records is #1773).
 //!
@@ -23,22 +25,34 @@
 //! - the objects already put are whole, because `put` is atomic and content addressed;
 //! - those objects are referenced by nothing, so garbage collection removes them (the `StoreGc` contract, ADR 0021).
 //!
-//! **Not here.** Importing as an editable part is CB-44 and answers `Unsupported`. Files a `.gltf` refers to are not
-//! read (the resolver needs the plan-time context): import a `.glb`, which carries its buffers and images.
+//! **Sidecars.** The files a `.gltf` refers to (`.bin`, images) are read by `work`, when the importer asks for them,
+//! through the job's file access and confined to the folder of the file the person named, with the rules of
+//! `io.inspect`'s resolver (`ops::sidecar`): no `..`, no absolute path, no link out of the folder. Only a `path` has a
+//! folder; `bytes` of a model that names a file are `Unsupported`. The input limit counts the file and every sidecar
+//! together. Each sidecar is stored like an image, under the same record, and the asset records its `uri` and hash, so
+//! nothing the import used is lost. (Reloading such an asset through `io.inspect {asset}` needs that op to serve the
+//! stored sidecars; it does not yet.)
+//!
+//! **Not here.** Importing as an editable part is CB-44 and answers `Unsupported`.
 
 use std::borrow::Cow;
 use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use omuzaki_doc_api::{DocPath, DocRead, Patch, Value};
 use omuzaki_io_api::{
-    FormatId, ImportCtx, ImportInput, ImportOptions, Importer, IoError, NoResolver, Progress, Report, SceneSummary,
-    find_importer, formats, run_import, sniff,
+    FormatId, ImportCtx, ImportInput, ImportOptions, Importer, IoError, NoResolver, Progress, Report, Resolver,
+    SceneSummary, find_importer, formats, run_import, sniff,
 };
-use omuzaki_ops_api::{FsMode, JobCtx, Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op};
+use omuzaki_ops_api::{
+    CanonicalPath, FsMode, JobCtx, Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op,
+};
 use omuzaki_store_api::{ContentHash, Provenance, Source, Store, StoreError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::sidecar::clean_relative;
 use crate::error::from_io;
 
 /// The name a byte import is given when the caller names none.
@@ -91,6 +105,9 @@ struct AssetRecord {
     original: ContentHash,
     /// The hashes of its images, in order, each once.
     images: Vec<ContentHash>,
+    /// The files the model refers to, as it names them, each with the hash of its stored bytes. Absent when none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    sidecars: Vec<SidecarRecord>,
     /// The file's name.
     file: String,
     /// The format it was read as.
@@ -98,6 +115,15 @@ struct AssetRecord {
     /// The character it is a reference for, if one was named. Absent otherwise: the document cannot hold a `null`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     character: Option<String>,
+}
+
+/// One file a model refers to, as the document records it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct SidecarRecord {
+    /// The URI as the model names it (percent-decoded), relative to the model's folder.
+    uri: String,
+    /// The content hash of the file's stored bytes.
+    hash: ContentHash,
 }
 
 /// What a finished import reports.
@@ -158,11 +184,29 @@ impl Import {
         store: &dyn Store,
         progress: &dyn Progress,
     ) -> Result<Imported, OpError> {
+        self.import_with(name, bytes, options, store, progress, None)
+    }
+
+    /// The shared body; `folder` serves the model's sidecars, and is `None` when the source has no folder.
+    fn import_with(
+        &self,
+        name: &str,
+        bytes: &[u8],
+        options: &ImportOptions,
+        store: &dyn Store,
+        progress: &dyn Progress,
+        folder: Option<&FolderFiles<'_, '_>>,
+    ) -> Result<Imported, OpError> {
         let field = self.source_field();
         let input = ImportInput::new(bytes).named(name);
         let importer = self.pick_importer(&input)?;
-        let ctx = ImportCtx::new(options).with_resolver(&NoResolver).with_progress(progress);
-        let outcome = run_import(&*importer, &input, &ctx).map_err(|e| import_error(e, field))?;
+        let resolver: &dyn Resolver = match folder {
+            Some(folder) => folder,
+            None => &NoResolver,
+        };
+        let ctx = ImportCtx::new(options).with_resolver(resolver).with_progress(progress);
+        let outcome = run_import(&*importer, &input, &ctx).map_err(|e| import_error(e, field, folder.is_some()))?;
+        let served = folder.map(FolderFiles::served).transpose()?.unwrap_or_default();
         // The last chance to stop: past this point the objects are written without further checks.
         progress.checkpoint("storing", 0.9).map_err(|e| from_io(e, field))?;
         let provenance = outcome
@@ -183,6 +227,20 @@ impl Import {
             };
             objects.push((hash, image.bytes.as_slice(), record));
         }
+        let image_objects = objects.len() - 1;
+        let mut sidecars = Vec::with_capacity(served.len());
+        for (uri, file) in &served {
+            let hash = ContentHash::of(file);
+            sidecars.push(SidecarRecord { uri: uri.clone(), hash });
+            // A file the model also uses as an image is already an object, recorded by its first use.
+            if objects.iter().all(|(seen, ..)| *seen != hash) {
+                let record = Provenance {
+                    source: Source::Imported { file: format!("{name}#{uri}"), origin: None },
+                    ..provenance.clone()
+                };
+                objects.push((hash, file.as_slice(), record));
+            }
+        }
         // Checked for every object before the first write, so a refusal stores nothing.
         for (hash, _, record) in &objects {
             if store.contains(hash) {
@@ -200,11 +258,13 @@ impl Import {
             stored.push(put);
         }
         let original = stored.remove(0);
+        stored.truncate(image_objects);
         let images = stored;
         Ok(Imported {
             asset: AssetRecord {
                 original,
                 images,
+                sidecars,
                 file: name.to_owned(),
                 format: importer.info().id.to_owned(),
                 character: self.character.clone(),
@@ -242,13 +302,16 @@ impl Import {
         self.name.clone().or_else(|| from_path.map(str::to_owned)).unwrap_or_else(|| DEFAULT_NAME.to_owned())
     }
 
-    /// The read: `path` through the job's file access, refusing a file over the input limit before reading it.
-    fn read_source(&self, job: &JobCtx<'_>, max_bytes: u64) -> Result<Cow<'_, [u8]>, OpError> {
+    /// The read: `path` through the job's file access, refusing a file over the input limit before reading it. Also
+    /// returns where the file really is, for a `path`, so its sidecars can be confined to its folder.
+    fn read_source(&self, job: &JobCtx<'_>, max_bytes: u64) -> Result<(Cow<'_, [u8]>, Option<CanonicalPath>), OpError> {
         let Some(path) = &self.path else {
             let bytes = self.bytes.as_deref();
-            return bytes.map(Cow::Borrowed).ok_or_else(|| OpError::internal("plan accepted an import with no source"));
+            let bytes = bytes.map(Cow::Borrowed).ok_or_else(|| OpError::internal("plan accepted an import with no source"))?;
+            return Ok((bytes, None));
         };
-        let file = job.fs_access(path, FsMode::Read)?.open_read()?;
+        let main = job.fs_access(path, FsMode::Read)?;
+        let file = main.open_read()?;
         let size = file.metadata().map_err(|e| OpError::invalid("path", format!("couldn't read the file: {e}")))?.len();
         check_size(size, max_bytes, "path")?;
         // The read still stops at the limit: the file may grow after the size was taken.
@@ -257,19 +320,99 @@ impl Import {
             .read_to_end(&mut bytes)
             .map_err(|e| OpError::invalid("path", format!("couldn't read the file: {e}")))?;
         check_size(bytes.len() as u64, max_bytes, "path")?;
-        Ok(Cow::Owned(bytes))
+        Ok((Cow::Owned(bytes), Some(main)))
     }
 }
 
-/// The op error for a failed import. The job reads no other files, so a file the model refers to is a feature this op
-/// lacks, not a missing file.
-fn import_error(error: IoError, field: &str) -> OpError {
+/// The op error for a failed import. Bytes have no folder, so a file the model refers to is a feature that source
+/// lacks, not a missing file; for a `path` (`has_folder`), an unreadable reference is an ordinary `NotFound`.
+fn import_error(error: IoError, field: &str, has_folder: bool) -> OpError {
     match error {
-        IoError::Resource { uri, .. } => OpError::unsupported(format!(
-            "the model refers to another file ({uri}), and io.import reads a single file"
+        IoError::Resource { uri, .. } if !has_folder => OpError::unsupported(format!(
+            "the model refers to another file ({uri}), and bytes have no folder to read it from"
         ))
-        .hint("import a .glb, which carries its buffers and images"),
+        .hint("import a .glb, which carries its buffers and images, or pass the model as a path"),
         other => from_io(other, field),
+    }
+}
+
+/// The files read for one import, with the bytes of each, in the order the importer first asked for them.
+type Served = Vec<(String, Vec<u8>)>;
+
+/// Serves a `.gltf`'s sidecars to the importer from the folder of the file the person named, through the job's file
+/// access, and remembers what it served so the import can store it.
+///
+/// The confinement is that of `ops::sidecar::DirResolver`, which needs a plan-time `OpCtx` and so cannot run here: the
+/// URI must be a plain relative path ([`clean_relative`]), is joined onto the folder as the person typed it, goes
+/// through `fs_access` (grants, roots, no links), and must really lie inside the file's real folder.
+struct FolderFiles<'a, 'j> {
+    job: &'a JobCtx<'j>,
+    /// The folder as the person typed it (empty for the project folder itself).
+    folder_text: String,
+    /// The file's real folder; every sidecar's real place must start with it.
+    folder: PathBuf,
+    /// The input limit, shared by the file and all its sidecars.
+    max_bytes: u64,
+    /// What has been served and the bytes counted against the limit (the file itself counts from the start).
+    state: Mutex<(Served, u64)>,
+}
+
+impl<'a, 'j> FolderFiles<'a, 'j> {
+    /// The sidecars of `main`, which the person typed as `typed`. `file_bytes` is its size, already counted.
+    fn new(job: &'a JobCtx<'j>, main: &CanonicalPath, typed: &str, max_bytes: u64, file_bytes: u64) -> Self {
+        let folder_text = Path::new(typed).parent().and_then(Path::to_str).unwrap_or("").to_owned();
+        // A file always has a parent; if one ever did not, the file itself is the fallback, so no sidecar lies inside
+        // it and every read is refused rather than widened.
+        let real = PathBuf::from(main.to_string());
+        let folder = real.parent().map_or_else(|| real.clone(), Path::to_path_buf);
+        Self { job, folder_text, folder, max_bytes, state: Mutex::new((Vec::new(), file_bytes)) }
+    }
+
+    /// What was served, taking it from the resolver, sorted by URI: the order the importer's reads finished in must
+    /// not reach the record or the choice of which equal file is stored under which name.
+    fn served(&self) -> Result<Served, OpError> {
+        let mut state = self.state.lock().map_err(|_| OpError::internal("the sidecar list was poisoned"))?;
+        let mut served = std::mem::take(&mut state.0);
+        served.sort_by(|(a, _), (b, _)| a.cmp(b));
+        Ok(served)
+    }
+}
+
+/// A refusal of the form or the place of `uri`, worded as `DirResolver`'s.
+fn refused(uri: &str, why: &str) -> IoError {
+    IoError::Resource { uri: uri.to_owned(), reason: format!("refused: {why}") }
+}
+
+impl Resolver for FolderFiles<'_, '_> {
+    fn read(&self, uri: &str) -> Result<Vec<u8>, IoError> {
+        let poisoned = || IoError::Internal("the sidecar list was poisoned".to_owned());
+        // Held for the whole read: the importer may ask for files from several threads, and the limit is one total that
+        // each read must see the result of the one before it.
+        let mut state = self.state.lock().map_err(|_| poisoned())?;
+        if let Some((_, bytes)) = state.0.iter().find(|(served, _)| served == uri) {
+            return Ok(bytes.clone());
+        }
+        let used = state.1;
+        let relative = clean_relative(uri).map_err(|why| refused(uri, &why))?;
+        let joined = Path::new(&self.folder_text).join(relative);
+        let joined = joined.to_str().ok_or_else(|| refused(uri, "the path is not text this machine can name"))?;
+        let resource = |reason: String| IoError::Resource { uri: uri.to_owned(), reason };
+        let sidecar = self.job.fs_access(joined, FsMode::Read).map_err(|e| resource(e.message))?;
+        if !Path::new(&sidecar.to_string()).starts_with(&self.folder) {
+            return Err(refused(uri, "the file is not in the folder of the importing file"));
+        }
+        let file = sidecar.open_read().map_err(|e| resource(e.message))?;
+        // One byte past what is left tells an over-long file from one that fits, and stops the read there.
+        let left = self.max_bytes.saturating_sub(used);
+        let mut bytes = Vec::new();
+        file.take(left.saturating_add(1)).read_to_end(&mut bytes).map_err(|e| resource(e.to_string()))?;
+        let total = used.saturating_add(bytes.len() as u64);
+        if total > self.max_bytes {
+            return Err(IoError::Limit { what: "input size in bytes", limit: self.max_bytes, got: total });
+        }
+        state.1 = total;
+        state.0.push((uri.to_owned(), bytes.clone()));
+        Ok(bytes)
     }
 }
 
@@ -347,8 +490,8 @@ fn require_character(doc: &dyn DocRead, id: &str) -> Result<(), OpError> {
 /// The patch that records `asset` under `assets/<original>`, creating `assets` when the document has none (a change
 /// needs its parent to exist).
 ///
-/// An entry that already exists is never overwritten, so a re-import cannot drop what it recorded. With no `character`,
-/// or the same one, the patch is empty; a `character` on an entry that has none is added; a different `character` is a
+/// An entry that already exists is never overwritten, so a re-import cannot drop what it recorded. Different `images` or
+/// `sidecars` than the recorded ones are a `Conflict`. Otherwise, with no `character`, or the same one, the patch is empty; a `character` on an entry that has none is added; a different `character` is a
 /// `Conflict` naming the existing one (several characters per asset is #1792).
 fn record_patch(doc: &dyn DocRead, asset: &AssetRecord) -> Result<Patch, OpError> {
     let value = serde_json::to_value(asset).map_err(|e| OpError::internal(format!("serialising the asset: {e}")))?;
@@ -374,6 +517,18 @@ fn keep_existing(existing: &Value, asset: &AssetRecord, entry: DocPath) -> Resul
         return Err(OpError::conflict(format!("the record at {entry} is not an object"))
             .hint("the document is damaged; restore it from history"));
     };
+    // The same original with other files behind it (a sidecar edited since) is not the recorded asset: keeping the old
+    // record would leave the new objects referenced by nothing.
+    let files = |value: Option<&Value>| value.cloned().filter(|v| v.as_array().is_none_or(|a| !a.is_empty()));
+    for (field, wanted) in [("images", serde_json::to_value(&asset.images)), ("sidecars", serde_json::to_value(&asset.sidecars))] {
+        let wanted = wanted.map_err(|e| OpError::internal(format!("serialising the asset: {e}")))?;
+        if files(fields.get(field)) != files(Some(&wanted)) {
+            return Err(OpError::conflict(format!(
+                "this file is already recorded with different {field} ({entry}), so a file it refers to changed since it was imported"
+            ))
+            .hint("an asset keeps one version of the files behind it for now; restore the files as they were, or remove the recorded asset first"));
+        }
+    }
     let recorded = fields.get("character").and_then(Value::as_str);
     match (recorded, asset.character.as_deref()) {
         (_, None) => Ok(Patch::new()),
@@ -445,8 +600,12 @@ impl Op for Import {
         let store = job.service::<dyn Store>()?;
         let options = ImportOptions::default();
         let outcome = job.checkpoint("reading", 0.0).and_then(|()| {
-            let bytes = self.read_source(job, options.limits.max_input_bytes)?;
-            self.import_bytes(&self.file_name(), &bytes, &options, store, &JobProgress(job))
+            let max_bytes = options.limits.max_input_bytes;
+            let (bytes, main) = self.read_source(job, max_bytes)?;
+            let (name, progress) = (self.file_name(), JobProgress(job));
+            let typed = self.path.as_deref().unwrap_or_default();
+            let folder = main.map(|main| FolderFiles::new(job, &main, typed, max_bytes, bytes.len() as u64));
+            self.import_with(&name, &bytes, &options, store, &progress, folder.as_ref())
         });
         // A cancelled import surfaces from the importer as a plain conflict; the job reports it as cancelled.
         let imported = outcome.map_err(|e| if job.is_cancelled() { OpError::cancelled(job.id()) } else { e })?;
@@ -484,11 +643,100 @@ mod tests {
 
     use super::*;
 
+    /// A job with nothing to report to and no document.
+    struct Quiet(omuzaki_ops_api::CancelFlag);
+
+    impl omuzaki_ops_api::JobSignal for Quiet {
+        fn progress(&self, _stage: &str, _fraction: f32) {}
+
+        fn is_cancelled(&self) -> bool {
+            false
+        }
+
+        fn cancel_flag(&self) -> omuzaki_ops_api::CancelFlag {
+            self.0.clone()
+        }
+
+        fn spend(&self, _usd_micros: u64) -> Result<(), OpError> {
+            Ok(())
+        }
+    }
+
+    struct NoDoc;
+
+    impl omuzaki_ops_api::JobDoc for NoDoc {
+        fn read(&self, f: &mut dyn FnMut(&dyn DocRead)) {
+            f(&omuzaki_doc_mock::MemDoc::new());
+        }
+    }
+
+    #[test]
+    #[allow(clippy::disallowed_methods, reason = "tests set up their fixtures on disk; the fence is for ops")]
+    fn sidecars_count_against_the_input_limit_with_the_file() {
+        use omuzaki_ops_api::{Actor, Grants, JobId, ProjectDir};
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("m.gltf"), [0_u8; 5]).unwrap();
+        std::fs::write(dir.path().join("a.bin"), [1_u8; 10]).unwrap();
+        std::fs::write(dir.path().join("b.png"), [2_u8; 10]).unwrap();
+        let (actor, signal, doc) = (Actor::Person { name: "t".into() }, Quiet(omuzaki_ops_api::CancelFlag::new()), NoDoc);
+        let (grants, project) = (Grants::person(), ProjectDir::open(dir.path()).unwrap());
+        let job = JobCtx::new(JobId(1), &actor, &doc, &signal).with_grants(&grants).with_project_dir(&project);
+        let main = job.fs_access("m.gltf", FsMode::Read).unwrap();
+
+        // The file (5) and both sidecars (10 each) fit exactly in 25 bytes; the same file is served again for free.
+        let folder = FolderFiles::new(&job, &main, "m.gltf", 25, 5);
+        assert_eq!(folder.read("a.bin").unwrap(), [1_u8; 10]);
+        assert_eq!(folder.read("b.png").unwrap(), [2_u8; 10]);
+        assert_eq!(folder.read("a.bin").unwrap(), [1_u8; 10]);
+        assert_eq!(folder.served().unwrap().len(), 2);
+
+        // One byte less and the second sidecar is the one that tips it over.
+        let folder = FolderFiles::new(&job, &main, "m.gltf", 24, 5);
+        folder.read("a.bin").unwrap();
+        let error = from_io(folder.read("b.png").unwrap_err(), "path");
+        assert_eq!(error.code, omuzaki_ops_api::ErrorCode::Invalid, "{}", error.message);
+        assert!(error.message.contains("input size in bytes"), "{}", error.message);
+    }
+
+    #[test]
+    #[allow(clippy::disallowed_methods, reason = "tests set up their fixtures on disk; the fence is for ops")]
+    fn the_served_files_are_in_uri_order_whatever_order_the_reads_finish_in() {
+        use omuzaki_ops_api::{Actor, Grants, JobId, ProjectDir};
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("m.gltf"), [0_u8; 1]).unwrap();
+        let names = ["a.bin", "b.bin", "c.png", "d.png"];
+        for name in names {
+            std::fs::write(dir.path().join(name), name.as_bytes()).unwrap();
+        }
+        let (actor, signal, doc) = (Actor::Person { name: "t".into() }, Quiet(omuzaki_ops_api::CancelFlag::new()), NoDoc);
+        let (grants, project) = (Grants::person(), ProjectDir::open(dir.path()).unwrap());
+        let job = JobCtx::new(JobId(1), &actor, &doc, &signal).with_grants(&grants).with_project_dir(&project);
+        let main = job.fs_access("m.gltf", FsMode::Read).unwrap();
+        let uris = |folder: &FolderFiles<'_, '_>| -> Vec<String> {
+            folder.served().unwrap().into_iter().map(|(uri, _)| uri).collect()
+        };
+
+        let reversed = FolderFiles::new(&job, &main, "m.gltf", 1 << 20, 1);
+        names.iter().rev().for_each(|name| drop(reversed.read(name).unwrap()));
+        assert_eq!(uris(&reversed), names);
+
+        // Reads from several threads finish in an order the scheduler picks; the result does not depend on it.
+        let threaded = FolderFiles::new(&job, &main, "m.gltf", 1 << 20, 1);
+        std::thread::scope(|scope| {
+            for name in names.iter().rev() {
+                let threaded = &threaded;
+                scope.spawn(move || drop(threaded.read(name).unwrap()));
+            }
+        });
+        assert_eq!(uris(&threaded), names);
+    }
+
     #[test]
     fn the_same_asset_recorded_twice_is_an_empty_patch() {
         let asset = AssetRecord {
             original: ContentHash::of(b"a"),
             images: vec![ContentHash::of(b"b")],
+            sidecars: Vec::new(),
             file: "a.glb".into(),
             format: "glb".into(),
             character: None,
