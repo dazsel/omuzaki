@@ -34,3 +34,7 @@ harness = false
 
 [lints]
 workspace = true
+
+[package.metadata.omuzaki]
+kind = "Implementation"
+summary = "the project store (§7): a folder of TOML files that loads into the document tree and saves back, `Project` implementing the document traits, over `omuzaki-doc-api`"

@@ -3,7 +3,7 @@
 //! module's edit.
 //!
 //! Each op plans against the document and returns a patch of leaf changes; none writes the document itself. The check
-//! and the patch are the shared face rules (`ops/shared`), so a refusal names every field the edit breaks.
+//! and the patch are the shared face rules (`ops_shared`), so a refusal names every field the edit breaks.
 
 mod describe;
 mod edit;

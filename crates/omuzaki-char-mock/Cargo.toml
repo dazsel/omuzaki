@@ -26,3 +26,7 @@ omuzaki-face-mock = { path = "../omuzaki-face-mock" }
 
 [lints]
 workspace = true
+
+[package.metadata.omuzaki]
+kind = "Mock"
+summary = "a small character built through the real part-kind contract (JSON fixtures, four `mock-*` kinds taking the real parameter types), a frame loop, and the end-to-end stage test against `omuzaki-render-mock`"

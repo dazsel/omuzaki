@@ -54,4 +54,6 @@ workspace = true
 
 # Native only: test harness on the build machine
 [package.metadata.omuzaki]
+kind = "App"
+summary = "golden-image compare (tolerant, premultiplied), bless, evidence reports and PR comments, `verify` of manifests against the object store, and a branch-safe `gc` of unreferenced objects"
 wasm = false

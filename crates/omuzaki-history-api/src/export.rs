@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use omuzaki_doc_api::Patch;
-use omuzaki_ops_api::{Actor, Scope, TxId};
+use omuzaki_ops_api::{Actor, Effect, Scope, TxId};
 use serde::{Deserialize, Serialize};
 
 use crate::WallTime;
@@ -25,6 +25,10 @@ pub struct StepExport {
     pub patch: Arc<Patch>,
     /// The scopes the transaction needed, re-checked when the step is undone or redone.
     pub scopes: BTreeSet<Scope>,
+    /// The effects of the transaction's ops outside the document, in apply order, so the step stays undoable and
+    /// redoable after a snapshot and a restart. Empty in exports made before effects were recorded.
+    #[serde(default)]
+    pub effects: Vec<Effect>,
 }
 
 /// One actor's history.
@@ -56,6 +60,10 @@ pub struct OpenTxExport {
     pub patch: Patch,
     /// The scopes its ops needed so far.
     pub scopes: BTreeSet<Scope>,
+    /// The effects of its ops outside the document so far, in apply order. Empty in exports made before effects were
+    /// recorded.
+    #[serde(default)]
+    pub effects: Vec<Effect>,
 }
 
 /// The executor's whole history at one journal position.
@@ -77,7 +85,13 @@ pub struct HistoryExport {
 impl StepExport {
     /// A step with these facts.
     pub fn new(tx: TxId, label: impl Into<String>, patch: Arc<Patch>, scopes: BTreeSet<Scope>) -> Self {
-        Self { tx, label: label.into(), patch, scopes }
+        Self { tx, label: label.into(), patch, scopes, effects: Vec::new() }
+    }
+
+    /// This step with the effects of its ops, in apply order.
+    #[must_use]
+    pub fn with_effects(self, effects: Vec<Effect>) -> Self {
+        Self { effects, ..self }
     }
 }
 
@@ -91,7 +105,13 @@ impl ActorHistory {
 impl OpenTxExport {
     /// An open transaction with these facts.
     pub fn new(owner: Actor, tx: TxId, label: impl Into<String>, patch: Patch, scopes: BTreeSet<Scope>) -> Self {
-        Self { owner, tx, label: label.into(), patch, scopes }
+        Self { owner, tx, label: label.into(), patch, scopes, effects: Vec::new() }
+    }
+
+    /// This transaction with the effects of its ops so far, in apply order.
+    #[must_use]
+    pub fn with_effects(self, effects: Vec<Effect>) -> Self {
+        Self { effects, ..self }
     }
 }
 
