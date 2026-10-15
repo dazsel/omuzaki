@@ -75,7 +75,8 @@ pub struct Withheld {
 pub struct StateRecord {
     /// The document version.
     pub doc_version: DocVersion,
-    /// The project's name.
+    /// The project's name; empty in the minimal State, which leaves it out (T2).
+    #[serde(default)]
     pub project: String,
     /// The active scene.
     #[serde(default)]

@@ -9,11 +9,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "form", rename_all = "snake_case")]
 pub enum TakeEntry {
-    /// The entry in full, with an `Op`'s cause text cleared (T5). Never `Mark` or `Session`.
-    Full {
-        /// The journal entry.
-        entry: HistoryEntry,
-    },
+    /// The entry in full, with an `Op`'s cause text cleared (T5). Never `Mark` or `Session`. Its own `entry` tag sits
+    /// beside `form` in the JSON.
+    Full(HistoryEntry),
     /// A bare stand-in for `Mark` and `Session`, so LSNs stay contiguous.
     Placeholder {
         /// What the entry was (`mark`, `session`).

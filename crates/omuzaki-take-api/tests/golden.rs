@@ -6,6 +6,7 @@
 
 use std::fmt::Debug;
 
+use omuzaki_history_api::HistoryEntry;
 use omuzaki_take_api::header::TakeHeader;
 use omuzaki_take_api::record::{EventRecord, TakeEntry};
 use omuzaki_take_api::state::StateRecord;
@@ -53,13 +54,21 @@ fn a_state_with_only_the_required_fields_reads() {
 #[test]
 fn event_full_round_trips_with_the_cause_text_cleared() {
     let event: EventRecord = round_trip(include_str!("golden/event_full.json"));
-    assert!(matches!(event.entry, TakeEntry::Full { .. }));
+    assert!(matches!(event.entry, TakeEntry::Full(HistoryEntry::Op { .. })));
 }
 
 #[test]
 fn event_placeholder_round_trips() {
     let event: EventRecord = round_trip(include_str!("golden/event_placeholder.json"));
     assert_eq!(event.entry, TakeEntry::Placeholder { kind: "mark".into() });
+}
+
+#[test]
+fn the_minimal_state_as_t2_writes_it_reads() {
+    // The overflow fallback writes only these four fields; it must stay readable, not become a JSON error.
+    let state: StateRecord =
+        serde_json::from_str(r#"{"doc_version":17,"after_lsn":41,"withheld":[],"overflow":true}"#).expect("reads");
+    assert!(state.overflow && state.project.is_empty() && state.cast.is_empty());
 }
 
 #[test]
