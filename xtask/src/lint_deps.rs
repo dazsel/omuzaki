@@ -22,6 +22,7 @@ pub enum CrateKind {
     /// Everything else under `crates/`: the real behaviour.
     Implementation,
     /// `omuzaki-cli`, `omuzaki-ui`, `omuzaki-test`, `omuzaki-stage`, `xtask`: they wire implementations together.
+    /// `omuzaki-link-probe` is a test-only App that `cargo xtask wasm-link-proof` builds for wasm (ADR 0015).
     App,
 }
 
@@ -33,7 +34,9 @@ impl CrateKind {
     pub fn of(name: &str) -> Self {
         match name {
             "omuzaki-core" => Self::Api,
-            "omuzaki-cli" | "omuzaki-ui" | "omuzaki-test" | "omuzaki-stage" | "xtask" => Self::App,
+            "omuzaki-cli" | "omuzaki-ui" | "omuzaki-test" | "omuzaki-stage" | "omuzaki-link-probe" | "xtask" => {
+                Self::App
+            }
             _ if name.ends_with("-api") => Self::Api,
             _ if name.ends_with("-mock") => Self::Mock,
             _ => Self::Implementation,
@@ -192,7 +195,7 @@ mod tests {
         assert_eq!(CrateKind::of("omuzaki-doc-api"), CrateKind::Api);
         assert_eq!(CrateKind::of("omuzaki-doc-mock"), CrateKind::Mock);
         assert_eq!(CrateKind::of("omuzaki-render"), CrateKind::Implementation);
-        for app in ["omuzaki-cli", "omuzaki-ui", "omuzaki-test", "omuzaki-stage", "xtask"] {
+        for app in ["omuzaki-cli", "omuzaki-ui", "omuzaki-test", "omuzaki-stage", "omuzaki-link-probe", "xtask"] {
             assert_eq!(CrateKind::of(app), CrateKind::App);
         }
     }

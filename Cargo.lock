@@ -3823,6 +3823,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-link-probe"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-char",
+ "omuzaki-core",
+ "omuzaki-link-build",
+]
+
+[[package]]
 name = "omuzaki-mcp"
 version = "0.0.0"
 dependencies = [
