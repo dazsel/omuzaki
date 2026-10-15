@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use omuzaki_ops_api::{OpError, OpInfo, OpRegistration};
+use omuzaki_ops_api::{OpError, OpInfo, OpRegistration, checks};
 
 use crate::ExecutorError;
 
@@ -27,7 +27,7 @@ impl OpIndex {
         let mut by_name = BTreeMap::new();
         for registration in registrations {
             let meta = (registration.meta)();
-            let info = OpInfo::new(meta, (registration.schema)()).with_coalesces((registration.coalesces)());
+            let info = checks::op_info(registration);
             if let Some(first) = by_name.insert(meta.name, Entry { registration, info }) {
                 return Err(ExecutorError::DuplicateOp {
                     name: meta.name,
