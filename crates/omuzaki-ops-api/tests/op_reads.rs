@@ -1,6 +1,9 @@
 //! `Op::reads` (design `comments.md` section 8): the default declares nothing, an override is computed from the
 //! parsed arguments, and `DynOp` forwards it.
 
+// Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
+#![allow(clippy::expect_used)]
+
 use omuzaki_doc_api::DocPath;
 use omuzaki_ops_api::{DynOp, Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo};
 use schemars::JsonSchema;
@@ -50,7 +53,7 @@ impl Op for Export {
 
 #[test]
 fn default_reads_is_empty() {
-    assert!(Op::reads(&Plain {}).is_empty());
+    assert_eq!(Op::reads(&Plain {}), Vec::<DocPath>::new());
 }
 
 #[test]
@@ -64,7 +67,7 @@ fn override_is_computed_from_arguments() {
 #[test]
 fn dyn_op_forwards_reads() {
     let plain: Box<dyn DynOp> = Box::new(Plain {});
-    assert!(plain.reads().is_empty());
+    assert_eq!(plain.reads(), Vec::<DocPath>::new());
     let export: Box<dyn DynOp> = Box::new(Export { character: "ana".into() });
     assert_eq!(export.reads(), vec![path("characters/ana")]);
 }
