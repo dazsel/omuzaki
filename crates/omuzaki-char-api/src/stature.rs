@@ -128,10 +128,16 @@ fn scale_chain(chain: &mut SpringChain, s: f32) {
 fn scale_group(group: &mut ColliderGroup, s: f32) {
     for Collider { shape, .. } in &mut group.colliders {
         match shape {
-            ColliderShape::Sphere { offset, radius } => (*offset, *radius) = (*offset * s, *radius * s),
-            ColliderShape::Capsule { offset, radius, tail } => {
+            ColliderShape::Sphere { offset, radius } | ColliderShape::SphereInside { offset, radius } => {
+                (*offset, *radius) = (*offset * s, *radius * s);
+            }
+            ColliderShape::Capsule { offset, radius, tail } | ColliderShape::CapsuleInside { offset, radius, tail } => {
                 (*offset, *radius, *tail) = (*offset * s, *radius * s, *tail * s);
             }
+            // A plane's offset scales; its normal is a direction and does not.
+            ColliderShape::Plane { offset, .. } => *offset *= s,
+            // `ColliderShape` is `#[non_exhaustive]`: a shape added later must be given its scaling here.
+            _ => debug_assert!(false, "scale_group: unscaled collider shape"),
         }
     }
 }
@@ -182,5 +188,36 @@ impl HeadSurface for ScaledHead {
 
     fn radius(&self, dir: Vec3) -> f32 {
         self.inner.radius(dir) * self.scale
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use omuzaki_anim_api::BoneId;
+
+    use super::*;
+
+    #[test]
+    fn scaling_a_group_scales_lengths_but_not_a_plane_normal() {
+        let (offset, tail) = (Vec3::new(0.0, 0.1, 0.2), Vec3::new(0.0, -0.3, 0.0));
+        let shapes = [
+            ColliderShape::SphereInside { offset, radius: 0.2 },
+            ColliderShape::CapsuleInside { offset, radius: 0.2, tail },
+            ColliderShape::Plane { offset, normal: Vec3::Y },
+        ];
+        let mut group = ColliderGroup {
+            name: "g".to_owned(),
+            colliders: shapes.iter().map(|&shape| Collider { bone: BoneId(0), shape }).collect(),
+        };
+        scale_group(&mut group, 2.0);
+        let scaled: Vec<_> = group.colliders.iter().map(|c| c.shape).collect();
+        assert_eq!(
+            scaled,
+            [
+                ColliderShape::SphereInside { offset: offset * 2.0, radius: 0.4 },
+                ColliderShape::CapsuleInside { offset: offset * 2.0, radius: 0.4, tail: tail * 2.0 },
+                ColliderShape::Plane { offset: offset * 2.0, normal: Vec3::Y },
+            ]
+        );
     }
 }

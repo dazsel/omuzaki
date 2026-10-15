@@ -3330,12 +3330,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-ai-native"
+version = "0.0.0"
+dependencies = [
+ "flate2",
+ "tar",
+ "tempfile",
+ "zip",
+]
+
+[[package]]
 name = "omuzaki-ai-ort"
 version = "0.0.0"
 dependencies = [
  "flate2",
  "hound",
  "omuzaki-ai-api",
+ "omuzaki-ai-native",
  "omuzaki-core",
  "ort",
  "sha2",
@@ -3876,6 +3887,8 @@ dependencies = [
  "omuzaki-core",
  "omuzaki-doc-api",
  "omuzaki-doc-mock",
+ "omuzaki-history-api",
+ "omuzaki-history-mock",
  "omuzaki-ops-api",
  "omuzaki-ops-mock",
  "omuzaki-store-api",
@@ -4014,6 +4027,7 @@ dependencies = [
  "omuzaki-core",
  "omuzaki-render-api",
  "omuzaki-render-mock",
+ "proptest",
  "thiserror 2.0.21",
 ]
 
@@ -7002,6 +7016,7 @@ version = "0.0.0"
 dependencies = [
  "clap",
  "flate2",
+ "omuzaki-ai-api",
  "omuzaki-core",
  "omuzaki-embed",
  "omuzaki-library-api",

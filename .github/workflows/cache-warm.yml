@@ -14,9 +14,8 @@ on:
     branches: [main]
   workflow_dispatch:
 
-concurrency:
-  group: cache-warm
-  cancel-in-progress: true
+# Concurrency is per job: a newer push cancels an older run's Rust warm-up, but queues behind a LiteRT build, which can
+# take hours and would otherwise never get to save.
 
 permissions:
   contents: read
@@ -31,6 +30,9 @@ jobs:
   xtask:
     name: xtask
     runs-on: ubuntu-latest
+    concurrency:
+      group: cache-warm-xtask
+      cancel-in-progress: true
     if: github.repository == 'dazsel/omuzaki'
     timeout-minutes: 20
     steps:
@@ -44,6 +46,9 @@ jobs:
   lint:
     name: lint
     runs-on: ubuntu-latest
+    concurrency:
+      group: cache-warm-lint
+      cancel-in-progress: true
     if: github.repository == 'dazsel/omuzaki'
     timeout-minutes: 45
     steps:
@@ -64,6 +69,9 @@ jobs:
   test:
     name: test
     runs-on: ubuntu-latest
+    concurrency:
+      group: cache-warm-test
+      cancel-in-progress: true
     if: github.repository == 'dazsel/omuzaki'
     timeout-minutes: 60
     steps:
@@ -80,6 +88,9 @@ jobs:
   win-cross:
     name: windows build
     runs-on: ubuntu-latest
+    concurrency:
+      group: cache-warm-win-cross
+      cancel-in-progress: true
     if: github.repository == 'dazsel/omuzaki'
     timeout-minutes: 60
     steps:
@@ -91,3 +102,51 @@ jobs:
           windows-cross: true
           free-disk: true
       - run: cargo build --locked --workspace --target x86_64-pc-windows-gnu
+
+  # Whether this push changed the LiteRT build's inputs: a push payload carries no file lists, so git compares the
+  # push's two ends. A manual run, a new branch (`before` all zeros) or an unreachable `before` counts as changed, so a
+  # doubt warms rather than skips.
+  litert-changes:
+    name: litert changes
+    runs-on: ubuntu-latest
+    if: github.repository == 'dazsel/omuzaki'
+    timeout-minutes: 10
+    concurrency:
+      group: cache-warm-litert-changes
+      cancel-in-progress: true
+    outputs:
+      changed: ${{ steps.diff.outputs.changed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Changed paths
+        id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          changed=true
+          if [ "$EVENT" = push ] && [ -n "$BEFORE" ] && [ "$BEFORE" != 0000000000000000000000000000000000000000 ] \
+            && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            paths=$(git diff --name-only "$BEFORE" "$AFTER" -- tools/litert/ .github/workflows/runtime-litert.yml)
+            [ -n "$paths" ] || changed=false
+          fi
+          echo "changed=$changed" >>"$GITHUB_OUTPUT"
+          echo "LiteRT inputs changed: $changed"
+
+  # The LiteRT archive (runtime-litert.yml): built, checked and saved when its inputs change.
+  litert:
+    name: litert
+    needs: litert-changes
+    if: needs.litert-changes.outputs.changed == 'true'
+    concurrency:
+      group: cache-warm-litert
+      cancel-in-progress: false
+    uses: ./.github/workflows/runtime-litert.yml
+    permissions:
+      contents: read
+    with:
+      save-cache: true

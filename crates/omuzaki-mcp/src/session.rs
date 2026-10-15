@@ -2,7 +2,9 @@
 
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
+use omuzaki_history_api::JournalStatus;
 use omuzaki_ops_api::{Actor, Cause, CauseKind, Mode, OpError, OpKind, Request, Runner, Scope};
 use rmcp::ErrorData as McpError;
 use rmcp::handler::server::ServerHandler;
@@ -26,6 +28,9 @@ use crate::render::{self, Call, OpenTx};
 use crate::resources::protocol_error;
 use crate::schema::{DRY_RUN, check_args};
 use crate::server::{Shared, View};
+
+/// How long a reply to a change waits for the journal to save it (spec v3 §6, journal design §5.5).
+const SAVE_WAIT: Duration = Duration::from_secs(5);
 
 /// The handler for one client connection (an rmcp [`ServerHandler`]).
 ///
@@ -191,10 +196,10 @@ impl Session {
     }
 
     /// Every call lands here and always yields a tool result: failures become tool errors, never protocol errors.
-    async fn dispatch(&self, request: CallToolRequestParams, context: &RequestContext<RoleServer>) -> CallToolResult {
+    async fn dispatch(&self, request: CallToolRequestParams, context: &RequestContext<RoleServer>) -> Reply {
         let name = request.name.as_ref();
         let Some(entry) = self.view.catalog.get(name) else {
-            return render::unknown_tool(name, &self.view.catalog.similar(name));
+            return render::unknown_tool(name, &self.view.catalog.similar(name)).into();
         };
         let actor = self.actor(context).clone();
         let mut args = request.arguments.unwrap_or_default();
@@ -213,7 +218,10 @@ impl Session {
             },
         };
         let tool = entry.tool.name.as_ref();
-        outcome.unwrap_or_else(|e| render::failure(tool, &in_tool_names(e, &entry.op, tool), Some(&entry.signature)))
+        match outcome {
+            Ok(reply) => reply,
+            Err(e) => render::failure(tool, &in_tool_names(e, &entry.op, tool), Some(&entry.signature)).into(),
+        }
     }
 
     async fn run_op(
@@ -224,7 +232,7 @@ impl Session {
         args: JsonObject,
         dry_run: bool,
         actor: Actor,
-    ) -> Result<CallToolResult, OpError> {
+    ) -> Result<Reply, OpError> {
         // A query has nothing to preview. It always runs as a normal call, so a stray `dry_run` can't skip the
         // scope check the runner makes on applied calls.
         let mode = if dry_run && kind != OpKind::Query { Mode::DryRun } else { Mode::Apply };
@@ -249,10 +257,29 @@ impl Session {
             lock(&self.state).own.remember(record.tx);
         }
         let call = Call { op: &entry.tool.name, kind, mode, tx: tx.as_ref(), verify: self.shared.guidance.verify() };
-        Ok(render::success(&call, &outcome))
+        let result = render::success(&call, &outcome);
+        Ok(if outcome.applied.is_some() { self.confirm_saved(result).await } else { result.into() })
     }
 
-    async fn run_builtin(&self, builtin: Builtin, args: JsonObject, actor: Actor) -> Result<CallToolResult, OpError> {
+    /// Waits until the journal has saved the change `result` reports, then returns it. A change that applied but isn't
+    /// saved yet (the wait timed out, or saving fails) still succeeds: the reply carries the warning, which
+    /// `call_tool` puts first.
+    async fn confirm_saved(&self, result: CallToolResult) -> Reply {
+        let Some(journal) = self.shared.journal.clone() else { return result.into() };
+        let waited = tokio::task::spawn_blocking(move || match journal.sync(SAVE_WAIT) {
+            Ok(_) => None,
+            Err(_) => Some(journal.status()),
+        })
+        .await;
+        let unsaved = match waited {
+            Ok(None) => None,
+            Ok(Some(status)) => Some(format!("applied, not yet saved: {}", describe(&status))),
+            Err(_) => Some("applied, not yet saved: the journal's status couldn't be read".to_owned()),
+        };
+        Reply { result, unsaved }
+    }
+
+    async fn run_builtin(&self, builtin: Builtin, args: JsonObject, actor: Actor) -> Result<Reply, OpError> {
         match builtin {
             Builtin::Undo | Builtin::Redo => {
                 let grants = self.view.grants.clone();
@@ -262,10 +289,12 @@ impl Session {
                         _ => runner.redo(&actor, &grants),
                     })
                     .await??;
-                Ok(render::history(builtin, label.as_deref()))
+                let changed = label.is_some();
+                let result = render::history(builtin, label.as_deref());
+                Ok(if changed { self.confirm_saved(result).await } else { result.into() })
             }
-            Builtin::Log => self.history_log(&args),
-            Builtin::TxBegin => self.begin_tx(args, actor).await,
+            Builtin::Log => self.history_log(&args).map(Reply::from),
+            Builtin::TxBegin => self.begin_tx(args, actor).await.map(Reply::from),
             Builtin::TxCommit | Builtin::TxRollback => self.finish_tx(builtin == Builtin::TxCommit, actor).await,
         }
     }
@@ -307,7 +336,7 @@ impl Session {
         Ok(render::confirmation(text, json!({"ok": true, "tx": id.0, "label": label})))
     }
 
-    async fn finish_tx(&self, commit: bool, actor: Actor) -> Result<CallToolResult, OpError> {
+    async fn finish_tx(&self, commit: bool, actor: Actor) -> Result<Reply, OpError> {
         let open = lock(&self.state).tx.clone().ok_or_else(|| {
             OpError::not_found("no transaction is open in this session").hint("start one with tx_begin")
         })?;
@@ -326,7 +355,8 @@ impl Session {
             ("Rolled back", "Every edit made since tx_begin was reverted.")
         };
         let text = format!("{verb} transaction {} ({:?}). {tail}", id.0, open.label);
-        Ok(render::confirmation(text, json!({"ok": true, "tx": id.0, "label": open.label})))
+        let result = render::confirmation(text, json!({"ok": true, "tx": id.0, "label": open.label}));
+        Ok(self.confirm_saved(result).await)
     }
 }
 
@@ -341,6 +371,29 @@ impl Drop for Session {
         {
             tracing::warn!(tx = open.id.0, label = %open.label, error = %e, "couldn't roll back an abandoned tx");
         }
+    }
+}
+
+/// A tool's reply, and the save warning that must lead it when the change applied but isn't saved yet. The warning
+/// is kept apart from the result so that `call_tool` can put it in front of everything else, including the heads-up.
+struct Reply {
+    result: CallToolResult,
+    unsaved: Option<String>,
+}
+
+impl From<CallToolResult> for Reply {
+    fn from(result: CallToolResult) -> Self {
+        Self { result, unsaved: None }
+    }
+}
+
+/// What the journal's status says about a save, for the warning.
+fn describe(status: &JournalStatus) -> String {
+    match status {
+        JournalStatus::Healthy => "the journal is healthy and should save it shortly".to_owned(),
+        JournalStatus::Behind { pending } => format!("saving is behind, with {pending} entries waiting"),
+        JournalStatus::Failing { reason } => format!("saving is failing: {reason}"),
+        _ => "the journal's status is unknown".to_owned(),
     }
 }
 
@@ -494,7 +547,7 @@ impl ServerHandler for Session {
             .catalog
             .get(request.name.as_ref())
             .is_some_and(|entry| matches!(entry.route, Route::Builtin(Builtin::Log)));
-        let result = self.dispatch(request, &context).await;
+        let Reply { result, unsaved } = self.dispatch(request, &context).await;
         // A successful `history_log` is the log itself as its whole text, so nothing may be put in front of it. Its
         // snapshot already caught this session up, so later events are reported by the next call, not lost.
         let log_text = reads_log && result.is_error != Some(true);
@@ -503,6 +556,12 @@ impl ServerHandler for Session {
         let report = if log_text { None } else { self.others_changed(self.actor(&context)) };
         let result = match report {
             Some(report) => render::with_heads_up(result, &report),
+            None => result,
+        };
+        // Last, so the save warning leads the text, ahead of the heads-up: a client that shows only the first line
+        // still sees that the change isn't saved.
+        let result = match unsaved {
+            Some(warning) => render::with_warning(result, &warning),
             None => result,
         };
         Ok(result.into())

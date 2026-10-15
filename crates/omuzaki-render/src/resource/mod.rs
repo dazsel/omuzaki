@@ -13,6 +13,7 @@ pub(crate) mod texture;
 
 use crate::arena::Arena;
 use crate::environment::GpuEnvironment;
+use crate::morph::MorphPool;
 use material::GpuMaterial;
 use mesh::GpuMesh;
 use omuzaki_render_api::{ResourceStats, Scene};
@@ -27,6 +28,8 @@ pub(crate) struct Resources {
     pub(crate) materials: Arena<GpuMaterial>,
     pub(crate) targets: Arena<GpuTarget>,
     pub(crate) environments: Arena<GpuEnvironment>,
+    /// The per-instance morphed vertex streams of the frame (`morph.rs`).
+    pub(crate) morphs: MorphPool,
 }
 
 /// The resources a scene draws with, read-only: meshes, textures, materials and environments. Split from the targets so a frame can
@@ -37,6 +40,7 @@ pub(crate) struct SceneResources<'a> {
     pub(crate) textures: &'a Arena<GpuTexture>,
     pub(crate) materials: &'a Arena<GpuMaterial>,
     pub(crate) environments: &'a Arena<GpuEnvironment>,
+    pub(crate) morphs: &'a MorphPool,
 }
 
 impl Resources {
@@ -47,6 +51,7 @@ impl Resources {
             textures: &self.textures,
             materials: &self.materials,
             environments: &self.environments,
+            morphs: &self.morphs,
         };
         (scene, &mut self.targets)
     }
@@ -60,7 +65,7 @@ impl Resources {
             let outlined = self
                 .materials
                 .get(instance.material.index(), instance.material.generation())
-                .is_some_and(|m| m.material.outline.is_some());
+                .is_some_and(GpuMaterial::draws_outline);
             if let Some(mesh) = self.meshes.get_mut(instance.mesh.index(), instance.mesh.generation()) {
                 mesh.refresh(queue, outlined);
             }
@@ -73,7 +78,8 @@ impl Resources {
             + self.textures.iter().map(|t| t.bytes).sum::<u64>()
             + self.materials.iter().map(|_| material::UNIFORM_BYTES).sum::<u64>()
             + self.targets.iter().map(GpuTarget::bytes).sum::<u64>()
-            + self.environments.iter().map(|e| e.bytes).sum::<u64>();
+            + self.environments.iter().map(|e| e.bytes).sum::<u64>()
+            + self.morphs.bytes();
         // Counts are bounded by memory long before they reach u32::MAX.
         #[allow(clippy::cast_possible_truncation)]
         ResourceStats {

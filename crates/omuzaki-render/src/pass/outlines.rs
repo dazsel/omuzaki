@@ -54,7 +54,7 @@ fn hulls<'a>(frame: &'a FrameView<'_>, resources: SceneResources<'a>) -> impl It
     frame.draws.for_pass(Pass::Outlines).filter_map(move |draw| {
         let mesh = resources.meshes.at(draw.mesh)?;
         let material = resources.materials.at(draw.material)?;
-        if !material.material.outline.is_some_and(|outline| outline.width > 0.0) {
+        if !material.draws_outline() {
             return None;
         }
         Some(Hull {
@@ -169,7 +169,11 @@ impl FramePass for Outlines {
             let Some(pipeline) = self.pipelines.get(&hull.variant) else { continue };
             pass.set_pipeline(pipeline);
             pass.set_bind_group(1, &hull.material.bind_group, &[]);
-            hull.mesh.draw_with_smooth_normals(&mut pass, hull.instance);
+            hull.mesh.draw_with_smooth_normals(
+                &mut pass,
+                hull.instance,
+                resources.morphs.outline_streams(hull.instance),
+            );
             cx.stats.draw_calls += 1;
             cx.stats.triangles += hull.mesh.triangles;
         }
