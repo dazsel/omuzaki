@@ -1,6 +1,6 @@
 //! The library's application records (`characters/<id>/applied/<app>`) in `licence.derive`, `licence.describe` and
 //! `io.check_export`: the rights an applied item carries are joined like a source row's, an item that is not cleared
-//! blocks `publish` at its record, and a pending first-party licence only warns.
+//! blocks `publish` at its record.
 
 // Integration-test helpers may panic: a panic is a clear test failure.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 
 use omuzaki_doc_api::DocWrite;
 use omuzaki_doc_mock::MemDoc;
+use omuzaki_io_api::UseTerms;
 use omuzaki_io_api::{Finding, Severity};
 use omuzaki_io_mock::{MockGlbExporter, MockVrm1Exporter};
 use omuzaki_io_ops::gather::avatar::LicenceRecord;
@@ -266,4 +267,18 @@ fn an_applied_node_that_is_not_a_table_is_an_error_not_no_applications() {
     let error =
         plan(&MemDoc::from_value(root), "licence.derive", json!({ "character": "mira" })).expect_err("not a table");
     assert_eq!(error.field.as_deref(), Some("applied"));
+}
+
+#[test]
+fn a_character_with_no_parts_keeps_the_most_restrictive_floor_whatever_it_has_applied() {
+    let rights = ItemRights::first_party();
+    let mut root = json!({ "characters": { "mira": serde_json::to_value(mock_character().unwrap()).unwrap() } });
+    root["characters"]["mira"]["parts"] = json!({});
+    root["characters"]["mira"]["applied"]["hair-style"] = node("omuzaki/hair/twintails", rights);
+    let derived = derive(&MemDoc::from_value(root));
+    assert!(derived.parts.is_empty() && derived.applications.len() == 1);
+    assert_eq!(derived.record.provenance.commercial, Commercial::Unknown);
+    assert!(derived.record.provenance.licence.contains("LicenseRef-Unknown"), "{}", derived.record.provenance.licence);
+    assert!(!derived.project_owned && !derived.complete);
+    assert_eq!(derived.record.meta.terms, UseTerms::default());
 }

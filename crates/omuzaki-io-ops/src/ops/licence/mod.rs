@@ -5,7 +5,7 @@
 //!
 //! | Op | Kind | Scope | Does |
 //! |---|---|---|---|
-//! | [`derive::LicenceDerive`] | query | `read` | the record the parts allow: the strictest join of their source rows |
+//! | [`derive::LicenceDerive`] | query | `read` | the record the parts and application records allow: the strictest join of their rights |
 //! | [`describe::LicenceDescribe`] | query | `read` | what the record holds and what is missing for an export purpose |
 //! | [`set::LicenceSet`] | edit | `edit:character` | stores a record, refusing one that grants more than the parts allow |
 //! | [`set_source::LicenceSetSource`] | edit | `edit:character` | records where one part came from and what its rights are |
