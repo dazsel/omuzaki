@@ -1,3 +1,9 @@
+---
+title: "0033: An imported avatar is a performer body of its own, with morph targets in the renderer (2026-10-13)"
+summary: "An imported avatar is a performer body of its own, with morph targets in the renderer"
+area: decisions
+---
+
 # 0033: An imported avatar is a performer body of its own, with morph targets in the renderer (2026-10-13)
 
 **Status:** accepted (decisions 1 and 3 with conditions). **Context:** EX-12, EX-11, LK-07,

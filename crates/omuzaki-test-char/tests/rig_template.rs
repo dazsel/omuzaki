@@ -57,7 +57,7 @@ impl PartKind for TemplateBody {
         let template = registry::find("soft-sd").ok_or_else(|| ctx.fail("soft-sd is not registered"))?;
         let layout = template.try_layout(&p.proportions, &p.shape, &p.hand).map_err(|e| ctx.fail(e.to_string()))?;
         let fit = Arc::new(TemplateFit::new(layout));
-        Ok(PartOutput { publishes: Publishes::default().with::<FitFact>(fit), ..PartOutput::default() })
+        Ok(PartOutput::new().with_publishes(Publishes::default().with::<FitFact>(fit)))
     }
 }
 omuzaki_char_api::register_part_kind!(TemplateBody);
@@ -91,7 +91,7 @@ impl PartKind for TemplateHead {
     fn build(_: &HeadParams, ctx: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
         let base = ctx.joint(&JointRef::HEAD).ok_or_else(|| ctx.fail("the body published no head joint"))?;
         let fit = JointFit::new(head_joints(base).map(|(bone, at)| (JointRef::Humanoid(bone), at)));
-        Ok(PartOutput { publishes: Publishes::default().with::<FitFact>(Arc::new(fit)), ..PartOutput::default() })
+        Ok(PartOutput::new().with_publishes(Publishes::default().with::<FitFact>(Arc::new(fit))))
     }
 }
 omuzaki_char_api::register_part_kind!(TemplateHead);

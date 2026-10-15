@@ -122,7 +122,7 @@ fn build_prop(
     let id = material_name(ctx, prefix)?;
     let mesh = grid_mesh("prop", &id, params.rings + extra_cells, &mut ctx.rng);
     let material = MaterialSpec::toon(ctx.colour(&params.tint)?);
-    Ok(PartOutput { meshes: vec![mesh], materials: vec![(id, material)], ..PartOutput::default() })
+    Ok(PartOutput::new().with_meshes(vec![mesh]).with_materials(vec![(id, material)]))
 }
 
 /// A silent part: a grid whose jitter comes from the part's stream and whose colour from a palette slot. Its colour
@@ -213,13 +213,11 @@ impl PartKind for Lamp {
         if params.publish {
             publishes.put::<AnchorsFact>((AnchorId::new("light").unwrap(), anchor));
         }
-        Ok(PartOutput {
-            meshes: vec![mesh],
-            materials: vec![(id, material)],
-            publishes,
-            warnings: if ctx.rig_export { vec!["built for export".to_owned()] } else { Vec::new() },
-            ..PartOutput::default()
-        })
+        Ok(PartOutput::new()
+            .with_meshes(vec![mesh])
+            .with_materials(vec![(id, material)])
+            .with_publishes(publishes)
+            .with_warnings(if ctx.rig_export { vec!["built for export".to_owned()] } else { Vec::new() }))
     }
 }
 omuzaki_char_api::register_part_kind!(Lamp);
@@ -252,11 +250,7 @@ impl PartKind for Sleeper {
         IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
         let id = material_name(ctx, "t-sleeper")?;
         let mesh = grid_mesh("sleeper", &id, 2, &mut ctx.rng);
-        Ok(PartOutput {
-            meshes: vec![mesh],
-            materials: vec![(id, MaterialSpec::toon(Colour::WHITE))],
-            ..PartOutput::default()
-        })
+        Ok(PartOutput::new().with_meshes(vec![mesh]).with_materials(vec![(id, MaterialSpec::toon(Colour::WHITE))]))
     }
 }
 omuzaki_char_api::register_part_kind!(Sleeper);
@@ -274,11 +268,7 @@ impl PartKind for Twin {
     fn build(_: &Empty, ctx: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
         let id = MaterialName::new("twin").map_err(|e| ctx.fail(e.to_string()))?;
         let mesh = grid_mesh("twin", &id, 2, &mut ctx.rng);
-        Ok(PartOutput {
-            meshes: vec![mesh],
-            materials: vec![(id, MaterialSpec::toon(Colour::WHITE))],
-            ..PartOutput::default()
-        })
+        Ok(PartOutput::new().with_meshes(vec![mesh]).with_materials(vec![(id, MaterialSpec::toon(Colour::WHITE))]))
     }
 }
 omuzaki_char_api::register_part_kind!(Twin);
@@ -320,12 +310,10 @@ impl PartKind for Stripe {
             MaterialSpec::toon(params.tint.as_ref().map(|t| ctx.colour(t)).transpose()?.unwrap_or(colour));
         material.base_texture = Some(tex.clone());
         let mesh = grid_mesh("stripe", &id, 2, &mut ctx.rng);
-        Ok(PartOutput {
-            meshes: vec![mesh],
-            materials: vec![(id, material)],
-            textures: vec![(tex, texture)],
-            ..PartOutput::default()
-        })
+        Ok(PartOutput::new()
+            .with_meshes(vec![mesh])
+            .with_materials(vec![(id, material)])
+            .with_textures(vec![(tex, texture)]))
     }
 
     /// Only the material follows the palette; the texture comes from the asset, which a recolour does not read again.
@@ -473,12 +461,10 @@ impl PartKind for Wobble {
             forks: params.forks,
             asked: Arc::new(AtomicUsize::new(0)),
         };
-        Ok(PartOutput {
-            meshes: vec![mesh],
-            materials: vec![(id, MaterialSpec::toon(Colour::WHITE))],
-            runtime: Some(Box::new(sim)),
-            ..PartOutput::default()
-        })
+        Ok(PartOutput::new()
+            .with_meshes(vec![mesh])
+            .with_materials(vec![(id, MaterialSpec::toon(Colour::WHITE))])
+            .with_runtime(Box::new(sim)))
     }
 }
 omuzaki_char_api::register_part_kind!(Wobble);
@@ -540,7 +526,7 @@ impl PartKind for Dyed {
         mesh.geometry.colours = gradient(&mesh.geometry.positions, ctx.colour(&params.root)?, ctx.colour(&params.tip)?);
         let mut material = MaterialSpec::toon(Colour::WHITE);
         material.vertex_colours = true;
-        Ok(PartOutput { meshes: vec![mesh], materials: vec![(id, material)], ..PartOutput::default() })
+        Ok(PartOutput::new().with_meshes(vec![mesh]).with_materials(vec![(id, material)]))
     }
 
     fn recolour(params: &DyedParams, output: &mut PartOutput, ctx: &RecolourCtx<'_>) -> Result<Recoloured, BuildError> {
@@ -624,12 +610,10 @@ impl PartKind for Plaid {
         let mut material = MaterialSpec::toon(cloth);
         material.base_texture = Some(tex.clone());
         let mesh = grid_mesh("plaid", &id, 3, &mut ctx.rng);
-        Ok(PartOutput {
-            meshes: vec![mesh],
-            materials: vec![(id, material)],
-            textures: vec![(tex, texture)],
-            ..PartOutput::default()
-        })
+        Ok(PartOutput::new()
+            .with_meshes(vec![mesh])
+            .with_materials(vec![(id, material)])
+            .with_textures(vec![(tex, texture)]))
     }
 
     fn recolour(

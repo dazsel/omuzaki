@@ -1,3 +1,9 @@
+---
+title: "0011: Shared format libraries as a layer (2026-10-12)"
+summary: "Shared format libraries as a layer"
+area: decisions
+---
+
 # 0011: Shared format libraries as a layer (2026-10-12)
 
 **Status:** accepted. **Context:** sharing the glTF reading between `omuzaki-io-gltf` and `omuzaki-io-vrm`; spec v3 §27 and §39 rule 10; `docs/design/io-api.md` §6; `crates/README.md`.

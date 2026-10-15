@@ -33,7 +33,6 @@ use omuzaki_anim_api::Channel;
 
 use super::common::{Band, MAX_ATTACK, Presence, Timing, raise};
 use crate::grammar::{GrammarRule, RuleCtx, RuleParams};
-use crate::register_grammar_rule;
 
 /// A pout is only believed after 0.1 s, then builds in 0.12 s, rides out a 0.15 s dip, and fades over 0.25 s.
 const POUT: Timing = Timing { attack: 0.1, hold: 0.15, rise: 0.12, fall: 0.25 };

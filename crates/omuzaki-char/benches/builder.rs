@@ -107,7 +107,7 @@ impl PartKind for Prop {
             dynamic: false,
         };
         let material = MaterialSpec::toon(ctx.colour(&params.tint)?);
-        Ok(PartOutput { meshes: vec![mesh], materials: vec![(id, material)], ..PartOutput::default() })
+        Ok(PartOutput::new().with_meshes(vec![mesh]).with_materials(vec![(id, material)]))
     }
 
     fn recolour(params: &PropParams, output: &mut PartOutput, ctx: &RecolourCtx<'_>) -> Result<Recoloured, BuildError> {

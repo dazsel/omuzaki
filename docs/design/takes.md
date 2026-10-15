@@ -1,3 +1,9 @@
+---
+title: "Takes: the recorded inputs beside a recording or a replay clip (SH-01)"
+summary: "the recorded inputs beside a recording or a replay clip (SH-01)"
+area: design
+---
+
 # Takes: the recorded inputs beside a recording or a replay clip (SH-01)
 
 **Status:** proposed (PR, 2026-10-13); a maintainer accepts it.

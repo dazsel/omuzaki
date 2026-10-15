@@ -1,3 +1,9 @@
+---
+title: "0014: Characters rest in the VRM T-pose and are bound in their sculpted pose (2026-10-12)"
+summary: "Characters rest in the VRM T-pose and are bound in their sculpted pose"
+area: decisions
+---
+
 # 0014: Characters rest in the VRM T-pose and are bound in their sculpted pose (2026-10-12)
 
 **Status:** accepted. It corrects the first decision, which fixed only the hands. **Context:** the rule "bind the mesh in A, rest the skeleton in T", `docs/design/anim-api.md` §8 (`HumanoidPose` identity is the VRM T-pose), `docs/design/io-api.md` ("inverse bind matrices are data"; VRM 1.0 needs a T-pose rest).

@@ -1,3 +1,9 @@
+---
+title: "Scripting: the script console, its sandbox, grants and journal, and macros (PL-02)"
+summary: "the script console, its sandbox, grants and journal, and macros (PL-02)"
+area: design
+---
+
 # Scripting: the script console, its sandbox, grants and journal, and macros (PL-02)
 
 **Status:** proposed. **Feature:** PL-02. **Decision record:** [ADR 0034](../decisions/0034-scripting.md). **Context:** spec v3 §4.1,
