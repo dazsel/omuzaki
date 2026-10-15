@@ -21,8 +21,8 @@ pub const MIN_STRANDS: u32 = 2;
 pub const MAX_STRANDS: u32 = 6;
 /// The most repeats along a rail.
 pub const MAX_LOBES: u32 = 400;
-/// Samples along each repeat of the braid.
-const PER_LOBE: usize = 16;
+/// Samples along each repeat of the braid, at least.
+const PER_LOBE: f64 = 16.0;
 /// Segments round a strand.
 const ROUND: usize = 8;
 /// The share of an open braid's length over which its strands taper to a point at each end.
@@ -73,9 +73,10 @@ impl Validate for Braid {
 /// [`TrimError::ZeroLengthRail`] for a rail without length; [`TrimError::Invalid`] for a spec that fails validation.
 pub fn build(surface: &Surface, spec: &Braid) -> Result<MeshBuilder, TrimError> {
     checked(spec)?;
-    let lobes = usize::try_from(spec.lobes).map_err(|_| TrimError::invalid("lobes", "too many"))?;
-    let samples = (lobes * PER_LOBE + 1).min(super::MAX_RAIL_SAMPLES);
-    let rail = Rail::from_polyline_on_surface(surface, &spec.rail, samples)?;
+    // Fine enough for every repeat to have its samples, and never coarser than the rail asks.
+    let length = Rail::length_on(surface, &spec.rail)?;
+    let step = (length / (f64::from(spec.lobes) * PER_LOBE)).min(spec.rail.step);
+    let rail = Rail::from_polyline_on_surface(surface, &spec.rail, step)?;
     let mut builder = MeshBuilder::new();
     for k in 0..spec.strands {
         builder.merge(&strand(&rail, spec, k)?)?;

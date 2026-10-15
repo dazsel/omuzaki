@@ -1,39 +1,54 @@
 //! Buttons and rivets: lathed shapes standing on the surface along its normal, alone or spaced along a rail.
 
+use omuzaki_char_api::JointRef;
+use omuzaki_core::glam::DVec3;
 use omuzaki_face_api::{Check, Validate};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::{Finish, Rail, RailSpec, TrimError, checked, feature, position};
-use crate::kit::grid::{GridOptions, MeshBuilder, Skin};
-use crate::kit::loft::lathe_axis;
+use super::{Basis, Finish, Rail, RailSpec, TrimError, checked, cylinder, feature, position, sphere, torus};
+use crate::kit::grid::MeshBuilder;
 use crate::outfit::loft::Surface;
 
 /// The most buttons in a row.
 pub const MAX_BUTTONS: u32 = 64;
-/// Segments round a button.
-const ROUND: usize = 20;
-/// The stem under a raised button, as a share of its radius.
-const STEM: f64 = 0.35;
-/// The head of a dome button, `(height, radius)` in button radii from its foot.
-pub const DOME: &[(f64, f64)] = &[(0.0, 0.92), (0.08, 1.0), (0.22, 0.97), (0.4, 0.75), (0.5, 0.4), (0.53, 0.0)];
-/// The head of a flat button.
-pub const FLAT: &[(f64, f64)] = &[(0.0, 0.94), (0.05, 1.0), (0.18, 1.0), (0.24, 0.9), (0.26, 0.0)];
-/// The head of a rivet.
-pub const RIVET: &[(f64, f64)] = &[(0.0, 1.0), (0.06, 1.0), (0.1, 0.62), (0.22, 0.6), (0.32, 0.42), (0.36, 0.0)];
+/// The prototype's gold button's radius at the foot of its disc, metres: every part below is for this radius.
+pub const GOLD_RADIUS: f64 = 0.0070;
+/// How far the disc's centre stands off the surface, metres.
+pub const STANDOFF: f64 = 0.0010;
+/// The disc: its radius at the top and at the foot, and its height (metres).
+pub const DISC: (f64, f64, f64) = (0.0066, 0.0070, 0.0020);
+/// Segments round the disc.
+pub const DISC_SEGMENTS: usize = 24;
+/// The rim torus: ring radius and tube radius (metres).
+pub const RIM: (f64, f64) = (0.0061, 0.00095);
+/// The rim's segments round its tube and round its ring.
+pub const RIM_SEGMENTS: (usize, usize) = (8, 28);
+/// How far above the disc's centre the rim and the dome sit, metres.
+pub const RIM_LIFT: f64 = 0.0009;
+/// The dome: a hemisphere of this radius (metres), squashed along the normal by the second number.
+pub const DOME: (f64, f64) = (0.0036, 0.38);
+/// The dome's segments round and from its rim to its crown.
+pub const DOME_SEGMENTS: (usize, usize) = (14, 8);
+/// The tip: radius and height (metres).
+pub const TIP: (f64, f64) = (0.0009, 0.0012);
+/// How far above the disc's centre the tip's centre sits, metres.
+pub const TIP_LIFT: f64 = 0.0021;
+/// Segments round the tip.
+pub const TIP_SEGMENTS: usize = 8;
 /// A row's rail is sampled about this often to place its buttons, metres.
-const STEP: f64 = 0.002;
+const STEP: f64 = super::RAIL_STEP;
 
 /// The shape of a button.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ButtonShape {
-    /// A rounded dome (the prototype's gold buttons).
+    /// The prototype's gold button: a disc, a rim, a low dome and a tip.
     #[default]
     Dome,
-    /// A flat disc with a rounded rim.
+    /// A disc and its rim, no dome.
     Flat,
-    /// A low rivet with a collar.
+    /// A small disc with a tall dome and no rim.
     Rivet,
 }
 
@@ -41,9 +56,10 @@ pub enum ButtonShape {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ButtonStyle {
-    /// Its radius, metres.
+    /// Its radius at the foot of its disc, metres (the prototype's gold button is [`GOLD_RADIUS`]); every part is in
+    /// proportion.
     pub radius: f64,
-    /// How far it stands off the surface on its stem, metres (0 sits it on the surface).
+    /// How far its disc stands off the surface, metres, beyond the prototype's own [`STANDOFF`] (scaled with it).
     #[serde(default)]
     pub shank: f64,
     /// Its shape.
@@ -108,38 +124,61 @@ impl Validate for ButtonRow {
     }
 }
 
-/// The lathe profile of a button of `style`, `(height along the normal, radius)` from its foot to its crown, both ends
-/// on the axis so the shell is closed.
-pub fn profile(style: &ButtonStyle) -> Vec<(f64, f64)> {
-    let (r, s) = (style.radius, style.shank);
-    let mut out = vec![(0.0, 0.0)];
-    if s > 0.0 {
-        out.extend([(0.0, STEM * r), (s, STEM * r)]);
-    }
-    let head = match style.shape {
-        ButtonShape::Dome => DOME,
-        ButtonShape::Flat => FLAT,
-        ButtonShape::Rivet => RIVET,
-    };
-    out.extend(head.iter().map(|(u, k)| (s + u * r, k * r)));
-    out
-}
-
 /// A button of `style` standing on `surface` at `[t, phi]`, skinned like the surface there.
 ///
 /// # Errors
 /// The surface's errors for a point it can't place; the kit's for a degenerate shape.
 pub fn button_at(surface: &Surface, at: [f64; 2], style: &ButtonStyle) -> Result<MeshBuilder, TrimError> {
     let frame = surface.at(at[0], at[1])?;
-    let shape = profile(style);
-    let grid = lathe_axis(frame.point, frame.normal, &shape, ROUND)?;
-    let inside = |i: usize, _: usize| frame.point + frame.normal * shape[i].0;
-    let skin = surface.weights().at(at[0]);
-    let options =
-        GridOptions { wrap_j: true, inside: Some(&inside), skin: Skin::Blend(skin), ..GridOptions::default() };
     let mut builder = MeshBuilder::new();
-    builder.add_grid(&grid, &options)?;
+    button(&mut builder, frame.point, frame.normal, style, &surface.weights().at(at[0]))?;
     Ok(builder)
+}
+
+/// A button of `style` on the surface point `foot` with outward normal `normal`: the prototype's gold button (#188's
+/// reference, D) for [`ButtonShape::Dome`] at [`GOLD_RADIUS`], every part scaled with the radius.
+///
+/// # Errors
+/// The kit's errors for a degenerate shape.
+pub fn button(
+    builder: &mut MeshBuilder,
+    foot: DVec3,
+    normal: DVec3,
+    style: &ButtonStyle,
+    skin: &[(JointRef, f32)],
+) -> Result<(), TrimError> {
+    let k = style.radius / GOLD_RADIUS;
+    let c = foot + normal * (STANDOFF * k + style.shank);
+    let at = |lift: f64| Basis::standing(c + normal * (lift * k), normal);
+    let (top, bottom, height) = DISC;
+    let (rim_big, rim_r) = RIM;
+    let (dome_r, dome_squash) = DOME;
+    let (tip_r, tip_h) = TIP;
+    match style.shape {
+        ButtonShape::Dome | ButtonShape::Flat => {
+            cylinder(builder, &at(0.0), (top * k, bottom * k), height * k, DISC_SEGMENTS, skin)?;
+            // The rim's axis along the normal: a torus lies in its local xy plane, round local z.
+            let b = at(RIM_LIFT);
+            let rim = Basis { x: b.x, y: b.z, z: b.y, ..b };
+            torus(builder, &rim, (rim_big * k, rim_r * k), RIM_SEGMENTS, DVec3::ONE, skin)?;
+        }
+        ButtonShape::Rivet => {
+            cylinder(builder, &at(0.0), (0.6 * top * k, 0.6 * bottom * k), height * k, DISC_SEGMENTS, skin)?;
+        }
+    }
+    match style.shape {
+        ButtonShape::Dome => {
+            let squash = DVec3::new(1.0, dome_squash, 1.0);
+            sphere(builder, &at(RIM_LIFT), dome_r * k, squash, DOME_SEGMENTS, std::f64::consts::FRAC_PI_2, skin)?;
+            cylinder(builder, &at(TIP_LIFT), (tip_r * k, tip_r * k), tip_h * k, TIP_SEGMENTS, skin)?;
+        }
+        ButtonShape::Rivet => {
+            let squash = DVec3::new(1.0, 2.0 * dome_squash, 1.0);
+            sphere(builder, &at(RIM_LIFT), dome_r * k, squash, DOME_SEGMENTS, std::f64::consts::FRAC_PI_2, skin)?;
+        }
+        ButtonShape::Flat => {}
+    }
+    Ok(())
 }
 
 /// The button `spec` describes on `surface`.
@@ -181,7 +220,7 @@ pub fn row_distances(length: f64, count: u32, spacing: Option<f64>) -> Result<Ve
 /// buttons that don't fit.
 pub fn build_row(surface: &Surface, spec: &ButtonRow) -> Result<MeshBuilder, TrimError> {
     checked(spec)?;
-    let rail = Rail::with_step(surface, &spec.rail, STEP)?;
+    let rail = Rail::from_polyline_on_surface(surface, &spec.rail, STEP.min(spec.rail.step))?;
     let mut builder = MeshBuilder::new();
     for distance in row_distances(rail.length(), spec.count, spec.spacing)? {
         builder.merge(&button_at(surface, rail_position(&rail, distance), &spec.button)?)?;

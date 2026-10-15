@@ -23,7 +23,7 @@ pub mod piping;
 
 use omuzaki_char_api::{BuildCtx, BuildError, JointRef, MaterialClass, MaterialName, MaterialSpec};
 use omuzaki_core::colour::Colour;
-use omuzaki_core::glam::{DVec3, Vec3};
+use omuzaki_core::glam::{DVec2, DVec3, Vec3};
 use omuzaki_core::id::Slug;
 use omuzaki_face_api::{Check, ColourRef, Validate};
 use omuzaki_render_api::{ParamValue, ProgramParams, Shading};
@@ -33,8 +33,8 @@ use serde::{Deserialize, Serialize};
 use super::common::{GarmentError, GarmentOutput};
 use super::loft::Surface;
 use crate::kit::KitError;
-use crate::kit::curve::fraction;
-use crate::kit::grid::MeshBuilder;
+use crate::kit::curve::{TAU, fraction};
+use crate::kit::grid::{Grid, GridOptions, MeshBuilder, Skin};
 
 /// How far a rail sits off the surface unless it says otherwise, metres (the robe's `LIFT`).
 pub const LIFT: f64 = 0.0025;
@@ -42,10 +42,12 @@ pub const LIFT: f64 = 0.0025;
 pub const MAX_LIFT: f64 = 0.02;
 /// The most points a rail's path may have.
 pub const MAX_RAIL_POINTS: usize = 64;
-/// The most samples a rail may be resampled to.
-pub const MAX_RAIL_SAMPLES: usize = 2048;
-/// Pieces each step of a rail's path is cut into to measure it along the surface.
-const RAIL_PIECES: usize = 24;
+/// The most samples a rail may have.
+pub const MAX_RAIL_SAMPLES: usize = 4096;
+/// The prototype's rail step, metres: a sample about this often.
+pub const RAIL_STEP: f64 = 0.004;
+/// Chords each step of a rail's path is measured with (the prototype's).
+const MEASURE_STEPS: usize = 10;
 /// A rail shorter than this is no rail, metres.
 pub const MIN_RAIL_LENGTH: f64 = 1e-4;
 /// The smallest size of any trim feature (a width, a radius, a link), metres.
@@ -117,10 +119,24 @@ pub struct RailSpec {
     /// How far the path sits off the surface, metres.
     #[serde(default = "default_lift")]
     pub lift: f64,
+    /// About how far apart its samples are, metres (the prototype's rail step).
+    #[serde(default = "default_step")]
+    pub step: f64,
 }
 
 fn default_lift() -> f64 {
     LIFT
+}
+
+fn default_step() -> f64 {
+    RAIL_STEP
+}
+
+impl RailSpec {
+    /// A rail through `points`, lifted and sampled as the prototype's are.
+    pub fn new(points: &[[f64; 2]], closed: bool) -> Self {
+        Self { points: points.to_vec(), closed, lift: LIFT, step: RAIL_STEP }
+    }
 }
 
 impl Validate for RailSpec {
@@ -133,6 +149,7 @@ impl Validate for RailSpec {
             position(c, &format!("points/{k}"), *p);
         }
         c.range("lift", self.lift, 0.0, MAX_LIFT);
+        c.range("step", self.step, MIN_FEATURE, MAX_FEATURE);
     }
 }
 
@@ -141,6 +158,8 @@ impl Validate for RailSpec {
 pub struct RailPoint {
     /// The point, `lift` off the surface.
     pub point: DVec3,
+    /// The point on the surface under it.
+    pub on_surface: DVec3,
     /// The surface's outward normal under it.
     pub normal: DVec3,
     /// The unit tangent along the rail, square to `normal`.
@@ -151,14 +170,15 @@ pub struct RailPoint {
     pub t: f64,
     /// The angle round the surface.
     pub phi: f64,
-    /// Its distance along the rail from the start, metres.
+    /// Its distance from the start along the surface points, metres (the strip's texture runs by it).
     pub distance: f64,
     /// The skin of the surface under it.
     pub skin: Vec<(JointRef, f32)>,
 }
 
-/// A path on a surface, resampled evenly by its length along the surface. A closed rail's last sample repeats its first
-/// exactly, so a sweep along it wraps.
+/// A path on a surface, densified as the prototype's `rail(S, pts, step)`: each step of the path is cut into
+/// `max(2, ceil(length / step))` pieces uniform in `[t, phi]` (not in length), the joints between steps not repeated. A
+/// closed rail's last sample repeats its first exactly, so a sweep along it wraps.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Rail {
     points: Vec<RailPoint>,
@@ -173,76 +193,140 @@ fn step(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
     [b[0] - a[0], dphi]
 }
 
-impl Rail {
-    /// The rail `spec` describes on `surface`, resampled to `samples` evenly spaced points (a closed rail gets one more,
-    /// repeating the first). The port of the robe's `rail`: points projected onto the surface and lifted off it.
-    ///
-    /// # Errors
-    /// [`TrimError::ZeroLengthRail`] if the path has no length; [`TrimError::Invalid`] for a spec [`RailSpec`]'s
-    /// validation refuses or `samples` outside `2..=`[`MAX_RAIL_SAMPLES`]; the surface's errors for a point it can't
-    /// place.
-    pub fn from_polyline_on_surface(surface: &Surface, spec: &RailSpec, samples: usize) -> Result<Self, TrimError> {
-        if !(2..=MAX_RAIL_SAMPLES).contains(&samples) {
-            return Err(TrimError::invalid("rail", format!("{samples} samples: use 2 to {MAX_RAIL_SAMPLES}")));
-        }
-        let (dense, length) = measure(surface, spec)?;
-        Self::resampled(surface, spec, &dense, length, samples)
-    }
+/// `[t, phi]` a fraction `s` of the way from `a` to `b`.
+fn mix(a: [f64; 2], b: [f64; 2], s: f64) -> [f64; 2] {
+    [a[0] + (b[0] - a[0]) * s, a[1] + (b[1] - a[1]) * s]
+}
 
-    /// The rail `spec` describes on `surface`, with a sample about every `step` metres (at least 2, at most
-    /// [`MAX_RAIL_SAMPLES`]).
+/// The path of `spec` in surface coordinates, each step unwrapped to go the short way round, closed if it says so.
+fn unwrapped(spec: &RailSpec) -> Vec<[f64; 2]> {
+    let mut path = vec![spec.points[0]];
+    for &next in spec.points.iter().skip(1).chain(spec.closed.then_some(&spec.points[0])) {
+        let last = path[path.len() - 1];
+        let d = step(last, next);
+        path.push([last[0] + d[0], last[1] + d[1]]);
+    }
+    path
+}
+
+/// The surface point at `at` (its `t` clamped to the surface).
+fn surface_point(surface: &Surface, at: [f64; 2]) -> Result<DVec3, TrimError> {
+    Ok(surface.point(at[0].clamp(0.0, 1.0), at[1])?)
+}
+
+/// The surface position `distance` metres from `at` in the direction `dir` (a unit vector in the surface's tangent
+/// plane), to first order: the step split along the surface's two coordinate directions and divided by how fast the
+/// surface moves along each.
+///
+/// # Errors
+/// The surface's errors; [`TrimError::Invalid`] where the surface doesn't move along a coordinate.
+pub fn param_offset(surface: &Surface, at: [f64; 2], dir: DVec3, distance: f64) -> Result<[f64; 2], TrimError> {
+    const H: f64 = 1e-4;
+    let frame = surface.at(at[0].clamp(0.0, 1.0), at[1])?;
+    let (t0, t1) = ((at[0] - H).max(0.0), (at[0] + H).min(1.0));
+    let per_t = surface_point(surface, [t1, at[1]])?.distance(surface_point(surface, [t0, at[1]])?) / (t1 - t0);
+    let per_phi =
+        surface_point(surface, [at[0], at[1] + H])?.distance(surface_point(surface, [at[0], at[1] - H])?) / (2.0 * H);
+    if !(per_t > 0.0 && per_phi > 0.0) {
+        return Err(TrimError::invalid("surface", format!("it doesn't move at t = {}, phi = {}", at[0], at[1])));
+    }
+    Ok([at[0] + distance * dir.dot(frame.along) / per_t, at[1] + distance * dir.dot(frame.around) / per_phi])
+}
+
+/// The length on the surface of the step from `a` to `b`, from [`MEASURE_STEPS`] chords (the prototype's estimate).
+fn step_length(surface: &Surface, a: [f64; 2], b: [f64; 2]) -> Result<f64, TrimError> {
+    let mut length = 0.0;
+    let mut previous = surface_point(surface, a)?;
+    for i in 1..=MEASURE_STEPS {
+        let next = surface_point(surface, mix(a, b, fraction(i, MEASURE_STEPS)))?;
+        length += next.distance(previous);
+        previous = next;
+    }
+    Ok(length)
+}
+
+impl Rail {
+    /// The rail `spec` describes on `surface`, densified at `step` metres ([`RAIL_STEP`] is the prototype's; its
+    /// collar piping uses 0.006). Each sample is the surface point under it lifted by `spec.lift` along the normal.
     ///
     /// # Errors
-    /// As [`Rail::from_polyline_on_surface`]; [`TrimError::Invalid`] for a step that isn't a positive length.
-    pub fn with_step(surface: &Surface, spec: &RailSpec, step: f64) -> Result<Self, TrimError> {
+    /// [`TrimError::ZeroLengthRail`] if the path has no length on the surface; [`TrimError::Invalid`] for a spec
+    /// [`RailSpec`]'s validation refuses, a step that isn't a positive length, or a rail denser than
+    /// [`MAX_RAIL_SAMPLES`]; the surface's errors for a point it can't place.
+    pub fn from_polyline_on_surface(surface: &Surface, spec: &RailSpec, step: f64) -> Result<Self, TrimError> {
+        checked(spec)?;
         if !(step.is_finite() && step > 0.0) {
             return Err(TrimError::invalid("rail", format!("a step of {step} m: use a positive length")));
         }
-        let (dense, length) = measure(surface, spec)?;
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)] // clamped below
-        let pieces = (length / step).ceil().min(MAX_RAIL_SAMPLES as f64) as usize;
-        let samples = (pieces + 1).clamp(2, MAX_RAIL_SAMPLES);
-        Self::resampled(surface, spec, &dense, length, samples)
-    }
-
-    fn resampled(
-        surface: &Surface,
-        spec: &RailSpec,
-        dense: &[Measured],
-        length: f64,
-        samples: usize,
-    ) -> Result<Self, TrimError> {
-        let count = if spec.closed { samples } else { samples - 1 };
-        let mut points = Vec::with_capacity(count + 1);
-        let mut cursor = 0;
-        for k in 0..=count {
-            let want = length * fraction(k, count);
-            while cursor + 2 < dense.len() && dense[cursor + 1].1 < want {
-                cursor += 1;
+        let path = unwrapped(spec);
+        let mut params: Vec<[f64; 2]> = Vec::new();
+        for pair in path.windows(2) {
+            let length = step_length(surface, pair[0], pair[1])?;
+            if length < MIN_RAIL_LENGTH * 1e-3 {
+                continue; // a repeated point: nothing to lay along
             }
-            let ((a, da), (b, db)) = (dense[cursor], dense[cursor + 1]);
-            let s = if db > da { ((want - da) / (db - da)).clamp(0.0, 1.0) } else { 0.0 };
-            let at = [a[0] + (b[0] - a[0]) * s, a[1] + (b[1] - a[1]) * s];
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)] // clamped
+            let pieces = (length / step).ceil().clamp(2.0, MAX_RAIL_SAMPLES as f64) as usize;
+            let first = usize::from(!params.is_empty());
+            params.extend((first..=pieces).map(|i| mix(pair[0], pair[1], fraction(i, pieces))));
+            if params.len() > MAX_RAIL_SAMPLES {
+                return Err(TrimError::invalid(
+                    "rail",
+                    format!("more than {MAX_RAIL_SAMPLES} samples: use a longer step or a shorter path"),
+                ));
+            }
+        }
+        if params.len() < 2 {
+            return Err(TrimError::ZeroLengthRail);
+        }
+        let mut points = Vec::with_capacity(params.len());
+        let mut length = 0.0;
+        for at in params {
             let frame = surface.at(at[0].clamp(0.0, 1.0), at[1])?;
+            if let Some(previous) = points.last().map(|p: &RailPoint| p.on_surface) {
+                length += frame.point.distance(previous);
+            }
             points.push(RailPoint {
                 point: frame.point + frame.normal * spec.lift,
+                on_surface: frame.point,
                 normal: frame.normal,
                 tangent: DVec3::ZERO,
                 side: DVec3::ZERO,
                 t: at[0],
                 phi: at[1],
-                distance: want,
-                skin: surface.weights().at(at[0]),
+                distance: length,
+                skin: surface.weights().at(at[0].clamp(0.0, 1.0)),
             });
         }
+        if !(length.is_finite() && length >= MIN_RAIL_LENGTH) {
+            return Err(TrimError::ZeroLengthRail);
+        }
         if spec.closed {
-            // The last sample is the first again: copy it, so the seam welds exactly.
+            // The last sample is the first again, a turn round: copy it, so the seam welds exactly.
             let first = points[0].clone();
             let last = points.len() - 1;
             points[last] = RailPoint { distance: length, ..first };
         }
         frame_points(&mut points, spec.closed)?;
         Ok(Self { points, closed: spec.closed, length })
+    }
+
+    /// The length of `spec`'s path on `surface` as the prototype estimates it before densifying, metres: for choosing a
+    /// step from a count (a braid's lobes, a lace's scallops).
+    ///
+    /// # Errors
+    /// As [`Rail::from_polyline_on_surface`].
+    pub fn length_on(surface: &Surface, spec: &RailSpec) -> Result<f64, TrimError> {
+        checked(spec)?;
+        let path = unwrapped(spec);
+        let mut length = 0.0;
+        for pair in path.windows(2) {
+            length += step_length(surface, pair[0], pair[1])?;
+        }
+        if length < MIN_RAIL_LENGTH {
+            return Err(TrimError::ZeroLengthRail);
+        }
+        Ok(length)
     }
 
     /// The samples, from the start.
@@ -255,53 +339,10 @@ impl Rail {
         self.closed
     }
 
-    /// Its length along the lifted path, metres.
+    /// Its length along the surface, metres.
     pub fn length(&self) -> f64 {
         self.length
     }
-}
-
-/// A point of a rail's path in surface coordinates `[t, phi]`, and the length along the rail up to it.
-type Measured = ([f64; 2], f64);
-
-/// The path of `spec` measured on `surface`: its unwrapped `[t, phi]` points, finely cut, each with the length along the
-/// lifted path up to it; and the whole length.
-fn measure(surface: &Surface, spec: &RailSpec) -> Result<(Vec<Measured>, f64), TrimError> {
-    checked(spec)?;
-    // The path in surface coordinates, unwrapped so each step goes the short way round.
-    let mut path = vec![spec.points[0]];
-    let ends = spec.points.iter().skip(1).chain(spec.closed.then_some(&spec.points[0]));
-    for &next in ends {
-        let last = path[path.len() - 1];
-        let d = step(last, next);
-        path.push([last[0] + d[0], last[1] + d[1]]);
-    }
-    let mut dense: Vec<Measured> = Vec::with_capacity((path.len() - 1) * RAIL_PIECES + 1);
-    let mut previous: Option<DVec3> = None;
-    let mut length = 0.0;
-    for pair in path.windows(2) {
-        let pieces = if dense.is_empty() { 0..=RAIL_PIECES } else { 1..=RAIL_PIECES };
-        for k in pieces {
-            let s = fraction(k, RAIL_PIECES);
-            let at = [pair[0][0] + (pair[1][0] - pair[0][0]) * s, pair[0][1] + (pair[1][1] - pair[0][1]) * s];
-            let p = lifted(surface, at, spec.lift)?;
-            if let Some(q) = previous {
-                length += p.distance(q);
-            }
-            previous = Some(p);
-            dense.push((at, length));
-        }
-    }
-    if !(length.is_finite() && length >= MIN_RAIL_LENGTH) {
-        return Err(TrimError::ZeroLengthRail);
-    }
-    Ok((dense, length))
-}
-
-/// The surface point at `at`, lifted along its normal.
-fn lifted(surface: &Surface, at: [f64; 2], lift: f64) -> Result<DVec3, TrimError> {
-    let frame = surface.at(at[0].clamp(0.0, 1.0), at[1])?;
-    Ok(frame.point + frame.normal * lift)
 }
 
 /// Fills in each point's tangent (a central difference, one-sided at the ends of an open rail) and side.
@@ -322,10 +363,7 @@ fn frame_points(points: &mut [RailPoint], closed: bool) -> Result<(), TrimError>
     for (p, d) in points.iter_mut().zip(tangents) {
         let tangent = (d - p.normal * d.dot(p.normal)).try_normalize();
         let Some(tangent) = tangent else {
-            return Err(TrimError::invalid(
-                "rail",
-                format!("it doubles back on itself at t = {}, phi = {}", p.t, p.phi),
-            ));
+            return Err(TrimError::invalid("rail", format!("it doubles back on itself at t = {}, phi = {}", p.t, p.phi)));
         };
         p.tangent = tangent;
         p.side = tangent.cross(p.normal);
@@ -432,14 +470,269 @@ impl Finish {
     }
 }
 
+// ----------------------------------------------------------------------------------------------------------- shapes
+
+/// A frame the prototype's primitives are placed in: an origin and three unit axes (local x, y and z). The primitives
+/// follow three.js's conventions, so the prototype's construction ports line by line: spheres, cylinders and cones stand
+/// along local y, a torus lies in the local xy plane round local z.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Basis {
+    /// Where local `(0, 0, 0)` is.
+    pub origin: DVec3,
+    /// Local x.
+    pub x: DVec3,
+    /// Local y.
+    pub y: DVec3,
+    /// Local z.
+    pub z: DVec3,
+}
+
+impl Basis {
+    /// The point at local `l`.
+    pub fn place(&self, l: DVec3) -> DVec3 {
+        self.origin + self.x * l.x + self.y * l.y + self.z * l.z
+    }
+
+    /// The same axes at local `l`.
+    #[must_use]
+    pub fn at(&self, l: DVec3) -> Self {
+        Self { origin: self.place(l), ..*self }
+    }
+
+    /// The axes turned by `angle` about local y (x toward -z), as three.js's `rotation.y`.
+    #[must_use]
+    pub fn turned_y(&self, angle: f64) -> Self {
+        let (s, c) = angle.sin_cos();
+        Self { x: self.x * c - self.z * s, z: self.x * s + self.z * c, ..*self }
+    }
+
+    /// The axes turned by `angle` about local z (x toward y), as three.js's `rotation.z`.
+    #[must_use]
+    pub fn turned_z(&self, angle: f64) -> Self {
+        let (s, c) = angle.sin_cos();
+        Self { x: self.x * c + self.y * s, y: self.y * c - self.x * s, ..*self }
+    }
+
+    /// A basis at `origin` whose local y is `up` (unit), the other two axes square to it.
+    pub fn standing(origin: DVec3, up: DVec3) -> Self {
+        let x = up.any_orthonormal_vector();
+        Self { origin, x, y: up, z: x.cross(up) }
+    }
+}
+
+/// Segment counts as the prototype's robe sphere helper reduces them: `max(6, ws - 4)` round and `max(4, hs - 3)` from
+/// pole to pole.
+pub fn robe_segments(ws: usize, hs: usize) -> (usize, usize) {
+    (ws.saturating_sub(4).max(6), hs.saturating_sub(3).max(4))
+}
+
+/// Adds the grid `points(i, j)` (`rows` by `cols`, wrapped as asked) round `inside`, skinned with `skin`.
+fn add_closed(
+    builder: &mut MeshBuilder,
+    (rows, cols): (usize, usize),
+    (wrap_i, wrap_j): (bool, bool),
+    points: impl FnMut(usize, usize) -> DVec3,
+    inside: &dyn Fn(usize, usize) -> DVec3,
+    skin: &[(JointRef, f32)],
+) -> Result<(), TrimError> {
+    let grid = Grid::from_fn(rows, cols, points)?;
+    let options = GridOptions {
+        wrap_i,
+        wrap_j,
+        inside: Some(inside),
+        skin: Skin::Blend(skin.to_vec()),
+        ..GridOptions::default()
+    };
+    builder.add_grid(&grid, &options)?;
+    Ok(())
+}
+
+/// A sphere of radius `r` at the basis's origin, scaled by `scale` along its local axes, `segments` round and pole to
+/// pole (three.js's `SphereGeometry(r, ws, hs)`); `upto` cuts it at a polar angle (`pi` for the whole sphere, `pi / 2`
+/// for the upper hemisphere, closed with a flat disc).
+///
+/// # Errors
+/// The kit's errors for a degenerate shape.
+pub fn sphere(
+    builder: &mut MeshBuilder,
+    basis: &Basis,
+    r: f64,
+    scale: DVec3,
+    (ws, hs): (usize, usize),
+    upto: f64,
+    skin: &[(JointRef, f32)],
+) -> Result<(), TrimError> {
+    let local = |i: usize, j: usize| {
+        let (theta, phi) = (upto * fraction(i, hs), TAU * fraction(j % ws, ws));
+        DVec3::new(-r * phi.cos() * theta.sin(), r * theta.cos(), r * phi.sin() * theta.sin()) * scale
+    };
+    add_closed(builder, (hs + 1, ws + 1), (false, true), |i, j| basis.place(local(i, j)), &|_, _| basis.origin, skin)?;
+    if upto < std::f64::consts::PI - 1e-9 {
+        let rim: Vec<DVec3> = (0..ws).map(|j| basis.place(local(hs, j))).collect();
+        disc(builder, rim, -basis.y, skin)?;
+    }
+    Ok(())
+}
+
+/// A torus at the basis's origin in its local xy plane: ring radius `big`, tube radius `r`, `radial` segments round the
+/// tube and `tubular` round the ring (three.js's `TorusGeometry(big, r, radial, tubular)`), scaled by `scale`.
+///
+/// # Errors
+/// The kit's errors for a degenerate shape.
+#[allow(clippy::many_single_char_names)] // the torus's own names: ring angle u, tube angle v
+pub fn torus(
+    builder: &mut MeshBuilder,
+    basis: &Basis,
+    (big, r): (f64, f64),
+    (radial, tubular): (usize, usize),
+    scale: DVec3,
+    skin: &[(JointRef, f32)],
+) -> Result<(), TrimError> {
+    let local = |i: usize, j: usize| {
+        let (u, v) = (TAU * fraction(i % tubular, tubular), TAU * fraction(j % radial, radial));
+        DVec3::new((big + r * v.cos()) * u.cos(), (big + r * v.cos()) * u.sin(), r * v.sin()) * scale
+    };
+    let inside = |i: usize, _: usize| {
+        let u = TAU * fraction(i % tubular, tubular);
+        basis.place(DVec3::new(big * u.cos(), big * u.sin(), 0.0) * scale)
+    };
+    add_closed(builder, (tubular + 1, radial + 1), (true, true), |i, j| basis.place(local(i, j)), &inside, skin)
+}
+
+/// A capped cylinder along local y centred on the origin, radius `top` at `+height / 2` and `bottom` at `-height / 2`,
+/// `radial` segments round (three.js's `CylinderGeometry`; a `top` of 0 is a cone).
+///
+/// # Errors
+/// The kit's errors for a degenerate shape.
+pub fn cylinder(
+    builder: &mut MeshBuilder,
+    basis: &Basis,
+    (top, bottom): (f64, f64),
+    height: f64,
+    radial: usize,
+    skin: &[(JointRef, f32)],
+) -> Result<(), TrimError> {
+    // Rows from the bottom cap's centre out to its rim, up the side, and in across the top cap: a closed lathe. A cone
+    // ends at its apex.
+    let mut rows = vec![(-0.5 * height, 0.0), (-0.5 * height, bottom), (0.5 * height, top)];
+    if top > 0.0 {
+        rows.push((0.5 * height, 0.0));
+    }
+    let local = |i: usize, j: usize| {
+        let (y, r) = rows[i];
+        let a = TAU * fraction(j % radial, radial);
+        DVec3::new(r * a.sin(), y, r * a.cos())
+    };
+    add_closed(builder, (rows.len(), radial + 1), (false, true), |i, j| basis.place(local(i, j)), &|_, _| basis.origin, skin)
+}
+
+/// A box of `size` centred on the origin, along the local axes.
+///
+/// # Errors
+/// The kit's errors for a degenerate shape.
+pub fn cuboid(builder: &mut MeshBuilder, basis: &Basis, size: DVec3, skin: &[(JointRef, f32)]) -> Result<(), TrimError> {
+    let axes = [basis.x * (size.x / 2.0), basis.y * (size.y / 2.0), basis.z * (size.z / 2.0)];
+    for (k, sign) in [(0, 1.0), (0, -1.0), (1, 1.0), (1, -1.0), (2, 1.0), (2, -1.0)] {
+        let (u, v) = (axes[(k + 1) % 3], axes[(k + 2) % 3]);
+        let centre = basis.origin + axes[k] * sign;
+        let ring = vec![centre - u - v, centre + u - v, centre + u + v, centre - u + v];
+        disc(builder, ring, axes[k].normalize_or_zero() * sign, skin)?;
+    }
+    Ok(())
+}
+
+/// The bevel of an extruded outline: how far its edge is rounded back (`thickness`) and out (`size`), in `segments`
+/// steps (three.js's `bevelThickness`, `bevelSize` and `bevelSegments`).
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Bevel {
+    /// How far the rounding runs back from each face.
+    pub thickness: f64,
+    /// How far the outline grows at the middle.
+    pub size: f64,
+    /// Steps of the rounding.
+    pub segments: usize,
+}
+
+/// The flat `outline` (local x, y; counter-clockwise) extruded along local z from 0 to `depth`, its edges bevelled as
+/// three.js's `ExtrudeGeometry` does: the faces are the outline at `-bevel.thickness` and `depth + bevel.thickness`, and
+/// between them the outline grows by up to `bevel.size` (each edge moved out by that much, corners mitred). The faces
+/// are filled as the convex pieces `faces` lists (index lists into `outline`), so a concave outline closes too.
+///
+/// # Errors
+/// [`TrimError::Invalid`] for fewer than 3 outline points; the kit's errors for a degenerate shape.
+pub fn extrude(
+    builder: &mut MeshBuilder,
+    basis: &Basis,
+    outline: &[DVec2],
+    faces: &[&[usize]],
+    depth: f64,
+    bevel: Bevel,
+    skin: &[(JointRef, f32)],
+) -> Result<(), TrimError> {
+    let n = outline.len();
+    if n < 3 {
+        return Err(TrimError::invalid("outline", format!("{n} points: an outline needs 3")));
+    }
+    // Each corner's mitre: the offset that moves both its edges out by 1.
+    let mitres: Vec<DVec2> = (0..n)
+        .map(|k| {
+            let (a, b, c) = (outline[(k + n - 1) % n], outline[k], outline[(k + 1) % n]);
+            let out = |d: DVec2| DVec2::new(d.y, -d.x).normalize_or_zero();
+            let (n1, n2) = (out(b - a), out(c - b));
+            (n1 + n2) / (1.0 + n1.dot(n2)).max(1e-6)
+        })
+        .collect();
+    // The layers from the back face to the front: the bevel's steps, then the same steps mirrored at the front.
+    let quarter = std::f64::consts::FRAC_PI_2;
+    let mut layers: Vec<(f64, f64)> = (0..=bevel.segments)
+        .map(|b| {
+            let t = fraction(b, bevel.segments.max(1));
+            (bevel.size * (t * quarter).sin(), -bevel.thickness * (t * quarter).cos())
+        })
+        .collect();
+    let back: Vec<(f64, f64)> = layers.iter().rev().map(|&(grow, z)| (grow, depth - z)).collect();
+    layers.extend(back);
+    layers.dedup_by(|a, b| (a.0 - b.0).abs() < 1e-12 && (a.1 - b.1).abs() < 1e-12);
+    let at = |layer: usize, k: usize| {
+        let (grow, z) = layers[layer];
+        let p = outline[k % n] + mitres[k % n] * grow;
+        basis.place(DVec3::new(p.x, p.y, z))
+    };
+    let centre = outline.iter().copied().sum::<DVec2>() / f64::from(u32::try_from(n).unwrap_or(u32::MAX));
+    let middle = basis.place(DVec3::new(centre.x, centre.y, depth / 2.0));
+    add_closed(builder, (layers.len(), n + 1), (false, true), at, &|_, _| middle, skin)?;
+    let last = layers.len() - 1;
+    for piece in faces {
+        disc(builder, piece.iter().map(|&k| at(0, k)).collect(), -basis.z, skin)?;
+        disc(builder, piece.iter().map(|&k| at(last, k)).collect(), basis.z, skin)?;
+    }
+    Ok(())
+}
+
+/// Closes a flat convex ring with a polygon facing `outward`, wound to match.
+fn disc(builder: &mut MeshBuilder, mut ring: Vec<DVec3>, outward: DVec3, skin: &[(JointRef, f32)]) -> Result<(), TrimError> {
+    // Newell's normal of the ring as given: reverse the ring if it faces the other way.
+    let mut newell = DVec3::ZERO;
+    for (k, p) in ring.iter().enumerate() {
+        newell += p.cross(ring[(k + 1) % ring.len()]);
+    }
+    if newell.dot(outward) < 0.0 {
+        ring.reverse();
+    }
+    builder.add_polygon(&ring, outward, [1.0; 4], skin)?;
+    Ok(())
+}
+
 // ------------------------------------------------------------------------------------------------------------ specs
 
 /// One trim on a garment, as its parameters store it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TrimSpec {
-    /// A raised strip along a rail.
+    /// A thick-edged strip along a rail.
     Piping(piping::Piping),
+    /// A round cord along a rail.
+    Cord(piping::Cord),
     /// Strands braided along a rail.
     Braid(braid::Braid),
     /// One button or rivet.
@@ -460,6 +753,7 @@ impl Validate for TrimSpec {
     fn check(&self, c: &mut Check) {
         match self {
             Self::Piping(s) => s.check(c),
+            Self::Cord(s) => s.check(c),
             Self::Braid(s) => s.check(c),
             Self::Button(s) => s.check(c),
             Self::ButtonRow(s) => s.check(c),
@@ -472,17 +766,13 @@ impl Validate for TrimSpec {
 }
 
 impl TrimSpec {
-    /// The open borders the trim's meshes have: a lace edge is a strip (one border round an open one, two for a loop),
-    /// a decal a sheet; every other trim is closed.
+    /// The open borders the trim's meshes have: a strip or a lace edge is a sheet (one border round it along an open
+    /// rail, two along a loop), a decal a sheet; every other trim is closed.
     pub fn open_borders(&self) -> usize {
+        let sheet = |rail: &RailSpec| if rail.closed { 2 } else { 1 };
         match self {
-            Self::Lace(lace) => {
-                if lace.rail.closed {
-                    2
-                } else {
-                    1
-                }
-            }
+            Self::Piping(piping) => sheet(&piping.rail),
+            Self::Lace(lace) => sheet(&lace.rail),
             Self::Decal(_) => 1,
             _ => 0,
         }
@@ -509,6 +799,10 @@ pub fn add_trim(
             let mesh = piping::build(surface, s).map_err(fail)?;
             add_finished(out, ctx, name, mesh, &s.finish)
         }
+        TrimSpec::Cord(s) => {
+            let mesh = piping::build_cord(surface, s).map_err(fail)?;
+            add_finished(out, ctx, name, mesh, &s.finish)
+        }
         TrimSpec::Braid(s) => {
             let mesh = braid::build(surface, s).map_err(fail)?;
             add_finished(out, ctx, name, mesh, &s.finish)
@@ -528,7 +822,12 @@ pub fn add_trim(
         TrimSpec::Clasp(s) => {
             let pieces = clasp::build(surface, s).map_err(fail)?;
             add_finished(out, ctx, name, pieces.metal, &s.finish)?;
-            add_finished(out, ctx, &format!("{name}-jewel"), pieces.jewel, &Finish::cloth(s.jewel.clone()))
+            match &s.jewel {
+                Some(colour) => {
+                    add_finished(out, ctx, &format!("{name}-jewel"), pieces.jewel, &Finish::cloth(colour.clone()))
+                }
+                None => Ok(()),
+            }
         }
         TrimSpec::Decal(s) => decal::add(out, ctx, surface, name, s),
         TrimSpec::Lace(s) => lace::add(out, ctx, surface, name, s),

@@ -27,8 +27,8 @@ pub const TILE_PX: u32 = 128;
 pub const DEPTH: f64 = 1.2;
 /// The alpha below which the lace is cut away.
 pub const CUTOFF: f32 = 0.5;
-/// Samples along the rail per scallop.
-const PER_SCALLOP: usize = 4;
+/// Samples along the rail per scallop, at least.
+const PER_SCALLOP: f64 = 4.0;
 
 /// The threads filling each scallop.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -181,9 +181,9 @@ pub fn add(
 ) -> Result<(), BuildError> {
     let fail = |e: TrimError| ctx.fail(format!("trim `{name}`: {e}"));
     checked(spec).map_err(fail)?;
-    let scallops = usize::try_from(spec.scallop_count).map_err(|_| ctx.fail("too many scallops"))?;
-    let samples = (scallops * PER_SCALLOP + 1).min(super::MAX_RAIL_SAMPLES);
-    let rail = Rail::from_polyline_on_surface(surface, &spec.rail, samples).map_err(fail)?;
+    let length = Rail::length_on(surface, &spec.rail).map_err(fail)?;
+    let step = (length / (f64::from(spec.scallop_count) * PER_SCALLOP)).min(spec.rail.step);
+    let rail = Rail::from_polyline_on_surface(surface, &spec.rail, step).map_err(fail)?;
     let mesh = strip(&rail, DEPTH * spec.scallop_radius, f64::from(spec.scallop_count), spec.flip).map_err(fail)?;
     let (list, rect) = scallop(spec.pattern, ctx.colour(&spec.colour)?);
     let desc = texture_desc();
