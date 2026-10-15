@@ -3498,6 +3498,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-audio-mock"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-audio-api",
+ "omuzaki-core",
+]
+
+[[package]]
 name = "omuzaki-budget"
 version = "0.0.0"
 dependencies = [
@@ -3626,12 +3634,14 @@ dependencies = [
 name = "omuzaki-doc"
 version = "0.0.0"
 dependencies = [
+ "crc32fast",
  "criterion",
  "inventory",
  "omuzaki-assets-lock",
  "omuzaki-core",
  "omuzaki-doc-api",
  "omuzaki-doc-mock",
+ "omuzaki-history-api",
  "omuzaki-stage-api",
  "omuzaki-store-api",
  "proptest",
@@ -4274,6 +4284,7 @@ version = "0.0.0"
 dependencies = [
  "bytes",
  "omuzaki-core",
+ "omuzaki-history-api",
  "omuzaki-render-api",
  "schemars",
  "serde",
