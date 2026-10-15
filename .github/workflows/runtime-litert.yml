@@ -1,0 +1,179 @@
+# Builds Omuzaki's LiteRT library (the `tflite` runtime: ADR 0061, docs/design/litert-runtime.md §8) for linux-x64,
+# win-x64 and macos-arm64, and keeps each archive as a checksummed workflow artifact. Nothing is published: a GitHub
+# Release waits for the owner's decision (ADR 0061 decision 5), so no job here needs more than `contents: read`.
+#
+#   models  fetches MediaPipe's face graphs with tools/models/mediapipe-face.sh, for the check
+#   build   LiteRT at the commit tools/litert/pins.toml pins, with tools/litert/build.py: licence notices first (they
+#           fail fast on an unreviewed dependency), then the library and the check's two programs, then the archive
+#           `litert-<version>-<build>-<platform>` with its SHA256SUMS; size and SHA-256 go in the run summary
+#   check   on a fresh runner per platform: checksum, BUILDINFO.json against the pins, the library loaded by the smoke
+#           program, the three face graphs fully delegated to XNNPACK and within 1e-4 of the official wheel
+#
+# A maintainer dispatches it with the build number, never a session. Pull requests that change the build run it too
+# (build 0, an evidence run; its artifacts are never pinned). Rebuilding a version takes a new build number.
+name: Runtime LiteRT
+
+on:
+  workflow_dispatch:
+    inputs:
+      build:
+        description: "Build number of this LiteRT version, from 1; never reused"
+        required: true
+        type: number
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/runtime-litert.yml"
+      - "tools/litert/**"
+
+concurrency:
+  group: runtime-litert-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+permissions: {}
+
+env:
+  BUILD_NUMBER: ${{ inputs.build || 0 }}
+
+jobs:
+  models:
+    name: models
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Face graphs
+        run: |
+          tools/models/mediapipe-face.sh --out "$RUNNER_TEMP/face"
+          mkdir "$RUNNER_TEMP/graphs"
+          cp "$RUNNER_TEMP"/face/*.tflite "$RUNNER_TEMP/face/manifest.json" "$RUNNER_TEMP/graphs/"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: face-graphs
+          path: ${{ runner.temp }}/graphs
+          retention-days: 1
+          if-no-files-found: error
+
+  build:
+    name: build (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    # LiteRT's own CI image on Linux (pinned by digest in pins.toml too; setup fails if they differ); none elsewhere.
+    container: ${{ matrix.container }}
+    timeout-minutes: 330
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x64
+            runner: ubuntu-24.04
+            container: us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:d6b429665f5269698f88ccd00bcb8a6eb685332c302f08f29fe0738cd6a6610c
+            python: python3.11
+          - platform: win-x64
+            runner: windows-2022
+            python: python
+          - platform: macos-arm64
+            runner: macos-15
+            python: python3
+    env:
+      PLATFORM: ${{ matrix.platform }}
+      PY: ${{ matrix.python }}
+      CONTAINER: ${{ matrix.container }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - if: matrix.platform != 'linux-x64'
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: Tests of the build script
+        run: |
+          "$PY" tools/litert/test_build.py
+          if [ "$PLATFORM" = linux-x64 ]; then
+            grep -qxF "container = \"$CONTAINER\"" tools/litert/pins.toml \
+              || { echo "::error::the job's container is not the one tools/litert/pins.toml pins"; exit 1; }
+          fi
+      - name: Setup
+        run: |
+          echo "LITERT=$RUNNER_TEMP/litert" >>"$GITHUB_ENV"
+          echo "TOOLS=$RUNNER_TEMP/tools" >>"$GITHUB_ENV"
+          echo "OUT=$RUNNER_TEMP/out" >>"$GITHUB_ENV"
+          "$PY" tools/litert/build.py setup --platform "$PLATFORM" --litert "$RUNNER_TEMP/litert" --tools "$RUNNER_TEMP/tools"
+      - name: Notices
+        run: '"$PY" tools/litert/build.py notices --platform "$PLATFORM" --litert "$LITERT" --tools "$TOOLS" --out "$OUT"'
+      - name: Build
+        run: '"$PY" tools/litert/build.py build --platform "$PLATFORM" --litert "$LITERT" --tools "$TOOLS" --out "$OUT"'
+      - name: Pack
+        id: pack
+        run: '"$PY" tools/litert/build.py pack --platform "$PLATFORM" --build "$BUILD_NUMBER" --litert "$LITERT" --out "$OUT"'
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ steps.pack.outputs.artifact }}
+          path: ${{ env.OUT }}/dist
+          retention-days: 90
+          compression-level: 0
+          if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: programs-${{ matrix.platform }}
+          path: ${{ env.OUT }}/programs
+          retention-days: 7
+          if-no-files-found: error
+
+  check:
+    name: check (${{ matrix.platform }})
+    needs: [models, build]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x64
+            runner: ubuntu-24.04
+          - platform: win-x64
+            runner: windows-2022
+          - platform: macos-arm64
+            runner: macos-15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Reference wheel
+        run: python -m pip install --require-hashes --no-deps --only-binary ':all:' -r tools/litert/requirements-check.txt
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: litert-*-${{ matrix.platform }}
+          path: ${{ runner.temp }}/dist
+          merge-multiple: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: programs-${{ matrix.platform }}
+          path: ${{ runner.temp }}/programs
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: face-graphs
+          path: ${{ runner.temp }}/graphs
+      - name: Check
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: >-
+          python tools/litert/build.py check --platform "$PLATFORM" --dist "$RUNNER_TEMP/dist"
+          --programs "$RUNNER_TEMP/programs" --models "$RUNNER_TEMP/graphs" --work "$RUNNER_TEMP/work"

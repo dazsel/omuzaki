@@ -1,0 +1,65 @@
+# Omuzaki's overlay package for the LiteRT source tree (ADR 0061 decision 5, design §8). tools/litert/build.py copies
+# it to `omuzaki/BUILD` at the root of a LiteRT checkout, beside the shim and the export lists it makes from
+# symbols.txt, then builds `//omuzaki:omuzaki_litert`.
+#
+# It mirrors `//tflite/c:tensorflowlite_c` (the interpreter C API, its builtin kernels and the XNNPACK delegate), adds
+# the shim, and exports only the symbols in symbols.txt on Linux and macOS. On Windows the DLL exports what LiteRT
+# marks `TFL_CAPI_EXPORT`, plus the shim.
+
+load("//tflite:build_def.bzl", "tflite_cc_shared_object", "tflite_copts", "tflite_linkopts_no_undefined")
+
+cc_library(
+    name = "omz_litert_shim",
+    srcs = ["omz_litert_shim.c"],
+    # Windows: TFL_COMPILE_LIBRARY, so TFL_CAPI_EXPORT marks the shim's functions for export.
+    copts = tflite_copts(),
+    deps = [
+        "//tflite/core/c:common",
+        "//tflite/delegates/xnnpack:xnnpack_delegate",
+        "@XNNPACK",
+    ],
+    # The library has no caller of the shim, so the linker must keep it.
+    alwayslink = True,
+)
+
+# libomuzaki_litert.so, libomuzaki_litert.dylib or omuzaki_litert.dll.
+tflite_cc_shared_object(
+    name = "omuzaki_litert",
+    linkopts = tflite_linkopts_no_undefined() + select({
+        "@org_tensorflow//tensorflow:macos": [
+            "-Wl,-exported_symbols_list,$(location :exported_symbols.lds)",
+        ],
+        "@org_tensorflow//tensorflow:windows": [],
+        "//conditions:default": [
+            "-Wl,--version-script,$(location :version_script.lds)",
+        ],
+    }),
+    per_os_targets = True,
+    deps = [
+        ":exported_symbols.lds",
+        ":omz_litert_shim",
+        ":version_script.lds",
+        "//tflite/c:c_api",
+    ],
+)
+
+# The check job's programs. The smoke program loads the library at run time, as the Rust crate does, so it links
+# nothing of it; the plan program links the same sources statically to count the nodes the delegate takes.
+cc_binary(
+    name = "omz_litert_plan",
+    srcs = ["omz_litert_plan.cc"],
+    deps = [
+        ":omz_litert_shim",
+        "//tflite:framework",
+        "//tflite/kernels:builtin_ops",
+    ],
+)
+
+cc_binary(
+    name = "omz_litert_smoke",
+    srcs = ["omz_litert_smoke.c"],
+    linkopts = select({
+        "@org_tensorflow//tensorflow:linux_x86_64": ["-ldl"],
+        "//conditions:default": [],
+    }),
+)

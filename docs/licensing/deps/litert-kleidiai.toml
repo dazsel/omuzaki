@@ -1,0 +1,7 @@
+section = "rust"
+item = "KleidiAI"
+kind = "native"
+used_for = "linked into the `tflite` runtime's library (`omuzaki_litert`) on macos-arm64: Arm's matrix kernels for XNNPACK"
+status = "conditions"
+condition = "Apache-2.0; ship the notice in the archive (its licence file in `licences/` and its entry in `THIRD_PARTY_NOTICES.md`). Pinned by LiteRT v2.3.0's Bazel workspace; mapped in `tools/litert/licences.toml`"
+audit = "(ADR 0061; its host was out of reach for this review, the macos-arm64 run's notices list confirms the file)"
