@@ -326,6 +326,6 @@ fn offline_quality_builds_finer_sheets_with_the_same_pins() {
         let pinned = |b: &omuzaki_char::cloth::runtime::ClothBinding| b.grid_rows()[b.pin_rows() - 1];
         assert_eq!(pinned(b_live), pinned(b_off), "level {level}");
     }
-    assert_eq!(rt.solver_config().substeps, 12);
+    assert_eq!((rt.solver_config().substeps, rt.solver_config().iterations), (4, 8));
 }
 

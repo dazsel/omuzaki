@@ -234,7 +234,7 @@ pub struct ClothSpec {
     pub contact: ContactParams,
     /// Wind coefficients; the velocity comes from [`StepCtx::wind`] each frame.
     pub wind: WindParams,
-    /// Live (the live solver preset, the sheets as given) or Offline (twice the rows and columns, 12 sub-steps of 4
+    /// Live (the live solver preset, the sheets as given) or Offline (twice the rows and columns, 4 sub-steps of 8
     /// sweeps; see [`quality`](super::quality)).
     pub quality: Quality,
     /// Level-of-detail thresholds.
@@ -664,7 +664,7 @@ impl ClothRuntime {
         clock_of(&self.d)
     }
 
-    /// The sub-step length, seconds (1/360 s live, 1/1440 s offline).
+    /// The sub-step length, seconds (1/360 s live, 1/480 s offline).
     pub fn substep_s(&self) -> f32 {
         self.levels[0].solver.substep_s()
     }

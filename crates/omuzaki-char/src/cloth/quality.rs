@@ -9,8 +9,14 @@
 //! - **Offline** builds every level twice as fine (each row and column of cells split in two: `2r - 1` rows, `2c`
 //!   columns around a wrapped garment or `2c - 1` across an open one, clamped to the render grid) with the same pins
 //!   (mapped by parameter) and runs [`OFFLINE_SUBSTEPS`] sub-steps of [`OFFLINE_ITERATIONS`] sweeps. The solver's
-//!   compliances are resolution independent, so Offline adds detail, not different behaviour: the hem stays within
-//!   1.5 cm of Live over a walk (`tests/cloth_quality.rs`).
+//!   compliances are resolution independent, so Offline adds detail, not different behaviour: over a walk the hem's
+//!   mean centroid stays within 6 mm of Live's and its flare within 2 mm (`tests/cloth_quality.rs`).
+//!
+//!   The sweeps, not the sub-steps, are what Offline adds. More sweeps converge the one-by-one shear and bend
+//!   projections toward the material the parameters describe. More sub-steps shorten the time step instead, and the
+//!   live preset's three are not converged in time: at 12 sub-steps of 4 sweeps the walking hem rides 3 cm higher than
+//!   Live's (measured; 6 at 8 and 4 sub-steps 2.5 and 1.1 cm), so an offline render would not match the live preview.
+//!   4 sub-steps (the solver's quality preset) of 8 sweeps does.
 //!
 //! # Frame-exact replay (SH-05, decision 0009)
 //!
@@ -34,11 +40,11 @@ use omuzaki_core::glam::{Vec3, Vec3A};
 use super::runtime::{ClothGrid, ClothRuntime, ClothRuntimeError, ClothSnapshot, ClothSpec, MAX_LEVELS, SheetSize};
 use super::solver::SolverConfig;
 
-/// Sub-steps per 1/120 s physics step at Offline quality (a 1440 Hz sub-step).
-pub const OFFLINE_SUBSTEPS: u32 = 12;
+/// Sub-steps per 1/120 s physics step at Offline quality (a 480 Hz sub-step, the solver's quality preset).
+pub const OFFLINE_SUBSTEPS: u32 = 4;
 
-/// Gauss-Seidel sweeps per sub-step at Offline quality.
-pub const OFFLINE_ITERATIONS: u32 = 4;
+/// Gauss-Seidel sweeps per sub-step at Offline quality (four times the live preset's).
+pub const OFFLINE_ITERATIONS: u32 = 8;
 
 /// The solver configuration for `quality`.
 pub fn solver_config(quality: Quality) -> SolverConfig {
