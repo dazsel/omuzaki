@@ -22,10 +22,10 @@ use omuzaki_face_api::{
     CatchlightShape, Cmd, DrawList, FaceDrawing, FaceInput, FaceLayerId, FacePainter, FaceProfile, FaceRasterizer,
     PaintParams, PathEl, PathRef, Raster,
 };
-use omuzaki_test::face_parity::js_params::case_inputs;
-use omuzaki_test::face_parity::{SectionTolerance, load_setup};
 use omuzaki_test::jsref::JsRef;
 use omuzaki_test::regioncmp::{Rect, compare_region, write_side_by_side};
+use omuzaki_test_face::face_parity::js_params::case_inputs;
+use omuzaki_test_face::face_parity::{SectionTolerance, load_setup};
 use serde::Deserialize;
 
 /// Pixels around the eyes' boxes that still count as compared (the harness's own margin).
@@ -466,7 +466,7 @@ fn the_iris_highlights_and_shimmer_match_the_prototype() {
 }
 
 /// Writes the reference / painter / diff picture of every compared case and the table, to `OMUZAKI_FACE_PARITY_OUT`
-/// (the evidence for the PR). `cargo test -p omuzaki-test --test face_parity_eye_iris -- --ignored`.
+/// (the evidence for the PR). `cargo test -p omuzaki-test-face --test face_parity_eye_iris -- --ignored`.
 #[test]
 #[ignore = "writes evidence to a local assets folder"]
 fn write_the_evidence() {
@@ -546,7 +546,7 @@ fn measure_the_noise_floor() {
 /// The left eye of a painting of the whole eyes section, cropped round the eye, composited over mid-grey and
 /// enlarged, for a contact sheet.
 fn eye_cell(
-    setup: &omuzaki_test::face_parity::Setup,
+    setup: &omuzaki_test_face::face_parity::Setup,
     profile: &FaceProfile,
     params: &PaintParams,
     time: f64,
@@ -609,7 +609,7 @@ fn tile(cells: &[RgbaImage], columns: usize) -> RgbaImage {
 
 /// The sheets of the extremes: the gaze sweep, each pupil shape and size, each catchlight shape sliding with the view,
 /// and the shimmer through time. Painted with the `game` look's face (the sample character's: sheets stay in a local assets
-/// drive). `OMUZAKI_FACE_PARITY_OUT=... cargo test -p omuzaki-test --test face_parity_eye_iris -- --ignored write_the_sheets`.
+/// drive). `OMUZAKI_FACE_PARITY_OUT=... cargo test -p omuzaki-test-face --test face_parity_eye_iris -- --ignored write_the_sheets`.
 #[test]
 #[ignore = "writes evidence to a local assets folder"]
 fn write_the_sheets() {

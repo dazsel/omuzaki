@@ -20,11 +20,11 @@ use image::imageops::overlay;
 use omuzaki_face::raster::SkiaRasterizer;
 use omuzaki_face::{MouthPiece, RealPainter};
 use omuzaki_face_api::{FaceDrawing, FaceInput, FaceLayerId, FaceLayerSpec, FacePainter, FaceRasterizer, Raster};
-use omuzaki_test::face_parity::SectionTolerance;
-use omuzaki_test::face_parity::js_params::case_inputs;
-use omuzaki_test::face_parity::load_setup;
 use omuzaki_test::jsref::JsRef;
 use omuzaki_test::regioncmp::{Rect, compare_region, write_side_by_side};
+use omuzaki_test_face::face_parity::SectionTolerance;
+use omuzaki_test_face::face_parity::js_params::case_inputs;
+use omuzaki_test_face::face_parity::load_setup;
 use serde::Deserialize;
 
 /// The rule every piece is held to: the issue's starting numbers.
@@ -97,7 +97,7 @@ fn region(boxes: &[[u32; 4]], size: (u32, u32)) -> Option<Rect> {
 fn paint_piece(
     piece: MouthPiece,
     input: &FaceInput<'_>,
-    setup: &omuzaki_test::face_parity::Setup,
+    setup: &omuzaki_test_face::face_parity::Setup,
     size: (u32, u32),
 ) -> RgbaImage {
     #[allow(clippy::cast_precision_loss)] // canvas sizes are a few thousand pixels
@@ -187,7 +187,7 @@ fn the_mouth_interior_matches_the_prototype() {
 }
 
 /// Writes the painter / prototype / difference picture of every compared piece to `OMUZAKI_FACE_PARITY_OUT/interior`.
-/// `cargo test -p omuzaki-test --test face_parity_mouth_interior -- --ignored`.
+/// `cargo test -p omuzaki-test-face --test face_parity_mouth_interior -- --ignored`.
 #[test]
 #[ignore = "writes evidence to a local assets folder"]
 fn write_the_golden_evidence() {
