@@ -42,9 +42,24 @@ use omuzaki_anim_api::{BoneId, Channel, ChannelBuf, Pose, Region, Skeleton, Tran
 use omuzaki_core::glam::{Quat, Vec3};
 use serde::{Deserialize, Serialize};
 
-/// How a channel value maps onto `from..to`.
+/// How a channel value maps onto `from..to`. Non-exhaustive: later mappings (ease curves) are not breaking changes.
+///
+/// Outside the crate a match must have a wildcard arm. This example matches every variant, so it must not compile
+/// (E0004); if `#[non_exhaustive]` is removed, it compiles and the doctest fails.
+///
+/// ```compile_fail,E0004
+/// use omuzaki_char_api::drivers::Mapping;
+///
+/// fn name(mapping: Mapping) -> &'static str {
+///     match mapping {
+///         Mapping::Clamped => "clamped",
+///         Mapping::Linear => "linear",
+///     }
+/// }
+/// ```
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[non_exhaustive]
 pub enum Mapping {
     /// The value is clamped to `0..1` first. The default; the only mapping that exports.
     #[default]
@@ -83,9 +98,24 @@ impl RollAxis {
     }
 }
 
-/// What poses a driven bone.
+/// What poses a driven bone. Non-exhaustive: later drive kinds (VRM's aim constraint) are not breaking changes.
+///
+/// Outside the crate a match must have a wildcard arm. This example matches every variant, so it must not compile
+/// (E0004); if `#[non_exhaustive]` is removed, it compiles and the doctest fails.
+///
+/// ```compile_fail,E0004
+/// use omuzaki_char_api::drivers::Drive;
+///
+/// fn kind(drive: Drive) -> &'static str {
+///     match drive {
+///         Drive::Channel { .. } => "channel",
+///         Drive::Follow { .. } => "follow",
+///     }
+/// }
+/// ```
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[non_exhaustive]
 pub enum Drive {
     /// A `custom` channel moves the bone between two local transforms.
     #[serde(rename_all = "camelCase")]

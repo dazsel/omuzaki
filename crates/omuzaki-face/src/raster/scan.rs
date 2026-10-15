@@ -8,7 +8,7 @@
 //! its `draw_line`: each edge adds its trapezoid area to a row of deltas and a prefix sum turns the deltas into coverage). The non-zero rule is
 //! `min(|winding area|, 1)`.
 //!
-//! The steps, each pinned by a comparison against Chrome (`crates/omuzaki-test/tests/raster_probes.rs`):
+//! The steps, each pinned by a comparison against Chrome (`crates/omuzaki-test-face/tests/raster_probes.rs`):
 //! - lines: clipped to the raster first, then both coordinates truncated to 1/256 px and `y` snapped to the nearest 1/4 px
 //!   (a vertical edge keeps its exact `x`; a horizontal one lands on a quarter row);
 //! - cubics: split at y extrema, `2^shift` segments from Skia's integer forward differencing, the chain started at the
@@ -503,7 +503,7 @@ impl Scan {
     /// parity holds. A partly covered pixel where two same-winding layers overlap adds their partial areas (0.35 + 0.35
     /// = 0.70) instead of taking the single-layer value; whether Chrome does that too is open.
     /// The resolve follows the accumulation of Skia's analytic AA (`SkScan_AAAPath`, through tiny-skia's
-    /// `scan/path_aa.rs`, BSD-3-Clause); the parity probes in `omuzaki-test` are the check against Chrome.
+    /// `scan/path_aa.rs`, BSD-3-Clause); the parity probes in `omuzaki-test-face` are the check against Chrome.
     pub fn sweep(&mut self, mut emit: impl FnMut(usize, usize, &[u8])) {
         let dirty = std::mem::replace(&mut self.dirty, Dirty::NONE);
         if dirty.min_y >= dirty.max_y {

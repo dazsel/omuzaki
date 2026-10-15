@@ -3,7 +3,7 @@
 
 use egui::{Key, Response, RichText, Sense, Ui, vec2};
 
-use super::keycap::{CapStyle, KeyCaps};
+use super::keycap::{CapStyle, KeyCaps, Shortcut};
 use crate::ds::focus;
 use crate::ds::theme::{Ds, ds};
 use crate::ds::tokens::size;
@@ -14,8 +14,8 @@ use crate::ds::tokens::size;
 pub struct Tip<'a> {
     /// What the control does, as a verb phrase ("Frame selection").
     pub name: &'a str,
-    /// Its keyboard shortcut as space-separated keys ("F").
-    pub shortcut: Option<&'a str>,
+    /// Its keyboard shortcut.
+    pub shortcut: Option<Shortcut>,
     /// The op it runs, in mono ("viewport.frame"): the vocabulary agents use too (P8).
     pub op: Option<&'a str>,
     /// A second line of detail: why a control is disabled, or who holds a lock.
@@ -29,8 +29,8 @@ impl<'a> Tip<'a> {
     }
 
     /// Adds the shortcut.
-    pub const fn shortcut(mut self, keys: &'a str) -> Self {
-        self.shortcut = Some(keys);
+    pub fn shortcut(mut self, shortcut: impl Into<Shortcut>) -> Self {
+        self.shortcut = Some(shortcut.into());
         self
     }
 
@@ -52,8 +52,8 @@ impl<'a> Tip<'a> {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 12.0;
             ui.label(RichText::new(self.name).font(ds.text.strong.clone()).color(t.text));
-            if let Some(keys) = self.shortcut {
-                let caps = KeyCaps::new(keys);
+            if let Some(shortcut) = self.shortcut {
+                let caps = KeyCaps::new(shortcut);
                 let (rect, _) = ui.allocate_exact_size(vec2(caps.width(ui.ctx()), 18.0), Sense::hover());
                 let style = CapStyle { fill: t.bg3, stroke: t.line, text: t.text2 };
                 caps.paint(ui.painter(), ds, rect.left_center(), style);
