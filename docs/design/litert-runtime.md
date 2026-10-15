@@ -74,8 +74,10 @@ pointers; a missing symbol fails the load with `LoadError::Runtime` naming it.
 | Tensor | `TfLiteTensorType`, `TfLiteTensorNumDims`, `TfLiteTensorDim`, `TfLiteTensorName`, `TfLiteTensorByteSize`, `TfLiteTensorCopyFromBuffer`, `TfLiteTensorCopyToBuffer` |
 | Ours (the shim, 3.3) | `omz_litert_abi`, `omz_litert_xnnpack_create`, `omz_litert_xnnpack_delete` |
 
-Never bound: `TfLiteInterpreterOptionsAddOperator`, `AddCustomOp`, the op-resolver setters and anything Flex. With no
-custom-op registration, a model that uses a custom op fails to build an interpreter (section 5).
+Never bound: `TfLiteInterpreterOptionsAddOperator`, `AddCustomOp`, the op-resolver setters and anything Flex. Not
+registering custom ops is **not** enough to refuse them: LiteRT 2.3.0 keeps an unresolved custom op in the graph for a
+delegate to claim later (`tflite/core/interpreter_builder.cc`), so interpreter creation can succeed. The refusal is the
+model scan's job, before any LiteRT code sees the bytes (section 5).
 
 ### 3.3 A three-function shim for the delegate
 
@@ -107,24 +109,28 @@ when the library loads, and refuses a mismatch.
 A new implementation crate, `omuzaki-ai-litert` (kind Implementation, `registers = true`, `wasm = false`), registers
 `LiteRtRuntime` as the runtime id **`tflite`** (the format, as `onnx` is). No `omuzaki-ai-api` change is needed.
 
-- **`Runtime::probe`**: read the main file; `TfLiteModelCreate`; an interpreter without a delegate; read each input and
-  output tensor's name, type and dims into a `Signature`. `Probe::opset` is `None` (TFLite has no opset). Element types:
-  `kTfLiteFloat32`, `kTfLiteInt32`, `kTfLiteInt64` and `kTfLiteUInt8` map to `DType`; others are refused at probe with
-  the same words the `onnx` runtime uses. A model with `[[stages]]` is refused until the stage pipeline lands (as
-  `onnx` does today).
-- **`Runtime::load`**: options with `SetNumThreads(threads)` (for any op XNNPACK doesn't take) and the shim's delegate
-  with the same count; `TfLiteInterpreterCreate`; `AllocateTensors` once. Then the slot match exactly as
-  `OrtRuntime::load_session` does it: `with_slot_names(io)`, `Signature::accepts`, the feed and pick tables.
+- **`Runtime::probe`**: read the main file and run the model scan (section 5). The scan alone gives the `Signature`:
+  each input and output tensor's name, element type and shape, the shape taken from `shape_signature` when the model
+  has one (its `-1` entries become `Dim::ANY`) and from `shape` otherwise. So `probe` runs no native code on the bytes.
+  `Probe::opset` is `None` (TFLite has no opset). Element types `FLOAT32`, `INT32`, `INT64` and `UINT8` map to `DType`;
+  others are refused with the same words the `onnx` runtime uses. A model with `[[stages]]` is refused until the stage
+  pipeline lands (as `onnx` does today).
+- **`Runtime::load`**: the same scan first; then options with `SetNumThreads(threads)` (for any op XNNPACK doesn't
+  take) and the shim's delegate with the same count; `TfLiteInterpreterCreate`. Where the scan says a model input is
+  `any` and the slot fixes it, `ResizeInputTensor` to the slot's shape; then `AllocateTensors` once. The interpreter's
+  input and output tensors are checked against the scan (count, names, types), and a mismatch is `LoadError::Format`.
+  Then the slot match exactly as `OrtRuntime::load_session` does it: `with_slot_names(io)`, `Signature::accepts`, the
+  feed and pick tables.
 - **`SessionOptions::providers`**: `tflite` has the CPU only. Any other provider is skipped with the reason "the
   `tflite` runtime runs on the CPU (XNNPACK) only" and `SessionInfo::provider` is `Cpu`.
 - **`SessionOptions::threads`**: as above; section 6.
-- **The graph-optimisation level** that #1730 adds to `SessionOptions` is an ONNX Runtime setting. `tflite` accepts every
-  level and behaves the same for each (XNNPACK always fuses), and says so in its docs. No new field is needed.
-- **`ModelSource::natives`**: the pinned archive comes through the app's `FileSource`, like ONNX Runtime's.
+- **`ModelSource::natives`**: once a published pin exists (8.5), the archive comes through the app's `FileSource`, like
+  ONNX Runtime's.
 - **`DirSource`**: the integration tests use the same verified-folder source as `omuzaki-ai-ort`'s tests, over
   `OMUZAKI_LITERT_CACHE` (the archive under its asset file name); without it the gated tests skip with a message.
-  Because the pin has no URL yet (8.4), this crate's test source finds the archive by its asset name from the build
-  table, not from `pin.urls[0]` as `omuzaki-ai-ort`'s does.
+  There is no pin in the repository yet (8.4), so this crate's test source finds the archive by its asset name from
+  the build table and checks it against `OMUZAKI_LITERT_SHA256`, not against `pin.urls[0]` and a committed hash as
+  `omuzaki-ai-ort`'s does.
 - **Load order with ONNX Runtime:** the two libraries are independent; each runtime loads its own, once per process,
   with `RTLD_LOCAL` on Linux (libloading's default), so neither's symbols interpose on the other's.
 
@@ -138,8 +144,8 @@ A new implementation crate, `omuzaki-ai-litert` (kind Implementation, `registers
   warm-up**, pinned by a counting-allocator test like `omuzaki-ai-ort/tests/allocations.rs`. An input whose shape differs
   from the last call takes the cold path: `ResizeInputTensor` and `AllocateTensors`, then runs (it allocates, as the ORT
   session does on a shape change).
-- **`reset`**: does nothing; the face graphs carry no state between runs. A model with variable tensors is refused at
-  probe until a slot needs one.
+- **`reset`**: does nothing, and that is sound by construction: the scan refuses any model with a variable tensor or
+  a variable op (section 5), so no state can survive a run inside the interpreter.
 - **Threads:** `Send`, not `Sync`. The interpreter has no thread affinity, but it is not safe to call from two threads
   at once; `&mut self` in `run` gives exactly that. The `unsafe impl Send` carries that argument in its `SAFETY` note.
 - **Errors:** the error reporter writes LiteRT's messages into a buffer owned by the load (cold); `run` reports a failed
@@ -153,14 +159,49 @@ process. `omuzaki-ai-litert` needs the same, and implementation crates can't dep
 a small lib crate, **`omuzaki-ai-native`**, used by both; `omuzaki-ai-ort` keeps its own build table, provider
 selection and `ort::init_from`. It is the first task of the cut, and changes no behaviour of `omuzaki-ai-ort`.
 
-## 5. Untrusted models (ADR 0016 rule 4)
+## 5. The model scan, and untrusted models (ADR 0016 rule 4)
 
-- `TfLiteModelCreate` runs the FlatBuffer verifier before anything reads the model.
-- No custom op and no Flex op can run: none is registered and the Flex delegate is not in the library. The interpreter
-  build fails, and that is reported as `LoadError::Refused("custom op <name>")` from the reporter's text. A fixture with a
-  custom op pins it.
-- A TFLite file can't name another file or native code to load, so there is nothing else to refuse.
-- User TFLite models run in the sandboxed worker like ONNX ones; the worker links `omuzaki-ai-litert`.
+One pass over the model's FlatBuffer, in Rust, before any LiteRT code sees the bytes. It is the counterpart of
+`omuzaki-ai-ort`'s `scan.rs` (which reads ONNX's protobuf the same way) and lives in **`omuzaki-ai-litert`, in
+`src/scan.rs`**: only this runtime reads TFLite, so it isn't shared.
+
+**How it reads.** A minimal, bounded FlatBuffer reader of the few tables it needs (`Model`, `SubGraph`, `Tensor`,
+`OperatorCode`, `Operator`), written against the TFLite schema at the pinned tag (`tflite/converter/schema/schema.fbs`,
+Apache-2.0). It is hand-written rather than generated, so it adds no dependency and holds no unused code. It is safe on
+hostile bytes:
+- the file is at most `MAX_MODEL_BYTES` (256 MiB, above any slot's model; the face landmark graph is 2.5 MB);
+- every offset, vtable and vector is checked against the buffer before it is read, and an unaligned or out-of-range one
+  is `LoadError::Format`;
+- counts are capped (`MAX_SUBGRAPHS`, `MAX_TENSORS`, `MAX_OPERATORS`, `MAX_DIMS` = `omuzaki-ai-api`'s `MAX_RANK`), and
+  the error names the constant;
+- it never recurses and never follows a buffer's data, only table fields, so the work is linear in the tables, not the
+  weights.
+
+**What it decides, in that one pass:**
+1. **Shapes:** each graph input and output's `shape_signature` (or `shape`), with `-1` as `Dim::ANY`. This is the
+   probe's signature (section 3.4); `TfLiteTensorDim` would report only the current concrete size.
+2. **Operators:** every `OperatorCode` resolves to a builtin (`max(deprecated_builtin_code, builtin_code)`, the schema's
+   rule) on the runtime's **allow-list**: the builtin operators the archive's build registers, minus `CUSTOM`,
+   `DELEGATE` and the variable ops (`VAR_HANDLE`, `READ_VARIABLE`, `ASSIGN_VARIABLE`, `CALL_ONCE`). A custom op (any
+   `custom_code`) is `LoadError::Refused("custom op <name>")`; a builtin off the list is `Refused` with its name. Flex ops
+   are custom ops, so they fall under the same rule. The list is a constant in `scan.rs`, checked against the build by
+   task 3a.
+3. **State:** any tensor with `is_variable` is `Refused`, which is what makes a no-op `reset` sound.
+4. **Files:** any tensor with a non-zero `external_buffer` (data outside the model's bytes) is `Refused`, as ONNX
+   external data is.
+
+**What it costs.** Once per probe and once per load, both cold. It reads only table fields, a few thousand for the face
+graphs, so it is expected well under a millisecond; task 3a measures it on the landmark graph and puts the number in its
+pull request. About 250 lines with its unit tests.
+
+**Then LiteRT.** `TfLiteModelCreate` runs LiteRT's own FlatBuffer verifier as a second check, before the interpreter
+is built. A TFLite file can't name native code to load. User TFLite models run in the sandboxed worker like ONNX ones;
+the worker links `omuzaki-ai-litert`.
+
+**Tests use synthetic FlatBuffers built in the test** (a small builder in the test helpers): a fixed-shape `ADD` graph,
+a dynamic input (`shape_signature` `[1, -1, -1, 3]`, which must probe as `any`), a custom op, an off-list builtin, a
+variable tensor, an external buffer, and truncated or out-of-range files. No downloaded or generated model files are
+committed.
 
 ## 6. Threads, and the tracking budget
 
@@ -232,7 +273,7 @@ carrying the channels. The runtime's part is to make one pass as cheap as MediaP
   accepted.
 - **Where:** a gated test in `omuzaki-ai-litert` (and the `track_models` tests in `omuzaki-test` for the tracker as a
   whole), run on Linux and Windows by a nightly job that fetches the model folder with `tools/models/mediapipe-face.sh`
-  and the archive by its pin.
+  and takes the archive from the LiteRT build it calls in the same run (8.2).
 - The tracker-level comparison against MediaPipe's own `FaceLandmarker` on real video is the separate tracker parity work;
   this design covers the runtime.
 
@@ -252,44 +293,84 @@ a checksummed workflow artifact (`actions/upload-artifact`), which needs no new 
 GitHub Release, which needs `contents: write`) is **pending the owner's decision**, which the Director is asking for;
 section 8.5 says what would change if it is approved.
 
+**A reusable workflow, consumed in the same run.** Downloading an artifact from *another* run needs a token with
+`actions: read`, and a new workflow permission is an access change only the owner makes (CLAUDE.md). So no consumer
+downloads across runs. The build is a reusable workflow (`on: workflow_call`). Each consumer calls it as a job of its own
+run and takes the archive from that run with `actions/download-artifact`, which needs no extra permission. The consumers
+are the nightly parity job (task 4), the `R` timing probe's job (#1731, task 6) and the build task's own evidence run.
+
+**Rebuilds are skipped with a cache.** The built archive is cached with `actions/cache`. The key is the hash of
+`tools/litert/**`, which holds the LiteRT tag and commit and the toolchain pins, plus the platform and the runner
+image's version. With a warm cache a consumer's call restores the archive in seconds, then runs the `check` job
+anyway. The repository's rule that only `cache-warm.yml` saves caches (CONTRIBUTING.md, "Continuous integration")
+holds:
+- `cache-warm.yml` calls the workflow with `save-cache: true` on pushes to `main` that change `tools/litert/` or the
+  workflow;
+- every other caller only restores (`actions/cache/restore`), and on a miss builds without saving.
+
 ```yaml
 on:
-  workflow_dispatch:
+  workflow_call:
     inputs:
-      build: { description: "build number of this LiteRT version, from 1", required: true }
+      save-cache: { type: boolean, default: false }   # true only from cache-warm.yml
+    outputs:
+      sha256:      { value: ${{ jobs.build.outputs.sha256 }} }   # JSON map platform -> SHA-256 of the archive
+  workflow_dispatch: {}                                # maintainers, on main, once the file is there
 permissions: {}
 jobs:
   build:        # matrix: ubuntu (in a container pinned by digest), windows-2022, macos-14
     permissions: { contents: read }
-    # 1. check out this repo at the dispatched commit (actions pinned by commit SHA)
-    # 2. fetch LiteRT at tag v2.3.0 and check the tag's commit against the pin in tools/litert/pins.toml
-    # 3. install Bazelisk by pinned release URL and SHA-256; Bazel 7.7.0 comes from LiteRT's .bazelversion
-    # 4. copy tools/litert/BUILD.omuzaki and omz_litert_shim.c into the tree; build the shared-library target
-    #    with -c opt and the flags in tools/litert/pins.toml (x86-64: the default ISA set, XNNPACK dispatches at run time)
-    # 5. collect licence notices (8.3) and BUILDINFO.json; pack the archive; write SHA256SUMS; upload both with
-    #    actions/upload-artifact as litert-2.3.0-<build>-<platform> (retention 90 days); print size and SHA-256
-    #    in the run summary, for builds.rs
+    # 1. check out this repo (actions pinned by commit SHA)
+    # 2. restore the archive from actions/cache (key: hash of tools/litert/**, platform, runner image version);
+    #    on a hit, skip to 6
+    # 3. fetch LiteRT at tag v2.3.0 and check the tag's commit against tools/litert/pins.toml
+    # 4. install Bazelisk by pinned release URL and SHA-256; Bazel 7.7.0 comes from LiteRT's .bazelversion
+    # 5. copy tools/litert/BUILD.omuzaki and omz_litert_shim.c into the tree; build the shared-library target with
+    #    -c opt and the flags in pins.toml (x86-64: the default ISA set, XNNPACK dispatches at run time); collect
+    #    the notices (8.3) and BUILDINFO.json; pack the archive; save it to the cache only when save-cache is true
+    # 6. write its SHA-256 to SHA256SUMS and to the job output; upload archive and SHA256SUMS with
+    #    actions/upload-artifact as litert-2.3.0-<platform> (retention 7 days: consumers read it in the same run)
   check:        # matrix as build; needs: build
     permissions: { contents: read }
-    # load the library from the archive with a small C smoke program: TfLiteVersion, omz_litert_abi, one face graph
-    # fetched by tools/models/mediapipe-face.sh, all nodes delegated to XNNPACK (the delegate's log line), outputs
-    # within 1e-4 of the ai-edge-litert wheel on the same input (7.2)
+    # download the same run's artifact; check its SHA-256 against the build job's output; load the library with a
+    # small C smoke program: TfLiteVersion, omz_litert_abi, one face graph fetched by tools/models/mediapipe-face.sh,
+    # all nodes delegated to XNNPACK (the delegate's log line), outputs within 1e-4 of the ai-edge-litert wheel (7.2)
   # no release job: publishing waits for the owner's decision (8.5)
 ```
 
-- **Pinned sources:** LiteRT by tag and commit (`tools/litert/pins.toml`); its dependencies come from its own Bazel
+A consumer job, for example nightly's parity job:
+
+```yaml
+  litert:
+    uses: ./.github/workflows/runtime-litert.yml
+    permissions: { contents: read }
+  parity:
+    needs: litert
+    permissions: { contents: read }
+    # actions/download-artifact (same run) into $OMUZAKI_LITERT_CACHE; OMUZAKI_LITERT_SHA256 from
+    # needs.litert.outputs.sha256 for this platform; then the gated tests
+```
+
+- **Pinned sources:** LiteRT by tag and commit (`tools/litert/pins.toml`). Its dependencies come from its own Bazel
   workspace, which pins each archive by SHA-256, so the dependency list is fixed by the tag.
-- **Pinned toolchains:** the Linux container image by digest (a glibc baseline no newer than the wheel's
-  `manylinux_2_27` floor, to be confirmed), its clang by version; MSVC by toolset version (`-vcvars_ver`) on the
-  Windows image; Xcode by version on the macOS image, deployment target macOS 13 (the `M` tier). The job prints every
-  version into `BUILDINFO.json` and fails when one differs from `pins.toml`.
-- **Builds are numbered and never replaced.** Any change (flags, shim, toolchain) is a new build number and a new pin.
-  Artifacts expire (90 days at most) and a rebuild isn't promised to be byte-identical, so an expired build is
-  replaced by a new numbered build and a pin update, never by re-uploading under the old name. Sessions never dispatch
-  the workflow; a maintainer does.
-- **Who uses the artifact:** the gated tests and nightly jobs download it from a named run with
-  `actions/download-artifact` into `OMUZAKI_LITERT_CACHE`; the `R` timing probe (#1731's job) bundles it. Each checks it
-  against the pin first.
+- **Pinned toolchains:**
+  - Linux: the container image by digest, with a glibc baseline no newer than the wheel's `manylinux_2_27` floor (to be
+    confirmed), and its clang by version;
+  - Windows: the MSVC toolset version (`-vcvars_ver`) on the Windows image;
+  - macOS: the Xcode version on the macOS image, with macOS 13 as the deployment target (the `M` tier).
+
+  The job prints every version into `BUILDINFO.json` and fails when one differs from `pins.toml`.
+- **What a consumer trusts.** A rebuild after a cache miss isn't promised to be byte-identical, so CI can't check a
+  fixed SHA-256 committed in the repository. Inside a run, the trust root is the build job's output:
+  - the consumer checks the downloaded archive against the SHA-256 the build job reported, which travels as a job
+    output, not inside the artifact;
+  - it checks `BUILDINFO.json` against `pins.toml`;
+  - at load, it checks `TfLiteVersion()` and `omz_litert_abi()`.
+
+  The `R` probe's artifact bundles the archive with that SHA-256, and the probe checks it before loading. A fixed pin
+  for people's machines comes only with publishing (8.4, 8.5).
+- **Sessions never dispatch the workflow.** Maintainers do, and the build task's evidence run is triggered as #1747
+  says.
 - **Why Bazel and not CMake:** LiteRT's CMake (`tflite/CMakeLists.txt` at `v2.3.0`) needs a TensorFlow checkout beside
   it (`TENSORFLOW_SOURCE_DIR`, for TSL and XLA files), and fetches dependencies by git tag; Bazel is LiteRT's own
   release build, with SHA-256-pinned archives. The CMake path is the fallback if the Bazel target can't produce the
@@ -298,7 +379,7 @@ jobs:
 ### 8.3 The archive
 
 ```
-omuzaki-litert-2.3.0-1-<platform>/
+omuzaki-litert-2.3.0-<platform>/
   lib/<library>
   LICENSE                     LiteRT's (Apache-2.0)
   THIRD_PARTY_NOTICES.md      every linked dependency: name, pinned version or commit, licence, its licence text
@@ -311,33 +392,35 @@ each one's licence file, and **fails** when a repository has no licence file or 
 `tools/litert/licences.toml` (dependency, SPDX id, register row). So a dependency that appears in a LiteRT bump can't
 ship without a register row.
 
-### 8.4 The pin (the `builds.rs` equivalent)
+### 8.4 The build table (the `builds.rs` equivalent)
 
 `crates/omuzaki-ai-litert/src/builds.rs`, shaped like ONNX Runtime's table:
 
 ```rust
 pub const LITERT_VERSION: &str = "2.3.0";
 pub const OMZ_LITERT_ABI: u32 = 1;
-// No download URL yet: the archive comes from the CI artifact through OMUZAKI_LITERT_CACHE (8.2). A URL is added
-// only if the owner approves publishing (8.5).
 pub static BUILDS: &[Build] = &[
-    Build { id: "linux-x64", os: "linux", arch: "x86_64", asset: "omuzaki-litert-2.3.0-1-linux-x64.tar.gz",
-            archive: Archive::TarGz, library: "libomuzaki_litert.so", sha256: hash("…"), size: … },
+    Build { id: "linux-x64", os: "linux", arch: "x86_64", asset: "omuzaki-litert-2.3.0-linux-x64.tar.gz",
+            archive: Archive::TarGz, library: "libomuzaki_litert.so" },
     // win-x64 (.zip, omuzaki_litert.dll), macos-arm64 (.tar.gz, libomuzaki_litert.dylib)
 ];
 ```
 
-The sha256 and size come from the build run's summary, and the table names that run. A test pins that each asset
-names `LITERT_VERSION` and its build number. Until a URL exists, `Build::pin` has an empty URL list, so the app's
-`FileSource` can only find an archive already in its cache, which is keyed by hash (ADR 0017 decision 5; whether an
-empty URL list is accepted everywhere is checked in task 3a), and the face graphs' app default stays `onnx` (ADR 0061,
-task 5).
+**For now there is no SHA-256, size or URL in the table**, because CI's archive is rebuilt on a cache miss and its
+trust root is the run's own build output (8.2). The tests' source reads the expected SHA-256 from
+`OMUZAKI_LITERT_SHA256`, which the calling workflow sets from the build job's output, and refuses an archive without
+one. Size and SHA-256 are still checked before anything is unpacked, as `omuzaki-ai-ort`'s source does.
+
+If publishing is approved (8.5), the published bytes get a fixed `PinnedFile` (URL, SHA-256, size) in this table, and the
+app fetches through `FileSource` like any pinned file. Until then the app has no way to get the runtime, and the face
+graphs' app default stays `onnx` (ADR 0061, task 5).
 
 ### 8.5 Publishing to users: pending the owner's decision
 
 Not decided here. If the owner approves a GitHub Release, the change would be one added job that publishes the
 already-checked artifacts **unchanged** (the same bytes and SHA-256) under an immutable tag such as
-`runtime-litert-2.3.0-<build>`, holding `contents: write` in that job alone; then the release URL is added to each pin
+`runtime-litert-2.3.0-<build>`, holding `contents: write` in that job alone; then a fixed pin (URL, SHA-256, size) is
+added to each row of the build table
 and the app's default for the face graphs can move to `tflite`. If the owner decides otherwise, the runtime stays a CI
 and probe runtime until another hosting is chosen.
 
@@ -376,10 +459,10 @@ thread) over the call. Two repetitions, `rep1 / rep2`. Nothing downloaded is com
 |---|---|---|
 | `crates/omuzaki-ai-native` (new, Lib) | the pinned-archive loader moved out of `omuzaki-ai-ort` | 1 |
 | `crates/omuzaki-ai-ort/src/library.rs` | uses `omuzaki-ai-native`; behaviour unchanged | 1 |
-| `.github/workflows/runtime-litert.yml`, `tools/litert/` | the build (a checksummed CI artifact), the shim, the notices check, the pins | 2 |
+| `.github/workflows/runtime-litert.yml` (reusable), one job in `cache-warm.yml`, `tools/litert/` | the build (a checksummed same-run artifact, cached), the shim, the notices check, the pins | 2 |
 | `docs/licensing/deps/` | the rows of ADR 0061 decision 6 | 2 |
-| `crates/omuzaki-ai-litert` (new, Implementation) | the `tflite` runtime | 3a, 3b |
-| `crates/omuzaki-ai-litert/tests`, `tools/models/litert_reference.py`, `nightly.yml` | parity and determinism | 4 |
+| `crates/omuzaki-ai-litert` (new, Implementation) | the `tflite` runtime, with its model scan (`src/scan.rs`) | 3a, 3b |
+| `crates/omuzaki-ai-litert/tests`, `tools/models/litert_reference.py`, `nightly.yml` (calls the build workflow) | parity and determinism | 4 |
 | `crates/omuzaki-track`, `crates/omuzaki-test` (`track_models`, the track bench) | the face graphs load `.tflite` on `tflite` | 5 |
 | the `track_roi` timing probe (#1731) | both runtimes, 1, 2 and 4 threads, wall and CPU | 6 |
 
@@ -412,9 +495,10 @@ Each is checked by the task named, from the pinned sources, and the answer goes 
 | Whether Google publishes an official per-platform LiteRT C library with notices at 2.3.0; if so, the task brings it to the Director before building our own | 2 |
 | Bazel's MSVC (or clang-cl) build of XNNPACK on the pinned Windows image, and the toolset version to pin | 2 |
 | The Linux glibc baseline the container gives, against our supported distributions | 2 |
+| How the cache key reads the runner image's version on each OS, so an image update rebuilds rather than reusing an archive built on another toolchain | 2 |
 | Whether `XNN_FLAG_DONT_SPIN_WORKERS` in the delegate's `runtime_flags` reaches pthreadpool's flags at this XNNPACK commit (the idle-CPU test proves the effect either way) | 3b |
 | That the default lazily-applied XNNPACK delegate is skipped once ours fully delegates the graph (`Interpreter::ApplyLazyDelegateProviders` returns early when `IsFullyDelegated()`), and what happens on a partially delegated user model (it would apply a second XNNPACK delegate with the interpreter's thread count, which is why `SetNumThreads` gets the same count) | 3a |
-| The exact text LiteRT reports for an unresolved custom op, for the `Refused` mapping | 3a |
+| The scan's operator allow-list against the builtin operators the archive's build actually registers, and the scan's measured cost on the landmark graph | 3a |
 | Each licence of decision 6 against the actual source tree that was built, including whether FP16 is still a separate dependency (at the pinned XNNPACK commit it appears vendored as `src/xnnpack/fp16.h`) and whether FXdiv is linked (pthreadpool's CMake fetches it; the Bazel build may not) | 2 |
 | MediaPipe's default XNNPACK thread count on desktop (`GetXnnpackDefaultNumThreads`), for the comparison in the probe's report | 6 |
 | The size of each archive and library, against `installer.size` (runtimes are fetched on demand, but the V0 zip may bundle one) | 2 |
