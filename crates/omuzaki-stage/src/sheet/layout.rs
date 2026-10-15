@@ -56,8 +56,8 @@ mod theme;
 mod title;
 
 pub use fallback::{
-    CATALOG, CachedDownloader, DirSource, FaceUsed, Family, Fetcher, FontConfig, FontError, FontReport, FontSource,
-    FontSpec, HanVariant, MissingGlyph, sha256_hex,
+    CATALOG, DirSource, FaceUsed, Family, FontConfig, FontError, FontReport, FontSource, FontSpec, HanVariant,
+    MissingGlyph, PinnedFonts,
 };
 pub use geometry::{Anchor, Rect};
 pub use page::{Board, Dpi, Orientation, Page, Paper};

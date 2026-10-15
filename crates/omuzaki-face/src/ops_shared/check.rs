@@ -215,7 +215,7 @@ fn repair(value: &Value, template: &Value, at: &str, problems: &mut Vec<Problem>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ops::shared::path::template;
+    use crate::ops_shared::path::template;
 
     #[test]
     fn a_default_face_has_no_problems() {

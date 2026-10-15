@@ -80,3 +80,12 @@ fn each_passing_check_also_passes_alone_on_a_fresh_renderer() {
         }
     }
 }
+
+#[test]
+fn the_capability_checks_pass_for_every_capability_the_renderer_claims() {
+    let mut renderer = support::renderer();
+    assert!(renderer.capabilities().dynamic_meshes, "R2 reports dynamic meshes");
+    if let Err(failure) = conformance::run_capable(&mut renderer) {
+        panic!("capability checks failed: {failure}");
+    }
+}

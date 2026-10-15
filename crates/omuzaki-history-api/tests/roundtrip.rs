@@ -7,7 +7,10 @@ use omuzaki_doc_api::{Change, DocPath, DocVersion, Patch, Value};
 use omuzaki_history_api::{
     ActorHistory, HISTORY_EXPORT_FORMAT, HistoryEntry, HistoryExport, Lsn, OpenTxExport, Stack, StepExport, WallTime,
 };
-use omuzaki_ops_api::{Actor, ApprovalId, ApprovalRef, Cause, CauseKind, OpRecord, Scope, TxId};
+use omuzaki_ops_api::{
+    Actor, ApprovalId, ApprovalRef, CancelReason, Cause, CauseKind, Effect, JobId, JobState, OpCall, OpError, OpRecord,
+    Scope, TxId,
+};
 use proptest::prelude::*;
 
 fn seconds() -> impl Strategy<Value = Seconds> {
@@ -79,9 +82,55 @@ fn record() -> impl Strategy<Value = OpRecord> {
         })
 }
 
+fn effect() -> impl Strategy<Value = Effect> {
+    ("[a-z ]{0,10}", "[a-z.]{1,10}", value(), "[a-z.]{1,10}", value()).prop_map(
+        |(summary, undo_op, undo_args, redo_op, redo_args)| Effect {
+            summary,
+            undo: OpCall { op: undo_op, args: undo_args },
+            redo: OpCall { op: redo_op, args: redo_args },
+        },
+    )
+}
+
+fn effects() -> impl Strategy<Value = Vec<Effect>> {
+    proptest::collection::vec(effect(), 0..4)
+}
+
+fn job_state() -> impl Strategy<Value = JobState> {
+    prop_oneof![
+        Just(JobState::Queued),
+        Just(JobState::Running),
+        Just(JobState::Held),
+        (tx(), proptest::option::of(any::<u64>())).prop_map(|(tx, seq)| JobState::Done { tx, seq }),
+        "[a-z ]{0,10}".prop_map(|message| JobState::Failed { error: OpError::unsupported(message) }),
+        (
+            proptest::option::of(actor()),
+            proptest::sample::select(vec![
+                CancelReason::Requested,
+                CancelReason::Stop,
+                CancelReason::SessionEnded,
+                CancelReason::Timeout,
+                CancelReason::Budget,
+                CancelReason::Shutdown,
+            ]),
+        )
+            .prop_map(|(by, reason)| JobState::Cancelled { by, reason }),
+        Just(JobState::Interrupted),
+    ]
+}
+
 fn step() -> impl Strategy<Value = StepExport> {
-    (tx(), "[a-z ]{0,10}", patch(), scopes())
-        .prop_map(|(tx, label, patch, scopes)| StepExport::new(tx, label, Arc::new(patch), scopes))
+    (tx(), "[a-z ]{0,10}", patch(), scopes(), effects()).prop_map(|(tx, label, patch, scopes, effects)| {
+        StepExport::new(tx, label, Arc::new(patch), scopes).with_effects(effects)
+    })
+}
+
+fn open_tx() -> impl Strategy<Value = OpenTxExport> {
+    (actor(), tx(), "[a-z ]{0,10}", patch(), scopes(), effects()).prop_map(
+        |(owner, tx, label, patch, scopes, effects)| {
+            OpenTxExport::new(owner, tx, label, patch, scopes).with_effects(effects)
+        },
+    )
 }
 
 fn export() -> impl Strategy<Value = HistoryExport> {
@@ -97,9 +146,7 @@ fn export() -> impl Strategy<Value = HistoryExport> {
             history.redo = redo;
             history
         });
-    let open = (actor(), tx(), "[a-z ]{0,10}", patch(), scopes())
-        .prop_map(|(owner, tx, label, patch, scopes)| OpenTxExport::new(owner, tx, label, patch, scopes));
-    (proptest::collection::vec(actor_history, 0..3), proptest::collection::vec(open, 0..3), tx(), any::<u64>())
+    (proptest::collection::vec(actor_history, 0..3), proptest::collection::vec(open_tx(), 0..3), tx(), any::<u64>())
         .prop_map(|(actors, open, next_tx, next_seq)| {
             let mut export = HistoryExport::empty();
             (export.actors, export.open, export.next_tx, export.next_seq) = (actors, open, next_tx, next_seq);
@@ -127,6 +174,19 @@ fn entry() -> impl Strategy<Value = HistoryEntry> {
         (actor(), tx(), patch()).prop_map(|(actor, tx, patch)| HistoryEntry::Undo { actor, tx, patch }),
         (actor(), tx(), patch()).prop_map(|(actor, tx, patch)| HistoryEntry::Redo { actor, tx, patch }),
         (actor(), tx(), stack()).prop_map(|(actor, tx, stack)| HistoryEntry::Dropped { actor, tx, stack }),
+        (any::<u64>(), "[a-z.]{1,10}", value(), actor(), proptest::option::of(actor()), seconds()).prop_map(
+            |(job, op, args, actor, on_behalf_of, at)| HistoryEntry::JobStarted {
+                job: JobId(job),
+                op,
+                args,
+                actor,
+                on_behalf_of,
+                at,
+            }
+        ),
+        (any::<u64>(), job_state()).prop_map(|(job, state)| HistoryEntry::JobEnded { job: JobId(job), state }),
+        (tx(), proptest::collection::vec(any::<u64>(), 0..4), patch(), open_tx())
+            .prop_map(|(tx, seqs, patch, remaining)| HistoryEntry::TxRevert { tx, seqs, patch, remaining }),
         export().prop_map(|h| HistoryEntry::Mark { history: Arc::new(h) }),
     ]
 }
@@ -172,4 +232,78 @@ fn a_non_finite_time_does_not_round_trip_so_writers_must_refuse_it() {
     let text = serde_json::to_string(&entry).unwrap();
     assert!(text.contains("\"at\":null"), "{text}");
     assert!(serde_json::from_str::<HistoryEntry>(&text).is_err());
+}
+
+fn effect_named(summary: &str) -> Effect {
+    Effect {
+        summary: summary.into(),
+        undo: OpCall { op: "fs.remove".into(), args: Value::from("a.txt") },
+        redo: OpCall { op: "fs.write".into(), args: Value::from("a.txt") },
+    }
+}
+
+#[test]
+fn a_tx_revert_keeps_its_remaining_transaction_exactly() {
+    let patch = Patch {
+        changes: vec![Change { path: DocPath::parse("layers/a").unwrap(), before: None, after: Some(Value::from(3)) }],
+    };
+    let remaining = OpenTxExport::new(
+        Actor::System,
+        TxId(4),
+        "open",
+        patch.clone(),
+        std::collections::BTreeSet::from([Scope::Read]),
+    )
+    .with_effects(vec![effect_named("wrote a.txt"), effect_named("made a.txt")]);
+    let entry = HistoryEntry::TxRevert { tx: TxId(4), seqs: vec![7, 9], patch, remaining: remaining.clone() };
+    let text = serde_json::to_string(&entry).unwrap();
+    let back: HistoryEntry = serde_json::from_str(&text).unwrap();
+    assert_eq!(back, entry);
+    let HistoryEntry::TxRevert { remaining: back_remaining, .. } = back else { panic!("not a tx_revert") };
+    assert_eq!(back_remaining, remaining);
+}
+
+#[test]
+fn entries_for_jobs_and_reverts_are_tagged_by_kind() {
+    let started = HistoryEntry::JobStarted {
+        job: JobId(3),
+        op: "render".into(),
+        args: Value::from(1),
+        actor: Actor::System,
+        on_behalf_of: None,
+        at: Seconds(1.5),
+    };
+    let json = serde_json::to_value(&started).unwrap();
+    assert_eq!(json["entry"], "job_started");
+    assert_eq!(json["job"], 3);
+    assert_eq!(
+        serde_json::to_value(HistoryEntry::JobEnded { job: JobId(3), state: JobState::Interrupted }).unwrap()["entry"],
+        "job_ended"
+    );
+}
+
+#[test]
+fn an_export_with_several_effects_round_trips_in_apply_order() {
+    let mut export = HistoryExport::empty();
+    let step = StepExport::new(TxId(2), "make", Arc::new(Patch::default()), std::collections::BTreeSet::new())
+        .with_effects(vec![effect_named("first"), effect_named("second"), effect_named("third")]);
+    let mut history = ActorHistory::new(Actor::System, WallTime(1));
+    history.undo.push(step);
+    export.actors.push(history);
+    let text = serde_json::to_string(&export).unwrap();
+    let back: HistoryExport = serde_json::from_str(&text).unwrap();
+    assert_eq!(back, export);
+    let summaries: Vec<&str> = back.actors[0].undo[0].effects.iter().map(|e| e.summary.as_str()).collect();
+    assert_eq!(summaries, ["first", "second", "third"]);
+}
+
+#[test]
+fn an_export_written_before_effects_reads_with_empty_effects() {
+    let text = include_str!("fixtures/history_export_format1_before_effects.json");
+    let export: HistoryExport = serde_json::from_str(text).unwrap();
+    assert_eq!(export.format, HISTORY_EXPORT_FORMAT);
+    assert_eq!(HISTORY_EXPORT_FORMAT, 1);
+    assert_eq!(export.actors[0].undo.len(), 1);
+    assert!(export.actors.iter().flat_map(|a| a.undo.iter().chain(&a.redo)).all(|step| step.effects.is_empty()));
+    assert!(export.open.iter().all(|open| open.effects.is_empty()));
 }

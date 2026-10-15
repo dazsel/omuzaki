@@ -7,6 +7,7 @@ rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
 repository.workspace = true
+build = "build.rs"
 
 # Every dependency the crate will need is declared here, so later work does not have to edit this file. A change that needs one that is missing adds it.
 [dependencies]
@@ -23,6 +24,7 @@ toml.workspace = true
 tracing.workspace = true
 unicode-bidi.workspace = true
 unicode-normalization.workspace = true
+omuzaki-ai-api = { path = "../omuzaki-ai-api" }
 omuzaki-anim-api = { path = "../omuzaki-anim-api" }
 omuzaki-char-api = { path = "../omuzaki-char-api" }
 omuzaki-core = { path = "../omuzaki-core" }
@@ -46,10 +48,16 @@ omuzaki-render = { path = "../omuzaki-render", optional = true }
 # `omuzaki-render` backend. Tests use the render mock.
 wgpu = ["dep:omuzaki-render"]
 
+# The build script declares the feature modules from their folders (ADR 0054 §1).
+[build-dependencies]
+omuzaki-embed = { path = "../omuzaki-embed" }
+
 [dev-dependencies]
 criterion.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
+omuzaki-ai = { path = "../omuzaki-ai" }
+omuzaki-ai-mock = { path = "../omuzaki-ai-mock" }
 omuzaki-anim-mock = { path = "../omuzaki-anim-mock" }
 omuzaki-char-mock = { path = "../omuzaki-char-mock" }
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
