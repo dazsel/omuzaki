@@ -498,3 +498,91 @@ fn a_figure_root_that_is_not_rigid_is_refused() {
     // A moved, turned figure is rigid.
     assert!(ResolvedScene::new().resolve_into(checked(&def), &figures([1.5, -2.0]), ASPECT).is_ok());
 }
+
+/// The first scene error's path, for a resolve that must fail and leave `out` alone.
+fn refused_path(out: &mut ResolvedScene, def: &SceneDef, figures: &BTreeMap<MemberId, Figure>) -> String {
+    let before = out.clone();
+    let result = out.resolve_into(checked(def), figures, ASPECT);
+    assert_eq!(*out, before, "an error leaves the last scene in place");
+    match result {
+        Err(StageError::Scene { source }) => source.path.to_string(),
+        Err(StageError::Framing { .. }) => "framing".to_string(),
+        other => panic!("expected an error, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_pitched_or_rolled_figure_root_is_refused() {
+    let (def, good) = (scene(), figures([0.0, 0.0]));
+    let mut out = resolved(&def, &good);
+    for root in [Affine3A::from_rotation_x(1.0), Affine3A::from_rotation_z(0.5)] {
+        let mut bad = good.clone();
+        bad.get_mut(&member("kiri")).unwrap().root = root;
+        assert_eq!(refused_path(&mut out, &def, &bad), "cast.kiri");
+    }
+}
+
+#[test]
+fn a_ground_radius_that_overflows_is_refused() {
+    let (mut def, _) = (scene(), ());
+    def.cameras.clear();
+    let huge = figures([f32::MAX, f32::MAX]);
+    let mut out = resolved(&def, &figures([0.0, 0.0]));
+    assert_eq!(refused_path(&mut out, &def, &huge), "scene.ground");
+}
+
+#[test]
+fn nan_landmarks_are_refused_before_the_subject_focus_uses_them() {
+    let (mut def, good) = (scene(), figures([0.0, 0.0]));
+    def.cameras.clear();
+    def.cameras.insert(camera("side"), free_stage_camera([3.0, 0.0, 0.0], [0.0, 0.0, 0.0]));
+    def.scene.post.depth_of_field = Some(dof(Focus::Subject(FocusSubject::Subject)));
+    let mut out = resolved(&def, &good);
+    let mut bad = good.clone();
+    let landmarks = &mut bad.get_mut(&member("kiri")).unwrap().landmarks;
+    landmarks.head.as_mut().unwrap().min.x = f32::NAN;
+    assert_eq!(refused_path(&mut out, &def, &bad), "cast.kiri");
+}
+
+/// Extreme finite and non-finite numbers in every figure field and every position: a resolve either fails and keeps
+/// the last scene, or succeeds with nothing non-finite in what it produced.
+#[test]
+fn extreme_figures_never_resolve_to_non_finite_values() {
+    const EXTREMES: [f32; 8] = [0.0, -1.0, 1e-30, 1e30, f32::MAX, f32::MIN, f32::NAN, f32::INFINITY];
+    let mut def = scene();
+    def.cameras.insert(camera("free"), free_stage_camera([0.0, 0.5, 3.0], [0.0, 0.5, 0.0]));
+    def.scene.post.depth_of_field = Some(dof(Focus::Subject(FocusSubject::Subject)));
+    let good = figures([0.0, 0.0]);
+    let mut out = resolved(&def, &good);
+    let mut tried = Vec::new();
+    for &value in &EXTREMES {
+        let mut cases = vec![figures([value, 0.0]), figures([value, value]), figures([2.0, value])];
+        let edits: [fn(&mut Figure, f32); 5] = [
+            |f, v| f.height_m = v,
+            |f, v| f.landmarks.height_m = v,
+            |f, v| f.landmarks.body.max.y = v,
+            |f, v| f.landmarks.head.as_mut().unwrap().min.z = v,
+            |f, v| f.root = Affine3A::from_translation(Vec3::splat(v)),
+        ];
+        for edit in edits {
+            let mut figures = good.clone();
+            edit(figures.get_mut(&member("kiri")).unwrap(), value);
+            cases.push(figures);
+        }
+        tried.extend(cases);
+    }
+    for figures in &tried {
+        let before = out.clone();
+        match out.resolve_into(checked(&def), figures, ASPECT) {
+            Ok(_) => {
+                let text = format!("{out:?}");
+                assert!(!text.contains("NaN") && !text.contains("inf"), "{figures:?} gave {text}");
+                for (_, camera) in &out.cameras {
+                    camera.validate().expect("a resolved camera is usable");
+                }
+                out = resolved(&def, &good);
+            }
+            Err(_) => assert_eq!(out, before, "{figures:?}"),
+        }
+    }
+}
