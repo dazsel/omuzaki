@@ -20,6 +20,7 @@ use omuzaki_char_api::{
 };
 use omuzaki_char_mock::mock_character;
 use omuzaki_core::glam::Vec3;
+use omuzaki_face_api::narrow;
 use serde_json::{Value, json};
 
 /// The soft-sd template's body fit, published the way the body part publishes it (as in `tests/head_part.rs`).
@@ -82,14 +83,15 @@ fn render_the_head_join_when_asked() {
     let Some(directory) = std::env::var_os("OMUZAKI_HEAD_JOIN_PPM") else { return };
     let directory = std::path::PathBuf::from(directory);
     std::fs::create_dir_all(&directory).unwrap();
-    let Projection::Perspective { fov_y_deg, .. } = Camera::default().projection else { panic!("a perspective camera") };
+    let Projection::Perspective { fov_y_deg, .. } = Camera::default().projection else {
+        panic!("a perspective camera")
+    };
     for id in ShapeProfiles::list().unwrap().iter().map(|p| p.id.as_str()) {
         let profile = ShapeProfiles::get(id).unwrap();
         let params = HeadParams { outline: profile.profile.outline, ..HeadParams::default() };
         let built = build(&character(&serde_json::to_value(&params).unwrap())).unwrap();
         // The head's local origin is its cranium centre, lowered by the neck drop (as `tests/head_part.rs` places it).
-        let join = Vec3::new(0.0, params.cranium.centre[1] as f32 - params.neck.drop as f32, 0.0)
-            + Vec3::Y * params.outline.top as f32;
+        let join = Vec3::new(0.0, narrow(params.cranium.centre[1] - params.neck.drop + params.outline.top), 0.0);
         let head = &built.meshes[0].mesh.geometry.positions;
         let (lo, hi) = head.iter().fold((f32::MAX, f32::MIN), |(lo, hi), p| (lo.min(p.x), hi.max(p.x)));
         let half = HALF_FRAME_PER_WIDTH * (hi - lo);
