@@ -26,6 +26,7 @@
 pub mod body;
 pub mod build;
 pub mod character;
+pub mod doc_key;
 pub mod drivers;
 pub mod error;
 pub mod fact;
@@ -33,6 +34,7 @@ pub mod geometry;
 pub mod hair;
 pub mod head;
 pub mod ids;
+pub mod keying;
 pub mod kind;
 pub mod look;
 pub mod rig;
@@ -54,6 +56,7 @@ pub use build::{
     RegistryBuilder, RuntimeSlot, build_part, part_rng, plan, recolour_part,
 };
 pub use character::{Attach, AttachOffset, CharacterDef, PartDef, TreeError, paths};
+pub use doc_key::{DocKeyError, DocKeyRegistration};
 pub use drivers::{
     BakedDriver, BoneDriver, Drive, DriverError, DriverExport, DriverPlan, Mapping, NodeConstraint, RollAxis,
     export_plan,

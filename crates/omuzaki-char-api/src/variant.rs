@@ -195,7 +195,7 @@ mod tests {
     use super::*;
     use crate::character::PartDef;
     use crate::ids::{BodyTemplateId, PartId, PartKindId};
-    use omuzaki_face_api::{FaceProfile, Palette};
+    use omuzaki_face_api::FaceProfile;
     use serde_json::json;
 
     fn vid(s: &str) -> VariantId {
@@ -223,16 +223,9 @@ mod tests {
             attach: None,
             params: json!({}),
         };
-        CharacterDef {
-            name: "Test".to_owned(),
-            template: BodyTemplateId::new("soft-sd").unwrap(),
-            seed: 3,
-            palette: Palette::default(),
-            skin_tone: None,
-            parts: [(PartId::new("head").unwrap(), head), (PartId::new("bangs").unwrap(), bangs)].into(),
-            face: FaceProfile::default(),
-            weight_brushes: BTreeMap::new(),
-        }
+        CharacterDef::new("Test", BodyTemplateId::new("soft-sd").unwrap())
+            .with_seed(3)
+            .with_parts([(PartId::new("head").unwrap(), head), (PartId::new("bangs").unwrap(), bangs)].into())
     }
 
     fn variant(extends: Option<&str>, overrides: &[(&str, Value)], shot: Option<(f64, f64)>) -> VariantDef {

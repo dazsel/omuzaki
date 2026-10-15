@@ -43,10 +43,7 @@ impl PartKind for TestBody {
             .into_iter()
             .filter(|b| b.is_required())
             .map(|b| (JointRef::Humanoid(b), Vec3::new(0.0, 0.05 * f32::from(b as u8), 0.0)));
-        Ok(PartOutput {
-            publishes: Publishes::default().with::<FitFact>(Arc::new(JointFit::new(joints))),
-            ..PartOutput::default()
-        })
+        Ok(PartOutput::new().with_publishes(Publishes::default().with::<FitFact>(Arc::new(JointFit::new(joints)))))
     }
 }
 omuzaki_char_api::register_part_kind!(TestBody);
