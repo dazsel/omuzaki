@@ -5,7 +5,7 @@
 //! The comparison is of that one tag. The painter's mouth section grows pieces as they land (interior, teeth, rim, tongue,
 //! lower lip) and each has its own test, so this one paints the shape piece alone
 //! ([`RealPainter::paint_mouth_piece`]) and stacks only the `mouth` section of the references.
-//! (`omuzaki_test::face_parity::check_section` compares a whole section against all its tags, which would fail here the
+//! (`omuzaki_test_face::face_parity::check_section` compares a whole section against all its tags, which would fail here the
 //! moment the interior is drawn; a tag-subset check in the harness is filed as a follow-up.)
 //!
 //! The references and the face profile are the sample character's, so they stay in a local assets folder: the test skips, saying why,
@@ -24,10 +24,10 @@ use omuzaki_face_api::{
     FaceDrawing, FaceInput, FaceLayerId, FaceLayerSpec, FacePainter, FaceProfile, FaceProjection, FaceRasterizer,
     FaceView, Raster,
 };
-use omuzaki_test::face_parity::js_params::{apply_style, case_inputs, paint_params};
-use omuzaki_test::face_parity::{SectionTolerance, load_setup};
 use omuzaki_test::jsref::{JsRef, Xy};
 use omuzaki_test::regioncmp::{Rect, RegionReport, compare_region, write_side_by_side};
+use omuzaki_test_face::face_parity::js_params::{apply_style, case_inputs, paint_params};
+use omuzaki_test_face::face_parity::{SectionTolerance, load_setup};
 use serde::Deserialize;
 
 /// The tolerance on the pixels as they are. The wave-3 face rule (per channel 12, 1 %, 34 dB) cannot be met by a mouth:
@@ -344,7 +344,7 @@ fn write_cases(dir: &Path, cases: &[Case], table_name: &str) {
 }
 
 /// Writes the reference / painter / diff picture of every golden case and the table, to `OMUZAKI_FACE_PARITY_OUT/golden`.
-/// `cargo test -p omuzaki-test --test face_parity_mouth_shape -- --ignored`.
+/// `cargo test -p omuzaki-test-face --test face_parity_mouth_shape -- --ignored`.
 #[test]
 #[ignore = "writes evidence to a local assets folder"]
 fn write_the_golden_evidence() {

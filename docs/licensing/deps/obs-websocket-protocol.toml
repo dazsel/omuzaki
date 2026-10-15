@@ -1,0 +1,7 @@
+section = "rust"
+item = "obs-websocket v5 protocol"
+kind = "protocol"
+used_for = "the OBS remote-control wire format in `omuzaki-obs` (BR-19)"
+status = "yes"
+condition = "clean-room from the public protocol document `docs/generated/protocol.md` of `obsproject/obs-websocket` (GPL-2.0-or-later repository; heading \"obs-websocket 5.x.x Protocol\", RPC version 1), URL `https://raw.githubusercontent.com/obsproject/obs-websocket/master/docs/generated/protocol.md`, retrieved 2026-10-15: facts only, no text or code copied or linked, no OBS or client-library code read. Plain-text names, no logo; the OBS Project's brand guidance was not checked and is noted for the legal review before release"
+audit = "upstream protocol document"
