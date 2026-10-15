@@ -21,21 +21,11 @@ omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-store-api = { path = "../omuzaki-store-api" }
 
-# The integration test `rig_template` is the one place the character implementation (`omuzaki-char`) and the rig
-# (`omuzaki-rig`) meet: implementations may not depend on each other, but this app crate may.
 [dev-dependencies]
 tempfile.workspace = true
-# Parity tests against the JS prototype live here because implementation crates may not depend on this App crate.
-# The parity tests (`tests/char_*_parity.rs`) check the character crate against the JS prototype's dumps: an impl crate
-# may not depend on this App crate, so they live here.
-omuzaki-anim = { path = "../omuzaki-anim" }
-omuzaki-anim-api = { path = "../omuzaki-anim-api" }
-omuzaki-char = { path = "../omuzaki-char" }
-omuzaki-char-api = { path = "../omuzaki-char-api" }
-omuzaki-render-api = { path = "../omuzaki-render-api" }
-omuzaki-rig = { path = "../omuzaki-rig" }
 # The real-format round trip (tests/gather_real_gltf.rs): the gather of `omuzaki-io-ops` through omuzaki-io-gltf, which no
 # implementation crate may test against.
+omuzaki-char-api = { path = "../omuzaki-char-api" }
 omuzaki-char-mock = { path = "../omuzaki-char-mock" }
 omuzaki-io-api = { path = "../omuzaki-io-api" }
 omuzaki-io-gltf = { path = "../omuzaki-io-gltf" }
