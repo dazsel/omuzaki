@@ -9,8 +9,8 @@ use omuzaki_llm_api::message::{ContentBlock, ToolChoice};
 use omuzaki_llm_api::stream::StopReason;
 use omuzaki_ops_api::{EndReason, PauseReason, SessionState, SessionTx, Spend};
 
-use crate::caps::{Counters, limit_note};
 use crate::calls::tool_calls;
+use crate::caps::{Counters, limit_note};
 use crate::store::cut_rationale;
 use crate::turn::TurnMode;
 use crate::tx;
@@ -28,6 +28,9 @@ pub(crate) enum Flow {
 }
 
 /// The state of the answer in progress.
+// The flags are independent facts of one answer (a transaction is open, the last turn is being made, a continue was
+// sent, the history was compacted); none implies another.
+#[allow(clippy::struct_excessive_bools)]
 pub(crate) struct AnswerRun {
     pub counters: Counters,
     /// The first line of the person's message: the transaction's label and cause.
@@ -71,15 +74,15 @@ impl Worker {
 
     fn drive(&mut self, run: &mut AnswerRun, msg: &UserMessage) -> Result<(), Flow> {
         self.ensure_tools()?;
-        self.admit(msg)?;
+        self.admit(msg);
         loop {
             self.gate(run)?;
-            if !run.final_turn {
-                if let Some(cap) = run.counters.reached(&self.cfg.caps, self.now()) {
-                    self.shared.emit(AssistantEvent::Limit(cap));
-                    self.push_user(vec![ContentBlock::text(limit_note(cap, &self.cfg.caps))]);
-                    run.final_turn = true;
-                }
+            if !run.final_turn
+                && let Some(cap) = run.counters.reached(&self.cfg.caps, self.now())
+            {
+                self.shared.emit(AssistantEvent::Limit(cap));
+                self.push_user(vec![ContentBlock::text(limit_note(cap, &self.cfg.caps))]);
+                run.final_turn = true;
             }
             let choice = if run.final_turn { ToolChoice::None } else { ToolChoice::Auto };
             self.ensure_tools()?;
@@ -110,7 +113,12 @@ impl Worker {
                     // The last turn was told not to call tools; answer any it called so the history stays valid.
                     let unanswered = tool_calls(&done.blocks)
                         .into_iter()
-                        .map(|c| ContentBlock::tool_error(c.id, vec![ContentBlock::text("not run: the limit for this message was reached")]))
+                        .map(|c| {
+                            ContentBlock::tool_error(
+                                c.id,
+                                vec![ContentBlock::text("not run: the limit for this message was reached")],
+                            )
+                        })
                         .collect();
                     self.push_user(unanswered);
                     return Ok(());
@@ -126,17 +134,16 @@ impl Worker {
     }
 
     /// D2.1: a session paused by the person is resumed by their next message. Records the message.
-    fn admit(&mut self, msg: &UserMessage) -> Result<(), Flow> {
-        if let Some(info) = self.session_info() {
-            if matches!(info.state, SessionState::Paused { reason: PauseReason::Person, .. }) {
-                // If the budget still blocks it, the gate waits for the person instead.
-                let _ = self.sessions.resume(self.session, &self.cfg.principal);
-            }
+    fn admit(&mut self, msg: &UserMessage) {
+        if let Some(info) = self.session_info()
+            && matches!(info.state, SessionState::Paused { reason: PauseReason::Person, .. })
+        {
+            // If the budget still blocks it, the gate waits for the person instead.
+            let _ = self.sessions.resume(self.session, &self.cfg.principal);
         }
         self.shared.record(Entry::user(msg.text.clone(), msg.chips.clone()));
         let blocks = self.user_blocks(msg);
         self.push_user(blocks);
-        Ok(())
     }
 
     /// Fetches `tools/list` the first time.
@@ -145,15 +152,16 @@ impl Worker {
     }
 
     /// Asks the executor whether the turn's bound fits the budget; if not, waits for the person (D2.2).
-    pub(crate) fn reserve_budget(&mut self, run: &mut AnswerRun, request: &omuzaki_llm_api::message::TurnRequest) -> Result<(), Flow> {
+    pub(crate) fn reserve_budget(
+        &mut self,
+        run: &mut AnswerRun,
+        request: &omuzaki_llm_api::message::TurnRequest,
+    ) -> Result<(), Flow> {
         loop {
             let bound = self.ledger.bound(request, self.llm.info(), &self.cfg.prices);
             let prompt = self.ledger.prompt_estimate(request, self.llm.info());
-            let needed = Spend {
-                usd_micros: bound.0,
-                tokens: prompt.saturating_add(u64::from(request.max_output)),
-                seconds: 0,
-            };
+            let needed =
+                Spend { usd_micros: bound.0, tokens: prompt.saturating_add(u64::from(request.max_output)), seconds: 0 };
             match self.sessions.request_budget(self.session, needed) {
                 Ok(()) => return Ok(()),
                 Err(error) => match error.detail.as_deref() {
@@ -169,7 +177,9 @@ impl Worker {
                     // An executor with no budgets lets the turn go.
                     _ if error.code == omuzaki_ops_api::ErrorCode::Unsupported => return Ok(()),
                     _ => {
-                        return Err(self.ended().map_or_else(|| Flow::Fail(HostError::Mcp(error.message.clone())), Flow::Revoked));
+                        return Err(self
+                            .ended()
+                            .map_or_else(|| Flow::Fail(HostError::Mcp(error.message.clone())), Flow::Revoked));
                     }
                 },
             }

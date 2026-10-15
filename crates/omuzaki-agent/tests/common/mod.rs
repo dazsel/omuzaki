@@ -9,14 +9,14 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use omuzaki_agent::{AssistantHost, Caps, HostConfig, McpClientLink};
 use omuzaki_agent::sink::EntrySink;
+use omuzaki_agent::{AssistantHost, Caps, HostConfig, McpClientLink};
+use omuzaki_agent_api::Assistant;
 use omuzaki_agent_api::entry::Entry;
 use omuzaki_agent_api::error::HostError;
 use omuzaki_agent_api::event::AssistantEvent;
 use omuzaki_agent_api::hub::EventReceiver;
 use omuzaki_agent_api::message::UserMessage;
-use omuzaki_agent_api::Assistant;
 use omuzaki_core::time::{Clock, FakeClock, Seconds};
 use omuzaki_llm_api::LlmClient;
 use omuzaki_llm_api::error::LlmError;
@@ -63,7 +63,8 @@ impl Outcome {
 
     /// An error as `omuzaki-mcp` renders it: `structuredContent { ok: false, code, message, hint, detail }`.
     pub fn refusal(code: &str, detail: &ErrorDetail) -> Self {
-        let data = json!({"ok": false, "op": "x", "code": code, "message": format!("{code}!"), "hint": "h", "detail": detail});
+        let data =
+            json!({"ok": false, "op": "x", "code": code, "message": format!("{code}!"), "hint": "h", "detail": detail});
         let mut result = CallToolResult::error(vec![ContentBlock::text(format!("x failed [{code}]"))]);
         result.structured_content = Some(data);
         Self { result, gate: None }
@@ -81,6 +82,9 @@ impl Outcome {
     }
 }
 
+/// Called with the name and arguments of every tool call, before it is answered.
+pub type CallHook = Arc<dyn Fn(&str, &JsonObject) + Send + Sync>;
+
 type Behaviour = Arc<dyn Fn(&JsonObject, usize) -> Outcome + Send + Sync>;
 
 /// One tool of the scripted server.
@@ -92,9 +96,10 @@ pub struct ToolSpec {
 pub fn tool(name: &str, title: &str, kind: &str, read_only: bool) -> Tool {
     let schema = json!({"type": "object", "additionalProperties": true});
     let meta = MetaObject::from(JsonObject::from_iter([("omuzaki/kind".to_owned(), json!(kind))]));
-    let mut tool = Tool::new(name.to_owned(), format!("{name} does its work."), schema.as_object().cloned().unwrap_or_default())
-        .with_title(title)
-        .with_meta(meta);
+    let mut tool =
+        Tool::new(name.to_owned(), format!("{name} does its work."), schema.as_object().cloned().unwrap_or_default())
+            .with_title(title)
+            .with_meta(meta);
     if read_only {
         tool = tool.with_annotations(ToolAnnotations::new().read_only(true));
     }
@@ -131,7 +136,7 @@ pub struct ScriptedServer {
     pub prompt_gate: Arc<Mutex<Option<Arc<tokio::sync::Notify>>>>,
     pub resources: Arc<Mutex<BTreeMap<String, ResourceContents>>>,
     pub instructions: String,
-    pub on_call: Arc<Mutex<Option<Arc<dyn Fn(&str, &JsonObject) + Send + Sync>>>>,
+    pub on_call: Arc<Mutex<Option<CallHook>>>,
     counts: Arc<Mutex<BTreeMap<String, usize>>>,
 }
 
@@ -174,6 +179,8 @@ impl ScriptedServer {
     }
 }
 
+// rmcp's trait methods are async; this scripted server has nothing to await in most of them.
+#[allow(clippy::unused_async_trait_impl)]
 impl ServerHandler for ScriptedServer {
     fn get_info(&self) -> ServerConfig {
         let capabilities = ServerCapabilities::builder().enable_tools().enable_prompts().enable_resources().build();
@@ -240,7 +247,9 @@ impl ServerHandler for ScriptedServer {
         request: GetPromptRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<GetPromptResponse, McpError> {
-        lock(&self.log).prompt_gets.push((request.name.clone(), Value::Object(request.arguments.clone().unwrap_or_default())));
+        lock(&self.log)
+            .prompt_gets
+            .push((request.name.clone(), Value::Object(request.arguments.clone().unwrap_or_default())));
         let gate = lock(&self.prompt_gate).clone();
         if let Some(gate) = gate {
             gate.notified().await;
@@ -300,10 +309,10 @@ async fn late_server(io: tokio::io::DuplexStream) {
             Some(_) if id.is_some() => Some(json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32601, "message": "no such method"}})),
             _ => None,
         };
-        if let Some(answer) = answer {
-            if write.write_all(format!("{answer}\n").as_bytes()).await.is_err() {
-                return;
-            }
+        if let Some(answer) = answer
+            && write.write_all(format!("{answer}\n").as_bytes()).await.is_err()
+        {
+            return;
         }
     }
 }
@@ -502,11 +511,11 @@ impl Sessions for FakeSessions {
             return None;
         }
         // A transaction a stopping executor is still closing.
-        if let Some(at) = st.close_open_tx_at {
-            if self.clock.now().0 >= at {
-                st.info.open_tx = None;
-                st.close_open_tx_at = None;
-            }
+        if let Some(at) = st.close_open_tx_at
+            && self.clock.now().0 >= at
+        {
+            st.info.open_tx = None;
+            st.close_open_tx_at = None;
         }
         Some(st.info.clone())
     }
@@ -593,7 +602,13 @@ impl Sessions for FakeSessions {
         });
         let by = st.info.actor.clone();
         st.info.state = SessionState::Paused { by, reason: PauseReason::Budget };
-        Err(OpError { code: ErrorCode::Waiting, message: "waiting".into(), field: None, hint: None, detail: Some(Box::new(ErrorDetail::Queued { approval, need })) })
+        Err(OpError {
+            code: ErrorCode::Waiting,
+            message: "waiting".into(),
+            field: None,
+            hint: None,
+            detail: Some(Box::new(ErrorDetail::Queued { approval, need })),
+        })
     }
 
     fn stop(&self, _id: SessionId, by: &Actor) -> Result<Stopped, OpError> {
@@ -687,7 +702,8 @@ struct Held {
 
 impl EventSource for Held {
     fn poll(&mut self, wait: Duration) -> Result<Next, LlmError> {
-        let held = !self.gate.open.load(Ordering::Acquire) && self.gate.delivered.load(Ordering::Acquire) >= self.gate.after;
+        let held =
+            !self.gate.open.load(Ordering::Acquire) && self.gate.delivered.load(Ordering::Acquire) >= self.gate.after;
         if held {
             std::thread::sleep(Duration::from_millis(1));
             return Ok(Next::Wait);
@@ -789,7 +805,7 @@ pub fn standard_server(sessions: &Arc<FakeSessions>) -> ScriptedServer {
 
 impl Rig {
     pub fn new(script: Script) -> Self {
-        Self::with(script, RigOptions::default(), |sessions| standard_server(sessions))
+        Self::with(script, RigOptions::default(), standard_server)
     }
 
     pub fn with(
@@ -818,7 +834,8 @@ impl Rig {
                 }
             });
         }
-        let link = McpClientLink::connect(client_io, &RuntimeHandle::new(rt.handle().clone())).expect("client connects");
+        let link =
+            McpClientLink::connect(client_io, &RuntimeHandle::new(rt.handle().clone())).expect("client connects");
         let mut cfg = HostConfig::new(person(), sink.clone(), clock.clone(), options.prices)
             .with_caps(options.caps)
             .with_history(options.history)
@@ -871,7 +888,7 @@ impl Rig {
     }
 
     /// Waits (real time) until `check` is true.
-    pub fn wait_for(&self, what: &str, mut check: impl FnMut() -> bool) {
+    pub fn wait_for(what: &str, mut check: impl FnMut() -> bool) {
         let started = Instant::now();
         while !check() {
             assert!(started.elapsed() < Duration::from_secs(10), "timed out waiting for {what}");

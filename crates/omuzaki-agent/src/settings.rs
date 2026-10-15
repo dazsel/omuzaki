@@ -8,6 +8,8 @@ use omuzaki_settings_api::error::SettingError;
 use omuzaki_settings_api::meta::{AgentWrite, Apply, InProfile, SettingMeta, SettingScope};
 use omuzaki_settings_api::register_setting;
 use omuzaki_settings_api::setting::Setting;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 use crate::config::Caps;
 
@@ -51,12 +53,39 @@ impl Setting for AssistantCaps {
 }
 register_setting!(AssistantCaps);
 
+/// The value of `assistant.budget`: a [`Budget`] whose absent caps are left out instead of written as `null`, which a
+/// settings file (TOML) cannot hold. `Budget` itself keeps its wire form, since other crates read it as JSON.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BudgetSetting {
+    /// Money, in micro-dollars. Zero by default (ADR 0020).
+    pub usd_micros: u64,
+    /// LLM tokens; absent is no cap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<u64>,
+    /// Active wall time in seconds; absent is no cap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seconds: Option<u64>,
+}
+
+impl From<BudgetSetting> for Budget {
+    fn from(setting: BudgetSetting) -> Self {
+        Self { usd_micros: setting.usd_micros, tokens: setting.tokens, seconds: setting.seconds }
+    }
+}
+
+impl From<Budget> for BudgetSetting {
+    fn from(budget: Budget) -> Self {
+        Self { usd_micros: budget.usd_micros, tokens: budget.tokens, seconds: budget.seconds }
+    }
+}
+
 /// `assistant.budget`: what each new assistant session opens with. Money defaults to 0 (ADR 0020): the first answer
 /// with a hosted model asks the person.
 pub struct AssistantBudget;
 
 impl Setting for AssistantBudget {
-    type Value = Budget;
+    type Value = BudgetSetting;
     const META: SettingMeta = SettingMeta::new(
         "assistant.budget",
         "The budget each new assistant session opens with",
@@ -67,8 +96,8 @@ impl Setting for AssistantBudget {
         1,
     );
 
-    fn default() -> Budget {
-        Budget { usd_micros: 0, tokens: None, seconds: None }
+    fn default() -> BudgetSetting {
+        BudgetSetting { usd_micros: 0, tokens: None, seconds: None }
     }
 }
 register_setting!(AssistantBudget);

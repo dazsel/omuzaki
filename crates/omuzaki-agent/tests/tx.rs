@@ -1,5 +1,8 @@
 //! The answer's transaction (#1111): which calls open it, which join it, and when it commits.
 
+// Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::assert_is_empty)]
+
 mod common;
 
 use common::*;
@@ -73,7 +76,9 @@ fn undo_with_the_transaction_open_is_answered_by_the_host_and_never_reaches_the_
         .unwrap()
         .content
         .iter()
-        .filter_map(|b| if let ContentBlock::ToolResult { id, blocks, .. } = b { Some(format!("{id}:{blocks:?}")) } else { None })
+        .filter_map(|b| {
+            if let ContentBlock::ToolResult { id, blocks, .. } = b { Some(format!("{id}:{blocks:?}")) } else { None }
+        })
         .collect();
     assert!(results[1].contains("use `discard_changes`"), "{results:?}");
 }
@@ -88,7 +93,11 @@ fn undo_with_no_transaction_open_goes_through() {
 #[test]
 fn a_tool_without_a_kind_is_an_edit_and_with_a_read_only_hint_a_query() {
     let rig = Rig::with(
-        script(vec![call_turn("", &[("c1", "old_query", "{}")]), call_turn("", &[("c2", "old_edit", "{}")]), say_turn("ok")]),
+        script(vec![
+            call_turn("", &[("c1", "old_query", "{}")]),
+            call_turn("", &[("c2", "old_edit", "{}")]),
+            say_turn("ok"),
+        ]),
         RigOptions::default(),
         |sessions| {
             let server = standard_server(sessions);
@@ -113,7 +122,10 @@ fn the_model_is_not_offered_the_transaction_tools() {
 
 #[test]
 fn the_step_is_recorded_with_the_transaction_and_what_the_model_wrote() {
-    let rig = Rig::new(script(vec![call_turn("I will narrow the jaw.", &[("c1", "face_set_profile", "{}")]), say_turn("Done.")]));
+    let rig = Rig::new(script(vec![
+        call_turn("I will narrow the jaw.", &[("c1", "face_set_profile", "{}")]),
+        say_turn("Done."),
+    ]));
     rig.say("make her face more oval", 0.0);
     let step = rig.sink.entries().into_iter().find_map(|e| match e {
         omuzaki_agent_api::entry::Entry::Step { tx, label, rationale, .. } => Some((tx, label, rationale)),

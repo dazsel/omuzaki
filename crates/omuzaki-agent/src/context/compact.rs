@@ -5,10 +5,14 @@
 //! Sizes are the `Ledger`'s estimate, an upper bound: 1 token per byte, 8 per block, images at the model's
 //! `image_cost`. The request the rebuilt message makes is the same system prefix and tools as every other request.
 
+use std::fmt::Write as _;
+
 use omuzaki_agent_api::entry::Entry;
 use omuzaki_agent_api::error::HostError;
 use omuzaki_agent_api::event::{PlanItem, PlanStatus};
-use omuzaki_llm_api::message::{ContentBlock, ImageOrigin, Message, Role, SystemBlock, ToolChoice, ToolDef, TurnRequest};
+use omuzaki_llm_api::message::{
+    ContentBlock, ImageOrigin, Message, Role, SystemBlock, ToolChoice, ToolDef, TurnRequest,
+};
 use omuzaki_llm_api::usage::{Ledger, ModelInfo};
 
 use crate::context::person_text;
@@ -42,7 +46,13 @@ fn chars(text: &str, most: usize) -> String {
 }
 
 /// The whole request's size: the prefix, the blocks of one user message, the block overhead and `max_output`.
-fn request_size(system: &[SystemBlock], tools: &[ToolDef], blocks: &[ContentBlock], max_output: u32, info: &ModelInfo) -> u64 {
+fn request_size(
+    system: &[SystemBlock],
+    tools: &[ToolDef],
+    blocks: &[ContentBlock],
+    max_output: u32,
+    info: &ModelInfo,
+) -> u64 {
     let request = TurnRequest::new(vec![Message::new(Role::User, blocks.to_vec())], max_output)
         .with_system(system.to_vec())
         .with_tools(tools.to_vec());
@@ -68,16 +78,6 @@ pub(crate) struct RebuildInput<'a> {
     pub render: Option<ContentBlock>,
 }
 
-/// The rebuilt first user message and what it left out.
-#[derive(Debug)]
-pub(crate) struct Rebuilt {
-    pub blocks: Vec<ContentBlock>,
-    pub earlier_left_out: usize,
-    pub render_left_out: bool,
-    /// The size of the mandatory part alone, as the design's boundary case counts it.
-    pub mandatory_size: u64,
-}
-
 fn left_out_line(earlier: usize, render: bool) -> Option<String> {
     let mut parts = Vec::new();
     if earlier > 0 {
@@ -91,7 +91,7 @@ fn left_out_line(earlier: usize, render: bool) -> Option<String> {
 
 /// Builds the rebuilt message, sizing the whole request at each step (D5, step 3). `None` when the mandatory part and
 /// `max_output` already pass the window: nothing is sent and the answer ends with `ContextFull`.
-pub(crate) fn rebuild(input: &RebuildInput<'_>, info: &ModelInfo) -> Option<Rebuilt> {
+pub(crate) fn rebuild(input: &RebuildInput<'_>, info: &ModelInfo) -> Option<Vec<ContentBlock>> {
     let size = |blocks: &[ContentBlock]| request_size(input.system, input.tools, blocks, input.max_output, info);
     let window = info.context_window;
     let keep_limit = window * KEEP_PERCENT / 100;
@@ -109,8 +109,7 @@ pub(crate) fn rebuild(input: &RebuildInput<'_>, info: &ModelInfo) -> Option<Rebu
         blocks
     };
 
-    let mandatory_size = size(&assemble(&[], None, None));
-    if mandatory_size > window {
+    if size(&assemble(&[], None, None)) > window {
         return None;
     }
 
@@ -133,15 +132,15 @@ pub(crate) fn rebuild(input: &RebuildInput<'_>, info: &ModelInfo) -> Option<Rebu
             let _ = trial;
             size(&assemble(&ordered, None, None)) <= keep_limit
         });
-        match fitted {
-            Some(candidate) => chosen.insert(0, candidate),
-            None => {
-                cut_off = true;
-                left += 1;
-            }
+        if let Some(candidate) = fitted {
+            chosen.insert(0, candidate);
+        } else {
+            cut_off = true;
+            left += 1;
         }
     }
-    let render_fits = input.render.as_ref().is_none_or(|image| size(&assemble(&chosen, Some(image), None)) <= keep_limit);
+    let render_fits =
+        input.render.as_ref().is_none_or(|image| size(&assemble(&chosen, Some(image), None)) <= keep_limit);
     let render = input.render.as_ref().filter(|_| render_fits);
     let render_left_out = input.render.is_some() && !render_fits;
 
@@ -154,9 +153,9 @@ pub(crate) fn rebuild(input: &RebuildInput<'_>, info: &ModelInfo) -> Option<Rebu
         if size(&blocks) > window {
             return None;
         }
-        return Some(Rebuilt { blocks, earlier_left_out: all_left, render_left_out: input.render.is_some(), mandatory_size });
+        return Some(blocks);
     }
-    Some(Rebuilt { blocks, earlier_left_out: left, render_left_out, mandatory_size })
+    Some(blocks)
 }
 
 /// The digest the summary turn is given: step labels, the plan, what is pending, and as much of the person's and the
@@ -164,9 +163,12 @@ pub(crate) fn rebuild(input: &RebuildInput<'_>, info: &ModelInfo) -> Option<Rebu
 pub(crate) fn digest(entries: &[Entry], plan: Option<&str>, pending: Option<&str>, window: u64) -> String {
     let limit = (window * DIGEST_PERCENT / 100).saturating_sub(u64::try_from(SUMMARY_ASK.len()).unwrap_or(0) + 64);
     let mut head = String::new();
-    let steps: Vec<&str> = entries.iter().filter_map(|e| if let Entry::Step { label, .. } = e { Some(label.as_str()) } else { None }).collect();
+    let steps: Vec<&str> = entries
+        .iter()
+        .filter_map(|e| if let Entry::Step { label, .. } = e { Some(label.as_str()) } else { None })
+        .collect();
     if !steps.is_empty() {
-        head.push_str(&format!("Steps made: {}\n", steps.join("; ")));
+        let _ = writeln!(head, "Steps made: {}", steps.join("; "));
     }
     for part in [plan, pending].into_iter().flatten() {
         head.push_str(part);
@@ -180,7 +182,10 @@ pub(crate) fn digest(entries: &[Entry], plan: Option<&str>, pending: Option<&str
             Entry::User { text, chips, .. } => ("Person", vec![person_text(text, chips)]),
             Entry::Assistant { blocks, .. } => (
                 "Assistant",
-                blocks.iter().filter_map(|b| if let ContentBlock::Text(t) = b { Some(t.clone()) } else { None }).collect(),
+                blocks
+                    .iter()
+                    .filter_map(|b| if let ContentBlock::Text(t) = b { Some(t.clone()) } else { None })
+                    .collect(),
             ),
             _ => continue,
         };
@@ -192,7 +197,9 @@ pub(crate) fn digest(entries: &[Entry], plan: Option<&str>, pending: Option<&str
             let cut = format!("{label}: {}\n", chars(&text, CUT_CHARS));
             // The person's words are cut to 200 characters when they do not fit whole; the model's text is whole or left out.
             let candidates = if label == "Person" { vec![whole, cut] } else { vec![whole] };
-            let choice = candidates.into_iter().find(|candidate| used + u64::try_from(candidate.len()).unwrap_or(u64::MAX) <= limit);
+            let choice = candidates
+                .into_iter()
+                .find(|candidate| used + u64::try_from(candidate.len()).unwrap_or(u64::MAX) <= limit);
             match choice {
                 Some(line) => {
                     used += u64::try_from(line.len()).unwrap_or(u64::MAX);
@@ -240,12 +247,13 @@ impl Worker {
     fn pending_text(&self, entries: &[Entry]) -> Option<String> {
         let mut lines: Vec<String> =
             self.sessions.approvals().iter().map(|a| format!("Pending approval #{}: {:?}", a.id.0, a.need)).collect();
-        let answered: Vec<_> = entries.iter().filter_map(|e| if let Entry::Answer { id, .. } = e { Some(*id) } else { None }).collect();
+        let answered: Vec<_> =
+            entries.iter().filter_map(|e| if let Entry::Answer { id, .. } = e { Some(*id) } else { None }).collect();
         for entry in entries {
-            if let Entry::Question { id, text, .. } = entry {
-                if !answered.contains(id) {
-                    lines.push(format!("Open question: {text}"));
-                }
+            if let Entry::Question { id, text, .. } = entry
+                && !answered.contains(id)
+            {
+                lines.push(format!("Open question: {text}"));
             }
         }
         (!lines.is_empty()).then(|| lines.join("\n"))
@@ -284,12 +292,19 @@ impl Worker {
             .with_effort(self.cfg.effort);
         self.reserve_budget(run, &request)?;
         let done = self.run_turn(run, &request, TurnMode::Summary)?;
-        let summary: String = done.blocks.iter().filter_map(|b| if let ContentBlock::Text(t) = b { Some(t.as_str()) } else { None }).collect();
+        let summary: String = done
+            .blocks
+            .iter()
+            .filter_map(|b| if let ContentBlock::Text(t) = b { Some(t.as_str()) } else { None })
+            .collect();
         let summary = if summary.trim().is_empty() { "(no summary was written)".to_owned() } else { summary };
 
-        let users: Vec<String> =
-            entries.iter().filter_map(|e| if let Entry::User { text, chips, .. } = e { Some(person_text(text, chips)) } else { None }).collect();
-        let (latest, earlier) = users.split_last().map_or((String::new(), Vec::new()), |(l, e)| (l.clone(), e.to_vec()));
+        let users: Vec<String> = entries
+            .iter()
+            .filter_map(|e| if let Entry::User { text, chips, .. } = e { Some(person_text(text, chips)) } else { None })
+            .collect();
+        let (latest, earlier) =
+            users.split_last().map_or((String::new(), Vec::new()), |(l, e)| (l.clone(), e.to_vec()));
         let input = RebuildInput {
             system: &system,
             tools: &tools,
@@ -304,8 +319,12 @@ impl Worker {
         let Some(rebuilt) = rebuild(&input, &info) else {
             return Err(Flow::Fail(HostError::ContextFull));
         };
-        let message: String = rebuilt.blocks.iter().filter_map(|b| if let ContentBlock::Text(t) = b { Some(t.as_str()) } else { None }).collect::<Vec<_>>().join("\n");
-        self.messages = vec![Message::new(Role::User, rebuilt.blocks)];
+        let message: String = rebuilt
+            .iter()
+            .filter_map(|b| if let ContentBlock::Text(t) = b { Some(t.as_str()) } else { None })
+            .collect::<Vec<_>>()
+            .join("\n");
+        self.messages = vec![Message::new(Role::User, rebuilt)];
         self.ledger = Ledger::new();
         self.measured = 0;
         run.compacted = true;
@@ -329,7 +348,7 @@ mod tests {
         vec![SystemBlock::new("p".repeat(tokens - 8))]
     }
 
-    fn input<'a>(system: &'a [SystemBlock], earlier: Vec<String>, render: Option<ContentBlock>) -> RebuildInput<'a> {
+    fn input(system: &[SystemBlock], earlier: Vec<String>, render: Option<ContentBlock>) -> RebuildInput<'_> {
         RebuildInput {
             system,
             tools: &[],
@@ -362,15 +381,20 @@ mod tests {
         let system = prefix(3_900);
         let earlier = vec!["e".repeat(2_000 - 8)];
         let rebuilt = rebuild(&input(&system, earlier, Some(render())), &info(10_000)).expect("fits");
-        assert_eq!(rebuilt.mandatory_size, 8_172, "3,900 + 2,200 + 3 blocks of 8 + 2,048");
-        assert_eq!(rebuilt.earlier_left_out, 1);
-        assert!(rebuilt.render_left_out);
-        let line = rebuilt.blocks.iter().find_map(|b| match b {
+        let size = |blocks: &[ContentBlock]| request_size(&system, &[], blocks, 2_048, &info(10_000));
+        let mandatory: Vec<ContentBlock> = rebuilt
+            .iter()
+            .filter(|b| !matches!(b, ContentBlock::Text(t) if t.contains("kept in this")))
+            .cloned()
+            .collect();
+        assert_eq!(size(&mandatory), 8_172, "3,900 + 2,200 + 3 blocks of 8 + 2,048");
+        assert!(size(&rebuilt) <= 10_000, "with the note it still fits");
+        let line = rebuilt.iter().find_map(|b| match b {
             ContentBlock::Text(t) if t.contains("kept in this conversation's history") => Some(t.clone()),
             _ => None,
         });
         assert_eq!(line.as_deref(), Some("1 earlier message and the last render, kept in this conversation's history"));
-        assert!(!rebuilt.blocks.iter().any(|b| matches!(b, ContentBlock::Image { .. })));
+        assert!(!rebuilt.iter().any(|b| matches!(b, ContentBlock::Image { .. })));
     }
 
     #[test]
@@ -378,13 +402,18 @@ mod tests {
         let system = prefix(3_900);
         let earlier = vec!["a".repeat(500), "b".repeat(500)];
         let rebuilt = rebuild(&input(&system, earlier.clone(), Some(render())), &info(20_000)).expect("fits");
-        assert_eq!(rebuilt.earlier_left_out, 0);
-        assert!(!rebuilt.render_left_out);
-        let texts: Vec<&str> = rebuilt.blocks.iter().filter_map(|b| if let ContentBlock::Text(t) = b { Some(t.as_str()) } else { None }).collect();
+        assert!(
+            !rebuilt.iter().any(|b| matches!(b, ContentBlock::Text(t) if t.contains("kept in this"))),
+            "nothing left out"
+        );
+        let texts: Vec<&str> = rebuilt
+            .iter()
+            .filter_map(|b| if let ContentBlock::Text(t) = b { Some(t.as_str()) } else { None })
+            .collect();
         let at = |needle: &str| texts.iter().position(|t| t.starts_with(needle)).unwrap();
         assert!(at("aaa") < at("bbb"), "oldest first");
-        assert!(rebuilt.blocks.iter().any(|b| matches!(b, ContentBlock::Image { .. })));
-        let size = request_size(&system, &[], &rebuilt.blocks, 2_048, &info(20_000));
+        assert!(rebuilt.iter().any(|b| matches!(b, ContentBlock::Image { .. })));
+        let size = request_size(&system, &[], &rebuilt, 2_048, &info(20_000));
         assert!(size <= 12_000, "{size} is within 60 % of 20,000");
     }
 
@@ -394,7 +423,11 @@ mod tests {
         // 20,000 x 60 % = 12,000; the fixed part is 8,172; 4,500 more do not fit whole but 200 do.
         let earlier = vec!["z".repeat(4_500)];
         let rebuilt = rebuild(&input(&system, earlier, None), &info(20_000)).expect("fits");
-        let kept: Vec<&str> = rebuilt.blocks.iter().filter_map(|b| if let ContentBlock::Text(t) = b { Some(t.as_str()) } else { None }).filter(|t| t.starts_with('z')).collect();
+        let kept: Vec<&str> = rebuilt
+            .iter()
+            .filter_map(|b| if let ContentBlock::Text(t) = b { Some(t.as_str()) } else { None })
+            .filter(|t| t.starts_with('z'))
+            .collect();
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0].len(), 200);
     }

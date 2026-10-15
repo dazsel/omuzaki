@@ -1,5 +1,8 @@
 //! The conversation store's write path, read path and retention (#1299), against a `FakeClock` and a temp folder.
 
+// Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::assert_is_empty)]
+
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -103,6 +106,8 @@ fn append_all(store: &ConversationStore, id: ConversationId, entries: &[Entry]) 
     }
 }
 
+// Takes the call's result as it comes, so each assertion reads `is_store_error(store.call())`.
+#[allow(clippy::needless_pass_by_value)]
 fn is_store_error(result: Result<impl std::fmt::Debug, HostError>) -> bool {
     matches!(result, Err(HostError::Store(_)))
 }

@@ -1,19 +1,20 @@
 //! What each refusal does (#1111, D2.6): waiting for an approval, a paused session, a rate limit, and the refusals that
 //! go to the model unchanged.
 
+// Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::assert_is_empty)]
+
 mod common;
 
 use std::sync::Arc;
 
 use common::*;
-use omuzaki_core::time::Clock;
+use omuzaki_agent_api::Assistant;
 use omuzaki_agent_api::event::AssistantEvent;
 use omuzaki_agent_api::message::UserMessage;
-use omuzaki_agent_api::Assistant;
+use omuzaki_core::time::Clock;
 use omuzaki_llm_api::message::ContentBlock;
-use omuzaki_ops_api::{
-    Actor, ApprovalId, ErrorDetail, Need, PauseReason, SessionState,
-};
+use omuzaki_ops_api::{Actor, ApprovalId, ErrorDetail, Need, PauseReason, SessionState};
 
 fn last_results(rig: &Rig, request: usize) -> Vec<String> {
     rig.llm.requests()[request]
@@ -24,7 +25,10 @@ fn last_results(rig: &Rig, request: usize) -> Vec<String> {
         .iter()
         .filter_map(|b| match b {
             ContentBlock::ToolResult { blocks, .. } => Some(
-                blocks.iter().filter_map(|b| if let ContentBlock::Text(t) = b { Some(t.clone()) } else { None }).collect::<Vec<_>>().join(""),
+                blocks
+                    .iter()
+                    .filter_map(|b| if let ContentBlock::Text(t) = b { Some(t.clone()) } else { None })
+                    .collect::<String>(),
             ),
             _ => None,
         })
@@ -56,13 +60,13 @@ fn a_queued_approval_waits_and_gives_the_model_the_resolution_as_the_calls_resul
     rig.sessions.queue_approval(7);
     rig.host.send(UserMessage::new("go")).unwrap();
     let mut seen = Vec::new();
-    rig.wait_for("Waiting", || {
+    Rig::wait_for("Waiting", || {
         while let Some(e) = rig.rx.try_recv() {
             seen.push(e);
         }
         seen.iter().any(|e| matches!(e, AssistantEvent::Waiting { approval, .. } if approval.0 == 7))
     });
-    rig.wait_for("the wait", || rig.server.called("approval_wait") >= 1);
+    Rig::wait_for("the wait", || rig.server.called("approval_wait") >= 1);
     assert_eq!(rig.server.called("face_set_profile"), 1, "nothing is re-sent while the approval is pending");
     rig.sessions.resolve_approvals();
     rig.until_done(0.0);
@@ -77,16 +81,22 @@ fn a_rejection_reaches_the_model_with_its_comment() {
         RigOptions::default(),
         |sessions| {
             let server = edit_server(vec![Outcome::refusal("waiting", &queued())])(sessions);
-            server.add_fixed(tool("approval_wait", "approval.wait", "builtin", false), Outcome::text("the person rejected this: 'too wide'"));
+            server.add_fixed(
+                tool("approval_wait", "approval.wait", "builtin", false),
+                Outcome::text("the person rejected this: 'too wide'"),
+            );
             server
         },
     );
     rig.sessions.queue_approval(7);
     rig.host.send(UserMessage::new("go")).unwrap();
-    rig.wait_for("the wait", || rig.server.called("approval_wait") >= 1);
+    Rig::wait_for("the wait", || rig.server.called("approval_wait") >= 1);
     rig.sessions.resolve_approvals();
     rig.until_done(0.0);
-    assert_eq!(last_results(&rig, 1), ["<data source=\"face_set_profile\">the person rejected this: 'too wide'</data>"]);
+    assert_eq!(
+        last_results(&rig, 1),
+        ["<data source=\"face_set_profile\">the person rejected this: 'too wide'</data>"]
+    );
 }
 
 #[test]
@@ -111,7 +121,7 @@ fn a_paused_session_is_polled_and_the_call_is_sent_again_exactly_once() {
     );
     rig.host.send(UserMessage::new("go")).unwrap();
     let mut seen = Vec::new();
-    rig.wait_for("Paused", || {
+    Rig::wait_for("Paused", || {
         while let Some(e) = rig.rx.try_recv() {
             seen.push(e);
         }
@@ -158,10 +168,9 @@ fn a_second_limit_goes_to_the_model_and_a_long_wait_is_cut_to_ten_seconds() {
 
 #[test]
 fn denied_and_conflict_arrive_unchanged() {
-    for (code, detail) in [
-        ("denied", ErrorDetail::PersonOnly { reason: "only you".into() }),
-        ("conflict", ErrorDetail::NoSession),
-    ] {
+    for (code, detail) in
+        [("denied", ErrorDetail::PersonOnly { reason: "only you".into() }), ("conflict", ErrorDetail::NoSession)]
+    {
         let outcome = Outcome::refusal(code, &detail);
         let rig = Rig::with(
             script(vec![call_turn("", &[("c1", "face_set_profile", "{}")]), say_turn("done")]),

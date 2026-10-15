@@ -3,6 +3,9 @@
 //! The golden is the section 4 conversation of `docs/design/agent-runtime.md` exported. `OMUZAKI_BLESS=1 cargo test
 //! -p omuzaki-agent --test store_export` rewrites `tests/goldens/store/` after an intended change.
 
+// Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::assert_is_empty)]
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
@@ -163,11 +166,20 @@ fn the_folder_has_two_images_a_markdown_file_and_the_raw_log_byte_for_byte() {
 
     let files = tree(&out);
     assert!(files.contains_key("conversation-1.md"));
-    assert_eq!(files.keys().filter(|n| n.ends_with(".png")).count(), 2);
+    assert_eq!(
+        files
+            .keys()
+            .filter(|n| std::path::Path::new(n.as_str()).extension().is_some_and(|e| e.eq_ignore_ascii_case("png")))
+            .count(),
+        2
+    );
     let log = fs::read(f.dir.path().join("assistant").join(PROJECT).join("1").join("log.jsonl")).unwrap();
     assert_eq!(files["log.jsonl"], log);
     let markdown = String::from_utf8(files["conversation-1.md"].clone()).unwrap();
-    for name in files.keys().filter(|n| n.ends_with(".png")) {
+    for name in files
+        .keys()
+        .filter(|n| std::path::Path::new(n.as_str()).extension().is_some_and(|e| e.eq_ignore_ascii_case("png")))
+    {
         assert!(markdown.contains(&format!("]({name})")), "{name} is linked relatively");
     }
 }

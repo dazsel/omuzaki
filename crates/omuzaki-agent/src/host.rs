@@ -6,20 +6,20 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+use omuzaki_agent_api::Assistant;
 use omuzaki_agent_api::entry::{Entry, SessionNote};
 use omuzaki_agent_api::error::HostError;
 use omuzaki_agent_api::event::QuestionId;
 use omuzaki_agent_api::hub::EventReceiver;
 use omuzaki_agent_api::message::UserMessage;
 use omuzaki_agent_api::prompts::PromptsState;
-use omuzaki_agent_api::Assistant;
 use omuzaki_llm_api::LlmClient;
 use omuzaki_llm_api::usage::Ledger;
 use omuzaki_ops_api::{EndReason, SessionId, SessionState, Sessions};
 
 use crate::config::HostConfig;
 use crate::link::{LinkError, McpClientLink};
-use crate::prompts::{check_prompt_text, prompt_arguments, PROMPT_TIMEOUT_S};
+use crate::prompts::{PROMPT_TIMEOUT_S, PromptFetch, check_prompt_text, prompt_arguments};
 use crate::resume::messages_from_entries_with;
 use crate::shared::{Shared, cut_text_blocks};
 use crate::worker::Worker;
@@ -75,7 +75,7 @@ impl AssistantHost {
             measured: 0,
             last_describe: None,
             model_checked: false,
-            prompt_fetch: Default::default(),
+            prompt_fetch: PromptFetch::default(),
             refetch_after_answer: false,
         };
         let (tx, rx) = channel();
@@ -114,11 +114,11 @@ impl Worker {
 
     /// Ends the session if it is still live, once, and closes the link.
     fn close_session(&mut self) {
-        if let Some(info) = self.session_info() {
-            if !matches!(info.state, SessionState::Ended { .. }) {
-                // Ending a session that ended meanwhile is a harmless conflict.
-                let _ = self.sessions.end(self.session, EndReason::Closed);
-            }
+        if let Some(info) = self.session_info()
+            && !matches!(info.state, SessionState::Ended { .. })
+        {
+            // Ending a session that ended meanwhile is a harmless conflict.
+            let _ = self.sessions.end(self.session, EndReason::Closed);
         }
         self.link.close();
     }
@@ -143,14 +143,13 @@ impl Assistant for AssistantHost {
             }
             self.shared.begin_answer(&mut ctl);
         }
-        let sent = self.commands.lock().unwrap_or_else(PoisonError::into_inner).as_ref().map(|tx| tx.send(Cmd::Send(msg)));
-        match sent {
-            Some(Ok(())) => Ok(()),
-            _ => {
-                self.shared.lock().running = false;
-                Err(HostError::SessionEnded)
-            }
+        let sent =
+            self.commands.lock().unwrap_or_else(PoisonError::into_inner).as_ref().map(|tx| tx.send(Cmd::Send(msg)));
+        if let Some(Ok(())) = sent {
+            return Ok(());
         }
+        self.shared.lock().running = false;
+        Err(HostError::SessionEnded)
     }
 
     fn stop(&self) {
@@ -170,7 +169,10 @@ impl Assistant for AssistantHost {
         let left = cut_text_blocks(turns, report.text_read);
         let mut live = vec![omuzaki_llm_api::message::ContentBlock::text(std::mem::take(&mut ctl.live_text))];
         cut_text_blocks([&mut live], left);
-        ctl.live_text = live.into_iter().find_map(|b| if let omuzaki_llm_api::message::ContentBlock::Text(t) = b { Some(t) } else { None }).unwrap_or_default();
+        ctl.live_text = live
+            .into_iter()
+            .find_map(|b| if let omuzaki_llm_api::message::ContentBlock::Text(t) = b { Some(t) } else { None })
+            .unwrap_or_default();
         ctl.question = None;
     }
 

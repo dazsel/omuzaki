@@ -91,7 +91,10 @@ fn text_result(text: impl Into<String>, is_error: bool) -> (Vec<ContentBlock>, b
 fn parse_plan(input: &Value) -> Result<Vec<PlanItem>, String> {
     let items = input.get("items").and_then(Value::as_array).ok_or("`items` must be a list")?;
     if items.len() > MAX_PLAN_ITEMS {
-        return Err(format!("a plan has at most {MAX_PLAN_ITEMS} items; you sent {}. Merge steps and send it again", items.len()));
+        return Err(format!(
+            "a plan has at most {MAX_PLAN_ITEMS} items; you sent {}. Merge steps and send it again",
+            items.len()
+        ));
     }
     items
         .iter()
@@ -110,9 +113,13 @@ fn parse_plan(input: &Value) -> Result<Vec<PlanItem>, String> {
 
 impl Worker {
     /// Runs one host-local tool. None of them opens the transaction.
-    pub(crate) fn host_tool(&mut self, run: &mut AnswerRun, call: &ToolCall) -> Result<(Vec<ContentBlock>, bool), Flow> {
+    pub(crate) fn host_tool(
+        &mut self,
+        run: &mut AnswerRun,
+        call: &ToolCall,
+    ) -> Result<(Vec<ContentBlock>, bool), Flow> {
         match call.name.as_str() {
-            ASK_PERSON => self.ask_person(run, &call.input),
+            ASK_PERSON => Ok(self.ask_person(run, &call.input)),
             UPDATE_PLAN => Ok(self.update_plan(&call.input)),
             DISCARD_CHANGES => self.discard_changes(run),
             _ => self.read_resource(&call.input),
@@ -122,7 +129,7 @@ impl Worker {
     fn update_plan(&mut self, input: &Value) -> (Vec<ContentBlock>, bool) {
         match parse_plan(input) {
             Ok(items) => {
-                self.plan = items.clone();
+                self.plan.clone_from(&items);
                 self.shared.emit(AssistantEvent::Plan(items));
                 text_result("plan updated", false)
             }
@@ -145,7 +152,8 @@ impl Worker {
         loop {
             match pending.poll(Duration::from_millis(1)) {
                 Some(Ok(Ok(blocks))) => {
-                    let origin = if uri.starts_with("omuzaki://render/") { ImageOrigin::Render } else { ImageOrigin::File };
+                    let origin =
+                        if uri.starts_with("omuzaki://render/") { ImageOrigin::Render } else { ImageOrigin::File };
                     return Ok((reply_blocks(uri, &blocks, origin), false));
                 }
                 Some(Ok(Err(LinkError::Protocol(text)))) => {
@@ -153,7 +161,9 @@ impl Worker {
                 }
                 Some(Ok(Err(LinkError::Cancelled))) => return Err(Flow::Stopped),
                 Some(Ok(Err(LinkError::Closed)) | Err(_)) => {
-                    return Err(self.ended().map_or(Flow::Fail(omuzaki_agent_api::error::HostError::SessionEnded), Flow::Revoked));
+                    return Err(self
+                        .ended()
+                        .map_or(Flow::Fail(omuzaki_agent_api::error::HostError::SessionEnded), Flow::Revoked));
                 }
                 None if self.shared.stopping() => return Err(Flow::Stopped),
                 None => {}
@@ -162,9 +172,9 @@ impl Worker {
     }
 
     /// `ask_person`: a question card, and the call waits for `answer` or Stop. The wait is not wall time.
-    fn ask_person(&mut self, run: &mut AnswerRun, input: &Value) -> Result<(Vec<ContentBlock>, bool), Flow> {
+    fn ask_person(&mut self, run: &mut AnswerRun, input: &Value) -> (Vec<ContentBlock>, bool) {
         let Some(question) = input.get("question").and_then(Value::as_str) else {
-            return Ok(text_result("`question` is required", true));
+            return text_result("`question` is required", true);
         };
         let choices: Vec<String> = input
             .get("choices")
@@ -189,7 +199,7 @@ impl Worker {
             if self.shared.stopping() {
                 self.shared.lock().question = None;
                 run.counters.exclude_seconds(self.now().0 - started.0);
-                return Ok(text_result("stopped by the person", true));
+                return text_result("stopped by the person", true);
             }
             let taken = {
                 let mut ctl = self.shared.lock();
@@ -205,7 +215,7 @@ impl Worker {
             crate::wait::step();
         };
         run.counters.exclude_seconds(self.now().0 - started.0);
-        Ok(text_result(wrap_data(ASK_PERSON, &reply), false))
+        text_result(wrap_data(ASK_PERSON, &reply), false)
     }
 }
 

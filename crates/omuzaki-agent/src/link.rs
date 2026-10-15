@@ -14,8 +14,9 @@ use omuzaki_llm_api::message::ImageMime;
 use omuzaki_llm_api::provider::RuntimeHandle;
 use omuzaki_llm_api::stream::Cancel;
 use rmcp::model::{
-    CallToolRequest, CallToolRequestParams, ClientCapabilities, ClientConfig, ClientRequest, ContentBlock, CustomNotification, GetPromptRequestParams, Implementation, JsonObject, ProtocolVersion,
-    ReadResourceRequestParams, ResourceContents, ServerResult,
+    CallToolRequest, CallToolRequestParams, ClientCapabilities, ClientConfig, ClientRequest, ContentBlock,
+    CustomNotification, GetPromptRequestParams, Implementation, JsonObject, ProtocolVersion, ReadResourceRequestParams,
+    ResourceContents, ServerResult,
 };
 use rmcp::service::{NotificationContext, PeerRequestOptions, RoleClient, RunningService, ServiceError};
 use rmcp::{ClientHandler, ClientLifecycleMode, ClientServiceExt};
@@ -210,7 +211,7 @@ impl McpClientLink {
         let peer = self.inner.peer.clone();
         self.spawn(async move {
             let tools = peer.list_all_tools().await.map_err(|e| link_error(&e))?;
-            Ok(tools.into_iter().map(tool_info).collect())
+            Ok(tools.iter().map(tool_info).collect())
         })
     }
 
@@ -324,7 +325,7 @@ fn reply_of(
     }
 }
 
-fn tool_info(tool: rmcp::model::Tool) -> ToolInfo {
+fn tool_info(tool: &rmcp::model::Tool) -> ToolInfo {
     let kind = tool.meta.as_ref().and_then(|m| m.get(KIND_KEY)).and_then(Value::as_str).map_or(
         ToolKind::Unknown,
         |k| match k {

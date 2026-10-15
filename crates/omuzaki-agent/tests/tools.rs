@@ -1,11 +1,14 @@
-//! The host-local tools (#1371): ask_person, update_plan, discard_changes and read_resource.
+//! The host-local tools (#1371): `ask_person`, `update_plan`, `discard_changes` and `read_resource`.
+
+// Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::assert_is_empty)]
 
 mod common;
 
 use common::*;
+use omuzaki_agent_api::Assistant;
 use omuzaki_agent_api::event::{AssistantEvent, PlanStatus, QuestionId};
 use omuzaki_agent_api::message::UserMessage;
-use omuzaki_agent_api::Assistant;
 use omuzaki_llm_api::message::{ContentBlock, ImageMime};
 use rmcp::model::ResourceContents;
 
@@ -24,7 +27,13 @@ fn results_of_request(rig: &Rig, request: usize) -> Vec<ContentBlock> {
 fn question_of(events: &[AssistantEvent]) -> Vec<(QuestionId, String, Vec<String>)> {
     events
         .iter()
-        .filter_map(|e| if let AssistantEvent::Question { id, text, choices, .. } = e { Some((*id, text.clone(), choices.clone())) } else { None })
+        .filter_map(|e| {
+            if let AssistantEvent::Question { id, text, choices, .. } = e {
+                Some((*id, text.clone(), choices.clone()))
+            } else {
+                None
+            }
+        })
         .collect()
 }
 
@@ -36,7 +45,7 @@ fn ask_person_emits_one_question_and_the_answer_reaches_the_model() {
     ]));
     rig.host.send(UserMessage::new("go")).unwrap();
     let mut seen = Vec::new();
-    rig.wait_for("the question", || {
+    Rig::wait_for("the question", || {
         while let Some(e) = rig.rx.try_recv() {
             seen.push(e);
         }
@@ -56,10 +65,11 @@ fn ask_person_emits_one_question_and_the_answer_reaches_the_model() {
 
 #[test]
 fn stop_ends_an_open_question_and_no_question_follows() {
-    let rig = Rig::new(script(vec![call_turn("", &[("c1", "ask_person", "{\"question\":\"Which?\"}")]), say_turn("ok")]));
+    let rig =
+        Rig::new(script(vec![call_turn("", &[("c1", "ask_person", "{\"question\":\"Which?\"}")]), say_turn("ok")]));
     rig.host.send(UserMessage::new("go")).unwrap();
     let mut seen = Vec::new();
-    rig.wait_for("the question", || {
+    Rig::wait_for("the question", || {
         while let Some(e) = rig.rx.try_recv() {
             seen.push(e);
         }
@@ -79,10 +89,13 @@ fn a_headless_run_answers_with_the_configured_reply() {
     let rig = Rig::with(
         script(vec![call_turn("", &[("c1", "ask_person", "{\"question\":\"Which?\"}")]), say_turn("ok")]),
         RigOptions { person_reply: Some("the wide one".into()), ..RigOptions::default() },
-        |sessions| standard_server(sessions),
+        standard_server,
     );
     rig.say("go", 0.0);
-    assert_eq!(results_of_request(&rig, 1), vec![ContentBlock::text("<data source=\"ask_person\">the wide one</data>")]);
+    assert_eq!(
+        results_of_request(&rig, 1),
+        vec![ContentBlock::text("<data source=\"ask_person\">the wide one</data>")]
+    );
 }
 
 #[test]
@@ -95,11 +108,15 @@ fn a_plan_of_twenty_items_emits_one_plan_and_twenty_one_is_refused() {
         say_turn("ok"),
     ]));
     let events = rig.say("go", 0.0);
-    let plans: Vec<_> = events.iter().filter_map(|e| if let AssistantEvent::Plan(p) = e { Some(p.len()) } else { None }).collect();
+    let plans: Vec<_> =
+        events.iter().filter_map(|e| if let AssistantEvent::Plan(p) = e { Some(p.len()) } else { None }).collect();
     assert_eq!(plans, [20]);
     let results = results_of_request(&rig, 1);
     assert!(matches!(&results[0], ContentBlock::Text(t) if t.contains("at most 20")), "{results:?}");
-    assert_eq!(events.iter().filter(|e| matches!(e, AssistantEvent::Plan(p) if p[0].status == PlanStatus::Doing)).count(), 1);
+    assert_eq!(
+        events.iter().filter(|e| matches!(e, AssistantEvent::Plan(p) if p[0].status == PlanStatus::Doing)).count(),
+        1
+    );
 }
 
 #[test]
@@ -123,7 +140,10 @@ fn read_resource_returns_text_as_text_and_images_as_images() {
     let rig = Rig::new(script(vec![
         call_turn(
             "",
-            &[("c1", "read_resource", "{\"uri\":\"omuzaki://character/main\"}"), ("c2", "read_resource", "{\"uri\":\"omuzaki://render/front\"}")],
+            &[
+                ("c1", "read_resource", "{\"uri\":\"omuzaki://character/main\"}"),
+                ("c2", "read_resource", "{\"uri\":\"omuzaki://render/front\"}"),
+            ],
         ),
         say_turn("ok"),
     ]));
@@ -132,7 +152,12 @@ fn read_resource_returns_text_as_text_and_images_as_images() {
         let mut resources = rig.server.resources.lock().unwrap();
         resources.insert(
             "omuzaki://character/main".into(),
-            ResourceContents::TextResourceContents { uri: "omuzaki://character/main".into(), mime_type: None, text: "{\"id\":\"main\"}".into(), meta: None },
+            ResourceContents::TextResourceContents {
+                uri: "omuzaki://character/main".into(),
+                mime_type: None,
+                text: "{\"id\":\"main\"}".into(),
+                meta: None,
+            },
         );
         resources.insert(
             "omuzaki://render/front".into(),
@@ -154,7 +179,14 @@ fn read_resource_returns_text_as_text_and_images_as_images() {
 #[test]
 fn none_of_the_host_tools_opens_the_transaction() {
     let rig = Rig::new(script(vec![
-        call_turn("", &[("c1", "update_plan", "{\"items\":[]}"), ("c2", "discard_changes", "{}"), ("c3", "read_resource", "{\"uri\":\"x\"}")]),
+        call_turn(
+            "",
+            &[
+                ("c1", "update_plan", "{\"items\":[]}"),
+                ("c2", "discard_changes", "{}"),
+                ("c3", "read_resource", "{\"uri\":\"x\"}"),
+            ],
+        ),
         say_turn("ok"),
     ]));
     rig.say("go", 0.0);

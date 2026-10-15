@@ -40,8 +40,7 @@ impl Worker {
             self.prompt_fetch.pending = None;
             let state = match result {
                 Ok(Ok(list)) => PromptsState::Ready(list),
-                Ok(Err(error)) => PromptsState::Failed(error.into()),
-                Err(error) => PromptsState::Failed(error.into()),
+                Ok(Err(error)) | Err(error) => PromptsState::Failed(error.into()),
             };
             self.shared.lock().prompts = state;
         }

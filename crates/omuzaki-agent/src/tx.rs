@@ -29,7 +29,11 @@ pub(crate) fn kind_of(info: Option<&ToolInfo>) -> ToolKind {
     match info {
         None => ToolKind::Edit,
         Some(t) if t.kind == ToolKind::Unknown => {
-            if t.read_only { ToolKind::Query } else { ToolKind::Edit }
+            if t.read_only {
+                ToolKind::Query
+            } else {
+                ToolKind::Edit
+            }
         }
         Some(t) => t.kind,
     }
@@ -63,8 +67,7 @@ pub(crate) fn cause(first_line: &str) -> String {
 }
 
 /// The text the model gets for `history_undo` or `history_redo` while the answer's transaction is open (D2.5).
-pub(crate) const UNDO_WHILE_OPEN: &str =
-    "your changes in this answer are not a step yet; use `discard_changes`";
+pub(crate) const UNDO_WHILE_OPEN: &str = "your changes in this answer are not a step yet; use `discard_changes`";
 
 impl Worker {
     /// Opens the answer's transaction with `tx_begin`. A refusal comes back for the model, as the result of the call that
@@ -117,14 +120,7 @@ mod tests {
     use super::*;
 
     fn tool(kind: ToolKind, read_only: bool) -> ToolInfo {
-        ToolInfo {
-            name: "t".into(),
-            title: None,
-            description: String::new(),
-            input_schema: json!({}),
-            kind,
-            read_only,
-        }
+        ToolInfo { name: "t".into(), title: None, description: String::new(), input_schema: json!({}), kind, read_only }
     }
 
     #[test]

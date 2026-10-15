@@ -75,7 +75,8 @@ impl Worker {
         if buf.text.is_empty() {
             return;
         }
-        self.shared.emit_text(std::mem::take(&mut buf.text));
+        let text = std::mem::take(&mut buf.text);
+        self.shared.emit_text(&text);
         buf.last_flush = Some(now);
     }
 
@@ -84,7 +85,12 @@ impl Worker {
     /// # Errors
     /// [`Flow::Stopped`] after Stop, [`Flow::Fail`] for a failed turn (the partial text is kept), or `Revoked` if the
     /// charge found the session gone.
-    pub(crate) fn run_turn(&mut self, run: &mut AnswerRun, request: &TurnRequest, mode: TurnMode) -> Result<TurnDone, Flow> {
+    pub(crate) fn run_turn(
+        &mut self,
+        run: &mut AnswerRun,
+        request: &TurnRequest,
+        mode: TurnMode,
+    ) -> Result<TurnDone, Flow> {
         let cancel = self.shared.fresh_cancel();
         let mut stream = match self.llm.stream(request.clone(), &cancel) {
             Ok(stream) => stream,

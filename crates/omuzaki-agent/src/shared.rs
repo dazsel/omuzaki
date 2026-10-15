@@ -26,6 +26,9 @@ pub(crate) struct OpenQuestion {
 }
 
 /// What the lock guards.
+// The flags are independent facts about one answer and one session, read together under the lock; a state enum would
+// need a variant for each combination.
+#[allow(clippy::struct_excessive_bools)]
 pub(crate) struct Control {
     /// An answer is in progress, from an accepted `send` until just before its `Done`.
     pub running: bool,
@@ -87,7 +90,15 @@ impl Shared {
             prompts: PromptsState::Loading,
             refresh_prompts: false,
         };
-        Self { hub: EventHub::new(), ctl: Mutex::new(ctl), stop_flag: AtomicBool::new(false), clock, sink, sessions, session }
+        Self {
+            hub: EventHub::new(),
+            ctl: Mutex::new(ctl),
+            stop_flag: AtomicBool::new(false),
+            clock,
+            sink,
+            sessions,
+            session,
+        }
     }
 
     pub(crate) fn lock(&self) -> MutexGuard<'_, Control> {
@@ -141,31 +152,32 @@ impl Shared {
     }
 
     /// Sends text to the panel and keeps it as the turn's live text, atomically with Stop.
-    pub(crate) fn emit_text(&self, text: String) {
+    pub(crate) fn emit_text(&self, text: &str) {
         let mut ctl = self.lock();
-        if self.hub.send(AssistantEvent::TextDelta(text.clone())) {
-            ctl.live_text.push_str(&text);
+        if self.hub.send(AssistantEvent::TextDelta(text.to_owned())) {
+            ctl.live_text.push_str(text);
         }
     }
 
     /// Records an entry in the transcript and the store. A store failure is shown to the person and does not stop the
     /// answer: losing the log must not lose the work.
     pub(crate) fn record(&self, entry: Entry) {
-        self.lock().transcript.push(entry.clone());
         if let Err(error) = self.sink.append(&entry) {
             self.emit(AssistantEvent::Error(error));
         }
+        self.lock().transcript.push(entry);
     }
 
     /// Records the finished turn's entry and drops the live text it replaces in one step, so a panel reading the
     /// transcript never sees the turn twice or not at all.
     pub(crate) fn record_turn(&self, entry: Entry) {
+        let appended = self.sink.append(&entry);
         {
             let mut ctl = self.lock();
             ctl.live_text.clear();
-            ctl.transcript.push(entry.clone());
+            ctl.transcript.push(entry);
         }
-        if let Err(error) = self.sink.append(&entry) {
+        if let Err(error) = appended {
             self.emit(AssistantEvent::Error(error));
         }
     }
@@ -217,7 +229,10 @@ impl Shared {
 
 /// Cuts the text of `blocks` (the text blocks of consecutive assistant turns, in order) so that at most `budget` bytes
 /// remain in total. Returns what is left of the budget. Blocks that become empty are dropped.
-pub(crate) fn cut_text_blocks<'a>(turns: impl IntoIterator<Item = &'a mut Vec<ContentBlock>>, mut budget: usize) -> usize {
+pub(crate) fn cut_text_blocks<'a>(
+    turns: impl IntoIterator<Item = &'a mut Vec<ContentBlock>>,
+    mut budget: usize,
+) -> usize {
     for blocks in turns {
         blocks.retain_mut(|block| {
             let ContentBlock::Text(text) = block else { return true };
@@ -257,6 +272,6 @@ mod tests {
         cut_text_blocks([&mut blocks], 4);
         assert_eq!(blocks, vec![ContentBlock::text("€")]);
         cut_text_blocks([&mut blocks], 0);
-        assert!(blocks.is_empty());
+        assert_eq!(blocks, Vec::<ContentBlock>::new());
     }
 }

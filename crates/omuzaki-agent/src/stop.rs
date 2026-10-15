@@ -18,7 +18,8 @@ impl Worker {
     /// Cuts the answer's text in the model's history to what the person had read, so the next request agrees with the
     /// panel and the transcript.
     fn cut_history(&mut self, run: &AnswerRun, read: usize) {
-        let turns = self.messages[run.msg_from..].iter_mut().filter(|m| m.role == Role::Assistant).map(|m| &mut m.content);
+        let turns =
+            self.messages[run.msg_from..].iter_mut().filter(|m| m.role == Role::Assistant).map(|m| &mut m.content);
         cut_text_blocks(turns, read);
     }
 
@@ -60,7 +61,9 @@ impl Worker {
     fn wait_step_closed(&self) {
         loop {
             match self.session_info() {
-                Some(info) if info.open_tx.is_some() && !matches!(info.state, omuzaki_ops_api::SessionState::Ended { .. }) => {
+                Some(info)
+                    if info.open_tx.is_some() && !matches!(info.state, omuzaki_ops_api::SessionState::Ended { .. }) =>
+                {
                     wait::for_seconds(self.cfg.clock.as_ref(), CLOSE_POLL, || false);
                 }
                 _ => return,

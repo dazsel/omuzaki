@@ -1,7 +1,5 @@
 //! The four per-message counters (D2.7).
 
-use std::time::Duration;
-
 use omuzaki_agent_api::event::Cap;
 use omuzaki_core::time::Seconds;
 
@@ -38,19 +36,10 @@ impl Counters {
         self.tokens = self.tokens.saturating_add(tokens);
     }
 
-    /// Takes `waited` out of the wall time: a person may take ten minutes to decide, and that is not the model's time.
-    pub(crate) fn exclude(&mut self, waited: Duration) {
-        self.excluded += waited.as_secs_f64();
-    }
-
-    /// Takes `seconds` of clock time out of the wall time.
+    /// Takes `seconds` of clock time out of the wall time: a person may take ten minutes to decide, and that is not the
+    /// model's time.
     pub(crate) fn exclude_seconds(&mut self, seconds: f64) {
         self.excluded += seconds.max(0.0);
-    }
-
-    /// The tool calls run so far.
-    pub(crate) fn tool_calls(&self) -> u32 {
-        self.tool_calls
     }
 
     /// The caps that stop further calls within a turn: every one but the turn count, which a turn that is already
@@ -127,7 +116,7 @@ mod tests {
     #[test]
     fn an_excluded_wait_does_not_count_toward_wall_time() {
         let mut c = Counters::new(Seconds(0.0));
-        c.exclude(Duration::from_secs(100));
+        c.exclude_seconds(100.0);
         assert_eq!(c.reached(&Caps { wall_s: 600, ..Caps::default() }, Seconds(650.0)), None);
         assert_eq!(c.reached(&Caps { wall_s: 600, ..Caps::default() }, Seconds(700.0)), Some(Cap::WallTime));
     }

@@ -1,5 +1,8 @@
 //! Stop (#1336, D4): no output after the click, what is kept, how fast `Done` comes, and what the executor is asked.
 
+// Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::assert_is_empty)]
+
 mod common;
 
 use std::sync::Arc;
@@ -13,7 +16,7 @@ use omuzaki_core::time::{Clock, Seconds};
 use omuzaki_llm_api::message::ContentBlock;
 use omuzaki_llm_api::stream::{LlmEvent, StopReason};
 use omuzaki_llm_mock::ScriptTurn;
-use omuzaki_ops_api::{PauseReason, SessionState};
+use omuzaki_ops_api::{PauseReason, SessionState, Sessions as _};
 
 /// The events of a turn that calls one tool with a short text: start, text, the call's three, usage and stop.
 const FIRST_TURN_EVENTS: usize = 7;
@@ -37,7 +40,13 @@ fn assistant_text(entries: &[Entry]) -> String {
 }
 
 fn is_output(event: &AssistantEvent) -> bool {
-    matches!(event, AssistantEvent::TextDelta(_) | AssistantEvent::ToolCall { .. } | AssistantEvent::Question { .. } | AssistantEvent::Plan(_))
+    matches!(
+        event,
+        AssistantEvent::TextDelta(_)
+            | AssistantEvent::ToolCall { .. }
+            | AssistantEvent::Question { .. }
+            | AssistantEvent::Plan(_)
+    )
 }
 
 /// A small deterministic generator, so a failing interleaving can be replayed from its seed.
@@ -58,10 +67,10 @@ fn after_stop_returns_nothing_new_is_readable_across_a_thousand_seeded_interleav
         let rig = Rig::with(
             script(vec![long_text(20)]),
             RigOptions { hold_after: Some(hold), ..RigOptions::default() },
-            |sessions| standard_server(sessions),
+            standard_server,
         );
         rig.host.send(UserMessage::new("go")).unwrap();
-        rig.wait_for("the held stream", || rig.gate.delivered.load(std::sync::atomic::Ordering::Acquire) >= hold);
+        Rig::wait_for("the held stream", || rig.gate.delivered.load(std::sync::atomic::Ordering::Acquire) >= hold);
         // Let the host flush what it has, then read a seeded part of it.
         std::thread::sleep(std::time::Duration::from_millis(2));
         let mut read = String::new();
@@ -88,10 +97,10 @@ fn the_next_request_carries_only_the_text_that_was_read() {
     let rig = Rig::with(
         script(vec![long_text(20), say_turn("ok")]),
         RigOptions { hold_after: Some(6), ..RigOptions::default() },
-        |sessions| standard_server(sessions),
+        standard_server,
     );
     rig.host.send(UserMessage::new("go")).unwrap();
-    rig.wait_for("the held stream", || rig.gate.delivered.load(std::sync::atomic::Ordering::Acquire) >= 6);
+    Rig::wait_for("the held stream", || rig.gate.delivered.load(std::sync::atomic::Ordering::Acquire) >= 6);
     std::thread::sleep(std::time::Duration::from_millis(2));
     let mut read = String::new();
     if let Some(AssistantEvent::TextDelta(t)) = rig.rx.try_recv() {
@@ -116,11 +125,11 @@ fn done_comes_with_no_clock_time_when_the_lock_is_free_and_after_the_hold_when_i
         let rig = Rig::with(
             script(vec![long_text(20)]),
             RigOptions { hold_after: Some(5), ..RigOptions::default() },
-            |sessions| standard_server(sessions),
+            standard_server,
         );
         rig.sessions.set_stop(StopBehaviour::Committed, hold);
         rig.host.send(UserMessage::new("go")).unwrap();
-        rig.wait_for("the held stream", || rig.gate.delivered.load(std::sync::atomic::Ordering::Acquire) >= 5);
+        Rig::wait_for("the held stream", || rig.gate.delivered.load(std::sync::atomic::Ordering::Acquire) >= 5);
         let clicked = rig.clock.now().0;
         rig.host.stop();
         let mut done_at = None;
@@ -147,16 +156,19 @@ fn done_comes_with_no_clock_time_when_the_lock_is_free_and_after_the_hold_when_i
 
 #[test]
 fn a_pending_step_emits_paused_at_once_polls_every_50_ms_and_done_only_when_the_step_closes() {
-    for close_after in [3.0, 10.0] {
+    for seconds in [3_u32, 10] {
+        let close_after = f64::from(seconds);
         let rig = Rig::with(
             script(vec![call_turn("", &[("c1", "face_set_profile", "{}")]), long_text(20)]),
             RigOptions { hold_after: Some(FIRST_TURN_EVENTS + 2), ..RigOptions::default() },
-            |sessions| standard_server(sessions),
+            standard_server,
         );
         rig.sessions.set_stop(StopBehaviour::Pending { close_after }, 0.0);
         rig.host.send(UserMessage::new("go")).unwrap();
         // The edit opens the transaction; then the second turn streams and is held.
-        rig.wait_for("the transaction", || rig.server.called("tx_begin") == 1 && rig.server.called("face_set_profile") == 1);
+        Rig::wait_for("the transaction", || {
+            rig.server.called("tx_begin") == 1 && rig.server.called("face_set_profile") == 1
+        });
         rig.host.stop();
         let polls_before = rig.sessions.session_polls();
         let started = rig.clock.now().0;
@@ -180,7 +192,7 @@ fn a_pending_step_emits_paused_at_once_polls_every_50_ms_and_done_only_when_the_
         assert!(waited < close_after + 0.2, "Done after {waited} s");
         assert!(events.iter().any(|e| matches!(e, AssistantEvent::Paused)));
         let polls = rig.sessions.session_polls() - polls_before;
-        let expected = (close_after / 0.05) as usize;
+        let expected = usize::try_from(seconds * 20).unwrap();
         assert!(polls * 10 >= expected * 8 && polls <= expected + 25, "{polls} polls for {close_after} s");
         assert_eq!(rig.sessions.stop_calls(), 1);
         assert_eq!(rig.server.called("tx_commit"), 0, "the executor commits, not the host");
@@ -197,10 +209,10 @@ fn the_host_asks_the_executor_once_never_pauses_or_commits_and_a_second_stop_cha
         let rig = Rig::with(
             script(vec![call_turn("", &[("c1", "face_set_profile", "{}")]), long_text(20)]),
             RigOptions { hold_after: Some(FIRST_TURN_EVENTS + 2), ..RigOptions::default() },
-            |sessions| standard_server(sessions),
+            standard_server,
         );
         rig.host.send(UserMessage::new("go")).unwrap();
-        rig.wait_for("the edit", || rig.server.called("face_set_profile") == 1);
+        Rig::wait_for("the edit", || rig.server.called("face_set_profile") == 1);
         rig.sessions.set_state(state.clone());
         rig.host.stop();
         rig.host.stop();
@@ -222,14 +234,16 @@ fn stop_commits_the_step_with_stopped_in_its_label_and_charges_what_was_used() {
     let rig = Rig::with(
         script(vec![call_turn("I will edit.", &[("c1", "face_set_profile", "{}")]), long_text(20)]),
         RigOptions { hold_after: Some(FIRST_TURN_EVENTS + 2), ..RigOptions::default() },
-        |sessions| standard_server(sessions),
+        standard_server,
     );
     rig.host.send(UserMessage::new("make it round")).unwrap();
-    rig.wait_for("the edit", || rig.server.called("face_set_profile") == 1);
+    Rig::wait_for("the edit", || rig.server.called("face_set_profile") == 1);
     rig.host.stop();
     rig.until_done(0.0);
     let entries = rig.sink.entries();
-    let step = entries.iter().find_map(|e| if let Entry::Step { tx, label, .. } = e { Some((tx.0, label.clone())) } else { None });
+    let step = entries
+        .iter()
+        .find_map(|e| if let Entry::Step { tx, label, .. } = e { Some((tx.0, label.clone())) } else { None });
     assert_eq!(step, Some((31, "Assistant: make it round (stopped)".to_owned())));
     assert!(entries.iter().any(|e| matches!(e, Entry::Stopped)));
     assert!(!rig.sessions.charges().is_empty());
@@ -243,12 +257,15 @@ fn a_call_in_flight_is_answered_as_stopped_and_not_waited_for() {
         RigOptions::default(),
         |sessions| {
             let server = standard_server(sessions);
-            server.add_fixed(tool("render_preview", "Render preview", "query", true), Outcome::text("rendered").held(&gate));
+            server.add_fixed(
+                tool("render_preview", "Render preview", "query", true),
+                Outcome::text("rendered").held(&gate),
+            );
             server
         },
     );
     rig.host.send(UserMessage::new("go")).unwrap();
-    rig.wait_for("the call", || rig.server.called("render_preview") == 1);
+    Rig::wait_for("the call", || rig.server.called("render_preview") == 1);
     rig.host.stop();
     let events = rig.until_done(0.0);
     assert!(matches!(events.last(), Some(AssistantEvent::Done)));
@@ -281,14 +298,17 @@ fn stop_while_waiting_leaves_the_approval_queued() {
                 approval: omuzaki_ops_api::ApprovalId(7),
                 need: omuzaki_ops_api::Need::Person { reason: "r".into() },
             };
-            server.add_fixed(tool("face_set_profile", "Face profile", "edit", false), Outcome::refusal("waiting", &queued));
+            server.add_fixed(
+                tool("face_set_profile", "Face profile", "edit", false),
+                Outcome::refusal("waiting", &queued),
+            );
             server
         },
     );
     rig.sessions.queue_approval(7);
     rig.host.send(UserMessage::new("go")).unwrap();
     let mut seen = Vec::new();
-    rig.wait_for("Waiting", || {
+    Rig::wait_for("Waiting", || {
         while let Some(e) = rig.rx.try_recv() {
             seen.push(e);
         }
@@ -297,7 +317,6 @@ fn stop_while_waiting_leaves_the_approval_queued() {
     rig.host.stop();
     let rest = rig.until_done(0.0);
     assert!(matches!(rest.last(), Some(AssistantEvent::Done)));
-    use omuzaki_ops_api::Sessions as _;
     assert_eq!(rig.sessions.approvals().len(), 1, "the approval stays queued for the person");
 }
 
@@ -306,11 +325,11 @@ fn a_result_that_arrives_after_stop_is_recorded_for_the_next_message() {
     let rig = Rig::with(
         script(vec![call_turn("", &[("c1", "render_preview", "{}")]), say_turn("ok"), say_turn("ok again")]),
         RigOptions { late_server: true, ..RigOptions::default() },
-        |sessions| standard_server(sessions),
+        standard_server,
     );
     rig.host.send(UserMessage::new("go")).unwrap();
     let mut seen = Vec::new();
-    rig.wait_for("the call", || {
+    Rig::wait_for("the call", || {
         while let Some(e) = rig.rx.try_recv() {
             seen.push(e);
         }
@@ -318,7 +337,7 @@ fn a_result_that_arrives_after_stop_is_recorded_for_the_next_message() {
     });
     rig.host.stop();
     rig.until_done(0.0);
-    rig.wait_for("the late result", || {
+    Rig::wait_for("the late result", || {
         rig.sink.entries().iter().any(|e| matches!(e, Entry::ToolResult { id, .. } if id == "c1:late"))
     });
 }

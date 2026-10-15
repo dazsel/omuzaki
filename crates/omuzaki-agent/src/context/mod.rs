@@ -111,7 +111,8 @@ impl Worker {
             .with_system(self.system_blocks())
             .with_tools(self.tool_defs_for_request());
         let prefix = Ledger::new().prompt_estimate(&prefix_request, &info);
-        let unsupported = |why: String| Flow::Fail(omuzaki_agent_api::error::HostError::Llm(LlmError::Unsupported(why)));
+        let unsupported =
+            |why: String| Flow::Fail(omuzaki_agent_api::error::HostError::Llm(LlmError::Unsupported(why)));
         if info.context_window < MIN_WINDOW {
             return Err(unsupported(format!(
                 "{} has a {}-token window; the assistant needs at least {MIN_WINDOW}",

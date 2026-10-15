@@ -63,11 +63,9 @@ impl<'a> Rebuild<'a> {
                         .collect();
                     self.messages.push(Message::new(Role::Assistant, blocks.clone()));
                 }
-                Entry::ToolResult { id, ok, blocks, .. } => {
-                    // A result that arrived after Stop answers nothing; it is kept in the log only.
-                    if !id.ends_with(":late") {
-                        self.results.insert(id.clone(), (*ok, blocks.clone()));
-                    }
+                // A result that arrived after Stop (its id ends in `:late`) answers nothing; it is kept in the log only.
+                Entry::ToolResult { id, ok, blocks, .. } if !id.ends_with(":late") => {
+                    self.results.insert(id.clone(), (*ok, blocks.clone()));
                 }
                 _ => {}
             }
@@ -106,13 +104,12 @@ impl<'a> Rebuild<'a> {
             .iter()
             .map(|block| match block {
                 StoredBlock::Text(text) => ContentBlock::text(text.clone()),
-                StoredBlock::Image { mime, blob, .. } => self
-                    .sink
-                    .and_then(|sink| sink.read_blob(blob, *mime))
-                    .map_or_else(
+                StoredBlock::Image { mime, blob, .. } => {
+                    self.sink.and_then(|sink| sink.read_blob(blob, *mime)).map_or_else(
                         || ContentBlock::text("[image no longer stored]"),
                         |bytes| ContentBlock::image(*mime, bytes, ImageOrigin::Render),
-                    ),
+                    )
+                }
                 _ => ContentBlock::text("[content omitted]"),
             })
             .collect()
@@ -121,7 +118,11 @@ impl<'a> Rebuild<'a> {
 
 /// Whether Stop was pressed between the previous turn and position `at`.
 fn stopped_before(tail: &[Entry], at: usize) -> bool {
-    tail[..at].iter().rev().take_while(|e| !matches!(e, Entry::User { .. } | Entry::Assistant { .. })).any(|e| matches!(e, Entry::Stopped))
+    tail[..at]
+        .iter()
+        .rev()
+        .take_while(|e| !matches!(e, Entry::User { .. } | Entry::Assistant { .. }))
+        .any(|e| matches!(e, Entry::Stopped))
 }
 
 #[cfg(test)]
@@ -170,7 +171,13 @@ mod tests {
         let ids: Vec<(&str, bool)> = messages[2]
             .content
             .iter()
-            .filter_map(|b| if let ContentBlock::ToolResult { id, is_error, .. } = b { Some((id.as_str(), *is_error)) } else { None })
+            .filter_map(|b| {
+                if let ContentBlock::ToolResult { id, is_error, .. } = b {
+                    Some((id.as_str(), *is_error))
+                } else {
+                    None
+                }
+            })
             .collect();
         assert_eq!(ids, [("c1", true), ("c2", false)]);
     }
@@ -219,7 +226,8 @@ mod tests {
 
     #[test]
     fn an_opaque_block_is_kept_byte_for_byte() {
-        let thinking = ContentBlock::opaque("anthropic", json!({"type": "thinking", "signature": "s", "thinking": "…"}));
+        let thinking =
+            ContentBlock::opaque("anthropic", json!({"type": "thinking", "signature": "s", "thinking": "…"}));
         let entries = vec![Entry::user("x", vec![]), Entry::assistant(vec![thinking.clone(), ContentBlock::text("y")])];
         assert_eq!(messages_from_entries(&entries)[1].content[0], thinking);
     }

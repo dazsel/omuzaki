@@ -1,5 +1,8 @@
 //! A text-only answer on `FakeLlm` (#1226): events, entries, charges, admission, stop reasons and errors.
 
+// Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::assert_is_empty)]
+
 mod common;
 
 use common::*;
@@ -15,7 +18,12 @@ use omuzaki_llm_mock::{Injected, ScriptTurn};
 use omuzaki_ops_api::{PauseReason, SessionState, Spend};
 
 fn turn_with_usage(text: &str, usage: Usage, stop: StopReason) -> ScriptTurn {
-    ScriptTurn::new(vec![LlmEvent::start("m"), LlmEvent::TextDelta(text.into()), LlmEvent::Usage(usage), LlmEvent::Stop(stop)])
+    ScriptTurn::new(vec![
+        LlmEvent::start("m"),
+        LlmEvent::TextDelta(text.into()),
+        LlmEvent::Usage(usage),
+        LlmEvent::Stop(stop),
+    ])
 }
 
 #[test]
@@ -69,7 +77,7 @@ fn with_no_budget_left_the_bound_is_requested_and_nothing_is_sent_until_the_pers
     rig.sessions.set_left(Some(0));
     rig.host.send(UserMessage::new("hi")).unwrap();
     let mut seen = Vec::new();
-    rig.wait_for("Waiting", || {
+    Rig::wait_for("Waiting", || {
         while let Some(e) = rig.rx.try_recv() {
             seen.push(e);
         }

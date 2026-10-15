@@ -57,11 +57,8 @@ pub(crate) fn summary(name: &str, title: Option<&str>, input: &Value) -> String 
         Value::Bool(b) => Some((1, b.to_string())),
         _ => None,
     };
-    let mut parts: Vec<(u8, String)> = args
-        .iter()
-        .filter(|(key, _)| key.as_str() != "base")
-        .filter_map(|(_, v)| shown(v))
-        .collect();
+    let mut parts: Vec<(u8, String)> =
+        args.iter().filter(|(key, _)| key.as_str() != "base").filter_map(|(_, v)| shown(v)).collect();
     parts.sort_by_key(|(group, _)| *group);
     parts.truncate(3);
     if parts.is_empty() {
@@ -117,7 +114,12 @@ impl Worker {
         self.call_plain_with(name, args, None)
     }
 
-    fn call_plain_with(&mut self, name: &str, args: Option<JsonObject>, late: Option<LateFn>) -> Result<ToolReply, Flow> {
+    fn call_plain_with(
+        &mut self,
+        name: &str,
+        args: Option<JsonObject>,
+        late: Option<LateFn>,
+    ) -> Result<ToolReply, Flow> {
         let cancel = self.shared.fresh_cancel();
         let pending = self.link.call_tool(name, args, cancel, late);
         loop {
@@ -134,7 +136,8 @@ impl Worker {
 
     /// The flow for a link that closed: the session's own end if it has one.
     fn link_down(&self) -> Flow {
-        self.ended().map_or_else(|| Flow::Fail(HostError::Mcp("the connection to the studio closed".into())), Flow::Revoked)
+        self.ended()
+            .map_or_else(|| Flow::Fail(HostError::Mcp("the connection to the studio closed".into())), Flow::Revoked)
     }
 
     /// Runs the calls of one turn and appends their results as one user message. If Stop or a revoke ends the answer
@@ -226,10 +229,11 @@ impl Worker {
         if undo_like && run.tx_open {
             return Ok(note_result(tx::UNDO_WHILE_OPEN));
         }
-        if tx::tx_use(kind) == TxUse::Join && !run.tx_open {
-            if let Some(refused) = self.begin_tx(run)? {
-                return Ok(tool_result_blocks(&call.name, &refused));
-            }
+        if tx::tx_use(kind) == TxUse::Join
+            && !run.tx_open
+            && let Some(refused) = self.begin_tx(run)?
+        {
+            return Ok(tool_result_blocks(&call.name, &refused));
         }
         let reply = self.send_with_refusals(run, call)?;
         Ok(tool_result_blocks(&call.name, &reply))
@@ -360,7 +364,10 @@ mod tests {
 
     #[test]
     fn a_tool_without_a_title_reads_its_name() {
-        assert_eq!(summary("render_preview", None, &json!({"view": "front", "size": 512})), "Render preview: front, 512");
+        assert_eq!(
+            summary("render_preview", None, &json!({"view": "front", "size": 512})),
+            "Render preview: front, 512"
+        );
         assert_eq!(summary("history_log", None, &json!({})), "History log");
     }
 

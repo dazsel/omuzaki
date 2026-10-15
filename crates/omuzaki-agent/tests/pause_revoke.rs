@@ -1,15 +1,18 @@
 //! A session paused elsewhere, undone, or revoked while an answer runs (#1336, D4).
 
+// Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::assert_is_empty)]
+
 mod common;
 
 use std::sync::Arc;
 
 use common::*;
+use omuzaki_agent_api::Assistant;
 use omuzaki_agent_api::entry::{Entry, SessionNote};
 use omuzaki_agent_api::error::HostError;
 use omuzaki_agent_api::event::AssistantEvent;
 use omuzaki_agent_api::message::UserMessage;
-use omuzaki_agent_api::Assistant;
 use omuzaki_ops_api::{EndReason, PauseReason, SessionState};
 
 #[test]
@@ -37,7 +40,7 @@ fn a_pause_mid_answer_keeps_the_transaction_open_and_resume_continues_the_answer
         );
         rig.host.send(UserMessage::new("go")).unwrap();
         let mut seen = Vec::new();
-        rig.wait_for("Paused", || {
+        Rig::wait_for("Paused", || {
             while let Some(e) = rig.rx.try_recv() {
                 seen.push(e);
             }
@@ -69,7 +72,7 @@ fn a_revoke_mid_answer_says_session_ended_and_refuses_every_later_send() {
         },
     );
     rig.host.send(UserMessage::new("go")).unwrap();
-    rig.wait_for("the call", || rig.server.called("render_preview") == 1);
+    Rig::wait_for("the call", || rig.server.called("render_preview") == 1);
     rig.sessions.revoke();
     gate.notify_one();
     let events = rig.until_done(0.0);
@@ -77,7 +80,11 @@ fn a_revoke_mid_answer_says_session_ended_and_refuses_every_later_send() {
     assert!(matches!(events.last(), Some(AssistantEvent::Done)));
     assert_eq!(rig.llm.requests().len(), 1, "the model is not asked again");
     assert_eq!(rig.host.send(UserMessage::new("again")), Err(HostError::SessionEnded));
-    let ended = rig.sink.entries().into_iter().any(|e| matches!(e, Entry::Session { note: SessionNote::Ended(EndReason::Revoked { .. }), .. }));
+    let ended = rig
+        .sink
+        .entries()
+        .into_iter()
+        .any(|e| matches!(e, Entry::Session { note: SessionNote::Ended(EndReason::Revoked { .. }), .. }));
     assert!(ended, "the revocation is recorded");
     assert_eq!(rig.server.called("tx_commit"), 0, "the executor rolled the transaction back with the session");
 }
@@ -86,6 +93,6 @@ fn a_revoke_mid_answer_says_session_ended_and_refuses_every_later_send() {
 fn prompts_of_a_revoked_session_are_session_ended() {
     let rig = Rig::new(script(vec![]));
     rig.sessions.revoke();
-    assert_eq!(rig.host.prompt("any", Default::default()), Err(HostError::SessionEnded));
+    assert_eq!(rig.host.prompt("any", std::collections::BTreeMap::new()), Err(HostError::SessionEnded));
     assert_eq!(rig.host.prompts(), omuzaki_agent_api::prompts::PromptsState::Failed(HostError::SessionEnded));
 }

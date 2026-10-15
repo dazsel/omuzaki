@@ -1,7 +1,10 @@
 //! The assistant's settings keys (#1300): registration, defaults, ranges and who may write them.
 
-use omuzaki_agent::settings::{AssistantBudget, AssistantCaps, AssistantRetention};
+// Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::assert_is_empty)]
+
 use omuzaki_agent::Caps;
+use omuzaki_agent::settings::{AssistantBudget, AssistantCaps, AssistantRetention, BudgetSetting};
 use omuzaki_ops_api::Budget;
 use omuzaki_settings_api::meta::{AgentWrite, Apply, InProfile, SettingScope};
 use omuzaki_settings_api::setting::Setting;
@@ -25,7 +28,8 @@ fn no_assistant_key_lets_an_agent_write_and_none_roams_into_a_profile() {
 #[test]
 fn the_defaults_are_exactly_the_designs() {
     assert_eq!(AssistantCaps::default(), Caps { turns: 30, tool_calls: 60, wall_s: 600, tokens: 400_000 });
-    assert_eq!(AssistantBudget::default(), Budget { usd_micros: 0, tokens: None, seconds: None });
+    assert_eq!(AssistantBudget::default(), BudgetSetting { usd_micros: 0, tokens: None, seconds: None });
+    assert_eq!(Budget::from(AssistantBudget::default()), Budget { usd_micros: 0, tokens: None, seconds: None });
     assert_eq!(AssistantRetention::default(), 90);
 }
 
@@ -34,10 +38,11 @@ fn the_defaults_round_trip_through_toml() {
     #[derive(serde::Serialize, serde::Deserialize, PartialEq, Debug)]
     struct Doc {
         caps: Caps,
-        budget: Budget,
+        budget: BudgetSetting,
         days: u16,
     }
-    let doc = Doc { caps: AssistantCaps::default(), budget: AssistantBudget::default(), days: AssistantRetention::default() };
+    let doc =
+        Doc { caps: AssistantCaps::default(), budget: AssistantBudget::default(), days: AssistantRetention::default() };
     let text = toml::to_string(&doc).unwrap();
     assert_eq!(toml::from_str::<Doc>(&text).unwrap(), doc);
 }

@@ -64,7 +64,10 @@ mod tests {
     fn denied_and_conflict_and_plain_results_are_not_refusals() {
         let changed = json!({"ok": false, "code": "conflict", "message": "m", "detail": {"kind": "no_session"}});
         assert_eq!(classify(&ToolReply { blocks: vec![], is_error: true, structured: Some(changed) }), None);
-        assert_eq!(classify(&ToolReply { blocks: vec![], is_error: false, structured: Some(json!({"ok": true})) }), None);
+        assert_eq!(
+            classify(&ToolReply { blocks: vec![], is_error: false, structured: Some(json!({"ok": true})) }),
+            None
+        );
         assert_eq!(classify(&ToolReply { blocks: vec![], is_error: false, structured: None }), None);
     }
 }

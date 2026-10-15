@@ -32,7 +32,9 @@ impl Worker {
             for block in blocks {
                 match block {
                     ReplyBlock::Text(text) => sections.push(wrap_data(UI_CONTEXT_URI, &text)),
-                    ReplyBlock::Image { mime, bytes } => images.push(ContentBlock::image(mime, bytes, ImageOrigin::Render)),
+                    ReplyBlock::Image { mime, bytes } => {
+                        images.push(ContentBlock::image(mime, bytes, ImageOrigin::Render));
+                    }
                     ReplyBlock::Note(_) => {}
                 }
             }
@@ -113,13 +115,17 @@ impl Worker {
                 let listed: Vec<String> = paths.iter().map(|p| format!("{p:?}")).collect();
                 sections.push(wrap_data("chip:selection", &listed.join("\n")));
             }
-            ContextChip::Image { png, .. } => images.push(ContentBlock::image(ImageMime::Png, png.clone(), ImageOrigin::File)),
+            ContextChip::Image { png, .. } => {
+                images.push(ContentBlock::image(ImageMime::Png, png.clone(), ImageOrigin::File));
+            }
             ContextChip::Resource(uri) => {
                 if let Some(blocks) = self.read_blocks(uri) {
                     for block in blocks {
                         match block {
                             ReplyBlock::Text(text) => sections.push(wrap_data(uri, &text)),
-                            ReplyBlock::Image { mime, bytes } => images.push(ContentBlock::image(mime, bytes, ImageOrigin::File)),
+                            ReplyBlock::Image { mime, bytes } => {
+                                images.push(ContentBlock::image(mime, bytes, ImageOrigin::File));
+                            }
                             ReplyBlock::Note(_) => {}
                         }
                     }
