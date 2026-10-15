@@ -20,6 +20,10 @@ omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-face-api = { path = "../omuzaki-face-api" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 
+# The build script declares the feature modules from their folders (ADR 0054 §1).
+[build-dependencies]
+omuzaki-embed = { path = "../omuzaki-embed" }
+
 [dev-dependencies]
 criterion.workspace = true
 image.workspace = true
@@ -66,3 +70,4 @@ workspace = true
 [package.metadata.omuzaki]
 kind = "Implementation"
 summary = "animation (§20, §22): the ARKit-52 retarget and the life layer, over `omuzaki-anim-api`"
+generated-mods = ["src"]
