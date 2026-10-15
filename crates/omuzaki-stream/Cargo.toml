@@ -7,8 +7,6 @@ rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
 repository.workspace = true
-# Integration tests are listed by hand: the fake worker is a bin, and its `main.rs` must not also build as a test.
-autotests = false
 
 # Every dependency the crate will need is declared here, so later tasks do not have to edit this file. The FFmpeg
 # encoders task is the one exception: it adds the optional FFmpeg dependency.
@@ -46,7 +44,7 @@ harness = false
 
 [[bin]]
 name = "fake-worker"
-path = "tests/fake_worker/main.rs"
+path = "src/bin/fake_worker.rs"
 required-features = ["testing"]
 
 [lints]

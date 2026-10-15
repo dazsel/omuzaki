@@ -30,7 +30,7 @@
 //! crate's map.
 //!
 //! Benchmarks sit in `benches/` (`ring`, `replay`); the fake worker that the supervisor tests launch is `fake-worker`,
-//! built from `tests/fake_worker/`.
+//! built from `src/bin/fake_worker.rs`.
 #![deny(missing_docs)]
 
 pub mod alpha;
