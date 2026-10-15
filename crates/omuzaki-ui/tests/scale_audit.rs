@@ -51,43 +51,7 @@ impl Expected {
 /// The known failures, each named exactly. Every entry is expected at every scale in [`SCALES`]: a matching finding
 /// is allowed, any other finding fails, and an entry that stops appearing fails too, so it is removed the moment its
 /// fix lands. Entries with the same text and overlap are one entry, since they are one defect.
-const EXPECTED_FAILURES: &[Expected] = &[
-    Expected {
-        story: "approval",
-        problem: LayoutProblem::Overlap,
-        what: "~40 s",
-        with: Some("reversible: yes"),
-        defect: "the approval card's chips and warning glyph overlap its reversibility line",
-    },
-    Expected {
-        story: "approval",
-        problem: LayoutProblem::Overlap,
-        what: " · ",
-        with: Some("reversible: yes"),
-        defect: "the approval card's chips and warning glyph overlap its reversibility line",
-    },
-    Expected {
-        story: "approval",
-        problem: LayoutProblem::Overlap,
-        what: "1.2 GB GPU",
-        with: Some("reversible: yes"),
-        defect: "the approval card's chips and warning glyph overlap its reversibility line",
-    },
-    Expected {
-        story: "approval",
-        problem: LayoutProblem::Overlap,
-        what: "$0",
-        with: Some("reversible: yes"),
-        defect: "the approval card's chips and warning glyph overlap its reversibility line",
-    },
-    Expected {
-        story: "approval",
-        problem: LayoutProblem::Overlap,
-        what: "\u{e4e0}",
-        with: Some("Can't be undone"),
-        defect: "the approval card's chips and warning glyph overlap its reversibility line",
-    },
-];
+const EXPECTED_FAILURES: &[Expected] = &[];
 
 /// Draws `draw` in a gallery-style card at `scale` and returns every layout problem the frame has.
 fn audit(scale: u16, draw: impl FnMut(&mut Ui) + 'static) -> Vec<LayoutFinding> {
@@ -231,6 +195,77 @@ fn a_planted_fixed_width_label_that_overflows_at_200_fails_and_is_named() {
     assert!(
         at_200.iter().any(|f| f.problem == LayoutProblem::OutsideWindow),
         "the planted fixed-width label should fail at 200% (named in the test): {at_200:?}"
+    );
+}
+
+/// A fixed-size box then a label in a wrapped row: the label's galley starts at the row's left edge with an indent the
+/// width of the box, though its glyphs sit right of the box (the approval card's cost chips and its reversibility line).
+fn box_then_label(ui: &mut Ui, label: &str) {
+    ui.horizontal_wrapped(|ui| {
+        ui.allocate_exact_size(vec2(120.0, 15.0), egui::Sense::hover());
+        ui.label(label);
+    });
+}
+
+#[test]
+fn a_label_after_a_box_in_a_wrapped_row_is_not_an_overlap() {
+    let draw = |ui: &mut Ui| {
+        ui.horizontal_wrapped(|ui| {
+            ui.label("cost");
+            ui.allocate_exact_size(vec2(120.0, 15.0), egui::Sense::hover());
+            ui.label("reversible: yes");
+        });
+    };
+    for scale in SCALES {
+        let found = audit(scale, draw);
+        assert!(found.is_empty(), "the indent of a wrapped label is not painted text at {scale}%: {found:?}");
+    }
+}
+
+#[test]
+fn text_painted_over_a_wrapped_label_is_still_an_overlap() {
+    let draw = |ui: &mut Ui| {
+        let top = ui.cursor().min;
+        box_then_label(ui, "reversible: yes");
+        // Drawn on top of the label's glyphs, which start right of the 120 pt box.
+        let at = top + vec2(130.0, 0.0);
+        ui.painter().text(at, egui::Align2::LEFT_TOP, "stray", egui::FontId::proportional(14.0), egui::Color32::WHITE);
+    };
+    let found = audit(100, draw);
+    assert!(
+        found
+            .iter()
+            .any(|f| f.problem == LayoutProblem::Overlap && (f.what == "stray" || f.with.as_deref() == Some("stray"))),
+        "text drawn over the label's glyphs must still be reported: {found:?}"
+    );
+}
+
+#[test]
+fn text_touching_only_a_glyphs_left_overhang_is_still_an_overlap() {
+    // A "j" reaches left of its layout position (a negative left-side bearing), so a glyph whose layout rectangle ends
+    // exactly at the "j"'s layout position can still paint into the "j"'s overhang. The stray is the ASCII glyph with
+    // the least room on its right. Measured, not assumed, so the test says so if the bundled font changes.
+    let font = egui::FontId::proportional(200.0);
+    let draw = move |ui: &mut Ui| {
+        let white = egui::Color32::WHITE;
+        let layout = |text: String| ui.painter().layout_no_wrap(text, font.clone(), white);
+        let j = layout("j".to_owned());
+        let stray = ('!'..='~')
+            .map(|c| layout(c.to_string()))
+            .min_by(|a, b| (a.rect.max.x - a.mesh_bounds.max.x).total_cmp(&(b.rect.max.x - b.mesh_bounds.max.x)))
+            .expect("ASCII glyphs");
+        let origin = pos2(300.0, 100.0);
+        let stray_at = pos2(origin.x - stray.rect.max.x, origin.y);
+        // Their layout rectangles only touch, yet the drawn stray reaches into the "j"'s overhang past the slack.
+        let shared = (stray_at.x + stray.mesh_bounds.max.x) - (origin.x + j.mesh_bounds.min.x);
+        assert!(shared > 1.0, "the bundled glyphs must overlap in ink alone: {shared}");
+        ui.painter().galley(origin, j, white);
+        ui.painter().galley(stray_at, stray, white);
+    };
+    let found = audit(100, draw);
+    assert!(
+        found.iter().any(|f| f.problem == LayoutProblem::Overlap),
+        "text touching only the overhang of a glyph must be reported: {found:?}"
     );
 }
 
