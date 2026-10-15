@@ -157,6 +157,72 @@ fn an_empty_target_is_unsupported() {
     assert!(matches!(resize(&image, 0, 1, TextureUse::Colour), Err(IoError::Unsupported { .. })));
 }
 
+/// The byte offset of the chunk of type `kind`, counted from its length field.
+fn chunk_at(bytes: &[u8], kind: [u8; 4]) -> usize {
+    bytes.windows(4).position(|window| window == kind).expect("the chunk is present") - 4
+}
+
+#[test]
+fn a_png_cut_right_after_its_idat_header_is_malformed_even_when_it_fits() {
+    let full = png("fits", &gradient_small());
+    let bytes = full.bytes.as_slice();
+    // Keep the IDAT length and type, then stop: the data the length promises is not there.
+    let cut = EncodedImage::new("fits", ImageMime::Png, Blob::new(bytes[..chunk_at(bytes, *b"IDAT") + 8].to_vec()));
+    // The 4 by 4 image fits within 8, so nothing would be resampled; the payload must still be checked.
+    assert!(matches!(downscale_to(&cut, 8, TextureUse::Colour), Err(IoError::Malformed { .. })));
+}
+
+#[test]
+fn a_png_without_its_iend_crc_or_its_iend_chunk_is_malformed() {
+    let full = png("end", &gradient_small());
+    let bytes = full.bytes.as_slice();
+    let without_crc = bytes[..bytes.len() - 4].to_vec();
+    let without_chunk = bytes[..chunk_at(bytes, *b"IEND")].to_vec();
+    for cut in [without_crc, without_chunk] {
+        let image = EncodedImage::new("end", ImageMime::Png, Blob::new(cut));
+        assert!(matches!(downscale_to(&image, 8, TextureUse::Colour), Err(IoError::Malformed { .. })));
+        assert!(matches!(resize(&image, 2, 2, TextureUse::Colour), Err(IoError::Malformed { .. })));
+    }
+}
+
+#[test]
+fn a_corrupt_chunk_fails_its_crc() {
+    let full = png("crc", &gradient_small());
+    let mut bytes = full.bytes.as_slice().to_vec();
+    // One byte inside the image data changes, so the chunk's CRC no longer matches.
+    let inside = chunk_at(&bytes, *b"IDAT") + 8 + 2;
+    bytes[inside] ^= 0x40;
+    let image = EncodedImage::new("crc", ImageMime::Png, Blob::new(bytes));
+    assert!(matches!(resize(&image, 2, 2, TextureUse::Colour), Err(IoError::Malformed { .. })));
+}
+
+/// FNV-1a over `bytes`: a fixed hash, so the expected values in the test below are constants, not computed by it.
+fn fnv1a(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for &byte in bytes {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    hash
+}
+
+/// The decoded pixels of three gradient resizes, hashed. The arithmetic is table-driven and uses no maths-library call,
+/// so these hold on every target; a change to the arithmetic changes them and must be a deliberate change.
+const COLOUR_1024_HASH: u64 = 8_127_134_797_264_960_293;
+const DATA_1024_HASH: u64 = 3_852_121_167_756_213_029;
+const COLOUR_1000X750_HASH: u64 = 4_407_125_968_514_470_469;
+
+#[test]
+fn the_gradient_resizes_match_their_fixed_hashes_on_every_target() {
+    let source = png("ramp", &gradient());
+    let colour = decode(&resize(&source, 1024, 1024, TextureUse::Colour).expect("resizes"));
+    let data = decode(&resize(&source, 1024, 1024, TextureUse::Data).expect("resizes"));
+    let odd = decode(&resize(&source, 1000, 750, TextureUse::Colour).expect("resizes"));
+    assert_eq!(fnv1a(colour.as_raw()), COLOUR_1024_HASH, "colour 1024x1024");
+    assert_eq!(fnv1a(data.as_raw()), DATA_1024_HASH, "data 1024x1024");
+    assert_eq!(fnv1a(odd.as_raw()), COLOUR_1000X750_HASH, "colour 1000x750");
+}
+
 /// A 4 by 4 gradient, for tests that only need some texels.
 fn gradient_small() -> RgbaImage {
     RgbaImage::from_fn(4, 4, |x, y| Rgba([(x * 60) as u8, (y * 60) as u8, 128, 255]))

@@ -12,11 +12,12 @@
 //!   cannot darken the edge of an opaque one. An output texel that is entirely transparent takes the plain average
 //!   colour of what it covers, so a filter that reads it does not pick up black.
 //!
-//! The output is a PNG with fixed encoder settings. The arithmetic is `f64` in a fixed order. The sRGB curve comes from
-//! `powf`, which can differ in its last bit between platforms; that can flip a value that lands exactly on a rounding
-//! boundary, so bytes are guaranteed identical on one build, and across builds only as far as `powf` agrees.
-
-use std::io::Cursor;
+//! The sRGB curve is two tables of constants, generated once from the sRGB formula and rounded to 16-bit steps. The
+//! rest is IEEE `f64` arithmetic in a fixed order, with no maths-library call on the path, so the same input gives the
+//! same bytes on every target. The output is a PNG with fixed encoder settings.
+//!
+//! Before any pixel is decoded, the input's PNG chunks are walked from the signature to `IEND`, and each chunk's length
+//! and CRC are checked. The header's size is checked before any decoder is built.
 
 use image::codecs::png::{CompressionType, FilterType, PngEncoder};
 use image::{ExtendedColorType, ImageEncoder, ImageError, ImageFormat, ImageReader, Limits, RgbaImage};
@@ -40,35 +41,76 @@ const MAX_PIXELS: u64 = 64 * 1024 * 1024;
 /// What the decoder may allocate for one image: room for a 16-bit RGBA decode of the largest allowed image.
 const MAX_DECODE_BYTES: u64 = 1 << 30;
 
+/// The eight bytes every PNG starts with.
+const PNG_SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+
+/// The sRGB value of each 8-bit stored value, as a linear-light step out of 65535. Generated from the sRGB formula.
+const SRGB_TO_LINEAR: [u16; 256] = [
+    0, 20, 40, 60, 80, 99, 119, 139, 159, 179, 199, 219, 241, 264, 288, 313, 340, 367, 396, 427, 458, 491, 526, 562,
+    599, 637, 677, 718, 761, 805, 851, 898, 947, 997, 1048, 1101, 1156, 1212, 1270, 1330, 1391, 1453, 1517, 1583, 1651,
+    1720, 1790, 1863, 1937, 2013, 2090, 2170, 2250, 2333, 2418, 2504, 2592, 2681, 2773, 2866, 2961, 3058, 3157, 3258,
+    3360, 3464, 3570, 3678, 3788, 3900, 4014, 4129, 4247, 4366, 4488, 4611, 4736, 4864, 4993, 5124, 5257, 5392, 5530,
+    5669, 5810, 5953, 6099, 6246, 6395, 6547, 6700, 6856, 7014, 7174, 7335, 7500, 7666, 7834, 8004, 8177, 8352, 8528,
+    8708, 8889, 9072, 9258, 9445, 9635, 9828, 10022, 10219, 10417, 10619, 10822, 11028, 11235, 11446, 11658, 11873,
+    12090, 12309, 12530, 12754, 12980, 13209, 13440, 13673, 13909, 14146, 14387, 14629, 14874, 15122, 15371, 15623,
+    15878, 16135, 16394, 16656, 16920, 17187, 17456, 17727, 18001, 18277, 18556, 18837, 19121, 19407, 19696, 19987,
+    20281, 20577, 20876, 21177, 21481, 21787, 22096, 22407, 22721, 23038, 23357, 23678, 24002, 24329, 24658, 24990,
+    25325, 25662, 26001, 26344, 26688, 27036, 27386, 27739, 28094, 28452, 28813, 29176, 29542, 29911, 30282, 30656,
+    31033, 31412, 31794, 32179, 32567, 32957, 33350, 33745, 34143, 34544, 34948, 35355, 35764, 36176, 36591, 37008,
+    37429, 37852, 38278, 38706, 39138, 39572, 40009, 40449, 40891, 41337, 41785, 42236, 42690, 43147, 43606, 44069,
+    44534, 45002, 45473, 45947, 46423, 46903, 47385, 47871, 48359, 48850, 49344, 49841, 50341, 50844, 51349, 51858,
+    52369, 52884, 53401, 53921, 54445, 54971, 55500, 56032, 56567, 57105, 57646, 58190, 58737, 59287, 59840, 60396,
+    60955, 61517, 62082, 62650, 63221, 63795, 64372, 64952, 65535,
+];
+
+/// For each sRGB byte from 1 to 255, the smallest linear-light step (out of 65535) at which it rounds up to that byte.
+/// Encoding a step is the count of these at or below it.
+const LINEAR_TO_SRGB: [u16; 255] = [
+    10, 30, 50, 70, 90, 110, 130, 150, 170, 189, 209, 230, 253, 276, 301, 327, 354, 382, 412, 443, 475, 509, 544, 580,
+    618, 657, 698, 740, 783, 828, 875, 923, 972, 1023, 1075, 1129, 1185, 1242, 1300, 1360, 1422, 1486, 1551, 1617,
+    1685, 1755, 1827, 1900, 1975, 2052, 2130, 2210, 2292, 2376, 2461, 2548, 2637, 2727, 2820, 2914, 3010, 3108, 3208,
+    3309, 3412, 3518, 3625, 3734, 3844, 3957, 4072, 4188, 4307, 4427, 4550, 4674, 4800, 4928, 5059, 5191, 5325, 5461,
+    5599, 5740, 5882, 6026, 6173, 6321, 6471, 6624, 6778, 6935, 7094, 7255, 7418, 7583, 7750, 7919, 8091, 8265, 8440,
+    8618, 8798, 8981, 9165, 9352, 9541, 9732, 9925, 10121, 10318, 10518, 10720, 10925, 11132, 11341, 11552, 11765,
+    11981, 12199, 12420, 12643, 12868, 13095, 13325, 13557, 13791, 14028, 14267, 14508, 14752, 14998, 15247, 15498,
+    15751, 16007, 16265, 16525, 16788, 17054, 17321, 17592, 17864, 18139, 18417, 18697, 18980, 19264, 19552, 19842,
+    20134, 20429, 20727, 21027, 21329, 21634, 21942, 22252, 22564, 22880, 23197, 23518, 23840, 24166, 24494, 24824,
+    25158, 25493, 25832, 26173, 26516, 26862, 27211, 27563, 27917, 28273, 28633, 28995, 29359, 29727, 30097, 30469,
+    30845, 31223, 31603, 31987, 32373, 32762, 33153, 33547, 33944, 34344, 34747, 35152, 35560, 35970, 36384, 36800,
+    37219, 37640, 38065, 38492, 38922, 39355, 39790, 40229, 40670, 41114, 41561, 42011, 42463, 42918, 43377, 43838,
+    44301, 44768, 45238, 45710, 46185, 46663, 47144, 47628, 48115, 48605, 49097, 49593, 50091, 50592, 51096, 51604,
+    52114, 52627, 53142, 53661, 54183, 54708, 55235, 55766, 56300, 56836, 57376, 57918, 58464, 59012, 59564, 60118,
+    60675, 61236, 61799, 62366, 62935, 63508, 64083, 64662, 65244,
+];
+
 /// Resizes `image` to `width` by `height` and returns it as a PNG, whatever format it came in.
 ///
 /// Area averaging: each output texel covers its share of the source texels, as described in the module docs. A target
-/// the same size as the source keeps every texel as it is. The size is checked before any pixel is decoded, so a
-/// header that declares an oversized image is refused without allocating for it.
+/// the same size as the source keeps every texel as it is. The header's size is checked before any pixel is decoded, so
+/// a header that declares an oversized image is refused without a decoder being built.
 ///
 /// # Errors
 /// [`IoError::Limit`] if the source or the target is over 16,384 pixels a side or 64 megapixels;
-/// [`IoError::Malformed`] if the image is truncated or cannot be read; [`IoError::Unsupported`] for a zero-sized target
-/// or a format this build cannot decode; [`IoError::Internal`] if the PNG encoder fails.
+/// [`IoError::Malformed`] if the image is truncated, damaged or cannot be read; [`IoError::Unsupported`] for a zero-sized
+/// target or a format this build cannot decode (JPEG); [`IoError::Internal`] if the PNG encoder fails.
 pub fn resize(image: &EncodedImage, width: u32, height: u32, usage: TextureUse) -> Result<EncodedImage, IoError> {
     check_size(width, height)?;
-    let source = decode(image)?;
-    let pixels = if source.dimensions() == (width, height) {
-        source.into_raw()
-    } else {
-        average(&source, width, height, &Transfer::new(usage))
-    };
-    encode(&image.name, width, height, &pixels)
+    let size = source_size(image)?;
+    resample(image, size, width, height, usage)
 }
 
 /// Shrinks `image` so its longer side is `max_side`, keeping the aspect ratio (the shorter side is rounded to the
-/// nearest pixel and is at least 1). Returns `None` when the image already fits.
+/// nearest pixel and is at least 1). Returns `None` when the image already fits, after decoding all of it to check it.
 ///
 /// # Errors
 /// As [`resize`]; a `max_side` of zero is [`IoError::Unsupported`].
 pub fn downscale_to(image: &EncodedImage, max_side: u32, usage: TextureUse) -> Result<Option<EncodedImage>, IoError> {
-    let (width, height) = source_size(image)?;
+    let size = source_size(image)?;
+    let (width, height) = size;
     if width.max(height) <= max_side {
+        // Nothing to resample, but the bytes must still be the image they claim to be: a truncated payload is an error
+        // here too, not a pass-through.
+        decode(image, size)?;
         return Ok(None);
     }
     let (target_width, target_height) = if width >= height {
@@ -76,7 +118,7 @@ pub fn downscale_to(image: &EncodedImage, max_side: u32, usage: TextureUse) -> R
     } else {
         (scaled_side(width, max_side, height), max_side)
     };
-    resize(image, target_width, target_height, usage).map(Some)
+    resample(image, size, target_width, target_height, usage).map(Some)
 }
 
 /// The side that keeps the aspect: `short` scaled by `to / long`, rounded to the nearest whole pixel, and at least one.
@@ -106,48 +148,149 @@ fn check_size(width: u32, height: u32) -> Result<(), IoError> {
     Ok(())
 }
 
-/// A reader over the encoded bytes of `image`, typed by its declared format.
-fn reader(image: &EncodedImage) -> ImageReader<Cursor<&[u8]>> {
-    let format = match image.mime {
-        ImageMime::Png => ImageFormat::Png,
-        ImageMime::Jpeg => ImageFormat::Jpeg,
-    };
-    ImageReader::with_format(Cursor::new(image.bytes.as_slice()), format)
-}
-
-/// The size declared by the header of `image`, read without decoding any pixels, and checked against the limits.
+/// The size declared by the header of `image`, checked against the limits, with no decoder built. JPEG is refused here
+/// because this build has no JPEG decoder, and a decoder is the only way to read a JPEG's size.
 fn source_size(image: &EncodedImage) -> Result<(u32, u32), IoError> {
-    let (width, height) = reader(image).into_dimensions().map_err(|e| read_error(&image.name, e))?;
-    check_size(width, height)?;
-    Ok((width, height))
+    let size = match image.mime {
+        ImageMime::Png => png_header(&image.name, image.bytes.as_slice())?,
+        ImageMime::Jpeg => {
+            return Err(IoError::Unsupported {
+                what: format!("image '{}': JPEG decoding isn't built into this release", image.name),
+                hint: Some("export the texture as PNG".to_owned()),
+            });
+        }
+    };
+    check_size(size.0, size.1)?;
+    Ok(size)
 }
 
-/// Decodes `image` to 8-bit RGBA. Sixteen-bit samples are reduced to eight, as the image crate does.
-fn decode(image: &EncodedImage) -> Result<RgbaImage, IoError> {
-    let (width, height) = source_size(image)?;
+/// The width and height in the IHDR chunk of a PNG, with that chunk's CRC checked. Only the first chunk is read.
+fn png_header(name: &str, bytes: &[u8]) -> Result<(u32, u32), IoError> {
+    let start = PNG_SIGNATURE.len();
+    if !bytes.starts_with(&PNG_SIGNATURE) {
+        return Err(malformed(name, "not a PNG (the signature is wrong)"));
+    }
+    let (kind, data, _) = next_chunk(name, bytes, start)?;
+    if &kind != b"IHDR" {
+        return Err(malformed(name, "the first chunk isn't IHDR"));
+    }
+    let size = header_size(data).ok_or_else(|| malformed(name, "IHDR is not 13 bytes"))?;
+    if size.0 == 0 || size.1 == 0 {
+        return Err(malformed(name, "the header declares a zero-sized image"));
+    }
+    Ok(size)
+}
+
+/// The width and height in IHDR data, which is 13 bytes: two big-endian `u32`s, then five one-byte fields.
+fn header_size(data: &[u8]) -> Option<(u32, u32)> {
+    let [w0, w1, w2, w3, h0, h1, h2, h3, _, _, _, _, _] = *data else {
+        return None;
+    };
+    Some((u32::from_be_bytes([w0, w1, w2, w3]), u32::from_be_bytes([h0, h1, h2, h3])))
+}
+
+/// Walks every chunk of the PNG in `bytes`, checking each length and CRC, and that the chunks are in order: IHDR first,
+/// at least one IDAT, IEND last. Bytes after IEND are ignored, as PNG readers ignore them.
+fn validate_png(name: &str, bytes: &[u8]) -> Result<(), IoError> {
+    let mut at = PNG_SIGNATURE.len();
+    let mut first = true;
+    let mut seen_data = false;
+    loop {
+        let (kind, data, end) = next_chunk(name, bytes, at)?;
+        if first && &kind != b"IHDR" {
+            return Err(malformed(name, "the first chunk isn't IHDR"));
+        }
+        first = false;
+        match &kind {
+            b"IDAT" => seen_data = true,
+            b"IEND" if !data.is_empty() => return Err(malformed(name, "IEND has data")),
+            b"IEND" if !seen_data => {
+                return Err(malformed(name, "there is no image data (no IDAT chunk) before IEND"));
+            }
+            b"IEND" => return Ok(()),
+            _ => {}
+        }
+        at = end;
+    }
+}
+
+/// The chunk that starts at `at`: its type, its data and the offset just past its CRC. Fails if the chunk runs past the
+/// end of `bytes` or its CRC does not match.
+fn next_chunk<'a>(name: &str, bytes: &'a [u8], at: usize) -> Result<([u8; 4], &'a [u8], usize), IoError> {
+    let Some(head) = bytes.get(at..at + 8) else {
+        return Err(malformed(name, "the file ends before its IEND chunk"));
+    };
+    let [l0, l1, l2, l3, k0, k1, k2, k3] = *head else {
+        return Err(malformed(name, "the file ends before its IEND chunk"));
+    };
+    let length = u64::from(u32::from_be_bytes([l0, l1, l2, l3]));
+    let end = u64::try_from(at).unwrap_or(u64::MAX).saturating_add(12 + length);
+    let Some(stop) = usize::try_from(end).ok().filter(|&stop| stop <= bytes.len()) else {
+        return Err(malformed(name, "a chunk runs past the end of the file"));
+    };
+    let kind = [k0, k1, k2, k3];
+    let data = &bytes[at + 8..stop - 4];
+    let stored = u32::from_be_bytes([bytes[stop - 4], bytes[stop - 3], bytes[stop - 2], bytes[stop - 1]]);
+    if crc32(&bytes[at + 4..stop - 4]) != stored {
+        return Err(malformed(name, &format!("the CRC of a {} chunk doesn't match", String::from_utf8_lossy(&kind))));
+    }
+    Ok((kind, data, stop))
+}
+
+/// The CRC-32 PNG chunks carry (ISO 3309, reflected polynomial), table-driven.
+fn crc32(bytes: &[u8]) -> u32 {
+    let mut crc = 0xFFFF_FFFF_u32;
+    for &byte in bytes {
+        crc = CRC_TABLE[usize::from(((crc ^ u32::from(byte)) & 0xFF) as u8)] ^ (crc >> 8);
+    }
+    !crc
+}
+
+/// The table [`crc32`] steps through: the CRC of every byte value.
+const CRC_TABLE: [u32; 256] = crc_table();
+
+/// Builds [`CRC_TABLE`] at compile time.
+#[allow(clippy::cast_possible_truncation)] // `n` is below 256
+const fn crc_table() -> [u32; 256] {
+    let mut table = [0_u32; 256];
+    let mut n = 0;
+    while n < 256 {
+        let mut crc = n as u32;
+        let mut bit = 0;
+        while bit < 8 {
+            crc = if crc & 1 == 1 { 0xEDB8_8320 ^ (crc >> 1) } else { crc >> 1 };
+            bit += 1;
+        }
+        table[n] = crc;
+        n += 1;
+    }
+    table
+}
+
+/// An error that names the image and says what is wrong with it.
+fn malformed(name: &str, what: &str) -> IoError {
+    IoError::Malformed { message: format!("image '{name}': {what}"), at: None }
+}
+
+/// Decodes `image` to 8-bit RGBA, after validating its chunks through `IEND`. Sixteen-bit samples are reduced to eight,
+/// as the image crate does. `size` is the header's size, which the decoder's allocation is bounded by.
+fn decode(image: &EncodedImage, size: (u32, u32)) -> Result<RgbaImage, IoError> {
+    validate_png(&image.name, image.bytes.as_slice())?;
     let mut limits = Limits::default();
     limits.max_alloc = Some(MAX_DECODE_BYTES);
-    let mut reader = reader(image);
+    let mut reader = ImageReader::with_format(std::io::Cursor::new(image.bytes.as_slice()), ImageFormat::Png);
     reader.limits(limits);
     let decoded = reader.decode().map_err(|e| match e {
         ImageError::Limits(_) => IoError::Limit {
             what: "decoded texture memory",
             limit: MAX_DECODE_BYTES,
             // Sixteen-bit RGBA is the most a decode of this size can need.
-            got: u64::from(width) * u64::from(height) * 8,
+            got: u64::from(size.0) * u64::from(size.1) * 8,
         },
-        other => read_error(&image.name, other),
+        ImageError::Unsupported(_) => IoError::Unsupported { what: format!("image '{}': {e}", image.name), hint: None },
+        other => malformed(&image.name, &other.to_string()),
     })?;
     Ok(decoded.into_rgba8())
-}
-
-/// Maps an image crate error to the io error a caller sees: a format this build cannot decode is `Unsupported`, and
-/// everything else (a truncated or damaged file) is `Malformed`.
-fn read_error(name: &str, error: ImageError) -> IoError {
-    match error {
-        ImageError::Unsupported(_) => IoError::Unsupported { what: format!("image '{name}': {error}"), hint: None },
-        other => IoError::Malformed { message: format!("image '{name}': {other}"), at: None },
-    }
 }
 
 /// Encodes RGBA8 `pixels` as a PNG with fixed settings, so the same pixels always give the same bytes.
@@ -159,55 +302,39 @@ fn encode(name: &str, width: u32, height: u32, pixels: &[u8]) -> Result<EncodedI
     Ok(EncodedImage::new(name, ImageMime::Png, Blob::new(bytes)))
 }
 
-/// How a stored 8-bit channel value maps to the value the average runs in, and back.
-struct Transfer {
+/// Decodes `image`, averages it to `width` by `height` and encodes the result. `size` is the source's header size.
+fn resample(
+    image: &EncodedImage,
+    size: (u32, u32),
+    width: u32,
+    height: u32,
     usage: TextureUse,
-    /// The working value of each stored value, so decoding is a table lookup.
-    load: [f64; 256],
-    /// The stored value of each working value in 16-bit steps, for colour. Empty for data, which needs no curve.
-    encoded: Vec<u8>,
+) -> Result<EncodedImage, IoError> {
+    let source = decode(image, size)?;
+    let pixels =
+        if source.dimensions() == (width, height) { source.into_raw() } else { average(&source, width, height, usage) };
+    encode(&image.name, width, height, &pixels)
 }
 
-impl Transfer {
-    /// The tables for `usage`. Computed once per resize, not per texel.
-    fn new(usage: TextureUse) -> Self {
-        let mut load = [0.0; 256];
-        for v in 0..=u8::MAX {
-            let unit = f64::from(v) / 255.0;
-            load[usize::from(v)] = match usage {
-                TextureUse::Colour => srgb_to_linear(unit),
-                TextureUse::Data => unit,
-            };
-        }
-        let encoded = match usage {
-            TextureUse::Colour => (0..=u16::MAX).map(|i| to_byte(linear_to_srgb(f64::from(i) / 65535.0))).collect(),
-            TextureUse::Data => Vec::new(),
-        };
-        Self { usage, load, encoded }
-    }
-
-    /// The working value of a stored channel value.
-    fn load(&self, stored: u8) -> f64 {
-        self.load[usize::from(stored)]
-    }
-
-    /// The stored value of a working value, clamped to the channel's range.
-    fn store(&self, working: f64) -> u8 {
-        match self.usage {
-            TextureUse::Colour => self.encoded[to_steps(working)],
-            TextureUse::Data => to_byte(working),
-        }
+/// The working value of a stored channel value: linear light for colour, the stored fraction for data.
+fn load(usage: TextureUse, stored: u8) -> f64 {
+    match usage {
+        TextureUse::Colour => f64::from(SRGB_TO_LINEAR[usize::from(stored)]) / 65535.0,
+        TextureUse::Data => f64::from(stored) / 255.0,
     }
 }
 
-/// The sRGB transfer function: a stored value in `0..=1` to linear light.
-fn srgb_to_linear(encoded: f64) -> f64 {
-    if encoded <= 0.04045 { encoded / 12.92 } else { ((encoded + 0.055) / 1.055).powf(2.4) }
+/// The stored value of a working value, clamped to the channel's range.
+fn store(usage: TextureUse, working: f64) -> u8 {
+    match usage {
+        TextureUse::Colour => encode_linear(to_steps(working)),
+        TextureUse::Data => to_byte(working),
+    }
 }
 
-/// The inverse of [`srgb_to_linear`]: linear light in `0..=1` to a sRGB value in `0..=1`.
-fn linear_to_srgb(linear: f64) -> f64 {
-    if linear <= 0.003_130_8 { linear * 12.92 } else { 1.055 * linear.powf(1.0 / 2.4) - 0.055 }
+/// The sRGB byte of a linear-light step: the number of thresholds at or below it.
+fn encode_linear(step: u16) -> u8 {
+    u8::try_from(LINEAR_TO_SRGB.partition_point(|&threshold| threshold <= step)).unwrap_or(u8::MAX)
 }
 
 /// Rounds a unit value to a byte, clamping it first. Halves round away from zero, so 127.5 is 128.
@@ -216,10 +343,10 @@ fn to_byte(unit: f64) -> u8 {
     (unit.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
-/// The index of a unit value in the 16-bit table, clamped.
+/// Rounds a unit value to a 16-bit linear step, clamping it first.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clamped to `0..=65535` first
-fn to_steps(unit: f64) -> usize {
-    (unit.clamp(0.0, 1.0) * 65535.0).round() as usize
+fn to_steps(unit: f64) -> u16 {
+    (unit.clamp(0.0, 1.0) * 65535.0).round() as u16
 }
 
 /// One texel's contribution to an average: colour premultiplied by alpha, alpha, and the plain colour, which is what an
@@ -233,9 +360,9 @@ struct Sum {
 
 impl Sum {
     /// The contribution of one stored texel.
-    fn of_texel(pixel: &[u8], transfer: &Transfer) -> Self {
+    fn of_texel(pixel: &[u8], usage: TextureUse) -> Self {
         let alpha = f64::from(pixel[3]) / 255.0;
-        let plain = [0, 1, 2].map(|c| transfer.load(pixel[c]));
+        let plain = [0, 1, 2].map(|c| load(usage, pixel[c]));
         Self { premultiplied: plain.map(|v| v * alpha), alpha, plain }
     }
 
@@ -281,7 +408,7 @@ fn taps(source: u32, target: u32) -> Vec<Taps> {
 
 /// Averages `source` to `width` by `height`, one output row at a time. Each source row is scaled horizontally into a
 /// line, then that line is added to the output row with its vertical weight. Only two rows of sums are alive at once.
-fn average(source: &RgbaImage, width: u32, height: u32, transfer: &Transfer) -> Vec<u8> {
+fn average(source: &RgbaImage, width: u32, height: u32, usage: TextureUse) -> Vec<u8> {
     let columns = taps(source.width(), width);
     let rows = taps(source.height(), height);
     let stride = source.width() as usize * 4;
@@ -293,34 +420,34 @@ fn average(source: &RgbaImage, width: u32, height: u32, transfer: &Transfer) -> 
         sums.fill(Sum::default());
         for (k, &weight) in row.weights.iter().enumerate() {
             let y = row.first as usize + k;
-            horizontal(&raw[y * stride..(y + 1) * stride], &columns, transfer, &mut line);
+            horizontal(&raw[y * stride..(y + 1) * stride], &columns, usage, &mut line);
             for (sum, scaled) in sums.iter_mut().zip(&line) {
                 sum.add(scaled, weight);
             }
         }
         for sum in &sums {
-            out.extend_from_slice(&finish(sum, transfer));
+            out.extend_from_slice(&finish(sum, usage));
         }
     }
     out
 }
 
 /// Scales one source row into `line`: each output column is the weighted sum of the texels it covers.
-fn horizontal(src_row: &[u8], columns: &[Taps], transfer: &Transfer, line: &mut [Sum]) {
+fn horizontal(src_row: &[u8], columns: &[Taps], usage: TextureUse, line: &mut [Sum]) {
     for (sum, column) in line.iter_mut().zip(columns) {
         *sum = Sum::default();
         for (k, &weight) in column.weights.iter().enumerate() {
             let x = column.first as usize + k;
-            sum.add(&Sum::of_texel(&src_row[x * 4..x * 4 + 4], transfer), weight);
+            sum.add(&Sum::of_texel(&src_row[x * 4..x * 4 + 4], usage), weight);
         }
     }
 }
 
 /// The stored RGBA of one output texel. Colour is un-premultiplied by its average alpha; a texel with no alpha takes
 /// the plain average colour instead.
-fn finish(sum: &Sum, transfer: &Transfer) -> [u8; 4] {
+fn finish(sum: &Sum, usage: TextureUse) -> [u8; 4] {
     let rgb = if sum.alpha > 0.0 { sum.premultiplied.map(|v| v / sum.alpha) } else { sum.plain };
-    [transfer.store(rgb[0]), transfer.store(rgb[1]), transfer.store(rgb[2]), to_byte(sum.alpha)]
+    [store(usage, rgb[0]), store(usage, rgb[1]), store(usage, rgb[2]), to_byte(sum.alpha)]
 }
 
 #[cfg(test)]
@@ -345,10 +472,21 @@ mod tests {
     }
 
     #[test]
-    fn the_sixteen_bit_table_endpoints_are_exact() {
-        let transfer = Transfer::new(TextureUse::Colour);
-        assert_eq!(transfer.store(0.0), 0);
-        assert_eq!(transfer.store(1.0), 255);
-        assert_eq!(transfer.load(255), 1.0);
+    fn the_colour_tables_hold_their_endpoints_and_rise() {
+        assert_eq!(SRGB_TO_LINEAR[0], 0);
+        assert_eq!(SRGB_TO_LINEAR[255], 65535);
+        assert!(SRGB_TO_LINEAR.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(LINEAR_TO_SRGB.windows(2).all(|pair| pair[0] < pair[1]));
+        assert_eq!(encode_linear(0), 0);
+        assert_eq!(encode_linear(65535), 255);
+        for stored in 0..=u8::MAX {
+            assert_eq!(encode_linear(SRGB_TO_LINEAR[usize::from(stored)]), stored, "round trip of {stored}");
+        }
+    }
+
+    #[test]
+    fn crc_matches_the_standard_check_value() {
+        // The CRC-32 check value of "123456789" (ISO 3309) is a published constant.
+        assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
     }
 }
