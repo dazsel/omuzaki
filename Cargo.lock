@@ -3888,6 +3888,7 @@ dependencies = [
  "proptest",
  "reqwest",
  "rmcp",
+ "rustls",
  "schemars",
  "serde",
  "serde_json",

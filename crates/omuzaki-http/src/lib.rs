@@ -7,6 +7,9 @@
 //! TLS uses rustls with the `ring` crypto provider, not `aws-lc-rs`: `ring` builds with a plain C toolchain on every
 //! platform, with no NASM and no prebuilt objects. What that gives up is rustls's post-quantum hybrid key exchange,
 //! which only the aws-lc provider offers; revisit it if a feature needs post-quantum TLS.
+//!
+//! reqwest is built with `rustls-no-provider`, so any other code that builds a reqwest client in the same build, tests
+//! included, must install the `ring` provider first.
 
 use std::io::Read;
 use std::net::IpAddr;
