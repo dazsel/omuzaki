@@ -359,7 +359,7 @@ an API crate, that module becomes its implementation and nothing else changes.
 | Crate | Use | Licence | Note |
 |---|---|---|---|
 | `reqwest` 0.13 (in tree) | HTTP client; the workspace's `rustls` and `system-proxy`, plus `stream`, `http2` | MIT OR Apache-2.0 | register row and TLS rows come with `omuzaki-http` |
-| `rustls` 0.23, `aws-lc-rs`, `rustls-platform-verifier` 0.7 | TLS, crypto, OS trust store | Apache-2.0 OR ISC OR MIT; ISC AND (Apache-2.0 OR ISC); MIT OR Apache-2.0 | already registered by `omuzaki-http` |
+| `rustls` 0.23, `ring`, `rustls-platform-verifier` 0.7 | TLS, crypto, OS trust store | Apache-2.0 OR ISC OR MIT; Apache-2.0 AND ISC; MIT OR Apache-2.0 | already registered by `omuzaki-http` |
 | `sse-stream` 0.2 (in tree via rmcp) | SSE framing | MIT OR Apache-2.0 | needs its own register row |
 | `base64` 0.23, `futures-util` 0.3 (in tree) | images, body stream | MIT OR Apache-2.0 | |
 
