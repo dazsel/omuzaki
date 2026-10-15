@@ -1,0 +1,325 @@
+//! `Reader::scan` (journal.md 8.2): rotation, the torn-tail and damage rules, and the errors that stop a scan.
+//!
+//! Segments are written into a temporary folder with the format module's `SegmentHeader` and `write_frame` and the
+//! record module's `encode`. Records are one-field commits, so frames are small and their offsets easy to compute.
+#![allow(clippy::unwrap_used)] // Helpers outside `#[test]` fns; a failing helper should just panic.
+
+use std::fs;
+use std::path::Path;
+
+use omuzaki_doc::journal::{
+    End, HEADER_LEN, JournalError, Position, Reader, Record, SKIPPABLE, SegmentHeader, SessionInfo, encode, kind,
+    segment_name, write_frame,
+};
+use omuzaki_history_api::{HistoryEntry, Lsn, WallTime};
+use omuzaki_ops_api::TxId;
+
+/// A commit record: the smallest real record, whose tx is its LSN.
+fn commit(lsn: u64) -> (Lsn, Record) {
+    (Lsn(lsn), Record::Entry(HistoryEntry::Commit { tx: TxId(lsn) }))
+}
+
+fn session(lsn: u64) -> (Lsn, Record) {
+    let info = SessionInfo::new(format!("s{lsn}"), WallTime(1), "0.0.0".into(), 1);
+    (Lsn(lsn), Record::Session(info))
+}
+
+fn frame(record: &(Lsn, Record)) -> Vec<u8> {
+    let mut out = Vec::new();
+    encode(std::slice::from_ref(record), &mut out).unwrap();
+    out
+}
+
+/// A segment file: the header for `first`, then the frames of `records`.
+fn segment(first: u64, records: &[(Lsn, Record)]) -> Vec<u8> {
+    let mut bytes = SegmentHeader::new(Lsn(first)).encode().to_vec();
+    encode(records, &mut bytes).unwrap();
+    bytes
+}
+
+/// The commits `first..=last`.
+fn commits(first: u64, last: u64) -> Vec<(Lsn, Record)> {
+    (first..=last).map(commit).collect()
+}
+
+/// The byte offset in a segment of the frame at `index` of `records`.
+fn offset_of(records: &[(Lsn, Record)], index: usize) -> usize {
+    HEADER_LEN + records[..index].iter().map(|r| frame(r).len()).sum::<usize>()
+}
+
+fn put(dir: &Path, seq: u64, bytes: &[u8]) {
+    fs::write(dir.join(segment_name(seq).unwrap()), bytes).unwrap();
+}
+
+fn lsns(scan: &omuzaki_doc::journal::Scan) -> Vec<u64> {
+    scan.records.iter().map(|(lsn, _)| lsn.0).collect()
+}
+
+fn at(segment: u64, offset: usize, after: u64) -> Position {
+    Position { segment, offset: u64::try_from(offset).unwrap(), after: Lsn(after) }
+}
+
+/// Two segments, 1 to 3 and 4 to 5.
+fn two_segments(dir: &Path) {
+    put(dir, 1, &segment(1, &commits(1, 3)));
+    put(dir, 2, &segment(4, &commits(4, 5)));
+}
+
+#[test]
+fn a_folder_without_segments_is_clean() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("notes.txt"), b"not a segment").unwrap();
+    let scan = Reader::scan(dir.path(), Lsn(0)).unwrap();
+    assert_eq!((scan.records.len(), scan.end), (0, End::Clean));
+}
+
+#[test]
+fn a_missing_folder_is_an_io_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let err = Reader::scan(&dir.path().join("absent"), Lsn(0)).unwrap_err();
+    assert!(matches!(err, JournalError::Io { .. }), "{err:?}");
+}
+
+#[test]
+fn a_clean_journal_reads_whole() {
+    let dir = tempfile::tempdir().unwrap();
+    two_segments(dir.path());
+    let scan = Reader::scan(dir.path(), Lsn(0)).unwrap();
+    assert_eq!(lsns(&scan), [1, 2, 3, 4, 5]);
+    assert_eq!(scan.records, (1..=5).map(commit).collect::<Vec<_>>());
+    assert_eq!(scan.end, End::Clean);
+}
+
+#[test]
+fn from_skips_earlier_records_and_segments() {
+    let dir = tempfile::tempdir().unwrap();
+    two_segments(dir.path());
+    for (from, want) in [(1, vec![2, 3, 4, 5]), (3, vec![4, 5]), (4, vec![5]), (5, vec![]), (9, vec![])] {
+        let scan = Reader::scan(dir.path(), Lsn(from)).unwrap();
+        assert_eq!((lsns(&scan), scan.end), (want, End::Clean), "from {from}");
+    }
+
+    // Segment 1 deleted: old damage or absence can't block a scan that starts after it.
+    fs::remove_file(dir.path().join(segment_name(1).unwrap())).unwrap();
+    let scan = Reader::scan(dir.path(), Lsn(3)).unwrap();
+    assert_eq!((lsns(&scan), scan.end), (vec![4, 5], End::Clean));
+}
+
+#[test]
+fn old_damage_before_the_start_segment_is_ignored() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut first = segment(1, &commits(1, 3));
+    first[HEADER_LEN + 6] ^= 0xff;
+    put(dir.path(), 1, &first);
+    put(dir.path(), 2, &segment(4, &commits(4, 5)));
+    let scan = Reader::scan(dir.path(), Lsn(3)).unwrap();
+    assert_eq!((lsns(&scan), scan.end), (vec![4, 5], End::Clean));
+}
+
+#[test]
+fn a_zero_tail_is_clean() {
+    for zeros in [1, 19, 20, 4096] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut bytes = segment(1, &commits(1, 3));
+        bytes.extend(std::iter::repeat_n(0u8, zeros));
+        put(dir.path(), 1, &bytes);
+        let scan = Reader::scan(dir.path(), Lsn(0)).unwrap();
+        assert_eq!((lsns(&scan), scan.end), (vec![1, 2, 3], End::Clean), "{zeros} zeros");
+    }
+}
+
+#[test]
+fn a_prepared_next_segment_is_clean() {
+    let dir = tempfile::tempdir().unwrap();
+    put(dir.path(), 1, &segment(1, &commits(1, 3)));
+    let mut prepared = SegmentHeader::prepared().encode().to_vec();
+    prepared.extend([0u8; 64]);
+    put(dir.path(), 2, &prepared);
+    let scan = Reader::scan(dir.path(), Lsn(0)).unwrap();
+    assert_eq!((lsns(&scan), scan.end), (vec![1, 2, 3], End::Clean));
+}
+
+#[test]
+fn a_torn_last_frame_is_a_torn_tail() {
+    let records = commits(1, 3);
+    let full = segment(1, &records);
+    let third = offset_of(&records, 2);
+    // Any cut inside the third frame, even one byte short, leaves a torn tail after record 2.
+    for cut in [full.len() - 1, full.len() - 10, third + 19, third + 1] {
+        let dir = tempfile::tempdir().unwrap();
+        put(dir.path(), 1, &full[..cut]);
+        let scan = Reader::scan(dir.path(), Lsn(0)).unwrap();
+        assert_eq!(lsns(&scan), [1, 2], "cut at {cut}");
+        assert_eq!(scan.end, End::TornTail { at: at(1, third, 2) }, "cut at {cut}");
+    }
+}
+
+#[test]
+fn a_bad_frame_with_valid_frames_after_is_damage() {
+    let records = commits(1, 5);
+    let mut bytes = segment(1, &records);
+    let second = offset_of(&records, 1);
+    bytes[second + 20] ^= 0x01; // a payload byte of frame 2
+    let dir = tempfile::tempdir().unwrap();
+    put(dir.path(), 1, &bytes);
+    let scan = Reader::scan(dir.path(), Lsn(0)).unwrap();
+    assert_eq!(lsns(&scan), [1]);
+    assert_eq!(scan.end, End::Damaged { at: at(1, second, 1), later_valid: 3 });
+}
+
+#[test]
+fn damage_counts_the_frames_of_later_segments() {
+    let dir = tempfile::tempdir().unwrap();
+    let records = commits(1, 3);
+    let mut bytes = segment(1, &records);
+    bytes[offset_of(&records, 2) + 20] ^= 0x01;
+    put(dir.path(), 1, &bytes);
+    put(dir.path(), 2, &segment(4, &commits(4, 5)));
+    let scan = Reader::scan(dir.path(), Lsn(0)).unwrap();
+    assert_eq!(lsns(&scan), [1, 2]);
+    assert_eq!(scan.end, End::Damaged { at: at(1, offset_of(&records, 2), 2), later_valid: 2 });
+}
+
+#[test]
+fn an_lsn_gap_ends_the_log() {
+    let records = [commit(1), commit(2), commit(4), commit(5)];
+    let third = offset_of(&records, 2);
+    let dir = tempfile::tempdir().unwrap();
+    put(dir.path(), 1, &segment(1, &records));
+    let scan = Reader::scan(dir.path(), Lsn(0)).unwrap();
+    assert_eq!(lsns(&scan), [1, 2], "nothing after the gap is returned");
+    assert_eq!(scan.end, End::Damaged { at: at(1, third, 2), later_valid: 1 });
+
+    // With nothing after the out-of-sequence frame, it is the torn end of a batch.
+    put(dir.path(), 1, &segment(1, &records[..3]));
+    let scan = Reader::scan(dir.path(), Lsn(0)).unwrap();
+    assert_eq!((lsns(&scan), scan.end), (vec![1, 2], End::TornTail { at: at(1, third, 2) }));
+}
+
+#[test]
+fn a_first_frame_that_does_not_match_its_header_ends_the_log() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut bytes = SegmentHeader::new(Lsn(5)).encode().to_vec();
+    encode(&commits(6, 6), &mut bytes).unwrap();
+    put(dir.path(), 1, &bytes);
+    let scan = Reader::scan(dir.path(), Lsn(0)).unwrap();
+    assert_eq!((lsns(&scan), scan.end), (vec![], End::TornTail { at: at(1, HEADER_LEN, 0) }));
+}
+
+#[test]
+fn a_bad_header_ends_the_log() {
+    let dir = tempfile::tempdir().unwrap();
+    put(dir.path(), 1, &segment(1, &commits(1, 3)));
+    let mut next = segment(4, &commits(4, 5));
+    next[0] ^= 0xff;
+    put(dir.path(), 2, &next);
+    let scan = Reader::scan(dir.path(), Lsn(0)).unwrap();
+    assert_eq!((lsns(&scan), scan.end), (vec![1, 2, 3], End::TornTail { at: at(2, 0, 3) }));
+
+    // A file too short for a header ends it the same way.
+    put(dir.path(), 2, &next[..10]);
+    let scan = Reader::scan(dir.path(), Lsn(0)).unwrap();
+    assert_eq!((lsns(&scan), scan.end), (vec![1, 2, 3], End::TornTail { at: at(2, 0, 3) }));
+}
+
+#[test]
+fn a_next_segment_that_does_not_follow_is_damage() {
+    let dir = tempfile::tempdir().unwrap();
+    put(dir.path(), 1, &segment(1, &commits(1, 3)));
+    put(dir.path(), 2, &segment(9, &commits(9, 11)));
+    let scan = Reader::scan(dir.path(), Lsn(0)).unwrap();
+    assert_eq!(lsns(&scan), [1, 2, 3]);
+    assert_eq!(scan.end, End::Damaged { at: at(2, 0, 3), later_valid: 3 });
+}
+
+#[test]
+fn the_post_recovery_session_continues_past_a_torn_tail() {
+    let records = commits(1, 4);
+    let full = segment(1, &records);
+    let dir = tempfile::tempdir().unwrap();
+    // Record 4 was torn by the crash; recovery started a segment at LSN 4 with a session record.
+    put(dir.path(), 1, &full[..full.len() - 3]);
+    let mut recovered = SegmentHeader::new(Lsn(4)).encode().to_vec();
+    encode(&[session(4), commit(5)], &mut recovered).unwrap();
+    put(dir.path(), 2, &recovered);
+
+    let scan = Reader::scan(dir.path(), Lsn(0)).unwrap();
+    assert_eq!(lsns(&scan), [1, 2, 3, 4, 5]);
+    assert!(matches!(scan.records[3].1, Record::Session(_)));
+    assert_eq!(scan.end, End::Clean);
+}
+
+#[test]
+fn a_next_segment_without_a_session_is_not_the_exception() {
+    let records = commits(1, 4);
+    let full = segment(1, &records);
+    let dir = tempfile::tempdir().unwrap();
+    put(dir.path(), 1, &full[..full.len() - 3]);
+    put(dir.path(), 2, &segment(4, &commits(4, 5)));
+    let scan = Reader::scan(dir.path(), Lsn(0)).unwrap();
+    assert_eq!(lsns(&scan), [1, 2, 3]);
+    assert_eq!(scan.end, End::Damaged { at: at(1, offset_of(&records, 3), 3), later_valid: 2 });
+}
+
+#[test]
+fn a_session_segment_that_starts_elsewhere_is_not_the_exception() {
+    let records = commits(1, 4);
+    let full = segment(1, &records);
+    let dir = tempfile::tempdir().unwrap();
+    put(dir.path(), 1, &full[..full.len() - 3]);
+    let mut other = SegmentHeader::new(Lsn(6)).encode().to_vec();
+    encode(&[session(6)], &mut other).unwrap();
+    put(dir.path(), 2, &other);
+    let scan = Reader::scan(dir.path(), Lsn(0)).unwrap();
+    assert_eq!(lsns(&scan), [1, 2, 3]);
+    assert!(matches!(scan.end, End::Damaged { later_valid: 1, .. }), "{:?}", scan.end);
+}
+
+#[test]
+fn a_newer_header_is_too_new() {
+    let dir = tempfile::tempdir().unwrap();
+    put(dir.path(), 1, &segment(1, &commits(1, 3)));
+    let mut newer = segment(4, &commits(4, 5));
+    newer[8..10].copy_from_slice(&2u16.to_le_bytes());
+    let crc = crc32fast::hash(&newer[..28]);
+    newer[28..32].copy_from_slice(&crc.to_le_bytes());
+    put(dir.path(), 2, &newer);
+    let err = Reader::scan(dir.path(), Lsn(0)).unwrap_err();
+    assert!(matches!(err, JournalError::TooNew { version: 2, kind: None }), "{err:?}");
+}
+
+#[test]
+fn an_unknown_required_kind_is_too_new() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut bytes = segment(1, &commits(1, 2));
+    write_frame(Lsn(3), 200, 0, b"{}", &mut bytes).unwrap();
+    put(dir.path(), 1, &bytes);
+    let err = Reader::scan(dir.path(), Lsn(0)).unwrap_err();
+    assert!(matches!(err, JournalError::TooNew { kind: Some(200), .. }), "{err:?}");
+
+    // Below `from` it is not read, so a base snapshot past it still opens.
+    let scan = Reader::scan(dir.path(), Lsn(3)).unwrap();
+    assert_eq!((scan.records.len(), scan.end), (0, End::Clean));
+}
+
+#[test]
+fn an_unknown_skippable_kind_is_skipped_but_counts_in_the_sequence() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut bytes = segment(1, &commits(1, 1));
+    write_frame(Lsn(2), 200, SKIPPABLE, b"{}", &mut bytes).unwrap();
+    encode(&commits(3, 3), &mut bytes).unwrap();
+    write_frame(Lsn(4), kind::AUDIT, SKIPPABLE, b"{}", &mut bytes).unwrap();
+    put(dir.path(), 1, &bytes);
+    let scan = Reader::scan(dir.path(), Lsn(0)).unwrap();
+    assert_eq!((lsns(&scan), scan.end), (vec![1, 3], End::Clean));
+}
+
+#[test]
+fn a_bad_payload_with_a_good_crc_is_an_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut bytes = segment(1, &commits(1, 1));
+    write_frame(Lsn(2), kind::SESSION, 0, b"nope", &mut bytes).unwrap();
+    put(dir.path(), 1, &bytes);
+    let err = Reader::scan(dir.path(), Lsn(0)).unwrap_err();
+    assert!(matches!(err, JournalError::BadPayload { lsn: 2, .. }), "{err:?}");
+}
