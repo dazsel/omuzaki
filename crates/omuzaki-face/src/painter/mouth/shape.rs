@@ -4,9 +4,11 @@
 //!
 //! - **Kiss**, when the lips are pushed together (`pucker > 0.35`) and the mouth is barely open (`open < 0.25`): a
 //!   short wavy slit with a light rim and a faint upper-lip arc.
-//! - **Closed line**, below an opening of [`CLOSED_BELOW`]: a thin line whose corners follow the smile of each side.
+//! - **Closed line**, below an opening of [`CLOSED_BELOW`]: a thin line whose corners follow the smile of each side. It
+//!   thins towards the switch, so it meets the open shape's rim.
 //! - **Open shape**, otherwise: a lens that grows with the opening, rounder with `round`, filled with the interior
-//!   gradient. Its path is kept in [`PaintCtx::open_mouth`] so the interior, teeth and rim clip and stroke the
+//!   gradient. The rim round it starts as the closed line and becomes the open mouth's over the openings
+//!   [`CLOSED_BELOW`] to [`FADE_UNTIL`] ([`OpenMouth::fade`]). Its path is kept in [`PaintCtx::open_mouth`] so the interior, teeth and rim clip and stroke the
 //!   same outline instead of recomputing it.
 //!
 //! Everything here is a pure function of the profile and the paint parameters: no clock, no state, and no allocation
@@ -21,6 +23,11 @@ use crate::painter::PaintCtx;
 
 /// Below this opening (after the press has taken its share) the mouth is a closed line.
 const CLOSED_BELOW: f32 = 0.06;
+/// The open mouth's rim finishes becoming its own at this opening ([`OpenMouth::fade`]).
+const FADE_UNTIL: f32 = 0.2;
+/// The closed line is this much thinner at the switch than at rest, so the lens that replaces it keeps the same weight
+/// (the line is 5.8 px thick at the switch and the lens 3.9 px deep, at 3600 px per metre).
+const CLOSED_THIN: f32 = 0.2;
 /// A pucker above this, with the mouth under [`KISS_OPEN_BELOW`], is a kiss.
 const KISS_ABOVE: f32 = 0.35;
 /// The kiss gives way to the open shape from this opening.
@@ -99,6 +106,9 @@ pub struct OpenMouth {
     pub height: f32,
     /// The performance scale in force (`closedScale` to `openScale`), which teeth and fangs scale with too.
     pub grow: f32,
+    /// How far the rim has become the open mouth's own, `0` at the switch to `1` from an opening of 0.2: until then
+    /// the rim is the closed line, and the closed smile's fang gives way to the open ones.
+    pub fade: f32,
     edges: Edges,
 }
 
@@ -111,6 +121,11 @@ impl OpenMouth {
     /// Height of the lower edge relative to [`centre`](Self::centre) at `u`; negative below it, in metres.
     pub fn bottom(&self, u: f32) -> f32 {
         self.edges.bottom(self.height, u)
+    }
+
+    /// The lens' height at the middle, from the upper edge to the lower, in metres.
+    pub fn depth(&self) -> f32 {
+        self.top(0.0) - self.bottom(0.0)
     }
 }
 
@@ -199,6 +214,19 @@ impl Frame {
         }
     }
 
+    /// The closed line's width: the style's, scaled with the performance scale and thinned by a press, and by the
+    /// approach to the switch (a share of [`CLOSED_THIN`] growing to all of it at [`CLOSED_BELOW`]).
+    pub(super) fn line_width(&self, style: &MouthStyle) -> f32 {
+        let thin = CLOSED_THIN * smoothstep(self.open / CLOSED_BELOW);
+        narrow(style.line_width) * self.grow.sqrt() * (1.0 - PRESS_THINS * self.press) * (1.0 - thin)
+    }
+
+    /// How far the open shape has taken over from the closed line, `0..=1` over the openings [`CLOSED_BELOW`] to
+    /// [`FADE_UNTIL`].
+    fn fade(&self) -> f32 {
+        smoothstep((self.open - CLOSED_BELOW) / (FADE_UNTIL - CLOSED_BELOW))
+    }
+
     pub(super) fn kind(&self) -> Kind {
         if self.pucker > KISS_ABOVE && self.open < KISS_OPEN_BELOW {
             Kind::Kiss
@@ -208,6 +236,12 @@ impl Frame {
             Kind::Open
         }
     }
+}
+
+/// Smoothstep of `t` clamped to `0..=1`: flat at both ends, so an easing starts and stops without a kink.
+pub(super) fn smoothstep(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 /// `colour` at `alpha` as a solid paint.
@@ -254,7 +288,7 @@ pub(super) fn record_outline(ctx: &mut PaintCtx<'_>) {
 fn closed_line(ctx: &mut PaintCtx<'_>, f: &Frame) {
     let style = &ctx.profile.mouth;
     let curve = narrow(style.corner_curve);
-    let width = narrow(style.line_width) * f.grow.sqrt() * (1.0 - PRESS_THINS * f.press);
+    let width = f.line_width(style);
     let colour = resolve(&style.line_colour, Colour::rgb(0xa8, 0x5a, 0x55));
     let mut points = [Vec2::ZERO; CLOSED_SEGMENTS + 1];
     for (i, p) in points.iter_mut().enumerate() {
@@ -345,7 +379,7 @@ fn open_outline(ctx: &mut PaintCtx<'_>, f: &Frame) -> OpenMouth {
         outline = outline.line_to(at(u, edges.bottom(height, u)));
     }
     let path = outline.close().finish();
-    let open = OpenMouth { path, centre: f.centre, half_width, height, grow: f.grow, edges };
+    let open = OpenMouth { path, centre: f.centre, half_width, height, grow: f.grow, fade: f.fade(), edges };
     ctx.open_mouth = Some(open);
     open
 }
@@ -409,6 +443,16 @@ mod tests {
             let u = along(OPEN_SEGMENTS - i, OPEN_SEGMENTS);
             assert!((p.y - (open.centre.y + open.bottom(u))).abs() < 1e-6, "bottom edge at {u}");
         }
+    }
+
+    #[test]
+    fn the_fade_runs_from_zero_at_the_switch_to_one_at_an_opening_of_a_fifth() {
+        let fade = |open: f32| painted(|m| m.open = open).0.expect("open").fade;
+        assert!(fade(0.0601) < 1e-3, "at the switch");
+        assert!((fade(0.13) - 0.5).abs() < 1e-3, "halfway, where the easing is symmetric");
+        assert!((fade(0.2) - 1.0).abs() < 1e-6 && (fade(0.8) - 1.0).abs() < 1e-6, "from 0.2");
+        let steps: Vec<f32> = (0..=14_u8).map(|i| fade(0.06 + 0.01 * f32::from(i))).collect();
+        assert!(steps.windows(2).all(|w| w[1] >= w[0]), "monotone: {steps:?}");
     }
 
     #[test]

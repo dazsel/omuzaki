@@ -20,7 +20,7 @@ use omuzaki_face::raster::SkiaRasterizer;
 use omuzaki_face::{MouthPiece, RealPainter};
 use omuzaki_face_api::{
     Cmd, DEFAULT_PX_PER_M, DrawList, ExpressionSet, FaceDrawing, FaceInput, FaceLayerId, FaceLayerSpec, FaceMapping,
-    FaceProfile, FaceProjection, FaceRasterizer, FaceRect, FaceView, MouthParams, PaintParams, PathEl, Raster,
+    FaceProfile, FaceProjection, FaceRasterizer, FaceRect, FaceView, MouthParams, Paint, PaintParams, PathEl, Raster,
 };
 
 struct Counting;
@@ -429,18 +429,25 @@ fn the_five_visemes_open_the_mouth_by_the_prototypes_amounts_and_paint_in_that_o
     }
 }
 
-/// The vertical extent of everything the shape draws, in pixels at the default density (strokes count their width).
-fn height_px(list: &DrawList) -> f32 {
+/// The vertical extent of everything the shape and the rim draw, in pixels at the default density (strokes count their
+/// width): what the viewer sees of the mouth's outline.
+fn height_px(profile: &FaceProfile, p: &PaintParams) -> f32 {
+    let mut out = FaceDrawing::new();
+    let input = FaceInput { profile, params: p, time: Seconds(0.0), view: FaceView::default() };
     let (mut lo, mut hi) = (f32::MAX, f32::MIN);
-    for cmd in list.cmds() {
-        let (path, half) = match cmd {
-            Cmd::Stroke { path, width, .. } => (*path, width / 2.0),
-            Cmd::Fill { path, .. } => (*path, 0.0),
-            _ => continue,
-        };
-        for p in points(list, path) {
-            lo = lo.min(p.y - half);
-            hi = hi.max(p.y + half);
+    for piece in [MouthPiece::Shape, MouthPiece::Rim] {
+        painter().paint_mouth_piece(piece, &input, &mut out).unwrap();
+        let list = &out[FaceLayerId::Base];
+        for cmd in list.cmds() {
+            let (path, half) = match cmd {
+                Cmd::Stroke { path, width, opacity, .. } => (*path, width / 2.0 * opacity.signum()),
+                Cmd::Fill { path, .. } => (*path, 0.0),
+                _ => continue,
+            };
+            for p in points(list, path) {
+                lo = lo.min(p.y - half);
+                hi = hi.max(p.y + half);
+            }
         }
     }
     (hi - lo) * DEFAULT_PX_PER_M
@@ -451,44 +458,141 @@ fn sweep_height(jaw: f32) -> (f32, f32) {
     let mut bus = ChannelBuf::NEUTRAL;
     bus.set(Channel::JAW_OPEN, jaw);
     let p = FaceMapping::default().apply(&bus);
-    (height_px(&paint(&glossy(), &p)), p.mouth.open)
+    (height_px(&glossy(), &p), p.mouth.open)
 }
 
-/// The prototype switches from the closed line to the open shape at an opening of 0.06 (`face.js` 311), and the two
-/// do not meet: the line is 5.8 px thick, the open shape 4.1 px deep there. Everything else in a sweep is smooth. The
-/// switch is to be settled with the lip rim; this pins how big it is.
-const SWITCH_JUMP_PX: f32 = 2.5;
+/// The smoothness bar: no step of a sweep differs from its neighbour by more than this, at 3600 px per metre (it was
+/// 2.5 px, the prototype's jump, for the steps across the switch).
+const SWITCH_JUMP_PX: f32 = 1.5;
+/// What a 20-step sweep (about 0.06 of opening a step) can show while the rim fades in, 0.06 to 0.2: the mouth goes
+/// from a 5.8 px line to a lens with an 8.6 px rim in two or three steps, which no easing makes smoother than this.
+/// The switch itself is continuous (see below); this is the coarse sampling's own bound.
+const EASING_STEP_PX: f32 = 7.0;
 
 #[test]
-fn a_jaw_sweep_in_twenty_steps_grows_the_mouth_smoothly_apart_from_the_prototypes_switch() {
+fn a_jaw_sweep_in_twenty_steps_grows_the_mouth_smoothly_across_the_switch() {
     let heights: Vec<(f32, f32)> = (0..=20_u8).map(|i| sweep_height(f32::from(i) / 20.0)).collect();
-    for pair in heights.windows(2) {
+    // The line thins as the jaw nears the switch (by design: the lens that replaces it is shallower than the line is
+    // thick), so only from the switch on does the mouth only grow.
+    for pair in heights.windows(2).filter(|pair| pair[0].1 >= 0.06) {
         let ((a, oa), (b, ob)) = (pair[0], pair[1]);
         assert!(b >= a - 1e-3, "the mouth shrank from {a} px (open {oa}) to {b} px (open {ob})");
     }
-    // Smooth means each step is the same size as the one before it to within 1.5 px (the curve is gentle: a step is
-    // about 3.7 px), except across the switch, where it may differ by the switch's jump.
+    // Smooth means each step is the same size as the one before it to within the bar (the curve is gentle: a step is
+    // about 3.7 px), except where the rim eases in.
+    let mut largest = 0.0_f32;
     for window in heights.windows(3) {
         let (first, second) = (window[1].0 - window[0].0, window[2].0 - window[1].0);
-        let switches = window[0].1 < 0.06 && window[2].1 >= 0.06; // one of its two steps crosses the switch
-        let allowed = if switches { SWITCH_JUMP_PX } else { 1.5 };
+        largest = largest.max((second - first).abs());
         assert!(
-            (second - first).abs() <= allowed,
+            (second - first).abs() <= if window[0].1 < 0.2 { EASING_STEP_PX } else { SWITCH_JUMP_PX },
             "steps {first} then {second} px at open {:?}",
             window.iter().map(|w| w.1).collect::<Vec<_>>()
         );
     }
+    println!("largest step-to-step change in the 20-step jaw sweep: {largest:.3} px");
 }
 
 #[test]
-fn right_at_the_switch_the_mouth_changes_height_by_less_than_the_documented_jump() {
-    let height_at = |open: f32| height_px(&paint(&glossy(), &params(|m| m.open = open)));
+fn a_fine_sweep_of_the_opening_has_no_step_that_differs_from_its_neighbour_by_more_than_the_bar() {
+    let profile = glossy();
+    let heights: Vec<f32> =
+        (0..=80_u8).map(|i| height_px(&profile, &params(|m| m.open = f32::from(i) * 0.005))).collect();
+    let mut largest = 0.0_f32;
+    for (i, w) in heights.windows(3).enumerate() {
+        let change = ((w[2] - w[1]) - (w[1] - w[0])).abs();
+        largest = largest.max(change);
+        assert!(change <= SWITCH_JUMP_PX, "steps differ by {change} px, {} steps in", i + 1);
+    }
+    println!("largest step-to-step change in a sweep of the opening in steps of 0.005: {largest:.3} px");
+}
+
+#[test]
+fn the_closed_smiles_fang_hands_over_to_the_open_ones_as_the_rim_fades_in() {
+    let profile = glossy();
+    let fang_opacity = |open: f32| {
+        let p = params(|m| (m.open, m.fangs, m.smile_left) = (open, 1.0, 0.8));
+        let mut out = FaceDrawing::new();
+        let input = FaceInput { profile: &profile, params: &p, time: Seconds(0.0), view: FaceView::default() };
+        painter().paint_mouth_piece(MouthPiece::Interior, &input, &mut out).unwrap();
+        // The closed fang is the last fill, outside the lens' clip.
+        out[FaceLayerId::Base].cmds().iter().rev().find_map(|c| match c {
+            Cmd::Fill { opacity, .. } => Some(*opacity),
+            _ => None,
+        })
+    };
+    let at_switch = fang_opacity(0.0601).unwrap();
+    let halfway = fang_opacity(0.13).unwrap();
+    assert!(at_switch > 0.99, "the closed fang is still fully there at the switch: {at_switch}");
+    assert!((halfway - 0.5).abs() < 0.01, "and half there halfway: {halfway}");
+    // From 0.2 the last fill is an open fang, at the channel's strength: the closed one is gone.
+    let list = {
+        let p = params(|m| (m.open, m.fangs, m.smile_left) = (0.2, 1.0, 0.8));
+        let mut out = FaceDrawing::new();
+        let input = FaceInput { profile: &profile, params: &p, time: Seconds(0.0), view: FaceView::default() };
+        painter().paint_mouth_piece(MouthPiece::Interior, &input, &mut out).unwrap();
+        out[FaceLayerId::Base].cmds().iter().filter(|c| matches!(c, Cmd::Stroke { .. })).count()
+    };
+    assert_eq!(list, 0, "no outlined closed fang once the mouth is open");
+}
+
+#[test]
+fn right_at_the_switch_the_mouth_changes_height_by_less_than_a_fifth_of_a_pixel() {
+    let height_at = |open: f32| height_px(&glossy(), &params(|m| m.open = open));
     let jump = (height_at(0.0601) - height_at(0.0599)).abs();
-    assert!(jump > 0.5 && jump <= SWITCH_JUMP_PX, "the switch changes the height by {jump} px");
+    println!(
+        "height at 0.0599 {:.3} px, at 0.0601 {:.3} px, change {jump:.3} px",
+        height_at(0.0599),
+        height_at(0.0601)
+    );
+    assert!(jump < 0.2, "the switch changes the height by {jump} px");
     // Away from the switch the height is continuous: 1 / 1000 of the opening moves it by well under a pixel.
-    for open in [0.2, 0.5, 0.9, 1.4] {
+    for open in [0.01, 0.03, 0.1, 0.15, 0.2, 0.5, 0.9, 1.4] {
         assert!((height_at(open + 0.001) - height_at(open)).abs() < 0.2, "open {open}");
     }
+}
+
+#[test]
+fn the_closed_line_thins_towards_the_switch_and_is_untouched_at_rest() {
+    let width_at = |open: f32| closed(&paint(&glossy(), &params(|m| m.open = open))).1;
+    let rest = width_at(0.0);
+    assert!(width_at(0.03) < rest && width_at(0.0599) < width_at(0.03), "the line thins as the jaw opens");
+    assert!((width_at(0.0599) - rest * 0.8).abs() < rest * 0.01, "by a fifth at the switch");
+}
+
+/// The rim and the other pieces of the open mouth at `open`.
+fn rim_at(open: f32) -> DrawList {
+    let mut out = FaceDrawing::new();
+    let profile = glossy();
+    let p = params(|m| m.open = open);
+    let input = FaceInput { profile: &profile, params: &p, time: Seconds(0.0), view: FaceView::default() };
+    painter().paint_mouth_piece(MouthPiece::Rim, &input, &mut out).unwrap();
+    out[FaceLayerId::Base].clone()
+}
+
+#[test]
+fn just_above_the_switch_the_rim_is_the_closed_line_and_from_an_opening_of_a_fifth_it_is_the_open_mouths() {
+    let closed_colour = flat().mouth.line_colour;
+    let list = rim_at(0.0601);
+    let strokes: Vec<(&Paint, f32)> = list
+        .cmds()
+        .iter()
+        .filter_map(|c| match c {
+            Cmd::Stroke { paint, width, opacity, .. } if *opacity > 0.01 => Some((paint, *width)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(strokes.len(), 1, "only the outer edge shows at the switch, not the light rim: {strokes:?}");
+    let omuzaki_face_api::ColourRef::Fixed(line) = closed_colour else { panic!("the default line colour is fixed") };
+    assert_eq!(strokes[0].0, &Paint::Solid(line), "the rim starts as the closed line's colour");
+    // From 0.2 up, the rim is the full two-tone rim: 2.4 mm dark, 1.2 mm light.
+    let widths: Vec<f32> = stroke_widths(&rim_at(0.2));
+    assert_eq!(widths.len(), 2);
+    assert_close(widths[0], 0.0024, "dark rim");
+    assert_close(widths[1], 0.0012, "light rim");
+    // In between, both are partway.
+    let mid = stroke_widths(&rim_at(0.13));
+    assert!(mid[1] > 0.0 && mid[1] < 0.0012, "the light rim fades in: {mid:?}");
 }
 
 // ------------------------------------------------------------------------------------------------ determinism, allocation
@@ -526,6 +630,40 @@ fn painting_the_mouth_allocates_nothing_once_the_list_is_warm() {
         }
     });
     assert_eq!(allocations, 0, "1000 mouth paints made {allocations} allocations");
+}
+
+#[test]
+fn painting_the_mouth_across_the_switch_allocates_nothing_once_the_list_is_warm() {
+    let profile = glossy();
+    // The openings the rim and the closed fang ease over, every piece that reads the fade.
+    let openings: Vec<PaintParams> = [0.05, 0.0601, 0.1, 0.15, 0.2]
+        .into_iter()
+        .map(|open| params(|m| (m.open, m.fangs, m.smile_left) = (open, 1.0, 0.8)))
+        .collect();
+    let pieces = [MouthPiece::Shape, MouthPiece::Interior, MouthPiece::Gloss, MouthPiece::Rim];
+    let mut out = FaceDrawing::new();
+    let mut painter = painter();
+    let mut paint_all = |out: &mut FaceDrawing, i: usize| {
+        let input = FaceInput {
+            profile: &profile,
+            params: &openings[i % openings.len()],
+            time: Seconds(0.0),
+            view: FaceView::default(),
+        };
+        for piece in pieces {
+            painter.paint_mouth_piece(piece, &input, out).unwrap();
+        }
+    };
+    for i in 0..openings.len() {
+        paint_all(&mut out, i);
+    }
+    let allocations = count_allocations(|| {
+        for i in 0..1000 {
+            paint_all(&mut out, i);
+            black_box(&out);
+        }
+    });
+    assert_eq!(allocations, 0, "1000 paints across the switch made {allocations} allocations");
 }
 
 #[test]
