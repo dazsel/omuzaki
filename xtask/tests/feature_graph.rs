@@ -151,13 +151,34 @@ fn a_weak_feature_does_not_count_a_crate_linked_through_another_path() {
 #[test]
 fn a_feature_cargo_would_refuse_is_an_error_not_a_default_build() {
     let fixture = workspace();
-    for feature in ["nope", "omuzaki-render/x", "omuzaki-cli-typo/gpu"] {
+    for feature in [
+        "nope",
+        "omuzaki-render/x",
+        "omuzaki-cli-typo/gpu",
+        "omuzaki-cli/nope",
+        "omuzaki-stage/nope",
+        "omuzaki-stage/default",
+    ] {
         let error = xtask::registry::expected_with_features(fixture.root(), "omuzaki-cli", None, &[feature]);
         let message = error.unwrap_err().to_string();
         assert!(message.contains(&format!("`omuzaki-cli` has no feature `{feature}`")), "{message}");
     }
     // The package's own name prefixes its own features.
     assert_eq!(names(&fixture, "omuzaki-cli", &["omuzaki-cli/gpu"]), ["Shade"]);
+    // A dependency's implicit feature (its optional dependency's key) is a feature Cargo accepts, and so does the gate.
+    assert_eq!(names(&fixture, "omuzaki-cli", &["omuzaki-stage/omuzaki-render"]), ["Shade"]);
+    // `dep:` takes the implicit feature away, so Cargo refuses the name, and so does the gate.
+    fixture.write(
+        "crates/omuzaki-stage/Cargo.toml",
+        &manifest(
+            "omuzaki-stage",
+            "[dependencies]\nomuzaki-render = { path = \"../omuzaki-render\", optional = true }\n\
+             [features]\nwgpu = [\"dep:omuzaki-render\"]\n",
+        ),
+    );
+    let hidden =
+        xtask::registry::expected_with_features(fixture.root(), "omuzaki-cli", None, &["omuzaki-stage/omuzaki-render"]);
+    assert!(hidden.unwrap_err().to_string().contains("has no feature `omuzaki-stage/omuzaki-render`"));
 }
 
 /// What the gate does with a binary's records: `linked` is what the binary would print.

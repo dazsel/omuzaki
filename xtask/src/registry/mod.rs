@@ -324,17 +324,23 @@ impl Sources {
         graph.enable(&root.name, "default");
         for feature in features {
             match feature.split_once('/') {
-                // `--features dep/feature` names a dependency of the package being built, or the package itself.
-                Some((package, name)) if package == root.name => graph.enable(&root.name, name),
-                Some((key, _)) => {
-                    if !root.dependencies.iter().any(|d| d.key == key.trim_end_matches('?')) {
+                // `--features dep/feature` names a dependency of the package being built, or the package itself; the
+                // feature after the slash must exist in that crate, as Cargo requires.
+                Some((package, name)) if package == root.name => {
+                    if !root.has_feature(name) {
+                        return Err(unknown(feature));
+                    }
+                    graph.enable(&root.name, name);
+                }
+                Some((key, name)) => {
+                    let dep = root.dependencies.iter().find(|d| d.key == key.trim_end_matches('?'));
+                    let Some(dep) = dep else { return Err(unknown(feature)) };
+                    if !self.get(&dep.package)?.krate.has_feature(name) {
                         return Err(unknown(feature));
                     }
                     graph.apply(root, feature);
                 }
-                None if root.features.iter().any(|(name, _)| name == feature) || root.implicit(feature) => {
-                    graph.enable(&root.name, feature);
-                }
+                None if root.has_feature(feature) => graph.enable(&root.name, feature),
                 None => return Err(unknown(feature)),
             }
         }
@@ -356,6 +362,12 @@ impl Sources {
 pub const FEATURES_VAR: &str = "OMUZAKI_LINK_FEATURES";
 
 impl Crate {
+    /// Whether `--features` may name `name` for this crate: one of its `[features]` (`default` only if declared), or
+    /// an optional dependency's implicit feature.
+    fn has_feature(&self, name: &str) -> bool {
+        self.features.iter().any(|(feature, _)| feature == name) || self.implicit(name)
+    }
+
     /// Whether `name` is the implicit feature of an optional dependency: one declared under that key that no feature
     /// lists as `dep:<key>`, and no explicit feature shadows.
     fn implicit(&self, name: &str) -> bool {
