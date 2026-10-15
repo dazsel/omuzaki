@@ -103,8 +103,22 @@ lane's or were handed to it on #2.
 - **Sessions report only on GitHub:** a fix round ends with one comment starting `fixed (head <sha7>)`; a question or
   blocker is one pull request comment starting `**<Area> (question):**`, for example `**Runtime (question):**`
   (opening a draft first if needed). A session
-  never calls `send_message` or `send_later`: started in `acceptEdits` mode, it waits on a permission prompt nobody can
-  approve, and its turn freezes.
+  never calls `send_message` or `send_later`: it can wait on a permission prompt nobody can approve, and its turn
+  freezes.
+- **Start every session in Auto mode** (owner, 2026-10-15), or in `acceptEdits` if its model doesn't offer Auto.
+  - Auto is the highest mode a cloud session has, and a session can't be more permissive than its lead.
+  - The mode is chosen when the session is created. `permissions.defaultMode` in a project file has no effect, and a
+    running session's mode changes only from its own mode menu.
+- **The committed `.claude/settings.json` approves most commands** without a prompt: every shell command, file reads
+  and edits, web search and fetch, and the GitHub tools.
+  - It denies what only the Director does or what can't be undone: merging pull requests, releases, repository
+    settings, secrets and variables, turning workflows on or off, `DELETE` API calls, deleting branches and plain
+    force-pushes. `--force-with-lease` on your own branch stays allowed.
+  - Deny rules win over allow rules, and a rule matches the command as written. `main` also has a ruleset on
+    GitHub, so the deny list is a second guard, not the only one.
+  - A session only reads this file when this repository is its only repository. Give each session this repository
+    alone.
+  - Auto still doesn't approve every call. That is why the ban on `send_message` and `send_later` above stays.
 - The lead answers a session with `send_message` (that direction works).
 - `interrupt_session` drops messages queued for that session: after interrupting, send again.
 - **A fresh session VM** needs `cargo install cargo-deny --locked`, and `mesa-vulkan-drivers` for render crates, before
