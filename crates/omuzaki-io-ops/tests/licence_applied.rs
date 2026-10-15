@@ -7,6 +7,8 @@
 
 use omuzaki_char_mock::mock_character;
 use omuzaki_core::time::FakeClock;
+use std::collections::BTreeMap;
+
 use omuzaki_doc_api::DocWrite;
 use omuzaki_doc_mock::MemDoc;
 use omuzaki_io_api::{Finding, Severity};
@@ -16,7 +18,7 @@ use omuzaki_io_ops::ops::check_export::ExportCheck;
 use omuzaki_io_ops::ops::licence::derive::DerivedLicence;
 use omuzaki_io_ops::ops::licence::describe::LicenceDescription;
 use omuzaki_io_ops::ops::licence::source::{Ownership, PartSource};
-use omuzaki_library_api::{ApplicationRecord, ItemId, ItemRights, RECORD_SCHEMA, Resolved, Version};
+use omuzaki_library_api::{ApplicationRecord, ItemId, ItemRights, RECORD_SCHEMA, RecordBindings, Resolved, Version};
 use omuzaki_ops_api::{Actor, ErrorCode, OpCtx, OpError, Plan, find};
 use omuzaki_store_api::{Commercial, ContentHash};
 use serde_json::{Value, json};
@@ -35,12 +37,12 @@ fn application(item: &str, rights: ItemRights) -> ApplicationRecord {
         publisher: None,
         from: Resolved::FirstParty,
         slot: None,
-        bindings: Default::default(),
-        params: Default::default(),
-        deps: Default::default(),
+        bindings: RecordBindings::default(),
+        params: BTreeMap::new(),
+        deps: BTreeMap::new(),
         rights,
         created: Vec::new(),
-        wrote: Default::default(),
+        wrote: BTreeMap::new(),
     }
 }
 
@@ -138,7 +140,7 @@ fn a_non_commercial_face_item_fails_publish_at_its_record_and_private_passes() {
 
     let private = check(&doc, "private");
     assert!(private.ok, "{:#?}", private.report);
-    assert!(rule(&private.report.findings, "rights.item_not_cleared").is_empty());
+    assert_eq!(rule(&private.report.findings, "rights.item_not_cleared").len(), 0);
 }
 
 #[test]
@@ -166,7 +168,8 @@ fn check_export_and_describe_agree_about_the_applied_items() {
             let key = |f: &&Finding| (f.severity, f.location.clone(), f.message.clone());
             let mut a: Vec<_> = rule(&export.report.findings, name).iter().map(key).collect();
             let mut b: Vec<_> = rule(&described.report.findings, name).iter().map(key).collect();
-            (a.sort(), b.sort());
+            a.sort();
+            b.sort();
             assert_eq!(a, b, "{purpose} {name}");
         }
         assert_eq!(export.ok, described.ok, "{purpose}");
