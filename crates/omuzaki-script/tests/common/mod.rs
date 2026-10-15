@@ -145,6 +145,10 @@ impl Runner for FakeRunner {
             hook(n);
         }
         match op.as_str() {
+            "face.set_profile" if args["character"] == "nobody" => {
+                Err(OpError::not_found("no character called nobody")
+                    .hint("list the characters with `get(\"characters\")`"))
+            }
             "face.set_profile" | "face.set_blend" | "export.publish_clip" => {
                 let mut plan = Plan::edit(Patch::default());
                 plan.output = Some(args);
