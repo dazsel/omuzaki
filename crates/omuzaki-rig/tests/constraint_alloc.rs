@@ -5,7 +5,7 @@
 //! `spring_alloc.rs`: the harness's other threads would make a process-wide count flaky.
 
 // A counting allocator is the only way to *prove* "no allocation"; the workspace denies unsafe code by default.
-#![allow(unsafe_code, clippy::expect_used)]
+#![allow(unsafe_code, clippy::expect_used, clippy::cast_precision_loss)]
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;

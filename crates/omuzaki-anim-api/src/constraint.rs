@@ -208,7 +208,7 @@ mod tests {
         let bones = (0..n)
             .map(|i| BoneDef {
                 name: format!("b{i}"),
-                parent: (i > 0).then(|| BoneId(0)),
+                parent: (i > 0).then_some(BoneId(0)),
                 rest: Transform::IDENTITY,
                 humanoid: None,
             })
