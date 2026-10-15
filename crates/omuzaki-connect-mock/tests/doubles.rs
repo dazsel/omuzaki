@@ -1,6 +1,9 @@
 //! The run context's doubles (#997): `FakePace`, `MemoryConfig`, `MemoryInputs` and `RecordingMeter`. `FakeHttp`
 //! moved to `omuzaki-http-mock` (design D13), whose own tests cover routes, cassettes, hangs and cancellation.
 
+// Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 

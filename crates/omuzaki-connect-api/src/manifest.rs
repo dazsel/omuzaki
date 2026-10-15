@@ -591,7 +591,7 @@ impl ConnectorManifest {
                 }
             },
             (_, Some(_)) => {
-                bad("endpoint", format!("only an HTTP connector has an endpoint, not {:?}", self.transport))
+                bad("endpoint", format!("only an HTTP connector has an endpoint, not {:?}", self.transport));
             }
             (_, None) => {}
         }

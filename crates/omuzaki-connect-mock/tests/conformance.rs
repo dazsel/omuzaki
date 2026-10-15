@@ -2,6 +2,9 @@
 //! exactly their own check; an HTTP adapter written against `FakeHttp` passes the transport checks; and the suite
 //! reports every finding, not the first.
 
+// Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use std::sync::Arc;
 
 use omuzaki_connect_api::{

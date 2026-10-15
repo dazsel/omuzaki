@@ -2,6 +2,9 @@
 //! for the link gate, `make` builds fresh connectors, the default `target` and `estimate` read the manifest, and the
 //! run context hands out services and its parts.
 
+// Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 

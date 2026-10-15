@@ -1,6 +1,9 @@
 //! `FakeConnector` (#1452): prices, the cap, cancellation, scripted failures, latency through the fake clock, the PNG
 //! outputs and the registrations.
 
+// Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 mod common;
 
 use std::sync::atomic::Ordering;
@@ -61,7 +64,7 @@ fn the_cap_stops_before_the_output_that_would_pass_it() {
     assert_eq!(out.stopped, Some(ConnectError::cap_reached(100_000, 120_000)));
     let none = run_with(&fake, &m, &images(4, None), 10_000, u32::MAX);
     assert_eq!(none.result, Err(ConnectError::cap_reached(10_000, 40_000)));
-    assert!(none.meter.charges().is_empty());
+    assert_eq!(none.meter.charges(), Vec::<u64>::new());
 }
 
 #[test]

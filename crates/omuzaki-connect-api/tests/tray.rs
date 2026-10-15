@@ -1,6 +1,9 @@
 //! The tray's document contract (#995, design D6, D7) over the in-memory document: landing, deciding once, who may
 //! decide, usability, garbage roots, runs, and the effective provenance every reader of a stored hash uses.
 
+// Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 

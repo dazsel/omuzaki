@@ -1,6 +1,9 @@
 //! Typed requests (#992, design D2): JSON round trips, the flat schema, unknown fields named, the accessors and every
 //! `check` rule at its field path.
 
+// Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use std::collections::BTreeMap;
 
 use omuzaki_connect_api::{
@@ -139,7 +142,7 @@ fn input_assets_in_reading_order() {
     assert_eq!(assets[8], [h(8)]);
     let no_asset =
         Request::Dcc(DccRequest { asset: None, tool: "b".into(), action: "a".into(), args: BTreeMap::new() });
-    assert!(no_asset.input_assets().is_empty());
+    assert_eq!(no_asset.input_assets(), Vec::<ContentHash>::new());
     let twice = Request::Image(ImageRequest { references: vec![h(1), h(1)], ..image() });
     assert_eq!(twice.input_assets().len(), 2, "duplicates are kept: the preview counts what is sent");
 }

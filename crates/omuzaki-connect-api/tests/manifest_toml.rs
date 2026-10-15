@@ -1,6 +1,9 @@
 //! The manifest (#991, design D3): three realistic manifests read and validate, each rule gives exactly one error at
 //! its field path, every problem is reported, and the TOML and schema forms are stable.
 
+// Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use omuzaki_connect_api::{
     AuthSpec, Capability, ConnectorManifest, CostModel, Deliver, ManifestError, MediaKind, ParamKind, Transport, Unit,
 };

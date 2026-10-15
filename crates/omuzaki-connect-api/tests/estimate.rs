@@ -1,6 +1,9 @@
 //! Estimates, previews and settings (#993, design D2, D4, D5, D12): exact integer prices, the English sentence, the
 //! widening rule a run checks against its plan, the target resolved from settings, and `ConnectorConfig`'s form.
 
+// Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use std::collections::BTreeMap;
 
 use omuzaki_connect_api::{

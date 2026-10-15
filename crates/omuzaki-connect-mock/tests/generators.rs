@@ -1,6 +1,9 @@
 //! The generated outputs (#996): exact shapes of textures, GLB, WAV and BVH, media types per manifest, usage equal to
 //! the estimate, and seeds that decide the bytes.
 
+// Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 mod common;
 
 use std::collections::BTreeMap;
@@ -151,8 +154,11 @@ fn dcc_echoes_its_call() {
     assert_eq!(out.outputs, [Output::Json(json!({"tool": "mock-dcc", "action": "export", "echo": {"scale": 2}}))]);
 }
 
-/// The constructor, its registered id, its price per output and a request, for each byte-making fake.
-fn cases() -> Vec<(FakeConnector, &'static str, Request, fn(u64) -> Request)> {
+/// A fake, its registered id, a request, and a request for a given seed.
+type Case = (FakeConnector, &'static str, Request, fn(u64) -> Request);
+
+/// The cases for each byte-making fake, priced as its manifest says.
+fn cases() -> Vec<Case> {
     vec![
         (FakeConnector::texture(Script::default()), "mock-texture", texture(false, 1), |s| texture(false, s)),
         (FakeConnector::model3d(Script::priced(200_000)), "mock-3d", mesh(1), mesh),
