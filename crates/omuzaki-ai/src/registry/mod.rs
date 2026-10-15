@@ -14,6 +14,7 @@ mod catalogue;
 mod consent;
 mod import;
 mod install;
+mod progress;
 mod state;
 #[cfg(test)]
 mod tests;
@@ -95,6 +96,8 @@ pub struct Shared {
     clock: RwLock<Arc<dyn WallClock>>,
     /// How user models' worker processes are started.
     sandbox: RwLock<SandboxSettings>,
+    /// The download fraction of each slot whose install is fetching files.
+    downloads: Mutex<Vec<(SlotRef, f32)>>,
 }
 
 impl Drop for Shared {
@@ -181,6 +184,7 @@ impl Registry {
                 consent: RwLock::new(Arc::new(NoConsentRecords)),
                 clock: RwLock::new(Arc::new(user::SystemWallClock)),
                 sandbox: RwLock::new(SandboxSettings::default()),
+                downloads: Mutex::new(Vec::new()),
             }),
         };
         registry.reinstall(&to_reinstall);
@@ -732,6 +736,7 @@ fn entry_of(
         status,
         active,
         eval,
+        imitates: manifest.card.imitates.clone(),
     }
 }
 
@@ -811,6 +816,10 @@ impl ModelRegistry for Registry {
 
     fn install(&self, model: &ModelRef, progress: &dyn omuzaki_ai_api::Progress) -> Result<(), RegistryError> {
         self.install_model(model, progress)
+    }
+
+    fn downloading(&self, slot: &SlotRef) -> Option<f32> {
+        self.download_fraction(slot)
     }
 
     fn rollback(&self, slot: &SlotRef) -> Result<ModelRef, RegistryError> {

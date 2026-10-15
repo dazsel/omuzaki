@@ -1,6 +1,6 @@
 [package]
 name = "omuzaki-ai"
-description = "The model registry's implementation, starting with the verified file cache: pinned, size-capped, hash-checked, resumable downloads (spec v3 §16 ML-01, ADR 0017)."
+description = "The model registry's implementation: the verified file cache, shipped and user models, slot sessions, the sandboxed worker user models run in, and the model.* ops (spec v3 §16 ML-01, ML-13, ADR 0016, ADR 0017)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,6 +9,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -16,6 +17,8 @@ tempfile.workspace = true
 toml.workspace = true
 tracing.workspace = true
 omuzaki-ai-api = { path = "../omuzaki-ai-api" }
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-update-api = { path = "../omuzaki-update-api" }
 
 # The model worker's limits (src/sandbox/limits.rs): safe setrlimit and setpriority on unix, a Job Object on Windows.
@@ -27,6 +30,8 @@ windows-sys = { workspace = true, features = ["Win32_System_JobObjects", "Win32_
 
 [dev-dependencies]
 omuzaki-ai-mock = { path = "../omuzaki-ai-mock" }
+omuzaki-doc-api = { path = "../omuzaki-doc-api" }
+omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 omuzaki-store-api = { path = "../omuzaki-store-api" }
 
 [lints]
@@ -34,4 +39,5 @@ workspace = true
 
 [package.metadata.omuzaki]
 kind = "Implementation"
-summary = "the model registry's implementation, so far the verified file cache `VerifiedCache` (the `FileSource` every pinned file comes from: ordered URLs with fall-through, bounded streamed SHA-256, resume from a kept partial file, atomic store), `sha256_file` and `model_ref`; design in `docs/design/ai-api.md` §8, ADR 0017"
+registers = true
+summary = "the model registry's implementation: `VerifiedCache` (the `FileSource` every pinned file comes from), `Registry` (shipped and user models, install with smoke test, acknowledgement, the consent hook, selection, slot sessions that swap and fall back), `sandbox` (the worker process user models are probed, tested and run in, with memory, priority and lifetime limits) and the `model.*` ops; design in `docs/design/ai-api.md`, ADR 0016, ADR 0017"

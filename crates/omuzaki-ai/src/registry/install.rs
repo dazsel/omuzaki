@@ -8,6 +8,7 @@ use omuzaki_ai_api::{
 use super::Candidate;
 use super::Registry;
 use super::catalogue::Registered;
+use super::progress::{FileShare, SlotDownload};
 use super::state::{Health, Installed, State};
 
 /// The evaluation environment of a smoke test: fixtures through the registry's cache, and another slot's default
@@ -97,6 +98,8 @@ impl Registry {
         manifest: &ModelManifest,
         progress: &dyn Progress,
     ) -> Result<Vec<LocalFile>, RegistryError> {
+        let total = manifest.size();
+        let mut before = 0;
         manifest
             .files
             .iter()
@@ -104,7 +107,9 @@ impl Registry {
                 let pin = file.pin().ok_or_else(|| {
                     RegistryError::Manifest(vec![omuzaki_ai_api::ManifestError::NoUrl(file.name.clone())])
                 })?;
-                let path = self.files.get(&pin, progress).map_err(from_fetch)?;
+                let share = FileShare { inner: progress, before, size: file.size, total };
+                let path = self.files.get(&pin, &share).map_err(from_fetch)?;
+                before += file.size;
                 Ok(LocalFile { name: file.name.clone(), path })
             })
             .collect()
@@ -152,7 +157,10 @@ impl Registry {
         }
         let manifest = &entry.manifest;
         let info = Self::slot_info(&manifest.slot)?;
-        let files = self.fetch_files(manifest, progress)?;
+        let files = {
+            let downloading = SlotDownload { inner: progress, registry: self, slot: manifest.slot.clone() };
+            self.fetch_files(manifest, &downloading)?
+        };
         let mut session = match self.load_files(model, manifest, &info, &files) {
             Ok(session) => session,
             Err(e @ RegistryError::Load(_)) => return self.refuse(model, e.to_string(), None, e),

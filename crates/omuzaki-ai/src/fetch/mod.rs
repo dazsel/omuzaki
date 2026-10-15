@@ -21,7 +21,7 @@ use download::{Ended, Stop, Target, copy};
 use record::Record;
 
 /// The progress stage name downloads report under.
-const STAGE: &str = "download";
+pub(crate) const STAGE: &str = "download";
 
 /// A [`FileSource`] that downloads pinned files through a [`Fetcher`], verifies them and keeps them under a root
 /// folder. Safe to share across threads and processes: files appear by atomic rename and are checked before that.
