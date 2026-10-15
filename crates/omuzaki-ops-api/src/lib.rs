@@ -34,6 +34,8 @@ pub use approval::{ApprovalId, ApprovalRef, ApprovalRequest, Decision, Need, Pen
 pub use ctx::OpCtx;
 pub use error::{ErrorCode, ErrorDetail, OpError, RevertConflict};
 pub use fence::{fence_covers, fence_overlap, fence_within, normalize_fence};
+#[cfg(feature = "fuzzing")]
+pub use file_access::fuzzing;
 pub use file_access::{
     CanonicalPath, DirEntryInfo, EntryKind, FsMode, ProjectDir, ProjectDirError, Replacement, WriteMode,
 };
