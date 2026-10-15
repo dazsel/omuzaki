@@ -73,7 +73,7 @@ issue 9001 <<'B'
 B
 cat >"$FX/prs.json" <<'J'
 [{"number":601,"headRefName":"cloud/601-audio","isDraft":false,"createdAt":"2026-10-01T10:00:00Z",
-  "files":[{"path":"crates/omuzaki-ops/src/a.rs"}],"body":"Closes #9100"},
+  "files":[{"path":"crates/omuzaki-ops/src/a.rs"}],"closingIssuesReferences":[{"number":9100}]},
  {"number":602,"headRefName":"local/602-x","isDraft":true,"createdAt":"2026-10-02T10:00:00Z",
   "files":[{"path":"tools/x.py"}],"body":""}]
 J
@@ -89,7 +89,7 @@ issue 9002 <<'B'
 B
 cat >"$FX/prs.json" <<'J'
 [{"number":603,"headRefName":"local/603-ops","isDraft":false,"createdAt":"2026-10-03T10:00:00Z",
-  "files":[{"path":"crates/omuzaki-ops/src/a.rs"}],"body":"Closes #9101"}]
+  "files":[{"path":"crates/omuzaki-ops/src/a.rs"}],"closingIssuesReferences":[{"number":9101}]}]
 J
 run 9002
 expect_line "wait #9002: overlap with #603 (crates/omuzaki-ops/src/a.rs)" "overlap: waits and names the PR"
@@ -105,7 +105,7 @@ issue 9003 <<'B'
 B
 cat >"$FX/prs.json" <<'J'
 [{"number":604,"headRefName":"cloud/604-ops","isDraft":false,"createdAt":"2026-10-04T10:00:00Z",
-  "files":[{"path":"crates/omuzaki-ops/src/a.rs"}],"body":"Fixes #9004"}]
+  "files":[{"path":"crates/omuzaki-ops/src/a.rs"}],"closingIssuesReferences":[{"number":9004}]}]
 J
 run 9003
 expect_line "go #9003" "chained: an overlap with the blocking work is go"
@@ -119,7 +119,7 @@ B
 echo '[{"number":9004}]' >"$FX/deps-blocked_by-9010.json"
 cat >"$FX/prs.json" <<'J'
 [{"number":606,"headRefName":"cloud/606-ops","isDraft":false,"createdAt":"2026-10-04T11:00:00Z",
-  "files":[{"path":"crates/omuzaki-ops/src/a.rs"}],"body":"Closes #9004"}]
+  "files":[{"path":"crates/omuzaki-ops/src/a.rs"}],"closingIssuesReferences":[{"number":9004}]}]
 J
 run 9010
 expect_line "go #9010" "native blocked-by: an overlap with the blocker's PR is go"
@@ -133,7 +133,7 @@ B
 echo '[{"number":9012}]' >"$FX/deps-blocking-9011.json"
 cat >"$FX/prs.json" <<'J'
 [{"number":607,"headRefName":"cloud/607-ops","isDraft":false,"createdAt":"2026-10-04T12:00:00Z",
-  "files":[{"path":"crates/omuzaki-ops/src/a.rs"}],"body":"Closes #9012"}]
+  "files":[{"path":"crates/omuzaki-ops/src/a.rs"}],"closingIssuesReferences":[{"number":9012}]}]
 J
 run 9011
 expect_line "go #9011" "native blocking: an overlap with the PR for the issue this task blocks is go"
@@ -235,7 +235,7 @@ issue 9005 <<'B'
 B
 cat >"$FX/prs.json" <<'J'
 [{"number":605,"headRefName":"port/605-y","isDraft":false,"createdAt":"2026-10-05T10:00:00Z",
-  "files":[{"path":"tools/y.py"}],"body":"Closes #9005"}]
+  "files":[{"path":"tools/y.py"}],"closingIssuesReferences":[{"number":9005}]}]
 J
 run 9005
 expect_line "go #9005" "own PR: the task's own PR is go"
@@ -320,6 +320,7 @@ table = [
     # unreadable entries fail closed
     ("tools/{a,b", "tools/a", E), ("tools/a}", "tools/a", E), ("a/[bc", "a/b", E), ("/etc/passwd", "etc/passwd", E),
     ("../x", "x", E), ("a//b", "a/b", E), ("", "a", E), ("/", "a", E),
+    ("tools/[z-a].py", "tools/x.py", E),
 ]
 bad = 0
 for entry, path, want in table:
@@ -454,6 +455,57 @@ for body, top, want_entries, want_bad in table:
 sys.exit(1 if bad else 0)
 P
 if [[ $? == 0 ]]; then pass "fence_entries: slashless words by root name"; else fail "fence_entries: slashless table"; fi
+
+# closing references come from GitHub, not the body: "Does not close #42" is not a reference, so the PR is other.
+scenario not-closes
+issue 42 <<'B'
+**Fence:** `tools/n.py`
+B
+cat >"$FX/prs.json" <<'J'
+[{"number":660,"headRefName":"cloud/660","isDraft":false,"createdAt":"2026-10-12T10:00:00Z",
+  "files":[{"path":"tools/n.py"}],"body":"Does not close #42","closingIssuesReferences":[]}]
+J
+run 42
+expect_line "wait #42: overlap with #660 (tools/n.py)" "closing refs: 'Does not close #42' is not a closing reference"
+
+# brace expansion is bounded: 30 groups make 2^30 alternatives, so the entry waits; 8 groups (256) are still read.
+scenario brace-limit
+{ echo '**Fence:**'; printf -- '- `tools/%s`\n' "$(printf '{a,b}%.0s' {1..30})"; } >"$work/body"
+issue 9050 <"$work/body"
+echo '[]' >"$FX/prs.json"
+run 9050
+if grep -q "^wait #9050: cannot understand the fence entry tools/" <<<"$out"; then pass "brace limit: 30 groups wait"; else fail "brace limit: $out"; fi
+scenario brace-edge
+{ echo '**Fence:**'; printf -- '- `tools/%s`\n' "$(printf '{a,b}%.0s' {1..8})"; } >"$work/body"
+issue 9051 <"$work/body"
+echo '[]' >"$FX/prs.json"
+run 9051
+expect_line "go #9051" "brace limit: 8 groups (256 alternatives) are read"
+
+# a backtick span keeps its spaces: one entry, so a PR touching the file collides.
+scenario spaced
+issue 9052 <<'B'
+**Fence:** `docs/My File.md`
+B
+cat >"$FX/prs.json" <<'J'
+[{"number":661,"headRefName":"cloud/661","isDraft":false,"createdAt":"2026-10-12T11:00:00Z",
+  "files":[{"path":"docs/My File.md"}],"body":""}]
+J
+run 9052
+expect_line "wait #9052: overlap with #661 (docs/My File.md)" "quoted span: a path with spaces is one entry"
+
+# an invalid character range is an unreadable entry: a wait, not a traceback.
+scenario bad-range
+issue 9053 <<'B'
+**Fence:** `tools/[z-a].py`
+B
+echo '[]' >"$FX/prs.json"
+run 9053
+if [[ $code == 1 ]] && grep -q "^wait #9053: cannot understand the fence entry tools/\[z-a\].py" <<<"$out"; then
+  pass "invalid regex range waits"
+else
+  fail "invalid regex range: exit $code: $out $(cat "$work/err")"
+fi
 
 # a missing fixture is a gh failure: exit 2 with a message, not a crash.
 scenario missing

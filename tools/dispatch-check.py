@@ -39,8 +39,8 @@ from collections import defaultdict
 REPO = "dazsel/omuzaki"
 PR_LIMIT = 1000
 LANES = ("cloud", "local", "port")
-# GitHub's closing keywords, as they appear in a pull request body.
-CLOSES = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+#(\d+)", re.IGNORECASE)
+# A brace group may expand to at most this many alternatives; a larger one makes its entry unreadable (fail closed).
+BRACE_LIMIT = 256
 # `Fence:` or `**Fence:**` (also `May touch:`) at the start of a line, with anything after the colon on the same line.
 FENCE_HEADER = re.compile(r"^\s*\*{0,2}(?:fence|may touch)\*{0,2}\s*:\*{0,2}(.*)$", re.IGNORECASE)
 BLOCKED_BY = re.compile(r"blocked[- ]by", re.IGNORECASE)
@@ -147,7 +147,7 @@ def load_prs():
     """Every open pull request, with its draft flag, branch, creation time, changed paths and the issues it closes."""
     raw = gh_json(
         ["pr", "list", "-R", REPO, "--state", "open", "--limit", str(PR_LIMIT),
-         "--json", "number,headRefName,isDraft,createdAt,files,changedFiles,body"]
+         "--json", "number,headRefName,isDraft,createdAt,files,changedFiles,closingIssuesReferences"]
     )
     if len(raw) >= PR_LIMIT:
         raise GhError(f"{len(raw)} open pull requests reached the list limit of {PR_LIMIT}; the list may be cut")
@@ -158,32 +158,39 @@ def load_prs():
             "draft": bool(pr["isDraft"]),
             "created": pr.get("createdAt") or "",
             "files": pr_files(pr["number"], pr.get("files") or [], pr.get("changedFiles")),
-            "closes": {int(n) for n in CLOSES.findall(pr.get("body") or "")},
+            # The issues GitHub itself says this PR closes; prose such as "Does not close #42" is not a reference.
+            "closes": {int(ref["number"]) for ref in pr.get("closingIssuesReferences") or []},
         }
         for pr in raw
     ]
 
 
 def expand_braces(pattern):
-    """Expand `{a,b}` groups in a glob, one group at a time: `src/{x,y}.rs` gives two patterns."""
+    """Expand `{a,b}` groups in a glob, one group at a time: `src/{x,y}.rs` gives two patterns.
+
+    Raises ValueError when the expansion would exceed BRACE_LIMIT alternatives.
+    """
     match = re.search(r"\{([^{}]*)\}", pattern)
     if not match:
         return [pattern]
     expanded = []
     for alternative in match.group(1).split(","):
         expanded.extend(expand_braces(pattern[: match.start()] + alternative + pattern[match.end():]))
+        # Each call checks its own output, so a long chain of groups stops at the first level over the limit.
+        if len(expanded) > BRACE_LIMIT:
+            raise ValueError(f"more than {BRACE_LIMIT} alternatives in {pattern!r}")
     return expanded
 
 
-def split_entries(text):
-    """Split on commas and whitespace outside braces, so `crates/{a,b}/src` stays one entry."""
+def split_entries(text, spaces=True):
+    """Split on commas, and on whitespace too when `spaces`, outside braces: `crates/{a,b}/src` stays one entry."""
     parts, current, depth = [], "", 0
     for char in text:
         if char == "{":
             depth += 1
         elif char == "}":
             depth = max(0, depth - 1)
-        if depth == 0 and (char == "," or char.isspace()):
+        if depth == 0 and (char == "," or (spaces and char.isspace())):
             if current:
                 parts.append(current)
             current = ""
@@ -228,7 +235,8 @@ def fence_entries(body, top_level=None):
         line = re.sub(r"^\s*[-*]\s+", "", line)
         quoted = re.findall(r"`([^`]+)`", line)
         bare = re.split(r"[:;(]", re.sub(r"`[^`]*`", " ", line), maxsplit=1)[0]
-        for token in [t for span in quoted for t in split_entries(span)] + split_entries(bare):
+        # A backtick span is one path even with spaces in it (`docs/My File.md`); commas still separate entries.
+        for token in [t for span in quoted for t in split_entries(span, spaces=False)] + split_entries(bare):
             token = token.strip().strip("\"'`")
             if not token:
                 continue
@@ -294,7 +302,10 @@ def glob_regex(pattern):
         else:
             out.append(re.escape(char))
             i += 1
-    return re.compile("".join(out))
+    try:
+        return re.compile("".join(out))
+    except re.error as exc:
+        raise ValueError(f"invalid pattern {pattern!r}: {exc}") from exc
 
 
 def fence_matches(entry, path):
