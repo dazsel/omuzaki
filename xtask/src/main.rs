@@ -5,6 +5,7 @@
 //! - `lint-ui-writes`: UI code changes the document only through the `Runner` (QG-11).
 //! - `lint-seed`: a published seed version keeps its content, and no seed item names private material (library D15, D16).
 //! - `registry`: print the self-registrations the source declares, the expected side of the link gate.
+//! - `dist`: pack the Windows zip (`omuzaki.exe`, models, notices).
 //! - `check`: run the CI gates on the crates a change affects (`--json` prints the scope for the CI plan job).
 
 mod affected;
@@ -51,6 +52,8 @@ enum Command {
     /// Run fmt, clippy, tests, cargo-deny, lint-deps, lint-links and lint-ui-writes on the crates a change affects, through the build
     /// queue.
     Check(check::CheckArgs),
+    /// Pack the Windows zip: omuzaki.exe, the models, the notices (and the ONNX Runtime DLL), deterministically.
+    Dist(xtask::dist::DistArgs),
 }
 
 fn main() -> ExitCode {
@@ -66,6 +69,18 @@ fn main() -> ExitCode {
 
 fn run(cli: &Cli) -> Result<ExitCode> {
     let workspace = Workspace::load(cli.manifest_path.as_deref())?;
+    if let Command::Dist(args) = &cli.command {
+        return Ok(match xtask::dist::run(&workspace.root, args) {
+            Ok(zip) => {
+                println!("{}", zip.display());
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("xtask: dist: {error}");
+                ExitCode::from(2)
+            }
+        });
+    }
     match &cli.command {
         Command::LintDeps => Ok(lint_deps::run(&workspace)),
         Command::LintLinks => links::run(&workspace),
@@ -73,5 +88,6 @@ fn run(cli: &Cli) -> Result<ExitCode> {
         Command::LintSeed(args) => lint_seed::run(&workspace, args),
         Command::Registry(args) => links::registry(&workspace, args),
         Command::Check(args) => check::run(&workspace, args),
+        Command::Dist(_) => unreachable!("handled above"),
     }
 }
