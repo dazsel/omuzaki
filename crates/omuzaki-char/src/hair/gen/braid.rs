@@ -113,9 +113,10 @@ fn strand(g: &BraidGen, centre: DVec3, path: &[DVec3], k: u8) -> Vec<Vec3> {
             let tangent = (after - before).normalize_or_zero();
             let outward = (path[i] - centre).normalize_or_zero();
             let binormal = tangent.cross(outward).normalize_or_zero();
-            let s = i as f64 / (n - 1) as f64 * g.lobes * PI + ph0;
-            let p = path[i] + binormal * g.across * s.sin() + outward * (g.out * (2.0 * s).sin() + STRAND_LIFT);
-            p.as_vec3()
+            let along = i as f64 / (n - 1) as f64 * g.lobes * PI + ph0;
+            let point =
+                path[i] + binormal * g.across * along.sin() + outward * (g.out * (2.0 * along).sin() + STRAND_LIFT);
+            point.as_vec3()
         })
         .collect()
 }
