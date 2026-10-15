@@ -55,7 +55,7 @@ if [ "${1:-}" = --check ]; then
   # Only an App token can list its installation's repositories; a token swapped for the user's on the way is refused.
   if api -H "Authorization: Bearer $tok" "https://api.github.com/installation/repositories" >/dev/null; then
     left=$(api -H "Authorization: Bearer $tok" https://api.github.com/rate_limit \
-           | python3 -I -c 'import json,sys; c=json.load(sys.stdin)["resources"]["core"]; print(f"{c[\"remaining\"]}/{c[\"limit\"]}")')
+           | python3 -I -c 'import json,sys; c=json.load(sys.stdin)["resources"]["core"]; print("%s/%s" % (c["remaining"], c["limit"]))')
     echo "ok: the token reaches GitHub as the App; App budget left: $left"
   else
     echo "not ok: GitHub didn't accept the token as the App (a proxy may be replacing the Authorization header)" >&2
