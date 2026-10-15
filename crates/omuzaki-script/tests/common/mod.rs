@@ -32,6 +32,10 @@ pub struct FakeRunner {
     next_tx: AtomicU64,
     /// Called with the number of requests received so far, after each one is recorded.
     pub on_request: Mutex<Option<Box<dyn Fn(usize) + Send + Sync>>>,
+    /// The next commit fails (once) and leaves the transaction open.
+    pub fail_commit: AtomicBool,
+    /// The next rollback fails (once) and leaves the transaction open, as the real runner does on a conflict.
+    pub fail_rollback: AtomicBool,
 }
 
 impl FakeRunner {
@@ -109,11 +113,17 @@ impl Runner for FakeRunner {
     }
 
     fn commit(&self, tx: TxId, _actor: &Actor) -> Result<(), OpError> {
+        if self.fail_commit.swap(false, Ordering::SeqCst) {
+            return Err(OpError::conflict("the fake commit failed"));
+        }
         self.log.lock().unwrap().push(Entry::Commit(tx));
         Ok(())
     }
 
     fn rollback(&self, tx: TxId, _actor: &Actor) -> Result<(), OpError> {
+        if self.fail_rollback.swap(false, Ordering::SeqCst) {
+            return Err(OpError::conflict("the fake rollback failed"));
+        }
         self.log.lock().unwrap().push(Entry::Rollback(tx));
         Ok(())
     }

@@ -169,12 +169,17 @@ impl Run {
         }
     }
 
-    fn progress(&self, started: f64, clock: &dyn Clock) -> Option<Dynamic> {
+    /// Why the run must stop now, if it must: cancelled (or the lease is over), or out of wall-clock time.
+    fn stop(&self, started: f64, clock: &dyn Clock) -> Option<Stop> {
         let lent = self.lent.read().unwrap_or_else(PoisonError::into_inner);
         if lent.as_ref().is_none_or(|l| l.cancel.is_cancelled()) {
-            return Some(Dynamic::from(Stop::Cancelled));
+            return Some(Stop::Cancelled);
         }
-        (clock.now().0 - started >= f64::from(self.limits.seconds)).then(|| Dynamic::from(Stop::Limit(LimitKind::Time)))
+        (clock.now().0 - started >= f64::from(self.limits.seconds)).then_some(Stop::Limit(LimitKind::Time))
+    }
+
+    fn progress(&self, started: f64, clock: &dyn Clock) -> Option<Dynamic> {
+        self.stop(started, clock).map(Dynamic::from)
     }
 
     fn print(&self, kind: OutputKind, text: &str) {
@@ -245,7 +250,7 @@ impl ScriptHost {
         self
     }
 
-    fn engine(&self, run: &Arc<Run>) -> Engine {
+    fn engine(&self, run: &Arc<Run>, started: f64) -> Engine {
         let mut engine = Engine::new_raw();
         for package in &self.packages {
             engine.register_global_module(package.clone());
@@ -275,7 +280,6 @@ impl ScriptHost {
         let sink = run.clone();
         engine.register_fn("log", move |value: f64| sink.print(OutputKind::Note, &value.to_string()));
         let (watch, clock) = (run.clone(), self.clock.clone());
-        let started = clock.now().0;
         engine.on_progress(move |_| watch.progress(started, clock.as_ref()));
         engine
     }
@@ -330,7 +334,11 @@ impl ScriptHost {
         if cancel.is_cancelled() {
             return Err(fail(ScriptErrorKind::Cancelled, "the run was cancelled before it started"));
         }
-        let engine = self.engine(run);
+        if let Some(kind) = oversized(&run.request.params, &self.limits) {
+            return Err(fail(ScriptErrorKind::Limit(kind), "`params` holds a value larger than the script limits"));
+        }
+        let started = self.clock.now().0;
+        let engine = self.engine(run, started);
         let ast = engine.compile(source).map_err(|e| {
             let kind = match &*e.0 {
                 ParseErrorType::ExprTooDeep => ScriptErrorKind::Limit(LimitKind::Depth),
@@ -349,6 +357,17 @@ impl ScriptHost {
         if too_big {
             return Err(fail(ScriptErrorKind::Limit(LimitKind::Result), "the result is larger than the result limit"));
         }
+        // The last inner call can return straight here, past the call path's check and every progress tick, so a
+        // cancel or timeout that arrived during it is caught now, before anything becomes durable.
+        match run.stop(started, self.clock.as_ref()) {
+            Some(Stop::Cancelled) => {
+                return Err(fail(ScriptErrorKind::Cancelled, "the run was cancelled before it committed"));
+            }
+            Some(Stop::Limit(kind)) => {
+                return Err(fail(ScriptErrorKind::Limit(kind), "the wall-clock limit passed before the run committed"));
+            }
+            None => {}
+        }
         let tx = calls.commit().map_err(|e| ScriptError {
             op_error: Some(e.clone()),
             ..fail(ScriptErrorKind::Op, &format!("the transaction did not commit: {}", e.message))
@@ -361,6 +380,26 @@ impl ScriptHost {
             plans: std::mem::take(&mut run.plans.lock().unwrap_or_else(PoisonError::into_inner)),
         })
     }
+}
+
+/// The first collection limit a JSON value breaks, if any. Rhai checks only the values a script builds, so injected
+/// `params` are checked here before conversion. Iterative, so a deeply nested value can't overflow the stack.
+fn oversized(params: &JsonMap<String, Value>, limits: &Limits) -> Option<LimitKind> {
+    if params.len() > limits.map_len {
+        return Some(LimitKind::MapSize);
+    }
+    let mut pending: Vec<&Value> = params.values().collect();
+    while let Some(value) = pending.pop() {
+        match value {
+            Value::String(text) if text.len() > limits.string_bytes => return Some(LimitKind::StringSize),
+            Value::Array(items) if items.len() > limits.array_len => return Some(LimitKind::ArraySize),
+            Value::Object(fields) if fields.len() > limits.map_len => return Some(LimitKind::MapSize),
+            Value::Array(items) => pending.extend(items),
+            Value::Object(fields) => pending.extend(fields.values()),
+            _ => {}
+        }
+    }
+    None
 }
 
 fn size_kind(typ: &str) -> LimitKind {

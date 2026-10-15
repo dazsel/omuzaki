@@ -75,7 +75,10 @@ impl RunnerCalls {
         Self { runner, actor, grants, name: name.into(), edits, tx: Mutex::new(None) }
     }
 
-    fn open_tx(&self) -> Option<TxId> {
+    /// The run's transaction while it is open: from the first edit until a commit or rollback succeeds. After a failed
+    /// rollback (the runner leaves the transaction open, for example on a conflict) it is still here, so the caller can
+    /// retry [`Calls::rollback`] or settle it on the runner.
+    pub fn open_tx(&self) -> Option<TxId> {
         *self.tx.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
@@ -105,13 +108,21 @@ impl Calls for RunnerCalls {
         self.runner.get(path, &self.grants)
     }
 
+    // Commit and rollback forget the transaction only when the runner settled it: after a failed commit the host
+    // rolls back, and after a failed rollback the runner keeps it open for a retry, so the handle must survive both.
     fn commit(&self) -> Result<Option<TxId>, OpError> {
-        let open = self.tx.lock().unwrap_or_else(PoisonError::into_inner).take();
-        open.map(|tx| self.runner.commit(tx, &self.actor).map(|()| tx)).transpose()
+        let mut open = self.tx.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(tx) = *open else { return Ok(None) };
+        self.runner.commit(tx, &self.actor)?;
+        *open = None;
+        Ok(Some(tx))
     }
 
     fn rollback(&self) -> Result<(), OpError> {
-        let open = self.tx.lock().unwrap_or_else(PoisonError::into_inner).take();
-        open.map_or(Ok(()), |tx| self.runner.rollback(tx, &self.actor))
+        let mut open = self.tx.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(tx) = *open else { return Ok(()) };
+        self.runner.rollback(tx, &self.actor)?;
+        *open = None;
+        Ok(())
     }
 }

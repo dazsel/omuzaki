@@ -5,11 +5,12 @@
 mod common;
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use common::{Entry, FakeRunner, Flag, Ticking, calls, host, request, run, run_with};
 use omuzaki_core::time::{FakeClock, Seconds};
 use omuzaki_ops_api::{ErrorCode, Mode, TxId};
-use omuzaki_script::{LimitKind, Limits, OutputKind, ScriptError, ScriptErrorKind};
+use omuzaki_script::{Calls, LimitKind, Limits, OutputKind, ScriptError, ScriptErrorKind};
 
 const EDIT: &str = "ops::face::set_profile(#{ character: \"a\" });";
 
@@ -238,4 +239,76 @@ fn a_dry_run_plans_every_call_and_opens_nothing() {
     let outcome = result.expect("runs");
     assert_eq!((outcome.plans.len(), outcome.plans[0].op.as_str()), (1, "face.set_profile"));
     assert_eq!((runner.begins(), runner.requests()[0].mode), (0, Mode::DryRun));
+}
+
+#[test]
+fn a_cancel_during_the_last_call_stops_the_commit() {
+    let runner = FakeRunner::default();
+    let flag = Arc::new(Flag::default());
+    let setter = flag.clone();
+    *runner.on_request.lock().expect("lock") = Some(Box::new(move |_| setter.set()));
+    // The edit is the final expression: no progress tick or later call follows it.
+    let source = EDIT.trim_end_matches(';');
+    let (runner, result) = run_with(request(source), flag.as_ref(), Limits::console(), runner);
+    assert_eq!(result.expect_err("cancelled").kind, ScriptErrorKind::Cancelled);
+    runner.assert_rolled_back();
+}
+
+#[test]
+fn the_wall_clock_running_out_during_the_last_call_stops_the_commit() {
+    let clock = Arc::new(FakeClock::new(Seconds(0.0)));
+    let runner = FakeRunner::default();
+    let late = clock.clone();
+    *runner.on_request.lock().expect("lock") = Some(Box::new(move |_| late.advance(Seconds(10.0))));
+    let runner = Arc::new(runner);
+    let host = host(&runner, Limits::console(), &clock);
+    let result = host.run(request(EDIT.trim_end_matches(';')), &calls(&runner), &Flag::default());
+    assert_eq!(result.expect_err("times out").kind, limit(LimitKind::Time));
+    runner.assert_rolled_back();
+}
+
+#[test]
+fn a_failed_commit_rolls_the_transaction_back() {
+    let runner = FakeRunner::default();
+    runner.fail_commit.store(true, Ordering::SeqCst);
+    let (runner, result) = run_with(request(EDIT), &Flag::default(), Limits::console(), runner);
+    assert_eq!(result.expect_err("commit fails").kind, ScriptErrorKind::Op);
+    assert_eq!((runner.commits(), runner.rollbacks()), (0, 1));
+}
+
+#[test]
+fn a_failed_rollback_keeps_the_transaction_for_a_retry() {
+    let runner = Arc::new(FakeRunner::default());
+    runner.fail_rollback.store(true, Ordering::SeqCst);
+    let clock = Arc::new(FakeClock::new(Seconds(0.0)));
+    let calls = calls(&runner);
+    let source = format!("{EDIT} ops::face::fail(#{{}})");
+    let error =
+        host(&runner, Limits::console(), &clock).run(request(&source), &calls, &Flag::default()).expect_err("fails");
+    assert!(error.message.contains("rollback failed"), "{}", error.message);
+    assert_eq!(calls.open_tx(), Some(TxId(1)), "the open transaction is still reachable");
+    calls.rollback().expect("the retry succeeds");
+    assert_eq!(calls.open_tx(), None);
+    runner.assert_rolled_back();
+}
+
+#[test]
+fn params_over_the_collection_limits_are_refused_before_the_run() {
+    let limits = Limits { string_bytes: 4, array_len: 2, map_len: 2, ..Limits::console() };
+    for (params, kind) in [
+        (serde_json::json!({ "s": "12345" }), LimitKind::StringSize),
+        (serde_json::json!({ "deep": [[1, 2, 3]] }), LimitKind::ArraySize),
+        (serde_json::json!({ "m": { "a": 1, "b": 2, "c": 3 } }), LimitKind::MapSize),
+        (serde_json::json!({ "a": 1, "b": 2, "c": 3 }), LimitKind::MapSize),
+    ] {
+        let mut req = request("params");
+        req.params = params.as_object().expect("an object").clone();
+        let (runner, result) = run_with(req, &Flag::default(), limits.clone(), FakeRunner::default());
+        assert_at(&result.expect_err("refused"), limit(kind), 1, 1);
+        assert_eq!(runner.requests(), Vec::new());
+    }
+    let mut fits = request("params.s");
+    fits.params = serde_json::json!({ "s": "1234" }).as_object().expect("an object").clone();
+    let (_, result) = run_with(fits, &Flag::default(), limits, FakeRunner::default());
+    assert_eq!(result.expect("fits").value, serde_json::json!("1234"));
 }
