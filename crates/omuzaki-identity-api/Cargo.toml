@@ -1,0 +1,27 @@
+[package]
+name = "omuzaki-identity-api"
+description = "Contract for identity (spec v3 SE-07; docs/design/identity.md): keys, domain-separated ed25519 signatures, the Signed envelope, Signer and TrustStore, and the pure verifier."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ed25519-dalek = { workspace = true }
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+omuzaki-store-api = { path = "../omuzaki-store-api" }
+
+[dev-dependencies]
+proptest.workspace = true
+
+[package.metadata.omuzaki]
+kind = "API"
+summary = "identity (SE-07; `docs/design/identity.md`): `KeyId`, `Signature`, `Identity`, the `Domain` tags and `signing_message`, strict ed25519 `verify`, `canonical_json`, the `Signed<T>` envelope, the `KeyStatement` contract (`check_statement`), the `Signer` and `TrustStore` services and the serialisable `Check` outcomes; pure and wasm-clean, byte-compatible with `omuzaki-library-api` signatures"
+
+[lints]
+workspace = true

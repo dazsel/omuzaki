@@ -144,6 +144,27 @@ fn toggles_buttons_and_chips_allocate_nothing_per_widget_once_warm() {
     );
 }
 
+/// A name long enough to be cut in a 288 pt panel, so the chips take their ellipsis and tooltip path.
+const CUT_NAME: &str = "Donaudampfschifffahrtsgesellschaftskapitän bestätigen und fortfahren!!";
+
+#[test]
+fn cut_chips_allocate_nothing_per_chip_once_warm() {
+    assert_flat(
+        "CutChips",
+        |ui, n, _| {
+            ui.set_max_width(288.0);
+            for _ in 0..n {
+                ui.add(ActorChip::new(CUT_NAME, ActorKind::Agent));
+                ui.add(ScopeBadge::new(CUT_NAME));
+                ui.add(CostChip::new(&[CUT_NAME]));
+                ui.add(StatusChip::new(Status::Warn, CUT_NAME));
+                ui.add(GateChip::failed(CUT_NAME, "0.81", "0.85"));
+            }
+        },
+        2.0,
+    );
+}
+
 #[test]
 fn tree_rows_allocate_nothing_per_row_once_warm() {
     assert_flat(

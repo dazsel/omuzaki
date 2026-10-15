@@ -104,9 +104,12 @@ impl TrackerConfig {
     }
 }
 
-/// Capture-to-publish latency of the running session: from the frame's capture time on the stage clock to the moment
-/// it went into the mailbox. Feeds the health meter (PF-26) and the `track.face` budget. Built from [`Default`] or
-/// [`new`](Self::new) (ADR 0054 §4).
+/// Latency of the running session, measured from the **arrival floor** to publish: the frame's start is the stage time
+/// [`ClockMap`](crate::clock::ClockMap) maps it to, its capture time plus the smallest transport delay seen, and the
+/// end is the moment it went into the mailbox. The constant best-case transport delay (USB or driver) is therefore
+/// **not** included, so these figures understate capture-to-publish by that amount. A calibrated device-to-stage
+/// offset, which would put the capture time back in, is how a later change would include it; this contract has none.
+/// Feeds the health meter (PF-26) and the `track.face` budget. Built from [`Default`] or [`new`](Self::new) (ADR 0054 §4).
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct LatencyStats {
@@ -149,7 +152,8 @@ pub trait Tracker: Send {
     /// Stops the session and releases the camera; a no-op when stopped.
     fn stop(&mut self);
 
-    /// Latency of the current (or last) session. Cheap; the UI may call it every frame.
+    /// Latency of the current (or last) session, measured from the arrival floor to publish (see [`LatencyStats`]):
+    /// the constant best-case transport delay is left out. Cheap; the UI may call it every frame.
     fn latency(&self) -> LatencyStats;
 }
 
