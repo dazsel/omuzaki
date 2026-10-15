@@ -650,8 +650,19 @@ mod tests {
             pool.prepare(&gpu.device, &gpu.queue, &meshes, scene, outlined).unwrap();
         }
         let warmed = held(&pool);
+        // Everything that can allocate: the vectors' capacities, which must not change once warmed.
+        let capacities = |pool: &MorphPool| -> (Vec<usize>, [usize; 3]) {
+            let per_slot = pool
+                .slots
+                .iter()
+                .flat_map(|s| [s.blended.capacity(), s.smooth_cpu.capacity(), s.weights.capacity()])
+                .collect();
+            (per_slot, [pool.slots.capacity(), pool.flags.capacity(), pool.sums.capacity()])
+        };
         for scene in &scenes {
+            let before = capacities(&pool);
             pool.prepare(&gpu.device, &gpu.queue, &meshes, scene, outlined).unwrap();
+            assert_eq!(capacities(&pool), before, "a capacity changed in the second pass");
             for (slot, was) in pool.slots.iter().zip(&warmed) {
                 assert!(slot.shapes.buffer == was.0 && slot.smooth.buffer == was.1, "a buffer was replaced");
             }
@@ -662,5 +673,13 @@ mod tests {
         }
         let kept = (pool.slots.len(), pool.bytes(), pool.flags.capacity(), pool.sums.capacity());
         assert_eq!(kept, (0, 0, 0, 0), "slots, buffers and scratch are all given back");
+        // With the pool empty, instances whose weights are all zero need no slot: nothing is created, let alone
+        // created and dropped again every frame.
+        for scene in &scenes {
+            let mut zeroed = scene.clone();
+            zeroed.morph_weights.iter_mut().for_each(|w| *w = 0.0);
+            pool.prepare(&gpu.device, &gpu.queue, &meshes, &zeroed, outlined).unwrap();
+            assert_eq!((pool.slots.len(), pool.slots.capacity()), (0, 0), "zero weights made a slot");
+        }
     }
 }
