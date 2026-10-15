@@ -34,7 +34,7 @@ pub enum PullOutcome {
 /// [`GitError`], which says what went wrong and what to do.
 ///
 /// Revisions and remotes are caller text and never options. An implementation passes every caller-supplied
-/// revision ([`Git::show`], [`Git::tree_at`], [`Git::merge_base`]) and remote ([`Git::push`], [`Git::pull`]) to git
+/// revision ([`Git::log`], through every [`LogRange`] revision, [`Git::show`], [`Git::tree_at`], [`Git::merge_base`]) and remote ([`Git::push`], [`Git::pull`]) to git
 /// after `--end-of-options`, so a value such as `--upload-pack=…` or `--output=…` is read as a name, never as an
 /// option. `--end-of-options` needs git 2.24 or later, which [`MIN_GIT_VERSION`] (2.30) covers. A revision that does
 /// not resolve to a commit is [`GitError::BadRev`].

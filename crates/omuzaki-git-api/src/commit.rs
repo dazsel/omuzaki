@@ -1,7 +1,9 @@
 //! Commits: [`CommitId`], the [`LogRange`] a log walks, what a commit holds and the files of its tree.
 
+use std::borrow::Cow;
+
 use omuzaki_core::time::Seconds;
-use schemars::JsonSchema;
+use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 
 use crate::error::GitError;
@@ -11,9 +13,27 @@ use crate::status::ChangedFile;
 pub const MAX_IMPORT_FILE_BYTES: u64 = 8 * 1024 * 1024;
 
 /// A full object id: 40 (SHA-1) or 64 (SHA-256) lowercase hex characters.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 #[serde(transparent)]
 pub struct CommitId(String);
+
+impl JsonSchema for CommitId {
+    fn inline_schema() -> bool {
+        false
+    }
+
+    fn schema_name() -> Cow<'static, str> {
+        "CommitId".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "type": "string",
+            "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$",
+            "description": "A full object id: 40 (SHA-1) or 64 (SHA-256) lowercase hex characters."
+        })
+    }
+}
 
 impl CommitId {
     /// Accepts 40 or 64 lowercase hex characters and nothing else, so an id can never be read as a git option.

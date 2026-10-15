@@ -132,6 +132,13 @@ fn git_error_round_trips_and_every_variant_has_text() {
 }
 
 #[test]
+fn commit_id_schema_matches_parse() {
+    let value = serde_json::to_value(schema_for!(CommitId)).expect("schema");
+    assert_eq!(value["pattern"], "^([0-9a-f]{40}|[0-9a-f]{64})$");
+    assert_eq!(value["type"], "string");
+}
+
+#[test]
 fn schemas_are_stable() {
     // A change here is a change to the contract. Regenerate with `UPDATE_SCHEMAS=1 cargo test -p omuzaki-git-api`.
     let snaps: [(&str, String); 10] = [
