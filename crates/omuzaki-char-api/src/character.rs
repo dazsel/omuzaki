@@ -12,6 +12,7 @@ use omuzaki_face_api::{FaceProfile, Palette};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::doc_key;
 use crate::ids::{AnchorId, BodyTemplateId, JointRef, PartId, PartKindId, SkinToneId};
 use crate::skin::WeightBrush;
 
@@ -253,11 +254,15 @@ pub enum TreeError {
 /// The message for a key of a character node that no file of the character owns: the key, and the nearest valid one if
 /// it is close enough to be a typo, otherwise the definition keys.
 fn unknown_key_message(key: &str) -> String {
-    match nearest_name(key, CharacterDef::NODE_KEYS.into_iter().chain(CharacterDef::SIBLING_KEYS)) {
+    if let Err(collision) = doc_key::check(key) {
+        return format!("{collision}, so the character cannot use it");
+    }
+    let node_keys = &CharacterDef::NODE_KEYS;
+    match nearest_name(key, node_keys.iter().copied().chain(doc_key::sibling_keys().iter().copied())) {
         Some(near) => format!("unknown field `{key}` in the character, did you mean `{near}`?"),
         None => format!(
             "unknown field `{key}` in the character, expected one of {}",
-            CharacterDef::NODE_KEYS.map(|k| format!("`{k}`")).join(", ")
+            node_keys.iter().map(|k| format!("`{k}`")).collect::<Vec<_>>().join(", ")
         ),
     }
 }
@@ -277,16 +282,16 @@ pub(crate) fn nearest_name<'a>(key: &str, candidates: impl IntoIterator<Item = &
 
 impl CharacterDef {
     /// The keys of `characters/<id>` that make up a [`CharacterDef`] (`character.toml` and `face.toml`).
-    pub const NODE_KEYS: [&'static str; 8] =
-        ["name", "template", "seed", "palette", "skin_tone", "parts", "face", "weight_brushes"];
+    pub const NODE_KEYS: [&'static str; 8] = doc_key::BUILT_IN_NODE_KEYS;
 
     /// The other keys of `characters/<id>`: the character's other files, each a sub-tree with its own contract
     /// (`variants`, `colourways`, `rig.toml`, `look.toml`, the `licence` record, the per-part `sources` rows, the
     /// `applied` library records, the `poses` and the `emotes` sets). They are not part of the definition;
-    /// [`from_node`](Self::from_node) skips them and [`to_node`](Self::to_node) leaves them alone. A new file of the
-    /// character is added here.
-    pub const SIBLING_KEYS: [&'static str; 9] =
-        ["variants", "colourways", "rig", "look", "licence", "sources", "applied", "poses", "emotes"];
+    /// [`from_node`](Self::from_node) skips them and [`to_node`](Self::to_node) leaves them alone.
+    ///
+    /// This is the built-in list; a new file of the character registers its key with
+    /// [`register_doc_key!`](crate::register_doc_key), and [`doc_key::sibling_keys`] lists both.
+    pub const SIBLING_KEYS: [&'static str; 9] = doc_key::BUILT_IN_SIBLING_KEYS;
 
     /// The definition stored in the character node `node` (`characters/<id>`): reads [`NODE_KEYS`](Self::NODE_KEYS) and
     /// skips the [`SIBLING_KEYS`](Self::SIBLING_KEYS), so a character with variants, colourways, a rig or a look reads
@@ -301,7 +306,7 @@ impl CharacterDef {
     pub fn from_node(node: &Value) -> Result<Self, serde_json::Error> {
         let own = match node {
             Value::Object(map) => {
-                if let Some(unknown) = map.keys().find(|key| !Self::is_node_key(key)) {
+                if let Some(unknown) = map.keys().find(|key| doc_key::check(key).is_err() || !Self::is_node_key(key)) {
                     return Err(<serde_json::Error as serde::de::Error>::custom(unknown_key_message(unknown)));
                 }
                 Value::Object(
@@ -318,7 +323,7 @@ impl CharacterDef {
 
     /// True for a key a character node may hold: a definition key or the key of another file.
     fn is_node_key(key: &str) -> bool {
-        Self::NODE_KEYS.contains(&key) || Self::SIBLING_KEYS.contains(&key)
+        doc_key::is_node_key(key) || doc_key::is_sibling_key(key)
     }
 
     /// Writes this definition into the character node `into`: sets the [`NODE_KEYS`](Self::NODE_KEYS) it has a value
