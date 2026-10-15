@@ -50,6 +50,16 @@ Leave out slips that cost nothing.
 - **The rule:** write "assuming X" rather than "X can't happen". Before approving, check the assumption against the
   code on `main` that the change replaces.
 
+**Cut review rounds at the source** (2026-10-15).
+- **What happened:** in the first hour after the foundation freeze lifted, CI and the merge queue waited on nothing.
+  What held pull requests was Codex rounds: three or four each, at 30 to 45 minutes a round. Later rounds kept finding
+  the same class of problem in a new place: fail-closed paths, atomicity, determinism, allocation.
+- **The rules:**
+  - **Self-review before opening.** The session reads its own diff against AGENTS.md's five review fronts and the
+    classes Codex keeps finding in its area. It writes one line per front in the pull request body.
+  - **Sweep the class on a repeat.** When a round finds the same class as an earlier round, fix every instance of it
+    across the fence in that round, and say so in the `fixed` comment. Don't wait to be shown each instance.
+
 ## Automation
 
 **Check exit codes, not just output** (2026-10-15).
