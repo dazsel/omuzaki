@@ -150,8 +150,12 @@ pub type SignedIndex = Signed<IndexBody>;
   (`ETag`) so an unchanged index costs a 304; it verifies in one pass and gives one `(epoch, sequence)` to pin. A
   store that outgrows it adds sharding under a new `format` (a per-id file listed by hash), not a different trust model.
   A store keeps at most 20 versions per id in the list; older ones stay downloadable at their `url` for pins.
-- **Versions are immutable.** A second entry for one `id@version` with another hash makes the whole index
-  `Tampered(Duplicate)`; the same bytes are idempotent. A fix is a new version. Delete is `yanked: true`, never removal,
+- **Versions are immutable,** within an index and across indexes. A second entry for one `id@version` with another
+  hash makes the whole index `Tampered(Duplicate)`; the same bytes are idempotent. The client also persists, per
+  store in the plugin state file, every accepted `id@version → hash` (about 40 bytes an entry, so under 1 MB at the
+  10,000-entry scale) and rejects any later index, whatever its sequence, that maps a recorded `id@version` to another
+  hash, the same `Tampered(Duplicate)`. Only a raised `epoch` (a rotated store key the person re-added, §3) clears
+  the map. A fix is a new version. Delete is `yanked: true`, never removal,
   so a pin or a rollback still resolves (crates.io's rule).
 - **Replay and freeze are the updater's rules** (`updates.md` §4): the client stores the highest accepted
   `(epoch, sequence)` per store in the plugin state file and refuses a lower pair (`Replay`). The `expires` is 14
@@ -231,13 +235,18 @@ every step refuses before the next begins:
 
 1. **Resolve.** Pick the entry in the cached verified index (refresh first if the person asked or it has expired).
    Refuse a revoked hash/key, and a yanked entry unless `hash` was given. With `hash`, the entry's hash must equal it.
-2. **Download** `url` (resolved against the store base; https, or `http://localhost` for a dev store; no redirect
-   followed; 120 s; at most `entry.size` ≤ 16 MiB bytes read) into a staging file.
+2. **Download** `url`. It must be a relative path: reject, at parse time and again here, anything with a scheme, a
+   leading `//`, a backslash, a `..` segment or a userinfo/authority part. It is joined to the store base, and the
+   resolved URL must have the base's scheme, host and port (https, or `http://localhost` for a dev store). No
+   redirect is followed; 120 s; at most `entry.size` ≤ 16 MiB bytes read) into a staging file.
 3. **Stage** with `plugins.md` §7's refusals (zip-slip, links, duplicates, count, size) plus the ratio and
    `plugin.toml` limits above. Nothing is executed or compiled yet.
 4. **Verify:** staged hash = `entry.hash`; `plugin.sig` present and `Check::Valid` under `Domain::Plugin`;
    `statement.{id,version,hash}` = manifest and staged; `signer.key` = `entry.publisher.key`; for an update, the
-   same key as the installed version (or the `Rotate` path of §3).
+   same key as the installed version, or the `Rotate` path of §3. A package whose signer is not `entry.publisher.key`
+   is refused (the listing lied). An update whose signer *is* the entry's key but differs from the installed version's
+   key, with no valid `Rotate`, is not refused: it sets `publisher_changed` and goes on to the card, where the typed
+   confirmation of §7 decides.
 5. **Policy:** the manifest is valid; no never-granted scope (plugins.md §3.2); licence rule (§8); listing matches
    package (§5); not revoked.
 6. **Card** (only now). Fields: name, publisher label or fingerprint, "Not from Omuzaki" line, licence and credits,
@@ -326,12 +335,15 @@ reviewed". A takedown is a revocation entry (§6), so the service needs no new c
 | `omuzaki-plugin-store-api` (new) | API | the types of §4 to §9, `parse_index`/`parse_revocations`/`parse_package`, verification, `listing::check`, `diff`, the `PluginStore` and `ReviewService` traits; builds for wasm |
 | `omuzaki-plugin-store-mock` (new) | mock | `MemoryStore`: a store served from memory with scripted faults, a hostile-package builder |
 | `omuzaki-plugin-store` (new) | implementation | the client over `omuzaki-http-api`: `plugin.stores`, cache, watermarks, `plugin.store.*` ops, revocation apply |
-| `omuzaki-plugin` | implementation | the install, update, pin, rollback and keep ops call the store crate's checks (extends 0058's install job) |
+| `omuzaki-plugin` | implementation | the install, update, pin, rollback and keep ops consume the `PluginStore` contract and the `omuzaki-plugin-store-api` checks, injected by the app; it never depends on `omuzaki-plugin-store` (extends 0058's install job) |
 
 `omuzaki-plugin-store-api` depends on `omuzaki-core`, `omuzaki-store-api` (`ContentHash`), `omuzaki-plugin-api`
 (`Manifest`, `PluginId`, `Requests`; the `PermissionSummary` of #1081, or, if #1081 does not define it, the store-api
 task defines it as a read-only rendering of `Requests`: scopes, `net_hosts`, data, quota, worlds), `omuzaki-library-api`
-(`Version`) and `omuzaki-identity-api` (`Signed`, `Domain`, `Identity`, `Check`, `verify`). Its own `plugin.stores`
+(`Version`) and `omuzaki-identity-api` (`Signed`, `Domain`, `Identity`, `Check`, `verify`). The app composes the
+implementations: `omuzaki-plugin-store` serves `PluginStore` to `omuzaki-plugin`, and applies a revocation through a
+`RevocationSink` trait that `omuzaki-plugin-store-api` defines and `omuzaki-plugin` implements, so neither
+implementation crate depends on the other. Its own `plugin.stores`
 setting is a static registration in the new store crate. `omuzaki-identity-api` gains `Domain::PluginIndex` and
 `Domain::PluginRevocation` (T1). `omuzaki-plugin-api` gains nothing. Crates are added to `crates/README.md` by the
 task that creates each.
@@ -359,8 +371,8 @@ All against `MemoryStore` on a `FakeClock`; no test touches the network. The hos
 | `relabelled_signature_refused` | 0.1.0's valid statement served as 0.2.0 or as another id fails the statement check |
 | `signature_outside_hash` | listing `plugin.sig` as content is refused; changing only `plugin.sig` leaves the hash unchanged |
 | `wrong_domain_and_key` | a signature over the same hash under `Domain::Export`, `LibraryIndex` or `Plugin` fails as an index signature (and the reverse); an index signed by any key but the pinned one is `BadSignature` |
-| `publisher_key_continuity` | a package signed by a valid key other than `entry.publisher.key` is refused; an update signed by a different key needs the typed confirmation, and declined changes nothing |
-| `index_replay_expiry_epoch` | a lower `(epoch, sequence)` is `Replay`; past `expires` is `Expired` and offers nothing; a raised epoch resets the pin; one `id@version` with two hashes is `Tampered(Duplicate)` |
+| `publisher_key_continuity` | a package signed by a valid key other than `entry.publisher.key` is refused; an update whose entry and signer both carry a new key, without `Rotate`, reaches the card with `publisher_changed` and needs the typed confirmation, and declined changes nothing; a package `url` with a scheme, `//`, backslash or `..` is refused before any request |
+| `index_replay_expiry_epoch` | a lower `(epoch, sequence)` is `Replay`; past `expires` is `Expired` and offers nothing; a raised epoch resets the pin; one `id@version` with two hashes is `Tampered(Duplicate)`, in one file or across a recorded earlier index of higher sequence |
 | `listing_lies_refused` | an entry that understates `permissions` or shows another licence is `ListingMismatch` at install |
 | `nc_licence_refused` | `listing::check` refuses a non-commercial or unknown SPDX id; the client refuses a store entry with one |
 | `mid_run_revocation` | a running plugin with a `fetch` waiting; the list names its hash: `Disabled { StoreRevoked }`, the fetch is cancelled, the entry rolls back (the assertions of `plugins.md` §3.4) |
