@@ -12,6 +12,7 @@ repository.workspace = true
 blake3.workspace = true
 clap.workspace = true
 image.workspace = true
+rmcp = { workspace = true, features = ["client"] }
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -20,6 +21,9 @@ toml.workspace = true
 omuzaki-core = { path = "../omuzaki-core" }
 # `Runner::get` takes a `DocPath`, which `omuzaki-ops-api` does not re-export: the `doc.*` checks read snapshots with it.
 omuzaki-doc-api = { path = "../omuzaki-doc-api" }
+# The MCP catalog names every tool after its op (`face_set_profile` for `face.set_profile`): the transcript is read in op
+# names through it (`ToolNames`), and the scripted driver serves the runner with it (src/eval/host.rs).
+omuzaki-mcp = { path = "../omuzaki-mcp" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-store-api = { path = "../omuzaki-store-api" }
 

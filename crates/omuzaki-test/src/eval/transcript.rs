@@ -1,6 +1,9 @@
 //! The transcript (design 7.3) as the `log.*` checks read it: what the server returned for each tool call, never what
 //! the model claimed.
 
+use std::collections::BTreeMap;
+
+use omuzaki_mcp::McpServer;
 use omuzaki_ops_api::Mode;
 use serde_json::Value;
 
@@ -53,5 +56,42 @@ impl Transcript {
     #[must_use]
     pub fn new(calls: Vec<ToolCall>) -> Self {
         Self { calls }
+    }
+}
+
+/// How a server's tools are named, so a transcript that carries MCP tool names (`face_set_profile`) can be read in the op
+/// names a task writes (`face.set_profile`).
+///
+/// The map comes from the server's own catalog ([`ToolNames::of_server`]: each tool's name and its `title`, the dotted
+/// op name), never from replacing characters, so an op whose name already has an underscore (`face.set_profile`'s
+/// `set_profile`) keeps it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ToolNames {
+    ops: BTreeMap<String, String>,
+}
+
+impl ToolNames {
+    /// The map of the tools `server` lists: every op and every built-in (`history_undo` is `history.undo`).
+    #[must_use]
+    pub fn of_server(server: &McpServer) -> Self {
+        let ops = server.tools().iter().filter_map(|tool| Some((tool.name.to_string(), tool.title.clone()?))).collect();
+        Self { ops }
+    }
+
+    /// A map from `(tool name, op name)` pairs.
+    pub fn new(pairs: impl IntoIterator<Item = (String, String)>) -> Self {
+        Self { ops: pairs.into_iter().collect() }
+    }
+
+    /// The op (or built-in) a tool name stands for, if the server lists such a tool.
+    #[must_use]
+    pub fn op_of(&self, tool: &str) -> Option<&str> {
+        self.ops.get(tool).map(String::as_str)
+    }
+
+    /// Whether `name` is an op or built-in name the map knows (as a target).
+    #[must_use]
+    pub fn knows_op(&self, name: &str) -> bool {
+        self.ops.values().any(|op| op == name)
     }
 }

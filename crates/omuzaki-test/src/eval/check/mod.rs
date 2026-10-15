@@ -33,13 +33,17 @@ use serde_json::{Map, Value};
 pub use self::report::{CheckReport, CheckResult, Outcome, Verdict};
 use self::resolve::Names;
 use super::task::{Check, CheckKind, Task};
-use super::transcript::Transcript;
+use super::transcript::{ToolCall, ToolNames, Transcript};
 
 /// Grades the checks of a task against one attempt.
 pub struct Checker {
     fixture: Arc<dyn Runner>,
     result: Arc<dyn Runner>,
     transcript: Transcript,
+    /// How the transcript's tool names map to op names; without it the transcript must already use op names.
+    tool_names: Option<ToolNames>,
+    /// The transcript's calls in op names, built on first use (the `log.*` checks).
+    calls: OnceLock<Result<Vec<ToolCall>, Verdict>>,
     /// The fixture's exports, already resolved to ids, by name.
     exports: BTreeMap<String, String>,
     /// "Before" values of read-only ops on the fixture, by op and arguments: the fixture does not change, so each is
@@ -59,12 +63,21 @@ impl Checker {
             fixture,
             result,
             transcript,
+            tool_names: None,
+            calls: OnceLock::new(),
             exports: BTreeMap::new(),
             before: Mutex::new(BTreeMap::new()),
             fixture_doc: OnceLock::new(),
             result_doc: OnceLock::new(),
             store: None,
         }
+    }
+
+    /// The same checker, reading the transcript's tool names through `names` (the server's catalog).
+    #[must_use]
+    pub fn with_tool_names(mut self, names: ToolNames) -> Self {
+        self.tool_names = Some(names);
+        self
     }
 
     /// The same checker, with the fixture's exports (`{main}` and the rest) resolved to ids for the checks to use.

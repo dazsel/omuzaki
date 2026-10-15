@@ -62,11 +62,25 @@ pub(super) fn well_formed(pointer: &str) -> Result<(), Verdict> {
     Ok(())
 }
 
+/// What a token that indexes an array is.
+enum Index {
+    /// A canonical index this machine can address.
+    Item(usize),
+    /// A canonical index too large to address: no array has that item, so it is absent, like `/items/2` of two items.
+    Beyond,
+    /// Not an index at all (a leading zero, a sign, a space, a fraction).
+    Malformed,
+}
+
 /// An array index by RFC 6901: `0`, or a non-zero digit followed by digits (no leading zero, sign, space or fraction).
-fn array_index(token: &str) -> Option<usize> {
+/// Whether the token is *written* as an index is kept apart from whether the number fits in `usize`.
+fn array_index(token: &str) -> Index {
     let canonical = token == "0"
         || (token.starts_with(|c: char| ('1'..='9').contains(&c)) && token.bytes().all(|b| b.is_ascii_digit()));
-    if canonical { token.parse().ok() } else { None }
+    if !canonical {
+        return Index::Malformed;
+    }
+    token.parse().map_or(Index::Beyond, Index::Item)
 }
 
 /// Every value a JSON pointer reaches, where a `*` segment stands for each array item or object value.
@@ -84,14 +98,15 @@ pub(super) fn pointer_all<'a>(value: &'a Value, pointer: &str) -> Result<Vec<&'a
             match (v, segment.as_str()) {
                 (Value::Array(items), "*") => next.extend(items),
                 (Value::Object(map), "*") => next.extend(map.values()),
-                (Value::Array(items), token) => {
-                    let index = array_index(token).ok_or_else(|| {
-                        Verdict::error(format!(
+                (Value::Array(items), token) => match array_index(token) {
+                    Index::Item(index) => next.extend(items.get(index)),
+                    Index::Beyond => {}
+                    Index::Malformed => {
+                        return Err(Verdict::error(format!(
                             "pointer `{pointer}` is malformed: `{token}` indexes an array but is not a canonical index (`0`, or a non-zero digit then digits)"
-                        ))
-                    })?;
-                    next.extend(items.get(index));
-                }
+                        )));
+                    }
+                },
                 (Value::Object(map), key) => next.extend(map.get(key)),
                 _ => {}
             }
@@ -153,6 +168,10 @@ mod tests {
             assert!(verdict.detail.contains("canonical"), "{bad}: {}", verdict.detail);
         }
         assert_eq!(pointer_all(&items, "/items/2").unwrap().len(), 0);
+        // Written as an index but too large to be one on this machine: absent, like `/items/2`, not malformed.
+        for huge in ["/items/18446744073709551616", "/items/99999999999999999999999999999999"] {
+            assert_eq!(pointer_all(&items, huge).unwrap().len(), 0, "{huge}");
+        }
     }
 
     #[test]
