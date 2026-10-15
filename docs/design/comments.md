@@ -329,8 +329,9 @@ like any other; review activity that is not a comment (opens, visits) never coun
 - **Scope:** both need `read` (the server enforces it). The text is untrusted by the same rule.
 - **Prompt "Address the open review comments"** (`address_review_comments`): `PromptDef.needs = ["review.comment.list",
   "review.comment.reply"]`; offered only when both are tools in the session. The fixed instruction says: read the
-  threads assigned to you or unassigned; make the change inside your fence; reply on the thread saying what you did;
-  do not resolve. It takes an optional `thread`. Comment text appears only as 7.3 blocks.
+  threads assigned to you whose task a person started (task form, 7.3); make the change inside your fence; reply on the
+  thread saying what you did; do not resolve. Unassigned or unstarted threads are shown in read form only and are not
+  acted on. It takes an optional `thread`. Comment text appears only as 7.3 blocks.
 - **Listing:** the resource list shows `omuzaki://comments` only when the project has any (no clutter).
 
 ## 10. Privacy and text
