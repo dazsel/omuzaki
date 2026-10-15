@@ -221,7 +221,7 @@ impl Replay {
         let events: Vec<Event> = self.events.try_iter().collect();
         for event in events {
             match event {
-                Event::OpApplied { record } => {
+                Event::OpApplied { record, .. } => {
                     self.apply(&record.patch, &format!("logged op {} ({})", record.seq, record.op))?;
                     self.owners.insert(record.tx, record.actor.clone());
                     self.patches.entry(record.tx).or_default().extend(record.patch);
@@ -230,17 +230,9 @@ impl Replay {
                 Event::TxRolledBack { tx, .. } => self.replay_tx(tx, true, None)?,
                 Event::Undone { tx, .. } => self.replay_tx(tx, true, Some(acting))?,
                 Event::Redone { tx, .. } => self.replay_tx(tx, false, Some(acting))?,
-                // This executor has no sessions, approvals or jobs yet, so these never arrive, and
-                // none of them changes the document (a job's edits arrive as `OpApplied`).
-                Event::SessionOpened { .. }
-                | Event::SessionChanged { .. }
-                | Event::SessionEnded { .. }
-                | Event::SessionUndone { .. }
-                | Event::ApprovalRequested { .. }
-                | Event::ApprovalResolved { .. }
-                | Event::JobChanged { .. }
-                | Event::JobProgress { .. }
-                | Event::Clash { .. } => {}
+                // Session, approval and job events never arrive from this executor, and none of them changes the
+                // document (a job's edits arrive as `OpApplied`).
+                _ => {}
             }
         }
         Ok(())

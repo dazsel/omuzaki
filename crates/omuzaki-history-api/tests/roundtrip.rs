@@ -66,19 +66,16 @@ fn record() -> impl Strategy<Value = OpRecord> {
         proptest::option::of(actor()),
         proptest::option::of(approval),
     )
-        .prop_map(|(seq, op, args, actor, tx, at, patch, version, on_behalf_of, approval)| OpRecord {
-            seq,
-            op,
-            args,
-            actor,
-            cause: Some(Cause { kind: CauseKind::Prompt, text: Some("make it rounder".into()) }),
-            tx,
-            at,
-            patch,
-            version: DocVersion(version),
-            on_behalf_of,
-            approval,
-            effect: None,
+        .prop_map(|(seq, op, args, actor, tx, at, patch, version, on_behalf_of, approval)| {
+            let mut record = OpRecord::new(seq, op, args, actor, tx, at, patch, DocVersion(version))
+                .with_cause(Cause { kind: CauseKind::Prompt, text: Some("make it rounder".into()) });
+            if let Some(person) = on_behalf_of {
+                record = record.with_on_behalf_of(person);
+            }
+            if let Some(approval) = approval {
+                record = record.with_approval(approval);
+            }
+            record
         })
 }
 
