@@ -16,6 +16,7 @@ use rmcp::model::{ClientCapabilities, ClientConfig, Implementation, ProtocolVers
 use rmcp::service::{RoleClient, RunningService};
 use rmcp::{ClientHandler, ClientServiceExt};
 use serde_json::{Value, json};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::task::JoinHandle;
 
 /// The two ways an MCP client can start a session.
@@ -129,4 +130,30 @@ async fn the_answer_never_carries_a_credential() {
         }
         disconnect(connection).await;
     }
+}
+
+/// A client may skip both `initialize` and `discover` and start with any request that carries its identity in its own
+/// metadata (protocol 2026-07-28). That request names the client, and the session stops counting once it hangs up.
+#[tokio::test]
+async fn a_client_that_starts_with_a_request_is_named_by_its_metadata() {
+    let mcp = server();
+    let (server_io, client_io) = tokio::io::duplex(64 * 1024);
+    let serving = mcp.clone();
+    let server = tokio::spawn(async move { serving.serve(server_io).await });
+    let meta = json!({
+        "io.modelcontextprotocol/protocolVersion": ProtocolVersion::V_2026_07_28,
+        "io.modelcontextprotocol/clientInfo": Implementation::new("claude-code", "1.0"),
+        "io.modelcontextprotocol/clientCapabilities": ClientCapabilities::default(),
+    });
+    let request = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {"_meta": meta}});
+    let (read, mut write) = tokio::io::split(client_io);
+    write.write_all(format!("{request}\n").as_bytes()).await.expect("sends");
+    let mut lines = BufReader::new(read).lines();
+    let reply: Value = serde_json::from_str(&lines.next_line().await.expect("reads").expect("a reply")).expect("json");
+    assert!(reply["result"]["tools"].is_array(), "the request is answered: {reply}");
+    assert_eq!(mcp.connection(), json!({"connected": true, "client_name": "claude-code", "sessions": 1}));
+
+    drop((lines, write));
+    server.await.expect("server task").expect("server ends cleanly");
+    assert_eq!(mcp.connection(), json!({"connected": false, "sessions": 0}), "after the client hung up");
 }

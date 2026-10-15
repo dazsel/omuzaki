@@ -98,6 +98,18 @@ impl Session {
         uri == LOG_URI || self.shared.providers.serving(uri).is_some()
     }
 
+    /// Names this session's client from the identity a request carries in its own metadata, which is what makes it
+    /// count as connected (`agent.connection`). Outside HTTP a session may start with `discover` or with any request,
+    /// skipping both `initialize` and `discover`, so every request handler calls this first. Over HTTP a session
+    /// starts with `initialize`, which names it.
+    fn name_client(&self, context: &RequestContext<RoleServer>) {
+        if !self.http
+            && let Some(info) = context.meta.client_info()
+        {
+            self.shared.connections.name(self.serial, &info.name);
+        }
+    }
+
     fn actor(&self, context: &RequestContext<RoleServer>) -> &Actor {
         self.actor.get_or_init(|| {
             let client = context.client_info().map_or_else(|| "mcp-client".to_owned(), |info| info.name);
@@ -441,9 +453,7 @@ impl ServerHandler for Session {
         }
         // rmcp's discovery request carries the client's identity and completes its startup, so an idle client is
         // already connected. Over HTTP it is refused above and the client falls back to `initialize`.
-        if let Some(info) = context.client_info() {
-            self.shared.connections.name(self.serial, &info.name);
-        }
+        self.name_client(&context);
         Ok(DiscoverResult::from_server_info(self.supported_protocol_versions().into_owned(), self.get_info()))
     }
 
@@ -462,8 +472,9 @@ impl ServerHandler for Session {
     async fn list_tools(
         &self,
         _request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
+        self.name_client(&context);
         Ok(ListToolsResult::with_all_items(self.view.catalog.tools().cloned().collect()))
     }
 
@@ -476,6 +487,7 @@ impl ServerHandler for Session {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
+        self.name_client(&context);
         // Matched on the resolved route, so the dotted alias (`history.log`) counts as the same tool.
         let reads_log = self
             .view
@@ -499,24 +511,27 @@ impl ServerHandler for Session {
     async fn list_prompts(
         &self,
         _request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ListPromptsResult, McpError> {
+        self.name_client(&context);
         Ok(ListPromptsResult::with_all_items(self.shared.prompts.list(&self.view.catalog)))
     }
 
     async fn get_prompt(
         &self,
         request: GetPromptRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<GetPromptResponse, McpError> {
+        self.name_client(&context);
         Ok(self.shared.prompts.get(&self.view.catalog, &request.name, request.arguments)?.into())
     }
 
     async fn list_resources(
         &self,
         _request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, McpError> {
+        self.name_client(&context);
         let mut resources = vec![log_resource()];
         // Listing reads the document, so it needs `read` like reading does; without it only the log (which names
         // nothing from the document) is listed, as before.
@@ -537,16 +552,18 @@ impl ServerHandler for Session {
     async fn list_resource_templates(
         &self,
         _request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ListResourceTemplatesResult, McpError> {
+        self.name_client(&context);
         Ok(ListResourceTemplatesResult::with_all_items(self.shared.providers.templates()))
     }
 
     async fn read_resource(
         &self,
         request: ReadResourceRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, McpError> {
+        self.name_client(&context);
         if request.uri == LOG_URI {
             return self.read_log();
         }
@@ -572,6 +589,7 @@ impl ServerHandler for Session {
         request: SubscribeRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<(), McpError> {
+        self.name_client(&context);
         let uri = request.uri;
         let what =
             if uri == LOG_URI { "subscribing to the op log".to_owned() } else { format!("subscribing to {uri}") };
@@ -602,8 +620,9 @@ impl ServerHandler for Session {
     async fn unsubscribe(
         &self,
         request: UnsubscribeRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<(), McpError> {
+        self.name_client(&context);
         self.require_read(&format!("unsubscribing from {}", request.uri))?;
         if !self.subscribable(&request.uri) {
             return Err(unknown_resource(&request.uri, &self.shared.providers.templates()));
