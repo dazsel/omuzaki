@@ -6,7 +6,7 @@ area: design
 
 # The marketplace client: browse, install, publish, receipts and licences
 
-**Status:** accepted; the owner's questions Q1, Q2, Q3, Q10, Q11 and Q12 (§8) stay open. **Feature:** LB-08 (and SE-07 for what travels in an export). **Decision record:** `docs/decisions/0063-marketplace.md`. **Wire detail:** `docs/design/marketplace-protocol.md` (signed documents, freshness, HTTP, limits).
+**Status:** accepted; Q1, Q2 and Q3 (§8) stay the owner's; Q10, Q11 and Q12 are decided in §8 by the Documents and versioning lead. **Feature:** LB-08 (and SE-07 for what travels in an export). **Decision record:** `docs/decisions/0063-marketplace.md`. **Wire detail:** `docs/design/marketplace-protocol.md` (signed documents, freshness, HTTP, limits).
 **Spec:** v3 §28 (LB-08), §31 (SE-07), §37, §38 (open question 5).
 **Builds on:** `docs/design/library-sharing.md` (D2 to D4, D7, D9, D11, D14; ADR 0057), `docs/design/library.md` (D2 ids, D5 the record is the lock, D8 rights and the gate, D9 install), `docs/design/identity.md` (D3 envelope, D4 trust, D5 key statements, D6 signed exports, D10 domains).
 
@@ -334,9 +334,9 @@ Carried from library-sharing Q1 to Q3, now with what this design needs:
 - **Q1. Who runs a backend** (none, the maintainers, or a partner) and whether a market key ships built in. The client needs only a base address and a pinned key.
 - **Q2. Payments:** whether any item needs an entitlement, who issues receipts and handles refunds. The client verifies receipts and ignores `commerce`; it has no offline purchase window (a paid item needs a fresh head, D3), and any other policy is the market's to offer.
 - **Q3. Moderation and takedown:** who signs a takedown, what appeals exist, how reports are handled. The client sends reports and honours a takedown page signed by the pinned key.
-- **Q10. Which licence templates ship** beyond `CC0-1.0` and `CC-BY-4.0`, and whether custom `LicenseRef-` text is allowed.
-- **Q11. Packs:** whether a later extension adds them (a collection type, a receipt that covers a set, an atomic multi-item install). Not in this design.
-- **Q12. App-version requirement:** whether items should declare the app version they need (a manifest contract change; D2 explains why it is left out).
+- **Q10. Licence templates (decided).** Version 1 ships `CC0-1.0` and `CC-BY-4.0` only, and custom `LicenseRef-` text is allowed under D7's rules (a signed `terms_hash`, at most 64 KiB, one custom licence per item). The template list is shipped data, so a template is added later by a data-only change; a template that forbids commercial use is never offered.
+- **Q11. Packs (decided).** Not in version 1. A pack is a later extension with its own design and its own library contract task (a collection type, a receipt that covers a set, an atomic multi-item install). Nothing in version 1 blocks it: one listing, one receipt and one install each name one item and one version.
+- **Q12. App-version requirement (decided).** None in version 1 (D2 explains why). Compatibility stays what `ItemManifest::check` derives from the signed manifest. If a real case appears that the check cannot see, the answer is an additive manifest field in its own library contract task.
 
 ## 9. Sources
 
