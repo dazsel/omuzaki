@@ -25,7 +25,7 @@ mod lid;
 mod sclera;
 
 use omuzaki_core::colour::Colour;
-use omuzaki_face_api::{Cmd, ColourRef, FaceLayerId};
+use omuzaki_face_api::{Cmd, FaceLayerId};
 
 use crate::painter::PaintCtx;
 use aperture::Eye;
@@ -39,14 +39,8 @@ pub(super) enum Side {
     Right,
 }
 
-/// The colour of a resolved profile colour. A palette slot never reaches a painter (the stage resolves them); if one
-/// does, it paints mid-grey rather than failing a frame.
-fn fixed_colour(colour: &ColourRef) -> Colour {
-    match colour {
-        ColourRef::Fixed(colour) => *colour,
-        ColourRef::Slot(_) => Colour::rgb(128, 128, 128),
-    }
-}
+/// The colour an eye piece paints for a palette slot nobody resolved: mid-grey, so the stage's bug shows in the picture.
+const FALLBACK_COLOUR: Colour = Colour::rgb(128, 128, 128);
 
 /// Paints both eyes.
 pub(super) fn paint(ctx: &mut PaintCtx<'_>) {

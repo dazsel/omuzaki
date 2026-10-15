@@ -9,10 +9,10 @@
 
 use omuzaki_core::glam::{Affine2, Vec2};
 use omuzaki_face_api::{
-    BlushKind, Cap, CheekStyle, Cmd, Colour, ColourExt, ColourRef, FaceLayerId, FaceRect, Join, Paint, Stops, narrow,
+    BlushKind, Cap, CheekStyle, Cmd, Colour, ColourExt, FaceLayerId, FaceRect, Join, Paint, Stops, narrow,
 };
 
-use crate::painter::PaintCtx;
+use crate::painter::{PaintCtx, fixed_colour};
 
 /// Radius of the warm wash (the prototype's `0.17`).
 const WASH_RADIUS: f32 = 0.17;
@@ -115,10 +115,7 @@ fn corners(rect: &FaceRect, lo: Vec2, hi: Vec2) -> [Vec2; 4] {
 
 /// One blush patch centred on `centre`, in the style's kind.
 fn patch(ctx: &mut PaintCtx<'_>, style: &CheekStyle, strength: f32, centre: Vec2) {
-    let colour = match &style.colour {
-        ColourRef::Fixed(c) => *c,
-        ColourRef::Slot(_) => FALLBACK_COLOUR,
-    };
+    let colour = fixed_colour(&style.colour, FALLBACK_COLOUR);
     // Coverage saturates first (the prototype's `rgba()` clamps alpha at 1), then the colour's own alpha scales it, so
     // a translucent colour never peaks above its alpha and a transparent one paints nothing.
     let alpha = colour.alpha();
@@ -183,10 +180,7 @@ fn hatched_patch(ctx: &mut PaintCtx<'_>, rgb: [u8; 3], alpha: f32, centre: Vec2,
 /// both scaled by `puff` (`0..=1`), so a half pout is half as strong everywhere and nothing pops in.
 fn puffed_cheek(ctx: &mut PaintCtx<'_>, style: &CheekStyle, puff: f32, side: f32, centre: Vec2) {
     let radii = Vec2::new(narrow(style.radius[0]), narrow(style.radius[1]));
-    let blush = match &style.colour {
-        ColourRef::Fixed(c) => *c,
-        ColourRef::Slot(_) => FALLBACK_COLOUR,
-    };
+    let blush = fixed_colour(&style.colour, FALLBACK_COLOUR);
     let rim_centre = centre + Vec2::new(side * PUFF_OUT * radii.x, 0.0);
     let rim_radii = radii * PUFF_RIM;
     // The lower half (and a little more) of the ellipse, from the outer side round the bottom to the inner side.

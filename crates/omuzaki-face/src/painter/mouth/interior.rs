@@ -26,8 +26,8 @@ use omuzaki_face_api::{Cap, Cmd, FaceLayerId, Join, Paint, narrow};
 
 use super::OpenMouth;
 use super::lips::{DEFAULT_LINE, DEFAULT_TEETH, DEFAULT_TEETH_LOWER, DEFAULT_TONGUE, lighten};
-use super::shape::{Frame, Kind, along, resolve, solid};
-use crate::painter::PaintCtx;
+use super::shape::{Frame, Kind, along, solid};
+use crate::painter::{PaintCtx, fixed_colour};
 
 /// Samples along the teeth band, as along the open shape.
 const BAND_SEGMENTS: usize = 28;
@@ -105,7 +105,7 @@ fn open_interior(ctx: &mut PaintCtx<'_>, open: &OpenMouth) {
 }
 
 fn tongue(ctx: &mut PaintCtx<'_>, open: &OpenMouth) {
-    let colour = resolve(&ctx.profile.mouth.interior.tongue, DEFAULT_TONGUE);
+    let colour = fixed_colour(&ctx.profile.mouth.interior.tongue, DEFAULT_TONGUE);
     let (c, w, h) = (open.centre, open.half_width, open.height);
     let list = ctx.list(FaceLayerId::Base);
     let body = list.path().ellipse(c - Vec2::new(0.0, h * TONGUE_AT), w * TONGUE_RX, h * TONGUE_RY).finish();
@@ -122,7 +122,7 @@ fn upper_teeth(ctx: &mut PaintCtx<'_>, open: &OpenMouth) {
     }
     let share = if mouth.teeth_lower > CLENCHED_ABOVE { BAND_SHARE_LOW } else { BAND_SHARE };
     let depth = (open.height * share).min(BAND_MAX * open.grow) * band;
-    let colour = resolve(&ctx.profile.mouth.interior.teeth, DEFAULT_TEETH);
+    let colour = fixed_colour(&ctx.profile.mouth.interior.teeth, DEFAULT_TEETH);
     let edge = |i: usize| {
         let u = along(i, BAND_SEGMENTS);
         open.centre + Vec2::new(u * open.half_width, open.top(u))
@@ -144,8 +144,8 @@ fn lower_teeth(ctx: &mut PaintCtx<'_>, open: &OpenMouth) {
     if strength <= LOWER_MIN {
         return;
     }
-    let colour = resolve(&ctx.profile.mouth.interior.teeth_lower, DEFAULT_TEETH_LOWER);
-    let line = resolve(&ctx.profile.mouth.line_colour, DEFAULT_LINE);
+    let colour = fixed_colour(&ctx.profile.mouth.interior.teeth_lower, DEFAULT_TEETH_LOWER);
+    let line = fixed_colour(&ctx.profile.mouth.line_colour, DEFAULT_LINE);
     let clenched = ctx.params.mouth.teeth_upper > CLENCHED_ABOVE;
     let row_height = (open.height * LOWER_SHARE).max(ctx.metres_from_px(LOWER_MIN_PX));
     let (c, w, h) = (open.centre, open.half_width, open.height);
@@ -182,7 +182,7 @@ fn fangs(ctx: &mut PaintCtx<'_>, open: &OpenMouth) {
     }
     let style = &ctx.profile.mouth.fang;
     let (width, height, position) = (narrow(style.width), narrow(style.height), narrow(style.position));
-    let colour = resolve(&ctx.profile.mouth.interior.teeth, DEFAULT_TEETH);
+    let colour = fixed_colour(&ctx.profile.mouth.interior.teeth, DEFAULT_TEETH);
     let half = width / 2.0 * open.grow;
     // The distance from a base's centre to the mouth's corner on its side. `position` is validated to `0.3..=1`, so
     // this is never negative and needs no clamp.
@@ -216,8 +216,8 @@ fn closed_fang(ctx: &mut PaintCtx<'_>, opacity: f32) {
         return;
     }
     let style = &ctx.profile.mouth;
-    let teeth = resolve(&style.interior.teeth, DEFAULT_TEETH);
-    let outline = resolve(&style.line_colour, DEFAULT_LINE);
+    let teeth = fixed_colour(&style.interior.teeth, DEFAULT_TEETH);
+    let outline = fixed_colour(&style.line_colour, DEFAULT_LINE);
     let (half, height) =
         (narrow(style.fang.width) / 2.0 * CLOSED_FANG_WIDTH, narrow(style.fang.height) * CLOSED_FANG_HEIGHT);
     let offset = frame.half_width * narrow(style.fang.position) * CLOSED_FANG_AT;

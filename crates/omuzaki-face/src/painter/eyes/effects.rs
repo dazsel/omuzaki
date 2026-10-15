@@ -24,8 +24,9 @@ use omuzaki_face_api::{Cap, Cmd, FaceLayerId, Join, Paint};
 
 use super::aperture::Eye;
 use super::iris::{Iris, lighten};
-use super::{Side, fixed_colour};
+use super::{FALLBACK_COLOUR, Side};
 use crate::painter::PaintCtx;
+use crate::painter::fixed_colour;
 
 /// Below this an effect counts as off.
 const OFF: f32 = 0.01;
@@ -135,7 +136,7 @@ fn darken(colour: Colour, k: f32) -> Colour {
 
 /// The iris darkened to one flat shade.
 fn gloom(ctx: &mut PaintCtx<'_>, iris: &Iris, strength: f32) {
-    let shade = darken(fixed_colour(&ctx.profile.eyes.iris.mid), GLOOM_DARKEN);
+    let shade = darken(fixed_colour(&ctx.profile.eyes.iris.mid, FALLBACK_COLOUR), GLOOM_DARKEN);
     let list = ctx.list(FaceLayerId::Base);
     let path = iris.outline(list);
     list.push(Cmd::Fill { path, paint: Paint::Solid(shade), opacity: GLOOM_OPACITY * strength });
@@ -144,7 +145,8 @@ fn gloom(ctx: &mut PaintCtx<'_>, iris: &Iris, strength: f32) {
 /// The iris covered by the eye white and replaced by a small disc with a white dot for a pupil.
 fn shock(ctx: &mut PaintCtx<'_>, iris: &Iris, strength: f32) {
     let eyes = &ctx.profile.eyes;
-    let (white, disc) = (fixed_colour(&eyes.sclera.mid), fixed_colour(&eyes.iris.mid));
+    let (white, disc) =
+        (fixed_colour(&eyes.sclera.mid, FALLBACK_COLOUR), fixed_colour(&eyes.iris.mid, FALLBACK_COLOUR));
     let list = ctx.list(FaceLayerId::Base);
     // A little bigger than the iris, so no edge of it shows round the cover.
     let cover = list.path().ellipse(iris.centre, iris.rx * SHOCK_COVER, iris.ry * SHOCK_COVER).finish();
@@ -159,7 +161,7 @@ fn shock(ctx: &mut PaintCtx<'_>, iris: &Iris, strength: f32) {
 
 /// A two-turn spiral from the iris's centre outward.
 fn spiral(ctx: &mut PaintCtx<'_>, iris: &Iris, strength: f32) {
-    let colour = fixed_colour(&ctx.profile.eyes.iris.ring);
+    let colour = fixed_colour(&ctx.profile.eyes.iris.ring, FALLBACK_COLOUR);
     let mut points = [Vec2::ZERO; SPIRAL_POINTS];
     for (i, p) in points.iter_mut().enumerate() {
         // `i` is at most 48, exact in f32.
@@ -183,8 +185,8 @@ fn spiral(ctx: &mut PaintCtx<'_>, iris: &Iris, strength: f32) {
 /// A five-point star over the iris, lighter than it, outlined like the iris.
 fn star_iris(ctx: &mut PaintCtx<'_>, iris: &Iris, strength: f32) {
     let eyes = &ctx.profile.eyes.iris;
-    let fill = lighten(fixed_colour(&eyes.low), STAR_LIGHTEN);
-    let ring = fixed_colour(&eyes.ring);
+    let fill = lighten(fixed_colour(&eyes.low, FALLBACK_COLOUR), STAR_LIGHTEN);
+    let ring = fixed_colour(&eyes.ring, FALLBACK_COLOUR);
     let mut points = [Vec2::ZERO; 2 * STAR_POINTS];
     for (i, p) in points.iter_mut().enumerate() {
         // `i` is at most 9, exact in f32.
@@ -210,7 +212,7 @@ fn star_iris(ctx: &mut PaintCtx<'_>, iris: &Iris, strength: f32) {
 /// colour. The lid closes with the effect (see [`Eye::new`]), so the chevron fades in over a closing eye.
 fn squeeze(ctx: &mut PaintCtx<'_>, side: Side, strength: f32) {
     let eye = Eye::new(ctx.profile, ctx.params, side);
-    let colour = fixed_colour(&ctx.profile.eyes.lash.colour);
+    let colour = fixed_colour(&ctx.profile.eyes.lash.colour, FALLBACK_COLOUR);
     let (arm, vertex) = (SQUEEZE_ARM, SQUEEZE_VERTEX);
     let points = [eye.point(arm.x, arm.y), eye.point(vertex.x, vertex.y), eye.point(arm.x, -arm.y)];
     let list = ctx.list(FaceLayerId::Base);
@@ -231,7 +233,7 @@ fn tear(ctx: &mut PaintCtx<'_>, side: Side, strength: f32) {
     if !eye.is_open() {
         return;
     }
-    let colour = fixed_colour(&ctx.profile.eyes.tear);
+    let colour = fixed_colour(&ctx.profile.eyes.tear, FALLBACK_COLOUR);
     let top = eye.point(-TEAR_IN, -TEAR_DOWN);
     let list = ctx.list(FaceLayerId::Base);
     // The prototype's canvas offsets are y-down; here y is up.

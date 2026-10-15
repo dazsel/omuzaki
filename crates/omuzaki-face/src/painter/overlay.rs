@@ -13,7 +13,7 @@ use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::Vec2;
 use omuzaki_face_api::{Cap, Cmd, FaceLayerId, FaceRect, Join, Paint, Stops, narrow};
 
-use crate::painter::PaintCtx;
+use crate::painter::{PaintCtx, fixed_colour};
 
 /// Below this a strength counts as off.
 const OFF: f32 = 0.01;
@@ -79,10 +79,7 @@ fn sweat_drop(ctx: &mut PaintCtx<'_>, strength: f32) {
         (outer + TEMPLE_OUT).clamp(bounds.x0 + size.x, bounds.x1 - size.x),
         (narrow(layout.eye_y) + TEMPLE_UP).clamp(bounds.y0 + size.y, bounds.y1 - size.y),
     );
-    let colour = match &ctx.profile.eyes.tear {
-        omuzaki_face_api::ColourRef::Fixed(c) => *c,
-        omuzaki_face_api::ColourRef::Slot(_) => Colour::rgba(190, 225, 255, 217),
-    };
+    let colour = fixed_colour(&ctx.profile.eyes.tear, Colour::rgba(190, 225, 255, 217));
     let list = ctx.list(FaceLayerId::Overlay);
     // A drop standing on its round end, pointed up: two cubics from the tip to the bottom.
     let (tip, bottom) = (at + Vec2::new(0.0, size.y), at - Vec2::new(0.0, 0.7 * size.y));

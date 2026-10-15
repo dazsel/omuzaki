@@ -16,3 +16,4 @@
   scaling smoothly from 0 to 1 and composing with the others. The heart and star catchlights now crossfade with the
   profile's own shape instead of switching at 0.5, and every highlight fades with the gloom.
 - The Overlay layer draws the sweat drop at the temple and the gloom's band and hatch over the forehead.
+- The mock painter draws fangs (the `fangs` channel), so a grin shows in a strip.

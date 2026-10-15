@@ -7,8 +7,8 @@
 use omuzaki_core::glam::Vec2;
 use omuzaki_face_api::{Cap, Cmd, FaceLayerId, Join, Paint, PathRef};
 
-use super::lips::{DARKEN, DEFAULT_TONGUE, darken, lighten, resolve, solid, tint};
-use crate::painter::PaintCtx;
+use super::lips::{DARKEN, DEFAULT_TONGUE, darken, lighten, solid, tint};
+use crate::painter::{PaintCtx, fixed_colour};
 
 /// Shows from this strength, and fades in over the next [`FADE_IN`] of it, so a channel that crosses the threshold does
 /// not make the tab pop in at full size (the prototype does).
@@ -60,7 +60,7 @@ pub(super) fn paint(ctx: &mut PaintCtx<'_>) {
     let half = (open.half_width * WIDTH_SHARE).min(MAX_HALF_WIDTH * open.grow);
     let height = (HEIGHT + HEIGHT_PER_UNIT * strength) * open.grow;
     let groove_to = y0 - height * GROOVE_TO;
-    let base = resolve(&ctx.profile.mouth.interior.tongue, DEFAULT_TONGUE);
+    let base = fixed_colour(&ctx.profile.mouth.interior.tongue, DEFAULT_TONGUE);
     let outline = darken(tint(ctx), DARKEN);
 
     let list = ctx.list(FaceLayerId::Base);

@@ -5,7 +5,7 @@ use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::Vec2;
 use omuzaki_face_api::{
     Cap, Cmd, ColourExt, ColourRef, DrawList, FaceDrawing, FaceError, FaceInput, FaceLayerId, FaceLayerSpec,
-    FacePainter, FaceProfile, FaceProjection, FaceRect, Join, Paint, PaintParams, Stops, narrow,
+    FacePainter, FaceProfile, FaceProjection, FaceRect, Join, MouthParams, Paint, PaintParams, Stops, narrow,
 };
 
 /// Raster density the mock suggests for the base layer: 2 000 px/m puts a 0.4 m wide face at 800 px.
@@ -36,7 +36,7 @@ pub struct MockPainter {
 
 impl MockPainter {
     /// The channels the mock reacts to (through the default `FaceMapping`); the rest are accepted and ignored.
-    pub const SUPPORTED: [Channel; 24] = [
+    pub const SUPPORTED: [Channel; 25] = [
         Channel::EYE_BLINK_LEFT,
         Channel::EYE_BLINK_RIGHT,
         Channel::EYE_ARC_LEFT,
@@ -61,6 +61,7 @@ impl MockPainter {
         Channel::BLUSH,
         Channel::CHEEK_PUFF,
         Channel::TEARS,
+        Channel::FANGS,
     ];
 
     /// A painter for a face projected onto `projection`.
@@ -235,7 +236,42 @@ fn paint_mouth(list: &mut DrawList, profile: &FaceProfile, params: &PaintParams)
         let teeth = list.path().polyline(&corners.map(|c| centre + c)).close().finish();
         list.fill(teeth, solid(fixed(&style.interior.teeth)));
     }
+    paint_fangs(list, profile, m, centre, half_w, (left, right));
     list.stroke(mouth, solid(line), narrow(style.line_width));
+}
+
+/// Two pointed fangs hanging from the open mouth's upper edge at the style's place, as opaque as the `fangs` channel.
+/// The mock draws them so a grin shows in a strip, as the real painter's do.
+fn paint_fangs(
+    list: &mut DrawList,
+    profile: &FaceProfile,
+    m: &MouthParams,
+    centre: Vec2,
+    half_w: f32,
+    ends: (f32, f32),
+) {
+    if m.fangs <= 0.01 {
+        return;
+    }
+    let style = &profile.mouth.fang;
+    let (width, height, position) = (narrow(style.width), narrow(style.height), narrow(style.position));
+    let (left, right) = ends;
+    for side in [-1.0_f32, 1.0] {
+        // The mouth's upper edge is the quadratic from the right end through the control point to the left end; read
+        // it where the fang stands.
+        let t = 0.5 + 0.5 * side * position;
+        let edge = (1.0 - t) * (1.0 - t) * right - (1.0 - t) * t * (left + right) + t * t * left;
+        let base = centre + Vec2::new(side * position * half_w, edge);
+        let length = height.min(0.016 * m.open * 2.0);
+        let fang = list
+            .path()
+            .move_to(base - Vec2::new(width / 2.0, 0.0))
+            .line_to(base + Vec2::new(width / 2.0, 0.0))
+            .line_to(base + Vec2::new(0.0, -length))
+            .close()
+            .finish();
+        list.fill(fang, solid(fixed(&profile.mouth.interior.teeth).faded(m.fangs.min(1.0))));
+    }
 }
 
 #[cfg(test)]

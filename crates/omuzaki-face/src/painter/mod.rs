@@ -15,13 +15,24 @@ mod nose;
 mod overlay;
 mod real;
 
+use omuzaki_core::colour::Colour;
 use omuzaki_core::time::Seconds;
 use omuzaki_face_api::{
-    DEFAULT_PX_PER_M, DrawList, FaceDrawing, FaceInput, FaceLayerId, FaceLayerSpec, FaceProfile, FaceView, PaintParams,
+    ColourRef, DEFAULT_PX_PER_M, DrawList, FaceDrawing, FaceInput, FaceLayerId, FaceLayerSpec, FaceProfile, FaceView,
+    PaintParams,
 };
 
 pub use mouth::{MouthPiece, OpenMouth};
 pub use real::RealPainter;
+
+/// A profile colour as a colour. A palette slot never reaches a painter (the stage resolves them); if one does, the
+/// section paints its own `fallback` rather than failing a frame.
+pub(crate) fn fixed_colour(colour: &ColourRef, fallback: Colour) -> Colour {
+    match colour {
+        ColourRef::Fixed(colour) => *colour,
+        ColourRef::Slot(_) => fallback,
+    }
+}
 
 /// One part of the face, in the order [`RealPainter`] paints them.
 ///

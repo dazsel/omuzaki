@@ -8,8 +8,9 @@ use omuzaki_core::glam::Vec2;
 use omuzaki_face_api::{FaceLayerId, Paint};
 
 use super::aperture::{Eye, Lid};
-use super::{Side, fixed_colour};
+use super::{FALLBACK_COLOUR, Side};
 use crate::painter::PaintCtx;
+use crate::painter::fixed_colour;
 
 /// Points on the curve (`i = 0..=30`), `u` from [`FROM`] over [`SPAN`] (to 1.15).
 const POINTS: usize = 31;
@@ -44,7 +45,7 @@ pub(super) fn paint(ctx: &mut PaintCtx<'_>, side: Side) {
         Lid::Relaxed if ctx.params.effects.squeeze > SQUEEZE_OFF => return,
         Lid::Relaxed => |u| RELAXED_BASE - RELAXED_BOW * (1.0 - u * u) + RELAXED_SLOPE * u,
     };
-    let colour = fixed_colour(&ctx.profile.eyes.lash.colour);
+    let colour = fixed_colour(&ctx.profile.eyes.lash.colour, FALLBACK_COLOUR);
     let mut points = [Vec2::ZERO; POINTS];
     for (i, p) in points.iter_mut().enumerate() {
         // `i` is at most 30, exact in f32.

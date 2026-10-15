@@ -8,9 +8,9 @@
 use std::f32::consts::PI;
 
 use omuzaki_core::glam::Vec2;
-use omuzaki_face_api::{BrowParams, BrowStyle, Colour, ColourRef, FaceLayerId, FaceRect, Paint, narrow};
+use omuzaki_face_api::{BrowParams, BrowStyle, Colour, FaceLayerId, FaceRect, Paint, narrow};
 
-use crate::painter::PaintCtx;
+use crate::painter::{PaintCtx, fixed_colour};
 
 /// Segments along each brow (the prototype's `N`).
 const SEGMENTS: usize = 22;
@@ -69,10 +69,7 @@ struct Style {
 
 impl Style {
     fn new(brows: &BrowStyle) -> Self {
-        let colour = match &brows.colour {
-            ColourRef::Fixed(c) => *c,
-            ColourRef::Slot(_) => FALLBACK_COLOUR,
-        };
+        let colour = fixed_colour(&brows.colour, FALLBACK_COLOUR);
         Self {
             inner: narrow(brows.inner_x),
             outer: narrow(brows.outer_x),

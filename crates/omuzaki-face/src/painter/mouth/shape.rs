@@ -18,10 +18,10 @@
 
 use omuzaki_core::glam::Vec2;
 use omuzaki_face_api::{
-    Cap, Cmd, Colour, ColourExt, ColourRef, FaceLayerId, Join, MouthParams, MouthStyle, Paint, PathRef, Stops, narrow,
+    Cap, Cmd, Colour, ColourExt, FaceLayerId, Join, MouthParams, MouthStyle, Paint, PathRef, Stops, narrow,
 };
 
-use crate::painter::PaintCtx;
+use crate::painter::{PaintCtx, fixed_colour};
 
 /// Below this opening (after the press has taken its share) the mouth is a closed line.
 const CLOSED_BELOW: f32 = 0.06;
@@ -291,14 +291,6 @@ pub(super) fn solid(colour: Colour, alpha: f32) -> Paint {
     Paint::Solid(colour.faded(alpha))
 }
 
-/// A style colour, or `fallback` for a palette slot nobody resolved (which a painter should never see).
-pub(super) fn resolve(colour: &ColourRef, fallback: Colour) -> Colour {
-    match colour {
-        ColourRef::Fixed(c) => *c,
-        ColourRef::Slot(_) => fallback,
-    }
-}
-
 /// Position along a path of sample `i` out of `n`, from `-1` to `1`.
 pub(super) fn along(i: usize, n: usize) -> f32 {
     // Sample counts are a few dozen at most, exact in f32.
@@ -337,7 +329,7 @@ fn closed_line(ctx: &mut PaintCtx<'_>, f: &Frame) {
     let style = &ctx.profile.mouth;
     let curve = narrow(style.corner_curve);
     let width = f.line_width(style);
-    let colour = resolve(&style.line_colour, Colour::rgb(0xa8, 0x5a, 0x55));
+    let colour = fixed_colour(&style.line_colour, Colour::rgb(0xa8, 0x5a, 0x55));
     let mut points = [Vec2::ZERO; CLOSED_SEGMENTS + 1];
     for (i, p) in points.iter_mut().enumerate() {
         let u = along(i, CLOSED_SEGMENTS);
@@ -411,8 +403,8 @@ pub(super) fn lerp(from: f32, to: f32, t: f32) -> f32 {
 fn open_shape(ctx: &mut PaintCtx<'_>, f: &Frame) {
     let open = open_outline(ctx, f);
     let interior = &ctx.profile.mouth.interior;
-    let top = resolve(&interior.top, Colour::rgb(0x4a, 0x16, 0x22));
-    let bottom = resolve(&interior.bottom, Colour::rgb(0x6e, 0x24, 0x33));
+    let top = fixed_colour(&interior.top, Colour::rgb(0x4a, 0x16, 0x22));
+    let bottom = fixed_colour(&interior.bottom, Colour::rgb(0x6e, 0x24, 0x33));
     let fill = Paint::Linear {
         from: f.centre,
         to: f.centre - Vec2::new(0.0, open.height),

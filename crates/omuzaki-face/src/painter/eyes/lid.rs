@@ -14,8 +14,9 @@ use omuzaki_core::glam::Vec2;
 use omuzaki_face_api::{Colour, ColourExt, FaceLayerId, Paint, narrow};
 
 use super::aperture::Eye;
-use super::{Side, fixed_colour};
+use super::{FALLBACK_COLOUR, Side};
 use crate::painter::PaintCtx;
+use crate::painter::fixed_colour;
 
 /// Points on each of the lines (`i = 0..=24`).
 const POINTS: usize = 25;
@@ -47,7 +48,7 @@ pub(super) fn paint(ctx: &mut PaintCtx<'_>, side: Side) {
         return;
     }
     let style = &ctx.profile.eyes.lower_lid;
-    let colour = fixed_colour(&style.colour);
+    let colour = fixed_colour(&style.colour, FALLBACK_COLOUR);
     let line_alpha = narrow(style.line);
     if line_alpha > 0.0 {
         let points = along(&eye, LINE_FROM, LINE_SPAN, 0.0);

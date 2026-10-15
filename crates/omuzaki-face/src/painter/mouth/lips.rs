@@ -17,10 +17,10 @@ use omuzaki_face_api::{Cap, Cmd, Colour, ColourExt, FaceLayerId, Join, Paint, St
 
 use super::OpenMouth;
 use super::shape::{Frame, Kind, lerp};
-use crate::painter::PaintCtx;
+use crate::painter::{PaintCtx, fixed_colour};
 
 // The tongue (outside this change) takes its helpers from here.
-pub(super) use super::shape::{resolve, solid};
+pub(super) use super::shape::solid;
 
 /// The lip tint of an unset palette slot (which a painter should never see): the default's.
 const DEFAULT_TINT: Colour = Colour::rgb(0xee, 0x8e, 0x92);
@@ -87,7 +87,7 @@ pub(super) fn darken(colour: Colour, by: [f32; 3]) -> Colour {
 
 /// The lip tint from the profile.
 pub(super) fn tint(ctx: &PaintCtx<'_>) -> Colour {
-    resolve(&ctx.profile.mouth.lips.colour, DEFAULT_TINT)
+    fixed_colour(&ctx.profile.mouth.lips.colour, DEFAULT_TINT)
 }
 
 /// Paints the glossy lower lip under the mouth: a soft swell of the lip tint with a small highlight. Nothing on a flat
@@ -173,7 +173,7 @@ pub(super) fn paint_rim(ctx: &mut PaintCtx<'_>) {
     let Some(open) = ctx.open_mouth else { return };
     let lips = narrow(ctx.profile.mouth.lips.strength);
     let glossy = lips > RIM_LIPS_ABOVE;
-    let line = resolve(&ctx.profile.mouth.line_colour, DEFAULT_LINE);
+    let line = fixed_colour(&ctx.profile.mouth.line_colour, DEFAULT_LINE);
     let tint = tint(ctx);
     let (colour, width) =
         if glossy { (darken(tint, DARKEN).faded(RIM_DARK_ALPHA), RIM_DARK_WIDTH) } else { (line, RIM_PLAIN_WIDTH) };
