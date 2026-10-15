@@ -221,7 +221,7 @@ impl Registry {
             .copied()
             .filter(|p| *p == Provider::Cpu || !self.settings.disabled_providers.contains(p))
             .collect();
-        SessionOptions { providers, threads: info.threads }
+        SessionOptions::new(providers, info.threads)
     }
 
     fn entry(&self, state: &State, entry: &Registered, active: Option<&ModelRef>) -> ModelEntry {
