@@ -43,6 +43,11 @@ fn stored(bytes: &[u8]) -> (Arc<MemStore>, ContentHash, Services) {
     (store, hash, services)
 }
 
+/// The pixels of a decoded image as `[r, g, b, a]` quads, for comparison.
+fn quads(image: &Rgba8) -> Vec<[u8; 4]> {
+    image.pixels.as_chunks::<4>().0.to_vec()
+}
+
 fn load_ok(bytes: &[u8]) -> Rgba8 {
     let (_, hash, services) = stored(bytes);
     run(&services, &Grants::of([]), None, |ctx| load(ctx, &ImageRef::Asset { asset: hash }, FIELD)).unwrap()
@@ -119,20 +124,20 @@ fn read_scope() -> Grants {
 fn grey_rgb_and_rgba_pngs_decode_to_rgba() {
     let grey = load_ok(&png(2, 1, ExtendedColorType::L8, &[10, 200]));
     assert_eq!((grey.width, grey.height), (2, 1));
-    assert_eq!(grey.pixels, vec![[10, 10, 10, 255], [200, 200, 200, 255]]);
+    assert_eq!(quads(&grey), vec![[10, 10, 10, 255], [200, 200, 200, 255]]);
 
     let rgb = load_ok(&png(1, 2, ExtendedColorType::Rgb8, &[1, 2, 3, 250, 251, 252]));
-    assert_eq!(rgb.pixels, vec![[1, 2, 3, 255], [250, 251, 252, 255]]);
+    assert_eq!(quads(&rgb), vec![[1, 2, 3, 255], [250, 251, 252, 255]]);
 
     let rgba = load_ok(&png(1, 1, ExtendedColorType::Rgba8, &[5, 6, 7, 128]));
-    assert_eq!(rgba.pixels, vec![[5, 6, 7, 128]]);
+    assert_eq!(quads(&rgba), vec![[5, 6, 7, 128]]);
 }
 
 #[test]
 fn a_transparent_pixel_keeps_its_colour_and_alpha_straight() {
     // Straight, not premultiplied: the colour under a zero alpha is the one the file gives, not black.
     let image = load_ok(&png(2, 1, ExtendedColorType::Rgba8, &[10, 20, 30, 0, 40, 50, 60, 255]));
-    assert_eq!(image.pixels, vec![[10, 20, 30, 0], [40, 50, 60, 255]]);
+    assert_eq!(quads(&image), vec![[10, 20, 30, 0], [40, 50, 60, 255]]);
 }
 
 #[test]
@@ -141,7 +146,7 @@ fn sixteen_bit_pngs_decode_to_their_eight_bit_values() {
     let values: [u16; 6] = [0, 257, 128 * 257, 255 * 257, 3 * 257, 77 * 257];
     let data: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
     let image = load_ok(&png(1, 2, ExtendedColorType::Rgb16, &data));
-    assert_eq!(image.pixels, vec![[0, 1, 128, 255], [255, 3, 77, 255]]);
+    assert_eq!(quads(&image), vec![[0, 1, 128, 255], [255, 3, 77, 255]]);
 }
 
 #[test]
@@ -158,7 +163,7 @@ fn pixels_run_row_by_row_from_the_top() {
     for y in 0..5_u8 {
         for x in 0..7_u8 {
             let at = usize::from(y) * 7 + usize::from(x);
-            assert_eq!(image.pixels[at], [x * 30, y * 40, 50, 255], "pixel ({x}, {y})");
+            assert_eq!(quads(&image)[at], [x * 30, y * 40, 50, 255], "pixel ({x}, {y})");
         }
     }
 }
@@ -172,7 +177,7 @@ fn a_flat_jpeg_decodes_to_its_colour() {
         .unwrap();
     let image = load_ok(&jpeg);
     assert_eq!((image.width, image.height), (16, 16));
-    for (at, pixel) in image.pixels.iter().enumerate() {
+    for (at, pixel) in quads(&image).iter().enumerate() {
         for (channel, (got, want)) in pixel.iter().zip([200_i32, 120, 60, 255]).enumerate() {
             let diff = (i32::from(*got) - want).abs();
             assert!(diff <= 3, "pixel {at} channel {channel}: {got} vs {want}");
@@ -187,7 +192,7 @@ fn an_asset_loads_to_the_bytes_the_store_holds() {
     let image = run(&services, &Grants::of([]), None, |ctx| load(ctx, &ImageRef::Asset { asset: hash }, FIELD));
     let image = image.unwrap();
     assert_eq!(image.hash, hash);
-    assert_eq!(image.pixels, vec![[11, 22, 33, 255]]);
+    assert_eq!(quads(&image), vec![[11, 22, 33, 255]]);
 }
 
 #[test]
@@ -199,7 +204,7 @@ fn a_file_loads_and_is_named_by_the_hash_of_its_bytes() {
     })
     .unwrap();
     assert_eq!(image.hash, ContentHash::of(&site.png));
-    assert_eq!(image.pixels, vec![[9, 8, 7, 255], [1, 2, 3, 255], [4, 5, 6, 255], [7, 8, 9, 255]]);
+    assert_eq!(quads(&image), vec![[9, 8, 7, 255], [1, 2, 3, 255], [4, 5, 6, 255], [7, 8, 9, 255]]);
 }
 
 #[test]

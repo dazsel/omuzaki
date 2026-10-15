@@ -1,26 +1,38 @@
 //! Reads a reference or render image for a measure (design 4.1): from the store by its hash, or from a file the grants
 //! allow, decoded to straight sRGB RGBA8. Both paths refuse an oversized image from its header, before any pixel is
-//! allocated, so a crafted file cannot make a measure allocate what it likes.
+//! allocated, so a crafted file cannot make a measure allocate what it likes. Only PNG and JPEG are read, and only sRGB.
 
 use std::io::{Cursor, Read};
 
-use ::image::{ImageError, ImageReader, Limits};
+use ::image::{DynamicImage, ImageDecoder, ImageError, ImageFormat, ImageReader, Limits};
 use omuzaki_ops_api::{FsMode, OpCtx, OpError};
 use omuzaki_store_api::{ContentHash, Store, StoreError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::header::{self, JpegFrame};
 use crate::messages;
 
 /// The longest side a measure reads, in pixels (design 4.1).
 pub const MAX_SIDE: u32 = 8192;
 
-/// The most a measure holds decoded, in MiB: its RGBA8 pixels (4 bytes each) and the decoder's own buffers are both
-/// capped by it.
+/// The most a measure holds at once while it decodes, in MiB: the decoder's scratch, its output and the RGBA8 pixels the
+/// measure keeps. The header gives all three before anything is decoded, and their sum is capped by this.
 pub const MAX_DECODED_MIB: u32 = 64;
 
-/// Bytes a decoded pixel takes in the RGBA8 the measure holds.
+/// The most bytes of a file a measure reads. A JPEG can be smaller than its pixels, and a PNG is about as large as its
+/// pixels, so twice the decoded cap covers every image the decoded cap admits.
+const MAX_FILE_BYTES: u64 = 2 * ((MAX_DECODED_MIB as u64) << 20);
+
+/// Bytes a decoded pixel takes in the RGBA8 the measure keeps.
 const RGBA_BYTES: u64 = 4;
+
+/// Bytes of one JPEG coefficient block: 64 `i16` coefficients. The decoder keeps them for every component, on whole MCUs.
+const COEFFICIENT_BLOCK_BYTES: u64 = 64 * 2;
+
+/// Bytes of a decoder's own state that does not grow with the image: its inflate window and tables for a PNG, its
+/// Huffman tables for a JPEG. Measured at about 45 KiB for a PNG, and allowed for at 64 KiB.
+const DECODER_STATE_BYTES: u64 = 64 << 10;
 
 /// The decoded cap in bytes.
 fn max_decoded_bytes() -> u64 {
@@ -51,8 +63,8 @@ pub struct Rgba8 {
     pub width: u32,
     /// The height in pixels.
     pub height: u32,
-    /// `width * height` pixels, row by row from the top, each `[r, g, b, a]`.
-    pub pixels: Vec<[u8; 4]>,
+    /// `width * height` pixels as RGBA quads (`r, g, b, a` bytes), row by row from the top.
+    pub pixels: Vec<u8>,
     /// The hash of the file's bytes, or the asset's hash: the name a target caches its numbers under.
     pub hash: ContentHash,
 }
@@ -66,8 +78,11 @@ pub struct Rgba8 {
 /// - `Unavailable` when the op's services carry no store, for an asset reference.
 /// - `Denied` (the field) when the grants do not let the file be read, or the path is a link that cannot be followed.
 /// - `Invalid` (the field) with [`measure-image-too-large`](messages::image_too_large) when the image is larger than
-///   [`MAX_SIDE`] a side or [`MAX_DECODED_MIB`] decoded, and with
-///   [`measure-image-unreadable`](messages::image_unreadable) when the bytes are not a PNG or JPEG.
+///   [`MAX_SIDE`] a side or needs more than [`MAX_DECODED_MIB`] at once, and with
+///   [`measure-image-unreadable`](messages::image_unreadable) when the bytes are not a PNG or JPEG (naming the format
+///   when they are another one), or a file is over [`MAX_FILE_BYTES`].
+/// - `Invalid` (the field) with [`measure-image-colour-unsupported`](messages::image_colour_unsupported) when the image
+///   is not sRGB.
 /// - `Internal` for a store that fails (corrupt bytes, an I/O error) or a file that cannot be read after the check.
 pub fn load(ctx: &OpCtx<'_>, image: &ImageRef, field: &str) -> Result<Rgba8, OpError> {
     let (bytes, hash) = source(ctx, image, field)?;
@@ -103,32 +118,111 @@ fn store_error(hash: &ContentHash, error: StoreError) -> OpError {
 }
 
 /// The bytes of a file the grants allow. The path is checked for reading, then opened only through the checked path,
-/// which refuses a link at every step, so a file swapped for a link after the check cannot be read in its place.
+/// which refuses a link at every step, so a file swapped for a link after the check cannot be read in its place. The
+/// read stops one byte past [`MAX_FILE_BYTES`], so an oversized file is refused without being read to its end.
 fn read_file(ctx: &OpCtx<'_>, path: &str, field: &str) -> Result<Vec<u8>, OpError> {
     let checked = ctx.fs_access(path, FsMode::Read).map_err(|error| at(field, error))?;
-    let mut file = checked.open_read().map_err(|error| at(field, error))?;
+    let file = checked.open_read().map_err(|error| at(field, error))?;
     let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes).map_err(|error| OpError::internal(format!("reading {checked}: {error}")))?;
+    file.take(MAX_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| OpError::internal(format!("reading {checked}: {error}")))?;
+    if bytes.len() as u64 > MAX_FILE_BYTES {
+        return Err(refuse_unreadable(field, format!("the file is larger than {} MiB", MAX_FILE_BYTES >> 20)));
+    }
     Ok(bytes)
 }
 
-/// Decodes `bytes`, refusing an oversized image from its header before the decoder allocates anything.
-fn decode(bytes: &[u8], hash: ContentHash, field: &str) -> Result<Rgba8, OpError> {
-    let (width, height) =
-        reader(bytes).and_then(ImageReader::into_dimensions).map_err(|error| unreadable(field, &error))?;
-    if !fits(width, height) {
-        return Err(too_large(field, width, height));
+/// Decodes `bytes` to straight sRGB RGBA8. The header is read first: the format must be PNG or JPEG, the size and the
+/// peak the decoder will hold must be within the caps, and the colour must be sRGB. Only then does the decoder run.
+///
+/// This is the decode [`load`] runs, public so the allocation budget can be measured on its own (`tests/budget.rs`).
+///
+/// # Errors
+/// The `Invalid` refusals of [`load`]; `hash` is recorded as the image's name in the result.
+pub fn decode(bytes: &[u8], hash: ContentHash, field: &str) -> Result<Rgba8, OpError> {
+    let format = guess(bytes).map_err(|reason| refuse_unreadable(field, reason))?;
+    let plan = plan(bytes, format).map_err(|reason| refuse_unreadable(field, reason))?;
+    if !fits(plan.width, plan.height, plan.peak) {
+        return Err(too_large(field, plan.width, plan.height));
     }
     let mut input = reader(bytes).map_err(|error| unreadable(field, &error))?;
     input.limits(limits());
-    let decoded = input.decode().map_err(|error| match error {
-        ImageError::Limits(_) => too_large(field, width, height),
+    let mut decoder = input.into_decoder().map_err(|error| unreadable(field, &error))?;
+    let icc = decoder.icc_profile().map_err(|error| unreadable(field, &error))?;
+    if let Some(found) = header::non_srgb(bytes, format, icc.as_deref()) {
+        return Err(colour_unsupported(field, &found));
+    }
+    let dynamic = DynamicImage::from_decoder(decoder).map_err(|error| match error {
+        ImageError::Limits(_) => too_large(field, plan.width, plan.height),
         other => unreadable(field, &other),
     })?;
-    let rgba = decoded.into_rgba8();
+    let rgba = dynamic.into_rgba8();
     let (width, height) = rgba.dimensions();
-    let pixels = rgba.pixels().map(|pixel| pixel.0).collect();
-    Ok(Rgba8 { width, height, pixels, hash })
+    Ok(Rgba8 { width, height, pixels: rgba.into_raw(), hash })
+}
+
+/// The predicted peak of decoding `bytes`, from the header alone: the decoder's scratch, its output and the RGBA8 the
+/// measure keeps. `None` when the header cannot be read or the format is not PNG or JPEG. [`decode`] refuses an image
+/// whose prediction is over [`MAX_DECODED_MIB`], and the budget test checks that the measured peak never exceeds it.
+pub fn predicted_peak(bytes: &[u8]) -> Option<u64> {
+    let format = guess(bytes).ok()?;
+    plan(bytes, format).ok().map(|plan| plan.peak)
+}
+
+/// The image's format, which must be PNG or JPEG: a format another crate enables on the shared `image` dependency is
+/// refused here, before its header is read, and named in the refusal.
+fn guess(bytes: &[u8]) -> Result<ImageFormat, String> {
+    let format = ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|error| error.to_string())?
+        .format()
+        .ok_or_else(|| "its format is not one a measure knows".to_owned())?;
+    match format {
+        ImageFormat::Png | ImageFormat::Jpeg => Ok(format),
+        other => {
+            let name = other.extensions_str().first().map_or("unknown", |extension| *extension).to_uppercase();
+            Err(format!("it is a {name} file, and a measure reads only PNG and JPEG"))
+        }
+    }
+}
+
+/// What the header says about the decode: the size, and the peak the decoder and the measure hold together.
+struct Plan {
+    width: u32,
+    height: u32,
+    peak: u64,
+}
+
+/// The plan for an image of a known format, from its header only.
+fn plan(bytes: &[u8], format: ImageFormat) -> Result<Plan, String> {
+    let (width, height, output, scratch) = if format == ImageFormat::Jpeg {
+        let frame = header::jpeg_frame(bytes).ok_or("its frame header is missing or cut short")?;
+        // The JPEG decoder outputs one byte a pixel for a grey image and three for any colour image.
+        let output = if frame.sampling.len() == 1 { 1 } else { 3 };
+        (frame.width, frame.height, output, coefficient_bytes(&frame))
+    } else {
+        let decoder = reader(bytes).and_then(ImageReader::into_decoder).map_err(|error| error.to_string())?;
+        let (width, height) = decoder.dimensions();
+        let output = u64::from(decoder.color_type().bytes_per_pixel());
+        // The PNG decoder fills a frame-sized scratch buffer alongside its output, and keeps the rows it filters
+        // against, which grow with the width.
+        let scratch = u64::from(width) * u64::from(height) * output + 4 * u64::from(width) * output;
+        (width, height, output, scratch)
+    };
+    let pixels = u64::from(width) * u64::from(height);
+    let peak = DECODER_STATE_BYTES + scratch + pixels * (output + RGBA_BYTES);
+    Ok(Plan { width, height, peak })
+}
+
+/// The coefficient buffers a JPEG decoder keeps for its frame: one block of [`COEFFICIENT_BLOCK_BYTES`] for each 8×8
+/// block of every component, on whole MCUs. Counted for baseline frames too, which is conservative for them.
+fn coefficient_bytes(frame: &JpegFrame) -> u64 {
+    let (h_max, v_max) = frame.sampling.iter().fold((1, 1), |(h, v), &(h_i, v_i)| (h.max(h_i), v.max(v_i)));
+    let mcus_x = u64::from(frame.width).div_ceil(8 * u64::from(h_max));
+    let mcus_y = u64::from(frame.height).div_ceil(8 * u64::from(v_max));
+    let blocks: u64 = frame.sampling.iter().map(|&(h, v)| mcus_x * u64::from(h) * mcus_y * u64::from(v)).sum();
+    blocks * COEFFICIENT_BLOCK_BYTES
 }
 
 /// A reader over the bytes, with the format guessed from them. Only the PNG and JPEG decoders are compiled in.
@@ -145,9 +239,9 @@ fn limits() -> Limits {
     limits
 }
 
-/// Whether an image of this size is within the caps: the sides, and its RGBA8 size in bytes.
-fn fits(width: u32, height: u32) -> bool {
-    width <= MAX_SIDE && height <= MAX_SIDE && u64::from(width) * u64::from(height) * RGBA_BYTES <= max_decoded_bytes()
+/// Whether an image of this size is within the caps: the sides, and its peak in bytes.
+fn fits(width: u32, height: u32, peak: u64) -> bool {
+    width <= MAX_SIDE && height <= MAX_SIDE && peak <= max_decoded_bytes()
 }
 
 /// Refuses an image larger than the caps, naming its size and the caps.
@@ -159,7 +253,18 @@ fn too_large(field: &str, width: u32, height: u32) -> OpError {
 
 /// Refuses bytes the decoder cannot read, with the decoder's reason.
 fn unreadable(field: &str, error: &ImageError) -> OpError {
-    let text = messages::image_unreadable(error.to_string());
+    refuse_unreadable(field, error.to_string())
+}
+
+/// Refuses an image that is not a PNG or JPEG, or cannot be read, with the reason.
+fn refuse_unreadable(field: &str, reason: String) -> OpError {
+    let text = messages::image_unreadable(reason);
+    OpError::invalid(field, messages::english(&text))
+}
+
+/// Refuses an image that is not sRGB, naming what was found.
+fn colour_unsupported(field: &str, found: &str) -> OpError {
+    let text = messages::image_colour_unsupported(found.to_owned());
     OpError::invalid(field, messages::english(&text))
 }
 

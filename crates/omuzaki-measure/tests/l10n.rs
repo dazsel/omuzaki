@@ -27,7 +27,7 @@ fn every_declared_message_has_a_translator_note() {
             assert!(!message.note.trim().is_empty(), "{} has no translator note", message.id);
         }
     }
-    assert_eq!(seen, 11, "the messages declared in src/messages.rs");
+    assert_eq!(seen, 12, "the messages declared in src/messages.rs");
 }
 
 #[test]
@@ -69,8 +69,14 @@ fn messages_render_their_english_with_their_arguments() {
             "The image is 10,000 × 9,000 px. A measure reads at most 8,192 px a side and 64 MiB decoded.",
         ),
         (messages::image_unreadable("unexpected end of file"), "The image could not be read: unexpected end of file."),
+        (
+            messages::image_colour_unsupported(String::from("a gamma of 1.00")),
+            "The image is not sRGB (a gamma of 1.00). Convert it to sRGB and try again.",
+        ),
     ];
     for (text, english) in cases {
         assert_eq!(catalog.render(&text), english, "{}", text.id);
     }
+    // Rendering is what records a message with no English, so the report is read after it.
+    assert!(catalog.missing().is_empty(), "{:?}", catalog.missing());
 }

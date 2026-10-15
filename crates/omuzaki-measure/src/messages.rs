@@ -1,4 +1,4 @@
-//! The sentences a measure refuses with (design 7.3), and the two refusals about the image itself. Each is a localised
+//! The sentences a measure refuses with (design 7.3), and the three refusals about the image itself. Each is a localised
 //! message with a message id and typed arguments (ADR 0023), so a person reads it in their language and an agent
 //! branches on its id. They are declared here, before the measures that raise them, so that every later task uses
 //! these ids and none invents its own.
@@ -63,7 +63,12 @@ omuzaki_l10n_api::messages! {
     pub image_too_large = "measure-image-too-large" (width: Int, height: Int, side_limit: Int, mebibyte_limit: Int)
         => "The image is { $width } × { $height } px. A measure reads at most { $side_limit } px a side and { $mebibyte_limit } MiB decoded.";
 
-    /// The bytes are not a PNG or JPEG the decoder can read. The reason is the decoder's own English, shown as written.
+    /// The bytes are not a PNG or JPEG the decoder can read, or are another format. The reason is shown as written.
     pub image_unreadable = "measure-image-unreadable" (reason: Verbatim)
         => "The image could not be read: { $reason }.";
+
+    /// The image is not sRGB, so its numbers would be wrong: a measure reads only sRGB, and refuses the rest rather than
+    /// guess at them. The argument names what was found, such as a gamma or an embedded profile.
+    pub image_colour_unsupported = "measure-image-colour-unsupported" (found: Verbatim)
+        => "The image is not sRGB ({ $found }). Convert it to sRGB and try again.";
 }
