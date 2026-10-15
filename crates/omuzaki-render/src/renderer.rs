@@ -93,11 +93,13 @@ impl WgpuRenderer {
         // A broken registration (a duplicate name, say) fails creation here rather than at the first draw.
         program::Registry::global()?;
         let device = gpu.device.clone();
-        let (shared, frame, graph) = scope_errors(&device, "the renderer", move || {
+        let (shared, frame, graph, morphs) = scope_errors(&device, "the renderer", move || {
             let shared = Shared::new(gpu);
             let frame = FrameState::new(&shared.gpu.device, &shared.layouts);
             let graph = FrameGraph::new(&shared);
-            Ok((shared, frame, graph))
+            // The morph path is chosen here, once: the GPU's where the device has compute, else the CPU's.
+            let morphs = morph::MorphPool::new(&shared.gpu.device);
+            Ok((shared, frame, graph, morphs))
         })?;
         let capabilities = Capabilities {
             backend: shared.gpu.backend_name.clone(),
@@ -115,12 +117,29 @@ impl WgpuRenderer {
         Ok(Self {
             shared,
             capabilities,
-            resources: Resources::default(),
+            resources: Resources { morphs, ..Resources::default() },
             frame,
             graph,
             paints: PaintLog::default(),
             staging: Staging::default(),
         })
+    }
+
+    /// Which path blends morph targets: `"gpu"` (a compute pass, where the device has compute) or `"cpu"`. It is chosen
+    /// when the renderer is created and never changes under a live mesh: there is no fallback mid-session.
+    #[must_use]
+    pub fn morph_path(&self) -> &'static str {
+        self.resources.morphs.path().name()
+    }
+
+    /// Switches morph blending to the CPU path on a device that has compute, so tests can check both paths on one
+    /// adapter. Not part of the renderer's contract.
+    ///
+    /// # Errors
+    /// `Invalid` once a mesh with morph targets has been created.
+    #[doc(hidden)]
+    pub fn force_cpu_morph(&mut self) -> Result<(), RenderError> {
+        self.resources.morphs.force_cpu()
     }
 
     /// The target's output texture: sRGB-encoded RGBA8 at the target's size, valid after a frame has been rendered.
@@ -205,6 +224,14 @@ impl Renderer for WgpuRenderer {
         let gpu = &self.shared.gpu;
         let uploaded = gpu.scoped("a mesh", || GpuMesh::upload(gpu, mesh, options))?;
         let (index, generation) = self.resources.meshes.insert(uploaded);
+        // The GPU morph path uploads the mesh's targets once, here; a mesh it cannot hold is refused outright.
+        let attached = self.resources.meshes.get(index, generation).map_or(Ok(()), |m| {
+            gpu.scoped("morph targets", || self.resources.morphs.attach(&gpu.device, index, generation, m))
+        });
+        if let Err(error) = attached {
+            self.resources.meshes.remove(index, generation);
+            return Err(error);
+        }
         Ok(MeshId::from_parts(index, generation))
     }
 
@@ -428,6 +455,8 @@ impl Renderer for WgpuRenderer {
             };
             let mut encoder =
                 gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
+            // The GPU morph blend runs first, so every pass that draws a morphed instance reads its finished stream.
+            scene_resources.morphs.record(&mut encoder);
             let mut cx = PassCx {
                 shared,
                 resources: scene_resources,

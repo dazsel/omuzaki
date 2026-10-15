@@ -1,4 +1,4 @@
-//! Morph targets: the CPU blend of an instance's weights into a per-instance vertex buffer.
+//! Morph targets: blending an instance's weights into a per-instance vertex buffer, on the GPU or the CPU.
 //!
 //! A mesh keeps its targets sparse ([`MorphSet`]). Each frame, an instance whose `morph` weights are not all zero gets
 //! `position = base + Σ wᵢ·Δpositionᵢ` and `normal = normalize(base_normal + Σ wᵢ·Δnormalᵢ)` (the reference in
@@ -17,11 +17,21 @@
 //! weld table, so the hull follows the morph without a second weld. As for a dynamic mesh, those welds are the ones
 //! found at creation: a morph that pulls a seam apart or brings two points together does not change which vertices
 //! share an outline direction.
+//!
+//! **Two paths, one pool.** Where the adapter has compute the blend is a compute pass ([`gpu`], `shader/morph.wgsl`): a
+//! mesh's sparse targets are uploaded once, when it is created, and a frame uploads only the weights; the pass writes
+//! into the same pooled buffers, so the change-skip, the stats and the release are the same mechanism. Otherwise
+//! ([`cpu`]) the CPU blends and uploads the result; it is also the reference the GPU path is tested against. The path is
+//! chosen when the renderer is created ([`MorphPool::new`]) and never changes: there is no fallback mid-session. The
+//! GPU path reads nothing back, so an instance's bounds are the mesh's grown by what the weights can move a vertex
+//! (conservative, never smaller than the CPU path's exact ones), and its outline directions are re-welded by a second
+//! dispatch, only when the instance re-blends.
 
 use omuzaki_core::glam::Vec3;
 use omuzaki_render_api::{Instance, MorphSet, RenderError, Scene};
 
 mod cpu;
+mod gpu;
 
 use crate::arena::Arena;
 use crate::resource::mesh::{GpuMesh, Shape, Surface, resmooth};
@@ -54,6 +64,25 @@ pub(crate) struct MorphInput<'a> {
     pub(crate) joints_needed: u32,
 }
 
+/// Which path blends: chosen once, when the renderer is created.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) enum MorphPath {
+    /// A compute pass.
+    Gpu,
+    /// The CPU, then an upload.
+    Cpu,
+}
+
+impl MorphPath {
+    /// The name the diagnostics use.
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Self::Gpu => "gpu",
+            Self::Cpu => "cpu",
+        }
+    }
+}
+
 /// What a slot's stream was blended from.
 #[derive(Copy, Clone, PartialEq)]
 struct Source {
@@ -72,7 +101,7 @@ struct Stream {
 impl Stream {
     /// Makes room for `bytes`, replacing the buffer only if it is smaller. True if it was replaced (its contents are
     /// gone).
-    fn reserve(&mut self, device: &wgpu::Device, label: &str, bytes: u64) -> bool {
+    fn reserve(&mut self, device: &wgpu::Device, label: &str, bytes: u64, usage: wgpu::BufferUsages) -> bool {
         self.used = bytes;
         if self.buffer.as_ref().is_some_and(|b| b.size() >= bytes) {
             return false;
@@ -80,7 +109,7 @@ impl Stream {
         self.buffer = Some(device.create_buffer(&wgpu::BufferDescriptor {
             label: Some(label),
             size: bytes,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            usage,
             mapped_at_creation: false,
         }));
         true
@@ -115,6 +144,8 @@ struct Slot {
     active: bool,
     /// Frames since the slot was last active, for [`IDLE_FRAMES`].
     idle: u32,
+    /// The GPU path's side: the params buffer and bind groups.
+    gpu: Option<gpu::SlotGpu>,
 }
 
 impl Default for Slot {
@@ -130,6 +161,7 @@ impl Default for Slot {
             smooth_stale: true,
             active: false,
             idle: 0,
+            gpu: None,
         }
     }
 }
@@ -137,20 +169,31 @@ impl Default for Slot {
 impl Slot {
     /// Whether the slot holds a blend or any buffer, i.e. anything worth releasing.
     fn holds_memory(&self) -> bool {
-        self.source.is_some() || self.shapes.buffer.is_some() || self.smooth.buffer.is_some()
+        self.source.is_some() || self.shapes.buffer.is_some() || self.smooth.buffer.is_some() || self.gpu.is_some()
     }
 
-    /// Blends if `source` or `weights` differ from what the slot holds, refitting the bounds; true if it did.
-    fn refresh(&mut self, source: Source, input: &MorphInput<'_>, weights: &[f32], flags: &mut Vec<bool>) -> bool {
-        if self.source == Some(source) && self.weights == weights {
-            return false;
-        }
-        blend(input.base, input.set, weights, flags, &mut self.blended);
-        self.bounds.refit(input.joints_needed, &self.blended, input.skin);
+    /// Whether the slot already holds the blend of `weights` from `source`.
+    fn holds(&self, source: Source, weights: &[f32]) -> bool {
+        self.source == Some(source) && self.weights == weights
+    }
+
+    /// Notes that the slot now holds the blend of `weights` from `source`; the outline directions lag it.
+    fn blended_from(&mut self, source: Source, weights: &[f32]) {
         self.weights.clear();
         self.weights.extend_from_slice(weights);
         self.source = Some(source);
         self.smooth_stale = true;
+    }
+
+    /// The CPU path: blends if `source` or `weights` differ from what the slot holds, refitting the bounds; true if it
+    /// did.
+    fn refresh(&mut self, source: Source, input: &MorphInput<'_>, weights: &[f32], flags: &mut Vec<bool>) -> bool {
+        if self.holds(source, weights) {
+            return false;
+        }
+        blend(input.base, input.set, weights, flags, &mut self.blended);
+        self.bounds.refit(input.joints_needed, &self.blended, input.skin);
+        self.blended_from(source, weights);
         true
     }
 }
@@ -182,22 +225,106 @@ pub(crate) struct MorphPool {
     slots: Vec<Slot>,
     flags: Vec<bool>,
     sums: Vec<Vec3>,
+    /// The GPU path's pipelines, or `None` for the CPU path (the default).
+    gpu: Option<gpu::Pipelines>,
+    /// The GPU path's data per mesh slot: the mesh's generation and what was uploaded for it.
+    meshes_gpu: Vec<Option<(u32, gpu::MeshGpu)>>,
+    /// The dispatches to record this frame, in order.
+    pending: Vec<gpu::Pending>,
 }
 
 impl MorphPool {
+    /// A pool on the GPU path if `device` can run it, else on the CPU path.
+    pub(crate) fn new(device: &wgpu::Device) -> Self {
+        Self { gpu: gpu::supported(device).then(|| gpu::Pipelines::new(device)), ..Self::default() }
+    }
+
+    /// The path that blends.
+    pub(crate) fn path(&self) -> MorphPath {
+        if self.gpu.is_some() { MorphPath::Gpu } else { MorphPath::Cpu }
+    }
+
+    /// Switches to the CPU path on an adapter that has compute: a test hook.
+    ///
+    /// # Errors
+    /// `Invalid` once a mesh with morph targets exists, since its data is on the GPU: the path never changes under a
+    /// live mesh.
+    pub(crate) fn force_cpu(&mut self) -> Result<(), RenderError> {
+        if self.meshes_gpu.iter().any(Option::is_some) {
+            return Err(RenderError::invalid("morph path", "meshes with morph targets exist; choose the path first"));
+        }
+        self.gpu = None;
+        Ok(())
+    }
+
+    /// Uploads the GPU path's data for the mesh just created at `index` and `generation`; nothing on the CPU path.
+    ///
+    /// # Errors
+    /// `LimitExceeded` for a mesh the GPU path cannot hold.
+    pub(crate) fn attach(
+        &mut self,
+        device: &wgpu::Device,
+        index: u32,
+        generation: u32,
+        mesh: &GpuMesh,
+    ) -> Result<(), RenderError> {
+        let (Some(pipelines), Some(input)) = (&self.gpu, mesh.morph_input()) else { return Ok(()) };
+        let data = gpu::MeshGpu::new(device, pipelines, mesh.shapes_buffer(), &input)?;
+        let at = index as usize;
+        if self.meshes_gpu.len() <= at {
+            self.meshes_gpu.resize_with(at + 1, || None);
+        }
+        if let Some(entry) = self.meshes_gpu.get_mut(at) {
+            *entry = Some((generation, data));
+        }
+        Ok(())
+    }
+
+    /// Records this frame's dispatches into `encoder`, before the passes that draw the streams.
+    pub(crate) fn record(&self, encoder: &mut wgpu::CommandEncoder) {
+        let Some(pipelines) = &self.gpu else { return };
+        if self.pending.is_empty() {
+            return;
+        }
+        gpu::record(
+            encoder,
+            pipelines,
+            &self.pending,
+            |slot| self.slots.get(slot)?.gpu.as_ref(),
+            |mesh| self.meshes_gpu.get(mesh)?.as_ref().map(|(_, data)| data),
+        );
+    }
+
     fn active(&self, instance: u32) -> Option<&Slot> {
         self.slots.get(instance as usize).filter(|s| s.active)
     }
 
-    /// The GPU memory the pool holds: every slot's buffers at their capacity.
+    /// The GPU memory the pool holds: every slot's buffers at their capacity, and the GPU path's data per mesh.
     pub(crate) fn bytes(&self) -> u64 {
         let size = |stream: &Stream| stream.buffer.as_ref().map_or(0, wgpu::Buffer::size);
-        self.slots.iter().map(|s| size(&s.shapes) + size(&s.smooth)).sum()
+        let slots: u64 = self
+            .slots
+            .iter()
+            .map(|s| size(&s.shapes) + size(&s.smooth) + s.gpu.as_ref().map_or(0, |g| g.params.size()))
+            .sum();
+        slots + self.meshes_gpu.iter().flatten().map(|(_, data)| data.bytes).sum::<u64>()
     }
 
-    /// Drops every slot last blended from the mesh at `index` and `generation`, buffers and CPU copies with them, so
-    /// releasing a mesh frees what was sized for it. A slot last blended from a live mesh keeps its capacity.
+    /// Drops every slot last blended from the mesh at `index` and `generation`, buffers and CPU copies with them, and
+    /// the GPU path's data for it, so releasing a mesh frees what was sized for it. A slot last blended from a live
+    /// mesh keeps its capacity.
     pub(crate) fn forget(&mut self, index: u32, generation: u32) {
+        if let Some(entry) =
+            self.meshes_gpu.get_mut(index as usize).filter(|e| e.as_ref().is_some_and(|(g, _)| *g == generation))
+        {
+            *entry = None;
+        }
+        while self.meshes_gpu.last().is_some_and(Option::is_none) {
+            self.meshes_gpu.pop();
+        }
+        if self.meshes_gpu.capacity() > 2 * self.meshes_gpu.len() {
+            self.meshes_gpu.shrink_to_fit();
+        }
         for slot in &mut self.slots {
             if slot.source.is_some_and(|s| s.mesh == (index, generation)) {
                 *slot = Slot::default();
@@ -279,8 +406,13 @@ impl MorphPool {
         if self.slots.len() < needed {
             self.slots.resize_with(needed, Slot::default);
         }
-        for (slot, instance) in
-            self.slots.iter_mut().zip(scene.instances.iter().map(Some).chain(std::iter::repeat(None)))
+        let Self { slots, flags, sums, gpu, meshes_gpu, pending, .. } = self;
+        pending.clear();
+        let usage = wgpu::BufferUsages::VERTEX
+            | wgpu::BufferUsages::COPY_DST
+            | if gpu.is_some() { wgpu::BufferUsages::STORAGE } else { wgpu::BufferUsages::empty() };
+        for (index, (slot, instance)) in
+            slots.iter_mut().zip(scene.instances.iter().map(Some).chain(std::iter::repeat(None))).enumerate()
         {
             slot.active = false;
             let Some(Morphing { instance, weights, mesh, input }) =
@@ -296,32 +428,109 @@ impl MorphPool {
                 continue;
             };
             slot.idle = 0;
-            let source =
-                Source { mesh: (instance.mesh.index(), instance.mesh.generation()), version: mesh.vertex_version() };
-            if slot.shapes.reserve(device, "morphed shapes", std::mem::size_of_val(input.base) as u64) {
+            let mesh_slot = instance.mesh.index();
+            let source = Source { mesh: (mesh_slot, instance.mesh.generation()), version: mesh.vertex_version() };
+            if slot.shapes.reserve(device, "morphed shapes", std::mem::size_of_val(input.base) as u64, usage) {
                 slot.source = None;
-            }
-            if slot.refresh(source, &input, weights, &mut self.flags)
-                && let Some(buffer) = &slot.shapes.buffer
-            {
-                queue.write_buffer(buffer, 0, bytemuck::cast_slice(&slot.blended));
-            }
-            if slot.smooth_stale && outlined(instance) {
-                let bytes = (input.base.len() * size_of::<[f32; 3]>()) as u64;
-                slot.smooth.reserve(device, "morphed outline directions", bytes);
-                slot.smooth_cpu.clear();
-                slot.smooth_cpu.resize(input.base.len(), [0.0; 3]);
-                resmooth(input.welds, input.weld_count, &mut self.sums, &slot.blended, &mut slot.smooth_cpu);
-                if let Some(buffer) = &slot.smooth.buffer {
-                    queue.write_buffer(buffer, 0, bytemuck::cast_slice(&slot.smooth_cpu));
+                if let Some(on_gpu) = &mut slot.gpu {
+                    on_gpu.forget_groups();
                 }
-                slot.smooth_stale = false;
+            }
+            let wanted_outline = outlined(instance);
+            match gpu {
+                None => {
+                    blend_on_cpu(slot, &input, weights, source, wanted_outline, (device, queue), usage, (flags, sums));
+                }
+                Some(pipelines) => {
+                    let Some(data) = meshes_gpu
+                        .get(mesh_slot as usize)
+                        .and_then(Option::as_ref)
+                        .filter(|(generation, _)| *generation == instance.mesh.generation())
+                        .map(|(_, data)| data)
+                    else {
+                        // `attach` ran when the mesh was created, so a mesh with targets always has its data.
+                        debug_assert!(false, "a morphed mesh without GPU data");
+                        continue;
+                    };
+                    let target = gpu::Target { pipelines, data, mesh: mesh_slot as usize, slot: index };
+                    blend_on_gpu(slot, mesh, weights, source, wanted_outline, &target, (device, queue), usage, pending);
+                }
             }
             slot.active = true;
         }
         self.trim();
         Ok(())
     }
+}
+
+/// The CPU path for one morphing instance: blends and uploads if the slot's blend is stale, then re-welds the outline
+/// directions if `outlined` and they lag.
+#[allow(clippy::too_many_arguments)]
+fn blend_on_cpu(
+    slot: &mut Slot,
+    input: &MorphInput<'_>,
+    weights: &[f32],
+    source: Source,
+    outlined: bool,
+    (device, queue): (&wgpu::Device, &wgpu::Queue),
+    usage: wgpu::BufferUsages,
+    (flags, sums): (&mut Vec<bool>, &mut Vec<Vec3>),
+) {
+    if slot.refresh(source, input, weights, flags)
+        && let Some(buffer) = &slot.shapes.buffer
+    {
+        queue.write_buffer(buffer, 0, bytemuck::cast_slice(&slot.blended));
+    }
+    if slot.smooth_stale && outlined {
+        let vertices = input.base.len();
+        slot.smooth.reserve(device, "morphed outline directions", (vertices * size_of::<[f32; 3]>()) as u64, usage);
+        slot.smooth_cpu.clear();
+        slot.smooth_cpu.resize(vertices, [0.0; 3]);
+        resmooth(input.welds, input.weld_count, sums, &slot.blended, &mut slot.smooth_cpu);
+        if let Some(buffer) = &slot.smooth.buffer {
+            queue.write_buffer(buffer, 0, bytemuck::cast_slice(&slot.smooth_cpu));
+        }
+        slot.smooth_stale = false;
+    }
+}
+
+/// The GPU path for one morphing instance: uploads the weights and queues the blend if the slot's is stale, grows its
+/// bounds, and queues the outline re-weld if `outlined` and the directions lag.
+#[allow(clippy::too_many_arguments)]
+fn blend_on_gpu(
+    slot: &mut Slot,
+    mesh: &GpuMesh,
+    weights: &[f32],
+    source: Source,
+    outlined: bool,
+    target: &gpu::Target<'_>,
+    (device, queue): (&wgpu::Device, &wgpu::Queue),
+    usage: wgpu::BufferUsages,
+    pending: &mut Vec<gpu::Pending>,
+) {
+    let mut on_gpu = slot.gpu.take().unwrap_or_else(|| gpu::SlotGpu::new(device));
+    if let Some(shapes) = &slot.shapes.buffer {
+        on_gpu.bind_blend(device, target.pipelines, shapes);
+    }
+    if !slot.holds(source, weights) {
+        on_gpu.write_params(queue, target.data.vertices, weights);
+        let (down, up) = gpu::grow(weights, target.data);
+        slot.bounds.set_grown(&mesh.bounds, down, up);
+        slot.blended_from(source, weights);
+        pending.push(target.pending(gpu::Step::Blend));
+    }
+    if slot.smooth_stale && outlined {
+        let bytes = (target.data.vertices as usize * size_of::<[f32; 3]>()) as u64;
+        if slot.smooth.reserve(device, "morphed outline directions", bytes, usage) {
+            on_gpu.forget_weld();
+        }
+        if let (Some(shapes), Some(smooth)) = (&slot.shapes.buffer, &slot.smooth.buffer) {
+            on_gpu.bind_weld(device, target.pipelines, shapes, smooth);
+        }
+        pending.push(target.pending(gpu::Step::Weld));
+        slot.smooth_stale = false;
+    }
+    slot.gpu = Some(on_gpu);
 }
 
 #[cfg(test)]
@@ -424,13 +633,19 @@ mod tests {
         })
         .unwrap();
         let mut stream = Stream::default();
-        assert!(stream.reserve(&gpu.device, "test", 240), "the first reserve creates the buffer");
+        assert!(
+            stream.reserve(&gpu.device, "test", 240, wgpu::BufferUsages::VERTEX),
+            "the first reserve creates the buffer"
+        );
         let big = stream.buffer.clone().unwrap();
-        assert!(!stream.reserve(&gpu.device, "test", 120), "a smaller mesh reuses it");
+        assert!(!stream.reserve(&gpu.device, "test", 120, wgpu::BufferUsages::VERTEX), "a smaller mesh reuses it");
         assert_eq!(stream.used, 120);
-        assert!(!stream.reserve(&gpu.device, "test", 240), "and the larger one comes back to it");
+        assert!(
+            !stream.reserve(&gpu.device, "test", 240, wgpu::BufferUsages::VERTEX),
+            "and the larger one comes back to it"
+        );
         assert_eq!(stream.buffer.as_ref(), Some(&big));
-        assert!(stream.reserve(&gpu.device, "test", 480), "only a bigger mesh replaces it");
+        assert!(stream.reserve(&gpu.device, "test", 480, wgpu::BufferUsages::VERTEX), "only a bigger mesh replaces it");
     }
 
     #[test]

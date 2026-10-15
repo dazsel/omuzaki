@@ -14,6 +14,42 @@ use omuzaki_render_api::{
 };
 use omuzaki_render_mock::{conformance, shapes};
 
+/// The path a test runs the morph blend on.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum Path {
+    /// The compute pass, on an adapter that has compute (lavapipe does).
+    Gpu,
+    /// The CPU blend, forced on that same adapter.
+    Cpu,
+}
+
+fn renderer(path: Path) -> WgpuRenderer {
+    let mut r = support::renderer();
+    match path {
+        Path::Gpu => assert_eq!(r.morph_path(), "gpu", "this adapter has compute"),
+        Path::Cpu => r.force_cpu_morph().unwrap(),
+    }
+    assert_eq!(r.morph_path(), if path == Path::Gpu { "gpu" } else { "cpu" });
+    r
+}
+
+/// Runs each named test function on both paths, as `name::gpu` and `name::cpu`.
+macro_rules! on_both_paths {
+    ($($name:ident),* $(,)?) => {
+        $(mod $name {
+            #[test]
+            fn gpu() {
+                super::$name(super::Path::Gpu);
+            }
+
+            #[test]
+            fn cpu() {
+                super::$name(super::Path::Cpu);
+            }
+        })*
+    };
+}
+
 #[test]
 fn the_renderer_claims_morph_targets() {
     let caps = support::renderer().capabilities().clone();
@@ -21,9 +57,8 @@ fn the_renderer_claims_morph_targets() {
     assert_eq!(caps.max_morph_targets, 256);
 }
 
-#[test]
-fn the_morph_conformance_checks_pass_and_leak_nothing() {
-    let mut r = support::renderer();
+fn the_morph_conformance_checks_pass_and_leak_nothing(path: Path) {
+    let mut r = renderer(path);
     if let Err(failure) = conformance::run_capable(&mut r) {
         panic!("{failure}");
     }
@@ -58,9 +93,8 @@ fn slide_options(quad: &MeshData, usage: MeshUsage) -> MeshOptions {
 }
 
 /// A 0.25 m quad (pixels 24..40) whose one target slides it 0.5 m (16 pixels) to the right.
-#[test]
-fn one_mesh_renders_at_weights_0_half_and_1() {
-    let mut r = support::renderer();
+fn one_mesh_renders_at_weights_0_half_and_1(path: Path) {
+    let mut r = renderer(path);
     let quad = shapes::quad(Vec2::splat(0.25));
     let mesh = r.create_mesh_with(&quad, &slide_options(&quad, MeshUsage::Static)).unwrap();
     let edges: Vec<(u32, u32)> = [0.0, 0.5, 1.0]
@@ -75,9 +109,8 @@ fn one_mesh_renders_at_weights_0_half_and_1() {
     r.release(mesh.into()).unwrap();
 }
 
-#[test]
-fn a_dynamic_meshes_morphs_follow_its_updated_vertices() {
-    let mut r = support::renderer();
+fn a_dynamic_meshes_morphs_follow_its_updated_vertices(path: Path) {
+    let mut r = renderer(path);
     let quad = shapes::quad(Vec2::splat(0.25));
     let mesh = r.create_mesh_with(&quad, &slide_options(&quad, MeshUsage::Dynamic)).unwrap();
     let before = lit_columns(&mut r, mesh, 1.0);
@@ -131,9 +164,8 @@ fn morphing(mut instance: Instance) -> Instance {
     instance
 }
 
-#[test]
-fn a_caster_morphed_out_of_its_base_bounds_still_casts_its_shadow() {
-    let mut r = support::renderer();
+fn a_caster_morphed_out_of_its_base_bounds_still_casts_its_shadow(path: Path) {
+    let mut r = renderer(path);
     let cube = shapes::cuboid(Vec3::splat(0.2));
     let slide = vec![Vec3::new(1.2, 0.0, 0.0); cube.positions.len()];
     let (set, baked) = target_and_baked(&cube, &slide, &[], 1.0);
@@ -176,14 +208,17 @@ fn a_caster_morphed_out_of_its_base_bounds_still_casts_its_shadow() {
     let want = draw(&mut r, scene(), vec![ground_instance(), Instance::new(baked, material, at)], 0.0);
     let no_cube = draw(&mut r, scene(), vec![ground_instance()], 0.0);
     assert!(differing(&want, &no_cube, 4) > 200, "the baked cube and its shadow must show");
-    assert_eq!(differing(&morphed, &want, 2), 0, "the morphed cube casts the shadow of the cube at the blended place");
+    // The CPU path's bounds are the blended cube's exactly; the GPU path's are conservative, so its shadow map is fitted
+    // to a slightly larger box and the shadow's edge texels land a little differently.
+    let allowed = if path == Path::Gpu { 64 } else { 0 };
+    let off = differing(&morphed, &want, 2);
+    assert!(off <= allowed, "the morphed cube casts the shadow of the cube at the blended place: {off} pixels differ");
 }
 
-#[test]
-fn a_morph_that_swaps_the_depth_of_two_blended_quads_swaps_their_compositing_order() {
-    let mut r = support::renderer();
+fn a_morph_that_swaps_the_depth_of_two_blended_quads_swaps_their_compositing_order(path: Path) {
+    let mut r = renderer(path);
     let quad = shapes::quad(Vec2::splat(0.4));
-    let forward = vec![Vec3::new(0.0, 0.0, 1.0); quad.positions.len()];
+    let forward = vec![Vec3::new(0.0, 0.0, 2.0); quad.positions.len()];
     let (set, baked) = target_and_baked(&quad, &forward, &[], 1.0);
     let morph = r.create_mesh_with(&quad, &MeshOptions { morphs: Some(set), ..MeshOptions::default() }).unwrap();
     let baked = r.create_mesh(&baked).unwrap();
@@ -197,7 +232,7 @@ fn a_morph_that_swaps_the_depth_of_two_blended_quads_swaps_their_compositing_ord
     let scene =
         || Scene::new(Camera::look_at(Vec3::new(0.0, 0.0, 3.0), Vec3::ZERO, Vec3::Y, Camera::default().projection));
     let green_at = || Instance::new(other, green, Mat4::from_translation(Vec3::new(0.1, 0.0, 0.5)));
-    // Red starts behind green (z 0 against 0.5); the target brings it to z 1, in front.
+    // Red starts behind green (z 0 against 0.5); the target brings it to z 2, in front.
     let morphed = draw(&mut r, scene(), vec![morphing(Instance::new(morph, red, Mat4::IDENTITY)), green_at()], 1.0);
     let want = draw(&mut r, scene(), vec![Instance::new(baked, red, Mat4::IDENTITY), green_at()], 0.0);
     let behind = draw(&mut r, scene(), vec![morphing(Instance::new(morph, red, Mat4::IDENTITY)), green_at()], 0.0);
@@ -205,9 +240,8 @@ fn a_morph_that_swaps_the_depth_of_two_blended_quads_swaps_their_compositing_ord
     assert_eq!(differing(&morphed, &want, 2), 0, "the morphed quad composites in front, as the baked one does");
 }
 
-#[test]
-fn an_outlined_morph_that_changes_normals_across_seams_outlines_like_the_blended_mesh() {
-    let mut r = support::renderer();
+fn an_outlined_morph_that_changes_normals_across_seams_outlines_like_the_blended_mesh(path: Path) {
+    let mut r = renderer(path);
     let cube = shapes::cuboid(Vec3::splat(0.4));
     // Every copy of a corner moves alike (the seams stay closed) while every normal tilts.
     let stretch: Vec<Vec3> = cube.positions.iter().map(|p| Vec3::new(p.x * 0.5, 0.0, 0.0)).collect();
@@ -232,7 +266,8 @@ fn an_outlined_morph_that_changes_normals_across_seams_outlines_like_the_blended
 }
 
 /// Writes the morph pictures as binary PPM files when `OMUZAKI_MORPH_PPM=<directory>` is set (the `morph` case of
-/// `evidence.toml`): a quad that slides at weights 0, 0.5 and 1, and an outlined, shadow-casting cube that stretches and
+/// `evidence.toml`): a quad that slides at weights 0, 0.5 and 1 on the CPU path (the reference), the GPU path and their
+/// difference, and an outlined, shadow-casting cube on the GPU path that stretches and
 /// tilts its normals, at weights 0, 0.5 and 1.
 #[test]
 #[allow(clippy::disallowed_methods, reason = "test evidence, written to a folder the developer names; not an op")]
@@ -247,23 +282,35 @@ fn render_the_morph_pictures_when_asked() {
         }
         std::fs::write(directory.join(name), ppm).unwrap();
     };
-    let mut r = support::renderer();
-
+    // The quad at three weights: the CPU path is the reference, the GPU path is under test, and the difference is
+    // amplified 32 times so a one-level error shows.
     let quad = shapes::quad(Vec2::splat(0.25));
-    let quad_mesh = r.create_mesh_with(&quad, &slide_options(&quad, MeshUsage::Static)).unwrap();
-    let paint = r.create_material(&Material::unlit(Colour::WHITE)).unwrap();
     let ortho = Camera::look_at(
         Vec3::new(0.0, 0.0, 5.0),
         Vec3::ZERO,
         Vec3::Y,
         Projection::Orthographic { height: 2.0, near: 0.1, far: 20.0 },
     );
-    for weight in [0.0, 0.5, 1.0] {
-        let image =
-            draw(&mut r, Scene::new(ortho), vec![morphing(Instance::new(quad_mesh, paint, Mat4::IDENTITY))], weight);
-        save(&format!("quad-{weight}.ppm"), &image);
+    let quad_pictures = |path: Path| {
+        let mut r = renderer(path);
+        let mesh = r.create_mesh_with(&quad, &slide_options(&quad, MeshUsage::Static)).unwrap();
+        let paint = r.create_material(&Material::unlit(Colour::WHITE)).unwrap();
+        [0.0, 0.5, 1.0].map(|weight| {
+            draw(&mut r, Scene::new(ortho), vec![morphing(Instance::new(mesh, paint, Mat4::IDENTITY))], weight)
+        })
+    };
+    let (reference, gpu) = (quad_pictures(Path::Cpu), quad_pictures(Path::Gpu));
+    for ((weight, cpu), gpu) in [0.0, 0.5, 1.0].iter().zip(&reference).zip(&gpu) {
+        save(&format!("quad-cpu-{weight}.ppm"), cpu);
+        save(&format!("quad-gpu-{weight}.ppm"), gpu);
+        let mut difference = cpu.clone();
+        for (d, (a, b)) in difference.rgba8.iter_mut().zip(cpu.rgba8.iter().zip(&gpu.rgba8)) {
+            *d = a.abs_diff(*b).saturating_mul(32);
+        }
+        save(&format!("quad-diff-{weight}.ppm"), &difference);
     }
 
+    let mut r = renderer(Path::Gpu);
     let cube = shapes::cuboid(Vec3::splat(0.3));
     let stretch: Vec<Vec3> = cube.positions.iter().map(|p| Vec3::new(p.x * 1.2, 0.0, 0.0)).collect();
     let tilt = vec![Vec3::new(0.0, 0.5, 0.3); cube.positions.len()];
@@ -302,9 +349,8 @@ fn render_the_morph_pictures_when_asked() {
     }
 }
 
-#[test]
-fn releasing_a_morphed_mesh_gives_back_the_pooled_buffers() {
-    let mut r = support::renderer();
+fn releasing_a_morphed_mesh_gives_back_the_pooled_buffers(path: Path) {
+    let mut r = renderer(path);
     let empty = Scene::new(Camera::default());
     let quality = plain();
     let target = r.create_target(&TargetDesc { size: UVec2::splat(32), alpha: AlphaEncoding::Straight }).unwrap();
@@ -331,10 +377,9 @@ fn releasing_a_morphed_mesh_gives_back_the_pooled_buffers() {
     assert_eq!(r.stats().gpu_bytes, before, "releasing the mesh frees the pooled buffers with it");
 }
 
-#[test]
-fn a_zero_wide_outline_holds_no_outline_direction_stream() {
+fn a_zero_wide_outline_holds_no_outline_direction_stream(path: Path) {
     let gpu_bytes_with = |width: Option<f32>| {
-        let mut r = support::renderer();
+        let mut r = renderer(path);
         let cube = shapes::cuboid(Vec3::splat(0.3));
         let mesh = r.create_mesh_with(&cube, &slide_options(&cube, MeshUsage::Static)).unwrap();
         let mut material = Material::unlit(Colour::WHITE);
@@ -351,3 +396,14 @@ fn a_zero_wide_outline_holds_no_outline_direction_stream() {
     assert_eq!(zero, none, "a 0-wide outline pools the same as no outline");
     assert!(drawn > none, "a drawn outline pools its direction stream: {none} against {drawn}");
 }
+
+on_both_paths!(
+    the_morph_conformance_checks_pass_and_leak_nothing,
+    one_mesh_renders_at_weights_0_half_and_1,
+    a_dynamic_meshes_morphs_follow_its_updated_vertices,
+    a_caster_morphed_out_of_its_base_bounds_still_casts_its_shadow,
+    a_morph_that_swaps_the_depth_of_two_blended_quads_swaps_their_compositing_order,
+    an_outlined_morph_that_changes_normals_across_seams_outlines_like_the_blended_mesh,
+    releasing_a_morphed_mesh_gives_back_the_pooled_buffers,
+    a_zero_wide_outline_holds_no_outline_direction_stream,
+);

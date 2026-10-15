@@ -196,6 +196,9 @@ impl GpuMesh {
             smooth_by_slots(&welds, weld_count, &mesh.normals).iter().map(Vec3::to_array).collect();
         // A dynamic mesh's vertex buffers are rewritten by `queue.write_buffer`; the rest never are.
         let rewritable = if dynamic { wgpu::BufferUsages::COPY_DST } else { wgpu::BufferUsages::empty() };
+        // The GPU morph blend reads the mesh's own shapes as the base its targets apply to.
+        let blendable =
+            if options.morphs.is_some() { wgpu::BufferUsages::STORAGE } else { wgpu::BufferUsages::empty() };
         let buffer = |contents: &[u8], usage| {
             gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("mesh"), contents, usage })
         };
@@ -230,7 +233,7 @@ impl GpuMesh {
             bounds_stale: false,
         });
         Ok(Self {
-            shapes: buffer(bytemuck::cast_slice(&shapes), wgpu::BufferUsages::VERTEX | rewritable),
+            shapes: buffer(bytemuck::cast_slice(&shapes), wgpu::BufferUsages::VERTEX | rewritable | blendable),
             surface: buffer(bytemuck::cast_slice(&surface), wgpu::BufferUsages::VERTEX),
             smooth_normals: buffer(bytemuck::cast_slice(&smooth), wgpu::BufferUsages::VERTEX | rewritable),
             shadow,
@@ -248,6 +251,11 @@ impl GpuMesh {
             morphs,
             vertex_version: 0,
         })
+    }
+
+    /// The mesh's own shape stream: the base a morph blend starts from.
+    pub(crate) fn shapes_buffer(&self) -> &wgpu::Buffer {
+        &self.shapes
     }
 
     /// Whether [`update_vertices`](Self::update_vertices) is allowed.

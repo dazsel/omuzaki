@@ -26,6 +26,15 @@ impl MeshBounds {
         Self { whole: Aabb::EMPTY, joints: Vec::new() }
     }
 
+    /// Overwrites `self` with `base`'s boxes grown by `down` below and `up` above on each axis: the conservative bounds
+    /// of an instance whose vertices may each have moved by up to that much from where `base` has them. Allocates only
+    /// if the joint count grew.
+    pub(crate) fn set_grown(&mut self, base: &Self, down: Vec3, up: Vec3) {
+        self.whole = Aabb { min: base.whole.min - down, max: base.whole.max + up };
+        self.joints.clear();
+        self.joints.extend(base.joints.iter().map(|b| Aabb { min: b.min - down, max: b.max + up }));
+    }
+
     /// The boxes of `mesh`, whose joint count (one past the highest weighted joint) is `joints_needed`.
     pub(crate) fn of(mesh: &MeshData, joints_needed: u32) -> Self {
         let mut whole = Aabb::EMPTY;
