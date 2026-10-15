@@ -50,6 +50,13 @@ pub fn lint_links(sources: &Sources) -> Vec<String> {
             let root = krate.krate.lib.as_ref().map_or_else(String::new, |(_, root)| root.display().to_string());
             out.push(format!("{name}: defines no `link()` (`omuzaki_core::define_link!`) in {root}, but {why}"));
         }
+        if krate.krate.lists_link_build && !krate.krate.generates_links {
+            out.push(format!(
+                "{name}: lists `omuzaki-link-build`, but its generated link list is not wired: `build.rs` `main` must call \
+                 `omuzaki_link_build::emit()`, and `define_link!` must contain an unconditional (no attribute, not nested) \
+                 `include!(concat!(env!(\"OUT_DIR\"), \"/link_calls.rs\"))`"
+            ));
+        }
         let calls = krate.link_calls();
         for dep in linkable_deps {
             // A linkable crate always has a library.

@@ -28,23 +28,53 @@ pub fn build_script_emits(source: &str) -> bool {
     })
 }
 
-/// Whether the library's `define_link!` invocation contains `include!(... "link_calls.rs" ...)`.
+/// Whether the library's `define_link!` invocation contains `include!(... "link_calls.rs" ...)` unconditionally.
+///
+/// Unconditional means: no attribute anywhere inside the invocation or on it (`#[cfg(any())]` on the include, or on
+/// something around it, would leave the compiled `link()` without the calls), and the include sits directly in the
+/// invocation, not inside a block, closure or `if`.
 pub fn library_includes_generated(source: &str) -> bool {
     let toks = tokens(source);
     (0..toks.len()).any(|at| {
         toks[at].is_ident("define_link")
             && toks.get(at + 1).is_some_and(|t| t.is_punct('!'))
+            && !attribute_before(&toks, at)
             && group_at(&toks, at + 2).is_some_and(|(from, to)| {
-                toks[from..to].windows(3).enumerate().any(|(i, w)| {
-                    w[0].is_ident("include")
-                        && w[1].is_punct('!')
-                        && w[2].is_punct('(')
-                        && toks[from + i..to]
-                            .iter()
-                            .any(|t| matches!(&t.tok, Tok::Literal(text) if text.contains(GENERATED)))
-                })
+                let inside = &toks[from..to];
+                !inside.iter().any(|t| t.is_punct('#')) && includes_at_top_level(inside)
             })
     })
+}
+
+/// Whether the tokens before the path that ends at `at` end an attribute (`#[cfg(...)]`).
+fn attribute_before(toks: &[Token], at: usize) -> bool {
+    let mut start = at;
+    // Walk back over `omuzaki_core ::`.
+    while start >= 3 && toks[start - 1].is_punct(':') && toks[start - 2].is_punct(':') {
+        start -= 3;
+    }
+    start > 0 && toks[start - 1].is_punct(']')
+}
+
+/// Whether `inside` has `include!(` ... `link_calls.rs` ... `)` at nesting depth zero.
+fn includes_at_top_level(inside: &[Token]) -> bool {
+    let mut depth = 0usize;
+    for (at, token) in inside.iter().enumerate() {
+        match token.tok {
+            Tok::Punct('{' | '(' | '[') => depth += 1,
+            Tok::Punct('}' | ')' | ']') => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        if depth == 0
+            && token.is_ident("include")
+            && inside.get(at + 1).is_some_and(|t| t.is_punct('!'))
+            && let Some((from, to)) = group_at(inside, at + 2)
+            && inside[from..to].iter().any(|t| matches!(&t.tok, Tok::Literal(text) if text.contains(GENERATED)))
+        {
+            return true;
+        }
+    }
+    false
 }
 
 /// The tokens strictly inside the delimited group that opens at `start`, as a half-open range; `None` when the token
@@ -98,5 +128,19 @@ mod tests {
         assert!(!library_includes_generated(outside));
         let other_file = "omuzaki_core::define_link! { include!(concat!(env!(\"OUT_DIR\"), \"/other.rs\")); }\n";
         assert!(!library_includes_generated(other_file));
+    }
+
+    #[test]
+    fn a_conditional_or_nested_include_is_not_wiring() {
+        let include = "include!(concat!(env!(\"OUT_DIR\"), \"/link_calls.rs\"));";
+        for wrapped in [
+            format!("omuzaki_core::define_link! {{\n    #[cfg(any())]\n    {include}\n}}\n"),
+            format!("omuzaki_core::define_link! {{\n    #[cfg(feature = \"x\")]\n    {{ {include} }}\n}}\n"),
+            format!("#[cfg(any())]\nomuzaki_core::define_link! {{\n    {include}\n}}\n"),
+            format!("#[cfg(any())]\ndefine_link! {{\n    {include}\n}}\n"),
+            format!("omuzaki_core::define_link! {{\n    if false {{ {include} }}\n}}\n"),
+        ] {
+            assert!(!library_includes_generated(&wrapped), "{wrapped}");
+        }
     }
 }

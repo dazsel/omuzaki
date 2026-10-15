@@ -35,6 +35,8 @@ pub struct Crate {
     /// file: it lists `omuzaki-link-build`, its `build.rs` calls `emit` from `main`, and its library's `define_link!`
     /// includes `link_calls.rs` (read as tokens, so a commented-out include does not count).
     pub generates_links: bool,
+    /// Whether it lists `omuzaki-link-build` under `[build-dependencies]`, wired or not.
+    pub lists_link_build: bool,
 }
 
 /// Every member of the workspace at `root`, sorted by name.
@@ -78,6 +80,7 @@ pub fn load(root: &Path) -> Result<Vec<Crate>, Error> {
                 .and_then(|p| p.get("metadata")?.get("omuzaki")?.get("registers")?.as_bool())
                 .unwrap_or(false),
             generates_links: generates_links(&dir, &manifest),
+            lists_link_build: lists_link_build(&manifest),
             dir: dir.strip_prefix(root).unwrap_or(&dir).to_path_buf(),
             name,
             deps,
@@ -148,14 +151,16 @@ fn path_deps(root: &Path, dir: &Path, manifest: &Table, workspace_deps: Option<&
     Ok(found)
 }
 
+/// Whether the manifest lists `omuzaki-link-build` under `[build-dependencies]`.
+fn lists_link_build(manifest: &Table) -> bool {
+    manifest.get("build-dependencies").and_then(Value::as_table).is_some_and(|table| table.contains_key(LINK_BUILD))
+}
+
 /// Whether the crate's `link()` calls really are generated: it lists `omuzaki-link-build` under `[build-dependencies]`,
 /// its build script calls `omuzaki_link_build::emit`, and its library includes the generated `link_calls.rs`. Any one
 /// missing leaves the list empty or unused, so the crate must not be credited with calls it does not make.
 fn generates_links(dir: &Path, manifest: &Table) -> bool {
-    let listed = manifest
-        .get("build-dependencies")
-        .and_then(Value::as_table)
-        .is_some_and(|table| table.contains_key(LINK_BUILD));
+    let listed = lists_link_build(manifest);
     let build = manifest.get("package").and_then(|p| p.get("build")).and_then(Value::as_str).unwrap_or("build.rs");
     let lib = library(dir, "", manifest).map_or_else(|| PathBuf::from("src/lib.rs"), |(_, root)| root);
     let holds =

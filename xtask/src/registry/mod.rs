@@ -473,6 +473,7 @@ mod tests {
             bins: vec![("omuzaki".into(), "src/main.rs".into()), ("fixture".into(), "src/bin/fixture.rs".into())],
             registers: false,
             generates_links: false,
+            lists_link_build: false,
         };
         assert_eq!(owning_bin(&krate, Path::new("src/main.rs")).as_deref(), Some("omuzaki"));
         assert_eq!(owning_bin(&krate, Path::new("src/bin/fixture.rs")).as_deref(), Some("fixture"));
