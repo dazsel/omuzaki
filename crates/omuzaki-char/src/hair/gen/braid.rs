@@ -10,9 +10,10 @@
 //! **The strands.** Per side, [`BraidGen::strands`] strands with phase `ph0 = k · 2π / strands`. At path point `i` of
 //! `n`, with tangent `T` from the neighbouring points, outward `O = normalize(p - head centre)`, binormal
 //! `B = normalize(T × O)` and `s = i / (n - 1) · lobes · π`, the strand point is
-//! `p + B · across · sin(s + ph0) + O · (out · sin(2 (s + ph0)) + 0.005)`. The `-x` side uses the same `B` rule, so its
-//! strands are the `+x` strands mirrored in `x` with the `across` term's sign negated (the cross product flips under a
-//! reflection), which is what the prototype's `-x` strands are.
+//! `p + B · across · sin(s + ph0) + O · (out · sin(2 (s + ph0)) + 0.005)`. The `-x` side uses the same `B` rule, as the
+//! prototype does, and that is deliberate: the cross product flips under a reflection in `x`, so the `-x` side's
+//! sideways swing is not a mirror image of the `+x` side's. Its strands are the `+x` strands mirrored in `x` with the
+//! `across` term's sign negated. The `outward` and `out` terms do mirror exactly.
 //!
 //! **Width and thickness.** A strand's width is [`BraidGen::strand_width`] along its length, narrowing to 0.4 of it over
 //! the last 8 % (a [`Taper`] with `tip_at` 0.92). The prototype also halves the root over the first 4 %; a [`Taper`]

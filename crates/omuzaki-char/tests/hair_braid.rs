@@ -114,15 +114,17 @@ fn the_legacy_stream_is_not_advanced_by_the_braid() {
 }
 
 #[test]
-fn the_mirror_side_matches_when_the_strands_have_no_sideways_swing() {
-    // With `across` zero the binormal term vanishes, so the -x side is the +x side reflected in x, exactly.
-    let g = BraidGen { across: 0.0, ..BraidGen::default() };
-    let (clumps, _) = compile_with(&g);
+fn the_mirror_side_is_the_other_side_mirrored_with_the_sideways_swing_negated() {
+    // The binormal `T × O` flips under a reflection in `x`, so the -x side's `across` term is the +x side's with its
+    // sign reversed: the -x strands from `across = a` are the +x strands from `across = -a`, mirrored in `x`.
+    let g = BraidGen::default();
+    let (pos, _) = compile_with(&g);
+    let (neg, _) = compile_with(&BraidGen { across: -g.across, ..g.clone() });
     let per_side = usize::from(g.strands);
     for k in 0..per_side {
-        let (pos, neg) = (&clumps[k].rest, &clumps[per_side + k].rest);
-        for (p, q) in pos.iter().zip(neg) {
-            assert!((p.x + q.x).abs() < 1e-6 && (p.y - q.y).abs() < 1e-6 && (p.z - q.z).abs() < 1e-6);
+        let (mine, theirs) = (&pos[per_side + k].rest, &neg[k].rest);
+        for (q, p) in mine.iter().zip(theirs) {
+            assert!((q.x + p.x).abs() < 1e-6 && (q.y - p.y).abs() < 1e-6 && (q.z - p.z).abs() < 1e-6, "strand {k}");
         }
     }
 }
