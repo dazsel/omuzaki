@@ -189,7 +189,7 @@ fn trims() -> Vec<TrimSpec> {
         }),
         TrimSpec::Decal(Decal {
             source: star(),
-            anchor: DecalAnchor::Surface { at: [0.35, 3.14] },
+            anchor: DecalAnchor::Surface { at: [0.35, std::f64::consts::PI] },
             size: [0.03, 0.03],
             rotation: 15.0,
             opacity: 0.9,
