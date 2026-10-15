@@ -75,6 +75,8 @@ const J_UNDER_TIP: usize = 20;
 /// ranges): widths in metres, angles in degrees, offsets in metres.
 const MIN_WIDTH: f64 = 0.001;
 const MAX_WIDTH: f64 = 0.3;
+/// The least shade the contract's validation allows (a built shade, after the top layer's step, stays above it).
+const MIN_SHADE: f64 = 0.5;
 const MAX_ANGLE_DEG: f64 = 90.0;
 const MAX_OFFSET: f64 = 0.2;
 /// The least distance from the skull at either end: half the lock's thickness there ([`THICKNESS`] is `base` at both ends)
@@ -109,7 +111,7 @@ fn hj(k: usize) -> f64 {
 
 /// The [`Taper`] that stands in for the prototype's outline of a lock of width `w`.
 pub fn taper(w: f64) -> Taper {
-    Taper { start: ROOT_WIDTH, mid: MID_GAIN * w + FLOOR, tip: FLOOR, tip_at: TIP_AT }
+    Taper { start: ROOT_WIDTH, mid: (MID_GAIN * w + FLOOR).clamp(MIN_WIDTH, MAX_WIDTH), tip: FLOOR, tip_at: TIP_AT }
 }
 
 /// The prototype's outline of a lock of width `w` at `t`: `lerp(0.040, w, ss(t, 0, 0.45)) (1 - ss(t, 0.5, 1))^0.7 + 0.0015`.
@@ -164,7 +166,7 @@ fn layer_lock(layer: &BangLayer, top: bool, i: usize) -> Lock {
     let n = usize::from(layer.count);
     let tip = sane(layer.tip_heights.get(i).or(layer.tip_heights.last()).copied().unwrap_or(0.0), -1.0, 1.0, 0.0);
     let spread = sane(layer.spread_deg, 5.0, 90.0, 44.0).to_radians();
-    let (width, shade) = (sane(layer.width, MIN_WIDTH, MAX_WIDTH, 0.064), sane(layer.shade, 0.5, 1.0, 1.0));
+    let (width, shade) = (sane(layer.width, MIN_WIDTH, MAX_WIDTH, 0.064), sane(layer.shade, MIN_SHADE, 1.0, 1.0));
     let (hook_deg, root_offset, tip_offset) = (
         sane(layer.hook_deg, -MAX_ANGLE_DEG, MAX_ANGLE_DEG, 0.0),
         sane(layer.root_offset, MIN_OFFSET, MAX_OFFSET, 0.046),
@@ -179,8 +181,8 @@ fn layer_lock(layer: &BangLayer, top: bool, i: usize) -> Lock {
             tip_height: tip - drop + TOP_TIP_JITTER * hj(i + J_TOP_TIP),
             root_offset,
             tip_offset,
-            width: width * (1.0 + WIDTH_JITTER * hj(i + J_TOP_WIDTH)),
-            shade: shade * (1.0 - SHADE_STEP * (i % 2) as f64),
+            width: (width * (1.0 + WIDTH_JITTER * hj(i + J_TOP_WIDTH))).clamp(MIN_WIDTH, MAX_WIDTH),
+            shade: (shade * (1.0 - SHADE_STEP * (i % 2) as f64)).clamp(MIN_SHADE, 1.0),
             hook_deg: hook_deg * (1.0 + hj(i + J_TOP_HOOK)),
             u: ratio(phi, spread),
         }

@@ -14,7 +14,7 @@ use omuzaki_char_api::{
     Wisp,
 };
 use omuzaki_core::glam::Vec3;
-use omuzaki_face_api::Palette;
+use omuzaki_face_api::{Palette, Validate};
 
 /// An ellipsoid head: centre `(0, 0.2, 0)`, semi-axes `(0.08, 0.11, 0.095)`.
 #[derive(Debug)]
@@ -294,6 +294,25 @@ fn the_resampled_points_keep_the_thickness_clearance_at_the_extremes_of_hook_and
             let need = clump.thickness.at(t) * 0.5;
             let gap = p.length() - 0.11;
             assert!(gap >= need - 1e-6, "point {k}: {gap} m out, the tube needs {need}");
+        }
+    }
+}
+
+#[test]
+fn every_built_taper_bulge_and_shade_passes_the_contracts_validation() {
+    let at_limits =
+        |width: f64, shade: f64| BangLayer { count: 9, width, shade, tip_heights: vec![0.0], ..BangLayer::default() };
+    for (width, shade) in [(0.3, 0.5), (0.3, 1.0), (0.001, 0.5), (0.064, 0.9)] {
+        let wisp = Wisp { width, ..Wisp::default() };
+        let g = BangsGen {
+            layers: vec![at_limits(width, shade), at_limits(width, shade)],
+            wisps: vec![wisp],
+            ..BangsGen::default()
+        };
+        for clump in compile(&g, &mut Counting::default()).clumps {
+            assert!(clump.width.validate().is_ok(), "w = {width}: {:?}", clump.width);
+            assert!(clump.thickness.validate().is_ok(), "{:?}", clump.thickness);
+            assert!((0.5..=1.0).contains(&clump.shade), "shade {} at {shade}", clump.shade);
         }
     }
 }
