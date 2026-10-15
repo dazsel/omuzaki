@@ -11,8 +11,7 @@
 //! conversion and taps on its own, so the real engine in `omuzaki-audio` is compared with an independent oracle
 //! (design section 3.6).
 //!
-//! Not here yet: the fake backend, the test signals and the node conformance suite (`src/backend/`, `src/signals/`
-//! and `src/conformance/`).
+//! Not here yet: the fake backend and the node conformance suite (`src/backend/` and `src/conformance/`).
 #![deny(missing_docs)]
 
 mod engine;
@@ -20,6 +19,7 @@ mod latency;
 mod mixer;
 mod null;
 mod offline;
+pub mod signals;
 mod taps;
 
 pub use engine::{MockEngine, mock_devices};
