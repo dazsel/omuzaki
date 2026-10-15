@@ -180,6 +180,10 @@ fn rigid_clumps_are_skipped_and_bad_input_is_refused() {
     assert_eq!(err, VerletError::BadCollider { collider: 1 });
     let err = ChainSet::from_clumps(&[], &physics, &[far, ok]).unwrap_err();
     assert_eq!(err, VerletError::BadCollider { collider: 0 });
+    // A positive f64 radius that narrows to 0 would be a collider nothing hits once the margin is 0.
+    let tiny = SphereCollider { bone: JointRef::HEAD, centre: [0.0, 0.7, 0.0], radius: 1e-50 };
+    let bare = HairPhysics { collider_margin: 0.0, ..HairPhysics::default() };
+    assert_eq!(ChainSet::from_clumps(&[], &bare, &[tiny]).unwrap_err(), VerletError::BadCollider { collider: 0 });
     // Particles at one place, or too far apart for an f32 distance, make no segment.
     let doubled = clump(vec![HEAD, HEAD + Vec3::Y * 0.01, HEAD, HEAD], Follow::Head);
     assert_eq!(ChainSet::from_clumps(&[doubled], &physics, &[]).unwrap_err(), VerletError::BadClump { clump: 0 });
@@ -279,36 +283,38 @@ fn colliders_hold_after_settling() {
 }
 
 #[test]
-fn overlapping_colliders_resolve_in_order_and_stay_within_the_margin() {
-    // The bench's colliders: head and neck overlap, as do the chest and shoulders.
-    let (clumps, mut physics) = mira();
-    physics.colliders = vec![
+fn overlapping_colliders_keep_hair_out_of_both() {
+    // The bench's overlapping head and neck spheres, and locks styled straight through the junction between them, so
+    // the springs keep pulling particles into the overlap.
+    let colliders = vec![
         SphereCollider { bone: JointRef::HEAD, centre: [0.0, 0.778, 0.0], radius: 0.09 },
         SphereCollider { bone: JointRef::NECK, centre: [0.0, 0.66, -0.01], radius: 0.045 },
-        SphereCollider { bone: JointRef::CHEST, centre: [0.0, 0.52, -0.02], radius: 0.11 },
-        SphereCollider { bone: JointRef::CHEST, centre: [0.12, 0.6, -0.02], radius: 0.06 },
-        SphereCollider { bone: JointRef::CHEST, centre: [-0.12, 0.6, -0.02], radius: 0.06 },
     ];
+    let physics = HairPhysics { colliders, ..HairPhysics::default() };
+    let clumps: Vec<_> = (0..12)
+        .map(|n| {
+            let a = TAU * n as f32 / 12.0;
+            let out = Vec3::new(a.sin(), 0.0, a.cos()) * 0.03 + Vec3::new(0.0, 0.0, -0.01);
+            clump((0..13).map(|i| out + Vec3::new(0.0, 0.80 - 0.02 * i as f32, 0.0)).collect(), Follow::Head)
+        })
+        .collect();
     let mut set = ChainSet::from_clumps(&clumps, &physics, &[]).unwrap();
-    let pose = Rigged(Pose::REST);
-    set.reset(&pose).unwrap();
+    set.reset(&Rigged(Pose::REST)).unwrap();
     set.settle(480);
-    let (margin, mut deepest) = (physics.collider_margin as f32, f32::NEG_INFINITY);
+    let mut deepest = f32::NEG_INFINITY;
     for i in 0..240 {
         set.targets(&Rigged(Pose::yawed(0.52 * (i as f32 / 90.0 * TAU).sin()))).unwrap();
         set.step(1.0 / 90.0).unwrap();
         for range in set.chains() {
             for p in &set.positions()[range.start + 1..range.end] {
                 for &(centre, reach) in set.spheres() {
-                    deepest = deepest.max(reach - margin - p.distance(centre));
+                    deepest = deepest.max(reach - p.distance(centre));
                 }
             }
         }
     }
-    eprintln!(
-        "overlapping colliders, head swinging: deepest particle {deepest:.2e} m inside a collider (margin excluded)"
-    );
-    assert!(deepest <= margin, "{deepest} m inside");
+    eprintln!("head and neck overlap: deepest particle {deepest:.2e} m inside radius + margin over 240 steps");
+    assert!(deepest <= 1e-5, "{deepest} m inside radius + margin");
 }
 
 #[test]
@@ -429,4 +435,31 @@ fn a_frame_allocates_nothing() {
     MEASURING.with(|m| m.set(false));
     let allocations = ALLOCATIONS.load(Ordering::Relaxed) - before;
     assert_eq!(allocations, 0, "1000 hair frames made {allocations} allocations");
+}
+
+#[test]
+fn a_particle_wedged_between_head_and_neck_ends_outside_both() {
+    // A fully stiff tip styled in the overlap, near the axis through both centres: the head pushes it down into the
+    // neck, the neck pushes it back up into the head. The prototype's single pass leaves it up to 2 cm inside the head;
+    // the repeated passes walk it out sideways.
+    let colliders = vec![
+        SphereCollider { bone: JointRef::HEAD, centre: [0.0, 0.778, 0.0], radius: 0.09 },
+        SphereCollider { bone: JointRef::NECK, centre: [0.0, 0.66, -0.01], radius: 0.045 },
+    ];
+    let physics = HairPhysics { colliders, ..HairPhysics::default() };
+    for x in [0.001_f32, 0.005, 0.01, 0.02] {
+        let rest = vec![Vec3::new(x, 0.95, -0.01), Vec3::new(x, 0.825, -0.01), Vec3::new(x, 0.70, -0.01)];
+        let mut set = ChainSet::from_clumps(&[clump(rest, Follow::Head)], &physics, &[]).unwrap();
+        set.set_stiffness(&[1.0, 1.0]).unwrap();
+        set.reset(&Rigged(Pose::REST)).unwrap();
+        set.settle(10);
+        let tip = set.positions()[1];
+        for &(centre, reach) in set.spheres() {
+            assert!(
+                reach - tip.distance(centre) <= 1e-5,
+                "x {x}: tip {tip} is {} m inside",
+                reach - tip.distance(centre)
+            );
+        }
+    }
 }

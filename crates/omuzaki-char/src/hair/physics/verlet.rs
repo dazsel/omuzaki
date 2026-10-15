@@ -18,11 +18,14 @@
 //! 3. `iterations` passes, each a one-sided distance pass root to tip (only the child moves, onto its rest length from
 //!    the parent, so the order matters), then a collider pass (every non-root particle against every collider in
 //!    order, pushed out to `radius + collider_margin`). A collider can leave a segment slightly off its rest length.
-//!    Overlapping colliders resolve in that fixed order, as in the prototype: a push out of a later collider can leave
-//!    a particle slightly inside an earlier one.
+//!    The first collider pass is the prototype's. Overlapping colliders can undo each other's push, so while a pass
+//!    still had to move a particle, the pass repeats in the same order, up to [`COLLIDER_PASSES`] in all. A particle
+//!    wedged where the passes keep cycling can end inside the sphere an earlier push of the last pass resolved, by at
+//!    most what that later push moved it; with no overlap, or overlap the passes settle, every particle ends outside
+//!    `radius + collider_margin`.
 //!
-//! Not in the prototype: wind (beside gravity), [`ChainSet::reset`] also clearing the carried time (#68), and a particle
-//! at a collider's exact centre leaving along its segment instead of staying inside.
+//! Not in the prototype: wind (beside gravity), [`ChainSet::reset`] also clearing the carried time (#68), the repeated
+//! collider passes, and a particle at a collider's exact centre leaving along its segment instead of staying inside.
 //!
 //! Nothing here allocates or locks after [`ChainSet::from_clumps`]: every buffer is sized there.
 
@@ -36,6 +39,12 @@ pub const SUBSAMPLE: usize = 2;
 pub const MAX_STEPS: u32 = 8;
 /// The longest frame time [`ChainSet::step`] takes in, seconds: a longer hitch counts as this (the prototype's clamp).
 pub const MAX_DT: f32 = 0.1;
+/// The most collider passes per constraint iteration: the prototype's one, then repeats while overlapping colliders
+/// still move particles (the `SphereCollider` contract: hair does not enter a sphere).
+pub const COLLIDER_PASSES: u32 = 4;
+/// How deep inside a collider a particle may sit before a pass counts it as pushed, metres: the rounding of a push
+/// that put it exactly on the surface.
+const SURFACE_TOLERANCE: f32 = 1e-6;
 /// Gravity, metres per second squared, before `HairPhysics::gravity_scale`.
 pub const GRAVITY: f32 = 9.8;
 /// The rate the stiffness numbers were tuned at: a spring factor `k` pulls by `k` per step at this rate.
@@ -155,8 +164,10 @@ impl ChainSet {
         for (n, c) in source.iter().enumerate() {
             // Checked after narrowing: a finite `f64` beyond `f32`'s range would become infinite here.
             let centre = Vec3::new(narrow(c.centre[0]), narrow(c.centre[1]), narrow(c.centre[2]));
-            let radius = narrow(c.radius) + margin;
-            if !(centre.is_finite() && radius.is_finite() && c.radius > 0.0) {
+            let base = narrow(c.radius);
+            let radius = base + margin;
+            // `base` too: a tiny positive `f64` radius narrows to 0, a collider nothing could hit without the margin.
+            if !(centre.is_finite() && base.is_finite() && base > 0.0 && radius.is_finite()) {
                 return Err(VerletError::BadCollider { collider: n });
             }
             colliders.push((c.bone.clone(), centre, radius));
@@ -351,7 +362,11 @@ impl ChainSet {
             for n in 0..self.chains.len() {
                 let chain = self.chains[n];
                 self.distance_pass(chain);
-                self.collider_pass(chain);
+                for _ in 0..COLLIDER_PASSES {
+                    if !self.collider_pass(chain) {
+                        break;
+                    }
+                }
             }
         }
     }
@@ -367,7 +382,9 @@ impl ChainSet {
         }
     }
 
-    fn collider_pass(&mut self, chain: Chain) {
+    /// One pass of every non-root particle against every collider in order; whether it pushed any particle.
+    fn collider_pass(&mut self, chain: Chain) -> bool {
+        let mut pushed = false;
         for i in chain.start + 1..chain.end {
             let mut p = self.pos[i];
             for &(centre, radius) in &self.spheres {
@@ -376,6 +393,7 @@ impl ChainSet {
                 if len >= radius {
                     continue;
                 }
+                pushed |= radius - len > SURFACE_TOLERANCE;
                 // A particle at the very centre has no direction of its own (the prototype then leaves it inside):
                 // it leaves along the segment from its parent, or straight up if that is degenerate too.
                 let dir =
@@ -384,6 +402,7 @@ impl ChainSet {
             }
             self.pos[i] = p;
         }
+        pushed
     }
 
     /// Particle positions, world space, chains one after another in clump order.
