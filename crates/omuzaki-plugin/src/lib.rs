@@ -13,6 +13,9 @@
 //! - [`bridge`]: the seam the op bridge plugs into.
 #![deny(missing_docs)]
 
+// The contract registers its messages (`messages!`); a binary linking this crate keeps them (ADR 0015).
+omuzaki_core::define_link! { omuzaki_plugin_api::link(); }
+
 pub mod bridge;
 pub mod cache;
 mod engine;

@@ -9,6 +9,9 @@
 //!   [`MockSubject`] is the mock's own.
 #![deny(missing_docs)]
 
+// The contract registers its messages (`messages!`); a binary linking this crate keeps them (ADR 0015).
+omuzaki_core::define_link! { omuzaki_plugin_api::link(); }
+
 pub mod conformance;
 mod fake;
 mod guest;

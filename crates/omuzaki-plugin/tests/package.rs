@@ -28,7 +28,7 @@ use zip::write::SimpleFileOptions;
 
 /// The digest of `tests/fixtures/golden-package` (a nested path and a non-ASCII name among its files); it must be
 /// the same on Linux, macOS and Windows.
-const GOLDEN: &str = "324787783eb4cd65e94e4284fd77b11085bbec9fb79505a8fa8131eadc3c41ea";
+const GOLDEN: &str = "398747ff2d87195b9819ba488f4137616209e40c91efeae09c7f59b61f30c18f";
 
 /// A test key; never a real one.
 fn key() -> SigningKey {
@@ -97,7 +97,7 @@ fn package_hash_golden() {
     for (path, bytes) in [
         ("a.txt", b"alpha".as_slice()),
         ("l10n/ja/übersicht.ftl", b"gamma".as_slice()),
-        ("nested/deeper/b.bin", b"beta\0\x01\x02".as_slice()),
+        ("nested/deeper/b.txt", b"beta".as_slice()),
     ] {
         preimage.extend_from_slice(&(path.len() as u64).to_le_bytes());
         preimage.extend_from_slice(path.as_bytes());

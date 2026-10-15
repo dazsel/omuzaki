@@ -34,6 +34,8 @@ omuzaki_l10n_api::messages! {
     pub perm_spend = "plugin-api-perm-spend" () => "Spend money on paid services, asking you each time";
     /// A plugin wants to reach the network; `hosts` lists every host it may reach.
     pub perm_net = "plugin-api-perm-net" (hosts: List) => "Reach { $hosts }";
+    /// A plugin wants to comment on reviews and reply to comments.
+    pub perm_review = "plugin-api-perm-review" () => "Comment on reviews and reply to comments";
     /// A scope a plugin is never granted (refused at install, shown if a card is ever built for it).
     pub perm_refused = "plugin-api-perm-refused" (scope: Id) => "{ $scope } (never granted to a plugin)";
     /// A plugin wants its own data folder; `quota` is in mebibytes (MiB).
@@ -52,7 +54,7 @@ pub enum Risk {
     High,
 }
 
-/// The risk of a scope: `read` low; `edit:*`, `perform` and `render` medium; everything that reaches outside the
+/// The risk of a scope: `read` low; `edit:*`, `perform`, `render` and `review` medium; everything that reaches outside the
 /// project high, as is any scope this table does not name.
 pub fn risk(scope: Scope) -> Risk {
     match scope {
@@ -62,7 +64,8 @@ pub fn risk(scope: Scope) -> Risk {
         | Scope::EditLibrary
         | Scope::EditSettings
         | Scope::Render
-        | Scope::Perform => Risk::Medium,
+        | Scope::Perform
+        | Scope::Review => Risk::Medium,
         _ => Risk::High,
     }
 }
@@ -136,6 +139,7 @@ fn text_of(scope: Scope, hosts: &[String]) -> Text {
         Scope::Broadcast => perm_broadcast(),
         Scope::Publish => perm_publish(),
         Scope::Spend => perm_spend(),
+        Scope::Review => perm_review(),
         Scope::Net => perm_net(hosts.iter().map(|h| omuzaki_l10n_api::Arg::Id(h.clone())).collect()),
         other => perm_refused(other.name()),
     }

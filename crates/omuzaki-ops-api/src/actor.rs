@@ -42,9 +42,11 @@ pub struct Cause {
     pub text: Option<String>,
 }
 
-/// The kinds of [`Cause`].
+/// The kinds of [`Cause`]. `#[non_exhaustive]` (ADR 0054 §4): a `match` outside this crate needs a wildcard arm, so a
+/// new kind never breaks it.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum CauseKind {
     /// A direct UI or CLI action.
     Direct,
@@ -58,6 +60,12 @@ pub enum CauseKind {
     Script,
     /// Replaying a log or recording.
     Replay,
+    /// A review comment (ADR 0056, `docs/design/comments.md` §6): the cause's text is the comment's id only, never its
+    /// words, so no comment text lands in History labels.
+    Review,
+    /// A plugin's entry call (ADR 0058): the cause's text is `<id>@<version> <entry>` (`example@0.1.0 init`), naming
+    /// the entry and never its arguments. Its own kind because `Script` never queues and `Rule` is automation's.
+    Plugin,
 }
 
 /// The scopes an actor holds, plus file-path grants for [`Scope::Fs`]. A person holds `fs` but no roots, so a path

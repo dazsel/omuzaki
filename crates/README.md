@@ -83,10 +83,13 @@ The other API crates (§39.1) arrive in later phases, each with its mock.
 out of the rest).
 
 **Plugins** (ADR 0058, `docs/design/plugins.md` §1). `omuzaki-plugin-api` (API, built: the WIT package `omuzaki:plugin`,
-`PluginId`, `PluginInfo`, `PluginState`, `FaultKind`, `PluginError` and the `Plugins` service; no wasmtime). Still to
-come in it: `Manifest`, `DataOwner` and the per-call-kind budgets. Planned: `omuzaki-plugin-mock` (Mock: `MockPlugins`,
-`MockGuest` and the conformance suite) and `omuzaki-plugin` (Implementation: the wasmtime component host, the WASI
-stubs, limits, fuel and epochs, the op bridge, the compiled-code cache, reload and the `plugin.*` ops; native only).
+`Manifest` with its checks and licence classes, the permission summary and update diff, `Approval` and the session
+`ceiling`, the sandbox `limits` and `CallKind` budgets, `PluginId`, `PluginInfo`, `PluginState`, `FaultKind`,
+`PluginError` and the `Plugins` service; no wasmtime). `omuzaki-plugin-mock` (Mock, built: `MockPlugins`, `MockGuest`,
+`MockSessions` and the conformance suite). `omuzaki-plugin` (Implementation, built; native only: the wasmtime 49
+component host with fuel and epochs per call kind, the CPU share, the WASI stubs, the worker threads, faults and
+restarts, the plugin log, packages, signatures, installs and the compiled-code cache). Still to come in it: the op
+bridge, the data folder and `fetch`, settings, reload by watching and the `plugin.*` ops.
 
 **Planned: connectors** (ADR 0030, `docs/design/connectors.md` D1 and D13). `omuzaki-connect-api` (API: manifests,
 requests, the `Connectors` service, the tray), `omuzaki-connect-mock` (Mock), `omuzaki-connect` (Implementation: the host
