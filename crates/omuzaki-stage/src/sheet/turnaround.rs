@@ -341,7 +341,8 @@ impl Shot {
 /// Each view ticks the character to its yaw and pose, settles the hair and cloth from rest (so no view depends on the
 /// views before it or on what the stage did earlier), redraws to upload the settled meshes, and then draws offline from
 /// that scene, tile by tile where the cell is too big for one target. The tick and the redraw also draw a throwaway
-/// frame into the stage's own target.
+/// frame into the stage's own target. The stage is left as the last view left it (the character turned away, in the
+/// sheet's pose, settled, the clock moved on): the caller's next tick sets its own pose and root.
 ///
 /// # Errors
 /// [`TurnaroundError`] for an unusable spec ([`TurnaroundSpec::validate`]), a character with nothing to frame, a

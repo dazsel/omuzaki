@@ -147,6 +147,15 @@ struct NoTargets {
     inner: MockRenderer,
     refuse: bool,
     refuse_release: bool,
+    /// Updates seen so far, and the one (counting from 0) at which `update_vertices` starts to fail.
+    updates: usize,
+    fail_updates_from: Option<usize>,
+}
+
+impl NoTargets {
+    fn new() -> Self {
+        Self { inner: MockRenderer::new(), refuse: false, refuse_release: false, updates: 0, fail_updates_from: None }
+    }
 }
 
 impl Renderer for NoTargets {
@@ -163,6 +172,10 @@ impl Renderer for NoTargets {
         self.inner.create_mesh_with(mesh, options)
     }
     fn update_vertices(&mut self, mesh: MeshId, positions: &[Vec3], normals: &[Vec3]) -> Result<(), RenderError> {
+        self.updates += 1;
+        if self.fail_updates_from.is_some_and(|from| self.updates > from) {
+            return Err(RenderError::Backend("vertex update refused by the test".to_owned()));
+        }
         self.inner.update_vertices(mesh, positions, normals)
     }
     fn create_texture(&mut self, desc: &TextureDesc, rgba: Option<&[u8]>) -> Result<TextureId, RenderError> {
@@ -376,7 +389,7 @@ fn the_long_lens_renders_and_the_scene_is_put_back() {
 
 #[test]
 fn a_refused_target_leaves_the_callers_scene_alone() {
-    let mut renderer = NoTargets { inner: MockRenderer::new(), refuse: false, refuse_release: false };
+    let mut renderer = NoTargets::new();
     let mut stage = stage_on(&mut renderer);
     // Lights, post and background the sheet would replace, so a leak would show.
     let scene = stage.scene_mut();
@@ -506,7 +519,7 @@ fn camera_for(stage: &Stage, coverage: f64) -> Camera {
 
 /// A stage on the mock character in its wide variant, with a face rig that can switch to the close-up (which has a
 /// longer torso, so its rig and height differ). It has run a few frames at wide framing.
-fn variant_stage(renderer: &mut MockRenderer) -> Stage {
+fn variant_stage(renderer: &mut dyn Renderer) -> Stage {
     let variants: VariantSet = serde_json::from_str(
         r#"{
             "game": { "shot": { "min": 0.0, "max": 0.35 } },
@@ -550,7 +563,7 @@ fn variant_stage(renderer: &mut MockRenderer) -> Stage {
 }
 
 /// Stages the close-up on `stage`: the swap happens on its next tick.
-fn stage_close_up(stage: &mut Stage, renderer: &mut MockRenderer) {
+fn stage_close_up(stage: &mut Stage, renderer: &mut dyn Renderer) {
     stage.scene_mut().camera = camera_for(stage, 0.8);
     stage.service_variants(renderer, &FrameInput::default()).expect("the close-up is staged");
     assert_eq!(stage.built().variant, Some(VariantId::new("game").expect("an id")), "staged, not yet swapped");
@@ -683,6 +696,24 @@ fn a_pending_variant_gives_the_sheet_a_swapped_stage_would() {
 }
 
 #[test]
+fn a_tick_that_fails_after_a_variant_swap_leaves_a_scene_that_names_live_meshes() {
+    let mut renderer = NoTargets::new();
+    let mut stage = variant_stage(&mut renderer);
+    stage_close_up(&mut stage, &mut renderer);
+    // The swapping tick makes two vertex updates: the swap's own refresh, then the frame's dynamic upload. The second
+    // one fails, after the swap is committed and before the scene is refilled.
+    renderer.fail_updates_from = Some(renderer.updates + 1);
+    let error = render_turnaround(&mut stage, &mut renderer, &spec()).expect_err("the upload is refused");
+    assert!(matches!(error, TurnaroundError::Stage(_)), "{error}");
+    renderer.fail_updates_from = None;
+    assert_eq!(stage.built().variant, Some(VariantId::new("close-up").expect("an id")), "the swap was committed");
+    // The retired character's meshes are released; the scene must not name them.
+    stage.service_variants(&mut renderer, &FrameInput::default()).expect("the retired character is released");
+    renderer.render(stage.target(), stage.scene(), &Quality::live()).expect("the stage's scene names live meshes");
+    stage.release(&mut renderer).expect("the stage releases");
+}
+
+#[test]
 fn a_spec_with_nothing_to_draw_is_refused_before_any_work() {
     for spec in
         [TurnaroundSpec::new(UVec2::new(0, 240)), TurnaroundSpec::new(UVec2::new(120, 0)), spec().with_max_tile(0)]
@@ -714,7 +745,7 @@ fn a_cell_too_big_to_allocate_is_refused_with_checked_arithmetic() {
 
 #[test]
 fn a_failed_release_never_hides_the_drawing_error() {
-    let mut renderer = NoTargets { inner: MockRenderer::new(), refuse: false, refuse_release: false };
+    let mut renderer = NoTargets::new();
     let mut stage = stage_on(&mut renderer);
     // Drawing fails (a telephoto cell that needs tiles) and the release fails too: the drawing error comes back.
     let tiles = TurnaroundSpec::new(CELL).with_lens(Lens::Telephoto).with_max_tile(64);

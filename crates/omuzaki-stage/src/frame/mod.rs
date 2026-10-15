@@ -184,7 +184,8 @@ impl Stage {
     ///
     /// # Errors
     /// [`StageError::Render`] if the renderer refuses a vertex update or the frame, or whatever the face update reports
-    /// (a layer that fails to paint). The simulations have already stepped; the next call carries on from there. A
+    /// (a layer that fails to paint). The simulations have already stepped and the scene already names the frame's
+    /// character; the next call carries on from there. A
     /// staged variant whose vertex refresh the renderer refuses fails the call before anything steps: the variant is
     /// abandoned and the live character stays.
     pub fn tick(&mut self, renderer: &mut dyn Renderer, input: &FrameInput) -> Result<FrameOutput, StageError> {
@@ -198,10 +199,15 @@ impl Stage {
         let pose = SkinPose { character: &self.built.rig, skin: self.rig.skin(), root: input.root };
         let ctx = StepCtx { dt: tick.dt, time: tick.time, pose: &pose, wind: input.wind };
         DynamicMeshes::step(&mut self.built.runtimes, &ctx);
-        let uploads = self.dynamic.upload(&self.built.runtimes, renderer)?;
-        self.update_face(renderer, tick, input)?;
+        let prepared = self
+            .dynamic
+            .upload(&self.built.runtimes, renderer)
+            .and_then(|uploads| self.update_face(renderer, tick, input).map(|()| uploads));
+        // Filled even when the frame can't be prepared: a variant swapped in at the top of this tick, and the scene
+        // must not go on naming the character it retired (its meshes are released).
         self.plan.fill(&mut self.scene, self.rig.skin(), input.root);
         self.scene.frame = FrameInfo { index: tick.index, time: tick.time };
+        let uploads = prepared?;
         let report = renderer
             .render(self.target, &self.scene, &self.quality)
             .map_err(|source| StageError::render("the frame", source))?;
