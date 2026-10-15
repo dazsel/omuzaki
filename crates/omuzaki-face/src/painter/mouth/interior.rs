@@ -8,15 +8,15 @@
 //! - **Upper teeth**: a band hanging from the upper edge, as strong as the `teeth_upper` channel, and at least half
 //!   there when fangs show.
 //! - **Lower teeth**: a row under the line, as strong as `teeth_lower`, with a split line when the upper teeth are
-//!   clenched too. The row starts below the lowest point of a flat mouth, so only a real smile, which lowers the
-//!   mouth's centre, brings it into the opening.
+//!   clenched too, as faint as the row. The row starts below the lowest point of a flat mouth, so only a real smile,
+//!   which lowers the mouth's centre, brings it into the opening.
 //! - **Fangs**: two triangles hanging from the upper edge at [`FangStyle::position`] of the half-width, as opaque as
 //!   the `fangs` channel.
 //!
 //! [`FangStyle::position`]: omuzaki_face_api::FangStyle::position
 
 use omuzaki_core::glam::Vec2;
-use omuzaki_face_api::{Cmd, FaceLayerId, Paint, narrow};
+use omuzaki_face_api::{Cap, Cmd, FaceLayerId, Join, Paint, narrow};
 
 use super::OpenMouth;
 use super::lips::{DEFAULT_LINE, DEFAULT_TEETH, DEFAULT_TEETH_LOWER, DEFAULT_TONGUE, along, lighten, resolve, solid};
@@ -138,7 +138,15 @@ fn lower_teeth(ctx: &mut PaintCtx<'_>, open: &OpenMouth) {
     if clenched {
         let y = c.y - h * SPLIT_AT;
         let split = list.path().move_to(Vec2::new(c.x - w, y)).line_to(Vec2::new(c.x + w, y)).finish();
-        list.stroke(split, solid(line, SPLIT_ALPHA), SPLIT_WIDTH);
+        // The row's own opacity, so the line fades in with the teeth instead of appearing at its full alpha.
+        list.push(Cmd::Stroke {
+            path: split,
+            paint: solid(line, SPLIT_ALPHA),
+            width: SPLIT_WIDTH,
+            cap: Cap::Round,
+            join: Join::Round,
+            opacity: strength.min(1.0),
+        });
     }
 }
 
