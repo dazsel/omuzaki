@@ -223,11 +223,18 @@ fn a_dead_stage_output_does_not_get_in_the_way() {
     assert_eq!(outputs[0].shape(), [2, 3]);
 }
 
+/// A provider that cannot be available on this platform, whatever the hardware: `DirectML` exists only on Windows and
+/// Core ML only on macOS, so the one that belongs to another platform is always skipped.
+#[cfg(windows)]
+const UNAVAILABLE: omuzaki_ai_api::Provider = omuzaki_ai_api::Provider::CoreMl;
+#[cfg(not(windows))]
+const UNAVAILABLE: omuzaki_ai_api::Provider = omuzaki_ai_api::Provider::DirectMl;
+
 #[test]
 fn a_provider_this_build_lacks_puts_every_stage_on_the_cpu_together() {
     let Some(natives) = cache("a_provider_this_build_lacks_puts_every_stage_on_the_cpu_together") else { return };
     let slot = Signature { inputs: vec![f32_port("x")], outputs: vec![f32_port("z")] };
-    let options = SessionOptions::new(vec![omuzaki_ai_api::Provider::Cuda], 1);
+    let options = SessionOptions::new(vec![UNAVAILABLE], 1);
     let session =
         with_pipeline(&natives, &a_then_b(), |s| OrtRuntime.load(s, &slot, &io(&[("z", "b.z")]), &options)).unwrap();
     // The stages cannot end on different providers, and `info` names the one they share.
