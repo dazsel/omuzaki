@@ -278,6 +278,7 @@ impl LlmProvider {
 pub enum RegistryError {
     /// Two registrations share a kind, so a [`ProviderConfig`] naming it would pick one by link order.
     #[error("two LLM providers are registered as kind \"{kind}\": {first} and {second}")]
+    #[non_exhaustive]
     DuplicateKind {
         /// The kind both registered.
         kind: &'static str,
@@ -298,6 +299,13 @@ pub fn providers() -> Vec<&'static LlmProvider> {
     all
 }
 
+impl RegistryError {
+    /// Two registrations, `first` and `second` (each `package (file:line)`), share the kind `kind`.
+    pub fn duplicate_kind(kind: &'static str, first: impl Into<String>, second: impl Into<String>) -> Self {
+        Self::DuplicateKind { kind, first: first.into(), second: second.into() }
+    }
+}
+
 /// Checks that no kind is registered twice. An App calls it once at startup.
 ///
 /// # Errors
@@ -308,7 +316,7 @@ pub fn check_providers() -> Result<(), RegistryError> {
 
 fn first_duplicate(sorted: &[&LlmProvider]) -> Result<(), RegistryError> {
     match sorted.windows(2).find(|w| w[0].kind == w[1].kind) {
-        Some(w) => Err(RegistryError::DuplicateKind { kind: w[0].kind, first: w[0].origin(), second: w[1].origin() }),
+        Some(w) => Err(RegistryError::duplicate_kind(w[0].kind, w[0].origin(), w[1].origin())),
         None => Ok(()),
     }
 }

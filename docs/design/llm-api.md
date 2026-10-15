@@ -154,8 +154,9 @@ pub enum LlmEvent {
     Stop(StopReason),
 }
 pub enum StopReason { EndTurn, ToolUse, MaxOutput, Refused, Paused }
-// Every struct-like variant above (of LlmEvent, ContentBlock and ImageCost) is #[non_exhaustive]: callers build them
-// with a constructor (LlmEvent::start(model), ContentBlock::tool_use(id, name, input), ImageCost::tiles(px), ...)
+// Every struct-like variant above (of LlmEvent, ContentBlock, ImageCost and LlmError, and RegistryError::DuplicateKind)
+// is #[non_exhaustive]: callers build them with a constructor (LlmEvent::start(model), ContentBlock::tool_use(id, name,
+// input), ImageCost::tiles(px), LlmError::rate_limited(wait), LlmError::context_too_long(max), ...)
 // and match with `..`, so a field added later breaks no provider.
 ```
 

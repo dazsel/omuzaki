@@ -32,7 +32,7 @@ register_llm_provider! { kind: "solo", manifest: manifest, build: build, list_mo
 
 #[test]
 fn a_kind_registered_twice_is_refused_at_lookup_naming_both() {
-    let Err(RegistryError::DuplicateKind { kind, first, second }) = provider("twin") else {
+    let Err(RegistryError::DuplicateKind { kind, first, second, .. }) = provider("twin") else {
         panic!("a duplicate kind must not resolve");
     };
     assert_eq!(kind, "twin");
@@ -51,4 +51,13 @@ fn the_startup_check_refuses_the_duplicate_and_says_which() {
 fn other_kinds_still_resolve_and_unknown_kinds_are_none() {
     assert_eq!(provider("solo").unwrap().unwrap().kind, "solo");
     assert!(provider("missing").unwrap().is_none());
+}
+
+#[test]
+fn the_constructor_builds_the_error_it_names() {
+    let e = RegistryError::duplicate_kind("k", "a (x.rs:1)", String::from("b (y.rs:2)"));
+    assert!(
+        matches!(&e, RegistryError::DuplicateKind { kind: "k", first, second, .. } if first == "a (x.rs:1)" && second == "b (y.rs:2)")
+    );
+    assert_eq!(e.to_string(), "two LLM providers are registered as kind \"k\": a (x.rs:1) and b (y.rs:2)");
 }

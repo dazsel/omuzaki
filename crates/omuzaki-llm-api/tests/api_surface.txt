@@ -1,4 +1,6 @@
 src/error.rs: pub enum LlmError {
+src/error.rs: pub fn rate_limited(retry_after: Option<Duration>) -> Self {
+src/error.rs: pub fn context_too_long(max: u64) -> Self {
 src/lib.rs: pub mod error;
 src/lib.rs: pub mod message;
 src/lib.rs: pub mod provider;
@@ -66,6 +68,7 @@ src/provider.rs: pub type ListModelsFn = fn(&ProviderConfig, &ProviderEnv) -> Re
 src/provider.rs: pub struct LlmProvider {
 src/provider.rs: pub enum RegistryError {
 src/provider.rs: pub fn providers() -> Vec<&'static LlmProvider> {
+src/provider.rs: pub fn duplicate_kind(kind: &'static str, first: impl Into<String>, second: impl Into<String>) -> Self {
 src/provider.rs: pub fn check_providers() -> Result<(), RegistryError> {
 src/provider.rs: pub fn provider(kind: &str) -> Result<Option<&'static LlmProvider>, RegistryError> {
 src/provider.rs: macro_rules! register_llm_provider {
