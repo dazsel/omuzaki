@@ -85,7 +85,9 @@ fn steps(
                 let nested = resolve(library, &item, &version, &field)?;
                 let mut inner = bindings.clone();
                 if let Some(target) = bind.get("target") {
-                    inner.target = omuzaki_char_api::PartId::new(target.as_str()).ok();
+                    let part = omuzaki_char_api::PartId::new(target.as_str())
+                        .map_err(|e| OpError::invalid(format!("{field}/bind/target"), e.to_string()))?;
+                    inner.target = Some(part);
                 }
                 if let Some(name) = bind.get("as") {
                     inner.name = Some(name.clone());

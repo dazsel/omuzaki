@@ -3,6 +3,9 @@
 //!
 //! [`all`] is the set every [`Library`](omuzaki_library_api::Library) must be loaded with to pass
 //! [`conformance::run`](crate::conformance::run); [`MockLibrary::fixtures`](crate::MockLibrary::fixtures) loads it.
+//!
+//! Every constructor here panics, naming the fixture, if its literal stops parsing: that is a bug in this crate, and
+//! its own tests load them all.
 
 use std::fmt::Write as _;
 
@@ -42,7 +45,8 @@ fn palette(colour: &str) -> String {
 }
 
 fn parse(toml: &str) -> ItemManifest {
-    // Fixtures are literals in this file; a parse failure is a bug caught by the crate's own tests.
+    // Fixtures are literals in this file, so a failure here is a bug in the fixture: panic, naming it, in any test
+    // that loads it (the crate's own tests do).
     ItemManifest::parse(toml).unwrap_or_else(|e| panic!("fixture does not parse: {e}\n{toml}"))
 }
 

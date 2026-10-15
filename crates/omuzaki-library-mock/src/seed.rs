@@ -103,12 +103,12 @@ fn character_bindings(m: &ItemManifest, keys: &[&String], doc: &dyn DocRead) -> 
     for key in keys {
         bindings.parts.insert((*key).clone(), PartId::new(format!("seed-{key}")).map_err(|e| e.to_string())?);
     }
-    bindings.target = node
-        .and_then(|n| n.get("parts"))
-        .and_then(|p| p.as_object())
-        .and_then(|p| p.keys().next())
-        .and_then(|k| PartId::new(k.as_str()).ok());
-    bindings.template =
-        node.and_then(|n| n.get("template")).and_then(|t| t.as_str()).and_then(|t| BodyTemplateId::new(t).ok());
+    // A wrong id in the document is reported, not skipped, so a broken fixture can't pass by binding nothing.
+    if let Some(first) = node.and_then(|n| n.get("parts")).and_then(|p| p.as_object()).and_then(|p| p.keys().next()) {
+        bindings.target = Some(PartId::new(first.as_str()).map_err(|e| format!("part {first:?}: {e}"))?);
+    }
+    if let Some(template) = node.and_then(|n| n.get("template")).and_then(|t| t.as_str()) {
+        bindings.template = Some(BodyTemplateId::new(template).map_err(|e| format!("template {template:?}: {e}"))?);
+    }
     Ok(bindings)
 }

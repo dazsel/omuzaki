@@ -287,7 +287,9 @@ impl Library for MockLibrary {
         if held.is_empty() {
             return Err(LibraryError::NotFound(item.to_string()));
         }
-        ensure_one_publisher(item, &held.iter().copied().filter(|e| e.scope == held[0].scope).collect::<Vec<_>>())?;
+        // Ambiguity is judged where `resolve` would look first: the earliest scope that holds the item.
+        let first = held.iter().map(|e| &e.scope).min();
+        ensure_one_publisher(item, &held.iter().copied().filter(|e| Some(&e.scope) == first).collect::<Vec<_>>())?;
         let mut all: Vec<Version> = held.iter().map(|e| e.version).collect();
         all.sort();
         all.dedup();
