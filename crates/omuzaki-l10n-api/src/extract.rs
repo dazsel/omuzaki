@@ -144,13 +144,14 @@ fn owner_entries(item: &RegisteredText, entries: &mut Vec<Entry>) {
     for (name, value) in &item.attributes {
         lines.push(format!(".{name} = {}", pattern(value)));
     }
-    entries.push(Entry { group, id: item.owner.clone(), text: lines.join("\n") });
+    // The owner's entries are built here and appended only when its whole schema reads. An ambiguous schema leaves no
+    // partial entries behind; the `registered` check reports the ambiguity.
+    let mut own = vec![Entry { group, id: item.owner.clone(), text: lines.join("\n") }];
 
     let Some(schema) = &item.schema else {
+        entries.extend(own);
         return;
     };
-    // An ambiguous schema is reported by the `registered` check, which fails the test run. Extraction keeps the entries
-    // walked before the ambiguity, so its output stays deterministic.
     let outcome = walk(schema, |path, node| {
         // The root holds the owner's own text, which the owner entry already carries.
         if path.is_empty() {
@@ -167,10 +168,10 @@ fn owner_entries(item: &RegisteredText, entries: &mut Vec<Entry>) {
         if let Some(description) = schema_text::description(node) {
             lines.push(format!(".description = {}", pattern(description)));
         }
-        entries.push(Entry { group, id, text: lines.join("\n") });
+        own.push(Entry { group, id, text: lines.join("\n") });
     });
-    if let Err(_ambiguous) = outcome {
-        // Reported by the `registered` check; nothing more is written for this owner.
+    if outcome.is_ok() {
+        entries.extend(own);
     }
 }
 
@@ -231,6 +232,11 @@ fn type_range_default(node: &Map<String, Value>) -> String {
         parts.push(named.join(" or "));
     }
     parts.extend(range(node));
+    parts.extend(count_bounds(node, "minItems", "maxItems", "items"));
+    parts.extend(count_bounds(node, "minProperties", "maxProperties", "properties"));
+    if node.get("uniqueItems") == Some(&Value::Bool(true)) {
+        parts.push("unique items".to_owned());
+    }
     if let Some(step) = node.get("multipleOf").filter(|value| value.is_number()) {
         parts.push(format!("multiple of {}", literal(step)));
     }
@@ -254,6 +260,17 @@ fn type_range_default(node: &Map<String, Value>) -> String {
         parts.push(format!("default {}", literal(default)));
     }
     parts.join(", ")
+}
+
+/// A count bound as a phrase: "2 to 5 items" for a closed pair, otherwise "at least 2 items" or "at most 5 items".
+fn count_bounds(node: &Map<String, Value>, min_key: &str, max_key: &str, noun: &str) -> Option<String> {
+    let bound = |keyword: &str| node.get(keyword).filter(|value| value.is_number());
+    match (bound(min_key), bound(max_key)) {
+        (Some(min), Some(max)) => Some(format!("{} to {} {noun}", literal(min), literal(max))),
+        (Some(min), None) => Some(format!("at least {} {noun}", literal(min))),
+        (None, Some(max)) => Some(format!("at most {} {noun}", literal(max))),
+        (None, None) => None,
+    }
 }
 
 /// The numeric bounds as phrases. A closed pair reads "0 to 1"; any exclusive bound, or a half-open range, reads as

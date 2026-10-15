@@ -269,6 +269,13 @@ fn the_comment_renders_each_constraint() {
         (json!({"type": "string", "const": "x"}), "string, only \"x\""),
         (json!({"type": "number", "default": 0.5}), "number, default 0.5"),
         (json!({"type": "number", "minimum": 1.0}), "number, at least 1"),
+        (json!({"type": "array", "minItems": 1}), "array, at least 1 items"),
+        (json!({"type": "array", "maxItems": 3}), "array, at most 3 items"),
+        (json!({"type": "array", "minItems": 1, "maxItems": 3}), "array, 1 to 3 items"),
+        (json!({"type": "object", "minProperties": 2}), "object, at least 2 properties"),
+        (json!({"type": "object", "maxProperties": 4}), "object, at most 4 properties"),
+        (json!({"type": "array", "uniqueItems": true}), "array, unique items"),
+        (json!({"type": "array", "uniqueItems": false}), "array"),
         (json!({"type": "integer", "minimum": 9_007_199_254_740_993_i64}), "integer, at least 9007199254740993"),
         (
             json!({"type": "integer", "minimum": u64::MAX, "default": i64::MIN}),
@@ -310,4 +317,39 @@ fn whitespace_inside_a_value_and_an_attribute_survives_the_round_trip() {
     assert_eq!(read_back(message.value.as_ref().expect("a value")), value.trim());
     let attr = message.attributes.first().expect("a description attribute");
     assert_eq!(read_back(&attr.value), attribute.trim());
+}
+
+/// An ambiguous schema leaves no partial entries: the walk returns its error, and the owner's entries are dropped as a
+/// whole. A clean owner beside it is unaffected. The `registered` check reports the error; its own test lives with it.
+#[test]
+fn an_ambiguous_schema_leaves_no_partial_entries() {
+    let schema = Schema::try_from(json!({
+        "type": "object",
+        "properties": {
+            "aaa": { "type": "integer", "description": "Before." },
+            "zzz": {
+                "oneOf": [
+                    {
+                        "type": "object",
+                        "properties": { "Named": { "type": "integer" } },
+                        "required": ["Named"],
+                        "additionalProperties": false
+                    },
+                    {
+                        "type": "object",
+                        "properties": { "a": { "type": "integer" } },
+                        "required": ["a"]
+                    }
+                ]
+            }
+        }
+    }))
+    .unwrap_or_else(|error| panic!("{error}"));
+    assert!(omuzaki_l10n_api::schema_text::walk(&schema, |_, _| {}).is_err(), "the schema is ambiguous");
+
+    let bad = RegisteredText { schema: Some(schema), ..owner("op-bad-x", "Bad.") };
+    let good = owner("op-good-y", "Good.");
+    let out = english_of(&PackageText::new("omuzaki-x").with_registered(vec![bad, good]));
+    assert!(out.contains("op-good-y = Good."), "{out}");
+    assert!(!out.contains("op-bad-x"), "no partial entries for the ambiguous owner:\n{out}");
 }
