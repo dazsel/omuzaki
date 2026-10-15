@@ -50,7 +50,7 @@ use std::fs;
 use std::path::Path;
 use std::process::ExitCode;
 
-use omuzaki_ai_api::{LineageKind, ModelManifest, Origin};
+use omuzaki_ai_api::{Lineage, LineageKind, ModelManifest, Origin};
 use xtask::registry::lex::{Tok, Token, tokens};
 
 use crate::lint_licences::register::{self, Named};
@@ -90,6 +90,17 @@ pub fn rows(entries: &[Named]) -> Vec<Row> {
 /// Every problem with one manifest, each as one line of text (the caller prefixes the file). `text` is its TOML;
 /// `register` its rows; `sources` the `(path, text)` of the `.rs` files of its crate.
 pub fn problems(file: &str, text: &str, register: &[Row], sources: &[(String, String)]) -> Vec<String> {
+    collect_problems(file, text, register, sources).iter().map(|line| one_line(line)).collect()
+}
+
+/// `text` with every control character (a newline, an ESC) written as an escape, so a finding that quotes a manifest
+/// value stays exactly one line and can't move the terminal.
+fn one_line(text: &str) -> String {
+    text.chars().map(|c| if c.is_control() { c.escape_default().to_string() } else { c.to_string() }).collect()
+}
+
+/// [`problems`] before its lines are made single-line.
+fn collect_problems(file: &str, text: &str, register: &[Row], sources: &[(String, String)]) -> Vec<String> {
     let manifest = match ModelManifest::from_toml(text) {
         Ok(manifest) => manifest,
         Err(error) => return vec![error.to_string()],
@@ -184,9 +195,12 @@ fn lineage_problems(manifest: &ModelManifest) -> Vec<String> {
     let id = &manifest.id;
     let lineage = &manifest.card.lineage;
     let mut out = Vec::new();
-    if !lineage.iter().any(|link| matches!(link.kind, LineageKind::BaseModel | LineageKind::TrainingData)) {
+    let documents = |link: &&Lineage| {
+        matches!(link.kind, LineageKind::BaseModel | LineageKind::TrainingData) && !link.name.trim().is_empty()
+    };
+    if !lineage.iter().any(|link| documents(&link)) {
         out.push(format!(
-            "model `{id}` has no documented lineage; `card.lineage` needs a base_model or training_data link"
+            "model `{id}` has no documented lineage; `card.lineage` needs a base_model or training_data link with a name"
         ));
     }
     for link in lineage {
@@ -893,7 +907,7 @@ pub fn report(workspace: &Workspace) -> bool {
         }
     }
     for line in &found {
-        println!("{line}");
+        println!("{}", one_line(line));
     }
     if found.is_empty() {
         println!("models: ok ({checked} shipped model(s) checked, {skipped} mock fixture(s) skipped)");
@@ -1087,11 +1101,34 @@ url = "https://data.example/tiny-corpus"
     }
 
     #[test]
-    fn a_blank_lineage_name_fails() {
-        let text = manifest("tiny", HTTPS).replace("Tiny corpus 1", "  ");
+    fn a_blank_lineage_name_fails_and_does_not_document_the_lineage() {
+        // Both kinds that document a lineage, each unnamed, with an allowed licence and a valid url.
+        let link = |kind: &str, name: &str| {
+            format!(
+                "\n[[card.lineage]]\nkind = \"{kind}\"\nname = \"{name}\"\nlicence = \"CC0-1.0\"\n\
+                 url = \"https://data.example/x\"\n"
+            )
+        };
+        let base = manifest("tiny", HTTPS);
+        let (head, _) = base.split_once("[[card.lineage]]").unwrap();
+        let text = format!("{head}{}{}", link("base_model", ""), link("training_data", "  "));
         let found = problems(FILE, &text, &register(), &good_source("tiny"));
-        assert_eq!(found.len(), 1, "{found:?}");
-        assert!(found[0].contains("blank `name`"), "{found:?}");
+        assert_eq!(found.len(), 3, "{found:?}");
+        assert!(found.iter().any(|line| line.contains("has no documented lineage")), "{found:?}");
+        assert_eq!(found.iter().filter(|line| line.contains("blank `name`")).count(), 2, "{found:?}");
+    }
+
+    #[test]
+    fn findings_that_quote_a_manifest_value_are_one_line() {
+        let text = manifest("tiny", HTTPS)
+            .replace("CC0-1.0", &toml_escaped("MIT\n\u{1b}[2J"))
+            .replace("https://data.example/tiny-corpus", &toml_escaped("https://data.example/\n\u{1b}[2J"));
+        let found = problems(FILE, &text, &register(), &good_source("tiny"));
+        assert_eq!(found.len(), 2, "{found:?}");
+        for line in &found {
+            assert!(!line.chars().any(char::is_control), "{line:?}");
+            assert!(line.contains("\\n\\u{1b}[2J"), "{line}");
+        }
     }
 
     #[test]
