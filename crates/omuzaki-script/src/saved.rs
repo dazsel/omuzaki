@@ -31,7 +31,7 @@ pub enum Place {
 
 /// What an item holds.
 #[derive(Clone, Debug, PartialEq)]
-pub enum Body {
+pub(crate) enum Body {
     /// Rhai source.
     Source(String),
     /// Recorded op calls.
@@ -43,7 +43,7 @@ impl Body {
     ///
     /// # Errors
     /// `Invalid`, naming `source` or `steps`.
-    pub fn validated(source: Option<&str>, steps: Option<&[RecordedCall]>) -> Result<Self, OpError> {
+    pub(crate) fn validated(source: Option<&str>, steps: Option<&[RecordedCall]>) -> Result<Self, OpError> {
         match (source, steps) {
             (Some(source), None) => {
                 let limit = Limits::console().source_bytes;
@@ -76,7 +76,7 @@ impl Body {
     }
 
     /// Script or macro.
-    pub fn kind(&self) -> ScriptKind {
+    pub(crate) fn kind(&self) -> ScriptKind {
         match self {
             Self::Source(_) => ScriptKind::Script,
             Self::Steps(_) => ScriptKind::Macro,
@@ -84,7 +84,7 @@ impl Body {
     }
 
     /// The text that is stored and hashed: the source, or the macro file named `name`.
-    pub fn text(&self, name: &str) -> String {
+    pub(crate) fn text(&self, name: &str) -> String {
         match self {
             Self::Source(source) => source.clone(),
             Self::Steps(steps) => to_jsonl(&Macro { name: name.to_owned(), steps: steps.clone() }),
@@ -94,22 +94,22 @@ impl Body {
 
 /// An item as the ops see it, from either place.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Item {
+pub(crate) struct Item {
     /// Its id.
-    pub id: String,
+    pub(crate) id: String,
     /// Its name.
-    pub name: String,
+    pub(crate) name: String,
     /// What it holds.
-    pub body: Body,
+    pub(crate) body: Body,
     /// The hash of its stored text.
-    pub hash: String,
+    pub(crate) hash: String,
     /// Who saved it last, when known (project items only).
-    pub author: Option<Value>,
+    pub(crate) author: Option<Value>,
 }
 
 impl Item {
     /// The item as a project node.
-    pub fn node(name: &str, body: &Body, author: &Actor, hash: &str) -> Value {
+    pub(crate) fn node(name: &str, body: &Body, author: &Actor, hash: &str) -> Value {
         let mut node = Map::new();
         node.insert("name".into(), json!(name));
         node.insert("kind".into(), json!(body.kind()));
@@ -126,7 +126,7 @@ impl Item {
     ///
     /// # Errors
     /// A sentence saying what is wrong with the node.
-    pub fn from_node(id: &str, node: &Value) -> Result<Self, String> {
+    pub(crate) fn from_node(id: &str, node: &Value) -> Result<Self, String> {
         let fields = node.as_object().ok_or("the node is not a map")?;
         let name = fields.get("name").and_then(Value::as_str).ok_or("the node has no `name`")?.to_owned();
         let body = match fields.get("kind").and_then(Value::as_str) {
@@ -148,7 +148,7 @@ impl Item {
     ///
     /// # Errors
     /// A sentence saying what is wrong with a macro file that doesn't read.
-    pub fn from_stored(stored: &StoredScript) -> Result<Self, String> {
+    pub(crate) fn from_stored(stored: &StoredScript) -> Result<Self, String> {
         let body = match stored.kind {
             ScriptKind::Script => Body::Source(stored.body.clone()),
             ScriptKind::Macro => Body::Steps(from_jsonl(&stored.body).map_err(|e| e.to_string())?.steps),
@@ -157,7 +157,7 @@ impl Item {
     }
 
     /// The item as My scripts keeps it.
-    pub fn stored(id: &str, name: &str, body: &Body) -> StoredScript {
+    pub(crate) fn stored(id: &str, name: &str, body: &Body) -> StoredScript {
         let text = body.text(name);
         StoredScript {
             id: id.to_owned(),
@@ -181,12 +181,12 @@ fn scripts_path() -> DocPath {
 }
 
 /// The path of one project item.
-pub fn item_path(id: &str) -> DocPath {
+pub(crate) fn item_path(id: &str) -> DocPath {
     scripts_path().join(id)
 }
 
 /// The project's saved items by id, as written.
-pub fn project_nodes(doc: &dyn DocRead) -> Vec<(String, Value)> {
+pub(crate) fn project_nodes(doc: &dyn DocRead) -> Vec<(String, Value)> {
     match doc.get(&scripts_path()) {
         Some(Value::Object(items)) => items.iter().map(|(id, node)| (id.clone(), node.clone())).collect(),
         _ => Vec::new(),
@@ -198,7 +198,7 @@ pub fn project_nodes(doc: &dyn DocRead) -> Vec<(String, Value)> {
 ///
 /// # Errors
 /// `Invalid` when `scripts` exists but is not a map; `NotFound` when there is nothing to remove.
-pub fn project_patch(doc: &dyn DocRead, id: &str, node: Option<Value>) -> Result<Patch, OpError> {
+pub(crate) fn project_patch(doc: &dyn DocRead, id: &str, node: Option<Value>) -> Result<Patch, OpError> {
     let at = item_path(id);
     match (doc.get(&scripts_path()), node) {
         (Some(Value::Object(_)), node) => {
@@ -216,7 +216,7 @@ pub fn project_patch(doc: &dyn DocRead, id: &str, node: Option<Value>) -> Result
 }
 
 /// The error for an id with nothing saved under it.
-pub fn not_saved(id: &str, place: Place) -> OpError {
+pub(crate) fn not_saved(id: &str, place: Place) -> OpError {
     let place = match place {
         Place::Project => "the project",
         Place::Mine => "My scripts",
@@ -228,11 +228,11 @@ pub fn not_saved(id: &str, place: Place) -> OpError {
 ///
 /// # Errors
 /// `Unavailable` naming the service when none is wired.
-pub fn store<'a>(ctx: &OpCtx<'a>) -> Result<&'a dyn ScriptStore, OpError> {
+pub(crate) fn store<'a>(ctx: &OpCtx<'a>) -> Result<&'a dyn ScriptStore, OpError> {
     ctx.service::<dyn ScriptStore>()
 }
 
 /// A call of `op` with `args`, for an effect's `undo` and `redo`.
-pub fn call(op: &str, args: Value) -> OpCall {
+pub(crate) fn call(op: &str, args: Value) -> OpCall {
     OpCall { op: op.to_owned(), args }
 }

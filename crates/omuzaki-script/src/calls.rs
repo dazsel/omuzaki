@@ -58,6 +58,10 @@ pub trait Calls: Send + Sync {
 }
 
 /// [`Calls`] over a [`Runner`], for the console and the CLI: one transaction per run, opened before the first edit.
+///
+/// The grants of a request are the run's own, narrowed by the script to the scopes of the ops it names and its declared
+/// ceiling; they are intersected with the caller's grants given to [`new`](Self::new), so a script never holds more than
+/// the person or session that runs it.
 pub struct RunnerCalls {
     runner: Arc<dyn Runner>,
     actor: Actor,
