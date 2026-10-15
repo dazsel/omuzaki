@@ -120,6 +120,7 @@ fn a_slow_poller_gets_only_the_newest_scripted_frame() {
     let mut tracker = FakeTracker::scripted(script);
     let mut source = tracker.start(&FakeCamera::id(), &TrackerConfig::default()).unwrap();
     assert_eq!(source.poll(Seconds(0.095)).map(|f| f.seq), Some(9));
+    assert_eq!(tracker.latency().frames, 10, "every due entry was published, though only the newest was polled");
     assert_eq!(source.poll(Seconds(0.1)), None);
     assert!(tracker.start(&CameraId("usb:1".to_owned()), &TrackerConfig::default()).is_err());
 }
@@ -153,6 +154,7 @@ fn a_late_first_poll_gets_the_due_lost_frame_not_the_stale_one() {
     assert_eq!(first.seq, 1);
     assert!((first.time.0 - 0.2).abs() < 1e-9, "{}", first.time.0);
     assert_eq!(source.poll(Seconds(2.0)), None, "one lost signal per gap");
+    assert_eq!(tracker.latency().frames, 2, "the entry and the lost frame");
 }
 
 #[test]
@@ -162,4 +164,5 @@ fn a_gap_inside_one_poll_gives_the_newest_frame() {
     let mut source = tracker.start(&FakeCamera::id(), &TrackerConfig::default()).unwrap();
     let f = source.poll(Seconds(1.05)).unwrap();
     assert_eq!((f.status, f.seq), (TrackStatus::Tracking, 2), "the frame at 1 s is newer than the lost one at 0.2 s");
+    assert_eq!(tracker.latency().frames, 3, "two entries and the lost frame between them were published");
 }

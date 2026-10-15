@@ -19,17 +19,20 @@ use crate::FakeCamera;
 /// real mailbox drops them. When no tracked entry has arrived for [`TrackerConfig::lost_after`], one
 /// [`TrackFrame::lost`] is returned (at the last frame's time plus `lost_after`, with its `seq`, since no new
 /// camera frame exists) — the same signal a real tracker gives when its camera stalls.
+///
+/// [`latency`](Tracker::latency) counts frames **published**, as a real tracker's `frames` does: every scripted entry
+/// once it is due, and every lost frame, including ones a slow poller never sees.
 pub struct FakeTracker {
     script: Arc<[(Duration, TrackFrame)]>,
     running: Option<Arc<AtomicBool>>,
-    delivered: Arc<AtomicU64>,
+    published: Arc<AtomicU64>,
 }
 
 impl FakeTracker {
     /// A tracker over `script`, sorted by time (stably, so equal times keep their order).
     pub fn scripted(mut script: Vec<(Duration, TrackFrame)>) -> Self {
         script.sort_by_key(|(at, _)| *at);
-        Self { script: script.into(), running: None, delivered: Arc::new(AtomicU64::new(0)) }
+        Self { script: script.into(), running: None, published: Arc::new(AtomicU64::new(0)) }
     }
 }
 
@@ -50,7 +53,7 @@ impl Tracker for FakeTracker {
         }
         let running = Arc::new(AtomicBool::new(true));
         self.running = Some(Arc::clone(&running));
-        self.delivered.store(0, Ordering::Relaxed);
+        self.published.store(0, Ordering::Relaxed);
         Ok(Box::new(ScriptedSource {
             script: Arc::clone(&self.script),
             next: 0,
@@ -58,7 +61,7 @@ impl Tracker for FakeTracker {
             last: None,
             lost_sent: false,
             running,
-            delivered: Arc::clone(&self.delivered),
+            published: Arc::clone(&self.published),
         }))
     }
 
@@ -70,7 +73,7 @@ impl Tracker for FakeTracker {
 
     fn latency(&self) -> LatencyStats {
         let zero = Duration::ZERO;
-        LatencyStats::new(self.delivered.load(Ordering::Relaxed), 0, zero, zero, zero)
+        LatencyStats::new(self.published.load(Ordering::Relaxed), 0, zero, zero, zero)
     }
 }
 
@@ -84,7 +87,7 @@ struct ScriptedSource {
     /// Whether the current gap has had its lost frame.
     lost_sent: bool,
     running: Arc<AtomicBool>,
-    delivered: Arc<AtomicU64>,
+    published: Arc<AtomicU64>,
 }
 
 impl FrameSource for ScriptedSource {
@@ -92,26 +95,42 @@ impl FrameSource for ScriptedSource {
         if !self.running.load(Ordering::Acquire) {
             return None;
         }
-        let visible = self.script[self.next..].iter().take_while(|(at, _)| at.as_secs_f64() <= now.0).count();
+        // Replay everything due since the last poll in time order, as a tracker would have published it; the
+        // mailbox keeps only the newest.
         let mut newest = None;
-        if visible > 0 {
-            self.next += visible;
-            let (at, frame) = self.script[self.next - 1];
-            let frame = TrackFrame { time: Seconds(at.as_secs_f64()), ..frame };
+        let mut published = 0;
+        while let Some(&(at, frame)) = self.script.get(self.next).filter(|(at, _)| at.as_secs_f64() <= now.0) {
+            self.next += 1;
+            let at = at.as_secs_f64();
+            // A gap before this entry that was long enough for a lost frame (strictly: an entry arriving exactly
+            // when the lost frame falls due is published instead of it).
+            if self.lost_due().is_some_and(|due| due < at) {
+                self.lost_sent = true;
+                published += 1;
+            }
+            let frame = TrackFrame { time: Seconds(at), ..frame };
             self.lost_sent = frame.status == TrackStatus::Lost;
             if !self.lost_sent {
                 self.last = Some(frame);
             }
+            published += 1;
             newest = Some(frame);
         }
-        // A lost frame already due is newer than any scripted frame seen in this poll (it falls `lost_after` after
-        // the newest tracked one), so it wins, as it would in a real tracker's mailbox.
-        if let Some(last) = self.last.filter(|last| !self.lost_sent && now.0 - last.time.0 >= self.lost_after) {
+        // A lost frame already due is newer than any entry replayed above (it falls `lost_after` after the newest
+        // tracked one), so it wins, as it would in a real tracker's mailbox.
+        if let Some(last) = self.last.filter(|_| self.lost_due().is_some_and(|due| due <= now.0)) {
             self.lost_sent = true;
+            published += 1;
             newest = Some(TrackFrame::lost(last.seq, Seconds(last.time.0 + self.lost_after), last.profile));
         }
-        let frame = newest?;
-        self.delivered.fetch_add(1, Ordering::Relaxed);
-        Some(frame)
+        self.published.fetch_add(published, Ordering::Relaxed);
+        newest
+    }
+}
+
+impl ScriptedSource {
+    /// When the current gap's lost frame falls due, or `None` if it has been sent or nothing was tracked yet.
+    fn lost_due(&self) -> Option<f64> {
+        self.last.filter(|_| !self.lost_sent).map(|last| last.time.0 + self.lost_after)
     }
 }

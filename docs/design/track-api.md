@@ -204,14 +204,14 @@ Spec §10 rows this contract touches, all on tier `R`:
 | `cpu.total` | ≤ 3 % of 8 cores, tracker included | one tracker thread, no spinning workers |
 
 The issue's brief says 100 ms glass-to-glass; the spec's rows are tighter, and the spec wins. Camera to photon at
-60 fps, as an estimate (nothing is measured on `R` yet):
+60 fps, as an estimate except for this crate's row, which is measured (nothing is measured on `R` yet):
 
 | Step | Estimate | Source |
 |---|---|---|
 | exposure, readout, USB, driver | about 17 to 25 ms | one frame at 60 fps plus transfer |
 | convert to RGB | ≤ 2.5 ms (NV12, YUY2), ≤ 8 ms (MJPG) at 720p | `omuzaki-pixfmt` bench budgets |
 | inference | about 6 ms (quiet) to 9 ms (loaded) on `Dev`; about 1.4x that per core on `R` | spike: crop 1.55, landmarks 5.9, blendshapes 0.82, pose 0.02 ms; +1.4 ms when the detector runs |
-| map + publish + poll | under 0.01 ms | this crate |
+| map + publish + poll | about 0.0005 ms, measured: `map` 0.18 µs (64-pair fit full), `publish` 0.03 µs alone and 0.17 µs against a polling thread, `poll` 0.13 µs against a publishing thread | `benches/hot_path.rs`, on a cloud VM |
 | wait for the next render frame | 0 to 17 ms | 60 Hz render |
 | render, present, display | about 17 to 33 ms | one to two refreshes |
 

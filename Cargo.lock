@@ -4141,6 +4141,7 @@ dependencies = [
 name = "omuzaki-track-api"
 version = "0.0.0"
 dependencies = [
+ "criterion",
  "omuzaki-anim-api",
  "omuzaki-core",
  "schemars",
