@@ -353,3 +353,28 @@ fn a_full_frame_allocates_nothing() {
     let allocations = ALLOCATIONS.load(Ordering::Relaxed) - before;
     assert_eq!(allocations, 0, "1000 full-rig frames made {allocations} allocations");
 }
+
+/// FNV-1a over the bit patterns of every number in `values`, the digest the rig's regression is pinned to.
+fn fnv(values: impl Iterator<Item = u32>) -> u64 {
+    values.fold(0xcbf2_9ce4_8422_2325_u64, |h, bits| (h ^ u64::from(bits)).wrapping_mul(0x0100_0000_01b3))
+}
+
+#[test]
+fn the_regression_digest_of_solve_and_skin_is_pinned() {
+    let rig = spring_rig::hair_rig(9, 8);
+    let n = rig.skeleton.len();
+    let mut full = FullRig::new(RigSkeleton::new(rig.skeleton.clone()), &rig.set).expect("valid springs");
+    let (mut out, mut joints) = (Pose::IDENTITY, vec![Mat4::ZERO; n]);
+    let (mut pose_bits, mut joint_bits) = (Vec::new(), Vec::new());
+    for frame in 0..240 {
+        full.set_goals(&moving_goals(&rig.skeleton, frame));
+        full.solve_and_skin(Tick::at_rate(frame, FPS), &animated(frame), &mut out, &mut joints);
+        for t in &out.local[..n] {
+            pose_bits.extend(t.translation.to_array().into_iter().chain(t.rotation.to_array()).map(f32::to_bits));
+        }
+        joint_bits.extend(joints.iter().flat_map(|m| m.to_cols_array().map(f32::to_bits)));
+    }
+    // Pinned on the commit before the constraint stage existed: a rig without constraints must not move a bit.
+    assert_eq!(fnv(pose_bits.into_iter()), 2_721_995_266_870_702_916, "the pose digest moved");
+    assert_eq!(fnv(joint_bits.into_iter()), 5_968_876_091_311_377_936, "the palette digest moved");
+}

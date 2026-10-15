@@ -1,16 +1,19 @@
-//! The full rig: humanoid pose, then IK, then spring bones, then one forward-kinematics pass for skinning (spec §8
-//! order, anim-api design §8; RG-05, RG-03).
+//! The full rig: humanoid pose, then IK, then node constraints, then spring bones, then one forward-kinematics pass for
+//! skinning (spec §8 order, anim-api design §8; RG-05, RG-03; VRM 1.0 puts constraints after look-at and IK, before
+//! springs).
 //!
 //! [`FullRig`] implements [`Rig`] by running, in this order:
 //!
 //! 1. [`HumanoidRig::apply_humanoid`]: the animated pose onto the skeleton's rest;
 //! 2. the IK stage ([`IkSolver`], by default [`TwoBoneIk`]) on the goals set with [`FullRig::set_goals`];
-//! 3. the spring stage ([`SpringSolver`], by default [`VrmSpringSolver`]) for hair, cloth and accessory chains, stepped by
-//!    the `dt` of the [`Tick`].
+//! 3. the constraint stage ([`VrmConstraintSolver`]), only when one was set with [`FullRig::with_constraints`];
+//! 4. the spring stage ([`SpringSolver`], by default [`VrmSpringSolver`]) for hair, cloth and accessory chains,
+//!    stepped by the `dt` of the [`Tick`].
 //!
-//! The order is what makes the stages compose: springs see the *IK result* (a chain on a hand follows where IK put the
-//! hand), and a goal sees the animated pose. With idle goals and no spring solver the result is the humanoid solve bit
-//! for bit.
+//! The order is what makes the stages compose: constraints read their sources as IK left them (a bone constrained to
+//! an IK-moved bone follows the IK result), springs see the constrained rotations (a chain under a constrained bone
+//! hangs from where the constraint put it), and a goal sees the animated pose. With idle goals, no constraints and no
+//! spring solver the result is the humanoid solve bit for bit.
 //!
 //! # Goals
 //!
@@ -31,7 +34,7 @@
 //!
 //! # Cost
 //!
-//! No allocation or locking after construction; the cost is the three stages plus one forward-kinematics pass.
+//! No allocation or locking after construction; the cost is the stages plus one forward-kinematics pass.
 
 use std::sync::Arc;
 
@@ -40,6 +43,7 @@ use omuzaki_anim_api::{
 };
 use omuzaki_core::glam::Mat4;
 
+use crate::constraint::VrmConstraintSolver;
 use crate::ik::TwoBoneIk;
 use crate::pose::HumanoidRig;
 use crate::skeleton::RigSkeleton;
@@ -53,6 +57,8 @@ pub struct FullRig<I = TwoBoneIk, S = VrmSpringSolver> {
     ik: I,
     /// `None` for a character without spring bones: the stage is skipped, not run on an empty set.
     springs: Option<S>,
+    /// `None` for a character without node constraints: the stage is skipped, as for the springs.
+    constraints: Option<VrmConstraintSolver>,
     goals: IkGoals,
     skinner: Skinner,
     /// Root-relative transforms of the last [`solve_and_skin`](Self::solve_and_skin) (boxed: 16 KiB).
@@ -77,15 +83,32 @@ impl FullRig {
 
 impl<I: IkSolver, S: SpringSolver> FullRig<I, S> {
     /// A rig from its stages: any IK solver, and a spring solver built for this skeleton (or `None`). Cold: allocates.
+    /// The rig has no node constraints; add them with [`with_constraints`](Self::with_constraints).
     pub fn from_parts(skeleton: Arc<RigSkeleton>, ik: I, springs: Option<S>) -> Self {
         Self {
             skinner: Skinner::new(skeleton.clone()),
             humanoid: HumanoidRig::new(skeleton),
             ik,
             springs,
+            constraints: None,
             goals: IkGoals::NONE,
             world: Box::new(Pose::IDENTITY),
         }
+    }
+
+    /// Adds the node-constraint stage, which runs after IK and before the springs. The solver must have been built with
+    /// [`VrmConstraintSolver::new`] against this rig's skeleton (the same [`Skeleton`](omuzaki_anim_api::Skeleton) this
+    /// rig was made from): the solver stores no skeleton to check against, so a solver built for another one writes to
+    /// the wrong bones. Replaces any earlier set. Cold: call it before the frame loop, not in it.
+    #[must_use]
+    pub fn with_constraints(mut self, solver: VrmConstraintSolver) -> Self {
+        self.constraints = Some(solver);
+        self
+    }
+
+    /// The node-constraint stage, if one was set with [`with_constraints`](Self::with_constraints).
+    pub fn constraints(&self) -> Option<&VrmConstraintSolver> {
+        self.constraints.as_ref()
     }
 
     /// Sets the IK and look-at goals for the following solves, until replaced. [`IkGoals::NONE`] turns the stage off.
@@ -135,12 +158,16 @@ impl<I: IkSolver, S: SpringSolver> Rig for FullRig<I, S> {
         if !self.goals.is_idle() {
             self.ik.solve(skeleton, &self.goals, out);
         }
+        if let Some(constraints) = &self.constraints {
+            constraints.apply(skeleton, out);
+        }
         if let Some(springs) = &mut self.springs {
             springs.step(tick, skeleton, out);
         }
     }
 
-    /// Clears the IK solver's and the springs' carried state; the goals stay.
+    /// Clears the IK solver's and the springs' carried state; the goals stay. The constraint stage carries none, so it
+    /// has nothing to clear.
     fn reset(&mut self) {
         self.ik.reset();
         if let Some(springs) = &mut self.springs {
