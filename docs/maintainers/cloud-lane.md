@@ -113,8 +113,9 @@ least every few hours and before stopping:
 **For the outgoing lead**, when its account is near its limits:
 1. Stop starting new sessions.
 2. **Stop every implementer session:** each one first commits any uncommitted work as-is to a side branch
-   `<branch>-wip` (no PR, no comments, the PR's own head untouched), then stops and pushes nothing more. Its sessions
-   live on this account, and a new lead on another account can't see, message or archive them.
+   `<branch>-wip` and **pushes that branch** (no PR, no comments, the PR's own head untouched), then stops and pushes
+   nothing more. Its sessions live on this account: a new lead on another account can't see, message or archive
+   them, and can only reach work that was pushed.
 3. Update the state issue completely, including any session that was mid-task: its branch and last pushed head.
 4. Post on #2 that a handover is due, and stop. The owner then archives this account's sessions.
 
