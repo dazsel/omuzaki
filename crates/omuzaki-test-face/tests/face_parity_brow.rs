@@ -2,11 +2,12 @@
 //! without the assets drive. See `omuzaki_test_face::face_parity` for what is private.
 //!
 //! The face rule (T-FACE) except for the share of bad pixels, 2 % instead of 1 %. A brow is a 5-10 px sliver, so
-//! nearly every pixel of its rectangle that has ink is an edge pixel. The reference's edges take only the coverages
-//! 1/4, 1/2 and 3/4: Chrome's Skia fills a path with 46 points over a 236 px width with its 4-sub-scanline
-//! supersampler (`SkScan_AntiPath`; it uses analytic AA only when the points number under width / 8), and the CPU
-//! rasteriser has analytic AA only. The errors are zero-mean (+-0.05 coverage, no bias on either edge, ink area within
-//! 0.2 %), so the geometry matches tracks the supersampling fallback, after which this returns to `T_FACE`.
+//! nearly every pixel of its rectangle that has ink is an edge pixel. The prototype's references take only the coverages
+//! 1/4, 1/2 and 3/4 on those edges, so whatever drew them supersampled or multisampled. Headless Chromium 141 in
+//! software does not: it fills a 46-point, 236 px path analytically (`omuzaki-test-face/tests/raster_supersample.rs`
+//! pins its values), and the CPU rasteriser matches that. The errors are zero-mean (+-0.05 coverage, no bias on either
+//! edge, ink area within 0.2 %), so the geometry matches. The allowance stays until #2023 settles how the references
+//! were rendered; then this returns to `T_FACE`.
 
 use omuzaki_face::Section;
 use omuzaki_test::compare::Tolerance;
