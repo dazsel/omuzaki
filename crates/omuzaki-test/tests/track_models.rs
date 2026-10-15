@@ -159,20 +159,26 @@ fn track_allocates_nothing_after_warm_up() {
     let Some((models, natives)) = env("track_allocates_nothing_after_warm_up") else { return };
     let pixels = gradient();
     let mut tracker = tracker(&models, &natives, Mode::Video);
-    for i in 0..10 {
-        let _ = tracker.track(&frame(&pixels), Seconds(f64::from(i) / 30.0)).unwrap();
-        tracker.track_roi(&frame(&pixels), ROI, Seconds(f64::from(i) / 30.0 + 1.0)).unwrap();
+    // Video mode wants strictly increasing timestamps, so every call, `track` or `track_roi`, takes the next tick.
+    let mut tick = 0_u32;
+    let mut next = || {
+        tick += 1;
+        Seconds(f64::from(tick) / 30.0)
+    };
+    for _ in 0..10 {
+        let _ = tracker.track(&frame(&pixels), next()).unwrap();
+        tracker.track_roi(&frame(&pixels), ROI, next()).unwrap();
     }
     let counted = allocations(|| {
-        for i in 10..310 {
-            let _ = tracker.track(&frame(&pixels), Seconds(f64::from(i) / 30.0)).unwrap();
+        for _ in 0..300 {
+            let _ = tracker.track(&frame(&pixels), next()).unwrap();
         }
     });
     assert_eq!(counted, 0, "allocations over 300 `track` calls");
     // `track` finds no face in the gradient, so the landmark, blendshape and pose stages run through `track_roi`.
     let counted = allocations(|| {
-        for i in 310..610 {
-            tracker.track_roi(&frame(&pixels), ROI, Seconds(f64::from(i) / 30.0)).unwrap();
+        for _ in 0..300 {
+            tracker.track_roi(&frame(&pixels), ROI, next()).unwrap();
         }
     });
     assert_eq!(counted, 0, "allocations over 300 `track_roi` calls");

@@ -1,6 +1,7 @@
 //! `track_roi` on a 640x480 frame with the real graphs, one intra-op thread: the cost of landmarks, blendshapes and head
 //! pose per frame in the steady state (the detector runs only when a face is new). Criterion reports the mean; the p95
-//! is taken over a separate pass of timed calls and printed beside it. Spec v3 §10 budgets `track.face` at 5 ms p95.
+//! is taken over a separate pass of timed calls and printed beside it. This is a `track_roi` microbenchmark only: it leaves out
+//! the detector, the frame hand-off and the rest of the `track.face` path, so it is not compared with that budget.
 //!
 //! Gated on `OMUZAKI_TRACK_MODELS` and `OMUZAKI_ORT_CACHE`, as `tests/track_models.rs`; prints a line and exits when one
 //! is unset.
@@ -66,7 +67,7 @@ fn bench_track_roi(c: &mut Criterion) {
     micros.sort_by(f64::total_cmp);
     let mean = micros.iter().sum::<f64>() / micros.len() as f64;
     eprintln!(
-        "track_roi 640x480, 1 thread, 1000 calls: mean {:.2} ms, p50 {:.2} ms, p95 {:.2} ms (spec §10: 5 ms p95)",
+        "track_roi 640x480, 1 thread, 1000 calls: mean {:.2} ms, p50 {:.2} ms, p95 {:.2} ms",
         mean / 1e3,
         micros[micros.len() / 2] / 1e3,
         micros[micros.len() * 95 / 100] / 1e3
