@@ -37,14 +37,19 @@ pub struct CapStyle {
 pub struct Shortcut {
     /// The modifiers held with the key.
     pub modifiers: Modifiers,
-    /// The key.
-    pub key: Key,
+    /// The key. `None` is a shortcut that could not be read (a bad legacy string): drawn as `?`, never as another key.
+    pub key: Option<Key>,
 }
 
 impl Shortcut {
     /// A shortcut of `modifiers` and `key`.
     pub const fn new(modifiers: Modifiers, key: Key) -> Self {
-        Self { modifiers, key }
+        Self { modifiers, key: Some(key) }
+    }
+
+    /// A shortcut that could not be read; its caps show `?`.
+    pub const fn invalid(modifiers: Modifiers) -> Self {
+        Self { modifiers, key: None }
     }
 
     /// `key` alone.
@@ -71,21 +76,27 @@ impl From<egui::KeyboardShortcut> for Shortcut {
 }
 
 /// Reads the old text form, space-separated names (`"Ctrl Enter"`, `"Shift Tab"`, `"F"`). `Ctrl` is the platform's main
-/// modifier, as a caller of the text form meant it. A name that is no key or modifier is left out (and fails a debug
-/// build), so a typo shows as a missing cap and not a wrong one.
+/// modifier, as a caller of the text form meant it. Text with no key, an unknown name or two keys is an invalid shortcut
+/// ([`Shortcut::invalid`]): its caps show `?`, so a typo never advertises another key.
 impl From<&str> for Shortcut {
     fn from(text: &str) -> Self {
-        let (mut modifiers, mut key) = (Modifiers::NONE, None);
+        let (mut modifiers, mut key, mut valid) = (Modifiers::NONE, None, true);
         for word in text.split(' ').filter(|w| !w.is_empty()) {
             match word {
                 "Ctrl" | "Cmd" => modifiers.command = true, // key name
                 "Alt" => modifiers.alt = true,              // key name
                 "Shift" => modifiers.shift = true,          // key name
-                _ => key = Key::from_name(word),
+                _ => {
+                    valid &= key.is_none();
+                    key = Key::from_name(word);
+                    valid &= key.is_some();
+                }
             }
         }
-        debug_assert!(key.is_some(), "no key in the shortcut {text:?}");
-        Self::new(modifiers, key.unwrap_or(Key::Enter))
+        match key {
+            Some(key) if valid => Self::new(modifiers, key),
+            _ => Self::invalid(modifiers),
+        }
     }
 }
 
@@ -185,7 +196,7 @@ pub(super) fn caps_for(shortcut: Shortcut, platform: Platform, locale: &str) -> 
         // Microsoft's order: Ctrl, Alt, Shift.
         Platform::Windows | Platform::Linux => {
             if m.ctrl || m.command {
-                push(name("Ctrl", "Ctrl"));
+                push(name("Ctrl", "Ctrl")); // key name
             }
             if m.alt {
                 push(text("Alt")); // key name
@@ -195,7 +206,7 @@ pub(super) fn caps_for(shortcut: Shortcut, platform: Platform, locale: &str) -> 
             }
         }
     }
-    push(key_face(shortcut.key, locale));
+    push(shortcut.key.map_or(Face::Text(Cow::Borrowed("?")), |key| key_face(key, locale)));
     // The language only renames keys; the pseudo-locale accents the lot so a hard-coded cap shows.
     if locale == PSEUDO_LOCALE {
         for face in faces.iter_mut().flatten() {
@@ -225,7 +236,8 @@ fn key_face(key: Key, locale: &str) -> Face {
         Key::Delete => name("Delete", "Del"),             // key name
         Key::Space => Face::Text(Cow::Borrowed("Space")), // key name
         other => {
-            let label = other.name();
+            // Punctuation keys draw the character printed on them ("/", "+", "["), not egui's identifier.
+            let label = other.symbol_or_name();
             let mut chars = label.chars();
             match (chars.next(), chars.next()) {
                 (Some(c), None) => Face::Char(c.to_ascii_uppercase()),

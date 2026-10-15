@@ -184,7 +184,8 @@ impl<'a> ApprovalCard<'a> {
         let was_within = ctx.data(|d| d.get_temp::<bool>(self.id.with("focus"))).unwrap_or(false);
         if was_within && !phase.rejecting {
             let key = ctx.input_mut(|i| {
-                if i.consume_key(Modifiers::CTRL, Key::Enter) {
+                // The shown shortcut (Command: ⌘ on macOS, Ctrl elsewhere); a host that reports only a bare Ctrl is taken too.
+                if i.consume_key(Modifiers::COMMAND, Key::Enter) || i.consume_key(Modifiers::CTRL, Key::Enter) {
                     Some(Key::Enter)
                 } else if i.consume_key(Modifiers::NONE, Key::Backspace) {
                     Some(Key::Backspace)

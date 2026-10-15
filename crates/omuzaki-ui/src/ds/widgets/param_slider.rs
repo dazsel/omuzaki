@@ -663,7 +663,8 @@ impl<'a> Show<'a> {
         let act = self.ctx.input_mut(|i| {
             let shift = i.modifiers.shift;
             let unit = if shift { 10.0 * step } else { step };
-            if i.consume_key(Modifiers::CTRL, Key::Backspace) {
+            // The shown shortcut (Command: ⌘ on macOS, Ctrl elsewhere); a host that reports only a bare Ctrl is taken too.
+            if i.consume_key(Modifiers::COMMAND, Key::Backspace) || i.consume_key(Modifiers::CTRL, Key::Backspace) {
                 Some(Act::Reset)
             } else if self.p.op_call.is_some() && i.consume_key(Modifiers::CTRL | Modifiers::SHIFT, Key::C) {
                 Some(Act::CopyOpCall)

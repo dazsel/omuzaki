@@ -75,3 +75,25 @@ fn the_old_text_form_still_reads() {
     assert_eq!(Shortcut::from("Shift Tab"), Shortcut::new(Modifiers::SHIFT, Key::Tab));
     assert_eq!(Shortcut::from("F"), Shortcut::key(Key::F));
 }
+
+#[test]
+fn an_unreadable_legacy_shortcut_shows_a_question_mark_never_another_key() {
+    for bad in ["", "Entr", "Ctrl", "Ctrl K L", "Ctrl Enter Tab"] {
+        let shortcut = Shortcut::from(bad);
+        assert_eq!(shortcut.key, None, "{bad:?}");
+        let caps = rendered(shortcut, Platform::Windows, "en");
+        assert_eq!(caps.last().map(String::as_str), Some("?"), "{bad:?}: {caps:?}");
+        assert!(!caps.iter().any(|c| c.starts_with("icon:")), "{bad:?}: {caps:?}");
+    }
+    assert_eq!(rendered("Ctrl Entr", Platform::Mac, "en"), ["⌘", "?"]);
+}
+
+#[test]
+fn punctuation_keys_draw_the_character_on_the_key() {
+    let keys = [(Key::Slash, "/"), (Key::Plus, "+"), (Key::OpenBracket, "["), (Key::Minus, "−"), (Key::Comma, ",")];
+    for (key, glyph) in keys {
+        assert_eq!(rendered(key, Platform::Linux, "en"), [glyph], "{key:?}");
+    }
+    assert_eq!(rendered("/", Platform::Linux, "en"), ["/"]);
+    assert_eq!(rendered("Ctrl +", Platform::Windows, "en"), ["Ctrl", "+"]);
+}
