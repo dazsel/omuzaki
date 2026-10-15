@@ -76,6 +76,7 @@ struct Conn {
 struct Running {
     addr: SocketAddr,
     stopping: Arc<AtomicBool>,
+    wake: Arc<Mutex<Option<SocketAddr>>>,
     acceptor: JoinHandle<()>,
     conns: Arc<Mutex<Vec<Conn>>>,
 }
@@ -108,12 +109,14 @@ impl MockVts {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port))?;
         let addr = listener.local_addr()?;
         let stopping = Arc::new(AtomicBool::new(false));
+        let wake = Arc::new(Mutex::new(None));
         let conns = Arc::new(Mutex::new(Vec::new()));
         let (shared, flag, list) = (Arc::clone(&self.shared), Arc::clone(&stopping), Arc::clone(&conns));
+        let wake_addr = Arc::clone(&wake);
         let acceptor = Builder::new()
             .name("vts-mock-accept".into())
-            .spawn(move || accept_loop(&listener, &shared, &flag, &list))?;
-        Ok(Running { addr, stopping, acceptor, conns })
+            .spawn(move || accept_loop(&listener, &shared, &Stop { flag: &flag, wake: &wake_addr }, &list))?;
+        Ok(Running { addr, stopping, wake, acceptor, conns })
     }
 
     /// The port the server listens on; the same after a [`restart`](Self::restart).
@@ -133,10 +136,16 @@ impl MockVts {
     /// [`ErrorKind::Other`] when the acceptor or a connection thread panicked.
     pub fn stop(&mut self) -> io::Result<()> {
         let Some(run) = self.running.take() else { return Ok(()) };
-        run.stopping.store(true, Ordering::SeqCst);
-        // Wakes the blocked `accept`. A refused connect means the acceptor already ended, which is what we want.
+        // Wakes the blocked `accept`. The lock is held until the wake-up connection's address is known, so the
+        // acceptor can tell it from a real client that connected just before the stop and still serves that one.
+        // A refused connect means the acceptor already ended, which is what we want.
         let mut panicked = false;
-        if TcpStream::connect(run.addr).is_ok() {
+        let woke = {
+            let mut wake = run.wake.lock().unwrap_or_else(PoisonError::into_inner);
+            run.stopping.store(true, Ordering::SeqCst);
+            TcpStream::connect(run.addr).ok().inspect(|s| *wake = s.local_addr().ok())
+        };
+        if woke.is_some() {
             panicked |= join(run.acceptor);
         }
         let conns = std::mem::take(&mut *run.conns.lock().unwrap_or_else(PoisonError::into_inner));
@@ -228,7 +237,23 @@ fn join(thread: JoinHandle<()>) -> bool {
     thread.join().is_err()
 }
 
-fn accept_loop(listener: &TcpListener, shared: &Arc<Shared>, stopping: &AtomicBool, conns: &Mutex<Vec<Conn>>) {
+struct Stop<'a> {
+    flag: &'a AtomicBool,
+    wake: &'a Mutex<Option<SocketAddr>>,
+}
+
+impl Stop<'_> {
+    /// Whether `stream` is the connection `stop` made to wake the acceptor.
+    fn is_wake(&self, stream: &TcpStream) -> bool {
+        if !self.flag.load(Ordering::SeqCst) {
+            return false;
+        }
+        let wake = self.wake.lock().unwrap_or_else(PoisonError::into_inner);
+        wake.is_some() && *wake == stream.peer_addr().ok()
+    }
+}
+
+fn accept_loop(listener: &TcpListener, shared: &Arc<Shared>, stop: &Stop<'_>, conns: &Mutex<Vec<Conn>>) {
     for incoming in listener.incoming() {
         let stream = match incoming {
             Ok(stream) => stream,
@@ -237,7 +262,7 @@ fn accept_loop(listener: &TcpListener, shared: &Arc<Shared>, stopping: &AtomicBo
                 break;
             }
         };
-        if stopping.load(Ordering::SeqCst) {
+        if stop.is_wake(&stream) {
             break;
         }
         let handle = match stream.try_clone() {
