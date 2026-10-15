@@ -194,8 +194,8 @@ impl Rig {
         serde_json::from_value(args).expect("decode io.import")
     }
 
-    /// `plan`, as the executor runs it under the lock; returns the output the job's `work` is given.
-    fn plan_output(&self, op: &Import) -> Result<Option<Value>, OpError> {
+    /// `plan`, as the executor runs it under the lock.
+    fn plan(&self, op: &Import) -> Result<(), OpError> {
         let (actor, clock, grants) = (Actor::Person { name: "tester".into() }, FakeClock::default(), Grants::person());
         let project = ProjectDir::open(self.dir.path()).unwrap();
         let ctx = OpCtx::new(&self.doc, &actor, &clock)
@@ -204,31 +204,18 @@ impl Rig {
             .with_services(&self.services);
         let plan = op.plan(&ctx)?;
         assert!(plan.patch.changes.is_empty(), "a job's plan returns no patch");
-        Ok(plan.output)
+        Ok(())
     }
 
-    /// `plan`, for a test that only needs to know it passes.
-    fn plan(&self, op: &Import) -> Result<(), OpError> {
-        self.plan_output(op).map(drop)
-    }
-
-    /// `work`, with `signal` and no plan output.
+    /// `work`, with `signal`.
     fn work(&self, op: &Import, signal: &Signal) -> Result<Value, OpError> {
-        self.work_with(op, signal, None)
-    }
-
-    /// `work`, with `signal` and the `output` the plan returned.
-    fn work_with(&self, op: &Import, signal: &Signal, output: Option<&Value>) -> Result<Value, OpError> {
         let (actor, grants) = (Actor::Person { name: "tester".into() }, Grants::person());
         let project = ProjectDir::open(self.dir.path()).unwrap();
         let doc = Doc(&self.doc);
-        let mut job = JobCtx::new(JobId(7), &actor, &doc, signal)
+        let job = JobCtx::new(JobId(7), &actor, &doc, signal)
             .with_grants(&grants)
             .with_project_dir(&project)
             .with_services(&self.services);
-        if let Some(output) = output {
-            job = job.with_plan_output(output);
-        }
         op.work(&job)
     }
 
@@ -243,8 +230,8 @@ impl Rig {
 
     /// The whole job: plan, work, finish.
     fn run(&mut self, op: &Import) -> Result<(Value, Patch), OpError> {
-        let output = self.plan_output(op)?;
-        let result = self.work_with(op, &Signal::new(None), output.as_ref())?;
+        self.plan(op)?;
+        let result = self.work(op, &Signal::new(None))?;
         let patch = self.finish(op, result.clone())?;
         Ok((result, patch))
     }
@@ -834,40 +821,41 @@ fn a_gltf_with_a_bin_and_a_png_imports_like_the_self_contained_one() {
     assert_eq!(split["summary"], joined["summary"]);
     assert_eq!(split["report"], joined["report"]);
     assert_eq!(split["provenance"], joined["provenance"], "the same record");
-    let image = rig.store.get(&hash(&split["asset"]["images"][0])).unwrap();
-    assert_eq!(image, b"PNGDATA", "the picture's bytes are the sidecar's");
+    assert_eq!(rig.store.get(&hash(&split["asset"]["images"][0])).unwrap(), b"PNGDATA");
+
+    // Nothing the import used is lost: both files are stored and the asset names them. The picture is the same object
+    // as the scene's image, so it is stored once.
+    let sidecars = split["asset"]["sidecars"].as_array().unwrap();
+    let uris: Vec<&str> = sidecars.iter().map(|s| s["uri"].as_str().unwrap()).collect();
+    assert_eq!(uris, ["hero.bin", "tex/hero.png"]);
+    assert_eq!(rig.store.get(&hash(&sidecars[0]["hash"])).unwrap(), b"buf");
+    assert_eq!(sidecars[1]["hash"], split["asset"]["images"][0]);
+    assert!(joined["asset"].get("sidecars").is_none(), "a self-contained model has none");
+    let record = rig.store.provenance(&hash(&sidecars[0]["hash"])).unwrap();
+    assert_eq!(record.licence, split_original_record(&rig, &split).licence);
+}
+
+/// The record the original was stored with.
+fn split_original_record(rig: &Rig, result: &Value) -> Provenance {
+    rig.store.provenance(&hash(&result["asset"]["original"])).unwrap()
 }
 
 #[test]
-fn a_sidecar_outside_the_files_folder_is_refused_when_planning() {
-    let rig = Rig::new();
+fn a_sidecar_outside_the_files_folder_is_refused_and_nothing_is_stored() {
+    let mut rig = Rig::new();
     write_project_file(&rig, "x.bin", b"outside the folder");
-    let gltf = json!({ "buffers": [{ "uri": "../x.bin" }] });
-    write_project_file(&rig, "models/hero.gltf", gltf.to_string().as_bytes());
-    let error = rig.plan(&Rig::op(json!({ "path": "models/hero.gltf" }))).unwrap_err();
+    write_project_file(&rig, "models/hero.gltf", json!({ "buffers": [{ "uri": "../x.bin" }] }).to_string().as_bytes());
+    let error = rig.run(&Rig::op(json!({ "path": "models/hero.gltf" }))).unwrap_err();
     assert_eq!(error.code, ErrorCode::NotFound, "{}", error.message);
     assert!(error.message.contains("refused"), "{}", error.message);
     assert!(rig.store.is_empty());
 }
 
 #[test]
-fn work_reads_only_the_sidecars_the_plan_resolved() {
-    let rig = Rig::new();
-    write_project_file(&rig, "models/hero.bin", b"buf");
-    let gltf = json!({ "buffers": [{ "uri": "hero.bin" }] });
-    write_project_file(&rig, "models/hero.gltf", gltf.to_string().as_bytes());
-    let op = Rig::op(json!({ "path": "models/hero.gltf" }));
-    let error = rig.work(&op, &Signal::new(None)).unwrap_err();
-    assert_eq!(error.code, ErrorCode::NotFound, "no plan output, no sidecars: {}", error.message);
-    assert!(rig.store.is_empty());
-    let output = rig.plan_output(&op).unwrap().expect("the plan resolves the buffer");
-    assert!(rig.work_with(&op, &Signal::new(None), Some(&output)).is_ok());
-}
-
-#[test]
-fn a_missing_sidecar_is_not_found_when_planning() {
-    let rig = Rig::new();
+fn a_missing_sidecar_is_not_found_and_nothing_is_stored() {
+    let mut rig = Rig::new();
     write_project_file(&rig, "models/hero.gltf", json!({ "buffers": [{ "uri": "gone.bin" }] }).to_string().as_bytes());
-    let error = rig.plan(&Rig::op(json!({ "path": "models/hero.gltf" }))).unwrap_err();
+    let error = rig.run(&Rig::op(json!({ "path": "models/hero.gltf" }))).unwrap_err();
     assert_eq!(error.code, ErrorCode::NotFound, "{}", error.message);
+    assert!(rig.store.is_empty());
 }
