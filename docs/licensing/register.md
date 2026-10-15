@@ -12,13 +12,13 @@ Format rule (the repo licence gate will parse this): one row per item, with colu
 | @pixiv/three-vrm 3.5.5 | js | prototype VRM loading | yes | keep notice | A1 |
 | @mediapipe/tasks-vision 0.10.14 | js+wasm | prototype webcam tracking | conditions | ship Apache text + notices ourselves; self-host; pin 0.10.14 (later versions plan telemetry) | A1 |
 | MediaPipe face_landmarker.task | model | 478 landmarks + 52 blendshapes | conditions | Apache-2.0 per the three model cards; archive cards + hashes; GHUM licence and Google ToS with legal review | A1 |
-| ONNX conversions of face_landmarker.task (`face_detector.onnx`, `face_landmarks_detector.onnx`, `face_blendshapes.onnx`) | model | webcam tracking spike: the same networks as ONNX, run by `ort` | conditions | derived from the MediaPipe row, so Apache-2.0 per the model cards; keep `manifest.json` and the numeric check (`tools/convert_models.py`) with the files; GHUM licence and Google ToS with legal review | A1, derived |
+| ONNX conversions of face_landmarker.task (`face_detector.onnx`, `face_landmarks_detector.onnx`, `face_blendshapes.onnx`) | model | webcam tracking (the spike, then `omuzaki-track`): the same networks as ONNX; the files ship in the V0 zip | conditions | derived from the MediaPipe row, so Apache-2.0 per the model cards; keep `manifest.json` and the numeric check (`tools/models/convert_mediapipe_face.py`, run by `tools/models/mediapipe-face.sh`) with the files; GHUM licence and Google ToS with legal review | A1, derived |
 | Google Fonts (Cormorant Garamond, Nunito Sans, Bricolage Grotesque, Instrument Sans, JetBrains Mono) | font | prototype UI | conditions | OFL-1.1: ship notice; self-host | A1 |
 | mediapipe (Python) 1.1.0 | python | the earlier prototype's `track_face.py` (not published), local dev only | conditions | dev only; versions ≥ 0.10.35 send telemetry; nothing shipped | A2 |
 | opencv-python-headless 5.0.0.93 | python | video decode in tooling | conditions | dev only; bundles LGPL FFmpeg | A2 |
 | opencv_contrib_python 5.0.0.93 | python | pulled in by mediapipe | conditions | dev only; bundles LGPL Qt: never ship | A2 |
 | numpy, Pillow, matplotlib and the other venv packages | python | tooling | yes | dev only | A2 |
-| tf2onnx 1.16.1 | python | converts the spike's TFLite models to ONNX (`tools/convert_models.py`) | yes | dev only, throwaway venv; never shipped | (PyPI: Apache-2.0) |
+| tf2onnx 1.16.1 | python | converts the spike's TFLite models to ONNX (`tools/models/convert_mediapipe_face.py`) | yes | dev only, throwaway venv; never shipped | (PyPI: Apache-2.0) |
 | TensorFlow 2.16.2 | python | reads the TFLite models in the conversion tooling | yes | dev only, throwaway venv; never shipped | (PyPI: Apache-2.0) |
 | onnx 1.16.2 | python | ONNX graph handling in the conversion tooling | yes | dev only, throwaway venv; never shipped | (PyPI: Apache-2.0) |
 | onnxruntime 1.26.0 (Python) | python | ONNX side of the conversion tooling; the shipped runtime is 1.28.3 (ONNX Runtime row) | yes | dev only, throwaway venv; never shipped | (PyPI: MIT) |
@@ -45,6 +45,7 @@ Format rule (the repo licence gate will parse this): one row per item, with colu
 | toml, toml_edit | crate | project files | yes | | (crates.io: MIT OR Apache-2.0) |
 | clap | crate | CLI | yes | | (crates.io: MIT OR Apache-2.0) |
 | blake3 | crate | content hashes for the asset store | yes | | (crates.io: CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception) |
+| base64 0.23 | crate | standard base64 for the blob of MCP image resources (`omuzaki-mcp` `RenderProvider`) | yes | MIT OR Apache-2.0: keep the notices; already in the lock through rmcp, so no new crate | #881 |
 | image (png only) | crate | golden renders, thumbnails | yes | | (crates.io: MIT OR Apache-2.0) |
 | tokio | crate | async runtime for MCP | yes | | (crates.io: MIT) |
 | tracing, tracing-subscriber | crate | logging | yes | | (crates.io: MIT) |
@@ -131,6 +132,8 @@ Format rule (the repo licence gate will parse this): one row per item, with colu
 | v4l2loopback | tool | Linux virtual camera | external | user installs it; we only write frames | B4 |
 | OBS plugin linked to libobs | code | BR-03 | NO | a closed plugin is impossible; never link libobs into the app | B4 |
 | Omuzaki OBS plugin (separate GPL-licensed project, IPC to the app) | code | BR-03 | conditions | ships (decision 2026-10-11); own repository and download; GPL text and source offer; legal review reviews the boundary | B4 |
+| Text-safety rule layer: Unicode normalisation, per-language word lists, regex for links and personal data, character-run limits (own code) | code | AP-07 filter before speech, in-process and fail-closed (`docs/research/2026-10-text-safety-filters.md`) | yes | written by us, no weights and no training data; the word lists are written by us with their provenance recorded; its crates `aho-corasick` and `regex` have their own row below | research 2026-10-text-safety-filters.md |
+| aho-corasick, regex (the rule layer's matchers) | crate | word-list and pattern matching in the AP-07 text-safety rule layer | yes | `aho-corasick`: Unlicense or MIT (UNLICENSE and LICENSE-MIT read, 2026-10-14); `regex`: MIT or Apache-2.0 (LICENSE-MIT and LICENSE-APACHE read, 2026-10-14); keep the notices. Both are already in `Cargo.lock`; their sub-crates (`regex-automata`, `regex-syntax`, `memchr`) were not read here and `cargo deny` is the gate | research 2026-10-text-safety-filters.md |
 | Texture watermark: keyed spread spectrum on a 512×512 canonical grid (own code) | code | SE-07 optional creator mark in exported textures (`omuzaki-export`, not yet built) | yes | written by us, std only; keys come from `blake3` (row above); the technique family is academic (Cox et al. 1997), patents for legal review (research note section 8) | (research note) |
 
 ## Planned: models, data and services (spec §14, §16)

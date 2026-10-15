@@ -17,6 +17,18 @@
 //! order the file system lists the files in. The contents are `include_str!` of the file's absolute path, so the
 //! data is compiled in (wasm needs no file system) and cargo rebuilds the crate when a file changes.
 //!
+//! [`modules`] does the same for a folder of Rust modules (ADR 0054): the build script writes one
+//! `#[path = "<absolute file>"] <vis> mod <name>;` per child, sorted by name, and the folder's own `mod.rs` includes
+//! the list, so adding a feature is adding a file and no shared list is edited:
+//!
+//! ```ignore
+//! // build.rs
+//! omuzaki_embed::modules("src/ops", out.join("ops_mods.rs"), "pub").unwrap();
+//!
+//! // src/ops/mod.rs
+//! include!(concat!(env!("OUT_DIR"), "/ops_mods.rs"));
+//! ```
+//!
 //! Why a lib crate and not a copy in each owning crate: four crates embed seed folders, and the other data folders
 //! (body shapes, skin tones, poses...) use the same helper instead of listing their files by hand.
 #![deny(missing_docs)]
@@ -73,6 +85,114 @@ pub fn embed_dir(dir: impl AsRef<Path>, out_file: impl AsRef<Path>) -> io::Resul
         println!("cargo:rerun-if-changed={}", path.display());
     }
     std::fs::write(out_file, table.source)
+}
+
+/// Rust keywords, which cannot name a module without `r#` (so a file with one of these names is an error).
+const KEYWORDS: &[&str] = &[
+    "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum", "extern", "false", "fn",
+    "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref", "return", "self", "Self",
+    "static", "struct", "super", "trait", "true", "type", "unsafe", "use", "where", "while", "abstract", "become",
+    "box", "do", "final", "macro", "override", "priv", "try", "typeof", "unsized", "virtual", "yield", "gen",
+];
+
+fn is_module_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    let starts_ok = chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
+    starts_ok && name != "_" && chars.all(|c| c.is_ascii_alphanumeric() || c == '_') && !KEYWORDS.contains(&name)
+}
+
+/// Builds the module declarations for the children of `dir` without writing anything; see [`modules`].
+///
+/// The result's `source` holds one `#[path = "<absolute path>"] <visibility> mod <name>;` line per child, sorted by
+/// name. `watched` is the folder, then each sub-folder (a `mod.rs` appearing in one changes it) and each declared
+/// file, so `cargo:rerun-if-changed` fires when a module is added or removed.
+///
+/// # Errors
+/// An I/O error reading the folder (an absent folder is an error: the module list would silently be empty), a name
+/// that is not valid UTF-8, a name that is not a plain Rust identifier (for example `my-file.rs`, or a keyword), or
+/// a file `foo.rs` next to a folder `foo/` (use `foo/mod.rs`; see [`modules`]).
+pub fn module_list(dir: impl AsRef<Path>, visibility: &str) -> io::Result<Table> {
+    let dir = dir.as_ref();
+    let bad = |message: String| io::Error::new(io::ErrorKind::InvalidData, message);
+    let mut children: Vec<(String, PathBuf)> = Vec::new();
+    let mut watched = vec![dir.to_path_buf()];
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let file_name =
+            entry.file_name().into_string().map_err(|n| bad(format!("{} is not valid UTF-8", n.to_string_lossy())))?;
+        if file_name.starts_with('.') {
+            continue;
+        }
+        let path = entry.path();
+        let (name, file) = if entry.file_type()?.is_dir() {
+            watched.push(path.clone());
+            let file = path.join("mod.rs");
+            if !file.is_file() {
+                continue; // not a module folder (assets, fixtures...)
+            }
+            (file_name, file)
+        } else {
+            if let Some(stem) = file_name.strip_suffix(".rs") {
+                let folder = dir.join(stem);
+                if folder.is_dir() {
+                    // `#[path]` makes `foo.rs` resolve `mod inner;` as a sibling, not as `foo/inner.rs`.
+                    return Err(bad(format!(
+                        "{} and {} both exist; a module with children must be the folder layout, so move {} to {}",
+                        path.display(),
+                        folder.display(),
+                        path.display(),
+                        folder.join("mod.rs").display()
+                    )));
+                }
+            }
+            match file_name.strip_suffix(".rs") {
+                // The folder's own `mod.rs` includes this list; `lib.rs`/`main.rs` are crate roots.
+                Some("mod" | "lib" | "main") | None => continue,
+                Some(stem) => (stem.to_owned(), path),
+            }
+        };
+        if !is_module_name(&name) {
+            return Err(bad(format!(
+                "{}: `{name}` is not a valid Rust module name; rename it (letters, digits and `_`, not a keyword)",
+                file.display()
+            )));
+        }
+        children.push((name, file));
+    }
+    children.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+    watched[1..].sort_unstable();
+    watched.extend(children.iter().filter(|(_, f)| f.parent() == Some(dir)).map(|(_, f)| f.clone()));
+    let visibility = if visibility.is_empty() { String::new() } else { format!("{visibility} ") };
+    let mut source = String::new();
+    for (name, file) in &children {
+        // `{:?}` escapes backslashes (Windows paths) and quotes into a valid Rust string literal.
+        let absolute = std::path::absolute(file)?;
+        writeln!(source, "#[path = {:?}] {visibility}mod {name};", absolute.to_string_lossy())
+            .map_err(io::Error::other)?;
+    }
+    Ok(Table { source, watched })
+}
+
+/// Writes the module declarations for the children of `dir` to `out_file` and prints the `cargo:rerun-if-changed`
+/// lines. Call it from `build.rs`, with `out_file` under `OUT_DIR`, and `include!` the file from the folder's
+/// `mod.rs`.
+///
+/// Declared: every `.rs` file and every sub-folder holding a `mod.rs`, sorted by name. Skipped: the folder's own
+/// `mod.rs`, `lib.rs`, `main.rs`, names starting with `.`, other file types and sub-folders without a `mod.rs`.
+/// A module with children must use the folder layout, `foo/mod.rs` with its children inside `foo/`: the generated
+/// `#[path]` makes a `foo.rs` look for `mod inner;` next to itself instead of in `foo/`, so a `foo.rs` beside a
+/// folder `foo/` is an error rather than a silent wrong lookup.
+///
+/// `visibility` is written before `mod` (`"pub"`, `"pub(crate)"`, or `""` for private).
+///
+/// # Errors
+/// As [`module_list`], or an I/O error writing `out_file`.
+pub fn modules(dir: impl AsRef<Path>, out_file: impl AsRef<Path>, visibility: &str) -> io::Result<()> {
+    let list = module_list(dir, visibility)?;
+    for path in &list.watched {
+        println!("cargo:rerun-if-changed={}", path.display());
+    }
+    std::fs::write(out_file, list.source)
 }
 
 fn collect(dir: &Path, prefix: &str, files: &mut Vec<(String, PathBuf)>, watched: &mut Vec<PathBuf>) -> io::Result<()> {

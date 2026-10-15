@@ -598,7 +598,8 @@ impl CachingBuilder {
     /// re-resolves the material colours, rewrites the tints it baked into vertex colours and repaints the textures it
     /// painted ([`PartKind::recolour`](omuzaki_char_api::PartKind::recolour)). Only a part whose kind declines (or that
     /// isn't cached any more) is built in full. The result equals a fresh build of `built.def` with `palette`.
-    /// Simulations restart, as in any build. On error `built` is left as it was.
+    /// Simulations restart, as in any build. The character keeps its look (LK-06): the rebuilt materials are drawn in
+    /// it again. On error `built` is left as it was.
     ///
     /// `options` and `services` are the ones `built` was built with; a built character doesn't record them.
     ///
@@ -613,7 +614,8 @@ impl CachingBuilder {
     ) -> Result<BuildTimings, BuildError> {
         let mut def = built.def.clone();
         def.palette = palette.clone();
-        let (rebuilt, timings) = self.build_timed(&built.id, &def, options, services)?;
+        let (mut rebuilt, timings) = self.build_timed(&built.id, &def, options, services)?;
+        rebuilt.inherit_look(built);
         *built = rebuilt;
         Ok(timings)
     }

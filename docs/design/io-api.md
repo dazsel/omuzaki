@@ -56,6 +56,7 @@ Right-handed, +Y up, the model's front facing **+Z**, metres, radians, unit quat
 ### D3. Importers and exporters are pure; the host does the I/O
 
 Importer: bytes in, scene out. Exporter: scene in, `OutputFile`s out. Sidecar files (`.gltf` + `.bin`) come through a `Resolver` the host supplies; the host checks the `fs` grant there and the `publish` grant before writing.
+The sidecar `Resolver` is confined to the folder of the file it reads: `io.inspect` is the first op to use that, and `io.import` is to share it.
 
 - **Safe on untrusted input**, testable with no disk, runnable in the web build.
 - **Deterministic:** the same scene and options give byte-identical files (the exporter writes no time or version of its own; the host passes `generator`). The content-addressed store then dedups exports, and golden tests can compare bytes. The mock test `exports_are_deterministic_and_canonical` also checks `export(import(export(x))) == export(x)`.
