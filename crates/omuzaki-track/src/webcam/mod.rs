@@ -5,7 +5,7 @@
 //! |---|---|
 //! | `convert` | [`FrameConverter`]: any [`PixelFormat`] to packed RGB8 in a reused buffer |
 //! | `preview` | [`PreviewFrame`] and the tap that fills it, only while it is on |
-//! | `thread` | the camera thread's loop, the stage-clock time and the latency counters |
+//! | `thread` | the camera thread's loop and the latency counters |
 //!
 //! The camera thread never blocks except inside [`CameraStream::next_frame`], never locks except a `try_lock` on the
 //! preview slot, and allocates nothing per frame once its buffers have grown (MJPG excepted, see [`FrameConverter`]).
@@ -19,11 +19,11 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 
 use omuzaki_anim_api::{FrameSource, TrackFrame};
-use omuzaki_core::time::Seconds;
-use omuzaki_track_api::camera::{Camera, CameraFormatRequest, CameraId, CameraInfo, PixelFormat};
+use omuzaki_core::time::{Clock, Seconds};
+use omuzaki_track_api::camera::{Camera, CameraFormatRequest, CameraId, CameraInfo, CameraStream, PixelFormat};
 use omuzaki_track_api::error::TrackError;
 use omuzaki_track_api::mailbox::{MailboxReader, mailbox};
-use omuzaki_track_api::tracker::{LatencyStats, Tracker, TrackerConfig};
+use omuzaki_track_api::tracker::{LatencyStats, QualityTier, Tracker, TrackerConfig};
 
 pub use convert::FrameConverter;
 pub use preview::{PREVIEW_MAX_WIDTH, PreviewFrame};
@@ -33,7 +33,7 @@ use crate::frame::RgbFrame;
 use crate::pipeline::FaceTracker;
 use crate::sample::{FaceSample, StageTimings};
 use preview::PreviewTap;
-use thread::{Outcome, Run, Stats, stage_now};
+use thread::{Outcome, Run, Stats};
 
 /// What turns an RGB frame into a face sample. [`FaceTracker`] implements it; tests script it.
 pub trait FrameTracker: Send {
@@ -72,25 +72,27 @@ impl FrameTracker for FaceTracker {
 pub struct WebcamConfig {
     /// A [`CameraInfo`] id for [`WebcamTracker::default_device`]; `None` means the first camera.
     pub camera: Option<String>,
-    /// The mode asked of the camera, in pixels. The camera gives the nearest it has.
+    /// The mode [`tracker_config`](WebcamTracker::tracker_config) asks of the camera, in pixels; `start` itself
+    /// honours the [`TrackerConfig`] it is given. The camera gives the nearest mode it has.
     pub width: u32,
     /// See [`width`](Self::width).
     pub height: u32,
     /// Frames per second asked of the camera.
     pub fps: u32,
-    /// Format preference, best first; the first one the camera opens with wins.
+    /// Format preference, best first; the first one the camera opens with wins. Used when the [`TrackerConfig`]
+    /// given to `start` names no format of its own.
     pub formats: Vec<PixelFormat>,
 }
 
 impl Default for WebcamConfig {
-    /// 1280 x 720 at 30 fps, the first camera, and [Nv12, Yuy2, Mjpg, Bgra8, Rgb8] (the cheapest to convert first
-    /// that webcams commonly offer).
+    /// 1280 x 720 at 60 fps (as `CameraFormatRequest::default()`: a camera that offers 30 and 60 gives 60), the first
+    /// camera, and [Nv12, Yuy2, Mjpg, Bgra8, Rgb8] (the cheapest to convert first that webcams commonly offer).
     fn default() -> Self {
         Self {
             camera: None,
             width: 1280,
             height: 720,
-            fps: 30,
+            fps: 60,
             formats: vec![
                 PixelFormat::Nv12,
                 PixelFormat::Yuy2,
@@ -117,11 +119,36 @@ impl WebcamConfig {
         self
     }
 
+    /// The camera request this configuration describes, with no format named.
+    pub const fn request(&self) -> CameraFormatRequest {
+        CameraFormatRequest::new(self.width, self.height, self.fps)
+    }
+
     /// Sets the format preference, best first.
     #[must_use]
     pub fn with_formats(mut self, formats: Vec<PixelFormat>) -> Self {
         self.formats = formats;
         self
+    }
+}
+
+/// Frames the camera thread discarded or could not use, apart from [`LatencyStats::dropped`], which stays the count of
+/// camera frames skipped for lack of time. Of the last session.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Failures {
+    /// Frames dropped because their device time was before the last one accepted.
+    pub backwards: u64,
+    /// Frames the converter refused; each one went out as a lost frame.
+    pub conversion: u64,
+    /// Frames the [`FrameTracker`] failed on; each one went out as a lost frame.
+    pub tracking: u64,
+}
+
+impl Failures {
+    /// The three counts.
+    pub const fn new(backwards: u64, conversion: u64, tracking: u64) -> Self {
+        Self { backwards, conversion, tracking }
     }
 }
 
@@ -150,15 +177,20 @@ impl FrameSource for Source {
 /// frame cannot be converted or tracked, when the camera is silent for [`TrackerConfig::lost_after`] (once), or when
 /// the stream fails.
 ///
-/// [`LatencyStats::dropped`] counts camera frames the thread skipped (gaps in the camera's `seq`) plus frames it
-/// could not convert or track. [`TrackerConfig::camera`] is not used: the request comes from [`WebcamConfig`],
-/// which also carries the format preference.
+/// Frames are timed on the `clock` given to [`new`](Self::new), the stage's own, so they line up with the rest of the
+/// pipeline however far into a performance tracking starts. [`LatencyStats::dropped`] counts camera frames the thread
+/// skipped (gaps in the camera's `seq`) and nothing else; [`failures`](Self::failures) counts the rest.
+///
+/// `start` honours [`TrackerConfig::camera`] (size, rate and, if it names one, the format; otherwise the
+/// [`WebcamConfig`] preference is tried in order) and [`TrackerConfig::lost_after`]. The tracker has no quality
+/// tiers, so a [`TrackerConfig::tier`] other than `Full` is refused with [`TrackError::Backend`].
 pub struct WebcamTracker {
     camera: Box<dyn Camera>,
     /// `None` while a session runs, or for good if the camera thread panicked.
     tracker: Option<Box<dyn FrameTracker>>,
     config: WebcamConfig,
     preview: Arc<PreviewTap>,
+    clock: Arc<dyn Clock>,
     stats: Arc<Stats>,
     error: Arc<Mutex<Option<TrackError>>>,
     next_seq: u64,
@@ -166,12 +198,19 @@ pub struct WebcamTracker {
 }
 
 impl WebcamTracker {
-    /// A stopped tracker over `camera` and `tracker`. Nothing is opened until [`start`](Tracker::start).
-    pub fn new(camera: Box<dyn Camera>, tracker: Box<dyn FrameTracker>, config: WebcamConfig) -> Self {
+    /// A stopped tracker over `camera` and `tracker`, timing frames on the stage's `clock`. Nothing is opened until
+    /// [`start`](Tracker::start).
+    pub fn new(
+        camera: Box<dyn Camera>,
+        tracker: Box<dyn FrameTracker>,
+        config: WebcamConfig,
+        clock: Arc<dyn Clock>,
+    ) -> Self {
         Self {
             camera,
             tracker: Some(tracker),
             config,
+            clock,
             preview: Arc::new(PreviewTap::default()),
             stats: Arc::new(Stats::new()),
             error: Arc::default(),
@@ -190,6 +229,16 @@ impl WebcamTracker {
         .map(|c| c.id)
     }
 
+    /// A [`TrackerConfig`] asking for the mode in the [`WebcamConfig`], for `start`.
+    pub fn tracker_config(&self) -> TrackerConfig {
+        TrackerConfig::default().with_camera(self.config.request())
+    }
+
+    /// Frames discarded or lost to a failure in the current (or last) session.
+    pub fn failures(&self) -> Failures {
+        self.stats.failures()
+    }
+
     /// Turns the preview tap on or off (off by default; costs nothing while off).
     pub fn set_preview(&self, on: bool) {
         self.preview.set(on);
@@ -206,13 +255,12 @@ impl WebcamTracker {
         self.error.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
 
-    /// Opens `device` with the first format of the preference the camera accepts.
-    fn open(&mut self, device: &CameraId) -> Result<Box<dyn omuzaki_track_api::camera::CameraStream>, TrackError> {
-        let c = &self.config;
-        let mut last = TrackError::FormatUnsupported(CameraFormatRequest::new(c.width, c.height, c.fps));
-        for &pixel in &c.formats {
-            let request = CameraFormatRequest::new(c.width, c.height, c.fps).with_pixel(Some(pixel));
-            match self.camera.open(device, &request) {
+    /// Opens `device` as `request` asks: the format it names, or else the first of the preference the camera accepts.
+    fn open(&mut self, device: &CameraId, request: &CameraFormatRequest) -> Result<Box<dyn CameraStream>, TrackError> {
+        let preference: Vec<PixelFormat> = request.pixel.map_or_else(|| self.config.formats.clone(), |p| vec![p]);
+        let mut last = TrackError::FormatUnsupported(*request);
+        for pixel in preference {
+            match self.camera.open(device, &request.with_pixel(Some(pixel))) {
                 Ok(stream) => return Ok(stream),
                 Err(e @ TrackError::FormatUnsupported(_)) => last = e,
                 Err(e) => return Err(e),
@@ -229,10 +277,17 @@ impl Tracker for WebcamTracker {
 
     fn start(&mut self, device: &CameraId, config: &TrackerConfig) -> Result<Box<dyn FrameSource>, TrackError> {
         self.stop();
+        if config.tier != QualityTier::Full {
+            return Err(TrackError::Backend(format!(
+                "the webcam tracker has one quality tier, {:?}; {:?} was asked for",
+                QualityTier::Full,
+                config.tier
+            )));
+        }
         let mut tracker = self.tracker.take().ok_or_else(|| {
             TrackError::Backend("the face tracker was lost when the camera thread panicked".to_owned())
         })?;
-        let stream = match self.open(device) {
+        let stream = match self.open(device, &config.camera) {
             Ok(stream) => stream,
             Err(e) => {
                 self.tracker = Some(tracker);
@@ -240,7 +295,6 @@ impl Tracker for WebcamTracker {
             }
         };
         tracker.reset();
-        stage_now(); // starts the clock here, not on the camera thread
         let (writer, reader) = mailbox();
         let (stop, live) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(true)));
         self.stats = Arc::new(Stats::new());
@@ -249,6 +303,7 @@ impl Tracker for WebcamTracker {
             stream,
             tracker,
             writer,
+            clock: Arc::clone(&self.clock),
             first_seq: self.next_seq,
             lost_after: config.lost_after,
             stop: Arc::clone(&stop),

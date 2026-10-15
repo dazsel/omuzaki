@@ -9,12 +9,16 @@ use crate::landmarks::NUM_LANDMARKS;
 /// The widest a preview gets, in pixels. Narrower frames are not enlarged.
 pub const PREVIEW_MAX_WIDTH: u32 = 640;
 
+/// Fixed-point one for the box filter's division by a pixel count.
+const RECIP_BITS: u32 = 24;
+const RECIP_ONE: u64 = 1 << RECIP_BITS;
+
 /// 478 landmarks in preview pixels.
 type Points = Box<[[f32; 2]; NUM_LANDMARKS]>;
 
 /// A preview frame for the UI: at most [`PREVIEW_MAX_WIDTH`] wide, packed RGB8, with the landmarks in preview pixels.
 /// Reuse one value across calls to [`WebcamTracker::preview`](super::WebcamTracker::preview): it keeps its buffers.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default)]
 #[non_exhaustive]
 pub struct PreviewFrame {
     /// `width * height` pixels of R, G, B.
@@ -30,12 +34,21 @@ pub struct PreviewFrame {
 }
 
 /// The camera thread's private preview buffer: filled without any lock, then swapped into the shared slot.
-#[derive(Default)]
 pub(super) struct Scratch {
     frame: PreviewFrame,
-    /// The landmark box while the face is absent, so a face that comes back allocates nothing.
-    spare: Option<Points>,
+    /// Landmark boxes not in use. At most two exist (one in the slot, one being filled), so the pool never grows
+    /// past its reserve and a face that comes back, however often it is lost, allocates nothing.
+    pool: Vec<Points>,
 }
+
+impl Default for Scratch {
+    fn default() -> Self {
+        Self { frame: PreviewFrame::default(), pool: Vec::with_capacity(POOL) }
+    }
+}
+
+/// Room for the landmark boxes in circulation, with one to spare.
+const POOL: usize = 3;
 
 #[derive(Default)]
 struct Slot {
@@ -48,6 +61,15 @@ struct Slot {
 pub(super) struct PreviewTap {
     on: AtomicBool,
     slot: Mutex<Slot>,
+}
+
+impl PreviewFrame {
+    /// Box-filters `rgb` into this frame, at most [`PREVIEW_MAX_WIDTH`] wide, reusing its buffer: what the preview tap
+    /// does with each camera frame. Leaves `seq` and `landmarks` alone. False, and nothing written, if `rgb` is not a
+    /// valid frame.
+    pub fn fill_from(&mut self, rgb: &RgbFrame<'_>) -> bool {
+        downscale(rgb, self)
+    }
 }
 
 impl PreviewTap {
@@ -71,15 +93,16 @@ impl PreviewTap {
         }
         scratch.frame.seq = seq;
         let (w, h) = (scratch.frame.width as f32, scratch.frame.height as f32);
-        let mut points = scratch.frame.landmarks.take().or_else(|| scratch.spare.take());
+        // The frame swapped back from the slot may carry a box; keep it for the next face.
+        if let Some(spare) = scratch.frame.landmarks.take().filter(|_| scratch.pool.len() < POOL) {
+            scratch.pool.push(spare);
+        }
         if let Some(src) = landmarks {
-            let dst = points.get_or_insert_with(|| Box::new([[0.0; 2]; NUM_LANDMARKS]));
-            for (d, s) in dst.iter_mut().zip(src) {
+            let mut points = scratch.pool.pop().unwrap_or_else(|| Box::new([[0.0; 2]; NUM_LANDMARKS]));
+            for (d, s) in points.iter_mut().zip(src) {
                 *d = [s[0] * w, s[1] * h];
             }
-            scratch.frame.landmarks = points;
-        } else {
-            scratch.spare = points;
+            scratch.frame.landmarks = Some(points);
         }
         if let Ok(mut slot) = self.slot.try_lock() {
             std::mem::swap(&mut slot.frame, &mut scratch.frame);
@@ -108,7 +131,7 @@ impl PreviewTap {
 }
 
 /// Box-filters `src` down to at most [`PREVIEW_MAX_WIDTH`] wide (each output pixel is the mean of the source pixels it
-/// covers). False, with `dst` unchanged in size, if `src` is not a valid frame.
+/// covers, rounded, to within one level of the exact mean). False, with `dst` unchanged in size, if `src` is not a valid frame.
 fn downscale(src: &RgbFrame<'_>, dst: &mut PreviewFrame) -> bool {
     if src.validate().is_err() {
         return false;
@@ -118,12 +141,19 @@ fn downscale(src: &RgbFrame<'_>, dst: &mut PreviewFrame) -> bool {
     let oh = u32::try_from((u64::from(src.height) * u64::from(ow) / u64::from(src.width)).max(1)).unwrap_or(1);
     let (cols, rows) = (ow as usize, oh as usize);
     dst.rgb.resize(cols * rows * 3, 0);
+    // Where each output column starts in the source. `cols <= sw`, so every box is at least one pixel wide. Worked
+    // out once, so the pixel loop below has no division in it.
+    let mut edges = [0_usize; PREVIEW_MAX_WIDTH as usize + 1];
+    for (i, edge) in edges[..=cols].iter_mut().enumerate() {
+        *edge = i * sw / cols;
+    }
+    // Most boxes hold the same number of pixels, so the reciprocal is worked out only when that number changes.
+    let (mut last_n, mut recip) = (0_u64, 0_u64);
     for (oy, row) in dst.rgb.chunks_exact_mut(cols * 3).enumerate() {
         let y0 = oy * sh / rows;
         let y1 = ((oy + 1) * sh / rows).max(y0 + 1);
         for (ox, px) in row.as_chunks_mut::<3>().0.iter_mut().enumerate() {
-            let x0 = ox * sw / cols;
-            let x1 = ((ox + 1) * sw / cols).max(x0 + 1);
+            let (x0, x1) = (edges[ox], edges[ox + 1]);
             let mut sum = [0_u32; 3];
             for y in y0..y1 {
                 let from = y * src.stride;
@@ -133,9 +163,12 @@ fn downscale(src: &RgbFrame<'_>, dst: &mut PreviewFrame) -> bool {
                     }
                 }
             }
-            let n = u32::try_from((y1 - y0) * (x1 - x0)).unwrap_or(u32::MAX);
+            let n = u64::try_from((y1 - y0) * (x1 - x0)).unwrap_or(u64::MAX);
+            if n != last_n {
+                (last_n, recip) = (n, RECIP_ONE / n);
+            }
             for (o, s) in px.iter_mut().zip(sum) {
-                *o = u8::try_from((s + n / 2) / n).unwrap_or(u8::MAX);
+                *o = u8::try_from((u64::from(s) * recip + RECIP_ONE / 2) >> RECIP_BITS).unwrap_or(u8::MAX);
             }
         }
     }

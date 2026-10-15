@@ -9,8 +9,9 @@ use omuzaki_track_api::error::TrackError;
 use crate::frame::RgbFrame;
 
 /// [`CameraFrame`] (any [`PixelFormat`]) to packed RGB8 in a buffer it owns, allocated at the first frame or when the
-/// frame size changes. NV12 and YUY2 are read as BT.601 limited range, which is what UVC webcams send. MJPG decoding
-/// allocates inside the JPEG library on every frame; the raw formats allocate nothing.
+/// frame size changes (or at [`with_size`](Self::with_size), for the mode a camera opened with). NV12 and YUY2 are
+/// read as BT.601 limited range, which is what UVC webcams send. The raw formats allocate nothing per frame. MJPG
+/// decodes into the same buffer, but zune-jpeg builds a small decoder per image (see the note in `convert`).
 #[derive(Debug, Default)]
 pub struct FrameConverter {
     rgb: Vec<u8>,
@@ -23,6 +24,11 @@ impl FrameConverter {
         Self::default()
     }
 
+    /// A converter whose buffer is already sized for `width` x `height` frames, so the first frame allocates nothing.
+    pub fn with_size(width: u32, height: u32) -> Self {
+        Self { rgb: vec![0; rgb_len(width, height)], mjpg: MjpgDecoder::new() }
+    }
+
     /// Converts `frame`; the result borrows the converter's buffer until the next call.
     ///
     /// # Errors
@@ -30,7 +36,7 @@ impl FrameConverter {
     /// even one, data shorter than its layout, a damaged JPEG, or a pixel format this version does not know.
     pub fn convert(&mut self, frame: &CameraFrame<'_>) -> Result<RgbFrame<'_>, TrackError> {
         let (w, h) = (frame.width, frame.height);
-        let len = (w as usize).saturating_mul(h as usize).saturating_mul(3);
+        let len = rgb_len(w, h);
         if self.rgb.len() != len {
             self.rgb.resize(len, 0);
         }
@@ -53,12 +59,21 @@ impl FrameConverter {
             PixelFormat::Yuy2 => yuy2_to_rgb(plane, Yuv::default(), &mut out),
             PixelFormat::Rgb8 => rgb_to_rgb(plane, &mut out),
             PixelFormat::Bgra8 => bgra_to_rgb(plane, false, &mut out),
+            // The pixels go straight into our buffer. What remains per frame is inside zune-jpeg, which builds its
+            // decoder (tables and row buffers, a few small allocations, none of them frame sized) for each image
+            // and offers no way to hand one back; `omuzaki-pixfmt` is outside this task's fence. Measured in
+            // `tests/webcam.rs` and `benches/webcam.rs`.
             PixelFormat::Mjpg => self.mjpg.decode(frame.data, &mut out),
             other => return Err(TrackError::Backend(format!("no converter for {other:?}"))),
         };
         converted.map_err(|e| TrackError::Backend(format!("pixel conversion: {e}")))?;
         Ok(RgbFrame { data: &self.rgb, width: w, height: h, stride: 3 * w as usize })
     }
+}
+
+/// Bytes of a packed RGB8 frame.
+fn rgb_len(width: u32, height: u32) -> usize {
+    (width as usize).saturating_mul(height as usize).saturating_mul(3)
 }
 
 #[cfg(test)]

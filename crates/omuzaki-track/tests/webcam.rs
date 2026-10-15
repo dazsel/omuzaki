@@ -20,30 +20,42 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use omuzaki_anim_api::{ARKIT_COUNT, ChannelMask, FrameSource, TrackFrame, TrackStatus};
-use omuzaki_core::time::Seconds;
-use omuzaki_track::webcam::{FrameTracker, PreviewFrame, WebcamConfig, WebcamTracker};
+use omuzaki_core::time::{Clock, FakeClock, Seconds, SystemClock};
+use omuzaki_track::webcam::{Failures, FrameConverter, FrameTracker, PreviewFrame, WebcamConfig, WebcamTracker};
 use omuzaki_track::{FaceSample, FaceTrackError, NormRect, RgbFrame, StageTimings};
 use omuzaki_track_api::camera::{
     Camera, CameraFormat, CameraFormatRequest, CameraFrame, CameraId, CameraInfo, CameraStream, DeviceTime, PixelFormat,
 };
 use omuzaki_track_api::error::TrackError;
-use omuzaki_track_api::tracker::{Tracker, TrackerConfig};
+use omuzaki_track_api::tracker::{QualityTier, Tracker, TrackerConfig};
 use omuzaki_track_mock::FakeCamera;
 
 struct Counting;
 
-static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
+/// What the camera thread allocated while a test marked it (`Scripted::measure`).
+static CAMERA_ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
 
 thread_local! {
     // `const` init with no destructor: reading it never allocates, so it is safe inside the allocator.
     static MEASURING: Cell<bool> = const { Cell::new(false) };
+    // Set by the scripted tracker on the camera thread, so tests running side by side cannot count each other's.
+    static ON_CAMERA: Cell<bool> = const { Cell::new(false) };
+    // What the measuring thread itself allocated, for tests that measure their own thread.
+    static THREAD_ALLOCS: Cell<usize> = const { Cell::new(0) };
+    static THREAD_BYTES: Cell<usize> = const { Cell::new(0) };
+    static THREAD_LARGEST: Cell<usize> = const { Cell::new(0) };
 }
 
 // SAFETY: every method forwards to `System` unchanged; the counter is the only addition.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        if ON_CAMERA.try_with(Cell::get).unwrap_or(false) {
+            CAMERA_ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+        }
         if MEASURING.try_with(Cell::get).unwrap_or(false) {
-            ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+            THREAD_ALLOCS.with(|c| c.set(c.get() + 1));
+            THREAD_BYTES.with(|c| c.set(c.get() + layout.size()));
+            THREAD_LARGEST.with(|c| c.set(c.get().max(layout.size())));
         }
         unsafe { System.alloc(layout) }
     }
@@ -114,7 +126,7 @@ impl FrameTracker for Scripted {
             seen.lock().unwrap().push(pixels);
         }
         if let Some(range) = &self.measure {
-            MEASURING.with(|m| m.set(range.contains(&self.calls)));
+            ON_CAMERA.with(|m| m.set(range.contains(&self.calls)));
         }
         let has_face = self.faces.get(self.calls).or(self.faces.last()).copied().unwrap_or(false);
         self.calls += 1;
@@ -153,11 +165,27 @@ fn nv12(width: u32, height: u32) -> CameraFormat {
 }
 
 fn webcam(camera: FakeCamera, tracker: Scripted, config: WebcamConfig) -> WebcamTracker {
-    WebcamTracker::new(Box::new(camera), Box::new(tracker), config)
+    webcam_on(camera, tracker, config, Arc::new(SystemClock::new()))
 }
 
+fn webcam_on(camera: FakeCamera, tracker: Scripted, config: WebcamConfig, clock: Arc<dyn Clock>) -> WebcamTracker {
+    WebcamTracker::new(Box::new(camera), Box::new(tracker), config, clock)
+}
+
+/// Starts with the mode the tracker's own `WebcamConfig` describes.
 fn start(tracker: &mut WebcamTracker) -> Box<dyn FrameSource> {
-    tracker.start(&FakeCamera::id(), &TrackerConfig::default()).expect("the fake camera opens")
+    let config = tracker.tracker_config();
+    tracker.start(&FakeCamera::id(), &config).expect("the fake camera opens")
+}
+
+/// Polls until the stream's end or failure shows as a lost frame, skipping whatever came before it.
+fn until_lost(source: &mut dyn FrameSource) -> TrackFrame {
+    loop {
+        let frame = next(source);
+        if frame.status == TrackStatus::Lost {
+            return frame;
+        }
+    }
 }
 
 #[test]
@@ -181,11 +209,15 @@ fn a_face_then_none_for_twenty_frames_then_a_face_is_tracking_lost_tracking() {
     assert!(statuses[1..=20].iter().all(|s| *s == TrackStatus::Lost), "{statuses:?}");
     assert_eq!(statuses[21], TrackStatus::Tracking);
     assert!(seen.windows(2).all(|w| w[0].seq < w[1].seq && w[0].time < w[1].time));
-    // The extra frame goes out, then the fake camera runs dry: a lost frame, and the reason is kept.
+    // The extra frame goes out, then the fake camera runs dry: a lost frame, and the reason is kept. The extra frame
+    // may or may not be seen first, so wait for the Lost and join the thread before reading the counters.
     tokens.send(()).unwrap();
-    assert_eq!(next(&mut *source).status, TrackStatus::Lost);
+    until_lost(&mut *source);
+    tracker.stop();
     assert_eq!(tracker.error(), Some(TrackError::Lost));
-    assert_eq!(tracker.latency().frames, faces.len() as u64 + 2);
+    let latency = tracker.latency();
+    assert_eq!((latency.frames, latency.dropped), (faces.len() as u64 + 2, 0));
+    assert_eq!(tracker.failures(), Failures::default());
 }
 
 /// Per-pixel luma and per-2x2-block chroma, so NV12 and YUY2 hold the same picture.
@@ -281,7 +313,7 @@ fn a_camera_error_mid_stream_ends_the_thread_with_a_lost_frame_and_the_error() {
     assert_eq!(next(&mut *source).status, TrackStatus::Tracking);
     tokens.send(()).unwrap();
     // The second frame and the failure follow each other at once, so the consumer may miss the first of the two.
-    while next(&mut *source).status == TrackStatus::Tracking {}
+    until_lost(&mut *source);
     assert!(matches!(tracker.error(), Some(TrackError::Backend(_))), "{:?}", tracker.error());
     let stopped = Instant::now();
     tracker.stop();
@@ -346,6 +378,7 @@ fn a_camera_that_goes_quiet_gives_one_lost_frame_after_lost_after() {
         Box::new(Stall(picture(PixelFormat::Nv12, (64, 48)))),
         Box::new(Scripted::new(vec![true])),
         WebcamConfig::default().with_mode(64, 48, 30),
+        Arc::new(SystemClock::new()),
     );
     let config = TrackerConfig::default().with_lost_after(Duration::from_millis(30));
     let mut source = tracker.start(&FakeCamera::id(), &config).unwrap();
@@ -396,13 +429,166 @@ fn the_preview_costs_nothing_while_off_and_scales_the_landmarks_while_on() {
 
 #[test]
 fn the_camera_thread_allocates_nothing_over_three_hundred_frames() {
-    // Frames 20 to 319 are measured, with the preview on, after the buffers have grown.
-    let scripted = Scripted { measure: Some(20..320), ..Scripted::new(vec![true]) };
+    // Frames 20 to 319 are measured, with the preview on, after the buffers have grown. The face comes and goes in
+    // runs of two frames and three, so the landmark buffers are lost and reacquired over and over.
+    let faces: Vec<bool> = (0..330).map(|i| i % 5 < 2).collect();
+    let scripted = Scripted { measure: Some(20..320), ..Scripted::new(faces) };
     let camera = FakeCamera::synthetic(nv12(320, 240), 330);
     let mut tracker = webcam(camera, scripted, WebcamConfig::default().with_mode(320, 240, 30));
     tracker.set_preview(true);
     let _source = start(&mut tracker);
     assert_eq!(wait_for_error(&tracker), TrackError::Lost);
     tracker.stop();
-    assert_eq!(ALLOCATIONS.load(Ordering::Relaxed), 0);
+    assert_eq!(CAMERA_ALLOCATIONS.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn reading_the_latency_allocates_nothing() {
+    let camera = FakeCamera::synthetic(nv12(64, 48), 10_000_000);
+    let mut tracker = webcam(camera, Scripted::new(vec![true]), WebcamConfig::default().with_mode(64, 48, 30));
+    let _source = start(&mut tracker);
+    while tracker.latency().frames < 50 {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    MEASURING.with(|m| m.set(true));
+    let before = THREAD_ALLOCS.with(Cell::get);
+    for _ in 0..100 {
+        std::hint::black_box(tracker.latency());
+    }
+    let allocated = THREAD_ALLOCS.with(Cell::get) - before;
+    MEASURING.with(|m| m.set(false));
+    assert_eq!(allocated, 0);
+    let latency = tracker.latency();
+    assert!(latency.p50 <= latency.p95 && latency.p95 <= latency.max.max(Duration::from_micros(100)), "{latency:?}");
+}
+
+#[test]
+fn mjpg_allocates_nothing_frame_sized() {
+    let jpeg = std::fs::read(format!("{}/../omuzaki-pixfmt/tests/fixtures/64x48_420.jpg", env!("CARGO_MANIFEST_DIR")))
+        .unwrap();
+    let frame = CameraFrame::new(&jpeg, 64, 48, 0, PixelFormat::Mjpg, DeviceTime(0), 0);
+    let mut converter = FrameConverter::with_size(64, 48);
+    converter.convert(&frame).unwrap();
+    MEASURING.with(|m| m.set(true));
+    let (calls, bytes) = (THREAD_ALLOCS.with(Cell::get), THREAD_BYTES.with(Cell::get));
+    THREAD_LARGEST.with(|c| c.set(0));
+    for _ in 0..100 {
+        converter.convert(&frame).unwrap();
+    }
+    let (calls, bytes) = (THREAD_ALLOCS.with(Cell::get) - calls, THREAD_BYTES.with(Cell::get) - bytes);
+    MEASURING.with(|m| m.set(false));
+    let largest = THREAD_LARGEST.with(Cell::get);
+    eprintln!("mjpg 64x48: {} allocations and {} bytes per frame, largest {largest} bytes", calls / 100, bytes / 100);
+    // The pixels go into the converter's own buffer: nothing the size of a frame (9216 bytes here) is allocated.
+    assert!(largest < 64 * 48 * 3, "largest allocation {largest} bytes");
+}
+
+#[test]
+fn frames_are_timed_on_the_stage_clock_wherever_tracking_starts() {
+    let clock = Arc::new(FakeClock::new(Seconds(1234.5)));
+    let (scripted, tokens) = Scripted::gated(vec![true]);
+    let camera = FakeCamera::synthetic(nv12(64, 48), 10_000_000);
+    let mut tracker = webcam_on(camera, scripted, WebcamConfig::default().with_mode(64, 48, 30), clock.clone());
+    for start_time in [1234.5, 5000.0, 0.25] {
+        clock.set(Seconds(start_time));
+        let mut source = start(&mut tracker);
+        for _ in 0..3 {
+            tokens.send(()).unwrap();
+            let frame = next(&mut *source);
+            // A fixed clock gives the arrival time for every frame; the map only spaces them out by a microsecond.
+            assert!((start_time - 1e-9..start_time + 1e-3).contains(&frame.time.0), "{} at {start_time}", frame.time.0);
+        }
+        // The thread is waiting in the scripted tracker for the next frame's token: release it so `stop` is quick.
+        tokens.send(()).unwrap();
+        tracker.stop();
+    }
+}
+
+/// A camera that records every mode it is asked to open, then behaves as the fake one.
+struct Spy {
+    inner: FakeCamera,
+    requests: Arc<Mutex<Vec<CameraFormatRequest>>>,
+}
+
+impl Camera for Spy {
+    fn enumerate(&self) -> Vec<CameraInfo> {
+        self.inner.enumerate()
+    }
+
+    fn open(&mut self, id: &CameraId, request: &CameraFormatRequest) -> Result<Box<dyn CameraStream>, TrackError> {
+        self.requests.lock().unwrap().push(*request);
+        self.inner.open(id, request)
+    }
+}
+
+fn spy(config: WebcamConfig) -> (WebcamTracker, Arc<Mutex<Vec<CameraFormatRequest>>>) {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let inner = FakeCamera::synthetic(CameraFormat::new(64, 48, 30, PixelFormat::Yuy2), 10_000_000);
+    let camera = Spy { inner, requests: Arc::clone(&requests) };
+    let tracker =
+        WebcamTracker::new(Box::new(camera), Box::new(Scripted::new(vec![true])), config, Arc::new(SystemClock::new()));
+    (tracker, requests)
+}
+
+#[test]
+fn start_forwards_the_camera_request_and_refuses_what_it_cannot_do() {
+    // A named format is the only one asked for, with the size and rate as given.
+    let asked = CameraFormatRequest::new(800, 600, 15).with_pixel(Some(PixelFormat::Yuy2));
+    let (mut tracker, requests) = spy(WebcamConfig::default());
+    tracker.start(&FakeCamera::id(), &TrackerConfig::default().with_camera(asked)).expect("the fake camera opens");
+    assert_eq!(*requests.lock().unwrap(), [asked]);
+    tracker.stop();
+
+    // No format named: the preference is tried in order until the camera accepts one.
+    let config = WebcamConfig::default().with_formats(vec![PixelFormat::Mjpg, PixelFormat::Yuy2]);
+    let (mut tracker, requests) = spy(config);
+    let any = CameraFormatRequest::new(800, 600, 15);
+    tracker.start(&FakeCamera::id(), &TrackerConfig::default().with_camera(any)).expect("the second format opens");
+    let wanted = [PixelFormat::Mjpg, PixelFormat::Yuy2].map(|p| any.with_pixel(Some(p)));
+    assert_eq!(*requests.lock().unwrap(), wanted);
+    tracker.stop();
+
+    // The mode the WebcamConfig describes is what `tracker_config` asks for.
+    let (mut tracker, requests) = spy(WebcamConfig::default().with_mode(64, 48, 25));
+    let config = tracker.tracker_config();
+    assert_eq!(config.camera, CameraFormatRequest::new(64, 48, 25));
+    tracker.start(&FakeCamera::id(), &config).expect("the fake camera opens");
+    assert_eq!(requests.lock().unwrap()[0].fps, 25);
+    tracker.stop();
+
+    // One quality tier only: others are refused before the camera is touched, and the tracker stays usable.
+    let (mut tracker, requests) = spy(WebcamConfig::default());
+    for tier in [QualityTier::Balanced, QualityTier::Light] {
+        let refused = tracker.start(&FakeCamera::id(), &TrackerConfig::default().with_tier(tier));
+        assert!(matches!(refused, Err(TrackError::Backend(_))), "{tier:?}");
+    }
+    assert!(requests.lock().unwrap().is_empty());
+    assert!(tracker.start(&FakeCamera::id(), &TrackerConfig::default()).is_ok());
+}
+
+#[test]
+fn a_backwards_device_time_drops_the_frame_and_the_stream_carries_on() {
+    let good = picture(PixelFormat::Nv12, (64, 48));
+    // The third frame is stamped before the second: dropped, with the fit kept, and the next ones are accepted.
+    let ms = [0, 33, 20, 66, 99, 132];
+    let frames = ms.iter().map(|ms| (DeviceTime(ms * 1_000_000), good.clone())).collect();
+    let (scripted, tokens) = Scripted::gated(vec![true]);
+    let camera = FakeCamera::from_frames(nv12(64, 48), frames);
+    let mut tracker = webcam(camera, scripted, WebcamConfig::default().with_mode(64, 48, 30));
+    let mut source = start(&mut tracker);
+    let mut seen = Vec::new();
+    for _ in 0..4 {
+        tokens.send(()).unwrap();
+        seen.push(next(&mut *source));
+    }
+    // The last frame waits for a token so the end of the script cannot hide the ones before it.
+    tokens.send(()).unwrap();
+    until_lost(&mut *source);
+    tracker.stop();
+    assert_eq!(seen.iter().map(|f| f.seq).collect::<Vec<_>>(), [0, 1, 2, 3], "the dropped frame takes no seq");
+    assert!(seen.iter().all(|f| f.status == TrackStatus::Tracking));
+    assert!(seen.windows(2).all(|w| w[0].time < w[1].time));
+    assert_eq!(tracker.failures(), Failures::new(1, 0, 0));
+    // A backwards frame is not a skipped one: the camera's own `seq` has no gap.
+    assert_eq!(tracker.latency().dropped, 0);
 }
