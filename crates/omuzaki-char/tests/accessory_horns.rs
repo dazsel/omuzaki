@@ -7,12 +7,13 @@
 mod accessory_common;
 
 use accessory_common::{
-    TEMPLATES, above_head, assert_closed, assert_mirror_symmetric, assert_recolours_in_place, assert_rides_the_bone,
-    assert_weights_valid, build_budget_ms, build_ms, built_scene, character, meshes, vertices,
+    ACC, TEMPLATES, above_head, assert_closed, assert_mirror_symmetric, assert_recolours_in_place,
+    assert_rides_the_bone, assert_weights_valid, build_budget_ms, build_ms, built_scene, character, character_with,
+    inside_mesh, meshes, meshes_of, scene, skinned, vertices,
 };
 use omuzaki_anim_api::HumanoidBone;
 use omuzaki_char_api::find_kind;
-use omuzaki_core::glam::Quat;
+use omuzaki_core::glam::{Quat, Vec3};
 use serde_json::{Value, json};
 
 /// Triangles one accessory kind may use at live quality.
@@ -153,5 +154,63 @@ fn the_horns_build_in_5_ms_or_less() {
         let ms = build_ms(&character("standard", "horns", params.clone(), None), 20);
         println!("horns {params}: {ms:.3} ms");
         assert!(ms <= build_budget_ms(), "horns {params} took {ms:.2} ms");
+    }
+}
+
+// ------------------------------------------------------------------------------------------------ the hair of today
+
+/// The hair vertices inside the horns' solid, with the head turned by `yaw` degrees (hair and horns skinned alike).
+fn hair_inside_horns(hair: &Value, shape: &str, yaw: f32) -> usize {
+    let def = character_with("standard", Some(hair), &[(ACC, "horns", json!({ "shape": shape }), None)]);
+    let s = scene(&def).unwrap();
+    let skeleton = &s.built.rig.skeleton;
+    let head = skeleton.humanoid_bone(HumanoidBone::Head).unwrap().index();
+    let rest = skeleton.rest_pose();
+    let mut posed = rest.clone();
+    posed.local[head].rotation = Quat::from_rotation_y(yaw.to_radians()) * rest.local[head].rotation;
+    let horns: Vec<Vec3> = meshes(&s.built).iter().flat_map(|m| skinned(&s.built, m, &posed)).collect();
+    let (lo, hi) =
+        horns.iter().fold((Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)), |(l, h), p| (l.min(*p), h.max(*p)));
+    let hair: Vec<Vec3> = meshes_of(&s.built, "hair").iter().flat_map(|m| skinned(&s.built, m, &posed)).collect();
+    // The horns' meshes, posed, as solids to test the hair against.
+    let solids: Vec<omuzaki_char_api::PartMesh> = meshes(&s.built)
+        .iter()
+        .map(|m| {
+            let mut posed_mesh = (*m).clone();
+            posed_mesh.geometry.positions = skinned(&s.built, m, &posed);
+            posed_mesh
+        })
+        .collect();
+    hair.iter()
+        .filter(|p| p.cmpge(lo).all() && p.cmple(hi).all())
+        .filter(|p| solids.iter().any(|solid| inside_mesh(**p, solid)))
+        .count()
+}
+
+#[test]
+fn only_the_scalp_shell_meets_the_horns_which_is_the_hole_the_hair_cap_will_get() {
+    // The hair cap has no opening for a horn yet (#141 adds it), so the horn passes through it. Every other part of today's hair
+    // keeps clear of the horns, at rest and over a 45 degree head turn either way, and the cap's hole is the only thing
+    // the default style adds.
+    let cap = json!({ "generator": { "type": "cap" } });
+    let bangs = json!({ "generator": { "type": "bangs" } });
+    let curtain = json!({ "generator": { "type": "curtain" }, "dynamics": { "simulate": true, "follow": "body" } });
+    let only = |groups: Value| json!({ "groups": groups });
+    for shape in ["swept_back", "ram", "antler"] {
+        for yaw in [0.0, 45.0, -45.0] {
+            let clear =
+                [("bangs", only(json!({ "b-bangs": bangs }))), ("curtain", only(json!({ "c-curtain": curtain })))];
+            for (name, hair) in clear {
+                let inside = hair_inside_horns(&hair, shape, yaw);
+                assert_eq!(inside, 0, "{shape} at yaw {yaw}: {inside} {name} vertices are inside the horns");
+            }
+            let with_cap =
+                hair_inside_horns(&only(json!({ "a-cap": cap, "b-bangs": bangs, "c-curtain": curtain })), shape, yaw);
+            let cap_alone = hair_inside_horns(&only(json!({ "a-cap": cap })), shape, yaw);
+            assert_eq!(
+                with_cap, cap_alone,
+                "{shape} at yaw {yaw}: the bangs and the curtain add vertices inside the horns"
+            );
+        }
     }
 }
