@@ -94,7 +94,8 @@ pub struct ImportedAvatar {
     pub constraints: ConstraintSet,
     /// The file's look-at, or `None` if it has none (the defaults of the route then apply, [`Self::look_at`]).
     pub look_at: Option<AvatarLookAt>,
-    /// First-person flags, one per mesh in mesh order: carried for export, not used at run time yet (D4).
+    /// First-person flags by mesh, in mesh order; a mesh past the end of the list is `Auto`, the spec's default.
+    /// Carried for export, not used at run time yet (D4).
     pub first_person: Vec<FirstPersonFlag>,
     /// Attachment points: one per humanoid bone plus named ones (head top, grips). Empty until the attachments work
     /// fills them (D1, condition 2).

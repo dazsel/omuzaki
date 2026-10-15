@@ -27,6 +27,7 @@ impl ExprIx {
 
 /// Moves one morph target of one mesh as the expression rises.
 #[derive(Copy, Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct MorphBind {
     /// The mesh, an index into [`ImportedAvatar::meshes`](crate::avatar::ImportedAvatar::meshes).
     pub mesh: u16,
@@ -46,6 +47,7 @@ impl MorphBind {
 /// Blends one material colour from `base` toward `target`: at weight `w` the colour moves by `(target − base) · w`
 /// (VRM 1.0 `expressions.md`, "Expression update algorithm").
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct ColourBind {
     /// The material.
     pub material: MaterialName,
@@ -72,6 +74,7 @@ impl ColourBind {
 /// Moves the UV scale and offset of a material's UV-addressed textures from its base transform toward a target, like
 /// a colour bind (how painted eyes and mouths switch atlas cells).
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct UvBind {
     /// The material.
     pub material: MaterialName,

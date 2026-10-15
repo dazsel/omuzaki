@@ -204,12 +204,14 @@ enum AnchorSource<'a> {
 pub struct Anchors<'a>(AnchorSource<'a>);
 
 impl<'a> Anchors<'a> {
-    /// Every anchor in order, with the part that published it (`None` for the body's own).
-    pub fn all(&self) -> Box<dyn Iterator<Item = (Option<&'a PartId>, &'a AnchorId, &'a Anchor)> + 'a> {
-        match self.0 {
-            AnchorSource::ByPart(map) => Box::new(map.iter().map(|((part, id), a)| (Some(part), id, a))),
-            AnchorSource::Own(map) => Box::new(map.iter().map(|(id, a)| (None, id, a))),
-        }
+    /// Every anchor in order, with the part that published it (`None` for the body's own). Allocates nothing.
+    pub fn all(&self) -> impl Iterator<Item = (Option<&'a PartId>, &'a AnchorId, &'a Anchor)> + 'a {
+        let (by_part, own) = match self.0 {
+            AnchorSource::ByPart(map) => (Some(map), None),
+            AnchorSource::Own(map) => (None, Some(map)),
+        };
+        let by_part = by_part.into_iter().flatten().map(|((part, id), a)| (Some(part), id, a));
+        by_part.chain(own.into_iter().flatten().map(|(id, a)| (None, id, a)))
     }
 
     /// The anchor `id`, from `part` when given, or the first of that name otherwise (parts in id order).
