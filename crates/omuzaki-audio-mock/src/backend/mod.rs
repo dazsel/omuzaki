@@ -15,7 +15,7 @@
 mod device;
 mod script;
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use omuzaki_audio_api::backend::{
@@ -60,14 +60,17 @@ struct Stream {
     /// What the stream really runs with.
     config: StreamConfig,
     closed: AtomicBool,
+    /// Whether callbacks still run. Atomic, with `next_at`, so the scheduler and `open_streams` can read them under the
+    /// backend's lock without taking the stream's, whose holder may be a callback that wants the backend's.
+    alive: AtomicBool,
+    /// The bits of the `f64` seconds at which the next callback runs.
+    next_at: AtomicU64,
     state: Mutex<StreamState>,
 }
 
 struct StreamState {
-    alive: bool,
-    /// When the next callback runs, in seconds of the engine timeline: `anchor + count * period`, so repeated additions
-    /// do not accumulate rounding error while the drift stays the same.
-    next_at: f64,
+    /// `anchor + count * period` is when the next callback runs, so repeated additions do not accumulate rounding error
+    /// while the drift stays the same.
     anchor: f64,
     count: u64,
     ppm: f64,
@@ -197,7 +200,7 @@ impl FakeBackend {
     #[must_use]
     pub fn open_streams(&self) -> usize {
         let shared = locked(&self.shared);
-        shared.streams.iter().filter(|s| locked(&s.state).alive).count()
+        shared.streams.iter().filter(|s| s.alive.load(Ordering::Acquire)).count()
     }
 
     /// What the playback device `id` has been given so far, interleaved, if it was built with
@@ -247,15 +250,15 @@ impl FakeBackend {
                 })
             };
             let mut state = locked(&stream.state);
-            if !state.alive || stream.closed.load(Ordering::Acquire) {
+            if !stream.alive.load(Ordering::Acquire) || stream.closed.load(Ordering::Acquire) {
                 continue;
             }
             let Some((ppm, latency, input, direction, record)) = params else {
                 // The device is gone but the script has not killed this stream: close it so the loop cannot spin.
-                state.alive = false;
+                stream.alive.store(false, Ordering::Release);
                 continue;
             };
-            let at = state.next_at;
+            let at = stream.next_at();
             let channels = usize::from(stream.config.channels);
             let StreamState { callback, buffer, frames_done, .. } = &mut *state;
             match callback {
@@ -270,7 +273,7 @@ impl FakeBackend {
                     on_data(buffer, CallbackTime { callback: Seconds(at), device: Seconds(at + latency.0) });
                 }
                 None => {
-                    state.alive = false;
+                    stream.alive.store(false, Ordering::Release);
                     continue;
                 }
             }
@@ -285,7 +288,8 @@ impl FakeBackend {
             }
             #[allow(clippy::cast_precision_loss)] // a count of callbacks, far below 2^52
             {
-                state.next_at = state.anchor + state.count as f64 * period(stream.config, ppm);
+                let next = state.anchor + state.count as f64 * period(stream.config, ppm);
+                stream.next_at.store(next.to_bits(), Ordering::Release);
             }
             if record && direction == Direction::Output {
                 let samples = state.buffer.clone();
@@ -303,9 +307,12 @@ impl FakeBackend {
         let shared = locked(&self.shared);
         let mut best: Option<(f64, &Arc<Stream>)> = None;
         for stream in &shared.streams {
-            let state = locked(&stream.state);
-            if state.alive && state.next_at < limit - BOUNDARY_SLACK && best.is_none_or(|(at, _)| state.next_at < at) {
-                best = Some((state.next_at, stream));
+            let at = stream.next_at();
+            if stream.alive.load(Ordering::Acquire)
+                && at < limit - BOUNDARY_SLACK
+                && best.is_none_or(|(first, _)| at < first)
+            {
+                best = Some((at, stream));
             }
         }
         best.map(|(_, stream)| Arc::clone(stream))
@@ -345,9 +352,9 @@ impl FakeBackend {
             device: id.clone(),
             config: actual,
             closed: AtomicBool::new(false),
+            alive: AtomicBool::new(true),
+            next_at: AtomicU64::new((seconds_of(shared.now) + period(actual, ppm)).to_bits()),
             state: Mutex::new(StreamState {
-                alive: true,
-                next_at: seconds_of(shared.now) + period(actual, ppm),
                 anchor: seconds_of(shared.now),
                 count: 1,
                 ppm,
@@ -363,14 +370,17 @@ impl FakeBackend {
 }
 
 impl Stream {
+    fn next_at(&self) -> f64 {
+        f64::from_bits(self.next_at.load(Ordering::Acquire))
+    }
+
     /// The device went away under a running stream: report it once and stop.
     fn fail(&self) {
         let mut state = locked(&self.state);
-        if state.alive {
-            state.alive = false;
-            if let Some(on_error) = state.on_error.as_mut() {
-                on_error(BackendError::DeviceNotAvailable);
-            }
+        if self.alive.swap(false, Ordering::AcqRel)
+            && let Some(on_error) = state.on_error.as_mut()
+        {
+            on_error(BackendError::DeviceNotAvailable);
         }
     }
 }
@@ -393,7 +403,7 @@ impl Drop for FakeStream {
         locked(&self.shared).streams.retain(|s| !Arc::ptr_eq(s, &self.stream));
         // Waits for a callback that is running on another thread, so none runs after this returns.
         let mut state = locked(&self.stream.state);
-        state.alive = false;
+        self.stream.alive.store(false, Ordering::Release);
         state.callback = None;
         state.on_error = None;
     }
