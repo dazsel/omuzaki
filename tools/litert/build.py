@@ -129,8 +129,14 @@ def bazel(args, litert: Path, tools: Path, plat: str, capture=True) -> str:
     return run([bazel_path(tools), *startup, *args], cwd=litert, env=bazel_env(plat), capture=capture)
 
 
+def pinned_flags(plat: str) -> list[str]:
+    """The Bazel flags pins.toml sets for `plat`, as BUILDINFO.json records them."""
+    return [*PINS["bazel"]["flags"], *platform_pins(plat)["flags"]]
+
+
 def build_flags(plat: str) -> list[str]:
-    flags = [*PINS["bazel"]["flags"], *platform_pins(plat)["flags"]]
+    """`pinned_flags` plus what only this runner knows: on Windows, the path of the Python the job set up."""
+    flags = pinned_flags(plat)
     if plat == "win-x64":
         # LiteRT's windows config names a fixed Python path; use the one this job set up.
         flags += [f"--action_env=PYTHON_BIN_PATH={sys.executable}", f"--python_path={sys.executable}"]
@@ -227,7 +233,7 @@ def read_back(plat: str, library: Path, litert: Path, tools: Path) -> dict:
         if pins["compiler"] not in comment:
             raise Mismatch(f"the library's .comment does not name {pins['compiler']!r}: {comment.strip()}")
         glibc = max_version(run([llvm / "llvm-readelf", "-V", library]), "GLIBC_")
-        if tuple(map(int, glibc.split("."))) > tuple(map(int, pins["glibc_max"].split("."))):
+        if version_tuple(glibc) > version_tuple(pins["glibc_max"]):
             raise Mismatch(f"the library needs glibc {glibc}, newer than the pinned floor {pins['glibc_max']}")
         # Names carry their version node (`TfLiteVersion@@VERS_1.0`), and the node itself is listed as a symbol.
         listed = run([llvm / "llvm-nm", "-D", "--defined-only", "--format=just-symbols", library]).split()
@@ -346,9 +352,36 @@ def buildinfo(plat: str, toolchain: dict) -> dict:
     pins = platform_pins(plat)
     return {"litert": {key: PINS["litert"][key] for key in ("version", "tag", "commit", "tflite_version")},
             "platform": plat, "omz_litert_abi": PINS["shim"]["abi"], "library": pins["library"],
-            "bazel": PINS["bazel"]["version"], "flags": build_flags(plat), "toolchain": toolchain,
+            "bazel": PINS["bazel"]["version"], "flags": pinned_flags(plat), "toolchain": toolchain,
             "run": {"repository": os.environ.get("GITHUB_REPOSITORY", ""), "id": os.environ.get("GITHUB_RUN_ID", ""),
                     "commit": os.environ.get("GITHUB_SHA", "")}}
+
+
+def version_tuple(version: str) -> tuple:
+    return tuple(int(part) for part in version.split("."))
+
+
+def buildinfo_problems(info: dict, plat: str) -> list[str]:
+    """Every field of an archive's BUILDINFO.json that differs from the pins (design §8.2, §8.4); the run is not checked.
+    The toolchain values are the ones `read_back` recorded: each must equal its pin, except the glibc floor, which may
+    be older than the pinned one."""
+    expected, problems = buildinfo(plat, {}), []
+    for field in ("litert", "platform", "omz_litert_abi", "library", "bazel", "flags"):
+        if info.get(field) != expected[field]:
+            problems.append(f"{field}: archive has {info.get(field)!r}, pinned {expected[field]!r}")
+    pins, toolchain = platform_pins(plat), info.get("toolchain")
+    keys = {"linux-x64": ("compiler", "glibc"), "macos-arm64": ("xcode", "macos_minimum"),
+            "win-x64": ("msvc_toolset",)}[plat]
+    if not isinstance(toolchain, dict) or sorted(toolchain) != sorted(keys):
+        return problems + [f"toolchain: archive has {toolchain!r}, expected the keys {sorted(keys)}"]
+    for key in keys:
+        found = toolchain[key]
+        if key == "glibc":
+            if not re.fullmatch(r"\d+(\.\d+)+", str(found)) or version_tuple(found) > version_tuple(pins["glibc_max"]):
+                problems.append(f"toolchain.glibc: archive needs {found!r}, pinned floor {pins['glibc_max']!r}")
+        elif found != pins[key]:
+            problems.append(f"toolchain.{key}: archive has {found!r}, pinned {pins[key]!r}")
+    return problems
 
 
 def cmd_pack(args):
@@ -500,9 +533,9 @@ def cmd_check(args):
     work.mkdir(parents=True, exist_ok=True)
     folder = unpack(archive_in(Path(args.dist), args.platform), os.environ.get("EXPECTED_SHA256", ""), work)
     info = json.loads((folder / "BUILDINFO.json").read_text())
-    expect("BUILDINFO litert", info["litert"], buildinfo(args.platform, {})["litert"])
-    expect("BUILDINFO platform", info["platform"], args.platform)
-    expect("BUILDINFO omz_litert_abi", info["omz_litert_abi"], PINS["shim"]["abi"])
+    problems = buildinfo_problems(info, args.platform)
+    if problems:
+        raise Mismatch("BUILDINFO.json differs from tools/litert/pins.toml:\n  " + "\n  ".join(problems))
     library = folder / "lib" / platform_pins(args.platform)["library"]
     programs = Path(args.programs)
     executable = ".exe" if os.name == "nt" else ""

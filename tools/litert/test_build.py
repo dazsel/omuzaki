@@ -43,6 +43,56 @@ class Pins(unittest.TestCase):
             self.assertTrue(entry["spdx"], repo)
 
 
+class BuildInfo(unittest.TestCase):
+    TOOLCHAINS = {"linux-x64": {"compiler": "clang version 18.1.8", "glibc": "2.17"},
+                  "win-x64": {"msvc_toolset": "14.44.35207"},
+                  "macos-arm64": {"xcode": "16.4", "macos_minimum": "13.0"}}
+
+    def info(self, plat: str) -> dict:
+        return build.buildinfo(plat, dict(self.TOOLCHAINS[plat]))
+
+    def test_a_pinned_build_has_no_problems(self):
+        for plat in build.PINS["platform"]:
+            self.assertEqual(build.buildinfo_problems(self.info(plat), plat), [], plat)
+
+    def test_runner_specific_flags_stay_out_of_the_record(self):
+        self.assertNotIn("python", " ".join(self.info("win-x64")["flags"]))
+
+    def assert_one_problem(self, plat: str, change, field: str):
+        info = self.info(plat)
+        change(info)
+        problems = build.buildinfo_problems(info, plat)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertTrue(problems[0].startswith(field), problems)
+
+    def test_each_field_mismatch_is_reported(self):
+        cases = [
+            ("litert", lambda i: i["litert"].update(commit="0" * 40)),
+            ("platform", lambda i: i.update(platform="linux-x64")),
+            ("omz_litert_abi", lambda i: i.update(omz_litert_abi=2)),
+            ("library", lambda i: i.update(library="other.dll")),
+            ("bazel", lambda i: i.update(bazel="7.6.0")),
+            ("flags", lambda i: i.update(flags=[*i["flags"], "--copt=-O0"])),
+            ("toolchain.msvc_toolset", lambda i: i["toolchain"].update(msvc_toolset="14.43.0")),
+            ("toolchain:", lambda i: i.update(toolchain={})),
+        ]
+        for field, change in cases:
+            with self.subTest(field=field):
+                self.assert_one_problem("win-x64", change, field)
+
+    def test_each_toolchain_value_is_checked(self):
+        cases = [
+            ("linux-x64", "toolchain.compiler", lambda i: i["toolchain"].update(compiler="clang version 19.1.0")),
+            ("linux-x64", "toolchain.glibc", lambda i: i["toolchain"].update(glibc="2.28")),
+            ("linux-x64", "toolchain.glibc", lambda i: i["toolchain"].update(glibc="")),
+            ("macos-arm64", "toolchain.xcode", lambda i: i["toolchain"].update(xcode="16.2")),
+            ("macos-arm64", "toolchain.macos_minimum", lambda i: i["toolchain"].update(macos_minimum="11.0")),
+        ]
+        for plat, field, change in cases:
+            with self.subTest(plat=plat, field=field):
+                self.assert_one_problem(plat, change, field)
+
+
 class ExportLists(unittest.TestCase):
     def test_version_script_exports_only_the_names(self):
         script = build.version_script(["A", "B"])
@@ -75,6 +125,15 @@ class Parity(unittest.TestCase):
     def test_the_largest_difference_is_returned(self):
         ours, reference = numpy.array([1.0, 2.0], numpy.float32), numpy.array([1.0, 2.5], numpy.float32)
         self.assertEqual(build.max_abs_diff(ours, reference, "out"), 0.5)
+
+    def test_a_nan_output_fails(self):
+        with self.assertRaisesRegex(build.Mismatch, "ours has a non-finite"):
+            build.max_abs_diff(numpy.array([numpy.nan], numpy.float32), numpy.zeros(1, numpy.float32), "out")
+
+    def test_an_infinite_difference_fails(self):
+        huge = numpy.array([numpy.inf], numpy.float32)
+        with self.assertRaisesRegex(build.Mismatch, "the wheel's has a non-finite"):
+            build.max_abs_diff(numpy.zeros(1, numpy.float32), huge, "out")
 
     def test_a_non_finite_value_on_either_side_fails(self):
         finite = numpy.zeros(2, numpy.float32)
