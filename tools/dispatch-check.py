@@ -41,6 +41,7 @@ old; otherwise GraphQL, then REST, read the same list. stderr says which source 
 import argparse
 import datetime
 import fnmatch
+import http.client
 import json
 import os
 import re
@@ -365,7 +366,11 @@ def snapshot_prs(raw):
     unless a PR lists GH_FILE_LIST_CAP files or more, when its full list is read from REST (None if unreadable)."""
     prs = []
     for pr in raw:
-        listed = [f["path"] for f in pr.get("files") or []]
+        files = pr.get("files") or []
+        listed = [f["path"] for f in files]
+        # gh pr list gives the new path only; a publisher that adds `previous_filename` keeps a rename's old path too.
+        sources = [f["previous_filename"] for f in files if f.get("previous_filename")]
+        listed += [source for source in sources if source not in listed]
         prs.append({
             "number": int(pr["number"]),
             "branch": pr["headRefName"],
@@ -389,8 +394,9 @@ def load_snapshot():
         age = (datetime.datetime.now(datetime.timezone.utc) - generated).total_seconds()
         if not 0 <= age <= SNAPSHOT_MAX_AGE:
             raise ValueError(f"generated {age:.0f} seconds ago, not within {SNAPSHOT_MAX_AGE}")
+        check_list_limit(snap["prs"])
         prs, claimed = snapshot_prs(snap["prs"]), {int(n) for n in snap["claimed"]}
-    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+    except (OSError, http.client.HTTPException, ValueError, KeyError, TypeError, AttributeError) as exc:
         print(f"dispatch-check: snapshot not used ({exc}); reading GitHub instead", file=sys.stderr)
         return None
     print(f"dispatch-check: open PRs from the snapshot, generated {snap['generated_at']}", file=sys.stderr)

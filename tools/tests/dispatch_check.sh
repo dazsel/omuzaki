@@ -1065,4 +1065,47 @@ run 9305
 expect_line "wait #9305: claimed" "claimed: the claimed label makes a task wait without a snapshot"
 expect_err "snapshot not used" "claimed: the missing snapshot is named"
 
+# snapshot, renames: a publisher's `previous_filename` keeps a rename's old path, so a task on that path waits.
+scenario snap-rename
+issue 9306 <<'B'
+**Fence:** `crates/omuzaki-ops/src/old.rs`
+B
+snapshot 60 <<'J'
+{"prs": [{"number":806,"headRefName":"local/806-ops","isDraft":false,"createdAt":"2026-10-01T10:00:00Z",
+  "files":[{"path":"crates/omuzaki-ops/src/new.rs","previous_filename":"crates/omuzaki-ops/src/old.rs"}],
+  "closingIssuesReferences":[]}], "claimed": []}
+J
+run 9306
+expect_line "wait #9306: overlap with #806 (crates/omuzaki-ops/src/old.rs)" "snapshot: a renamed file's old path is checked"
+
+# snapshot, at the list limit: the list may be cut, so the check stops rather than trust it.
+scenario snap-limit
+issue 9307 <<'B'
+**Fence:** `crates/omuzaki-ops/src/d.rs`
+B
+python3 -I -c 'import json; print(json.dumps({"prs": [{"number": n, "headRefName": "b", "isDraft": False, "createdAt": "",
+  "files": [], "closingIssuesReferences": []} for n in range(1, 1001)], "claimed": []}))' | snapshot 60
+run 9307
+expect_code 2 "snapshot: a snapshot at the list limit stops the check"
+expect_err "list limit" "snapshot: the list limit is named"
+
+# snapshot, interrupted: a truncated read falls back instead of crashing. The read is mocked, so no network is used.
+scenario snap-torn
+python3 -I - "$CHECK" <<'PYTEST' >"$work/torn.out" 2>"$work/torn.err"
+import http.client, importlib.util, io, sys, urllib.request
+spec = importlib.util.spec_from_file_location("dispatch_check", sys.argv[1])
+dc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(dc)
+class Torn(io.BytesIO):
+    def read(self, *args):
+        raise http.client.IncompleteRead(b'{"prs": [')
+urllib.request.urlopen = lambda *args, **kwargs: Torn()
+print("fallback" if dc.load_snapshot() is None else "used")
+PYTEST
+if grep -qx fallback "$work/torn.out" && grep -q "snapshot not used" "$work/torn.err"; then
+  pass "snapshot: a truncated read falls back"
+else
+  fail "snapshot: a truncated read falls back: $(cat "$work/torn.out" "$work/torn.err")"
+fi
+
 ((failures == 0)) || exit 1
