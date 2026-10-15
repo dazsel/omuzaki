@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::chan::{self, Closed, Sender};
 use crate::http::{HeaderValue, Http, HttpFail, MAX_ERROR_BODY, Request};
-use crate::retry::Backoff;
+use crate::retry::{Backoff, DEFAULT_UNIT};
 use crate::sse::{self, SseEvent, SseFail};
 
 /// How often a running turn looks at its [`Cancel`] flag (llm-api D5: the connection closes within 50 ms).
@@ -29,11 +29,14 @@ pub struct Timeouts {
     pub first_byte: Duration,
     /// The longest silence between two chunks of the body. Keep-alive pings count.
     pub idle: Duration,
+    /// The unit of the retry jitter: the wait before retry `n` is uniform in `[0, min(16, 2^(n-1)) units]`. One second
+    /// outside tests.
+    pub backoff_unit: Duration,
 }
 
 impl Default for Timeouts {
     fn default() -> Self {
-        Self { first_byte: Duration::from_secs(120), idle: Duration::from_secs(60) }
+        Self { first_byte: Duration::from_secs(120), idle: Duration::from_secs(60), backoff_unit: DEFAULT_UNIT }
     }
 }
 
@@ -160,7 +163,7 @@ fn redact(text: String, secret: Option<&SecretValue>) -> String {
 }
 
 async fn drive(job: &Job, tx: &Sender) -> Result<(), LlmError> {
-    let mut backoff = Backoff::new(job.seed);
+    let mut backoff = Backoff::new(job.seed, job.timeouts.backoff_unit);
     let mut attempt = 0u8;
     loop {
         let mut started = false;
@@ -183,19 +186,41 @@ async fn drive(job: &Job, tx: &Sender) -> Result<(), LlmError> {
     }
 }
 
+/// Redacts `secret` from the text of `error`.
+fn redact_error(error: LlmError, secret: Option<&SecretValue>) -> LlmError {
+    match error {
+        LlmError::Unsupported(m) => LlmError::Unsupported(redact(m, secret)),
+        LlmError::Network(m) => LlmError::Network(redact(m, secret)),
+        LlmError::Malformed(m) => LlmError::Malformed(redact(m, secret)),
+        other => other,
+    }
+}
+
+/// Runs one attempt. Whatever a server echoes in an error, the key never leaves in it (llm-api D5).
 async fn attempt_once(job: &Job, tx: &Sender, started: &mut bool) -> Result<(), Fail> {
     let secret = match &job.key {
         Some((label, store)) => store.get(label),
         None => None,
     };
+    attempt_with(job, tx, started, secret.as_ref()).await.map_err(|fail| match fail {
+        Fail::Fatal(error) => Fail::Fatal(redact_error(error, secret.as_ref())),
+        Fail::Retry { error, retry_after, cause } => Fail::Retry {
+            error: redact_error(error, secret.as_ref()),
+            retry_after,
+            cause: redact(cause, secret.as_ref()),
+        },
+    })
+}
+
+async fn attempt_with(job: &Job, tx: &Sender, started: &mut bool, secret: Option<&SecretValue>) -> Result<(), Fail> {
     if secret.is_none() && job.protocol.key_required() {
         return Err(Fail::Fatal(LlmError::Auth));
     }
-    let headers = job.protocol.headers(secret.as_ref()).map_err(Fail::Fatal)?;
+    let headers = job.protocol.headers(secret).map_err(Fail::Fatal)?;
     let request = Request::post(job.protocol.url(), headers, job.body.clone());
     let response = match timeout(job.timeouts.first_byte, job.http.send(request)).await {
         Err(_) => return Err(Fail::network("no response before the first-byte timeout")),
-        Ok(Err(fail)) => return Err(http_fail(fail, secret.as_ref())),
+        Ok(Err(fail)) => return Err(http_fail(fail, secret)),
         Ok(Ok(response)) => response,
     };
     if !(200..300).contains(&response.status) {
@@ -218,7 +243,7 @@ async fn attempt_once(job: &Job, tx: &Sender, started: &mut bool) -> Result<(), 
         wait = job.timeouts.idle;
         let event = match item {
             None => return Err(decoder.cut()),
-            Some(Err(SseFail::Transport(why))) => return Err(Fail::network(redact(why, secret.as_ref()))),
+            Some(Err(SseFail::Transport(why))) => return Err(Fail::network(redact(why, secret))),
             Some(Err(SseFail::Malformed(why))) => {
                 return Err(Fail::Fatal(LlmError::Malformed(format!("malformed event stream: {why}"))));
             }

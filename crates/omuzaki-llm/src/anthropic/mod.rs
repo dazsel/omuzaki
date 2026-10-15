@@ -10,7 +10,7 @@ use omuzaki_llm_api::LlmClient;
 use omuzaki_llm_api::error::LlmError;
 use omuzaki_llm_api::message::TurnRequest;
 use omuzaki_llm_api::provider::{
-    CostModel, LlmCapability, Privacy, ProviderConfig, ProviderEnv, ProviderManifest, SecretValue,
+    CostModel, LlmCapability, Privacy, ProviderConfig, ProviderEnv, ProviderManifest, RuntimeHandle, SecretValue,
 };
 use omuzaki_llm_api::stream::{Cancel, TurnStream};
 use omuzaki_llm_api::usage::{ImageCost, ModelInfo, PriceTable};
@@ -77,6 +77,8 @@ pub struct AnthropicClient {
     max_retries: u8,
     timeouts: Timeouts,
     seed: u64,
+    /// Keeps a runtime this crate started alive for as long as the client.
+    _runtime: RuntimeHandle,
 }
 
 impl std::fmt::Debug for AnthropicClient {
@@ -120,6 +122,7 @@ impl AnthropicClient {
             max_retries: config.retry.max_retries,
             timeouts: Timeouts::default(),
             seed: random_seed(),
+            _runtime: env.runtime.clone(),
         })
     }
 
