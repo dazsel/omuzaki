@@ -64,7 +64,8 @@ mod tests {
     fn jitter_stays_under_the_doubling_ceiling_and_the_16_second_cap() {
         let mut b = Backoff::new(42);
         for attempt in 1..=40u8 {
-            let ceiling = Duration::from_secs(1).saturating_mul(1 << u32::from(attempt - 1).min(16)).min(MAX_JITTER_CEILING);
+            let ceiling =
+                Duration::from_secs(1).saturating_mul(1 << u32::from(attempt - 1).min(16)).min(MAX_JITTER_CEILING);
             for _ in 0..200 {
                 assert!(b.wait(attempt, None) <= ceiling, "attempt {attempt}");
             }

@@ -95,11 +95,15 @@ pub struct ProviderConfig {
     pub context_window: Option<u64>,
     /// How often to retry.
     pub retry: RetryPolicy,
+    /// The model the built client serves (the `model` of the host's `ModelChoice`). A provider that serves one
+    /// model per client needs it to build; listing models does not.
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 impl ProviderConfig {
     /// A configuration for the provider `kind` at `endpoint`, with no key, no remote endpoint allowed, the shipped
-    /// prices and context window, and the default retries.
+    /// prices and context window, the default retries and no model chosen.
     pub fn new(id: impl Into<String>, kind: impl Into<String>, endpoint: impl Into<String>) -> Self {
         Self {
             id: id.into(),
@@ -110,7 +114,15 @@ impl ProviderConfig {
             prices: None,
             context_window: None,
             retry: RetryPolicy::default(),
+            model: None,
         }
+    }
+
+    /// Sets the model the built client serves.
+    #[must_use]
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.model = Some(model.into());
+        self
     }
 
     /// Sets the key, by reference.

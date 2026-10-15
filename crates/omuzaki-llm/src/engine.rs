@@ -296,7 +296,9 @@ mod tests {
         assert!(at(401, None).starts_with("fatal the provider refused the key"));
         assert!(at(403, None).starts_with("fatal the provider refused the key"));
         assert!(at(413, None).contains("1000-token"));
-        assert!(at(429, Some(Duration::from_secs(2))).starts_with("retry rate limited, retry after 2 s after Some(2s)"));
+        assert!(
+            at(429, Some(Duration::from_secs(2))).starts_with("retry rate limited, retry after 2 s after Some(2s)")
+        );
         assert_eq!(at(429, None), "fatal rate limited");
         for status in [500, 502, 504] {
             assert!(at(status, None).starts_with("retry network error"), "{status}");
@@ -310,7 +312,9 @@ mod tests {
 
     #[test]
     fn a_400_that_names_the_context_is_context_too_long() {
-        for message in ["prompt is too long: 250000 tokens > 200000", "context_length_exceeded", "maximum context length is 8192"] {
+        for message in
+            ["prompt is too long: 250000 tokens > 200000", "context_length_exceeded", "maximum context length is 8192"]
+        {
             assert!(kind(&status_fail(400, None, message, 8192)).contains("8192-token"), "{message}");
         }
     }

@@ -190,7 +190,8 @@ impl Http {
             ];
             builder = builder.no_proxy().resolve_to_addrs("localhost", &local);
         }
-        let client = builder.build().map_err(|e| LlmError::Unsupported(format!("cannot start the HTTP client: {e}")))?;
+        let client =
+            builder.build().map_err(|e| LlmError::Unsupported(format!("cannot start the HTTP client: {e}")))?;
         Ok(Self { client })
     }
 
@@ -238,14 +239,19 @@ mod tests {
 
     #[test]
     fn loopback_may_use_plain_http_and_a_remote_host_may_not() {
-        assert_eq!(parse("http://127.0.0.1:11434/").map(|e| (e.base, e.loopback)), Ok(("http://127.0.0.1:11434".into(), true)));
+        assert_eq!(
+            parse("http://127.0.0.1:11434/").map(|e| (e.base, e.loopback)),
+            Ok(("http://127.0.0.1:11434".into(), true))
+        );
         assert_eq!(parse("https://api.example.com").map(|e| e.loopback), Ok(false));
         assert!(matches!(parse("http://api.example.com"), Err(LlmError::Unsupported(m)) if m.contains("plain http")));
     }
 
     #[test]
     fn credentials_and_junk_in_the_endpoint_are_refused_without_echoing_them() {
-        for bad in ["https://user:secret-key@api.example.com", "http://127.0.0.1@evil.example", "ftp://x", "", "https://"] {
+        for bad in
+            ["https://user:secret-key@api.example.com", "http://127.0.0.1@evil.example", "ftp://x", "", "https://"]
+        {
             match parse(bad) {
                 Err(LlmError::Unsupported(m)) => assert!(!m.contains("secret-key"), "{m}"),
                 other => panic!("{bad:?} gave {other:?}"),

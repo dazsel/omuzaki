@@ -50,6 +50,20 @@ impl Usage {
     pub fn tokens(&self) -> u64 {
         self.prompt().saturating_add(self.output)
     }
+
+    /// What this usage costs under `prices` (llm-api D4): the first tier that holds [`prompt`](Self::prompt) sets the
+    /// four rates; `tokens × rate` is summed over the counters in `u128`, divided by 1,000,000 and rounded up, once.
+    /// Exact and deterministic; it never under-charges and over-charges by under 1 µ$ a turn.
+    pub fn cost(&self, prices: &PriceTable) -> MicroUsd {
+        let rates = prices.rates_for(self.prompt());
+        let sum = |tokens: u64, rate: u64| u128::from(tokens) * u128::from(rate);
+        round_up(
+            sum(self.input, rates.input)
+                + sum(self.output, rates.output)
+                + sum(self.cache_read, rates.cache_read)
+                + sum(self.cache_write, rates.cache_write),
+        )
+    }
 }
 
 /// Millionths of a US dollar.
@@ -277,21 +291,12 @@ impl ModelInfo {
     }
 }
 
-/// The largest image the contract allows on its long side, used when a format's size cannot be read.
-const MAX_IMAGE_SIDE: u32 = 768;
 /// Tokens added per block for framing.
 const BLOCK_OVERHEAD: u64 = 8;
 
-/// The pixel size of an image, from its header; the contract's maximum when the format is not read here.
+/// The pixel size of an image, from its header; the contract's maximum when the header is not readable.
 fn image_size(mime: ImageMime, bytes: &[u8]) -> (u32, u32) {
-    let be = |at: usize| bytes.get(at..at + 4).and_then(|b| <[u8; 4]>::try_from(b).ok()).map(u32::from_be_bytes);
-    let le = |at: usize| bytes.get(at..at + 2).and_then(|b| <[u8; 2]>::try_from(b).ok()).map(u16::from_le_bytes);
-    let read = match mime {
-        ImageMime::Png => be(16).zip(be(20)),
-        ImageMime::Gif => le(6).zip(le(8)).map(|(w, h)| (u32::from(w), u32::from(h))),
-        _ => None,
-    };
-    read.unwrap_or((MAX_IMAGE_SIDE, MAX_IMAGE_SIDE))
+    crate::image::size(mime, bytes).unwrap_or((crate::image::MAX_IMAGE_SIDE, crate::image::MAX_IMAGE_SIDE))
 }
 
 fn block_tokens(block: &ContentBlock, info: &ModelInfo) -> u64 {
@@ -529,6 +534,22 @@ mod tests {
         second.max_output = 1024;
         assert_eq!(ledger.prompt_estimate(&second, &haiku), 4_895 + 418);
         assert_eq!(ledger.bound(&second, &haiku, &prices), MicroUsd(1_177));
+    }
+
+    #[test]
+    fn cost_rounds_the_sum_up_once_and_picks_the_tier_by_prompt() {
+        let rates = Rates::new(100_000, 500_000).with_cache_write(125_000).with_cache_read(10_000);
+        let dear = Rates::new(500_000, 2_500_000).with_cache_write(625_000).with_cache_read(50_000);
+        let table = PriceTable::new("x", "y", vec![PriceTier::new(Some(100_000), rates), PriceTier::new(None, dear)]);
+        // llm-api §4: 632.7 and 100.8 round up to 633 and 101, and the conversation is 734.
+        assert_eq!(Usage::new(37, 58).with_cache_write(4800).cost(&table), MicroUsd(633));
+        assert_eq!(Usage::new(413, 23).with_cache_read(4800).cost(&table), MicroUsd(101));
+        // One tier up the instant the prompt passes 100,000: 100,001 tokens at 0.5 $/MTok is 50,000.5 µ$.
+        assert_eq!(Usage::new(100_000, 0).cost(&table), MicroUsd(10_000));
+        assert_eq!(Usage::new(100_001, 0).cost(&table), MicroUsd(50_001));
+        assert_eq!(Usage::new(0, 0).cost(&table), MicroUsd(0));
+        assert_eq!(Usage::new(1, 0).cost(&table), MicroUsd(1), "a single token still rounds up to 1 µ$");
+        assert_eq!(Usage::new(u64::MAX, u64::MAX).cost(&table), MicroUsd(u64::MAX));
     }
 
     #[test]

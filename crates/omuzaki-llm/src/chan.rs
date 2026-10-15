@@ -190,7 +190,11 @@ mod tests {
 
     #[test]
     fn a_full_queue_holds_the_sender_until_the_consumer_reads() {
-        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap_or_else(|e| panic!("{e}"));
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap_or_else(|e| panic!("{e}"));
         let (mut tx, mut rx) = channel();
         let sent = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counter = Arc::clone(&sent);
@@ -214,7 +218,11 @@ mod tests {
 
     #[test]
     fn dropping_the_receiver_releases_a_waiting_sender() {
-        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap_or_else(|e| panic!("{e}"));
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap_or_else(|e| panic!("{e}"));
         let (tx, rx) = channel();
         let handle = rt.spawn(async move {
             let mut result = Ok(());
