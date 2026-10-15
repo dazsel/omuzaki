@@ -66,6 +66,10 @@ omuzaki-track = { path = "../omuzaki-track" }
 name = "track"
 harness = false
 
+# `link()` calls for the crates that register and are linked here (`omuzaki-cli`, `omuzaki-mcp`): ADR 0015, ADR 0054 section 6.
+[build-dependencies]
+omuzaki-link-build = { path = "../omuzaki-link-build" }
+
 [lints]
 workspace = true
 
@@ -74,3 +78,4 @@ workspace = true
 kind = "App"
 summary = "golden-image compare (tolerant, premultiplied), bless, evidence reports and PR comments, `verify` of manifests against the object store, and a branch-safe `gc` of unreferenced objects; and the agent eval harness (`eval`): checks, scripted driver, runner, gate, eval sets, rating page and lint"
 wasm = false
+registers = true

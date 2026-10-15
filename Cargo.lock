@@ -4302,6 +4302,7 @@ dependencies = [
  "omuzaki-io-gltf",
  "omuzaki-io-mock",
  "omuzaki-io-ops",
+ "omuzaki-link-build",
  "omuzaki-mcp",
  "omuzaki-ops-api",
  "omuzaki-ops-mock",
