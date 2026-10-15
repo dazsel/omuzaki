@@ -126,13 +126,15 @@ impl SessionState {
     /// Records a dismissed version, but never lowers it: after a rollback the higher value stays so the roll-forward
     /// does not show the notes twice. Versions are compared by the full precedence rules of Semantic Versioning 2.0, so
     /// a pre-release is below its release (`0.9.0-beta.1` never replaces a recorded `0.9.0`) and build metadata is
-    /// ignored. An equal version replaces the old text. A recorded value that is not a semantic version (a damaged
-    /// file) is replaced; a new value that is not one is ignored while a valid one is recorded, because it cannot be
-    /// ranked and must not lower the record.
+    /// ignored. An equal version replaces the old text. A `version` that is not a semantic version is **never
+    /// recorded**, whether the old record is absent, valid or damaged: it cannot be ranked, and persisting it would
+    /// make the next comparison meaningless. A damaged old record is replaced by the next valid version.
     pub fn mark_version_seen(&mut self, version: &str) {
-        let keep = match (self.last_seen_version.as_deref().map(Version::parse), Version::parse(version)) {
-            (Some(Ok(old)), Ok(new)) => old.cmp_precedence(&new) == Ordering::Greater,
-            (Some(Ok(_)), Err(_)) => true,
+        let Ok(new) = Version::parse(version) else {
+            return;
+        };
+        let keep = match self.last_seen_version.as_deref().map(Version::parse) {
+            Some(Ok(old)) => old.cmp_precedence(&new) == Ordering::Greater,
             _ => false,
         };
         if !keep {
@@ -249,15 +251,27 @@ mod tests {
     }
 
     #[test]
-    fn build_metadata_is_ignored_and_unrankable_values_do_not_lower_the_record() {
+    fn build_metadata_is_ignored_for_ranking() {
         let mut s = SessionState::default();
         s.mark_version_seen("1.2.0+b9");
         s.mark_version_seen("1.1.9+b10");
         assert_eq!(s.last_seen_version.as_deref(), Some("1.2.0+b9"), "build metadata is not a downgrade route");
-        s.mark_version_seen("nightly");
-        assert_eq!(s.last_seen_version.as_deref(), Some("1.2.0+b9"), "a value that is not SemVer is ignored");
-        let mut s = SessionState { last_seen_version: Some("garbled".into()), ..SessionState::default() };
-        s.mark_version_seen("0.1.0");
-        assert_eq!(s.last_seen_version.as_deref(), Some("0.1.0"), "a damaged record is replaced");
+    }
+
+    #[test]
+    fn a_value_that_is_not_a_semantic_version_is_never_recorded() {
+        let record = |old: Option<&str>, new: &str| {
+            let mut s = SessionState { last_seen_version: old.map(str::to_owned), ..SessionState::default() };
+            s.mark_version_seen(new);
+            s.last_seen_version
+        };
+        // Every (old, new) combination with an invalid new value: absent, valid and damaged records.
+        assert_eq!(record(None, "nightly"), None, "no old record: still nothing recorded");
+        assert_eq!(record(Some("1.2.0"), "nightly").as_deref(), Some("1.2.0"), "a valid old record is kept");
+        assert_eq!(record(Some("garbled"), "nightly").as_deref(), Some("garbled"), "a damaged record is left alone");
+        assert_eq!(record(Some("1.2.0"), "").as_deref(), Some("1.2.0"));
+        // A valid new value still replaces a damaged or absent record.
+        assert_eq!(record(Some("garbled"), "0.1.0").as_deref(), Some("0.1.0"));
+        assert_eq!(record(None, "0.1.0").as_deref(), Some("0.1.0"));
     }
 }

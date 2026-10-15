@@ -11,7 +11,7 @@
 //!   matcher) and module-level macro invocations that define items (`slug_id!`);
 //! - members: public struct fields, every enum variant, every trait method, type and constant, public inherent methods
 //!   and constants, and the header of each trait impl;
-//! - the attributes that change the contract: `derive`, `non_exhaustive`, `serde`, `must_use`, `repr`, `macro_export`,
+//! - the attributes that change the contract: `derive`, `non_exhaustive`, `serde`, `schemars`, `must_use`, `repr`, `macro_export`,
 //!   `doc(hidden)`, `deprecated` and non-test `cfg`.
 //!
 //! It skips everything private (`pub(crate)` included), `#[cfg(test)]` items, comments and function bodies. Raw
@@ -23,10 +23,11 @@
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-const KEPT_ATTRS: [&str; 10] = [
+const KEPT_ATTRS: [&str; 11] = [
     "#[derive",
     "#[non_exhaustive",
     "#[serde",
+    "#[schemars",
     "#[must_use",
     "#[repr",
     "#[macro_export",

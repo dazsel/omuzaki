@@ -107,7 +107,7 @@ src/profile.rs: impl ProfileId: pub const SUFFIX_LEN: usize = 4
 src/profile.rs: impl ProfileId: pub fn from_name(name: &str, suffix: &str) -> Result<Self, SettingError>
 src/profile.rs: #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)] #[non_exhaustive] pub struct ProfileInfo
 src/profile.rs: struct ProfileInfo: pub id: ProfileId
-src/profile.rs: struct ProfileInfo: pub name: String
+src/profile.rs: struct ProfileInfo: #[schemars(length(min = 1, max = NAME_MAX))] pub name: String
 src/profile.rs: struct ProfileInfo: pub keys: u32
 src/profile.rs: struct ProfileInfo: pub active: bool
 src/profile.rs: impl ProfileInfo: #[must_use] pub fn new(id: ProfileId, name: impl Into<String>, keys: u32, active: bool) -> Self
