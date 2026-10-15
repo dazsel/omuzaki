@@ -290,7 +290,7 @@ fn has_branches(node: &Map<String, Value>) -> bool {
 
 /// Whether a schema is the `null` of an `Option`, in any of the forms schemars writes: `{"type": "null"}`,
 /// `{"const": null}`, or `{"enum": [null]}`. Every null check in this module goes through here.
-fn is_null_schema(schema: &Value) -> bool {
+pub(crate) fn is_null_schema(schema: &Value) -> bool {
     let Some(node) = schema.as_object() else {
         return false;
     };
