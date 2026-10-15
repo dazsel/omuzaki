@@ -315,6 +315,8 @@ omuzaki_char_api::fact! {
 omuzaki_char_api::register_fact_probe!(ProbedEqFact);
 omuzaki_char_api::register_fact_probe!(ProbedFnFact, within_tolerance);
 
+// The signature is `fn(&Value, &Value) -> bool`, whatever the value.
+#[allow(clippy::trivially_copy_pass_by_ref)]
 fn within_tolerance(a: &f32, b: &f32) -> bool {
     (a - b).abs() < 0.01
 }
