@@ -1,0 +1,7 @@
+section = "rust"
+item = "OouraFFT (fft2d)"
+kind = "native"
+used_for = "linked into the `tflite` runtime's library (`omuzaki_litert`): TFLite's FFT kernels"
+status = "conditions"
+condition = "Takuya Ooura's terms: use, copy and modify for any purpose without fee; ship the notice in the archive (its licence file in `licences/` and its entry in `THIRD_PARTY_NOTICES.md`). Pinned by LiteRT v2.3.0's Bazel workspace; mapped in `tools/litert/licences.toml`"
+audit = "(readme.txt read at v1.0)"
