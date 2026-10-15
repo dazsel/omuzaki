@@ -1,3 +1,9 @@
+---
+title: "Licence register"
+summary: "Licence register"
+area: licensing
+---
+
 # Licence register
 
 Everything we use or plan to use, with its verdict (see `policy.md`). Evidence and sources are in `docs/research/2026-10-licence-audit.md`; the "Audit" column points at its section. Add or update its file in `docs/licensing/deps/` in the same PR that adds, upgrades or drops the item.

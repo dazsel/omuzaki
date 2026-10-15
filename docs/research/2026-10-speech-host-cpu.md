@@ -1,3 +1,9 @@
+---
+title: "Speech host CPU share while transcribing"
+summary: "Speech host CPU share while transcribing"
+area: research
+---
+
 # Speech host CPU share while transcribing
 
 Question: the speech host used 10 to 22 % of 8 cores while transcribing continuously, against `cpu.total` ≤ 3 % (spec v3 §10). What does it take on the CPU path, and what is the baseline?

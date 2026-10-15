@@ -1,3 +1,9 @@
+---
+title: "The scene contract: stage, cameras, light rig, props and cast"
+summary: "stage, cameras, light rig, props and cast"
+area: design
+---
+
 # The scene contract: stage, cameras, light rig, props and cast
 
 **Status:** accepted (2026-10-12); the review decisions are in §7.

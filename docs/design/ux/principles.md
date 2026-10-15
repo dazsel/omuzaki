@@ -1,3 +1,9 @@
+---
+title: "UX principles"
+summary: "UX principles"
+area: design
+---
+
 # UX principles
 
 > Part of the UX direction. Spec references are to `docs/product/02-studio-spec-v3.md`.

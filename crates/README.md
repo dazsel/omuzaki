@@ -11,10 +11,16 @@ a shared file.
 | **Mock** | `*-mock` | API crates |
 | **Lib** (format libraries) | crates with `layer = "lib"` under `[package.metadata.omuzaki]` | API crates and other lib crates (mocks as dev-dependencies) |
 | **Implementation** | everything else under `crates/` | API crates and lib crates (mocks as dev-dependencies) |
-| **App** | `omuzaki-cli`, `omuzaki-ui`, `omuzaki-test`, `omuzaki-stage`, `xtask` | anything: they wire implementations together |
+| **App** | `omuzaki-cli`, `omuzaki-ui`, `omuzaki-test`, `omuzaki-stage`, `xtask`, the area test crates `omuzaki-test-<area>` | anything: they wire implementations together (area test crates: see below) |
 
 `cargo xtask lint-deps` enforces the table (§39 rule 10). API crates change rarely and go through maintainer
 review; breaking changes need a decision record (§39.2 item 8).
+
+**Area test crates** (ADR 0054 §6). A test across crates goes in its area's test crate, `omuzaki-test-<area>` (a new
+area is a new crate), not in the harness `omuzaki-test`. An area test crate may depend on API crates, mocks, the harness
+and its own area's implementation and lib crates: `omuzaki-<area>`, `omuzaki-<area>-*`, plus the few whose names don't
+say their area (`omuzaki-rig` and `omuzaki-anim` are `char`, `omuzaki-gltf` is `io`). A change to one area then doesn't
+put the other areas' tests in scope. `lint-deps` enforces it.
 
 **Lib crates** (ADR 0011) hold code that several implementations need and that is too large to write twice, and that is
 a *format* rather than behaviour: `omuzaki-gltf` is glTF 2.0 for both `omuzaki-io-gltf` and `omuzaki-io-vrm`. A lib crate
@@ -58,6 +64,8 @@ Each crate describes itself in its own `Cargo.toml`, so adding a crate edits no 
 `cargo xtask crate-table` prints the table of every crate from those lines. `cargo xtask lint-crate-table` fails on a crate
 without them, on a `kind` that disagrees with `lint-deps`, and on a crate table in this file.
 
+A crate whose folder uses `omuzaki_embed::modules` (ADR 0054) lists that folder in `generated-mods = ["src/ops"]` under the same table (paths relative to the crate; `"src"` means `src/lib.rs`), and `cargo xtask lint-mods` then fails on a hand-written `mod` for a child of the folder or a missing generated `include!`.
+
 **Planned crates** (not in the workspace yet):
 
 - `omuzaki-llm-api` (API): not in the workspace yet (design): the LLM seam (CN-09, AG-01, AP-03): `LlmClient`, `TurnRequest` and the provider-neutral `ContentBlock`s, the pull-based `TurnStream` of `LlmEvent`s, `Usage` with `cost` in integer micro-dollars from a dated `PriceTable`, the offline pre-request `Ledger` bound, `LlmError`, `Cancel`, `register_llm_provider!`; design in `docs/design/llm-api.md`, ADR 0032
@@ -95,9 +103,9 @@ App's `Services`.
 
 `check` maps the files that differ from `--base` (default `origin/main`, via the merge-base; uncommitted and untracked
 files count) to crates, adds every crate that depends on them (dev-dependencies too), then runs in order: `fmt --check`,
-`clippy -D warnings`, `test`, `cargo deny check licenses bans sources`, `lint-deps`, `lint-links`, `models` (every shipped model has an allowed register row). A change to `Cargo.toml`,
+`clippy -D warnings`, `test`, `cargo deny check licenses bans sources`, `lint-deps`, `lint-links`, `models` (every shipped model has an allowed licence file). A change to `Cargo.toml`,
 `Cargo.lock`, `deny.toml`, `clippy.toml`, `rustfmt.toml`, `rust-toolchain.toml` or `.cargo/` checks everything; a change
-outside every crate (docs, tools) runs only the `models` gate, since a register change can break it. It always runs every step and ends with a one-screen summary; the exit
+outside every crate (docs, tools) runs only the `models` gate, since a licence-file change can break it. It always runs every step and ends with a one-screen summary; the exit
 code is non-zero if any step failed.
 
 **Link gate only.** An App such as `omuzaki-cli` links every op crate only to carry their registrations (ADR 0015), so a

@@ -1,13 +1,21 @@
-//! `cargo xtask models`: every shipped model is backed by an allowed row in `docs/licensing/register.md` (ML-01, ADR 0017).
+//! `cargo xtask models`: every shipped model is backed by an allowed entry in `docs/licensing/deps/` (ML-01, ADR 0017).
 //!
-//! Why: a model we ship must have a licence somebody checked. Its manifest names the register row it rests on
-//! (`card.register`) and the SPDX licence it declares; this lint refuses a model whose row is missing, not `yes` or
+//! Why: a model we ship must have a licence somebody checked. Its manifest names the register item it rests on
+//! (`card.register`, the `item` of a `docs/licensing/deps/*.toml` file, which `register.md` is generated from) and the
+//! SPDX licence it declares; this lint refuses a model whose entry is missing, not `yes` or
 //! `conditions`, or that doesn't name the same licence. It also refuses a `register_model!` that registers a different id
 //! for the file than the manifest says. Mock crates ship test fixtures, so their `models/` folders are exempt.
 //!
-//! The licence comparison is exact: the row's `Key condition` cell must name the manifest's whole SPDX expression as
+//! The licence comparison is exact: the entry's `condition` must name the manifest's whole SPDX expression as
 //! whole tokens, and no non-commercial licence ships. Every `register_model!` of a crate must include one of its own
 //! `models/*.model.toml`, or the gate fails: it can't check a manifest it doesn't scan.
+//!
+//! The source scanner fails closed. Anything it can't follow is an error naming the file and line, never a silent skip:
+//! a `register_model` token that isn't a direct `register_model!("<id>", include_str!("<path>"))` call (an alias, a
+//! re-export, a use inside another macro's definition), an `include!` whose path isn't a string literal or doesn't
+//! resolve to a file in the crate's `src/`, and a licence file that doesn't parse. Every `include!` is followed,
+//! whatever the extension of the file, and the file is scanned like any other source. The one exception is
+//! `include!(concat!(env!("OUT_DIR"), …))`, the file `build.rs` generates, which holds no source to read.
 //!
 //! Checked: every `models/*.model.toml` of a workspace crate whose name doesn't end in `-mock`. It runs no build, only
 //! parsing and reads. `cargo xtask check` runs it on the whole repo, since it is cheap.
@@ -19,15 +27,16 @@ use std::process::ExitCode;
 use omuzaki_ai_api::{ModelManifest, Origin};
 use xtask::registry::lex::{Tok, Token, tokens};
 
+use crate::lint_licences::register::{self, Named};
 use crate::workspace::{Package, Workspace};
 
 /// The statuses a shipped model may rest on (`docs/licensing/policy.md`, Verdicts).
 const ALLOWED_STATUS: [&str; 2] = ["yes", "conditions"];
 
-/// The register the rows are read from, relative to the workspace root.
-const REGISTER: &str = "docs/licensing/register.md";
+/// The folder of licence files the register is generated from, relative to the workspace root.
+const REGISTER: &str = "docs/licensing/deps";
 
-/// One row of the register table: its `Item`, `Status` and `Key condition` cells (the last names the licence).
+/// One licence file: its `item`, `status` and `condition` (the last names the licence).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
     item: String,
@@ -35,20 +44,15 @@ pub struct Row {
     condition: String,
 }
 
-/// The table rows of `register.md`, in order. The format rule at its top fixes the columns: `Item` first, `Status`
-/// fourth, `Key condition` fifth. Header and separator lines parse too, but no real item is named `Status` or `---`.
-pub fn rows(register: &str) -> Vec<Row> {
-    register
-        .lines()
-        .map(str::trim)
-        .filter(|line| line.starts_with('|'))
-        .filter_map(|line| {
-            let cells: Vec<&str> = line.trim_matches('|').split('|').map(str::trim).collect();
-            (cells.len() >= 5).then(|| Row {
-                item: cells[0].to_owned(),
-                status: cells[3].to_owned(),
-                condition: cells[4].to_owned(),
-            })
+/// The rows of the licence files `load` read, in file-name order. This is the data `register::render` builds the
+/// register page from, so the gate and the page can't disagree.
+pub fn rows(entries: &[Named]) -> Vec<Row> {
+    entries
+        .iter()
+        .map(|(_, entry)| Row {
+            item: entry.item.clone(),
+            status: entry.status.clone(),
+            condition: entry.condition.clone(),
         })
         .collect()
 }
@@ -66,15 +70,17 @@ pub fn problems(file: &str, text: &str, register: &[Row], sources: &[(String, St
     };
     if let Some(item) = &manifest.card.register {
         match register.iter().find(|row| &row.item == item) {
-            None => out.push(format!("no row for `{item}` in {REGISTER}")),
+            None => out.push(format!("no licence file for `{item}` in {REGISTER}/")),
             Some(row) if !ALLOWED_STATUS.contains(&row.status.as_str()) => out.push(format!(
-                "the row for `{item}` in {REGISTER} is `{}`; a shipped model needs `yes` or `conditions`",
+                "the licence file for `{item}` in {REGISTER}/ is `{}`; a shipped model needs `yes` or `conditions`",
                 row.status
             )),
             Some(row) => {
                 if let Some(spdx) = &manifest.card.licence.spdx {
                     if !names_licence(&row.condition, spdx) {
-                        out.push(format!("the row for `{item}` in {REGISTER} doesn't name its licence `{spdx}`"));
+                        out.push(format!(
+                            "the licence file for `{item}` in {REGISTER}/ doesn't name its licence `{spdx}`"
+                        ));
                     }
                     if is_non_commercial(spdx) {
                         out.push(format!("the licence `{spdx}` is non-commercial; a shipped model can't use it"));
@@ -146,9 +152,10 @@ fn is_non_commercial(spdx: &str) -> bool {
 
 /// Every problem with the `register_model!` calls of one crate that no manifest check can see: a call whose literals
 /// can't be read, and one that includes anything but `<crate>/models/<name>.model.toml`, the only files the gate scans.
-/// An `include!` of a source file outside `<crate>/src/` is a problem too: the gate never reads it, so it could hide a
-/// registration. `include!(concat!(env!("OUT_DIR"), …))` (a file `build.rs` generates) is the one include it allows.
-/// `dir` is the crate's workspace-relative folder; `sources` the `(path, text)` of its `.rs` files. Either separator
+/// An `include!` of a file outside `<crate>/src/`, or of one missing from `sources`, is a problem too: the gate never
+/// reads it, so it could hide a registration. `include!(concat!(env!("OUT_DIR"), …))` (a file `build.rs` generates) is
+/// the one include it allows. `dir` is the crate's workspace-relative folder; `sources` the `(path, text)` of its `.rs`
+/// files and of every file they `include!` ([`with_includes`]). Either separator
 /// (`/` or `\`) may be used, since Windows paths come back with `\`.
 fn unchecked_registrations(dir: &str, sources: &[(String, String)]) -> Vec<String> {
     let dir = normalise(dir);
@@ -183,6 +190,11 @@ fn unchecked_registrations(dir: &str, sources: &[(String, String)]) -> Vec<Strin
                         out.push(format!(
                             "{path}: `include!` reads `{include}`, outside the crate's `src/`, which the gate doesn't scan \
                              for `register_model!`"
+                        ));
+                    } else if !sources.iter().any(|(other, _)| normalise(other) == resolved) {
+                        out.push(format!(
+                            "{path}: `include!` reads `{include}`, which is not a file the gate could read, so it can't \
+                             scan it for `register_model!`"
                         ));
                     }
                 }
@@ -245,11 +257,31 @@ fn normalise(path: &str) -> String {
 fn registrations(source: &str) -> Vec<Result<(String, String), String>> {
     let toks = tokens(source);
     let mut found = Vec::new();
+    let bodies = macro_bodies(&toks);
     for at in 0..toks.len() {
-        if !toks[at].is_ident("register_model") || !is_punct(&toks, at + 1, '!') {
+        if !toks[at].is_ident("register_model") {
             continue;
         }
         let line = toks[at].line;
+        // The definition `macro_rules! register_model { … }` is the macro itself, not a use of it.
+        if at >= 2 && toks[at - 1].is_punct('!') && toks[at - 2].is_ident("macro_rules") {
+            continue;
+        }
+        if bodies.iter().any(|body| body.contains(&at)) {
+            found.push(Err(format!(
+                "line {line}: `register_model` inside another macro's definition, which the gate can't read"
+            )));
+            continue;
+        }
+        if !is_punct(&toks, at + 1, '!') {
+            if !is_plain_import(&toks, at) {
+                found.push(Err(format!(
+                    "line {line}: `register_model` isn't a direct `register_model!(\"<id>\", include_str!(\"<path>\"))` \
+                     call or a plain `use`; an alias or any other path hides what it registers"
+                )));
+            }
+            continue;
+        }
         let unreadable = || {
             format!("line {line}: `register_model!` isn't `(\"<id>\", include_str!(\"<path>\"))` with string literals")
         };
@@ -273,6 +305,46 @@ fn registrations(source: &str) -> Vec<Result<(String, String), String>> {
         });
     }
     found
+}
+
+/// The token ranges of every `macro_rules! name { … }` body in `toks`, delimiters included.
+fn macro_bodies(toks: &[Token]) -> Vec<std::ops::Range<usize>> {
+    let mut out = Vec::new();
+    for at in 0..toks.len() {
+        if !(toks[at].is_ident("macro_rules") && is_punct(toks, at + 1, '!')) {
+            continue;
+        }
+        let open = at + 3;
+        if toks.get(open).and_then(closer).is_none() {
+            continue;
+        }
+        let mut depth = 0usize;
+        let mut end = toks.len();
+        for (index, token) in toks.iter().enumerate().skip(open) {
+            if closer(token).is_some() {
+                depth += 1;
+            } else if [')', ']', '}'].iter().any(|&c| token.is_punct(c)) {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    end = index + 1;
+                    break;
+                }
+            }
+        }
+        out.push(open..end);
+    }
+    out
+}
+
+/// Whether the `register_model` at `at` (not followed by `!`) is only imported by a `use` item: no `as` rename in
+/// either direction, and the name ends the path. The nearest earlier `;` or `use` tells whether `at` is in a `use`,
+/// since every `use` item ends in a `;`.
+fn is_plain_import(toks: &[Token], at: usize) -> bool {
+    let in_use =
+        toks[..at].iter().rev().find(|t| t.is_punct(';') || t.is_ident("use")).is_some_and(|t| t.is_ident("use"));
+    let renamed_to = at > 0 && toks[at - 1].is_ident("as");
+    let ends = toks.get(at + 1).is_some_and(|t| t.is_punct(',') || t.is_punct(';') || t.is_punct('}'));
+    in_use && !renamed_to && ends
 }
 
 /// The closing delimiter for a macro's opening one: `(`, `[` or `{`; `None` for any other token.
@@ -384,6 +456,33 @@ fn rust_sources(root: &Path, dir: &Path, out: &mut Vec<(String, String)>) {
     }
 }
 
+/// `sources` plus every file they `include!` (whatever its extension) that lies in the crate's `src/` and can be read,
+/// followed until no new file turns up. An include that can't be read is left out, and [`unchecked_registrations`]
+/// reports it.
+fn with_includes(root: &Path, dir: &str, sources: &mut Vec<(String, String)>) {
+    let dir = normalise(dir);
+    let mut next = 0;
+    while next < sources.len() {
+        let path = sources[next].0.replace('\\', "/");
+        let from = path.rsplit_once('/').map_or("", |(parent, _)| parent);
+        let wanted: Vec<String> = source_includes(&sources[next].1)
+            .into_iter()
+            .filter_map(|include| include.ok().flatten())
+            .map(|include| normalise(&format!("{from}/{include}")))
+            .filter(|resolved| resolved.starts_with(&format!("{dir}/src/")))
+            .collect();
+        for resolved in wanted {
+            if sources.iter().any(|(other, _)| normalise(other) == resolved) {
+                continue;
+            }
+            if let Ok(text) = fs::read_to_string(root.join(&resolved)) {
+                sources.push((resolved, text));
+            }
+        }
+        next += 1;
+    }
+}
+
 /// The manifests of one package, sorted by name: `(workspace-relative path, text)`. A package with no `models/` folder has
 /// none.
 fn manifests(root: &Path, package: &Package) -> Vec<(String, String)> {
@@ -406,17 +505,12 @@ fn manifests(root: &Path, package: &Package) -> Vec<(String, String)> {
 
 /// Prints every problem and a summary; returns whether there were none.
 pub fn report(workspace: &Workspace) -> bool {
-    let register = match fs::read_to_string(workspace.root.join(REGISTER)) {
-        Ok(text) => rows(&text),
-        Err(error) => {
-            println!("{REGISTER}: cannot be read: {error}");
-            println!("models: 1 problem(s)");
-            return false;
-        }
-    };
+    let (entries, broken) = register::load(&workspace.root.join(REGISTER));
+    let register = rows(&entries);
+    let mut found: Vec<String> =
+        broken.iter().map(|(name, message)| format!("{REGISTER}/{name}.toml: cannot be read: {message}")).collect();
     let mut checked = 0;
     let mut skipped = 0;
-    let mut found = Vec::new();
     for package in &workspace.packages {
         let manifests = manifests(&workspace.root, package);
         if package.name.ends_with("-mock") {
@@ -425,6 +519,7 @@ pub fn report(workspace: &Workspace) -> bool {
         }
         let mut sources = Vec::new();
         rust_sources(&workspace.root, &workspace.root.join(&package.dir).join("src"), &mut sources);
+        with_includes(&workspace.root, &package.dir.to_string_lossy(), &mut sources);
         found.extend(unchecked_registrations(&package.dir.to_string_lossy(), &sources));
         for (file, text) in &manifests {
             checked += 1;
@@ -452,12 +547,29 @@ mod tests {
     use super::*;
     use crate::workspace::testing::workspace;
 
-    const REGISTER_TEXT: &str = "\
-| Item | Kind | Used for | Status | Key condition | Audit |
-|---|---|---|---|---|---|
-| Tiny model | model | a test | yes | keep notice; MIT OR Apache-2.0 | A1 |
-| Blocked model | model | a test | NO | CC BY-NC | A1 |
-";
+    /// The licence files of the fixture register: `(file stem, item, status, condition)`.
+    const DEPS: [(&str, &str, &str, &str); 2] = [
+        ("tiny-model", "Tiny model", "yes", "keep notice; MIT OR Apache-2.0"),
+        ("blocked-model", "Blocked model", "NO", "CC BY-NC"),
+    ];
+
+    /// Writes the fixture register under `root`, one TOML file per item as `docs/licensing/deps/` holds them.
+    fn write_deps(root: &Path, tiny_status: &str) {
+        let deps = root.join(REGISTER);
+        fs::create_dir_all(&deps).unwrap();
+        for (stem, item, status, condition) in DEPS {
+            let status = if stem == "tiny-model" { tiny_status } else { status };
+            let text = format!(
+                "section = \"models\"\nitem = \"{item}\"\nkind = \"model\"\nused_for = \"a test\"\nstatus = \"{status}\"\n\
+                 condition = \"{condition}\"\naudit = \"A1\"\n"
+            );
+            fs::write(deps.join(format!("{stem}.toml")), text).unwrap();
+        }
+    }
+
+    fn row(item: &str, status: &str, condition: &str) -> Row {
+        Row { item: item.to_owned(), status: status.to_owned(), condition: condition.to_owned() }
+    }
 
     /// A good shipped manifest, citing the `Tiny model` row, with the given `urls` and `id`.
     fn manifest(id: &str, urls: &str) -> String {
@@ -486,7 +598,7 @@ spdx = "MIT OR Apache-2.0"
     }
 
     fn register() -> Vec<Row> {
-        rows(REGISTER_TEXT)
+        DEPS.iter().map(|(_, item, status, condition)| row(item, status, condition)).collect()
     }
 
     fn good_source(id: &str) -> Vec<(String, String)> {
@@ -508,7 +620,7 @@ spdx = "MIT OR Apache-2.0"
         let text = manifest("tiny", HTTPS).replace("Tiny model", "Other model");
         let found = problems(FILE, &text, &register(), &good_source("tiny"));
         assert_eq!(found.len(), 1, "{found:?}");
-        assert!(found[0].contains("no row for `Other model`"), "{found:?}");
+        assert!(found[0].contains("no licence file for `Other model`"), "{found:?}");
     }
 
     #[test]
@@ -561,12 +673,12 @@ spdx = "MIT OR Apache-2.0"
     }
 
     #[test]
-    fn the_register_rows_read_the_item_and_status_columns() {
-        let parsed = register();
-        assert_eq!(parsed[0].item, "Item");
-        assert_eq!(parsed[2].item, "Tiny model");
-        assert_eq!(parsed[2].status, "yes");
-        assert_eq!(parsed[3].status, "NO");
+    fn the_rows_come_from_the_licence_files_the_register_page_is_rendered_from() {
+        let dir = tempfile::tempdir().unwrap();
+        write_deps(dir.path(), "yes");
+        let (entries, broken) = register::load(&dir.path().join(REGISTER));
+        assert!(broken.is_empty(), "{broken:?}");
+        assert_eq!(rows(&entries), register().into_iter().rev().collect::<Vec<_>>());
     }
 
     #[test]
@@ -727,11 +839,113 @@ spdx = "MIT OR Apache-2.0"
     }
 
     #[test]
+    fn an_aliased_or_hidden_register_model_fails_the_gate() {
+        for text in [
+            r#"use omuzaki_ai_api::register_model as reg; reg!("x", include_str!("../models/x.model.toml"));"#,
+            "use omuzaki_ai_api::{register_model as reg};",
+            "use omuzaki_ai_api::other as register_model;",
+            "let f = register_model;",
+            "pub use omuzaki_ai_api::register_model::inner;",
+            r#"macro_rules! wrap { () => { register_model!("x", include_str!("../models/x.model.toml")); } }"#,
+            r#"macro_rules! wrap { ($m:expr) => { $crate::register_model!("x", $m); } }"#,
+        ] {
+            let found = unchecked(text);
+            assert!(!found.is_empty(), "{text}");
+            assert!(
+                found
+                    .iter()
+                    .all(|f| f.contains("crates/omuzaki-tiny/src/lib.rs: line 1: `register_model`")
+                        || f.contains("isn't")),
+                "{found:?}"
+            );
+        }
+        let aliased = unchecked("use omuzaki_ai_api::register_model as reg;");
+        assert!(aliased[0].contains("an alias or any other path hides what it registers"), "{aliased:?}");
+        for text in [
+            "use omuzaki_ai_api::register_model;",
+            "use omuzaki_ai_api::{SlotId, register_model, SlotInfo};",
+            "pub use omuzaki_ai_api::register_model;",
+            r#"omuzaki_ai_api::register_model!("x", include_str!("../models/x.model.toml"));"#,
+        ] {
+            assert_eq!(unchecked(text), Vec::<String>::new(), "{text}");
+        }
+    }
+
+    #[test]
+    fn an_included_file_of_any_extension_is_scanned() {
+        let sources = [
+            ("crates/omuzaki-tiny/src/lib.rs".to_owned(), r#"include!("registrations.inc");"#.to_owned()),
+            (
+                "crates/omuzaki-tiny/src/registrations.inc".to_owned(),
+                r#"register_model!("other", include_str!("../models/tiny.model.toml"));"#.to_owned(),
+            ),
+        ];
+        assert_eq!(unchecked_registrations("crates/omuzaki-tiny", &sources), Vec::<String>::new());
+        let found = problems(FILE, &manifest("tiny", HTTPS), &register(), &sources);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("registrations.inc registers `other` for this file"), "{found:?}");
+        let outside = [
+            sources[0].clone(),
+            (sources[1].0.clone(), r#"register_model!("x", include_str!("../assets/x.toml"));"#.to_owned()),
+        ];
+        assert_eq!(unchecked_registrations("crates/omuzaki-tiny", &outside).len(), 1);
+    }
+
+    #[test]
+    fn an_include_the_gate_cannot_resolve_fails_the_gate() {
+        let found = unchecked(r#"include!("registrations.inc");"#);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("src/lib.rs: `include!` reads `registrations.inc`"), "{found:?}");
+    }
+
+    #[test]
+    fn includes_are_followed_from_disk_through_nested_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write_deps(root, "yes");
+        let tiny = root.join("crates/omuzaki-tiny");
+        fs::create_dir_all(tiny.join("models")).unwrap();
+        fs::create_dir_all(tiny.join("src/sub")).unwrap();
+        fs::write(tiny.join("models/tiny.model.toml"), manifest("tiny", HTTPS)).unwrap();
+        fs::write(tiny.join("src/lib.rs"), r#"include!("sub/a.inc");"#).unwrap();
+        fs::write(tiny.join("src/sub/a.inc"), r#"include!("b.txt");"#).unwrap();
+        let nested = |id: &str| good_source(id)[0].1.replace("../models", "../../models");
+        fs::write(tiny.join("src/sub/b.txt"), nested("tiny")).unwrap();
+        let mut ws = workspace(&[("omuzaki-tiny", &[])]);
+        ws.root = root.to_path_buf();
+        assert!(report(&ws));
+
+        fs::write(tiny.join("src/sub/b.txt"), nested("other")).unwrap();
+        assert!(!report(&ws), "the id of the registration in the nested include is checked");
+        fs::remove_file(tiny.join("src/sub/b.txt")).unwrap();
+        assert!(!report(&ws), "a missing include fails");
+    }
+
+    #[test]
+    fn a_model_naming_a_licence_file_passes_and_an_unknown_name_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write_deps(root, "yes");
+        let tiny = root.join("crates/omuzaki-tiny");
+        fs::create_dir_all(tiny.join("models")).unwrap();
+        fs::create_dir_all(tiny.join("src")).unwrap();
+        fs::write(tiny.join("src/lib.rs"), good_source("tiny")[0].1.as_str()).unwrap();
+        fs::write(tiny.join("models/tiny.model.toml"), manifest("tiny", HTTPS)).unwrap();
+        let mut ws = workspace(&[("omuzaki-tiny", &[])]);
+        ws.root = root.to_path_buf();
+        assert!(report(&ws));
+        fs::write(tiny.join("models/tiny.model.toml"), manifest("tiny", HTTPS).replace("Tiny model", "Unknown"))
+            .unwrap();
+        assert!(!report(&ws));
+        fs::remove_dir_all(root.join(REGISTER)).unwrap();
+        assert!(!report(&ws), "no licence folder fails closed");
+    }
+
+    #[test]
     fn a_crate_without_models_is_scanned_too() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        fs::create_dir_all(root.join("docs/licensing")).unwrap();
-        fs::write(root.join(REGISTER), REGISTER_TEXT).unwrap();
+        write_deps(root, "yes");
         let tiny = root.join("crates/omuzaki-tiny");
         fs::create_dir_all(tiny.join("src")).unwrap();
         fs::write(tiny.join("src/lib.rs"), r#"register_model!("x", include_str!("../assets/x.toml"));"#).unwrap();
@@ -786,9 +1000,16 @@ spdx = "MIT OR Apache-2.0"
 
     #[test]
     fn an_include_inside_src_or_generated_by_build_rs_is_allowed() {
+        let present = |name: &str| (format!("crates/omuzaki-tiny/src/{name}"), String::new());
+        for text in [r#"include!("registrations.rs");"#, r#"include!("./sub/registrations.rs");"#] {
+            let sources = [
+                ("crates/omuzaki-tiny/src/lib.rs".to_owned(), text.to_owned()),
+                present("registrations.rs"),
+                present("sub/registrations.rs"),
+            ];
+            assert_eq!(unchecked_registrations("crates/omuzaki-tiny", &sources), Vec::<String>::new(), "{text}");
+        }
         for text in [
-            r#"include!("registrations.rs");"#,
-            r#"include!("./sub/registrations.rs");"#,
             r#"include!(concat!(env!("OUT_DIR"), "/ops_mods.rs"));"#,
             r#"// include!("../registration.rs");"#,
             r#"include_str!("../README.md");"#,
@@ -813,7 +1034,7 @@ spdx = "MIT OR Apache-2.0"
 
     #[test]
     fn mit_does_not_match_a_row_that_only_names_mit_zero() {
-        let rows = rows("| Tiny model | model | a test | yes | MIT-0; keep notice | A1 |\n");
+        let rows = vec![row("Tiny model", "yes", "MIT-0; keep notice")];
         let text = manifest("tiny", HTTPS).replace("MIT OR Apache-2.0\"\n", "MIT\"\n");
         let found = problems(FILE, &text, &rows, &good_source("tiny"));
         assert_eq!(found.len(), 1, "{found:?}");
@@ -822,7 +1043,7 @@ spdx = "MIT OR Apache-2.0"
 
     #[test]
     fn a_non_commercial_licence_fails_even_when_the_row_mentions_it() {
-        let rows = rows("| Tiny model | model | a test | yes | not CC-BY-NC-4.0; keep notice | A1 |\n");
+        let rows = vec![row("Tiny model", "yes", "not CC-BY-NC-4.0; keep notice")];
         let text = manifest("tiny", HTTPS).replace("MIT OR Apache-2.0\"\n", "CC-BY-NC-4.0\"\n");
         let found = problems(FILE, &text, &rows, &good_source("tiny"));
         assert_eq!(found.len(), 1, "{found:?}");
@@ -861,8 +1082,7 @@ const DOC: &str = "register_model!(\"tiny\", include_str!(\"../models/tiny.model
     fn a_register_only_change_to_no_fails_the_gate_without_touching_a_manifest() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        fs::create_dir_all(root.join("docs/licensing")).unwrap();
-        fs::write(root.join(REGISTER), REGISTER_TEXT).unwrap();
+        write_deps(root, "yes");
         let tiny = root.join("crates/omuzaki-tiny");
         fs::create_dir_all(tiny.join("models")).unwrap();
         fs::create_dir_all(tiny.join("src")).unwrap();
@@ -872,7 +1092,7 @@ const DOC: &str = "register_model!(\"tiny\", include_str!(\"../models/tiny.model
         ws.root = root.to_path_buf();
         assert!(report(&ws));
 
-        fs::write(root.join(REGISTER), REGISTER_TEXT.replace("| yes |", "| NO |")).unwrap();
+        write_deps(root, "NO");
         assert!(!report(&ws));
     }
 
@@ -880,8 +1100,7 @@ const DOC: &str = "register_model!(\"tiny\", include_str!(\"../models/tiny.model
     fn the_gate_runs_on_a_workspace_and_exempts_mock_crates() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        fs::create_dir_all(root.join("docs/licensing")).unwrap();
-        fs::write(root.join(REGISTER), REGISTER_TEXT).unwrap();
+        write_deps(root, "yes");
         let tiny = root.join("crates/omuzaki-tiny");
         fs::create_dir_all(tiny.join("models")).unwrap();
         fs::create_dir_all(tiny.join("src")).unwrap();

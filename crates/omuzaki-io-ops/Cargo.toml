@@ -43,4 +43,6 @@ workspace = true
 
 [package.metadata.omuzaki]
 kind = "Implementation"
+generated-mods = ["src/ops"]
 summary = "the op layer for model import and export (§6, §27): the `io.*` ops and the conversions between file types and the runtime character, face and animation types, over the API crates only; and platform export (ADR 0047): limit tables in `data/platforms/`, the fit tools and planner, self-registered platform profiles and the `platform.*` ops"
+registers = true

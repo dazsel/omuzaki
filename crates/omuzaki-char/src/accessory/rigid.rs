@@ -393,7 +393,7 @@ fn output(
     glow: f32,
     rig: RigContribution,
 ) -> Result<PartOutput, BuildError> {
-    let mut out = PartOutput { rig, ..PartOutput::default() };
+    let mut out = PartOutput::new().with_rig(rig);
     // Publish the bones this part contributes, so another part can attach to one (`halo_acc_0`): a joint-only fit never
     // hides the body from garments, and the rig still gets the bones from the contribution.
     let bones: Vec<_> = out.rig.bones.iter().map(|b| (JointRef::Named(b.name.clone()), b.rest.translation)).collect();

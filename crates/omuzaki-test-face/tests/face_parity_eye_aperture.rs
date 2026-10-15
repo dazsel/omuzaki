@@ -4,7 +4,7 @@
 //!
 //! The comparison is of those two parts alone. The painter's eyes section grows pieces as they land (iris,
 //! lash, ...), and each of those has its own test, so this one keeps only what the aperture draws: the fill of the
-//! aperture, which comes just before the clip to it. (`omuzaki_test::face_parity::check_section` compares a whole section against all its tags,
+//! aperture, which comes just before the clip to it. (`omuzaki_test_face::face_parity::check_section` compares a whole section against all its tags,
 //! which would fail here the moment the iris is drawn; a tag-subset check in the harness would replace [`eye_whites`]
 //! and the reference reading below, and is filed as a follow-up.)
 //!
@@ -21,10 +21,10 @@ use omuzaki_face::{RealPainter, Section};
 use omuzaki_face_api::{
     Cmd, DrawList, FaceDrawing, FaceInput, FaceLayerId, FacePainter, FaceRasterizer, PathEl, PathRef, Raster,
 };
-use omuzaki_test::face_parity::js_params::case_inputs;
-use omuzaki_test::face_parity::{SectionTolerance, load_setup};
 use omuzaki_test::jsref::JsRef;
 use omuzaki_test::regioncmp::{Rect, compare_region, write_side_by_side};
+use omuzaki_test_face::face_parity::js_params::case_inputs;
+use omuzaki_test_face::face_parity::{SectionTolerance, load_setup};
 use serde::Deserialize;
 
 /// The tolerance this section is held to: the face rule. Measured first (see the PR): the worst case is far inside it.
@@ -314,7 +314,7 @@ fn the_eye_whites_match_the_prototype() {
 }
 
 /// Writes the reference / painter / diff picture of every compared case and the table, to `OMUZAKI_FACE_PARITY_OUT`
-/// (the evidence for the PR). `cargo test -p omuzaki-test --test face_parity_eye_aperture -- --ignored`.
+/// (the evidence for the PR). `cargo test -p omuzaki-test-face --test face_parity_eye_aperture -- --ignored`.
 #[test]
 #[ignore = "writes evidence to a local assets folder"]
 fn write_the_evidence() {

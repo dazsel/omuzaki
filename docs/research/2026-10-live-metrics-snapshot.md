@@ -1,3 +1,9 @@
+---
+title: "The live-metrics snapshot: fields, owner, publishing"
+summary: "fields, owner, publishing"
+area: research
+---
+
 # The live-metrics snapshot: fields, owner, publishing
 
 **Status:** research with a short design, for review. **Feeds:** `omuzaki://metrics/live` (`docs/design/mcp-resources.md` §2), the UI health meter (PF-26, the Health row). **Sources read:** files on main when this was written, plus the pending perform-status, latency-stats and recorder work.

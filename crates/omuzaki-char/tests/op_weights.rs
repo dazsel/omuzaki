@@ -592,11 +592,7 @@ mod stand_ins {
             };
             segments.skin_mesh(&mut mesh, &joints, CapsuleParams::default()).map_err(|e| ctx.fail(e.to_string()))?;
             let colour = ctx.colour(&params.colour)?;
-            Ok(PartOutput {
-                meshes: vec![mesh],
-                materials: vec![(material, MaterialSpec::toon(colour))],
-                ..PartOutput::default()
-            })
+            Ok(PartOutput::new().with_meshes(vec![mesh]).with_materials(vec![(material, MaterialSpec::toon(colour))]))
         }
     }
 

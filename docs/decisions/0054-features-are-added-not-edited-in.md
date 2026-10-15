@@ -1,3 +1,9 @@
+---
+title: "0054: Features are added, not edited in: generated module lists, open fact maps, non-exhaustive contracts and wiring from manifests (2026-10-14)"
+summary: "Features are added, not edited in: generated module lists, open fact maps, non-exhaustive contracts and wiring from manifests"
+area: decisions
+---
+
 # 0054: Features are added, not edited in: generated module lists, open fact maps, non-exhaustive contracts and wiring from manifests (2026-10-14)
 
 **Status:** accepted (2026-10-14); the work starts once the pull requests ported in the move have merged. **Context:** spec v3 §39.1 rules 1–5, 10, 11; ADR 0015 (link gate); ADR 0053 §3 (structure code so

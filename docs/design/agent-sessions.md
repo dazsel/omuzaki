@@ -1,3 +1,9 @@
+---
+title: "Agent sessions: who an agent is, what it may do, and how a person stays in charge"
+summary: "who an agent is, what it may do, and how a person stays in charge"
+area: design
+---
+
 # Agent sessions: who an agent is, what it may do, and how a person stays in charge
 
 **Status:** accepted (2026-10-12; section 14 records the answers to the open questions). **Feature:** AG-02. **Decision:** ADR 0020.
