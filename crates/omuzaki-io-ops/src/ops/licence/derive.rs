@@ -192,7 +192,7 @@ pub struct DerivedSummary {
     pub complete: bool,
     /// Whether any part is private test material.
     pub private_test: bool,
-    /// Whether every part is the project's own.
+    /// Whether every part and application record is the project's own.
     pub project_owned: bool,
     /// Who said so.
     pub owners: Vec<String>,
@@ -350,7 +350,7 @@ fn join_licences(rows: &[PartRow]) -> String {
     }
 }
 
-/// The consent a record can hold: the one every part that has a consent agrees on. Different consents cannot be one.
+/// The consent a record can hold: the one every part and application record that has a consent agrees on. Different consents cannot be one.
 fn joint_consent(inputs: &[PartInput], applications: &[ApplicationInput], report: &mut Report) -> Option<Consent> {
     let mut consents: Vec<(String, &Consent)> = Vec::new();
     for input in inputs {
@@ -371,7 +371,7 @@ fn joint_consent(inputs: &[PartInput], applications: &[ApplicationInput], report
     report.push(
         Finding::warning(
             "licence.consent_ambiguous",
-            format!("the parts record different consents ({}), and a record holds one", named.join("; ")),
+            format!("the contributions (parts and application records) record different consents ({}), and a record holds one", named.join("; ")),
         )
         .hint("record the consent that covers the whole character in the record's provenance.consent"),
     );

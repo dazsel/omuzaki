@@ -1,7 +1,7 @@
 //! The findings that measure a stored licence record against the parts as they are now, in the vocabulary of
 //! `io.check_export` (a rule id, a location in the document and a fix hint on each).
 //!
-//! The record is a snapshot: `licence.set` refuses a record that grants more than the parts allow, but a part can change
+//! The record is a snapshot: `licence.set` refuses a record that grants more than the parts and application records allow, but a part can change
 //! afterwards (a library item with tighter terms swapped in, a part with a non-commercial source switched on, a new part
 //! with no source), and the stored record then grants more than the parts do. `licence.describe` and `io.check_export`
 //! (and so `io.export`) both report that through this module, so a stale record reads the same in each and the two can
@@ -55,7 +55,7 @@ pub(crate) const fn leaves_the_machine(purpose: Purpose) -> bool {
 /// - **private test material** in a part fails every purpose but `private` (`rights.gate_private_test`, located at the
 ///   part's row), with or without a record and even if the record forgot the flag. A record that carries the flag gets
 ///   the gate's own finding from `preflight`, so it is not raised twice;
-/// - **a record that grants more than the parts allow** (`licence.exceeds_parts`), one finding per field with the part
+/// - **a record that grants more than the parts and application records allow** (`licence.exceeds_parts`), one finding per field with the part
 ///   that limits it, located at that field of the record. Nothing is said without a record: its absence is
 ///   `rights.provenance_missing`, which `preflight` reports.
 pub(crate) fn against_stored_record(
@@ -129,12 +129,12 @@ fn private_parts_finding(
     )
 }
 
-/// One field of a record that grants more than the parts allow.
+/// One field of a record that grants more than the parts and application records allow.
 ///
 /// - **An error** (`licence.exceeds_parts`) for a file that leaves the machine, and for the private-test flag whatever
 ///   the purpose: that is never waived.
 /// - **A warning** for a file that stays on the user's machine.
-/// - **A note** (`licence.exceeds_parts_owned`) when every part is the project's own and the record says so; a warning if
+/// - **A note** (`licence.exceeds_parts_owned`) when every part and application record is the project's own and the record says so; a warning if
 ///   it does not yet say so. The project-owned exception waives every field but the private-test flag.
 pub(crate) fn exceeds_parts_finding(
     excess: &Excess,

@@ -1,14 +1,14 @@
-//! `licence.set`: store a character's licence record, refusing one that grants more than its parts allow.
+//! `licence.set`: store a character's licence record, refusing one that grants more than its parts and application records allow.
 //!
 //! Rights are a legal surface, so the op is the one place a record can enter the document and it checks the whole
 //! record first:
 //! 1. the record is well formed (`schema`, a licence, a consent that names a person and a scope);
 //! 2. it does not contradict itself: terms grant nothing while the commercial status is not `ok`, and private test
 //!    material carries only the most restrictive terms (the rule the exporters enforce);
-//! 3. it grants **no more than `licence.derive` says the parts allow**, on any permission. The refusal names the field
-//!    (`record/meta/commercialUsage`) and the parts that set the limit.
+//! 3. it grants **no more than `licence.derive` says the parts and application records allow**, on any permission. The refusal names the field
+//!    (`record/meta/commercialUsage`) and the contributions that set the limit.
 //!
-//! The one exception to 3 is a character whose parts are **all the project's own** (each marked with who asserted it).
+//! The one exception to 3 is a character whose parts and application records are **all the project's own** (each marked with who asserted it).
 //! The record may then grant more, and the op writes who asserted it into the record (`owned`), replacing whatever the
 //! caller passed there. The private-test flag is never waived, and neither is rule 2.
 
@@ -78,14 +78,15 @@ fn contradiction(excess: &[Excess]) -> OpError {
     .hint("lower the terms to what the provenance allows; exporters refuse a record like this")
 }
 
-/// The refusal for a record that grants more than the parts allow. `excess` is not empty.
+/// The refusal for a record that grants more than the parts and application records allow. `excess` is not empty.
 fn refusal(character: &CharId, excess: &[Excess]) -> OpError {
     let sentences: Vec<String> = excess.iter().map(Excess::sentence).collect();
     let message = format!("the record grants more than the parts of `{character}` allow: {}", sentences.join("; "));
     let hint = if excess.iter().all(|e| e.waivable) {
         "store the record licence.derive returns, or lower these fields. To grant more, record each part's source \
-         (licence.set_source) with the terms it was really licensed under, or, for parts that are the project's own, \
-         mark each one with `owned.asserted_by` in its source row"
+         (licence.set_source) with the terms it was really licensed under, or, when every part and application record \
+         is the project's own, mark each part with `owned.asserted_by` in its source row (an application record is \
+         owned when its item's rights say so); the message names what limits the record"
     } else {
         "private test material can never be exported for any purpose but private: set `provenance.private_test` to \
          true and store the record licence.derive returns"
@@ -94,7 +95,7 @@ fn refusal(character: &CharId, excess: &[Excess]) -> OpError {
 }
 
 impl LicenceSet {
-    /// The record to store, or the refusal. `derived` is what the parts allow.
+    /// The record to store, or the refusal. `derived` is what the parts and application records allow.
     fn checked(&self, derived: &DerivedLicence) -> Result<(LicenceRecord, Vec<Excess>), OpError> {
         check_form(&self.record)?;
         let contradictions = against_itself(&self.record);
@@ -121,7 +122,7 @@ impl Op for LicenceSet {
         OpMeta {
             name: "licence.set",
             summary: "Store a character's licence record. Refused if it grants more than licence.derive says the \
-                      parts allow, unless every part is the project's own.",
+                      parts and application records allow, unless every part and application record is the project's own.",
             kind: OpKind::Edit,
             scope: Scope::EditCharacter,
             undo: Undo::Auto,

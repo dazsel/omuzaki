@@ -36,7 +36,7 @@ pub const SCHEMA: u32 = 1;
 ///
 /// It lives in the document at [`record_path`]. A character with no record exports nothing but a failing check
 /// (`rights.provenance_missing`): rights are never guessed from the parts. `licence.derive` computes the record the
-/// parts allow and `licence.set` stores one (`ops::licence`). Read one from its document node with
+/// parts and application records allow and `licence.set` stores one (`ops::licence`). Read one from its document node with
 /// [`LicenceRecord::from_node`], which names an unknown `schema` before anything else.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

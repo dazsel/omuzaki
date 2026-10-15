@@ -1,4 +1,4 @@
-//! Where a record grants more than it may: more than the parts allow, or more than its own provenance allows.
+//! Where a record grants more than it may: more than the parts and application records allow, or more than its own provenance allows.
 //!
 //! `licence.set` refuses a record with any [`Excess`] that is not waived, and `licence.describe` lists them, so both
 //! name the same fields with the same words. A field is named by its path inside the record (`meta/commercialUsage`,
