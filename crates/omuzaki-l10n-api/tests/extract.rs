@@ -269,6 +269,7 @@ fn the_comment_renders_each_constraint() {
         (json!({"type": "string", "const": "x"}), "string, only \"x\""),
         (json!({"type": "number", "default": 0.5}), "number, default 0.5"),
         (json!({"type": "number", "minimum": 1.0}), "number, at least 1"),
+        (json!({"type": "integer", "minimum": 9_007_199_254_740_993_i64}), "integer, at least 9007199254740993"),
         (
             json!({"type": "integer", "minimum": u64::MAX, "default": i64::MIN}),
             "integer, at least 18446744073709551615, default -9223372036854775808",
@@ -282,4 +283,31 @@ fn the_comment_renders_each_constraint() {
         let want = format!("# {expected}\nop-x-y--arg = Arg\n");
         assert!(out.contains(&want), "expected `{expected}` before the argument, got:\n{out}");
     }
+}
+
+/// Whitespace inside a value or an attribute reads back unchanged. The whole value is trimmed; a line's own trailing
+/// spaces, a whitespace-only line, and a blank line inside it are kept.
+#[test]
+fn whitespace_inside_a_value_and_an_attribute_survives_the_round_trip() {
+    let value = "\n\nFirst  \n   \nSecond\t\n\nThird  \n\n";
+    let attribute = "  Attr  \n   \nEnd\n";
+    let op =
+        RegisteredText { attributes: vec![("description".to_owned(), attribute.to_owned())], ..owner("op-x-y", value) };
+    let out = english_of(&PackageText::new("omuzaki-x").with_registered(vec![op]));
+
+    let resource = match parse(out.as_str()) {
+        Ok(resource) => resource,
+        Err((_, errors)) => panic!("the English file does not parse: {errors:?}\n{out}"),
+    };
+    let message = resource
+        .body
+        .iter()
+        .find_map(|entry| match entry {
+            Entry::Message(message) if message.id.name == "op-x-y" => Some(message),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no op-x-y message in\n{out}"));
+    assert_eq!(read_back(message.value.as_ref().expect("a value")), value.trim());
+    let attr = message.attributes.first().expect("a description attribute");
+    assert_eq!(read_back(&attr.value), attribute.trim());
 }

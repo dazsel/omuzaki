@@ -288,41 +288,55 @@ fn literal(value: &Value) -> String {
     }
 }
 
-/// A registered value as a Fluent pattern, to follow `= `: trimmed, escaped, and with each continuation line indented
-/// by four spaces. A blank line stays blank.
+/// A registered value as a Fluent pattern, to follow `= `. The whole value is trimmed, as the contract says; the
+/// whitespace inside it is the value's own and is kept. Each continuation line is indented by four spaces, and a blank
+/// line stays blank.
 fn pattern(value: &str) -> String {
     let mut lines = value.trim().lines();
     let mut out = String::new();
     if let Some(first) = lines.next() {
-        out.push_str(&escape(first.trim_end()));
+        out.push_str(&line_text(first));
     }
     for line in lines {
         out.push('\n');
-        if !line.trim().is_empty() {
+        if !line.is_empty() {
             out.push_str(&continuation(line));
         }
     }
     out
 }
 
-/// One continuation line, indented. A line that starts with `[`, `*` or `.` would read as a select or an attribute,
-/// so that first character is written as a string literal.
+/// One continuation line, indented. Fluent strips the leading whitespace of a continuation line, so the value's own
+/// indent, and a whitespace-only line, are written as string literals. A line that starts with `[`, `*` or `.` would
+/// read as a select or an attribute, so that character is written as a literal too.
 fn continuation(line: &str) -> String {
-    let line = line.trim_end();
     let body = line.trim_start();
     let lead = &line[..line.len() - body.len()];
     let mut out = String::from("    ");
-    // Fluent strips the leading whitespace of a continuation line, so the value's own indent is written as a literal.
     if !lead.is_empty() {
         let _ = write!(out, "{{\"{lead}\"}}");
     }
+    if body.is_empty() {
+        return out;
+    }
     let mut rest = body;
     if let Some(first) = body.chars().next().filter(|c| matches!(c, '[' | '*' | '.')) {
-        // A select or an attribute would start here, so the character is written as a literal too.
         let _ = write!(out, "{{\"{first}\"}}");
         rest = &body[first.len_utf8()..];
     }
-    out.push_str(&escape(rest));
+    out.push_str(&line_text(rest));
+    out
+}
+
+/// The text of a line, braces escaped. The whitespace at its end is written as a string literal, because Fluent drops
+/// the trailing spaces of a line otherwise.
+fn line_text(text: &str) -> String {
+    let body = text.trim_end();
+    let mut out = escape(body);
+    let tail = &text[body.len()..];
+    if !tail.is_empty() {
+        let _ = write!(out, "{{\"{tail}\"}}");
+    }
     out
 }
 
