@@ -3,7 +3,7 @@
 //! credential and returns none: an entry is a session serial and a client name, nothing else.
 
 use std::collections::BTreeMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use omuzaki_ops_api::{ConnectionService, Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op};
 use schemars::JsonSchema;
@@ -11,13 +11,22 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::events::lock;
-use crate::server::McpServer;
 
 /// The live sessions of one server, keyed by session serial. A session is listed from the moment its handler exists;
 /// its value is the client's name once the handshake has given one, and `None` until then. A session leaves the list
 /// when its connection ends.
-#[derive(Default)]
-pub(crate) struct Connections(Mutex<BTreeMap<u64, Option<String>>>);
+///
+/// A cheap handle: clones share the list. The host makes one before it builds its runner, inserts it into the runner's
+/// services as a [`ConnectionService`], and gives the same handle to [`McpOptions::with_connections`](crate::McpOptions::with_connections),
+/// which is what lets the server list `agent.connection` (it lists the op only when it is told the service is wired).
+#[derive(Clone, Debug, Default)]
+pub struct Connections(Arc<Mutex<BTreeMap<u64, Option<String>>>>);
+
+impl ConnectionService for Connections {
+    fn connection(&self) -> Value {
+        self.answer()
+    }
+}
 
 impl Connections {
     /// A session has begun, before its client has said who it is.
@@ -43,6 +52,9 @@ impl Connections {
     }
 }
 
+/// The name of the op that needs a [`ConnectionService`] in the runner's services.
+pub(crate) const OP: &str = "agent.connection";
+
 /// `{connected, client_name?, sessions}`: `connected` means some live session has a named client, `client_name` is
 /// the newest such client (a later session supersedes an earlier one), and `sessions` counts every live session.
 /// `client_name` is left out when nothing is connected.
@@ -53,12 +65,6 @@ fn answer(sessions: &BTreeMap<u64, Option<String>>) -> Value {
         out["client_name"] = json!(name);
     }
     out
-}
-
-impl ConnectionService for McpServer {
-    fn connection(&self) -> Value {
-        McpServer::connection(self)
-    }
 }
 
 /// `agent.connection`: whether an agent client is connected, its name, and how many sessions are live. The setup

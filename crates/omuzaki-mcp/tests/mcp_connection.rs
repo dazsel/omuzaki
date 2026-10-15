@@ -10,9 +10,9 @@ mod common;
 use std::sync::Arc;
 
 use common::FakeRunner;
-use omuzaki_mcp::{McpOptions, McpServer, ServerError};
+use omuzaki_mcp::{Connections, McpOptions, McpServer, ServerError};
 use rmcp::ClientLifecycleMode;
-use rmcp::model::{ClientCapabilities, ClientConfig, Implementation, ProtocolVersion};
+use rmcp::model::{CallToolRequestParams, ClientCapabilities, ClientConfig, Implementation, ProtocolVersion};
 use rmcp::service::{RoleClient, RunningService};
 use rmcp::{ClientHandler, ClientServiceExt};
 use serde_json::{Value, json};
@@ -210,4 +210,48 @@ async fn a_client_that_starts_by_listening_is_named_while_it_listens() {
     client.send(json!({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 1}})).await;
     client.hang_up().await;
     assert_eq!(mcp.connection(), json!({"connected": false, "sessions": 0}), "after the client hung up");
+}
+
+/// The op reads its answer from a service the host wires into the runner. A server the host did not tell about that
+/// service must neither list the op nor route a call to it, to the dotted name or the tool name.
+#[tokio::test]
+async fn the_op_is_neither_listed_nor_callable_without_its_service() {
+    let mcp = server();
+    assert!(mcp.tools().iter().all(|tool| tool.name != "agent_connection"), "listed without its service");
+    let connection = connect(&mcp, Lifecycle::Initialize).await;
+    let listed = connection.client.list_all_tools().await.expect("lists tools");
+    assert!(listed.iter().all(|tool| tool.name != "agent_connection"), "advertised to a client");
+    for name in ["agent_connection", "agent.connection"] {
+        let called = connection.client.call_tool(CallToolRequestParams::new(name)).await;
+        assert!(called.is_err() || called.is_ok_and(|result| result.is_error == Some(true)), "{name} was callable");
+    }
+    // A server for other grants (the HTTP transport's per-token servers) keeps the same rule.
+    let other = mcp.with_grants(omuzaki_ops_api::Grants::agent_default()).expect("rebuilds");
+    assert!(other.tools().iter().all(|tool| tool.name != "agent_connection"), "listed after with_grants");
+    disconnect(connection).await;
+}
+
+/// Once the host says the service is wired, the op is listed, also for servers made with other grants.
+#[tokio::test]
+async fn the_op_is_listed_once_its_service_is_wired() {
+    let options = McpOptions::default().with_connections(Connections::default());
+    let mcp = McpServer::new(Arc::new(FakeRunner::new()), options).expect("server builds");
+    assert!(mcp.tools().iter().any(|tool| tool.name == "agent_connection"));
+    let other = mcp.with_grants(omuzaki_ops_api::Grants::agent_default()).expect("rebuilds");
+    assert!(other.tools().iter().any(|tool| tool.name == "agent_connection"));
+}
+
+/// The handle the host wires is the one the server counts sessions in.
+#[tokio::test]
+async fn the_wired_handle_sees_the_servers_sessions() {
+    let connections = Connections::default();
+    let mcp = McpServer::new(Arc::new(FakeRunner::new()), McpOptions::default().with_connections(connections.clone()))
+        .expect("server builds");
+    let connection = connect(&mcp, Lifecycle::Initialize).await;
+    connection.client.list_all_tools().await.expect("lists tools");
+    assert_eq!(
+        omuzaki_ops_api::ConnectionService::connection(&connections),
+        json!({"connected": true, "client_name": "claude-code", "sessions": 1})
+    );
+    disconnect(connection).await;
 }
