@@ -1,0 +1,108 @@
+# Builds one spike (a folder under spikes/, each its own small Cargo workspace) on one OS and uploads its release
+# binaries with a SHA256SUMS file, so the owner can take a measurement that needs hardware the cloud lacks (a GPU, a
+# hardware encoder, a kernel module) without building anything on their machine (lead practice 13 in
+# docs/maintainers/cloud-lane.md). Each owner run gets a `needs-owner` issue naming the run's artifact and the one
+# command to run.
+#
+# Dispatch only: a maintainer starts it from the Actions tab (or `gh workflow run spike-build.yml -f spike=<name>
+# -f os=<runner>`), so it runs no pull request code and costs no pull request CI minutes. The spike is built from the
+# commit the dispatch names, with its own Cargo.lock (--locked) and the root rust-toolchain.toml.
+name: Spike build
+
+on:
+  workflow_dispatch:
+    inputs:
+      spike:
+        description: "The spike: a folder name under spikes/, for example worker-process"
+        required: true
+        type: string
+      os:
+        description: "The runner to build on"
+        required: true
+        type: choice
+        options:
+          - windows-latest
+          - macos-15
+          - ubuntu-24.04
+
+permissions: {}
+
+concurrency:
+  group: spike-build-${{ inputs.spike }}-${{ inputs.os }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  build:
+    name: build
+    runs-on: ${{ inputs.os }}
+    if: github.repository == 'dazsel/omuzaki'
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The input reaches the shell only through the environment, never interpolated into a script. A spike is a plain
+      # folder name (no separator, no `..`) that matches a folder under spikes/ holding a Cargo.toml and a Cargo.lock.
+      - name: Check the spike name
+        env:
+          SPIKE: ${{ inputs.spike }}
+        run: |
+          if [[ ! "$SPIKE" =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then
+            echo "::error::spike must be a folder name under spikes/ (lowercase letters, digits, '-' or '_'), got: $SPIKE"
+            exit 1
+          fi
+          found=""
+          for dir in spikes/*/; do
+            if [ "$(basename "$dir")" = "$SPIKE" ]; then found="$dir"; fi
+          done
+          if [ -z "$found" ] || [ ! -f "spikes/$SPIKE/Cargo.toml" ] || [ ! -f "spikes/$SPIKE/Cargo.lock" ]; then
+            echo "::error::no spike named $SPIKE: it needs spikes/$SPIKE/Cargo.toml and spikes/$SPIKE/Cargo.lock"
+            exit 1
+          fi
+
+      # rust-toolchain.toml at the root pins the compiler for the spike too; rustup installs it on first use.
+      - name: Build
+        env:
+          SPIKE: ${{ inputs.spike }}
+        run: |
+          cd "spikes/$SPIKE"
+          cargo build --release --locked
+
+      # The top level of target/release holds the spike's binaries and libraries; build scripts, dependency info and
+      # debug files stay behind.
+      - name: Collect the binaries
+        env:
+          SPIKE: ${{ inputs.spike }}
+        run: |
+          out="$RUNNER_TEMP/spike-out"
+          mkdir -p "$out"
+          release="spikes/$SPIKE/target/release"
+          case "$RUNNER_OS" in
+            Windows) find "$release" -maxdepth 1 -type f \( -name '*.exe' -o -name '*.dll' \) -exec cp {} "$out/" \; ;;
+            macOS) find "$release" -maxdepth 1 -type f \( -perm -u+x -o -name '*.dylib' \) ! -name '*.d' -exec cp {} "$out/" \; ;;
+            *) find "$release" -maxdepth 1 -type f \( -perm -u+x -o -name '*.so' \) ! -name '*.d' -exec cp {} "$out/" \; ;;
+          esac
+          cd "$out"
+          if [ -z "$(ls -A)" ]; then
+            echo "::error::spikes/$SPIKE built no binary or library"
+            exit 1
+          fi
+          if command -v sha256sum >/dev/null; then sha256sum -- * > SHA256SUMS; else shasum -a 256 -- * > SHA256SUMS; fi
+          cat SHA256SUMS
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: spike-${{ inputs.spike }}-${{ inputs.os }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/spike-out
+          retention-days: 14
+          if-no-files-found: error
