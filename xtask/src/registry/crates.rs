@@ -40,12 +40,27 @@ pub struct Crate {
     /// The members it depends on optionally, by the name of the implicit feature that switches each on (the
     /// dependency's key) and the package.
     pub optional_deps: Vec<(String, String)>,
-    /// Every member it depends on under `[dependencies]`, optional or not: the key it is declared under and the package.
-    pub dep_keys: Vec<(String, String)>,
+    /// Every member it depends on under `[dependencies]`, optional or not, as declared.
+    pub dependencies: Vec<Dependency>,
     /// Its `[features]`: each feature and what it lists.
     pub features: Vec<(String, Vec<String>)>,
     /// The optional dependencies some feature lists as `dep:<key>`, which removes their implicit feature.
     pub dep_syntax: Vec<String>,
+}
+
+/// A member one crate depends on under `[dependencies]`, with what the declaration asks of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Dependency {
+    /// The key it is declared under: the name `dep/feature` items use, and its implicit feature if it is optional.
+    pub key: String,
+    /// The package.
+    pub package: String,
+    /// Whether it is `optional = true`.
+    pub optional: bool,
+    /// The features the declaration turns on (`features = [...]`, the workspace entry's and the member's).
+    pub features: Vec<String>,
+    /// Whether its `default` feature is on: `default-features` is not `false`.
+    pub default_features: bool,
 }
 
 /// Every member of the workspace at `root`, sorted by name.
@@ -77,15 +92,21 @@ pub fn load(root: &Path) -> Result<Vec<Crate>, Error> {
     let workspace_deps = workspace.get("workspace").and_then(|w| w.get("dependencies")).and_then(Value::as_table);
     let mut out: Vec<Crate> = Vec::new();
     for (dir, name, manifest) in crates {
-        let (mut deps, mut optional_deps, mut dep_keys) = (Vec::new(), Vec::new(), Vec::new());
+        let (mut deps, mut optional_deps, mut dependencies) = (Vec::new(), Vec::new(), Vec::new());
         for entry in path_deps(root, &dir, &manifest, workspace_deps)? {
             let Some(package) = by_dir.iter().find(|(d, _)| *d == entry.dir).map(|(_, n)| n.clone()) else { continue };
-            dep_keys.push((entry.key.clone(), package.clone()));
             if entry.optional {
-                optional_deps.push((entry.key, package));
+                optional_deps.push((entry.key.clone(), package.clone()));
             } else {
-                deps.push(package);
+                deps.push(package.clone());
             }
+            dependencies.push(Dependency {
+                key: entry.key,
+                package,
+                optional: entry.optional,
+                features: entry.features,
+                default_features: entry.default_features,
+            });
         }
         let dep_syntax =
             optional_deps.iter().map(|(key, _)| key).filter(|key| uses_dep_syntax(&manifest, key)).cloned().collect();
@@ -99,7 +120,7 @@ pub fn load(root: &Path) -> Result<Vec<Crate>, Error> {
             generates_links: generates_links(&dir, &manifest),
             lists_link_build: lists_link_build(&manifest),
             optional_deps,
-            dep_keys,
+            dependencies,
             features: feature_table(&manifest),
             dep_syntax,
             dir: dir.strip_prefix(root).unwrap_or(&dir).to_path_buf(),
@@ -136,6 +157,10 @@ struct DepEntry {
     dir: PathBuf,
     /// Whether it is `optional = true`.
     optional: bool,
+    /// Its `features = [...]`.
+    features: Vec<String>,
+    /// Whether `default-features` is not `false`.
+    default_features: bool,
 }
 
 /// The `[features]` table as written.
@@ -191,14 +216,27 @@ fn path_deps(
             }
         }
         let base = if inherits && !member.contains_key("path") { root } else { dir };
+        // An inheriting member adds its `features` to the workspace entry's; every other key it sets wins.
+        let mut features: Vec<String> = strings(spec.get("features")).map(str::to_owned).collect();
+        features.extend(strings(member.get("features")).map(str::to_owned));
         for (name, value) in member {
             if name != "workspace" {
                 spec.insert(name.clone(), value.clone());
             }
         }
         let optional = spec.get("optional").and_then(Value::as_bool).unwrap_or(false);
+        let default_features = ["default-features", "default_features"]
+            .iter()
+            .find_map(|k| spec.get(*k).and_then(Value::as_bool))
+            .unwrap_or(true);
         match spec.get("path").and_then(Value::as_str) {
-            Some(path) => found.push(DepEntry { key: key.clone(), dir: normalise(&base.join(path)), optional }),
+            Some(path) => found.push(DepEntry {
+                key: key.clone(),
+                dir: normalise(&base.join(path)),
+                optional,
+                features,
+                default_features,
+            }),
             None if inherits || ["version", "git", "registry"].iter().any(|k| spec.contains_key(*k)) => {}
             None => {
                 return Err(fail(format!(

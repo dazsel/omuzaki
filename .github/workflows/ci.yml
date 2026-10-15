@@ -200,6 +200,8 @@ jobs:
       - name: Link gate tests
         run: |
           for name in $LINK_CRATES; do cargo test --locked -p "$name" --test registrations; done
+          # The product's configuration: the CLI with the stage's wgpu renderer; one value feeds the build and the gate.
+          f=omuzaki-stage/wgpu; OMUZAKI_LINK_FEATURES=$f cargo test --locked -p omuzaki-cli --features $f --test registrations
 
   # Merge queue only: ordinary pull requests don't pay for the Windows toolchain. Native Windows tests run nightly.
   win-cross:
