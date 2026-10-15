@@ -14,3 +14,7 @@ thiserror.workspace = true
 
 [lints]
 workspace = true
+
+[package.metadata.omuzaki]
+kind = "API"
+summary = "the one outgoing-HTTP contract (connectors D13): `HttpTransport` (`send`, `open` for streams), `HttpRequest`, `HttpResponse`, `HttpStream`, `HttpError`, and the `Cancel` handle with `NeverCancel` and `CancelFlag`; no network stack; the client is `omuzaki-http`, the fake `omuzaki-http-mock`"

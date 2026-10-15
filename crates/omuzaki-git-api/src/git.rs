@@ -61,6 +61,16 @@ pub trait Git: Send + Sync {
     /// [`GitError::BadRev`].
     fn merge_base(&self, dir: &Path, a: &str, b: &str, cancel: &dyn Cancel) -> Result<Option<CommitId>, GitError>;
     /// Commits `paths` with `message`. A person only: agents never reach it.
+    ///
+    /// Every path must be relative, stay inside `dir`, and never name `.omuzaki` or `.git`; otherwise the call fails
+    /// with [`GitError::BadPath`] before git runs. [`validate_commit_paths`] is that check, and both the real
+    /// implementation and the mock call it, so they cannot disagree. Each path reaches git as a literal pathspec
+    /// ([`literal_pathspec`]: the `:(literal)` prefix) after `--`, because `--` alone does not stop magic such as
+    /// `:(top)*`. The call, hooks included, is bounded by [`COMMIT_TIMEOUT`] and ends with [`GitError::Timeout`].
+    ///
+    /// [`validate_commit_paths`]: crate::paths::validate_commit_paths
+    /// [`literal_pathspec`]: crate::paths::literal_pathspec
+    /// [`COMMIT_TIMEOUT`]: crate::error::COMMIT_TIMEOUT
     fn commit(&self, dir: &Path, message: &str, paths: &[PathBuf], cancel: &dyn Cancel) -> Result<CommitId, GitError>;
     /// Pushes the current branch to `remote`. A person only.
     ///

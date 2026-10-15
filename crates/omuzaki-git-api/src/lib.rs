@@ -10,12 +10,15 @@
 //! - [`commit`]: commit ids, log ranges, commit details and trees, and
 //!   [`MAX_IMPORT_FILE_BYTES`](commit::MAX_IMPORT_FILE_BYTES)
 //! - [`status`]: the working-tree [`GitStatus`](status::GitStatus) and its changed files
+//! - [`paths`]: [`validate_commit_paths`](paths::validate_commit_paths) and
+//!   [`literal_pathspec`](paths::literal_pathspec), which both implementations use for `Git::commit`
 //! - [`error`]: [`GitError`](error::GitError) and the shared limits ([`READ_TIMEOUT`](error::READ_TIMEOUT),
-//!   [`NETWORK_TIMEOUT`](error::NETWORK_TIMEOUT), [`MIN_GIT_VERSION`](error::MIN_GIT_VERSION))
+//!   [`COMMIT_TIMEOUT`](error::COMMIT_TIMEOUT), [`NETWORK_TIMEOUT`](error::NETWORK_TIMEOUT), [`MIN_GIT_VERSION`](error::MIN_GIT_VERSION))
 #![deny(missing_docs)]
 
 pub mod cancel;
 pub mod commit;
 pub mod error;
 pub mod git;
+pub mod paths;
 pub mod status;

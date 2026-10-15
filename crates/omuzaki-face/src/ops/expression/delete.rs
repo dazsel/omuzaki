@@ -9,7 +9,7 @@ use serde_json::json;
 
 use super::rules::{is_reserved, refuse_reserved};
 use super::store::{edited_face, entry, library, missing, patch_to};
-use crate::ops::shared::edit::{changed, stored_face};
+use crate::ops_shared::edit::{changed, stored_face};
 
 /// Removes a named expression from a character's face. The five visemes and `blink` can't be removed: lip sync and the
 /// VRM export name them.

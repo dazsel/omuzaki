@@ -17,5 +17,9 @@ omuzaki-core = { path = "../omuzaki-core" }
 [dev-dependencies]
 serde_json.workspace = true
 
+[package.metadata.omuzaki]
+kind = "API"
+summary = "the person's-own-git contract (VC-04, ADR 0045): the `Git` trait, `Cancel` handles, commit and status types, `GitError` and the shared timeouts"
+
 [lints]
 workspace = true

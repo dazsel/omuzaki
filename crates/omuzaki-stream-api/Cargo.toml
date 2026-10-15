@@ -16,3 +16,7 @@ thiserror.workspace = true
 
 [lints]
 workspace = true
+
+[package.metadata.omuzaki]
+kind = "API"
+summary = "the recording and streaming base types (§25, §39.1; `docs/design/record.md`): `Ticks`, exact `Timebase::rescale`, `Packet` with side data, `ByteMeter`, `StreamError`; encoder, muxer and output traits follow"

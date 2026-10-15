@@ -20,7 +20,7 @@
 //! |---|---|
 //! | [`error`] | [`StageError`](error::StageError) |
 //! | [`upload`] | [`StageCharacter`](upload::StageCharacter): meshes, textures and materials on a renderer, the face atlas resolution knob |
-//! | `release` (private) | releasing in dependency order, and the leak guard on drop |
+//! | `upload::release` (private) | releasing in dependency order, and the leak guard on drop |
 //! | [`frame`] | the frame loop: [`pose`](frame::pose) (bind-based pose assembly), [`rig`](frame::rig), [`runtimes`](frame::runtimes), [`scene`](frame::scene), then [`face`](frame::face) |
 //! | [`scene`] | the scene: [`landmarks`](scene::landmarks), [`frame`](scene::frame) (framing presets), [`resolve`](scene::resolve), [`apply`](scene::apply), [`default`](scene::default) |
 //! | [`ops::scene`] | the `stage.*` scene ops |
@@ -40,17 +40,8 @@
 //! wgpu backend (R1) is not linked here: only the `wgpu` feature pulls it in.
 #![deny(missing_docs)]
 
-/// Stage effects: the chat-emote atlas (D13) now, and the particle service and its parts as they land.
-pub mod effects;
-pub mod error;
-pub mod frame;
-pub mod ops;
-pub mod perform;
-pub mod recipe;
-mod release;
-pub mod scene;
-pub mod sheet;
-pub mod upload;
+// The crate's feature modules, declared from the folder by the build script (ADR 0054 §1).
+include!(concat!(env!("OUT_DIR"), "/crate_mods.rs"));
 
 pub use error::StageError;
 pub use upload::{StageCharacter, UploadOptions};

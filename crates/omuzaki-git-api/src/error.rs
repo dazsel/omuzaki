@@ -9,6 +9,9 @@ use serde::{Deserialize, Serialize};
 pub const READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long a push or pull may run before [`GitError::Timeout`].
 pub const NETWORK_TIMEOUT: Duration = Duration::from_secs(600);
+/// How long a commit, hooks included, may run before [`GitError::Timeout`]. A hook that never returns is ended with
+/// the rest of git's process tree.
+pub const COMMIT_TIMEOUT: Duration = Duration::from_secs(120);
 /// The oldest git (major, minor) the contract supports. It must stay at 2.24 or later: [`crate::git::Git`] passes caller
 /// revisions and remotes after `--end-of-options`, which git 2.24 added.
 pub const MIN_GIT_VERSION: (u32, u32) = (2, 30);

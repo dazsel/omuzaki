@@ -56,5 +56,13 @@ harness = false
 name = "poses"
 harness = false
 
+[[bench]]
+name = "triggers"
+harness = false
+
 [lints]
 workspace = true
+
+[package.metadata.omuzaki]
+kind = "Implementation"
+summary = "animation (§20, §22): the ARKit-52 retarget and the life layer, over `omuzaki-anim-api`"
