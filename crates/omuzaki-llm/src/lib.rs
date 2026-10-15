@@ -2,6 +2,7 @@
 //! SSE and retry stack, on the host's tokio runtime, with the dated price data and model listing.
 //!
 //! - **[`anthropic`]**: `POST /v1/messages`, the hosted API.
+//! - **[`openai`]**: `POST /v1/chat/completions` for Ollama, llama.cpp, LM Studio, vLLM and any compatible host.
 //! - **[`runtime`]**: the runtime handle a provider is built with.
 //! - **[`prices`]**: the shipped model table.
 //!
@@ -15,6 +16,7 @@ mod chan;
 mod common;
 mod engine;
 mod http;
+pub mod openai;
 pub mod prices;
 mod retry;
 pub mod runtime;
@@ -22,5 +24,6 @@ mod sse;
 
 pub use anthropic::AnthropicClient;
 pub use engine::Timeouts;
+pub use openai::OpenAiClient;
 
 omuzaki_core::define_link!();

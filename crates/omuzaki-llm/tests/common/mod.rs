@@ -123,6 +123,8 @@ impl Reply {
 #[derive(Default)]
 struct State {
     replies: VecDeque<Reply>,
+    /// Replies for one `"METHOD /path"` each; a request with no route and no general reply left gets a 404.
+    routes: Vec<(String, VecDeque<Reply>)>,
     requests: Vec<Recorded>,
     /// When the body of request `i` was dropped, which is when the client hung up or the body finished.
     closed: Vec<Option<Instant>>,
@@ -169,8 +171,17 @@ pub struct Server {
 impl Server {
     /// Starts a server that answers requests with `replies`, in order.
     pub fn start(replies: Vec<Reply>) -> Self {
+        Self::with(replies, Vec::new())
+    }
+
+    /// Starts a server that answers each `"METHOD /path"` from its own list of replies, and any other request with a 404.
+    pub fn routed(routes: Vec<(&str, Vec<Reply>)>) -> Self {
+        Self::with(Vec::new(), routes.into_iter().map(|(k, r)| (k.to_owned(), r.into())).collect())
+    }
+
+    fn with(replies: Vec<Reply>, routes: Vec<(String, VecDeque<Reply>)>) -> Self {
         let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
-        let state: Shared = Arc::new(Mutex::new(State { replies: replies.into(), ..State::default() }));
+        let state: Shared = Arc::new(Mutex::new(State { replies: replies.into(), routes, ..State::default() }));
         let listener = runtime.block_on(TcpListener::bind("127.0.0.1:0")).unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let shared = Arc::clone(&state);
@@ -199,7 +210,17 @@ impl Server {
 
     /// Replies not yet used.
     pub fn unused(&self) -> usize {
-        lock(&self.state).replies.len()
+        let state = lock(&self.state);
+        state.replies.len() + state.routes.iter().map(|(_, q)| q.len()).sum::<usize>()
+    }
+
+    /// How many requests `"METHOD /path"` has had.
+    pub fn count(&self, route: &str) -> usize {
+        lock(&self.state)
+            .requests
+            .iter()
+            .filter(|r| format!("{} {}", r.method, r.path.split('?').next().unwrap_or_default()) == route)
+            .count()
     }
 }
 
@@ -220,7 +241,14 @@ async fn handle(request: Request<hyper::body::Incoming>, state: Shared) -> Resul
             body,
         });
         guard.closed.push(None);
-        (guard.replies.pop_front(), guard.requests.len() - 1)
+        let key = format!("{} {}", parts.method, parts.uri.path());
+        let routed = guard.routes.iter_mut().find(|(k, _)| *k == key).map(|(_, queue)| queue.pop_front());
+        let reply = match routed {
+            Some(reply) => reply,
+            None if guard.routes.is_empty() => guard.replies.pop_front(),
+            None => Some(Reply::status(404, r#"{"error":{"message":"no such route"}}"#)),
+        };
+        (reply, guard.requests.len() - 1)
     };
     let reply = reply.unwrap_or_else(|| Reply::status(500, r#"{"error":{"message":"no reply scripted"}}"#));
     let (tx, rx) = mpsc::unbounded_channel();

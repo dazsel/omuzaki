@@ -207,8 +207,8 @@ impl Decoder for AnthropicDecoder {
         }
     }
 
-    fn cut(&mut self) -> Fail {
-        Fail::network("the event stream ended before the turn completed")
+    fn end(&mut self) -> Result<Vec<LlmEvent>, Fail> {
+        Err(Fail::network("the event stream ended before the turn completed"))
     }
 }
 

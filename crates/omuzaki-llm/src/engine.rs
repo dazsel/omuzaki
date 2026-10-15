@@ -87,8 +87,9 @@ pub(crate) trait Protocol: Send + Sync + 'static {
 pub(crate) trait Decoder: Send {
     /// The events one SSE event produces. The last event of a turn is `Stop`.
     fn event(&mut self, event: SseEvent) -> Result<Vec<LlmEvent>, Fail>;
-    /// The body ended without a `Stop`: the stream was cut.
-    fn cut(&mut self) -> Fail;
+    /// The body ended. A decoder whose protocol has no closing event finishes the turn here (the events end in `Stop`);
+    /// otherwise the stream was cut.
+    fn end(&mut self) -> Result<Vec<LlmEvent>, Fail>;
 }
 
 /// Everything one turn needs once it runs.
@@ -242,7 +243,17 @@ async fn attempt_with(job: &Job, tx: &Sender, started: &mut bool, secret: Option
         };
         wait = job.timeouts.idle;
         let event = match item {
-            None => return Err(decoder.cut()),
+            None => {
+                for out in decoder.end()? {
+                    let done = matches!(out, LlmEvent::Stop(_));
+                    *started |= matches!(out, LlmEvent::Start { .. });
+                    tx.event(out).await.map_err(|Closed| Fail::Fatal(LlmError::Cancelled))?;
+                    if done {
+                        return Ok(());
+                    }
+                }
+                return Err(Fail::network("the event stream ended before the turn completed"));
+            }
             Some(Err(SseFail::Transport(why))) => return Err(Fail::network(redact(why, secret))),
             Some(Err(SseFail::Malformed(why))) => {
                 return Err(Fail::Fatal(LlmError::Malformed(format!("malformed event stream: {why}"))));
