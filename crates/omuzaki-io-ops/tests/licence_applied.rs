@@ -297,3 +297,35 @@ fn licence_set_names_the_floor_when_a_character_with_no_parts_claims_more_than_i
     assert!(error.message.contains("limited by `(no parts)`"), "{}", error.message);
     assert!(!error.message.contains("limited by )") && !error.message.contains("limited by  "), "{}", error.message);
 }
+
+#[test]
+fn a_limit_set_by_an_application_is_named_as_one_and_the_fix_is_to_reapply_it() {
+    // Every part is cleared and the record says so; only the applied face forbids commercial use.
+    let doc = doc(&ItemRights::first_party(), &[("face", node("test/face-style", non_commercial()))]);
+    let mut record = derive(&doc).record;
+    record.provenance.commercial = Commercial::Ok;
+    record.provenance.licence = "CC0-1.0".into();
+    let args = json!({ "character": "mira", "record": serde_json::to_value(&record).unwrap() });
+    let error = plan(&doc, "licence.set", args).expect_err("the application limits the record");
+    assert!(error.message.contains("the application `face` allows only `no`"), "{}", error.message);
+    assert!(!error.message.contains("limited by"), "{}", error.message);
+    let hint = error.hint.as_deref().unwrap_or_default();
+    assert!(hint.contains("re-apply the application"), "{hint}");
+    assert!(hint.contains("licence.set_source records parts only"), "{hint}");
+
+    // The stored record goes stale the same way, and describe says so in the same words.
+    let stored = with_derived_record(doc.clone());
+    let mut root = stored.root().clone();
+    root["characters"]["mira"]["licence"]["provenance"]["commercial"] = json!("ok");
+    root["characters"]["mira"]["licence"]["provenance"]["licence"] = json!("CC0-1.0");
+    let stale = MemDoc::from_value(root);
+    let described = describe(&stale, "publish");
+    let finding = rule(&described.report.findings, "licence.exceeds_parts")
+        .into_iter()
+        .find(|f| f.location.as_deref() == Some("characters/mira/licence/provenance/commercial"))
+        .expect("the commercial excess");
+    assert!(finding.message.contains("the application `face` allows only `no`"), "{}", finding.message);
+    let hint = finding.hint.as_deref().unwrap_or_default();
+    assert!(hint.contains("re-apply the limiting application"), "{hint}");
+    assert!(!hint.contains("record the parts' real terms"), "{hint}");
+}

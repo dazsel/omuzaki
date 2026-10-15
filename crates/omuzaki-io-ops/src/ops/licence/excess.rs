@@ -23,6 +23,72 @@ pub(crate) struct Excess {
     /// Whether the project-owned basis waives it. The private-test flag never is: fan art stays private even when the
     /// person who drew it owns it.
     pub waivable: bool,
+    /// Whose limit it is, so the words and the fix can name the right kind of contribution.
+    pub limiter: Limiter,
+}
+
+/// Which kind of contribution holds a field back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Limiter {
+    /// The parts' source rows (or the no-parts floor).
+    Parts,
+    /// The application records alone.
+    Applications,
+    /// Both.
+    Both,
+}
+
+impl Limiter {
+    fn of(rows: &[&PartRow]) -> Self {
+        let apps = rows.iter().filter(|r| is_application(r)).count();
+        match (apps, rows.len()) {
+            (0, _) => Self::Parts,
+            (n, total) if n == total => Self::Applications,
+            _ => Self::Both,
+        }
+    }
+
+    /// The limiter of a refusal that cites all of `excess`.
+    pub(crate) fn of_all(excess: &[Excess]) -> Self {
+        let (mut parts, mut apps) = (false, false);
+        for e in excess {
+            match e.limiter {
+                Self::Parts => parts = true,
+                Self::Applications => apps = true,
+                Self::Both => (parts, apps) = (true, true),
+            }
+        }
+        match (parts, apps) {
+            (false, true) => Self::Applications,
+            (true, true) => Self::Both,
+            _ => Self::Parts,
+        }
+    }
+
+    /// How to bring a record back under the limit: the fix depends on which kind of contribution limits it, because a
+    /// source row can only be recorded for a part.
+    pub(crate) fn fix(self) -> &'static str {
+        match self {
+            Self::Parts => {
+                "a part may have changed since the record was set: run licence.derive and licence.set to store what the \
+                 parts allow, or record the parts' real terms with licence.set_source"
+            }
+            Self::Applications => {
+                "an application may have changed since the record was set: run licence.derive and licence.set to store \
+                 what the applications allow, or re-apply the limiting application with an item whose rights allow \
+                 more (licence.set_source records parts only)"
+            }
+            Self::Both => {
+                "a part or an application may have changed since the record was set: run licence.derive and licence.set \
+                 to store what they allow, record a part's real terms with licence.set_source, or re-apply the limiting \
+                 application with an item whose rights allow more"
+            }
+        }
+    }
+}
+
+fn is_application(row: &PartRow) -> bool {
+    row.kind == "application"
 }
 
 impl Excess {
@@ -35,11 +101,50 @@ impl Excess {
 /// "`hair`, `vest` (no source recorded)": the parts that set a limit, with the ones that count only because nobody
 /// recorded a source marked as such.
 fn naming(rows: &[&PartRow]) -> String {
+    let mixed = Limiter::of(rows) == Limiter::Both;
     let named: Vec<String> = rows
         .iter()
-        .map(|r| if r.recorded { format!("`{}`", r.part) } else { format!("`{}` (no source recorded)", r.part) })
+        .map(|r| {
+            // An application row is named by its record (`applied/face`); beside parts it says what it is.
+            if is_application(r) {
+                let label = r.part.strip_prefix("applied/").unwrap_or(&r.part);
+                if mixed { format!("`{label}` (application)") } else { format!("`{label}`") }
+            } else if r.recorded {
+                format!("`{}`", r.part)
+            } else {
+                format!("`{}` (no source recorded)", r.part)
+            }
+        })
         .collect();
     named.join(", ")
+}
+
+/// "part"/"parts", "application"/"applications" or "contribution"/"contributions", for the rows that limit.
+fn noun(rows: &[&PartRow]) -> &'static str {
+    match (Limiter::of(rows), rows.len() == 1) {
+        (Limiter::Applications, true) => "application",
+        (Limiter::Applications, false) => "applications",
+        (Limiter::Parts, true) => "part",
+        (Limiter::Parts, false) => "parts",
+        (Limiter::Both, _) => "contributions",
+    }
+}
+
+/// "the parts allow only `v` (limited by `hair`)", or "the application `face` allows only `v`" when an application is
+/// the only limiter (the subject already names it). `detail` replaces "limited by …" when the limit has another reason.
+fn allows_only(rows: &[&PartRow], value: &str, detail: Option<String>) -> String {
+    match Limiter::of(rows) {
+        Limiter::Applications => {
+            let verb = if rows.len() == 1 { "allows" } else { "allow" };
+            let tail = detail.map(|d| format!(" ({d})")).unwrap_or_default();
+            format!("the {} {} {verb} only `{value}`{tail}", noun(rows), naming(rows))
+        }
+        Limiter::Parts => format!("the parts allow only `{value}` ({})", detail.unwrap_or_else(|| format!("limited by {}", naming(rows)))),
+        Limiter::Both => format!(
+            "the parts and application records allow only `{value}` ({})",
+            detail.unwrap_or_else(|| format!("limited by {}", naming(rows)))
+        ),
+    }
 }
 
 fn source_name(source: &Source) -> &'static str {
@@ -73,14 +178,14 @@ pub(crate) fn against_parts(record: &LicenceRecord, derived: &DerivedLicence) ->
         found.push(Excess {
             field: "provenance/private_test".to_owned(),
             record: "false".to_owned(),
-            because: format!("{} private test material, which can never be exported for any purpose but private", {
-                if rows.len() == 1 {
-                    format!("part {} is", naming(&rows))
-                } else {
-                    format!("parts {} are", naming(&rows))
-                }
-            }),
+            because: format!(
+                "{} {} {} private test material, which can never be exported for any purpose but private",
+                noun(&rows),
+                naming(&rows),
+                if rows.len() == 1 { "is" } else { "are" }
+            ),
             waivable: false,
+            limiter: Limiter::of(&rows),
         });
     }
 
@@ -92,24 +197,23 @@ pub(crate) fn against_parts(record: &LicenceRecord, derived: &DerivedLicence) ->
             record: source_name(kept).to_owned(),
             because: format!(
                 "{} {} imported or generated, and the creator's own terms apply to the file",
-                if rows.len() == 1 { "part" } else { "parts" },
+                noun(&rows),
                 naming(&rows)
             ),
             waivable: true,
+            limiter: Limiter::of(&rows),
         });
     }
 
     let (status, allowed) = (record.provenance.commercial, limit.provenance.commercial);
     if commercial_rank(status) > commercial_rank(allowed) {
+        let rows: Vec<&PartRow> = contributions.iter().filter(|r| r.commercial == allowed).collect();
         found.push(Excess {
             field: "provenance/commercial".to_owned(),
             record: written(status),
-            because: format!(
-                "the parts allow only `{}` (limited by {})",
-                written(allowed),
-                naming(&contributions.iter().filter(|r| r.commercial == allowed).collect::<Vec<_>>())
-            ),
+            because: allows_only(&rows, &written(allowed), None),
             waivable: true,
+            limiter: Limiter::of(&rows),
         });
     }
 
@@ -122,8 +226,14 @@ pub(crate) fn against_parts(record: &LicenceRecord, derived: &DerivedLicence) ->
         found.push(Excess {
             field: "provenance/attribution".to_owned(),
             record: if kept.is_empty() { "(none)".to_owned() } else { kept.to_owned() },
-            because: format!("it must keep the credit {} that {} require", credits.join(", "), naming(&rows)),
+            because: format!(
+                "it must keep the credit {} that the {} {} require",
+                credits.join(", "),
+                noun(&rows),
+                naming(&rows)
+            ),
             waivable: true,
+            limiter: Limiter::of(&rows),
         });
     }
 
@@ -140,34 +250,50 @@ pub(crate) fn against_parts(record: &LicenceRecord, derived: &DerivedLicence) ->
             field: "provenance/licence".to_owned(),
             record: record.provenance.licence.clone(),
             because: format!(
-                "it must keep every licence the parts carry, and it leaves out {} of {who}",
+                "it must keep every licence the {} carry, and it leaves out {} of {who}",
+                match Limiter::of(&rows) {
+                    Limiter::Parts => "parts",
+                    Limiter::Applications => "applications",
+                    Limiter::Both => "parts and application records",
+                },
                 missing.iter().map(|t| format!("`{t}`")).collect::<Vec<_>>().join(", ")
             ),
             waivable: true,
+            limiter: Limiter::of(&rows),
         });
     }
 
+    found.extend(against_terms(record, limit, &contributions));
+    found
+}
+
+/// The flags of the file's terms on which `record` grants more than `limit`, each with the contributions that hold it back.
+fn against_terms(record: &LicenceRecord, limit: &LicenceRecord, contributions: &[PartRow]) -> Vec<Excess> {
+    let mut found = Vec::new();
     for axis in exceeding(&record.meta.terms, &limit.meta.terms) {
         let allowed = axis.rank_of(&limit.meta.terms);
         let by_terms: Vec<&PartRow> = contributions.iter().filter(|r| axis.rank_of(&r.terms) == allowed).collect();
-        let reason = if by_terms.is_empty() {
-            // No part holds the flag back by itself: it is held back because a commercial status that is not `ok` allows
-            // no permission at all.
+        let value = axis.show_of(&limit.meta.terms);
+        let (rows, detail) = if by_terms.is_empty() {
+            // No contribution holds the flag back by itself: it is held back because a commercial status that is not
+            // `ok` allows no permission at all.
             let rows: Vec<&PartRow> =
                 contributions.iter().filter(|r| r.commercial == limit.provenance.commercial).collect();
-            format!(
+            let detail = format!(
                 "commercial status `{}` of {} allows no permission",
                 written(limit.provenance.commercial),
                 naming(&rows)
-            )
+            );
+            (rows, Some(detail))
         } else {
-            format!("limited by {}", naming(&by_terms))
+            (by_terms, None)
         };
         found.push(Excess {
             field: format!("meta/{}", axis.key),
             record: axis.show_of(&record.meta.terms),
-            because: format!("the parts allow only `{}` ({reason})", axis.show_of(&limit.meta.terms)),
+            because: allows_only(&rows, &value, detail),
             waivable: true,
+            limiter: Limiter::of(&rows),
         });
     }
     found
@@ -196,6 +322,7 @@ pub(crate) fn against_itself(record: &LicenceRecord) -> Vec<Excess> {
             record: axis.show_of(&record.meta.terms),
             because: format!("{why} (the most it may say is `{}`)", axis.show_of(&strictest)),
             waivable: false,
+            limiter: Limiter::Parts,
         })
         .collect()
 }

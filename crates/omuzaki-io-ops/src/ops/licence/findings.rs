@@ -162,9 +162,8 @@ pub(crate) fn exceeds_parts_finding(
         return finding.at(at).hint(hint);
     }
     let blocking = leaves_the_machine(purpose) || !excess.waivable;
-    let message = format!("the record grants more than its parts allow: {}", excess.sentence());
-    let hint = "a part may have changed since the record was set: run licence.derive and licence.set to store what the \
-                parts allow, or record the parts' real terms with licence.set_source";
+    let message = format!("the record grants more than its parts and application records allow: {}", excess.sentence());
+    let hint = excess.limiter.fix();
     let finding = if blocking {
         Finding::error("licence.exceeds_parts", message)
     } else {

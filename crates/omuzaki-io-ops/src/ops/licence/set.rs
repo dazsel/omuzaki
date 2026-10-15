@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::derive::{DerivedLicence, DerivedSummary, load};
-use super::excess::{Excess, against_itself, against_parts};
+use super::excess::{Excess, Limiter, against_itself, against_parts};
 use super::store;
 use crate::gather::avatar::{LicenceRecord, OwnedBasis, SCHEMA, record_path};
 
@@ -51,7 +51,7 @@ fn check_form(record: &LicenceRecord) -> Result<(), OpError> {
     let provenance = &record.provenance;
     if provenance.licence.trim().is_empty() {
         return Err(OpError::invalid("record/provenance/licence", "the licence is blank").hint(
-            "give an SPDX expression (`CC-BY-4.0`) or `LicenseRef-<name>`; `licence.derive` returns the join of the parts'",
+            "give an SPDX expression (`CC-BY-4.0`) or `LicenseRef-<name>`; `licence.derive` returns the join of the parts' and application records'",
         ));
     }
     if let Some(consent) = &provenance.consent {
@@ -83,10 +83,24 @@ fn refusal(character: &CharId, excess: &[Excess]) -> OpError {
     let sentences: Vec<String> = excess.iter().map(Excess::sentence).collect();
     let message = format!("the record grants more than the parts of `{character}` allow: {}", sentences.join("; "));
     let hint = if excess.iter().all(|e| e.waivable) {
-        "store the record licence.derive returns, or lower these fields. To grant more, record each part's source \
-         (licence.set_source) with the terms it was really licensed under, or, when every part and application record \
-         is the project's own, mark each part with `owned.asserted_by` in its source row (an application record is \
-         owned when its item's rights say so); the message names what limits the record"
+        match Limiter::of_all(excess) {
+            Limiter::Parts => {
+                "store the record licence.derive returns, or lower these fields. To grant more, record each part's \
+                 source (licence.set_source) with the terms it was really licensed under, or, when every part and \
+                 application record is the project's own, mark each part with `owned.asserted_by` in its source row"
+            }
+            Limiter::Applications => {
+                "store the record licence.derive returns, or lower these fields. To grant more, re-apply the \
+                 application that limits it with an item whose rights allow more (licence.set_source records parts \
+                 only); the project-owned exception needs every part and application record to be owned, and an \
+                 application record is owned when its item's rights say so"
+            }
+            Limiter::Both => {
+                "store the record licence.derive returns, or lower these fields. To grant more, record each limiting \
+                 part's source (licence.set_source) and re-apply each limiting application with an item whose rights \
+                 allow more; the project-owned exception needs every part and application record to be owned"
+            }
+        }
     } else {
         "private test material can never be exported for any purpose but private: set `provenance.private_test` to \
          true and store the record licence.derive returns"

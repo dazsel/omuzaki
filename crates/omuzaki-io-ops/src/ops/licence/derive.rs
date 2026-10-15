@@ -561,7 +561,7 @@ fn load_applications(ctx: &OpCtx<'_>, id: &CharId) -> Result<Vec<ApplicationInpu
                     "a record is written by library.apply; remove it with library.detach, or apply the item again",
                 )
             })?;
-            if let Some(fault) = blank_rights_field(&record.rights.licence, record.rights.consent.as_ref()) {
+            if let Some((_, fault)) = blank_rights_field(&record.rights.licence, record.rights.consent.as_ref()) {
                 return Err(OpError::invalid(format!("applied/{app}"), format!("the application record at {path}: {fault}"))
                     .hint("a record is written by library.apply; remove it with library.detach, or apply the item again"));
             }

@@ -105,26 +105,33 @@ impl LicenceRecord {
         check_schema(node)?;
         let record = Self::deserialize(node).map_err(|e| RecordError::Invalid(e.to_string()))?;
         match blank_rights_field(&record.provenance.licence, record.provenance.consent.as_ref()) {
-            Some(fault) => Err(RecordError::Invalid(fault)),
+            Some((_, fault)) => Err(RecordError::Invalid(fault)),
             None => Ok(record),
         }
     }
 }
 
-/// The first required rights field that is blank, as a sentence naming it: the licence (give `LicenseRef-Unknown` when
-/// nobody knows) or the person or scope of a consent. The one rule for every stored layout of rights, so a record, a
+/// The first required rights field that is blank: its path below `provenance` (`licence`, `consent/person`,
+/// `consent/scope`) and a sentence naming it. The licence is blank when nobody gave one (give `LicenseRef-Unknown` when
+/// nobody knows); a consent names who agreed and to what. The one rule for every stored layout of rights, so a record, a
 /// source row and an application record cannot disagree about what blank means.
-pub(crate) fn blank_rights_field(licence: &str, consent: Option<&omuzaki_store_api::Consent>) -> Option<String> {
+pub(crate) fn blank_rights_field(
+    licence: &str,
+    consent: Option<&omuzaki_store_api::Consent>,
+) -> Option<(&'static str, String)> {
     if licence.trim().is_empty() {
-        return Some(
+        return Some((
+            "licence",
             "`provenance.licence` is blank: give an SPDX id, or `LicenseRef-Unknown` if nobody knows".to_owned(),
-        );
+        ));
     }
     let consent = consent?;
-    [("person", &consent.person), ("scope", &consent.scope)]
+    [("consent/person", "person", &consent.person), ("consent/scope", "scope", &consent.scope)]
         .into_iter()
-        .find(|(_, text)| text.trim().is_empty())
-        .map(|(field, _)| format!("`provenance.consent.{field}` is blank: a consent names who agreed and to what"))
+        .find(|(_, _, text)| text.trim().is_empty())
+        .map(|(path, field, _)| {
+            (path, format!("`provenance.consent.{field}` is blank: a consent names who agreed and to what"))
+        })
 }
 
 /// Checks that `node` says it is [`SCHEMA`], before anything else about it is read. Shared by every stored layout of

@@ -94,7 +94,7 @@ impl LicenceDescribe {
             && record.provenance.author.as_deref().is_none_or(|a| a.trim().is_empty())
         {
             let msg = "a VRM file needs at least one author, and the record names none";
-            let hint = "set provenance.author or the meta authors; `licence.derive` unions the parts' authors";
+            let hint = "set provenance.author or the meta authors; `licence.derive` unions the authors of the parts and application records";
             report
                 .push(Finding::warning("vrm.meta_authors_missing", msg).at(format!("{base}/meta/authors")).hint(hint));
         }
@@ -136,7 +136,7 @@ impl Op for LicenceDescribe {
             Ok(Some(record)) => Some(record),
             Ok(None) => {
                 let hint = "run licence.derive and store its record with licence.set; rights are never guessed from \
-                            the parts";
+                            the parts or application records";
                 report.push(
                     Finding::error(
                         "rights.provenance_missing",

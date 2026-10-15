@@ -108,8 +108,13 @@ impl PartSource {
                 message: format!("`schema` is {}, but this build reads only schema {SCHEMA}", self.schema),
             });
         }
-        if let Some(message) = blank_rights_field(&self.provenance.licence, self.provenance.consent.as_ref()) {
-            let field = if self.provenance.licence.trim().is_empty() { "provenance/licence" } else { "provenance/consent" };
+        if let Some((path, message)) = blank_rights_field(&self.provenance.licence, self.provenance.consent.as_ref()) {
+            // `SourceFault` fields are static: the three paths are spelled out here.
+            let field = match path {
+                "licence" => "provenance/licence",
+                "consent/person" => "provenance/consent/person",
+                _ => "provenance/consent/scope",
+            };
             return Err(SourceFault { field, message });
         }
         match &self.owned {
