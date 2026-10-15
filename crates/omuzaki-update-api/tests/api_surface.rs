@@ -26,13 +26,18 @@ fn sources(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// A snapshot-relative path with `/` separators on every platform (`Path::display` uses `\\` on Windows).
+fn slashed(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
 fn surface() -> String {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut files = Vec::new();
     sources(&root.join("src"), &mut files);
     let mut text = String::new();
     for file in files {
-        let rel = file.strip_prefix(root).unwrap().display().to_string();
+        let rel = slashed(file.strip_prefix(root).unwrap());
         let source = std::fs::read_to_string(&file).unwrap();
         // Items inside `#[cfg(test)] mod tests` are not public API.
         let body = source.split("#[cfg(test)]").next().unwrap_or("");
@@ -58,4 +63,10 @@ fn the_public_surface_matches_the_snapshot() {
     }
     let before = std::fs::read_to_string(&snapshot).unwrap_or_default();
     assert!(before == now, "the public API changed: review the diff, then regenerate with UPDATE_API_SURFACE=1");
+}
+
+#[test]
+fn snapshot_paths_use_forward_slashes() {
+    assert_eq!(slashed(Path::new("src\\error.rs")), "src/error.rs");
+    assert_eq!(slashed(Path::new("src/error.rs")), "src/error.rs");
 }
