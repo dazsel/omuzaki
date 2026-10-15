@@ -7,9 +7,10 @@ area: decisions
 # 0064: Plugin extensions are one world and one instance kind each, declared in the manifest, added to run-time catalogues all or nothing (2026-10-15)
 
 **Status:** proposed (#1083); accepted when merged. Decisions 4 to 10 change contracts other areas own and need
-the Director's sign-off (5: the tracker-source registry the stage reads, not yet designed; 8: drops PL-03's outputs,
-an amendment to the product spec; 10: a degraded-build contract in `omuzaki-char-api`'s `CharacterBuilder`). **Context:** PL-03, BR-10; spec v3 §10, §22, §25, §30, §39 rule 2; ADR 0015, 0054, 0058;
-automation D9 and D15. Design, prior art and numbers: `docs/design/plugin-extensions.md`.
+the Director's sign-off (5: the tracker-source registry, task T17, recommended home `omuzaki-track-api`; 8: drops
+PL-03's outputs, an amendment to the product spec; 10: the degraded-build policy, task T18, recommended as an opt-in
+`BuildPolicy::SkipMissing` with `Strict` the default). **Context:** PL-03, BR-10; spec v3 §10, §22, §25, §30,
+§39 rule 2; ADR 0015, 0054, 0058; automation D9 and D15. Design, prior art and numbers: `docs/design/plugin-extensions.md`.
 
 ## Context
 
@@ -56,7 +57,8 @@ trackers, outputs, exporters and part generators. Each plugs into a contract tha
    outputs need sockets, which plugins never get; protocol outputs are #1085's.
 9. **Registration is all or nothing:** each catalogue reserves under one shared activation gate (fallible, invisible to
    readers); enable reserves every kind and prepares the tracker thread and instances, then opens the gate in one
-   store, so every kind appears together and nothing after can fail; disable closes it first.
+   store, so every kind appears together and nothing after can fail; disable closes it first, drains
+   in-flight calls (every handle re-checks the gate on entry), then stops services.
 10. **A document naming a missing kind loses nothing:** parameters stay byte for byte, with a finding naming the plugin;
     nodes are inert, triggers never fire, parts don't build and their character can't be exported until the plugin is
     back, exporters are `not_found`, tracker channels fall back to first party.
