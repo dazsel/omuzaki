@@ -61,8 +61,10 @@ fn db(ratio: f32) -> f32 {
 struct Run {
     out: Vec<f32>,
     frame_us: Vec<f32>,
-    /// Heap allocations per block once past the warm-up.
-    allocs_per_block: f32,
+    /// Rust heap allocations per block once past the warm-up.
+    rust_allocs_per_block: f32,
+    /// C and C++ (`malloc`, `new`) allocations per block; `None` where they cannot be counted.
+    native_allocs_per_block: Option<f32>,
 }
 
 /// Blocks skipped before counting allocations: filters have been sized and caches filled.
@@ -71,19 +73,26 @@ const ALLOC_WARMUP_BLOCKS: usize = 300;
 fn run(c: &mut dyn Canceller, s: &Scenario) -> Run {
     let mut out = vec![0.0f32; s.mic.len()];
     let mut frame_us = Vec::with_capacity(s.mic.len() / FRAME);
-    let mut allocs = 0usize;
+    let (mut rust_allocs, mut native_allocs) = (0usize, Some(0usize));
     for b in 0..s.mic.len() / FRAME {
         let r = b * FRAME..(b + 1) * FRAME;
-        let before = count_alloc::count();
+        let before = count_alloc::snapshot();
         let t = Instant::now();
         c.process(&s.far[r.clone()], &s.mic[r.clone()], &mut out[r]);
         frame_us.push(t.elapsed().as_secs_f32() * 1e6);
         if b >= ALLOC_WARMUP_BLOCKS {
-            allocs += count_alloc::count() - before;
+            let after = count_alloc::snapshot();
+            rust_allocs += after.rust_since(before);
+            native_allocs = native_allocs.zip(after.native_since(before)).map(|(a, b)| a + b);
         }
     }
     let counted = (s.mic.len() / FRAME).saturating_sub(ALLOC_WARMUP_BLOCKS).max(1);
-    Run { out, frame_us, allocs_per_block: allocs as f32 / counted as f32 }
+    Run {
+        out,
+        frame_us,
+        rust_allocs_per_block: rust_allocs as f32 / counted as f32,
+        native_allocs_per_block: native_allocs.map(|n| n as f32 / counted as f32),
+    }
 }
 
 struct Metrics {
@@ -94,6 +103,8 @@ struct Metrics {
     leak_pct: f32,
     dt_sdr_db: f32,
     dt_fit_sdr_db: f32,
+    /// Near-end gain in double talk: the projection gain of the output on the true near end, in dB. Residual echo and
+    /// noise in the output are orthogonal to the near end and do not count; `dt_fit_sdr_db` measures them.
     dt_level_db: f32,
 }
 
@@ -136,7 +147,7 @@ fn metrics(s: &Scenario, out: &[f32]) -> Metrics {
     let lag = best_lag(&s.near[DT_START * RATE..(DT_START + 2) * RATE], &out[DT_START * RATE..], MAX_LAG);
     // Double talk: blocks with both a near-end talker and echo. `dt_sdr` is the signal-to-error ratio against the true
     // near-end after removing that lag; `dt_fit` also fits one gain to the output, so it measures leftover echo and
-    // distortion apart from how much a suppressor turned the talker down (`dt_level`).
+    // distortion apart from how much a suppressor turned the talker down (`dt_level`, from that same gain `alpha`).
     let (mut ne, mut err, mut outp, mut cross) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
     for b in DT_START * 100..DT_END * 100 {
         if blk(&s.near, b) / FRAME as f32 > 1e-4 && echo_active(b) {
@@ -159,7 +170,7 @@ fn metrics(s: &Scenario, out: &[f32]) -> Metrics {
         leak_pct: 100.0 * leaked as f32 / active.max(1) as f32,
         dt_sdr_db: db(ne / err.max(1e-12)),
         dt_fit_sdr_db: db(alpha * alpha * ne / fit_err),
-        dt_level_db: db(outp / ne.max(1e-12)),
+        dt_level_db: db(alpha * alpha),
     }
 }
 
@@ -209,9 +220,9 @@ const NAMES: [&str; 10] =
 
 fn table() {
     println!(
-        "| room | candidate | ERLE dB | 25 dB first / stable (s) | leak % | lag ms | DT SDR dB | DT fit SDR dB | DT level dB | mean us | p99 us | max us | core % | allocs/block |"
+        "| room | candidate | ERLE dB | 25 dB first / stable (s) | leak % | lag ms | DT SDR dB | DT fit SDR dB | DT level dB | mean us | p99 us | max us | core % | Rust allocs/block | native allocs/block |"
     );
-    println!("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|");
+    println!("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|");
     for room in &ROOMS {
         let s = scenario(room, 0);
         for name in NAMES {
@@ -225,7 +236,7 @@ fn table() {
             us.sort_by(f32::total_cmp);
             let mean = us.iter().sum::<f32>() / us.len() as f32;
             println!(
-                "| {} | {} | {:.1} | {} / {} | {:.1} | {:.1} | {:.1} | {:.1} | {:+.1} | {:.0} | {:.0} | {:.0} | {:.2} | {:.1} |",
+                "| {} | {} | {:.1} | {} / {} | {:.1} | {:.1} | {:.1} | {:.1} | {:+.1} | {:.0} | {:.0} | {:.0} | {:.2} | {:.1} | {} |",
                 room.name,
                 c.name(),
                 m.erle_db,
@@ -240,7 +251,8 @@ fn table() {
                 percentile(&us, 0.99),
                 us[us.len() - 1],
                 mean / 100.0,
-                r.allocs_per_block,
+                r.rust_allocs_per_block,
+                r.native_allocs_per_block.map_or("not measured".to_string(), |n| format!("{n:.1}")),
             );
         }
     }
@@ -312,8 +324,139 @@ fn main() {
         Some("sweep") => sweep(),
         Some("seeds") => seeds(),
         Some(other) => {
-            eprintln!("unknown mode {other}; use table or sweep");
+            eprintln!("unknown mode {other}; use table, sweep or seeds");
             std::process::exit(2);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn room(name: &str) -> &'static Room {
+        ROOMS.iter().find(|r| r.name == name).expect("room exists in ROOMS")
+    }
+
+    /// A scenario whose output is built from its own parts, so each metric has a known answer.
+    fn out_from(s: &Scenario, f: impl Fn(usize) -> f32) -> Vec<f32> {
+        (0..s.mic.len()).map(f).collect()
+    }
+
+    #[test]
+    fn pass_through_has_no_erle_and_leaks_every_echo_frame() {
+        let s = scenario(room("medium"), 0);
+        let m = metrics(&s, &s.mic);
+        assert!(m.erle_db.abs() < 0.5, "pass-through ERLE {} dB should be about 0", m.erle_db);
+        assert!(m.leak_pct > 90.0, "pass-through leaks {} %", m.leak_pct);
+        assert_eq!(m.first_s, None);
+        assert_eq!(m.converge_s, None);
+        assert_eq!(m.lag_ms, 0.0);
+        // The talker is untouched: unit near-end gain, and the echo shows up as error, not as speech.
+        assert!(m.dt_level_db.abs() < 0.5, "pass-through near-end gain {} dB", m.dt_level_db);
+        assert!(m.dt_fit_sdr_db < 10.0, "echo left in the output must lower the fitted SDR, got {}", m.dt_fit_sdr_db);
+    }
+
+    #[test]
+    fn best_lag_finds_a_known_delay_exactly() {
+        let mut rng = Rng::new(7);
+        let x: Vec<f32> = (0..4800).map(|_| rng.gauss()).collect();
+        for lag in [0usize, 1, 240, MAX_LAG] {
+            let mut y = vec![0.0f32; lag];
+            y.extend_from_slice(&x);
+            assert_eq!(best_lag(&x, &y, MAX_LAG), lag);
+        }
+    }
+
+    #[test]
+    fn metrics_report_an_added_latency_of_five_ms() {
+        let s = scenario(room("small"), 0);
+        let lag = RATE / 200; // 5 ms
+        let out = out_from(&s, |i| if i >= lag { s.near[i - lag] } else { 0.0 });
+        let m = metrics(&s, &out);
+        assert_eq!(m.lag_ms, 5.0);
+        // The lag is removed before comparing, so a delayed clean talker is perfect.
+        assert!(m.dt_level_db.abs() < 0.1, "{}", m.dt_level_db);
+        assert!(m.dt_sdr_db > 40.0, "{}", m.dt_sdr_db);
+        assert!(m.erle_db >= ERLE_CAP_DB - 0.1, "no echo in the output reaches the cap, got {}", m.erle_db);
+    }
+
+    #[test]
+    fn double_talk_metrics_on_a_constructed_output() {
+        let s = scenario(room("medium"), 0);
+        // Half-amplitude talker and nothing else: 6.02 dB down, and exactly one gain explains it.
+        let half = out_from(&s, |i| 0.5 * s.near[i]);
+        let m = metrics(&s, &half);
+        assert!((m.dt_level_db + 6.02).abs() < 0.05, "level {}", m.dt_level_db);
+        assert!((m.dt_sdr_db - 6.02).abs() < 0.05, "sdr {}", m.dt_sdr_db);
+        assert!(m.dt_fit_sdr_db > 30.0, "fit sdr {}", m.dt_fit_sdr_db);
+        // Full talker plus the echo: the level stays at 0 dB (echo is not near-end speech) but the fitted SDR drops.
+        let leaky = out_from(&s, |i| s.near[i] + s.echo[i]);
+        let m = metrics(&s, &leaky);
+        assert!(m.dt_level_db.abs() < 0.5, "level {}", m.dt_level_db);
+        assert!(m.dt_fit_sdr_db < 10.0, "fit sdr {}", m.dt_fit_sdr_db);
+        // A gate: silence in, the talker is gone.
+        let m = metrics(&s, &vec![0.0; s.mic.len()]);
+        assert!(m.dt_level_db < -100.0, "level {}", m.dt_level_db);
+    }
+
+    #[test]
+    fn a_perfect_canceller_converges_at_once_and_a_real_filter_converges_on_a_synthetic_room() {
+        let s = scenario(room("small"), 0);
+        let oracle = out_from(&s, |i| s.mic[i] - s.echo[i]);
+        let m = metrics(&s, &oracle);
+        assert!(m.erle_db > 25.0, "{}", m.erle_db);
+        assert_eq!(m.first_s, Some(0.5));
+        assert_eq!(m.converge_s, Some(0.5));
+        assert_eq!(m.leak_pct, 0.0);
+
+        // Our own partitioned filter, 300 ms, in the 12 ms room: repeatable, so a fixed bound is a regression test.
+        let mut c = make("pbfdaf").expect("pbfdaf builds");
+        let r = run(c.as_mut(), &s);
+        let m = metrics(&s, &r.out);
+        assert!(m.erle_db > 25.0, "PBFDAF ERLE {} dB", m.erle_db);
+        assert!(m.converge_s.is_some(), "PBFDAF never stayed above 25 dB");
+        assert!(m.dt_level_db > -1.0, "a linear filter should keep the talker: {} dB", m.dt_level_db);
+    }
+
+    /// The native counter must see allocations that Rust's allocator does not, or "0 native allocations" proves nothing.
+    #[test]
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    #[allow(unsafe_code)]
+    fn native_counter_sees_c_allocations_and_not_rust_ones() {
+        unsafe extern "C" {
+            fn malloc(size: usize) -> *mut std::ffi::c_void;
+            fn free(ptr: *mut std::ffi::c_void);
+        }
+        let before = count_alloc::snapshot();
+        // SAFETY: a plain malloc/free pair of 64 bytes.
+        unsafe { free(std::hint::black_box(malloc(64))) }; // black_box: LLVM would delete an unused pair
+        let after = count_alloc::snapshot();
+        assert!(after.native_since(before).is_some_and(|n| n >= 1), "a C malloc was not counted");
+        let before = count_alloc::snapshot();
+        let v = std::hint::black_box(vec![0u8; 4096]);
+        let after = count_alloc::snapshot();
+        assert!(after.rust_since(before) >= 1, "a Vec was not counted as a Rust allocation");
+        drop(v);
+    }
+
+    /// Building the C and C++ candidates allocates natively, so the counter reads above zero for them. (Steady-state
+    /// zeros in the table mean something only because this holds.)
+    #[test]
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    fn native_counter_sees_the_c_and_cpp_candidates_allocate() {
+        let before = count_alloc::snapshot();
+        let speex = make("speex").expect("speex builds");
+        let n = count_alloc::snapshot().native_since(before).expect("measured");
+        assert!(n > 0, "SpeexDSP setup showed no native allocations");
+        drop(speex);
+        #[cfg(feature = "webrtc-cpp")]
+        {
+            let before = count_alloc::snapshot();
+            let cpp = make("webrtc-cpp").expect("webrtc-cpp builds");
+            let n = count_alloc::snapshot().native_since(before).expect("measured");
+            assert!(n > 0, "WebRTC C++ setup showed no native allocations");
+            drop(cpp);
         }
     }
 }

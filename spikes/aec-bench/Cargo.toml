@@ -51,3 +51,7 @@ todo = "deny"
 lto = "thin"
 codegen-units = 16
 debug = false
+
+# The tests build 24 s scenarios and run filters over them; unoptimised they take minutes.
+[profile.test]
+opt-level = 3

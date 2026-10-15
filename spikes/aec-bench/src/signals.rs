@@ -116,7 +116,7 @@ pub struct Room {
     pub nonlinear: bool,
 }
 
-/// The rooms the bench runs. Delays of 12 to 120 ms bracket a wired device (a few ms of buffer plus about 3 ms of air)
+/// The rooms the bench runs. Delays of 12 to 180 ms bracket a wired device (a few ms of buffer plus about 3 ms of air)
 /// and a Bluetooth or monitored-through-OBS path.
 pub const ROOMS: [Room; 5] = [
     Room { name: "small", delay_ms: 12.0, rt60_ms: 150.0, tail_ms: 150.0, nonlinear: false },

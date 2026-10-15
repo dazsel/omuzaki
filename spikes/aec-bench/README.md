@@ -1,7 +1,8 @@
 # Spike: echo cancellers for `fx.aec`
 
-Measures echo return loss enhancement (ERLE), double-talk behaviour, added latency, CPU per 10 ms frame and heap
-allocations per frame for each echo-cancellation candidate, on **synthetic, seeded signals only** (research #920, the
+Measures echo return loss enhancement (ERLE), double-talk behaviour (the near-end gain, from a projection of the output
+on the true talker), added latency, CPU per 10 ms frame and heap allocations per frame (Rust and native `malloc`/`new`
+counted separately; native counting is Linux/glibc only) for each echo-cancellation candidate, on **synthetic, seeded signals only** (research #920, the
 note is `docs/research/2026-10-echo-cancellation.md`). It is its own Cargo workspace (like the other spikes), so none of
 its dependencies reach the main workspace. Nothing here is a recording of a person.
 
@@ -20,6 +21,9 @@ cargo run --release -- table    # every candidate in five rooms (default)
 cargo run --release -- sweep    # ERLE against the speaker-to-mic delay: each estimator's range
 cargo run --release -- seeds    # the AEC3 builds over five seeds
 ```
+
+`cargo test` runs the metric calibration cases (pass-through, a known lag, a constructed double-talk output, convergence
+on a synthetic room, the allocation counters).
 
 Metrics are exact and repeat run to run; times vary by about 10 % on a shared VM, so read them as ratios between
 candidates. `src/signals.rs` has the signal model, `src/main.rs` the metric definitions.
