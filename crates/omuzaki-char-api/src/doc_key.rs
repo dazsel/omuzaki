@@ -12,7 +12,9 @@
 //!
 //! The keys this crate's own types own, and the sibling keys whose owners are not linked by every binary that parses a
 //! character, are the built-in table ([`BUILT_IN_NODE_KEYS`], [`BUILT_IN_SIBLING_KEYS`]), so validation never depends
-//! on what a binary linked (ADR 0015). Registered keys add to it.
+//! on what a binary linked (ADR 0015). Registered keys add to it. The built-in keys are also recorded for the listing of
+//! registrations (`omuzaki registrations`), so one list shows every key; that record needs this crate's `link()`, the
+//! table does not.
 
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
@@ -45,8 +47,11 @@ pub const BUILT_IN_NODE_KEYS: [&str; 8] =
     ["name", "template", "seed", "palette", "skin_tone", "parts", "face", "weight_brushes"];
 
 /// The built-in sibling keys: the roots of the other files of the character. They are `variants`, `colourways`, `rig`,
-/// `look`, `licence`, `sources`, `applied`, `poses` and `emotes`; some are owned by crates that not every binary which
-/// parses a character links, so they cannot register.
+/// `look`, `licence`, `sources`, `applied`, `poses` and `emotes`.
+///
+/// Five are owned by other crates: `licence` by `omuzaki-io-ops`, `sources` by `omuzaki-char`, `applied` and `emotes` by
+/// `omuzaki-library-api`, and `poses` by `omuzaki-anim`. They stay in this table because no crate that parses a character
+/// links all of those owners, so they cannot register.
 pub const BUILT_IN_SIBLING_KEYS: [&str; 9] =
     ["variants", "colourways", "rig", "look", "licence", "sources", "applied", "poses", "emotes"];
 
@@ -56,8 +61,14 @@ pub const BUILT_IN_SIBLING_KEYS: [&str; 9] =
 /// ```ignore
 /// omuzaki_char_api::register_doc_key!("hats", hats_path);
 /// ```
+///
+/// The marker form `register_doc_key!("name", @built_in)` is for this module only: it records the key for the listing and
+/// registers nothing. `@built_in` can't parse as a path, so every path argument means what it always did.
 #[macro_export]
 macro_rules! register_doc_key {
+    ($key:literal, @built_in) => {
+        $crate::__record_registration!("doc_key", $key);
+    };
     ($key:literal, $path:path) => {
         $crate::__inventory::submit! {
             $crate::DocKeyRegistration { key: $key, path: $path }
@@ -65,6 +76,27 @@ macro_rules! register_doc_key {
         $crate::__record_registration!("doc_key", $key);
     };
 }
+
+// The built-in keys, listed beside the registered ones (ADR 0054 §5). The record is in a binary exactly when this crate's
+// `link()` is called; the tables above are what validation reads, so it never depends on that. The test below keeps the
+// two in step. `@built_in` is not a path, so no path argument can match it.
+register_doc_key!("name", @built_in);
+register_doc_key!("template", @built_in);
+register_doc_key!("seed", @built_in);
+register_doc_key!("palette", @built_in);
+register_doc_key!("skin_tone", @built_in);
+register_doc_key!("parts", @built_in);
+register_doc_key!("face", @built_in);
+register_doc_key!("weight_brushes", @built_in);
+register_doc_key!("variants", @built_in);
+register_doc_key!("colourways", @built_in);
+register_doc_key!("rig", @built_in);
+register_doc_key!("look", @built_in);
+register_doc_key!("licence", @built_in);
+register_doc_key!("sources", @built_in);
+register_doc_key!("applied", @built_in);
+register_doc_key!("poses", @built_in);
+register_doc_key!("emotes", @built_in);
 
 /// The registered keys, resolved once: usable ones by key, and the collisions.
 struct Resolved {
@@ -141,6 +173,20 @@ mod tests {
     #[test]
     fn built_in_lists_do_not_overlap() {
         assert!(BUILT_IN_SIBLING_KEYS.iter().all(|k| !BUILT_IN_NODE_KEYS.contains(k)));
+    }
+
+    #[test]
+    fn the_listing_records_each_built_in_key_once() {
+        let mut recorded: Vec<String> = omuzaki_core::link::registered()
+            .into_iter()
+            .filter(|r| r.kind == "doc_key" && r.package == "omuzaki-char-api")
+            .map(|r| r.name.trim_matches('"').to_owned())
+            .collect();
+        recorded.sort();
+        let mut table: Vec<String> =
+            BUILT_IN_NODE_KEYS.iter().chain(&BUILT_IN_SIBLING_KEYS).map(|k| (*k).to_owned()).collect();
+        table.sort();
+        assert_eq!(recorded, table);
     }
 
     #[test]
