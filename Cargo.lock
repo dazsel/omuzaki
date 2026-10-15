@@ -3598,6 +3598,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-connect-api"
+version = "0.0.0"
+dependencies = [
+ "inventory",
+ "omuzaki-ai-api",
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-doc-mock",
+ "omuzaki-http-api",
+ "omuzaki-ops-api",
+ "omuzaki-settings-api",
+ "omuzaki-store-api",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "toml",
+]
+
+[[package]]
+name = "omuzaki-connect-mock"
+version = "0.0.0"
+dependencies = [
+ "image",
+ "omuzaki-ai-api",
+ "omuzaki-connect-api",
+ "omuzaki-core",
+ "omuzaki-http-api",
+ "omuzaki-http-mock",
+ "omuzaki-ops-api",
+ "omuzaki-store-api",
+ "serde_json",
+]
+
+[[package]]
 name = "omuzaki-core"
 version = "0.0.0"
 dependencies = [
