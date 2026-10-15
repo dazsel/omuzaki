@@ -21,6 +21,7 @@ accepted = [
     "MPL-2.0",
     "OFL-1.1",
     "Ubuntu-font-1.0",
+    "CDLA-Permissive-2.0",
 ]
 
 # Exactly deny.toml's `[graph] targets`, so the notices cover every platform the policy checks.
