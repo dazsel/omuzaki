@@ -1,0 +1,7 @@
+section = "rust"
+item = "rustfft 6.4.1"
+kind = "crate"
+used_for = "FFT for the spike's own partitioned-block echo filter in `spikes/aec-bench` (research 2026-10-echo-cancellation.md, #920); not in the main workspace"
+status = "yes"
+condition = "`license = \"MIT OR Apache-2.0\"` in the manifest, with `LICENSE-MIT` and `LICENSE-APACHE` in the 6.4.1 package (read 2026-10-15); keep the notice if it is ever shipped"
+audit = "research 2026-10-echo-cancellation.md section 2"

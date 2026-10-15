@@ -1,0 +1,6 @@
+section = "rust"
+item = "objc2-foundation"
+kind = "crate"
+used_for = "geometry and array types for the AppKit calls on macOS in `spikes/mascot-window`; the spike's own workspace keeps it out of the main lockfile"
+status = "yes"
+audit = "(crates.io: objc2-foundation 0.3.2, MIT)"

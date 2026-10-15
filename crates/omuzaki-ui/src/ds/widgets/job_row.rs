@@ -21,6 +21,7 @@ use egui::{
 use super::button::Button;
 use super::channel_meter::hatch;
 use super::chip::{cost_width, paint_cost};
+use super::ids;
 use super::tooltip::{Tip, TipExt as _};
 use crate::ds::a11y;
 use crate::ds::contrast::{Rule, Table};
@@ -31,6 +32,9 @@ use crate::ds::text::NumberBuf;
 use crate::ds::theme::{Ds, ds};
 use crate::ds::tokens::{Theme, radius, space};
 use crate::register_contrast;
+
+/// What a job row's salt is namespaced by (see [`ids`]).
+const KIND: &str = "ds.job_row";
 
 /// Where a job is.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -101,7 +105,7 @@ impl<'a> JobRow<'a> {
         let m = &ds.metrics;
         let height = 2.0 * space::S8 + m.control_row + BAR_LINE + META_LINE;
         let (rect, outer) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
-        let id = self.salt.map_or(outer.id.with("job"), |salt| ui.make_persistent_id(salt));
+        let id = self.salt.map_or(outer.id.with("job"), |salt| ids::salted(ui, KIND, salt));
         let rect = paint::snap(ui.ctx(), rect);
         let inner = rect.shrink2(vec2(space::S8, space::S8));
         let title_line = Rect::from_min_size(inner.min, vec2(inner.width(), m.control_row));
