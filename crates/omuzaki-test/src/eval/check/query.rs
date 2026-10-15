@@ -42,6 +42,19 @@ impl Checker {
         if let Err(refused) = allowed(&*self.result, op) {
             return refused;
         }
+        // A `change` is measured from the fixture, so the fixture comes first: a pointer that is absent there is a
+        // broken check, and must not be read as the agent losing the value.
+        let mut before = None;
+        if expect.change.is_some() {
+            let value = self
+                .before(op, args)
+                .and_then(|output| single(&output, at, |detail| Verdict::error(format!("on the fixture: {detail}"))));
+            match value {
+                Ok(value) if value.is_number() => before = Some(value),
+                Ok(value) => return Verdict::error(format!("change needs a number on the fixture, found {value}")),
+                Err(verdict) => return verdict,
+            }
+        }
         let after = match call(&*self.result, op, args) {
             Ok(output) => match single(&output, at, Verdict::fail) {
                 Ok(value) => value,
@@ -49,16 +62,6 @@ impl Checker {
             },
             Err(e) => return result_failure(&format!("`{op}`"), &e),
         };
-        let mut before = None;
-        if expect.change.is_some() {
-            match self
-                .before(op, args)
-                .and_then(|output| single(&output, at, |detail| Verdict::error(format!("on the fixture: {detail}"))))
-            {
-                Ok(value) => before = Some(value),
-                Err(verdict) => return verdict,
-            }
-        }
         let verdict = judge(expect, before.as_ref(), &after);
         verdict.seen(before, Some(after))
     }

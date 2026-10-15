@@ -380,3 +380,44 @@ fn a_preview_is_matched_to_its_apply_without_the_dry_run_transport_flag() {
     let other = ToolCall::new("evaltest.set_counter", json!({"value": 6}), Mode::Apply, true).with_application();
     assert_eq!(log_outcomes(vec![preview, other], checks), [Outcome::Fail]);
 }
+
+#[test]
+fn a_change_query_whose_pointer_is_absent_from_the_fixture_too_is_a_broken_check() {
+    // An obsolete pointer: neither the pristine fixture nor the result has it, so no attempt could ever pass.
+    assert_eq!(outcome(&doc_query("/chars/gone/hp", "{ change = 'up' }")), Outcome::Error);
+    assert_eq!(outcome(&doc_query("/chars/gone/hp", "{ change = 'none' }")), Outcome::Error);
+    // Whereas an `equals` on a value the agent was to create is still the agent's to get right.
+    assert_eq!(outcome(&doc_query("/chars/gone/hp", "{ equals = 1 }")), Outcome::Fail);
+    // And a fixture value that is present but moved or lost in the result stays the agent's.
+    let lost = runner(&json!({"chars": {}}));
+    let fixture = runner(&json!({"counter": 1}));
+    let report =
+        Checker::new(fixture, lost, Transcript::default()).grade(&task(&doc_query("/counter", "{ change = 'up' }")));
+    assert_eq!(report.results[0].outcome, Outcome::Fail);
+}
+
+#[test]
+fn checks_can_name_the_fixtures_exports_and_a_name_cannot_be_both_an_export_and_a_bind() {
+    let by_export = "[[check]]\nid='c'\nkind='query'\nop='evaltest.char'\nargs={ id = '{main}' }\nat='/name'\nexpect={ equals = 'A' }\n";
+    let exports = std::collections::BTreeMap::from([("main".to_owned(), "a".to_owned())]);
+    let fixture = runner(&json!({"counter": 1, "chars": {"a": {"name": "A"}}}));
+    let result = runner(&json!({"counter": 5, "chars": {"a": {"name": "A"}, "fox": {"name": "Fox"}}}));
+    let checker = Checker::new(fixture.clone(), result.clone(), Transcript::default()).with_exports(exports.clone());
+    assert_eq!(checker.grade(&task(by_export)).results[0].outcome, Outcome::Pass);
+    // Exports and bindings work together in one task.
+    let both = format!("{BIND}{}", by_export.replace("'c'", "'e'") + &bound_check("Fox").replace(BIND, ""));
+    let report = Checker::new(fixture.clone(), result.clone(), Transcript::default())
+        .with_exports(exports.clone())
+        .grade(&task(&both));
+    assert_eq!(report.results.iter().map(|r| r.outcome).collect::<Vec<_>>(), [Outcome::Pass, Outcome::Pass]);
+    // A name both exported and bound cannot be resolved either way.
+    let clash = std::collections::BTreeMap::from([("fox".to_owned(), "a".to_owned())]);
+    let report =
+        Checker::new(fixture, result, Transcript::default()).with_exports(clash).grade(&task(&bound_check("Fox")));
+    assert_eq!(report.results[0].outcome, Outcome::Error);
+    assert!(
+        report.results[0].detail.contains("both a fixture export and a [bind] name"),
+        "{}",
+        report.results[0].detail
+    );
+}
