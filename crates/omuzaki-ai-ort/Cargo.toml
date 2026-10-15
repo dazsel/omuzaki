@@ -25,6 +25,11 @@ zip.workspace = true
 hound.workspace = true
 sha2.workspace = true
 
+# Gated on OMUZAKI_ORT_CACHE; a plain `main` with `Instant`, so it adds no dependency.
+[[bench]]
+name = "pipeline"
+harness = false
+
 [lints]
 workspace = true
 

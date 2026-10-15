@@ -1,0 +1,28 @@
+[package]
+name = "omuzaki-identity-mock"
+description = "Deterministic test signer and in-memory trust list for omuzaki-identity-api; test seeds exist only here (design D1)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ed25519-dalek = { workspace = true }
+omuzaki-identity-api = { path = "../omuzaki-identity-api" }
+omuzaki-store-api = { path = "../omuzaki-store-api" }
+
+[dev-dependencies]
+proptest.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+omuzaki-library-api = { path = "../omuzaki-library-api" }
+
+[package.metadata.omuzaki]
+kind = "Mock"
+summary = "`MemorySigner::from_test_seed` and `MemoryTrust`; test seeds live only here, and the compatibility test against `omuzaki-library-api`"
+
+[lints]
+workspace = true
