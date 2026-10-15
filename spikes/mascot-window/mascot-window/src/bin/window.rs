@@ -30,12 +30,18 @@ struct Cli {
     probe: bool,
 }
 
+/// Whether the run goes through eframe's event loop. A probe only asks the OS about the mascot window, so it never
+/// starts the eframe window next to it, whatever `--host` says.
+fn shares_eframe_loop(host: HostArg, probe: bool) -> bool {
+    matches!(host, HostArg::Eframe) && !probe
+}
+
 fn run(cli: &Cli) -> Result<Outcome, RunError> {
     let config = cli.window.config(if cli.probe { Mode::Probe } else { Mode::Run });
-    match cli.host {
-        // A probe only asks the OS about the mascot window, so it never starts the eframe window next to it.
-        HostArg::Eframe if !cli.probe => host::run_shared(config, cli.window.gpu.dx12_visual()),
-        HostArg::Winit | HostArg::Eframe => app::run(config),
+    if shares_eframe_loop(cli.host, cli.probe) {
+        host::run_shared(config, cli.window.gpu.dx12_visual())
+    } else {
+        app::run(config)
     }
 }
 
@@ -52,5 +58,18 @@ fn main() -> ExitCode {
             eprintln!("error: {e}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_run_on_the_eframe_host_shares_eframes_loop() {
+        assert!(shares_eframe_loop(HostArg::Eframe, false));
+        assert!(!shares_eframe_loop(HostArg::Eframe, true), "a probe never starts the eframe window");
+        assert!(!shares_eframe_loop(HostArg::Winit, false));
+        assert!(!shares_eframe_loop(HostArg::Winit, true));
     }
 }
