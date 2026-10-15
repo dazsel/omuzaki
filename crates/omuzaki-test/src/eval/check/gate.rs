@@ -26,8 +26,11 @@ impl Checker {
                 return refused;
             }
             match call(&*self.result, op, &Map::new()) {
-                Ok(output) if pointer_all(&output, PASSED).first().is_some_and(|v| v.as_bool() == Some(true)) => {}
-                Ok(_) => failed.push(op.clone()),
+                Ok(output) => match pointer_all(&output, PASSED) {
+                    Ok(found) if found.first().is_some_and(|v| v.as_bool() == Some(true)) => {}
+                    Ok(_) => failed.push(op.clone()),
+                    Err(verdict) => return verdict,
+                },
                 Err(e) => return result_failure(&format!("gate `{op}`"), &e),
             }
         }
@@ -55,7 +58,7 @@ impl Checker {
             )));
         }
         let output = call(&*self.result, DESCRIBE_OP, &Map::new()).map_err(|e| result_failure(DESCRIBE_OP, &e))?;
-        match pointer_all(&output, FAILED_GATES).as_slice() {
+        match pointer_all(&output, FAILED_GATES)?.as_slice() {
             [serde_json::Value::Array(names)] => {
                 Ok(names.iter().map(|n| n.as_str().map_or_else(|| n.to_string(), str::to_owned)).collect())
             }

@@ -15,18 +15,29 @@ pub struct ToolCall {
     pub mode: Mode,
     /// `true` when the server answered with a result, `false` when it answered with an error.
     pub ok: bool,
+    /// `true` when the server's answer carried an application record: the call really changed the project. A query
+    /// runs in [`Mode::Apply`] and succeeds without one, so neither the mode nor `ok` says this.
+    pub applied: bool,
 }
 
 impl ToolCall {
-    /// A call of `op` with `args` in `mode`, and whether the server answered without an error.
+    /// A call of `op` with `args` in `mode`, and whether the server answered without an error. It did not change the
+    /// project until [`ToolCall::with_application`] says so.
     pub fn new(op: impl Into<String>, args: Value, mode: Mode, ok: bool) -> Self {
-        Self { op: op.into(), args, mode, ok }
+        Self { op: op.into(), args, mode, ok, applied: false }
     }
 
-    /// Whether this call changed the project: an applied call the server did not refuse.
+    /// The same call, whose answer carried an application record.
+    #[must_use]
+    pub fn with_application(mut self) -> Self {
+        self.applied = true;
+        self
+    }
+
+    /// Whether this call changed the project: the server answered with an application record.
     #[must_use]
     pub fn applied(&self) -> bool {
-        self.mode == Mode::Apply && self.ok
+        self.ok && self.applied
     }
 }
 

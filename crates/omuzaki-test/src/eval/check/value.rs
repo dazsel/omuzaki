@@ -37,7 +37,14 @@ pub(super) fn result_failure(what: &str, error: &OpError) -> Verdict {
 }
 
 /// Every value a JSON pointer reaches, where a `*` segment stands for each array item or object value.
-pub(super) fn pointer_all<'a>(value: &'a Value, pointer: &str) -> Vec<&'a Value> {
+///
+/// # Errors
+/// An `error` verdict when `pointer` is not empty and does not start with `/`: a pointer such as `counter` would
+/// otherwise read the whole output like the empty pointer, and a broken check could pass.
+pub(super) fn pointer_all<'a>(value: &'a Value, pointer: &str) -> Result<Vec<&'a Value>, Verdict> {
+    if !pointer.is_empty() && !pointer.starts_with('/') {
+        return Err(Verdict::error(format!("pointer `{pointer}` is malformed: a non-empty pointer starts with `/`")));
+    }
     let mut found = vec![value];
     for raw in pointer.split('/').skip(1) {
         let segment = raw.replace("~1", "/").replace("~0", "~");
@@ -54,7 +61,7 @@ pub(super) fn pointer_all<'a>(value: &'a Value, pointer: &str) -> Vec<&'a Value>
             })
             .collect();
     }
-    found
+    Ok(found)
 }
 
 /// Whether `text` matches `pattern`, where `*` stands for any run of characters (an op name or a name glob).
@@ -82,11 +89,29 @@ pub(super) fn moved(before: f64, after: f64, change: Change, at_least: Option<f6
     direction && at_least.is_none_or(|least| size >= least)
 }
 
-/// Whether two JSON values are equal, with numbers compared as numbers so `1` equals `1.0`.
-pub(super) fn same_value(a: &Value, b: &Value) -> bool {
-    match (a.as_f64(), b.as_f64()) {
-        (Some(x), Some(y)) => (x - y).abs() <= f64::EPSILON * x.abs().max(y.abs()).max(1.0),
-        _ => a == b,
+/// A number as an exact integer, when it is one: a JSON integer, or a float with no fraction small enough that the
+/// conversion loses nothing.
+#[allow(clippy::cast_possible_truncation)] // the filter keeps the float whole and far inside `i128`
+fn exact_integer(n: &serde_json::Number) -> Option<i128> {
+    if let Some(i) = n.as_i64() {
+        return Some(i128::from(i));
+    }
+    if let Some(u) = n.as_u64() {
+        return Some(i128::from(u));
+    }
+    n.as_f64().filter(|f| f.is_finite() && f.fract() == 0.0 && f.abs() < 1.0e38).map(|f| f as i128)
+}
+
+/// Whether two JSON values are equal. Numbers are compared as numbers, so `1` equals `1.0`, but integers are compared
+/// exactly: `9007199254740993` is not `9007199254740992`. Two non-integral floats must be the same float.
+pub(super) fn same_value(left: &Value, right: &Value) -> bool {
+    match (left, right) {
+        (Value::Number(l), Value::Number(r)) => match (exact_integer(l), exact_integer(r)) {
+            (Some(li), Some(ri)) => li == ri,
+            (None, None) => l.as_f64() == r.as_f64(),
+            _ => false,
+        },
+        _ => left == right,
     }
 }
 
@@ -99,11 +124,38 @@ mod tests {
     #[test]
     fn pointers_expand_wildcards_over_arrays_and_objects() {
         let v = json!({"a": [{"id": "x"}, {"id": "y"}], "b": {"k": {"id": "z"}}});
-        assert_eq!(pointer_all(&v, "/a/*/id"), [&json!("x"), &json!("y")]);
-        assert_eq!(pointer_all(&v, "/b/*/id"), [&json!("z")]);
-        assert_eq!(pointer_all(&v, "/a/1/id"), [&json!("y")]);
-        assert_eq!(pointer_all(&v, "/a/2/id").len(), 0);
-        assert_eq!(pointer_all(&v, ""), [&v]);
+        assert_eq!(pointer_all(&v, "/a/*/id").unwrap(), [&json!("x"), &json!("y")]);
+        assert_eq!(pointer_all(&v, "/b/*/id").unwrap(), [&json!("z")]);
+        assert_eq!(pointer_all(&v, "/a/1/id").unwrap(), [&json!("y")]);
+        assert_eq!(pointer_all(&v, "/a/2/id").unwrap().len(), 0);
+        assert_eq!(pointer_all(&v, "").unwrap(), [&v]);
+    }
+
+    #[test]
+    fn a_pointer_without_a_leading_slash_is_a_malformed_check() {
+        let v = json!({"counter": 5});
+        for bad in ["counter", "a/b", "*", "~0"] {
+            let verdict = pointer_all(&v, bad).unwrap_err();
+            assert_eq!(verdict.outcome, Outcome::Error, "{bad}");
+        }
+    }
+
+    #[test]
+    fn equality_is_exact_for_integers_and_still_reads_one_as_one_point_zero() {
+        let n = |text: &str| serde_json::from_str::<Value>(text).unwrap();
+        assert!(same_value(&n("1"), &n("1.0")));
+        assert!(same_value(&n("9007199254740993"), &n("9007199254740993")));
+        assert!(!same_value(&n("9007199254740992"), &n("9007199254740993")));
+        assert!(!same_value(&n("9007199254740993"), &n("9007199254740992")));
+        assert!(!same_value(&n("9007199254740991"), &n("9007199254740992")));
+        assert!(!same_value(&n("9007199254740993"), &n("9007199254740992.0")));
+        assert!(same_value(&n("9007199254740992"), &n("9007199254740992.0")));
+        assert!(!same_value(&n("18446744073709551615"), &n("18446744073709551614")));
+        assert!(!same_value(&n("-9223372036854775808"), &n("-9223372036854775807")));
+        assert!(!same_value(&n("1"), &n("1.0000000000000002")));
+        assert!(!same_value(&n("0.1"), &n("0.10000000000000002")));
+        assert!(same_value(&n("0.5"), &n("0.5")));
+        assert!(!same_value(&n("1"), &json!("1")));
     }
 
     #[test]

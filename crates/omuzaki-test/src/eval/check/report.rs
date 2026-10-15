@@ -81,8 +81,9 @@ pub struct CheckResult {
     pub hard: bool,
     /// How it ended.
     pub outcome: Outcome,
-    /// For a soft check: 1 on a pass, 0 otherwise (a number is not yet mapped through the check's `range`). Hard
-    /// checks have no score.
+    /// For a soft check that passed or failed: 1 on a pass, 0 on a fail (a number is not yet mapped through the check's
+    /// `range`). Hard checks have no score, and neither has a check that errored: harness trouble is re-graded, never
+    /// scored.
     pub score: Option<f64>,
     /// The value on the fixture, when the check looked at one.
     pub before: Option<Value>,
@@ -94,7 +95,12 @@ pub struct CheckResult {
 
 impl CheckResult {
     pub(super) fn new(id: &str, hard: bool, verdict: Verdict) -> Self {
-        let score = (!hard).then(|| if verdict.outcome == Outcome::Pass { 1.0 } else { 0.0 });
+        let score = match verdict.outcome {
+            _ if hard => None,
+            Outcome::Pass => Some(1.0),
+            Outcome::Fail => Some(0.0),
+            Outcome::Error => None,
+        };
         Self {
             id: id.to_owned(),
             hard,

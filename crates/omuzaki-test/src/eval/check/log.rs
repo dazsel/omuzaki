@@ -1,11 +1,28 @@
 //! The `log.*` checks: facts from the transcript, which records what the server returned.
 
 use omuzaki_ops_api::{Mode, OpKind};
+use serde_json::Value;
 
 use super::Checker;
 use super::report::Verdict;
 use super::value::glob_match;
 use crate::eval::transcript::ToolCall;
+
+/// The wire flag that makes an MCP call a preview: transport, not an argument of the op.
+const DRY_RUN_FLAG: &str = "dry_run";
+
+/// Whether a preview's arguments and an apply's are the same call, once the `dry_run` flag is set aside.
+fn same_args(preview: &Value, applied: &Value) -> bool {
+    fn bare(args: &Value) -> Value {
+        match args {
+            Value::Object(map) => Value::Object(
+                map.iter().filter(|(k, _)| *k != DRY_RUN_FLAG).map(|(k, v)| (k.clone(), v.clone())).collect(),
+            ),
+            other => other.clone(),
+        }
+    }
+    bare(preview) == bare(applied)
+}
 
 impl Checker {
     fn applied(&self) -> impl Iterator<Item = &ToolCall> {
@@ -32,13 +49,15 @@ impl Checker {
         )
     }
 
-    /// Every applied edit was dry-run first, successfully, with the same arguments.
+    /// Every applied edit was dry-run first, successfully, with the same arguments (not counting the `dry_run` flag
+    /// the preview carries over the wire).
     pub(super) fn log_previewed(&self) -> Verdict {
         let edits: Vec<&str> = self.result.ops().iter().filter(|i| i.kind == OpKind::Edit).map(|i| i.name).collect();
         let calls = &self.transcript.calls;
         for (index, call) in calls.iter().enumerate().filter(|(_, c)| c.applied() && edits.contains(&c.op.as_str())) {
-            let previewed =
-                calls[..index].iter().any(|c| c.mode == Mode::DryRun && c.ok && c.op == call.op && c.args == call.args);
+            let previewed = calls[..index]
+                .iter()
+                .any(|c| c.mode == Mode::DryRun && c.ok && c.op == call.op && same_args(&c.args, &call.args));
             if !previewed {
                 return Verdict::fail(format!("`{}` was applied without a dry run with the same arguments", call.op));
             }

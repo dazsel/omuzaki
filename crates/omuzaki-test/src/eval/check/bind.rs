@@ -9,20 +9,19 @@ use super::query::allowed;
 use super::report::Verdict;
 use super::value::{call, pointer_all, result_failure};
 use crate::eval::task::{Bind, Pick};
-use omuzaki_ops_api::Runner;
+use omuzaki_ops_api::{OpError, Runner};
 
-/// The ids a binding's op names, from one project.
-fn ids(runner: &dyn Runner, bind: &Bind) -> Result<Vec<String>, omuzaki_ops_api::OpError> {
-    let output = call(runner, &bind.op, &bind.args)?;
-    Ok(pointer_all(&output, &bind.at).into_iter().filter_map(Value::as_str).map(str::to_owned).collect())
+/// The ids a binding's op names, from one project. `on_error` makes the verdict of an op that failed there.
+fn ids(runner: &dyn Runner, bind: &Bind, on_error: fn(&Bind, &OpError) -> Verdict) -> Result<Vec<String>, Verdict> {
+    let output = call(runner, &bind.op, &bind.args).map_err(|e| on_error(bind, &e))?;
+    Ok(pointer_all(&output, &bind.at)?.into_iter().filter_map(Value::as_str).map(str::to_owned).collect())
 }
 
 /// Resolves one binding: the single id the result has that the fixture did not.
 fn resolve_one(fixture: &dyn Runner, result: &dyn Runner, bind: &Bind) -> Result<String, Verdict> {
     allowed(result, &bind.op)?;
-    let before =
-        ids(fixture, bind).map_err(|e| Verdict::error(format!("binding `{}` on the fixture: {e}", bind.op)))?;
-    let after = ids(result, bind).map_err(|e| result_failure(&format!("binding `{}`", bind.op), &e))?;
+    let before = ids(fixture, bind, |bind, e| Verdict::error(format!("binding `{}` on the fixture: {e}", bind.op)))?;
+    let after = ids(result, bind, |bind, e| result_failure(&format!("binding `{}`", bind.op), e))?;
     let Pick::New = bind.pick;
     let mut new: Vec<String> = after.into_iter().filter(|id| !before.contains(id)).collect();
     new.sort();

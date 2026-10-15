@@ -8,11 +8,12 @@ use super::report::Verdict;
 use super::value::{call, moved, pointer_all, result_failure, same_value};
 use crate::eval::task::QueryExpect;
 
-/// The single value at `at` in an op's output.
-fn single(output: &Value, at: &str) -> Result<Value, Verdict> {
-    match pointer_all(output, at).as_slice() {
+/// The single value at `at` in an op's output. `on_miss` makes the verdict when it is not exactly one value: a `fail`
+/// for the result, which the agent shaped, and an `error` for the fixture, which it did not.
+fn single(output: &Value, at: &str, on_miss: fn(String) -> Verdict) -> Result<Value, Verdict> {
+    match pointer_all(output, at)?.as_slice() {
         [one] => Ok((*one).clone()),
-        found => Err(Verdict::fail(format!("`{at}` reached {} values; a query reads exactly one", found.len()))),
+        found => Err(on_miss(format!("`{at}` reached {} values; a query reads exactly one", found.len()))),
     }
 }
 
@@ -42,7 +43,7 @@ impl Checker {
             return refused;
         }
         let after = match call(&*self.result, op, args) {
-            Ok(output) => match single(&output, at) {
+            Ok(output) => match single(&output, at, Verdict::fail) {
                 Ok(value) => value,
                 Err(verdict) => return verdict,
             },
@@ -50,7 +51,10 @@ impl Checker {
         };
         let mut before = None;
         if expect.change.is_some() {
-            match self.before(op, args).and_then(|output| single(&output, at)) {
+            match self
+                .before(op, args)
+                .and_then(|output| single(&output, at, |detail| Verdict::error(format!("on the fixture: {detail}"))))
+            {
                 Ok(value) => before = Some(value),
                 Err(verdict) => return verdict,
             }
@@ -75,8 +79,11 @@ fn judge(expect: &QueryExpect, before: Option<&Value>, after: &Value) -> Verdict
         }
     }
     if let (Some(change), Some(before)) = (expect.change, before) {
-        let (Some(b), Some(a)) = (before.as_f64(), after.as_f64()) else {
-            return Verdict::fail(format!("change needs numbers, found {before} then {after}"));
+        let Some(b) = before.as_f64() else {
+            return Verdict::error(format!("change needs a number on the fixture, found {before}"));
+        };
+        let Some(a) = after.as_f64() else {
+            return Verdict::fail(format!("change needs a number, found {before} then {after}"));
         };
         if !moved(b, a, change, expect.at_least, expect.relative) {
             return Verdict::fail(format!("{b} to {a} is not {change:?} by the amount asked"));
