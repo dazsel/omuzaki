@@ -422,11 +422,19 @@ impl Stage {
         Ok(())
     }
 
-    /// Warms the part runtimes (hair, cloth, tails) by `steps` steps of [`SETTLE_DT`] under the last frame's pose and
-    /// root, so the first golden frame doesn't start from a rest shape ([`SETTLE_STEPS`] is the usual count). Nothing is
-    /// sent to the renderer: the next [`tick`](Stage::tick) uploads the meshes that moved.
+    /// Warms the rig's spring bones and the part runtimes (hair, cloth, tails) by `steps` steps of [`SETTLE_DT`], under
+    /// the last frame's pose, goals and root, so the first frame doesn't start from a rest shape ([`SETTLE_STEPS`] is
+    /// the usual count). Each step solves the rig and then steps the runtimes on the solved skeleton. The stage clock
+    /// doesn't move and nothing is sent to the renderer: the next [`tick`](Stage::tick) uploads the meshes that moved.
     pub fn settle(&mut self, steps: u32) {
-        step_runtimes(&mut self.built, self.rig.skin(), self.root, steps);
+        for step in 0..steps {
+            let time = Seconds(f64::from(step) * f64::from(SETTLE_DT));
+            let tick = Tick { index: u64::from(step), time, dt: SETTLE_DT };
+            self.rig.solve(tick, &self.pose, &self.goals);
+            let pose = SkinPose { character: &self.built.rig, skin: self.rig.skin(), root: self.root };
+            let ctx = StepCtx { dt: SETTLE_DT, time, pose: &pose, wind: Vec3::ZERO };
+            DynamicMeshes::step(&mut self.built.runtimes, &ctx);
+        }
     }
 
     /// Changes the face texture density (the frame-budget scheduler's knob) and repaints every layer on the next frame.
