@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
-use omuzaki_ops_api::{Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op};
+use omuzaki_ops_api::{ConnectionService, Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -53,13 +53,6 @@ fn answer(sessions: &BTreeMap<u64, Option<String>>) -> Value {
         out["client_name"] = json!(name);
     }
     out
-}
-
-/// What the `agent.connection` op reads from the host: the connection state of the server it runs under. The app
-/// inserts an implementation into its services, and [`McpServer`] is the one this crate provides.
-pub trait ConnectionService: Send + Sync + 'static {
-    /// The `{connected, client_name?, sessions}` answer for the sessions live now.
-    fn connection(&self) -> Value;
 }
 
 impl ConnectionService for McpServer {

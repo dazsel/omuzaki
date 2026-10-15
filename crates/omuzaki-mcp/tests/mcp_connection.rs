@@ -12,8 +12,10 @@ use std::sync::Arc;
 use common::FakeRunner;
 use omuzaki_mcp::{McpOptions, McpServer, ServerError};
 use rmcp::ClientLifecycleMode;
-use rmcp::model::{ClientCapabilities, ClientConfig, Implementation, ProtocolVersion};
-use rmcp::service::{RoleClient, RunningService};
+use rmcp::model::{
+    ClientCapabilities, ClientConfig, Implementation, ProtocolVersion, ServerCapabilities, ServerConfig,
+};
+use rmcp::service::{RoleClient, RoleServer, RunningService};
 use rmcp::{ClientHandler, ClientServiceExt};
 use serde_json::{Value, json};
 use tokio::task::JoinHandle;
@@ -129,4 +131,30 @@ async fn the_answer_never_carries_a_credential() {
         }
         disconnect(connection).await;
     }
+}
+
+/// A non-HTTP session may start straight with a request that carries inline metadata, with neither `initialize` nor
+/// `discover`: the request names the client, and the session is gone once the client is.
+#[tokio::test]
+async fn a_session_started_by_a_request_is_named_and_cleaned_up() {
+    let mcp = server();
+    let (server_io, client_io) = tokio::io::duplex(64 * 1024);
+    // `serve_directly` skips the startup exchange on both sides, so the first message on the wire is `tools/list`.
+    let serving = rmcp::service::serve_directly::<RoleServer, _, _, _, _>(mcp.session(), server_io, None);
+    let peer = ServerConfig::new(ServerCapabilities::default());
+    let client = rmcp::service::serve_directly::<RoleClient, _, _, _, _>(
+        NamedClient(Lifecycle::Discover),
+        client_io,
+        Some(peer.into()),
+    );
+    assert_eq!(mcp.connection(), json!({"connected": false, "sessions": 1}), "before any request");
+    client.list_all_tools().await.expect("lists tools");
+    assert_eq!(
+        mcp.connection(),
+        json!({"connected": true, "client_name": "claude-code", "sessions": 1}),
+        "named by the request"
+    );
+    client.cancel().await.expect("closes");
+    serving.waiting().await.expect("server ends");
+    assert_eq!(mcp.connection(), json!({"connected": false, "sessions": 0}), "after disconnect");
 }
