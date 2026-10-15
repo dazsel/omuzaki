@@ -62,7 +62,7 @@ fn scene() -> SceneDef {
     for (name, rgb, intensity, shadow, angles, anchor) in [
         ("key", [0xff, 0xf6, 0xec], 1.7, true, [33.7, 46.1], Anchor::Subject),
         ("fill", [0xff, 0xf0, 0xe0], 0.45, false, [-50.2, 21.0], Anchor::Subject),
-        ("rim", [0xdf, 0xe6, 0xff], 0.8, false, [-138.7, 31.0], Anchor::Stage),
+        ("rim", [0xdf, 0xe6, 0xff], 0.8, false, [-138.7, 31.0], Anchor::Subject),
     ] {
         let (id, light) = light(name, rgb, intensity, shadow, angles, anchor);
         l.lights.insert(id, light);
