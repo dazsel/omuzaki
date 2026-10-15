@@ -54,7 +54,11 @@ impl Importer for ProbeImporter {
             scene.add_image(EncodedImage::new(format!("img{ix}"), ImageMime::Png, Blob::new(vec![0x89, b'P', tag])));
         }
         let mut meta = VrmMeta::new("Probe", vec!["Probe Author".into()], omuzaki_io_api::VRM_LICENSE_URLS[0]);
-        meta.terms.commercial_usage = CommercialUsage::PersonalProfit;
+        meta.terms.commercial_usage = if input.bytes.get(7) == Some(&NON_PROFIT) {
+            CommercialUsage::PersonalNonProfit
+        } else {
+            CommercialUsage::PersonalProfit
+        };
         scene.meta = meta;
         Ok(ImportOutcome::new(scene, LicenceEvidence::Imported))
     }
@@ -64,6 +68,9 @@ register_importer!(ProbeImporter);
 
 /// The image count that makes the probe read a file beside it, as a `.gltf` with a `.bin` does.
 const SIDECAR: u8 = 255;
+
+/// The byte that makes the probe's terms personal non-profit, so its record is `commercial: no`.
+const NON_PROFIT: u8 = 1;
 
 /// A probe file with `count` images of which `distinct` differ.
 fn probe(count: u8, distinct: u8) -> Vec<u8> {
@@ -476,4 +483,61 @@ fn a_model_that_refers_to_other_files_is_unsupported_and_says_to_use_a_glb() {
     assert!(error.message.contains("side.bin"), "{}", error.message);
     assert!(error.hint.as_deref().is_some_and(|h| h.contains(".glb")), "{:?}", error.hint);
     assert!(rig.store.is_empty());
+}
+
+/// The probe file `count` images (all one image when `distinct` is 1) under non-profit terms.
+fn restrictive_probe(count: u8, distinct: u8) -> Vec<u8> {
+    let mut bytes = probe(count, distinct);
+    bytes.push(NON_PROFIT);
+    bytes
+}
+
+#[test]
+fn an_image_already_stored_under_wider_rights_refuses_the_import() {
+    let mut rig = Rig::new();
+    // The first model is commercial-ok; the second is non-profit and shares its one image.
+    rig.run(&bytes_op(&probe(1, 1))).unwrap();
+    let (objects, doc) = (rig.store.len(), rig.doc.root().clone());
+
+    let error = rig.run(&bytes_op(&restrictive_probe(1, 1))).unwrap_err();
+    assert_eq!(error.code, ErrorCode::Conflict);
+    assert!(error.message.contains("wider rights"), "{}", error.message);
+    assert!(error.message.contains("Ok") && error.message.contains("No"), "names both: {}", error.message);
+    assert_eq!(rig.store.len(), objects, "nothing of the refused model was stored");
+    assert_eq!(rig.doc.root(), &doc);
+}
+
+#[test]
+fn an_image_already_stored_under_equal_or_stricter_rights_is_fine() {
+    let mut rig = Rig::new();
+    let (strict, _) = rig.run(&bytes_op(&restrictive_probe(1, 1))).unwrap();
+    let image = hash(&strict["asset"]["images"][0]);
+    rig.run(&bytes_op(&probe(1, 1))).unwrap();
+    assert_eq!(rig.store.provenance(&image).unwrap().commercial, Commercial::No, "the stricter record stays");
+    rig.run(&bytes_op(&probe(1, 1))).unwrap();
+}
+
+/// What a TOML-backed project can store: no `null` anywhere.
+fn assert_storable(value: &Value) {
+    toml::Value::try_from(value).unwrap_or_else(|e| panic!("TOML cannot hold {value}: {e}"));
+}
+
+#[test]
+fn what_the_import_writes_is_storable_in_a_toml_project() {
+    assert!(toml::Value::try_from(json!({ "a": null })).is_err(), "the check bites on a null");
+    let mut rig = Rig::new();
+    for args in [json!({ "bytes": probe(2, 2) }), json!({ "bytes": probe(0, 1), "character": "mira" })] {
+        let op = Rig::op(args);
+        rig.plan(&op).unwrap();
+        let result = rig.work(&op, &Signal::new(None)).unwrap();
+        assert_storable(&result);
+        let (actor, clock) = (Actor::Person { name: "tester".into() }, FakeClock::default());
+        let ctx = OpCtx::new(&rig.doc, &actor, &clock).with_services(&rig.services);
+        let plan = op.finish(&ctx, result).unwrap();
+        assert!(!plan.patch.changes.is_empty());
+        for change in &plan.patch.changes {
+            change.before.iter().chain(&change.after).for_each(assert_storable);
+        }
+        rig.doc.apply(&plan.patch).unwrap();
+    }
 }

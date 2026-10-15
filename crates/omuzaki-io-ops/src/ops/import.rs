@@ -26,7 +26,7 @@ use omuzaki_io_api::{
     find_importer, formats, run_import, sniff,
 };
 use omuzaki_ops_api::{FsMode, JobCtx, Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op};
-use omuzaki_store_api::{ContentHash, Provenance, Source, Store, StoreError};
+use omuzaki_store_api::{Commercial, ContentHash, Provenance, Source, Store, StoreError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -86,7 +86,8 @@ struct AssetRecord {
     file: String,
     /// The format it was read as.
     format: String,
-    /// The character it is a reference for, if one was named.
+    /// The character it is a reference for, if one was named. Absent otherwise: the document cannot hold a `null`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     character: Option<String>,
 }
 
@@ -156,21 +157,34 @@ impl Import {
             .provenance
             .clone()
             .ok_or_else(|| OpError::internal("run_import left the scene without a provenance record"))?;
-        let put = |bytes: &[u8], provenance: Provenance| {
-            store.put(bytes, provenance).map_err(|e: StoreError| OpError::internal(format!("storing {name}: {e}")))
-        };
-        let original = put(bytes, provenance.clone())?;
-        let mut images = Vec::new();
+        let mut objects = vec![(ContentHash::of(bytes), bytes, provenance.clone())];
         for (ix, image) in outcome.scene.images.iter().enumerate() {
             let record = Provenance {
                 source: Source::Imported { file: format!("{name}#image{ix}"), origin: None },
                 ..provenance.clone()
             };
-            let hash = put(image.bytes.as_slice(), record)?;
-            if !images.contains(&hash) {
-                images.push(hash);
-            }
+            objects.push((ContentHash::of(image.bytes.as_slice()), image.bytes.as_slice(), record));
         }
+        // Checked for every object before the first write: `put` keeps the record an object was first stored with, so
+        // an image that is already there under wider rights would carry more than this model grants.
+        for (hash, _, record) in &objects {
+            refuse_wider_rights(store, hash, record, name)?;
+        }
+        let mut images = Vec::new();
+        for (hash, bytes, record) in objects {
+            let stored = store
+                .put(bytes, record)
+                .map_err(|e: StoreError| OpError::internal(format!("storing {name}: {e}")))?;
+            debug_assert_eq!(stored, hash, "the store names an object by the hash of its bytes");
+            images.push(stored);
+        }
+        let original = images.remove(0);
+        let mut seen = Vec::new();
+        images.retain(|hash| {
+            let first = !seen.contains(hash);
+            seen.push(*hash);
+            first
+        });
         progress.stage("done", 1.0);
         Ok(Imported {
             asset: AssetRecord {
@@ -237,6 +251,51 @@ fn import_error(error: IoError) -> OpError {
         .hint("import a .glb, which carries its buffers and images"),
         other => from_io(other, "path"),
     }
+}
+
+/// Removes every `null` from `value`: the result is shown in history and a stored document cannot hold one.
+fn strip_nulls(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            map.retain(|_, v| !v.is_null());
+            map.values_mut().for_each(strip_nulls);
+        }
+        Value::Array(items) => items.iter_mut().for_each(strip_nulls),
+        _ => {}
+    }
+}
+
+/// How much a record lets people do with an object: higher grants more.
+fn permissiveness(record: &Provenance) -> (u8, bool, bool) {
+    let commercial = match record.commercial {
+        Commercial::No => 0,
+        Commercial::Unknown => 1,
+        Commercial::Ok => 2,
+    };
+    // Private test material is the stricter record; a missing credit line asks less of the user than a required one.
+    (commercial, !record.private_test, record.attribution.is_none())
+}
+
+/// Refuses an import whose object is already stored under a record that grants more than `wanted`. `Store::put` keeps the
+/// first record and the store offers no way to join two, so the import fails closed; an equal or stricter stored record
+/// is fine.
+fn refuse_wider_rights(store: &dyn Store, hash: &ContentHash, wanted: &Provenance, name: &str) -> Result<(), OpError> {
+    if !store.contains(hash) {
+        return Ok(());
+    }
+    let existing = store
+        .provenance(hash)
+        .map_err(|e| OpError::internal(format!("reading the record of {hash}: {e}")))?;
+    let (have, want) = (permissiveness(&existing), permissiveness(wanted));
+    if have.0 > want.0 || (have.1 && !want.1) || (have.2 && !want.2) {
+        return Err(OpError::conflict(format!(
+            "{name} holds an object ({hash}) that the store already has under wider rights: stored as {} ({:?}), \
+             but this model is {} ({:?})",
+            existing.licence, existing.commercial, wanted.licence, wanted.commercial,
+        ))
+        .hint("import the models in the order of their rights, or record the shared object's rights by hand first"));
+    }
+    Ok(())
 }
 
 /// `Invalid` over the input limit, the same error `run_import` gives, so a hostile file is refused before it is held.
@@ -346,7 +405,10 @@ impl Op for Import {
         });
         // A cancelled import surfaces from the importer as a plain conflict; the job reports it as cancelled.
         let imported = outcome.map_err(|e| if job.is_cancelled() { OpError::cancelled(job.id()) } else { e })?;
-        serde_json::to_value(imported).map_err(|e| OpError::internal(format!("serialising the import: {e}")))
+        let mut result = serde_json::to_value(imported)
+            .map_err(|e| OpError::internal(format!("serialising the import: {e}")))?;
+        strip_nulls(&mut result);
+        Ok(result)
     }
 
     fn finish(&self, ctx: &OpCtx<'_>, result: Value) -> Result<Plan, OpError> {
