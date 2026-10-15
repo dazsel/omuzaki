@@ -5,13 +5,16 @@
 //! tint: the tab is a touch lighter than the tongue, outlined in the rim's dark.
 
 use omuzaki_core::glam::Vec2;
-use omuzaki_face_api::{FaceLayerId, Paint};
+use omuzaki_face_api::{Cap, Cmd, FaceLayerId, Join, Paint, PathRef};
 
 use super::lips::{DARKEN, DEFAULT_TONGUE, darken, lighten, resolve, solid, tint};
 use crate::painter::PaintCtx;
 
-/// Shows from this strength.
+/// Shows from this strength, and fades in over the next [`FADE_IN`] of it, so a channel that crosses the threshold does
+/// not make the tab pop in at full size (the prototype does).
 const MIN: f32 = 0.01;
+/// See [`MIN`].
+const FADE_IN: f32 = 0.1;
 /// The tab is at most this share of the mouth's half-width wide, and never wider than [`MAX_HALF_WIDTH`] metres times
 /// the performance scale.
 const WIDTH_SHARE: f32 = 0.62;
@@ -48,7 +51,8 @@ const SHINE_RY: f32 = 0.18;
 pub(super) fn paint(ctx: &mut PaintCtx<'_>) {
     let strength = ctx.params.mouth.tongue;
     let Some(open) = ctx.open_mouth else { return };
-    if strength <= MIN {
+    let opacity = ((strength - MIN) / FADE_IN).clamp(0.0, 1.0);
+    if opacity <= 0.0 {
         return;
     }
     let y0 = open.centre.y + open.bottom(0.0) + ABOVE_EDGE;
@@ -67,11 +71,20 @@ pub(super) fn paint(ctx: &mut PaintCtx<'_>) {
         .move_to(Vec2::new(x - half, y0))
         .cubic_to(Vec2::new(x - half, belly), Vec2::new(x + half, belly), Vec2::new(x + half, y0))
         .finish();
-    list.fill(tab, Paint::Solid(lighten(base, LIGHTER)));
-    list.stroke(tab, solid(outline, OUTLINE_ALPHA), OUTLINE_WIDTH);
+    let fill = |path, paint, opacity| Cmd::Fill { path, paint, opacity };
+    let stroke = |path: PathRef, paint, width, opacity| Cmd::Stroke {
+        path,
+        paint,
+        width,
+        cap: Cap::Round,
+        join: Join::Round,
+        opacity,
+    };
+    list.push(fill(tab, Paint::Solid(lighten(base, LIGHTER)), opacity));
+    list.push(stroke(tab, solid(outline, OUTLINE_ALPHA), OUTLINE_WIDTH, opacity));
     let groove = list.path().move_to(Vec2::new(x, y0 - GROOVE_FROM)).line_to(Vec2::new(x, groove_to)).finish();
-    list.stroke(groove, solid(darken(base, [GROOVE_DARKEN; 3]), GROOVE_ALPHA), GROOVE_WIDTH);
+    list.push(stroke(groove, solid(darken(base, [GROOVE_DARKEN; 3]), GROOVE_ALPHA), GROOVE_WIDTH, opacity));
     let shine_at = Vec2::new(x + half * SHINE_X, groove_to + height * SHINE_Y);
     let shine = list.path().ellipse(shine_at, half * SHINE_RX, height * SHINE_RY).finish();
-    list.fill(shine, solid(lighten(base, SHINE_WHITE), SHINE_ALPHA));
+    list.push(fill(shine, solid(lighten(base, SHINE_WHITE), SHINE_ALPHA), opacity));
 }

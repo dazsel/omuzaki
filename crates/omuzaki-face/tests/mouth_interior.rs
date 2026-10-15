@@ -225,6 +225,50 @@ fn the_tongue_tab_hangs_below_the_lower_edge_and_never_rises_above_its_start() {
 }
 
 #[test]
+fn the_gloss_hangs_from_the_lower_edge_as_drawn_at_every_smile() {
+    let profile = glossy();
+    for smile in [-1.5, 0.0, 1.5] {
+        let p = params(|m| (m.open, m.smile_left, m.smile_right) = (0.6, smile, smile));
+        let bottom_mid = outline(&profile, &p)[29 + 14].y;
+        let list = piece(MouthPiece::Gloss, &profile, &p);
+        let centre = list
+            .cmds()
+            .iter()
+            .find_map(|c| match c {
+                Cmd::Fill { paint: omuzaki_face_api::Paint::Radial { centre, .. }, .. } => Some(*centre),
+                _ => None,
+            })
+            .unwrap();
+        assert!(
+            (centre.y - (bottom_mid - 0.0042)).abs() < 1e-6,
+            "smile {smile}: gloss at {}, edge {bottom_mid}",
+            centre.y
+        );
+    }
+}
+
+#[test]
+fn the_tongue_tab_fades_in_from_nothing_instead_of_popping() {
+    let profile = glossy();
+    let opacity = |tongue: f32| {
+        let p = params(|m| (m.open, m.tongue) = (0.6, tongue));
+        piece(MouthPiece::Tongue, &profile, &p).cmds().iter().find_map(|c| match c {
+            Cmd::Fill { opacity, .. } => Some(*opacity),
+            _ => None,
+        })
+    };
+    assert_eq!(opacity(0.005), None, "below the threshold there is no tab");
+    assert!(opacity(0.0101).unwrap() < 0.01, "just above it the tab is nearly invisible");
+    let mut last = 0.0;
+    for i in 1..=12 {
+        let now = opacity(0.01 + 0.01 * i as f32).unwrap();
+        assert!(now >= last && now - last < 0.11, "a steady ramp");
+        last = now;
+    }
+    assert_eq!(opacity(0.5), Some(1.0), "full from a tenth above the threshold");
+}
+
+#[test]
 fn lower_teeth_show_on_a_real_smile_and_not_on_a_flat_mouth() {
     let profile = glossy();
     let ink = |smile: f32, lower: f32| {

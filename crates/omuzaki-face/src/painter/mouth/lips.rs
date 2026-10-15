@@ -108,7 +108,10 @@ pub(super) fn paint_gloss(ctx: &mut PaintCtx<'_>) {
     }
     let tint = tint(ctx);
     let pucker = ctx.params.mouth.pucker.clamp(0.0, 1.0);
-    let centre = Vec2::new(open.centre.x, open.centre.y - open.height - GLOSS_DROP - GLOSS_DROP_PUCKER * pucker);
+    // Under the lower edge as drawn, which a smile lowers by `drop` (the prototype hangs it from the nominal edge, so at
+    // a strong smile its gloss floats off the lip).
+    let edge = open.centre.y + open.bottom(0.0);
+    let centre = Vec2::new(open.centre.x, edge - GLOSS_DROP - GLOSS_DROP_PUCKER * pucker);
     let rx = open.half_width * (GLOSS_WIDTH + GLOSS_WIDTH_PUCKER * pucker);
     let ry = GLOSS_HEIGHT + GLOSS_HEIGHT_PUCKER * pucker;
     // A mouth with no width has nothing to swell under, and the squash below divides by it.
