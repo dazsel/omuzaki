@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use omuzaki_doc_api::Value;
-use omuzaki_ops_api::Actor;
+use omuzaki_ops_api::{Actor, Mode};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -167,6 +167,31 @@ impl Snapshot {
 
 /// The settings service. Raw: a string key and a JSON value, so ops and the generated page need no type per key;
 /// [`SettingsExt`] adds the typed `get::<K>()` and `set::<K>()`. Every method takes `&self`: the service is shared.
+///
+/// # Mutating methods
+///
+/// Every method that can change an effective value, a profile or the change log takes **a [`Mode`] and the
+/// [`Actor`]** who asked, in that order: [`set_raw`](Self::set_raw), [`reset`](Self::reset),
+/// [`save_profile`](Self::save_profile), [`rename_profile`](Self::rename_profile),
+/// [`delete_profile`](Self::delete_profile), [`switch_profile`](Self::switch_profile) and [`reload`](Self::reload).
+/// The change log stamps each change with that actor, so a method that changes values as a side effect (deleting the
+/// active profile switches to none) is attributed to the person who asked, never to the system. Session state is
+/// written by the app as a side effect and has no actor: see [`SessionStore`].
+///
+/// # Dry runs
+///
+/// `Mode::Apply` validates, writes, swaps the snapshot, records the changes and emits the event. `Mode::DryRun` runs
+/// **the same validation** and computes **the same return value** on an identical store, then stops: it writes
+/// nothing, swaps no snapshot, records no change, emits no event and leaves the profile list, the change log and the
+/// findings as they were. Errors are identical in both modes. A caller therefore previews a change by calling the
+/// method with `DryRun`, and never has to work the result out from [`resolve`](Self::resolve), which cannot see a
+/// value a profile override hides (profile `ui.scale = 100` over base `125`: `resolve` shows `100`, and only the
+/// service knows that a reset leads to `125`). Permissions are the ops layer's business and are checked before the
+/// service is called in either mode.
+///
+/// One exception, for a store that draws random ids: a dry-run [`save_profile`](Self::save_profile) returns the
+/// `ProfileInfo` an apply would, except that the random suffix of the new id is only an example of its shape.
+/// Everything else in the result is exact.
 pub trait Settings: Send + Sync {
     /// The effective values. Cheap; swapped as a whole on every change.
     fn snapshot(&self) -> Arc<Snapshot>;
@@ -182,23 +207,26 @@ pub trait Settings: Send + Sync {
 
     /// Validates (type, `Setting::check`), then writes to the active profile or the base (see [`Layer`]). Emits one
     /// event when the effective value changed, and none when it did not (a base write hidden by a profile override).
-    /// Returns the change either way, so a dry-run caller can show `before` and `after`.
+    /// Returns the change either way, with `before` and `after` the effective values; see [Dry runs](Settings#dry-runs).
     ///
     /// # Errors
     /// Unknown key, wrong type, or a failed `Setting::check`.
-    fn set_raw(&self, key: &str, value: Value, layer: Layer, by: &Actor) -> Result<Change, SettingError>;
+    fn set_raw(&self, key: &str, value: Value, layer: Layer, mode: Mode, by: &Actor) -> Result<Change, SettingError>;
 
     /// Removes the key from the layer, so it falls back (profile to base to default). `None` when the layer did not
-    /// hold the key. Emits one event when the effective value changed.
+    /// hold the key. Emits one event when the effective value changed. The returned change carries the fallback as
+    /// `after`, also under `DryRun`; see [Dry runs](Settings#dry-runs).
     ///
     /// # Errors
     /// Unknown key.
-    fn reset(&self, key: &str, layer: Layer, by: &Actor) -> Result<Option<Change>, SettingError>;
+    fn reset(&self, key: &str, layer: Layer, mode: Mode, by: &Actor) -> Result<Option<Change>, SettingError>;
 
     /// The profiles, sorted by id.
     fn profiles(&self) -> Vec<ProfileInfo>;
 
-    /// Creates a profile from `from`. A name that exists is replaced only with `overwrite`.
+    /// Creates a profile from `from`. A name that exists is replaced only with `overwrite`. Saving over the active
+    /// profile changes effective values: one event with [`ChangeCause::Reloaded`](crate::event::ChangeCause), changes
+    /// stamped with `by`. See [Dry runs](Settings#dry-runs) for the id of a new profile.
     ///
     /// # Errors
     /// A bad name, an unknown source profile, or [`ProfileExists`](crate::error::SettingErrorKind::ProfileExists).
@@ -207,26 +235,44 @@ pub trait Settings: Send + Sync {
         name: &str,
         from: ProfileSource,
         overwrite: bool,
+        mode: Mode,
         by: &Actor,
     ) -> Result<ProfileInfo, SettingError>;
 
-    /// Renames the display name; the id and file name stay.
+    /// Renames the display name; the id and file name stay. No value changes, so there is no event and no log entry;
+    /// `by` is carried for the store's own audit log. See [Dry runs](Settings#dry-runs).
     ///
     /// # Errors
-    /// A bad name or an unknown profile.
-    fn rename_profile(&self, id: &ProfileId, name: &str) -> Result<ProfileInfo, SettingError>;
+    /// A bad name, a name another profile has, or an unknown profile.
+    fn rename_profile(&self, id: &ProfileId, name: &str, mode: Mode, by: &Actor) -> Result<ProfileInfo, SettingError>;
 
-    /// Deletes a profile. Deleting the active one switches to none first, with its own event.
+    /// Deletes a profile. Deleting the active one switches to none in the same step: one snapshot swap, one event
+    /// (`ProfileSwitched` to none), changes stamped with `by`. The report says what the switch changed (zero for a
+    /// profile that was not active), so a dry run previews it. See [Dry runs](Settings#dry-runs).
     ///
     /// # Errors
     /// An unknown profile.
-    fn delete_profile(&self, id: &ProfileId) -> Result<(), SettingError>;
+    fn delete_profile(&self, id: &ProfileId, mode: Mode, by: &Actor) -> Result<SwitchReport, SettingError>;
 
-    /// Atomic: all of the new effective values appear in one snapshot swap and one event, or nothing changes.
+    /// Atomic: all of the new effective values appear in one snapshot swap and one event, or nothing changes. See
+    /// [Dry runs](Settings#dry-runs).
     ///
     /// # Errors
     /// An unknown profile.
-    fn switch_profile(&self, to: Option<&ProfileId>, by: &Actor) -> Result<SwitchReport, SettingError>;
+    fn switch_profile(&self, to: Option<&ProfileId>, mode: Mode, by: &Actor) -> Result<SwitchReport, SettingError>;
+
+    /// Re-reads the settings files and applies what differs from the running state (`settings.reload`; hand edits are
+    /// otherwise read at the next start). Atomic like [`switch_profile`](Self::switch_profile): the new effective
+    /// values appear in one snapshot swap, one event with [`ChangeCause::Reloaded`](crate::event::ChangeCause) and one
+    /// log entry per changed key stamped with `by`; when no effective value differs there is no swap and no event.
+    /// Stored values that cannot be used do not fail the reload: they fall back and are listed by
+    /// [`findings`](Self::findings). A store with no files reloads its in-memory copy. See
+    /// [Dry runs](Settings#dry-runs).
+    ///
+    /// # Errors
+    /// [`SettingErrorKind::Storage`](crate::error::SettingErrorKind::Storage) when a file exists but cannot be read;
+    /// nothing changes then.
+    fn reload(&self, mode: Mode, by: &Actor) -> Result<SwitchReport, SettingError>;
 
     /// The last `limit` changes, newest first (at most [`CHANGE_LOG_CAPACITY`](crate::event::CHANGE_LOG_CAPACITY)).
     fn changes(&self, limit: usize) -> Vec<SettingChange>;
@@ -257,9 +303,9 @@ pub trait SettingsExt: Settings {
     ///
     /// # Errors
     /// As [`Settings::set_raw`].
-    fn set<S: Setting>(&self, value: &S::Value, layer: Layer, by: &Actor) -> Result<Change, SettingError> {
+    fn set<S: Setting>(&self, value: &S::Value, layer: Layer, mode: Mode, by: &Actor) -> Result<Change, SettingError> {
         let json = serde_json::to_value(value).map_err(|e| SettingError::wrong_type(S::META.key, e))?;
-        self.set_raw(S::META.key, json, layer, by)
+        self.set_raw(S::META.key, json, layer, mode, by)
     }
 }
 

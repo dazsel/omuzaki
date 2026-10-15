@@ -85,7 +85,7 @@ impl SettingsEvent {
     }
 }
 
-/// What `Settings::switch_profile` reports.
+/// What `Settings::switch_profile`, `delete_profile` and `reload` report: how many effective values changed.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[non_exhaustive]
 pub struct SwitchReport {
