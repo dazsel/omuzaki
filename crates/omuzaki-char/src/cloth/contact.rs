@@ -21,15 +21,14 @@
 //! hairpin, a 3 mm strap against 2 cm cells) could pass between particles. Once the environment knows the sheet
 //! ([`ClothEnvironment::set_sheet`]), every collider whose diameter (with clearance) is under the sheet's longest rest
 //! edge is also tested against the sheet's **triangles**: its axis, clipped to each nearby triangle's prism, must stay
-//! `radius + thickness + margin` on the side of the triangle it started the sub-step on, and a triangle that is closer
-//! is moved away by that depth, shared among its corners by barycentric weight and inverse mass (the triangle-point
-//! constraint of position-based dynamics, with the collider immovable). The side is the one the same axis point was on
-//! at the sub-step's start; a collider that started within half its reach of the triangle's plane is already in
-//! contact and left to the particle contacts, and one push moves a triangle at most a reach, so a sheet crumpling
-//! around a collider is never flung. A 3 mm capsule swung at 5 m/s through a sheet of 1.9 cm cells crosses no
-//! triangle (`tests/cloth_contact.rs`). What remains: a collider already through the sheet stays through it, and one
-//! that moves more than a cell in one sub-step (over 7 m/s at 1.9 cm cells and the live 1/360 s sub-step) can still
-//! pass between triangles' prisms.
+//! `radius + thickness + margin` on the side of the triangle that the same stretch of axis was on at the sub-step's
+//! start, and a triangle that is closer is moved away by that depth as a whole (its movable corners each by the depth:
+//! the barycentric triangle-point projection of position-based dynamics can fling a corner when the point under the
+//! axis sits by a pinned one). A push never exceeds what the sub-step's motion can make up. A 3 mm capsule swung at
+//! 5 m/s into a sheet of 1.9 cm cells crosses no triangle (`tests/cloth_contact.rs`; without the triangles it crosses
+//! in every frame). What remains: a collider already through the sheet stays through it, a pinned edge cannot move out
+//! of the way, and a collider that moves more than a cell in one sub-step (over 7 m/s at 1.9 cm cells and the live
+//! 1/360 s sub-step) can still pass between triangles' prisms.
 //!
 //! **Overlapping colliders (limit 2, #129).** Colliders are met one after the other, so a particle pressed into the
 //! crease between two overlapping colliders could be pushed out of the second back into the first. A particle that
@@ -520,14 +519,13 @@ fn push_triangle(
             return;
         }
     }
-    // The side the collider started on: the same axis point at the sub-step's start, against the triangle where it
-    // was. A collider that started within half its reach of the triangle's plane is already in contact, and the
-    // particle contacts handle it; judging a side there would flip with every wrinkle.
+    // The side the collider started on: the middle of the same stretch of axis at the sub-step's start, against the
+    // triangle where it was. A triangle pushed part way into the collider's skin keeps that side and is pushed out
+    // again; one exactly through the axis has none and is left to the particle contacts.
     let (y0, y1, y2) = (previous[i], previous[j], previous[k]);
     let n0 = (y1 - y0).cross(y2 - y0).normalize_or(n);
-    let side_at = |t: f32| n0.dot(pose.a0 + pose.e0 * t - y0);
-    let start = if side_at(t0).abs() <= side_at(t1).abs() { side_at(t0) } else { side_at(t1) };
-    if start.abs() < 0.5 * pose.reach {
+    let start = n0.dot(pose.a0 + pose.e0 * (0.5 * (t0 + t1)) - y0);
+    if start.abs() < 1e-7 || !start.is_finite() {
         return;
     }
     if (n.dot(n0) < 0.0) != (start < 0.0) {
@@ -536,33 +534,18 @@ fn push_triangle(
     // The axis's lowest point over the triangle, measured on the collider's side.
     let height = |t: f32| n.dot(a + e * t - x0);
     let t = if height(t0) <= height(t1) { t0 } else { t1 };
-    // One push moves the surface at most a reach (and what the sub-step's motion can make up), so a sheet that
-    // crumples around a collider is never flung.
-    let depth = (pose.reach - height(t)).min(most).min(pose.reach);
+    // One push moves the surface at most what the sub-step's motion can make up, so a sheet that crumples around a
+    // collider is never flung.
+    let depth = (pose.reach - height(t)).min(most);
     if depth <= 0.0 {
         return;
     }
-    // Barycentric weights of the point under the axis.
-    let q = a + e * t;
-    let q = q - n * n.dot(q - x0);
-    let (v0, v1, v2) = (x1 - x0, x2 - x0, q - x0);
-    let (d00, d01, d11, d20, d21) = (v0.dot(v0), v0.dot(v1), v1.dot(v1), v2.dot(v0), v2.dot(v1));
-    let denom = d00 * d11 - d01 * d01;
-    if denom.abs() < 1e-20 {
-        return;
-    }
-    let bj = ((d11 * d20 - d01 * d21) / denom).clamp(0.0, 1.0);
-    let bk = ((d00 * d21 - d01 * d20) / denom).clamp(0.0, 1.0);
-    let bi = (1.0 - bj - bk).max(0.0);
-    let weights = [(i, bi), (j, bj), (k, bk)];
-    let sum: f32 = weights.iter().map(|&(p, b)| inv_mass[p] * b * b).sum();
-    if sum < 1e-12 {
-        return;
-    }
-    // The exact projection moves a corner by `depth · w b / Σ w b²`, which is unbounded when the point under the axis
-    // sits by a pinned corner and the movable ones carry almost no weight: no corner moves further than the depth.
-    for (p, b) in weights {
-        positions[p] -= n * (depth * inv_mass[p] * b / sum).min(depth);
+    // The triangle moves away as a whole: each movable corner by the depth, so the point under the axis clears it
+    // exactly (less where a corner is pinned) and no corner moves further than the depth.
+    for p in [i, j, k] {
+        if inv_mass[p] > 0.0 {
+            positions[p] -= n * depth;
+        }
     }
 }
 

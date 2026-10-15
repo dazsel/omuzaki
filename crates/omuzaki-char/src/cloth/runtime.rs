@@ -567,6 +567,7 @@ pub struct ClothRuntime {
     forced: Option<usize>,
     mesh: u16,
     config: SolverConfig,
+    params: ClothParams,
     key: u64,
     /// Initial positions and normals (bind space; the generator's output), for `fork`.
     initial: Dynamic,
@@ -636,6 +637,7 @@ impl ClothRuntime {
             forced: None,
             mesh: spec.mesh,
             config,
+            params: spec.params,
             key: 0,
             initial: Dynamic {
                 states,
@@ -702,6 +704,11 @@ impl ClothRuntime {
     /// The sub-step length, seconds (1/360 s live, 1/480 s offline).
     pub fn substep_s(&self) -> f32 {
         self.levels[0].solver.substep_s()
+    }
+
+    /// The fabric.
+    pub fn cloth_params(&self) -> ClothParams {
+        self.params
     }
 
     /// The solver configuration the spec's quality chose.
