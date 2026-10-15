@@ -362,12 +362,15 @@ fn stripes(
         }
         StripeDirection::Diagonal => {
             // A band between the lines x - y = c and x - y = c + w (w is the width measured horizontally), one per
-            // repeat, from a repeat before the tile to one past it so every corner is covered.
+            // repeat, from a repeat before the tile to one past it so every corner is covered. Each band is centred in
+            // its repeat, so its edges don't run through the corners, where the tile's own pixel grid would sample
+            // exactly on an edge.
             let w = width * std::f64::consts::SQRT_2;
+            let start = (tile - w) / 2.0;
             let first = -i64::from(repeats) - 1;
             for k in first..=i64::from(repeats) {
                 #[allow(clippy::cast_precision_loss)] // a handful of repeats
-                let c = tile * k as f64;
+                let c = start + tile * k as f64;
                 #[allow(clippy::cast_possible_truncation)] // the drawing plane is f32
                 let corners = [(c, 0.0), (c + w, 0.0), (c + w + size, size), (c + size, size)]
                     .map(|(x, y): (f64, f64)| Vec2::new(x as f32, y as f32));
