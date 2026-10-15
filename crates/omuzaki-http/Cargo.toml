@@ -9,7 +9,9 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-reqwest = { workspace = true, features = ["blocking", "rustls", "system-proxy"] }
+# `rustls-no-provider` leaves the crypto provider to us: `ring` below, installed in `HttpFetcherBuilder::build`.
+reqwest = { workspace = true, features = ["blocking", "rustls-no-provider", "system-proxy"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 omuzaki-ai-api = { path = "../omuzaki-ai-api" }
 
 [dev-dependencies]
@@ -25,5 +27,5 @@ workspace = true
 # Native only: the blocking reqwest client and its TLS stack have no wasm32 build
 [package.metadata.omuzaki]
 kind = "Implementation"
-summary = "`HttpFetcher`, the HTTPS `Fetcher` over reqwest with rustls (the OS trust store): https only, at most five redirects (each https), three tries with backoff on connect errors, timeouts, 5xx and 429, `Range` resume with a checked `Content-Range`, streamed bodies with an idle read timeout; native only; `allow_loopback_http` is a test aid"
+summary = "`HttpFetcher`, the HTTPS `Fetcher` over reqwest with rustls and the `ring` provider (the OS trust store): https only, at most five redirects (each https), three tries with backoff on connect errors, timeouts, 5xx and 429, `Range` resume with a checked `Content-Range`, streamed bodies with an idle read timeout; native only; `allow_loopback_http` is a test aid"
 wasm = false

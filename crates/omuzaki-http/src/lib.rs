@@ -3,6 +3,10 @@
 //! It is https only, follows at most five redirects (each to an https target), retries transient failures inside
 //! [`Fetcher::open`], and returns the response as a stream, never buffering the body. Nothing below the app links this
 //! crate (`omuzaki-ai-api` says so); the app hands it to the model cache.
+//!
+//! TLS uses rustls with the `ring` crypto provider, not `aws-lc-rs`: `ring` builds with a plain C toolchain on every
+//! platform, with no NASM and no prebuilt objects. What that gives up is rustls's post-quantum hybrid key exchange,
+//! which only the aws-lc provider offers; revisit it if a feature needs post-quantum TLS.
 
 use std::io::Read;
 use std::net::IpAddr;
@@ -107,6 +111,7 @@ impl HttpFetcherBuilder {
                 attempt.follow()
             }
         });
+        install_crypto_provider();
         let mut builder = Client::builder()
             .user_agent(self.user_agent.clone())
             .connect_timeout(self.connect_timeout)
@@ -121,6 +126,16 @@ impl HttpFetcherBuilder {
         let client = builder.build().map_err(|e| e.to_string());
         HttpFetcher { client, tries: self.retries, backoff: self.backoff, allow_loopback_http: allow }
     }
+}
+
+/// Installs `ring` as the process-wide rustls provider, once. If another provider is already installed the call is a
+/// no-op: the first one wins, and reqwest uses whichever is installed.
+fn install_crypto_provider() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        // Err means a provider is already installed, which is fine.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
 }
 
 /// The HTTPS [`Fetcher`]. Build one with [`HttpFetcher::new`] or [`HttpFetcher::builder`].

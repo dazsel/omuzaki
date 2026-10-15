@@ -1,0 +1,8 @@
+section = "rust"
+item = "ring, untrusted"
+kind = "crate"
+used_for = "rustls's crypto provider for `HttpFetcher`: builds with a plain C toolchain on every platform (carries its own pre-generated assembly, so no NASM or CMake), at the cost of rustls's post-quantum hybrid key exchange"
+status = "yes"
+condition = "keep the notices"
+audit = "(crates.io: ring Apache-2.0 AND ISC: new code ISC, parts sourced from BoringSSL under Apache-2.0 or ISC, once_cell parts MIT OR Apache-2.0; untrusted ISC)"
+crates = ["ring", "untrusted"]
