@@ -431,8 +431,9 @@ fn body_geometry(template: &dyn Template, params: &FitParams) -> Result<Vec<Mesh
 /// with a 4 px margin. For tests and tools that need a target of a known truth.
 ///
 /// # Errors
-/// [`FitError::BadMask`] if `height` is not in `9..=`[`MAX_SIDE`] or the figure is wider than [`MAX_SIDE`] pixels,
-/// before anything is allocated; otherwise [`FitError`] if the template is unknown, the body cannot be built or a mesh
+/// [`FitError::BadMask`] if `height` is not in `9..=`[`MAX_SIDE`] (checked before the body is built) or the figure is
+/// wider than [`MAX_SIDE`] pixels (checked once its extent is known), either way before the mask is allocated;
+/// otherwise [`FitError`] if the template is unknown, the body cannot be built or a mesh
 /// is bad.
 pub fn render_target(
     template: &str,

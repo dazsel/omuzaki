@@ -27,8 +27,8 @@ const STEPS: usize = 3;
 const WINDOW: f64 = 0.5;
 /// How much narrower each sweep's window is than the last, while the sweeps keep gaining.
 const SHRINK: f64 = 0.85;
-/// Two costs closer than this are the same. A parameter is not visible only if the interior probes and both ends of
-/// its bracket cost the same.
+/// Two costs closer than this are the same. A parameter is not visible only if seven samples across its bracket all
+/// cost the same.
 const FLAT: f64 = 1e-12;
 /// How far past its end a sweep's net displacement is searched, in displacements.
 const PATTERN_REACH: f64 = 3.0;
@@ -278,22 +278,49 @@ impl Search<'_> {
 }
 
 /// Golden-section search over `(a, b)` of `cost`, which gives `None` once the budget is spent (then this is `false`).
-/// Two interior probes that cost the same prove nothing at low resolution, where distinct values can rasterise alike:
-/// the ends of the bracket are probed too, and the parameter is called flat only if all four agree.
-fn golden(
+///
+/// Two interior probes that cost the same prove nothing at low resolution, where distinct values can rasterise alike,
+/// and four samples can straddle a dip between them. On a tie the ends and the midpoints of the three intervals are
+/// probed too: the parameter is called flat only if all seven agree. Otherwise the search goes on in the bracket
+/// round the lowest of the seven, so a dip found by the extra probes is followed, not forgotten.
+fn golden((a, b): (f64, f64), cost: &mut dyn FnMut(f64) -> Result<Option<f64>, FitError>) -> Result<bool, FitError> {
+    let (c, d) = (b - INV_PHI * (b - a), a + INV_PHI * (b - a));
+    let Some(fc) = cost(c)? else { return Ok(false) };
+    let Some(fd) = cost(d)? else { return Ok(false) };
+    if (fc - fd).abs() >= FLAT {
+        return steps((a, b), (c, d), (fc, fd), cost);
+    }
+    let mut samples = [
+        (a, f64::NAN),
+        (f64::midpoint(a, c), f64::NAN),
+        (c, fc),
+        (f64::midpoint(c, d), f64::NAN),
+        (d, fd),
+        (f64::midpoint(d, b), f64::NAN),
+        (b, f64::NAN),
+    ];
+    for (t, f) in samples.iter_mut().filter(|(_, f)| f.is_nan()) {
+        let Some(v) = cost(*t)? else { return Ok(false) };
+        *f = v;
+    }
+    if samples.iter().all(|(_, f)| (f - fc).abs() < FLAT) {
+        return Ok(true);
+    }
+    let low = samples.iter().enumerate().fold(0, |m, (i, (_, f))| if *f < samples[m].1 { i } else { m });
+    let (lo, hi) = (samples[low.saturating_sub(1)].0, samples[(low + 1).min(samples.len() - 1)].0);
+    let (c, d) = (hi - INV_PHI * (hi - lo), lo + INV_PHI * (hi - lo));
+    let Some(fc) = cost(c)? else { return Ok(false) };
+    let Some(fd) = cost(d)? else { return Ok(false) };
+    steps((lo, hi), (c, d), (fc, fd), cost)
+}
+
+/// The golden-section steps from the bracket `(a, b)` whose interior probes `(c, d)` cost `(fc, fd)`.
+fn steps(
     (mut a, mut b): (f64, f64),
+    (mut c, mut d): (f64, f64),
+    (mut fc, mut fd): (f64, f64),
     cost: &mut dyn FnMut(f64) -> Result<Option<f64>, FitError>,
 ) -> Result<bool, FitError> {
-    let (mut c, mut d) = (b - INV_PHI * (b - a), a + INV_PHI * (b - a));
-    let Some(mut fc) = cost(c)? else { return Ok(false) };
-    let Some(mut fd) = cost(d)? else { return Ok(false) };
-    if (fc - fd).abs() < FLAT {
-        let Some(fa) = cost(a)? else { return Ok(false) };
-        let Some(fb) = cost(b)? else { return Ok(false) };
-        if (fa - fc).abs() < FLAT && (fb - fc).abs() < FLAT {
-            return Ok(true);
-        }
-    }
     for _ in 0..STEPS {
         let probed = if fc < fd {
             (b, d, fd) = (d, c, fc);
@@ -333,13 +360,26 @@ mod tests {
         assert!(probes.contains(&1.0), "the end of the bracket was not probed");
     }
 
+    /// A dip in the middle of the middle interval: the four samples at 0, 0.382, 0.618 and 1 all miss it.
     #[test]
-    fn a_constant_cost_is_flat_after_four_probes() {
+    fn a_dip_between_the_four_samples_is_found() {
+        let mut lowest = f64::MAX;
+        let ok = golden((0.0, 1.0), &mut |t| {
+            let f = if (t - 0.5).abs() < 0.02 { 0.0 } else { 1.0 };
+            lowest = lowest.min(f);
+            Ok(Some(f))
+        });
+        assert_eq!(ok, Ok(true));
+        assert!(lowest == 0.0, "the dip near 0.5 was never probed");
+    }
+
+    #[test]
+    fn a_constant_cost_is_flat_after_seven_probes() {
         let mut probes = 0;
         let ok = golden((0.0, 1.0), &mut |_| {
             probes += 1;
             Ok(Some(0.5))
         });
-        assert_eq!((ok, probes), (Ok(true), 4));
+        assert_eq!((ok, probes), (Ok(true), 7));
     }
 }
