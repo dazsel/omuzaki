@@ -6858,6 +6858,7 @@ version = "0.0.0"
 dependencies = [
  "clap",
  "flate2",
+ "omuzaki-embed",
  "omuzaki-library-api",
  "serde",
  "serde_json",

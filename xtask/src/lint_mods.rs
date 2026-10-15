@@ -66,28 +66,98 @@ fn opt_ins(workspace: &Workspace) -> Result<Vec<OptIn>> {
     Ok(found)
 }
 
-/// The names of the modules a folder's files and sub-folders would declare, sorted.
+/// The names of the modules the generator declares for `folder`, sorted: `omuzaki_embed::module_list` is the one
+/// source of truth for which files and sub-folders count.
+///
+/// # Errors
+/// What the build would fail on too: an unreadable folder, a name that isn't a module name, a `foo.rs` beside `foo/`.
 fn children(folder: &Path) -> Result<Vec<String>> {
-    let read = |source| ReadError::Read { path: folder.to_path_buf(), source };
-    let mut names = Vec::new();
-    for entry in fs::read_dir(folder).map_err(read)? {
-        let entry = entry.map_err(read)?;
-        let file_name = entry.file_name().to_string_lossy().into_owned();
-        let is_dir = entry.file_type().map_err(read)?.is_dir();
-        let name = if is_dir { Some(file_name.as_str()) } else { file_name.strip_suffix(".rs") };
-        if let Some(name) = name.filter(|name| *name != "mod" && !name.starts_with('.')) {
-            names.push(name.to_owned());
-        }
-    }
-    names.sort();
-    names.dedup();
-    Ok(names)
+    let list = omuzaki_embed::module_list(folder, "")
+        .map_err(|error| failed(&format!("lint-mods {}", folder.display()), error.to_string()))?;
+    // One `#[path = "..."] mod name;` per line; the name is the last word.
+    Ok(list.source.lines().filter_map(|line| Some(line.rsplit(' ').next()?.strip_suffix(';')?.to_owned())).collect())
 }
 
-/// Whether a line is the `include!` of a generated module list.
-fn is_generated_include(line: &str) -> bool {
-    let squeezed: String = line.chars().filter(|c| !c.is_whitespace()).collect();
-    !squeezed.starts_with("//") && squeezed.contains("include!(concat!(env!(\"OUT_DIR\"),")
+/// `text` with its comments blanked (line breaks kept, so line numbers hold). String and character literals are
+/// skipped over, so a `//` inside a string is not a comment. A minimal scan, not a lexer.
+fn without_comments(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    let blank = |c: char| if c == '\n' { '\n' } else { ' ' };
+    while i < chars.len() {
+        let c = chars[i];
+        let next = chars.get(i + 1).copied();
+        if c == '/' && next == Some('/') {
+            while i < chars.len() && chars[i] != '\n' {
+                out.push(' ');
+                i += 1;
+            }
+        } else if c == '/' && next == Some('*') {
+            let mut depth = 0;
+            while i < chars.len() {
+                if chars[i] == '/' && chars.get(i + 1) == Some(&'*') {
+                    depth += 1;
+                    out.push_str("  ");
+                    i += 2;
+                } else if chars[i] == '*' && chars.get(i + 1) == Some(&'/') {
+                    depth -= 1;
+                    out.push_str("  ");
+                    i += 2;
+                    if depth == 0 {
+                        break;
+                    }
+                } else {
+                    out.push(blank(chars[i]));
+                    i += 1;
+                }
+            }
+        } else if c == '"' {
+            // A string literal, with `\"` escapes; a raw string `r#"..."#` ends at its own hashes.
+            let before = out.trim_end_matches('#');
+            let raw = before.ends_with('r');
+            let hashes = if raw { out.len() - before.len() } else { 0 };
+            let closing: String = std::iter::once('"').chain(std::iter::repeat_n('#', hashes)).collect();
+            out.push(c);
+            i += 1;
+            while i < chars.len() {
+                let rest: String = chars[i..].iter().take(closing.len()).collect();
+                if !raw && chars[i] == '\\' {
+                    out.push(chars[i]);
+                    out.extend(chars.get(i + 1));
+                    i += 2;
+                } else if rest == closing {
+                    out.push_str(&closing);
+                    i += closing.len();
+                    break;
+                } else {
+                    out.push(chars[i]);
+                    i += 1;
+                }
+            }
+        } else if c == '\'' && (chars.get(i + 2) == Some(&'\'') || next == Some('\\')) {
+            // A character literal such as `'"'` or `'\''`, not a lifetime.
+            let end = if next == Some('\\') {
+                chars[i + 2..].iter().position(|c| *c == '\'').map(|p| i + 2 + p)
+            } else {
+                Some(i + 2)
+            };
+            let end = end.unwrap_or(i).min(chars.len() - 1);
+            out.extend(&chars[i..=end]);
+            i = end + 1;
+        } else {
+            out.push(c);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Whether `code` (comments already blanked) contains the `include!` of a generated module list, wherever rustfmt
+/// broke its lines.
+fn has_generated_include(code: &str) -> bool {
+    let squeezed: String = code.chars().filter(|c| !c.is_whitespace()).collect();
+    squeezed.contains("include!(concat!(env!(\"OUT_DIR\"),")
 }
 
 /// The module a line declares without a body (`mod name;`, with any attributes and visibility), if it is one. Only an
@@ -130,14 +200,15 @@ fn folder_violations(name: &str, crate_root: &Path, folder: &str) -> Result<Vec<
         return Ok(vec![format!("{name}: {declaring} is missing; it declares the modules of {folder}")]);
     }
     let text = fs::read_to_string(&path).map_err(|source| ReadError::Read { path: path.clone(), source })?;
+    let code = without_comments(&text);
     let mut found = Vec::new();
-    if !text.lines().any(is_generated_include) {
+    if !has_generated_include(&code) {
         found.push(format!(
             "{name}: {declaring} has no `include!(concat!(env!(\"OUT_DIR\"), ...))`; it opts in but declares nothing generated"
         ));
     }
     let children = children(&dir)?;
-    for (number, line) in text.lines().enumerate() {
+    for (number, line) in code.lines().enumerate() {
         if let Some(module) = bodyless_mod(line).filter(|module| children.iter().any(|child| child == module)) {
             found.push(format!(
                 "{name}: {declaring}:{}: hand-written `mod {module};`; {folder} generates its module list (`omuzaki_embed::modules`)",
@@ -192,6 +263,7 @@ mod tests {
         let root = tempfile::tempdir().expect("a temporary directory");
         let ops = root.path().join("src/ops");
         fs::create_dir_all(ops.join("nested")).expect("the folder");
+        fs::write(ops.join("nested/mod.rs"), "").expect("a module folder");
         fs::write(ops.join("mod.rs"), mod_rs).expect("mod.rs");
         for file in files {
             fs::write(ops.join(file), "").expect("a child");
@@ -225,6 +297,49 @@ mod tests {
     fn a_child_folder_counts_as_a_child() {
         let found = check(&krate(&format!("{INCLUDE}mod nested;\n"), &[]));
         assert_eq!(found.len(), 1, "{found:?}");
+    }
+
+    #[test]
+    fn an_include_that_rustfmt_split_across_lines_is_accepted() {
+        let source = "include!(concat!(\n    env!(\"OUT_DIR\"),\n    \"/ops_mods.rs\"\n));\n";
+        assert_eq!(check(&krate(source, &["a.rs"])), Vec::<String>::new());
+    }
+
+    #[test]
+    fn an_include_or_a_mod_inside_a_comment_does_not_count() {
+        let source =
+            format!("/* {INCLUDE} */\n/*\n/* nested */\nmod a;\n*/\nlet _s = \"// not a comment\";\n{INCLUDE}");
+        assert_eq!(check(&krate(&source, &["a.rs"])), Vec::<String>::new());
+        let commented = format!("/*\n{INCLUDE}*/\n");
+        let found = check(&krate(&commented, &["a.rs"]));
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("no `include!"), "{found:?}");
+        let hand = format!("{INCLUDE}/* a comment\n*/ \nmod a;\n");
+        assert!(check(&krate(&hand, &["a.rs"]))[0].contains("mod.rs:4:"), "line numbers survive comments");
+    }
+
+    #[test]
+    fn quotes_in_literals_do_not_hide_what_follows() {
+        let source = format!("const Q: char = '\"';\nconst R: &str = r#\"/* \"#;\n{INCLUDE}mod a;\n");
+        assert_eq!(check(&krate(&source, &["a.rs"])).len(), 1);
+    }
+
+    #[test]
+    fn children_are_the_generators_rules() {
+        let root = krate(&format!("{INCLUDE}mod plain;\nmod nomod;\nmod withmod;\nmod lib;\n"), &["lib.rs", "main.rs"]);
+        let ops = root.path().join("src/ops");
+        fs::create_dir_all(ops.join("plain")).expect("a folder with no mod.rs");
+        fs::create_dir_all(ops.join("withmod")).expect("a folder");
+        fs::write(ops.join("withmod/mod.rs"), "").expect("mod.rs");
+        fs::write(ops.join(".hidden.rs"), "").expect("hidden");
+        fs::write(ops.join("notes.txt"), "").expect("other file");
+        let found = check(&root);
+        assert_eq!(
+            found.len(),
+            1,
+            "only `withmod` is a child (no mod.rs: not a module; lib/main: crate roots): {found:?}"
+        );
+        assert!(found[0].contains("mod withmod;"), "{found:?}");
     }
 
     #[test]
