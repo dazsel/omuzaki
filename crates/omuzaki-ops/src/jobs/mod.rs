@@ -6,13 +6,14 @@
 //! delivered after it is released). Time reads the executor's clock; [`Manager::poll`] enforces the deadlines.
 
 mod lanes;
+mod priority;
 mod reservation;
 mod worker;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex, PoisonError};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::time::Duration;
 
 use omuzaki_core::time::Seconds;
 use omuzaki_doc_api::Value;
@@ -32,7 +33,7 @@ const GRACE_SECS: f64 = 10.0;
 const PROGRESS_INTERVAL: f64 = 0.1;
 /// Ended jobs `jobs()` still lists.
 const KEEP_ENDED: usize = 100;
-/// How often the supervisor thread checks deadlines against the clock, in wall time.
+/// How often the supervisor thread checks deadlines against the clock, and a timed `wait` re-reads it, in wall time.
 const SUPERVISOR_TICK: Duration = Duration::from_millis(50);
 
 #[derive(Copy, Clone, PartialEq, Eq)]
@@ -76,6 +77,9 @@ struct Job {
     /// Set once the thread is given up: whether the lane lent a replacement (freed the slot) for it.
     detached: Option<bool>,
     outcome: Option<Result<Outcome, OpError>>,
+    /// Callers blocked on this job (or, for `Runner::run`, registered at start): the entry outlives the bounded
+    /// history of ended jobs until the last of them has read it.
+    waiters: usize,
 }
 
 /// What a worker thread needs to run a job, copied out so no lock is held while it runs.
@@ -132,8 +136,15 @@ impl Manager {
         self.changed.notify_all();
     }
 
-    /// Admits a planned job: reserves its money, queues it and starts it if its lane has room.
-    pub(crate) fn start(self: &Arc<Self>, op: Arc<dyn DynOp>, req: Request, plan: Plan) -> Result<JobInfo, OpError> {
+    /// Admits a planned job: reserves its money, queues it and starts it if its lane has room. An `awaited` job is
+    /// registered for [`outcome`](Self::outcome) from the start, so its result is kept however many jobs end first.
+    pub(crate) fn start(
+        self: &Arc<Self>,
+        op: Arc<dyn DynOp>,
+        req: Request,
+        plan: Plan,
+        awaited: bool,
+    ) -> Result<JobInfo, OpError> {
         let meta = op.meta();
         let lane = lanes::lane_of(&meta, plan.cost.as_ref());
         let reserved = reserve_micros(plan.cost.as_ref());
@@ -205,6 +216,7 @@ impl Manager {
                 thread_live: false,
                 detached: None,
                 outcome: None,
+                waiters: usize::from(awaited),
             };
             self.announce(&job);
             inner.jobs.insert(id, job);
@@ -255,16 +267,7 @@ impl Manager {
         job.outcome = Some(outcome);
         self.announce(job);
         inner.ended.push_back(id);
-        while inner.ended.len() > KEEP_ENDED {
-            // A job whose thread is still inside `work` stays: its late `spend` needs the entry.
-            let Some(at) = inner.ended.iter().position(|old| inner.jobs.get(old).is_none_or(|job| !job.thread_live))
-            else {
-                break;
-            };
-            if let Some(old) = inner.ended.remove(at) {
-                inner.jobs.remove(&old);
-            }
-        }
+        trim(inner);
     }
 
     /// Asks a job to stop. A queued job ends at once; a running one is told through its flag and ends when `work`
@@ -305,6 +308,8 @@ impl Manager {
                     Some(_) | None => {}
                 }
             }
+            // A timed `wait` measures the executor's clock, which may just have moved.
+            self.changed.notify_all();
         }
         self.env.publish();
     }
@@ -417,8 +422,12 @@ impl Manager {
         let result = {
             let mut inner = lock(&self.inner);
             let Some(job) = inner.jobs.get_mut(&id) else { return Err(OpError::not_found("the job is gone")) };
-            let total = job.spent.saturating_add(usd_micros);
-            if total > job.reserved {
+            // An overflowing total is past any cap.
+            if let Some(total) = job.spent.checked_add(usd_micros).filter(|total| *total <= job.reserved) {
+                job.spent = total;
+                job.info.spent_usd_micros = total;
+                Ok(())
+            } else {
                 let (spent, cap) = (job.spent, job.reserved);
                 self.cancel_job(&mut inner, id, None, CancelReason::Budget);
                 Err(limited(
@@ -426,10 +435,6 @@ impl Manager {
                     "the job's estimate is its money cap: plan a larger estimate to allow more",
                     "job_cost",
                 ))
-            } else {
-                job.spent = total;
-                job.info.spent_usd_micros = total;
-                Ok(())
             }
         };
         self.env.publish();
@@ -466,41 +471,63 @@ impl Manager {
         info.ok_or_else(|| OpError::internal("a cancelled job vanished"))
     }
 
-    /// Blocks until the job ends or `timeout` (wall time) passes.
+    /// Blocks until the job ends or `timeout` passes on the executor's clock.
     pub(crate) fn wait(&self, id: JobId, timeout: Option<Duration>) -> Result<JobInfo, OpError> {
-        let until = timeout.map(|t| Instant::now() + t);
         let mut inner = lock(&self.inner);
+        let Some(job) = inner.jobs.get_mut(&id) else {
+            return Err(OpError::not_found(format!("job {} is unknown", id.0)));
+        };
+        job.waiters += 1;
+        let (inner, info) = self.wait_registered(inner, id, timeout);
+        release(inner, id);
+        self.after_wait(id, info)
+    }
+
+    /// What `Runner::run` returns for a job started `awaited`: waits for it, then hands over its outcome.
+    pub(crate) fn outcome(&self, id: JobId) -> Result<Outcome, OpError> {
+        let inner = lock(&self.inner);
+        let (mut inner, info) = self.wait_registered(inner, id, None);
+        let taken = inner.jobs.get_mut(&id).and_then(|job| job.outcome.take());
+        release(inner, id);
+        self.after_wait(id, info)?;
+        taken.unwrap_or_else(|| Err(OpError::internal("the job's outcome was already taken")))
+    }
+
+    /// Waits on a job this caller is already counted among the waiters of, so it cannot be dropped from the history
+    /// meanwhile. Returns the lock and the job's last snapshot (`None` only for a job never known).
+    fn wait_registered<'a>(
+        &self,
+        mut inner: MutexGuard<'a, Inner>,
+        id: JobId,
+        timeout: Option<Duration>,
+    ) -> (MutexGuard<'a, Inner>, Option<JobInfo>) {
+        let until = timeout.map(|t| self.now() + t.as_secs_f64());
         loop {
-            let Some(job) = inner.jobs.get(&id) else {
-                return Err(OpError::not_found(format!("job {} is unknown", id.0)));
-            };
+            let Some(job) = inner.jobs.get(&id) else { return (inner, None) };
             if job.phase == Phase::Ended {
                 let info = job.info.clone();
-                drop(inner);
-                // Whoever sees the job ended sees its events too: the worker may not have delivered them yet.
-                self.env.publish();
-                return Ok(info);
+                return (inner, Some(info));
             }
-            let info = job.info.clone();
             inner = match until {
                 None => self.changed.wait(inner).unwrap_or_else(PoisonError::into_inner),
-                Some(until) => {
-                    let left = until.saturating_duration_since(Instant::now());
-                    if left.is_zero() {
-                        return Ok(info);
-                    }
-                    self.changed.wait_timeout(inner, left).unwrap_or_else(PoisonError::into_inner).0
+                // Fake time moves without a wall-clock wake-up, so the clock is re-read every tick as well as on
+                // every change (`poll` signals one).
+                Some(until) if self.now() < until => {
+                    self.changed.wait_timeout(inner, SUPERVISOR_TICK).unwrap_or_else(PoisonError::into_inner).0
+                }
+                Some(_) => {
+                    let info = job.info.clone();
+                    return (inner, Some(info));
                 }
             };
         }
     }
 
-    /// What `Runner::run` returns for a job: waits for it, then hands over its outcome.
-    pub(crate) fn outcome(&self, id: JobId) -> Result<Outcome, OpError> {
-        self.wait(id, None)?;
-        let mut inner = lock(&self.inner);
-        let taken = inner.jobs.get_mut(&id).and_then(|job| job.outcome.take());
-        taken.unwrap_or_else(|| Err(OpError::internal("the job's outcome was already taken")))
+    /// The end of a wait, after the lock is released.
+    fn after_wait(&self, id: JobId, info: Option<JobInfo>) -> Result<JobInfo, OpError> {
+        // Whoever sees the job ended sees its events too: the worker may not have delivered them yet.
+        self.env.publish();
+        info.ok_or_else(|| OpError::not_found(format!("job {} is unknown", id.0)))
     }
 
     /// Blocks until at most `at_most` detached threads are still inside `work`.
@@ -534,8 +561,9 @@ impl Manager {
         charged
     }
 
-    /// Starts the thread that calls [`poll`](Self::poll) while the manager lives. It holds only a weak handle, so it
-    /// never keeps an executor's jobs alive.
+    /// Starts the thread that calls [`poll`](Self::poll) while the manager lives, and after a shutdown until no job is
+    /// still running, so every cancelled job reaches its end by its deadline. It holds only a weak handle, so it never
+    /// keeps an executor's jobs alive.
     fn ensure_supervisor(self: &Arc<Self>) {
         if self.supervisor.swap(true, Ordering::AcqRel) {
             return;
@@ -546,11 +574,44 @@ impl Manager {
             loop {
                 std::thread::sleep(SUPERVISOR_TICK);
                 match weak.upgrade() {
-                    Some(mgr) if !lock(&mgr.inner).closed => mgr.poll(),
+                    Some(mgr) if !mgr.idle_after_shutdown() => mgr.poll(),
                     _ => break,
                 }
             }
         });
+    }
+}
+
+impl Manager {
+    /// Shut down, with no job left whose deadline the supervisor still has to enforce.
+    fn idle_after_shutdown(&self) -> bool {
+        let inner = lock(&self.inner);
+        inner.closed && inner.jobs.values().all(|job| job.phase != Phase::Working)
+    }
+}
+
+/// Drops one waiter from `id` and trims the history it may have held open.
+fn release(mut inner: MutexGuard<'_, Inner>, id: JobId) {
+    if let Some(job) = inner.jobs.get_mut(&id) {
+        job.waiters = job.waiters.saturating_sub(1);
+    }
+    trim(&mut inner);
+}
+
+/// Keeps the last `KEEP_ENDED` ended jobs listed. A job whose thread is still inside `work` stays (its late `spend`
+/// needs the entry), and so does one with a waiter (its outcome is not read yet).
+fn trim(inner: &mut Inner) {
+    while inner.ended.len() > KEEP_ENDED {
+        let Some(at) = inner
+            .ended
+            .iter()
+            .position(|old| inner.jobs.get(old).is_none_or(|job| !job.thread_live && job.waiters == 0))
+        else {
+            break;
+        };
+        if let Some(old) = inner.ended.remove(at) {
+            inner.jobs.remove(&old);
+        }
     }
 }
 

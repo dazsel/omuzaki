@@ -211,15 +211,15 @@ impl Executor {
         Ok(())
     }
 
-    /// Plans a job under the lock and starts it on the manager.
-    fn start_job(&self, op: Arc<dyn DynOp>, req: Request) -> Result<JobInfo, OpError> {
+    /// Plans a job under the lock and starts it on the manager. `awaited` keeps its outcome for [`Runner::run`].
+    fn start_job(&self, op: Arc<dyn DynOp>, req: Request, awaited: bool) -> Result<JobInfo, OpError> {
         let meta = op.meta();
         let plan = {
             let state = lock(&self.env.state);
             require(&req.grants, &req.actor, meta.scope, meta.name)?;
             self.plan(&state, &*op, meta, &req)?
         };
-        self.jobs.start(op, req, plan)
+        self.jobs.start(op, req, plan, awaited)
     }
 
     /// The part of [`Runner::run`] that holds the lock.
@@ -286,7 +286,7 @@ impl Runner for Executor {
             // A dry-run is the plan alone (below). An apply starts the job and waits, holding no lock: every other
             // actor keeps editing while it runs, and the finish lands through the same apply path as any edit.
             if req.mode == Mode::Apply {
-                let info = self.start_job(Arc::from(op), req)?;
+                let info = self.start_job(Arc::from(op), req, true)?;
                 return self.jobs.outcome(info.id);
             }
         }
@@ -344,7 +344,7 @@ impl Jobs for Executor {
             return Err(OpError::invalid("op", format!("{} is not a job", req.op)).hint("run it with `Runner::run`"));
         }
         Self::check_job_request(&*op, &req)?;
-        self.start_job(Arc::from(op), req)
+        self.start_job(Arc::from(op), req, false)
     }
 
     fn job(&self, id: JobId, grants: &Grants) -> Result<Option<JobInfo>, OpError> {

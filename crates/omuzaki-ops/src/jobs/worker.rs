@@ -13,6 +13,8 @@ use crate::sync::lock;
 
 /// The thread body for one job: `work`, then (if it returned a result) `finish`.
 pub(super) fn run(mgr: &Arc<Manager>, id: JobId) {
+    // Best effort: a platform that refuses still runs the job, at normal priority.
+    let _ = super::priority::lower();
     let Some(task) = mgr.task(id) else { return };
     let doc = StateDoc(&mgr.env.state);
     let signal = Signal { mgr, id, cancel: task.cancel.clone() };

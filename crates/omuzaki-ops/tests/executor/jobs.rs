@@ -45,6 +45,8 @@ enum How {
     Fail,
     /// Panics.
     Panic,
+    /// Returns the nice value its thread runs at (Linux; null elsewhere).
+    Nice,
 }
 
 #[derive(Serialize, Deserialize, JsonSchema)]
@@ -183,6 +185,7 @@ impl Op for TestJob {
             }
             How::Fail => Err(OpError::invalid("key", "boom")),
             How::Panic => panic!("the job's work panicked"),
+            How::Nice => Ok(json!(thread_nice())),
         }
     }
 
@@ -216,6 +219,32 @@ impl Op for TestDriver {
     }
 }
 register_op!(TestDriver);
+
+/// The calling thread's nice value, from `/proc/thread-self/stat` (field 19).
+#[cfg(target_os = "linux")]
+fn thread_nice() -> Option<i64> {
+    let stat = std::fs::read_to_string("/proc/thread-self/stat").ok()?;
+    stat.rsplit_once(')')?.1.split_whitespace().nth(16)?.parse().ok()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn thread_nice() -> Option<i64> {
+    None
+}
+
+/// The first `JobChanged` for `id` in an ended state, within `secs` of wall time.
+fn ended_event(events: &Receiver<Event>, id: JobId, secs: u64) -> Option<JobInfo> {
+    let until = Instant::now() + Duration::from_secs(secs);
+    loop {
+        let left = until.saturating_duration_since(Instant::now());
+        match events.recv_timeout(left).ok()? {
+            Event::JobChanged { job } if job.id == id && !matches!(job.state, JobState::Queued | JobState::Running) => {
+                return Some(job);
+            }
+            _ => {}
+        }
+    }
+}
 
 fn job(key: &str, how: &Value) -> Request {
     request("test.job", json!({"key": key, "how": how}))
@@ -621,4 +650,77 @@ fn a_job_needs_read_to_be_listed_and_its_op_scope_to_start() {
     read_only.grants = Grants::of([Scope::Read]);
     assert_eq!(code(&rig.exec.start(read_only).unwrap_err()), ErrorCode::Denied);
     assert_eq!(rig.exec.jobs(&Grants::person()).unwrap().len(), 0);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_job_thread_runs_below_normal_priority() {
+    let rig = rig(json!({}));
+    rig.exec.run(job("n1", &json!("nice"))).unwrap();
+    let here = thread_nice().unwrap();
+    let worker = rig.at("n1").and_then(|nice| nice.as_i64()).unwrap();
+    assert!(worker >= here.max(10), "the job ran at nice {worker}, the test at {here}");
+}
+
+#[test]
+fn shutdown_still_ends_a_job_that_ignores_cancel_at_its_deadline() {
+    let rig = rig(json!({}));
+    let events = rig.exec.subscribe(&Grants::person()).unwrap();
+    let gate = Gate::new("s1");
+    let info = rig.exec.start(job("s1", &json!("block"))).unwrap();
+    gate.wait_entered();
+    rig.exec.shutdown_jobs();
+    // Only the supervisor sees the clock move: the test does not call `poll_jobs`.
+    rig.clock.advance(Seconds(10.1));
+    let ended = ended_event(&events, info.id, 30).expect("the job was never ended after shutdown");
+    assert_eq!(ended.state, JobState::Cancelled { by: None, reason: CancelReason::Shutdown });
+    assert_eq!(rig.exec.wait(info.id, None).unwrap().state, ended.state);
+    drop(gate);
+    rig.exec.wait_detached(0);
+}
+
+#[test]
+fn run_gets_its_cancelled_outcome_however_many_queued_jobs_shutdown_ends() {
+    let rig = rig(json!({}));
+    let gpu = json!({"gpu": true});
+    let gate = Gate::new("e");
+    rig.exec.start(job_with("e", &json!("block"), gpu.clone())).unwrap();
+    gate.wait_entered();
+    let error = std::thread::scope(|scope| {
+        let running = scope.spawn(|| rig.exec.run(job_with("e", &json!("block"), gpu.clone())));
+        while rig.exec.jobs(&Grants::person()).unwrap().len() < 2 {
+            std::thread::yield_now();
+        }
+        for _ in 0..150 {
+            rig.exec.start(job_with("e", &json!("block"), gpu.clone())).unwrap();
+        }
+        // The waiting run's job ends first of 151 queued jobs, past the 100 the history keeps.
+        rig.exec.shutdown_jobs();
+        running.join().unwrap().unwrap_err()
+    });
+    assert_eq!(code(&error), ErrorCode::Cancelled, "{error}");
+    assert!(matches!(error.detail.as_deref(), Some(ErrorDetail::Cancelled { reason: CancelReason::Shutdown, .. })));
+    assert!(rig.exec.jobs(&Grants::person()).unwrap().len() <= 101, "the history is trimmed once it is read");
+    drop(gate);
+}
+
+#[test]
+fn a_timed_wait_runs_on_the_executor_clock() {
+    let rig = rig(json!({}));
+    let gate = Gate::new("tw");
+    let info = rig.exec.start(job("tw", &json!("block"))).unwrap();
+    gate.wait_entered();
+    let (done, waited) = channel();
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let _ = done.send(rig.exec.wait(info.id, Some(Duration::from_millis(50))));
+        });
+        // Six times the timeout in wall time, while the fake clock stands still.
+        assert!(waited.recv_timeout(Duration::from_millis(300)).is_err(), "wall time expired the wait");
+        advance(&rig, 0.06);
+        let woke = waited.recv_timeout(Duration::from_secs(30)).expect("moving the clock did not expire the wait");
+        assert_eq!(woke.unwrap().state, JobState::Running);
+    });
+    gate.release.send(()).unwrap();
+    rig.exec.wait(info.id, None).unwrap();
 }

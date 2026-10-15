@@ -18,8 +18,9 @@ impl Ledger {
     /// Holds `need` for a job about to start; `false` (nothing held) when charged plus held plus `need` would pass
     /// the budget.
     pub(crate) fn reserve(&mut self, need: u64) -> bool {
-        let total = self.charged.saturating_add(self.held).saturating_add(need);
-        if total > self.budget {
+        // A sum past `u64::MAX` is past any budget, the unlimited one included.
+        let total = self.charged.checked_add(self.held).and_then(|sum| sum.checked_add(need));
+        if total.is_none_or(|total| total > self.budget) {
             return false;
         }
         self.held += need;
@@ -50,6 +51,16 @@ mod tests {
         ledger.settle(600, 100);
         assert_eq!(ledger.charged(), 100);
         assert!(ledger.reserve(900), "the rest is released once the work has returned");
+    }
+
+    #[test]
+    fn an_overflow_is_refused_even_against_the_unlimited_budget() {
+        let mut ledger = Ledger::new(u64::MAX);
+        assert!(ledger.reserve(u64::MAX));
+        assert!(!ledger.reserve(1), "held plus need would overflow");
+        ledger.settle(u64::MAX, 1);
+        assert!(!ledger.reserve(u64::MAX), "charged plus need would overflow");
+        assert!(ledger.reserve(u64::MAX - 1));
     }
 
     #[test]
