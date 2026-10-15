@@ -334,8 +334,9 @@ where
 /// first time a fact is missing here, never again. Published facts never reach it. Cloning gives the clone an empty
 /// list, so no default is ever shared between two views.
 ///
-/// A `Default` can't read the `Published` it is made for, so making it inside the cell's one-time initialiser can't
-/// deadlock. Two threads that miss the same fact wait for one winner.
+/// A `Default` may read the view it is made for (through a `static`), so it is made outside any cell, never inside a
+/// one-time initialiser that it could re-enter. Two threads that both miss a fact may each make one; the first one
+/// stored wins and the other is dropped.
 #[derive(Default)]
 pub(crate) struct Defaults {
     head: OnceLock<Box<Node>>,
@@ -351,11 +352,19 @@ impl Defaults {
     /// The empty value of fact `F` in this view, made on the first read.
     pub(crate) fn of<F: Fact>(&self) -> &F::Merged {
         let key = TypeId::of::<F>();
+        // A default made for an empty cell that another reader filled first: kept for the next empty cell.
+        let mut spare: Option<Box<Node>> = None;
         let mut link = &self.head;
         loop {
-            let node = link.get_or_init(|| {
-                Box::new(Node { fact: key, value: Box::new(F::Merged::default()), next: OnceLock::new() })
-            });
+            let Some(node) = link.get() else {
+                let fresh = spare.take().unwrap_or_else(|| {
+                    Box::new(Node { fact: key, value: Box::new(F::Merged::default()), next: OnceLock::new() })
+                });
+                if let Err(lost) = link.set(fresh) {
+                    spare = Some(lost);
+                }
+                continue;
+            };
             // The key is the fact's own type, so a match always has the fact's merged type; a miss moves on.
             if node.fact == key
                 && let Some(m) = node.value.downcast_ref::<F::Merged>()

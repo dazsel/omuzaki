@@ -4,7 +4,8 @@
 // Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
+use std::time::Duration;
 
 use omuzaki_char_api::{Fact, PartId, Published, Publishes};
 
@@ -84,4 +85,43 @@ fn views_are_independent_across_threads() {
         }
     });
     assert_eq!(contents(a.get::<One>()), Vec::<u32>::new());
+}
+
+// ---- a Default that reads the view it is made for
+
+static VIEW: OnceLock<Published> = OnceLock::new();
+
+shared_fact!(Inner, "test-default-inner");
+
+/// A merged value whose `Default` reads another missing fact from the same `Published`.
+#[derive(Clone)]
+struct Reader(usize);
+
+impl Default for Reader {
+    fn default() -> Self {
+        Self(VIEW.get().map_or(usize::MAX, |view| view.get::<Inner>().lock().unwrap().len()))
+    }
+}
+
+struct Outer;
+impl Fact for Outer {
+    const NAME: &'static str = "test-default-outer";
+    type Value = u32;
+    type Merged = Reader;
+    fn merge(_merged: &mut Reader, _part: &PartId, _value: u32) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+#[test]
+fn a_default_that_reads_a_missing_fact_of_its_own_view_does_not_hang() {
+    let view = VIEW.get_or_init(Published::default);
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(view.get::<Outer>().0);
+    });
+    let seen = rx.recv_timeout(Duration::from_secs(5)).expect("the read finished instead of hanging");
+    assert_eq!(seen, 0, "the default read the empty value of the other fact");
+    assert_eq!(view.get::<Outer>().0, 0);
+    assert!(std::ptr::eq(view.get::<Inner>(), view.get::<Inner>()));
 }
