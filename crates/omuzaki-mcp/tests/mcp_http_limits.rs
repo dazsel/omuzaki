@@ -10,6 +10,7 @@
 
 mod common;
 
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -207,6 +208,16 @@ fn drain_open(stream: &mut TcpStream) {
     }
 }
 
+/// The most real time a test waits for the server to get somewhere. A healthy run takes well under a second.
+const REAL_TIME_CEILING: Duration = Duration::from_secs(60);
+
+/// Whether the socket has something to read right now: the answer's first bytes, as long as nothing has been read.
+fn has_arrived_for_reading(stream: &TcpStream) -> bool {
+    let mut readable = std::pin::pin!(stream.readable());
+    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+    readable.as_mut().poll(&mut context).is_ready()
+}
+
 /// Gives the server's tasks real time to run while the clock stays frozen: the server's I/O moves in real time, and
 /// tokio does not auto-advance the clock while a blocking task runs.
 async fn let_the_server_run() {
@@ -249,8 +260,20 @@ async fn a_client_that_never_reads_its_answer_loses_its_connection_at_the_write_
             async move { raw.stateless_call(Some(bearer.as_str()), "project_ping", &json!({})).await.status() },
         )
     };
+    // The write timeout starts only once the server's write is blocked, and building a 13 MB answer takes as long as
+    // the machine makes it take. So the clock stays still until the first bytes of the answer reach the stalled
+    // client (they are left unread): from then on the server fills the tiny buffers within moments and blocks.
+    let began = std::time::Instant::now();
+    while !has_arrived_for_reading(&stalled) {
+        assert!(began.elapsed() < REAL_TIME_CEILING, "the server never started to answer");
+        let_the_server_run().await;
+    }
+    // Move the clock in steps, giving the server real time between them. Only real time bounds the loop, by a ceiling
+    // a healthy run never nears, so a slow machine makes the test slower and never red. The virtual time is bounded
+    // too, as the failure of a server that never cuts the connection off.
     let mut advanced = Duration::ZERO;
     while !probe.is_finished() {
+        assert!(began.elapsed() < REAL_TIME_CEILING, "the stalled connection was never cut off (real time)");
         assert!(advanced < Duration::from_secs(60), "the stalled connection was never cut off");
         let_the_server_run().await;
         if probe.is_finished() {
