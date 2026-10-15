@@ -9,8 +9,11 @@
 //!
 //! - Media Foundation is started once and shared (`Arc<MfRuntime>`): the camera and every stream hold it, and it is
 //!   shut down when the last of them is gone. A stream declares it as its last field so it outlives every interface.
-//! - COM is per thread. Every entry point enters a [`ComScope`] first, and every interface is released while the
-//!   scope is still alive: streams drop their interfaces explicitly inside `Drop`, not as fields after it.
+//! - COM is per thread, and a stream may move between threads, so the apartment is a thread-local guard
+//!   ([`enter_com`]): every entry point calls it, the first call on a thread runs `CoInitializeEx` and the guard
+//!   keeps the apartment until the thread exits. `next_frame` therefore pays one thread-local read per frame, not an
+//!   apartment set-up and tear-down. Every interface is released on a thread whose guard is still alive: streams drop
+//!   their interfaces explicitly inside the reaper thread's work, never from a thread-local destructor.
 //! - The callback owns its own `Arc<Shared>`, so a late callback after the stream is gone touches only memory it owns.
 //!   The one thing it borrows, the reader it re-arms, is detached (and awaited) before the reader is released.
 //!
@@ -31,6 +34,7 @@
 //! grows a `Vec` or resizes anything.
 #![allow(unsafe_code)] // Win32/COM FFI has no safe binding; each block carries its own `// SAFETY:` comment.
 
+use std::cell::Cell;
 use std::ffi::c_void;
 use std::ptr::NonNull;
 use std::sync::Arc;
@@ -91,31 +95,75 @@ impl Drop for MfRuntime {
     }
 }
 
-/// Puts the calling thread in the multithreaded apartment for a scope. COM is per thread, so every entry point
-/// that touches Media Foundation holds one: the camera and its streams may move between threads. Declare it before
-/// every interface it must outlive.
-struct ComScope(bool);
+/// How a thread stands with COM.
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum Standing {
+    /// `CoInitializeEx` has not succeeded on this thread yet.
+    Outside,
+    /// This guard holds a `CoInitializeEx` reference, released when the thread exits.
+    Owner,
+    /// The thread was already in another apartment (`RPC_E_CHANGED_MODE`): usable as it is, nothing of ours to release.
+    Guest,
+}
 
-impl ComScope {
-    fn enter() -> Result<Self, TrackError> {
+/// The calling thread's COM apartment, entered once and kept until the thread exits (see [`enter_com`]).
+struct Apartment {
+    standing: Cell<Standing>,
+    /// How many times `CoInitializeEx` ran on this thread: the counting seam behind the "once per thread" test.
+    inits: Cell<u32>,
+}
+
+impl Apartment {
+    const fn new() -> Self {
+        Self { standing: Cell::new(Standing::Outside), inits: Cell::new(0) }
+    }
+
+    fn enter(&self) -> Result<(), TrackError> {
+        if self.standing.get() != Standing::Outside {
+            return Ok(());
+        }
+        self.inits.set(self.inits.get().saturating_add(1));
         // SAFETY: plain call. `S_OK` and `S_FALSE` both add a reference that `Drop` releases; a thread already in
         // another apartment (`RPC_E_CHANGED_MODE`) is usable as it is and takes no reference.
         let hr = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
         if hr == RPC_E_CHANGED_MODE {
-            return Ok(Self(false));
+            self.standing.set(Standing::Guest);
+            return Ok(());
         }
         hr.ok().map_err(|e| map_hresult(e.code().0, &CameraId(String::new())))?;
-        Ok(Self(true))
+        self.standing.set(Standing::Owner);
+        Ok(())
     }
 }
 
-impl Drop for ComScope {
+impl Drop for Apartment {
     fn drop(&mut self) {
-        if self.0 {
-            // SAFETY: pairs the `CoInitializeEx` that took a reference in `enter`, on the same thread.
+        if self.standing.get() == Standing::Owner {
+            // SAFETY: pairs the `CoInitializeEx` that took a reference in `enter`, on the same thread (a
+            // thread-local is destroyed on the thread that owns it).
             unsafe { CoUninitialize() };
         }
     }
+}
+
+thread_local! {
+    static APARTMENT: Apartment = const { Apartment::new() };
+}
+
+/// Puts the calling thread in the multithreaded apartment, once: the first call on a thread runs `CoInitializeEx`, every
+/// later call is a thread-local read, and the apartment lives until the thread exits. COM is per thread, so every entry
+/// point that touches Media Foundation calls this; the guard is thread-local rather than owned by the stream because a
+/// stream may be moved to another thread (`next_frame` on a capture loop's thread, the drop on the reaper's). A scope
+/// per call would tear the apartment down after every frame whenever the thread has no apartment of its own.
+fn enter_com() -> Result<(), TrackError> {
+    APARTMENT
+        .try_with(Apartment::enter)
+        .unwrap_or_else(|_| Err(TrackError::Backend("the thread is exiting; COM can no longer be entered".into())))
+}
+
+/// How many times `CoInitializeEx` ran on the calling thread.
+fn com_init_calls() -> u32 {
+    APARTMENT.try_with(|a| a.inits.get()).unwrap_or(0)
 }
 
 /// The Media Foundation camera source.
@@ -163,7 +211,7 @@ fn string_attr(attrs: &IMFAttributes, key: &GUID) -> Option<String> {
     Some(value)
 }
 
-/// Every video capture device present. Needs a [`ComScope`] that outlives the returned devices.
+/// Every video capture device present. Needs the thread to have entered COM ([`enter_com`]).
 fn devices() -> windows::core::Result<Vec<Device>> {
     let mut query = None;
     // SAFETY: `query` outlives the call and receives the new attribute store.
@@ -430,8 +478,9 @@ fn modes(reader: &IMFSourceReader) -> windows::core::Result<Vec<(ModeInfo, Nativ
 impl Camera for MfCamera {
     /// A device that cannot be probed (busy, or refusing access) is listed without formats.
     fn enumerate(&self) -> Vec<CameraInfo> {
-        // Declared first so it is released last: every interface below goes before it.
-        let Ok(_com) = ComScope::enter() else { return Vec::new() };
+        if enter_com().is_err() {
+            return Vec::new();
+        }
         let Ok(found) = devices() else { return Vec::new() };
         found
             .into_iter()
@@ -448,14 +497,13 @@ impl Camera for MfCamera {
     }
 
     fn open(&mut self, id: &CameraId, request: &CameraFormatRequest) -> Result<Box<dyn CameraStream>, TrackError> {
-        // Declared first so it is released last, after every interface `open_stream` created and dropped.
-        let _com = ComScope::enter()?;
+        enter_com()?;
         let stream = open_stream(&self.runtime, id, request)?;
         Ok(Box::new(stream))
     }
 }
 
-/// Opens `id` in the mode `request` picks. Runs inside the caller's [`ComScope`]; everything it creates and does not
+/// Opens `id` in the mode `request` picks. Runs on a thread that has entered COM ([`enter_com`]); everything it creates and does not
 /// hand to the stream is released before it returns.
 fn open_stream(runtime: &Arc<MfRuntime>, id: &CameraId, request: &CameraFormatRequest) -> Result<MfStream, TrackError> {
     let device = devices()
@@ -697,7 +745,7 @@ fn lock_buffer(
     }
 }
 
-/// The interfaces a stream owns. Dropped by `MfStream::drop` inside its [`ComScope`], never as a bare field.
+/// The interfaces a stream owns. Released by the reaper thread after it entered COM, never as a bare field.
 struct Live {
     reader: IMFSourceReader,
     /// Owns the camera; shut down on drop so it is released at once.
@@ -742,8 +790,7 @@ fn contiguous(
 }
 
 // SAFETY: the reader and activator are free-threaded (multithreaded-apartment) objects; `held` points into a buffer
-// that moves with them. All of it is touched only through `&mut MfStream`, one thread at a time, each time inside a
-// `ComScope`.
+// that moves with them. All of it is touched only through `&mut MfStream`, one thread at a time, each time after `enter_com`.
 unsafe impl Send for Live {}
 
 struct MfStream {
@@ -876,7 +923,7 @@ impl CameraStream for MfStream {
     /// skipped capture is a gap. If the camera switches to a format that cannot be handed over, this and every later
     /// call return that error.
     fn next_frame(&mut self, timeout: Duration) -> Result<Option<CameraFrame<'_>>, TrackError> {
-        let _com = ComScope::enter()?;
+        enter_com()?;
         if let Some(e) = &self.failed {
             return Err(e.clone());
         }
@@ -931,8 +978,10 @@ impl Drop for MfStream {
 /// If a callback is stuck inside the reader, releasing it would be a use after free, so it is leaked instead.
 fn reap_stream(reaped: Reaped) {
     let Reaped { live, shared, runtime } = reaped;
-    // Entered first, dropped last: after every interface below. Without COM we still release what we can.
-    let _com = ComScope::enter().ok();
+    // The reaper is a fresh thread whose apartment outlives everything below. Without COM we still release what we can.
+    if let Err(e) = enter_com() {
+        tracing::warn!(error = %e, "releasing a camera without COM");
+    }
     shared.slot.close();
     shared.reader.store(std::ptr::null_mut(), Ordering::SeqCst);
     // A callback that read the reader pointer before it was cleared is still using the reader: wait it out.
@@ -971,13 +1020,18 @@ fn reap_stream(reaped: Reaped) {
 #[doc(hidden)]
 pub mod bench_support {
     use super::{
-        Arc, AtomicPtr, AtomicUsize, CameraId, ComScope, EventSignal, IMFMediaBuffer, IMFSample, MFCreateMemoryBuffer,
+        Arc, AtomicPtr, AtomicUsize, CameraId, EventSignal, IMFMediaBuffer, IMFSample, MFCreateMemoryBuffer,
         MfRuntime, ModeInfo, PixelFormat, RowFlip, Shared, Take, TokenSlot, TrackError, contiguous, err, into_token,
-        lock_buffer,
+        com_init_calls, enter_com, lock_buffer,
     };
     use std::time::Duration;
 
     use windows::Win32::Media::MediaFoundation::MFCreateSample;
+
+    /// How many times `CoInitializeEx` ran on the calling thread.
+    pub fn com_inits() -> u32 {
+        com_init_calls()
+    }
 
     /// A synthetic one-buffer sample and everything the frame path needs around it.
     pub struct Harness {
@@ -989,9 +1043,8 @@ pub mod bench_support {
         stride: isize,
         flip: RowFlip,
         id: CameraId,
-        // Dropped last, in this order: Media Foundation after the interfaces, COM after Media Foundation.
+        // Dropped last: Media Foundation after the interfaces.
         _runtime: MfRuntime,
-        _com: ComScope,
     }
 
     impl Harness {
@@ -1001,7 +1054,7 @@ pub mod bench_support {
         /// If Media Foundation cannot start or build the sample.
         pub fn new(format: PixelFormat, width: u32, height: u32, stride: isize) -> Result<Self, TrackError> {
             let id = CameraId("bench".into());
-            let com = ComScope::enter()?;
+            enter_com()?;
             let runtime = MfRuntime::start().map_err(|e| err(&e, &id))?;
             let mode = ModeInfo { format, width, height, fps_num: 30, fps_den: 1 };
             let row = format.tight_stride(width).unwrap_or(0);
@@ -1031,7 +1084,20 @@ pub mod bench_support {
                 reader: AtomicPtr::new(std::ptr::null_mut()),
                 in_flight: AtomicUsize::new(0),
             });
-            Ok(Self { sample, gather, gather_len: len, shared, mode, stride, flip, id, _runtime: runtime, _com: com })
+            Ok(Self { sample, gather, gather_len: len, shared, mode, stride, flip, id, _runtime: runtime })
+        }
+
+        /// One `next_frame` without a device: enter COM as the real call does (a thread-local read once the thread
+        /// has an apartment), then the hand-off and the lock. Returns the bytes of the frame.
+        ///
+        /// # Errors
+        /// As `next_frame` would.
+        pub fn next_frame(&mut self) -> Result<usize, TrackError> {
+            enter_com()?;
+            if !self.hand_off() {
+                return Err(TrackError::Lost);
+            }
+            self.lock_and_read()
         }
 
         /// The callback's side and the caller's: put the sample in the slot (waking the event) and take it back.
