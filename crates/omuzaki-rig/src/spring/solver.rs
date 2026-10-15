@@ -740,9 +740,9 @@ impl<'a> Builder<'a> {
 
 #[cfg(test)]
 impl VrmSpringSolver {
-    /// Test helper: adopts `from`'s dynamic state (tails, rotations, time owed, whether the next step rests) and keeps
-    /// this solver's parameters. Lets a test start a solver built fresh from a new set at the same point as a switched
-    /// one.
+    /// Test helper: adopts `from`'s dynamic state (tails, rotations, time owed, whether the next step rests, the previous
+    /// pose it interpolates from) and keeps this solver's parameters. Lets a test start a solver built fresh from a new
+    /// set at the same point as a switched one.
     pub(super) fn copy_state_from(&mut self, from: &Self) {
         for (mine, theirs) in self.segments.iter_mut().zip(&from.segments) {
             mine.prev = theirs.prev;
@@ -751,5 +751,7 @@ impl VrmSpringSolver {
         }
         self.owed_s = from.owed_s;
         self.needs_rest = from.needs_rest;
+        self.previous.clone_from(&from.previous);
+        self.has_previous = from.has_previous;
     }
 }
