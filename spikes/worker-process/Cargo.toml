@@ -1,0 +1,63 @@
+# Spike: can the renderer live in a killable worker process while a host process keeps the outputs fed with the last
+# frame? Its own workspace root on purpose, like spikes/broadcast-out: nothing here touches the main workspace's lockfile.
+[workspace]
+members = ["."]
+resolver = "3"
+
+[package]
+name = "worker-process"
+description = "Spike: a wgpu renderer in a killable worker process, a host that holds the last frame, and the kill timings"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "worker_process"
+
+[[bin]]
+name = "wp-spike"
+path = "src/main.rs"
+
+[dependencies]
+# The test picture (scene.wgsl), the frame tag, the statistics and the Spout bridge come from the broadcast-out spike.
+spout-out = { path = "../broadcast-out/spout-out" }
+clap = { version = "4.6", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+pollster = "1"
+thiserror = "2"
+wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "dx12", "wgsl"] }
+
+# Off Windows the renderer runs on whatever Vulkan driver is around (lavapipe on a cloud VM).
+[target.'cfg(not(windows))'.dependencies]
+wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "dx12", "wgsl", "vulkan"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D12",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Security",
+    "Win32_System_Threading",
+] }
+
+# The same lint table as the main workspace. `unsafe_code` is denied crate-wide; the Windows FFI module opts in.
+[lints.rust]
+unsafe_code = "deny"
+unused_must_use = "deny"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+unwrap_used = "deny"
+expect_used = "deny"
+dbg_macro = "deny"
+todo = "deny"
+
+[profile.release]
+lto = "thin"
+codegen-units = 16

@@ -19,13 +19,17 @@ use omuzaki_render_api::{
     Scene, TargetDesc,
 };
 
-#[test]
-fn morphing_allocates_nothing_in_this_crate_after_warm_up() {
+/// Runs on the GPU path, or on the CPU path forced on the same adapter.
+fn morphing_allocates_nothing_in_this_crate_after_warm_up(cpu: bool) {
     if !counting::can_attribute() {
         println!("no source paths in backtraces (a build without debug info): skipping");
         return;
     }
     let mut r = support::renderer();
+    if cpu {
+        r.force_cpu_morph().unwrap();
+    }
+    assert_eq!(r.morph_path(), if cpu { "cpu" } else { "gpu" });
     let mesh = grid::grid(100, 200);
     let n = mesh.positions.len();
     let ramp: Vec<Vec3> = (0..n).map(|i| Vec3::new(0.0, 0.0, (i % 7) as f32 * 0.01)).collect();
@@ -63,4 +67,14 @@ fn morphing_allocates_nothing_in_this_crate_after_warm_up() {
     for owner in ["omuzaki-render", "render-api", "unattributed"] {
         assert_eq!(totals.get(owner).copied().unwrap_or(0), 0, "{owner} allocated: {totals:?}");
     }
+}
+
+#[test]
+fn on_the_gpu_path() {
+    morphing_allocates_nothing_in_this_crate_after_warm_up(false);
+}
+
+#[test]
+fn on_the_cpu_path() {
+    morphing_allocates_nothing_in_this_crate_after_warm_up(true);
 }
