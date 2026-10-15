@@ -13,8 +13,8 @@ use omuzaki_char::template::standard::HEAD;
 use omuzaki_char::template::{Template, registry};
 use omuzaki_char_api::{
     BodyFit, BodyShape, BuildCtx, BuildError, BuildOptions, BuildServices, BuiltCharacter, CharId, CharacterBuilder,
-    CharacterDef, HandParams, PartCategory, PartDef, PartId, PartKind, PartKindId, PartMeta, PartOutput, Proportions,
-    Publishes, RegistryBuilder,
+    CharacterDef, FitFact, HandParams, PartCategory, PartDef, PartId, PartKind, PartKindId, PartMeta, PartOutput,
+    Proportions, Publishes, RegistryBuilder, StatureFact,
 };
 use omuzaki_core::glam::Vec3;
 use omuzaki_face_api::{Check, FaceProfile, Palette, Validate};
@@ -61,11 +61,9 @@ impl PartKind for TemplateBody {
         let layout = layout_of(t, p.height);
         let stature = t.stature(&layout).ok_or_else(|| ctx.fail("no stature"))?;
         Ok(PartOutput {
-            publishes: Publishes {
-                fit: Some(Arc::new(TemplateFit::new(layout))),
-                stature: Some(stature),
-                ..Publishes::default()
-            },
+            publishes: Publishes::default()
+                .with::<FitFact>(Arc::new(TemplateFit::new(layout)))
+                .with::<StatureFact>(stature),
             ..PartOutput::default()
         })
     }
