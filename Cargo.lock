@@ -3731,6 +3731,7 @@ dependencies = [
 name = "omuzaki-http-mock"
 version = "0.0.0"
 dependencies = [
+ "base64",
  "omuzaki-http-api",
  "serde_json",
  "thiserror 2.0.21",
