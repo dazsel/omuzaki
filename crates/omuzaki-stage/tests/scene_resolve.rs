@@ -229,6 +229,18 @@ fn a_preset_without_a_figure_is_a_scene_error() {
     else {
         panic!("expected a scene error");
     };
+    // The cast has a subject but no figure is visible: no stand-in is used.
+    assert_eq!(source.path, "scene.subject");
+}
+
+#[test]
+fn a_preset_whose_member_is_hidden_is_a_scene_error() {
+    let (mut def, figures) = (scene(), figures([0.0, 0.0]));
+    def.cast.insert(member("zed"), cast_member());
+    def.cameras.get_mut(&camera("close")).unwrap().subject = Anchor::Member(member("zed"));
+    let Err(StageError::Scene { source }) = ResolvedScene::new().resolve_into(checked(&def), &figures, ASPECT) else {
+        panic!("expected a scene error");
+    };
     assert_eq!(source.path, "cameras.close.subject");
 }
 
@@ -388,7 +400,8 @@ fn a_subject_focus_is_view_depth_not_distance() {
 #[test]
 fn the_default_subject_is_the_first_cast_member_even_when_it_is_hidden() {
     let (mut def, figures) = (scene(), figures([0.0, 0.0]));
-    // `aoi` sorts before `kiri` but has no figure: the subject is unavailable, not `kiri`.
+    // `aoi` sorts before `kiri` but has no figure: the subject is unavailable, not `kiri`, and nothing falls back to
+    // the unit figure.
     def.cast.insert(member("aoi"), cast_member());
     def.cameras.clear();
     def.cameras.insert(camera("side"), free_stage_camera([3.0, 0.0, 0.0], [0.0, 0.0, 0.0]));
@@ -396,7 +409,7 @@ fn the_default_subject_is_the_first_cast_member_even_when_it_is_hidden() {
     let Err(StageError::Scene { source }) = ResolvedScene::new().resolve_into(checked(&def), &figures, ASPECT) else {
         panic!("expected a scene error");
     };
-    assert_eq!(source.path, "scene.post.depth_of_field.focus");
+    assert_eq!(source.path, "scene.subject");
     // Naming the visible member as the subject resolves it.
     def.scene.subject = Some(member("kiri"));
     assert!(ResolvedScene::new().resolve_into(checked(&def), &figures, ASPECT).is_ok());
@@ -464,4 +477,24 @@ fn a_free_camera_without_a_subject_reaches_ten_unit_heights_past_its_target() {
     let out = resolved(&def, &BTreeMap::new());
     let Projection::Perspective { far, .. } = out.cameras[0].1.projection else { panic!("perspective") };
     assert!((far - 13.0).abs() < 1e-4, "{far}");
+}
+
+#[test]
+fn a_figure_root_that_is_not_rigid_is_refused() {
+    let (def, good) = (scene(), figures([0.0, 0.0]));
+    for root in [
+        Affine3A::from_scale(Vec3::ZERO),
+        Affine3A::from_scale(Vec3::splat(2.0)),
+        Affine3A::from_scale(Vec3::new(1.0, 1.0, -1.0)),
+        Affine3A::from_mat3(omuzaki_core::glam::Mat3::from_cols(Vec3::X, Vec3::X, Vec3::Z)),
+    ] {
+        let mut bad = good.clone();
+        bad.get_mut(&member("kiri")).unwrap().root = root;
+        let Err(StageError::Scene { source }) = ResolvedScene::new().resolve_into(checked(&def), &bad, ASPECT) else {
+            panic!("expected a scene error for {root:?}");
+        };
+        assert_eq!(source.path, "cast.kiri");
+    }
+    // A moved, turned figure is rigid.
+    assert!(ResolvedScene::new().resolve_into(checked(&def), &figures([1.5, -2.0]), ASPECT).is_ok());
 }
