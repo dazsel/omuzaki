@@ -2,7 +2,8 @@
 # The licence policy lives in deny.toml. `xtask/tests/notices_config.rs` fails when `accepted` or `targets` drift from it.
 
 # Exactly deny.toml's `[licenses] allow` list, plus the licences of its per-crate exceptions (OFL-1.1 and
-# Ubuntu-font-1.0 for egui's bundled fonts). A licence missing here fails the generate step, which is the point.
+# Ubuntu-font-1.0 for egui's bundled fonts, CDLA-Permissive-2.0 for webpki-root-certs). A licence missing here fails
+# the generate step, which is the point.
 accepted = [
     "MIT",
     "MIT-0",
@@ -21,6 +22,7 @@ accepted = [
     "MPL-2.0",
     "OFL-1.1",
     "Ubuntu-font-1.0",
+    "CDLA-Permissive-2.0",
 ]
 
 # Exactly deny.toml's `[graph] targets`, so the notices cover every platform the policy checks.
