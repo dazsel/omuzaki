@@ -19,6 +19,16 @@ FRAME_MS = 1000 / FPS
 LAYOUT = stimulus.layout(FPS, 60)
 
 
+def invert_output(frame):
+    """The recording frame with the output region's grey levels inverted (a dark-when-open signal)."""
+    px, py, pw, ph = synth.OUT_ROI
+    g = bytearray(frame)
+    for r in range(py, py + ph):
+        o = r * synth.WIDTH + px
+        g[o:o + pw] = bytes(255 - v for v in g[o:o + pw])
+    return bytes(g)
+
+
 def run(frames, **kw):
     return analyze.analyse(frames, synth.WIDTH, FPS, LAYOUT, synth.STIM_ORIGIN, synth.OUT_ROI, **kw)
 
@@ -50,15 +60,24 @@ class RecoversInjectedDelay(unittest.TestCase):
 
     def test_dark_output_polarity(self):
         frames, truth = synth.build(83.0, 0.0)
-        px, py, pw, ph = synth.OUT_ROI
-        def invert(f):
-            g = bytearray(f)
-            for r in range(py, py + ph):
-                o = r * synth.WIDTH + px
-                g[o:o + pw] = bytes(255 - v for v in g[o:o + pw])
-            return bytes(g)
-        report = run((invert(f) for f in frames), out_bright=False)
+        report = run((invert_output(f) for f in frames), out_bright=False)
         self.assertAlmostEqual(report["p50_ms"], 83.0, delta=FRAME_MS / 2)
+
+
+class FixedRange(unittest.TestCase):
+    def test_asymmetric_range_moves_the_crossing_the_same_way_in_both_polarities(self):
+        # Closed at level 0 and open at level 200 puts half way at 100, a jaw of 0.39, earlier than the 0.5 default.
+        bright = run(synth.build(83.0, 0.0)[0], out_range=(0, 200))
+        frames, _ = synth.build(83.0, 0.0)
+        dark = run((invert_output(f) for f in frames), out_bright=False, out_range=(255, 55))
+        self.assertAlmostEqual(bright["p50_ms"], 83.0 - 0.108 * synth.RAMP_MS, delta=1.0)
+        self.assertAlmostEqual(dark["p50_ms"], bright["p50_ms"], delta=0.1)
+        default = run(synth.build(83.0, 0.0)[0])
+        self.assertGreater(default["p50_ms"] - bright["p50_ms"], 3.0)
+
+    def test_range_that_does_not_open_is_an_error(self):
+        with self.assertRaisesRegex(ValueError, "does not move"):
+            run(synth.build(83.0, 0.0)[0], out_range=(100, 100))
 
 
 class RejectsBadRecordings(unittest.TestCase):
@@ -79,10 +98,20 @@ class RejectsBadRecordings(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "at least 50"):
             analyze.analyse(frames, synth.WIDTH, FPS, layout, synth.STIM_ORIGIN, synth.OUT_ROI)
 
-    def test_events_beyond_max_latency_are_missed_not_paired(self):
+    def test_no_response_at_all_is_an_error(self):
         frames, _ = synth.build(700.0, 0.0)
-        with self.assertRaisesRegex(ValueError, "at least 50"):
+        with self.assertRaisesRegex(ValueError, "one response"):
             run(frames)
+
+    def test_slow_responses_count_as_the_whole_window(self):
+        # Fifty events at 83 ms and ten that respond after 700 ms: the ten must fail the p95, not drop out of it.
+        frames, truth = synth.build(83.0, 0.0, slow_every=6, slow_ms=700.0)
+        report = run(frames)
+        self.assertEqual(sum(1 for t in truth if t > 600), 10)
+        self.assertEqual(report["missed"], 10)
+        self.assertEqual(report["events"], 60)
+        self.assertEqual(report["p95_ms"], analyze.MAX_LATENCY_MS)
+        self.assertAlmostEqual(report["p50_ms"], 83.0, delta=FRAME_MS / 2)
 
     def test_wrong_counter_rejects_the_event(self):
         frames, _ = synth.build(83.0, 0.0)

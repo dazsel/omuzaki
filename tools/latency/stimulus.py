@@ -8,7 +8,7 @@ only; frames are written as PNG files and the layout the analysis needs goes to 
     python3 tools/latency/stimulus.py OUT_DIR [--fps 60] [--events 60]
 
 Encode and play the frames with an external tool, for example `ffmpeg -framerate 60 -i OUT_DIR/frame_%05d.png`
-(`docs/maintainers/latency-harness.md`). ffmpeg is called as a separate program and is never linked or shipped.
+(`tools/latency/README.md`). ffmpeg is called as a separate program and is never linked or shipped.
 """
 import argparse
 import json

@@ -72,7 +72,9 @@ def oriented(signal, bright_when_open):
 
 
 def calibrate(signal, fixed_range=None):
-    """Half-way level between the closed and open levels: the observed 2nd and 98th percentiles unless fixed."""
+    """Half-way level between the closed and open levels: the observed 2nd and 98th percentiles unless fixed.
+
+    `fixed_range` is `(closed, open)` in the signal's own orientation, so closed is below open."""
     lo, hi = fixed_range if fixed_range else (percentile(signal, 2), percentile(signal, 98))
     if hi - lo < 16:
         raise ValueError(f"signal does not move (levels {lo:.1f} to {hi:.1f}); check the region and the polarity")
@@ -103,7 +105,8 @@ def stimulus_events(stim, counters, threshold, open_frames):
 
 
 def pair(events, crossings, fps, max_latency_ms):
-    """Delay in ms for each event: its first output crossing within `max_latency_ms`; unmatched events are counted."""
+    """`(delays, missed)`: the delay in ms of each event's first output crossing within `max_latency_ms`, and the number
+    of events with no such crossing."""
     delays, missed, j = [], 0, 0
     for e in events:
         while j < len(crossings) and crossings[j] < e:
@@ -124,7 +127,9 @@ def summarise(delays):
 
 def analyse(frames, width, fps, layout, stim_origin, out_roi, out_bright=True, out_range=None,
             max_latency_ms=MAX_LATENCY_MS):
-    """Latency report for an iterable of raw grey frames; raises `ValueError` if the recording can't be analysed."""
+    """Latency report for an iterable of raw grey frames; raises `ValueError` if the recording can't be analysed.
+
+    Events with no response within `max_latency_ms` count as that whole window in the percentiles."""
     mouth = layout["mouth_roi"]
     mouth_roi = (stim_origin[0] + mouth[0], stim_origin[1] + mouth[1], mouth[2], mouth[3])
     stim, out, counters = [], [], []
@@ -136,13 +141,17 @@ def analyse(frames, width, fps, layout, stim_origin, out_roi, out_bright=True, o
         raise ValueError("the recording has no frames")
     stim = oriented(stim, layout["mouth_open_luma"] == "bright")
     out = oriented(out, out_bright)
+    if out_range and not out_bright:
+        out_range = (255 - out_range[0], 255 - out_range[1])
     events, rejected = stimulus_events(stim, counters, calibrate(stim), layout["open_frames"])
     crossings = rising_crossings(out, calibrate(out, out_range))
     delays, missed = pair(events, crossings, fps, max_latency_ms)
-    if len(delays) < MIN_EVENTS:
-        raise ValueError(f"only {len(delays)} paired events ({len(events)} stimulus events, {rejected} rejected by the "
-                         f"counter, {missed} without an output crossing); at least {MIN_EVENTS} are needed")
-    report = summarise(delays)
+    if not delays or len(events) < MIN_EVENTS:
+        raise ValueError(f"{len(events)} usable stimulus events ({rejected} rejected by the counter), {len(delays)} "
+                         f"with an output crossing; at least {MIN_EVENTS} events and one response are needed")
+    # An event with no response in the window is a failure, not a gap: it counts as the whole window, so it pushes the
+    # percentiles up instead of dropping out of them.
+    report = summarise(delays + [max_latency_ms] * missed)
     report.update({"frames": len(stim), "stimulus_events": len(events), "rejected_by_counter": rejected,
                    "missed": missed, "delays_ms": [round(d, 2) for d in delays]})
     return report
@@ -169,7 +178,8 @@ def main(argv):
     ap.add_argument("--out-polarity", choices=("bright", "dark"), default="bright",
                     help="whether the output signal is bright (a jawOpen marker patch) or dark when the mouth is open")
     ap.add_argument("--out-range", type=lambda t: parse_ints(t, 2), default=None,
-                    help="LOW,HIGH grey levels of jawOpen 0 and 1 (default: the observed 2nd and 98th percentile)")
+                    help="CLOSED,OPEN grey levels of the signal at jawOpen 0 and 1, as it appears in the recording "
+                         "(for --out-polarity dark, CLOSED is above OPEN); default: the observed 2nd and 98th percentile")
     ap.add_argument("--max-latency-ms", type=float, default=MAX_LATENCY_MS)
     ap.add_argument("--budget-ms", type=float, default=None, help="exit 1 if p95 is above this (V0: 100)")
     ap.add_argument("--json", action="store_true", help="print the report as JSON, with every delay")
@@ -190,7 +200,7 @@ def main(argv):
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
     else:
-        print(f"events {report['events']} (missed {report['missed']}, rejected by counter "
+        print(f"events {report['events']} (no response within the window: {report['missed']}, rejected by counter "
               f"{report['rejected_by_counter']}) over {report['frames']} frames at {args.fps:g} fps")
         print(f"glass to glass: p50 {report['p50_ms']:.1f} ms, p95 {report['p95_ms']:.1f} ms, "
               f"max {report['max_ms']:.1f} ms")

@@ -39,15 +39,18 @@ def jaw_open(t_ms, onsets_ms, ramp_ms=RAMP_MS, open_ms=750.0):
     return 0.0
 
 
-def build(delay_ms, jitter_ms, fps=60, events=60, seed=7):
+def build(delay_ms, jitter_ms, fps=60, events=60, seed=7, slow_every=0, slow_ms=0.0):
     """`(frames, truth_ms)`: an iterator of recording frames (built lazily: a full list is about a gigabyte) and the
     true delay in ms of each event.
 
+    Every `slow_every`-th event (if set) responds after `slow_ms` instead.
     The truth of an event is the time `jawOpen` crosses 0.5 minus the time the recording shows the mouth open.
     """
     rng = Lcg(seed)
     opens = stimulus.schedule(events)
     delays = [delay_ms + (rng.next_unit() * 2 - 1) * jitter_ms for _ in opens]
+    for k in range(slow_every - 1, events, slow_every) if slow_every else ():
+        delays[k] = slow_ms
     onsets = [o * 1000 / fps + d - RAMP_MS / 2 for o, d in zip(opens, delays)]
     return _frames(fps, events, onsets, rng), delays
 

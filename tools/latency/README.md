@@ -1,10 +1,4 @@
----
-title: "How to measure glass-to-glass latency (V0 harness)"
-summary: "Run the frame-counting latency harness on Windows with a real webcam, and what to attach as V0 evidence."
-area: maintainers
----
-
-# How to measure glass-to-glass latency
+# How to measure glass-to-glass latency (V0 harness)
 
 V0's bar is **100 ms or less at p95, glass to glass** (#1423, exit criterion 3): a change in front of the camera lens,
 through capture, tracking, retarget and render, to the avatar changing on the screen. The harness (#1967) measures it
@@ -28,20 +22,28 @@ called as a separate program here and is never linked, vendored or shipped.
 
 The analysis reads a small rectangle of the output window whose mean grey level follows `jawOpen`:
 
-- **Marker patch (preferred, once the output can draw one):** a patch that is black at `jawOpen` 0 and white at 1, drawn
-  by the output in test mode. Omuzaki has no such mode yet, so use the avatar pixels below until it does.
-  Pass its rectangle as `--out-roi`. If the jaw never reaches 0 and 1 during the run, pass the grey levels for
-  `jawOpen` 0 and 1 as `--out-range LOW,HIGH`; otherwise the tool takes the 2nd and 98th percentile of what it saw.
-- **Avatar pixels:** the avatar's mouth interior (dark when open). Pass its rectangle and `--out-polarity dark`. The
-  half-way crossing of the pixels stands in for `jawOpen` 0.5.
+- **Avatar pixels (what Omuzaki offers today):** the avatar's mouth interior, which is dark when the mouth is open. Pass
+  its rectangle and `--out-polarity dark`. The half-way crossing of the pixels stands in for `jawOpen` 0.5.
+- **Marker patch (once the output can draw one):** a patch that is black at `jawOpen` 0 and white at 1, drawn by the
+  output in test mode. Omuzaki has no such mode yet. Pass its rectangle with the default `--out-polarity bright`.
+
+By default the closed and open levels are the 2nd and 98th percentile of what the recording shows. If the jaw never
+reaches both ends during the run, pass the grey levels the signal has at `jawOpen` 0 and 1 as
+`--out-range CLOSED,OPEN`, exactly as they appear in the recording (so `--out-range 230,40` for a dark-when-open mouth).
+
+An event whose avatar does not respond within `--max-latency-ms` (600 by default) is reported as "no response within
+the window" and counts as that whole window in p50, p95 and max, so a stuck tracker fails the budget instead of
+disappearing from the numbers.
 
 ## Run on Windows with a real webcam
 
+Commands below are for PowerShell (Python 3 and ffmpeg on the `PATH`). Run them from the repository root.
+
 1. Generate the clip (60 events, 90 frames each, about 90 s):
 
-   ```sh
-   python tools/latency/stimulus.py stimulus --fps 60 --events 60
-   ffmpeg -framerate 60 -i stimulus/frame_%05d.png -c:v libx264 -crf 12 -pix_fmt yuv420p stimulus.mp4
+   ```powershell
+   python tools\latency\stimulus.py stimulus --fps 60 --events 60
+   ffmpeg -framerate 60 -i stimulus\frame_%05d.png -c:v libx264 -crf 12 -pix_fmt yuv420p stimulus.mp4
    ```
 
 2. Set the display to 60 Hz or more. Play `stimulus.mp4` in a player at 100 % scale (one clip pixel is one screen
@@ -51,21 +53,30 @@ The analysis reads a small rectangle of the output window whose mean grey level 
 4. Record the whole screen with OBS (Display Capture, 60 fps, Output mode Advanced, a lossless or high-quality
    recording format such as MKV with x264 CRF 12 or lower). Start recording, then press play, then stop once the clip
    ends.
-5. Take a screenshot of the same layout. Read from it the top-left pixel of the stimulus window (`--stim-origin`) and
-   the rectangle of the output signal (`--out-roi`), and the recording size.
-6. Decode and analyse:
+5. Take a screenshot of the same layout, once with the avatar's mouth closed and once open. Read from it the top-left
+   pixel of the stimulus window (`--stim-origin`), the rectangle of the avatar's mouth (`--out-roi`; it must lie inside
+   the mouth in both states) and the recording size.
+6. Decode and analyse. The decoded frames are binary, and PowerShell's own pipeline would re-encode them as text, so
+   run the pipe inside `cmd`, which passes the bytes through unchanged:
 
-   ```sh
-   ffmpeg -i rec.mkv -pix_fmt gray -f rawvideo - | python tools/latency/analyze.py - \
-     --width 1920 --height 1080 --fps 60 --layout stimulus/layout.json \
-     --stim-origin 100,100 --out-roi 1200,300,64,64 --budget-ms 100
+   ```powershell
+   cmd /c "ffmpeg -hide_banner -loglevel error -i rec.mkv -pix_fmt gray -f rawvideo - | python tools\latency\analyze.py - --width 1920 --height 1080 --fps 60 --layout stimulus\layout.json --stim-origin 100,100 --out-roi 1200,300,40,20 --out-polarity dark --budget-ms 100"
    ```
 
+   Add `--json` for every delay. In Git Bash or any POSIX shell the same pipeline works without `cmd /c`.
+
    The command exits 0 when p95 is within the budget, 1 when it is above it, and 2 when the recording can't be
-   analysed (fewer than 50 paired events, a flat signal, a truncated recording). `--json` adds every delay.
+   analysed (fewer than 50 usable events, no response at all, a flat signal, a truncated recording).
 
 If a run reports many "rejected by counter" events, the player dropped or repeated frames: lower the load and record
 again. A recording whose frame rate is variable gives wrong times; record at a constant rate.
+
+## Owner run
+
+CI checks the analysis on generated frames only. The end-to-end run on Windows with a real webcam is an owner step and
+has not been done by the change that added this harness: follow "Run on Windows with a real webcam" above on the
+owner's machine, with the avatar's mouth rectangle as `--out-roi` and `--out-polarity dark`, check that the report holds
+at least 50 events with the mouth closed and open on the screenshots, and attach the evidence below.
 
 ## What to attach as V0 evidence
 
