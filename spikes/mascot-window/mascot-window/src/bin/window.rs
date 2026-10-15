@@ -24,7 +24,8 @@ struct Cli {
     /// Which event loop runs the window.
     #[arg(long, value_enum, default_value = "winit")]
     host: HostArg,
-    /// Apply the platform features, print what the OS reports back and exit; draws nothing.
+    /// Apply the platform features, print what the OS reports back and exit. Draws nothing, except that
+    /// `--passthrough pixel` draws the picture once on a GPU device to build its click-through mask.
     #[arg(long)]
     probe: bool,
 }
