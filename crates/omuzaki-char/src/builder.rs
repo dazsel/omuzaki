@@ -28,11 +28,12 @@
 //!    head, which name the skin slots, but not the garments after them, which only see the body's shape.
 //!
 //!    This is **enforced, not only stated**: facts are type-erased, so the builder can't see a colour in one, and a
-//!    palette-dependent fact would be served stale with no error. The conformance check in
-//!    `tests/common/palette_facts.rs` builds a part of every linked kind under two palettes that differ in every slot and
-//!    fails, naming the kind, the part and the fact, if what it publishes differs (`tests/palette_independence.rs` runs
-//!    it over every kind the kit characters use; `tests/builder.rs` shows it refusing a palette-dependent publisher). A
-//!    crate that adds a fact adds a probe for it there; a published fact nothing compares fails the sweep.
+//!    palette-dependent fact would be served stale with no error. The conformance check in [`palette_facts`] builds a
+//!    part of every linked kind under several palettes that differ from the character's in every slot, and fails,
+//!    naming the kind, the part and the fact, if what it publishes differs. `tests/palette_independence.rs` runs it over
+//!    every kind the kit characters use, and `tests/builder.rs` shows it refusing a palette-dependent publisher. It is
+//!    a public function, so other crates can run it over their own kinds. A crate that adds a fact adds a probe for it
+//!    there; a published fact nothing compares fails the sweep.
 //! 3. A kind that overrides [`PartKind::recolour`](omuzaki_char_api::PartKind::recolour) keeps its promise: recolouring
 //!    the output of a build gives exactly what a build with the new palette gives. Kinds that don't override it are
 //!    rebuilt, so they are correct whatever they bake into their output.
@@ -66,6 +67,8 @@
 //! them publish nothing. The builder guesses from earlier builds which kinds publish nothing, builds such a run (and
 //! the first part after it) on scoped threads against one view, then merges in build order. If a guess was wrong, the
 //! parts built against a stale view are dropped and redone, so the thread count never changes the result.
+
+pub mod palette_facts;
 
 use std::collections::{BTreeSet, HashMap};
 use std::io::{self, Write};

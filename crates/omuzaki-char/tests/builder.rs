@@ -13,11 +13,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-#[path = "common/palette_facts.rs"]
-mod palette_facts;
-
 use omuzaki_char::builder::PartSource::{Built, Cached};
-use omuzaki_char::builder::{BuildTimings, CachingBuilder};
+use omuzaki_char::builder::{BuildTimings, CachingBuilder, palette_facts};
 use omuzaki_char_api::{
     Anchor, AnchorId, AnchorsFact, Attach, AttachOffset, BrushFalloff, BuildCtx, BuildError, BuildOptions,
     BuildServices, BuiltCharacter, CharId, CharacterBuilder, CharacterDef, CollidersFact, ContentHash, DynamicMesh,

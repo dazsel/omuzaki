@@ -5,12 +5,9 @@
 // Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
-#[path = "common/palette_facts.rs"]
-mod palette_facts;
-
+use omuzaki_char::builder::palette_facts::{Probes, check, check_all};
 use omuzaki_char_api::{CharacterDef, PartDef, PartId, PartKindId};
 use omuzaki_char_mock::mock_character;
-use palette_facts::{Probes, check, check_all};
 use serde_json::json;
 
 /// The kit characters: the mock one, and the real body, head and hair (what the real accessories sit on).
