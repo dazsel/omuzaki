@@ -123,7 +123,9 @@ async fn the_tool_list_matches_the_runner_ops_exactly() {
     let tools = h.client.list_all_tools().await.unwrap();
 
     // Tool names are op names with dots as underscores: Anthropic's rule is ^[a-zA-Z0-9_-]{1,64}$.
-    let mut expected: Vec<String> = h.runner.ops().iter().map(|o| o.name.replace('.', "_")).collect();
+    // `agent.connection` is left out: this harness wires no connection service (see `mcp_connection.rs`).
+    let mut expected: Vec<String> =
+        h.runner.ops().iter().filter(|o| o.name != "agent.connection").map(|o| o.name.replace('.', "_")).collect();
     expected.extend(BUILTINS.map(str::to_owned));
     expected.sort();
     let listed: Vec<String> = tools.iter().map(|t| t.name.to_string()).collect();
