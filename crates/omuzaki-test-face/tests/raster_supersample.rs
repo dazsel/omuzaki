@@ -220,7 +220,7 @@ fn an_opposite_wound_hole_stays_a_hole() {
 fn rects(contours: &[[f32; 4]]) -> Vec<u8> {
     let polygons: Vec<[[f32; 2]; 4]> =
         contours.iter().map(|&[x0, y0, x1, y1]| [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]).collect();
-    let refs: Vec<&[[f32; 2]]> = polygons.iter().map(|p| p.as_slice()).collect();
+    let refs: Vec<&[[f32; 2]]> = polygons.iter().map(<[[f32; 2]; 4]>::as_slice).collect();
     alpha(40, 30, &refs)
 }
 
