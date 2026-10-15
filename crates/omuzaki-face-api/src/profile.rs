@@ -63,7 +63,8 @@ impl Default for FaceLayout {
 /// The layout as ratios, independent of absolute head size (CB-12's overlay and the report card).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct FaceRatios {
-    /// Eye width over the distance between the eye centres.
+    /// Half an eye's width ([`FaceLayout::eye_width`]) over the distance between the eye centres. A full drawn eye width
+    /// is twice the numerator.
     pub eye_width_to_iod: f64,
     /// Where the nose sits between the eye line (0) and the chin (1).
     pub nose: f64,
@@ -917,5 +918,13 @@ mod tests {
         assert_eq!(a.lerp(&b, 0.0), a);
         assert_eq!(a.lerp(&b, 1.0), b);
         assert!((a.lerp(&b, 0.5).mouth_y - -0.175).abs() < 1e-6);
+    }
+
+    #[test]
+    fn eye_width_to_iod_is_half_an_eye_width_over_the_eye_distance() {
+        // A half-width of 0.05 m on eyes 0.2 m apart: 0.25, not the 0.5 a full width would give.
+        let l = FaceLayout { eye_width: 0.05, eye_spacing: 0.1, ..FaceLayout::default() };
+        let r = l.ratios(-0.25).unwrap();
+        assert!((r.eye_width_to_iod - 0.25).abs() < 1e-12, "{r:?}");
     }
 }
