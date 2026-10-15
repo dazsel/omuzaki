@@ -4,6 +4,8 @@
 
 use ::image::ImageFormat;
 
+use crate::icc;
+
 /// A JPEG frame header: the size, and each component's horizontal and vertical sampling factors.
 pub(crate) struct JpegFrame {
     /// The width in pixels.
@@ -101,7 +103,7 @@ const CHROMATICITY_TOLERANCE: u32 = 100;
 /// with an `sRGB` chunk is sRGB whatever its gamma says, as the PNG specification has it; a JPEG in CMYK is not read.
 pub(crate) fn non_srgb(bytes: &[u8], format: ImageFormat, icc: Option<&[u8]>) -> Option<String> {
     if let Some(profile) = icc {
-        return (!icc_is_srgb(profile)).then(|| "an embedded colour profile that is not sRGB".to_owned());
+        return (!icc::is_srgb(profile)).then(|| "an embedded colour profile that is not sRGB".to_owned());
     }
     if format == ImageFormat::Jpeg {
         let frame = jpeg_frame(bytes)?;
@@ -120,65 +122,44 @@ pub(crate) fn non_srgb(bytes: &[u8], format: ImageFormat, icc: Option<&[u8]>) ->
     (!primaries_match).then(|| "primaries other than sRGB's".to_owned())
 }
 
-/// Whether an ICC profile is the sRGB profile, by its description: `sRGB IEC61966-2.1`, which the sRGB profiles in common
-/// use carry, as ASCII (version 2) or UTF-16 (version 4). Any other profile is not treated as sRGB.
-pub(crate) fn icc_is_srgb(profile: &[u8]) -> bool {
-    let Some(count) = be_u32(profile, 128) else { return false };
-    (0..count as usize).any(|entry| {
-        let at = 132 + 12 * entry;
-        let (Some(kind), Some(offset), Some(size)) =
-            (profile.get(at..at + 4), be_u32(profile, at + 4), be_u32(profile, at + 8))
-        else {
-            return false;
-        };
-        let text = profile.get(offset as usize..(offset + size) as usize).unwrap_or_default();
-        kind == b"desc" && (contains(text, b"sRGB IEC61966-2.1") || contains(text, &utf16_be(b"sRGB IEC61966-2.1")))
-    })
-}
-
 /// Reads a big-endian `u32` at `at`, or `None` when it is past the end.
 fn be_u32(bytes: &[u8], at: usize) -> Option<u32> {
     let end = at.checked_add(4)?;
     Some(u32::from_be_bytes(bytes.get(at..end)?.try_into().ok()?))
 }
 
-fn contains(haystack: &[u8], needle: &[u8]) -> bool {
-    haystack.windows(needle.len()).any(|window| window == needle)
-}
-
-/// The UTF-16BE encoding of ASCII text.
-fn utf16_be(ascii: &[u8]) -> Vec<u8> {
-    ascii.iter().flat_map(|&byte| [0, byte]).collect()
-}
-
 #[cfg(test)]
 mod tests {
-    use super::icc_is_srgb;
+    use super::{jpeg_frame, png_colour};
 
-    /// A version 2 profile with one `desc` tag holding `text` (the tag's own type, its count and the string).
-    fn profile(text: &[u8]) -> Vec<u8> {
-        let mut tag = b"desc\0\0\0\0".to_vec();
-        tag.extend(u32::try_from(text.len()).unwrap().to_be_bytes());
-        tag.extend(text);
-        let mut out = vec![0; 128];
-        out.extend(1_u32.to_be_bytes());
-        out.extend(b"desc");
-        out.extend(144_u32.to_be_bytes());
-        out.extend(u32::try_from(tag.len()).unwrap().to_be_bytes());
-        out.extend(tag);
-        out
+    #[test]
+    fn a_forged_png_chunk_length_stops_the_walk_without_a_panic() {
+        // A `gAMA` whose length is four billion: its data is past the end, so it is ignored, and the walk ends.
+        let mut png = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        png.extend(u32::MAX.to_be_bytes());
+        png.extend(b"gAMA");
+        png.extend([0; 4]);
+        let colour = png_colour(&png);
+        assert!(colour.gamma.is_none());
+        assert!(!colour.srgb);
     }
 
     #[test]
-    fn the_srgb_description_identifies_the_srgb_profile_in_ascii_and_utf16() {
-        assert!(icc_is_srgb(&profile(b"sRGB IEC61966-2.1\0")));
-        let utf16: Vec<u8> = b"sRGB IEC61966-2.1".iter().flat_map(|&byte| [0, byte]).collect();
-        assert!(icc_is_srgb(&profile(&utf16)));
+    fn a_jpeg_segment_longer_than_the_bytes_is_refused() {
+        // A SOF0 segment that claims 65 535 bytes, with four present.
+        assert!(jpeg_frame(&[0xFF, 0xD8, 0xFF, 0xC0, 0xFF, 0xFF, 8, 0, 1, 0, 1]).is_none());
     }
 
     #[test]
-    fn another_profile_is_not_srgb() {
-        assert!(!icc_is_srgb(&profile(b"Display P3\0")));
-        assert!(!icc_is_srgb(&[0; 100]));
+    fn a_jpeg_component_count_past_the_segment_is_refused() {
+        // A SOF0 whose component count is 255, with one component's bytes present.
+        let frame = [0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x0B, 8, 0, 1, 0, 1, 255, 1, 0x11, 0];
+        assert!(jpeg_frame(&frame).is_none());
+    }
+
+    #[test]
+    fn a_jpeg_sampling_factor_of_zero_is_refused() {
+        let frame = [0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x0B, 8, 0, 1, 0, 1, 1, 1, 0x01, 0];
+        assert!(jpeg_frame(&frame).is_none());
     }
 }

@@ -55,6 +55,57 @@ fn with_chunks(png: &[u8], chunks: &[Vec<u8>]) -> Vec<u8> {
     out
 }
 
+/// An ICC profile of the given colour: RGB and XYZ, the three primaries, a D50 white and the sRGB curve (as a parametric
+/// curve) on each channel. Its description is left out, since the decision reads the colour data, not the name.
+#[allow(clippy::cast_possible_truncation, reason = "fixed-point numbers of the profile are small")]
+fn icc_profile(red: [f64; 3], green: [f64; 3], blue: [f64; 3]) -> Vec<u8> {
+    let s15 = |value: f64| ((value * 65_536.0).round() as i32).to_be_bytes();
+    let xyz = |value: [f64; 3]| [b"XYZ \0\0\0\0".to_vec(), value.iter().flat_map(|&v| s15(v)).collect()].concat();
+    let curve = [
+        b"para\0\0\0\0\0\x03\0\0".to_vec(),
+        [2.4, 1.0 / 1.055, 0.055 / 1.055, 1.0 / 12.92, 0.04045].iter().flat_map(|&v| s15(v)).collect(),
+    ]
+    .concat();
+    let tags = [
+        (*b"rXYZ", xyz(red)),
+        (*b"gXYZ", xyz(green)),
+        (*b"bXYZ", xyz(blue)),
+        (*b"wtpt", xyz([0.9642, 1.0, 0.8249])),
+        (*b"rTRC", curve.clone()),
+        (*b"gTRC", curve.clone()),
+        (*b"bTRC", curve),
+    ];
+    let mut out = vec![0; 128];
+    out[16..20].copy_from_slice(b"RGB ");
+    out[20..24].copy_from_slice(b"XYZ ");
+    out.extend(u32::try_from(tags.len()).unwrap().to_be_bytes());
+    let mut offset = 132 + 12 * tags.len();
+    for (signature, data) in &tags {
+        out.extend(signature);
+        out.extend(u32::try_from(offset).unwrap().to_be_bytes());
+        out.extend(u32::try_from(data.len()).unwrap().to_be_bytes());
+        offset += data.len();
+    }
+    for (_, data) in &tags {
+        out.extend(data);
+    }
+    let length = u32::try_from(out.len()).unwrap().to_be_bytes();
+    out[..4].copy_from_slice(&length);
+    out
+}
+
+/// A JPEG with `profile` embedded in an APP2 segment right after its start, the way a camera or an editor writes it.
+fn with_icc_jpeg(jpeg: &[u8], profile: &[u8]) -> Vec<u8> {
+    let mut app2 = b"ICC_PROFILE\0\x01\x01".to_vec();
+    app2.extend(profile);
+    let mut out = jpeg[..2].to_vec();
+    out.extend([0xFF, 0xE2]);
+    out.extend(u16::try_from(app2.len() + 2).unwrap().to_be_bytes());
+    out.extend(app2);
+    out.extend(&jpeg[2..]);
+    out
+}
+
 /// Decodes `bytes` and returns the refusal's text, expecting a refusal with the `Invalid` code.
 fn refusal(bytes: &[u8]) -> String {
     let error = decode(bytes, ContentHash::of(bytes), FIELD).unwrap_err();
@@ -116,4 +167,18 @@ fn a_tiff_is_refused_by_name_before_it_is_read() {
 fn a_bmp_is_refused_by_name_before_it_is_read() {
     let bmp = [b"BM".as_slice(), &[0; 52]].concat();
     assert!(refusal(&bmp).contains("it is a BMP file, and a measure reads only PNG and JPEG"));
+}
+
+#[test]
+fn a_jpeg_with_the_srgb_profile_is_read_as_srgb() {
+    let srgb = icc_profile([0.4361, 0.2225, 0.0139], [0.3851, 0.7169, 0.0971], [0.1431, 0.0606, 0.7141]);
+    let jpeg = with_icc_jpeg(include_bytes!("fixtures/baseline_444.jpg"), &srgb);
+    assert!(decode(&jpeg, ContentHash::of(&jpeg), FIELD).is_ok());
+}
+
+#[test]
+fn a_jpeg_with_a_display_p3_profile_is_refused_naming_the_profile() {
+    let p3 = icc_profile([0.5151, 0.2412, -0.0011], [0.2919, 0.6922, 0.0419], [0.1572, 0.0666, 0.7841]);
+    let jpeg = with_icc_jpeg(include_bytes!("fixtures/baseline_444.jpg"), &p3);
+    assert!(refusal(&jpeg).contains("an embedded colour profile that is not sRGB"));
 }

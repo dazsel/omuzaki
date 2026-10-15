@@ -1,5 +1,7 @@
-//! The decoded budget. A counting global allocator measures the peak a decode holds at once; it must never exceed the
-//! peak the header predicts, and an image whose predicted peak is over the cap is refused before any decoder runs.
+//! The decoded budget. A counting global allocator measures the peak a decode holds at once on the measuring thread; it
+//! must never exceed the peak the header predicts, and an image whose predicted peak is over the cap is refused before any
+//! decoder runs. Counters are per thread (a thread-local flag, as `crates/omuzaki-stage/tests/perform.rs` uses), so no
+//! lock is needed: the tests run in parallel, and one thread never sees another's allocations.
 //!
 //! The fixtures in `tests/fixtures` are small JPEGs of the synthetic pattern, generated with PIL (the generator is in
 //! the doc comment of [`fixture_generator`]). The PNGs are encoded here from the same kind of pattern.
@@ -11,7 +13,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+use std::cell::Cell;
 
 use ::image::codecs::png::PngEncoder;
 use ::image::{ExtendedColorType, ImageEncoder};
@@ -21,37 +23,50 @@ use omuzaki_store_api::ContentHash;
 
 const FIELD: &str = "image";
 
-/// Live bytes now, and the most live bytes since the last reset.
-static CURRENT: AtomicUsize = AtomicUsize::new(0);
-static PEAK: AtomicUsize = AtomicUsize::new(0);
+thread_local! {
+    // Per thread, so the tests run in parallel without a lock: only the thread that set `MEASURING` counts, and only its
+    // own allocations are seen. `const` initialisers allocate nothing, so the allocator can use them.
+    static MEASURING: Cell<bool> = const { Cell::new(false) };
+    static LIVE: Cell<isize> = const { Cell::new(0) };
+    static PEAK: Cell<isize> = const { Cell::new(0) };
+}
+
+/// Adds `delta` bytes to the measuring thread's live count, and keeps its peak. Silent on other threads, and during
+/// thread teardown, when the locals are gone.
+fn note(delta: isize) {
+    let _ = MEASURING.try_with(|on| {
+        if on.get() {
+            let _ = LIVE.try_with(|live| {
+                let now = live.get() + delta;
+                live.set(now);
+                let _ = PEAK.try_with(|peak| peak.set(peak.get().max(now)));
+            });
+        }
+    });
+}
 
 struct Counting;
 
-fn add(bytes: usize) {
-    let now = CURRENT.fetch_add(bytes, SeqCst) + bytes;
-    PEAK.fetch_max(now, SeqCst);
-}
-
-// SAFETY: every call is forwarded to `System` unchanged; only the counters are added to.
+// SAFETY: every call is forwarded to `System` unchanged; `note` only reads and writes thread-local counters.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let pointer = unsafe { System.alloc(layout) };
         if !pointer.is_null() {
-            add(layout.size());
+            note(layout.size().cast_signed());
         }
         pointer
     }
 
     unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+        note(-(layout.size().cast_signed()));
         unsafe { System.dealloc(pointer, layout) };
-        CURRENT.fetch_sub(layout.size(), SeqCst);
     }
 
     unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         let moved = unsafe { System.realloc(pointer, layout, new_size) };
         if !moved.is_null() {
-            CURRENT.fetch_sub(layout.size(), SeqCst);
-            add(new_size);
+            note(-(layout.size().cast_signed()));
+            note(new_size.cast_signed());
         }
         moved
     }
@@ -60,12 +75,16 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static ALLOCATOR: Counting = Counting;
 
-/// Runs `f` and returns its result with the most bytes it held at once above what was live before it.
+/// Runs `f` on this thread and returns its result with the most bytes it held at once. Only this thread's allocations
+/// are counted, so the tests may run in parallel; a frame freed inside `f` that was allocated before it lowers the live
+/// count, which cannot raise the peak.
 fn peak_of<T>(f: impl FnOnce() -> T) -> (T, usize) {
-    let base = CURRENT.load(SeqCst);
-    PEAK.store(base, SeqCst);
+    LIVE.with(|live| live.set(0));
+    PEAK.with(|peak| peak.set(0));
+    MEASURING.with(|on| on.set(true));
     let result = f();
-    (result, PEAK.load(SeqCst) - base)
+    MEASURING.with(|on| on.set(false));
+    (result, PEAK.with(Cell::get).max(0).cast_unsigned())
 }
 
 /// The synthetic pattern as an encoder's input: a gradient with a flat square, `channels` bytes a pixel.

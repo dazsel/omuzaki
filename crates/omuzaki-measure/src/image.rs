@@ -84,6 +84,9 @@ pub struct Rgba8 {
 /// - `Invalid` (the field) with [`measure-image-colour-unsupported`](messages::image_colour_unsupported) when the image
 ///   is not sRGB.
 /// - `Internal` for a store that fails (corrupt bytes, an I/O error) or a file that cannot be read after the check.
+///
+/// An asset is fetched whole before its size is checked: the store has no size query or bounded read yet, so the asset
+/// path has no cap before the fetch (#1876).
 pub fn load(ctx: &OpCtx<'_>, image: &ImageRef, field: &str) -> Result<Rgba8, OpError> {
     let (bytes, hash) = source(ctx, image, field)?;
     decode(&bytes, hash, field)

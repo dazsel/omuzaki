@@ -12,6 +12,7 @@
 //! | [`colour`] | `lab`: sRGB bytes to CIELAB (D65), the colour space the skin and line tests compare in |
 //! | [`messages`] | the refusals of design 7.3 and the three image refusals, declared as localised messages (ADR 0023) |
 //! | `header` | what a PNG or JPEG header says before a decode: the JPEG frame and the colour tags, read from the bytes |
+//! | `icc` | whether an embedded ICC profile is sRGB, from its primaries, white and curves (not its description) |
 //!
 //! Later tasks add the modules of design D9 beside these: `face::{frame, segment, snap, outline, spacing, likeness}`,
 //! and the ops that call them. No op is registered yet, so the crate has no `define_link!` (ADR 0015).
@@ -22,3 +23,4 @@ pub mod image;
 pub mod messages;
 
 mod header;
+mod icc;
