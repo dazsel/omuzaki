@@ -793,7 +793,8 @@ impl PartKind for Noter {
         let note = if params.from_len {
             u8::try_from(ctx.palette.0.len()).unwrap_or(u8::MAX)
         } else if params.from_slot {
-            let present = params.named.strip_prefix('@').is_some_and(|name| ctx.palette.0.keys().any(|s| s.as_str() == name));
+            let present =
+                params.named.strip_prefix('@').is_some_and(|name| ctx.palette.0.keys().any(|s| s.as_str() == name));
             u8::from(present)
         } else if params.gated {
             if ctx.rng.next_f32() < 0.2 { tint.r } else { 7 }
@@ -965,7 +966,8 @@ fn a_fact_read_only_at_some_seeds_is_caught_by_the_seed_sweep_and_names_the_seed
 fn a_fact_that_depends_on_a_referenced_slot_being_present_is_caught_under_the_removal_alternative() {
     // The part names `accent` without resolving it, and no other part needs it: removing it changes the fact, though no
     // colour and no slot count does.
-    let mut def = noted_with(json!({ "from_palette": false, "from_slot": true, "named": "@accent", "tint": "#102030" }));
+    let mut def =
+        noted_with(json!({ "from_palette": false, "from_slot": true, "named": "@accent", "tint": "#102030" }));
     def.palette.0.insert(slot("accent"), Colour::rgb(1, 2, 3));
     let probes = conformance::Probes::default().fact::<NoteFact>();
     let report = conformance::check(&def, Some(&["t-noter"]), &probes, &BuildServices::default());
