@@ -4,15 +4,23 @@
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum TakeError {
-    /// The file or a chunk is from a newer major, or sets a must-understand flag this reader does not know.
+    /// The file or a chunk is from a newer major than this reader decodes.
     #[error("this take is newer than this reader supports ({found:?} against {supported:?}): {hint}")]
     Newer {
         /// The (major, minor) the take carries.
-        found: (u8, u8),
+        found: (u16, u16),
         /// The newest (major, minor) this reader decodes.
         supported: (u8, u8),
         /// What to do about it: `update Omuzaki to read this take`.
         hint: String,
+    },
+    /// A chunk sets a must-understand flag (bits 8 to 15) this reader does not know, so it refuses the take (T3).
+    #[error(
+        "this take sets must-understand flag bits {flags:#06x}, which this reader does not know: update Omuzaki to read it"
+    )]
+    UnknownFlag {
+        /// The must-understand bits the chunk set (`flags & 0xFF00`).
+        flags: u16,
     },
     /// A file or chunk does not start with its magic.
     #[error("not a take: the magic bytes are wrong")]
@@ -55,5 +63,11 @@ mod tests {
         let e = TakeError::Newer { found: (2, 0), supported: (1, 0), hint: "update Omuzaki to read this take".into() };
         let text = e.to_string();
         assert!(text.contains("(2, 0)") && text.contains("(1, 0)") && text.contains("update Omuzaki"), "{text}");
+    }
+
+    #[test]
+    fn unknown_flag_names_the_flag_bits() {
+        let text = TakeError::UnknownFlag { flags: 0x0200 }.to_string();
+        assert!(text.contains("0x0200") && text.contains("must-understand"), "{text}");
     }
 }

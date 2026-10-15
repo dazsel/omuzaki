@@ -18,7 +18,10 @@ pub struct ChunkView<'a> {
 }
 
 /// What a read found. Filled as chunks are read.
+///
+/// Later fields are added with a default in [`TakeReport::new`], so a reader built for an older version keeps compiling.
 #[derive(Clone, Debug, Default, PartialEq)]
+#[non_exhaustive]
 pub struct TakeReport {
     /// Chunks read.
     pub chunks: u64,
@@ -44,6 +47,85 @@ pub struct TakeReport {
     pub incomplete_tail: bool,
     /// Whether the read used the index (a clean finish) rather than a scan.
     pub indexed: bool,
+}
+
+impl TakeReport {
+    /// An empty report: nothing read yet. Set the counts a reader found with `with_*`.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The same report with the number of chunks read.
+    #[must_use]
+    pub fn with_chunks(self, chunks: u64) -> Self {
+        Self { chunks, ..self }
+    }
+
+    /// The same report with the offset of the first bad or truncated chunk.
+    #[must_use]
+    pub fn with_truncated_at(self, truncated_at: Option<u64>) -> Self {
+        Self { truncated_at, ..self }
+    }
+
+    /// The same report with the unknown record kinds skipped, by kind byte.
+    #[must_use]
+    pub fn with_skipped(self, skipped: BTreeMap<u8, u64>) -> Self {
+        Self { skipped, ..self }
+    }
+
+    /// The same report with the muted or private runs read.
+    #[must_use]
+    pub fn with_withheld(self, withheld: Vec<Withheld>) -> Self {
+        Self { withheld, ..self }
+    }
+
+    /// The same report with the entries carried as references.
+    #[must_use]
+    pub fn with_event_refs(self, event_refs: u64) -> Self {
+        Self { event_refs, ..self }
+    }
+
+    /// The same report with the entries that waited in the queue past their chunk.
+    #[must_use]
+    pub fn with_deferred(self, deferred: u64) -> Self {
+        Self { deferred, ..self }
+    }
+
+    /// The same report with the providers left out by the size cap, by name.
+    #[must_use]
+    pub fn with_omitted(self, omitted: BTreeMap<String, u64>) -> Self {
+        Self { omitted, ..self }
+    }
+
+    /// The same report with the States that overflowed to the minimal form.
+    #[must_use]
+    pub fn with_state_overflow(self, state_overflow: u64) -> Self {
+        Self { state_overflow, ..self }
+    }
+
+    /// The same report with the holes in the event stream.
+    #[must_use]
+    pub fn with_incomplete(self, incomplete: Vec<Incomplete>) -> Self {
+        Self { incomplete, ..self }
+    }
+
+    /// The same report with the largest lag between an entry's chunk and its `applied_frame`, in frames.
+    #[must_use]
+    pub fn with_max_defer_frames(self, max_defer_frames: u32) -> Self {
+        Self { max_defer_frames, ..self }
+    }
+
+    /// The same report with whether the file ended before the TAIL did.
+    #[must_use]
+    pub fn with_incomplete_tail(self, incomplete_tail: bool) -> Self {
+        Self { incomplete_tail, ..self }
+    }
+
+    /// The same report with whether the read used the index (a clean finish) rather than a scan.
+    #[must_use]
+    pub fn with_indexed(self, indexed: bool) -> Self {
+        Self { indexed, ..self }
+    }
 }
 
 /// A take opened for reading. One codec implements it for every user (`omuzaki-take`); the scripted mock

@@ -17,10 +17,16 @@ pub enum TakeEntry {
         /// What the entry was (`mark`, `session`).
         kind: String,
     },
+    /// A `form` this version does not know (a newer minor). The entry is skipped; its LSN still counts.
+    #[serde(other)]
+    Unknown,
 }
 
 /// A journal entry during the take, with the frame it took effect at.
+///
+/// Later fields are added with `#[serde(default)]`, so an older reader keeps reading the record.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct EventRecord {
     /// The entry's position in the project journal.
     pub lsn: Lsn,
@@ -30,8 +36,18 @@ pub struct EventRecord {
     pub entry: TakeEntry,
 }
 
+impl EventRecord {
+    /// An event record with its required fields. Later fields are set with `with_*`.
+    pub fn new(lsn: Lsn, applied_frame: i64, entry: TakeEntry) -> Self {
+        Self { lsn, applied_frame, entry }
+    }
+}
+
 /// A hole in the event stream: the feed's queue overflowed. A reader refuses to cross it (`StateGap`).
+///
+/// Later fields are added with `#[serde(default)]`, so an older reader keeps reading the record.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct Incomplete {
     /// The first entry that may be missing.
     pub from_lsn: Lsn,
@@ -39,9 +55,17 @@ pub struct Incomplete {
     pub cause: String,
 }
 
+impl Incomplete {
+    /// A hole starting at `from_lsn`, for `cause`.
+    pub fn new(from_lsn: Lsn, cause: impl Into<String>) -> Self {
+        Self { from_lsn, cause: cause.into() }
+    }
+}
+
 /// One record of a chunk, decoded. Hot kinds are decoded to values; cold kinds are handed over as their JSON bytes,
 /// borrowed from the chunk, so a reader pays for them only when it wants them.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum Record<'a> {
     /// A tracker frame and its source index.
     Track(TrackFrame, u8),

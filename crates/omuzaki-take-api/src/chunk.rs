@@ -14,6 +14,18 @@ pub const FILE_MAGIC: [u8; 10] = *b"OMUZAKIINP";
 pub const CHUNK_HEADER_LEN: usize = 32;
 /// The size of a record header (`kind u8 | rflags u8 | reserved u16 | len u32`), in bytes.
 pub const RECORD_HEADER_LEN: usize = 8;
+/// The first four bytes of the index that follows the last chunk of a clean take (T4).
+pub const INDEX_MAGIC: [u8; 4] = *b"TKIX";
+/// The last four bytes of a clean take's trailer (T4).
+pub const TRAILER_MAGIC: [u8; 4] = *b"TKND";
+/// The size of the trailer at the end of a clean take: `index_offset u64 | chunks u64 | crc u32 | magic`, in bytes (T4).
+pub const TRAILER_LEN: usize = 24;
+/// The most serialised bytes a `State` record may take (T2). Above it the minimal State is written instead.
+pub const STATE_MAX_BYTES: usize = 16 * 1024;
+/// The most serialised bytes of events one chunk may carry (T2). The rest wait for the next chunk.
+pub const EVENTS_MAX_BYTES: usize = 32 * 1024;
+/// The most provider names a `State` lists in `omitted` before it counts the rest in `omitted_more` (T2).
+pub const OMITTED_NAMES_MAX: usize = 32;
 
 /// What a record is. The number is the byte on disk. A reader meeting an unknown number skips the record by its length
 /// and counts it (`Record::Unknown`).
@@ -136,5 +148,18 @@ mod tests {
         assert_eq!(&CHUNK_MAGIC, b"TKCH");
         assert_eq!(FILE_MAGIC.len(), 10);
         assert_eq!((MAJOR, MINOR, CHUNK_HEADER_LEN), (1, 0, 32));
+    }
+
+    #[test]
+    fn the_index_and_trailer_match_t4() {
+        assert_eq!(&INDEX_MAGIC, b"TKIX");
+        assert_eq!(&TRAILER_MAGIC, b"TKND");
+        // index_offset u64 | chunks u64 | crc u32 | magic [u8; 4]
+        assert_eq!(TRAILER_LEN, 8 + 8 + 4 + 4);
+    }
+
+    #[test]
+    fn the_t2_limits_are_the_design_values() {
+        assert_eq!((STATE_MAX_BYTES, EVENTS_MAX_BYTES, OMITTED_NAMES_MAX), (16_384, 32_768, 32));
     }
 }

@@ -4,15 +4,19 @@
 
 #![allow(clippy::expect_used)]
 
+use std::collections::BTreeMap;
 use std::fmt::Debug;
 
-use omuzaki_history_api::HistoryEntry;
-use omuzaki_take_api::header::TakeHeader;
+use omuzaki_core::time::Seconds;
+use omuzaki_doc_api::DocVersion;
+use omuzaki_history_api::{HistoryEntry, Lsn, SnapshotId};
+use omuzaki_stage_api::SceneId;
+use omuzaki_take_api::header::{SnapshotAt, TakeHeader, TakeKind};
 use omuzaki_take_api::record::{EventRecord, TakeEntry};
-use omuzaki_take_api::state::StateRecord;
+use omuzaki_take_api::state::{CastEntry, SourceEntry, StateRecord, VoiceEntry, Withheld, WithheldCause};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use serde_json::Value;
+use serde_json::{Value, json};
 
 fn round_trip<T: Serialize + DeserializeOwned + PartialEq + Debug>(golden: &str) -> T {
     let expected: Value = serde_json::from_str(golden).expect("golden is JSON");
@@ -77,4 +81,75 @@ fn unknown_state_fields_are_ignored() {
         serde_json::from_str(r#"{"doc_version":1,"project":"p","after_lsn":0,"withheld":[],"future":true}"#)
             .expect("a newer minor's extra field is ignored");
     assert_eq!(state.project, "p");
+}
+
+#[test]
+fn the_minimal_state_builds_through_its_constructor() {
+    // The overflow fallback is built by `StateRecord::minimal`, so the constructor and the golden must agree.
+    let built = StateRecord::minimal(DocVersion(17), Lsn(41), Vec::new());
+    let expected: Value = serde_json::from_str(include_str!("golden/state_minimal.json")).expect("golden is JSON");
+    assert_eq!(serde_json::to_value(&built).expect("serialises"), expected);
+}
+
+#[test]
+fn the_full_state_builds_through_its_constructors() {
+    let built = StateRecord::new(DocVersion(17), Lsn(41), vec![Withheld::new(0, WithheldCause::Muted, Seconds(12.5))])
+        .with_project("demo")
+        .with_scene(SceneId::new("main").expect("a slug"))
+        .with_camera("bust")
+        .with_cast(vec![CastEntry::new("mira", "mira", "ab12")])
+        .with_sources(vec![SourceEntry::new(0, "mira", "arkit", "iphone")])
+        .with_voices(vec![VoiceEntry::new(0, "mira", "mic")])
+        .with_models(BTreeMap::from([
+            ("tracker".to_owned(), "tracker-v2".to_owned()),
+            ("lipsync".to_owned(), "lipsync-v1".to_owned()),
+        ]))
+        .with_delay_s(0.25)
+        .with_omitted(vec!["obs".to_owned()], 3)
+        .with_live(BTreeMap::from([("expressions".to_owned(), json!({ "held": ["smile"] }))]));
+    let expected: Value = serde_json::from_str(include_str!("golden/state_full.json")).expect("golden is JSON");
+    assert_eq!(serde_json::to_value(&built).expect("serialises"), expected);
+}
+
+#[test]
+fn the_placeholder_event_builds_through_its_constructor() {
+    let built = EventRecord::new(Lsn(43), 91, TakeEntry::Placeholder { kind: "mark".into() });
+    let expected: Value = serde_json::from_str(include_str!("golden/event_placeholder.json")).expect("golden is JSON");
+    assert_eq!(serde_json::to_value(&built).expect("serialises"), expected);
+}
+
+#[test]
+fn the_take_header_builds_through_its_constructor() {
+    let snapshot: SnapshotId =
+        "0000000000000000000000000000000000000000000000000000000000000001".parse().expect("a hash");
+    let built = TakeHeader::new(
+        "2026-10-13-stream-a",
+        TakeKind::Recording,
+        (30, 1),
+        0,
+        "2026-10-13T18:00:00Z",
+        "0.0.0",
+        Lsn(41),
+        SnapshotAt::Start,
+        DocVersion(17),
+    )
+    .with_snapshot(snapshot)
+    .with_video("2026-10-13-stream-a.mp4")
+    .with_audio(BTreeMap::from([("mic".to_owned(), "2026-10-13-stream-a.mic.wav".to_owned())]));
+    let expected: Value = serde_json::from_str(include_str!("golden/take_header.json")).expect("golden is JSON");
+    assert_eq!(serde_json::to_value(&built).expect("serialises"), expected);
+}
+
+#[test]
+fn an_unknown_entry_form_reads_as_unknown() {
+    // A newer minor's `form` is skipped, not a read error: the LSN still counts.
+    let event: EventRecord = serde_json::from_str(include_str!("golden/event_unknown_form.json")).expect("reads");
+    assert_eq!((event.lsn, event.entry), (Lsn(44), TakeEntry::Unknown));
+}
+
+#[test]
+fn an_unknown_withheld_cause_reads_as_unknown() {
+    let withheld: Withheld = serde_json::from_str(include_str!("golden/withheld_unknown_cause.json")).expect("reads");
+    assert_eq!(withheld.cause, WithheldCause::Unknown);
+    assert_eq!(withheld.to, None);
 }
