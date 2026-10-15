@@ -7,7 +7,8 @@
 //! - `install`: install with its smoke test, rollback, removal.
 //!
 //! This file holds the registry itself, the choice chain (explicit model, selection, newest installed default) and
-//! the read side of the trait. User models, the sandbox and the slot session that swaps and falls back come later.
+//! the read side of the trait. `open` returns a slot session (`crate::slot_session`) that follows the chain; user
+//! models and the sandbox come later.
 
 mod catalogue;
 mod import;
@@ -69,6 +70,20 @@ pub struct Shared {
     /// Models switched off for this app session only, with the reason: a model that crashed. The state file never
     /// records them, so they run again after a restart or a reinstall.
     session_disabled: Mutex<Vec<(ModelRef, String)>>,
+    /// What each open slot session has loaded right now (`None`: nothing, e.g. while a fallback loads), so `slots`
+    /// reports a model as active only once it is. Keyed by a per-session id; the newest session of a slot wins.
+    running: Mutex<Vec<Running>>,
+    next_session: AtomicU64,
+}
+
+/// What a slot session has loaded: a model, or nothing.
+struct Held(Option<ModelRef>);
+
+/// One slot session's loaded model, for [`Shared`]'s `running`.
+struct Running {
+    id: u64,
+    slot: SlotRef,
+    model: Option<ModelRef>,
 }
 
 impl Deref for Registry {
@@ -140,6 +155,8 @@ impl Registry {
                 notes,
                 generation: AtomicU64::new(0),
                 session_disabled: Mutex::new(Vec::new()),
+                running: Mutex::new(Vec::new()),
+                next_session: AtomicU64::new(0),
             }),
         };
         registry.reinstall(&to_reinstall);
@@ -162,21 +179,40 @@ impl Registry {
     fn commit(&self, state: &mut State, next: State) -> Result<(), RegistryError> {
         state::save(&self.data_dir, &self.persistent(&next))?;
         *state = next;
+        // Only now, with the file written and the change taken, is a record that no longer applies safe to forget.
+        self.session_off().retain(|(model, reason)| state.health(model).is_some_and(|h| &h.reason == reason));
         self.generation.fetch_add(1, Ordering::Release);
         Ok(())
     }
 
-    /// `state` as the file keeps it: without the models only this app session has switched off.
+    fn session_off(&self) -> MutexGuard<'_, Vec<(ModelRef, String)>> {
+        self.session_disabled.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// `state` as the file keeps it: without the models only this app session has switched off. A model that failed
+    /// for another reason since is no longer ours to hide, so the reason must match.
     fn persistent<'a>(&self, state: &'a State) -> Cow<'a, State> {
-        let mut off = self.session_disabled.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        // A model that was reinstalled, or failed for another reason since, is no longer ours to hide.
-        off.retain(|(model, reason)| state.health(model).is_some_and(|h| &h.reason == reason));
-        if off.is_empty() {
+        let off = self.session_off();
+        if !state.health.iter().any(|h| off.iter().any(|(m, r)| m == &h.model && r == &h.reason)) {
             return Cow::Borrowed(state);
         }
         let mut kept = state.clone();
-        kept.health.retain(|h| !off.iter().any(|(model, _)| model == &h.model));
+        kept.health.retain(|h| !off.iter().any(|(m, r)| m == &h.model && r == &h.reason));
         Cow::Owned(kept)
+    }
+
+    /// `state` as if nothing had crashed in this app session.
+    fn without_session_off(&self, state: &State) -> State {
+        let mut ideal = state.clone();
+        let off = self.session_off();
+        ideal.health.retain(|h| !off.iter().any(|(m, r)| m == &h.model && r == &h.reason));
+        ideal
+    }
+
+    /// The model `slot` would run if nothing had crashed in this app session: what a fallback stands in for.
+    fn ideal(&self, state: &State, slot: &SlotRef, explicit: Option<&ModelRef>) -> Option<ModelRef> {
+        let ideal = self.without_session_off(state);
+        self.chain(&ideal, slot, explicit).first().map(|i| i.model.clone())
     }
 
     /// True if the app is older than the model needs.
@@ -260,7 +296,7 @@ impl Registry {
     /// don't. If the chain reaches `current` first, that model is already the best that can run: nothing is loaded.
     ///
     /// # Errors
-    /// The last load error, or `NoModel` when the chain is empty.
+    /// The last load error, or `NoModel` when the chain is empty. Either way `current`, if any, is not in the chain.
     pub(crate) fn load_chain(
         &self,
         slot: &SlotRef,
@@ -271,13 +307,12 @@ impl Registry {
         let (candidates, wanted) = {
             let state = self.lock();
             let candidates: Vec<state::Installed> = self.chain(&state, slot, explicit).into_iter().cloned().collect();
-            let selected = state.slot(slot).and_then(|r| r.selected.clone());
-            (candidates, explicit.cloned().or(selected))
+            (candidates, self.ideal(&state, slot, explicit))
         };
         let mut last = None;
         for installed in &candidates {
             if current == Some(&installed.model) {
-                return Ok(Chosen::Keep);
+                return Ok(Chosen::Keep { wanted });
             }
             match self.load(installed, &info) {
                 Ok(session) => return Ok(Chosen::Loaded { session, model: installed.model.clone(), wanted }),
@@ -296,16 +331,41 @@ impl Registry {
         let mut state = self.lock();
         let mut next = state.clone();
         next.set_health(Health { reason: reason.to_owned(), model: model.clone(), eval: None });
-        self.session_disabled
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push((model.clone(), reason.to_owned()));
+        self.session_off().push((model.clone(), reason.to_owned()));
         if let Err(e) = self.commit(&mut state, next.clone()) {
             // The file isn't written for these anyway, so a failing disk must not keep a crashing model running.
             tracing::warn!(%model, "couldn't save the model state: {e}");
             *state = next;
             self.generation.fetch_add(1, Ordering::Release);
         }
+    }
+
+    /// Notes that a slot session for `slot` is open and runs `model`. Returns its id for the calls below.
+    pub(crate) fn register_session(&self, slot: &SlotRef, model: Option<ModelRef>) -> u64 {
+        let id = self.next_session.fetch_add(1, Ordering::Relaxed);
+        self.running_list().push(Running { id, slot: slot.clone(), model });
+        id
+    }
+
+    /// Notes what session `id` has loaded now (`None`: nothing).
+    pub(crate) fn report_running(&self, id: u64, model: Option<ModelRef>) {
+        if let Some(entry) = self.running_list().iter_mut().find(|r| r.id == id) {
+            entry.model = model;
+        }
+    }
+
+    /// Notes that session `id` is gone.
+    pub(crate) fn forget_session(&self, id: u64) {
+        self.running_list().retain(|r| r.id != id);
+    }
+
+    fn running_list(&self) -> MutexGuard<'_, Vec<Running>> {
+        self.running.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// What the newest open session of `slot` has loaded; `None` if no session is open.
+    fn running_in(&self, slot: &SlotRef) -> Option<Held> {
+        self.running_list().iter().rev().find(|r| &r.slot == slot).map(|r| Held(r.model.clone()))
     }
 
     /// The slot's info, or `UnknownSlot`.
@@ -376,14 +436,18 @@ impl Registry {
 /// What [`Registry::load_chain`] found.
 pub(crate) enum Chosen {
     /// The model the caller already runs is the best the chain offers.
-    Keep,
+    Keep {
+        /// The model that would run if nothing had crashed in this app session (see [`Chosen::Loaded`]).
+        wanted: Option<ModelRef>,
+    },
     /// A freshly loaded session.
     Loaded {
         /// The session.
         session: Box<dyn Session>,
         /// The model it runs.
         model: ModelRef,
-        /// The model that was asked for (explicit, else selected), which `model` replaces if they differ.
+        /// The model that would run if nothing had crashed in this app session (the explicit one, the selection or
+        /// the shipped default); `model` stands in for it if they differ.
         wanted: Option<ModelRef>,
     },
 }
@@ -417,11 +481,15 @@ impl ModelRegistry for Registry {
             .map(|slot| {
                 let info = slot.info();
                 let selected = state.slot(&info.slot).and_then(|r| r.selected.clone());
-                let active = self.chain(&state, &info.slot, None).first().map(|i| i.model.clone());
-                let fallback = selected
-                    .as_ref()
-                    .filter(|s| active.as_ref() != Some(*s))
-                    .map(|s| format!("{s} can't run, so the slot runs its default"));
+                let best = self.chain(&state, &info.slot, None).first().map(|i| i.model.clone());
+                // A slot session reports what it has loaded; a fallback is active only once it is.
+                let active = self.running_in(&info.slot).map_or_else(|| best.clone(), |held| held.0);
+                let expected = selected.clone().or_else(|| self.ideal(&state, &info.slot, None));
+                let fallback = expected.filter(|e| Some(e) != best.as_ref()).map(|e| {
+                    let why = self.session_off().iter().find(|(m, _)| m == &e).map(|(_, r)| format!(" ({r})"));
+                    let then = if best.is_some() { "so the slot runs its default" } else { &info.without_model };
+                    format!("{e} can't run{}, {then}", why.unwrap_or_default())
+                });
                 SlotStatus { info, selected, active, fallback }
             })
             .collect();
@@ -462,7 +530,9 @@ impl ModelRegistry for Registry {
             Chosen::Loaded { session, wanted, .. } => {
                 Ok(Box::new(SlotSession::start(self.handle(), slot, model.cloned(), generation, session, wanted)?))
             }
-            Chosen::Keep => Err(RegistryError::NoModel { slot: slot.clone(), without_model: info.without_model }),
+            Chosen::Keep { .. } => {
+                Err(RegistryError::NoModel { slot: slot.clone(), without_model: info.without_model })
+            }
         }
     }
 

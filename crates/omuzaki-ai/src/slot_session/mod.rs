@@ -5,44 +5,108 @@
 //! - a crash, a stall or any runtime error switches the model off for the app session and falls back down the
 //!   slot's chain.
 //!
-//! **`run` never waits.** It reads the registry's generation (an atomic), polls a channel without blocking and calls
-//! the current session. Loading, switching models off (which writes the state) and dropping retired sessions all
-//! happen on the session's loader thread (`loader`). Until a replacement is ready the old session keeps answering,
-//! or `RunError::Unavailable` does when there is none.
+//! **`run` never waits, allocates or drops a session.** Per call it reads the registry's generation, a flag and a
+//! counter (atomics), `try_lock`s a small mailbox at most, and calls the current session. Everything slow or
+//! allocating happens on the session's loader thread (`loader`): reading the chain, loading, writing the state,
+//! releasing retired sessions. The two sides exchange only preallocated storage:
+//!
+//! - **gate:** the session answers only while the loader has confirmed the registry's current generation for the
+//!   session it runs. After any change the answer is `Unavailable` until the loader says the same model is still
+//!   right (a moment) or its replacement is in (a load), so a deselected model never answers;
+//! - **mailbox:** the loader publishes at most one `Ready` replacement; the run side hands it the sessions that
+//!   were swapped out or crashed, to be switched off and dropped there. If the mailbox is busy the run side keeps
+//!   them in its own preallocated queue and tries again on a later call.
 
 mod loader;
+
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::thread::Thread;
 
 use omuzaki_ai_api::{
     ModelRef, RegistryError, RunError, Session, SessionInfo, Signature, SlotRef, TensorBuf, TensorRef, find_slot,
 };
 
 use crate::registry::Registry;
-use loader::{Done, Job, Loader, Outcome, Request};
+
+/// How many retired sessions each side can hold without allocating: the crashed one and the swapped-out one are the
+/// most that exist at once.
+const RETIRE_CAPACITY: usize = 4;
+
+/// A session and the model it runs.
+struct Active {
+    session: Box<dyn Session>,
+    model: ModelRef,
+}
+
+/// Why a session was handed to the loader.
+enum Why {
+    /// It was swapped out.
+    Replaced,
+    /// It failed in `run`; the loader switches its model off.
+    Failed(RunError),
+}
+
+struct Retired {
+    active: Active,
+    why: Why,
+}
+
+/// The loader's answer to a change: what the slot runs now, as of registry generation `generation`.
+struct Ready {
+    /// `None`: nothing in the chain can run (the model was removed, or every candidate failed to load).
+    replacement: Option<Active>,
+    generation: u64,
+}
+
+struct Mailbox {
+    /// Loader to run side.
+    ready: Option<Ready>,
+    /// Run side to loader. Its capacity is fixed at [`RETIRE_CAPACITY`].
+    retire: Vec<Retired>,
+}
+
+/// What the run side and the loader thread share.
+struct Shared {
+    registry: Registry,
+    slot: SlotRef,
+    /// The id the registry knows this session by, for `slots`.
+    id: u64,
+    mailbox: Mutex<Mailbox>,
+    /// A `ready` is waiting in the mailbox. Set and cleared only under the mailbox lock.
+    ready: AtomicBool,
+    /// The newest generation at which the loader found the model it published (or the initial one) still right.
+    confirmed: AtomicU64,
+    /// Work for the loader: the run side sets it and unparks the thread.
+    work: AtomicBool,
+    closed: AtomicBool,
+    /// For `info`, which is cold. The loader writes it when it publishes or confirms.
+    info: Mutex<SessionInfo>,
+}
 
 /// A session that follows its slot: see the [module documentation](self).
 pub(crate) struct SlotSession {
-    registry: Registry,
-    slot: SlotRef,
-    /// The model `open` was asked for, if any: it stays first in the chain for the session's life.
+    shared: Arc<Shared>,
     explicit: Option<ModelRef>,
     signature: Signature,
-    /// What runs now; while there is no session, what ran last.
-    info: SessionInfo,
-    active: Option<Box<dyn Session>>,
-    /// The registry generation the current choice was made at.
-    seen: u64,
-    /// Started by `open`, not by the first change: starting a thread is too slow for `run`. `None` only if the
-    /// thread couldn't be started or has died, and then `hand_over` tries again.
-    loader: Option<Loader>,
-    /// Loads handed to the loader that haven't answered yet.
-    in_flight: usize,
-    /// A `reset` the next session to be swapped in hasn't had yet.
+    active: Option<Active>,
+    /// Handle for waking the loader; `None` if its thread couldn't be started.
+    loader: Option<Thread>,
+    /// The generation the loader was last woken for.
+    asked: u64,
+    /// The generation of the last answer taken from the mailbox (or of `open`).
+    applied: u64,
+    /// Sessions waiting for room in the mailbox. Never grows past its capacity, so pushing never allocates.
+    retiring: Vec<Retired>,
+    /// A `reset` the session that is swapped in next hasn't had.
     reset_owed: bool,
+    /// The registry generation at the last `reset`.
+    reset_at: u64,
 }
 
 impl SlotSession {
-    /// Wraps `session`, which `registry` just loaded for `slot`, read at `generation`. `wanted` is the model asked
-    /// for (explicit, else selected): if the session runs another one, it stands in for it.
+    /// Wraps `session`, which `registry` just loaded for `slot` at `generation`. `wanted` is the model that would
+    /// run if nothing had crashed: if the session runs another one, it stands in for it.
     ///
     /// # Errors
     /// `UnknownSlot` if the slot isn't registered.
@@ -57,111 +121,115 @@ impl SlotSession {
         let signature = find_slot(slot).ok_or_else(|| RegistryError::UnknownSlot(slot.clone()))?.signature();
         let mut info = session.info();
         info.fallback_for = wanted.filter(|w| w != &info.model);
-        let mut this = Self {
+        let model = info.model.clone();
+        let shared = Arc::new(Shared {
+            id: registry.register_session(slot, Some(model.clone())),
             registry,
             slot: slot.clone(),
+            mailbox: Mutex::new(Mailbox { ready: None, retire: Vec::with_capacity(RETIRE_CAPACITY) }),
+            ready: AtomicBool::new(false),
+            confirmed: AtomicU64::new(0),
+            work: AtomicBool::new(false),
+            closed: AtomicBool::new(false),
+            info: Mutex::new(info),
+        });
+        let loader = loader::spawn(&shared, explicit.clone(), Some(model.clone()));
+        Ok(Self {
+            shared,
             explicit,
             signature,
-            info,
-            active: Some(session),
-            seen: generation,
-            loader: None,
-            in_flight: 0,
+            active: Some(Active { session, model }),
+            loader,
+            asked: generation,
+            applied: generation,
+            retiring: Vec::with_capacity(RETIRE_CAPACITY),
             reset_owed: false,
-        };
-        this.loader = this.spawn_loader();
-        Ok(this)
+            reset_at: generation,
+        })
     }
 
-    fn spawn_loader(&self) -> Option<Loader> {
-        Loader::spawn(self.registry.handle(), self.slot.clone(), self.explicit.clone())
-            .inspect_err(|e| tracing::warn!(slot = %self.slot, "couldn't start a loader thread: {e}"))
-            .ok()
-    }
-
-    /// Takes in the loader's answers and, if the registry changed since the last choice, asks for a new one.
-    fn poll(&mut self) {
-        self.receive();
-        if self.in_flight == 0 && self.registry.generation() != self.seen {
-            let request = Request {
-                current: self.active.is_some().then(|| self.info.model.clone()),
-                failed: None,
-                stands_in_for: self.info.fallback_for.clone(),
-                retire: None,
-            };
-            self.hand_over(request);
+    /// Wakes the loader. No allocation, no lock.
+    fn poke(&self) {
+        if let Some(loader) = &self.loader
+            && !self.shared.work.swap(true, Ordering::AcqRel)
+        {
+            loader.unpark();
         }
     }
 
-    /// Applies every answer that is ready.
-    fn receive(&mut self) {
-        while self.in_flight > 0 {
-            let Some(loader) = &self.loader else { return };
-            match loader.try_recv() {
-                Ok(Some(done)) => self.apply(done),
-                Ok(None) => return,
-                Err(_) => self.lose_loader(),
-            }
-        }
+    /// True if the loader has confirmed registry generation `generation` for what this session runs.
+    fn confirmed_for(&self, generation: u64) -> bool {
+        // Without a loader nothing can change, and answering from the session we have beats never answering.
+        self.loader.is_none()
+            || (!self.shared.ready.load(Ordering::Acquire)
+                && self.applied.max(self.shared.confirmed.load(Ordering::Acquire)) >= generation)
     }
 
-    fn apply(&mut self, done: Done) {
-        self.in_flight -= 1;
-        self.seen = done.generation;
-        if let Outcome::Swap { mut session, info } = done.outcome {
-            if self.reset_owed {
-                session.reset();
-            }
-            self.info = info;
-            if let Some(old) = self.active.replace(session) {
-                self.retire(old);
-            }
+    /// Everything the run side does besides running: wake the loader after a change, pass it retired sessions and
+    /// take its answer. Returns the registry generation it saw.
+    fn service(&mut self) -> u64 {
+        let generation = self.shared.registry.generation();
+        if generation != self.asked {
+            self.asked = generation;
+            self.poke();
         }
-        // Whatever was running has been reset already; only a slot with nothing running still owes it.
-        if self.in_flight == 0 && self.active.is_some() {
+        self.flush();
+        self.take_ready();
+        if self.reset_owed && self.confirmed_for(self.reset_at) {
+            // The loader kept this session for everything up to the reset: nothing will be swapped in for it.
             self.reset_owed = false;
         }
+        generation
     }
 
-    fn retire(&mut self, session: Box<dyn Session>) {
-        if let Some(loader) = &self.loader
-            && loader.send(Job::Retire(session)).is_err()
+    /// Moves retired sessions to the loader if the mailbox is free and has room.
+    fn flush(&mut self) {
+        if self.retiring.is_empty() {
+            return;
+        }
+        let Some(mut mailbox) = self.shared.try_mailbox() else { return };
+        while mailbox.retire.len() < RETIRE_CAPACITY
+            && let Some(retired) = self.retiring.pop()
         {
-            self.lose_loader();
+            mailbox.retire.push(retired);
         }
+        drop(mailbox);
+        self.poke();
     }
 
-    /// Queues `request`. If the loader can't be reached, the slot keeps what it has and tries again at the next
-    /// change.
-    fn hand_over(&mut self, request: Request) {
-        if self.loader.is_none() {
-            self.loader = self.spawn_loader();
+    /// Takes the loader's answer if there is one and the mailbox is free.
+    fn take_ready(&mut self) {
+        if !self.shared.ready.load(Ordering::Acquire) || self.retiring.len() >= RETIRE_CAPACITY {
+            return;
         }
-        match self.loader.as_ref().map(|l| l.send(Job::Load(Box::new(request)))) {
-            Some(Ok(())) => self.in_flight += 1,
-            _ => self.lose_loader(),
-        }
-    }
-
-    /// The loader thread died (a panic in a runtime): forget its queue. The next change starts a new one.
-    fn lose_loader(&mut self) {
-        tracing::warn!(slot = %self.slot, "the loader thread stopped; the slot keeps its current model");
-        self.loader = None;
-        self.in_flight = 0;
-        self.seen = self.registry.generation();
-    }
-
-    /// The running model failed: take it out, answer `Unavailable` from now on, and let the loader switch it off and
-    /// load the next one in the chain.
-    fn fail(&mut self, error: &RunError) {
-        let failed = self.info.model.clone();
-        let request = Request {
-            current: None,
-            stands_in_for: self.info.fallback_for.clone().or_else(|| Some(failed.clone())),
-            failed: Some((failed, format!("it stopped working ({error})"))),
-            retire: self.active.take(),
+        let Some(mut mailbox) = self.shared.try_mailbox() else { return };
+        let ready = mailbox.ready.take();
+        self.shared.ready.store(false, Ordering::Release);
+        drop(mailbox);
+        let Some(Ready { replacement, generation }) = ready else { return };
+        self.applied = generation;
+        let old = match replacement {
+            Some(mut next) => {
+                if self.reset_owed {
+                    next.session.reset();
+                    self.reset_owed = false;
+                }
+                self.active.replace(next)
+            }
+            None => self.active.take(),
         };
-        self.hand_over(request);
+        if let Some(active) = old {
+            self.retiring.push(Retired { active, why: Why::Replaced });
+            self.flush();
+        }
+    }
+
+    /// The running model failed: it leaves `run` for good, and the loader switches it off and loads the next one.
+    fn fail(&mut self, error: RunError) {
+        if let Some(active) = self.active.take() {
+            self.retiring.push(Retired { active, why: Why::Failed(error) });
+            self.flush();
+        }
     }
 }
 
@@ -171,27 +239,49 @@ impl Session for SlotSession {
     }
 
     fn run(&mut self, inputs: &[TensorRef<'_>], outputs: &mut [TensorBuf]) -> Result<(), RunError> {
-        self.poll();
-        let Some(session) = self.active.as_mut() else { return Err(RunError::Unavailable) };
-        match session.run(inputs, outputs) {
+        let generation = self.service();
+        if !self.confirmed_for(generation) {
+            return Err(RunError::Unavailable);
+        }
+        let Some(active) = self.active.as_mut() else { return Err(RunError::Unavailable) };
+        match active.session.run(inputs, outputs) {
             Err(error @ (RunError::Crashed | RunError::Failed(_))) => {
-                self.fail(&error);
+                self.fail(error);
                 Err(RunError::Unavailable)
             }
             other => other,
         }
     }
 
+    /// Cold: also restarts a loader thread that couldn't be started, which `run` must not do.
     fn reset(&mut self) {
-        self.receive();
-        if let Some(session) = self.active.as_mut() {
-            session.reset();
+        let _ = self.service();
+        if let Some(active) = self.active.as_mut() {
+            active.session.reset();
         }
-        self.reset_owed = self.in_flight > 0 || self.active.is_none();
+        self.reset_owed = true;
+        self.reset_at = self.shared.registry.generation();
+        if self.loader.is_none() {
+            let belief = self.active.as_ref().map(|a| a.model.clone());
+            self.loader = loader::spawn(&self.shared, self.explicit.clone(), belief);
+            // Ask again: whatever changed while nobody was listening is still unanswered.
+            self.asked = self.asked.wrapping_sub(1);
+        }
     }
 
     /// While the slot has no session (after a crash with nothing to fall back to), the model that ran last.
     fn info(&self) -> SessionInfo {
-        self.info.clone()
+        self.shared.info.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+}
+
+impl Drop for SlotSession {
+    fn drop(&mut self) {
+        self.shared.closed.store(true, Ordering::Release);
+        self.shared.registry.forget_session(self.shared.id);
+        if let Some(loader) = &self.loader {
+            self.shared.work.store(true, Ordering::Release);
+            loader.unpark();
+        }
     }
 }

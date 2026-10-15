@@ -8,6 +8,7 @@ mod common;
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
+use std::thread::{self, ThreadId};
 use std::time::{Duration, Instant};
 
 use omuzaki_ai::{CACHE_DIR, Registry, RegistrySettings, VerifiedCache};
@@ -25,24 +26,45 @@ const RUN_BUDGET: Duration = Duration::from_millis(5);
 /// How long a test waits for the loader thread before it calls the swap lost.
 const PATIENCE: Duration = Duration::from_secs(20);
 
-/// Everything the probe runtime saw, for all tests in this binary; each test looks up only its own models (their
-/// digests differ).
-static LOG: Mutex<Vec<Event>> = Mutex::new(Vec::new());
+/// What the probe runtime saw, one log per model (their digests differ between tests), so a session's `run` only
+/// ever contends with the same test's other threads, never with other tests running in parallel.
+static LOGS: Mutex<Vec<(ModelRef, Log)>> = Mutex::new(Vec::new());
+
+type Log = Arc<Mutex<Vec<Event>>>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Event {
-    Loaded(ModelRef),
-    Reset(ModelRef),
+    /// A load began (before its delay).
+    Loading,
+    Loaded,
+    Reset,
+    /// A `run` reached the model.
+    Ran,
+    /// The session was dropped, on this thread.
+    Dropped(ThreadId),
 }
 
-fn count(event: &Event) -> usize {
-    LOG.lock().unwrap().iter().filter(|e| *e == event).count()
+fn log_of(model: &ModelRef) -> Log {
+    let mut logs = LOGS.lock().unwrap();
+    if let Some((_, log)) = logs.iter().find(|(m, _)| m == model) {
+        return log.clone();
+    }
+    let log = Log::default();
+    logs.push((model.clone(), log.clone()));
+    log
+}
+
+fn count(model: &ModelRef, event: &Event) -> usize {
+    log_of(model).lock().unwrap().iter().filter(|e| *e == event).count()
 }
 
 #[derive(Deserialize)]
 struct Extras {
     #[serde(default)]
     load_ms: u64,
+    /// Loads after this many earlier ones fail (the install's smoke test is the first).
+    #[serde(default)]
+    fail_load_after: Option<usize>,
 }
 
 /// The `fake` runtime, slowed by the model file's `load_ms`, logging loads and resets.
@@ -51,7 +73,7 @@ struct ProbeRuntime;
 
 struct Probed {
     inner: Box<dyn Session>,
-    model: ModelRef,
+    log: Log,
 }
 
 impl Session for Probed {
@@ -60,16 +82,23 @@ impl Session for Probed {
     }
 
     fn run(&mut self, inputs: &[TensorRef<'_>], outputs: &mut [TensorBuf]) -> Result<(), RunError> {
+        self.log.lock().unwrap().push(Event::Ran);
         self.inner.run(inputs, outputs)
     }
 
     fn reset(&mut self) {
-        LOG.lock().unwrap().push(Event::Reset(self.model.clone()));
+        self.log.lock().unwrap().push(Event::Reset);
         self.inner.reset();
     }
 
     fn info(&self) -> SessionInfo {
         self.inner.info()
+    }
+}
+
+impl Drop for Probed {
+    fn drop(&mut self) {
+        self.log.lock().unwrap().push(Event::Dropped(thread::current().id()));
     }
 }
 
@@ -91,10 +120,15 @@ impl Runtime for ProbeRuntime {
     ) -> Result<Box<dyn Session>, LoadError> {
         let text = std::fs::read_to_string(&source.files[0].path).map_err(|e| LoadError::Format(e.to_string()))?;
         let extras: Extras = toml::from_str(&text).map_err(|e| LoadError::Format(e.to_string()))?;
+        log_of(source.model).lock().unwrap().push(Event::Loading);
         std::thread::sleep(Duration::from_millis(extras.load_ms));
+        if extras.fail_load_after.is_some_and(|n| count(source.model, &Event::Loaded) >= n) {
+            return Err(LoadError::Format("this model's load was set to fail".into()));
+        }
         let inner = FakeRuntime.load(source, slot, io, options)?;
-        LOG.lock().unwrap().push(Event::Loaded(source.model.clone()));
-        Ok(Box::new(Probed { inner, model: source.model.clone() }))
+        let log = log_of(source.model);
+        log.lock().unwrap().push(Event::Loaded);
+        Ok(Box::new(Probed { inner, log }))
     }
 }
 
@@ -107,8 +141,12 @@ fn echo_slot() -> SlotRef {
 /// An identity model file; `tag` makes its digest unique, `load_ms` its load slow, `crash_after` its runs fail.
 fn model_file(tag: &str, load_ms: u64, crash_after: Option<u64>) -> String {
     let crash = crash_after.map(|n| format!("crash_after = {n}\n")).unwrap_or_default();
+    model_file_with(tag, load_ms, &crash)
+}
+
+fn model_file_with(tag: &str, load_ms: u64, extra: &str) -> String {
     format!(
-        "# {tag}\nscale = 1.0\nbias = 0.0\nload_ms = {load_ms}\n{crash}\n[[inputs]]\nname = \"x\"\ndtype = \"f32\"\n\
+        "# {tag}\nscale = 1.0\nbias = 0.0\nload_ms = {load_ms}\n{extra}\n[[inputs]]\nname = \"x\"\ndtype = \"f32\"\n\
          shape = [\"any\"]\n\n[[outputs]]\nname = \"y\"\ndtype = \"f32\"\nshape = [\"any\"]\n"
     )
 }
@@ -206,8 +244,56 @@ fn run_until(
     seen
 }
 
+fn status(registry: &Registry) -> omuzaki_ai_api::SlotStatus {
+    registry.slots().into_iter().find(|s| s.info.slot == echo_slot()).unwrap()
+}
+
+/// Polls `check` every few milliseconds until it holds.
+fn wait_for(what: &str, mut check: impl FnMut() -> bool) {
+    let deadline = Instant::now() + PATIENCE;
+    while !check() {
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+/// Keeps running, checking the budget, until a run answers. The answers before that must be `Unavailable`.
+fn settle(session: &mut dyn Session, out: &mut [TensorBuf]) {
+    let deadline = Instant::now() + PATIENCE;
+    loop {
+        let (result, took) = timed_run(session, out);
+        assert!(took < RUN_BUDGET, "a run took {took:?}, longer than a run may");
+        match result {
+            Ok(()) => return,
+            Err(RunError::Unavailable) => {}
+            Err(other) => panic!("unexpected {other:?}"),
+        }
+        assert!(Instant::now() < deadline, "the session never answered again");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+fn ran(model: &ModelRef) -> usize {
+    count(model, &Event::Ran)
+}
+
+/// Where `model`'s log is now, to look only at what happens after.
+fn mark(model: &ModelRef) -> usize {
+    log_of(model).lock().unwrap().len()
+}
+
+/// True once `model`'s session was dropped since `mark`, and every such drop was on a thread other than this one.
+fn dropped_off_thread_since(model: &ModelRef, mark: usize) -> bool {
+    let me = thread::current().id();
+    let log = log_of(model);
+    let log = log.lock().unwrap();
+    let drops: Vec<_> =
+        log[mark..].iter().filter_map(|e| if let Event::Dropped(t) = e { Some(*t) } else { None }).collect();
+    !drops.is_empty() && drops.iter().all(|t| *t != me)
+}
+
 #[test]
-fn a_new_selection_is_swapped_in_without_blocking_any_run() {
+fn a_selection_change_answers_unavailable_until_the_new_model_is_in() {
     let rig = Rig::new(&[("1.0.0", model_file("swap-1", 0, None)), ("2.0.0", model_file("swap-2", 200, None))]);
     let registry = rig.open();
     let models = install(&registry, &["2.0.0", "1.0.0"]);
@@ -215,25 +301,59 @@ fn a_new_selection_is_swapped_in_without_blocking_any_run() {
     let mut session = registry.open(&echo_slot(), None).unwrap();
     assert_eq!(session.info().model, v1);
     let mut out = TensorBuf::for_outputs(session.signature());
-    let loads_before = count(&Event::Loaded(v2.clone()));
+    settle(&mut *session, &mut out);
+    let loads_before = count(&v2, &Event::Loaded);
+    let ran_before = ran(&v1);
+    let v2_ran_before = ran(&v2); // the install's smoke test ran it once
 
     registry.select(&echo_slot(), Some(&v2), Requester::Person).unwrap();
     let started = Instant::now();
-    let during = run_until(&mut *session, &mut out, |s| {
-        s.info().model == v2 || count(&Event::Loaded(v2.clone())) > loads_before
-    });
+    let during = run_until(&mut *session, &mut out, |_| count(&v2, &Event::Loaded) > loads_before);
 
     assert!(started.elapsed() >= Duration::from_millis(150), "the 200 ms load happened on another thread");
-    assert!(!during.is_empty() && during.iter().all(Result::is_ok), "the old session answered meanwhile: {during:?}");
-    // The load is done: the next two runs pick it up (after a pause, so the hand-over has certainly landed).
+    // Every run before the load finished is `Unavailable`; the last may land just after it and be the new model's.
+    let (last, before) = during.split_last().unwrap();
+    assert!(before.iter().all(|r| *r == Err(RunError::Unavailable)), "no result while it loads: {during:?}");
+    assert!(*last == Err(RunError::Unavailable) || *last == Ok(()));
+    assert_eq!(ran(&v1), ran_before, "the deselected model never answered");
+    // The load is done: the next run takes it in (after a pause, so the hand-over has certainly landed).
     std::thread::sleep(Duration::from_millis(50));
-    for _ in 0..2 {
-        let (result, took) = timed_run(&mut *session, &mut out);
-        assert!(took < RUN_BUDGET, "{took:?}");
-        assert!(result.is_ok() || result == Err(RunError::Unavailable));
-    }
+    let (result, took) = timed_run(&mut *session, &mut out);
+    assert!(took < RUN_BUDGET, "{took:?}");
+    assert_eq!(result, Ok(()));
+    assert!(ran(&v2) > v2_ran_before, "the new model answers");
     assert_eq!(session.info().model, v2);
     assert_eq!(session.info().fallback_for, None, "the selection is what runs, nothing is stood in for");
+}
+
+#[test]
+fn a_load_that_finishes_after_the_selection_moved_on_never_answers() {
+    let files = [
+        ("1.0.0", model_file("obsolete-1", 0, None)),
+        ("2.0.0", model_file("obsolete-2", 200, None)),
+        ("3.0.0", model_file("obsolete-3", 0, None)),
+    ];
+    let rig = Rig::new(&files);
+    let registry = rig.open();
+    let models = install(&registry, &["2.0.0", "3.0.0", "1.0.0"]);
+    let (v2, v3) = (models[0].clone(), models[1].clone());
+    let mut session = registry.open(&echo_slot(), None).unwrap();
+    let mut out = TensorBuf::for_outputs(session.signature());
+    settle(&mut *session, &mut out);
+    let loads = count(&v2, &Event::Loaded);
+    let starts = count(&v2, &Event::Loading);
+    let ran_v2 = ran(&v2); // the install's smoke test
+
+    registry.select(&echo_slot(), Some(&v2), Requester::Person).unwrap();
+    assert_eq!(timed_run(&mut *session, &mut out).0, Err(RunError::Unavailable));
+    wait_for("v2 to start loading", || count(&v2, &Event::Loading) > starts);
+    registry.select(&echo_slot(), Some(&v3), Requester::Person).unwrap();
+    wait_for("v2's load to finish", || count(&v2, &Event::Loaded) > loads);
+    settle(&mut *session, &mut out);
+
+    assert_eq!(session.info().model, v3);
+    assert_eq!(ran(&v2), ran_v2, "v2 was no longer the choice when it arrived");
+    assert_eq!(status(&registry).active, Some(v3));
 }
 
 #[test]
@@ -243,17 +363,18 @@ fn a_change_that_leaves_the_choice_alone_loads_nothing() {
     let v1 = install(&registry, &["1.0.0"]).remove(0);
     let mut session = registry.open(&echo_slot(), None).unwrap();
     let mut out = TensorBuf::for_outputs(session.signature());
-    let loaded = count(&Event::Loaded(v1.clone()));
+    let loaded = count(&v1, &Event::Loaded);
 
     registry.select(&echo_slot(), None, Requester::Person).unwrap(); // bumps the generation, same chain
+    settle(&mut *session, &mut out);
     for _ in 0..5 {
         let (result, took) = timed_run(&mut *session, &mut out);
         assert_eq!(result, Ok(()));
         assert!(took < RUN_BUDGET);
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(Duration::from_millis(5));
     }
 
-    assert_eq!(count(&Event::Loaded(v1)), loaded, "the same model isn't loaded again");
+    assert_eq!(count(&v1, &Event::Loaded), loaded, "the same model isn't loaded again");
 }
 
 #[test]
@@ -266,23 +387,26 @@ fn a_crash_falls_back_to_the_shipped_default_and_says_why() {
     let mut session = registry.open(&echo_slot(), None).unwrap();
     assert_eq!(session.info().model, v2);
     let mut out = TensorBuf::for_outputs(session.signature());
-
-    for _ in 0..3 {
+    settle(&mut *session, &mut out);
+    for _ in 0..2 {
         assert_eq!(timed_run(&mut *session, &mut out).0, Ok(()));
     }
+    let at = mark(&v2);
+
     let (fourth, took) = timed_run(&mut *session, &mut out);
     assert_eq!(fourth, Err(RunError::Unavailable), "the crash is not passed on");
     assert!(took < RUN_BUDGET, "{took:?}");
-    run_until(&mut *session, &mut out, |s| s.info().model == v1);
+    settle(&mut *session, &mut out);
 
-    let info = session.info();
-    assert_eq!(info.fallback_for, Some(v2.clone()));
-    assert_eq!(timed_run(&mut *session, &mut out).0, Ok(()), "the default answers");
-    let slot = registry.slots().into_iter().find(|s| s.info.slot == echo_slot()).unwrap();
+    assert_eq!(session.info().model, v1);
+    assert_eq!(session.info().fallback_for, Some(v2.clone()));
+    let slot = status(&registry);
     assert_eq!(slot.active, Some(v1));
-    assert!(slot.fallback.as_ref().is_some_and(|f| f.contains("can't run")), "{:?}", slot.fallback);
+    let fallback = slot.fallback.unwrap();
+    assert!(fallback.contains("can't run") && fallback.contains("crashed"), "{fallback}");
     let ModelStatus::Disabled { reason } = entry(&registry, "2.0.0").status else { panic!("v2 should be disabled") };
     assert!(reason.contains("stopped working") && reason.contains("crashed"), "{reason}");
+    wait_for("the crashed session to be dropped", || dropped_off_thread_since(&v2, at));
 
     // Only for this app session: the state file doesn't remember it.
     drop(session);
@@ -297,7 +421,8 @@ fn with_nothing_to_fall_back_to_a_crash_leaves_the_slot_unavailable() {
     install(&registry, &["1.0.0"]);
     let mut session = registry.open(&echo_slot(), None).unwrap();
     let mut out = TensorBuf::for_outputs(session.signature());
-    for _ in 0..3 {
+    settle(&mut *session, &mut out);
+    for _ in 0..2 {
         assert_eq!(timed_run(&mut *session, &mut out).0, Ok(()));
     }
 
@@ -308,10 +433,135 @@ fn with_nothing_to_fall_back_to_a_crash_leaves_the_slot_unavailable() {
         std::thread::sleep(Duration::from_millis(10));
     }
 
-    let slot = registry.slots().into_iter().find(|s| s.info.slot == echo_slot()).unwrap();
+    let slot = status(&registry);
     assert_eq!(slot.active, None);
     assert!(!slot.info.without_model.is_empty(), "the health meter has the slot's own words");
+    assert!(slot.fallback.is_some_and(|f| f.contains("crashed")));
     assert!(matches!(entry(&registry, "1.0.0").status, ModelStatus::Disabled { .. }));
+}
+
+#[test]
+fn removing_the_only_model_retires_the_session_and_answers_unavailable() {
+    let rig = Rig::new(&[("1.0.0", model_file("remove-1", 0, None))]);
+    let registry = rig.open();
+    let v1 = install(&registry, &["1.0.0"]).remove(0);
+    let mut session = registry.open(&echo_slot(), None).unwrap();
+    let mut out = TensorBuf::for_outputs(session.signature());
+    settle(&mut *session, &mut out);
+    let ran_before = ran(&v1);
+    let at = mark(&v1);
+
+    registry.remove(&v1).unwrap();
+    for _ in 0..10 {
+        assert_eq!(timed_run(&mut *session, &mut out).0, Err(RunError::Unavailable));
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    assert_eq!(ran(&v1), ran_before, "the removed model never ran again");
+    wait_for("the removed model's session to be dropped", || dropped_off_thread_since(&v1, at));
+    assert_eq!(status(&registry).active, None);
+}
+
+#[test]
+fn a_fallback_that_is_still_loading_is_not_reported_as_active() {
+    // Selected v2 crashes; the shipped default v1 takes 300 ms to load.
+    let rig = Rig::new(&[("1.0.0", model_file("slots-1", 300, None)), ("2.0.0", model_file("slots-2", 0, Some(3)))]);
+    let registry = rig.open();
+    let models = install(&registry, &["2.0.0", "1.0.0"]);
+    let (v2, v1) = (models[0].clone(), models[1].clone());
+    registry.select(&echo_slot(), Some(&v2), Requester::Person).unwrap();
+    let mut session = registry.open(&echo_slot(), None).unwrap();
+    let mut out = TensorBuf::for_outputs(session.signature());
+    settle(&mut *session, &mut out);
+    for _ in 0..2 {
+        assert_eq!(timed_run(&mut *session, &mut out).0, Ok(()));
+    }
+    assert_eq!(timed_run(&mut *session, &mut out).0, Err(RunError::Unavailable)); // the crash
+
+    wait_for("the crash to show", || status(&registry).fallback.is_some());
+    let meanwhile = status(&registry);
+    assert_eq!(meanwhile.active, None, "v1 is still loading: {meanwhile:?}");
+    assert!(meanwhile.fallback.unwrap().contains("crashed"));
+    settle(&mut *session, &mut out);
+    assert_eq!(status(&registry).active, Some(v1));
+}
+
+#[test]
+fn an_unselected_default_that_crashes_is_recorded_too() {
+    let rig = Rig::new(&[("1.0.0", model_file("default-1", 0, None)), ("2.0.0", model_file("default-2", 0, Some(3)))]);
+    let registry = rig.open();
+    let models = install(&registry, &["1.0.0", "2.0.0"]); // 2.0.0 becomes the default
+    let (v1, v2) = (models[0].clone(), models[1].clone());
+    let mut session = registry.open(&echo_slot(), None).unwrap();
+    assert_eq!(session.info().model, v2);
+    let mut out = TensorBuf::for_outputs(session.signature());
+    settle(&mut *session, &mut out);
+    for _ in 0..2 {
+        assert_eq!(timed_run(&mut *session, &mut out).0, Ok(()));
+    }
+    assert_eq!(timed_run(&mut *session, &mut out).0, Err(RunError::Unavailable));
+    settle(&mut *session, &mut out);
+
+    assert_eq!(session.info().model, v1);
+    assert_eq!(session.info().fallback_for, Some(v2), "the older default stands in for the one that crashed");
+    let slot = status(&registry);
+    assert_eq!(slot.active, Some(v1));
+    assert!(slot.fallback.is_some_and(|f| f.contains("crashed")), "no selection, yet the crash is shown");
+}
+
+#[test]
+fn a_healthy_selection_or_none_clears_what_the_fallback_stood_in_for() {
+    let files = [
+        ("1.0.0", model_file("meta-1", 0, None)),
+        ("2.0.0", model_file("meta-2", 0, Some(3))),
+        ("3.0.0", model_file("meta-3", 0, None)),
+    ];
+    let rig = Rig::new(&files);
+    let registry = rig.open();
+    let models = install(&registry, &["2.0.0", "3.0.0", "1.0.0"]);
+    let (v2, v3) = (models[0].clone(), models[1].clone());
+    registry.select(&echo_slot(), Some(&v2), Requester::Person).unwrap();
+    let mut session = registry.open(&echo_slot(), None).unwrap();
+    let mut out = TensorBuf::for_outputs(session.signature());
+    settle(&mut *session, &mut out);
+    for _ in 0..2 {
+        assert_eq!(timed_run(&mut *session, &mut out).0, Ok(()));
+    }
+    assert_eq!(timed_run(&mut *session, &mut out).0, Err(RunError::Unavailable));
+    settle(&mut *session, &mut out);
+    assert_eq!(session.info().fallback_for, Some(v2.clone()));
+
+    // Back to the shipped default, which is what runs: nothing is stood in for any more (the Keep path).
+    registry.select(&echo_slot(), None, Requester::Person).unwrap();
+    settle(&mut *session, &mut out);
+    assert_eq!(session.info().fallback_for, None, "v1 is the default now, not a stand-in");
+
+    // A healthy selection clears it too (the Load path).
+    registry.select(&echo_slot(), Some(&v3), Requester::Person).unwrap();
+    settle(&mut *session, &mut out);
+    assert_eq!(session.info().model, v3);
+    assert_eq!(session.info().fallback_for, None);
+}
+
+#[test]
+fn keeping_the_model_because_the_new_selection_wont_load_marks_the_fallback() {
+    let rig = Rig::new(&[
+        ("1.0.0", model_file("noload-1", 0, None)),
+        ("2.0.0", model_file_with("noload-2", 0, "fail_load_after = 1\n")),
+    ]);
+    let registry = rig.open();
+    let models = install(&registry, &["2.0.0", "1.0.0"]);
+    let (v2, v1) = (models[0].clone(), models[1].clone());
+    let mut session = registry.open(&echo_slot(), None).unwrap();
+    let mut out = TensorBuf::for_outputs(session.signature());
+    settle(&mut *session, &mut out);
+    assert_eq!(session.info().fallback_for, None);
+
+    registry.select(&echo_slot(), Some(&v2), Requester::Person).unwrap();
+    settle(&mut *session, &mut out);
+
+    assert_eq!(session.info().model, v1, "v2 wouldn't load, so v1 stays");
+    assert_eq!(session.info().fallback_for, Some(v2));
 }
 
 #[test]
@@ -324,12 +574,60 @@ fn reset_reaches_the_current_session_and_the_one_swapped_in() {
     let mut out = TensorBuf::for_outputs(session.signature());
 
     session.reset();
-    assert_eq!(count(&Event::Reset(v1.clone())), 1, "forwarded to the session that runs");
+    assert_eq!(count(&v1, &Event::Reset), 1, "forwarded to the session that runs");
 
     registry.select(&echo_slot(), Some(&v2), Requester::Person).unwrap();
-    assert_eq!(timed_run(&mut *session, &mut out).0, Ok(())); // starts the load
+    assert_eq!(timed_run(&mut *session, &mut out).0, Err(RunError::Unavailable)); // starts the load
     session.reset(); // while v2 loads
-    run_until(&mut *session, &mut out, |s| s.info().model == v2);
+    settle(&mut *session, &mut out);
 
-    assert_eq!(count(&Event::Reset(v2)), 1, "replayed on the session that was swapped in");
+    assert_eq!(session.info().model, v2);
+    assert_eq!(count(&v2, &Event::Reset), 1, "replayed on the session that was swapped in");
+}
+
+#[test]
+fn a_reset_right_after_a_selection_change_is_replayed_too() {
+    let rig = Rig::new(&[("1.0.0", model_file("early-1", 0, None)), ("2.0.0", model_file("early-2", 100, None))]);
+    let registry = rig.open();
+    let models = install(&registry, &["2.0.0", "1.0.0"]);
+    let v2 = models[0].clone();
+    let mut session = registry.open(&echo_slot(), None).unwrap();
+    let mut out = TensorBuf::for_outputs(session.signature());
+
+    registry.select(&echo_slot(), Some(&v2), Requester::Person).unwrap();
+    session.reset(); // before any run has noticed the change
+    settle(&mut *session, &mut out);
+
+    assert_eq!(session.info().model, v2);
+    assert_eq!(count(&v2, &Event::Reset), 1);
+}
+
+#[test]
+fn a_crash_disable_is_not_saved_by_a_later_commit_after_a_failed_one() {
+    let rig = Rig::new(&[("1.0.0", model_file("save-1", 0, None)), ("2.0.0", model_file("save-2", 0, Some(3)))]);
+    let registry = rig.open();
+    let models = install(&registry, &["2.0.0", "1.0.0"]);
+    let v2 = models[0].clone();
+    registry.select(&echo_slot(), Some(&v2), Requester::Person).unwrap();
+    let mut session = registry.open(&echo_slot(), None).unwrap();
+    let mut out = TensorBuf::for_outputs(session.signature());
+    settle(&mut *session, &mut out);
+    for _ in 0..2 {
+        assert_eq!(timed_run(&mut *session, &mut out).0, Ok(()));
+    }
+    assert_eq!(timed_run(&mut *session, &mut out).0, Err(RunError::Unavailable));
+    settle(&mut *session, &mut out);
+
+    // A reinstall whose state can't be saved: the state file's place is taken by a folder.
+    let file = rig.dir.path().join("models").join("state.toml");
+    let kept = std::fs::read(&file).unwrap();
+    std::fs::remove_file(&file).unwrap();
+    std::fs::create_dir_all(file.join("in the way")).unwrap();
+    assert!(registry.install(&v2, &NoProgress).is_err(), "the commit can't be written");
+    std::fs::remove_dir_all(&file).unwrap();
+    std::fs::write(&file, kept).unwrap();
+    registry.select(&echo_slot(), None, Requester::Person).unwrap(); // the next commit writes the file
+
+    drop(session);
+    assert_eq!(entry(&rig.open(), "2.0.0").status, ModelStatus::Ready, "the crash was for that app session only");
 }
