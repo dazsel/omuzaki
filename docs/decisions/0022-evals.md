@@ -1,3 +1,9 @@
+---
+title: "0022: Evals are data-driven tasks graded on the end state, replayed free on every PR and sampled from a pinned model only when the maintainers enable spending (2026-10-12)"
+summary: "Evals are data-driven tasks graded on the end state, replayed free on every PR and sampled from a pinned model only when the maintainers enable spending"
+area: decisions
+---
+
 # 0022: Evals are data-driven tasks graded on the end state, replayed free on every PR and sampled from a pinned model only when the maintainers enable spending (2026-10-12)
 
 **Status:** accepted (2026-10-12). **Context:** QG-03, AG-01, ML-01, ML-09, ML-11, ML-12,

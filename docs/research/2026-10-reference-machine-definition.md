@@ -1,3 +1,9 @@
+---
+title: "Defining the reference machine for the §10 budgets (2026-10-12)"
+summary: "the evidence behind the named reference machines in §10 (hardware tiers, the CPU and RAM counting rules, measurement choices, which budgets are at risk)."
+area: research
+---
+
 # Defining the reference machine for the §10 budgets (2026-10-12)
 
 > Research. It backs the new "Reference machines" block in spec v3 §10 and builds on an earlier measurement, which showed what the development PC can and cannot say about a laptop. **Nothing here was measured on a real laptop.** New evidence is public: the Steam hardware survey, vendor spec sheets, VTuber software requirements and Microsoft API documentation, all read on 2026-10-12 through a fetch tool that summarises pages. Each figure that decides something was read once; re-check it before quoting it outside this repo.

@@ -53,4 +53,6 @@ pub fn mock_variants() -> Result<VariantSet, serde_json::Error> {
     serde_json::from_str(VARIANTS_JSON)
 }
 
-omuzaki_core::define_link!();
+omuzaki_core::define_link! {
+    omuzaki_char_api::link();
+}

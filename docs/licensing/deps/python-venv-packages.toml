@@ -1,0 +1,7 @@
+section = "in-use"
+item = "numpy, Pillow, matplotlib and the other venv packages"
+kind = "python"
+used_for = "tooling"
+status = "yes"
+condition = "dev only"
+audit = "A2"

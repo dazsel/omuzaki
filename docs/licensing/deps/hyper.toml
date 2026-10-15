@@ -1,0 +1,7 @@
+section = "rust"
+item = "hyper (http1, server), hyper-util, http-body-util, bytes"
+kind = "crate"
+used_for = "HTTP front end of the MCP Streamable HTTP port (loopback only)"
+status = "yes"
+audit = "(crates.io: MIT)"
+crates = ["bytes", "http-body-util", "hyper", "hyper-util"]

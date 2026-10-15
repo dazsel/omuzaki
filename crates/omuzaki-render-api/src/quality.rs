@@ -64,7 +64,12 @@ pub struct Quality {
     pub samples: u8,
     /// Shadow-map quality.
     pub shadows: ShadowQuality,
-    /// In `Live` mode, redraw shadow maps every this-many frames (`>= 1`). Ignored in `Offline`.
+    /// In `Live` mode, redraw shadow maps every this-many frames. Ignored in `Offline`.
+    ///
+    /// The valid range is `1..=255`: `1` redraws every frame, and `255` redraws about every 4.25 s at 60 fps. A moving
+    /// caster's shadow may therefore lag by up to that long. A turned light redraws at once whatever the interval. `0` is
+    /// rejected by [`Quality::validate`] rather than clamped, because a silent clamp would hide a mistake in the caller's
+    /// settings.
     pub shadow_interval: u8,
     /// Whether the scene's bloom, depth of field, grain and grade run at all. Exposure and tone mapping always run.
     pub post_effects: bool,
@@ -178,6 +183,19 @@ mod tests {
         let mut q = Quality::live();
         q.samples = 32;
         assert!(q.validate().is_err(), "more than MAX_SAMPLES");
+    }
+
+    #[test]
+    fn shadow_interval_takes_one_to_255_and_says_so_when_zero() {
+        for interval in [1, 2, 255] {
+            let mut q = Quality::live();
+            q.shadow_interval = interval;
+            assert_eq!(q.validate(), Ok(()), "interval {interval} is in 1..=255");
+        }
+        let mut q = Quality::live();
+        q.shadow_interval = 0;
+        let err = q.validate().unwrap_err().to_string();
+        assert!(err.contains("shadow_interval must be at least 1"), "{err:?}");
     }
 
     #[test]

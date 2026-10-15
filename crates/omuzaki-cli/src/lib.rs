@@ -41,11 +41,9 @@ pub mod session;
 pub mod store;
 
 // `omuzaki` ships the product's ops, importers and exporters: the stage (which links the character, animation and face
-// crates) and the I/O crates. `main` calls this at startup (ADR 0015); `cargo xtask lint-links` checks the list.
+// crates) and the I/O crates. `main` calls this at startup (ADR 0015). `build.rs` writes the calls: one for every
+// dependency that sets `registers = true`, so adding a crate here is one dependency line (ADR 0054 section 6).
 // Any binary that links this library carries the crates, whether or not it calls `link()`.
 omuzaki_core::define_link! {
-    omuzaki_stage::link();
-    omuzaki_io_ops::link();
-    omuzaki_io_gltf::link();
-    omuzaki_io_vrm::link();
+    include!(concat!(env!("OUT_DIR"), "/link_calls.rs"));
 }

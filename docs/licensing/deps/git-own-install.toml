@@ -1,0 +1,6 @@
+section = "models"
+item = "git (the person's own install)"
+kind = "tool"
+used_for = "VC-04: status, log, tree, commit, push, pull, run as a separate process (ADR 0045)"
+status = "external"
+condition = "GPL-2.0-only per git's `COPYING` (read 2026-10-13); never bundled, linked or redistributed; Omuzaki detects it and says when it is missing"
