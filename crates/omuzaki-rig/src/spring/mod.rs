@@ -33,6 +33,11 @@
 //!   so a character that first appears away from the origin does not whip its hair into place.
 //! - **A zero-length pair does not move.** A joint on top of the next one has no direction to swing in; it keeps its
 //!   rest rotation.
+//! - **Colliders push, then the bone length is kept**, as the spec orders it (and three-vrm does). A push that moves a
+//!   tail out of a collider is undone in part when the length is restored, so a tail whose root is closer to a plane
+//!   (or to the wall of an inside shape) than a bone length can still end a step behind it. The guarantee is on the
+//!   push, which leaves no joint more than rounding behind the plane or outside the shape; the end of the step keeps
+//!   the bone length. A test pins the case (root 0.1 m above a plane, a 0.2 m bone hanging straight down).
 //! - **Centre space** is applied at the step boundary: tails are stored relative to the centre bone, mapped to world
 //!   space when a step begins, simulated there, and mapped back. With the pose held across the step this is the spec's
 //!   per-sub-step formulation exactly, and it makes nested chains and gravity (always world space) free.

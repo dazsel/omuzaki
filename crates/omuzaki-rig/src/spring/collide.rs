@@ -217,4 +217,55 @@ mod tests {
         let push = capsule.push_out(Vec3::new(0.0, 1.0, 0.0), 0.0, Vec3::X).unwrap();
         assert!(close(push, Vec3::X * 0.5), "{push}");
     }
+
+    mod push_properties {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        fn vec3() -> impl Strategy<Value = Vec3> {
+            prop::array::uniform3(-0.3_f32..0.3).prop_map(Vec3::from_array)
+        }
+
+        /// Distance from `p` to the segment `a`..`b`, written independently of the collider.
+        fn to_segment(p: Vec3, a: Vec3, b: Vec3) -> f32 {
+            let ab = b - a;
+            let t =
+                if ab.length_squared() > 0.0 { ((p - a).dot(ab) / ab.length_squared()).clamp(0.0, 1.0) } else { 0.0 };
+            (p - (a + ab * t)).length()
+        }
+
+        proptest! {
+            /// The push itself (before any bone length is restored) leaves a joint on the allowed side, for planes whose
+            /// normal is unit length and for inside shapes, and the run really does push: the first point is always
+            /// placed in the forbidden region.
+            #[test]
+            fn the_push_leaves_every_joint_on_the_allowed_side(
+                a in vec3(), b in vec3(), tilt in vec3(), radius in 0.05_f32..0.3, joint in 0.0_f32..0.05,
+                points in prop::collection::vec(vec3(), 8), kind in 0_u8..3,
+            ) {
+                let normal = (Vec3::Y + tilt * 3.0).normalize();
+                let (collider, room): (Collider, Box<dyn Fn(Vec3) -> f32>) = match kind {
+                    0 => (Collider::plane(a, normal), Box::new(move |p| (p - a).dot(normal))),
+                    1 => (Collider::sphere_inside(a, radius), Box::new(move |p| radius - (p - a).length())),
+                    _ => (Collider::capsule_inside(a, b, radius), Box::new(move |p| radius - to_segment(p, a, b))),
+                };
+                // A point outside the inside shapes / behind the plane, so the push cannot be skipped vacuously.
+                let beyond = match kind {
+                    0 => a - normal * 0.2,
+                    1 => a + Vec3::X * (radius + 0.2),
+                    _ => b + Vec3::X * (radius + 0.2),
+                };
+                let mut pushed = 0;
+                for point in std::iter::once(beyond).chain(points) {
+                    if let Some(push) = collider.push_out(point, joint, Vec3::Y) {
+                        pushed += 1;
+                        let after = room(point + push) - joint;
+                        prop_assert!(after >= -1e-5, "still {after} on the wrong side after the push");
+                    }
+                }
+                prop_assert!(pushed >= 1, "nothing was pushed");
+            }
+        }
+    }
 }

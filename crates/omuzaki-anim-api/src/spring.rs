@@ -172,7 +172,9 @@ pub enum ColliderShape {
         #[schemars(with = "[f32; 3]")]
         tail: Vec3,
     },
-    /// A half-space: joints stay on the side `normal` points to.
+    /// A half-space. A joint behind the plane is pushed back to the side `normal` points to. The spec keeps the bone
+    /// length after collisions, so a tail whose root is closer to the plane than a bone length can still end a step
+    /// behind it.
     Plane {
         /// A point on the plane.
         #[schemars(with = "[f32; 3]")]
@@ -213,7 +215,7 @@ impl ColliderShape {
             Self::Plane { offset, normal }
                 if !offset.is_finite() || !normal.is_finite() || (normal.length() - 1.0).abs() > NORMAL_TOLERANCE =>
             {
-                Some("plane normal must be unit length (within 0.001) and the offset finite")
+                Some("plane normal must be unit length (within the normal tolerance) and the offset finite")
             }
             _ => None,
         }

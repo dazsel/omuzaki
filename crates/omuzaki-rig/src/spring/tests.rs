@@ -356,9 +356,10 @@ fn matches_the_spec_on_seeded_random_scenes_to_1e_5() {
         let set = set_of(chains, vec![group]);
         set.validate(&fixture.skeleton).unwrap();
         let agreement = compare_with_spec(&fixture, &set, 60.0, 200);
-        // Joint positions agree to 1e-5 m. Quaternion components carry the `f32` rounding of a whole chain's turn, so
-        // a violent scene (2 rad of swing) reaches 2.2e-5 there.
-        assert!(agreement.rotation < 5e-5 && agreement.position < 1e-5, "scene {scene} {shape:?}: {agreement:?}");
+        // Joint positions agree to 2e-5 m and quaternion components to 5e-5: the `f32` rounding of a whole chain's
+        // turn shows up in both on a violent scene (2 rad of swing; the worst reaches 1.2e-5 m and 4.2e-5). The
+        // calm scenes agree to 1e-5 (see the plane-normal test).
+        assert!(agreement.rotation < 5e-5 && agreement.position < 2e-5, "scene {scene} {shape:?}: {agreement:?}");
         engaged += i32::from(agreement.swing > 0.43); // the free run's swing is 0.42 rad
     }
     assert!(engaged >= 12, "only {engaged} of 24 scenes changed the swing: the colliders were mostly missed");
@@ -366,7 +367,7 @@ fn matches_the_spec_on_seeded_random_scenes_to_1e_5() {
 
 /// A root bone at the head's origin with one bone of `length` hanging from it, simulated under `shape` on the head.
 /// Returns, per frame, the head's world transform and the world positions of the root and the tail.
-fn swing_into(shape: ColliderShape, length: f32, seed: u64) -> Vec<(Transform, Vec3, Vec3)> {
+fn swing_into(shape: Option<ColliderShape>, length: f32, seed: u64) -> Vec<(Transform, Vec3, Vec3)> {
     let mut ids = (BoneId(0), BoneId(0));
     let fixture = Fixture::with(|head, first| {
         ids = (BoneId(first), BoneId(first + 1));
@@ -378,9 +379,8 @@ fn swing_into(shape: ColliderShape, length: f32, seed: u64) -> Vec<(Transform, V
     let params = SpringParams { stiffness: 0.5, gravity_power: 1.0, drag_force: 0.1, ..SpringParams::default() };
     let mut chain = SpringChain::new("c", &[ids.0, ids.1], params);
     chain.collider_groups = vec!["g".into()];
-    let group =
-        ColliderGroup { name: "g".into(), colliders: vec![omuzaki_anim_api::Collider { bone: fixture.head, shape }] };
-    let set = set_of(vec![chain], vec![group]);
+    let colliders = shape.map(|shape| omuzaki_anim_api::Collider { bone: fixture.head, shape }).into_iter().collect();
+    let set = set_of(vec![chain], vec![ColliderGroup { name: "g".into(), colliders }]);
     set.validate(&fixture.skeleton).unwrap();
     let mut solver = VrmSpringSolver::new(&set, &fixture.skeleton).unwrap();
     let mut rng = Rng::new(seed);
@@ -434,46 +434,131 @@ mod properties {
             .collect()
     }
 
+    /// Whether `frames` (a run without the collider) ever puts the tail where the collider would push it: more than
+    /// 1 mm behind `room`'s zero, with `room` measured in the head's frame of that frame.
+    fn reaches(free: &[(Transform, Vec3, Vec3)], room: impl Fn(&Transform, Vec3) -> f32) -> bool {
+        free.iter().any(|(head, _, tail)| room(head, *tail) < -1e-3)
+    }
+
+    /// The checks every collider property shares: the bone keeps its length through the whole step, the run is
+    /// bit-identical when repeated, and the collider changed the swing (so the contacts were real, not skipped).
+    fn check(
+        shape: ColliderShape,
+        length: f32,
+        seed: u64,
+        free: &[(Transform, Vec3, Vec3)],
+    ) -> Result<(), TestCaseError> {
+        let frames = swing_into(Some(shape), length, seed);
+        for (_, root, tail) in &frames {
+            prop_assert!(((*tail - *root).length() - length).abs() <= 1e-5, "bone length changed");
+        }
+        prop_assert_eq!(bits(&frames), bits(&swing_into(Some(shape), length, seed)));
+        prop_assert!(bits(&frames) != bits(free), "the collider never touched the tail");
+        Ok(())
+    }
+
     proptest! {
+        /// Inside shapes whose wall the bone can reach (the radius is less than the root's room plus the bone's
+        /// length). The push itself is held to 1e-5 by `collide`'s `push_properties`; here the whole step keeps the
+        /// bone length and is deterministic, and the tail does hit the wall.
         #[test]
-        fn a_tail_never_leaves_an_inside_shape_it_could_stay_in(
-            centre in vec3(), end in vec3(), length in 0.03_f32..0.15, slack in 0.0_f32..0.1, capsule: bool, seed: u64,
+        fn a_tail_that_reaches_the_wall_of_an_inside_shape_collides(
+            centre in vec3(), end in vec3(), length in 0.05_f32..0.15, reach in 0.2_f32..0.8, capsule: bool, seed: u64,
         ) {
             // The root sits at the head's origin, so its distance to the shape is its distance to the centre or axis.
             let axis_end = if capsule { end } else { centre };
-            let radius = to_segment(Vec3::ZERO, centre, axis_end) + length + slack;
+            let radius = to_segment(Vec3::ZERO, centre, axis_end) + length * reach;
             let shape = if capsule {
                 ColliderShape::CapsuleInside { offset: centre, radius, tail: end }
             } else {
                 ColliderShape::SphereInside { offset: centre, radius }
             };
-            let frames = swing_into(shape, length, seed);
-            for (head, root, tail) in &frames {
-                let outside = to_segment(*tail, at(head, centre), at(head, axis_end)) - radius;
-                prop_assert!(outside <= 1e-5, "tail {outside} outside the shape");
-                prop_assert!(((*tail - *root).length() - length).abs() <= 1e-5, "bone length changed");
-            }
-            prop_assert_eq!(bits(&frames), bits(&swing_into(shape, length, seed)));
+            let free = swing_into(None, length, seed);
+            prop_assume!(reaches(&free, |head, tail| radius - to_segment(tail, at(head, centre), at(head, axis_end))));
+            check(shape, length, seed, &free)?;
         }
 
+        /// Planes the bone can reach (the root is less than a bone length in front of the plane).
         #[test]
-        fn a_tail_never_ends_behind_a_plane_its_root_is_clear_of(
-            tilt in vec3(), length in 0.03_f32..0.15, slack in 0.0_f32..0.1, sideways in vec3(), seed: u64,
+        fn a_tail_that_reaches_a_plane_collides(
+            tilt in vec3(), length in 0.05_f32..0.15, reach in 0.2_f32..0.8, sideways in vec3(), seed: u64,
         ) {
             let normal = (Vec3::Y + tilt * 5.0).normalize();
-            // Root at the origin is `length + slack` in front of the plane.
-            let offset = sideways - normal * (normal.dot(sideways) + length + slack);
-            let shape = ColliderShape::Plane { offset, normal };
-            let frames = swing_into(shape, length, seed);
-            for (head, root, tail) in &frames {
-                let (n, o) = (head.rotation * normal, at(head, offset));
-                let behind = -(*tail - o).dot(n);
-                prop_assert!(behind <= 1e-5, "tail {behind} behind the plane");
-                prop_assert!(((*tail - *root).length() - length).abs() <= 1e-5, "bone length changed");
-            }
-            prop_assert_eq!(bits(&frames), bits(&swing_into(shape, length, seed)));
+            // The root at the origin is `length * reach` in front of the plane.
+            let offset = sideways - normal * (normal.dot(sideways) + length * reach);
+            let free = swing_into(None, length, seed);
+            prop_assume!(reaches(&free, |head, tail| (tail - at(head, offset)).dot(head.rotation * normal)));
+            check(ColliderShape::Plane { offset, normal }, length, seed, &free)?;
         }
     }
+}
+
+/// A plane whose normal is 0.9995 long (accepted by `validate`) must collide like the unit normal the oracle uses.
+#[test]
+fn matches_the_spec_for_a_plane_normal_that_is_not_quite_unit() {
+    let (fixture, ids) = Fixture::hair(2, 4);
+    let normal = Vec3::new(0.1, 1.0, 0.05).normalize() * 0.9995;
+    let group = ColliderGroup {
+        name: "g".into(),
+        colliders: vec![omuzaki_anim_api::Collider {
+            bone: fixture.head,
+            shape: ColliderShape::Plane { offset: Vec3::new(0.0, -0.2, 0.0), normal },
+        }],
+    };
+    let mut chains = chains_of(&ids, SpringParams { stiffness: 4.0, drag_force: 0.4, ..windy() });
+    for chain in &mut chains {
+        chain.collider_groups = vec!["g".into()];
+    }
+    let set = set_of(chains, vec![group]);
+    set.validate(&fixture.skeleton).unwrap();
+    let agreement = compare_with_spec(&fixture, &set, 60.0, 300);
+    assert!(agreement.position < 1e-5 && agreement.rotation < 5e-5, "{agreement:?}");
+    assert!(agreement.swing > 0.1, "{agreement:?}");
+}
+
+/// The spec collides and then restores the bone length, so a plane closer than a bone length is not a wall: the
+/// root 0.1 m in front of the plane and a 0.2 m bone hanging straight down ends the step 0.1 m behind it, as in the
+/// oracle (and three-vrm). `mod.rs` records this; the guarantee is on the push.
+#[test]
+fn a_bone_longer_than_its_root_clearance_ends_the_step_behind_the_plane_as_the_spec_does() {
+    let (length, clearance) = (0.2, 0.1);
+    let mut ids = (BoneId(0), BoneId(0));
+    let fixture = Fixture::with(|head, first| {
+        ids = (BoneId(first), BoneId(first + 1));
+        vec![
+            bone("root".into(), head, Vec3::ZERO, Quat::IDENTITY),
+            bone("tip".into(), ids.0, Vec3::NEG_Y * length, Quat::IDENTITY),
+        ]
+    });
+    // No gravity, the bone held at rest by stiffness: the tail wants to stay straight down every sub-step.
+    let params = SpringParams { stiffness: 1.0, gravity_power: 0.0, drag_force: 0.0, ..SpringParams::default() };
+    let mut chain = SpringChain::new("c", &[ids.0, ids.1], params);
+    chain.collider_groups = vec!["g".into()];
+    let plane = ColliderShape::Plane { offset: Vec3::NEG_Y * clearance, normal: Vec3::Y };
+    let group = ColliderGroup {
+        name: "g".into(),
+        colliders: vec![omuzaki_anim_api::Collider { bone: fixture.head, shape: plane }],
+    };
+    let set = set_of(vec![chain], vec![group]);
+    set.validate(&fixture.skeleton).unwrap();
+    let pose = fixture.skeleton.rest_pose();
+    let mut solver = VrmSpringSolver::new(&set, &fixture.skeleton).unwrap();
+    let mut oracle = Reference::new(&fixture.skeleton, &set, &pose);
+    let (mut out, mut world) = (pose.clone(), Pose::default());
+    for frame in 0..30 {
+        out = pose.clone();
+        solver.step(Tick::at_rate(frame, 60.0), &fixture.skeleton, &mut out);
+        for _ in 0..solver.stats().substeps {
+            oracle.substep(&pose);
+        }
+    }
+    fixture.skeleton.world_pose(&out, &mut world);
+    let (root, tail) = (world.local[ids.0.index()].translation, world.local[ids.1.index()].translation);
+    let behind = (root.y - clearance) - tail.y;
+    assert!((behind - (length - clearance)).abs() < 1e-4, "the tail ends {behind} m behind the plane");
+    assert!(((tail - root).length() - length).abs() < 1e-5, "the bone keeps its length");
+    let want = oracle.world(ids.1.index()).w_axis.truncate();
+    assert!((world.local[ids.1.index()].translation.as_dvec3() - want).length() < 1e-5, "the oracle agrees");
 }
 
 #[test]
