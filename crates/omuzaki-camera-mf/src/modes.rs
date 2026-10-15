@@ -85,3 +85,35 @@ pub fn map_hresult(hr: i32, id: &CameraId) -> TrackError {
         other => TrackError::Backend(format!("Media Foundation error {:#010X}", other.cast_unsigned())),
     }
 }
+
+/// Copies `rows` rows of `row_bytes` pixels each from `block` into `dst`, top row first.
+///
+/// `block` holds the rows `pitch` bytes apart. A positive pitch means the top row is first in memory; a negative
+/// one means it is last (a bottom-up image), and the rows are read from the end. Only the first `row_bytes` of
+/// each row are copied, so padding never reaches `dst`.
+///
+/// # Errors
+/// If `pitch` is 0 or smaller than `row_bytes`, or `block` or `dst` is too short for `rows` rows.
+pub fn copy_top_down(
+    block: &[u8],
+    pitch: isize,
+    row_bytes: usize,
+    rows: usize,
+    dst: &mut [u8],
+) -> Result<(), &'static str> {
+    let step = pitch.unsigned_abs();
+    if step < row_bytes || step == 0 {
+        return Err("row pitch is smaller than a row");
+    }
+    let (Some(src_len), Some(dst_len)) = (step.checked_mul(rows), row_bytes.checked_mul(rows)) else {
+        return Err("frame size overflows");
+    };
+    if block.len() < src_len || dst.len() < dst_len {
+        return Err("buffer is shorter than the frame");
+    }
+    for (row, out) in dst[..dst_len].chunks_exact_mut(row_bytes.max(1)).enumerate() {
+        let at = if pitch >= 0 { row } else { rows - 1 - row } * step;
+        out.copy_from_slice(&block[at..at + row_bytes]);
+    }
+    Ok(())
+}

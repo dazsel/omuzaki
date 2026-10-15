@@ -14,15 +14,15 @@ use windows::Win32::Media::MediaFoundation::{
     IMF2DBuffer, IMFActivate, IMFAttributes, IMFMediaBuffer, IMFMediaSource, IMFMediaType, IMFSample, IMFSourceReader,
     MF_API_VERSION, MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
     MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK,
-    MF_E_NO_MORE_TYPES, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_SUBTYPE, MF_READWRITE_DISABLE_CONVERTERS,
-    MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, MF_SOURCE_READER_FIRST_VIDEO_STREAM, MF_SOURCE_READERF_ENDOFSTREAM,
-    MF_SOURCE_READERF_ERROR, MFCreateAttributes, MFCreateSourceReaderFromMediaSource, MFEnumDeviceSources,
-    MFSTARTUP_FULL, MFShutdown, MFStartup,
+    MF_E_NO_MORE_TYPES, MF_MT_DEFAULT_STRIDE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_SUBTYPE,
+    MF_READWRITE_DISABLE_CONVERTERS, MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, MF_SOURCE_READER_FIRST_VIDEO_STREAM,
+    MF_SOURCE_READERF_ENDOFSTREAM, MF_SOURCE_READERF_ERROR, MFCreateAttributes, MFCreateSourceReaderFromMediaSource,
+    MFEnumDeviceSources, MFSTARTUP_FULL, MFShutdown, MFStartup,
 };
 use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoTaskMemFree, CoUninitialize};
 use windows::core::{GUID, Interface, PWSTR};
 
-use crate::modes::{ModeInfo, choose_mode, map_hresult, subtype_format};
+use crate::modes::{ModeInfo, choose_mode, copy_top_down, map_hresult, subtype_format};
 
 /// The reader's first video stream, as the `u32` the calls take.
 const VIDEO: u32 = MF_SOURCE_READER_FIRST_VIDEO_STREAM.0.cast_unsigned();
@@ -236,12 +236,21 @@ impl Camera for MfCamera {
         let media = media.ok_or_else(|| TrackError::Backend("chosen mode vanished from the list".into()))?;
         // SAFETY: `media` is one of the reader's own native types, so no conversion is needed.
         unsafe { reader.SetCurrentMediaType(VIDEO, None, media) }.map_err(|e| err(&e, id))?;
+        // SAFETY: plain call on a live media type; an absent attribute means top-down.
+        let bottom_up = unsafe { media.GetUINT32(&MF_MT_DEFAULT_STRIDE) }.is_ok_and(|v| v.cast_signed() < 0);
+        // One top-down copy buffer for the life of the stream, only for the layout that arrives bottom-up.
+        let flip_len = match (mode.format, mode.format.tight_stride(mode.width)) {
+            (PixelFormat::Bgra8, Some(row)) => row.saturating_mul(mode.height as usize),
+            _ => 0,
+        };
         drop(com);
         Ok(Box::new(MfStream {
             reader: SendReader(reader),
             id: id.clone(),
             mode,
             held: None,
+            flip: vec![0; flip_len],
+            bottom_up,
             seq: 0,
             device: SendActivate(device.activate),
         }))
@@ -263,9 +272,11 @@ unsafe impl Send for SendActivate {}
 struct Held {
     buffer: IMFMediaBuffer,
     two_d: Option<IMF2DBuffer>,
-    ptr: *const u8,
+    /// The lowest address of the frame's rows, and the bytes from there to the end of the last row.
+    block: *const u8,
     len: usize,
-    stride: usize,
+    /// Bytes from one row to the next, top row first; negative when the top row is last in memory.
+    pitch: isize,
 }
 
 impl Held {
@@ -286,6 +297,11 @@ struct MfStream {
     id: CameraId,
     mode: ModeInfo,
     held: Option<Held>,
+    /// Where bottom-up frames are turned top-down; allocated once at open, only for BGRA (the layout Windows
+    /// delivers bottom-up). Empty for the other layouts.
+    flip: Vec<u8>,
+    /// The mode's default stride is negative, so a plain `Lock` hands over rows bottom-up.
+    bottom_up: bool,
     seq: u64,
     device: SendActivate,
 }
@@ -298,9 +314,9 @@ impl MfStream {
     /// Locks `sample`'s pixels and keeps them locked until the next read.
     fn lock(&mut self, sample: &IMFSample) -> Result<(), TrackError> {
         let id = self.id.clone();
+        let (format, height) = (self.mode.format, self.mode.height as usize);
         // SAFETY: plain calls on a live sample and its buffer.
         let buffer = unsafe { sample.ConvertToContiguousBuffer() }.map_err(|e| err(&e, &id))?;
-        let format = self.mode.format;
         let two_d = if format == PixelFormat::Mjpg { None } else { buffer.cast::<IMF2DBuffer>().ok() };
         let (mut ptr, mut pitch, mut len) = (std::ptr::null_mut::<u8>(), 0_i32, 0_u32);
         if let Some(two_d) = &two_d {
@@ -311,25 +327,31 @@ impl MfStream {
         } else {
             // SAFETY: as above; a success locks the buffer until `Unlock`.
             unsafe { buffer.Lock(&raw mut ptr, None, Some(&raw mut len)) }.map_err(|e| err(&e, &id))?;
+            let tight = format.tight_stride(self.mode.width).unwrap_or(0);
+            pitch = i32::try_from(tight).unwrap_or(0);
+            if self.bottom_up {
+                pitch = -pitch;
+            }
         }
-        let held = Held { buffer, two_d, ptr, len: len as usize, stride: usize::try_from(pitch).unwrap_or(0) };
-        // A bottom-up frame (negative pitch) cannot be described by `CameraFrame`; refuse it rather than hand over
-        // a mirrored picture.
-        let tight = format.tight_stride(self.mode.width);
-        let stride = if format == PixelFormat::Mjpg {
-            0
-        } else if held.two_d.is_some() {
-            held.stride
-        } else {
-            tight.unwrap_or(0)
-        };
-        let needed =
-            if format == PixelFormat::Mjpg { Some(held.len) } else { format.frame_len(self.mode.height, stride) };
-        if pitch < 0 || ptr.is_null() || needed.is_none_or(|n| n == 0 || n > held.len) {
+        let mut held = Held { buffer, two_d, block: ptr, len: len as usize, pitch: pitch as isize };
+        let rows_len =
+            if format == PixelFormat::Mjpg { Some(held.len) } else { height.checked_mul(held.pitch.unsigned_abs()) };
+        let usable = !ptr.is_null() && rows_len.is_some_and(|n| n > 0 && n <= held.len);
+        // Planar NV12 cannot be flipped row by row; nothing delivers it bottom-up.
+        let flippable = held.pitch >= 0 || !self.flip.is_empty();
+        if !usable || !flippable {
             held.unlock();
             return Err(TrackError::Backend(format!("unusable {format:?} buffer: pitch {pitch}, {} bytes", held.len)));
         }
-        self.held = Some(Held { stride, len: needed.unwrap_or(0), ..held });
+        if held.pitch < 0 && held.two_d.is_some() {
+            // `Lock2D` points at the top row; the block starts `height - 1` rows lower in memory.
+            // SAFETY: the buffer holds `height` rows of `|pitch|` bytes ending at the top row's end (checked above), so
+            // the lowest row starts inside the allocation.
+            let back = rows_len.unwrap_or(0).saturating_sub(held.pitch.unsigned_abs());
+            held.block = unsafe { ptr.sub(back) };
+        }
+        held.len = rows_len.unwrap_or(0);
+        self.held = Some(held);
         Ok(())
     }
 }
@@ -339,8 +361,15 @@ impl CameraStream for MfStream {
         self.mode.to_format()
     }
 
-    /// Synchronous reads cannot be cut short: this waits for the device's next frame, so `timeout` is not used.
-    /// The reader's frame cadence bounds the wait while the camera streams.
+    /// Blocks until Media Foundation delivers a frame or fails; `timeout` is **not** honoured. The reader runs in
+    /// synchronous mode (`ReadSample` has no timed wait), so a camera that stays connected but stops sending blocks
+    /// the caller for as long as it is silent. Nothing here can interrupt the wait: the stream is borrowed
+    /// exclusively for the call, so neither `Drop` nor another method can run meanwhile, and Media Foundation does
+    /// not document that `IMFSourceReader::Flush` from another thread cancels a pending synchronous read. An
+    /// unplugged camera ends the wait with an error (mapped to [`TrackError::Lost`]). A timed wait needs an
+    /// asynchronous-mode reader.
+    ///
+    /// A bottom-up BGRA frame is copied top-down into a buffer allocated at open; no other layout copies.
     fn next_frame(&mut self, _timeout: Duration) -> Result<Option<CameraFrame<'_>>, TrackError> {
         // The previous frame's borrow ended with this call, so its buffer can be released.
         if let Some(held) = self.held.take() {
@@ -360,20 +389,23 @@ impl CameraStream for MfStream {
         let Some(sample) = sample else { return Ok(None) };
         self.lock(&sample)?;
         let Some(held) = &self.held else { return Err(TrackError::Backend("frame lock was lost".into())) };
-        // SAFETY: `ptr` is the locked buffer's start and `len` bytes of it were checked to be mapped; the lock is
-        // held until the next call to this method, which needs `&mut self` and so ends this borrow first.
-        let data = unsafe { std::slice::from_raw_parts(held.ptr, held.len) };
+        // SAFETY: `block` is the locked buffer's lowest row and `len` bytes from it were checked to be mapped; the
+        // lock is held until the next call to this method, which needs `&mut self` and so ends this borrow first.
+        let block = unsafe { std::slice::from_raw_parts(held.block, held.len) };
+        let (width, height, pixel) = (self.mode.width, self.mode.height, self.mode.format);
         let captured = DeviceTime(u64::try_from(stamp).unwrap_or(0).saturating_mul(NS_PER_TICK));
         self.seq += 1;
-        Ok(Some(CameraFrame::new(
-            data,
-            self.mode.width,
-            self.mode.height,
-            held.stride,
-            self.mode.format,
-            captured,
-            self.seq,
-        )))
+        if held.pitch < 0 {
+            let row_bytes = self.flip.len() / height as usize;
+            copy_top_down(block, held.pitch, row_bytes, height as usize, &mut self.flip)
+                .map_err(|e| TrackError::Backend(e.into()))?;
+            if let Some(held) = self.held.take() {
+                held.unlock();
+            }
+            return Ok(Some(CameraFrame::new(&self.flip, width, height, row_bytes, pixel, captured, self.seq)));
+        }
+        let stride = if pixel == PixelFormat::Mjpg { 0 } else { held.pitch.unsigned_abs() };
+        Ok(Some(CameraFrame::new(block, width, height, stride, pixel, captured, self.seq)))
     }
 }
 

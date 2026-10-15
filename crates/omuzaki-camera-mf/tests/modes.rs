@@ -2,7 +2,7 @@
 
 use omuzaki_camera_mf::modes::{
     E_ACCESSDENIED, MF_E_HW_MFT_FAILED_START_STREAMING, MF_E_VIDEO_RECORDING_DEVICE_INVALIDATED, MJPG, ModeInfo, NV12,
-    RGB32, YUY2, choose_mode, map_hresult, subtype_format,
+    RGB32, YUY2, choose_mode, copy_top_down, map_hresult, subtype_format,
 };
 use omuzaki_track_api::camera::{CameraFormat, CameraFormatRequest, CameraId, PixelFormat};
 use omuzaki_track_api::error::TrackError;
@@ -92,4 +92,31 @@ fn hresults_map_to_track_errors() {
         map_hresult(0x8000_4005_u32.cast_signed(), &id),
         TrackError::Backend("Media Foundation error 0x80004005".into())
     );
+}
+
+/// Three rows of two pixels' worth of bytes (`a`, `b`), padded to a pitch of 4.
+const BLOCK: [u8; 12] = [1, 1, 0, 0, 2, 2, 0, 0, 3, 3, 0, 0];
+
+#[test]
+fn top_first_rows_copy_in_order_without_padding() {
+    let mut dst = [9; 6];
+    copy_top_down(&BLOCK, 4, 2, 3, &mut dst).unwrap();
+    assert_eq!(dst, [1, 1, 2, 2, 3, 3]);
+}
+
+#[test]
+fn bottom_up_rows_are_read_from_the_end() {
+    let mut dst = [9; 6];
+    copy_top_down(&BLOCK, -4, 2, 3, &mut dst).unwrap();
+    assert_eq!(dst, [3, 3, 2, 2, 1, 1]);
+}
+
+#[test]
+fn bad_sizes_are_errors_and_leave_dst_alone() {
+    let mut dst = [9; 6];
+    assert!(copy_top_down(&BLOCK, 1, 2, 3, &mut dst).is_err(), "pitch below a row");
+    assert!(copy_top_down(&BLOCK, 0, 0, 3, &mut dst).is_err(), "zero pitch");
+    assert!(copy_top_down(&BLOCK[..10], 4, 2, 3, &mut dst).is_err(), "short source");
+    assert!(copy_top_down(&BLOCK, 4, 2, 3, &mut dst[..5]).is_err(), "short destination");
+    assert_eq!(dst, [9; 6]);
 }
