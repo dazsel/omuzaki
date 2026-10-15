@@ -211,7 +211,15 @@ Gate and review
 Never
 - Merge, enqueue or push to main. Force-push, except your own new branch with --force-with-lease.
 - Post secrets, personal details, unpublished plans, other repositories' issue numbers, or model identifiers beyond the commit attribution lines. Everything here is public.
-- Download or generate models or assets. Post on #2.
+- Download or generate models or assets, except the one case below. Post on #2.
+
+The one model exception (Director, 2026-10-15): when your task's tests or measurements need an upstream model, you may
+fetch it into a scratch folder in your VM if all of these hold:
+- its licence is recorded as permissive in docs/licensing/deps/;
+- you fetch it from the official URL recorded there;
+- its sha256 matches the pinned value, or your PR records it;
+- it loads only through the ONNX scan;
+- nothing is committed.
 
 Talk to your lead (GitHub only)
 - Never call send_message or send_later (they freeze your turn on a permission prompt).
