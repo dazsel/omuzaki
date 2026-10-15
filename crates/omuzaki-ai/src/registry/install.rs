@@ -5,6 +5,7 @@ use omuzaki_ai_api::{
     ModelRef, ModelSource, Progress, RegistryError, Session, SlotInfo, SlotRef, Version, find_runtime, find_slot,
 };
 
+use super::Candidate;
 use super::Registry;
 use super::catalogue::Registered;
 use super::state::{Health, Installed, State};
@@ -23,16 +24,17 @@ impl EvalEnv for Env<'_> {
     fn shipped(&self, slot: &SlotRef) -> Result<Box<dyn Session>, EvalError> {
         let needs = || EvalError::Needs(slot.clone());
         let info = find_slot(slot).map(|s| s.info()).ok_or_else(needs)?;
-        let candidates: Vec<_> = {
+        let candidates: Vec<Candidate> = {
             let state = self.registry.lock();
-            self.registry.defaults(&state, slot).into_iter().cloned().collect()
+            self.registry.defaults(&state, slot).into_iter().map(Candidate::from).collect()
         };
-        candidates.iter().find_map(|installed| self.registry.load(installed, &info).ok()).ok_or_else(needs)
+        candidates.iter().find_map(|candidate| self.registry.load(candidate, &info).ok()).ok_or_else(needs)
     }
 }
 
-/// The words for a failed smoke test: every check that missed its floor, with its number.
-fn failure_reason(report: &EvalReport) -> String {
+/// The words for a failed smoke test, for a shipped install and a user model alike: every check that missed its
+/// floor, with its number.
+pub(super) fn failure_reason(report: &EvalReport) -> String {
     let misses: Vec<String> = report.failures().map(describe).collect();
     if misses.is_empty() {
         return "its smoke test measured nothing".into();
@@ -244,11 +246,13 @@ impl Registry {
         Ok(())
     }
 
-    /// Forgets the cached files of a removed model that no installed model still uses. Best effort: a file that
-    /// can't be deleted only costs disk, and the cache checks files again before it hands them out.
-    fn delete_blobs(&self, manifest: &ModelManifest, state: &State) {
+    /// Forgets the cached files of a removed model that no installed or added model in `state` still uses. Best
+    /// effort: a file that can't be deleted only costs disk, and the cache checks files again before it hands them out.
+    pub(super) fn delete_blobs(&self, manifest: &ModelManifest, state: &State) {
         for file in &manifest.files {
-            let shared = state.installed.iter().any(|i| i.manifest.files.iter().any(|f| f.sha256 == file.sha256));
+            let uses = |m: &ModelManifest| m.files.iter().any(|f| f.sha256 == file.sha256);
+            let shared =
+                state.installed.iter().any(|i| uses(&i.manifest)) || state.user.iter().any(|u| uses(&u.manifest));
             if shared {
                 continue;
             }

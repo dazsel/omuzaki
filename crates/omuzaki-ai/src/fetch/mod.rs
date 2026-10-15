@@ -241,6 +241,32 @@ impl<F: Fetcher> FileSource for VerifiedCache<F> {
     }
 }
 
+/// Copies a local file into the cache under `root` (the folder a [`VerifiedCache`] over the same root reads), hashing
+/// it while it copies, and stores it as a verified blob with its record, as a download would be: under the hash's
+/// lock, by atomic rename, accepting the same verified blob another writer stored first. Returns its SHA-256 and size.
+/// This is how a model the person adds enters the cache: its bytes are only known once they are read, so there is no
+/// pin to [`get`](FileSource::get).
+///
+/// # Errors
+/// [`FetchError::Io`] naming the cache file for a cache that can't be written; `source` errors are `Io` too, with the
+/// path the caller gave (the caller words them); [`FetchError::Cancelled`] when `progress` says stop.
+pub(crate) fn import(root: &Path, source: &Path, progress: &dyn Progress) -> Result<(Sha256, u64), FetchError> {
+    let mut from = File::open(source).map_err(|e| io_err(source, &e))?;
+    let dir = root.join("sha256");
+    fs::create_dir_all(&dir).map_err(|e| io_err(&dir, &e))?;
+    let mut tmp = tempfile::Builder::new().suffix(".tmp").tempfile_in(&dir).map_err(|e| io_err(&dir, &e))?;
+    let tmp_path = tmp.path().to_owned();
+    let (sha256, size) = digest::copy_hashing((&mut from, source), (tmp.as_file_mut(), &tmp_path), progress)?;
+    let paths = Paths::new(root, sha256);
+    tmp.as_file().sync_all().map_err(|e| io_err(tmp.path(), &e))?;
+    let _lock = PinLock::acquire(&paths)?;
+    if let Err(e) = tmp.persist(&paths.blob) {
+        accept_existing(&PinnedFile::new(std::iter::empty::<String>(), sha256, size), &paths, &e.error)?;
+    }
+    write_record(&paths)?;
+    Ok((sha256, size))
+}
+
 /// Where one pin's files live.
 struct Paths {
     hex: String,

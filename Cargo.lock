@@ -3339,6 +3339,8 @@ version = "0.0.0"
 dependencies = [
  "omuzaki-ai-api",
  "omuzaki-ai-mock",
+ "omuzaki-store-api",
+ "omuzaki-update-api",
  "serde",
  "sha2",
  "tempfile",

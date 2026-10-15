@@ -1,11 +1,9 @@
 //! Models the person adds (ADR 0016, design `docs/design/ai-api.md` sections 4, 5 and 7): `add` imports and checks
-//! them, `acknowledge` records the person's acceptance of the disclaimer, `select` applies the requester rule and
-//! `remove` forgets them.
+//! them, `acknowledge` records the person's acceptance of the disclaimer, `select` applies the requester rule
+//! (`Registry::select`) and `remove` forgets them and frees their files.
 //!
 //! A user model is checked in the order the design gives; the first stage that finds problems lists all of them, and
-//! the model is kept as disabled with those words. Probing and the smoke test run in this process for now; the
-//! sandboxed worker takes them over later, and until then no user model is opened for use (`open` only runs
-//! shipped models).
+//! the model is kept as disabled with those words.
 
 mod import;
 mod manifest;
@@ -16,30 +14,43 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use omuzaki_ai_api::{
     AddModel, DISCLAIMER_VERSION, EvalLevel, EvalReport, LocalFile, ManifestError, ModelEntry, ModelManifest, ModelRef,
-    ModelSource, ModelStatus, Origin, Progress, RegistryError, Slot, SlotInfo, SlotMode, find_runtime, find_slot,
+    ModelSource, Origin, Progress, RegistryError, Session, Slot, SlotInfo, SlotMode, find_runtime, find_slot,
 };
+use omuzaki_update_api::clock::{Timestamp, WallClock};
 
 use super::catalogue::Registered;
-use super::install::Env;
+use super::install::{Env, failure_reason};
 use super::state::{Acknowledgement, State, UserModel};
 use super::{CACHE_DIR, Registry};
 use crate::model_ref;
 use import::{Imported, blob_path, import};
 
-/// The status of a user model that isn't disabled.
-pub(super) fn status(state: &State, model: &ModelRef) -> ModelStatus {
-    if state.acknowledged(model) { ModelStatus::Ready } else { ModelStatus::NeedsAcknowledgement }
+/// Why a user model the person hasn't accepted can't be selected or opened yet.
+pub(super) const NEEDS_ACKNOWLEDGEMENT: &str =
+    "the person hasn't accepted its licence notice yet; they acknowledge it on the Models page (model.acknowledge)";
+
+/// The calendar clock acknowledgements are stamped with unless the app sets another: the operating system's.
+pub(super) struct SystemWallClock;
+
+impl WallClock for SystemWallClock {
+    fn now(&self) -> Timestamp {
+        // A clock set before 1970 records 0: the time is for people to read, nothing is decided by it.
+        let seconds = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        Timestamp(i64::try_from(seconds).unwrap_or(i64::MAX))
+    }
+}
+
+impl Registered {
+    /// A model the person added, as the registry lists it: a failed one carries its reason as `problem`.
+    pub(super) fn user(u: &UserModel) -> Self {
+        Self { manifest: u.manifest.clone(), model: u.model.clone(), problem: u.problem.clone(), origin: Origin::User }
+    }
 }
 
 impl Registry {
-    /// The models the person added, as the registry lists them: a failed one carries its reason as `problem`.
+    /// The models the person added, failed ones included.
     pub(super) fn user_models(state: &State) -> impl Iterator<Item = Registered> + '_ {
-        state.user.iter().map(|u| Registered {
-            manifest: u.manifest.clone(),
-            model: u.model.clone(),
-            problem: u.problem.clone(),
-            origin: Origin::User,
-        })
+        state.user.iter().map(Registered::user)
     }
 
     /// See [`ModelRegistry::add`](omuzaki_ai_api::ModelRegistry::add).
@@ -87,11 +98,83 @@ impl Registry {
         next.user.retain(|u| u.model != model);
         next.user.push(UserModel { model: model.clone(), manifest: manifest.clone(), problem: problem.clone(), eval });
         if let Some(person) = request.acknowledged_by {
-            record(&mut next, &model, &person);
+            record(&mut next, &model, &person, &*self.clock());
         }
         self.commit(&mut state, next)?;
         let registered = Registered { manifest, model, problem, origin: Origin::User };
         Ok(self.entry(&state, &registered, None))
+    }
+
+    /// See [`ModelRegistry::acknowledge`](omuzaki_ai_api::ModelRegistry::acknowledge). Only models the person added
+    /// need it; a shipped model has nothing to acknowledge, so that is a no-op.
+    pub(super) fn acknowledge_user_model(&self, model: &ModelRef, person: &str) -> Result<(), RegistryError> {
+        let _one_change_at_a_time = self.changing.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.lock();
+        if state.user(model).is_none() {
+            let known = self.known(&state).iter().any(|r| &r.model == model);
+            return if known { Ok(()) } else { Err(RegistryError::UnknownModel(model.to_string())) };
+        }
+        if state.acknowledged(model) {
+            return Ok(());
+        }
+        let mut next = state.clone();
+        record(&mut next, model, person, &*self.clock());
+        self.commit(&mut state, next)
+    }
+
+    /// See [`ModelRegistry::remove`](omuzaki_ai_api::ModelRegistry::remove), for a model the person added: it is
+    /// forgotten with its acknowledgement (adding the same file again asks again), a slot that selected it goes back to
+    /// its shipped default, and its copies in the cache are deleted unless another model uses the same bytes. The
+    /// person's originals were never touched.
+    pub(super) fn remove_user_model(&self, model: &ModelRef) -> Result<(), RegistryError> {
+        let _one_change_at_a_time = self.changing.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.lock();
+        let Some(removed) = state.user(model).cloned() else {
+            return Err(RegistryError::UnknownModel(model.to_string()));
+        };
+        let mut next = state.clone();
+        next.user.retain(|u| &u.model != model);
+        // Another model the person added may have the same files, hence the same digest, under another manifest.
+        if !next.user.iter().any(|u| u.model.digest == model.digest) {
+            next.acknowledgements.retain(|a| a.digest != model.digest);
+        }
+        for record in &mut next.slots {
+            if record.selected.as_ref() == Some(model) {
+                record.selected = None;
+            }
+        }
+        self.commit(&mut state, next.clone())?;
+        drop(state);
+        self.delete_blobs(&removed.manifest, &next);
+        Ok(())
+    }
+
+    /// Opens a user model the person added, from the files `add` imported. A file the cache no longer holds (or holds
+    /// changed) can't be had again from anywhere, so the model must be added again.
+    pub(super) fn load_user(
+        &self,
+        model: &ModelRef,
+        manifest: &ModelManifest,
+        info: &SlotInfo,
+    ) -> Result<Box<dyn Session>, RegistryError> {
+        let locals = self.user_files(manifest)?;
+        self.load_files(model, manifest, info, &locals)
+    }
+
+    /// The verified cached copy of every file of a user model.
+    fn user_files(&self, manifest: &ModelManifest) -> Result<Vec<LocalFile>, RegistryError> {
+        manifest
+            .files
+            .iter()
+            .map(|file| match self.files.lookup(file.sha256) {
+                Ok(Some(path)) => Ok(LocalFile { name: file.name.clone(), path }),
+                Ok(None) => Err(RegistryError::Io(format!(
+                    "{:?} is no longer in the model cache (or changed there); add the model again",
+                    file.name
+                ))),
+                Err(e) => Err(RegistryError::Fetch(e)),
+            })
+            .collect()
     }
 
     /// The manifest for files that came without one: the runtime from the main file, the id from its name.
@@ -156,22 +239,20 @@ impl Registry {
         let report = slot
             .evaluate(&mut *session, &Env { registry: self }, EvalLevel::Smoke)
             .map_err(|e| vec![format!("its smoke test could not run: {e}")])?;
-        if report.passed() { Ok(report) } else { Err(vec![smoke_failure(&report)]) }
+        if report.passed() { Ok(report) } else { Err(vec![failure_reason(&report)]) }
     }
 }
 
-/// Records `person`'s acknowledgement of `model`'s digest, once.
-fn record(state: &mut State, model: &ModelRef, person: &str) {
+/// Records `person`'s acknowledgement of `model`'s digest, once: the first acceptance of a digest is the record.
+fn record(state: &mut State, model: &ModelRef, person: &str, clock: &dyn WallClock) {
     if state.acknowledged(model) {
         return;
     }
-    // The registry has no wall clock to inject, so this is the one place the OS clock is read.
-    let at = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
     state.acknowledgements.push(Acknowledgement {
         digest: model.digest,
         person: person.to_owned(),
         disclaimer_version: DISCLAIMER_VERSION,
-        at,
+        at: u64::try_from(clock.now().0).unwrap_or(0),
     });
 }
 
@@ -186,24 +267,5 @@ fn stream_problems(slot: &dyn Slot, info: &SlotInfo, manifest: &ModelManifest) -
         }
         (SlotMode::Stream { .. }, Some(spec)) => slot.check_stream(&spec).err().into_iter().collect(),
         (SlotMode::Call { .. }, None) => Vec::new(),
-    }
-}
-
-/// The words for a smoke test that missed: every check below its floor, with its number.
-fn smoke_failure(report: &EvalReport) -> String {
-    let misses: Vec<String> = report
-        .failures()
-        .map(|c| {
-            let m = &c.metric;
-            c.floor.map_or_else(
-                || format!("{} was {} on {}", m.name, m.value, m.set.id),
-                |floor| format!("{} was {} on {} (the floor is {floor})", m.name, m.value, m.set.id),
-            )
-        })
-        .collect();
-    if misses.is_empty() {
-        "its smoke test measured nothing".into()
-    } else {
-        format!("it failed its smoke test: {}", misses.join("; "))
     }
 }

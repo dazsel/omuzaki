@@ -8,4 +8,4 @@ mod registry;
 mod slot_session;
 
 pub use fetch::{VerifiedCache, model_ref, sha256_file};
-pub use registry::{CACHE_DIR, Registry, RegistrySettings};
+pub use registry::{CACHE_DIR, IMPERSONATION_WARNING, Registry, RegistrySettings};

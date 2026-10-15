@@ -4,96 +4,17 @@
 
 mod common;
 
-use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::path::Path;
 
-use omuzaki_ai::{CACHE_DIR, Registry, RegistrySettings, VerifiedCache};
+use common::rig::{PORTS_X_Y, Rig, add, echo, manifest, reason, stream};
+use omuzaki_ai::Registry;
 use omuzaki_ai_api::{
-    AddModel, ManifestError, ModelEntry, ModelManifest, ModelRegistry, ModelStatus, NoProgress, RegistryError, SlotRef,
+    AddModel, DISCLAIMER_VERSION, ManifestError, ModelEntry, ModelManifest, ModelRef, ModelRegistry, ModelStatus,
+    NoProgress, RegistryError, Requester, SlotRef, TensorBuf, TensorRef,
 };
-use omuzaki_ai_mock::MemFetcher;
-
-const PORTS_X_Y: &str = "[[inputs]]\nname = \"x\"\ndtype = \"f32\"\nshape = [\"any\"]\n\n\
-                         [[outputs]]\nname = \"y\"\ndtype = \"f32\"\nshape = [\"any\"]\n";
 
 /// An edit that makes a good manifest bad.
 type Edit = Box<dyn FnOnce(&mut ModelManifest)>;
-
-fn echo() -> SlotRef {
-    "test_echo@1".parse().unwrap()
-}
-
-fn stream() -> SlotRef {
-    "test_stream@1".parse().unwrap()
-}
-
-/// A person's data folder, and a folder holding the files they pick.
-struct Rig {
-    data: tempfile::TempDir,
-    picked: tempfile::TempDir,
-}
-
-impl Rig {
-    fn new() -> Self {
-        Self { data: tempfile::tempdir().unwrap(), picked: tempfile::tempdir().unwrap() }
-    }
-
-    fn registry(&self) -> Registry {
-        let files = Arc::new(VerifiedCache::new(self.data.path().join(CACHE_DIR), MemFetcher::new()));
-        let app = "1.0.0".parse().unwrap();
-        Registry::with_models(self.data.path(), files, app, RegistrySettings::default(), Vec::new()).unwrap()
-    }
-
-    /// A file the person picked.
-    fn pick(&self, name: &str, text: &str) -> PathBuf {
-        let path = self.picked.path().join(name);
-        std::fs::write(&path, text).unwrap();
-        path
-    }
-
-    /// A `fake` model: `scale`, the ports (`PORTS_X_Y` fits `test_echo@1`).
-    fn fake(&self, name: &str, scale: &str, ports: &str) -> PathBuf {
-        self.pick(name, &format!("scale = {scale}\nbias = 0.0\n\n{ports}"))
-    }
-
-    fn blobs(&self) -> Vec<String> {
-        common::cache_files(&self.data.path().join(CACHE_DIR))
-    }
-}
-
-/// A manifest for `files` (pinned to what is on disk), with `extra` TOML after the keys and before the tables.
-fn manifest(slot: &SlotRef, files: &[&Path], extra: &str) -> ModelManifest {
-    let mut entries = String::new();
-    for path in files {
-        let pin = common::pin(&[], &std::fs::read(path).unwrap());
-        let name = path.file_name().unwrap().to_string_lossy();
-        writeln!(entries, "[[files]]\nname = \"{name}\"\nsha256 = \"{}\"\nsize = {}\n", pin.sha256, pin.size).unwrap();
-    }
-    let text = format!(
-        "id = \"user-mine\"\nversion = \"1.0.0\"\nname = \"Mine\"\nslot = \"{slot}\"\nruntime = \"fake\"\n{extra}\n\
-         {entries}[card.licence]\nspdx = \"MIT\"\n"
-    );
-    ModelManifest::from_toml(&text).unwrap()
-}
-
-fn add(
-    registry: &Registry,
-    slot: &SlotRef,
-    files: Vec<PathBuf>,
-    given: Option<ModelManifest>,
-    by: Option<&str>,
-) -> ModelEntry {
-    let request = AddModel { slot: slot.clone(), files, manifest: given, acknowledged_by: by.map(str::to_owned) };
-    registry.add(request, &NoProgress).unwrap()
-}
-
-fn reason(entry: &ModelEntry) -> String {
-    match &entry.status {
-        ModelStatus::Disabled { reason } => reason.clone(),
-        other => panic!("expected Disabled, got {other:?}"),
-    }
-}
 
 /// Adds `file` with a manifest made by `edit` and returns why it was refused.
 fn refused(rig: &Rig, slot: &SlotRef, file: &Path, edit: impl FnOnce(&mut ModelManifest)) -> String {
@@ -255,7 +176,132 @@ fn files_are_copied_into_the_cache_under_their_hash_so_the_originals_can_go() {
     let given = manifest(&echo(), &[&file], "");
     let entry = add(&rig.registry(), &echo(), vec![file.clone()], Some(given), None);
     std::fs::remove_file(&file).unwrap();
-    assert_eq!(rig.blobs(), [pin.sha256.to_string()]);
+    // Stored as the cache stores a download: the blob and its record.
+    assert_eq!(rig.blobs(), [pin.sha256.to_string(), format!("{}.rec", pin.sha256)]);
     assert_eq!(entry.size, pin.size);
     assert_eq!(rig.registry().models(None)[0].model, entry.model, "it is listed again after a reload");
+}
+
+/// Adds a good model for `test_echo@1` without an acknowledgement, as an agent would.
+fn add_good(rig: &Rig, registry: &Registry, name: &str) -> ModelEntry {
+    add_fake(rig, registry, name, PORTS_X_Y, None)
+}
+
+/// Adds a `fake` identity model for `test_echo@1` with `ports`, with its manifest, accepted by `by` if given.
+fn add_fake(rig: &Rig, registry: &Registry, name: &str, ports: &str, by: Option<&str>) -> ModelEntry {
+    let file = rig.fake(name, "1.0", ports);
+    let given = manifest(&echo(), &[&file], "");
+    add(registry, &echo(), vec![file], Some(given), by)
+}
+
+fn status_of(registry: &Registry, model: &ModelRef) -> ModelStatus {
+    registry.models(None).into_iter().find(|e| &e.model == model).unwrap().status
+}
+
+#[test]
+fn an_agent_adds_and_asks_and_only_the_person_acknowledges() {
+    let rig = Rig::new();
+    let registry = rig.registry();
+    let entry = add_good(&rig, &registry, "mine.fake.toml");
+    assert_eq!(entry.status, ModelStatus::NeedsAcknowledgement);
+
+    let opened = registry.open(&echo(), Some(&entry.model)).map(|_| ()).unwrap_err();
+    assert!(
+        matches!(&opened, RegistryError::NotUsable { reason, .. } if reason.contains("licence notice")),
+        "{opened}"
+    );
+
+    let refused = registry.select(&echo(), Some(&entry.model), Requester::Agent).unwrap_err();
+    assert_eq!(refused, RegistryError::NeedsPerson(entry.model.clone()));
+    // A person must acknowledge first, too: selecting never accepts the notice on their behalf.
+    let by_person = registry.select(&echo(), Some(&entry.model), Requester::Person).unwrap_err();
+    assert!(matches!(&by_person, RegistryError::NotUsable { reason, .. } if reason.contains("licence notice")));
+    assert_eq!(registry.slots().iter().find(|s| s.info.slot == echo()).unwrap().selected, None, "nothing switched");
+
+    registry.acknowledge(&entry.model, "Pat").unwrap();
+    assert_eq!(status_of(&registry, &entry.model), ModelStatus::Ready);
+    registry.select(&echo(), Some(&entry.model), Requester::Agent).unwrap();
+    assert_eq!(registry.slots().iter().find(|s| s.info.slot == echo()).unwrap().selected, Some(entry.model));
+}
+
+#[test]
+fn a_person_who_accepts_while_adding_gets_a_ready_model_and_the_record_says_who_when_and_which_words() {
+    let rig = Rig::new();
+    let entry = add_fake(&rig, &rig.registry(), "mine.fake.toml", PORTS_X_Y, Some("Pat"));
+    assert_eq!(entry.status, ModelStatus::Ready);
+    let state = rig.state();
+    for expected in [
+        format!("digest = \"{}\"", entry.model.digest),
+        "person = \"Pat\"".to_owned(),
+        format!("disclaimer_version = {DISCLAIMER_VERSION}"),
+        "at = 1700000000".to_owned(),
+    ] {
+        assert!(state.contains(&expected), "{expected:?} not in\n{state}");
+    }
+    assert_eq!(status_of(&rig.registry(), &entry.model), ModelStatus::Ready, "the acknowledgement survives a reload");
+}
+
+#[test]
+fn an_acknowledgement_is_per_hash_so_a_changed_file_asks_again() {
+    let rig = Rig::new();
+    let registry = rig.registry();
+    let first = add_fake(&rig, &registry, "mine.fake.toml", PORTS_X_Y, Some("Pat"));
+    assert_eq!(first.status, ModelStatus::Ready);
+    // The same name and manifest, other bytes: another model, which the person hasn't accepted.
+    let second = add_fake(&rig, &registry, "mine.fake.toml", &format!("# edited\n{PORTS_X_Y}"), None);
+    assert_ne!(second.model.digest, first.model.digest);
+    assert_eq!(second.status, ModelStatus::NeedsAcknowledgement);
+    assert_eq!(status_of(&registry, &first.model), ModelStatus::Ready);
+}
+
+#[test]
+fn acknowledging_twice_keeps_the_first_record_and_unknown_models_are_refused() {
+    let rig = Rig::new();
+    let registry = rig.registry();
+    let entry = add_good(&rig, &registry, "mine.fake.toml");
+    registry.acknowledge(&entry.model, "Pat").unwrap();
+    registry.acknowledge(&entry.model, "Sam").unwrap();
+    assert!(rig.state().contains("Pat") && !rig.state().contains("Sam"), "{}", rig.state());
+    let mut ghost = entry.model.clone();
+    ghost.digest = omuzaki_ai_api::Sha256([7; 32]);
+    assert!(matches!(registry.acknowledge(&ghost, "Pat"), Err(RegistryError::UnknownModel(_))));
+}
+
+#[test]
+fn an_acknowledged_user_model_runs_when_selected_and_remove_really_removes() {
+    let rig = Rig::new();
+    let registry = rig.registry();
+    // scale 1.0 is the identity, so its outputs are its inputs.
+    let entry = add_fake(&rig, &registry, "mine.fake.toml", PORTS_X_Y, Some("Pat"));
+    registry.select(&echo(), Some(&entry.model), Requester::Person).unwrap();
+    let mut session = registry.open(&echo(), None).unwrap();
+    assert_eq!(session.info().model, entry.model);
+    let mut out = TensorBuf::for_outputs(session.signature());
+    let x = [0.25f32, -1.0, 3.0];
+    session.run(&[TensorRef::f32(&x, &[3])], &mut out).unwrap();
+    assert_eq!(out[0].as_f32().unwrap(), x);
+    drop(session);
+
+    registry.remove(&entry.model).unwrap();
+    assert!(registry.models(None).is_empty(), "it is forgotten");
+    assert_eq!(registry.slots().iter().find(|s| s.info.slot == echo()).unwrap().selected, None, "the slot let go");
+    assert!(rig.blobs().is_empty(), "its files are gone: {:?}", rig.blobs());
+    assert!(!rig.state().contains("Pat"), "its acknowledgement went with it");
+    assert!(matches!(registry.remove(&entry.model), Err(RegistryError::UnknownModel(_))));
+    assert!(matches!(registry.open(&echo(), None), Err(RegistryError::NoModel { .. })));
+}
+
+#[test]
+fn removing_one_model_keeps_the_files_another_still_uses() {
+    let rig = Rig::new();
+    let registry = rig.registry();
+    let file = rig.fake("mine.fake.toml", "1.0", PORTS_X_Y);
+    let given = add(&registry, &echo(), vec![file.clone()], Some(manifest(&echo(), &[&file], "")), None);
+    // The written manifest names a runtime this app lacks, so it is listed disabled; it still shares the bytes.
+    let written = add(&registry, &echo(), vec![file.clone()], None, None);
+    assert_ne!(written.model, given.model, "two manifests over the same bytes");
+    registry.remove(&written.model).unwrap();
+    assert_eq!(rig.blobs().len(), 2, "blob and record stay for the other model: {:?}", rig.blobs());
+    registry.remove(&given.model).unwrap();
+    assert_eq!(rig.blobs(), Vec::<String>::new());
 }
