@@ -133,13 +133,18 @@ fn triangles(list: &DrawList) -> Vec<Vec<Vec2>> {
 
 #[test]
 fn a_closed_smile_and_a_kiss_have_the_lower_lip_gloss() {
-    for (name, edit) in [("closed smile", closed_smile as fn(&mut MouthParams)), ("kiss", kiss)] {
+    let line = FaceProfile::default().layout.mouth_y as f32;
+    // The swell hangs 4.2 mm under the line, plus 2.2 mm per unit of pucker; a kiss sits 0.8 mm lower still. Strength 1
+    // gives the middle stop 0.42 of full alpha.
+    for (name, edit, drop) in
+        [("closed smile", closed_smile as fn(&mut MouthParams), 0.0042), ("kiss", kiss, 0.0042 + 0.0022 * 0.9 + 0.0008)]
+    {
         let p = params(edit);
         let (centre, alpha) =
             swell(&piece(MouthPiece::Gloss, &lips(1.0), &p)).unwrap_or_else(|| panic!("{name}: no gloss"));
-        assert!(centre.y < -0.15, "{name}: the gloss hangs under the mouth line, not {}", centre.y);
-        assert!(alpha > 0, "{name}: the swell has colour");
-        println!("gloss {name}: centre y {:.5} m (line -0.15), middle alpha {alpha}/255", centre.y);
+        assert!((centre.y - (line - drop)).abs() < 1e-5, "{name}: gloss centre {} against {}", centre.y, line - drop);
+        assert!((i32::from(alpha) - 107).abs() <= 1, "{name}: middle alpha {alpha}, expected 0.42 x 255");
+        println!("gloss {name}: centre y {:.5} m (line {line}), middle alpha {alpha}/255", centre.y);
     }
 }
 
@@ -171,22 +176,31 @@ fn a_closed_smile_shows_one_fang_where_a_wide_mouth_with_no_smile_shows_none() {
 }
 
 #[test]
-fn the_closed_fang_stands_on_the_line_inside_its_extent_at_every_width() {
-    let profile = FaceProfile::default();
-    let grow = profile.mouth.closed_scale as f32;
-    for position in [0.72, 1.0] {
-        let mut profile = profile.clone();
-        profile.mouth.fang.position = position;
-        for wide in [0.3, 0.5, 1.0, 2.0] {
-            let p = params(|m| {
-                closed_smile(m);
-                m.wide = wide;
-            });
-            let half_line = profile.mouth.half_width as f32 * wide * grow;
-            let t = &triangles(&piece(MouthPiece::Interior, &profile, &p))[0];
-            let (left, right) = (t[0].x, t[1].x);
-            assert!(left < right && t[2].y > t[0].y - 1.0, "a triangle with its tip above its base");
-            assert!(right <= half_line + 1e-6, "base corner {right} past the line's end {half_line} (wide {wide})");
+fn the_closed_fang_stands_on_the_line_whatever_its_position_and_the_scale() {
+    let base_profile = FaceProfile::default();
+    let (curve, mouth_y) = (base_profile.mouth.corner_curve as f32, base_profile.layout.mouth_y as f32);
+    for position in [0.3, 0.72, 1.0] {
+        for scale in [0.8, 1.0, 1.25] {
+            let mut profile = base_profile.clone();
+            profile.mouth.fang.position = position;
+            profile.mouth.closed_scale = scale;
+            for wide in [0.3, 1.0, 2.0] {
+                let p = params(|m| {
+                    closed_smile(m);
+                    m.smile_left = 1.2;
+                    m.wide = wide;
+                });
+                let half_line = profile.mouth.half_width as f32 * wide * scale as f32;
+                let t = &triangles(&piece(MouthPiece::Interior, &profile, &p))[0];
+                // The closed line's own height this far along (`u` is a share of the half-width), then the fang's
+                // height above it: 0.0045 / 0.0058 of the style's 5.8 mm.
+                let u = position as f32 * (0.55 / 0.72);
+                let line_y = mouth_y + 1.2 * curve * u * u * scale as f32;
+                let at = format!("position {position}, scale {scale}, wide {wide}");
+                assert!((t[0].y - line_y).abs() < 1e-5 && (t[1].y - line_y).abs() < 1e-5, "base off the line: {at}");
+                assert!((t[2].y - (line_y - 0.0058 * 0.0045 / 0.0058)).abs() < 1e-5, "tip height: {at}");
+                assert!(t[0].x < t[1].x && t[1].x <= half_line + 1e-6, "base corner past the line's end: {at}");
+            }
         }
     }
 }
@@ -210,7 +224,11 @@ fn the_split_line_is_continuous_as_the_lower_teeth_cross_their_threshold() {
     assert_eq!(split_alpha(0.01), None);
     let steps: Vec<f32> = (0..=40).map(|i| 0.01 + 0.0005 * i as f32).collect();
     let alphas: Vec<f32> = steps.iter().map(|&t| split_alpha(t.max(0.0101)).unwrap()).collect();
-    assert!(alphas[0] < 0.01, "just above the threshold the line is nearly invisible, not {}", alphas[0]);
+    assert!(
+        (alphas[0] - 0.55 * 0.0101).abs() < 1e-4,
+        "just above the threshold the line is as faint as the row, not {}",
+        alphas[0]
+    );
     for w in alphas.windows(2) {
         assert!(w[1] >= w[0] && w[1] - w[0] < 0.55 * 0.0006, "a jump from {} to {}", w[0], w[1]);
     }

@@ -81,9 +81,6 @@ const CLOSED_FANG_AT: f32 = 0.55 / 0.72;
 const CLOSED_FANG_OUTLINE: f32 = 0.0008;
 /// The closed fang needs a smile above this at its corner.
 const CLOSED_FANG_SMILE: f32 = 0.3;
-/// The closed fang's base rides the corner curve by this share of the smile (the line there is at `u` = 0.55, `u^2` is
-/// about 0.3).
-const CLOSED_FANG_FOLLOWS: f32 = 0.3;
 
 /// Paints the inside of an open mouth, or the fang of a closed smile.
 pub(super) fn paint(ctx: &mut PaintCtx<'_>) {
@@ -219,7 +216,10 @@ fn closed_fang(ctx: &mut PaintCtx<'_>) {
     let (half, height) =
         (narrow(style.fang.width) / 2.0 * CLOSED_FANG_WIDTH, narrow(style.fang.height) * CLOSED_FANG_HEIGHT);
     let offset = frame.half_width * narrow(style.fang.position) * CLOSED_FANG_AT;
-    let (x, y) = (frame.centre.x + offset, frame.centre.y + smile * narrow(style.corner_curve) * CLOSED_FANG_FOLLOWS);
+    // The base stands on the closed line, at the same height `closed_line` draws it at this far along.
+    let u = offset / frame.half_width;
+    let y = frame.centre.y + smile * narrow(style.corner_curve) * u * u * frame.grow;
+    let x = frame.centre.x + offset;
     // As for the open fangs, the outer base corner stops at the line's end instead of hanging past it.
     let outer = half.min(frame.half_width - offset);
     let list = ctx.list(FaceLayerId::Base);

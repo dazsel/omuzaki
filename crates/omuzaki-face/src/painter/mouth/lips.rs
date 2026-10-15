@@ -3,8 +3,10 @@
 //!
 //! The gloss ([`paint_gloss`]) is drawn **before** the mouth shape, as the prototype does. The rim ([`paint_rim`]) is
 //! drawn after the interior, over the clipped teeth and tongue. Both follow the lip strength of the profile
-//! ([`Lips::strength`]): none on the flat sheet look, full on a close-up. Every colour comes from the profile: the lip
-//! tint, the mouth line colour and the interior colours, lightened or darkened where the prototype shades them.
+//! ([`Lips::strength`]): none on the flat sheet look, full on a close-up. The one exception is a kiss: pushed-forward
+//! lips always read as glossy, so its gloss never drops below [`KISS_LIPS`] even on a flat face. Every colour comes from
+//! the profile: the lip tint, the mouth line colour and the interior colours, lightened or darkened where the prototype
+//! shades them.
 //!
 //! [`Lips::strength`]: omuzaki_face_api::Lips::strength
 
