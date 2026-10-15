@@ -4,7 +4,7 @@
 //! `OMUZAKI_FACE_EVIDENCE_DIR` set; in ordinary test runs they return at once and write nothing.
 
 // The helpers are not `#[test]` bodies, so the test-only allowance does not reach them; a panic is a clear failure here.
-// The crop is a few hundred pixels, far inside what the casts hold.
+// The mouth crop is a few hundred pixels, far inside what the casts hold.
 #![allow(clippy::unwrap_used, clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
 
 use omuzaki_anim_api::ChannelBuf;
@@ -23,8 +23,14 @@ const SKIN: [u8; 4] = [236, 200, 180, 255];
 /// Half the width and height of a mouth picture, in metres: the widest mouth of these cases with room round it.
 const MOUTH_HALF: [f32; 2] = [0.05, 0.03];
 
-/// Paints every layer for `params`, rasterises `layer` at the base density and composites it over `SKIN`.
-fn picture(profile: &FaceProfile, params: &PaintParams, layer: FaceLayerId) -> image::RgbaImage {
+/// Paints every layer for `params` with the mock profile, rasterises `layer` at the base density and composites it over
+/// `SKIN`.
+fn picture(params: &PaintParams, layer: FaceLayerId) -> image::RgbaImage {
+    picture_of(&mock_profile(), params, layer)
+}
+
+/// [`picture`] for a profile of the caller's.
+fn picture_of(profile: &FaceProfile, params: &PaintParams, layer: FaceLayerId) -> image::RgbaImage {
     let mut painter = RealPainter::new(mock_projection(), DEFAULT_PX_PER_M);
     let input = FaceInput { profile, params, time: Seconds(0.0), view: FaceView::default() };
     let mut drawing = FaceDrawing::new();
@@ -54,16 +60,23 @@ fn mouth_picture(profile: &FaceProfile, edit: impl FnOnce(&mut MouthParams)) -> 
     let mut params = profile.mapping.apply(&ChannelBuf::NEUTRAL);
     params.mouth = MouthParams { smile_left: 0.0, smile_right: 0.0, ..params.mouth };
     edit(&mut params.mouth);
-    let picture = picture(profile, &params, FaceLayerId::Base);
+    let picture = picture_of(profile, &params, FaceLayerId::Base);
     let rect = mock_projection().rect;
     let at = |metres: f32| (metres * DEFAULT_PX_PER_M).round().max(0.0) as u32;
     let (x, y) = (at(-MOUTH_HALF[0] - rect.x0), at(rect.y1 - narrow(profile.layout.mouth_y) - MOUTH_HALF[1]));
     image::imageops::crop_imm(&picture, x, y, at(2.0 * MOUTH_HALF[0]), at(2.0 * MOUTH_HALF[1])).to_image()
 }
 
-/// The directory a case writes its pictures to, if it was asked for.
+/// The directory a mouth case writes its pictures to, if it was asked for.
 fn evidence_dir() -> Option<std::path::PathBuf> {
     std::env::var_os("OMUZAKI_FACE_EVIDENCE_DIR").map(std::path::PathBuf::from)
+}
+
+/// The mock profile with the lips on, so the rim shows.
+fn lips_profile() -> FaceProfile {
+    let mut profile = mock_profile();
+    profile.mouth.lips.strength = 1.0;
+    profile
 }
 
 #[test]
@@ -72,8 +85,7 @@ fn render_the_mouth_switch_when_asked() {
         return;
     };
     // Either side of the switch at an opening of 0.06, and the openings the rim fades in over (0.06 to 0.2).
-    let mut profile = mock_profile();
-    profile.mouth.lips.strength = 1.0;
+    let profile = lips_profile();
     for (name, open) in [("0.04", 0.04), ("0.06", 0.06), ("0.08", 0.08), ("0.12", 0.12), ("0.22", 0.22)] {
         mouth_picture(&profile, |m| m.open = open).save(dir.join(format!("mouth-switch-{name}.png"))).unwrap();
     }
@@ -84,8 +96,7 @@ fn render_the_smiling_mouth_switch_when_asked() {
     let Some(dir) = evidence_dir() else {
         return;
     };
-    let mut profile = mock_profile();
-    profile.mouth.lips.strength = 1.0;
+    let profile = lips_profile();
     // Both corners lifted, either side of the switch: the closed line and the open lens that replaces it.
     for open in ["0.0599", "0.0601"] {
         let value: f32 = open.parse().unwrap();
@@ -100,8 +111,7 @@ fn render_the_mouth_cases_when_asked() {
     let Some(dir) = evidence_dir() else {
         return;
     };
-    let mut profile = mock_profile();
-    profile.mouth.lips.strength = 1.0;
+    let profile = lips_profile();
     let save = |name: &str, image: image::RgbaImage| image.save(dir.join(name)).unwrap();
     save("mouth-closed-smile-fang.png", mouth_picture(&profile, |m| (m.smile_left, m.fangs) = (0.8, 1.0)));
     save("mouth-kiss.png", mouth_picture(&profile, |m| (m.pucker, m.open) = (0.9, 0.05)));
@@ -121,9 +131,10 @@ fn render_the_mouth_cases_when_asked() {
 
 #[test]
 fn render_the_brows_when_asked() {
-    let Some(dir) = evidence_dir() else {
+    let Some(dir) = std::env::var_os("OMUZAKI_FACE_EVIDENCE_DIR") else {
         return;
     };
+    let dir = std::path::PathBuf::from(dir);
 
     let neutral = mock_profile().mapping.apply(&ChannelBuf::NEUTRAL);
     let mut raised = neutral;
@@ -133,9 +144,8 @@ fn render_the_brows_when_asked() {
     lowered.left_brow.height = -1.0;
     lowered.right_brow.height = -1.0;
 
-    let profile = mock_profile();
-    picture(&profile, &neutral, FaceLayerId::Base).save(dir.join("brows-neutral.png")).unwrap();
-    picture(&profile, &raised, FaceLayerId::Base).save(dir.join("brows-raised.png")).unwrap();
-    picture(&profile, &lowered, FaceLayerId::Base).save(dir.join("brows-lowered.png")).unwrap();
-    picture(&profile, &neutral, FaceLayerId::Brows).save(dir.join("brows-through-bangs.png")).unwrap();
+    picture(&neutral, FaceLayerId::Base).save(dir.join("brows-neutral.png")).unwrap();
+    picture(&raised, FaceLayerId::Base).save(dir.join("brows-raised.png")).unwrap();
+    picture(&lowered, FaceLayerId::Base).save(dir.join("brows-lowered.png")).unwrap();
+    picture(&neutral, FaceLayerId::Brows).save(dir.join("brows-through-bangs.png")).unwrap();
 }
