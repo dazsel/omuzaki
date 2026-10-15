@@ -1,6 +1,6 @@
 ---
 title: "Can we ship Kokoro or Chatterbox TTS with no GPL anywhere in the stack? (2026-10-15)"
-summary: "Kokoro-82M weights run through our own ort code with a lexicon-only English G2P are shippable; Chatterbox weights are MIT but need more work and open provenance questions, so it is a later add-on."
+summary: "Kokoro-82M weights run through our own ort code with a lexicon-only English G2P are the best GPL-free candidate, but they stay unverified (treated as NO) until lexicon and training-data provenance is cleared; Chatterbox weights are MIT but need more work and open provenance questions, so it is a later add-on."
 area: research
 ---
 
@@ -11,7 +11,7 @@ summary), **inference** (my reading of verified facts), **unverified** (not sett
 
 ## 1. Answer
 
-- **Pick Kokoro-82M as the first TTS model.** Weights are Apache-2.0 (verified). They run on ONNX Runtime through
+- **Pick Kokoro-82M as the first TTS model to build a spike on (shipping waits for the clearance gate in section 6).** Weights are Apache-2.0 (verified). They run on ONNX Runtime through
   `ort` behind the `Runtime` seam, which ADR 0061 already assigns to `tts@1` (verified, repo file).
 - **The weights are not the problem; the Python front end is.** The GPL enters through `espeak-ng` (GPL-3.0-or-later,
   verified) and the `phonemizer` packages that wrap it. We drop all of that.
@@ -34,9 +34,13 @@ summary), **inference** (my reading of verified facts), **unverified** (not sett
 - **Japanese (second):** `jpreprocess` (BSD-3-Clause, Rust) replaces `pyopenjtalk` for the Japanese front end. Parity
   with misaki's `ja.py` output is **unverified** and is part of the Japanese spike, not the English one.
 
-**Decision this supports:** audit blocker 2 (`2026-10-licence-audit.md`) moves from "NO as installed" to "yes, with
-conditions", for this path only: Kokoro weights + `ort` + own G2P over gold lexicons. The register rows
-`kokoro-82m-weights`, `chatterbox-weights` and a new `misaki` row should carry the conditions in section 6.
+**Decision this supports:** audit blocker 2 (`2026-10-licence-audit.md`) moves from "NO as installed" to a **build
+candidate**, not to "yes". The path is Kokoro weights + `ort` + own G2P over gold lexicons. Two provenance gaps stay
+open: who seeded the gold lexicons, and which closed vendors' synthetic audio is in Kokoro's training set. Under
+`docs/licensing/policy.md` (line 29: `unverified` is "treated as `NO`" until a primary source or legal review settles
+it; lines 115-118: nothing `unverified` merges into a shippable path, and every new crate, model and build dataset
+gets a register row in the same PR) the register rows stay `unverified`, and **nothing ships** until the clearance
+gate in section 6 is met. The spike may run, because it is not a shippable path.
 
 ## 2. What is GPL, and where it enters
 
@@ -235,8 +239,16 @@ Evidence that the path works, and where each project stumbles (all read 2026-10-
 
 ## 6. Recommendation
 
-1. **Ship Kokoro-82M** (Apache-2.0) via `ort` behind `tts@1`, ONNX export from `onnx-community/Kokoro-82M-v1.0-ONNX`
-   (or our own re-export of the same weights, with the graph audited).
+0. **Clearance gate (blocks shipping, not the spike).** Kokoro and the gold lexicons stay `unverified` (treated as
+   `NO`) until one of these is true for each gap:
+   - *Gold lexicon seeds:* an authoritative upstream statement naming the seed datasets and their licences (misaki #107),
+     or legal review, or we replace gold with a lexicon we build only from sources already cleared (CMUdict).
+   - *Closed-vendor synthetic audio in the weights:* an upstream statement naming the vendors plus legal review of
+     their terms, or a second model whose training data is fully documented.
+   The overlap report in spike item 5 is diagnostic only. It cannot clear provenance (see item 5).
+1. **Build the Kokoro-82M spike** (Apache-2.0 weights) via `ort` behind `tts@1`, ONNX export from
+   `onnx-community/Kokoro-82M-v1.0-ONNX` (or our own re-export of the same weights, with the graph audited). **Ship it
+   only after the clearance gate.**
 2. **Write `omuzaki-g2p` (or a module in `omuzaki-audio`): a Rust English G2P** that:
    - loads `us_gold` and `gb_gold` only (embedded or shipped as a data file, with the Apache-2.0 text);
    - handles plurals, past tense and `-ing` using the same rules that misaki documents (read from its code, which is
@@ -257,9 +269,9 @@ Evidence that the path works, and where each project stumbles (all read 2026-10-
 
 | File | `condition` text |
 | --- | --- |
-| `docs/licensing/deps/kokoro-82m-weights.toml` | "Apache-2.0; credit Koniwa (CC BY 3.0) and SIWIS (CC BY 4.0) in the licences screen; synthetic-training-data terms of unnamed closed TTS vendors unverified; run with own G2P only" |
+| `docs/licensing/deps/kokoro-82m-weights.toml` | "unverified (treated as NO, not shippable): Apache-2.0 on the card, but the synthetic-training-data terms of unnamed closed TTS vendors are not cleared; needs upstream statement and legal review; when cleared: credit Koniwa (CC BY 3.0) and SIWIS (CC BY 4.0) in the licences screen; run with own G2P only" |
 | `docs/licensing/deps/chatterbox-weights.toml` | "MIT; Perth stays on; training data and any Llama-weights ancestry unverified (ask Resemble AI); consent for cloning; not shipped until the spike for it passes" |
-| `docs/licensing/deps/misaki.toml` (new) | "code Apache-2.0; ship gold lexicons only; silver lexicons and the PeterReid BART fallback are espeak-derived: do not ship; gold seed datasets unnamed (misaki #107 open); do not install the Python package" |
+| `docs/licensing/deps/misaki.toml` (new) | "code Apache-2.0; gold lexicon seed datasets unnamed (misaki #107 open), so the data is unverified (treated as NO) until upstream or legal clearance, or replaced by an own lexicon from cleared sources; silver lexicons and the PeterReid BART fallback are espeak-derived: never ship; do not install the Python package" |
 
 I did not edit these files in this note (the research PR is docs-only, one file). They belong in the spike's PR.
 
@@ -294,20 +306,49 @@ line was not read: **unverified**).
   catalogue path; no change to `omuzaki-audio` APIs.
 - `docs/licensing/deps/kokoro-82m-weights.toml`, `chatterbox-weights.toml`, `misaki.toml` (new), plus the attribution
   text file named in the licences-screen task.
-- No new top-level dependency without a register row.
+- New register rows, in the same PR, for every other crate, model and build dataset the spike adds (policy lines
+  115-118): `num2words` (Rust crate, MIT OR Apache-2.0), `cmudict-fast` (only if used), the CMUdict data (BSD-style
+  notice, used for the overlap report and number/word cross-checks), and the Kokoro ONNX export. The letter-to-sound
+  model is **not** in this spike (follow-up 4): unknown words are spelled out, so no derived model needs a row yet.
+  Dev-only reference tooling (Python `kokoro-onnx`) is not shipped and is not registered, but is recorded in the PR as
+  external (see item 1).
+- No new dependency of any kind without a register row.
 
 **Acceptance (all evidenced in the PR):**
-1. `cargo deny check` passes on the spike with `bans` denying `espeak-rs`, `espeak-rs-sys`, `phonemizer*`,
-   `espeakng*`, `pykakasi` and every `*-sys` that builds espeak-ng; and `cargo tree -e normal` shows none of them.
+1. **No GPL in the tree or the binary.** `cargo deny check licenses bans sources` passes with `bans` denying
+   `espeak-rs`, `espeak-rs-sys` and every `*-sys` that builds espeak-ng. The spike also carries a script modelled on
+   `spikes/speech/tools/check-no-espeak.sh` (checks the dependency tree, the symbol table, the strings and the dynamic
+   dependencies of the release binary, with a positive control that finds ONNX Runtime symbols in the same binary), and
+   it must find nothing. Two changes to that script's tree check, because `cargo tree` defaults hide edges: run it as
+   `cargo tree --target all --all-features -e normal,build,dev`, so build, dev, target-specific and optional-feature
+   paths are covered. Cargo checks cannot see Python packages, so: the Python reference environment (`kokoro-onnx`,
+   `onnxruntime`, and whatever they pull in) lives outside the repo, is pinned and listed in the PR, and is audited for
+   `phonemizer*`, `espeakng*`, `espeak*` and `pykakasi`; and a repository check fails if any checked-in
+   `requirements*.txt`, `pyproject.toml`, lock file or helper script names one of those packages.
 2. A script lists the operators and opset in the exported graph and the minimum ONNX Runtime version it needs.
 3. Ten fixed sentences (including numbers, plurals, past tense, a name, one OOV word) synthesise at 24 kHz through
-   `ort`; waveforms are within a stated tolerance of the reference Python `kokoro-onnx` run on the *same phoneme
-   strings* (the reference is test tooling, never shipped).
+   `ort`; output is compared with the reference Python `kokoro-onnx` run on the *same phoneme strings*, the same voice
+   row and speed, the same fp32 export and the same ONNX Runtime version on the CPU provider (the reference is test
+   tooling, never shipped). **Proposed thresholds, fixed here before the spike so it cannot pick its own:** (a) equal
+   sample count (the duration predictor is deterministic, so no alignment step is needed); (b) mean absolute difference
+   of the natural-log mel spectrogram (80 bins, 1024-point window, hop 256, 24 kHz) of at most 0.05; (c) peak sample
+   difference of at most 0.02 of full scale. The decoder uses a random noise source, so the spike first runs the
+   reference twice against itself; if the reference's own run-to-run difference already exceeds (b) or (c), the spike
+   reports that, seeds the noise (or compares with noise inputs fixed) and states the seeding, instead of widening the
+   bounds. Changing a threshold needs a review comment, not a spike decision.
 4. The G2P unit tests: gold lookups match `us_gold.json` entries; plurals and `-ed`/`-ing` cases match misaki's output
    on a fixed word list; the unknown-word path is exercised.
-5. A report of gold vs CMUdict overlap (how many gold entries equal an ARPAbet-mapped CMUdict entry), to settle the
-   "gold is a re-mapping of one source" question.
-6. Real-time factor on the reference CPU, and on GPU if available, against the `tts.*` budget in spec v3 section 10.
+5. A report of gold vs CMUdict overlap (how many gold entries equal an ARPAbet-mapped CMUdict entry). **Diagnostic
+   evidence only.** Full overlap would not show which dataset seeded gold or that every entry may be redistributed,
+   and partial overlap leaves the unmatched entries unexplained. Provenance is settled only by the clearance gate in
+   section 6 (upstream statement, legal review, or an own lexicon from cleared sources).
+6. Speed, against thresholds **proposed for this spike** (spec v3 section 10 has no `tts.*` row; its table, lines
+   318-339, ends at `asr.final`, so this is a spec gap, filed as follow-up 8). Measure on 10 fixed sentences of 8 to 25
+   words, after one warm-up run, as p95 over 20 runs: real-time factor (compute time over audio time) and
+   first-chunk latency (text in to the first 100 ms of audio samples out). Proposed: CPU on `Dev`'s E-cores scaled to
+   tier `R` by the spec's rule, RTF <= 0.5 and warm first-chunk <= 1.0 s; GPU path (tiers `U` or `D`), RTF <= 0.1 and
+   warm first-chunk <= 300 ms. Cold model load (process start to ready) is measured and reported, not gated. Numbers
+   taken off tier are printed as estimates, as spec v3 section 10 requires.
 7. Register rows and attribution text match section 6 and 7 of this note; `cargo xtask check --affected` passes.
 
 **Not in the spike:** Japanese (separate task: `jpreprocess` parity), Chatterbox, voice cloning, any model download
@@ -317,8 +358,8 @@ into the repo (models stay outside the repo).
 
 | Question | What settles it |
 | --- | --- |
-| What datasets seeded the gold lexicons, and may they be redistributed? | Answer on misaki #107 (open); or the gold-vs-CMUdict overlap in spike item 5; or an own lexicon built only from CMUdict |
-| Does the closed-TTS synthetic data in Kokoro's training set breach any vendor's terms? | Only hexgrad can name the vendors; ask on hexgrad/kokoro. Residual risk accepted by the Director, or reduced by offering a second model |
+| What datasets seeded the gold lexicons, and may they be redistributed? | Only an upstream statement (misaki #107, open), legal review, or replacing gold with an own lexicon built from cleared sources (CMUdict). The overlap in spike item 5 is diagnostic and does not settle it. **Open, blocks shipping** |
+| Does the closed-TTS synthetic data in Kokoro's training set breach any vendor's terms? | Only hexgrad can name the vendors; ask on hexgrad/kokoro, then legal review of their terms, or a second model with documented training data. **Open, blocks shipping**; a maintainer accepting the risk is a legal call, not a research result |
 | Is espeak-ng output (silver) covered by GPL? | Counsel, or avoid (this note avoids) |
 | Credit wording for Koniwa and SIWIS | Read the two licence pages; the spike's attribution file task |
 | Is the StyleTTS 2 "inform the listeners" clause a condition on Kokoro? | Read how Kokoro's authors treat it; ask on hexgrad/kokoro. Low risk, since voices are Kokoro's own; it also fits spec section 14 (disclosure of AI voices) |
@@ -338,6 +379,9 @@ into the repo (models stay outside the repo).
 5. **Task:** add `espeak-rs` and friends to `deny.toml` `bans` repo-wide, with a test, so no later crate can bring them.
 6. **Task (P1):** Chatterbox spike (English, ONNX, Perth port). Blocked on follow-up 2.
 7. **Task:** licences-screen text for the TTS attribution (section 7).
+8. **Spec change (needs maintainer review):** add `tts.rtf` and `tts.first_chunk` rows to spec v3 section 10, taking
+   the proposed values in spike item 6 once the spike has measured them.
+9. **Legal review request:** the two clearance-gate items in section 6 (gold seeds, closed-vendor synthetic audio).
 
 ## Sources (all read 2026-10-15)
 
