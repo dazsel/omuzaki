@@ -169,3 +169,25 @@ fn report_is_sorted_and_one_line_each() {
     let failures = vec![Failure::new("registered", "op-b", "second"), Failure::new("registered", "op-a", "first")];
     assert_eq!(report(&failures), "registered op-a: first\nregistered op-b: second");
 }
+
+#[test]
+fn an_ambiguous_argument_schema_fails_with_its_path() {
+    let schema = Schema::try_from(json!({
+        "oneOf": [
+            {
+                "type": "object",
+                "properties": { "Named": { "type": "integer", "description": "One." } },
+                "required": ["Named"],
+                "additionalProperties": false
+            },
+            {
+                "type": "object",
+                "properties": { "a": { "type": "integer", "description": "A." } },
+                "required": ["a"]
+            }
+        ]
+    }))
+    .unwrap_or_else(|error| panic!("{error}"));
+    let failures = run(vec![op("op-face-set_profile", "Set the face.", Some(schema))]);
+    assert_one(&failures, "op-face-set_profile", "the argument schema is ambiguous at the root");
+}
