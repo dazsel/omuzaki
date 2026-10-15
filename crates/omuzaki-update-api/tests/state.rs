@@ -1,6 +1,11 @@
 //! `State` keeps what it does not know, `Watermark` orders by epoch first, and the serde shapes and JSON Schemas of the
 //! types that cross an op are pinned (`UPDATE_SCHEMAS=1` regenerates `tests/schemas.json`).
 
+// Helpers outside `#[test]` functions may panic: a panic is a clear test failure.
+#![allow(clippy::unwrap_used)]
+
+use std::fmt::Write as _;
+
 use omuzaki_update_api::{
     Channel, CheckFailure, HoldReason, PackageKind, Release, RollbackReason, State, Timestamp, UpdateError,
     UpdateEvent, UpdateStatus, Version, Watermark,
@@ -111,8 +116,10 @@ fn the_json_schemas_match_the_snapshot() {
         ("UpdateError", schema_for!(UpdateError)),
         ("State", schema_for!(State)),
     ];
-    let text: String =
-        schemas.iter().map(|(name, schema)| format!("{name} {}\n", serde_json::to_string(schema).unwrap())).collect();
+    let mut text = String::new();
+    for (name, schema) in &schemas {
+        writeln!(text, "{name} {}", serde_json::to_string(schema).unwrap()).unwrap();
+    }
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/schemas.json");
     if std::env::var_os("UPDATE_SCHEMAS").is_some() {
         std::fs::write(&path, &text).unwrap();
