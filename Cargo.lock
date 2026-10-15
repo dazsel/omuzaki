@@ -3533,6 +3533,7 @@ version = "0.0.0"
 dependencies = [
  "glam 0.34.1",
  "inventory",
+ "proptest",
  "schemars",
  "serde",
  "serde_json",
