@@ -78,8 +78,8 @@ pick may not be adopted until the open items below are closed.
 ### API shape
 - Unverified except what the price page says: billing is by characters sent, and "All Speech Synthesis Markup Language
   (SSML) tags (except the `<mark>` tag) are also included in the character count" (pricing page, read 2026-10-15), so
-  SSML is supported. Streaming, sample rates, auth, seed and languages: unverified (the marketing text on the
-  service-terms page says "220+ voices and 40+ languages", a vendor claim). Latency claims: none read.
+  SSML is supported. Streaming, sample rates, auth, seed, voice count and languages: unverified (the service-terms page is
+  not a product page and is not cited for them). Latency claims: none read.
 
 ### Price and limits
 Read 2026-10-15 at https://cloud.google.com/text-to-speech/pricing, per character, "The total number of characters in the
