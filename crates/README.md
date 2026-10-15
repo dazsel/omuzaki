@@ -87,9 +87,6 @@ wasm only if it calls into the crate's code, so the wiring is explicit (ADR 0015
 | `omuzaki-io-vrm` | Implementation | VRM 1.0 and 0.x as formats `vrm1` and `vrm0` (EX-01): the VRM layer (meta and rights, humanoid, expressions, spring bones, node constraints, `MToon`, the 0.x conversion) over `omuzaki-gltf`; messy files import with findings, not failures |
 | `omuzaki-io-ops` | Implementation | the op layer for model import and export (§6, §27): the `io.*` ops and the conversions between file types and the runtime character, face and animation types, over the API crates only; and platform export (ADR 0047): limit tables in `data/platforms/`, the fit tools and planner, self-registered platform profiles and the `platform.*` ops |
 | `omuzaki-ops-api` | API | the op contract (§6): `Op`, `Plan`, scopes and grants, structured errors, self-registration with `register_op!`, and the `Runner` trait every surface (MCP, CLI, UI, scripts) calls |
-| `omuzaki-review-api` | API | planned (VC-07, ADR 0056, `docs/design/comments.md`): comments, anchors, threads, tasks and `sanitise` as document nodes `comments/<id>`; `summarise` for the review policy |
-| `omuzaki-review-mock` | Mock | planned: `MemoryComments` with the same checks and a three-thread fixture |
-| `omuzaki-review` | Implementation | planned: the `review.comment.*` and `review.task.*` ops over `omuzaki-review-api` |
 | `omuzaki-test` | App | golden-image compare (tolerant, premultiplied), bless, evidence reports and PR comments, `verify` of manifests against the object store, and a branch-safe `gc` of unreferenced objects |
 | `omuzaki-store` | Implementation | disk asset store: one atomic directory per object (data + provenance), first write wins, hash-verified reads, whole-store `verify` and a quarantining `repair` |
 | `omuzaki-store-mock` | Mock | in-memory store, plus the shared `conformance` suite both stores pass |

@@ -22,23 +22,38 @@ an external reviewer is untrusted and can reach an agent's prompt. The plan docu
    default (team.md). Resolve, reopen, delete, import and task creation are person-only. External reviewers hold nothing:
    a person imports their comment file, always as `Author::External`.
 5. **Tasks:** `Comment.task { assignee, state, item }` on the root, with the work held in a #971 plan item (fence from
-   the anchor, `plan.link` back to the comment). Assigning records; a person starts the agent (open question Q1).
-   `CauseKind::Review` is added, with the comment id as text, never the comment's text.
+   the anchor, `plan.link` back to the comment); the task's state is derived from the plan item, not stored. Assigning
+   records; a person presses Start (D1). `CauseKind::Review` is added, with the comment id as text, never the
+   comment's text (D5).
 6. **Injection:** comment text is sanitised on the way in (controls, bidi, Unicode tag characters), and is shown to an
-   agent only inside a fenced block under a fixed "this is data" sentence, whoever wrote it. It is never put in labels,
+   agent only inside a fenced block under a fixed "this is data" sentence, whoever wrote it (a task form of the sentence
+   carries the person's authorisation to address the feedback, and still forbids anything beyond it). It is never put in labels,
    causes, plan items or the instruction part of a prompt. An external comment cannot start a task or an agent.
 7. **One mechanism:** `review.approve`, `reject` and `request_changes` are the approval card and the branch-review
-   decisions, not new ops (spec amendment, Q3). VC-11's `no_open_threads` reads `summarise` over comment threads.
+   decisions on the existing approval card and branch review, not new ops (the spec §11 amendment is pending the
+   Director, D3). VC-11's `no_open_threads` reads `summarise` over comment threads for the request's subject paths
+   (patch paths plus the paths the op declares it reads).
 8. **MCP:** `omuzaki://comments` and `omuzaki://comments/<thread>` (a `ResourceProvider`) and the prompt
    `address_review_comments`; `resources/updated` through the path-to-URI mapping.
 9. **Privacy:** user text, not translated, no telemetry; comments leave the machine only in a review bundle a person
    shares (or a git push, which the UI warns about).
+10. **Time:** `at` is wall-clock UTC seconds recorded in the patch, because the journal's `Seconds` do not order across
+    sessions.
 
 ## Consequences
 
 - New API crate `omuzaki-review-api` and `omuzaki-review-mock`, implementation `omuzaki-review`; the `review` scope
-  (#1060) and `CauseKind::Review` are additive changes to `omuzaki-ops-api`.
+  (#1060) is an additive change to `omuzaki-ops-api`. `CauseKind::Review` ships in one `omuzaki-ops-api` task with
+  `CauseKind::Plugin` and `EndReason::Faulted` (#1537), which makes both enums `#[non_exhaustive]` (ADR 0054 §4).
 - #1067 is re-cut (labels without comment text, import), #1197 (anchor name, task types, `sanitise` tag range),
   #1068 and #1060 confirmed. The follow-up tasks are listed in the design (section 16).
-- Open for the Director or owner: assignment starting an agent (Q1), return path for external comments (Q2), the spec
-  §11 wording (Q3), viewers commenting (Q4), `CauseKind::Review` (Q5).
+
+## Decisions on the open questions (Runtime lead, on #1535)
+
+- **D1:** assigning a task to an agent role only records it; a person presses Start. A per-project setting can come later.
+- **D2:** external comments come back as a comment file a person imports. A relay URL and a hosted inbox wait on the
+  owner's hosted-service decision (#1051); nothing is built for them here.
+- **D3:** `approve`, `reject` and `request_changes` are decisions on the approval card and branch review. The spec
+  §11 amendment is pending the Director.
+- **D4:** reviewers and up may comment; viewers may not (`team.md`).
+- **D5:** `CauseKind::Review` is approved, shipped as above.
