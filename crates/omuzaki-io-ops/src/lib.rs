@@ -20,6 +20,7 @@
 //! | [`convert::material`], [`convert::texture`] | toon and `MToon` materials, PNG textures |
 //! | [`gather::scene`], [`gather::skeleton`] | a built character into an `IoScene` |
 //! | [`gather::springs`], [`gather::avatar`] | the VRM avatar block and spring bones |
+//! | [`prepare::humanoid`] | `auto_map`, `apply`: propose the humanoid bones of a skinned skeleton, with an override table |
 //! | [`fit_bones`] | `reduce_bones`: cut a skin's joints to a budget, the `fit.bones` stage |
 //!
 //! Ops register themselves with `omuzaki_ops_api::register_op!` next to their definition, so nothing here lists them.
@@ -30,6 +31,7 @@ pub mod convert;
 pub mod fit_bones;
 pub mod gather;
 pub mod ops;
+pub mod prepare;
 pub mod vrchat_rank;
 
 omuzaki_core::define_link!();

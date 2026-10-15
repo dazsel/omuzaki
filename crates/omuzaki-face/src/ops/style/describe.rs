@@ -9,8 +9,8 @@ use schemars::generate::SchemaSettings;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
-use crate::ops::shared::edit::{effective, stored_face, to_json};
-use crate::ops::shared::path::{SECTIONS, section};
+use crate::ops_shared::edit::{effective, stored_face, to_json};
+use crate::ops_shared::path::{SECTIONS, section};
 
 /// Describes the face sections of a character: for each, its path, its JSON Schema (inlined), its defaults and its current
 /// values. Marks are a list: `defaults` is empty and `item_defaults` is what a new mark starts from.
