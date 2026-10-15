@@ -39,7 +39,7 @@ pub const EYE_LINE_FRACTION: f32 = 0.6;
 pub const HEAD_CENTRE_FRACTION: f32 = 0.5;
 /// The light rig every sheet is lit with. The sheet always uses it, replacing whatever lights the stage's scene had
 /// and every other render setting of the stage's scene (post, background, fog, environment light, outline light and
-/// the rest, which the sheet draws from a fresh scene); [`render_turnaround`] puts the caller's scene back afterwards.
+/// the rest, which the sheet draws from a fresh scene); [`render_turnaround`] puts the caller's settings back afterwards.
 pub const LIGHT_RIG: &str = "viewer-studio";
 
 /// Which way the character faces the camera. The side and three-quarter views show the character's left.
@@ -164,6 +164,20 @@ impl TurnaroundSpec {
     pub fn with_max_tile(mut self, side: u32) -> Self {
         self.max_tile = Some(side);
         self
+    }
+
+    /// Checks the spec, the one place its values are: a cell with pixels and a tile side of at least one pixel.
+    ///
+    /// # Errors
+    /// [`TurnaroundError::Invalid`] naming the first value that is unusable.
+    pub fn validate(&self) -> Result<(), TurnaroundError> {
+        if self.cell.x == 0 || self.cell.y == 0 {
+            return Err(TurnaroundError::Invalid(format!("the cell is {}x{} pixels; it needs at least 1x1", self.cell.x, self.cell.y)));
+        }
+        if self.max_tile == Some(0) {
+            return Err(TurnaroundError::Invalid("the largest tile side is 0; it needs at least 1 pixel".to_owned()));
+        }
+        Ok(())
     }
 
     /// The same sheet settled for `steps` steps.
@@ -322,9 +336,7 @@ pub fn render_turnaround(
     renderer: &mut dyn Renderer,
     spec: &TurnaroundSpec,
 ) -> Result<TurnaroundSheet, TurnaroundError> {
-    if spec.cell.x == 0 || spec.cell.y == 0 {
-        return Err(TurnaroundError::Invalid("the cell has no pixels".to_owned()));
-    }
+    spec.validate()?;
     let (lights, look) = LightRig::load(LIGHT_RIG).and_then(|rig| Ok((rig.to_lights()?, rig.post(false))))?;
     // Everything that can fail without touching the stage comes first, so an error here leaves the caller's scene as it was.
     let target = renderer
@@ -334,7 +346,7 @@ pub fn render_turnaround(
     *stage.scene_mut() = neutral_scene(&saved, Camera::default(), lights, look, spec.background);
     let sheet = draw_sheet(stage, renderer, spec, target);
     let released = renderer.release(ResourceRef::from(target));
-    *stage.scene_mut() = saved;
+    restore_settings(stage.scene_mut(), saved);
     let sheet = sheet?;
     released.map_err(|e| StageError::render("the sheet's target", e))?;
     Ok(sheet)
@@ -382,10 +394,36 @@ fn neutral_scene(saved: &Scene, camera: Camera, lights: Vec<Light>, post: Post, 
     }
 }
 
+/// Puts the caller's render settings back on the stage's scene. The scene itself is not swapped back: a face variant
+/// that swapped in during the sheet replaced the character's instances and joint palette, and the caller's copies would
+/// name meshes that are gone. The destructuring lists every field, so a new `Scene` field must be placed here.
+fn restore_settings(scene: &mut Scene, saved: Scene) {
+    let Scene {
+        frame: _,
+        camera,
+        lights,
+        instances: _,
+        joints: _,
+        morph_weights: _,
+        background,
+        fog,
+        environment,
+        outline_light,
+        post,
+    } = saved;
+    scene.camera = camera;
+    scene.lights = lights;
+    scene.background = background;
+    scene.fog = fog;
+    scene.environment = environment;
+    scene.outline_light = outline_light;
+    scene.post = post;
+}
+
 /// The largest tile side: the renderer's limit, lowered by the spec.
 fn tile_side(renderer: &dyn Renderer, spec: &TurnaroundSpec) -> u32 {
     let limit = renderer.capabilities().max_texture_size;
-    spec.max_tile.map_or(limit, |side| side.clamp(1, limit))
+    spec.max_tile.map_or(limit, |side| side.min(limit))
 }
 
 /// What every view of one sheet shares.

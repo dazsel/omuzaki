@@ -121,6 +121,13 @@ impl Renderer for NoTargets {
     }
 }
 
+/// Whether two scenes have the same render settings. The sheet's ticks refill the instances and the frame number, so
+/// those are not the caller's to get back.
+fn same_settings(a: &Scene, b: &Scene) -> bool {
+    (a.camera, &a.lights, a.background, a.fog, a.environment, a.outline_light, a.post)
+        == (b.camera, &b.lights, b.background, b.fog, b.environment, b.outline_light, b.post)
+}
+
 fn spec() -> TurnaroundSpec {
     TurnaroundSpec::new(CELL).with_lens(Lens::Orthographic).with_settle_steps(4)
 }
@@ -276,7 +283,7 @@ fn the_long_lens_renders_and_the_scene_is_put_back() {
     let sheet = with_stage(|stage, renderer| {
         let before = stage.scene().clone();
         let sheet = render_turnaround(stage, renderer, &spec).expect("the sheet renders");
-        assert_eq!(*stage.scene(), before);
+        assert!(same_settings(stage.scene(), &before), "the caller's settings are back");
         sheet
     });
     let (top, bottom) = extent(&sheet.views[0].image);
@@ -308,7 +315,7 @@ fn the_callers_fog_does_not_tint_the_sheet() {
         stage.scene_mut().fog = Some(Fog { colour: Colour::WHITE, near: 0.0, far: 0.5 });
         let before = stage.scene().clone();
         let sheet = render_turnaround(stage, renderer, &spec()).expect("the sheet renders");
-        (sheet, *stage.scene() == before)
+        (sheet, same_settings(stage.scene(), &before))
     });
     assert!(restored, "the caller's fog is back after the sheet");
     for (a, b) in clear.views.iter().zip(&foggy.views) {
@@ -327,7 +334,7 @@ fn the_callers_environment_light_does_not_light_the_sheet() {
         stage.scene_mut().environment = Some(use_);
         let before = stage.scene().clone();
         let sheet = render_turnaround(stage, renderer, &spec()).expect("the sheet renders");
-        let restored = *stage.scene() == before;
+        let restored = same_settings(stage.scene(), &before);
         stage.scene_mut().environment = None;
         renderer.release(id.into()).expect("the sky is released");
         (sheet, restored)
@@ -370,7 +377,7 @@ fn nothing_the_caller_sets_on_the_scene_reaches_the_sheet() {
         };
         let before = stage.scene().clone();
         let sheet = render_turnaround(stage, renderer, &spec()).expect("the sheet renders");
-        let restored = *stage.scene() == before;
+        let restored = same_settings(stage.scene(), &before);
         stage.scene_mut().environment = None;
         renderer.release(id.into()).expect("the sky is released");
         (sheet, restored)
@@ -466,6 +473,10 @@ fn a_variant_staged_before_the_call_is_framed_as_the_new_character() {
     assert_eq!(stage.built().variant, Some(id("close-up")), "the sheet's first tick swapped the variant in");
     let close = expected_eye_row(stage.built());
     assert!((close - wide).abs() > 2.0, "the variants' head joints differ, or this test aims at nothing");
+    // The caller's settings are back but the scene still holds the new character's instances: after the retired
+    // character is released the stage's own scene must still draw.
+    stage.service_variants(&mut renderer, &FrameInput::default()).expect("the retired character is released");
+    renderer.render(stage.target(), stage.scene(), &Quality::live()).expect("the stage's scene names live meshes");
     for v in &sheet.views {
         let row = v.framing.eye_line_row;
         assert!(
@@ -476,6 +487,23 @@ fn a_variant_staged_before_the_call_is_framed_as_the_new_character() {
     }
     stage.service_variants(&mut renderer, &FrameInput::default()).expect("the retired character is released");
     stage.release(&mut renderer).expect("the stage releases");
+}
+
+#[test]
+fn a_spec_with_nothing_to_draw_is_refused_before_any_work() {
+    for spec in
+        [TurnaroundSpec::new(UVec2::new(0, 240)), TurnaroundSpec::new(UVec2::new(120, 0)), spec().with_max_tile(0)]
+    {
+        assert!(matches!(spec.validate(), Err(TurnaroundError::Invalid(_))), "{spec:?}");
+        with_stage(|stage, renderer| {
+            let before = stage.scene().clone();
+            let targets = renderer.stats().targets;
+            let error = render_turnaround(stage, renderer, &spec).expect_err("the spec is unusable");
+            assert!(matches!(error, TurnaroundError::Invalid(_)), "{error}");
+            assert_eq!((*stage.scene() == before, renderer.stats().targets), (true, targets), "nothing was touched");
+        });
+    }
+    assert!(spec().validate().is_ok());
 }
 
 #[test]
