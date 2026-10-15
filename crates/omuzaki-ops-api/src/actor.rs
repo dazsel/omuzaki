@@ -79,7 +79,9 @@ impl Grants {
         Self::of(Scope::ALL)
     }
 
-    /// The default for agents: read, edit, render. `broadcast`, `publish` and `spend` need a per-session grant (§6).
+    /// The default for agents: read, edit, render and review (comment and reply, design `comments.md` §3: a comment is
+    /// a plain data node, and resolving, deleting and approving stay with people). `broadcast`, `publish` and `spend`
+    /// need a per-session grant (§6).
     pub fn agent_default() -> Self {
         Self::of([
             Scope::Read,
@@ -88,6 +90,7 @@ impl Grants {
             Scope::EditLibrary,
             Scope::EditSettings,
             Scope::Render,
+            Scope::Review,
         ])
     }
 
@@ -212,6 +215,8 @@ mod tests {
         let g = Grants::agent_default();
         assert!(g.allows(Scope::EditCharacter) && g.allows(Scope::EditSettings) && g.allows(Scope::Render));
         assert!(!g.allows(Scope::Publish) && !g.allows(Scope::Spend) && !g.allows(Scope::Broadcast));
+        assert!(g.allows(Scope::Review), "agents may comment and reply by default (ADR 0056)");
+        assert!(Grants::person().allows(Scope::Review) && !Grants::of([Scope::Read]).allows(Scope::Review));
         assert!(g.with(Scope::Publish).allows(Scope::Publish));
         assert!(Grants::person().allows(Scope::Native));
     }

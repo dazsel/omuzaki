@@ -1,0 +1,26 @@
+# The yawn over 4.2 s: a breath in (anticipation), the wide peak held, then the settle back to rest.
+id = "yawn"
+summary = "A one-shot yawn: anticipation, peak and settle over 4.2 s."
+length = 4.2
+looped = false
+easing = "smoother"
+
+[[keys]]
+t = 0.0
+pose = "stand-neutral"
+
+[[keys]]
+t = 1.0
+pose = "yawn-anticipation"
+
+[[keys]]
+t = 2.0
+pose = "yawn-peak"
+
+[[keys]]
+t = 2.8
+pose = "yawn-peak"
+
+[[keys]]
+t = 4.2
+pose = "stand-neutral"

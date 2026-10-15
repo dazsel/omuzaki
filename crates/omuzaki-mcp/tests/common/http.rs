@@ -13,6 +13,15 @@ use tokio::net::TcpStream;
 
 use super::{FakeRunner, fake_runner};
 
+/// reqwest is built without a crypto provider, so every client needs `ring` installed first. Once per process; an
+/// already installed provider is fine.
+pub fn install_crypto_provider() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+}
+
 /// A server with the fake runner, listening on a free loopback port.
 pub struct Port {
     /// The fake runner behind the port, for checking what the server did to it.
@@ -32,6 +41,7 @@ impl Port {
 
     /// A port whose options `configure` adjusts from the defaults, still on a free loopback address.
     pub async fn start_with(configure: impl FnOnce(HttpOptions) -> HttpOptions) -> Self {
+        install_crypto_provider();
         let runner = Arc::new(fake_runner());
         let mcp = McpServer::new(runner.clone(), McpOptions::default()).expect("server builds");
         let options = configure(HttpOptions::default().with_bind("127.0.0.1:0".parse().unwrap()));

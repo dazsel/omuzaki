@@ -1825,6 +1825,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "futures-intrusive"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d930c203dd0b6ff06e0201a4a2fe9149b43c684fd4420555b26d21b1a02956f"
+dependencies = [
+ "futures-core",
+ "lock_api",
+ "parking_lot",
+]
+
+[[package]]
 name = "futures-io"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2104,6 +2115,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6b17e70c989c36bad147b27a58d148c0741c51448aa5653436547323e524d0ab"
 dependencies = [
  "euclid",
+ "svg_fmt",
 ]
 
 [[package]]
@@ -3534,6 +3546,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-audio-mock"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-audio-api",
+ "omuzaki-core",
+]
+
+[[package]]
 name = "omuzaki-budget"
 version = "0.0.0"
 dependencies = [
@@ -3662,12 +3682,14 @@ dependencies = [
 name = "omuzaki-doc"
 version = "0.0.0"
 dependencies = [
+ "crc32fast",
  "criterion",
  "inventory",
  "omuzaki-assets-lock",
  "omuzaki-core",
  "omuzaki-doc-api",
  "omuzaki-doc-mock",
+ "omuzaki-history-api",
  "omuzaki-stage-api",
  "omuzaki-store-api",
  "proptest",
@@ -3726,6 +3748,7 @@ dependencies = [
  "omuzaki-render-api",
  "omuzaki-render-mock",
  "omuzaki-store-api",
+ "pollster",
  "proptest",
  "schemars",
  "serde",
@@ -3733,6 +3756,8 @@ dependencies = [
  "thiserror 2.0.21",
  "tiny-skia",
  "toml",
+ "vello",
+ "wgpu",
 ]
 
 [[package]]
@@ -3809,6 +3834,20 @@ dependencies = [
  "omuzaki-ops-api",
  "omuzaki-store-api",
  "serde_json",
+]
+
+[[package]]
+name = "omuzaki-http"
+version = "0.0.0"
+dependencies = [
+ "bytes",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "omuzaki-ai-api",
+ "reqwest",
+ "rustls",
+ "tokio",
 ]
 
 [[package]]
@@ -4061,6 +4100,7 @@ dependencies = [
  "proptest",
  "reqwest",
  "rmcp",
+ "rustls",
  "schemars",
  "serde",
  "serde_json",
@@ -4325,11 +4365,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-stream"
+version = "0.0.0"
+dependencies = [
+ "bytes",
+ "criterion",
+ "hound",
+ "image",
+ "omuzaki-audio-api",
+ "omuzaki-core",
+ "omuzaki-ops-api",
+ "omuzaki-render-api",
+ "omuzaki-stream-api",
+ "proptest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "omuzaki-stream-api"
 version = "0.0.0"
 dependencies = [
  "bytes",
  "omuzaki-core",
+ "omuzaki-history-api",
  "omuzaki-render-api",
  "schemars",
  "serde",
@@ -4406,15 +4467,21 @@ name = "omuzaki-test-face"
 version = "0.0.0"
 dependencies = [
  "image",
+ "omuzaki-anim-api",
  "omuzaki-core",
  "omuzaki-face",
  "omuzaki-face-api",
+ "omuzaki-face-mock",
  "omuzaki-link-build",
+ "omuzaki-render-mock",
  "omuzaki-test",
+ "pollster",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+ "toml",
+ "wgpu",
 ]
 
 [[package]]
@@ -4468,10 +4535,13 @@ dependencies = [
  "image",
  "inventory",
  "omuzaki-core",
+ "omuzaki-doc-api",
  "omuzaki-l10n-api",
  "omuzaki-ops-api",
  "rustix 1.1.5",
+ "schemars",
  "serde",
+ "serde_json",
  "tempfile",
  "toml",
  "tracing",
@@ -5162,6 +5232,7 @@ checksum = "16a1cfa75cc186dd73d5818e510e042e40927bccc9c236b061cea97e1eb08029"
 dependencies = [
  "base64",
  "bytes",
+ "futures-channel",
  "futures-core",
  "futures-util",
  "h2",
@@ -5337,6 +5408,7 @@ version = "0.23.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
+ "log",
  "once_cell",
  "ring",
  "rustls-pki-types",
@@ -5384,7 +5456,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5897,6 +5969,12 @@ name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
+
+[[package]]
+name = "svg_fmt"
+version = "0.4.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0193cc4331cfd2f3d2011ef287590868599a2f33c3e69bc22c1a3d3acf9e02fb"
 
 [[package]]
 name = "syn"
@@ -6508,6 +6586,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
+name = "vello"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "913abde56cab6131b62c0cc69b1a93b671d3c34b3097beb3714fd1dc93be8115"
+dependencies = [
+ "bytemuck",
+ "futures-intrusive",
+ "log",
+ "peniko",
+ "png",
+ "skrifa",
+ "static_assertions",
+ "thiserror 2.0.21",
+ "vello_encoding",
+ "vello_shaders",
+ "wgpu",
+]
+
+[[package]]
 name = "vello_common"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6532,6 +6629,32 @@ dependencies = [
  "glifo",
  "hashbrown 0.17.1",
  "vello_common",
+]
+
+[[package]]
+name = "vello_encoding"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b1fb9548d2b46b0f79137b5b1d208ecbd76d432f74e7a2ba838615d117f11532"
+dependencies = [
+ "bytemuck",
+ "guillotiere",
+ "peniko",
+ "skrifa",
+ "smallvec",
+]
+
+[[package]]
+name = "vello_shaders"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2e653222cee49f2571729c3e4b0fa99bc4f826c6bb9487dbb88b825d552b3a27"
+dependencies = [
+ "bytemuck",
+ "log",
+ "naga",
+ "thiserror 2.0.21",
+ "vello_encoding",
 ]
 
 [[package]]

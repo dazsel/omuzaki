@@ -13,9 +13,7 @@ base64.workspace = true
 bytes.workspace = true
 futures-util.workspace = true
 reqwest = { workspace = true, features = ["rustls-no-provider", "system-proxy", "stream", "http2"] }
-# The one crypto provider (ring, as in omuzaki-http, llm-api D11). Version and features match the workspace line #1504
-# adds; this becomes `rustls.workspace = true` once that is on main.
-rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sse-stream.workspace = true

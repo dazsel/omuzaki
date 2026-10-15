@@ -3,6 +3,9 @@
 //! In [`Mode::Video`] the face found on one frame seeds the next frame's ROI, so the detector only runs when the
 //! face is new or lost, and landmarks are One-Euro smoothed before blendshapes and pose are computed (as
 //! `FaceLandmarker` does). In [`Mode::Image`] every frame is independent: the detector always runs, nothing is smoothed.
+//!
+//! On top of that, a video-mode frame may be skipped (the last result stands) when the ROI barely changed, and the
+//! detector re-runs on a timer; see [`ReuseConfig`].
 
 use std::time::Instant;
 
@@ -20,6 +23,10 @@ use crate::metadata::GeometryMetadata;
 use crate::roi::NormRect;
 use crate::sample::{FaceSample, StageTimings, coefficient_channels};
 use crate::smoothing::LandmarkSmoother;
+
+mod reuse;
+pub use reuse::ReuseConfig;
+use reuse::{Plan, ReuseGate};
 
 /// Whether successive frames belong to one video.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -40,12 +47,14 @@ pub struct FaceTrackerConfig {
     /// A landmark result whose presence score is below this counts as "no face"
     /// (MediaPipe: `min_face_presence_confidence`).
     pub min_presence: f32,
+    /// ROI reuse and frame skipping in video mode.
+    pub reuse: ReuseConfig,
 }
 
 impl Default for FaceTrackerConfig {
-    /// Video mode with MediaPipe's thresholds: 0.5 for detection and for presence.
+    /// Video mode with MediaPipe's thresholds (0.5 for detection and for presence) and the default [`ReuseConfig`].
     fn default() -> Self {
-        Self { mode: Mode::Video, min_detection: 0.5, min_presence: 0.5 }
+        Self { mode: Mode::Video, min_detection: 0.5, min_presence: 0.5, reuse: ReuseConfig::default() }
     }
 }
 
@@ -81,8 +90,12 @@ pub struct FaceTracker {
     pose: PoseEstimator,
     smoother: LandmarkSmoother,
     mode: Mode,
+    reuse_enabled: bool,
     min_presence: f32,
     next_rect: Option<NormRect>,
+    reuse: ReuseGate,
+    /// The last full pass's result, which a skipped frame repeats. Kept only while frames may be skipped.
+    last: Option<FaceSample>,
     /// The landmarks of the frame being tracked.
     points: [Landmark; NUM_LANDMARKS],
     /// The `ARKit` channel of each of the model's 51 coefficients.
@@ -109,8 +122,11 @@ impl FaceTracker {
             pose: PoseEstimator::new(geometry),
             smoother: LandmarkSmoother::new(),
             mode: config.mode,
+            reuse_enabled: config.reuse.enabled,
             min_presence: config.min_presence,
             next_rect: None,
+            reuse: ReuseGate::new(config.reuse),
+            last: None,
             points: [[0.0; 3]; NUM_LANDMARKS],
             channels,
             present,
@@ -125,25 +141,78 @@ impl FaceTracker {
     /// [`FaceTrackError::Shape`] when one answers with the wrong number of values.
     pub fn track(&mut self, frame: &RgbFrame<'_>, time: Seconds) -> Result<(Option<FaceSample>, StageTimings)> {
         frame.validate()?;
+        let timings = StageTimings::default();
+        let video = self.mode == Mode::Video;
+        let plan = if video { self.reuse.plan(frame, self.next_rect.as_ref()) } else { Plan::Detect };
+        if plan == Plan::Skip {
+            self.reuse.skipped();
+            debug_assert!(self.last.is_some(), "a skip needs the last result");
+            return Ok((self.last.clone(), timings));
+        }
+        let result = self.full_pass(frame, time, plan);
+        if result.is_err() {
+            // A graph failed part-way: whatever it left (the ROI for the next frame, a reference taken before it) is
+            // unproven, so the next frame detects instead of repeating the old sample.
+            self.lose_face();
+        }
+        result
+    }
+
+    /// The detector (when `plan` asks for it), then the landmark pass and what follows it, for a video or image frame.
+    fn full_pass(
+        &mut self,
+        frame: &RgbFrame<'_>,
+        time: Seconds,
+        plan: Plan,
+    ) -> Result<(Option<FaceSample>, StageTimings)> {
         let mut timings = StageTimings::default();
-        let tracked = if self.mode == Mode::Video { self.next_rect.take() } else { None };
-        let rect = if tracked.is_some() {
-            tracked
-        } else {
+        let video = self.mode == Mode::Video;
+        let tracked = if video { self.next_rect.take() } else { None };
+        let detected = plan == Plan::Detect;
+        let rect = if detected {
             let started = Instant::now();
-            let found = self.detector.detect(frame)?;
+            // A timed re-detection that misses keeps the face the landmarks already follow.
+            let found = self.detector.detect(frame)?.or(tracked);
             timings.detect_us = micros_since(started);
             found
+        } else {
+            tracked
         };
-        let Some(rect) = rect else { return Ok((None, timings)) };
+        let Some(rect) = rect else {
+            self.forget_pass();
+            return Ok((None, timings));
+        };
         // A lost face reports nothing, and `next_rect` stays `None` so the next frame runs the detector.
         let sample = self.track_in(frame, rect, time, true, &mut timings)?.ok();
+        match &sample {
+            Some(found) if video => {
+                self.reuse.passed(frame, detected, self.next_rect, found.presence);
+                if self.reuse_enabled {
+                    self.last = Some(found.clone());
+                }
+            }
+            Some(_) => {}
+            None => self.forget_pass(),
+        }
         Ok((sample, timings))
+    }
+
+    /// Drops the tracked face and what a skipped frame would repeat, so the next frame runs the detector.
+    fn lose_face(&mut self) {
+        self.next_rect = None;
+        self.forget_pass();
+    }
+
+    /// Drops what a skipped frame would repeat.
+    fn forget_pass(&mut self) {
+        self.reuse.lost();
+        self.last = None;
     }
 
     /// Forgets the tracked face, the smoothing history and whatever the sessions carry, e.g. when the camera restarts.
     pub fn reset(&mut self) {
         self.next_rect = None;
+        self.forget_pass();
         self.smoother.reset();
         self.detector.reset();
         self.landmarks.reset();
@@ -160,11 +229,18 @@ impl FaceTracker {
     #[doc(hidden)]
     pub fn track_roi(&mut self, frame: &RgbFrame<'_>, roi: NormRect, time: Seconds) -> Result<FaceSample> {
         frame.validate()?;
+        self.forget_pass();
         let mut timings = StageTimings::default();
-        self.track_in(frame, roi, time, false, &mut timings)?.map_err(|lost| match lost {
-            Lost::NoArea => FaceTrackError::Shape { graph: "roi" },
-            Lost::LowPresence | Lost::NoPose => FaceTrackError::Shape { graph: "geometry" },
-        })
+        let result = self.track_in(frame, roi, time, false, &mut timings).and_then(|tracked| {
+            tracked.map_err(|lost| match lost {
+                Lost::NoArea => FaceTrackError::Shape { graph: "roi" },
+                Lost::LowPresence | Lost::NoPose => FaceTrackError::Shape { graph: "geometry" },
+            })
+        });
+        if result.is_err() {
+            self.lose_face();
+        }
+        result
     }
 
     /// Landmarks, smoothing, blendshapes and pose inside `rect`. `gate` applies the presence threshold.
