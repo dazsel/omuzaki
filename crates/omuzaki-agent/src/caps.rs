@@ -53,6 +53,13 @@ impl Counters {
         self.tool_calls
     }
 
+    /// The caps that stop further calls within a turn: every one but the turn count, which a turn that is already
+    /// running has met by definition.
+    pub(crate) fn reached_during_calls(&self, caps: &Caps, now: Seconds) -> Option<Cap> {
+        let turns_met = Caps { turns: u32::MAX, ..*caps };
+        self.reached(&turns_met, now)
+    }
+
     /// The first cap that has been reached at `now`, in the order of D2.7. A counter that equals its cap has reached it.
     pub(crate) fn reached(&self, caps: &Caps, now: Seconds) -> Option<Cap> {
         let wall = (now.0 - self.started.0 - self.excluded).max(0.0);

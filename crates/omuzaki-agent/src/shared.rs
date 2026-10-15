@@ -1,0 +1,249 @@
+//! The state the panel-facing handle and the host thread share.
+//!
+//! One lock, [`Control`], guards everything Stop must change atomically with the event queue: the stopped flag, the
+//! text of the turn in flight, the transcript and the open question. The queue ([`EventHub`]) has its own lock, always
+//! taken inside this one, never the other way round.
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+
+use omuzaki_agent_api::entry::Entry;
+use omuzaki_agent_api::error::HostError;
+use omuzaki_agent_api::event::{AssistantEvent, QuestionId};
+use omuzaki_agent_api::hub::EventHub;
+use omuzaki_agent_api::prompts::PromptsState;
+use omuzaki_core::time::Clock;
+use omuzaki_llm_api::message::ContentBlock;
+use omuzaki_llm_api::stream::Cancel;
+use omuzaki_ops_api::{SessionId, SessionState, Sessions};
+
+use crate::sink::EntrySink;
+
+/// An `ask_person` question waiting for the person.
+pub(crate) struct OpenQuestion {
+    pub id: QuestionId,
+    pub reply: Option<String>,
+}
+
+/// What the lock guards.
+pub(crate) struct Control {
+    /// An answer is in progress, from an accepted `send` until just before its `Done`.
+    pub running: bool,
+    /// Stop was pressed for the answer in progress.
+    pub stopping: bool,
+    /// The session is over (revoked, closed or ended): every later `send` is refused.
+    pub ended: bool,
+    /// The host is being dropped.
+    pub shutdown: bool,
+    /// The cancel flag of the turn or call in flight; Stop sets it.
+    pub cancel: Cancel,
+    /// Every entry so far, in order.
+    pub transcript: Vec<Entry>,
+    /// Where the answer in progress starts in `transcript`.
+    pub answer_from: usize,
+    /// The text of the turn in flight that has been sent to the panel.
+    pub live_text: String,
+    /// Bytes of the answer's text the panel had read when Stop was pressed.
+    pub stop_text_read: Option<usize>,
+    pub question: Option<OpenQuestion>,
+    pub next_question: u64,
+    pub prompts: PromptsState,
+    /// `refresh_prompts` was called and the host thread has not refetched yet.
+    pub refresh_prompts: bool,
+}
+
+/// Shared between the handle, the host thread and the late-result callbacks.
+pub(crate) struct Shared {
+    pub hub: EventHub,
+    pub ctl: Mutex<Control>,
+    /// Mirrors `Control::stopping` for loops that poll it without taking the lock.
+    stop_flag: AtomicBool,
+    pub clock: Arc<dyn Clock>,
+    pub sink: Arc<dyn EntrySink>,
+    pub sessions: Arc<dyn Sessions>,
+    pub session: SessionId,
+}
+
+impl Shared {
+    pub(crate) fn new(
+        clock: Arc<dyn Clock>,
+        sink: Arc<dyn EntrySink>,
+        sessions: Arc<dyn Sessions>,
+        session: SessionId,
+        transcript: Vec<Entry>,
+    ) -> Self {
+        let ctl = Control {
+            running: false,
+            stopping: false,
+            ended: false,
+            shutdown: false,
+            cancel: Cancel::new(),
+            answer_from: transcript.len(),
+            transcript,
+            live_text: String::new(),
+            stop_text_read: None,
+            question: None,
+            next_question: 1,
+            prompts: PromptsState::Loading,
+            refresh_prompts: false,
+        };
+        Self { hub: EventHub::new(), ctl: Mutex::new(ctl), stop_flag: AtomicBool::new(false), clock, sink, sessions, session }
+    }
+
+    pub(crate) fn lock(&self) -> MutexGuard<'_, Control> {
+        // A poisoned lock means a thread panicked mid-update; the state is plain data and Stop must still work.
+        self.ctl.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Stop was pressed (or the host is being dropped) for the answer in progress.
+    pub(crate) fn stopping(&self) -> bool {
+        self.stop_flag.load(Ordering::Acquire)
+    }
+
+    /// Marks Stop (or a shutdown) as requested and cancels what is in flight. Returns false if it already was.
+    pub(crate) fn request_stop(&self, ctl: &mut Control) -> bool {
+        if ctl.stopping {
+            return false;
+        }
+        ctl.stopping = true;
+        self.stop_flag.store(true, Ordering::Release);
+        ctl.cancel.cancel();
+        true
+    }
+
+    /// A fresh cancel flag for the next turn or call, already set if Stop was pressed.
+    pub(crate) fn fresh_cancel(&self) -> Cancel {
+        let mut ctl = self.lock();
+        let cancel = Cancel::new();
+        if ctl.stopping {
+            cancel.cancel();
+        }
+        ctl.cancel = cancel.clone();
+        cancel
+    }
+
+    /// Starts an answer: clears the stop state and the queue's stopped flag.
+    pub(crate) fn begin_answer(&self, ctl: &mut Control) {
+        ctl.running = true;
+        ctl.stopping = false;
+        self.stop_flag.store(false, Ordering::Release);
+        ctl.stop_text_read = None;
+        ctl.live_text.clear();
+        ctl.answer_from = ctl.transcript.len();
+        ctl.cancel = Cancel::new();
+        self.hub.reset();
+    }
+
+    /// Queues an event for the panel. False once Stop has been pressed, except for `Paused` and `Done`.
+    pub(crate) fn emit(&self, event: AssistantEvent) -> bool {
+        let _guard = self.lock();
+        self.hub.send(event)
+    }
+
+    /// Sends text to the panel and keeps it as the turn's live text, atomically with Stop.
+    pub(crate) fn emit_text(&self, text: String) {
+        let mut ctl = self.lock();
+        if self.hub.send(AssistantEvent::TextDelta(text.clone())) {
+            ctl.live_text.push_str(&text);
+        }
+    }
+
+    /// Records an entry in the transcript and the store. A store failure is shown to the person and does not stop the
+    /// answer: losing the log must not lose the work.
+    pub(crate) fn record(&self, entry: Entry) {
+        self.lock().transcript.push(entry.clone());
+        if let Err(error) = self.sink.append(&entry) {
+            self.emit(AssistantEvent::Error(error));
+        }
+    }
+
+    /// The transcript for a panel opened late, with the turn in flight as it has been shown.
+    pub(crate) fn transcript(&self) -> Vec<Entry> {
+        let ctl = self.lock();
+        let mut entries = ctl.transcript.clone();
+        if !ctl.live_text.is_empty() {
+            entries.push(Entry::assistant(vec![ContentBlock::text(ctl.live_text.clone())]));
+        }
+        entries
+    }
+
+    /// Marks the session over so later `send`s are refused.
+    pub(crate) fn mark_ended(&self) {
+        self.lock().ended = true;
+    }
+
+    /// Whether the session is over: the host knows it ended, or the executor says so.
+    pub(crate) fn session_over(&self) -> bool {
+        if self.lock().ended {
+            return true;
+        }
+        match self.sessions.session(self.session) {
+            Some(info) => matches!(info.state, SessionState::Ended { .. }),
+            None => true,
+        }
+    }
+
+    /// Records the person's reply to the open question `q` and wakes the call that asked.
+    pub(crate) fn answer(&self, q: QuestionId, text: String) -> Result<(), HostError> {
+        {
+            let mut ctl = self.lock();
+            match ctl.question.as_mut() {
+                Some(open) if open.id == q && open.reply.is_none() => open.reply = Some(text.clone()),
+                _ => return Err(HostError::Mcp(format!("no open question {}", q.0))),
+            }
+        }
+        self.record(Entry::answer(q, text));
+        Ok(())
+    }
+
+    /// The error a refused `send` returns once the session has ended.
+    pub(crate) fn ended_error() -> HostError {
+        HostError::SessionEnded
+    }
+}
+
+/// Cuts the text of `blocks` (the text blocks of consecutive assistant turns, in order) so that at most `budget` bytes
+/// remain in total. Returns what is left of the budget. Blocks that become empty are dropped.
+pub(crate) fn cut_text_blocks<'a>(turns: impl IntoIterator<Item = &'a mut Vec<ContentBlock>>, mut budget: usize) -> usize {
+    for blocks in turns {
+        blocks.retain_mut(|block| {
+            let ContentBlock::Text(text) = block else { return true };
+            if text.len() <= budget {
+                budget -= text.len();
+                return !text.is_empty();
+            }
+            let mut end = budget;
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            text.truncate(end);
+            budget = 0;
+            end > 0
+        });
+    }
+    budget
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_cut_keeps_text_in_order_until_the_budget_is_spent() {
+        let mut first = vec![ContentBlock::text("abc"), ContentBlock::tool_use("c", "t", serde_json::json!({}))];
+        let mut second = vec![ContentBlock::text("defg")];
+        let left = cut_text_blocks([&mut first, &mut second], 5);
+        assert_eq!(left, 0);
+        assert_eq!(first[0], ContentBlock::text("abc"));
+        assert_eq!(second, vec![ContentBlock::text("de")]);
+    }
+
+    #[test]
+    fn a_cut_to_nothing_drops_the_block_and_never_splits_a_character() {
+        let mut blocks = vec![ContentBlock::text("€€")];
+        cut_text_blocks([&mut blocks], 4);
+        assert_eq!(blocks, vec![ContentBlock::text("€")]);
+        cut_text_blocks([&mut blocks], 0);
+        assert!(blocks.is_empty());
+    }
+}

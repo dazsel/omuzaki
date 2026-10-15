@@ -324,4 +324,13 @@ impl EntrySink for StoreSink {
     fn append(&self, entry: &Entry) -> Result<(), HostError> {
         self.store.append(self.id, entry)
     }
+
+    fn put_blob(&self, bytes: &[u8], mime: ImageMime) -> Result<StoredBlock, HostError> {
+        self.store.put_blob(self.id, bytes, mime)
+    }
+
+    fn read_blob(&self, hash: &str, mime: ImageMime) -> Option<Vec<u8>> {
+        let path = blobs::path(&self.store.project_dir().ok()?, hash, mime).ok()?;
+        fs::read(path).ok()
+    }
 }
