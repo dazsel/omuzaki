@@ -14,8 +14,8 @@
 //!
 //! After the humanoid pose, look-at and IK have written the pose, and before spring bones (the order of
 //! `VRMC_vrm-1.0`): constraints read their sources' rotations *as posed*, and springs then move on top of the
-//! constrained bones. In the composed rig (`full::FullRig`) that is between the IK stage and the spring stage; wiring it
-//! in is a separate change because it alters the rig's public constructors.
+//! constrained bones. In the composed rig (`full::FullRig`) that is between the IK stage and the spring stage, set with
+//! [`FullRig::with_constraints`](crate::full::FullRig::with_constraints).
 
 use omuzaki_anim_api::{
     Axis, BoneConstraint, ConstraintError, ConstraintKind, ConstraintSet, Pose, SignedAxis, Skeleton, Transform,
