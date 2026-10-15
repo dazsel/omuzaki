@@ -1,0 +1,33 @@
+[package]
+name = "omuzaki-avatar-api"
+description = "Contract for imported avatars (EX-12, ADR 0033): ImportedAvatar, expressions and channel drivers, the gaze route, what export retains, the AvatarDef document node, and Body/BodyView, the one performer surface for built and imported characters."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[package.metadata.omuzaki]
+kind = "API"
+summary = "imported avatars (EX-12, ADR 0033): `ImportedAvatar` with its meshes, expressions, `ChannelDrivers`, gaze route and look-at, `driven()` and `validate()`; `Retained` for exact re-export; the `AvatarDef` document node; `AvatarSummary`; and `Body`/`BodyView`, the one performer surface the stage, export and the doctor read for built and imported characters; design in `docs/design/byom.md`"
+
+[dependencies]
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+omuzaki-anim-api = { path = "../omuzaki-anim-api" }
+omuzaki-char-api = { path = "../omuzaki-char-api" }
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-face-api = { path = "../omuzaki-face-api" }
+omuzaki-io-api = { path = "../omuzaki-io-api" }
+omuzaki-render-api = { path = "../omuzaki-render-api" }
+omuzaki-store-api = { path = "../omuzaki-store-api" }
+
+[dev-dependencies]
+toml.workspace = true
+omuzaki-char-mock = { path = "../omuzaki-char-mock" }
+
+[lints]
+workspace = true
