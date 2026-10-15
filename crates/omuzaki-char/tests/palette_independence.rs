@@ -1,6 +1,8 @@
 //! Facts don't depend on the palette: every part kind linked into this binary (the mock kinds the kit characters are made
-//! of) publishes the same facts under the character's own palette and `PALETTES` (five) alternatives, each differing
-//! from it in every entry (six builds per kind). The caching builder relies on it (see the `builder` module doc): it keys
+//! of) publishes the same facts whatever the palette is. For each of the four build-option combinations (Live and Offline,
+//! each with and without `rig_export`), a kind's part is built with the character's own palette, then with five colour
+//! alternatives that each differ from it in every entry, then with one extra unreferenced slot, and with the slots no
+//! part names removed when the palette has any. The caching builder relies on it (see the `builder` module doc): it keys
 //! a part that reads facts on the geometry of their publishers, not their colours.
 
 // Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
