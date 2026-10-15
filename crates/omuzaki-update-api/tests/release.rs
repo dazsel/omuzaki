@@ -79,3 +79,19 @@ fn a_release_without_notes_still_parses() {
     let release: Release = serde_json::from_str(&json).unwrap();
     assert!(release.notes_url.is_none());
 }
+
+#[test]
+fn ports_are_numbers_up_to_65535() {
+    for text in ["https://example.com:443/", "https://example.com:65535", "https://example.com:0/"] {
+        assert!(Url::new(text).is_ok(), "rejected {text:?}");
+    }
+    for text in [
+        "https://example.com:65536",
+        "https://example.com:99999/x",
+        "https://example.com:",
+        "https://example.com:+80",
+        "https://example.com:-1",
+    ] {
+        assert!(Url::new(text).is_err(), "accepted {text:?}");
+    }
+}

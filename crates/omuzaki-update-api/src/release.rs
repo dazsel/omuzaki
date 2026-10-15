@@ -67,14 +67,16 @@ impl From<Url> for String {
     }
 }
 
-/// `host` or `host:port`, with no user information. The host is a DNS name or an IPv4 address: letters, digits, `-`
+/// `host` or `host:port`, with no user information. The port is digits only and at most 65535 (port 0 is accepted:
+/// it is well-formed, and what to connect to is the fetcher's concern). The host is a DNS name or an IPv4 address: letters, digits, `-`
 /// and `.`, not empty, no leading or trailing dot.
 fn valid_authority(authority: &str) -> bool {
     let (host, port) = match authority.rsplit_once(':') {
         Some((host, port)) => (host, Some(port)),
         None => (authority, None),
     };
-    let port_ok = port.is_none_or(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
+    let port_ok =
+        port.is_none_or(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()) && p.parse::<u16>().is_ok());
     let host_ok = !host.is_empty()
         && !host.starts_with('.')
         && !host.ends_with('.')

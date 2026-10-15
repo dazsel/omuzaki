@@ -75,7 +75,7 @@ pub trait Updater: Send + Sync {
     fn stage(&self, release: &Release) -> Result<(), UpdateError>;   // applied at the next start, never hot-swapped
     fn rollback(&self) -> Result<(), UpdateError>;                   // takes effect at the next start
     fn hold(&self, why: HoldReason) -> Hold;                         // live subsystems take one (section 7)
-    fn healthy(&self);                                               // idempotent; writes the marker the launcher reads (section 6)
+    fn healthy(&self) -> Result<(), UpdateError>;                    // idempotent; writes the marker the launcher reads (section 6)
     fn subscribe(&self) -> Subscription<UpdateEvent>;
 }
 pub enum UpdateStatus {
@@ -96,7 +96,7 @@ pub enum Channel { Stable, Beta }
 Decisions where this differs from the original sketch:
 - **`notes_id` is dropped from `Available`.** D10 ships release notes inside the binary and shows them after the update; a notes id for an app not yet installed would need a network fetch SE-04 rules out. `notes_url` is an optional page the person may open in a browser.
 - **`hold` is added.** A subsystem that must not be interrupted (section 7) takes a `Hold`; the updater never has to know about streams or renders, so `omuzaki-update-api` depends on no other subsystem (dependency inversion).
-- **`healthy` is added.** The app calls it once, when the main window is up and `startup_plan` has resolved (D9). It is idempotent and only writes the marker file the launcher reads; it never blocks.
+- **`healthy` is added.** The app calls it once, when the main window is up and `startup_plan` has resolved (D9). It is idempotent and only writes the marker file the launcher reads; it never blocks. It returns `Result<(), UpdateError>`: callers must handle a marker-write failure (log it, and retry later if the window is still up), because the launcher counts a trial whose marker is missing as failed.
 - **`UpdateStatus::Unavailable`** covers installs we must not touch (a distro package, winget, a read-only root, a debug build). Section 5.
 - **`stage` requires a downloaded and verified package** and is idempotent. The sketch's separate "hash and signature verified before staging" is enforced twice: at the end of `download`, and again by `stage` before it unpacks (the file could have changed on disk in between).
 

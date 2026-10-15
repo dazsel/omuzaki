@@ -32,3 +32,13 @@ Read on 2026-10-13: Velopack 1.2.161 has deltas and channels. Its stock `HttpSou
 - We own the updater's bugs and security; the mitigation is that it is small, pure-functional at its core, and tested with a fake server, property tests and kill-at-every-step tests.
 - Code signing and notarisation stay an outer layer and never replace our check.
 - **Rejected for now:** stock Velopack (identifier in the check, unsigned feed), and Velopack with our adapter pending the spike (no rollback or guard, owns the install layout); `cargo-packager-updater` (no delta, stale); MSIX, Sparkle and WinSparkle (one platform each, three mechanisms); replacing files in place (impossible for a running executable on Windows, breaks macOS signatures); a version in the check request (not needed, the client can compare); release notes in the manifest (D10: they ship in the binary).
+
+## Amendment (2026-10-15): contract changes from the review of #1512 (issue #1589)
+
+The review of the first `omuzaki-update-api` pull request (#1512) found three weak points in the contract; they were fixed in the follow-up for issue #1589:
+
+- `Updater::healthy` returns `Result<(), UpdateError>`. A marker that cannot be written must not look like success, because the launcher counts a trial start whose marker is missing as failed and could roll back a healthy version.
+- `Url` has a private field and is validated: it is built only through `Url::new` (or deserialization, which uses it), so a value is always an https URL with a host and a port in 0..=65535.
+- The API snapshot (`tests/api_surface.txt`) also lists the methods of each `pub trait`, so a renamed or removed trait method shows up as a diff.
+
+Nothing on `main` depended on the old shapes (`healthy` returning nothing, a public `Url` field), so no other crate changed.

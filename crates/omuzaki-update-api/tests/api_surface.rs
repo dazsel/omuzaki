@@ -44,20 +44,48 @@ fn braces(line: &str) -> i32 {
         .sum()
 }
 
-/// The snapshot lines of one source file: its `pub` declarations, then the `fn` members of each `pub trait` it declares.
+/// Whether `text` starts a method declaration: `fn`, optionally after `pub`, `const`, `async`, `unsafe`, `default`
+/// and `extern "ABI"` qualifiers in any combination.
+fn is_method(text: &str) -> bool {
+    let mut rest = text.trim_start();
+    loop {
+        if rest.starts_with("fn ") {
+            return true;
+        }
+        if let Some(after) = rest.strip_prefix("extern ") {
+            rest = after.trim_start();
+            if rest.starts_with('"') {
+                match rest[1..].split_once('"') {
+                    Some((_, tail)) => rest = tail.trim_start(),
+                    None => return false,
+                }
+            }
+            continue;
+        }
+        match ["pub ", "const ", "async ", "unsafe ", "default "].iter().find_map(|q| rest.strip_prefix(q)) {
+            Some(after) => rest = after.trim_start(),
+            None => return false,
+        }
+    }
+}
+
+/// The snapshot lines of one source file: its `pub` declarations, then the method members of each `pub trait` it
+/// declares.
 fn scan(rel: &str, source: &str) -> String {
     // Items inside `#[cfg(test)] mod tests` are not public API.
     let body = source.split("#[cfg(test)]").next().unwrap_or("");
     let mut text = String::new();
-    // The trait whose body is being read, with its brace depth: members sit at depth 1.
-    let mut in_trait: Option<(String, i32)> = None;
+    // The trait whose body is being read: its name, its brace depth (members sit at depth 1) and whether its opening
+    // brace has been seen (a header can run over several lines).
+    let mut in_trait: Option<(String, i32, bool)> = None;
     for line in body.lines().map(str::trim) {
-        if let Some((name, depth)) = in_trait.as_mut() {
-            if *depth == 1 && line.starts_with("fn ") {
+        if let Some((name, depth, opened)) = in_trait.as_mut() {
+            if *depth == 1 && is_method(line) {
                 writeln!(text, "{rel}: {name}: {line}").unwrap();
             }
             *depth += braces(line);
-            if *depth <= 0 {
+            *opened |= line.contains('{');
+            if *opened && *depth <= 0 {
                 in_trait = None;
             }
             continue;
@@ -70,7 +98,18 @@ fn scan(rel: &str, source: &str) -> String {
         }
         if let Some(rest) = line.strip_prefix("pub trait ") {
             let name = rest.split(|c: char| !(c.is_alphanumeric() || c == '_')).next().unwrap_or_default();
-            in_trait = Some((name.to_owned(), braces(line)));
+            let depth = braces(line);
+            if let (Some(open), Some(close)) = (line.find('{'), line.rfind('}')) {
+                // The whole body is on this line: record its methods and stay out of trait mode.
+                if open < close {
+                    for member in line[open + 1..close].split(';').filter(|m| is_method(m)) {
+                        writeln!(text, "{rel}: {name}: {};", member.trim()).unwrap();
+                    }
+                }
+            }
+            if depth > 0 || !line.contains('{') && !line.ends_with(';') {
+                in_trait = Some((name.to_owned(), depth, line.contains('{')));
+            }
         }
     }
     text
@@ -125,4 +164,36 @@ fn renaming_or_removing_a_trait_method_changes_the_surface() {
     let text = scan("src/store.rs", before);
     assert_ne!(text, scan("src/store.rs", renamed));
     assert_ne!(text, scan("src/store.rs", removed));
+}
+
+#[test]
+fn qualified_trait_methods_are_in_the_surface() {
+    let source = "pub trait Io {\n    async fn a(&self);\n    unsafe fn b(&self);\n    const fn c();\n    pub fn d();\n    extern \"C\" fn e();\n    pub const unsafe extern \"C\" fn f();\n    const X: u8;\n}\n";
+    let text = scan("src/io.rs", source);
+    for name in ["a", "b", "c", "d", "e", "f"] {
+        assert!(text.contains(&format!("{name}(")), "{name} missing: {text}");
+    }
+    assert!(!text.contains("const X"), "{text}");
+    let renamed = source.replace("async fn a", "async fn z");
+    let removed = source.replace("    unsafe fn b(&self);\n", "");
+    assert_ne!(text, scan("src/io.rs", &renamed));
+    assert_ne!(text, scan("src/io.rs", &removed));
+}
+
+#[test]
+fn a_one_line_trait_does_not_swallow_later_items() {
+    let text = scan("src/m.rs", "pub trait Marker {}\npub fn after() {}\npub struct S;\n");
+    assert!(text.contains("src/m.rs: pub trait Marker {}\n"), "{text}");
+    assert!(text.contains("src/m.rs: pub fn after() {}\n"), "{text}");
+    assert!(text.contains("src/m.rs: pub struct S;\n"), "{text}");
+    let text = scan("src/m.rs", "pub trait A { fn f(&self); }\npub fn after() {}\n");
+    assert!(text.contains("src/m.rs: A: fn f(&self);\n"), "{text}");
+    assert!(text.contains("src/m.rs: pub fn after() {}\n"), "{text}");
+}
+
+#[test]
+fn a_trait_header_over_several_lines_is_followed() {
+    let text = scan("src/m.rs", "pub trait T\nwhere\n    Self: Sized,\n{\n    fn f(&self);\n}\npub fn after() {}\n");
+    assert!(text.contains("src/m.rs: T: fn f(&self);\n"), "{text}");
+    assert!(text.contains("src/m.rs: pub fn after() {}\n"), "{text}");
 }
