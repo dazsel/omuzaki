@@ -14,11 +14,12 @@
 //! | [`metadata`] | the canonical face ([`GeometryMetadata`]) and the protobuf reader for it |
 //! | [`geometry`] | the head-pose fit (Procrustes through a virtual camera) |
 //! | [`smoothing`] | the One-Euro landmark filter |
+//! | [`models`] | [`models::ModelDir`]: the verified model folder and its three loaded graphs |
 //! | [`pipeline`] | [`FaceTracker`]: the three graphs, tracking between frames, [`Mode`] |
 //! | [`sample`] | [`FaceSample`], [`StageTimings`] and [`to_track_frame`] |
 //! | [`error`] | [`FaceTrackError`] |
 //!
-//! The camera thread, the `Tracker` seam, the real models (with parity against MediaPipe) and the pixel
+//! The camera thread, the `Tracker` seam, parity with MediaPipe and the pixel
 //! conversion are separate pieces; this crate is the part that needs none of them.
 #![deny(missing_docs)]
 // Product names (MediaPipe, BlazeFace, ARKit) are prose here, not code.
@@ -31,6 +32,7 @@ pub mod frame;
 pub mod geometry;
 pub mod landmarks;
 pub mod metadata;
+pub mod models;
 pub mod pipeline;
 pub mod roi;
 pub mod sample;

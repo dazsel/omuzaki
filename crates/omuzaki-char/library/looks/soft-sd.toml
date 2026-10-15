@@ -1,0 +1,25 @@
+# Soft SD: the default look (ADR 0001), written as a preset so it can be re-applied after any other.
+#
+# The parts' own materials *are* the Soft SD look: each part kind chooses its toon terminator, tinted shade, rim, skin
+# treatment and coloured line per material, as the style guide says (docs/design/style-guide-soft-sd.md, "Shading" and
+# "Line art"). So every material setting below is the identity, spelled out, and applying this preset to a fresh
+# character changes no byte of its materials. Looks never compound (a look always starts from the parts' materials), so
+# switching back to Soft SD from any preset restores those bytes too.
+id = "soft-sd"
+name = "Soft SD"
+summary = "Soft cel shading with tinted shadows, a soft rim, the skin treatment and thin coloured lines, with a gentle bloom."
+origin = """Design target: ADR 0001 and the Soft SD style guide. Materials: the part kinds' own values (identity scales). \
+Scene: the prototype viewer's post (js/viewer.js: UnrealBloomPass on, its strength, radius and threshold come from the \
+light rig), no film grain and no grade."""
+
+# Identity on every class: the parts' terminators, rims and lines as built.
+[params.all]
+softness_scale = 1.0
+rim_scale = 1.0
+outline_width_scale = 1.0
+outline_colour = "material"
+
+# A gentle bloom (the rig's numbers), no grain. Depth of field and the grade are left to the shot's recipe.
+[params.scene]
+bloom = true
+grain = 0.0

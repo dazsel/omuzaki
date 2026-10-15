@@ -5,6 +5,7 @@ pub mod character;
 pub mod face_profile;
 pub mod hair;
 pub mod layout;
+pub mod look;
 pub mod part;
 pub mod variant;
 pub mod weights;
