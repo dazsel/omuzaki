@@ -2,9 +2,9 @@
 //! colliders"), and against the extended colliders (`VRMC_springBone_extended_collider`): the inside of a sphere or
 //! capsule, and a plane.
 //!
-//! A sphere is a capsule of zero length, so one code path serves both and the hot loop has no branch on the shape;
-//! the inside shapes reuse the same nearest-axis-point maths and differ only in which side of the radius they push
-//! from, and a plane is a dot product.
+//! A sphere is a capsule of zero length, so one code path serves both and the hot loop has no branch on which of them it is;
+//! the inside shapes reuse the same nearest-axis-point maths and differ only in the sign of the distance, and a
+//! plane is a dot product.
 
 use omuzaki_core::glam::Vec3;
 
