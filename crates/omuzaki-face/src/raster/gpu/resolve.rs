@@ -2,7 +2,8 @@
 //!
 //! The pass writes what [`SkiaRasterizer`](crate::raster::SkiaRasterizer) writes, premultiplied sRGB values, so the two
 //! rasterisers can stand in for each other (Q1 (a), #1433). Only mip level 0 is written: the renderer's `PaintTextures`
-//! pass rebuilds the chain over the dirty rectangle.
+//! pass rebuilds the chain over the dirty rectangle. Only a rectangle of it is written: the source holds that rectangle
+//! rendered from (0, 0), and the pass puts it back at its place, leaving the rest of the target as it was.
 
 /// The pipeline that copies a straight-alpha source into a premultiplied target of one format.
 pub struct Resolve {
@@ -20,16 +21,28 @@ impl Resolve {
         });
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("face-resolve"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
                 },
-                count: None,
-            }],
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("face-resolve"),
@@ -65,12 +78,33 @@ impl Resolve {
         self.format
     }
 
-    /// A bind group that reads `source`, which must stay the same size as the targets it is resolved into.
-    pub fn bind(&self, device: &wgpu::Device, source: &wgpu::TextureView) -> wgpu::BindGroup {
+    /// The buffer the pass reads the rectangle's origin from. Write it with [`set_origin`](Self::set_origin).
+    pub fn origin_buffer(device: &wgpu::Device) -> wgpu::Buffer {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("face-resolve-origin"),
+            size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    }
+
+    /// Tells the next pass that its source holds the rectangle at `(x, y)` of the target, rendered from (0, 0).
+    pub fn set_origin(queue: &wgpu::Queue, origin: &wgpu::Buffer, x: u32, y: u32) {
+        let mut bytes = [0_u8; 16];
+        bytes[..4].copy_from_slice(&x.to_le_bytes());
+        bytes[4..8].copy_from_slice(&y.to_le_bytes());
+        queue.write_buffer(origin, 0, &bytes);
+    }
+
+    /// A bind group that reads `source`, which must hold the rectangle `origin` names.
+    pub fn bind(&self, device: &wgpu::Device, source: &wgpu::TextureView, origin: &wgpu::Buffer) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("face-resolve"),
             layout: &self.layout,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(source) }],
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(source) },
+                wgpu::BindGroupEntry { binding: 1, resource: origin.as_entire_binding() },
+            ],
         })
     }
 
@@ -83,21 +117,26 @@ impl Resolve {
         })
     }
 
-    /// Records the pass: every pixel of `level_zero` is overwritten with the premultiplied `source` pixel.
-    pub fn encode(&self, encoder: &mut wgpu::CommandEncoder, source: &wgpu::BindGroup, level_zero: &wgpu::TextureView) {
+    /// Records the pass: every pixel of `level_zero` inside `rect` (`x`, `y`, width, height) is overwritten with the
+    /// premultiplied `source` pixel; the rest is kept.
+    pub fn encode(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        source: &wgpu::BindGroup,
+        level_zero: &wgpu::TextureView,
+        rect: [u32; 4],
+    ) {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("face-resolve"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: level_zero,
                 depth_slice: None,
                 resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                    store: wgpu::StoreOp::Store,
-                },
+                ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
             })],
             ..wgpu::RenderPassDescriptor::default()
         });
+        pass.set_scissor_rect(rect[0], rect[1], rect[2], rect[3]);
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, source, &[]);
         pass.draw(0..3, 0..1);

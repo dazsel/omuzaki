@@ -47,10 +47,8 @@ impl PaintTarget for MockTarget {
 
 /// The Base layer of a face system painted into a mock target, with a `VelloRasterizer` registered or not.
 fn base_layer_pixels(with_vello: bool) -> Vec<u8> {
-    let mut system = FaceSystem::new(
-        Box::new(RealPainter::new(mock_projection(), DEFAULT_PX_PER_M)),
-        Box::new(SkiaRasterizer::new()),
-    );
+    let mut system =
+        FaceSystem::real(RealPainter::new(mock_projection(), DEFAULT_PX_PER_M), Box::new(SkiaRasterizer::new()));
     if with_vello {
         system.set_gpu_rasterizer(Some(Box::new(VelloRasterizer::new())));
     }

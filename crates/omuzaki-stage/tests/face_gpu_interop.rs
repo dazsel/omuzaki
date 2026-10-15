@@ -21,7 +21,7 @@ use omuzaki_core::glam::{Mat4, UVec2, Vec2, Vec3};
 use omuzaki_core::time::Seconds;
 use omuzaki_face::raster::SkiaRasterizer;
 use omuzaki_face::raster::gpu::VelloRasterizer;
-use omuzaki_face::{FaceSystem, GpuRasterizer, RealPainter};
+use omuzaki_face::{FaceSystem, GpuRasterizer, LayerSections, RealPainter};
 use omuzaki_face_api::{DEFAULT_PX_PER_M, DrawList, FaceError, FaceLayerId, FaceLayerSpec, FaceView};
 use omuzaki_face_mock::{mock_profile, mock_projection};
 use omuzaki_render::{AdapterPreference, HeadlessOptions, WgpuRenderer};
@@ -56,13 +56,25 @@ impl GpuRasterizer for Counting {
         counter.fetch_add(1, Ordering::Relaxed);
         Ok(drawn)
     }
+
+    fn rasterize_native_sections(
+        &mut self,
+        spec: &FaceLayerSpec,
+        list: &DrawList,
+        sections: &LayerSections,
+        native: &mut dyn Any,
+    ) -> Result<bool, FaceError> {
+        let drawn = self.inner.rasterize_native_sections(spec, list, sections, native)?;
+        let counter = if drawn { &self.drawn } else { &self.declined };
+        counter.fetch_add(1, Ordering::Relaxed);
+        Ok(drawn)
+    }
 }
 
 /// A face system for the synthetic face at probe density, updated once, and the Base layer's spec.
 fn system(gpu: Option<Counting>) -> (FaceSystem, FaceLayerSpec) {
     let ppm = PROBE_WIDTH_PX / mock_projection().rect.width();
-    let mut system =
-        FaceSystem::new(Box::new(RealPainter::new(mock_projection(), ppm)), Box::new(SkiaRasterizer::new()));
+    let mut system = FaceSystem::real(RealPainter::new(mock_projection(), ppm), Box::new(SkiaRasterizer::new()));
     if let Some(gpu) = gpu {
         system.set_gpu_rasterizer(Some(Box::new(gpu)));
     }

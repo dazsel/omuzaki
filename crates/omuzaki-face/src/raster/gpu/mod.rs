@@ -6,15 +6,17 @@ pub mod clip;
 pub mod fill;
 pub mod gradient;
 pub mod resolve;
+mod sections;
 mod snap;
 pub mod stroke;
 
 use std::any::Any;
 use std::future::Future;
+use std::ops::Range;
 use std::task::{Context, Poll, Waker};
 
 use omuzaki_core::glam::Affine2;
-use omuzaki_face_api::{Cap, Cmd, DrawList, FaceError, FaceLayerSpec, Join};
+use omuzaki_face_api::{Cap, Cmd, DrawList, FaceError, FaceLayerId, FaceLayerSpec, Join};
 use vello::kurbo::{Affine, BezPath, Cap as KCap, Join as KJoin, Rect, Stroke};
 use vello::peniko::Color;
 use vello::peniko::{ColorStop, Fill};
@@ -24,8 +26,10 @@ use self::clip::{OpenStack, Transforms};
 use self::fill::{Bounds, fill_bez};
 use self::gradient::brush;
 use self::resolve::Resolve;
+use self::sections::{LayerCache, check_tiling, fingerprint};
 use self::snap::snapped_path;
 use crate::layer::GpuRasterizer;
+use crate::painter::LayerSections;
 
 /// The most a layer may be per side, as in the CPU raster.
 const MAX_SIDE: u32 = 16_384;
@@ -78,6 +82,25 @@ impl SceneEncoder {
         px_per_m: f32,
         scene: &mut Scene,
     ) -> Result<(), FaceError> {
+        self.encode_range(spec, list, 0..list.cmds().len(), px_per_m, scene)
+    }
+
+    /// As [`encode`](Self::encode), for the commands in `range` only (one section's slice). The slice must be balanced:
+    /// every push inside it popped inside it.
+    ///
+    /// # Errors
+    /// As [`encode`](Self::encode), and [`FaceError::Raster`] if `range` is not inside the list.
+    pub fn encode_range(
+        &mut self,
+        spec: &FaceLayerSpec,
+        list: &DrawList,
+        range: Range<usize>,
+        px_per_m: f32,
+        scene: &mut Scene,
+    ) -> Result<(), FaceError> {
+        let cmds = list.cmds().get(range.clone()).ok_or_else(|| {
+            FaceError::Raster(format!("the command range {range:?} is outside the {} commands", list.cmds().len()))
+        })?;
         let rect = spec.rect;
         if !(rect.width() > 0.0 && rect.height() > 0.0 && px_per_m.is_finite() && px_per_m > 0.0) {
             return Err(FaceError::Raster("the layer rectangle and density must be positive".to_owned()));
@@ -93,9 +116,9 @@ impl SceneEncoder {
         self.bounds.clear();
         self.transforms.clear();
         self.clips.clear();
-        for (index, cmd) in list.cmds().iter().enumerate() {
+        for (index, cmd) in cmds.iter().enumerate() {
             let current = self.transforms.top().map_or(to_px, |t| *t);
-            self.command(index, cmd, current, list, scene)?;
+            self.command(range.start + index, cmd, current, list, scene)?;
         }
         self.finish(scene)
     }
@@ -180,11 +203,25 @@ fn ready<T>(future: impl Future<Output = T>) -> Option<T> {
 /// What the native handle of a face layer downcasts to: the renderer's `NativePaintTarget`, which this crate can't name.
 type Native = (wgpu::Device, wgpu::Queue, wgpu::Texture);
 
-/// Vello's private render target, with the resolve's bind group for it. Reused until the layer changes size.
+/// Vello's private render target for one layer, with the resolve's bind group and origin buffer for it. Kept until the
+/// layer changes size.
 struct Private {
     size: (u32, u32),
     view: wgpu::TextureView,
     bind: wgpu::BindGroup,
+    origin: wgpu::Buffer,
+}
+
+/// Everything one layer keeps between repaints: its sections' scenes, its private texture, the last target it drew into
+/// and whether that target holds the picture the scenes describe.
+#[derive(Default)]
+struct LayerState {
+    sections: LayerCache,
+    private: Option<Private>,
+    /// The last target texture and its level-0 view, kept because making a view allocates.
+    target: Option<(wgpu::Texture, wgpu::TextureView)>,
+    /// The target shows what the cached scenes encode, so only changed sections need drawing again.
+    painted: bool,
 }
 
 /// Everything that needs a device. Created on the first paint, because Vello compiles its pipelines when its renderer is
@@ -192,34 +229,46 @@ struct Private {
 struct Gpu {
     renderer: Renderer,
     resolve: Resolve,
-    private: Option<Private>,
-    /// The last target and its level-0 view, kept because making a view allocates.
-    target: Option<(wgpu::Texture, wgpu::TextureView)>,
 }
 
 /// The Vello rasteriser: encodes a list with [`SceneEncoder`], renders it with Vello into a private straight-alpha
 /// texture, and resolves that into the renderer's face texture (level 0 only; the renderer rebuilds the mips).
 ///
-/// Keep one per layer, and use it with one device only: the Vello renderer and the private texture belong to the device
-/// of the first paint.
+/// Given a list's section ranges ([`rasterize_native_sections`](GpuRasterizer::rasterize_native_sections)) it keeps one
+/// encoded scene per section of every layer and, on a repaint, encodes only the sections whose slice of the list changed,
+/// then renders and resolves only the rectangle those sections cover now or covered before (decision 7.2). A repaint of an
+/// unchanged layer into the same texture does no work at all. [`rasterize_native`](GpuRasterizer::rasterize_native) treats
+/// the whole list as one section.
+///
+/// Use one for all of a system's layers, and with one device only: the Vello renderer belongs to the device of the first
+/// paint, and each layer has its own cache and private texture.
 ///
 /// It returns `Ok(false)`, so the CPU raster draws, when `native` is not the renderer's `(Device, Queue, Texture)` (the
-/// mock renderer's targets, another backend) and when Vello's renderer can't be created on the device: that is logged once
-/// and never retried. Don't register it on a software adapter such as lavapipe: those check correctness only and are far
-/// slower than the CPU raster (decision 7.3). Registering it is the stage's job.
+/// mock renderer's targets, another backend) and when Vello can't run on the device: that is logged once and never
+/// retried. Don't register it on a software adapter such as lavapipe: those check correctness only and are far slower
+/// than the CPU raster (decision 7.3). Registering it is the stage's job.
 #[derive(Default)]
 pub struct VelloRasterizer {
     encoder: SceneEncoder,
+    /// The scene of the rectangle being drawn: the cached sections appended in order.
     scene: Scene,
     gpu: Option<Gpu>,
-    /// Vello's renderer could not be created: every paint declines.
+    layers: [LayerState; FaceLayerId::COUNT],
+    /// Vello can't run on the device: every paint declines.
     unavailable: bool,
+    /// How many sections the last paint encoded.
+    encoded: usize,
 }
 
 impl VelloRasterizer {
     /// A rasteriser with nothing allocated on the GPU yet.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// How many sections the last paint encoded again: for tests and tools that check what a repaint redid.
+    pub fn sections_encoded(&self) -> usize {
+        self.encoded
     }
 }
 
@@ -236,12 +285,8 @@ impl Gpu {
             pipeline_cache: None,
         };
         let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let made = Renderer::new(device, options).map(|renderer| Self {
-            renderer,
-            resolve: Resolve::new(device, format),
-            private: None,
-            target: None,
-        });
+        let made =
+            Renderer::new(device, options).map(|renderer| Self { renderer, resolve: Resolve::new(device, format) });
         let rejected = ready(scope.pop()).flatten();
         match (made, rejected) {
             (Ok(_), Some(error)) => Err(error.to_string()),
@@ -249,25 +294,12 @@ impl Gpu {
             (Err(error), _) => Err(error.to_string()),
         }
     }
+}
 
-    /// Rebuilds the resolve if the target's format changed.
-    fn fit_format(&mut self, device: &wgpu::Device, format: wgpu::TextureFormat) {
-        if self.resolve.format() != format {
-            self.resolve = Resolve::new(device, format);
-            self.private = None;
-            self.target = None;
-        }
-    }
-
-    /// Makes the level-0 view of `target`, unless it is the last texture.
-    fn ensure_target(&mut self, target: &wgpu::Texture) {
-        if self.target.as_ref().is_none_or(|(texture, _)| texture != target) {
-            self.target = Some((target.clone(), Resolve::level_zero(target)));
-        }
-    }
-
-    /// Makes the private texture for a `width` x `height` layer if there is none of that size.
-    fn ensure_private(&mut self, device: &wgpu::Device, width: u32, height: u32) {
+impl LayerState {
+    /// Makes the private texture for a `width` x `height` layer if there is none of that size; a new one forgets that
+    /// the target was painted.
+    fn ensure_private(&mut self, device: &wgpu::Device, resolve: &Resolve, width: u32, height: u32) {
         if self.private.as_ref().is_none_or(|p| p.size != (width, height)) {
             let texture = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("face-vello"),
@@ -280,17 +312,66 @@ impl Gpu {
                 view_formats: &[],
             });
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-            let bind = self.resolve.bind(device, &view);
-            self.private = Some(Private { size: (width, height), view, bind });
+            let origin = Resolve::origin_buffer(device);
+            let bind = resolve.bind(device, &view, &origin);
+            self.private = Some(Private { size: (width, height), view, bind, origin });
+            self.painted = false;
         }
+    }
+
+    /// Makes the level-0 view of `target`; a texture other than the last one has not been painted.
+    fn ensure_target(&mut self, target: &wgpu::Texture) {
+        if self.target.as_ref().is_none_or(|(texture, _)| texture != target) {
+            self.target = Some((target.clone(), Resolve::level_zero(target)));
+            self.painted = false;
+        }
+    }
+
+    /// Encodes the sections whose slice of `list` changed, and returns how many, and the rectangle they covered or cover
+    /// now (`None` if nothing changed).
+    fn encode_changed(
+        &mut self,
+        encoder: &mut SceneEncoder,
+        spec: &FaceLayerSpec,
+        list: &DrawList,
+        sections: &LayerSections,
+    ) -> Result<(usize, Option<Rect>), FaceError> {
+        let (mut count, mut damage) = (0, None::<Rect>);
+        for (cache, range) in self.sections.iter_mut().zip(sections) {
+            let key = fingerprint(list, range.clone(), spec)?;
+            if cache.key == Some(key) {
+                continue;
+            }
+            cache.scene.reset();
+            encoder.encode_range(spec, list, range.clone(), spec.px_per_m, &mut cache.scene)?;
+            let now = encoder.last_bounds();
+            for bounds in [cache.bounds, now].into_iter().flatten() {
+                damage = Some(damage.map_or(bounds, |d| d.union(bounds)));
+            }
+            (cache.bounds, cache.key) = (now, Some(key));
+            count += 1;
+        }
+        Ok((count, damage))
     }
 }
 
-impl GpuRasterizer for VelloRasterizer {
-    fn rasterize_native(
+/// `damage` as whole pixels inside a `width` x `height` layer, one pixel wider on every side for anti-aliasing, as
+/// `[x, y, w, h]`; `None` if it is empty there.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clamped into the layer first
+fn pixel_rect(damage: Rect, width: u32, height: u32) -> Option<[u32; 4]> {
+    let (w, h) = (f64::from(width), f64::from(height));
+    let (x0, y0) = ((damage.x0.floor() - 1.0).clamp(0.0, w), (damage.y0.floor() - 1.0).clamp(0.0, h));
+    let (x1, y1) = ((damage.x1.ceil() + 1.0).clamp(0.0, w), (damage.y1.ceil() + 1.0).clamp(0.0, h));
+    (x1 > x0 && y1 > y0).then(|| [x0 as u32, y0 as u32, (x1 - x0) as u32, (y1 - y0) as u32])
+}
+
+impl VelloRasterizer {
+    /// Draws `list` into `native`, redoing only what the sections' ranges say changed.
+    fn paint(
         &mut self,
         spec: &FaceLayerSpec,
         list: &DrawList,
+        sections: &LayerSections,
         native: &mut dyn Any,
     ) -> Result<bool, FaceError> {
         let Some((device, queue, target)) = native.downcast_mut::<Native>().map(|n| (&n.0, &n.1, &n.2)) else {
@@ -308,8 +389,7 @@ impl GpuRasterizer for VelloRasterizer {
                 target.height()
             )));
         }
-        self.scene.reset();
-        self.encoder.encode(spec, list, spec.px_per_m, &mut self.scene)?;
+        check_tiling(sections, list.cmds().len())?;
         if self.gpu.is_none() {
             match Gpu::create(device, target.format()) {
                 Ok(gpu) => self.gpu = Some(gpu),
@@ -323,24 +403,81 @@ impl GpuRasterizer for VelloRasterizer {
         let Some(gpu) = self.gpu.as_mut() else {
             return Err(FaceError::Raster("the Vello state is missing after it was made".to_owned()));
         };
-        gpu.fit_format(device, target.format());
-        gpu.ensure_private(device, width, height);
-        gpu.ensure_target(target);
-        let Gpu { renderer, resolve, private, target: cached } = gpu;
-        let (Some(private), Some((_, level_zero))) = (private.as_ref(), cached.as_ref()) else {
+        if gpu.resolve.format() != target.format() {
+            gpu.resolve = Resolve::new(device, target.format());
+            self.layers = Default::default();
+        }
+        let layer = &mut self.layers[spec.id as usize];
+        layer.ensure_private(device, &gpu.resolve, width, height);
+        layer.ensure_target(target);
+
+        // From here the target no longer shows the cached scenes until the repaint below finishes.
+        let was_painted = std::mem::replace(&mut layer.painted, false);
+        let (count, damage) = layer.encode_changed(&mut self.encoder, spec, list, sections)?;
+        self.encoded = count;
+        let damage = if was_painted {
+            let Some(damage) = damage else {
+                // Nothing changed and the target already shows it.
+                layer.painted = true;
+                return Ok(true);
+            };
+            damage
+        } else {
+            Rect::new(0.0, 0.0, f64::from(width), f64::from(height))
+        };
+        let Some(rect) = pixel_rect(damage, width, height) else {
+            layer.painted = true;
+            return Ok(true);
+        };
+
+        self.scene.reset();
+        let shift = Affine::translate((-f64::from(rect[0]), -f64::from(rect[1])));
+        for cache in &layer.sections {
+            self.scene.append(&cache.scene, Some(shift));
+        }
+        let (Some(private), Some((_, level_zero))) = (layer.private.as_ref(), layer.target.as_ref()) else {
             return Err(FaceError::Raster(
                 "the private texture or the target view is missing after it was made".to_owned(),
             ));
         };
-        let params =
-            RenderParams { base_color: Color::TRANSPARENT, width, height, antialiasing_method: AaConfig::Area };
-        renderer
+        let params = RenderParams {
+            base_color: Color::TRANSPARENT,
+            width: rect[2],
+            height: rect[3],
+            antialiasing_method: AaConfig::Area,
+        };
+        gpu.renderer
             .render_to_texture(device, queue, &self.scene, &private.view, &params)
             .map_err(|e| FaceError::Raster(format!("Vello could not render the layer: {e}")))?;
+        Resolve::set_origin(queue, &private.origin, rect[0], rect[1]);
         let mut commands =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("face-resolve") });
-        resolve.encode(&mut commands, &private.bind, level_zero);
+        gpu.resolve.encode(&mut commands, &private.bind, level_zero, rect);
         queue.submit([commands.finish()]);
+        layer.painted = true;
         Ok(true)
+    }
+}
+
+impl GpuRasterizer for VelloRasterizer {
+    fn rasterize_native(
+        &mut self,
+        spec: &FaceLayerSpec,
+        list: &DrawList,
+        native: &mut dyn Any,
+    ) -> Result<bool, FaceError> {
+        let len = list.cmds().len();
+        let whole: LayerSections = std::array::from_fn(|at| if at == 0 { 0..len } else { len..len });
+        self.paint(spec, list, &whole, native)
+    }
+
+    fn rasterize_native_sections(
+        &mut self,
+        spec: &FaceLayerSpec,
+        list: &DrawList,
+        sections: &LayerSections,
+        native: &mut dyn Any,
+    ) -> Result<bool, FaceError> {
+        self.paint(spec, list, sections, native)
     }
 }

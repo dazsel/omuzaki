@@ -6,6 +6,7 @@ use omuzaki_core::glam::UVec2;
 use omuzaki_face_api::{DrawList, FaceError, FaceLayerSpec, FaceRasterizer};
 use omuzaki_render_api::{PaintTarget, Painter, PixelRect, RenderError};
 
+use crate::painter::LayerSections;
 use crate::system::LayerSlot;
 
 /// A rasteriser that draws a [`DrawList`] straight into the renderer's own texture, with no CPU round trip: the face
@@ -23,6 +24,23 @@ pub trait GpuRasterizer: Send {
         list: &DrawList,
         native: &mut dyn Any,
     ) -> Result<bool, FaceError>;
+
+    /// As [`rasterize_native`](Self::rasterize_native), for a list whose sections' command ranges are known
+    /// (`sections`, from [`RealPainter`](crate::RealPainter)), so a rasteriser can keep a cache per section and redraw only
+    /// what changed. The default ignores the ranges.
+    ///
+    /// # Errors
+    /// As [`rasterize_native`](Self::rasterize_native).
+    fn rasterize_native_sections(
+        &mut self,
+        spec: &FaceLayerSpec,
+        list: &DrawList,
+        sections: &LayerSections,
+        native: &mut dyn Any,
+    ) -> Result<bool, FaceError> {
+        let _ = sections;
+        self.rasterize_native(spec, list, native)
+    }
 }
 
 /// The renderer's [`Painter`] for one face layer, from [`FaceSystem::layer_painter`](crate::FaceSystem::layer_painter).
@@ -34,6 +52,7 @@ pub trait GpuRasterizer: Send {
 pub struct FaceLayerPainter<'a> {
     spec: FaceLayerSpec,
     list: &'a DrawList,
+    sections: Option<&'a LayerSections>,
     slot: &'a mut LayerSlot,
     cpu: &'a mut dyn FaceRasterizer,
     gpu: Option<&'a mut dyn GpuRasterizer>,
@@ -43,11 +62,12 @@ impl<'a> FaceLayerPainter<'a> {
     pub(crate) fn new(
         spec: FaceLayerSpec,
         list: &'a DrawList,
+        sections: Option<&'a LayerSections>,
         slot: &'a mut LayerSlot,
         cpu: &'a mut dyn FaceRasterizer,
         gpu: Option<&'a mut dyn GpuRasterizer>,
     ) -> Self {
-        Self { spec, list, slot, cpu, gpu }
+        Self { spec, list, sections, slot, cpu, gpu }
     }
 }
 
@@ -70,10 +90,15 @@ impl Painter for FaceLayerPainter<'_> {
                 ),
             ));
         }
-        if let Some(gpu) = self.gpu.as_mut()
-            && gpu.rasterize_native(&self.spec, self.list, target.native()).map_err(|e| render_error(&e))?
-        {
-            return Ok(());
+        if let Some(gpu) = self.gpu.as_mut() {
+            let native = target.native();
+            let drawn = match self.sections {
+                Some(sections) => gpu.rasterize_native_sections(&self.spec, self.list, sections, native),
+                None => gpu.rasterize_native(&self.spec, self.list, native),
+            };
+            if drawn.map_err(|e| render_error(&e))? {
+                return Ok(());
+            }
         }
         if self.slot.stale {
             self.cpu

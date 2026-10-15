@@ -1,8 +1,9 @@
-//! Steady state of the GPU rasteriser (#1433 A6, #902): after warm-up a repaint through `VelloRasterizer` allocates nothing
-//! in `omuzaki-face`'s own code, only what Vello allocates inside `render_to_texture`, and that count is pinned and the same
-//! on every repaint. Also: no wgpu validation error over 100 repaints, and the repaint time (CPU encode, GPU render and
-//! resolve, waited for) over 1,000 warmed repaints. Lavapipe is a software adapter, so the times are not a GPU timing
-//! (decision 7.3); the owner's run is #1658. Without an adapter the tests print why and pass.
+//! Steady state of the GPU rasteriser (#1433 A5 and A6, #902): after warm-up a repaint through `VelloRasterizer` allocates
+//! nothing in `omuzaki-face`'s own code, only what Vello and wgpu allocate, and that count is pinned and the same on every
+//! repaint, for a mouth-only change and for a change of the whole face. Also: no wgpu validation error over 100 repaints, and
+//! the repaint time (CPU encode, GPU render and resolve, waited for) over 1,000 warmed repaints of each. Lavapipe is a
+//! software adapter, so the times are not a GPU timing (decision 7.3); the owner's run is #1658. Without an adapter the tests
+//! print why and pass.
 
 // A counting allocator is the only way to *prove* an allocation budget; the workspace denies unsafe code by default.
 // Tests may unwrap: a panic is a clear failure.
@@ -14,17 +15,19 @@ use std::time::Instant;
 
 use omuzaki_core::time::Seconds;
 use omuzaki_face::raster::gpu::VelloRasterizer;
-use omuzaki_face::{GpuRasterizer, RealPainter};
+use omuzaki_face::{GpuRasterizer, LayerSections, RealPainter};
 use omuzaki_face_api::{
-    DEFAULT_PX_PER_M, DrawList, FaceDrawing, FaceInput, FaceLayerId, FaceLayerSpec, FaceMapping, FacePainter, FaceView,
+    DEFAULT_PX_PER_M, FaceDrawing, FaceInput, FaceLayerId, FaceLayerSpec, FaceMapping, FacePainter, FaceView,
+    PaintParams,
 };
 use omuzaki_face_mock::{mock_profile, mock_projection};
 
-/// The most allocations one warmed repaint of the synthetic face's Base layer makes on the calling thread. Measured on
-/// lavapipe: 799 or 800 on every one of 32 repaints after 50 warm-up ones. About 742 of them are inside Vello's
-/// `render_to_texture` and about 57 in wgpu recording and submitting the resolve pass; the encode, the scene and the views are
-/// `omuzaki-face`'s own and allocate nothing (`gpu_encode.rs`). Cutting Vello's share is #902's upstream report.
-const VELLO_STEADY_STATE_ALLOCS: usize = 801;
+/// The most allocations one warmed repaint makes on the calling thread, measured on lavapipe over 32 repaints after 50
+/// warm-up ones (815 or 816 for either change: Vello's fixed cost dominates), and the spread allowed around it. The count is Vello's and wgpu's: encoding, the scenes, the views and the
+/// bookkeeping are `omuzaki-face`'s own and allocate nothing (`gpu_encode.rs`). Cutting it is #902's upstream report.
+const MOUTH_ONLY_ALLOCS: usize = 816;
+const WHOLE_FACE_ALLOCS: usize = 816;
+const SPREAD: usize = 2;
 /// Repaints before anything is counted or timed: Vello grows its buffers over the first few dozen.
 const WARM_UP: usize = 50;
 
@@ -62,14 +65,22 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static GLOBAL: Counting = Counting;
 
-/// Everything a repaint needs: a device, the layer's texture, the rasteriser and the face's Base list.
+/// Everything a repaint needs: a device, the layer's texture, the rasteriser and the frames it alternates between.
 struct Setup {
     device: wgpu::Device,
     native: (wgpu::Device, wgpu::Queue, wgpu::Texture),
     spec: FaceLayerSpec,
-    list: DrawList,
     rasterizer: VelloRasterizer,
+    /// The drawing and its section ranges of the neutral face, the face with the mouth open, and a face with everything
+    /// moved.
+    frames: [(FaceDrawing, LayerSections); 3],
+    /// The frame to paint next.
+    next: usize,
 }
+
+const NEUTRAL: usize = 0;
+const MOUTH: usize = 1;
+const WHOLE: usize = 2;
 
 fn setup() -> Option<Setup> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
@@ -84,10 +95,28 @@ fn setup() -> Option<Setup> {
     let (device, queue) = pollster::block_on(adapter.request_device(&descriptor)).ok()?;
 
     let profile = mock_profile();
-    let params = FaceMapping::default().rest_params();
-    let mut drawing = FaceDrawing::new();
-    let input = FaceInput { profile: &profile, params: &params, time: Seconds(0.0), view: FaceView::default() };
-    RealPainter::new(mock_projection(), DEFAULT_PX_PER_M).paint(&input, &mut drawing).unwrap();
+    let mut painter = RealPainter::new(mock_projection(), DEFAULT_PX_PER_M);
+    let mut frame = |change: fn(&mut PaintParams)| {
+        let mut params = FaceMapping::default().rest_params();
+        change(&mut params);
+        let mut drawing = FaceDrawing::new();
+        let input = FaceInput { profile: &profile, params: &params, time: Seconds(0.0), view: FaceView::default() };
+        painter.paint(&input, &mut drawing).unwrap();
+        let sections = painter.sections().layer(FaceLayerId::Base).clone();
+        (drawing, sections)
+    };
+    let frames = [
+        frame(|_| {}),
+        frame(|p| p.mouth.open = 0.6),
+        frame(|p| {
+            p.mouth.open = 0.6;
+            p.mouth.smile_left = 1.0;
+            p.left_eye.close = 0.6;
+            p.blush = 1.0;
+            p.gaze = [0.5, 0.3].into();
+            p.left_brow.height = 1.0;
+        }),
+    ];
     let rect = FaceLayerSpec::for_layer(FaceLayerId::Base, &mock_projection(), DEFAULT_PX_PER_M).rect;
     let spec = FaceLayerSpec::for_rect(rect, FaceLayerId::Base, 256.0 / rect.width());
     let (width, height) = spec.size_px();
@@ -103,66 +132,111 @@ fn setup() -> Option<Setup> {
             | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
-    let list = drawing[FaceLayerId::Base].clone();
-    Some(Setup { native: (device.clone(), queue, texture), device, spec, list, rasterizer: VelloRasterizer::new() })
+    Some(Setup {
+        native: (device.clone(), queue, texture),
+        device,
+        spec,
+        rasterizer: VelloRasterizer::new(),
+        frames,
+        next: 0,
+    })
 }
 
 impl Setup {
-    /// One repaint, waited for.
-    fn repaint(&mut self) {
-        let drawn = self.rasterizer.rasterize_native(&self.spec, &self.list, &mut self.native).unwrap();
+    /// Paints `frame`, a different one from the last, through the sections path.
+    fn repaint(&mut self, frame: usize) {
+        let (drawing, sections) = &self.frames[frame];
+        let drawn = self
+            .rasterizer
+            .rasterize_native_sections(&self.spec, &drawing[FaceLayerId::Base], sections, &mut self.native)
+            .unwrap();
         assert!(drawn, "the rasteriser declined the wgpu tuple");
     }
 
-    fn warm(&mut self) {
+    /// One repaint of the change under test: the neutral face and `other` in turn.
+    fn alternate(&mut self, other: usize) {
+        let frame = if self.next == 0 { other } else { NEUTRAL };
+        self.next = 1 - self.next;
+        self.repaint(frame);
+    }
+
+    fn warm(&mut self, other: usize) {
         for _ in 0..WARM_UP {
-            self.repaint();
+            self.alternate(other);
         }
         self.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
     }
 }
 
-#[test]
-fn a_warmed_repaint_allocates_the_pinned_count_on_every_repaint() {
+/// The allocations of 32 warmed repaints alternating the neutral face with `other`, checked against `pinned`.
+fn check_allocations(other: usize, pinned: usize, what: &str) {
     let Some(mut s) = setup() else { return };
-    s.warm();
-    // The first repaint after the device went idle also pays for waking it (about ten more), so it is not counted.
-    s.repaint();
-    let counts: Vec<usize> = (0..32).map(|_| count_allocations(|| s.repaint())).collect();
-    eprintln!("allocations per warmed repaint (Vello's own): {counts:?}");
-    let most = counts.iter().copied().max().unwrap();
-    assert!(
-        most <= VELLO_STEADY_STATE_ALLOCS,
-        "{most} allocations in one repaint, pinned at {VELLO_STEADY_STATE_ALLOCS}"
-    );
-    let least = counts.iter().copied().min().unwrap();
-    assert!(most - least <= 2, "the count moves between repaints: {counts:?}");
+    s.warm(other);
+    // The first repaint after the device went idle also pays for waking it, so it is not counted.
+    s.alternate(other);
+    let counts: Vec<usize> = (0..32).map(|_| count_allocations(|| s.alternate(other))).collect();
+    eprintln!("allocations per warmed repaint, {what}: {counts:?}");
+    let (most, least) = (counts.iter().copied().max().unwrap(), counts.iter().copied().min().unwrap());
+    assert!(most <= pinned, "{what}: {most} allocations in one repaint, pinned at {pinned}");
+    assert!(most - least <= SPREAD, "{what}: the count moves between repaints: {counts:?}");
+}
+
+#[test]
+fn a_warmed_mouth_only_repaint_allocates_the_pinned_count_on_every_repaint() {
+    check_allocations(MOUTH, MOUTH_ONLY_ALLOCS, "mouth only");
+}
+
+#[test]
+fn a_warmed_whole_face_repaint_allocates_the_pinned_count_on_every_repaint() {
+    check_allocations(WHOLE, WHOLE_FACE_ALLOCS, "whole face");
+}
+
+#[test]
+fn an_unchanged_repaint_allocates_nothing() {
+    let Some(mut s) = setup() else { return };
+    s.warm(MOUTH);
+    s.repaint(NEUTRAL);
+    s.repaint(NEUTRAL);
+    let allocations = count_allocations(|| s.repaint(NEUTRAL));
+    assert_eq!(allocations, 0, "fingerprinting the sections of an unchanged face allocated");
+    assert_eq!(s.rasterizer.sections_encoded(), 0);
 }
 
 #[test]
 fn a_hundred_repaints_raise_no_validation_error() {
     let Some(mut s) = setup() else { return };
-    s.warm();
+    s.warm(WHOLE);
     for repaint in 0..100 {
         let scope = s.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        s.repaint();
+        s.alternate(if repaint % 2 == 0 { MOUTH } else { WHOLE });
         let error = pollster::block_on(scope.pop());
         assert!(error.is_none(), "repaint {repaint}: {error:?}");
     }
 }
 
-#[test]
-fn repaint_time_over_a_thousand_warmed_repaints() {
-    let Some(mut s) = setup() else { return };
-    s.warm();
+/// p50 and p99 in milliseconds of 1,000 warmed repaints alternating the neutral face with `other`.
+fn repaint_times(other: usize) -> Option<(f64, f64)> {
+    let mut s = setup()?;
+    s.warm(other);
     let mut ms: Vec<f64> = (0..1000)
         .map(|_| {
             let start = Instant::now();
-            s.repaint();
+            s.alternate(other);
             s.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
             start.elapsed().as_secs_f64() * 1000.0
         })
         .collect();
     ms.sort_by(f64::total_cmp);
-    eprintln!("repaint on lavapipe (not a GPU timing): p50 {:.3} ms, p99 {:.3} ms (budget 0.5 ms)", ms[500], ms[990]);
+    Some((ms[500], ms[990]))
+}
+
+#[test]
+fn repaint_time_over_a_thousand_warmed_repaints() {
+    for (what, other) in [("mouth only", MOUTH), ("whole face", WHOLE)] {
+        if let Some((p50, p99)) = repaint_times(other) {
+            eprintln!(
+                "repaint, {what}, on lavapipe (not a GPU timing): p50 {p50:.3} ms, p99 {p99:.3} ms (budget 0.5 ms)"
+            );
+        }
+    }
 }
