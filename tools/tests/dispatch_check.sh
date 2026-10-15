@@ -773,8 +773,83 @@ def want(got, expected, label):
         print(f"FAIL: {label}: got {got!r}, wanted {expected!r}", file=sys.stderr)
     else:
         print(f"ok: {label}")
-# one test per table entry: a file key is its own path; a folder key holds files and is itself the folder.
-for crate, keys in dc.TEST_MODULES.items():
+# the intended mapping, written out a second time here rather than read from TEST_MODULES: an entry that is changed to
+# the wrong module or deleted in the table fails, and so does one missing here. Each entry is then checked through
+# bucket_of: a file key is its own path, a folder key holds files and is itself the folder.
+EXPECTED = {
+    "omuzaki-char": {
+        "tests/accessory_rigid.rs": "accessory",
+        "tests/body.rs": "body",
+        "tests/body_shape.rs": "body",
+        "tests/builder.rs": "builder",
+        "tests/cloth_contact.rs": "cloth",
+        "tests/cloth_contact_replay.rs": "cloth",
+        "tests/cloth_live.rs": "cloth",
+        "tests/cloth_solver": "cloth",
+        "tests/hair_bangs.rs": "hair",
+        "tests/hair_braid.rs": "hair",
+        "tests/hair_cap_sweep.rs": "hair",
+        "tests/hair_curtain.rs": "hair",
+        "tests/hair_pipeline.rs": "hair",
+        "tests/head_ears.rs": "head",
+        "tests/head_part.rs": "head",
+        "tests/head_quality": "head",
+        "tests/head_shape.rs": "head",
+        "tests/head_trace.rs": "head",
+        "tests/kit_builder.rs": "kit",
+        "tests/kit_parity.rs": "kit",
+        "tests/kit_sweep.rs": "kit",
+        "tests/look_ops.rs": "ops",
+        "tests/op_layout.rs": "ops",
+        "tests/op_part_sources.rs": "ops",
+        "tests/op_variant.rs": "ops",
+        "tests/op_weights.rs": "ops",
+        "tests/ops_body.rs": "ops",
+        "tests/ops_character.rs": "ops",
+        "tests/ops_part_param.rs": "ops",
+        "tests/palette_contrast.rs": "palette",
+        "tests/palette_independence.rs": "palette",
+        "tests/palette_ops.rs": "palette",
+        "tests/skin_tone.rs": "palette",
+        "tests/template_soft_sd.rs": "template",
+        "tests/template_soft_sd.proptest-regressions": "template",
+        "tests/templates.rs": "template",
+        "benches/builder.rs": "builder",
+        "benches/cloth_contact.rs": "cloth",
+        "benches/cloth_runtime.rs": "cloth",
+        "benches/cloth_solver.rs": "cloth",
+        "benches/hair_cap_sweep.rs": "hair",
+        "benches/hair_runtime.rs": "hair",
+        "benches/hair_verlet.rs": "hair",
+        "benches/kit.rs": "kit",
+    },
+    "omuzaki-face": {
+        "tests/brows.rs": "painter",
+        "tests/cheeks_nose_marks.rs": "painter",
+        "tests/eyes_aperture.rs": "painter",
+        "tests/eyes_iris.rs": "painter",
+        "tests/mouth_interior.rs": "painter",
+        "tests/mouth_shape.rs": "painter",
+        "tests/op_expression.rs": "ops",
+        "tests/op_mapping.rs": "ops",
+        "tests/op_style.rs": "ops",
+        "tests/raster_subpixel.rs": "raster",
+        "tests/raster_unit.rs": "raster",
+        "tests/system.rs": "system",
+        "tests/underlay.rs": "underlay",
+        "benches/cheeks_nose_marks.rs": "painter",
+        "benches/face_system.rs": "system",
+        "benches/mouth_interior.rs": "painter",
+        "benches/mouth_shape.rs": "painter",
+        "benches/painter_eyes.rs": "painter",
+    },
+}
+got = {(c, k): m for c, keys in dc.TEST_MODULES.items() for k, m in keys.items()}
+intended = {(c, k): m for c, keys in EXPECTED.items() for k, m in keys.items()}
+differ = sorted((c, k, got.get((c, k)), intended.get((c, k))) for c, k in set(got) | set(intended)
+                if got.get((c, k)) != intended.get((c, k)))
+want(differ, [], "TEST_MODULES holds exactly the intended mapping")
+for crate, keys in EXPECTED.items():
     for key, module in keys.items():
         if "." in key.rsplit("/", 1)[-1]:
             want(dc.bucket_of(crate, key, True), module, f"{crate}/{key} -> {module}")
@@ -838,20 +913,21 @@ expect_code 1 "module cap: exit 1"
 run 9201 --module-cap 4
 expect_line "go #9201" "module cap: a higher --module-cap lets it go"
 
-# ceiling: 8 open PRs in the crate wait, though no module is full and the crate cap (3) would bite any other crate.
+# ceiling: 12 open PRs in the crate (the default, ADR 0062) wait, though no module is full and the crate cap (3) would
+# bite any other crate. Twelve modules, one PR each, so no module is full; the fence is a thirteenth, empty module.
 scenario ceiling
 issue 9204 <<'B'
 **Fence:** `crates/omuzaki-char/src/template/layout.rs`
 B
 python3 -I -c '
 import json
-mods = ["accessory", "body", "builder", "cloth", "fit", "head", "kit", "look"]
+mods = ["accessory", "body", "builder", "cloth", "fit", "head", "kit", "look", "hair", "ops", "palette", "rig"]
 print(json.dumps([{"number": 800 + i, "headRefName": f"cloud/{800 + i}", "isDraft": False,
                    "createdAt": "2026-10-08T10:00:00Z", "files": [{"path": f"crates/omuzaki-char/src/{m}/x.rs"}], "body": ""}
                   for i, m in enumerate(mods)]))' >"$FX/prs.json"
 run 9204
-expect_line "wait #9204: crate ceiling: omuzaki-char has 8 open PRs (#800, #801, #802, #803, #804, #805, #806, #807) (ceiling 8)" "ceiling: waits at 8 open PRs, and the crate cap does not count char"
-run 9204 --module-ceiling 9
+expect_line "wait #9204: crate ceiling: omuzaki-char has 12 open PRs (#800, #801, #802, #803, #804, #805, #806, #807, #808, #809, #810, #811) (ceiling 12)" "ceiling: the default waits at 12 open PRs, and the crate cap does not count char"
+run 9204 --module-ceiling 13
 expect_line "go #9204" "ceiling: a higher --module-ceiling lets it go"
 
 # shared slot: a root file, lib.rs, tests/common and an unlisted test take the one slot; a task that does not need it goes.
