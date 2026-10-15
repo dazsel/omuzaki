@@ -1,8 +1,21 @@
 src/clock.rs: pub struct Timestamp(pub i64);
 src/clock.rs: pub trait WallClock: Send + Sync {
+src/clock.rs: WallClock: fn now(&self) -> Timestamp;
 src/disk.rs: pub struct DirEntry {
 src/disk.rs: pub enum LinkKind {
 src/disk.rs: pub trait Disk: Send + Sync {
+src/disk.rs: Disk: fn read(&self, path: &Path) -> io::Result<Vec<u8>>;
+src/disk.rs: Disk: fn write(&self, path: &Path, bytes: &[u8]) -> io::Result<()>;
+src/disk.rs: Disk: fn fsync(&self, path: &Path) -> io::Result<()>;
+src/disk.rs: Disk: fn rename(&self, from: &Path, to: &Path) -> io::Result<()>;
+src/disk.rs: Disk: fn create_dir_all(&self, path: &Path) -> io::Result<()>;
+src/disk.rs: Disk: fn remove_dir_all(&self, path: &Path) -> io::Result<()>;
+src/disk.rs: Disk: fn exists(&self, path: &Path) -> bool;
+src/disk.rs: Disk: fn list_dir(&self, path: &Path) -> io::Result<Vec<DirEntry>>;
+src/disk.rs: Disk: fn symlink(&self, target: &str, link: &Path, kind: LinkKind) -> io::Result<()>;
+src/disk.rs: Disk: fn set_executable(&self, path: &Path, on: bool) -> io::Result<()>;
+src/disk.rs: Disk: fn free_bytes(&self, path: &Path) -> io::Result<u64>;
+src/disk.rs: Disk: fn write_atomic(&self, path: &Path, bytes: &[u8]) -> io::Result<()> {
 src/error.rs: pub enum UpdateError {
 src/event.rs: pub const EVENT_QUEUE_CAPACITY: usize = 64;
 src/event.rs: pub enum UpdateEvent {
@@ -40,7 +53,12 @@ src/lib.rs: pub mod status;
 src/lib.rs: pub mod updater;
 src/lib.rs: pub use semver::Version;
 src/progress.rs: pub trait Progress: Send + Sync {
-src/release.rs: pub struct Url(pub String);
+src/progress.rs: Progress: fn report(&self, done: u64, total: u64);
+src/progress.rs: Progress: fn cancelled(&self) -> bool;
+src/release.rs: pub struct Url(String);
+src/release.rs: pub enum UrlError {
+src/release.rs: pub fn new(text: impl Into<String>) -> Result<Self, UrlError> {
+src/release.rs: pub fn as_str(&self) -> &str {
 src/release.rs: pub enum Channel {
 src/release.rs: pub enum PackageKind {
 src/release.rs: pub struct Release {
@@ -55,4 +73,15 @@ src/status.rs: pub enum RollbackReason {
 src/status.rs: pub enum UpdateStatus {
 src/status.rs: pub enum CatalogueStatus {
 src/updater.rs: pub trait Updater: Send + Sync {
+src/updater.rs: Updater: fn status(&self) -> UpdateStatus;
+src/updater.rs: Updater: fn check(&self, channel: Channel) -> Result<Option<Release>, UpdateError>;
+src/updater.rs: Updater: fn download(&self, release: &Release, progress: &dyn Progress) -> Result<(), UpdateError>;
+src/updater.rs: Updater: fn stage(&self, release: &Release) -> Result<(), UpdateError>;
+src/updater.rs: Updater: fn rollback(&self) -> Result<(), UpdateError>;
+src/updater.rs: Updater: fn hold(&self, why: HoldReason) -> Hold;
+src/updater.rs: Updater: fn healthy(&self) -> Result<(), UpdateError>;
+src/updater.rs: Updater: fn subscribe(&self) -> UpdateEvents;
+src/updater.rs: Updater: fn restart_allowed(&self) -> Result<(), UpdateError>;
 src/updater.rs: pub trait ModelCatalogue: Send + Sync {
+src/updater.rs: ModelCatalogue: fn refresh(&self) -> Result<CatalogueStatus, UpdateError>;
+src/updater.rs: ModelCatalogue: fn status(&self) -> CatalogueStatus;

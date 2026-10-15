@@ -3,11 +3,84 @@
 use schemars::JsonSchema;
 use semver::Version;
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 /// An https URL. Used for release-notes pages only, which the person may open in a browser.
+///
+/// The only way in is [`Url::new`], and deserialization goes through it too, so a `Url` value is always an https URL
+/// with a host. A manifest that offers `http:`, `file:` or a non-URL fails to parse as a whole.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
-#[serde(transparent)]
-pub struct Url(pub String);
+#[serde(try_from = "String", into = "String")]
+pub struct Url(String);
+
+/// Why a string is not an https URL.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Error)]
+pub enum UrlError {
+    /// The scheme is not `https`.
+    #[error("not an https URL")]
+    NotHttps,
+    /// The scheme is https, but the rest is not a URL with a host: spaces or other non-ASCII characters, a missing
+    /// host, a bad port, or user information (`user@host`).
+    #[error("malformed https URL")]
+    Malformed,
+}
+
+impl Url {
+    /// Parses `text` as an https URL.
+    ///
+    /// # Errors
+    /// [`UrlError::NotHttps`] when the scheme is not `https` (any case); [`UrlError::Malformed`] when the rest is not
+    /// a URL with a host.
+    pub fn new(text: impl Into<String>) -> Result<Self, UrlError> {
+        let text = text.into();
+        let rest = match text.get(..8) {
+            Some(scheme) if scheme.eq_ignore_ascii_case("https://") => &text[8..],
+            _ => return Err(UrlError::NotHttps),
+        };
+        if !rest.bytes().all(|b| b.is_ascii_graphic()) {
+            return Err(UrlError::Malformed);
+        }
+        let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+        if !valid_authority(authority) {
+            return Err(UrlError::Malformed);
+        }
+        Ok(Self(text))
+    }
+
+    /// The URL as text.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for Url {
+    type Error = UrlError;
+
+    fn try_from(text: String) -> Result<Self, Self::Error> {
+        Self::new(text)
+    }
+}
+
+impl From<Url> for String {
+    fn from(url: Url) -> Self {
+        url.0
+    }
+}
+
+/// `host` or `host:port`, with no user information. The host is a DNS name or an IPv4 address: letters, digits, `-`
+/// and `.`, not empty, no leading or trailing dot.
+fn valid_authority(authority: &str) -> bool {
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((host, port)) => (host, Some(port)),
+        None => (authority, None),
+    };
+    let port_ok = port.is_none_or(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
+    let host_ok = !host.is_empty()
+        && !host.starts_with('.')
+        && !host.ends_with('.')
+        && host.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.');
+    port_ok && host_ok
+}
 
 /// An update channel. It is part of the feed path, never of the request.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
