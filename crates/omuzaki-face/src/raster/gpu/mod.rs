@@ -240,6 +240,11 @@ struct Gpu {
 /// unchanged layer into the same texture does no work at all. [`rasterize_native`](GpuRasterizer::rasterize_native) treats
 /// the whole list as one section.
 ///
+/// The native convention: `native` downcasts to `(wgpu::Device, wgpu::Queue, wgpu::Texture)`, which is
+/// `omuzaki_render::NativePaintTarget` (this crate can't name that alias, so it names the tuple). The texture is the
+/// renderer's `Rgba8Unorm` face texture holding premultiplied sRGB with `STORAGE_BINDING | RENDER_ATTACHMENT | COPY_DST`
+/// usages; only level 0 is written, and the renderer rebuilds the mips. The rasteriser submits on that queue.
+///
 /// Use one for all of a system's layers, and with one device only: the Vello renderer belongs to the device of the first
 /// paint, and each layer has its own cache and private texture.
 ///
