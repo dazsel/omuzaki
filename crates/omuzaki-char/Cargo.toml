@@ -53,6 +53,10 @@ name = "hair_runtime"
 harness = false
 
 [[bench]]
+name = "hair_cap_sweep"
+harness = false
+
+[[bench]]
 name = "cloth_solver"
 harness = false
 
