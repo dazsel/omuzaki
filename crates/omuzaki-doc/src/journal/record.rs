@@ -145,15 +145,45 @@ fn entry_time(entry: &HistoryEntry) -> Option<Seconds> {
     }
 }
 
-/// The kind and JSON payload of one record.
+/// The deepest nesting of JSON arrays and objects a payload may have: 127, one less than the recursion limit of 128 that
+/// `serde_json` enforces when it reads a document. `encode` refuses a deeper payload, so every record it accepts is
+/// one [`decode`] reads back.
+pub const MAX_DEPTH: usize = 127;
+
+/// How deeply the JSON text `bytes` nests arrays and objects; 0 for a scalar. Brackets inside strings don't count.
+fn json_depth(bytes: &[u8]) -> usize {
+    let (mut depth, mut deepest, mut in_string, mut escaped) = (0usize, 0usize, false, false);
+    for &b in bytes {
+        if in_string {
+            match (escaped, b) {
+                (true, _) => escaped = false,
+                (false, b'\\') => escaped = true,
+                (false, b'"') => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        match b {
+            b'"' => in_string = true,
+            b'[' | b'{' => {
+                depth += 1;
+                deepest = deepest.max(depth);
+            }
+            b']' | b'}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    deepest
+}
+
+/// The kind and JSON payload of one record. The payload is checked to read back as the same record, so what `encode`
+/// accepts is what [`decode`] returns.
 fn payload_of(lsn: Lsn, record: &Record) -> Result<(u8, Vec<u8>), JournalError> {
     let unencodable = |reason: String| JournalError::Unencodable { lsn: lsn.0, reason };
     let json = |r: serde_json::Result<Vec<u8>>| r.map_err(|e| unencodable(format!("the payload doesn't encode: {e}")));
-    match record {
-        Record::Session(info) => Ok((kind::SESSION, json(serde_json::to_vec(info))?)),
-        Record::Close { snapshot } => {
-            Ok((kind::CLOSE, json(serde_json::to_vec(&ClosePayload { snapshot: *snapshot }))?))
-        }
+    let (k, payload) = match record {
+        Record::Session(info) => (kind::SESSION, json(serde_json::to_vec(info))?),
+        Record::Close { snapshot } => (kind::CLOSE, json(serde_json::to_vec(&ClosePayload { snapshot: *snapshot }))?),
         Record::Entry(entry) => {
             let Some(k) = entry_kind(entry) else {
                 return Err(unencodable(
@@ -165,8 +195,18 @@ fn payload_of(lsn: Lsn, record: &Record) -> Result<(u8, Vec<u8>), JournalError> 
                     "a runner-clock time isn't finite, and JSON would write it as null".to_string(),
                 ));
             }
-            Ok((k, json(serde_json::to_vec(entry))?))
+            (k, json(serde_json::to_vec(entry))?)
         }
+    };
+    let depth = json_depth(&payload);
+    if depth > MAX_DEPTH {
+        return Err(unencodable(format!("the payload nests {depth} levels deep, over the {MAX_DEPTH} level cap")));
+    }
+    let frame = Frame { lsn, kind: k, flags: 0, payload: &payload };
+    match decode(&frame) {
+        Ok(Some(back)) if back == *record => Ok((k, payload)),
+        Ok(_) => Err(unencodable("the payload doesn't read back as the same record".to_string())),
+        Err(e) => Err(unencodable(format!("the payload doesn't read back: {e}"))),
     }
 }
 
@@ -175,8 +215,9 @@ fn payload_of(lsn: Lsn, record: &Record) -> Result<(u8, Vec<u8>), JournalError> 
 ///
 /// # Errors
 /// [`JournalError::Unencodable`] for a `Mark` or `HistoryEntry::Session` entry, a non-finite runner-clock time
-/// (`Begin::at`, `OpRecord::at`, `JobStarted::at`), a payload over [`MAX_PAYLOAD`](super::MAX_PAYLOAD), or JSON that fails. `out` is left
-/// as it was.
+/// (`Begin::at`, `OpRecord::at`, `JobStarted::at`), a payload over [`MAX_PAYLOAD`](super::MAX_PAYLOAD) or nested deeper than [`MAX_DEPTH`], a
+/// value JSON can't hold exactly (so the payload doesn't read back as the same record), or JSON that fails. `out` is
+/// left as it was.
 pub fn encode(records: &[(Lsn, Record)], out: &mut Vec<u8>) -> Result<(), JournalError> {
     let start = out.len();
     let result = records.iter().try_for_each(|(lsn, record)| {

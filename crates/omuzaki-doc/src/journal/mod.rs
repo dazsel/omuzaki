@@ -18,7 +18,7 @@ pub use format::{
     SegmentHeader, read_frame, segment_name, segment_seq, write_frame,
 };
 pub use reader::{End, Position, Reader, Scan};
-pub use record::{Record, SessionInfo, decode, encode, kind};
+pub use record::{MAX_DEPTH, Record, SessionInfo, decode, encode, kind};
 
 /// Why the journal can't be read or written.
 #[derive(Debug, thiserror::Error)]

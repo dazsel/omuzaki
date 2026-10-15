@@ -323,3 +323,79 @@ fn a_bad_payload_with_a_good_crc_is_an_error() {
     let err = Reader::scan(dir.path(), Lsn(0)).unwrap_err();
     assert!(matches!(err, JournalError::BadPayload { lsn: 2, .. }), "{err:?}");
 }
+
+#[test]
+fn a_scan_from_zero_starts_at_the_first_segment_and_reports_a_restart() {
+    // Segment 2 restarts at LSN 1: with `from` 0 the scan starts at segment 1 and sees the discontinuity.
+    let dir = tempfile::tempdir().unwrap();
+    put(dir.path(), 1, &segment(1, &commits(1, 3)));
+    put(dir.path(), 2, &segment(1, &commits(1, 2)));
+    let scan = Reader::scan(dir.path(), Lsn(0)).unwrap();
+    assert_eq!(lsns(&scan), [1, 2, 3]);
+    assert_eq!(scan.end, End::Damaged { at: at(2, 0, 3), later_valid: 2 });
+}
+
+#[test]
+fn a_zero_tail_ends_the_log_unless_a_recovery_session_follows() {
+    for zeros in [1, 19, 20, 4096] {
+        // A later segment that continues the LSNs is not a rotation: the zero tail ended the log.
+        let dir = tempfile::tempdir().unwrap();
+        let mut first = segment(1, &commits(1, 3));
+        first.extend(std::iter::repeat_n(0u8, zeros));
+        put(dir.path(), 1, &first);
+        put(dir.path(), 2, &segment(4, &commits(4, 5)));
+        let scan = Reader::scan(dir.path(), Lsn(0)).unwrap();
+        assert_eq!((lsns(&scan), scan.end), (vec![1, 2, 3], End::Clean), "{zeros} zeros");
+
+        // A segment an earlier recovery started (a session record one past the last good record) is read.
+        put(dir.path(), 2, &segment(4, &[session(4), commit(5)]));
+        let scan = Reader::scan(dir.path(), Lsn(0)).unwrap();
+        assert_eq!(lsns(&scan), [1, 2, 3, 4, 5], "{zeros} zeros, recovery session");
+        assert_eq!(scan.end, End::Clean);
+    }
+}
+
+#[test]
+fn lsn_u64_max_is_the_end_of_the_sequence() {
+    let top = u64::MAX;
+    // A second frame with the same LSN is a bad frame, not a duplicate to accept.
+    let dir = tempfile::tempdir().unwrap();
+    let records = [commit(top), commit(top)];
+    put(dir.path(), 1, &segment(top, &records));
+    let scan = Reader::scan(dir.path(), Lsn(0)).unwrap();
+    assert_eq!(lsns(&scan), [top]);
+    assert_eq!(scan.end, End::TornTail { at: at(1, offset_of(&records, 1), top) });
+
+    // So is a following segment that starts at u64::MAX again.
+    let dir = tempfile::tempdir().unwrap();
+    put(dir.path(), 1, &segment(top, &[commit(top)]));
+    put(dir.path(), 2, &segment(top, &[commit(top)]));
+    let scan = Reader::scan(dir.path(), Lsn(0)).unwrap();
+    assert_eq!(lsns(&scan), [top]);
+    assert_eq!(scan.end, End::Damaged { at: at(2, 0, top), later_valid: 1 });
+}
+
+#[test]
+fn a_large_noisy_tail_is_scanned_in_bounded_work() {
+    // 16 MiB of deterministic noise after a bad frame. Looking past the bad frame must not hash a payload at every
+    // offset (hundreds of GB for this input): only offsets whose length fits and whose payload looks like a JSON
+    // object are hashed, so this finishes at once, and the noise holds no valid frame.
+    let records = commits(1, 3);
+    let mut bytes = segment(1, &records);
+    let second = offset_of(&records, 1);
+    bytes[second + 20] ^= 0x01;
+    let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+    bytes.extend((0..16 * 1024 * 1024).map(|_| {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state.to_le_bytes()[3]
+    }));
+    let dir = tempfile::tempdir().unwrap();
+    put(dir.path(), 1, &bytes);
+    let scan = Reader::scan(dir.path(), Lsn(0)).unwrap();
+    assert_eq!(lsns(&scan), [1]);
+    // Frame 3 is intact after the bad frame 2, so this is damage with one later valid frame... unless the noise
+    // overwrote it: the noise is appended, so frame 3 is still there.
+    assert_eq!(scan.end, End::Damaged { at: at(1, second, 1), later_valid: 1 });
+}

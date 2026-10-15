@@ -7,11 +7,11 @@ use std::sync::Arc;
 
 use omuzaki_core::time::Seconds;
 use omuzaki_doc::journal::{
-    JournalError, Record, SKIPPABLE, SessionInfo, decode, encode, kind, read_frame, write_frame,
+    JournalError, MAX_DEPTH, Record, SKIPPABLE, SessionInfo, decode, encode, kind, read_frame, write_frame,
 };
 use omuzaki_doc_api::{Change, DocPath, DocVersion, Patch};
 use omuzaki_history_api::{HistoryEntry, HistoryExport, Lsn, OpenTxExport, SnapshotId, Stack, WallTime};
-use omuzaki_ops_api::{Actor, JobId, JobState, OpRecord, TxId};
+use omuzaki_ops_api::{Actor, ErrorDetail, JobId, JobState, OpError, OpRecord, TxId};
 use omuzaki_store_api::ContentHash;
 use serde_json::json;
 
@@ -226,4 +226,61 @@ fn encoding_is_deterministic() {
     encode(&records, &mut a).unwrap();
     encode(&records, &mut b).unwrap();
     assert_eq!(a, b);
+}
+
+/// An `op` record whose args are `levels` arrays nested in each other.
+fn nested(levels: usize) -> (Lsn, Record) {
+    let mut args = json!(1);
+    for _ in 0..levels {
+        args = json!([args]);
+    }
+    let record = OpRecord::new(1, "set", args, actor(), TxId(1), Seconds(1.0), patch(), DocVersion(2));
+    (Lsn(1), Record::Entry(HistoryEntry::Op { record: Arc::new(record), commits: true }))
+}
+
+#[test]
+fn every_record_encode_accepts_decodes_including_deep_ones() {
+    let mut accepted = 0;
+    for levels in 0..(MAX_DEPTH + 10) {
+        let record = nested(levels);
+        let mut out = Vec::new();
+        match encode(std::slice::from_ref(&record), &mut out) {
+            Ok(()) => {
+                accepted = levels;
+                let frame = read_frame(&out).unwrap();
+                assert_eq!(decode(&frame).unwrap(), Some(record.1), "{levels} levels");
+            }
+            Err(err) => {
+                assert!(matches!(err, JournalError::Unencodable { lsn: 1, .. }), "{levels} levels: {err:?}");
+                assert!(out.is_empty(), "{levels} levels: out is unchanged");
+                assert!(levels > accepted, "{levels} levels is refused after {accepted} were accepted");
+            }
+        }
+    }
+    // The cap bites: the args sit a few levels inside the payload, so fewer than MAX_DEPTH levels fit, and one more is
+    // refused with a message naming the cap.
+    assert!(accepted > 100 && accepted < MAX_DEPTH, "{accepted}");
+    let JournalError::Unencodable { reason, .. } = encode(&[nested(accepted + 1)], &mut Vec::new()).unwrap_err() else {
+        panic!("not unencodable");
+    };
+    assert!(reason.contains("level"), "{reason}");
+}
+
+#[test]
+fn a_value_json_cannot_hold_exactly_is_refused() {
+    // An f32 progress or cost that is not finite would be written as null and read back as something else.
+    let job = |seconds: f32| {
+        Record::Entry(HistoryEntry::JobEnded {
+            job: JobId(1),
+            state: JobState::Failed {
+                error: OpError::internal("limit").with_detail(ErrorDetail::RetryAfter { seconds, limit: "x=1".into() }),
+            },
+        })
+    };
+    let mut out = Vec::new();
+    for seconds in [f32::NAN, f32::INFINITY] {
+        assert!(encode(&[(Lsn(1), job(seconds))], &mut out).is_err(), "{seconds}");
+        assert_eq!(out, Vec::<u8>::new());
+    }
+    encode(&[(Lsn(1), job(1.5))], &mut out).unwrap();
 }
