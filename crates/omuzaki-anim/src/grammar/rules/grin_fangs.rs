@@ -34,7 +34,6 @@ use omuzaki_anim_api::Channel;
 
 use super::common::{Band, MAX_ATTACK, Presence, Timing, net_smile, raise};
 use crate::grammar::{GrammarRule, RuleCtx, RuleParams};
-use crate::register_grammar_rule;
 
 /// The fangs are only believed after 0.08 s, then rise in 0.08 s and linger a moment after the grin.
 const GRIN: Timing = Timing { attack: 0.08, hold: 0.1, rise: 0.08, fall: 0.15 };

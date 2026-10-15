@@ -21,6 +21,8 @@ zip.workspace = true
 flate2.workspace = true
 # The library contract: `lint-seed` reads manifests and compares their canonical form exactly as the library hashes them.
 omuzaki-library-api = { path = "../crates/omuzaki-library-api" }
+# `lint-mods` asks the generator itself which children a folder declares, so the lint and the build share one rule.
+omuzaki-embed = { path = "../crates/omuzaki-embed" }
 
 [dev-dependencies]
 tempfile.workspace = true

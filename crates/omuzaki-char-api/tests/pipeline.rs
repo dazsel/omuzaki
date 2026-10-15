@@ -36,7 +36,7 @@ impl PartKind for Probe {
     }
 
     fn build(_: &common::NoParams, ctx: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
-        Ok(PartOutput { warnings: vec![draw(&mut ctx.rng)], ..PartOutput::default() })
+        Ok(PartOutput::new().with_warnings(vec![draw(&mut ctx.rng)]))
     }
 }
 omuzaki_char_api::register_part_kind!(Probe);
@@ -66,16 +66,13 @@ fn probe(layer: i32) -> PartDef {
 fn character(seed: u32, probes: &[(&str, i32)]) -> CharacterDef {
     let mut parts = BTreeMap::from([(id("body"), common::body_part())]);
     parts.extend(probes.iter().map(|(name, layer)| (id(name), probe(*layer))));
-    CharacterDef {
-        name: "Pipeline".to_owned(),
-        template: omuzaki_char_api::BodyTemplateId::new("soft-sd").unwrap(),
-        seed,
-        palette: Palette::default(),
-        skin_tone: None,
-        parts,
-        face: FaceProfile::default(),
-        weight_brushes: BTreeMap::new(),
-    }
+    CharacterDef::new("Pipeline".to_owned(), omuzaki_char_api::BodyTemplateId::new("soft-sd").unwrap())
+        .with_seed(seed)
+        .with_palette(Palette::default())
+        .with_skin_tone(None)
+        .with_parts(parts)
+        .with_face(FaceProfile::default())
+        .with_weight_brushes(BTreeMap::new())
 }
 
 fn char_id() -> CharId {
@@ -273,13 +270,12 @@ fn the_assembler_validates_what_it_is_given_in_the_registry_builders_order() {
     // A broken mesh is named before the (also broken) material that follows it.
     let mut broken = triangle("oops", "m");
     broken.geometry.normals.pop();
-    let output =
-        PartOutput { meshes: vec![broken], materials: vec![material("m"), material("m")], ..PartOutput::default() };
+    let output = PartOutput::new().with_meshes(vec![broken]).with_materials(vec![material("m"), material("m")]);
     assert!(matches!(new().add(&id("a"), output).unwrap_err(), BuildError::Mesh { ref mesh, .. } if mesh == "oops"));
 
     // A material another part defined.
     let mut assembler = new();
-    let define = || PartOutput { materials: vec![material("shared")], ..PartOutput::default() };
+    let define = || PartOutput::new().with_materials(vec![material("shared")]);
     assembler.add(&id("a"), define()).unwrap();
     let err = assembler.add(&id("b"), define()).unwrap_err();
     assert!(matches!(err, BuildError::Duplicate { what: "material", ref id } if id == "shared"), "{err}");
@@ -287,7 +283,7 @@ fn the_assembler_validates_what_it_is_given_in_the_registry_builders_order() {
     // A mesh naming a material nobody defines is found at the end, once all parts are in.
     let mut assembler = new();
     assembler.add(&id("body"), body_output(&def)).unwrap();
-    let orphan = PartOutput { meshes: vec![triangle("orphan", "ghost")], ..PartOutput::default() };
+    let orphan = PartOutput::new().with_meshes(vec![triangle("orphan", "ghost")]);
     assembler.add(&id("a"), orphan).unwrap();
     let err = assembler.finish().unwrap_err();
     assert!(matches!(err, BuildError::UnknownMaterial { ref material, .. } if material.as_str() == "ghost"), "{err}");

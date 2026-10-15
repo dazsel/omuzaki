@@ -33,6 +33,19 @@ pub fn violations(sources: &Sources) -> Vec<String> {
             ))
         })
         .collect();
+    for krate in sources.crates() {
+        for (key, package) in &krate.krate.optional_deps {
+            let registers = sources.get(package).is_ok_and(|dep| dep.krate.registers);
+            if registers && krate.krate.dep_syntax.contains(key) {
+                found.push(format!(
+                    "{}: a feature lists `dep:{key}`, but `{package}` registers: `dep:` hides the implicit feature `{key}` \
+                     that the generated link call is gated on, so a command line `--features {key}/<feature>` would link the \
+                     crate without its `link()` call. List `\"{key}\"` instead",
+                    krate.krate.name
+                ));
+            }
+        }
+    }
     found.sort();
     found
 }

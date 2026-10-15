@@ -119,10 +119,10 @@ impl PartKind for Cloth {
         let mut desc = TextureDesc::colour(UVec2::ONE);
         desc.alpha = if params.straight { AlphaEncoding::Straight } else { AlphaEncoding::Premultiplied };
         let texture = ctx.paint_texture(UVec2::new(16, 8), cloth_rect(), &DrawList::new(), desc)?;
-        Ok(PartOutput {
-            textures: vec![(TextureName::new("probe-cloth-weave").map_err(|e| ctx.fail(e.to_string()))?, texture)],
-            ..PartOutput::default()
-        })
+        Ok(PartOutput::new().with_textures(vec![(
+            TextureName::new("probe-cloth-weave").map_err(|e| ctx.fail(e.to_string()))?,
+            texture,
+        )]))
     }
 }
 omuzaki_char_api::register_part_kind!(Cloth);
@@ -151,7 +151,7 @@ impl PartKind for Reader {
     fn build(params: &ReaderParams, ctx: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
         let hash: ContentHash = params.hash.parse().map_err(|e| ctx.fail(format!("{e}")))?;
         let bytes = ctx.asset_or_fail(&hash)?;
-        Ok(PartOutput { warnings: vec![format!("read {} bytes", bytes.len())], ..PartOutput::default() })
+        Ok(PartOutput::new().with_warnings(vec![format!("read {} bytes", bytes.len())]))
     }
 }
 omuzaki_char_api::register_part_kind!(Reader);
@@ -161,19 +161,16 @@ omuzaki_char_api::register_part_kind!(Reader);
 fn character(kind: &str, params: serde_json::Value) -> CharacterDef {
     let part =
         PartDef { kind: PartKindId::new(kind).unwrap(), parent: None, enabled: true, layer: 0, attach: None, params };
-    CharacterDef {
-        name: "Test".to_owned(),
-        template: omuzaki_char_api::BodyTemplateId::new("soft-sd").unwrap(),
-        seed: 7,
-        palette: Palette::default(),
-        skin_tone: None,
-        parts: BTreeMap::from([
+    CharacterDef::new("Test".to_owned(), omuzaki_char_api::BodyTemplateId::new("soft-sd").unwrap())
+        .with_seed(7)
+        .with_palette(Palette::default())
+        .with_skin_tone(None)
+        .with_parts(BTreeMap::from([
             (PartId::new("body").unwrap(), common::body_part()),
             (PartId::new("probe").unwrap(), part),
-        ]),
-        face: FaceProfile::default(),
-        weight_brushes: BTreeMap::new(),
-    }
+        ]))
+        .with_face(FaceProfile::default())
+        .with_weight_brushes(BTreeMap::new())
 }
 
 fn build(def: &CharacterDef, services: &BuildServices) -> Result<BuiltCharacter, BuildError> {
@@ -189,18 +186,7 @@ fn with_ctx<T>(services: &BuildServices, f: impl FnOnce(&BuildCtx<'_>) -> T) -> 
     let (part, palette, face) = (PartId::new("probe").unwrap(), Palette::default(), FaceProfile::default());
     let published = Published::default();
     let template = omuzaki_char_api::BodyTemplateId::new("soft-sd").unwrap();
-    let ctx = BuildCtx {
-        part: &part,
-        template: &template,
-        palette: &palette,
-        face: &face,
-        rng: Rng::new(0),
-        published: &published,
-        quality: Quality::Live,
-        services,
-        rig_export: false,
-        attach: None,
-    };
+    let ctx = BuildCtx::new(&part, &template, &palette, &face, Rng::new(0), &published, Quality::Live, services);
     f(&ctx)
 }
 

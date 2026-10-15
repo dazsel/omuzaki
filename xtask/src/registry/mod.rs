@@ -256,8 +256,24 @@ impl Sources {
     /// # Errors
     /// [`Error::UnknownCrate`] or [`Error::UnknownBin`].
     pub fn expected(&self, package: &str, bin: Option<&str>) -> Result<Vec<Registration>, Error> {
+        self.expected_with_features(package, bin, &[])
+    }
+
+    /// [`expected`](Self::expected) for a build of `package` with these of its features on: an optional dependency of
+    /// `package` is included when its implicit feature (the name it is declared under) is listed. An App's gate test
+    /// passes `cfg!(feature = "...")` for each optional registering dependency.
+    ///
+    /// # Errors
+    /// [`Error::UnknownCrate`] or [`Error::UnknownBin`].
+    pub fn expected_with_features(
+        &self,
+        package: &str,
+        bin: Option<&str>,
+        features: &[&str],
+    ) -> Result<Vec<Registration>, Error> {
         let app = self.get(package)?;
-        let mut all: Vec<Registration> = self.closure(app)?.into_iter().flat_map(|c| c.lib.iter().cloned()).collect();
+        let mut all: Vec<Registration> =
+            self.closure(app, features)?.into_iter().flat_map(|c| c.lib.iter().cloned()).collect();
         if let Some(bin) = bin {
             if !app.krate.bins.iter().any(|(name, _)| name == bin) {
                 return Err(Error::UnknownBin { package: package.to_owned(), bin: bin.to_owned() });
@@ -269,9 +285,14 @@ impl Sources {
     }
 
     /// `app` and everything it depends on, each crate once.
-    fn closure<'a>(&'a self, app: &'a ScannedCrate) -> Result<Vec<&'a ScannedCrate>, Error> {
+    fn closure<'a>(&'a self, app: &'a ScannedCrate, features: &[&str]) -> Result<Vec<&'a ScannedCrate>, Error> {
         let mut seen: Vec<&ScannedCrate> = Vec::new();
         let mut todo = vec![app];
+        for (feature, dep) in &app.krate.optional_deps {
+            if features.contains(&feature.as_str()) {
+                todo.push(self.get(dep)?);
+            }
+        }
         while let Some(next) = todo.pop() {
             if seen.iter().any(|c| c.krate.name == next.krate.name) {
                 continue;
@@ -405,6 +426,19 @@ pub fn expected(root: &Path, package: &str, bin: Option<&str>) -> Result<Vec<Reg
     Sources::scan(root)?.expected(package, bin)
 }
 
+/// [`Sources::expected_with_features`] for the workspace at `root`.
+///
+/// # Errors
+/// As [`Sources::scan`] and [`Sources::expected_with_features`].
+pub fn expected_with_features(
+    root: &Path,
+    package: &str,
+    bin: Option<&str>,
+    features: &[&str],
+) -> Result<Vec<Registration>, Error> {
+    Sources::scan(root)?.expected_with_features(package, bin, features)
+}
+
 /// The binary that owns `file` (relative to its crate), if a binary does: a binary's root file, and everything
 /// under `src/bin/`.
 fn owning_bin(krate: &Crate, file: &Path) -> Option<String> {
@@ -474,6 +508,8 @@ mod tests {
             registers: false,
             generates_links: false,
             lists_link_build: false,
+            optional_deps: Vec::new(),
+            dep_syntax: Vec::new(),
         };
         assert_eq!(owning_bin(&krate, Path::new("src/main.rs")).as_deref(), Some("omuzaki"));
         assert_eq!(owning_bin(&krate, Path::new("src/bin/fixture.rs")).as_deref(), Some("fixture"));

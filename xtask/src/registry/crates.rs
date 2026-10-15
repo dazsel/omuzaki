@@ -37,6 +37,11 @@ pub struct Crate {
     pub generates_links: bool,
     /// Whether it lists `omuzaki-link-build` under `[build-dependencies]`, wired or not.
     pub lists_link_build: bool,
+    /// The members it depends on optionally, by the name of the implicit feature that switches each on (the
+    /// dependency's key) and the package.
+    pub optional_deps: Vec<(String, String)>,
+    /// The optional dependencies some feature lists as `dep:<key>`, which removes their implicit feature.
+    pub dep_syntax: Vec<String>,
 }
 
 /// Every member of the workspace at `root`, sorted by name.
@@ -68,10 +73,17 @@ pub fn load(root: &Path) -> Result<Vec<Crate>, Error> {
     let workspace_deps = workspace.get("workspace").and_then(|w| w.get("dependencies")).and_then(Value::as_table);
     let mut out: Vec<Crate> = Vec::new();
     for (dir, name, manifest) in crates {
-        let mut deps = Vec::new();
-        for target in path_deps(root, &dir, &manifest, workspace_deps)? {
-            deps.extend(by_dir.iter().find(|(d, _)| *d == target).map(|(_, n)| n.clone()));
+        let (mut deps, mut optional_deps) = (Vec::new(), Vec::new());
+        for entry in path_deps(root, &dir, &manifest, workspace_deps)? {
+            let Some(package) = by_dir.iter().find(|(d, _)| *d == entry.dir).map(|(_, n)| n.clone()) else { continue };
+            if entry.optional {
+                optional_deps.push((entry.key, package));
+            } else {
+                deps.push(package);
+            }
         }
+        let dep_syntax =
+            optional_deps.iter().map(|(key, _)| key).filter(|key| uses_dep_syntax(&manifest, key)).cloned().collect();
         out.push(Crate {
             lib: library(&dir, &name, &manifest),
             bins: binaries(&dir, &name, &manifest),
@@ -81,6 +93,8 @@ pub fn load(root: &Path) -> Result<Vec<Crate>, Error> {
                 .unwrap_or(false),
             generates_links: generates_links(&dir, &manifest),
             lists_link_build: lists_link_build(&manifest),
+            optional_deps,
+            dep_syntax,
             dir: dir.strip_prefix(root).unwrap_or(&dir).to_path_buf(),
             name,
             deps,
@@ -107,11 +121,37 @@ fn subdirs_with_manifest(parent: &Path) -> Result<Vec<PathBuf>, Error> {
     Ok(dirs)
 }
 
-/// The directories of the non-optional workspace dependencies under `[dependencies]`: `path` entries, and
+/// A workspace dependency under `[dependencies]`.
+struct DepEntry {
+    /// The key it is declared under, which is also the name of its implicit feature if it is optional.
+    key: String,
+    /// The directory of the crate.
+    dir: PathBuf,
+    /// Whether it is `optional = true`.
+    optional: bool,
+}
+
+/// Whether some feature lists `dep:<key>`.
+fn uses_dep_syntax(manifest: &Table, key: &str) -> bool {
+    let hidden = format!("dep:{key}");
+    manifest
+        .get("features")
+        .and_then(Value::as_table)
+        .into_iter()
+        .flatten()
+        .any(|(_, list)| list.as_array().into_iter().flatten().filter_map(Value::as_str).any(|item| item == hidden))
+}
+
+/// The workspace dependencies under `[dependencies]`, optional ones marked: `path` entries, and
 /// `workspace = true` entries resolved through `[workspace.dependencies]` (their `path` is relative to the workspace
 /// root). A crate from a registry or git is not a member and is left out. A dependency in a form this does not know is an
 /// error: skipping it would hide a member from the link gate.
-fn path_deps(root: &Path, dir: &Path, manifest: &Table, workspace_deps: Option<&Table>) -> Result<Vec<PathBuf>, Error> {
+fn path_deps(
+    root: &Path,
+    dir: &Path,
+    manifest: &Table,
+    workspace_deps: Option<&Table>,
+) -> Result<Vec<DepEntry>, Error> {
     let manifest_path = dir.join("Cargo.toml");
     let fail = |message: String| Error::Manifest { path: manifest_path.clone(), message };
     let mut found = Vec::new();
@@ -138,8 +178,7 @@ fn path_deps(root: &Path, dir: &Path, manifest: &Table, workspace_deps: Option<&
         }
         let optional = spec.get("optional").and_then(Value::as_bool).unwrap_or(false);
         match spec.get("path").and_then(Value::as_str) {
-            Some(path) if !optional => found.push(normalise(&base.join(path))),
-            Some(_) => {}
+            Some(path) => found.push(DepEntry { key: key.clone(), dir: normalise(&base.join(path)), optional }),
             None if inherits || ["version", "git", "registry"].iter().any(|k| spec.contains_key(*k)) => {}
             None => {
                 return Err(fail(format!(

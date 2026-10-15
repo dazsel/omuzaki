@@ -76,11 +76,9 @@ impl PartKind for LookBody {
     }
 
     fn build(_: &Params, _: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
-        Ok(PartOutput {
-            meshes: vec![mesh("look-skin")],
-            materials: vec![(name("look-skin"), toon(0x00f9_d3c5, true))],
-            ..PartOutput::default()
-        })
+        Ok(PartOutput::new()
+            .with_meshes(vec![mesh("look-skin")])
+            .with_materials(vec![(name("look-skin"), toon(0x00f9_d3c5, true))]))
     }
 }
 omuzaki_char_api::register_part_kind!(LookBody);
@@ -97,15 +95,13 @@ impl PartKind for LookCoat {
 
     fn build(params: &Params, _: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
         let declared = if params.stray_class { "look-lining" } else { "look-button" };
-        Ok(PartOutput {
-            meshes: vec![mesh("look-cloth"), mesh("look-button")],
-            materials: vec![
+        Ok(PartOutput::new()
+            .with_meshes(vec![mesh("look-cloth"), mesh("look-button")])
+            .with_materials(vec![
                 (name("look-cloth"), toon(0x0023_2028, false)),
                 (name("look-button"), toon(0x00dc_b66c, false)),
-            ],
-            material_classes: vec![(name(declared), MaterialClass::Metal)],
-            ..PartOutput::default()
-        })
+            ])
+            .with_material_classes(vec![(name(declared), MaterialClass::Metal)]))
     }
 }
 omuzaki_char_api::register_part_kind!(LookCoat);
@@ -126,7 +122,7 @@ impl PartKind for LookSpare {
     }
 
     fn build(_: &Params, _: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
-        Ok(PartOutput { materials: vec![(name("look-spare"), toon(0x0010_1010, false))], ..PartOutput::default() })
+        Ok(PartOutput::new().with_materials(vec![(name("look-spare"), toon(0x0010_1010, false))]))
     }
 }
 omuzaki_char_api::register_part_kind!(LookSpare);
@@ -147,7 +143,7 @@ impl PartKind for LookBorrow {
     }
 
     fn build(_: &Params, _: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
-        Ok(PartOutput { meshes: vec![mesh("look-spare")], ..PartOutput::default() })
+        Ok(PartOutput::new().with_meshes(vec![mesh("look-spare")]))
     }
 }
 omuzaki_char_api::register_part_kind!(LookBorrow);

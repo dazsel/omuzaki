@@ -118,7 +118,11 @@ impl PartKind for Head {
         for ear in ear_anchors {
             publishes.put::<AnchorsFact>(ear);
         }
-        Ok(PartOutput { meshes, materials, publishes, warnings, ..PartOutput::default() })
+        Ok(PartOutput::new()
+            .with_meshes(meshes)
+            .with_materials(materials)
+            .with_publishes(publishes)
+            .with_warnings(warnings))
     }
 }
 

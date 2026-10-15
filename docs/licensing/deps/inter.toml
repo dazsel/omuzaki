@@ -5,4 +5,9 @@ used_for = "character-sheet type, embedded in `omuzaki-stage` (`crates/omuzaki-s
 status = "conditions"
 condition = "OFL-1.1: ship the notice (`OFL.txt`, `NOTICES.md` there); never sold alone; no Reserved Font Name, so the subset (`make_subset.py`) keeps the name; Latin only; other scripts via the Noto fallback fonts below"
 audit = "(rsms/inter v4.1)"
-paths = ["crates/omuzaki-stage/assets/fonts/"]
+paths = [
+  "crates/omuzaki-stage/assets/fonts/Inter-Regular.subset.ttf",
+  "crates/omuzaki-stage/assets/fonts/Inter-SemiBold.subset.ttf",
+  "crates/omuzaki-stage/assets/fonts/NOTICES.md",
+  "crates/omuzaki-stage/assets/fonts/coverage.bin",
+]

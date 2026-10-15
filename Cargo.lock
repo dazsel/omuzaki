@@ -3356,6 +3356,7 @@ dependencies = [
  "omuzaki-anim-mock",
  "omuzaki-core",
  "omuzaki-doc-mock",
+ "omuzaki-embed",
  "omuzaki-face-api",
  "omuzaki-face-mock",
  "omuzaki-ops-api",
@@ -3747,6 +3748,7 @@ dependencies = [
  "omuzaki-core",
  "omuzaki-doc-api",
  "omuzaki-doc-mock",
+ "omuzaki-embed",
  "omuzaki-face-api",
  "omuzaki-io-api",
  "omuzaki-io-mock",
@@ -6878,6 +6880,7 @@ version = "0.0.0"
 dependencies = [
  "clap",
  "flate2",
+ "omuzaki-embed",
  "omuzaki-library-api",
  "omuzaki-link-build",
  "serde",

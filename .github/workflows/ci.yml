@@ -116,6 +116,7 @@ jobs:
           cargo xtask lint-registers
           cargo xtask lint-ui-writes
           cargo xtask lint-crate-table
+          cargo xtask lint-mods
           cargo xtask lint-seed --base "$BASE"
       # On wasm a `registers` crate keeps its registrations only through the App's generated `link()` call (ADR 0015),
       # which no native gate can show. Build the test-only App for wasm32, run it in the runner's preinstalled node and
