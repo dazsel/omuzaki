@@ -127,9 +127,11 @@ jobs:
         if: steps.cache.outputs.cache-hit != 'true'
         run: python tools/litert/build.py --help >/dev/null && python tools/litert/test_build.py
       # Linux builds inside LiteRT's own CI image, pinned by digest in pins.toml; the steps below call "$PY".
+      # The container runs as root, so the host creates the folders its own later steps write into first.
       - name: Build environment
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
+          mkdir -p "$OUT/digest" "$OUT/cachekey"
           py="$RUNNER_TEMP/py"
           image=$(python tools/litert/build.py container --platform "$PLATFORM")
           if [ -n "$image" ]; then
