@@ -5,8 +5,10 @@
 //!   yet (#1748), so the archive comes with the SHA-256 of the run that built it.
 //! - **The library** ([`load_archive`]): unpacked through `omuzaki-ai-native`, loaded once per process, every C
 //!   function of design §3.2 resolved, and its version, schema version and shim ABI checked before anything runs.
-//! - **Not yet:** the model scan (design §5) arrives with the second part of #1749 and sessions with #1750; until then
-//!   `probe` and `load` refuse.
+//! - **The scan** ([`scan`]): every model passes design §5's allow-list before LiteRT sees its bytes: one subgraph,
+//!   builtin operators that keep no state, no variables, no data outside the file, nothing newer than the pinned
+//!   schema. `probe` is the scan alone, so it runs no native code on the bytes.
+//! - **Sessions** arrive with #1750; until then `load` scans and refuses.
 //!
 //! The runtime registers itself as `tflite`; link this crate and [`omuzaki_ai_api::find_runtime`] finds it.
 #![deny(missing_docs)]
@@ -15,6 +17,7 @@
 
 pub mod builds;
 mod library;
+pub mod scan;
 
 use std::collections::BTreeMap;
 
@@ -31,27 +34,41 @@ pub struct LiteRtRuntime;
 
 register_runtime!(LiteRtRuntime);
 
-/// Why `probe` and `load` refuse for now.
-const NOT_YET: &str =
-    "the `tflite` runtime cannot read models yet: its model scan arrives with #1749 and its session with #1750";
+/// The model's one graph, read whole and scanned: the main file of a single-graph model.
+fn main_graph(source: &ModelSource<'_>) -> Result<scan::Scan, LoadError> {
+    if !source.stages.is_empty() {
+        return Err(LoadError::Format("multi-graph models are not supported yet".to_owned()));
+    }
+    let file = source.files.first().ok_or_else(|| LoadError::MissingFile("(the main model file)".to_owned()))?;
+    let missing = || LoadError::MissingFile(file.name.clone());
+    let size = std::fs::metadata(&file.path).map_err(|_| missing())?.len();
+    if size > scan::MAX_MODEL_BYTES as u64 {
+        return Err(LoadError::Refused(format!(
+            "the model is larger than MAX_MODEL_BYTES ({} bytes)",
+            scan::MAX_MODEL_BYTES
+        )));
+    }
+    scan::scan_model(&std::fs::read(&file.path).map_err(|_| missing())?)
+}
 
 impl Runtime for LiteRtRuntime {
     fn id(&self) -> RuntimeId {
         RuntimeId::new(RUNTIME_ID).unwrap_or_else(|_| unreachable!("a literal slug"))
     }
 
-    fn probe(&self, _source: &ModelSource<'_>) -> Result<Probe, LoadError> {
-        Err(LoadError::Runtime(NOT_YET.to_owned()))
+    fn probe(&self, source: &ModelSource<'_>) -> Result<Probe, LoadError> {
+        Ok(Probe { signature: main_graph(source)?.signature, opset: None })
     }
 
     fn load(
         &self,
-        _source: &ModelSource<'_>,
+        source: &ModelSource<'_>,
         _slot: &Signature,
         _io: &BTreeMap<String, String>,
         _options: &SessionOptions,
     ) -> Result<Box<dyn omuzaki_ai_api::Session>, LoadError> {
-        Err(LoadError::Runtime(NOT_YET.to_owned()))
+        main_graph(source)?;
+        Err(LoadError::Runtime("the `tflite` runtime cannot run models yet: its session arrives with #1750".to_owned()))
     }
 }
 

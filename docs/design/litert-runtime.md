@@ -253,6 +253,7 @@ closed. Each row was checked against the three shipped face graphs (section 9 su
 | `Operator` | `opcode_index` | a valid index |
 | | `inputs`, `outputs` | valid tensor indices; -1 (an omitted optional input) only in `inputs` |
 | | `builtin_options` | any (the op's own options; LiteRT's verifier and the kernel check them) |
+| | `builtin_options_2` | absent (not listed, so refused: only StableHLO ops carry it, and no slot uses them) |
 | | `mutating_variable_inputs` | empty, or every entry false |
 | | `intermediates` | empty |
 | | `custom_options`, `custom_options_format`, `large_custom_options_offset`, `large_custom_options_size` | empty, default, 0, 0 |
@@ -264,8 +265,12 @@ closed. Each row was checked against the three shipped face graphs (section 9 su
 | | `offset`, `size` | 0 and 0 (no data outside the FlatBuffer) |
 
 **The operator allow-list** is the builtin operators the archive's build registers, minus `CUSTOM`, `DELEGATE`,
-`CALL`, `IF`, `WHILE`, `CALL_ONCE` (they need other subgraphs) and `VAR_HANDLE`, `READ_VARIABLE`, `ASSIGN_VARIABLE`
-(state). It is a constant in `scan.rs`, checked against the build by task 3a. It must contain the 22 builtins the face
+`CALL`, `IF`, `WHILE`, `CALL_ONCE`, `STABLEHLO_CASE`, `STABLEHLO_SCATTER`, `STABLEHLO_REDUCE_WINDOW` and
+`STABLEHLO_COMPOSITE` (they run other subgraphs), `VAR_HANDLE`, `READ_VARIABLE`, `ASSIGN_VARIABLE` (state), and every
+kernel that keeps state between invocations at the pinned source: `RANDOM_STANDARD_NORMAL`, `RANDOM_UNIFORM`,
+`MULTINOMIAL` (`tflite/kernels/random_ops.cc`) and `HASHTABLE`, `HASHTABLE_FIND`, `HASHTABLE_IMPORT`, `HASHTABLE_SIZE`
+(`tflite/kernels/hashtable*.cc`). It is a constant in `scan.rs`, checked against the build by task 3a: the build's
+resolver is `register.cc`'s 172 builtins, so 155 are allowed. It must contain the 22 builtins the face
 graphs use: `ADD`, `CONCATENATION`, `CONV_2D`, `DEPTHWISE_CONV_2D`, `DEQUANTIZE`, `DIV`, `LOGISTIC`, `MAX_POOL_2D`,
 `MEAN`, `MUL`, `NEG`, `PAD`, `PRELU`, `RELU`, `RESHAPE`, `RSQRT`, `SQRT`, `SQUARED_DIFFERENCE`, `STRIDED_SLICE`, `SUB`,
 `SUM`, `TRANSPOSE`.
