@@ -7,6 +7,9 @@ they merge). Live state is in the pinned issue
 **your area's state issue** (Runtime and output: #1498; Character: #1528); coordination between areas and with the
 Director is on **#2**.
 
+Use whatever GitHub tool your session has (in a cloud session, its GitHub tool). This manual says what to achieve, not
+which command to run.
+
 ## The role
 
 The cloud lead runs the cloud lane: it picks tasks, starts one implementer session per task, keeps the lane's pull
@@ -35,7 +38,7 @@ ADR 0053's limits:
   on #2);
 - before starting a task, check its fence against open pull requests: `python3 tools/dispatch-check.py <issue>`.
   Until that script is on `main` (#1479), check by hand: list the files of every open pull request
-  (`gh pr list --limit 200 --json number,files`) and compare them with the fence; when in doubt, ask on #2.
+  and compare them with the fence; when in doubt, ask on #2.
 
 **Priority:** fix rounds on open pull requests first; then V0 (milestone "V0: live slice"); then the redo list and the
 structure work (ADR 0054); then Phase 1.
@@ -66,9 +69,11 @@ doesn't wake twice for the same thing. Implementer sessions don't watch anything
    which says `Closes #<issue>`.
 4. Mark it ready. CI's `gate` is the gate; Codex reviews on GitHub and posts findings as inline review comments
    (a 👍 on the pull request when it finds nothing).
-5. Fix rounds end with a comment that starts `fixed (head <sha7>)`, then a request for a new Codex review (pushes
-   don't trigger one). Each finding is fixed, or dismissed with a one-line reason; either way its thread is resolved.
-   A maintainer ruling on the pull request settles a finding; reply by pointing to it.
+5. **Answer every finding:** fixed, or dismissed with a one-line reason (a maintainer ruling settles a finding; point
+   to it). Answer in the finding's thread, or in the comment that ends the fix round: it starts `fixed (head <sha7>)`
+   and has one line per finding. Then ask Codex for a new review (pushes don't trigger one). Sessions don't resolve
+   threads or react; the merge loop resolves answered threads. A pull request merges when Codex has reviewed its
+   current head, every finding is answered, `gate` is green and the sign-offs are in.
 6. The Director enqueues; the merge queue merges. Never push to `main`; force-push only your own branch, with
    `--force-with-lease`.
 
@@ -124,7 +129,7 @@ least every few hours and before stopping:
 **For the new lead, first hour:**
 1. Set up your watcher ("Your watcher" above), then read this file, `CLAUDE.md`, the state issue and the recent
    comments on #2.
-2. List **every** open pull request in **your area's crates** (`gh pr list --limit 200 --json number,headRefName,title`), not only `cloud/*`
+2. List **every** open pull request in **your area's crates**, not only `cloud/*`
    branches: the lane also owns `port/*` and `local/*` pull requests handed to it. Work in another area's crates stays with that
    area's lead, even if it was once this lane's. Reconcile ownership with the state
    issue and the handovers recorded on #2.
