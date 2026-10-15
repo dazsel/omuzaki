@@ -135,7 +135,7 @@ mod tests {
 
     #[test]
     fn only_rows_with_a_reading_appear() {
-        assert!(derive(None, None, None).is_empty());
+        assert_eq!(derive(None, None, None), Vec::new());
         let mut frame = FrameMetrics::new(Seconds(1.0));
         assert!(derive(Some(&frame), None, None).is_empty(), "no gpu_ms, no track_to_submit_ms");
         frame.gpu_ms = Some(3.0);

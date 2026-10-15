@@ -181,7 +181,7 @@ impl FrameMetrics {
         Self { at, ..Self::default() }
     }
 
-    pub(crate) fn to_words(&self) -> [u64; FRAME_WORDS] {
+    pub(crate) fn to_words(self) -> [u64; FRAME_WORDS] {
         let flags = flag(self.gpu_ms.is_some(), 0)
             | flag(self.face_paint_ms.is_some(), 1)
             | flag(self.output_dropped.is_some(), 2)
@@ -266,7 +266,7 @@ impl PerformMetrics {
         Self { at, ..Self::default() }
     }
 
-    pub(crate) fn to_words(&self) -> [u64; PERFORM_WORDS] {
+    pub(crate) fn to_words(self) -> [u64; PERFORM_WORDS] {
         let mut put = Put::<PERFORM_WORDS>::new();
         put.f64(self.at.0)
             .f32(self.source_fps)
@@ -316,7 +316,7 @@ impl TrackerMetrics {
         Self { at, ..Self::default() }
     }
 
-    pub(crate) fn to_words(&self) -> [u64; TRACKER_WORDS] {
+    pub(crate) fn to_words(self) -> [u64; TRACKER_WORDS] {
         let mut put = Put::<TRACKER_WORDS>::new();
         put.f64(self.at.0)
             .f32(self.track_ms_p50)
@@ -373,7 +373,7 @@ impl AudioMetrics {
         Self { at, ..Self::default() }
     }
 
-    pub(crate) fn to_words(&self) -> [u64; AUDIO_WORDS] {
+    pub(crate) fn to_words(self) -> [u64; AUDIO_WORDS] {
         let mut put = Put::<AUDIO_WORDS>::new();
         put.f64(self.at.0)
             .u64(flag(self.heard_latency_measured_ms.is_some(), 0))

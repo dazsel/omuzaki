@@ -22,7 +22,6 @@ pub mod budget;
 
 use std::sync::Arc;
 
-use omuzaki_core::time::Seconds;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -148,6 +147,8 @@ impl MetricsReader {
 
 #[cfg(all(test, not(loom)))]
 mod tests {
+    use omuzaki_core::time::Seconds;
+
     use super::*;
 
     #[test]
@@ -155,7 +156,7 @@ mod tests {
         let (mut w, reader) = metrics();
         let live = reader.read();
         assert_eq!((live.frame, live.perform, live.tracker, live.audio), (None, None, None, None));
-        assert!(live.budget.is_empty());
+        assert_eq!(live.budget, Vec::new());
 
         let mut m = PerformMetrics::new(Seconds(2.0));
         m.skipped_steps = 3;

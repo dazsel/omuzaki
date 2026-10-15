@@ -1,6 +1,9 @@
 //! A reader racing a real writer thread: never torn, never backwards, and a writer at 1 kHz never starves a read.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+// The counters stay far below 2^24, so the casts to float are exact.
+#![allow(clippy::cast_precision_loss)]
+
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -65,26 +68,33 @@ fn a_flat_out_writer_never_shows_a_torn_or_backwards_read() {
 
 #[test]
 fn a_writer_at_1_khz_never_exhausts_a_reads_retries() {
+    const READS: u32 = 10_000;
+    const MIN_PUBLISHES: u64 = 100;
     let (mut w, reader) = metrics();
     w.frame.publish(&frame(1));
     let stop = AtomicBool::new(false);
+    let published = AtomicU64::new(0);
     thread::scope(|scope| {
-        let stop = &stop;
+        let (stop, published) = (&stop, &published);
         scope.spawn(move || {
             let mut k = 2;
             while !stop.load(Ordering::Relaxed) {
                 w.frame.publish(&frame(k));
+                published.fetch_add(1, Ordering::Relaxed);
                 k += 1;
                 thread::sleep(Duration::from_millis(1));
             }
         });
-        let mut last = 0;
-        for i in 0..10_000 {
+        // At least `READS` reads, and until the writer has published enough times for them to overlap its writes
+        // (a sleep's length varies by machine, so the count of publishes decides, not a clock).
+        let (mut last, mut i) = (0, 0);
+        while i < READS || published.load(Ordering::Relaxed) < MIN_PUBLISHES {
             let m = reader.read().frame.unwrap_or_else(|| panic!("read {i} lost every retry"));
             let k = assert_consistent(&m);
             assert!(k >= last, "went backwards: {last} then {k}");
             last = k;
-            thread::sleep(Duration::from_micros(20));
+            i += 1;
+            thread::yield_now();
         }
         stop.store(true, Ordering::Relaxed);
     });
