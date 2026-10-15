@@ -320,15 +320,24 @@ fn without_a_salt_the_open_section_stays_in_its_slot() {
 
 #[test]
 fn widgets_of_different_kinds_can_share_a_salt_in_one_parent() {
+    type Shared = (bool, u8, f64, String, Colour, u8, usize, f64, Curve);
     let mut h = state(
-        (false, 0u8, 0.5, String::new(), Colour::rgb(1, 2, 3)),
-        |ui, (on, mode, gain, name, tint): &mut (bool, u8, f64, String, Colour)| {
+        (false, 0u8, 0.5, String::new(), Colour::rgb(1, 2, 3), 0u8, 0usize, 0.5, Curve::linear()),
+        |ui, (on, mode, gain, name, tint, choice, tab, count, curve): &mut Shared| {
             let segments = [Segment::new(0u8, "Mode left"), Segment::new(1u8, "Mode right")];
+            let choices = [Choice::new(0u8, "One"), Choice::new(1u8, "Two")];
+            let tabs = [TabItem::new("Tab one"), TabItem::new("Tab two")];
             ui.add(Toggle::switch("Mute", on).id_salt("x"));
             ui.add(Segmented::new("Mode", mode, &segments).id_salt("x"));
             ParamSlider::new("Gain", gain, 0.0..=1.0).id_salt("x").show(ui);
             ui.add(TextField::new("Name", name).id_salt("x"));
             ColourField::new("Tint", tint).id_salt("x").show(ui);
+            ui.add(Dropdown::new("Choice", choice, &choices).id_salt("x"));
+            ui.add(TabBar::new("Tabs", tab, &tabs).id_salt("x"));
+            ui.add(NumberField::new("Count", count, 0.0..=1.0).id_salt("x"));
+            CurveEditor::new("Curve", curve).id_salt("x").show(ui);
+            StepCard::new("Step", "Designer", ActorKind::Agent).state(StepState::Pending).id_salt("x").show(ui);
+            JobRow::new("Job", JobState::Running { progress: Some(0.4) }).id_salt("x").show(ui);
         },
     );
     let focusable = [
@@ -337,6 +346,12 @@ fn widgets_of_different_kinds_can_share_a_salt_in_one_parent() {
         (Role::Slider, "Gain"),
         (Role::TextInput, "Name"),
         (Role::ColorWell, "Tint"),
+        (Role::ComboBox, "Choice"),
+        (Role::Tab, "Tab one"),
+        (Role::SpinButton, "Count"),
+        (Role::Slider, "Curve, point 1 of 2"),
+        (Role::Button, "Approve: Step"),
+        (Role::Button, "Cancel Job"),
     ];
     for &(role, label) in &focusable {
         h.get_by_role_and_label(role, label).focus();
@@ -346,7 +361,186 @@ fn widgets_of_different_kinds_can_share_a_salt_in_one_parent() {
             .filter(|(role, label)| h.get_by_role_and_label(*role, label).is_focused())
             .map(|(_, label)| *label)
             .collect();
-        assert_eq!(focused, [label], "focusing one of five widgets that share the salt \"x\" focuses only it");
+        assert_eq!(
+            focused,
+            [label],
+            "focusing one of the {} widgets that share the salt \"x\" focuses only it",
+            focusable.len()
+        );
     }
     h.get_by_role_and_label(Role::RadioGroup, "Mode");
+}
+
+// ---- Dropdown ----------------------------------------------------------------------------------------------------
+
+fn dropdown(ui: &mut Ui, name: &'static str, salt: Option<&'static str>, value: &mut u8) {
+    let choices = [Choice::new(0u8, "One"), Choice::new(1u8, "Two")];
+    let mut dropdown = Dropdown::new(name, value, &choices);
+    if let Some(salt) = salt {
+        dropdown = dropdown.id_salt(salt);
+    }
+    ui.add(dropdown);
+}
+
+/// Opens "Alpha"'s list, swaps the rows, and says which dropdown's list is open.
+fn dropdowns_open(salted: bool) -> Vec<&'static str> {
+    let mut h = rows(salted, 0, 1, dropdown, 200.0);
+    h.get_by_role_and_label(Role::ComboBox, "Alpha").click();
+    h.run_steps(3);
+    swap(&mut h);
+    holders(|name| h.query_by_role_and_label(Role::ListBox, name).is_some())
+}
+
+#[test]
+fn an_open_dropdown_stays_with_its_salt_when_the_rows_swap() {
+    assert_eq!(dropdowns_open(true), ["Alpha"]);
+}
+
+#[test]
+fn without_a_salt_the_open_dropdown_stays_in_its_slot() {
+    assert_eq!(dropdowns_open(false), ["Beta"]);
+}
+
+// ---- TabBar ------------------------------------------------------------------------------------------------------
+
+fn tab_bar(ui: &mut Ui, name: &'static str, salt: Option<&'static str>, value: &mut usize) {
+    let (one, two) = if name == "Alpha" { ("Alpha one", "Alpha two") } else { ("Beta one", "Beta two") };
+    let tabs = [TabItem::new(one), TabItem::new(two)];
+    let mut bar = TabBar::new(name, value, &tabs);
+    if let Some(salt) = salt {
+        bar = bar.id_salt(salt);
+    }
+    ui.add(bar);
+}
+
+fn tabs_with_focus(salted: bool) -> Vec<&'static str> {
+    let mut h = rows(salted, 0, 0, tab_bar, 120.0);
+    h.get_by_role_and_label(Role::Tab, "Alpha one").focus();
+    h.run();
+    swap(&mut h);
+    holders(|name| h.get_by_role_and_label(Role::Tab, &format!("{name} one")).is_focused())
+}
+
+#[test]
+fn a_focused_tab_keeps_the_focus_when_the_rows_swap() {
+    assert_eq!(tabs_with_focus(true), ["Alpha"]);
+}
+
+#[test]
+fn without_a_salt_the_focused_tab_stays_in_its_slot() {
+    assert_eq!(tabs_with_focus(false), ["Beta"]);
+}
+
+// ---- NumberField -------------------------------------------------------------------------------------------------
+
+fn number(ui: &mut Ui, name: &'static str, salt: Option<&'static str>, value: &mut f64) {
+    let mut field = NumberField::new(name, value, 0.0..=1.0);
+    if let Some(salt) = salt {
+        field = field.id_salt(salt);
+    }
+    field.show(ui);
+}
+
+/// Starts typing a number in "Alpha", swaps the rows, and says which fields are being typed in.
+fn numbers_being_typed_in(salted: bool) -> Vec<&'static str> {
+    let mut h = rows(salted, 0.2, 0.8, number, 200.0);
+    h.get_by_role_and_label(Role::SpinButton, "Alpha").click();
+    h.run_steps(3);
+    swap(&mut h);
+    holders(|name| h.query_by_role_and_label(Role::TextInput, &format!("{name} value")).is_some())
+}
+
+#[test]
+fn a_number_being_typed_in_stays_with_its_salt_when_the_rows_swap() {
+    assert_eq!(numbers_being_typed_in(true), ["Alpha"]);
+}
+
+#[test]
+fn without_a_salt_a_number_being_typed_in_stays_in_its_slot() {
+    assert_eq!(numbers_being_typed_in(false), ["Beta"]);
+}
+
+// ---- CurveEditor -------------------------------------------------------------------------------------------------
+
+fn curve(ui: &mut Ui, name: &'static str, salt: Option<&'static str>, value: &mut Curve) {
+    let mut editor = CurveEditor::new(name, value);
+    if let Some(salt) = salt {
+        editor = editor.id_salt(salt);
+    }
+    editor.show(ui);
+}
+
+/// Focuses the first point of "Alpha"'s curve, swaps the rows, and says which curve's first point has the focus.
+fn curve_points_with_focus(salted: bool) -> Vec<&'static str> {
+    let mut h = rows(salted, Curve::linear(), Curve::linear(), curve, 480.0);
+    h.get_by_role_and_label(Role::Slider, "Alpha, point 1 of 2").focus();
+    h.run();
+    swap(&mut h);
+    holders(|name| h.get_by_role_and_label(Role::Slider, &format!("{name}, point 1 of 2")).is_focused())
+}
+
+#[test]
+fn a_focused_curve_point_keeps_the_focus_when_the_rows_swap() {
+    assert_eq!(curve_points_with_focus(true), ["Alpha"]);
+}
+
+#[test]
+fn without_a_salt_the_focused_curve_point_stays_in_its_slot() {
+    assert_eq!(curve_points_with_focus(false), ["Beta"]);
+}
+
+// ---- StepCard ----------------------------------------------------------------------------------------------------
+
+fn step(ui: &mut Ui, name: &'static str, salt: Option<&'static str>, _value: &mut ()) {
+    let mut card = StepCard::new(name, "Designer", ActorKind::Agent).state(StepState::Pending);
+    if let Some(salt) = salt {
+        card = card.id_salt(salt);
+    }
+    card.show(ui);
+}
+
+fn steps_with_focus(salted: bool) -> Vec<&'static str> {
+    let mut h = rows(salted, (), (), step, 260.0);
+    h.get_by_role_and_label(Role::Button, "Approve: Alpha").focus();
+    h.run();
+    swap(&mut h);
+    holders(|name| h.get_by_role_and_label(Role::Button, &format!("Approve: {name}")).is_focused())
+}
+
+#[test]
+fn a_focused_step_action_keeps_the_focus_when_the_rows_swap() {
+    assert_eq!(steps_with_focus(true), ["Alpha"]);
+}
+
+#[test]
+fn without_a_salt_the_focused_step_action_stays_in_its_slot() {
+    assert_eq!(steps_with_focus(false), ["Beta"]);
+}
+
+// ---- JobRow ------------------------------------------------------------------------------------------------------
+
+fn job(ui: &mut Ui, name: &'static str, salt: Option<&'static str>, _value: &mut ()) {
+    let mut row = JobRow::new(name, JobState::Running { progress: Some(0.4) });
+    if let Some(salt) = salt {
+        row = row.id_salt(salt);
+    }
+    row.show(ui);
+}
+
+fn jobs_with_focus(salted: bool) -> Vec<&'static str> {
+    let mut h = rows(salted, (), (), job, 120.0);
+    h.get_by_role_and_label(Role::Button, "Cancel Alpha").focus();
+    h.run();
+    swap(&mut h);
+    holders(|name| h.get_by_role_and_label(Role::Button, &format!("Cancel {name}")).is_focused())
+}
+
+#[test]
+fn a_focused_job_action_keeps_the_focus_when_the_rows_swap() {
+    assert_eq!(jobs_with_focus(true), ["Alpha"]);
+}
+
+#[test]
+fn without_a_salt_the_focused_job_action_stays_in_its_slot() {
+    assert_eq!(jobs_with_focus(false), ["Beta"]);
 }

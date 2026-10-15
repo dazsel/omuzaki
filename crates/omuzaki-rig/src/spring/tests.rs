@@ -1293,3 +1293,434 @@ mod three_vrm {
         assert!(apart(&free, &colliders) > 0.02, "the colliders change nothing");
     }
 }
+
+/// The pose after stepping `set` through `frames` frames of the fixture's animation, every frame run in order.
+fn pose_after(fixture: &Fixture, set: &SpringSet, frames: u64) -> Pose {
+    let mut solver = VrmSpringSolver::new(set, &fixture.skeleton).unwrap();
+    let mut last = fixture.pose_at(0);
+    for frame in 0..frames {
+        last = run_frame(&mut solver, fixture, frame);
+    }
+    last
+}
+
+/// `VRMC_springBone_limit`: the pure limit maths, the step order, and agreement with the spec's pseudocode.
+mod limits {
+    use std::f32::consts::{FRAC_PI_2, FRAC_PI_3, FRAC_PI_6, PI};
+
+    use omuzaki_anim_api::spring::JointLimit;
+    use proptest::prelude::*;
+
+    use super::super::limit::apply;
+    use super::*;
+
+    const ID: Quat = Quat::IDENTITY;
+
+    fn place_point(frame: &Transform, p: Vec3) -> Vec3 {
+        frame.translation + frame.rotation * p
+    }
+
+    /// The angle between two vectors as `atan2(|cross|, dot)`: `acos` of a dot product is blind below about 5e-4 rad
+    /// in `f32`, which is exactly where a zero-angle limit leaks.
+    fn tilt(a: Vec3, b: Vec3) -> f32 {
+        a.cross(b).length().atan2(a.dot(b))
+    }
+
+    /// The hinge's in-plane angle and the spherical limit's pitch and yaw of a direction in the limit's space.
+    fn plane_angle(d: Vec3) -> f32 {
+        d.z.abs().atan2(d.y)
+    }
+    fn pitch_yaw(d: Vec3) -> (f32, f32) {
+        (d.z.atan2(d.y).abs(), d.x.abs().atan2(d.y.hypot(d.z)))
+    }
+
+    #[test]
+    fn a_cone_clamps_a_tilt_of_sixty_degrees_to_thirty() {
+        let dir = Vec3::new(FRAC_PI_3.sin(), FRAC_PI_3.cos(), 0.0);
+        let out = apply(&JointLimit::cone(FRAC_PI_6), ID, dir) * 0.1;
+        assert!((tilt(out, Vec3::Y) - FRAC_PI_6).abs() < 1e-5, "tilted {} rad", tilt(out, Vec3::Y));
+        assert!((out.length() - 0.1).abs() < 1e-6, "length {}", out.length());
+        let inside = Vec3::new(0.2, 0.9, -0.1).normalize();
+        assert_eq!(apply(&JointLimit::cone(FRAC_PI_3), ID, inside), inside, "inside is returned bit for bit");
+    }
+
+    #[test]
+    fn a_hinge_stays_in_its_plane_and_a_spherical_limit_bounds_both_angles() {
+        let hinge = apply(&JointLimit::hinge(0.5), ID, Vec3::new(0.1, 0.3, 0.9).normalize());
+        assert!(hinge.x.abs() < 1e-6 && tilt(hinge, Vec3::Y) <= 0.5 + 1e-5, "{hinge}");
+        let sphere = apply(
+            &JointLimit::spherical(20_f32.to_radians(), 10_f32.to_radians()),
+            ID,
+            Vec3::new(1.0, 1.0, 1.0).normalize(),
+        );
+        assert!(sphere.z.atan2(sphere.y).abs() <= 20_f32.to_radians() + 1e-5, "pitch of {sphere}");
+        assert!(sphere.x.asin().abs() <= 10_f32.to_radians() + 1e-5, "yaw of {sphere}");
+    }
+
+    /// The five rows of the spec's table of singular directions, one assertion each, exact side.
+    #[test]
+    fn the_spec_table_of_singular_directions() {
+        let down = Vec3::NEG_Y;
+        let cone = apply(&JointLimit::cone(FRAC_PI_6), ID, down);
+        assert_eq!((cone.x, cone.z > 0.0), (0.0, true), "cone, tail at -Y: boundary on the +Z side, {cone}");
+        assert!((tilt(cone, Vec3::Y) - FRAC_PI_6).abs() < 1e-5);
+        for x in [Vec3::X, Vec3::NEG_X] {
+            assert_eq!(apply(&JointLimit::hinge(0.5), ID, x), Vec3::Y, "hinge, tail at {x}: +Y");
+        }
+        let hinge = apply(&JointLimit::hinge(0.5), ID, down);
+        assert!(hinge.x == 0.0 && hinge.z > 0.0 && (tilt(hinge, Vec3::Y) - 0.5).abs() < 1e-5, "hinge at -Y: {hinge}");
+        let limit = JointLimit::spherical(0.5, 0.2);
+        for (x, side) in [(Vec3::X, 1.0), (Vec3::NEG_X, -1.0)] {
+            let out = apply(&limit, ID, x);
+            assert!(out.y > 0.0 && out.z == 0.0 && out.x * side > 0.0, "spherical, tail at {x}: +Y boundary, {out}");
+            assert!((out.x.asin().abs() - 0.2).abs() < 1e-5);
+        }
+        let out = apply(&limit, ID, down);
+        assert!(out.z > 0.0 && out.x.abs() < 1e-6 && (out.z.atan2(out.y) - 0.5).abs() < 1e-5, "spherical at -Y: {out}");
+    }
+
+    #[test]
+    fn a_rotation_turns_the_limit_in_its_own_frame() {
+        let frame = Quat::from_rotation_z(FRAC_PI_2); // +Y of the limit is -X in the world
+        let out = apply(&JointLimit::cone(0.1), frame, Vec3::new(-1.0, 0.0, 0.0));
+        assert_eq!(out, Vec3::new(-1.0, 0.0, 0.0), "the world -X is the cone's axis");
+        let out = apply(&JointLimit::cone(0.1), frame, Vec3::Y);
+        assert!((tilt(out, Vec3::NEG_X) - 0.1).abs() < 1e-5, "{out}");
+    }
+
+    proptest! {
+        #[test]
+        fn the_result_is_inside_unit_length_and_idempotent(
+            d in prop::array::uniform3(-1.0_f32..1.0),
+            a in 0.0_f32..4.0,
+            b in 0.0_f32..2.0,
+            axis in prop::array::uniform3(-1.0_f32..1.0),
+            turn in -3.0_f32..3.0,
+            kind in 0..3_u8,
+        ) {
+            let dir = Vec3::from_array(d);
+            prop_assume!(dir.length() > 0.1 && Vec3::from_array(axis).length() > 0.1);
+            let dir = dir.normalize();
+            let frame = Quat::from_axis_angle(Vec3::from_array(axis).normalize(), turn);
+            let limit = match kind {
+                0 => JointLimit::cone(a),
+                1 => JointLimit::hinge(a),
+                _ => JointLimit::spherical(a, b),
+            };
+            let once = apply(&limit, frame, dir);
+            prop_assert!((once.length() - 1.0).abs() < 1e-5, "length {}", once.length());
+            let local = frame.conjugate() * once;
+            let (a, b) = (a.min(PI), b.min(FRAC_PI_2));
+            match limit {
+                JointLimit::Cone { .. } => prop_assert!(tilt(local, Vec3::Y) <= a + 1e-5),
+                JointLimit::Hinge { .. } => prop_assert!(local.x.abs() < 1e-5 && plane_angle(local) <= a + 1e-5),
+                _ => {
+                    let (pitch, yaw) = pitch_yaw(local);
+                    prop_assert!(pitch <= a + 1e-5 && yaw <= b + 1e-5, "pitch {pitch} yaw {yaw}");
+                }
+            }
+            let twice = apply(&limit, frame, once);
+            prop_assert!((twice - once).length() < 1e-6, "{once} then {twice}");
+        }
+
+        /// The `f32` limit against the appendix listings in `f64`, on random directions, frames and limits.
+        #[test]
+        fn apply_matches_the_spec_listings_to_1e_5(
+            d in prop::array::uniform3(-1.0_f32..1.0),
+            a in 0.0_f32..4.0,
+            b in 0.0_f32..2.0,
+            axis in prop::array::uniform3(-1.0_f32..1.0),
+            turn in -3.0_f32..3.0,
+            kind in 0..3_u8,
+        ) {
+            let dir = Vec3::from_array(d);
+            prop_assume!(dir.length() > 0.1 && Vec3::from_array(axis).length() > 0.1);
+            let dir = dir.normalize();
+            let frame = Quat::from_axis_angle(Vec3::from_array(axis).normalize(), turn);
+            let limit = match kind {
+                0 => JointLimit::cone(a),
+                1 => JointLimit::hinge(a),
+                _ => JointLimit::spherical(a, b),
+            };
+            let got = apply(&limit, frame, dir);
+            let local = super::super::reference::limit_direction(&limit, (frame.conjugate().as_dquat() * dir.as_dvec3()).normalize());
+            let want = frame.as_dquat() * local;
+            prop_assert!((got.as_dvec3() - want).length() < 1e-5, "{got} against {want}");
+        }
+    }
+
+    /// A tilt too small for `cos` to see (1e-4 rad is `1 - 5e-9`, which is 1 in `f32`) is still outside a cone or hinge
+    /// of angle 0, and still held to a small one.
+    #[test]
+    fn a_tiny_tilt_is_limited_at_zero_and_small_angles() {
+        for tilt_by in [1e-4_f32, 2e-4, 1e-3] {
+            let dir = Vec3::new(0.0, 1.0, tilt_by).normalize();
+            for angle in [0.0, tilt_by * 0.5, tilt_by * 0.9] {
+                for limit in [JointLimit::cone(angle), JointLimit::hinge(angle), JointLimit::spherical(angle, angle)] {
+                    let out = apply(&limit, ID, dir);
+                    assert!(
+                        tilt(out, Vec3::Y) <= angle + 1e-6,
+                        "{limit:?} left {tilt_by} rad as {}",
+                        tilt(out, Vec3::Y)
+                    );
+                    assert!((out.length() - 1.0).abs() < 1e-6);
+                }
+            }
+            // A limit wider than the tilt leaves it alone, bit for bit.
+            for limit in [JointLimit::cone(tilt_by * 2.0), JointLimit::spherical(tilt_by * 2.0, 1.0)] {
+                assert_eq!(apply(&limit, ID, dir), dir, "{limit:?}");
+            }
+        }
+        // And a tail rotated into a frame, since the solver always works in one.
+        let frame = Quat::from_rotation_x(0.7);
+        let out = apply(&JointLimit::cone(0.0), frame, frame * Vec3::new(1e-4, 1.0, 0.0).normalize());
+        assert!(tilt(out, frame * Vec3::Y) < 1e-6, "{out}");
+    }
+
+    /// One chain of one swinging bone, the plane collider (in the head's space) that the test describes in the world,
+    /// and the solver's tail position after a single sub-step from rest.
+    struct Run {
+        head: Vec3,
+        rest_dir: Vec3,
+        length: f32,
+        tail: Vec3,
+    }
+
+    /// Steps one bone one sub-step from rest, under gravity `g` of `power` and a world-space plane given by a point
+    /// relative to the bone's head and a normal, both from `plane`.
+    fn one_step(
+        limit: Option<JointLimit>,
+        g: impl Fn(Vec3) -> Vec3,
+        plane: impl Fn(Vec3, Vec3, Vec3, f32) -> (Vec3, Vec3),
+    ) -> Run {
+        let (fixture, ids) = Fixture::hair(1, 2);
+        let bone = ids[0][0];
+        let rest = fixture.skeleton.rest_pose();
+        let mut world = Pose::default();
+        fixture.skeleton.world_pose(&rest, &mut world);
+        let parent = fixture.skeleton.bones()[bone.index()].parent.unwrap().index();
+        let rest_dir = world.local[parent].rotation * rest.local[bone.index()].rotation * tail_axis(&fixture, bone);
+        let head = world.local[bone.index()].translation;
+        let length = fixture.skeleton.bones()[bone.index() + 1].rest.translation.length();
+        let gravity = g(rest_dir);
+        let (point, normal) = plane(rest_dir, gravity.normalize(), head, length);
+        let head_world = world.local[fixture.head.index()];
+        let shape = ColliderShape::Plane {
+            offset: head_world.rotation.conjugate() * (point - head_world.translation),
+            normal: head_world.rotation.conjugate() * normal,
+        };
+        let params = SpringParams {
+            stiffness: 0.0,
+            drag_force: 0.0,
+            hit_radius: 0.0,
+            gravity_power: gravity.length(),
+            gravity_dir: gravity.normalize(),
+        };
+        let mut chain = SpringChain::new("c", &ids[0], params);
+        chain.joints[0].limit = limit;
+        chain.collider_groups = vec!["g".into()];
+        let group = ColliderGroup {
+            name: "g".into(),
+            colliders: vec![omuzaki_anim_api::Collider { bone: fixture.head, shape }],
+        };
+        let mut solver = VrmSpringSolver::new(&set_of(vec![chain], vec![group]), &fixture.skeleton).unwrap();
+        let mut pose = rest.clone();
+        solver.step(Tick::at_rate(0, PHYSICS_HZ), &fixture.skeleton, &mut pose);
+        fixture.skeleton.world_pose(&pose, &mut world);
+        let tail = place_point(&world.local[bone.index()], tail_axis(&fixture, bone) * length);
+        Run { head, rest_dir, length, tail }
+    }
+
+    /// The limit comes after the inertia and gravity update and before the collider: the raw tail is behind the plane,
+    /// the clamped one in front of it, so nothing is pushed and the tail is exactly the clamped one. A solver that
+    /// collided first would push the raw tail sideways (the normal leans toward `w`) and clamp from there.
+    #[test]
+    fn the_limit_is_applied_right_after_the_inertia_and_before_the_collider() {
+        let theta = 0.3;
+        let run = one_step(
+            Some(JointLimit::cone(theta)),
+            |r| r.any_orthogonal_vector().normalize() * 1000.0,
+            |r, g, head, length| (head + g * (0.6 * length), (-g + r.cross(g) * 0.5).normalize()),
+        );
+        let g = run.rest_dir.any_orthogonal_vector().normalize();
+        let expected = run.head + (run.rest_dir * theta.cos() + g * theta.sin()) * run.length;
+        assert!((run.tail - expected).length() < 1e-5, "tail {} expected {expected}", run.tail);
+    }
+
+    /// And again after a push: a plane that shoves the tail out of the cone must not leave it there.
+    #[test]
+    fn the_limit_is_applied_again_after_each_collision() {
+        let theta = 0.3;
+        // The tail rests half a bone length behind a plane whose normal is sideways: the push alone tilts it past 20 degrees.
+        let plane = |r: Vec3, _g: Vec3, head: Vec3, length: f32| {
+            let n = (r * 0.2 + r.cross(Vec3::Y).normalize() * 1.0).normalize();
+            (head + r * length + n * (0.5 * length), n)
+        };
+        let run = one_step(
+            Some(JointLimit::cone(theta)),
+            |r| r * 0.0 + Vec3::NEG_Y * 0.0 + r.cross(Vec3::Y).normalize() * 0.01,
+            plane,
+        );
+        assert!(tilt(run.tail - run.head, run.rest_dir) <= theta + 1e-5, "tail {} left the cone", run.tail);
+        let free = one_step(None, |r| r * 0.0 + Vec3::NEG_Y * 0.0 + r.cross(Vec3::Y).normalize() * 0.01, plane);
+        assert!(tilt(free.tail - free.head, free.rest_dir) > theta + 1e-3, "the plane never pushed the tail out");
+    }
+}
+
+/// The solver against the oracle's transcription of the limit pseudocode, on seeded random limits.
+mod limits_vs_spec {
+    use omuzaki_anim_api::spring::JointLimit;
+
+    use super::*;
+
+    fn random_limit(rng: &mut Rng, kind: u32) -> JointLimit {
+        let turn = Quat::from_euler(
+            omuzaki_core::glam::EulerRot::XYZ,
+            rng.range_f32(-1.0, 1.0),
+            rng.range_f32(-1.0, 1.0),
+            rng.range_f32(-1.0, 1.0),
+        );
+        let angle = rng.range_f32(0.05, 0.6);
+        match kind % 3 {
+            0 => JointLimit::cone(angle),
+            1 => JointLimit::hinge(angle),
+            _ => JointLimit::spherical(angle, rng.range_f32(0.05, 0.6)),
+        }
+        .rotated(turn)
+    }
+
+    #[test]
+    fn matches_the_spec_on_seeded_random_limits_to_1e_5() {
+        let (fixture, ids) = Fixture::hair(2, 4);
+        let mut rng = Rng::new(985);
+        let mut engaged = 0;
+        for scene in 0..24_u32 {
+            let params = SpringParams { stiffness: 4.0, drag_force: 0.4, ..windy() };
+            let mut chains = chains_of(&ids, params);
+            for chain in &mut chains {
+                for joint in &mut chain.joints {
+                    joint.limit = Some(random_limit(&mut rng, scene));
+                }
+            }
+            let set = set_of(chains, vec![]);
+            set.validate(&fixture.skeleton).unwrap();
+            let agreement = compare_with_spec(&fixture, &set, 60.0, 200);
+            assert!(agreement.rotation < 1e-5 && agreement.position < 1e-5, "scene {scene}: {agreement:?}");
+            // The limit has to matter: the limited hair ends somewhere the free hair does not.
+            let (limited, free) =
+                (pose_after(&fixture, &set, 200), pose_after(&fixture, &set_of(chains_of(&ids, params), vec![]), 200));
+            let moved = ids
+                .iter()
+                .flatten()
+                .map(|b| distance(limited.local[b.index()].rotation, free.local[b.index()].rotation));
+            engaged += i32::from(moved.fold(0.0, f32::max) > 0.02);
+        }
+        assert!(engaged >= 12, "only {engaged} of 24 scenes were held back by their limit");
+    }
+
+    #[test]
+    fn matches_the_spec_with_colliders_pushing_into_the_limits() {
+        let (fixture, ids) = Fixture::hair(2, 4);
+        let mut rng = Rng::new(9850);
+        let group = ColliderGroup {
+            name: "g".into(),
+            colliders: vec![omuzaki_anim_api::Collider {
+                bone: fixture.head,
+                shape: ColliderShape::Sphere { offset: Vec3::new(0.0, -0.1, 0.0), radius: 0.07 },
+            }],
+        };
+        let mut chains = chains_of(&ids, SpringParams { stiffness: 4.0, drag_force: 0.4, ..windy() });
+        for (i, chain) in chains.iter_mut().enumerate() {
+            chain.collider_groups = vec!["g".into()];
+            for joint in &mut chain.joints {
+                joint.limit = Some(random_limit(&mut rng, i as u32));
+            }
+        }
+        let agreement = compare_with_spec(&fixture, &set_of(chains, vec![group]), 60.0, 200);
+        assert!(agreement.rotation < 1e-5 && agreement.position < 1e-5, "{agreement:?}");
+    }
+
+    #[test]
+    fn a_bone_pointing_straight_down_uses_the_half_turn_default_orientation() {
+        let (fixture, ids) = {
+            let mut ids = vec![];
+            let fixture = Fixture::with(|head, first| {
+                ids = vec![BoneId(first), BoneId(first + 1)];
+                vec![
+                    bone("a".into(), head, Vec3::new(0.0, -0.05, 0.0), Quat::IDENTITY),
+                    bone("b".into(), BoneId(first), Vec3::new(0.0, -0.1, 0.0), Quat::IDENTITY),
+                ]
+            });
+            (fixture, vec![ids])
+        };
+        let mut chains = chains_of(&ids, SpringParams { stiffness: 0.5, drag_force: 0.3, ..windy() });
+        chains[0].joints[0].limit = Some(JointLimit::cone(0.4));
+        let agreement = compare_with_spec(&fixture, &set_of(chains, vec![]), 60.0, 200);
+        assert!(agreement.rotation < 1e-5 && agreement.position < 1e-5, "{agreement:?}");
+    }
+}
+
+/// `SpringSet::validate` and the wire form of a limit.
+mod limit_data {
+    use omuzaki_anim_api::spring::JointLimit;
+
+    use super::*;
+
+    fn set_with(limit: JointLimit, joint: usize) -> (Fixture, SpringSet) {
+        let (fixture, ids) = Fixture::hair(1, 3);
+        let mut chains = chains_of(&ids, windy());
+        chains[0].joints[joint].limit = Some(limit);
+        (fixture, set_of(chains, vec![]))
+    }
+
+    #[test]
+    fn a_malformed_limit_is_bad_params() {
+        let bad = [
+            JointLimit::cone(-0.1),
+            JointLimit::hinge(f32::NAN),
+            JointLimit::spherical(0.5, f32::INFINITY),
+            JointLimit::spherical(-0.5, 0.5),
+            JointLimit::cone(0.5).rotated(Quat::from_xyzw(0.0, 0.0, 0.0, 1.01)),
+            JointLimit::hinge(0.5).rotated(Quat::from_xyzw(f32::NAN, 0.0, 0.0, 1.0)),
+        ];
+        for limit in bad {
+            let (fixture, set) = set_with(limit, 0);
+            assert!(matches!(set.validate(&fixture.skeleton), Err(SpringError::BadParams { .. })), "{limit:?}");
+        }
+        // Angles past the clamp, and a unit quaternion within the tolerance, are fine.
+        let (fixture, set) =
+            set_with(JointLimit::spherical(9.0, 9.0).rotated(Quat::from_xyzw(0.0, 0.0, 0.0, 1.0005)), 1);
+        assert_eq!(set.validate(&fixture.skeleton), Ok(()));
+    }
+
+    #[test]
+    fn a_limit_on_the_last_joint_is_ignored() {
+        let (fixture, with) = set_with(JointLimit::cone(0.01), 2);
+        let mut without = with.clone();
+        without.chains[0].joints[2].limit = None;
+        let run = |set: &SpringSet| {
+            let mut solver = VrmSpringSolver::new(set, &fixture.skeleton).unwrap();
+            let mut pose = fixture.pose_at(0);
+            for frame in 0..60 {
+                pose = fixture.pose_at(frame);
+                solver.step(Tick::at_rate(frame, 60.0), &fixture.skeleton, &mut pose);
+            }
+            pose
+        };
+        assert_same_pose(&run(&with), &run(&without), "a limit on the tail joint");
+    }
+
+    #[test]
+    fn a_limit_does_not_change_an_unlimited_run_bit_for_bit() {
+        let (fixture, ids) = Fixture::hair(2, 4);
+        let plain = set_of(chains_of(&ids, windy()), vec![]);
+        // A cone of pi is a sphere: no direction is outside it.
+        let mut wide = plain.clone();
+        for joint in wide.chains.iter_mut().flat_map(|c| &mut c.joints) {
+            joint.limit = Some(JointLimit::cone(PI_OR_MORE));
+        }
+        assert_same_pose(&pose_after(&fixture, &plain, 120), &pose_after(&fixture, &wide, 120), "a cone of pi");
+    }
+
+    const PI_OR_MORE: f32 = 3.5;
+}

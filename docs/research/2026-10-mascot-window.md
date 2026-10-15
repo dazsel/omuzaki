@@ -7,24 +7,27 @@ area: research
 # Mascot window: transparent, always-on-top, click-through with wgpu
 
 Status: research, partial. Part of BR-25. Read against the main branch as of 2026-10-13.
-The spike binaries and the cost measurement on `Dev` are not in this page; section 9 is the exact run-list.
+The spike binaries are in `spikes/mascot-window/` (section 9). What the cloud VM could run (Linux, X11 on Xvfb, software
+Vulkan and GL) is recorded below, each result marked *verified (cloud VM, lavapipe)*. Everything that needs a Windows or
+macOS machine, a real GPU or a Wayland compositor is still *not verified*, and the cost measurement on `Dev` is open.
 
 ## 1. Summary
 
 | Feature | Windows | macOS | Linux X11 | Linux Wayland |
 |---|---|---|---|---|
-| Transparent surface (wgpu) | DX12 default (`DxgiFromHwnd`): **Opaque only**. DX12 `DxgiFromVisual` (wgpu makes the visual from the HWND): alpha modes offered; end-to-end appearance not verified. Vulkan: driver-defined (not verified). | Metal: Opaque + PostMultiplied (verified). | Vulkan / GL: not verified. A 32-bit TrueColor visual is chosen by winit. | Not verified . |
-| Always on top | `WS_EX_TOPMOST` in winit (verified). | `kCGFloatingWindowLevel` in winit (verified). | `_NET_WM_STATE_ABOVE` in winit (verified). | **No-op** in winit (verified). Needs wlr-layer-shell, outside winit. |
-| Hide from taskbar | `with_skip_taskbar` in winit (verified). | Not in winit; only app-wide `ActivationPolicy::Accessory`. | Not in winit (verified). | Not in winit. |
+| Transparent surface (wgpu) | DX12 default (`DxgiFromHwnd`): **Opaque only**. DX12 `DxgiFromVisual` (wgpu makes the visual from the HWND): alpha modes offered; end-to-end appearance not verified. Vulkan: driver-defined (not verified). | Metal: Opaque + PostMultiplied (verified). | **Vulkan: PreMultiplied + Inherit, blends correctly under a compositor (verified (cloud VM, lavapipe)).** GL (EGL): **Opaque only** (verified (cloud VM, lavapipe)). Winit picks a 32-bit TrueColor visual (verified (cloud VM, lavapipe)). | Not verified. |
+| Always on top | `WS_EX_TOPMOST` in winit (verified). | `kCGFloatingWindowLevel` in winit (verified). | `_NET_WM_STATE_ABOVE` in winit (verified); openbox reports the state set, also `BELOW` for `--level bottom` (verified (cloud VM, lavapipe); stacking order by overlap not checked). | **No-op** in winit (verified). Needs wlr-layer-shell, outside winit. |
+| Hide from taskbar | `with_skip_taskbar` in winit (verified). | Not in winit; only app-wide `ActivationPolicy::Accessory`. | Not in winit (verified). The spike sets `_NET_WM_STATE_SKIP_TASKBAR` and `SKIP_PAGER` itself through `x11rb`; both appear on the window (verified (cloud VM, lavapipe); no taskbar was present to look at). | Not in winit. |
 | Hide from Alt-Tab | Not in winit; `WS_EX_TOOLWINDOW` needs `windows-sys` (not verified on a machine). | Not applicable (Dock / Cmd-Tab, not verified). | Not in winit. | Not in winit. |
-| Opacity | No winit API. Shader-side multiplication is the portable path. | No winit API. | No winit API. | No winit API. |
-| Whole-window click-through | `WS_EX_TRANSPARENT \| WS_EX_LAYERED` in winit (verified). | `setIgnoresMouseEvents` in winit (verified). | Empty XShape input rectangles in winit (verified). | Empty `wl_surface` input region in winit (verified). |
-| Per-pixel click-through | Not in winit; needs polling or custom hit testing. | Not in winit; needs polling. | Not in winit; needs XShape rectangles from the alpha mask (x11rb). | Not in winit; needs a `wl_region` built from the alpha mask, passed to `wl_surface.set_input_region` (not verified, cloud). |
+| Opacity | No winit API. Shader-side multiplication is the portable path. | No winit API. | No winit API. Shader-side multiplication at `--opacity 0.5` gives exactly half of every premultiplied value (verified (cloud VM, lavapipe)). | No winit API. |
+| Whole-window click-through | `WS_EX_TRANSPARENT \| WS_EX_LAYERED` in winit (verified). | `setIgnoresMouseEvents` in winit (verified). | Empty XShape input rectangles in winit (verified); the pointer over the window resolves to the root window instead of the window (verified (cloud VM, lavapipe)). | Empty `wl_surface` input region in winit (verified). |
+| Per-pixel click-through | Not in winit; needs polling or custom hit testing. | Not in winit; needs polling. | Not in winit; XShape rectangles from the alpha mask through `x11rb`: over an opaque pixel the pointer resolves to the window, over a transparent one to the root (verified (cloud VM, lavapipe)). | Not in winit; needs a `wl_region` built from the alpha mask, passed to `wl_surface.set_input_region` (not verified, cloud). |
 
-The "verified" entries above are facts about winit 0.30.13 and wgpu-hal 30.0.1 source. Whether the OS
-honours them on a real desktop is marked "not verified" and is the job of the run-list in section 9.
+The "verified" entries above are facts about winit 0.30.13 and wgpu-hal 30.0.1 source, except the ones marked
+*verified (cloud VM, lavapipe)*, which a binary from `spikes/mascot-window/` showed on the cloud VM (section 9.1). Whether
+the OS honours the rest on a real desktop is marked "not verified" and is the job of the owner run-list in section 9.2.
 
-**Provisional recommendation (to be confirmed on machines):** keep eframe for the main window; build the mascot as its
+**Provisional recommendation (to be confirmed on machines; X11 results in section 9.1 agree with it):** keep eframe for the main window; build the mascot as its
 own winit window with its own wgpu surface, not as an egui secondary viewport (section 6). Use whole-window
 click-through first, and treat per-pixel click-through as a follow-up that polls the cursor against the alpha mask.
 
@@ -258,26 +261,77 @@ premultiplied result, and record the colour of the known patches.
 - Metal `PostMultiplied` encoding may give a halo over a white or black desktop.
 - Wayland always-on-top depends on the compositor's layer-shell support.
 
-## 9. Run-list for the follow-up
+## 9. The spike binaries and what has been run
 
-These steps need a real display, GPU or compositor, so they need a machine with one. They go in
-`spikes/mascot-window/` (its own `Cargo.lock`, winit 0.30.13 and wgpu 30.0.1, not in the workspace).
+`spikes/mascot-window/` is its own workspace root with its own `Cargo.lock` (winit 0.30.13, wgpu 30.0.1, eframe 0.36.2;
+not in the main workspace). `cargo build --release --locked` from that folder builds four binaries. `window`,
+`egui-viewport` and `cost` draw the Spout spike's `scene.wgsl` (copied in unmodified, premultiplied, soft edges and
+known-value patches); `window` and `cost` draw it into an offscreen texture and copy it to the swap chain, applying
+`--opacity` and, for a `PostMultiplied` surface, the division by alpha, and `egui-viewport` uploads it as an egui texture.
+`caps` draws nothing: it only asks each backend what a window surface offers. The window's per-pixel click-through mask is
+the picture read back from the GPU, redone when the window's size changes and applied at the opacity the window is shown at.
 
-1. **`caps` bin:** print the adapter and `get_capabilities().alpha_modes` for each backend, selected with
-   `WGPU_BACKEND=dx12|vulkan|metal|gl`. Answers section 3.1 for Vulkan and GL.
-2. **`window` bin:** draw the scene.wgsl test picture in a transparent window, with flags for level
-   (`--level`), skip-taskbar (`--skip-taskbar`), opacity (`--opacity`) and click-through
-   (`--passthrough whole|pixel`), and DX12 swapchain kind (`--dx12-swapchain hwnd|visual`, set through the wgpu
-   backend options). Run both as a standalone window and inside a shared `EframeWinitApplication` loop (section 6).
-   Answers sections 3.2, 4 and 5 on each OS.
-3. **`egui-viewport` bin:** a transparent root and a transparent secondary viewport, to test section 6.
-4. **`cost` bin:** 1080p at 30 fps for 60 s, GPU timestamps and CPU percentage, for the cost question.
-5. **Record per machine:** OS build, GPU and driver, desktop and compositor, `XDG_SESSION_TYPE`.
-6. **Screenshots** of the window over solid white and solid black, for the fringe check (section 7).
+| Binary | What it does | Section 9 item |
+|---|---|---|
+| `caps` | Per backend (Vulkan, DX12, Metal, GL): the adapter, driver, `alpha_modes`, formats and present modes for a real window surface. | 1 |
+| `window` | The transparent window. `--level normal\|top\|bottom`, `--skip-taskbar`, `--opacity`, `--passthrough whole\|pixel`, `--dx12-swapchain hwnd\|visual`, `--host winit\|eframe` (alone, or sharing eframe's event loop with an opaque eframe window), `--probe` (apply, read the OS state back, exit), plus `--backend`, `--alpha`, `--output`, `--software`, `--size`. | 2 |
+| `egui-viewport` | The same picture as an egui viewport: `--mode root` (transparent root) or `--mode child` (opaque or, with `--root-transparent`, transparent root and a transparent secondary viewport). | 3 |
+| `cost` | 1080p, 30 fps, 60 s by default: GPU time from timestamp queries around both passes, CPU time inside `render()`, and process CPU percent. | 4 |
 
-Open questions that only the run-list can answer: Vulkan alpha caps per driver; the DX12 composition path working
+Per-OS code is in `platform/` (`x11rb` on Linux, `windows` on Windows, `objc2` on macOS). Only the Linux code has run.
+
+### 9.1 Verified on the cloud VM (lavapipe)
+
+Machine (item 5): a Linux container, X11 on Xvfb 1600x900 depth 24 with SHAPE, RENDER and Composite; openbox as window
+manager, xcompmgr as compositor for the fringe checks; Mesa 25.2.8 lavapipe (llvmpipe, LLVM 20.1.2) for Vulkan, and
+llvmpipe on EGL for GL; no `XDG_SESSION_TYPE` (no session). Everything below is *verified (cloud VM, lavapipe)*: a
+software rasteriser on X11. None of it says anything about Windows, macOS, Wayland or a real GPU driver.
+
+| Question | Result |
+|---|---|
+| `caps`, Vulkan (section 3.1) | `alpha_modes` = `[PreMultiplied, Inherit]`; formats `Bgra8UnormSrgb`, `Bgra8Unorm`; present modes `Immediate`, `Mailbox`, `Fifo`, `FifoRelaxed`. |
+| `caps`, GL (section 3.1) | `alpha_modes` = `[Opaque]` only. The GL backend needs `libEGL` installed, and wgpu 30 makes no GL surface unless the instance is given the window's display handle (the spike does). |
+| Visual (section 4.2) | winit's window has a 32-bit TrueColor visual (depth 32); with the compositor running the window is see-through. |
+| Fringe over white and black (section 7) | Vulkan `PreMultiplied`, shader writes premultiplied. Known patches (straight colour, alpha) read from a screenshot: orange at 0.5 gives (255,191,127) over white and (128,64,0) over black; blue at 0.25 gives (191,229,255) and (0,38,64); white at 0.1 gives (255,255,255) and (26,26,26); opaque red and the fully transparent patch are exact. Edge pixels of the feathered orange disc, un-premultiplied from the black and white screenshots, give (255,113..116,25..28) for alphas 0.11 to 0.79, against (255,115,26): no halo and no hue shift. The egui viewport (root, and a secondary viewport under an opaque or transparent root) gives the same numbers. |
+| Opacity (section 4.4) | `--opacity 0.5` over black: the opaque red patch reads (128,0,0), the orange one (64,32,0). Shader-side multiplication is exact. |
+| Always on top (section 4.1) | `_NET_WM_STATE_ABOVE` on the window under openbox for `--level top`; `_NET_WM_STATE_BELOW` for `bottom`; none for `normal`. Overlap order was not looked at. |
+| Skip taskbar (section 4.3) | `_NET_WM_STATE_SKIP_TASKBAR` and `_NET_WM_STATE_SKIP_PAGER` set. No taskbar was running, so the effect was not seen. |
+| Whole-window click-through (section 5.1) | With `--passthrough whole`, `XQueryPointer` over the window returns the root window; without it, the window. |
+| Per-pixel click-through (section 5.2) | With `--passthrough pixel`, an input shape of 421 rectangles is set (the server reads back 528 after normalising bands). Over an opaque pixel of the tag row the pointer resolves to the window; over a transparent pixel next to it, to the root. |
+| Shared eframe loop (section 6) | `window --host eframe`: one winit loop, an opaque eframe window and the mascot window both open and drawing at 30 fps; the mascot window keeps its `ABOVE` state. The loop-sharing code runs. |
+| egui multi-viewport (section 6) | `egui-viewport --mode child` with an opaque root: the secondary viewport is a depth-32 window, `ABOVE`, and blends correctly. On X11 with Vulkan the root's flag did not stop it from being transparent. Windows and macOS are not verified. |
+| Cost (section 9 item 4) | The cost bin runs and times the GPU with timestamp queries on lavapipe: 1920x1080, 10 s, 26.8 fps achieved, GPU mean 15.2 ms (p95 18.0), `render()` CPU mean 15.9 ms, process CPU 168% of one core. This is a software rasteriser: it shows the bin works, not what `Dev` will do. |
+
+Builds: on Linux `cargo build --release --locked` links all four binaries (clippy `-D warnings` clean). For Windows,
+`cargo build --release --locked --target x86_64-pc-windows-gnu` through the repo's mingw linker script links all four
+`.exe` files, and clippy is clean on that target; they have not been run. For macOS, `cargo check` and `cargo clippy -D
+warnings` on `aarch64-apple-darwin` pass; nothing was linked or run there.
+
+### 9.2 Still not verified (needs a machine)
+
+Run each on its OS with the binaries from the `spike-build.yml` workflow (`workflow_dispatch`, `spike` =
+`mascot-window`; the Director has approved it and it is in the broadcast lead's branch `cloud/1925-spike-build`, so the
+owner run waits for that workflow to merge; until then `cargo build --release --locked` in `spikes/mascot-window/` makes
+the same binaries) and record, per machine, the OS build, GPU and
+driver, desktop and compositor and `XDG_SESSION_TYPE` (item 5), and screenshots of the window over solid white and solid
+black (item 6; `--probe` prints the OS state read back).
+
+- **Windows (DX12 and Vulkan):** `caps` (does Vulkan offer a transparent mode; does DX12 offer `PreMultiplied` with the
+  visual swap chain); `window --backend dx12 --dx12-swapchain visual` against `hwnd` (alpha end to end, fringe);
+  `--level`, `--skip-taskbar` (taskbar button, and Alt-Tab, which also needs `WS_EX_TOOLWINDOW`: the spike sets it),
+  `--opacity`, `--passthrough whole` and `pixel` (with `--hit-test winit` and `native`); `--host eframe`;
+  `egui-viewport` in both modes; `cost`.
+- **macOS (Metal):** the same set. `caps` (Metal offers `PostMultiplied`), the fringe with the straight-colour shader
+  output, `--skip-taskbar` (app-wide Accessory policy), per-pixel click-through by cursor polling, `cost`.
+- **Linux Wayland (GNOME, KDE, sway):** `caps`, transparency, `--passthrough whole`, and what happens to `pixel` (the spike
+  reports it unsupported on Wayland; the mask region is not built).
+- **Linux X11 on a real GPU and desktop:** `caps` on Mesa, NVIDIA and AMD drivers; overlap order for always-on-top; the
+  taskbar and pager hiding; `cost`.
+- **Cost on `Dev`:** `cost` at 1920x1080, 30 fps, 60 s on the real GPU.
+
+Open questions that only those runs can answer: Vulkan alpha caps per driver on Windows; the DX12 composition path working
 end to end; fringe over white and black on Windows and macOS; Alt-Tab and Dock hiding; GNOME, KDE and sway behaviour;
-cost at 1080p30.
+cost at 1080p30 on real hardware.
 
 ## 10. Sources
 
