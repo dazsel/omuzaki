@@ -159,27 +159,35 @@ fn look_at(l: &LookAt) -> WireLookAt {
     }
 }
 
+/// The base shape of a collider. `VRMC_springBone_extended_collider` shapes are not written yet: each one gets the
+/// spec's own fallback for a reader without the extension, an inert sphere of radius 0 far below the model, so the
+/// collider indices in the groups stay valid. `vrm_profile` reports the loss (`vrm.collider_dropped`).
+fn base_shape(shape: ColliderShape) -> WireShape {
+    match shape {
+        ColliderShape::Sphere { offset, radius } => {
+            WireShape { sphere: Some(WireSphere { offset: offset.to_array(), radius }), capsule: None }
+        }
+        ColliderShape::Capsule { offset, radius, tail } => WireShape {
+            sphere: None,
+            capsule: Some(WireCapsule { offset: offset.to_array(), radius, tail: tail.to_array() }),
+        },
+        _ => WireShape { sphere: Some(WireSphere { offset: INERT_OFFSET, radius: 0.0 }), capsule: None },
+    }
+}
+
+/// Where the inert fallback sphere sits (`VRMC_springBone_extended_collider-1.0`, "Fallback").
+const INERT_OFFSET: [f32; 3] = [0.0, -10_000.0, 0.0];
+
 fn spring_bones(av: &Avatar) -> WireSpringBone {
     let sb = &av.spring_bones;
+    let colliders = sb
+        .colliders
+        .iter()
+        .map(|c| WireCollider { node: c.node.index(), shape: Some(base_shape(c.shape)), extensions: BTreeMap::new() })
+        .collect();
     WireSpringBone {
         spec_version: "1.0".to_owned(),
-        colliders: sb
-            .colliders
-            .iter()
-            .map(|c| WireCollider {
-                node: c.node.index(),
-                shape: Some(match c.shape {
-                    ColliderShape::Sphere { offset, radius } => {
-                        WireShape { sphere: Some(WireSphere { offset: offset.to_array(), radius }), capsule: None }
-                    }
-                    ColliderShape::Capsule { offset, radius, tail } => WireShape {
-                        sphere: None,
-                        capsule: Some(WireCapsule { offset: offset.to_array(), radius, tail: tail.to_array() }),
-                    },
-                }),
-                extensions: BTreeMap::new(),
-            })
-            .collect(),
+        colliders,
         collider_groups: sb
             .collider_groups
             .iter()
