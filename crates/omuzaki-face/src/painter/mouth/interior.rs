@@ -11,7 +11,8 @@
 //!   clenched too, as faint as the row. The row starts below the lowest point of a flat mouth, so only a real smile,
 //!   which lowers the mouth's centre, brings it into the opening.
 //! - **Fangs**: two triangles hanging from the upper edge at [`FangStyle::position`] of the half-width, as opaque as
-//!   the `fangs` channel.
+//!   the `fangs` channel. In a mouth too narrow for the base, the outer corner stops at the mouth's corner, so the fang
+//!   narrows instead of being clipped.
 //!
 //! [`FangStyle::position`]: omuzaki_face_api::FangStyle::position
 
@@ -159,15 +160,22 @@ fn fangs(ctx: &mut PaintCtx<'_>, open: &OpenMouth) {
     let (width, height, position) = (narrow(style.width), narrow(style.height), narrow(style.position));
     let colour = resolve(&ctx.profile.mouth.interior.teeth, DEFAULT_TEETH);
     let half = width / 2.0 * open.grow;
+    // The distance from a base's centre to the mouth's corner on its side. `position` is validated to `0.3..=1`, so
+    // this is never negative and needs no clamp.
+    let room = (1.0 - position) * open.half_width;
     let length = (height * open.grow).min(open.height * FANG_MAX_SHARE);
     let list = ctx.list(FaceLayerId::Base);
     for side in [-1.0_f32, 1.0] {
         let u = side * position;
         let base = open.centre + Vec2::new(u * open.half_width, open.top(u) + FANG_DROP);
+        // The base corner toward the mouth's corner (outer) stops there, so a narrow mouth narrows the fang instead of
+        // clipping it; the corner toward the middle (inner) keeps its full half-width.
+        let outer = half.min(room);
+        let (left, right) = if side > 0.0 { (half, outer) } else { (outer, half) };
         let fang = list
             .path()
-            .move_to(base - Vec2::new(half, 0.0))
-            .line_to(base + Vec2::new(half, 0.0))
+            .move_to(base - Vec2::new(left, 0.0))
+            .line_to(base + Vec2::new(right, 0.0))
             .line_to(base + Vec2::new(side * FANG_LEAN, -length))
             .close()
             .finish();
