@@ -92,7 +92,9 @@ fn swing_percent(ink: &[f64]) -> f64 {
 #[test]
 fn sweeps_are_deterministic() {
     for dir in DIRECTIONS {
-        assert_eq!(sweep(dir, 1.0), sweep(dir, 1.0), "the raster is deterministic (ADR 0009)");
+        for width in WIDTHS {
+            assert_eq!(sweep(dir, width), sweep(dir, width), "the raster is deterministic (ADR 0009)");
+        }
     }
 }
 
