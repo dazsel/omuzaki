@@ -60,8 +60,12 @@ fn build(def: &CharacterDef) -> Result<BuiltCharacter, BuildError> {
     RegistryBuilder.build(&id, def, &BuildOptions::default(), &BuildServices::default())
 }
 
-/// The camera's frame, in metres, is this fraction of the built head's width on each side of the join.
-const HALF_FRAME_PER_WIDTH: f32 = 0.5;
+/// The frame's half-size is this many head widths at the join. The frame spans 1.2 head widths, so the join's silhouette
+/// sits inside it with background beyond it in the front view.
+const HALF_FRAME_PER_WIDTH: f32 = 0.6;
+
+/// The half-height of the slab of the built head that gives the head's width at the join.
+const JOIN_SLAB: f32 = 0.005;
 
 /// The views: a name and the azimuth of the camera around the join, in degrees.
 const VIEWS: [(&str, f32); 3] = [("front", 0.0), ("three-quarter", 35.0), ("side", 90.0)];
@@ -93,7 +97,11 @@ fn render_the_head_join_when_asked() {
         // The head's local origin is its cranium centre, lowered by the neck drop (as `tests/head_part.rs` places it).
         let join = Vec3::new(0.0, narrow(params.cranium.centre[1] - params.neck.drop + params.outline.top), 0.0);
         let head = &built.meshes[0].mesh.geometry.positions;
-        let (lo, hi) = head.iter().fold((f32::MAX, f32::MIN), |(lo, hi), p| (lo.min(p.x), hi.max(p.x)));
+        // The head's width at the join, measured on the built mesh in a thin slab at the join height.
+        let (lo, hi) = head
+            .iter()
+            .filter(|p| (p.y - join.y).abs() < JOIN_SLAB)
+            .fold((f32::MAX, f32::MIN), |(lo, hi), p| (lo.min(p.x), hi.max(p.x)));
         let half = HALF_FRAME_PER_WIDTH * (hi - lo);
         let distance = half / (fov_y_deg.to_radians() / 2.0).tan();
         for (view, azimuth_deg) in VIEWS {
