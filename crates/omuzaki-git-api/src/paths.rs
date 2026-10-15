@@ -7,6 +7,10 @@ use crate::error::GitError;
 /// Folder names a commit never touches: the keeper's data and git's own.
 const FORBIDDEN: [&str; 2] = [".omuzaki", ".git"];
 
+/// The pathspec that removes the keeper's private folder from any selection (design §6): `.omuzaki/` is never staged,
+/// committed, logged or listed, even if someone force-added a file there.
+pub const PRIVATE_EXCLUDE: &str = ":(exclude,literal).omuzaki";
+
 /// Checks the `paths` given to `Git::commit`.
 ///
 /// Each must be non-empty, relative, free of `..`, and must not have a `.omuzaki` or `.git` component (any case, so a
@@ -47,4 +51,23 @@ pub fn validate_commit_paths<P: AsRef<Path>>(paths: &[P]) -> Result<(), GitError
 pub fn literal_pathspec(path: &Path) -> String {
     let text = path.to_string_lossy().replace('\\', "/");
     format!(":(literal){text}")
+}
+
+/// The pathspecs for a [`Git::commit`](crate::git::Git::commit) selection: each of `paths` through [`literal_pathspec`],
+/// then [`PRIVATE_EXCLUDE`] always, so a selection of the whole project (`.`) can never stage or commit a force-added
+/// file under `.omuzaki/`. Call it on paths [`validate_commit_paths`] accepted; both implementations use it for the
+/// `add` and the `commit` command alike.
+#[must_use]
+pub fn commit_pathspecs<P: AsRef<Path>>(paths: &[P]) -> Vec<String> {
+    let mut specs: Vec<String> = paths.iter().map(|p| literal_pathspec(p.as_ref())).collect();
+    specs.push(PRIVATE_EXCLUDE.to_owned());
+    specs
+}
+
+/// The pathspecs that scope a read ([`Git::status`](crate::git::Git::status), [`Git::log`](crate::git::Git::log),
+/// [`Git::show`](crate::git::Git::show)) to the project folder: the folder itself, without `.omuzaki/`. Run git with
+/// `dir` as its working directory and pass these after `--`.
+#[must_use]
+pub fn project_pathspecs() -> [&'static str; 2] {
+    [":(literal).", PRIVATE_EXCLUDE]
 }

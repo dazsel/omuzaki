@@ -44,14 +44,30 @@ pub enum PullOutcome {
 #[allow(clippy::missing_errors_doc)]
 pub trait Git: Send + Sync {
     /// The folder's branch, ahead/behind, changed files and merge state.
+    ///
+    /// Scoped to the project folder with [`project_pathspecs`]; a tracked file under `.omuzaki/` is reported only as
+    /// `private_tracked`.
+    ///
+    /// [`project_pathspecs`]: crate::paths::project_pathspecs
     fn status(&self, dir: &Path, cancel: &dyn Cancel) -> Result<GitStatus, GitError>;
-    /// At most `limit` commits of `range`, newest first.
+    /// At most `limit` commits of `range` that touch the project folder, newest first.
+    ///
+    /// The implementation passes [`project_pathspecs`] after `--`, so commits elsewhere in the repository are not
+    /// listed (design §4).
+    ///
+    /// [`project_pathspecs`]: crate::paths::project_pathspecs
     fn log(&self, dir: &Path, range: LogRange, limit: usize, cancel: &dyn Cancel) -> Result<Vec<Commit>, GitError>;
-    /// One commit and the files it changed against its first parent.
+    /// One commit and the files it changed against its first parent, limited to the project folder
+    /// ([`project_pathspecs`]).
+    ///
+    /// [`project_pathspecs`]: crate::paths::project_pathspecs
     ///
     /// `rev` goes to git after `--end-of-options`, never as an option; if it does not resolve, [`GitError::BadRev`].
     fn show(&self, dir: &Path, rev: &str, cancel: &dyn Cancel) -> Result<CommitDetail, GitError>;
-    /// The files of a commit, to import as a point.
+    /// The files of a commit under the project folder, to import as a point; nothing under `.omuzaki/` is returned
+    /// ([`project_pathspecs`]).
+    ///
+    /// [`project_pathspecs`]: crate::paths::project_pathspecs
     ///
     /// `rev` goes to git after `--end-of-options`, never as an option; if it does not resolve, [`GitError::BadRev`].
     fn tree_at(&self, dir: &Path, rev: &str, cancel: &dyn Cancel) -> Result<CommitTree, GitError>;
@@ -64,12 +80,13 @@ pub trait Git: Send + Sync {
     ///
     /// Every path must be relative, stay inside `dir`, and never name `.omuzaki` or `.git`; otherwise the call fails
     /// with [`GitError::BadPath`] before git runs. [`validate_commit_paths`] is that check, and both the real
-    /// implementation and the mock call it, so they cannot disagree. Each path reaches git as a literal pathspec
-    /// ([`literal_pathspec`]: the `:(literal)` prefix) after `--`, because `--` alone does not stop magic such as
-    /// `:(top)*`. The call, hooks included, is bounded by [`COMMIT_TIMEOUT`] and ends with [`GitError::Timeout`].
+    /// implementation and the mock call it, so they cannot disagree. The paths reach git, for `add` and `commit` alike,
+    /// as [`commit_pathspecs`] after `--`: each a literal pathspec (the `:(literal)` prefix, because `--` alone does not
+    /// stop magic such as `:(top)*`), then the `.omuzaki` exclusion every time, so a selection of the whole project
+    /// (`.`) cannot commit a force-added private file. The call, hooks included, is bounded by [`COMMIT_TIMEOUT`] and ends with [`GitError::Timeout`].
     ///
     /// [`validate_commit_paths`]: crate::paths::validate_commit_paths
-    /// [`literal_pathspec`]: crate::paths::literal_pathspec
+    /// [`commit_pathspecs`]: crate::paths::commit_pathspecs
     /// [`COMMIT_TIMEOUT`]: crate::error::COMMIT_TIMEOUT
     fn commit(&self, dir: &Path, message: &str, paths: &[PathBuf], cancel: &dyn Cancel) -> Result<CommitId, GitError>;
     /// Pushes the current branch to `remote`. A person only.
