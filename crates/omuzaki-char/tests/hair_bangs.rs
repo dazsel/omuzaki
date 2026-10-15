@@ -8,8 +8,10 @@ use omuzaki_char::hair::compile::{
     Dispatch, GroupGenerator, HairGenCtx, UnitStream, clumps_in, compile_groups, is_bilateral,
 };
 use omuzaki_char::hair::r#gen::bangs::{self, REST_POINTS};
+use omuzaki_char::hair::tube::{TubeLook, TubeMesh};
 use omuzaki_char_api::{
-    BangLayer, BangsGen, Dynamics, Generator, GroupId, HairGroup, HairParams, HairRng, HeadSurface, Quality, Wisp,
+    BangLayer, BangsGen, Dynamics, Generator, GroupId, HairClump, HairGroup, HairParams, HairRng, HeadSurface, Quality,
+    Wisp,
 };
 use omuzaki_core::glam::Vec3;
 use omuzaki_face_api::Palette;
@@ -168,7 +170,8 @@ fn non_finite_and_extreme_parameters_still_make_finite_clumps_outside_the_head()
     assert_eq!(group.clumps.len(), bangs::clump_count(&g));
     for clump in &group.clumps {
         assert!(clump.rest.iter().all(|p| p.is_finite()));
-        assert!(clump.rest.iter().all(|p| (*p - Egg.centre()).length() >= Egg.radius((*p - Egg.centre()).normalize())));
+        // A tip below the head wraps the lock round to the underside; the tube surface is checked for sane inputs below.
+        assert!(clump.rest.iter().all(|p| (*p - Egg.centre()).length() > Egg.radius((*p - Egg.centre()).normalize())));
     }
 }
 
@@ -215,4 +218,43 @@ fn a_mirrored_bangs_group_compiles_to_clump_count_clumps() {
     assert!(is_bilateral(&group.generator), "the fringe already spans both sides");
     assert_eq!(entries[0].group.clumps.len(), bangs::clump_count(&style(2, 2)));
     assert_eq!(clumps_in(&group, &Dispatch), entries[0].group.clumps.len());
+}
+
+/// The smallest distance from the head to any vertex, or any triangle or edge midpoint, of the lock's tube
+/// (negative: inside).
+fn surface_gap(clump: &HairClump) -> f32 {
+    let centre = Egg.centre();
+    let gap = |p: Vec3| (p - centre).length() - Egg.radius((p - centre).normalize());
+    let mut mesh = TubeMesh::new();
+    let polar = vec![0.5; clump.rest.len()];
+    let look = TubeLook { seed: 0.5, shade: 1.0, polar: &polar, tint: None, flip: 1.0 };
+    mesh.push(&clump.rest, &clump.width, &clump.thickness, |p| (p - centre).normalize_or_zero(), &look).unwrap();
+    let m = mesh.finish().unwrap();
+    let mut worst = f32::MAX;
+    for t in m.indices.chunks(3) {
+        let [a, b, c] = [0, 1, 2].map(|k| m.positions[t[k] as usize]);
+        for p in [a, b, c, (a + b + c) / 3.0, (a + b) / 2.0, (b + c) / 2.0, (c + a) / 2.0] {
+            worst = worst.min(gap(p));
+        }
+    }
+    worst
+}
+
+#[test]
+fn the_tube_surface_stays_outside_the_head_for_the_defaults_and_for_offsets_of_0_and_1_mm() {
+    let mut styles = vec![("defaults", BangsGen::default())];
+    for (name, offset) in [("0 mm", 0.0), ("1 mm", 0.001)] {
+        let mut g = style(3, 2);
+        for l in &mut g.layers {
+            l.root_offset = offset;
+            l.tip_offset = offset;
+        }
+        styles.push((name, g));
+    }
+    for (name, g) in styles {
+        for clump in compile(&g, &mut Counting::default()).clumps {
+            let gap = surface_gap(&clump);
+            assert!(gap >= 0.0, "{name}: the tube surface is {gap} m inside the head");
+        }
+    }
 }

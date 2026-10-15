@@ -73,8 +73,10 @@ const MIN_WIDTH: f64 = 0.001;
 const MAX_WIDTH: f64 = 0.3;
 const MAX_ANGLE_DEG: f64 = 90.0;
 const MAX_OFFSET: f64 = 0.2;
-/// The least distance from the skull, so a clump never sits in it.
-const MIN_OFFSET: f64 = 0.002;
+/// The least distance from the skull at either end: half the lock's thickness there ([`THICKNESS`] is `base` at both ends)
+/// plus 1 mm, so the tube's surface, not just its centreline, stays outside the head. Mid-lock the belly lifts the
+/// centreline by far more than the swell (16 mm against 2.5 mm). The prototype's offsets (4 mm and more) are above it.
+const MIN_OFFSET: f64 = THICKNESS.base * 0.5 + 0.001;
 /// Thickness of every lock (the prototype's `0.005 + 0.005 sin(pi t)`).
 pub const THICKNESS: Bulge = Bulge { base: 0.005, swell: 0.005 };
 /// Width fit: the outline's width at the root, metres, including [`FLOOR`].
