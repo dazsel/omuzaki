@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use image::RgbaImage;
 use omuzaki_face::raster::SkiaRasterizer;
 use omuzaki_face::{RealPainter, Section};
-use omuzaki_face_api::{FaceDrawing, FaceInput, FaceLayerId, FacePainter, FaceRasterizer, Raster};
+use omuzaki_face_api::{DrawList, FaceDrawing, FaceInput, FaceLayerId, FacePainter, FaceRasterizer, Raster};
 use serde::Deserialize;
 
 use super::js_params::case_inputs;
@@ -321,10 +321,14 @@ fn region(entries: &[&IndexSection], size: (u32, u32)) -> Rect {
 
 // ------------------------------------------------------------------------------------------------ the Rust side
 
+/// Cuts a section's Base-layer list down to one piece of it (see [`check_tags`]).
+pub type Select<'a> = &'a dyn Fn(&DrawList) -> DrawList;
+
 /// One section of one case through the painter and the CPU rasteriser, as straight-alpha pixels; `None` when the
-/// painter's lists for the compared layers are empty.
+/// painter's lists for the compared layers are empty. With `select`, only the Base layer is taken, cut down by it.
 fn paint_section(
     section: Section,
+    select: Option<&Select<'_>>,
     setup: &Setup,
     input: &FaceInput<'_>,
     size: (u32, u32),
@@ -343,7 +347,15 @@ fn paint_section(
     let mut rasterizer = SkiaRasterizer::new();
     let mut raster = Raster::new(1, 1);
     for spec in painter.layers().iter().filter(|s| COMPARED_LAYERS.contains(&s.id)) {
-        let list = &drawing[spec.id];
+        let selected;
+        let list = match select {
+            Some(_) if spec.id != FaceLayerId::Base => continue,
+            Some(select) => {
+                selected = select(&drawing[spec.id]);
+                &selected
+            }
+            None => &drawing[spec.id],
+        };
         if list.is_empty() {
             continue;
         }
@@ -416,11 +428,23 @@ struct Run {
     missing_state: Vec<String>,
 }
 
-/// Compares `sections` over every case of the index; `evidence` (when given) receives a picture per compared case.
+/// One comparison of a run: a section, the tags that make up its reference, and the cut of the painter's list.
+struct Job<'a> {
+    section: Section,
+    tags: Vec<String>,
+    select: Option<Select<'a>>,
+}
+
+/// The whole-section jobs for `sections`.
+fn whole(sections: &[Section]) -> Vec<Job<'static>> {
+    sections.iter().map(|&section| Job { section, tags: tags(section), select: None }).collect()
+}
+
+/// Compares `jobs` over every case of the index; `evidence` (when given) receives a picture per compared case.
 fn run(
     js: &JsRef,
     index: &Index,
-    sections: &[Section],
+    jobs: &[Job<'_>],
     tolerance: SectionTolerance,
     evidence: Option<&Path>,
 ) -> Result<Run, ParityError> {
@@ -451,12 +475,12 @@ fn run(
             .map_err(|source| ParityError::Params { case: case.id.clone(), source })?;
         let input = FaceInput { profile: &profile, params: &inputs.params, time: inputs.time, view: inputs.view };
 
-        for &section in sections {
-            let wanted = tags(section);
-            let entries: Vec<&IndexSection> = case.sections.iter().filter(|e| wanted.contains(&e.tag)).collect();
+        for job in jobs {
+            let section = job.section;
+            let entries: Vec<&IndexSection> = case.sections.iter().filter(|e| job.tags.contains(&e.tag)).collect();
             let reference = stack_reference(js, &entries, size)?;
             let rect = region(&entries, size);
-            let actual = paint_section(section, &variant.setup, &input, size, &case.id)?;
+            let actual = paint_section(section, job.select.as_ref(), &variant.setup, &input, size, &case.id)?;
             let outcome = judge(actual.as_ref(), &reference, rect, tolerance, &case.id)?;
             if let (Some(dir), Outcome::Compared { .. }, Some(actual)) = (evidence, &outcome, &actual) {
                 write_evidence(dir, case, section, actual, &reference, rect, tolerance)?;
@@ -556,12 +580,57 @@ pub fn check_section_in(
     section: Section,
     tolerance: SectionTolerance,
 ) -> Result<SectionCheck, ParityError> {
+    check_jobs_in(js, &whole(&[section]), tolerance)
+}
+
+/// [`check_section`] over a subset of one section's tags, for a piece of a section that has its own parity test (the
+/// eye's aperture, iris, ...).
+///
+/// The reference is only the listed `tags` stacked, and the compared rectangle is only their boxes. `select` cuts the
+/// painter's Base-layer list for the section down to the piece, so the pixels compared are the piece's alone (the
+/// Overlay layer is not compared). `tags` outside the section are allowed; names the index lacks in a case simply add
+/// nothing to that case's reference.
+///
+/// ```ignore
+/// let check = face_parity::check_tags(Section::Eyes, &["eye-L-sclera", "eye-R-sclera"], &eye_whites, T_FACE).unwrap();
+/// ```
+///
+/// # Errors
+/// As [`check_section`].
+pub fn check_tags(
+    section: Section,
+    tags: &[&str],
+    select: Select<'_>,
+    tolerance: SectionTolerance,
+) -> Result<SectionCheck, ParityError> {
+    match JsRef::open() {
+        Some(js) => check_tags_in(&js, section, tags, select, tolerance),
+        None => Ok(SectionCheck::Skipped("no JS reference dump".to_owned())),
+    }
+}
+
+/// [`check_tags`] against the dump `js` (a fixture, in tests).
+///
+/// # Errors
+/// As [`check_section`].
+pub fn check_tags_in(
+    js: &JsRef,
+    section: Section,
+    tags: &[&str],
+    select: Select<'_>,
+    tolerance: SectionTolerance,
+) -> Result<SectionCheck, ParityError> {
+    let job = Job { section, tags: tags.iter().map(|t| (*t).to_owned()).collect(), select: Some(select) };
+    check_jobs_in(js, &[job], tolerance)
+}
+
+fn check_jobs_in(js: &JsRef, jobs: &[Job<'_>], tolerance: SectionTolerance) -> Result<SectionCheck, ParityError> {
     let Some(index) = read_index(js)? else {
         let reason = format!("no face-section references at {}/face-sections", js.root().display());
         eprintln!("skipped: {reason}");
         return Ok(SectionCheck::Skipped(reason));
     };
-    let Run { results, missing_state, .. } = run(js, &index, &[section], tolerance, None)?;
+    let Run { results, missing_state, .. } = run(js, &index, jobs, tolerance, None)?;
     if !missing_state.is_empty() {
         eprintln!("not compared, no face state in the dump: {}", missing_state.join(", "));
     }
@@ -604,7 +673,8 @@ pub fn report_in(js: &JsRef, out_dir: &Path) -> Result<SectionReport, ParityErro
         let reason = format!("no face-section references at {}/face-sections", js.root().display());
         return Ok(SectionReport { skipped: Some(reason), markdown: String::new(), results: Vec::new() });
     };
-    let Run { results, defaulted, missing_state } = run(js, &index, &Section::ALL, REPORT_TOLERANCE, Some(out_dir))?;
+    let Run { results, defaulted, missing_state } =
+        run(js, &index, &whole(&Section::ALL), REPORT_TOLERANCE, Some(out_dir))?;
     let mut markdown = markdown(&results, &defaulted, REPORT_TOLERANCE);
     if !missing_state.is_empty() {
         let _ = write!(markdown, "\n## Not compared: no face state in the dump\n\n");
@@ -934,6 +1004,46 @@ mod tests {
             assert!(check.problems().is_none(), "{section:?}: {check:?}");
             assert!(matches!(&check, SectionCheck::Ran { results, .. } if results.len() == 1));
         }
+    }
+
+    #[test]
+    fn check_tags_compares_only_the_listed_tags() {
+        let dir = tempfile::tempdir().unwrap();
+        fake_dump(dir.path());
+        // A second tag in the same case, with a different amount of ink than the nose's 60 px.
+        let mut rim = RgbaImage::new(SIZE.0, SIZE.1);
+        rim.put_pixel(10, 10, Rgba([200, 90, 90, 255]));
+        rim.put_pixel(11, 10, Rgba([200, 90, 90, 255]));
+        write(dir.path(), "face-sections/game/smile/lip-rim.png", &png(&rim));
+        let index_path = dir.path().join("face-sections/index.json");
+        let mut index: Value = serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
+        index["cases"][0]["sections"].as_array_mut().unwrap().push(json!({
+            "tag": "lip-rim", "file": "face-sections/game/smile/lip-rim.png", "bbox": [10, 10, 12, 11] }));
+        std::fs::write(&index_path, index.to_string()).unwrap();
+        let js = JsRef::open_at(dir.path()).unwrap();
+        let keep_all = |list: &DrawList| list.clone();
+
+        let only = |tags: &[&str]| {
+            let check = check_tags_in(&js, Section::Nose, tags, &keep_all, TOL).unwrap();
+            let [failure] = check.failures()[..] else { panic!("expected one failure: {check:?}") };
+            (failure.tags.clone(), failure.outcome.clone())
+        };
+        let (tags, outcome) = only(&["nose"]);
+        assert_eq!(tags, ["nose"]);
+        assert_eq!(outcome, Outcome::NotDrawn { reference_pixels: 60 });
+        let (tags, outcome) = only(&["lip-rim"]);
+        assert_eq!(tags, ["lip-rim"]);
+        assert_eq!(
+            outcome,
+            Outcome::NotDrawn { reference_pixels: 2 },
+            "the nose's ink is not in the lip rim's reference"
+        );
+        // Both listed: both stacked.
+        let both = check_tags_in(&js, Section::Nose, &["nose", "lip-rim"], &keep_all, TOL).unwrap();
+        assert_eq!(both.failures()[0].tags, ["nose", "lip-rim"]);
+        // None listed: an empty reference, which an empty painting matches.
+        let none = check_tags_in(&js, Section::Nose, &[], &keep_all, TOL).unwrap();
+        assert!(none.problems().is_none(), "{none:?}");
     }
 
     #[test]
