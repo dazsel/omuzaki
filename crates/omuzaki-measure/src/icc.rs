@@ -1,7 +1,7 @@
 //! Whether an embedded ICC profile is the sRGB profile, from its data: the colour space and connection space, the three
 //! primaries, the white point and the three tone curves. The profile's description is metadata, and is not read for this.
 //! Every count, offset and size is checked against the bytes actually present before it is used, so a forged profile
-//! yields `false` quickly, never a panic and never a long loop.
+//! yields `false` quickly: the tag table is capped, and each walk over it is bounded by that cap.
 
 use libm::pow;
 
@@ -17,19 +17,31 @@ const XYZ_TOLERANCE: f64 = 0.002;
 const SRGB_PARAMETERS: [f64; 5] = [2.4, 1.0 / 1.055, 0.055 / 1.055, 1.0 / 12.92, 0.04045];
 const PARAMETER_TOLERANCE: f64 = 1e-4;
 
+/// The most tags a profile may declare. Real profiles declare a few dozen; the cap bounds every walk over the table.
+pub(crate) const MAX_TAGS: usize = 256;
+
+/// The fewest and most points a sampled tone curve may have. A table with fewer points is not a faithful sRGB curve (an
+/// identity or a two-point stand-in is refused by its count alone); the most bounds the work per channel.
+const MIN_CURVE_SAMPLES: usize = 256;
+const MAX_CURVE_SAMPLES: usize = 4096;
+
+/// How far a sampled curve's value may stray from sRGB at any point: one step of an 8-bit channel.
+const CURVE_TOLERANCE: f64 = 1.0 / 255.0;
+
 /// Whether the profile describes sRGB: an RGB profile with an XYZ connection space, sRGB's primaries and D50 white, and
-/// the sRGB curve on each channel (as a parametric curve or a table within 1/255 of it at every entry).
+/// the sRGB curve on each channel (a parametric curve, or a sampled curve within one 8-bit step of it at every point).
 pub(crate) fn is_srgb(profile: &[u8]) -> bool {
     if profile.get(16..20) != Some(b"RGB ".as_slice()) || profile.get(20..24) != Some(b"XYZ ".as_slice()) {
         return false;
     }
-    let Some(tags) = Tags::read(profile) else { return false };
+    let Some(count) = tag_count(profile) else { return false };
+    let tag = |signature: [u8; 4]| find_tag(profile, count, signature);
     let xyz_matches = |signature: [u8; 4], want: [f64; 3]| {
-        tags.get(signature)
+        tag(signature)
             .and_then(xyz)
             .is_some_and(|got| got.iter().zip(want).all(|(got, want)| (got - want).abs() <= XYZ_TOLERANCE))
     };
-    let curve_matches = |signature: [u8; 4]| tags.get(signature).is_some_and(is_srgb_curve);
+    let curve_matches = |signature: [u8; 4]| tag(signature).is_some_and(is_srgb_curve);
     xyz_matches(*b"rXYZ", RED_XYZ)
         && xyz_matches(*b"gXYZ", GREEN_XYZ)
         && xyz_matches(*b"bXYZ", BLUE_XYZ)
@@ -39,35 +51,26 @@ pub(crate) fn is_srgb(profile: &[u8]) -> bool {
         && curve_matches(*b"bTRC")
 }
 
-/// The tag table of a profile: each entry's signature and its data, every one checked against the bytes present.
-struct Tags<'a> {
-    entries: Vec<([u8; 4], &'a [u8])>,
+/// The tag count at byte 128, refused when it is over [`MAX_TAGS`] or over the complete 12-byte entries present. Checked
+/// before any entry is read, so a forged count costs nothing.
+fn tag_count(profile: &[u8]) -> Option<usize> {
+    let count = usize::try_from(be_u32(profile, 128)?).ok()?;
+    let present = profile.len().saturating_sub(132) / 12;
+    (count <= MAX_TAGS && count <= present).then_some(count)
 }
 
-impl<'a> Tags<'a> {
-    /// Reads the table at byte 128. A count larger than the complete 12-byte entries present is refused before any
-    /// entry is read, so a forged count cannot make the reader walk a long, empty table.
-    fn read(profile: &'a [u8]) -> Option<Self> {
-        let count = usize::try_from(be_u32(profile, 128)?).ok()?;
-        let present = profile.len().saturating_sub(132) / 12;
-        if count > present {
+/// The data of the tag with `signature`, found by scanning the `count` entries of the table in place: no entry is
+/// collected, and an entry whose bytes are not present is skipped.
+fn find_tag(profile: &[u8], count: usize, signature: [u8; 4]) -> Option<&[u8]> {
+    (0..count).find_map(|entry| {
+        let at = 132 + 12 * entry;
+        if profile.get(at..at + 4)? != signature.as_slice() {
             return None;
         }
-        let mut entries = Vec::with_capacity(count);
-        for entry in 0..count {
-            let at = 132 + 12 * entry;
-            let signature: [u8; 4] = profile.get(at..at + 4)?.try_into().ok()?;
-            let offset = usize::try_from(be_u32(profile, at + 4)?).ok()?;
-            let size = usize::try_from(be_u32(profile, at + 8)?).ok()?;
-            let data = profile.get(offset..offset.checked_add(size)?)?;
-            entries.push((signature, data));
-        }
-        Some(Self { entries })
-    }
-
-    fn get(&self, signature: [u8; 4]) -> Option<&'a [u8]> {
-        self.entries.iter().find(|(kind, _)| *kind == signature).map(|(_, data)| *data)
-    }
+        let offset = usize::try_from(be_u32(profile, at + 4)?).ok()?;
+        let size = usize::try_from(be_u32(profile, at + 8)?).ok()?;
+        profile.get(offset..offset.checked_add(size)?)
+    })
 }
 
 /// The XYZ values of an `XYZ ` tag: three `s15Fixed16` numbers after its type and reserved words.
@@ -78,9 +81,10 @@ fn xyz(data: &[u8]) -> Option<[f64; 3]> {
     Some(std::array::from_fn(|i| fixed(data, 8 + 4 * i)))
 }
 
-/// Whether a tone curve is the sRGB curve: a parametric type 3 with sRGB's parameters, or a table of at least two
-/// entries that is within 1/255 of sRGB at every entry. A gamma, an identity or any other curve is not.
-#[allow(clippy::cast_precision_loss, reason = "a table index is far below 2^52, so the conversion is exact")]
+/// Whether a tone curve is the sRGB curve: a parametric type 3 with sRGB's parameters, or a sampled curve of
+/// [`MIN_CURVE_SAMPLES`] to [`MAX_CURVE_SAMPLES`] points that is within [`CURVE_TOLERANCE`] of sRGB's decode at every
+/// point. The curve maps an encoded value to linear light, as the parametric one does. A gamma, an identity or any other
+/// curve is refused.
 fn is_srgb_curve(data: &[u8]) -> bool {
     match data.get(..4) {
         Some(b"para") => {
@@ -94,22 +98,24 @@ fn is_srgb_curve(data: &[u8]) -> bool {
         }
         Some(b"curv") => {
             let Some(count) = be_u32(data, 8).and_then(|count| usize::try_from(count).ok()) else { return false };
-            if count < 2 || data.len() < 12 + 2 * count {
+            if !(MIN_CURVE_SAMPLES..=MAX_CURVE_SAMPLES).contains(&count) || data.len() < 12 + 2 * count {
                 return false;
             }
+            #[allow(clippy::cast_precision_loss, reason = "the count is at most 4096, exact in f64")]
             (0..count).all(|i| {
                 let value = f64::from(u16::from_be_bytes([data[12 + 2 * i], data[13 + 2 * i]])) / 65_535.0;
-                let want = srgb_encode(i as f64 / (count - 1) as f64);
-                (value - want).abs() <= 1.0 / 255.0
+                // A table index of at most 4096 is exact in f64.
+                let encoded = i as f64 / (count - 1) as f64;
+                (value - srgb_decode(encoded)).abs() <= CURVE_TOLERANCE
             })
         }
         _ => false,
     }
 }
 
-/// The sRGB transfer function: linear light to the encoded value, for `x` in [0, 1].
-fn srgb_encode(x: f64) -> f64 {
-    if x <= 0.003_130_8 { 12.92 * x } else { 1.055 * pow(x, 1.0 / 2.4) - 0.055 }
+/// The sRGB transfer function, encoded value to linear light, for `x` in [0, 1]: the inverse of the encoding.
+fn srgb_decode(x: f64) -> f64 {
+    if x <= 0.040_45 { x / 12.92 } else { pow((x + 0.055) / 1.055, 2.4) }
 }
 
 /// An `s15Fixed16` number at `at`, or NaN when it is past the end, which fails every comparison.
@@ -131,7 +137,7 @@ fn be_u32(bytes: &[u8], at: usize) -> Option<u32> {
     reason = "test tables and fixed-point numbers are small and in range"
 )]
 mod tests {
-    use super::{is_srgb, srgb_encode};
+    use super::{MAX_TAGS, is_srgb};
 
     /// The `s15Fixed16` bytes of a number.
     fn s15(value: f64) -> [u8; 4] {
@@ -154,13 +160,23 @@ mod tests {
         tag
     }
 
-    /// A table curve of `entries` points, each the sRGB curve at its place, in 16 bits.
-    fn table_tag(entries: usize) -> Vec<u8> {
+    /// The sRGB transfer function as the reference, written independently of the code under test: the encoding by its
+    /// definition, and the decode as its inverse.
+    fn reference_encode(linear: f64) -> f64 {
+        if linear <= 0.003_130_8 { 12.92 * linear } else { 1.055 * linear.powf(1.0 / 2.4) - 0.055 }
+    }
+
+    fn reference_decode(encoded: f64) -> f64 {
+        if encoded <= 0.040_45 { encoded / 12.92 } else { ((encoded + 0.055) / 1.055).powf(2.4) }
+    }
+
+    /// A sampled curve of `entries` points for `value(position)`, where the position runs over [0, 1]: 16 bits each.
+    fn sampled_tag(entries: usize, value: impl Fn(f64) -> f64) -> Vec<u8> {
         let mut tag = b"curv\0\0\0\0".to_vec();
         tag.extend(u32::try_from(entries).unwrap().to_be_bytes());
         for i in 0..entries {
-            let value = (srgb_encode(i as f64 / (entries - 1) as f64) * 65_535.0).round() as u16;
-            tag.extend(value.to_be_bytes());
+            let sample = (value(i as f64 / (entries - 1) as f64) * 65_535.0).round() as u16;
+            tag.extend(sample.to_be_bytes());
         }
         tag
     }
@@ -209,20 +225,41 @@ mod tests {
     #[test]
     fn a_profile_with_srgb_primaries_white_and_curve_is_srgb() {
         assert!(is_srgb(&srgb_parametric()));
-        assert!(is_srgb(&srgb_with(&table_tag(1024))));
+        // A sampled sRGB curve maps encoded values to linear light: the decode, not the encode.
+        assert!(is_srgb(&srgb_with(&sampled_tag(1024, reference_decode))));
+    }
+
+    #[test]
+    fn a_sampled_curve_in_the_encode_direction_is_refused() {
+        // The same samples as the encode direction map linear light back to encoded values: a reversed table.
+        assert!(!is_srgb(&srgb_with(&sampled_tag(1024, reference_encode))));
+    }
+
+    #[test]
+    fn a_sparse_or_identity_table_is_refused_by_its_count() {
+        // Two points (an identity) match the endpoints of the sRGB decode, and nothing else: refused by count.
+        assert!(!is_srgb(&srgb_with(&sampled_tag(2, |x| x))));
+        assert!(!is_srgb(&srgb_with(&sampled_tag(255, reference_decode))));
+    }
+
+    #[test]
+    fn a_sampled_curve_that_strays_inside_the_table_is_refused() {
+        // Right at both ends and wrong in the middle: a gamma of 1.8 stands in for sRGB between the endpoints.
+        assert!(!is_srgb(&srgb_with(&sampled_tag(1024, |x| x.powf(1.8)))));
     }
 
     #[test]
     fn a_display_p3_matrix_is_refused_even_when_its_description_says_srgb() {
         // Display P3 (D50-adapted): wider red and green, same curve and white. Its tags say P3, whatever it is called.
+        let curve = parametric_tag([2.4, 1.0 / 1.055, 0.055 / 1.055, 1.0 / 12.92, 0.04045]);
         let p3 = profile(&[
             (b"rXYZ", xyz_tag([0.5151, 0.2412, -0.0011])),
             (b"gXYZ", xyz_tag([0.2919, 0.6922, 0.0419])),
             (b"bXYZ", xyz_tag([0.1572, 0.0666, 0.7841])),
             (b"wtpt", xyz_tag(D50)),
-            (b"rTRC", parametric_tag([2.4, 1.0 / 1.055, 0.055 / 1.055, 1.0 / 12.92, 0.04045])),
-            (b"gTRC", parametric_tag([2.4, 1.0 / 1.055, 0.055 / 1.055, 1.0 / 12.92, 0.04045])),
-            (b"bTRC", parametric_tag([2.4, 1.0 / 1.055, 0.055 / 1.055, 1.0 / 12.92, 0.04045])),
+            (b"rTRC", curve.clone()),
+            (b"gTRC", curve.clone()),
+            (b"bTRC", curve),
             (b"desc", b"desc\0\0\0\0\0\0\0\x11sRGB IEC61966-2.1\0".to_vec()),
         ]);
         assert!(!is_srgb(&p3));
@@ -245,11 +282,15 @@ mod tests {
     }
 
     #[test]
-    fn a_forged_tag_count_is_refused_without_walking_the_table() {
-        // The count claims four billion entries; only one is present. Refused before any entry is read.
+    fn a_header_claiming_millions_of_tags_is_refused_before_the_table_is_walked() {
+        // The count claims five million tags; the profile holds one. Refused by the cap before any entry is read.
         let mut forged = srgb_parametric();
-        forged[128..132].copy_from_slice(&u32::MAX.to_be_bytes());
+        forged[128..132].copy_from_slice(&5_000_000_u32.to_be_bytes());
         assert!(!is_srgb(&forged));
+        // Just over the cap is refused too, even with the entries present.
+        let mut over = srgb_parametric();
+        over[128..132].copy_from_slice(&((MAX_TAGS + 1) as u32).to_be_bytes());
+        assert!(!is_srgb(&over));
     }
 
     #[test]
@@ -265,12 +306,11 @@ mod tests {
 
     #[test]
     fn a_forged_curve_count_is_refused() {
-        // A table that claims more points than its bytes hold.
+        // A table that claims four billion points with none present.
         let mut curve = b"curv\0\0\0\0".to_vec();
         curve.extend(u32::MAX.to_be_bytes());
         curve.extend([0_u8; 8]);
-        let forged = srgb_with(&curve);
-        assert!(!is_srgb(&forged));
+        assert!(!is_srgb(&srgb_with(&curve)));
     }
 
     #[test]

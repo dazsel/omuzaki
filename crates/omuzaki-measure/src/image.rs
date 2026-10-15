@@ -153,6 +153,11 @@ pub fn decode(bytes: &[u8], hash: ContentHash, field: &str) -> Result<Rgba8, OpE
     input.limits(limits());
     let mut decoder = input.into_decoder().map_err(|error| unreadable(field, &error))?;
     let icc = decoder.icc_profile().map_err(|error| unreadable(field, &error))?;
+    // The profile's bytes are part of what the decode holds, so they count against the same budget.
+    let icc_bytes = icc.as_ref().map_or(0, |profile| profile.len() as u64);
+    if !fits(plan.width, plan.height, plan.peak + icc_bytes) {
+        return Err(too_large(field, plan.width, plan.height));
+    }
     if let Some(found) = header::non_srgb(bytes, format, icc.as_deref()) {
         return Err(colour_unsupported(field, &found));
     }
