@@ -16,15 +16,22 @@ thiserror.workspace = true
 omuzaki-ai-api = { path = "../omuzaki-ai-api" }
 omuzaki-anim-api = { path = "../omuzaki-anim-api" }
 omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-pixfmt = { path = "../omuzaki-pixfmt" }
+omuzaki-track-api = { path = "../omuzaki-track-api" }
 
 [dev-dependencies]
 criterion.workspace = true
 omuzaki-ai-mock = { path = "../omuzaki-ai-mock" }
+omuzaki-track-mock = { path = "../omuzaki-track-mock" }
 sha2.workspace = true
 tempfile.workspace = true
 
 [[bench]]
 name = "pipeline"
+harness = false
+
+[[bench]]
+name = "webcam"
 harness = false
 
 # Native only: the webcam capture path (camera thread, pixel conversion) has no wasm32 counterpart.
