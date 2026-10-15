@@ -4,7 +4,7 @@
 // Integration-test helpers may panic: a panic is a clear test failure.
 #![allow(clippy::unwrap_used, clippy::assert_is_empty)]
 
-use omuzaki_settings_api::check::problems;
+use omuzaki_settings_api::check::{problems, registry_problems};
 use omuzaki_settings_api::error::{SettingError, SettingErrorKind};
 use omuzaki_settings_api::meta::{AgentWrite, Apply, InProfile, SettingMeta, SettingScope};
 use omuzaki_settings_api::registry::{self, SettingRegistration};
@@ -146,6 +146,7 @@ key!(OneSegment, u8, "scale", 1);
 key!(EmptySegment, u8, "ui..x", 1);
 key!(Parent, u8, "mascot.size", 1);
 key!(Child, u8, "mascot.size.max", 1);
+key!(Sibling, u8, "mascot.sizes", 1);
 key!(NoSummary, u8, "ui.nosummary", 1, "", SettingScope::User, InProfile::Member);
 key!(MachineMember, u8, "audio.device", 1, "Device", SettingScope::Machine, InProfile::Member);
 key!(NoneDefault, Option<u8>, "ui.maybe", None);
@@ -182,6 +183,24 @@ impl Setting for BadRename {
     const META: SettingMeta = SettingMeta::new(
         "ui.renamed",
         "Renamed",
+        SettingScope::User,
+        AgentWrite::Free,
+        InProfile::Member,
+        Apply::Live,
+        1,
+    );
+    const RENAMED_FROM: &'static [&'static str] = &["ui.fine"];
+    fn default() -> u8 {
+        1
+    }
+}
+
+struct AlsoRenames;
+impl Setting for AlsoRenames {
+    type Value = u8;
+    const META: SettingMeta = SettingMeta::new(
+        "ui.again",
+        "Renamed again",
         SettingScope::User,
         AgentWrite::Free,
         InProfile::Member,
@@ -245,4 +264,53 @@ fn a_package_that_registers_nothing_is_a_problem_not_a_pass() {
     let p = problems(&[&other], "t");
     assert!(p.iter().any(|m| m.contains("`t` registers no settings")), "{p:?}");
     assert_eq!(problems(&[], "t").len(), 1, "an empty registry fails too");
+}
+
+// --- the App check: what only the whole registry can see -------------------------------------------------------
+
+const TABLE: &str = "a value and a table cannot share one TOML path";
+
+#[test]
+fn the_registry_check_reports_each_duplicate_and_prefix_across_crates_once() {
+    let parent = SettingRegistration::of::<Parent>("alpha");
+    let child = SettingRegistration::of::<Child>("beta");
+    let twin = SettingRegistration::of::<Parent>("gamma");
+    // Handed over out of order: the report does not depend on registration order.
+    assert_eq!(
+        registry_problems(&[&child, &twin, &parent]),
+        [
+            "`mascot.size` is registered by both `alpha` and `gamma`".to_owned(),
+            format!("`mascot.size` (alpha) is a prefix of `mascot.size.max` (beta): {TABLE}"),
+            format!("`mascot.size` (gamma) is a prefix of `mascot.size.max` (beta): {TABLE}"),
+        ]
+    );
+    let again = SettingRegistration::of::<Parent>("alpha");
+    assert_eq!(registry_problems(&[&parent, &again]), ["`mascot.size` is registered twice by `alpha`"]);
+}
+
+#[test]
+fn the_registry_check_passes_independent_keys_and_fails_an_empty_registry() {
+    let none: Vec<String> = Vec::new();
+    let fine = SettingRegistration::of::<Fine>("alpha");
+    let parent = SettingRegistration::of::<Parent>("beta");
+    assert_eq!(registry_problems(&[&fine, &parent]), none);
+    // A key that merely starts with another key's text is not under it.
+    let sibling = SettingRegistration::of::<Sibling>("gamma");
+    assert_eq!(registry_problems(&[&parent, &sibling]), none);
+    let empty = registry_problems(&[]);
+    assert!(empty.len() == 1 && empty[0].contains("no settings are registered"), "{empty:?}");
+}
+
+#[test]
+fn the_registry_check_catches_retired_keys_claimed_twice_or_still_live() {
+    let one = SettingRegistration::of::<BadRename>("alpha");
+    let two = SettingRegistration::of::<AlsoRenames>("beta");
+    let both = registry_problems(&[&one, &two]);
+    assert!(
+        both.len() == 1 && both[0].starts_with("`ui.fine` is retired by both `ui.again` (beta) and `ui.renamed`"),
+        "{both:?}"
+    );
+    let live = SettingRegistration::of::<Fine>("gamma");
+    let still = registry_problems(&[&one, &live]);
+    assert_eq!(still, ["`ui.fine`, retired by `ui.renamed` (alpha), is still the key of a setting in `gamma`"]);
 }

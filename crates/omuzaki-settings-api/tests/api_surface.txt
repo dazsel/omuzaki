@@ -2,6 +2,10 @@ src/check.rs: pub fn assert_crate(package: &str, link: fn())
 src/check.rs: #[macro_export] macro_rules! check_crate
 src/check.rs: macro_rules! check_crate: ($krate:ident)
 src/check.rs: #[must_use] pub fn problems(all: &[&SettingRegistration], package: &str) -> Vec<String>
+src/check.rs: #[macro_export] macro_rules! check_app
+src/check.rs: macro_rules! check_app: ($app:ident)
+src/check.rs: pub fn assert_app(link: fn())
+src/check.rs: #[must_use] pub fn registry_problems(all: &[&SettingRegistration]) -> Vec<String>
 src/error.rs: #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error, Serialize, Deserialize, JsonSchema)] #[non_exhaustive] pub struct SettingError
 src/error.rs: struct SettingError: pub key: String
 src/error.rs: struct SettingError: pub kind: SettingErrorKind
@@ -127,6 +131,7 @@ src/registry.rs: macro_rules! register_setting: ($ty:ty)
 src/secret.rs: #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)] #[serde(try_from = "String", into = "String")] pub struct SecretRef(String)
 src/secret.rs: impl SecretRef: pub const MAX_LEN: usize = 128
 src/secret.rs: impl SecretRef: pub fn new(label: impl Into<String>) -> Result<Self, SettingError>
+src/secret.rs: impl SecretRef: #[must_use] pub fn pattern() -> String
 src/secret.rs: impl SecretRef: #[must_use] pub fn label(&self) -> &str
 src/secret.rs: impl TryFrom<String> for SecretRef
 src/secret.rs: impl From<SecretRef> for String

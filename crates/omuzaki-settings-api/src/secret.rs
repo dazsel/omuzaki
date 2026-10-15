@@ -43,6 +43,17 @@ impl SecretRef {
         Ok(Self(label))
     }
 
+    /// The schema `pattern` of a label: slash-separated segments of `a-z`, `0-9`, `-`, `_` and `.`, none empty and
+    /// none exactly `.` or `..`, which [`new`](Self::new) rejects too. It uses only groups, alternation and counted
+    /// repetition (no look-ahead), so any ECMA-262 or RE2-style validator reads it, and `tests/secret_schema.rs` proves
+    /// it accepts exactly the labels `new` does. A segment is up to two dots then a non-dot character, or three or more
+    /// dots.
+    #[must_use]
+    pub fn pattern() -> String {
+        let segment = r"(?:\.{0,2}[a-z0-9_-][a-z0-9._-]*|\.{3,}[a-z0-9._-]*)";
+        format!("^{segment}(?:/{segment})*$")
+    }
+
     /// The label (not the secret).
     #[must_use]
     pub fn label(&self) -> &str {
@@ -79,7 +90,7 @@ impl JsonSchema for SecretRef {
             "type": "string",
             "description": "The label of a secret held in the OS keychain, never the secret.",
             "maxLength": Self::MAX_LEN,
-            "pattern": "^[a-z0-9._-]+(/[a-z0-9._-]+)*$"
+            "pattern": Self::pattern()
         })
     }
 }
