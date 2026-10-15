@@ -3,6 +3,8 @@
 //! - [`task`]: [`task::Task`], its caps and the typed check vocabulary
 //! - [`fixture`]: [`fixture::Fixture`], the starting project as an op script
 //! - [`provenance`]: the private list and the provenance rules for fixture and eval-set items
+//! - [`check`]: the check library that grades an attempt
+//! - [`transcript`]: the tool calls of an attempt, as the `log.*` checks read them
 //! - [`lint`]: everything `omuzaki-test eval lint` fails on, as a list of findings
 //!
 //! Tasks live in `crates/<crate>/evals/**/*.toml` (never in a `fixtures/` folder), fixtures in
@@ -10,10 +12,12 @@
 //! The two files `defaults.toml` and `private.toml` at the top of an `evals/` folder are configuration, not tasks.
 //! Adding a task never edits another file (spec §39 rule 2).
 
+pub mod check;
 pub mod fixture;
 pub mod lint;
 pub mod provenance;
 pub mod task;
+pub mod transcript;
 
 use std::fs;
 use std::io;

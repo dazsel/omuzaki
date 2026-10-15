@@ -1,0 +1,7 @@
+section = "rust"
+item = "aec3 0.4.0"
+kind = "crate"
+used_for = "echo cancellation candidate for `fx.aec`: a second pure-Rust port of WebRTC's AEC3 (research 2026-10-echo-cancellation.md, #920)"
+status = "conditions"
+condition = "manifest says `MIT OR BSD-3-Clause`, but its LICENSE file applies MIT to the Rust code and the WebRTC BSD-3-Clause to the derived parts, so treat it as both and ship both notices; PATENT file restates Google's grant (read 2026-10-15). Not selected"
+audit = "research 2026-10-echo-cancellation.md section 2"
