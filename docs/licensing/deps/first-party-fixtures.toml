@@ -16,6 +16,7 @@ paths = [
   "crates/omuzaki-ai-ort/tests/fixtures/stage_a.onnx",
   "crates/omuzaki-ai-ort/tests/fixtures/stage_b.onnx",
   "crates/omuzaki-ai-ort/tests/fixtures/stage_cast.onnx",
+  "crates/omuzaki-ai-ort/tests/fixtures/stage_nine.onnx",
   "crates/omuzaki-pixfmt/tests/fixtures/64x48_420.jpg",
   "crates/omuzaki-pixfmt/tests/fixtures/64x48_420.rgb",
   "crates/omuzaki-pixfmt/tests/fixtures/64x48_422.jpg",

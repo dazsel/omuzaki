@@ -29,6 +29,34 @@ pub(super) struct Plan {
     pub signature: Signature,
 }
 
+/// For each stage, where each of its outputs sits among the outputs something reads, or `None` for one nothing reads.
+/// A stage asks ONNX Runtime only for the outputs that a later stage consumes or the slot selects (`picks`, as
+/// `(stage, port)`); `counts` is the number of outputs of each graph.
+pub(super) fn reads(plan: &Plan, counts: &[usize], picks: &[(usize, usize)]) -> Vec<Vec<Option<usize>>> {
+    let mut read: Vec<Vec<bool>> = counts.iter().map(|&n| vec![false; n]).collect();
+    let consumed = plan.stages.iter().flat_map(|stage| &stage.inputs).filter_map(|source| match source {
+        Source::Stage { stage, port } => Some((*stage, *port)),
+        Source::Slot(_) => None,
+    });
+    for (stage, port) in consumed.chain(picks.iter().copied()) {
+        read[stage][port] = true;
+    }
+    read.iter()
+        .map(|ports| {
+            let mut next = 0;
+            ports
+                .iter()
+                .map(|&is_read| {
+                    is_read.then(|| {
+                        next += 1;
+                        next - 1
+                    })
+                })
+                .collect()
+        })
+        .collect()
+}
+
 fn wiring_error(stage: &str, input: &str, source: &str, why: impl std::fmt::Display) -> LoadError {
     LoadError::Format(format!("stage `{stage}` input `{input}` reads `{source}`: {why}"))
 }
@@ -223,6 +251,19 @@ mod tests {
         stages[1].inputs.insert("q".to_owned(), "x".to_owned());
         stages[1].inputs.insert("r".to_owned(), "x".to_owned());
         assert!(message(plan(&stages, &graphs)).contains("no such input"));
+    }
+
+    #[test]
+    fn a_stage_asks_only_for_outputs_that_are_read() {
+        let f = |n: &str| spec(n, DType::F32, &[1, 4]);
+        let stages = vec![stage("a", &[("x", "x")]), stage("b", &[("p", "a.y2")])];
+        let graphs = vec![graph(&[f("x")], &[f("y1"), f("y2"), f("y3")]), graph(&[f("p")], &[f("z1"), f("z2")])];
+        let plan = plan(&stages, &graphs).unwrap();
+        // The slot selects b.z2 only: a.y2 is consumed by b, everything else is dead.
+        let reads = reads(&plan, &[3, 2], &[(1, 1)]);
+        assert_eq!(reads, [vec![None, Some(0), None], vec![None, Some(0)]]);
+        // Selecting a.y3 as well numbers the read outputs in port order.
+        assert_eq!(super::reads(&plan, &[3, 2], &[(1, 1), (0, 2)])[0], [None, Some(0), Some(1)]);
     }
 
     #[test]

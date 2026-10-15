@@ -13,6 +13,7 @@ Needs `onnx` (Apache-2.0; dev-only, never shipped). The models are checked in, s
   stage_a.onnx        x f32[1,4] -> y = x + x: the doubling stage of the pipeline tests
   stage_b.onnx        p, q f32[1,4] -> z = p + q: the adding stage
   stage_cast.onnx     x f32[1,4] -> y int64[1,4], one Cast node: a stage whose output type differs
+  stage_nine.onnx     i0..i8 f32[1,4] -> s = i0 + ... + i8: more inputs than ort keeps on the stack
 """
 import sys
 from pathlib import Path
@@ -109,6 +110,12 @@ def main():
         [helper.make_tensor_value_info("y", TensorProto.INT64, [1, 4])],
     )
     save(model(cast), out, "stage_cast.onnx")
+
+    nine = [f"i{n}" for n in range(9)]
+    adds = [helper.make_node("Add", [nine[0], nine[1]], ["t1"])]
+    adds += [helper.make_node("Add", [f"t{n}", nine[n + 1]], [f"t{n + 1}" if n < 7 else "s"]) for n in range(1, 8)]
+    stage_nine = helper.make_graph(adds, "stage_nine", [vi(n, [1, 4]) for n in nine], [vi("s", [1, 4])])
+    save(model(stage_nine), out, "stage_nine.onnx")
 
 
 if __name__ == "__main__":

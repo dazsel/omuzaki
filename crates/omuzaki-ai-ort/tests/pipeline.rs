@@ -74,6 +74,8 @@ fn with_pipeline<R>(
         local("a.onnx", &fixture("stage_a.onnx")),
         local("b.onnx", &fixture("stage_b.onnx")),
         local("cast.onnx", &fixture("stage_cast.onnx")),
+        local("nine.onnx", &fixture("stage_nine.onnx")),
+        local("add_sub.onnx", &fixture("add_sub.onnx")),
     ];
     with_source(&files, stages, natives, body)
 }
@@ -183,4 +185,51 @@ fn a_pipeline_allocates_nothing_over_1000_steady_state_runs() {
     let total = ALLOCATIONS.with(Cell::get);
     eprintln!("1000 pipeline runs: {total} Rust-side allocations");
     assert_eq!(total, 0);
+}
+
+#[test]
+fn a_stage_may_have_more_inputs_than_ort_keeps_on_its_stack() {
+    let Some(natives) = cache("a_stage_may_have_more_inputs_than_ort_keeps_on_its_stack") else { return };
+    // Nine inputs: four read the slot input, five read the doubling stage.
+    let reads: Vec<(String, &str)> = (0..9).map(|n| (format!("i{n}"), if n < 4 { "x" } else { "a.y" })).collect();
+    let wiring: Vec<(&str, &str)> = reads.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+    let stages = vec![stage("a", "a.onnx", &[("x", "x")]), stage("n", "nine.onnx", &wiring)];
+    let slot = Signature { inputs: vec![f32_port("x")], outputs: vec![f32_port("s")] };
+    let mut session = with_pipeline(&natives, &stages, |s| {
+        OrtRuntime.load(s, &slot, &io(&[("s", "n.s")]), &SessionOptions::default())
+    })
+    .unwrap();
+    let mut outputs = TensorBuf::for_outputs(session.signature());
+    session.run(&[TensorRef::f32(&[1.0, 2.0, 3.0, 4.0], &[1, 4])], &mut outputs).unwrap();
+    assert_eq!(outputs[0].as_f32().unwrap(), [14.0, 28.0, 42.0, 56.0]); // 4x + 5 * 2x
+}
+
+#[test]
+fn a_dead_stage_output_does_not_get_in_the_way() {
+    // `add_sub` has outputs c and d; the slot selects only `m.c`, so `m.d` is never fetched (`plan::reads` pins which
+    // outputs a stage asks for; this checks the pipeline still runs and delivers the one that is read).
+    let Some(natives) = cache("a_dead_stage_output_does_not_get_in_the_way") else { return };
+    let any3 = |name: &str| TensorSpec::new(name, DType::F32, [Dim::ANY, Dim::Fixed(3)]);
+    let stages = vec![stage("m", "add_sub.onnx", &[("a", "a"), ("b", "b")])];
+    let slot = Signature { inputs: vec![any3("a"), any3("b")], outputs: vec![any3("sum")] };
+    let mut session = with_pipeline(&natives, &stages, |s| {
+        OrtRuntime.load(s, &slot, &io(&[("sum", "m.c")]), &SessionOptions::default())
+    })
+    .unwrap();
+    let mut outputs = TensorBuf::for_outputs(session.signature());
+    let (a, b) = ([1.0f32; 6], [2.0f32; 6]);
+    session.run(&[TensorRef::f32(&a, &[2, 3]), TensorRef::f32(&b, &[2, 3])], &mut outputs).unwrap();
+    assert_eq!(outputs[0].as_f32().unwrap(), [3.0; 6]);
+    assert_eq!(outputs[0].shape(), [2, 3]);
+}
+
+#[test]
+fn a_provider_this_build_lacks_puts_every_stage_on_the_cpu_together() {
+    let Some(natives) = cache("a_provider_this_build_lacks_puts_every_stage_on_the_cpu_together") else { return };
+    let slot = Signature { inputs: vec![f32_port("x")], outputs: vec![f32_port("z")] };
+    let options = SessionOptions::new(vec![omuzaki_ai_api::Provider::Cuda], 1);
+    let session =
+        with_pipeline(&natives, &a_then_b(), |s| OrtRuntime.load(s, &slot, &io(&[("z", "b.z")]), &options)).unwrap();
+    // The stages cannot end on different providers, and `info` names the one they share.
+    assert_eq!(session.info().provider, omuzaki_ai_api::Provider::Cpu);
 }
