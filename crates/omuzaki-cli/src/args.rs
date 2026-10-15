@@ -2,6 +2,7 @@
 
 use std::fs::File;
 use std::io::{self, Read};
+use std::path::Path;
 
 use omuzaki_ops_api::OpError;
 use serde_json::{Map, Value};
@@ -17,7 +18,8 @@ const SOURCES_HINT: &str = "pass --args '<json>', --args @file.json, or --args @
 ///
 /// # Errors
 /// - `NotFound` if the `@file` doesn't exist.
-/// - `Invalid` (field `args`) if the file or stdin can't be read, is larger than [`MAX_ARGS_BYTES`], or isn't JSON.
+/// - `Invalid` (field `args`) if the `@file` is a directory, if the file or stdin can't be read, is larger than
+///   [`MAX_ARGS_BYTES`], or isn't JSON.
 #[allow(clippy::disallowed_methods, reason = "the CLI reads the `@file` the person typed; it is not an op")]
 pub fn parse(raw: Option<&str>, stdin: &mut dyn Read) -> Result<Value, OpError> {
     let Some(raw) = raw else { return Ok(Value::Object(Map::new())) };
@@ -25,6 +27,11 @@ pub fn parse(raw: Option<&str>, stdin: &mut dyn Read) -> Result<Value, OpError> 
         None => from_json(raw.as_bytes(), "--args"),
         Some("-") => from_json(&read_capped(stdin, "standard input")?, "standard input"),
         Some(path) => {
+            // Checked before opening: Windows refuses to open a directory with "access denied", which would give the
+            // permissions hint, and Linux opens it and fails only on read.
+            if Path::new(path).is_dir() {
+                return Err(invalid(format!("{path} is a directory, not an arguments file")).hint(SOURCES_HINT));
+            }
             let file = File::open(path).map_err(|e| read_error(path, &e))?;
             from_json(&read_capped(file, path)?, path)
         }
@@ -108,10 +115,11 @@ mod tests {
     }
 
     #[test]
-    fn other_read_failures_are_invalid_and_say_how_to_pass_arguments() {
+    fn a_directory_is_invalid_and_says_how_to_pass_arguments() {
         let dir = tempfile::tempdir().unwrap();
         let e = parse_with(Some(&format!("@{}", dir.path().display())), b"").unwrap_err();
         assert_eq!((e.code, e.field.as_deref()), (ErrorCode::Invalid, Some("args")));
+        assert!(e.message.contains("is a directory"), "{e:?}");
         assert!(e.hint.is_some_and(|h| h.contains("@-")), "a directory is not an arguments file");
     }
 
