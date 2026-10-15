@@ -1,0 +1,24 @@
+[package]
+name = "omuzaki-script"
+description = "The script runtime (PL-02): the Rhai engine, its limits, cancel, output and errors, and the Calls handle a run sends its inner op requests through."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rhai.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-doc-api = { path = "../omuzaki-doc-api" }
+omuzaki-ops-api = { path = "../omuzaki-ops-api" }
+
+[dev-dependencies]
+schemars.workspace = true
+
+[lints]
+workspace = true
