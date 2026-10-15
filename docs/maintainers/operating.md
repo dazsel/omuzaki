@@ -49,9 +49,12 @@ goes to the Director first.
 - **The cheapest model that keeps quality, for implementation:** small, well-specified tasks (a fence, a contract and
   acceptance checks that leave little to decide) go to the smallest model; implementation tasks that need design
   judgement to a mid-size one; leads and architecture to the largest.
-- **Reviews are not done by implementation models.** Every pull request gets the automated Codex review (the review
-  loop the Director runs); rulings on its findings come from the area lead or the Director. Sessions review their own
-  diff before marking it ready, but that self-check is not the review.
+- **Code review is the automated Codex review,** on every pull request (the review loop the Director runs). No other
+  model reviews pull requests, and leads don't re-review code line by line.
+- **A sign-off is a decision check, not a second review.** A lead (or the Director) signing off a contract or hub
+  change reads the pull request's summary, the API-surface change and Codex's verdict, and decides whether it is the
+  right design; it opens the code only where the decision needs it. Rulings on Codex's findings work the same way.
+  Sessions check their own diff before marking it ready; that self-check is not the review either.
 - **Short sessions:** one task, one pull request; archive the session as soon as its pull request is ready or its fix
   round is pushed. A review round gets a fresh, short session.
 - **Nothing idles:** implementer sessions run no hooks, check-ins, watchers or polling loops; only a lead watches, and
