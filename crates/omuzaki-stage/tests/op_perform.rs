@@ -205,6 +205,7 @@ fn each_refusal_maps_to_its_error_code() {
         (PerformError::CalibrationRunning, ErrorCode::Conflict),
         (PerformError::QueueFull, ErrorCode::Conflict),
         (PerformError::Disconnected, ErrorCode::Unavailable),
+        (PerformError::Stalled, ErrorCode::Unavailable),
     ] {
         let host = FakeHost::new(Some(refusal));
         for (op, args) in [("perform.calibrate", json!({})), ("perform.set_retarget", json!({ "mirror": true }))] {

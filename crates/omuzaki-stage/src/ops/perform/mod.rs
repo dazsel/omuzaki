@@ -21,6 +21,8 @@ fn op_error(error: PerformError) -> OpError {
             .hint("wait for the running calibration to finish (`perform.status` shows it), then ask again"),
         PerformError::QueueFull => OpError::conflict(error.to_string()).hint("ask again in a moment"),
         PerformError::Disconnected => OpError::unavailable("PerformHost").hint("start the performer, then ask again"),
+        PerformError::Stalled => OpError::unavailable("PerformHost")
+            .hint("the performer is not stepping; the change stays queued and applies when it runs (`perform.status` shows it)"),
     }
 }
 
@@ -36,6 +38,7 @@ mod tests {
             (PerformError::CalibrationRunning, ErrorCode::Conflict),
             (PerformError::QueueFull, ErrorCode::Conflict),
             (PerformError::Disconnected, ErrorCode::Unavailable),
+            (PerformError::Stalled, ErrorCode::Unavailable),
         ];
         for (error, code) in cases {
             let mapped = op_error(error);

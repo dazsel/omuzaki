@@ -8,18 +8,27 @@
 //! - commands arrive through a bounded queue, at most [`MAX_COMMANDS_PER_ADVANCE`] per call, and carry their data
 //!   ready-made (the handle builds a full [`RetargetConfig`] off-thread);
 //! - the tracking state, capture progress and frame rate go back through one atomic word;
-//! - a finished calibration goes back through a second preallocated queue.
+//! - the calibration in use goes back through a lock-free latest-value mailbox, and each applied settings request is
+//!   acknowledged by its sequence number.
 //!
 //! The one exception is the retarget's own `set_config`, which its contract allows to allocate between frames.
-//! Everything that needs the performer's real settings (the handle's merge base) is reconciled once, in
-//! [`PerformControl::sync`], which is setup work and may lock and allocate.
+//!
+//! # What is reported
+//!
+//! The handle keeps two views of the settings. **Requested** is the base of the next merge, so back-to-back changes
+//! compose; nothing outside the handle reads it. **Applied** is what the performer has acknowledged, and it is the
+//! only one [`PerformHost::status`] and the reply of [`PerformHost::set_retarget`] report. The handle is made from the
+//! performer ([`perform_channel`]), so both views start from the settings really in use.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering, fence};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::{Duration, Instant};
 
 use omuzaki_anim::{MAX_NEUTRAL_FRAMES, MIN_NEUTRAL_FRAMES, NeutralCapture, NeutralError};
-use omuzaki_anim_api::{Calibration, DeviceProfile, RetargetConfig, Tick};
+use omuzaki_anim_api::{ARKIT_COUNT, Calibration, Channel, DeviceProfile, HeadPose, RetargetConfig, Tick};
+use omuzaki_core::glam::Vec3;
 use omuzaki_core::time::Seconds;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -33,6 +42,12 @@ pub const COMMAND_QUEUE_LEN: usize = 16;
 pub const MAX_COMMANDS_PER_ADVANCE: usize = 4;
 /// Steps a neutral capture waits for its next tracked frame before it gives up (10 s at the 60 Hz step).
 pub const CAPTURE_STALL_STEPS: u64 = 600;
+/// How long [`PerformHost::set_retarget`] waits for the performer to apply a change before it reports
+/// [`PerformError::Stalled`]: several frames of the perform loop, which takes the queue at
+/// [`MAX_COMMANDS_PER_ADVANCE`] a frame.
+pub const REPLY_TIMEOUT: Duration = Duration::from_secs(1);
+/// How often a waiting reply looks for the performer's acknowledgement.
+const REPLY_POLL: Duration = Duration::from_millis(1);
 /// Slack so a `now` that lands exactly on a step boundary is not lost to float rounding (as [`Performer::advance`]).
 const BOUNDARY_EPS: f64 = 1e-9;
 /// Weight of the newest arrival gap in the [`PerformStatus::source_fps`] average.
@@ -49,12 +64,14 @@ pub trait PerformHost: Send + Sync {
     /// [`PerformError::Disconnected`].
     fn calibrate(&self, frames: usize) -> Result<(), PerformError>;
 
-    /// Applies a partial change; returns the full config now in use (as the change will leave it). The result is built
-    /// from the last settings this host returned, starting from the performer's own at [`PerformControl::sync`], so a
-    /// change made around the host, directly on the performer's retarget, is not seen.
+    /// Applies a partial change and returns the full config the performer is now using, once it has applied it. The
+    /// change is merged into the settings requested so far, so back-to-back changes compose; a change made around the
+    /// host, directly on the performer's retarget, is not seen. Waits up to [`REPLY_TIMEOUT`]: call it from an ops
+    /// thread, never from the perform thread.
     ///
     /// # Errors
-    /// [`PerformError::QueueFull`] or [`PerformError::Disconnected`].
+    /// [`PerformError::QueueFull`], [`PerformError::Disconnected`], or [`PerformError::Stalled`] when the performer
+    /// did not step in time (the change stays queued and applies when it does).
     fn set_retarget(&self, change: RetargetChange) -> Result<RetargetConfig, PerformError>;
 
     /// Replaces the calibration in use (a saved profile loading, say).
@@ -63,10 +80,10 @@ pub trait PerformHost: Send + Sync {
     /// [`PerformError::QueueFull`] or [`PerformError::Disconnected`].
     fn set_calibration(&self, calibration: Calibration) -> Result<(), PerformError>;
 
-    /// The calibration in use (from the last published status).
+    /// The calibration the performer is using (the last one it applied).
     fn calibration(&self) -> Calibration;
 
-    /// The status the perform thread published last.
+    /// The status the perform thread published last. Reports applied state only.
     fn status(&self) -> PerformStatus;
 }
 
@@ -135,7 +152,7 @@ pub struct PerformStatus {
     pub tracking: Tracking,
     /// The neutral capture.
     pub calibration: CalibrationState,
-    /// The settings in use.
+    /// The settings the performer has applied.
     pub retarget: RetargetConfig,
     /// Tracker frames per second as the performer sees them (a moving average; `0` before the first frame).
     pub source_fps: f32,
@@ -150,6 +167,10 @@ pub enum PerformError {
     /// A neutral capture is already running.
     #[error("a calibration is already running")]
     CalibrationRunning,
+    /// The performer did not apply a settings change within [`REPLY_TIMEOUT`]: its loop is paused or very slow. The
+    /// change stays queued and applies when the loop runs.
+    #[error("the performer did not apply the change in time")]
+    Stalled,
     /// The performer has not caught up with the requests already queued (the queue holds [`COMMAND_QUEUE_LEN`]).
     #[error("the performer has too many requests waiting; try again in a moment")]
     QueueFull,
@@ -162,32 +183,33 @@ pub enum PerformError {
 #[allow(clippy::large_enum_variant)]
 enum Command {
     Calibrate(usize),
-    /// A change made before [`PerformControl::sync`]: the handle did not yet know the performer's own settings, so the
-    /// change is merged into them on the perform side (once, at setup).
-    Retarget(RetargetChange),
-    /// The full config the handle built after sync.
-    Config(RetargetConfig),
+    /// The full config the handle built, numbered so the performer can acknowledge it.
+    Config {
+        seq: u64,
+        config: RetargetConfig,
+    },
     Calibration(Calibration),
 }
 
-/// What the handle knows of the performer, behind one lock that only the handle side takes (and
-/// [`PerformControl::sync`], once).
-struct HandleState {
-    /// The settings as they will be once every queued request has run: the base of the next merge.
-    config: RetargetConfig,
-    /// The calibration the performer last reported.
-    calibration: Calibration,
-    /// Whether `config` and `calibration` are the performer's own (set by [`PerformControl::sync`]).
-    synced: bool,
-    /// Calibrations the performer reports, oldest first.
-    reports: Receiver<Calibration>,
+/// The handle's two views of the settings (see the module docs). Behind a lock only the handle side takes.
+struct RetargetBook {
+    /// The settings once every request made so far has run: the base of the next merge.
+    requested: RetargetConfig,
+    /// The settings the performer has acknowledged.
+    applied: RetargetConfig,
+    /// The last sequence number handed out.
+    last_seq: u64,
+    /// Requests the performer has not acknowledged yet, with the config each asked for. At most the queue's length.
+    in_flight: VecDeque<(u64, RetargetConfig)>,
 }
 
-impl HandleState {
-    /// Takes in what the performer reported since the last call.
-    fn drain_reports(&mut self) {
-        while let Ok(calibration) = self.reports.try_recv() {
-            self.calibration = calibration;
+impl RetargetBook {
+    /// Moves every acknowledged request from `in_flight` into `applied`.
+    fn settle(&mut self, acknowledged: u64) {
+        while self.in_flight.front().is_some_and(|(seq, _)| *seq <= acknowledged) {
+            if let Some((_, config)) = self.in_flight.pop_front() {
+                self.applied = config;
+            }
         }
     }
 }
@@ -198,12 +220,112 @@ struct Shared {
     live: AtomicU64,
     /// Set by the handle when it queues a capture, cleared by the control when the capture ends or the control drops.
     capturing: AtomicBool,
-    state: Mutex<HandleState>,
+    /// Cleared when the control drops: nothing more will be applied.
+    running: AtomicBool,
+    /// The newest settings request the performer has applied.
+    acknowledged: AtomicU64,
+    /// The calibration the performer is using.
+    calibration: CalibrationMailbox,
+    /// Handle side only; the control never touches it.
+    book: Mutex<RetargetBook>,
 }
 
 /// Locks `m`; a panic elsewhere cannot leave these plain records half-written, so a poisoned lock is still good.
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// One calibration, readable from any thread while the perform thread overwrites it: a latest-value mailbox. The
+/// writer never waits and never fails (a write replaces the value), and a reader retries until it saw no write in
+/// progress, so it can neither tear nor see a stale newest value. It is a seqlock over atomic words, which needs no
+/// `unsafe`.
+struct CalibrationMailbox {
+    /// Odd while a write is in progress, and increases with each write.
+    seq: AtomicU64,
+    words: [AtomicU32; CALIBRATION_WORDS],
+}
+
+/// A calibration as words: the profile, a range (two) for each `ARKit` channel, the head rest angles, whether it has a
+/// position, and the position.
+const CALIBRATION_WORDS: usize = 1 + 2 * ARKIT_COUNT + 3 + 1 + 3;
+
+impl CalibrationMailbox {
+    fn new(calibration: &Calibration) -> Self {
+        let mailbox = Self { seq: AtomicU64::new(0), words: std::array::from_fn(|_| AtomicU32::new(0)) };
+        mailbox.write(calibration);
+        mailbox
+    }
+
+    /// Replaces the value. Only the perform thread (or whoever holds the control) calls this, so writes never overlap.
+    fn write(&self, calibration: &Calibration) {
+        let words = Self::encode(calibration);
+        let before = self.seq.load(Ordering::Relaxed);
+        self.seq.store(before.wrapping_add(1), Ordering::Relaxed);
+        fence(Ordering::Release);
+        for (slot, word) in self.words.iter().zip(words) {
+            slot.store(word, Ordering::Relaxed);
+        }
+        self.seq.store(before.wrapping_add(2), Ordering::Release);
+    }
+
+    fn read(&self) -> Calibration {
+        loop {
+            let first = self.seq.load(Ordering::Acquire);
+            if first.is_multiple_of(2) {
+                let mut words = [0_u32; CALIBRATION_WORDS];
+                for (word, slot) in words.iter_mut().zip(&self.words) {
+                    *word = slot.load(Ordering::Relaxed);
+                }
+                fence(Ordering::Acquire);
+                if self.seq.load(Ordering::Relaxed) == first {
+                    return Self::decode(&words);
+                }
+            }
+            std::thread::yield_now();
+        }
+    }
+
+    fn encode(calibration: &Calibration) -> [u32; CALIBRATION_WORDS] {
+        let mut words = [0_u32; CALIBRATION_WORDS];
+        let mut next = words.iter_mut();
+        let mut put = |value: u32| {
+            if let Some(word) = next.next() {
+                *word = value;
+            }
+        };
+        put(u32::from(calibration.profile == DeviceProfile::Webcam));
+        for info in Channel::arkit() {
+            let range = calibration.range(info.channel);
+            put(range.lo.to_bits());
+            put(range.hi.to_bits());
+        }
+        let head = calibration.head_rest;
+        put(head.yaw.to_bits());
+        put(head.pitch.to_bits());
+        put(head.roll.to_bits());
+        let position = head.position.unwrap_or(Vec3::ZERO);
+        put(u32::from(head.position.is_some()));
+        put(position.x.to_bits());
+        put(position.y.to_bits());
+        put(position.z.to_bits());
+        words
+    }
+
+    fn decode(words: &[u32; CALIBRATION_WORDS]) -> Calibration {
+        let mut next = words.iter().copied();
+        let mut take = || next.next().unwrap_or(0);
+        let profile = if take() == 0 { DeviceProfile::Arkit } else { DeviceProfile::Webcam };
+        let mut calibration = Calibration::identity(profile);
+        for info in Channel::arkit() {
+            let (lo, hi) = (f32::from_bits(take()), f32::from_bits(take()));
+            calibration.set_range(info.channel, omuzaki_anim_api::ChannelRange { lo, hi });
+        }
+        let (yaw, pitch, roll) = (f32::from_bits(take()), f32::from_bits(take()), f32::from_bits(take()));
+        let has_position = take() != 0;
+        let position = Vec3::new(f32::from_bits(take()), f32::from_bits(take()), f32::from_bits(take()));
+        calibration.head_rest = HeadPose { yaw, pitch, roll, position: has_position.then_some(position) };
+        calibration
+    }
 }
 
 /// The part of the status that changes every step, packed into a `u64`.
@@ -265,6 +387,10 @@ impl Live {
     }
 }
 
+/// A settings request that has been queued: wait for it with [`PerformHandle::await_retarget`].
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct RetargetTicket(u64);
+
 /// The ops' side. Cheap to clone; every clone talks to the same performer.
 #[derive(Clone)]
 pub struct PerformHandle {
@@ -272,42 +398,47 @@ pub struct PerformHandle {
     shared: Arc<Shared>,
 }
 
-/// Frees the capture slot when dropped. A field of [`PerformControl`] declared after its receiver, so by the time it
-/// runs the queue is already disconnected: a `calibrate` that reserved the slot meanwhile finds its send refused and
-/// releases the slot itself.
+/// Frees the capture slot, and marks the control gone, when dropped. A field of [`PerformControl`] declared after its
+/// receiver, so by the time it runs the queue is already disconnected: a `calibrate` that reserved the slot meanwhile
+/// finds its send refused and releases the slot itself.
 struct SlotGuard(Arc<Shared>);
 
 impl Drop for SlotGuard {
     fn drop(&mut self) {
+        self.0.running.store(false, Ordering::Release);
         self.0.capturing.store(false, Ordering::Release);
     }
 }
 
 /// The two ends of the performer's control channel: hand the [`PerformHandle`] to the ops and keep the
 /// [`PerformControl`] on the perform thread.
-pub fn perform_channel() -> (PerformHandle, PerformControl) {
+///
+/// The handle is made from the `performer`, so it starts from the settings and calibration really in use: there is no
+/// moment when it can answer from defaults. Make the channel once, before the loop starts; it takes the performer's
+/// settings by clone, which is setup work.
+pub fn perform_channel(performer: &Performer) -> (PerformHandle, PerformControl) {
     let (commands_tx, commands_rx) = sync_channel(COMMAND_QUEUE_LEN);
-    // Room for every request in the queue plus a finished capture, doubled: the handle drains it before each send.
-    let (reports_tx, reports_rx) = sync_channel(2 * COMMAND_QUEUE_LEN);
+    let config = performer.retarget().config().clone();
     let shared = Arc::new(Shared {
         live: AtomicU64::new(Live::START.pack()),
         capturing: AtomicBool::new(false),
-        state: Mutex::new(HandleState {
-            config: RetargetConfig::default(),
-            calibration: Calibration::identity(DeviceProfile::Webcam),
-            synced: false,
-            reports: reports_rx,
+        running: AtomicBool::new(true),
+        acknowledged: AtomicU64::new(0),
+        calibration: CalibrationMailbox::new(performer.retarget().calibration()),
+        book: Mutex::new(RetargetBook {
+            requested: config.clone(),
+            applied: config,
+            last_seq: 0,
+            in_flight: VecDeque::with_capacity(COMMAND_QUEUE_LEN),
         }),
     });
     let control = PerformControl {
         commands: commands_rx,
         _slot: SlotGuard(Arc::clone(&shared)),
         shared: Arc::clone(&shared),
-        reports: reports_tx,
         // The capture's buffers are sized for the longest capture, once; a shorter one just stops pushing earlier.
         capture: NeutralCapture::new(MAX_NEUTRAL_FRAMES),
         running: None,
-        synced: false,
         origin: None,
         next_step: 0,
         skipped: 0,
@@ -325,11 +456,49 @@ impl PerformHandle {
         })
     }
 
-    /// The state with the performer's latest reports taken in.
-    fn state(&self) -> MutexGuard<'_, HandleState> {
-        let mut state = lock(&self.shared.state);
-        state.drain_reports();
-        state
+    /// The book with the performer's acknowledgements taken in.
+    fn book(&self) -> MutexGuard<'_, RetargetBook> {
+        let mut book = lock(&self.shared.book);
+        book.settle(self.shared.acknowledged.load(Ordering::Acquire));
+        book
+    }
+
+    /// Queues a settings change without waiting for the performer to apply it.
+    ///
+    /// # Errors
+    /// [`PerformError::QueueFull`] or [`PerformError::Disconnected`]; nothing is queued then.
+    pub fn request_retarget(&self, change: RetargetChange) -> Result<RetargetTicket, PerformError> {
+        // Held across the send, so changes reach the performer in the order they are merged here.
+        let mut book = self.book();
+        let mut config = book.requested.clone();
+        change.apply_to(&mut config);
+        let seq = book.last_seq + 1;
+        self.send(Command::Config { seq, config: config.clone() })?;
+        book.last_seq = seq;
+        book.requested.clone_from(&config);
+        book.in_flight.push_back((seq, config));
+        Ok(RetargetTicket(seq))
+    }
+
+    /// Waits up to `timeout` for the performer to apply the request, and returns the settings it is then using.
+    ///
+    /// # Errors
+    /// [`PerformError::Stalled`] after `timeout`, or [`PerformError::Disconnected`] if the control is gone before it
+    /// applied the request.
+    pub fn await_retarget(&self, ticket: RetargetTicket, timeout: Duration) -> Result<RetargetConfig, PerformError> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if self.shared.acknowledged.load(Ordering::Acquire) >= ticket.0 {
+                return Ok(self.book().applied.clone());
+            }
+            if !self.shared.running.load(Ordering::Acquire) {
+                return Err(PerformError::Disconnected);
+            }
+            if Instant::now() >= deadline {
+                return Err(PerformError::Stalled);
+            }
+            std::thread::sleep(REPLY_POLL);
+        }
     }
 }
 
@@ -346,30 +515,21 @@ impl PerformHost for PerformHandle {
     }
 
     fn set_retarget(&self, change: RetargetChange) -> Result<RetargetConfig, PerformError> {
-        // Held across the send, so changes reach the performer in the order they are merged here, and so a sync
-        // cannot slip between choosing the command's form and queueing it.
-        let mut state = self.state();
-        let mut config = state.config.clone();
-        change.apply_to(&mut config);
-        let command = if state.synced { Command::Config(config.clone()) } else { Command::Retarget(change) };
-        self.send(command)?;
-        state.config.clone_from(&config);
-        Ok(config)
+        let ticket = self.request_retarget(change)?;
+        self.await_retarget(ticket, REPLY_TIMEOUT)
     }
 
     fn set_calibration(&self, calibration: Calibration) -> Result<(), PerformError> {
-        // Drain first: the performer reports every calibration it sets, and the report queue must have room.
-        drop(self.state());
         self.send(Command::Calibration(calibration))
     }
 
     fn calibration(&self) -> Calibration {
-        self.state().calibration
+        self.shared.calibration.read()
     }
 
     fn status(&self) -> PerformStatus {
         let live = Live::unpack(self.shared.live.load(Ordering::Acquire));
-        let retarget = self.state().config.clone();
+        let retarget = self.book().applied.clone();
         PerformStatus { tracking: live.tracking, calibration: live.calibration, retarget, source_fps: live.fps }
     }
 }
@@ -413,10 +573,8 @@ pub struct PerformControl {
     commands: Receiver<Command>,
     _slot: SlotGuard,
     shared: Arc<Shared>,
-    reports: SyncSender<Calibration>,
     capture: NeutralCapture,
     running: Option<Running>,
-    synced: bool,
     /// The `now` of the first `advance`; step `i` is due `i / STEP_HZ` after it.
     origin: Option<f64>,
     next_step: u64,
@@ -426,38 +584,13 @@ pub struct PerformControl {
 }
 
 impl PerformControl {
-    /// Hands the handle the performer's own settings and calibration, and runs the requests queued before now.
-    ///
-    /// This is setup work: it locks, allocates and is not bounded by [`MAX_COMMANDS_PER_ADVANCE`]. [`advance`] calls
-    /// it on its first call; call it yourself at startup to keep that out of the loop. It does nothing after the
-    /// first time.
-    ///
-    /// [`advance`]: Self::advance
-    pub fn sync(&mut self, performer: &mut Performer) {
-        if self.synced {
-            return;
-        }
-        self.synced = true;
-        // The handle's lock makes this atomic with its `set_retarget`: a change queued before this point is run here,
-        // and one made after it sees `synced` and carries a full config.
-        let shared = Arc::clone(&self.shared);
-        let mut state = lock(&shared.state);
-        while let Ok(command) = self.commands.try_recv() {
-            self.run(command, performer);
-        }
-        state.config.clone_from(performer.retarget().config());
-        state.calibration = *performer.retarget().calibration();
-        state.synced = true;
-    }
-
     /// Runs the performer's steps that are due at `now` (at most [`MAX_STEPS_PER_ADVANCE`], then it skips ahead, as
     /// [`Performer::advance`] does), after taking at most [`MAX_COMMANDS_PER_ADVANCE`] requests from the queue.
     /// Returns the last step run, or `None` if none was due. Publishes the status.
     ///
-    /// Never blocks. After the first call it takes no lock and neither allocates nor frees, except inside the
-    /// retarget's `set_config` when a settings request arrives, which its contract allows between frames.
+    /// Never blocks, locks, allocates or frees, except inside the retarget's `set_config` when a settings request
+    /// arrives, which its contract allows between frames.
     pub fn advance<'p>(&mut self, performer: &'p mut Performer, now: Seconds) -> Option<PerformOutput<'p>> {
-        self.sync(performer);
         self.finish_capture(performer);
         for _ in 0..MAX_COMMANDS_PER_ADVANCE {
             let Ok(command) = self.commands.try_recv() else { break };
@@ -508,23 +641,18 @@ impl PerformControl {
                 self.running = Some(Running { frames, held: 0, idle: 0, full: false });
                 self.live.calibration = CalibrationState::Capturing { frames: 0, of: frames };
             }
-            Command::Retarget(change) => {
-                let mut config = performer.retarget().config().clone();
-                change.apply_to(&mut config);
+            Command::Config { seq, config } => {
                 performer.retarget_mut().set_config(config);
+                self.shared.acknowledged.store(seq, Ordering::Release);
             }
-            Command::Config(config) => performer.retarget_mut().set_config(config),
             Command::Calibration(calibration) => self.set_calibration(performer, &calibration),
         }
     }
 
-    fn set_calibration(&mut self, performer: &mut Performer, calibration: &Calibration) {
+    /// Sets the calibration and publishes it: the mailbox always holds the one in use.
+    fn set_calibration(&self, performer: &mut Performer, calibration: &Calibration) {
         performer.retarget_mut().set_calibration(*calibration);
-        // The queue is preallocated and sized for every request that can be outstanding (the handle drains it before
-        // each send), so a full queue is a bug, not load.
-        if self.reports.try_send(*calibration).is_err() {
-            debug_assert!(false, "the calibration report queue is full");
-        }
+        self.shared.calibration.write(calibration);
     }
 
     /// Takes in one executed step: the tracking state, the frame rate and the capture.

@@ -11,6 +11,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier};
+use std::time::Duration;
 
 use omuzaki_anim::life::Life;
 use omuzaki_anim::retarget::ArkitRetarget;
@@ -88,10 +89,13 @@ fn rig(source: Box<dyn FrameSource>) -> (PerformHandle, PerformControl, Performe
 }
 
 fn rig_on(mut performer: Performer) -> (PerformHandle, PerformControl, Performer) {
-    let (handle, mut control) = perform_channel();
+    let (handle, mut control) = perform_channel(&performer);
     control.advance(&mut performer, mid_step(0));
     (handle, control, performer)
 }
+
+/// How long a threaded test waits for the performer to apply a change.
+const SHORT_WAIT: Duration = Duration::from_millis(50);
 
 /// A retarget whose `set_config` runs unmeasured: its contract lets it compile tables (and free the old config)
 /// between frames, so the allocation test counts the host's own work and not that.
@@ -196,10 +200,11 @@ fn a_second_calibrate_while_one_runs_is_refused_and_a_finished_one_frees_the_slo
 fn a_full_queue_is_refused_and_leaves_no_capture_marked_running() {
     let (host, mut control, mut performer) = rig(replay(5.0));
     for _ in 0..COMMAND_QUEUE_LEN {
-        host.set_retarget(RetargetChange { mirror: Some(true), ..RetargetChange::default() }).unwrap();
+        host.request_retarget(RetargetChange { mirror: Some(true), ..RetargetChange::default() }).unwrap();
     }
     let change = RetargetChange { mirror: Some(false), ..RetargetChange::default() };
-    assert_eq!(host.set_retarget(change), Err(PerformError::QueueFull));
+    assert_eq!(host.request_retarget(change), Err(PerformError::QueueFull));
+    assert_eq!(host.set_retarget(change), Err(PerformError::QueueFull), "and set_retarget does not wait on a refusal");
     assert_eq!(host.set_calibration(*performer.retarget().calibration()), Err(PerformError::QueueFull));
     assert_eq!(host.calibrate(150), Err(PerformError::QueueFull));
     step(&mut control, &mut performer, 1);
@@ -266,32 +271,108 @@ fn every_catch_up_step_feeds_the_capture_and_the_frame_rate() {
 }
 
 #[test]
-fn a_request_before_the_first_sync_is_merged_into_the_performers_own_settings() {
+fn a_handle_made_from_the_performer_starts_from_its_real_settings() {
     let mut performer = performer_with(replay(5.0));
     performer.retarget_mut().set_config(custom_config());
-    let (host, mut control) = perform_channel();
-    // Before the first `advance` the host cannot know the performer's settings.
-    host.set_retarget(RetargetChange { head_gain: Some(2.0), ..RetargetChange::default() }).unwrap();
+    let own_calibration = *performer.retarget().calibration();
+    let (host, mut control) = perform_channel(&performer);
+    // Before any `advance`: no defaults, no stand-ins.
+    assert_eq!(host.status().retarget, custom_config());
+    assert_eq!(host.calibration(), own_calibration);
+    let ticket = host.request_retarget(RetargetChange { head_gain: Some(2.0), ..RetargetChange::default() }).unwrap();
     control.advance(&mut performer, mid_step(0));
     let mut want = custom_config();
     want.head_gain = 2.0;
-    assert_eq!(*performer.retarget().config(), want, "the early change was merged into the performer's settings");
-    assert_eq!(host.status().retarget, want, "and the host now shows them, not defaults");
-    let next = host.set_retarget(RetargetChange { mirror: Some(true), ..RetargetChange::default() }).unwrap();
-    want.mirror = true;
-    assert_eq!(next, want, "later replies keep the performer's settings, responses included");
-    step(&mut control, &mut performer, 1);
+    assert_eq!(host.await_retarget(ticket, Duration::ZERO), Ok(want.clone()), "merged into the real base");
     assert_eq!(*performer.retarget().config(), want);
 }
 
 #[test]
-fn sync_at_setup_publishes_the_performers_calibration() {
-    let mut performer = performer_with(replay(5.0));
-    let own = *performer.retarget().calibration();
-    let (host, mut control) = perform_channel();
-    assert_ne!(host.calibration(), own, "before sync the host holds a stand-in");
-    control.sync(&mut performer);
-    assert_eq!(host.calibration(), own);
+fn status_and_replies_report_only_what_the_performer_applied() {
+    let (host, mut control, mut performer) = rig(replay(5.0));
+    let before = host.status().retarget;
+    let a = host.request_retarget(RetargetChange { mirror: Some(true), ..RetargetChange::default() }).unwrap();
+    let b = host.request_retarget(RetargetChange { head_gain: Some(2.0), ..RetargetChange::default() }).unwrap();
+    assert_eq!(host.status().retarget, before, "queued is not applied");
+    assert_eq!(host.await_retarget(b, Duration::from_millis(20)), Err(PerformError::Stalled));
+    assert_eq!(host.status().retarget, before, "and a timed-out wait changes nothing");
+    step(&mut control, &mut performer, 1);
+    let mut want = before.clone();
+    (want.mirror, want.head_gain) = (true, 2.0);
+    assert_eq!(host.await_retarget(a, Duration::ZERO), Ok(want.clone()));
+    assert_eq!(host.status().retarget, want);
+    assert_eq!(*performer.retarget().config(), want);
+}
+
+#[test]
+fn a_wait_for_a_request_the_control_never_applies_ends_when_the_control_is_gone() {
+    let (host, control, _performer) = rig(replay(5.0));
+    let before = host.status().retarget;
+    let ticket = host.request_retarget(RetargetChange { mirror: Some(true), ..RetargetChange::default() }).unwrap();
+    drop(control);
+    assert_eq!(host.await_retarget(ticket, Duration::from_secs(5)), Err(PerformError::Disconnected));
+    assert_eq!(host.status().retarget, before, "the unapplied request never shows");
+}
+
+#[test]
+fn set_retarget_waits_for_the_performer_and_returns_the_applied_settings() {
+    let (host, mut control, mut performer) = rig(replay(5.0));
+    let stop = AtomicBool::new(false);
+    let reply = std::thread::scope(|scope| {
+        let stepper = scope.spawn(|| {
+            let mut i = 1;
+            while !stop.load(Ordering::Acquire) {
+                step(&mut control, &mut performer, i);
+                i += 1;
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        });
+        let reply = host.set_retarget(RetargetChange { smoothing: Some(0.8), ..RetargetChange::default() });
+        stop.store(true, Ordering::Release);
+        stepper.join().unwrap();
+        reply
+    });
+    assert_eq!(reply.unwrap().smoothing, 0.8);
+    assert_eq!(host.status().retarget.smoothing, 0.8);
+}
+
+#[test]
+fn forty_captures_back_to_back_with_no_reads_keep_the_newest_calibration() {
+    let (host, mut control, mut performer) = rig(replay(80.0));
+    let mut i = 1;
+    for _ in 0..40 {
+        host.calibrate(30).unwrap();
+        // About 62 steps for 30 frames at 30 fps, plus the step that sets the calibration.
+        for _ in 0..80 {
+            step(&mut control, &mut performer, i);
+            i += 1;
+        }
+    }
+    assert_eq!(host.status().calibration, CalibrationState::Done { frames: 30 });
+    assert_eq!(host.calibration(), *performer.retarget().calibration(), "the mailbox holds the newest, not an old one");
+}
+
+#[test]
+fn readers_never_see_a_torn_calibration_while_the_performer_replaces_it() {
+    let (host, mut control, mut performer) = rig(replay(60.0));
+    let (a, b) = (Calibration::identity(DeviceProfile::Arkit), Calibration::identity(DeviceProfile::Webcam));
+    let initial = host.calibration();
+    let stop = AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        for _ in 0..3 {
+            scope.spawn(|| {
+                while !stop.load(Ordering::Acquire) {
+                    let seen = host.calibration();
+                    assert!(seen == a || seen == b || seen == initial, "torn read: {seen:?}");
+                }
+            });
+        }
+        for i in 1..3000 {
+            host.set_calibration(if i % 2 == 0 { a } else { b }).unwrap();
+            step(&mut control, &mut performer, i);
+        }
+        stop.store(true, Ordering::Release);
+    });
 }
 
 #[test]
@@ -299,20 +380,20 @@ fn a_command_flood_cannot_starve_the_steps() {
     let (host, mut control, mut performer) = rig(replay(5.0));
     let change = RetargetChange { mirror: Some(true), ..RetargetChange::default() };
     for _ in 0..COMMAND_QUEUE_LEN {
-        host.set_retarget(change).unwrap();
+        host.request_retarget(change).unwrap();
     }
     step(&mut control, &mut performer, 1);
     for _ in 0..MAX_COMMANDS_PER_ADVANCE {
-        host.set_retarget(change).expect("one call took exactly its share and freed that many slots");
+        host.request_retarget(change).expect("one call took exactly its share and freed that many slots");
     }
-    assert_eq!(host.set_retarget(change), Err(PerformError::QueueFull));
+    assert_eq!(host.request_retarget(change), Err(PerformError::QueueFull));
 
     // And with a producer refilling the queue as fast as it can while the performer steps.
     let stop = AtomicBool::new(false);
     std::thread::scope(|scope| {
         scope.spawn(|| {
             while !stop.load(Ordering::Acquire) {
-                let _ = host.set_retarget(change);
+                let _ = host.request_retarget(change);
             }
         });
         for i in 2..800 {
@@ -343,17 +424,18 @@ fn a_calibration_racing_the_drop_never_leaves_the_slot_taken() {
 }
 
 #[test]
-fn set_retarget_merges_into_the_config_in_use_and_publishes_it() {
+fn requests_compose_in_order_and_the_reply_is_the_applied_config() {
     let (host, mut control, mut performer) = rig(replay(5.0));
     let mut want = RetargetConfig::default();
     assert_eq!(host.status().retarget, want);
     let first = RetargetChange { smoothing: Some(0.8), mirror: Some(true), ..RetargetChange::default() };
-    (want.smoothing, want.mirror) = (0.8, true);
-    assert_eq!(host.set_retarget(first).unwrap(), want, "returns the full config");
     let second = RetargetChange { head_gain: Some(2.0), ..RetargetChange::default() };
-    want.head_gain = 2.0;
-    assert_eq!(host.set_retarget(second).unwrap(), want, "the second change keeps the first");
+    let (t1, t2) = (host.request_retarget(first).unwrap(), host.request_retarget(second).unwrap());
     step(&mut control, &mut performer, 1);
+    (want.smoothing, want.mirror) = (0.8, true);
+    want.head_gain = 2.0;
+    assert_eq!(host.await_retarget(t1, Duration::ZERO), Ok(want.clone()), "the second change keeps the first");
+    assert_eq!(host.await_retarget(t2, Duration::ZERO), Ok(want.clone()));
     assert_eq!(*performer.retarget().config(), want);
     assert_eq!(host.status().retarget, want);
 }
@@ -377,8 +459,9 @@ fn four_threads_reading_and_writing_while_the_performer_steps_neither_deadlock_n
         exaggeration: Some(1.0 + k as f32 / 10.0),
         ..RetargetChange::default()
     };
-    host.set_retarget(both(0)).unwrap();
+    let first = host.request_retarget(both(0)).unwrap();
     step(&mut control, &mut performer, 1);
+    host.await_retarget(first, Duration::ZERO).unwrap();
     let consistent = |c: &RetargetConfig| (c.exaggeration - (1.0 + c.smoothing)).abs() < 1e-6;
     let stop = AtomicBool::new(false);
     std::thread::scope(|scope| {
@@ -388,9 +471,11 @@ fn four_threads_reading_and_writing_while_the_performer_steps_neither_deadlock_n
                 let mut k = t;
                 while !stop.load(Ordering::Acquire) {
                     k = (k + 1) % 11;
-                    match host.set_retarget(both(k)) {
+                    let reply = host.request_retarget(both(k)).and_then(|t| host.await_retarget(t, SHORT_WAIT));
+                    match reply {
                         Ok(config) => assert!(consistent(&config), "{config:?}"),
-                        Err(PerformError::QueueFull) => {}
+                        // Busy or stopped stepping at the end of the run: both are fine here.
+                        Err(PerformError::QueueFull | PerformError::Stalled) => {}
                         Err(e) => panic!("{e}"),
                     }
                     let status = host.status();
@@ -449,7 +534,9 @@ fn advance_allocates_nothing_with_responses_configured_and_commands_arriving() {
             // The handle builds and sends its requests off the perform thread.
             0 => {
                 let smoothing = Some(if i % 600 == 0 { 0.3 } else { 0.7 });
-                unmeasured(|| host.set_retarget(RetargetChange { smoothing, ..RetargetChange::default() }).unwrap());
+                unmeasured(|| {
+                    host.request_retarget(RetargetChange { smoothing, ..RetargetChange::default() }).unwrap()
+                });
             }
             1 => unmeasured(|| host.set_calibration(calibration).unwrap()),
             2 if i < 3000 => unmeasured(|| host.calibrate(30).unwrap()),
