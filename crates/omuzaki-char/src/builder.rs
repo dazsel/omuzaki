@@ -359,8 +359,7 @@ impl Stored {
 
 /// Whether a part's output changes what later parts see. Mirrors [`Published::absorb`], which adds nothing for it.
 fn is_silent(p: &Publishes) -> bool {
-    let Publishes { head, face, fit, anchors, colliders, stature } = p;
-    head.is_none() && face.is_none() && fit.is_none() && anchors.is_empty() && colliders.is_empty() && stature.is_none()
+    p.is_empty()
 }
 
 struct Resident {

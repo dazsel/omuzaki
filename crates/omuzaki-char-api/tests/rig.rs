@@ -13,9 +13,9 @@ use omuzaki_anim_api::{
 };
 use omuzaki_char_api::{
     BodyFit, BodyRegion, BoneName, BrushFalloff, BuildCtx, BuildError, BuildOptions, BuildServices, BuiltCharacter,
-    CharId, CharacterBuilder, CharacterDef, ExtraBone, JointFit, JointRef, MaterialName, MaterialSpec, MeshData,
-    PartCategory, PartDef, PartId, PartKind, PartKindId, PartMesh, PartMeta, PartOutput, Publishes, RegistryBuilder,
-    RigContribution, Section, WeightBrush, extra_id, humanoid_id, humanoid_of,
+    CharId, CharacterBuilder, CharacterDef, CollidersFact, ExtraBone, FitFact, JointFit, JointRef, MaterialName,
+    MaterialSpec, MeshData, PartCategory, PartDef, PartId, PartKind, PartKindId, PartMesh, PartMeta, PartOutput,
+    Publishes, RegistryBuilder, RigContribution, Section, WeightBrush, extra_id, humanoid_id, humanoid_of,
 };
 use omuzaki_core::glam::{Mat4, Vec2, Vec3};
 use omuzaki_face_api::{Check, FaceProfile, Palette, Validate};
@@ -94,11 +94,9 @@ impl PartKind for RigBody {
             shape: ColliderShape::Sphere { offset: Vec3::ZERO, radius: 0.12 },
         };
         Ok(PartOutput {
-            publishes: Publishes {
-                fit: Some(Arc::new(Torso)),
-                colliders: vec![ColliderGroup { name: "body".to_owned(), colliders: vec![head] }],
-                ..Publishes::default()
-            },
+            publishes: Publishes::default()
+                .with::<FitFact>(Arc::new(Torso))
+                .with::<CollidersFact>(ColliderGroup { name: "body".to_owned(), colliders: vec![head] }),
             ..PartOutput::default()
         })
     }
@@ -115,7 +113,7 @@ fn head_drop() -> PartOutput {
         (HumanoidBone::Jaw, Vec3::new(0.0, 1.62, 0.05)),
     ];
     let fit = JointFit::new(joints.map(|(b, p)| (JointRef::Humanoid(b), p)));
-    PartOutput { publishes: Publishes { fit: Some(Arc::new(fit)), ..Publishes::default() }, ..PartOutput::default() }
+    PartOutput { publishes: Publishes::default().with::<FitFact>(Arc::new(fit)), ..PartOutput::default() }
 }
 
 struct RigHead;
@@ -176,7 +174,7 @@ impl PartKind for RigCoat {
 
     fn build(_: &NoParams, ctx: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
         let envelope = Arc::new(Coat { inner: ctx.fit()? });
-        Ok(PartOutput { publishes: Publishes { fit: Some(envelope), ..Publishes::default() }, ..PartOutput::default() })
+        Ok(PartOutput { publishes: Publishes::default().with::<FitFact>(envelope), ..PartOutput::default() })
     }
 }
 omuzaki_char_api::register_part_kind!(RigCoat);
@@ -355,7 +353,7 @@ impl PartKind for RigProbe {
             }
             Mode::NonFiniteJoint => {
                 let fit = JointFit::new([(JointRef::HEAD, Vec3::new(0.0, f32::INFINITY, 0.0))]);
-                out.publishes.fit = Some(Arc::new(fit));
+                out.publishes.put::<FitFact>(Arc::new(fit));
             }
             Mode::GroupNameClash => {
                 let group = ColliderGroup { name: "body".to_owned(), colliders: Vec::new() };
@@ -370,7 +368,8 @@ impl PartKind for RigProbe {
                 two(rig);
                 let collider =
                     Collider { bone: extra_id(0), shape: ColliderShape::Sphere { offset: Vec3::ZERO, radius: 0.1 } };
-                out.publishes.colliders.push(ColliderGroup { name: "mine".to_owned(), colliders: vec![collider] });
+                out.publishes
+                    .put::<CollidersFact>(ColliderGroup { name: "mine".to_owned(), colliders: vec![collider] });
             }
         }
         Ok(out)

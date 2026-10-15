@@ -653,7 +653,7 @@ mod tests {
     use std::sync::Arc;
 
     use crate::build::BuiltMesh;
-    use crate::kind::Publishes;
+    use crate::kind::{FitFact, Publishes};
 
     use super::*;
 
@@ -961,7 +961,7 @@ mod tests {
 
     #[test]
     fn a_published_bind_makes_the_rig_rest_in_the_t_and_pose_back_onto_the_joints_extra_bones_included() {
-        let published = Published { fit: vec![Arc::new(SculptedBody { bind: a_pose() })], ..Published::default() };
+        let published = published_of(vec![Arc::new(SculptedBody { bind: a_pose() })]);
         let hand_at_bind = published.joint(&JointRef::Humanoid(HumanoidBone::LeftHand)).unwrap();
         assert!(hand_at_bind.y < 1.2, "the published joints hang: {hand_at_bind:?}");
         // A sleeve bone 5 cm below the sculpted hand, authored in bind space with a quarter turn of its own.
@@ -996,8 +996,16 @@ mod tests {
         assert!(turn.abs_diff_eq(rest.rotation, 1e-5) || turn.abs_diff_eq(-rest.rotation, 1e-5));
     }
 
+    fn published_of(fits: Vec<Arc<dyn BodyFit>>) -> Published {
+        let mut publishes = Publishes::default();
+        fits.into_iter().for_each(|fit| publishes.put::<FitFact>(fit));
+        let mut published = Published::default();
+        published.absorb(&PartId::new("body").unwrap(), publishes).unwrap();
+        published
+    }
+
     fn publish(published: &mut Published, part: &str, bind: &HumanoidPose) -> Result<(), BuildError> {
-        let output = Publishes { fit: Some(Arc::new(SculptedBody { bind: *bind })), ..Publishes::default() };
+        let output = Publishes::default().with::<FitFact>(Arc::new(SculptedBody { bind: *bind }));
         published.absorb(&PartId::new(part).unwrap(), output)
     }
 
@@ -1012,7 +1020,7 @@ mod tests {
         };
         assert_eq!(part.as_str(), "garment");
         assert!(message.contains("'body'"), "{message}");
-        assert_eq!(published.fit.len(), 1, "nothing of the refused part is absorbed");
+        assert_eq!(published.get::<FitFact>().fits.len(), 1, "nothing of the refused part is absorbed");
         assert_eq!(published.bind(), a_pose(), "and the first bind stands");
     }
 
@@ -1077,7 +1085,7 @@ mod tests {
     }
 
     fn creature(joints: Vec<(&'static str, Vec3)>, bones: &[(&str, &str, Vec3)]) -> Result<CharacterRig, BuildError> {
-        let published = Published { fit: vec![Arc::new(CreatureBody(joints))], ..Published::default() };
+        let published = published_of(vec![Arc::new(CreatureBody(joints))]);
         let bones = bones
             .iter()
             .map(|&(name, parent, at)| ExtraBone {
@@ -1134,7 +1142,7 @@ mod tests {
     fn a_humanoid_binding_on_a_creature_is_an_error_naming_the_part() {
         let bone =
             ExtraBone { name: BoneName::new("core").unwrap(), parent: JointRef::HEAD, rest: Transform::IDENTITY };
-        let published = Published { fit: vec![Arc::new(CreatureBody(vec![]))], ..Published::default() };
+        let published = published_of(vec![Arc::new(CreatureBody(vec![]))]);
         let part = PartId::new("ears").unwrap();
         let rig = RigContribution { bones: vec![bone], ..RigContribution::default() };
         let Err(BuildError::MissingParentBone { part: blamed, .. }) = assemble(&published, &[(part, rig)]) else {

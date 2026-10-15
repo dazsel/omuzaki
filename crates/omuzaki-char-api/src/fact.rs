@@ -16,6 +16,10 @@ use std::sync::{LazyLock, Mutex, PoisonError};
 use crate::ids::PartId;
 
 /// A typed value a part publishes for later parts, and the builder, to read.
+///
+/// `Value` and `Merged` must be `Clone` to be published ([`Publishes::put`](crate::Publishes::put) asks for it, not
+/// this trait): the builder forks a part's output to cache it and clones the merged view it hands to parts built in
+/// parallel. Share anything big behind an `Arc`.
 pub trait Fact: 'static {
     /// Stable, unique name: errors, describe output and the link gate use it.
     const NAME: &'static str;
