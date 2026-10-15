@@ -1,0 +1,34 @@
+[package]
+name = "omuzaki-link-probe"
+description = "Test-only wasm32 App that proves a `registers` crate keeps its self-registrations in a WebAssembly build (ADR 0015)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# `cdylib` is the WebAssembly module `cargo xtask wasm-link-proof` builds and runs; `rlib` lets the native tests link it.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+omuzaki-core = { path = "../omuzaki-core" }
+# The flagged crate under proof: many registering modules, so a wasm build that kept only some objects would show.
+omuzaki-char = { path = "../omuzaki-char" }
+
+[features]
+# The negative case: the build script generates an empty `link()`, as it would if `omuzaki-char` lost its flag.
+# `cargo xtask wasm-link-proof --unlinked` builds with it and passes only if the registrations are gone.
+unlinked = []
+
+# The build script writes the `link()` calls from the dependencies' `registers` flags (ADR 0054 §6).
+[build-dependencies]
+omuzaki-link-build = { path = "../omuzaki-link-build" }
+
+[package.metadata.omuzaki]
+kind = "App"
+summary = "test-only: a wasm32 App linking `omuzaki-char` through its generated `link()`, which `cargo xtask wasm-link-proof` builds and runs in node to prove the registrations survive a WebAssembly link (ADR 0015)"
+
+[lints]
+workspace = true
