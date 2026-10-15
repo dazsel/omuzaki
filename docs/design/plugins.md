@@ -244,7 +244,7 @@ exactly these, and refuses a component that imports any other (`PluginError::Imp
 | Wasm stack | 512 KiB | `Config::max_wasm_stack`; deep recursion traps |
 | Host-call rate | 10,000 a second, burst 1,000, across every import | a token bucket on the runner's clock, like #244's; over it, `call` and `plan` return `limited` and other imports trap |
 | Data folder | `data_quota_mb` bytes and 4,096 files (flat names); a `write` past either is "over quota" | `data`: both checked and updated under one lock; `list` is bounded by the count |
-| Export lists | `list()` results and `describe` strings over 1 MiB, an `init` config over 64 KiB | the bridge; a bad or oversized return value faults the plugin |
+| Export lists, op bytes | `list()` results and `describe` strings over 1 MiB, an `init` config over 64 KiB; `ops.call` arguments and `plan` input over 1 MiB (before decoding) and results over 1 MiB (before returning) are refused with a fault | the bridge; a bad or oversized return value faults the plugin |
 
 ### 4.3 Fuel and deadlines per call kind
 
@@ -304,7 +304,7 @@ Measured on `R` unless the row says otherwise; the plugin bench (§12) runs nigh
 | Host-call overhead, `call` round trip with 1 KiB of JSON each way, excluding the op | ≤ 20 µs | p95 | bench `call_1kib`, nightly; same-session A/B on bridge PRs | reported |
 | `log`, `monotonic-seconds` | ≤ 2 µs, ≤ 0.5 µs | p95 | bench `host_small` | reported |
 | A node activation (engine thread) | 10⁶ fuel ≈ 1 ms, 2 ms deadline | per activation | §4.3, calibration test | node fault |
-| A plugin's CPU share, all its calls | ≤ 100 ms of work a second (10 % of one core, 1.25 % of `cpu.total`'s 8 cores) | per second, fuel-counted, host-call charges included (§4.3) | conformance test on `FakeClock` | further entry calls `limited` until the next second |
+| A plugin's CPU share, all its calls | ≤ 100 ms of work a second (10 % of one core, 1.25 % of `cpu.total`'s 8 cores) | per second, fuel-counted, host-call charges included (§4.3) | conformance test on `FakeClock` | an entry call's fuel is the smaller of its cap and the remaining budget, so a long call is interrupted at the share; later calls `limited` until the next second |
 | Memory per plugin | 64 MiB worker + 16 MiB engine instance + ≤ 8 MiB host side (code, store) | max | conformance test (`memory.grow` past the cap fails) | trap: fault |
 | Memory, all plugins | ≤ 256 MiB in the editor (of `ram.editor`'s 1.5 GB), ≤ 128 MiB in performance mode (of `ram.runtime`'s 400 MB; provisional, 14.3) | linear memory in use, summed | the host, on every `memory.grow` | that grow fails (the plugin faults); the manager names the largest plugins |
 | Reload: drain and swap | ≤ the running call's deadline + 1 s shutdown + load | per reload | conformance test | the old instance is dropped |
@@ -409,12 +409,12 @@ agent = "confirm"              # free, confirm or never; default never
 | `plugin.grant {id, scopes?, hosts?, data?}` | Edit | `edit:settings` | person only | sets what the person approves, never beyond the requests |
 | `plugin.reload {id}` | Edit | `edit:settings` | person only | 6.3 |
 | `plugin.remove {id, data}` | Edit | `edit:settings` | person only | 6.3 |
-| `plugin.run {id, command, args}` | Edit | the command's declared scope | anyone with it | runs a plugin command (14.1) inside the caller's grants (3.2) |
+| `plugin.run {id, command, args}` | Driver job (as `script.run`) | `read`; the driver checks the command's declared scope first | anyone holding that scope | runs a plugin command (14.1) inside the caller's grants (3.2); the guest runs off the document lock and its inner calls go through `JobCtx::call` in one executor-owned transaction |
 
 The management ops (install, enable, disable, grant, reload, remove) return `OpError::person_only` to any agent or
 plugin and are **never queued**: an agent that installs, enables or grants a plugin hands its own work to an actor
-whose grants it chose, which is escalating its own privileges with extra steps. `plugin.run` is not one: it runs for
-any caller holding the command's declared scope.
+whose grants it chose, which is escalating its own privileges with extra steps. `plugin.run` is not one: before
+starting the guest the driver calls `JobCtx::authorize(scope)` (additive, `omuzaki-ops-api`) for the command's declared scope and refuses if the caller's grants don't cover it.
 
 ## 10. Scripts (PL-02) and plugins
 
@@ -468,13 +468,13 @@ exist.
 
 | Plugin | Expected |
 |---|---|
-| infinite loop in `init` | out of fuel at 10⁹, `Faulted { "out of fuel in init" }`, session `Faulted` |
+| infinite loop in `init`; a command call that would run 500 ms of fuel | out of fuel at 10⁹, `Faulted { "out of fuel in init" }`, session `Faulted`; the call's fuel is the smaller of its cap and the remaining share, so it is interrupted at 100 ms, not only refused next time |
 | loop around a slow host call | epoch deadline at 5 s |
 | `memory.grow` to 1 GiB | grow fails at 64 MiB; the guest's abort traps |
 | deep recursion | stack overflow trap at 512 KiB |
 | host-call flood (10⁶ `log` calls) | 100 lines then "N lines dropped"; the bucket traps at 10,000 a second |
 | `call` flood | `limited` with `RetryAfter`; the person's edits are never slowed |
-| bad return (invalid UTF-8, a `list` of 10⁶ names) | fault "bad return value" |
+| bad return (invalid UTF-8, a `list` of 10⁶ names); `ops.call` with 2 MiB of arguments, or an op result over 1 MiB | fault "bad return value"; refused with a fault before decoding or before the result is returned |
 | trap at start | `Faulted`; restart after 1 s, 10 s; disabled at the third |
 | imports `wasi:sockets` | refused at install, `Imports { unexpected: ["wasi:sockets/tcp"] }` |
 | `fetch` to a host not approved | `err("host not approved")`, one `warn` line |

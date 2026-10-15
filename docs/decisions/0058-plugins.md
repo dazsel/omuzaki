@@ -35,7 +35,7 @@ manifest, rights, and how plugins relate to scripts (ADR 0034).
    Approvals attach to the content hash and the publisher key, never the name.
 6. **Sandbox:** no WASI except a fixed stub subset that grants nothing (so `std` guests link); 64 MiB memory, one
    table of 10,000 elements, 32 instances, a 512 KiB stack; fuel and an epoch deadline per call kind (`init` 10⁹
-   fuel and 5 s; node activations 10⁶ fuel, about 1 ms on `R`, and 2 ms); a host-call bucket of 10,000 a second. A
+   fuel and 5 s; node activations 10⁶ fuel, about 1 ms on `R`, and 2 ms); a host-call bucket of 10,000 a second; `ops.call` and `plan` bytes capped at 1 MiB in and out; each call's fuel is the smaller of its cap and the plugin's remaining CPU share. A
    trap faults the plugin and ends its session with the new `EndReason::Faulted { reason }`; three faults in ten
    minutes disable it. Every import charges fuel (2,000 plus 1 per byte), so caps and the 100 ms a second CPU share
    count host work. Blocking host calls carry the deadline: `fetch` is cancelled at it, and nothing is called after
@@ -47,7 +47,7 @@ manifest, rights, and how plugins relate to scripts (ADR 0034).
 8. **Lifecycle:** installed per machine, enabled per machine or per (machine, project) in a person-only `Machine`
    setting; nothing loads unless enabled (SE-04). Reload swaps by content hash, drains, and hands over no state.
    The management ops (install, enable, disable, grant, reload, remove) are `person_only` and never queued;
-   `plugin.run` needs the command's declared scope and runs every inner call inside
+   `plugin.run` is a driver job (as `script.run`), `read` statically, whose driver checks the command's declared scope with `JobCtx::authorize` before the guest starts and runs every inner call inside
    `caller's grants ∩ declared scope ∩ plugin ceiling`, as `script.run` does; `plugin.list` and `plugin.describe` are `read`
    queries agents may use.
 9. **Rights:** the card shows the licence and the "not from Omuzaki" line (ADR 0016's pattern). A non-commercial or
