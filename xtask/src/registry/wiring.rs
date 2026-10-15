@@ -56,7 +56,7 @@ fn attribute_before(toks: &[Token], at: usize) -> bool {
     start > 0 && toks[start - 1].is_punct(']')
 }
 
-/// Whether `inside` has `include!(` ... `link_calls.rs` ... `)` at nesting depth zero.
+/// Whether `inside` has, at nesting depth zero, exactly `include!(concat!(env!("OUT_DIR"), "/link_calls.rs"));`.
 fn includes_at_top_level(inside: &[Token]) -> bool {
     let mut depth = 0usize;
     for (at, token) in inside.iter().enumerate() {
@@ -65,16 +65,34 @@ fn includes_at_top_level(inside: &[Token]) -> bool {
             Tok::Punct('}' | ')' | ']') => depth = depth.saturating_sub(1),
             _ => {}
         }
-        if depth == 0
-            && token.is_ident("include")
-            && inside.get(at + 1).is_some_and(|t| t.is_punct('!'))
-            && let Some((from, to)) = group_at(inside, at + 2)
-            && inside[from..to].iter().any(|t| matches!(&t.tok, Tok::Literal(text) if text.contains(GENERATED)))
-        {
+        if depth == 0 && token.is_ident("include") && is_bare_include(&inside[at..]) {
             return true;
         }
     }
     false
+}
+
+/// Whether the tokens start with `include ! ( concat ! ( env ! ( "OUT_DIR" ) , "/link_calls.rs" ) )`, optionally
+/// followed by `;`.
+fn is_bare_include(toks: &[Token]) -> bool {
+    let shape: [&dyn Fn(&Token) -> bool; 15] = [
+        &|t| t.is_ident("include"),
+        &|t| t.is_punct('!'),
+        &|t| t.is_punct('('),
+        &|t| t.is_ident("concat"),
+        &|t| t.is_punct('!'),
+        &|t| t.is_punct('('),
+        &|t| t.is_ident("env"),
+        &|t| t.is_punct('!'),
+        &|t| t.is_punct('('),
+        &|t| matches!(&t.tok, Tok::Literal(text) if text.trim_matches('"') == "OUT_DIR"),
+        &|t| t.is_punct(')'),
+        &|t| t.is_punct(','),
+        &|t| matches!(&t.tok, Tok::Literal(text) if text.trim_matches('"').trim_start_matches('/') == GENERATED),
+        &|t| t.is_punct(')'),
+        &|t| t.is_punct(')'),
+    ];
+    toks.len() >= 15 && shape.iter().zip(toks).all(|(test, token)| test(token))
 }
 
 /// The tokens strictly inside the delimited group that opens at `start`, as a half-open range; `None` when the token
@@ -131,10 +149,25 @@ mod tests {
     }
 
     #[test]
+    fn only_the_exact_bare_include_counts() {
+        let wrap = |inner: &str| format!("omuzaki_core::define_link! {{\n    {inner}\n}}\n");
+        assert!(library_includes_generated(&wrap("include!(concat!(env!(\"OUT_DIR\"), \"/link_calls.rs\"));")));
+        for other in [
+            "include!(concat!(env!(\"OUT_DIR\"), \"/link_calls.rs\", \"x\"));",
+            "include!(concat!(env!(\"MANIFEST\"), \"/link_calls.rs\"));",
+            "include!(\"link_calls.rs\");",
+            "include!(concat!(env!(\"OUT_DIR\"), \"/other_link_calls.rs\"));",
+        ] {
+            assert!(!library_includes_generated(&wrap(other)), "{other}");
+        }
+    }
+
+    #[test]
     fn a_conditional_or_nested_include_is_not_wiring() {
         let include = "include!(concat!(env!(\"OUT_DIR\"), \"/link_calls.rs\"));";
         for wrapped in [
             format!("omuzaki_core::define_link! {{\n    #[cfg(any())]\n    {include}\n}}\n"),
+            format!("omuzaki_core::define_link! {{\n    #[cfg(feature = \"x\")]\n    {include}\n}}\n"),
             format!("omuzaki_core::define_link! {{\n    #[cfg(feature = \"x\")]\n    {{ {include} }}\n}}\n"),
             format!("#[cfg(any())]\nomuzaki_core::define_link! {{\n    {include}\n}}\n"),
             format!("#[cfg(any())]\ndefine_link! {{\n    {include}\n}}\n"),

@@ -84,3 +84,44 @@ fn a_crate_that_registers_only_on_another_target_still_needs_a_link() {
     assert!(!run.success, "{}", run.stdout);
     assert!(run.stdout.contains("omuzaki-char: defines no `link()`"), "{}", run.stdout);
 }
+
+/// An App with an optional dependency on the registering crate, activated by a feature written as `feature_entry`.
+fn optional_app(feature_entry: &str) -> Fixture {
+    let fixture = workspace(true).krate("omuzaki-stage", &[]);
+    let manifest = "[package]\nname = \"omuzaki-stage\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\
+        [dependencies]\nomuzaki-char = { path = \"../omuzaki-char\", optional = true }\n\
+        [features]\nwgpu = [\""
+        .to_owned()
+        + feature_entry
+        + "\"]\n";
+    fixture.write("crates/omuzaki-stage/Cargo.toml", &manifest);
+    fixture
+}
+
+#[test]
+fn dep_syntax_on_an_optional_registering_dependency_fails() {
+    let run = optional_app("dep:omuzaki-char").xtask(&["lint-registers"]);
+    assert!(!run.success, "{}", run.stdout);
+    assert!(
+        run.stdout.contains("omuzaki-stage: a feature lists `dep:omuzaki-char`, but `omuzaki-char` registers"),
+        "{}",
+        run.stdout
+    );
+}
+
+#[test]
+fn the_implicit_feature_on_an_optional_registering_dependency_passes() {
+    let run = optional_app("omuzaki-char").xtask(&["lint-registers"]);
+    assert!(run.success, "{}{}", run.stdout, run.stderr);
+}
+
+#[test]
+fn the_gates_expected_set_includes_an_optional_registering_dependency_when_its_feature_is_on() {
+    let fixture = optional_app("omuzaki-char");
+    fixture.write("crates/omuzaki-stage/src/lib.rs", "");
+    let off = xtask::registry::expected_with_features(fixture.root(), "omuzaki-stage", None, &[]).unwrap();
+    assert!(off.is_empty(), "{off:?}");
+    let on = xtask::registry::expected_with_features(fixture.root(), "omuzaki-stage", None, &["omuzaki-char"]).unwrap();
+    assert_eq!(on.len(), 1, "{on:?}");
+    assert_eq!((on[0].package.as_str(), on[0].name.as_str()), ("omuzaki-char", "Create"));
+}

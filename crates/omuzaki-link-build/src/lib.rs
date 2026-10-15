@@ -15,7 +15,6 @@
 //! forwards to crates that do. The link gate (each App's `tests/registrations.rs`) still proves nothing was dropped,
 //! and `cargo xtask lint-registers` fails a crate that registers without the flag.
 
-use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::{env, fmt, fs};
@@ -176,8 +175,8 @@ impl Reader<'_> {
 /// manifest's back; the link gate catches that build.)
 ///
 /// # Errors
-/// A manifest that can't be read or parsed, a dependency form the generator does not read, an optional registering
-/// dependency without an explicit activation feature, or a flagged dependency declared under
+/// A manifest that can't be read or parsed, a dependency form the generator does not read, a feature that lists
+/// `dep:<name>` for an optional registering dependency, or a flagged dependency declared under
 /// `[target.*.dependencies]` (declare it unconditionally).
 pub fn generate(manifest_dir: &Path) -> Result<Generated, Error> {
     let own_path = manifest_dir.join("Cargo.toml");
@@ -194,12 +193,10 @@ pub fn generate(manifest_dir: &Path) -> Result<Generated, Error> {
             continue;
         }
         if dependency.spec.get("optional").and_then(Value::as_bool).unwrap_or(false) {
-            let features = enabling_features(&own, key)?;
-            let any: Vec<String> = features.iter().map(|feature| format!("feature = {feature:?}")).collect();
-            let _ = match any.as_slice() {
-                [one] => writeln!(source, "    #[cfg({one})]"),
-                many => writeln!(source, "    #[cfg(any({}))]", many.join(", ")),
-            };
+            forbid_hidden_activation(&own, key)?;
+            // Cargo turns the implicit feature `<key>` on whenever the dependency is active, whatever switched it on
+            // (a feature in the manifest, or `--features <key>/<feature>` on the command line).
+            let _ = writeln!(source, "    #[cfg(feature = {key:?})]");
         }
         let _ = writeln!(source, "    {}::link();", library_name(key, &dependency.spec, &manifest));
     }
@@ -233,43 +230,23 @@ fn library_name(key: &str, spec: &Table, dependency: &Table) -> String {
     name.replace('-', "_")
 }
 
-/// The features that turn on the optional dependency `key`: those that list `dep:<key>`, `<key>/<feature>` or any
-/// feature already in the set, sorted.
+/// Errors when a feature lists `dep:<key>` for the optional dependency `key`.
 ///
-/// # Errors
-/// No feature lists `dep:<key>`. Without one, cargo gives the dependency an implicit feature that a command line can
-/// switch on through `<key>/<feature>` without any declared feature, so the generated `cfg` could not be known to
-/// match the build.
-fn enabling_features(manifest: &Table, key: &str) -> Result<BTreeSet<String>, Error> {
-    let features: Vec<(&String, Vec<&str>)> = manifest
-        .get("features")
-        .and_then(Value::as_table)
-        .into_iter()
-        .flatten()
-        .map(|(name, list)| (name, list.as_array().into_iter().flatten().filter_map(Value::as_str).collect()))
-        .collect();
-    let activation = format!("dep:{key}");
-    if !features.iter().any(|(_, list)| list.contains(&activation.as_str())) {
-        return Err(Error(format!(
-            "`{key}` is optional and registers, so it needs an explicit activation feature: add `<feature> = [\"{activation}\"]` \
-             under [features]"
-        )));
-    }
-    let direct = |item: &str| item == activation || item.split_once('/').is_some_and(|(dep, _)| dep == key);
-    let mut enabled: BTreeSet<String> =
-        features.iter().filter(|(_, list)| list.iter().any(|item| direct(item))).map(|(n, _)| (*n).clone()).collect();
-    // A feature that lists an enabling feature enables the dependency too.
-    loop {
-        let more: Vec<String> = features
-            .iter()
-            .filter(|(name, list)| !enabled.contains(*name) && list.iter().any(|item| enabled.contains(*item)))
-            .map(|(name, _)| (*name).clone())
-            .collect();
-        if more.is_empty() {
-            return Ok(enabled);
+/// `dep:` removes the dependency's implicit feature, and with it the one `cfg` that is true whenever the dependency is
+/// active: `--features <key>/<feature>` on a command line would link the crate without any feature the generated call
+/// could name, and its registrations would silently go unlinked.
+fn forbid_hidden_activation(manifest: &Table, key: &str) -> Result<(), Error> {
+    let hidden = format!("dep:{key}");
+    let features = manifest.get("features").and_then(Value::as_table);
+    for (feature, list) in features.into_iter().flatten() {
+        if list.as_array().into_iter().flatten().filter_map(Value::as_str).any(|item| item == hidden) {
+            return Err(Error(format!(
+                "feature `{feature}` lists `{hidden}`, but `{key}` registers: `dep:` hides its implicit feature `{key}`, \
+                 the one the generated link call is gated on. List `\"{key}\"` instead"
+            )));
         }
-        enabled.extend(more);
     }
+    Ok(())
 }
 
 /// Errors on a flagged dependency under `[target.*.dependencies]`. Every manifest it reads is a build input, so one
@@ -336,58 +313,42 @@ mod tests {
     }
 
     #[test]
-    fn an_optional_dependency_is_called_under_the_features_that_enable_it() {
+    fn an_optional_registering_dependency_is_called_under_its_implicit_feature() {
         let dir = tempfile::tempdir().unwrap();
         crate_dir(dir.path(), "omuzaki-render", FLAG);
         let generated = app(
             dir.path(),
-            "[dependencies]\nomuzaki-render = { path = \"../omuzaki-render\", optional = true }\n[features]\nwgpu = [\"dep:omuzaki-render\"]\nfull = [\"wgpu\"]\nother = []\n",
+            "[dependencies]\nomuzaki-render = { path = \"../omuzaki-render\", optional = true }\n[features]\nwgpu = [\"omuzaki-render\"]\ngpu = [\"omuzaki-render/extra\"]\n",
         );
         assert!(
-            generated
-                .source
-                .contains("#[cfg(any(feature = \"full\", feature = \"wgpu\"))]\n    omuzaki_render::link();"),
+            generated.source.contains("    #[cfg(feature = \"omuzaki-render\")]\n    omuzaki_render::link();"),
             "{}",
             generated.source
         );
     }
 
     #[test]
-    fn an_optional_registering_dependency_needs_an_explicit_activation_feature() {
+    fn dep_syntax_on_an_optional_registering_dependency_is_an_error() {
         let dir = tempfile::tempdir().unwrap();
         crate_dir(dir.path(), "omuzaki-render", FLAG);
         crate_dir(
             dir.path(),
             "app",
-            "[dependencies]\nomuzaki-render = { path = \"../omuzaki-render\", optional = true }\n",
+            "[dependencies]\nomuzaki-render = { path = \"../omuzaki-render\", optional = true }\n[features]\nwgpu = [\"dep:omuzaki-render\"]\n",
         );
-        let error = generate(&dir.path().join("app")).unwrap_err();
-        assert!(error.to_string().contains("explicit activation feature"), "{error}");
-        // The implicit feature is hidden by any `dep:`, and `x/feature` alone switches the dependency on behind it.
-        crate_dir(
-            dir.path(),
-            "app",
-            "[dependencies]\nomuzaki-render = { path = \"../omuzaki-render\", optional = true }\n[features]\ngpu = [\"omuzaki-render/extra\"]\n",
-        );
-        let error = generate(&dir.path().join("app")).unwrap_err();
-        assert!(error.to_string().contains("explicit activation feature"), "{error}");
+        let error = generate(&dir.path().join("app")).unwrap_err().to_string();
+        assert!(error.contains("`dep:omuzaki-render`") && error.contains("implicit feature"), "{error}");
     }
 
     #[test]
-    fn features_that_switch_the_dependency_on_through_dep_slash_feature_are_covered_too() {
+    fn dep_syntax_on_an_optional_dependency_that_does_not_register_is_fine() {
         let dir = tempfile::tempdir().unwrap();
-        crate_dir(dir.path(), "omuzaki-render", FLAG);
+        crate_dir(dir.path(), "omuzaki-doc", "");
         let generated = app(
             dir.path(),
-            "[dependencies]\nomuzaki-render = { path = \"../omuzaki-render\", optional = true }\n[features]\nwgpu = [\"dep:omuzaki-render\"]\ngpu = [\"omuzaki-render/extra\"]\n",
+            "[dependencies]\nomuzaki-doc = { path = \"../omuzaki-doc\", optional = true }\n[features]\ndocs = [\"dep:omuzaki-doc\"]\n",
         );
-        assert!(
-            generated
-                .source
-                .contains("#[cfg(any(feature = \"gpu\", feature = \"wgpu\"))]\n    omuzaki_render::link();"),
-            "{}",
-            generated.source
-        );
+        assert!(!generated.source.contains("link()"), "{}", generated.source);
     }
 
     #[test]
@@ -415,10 +376,10 @@ mod tests {
         .unwrap();
         let generated = app(
             dir.path(),
-            "[dependencies]\nomuzaki-render = { workspace = true, optional = true }\n[features]\nwgpu = [\"dep:omuzaki-render\"]\n",
+            "[dependencies]\nomuzaki-render = { workspace = true, optional = true }\n[features]\nwgpu = [\"omuzaki-render\"]\n",
         );
         assert!(
-            generated.source.contains("#[cfg(feature = \"wgpu\")]\n    omuzaki_render::link();"),
+            generated.source.contains("#[cfg(feature = \"omuzaki-render\")]\n    omuzaki_render::link();"),
             "{}",
             generated.source
         );
