@@ -619,3 +619,48 @@ fn the_serde_representations_are_read_or_rejected() {
         }
     }
 }
+
+/// Holds an optional plain enum.
+#[derive(JsonSchema)]
+struct OptionalPlain {
+    /// The optional pick.
+    pick: Option<Plain>,
+}
+
+#[test]
+fn an_option_of_a_plain_enum_skips_the_null() {
+    assert_eq!(
+        visited::<OptionalPlain>(),
+        vec![
+            (String::new(), Some("Holds an optional plain enum.".to_owned())),
+            ("pick".into(), Some("The optional pick.".to_owned())),
+            ("pick--Slow".into(), None),
+            ("pick--Quick".into(), None),
+        ]
+    );
+}
+
+/// One value.
+#[derive(JsonSchema)]
+enum LoneValue {
+    Only,
+}
+
+/// Holds an optional one-value enum.
+#[derive(JsonSchema)]
+struct OptionalLone {
+    /// The optional lone value.
+    lone: Option<LoneValue>,
+}
+
+#[test]
+fn an_option_of_a_one_value_enum_skips_the_null() {
+    assert_eq!(
+        visited::<OptionalLone>(),
+        vec![
+            (String::new(), Some("Holds an optional one-value enum.".to_owned())),
+            ("lone".into(), Some("The optional lone value.".to_owned())),
+            ("lone--Only".into(), None),
+        ]
+    );
+}
