@@ -7,7 +7,8 @@
 use omuzaki_anim_api::{HumanoidBone, HumanoidPose};
 use omuzaki_char_api::{BuildOptions, BuildServices, BuiltCharacter, CharId, CharacterBuilder, RegistryBuilder};
 use omuzaki_core::glam::{Quat, UVec2, Vec3};
-use omuzaki_render_api::{AlphaEncoding, Camera, Projection, Quality, Renderer, Scene, TargetDesc};
+use omuzaki_core::time::Seconds;
+use omuzaki_render_api::{AlphaEncoding, Camera, FrameInfo, Projection, Quality, Renderer, Scene, TargetDesc};
 use omuzaki_render_mock::MockRenderer;
 use omuzaki_stage::UploadOptions;
 use omuzaki_stage::frame::face::SETTLE_STEPS;
@@ -88,5 +89,17 @@ fn a_redraw_does_not_step_the_settled_state() {
     let before = stage.skin().to_vec();
     stage.redraw(&mut renderer, &turned()).expect("the redraw renders");
     assert_eq!(stage.skin(), before.as_slice(), "the rig is untouched by a redraw");
+    stage.release(&mut renderer).expect("the stage releases");
+}
+
+#[test]
+fn a_redraw_before_any_tick_renders_the_stage_clock_frame() {
+    // The caller's scene carries a frame that no tick has made: a redraw must render at the stage's own tick, as a tick
+    // would have set it, not at the caller's frame info.
+    let mut renderer = MockRenderer::new();
+    let mut stage = staged(&mut renderer);
+    stage.scene_mut().frame = FrameInfo { index: 7, time: Seconds(3.0) };
+    stage.redraw(&mut renderer, &FrameInput::default()).expect("the redraw renders");
+    assert_eq!(stage.scene().frame, FrameInfo { index: 0, time: Seconds(0.0) }, "the frame is the stage's first tick");
     stage.release(&mut renderer).expect("the stage releases");
 }

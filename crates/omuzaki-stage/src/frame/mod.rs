@@ -228,6 +228,8 @@ impl Stage {
     pub fn redraw(&mut self, renderer: &mut dyn Renderer, input: &FrameInput) -> Result<FrameOutput, StageError> {
         self.update_face(renderer, self.tick, input)?;
         self.plan.fill(&mut self.scene, self.rig.skin(), self.root);
+        // What the last tick wrote into the scene, so a redraw before any tick doesn't render the caller's frame info.
+        self.scene.frame = FrameInfo { index: self.tick.index, time: self.tick.time };
         let report = renderer
             .render(self.target, &self.scene, &self.quality)
             .map_err(|source| StageError::render("the still", source))?;
