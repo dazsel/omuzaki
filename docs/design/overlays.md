@@ -137,7 +137,7 @@ shows/<show>/overlay/scenes/<scene>/<widget>.toml  a LayoutPatch: only the field
   scene that no longer exists is kept and reported (`overlay-layout-unknown-scene`, a finding), never dropped, because
   the scene may come back with a pull or an undo; `overlay.reset_layout` removes it.
 - **Copy and duplicate:** `overlay.add {copy_of}` copies a widget's definition and every scene patch of it under a new
-  id in one patch (a second chat box styled like the first). `show.copy` and library applies copy the whole subtree
+  id in one patch (a second chat box styled like the first). A copy of the show and a library apply copy the whole subtree
   (automation D21 rule 2). A scene duplicated by `stage.duplicate_scene` gets no overlay patches by itself (the stage
   doesn't know overlays); `overlay.copy_layout {from_scene, to_scene}` copies them, and the editor offers it after a
   duplicate.
@@ -262,7 +262,8 @@ pub trait WidgetKind: Send + Sync + 'static {
 pub struct KindCx<'a> { pub grants: &'a WidgetGrants, pub language: &'a Locale }
 pub struct WidgetGrants { /* what the person approved for this show on this machine: camera, files (roots), network
                              (hosts), transcript; built by the host from the automation `Approvals` store */ }
-pub enum KindError { NeedsGrant { need: NeedName }, Params(ParamErrors) }
+pub enum WidgetNeed { Camera, Files, Network, Transcript }                        // what NeedsGrant names
+pub enum KindError { NeedsGrant { need: WidgetNeed }, Params(ParamErrors) }      // ParamErrors: live-api's (node)
 pub struct WidgetKindRegistration { /* fn pointers like automation's NodeRegistration: info, schema, defaults,
                                        check (normalised params), create */ }
 #[macro_export] macro_rules! register_widget_kind { ($ty:ty) => { /* inventory submit + __record_registration */ } }
@@ -290,7 +291,7 @@ pub trait TextMeasure: Send + Sync {
     /// The advance width in output pixels of `text` drawn at `style`: the painter's own shaping (D10).
     fn width(&self, text: &str, style: &MeasureStyle) -> f32;
 }
-pub struct MeasureStyle { pub px: f32, pub bold: bool, pub lang: Option<LangTag> }
+pub struct MeasureStyle { pub px: f32, pub bold: bool, pub lang: Option<Locale> }   // Locale: omuzaki-l10n-api's
 pub enum Command { Clear, Alert(AlertRequest) }
 
 // ── view ────────────────────────────────────────────────────────────────────────────────────────────
@@ -302,7 +303,7 @@ pub struct View {
     pub revision: u64,                               // bumps when items change; the painter repaints only then
 }
 pub enum ViewItem {
-    Text { spans: Vec<Span>, lang: Option<LangTag>, align: Align, size: TextSize, max_lines: u8 },
+    Text { spans: Vec<Span>, lang: Option<Locale>, align: Align, size: TextSize, max_lines: u8 },
     Image { image: ImageRef, size: [f32; 2] },       // size: a fraction of the content box
     Bar { value: f32, label: Option<Content>, token: PaletteToken },
     Chip { label: Content, token: PaletteToken },    // e.g. the AI disclosure (SE-06)
@@ -445,7 +446,10 @@ The behaviour, parameters and acceptance of #1035 stand; the design fixes what t
   most 200) drops the lowest priority, oldest first, and a newcomer of higher priority evicts that one; `paused` holds
   the queue; the priority table defaults to raid 5, sub gift 4, sub 3, cheer 3, tip 3, redeem 2, follow 1, and is a
   param. A **test alert** (`overlay.alert`, priority 9) goes to the front but never interrupts the one showing.
-  `min_amount` per kind (bits, tip micros) filters small ones; a kind set to priority 0 is ignored.
+  `min_amount` per kind (bits, tip micros) filters small ones; a kind set to priority 0 is ignored. An
+  `overlay.alert` may set its own duration, clamped to `min_display_s` (1.0) and `max_display_s` (30.0); a queued
+  alert older than `max_wait_s` (120) is dropped and counted, so a long raid train never shows stale thanks minutes
+  later.
 - **Text:** each alert kind has a message (`overlay-alert-raid`: "{ $name } is raiding with { $viewers } viewers!")
   with typed arguments; the person may replace the message per kind with their own template (`templates.raid =
   "{name} brought {viewers} friends"`), whose placeholders are the payload's top-level fields, substituted as plain
