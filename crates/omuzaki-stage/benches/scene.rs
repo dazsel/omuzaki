@@ -12,6 +12,8 @@ use std::hint::black_box;
 use criterion::{Criterion, criterion_group, criterion_main};
 use omuzaki_char_api::CharId;
 use omuzaki_render_api::Colour;
+use omuzaki_render_api::{Camera, Scene};
+use omuzaki_stage::scene::apply::{Applier, fill, reserve};
 use omuzaki_stage::scene::landmarks::Landmarks;
 use omuzaki_stage::scene::resolve::{CheckedScene, Figure, ResolvedScene};
 use omuzaki_stage_api::{
@@ -100,5 +102,20 @@ fn resolve(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, resolve);
+/// The per-frame apply: the fill of the renderer's scene, and the applier's diff on top of it.
+fn apply(c: &mut Criterion) {
+    let landmarks = Landmarks::measure(&templates::build("standard")).expect("the template measures");
+    let figure = Figure::new(&CastMember::new(CharId::new("t").unwrap()), landmarks);
+    let figures = BTreeMap::from([(MemberId::new("kiri").unwrap(), figure)]);
+    let def = scene();
+    let mut resolved = ResolvedScene::new();
+    resolved.resolve_into(CheckedScene::new(&def).expect("passes its check"), &figures, ASPECT).expect("resolves");
+    let mut target = Scene::new(Camera::default());
+    reserve(&mut target);
+    c.bench_function("apply/fill", |b| b.iter(|| fill(black_box(&resolved), &mut target)));
+    let mut applier = Applier::new();
+    c.bench_function("apply/applier", |b| b.iter(|| black_box(applier.apply(black_box(&resolved), &mut target))));
+}
+
+criterion_group!(benches, resolve, apply);
 criterion_main!(benches);
