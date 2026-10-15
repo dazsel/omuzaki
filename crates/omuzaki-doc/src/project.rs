@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use omuzaki_doc_api::{Change, DocPath, DocRead, DocVersion, DocWrite, Patch, PatchError, lookup};
 use omuzaki_store_api::ContentHash;
@@ -55,7 +56,9 @@ pub struct RenderedFile {
 /// survives in the replaced folder. Elsewhere the swap is atomic and checked afterwards, and a raced save is put back.
 /// See `docs/design/journal.md` section 6.1.
 ///
-/// Cloning a project copies the tree, the layout and the known texts, so the clone is independent.
+/// Cloning a project copies the tree, the layout and the known texts, so the clone is independent. The record of the
+/// project folder's kept files (for pruning) is shared, because the clone saves into the same folder: whichever saves
+/// next prunes what either kept.
 ///
 /// See the [crate docs](crate) for how folders and files map onto the tree.
 #[derive(Clone, Debug)]
@@ -66,8 +69,14 @@ pub struct Project {
     layout: Layout,
     known: Known,
     upgraded_from: Option<u32>,
-    /// The replaced folder's entries and their ages, for pruning (see `disk::Retention`).
-    retention: Retention,
+    /// The replaced folder's entries and their ages, for pruning (see `disk::Retention`), shared with every clone.
+    retention: Arc<Mutex<Retention>>,
+}
+
+/// The shared retention, even if a thread panicked while holding it: it only lists files, and a pass that stopped
+/// part way leaves it consistent.
+fn lock(retention: &Mutex<Retention>) -> MutexGuard<'_, Retention> {
+    retention.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 impl Project {
@@ -112,7 +121,7 @@ impl Project {
             layout,
             known,
             upgraded_from,
-            retention: Retention::default(),
+            retention: Arc::default(),
         })
     }
 
@@ -141,7 +150,7 @@ impl Project {
             layout,
             known: Known::default(),
             upgraded_from: None,
-            retention: Retention::default(),
+            retention: Arc::default(),
         };
         project.save()?;
         Ok(project)
@@ -231,7 +240,7 @@ impl Project {
         let saved = self.save_files();
         // Every save prunes, whatever it did, at least as many entries as it (and any failed save before it) kept.
         let (wall, mono) = disk::clock();
-        self.retention.prune(&self.dir, wall, mono);
+        lock(&self.retention).prune(&self.dir, wall, mono);
         saved
     }
 
@@ -248,7 +257,7 @@ impl Project {
             // Like a replacement, a deletion needs the file to hold the bytes this project last saw. An error after the
             // file is gone from its name is returned only once the deletion is recorded, so a retry carries on.
             let (removed, late) =
-                match disk::remove_checked(&self.dir, &segs, self.known.hash(&segs), &mut self.retention) {
+                match disk::remove_checked(&self.dir, &segs, self.known.hash(&segs), &mut lock(&self.retention)) {
                     Ok(removed) => (removed, None),
                     Err(error @ StoreError::NotDurable { .. }) => (true, Some(error)),
                     Err(error) => return Err(error),
@@ -317,7 +326,13 @@ impl Project {
             let mut late = None;
             if rendered.changed {
                 let expected = self.known.hash(&segs);
-                match placed(disk::replace_checked(&self.dir, &path, &rendered.text, expected, &mut self.retention))? {
+                match placed(disk::replace_checked(
+                    &self.dir,
+                    &path,
+                    &rendered.text,
+                    expected,
+                    &mut lock(&self.retention),
+                ))? {
                     Placed::No => {
                         refused.get_or_insert(disk::why_changed(path));
                         continue;
@@ -344,7 +359,7 @@ impl Project {
                             &path,
                             &rendered.text,
                             None,
-                            &mut self.retention,
+                            &mut lock(&self.retention),
                         ))? {
                             Placed::No => {
                                 refused.get_or_insert(disk::why_changed(path));
@@ -553,5 +568,26 @@ mod tests {
         disk::faults::CLOCK_SKEW.with(|skew| skew.set((Duration::ZERO, Duration::ZERO)));
         // What is left is what those saves kept, all of it young.
         assert_eq!(kept_entries(tmp.path()), saves);
+    }
+
+    /// A clone saves into the same folder and shares the record of kept files, so what it kept is pruned by the
+    /// original's later saves after the clone is gone.
+    #[test]
+    fn what_a_dropped_clone_kept_is_pruned_by_the_original() {
+        let tmp = folder();
+        let mut project = Project::open(tmp.path()).unwrap();
+        project.apply(&change("a/v", Some(json!(1)), Some(json!(2)))).unwrap();
+        project.save().unwrap();
+        let mut clone = project.clone();
+        clone.apply(&change("a/v", Some(json!(2)), Some(json!(3)))).unwrap();
+        clone.save().unwrap();
+        drop(clone);
+        assert_eq!(kept_entries(tmp.path()), 2);
+        let later = disk::RETAIN_UNCHANGED + Duration::from_secs(1);
+        disk::faults::CLOCK_SKEW.with(|skew| skew.set((later, later)));
+        let saved = project.save();
+        disk::faults::CLOCK_SKEW.with(|skew| skew.set((Duration::ZERO, Duration::ZERO)));
+        saved.unwrap();
+        assert_eq!(kept_entries(tmp.path()), 0);
     }
 }

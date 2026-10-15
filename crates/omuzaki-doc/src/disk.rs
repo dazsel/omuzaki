@@ -815,7 +815,9 @@ const PRUNE_EXAMINE_SLACK: usize = 16;
 /// counts from when this process created the entry or, for one it didn't create, from when a pass first found it, so
 /// a wall clock that jumps forward never makes an entry old early, and an entry whose wall time is in the future
 /// waits for the wall clock too.
-#[derive(Clone, Debug, Default)]
+///
+/// Not `Clone`: a copy would stop seeing what the other registers. `Project` clones share one through an `Arc`.
+#[derive(Debug, Default)]
 pub(crate) struct Retention {
     /// Entries waiting to be old enough, each with the monotonic time its age counts from, oldest first (an entry
     /// that wasn't yet old on the wall clock goes to the back again).

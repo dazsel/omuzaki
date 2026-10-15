@@ -390,8 +390,8 @@ check; no check can see a write through a handle that is already open. So the di
 - **What is tested where.** CI (Linux) tests a write through a handle opened before the save: made before the check
   it is refused and nothing is lost, made after the check its bytes are in the `.kept` entry and pruning keeps it. It
   also tests the pruning rules: young entries, changed entries,
-  `.displaced` entries and other files stay, and one call deletes at most 64. The Windows behaviour is not tested in
-  CI.
+  `.displaced` entries and other files stay, and one pass deletes at most the entries kept since the last pass plus
+  16 (`owed + PRUNE_CATCH_UP`), which keeps pace with a burst of saves. The Windows behaviour is not tested in CI.
 - **Crash safety.** The hard-linked entry's folder is not flushed (that would add a folder sync to every save): after a
   power loss the handles that could write into it are gone too, and what it held when kept is the text the save
   replaced. A copied backup's folder is flushed once, after the displaced file takes its name.
