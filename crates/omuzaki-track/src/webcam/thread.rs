@@ -1,31 +1,40 @@
 //! The camera thread: camera frame, pixel conversion, face tracker, stage-clock time, mailbox, preview.
 
+use std::io;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, sync_channel};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
-use omuzaki_anim_api::TrackFrame;
 use omuzaki_core::time::{Clock, Seconds};
+use omuzaki_pixfmt::MjpgDecoder;
 use omuzaki_track_api::camera::CameraStream;
 use omuzaki_track_api::clock::{ClockMap, MIN_STEP};
 use omuzaki_track_api::error::TrackError;
 use omuzaki_track_api::mailbox::MailboxWriter;
 use omuzaki_track_api::tracker::LatencyStats;
 
-use super::convert::FrameConverter;
+use super::convert::{convert_into, rgb_len};
 use super::preview::{PreviewFrame, PreviewTap};
 use super::{Failures, FrameTracker};
-use crate::sample::{FaceSample, to_track_frame};
+use crate::error::FaceTrackError;
+use crate::frame::RgbFrame;
+use crate::sample::{FaceSample, StageTimings, to_track_frame};
 
 /// The longest the thread waits inside the camera, so `stop` is noticed within this (the join budget is 200 ms).
-const POLL: Duration = Duration::from_millis(20);
+pub(super) const POLL: Duration = Duration::from_millis(20);
 
-/// How long `stop` waits for the camera thread to come back from a frame in hand before it detaches it.
-pub(super) const JOIN_GRACE: Duration = Duration::from_millis(150);
+/// How long the camera thread waits at its end for the tracker's thread, which `stop` then waits for in turn (and `stop`
+/// has two polls on top); a tracker that is not back by then is let go.
+pub(super) const JOIN_GRACE: Duration = Duration::from_millis(100);
 
-// `stop` waits at most the grace period, which covers a camera poll and the frame in hand; the task's budget for it
-// is 200 ms.
-const _: () = assert!(POLL.as_millis() + JOIN_GRACE.as_millis() <= 200);
+// `stop` waits at most the grace period and two camera polls (the camera thread's and its own); the task's budget
+// for it is 200 ms.
+const _: () = assert!(JOIN_GRACE.as_millis() + 2 * POLL.as_millis() <= 200);
+
+/// How long a thread blocks on an empty channel to warm up its blocking path (see the tracker thread's loop).
+const WARM_UP: Duration = Duration::from_micros(1);
 
 /// Width of one latency bucket, in microseconds.
 const BUCKET_US: u64 = 100;
@@ -72,14 +81,16 @@ impl Stats {
         self.samples.fetch_add(1, Ordering::Release);
     }
 
-    /// The upper edge of the bucket holding the `q`th percentile, never above the worst case seen.
+    /// The upper edge of the bucket holding the `q`th percentile (the worst case, for the last), never above the worst
+    /// case seen.
     fn percentile(&self, samples: u64, q: u64) -> u64 {
         let rank = (samples * q).div_ceil(100).max(1);
         let mut seen = 0;
         for (i, count) in self.histogram.iter().enumerate() {
             seen += count.load(Ordering::Relaxed);
             if seen >= rank {
-                return (i as u64 + 1) * BUCKET_US;
+                // The last bucket holds everything slower than the range, so only the worst case speaks for it.
+                return if i == BUCKETS - 1 { u64::MAX } else { (i as u64 + 1) * BUCKET_US };
             }
         }
         u64::from(self.max_us.load(Ordering::Relaxed))
@@ -108,142 +119,225 @@ impl Stats {
     }
 }
 
-/// Everything the camera thread owns or shares.
+/// A frame for the worker to track: the converted pixels, and the capture time on the stage clock.
+struct Job {
+    rgb: Vec<u8>,
+    width: u32,
+    height: u32,
+    time: Seconds,
+}
+
+/// What the worker answers: the pixels back, for the next frame, and what the tracker made of them.
+struct Done {
+    rgb: Vec<u8>,
+    result: Result<(Option<FaceSample>, StageTimings), FaceTrackError>,
+}
+
+/// Everything the camera thread owns.
 pub(super) struct Run {
     pub(super) stream: Box<dyn CameraStream>,
-    pub(super) tracker: Box<dyn FrameTracker>,
-    pub(super) shared: Arc<Shared>,
+    pub(super) writer: MailboxWriter,
+    pub(super) clock: Arc<dyn Clock>,
+    pub(super) first_seq: u64,
+    pub(super) lost_after: Duration,
     /// Track one camera frame in this many (see `tier_stride`).
     pub(super) stride: u32,
+    /// How long to wait for the tracker's thread at the end before letting it go.
+    pub(super) grace: Duration,
     pub(super) stop: Arc<AtomicBool>,
     pub(super) preview: Arc<PreviewTap>,
+    pub(super) stats: Arc<Stats>,
     pub(super) error: Arc<Mutex<Option<TrackError>>>,
+    pub(super) worker: Worker,
 }
 
-/// What the thread hands back when it ends: the tracker, for the next session.
+/// What the thread hands back when it ends: the tracker, if its thread came back, and the next free `seq`.
 pub(super) struct Outcome {
-    pub(super) tracker: Box<dyn FrameTracker>,
+    pub(super) tracker: Option<Box<dyn FrameTracker>>,
+    pub(super) next_seq: u64,
 }
 
-/// Numbers frames and keeps their stage times strictly increasing, whichever path stamps them.
+/// What the worker thread runs, until its jobs end; it returns the tracker.
+pub(super) type Body = Box<dyn FnOnce() -> Option<Box<dyn FrameTracker>> + Send>;
+
+/// The inference thread and the two bounded channels to it, made by `start` before the camera thread.
+pub(super) struct Worker {
+    handle: JoinHandle<Option<Box<dyn FrameTracker>>>,
+    jobs: SyncSender<Job>,
+    done: Receiver<Done>,
+}
+
+impl Worker {
+    /// Starts the thread that owns `tracker` and answers each [`Job`] over a one-slot channel, so neither side
+    /// allocates per frame. `spawn` is how `start` makes threads, so that it can fail one on purpose.
+    pub(super) fn start(
+        tracker: Box<dyn FrameTracker>,
+        spawn: impl FnOnce(Body) -> io::Result<JoinHandle<Option<Box<dyn FrameTracker>>>>,
+    ) -> Result<Self, (io::Error, Box<dyn FrameTracker>)> {
+        let (jobs, job_rx) = sync_channel::<Job>(1);
+        let (done_tx, done) = sync_channel::<Done>(1);
+        // The tracker travels in a cell, so a closure dropped by a failed spawn does not take it along.
+        let cell = Arc::new(Mutex::new(Some(tracker)));
+        let body = {
+            let cell = Arc::clone(&cell);
+            Box::new(move || {
+                let mut tracker = cell.lock().unwrap_or_else(PoisonError::into_inner).take()?;
+                // The first time a thread blocks on a channel, std allocates (a per-thread wait context and the
+                // channel's list of waiters). Block once now, for a microsecond, so that happens before the first
+                // frame whatever the timing, and the steady state allocates nothing.
+                let mut pending = match job_rx.recv_timeout(WARM_UP) {
+                    Ok(job) => Some(job),
+                    Err(RecvTimeoutError::Timeout) => None,
+                    Err(RecvTimeoutError::Disconnected) => return Some(tracker),
+                };
+                while let Some(Job { rgb, width, height, time }) = pending.take().or_else(|| job_rx.recv().ok()) {
+                    let frame = RgbFrame { data: &rgb, width, height, stride: 3 * width as usize };
+                    let result = tracker.track(&frame, time);
+                    if done_tx.send(Done { rgb, result }).is_err() {
+                        break;
+                    }
+                }
+                Some(tracker)
+            }) as Body
+        };
+        match spawn(body) {
+            Ok(handle) => Ok(Self { handle, jobs, done }),
+            Err(e) => match cell.lock().unwrap_or_else(PoisonError::into_inner).take() {
+                Some(tracker) => Err((e, tracker)),
+                None => unreachable!("a thread that did not start has not taken the tracker"),
+            },
+        }
+    }
+
+    /// Ends the thread and takes the tracker back, if it comes within `grace`; otherwise lets the thread go.
+    pub(super) fn finish(self, grace: Duration) -> Option<Box<dyn FrameTracker>> {
+        let Self { handle, jobs, done } = self;
+        // With the sending end gone the thread leaves its loop as soon as it is idle.
+        drop((jobs, done));
+        let give_up = Instant::now() + grace;
+        while !handle.is_finished() && Instant::now() < give_up {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        if handle.is_finished() { handle.join().ok().flatten() } else { None }
+    }
+}
+
+/// Numbers frames and keeps their stage times strictly increasing, whichever path stamps them. Owned by the camera
+/// thread alone: nothing else ever publishes, so publication takes no lock.
 struct Publisher {
     writer: MailboxWriter,
+    clock: Arc<dyn Clock>,
+    stats: Arc<Stats>,
+    lost_after: f64,
     /// The `seq` of the next frame.
     seq: u64,
     /// The `seq` of the last frame published, which a notice repeats.
     last_seq: Option<u64>,
+    /// The stage time of the last frame published, which the next must follow.
     last_time: f64,
+    /// When anything last went out, for the silence rule.
+    last_publish: f64,
+    /// A notice has been sent for the silence since `last_publish`.
+    notified: bool,
 }
 
-/// When the last frame went out, for the watchdog to read without taking the publisher's lock.
-struct Pulse {
-    /// Stage time of the last publish, as `f64` bits.
-    last: AtomicU64,
-    /// A notice has been sent for the silence since `last`; the next frame clears it.
-    notified: AtomicBool,
-}
-
-/// What the camera thread and the watchdog share: the one writer of the mailbox, and the clock and counters.
-///
-/// The camera thread takes the lock once per frame, to publish; the watchdog takes it only when a silence has gone on
-/// for `lost_after`, and checks again under it, so a frame that went out meanwhile is never overwritten by a stale
-/// notice. A frame published by a thread that was stuck and came back is ordered after the notice, never before it.
-pub(super) struct Shared {
-    publisher: Mutex<Publisher>,
-    pulse: Pulse,
-    clock: Arc<dyn Clock>,
-    pub(super) stats: Arc<Stats>,
-}
-
-impl Shared {
-    pub(super) fn new(writer: MailboxWriter, first_seq: u64, clock: Arc<dyn Clock>, stats: Arc<Stats>) -> Self {
-        let pulse = Pulse { last: AtomicU64::new(clock.now().0.to_bits()), notified: AtomicBool::new(false) };
-        let publisher = Mutex::new(Publisher { writer, seq: first_seq, last_seq: None, last_time: f64::NEG_INFINITY });
-        Self { publisher, pulse, clock, stats }
-    }
-
-    /// The `seq` the next frame gets.
-    pub(super) fn next_seq(&self) -> u64 {
-        self.publisher.lock().unwrap_or_else(PoisonError::into_inner).seq
-    }
-
-    /// Publishes a frame, a lost one if `sample` is `None`, no earlier than `time`. Returns it with the stage time
-    /// at which it went out.
-    fn publish(&self, sample: Option<&FaceSample>, time: Seconds) -> (TrackFrame, Seconds) {
-        let mut out = self.publisher.lock().unwrap_or_else(PoisonError::into_inner);
-        let time = Seconds(time.0.max(out.last_time + MIN_STEP));
-        out.last_time = time.0;
-        let frame = to_track_frame(sample, out.seq, time);
-        out.writer.publish(&frame);
-        out.last_seq = Some(out.seq);
-        out.seq += 1;
+impl Publisher {
+    /// Publishes a frame, a lost one if `sample` is `None`, stamped no earlier than `time` and after the last one.
+    /// Returns its `seq` and the stage time at which it went out.
+    fn publish(&mut self, sample: Option<&FaceSample>, time: Seconds) -> (u64, Seconds) {
+        let time = Seconds(time.0.max(self.last_time + MIN_STEP));
+        self.last_time = time.0;
+        let seq = self.seq;
+        self.writer.publish(&to_track_frame(sample, seq, time));
+        (self.last_seq, self.seq) = (Some(seq), seq + 1);
         let now = self.clock.now();
-        self.pulse.last.store(now.0.to_bits(), Ordering::Relaxed);
-        self.pulse.notified.store(false, Ordering::Relaxed);
+        (self.last_publish, self.notified) = (now.0, false);
         self.stats.published.fetch_add(1, Ordering::Relaxed);
-        (frame, now)
+        (seq, now)
     }
 
-    /// Publishes one lost frame that stands for no camera frame, so it repeats the last frame's `seq` and takes no
-    /// new one (`track-api.md` §8). With `silence` it is the watchdog's: sent only if no frame has gone out for that
-    /// long and none has been sent for this silence, and not at all before the first frame, when there is no face to
-    /// clear. Without it the camera is gone, and the notice is sent whatever came before.
-    fn notify(&self, silence: Option<Duration>) -> Option<TrackFrame> {
-        let mut out = self.publisher.lock().unwrap_or_else(PoisonError::into_inner);
+    /// Publishes the one lost frame that stands for no camera frame, so it repeats the last frame's `seq` and takes
+    /// no new one (`track-api.md` §8). `silent` is the stall rule's: sent only once nothing has gone out for
+    /// `lost_after`, once per silence, and not at all before the first frame, when there is no face to clear. The
+    /// camera being gone is not silent: it is sent whatever came before.
+    fn notify(&mut self, silent: bool) {
         let now = self.clock.now();
-        if let Some(silence) = silence {
-            let quiet = now.0 - f64::from_bits(self.pulse.last.load(Ordering::Relaxed)) >= silence.as_secs_f64();
-            if !quiet || self.pulse.notified.swap(true, Ordering::Relaxed) {
-                return None;
+        if silent {
+            if self.notified || now.0 - self.last_publish < self.lost_after {
+                return;
             }
-        } else {
-            self.pulse.notified.store(true, Ordering::Relaxed);
+            self.notified = true;
         }
-        let seq = out.last_seq.or_else(|| silence.is_none().then_some(out.seq))?;
-        let time = Seconds(now.0.max(out.last_time + MIN_STEP));
-        out.last_time = time.0;
-        let frame = to_track_frame(None, seq, time);
-        out.writer.publish(&frame);
+        let Some(seq) = self.last_seq.or_else(|| (!silent).then_some(self.seq)) else { return };
+        let time = Seconds(now.0.max(self.last_time + MIN_STEP));
+        self.last_time = time.0;
+        self.writer.publish(&to_track_frame(None, seq, time));
         self.stats.published.fetch_add(1, Ordering::Relaxed);
-        Some(frame)
     }
 }
 
-/// The watchdog: publishes the one lost frame when nothing has gone out for `lost_after`, whether the camera is
-/// silent or the tracker is stuck inside `track`, which the camera thread cannot notice from the inside. Ends at `stop`.
-pub(super) fn watch(shared: &Shared, lost_after: Duration, stop: &AtomicBool) {
-    let tick = lost_after.min(POLL).max(Duration::from_millis(1));
-    while !stop.load(Ordering::Relaxed) {
-        shared.notify(Some(lost_after));
-        // Unparked by `stop`; a spurious wake-up only checks again.
-        std::thread::park_timeout(tick);
-    }
+/// Why the wait for the worker's answer ended without one.
+enum Ended {
+    /// `stop` was asked for while waiting.
+    Stopped,
+    /// The worker's thread is gone: it panicked.
+    Died,
 }
 
 impl Run {
     /// Runs until `stop` is set or the stream fails. A failure publishes one lost frame and is kept in `error`.
     pub(super) fn run(self) -> Outcome {
-        let Self { mut stream, mut tracker, shared, stride, stop, preview, error } = self;
-        let stats = Arc::clone(&shared.stats);
+        let Self {
+            mut stream,
+            writer,
+            clock,
+            first_seq,
+            lost_after,
+            stride,
+            grace,
+            stop,
+            preview,
+            stats,
+            error,
+            worker,
+        } = self;
+        let mut out = Publisher {
+            writer,
+            lost_after: lost_after.as_secs_f64(),
+            last_publish: clock.now().0,
+            clock: Arc::clone(&clock),
+            stats: Arc::clone(&stats),
+            seq: first_seq,
+            last_seq: None,
+            last_time: f64::NEG_INFINITY,
+            notified: false,
+        };
         // Sized for the mode the camera opened with, so the first frame allocates nothing either.
         let mode = stream.format();
-        let mut converter = FrameConverter::with_size(mode.width, mode.height);
+        let mut mjpg = MjpgDecoder::new();
+        let mut rgb = vec![0; rgb_len(mode.width, mode.height)];
         let (mut device_clock, mut scratch) = (ClockMap::new(), PreviewFrame::default());
         let mut camera_seq = None::<u64>;
         let mut accepted = 0_u64;
-        while !stop.load(Ordering::Relaxed) {
+        // The same warm-up as the tracker's thread: nothing is waiting yet, so this times out at once.
+        worker.done.recv_timeout(WARM_UP).ok();
+        let fail = |why: TrackError| *error.lock().unwrap_or_else(PoisonError::into_inner) = Some(why);
+        'frames: while !stop.load(Ordering::Relaxed) {
             let frame = match stream.next_frame(POLL) {
                 Ok(Some(frame)) => frame,
-                // A silent camera is the watchdog's to report.
-                Ok(None) => continue,
+                // A silent camera: say so once `lost_after` has gone by.
+                Ok(None) => {
+                    out.notify(true);
+                    continue;
+                }
                 Err(e) => {
                     // Kept before the lost frame goes out, so a consumer that sees it can already ask why.
-                    *error.lock().unwrap_or_else(PoisonError::into_inner) = Some(e);
-                    shared.notify(None);
+                    fail(e);
+                    out.notify(false);
                     break;
                 }
             };
-            let arrived = shared.clock.now();
+            let arrived = clock.now();
             if let Some(previous) = camera_seq {
                 stats.dropped.fetch_add(frame.seq.saturating_sub(previous + 1), Ordering::Relaxed);
             }
@@ -260,23 +354,52 @@ impl Run {
                 continue;
             }
             // A frame that cannot be converted or tracked is a lost frame: the pipeline must not hold a stale face.
-            let Ok(rgb) = converter.convert(&frame) else {
+            if convert_into(&mut mjpg, &frame, &mut rgb).is_err() {
                 stats.conversion.fetch_add(1, Ordering::Relaxed);
-                shared.publish(None, time);
+                out.publish(None, time);
                 continue;
+            }
+            let job = Job { rgb: std::mem::take(&mut rgb), width: frame.width, height: frame.height, time };
+            if worker.jobs.try_send(job).is_err() {
+                fail(TrackError::Backend("the face tracker's thread is gone".to_owned()));
+                out.notify(false);
+                break;
+            }
+            // The camera thread does not run inference, so it can keep time while the tracker works: it waits a tick
+            // at a time, says so if the silence passes `lost_after`, and looks at `stop`, so neither a slow tracker
+            // nor one that never returns can hold up the lost frame or the end.
+            let answer = loop {
+                match worker.done.recv_timeout(POLL) {
+                    Ok(done) => break Ok(done),
+                    Err(RecvTimeoutError::Timeout) if stop.load(Ordering::Relaxed) => break Err(Ended::Stopped),
+                    Err(RecvTimeoutError::Timeout) => out.notify(true),
+                    Err(RecvTimeoutError::Disconnected) => break Err(Ended::Died),
+                }
             };
-            let sample = if let Ok((sample, _timings)) = tracker.track(&rgb, time) {
+            let Ok(Done { rgb: pixels, result }) = answer else {
+                if matches!(answer, Err(Ended::Died)) {
+                    fail(TrackError::Backend("the face tracker's thread panicked".to_owned()));
+                    out.notify(false);
+                }
+                break 'frames;
+            };
+            rgb = pixels;
+            let sample = if let Ok((sample, _timings)) = result {
                 sample
             } else {
                 stats.tracking.fetch_add(1, Ordering::Relaxed);
                 None
             };
-            let (published, now) = shared.publish(sample.as_ref(), time);
-            // Before the preview, so that work cannot inflate the health metric.
-            stats.record(Seconds(now.0 - published.time.0));
-            preview.offer(&mut scratch, &rgb, published.seq, sample.as_ref().map(|s| &s.landmarks));
+            let (seq, now) = out.publish(sample.as_ref(), time);
+            // Latency is from when the frame was captured, not from the time its output was ordered at, and it is
+            // taken before the preview, so that work cannot inflate it.
+            stats.record(Seconds(now.0 - time.0));
+            let frame =
+                RgbFrame { data: &rgb, width: frame.width, height: frame.height, stride: 3 * frame.width as usize };
+            preview.offer(&mut scratch, &frame, seq, sample.as_ref().map(|s| &s.landmarks));
         }
-        Outcome { tracker }
+        let tracker = worker.finish(grace);
+        Outcome { tracker, next_seq: out.seq }
     }
 }
 
@@ -305,7 +428,12 @@ mod tests {
         // A latency past the last bucket is clamped there, and the worst case stays exact.
         stats.record(Seconds(5.0));
         assert_eq!(stats.snapshot().max, Duration::from_secs(5));
-        assert!(stats.snapshot().p95 <= Duration::from_micros(BUCKETS as u64 * BUCKET_US));
+        // 5 s is past the last bucket: 1 of 101 samples, so the 10 ms group still holds p95.
+        within(stats.snapshot().p95, 10_000);
+        for _ in 0..200 {
+            stats.record(Seconds(0.250));
+        }
+        assert_eq!(stats.snapshot().p50, Duration::from_secs(5), "the overflow bucket speaks with the worst case");
     }
 
     #[test]

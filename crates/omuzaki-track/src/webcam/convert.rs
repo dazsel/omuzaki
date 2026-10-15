@@ -35,44 +35,54 @@ impl FrameConverter {
     /// [`TrackError::Backend`] for a frame the converter cannot read: a zero or odd side where the format needs an
     /// even one, data shorter than its layout, a damaged JPEG, or a pixel format this version does not know.
     pub fn convert(&mut self, frame: &CameraFrame<'_>) -> Result<RgbFrame<'_>, TrackError> {
-        let (w, h) = (frame.width, frame.height);
-        let len = rgb_len(w, h);
-        if self.rgb.len() != len {
-            self.rgb.resize(len, 0);
-        }
-        let mut out = RgbOut { data: &mut self.rgb, width: w, height: h };
-        let plane = Plane { data: frame.data, stride: frame.stride };
-        let converted = match frame.pixel {
-            PixelFormat::Nv12 => {
-                // The Y plane is `height` rows, the interleaved UV plane follows it.
-                let y_len = frame.stride.saturating_mul(h as usize);
-                match frame.data.split_at_checked(y_len) {
-                    Some((y, uv)) => nv12_to_rgb(
-                        Plane { data: y, stride: frame.stride },
-                        Plane { data: uv, stride: frame.stride },
-                        Yuv::default(),
-                        &mut out,
-                    ),
-                    None => Err(ConvertError::ShortPlane { plane: "y", need: y_len, got: frame.data.len() }),
-                }
-            }
-            PixelFormat::Yuy2 => yuy2_to_rgb(plane, Yuv::default(), &mut out),
-            PixelFormat::Rgb8 => rgb_to_rgb(plane, &mut out),
-            PixelFormat::Bgra8 => bgra_to_rgb(plane, false, &mut out),
-            // The pixels go straight into our buffer. What remains per frame is inside zune-jpeg, which builds its
-            // decoder (tables and row buffers, a few small allocations, none of them frame sized) for each image
-            // and offers no way to hand one back; `omuzaki-pixfmt` is outside this task's fence. Measured in
-            // `tests/webcam.rs` and `benches/webcam.rs`.
-            PixelFormat::Mjpg => self.mjpg.decode(frame.data, &mut out),
-            other => return Err(TrackError::Backend(format!("no converter for {other:?}"))),
-        };
-        converted.map_err(|e| TrackError::Backend(format!("pixel conversion: {e}")))?;
-        Ok(RgbFrame { data: &self.rgb, width: w, height: h, stride: 3 * w as usize })
+        convert_into(&mut self.mjpg, frame, &mut self.rgb)?;
+        Ok(RgbFrame { data: &self.rgb, width: frame.width, height: frame.height, stride: 3 * frame.width as usize })
     }
 }
 
+/// `frame` as packed RGB8 in `rgb`, resized to fit if it is not that size already (so, no allocation once it has
+/// been). The camera thread converts into a buffer it then hands to the tracker, which is why this takes the buffer.
+pub(super) fn convert_into(
+    mjpg: &mut MjpgDecoder,
+    frame: &CameraFrame<'_>,
+    rgb: &mut Vec<u8>,
+) -> Result<(), TrackError> {
+    let (w, h) = (frame.width, frame.height);
+    let len = rgb_len(w, h);
+    if rgb.len() != len {
+        rgb.resize(len, 0);
+    }
+    let mut out = RgbOut { data: rgb.as_mut_slice(), width: w, height: h };
+    let plane = Plane { data: frame.data, stride: frame.stride };
+    let converted = match frame.pixel {
+        PixelFormat::Nv12 => {
+            // The Y plane is `height` rows, the interleaved UV plane follows it.
+            let y_len = frame.stride.saturating_mul(h as usize);
+            match frame.data.split_at_checked(y_len) {
+                Some((y, uv)) => nv12_to_rgb(
+                    Plane { data: y, stride: frame.stride },
+                    Plane { data: uv, stride: frame.stride },
+                    Yuv::default(),
+                    &mut out,
+                ),
+                None => Err(ConvertError::ShortPlane { plane: "y", need: y_len, got: frame.data.len() }),
+            }
+        }
+        PixelFormat::Yuy2 => yuy2_to_rgb(plane, Yuv::default(), &mut out),
+        PixelFormat::Rgb8 => rgb_to_rgb(plane, &mut out),
+        PixelFormat::Bgra8 => bgra_to_rgb(plane, false, &mut out),
+        // The pixels go straight into our buffer. What remains per frame is inside zune-jpeg, which builds its
+        // decoder (tables and row buffers, a few small allocations, none of them frame sized) for each image
+        // and offers no way to hand one back; `omuzaki-pixfmt` is outside this task's fence. Measured in
+        // `tests/webcam.rs` and `benches/webcam.rs`.
+        PixelFormat::Mjpg => mjpg.decode(frame.data, &mut out),
+        other => return Err(TrackError::Backend(format!("no converter for {other:?}"))),
+    };
+    converted.map_err(|e| TrackError::Backend(format!("pixel conversion: {e}")))
+}
+
 /// Bytes of a packed RGB8 frame.
-fn rgb_len(width: u32, height: u32) -> usize {
+pub(super) fn rgb_len(width: u32, height: u32) -> usize {
     (width as usize).saturating_mul(height as usize).saturating_mul(3)
 }
 

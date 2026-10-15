@@ -105,6 +105,10 @@ struct Scripted {
     signal_at: Option<(usize, Sender<()>)>,
     /// Sends on this as each frame arrives, before waiting for its token: the previous frame is then done with.
     waiting: Option<Sender<()>>,
+    /// Moves this clock on by this much inside every `track`, as a slow tracker would.
+    slow: Option<(Arc<FakeClock>, f64)>,
+    /// While set, the gate is open: frames pass without a token, so a test can end a session without a race.
+    open: Arc<AtomicBool>,
     calls: usize,
 }
 
@@ -118,6 +122,8 @@ impl Scripted {
             measure: None,
             signal_at: None,
             waiting: None,
+            slow: None,
+            open: Arc::default(),
             calls: 0,
         }
     }
@@ -134,12 +140,21 @@ impl FrameTracker for Scripted {
         frame: &RgbFrame<'_>,
         _: Seconds,
     ) -> Result<(Option<FaceSample>, StageTimings), FaceTrackError> {
+        if let Some((clock, by)) = &self.slow {
+            clock.advance(Seconds(*by));
+        }
         if let Some(waiting) = &self.waiting {
             waiting.send(()).ok();
         }
         if let Some(gate) = &self.gate {
-            // A token per frame; a test that fails early must not hang the join in `Drop`.
-            gate.recv_timeout(BACKSTOP / 2).ok();
+            // A token per frame; a test that fails early must not hang the join in `Drop`, so this gives up in time.
+            let give_up = Instant::now() + BACKSTOP / 2;
+            while !self.open.load(Ordering::Acquire) && Instant::now() < give_up {
+                match gate.recv_timeout(Duration::from_millis(5)) {
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                    Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+            }
         }
         if let Some(seen) = &self.seen {
             let row = frame.width as usize * 3;
@@ -529,6 +544,9 @@ fn a_slow_tracker_gives_one_lost_frame_then_resumes() {
     drop(tokens);
     tracker.stop();
     assert_eq!(tracker.error(), None);
+    // The frame was captured 5.1 s before it went out, give or take a frame time. Its output was ordered after the
+    // lost frame, 5 s before; the latency is from the capture.
+    assert!(tracker.latency().max >= Duration::from_millis(5050), "{:?}", tracker.latency());
 }
 
 /// A tracker that never returns: a lost frame, and `stop` gives up on it instead of hanging.
@@ -551,7 +569,7 @@ fn a_tracker_that_never_returns_gives_a_lost_frame_and_stop_detaches_it() {
     tracker.stop();
     assert!(stopping.elapsed() < BACKSTOP / 4, "stop took {:?}", stopping.elapsed());
     assert!(
-        matches!(tracker.error(), Some(TrackError::Backend(ref why)) if why.contains("detached")),
+        matches!(tracker.error(), Some(TrackError::Backend(ref why)) if why.contains("let go")),
         "{:?}",
         tracker.error()
     );
@@ -614,21 +632,75 @@ fn the_preview_costs_nothing_while_off_and_scales_the_landmarks_while_on() {
     drop(tokens);
 }
 
+/// A fake camera whose stream marks the camera thread for the counting allocator over a range of frames, and
+/// unmarks it at the end of the range.
+struct Metered {
+    inner: FakeCamera,
+    frames: std::ops::Range<usize>,
+}
+
+struct MeteredStream {
+    inner: Box<dyn CameraStream>,
+    frames: std::ops::Range<usize>,
+    calls: usize,
+}
+
+impl Camera for Metered {
+    fn enumerate(&self) -> Vec<CameraInfo> {
+        self.inner.enumerate()
+    }
+
+    fn open(&mut self, id: &CameraId, request: &CameraFormatRequest) -> Result<Box<dyn CameraStream>, TrackError> {
+        let inner = self.inner.open(id, request)?;
+        Ok(Box::new(MeteredStream { inner, frames: self.frames.clone(), calls: 0 }))
+    }
+}
+
+impl CameraStream for MeteredStream {
+    fn format(&self) -> CameraFormat {
+        self.inner.format()
+    }
+
+    fn next_frame(&mut self, timeout: Duration) -> Result<Option<CameraFrame<'_>>, TrackError> {
+        ON_CAMERA.with(|m| m.set(self.frames.contains(&self.calls)));
+        self.calls += 1;
+        self.inner.next_frame(timeout)
+    }
+}
+
 #[test]
-fn the_camera_thread_allocates_nothing_over_three_hundred_frames() {
-    // Frames 20 to 319 are measured, with the preview on, after the buffers have grown. The face comes and goes in
-    // runs of two frames and three, so the landmark buffers are lost and reacquired over and over.
+fn the_camera_and_tracker_threads_allocate_nothing_over_three_hundred_frames() {
+    // Frames 20 to 319 are measured, on the camera thread and on the tracker's, with the preview on, after the buffers
+    // have grown. The face comes and goes in runs of two frames and three, so the landmark buffers are lost and
+    // reacquired over and over.
     let faces: Vec<bool> = (0..330).map(|i| i % 5 < 2).collect();
     let (done, finished) = channel();
     let scripted = Scripted { measure: Some(20..320), signal_at: Some((320, done)), ..Scripted::new(faces) };
     // The camera never runs dry: the session ends on frame 320, which the tracker reports, so no timer decides when.
-    let camera = FakeCamera::synthetic(nv12(160, 120), u64::MAX);
-    let mut tracker = webcam(camera, scripted, WebcamConfig::default().with_mode(160, 120, 30));
+    let camera = Metered { inner: FakeCamera::synthetic(nv12(160, 120), u64::MAX), frames: 20..320 };
+    let config = WebcamConfig::default().with_mode(160, 120, 30);
+    let mut tracker = patient(Box::new(camera), Box::new(scripted), config, standing_clock());
     tracker.set_preview(true);
     let _source = start(&mut tracker);
     finished.recv_timeout(BACKSTOP).expect("the camera thread reached frame 320");
     tracker.stop();
     assert_eq!(CAMERA_ALLOCATIONS.load(Ordering::Relaxed), 0);
+}
+
+/// A tracker that takes a quarter of a second: the latency is from capture, so it shows.
+#[test]
+fn latency_is_measured_from_the_capture_time_whatever_the_output_was_ordered_at() {
+    let clock = Arc::new(FakeClock::new(Seconds(100.0)));
+    let slow = Scripted { slow: Some((Arc::clone(&clock), 0.25)), ..Scripted::new(vec![true]) };
+    // One frame: with more, the clock map would read a clock that runs faster than the device's as growing delay.
+    let camera = FakeCamera::synthetic(nv12(64, 48), 1);
+    let mut tracker = webcam_on(camera, slow, WebcamConfig::default().with_mode(64, 48, 30), clock);
+    let _source = start(&mut tracker);
+    wait_for_error(&tracker);
+    tracker.stop();
+    let latency = tracker.latency();
+    assert!(latency.p50 >= Duration::from_millis(250), "{latency:?}");
+    assert!(latency.max >= Duration::from_millis(250), "{latency:?}");
 }
 
 #[test]
@@ -714,6 +786,7 @@ fn mjpg_allocates_nothing_frame_sized() {
 fn frames_are_timed_on_the_stage_clock_wherever_tracking_starts() {
     let clock = Arc::new(FakeClock::new(Seconds(1234.5)));
     let (scripted, tokens) = Scripted::gated(vec![true]);
+    let open = Arc::clone(&scripted.open);
     let camera = FakeCamera::synthetic(nv12(64, 48), 10_000_000);
     let mut tracker = webcam_on(camera, scripted, WebcamConfig::default().with_mode(64, 48, 30), clock.clone());
     for start_time in [1234.5, 5000.0, 0.25] {
@@ -725,9 +798,11 @@ fn frames_are_timed_on_the_stage_clock_wherever_tracking_starts() {
             // A fixed clock gives the arrival time for every frame; the map only spaces them out by a microsecond.
             assert!((start_time - 1e-9..start_time + 1e-3).contains(&frame.time.0), "{} at {start_time}", frame.time.0);
         }
-        // The thread is waiting in the scripted tracker for the next frame's token: release it so `stop` is quick.
-        tokens.send(()).unwrap();
+        // Open the gate for the end of the session, so that whichever frame the thread is on, `stop` is not waiting
+        // for a token; close it again for the next.
+        open.store(true, Ordering::Release);
         tracker.stop();
+        open.store(false, Ordering::Release);
     }
 }
 
