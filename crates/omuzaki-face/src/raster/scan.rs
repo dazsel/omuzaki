@@ -5,10 +5,10 @@
 //! and edge end to a quarter pixel, replaces a curve by line segments taken from fixed-point forward differencing, and
 //! rounds some positions to whole rows. To land on the same pixels this module repeats those steps, then sums the exact
 //! signed area of the resulting polygon per pixel by the accumulation-buffer method of `font-rs` (`add_span` is a port of
-//! its `draw_line`: each edge adds its trapezoid area to a row of deltas and a prefix sum turns the deltas into coverage). The non-zero rule is
-//! `min(|winding area|, 1)`, except in a row where layers of one winding overlap (two same-direction edges cross one cell of a
-//! band): there
-//! the row is resolved again as a union, one quarter-row band at a time, from the edges themselves (see
+//! its `draw_line`: each edge adds its trapezoid area to a row of deltas and a prefix sum turns the deltas into
+//! coverage). The non-zero rule is `min(|winding area|, 1)`. In a row where two edges of one direction cross the same
+//! cell in the same quarter-row band (layers of one winding sharing a pixel), that sum would add their partial areas,
+//! so the row is resolved again as a union, one quarter-row band at a time, from the edges themselves (see
 //! [`Scan::sweep`]).
 //!
 //! The steps, each pinned by a comparison against Chrome (`crates/omuzaki-test-face/tests/raster_probes.rs`):
@@ -326,10 +326,10 @@ pub(super) struct Scan {
     /// Signed area deltas, all zero between paths (the sweep clears what it reads).
     acc: Vec<f32>,
     /// Which cells the edges that run down (and up) cross in each quarter-row band, four bits per cell (one per band):
-    /// `occupied[(y * 2 + direction) * words..][..words]`. An edge that crosses a cell already taken by
-    /// another of the same direction in the same band is a second layer of one winding sharing that pixel's partial
-    /// coverage, which the area sum cannot tell (an edge that crosses half a row adds half, and a thin layer's two edges
-    /// cancel); it marks the row in `overlapping`. A bit set never wraps, however many contours are stacked.
+    /// `occupied[(y * 2 + direction) * words..][..words]`. An edge that crosses a cell already taken by another of the
+    /// same direction in the same band is a second layer of one winding sharing that pixel's partial coverage, which
+    /// the area sum cannot tell (an edge that crosses half a row adds half, and a thin layer's two edges cancel); it
+    /// marks the row in `overlapping`. A bit set never wraps, however many contours are stacked.
     occupied: Vec<u64>,
     /// Words of `occupied` per row and direction.
     words: usize,
@@ -574,7 +574,8 @@ impl Scan {
             let bands = first_band.saturating_sub(y * BANDS)..(last_band - y * BANDS).min(BANDS);
             // The cells the edge crosses in this row, for the bands it crosses. A band of it covers fewer cells than
             // the row does, so two layers may be flagged that share no cell in one band; the union resolve then finds
-            // nothing to change, which costs time and not correctness. A layer is never missed.
+            // nothing to change, which costs time and not correctness. Layers whose edges run in opposite directions
+            // are not seen (see the known limit on `sweep_with`).
             let shared = self.claim_cells(
                 y,
                 count_dir,
@@ -617,16 +618,23 @@ impl Scan {
     /// hole. The magnitude (`abs`) is taken because the sign of the winding carries no coverage, and the clamp then
     /// saturates a pixel that two same-winding layers fully cover.
     ///
-    /// A row where two edges of one direction cross the same cell in the same quarter-row band (found while the edges are
-    /// fed, from `occupied`) holds layers of one winding whose edges cross the same pixel, and there the sum is wrong at
-    /// that partly covered pixel: it adds their partial areas. Skia's analytic AA fills from the outer edge in, so the
-    /// row is resolved again by [`Scan::union_row`], which keeps only the edges where the winding enters or leaves zero. Chrome's alphas for such rows are in
-    /// `omuzaki-test-face/tests/raster_supersample.rs`.
+    /// A row where two edges of one direction cross the same cell in the same quarter-row band (found while the edges
+    /// are fed, from `occupied`) holds layers of one winding whose edges cross the same pixel, and there the sum is
+    /// wrong at that partly covered pixel: it adds their partial areas. Skia's analytic AA fills from the outer edge
+    /// in, so the row is resolved again by [`Scan::union_row`], which keeps only the edges where the winding enters or
+    /// leaves zero. Chrome's alphas for such rows are in `omuzaki-test-face/tests/raster_supersample.rs`.
     ///
-    /// Known limit: the sum is over area, so two regions that share a pixel subtract when their windings are opposite,
-    /// and add when they are the same. A figure-8's crossing is the first case: its lobes are +1 and -1, so the pixel
-    /// gets |a - b| instead of the ideal a + b, a slight under-coverage notch. Skia's analytic AA does the same, so Chrome
-    /// parity holds. The resolve follows the accumulation of Skia's analytic AA (`SkScan_AAAPath`, through tiny-skia's
+    /// Known limits:
+    /// - the sum is over area, so two regions that share a pixel subtract when their windings are opposite, and add
+    ///   when they are the same. A figure-8's crossing is the first case: its lobes are +1 and -1, so the pixel gets
+    ///   |a - b| instead of the ideal a + b, a slight under-coverage notch. Skia's analytic AA does the same, so
+    ///   Chrome parity holds;
+    /// - overlap is found per direction, so two same-winding layers whose edges of opposite directions cross inside
+    ///   one pixel are still summed (#2170);
+    /// - cutting a band at the crossings of its edges costs more than linearly in the pieces that cross inside it
+    ///   (400 mutually crossing slivers take 7 ms a row set); a face never has more than a few.
+    ///
+    /// The resolve follows the accumulation of Skia's analytic AA (`SkScan_AAAPath`, through tiny-skia's
     /// `scan/path_aa.rs`, BSD-3-Clause); the parity probes in `omuzaki-test-face` are the check against Chrome.
     fn sweep_with<T: Copy>(
         &mut self,
@@ -698,9 +706,9 @@ impl Scan {
     /// Resolves row `y` as a union of its layers, replacing the coverage the sum gave. In each quarter-row band the
     /// edges are taken in x order with a running winding, and only those that make it enter or leave zero are added: the
     /// ones inside an overlap cannot change what is covered. The prefix sum of those is then exact (a ring's hole still
-    /// cuts, since its edges take the winding to zero). Edges that cross inside a band swap their order there, so the band
-    /// is cut at every crossing and each part resolved on its own, weighted by its height. Only the columns the edges
-    /// reach are touched.
+    /// cuts, since its edges take the winding to zero). Edges that cross inside a band swap their order there, so the
+    /// band is cut at every crossing and each part resolved on its own, weighted by its height. Only the columns the
+    /// edges reach are touched.
     fn union_row<T>(&mut self, y: usize, row: &mut [T], convert: impl Fn(f32) -> T) {
         #[allow(clippy::cast_precision_loss)] // raster widths are far below 2^24
         let width = self.width as f32;
@@ -1035,13 +1043,14 @@ mod tests {
         sum / 2000.0
     }
 
-    /// A one-row polygon with a slanted left side from `(left.0, 4)` to `(left.1, 5)` and a vertical right side at `right`.
+    /// A one-row polygon with a slanted left side from `(left.0, 4)` to `(left.1, 5)` and a vertical right side at
+    /// `right`.
     fn slanted(left: (f32, f32), right: f32) -> [(f32, f32); 4] {
         [(left.0, 4.0), (right, 4.0), (right, 5.0), (left.1, 5.0)]
     }
 
-    /// Codex's sloped case: left edges (5.1, 4) to (6.1, 5) and (5.2, 4) to (5.8, 5) both cross pixel 5 although they end
-    /// in different cells, and their right edges are elsewhere. The union covers the pixel from the nearer edge.
+    /// Codex's sloped case: left edges (5.1, 4) to (6.1, 5) and (5.2, 4) to (5.8, 5) both cross pixel 5 although they
+    /// end in different cells, and their right edges are elsewhere. The union covers the pixel from the nearer edge.
     #[test]
     fn sloped_layers_that_end_in_different_cells_still_form_a_union() {
         let (a, b) = ((5.1, 6.1), (5.2, 5.8));
@@ -1053,10 +1062,11 @@ mod tests {
         assert!((cov[4 * W + 5] - want).abs() < 0.01, "pixel (5, 4): {} vs {want}", cov[4 * W + 5]);
     }
 
-    /// Codex's crossing case: left edges 5.1 to 5.9 and 5.8 to 5.2 swap order halfway down the row, so the union follows
-    /// whichever is nearer (0.675 of the pixel), not one whole edge (0.5).
+    /// Codex's crossing case: left edges 5.1 to 5.9 and 5.8 to 5.2 swap order halfway down the row, so the union
+    /// follows whichever is nearer (0.675 of the pixel). They cross on a band boundary, so the plain sum already gets
+    /// this one right (0.677): it pins the result, and the next test is the one that needs the split.
     #[test]
-    fn edges_that_cross_inside_a_band_switch_at_the_crossing() {
+    fn edges_that_cross_on_a_band_boundary_follow_the_nearer_one() {
         let (a, b) = ((5.1, 5.9), (5.8, 5.2));
         let mut s = scan();
         polygon(&mut s, &slanted(a, 20.0));
@@ -1065,6 +1075,20 @@ mod tests {
         let want = left_union_fraction(a, b, 5);
         assert!((want - 0.675).abs() < 0.01, "the oracle {want}");
         assert!((cov[4 * W + 5] - want).abs() < 0.01, "pixel (5, 4): {} vs {want}", cov[4 * W + 5]);
+    }
+
+    /// Edges that cross strictly inside a quarter-row band: the left sides (5, 4) to (7, 4.25) and (7, 4) to (5, 4.25)
+    /// swap order halfway down the band, at x = 6 and y = 4.125. The union is
+    /// the nearer one on each side of the crossing, which takes the first band of row 4 to 0.125 of pixel (5, 4) and
+    /// 0.25 of pixel (6, 4); taking one whole edge, as the plain sum does, gives 0.0625 and 0.1875.
+    #[test]
+    fn edges_that_cross_inside_a_band_switch_at_the_crossing() {
+        let mut s = scan();
+        polygon(&mut s, &[(5.0, 4.0), (20.0, 4.0), (20.0, 4.25), (7.0, 4.25)]);
+        polygon(&mut s, &[(7.0, 4.0), (19.0, 4.0), (19.0, 4.25), (5.0, 4.25)]);
+        let cov = coverage(&mut s);
+        assert!((cov[4 * W + 5] - 0.125).abs() < 0.005, "pixel (5, 4): {}", cov[4 * W + 5]);
+        assert!((cov[4 * W + 6] - 0.25).abs() < 0.005, "pixel (6, 4): {}", cov[4 * W + 6]);
     }
 
     /// More repeated contours than a small counter holds (the union's winding is a wide integer, and the
