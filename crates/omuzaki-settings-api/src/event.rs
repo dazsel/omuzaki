@@ -103,7 +103,8 @@ impl SwitchReport {
     }
 }
 
-/// One entry of the in-memory change log (the last 200), which is how the UI shows "changed by an agent 2 min ago".
+/// One entry of the in-memory change log (the last [`CHANGE_LOG_CAPACITY`]), which is how the UI shows "changed by an
+/// agent 2 min ago".
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[non_exhaustive]
 pub struct SettingChange {
