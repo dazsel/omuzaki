@@ -42,6 +42,9 @@ impl Importer for ProbeImporter {
 
     fn import(&self, input: &ImportInput<'_>, ctx: &ImportCtx<'_>) -> Result<ImportOutcome, IoError> {
         ctx.progress.checkpoint("probing", 0.0)?;
+        if input.bytes[5] == SIDECAR {
+            ctx.resolver.read("side.bin")?;
+        }
         let (count, distinct) = (usize::from(input.bytes[5]), usize::from(input.bytes[6]).max(1));
         let mut scene = IoScene::new();
         let root = scene.add_node(Node::new("root"));
@@ -58,6 +61,9 @@ impl Importer for ProbeImporter {
 }
 
 register_importer!(ProbeImporter);
+
+/// The image count that makes the probe read a file beside it, as a `.gltf` with a `.bin` does.
+const SIDECAR: u8 = 255;
 
 /// A probe file with `count` images of which `distinct` differ.
 fn probe(count: u8, distinct: u8) -> Vec<u8> {
@@ -460,4 +466,14 @@ fn the_op_is_registered_as_a_job_that_needs_edit_character() {
     assert_eq!(meta.name, "io.import");
     assert_eq!((meta.kind, meta.scope), (omuzaki_ops_api::OpKind::Job, omuzaki_ops_api::Scope::EditCharacter));
     assert!(omuzaki_ops_api::find("io.import").is_some());
+}
+
+#[test]
+fn a_model_that_refers_to_other_files_is_unsupported_and_says_to_use_a_glb() {
+    let rig = Rig::new();
+    let error = rig.work(&bytes_op(&probe(SIDECAR, 1)), &Signal::new(None)).unwrap_err();
+    assert_eq!(error.code, ErrorCode::Unsupported, "{}", error.message);
+    assert!(error.message.contains("side.bin"), "{}", error.message);
+    assert!(error.hint.as_deref().is_some_and(|h| h.contains(".glb")), "{:?}", error.hint);
+    assert!(rig.store.is_empty());
 }

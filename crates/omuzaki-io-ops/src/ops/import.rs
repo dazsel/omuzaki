@@ -148,7 +148,7 @@ impl Import {
         let input = ImportInput::new(bytes).named(name);
         let importer = self.pick_importer(&input)?;
         let ctx = ImportCtx::new(options).with_resolver(&NoResolver).with_progress(progress);
-        let outcome = run_import(&*importer, &input, &ctx).map_err(|e| from_io(e, "path"))?;
+        let outcome = run_import(&*importer, &input, &ctx).map_err(import_error)?;
         // The last chance to stop: past this point the objects are written without further checks.
         progress.checkpoint("storing", 0.9).map_err(|e| from_io(e, "path"))?;
         let provenance = outcome
@@ -224,6 +224,18 @@ impl Import {
             .map_err(|e| OpError::invalid("path", format!("couldn't read the file: {e}")))?;
         check_size(bytes.len() as u64, max_bytes)?;
         Ok(Cow::Owned(bytes))
+    }
+}
+
+/// The op error for a failed import. The job reads no other files, so a file the model refers to is a feature this op
+/// lacks, not a missing file.
+fn import_error(error: IoError) -> OpError {
+    match error {
+        IoError::Resource { uri, .. } => OpError::unsupported(format!(
+            "the model refers to another file ({uri}), and io.import reads a single file"
+        ))
+        .hint("import a .glb, which carries its buffers and images"),
+        other => from_io(other, "path"),
     }
 }
 
