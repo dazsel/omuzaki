@@ -125,7 +125,7 @@ fn tool_choice(choice: &ToolChoice) -> Value {
     }
 }
 
-/// `reasoning_effort`: OpenAI has no level above `high`, so `Max` is `high`.
+/// `reasoning_effort`: `OpenAI` has no level above `high`, so `Max` is `high`.
 fn effort(effort: Effort) -> Option<&'static str> {
     match effort {
         Effort::Low => Some("low"),

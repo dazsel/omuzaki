@@ -66,6 +66,7 @@ mod tests {
         rt.block_on(events(body).collect())
     }
 
+    #[allow(clippy::unnecessary_wraps)] // the events are compared with `Result`s
     fn event(name: Option<&str>, data: &str) -> Result<SseEvent, SseFail> {
         Ok(SseEvent { event: name.map(str::to_owned), data: data.to_owned() })
     }

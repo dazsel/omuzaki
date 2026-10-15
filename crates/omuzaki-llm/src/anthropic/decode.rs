@@ -334,8 +334,8 @@ mod tests {
                 .is_err()
         );
         assert!(feed(&mut d, r#"{"type":"message_stop"}"#).is_err(), "stop without a reason");
-        assert!(ok(feed(&mut d, r#"{"type":"ping"}"#)).is_empty());
-        assert!(ok(feed(&mut d, r#"{"type":"something_new"}"#)).is_empty());
+        assert_eq!(ok(feed(&mut d, r#"{"type":"ping"}"#)), Vec::new());
+        assert_eq!(ok(feed(&mut d, r#"{"type":"something_new"}"#)), Vec::new());
     }
 
     #[test]

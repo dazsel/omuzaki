@@ -148,10 +148,9 @@ async fn run(job: Job, cancel: Cancel, token: CancellationToken, mut tx: Sender)
         r = drive(&job, &tx) => Some(r),
     };
     match result {
-        Some(Ok(())) => tx.finish(),
+        // Cancelled (`None`): `TurnStream` already answers `Cancelled` from the flag, so the consumer needs nothing queued.
+        Some(Ok(())) | None => tx.finish(),
         Some(Err(error)) => tx.fail(error).await,
-        // Cancelled: `TurnStream` already answers `Cancelled` from the flag; the consumer needs nothing queued.
-        None => tx.finish(),
     }
 }
 
@@ -237,9 +236,8 @@ async fn attempt_with(job: &Job, tx: &Sender, started: &mut bool, secret: Option
     let mut decoder = job.protocol.decoder();
     let mut wait = job.timeouts.first_byte;
     loop {
-        let item = match timeout(wait, events.next()).await {
-            Err(_) => return Err(Fail::network("no data before the timeout")),
-            Ok(item) => item,
+        let Ok(item) = timeout(wait, events.next()).await else {
+            return Err(Fail::network("no data before the timeout"));
         };
         wait = job.timeouts.idle;
         let event = match item {

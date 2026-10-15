@@ -107,7 +107,7 @@ mod tests {
         lossy.extend_from_slice(&[0, 0, 0, 0x9d, 0x01, 0x2a, 0x20, 0x03, 0x58, 0x02]);
         assert_eq!(size(ImageMime::Webp, &lossy), Some((800, 600)));
         let mut lossless = b"RIFF\0\0\0\0WEBPVP8L\0\0\0\0".to_vec();
-        let packed: u32 = 99 | (49 << 14);
+        let packed: u32 = 0x63 | (0x31 << 14);
         lossless.push(0x2f);
         lossless.extend_from_slice(&packed.to_le_bytes());
         assert_eq!(size(ImageMime::Webp, &lossless), Some((100, 50)));

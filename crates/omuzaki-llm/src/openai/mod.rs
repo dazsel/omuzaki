@@ -129,16 +129,15 @@ impl OpenAiClient {
         let http = Http::new(&endpoint)?;
         let handle = handle_of(&env.runtime)?;
         let key = key_ref(config, env);
-        let found = match probe::cached(&endpoint, &model) {
-            Some(found) => found,
-            None => {
-                let secret = key.as_ref().and_then(|(label, store)| store.get(label));
-                if key.is_some() && secret.is_none() {
-                    return Err(LlmError::Auth);
-                }
-                let (http, endpoint, model) = (http.clone(), endpoint.clone(), model.clone());
-                block_on(&handle, async move { probe(&http, &endpoint, secret.as_ref(), &model).await })??
+        let found = if let Some(found) = probe::cached(&endpoint, &model) {
+            found
+        } else {
+            let secret = key.as_ref().and_then(|(label, store)| store.get(label));
+            if key.is_some() && secret.is_none() {
+                return Err(LlmError::Auth);
             }
+            let (http, endpoint, model) = (http.clone(), endpoint.clone(), model.clone());
+            block_on(&handle, async move { probe(&http, &endpoint, secret.as_ref(), &model).await })??
         };
         let window = config.context_window.or(found.context_window).unwrap_or(FALLBACK_CONTEXT);
         let info = ModelInfo::new(model.clone(), window, window, ImageCost::Flat(IMAGE_TOKENS))

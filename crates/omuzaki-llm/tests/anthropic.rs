@@ -6,6 +6,7 @@
 
 mod common;
 
+use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 
 use common::{End, Reply, Server, config, drain, env, golden, retries, runtime_handle, transcript, user};
@@ -533,7 +534,10 @@ fn a_long_turn_arrives_whole_through_the_bounded_channel() {
     );
     wire.push_str("event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n");
     for i in 0..500 {
-        wire.push_str(&format!("event: content_block_delta\ndata: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"text_delta\",\"text\":\"{i},\"}}}}\n\n"));
+        let _ = write!(
+            wire,
+            "event: content_block_delta\ndata: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"text_delta\",\"text\":\"{i},\"}}}}\n\n"
+        );
     }
     wire.push_str("event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":500}}\n\n");
     let rig = Rig::new(vec![Reply::sse_text(&wire)]);
@@ -541,7 +545,10 @@ fn a_long_turn_arrives_whole_through_the_bounded_channel() {
     // Let the task fill the channel before anyone reads.
     std::thread::sleep(Duration::from_millis(100));
     let turn = stream.collect(common::PATIENCE).unwrap();
-    let want: String = (0..500).map(|i| format!("{i},")).collect();
+    let want = (0..500).fold(String::new(), |mut acc, i| {
+        let _ = write!(acc, "{i},");
+        acc
+    });
     assert_eq!(turn.message.content, vec![ContentBlock::text(want)]);
 }
 

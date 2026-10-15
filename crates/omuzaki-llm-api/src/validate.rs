@@ -8,7 +8,7 @@ use crate::usage::ModelInfo;
 
 /// The most cache breakpoints Anthropic accepts in one request; the conversation's own counts as one.
 pub const MAX_CACHE_BREAKPOINTS: usize = 4;
-/// The longest tool name (the stricter OpenAI limit).
+/// The longest tool name (the stricter `OpenAI` limit).
 pub const MAX_TOOL_NAME: usize = 64;
 
 fn safe_name(name: &str) -> bool {
