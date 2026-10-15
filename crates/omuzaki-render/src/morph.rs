@@ -232,7 +232,9 @@ impl MorphPool {
         if self.slots.len() < before {
             self.slots.shrink_to_fit();
         }
-        let largest = self.slots.iter().map(|s| s.blended.len()).max().unwrap_or(0);
+        // Capacity follows what the slots keep, not this frame's use: a slot that alternates between a large and a small
+        // mesh keeps the large one's room, so the scratch must too, or it would be reallocated every large frame.
+        let largest = self.slots.iter().map(|s| s.blended.capacity()).max().unwrap_or(0);
         if self.flags.capacity() > largest {
             self.flags.truncate(largest);
             self.flags.shrink_to(largest);
@@ -463,7 +465,7 @@ mod tests {
         })
         .unwrap();
         let mut meshes = Arena::default();
-        let mut scenes = Vec::new();
+        let (mut scenes, mut ids) = (Vec::new(), Vec::new());
         // A cube (24 vertices) and a quad (4): one slot, two sizes.
         for mesh in [
             omuzaki_render_mock::shapes::cuboid(Vec3::ONE),
@@ -481,16 +483,25 @@ mod tests {
             scene.instances.push(instance);
             scene.morph_weights.push(0.5);
             scenes.push(scene);
+            ids.push((index, generation));
         }
         let mut pool = MorphPool::default();
-        let mut buffers = Vec::new();
+        let (mut buffers, mut scratch) = (Vec::new(), Vec::new());
         for frame in 0..8 {
-            pool.prepare(&gpu.device, &gpu.queue, &meshes, &scenes[frame % 2], |_| false).unwrap();
-            buffers.push(pool.slots[0].shapes.buffer.clone().unwrap());
+            // Outlined, so the per-point sums are used too.
+            pool.prepare(&gpu.device, &gpu.queue, &meshes, &scenes[frame % 2], |_| true).unwrap();
+            buffers.push((pool.slots[0].shapes.buffer.clone().unwrap(), pool.slots[0].smooth.buffer.clone().unwrap()));
+            scratch.push((pool.flags.capacity(), pool.sums.capacity()));
             assert!(pool.shapes(0).is_some());
         }
-        // Frame 0 sized the buffer for the cube; every later frame, on either mesh, reuses it.
+        // Frame 0 sized the buffers for the cube; every later frame, on either mesh, reuses them.
         assert!(buffers.iter().all(|b| b == &buffers[0]), "a slot alternating between meshes reallocated");
+        // Capacity follows what the slot keeps, not the frame's mesh: the scratch holds steady across the alternation.
+        assert!(scratch.iter().all(|c| *c == scratch[0]) && scratch[0].0 >= 24, "scratch capacities: {scratch:?}");
+        for (index, generation) in ids {
+            pool.forget(index, generation);
+        }
+        assert_eq!((pool.flags.capacity(), pool.sums.capacity(), pool.bytes()), (0, 0, 0), "forgetting frees it all");
     }
 
     /// A pool with one morphed cube in slot 0 of `scene`, blended once, and an empty scene.
