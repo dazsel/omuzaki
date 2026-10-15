@@ -295,10 +295,10 @@ there is no edit history to keep. Undoing a delete restores the file.
 
 So `review.approve`, `reject` and `request_changes` are **not new ops**: they are decisions on the existing approval
 card and branch review, and the spec's names are aliases of them, listed in the generated MCP docs as such. Spec §11
-is amended with a one-line note saying so (D3). Agents can only
-comment: approving is never a scope (team.md 3).
+is amended with a one-line note saying so (D3). Agents can only comment: approving is never a scope (team.md 3).
 
-**Branch review and comments (the one line for branches.md 8.3):** "Send back" takes a comment; that comment is stored
+**Branch review and comments (the one line for branches.md 8.3):** "Send back" takes a comment; the agent's next result
+carries only its id, and the text reaches the agent through `render_for_agent` (7.3); the comment is stored
 as a root comment on the point's project (`Anchor::Project`), so the same Comments panel, resource and task flow cover
 it; the review state stays on the ref. The ref's state stays the source of truth for `ready` and
 `sent-back`; a comment never changes it.
@@ -310,12 +310,11 @@ publish or export op can write only outside the document (`io.export` reads a ch
 and the op's declared reads (for `io.export`, the character it exports; for a `Part` anchor, the character or part
 path matches); an op that declares neither makes the whole project its subject, so every open thread counts.
 
-**How an op declares reads (a contract shape).** `omuzaki-ops-api` gains an additive `OpMeta.reads: ReadDecl`, a list of
-path templates over the op's arguments (for `io.export`, `characters/{character}`), resolved against the call's
-arguments when the approval request is built. The default is empty, which means "whole project" for the approval
-subject only; no other behaviour changes. This is an API change, so it needs the Director's approval on its issue
-(CLAUDE.md, contracts first) and lands before the ops that use it; the publish and export ops (`io.export`, the
-`platform.*` exports, `broadcast`) then declare theirs. Both are tasks in section 16. A
+**How an op declares reads.** `omuzaki-ops-api` adds a default method `fn reads(&self) -> Vec<DocPath> { Vec::new() }` to
+`Op`, forwarded by `DynOp` and computed from the parsed arguments (no template language). Empty means "whole project"
+for the approval subject only; nothing else changes. Approved by the Runtime lead (it stays in the ops area: `OpMeta`
+is built by struct literal in about 80 files, so a field there would not). `io.export`, the `platform.*` exports and
+`broadcast` then override it (section 16). A
 `Project` thread opened since the request was queued is always inside it. The approval card (team-review 8.4) lists
 the open ones and the resolved ones with who resolved. `ReviewPolicy.no_open_threads` (team-review 8.1) uses
 `omuzaki_review_api::summarise(threads, subject) -> ThreadSummary { open, resolved, external_open }`:
@@ -456,7 +455,8 @@ Synthetic project only (no real people's text or images).
 
 - Round trip and goldens: TOML goldens for one comment per anchor kind and for a task; `from_node(to_node(x)) == x`
   (proptest); text of 4,000 accepted, 4,001 refused; the project, thread and import caps.
-- `sanitise` table and the hostile-comment fixture of 7.5; the fence cannot be closed from inside.
+- `sanitise` table and the hostile-comment fixture of 7.5; the fence cannot be closed from inside; hostile text
+  entered through Send back reaches the agent only as a comment id and through `render_for_agent` (8).
 - Orphans: delete a part, undo the delete, rename a part (key change and display-only), delete the character.
 - **Merge across two branches:** branch A adds a thread and resolves another; branch B replies to the first and
   resolves the second differently; merge gives the new thread, both replies, one conflict unit for the double resolve,
@@ -516,8 +516,8 @@ Each: fence, contract, acceptance numbers, `Blocked by` (all blocked by this des
 | `review.task.create`, `assign`, `drop` | sonnet | `omuzaki-review` | fence from the anchor; `Project` refused without fence; title carries no text; external badge; assigning starts nothing | #1067, #971 (plan ops) |
 | Plan-item link and derived task state | haiku | `omuzaki-review` | `plan.link` to `comments/<id>`; `task_state` table; missing item reads Todo | #971 |
 | `CauseKind::Review` with `CauseKind::Plugin` and `EndReason::Faulted`, both enums `#[non_exhaustive]` (shared with #1537) | haiku | `omuzaki-ops-api` `actor.rs`; matches in Platform crates | enums non-exhaustive; every match compiles; `Review` carries an id only | none |
-| `OpMeta.reads` (additive contract: read-path templates; Director's approval first) | sonnet | `omuzaki-ops-api` `OpMeta` only | default empty; templates resolve against args; no behaviour change for existing ops | none |
-| Ops declare reads: `io.export`, `platform.*` exports, `broadcast` | haiku | `omuzaki-io-ops` and the broadcast op; tests | each op declares the paths it reads; an empty-patch export lists its character | the `OpMeta.reads` task |
+| `Op::reads` (default method, forwarded by `DynOp`; Runtime lead approved) | sonnet | `omuzaki-ops-api` `Op` and `DynOp` only | default empty; computed from parsed args; no behaviour change for existing ops | none |
+| Ops declare reads: `io.export`, `platform.*` exports, `broadcast` | haiku | `omuzaki-io-ops` and the broadcast op; tests | each op declares the paths it reads; an empty-patch export lists its character | the `Op::reads` task |
 | Subject paths on the approval request | sonnet | `omuzaki-review-api` `summarise`; approval request type | empty-patch `io.export` with an open thread on its character is refused; path overlap in both directions (a leaf patch under an anchored part counts) | #1197, team-review 8, the two tasks above |
 | `render_for_agent` (read and task forms) and the hostile fixture | sonnet | `omuzaki-review-api` | all of 7.5 | #1197 |
 | `resources/updated` for comments | haiku | `omuzaki-mcp` | one notification per burst, thread taken from the reply id | #1068 |

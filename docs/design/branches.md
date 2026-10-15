@@ -664,7 +664,8 @@ like any other. Undoing it also reverts `merges.toml` (7.3). Nothing about mergi
    by accident). When a `branch.merge` with that point commits, the host marks the review `merged`, and the agent's
    heads-up says so.
 4. **Send back** takes a comment (stored as a project-level review comment, `docs/design/comments.md` 8; the ref's `[review]` stays the source of truth); the review becomes `sent-back`, and the agent's next result carries "the person sent
-   back version A: 'chin still too pointy'", the same channel ADR 0020 uses for approval outcomes.
+   back version A" and the comment id only, the same channel ADR 0020 uses for approval outcomes; the text is read
+   through `render_for_agent`, never put in the result.
 
 This is the safe pattern for big agent edits: the person's branch changes only when the person merges, every merge is
 one undo step, and every reviewed state is a point that stays.
