@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 
 use omuzaki_char_api::{BuildOptions, BuildServices, CharId, CharacterBuilder, RegistryBuilder};
 use omuzaki_render_api::{Background, Camera, Colour, Light, Scene};
-use omuzaki_stage::scene::apply::{Applier, Mailbox, fill, reserve};
+use omuzaki_stage::scene::apply::{Applier, Mailbox, Owed, fill, reserve};
 use omuzaki_stage::scene::landmarks::Landmarks;
 use omuzaki_stage::scene::resolve::{CheckedScene, Figure, ResolvedScene};
 use omuzaki_stage_api::{
@@ -100,6 +100,13 @@ fn resolve(def: &SceneDef) -> ResolvedScene {
     out
 }
 
+/// What a caller does: apply, do the owed work (which succeeds here), commit.
+fn settle(applier: &mut Applier, resolved: &ResolvedScene, target: &mut Scene) -> Owed {
+    let owed = applier.apply(resolved, target);
+    applier.commit(&owed);
+    owed
+}
+
 fn empty_scene() -> Scene {
     let mut scene = Scene::new(Camera::default());
     reserve(&mut scene);
@@ -139,17 +146,17 @@ fn applying_allocates_nothing_for_a_value_edit_or_an_unchanged_scene() {
     let mut resolved = ResolvedScene::new();
     resolved.resolve_into(CheckedScene::new(&def).unwrap(), &figures, ASPECT).unwrap();
     let (mut applier, mut target) = (Applier::new(), empty_scene());
-    applier.apply(&resolved, &mut target);
+    settle(&mut applier, &resolved, &mut target);
     def.cameras.get_mut(&CameraId::new("close").unwrap()).unwrap().yaw = 20.0;
     let proof = CheckedScene::new(&def).unwrap();
     let ((changes, owed), allocations) = counted(|| {
         let changes = resolved.resolve_into(proof, &figures, ASPECT).unwrap();
-        (changes, applier.apply(&resolved, &mut target))
+        (changes, settle(&mut applier, &resolved, &mut target))
     });
     assert!(changes.cameras && changes.value_only(), "{changes:?}");
     assert!(owed.is_empty(), "{owed:?}");
     assert_eq!(allocations, 0);
-    let (_, allocations) = counted(|| applier.apply(&resolved, &mut target));
+    let (_, allocations) = counted(|| settle(&mut applier, &resolved, &mut target));
     assert_eq!(allocations, 0);
 }
 
@@ -159,13 +166,13 @@ fn a_camera_yaw_edit_and_a_light_colour_edit_show_in_the_next_scene() {
     let mut resolved = ResolvedScene::new();
     resolved.resolve_into(CheckedScene::new(&def).unwrap(), &figures, ASPECT).unwrap();
     let (mut applier, mut target) = (Applier::new(), empty_scene());
-    applier.apply(&resolved, &mut target);
+    settle(&mut applier, &resolved, &mut target);
     let (camera_before, lights_before) = (target.camera, target.lights.clone());
 
     def.cameras.get_mut(&CameraId::new("close").unwrap()).unwrap().yaw = 25.0;
     def.lighting.lights.get_mut(&LightId::new("key").unwrap()).unwrap().colour = Colour::rgb(255, 0, 0);
     resolved.resolve_into(CheckedScene::new(&def).unwrap(), &figures, ASPECT).unwrap();
-    applier.apply(&resolved, &mut target);
+    settle(&mut applier, &resolved, &mut target);
     assert_ne!(target.camera, camera_before, "the yaw moved the camera");
     assert_ne!(target.lights, lights_before, "the colour changed a light");
     assert!(
@@ -193,29 +200,33 @@ fn the_ground_and_the_skin_floor_are_owed_only_when_they_change() {
     let mut resolved = resolve(&scene());
     let (mut applier, mut target) = (Applier::new(), empty_scene());
 
-    let first = applier.apply(&resolved, &mut target);
+    let first = settle(&mut applier, &resolved, &mut target);
     assert_eq!(first.ground, Some(resolved.ground), "the first scene has a shadow ground to upload");
     assert_eq!(first.skin_floor, None, "no override, none applied");
-    assert!(applier.apply(&resolved, &mut target).is_empty(), "the same scene owes nothing");
+    assert!(settle(&mut applier, &resolved, &mut target).is_empty(), "the same scene owes nothing");
 
     resolved.ground.radius_m += 1.0;
-    let grown = applier.apply(&resolved, &mut target);
+    let grown = settle(&mut applier, &resolved, &mut target);
     assert_eq!(grown.ground, Some(resolved.ground), "a new radius is a new disc");
     resolved.ground.opacity = 0.6;
-    assert_eq!(applier.apply(&resolved, &mut target).ground, Some(resolved.ground), "so is a new opacity");
+    assert_eq!(settle(&mut applier, &resolved, &mut target).ground, Some(resolved.ground), "so is a new opacity");
 
     resolved.skin_floor = Some(0.4);
-    assert_eq!(applier.apply(&resolved, &mut target).skin_floor, Some(Some(0.4)), "set");
-    assert!(applier.apply(&resolved, &mut target).is_empty());
+    assert_eq!(settle(&mut applier, &resolved, &mut target).skin_floor, Some(Some(0.4)), "set");
+    assert!(settle(&mut applier, &resolved, &mut target).is_empty());
     resolved.skin_floor = Some(0.5);
-    assert_eq!(applier.apply(&resolved, &mut target).skin_floor, Some(Some(0.5)), "changed");
+    assert_eq!(settle(&mut applier, &resolved, &mut target).skin_floor, Some(Some(0.5)), "changed");
     resolved.skin_floor = None;
-    assert_eq!(applier.apply(&resolved, &mut target).skin_floor, Some(None), "cleared: back to each material's own");
+    assert_eq!(
+        settle(&mut applier, &resolved, &mut target).skin_floor,
+        Some(None),
+        "cleared: back to each material's own"
+    );
 
     resolved.ground.kind = GroundKind::None;
-    let released = applier.apply(&resolved, &mut target);
+    let released = settle(&mut applier, &resolved, &mut target);
     assert_eq!(released.ground.map(|g| g.kind), Some(GroundKind::None), "no ground releases the disc");
-    assert!(applier.apply(&resolved, &mut target).is_empty());
+    assert!(settle(&mut applier, &resolved, &mut target).is_empty());
 }
 
 #[test]
@@ -259,4 +270,17 @@ fn posts_from_other_threads_arrive() {
     let mut mine = ResolvedScene::new();
     assert!(mailbox.take_into(&mut mine));
     assert_eq!(mine, posted);
+}
+
+#[test]
+fn work_that_failed_stays_owed_until_it_is_committed() {
+    let mut resolved = resolve(&scene());
+    resolved.skin_floor = Some(0.4);
+    let (mut applier, mut target) = (Applier::new(), empty_scene());
+    let owed = applier.apply(&resolved, &mut target);
+    assert!(owed.ground.is_some() && owed.skin_floor == Some(Some(0.4)));
+    // The renderer refused the disc: nothing is committed, so the next call owes the same work.
+    assert_eq!(applier.apply(&resolved, &mut target), owed, "a retry owes what failed");
+    applier.commit(&owed);
+    assert!(applier.apply(&resolved, &mut target).is_empty(), "committed work is not owed again");
 }

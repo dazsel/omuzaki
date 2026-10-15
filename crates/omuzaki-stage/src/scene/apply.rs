@@ -6,9 +6,9 @@
 //!   scene without the render thread waiting for it.
 //! - [`fill`]: copies the active camera, the lights, the background, the post look and the outline light into the
 //!   [`Scene`] a frame renders. Hot: after [`reserve`] it allocates nothing.
-//! - [`Applier`]: remembers the ground and the skin floor last applied and says, by value, which of them the next
+//! - [`Applier`]: remembers the ground and the skin floor last committed and says, by value, which of them the next
 //!   scene changes. Both need renderer resources (a disc mesh, a material update), so they are [`Owed`] to whoever
-//!   owns the renderer, and only when they change.
+//!   owns the renderer, only when they change, and stay owed until the caller commits that the work succeeded.
 
 use std::sync::{Mutex, PoisonError, TryLockError};
 
@@ -71,24 +71,35 @@ impl Applier {
         Self::default()
     }
 
-    /// Fills `scene` from `resolved` (see [`fill`]) and says what else the renderer is owed.
+    /// Fills `scene` from `resolved` (see [`fill`]) and says what else the renderer is owed. It records nothing: the
+    /// caller does the work, then calls [`commit`](Self::commit), so a renderer error leaves the same work owed on the
+    /// next call instead of the applier believing it was done.
     ///
-    /// The ground is owed when its kind, radius or opacity differs from the last applied (a `None` ground and a missing
-    /// one are the same thing), and the skin floor when the override is set, changed or cleared. Allocation-free once
-    /// [`reserve`] has run on `scene`.
-    pub fn apply(&mut self, resolved: &ResolvedScene, scene: &mut Scene) -> Owed {
+    /// The ground is owed when its kind, radius or opacity differs from the last committed (a `None` ground and a
+    /// missing one are the same thing), and the skin floor when the override is set, changed or cleared.
+    /// Allocation-free once [`reserve`] has run on `scene`.
+    pub fn apply(&self, resolved: &ResolvedScene, scene: &mut Scene) -> Owed {
         fill(resolved, scene);
         let wanted_ground = (resolved.ground.kind != GroundKind::None).then_some(resolved.ground);
         let mut owed = Owed::default();
         if wanted_ground != self.ground {
-            self.ground = wanted_ground;
             owed.ground = Some(wanted_ground.unwrap_or(ResolvedGround { kind: GroundKind::None, ..resolved.ground }));
         }
         if resolved.skin_floor != self.skin_floor {
-            self.skin_floor = resolved.skin_floor;
             owed.skin_floor = Some(resolved.skin_floor);
         }
         owed
+    }
+
+    /// Records that everything in `owed` reached the renderer. Call it only after every operation succeeded; after a
+    /// failure, call [`apply`](Self::apply) again and the same work is owed.
+    pub fn commit(&mut self, owed: &Owed) {
+        if let Some(ground) = owed.ground {
+            self.ground = (ground.kind != GroundKind::None).then_some(ground);
+        }
+        if let Some(skin_floor) = owed.skin_floor {
+            self.skin_floor = skin_floor;
+        }
     }
 }
 
@@ -146,7 +157,7 @@ mod tests {
 
     #[test]
     fn a_missing_ground_and_a_none_ground_are_the_same_state() {
-        let mut applier = Applier::new();
+        let applier = Applier::new();
         let mut scene = Scene::new(omuzaki_render_api::Camera::default());
         let mut resolved = ResolvedScene::new();
         resolved.ground = ResolvedGround { kind: GroundKind::None, opacity: 0.5, radius_m: 3.0 };

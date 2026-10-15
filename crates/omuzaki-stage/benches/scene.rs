@@ -113,7 +113,7 @@ fn apply(c: &mut Criterion) {
     let mut target = Scene::new(Camera::default());
     reserve(&mut target);
     c.bench_function("apply/fill", |b| b.iter(|| fill(black_box(&resolved), &mut target)));
-    let mut applier = Applier::new();
+    let applier = Applier::new();
     c.bench_function("apply/applier", |b| b.iter(|| black_box(applier.apply(black_box(&resolved), &mut target))));
 }
 

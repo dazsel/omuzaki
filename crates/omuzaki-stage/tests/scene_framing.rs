@@ -246,18 +246,16 @@ fn zoom_two_halves_the_distance() {
 
 #[test]
 fn yaw_90_looks_from_the_side() {
-    const ASPECT_WIDE: f32 = 16.0 / 9.0;
     let l = landmarks("standard");
-    let front = frame(Framing::Full, &l, &CameraDef::preset(Framing::Full), ASPECT_WIDE).unwrap();
+    let front = frame(Framing::Full, &l, &CameraDef::preset(Framing::Full), 1.0).unwrap();
     let def = CameraDef { yaw: 90.0, ..CameraDef::preset(Framing::Full) };
-    let side = frame(Framing::Full, &l, &def, ASPECT_WIDE).unwrap();
+    let side = frame(Framing::Full, &l, &def, 1.0).unwrap();
     let target = Vec3::new(l.body.centre().x, f32::midpoint(l.bottom(), l.top()), l.body.centre().z);
     let offset = side.position() - target;
     assert!(offset.x > 0.0 && offset.y.abs() < 1e-4 && offset.z.abs() < 1e-4, "{offset}");
-    // The height binds from both sides; only the box's depth toward the lens differs. From the side the T-pose arm
-    // points at the lens, so the near corner of the box is the arm's length closer and the camera backs off to match.
+    // The height binds from both sides; only the box's depth toward the lens differs, a few centimetres.
     let ratio = offset.length() / (front.position() - target).length();
-    assert!((1.0..1.25).contains(&ratio), "{ratio}");
+    assert!((ratio - 1.0).abs() < 0.1, "{ratio}");
 }
 
 #[test]
