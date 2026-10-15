@@ -79,3 +79,42 @@ fn a_release_without_notes_still_parses() {
     let release: Release = serde_json::from_str(&json).unwrap();
     assert!(release.notes_url.is_none());
 }
+
+#[test]
+fn numeric_hosts_must_be_valid_dotted_quads() {
+    for text in [
+        "https://256.0.0.1/",
+        "https://9999999999999/",
+        "https://1.2.3/",
+        "https://1.2.3.4.5/",
+        "https://01.2.3.4/",
+        "https://127.0.0.256:443/",
+    ] {
+        assert_eq!(Url::new(text).unwrap_err(), UrlError::Malformed, "accepted {text:?}");
+    }
+    // Loopback and private addresses are valid syntax: the contract has no network policy.
+    for text in ["https://127.0.0.1/", "https://10.0.0.1:8443/notes", "https://255.255.255.255/"] {
+        assert!(Url::new(text).is_ok(), "rejected {text:?}");
+    }
+}
+
+#[test]
+fn ports_are_one_to_65535() {
+    for text in ["https://example.com:0/", "https://example.com:65536/", "https://example.com:99999999999/"] {
+        assert!(Url::new(text).is_err(), "accepted {text:?}");
+    }
+    for text in ["https://example.com:1/", "https://example.com:65535/"] {
+        assert!(Url::new(text).is_ok(), "rejected {text:?}");
+    }
+}
+
+#[test]
+fn the_check_is_syntax_only_and_does_not_model_browser_host_forms() {
+    // Documented limits: these hold, so a caller must not read `Url` as "a browser will open this".
+    for text in ["https://0x7f.1/", "https://no-such-host.invalid/", "HTTPS://EXAMPLE.COM/"] {
+        assert!(Url::new(text).is_ok(), "rejected {text:?}");
+    }
+    // IDN must be given in its ASCII form.
+    assert!(Url::new("https://b\u{fc}cher.example/").is_err());
+    assert!(Url::new("https://xn--bcher-kva.example/").is_ok());
+}
