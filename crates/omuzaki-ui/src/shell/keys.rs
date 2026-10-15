@@ -2,7 +2,8 @@
 //!
 //! [`resolve`] only reads the input and names the action, so the map is tested without a window and the shell is the
 //! one place that carries actions out. Ctrl is Cmd on macOS. A key is consumed when it matches, so it never reaches a
-//! widget as well; while a text field has the keyboard nothing is consumed (Undo in a field is the field's own).
+//! widget as well. While a text field is being edited nothing is consumed (Undo in a field is the field's own); a
+//! focused button or tab does not stop them, so the keys keep working after a click.
 
 use egui::{Context, Key, Modifiers};
 
@@ -32,7 +33,7 @@ const NUMBERS: [Key; 9] =
 
 /// The action the keys pressed this frame ask for, consuming them. At most one per frame.
 pub fn resolve(ctx: &Context) -> Option<Action> {
-    if ctx.egui_wants_keyboard_input() {
+    if ctx.text_edit_focused() {
         return None;
     }
     ctx.input_mut(|i| {

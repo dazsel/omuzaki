@@ -9,6 +9,7 @@
 //! - [`persist`]: layouts belong to the person, not the project, and are saved per workspace;
 //! - [`text`], [`keys`], [`panels`], [`stub`]: the shell's words, its global keyboard map, the panels it ships with and
 //!   the runner it starts with;
+//! - [`dock`], [`saver`]: how panels are docked and constrained, and the background thread that writes layouts;
 //! - [`app`]: the [`Shell`] that draws a frame from all of them.
 
 // Layout arithmetic converts between small integers and `f32` (window sizes, counts); every value is bounded by a screen.
@@ -16,11 +17,13 @@
 
 pub mod app;
 pub mod class;
+pub mod dock;
 pub mod keys;
 pub mod layout;
 pub mod panels;
 pub mod persist;
 pub mod registry;
+pub mod saver;
 pub mod stub;
 pub mod text;
 

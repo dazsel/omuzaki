@@ -8,7 +8,8 @@ use std::sync::{Arc, Mutex};
 use egui::{Key, Modifiers, Vec2, vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable as _;
-use omuzaki_doc_api::{DocPath, Value};
+use omuzaki_core::time::Seconds;
+use omuzaki_doc_api::{DocPath, DocVersion, Patch, Value};
 use omuzaki_ops_api::{Actor, Event, Grants, OpError, OpInfo, OpRecord, Outcome, Request, Runner, TxId};
 
 use super::layout::{Dir, Layout, Node};
@@ -28,9 +29,28 @@ fn probe_layout() -> Layout {
     Layout::new(Node::split(Dir::Horizontal, vec![Node::pane("viewport"), Node::pane("inspector")], &[3.0, 1.0]))
 }
 
+fn record(seq: u64) -> OpRecord {
+    OpRecord {
+        seq,
+        op: "test.set".into(),
+        args: Value::Null,
+        actor: Actor::System,
+        cause: None,
+        tx: TxId(seq),
+        at: Seconds(0.0),
+        patch: Patch::new(),
+        version: DocVersion(seq),
+        on_behalf_of: None,
+        approval: None,
+        effect: None,
+    }
+}
+
 /// A runner that remembers what the shell asked of it.
 #[derive(Default)]
 struct Spy {
+    /// How many records the log holds.
+    total: u64,
     undos: AtomicUsize,
     redos: AtomicUsize,
     asked: Mutex<Vec<u64>>,
@@ -66,11 +86,12 @@ impl Runner for Spy {
     fn get(&self, path: &DocPath, grants: &Grants) -> Result<Option<Value>, OpError> {
         NullRunner.get(path, grants)
     }
-    fn log(&self, after_seq: u64, limit: usize, grants: &Grants) -> Result<Vec<OpRecord>, OpError> {
+    fn log(&self, after_seq: u64, limit: usize, _grants: &Grants) -> Result<Vec<OpRecord>, OpError> {
         if let Ok(mut asked) = self.asked.lock() {
             asked.push(after_seq);
         }
-        NullRunner.log(after_seq, limit, grants)
+        let last = self.total.min(after_seq.saturating_add(limit as u64));
+        Ok(((after_seq + 1)..=last).map(record).collect())
     }
 }
 
@@ -158,7 +179,8 @@ fn a_layout_the_person_changes_is_saved_and_comes_back_in_the_next_session() {
     let mut first = shell_at(size, Some(store.clone()), Arc::new(NullRunner));
     assert!(store.load("build").expect("readable").is_none(), "nothing is written until the person changes something");
     // Drag the divider between the viewport and the right dock 100 points to the left.
-    drag(&mut first, &[egui::pos2(1560.0, 500.0), egui::pos2(1510.0, 500.0), egui::pos2(1460.0, 500.0)]);
+    drag(&mut first, &[egui::pos2(1552.0, 500.0), egui::pos2(1510.0, 500.0), egui::pos2(1460.0, 500.0)]);
+    first.state().flush();
     let saved = store.load("build").expect("readable").expect("saved when the drag ended");
     let default = shares(&plain(size).state().shown_layout().expect("built"));
     let ratio = |s: &[f32]| s[2] / s[1];
@@ -168,27 +190,42 @@ fn a_layout_the_person_changes_is_saved_and_comes_back_in_the_next_session() {
 }
 
 #[test]
-fn a_small_window_never_overwrites_the_layout_made_on_a_big_one() {
+fn a_small_window_keeps_its_own_layout_and_never_overwrites_the_one_made_on_a_big_one() {
     let (_keep, store) = store();
     let mut big = shell_at(vec2(1920.0, 1080.0), Some(store.clone()), Arc::new(NullRunner));
-    drag(&mut big, &[egui::pos2(1560.0, 500.0), egui::pos2(1500.0, 500.0)]);
+    drag(&mut big, &[egui::pos2(1552.0, 500.0), egui::pos2(1500.0, 500.0)]);
+    big.state().flush();
     let on_disk = std::fs::read_to_string(store.dir().join("build.toml")).expect("saved");
-    let mut small = shell_at(vec2(1366.0, 768.0), Some(store.clone()), Arc::new(NullRunner));
-    small.get_by_label("History").click();
-    small.run_steps(3);
-    drag(&mut small, &[egui::pos2(1066.0, 500.0), egui::pos2(1000.0, 500.0)]);
+    big.state().flush();
+    let size = vec2(1366.0, 768.0);
+    let mut small = shell_at(size, Some(store.clone()), Arc::new(NullRunner));
+    drag(&mut small, &[egui::pos2(1058.0, 500.0), egui::pos2(1000.0, 500.0)]);
+    small.state().flush();
     assert_eq!(std::fs::read_to_string(store.dir().join("build.toml")).expect("still there"), on_disk);
+    // What was done in the small window is kept under its own name and comes back at that size.
+    let compact = store.dir().join("build-compact-la.toml");
+    assert!(compact.exists(), "the compact arrangement is saved apart");
+    let again = shell_at(size, Some(store), Arc::new(NullRunner));
+    assert_eq!(again.state().shown_layout(), small.state().shown_layout());
 }
 
 #[test]
 fn reset_layout_forgets_the_saved_one_and_a_corrupt_file_falls_back_to_the_default() {
     let (_keep, store) = store();
     let mut harness = shell_at(vec2(1920.0, 1080.0), Some(store.clone()), Arc::new(NullRunner));
-    drag(&mut harness, &[egui::pos2(1560.0, 500.0), egui::pos2(1500.0, 500.0)]);
+    drag(&mut harness, &[egui::pos2(1552.0, 500.0), egui::pos2(1500.0, 500.0)]);
+    harness.state().flush();
     assert!(store.dir().join("build.toml").exists());
     harness.state_mut().reset_layout();
     harness.run_steps(3);
+    harness.state().flush();
     assert!(!store.dir().join("build.toml").exists());
+    let default = plain(vec2(1920.0, 1080.0)).state().shown_layout();
+    assert_eq!(
+        harness.state().shown_layout(),
+        default,
+        "the default is back at once, not the file that was being removed"
+    );
     std::fs::write(store.dir().join("build.toml"), "not a layout [").expect("write");
     let corrupt = shell_at(vec2(1920.0, 1080.0), Some(store), Arc::new(NullRunner));
     assert_shows(&corrupt, "Connect an agent");
@@ -265,5 +302,96 @@ fn an_idle_window_asks_for_no_repaint_over_thirty_simulated_seconds() {
         // The counter does see a request, so the zero above means something.
         harness.ctx.request_repaint();
         assert!(repaints.load(Ordering::SeqCst) > 0);
+    }
+}
+
+#[test]
+fn the_keys_still_work_after_a_click_has_focused_a_tab_or_button() {
+    let mut harness = plain(vec2(1920.0, 1080.0));
+    harness.get_by_label("Build").click();
+    harness.run_steps(3);
+    press(&mut harness, Modifiers::COMMAND, Key::Num2);
+    assert_eq!(harness.state().active_workspace(), Some("probe"));
+}
+
+#[test]
+fn focus_follows_tab_presses_workspace_switches_and_f6_which_shows_the_panel_it_picks() {
+    let mut harness = plain(vec2(1920.0, 1080.0));
+    harness.get_by_label("History").click();
+    harness.run_steps(3);
+    assert_eq!(harness.state().focused_panel(), Some("history"));
+    press(&mut harness, Modifiers::COMMAND, Key::Space);
+    harness.run_steps(2);
+    assert_shows(&harness, "Your changes will appear here");
+    assert!(!shows(&harness, "Start with a character"), "only History fills the dock area");
+    press(&mut harness, Modifiers::NONE, Key::Escape);
+    // A workspace without the focused panel does not inherit it.
+    press(&mut harness, Modifiers::COMMAND, Key::Num2);
+    assert_eq!(harness.state().focused_panel(), None);
+    press(&mut harness, Modifiers::COMMAND, Key::Space);
+    harness.run_steps(2);
+    assert_shows(&harness, "Start with a character");
+    assert_shows(&harness, "Select a part to edit it");
+    // F6 walks the reading order and brings a panel behind a tab to the front.
+    press(&mut harness, Modifiers::COMMAND, Key::Num1);
+    press(&mut harness, Modifiers::NONE, Key::F6);
+    press(&mut harness, Modifiers::NONE, Key::F6);
+    harness.run_steps(2);
+    assert_eq!(harness.state().focused_panel(), Some("library"));
+    assert_shows(&harness, "The library is empty");
+    assert!(!shows(&harness, "Pick a part to edit it"), "the Outliner tab went to the back");
+}
+
+#[test]
+fn the_primary_panel_cannot_be_dragged_out_and_the_lock_stops_every_other_move_and_divider() {
+    let mut harness = plain(vec2(1920.0, 1080.0));
+    let before = harness.state().shown_layout();
+    let viewport = harness.get_by_label("Viewport").rect().center();
+    drag(&mut harness, &[viewport, egui::pos2(1700.0, 300.0), egui::pos2(1700.0, 320.0)]);
+    assert_eq!(harness.state().shown_layout(), before, "the viewport tab stays in the centre");
+    // Control: another panel's tab does move when unlocked, and not when locked.
+    let history = harness.get_by_label("History").rect().center();
+    press(&mut harness, Modifiers::COMMAND | Modifiers::SHIFT, Key::L);
+    drag(&mut harness, &[history, egui::pos2(150.0, 600.0), egui::pos2(150.0, 620.0)]);
+    drag(&mut harness, &[egui::pos2(1552.0, 500.0), egui::pos2(1500.0, 500.0)]);
+    assert_eq!(harness.state().shown_layout(), before, "locked: nothing moves and no divider drags");
+    press(&mut harness, Modifiers::COMMAND | Modifiers::SHIFT, Key::L);
+    drag(&mut harness, &[history, egui::pos2(150.0, 600.0), egui::pos2(150.0, 620.0)]);
+    assert_ne!(harness.state().shown_layout(), before, "unlocked: the History tab moved");
+}
+
+#[test]
+fn a_divider_cannot_take_a_panel_below_its_registered_minimum() {
+    let mut harness = plain(vec2(1920.0, 1080.0));
+    let widths = |harness: &Harness<'_, Shell>| {
+        let shares = shares(&harness.state().shown_layout().expect("built"));
+        let total: f32 = shares.iter().sum();
+        shares.iter().map(|s| s / total * 1920.0).collect::<Vec<_>>()
+    };
+    drag(&mut harness, &[egui::pos2(308.0, 500.0), egui::pos2(150.0, 500.0), egui::pos2(40.0, 500.0)]);
+    harness.run_steps(3);
+    assert!(widths(&harness)[0] >= 238.0, "the left dock keeps its 240: {:?}", widths(&harness));
+    drag(&mut harness, &[egui::pos2(1552.0, 500.0), egui::pos2(1800.0, 500.0), egui::pos2(1900.0, 500.0)]);
+    harness.run_steps(3);
+    assert!(widths(&harness)[2] >= 286.0, "the inspector keeps its 288: {:?}", widths(&harness));
+}
+
+#[test]
+fn folded_docks_are_sized_again_so_the_inspector_is_288_wide_at_1280() {
+    let harness = plain(vec2(1280.0, 720.0));
+    let shares = shares(&harness.state().shown_layout().expect("built"));
+    assert_eq!(shares.len(), 2, "the rail's panels are gone");
+    let right = shares[1] / (shares[0] + shares[1]) * (1264.0 - 48.0);
+    assert!((right - 288.0).abs() < 1.0, "{right} {shares:?}");
+}
+
+#[test]
+fn the_history_panel_keeps_the_newest_records_of_a_long_log() {
+    for (total, kept, first) in [(0_u64, 0_usize, 0_u64), (3, 3, 1), (500, 500, 1), (1200, 500, 701)] {
+        let spy = Spy { total, ..Spy::default() };
+        let records = super::app::newest_records(&spy, 500).expect("readable");
+        assert_eq!(records.len(), kept, "{total}");
+        assert_eq!(records.first().map_or(0, |r| r.seq), first, "{total}");
+        assert_eq!(records.last().map_or(0, |r| r.seq), total, "{total}: the last record is the newest");
     }
 }

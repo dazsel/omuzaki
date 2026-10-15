@@ -53,44 +53,79 @@ pub struct Env<'a> {
     pub history_error: Option<&'a str>,
 }
 
-/// The empty state text of a panel: its headline and the line saying why.
-fn copy(panel: &str) -> Option<(Word, Word)> {
-    match panel {
-        "outliner" => Some((Word::OutlinerHeadline, Word::OutlinerLine)),
-        "library" => Some((Word::LibraryHeadline, Word::LibraryLine)),
-        "viewport" => Some((Word::ViewportHeadline, Word::ViewportLine)),
-        "inspector" => Some((Word::InspectorHeadline, Word::InspectorLine)),
-        "history" => Some((Word::HistoryHeadline, Word::HistoryLine)),
-        "agent" => Some((Word::AgentHeadline, Word::AgentLine)),
-        _ => None,
-    }
+/// How a panel draws its body. Registered beside the panel (`register_panel_view!`), so adding a panel never edits a
+/// central list.
+pub struct PanelView {
+    /// The registered panel it draws.
+    pub id: &'static str,
+    /// Draws the body.
+    pub draw: fn(&mut Ui, &PanelDef, &Env<'_>),
 }
 
-/// Draws the body of `def`.
+inventory::collect!(PanelView);
+
+/// Registers how a panel draws its body.
+#[macro_export]
+macro_rules! register_panel_view {
+    (id: $id:literal, draw: $draw:expr $(,)?) => {
+        ::inventory::submit! {
+            $crate::shell::panels::PanelView { id: $id, draw: $draw }
+        }
+        $crate::__record_registration!("panel_view", $id);
+    };
+}
+
+register_panel_view! { id: "outliner", draw: |ui, def, _| empty(ui, def, Word::OutlinerHeadline, Word::OutlinerLine) }
+register_panel_view! { id: "library", draw: |ui, def, _| empty(ui, def, Word::LibraryHeadline, Word::LibraryLine) }
+register_panel_view! { id: "viewport", draw: |ui, def, _| empty(ui, def, Word::ViewportHeadline, Word::ViewportLine) }
+register_panel_view! { id: "inspector", draw: |ui, def, _| empty(ui, def, Word::InspectorHeadline, Word::InspectorLine) }
+register_panel_view! { id: "agent", draw: |ui, def, _| empty(ui, def, Word::AgentHeadline, Word::AgentLine) }
+register_panel_view! { id: "history", draw: history }
+
+/// The view registered for `panel`.
+fn view(panel: &str) -> Option<&'static PanelView> {
+    inventory::iter::<PanelView>.into_iter().find(|v| v.id == panel)
+}
+
+/// Draws the body of `def`: its registered view, or a note that it has none.
 pub fn body(ui: &mut Ui, def: &PanelDef, env: &Env<'_>) {
-    if def.id == "history" && !env.history.is_empty() {
-        return history(ui, env.history);
-    }
-    let ctx = ui.ctx().clone();
-    if def.id == "history"
-        && let Some(why) = env.history_error
-    {
-        let line = say(&ctx, Word::HistoryUnavailable, &[("why", why)]);
-        ui.label(RichText::new(line).color(ds(&ctx).theme.text2));
+    if let Some(view) = view(def.id) {
+        (view.draw)(ui, def, env);
         return;
     }
+    let ctx = ui.ctx().clone();
     let title = super::text::title(&ctx, def.title);
-    let (headline, line) = match copy(def.id) {
-        Some((headline, line)) => (say(&ctx, headline, &[]), say(&ctx, line, &[])),
-        None => (title.to_string(), say(&ctx, Word::PanelNoView, &[("panel", &title)])),
-    };
+    let line = say(&ctx, Word::PanelNoView, &[("panel", &title)]);
+    ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
+        EmptyState::new(def.icon, &title, &line).show(ui);
+    });
+}
+
+/// A panel with nothing to show yet: its headline and the line saying why.
+fn empty(ui: &mut Ui, def: &PanelDef, headline: Word, line: Word) {
+    let ctx = ui.ctx().clone();
+    let (headline, line) = (say(&ctx, headline, &[]), say(&ctx, line, &[]));
     ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
         EmptyState::new(def.icon, &headline, &line).show(ui);
     });
 }
 
+/// The History panel: the op log when there is one, the reason it cannot be read, or its empty state.
+fn history(ui: &mut Ui, def: &PanelDef, env: &Env<'_>) {
+    if !env.history.is_empty() {
+        return history_list(ui, env.history);
+    }
+    let ctx = ui.ctx().clone();
+    if let Some(why) = env.history_error {
+        let line = say(&ctx, Word::HistoryUnavailable, &[("why", why)]);
+        ui.label(RichText::new(line).color(ds(&ctx).theme.text2));
+    } else {
+        empty(ui, def, Word::HistoryHeadline, Word::HistoryLine);
+    }
+}
+
 /// The op log as a list, newest first. Rows are one fixed height, so only the visible ones are built.
-fn history(ui: &mut Ui, records: &[OpRecord]) {
+fn history_list(ui: &mut Ui, records: &[OpRecord]) {
     let ds = ds(ui.ctx());
     let row = ds.metrics.tree_row;
     ScrollArea::vertical().auto_shrink([false; 2]).show_rows(ui, row, records.len(), |ui, rows| {
@@ -110,10 +145,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_shipped_panel_has_its_own_empty_state_and_the_layout_uses_only_registered_panels() {
+    fn every_shipped_panel_registers_its_own_view_and_the_layout_uses_only_registered_panels() {
         for panel in build_layout().panels() {
             let def = registry::panel(panel).expect("registered");
-            assert!(copy(def.id).is_some(), "{panel} has no empty state");
+            assert!(view(def.id).is_some(), "{panel} has no view");
         }
         let primary: Vec<_> = registry::panels().into_iter().filter(|p| p.kind == PanelKind::Primary).collect();
         assert_eq!(primary.len(), 1, "one primary panel per workspace");

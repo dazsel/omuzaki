@@ -4,10 +4,10 @@
 //! One [`Shell::ui`] call draws a frame. It is reactive: nothing here asks for a repaint, so an idle window costs no
 //! CPU. egui repaints on input and on the animations the widgets run for themselves.
 //!
-//! What the person arranges is saved per workspace when a drag or click ends. When the window is too small to show the
-//! saved arrangement (Library folded into the Outliner's tabs, Agent and History into the Inspector's, the left dock a
-//! rail), the folded form is shown instead and edits made while folded last only for the session, so a small window
-//! never overwrites the layout made on a big one.
+//! What the person arranges is saved per workspace when a drag or click ends, on a background thread. When the window is
+//! too small to show the saved arrangement (Library folded into the Outliner's tabs, Agent and History into the
+//! Inspector's, the left dock a rail), the folded form is shown, and what the person changes there is saved under its
+//! own name (`Fold::key`), so a small window never overwrites the layout made on a big one and each is remembered.
 
 use std::sync::Arc;
 
@@ -15,22 +15,24 @@ use egui::{
     Align, CentralPanel, Context, Frame, Key, Layout as Flow, Margin, Panel, Popup, Response, RichText, Ui, Vec2,
     WidgetInfo, WidgetType,
 };
-use egui_tiles::{Behavior, SimplificationOptions, TileId, Tree, UiResponse};
-use omuzaki_ops_api::{Actor, Grants, OpRecord, Runner};
+use egui_tiles::{Tile, Tree};
+use omuzaki_ops_api::{Actor, Grants, OpError, OpRecord, Runner};
 
 use super::class::{DockMode, Plan, RAIL, STATUS_BAR, TOP_BAR};
+use super::dock::{self, Dock};
 use super::keys::{self, Action};
 use super::layout::{Known, Layout, PanelId};
 use super::panels::{self, Env};
 use super::persist::LayoutStore;
 use super::registry::{self, PanelKind, Region, WorkspaceDef};
+use super::saver::Saver;
 use super::text::{Word, say, title};
 use crate::ds::theme::ds;
 use crate::ds::widgets::{Button, TabBar, TabItem, Tip, TipExt as _};
 use crate::ds::{a11y, icons};
 
 const MENU_ICON: &str = egui_phosphor::regular::LIST;
-/// How many op-log records the History panel reads.
+/// How many op-log records the History panel keeps (the newest), and how many it asks the runner for at a time.
 const HISTORY_PAGE: usize = 500;
 /// The panels the window size folds together (`class::Plan`).
 const OUTLINER: &str = "outliner";
@@ -39,8 +41,6 @@ const INSPECTOR: &str = "inspector";
 const AGENT_HISTORY: [&str; 2] = ["agent", "history"];
 /// The left dock's width when its class has no room to show it open: the width it takes once the window grows.
 const LEFT_WHEN_RAIL: f32 = 240.0;
-/// The shortest a docked panel gets before the dock collapses.
-const MIN_TILE: f32 = 160.0;
 
 /// Which docks the window size folds away. Part of a view's identity: a new fold rebuilds the docking tree.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -60,11 +60,22 @@ impl Fold {
             left_rail: plan.left == DockMode::Rail,
         }
     }
+
+    /// The name a layout is saved under: the workspace's own for the full arrangement, and one per fold for the
+    /// arrangements of smaller windows, so each is kept apart from the others.
+    fn key(self, workspace: &str) -> String {
+        if self == Self::NONE {
+            return workspace.to_owned();
+        }
+        let flags = [(self.library_as_tab, 'l'), (self.agent_history_merged, 'a'), (self.left_rail, 'r')];
+        let letters: String = flags.iter().filter(|(on, _)| *on).map(|(_, c)| *c).collect();
+        format!("{workspace}-compact-{letters}")
+    }
 }
 
 /// One workspace's docking tree, built from its layout and the fold in force.
 struct View {
-    /// What the person arranged: the one that is saved.
+    /// The arrangement made at full size: the workspace's own saved layout.
     saved: Layout,
     /// What the tree was last built from or read back as, to tell an edit from no change.
     shown: Layout,
@@ -90,12 +101,17 @@ enum Note {
 pub struct Shell {
     runner: Arc<dyn Runner>,
     store: Option<LayoutStore>,
+    saver: Option<Saver>,
     workspaces: Vec<&'static WorkspaceDef>,
     views: Vec<Option<View>>,
     active: usize,
     window: Vec2,
+    /// The width the docks share: the root `Ui`'s, which is the window's unless the app frames the shell.
+    room: f32,
     locked: bool,
     maximised: bool,
+    /// The next view is built from the defaults, not from disk (Reset layout).
+    fresh: bool,
     focus: Option<String>,
     drawer: Option<String>,
     history: Vec<OpRecord>,
@@ -107,15 +123,25 @@ impl Shell {
     /// A shell over `runner`. Layouts are read from and saved to `store`; with none they live in memory only.
     pub fn new(runner: Arc<dyn Runner>, store: Option<LayoutStore>) -> Self {
         let workspaces = registry::workspaces();
+        let saver = store.clone().and_then(|store| match Saver::spawn(store) {
+            Ok(saver) => Some(saver),
+            Err(error) => {
+                tracing::warn!(%error, "layouts will not be saved");
+                None
+            }
+        });
         let mut shell = Self {
             runner,
             store,
+            saver,
             views: workspaces.iter().map(|_| None).collect(),
             workspaces,
             active: 0,
             window: super::class::MIN_WINDOW,
+            room: super::class::MIN_WINDOW.x,
             locked: false,
             maximised: false,
+            fresh: false,
             focus: None,
             drawer: None,
             history: Vec::new(),
@@ -143,14 +169,28 @@ impl Shell {
         self.locked
     }
 
+    /// The panel that has the keyboard's attention, if any.
+    pub fn focused_panel(&self) -> Option<&str> {
+        self.focus.as_deref()
+    }
+
+    /// Waits until every layout change so far is on disk. Layouts are written in the background and the last ones are
+    /// written when the shell is dropped, so the app needs this only to read the files back.
+    pub fn flush(&self) {
+        if let Some(saver) = &self.saver {
+            saver.flush();
+        }
+    }
+
     /// Draws one frame of the shell into `ui`, which spans the window.
     pub fn ui(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
         self.window = ctx.content_rect().size();
+        self.room = ui.available_width();
         if let Some(action) = keys::resolve(&ctx) {
             self.act(action);
         }
-        if self.maximised && !ctx.egui_wants_keyboard_input() && ctx.input(|i| i.key_pressed(Key::Escape)) {
+        if self.maximised && !ctx.text_edit_focused() && ctx.input(|i| i.key_pressed(Key::Escape)) {
             self.maximised = false;
         }
         let plan = Plan::for_window(self.window, 0.0);
@@ -183,7 +223,9 @@ impl Shell {
     fn select(&mut self, index: usize) {
         if index < self.workspaces.len() {
             self.active = index;
+            // Focus, the maximised panel and the drawer belong to the workspace they were made in.
             self.maximised = false;
+            self.focus = None;
             self.drawer = None;
         }
     }
@@ -204,7 +246,7 @@ impl Shell {
     /// Reads the op log again. It changes only when the person undoes or redoes here; live updates from agents arrive
     /// with the History panel's own task.
     fn refresh_history(&mut self) {
-        match self.runner.log(0, HISTORY_PAGE, &Grants::person()) {
+        match newest_records(self.runner.as_ref(), HISTORY_PAGE) {
             Ok(records) => {
                 self.history = records;
                 self.history_error = None;
@@ -216,39 +258,68 @@ impl Shell {
         }
     }
 
+    /// Moves the focus to the next (or previous) panel of the workspace and shows it: a panel behind a tab is brought
+    /// to the front, so what has the focus is always what is on screen.
     fn cycle_focus(&mut self, step: isize) {
-        let Some(view) = self.views.get(self.active).and_then(Option::as_ref) else { return };
+        let Some(view) = self.views.get_mut(self.active).and_then(Option::as_mut) else { return };
         let panels = view.shown.panels();
         if panels.is_empty() {
             return;
         }
         let at = self.focus.as_deref().and_then(|f| panels.iter().position(|p| *p == f));
         let next = at.map_or(0, |i| (i.cast_signed() + step).rem_euclid(panels.len().cast_signed()).cast_unsigned());
-        self.focus = panels.get(next).map(|p| (*p).to_owned());
+        let Some(target) = panels.get(next).map(|p| (*p).to_owned()) else { return };
+        view.tree.make_active(|_, tile| matches!(tile, Tile::Pane(PanelId(panel)) if *panel == target));
+        self.focus = Some(target);
     }
 
     /// Builds the active workspace's docking tree the first time, and again when the fold in force changes.
     fn ensure_view(&mut self, plan: &Plan) {
         let fold = Fold::of(plan);
         let Some(&workspace) = self.workspaces.get(self.active) else { return };
-        let current = self.views.get_mut(self.active).and_then(Option::take);
-        let saved = match current {
+        let from_disk = !std::mem::take(&mut self.fresh);
+        let saved = match self.views.get_mut(self.active).and_then(Option::take) {
             Some(view) if view.fold == fold => {
                 self.views[self.active] = Some(view);
+                self.fresh = !from_disk;
                 return;
             }
-            // Edits made at full size are the person's; edits made while folded are not kept.
-            Some(view) if view.fold == Fold::NONE => {
-                Layout::from_tree(&view.tree).map_or(view.saved, |l| l.without(&[]))
-            }
             Some(view) => view.saved,
-            None => self.load(workspace, plan),
+            None => self.full_layout(workspace, plan, from_disk),
         };
         let rail: Vec<_> = if fold.left_rail {
             saved.panels().into_iter().filter_map(registry::panel).filter(|p| p.region == Region::Left).collect()
         } else {
             Vec::new()
         };
+        let shown = if fold == Fold::NONE {
+            saved.clone()
+        } else {
+            let derived = self.folded_layout(&saved, fold, &rail, plan);
+            let stored = from_disk.then(|| self.stored(&fold.key(workspace.id), &derived)).flatten();
+            stored.map_or(derived, |l| l.without(&rail.iter().map(|p| p.id).collect::<Vec<_>>()))
+        };
+        // What was focused, maximised or open as a drawer may not be in the arrangement that is shown now.
+        if self.focus.as_deref().is_some_and(|f| !shown.contains(f)) {
+            self.focus = None;
+            self.maximised = false;
+        }
+        if self.drawer.as_deref().is_some_and(|d| !rail.iter().any(|p| p.id == d)) {
+            self.drawer = None;
+        }
+        let tree = shown.to_tree(egui::Id::new(("shell_tree", workspace.id)));
+        self.views[self.active] = Some(View { saved, shown, tree, fold, rail });
+    }
+
+    /// The layout of `workspace` at full size: the saved one made safe, or the default sized for this window.
+    fn full_layout(&self, workspace: &WorkspaceDef, plan: &Plan, from_disk: bool) -> Layout {
+        let default = (workspace.layout)().with_root_widths(&dock_widths(plan), self.room);
+        let saved = from_disk.then(|| self.stored(workspace.id, &default)).flatten();
+        saved.unwrap_or(default)
+    }
+
+    /// The arrangement for a window that folds some docks: the full one with those docks folded, sized for the window.
+    fn folded_layout(&self, saved: &Layout, fold: Fold, rail: &[&registry::PanelDef], plan: &Plan) -> Layout {
         let mut shown = saved.clone();
         if fold.library_as_tab {
             shown = shown.folded(OUTLINER, &[LIBRARY]);
@@ -256,35 +327,28 @@ impl Shell {
         if fold.agent_history_merged {
             shown = shown.folded(INSPECTOR, &AGENT_HISTORY);
         }
-        shown = shown.without(&rail.iter().map(|p| p.id).collect::<Vec<_>>());
-        let tree = shown.to_tree(egui::Id::new(("shell_tree", workspace.id)));
-        self.views[self.active] = Some(View { saved, shown, tree, fold, rail });
+        let hidden: Vec<&str> = rail.iter().map(|p| p.id).collect();
+        let rail_width = if hidden.is_empty() { 0.0 } else { RAIL };
+        // Panels removed with the rail leave their shares behind, so the others are sized again.
+        shown.without(&hidden).with_root_widths(&dock_widths(plan), self.room - rail_width)
     }
 
-    /// The saved layout of `workspace` made safe, or its default sized for this window.
-    fn load(&self, workspace: &WorkspaceDef, plan: &Plan) -> Layout {
-        let width = |mode: DockMode, fallback: f32| if mode == DockMode::Rail { fallback } else { mode.width() };
-        let (left, right) = (width(plan.left, LEFT_WHEN_RAIL), plan.right.width());
-        let wanted = move |panel: &str| match registry::panel(panel).map(|p| p.region) {
-            Some(Region::Left) => Some(left),
-            Some(Region::Right) => Some(right),
-            _ => None,
+    /// The layout saved under `key`, repaired against the registry; `None` when there is none or it is unreadable.
+    fn stored(&self, key: &str, default: &Layout) -> Option<Layout> {
+        let primary = default
+            .panels()
+            .into_iter()
+            .find_map(|p| registry::panel(p).filter(|def| def.kind == PanelKind::Primary).map(|def| def.id));
+        let Some(primary) = primary else {
+            debug_assert!(false, "{key}: the default layout has no primary panel");
+            return None;
         };
-        let default = (workspace.layout)().with_root_widths(&wanted, self.window.x);
-        let Some(primary) =
-            default.panels().into_iter().find(|p| registry::panel(p).is_some_and(|def| def.kind == PanelKind::Primary))
-        else {
-            debug_assert!(false, "workspace {} has no primary panel", workspace.id);
-            return default;
-        };
-        let Some(store) = &self.store else { return default };
         let known = Known { exists: &|p| registry::panel(p).is_some(), primary };
-        match store.load(workspace.id) {
-            Ok(Some(saved)) => saved.repaired(&known, &default),
-            Ok(None) => default,
+        match self.store.as_ref()?.load(key) {
+            Ok(saved) => saved.map(|saved| saved.repaired(&known, default)),
             Err(error) => {
-                tracing::warn!(workspace = workspace.id, %error, "using the default layout");
-                default
+                tracing::warn!(layout = key, %error, "using the default layout");
+                None
             }
         }
     }
@@ -292,18 +356,24 @@ impl Shell {
     fn body(&mut self, ui: &mut Ui) {
         let Some(view) = self.views.get_mut(self.active).and_then(Option::as_mut) else { return };
         let env = Env { history: &self.history, history_error: self.history_error.as_deref() };
-        let maximised = self.maximised.then(|| self.focus.as_deref().and_then(registry::panel)).flatten();
+        let maximised = self
+            .maximised
+            .then(|| self.focus.as_deref().filter(|f| view.shown.contains(f)).and_then(registry::panel))
+            .flatten();
         if let Some(def) = maximised {
             panels::body(ui, def, &env);
             return;
         }
         let (ctx, rect) = (ui.ctx().clone(), ui.max_rect());
-        let mut dock = Dock { ctx: &ctx, env, locked: self.locked, focus: &mut self.focus };
+        dock::enforce_minimums(&mut view.tree);
+        let pinned = dock::pinned(&view.tree);
+        let mut dock = Dock { ctx: &ctx, env, locked: self.locked, pinned: &pinned, focus: &mut self.focus };
         view.tree.ui(&mut dock, ui);
         self.drawer(&ctx, rect);
     }
 
-    /// Saves the active layout when a drag or click ends and the arrangement differs from the one on disk.
+    /// Saves the arrangement when a drag or click ends and it differs from the one before. The full-size arrangement
+    /// is the workspace's own layout; a smaller window's is kept under its own name, so neither overwrites the other.
     fn save_if_edited(&mut self, ctx: &Context) {
         if !ctx.input(|i| i.pointer.any_released()) {
             return;
@@ -318,26 +388,23 @@ impl Shell {
             return;
         }
         view.shown = current.clone();
-        if view.fold != Fold::NONE {
-            return;
+        if view.fold == Fold::NONE {
+            view.saved = current.clone();
         }
-        view.saved = current;
-        if let Some(store) = &self.store
-            && let Err(error) = store.save(workspace.id, &view.saved)
-        {
-            tracing::warn!(workspace = workspace.id, %error, "could not save the layout");
+        if let Some(saver) = &self.saver {
+            saver.save(&view.fold.key(workspace.id), &current);
         }
     }
 
-    /// Forgets the saved layout of the active workspace; the default is rebuilt on the next frame.
+    /// Forgets the saved layouts of the active workspace; the default is built on the next frame.
     pub fn reset_layout(&mut self) {
         let Some(&workspace) = self.workspaces.get(self.active) else { return };
-        if let Some(store) = &self.store
-            && let Err(error) = store.reset(workspace.id)
-        {
-            tracing::warn!(workspace = workspace.id, %error, "could not forget the saved layout");
+        if let (Some(saver), Some(view)) = (&self.saver, self.views.get(self.active).and_then(Option::as_ref)) {
+            saver.reset(workspace.id);
+            saver.reset(&view.fold.key(workspace.id));
         }
         self.views[self.active] = None;
+        self.fresh = true;
         self.maximised = false;
     }
 
@@ -490,50 +557,34 @@ fn icon_button(ui: &mut Ui, glyph: &str, tip: &Tip<'_>, enabled: bool) -> Respon
     response.tip(*tip)
 }
 
-/// The docking widget's view of a frame: how a panel is drawn and what may be dragged.
-struct Dock<'a> {
-    ctx: &'a Context,
-    env: Env<'a>,
-    locked: bool,
-    focus: &'a mut Option<String>,
+/// The widths the docks have in a window of this plan: the left and right docks by region, nothing for the others.
+fn dock_widths(plan: &Plan) -> impl Fn(&str) -> Option<f32> {
+    let width = |mode: DockMode, fallback: f32| if mode == DockMode::Rail { fallback } else { mode.width() };
+    let (left, right) = (width(plan.left, LEFT_WHEN_RAIL), plan.right.width());
+    move |panel| match registry::panel(panel).map(|p| p.region) {
+        Some(Region::Left) => Some(left),
+        Some(Region::Right) => Some(right),
+        _ => None,
+    }
 }
 
-impl Behavior<PanelId> for Dock<'_> {
-    fn pane_ui(&mut self, ui: &mut Ui, _tile: TileId, pane: &mut PanelId) -> UiResponse {
-        let def = registry::panel(&pane.0);
-        debug_assert!(def.is_some(), "the layout was repaired against the registry, so {} exists", pane.0);
-        if let Some(def) = def {
-            let rect = ui.max_rect();
-            if ui.input(|i| i.pointer.any_pressed()) && ui.rect_contains_pointer(rect) {
-                *self.focus = Some(def.id.to_owned());
-            }
-            panels::body(ui, def, &self.env);
-            if self.focus.as_deref() == Some(def.id) {
-                let accent = ds(self.ctx).theme.accent;
-                ui.painter().hline(rect.x_range(), rect.top(), egui::Stroke::new(2.0, accent));
-            }
+/// The newest `keep` records of the runner's log. The log is read oldest first a page at a time, so a long project's
+/// History shows its latest changes and not its first.
+pub(super) fn newest_records(runner: &dyn Runner, keep: usize) -> Result<Vec<OpRecord>, OpError> {
+    let grants = Grants::person();
+    let (mut after, mut newest) = (0, Vec::<OpRecord>::new());
+    loop {
+        let page = runner.log(after, keep, &grants)?;
+        let Some(last) = page.last().map(|record| record.seq) else { return Ok(newest) };
+        if last <= after {
+            return Err(OpError::internal("the op log did not advance"));
         }
-        UiResponse::None
-    }
-
-    fn tab_title_for_pane(&mut self, pane: &PanelId) -> egui::WidgetText {
-        registry::panel(&pane.0).map_or_else(|| pane.0.clone(), |def| title(self.ctx, def.title).into_owned()).into()
-    }
-
-    fn is_tile_draggable(&self, _tiles: &egui_tiles::Tiles<PanelId>, _tile: TileId) -> bool {
-        !self.locked
-    }
-
-    fn tab_bar_height(&self, _style: &egui::Style) -> f32 {
-        crate::ds::tokens::size::DOCK_TAB
-    }
-
-    fn min_size(&self) -> f32 {
-        MIN_TILE
-    }
-
-    fn simplification_options(&self) -> SimplificationOptions {
-        // Every panel keeps a tab strip with its name, alone or in a group.
-        SimplificationOptions { all_panes_must_have_tabs: true, ..SimplificationOptions::default() }
+        let full = page.len() >= keep;
+        after = last;
+        newest.extend(page);
+        newest.drain(..newest.len().saturating_sub(keep));
+        if !full {
+            return Ok(newest);
+        }
     }
 }
