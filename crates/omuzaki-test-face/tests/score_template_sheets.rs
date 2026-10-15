@@ -4,7 +4,8 @@
 //! compiled with [`Score::compile`]. Five frames, at the start, a quarter, half, three quarters and the end of the
 //! score, are painted with the real face painter on the default face profile (a synthetic face), rasterised on the CPU
 //! as `face_parity` does, and written as one row per template. The caption under the row names the channels the
-//! score drives that the face does not paint (head and body), so the reviewer knows what is not shown.
+//! score drives that the sheet does not show: head and body channels are "not painted", and the eye effects whose
+//! painters are still stubs ([`UNDRAWN`]) are "not drawn yet", so the reviewer knows what is missing.
 //!
 //! `sheet` is ignored and writes `$OMUZAKI_SHEET_DIR/<id>.png` (the evidence case `score-templates` runs it).
 
@@ -132,28 +133,54 @@ fn over(dst: &mut [u8; 4], src: [u8; 4]) {
     }
 }
 
-/// The channels the score drives that the face does not paint, as words: `headShiftX` becomes `head shift x`.
+/// Channels the face region paints but whose painter is still a stub in `omuzaki-face`. The caption names them as "not
+/// drawn yet", so a sheet never hides an effect the score asks for. Each entry says which stub file holds it, and the
+/// list shrinks as those files are implemented.
+const UNDRAWN: [Channel; 4] = [
+    // eyeArc*: `painter/eyes/closed.rs`
+    Channel::EYE_ARC_LEFT,
+    Channel::EYE_ARC_RIGHT,
+    // eyesHeart: `painter/eyes/effects.rs`
+    Channel::EYES_HEART,
+    // tears: `painter/eyes/effects.rs`
+    Channel::TEARS,
+];
+
+/// A channel's name as words: `headShiftX` becomes `head shift x`.
+fn words(channel: Channel) -> String {
+    let mut words = String::new();
+    for ch in channel.name().chars() {
+        if ch.is_ascii_uppercase() {
+            words.push(' ');
+        }
+        words.push(ch.to_ascii_lowercase());
+    }
+    words
+}
+
+/// The channels the score drives that the face does not paint, as words: head and body channels are "not painted", and
+/// the stubs in [`UNDRAWN`] are "not drawn yet".
 fn not_painted(score: &Score) -> String {
-    let words: Vec<String> = score
-        .tracks
-        .iter()
-        .map(|t| t.channel)
-        .filter(|c: &Channel| matches!(c.region(), Region::Head | Region::Body))
-        .map(|c| {
-            let mut words = String::new();
-            for ch in c.name().chars() {
-                if ch.is_ascii_uppercase() {
-                    words.push(' ');
-                }
-                words.push(ch.to_ascii_lowercase());
-            }
-            words
-        })
-        .collect();
-    if words.is_empty() {
-        "not painted here - nothing the score drives".into()
+    let mut not_painted = Vec::new();
+    let mut not_drawn_yet = Vec::new();
+    for channel in score.tracks.iter().map(|t| t.channel) {
+        if UNDRAWN.contains(&channel) {
+            not_drawn_yet.push(words(channel));
+        } else if matches!(channel.region(), Region::Head | Region::Body) {
+            not_painted.push(words(channel));
+        }
+    }
+    let mut parts = Vec::new();
+    if !not_painted.is_empty() {
+        parts.push(format!("not painted: {}", not_painted.join(", ")));
+    }
+    if !not_drawn_yet.is_empty() {
+        parts.push(format!("not drawn yet: {}", not_drawn_yet.join(", ")));
+    }
+    if parts.is_empty() {
+        "nothing the score drives is left out".into()
     } else {
-        format!("not painted here - {}", words.join(", "))
+        parts.join("; ")
     }
 }
 
