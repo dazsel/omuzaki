@@ -40,7 +40,8 @@ pub const COMMAND_QUEUE_LEN: usize = 16;
 /// Commands one [`PerformControl::advance`] takes from the queue. A producer can refill the queue as fast as it is
 /// drained, so this bounds the work before the performer steps; the rest wait for the next call.
 pub const MAX_COMMANDS_PER_ADVANCE: usize = 4;
-/// Steps a neutral capture waits for its next tracked frame before it gives up (10 s at the 60 Hz step).
+/// Ticks (steps of the control's timeline, 1/[`STEP_HZ`] s each, skipped ones included) a neutral capture waits for its
+/// next tracked frame before it gives up: 10 s.
 pub const CAPTURE_STALL_STEPS: u64 = 600;
 /// How long [`PerformHost::set_retarget`] waits for the performer to apply a change before it reports
 /// [`PerformError::Stalled`]: several frames of the perform loop, which takes the queue at
@@ -136,7 +137,7 @@ pub enum CalibrationState {
         /// Tracked frames it was taken over.
         frames: usize,
     },
-    /// The last capture gave up: the face was not seen for [`CAPTURE_STALL_STEPS`] steps.
+    /// The last capture gave up: the face was not seen for [`CAPTURE_STALL_STEPS`] ticks (10 s).
     Failed {
         /// Tracked frames held when it gave up.
         got: usize,
@@ -540,8 +541,8 @@ struct Running {
     frames: usize,
     /// Tracked frames held at the last step that made progress.
     held: usize,
-    /// Steps since the capture last made progress, counted by the control itself so a performer reset cannot confuse it.
-    idle: u64,
+    /// The control-timeline tick (see [`PerformControl`]) at which the capture started or last made progress.
+    progress_tick: u64,
     /// Whether the frames are all in and only the performer's calibration is left to set.
     full: bool,
 }
@@ -568,6 +569,10 @@ impl FpsMeter {
 ///
 /// It runs the performer's steps itself (with [`Performer::step`], on the same fixed schedule `Performer::advance`
 /// keeps), so it sees every step's frame, and its step count never rewinds when the performer is reset.
+///
+/// Its **timeline** counts ticks of 1/[`STEP_HZ`] s from the first `advance`, including the ticks a slow loop skips
+/// ([`skipped_steps`](Self::skipped_steps)). Anything that means elapsed time (the capture's 10 s stall limit) is
+/// measured on it, not in steps executed; the frame rate is measured on the frames' own timestamps.
 pub struct PerformControl {
     // Field order matters: the receiver drops first, then `_slot` frees the capture reservation (see `SlotGuard`).
     commands: Receiver<Command>,
@@ -600,6 +605,7 @@ impl PerformControl {
             self.publish();
             return None;
         };
+        self.check_stall();
         let last = first + count - 1;
         for index in first..last {
             let out = performer.step(Tick::at_rate(index, STEP_HZ));
@@ -638,7 +644,7 @@ impl PerformControl {
             Command::Calibrate(frames) => {
                 let frames = frames.clamp(MIN_NEUTRAL_FRAMES, MAX_NEUTRAL_FRAMES);
                 self.capture.reset();
-                self.running = Some(Running { frames, held: 0, idle: 0, full: false });
+                self.running = Some(Running { frames, held: 0, progress_tick: self.next_step, full: false });
                 self.live.calibration = CalibrationState::Capturing { frames: 0, of: frames };
             }
             Command::Config { seq, config } => {
@@ -658,8 +664,9 @@ impl PerformControl {
     /// Takes in one executed step: the tracking state, the frame rate and the capture.
     fn observe(&mut self, out: &PerformOutput<'_>) {
         self.live.tracking = out.tracking;
-        if out.frame.is_some() {
-            self.fps.arrived(out.tick.time.0);
+        if let Some(frame) = out.frame {
+            // The frame's own timestamp, not the loop's: the rate is the tracker's, whatever the loop does.
+            self.fps.arrived(frame.time.0);
         }
         self.live.fps = self.fps.fps;
         self.feed_capture(out);
@@ -679,14 +686,24 @@ impl PerformControl {
         if held >= run.frames {
             run.full = true;
         } else if held > run.held {
-            (run.held, run.idle) = (held, 0);
-        } else {
-            run.idle += 1;
-            if run.idle >= CAPTURE_STALL_STEPS {
-                self.live.calibration = CalibrationState::Failed { got: held, need: run.frames };
-                self.running = None;
-                self.shared.capturing.store(false, Ordering::Release);
-            }
+            // Progress at step `index` means the timeline has covered `index + 1` ticks.
+            (run.held, run.progress_tick) = (held, out.tick.index + 1);
+        }
+    }
+
+    /// Fails a capture the face has been missing from for [`CAPTURE_STALL_STEPS`] ticks of the control's timeline.
+    /// The timeline is the one `due_steps` keeps, which counts the ticks it skips too, so a slow loop or a pause is
+    /// 10 s of waiting just as 600 stepped ticks are. Checked before the due steps run, so frames that arrive after a
+    /// long gap do not rescue the capture.
+    fn check_stall(&mut self) {
+        let Some(run) = self.running.as_ref().filter(|run| !run.full) else {
+            return;
+        };
+        if self.next_step.saturating_sub(run.progress_tick) >= CAPTURE_STALL_STEPS {
+            let (got, _) = self.capture.progress();
+            self.live.calibration = CalibrationState::Failed { got, need: run.frames };
+            self.running = None;
+            self.shared.capturing.store(false, Ordering::Release);
         }
     }
 

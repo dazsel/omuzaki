@@ -16,11 +16,12 @@ use std::time::Duration;
 use omuzaki_anim::life::Life;
 use omuzaki_anim::retarget::ArkitRetarget;
 use omuzaki_anim_api::{
-    Calibration, Channel, ChannelBuf, DeviceProfile, FrameSource, HumanoidPose, Layer, LifeConfig, Response, Retarget,
-    RetargetConfig, TrackFrame,
+    Calibration, Channel, ChannelBuf, ChannelRange, DeviceProfile, FrameSource, HeadPose, HumanoidPose, Layer,
+    LifeConfig, Response, Retarget, RetargetConfig, TrackFrame,
 };
 use omuzaki_anim_mock::animator::MockAnimator;
 use omuzaki_anim_mock::track::{SyntheticSpec, TrackReplay, synthetic_track};
+use omuzaki_core::glam::Vec3;
 use omuzaki_core::time::Seconds;
 use omuzaki_stage::perform::host::{
     COMMAND_QUEUE_LEN, CalibrationState, MAX_COMMANDS_PER_ADVANCE, PerformControl, PerformError, PerformHandle,
@@ -123,6 +124,17 @@ impl Retarget for Quiet {
     fn reset(&mut self) {
         self.0.reset();
     }
+}
+
+/// A calibration whose every field depends on `seed`, so two seeds differ everywhere.
+fn distinct_calibration(seed: f32, profile: DeviceProfile, position: Option<Vec3>) -> Calibration {
+    let mut calibration = Calibration::identity(profile);
+    for (i, info) in Channel::arkit().iter().enumerate() {
+        let lo = seed + i as f32 * 0.01;
+        calibration.set_range(info.channel, ChannelRange { lo, hi: lo + 1.0 + seed });
+    }
+    calibration.head_rest = HeadPose { yaw: seed + 0.1, pitch: seed + 0.2, roll: seed + 0.3, position };
+    calibration
 }
 
 /// A config that is not the default and has per-channel responses (so cloning it allocates).
@@ -251,6 +263,47 @@ fn a_reset_late_in_a_session_still_fails_a_stalled_capture_after_600_steps() {
 }
 
 #[test]
+fn a_loop_that_advances_once_a_second_still_fails_a_silent_capture_after_10_seconds() {
+    let (host, mut control, mut performer) = rig(Box::new(Silent));
+    host.calibrate(150).unwrap();
+    // One call a second: 60 ticks come due each time and all but 4 are skipped.
+    let call = |control: &mut PerformControl, performer: &mut Performer, second: u32| {
+        control.advance(performer, Seconds(f64::from(second) + 0.5 / 60.0)).expect("steps are due");
+    };
+    for second in 1..=9 {
+        call(&mut control, &mut performer, second);
+        assert!(matches!(host.status().calibration, CalibrationState::Capturing { .. }), "second {second}");
+    }
+    call(&mut control, &mut performer, 10);
+    assert_eq!(host.status().calibration, CalibrationState::Failed { got: 0, need: 150 });
+    assert!(control.skipped_steps() > 0, "the loop really skipped ticks");
+}
+
+#[test]
+fn a_ten_second_pause_fails_the_capture_even_if_a_frame_arrives_after_it() {
+    let (host, mut control, mut performer) = rig(replay(60.0));
+    host.calibrate(150).unwrap();
+    for i in 1..=20 {
+        step(&mut control, &mut performer, i);
+    }
+    let CalibrationState::Capturing { frames, .. } = host.status().calibration else { panic!("not capturing") };
+    assert!(frames > 0, "the capture had started");
+    // The loop stalls for 10 s; the tracker is fine and its next frame is there when the loop resumes.
+    control.advance(&mut performer, Seconds(10.5 + 21.0 / 60.0)).expect("steps are due");
+    assert_eq!(host.status().calibration, CalibrationState::Failed { got: frames, need: 150 });
+}
+
+#[test]
+fn the_frame_rate_reads_the_trackers_30_fps_off_the_frames_own_timestamps() {
+    let (host, mut control, mut performer) = rig(replay(20.0));
+    for i in 1..=300 {
+        step(&mut control, &mut performer, i);
+    }
+    let fps = host.status().source_fps;
+    assert!((fps - 30.0).abs() < 0.5, "frame rate {fps}");
+}
+
+#[test]
 fn every_catch_up_step_feeds_the_capture_and_the_frame_rate() {
     // 30 fps arrives on every other 60 Hz step; calls come every two steps, so each call's frame is on its FIRST step.
     let (host, mut control, mut performer) = rig(replay(20.0));
@@ -355,7 +408,11 @@ fn forty_captures_back_to_back_with_no_reads_keep_the_newest_calibration() {
 #[test]
 fn readers_never_see_a_torn_calibration_while_the_performer_replaces_it() {
     let (host, mut control, mut performer) = rig(replay(60.0));
-    let (a, b) = (Calibration::identity(DeviceProfile::Arkit), Calibration::identity(DeviceProfile::Webcam));
+    // Every word differs between the two (profile, each range, head angles, the position flag and the position), so a
+    // read that mixes them matches neither.
+    let a = distinct_calibration(0.1, DeviceProfile::Arkit, Some(Vec3::new(1.0, 2.0, 3.0)));
+    let b = distinct_calibration(0.5, DeviceProfile::Webcam, None);
+    assert_ne!(a, b);
     let initial = host.calibration();
     let stop = AtomicBool::new(false);
     std::thread::scope(|scope| {
