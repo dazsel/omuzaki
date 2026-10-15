@@ -110,6 +110,14 @@ impl SettingError {
         Self { key: key.into(), kind }
     }
 
+    /// The same error, about `key`. The registry uses it to make every error from a setting's own `check` or `migrate`
+    /// name the setting that was asked about, whatever key (or none) the callback put in it.
+    #[must_use]
+    pub fn for_key(mut self, key: impl Into<String>) -> Self {
+        self.key = key.into();
+        self
+    }
+
     /// No such key.
     #[must_use]
     pub fn unknown_key(key: impl Into<String>) -> Self {
@@ -178,7 +186,9 @@ pub struct SettingFinding {
 }
 
 impl SettingFinding {
-    /// A finding about `stored`, read from `from`.
+    /// A finding about `stored`, read from `from`. `error` should come from
+    /// [`SettingRegistration::validate`](crate::registry::SettingRegistration::validate) or
+    /// [`migrate`](crate::registry::SettingRegistration::migrate), which always name the registered key.
     #[must_use]
     pub fn new(error: SettingError, stored: Value, from: impl Into<String>) -> Self {
         Self { error, stored, from: from.into() }

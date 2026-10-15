@@ -48,7 +48,8 @@ pub trait Setting: 'static {
     /// Rules a type cannot say (ranges, cross-field). Runs on every write and on load.
     ///
     /// # Errors
-    /// A [`SettingError`] naming the key and the rule.
+    /// A [`SettingError`] naming the rule. The registry puts this setting's key on it whatever key the error carries,
+    /// so `SettingError::range("ui.scale", ..)` and an error built with an empty key read the same to a caller.
     fn check(_value: &Self::Value) -> Result<(), SettingError> {
         Ok(())
     }
@@ -56,7 +57,8 @@ pub trait Setting: 'static {
     /// Brings a value stored at version `from` (below `META.version`) to the current shape.
     ///
     /// # Errors
-    /// A [`SettingError`] when the old value cannot be carried over (the key then reads as its default).
+    /// A [`SettingError`] when the old value cannot be carried over (the key then reads as its default). Re-keyed to
+    /// this setting like [`check`](Self::check)'s.
     fn migrate(_from: u32, old: Value) -> Result<Value, SettingError> {
         Ok(old)
     }

@@ -37,11 +37,12 @@ fn default_of<S: Setting>() -> Value {
 fn check_of<S: Setting>(value: &Value) -> Result<(), SettingError> {
     let typed: S::Value =
         serde_json::from_value(value.clone()).map_err(|e| SettingError::wrong_type(S::META.key, e))?;
-    S::check(&typed)
+    // Whatever key the callback put in its error (none, or another setting's), the error names this registration.
+    S::check(&typed).map_err(|e| e.for_key(S::META.key))
 }
 
 fn migrate_of<S: Setting>(from: u32, old: Value) -> Result<Value, SettingError> {
-    S::migrate(from, old)
+    S::migrate(from, old).map_err(|e| e.for_key(S::META.key))
 }
 
 impl SettingRegistration {
@@ -75,7 +76,8 @@ impl SettingRegistration {
     /// Checks `value` against the type (a wrong type is rejected) and then `Setting::check` (a range is enforced).
     ///
     /// # Errors
-    /// A [`SettingError`] that names this key.
+    /// A [`SettingError`] that names this key: the key of an error returned by the setting's own `check` is replaced by
+    /// the registered one, so a callback cannot misattribute a failure.
     pub fn validate(&self, value: &Value) -> Result<(), SettingError> {
         (self.check)(value)
     }
@@ -83,7 +85,7 @@ impl SettingRegistration {
     /// Runs `Setting::migrate` on a value stored at version `from`.
     ///
     /// # Errors
-    /// A [`SettingError`] that names this key.
+    /// A [`SettingError`] that names this key, re-keyed like [`validate`](Self::validate).
     pub fn migrate(&self, from: u32, old: Value) -> Result<Value, SettingError> {
         (self.migrate)(from, old)
     }
