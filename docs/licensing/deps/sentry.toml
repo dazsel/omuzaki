@@ -1,0 +1,7 @@
+section = "rust"
+item = "sentry, sentry-minidump"
+kind = "crate"
+used_for = "crash reports"
+status = "conditions"
+condition = "DPA before sending personal data; scrub minidumps"
+audit = "B4"

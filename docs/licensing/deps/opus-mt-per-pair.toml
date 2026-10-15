@@ -1,0 +1,7 @@
+section = "models"
+item = "OPUS-MT per-pair translation models (Helsinki-NLP, Marian), Hugging Face repos"
+kind = "model"
+used_for = "caption translation candidate"
+status = "NO"
+condition = "`opus-mt-ko-en`, `-en-es`, `-es-en`, `-en-zh`, `-zh-en` and the `tc-big-*` family name Tatoeba-Challenge as their source, whose training data is CC-BY-NC-SA 4.0 (Tatoeba-Challenge README); weights tags `apache-2.0` or `cc-by-4.0` per repo. `opus-mt-ja-en` and `-en-ROMANCE` are OPUS builds whose per-corpus terms are unread, so they stay `unverified` (treated as NO)"
+audit = "research 2026-10-caption-translation.md"

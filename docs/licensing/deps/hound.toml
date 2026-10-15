@@ -1,0 +1,8 @@
+section = "models"
+item = "hound 3.5"
+kind = "crate"
+used_for = "WAV reading in the `omuzaki-audio` host benchmark and tests (dev-dependency only, not in shipped builds)"
+status = "yes"
+condition = "Apache-2.0"
+audit = "(crates.io)"
+crates = ["hound"]
