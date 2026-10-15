@@ -56,5 +56,9 @@ harness = false
 name = "poses"
 harness = false
 
+[[bench]]
+name = "triggers"
+harness = false
+
 [lints]
 workspace = true
