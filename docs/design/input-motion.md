@@ -24,7 +24,7 @@ same stages); `scenes.md` D7 (props). Pages named alone are in `docs/design/`.
 | D1 | A new contract, **`omuzaki-input-api`**, with `omuzaki-input-mock` and one implementation crate `omuzaki-input` that holds every OS backend. Not inside `omuzaki-track-api`. | §2 |
 | D2 | **Key identities exist in one module of one crate.** The capture thread turns a key into a *zone* (a cell of a fixed, coarse keyboard grid) and, only when it matches a configured binding, a *binding slot*. Neither the contract's hot types nor anything after the capture thread can hold a key code or a character. Pointer input is relative motion, never a screen position. | §3 |
 | D3 | **Capture is off by default, turned on only by a person** (`person_only`, scope `input`, which already exists on `main`: no `omuzaki-ops-api` change), **never restored** at start, and **runs only while an indicator is shown**: a surface installs its indicator with the hub (not through an op), start fails with `NoIndicator` unless it is shown, and the hub pauses itself if it stops showing. Anyone may pause or stop (`read`), and every pause or stop releases whatever was held. The protected-program kill switch is set only with `process`, and its pause reason is shown only to `process`. | §4 |
-| D4 | **Bindings and triggers share the source.** Each capture backend feeds its own SPSC rings: zone events to the frame thread (motion), binding events to the binding dispatcher (PF-05 actions, PF-25 triggers, locomotion intents), drained in turn; the drained order is what takes and replays record. Binding events carry their table generation; releases survive overflow, and held-state snapshots reconcile any loss. Chords live in a machine-local store that `Services`, ops, MCP and agents never reach. | §2, §5 |
+| D4 | **Bindings and triggers share the source.** Each capture backend feeds its own SPSC rings: zone and pad events to the frame thread (motion), locomotion intents to the frame thread (`IntentFeed`), other bindings to the binding dispatcher (`BindingFeed`), drained in turn; the drained order is what takes and replays record. The feeds resolve every binding hit to its stable id and action inside `omuzaki-input`: generations survive table swaps, a press owns its release, releases survive overflow, and held snapshots reconcile any loss. Chords live in a machine-local store that `Services`, ops, MCP and agents never reach. | §2, §5 |
 | D5 | **Motion is pose layers plus IK goals in the §8 order:** after the animator, before the rig. Typing, pointer, pen and gamepad are device motions sharing one hand allocator; each hand belongs to one device at a time. A tracked bone wins (PF-23) through a `tracked` bone mask, with a 0.3 s hand-over. No `omuzaki-anim-api` change. | §6 |
 | D6 | **Locomotion** is a state machine (idle, walk, run, jump, sit, emote) over a 1-D speed blend; walk and run are a procedural gait (licence-clean by construction), jump, sit and emotes are pose clips (#223). The root moves procedurally, matched to stride; foot planting (`omuzaki-rig`) removes the rest of the slide. A set is a library item that materialises its values and clips into the character and pins itself (ADR 0019 §4). | §7 |
 | D7 | **Props** are four ST-03 prop kinds with named anchors (key plane, pad plane, tablet plane, grips). Hands use the anchors whether the prop is drawn or hidden. A desk is placed from the character's own proportions. | §8 |
@@ -59,28 +59,33 @@ at has no section yet, so locomotion is kept world-agnostic (§7.6) and promises
  OS (Raw Input, CGEventTap, XI2, evdev, GlobalShortcuts portal, XInput/GameController via gilrs)
    │  omuzaki-input: one capture thread per backend; key codes live only in `normalise`
    ▼
- per backend b:  normalise ──► zone table ──► motion ring[b] (SPSC, 512) ──┐ drained in turn (§2)
-                     │                                                     └─► frame thread: MotionFeed::drain ──► omuzaki-anim
-                     └──► binding matcher ──► binding ring[b] (SPSC, 64) ──┐ drained in turn (§2)
-                     └──► held slots[b] (atomic snapshot, generation)  ────┴─► binding dispatcher: PF-05 actions,
-                                                                               PF-25 triggers, locomotion intents
- gamepad backend: newest-wins PadState (triple buffer) ──► frame thread
+ per backend b:  normalise ──► zone table ──► motion ring[b] (SPSC, 512) ───────┐ drained in turn (§2)
+                     │                                                          └─► frame thread: MotionFeed ──► omuzaki-anim
+                     ├──► binding matcher ──► intent ring[b] (SPSC, 64) ───────┐ drained in turn
+                     │                   │                                      └─► frame thread: IntentFeed ──► locomotion
+                     │                   └──► binding ring[b] (SPSC, 64) ──────┐ drained in turn
+                     │                                                          └─► dispatcher: BindingFeed (PF-05, PF-25)
+                     └──► held snapshot[b] (atomic, one writer) ── read by the feeds for reconciliation (§5)
+ gamepad backend: its own motion ring (PadEdges), rings as above for pad bindings,
+                  and a newest-wins PadState (triple buffer, levels only) ──► frame thread
 ```
 
 **One producer per ring.** Every capture backend runs on its own thread and owns its own rings, so each ring has
 exactly one producer and one consumer and stays a plain SPSC ring with no lock. Each ring is in order; **across rings
 no global order is promised.** Backends are scheduled independently, so an event stamped earlier on one backend can
 reach its ring after a later event on another has already been drained, and no barrier between them is worth a stall on
-the frame thread. A consumer drains the running backends' rings in turn (in the declaration order of `Backend`,
-`Windows`, `MacTap`, `X11`, `Evdev`, `Portal`, `Gamepad`, which only fixes whose ring is read first), and **the live
-order is the order it drained**. Determinism comes from recording that order, not from re-deriving it: a take's
+the frame thread. A consumer drains the running backends' rings in turn (in the order of the backends' registered
+names, which only fixes whose ring is read first), and **the live order is the order it drained**. Backends register
+themselves inside `omuzaki-input` (`register_input_backend!` next to each backend, with a stable name such as
+`windows.raw_input`), and the hub hands each an opaque `BackendId`; the contract has no list of backends, so adding one
+is a folder and nothing else. Determinism comes from recording that order, not from re-deriving it: a take's
 `Motion` records keep the drained order (§9), and `ReplaySource` keeps each event's backend and its position in the
 drained order, so a replay hands consumers exactly the same sequence. Cross-device order inside one 1/120 s window is
 not visible in the motion anyway (each device drives its own hand or layer).
 
 | Crate | Kind | Holds |
 |---|---|---|
-| `omuzaki-input-api` | API (over `omuzaki-core`, `serde`, `schemars`, `thiserror`) | the event and state types of §3, the zone table, `BindingSlot`, `BindingId`, `KeyChord` (cold, binding store only), `CaptureState`, `CaptureCaps`, the traits `MotionFeed`, `BindingFeed`, `InputControl`, `Indicator` |
+| `omuzaki-input-api` | API (over `omuzaki-core`, `serde`, `schemars`, `thiserror`) | the event and state types of §3, the zone table, `BindingId`, `BindingAction`, `Intent`, `BackendId`, `PadId`, `KeyChord` (cold, binding store only), `CaptureState`, `CaptureCaps`, the traits `MotionFeed`, `IntentFeed`, `BindingFeed`, `InputControl`, `Indicator`, `IndicatorHost`, `ChordStore` |
 | `omuzaki-input-mock` | Mock | `FakeInput` (scripted events on `FakeClock`), `ReplaySource` (recorded input from text, deterministic), the conformance suite every backend passes |
 | `omuzaki-input` | Implementation (`wasm = false`: OS input) | the hub, the normaliser and binding matcher, the rings, the indicator host, the kill switch, the backends (`windows`, `macos`, `linux_x11`, `linux_evdev`, `linux_portal`, `gamepad`), the ops `input.capture.*` and `input.binding.*` |
 
@@ -126,26 +131,35 @@ pub enum MotionEvent {                        // Copy, at most 32 bytes; what th
     Pointer { dx: f32, dy: f32, wheel: f32, at: Seconds },                      // coalesced relative motion, metres on the pad
     Pen { u: u8, v: u8, pressure: u8, tilt: [i8; 2], contact: bool, at: Seconds }, // 32 x 32 grid, coarse (below)
 }
-pub struct PadState { pub pad: u8, pub sticks: [[i8; 2]; 2], pub triggers: [u8; 2], pub zones: PadZones, pub at: Seconds }
+    PadEdges { pad: PadId, pressed: PadZones, released: PadZones, at: Seconds },  // queued, so a tap between drains is kept
+}
+pub struct PadId(u8);                         // a connected pad, stable while it stays connected
+pub struct PadState { pub pad: PadId, pub sticks: [[i8; 2]; 2], pub triggers: [u8; 2], pub zones: PadZones, pub at: Seconds }
 pub struct PadZones(u16);                     // DPad, Face, LeftStick, RightStick, LeftShoulder, RightShoulder, LeftTrigger, RightTrigger, Centre
-pub struct BindingSlot(u8);                   // index into one generation of the binding table, 0..MAX_BINDINGS (64)
-pub struct TableGen(u32);                     // the binding table's generation; bumped on every swap
-pub enum Backend { Windows, MacTap, X11, Evdev, Portal, Gamepad }   // declaration order is only the drain turn (§2)
-pub struct CaptureEpoch(u32);                 // bumped on every transition out of On, and per backend on its exit (§4)
-pub struct BindingEvent { pub gen: TableGen, pub slot: BindingSlot, pub edge: Edge, pub backend: Backend, pub at: Seconds }
+pub struct BackendId(u16);                    // opaque; the hub assigns it from the backend's registered stable name (§2)
+pub struct BindingId(u32);                    // stable for the binding's life, from the binding store
 pub enum Edge { Press, Release, Repeat }
-pub struct HeldSlots { pub gen: TableGen, pub held: u64 }   // per backend: which slots are down now (bit per slot)
+pub enum Intent { Move { x: i8, y: i8 }, Run, Jump, Sit, Emote(u8) }   // Copy: the locomotion intents (§7.1)
+#[non_exhaustive]
+pub enum BindingAction {                      // cold; owned by the binding store, set by input.binding.set_action
+    Op { op: String, args: serde_json::Value },   // run by the binding dispatcher (#469)
+    Trigger(u8),                                   // a PF-25 trigger slot (#478)
+    Intent(Intent),                                // routed to the frame thread's IntentFeed, never to the dispatcher
+}
+pub struct BindingHit<'a> { pub id: BindingId, pub action: &'a BindingAction, pub edge: Edge, pub at: Seconds }
+pub struct IntentEvent { pub id: BindingId, pub intent: Intent, pub edge: Edge, pub at: Seconds }   // Copy
 
 pub trait MotionFeed: Send {                  // the frame thread's port; never blocks, never allocates
     fn drain(&mut self, up_to: Seconds, out: &mut MotionFrame);   // events with at <= up_to: each ring in its order, rings in turn (§2)
-    fn pad(&self, pad: u8) -> Option<PadState>;                    // newest wins
+    fn pad(&self, pad: PadId) -> Option<PadState>;                 // newest wins (levels only; edges are PadEdges)
 }
 pub struct MotionFrame { /* fixed array of MOTION_FRAME_MAX (128) events, a dropped count, and
                              reset: DeviceMask, the classes whose held state ended this frame (§4, §5a) */ }
-pub trait BindingFeed: Send {
-    fn poll(&mut self) -> Option<BindingEvent>;          // the backends' rings drained in turn; no global order (§2)
-    fn dropped(&self) -> u64;                             // edges dropped by any ring since start; a change triggers reconciliation
-    fn held(&self, backend: Backend) -> HeldSlots;       // the backend's held-state snapshot
+pub trait IntentFeed: Send {                  // the frame thread's port for locomotion intents; never blocks, never allocates
+    fn drain(&mut self, up_to: Seconds, out: &mut IntentFrame);   // fixed array of IntentEvent, plus reset like MotionFrame
+}
+pub trait BindingFeed: Send {                 // the binding dispatcher's port (ops side): resolved, ready to run
+    fn poll(&mut self) -> Option<BindingHit<'_>>;   // a Release carries the action its press started (§5)
 }
 ```
 
@@ -183,8 +197,8 @@ hot types stay in memory.
 2. **One module.** In `omuzaki-input`, `HidUsage` and the raw event are `pub(crate)` in `normalise`; the backends hand
    raw events straight to it through a `pub(crate)` sink, on the capture thread's stack, overwritten by the next event.
 3. **No text path.** The crate has no `Display` or `Debug` for raw events (a manual `Debug` prints `<key>`), no logging
-   of key codes, and panics inside the capture thread are caught and reported as `CaptureState::Failed { reason }` with a
-   fixed reason string (the crash-report design keeps only registered templates and sends no memory, `privacy.md` §3, §4).
+   of key codes, and panics inside a capture thread are caught and reported as that backend's `BackendState::Failed { reason }`
+   with a fixed reason string (the crash-report design keeps only registered templates and sends no memory, `privacy.md` §3, §4).
 4. **No injection or hooks.** No `SendInput`, `CGEventPost`, uinput, `SetWindowsHookEx` or DLL in the crate. A test
    in `omuzaki-input` fails if the crate's dependency tree in `Cargo.lock` holds `rdev`, `device_query`, `inputbot` or
    `willhook`, or if its `src/` names any of those symbols.
@@ -210,9 +224,18 @@ an agent with `perform` drives the avatar, which must never imply reading anothe
 private call) without losing the classes chosen; the hub's own pauses (indicator, protected program) use the same path.
 | `input.motion.*` settings keys | (settings registry) | agent `Confirm` | the motion settings of §6.5 |
 
-`CaptureState` is `Off`, `NeedsPermission { how: PermissionHow }` (macOS Input Monitoring, Linux `input` group for
-evdev), `On { classes }`, `Paused { why: Option<PauseWhy> }` (`IndicatorLost`, `ProtectedApp`) or `Failed { reason }`.
-Who sees `why` is limited by the kill-switch rule below.
+**State is per backend, summarised once.** Each running backend has a `BackendState`: `Running`,
+`NeedsPermission { how: PermissionHow }` (macOS Input Monitoring, Linux `input` group for evdev) or
+`Failed { reason }` (a fixed string). The global `CaptureState` is derived from them, never set on its own:
+- `Off` before start and after stop; `Paused { why: Option<PauseWhy> }` (`IndicatorLost`, `ProtectedApp`) while paused;
+- `On { classes, degraded }` while **any** backend runs: `classes` are the device classes actually being read, and
+  `degraded` lists the classes asked for whose backend is not running (failed, missing permission, not built for this
+  OS), so the person and the indicator see both;
+- `Failed { reason }` only when capture was started and **no** backend runs.
+
+A backend that fails while others run takes only its own epoch (below), releasing what it held; the rest keep running
+and the state stays `On` with that class in `degraded`. `input.capture.state` returns the summary and the per-backend
+list (`[{ name, classes, state }]`, no device names). Who sees `why` is limited by the kill-switch rule below.
 `CaptureCaps` says per class and OS what works (`pen_pressure: Unavailable`, `typing: NeedsOptIn` on Wayland), so the UI
 can say so (research §2).
 
@@ -226,11 +249,12 @@ an automation or a script can always turn capture off.
 **The indicator is a precondition, not a courtesy.** An op request cannot carry anything a surface holds, so the
 indicator is installed with the hub, not passed through an op. When a surface starts, it calls
 `IndicatorHost::install(Box<dyn Indicator>)` on the hub: a hub API that, like `ChordStore`, is handed to the surface
-directly and never inserted into `Services`, so no op, MCP tool or agent can install or replace an indicator. The two
-surfaces that install one are the desktop shell (its status-bar badge and tray state, "Reading keyboard and mouse:
-zones only. Stop"; task UI-1) and the CLI (a persistent stderr banner; task CLI-1). `input.capture.start` then calls
+directly and never inserted into `Services`, so no op, MCP tool or agent can install or replace an indicator. **An installed indicator is visible in every state, `Off` included**: it shows "Input capture: off" (with the Start
+control, which only the person can use) before capture starts, and "Reading keyboard and mouse: zones only. Stop"
+while it runs, so `shown()` describes the indicator, not the capture. The two surfaces that install one are the desktop
+shell (its status-bar badge and tray state; task UI-1) and the CLI (a stderr status line; task CLI-1). `input.capture.start` then calls
 `InputControl::start(classes)`, which fails with the typed `InputError::NoIndicator` unless an indicator is installed
-and `Indicator::shown()` reads `true`; a headless process that installed none can never start capture. The hub calls
+and `Indicator::shown()` reads `true` at that moment; a headless process that installed none can never start capture. The hub calls
 `shown()` once a second on its control thread; if it reads `false` (the window was hidden by a bug, the surface
 uninstalled or dropped it) the hub pauses capture within a second and reports `Paused { why: IndicatorLost }`. Windows
 and X11 show the user nothing of their own (research §5), so this is the only signal the person has.
@@ -240,9 +264,9 @@ stops would otherwise never deliver its release. The control thread must not wri
 (each has exactly one writer, §2), so the release travels as an **epoch**, not as injected events:
 1. Every transition out of `On` (an explicit `pause` or `stop`, a lost indicator, a protected program) bumps one atomic
    `CaptureEpoch` and then tells each backend thread to stop reading.
-2. Each backend thread, on its own thread, discards what it has not pushed, clears its own `HeldSlots`, and parks.
-3. Each consumer (the dispatcher, the frame thread's `MotionFeed`) reads the epoch before every poll or drain. On a
-   change it first ends everything it holds: the dispatcher synthesises a `Release` for every held-action record
+2. Each backend thread, on its own thread, discards what it has not pushed, clears its own held snapshot, and parks.
+3. Each feed (`BindingFeed`, `IntentFeed`, `MotionFeed`) reads the epoch before every poll or drain. On a change it
+   first ends everything it holds: the binding and intent feeds hand out a `Release` for every held-action record
    (§5), motion releases every zone, button and pad zone it holds (fingers lift, locomotion intents fall to zero), and
    then it discards any ring entry stamped with an older epoch (every pushed event carries the epoch it was read in).
    `CaptureState` is published only after both consumers have acknowledged the new epoch, or after 100 ms if one is
@@ -292,36 +316,43 @@ source delivers them; the action catalogue and the dispatcher belong to #469 and
   result is shown in the binding editor and written to the store, and nothing goes through the executor. A conflict
   (the same chord on two bindings) is reported, not overwritten.
 - **Matching.** On the capture thread, after the zone is computed, the raw event is compared with the active table (a
-  fixed array of at most 64 chords, swapped in whole by the control thread when the store changes). A match pushes
-  `BindingEvent { gen, slot, edge, backend, at }` to that backend's binding ring. Modifier state is kept inside
-  `normalise`. A non-match produces nothing on that ring.
-- **Identity across table swaps.** Every swap bumps the table's generation (`TableGen`), and every event carries the
-  generation it was matched against. The dispatcher resolves `(gen, slot)` against **that** generation's table, never
-  the current one: it keeps each retired table (a fixed pool of 4 generations, recycled off the hot path) until the
-  last queued event of that generation has drained, so a queued slot can never index another binding. An event from a
-  retired generation whose binding (by its stable `BindingId`) is gone from the current table is dropped and counted;
-  so that this never strands a held action, the dispatcher ends every action held for a binding the new table removes
-  (a synthesised `Release`) when it takes the swap.
+  fixed array of at most `MAX_BINDINGS` (64) chords, swapped in whole by the control thread when the store changes). A
+  match pushes an internal entry `(gen, slot, edge, at)` to that backend's ring for the binding's consumer: **intent
+  bindings** go to the backend's intent ring (read by the frame thread through `IntentFeed`), **every other binding**
+  to its binding ring (read by the dispatcher through `BindingFeed`). Each ring has one producer and one consumer.
+  Modifier state is kept inside `normalise`. A non-match produces nothing.
+- **Resolution is the feed's job, not the consumer's.** The generation tables, slots, held snapshots and held-action
+  records are `pub(crate)` in `omuzaki-input`; the feeds hand consumers resolved values only: `BindingHit { id, action,
+  edge, at }` (the stable `BindingId` and a borrow of the `BindingAction`) and `IntentEvent { id, intent, edge, at }`.
+  So #469's dispatcher runs `hit.action` and #478's triggers press `Trigger(n)`, and neither needs to know a table
+  exists. The rest of this list is how the feeds keep that resolution right.
+- **Identity across table swaps.** Every swap bumps the table's generation, and every entry carries the generation it
+  was matched against. The feed resolves `(gen, slot)` against **that** generation's table, never the current one: it
+  keeps each retired table (a fixed pool of 4 generations, recycled off the hot path) until the last queued entry of
+  that generation has drained, so a queued slot can never index another binding. If 4 generations are pending (edits
+  faster than the consumers drain), the control thread waits to swap instead of recycling a table that still has
+  queued entries. An entry from a retired generation whose binding (by its `BindingId`) is gone from the current table
+  is dropped and counted; so that this never strands a held action, the feed hands out a `Release` for every action
+  held for a binding the new table removes when it takes the swap.
 - **A press owns its release.** A key can be held across a swap: pressed under the old table, released under the new
-  one. So the dispatcher keeps a held-action record per `BindingId` (a fixed array of `MAX_BINDINGS`), written at the
-  press: the generation and the action the press started. A `Release` ends **the action in that record**, whatever the
-  release's own generation or the current table says, and clears it; a `Repeat` repeats the recorded action. If the
-  binding's action was edited while it was held, the old action ends at the release and the new action never starts
-  from that press; the next press starts the new one. A `Release` with no record (its press was dropped, or happened
-  before a resume) does nothing. If 4 generations are pending
-  (edits faster than the dispatcher drains), the control thread waits to swap instead of recycling a table that still
-  has queued events.
-- **A lost release is never permanent.** Inside a run of capture, edges can be dropped only when a ring is full (the
-  dispatcher is stalled); a pause or stop releases everything held (§4).
-  The ring keeps releases, as the motion ring keeps key-ups: a full binding ring drops its oldest `Repeat`, then its
-  oldest complete tap (a `Press` with its `Release` queued behind it, both together), then its oldest lone `Press`; it
-  drops a `Release` only if the ring holds nothing else. Each backend also publishes `HeldSlots`, the slots it holds
-  down now, as an atomic snapshot with its generation. Whenever `dropped()` has moved, the dispatcher reconciles: any
-  action it holds for a slot that the backend's snapshot says is up gets a synthesised `Release`; a slot held in the
-  snapshot but not active is left alone (a missed press is not replayed, since its moment has passed). So a stalled
-  dispatcher can delay a release but cannot leave movement or a held trigger stuck.
-- **Consumers.** The binding dispatcher (#469) polls `BindingFeed` on the ops side and runs the action; PF-25 triggers
-  get slot presses as trigger slot presses; locomotion intents are turned into an `Intents` value per frame (§7.1).
+  one. So each feed keeps a held-action record per `BindingId` (a fixed array of `MAX_BINDINGS`), written at the press:
+  the generation and the action the press started. A `Release` resolves to **the action in that record**, whatever its
+  own generation or the current table says, and clears it; a `Repeat` repeats the recorded action. If the binding's
+  action was edited while it was held, the old action ends at the release and the new action never starts from that
+  press; the next press starts the new one. A `Release` with no record (its press was dropped, or happened before a
+  resume) is not handed out.
+- **A lost release is never permanent.** Inside a run of capture, entries can be dropped only when a ring is full (its
+  consumer is stalled); a pause, a stop or a backend leaving releases everything held (§4). A full ring keeps releases,
+  as the motion ring keeps key-ups: it drops its oldest `Repeat`, then its oldest complete tap (a `Press` with its
+  `Release` queued behind it, both together), then its oldest lone `Press`, and drops a `Release` only if the ring holds
+  nothing else. Each backend also publishes a held snapshot (the slots it holds down now, with its generation). Whenever
+  a ring has dropped anything, the feed reconciles: every held-action record whose slot the snapshot shows as up gets a
+  synthesised `Release`; a slot held in the snapshot with no record is left alone (a missed press is not replayed,
+  since its moment has passed). So a stalled consumer can delay a release but cannot leave movement or a held trigger
+  stuck.
+- **Consumers.** The binding dispatcher (#469) polls `BindingFeed` on the ops side and runs each hit's action (an op,
+  or a PF-25 trigger press); the frame thread drains `IntentFeed` and folds the intents into an `Intents` value per
+  frame (§7.1).
   Gamepad bindings (`PadChord`: a button, a combination, or a stick past a threshold) match in the same place.
 - **Wayland.** Bindings use the GlobalShortcuts portal: the portal sends only the shortcuts we registered, which is the
   binding table itself, so the privacy rule holds by construction there.
@@ -329,7 +360,7 @@ source delivers them; the action catalogue and the dispatcher belong to #469 and
   sit; the pad's left stick and face buttons). A preset is just bindings; nothing is bound until the person applies it.
 
 Note for #469 (filed by the lead, not here): PF-05 consumes `BindingFeed` from `omuzaki-input` and adds no second OS
-capture path; OSC, MIDI and Stream Deck are other sources of the same `BindingEvent`.
+capture path; OSC, MIDI and Stream Deck are other sources of the same `BindingHit`.
 
 ## 5a. Invariants: held state, ordering and scopes
 
@@ -352,7 +383,7 @@ place in the design it applies, so the tasks test the class, not one instance.
 threads nothing is promised, and determinism comes from recording the drained order (§2). Every other order in the
 design is single-threaded and fixed: the frame stages (§6.1), the pose layers (`PoseLayers` lowest first), the IK stage
 (look-at, palms, limbs, feet), the take's chunk records (takes.md T2). Each piece of shared state has exactly one
-writer: a ring and a `HeldSlots` snapshot are written only by their backend's thread; the binding table and the epochs
+writer: a ring and a held snapshot are written only by their backend's thread; the binding table and the epochs
 only by the control thread; consumers only read them. No step anywhere writes into another thread's ring.
 
 **3. Every op names its scope, and none widens what its caller can do.**
@@ -365,6 +396,7 @@ only by the control thread; consumers only read them. No step anywhere writes in
 | `input.capture.protect` | `process` | `Confirm` | checks whether named programs run |
 | `input.binding.list` | `read` | free | ids, names, actions; never a chord |
 | `input.binding.set_action`, `input.binding.remove` | `perform`, plus every scope of the action's op | `Confirm` | a binding cannot launder an op its setter could not run (§5) |
+| `input.binding.apply_preset` | `perform`, plus every scope of the preset's actions | `Confirm` | the preset's chords are data in `omuzaki-input`; the op names the preset only |
 | chord learning, indicator install | none: hub APIs handed to the surface, never ops or services | not reachable | identities and the indicator stay out of the executor |
 | `input.motion.*` settings keys | settings registry, `User` | `Confirm` | capture-adjacent, so never `Free` (settings.md rule) |
 | `locomotion.set` | `edit:character` | as the registry allows | writes document values (§7.4) |
@@ -443,7 +475,8 @@ pub struct PalmGoal { pub frame: Transform, pub pole: Vec3, pub weight: f32 }
 - Both hands hold the pad (`TwoHandedProp` on the pad's grip anchors) at chest height; the posture layer is a pose from
   the pose library (`hold-pad`), scaled by the desk rig.
 - Thumbs: the finger layer bends each thumb so its tip follows its stick cap within the stick's travel; a face or d-pad
-  zone press moves the thumb to that cluster; shoulder and trigger zones curl the index fingers with the trigger value.
+  zone press (a queued `PadEdges` event, so a tap shorter than a frame still moves the thumb) moves the thumb to that
+  cluster; shoulder and trigger zones curl the index fingers with the trigger value.
 - **Stick look** (opt-in, #749's numbers kept: ±35° yaw, ±20° pitch, smoothing 0.1 s, return in 0.3 s) is a `LookAt`
   goal with `eye_share` 0.3, **not** a channel write. #749 proposed the `Trigger` layer, but that layer sits above the
   tracker in `LayerStack` and would override a tracked head. The stage gives the look-at goal weight 0 whenever the bus
@@ -605,16 +638,17 @@ locomotion is active, fixed little-endian layout, about 40 to 80 bytes (plus the
 member u8 | flags u8 (HAS_KEYS, HAS_BUTTONS, HAS_POINTER, HAS_PEN, HAS_PAD, HAS_LOCO, HAND_ONLY, CHECKPOINT)
   | reset u8 (DeviceMask: classes whose held state ended before this frame's edges, §5a) | aux u8 (bit 0 HAS_SETTINGS)
 keys:     n u8 | n × (zone u8 | down u8)                      // edges, in drained order within the frame (§2); no times
-buttons:  n u8 | n × (source u8 | button u8 | down u8)        // edges: source 0 mouse, 1 pen, 2 pad (a pad zone)
+buttons:  n u8 | n × (source u8 | button u8 | down u8)        // edges: source 0 mouse, 1 pen
+pad_edges: n u8 | n × (pad u8 | zone u8 | down u8)            // from MotionEvent::PadEdges, one entry per zone bit
 pointer:  dx f32 | dy f32 | wheel f32                         // summed over the frame (motion integrates per frame)
 pen:      u u8 | v u8 | pressure u8 | contact u8 | tilt i8 × 2 | 2 reserved   // the frame's last sample
-pad:      sticks i8 × 4 | triggers u8 × 2 | 2 reserved                         // levels; pad zones are button edges
+pad:      pad u8 | sticks i8 × 4 | triggers u8 × 2 | reserved u8               // levels of the active pad; zones are pad_edges
 loco:     state u8 | flags u8 (RUN, JUMP, SIT) | emote u8 | reserved u8 | move i8 × 2 | 2 reserved | root x, y, z f32 | yaw f32
 settings: len u16 | the motion settings (§6.5) as written, when they changed this frame (HAS_SETTINGS)
 checkpoint (group-start chunks only): len u16 | MotionCheckpoint bytes (below)
 ```
 
-**Edges, not bitmaps.** Keys, mouse and pen buttons and pad zones are recorded as the edges that arrived in the frame,
+**Edges, not bitmaps.** Keys, mouse and pen buttons and pad zones (with their pad) are recorded as the edges that arrived in the frame,
 in drained order, so a click or a tap shorter than one frame (down and up in the same 33 ms) replays as the strike it was. A
 per-frame bitmap of what is held would lose it. Levels (pointer deltas, pen position, sticks, triggers, the move vector)
 are values, since motion samples them once per frame.
@@ -717,6 +751,8 @@ crate describes itself in its own `Cargo.toml` (`[package.metadata.omuzaki]` `ki
 | IN-9 | new (Wayland bindings) | `omuzaki-input` (portal) | sonnet | IN-3; the owner's answer to §12 question 2 |
 | UI-1 | new (indicator) | `omuzaki-ui` | sonnet | IN-1 |
 | CLI-1 | new (indicator) | `omuzaki-cli` | haiku | IN-1 |
+| UI-2 | new (binding editor, kill-switch list) | `omuzaki-ui` | sonnet | IN-3, IN-8 |
+| WIRE-1 | new (App wiring) | `omuzaki-cli` | sonnet | IN-3, IN-8, CLI-1, ST-1 |
 | MO-1 | #748 (typing half) | `omuzaki-anim` | sonnet | IN-1 |
 | MO-2 | #748 (pointer half) | `omuzaki-anim` | sonnet | MO-1 |
 | MO-3 | #749 | `omuzaki-anim` | sonnet | MO-1 |
@@ -732,18 +768,44 @@ crate describes itself in its own `Cargo.toml` (`[package.metadata.omuzaki]` `ki
 | SP-1 | research spikes 1 to 4 | none (a report) | local lane | IN-4 |
 
 The table is each task's model and `Blocked by` line; the sections below give the title, crate, fence, contract and
-acceptance. Order: IN-1 → (IN-2, MO-1, LO-1, UI-1, CLI-1 in parallel) → IN-3 → (IN-4 to IN-9, MO-2, MO-3, LO-2, LO-3, LO-4) → ST-1 → ST-2,
+acceptance. Order: IN-1 → (IN-2, MO-1, LO-1, UI-1, CLI-1 in parallel) → IN-3 → (IN-4 to IN-9, UI-2, MO-2, MO-3, LO-2, LO-3, LO-4) → ST-1 → WIRE-1, ST-2,
 ST-3 → ST-4, EV-1. MO-1 and LO-1 need only the contract and the mock, so the motion work never waits on an OS backend.
+
+### Who owns each boundary
+
+Every public type and handle this design adds, who produces it, who consumes it, and the task that connects them. A
+row without both ends inside a task would be an interface nobody owns; there is none.
+
+| Boundary | Producer (task) | Consumer (task) |
+|---|---|---|
+| `InputHub` construction, `Services` entry `dyn InputControl` | `omuzaki-input` (IN-3) | the App (WIRE-1); ops (IN-8) |
+| `IndicatorHost`, `Indicator` | hub (IN-3) | desktop shell (UI-1), CLI (CLI-1), handed over by WIRE-1 |
+| `ChordStore` | hub (IN-3) | desktop shell's binding editor (UI-2), handed over by WIRE-1 |
+| `MotionFeed` (`MotionEvent`, `PadEdges`, `MotionFrame.reset`) | hub and backends (IN-3 to IN-7, IN-5 for pads) | stage frame (ST-1) → `InputMotion` (MO-1 to MO-3); set by WIRE-1 |
+| `PadState` levels | gamepad backend (IN-5) | `pad_motion` (MO-3), locomotion `move` (ST-2) |
+| `IntentFeed` (`IntentEvent`) | hub (IN-3), portal (IN-9) | stage locomotion (ST-2) → `Locomotion` (LO-1); set by WIRE-1 |
+| `BindingFeed` (`BindingHit`) | hub (IN-3), portal (IN-9) | the binding dispatcher of #469 (actions) and #478 (trigger presses); WIRE-1 hands it over |
+| `BindingAction` values | `input.binding.set_action`, `apply_preset` (IN-8) | the feeds (IN-3) |
+| `CaptureState`, `BackendState` | hub (IN-3) | `input.capture.state` (IN-8), indicators (UI-1, CLI-1) |
+| `input.motion.*` settings keys | registered by LO-4 | stage (ST-1), by settings subscription |
+| `MotionOut`, `PalmGoal`, `DeskRig` | `omuzaki-anim` (MO-1) | stage IK stage (ST-1) |
+| `InputPropAnchors` | stage props (ST-3) | desk rig input in the stage (ST-1) |
+| `Intents`, `RootStep`, `LocomotionDef` | `omuzaki-anim` (LO-1, LO-2) | stage (ST-2); `locomotion.set` (LO-4) |
+| `locomotion.home`, `locomotion.state` | stage (ST-2) | ops callers |
+| `MotionCheckpoint`, the `motion` take provider, the `Motion` record | MO-1, LO-1 (checkpoint), ST-4 (record, provider) | the take reader (#1149 family), re-render |
+| `register_input_backend!` | each backend folder (IN-4 to IN-7, IN-9) | the hub (IN-3) |
 
 ### IN-1: `omuzaki-input-api`: events, zones, bindings, capture state and the traits (new API crate)
 
 - **Fence:** `crates/omuzaki-input-api/**` (new: `Cargo.toml`, `src/lib.rs`, `src/event.rs`, `src/zones.rs`,
   `src/binding.rs`, `src/capture.rs`, `src/feed.rs`, `tests/zones.rs`, `tests/no_identity.rs`).
 - **Contract:** §3 and §5 as written: `KeyZone` and the 16-zone table by HID usage, `ZoneInfo`, `MotionEvent`,
-  `PadState`, `PadZones`, `BindingSlot`, `BindingId`, `TableGen`, `Backend`, `BindingEvent`, `HeldSlots`, `Edge`,
-  `KeyChord` and `PadChord` (cold), `CaptureState`, `CaptureCaps`, `PermissionHow`, `PauseWhy`, `MotionFrame` (`MOTION_FRAME_MAX` 128), `MAX_BINDINGS`
-  64, `InputError` (with `NoIndicator`), the traits `MotionFeed`, `BindingFeed`, `InputControl`, `Indicator`,
-  `IndicatorHost` and `ChordStore`. Needs the
+  `PadState`, `PadZones`, `PadId`, `BackendId`, `BindingId`, `BindingAction`, `Intent`, `BindingHit`, `IntentEvent`, `Edge`,
+  `KeyChord` and `PadChord` (cold), `CaptureState`, `BackendState`, `CaptureCaps`, `PermissionHow`, `PauseWhy`,
+  `DeviceMask`, `MotionFrame` (`MOTION_FRAME_MAX` 128), `IntentFrame`, `MAX_BINDINGS` 64, `InputError` (with
+  `NoIndicator`), the traits `MotionFeed`, `IntentFeed`, `BindingFeed`, `InputControl`, `Indicator`, `IndicatorHost`,
+  `ChordStore`, and `InputHub` (the one constructor contract an App calls: it returns the `Services` entry, the two
+  surface handles and the three feeds, §13 "Who owns each boundary"). Needs the
   Director's approval as a new contract.
 - **Acceptance:** the zone table covers every usage of the ANSI (104), ISO (105) and JIS (109) boards, counted in a test;
   `MotionEvent` is `Copy` and at most 32 bytes (`size_of` test); serde round trip of every cold type; a test that no
@@ -753,8 +815,9 @@ ST-3 → ST-4, EV-1. MO-1 and LO-1 need only the contract and the mock, so the m
 ### IN-2: `omuzaki-input-mock`: `FakeInput`, `ReplaySource` and the conformance suite (new mock)
 
 - **Fence:** `crates/omuzaki-input-mock/**` (new).
-- **Contract:** IN-1. `FakeInput` (scripted events and pad states on `FakeClock`, implements `MotionFeed`, `BindingFeed`
-  and `InputControl`), `ReplaySource::from_text` (the recorded-input text format: one event per line, zone names, times
+- **Contract:** IN-1. `FakeInput` (scripted events, pad states and binding hits on `FakeClock`; implements `InputHub`,
+  `MotionFeed`, `IntentFeed`, `BindingFeed`, `InputControl`, `IndicatorHost` and `ChordStore`, so every consumer task
+  tests against the mock before IN-3 lands), `ReplaySource::from_text` (the recorded-input text format: one event per line, zone names, times
   in seconds and the backend, in drained order), `conformance::run(&mut dyn MotionFeed, …)`.
 - **Acceptance:** replay of a 60 s script is identical over two runs and after a text round trip; `drain` allocates 0
   bytes (counting allocator); `drain(up_to)` never returns an event after `up_to` (proptest); a dropped-event count when
@@ -769,7 +832,9 @@ ST-3 → ST-4, EV-1. MO-1 and LO-1 need only the contract and the mock, so the m
   `src/hub.rs`, `src/normalise.rs`, `src/matcher.rs`, `src/rings.rs`, `src/dispatch.rs` (draining the rings, the
   generation pool, held actions and reconciliation), `src/indicator.rs`, `src/kill_switch.rs`, `src/store.rs`; `tests/privacy.rs`,
   `tests/gate.rs`, `tests/bindings.rs`, `benches/normalise.rs` and its `[[bench]]` entry.
-- **Contract:** IN-1; ops-api `Scope::Input`; §3 (rules 1 to 5), §4 and §5. A `pub(crate)` `RawSink` the backends call.
+- **Contract:** IN-1; ops-api `Scope::Input`; §3 (rules 1 to 5), §4 and §5. Implements `InputHub` and the three feeds
+  (`MotionFeed`, `IntentFeed`, `BindingFeed`), `InputControl`, `IndicatorHost` and `ChordStore`; `register_input_backend!`
+  for the backend folders; a `pub(crate)` `RawSink` the backends call.
 - **Acceptance:** the zone-equivalence proptest (§3 rule 5) over every output surface the crate has; `start` fails with
   `NoIndicator` when no indicator is installed and when the installed one reports hidden, and capture pauses within
   1.1 s of `Indicator::shown()` turning false (`FakeClock`); **held across a pause:** hold a movement binding and a key,
@@ -777,7 +842,7 @@ ST-3 → ST-4, EV-1. MO-1 and LO-1 need only the contract and the mock, so the m
   next `MotionFrame` carries `reset` for the keyboard class before the state is published, and after resuming the
   still-held key does nothing until pressed again; **one backend leaves:** with keyboard and gamepad both capturing,
   fail the gamepad backend while a pad binding and a key are held: the pad binding's action ends and the gamepad class
-  resets, while the key stays held; **single writers:** a debug-build check on every ring and `HeldSlots` records its
+  resets, while the key stays held; **single writers:** a debug-build check on every ring and held snapshot records its
   writer thread and fails if a second thread writes; **a press owns its release:** press a binding, swap in a table that changes its action, release:
   the old action ends and the new one never starts, and the next press starts the new one; the binding table
   matches chords with modifiers and reports conflicts; a full ring drops the oldest motion event and counts it, and
@@ -786,8 +851,9 @@ ST-3 → ST-4, EV-1. MO-1 and LO-1 need only the contract and the mock, so the m
   slot 1's binding and gives slot 2's chord another action, drain: slot 1's held action ends at the swap and its queued
   release is dropped and counted, slot 2's press and release both run its old action, and no event runs an action of
   another binding); **a lost release:** hold a movement binding,
-  overflow its backend's binding ring with repeats from a stalled dispatcher, release the key, resume the dispatcher:
-  the movement action ends (by the queued release or by reconciliation against `HeldSlots`) within one dispatch;
+  overflow its backend's intent ring with repeats from a stalled consumer, release the key, resume the consumer: the
+  movement intent ends (by the queued release or by reconciliation against the held snapshot) within one drain, and the
+  same for an op binding through `BindingFeed`;
   the forbidden-symbol test of §3 rule 4;
   `normalise` plus `match` at most 1 µs per event on `Dev` (bench); check green.
 
@@ -807,8 +873,10 @@ ST-3 → ST-4, EV-1. MO-1 and LO-1 need only the contract and the mock, so the m
 
 - **Fence:** `crates/omuzaki-input/src/gamepad/**`, `tests/gamepad.rs`, the `gilrs` dependency
   (`default-features = false`, `xinput` on Windows) with register row and deps file.
-- **Contract:** `PadState`, `PadZones`, `PadChord` (IN-1); research §1.1, §1.2, §1.5, §4.
-- **Acceptance:** a mapping test from gilrs events to `PadState` and `PadZones` with a fake gilrs event list; dead zone
+- **Contract:** `PadState`, `PadZones`, `PadId`, `MotionEvent::PadEdges`, `PadChord` (IN-1); a `register_input_backend!`
+  named `gamepad.gilrs`; research §1.1, §1.2, §1.5, §4.
+- **Acceptance:** a mapping test from gilrs events to `PadState`, queued `PadEdges` and `PadZones` with a fake gilrs
+  event list (a press and release between two drains arrive as two edges, with the pad id); dead zone
   and quantisation (i8, u8) exact at the edges; hot-plug of a second pad keeps pad indices stable; the libudev link is
   dynamic (recorded under the LGPL-shared rule); unplugging a pad with a stick deflected and a button held publishes a
   neutral `PadState` and the backend's epoch, so nothing stays deflected or pressed; check green on Linux and the
@@ -838,8 +906,9 @@ ST-3 → ST-4, EV-1. MO-1 and LO-1 need only the contract and the mock, so the m
 - **Fence:** `crates/omuzaki-input/src/ops/**` (one file per op), `crates/omuzaki-input/tests/ops.rs`.
 - **Contract:** ops-api (`register_op!`, `Scope::Input`, `person_only`, `require_person`), `InputControl` as a service;
   §4 and §5 tables: `input.capture.start`, `input.capture.stop`, `input.capture.state`, `input.capture.protect`,
-  `input.capture.pause`, `input.binding.list`, `input.binding.set_action`, `input.binding.remove`. No op takes or
-  returns a chord or an indicator.
+  `input.capture.pause`, `input.binding.list`, `input.binding.set_action`, `input.binding.remove`,
+  `input.binding.apply_preset { preset }` (scope `perform`, agent `Confirm`; the preset's chords are data inside
+  `omuzaki-input`, so the op carries only the preset name). No op takes or returns a chord or an indicator.
 - **Acceptance:** table tests with person, agent and automation actors (an agent's `input.capture.start` is `Denied`
   and never queued; a person's `start` with no indicator installed fails with `NoIndicator`; **a read-only actor**
   (grants `read` only) stops and pauses capture; stopping and pausing are idempotent; `input.binding.set_action` with an
@@ -858,7 +927,8 @@ ST-3 → ST-4, EV-1. MO-1 and LO-1 need only the contract and the mock, so the m
 - **Fence:** `crates/omuzaki-input/src/linux_portal/**`, `tests/portal.rs`, the `ashpd` dependency (its
   `global_shortcuts` feature) in `crates/omuzaki-input/Cargo.toml` with its row in `docs/licensing/register.md` and its
   file in `docs/licensing/deps/`.
-- **Contract:** `BindingFeed`, `HeldSlots`, `Backend::Portal` (IN-1); §5 ("Wayland"): the binding table is registered
+- **Contract:** `BindingFeed`, `IntentFeed` (IN-1), the internal ring, generation and held-snapshot machinery (IN-3),
+  a `register_input_backend!` named `linux.portal`; §5 ("Wayland"): the binding table is registered
   as the portal's shortcut list (one shortcut per binding, described by its name, never by a chord we invent), and every
   table swap re-registers it; `Activated` and `Deactivated` signals become `Press` and `Release` on the portal backend's
   own binding ring; the portal gives no zones, so this backend produces no motion events. `CaptureCaps` reports
@@ -867,31 +937,64 @@ ST-3 → ST-4, EV-1. MO-1 and LO-1 need only the contract and the mock, so the m
   skipped with a message where the runner has none): registering a table of three bindings sends three shortcuts with
   their names and no key codes; activation and deactivation signals arrive as `Press` and `Release` with the right
   `(gen, slot)`; a table swap re-registers and stamps the new generation; a portal that refuses or is missing gives
-  `CaptureState::Failed` with a fixed reason and leaves the other backends running; check green.
+  the portal backend `BackendState::Failed` with a fixed reason, leaves the other backends running and the global state
+  `On` with keyboard bindings in `degraded` (and `Failed` only when the portal was the only backend); check green.
 
 ### UI-1: `omuzaki-ui`: the capture indicator in the desktop shell
 
 - **Platform area** (the Platform lead signs off the shell files).
 - **Fence:** `crates/omuzaki-ui/src/shell/input_indicator.rs` and its `mod` line in `src/shell/mod.rs`,
   `crates/omuzaki-ui/tests/input_indicator.rs`, the `omuzaki-input-api` dependency in `crates/omuzaki-ui/Cargo.toml`.
-- **Contract:** `Indicator`, `IndicatorHost`, `CaptureState` (IN-1); §4: the status-bar badge and tray state while
-  capture is `On` or `Paused` (the classes read, the detail, the full pause reason and program for the person, and a
-  one-click Stop that calls `input.capture.stop`); installed with the hub at shell start; `shown()` is true only while
-  the badge is actually drawn in a visible window.
-- **Acceptance:** with the shell's test harness, the badge appears within one frame of `On`, `shown()` turns false when
-  the window is hidden or the badge is removed, and Stop ends capture; strings go through the localisation pipeline;
-  check green.
+- **Contract:** `Indicator`, `IndicatorHost`, `CaptureState`, `BackendState` (IN-1); §4: a status-bar badge and tray
+  state **in every capture state, `Off` included** ("Input capture: off" with a Start control for the person; while on,
+  the classes read, the degraded classes, the detail, and a one-click Stop that calls `input.capture.stop`; while
+  paused, the full reason and program for the person); installed with the hub at shell start (the handle comes from
+  WIRE-1); `shown()` is true only while the badge is actually drawn in a visible window.
+- **Acceptance:** with the shell's test harness, the badge is drawn at `Off` and `shown()` is true, so a person's
+  `input.capture.start` succeeds; the badge changes within one frame of `On`; `shown()` turns false when the window is
+  hidden or the badge is removed, and capture then pauses; Stop ends capture; strings go through the localisation
+  pipeline; check green.
 
 ### CLI-1: `omuzaki-cli`: the capture banner
 
 - **Platform area.**
 - **Fence:** `crates/omuzaki-cli/src/input_banner.rs` and its `mod` line in `src/lib.rs`,
   `crates/omuzaki-cli/tests/input_banner.rs`, the `omuzaki-input-api` dependency in `crates/omuzaki-cli/Cargo.toml`.
-- **Contract:** `Indicator`, `IndicatorHost` (IN-1); §4: a persistent stderr banner line while capture is on, reprinted
-  after other output, installed only when stderr is a terminal (`shown()` is false otherwise, so a piped or headless
-  run can never start capture).
-- **Acceptance:** with stderr a pseudo-terminal the banner prints on `On` and `shown()` is true; with stderr redirected
-  `start` fails with `NoIndicator`; check green.
+- **Contract:** `Indicator`, `IndicatorHost` (IN-1); §4: a stderr status line printed as soon as the indicator is
+  installed ("input capture: off") and kept current in every state, reprinted after other output; installed only when
+  stderr is a terminal (`shown()` is false otherwise, so a piped or headless run can never start capture). The handle
+  comes from WIRE-1.
+- **Acceptance:** with stderr a pseudo-terminal the line prints at `Off`, `shown()` is true there and `start` succeeds,
+  and the line changes on `On`, `Paused` and `Off`; with stderr redirected `start` fails with `NoIndicator`; check
+  green.
+
+### UI-2: `omuzaki-ui`: the binding editor and the protected-program list
+
+- **Platform area.**
+- **Fence:** `crates/omuzaki-ui/src/shell/input_bindings.rs` and its `mod` line in `src/shell/mod.rs`,
+  `crates/omuzaki-ui/tests/input_bindings.rs`.
+- **Contract:** `ChordStore` (learn, set, remove, conflicts; IN-1, IN-3), the ops `input.binding.*` and
+  `input.capture.protect` (IN-8), §4 and §5: the only place chords are learnt and shown, and the person's own editor for
+  the kill-switch list (it calls the hub through the handle WIRE-1 gives the shell).
+- **Acceptance:** learning a chord through the harness stores it and shows it only in this panel; the panel's actions
+  that go through ops carry no chord (checked on the recorded requests); a conflicting chord is shown, not overwritten;
+  check green.
+
+### WIRE-1: wiring `omuzaki-input` into the Apps
+
+- **Owner:** the App that builds `Services` (today `omuzaki-cli`'s session, `crates/omuzaki-cli/src/session.rs`; the
+  desktop App's startup path does not exist on `main` yet, so its half is a follow-up in the same shape once it does).
+- **Fence:** `crates/omuzaki-cli/src/session.rs`, `crates/omuzaki-cli/Cargo.toml` (the `omuzaki-input` dependency),
+  the CLI's link gate `crates/omuzaki-cli/tests/registrations.rs` expectations (the one-line `link()` call is inside
+  the fence by standing ruling), `crates/omuzaki-cli/tests/input_wiring.rs`.
+- **Contract:** `InputHub` (IN-1, built in IN-3): construct the hub once per process; insert its `dyn InputControl`
+  into `Services`; hand `IndicatorHost` to the surface (CLI-1 here, UI-1 in the desktop App) and `ChordStore` only to
+  the desktop shell (UI-2); give the stage its `MotionFeed` and `IntentFeed` (through ST-1's and ST-2's setters) and the
+  binding dispatcher its `BindingFeed` (#469); call `omuzaki_input::link()`. `omuzaki-mcp`'s standalone server is
+  deliberately not wired: there `input.*` ops answer `Unavailable`, which a test pins.
+- **Acceptance:** a CLI session with a terminal stderr lists the `input.*` ops, `input.capture.state` answers `Off`,
+  and a person's `start` reaches the hub; the link gate passes; `omuzaki mcp` answers `Unavailable` for
+  `input.capture.start`; check green.
 
 ### MO-1: `omuzaki-anim`: input motion, the desk rig, the hand allocator and typing
 
@@ -922,17 +1025,19 @@ ST-3 → ST-4, EV-1. MO-1 and LO-1 need only the contract and the mock, so the m
 
 - **Fence:** `crates/omuzaki-anim/src/pad_motion/**` (a new top-level folder, so `input_motion` is not edited),
   `crates/omuzaki-anim/tests/pad_motion.rs`, `crates/omuzaki-anim/library/poses/hold-pad.toml`.
-- **Contract:** MO-1's `DeviceMotion`, `PadState` (IN-1), `TwoHandedProp` shape of goals (two palm goals), §6.4.
+- **Contract:** MO-1's `DeviceMotion`, `PadState` and `PadEdges` (IN-1), `TwoHandedProp` shape of goals (two palm
+  goals), §6.4.
 - **Acceptance:** at three statures, thumb tips within 5 mm of the stick caps at full deflection in 8 directions; full
   right-stick deflection gives 35.0 ± 0.5 degrees of look yaw after settling; with the tracker owning a head channel
-  the look goal's weight is 0 after 0.3 s; deterministic, 0 allocations; check green.
+  the look goal's weight is 0 after 0.3 s; a face-button tap whose press and release fall between two frames still
+  moves the thumb; deterministic, 0 allocations; check green.
 
 ### LO-1: `omuzaki-anim`: the locomotion state machine and root motion
 
 - **Fence:** `crates/omuzaki-anim/src/locomotion/{mod.rs,machine.rs,def.rs,intents.rs}`,
   `crates/omuzaki-anim/tests/locomotion.rs`, `crates/omuzaki-anim/benches/locomotion.rs` and its `[[bench]]` entry, the
   `omuzaki-input-api` dependency if MO-1 has not added it.
-- **Contract:** `PoseClip` (#223), `PoseLayer`, IN-1's `BindingEvent` and `PadState` for `Intents`; §7.1, §7.3, §7.4:
+- **Contract:** `PoseClip` (#223), `PoseLayer`, IN-1's `IntentEvent` (from `IntentFeed`) and `PadState` for `Intents`; §7.1, §7.3, §7.4:
   `Intents`, `LocomotionDef`, `Locomotion::step(tick, &Intents, &DeskRig, &mut PoseLayer) -> RootStep`. The gait is a
   trait (`Gait`) with an in-place placeholder until LO-2.
 - **Acceptance:** a test per allowed state pair, and every other pair refused; no bone jumps more than 2 degrees between
@@ -968,9 +1073,9 @@ ST-3 → ST-4, EV-1. MO-1 and LO-1 need only the contract and the mock, so the m
   `mod` lines in the two folders' `mod.rs`, the seed item `crates/omuzaki-anim/library/seed/locomotion/default.toml`
   (registered by the crate's existing `register_library_source!`), `crates/omuzaki-anim/tests/locomotion_ops.rs`.
 - **Contract:** ops-api; ADR 0019 (§4 materialise and pin, §5 update, §8 seed); the settings registry
-  (`settings.md`); `locomotion.set { character, def, clips }` (`edit:character`, values only, never a name),
-  `locomotion.state` (`read`), `locomotion.home` (`perform`), and the `input.motion.*` settings keys of §6.5 (User,
-  agent `Confirm`).
+  (`settings.md`); `locomotion.set { character, def, clips }` (`edit:character`, values only, never a name) and the
+  `input.motion.*` settings keys of §6.5 (User, agent `Confirm`). `locomotion.home` and `locomotion.state` act on the
+  stage's live root, so they are ST-2's.
 - **Acceptance:** undo of `locomotion.set` is exact; `library.apply` of the seed item writes the whole def and every
   clip's keys as pose values under `characters/<id>/locomotion` plus an `applied/<app>` record with the pin, and
   `library.lock` verifies it; after the item is uninstalled or replaced by another version, the project's locomotion
@@ -985,18 +1090,25 @@ ST-3 → ST-4, EV-1. MO-1 and LO-1 need only the contract and the mock, so the m
   planting in the IK stage), `crates/omuzaki-stage/tests/input_frame.rs`, `crates/omuzaki-stage/benches/input_frame.rs`
   and its `[[bench]]` entry, the `omuzaki-input-api` dependency in `crates/omuzaki-stage/Cargo.toml`. Runtime-area files:
   the Runtime lead signs off.
-- **Contract:** `MotionFeed` (IN-1), `InputMotion` and `MotionOut` (MO-1), `HandTarget` and `FootPlanting` (rig), §6.1.
+- **Contract:** `MotionFeed` (IN-1), handed in through a new `Stage::set_motion_feed` that WIRE-1 calls; `InputMotion`
+  and `MotionOut` (MO-1); `HandTarget` and `FootPlanting` (rig); the `input.motion.*` settings (LO-4), read through a
+  `SettingsEvent` subscription and copied on change, never per frame; the device-prop anchors from ST-3 when present,
+  else the desk rig's defaults; §6.1.
 - **Acceptance:** a 60 s replay (typing, mouse) on the mock character gives equal frame digests over two runs; the
   stage's zero-allocation frame test still passes; drain honours the A/V delay (events at `t` act at `t + D`); added
   CPU at most 0.08 ms per frame on `Dev` (drain, motion and palm IK, §10; bench, `scaled`); check green.
 
 ### ST-2: `omuzaki-stage`: locomotion, the live root and camera follow
 
-- **Fence:** `crates/omuzaki-stage/src/perform/locomotion.rs` and its `mod` line in `src/perform/mod.rs`; the place
+- **Fence:** `crates/omuzaki-stage/src/perform/locomotion.rs` and its `mod` line in `src/perform/mod.rs`; the ops
+  `locomotion.home` and `locomotion.state` in `crates/omuzaki-stage/src/ops/locomotion/` (they act on the live root,
+  which only the stage holds; the `src/ops` list is generated); the place
   where the stage builds each member's `AnchorFrame` (`omuzaki-stage-api` `resolve.rs`: `root` is the member's position
   and yaw), which takes the live root instead of the authored one; `crates/omuzaki-stage/tests/locomotion_frame.rs`. A follow-lag field on `CameraDef` is an `omuzaki-stage-api` change:
   it needs the Director's approval on the task before work starts, and lands as its own PR first if approved.
-- **Contract:** `Locomotion`, `RootStep` (LO-1), `Intents` from `BindingFeed` and `PadState`, §7.3.
+- **Contract:** `Locomotion`, `RootStep` (LO-1); `Intents` from `IntentFeed` (handed in through a new
+  `Stage::set_intent_feed` that WIRE-1 calls) and `PadState`; §7.3; `locomotion.home` (`perform`) and
+  `locomotion.state` (`read`).
 - **Acceptance:** added CPU at most 0.02 ms per frame on `Dev` (§10); the root stays inside the walk radius over a
   120 s random-intent run; `locomotion.home` returns within
   0.5 s ± one frame; a `Subject`-framed camera follows with the configured lag; deterministic; check green.
@@ -1005,15 +1117,18 @@ ST-3 → ST-4, EV-1. MO-1 and LO-1 need only the contract and the mock, so the m
 
 - **Fence:** `crates/omuzaki-stage/src/input_props/**` (a new top-level folder, declared by the build script),
   `crates/omuzaki-stage/tests/input_props.rs`.
-- **Contract:** #705's `PropKind` and `register_prop_kind!`; §8's kinds and anchors.
-- **Acceptance:** each kind builds a mesh under 2,000 triangles with its anchors; the default placement puts the key
-  plane within reach (every zone centre inside 95 % of arm reach) at three statures; check green.
+- **Contract:** #705's `PropKind` and `register_prop_kind!`; §8's kinds and anchors. #705's `PropOutput` carries no
+  anchors, so this task does not change it: the anchors are computed in `input_props` from each prop's params and
+  placement (`InputPropAnchors`, a stage-internal type) and handed to ST-1's desk rig each frame.
+- **Acceptance:** each kind builds a mesh under 2,000 triangles; its anchors move with the prop when `stage.set_prop`
+  moves it, and ST-1's hands follow; the default placement puts the key plane within reach (every zone centre inside 95 % of arm reach) at three statures; check green.
 
 ### ST-4: the take's `Motion` record
 
 - **Fence:** `crates/omuzaki-take-api/src/record.rs` (the new kind and its layout, minor version bump; a contract change
   that needs the Director's approval), `crates/omuzaki-stage/src/take/motion.rs`, `crates/omuzaki-stage/tests/take_motion.rs`.
-- **Contract:** takes.md T2, T3 and T5; §9.
+- **Contract:** takes.md T2, T3 and T5; §9; the `motion` live-state provider (`register_take_state!`: the seed and the
+  motion settings) and the per-frame data ST-1 and ST-2 already hold.
 - **Acceptance:** a take recorded during a 120 s replay contains no key code (scan for every usage of the typed string),
   re-renders to the same frames, and an older reader skips the record and counts it; **replay cuts:** for every group
   boundary of that take, a clip cut there and re-rendered from its checkpoint gives frame digests equal to the uncut

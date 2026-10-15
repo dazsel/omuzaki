@@ -28,9 +28,12 @@ the feature. The spec forbids game hooks and injection, and gates the capture be
    the capture thread. What leaves it is a zone of a fixed 16-cell keyboard grid (by physical position) for motion, and a
    binding slot for a configured binding. No public hot type can hold a key code; mouse input is relative motion, never a
    screen position; pen position is coarsened to a 32 x 32 grid. A property test proves two key streams that differ
-   only inside zones give byte-identical output on every surface. Each backend owns its rings (one producer each);
+   only inside zones give byte-identical output on every surface. Backends register themselves inside
+   `omuzaki-input` and are known to the contract only by an opaque `BackendId`. Each backend owns its rings (one
+   producer each);
    consumers drain them in turn, no global order across backends is promised, and takes and replays record the drained
-   order. Binding events carry the generation of the table they matched, a press owns its release (the release ends the
+   order. The feeds hand consumers resolved hits (the stable `BindingId` and its action; locomotion intents on their
+   own frame-thread feed), and inside them binding entries carry the generation of the table they matched, a press owns its release (the release ends the
    action the press started), and a release is never lost for good (rings keep releases; held-state snapshots
    reconcile after any drop; every pause, stop or backend exit releases whatever is held, carried as an epoch so
    every ring and snapshot keeps a single writer).
@@ -40,7 +43,9 @@ the feature. The spec forbids game hooks and injection, and gates the capture be
 4. **Capture is a person's act, shown while it runs.** `input.capture.start` needs scope `input` and is `person_only`;
    `input.capture.pause` and `input.capture.stop` are registered with `read`, so any actor can turn capture off. A
    surface installs its indicator with the hub (a hub API, never an op or a service); start fails with `NoIndicator`
-   unless it is shown, capture pauses when it stops showing, and capture is never restored at start. No new scope: `input` already exists. The
+   unless it is shown (an installed indicator is visible in every state, `Off` included), capture pauses when it stops
+   showing, and capture is never restored at start. State is kept per backend: capture stays `On` while any backend
+   runs, with the others listed as degraded, and is `Failed` only when none runs. No new scope: `input` already exists. The
    protected-program kill switch checks whether named programs run, which `Scope::Process` governs: its list is set
    only with `process` (or by the person in Settings), and the pause reason is shown only to actors with `process`.
 5. **Motion is pose layers and IK goals after the animator and before the rig** (spec §8 order: humanoid, IK, node
