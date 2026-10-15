@@ -3446,6 +3446,7 @@ version = "0.0.0"
 dependencies = [
  "criterion",
  "inventory",
+ "libm",
  "omuzaki-anim-api",
  "omuzaki-char-api",
  "omuzaki-char-mock",
@@ -3825,6 +3826,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-link-probe"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-char",
+ "omuzaki-core",
+ "omuzaki-link-build",
+]
+
+[[package]]
 name = "omuzaki-mcp"
 version = "0.0.0"
 dependencies = [
@@ -3875,6 +3885,7 @@ dependencies = [
  "omuzaki-doc-api",
  "omuzaki-doc-mock",
  "omuzaki-ops-api",
+ "omuzaki-ops-mock",
  "proptest",
  "schemars",
  "serde",
@@ -4163,6 +4174,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-track-api"
+version = "0.0.0"
+dependencies = [
+ "criterion",
+ "omuzaki-anim-api",
+ "omuzaki-core",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "omuzaki-track-mock"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-anim-api",
+ "omuzaki-core",
+ "omuzaki-track-api",
+]
+
+[[package]]
 name = "omuzaki-ui"
 version = "0.0.0"
 dependencies = [
@@ -4182,6 +4215,19 @@ dependencies = [
  "tempfile",
  "toml",
  "tracing",
+]
+
+[[package]]
+name = "omuzaki-update-api"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-core",
+ "schemars",
+ "semver",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "toml",
 ]
 
 [[package]]
@@ -5002,6 +5048,7 @@ dependencies = [
  "dyn-clone",
  "ref-cast",
  "schemars_derive",
+ "semver",
  "serde",
  "serde_json",
 ]
@@ -5041,6 +5088,10 @@ name = "semver"
 version = "1.0.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
+dependencies = [
+ "serde",
+ "serde_core",
+]
 
 [[package]]
 name = "serde"
