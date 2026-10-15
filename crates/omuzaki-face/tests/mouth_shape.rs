@@ -21,6 +21,7 @@ use omuzaki_face::{MouthPiece, RealPainter};
 use omuzaki_face_api::{
     Cmd, DEFAULT_PX_PER_M, DrawList, ExpressionSet, FaceDrawing, FaceInput, FaceLayerId, FaceLayerSpec, FaceMapping,
     FaceProfile, FaceProjection, FaceRasterizer, FaceRect, FaceView, MouthParams, Paint, PaintParams, PathEl, Raster,
+    narrow,
 };
 
 struct Counting;
@@ -507,6 +508,48 @@ fn a_fine_sweep_of_the_opening_has_no_step_that_differs_from_its_neighbour_by_mo
         assert!(change <= SWITCH_JUMP_PX, "steps differ by {change} px, {} steps in", i + 1);
     }
     println!("largest step-to-step change in a sweep of the opening in steps of 0.005: {largest:.3} px");
+}
+
+/// Valid profiles away from the default: thin and thick closed lines on narrow and wide mouths.
+fn odd_profiles() -> Vec<FaceProfile> {
+    [(0.05, 0.0003), (0.002, 0.01), (0.05, 0.01), (0.002, 0.0003), (0.0105, 0.0003), (0.0105, 0.01)]
+        .into_iter()
+        .map(|(half_width, line_width)| {
+            let mut p = glossy();
+            (p.mouth.half_width, p.mouth.line_width) = (half_width, line_width);
+            p
+        })
+        .collect()
+}
+
+#[test]
+fn the_switch_is_continuous_for_thin_and_thick_lines_on_narrow_and_wide_mouths() {
+    for profile in odd_profiles() {
+        let height_at = |open: f32| height_px(&profile, &params(|m| m.open = open));
+        let jump = (height_at(0.0601) - height_at(0.0599)).abs();
+        let what = (profile.mouth.half_width, profile.mouth.line_width);
+        assert!(jump < 0.2, "{what:?}: the switch changes the height by {jump} px");
+        // The mouth only grows from the switch on, and the rim's eased-in weight stays within the coarse sweep's bound.
+        let heights: Vec<f32> = (0..=20_u8)
+            .map(|i| {
+                let mut bus = ChannelBuf::NEUTRAL;
+                bus.set(Channel::JAW_OPEN, f32::from(i) / 20.0);
+                height_px(&profile, &FaceMapping::default().apply(&bus))
+            })
+            .collect();
+        let steps: Vec<f32> = heights.windows(2).map(|w| w[1] - w[0]).collect();
+        let largest = steps.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0_f32, f32::max);
+        // The bound scales with the profile: a step of the lens' own growth (3.73 px at the default mouth, in proportion
+        // to its half-width) and the heavier of the line and the rim, which the eased-in weight cannot exceed.
+        let natural = 3.726 * narrow(profile.mouth.half_width) / 0.0105;
+        let line_px = narrow(profile.mouth.line_width) * DEFAULT_PX_PER_M;
+        let weight = line_px.max(8.64);
+        assert!(largest <= 1.5 * natural + weight, "{what:?}: largest coarse step change {largest} px");
+        // A line thicker than the open mouth's rim gives way to the thinner rim, so only the lighter lines never shrink.
+        if line_px <= 8.64 {
+            assert!(steps[1..].iter().all(|s| *s >= -1e-3), "{what:?}: the mouth shrank after the switch: {steps:?}");
+        }
+    }
 }
 
 #[test]

@@ -6,7 +6,7 @@
 //!   short wavy slit with a light rim and a faint upper-lip arc.
 //! - **Closed line**, below an opening of [`CLOSED_BELOW`]: a thin line whose corners follow the smile of each side. It
 //!   thins towards the switch, so it meets the open shape's rim.
-//! - **Open shape**, otherwise: a lens that grows with the opening (eased in over the same range), rounder with `round`, filled with the interior
+//! - **Open shape**, otherwise: a lens that grows with the opening (eased in over the same range, from a share of the line's thickness), rounder with `round`, filled with the interior
 //!   gradient. The rim round it starts as the closed line and becomes the open mouth's over the openings
 //!   [`CLOSED_BELOW`] to [`FADE_UNTIL`] ([`OpenMouth::fade`]). Its path is kept in [`PaintCtx::open_mouth`] so the interior, teeth and rim clip and stroke the
 //!   same outline instead of recomputing it.
@@ -28,9 +28,10 @@ const FADE_UNTIL: f32 = 0.2;
 /// The closed line is this much thinner at the switch than at rest, so the lens that replaces it keeps the same weight
 /// (the line is 5.8 px thick at the switch and the lens 3.9 px deep, at 3600 px per metre).
 const CLOSED_THIN: f32 = 0.2;
-/// The open lens is this share of its depth at the switch and eases to all of it over the fade, so the extra weight of
-/// the rim is not all added in the two or three steps of a coarse jaw sweep.
-const LENS_AT_SWITCH: f32 = 0.7;
+/// At the switch the open lens is this share of the closed line's thickness deep (and at most all of its own depth),
+/// whatever the profile's line width and scale, so the rim has the rest to make up and the lens' depth eases in over
+/// the fade instead of the rim's weight landing in two or three steps of a coarse jaw sweep.
+const LENS_OF_LINE: f32 = 0.6;
 /// A pucker above this, with the mouth under [`KISS_OPEN_BELOW`], is a kiss.
 const KISS_ABOVE: f32 = 0.35;
 /// The kiss gives way to the open shape from this opening.
@@ -358,13 +359,18 @@ fn open_outline(ctx: &mut PaintCtx<'_>, f: &Frame) -> OpenMouth {
     let style = &ctx.profile.mouth;
     let scale = narrow(style.half_width) / PROTOTYPE_HALF_WIDTH;
     let fade = f.fade();
-    let height = HEIGHT_PER_OPEN * scale * f.open * f.grow * (LENS_AT_SWITCH + (1.0 - LENS_AT_SWITCH) * fade);
+    let round = ctx.params.mouth.round;
+    let full = HEIGHT_PER_OPEN * scale * f.grow;
+    // The lens at the switch, whole: its depth from the upper edge to the lower, against the line's thickness there.
+    let at_switch = full * CLOSED_BELOW * (1.0 + TOP_RISE * (1.0 - ROUND_FLATTENS_TOP * round));
+    let share = (LENS_OF_LINE * f.line_width(style) / at_switch.max(f32::EPSILON)).min(1.0);
+    let height = full * f.open * (1.0 - share * (1.0 - fade));
     let half_width = f.half_width
         * (1.0 + OPEN_WIDENS * f.open)
         * (1.0 - ROUND_NARROWS * ctx.params.mouth.round)
         * (1.0 - PUCKER_NARROWS_OPEN * f.pucker);
     let edges = Edges {
-        round: ctx.params.mouth.round,
+        round,
         smile: f.smile,
         curve: narrow(style.corner_curve) * OPEN_CURVE_RATIO,
         drop: CENTRE_FOLLOWS_SMILE * f32::midpoint(f.smile[0], f.smile[1]),
