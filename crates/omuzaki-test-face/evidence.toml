@@ -1,0 +1,21 @@
+# Render cases for `tools/ci/evidence.py`: CI renders each at the PR's base and at the PR, for pull requests labelled
+# `visual` (.github/workflows/visual-evidence.yml). The format is documented at the top of tools/ci/evidence.py.
+
+[[case]]
+name = "score-templates"
+description = "The nine score templates, five face frames each from start to end, through the real CPU face painter on the default face profile (tests/score_template_sheets.rs)."
+env = { OMUZAKI_SHEET_DIR = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-test-face", "--test", "score_template_sheets", "--", "--ignored", "--exact", "sheet"] },
+]
+images = [
+    "angry.png",
+    "gasp.png",
+    "intro-wave.png",
+    "kiss-mwah.png",
+    "laugh.png",
+    "outro.png",
+    "sad.png",
+    "shy.png",
+    "smug.png",
+]

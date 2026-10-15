@@ -586,3 +586,38 @@ fn extreme_figures_never_resolve_to_non_finite_values() {
         }
     }
 }
+
+#[test]
+fn a_point_light_range_that_underflows_to_zero_is_refused() {
+    // 1e-30 m of range on a figure 1e-30 m tall is 1e-60 m: zero in f32, which the render contract rejects (#2020).
+    let mut def = scene();
+    let point = LightDef {
+        shape: LightShape::Point { position: [0.0, 0.5, 0.5], range: 1e-30 },
+        ..light(Anchor::Subject, Colour::WHITE)
+    };
+    def.lighting.lights.insert(LightId::new("lamp").unwrap(), point);
+    let mut out = resolved(&def, &figures([0.0, 0.0]));
+    let mut tiny = figures([0.0, 0.0]);
+    tiny.get_mut(&member("kiri")).unwrap().height_m = 1e-30;
+    assert_eq!(refused_path(&mut out, &def, &tiny), "lighting.lights");
+    // The same lamp at a normal height resolves with a positive range.
+    assert!(resolved(&def, &figures([0.0, 0.0])).lights.as_slice().iter().all(|l| match l {
+        omuzaki_render_api::Light::Point { range, .. } => *range > 0.0,
+        _ => true,
+    }));
+}
+
+#[test]
+fn a_figure_root_lifted_in_y_is_refused() {
+    let (def, good) = (scene(), figures([0.0, 0.0]));
+    let mut out = resolved(&def, &good);
+    for lift in [0.5, -0.5, 1e-3] {
+        let mut bad = good.clone();
+        bad.get_mut(&member("kiri")).unwrap().root = Affine3A::from_translation(Vec3::new(0.0, lift, 0.0));
+        assert_eq!(refused_path(&mut out, &def, &bad), "cast.kiri", "lift {lift}");
+    }
+    // A float-sized wobble is not a lift.
+    let mut level = good.clone();
+    level.get_mut(&member("kiri")).unwrap().root = Affine3A::from_translation(Vec3::new(1.0, 1e-6, 1.0));
+    assert!(out.resolve_into(checked(&def), &level, ASPECT).is_ok());
+}
