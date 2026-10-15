@@ -1,0 +1,7 @@
+section = "rust"
+item = "SeaweedFS"
+kind = "native"
+used_for = "optional self-hosted S3-compatible team store (LB-07)"
+status = "external"
+condition = "Apache-2.0, verified from `LICENSE` (seaweedfs/seaweedfs at 8093ecf, 2026-10-13); a separate program the team runs; Omuzaki is only an S3 client"
+audit = "upstream licence file"

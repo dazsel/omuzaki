@@ -1,0 +1,8 @@
+section = "in-use"
+item = "Omuzaki wordmark (`.github/assets/omuzaki-wordmark.png`)"
+kind = "asset"
+used_for = "the README's heading image"
+status = "yes"
+condition = "made by Dazsel: the name set in Archivo (OFL-1.1, Omnibus-Type) and filled with the house stripes. It is an image of set type, not a copy of the font, so the OFL adds no condition; the name and mark are Dazsel trademarks (`TRADEMARKS.md`)"
+audit = "(Dazsel, 2026-10-14)"
+paths = [".github/assets/omuzaki-wordmark.png"]

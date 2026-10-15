@@ -1,0 +1,7 @@
+section = "rust"
+item = "cargo-dist"
+kind = "tool"
+used_for = "release packaging"
+status = "yes"
+condition = "build tool only"
+audit = "B4"

@@ -72,6 +72,12 @@ A crate whose folder uses `omuzaki_embed::modules` (ADR 0054) lists that folder 
 
 The other API crates (§39.1) arrive in later phases, each with its mock.
 
+**Planned: shared library sources** (ADR 0057, `docs/design/library-sharing.md` §5). `omuzaki-library-source-api` (API: `ItemStore`,
+`SignedIndex`, review records, the pure source verifier and the team-licence join), `omuzaki-library-source-mock` (Mock:
+`FakeStore` and the conformance suite), `omuzaki-library-source` (Implementation: the folder store, the cache and the
+`library.team.*` ops) and `omuzaki-library-source-s3` (Implementation: the bucket store, so the network dependency stays
+out of the rest).
+
 **Planned: connectors** (ADR 0030, `docs/design/connectors.md` D1 and D13). `omuzaki-connect-api` (API: manifests,
 requests, the `Connectors` service, the tray), `omuzaki-connect-mock` (Mock), `omuzaki-connect` (Implementation: the host
 and the `connect.*` ops) and one `omuzaki-connect-<family>` Implementation per adapter family. HTTP has one contract,

@@ -1,0 +1,7 @@
+section = "rust"
+item = "nalgebra 0.35.0"
+kind = "crate"
+used_for = "matrix and rotation maths of the head-pose fit in `omuzaki-track` (shipped; `default-features = false`, `std`), and in the webcam tracking spike (`spikes/webcam-track`) it was ported from"
+status = "yes"
+audit = "(crates.io: Apache-2.0)"
+crates = ["nalgebra"]

@@ -1,0 +1,7 @@
+section = "rust"
+item = "image (png only)"
+kind = "crate"
+used_for = "golden renders, thumbnails"
+status = "yes"
+audit = "(crates.io: MIT OR Apache-2.0)"
+crates = ["image"]

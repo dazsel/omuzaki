@@ -39,6 +39,7 @@ mod bus;
 mod error;
 mod executor;
 mod index;
+mod jobs;
 mod state;
 mod sync;
 
