@@ -197,7 +197,7 @@ fn the_first_save_prunes_old_unchanged_entries_and_keeps_changed_ones() {
 #[test]
 fn project_toml_stays_openable_while_it_is_saved() {
     use std::sync::Barrier;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     /// Stops the reader when dropped, so a panic in the writer can't leave the scope waiting for it.
     struct Stop<'a>(&'a AtomicBool);
@@ -211,16 +211,23 @@ fn project_toml_stays_openable_while_it_is_saved() {
     let dir = tmp.path().to_path_buf();
     let mut project = Project::open(&dir).unwrap();
     let done = AtomicBool::new(false);
-    let start = Barrier::new(2);
+    let attempts = AtomicUsize::new(0);
+    // The writer starts only once the reader has opened the project once, so the test never runs without a reader.
+    let started = Barrier::new(2);
     std::thread::scope(|s| {
         s.spawn(|| {
-            start.wait();
-            while !done.load(Ordering::Relaxed) {
+            loop {
                 Project::open(&dir).unwrap();
+                if attempts.fetch_add(1, Ordering::Relaxed) == 0 {
+                    started.wait();
+                }
+                if done.load(Ordering::Relaxed) {
+                    break;
+                }
             }
         });
         let _stop = Stop(&done);
-        start.wait();
+        started.wait();
         let mut name = "x".to_owned();
         for i in 0..200 {
             let next = format!("n{i}");
@@ -229,6 +236,7 @@ fn project_toml_stays_openable_while_it_is_saved() {
             name = next;
         }
     });
+    assert!(attempts.load(Ordering::Relaxed) > 0);
 }
 
 fn remove_rig(project: &mut Project) {
