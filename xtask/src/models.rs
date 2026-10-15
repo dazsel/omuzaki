@@ -23,18 +23,19 @@
 //! followed and scanned like `src/`. (`tests/` and `benches/` are not shipped code and are not scanned.)
 //!
 //! `include!(concat!(env!("OUT_DIR"), "/<file>"))` holds the file `build.rs` generates, which the gate can't read, so it
-//! is allowed only for a reviewed list of generators ([`REVIEWED_GENERATORS`]), by file name, and only in a crate that
-//! has a `build.rs`. Each is safe because its generator emits only `mod` / `#[path]` lines into the crate's own `src/`
-//! tree (every file there is scanned), `link()` calls, or data, and never a registration macro:
+//! is allowed only through [`GENERATED`], a table of `(crate, file, generator)`: the file is bound to the crate whose
+//! reviewed `build.rs` generates it, and that `build.rs` must contain the generator's call. Nothing is allowed by file
+//! name alone, so a file listed for one crate fails in another. Each generator emits only `mod` / `#[path]` lines into
+//! the crate's own `src/` tree (every file there is scanned), `link()` calls, or data, and never a registration macro:
 //!
 //! - `ops_mods.rs`, `crate_mods.rs`: `omuzaki_embed::modules`, one `#[path = "<abs>"] pub mod <name>;` per file or
 //!   folder of the crate's `src/`;
 //! - `migrations.rs`: `omuzaki-doc`'s `module_decls`, the same `#[path]` + `mod` lines for `src/migrations/`;
-//! - `link_calls.rs`: `omuzaki_link_build::emit`, one `<crate>::link();` per flagged dependency;
-//! - `looks.rs`: `omuzaki-char`'s `build.rs`, a `static` table of `include_str!` of `library/looks/*.toml` (data);
-//! - `seed.rs`: `omuzaki_embed::embed_dir`, a table of `include_str!` of a folder's files (data; no crate uses it yet).
+//! - `link_calls.rs`: `omuzaki_link_build::emit`, one `<crate>::link();` per flagged dependency (`omuzaki-link-probe`
+//!   may overwrite it with an empty block);
+//! - `looks.rs`: `omuzaki-char`'s `build.rs`, a `static` table of `include_str!` of `library/looks/*.toml` (data).
 //!
-//! Any other `OUT_DIR` include fails, so a new generator is added to the list in review, not by a crate on its own.
+//! Any other pairing fails, so a new generator is added to the table in review, not by a crate on its own.
 //!
 //! Checked: every `models/*.model.toml` of a workspace crate whose name doesn't end in `-mock`. It runs no build, only
 //! parsing and reads. `cargo xtask check` runs it on the whole repo, since it is cheap.
@@ -58,6 +59,7 @@ const REGISTER: &str = "docs/licensing/deps";
 /// One licence file: its `item`, `kind`, `status` and `condition` (the last names the licence).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
+    file: String,
     item: String,
     kind: String,
     status: String,
@@ -69,7 +71,8 @@ pub struct Row {
 pub fn rows(entries: &[Named]) -> Vec<Row> {
     entries
         .iter()
-        .map(|(_, entry)| Row {
+        .map(|(file, entry)| Row {
+            file: file.clone(),
             item: entry.item.clone(),
             kind: entry.kind.clone(),
             status: entry.status.clone(),
@@ -91,18 +94,29 @@ pub fn problems(file: &str, text: &str, register: &[Row], sources: &[(String, St
     };
     if let Some(item) = &manifest.card.register {
         let named: Vec<&Row> = register.iter().filter(|row| &row.item == item).collect();
-        match named.iter().find(|row| is_model_kind(&row.kind)) {
-            None if named.is_empty() => out.push(format!("no licence file for `{item}` in {REGISTER}/")),
-            None => out.push(format!(
-                "the licence file for `{item}` in {REGISTER}/ is kind `{}`, not a model; model `{}` needs a \
+        let models: Vec<&Row> = named.iter().copied().filter(|row| is_model_kind(&row.kind)).collect();
+        let files =
+            |rows: &[&Row]| rows.iter().map(|row| format!("`{}.toml`", row.file)).collect::<Vec<_>>().join(", ");
+        // Exactly one model row must carry the item: with none the licence is unaudited, and with several the gate
+        // can't tell which one the model rests on.
+        match models.as_slice() {
+            [] if named.is_empty() => out.push(format!("no licence file for `{item}` in {REGISTER}/")),
+            [] => out.push(format!(
+                "the licence file(s) for `{item}` in {REGISTER}/ ({}) are not a model; model `{}` needs a \
                  `kind = \"model\"` entry",
-                named[0].kind, manifest.id
+                files(&named),
+                manifest.id
             )),
-            Some(row) if !ALLOWED_STATUS.contains(&row.status.as_str()) => out.push(format!(
+            [_, _, ..] => out.push(format!(
+                "{} licence files in {REGISTER}/ name the model `{item}` ({}); exactly one is allowed",
+                models.len(),
+                files(&models)
+            )),
+            [row] if !ALLOWED_STATUS.contains(&row.status.as_str()) => out.push(format!(
                 "the licence file for `{item}` in {REGISTER}/ is `{}`; a shipped model needs `yes` or `conditions`",
                 row.status
             )),
-            Some(row) => {
+            [row] => {
                 if let Some(spdx) = &manifest.card.licence.spdx {
                     if !names_licence(&row.condition, spdx) {
                         out.push(format!(
@@ -116,10 +130,10 @@ pub fn problems(file: &str, text: &str, register: &[Row], sources: &[(String, St
             }
         }
     }
-    let file_name = file.rsplit('/').next().unwrap_or(file);
+    let file_name = base_name(file);
     for (path, source) in sources {
         for (id, include) in registrations(source).into_iter().flatten() {
-            let include = include.rsplit('/').next().unwrap_or_default();
+            let include = base_name(&include);
             if include == file_name && id != manifest.id.as_str() {
                 out.push(format!(
                     "`register_model!` in {path} registers `{id}` for this file; its manifest's id is `{}`",
@@ -129,6 +143,11 @@ pub fn problems(file: &str, text: &str, register: &[Row], sources: &[(String, St
         }
     }
     out
+}
+
+/// The last segment of a path, with `\` read as `/` (Windows paths come back with `\`).
+fn base_name(path: &str) -> String {
+    path.replace('\\', "/").rsplit('/').next().unwrap_or_default().to_owned()
 }
 
 /// Whether a licence file's `kind` marks a model: `model`, or a `+` combination that includes it (`model+code`), the
@@ -183,10 +202,33 @@ fn is_non_commercial(spdx: &str) -> bool {
     })
 }
 
-/// The generators whose `include!(concat!(env!("OUT_DIR"), "/<file>"))` the gate allows, by file name. Each emits only
-/// `mod` / `#[path]` lines into the crate's own `src/`, `link()` calls, or data, never a registration macro (module doc).
-const REVIEWED_GENERATORS: [&str; 6] =
-    ["ops_mods.rs", "crate_mods.rs", "link_calls.rs", "migrations.rs", "looks.rs", "seed.rs"];
+/// The `OUT_DIR` files the gate allows, each bound to the crate whose reviewed `build.rs` generates it:
+/// `(crate, file, generator)`. The generator is the call that must appear in that crate's `build.rs`. A file allowed for
+/// one crate is not allowed for another, and nothing is allowed by file name alone. Each generator emits only `mod` /
+/// `#[path]` lines into the crate's own `src/`, `link()` calls, or data, never a registration macro.
+const GENERATED: [(&str, &str, &str); 12] = [
+    ("omuzaki-anim", "crate_mods.rs", "omuzaki_embed::modules"),
+    ("omuzaki-char", "ops_mods.rs", "omuzaki_embed::modules"),
+    ("omuzaki-char", "looks.rs", "looks.rs"),
+    ("omuzaki-cli", "link_calls.rs", "omuzaki_link_build::emit"),
+    ("omuzaki-doc", "migrations.rs", "migration_files::module_decls"),
+    ("omuzaki-face", "ops_mods.rs", "omuzaki_embed::modules"),
+    ("omuzaki-io-ops", "ops_mods.rs", "omuzaki_embed::modules"),
+    ("omuzaki-link-probe", "link_calls.rs", "omuzaki_link_build::emit"),
+    ("omuzaki-stage", "crate_mods.rs", "omuzaki_embed::modules"),
+    ("omuzaki-stage", "ops_mods.rs", "omuzaki_embed::modules"),
+    ("omuzaki-stage", "link_calls.rs", "omuzaki_link_build::emit"),
+    ("omuzaki-test-face", "link_calls.rs", "omuzaki_link_build::emit"),
+];
+
+impl Crate<'_> {
+    /// Whether `file` in `OUT_DIR` is one this crate's reviewed `build.rs` generates ([`GENERATED`]).
+    fn generates(&self, file: &str) -> bool {
+        GENERATED.iter().any(|&(name, listed, generator)| {
+            name == self.name && listed == file && self.build_script.is_some_and(|text| text.contains(generator))
+        })
+    }
+}
 
 /// Files outside a crate's `src/` that a `#[path]` may name, by workspace-relative path. A listed file is followed and
 /// scanned like one in `src/`, not exempted. `omuzaki-doc`'s `build_support/migration_files.rs` is shared by its
@@ -199,15 +241,15 @@ struct Crate<'a> {
     name: &'a str,
     /// Its workspace-relative folder.
     dir: &'a str,
-    /// Whether the folder holds a `build.rs`.
-    build_script: bool,
+    /// The text of the folder's `build.rs`, if it has one.
+    build_script: Option<&'a str>,
 }
 
 /// Every problem with the `register_model!` calls of one crate that no manifest check can see: a call whose literals
 /// can't be read, and one that includes anything but `<crate>/models/<name>.model.toml`, the only files the gate scans.
 /// An `include!` or `#[path]` of a file outside `<crate>/src/`, or of one missing from `sources`, is a problem too: the
 /// gate never reads it, so it could hide a registration. So is an `include!(concat!(env!("OUT_DIR"), …))` of a file
-/// that is not in [`REVIEWED_GENERATORS`], or in a crate with no `build.rs`. `sources` is the `(path, text)` of the
+/// that is not bound to this crate in [`GENERATED`]. `sources` is the `(path, text)` of the
 /// crate's `.rs` files and of every file they `include!` or `#[path]` ([`with_includes`]). Either separator
 /// (`/` or `\`) may be used, since Windows paths come back with `\`.
 fn unchecked_registrations(krate: &Crate<'_>, sources: &[(String, String)]) -> Vec<String> {
@@ -238,11 +280,11 @@ fn unchecked_registrations(krate: &Crate<'_>, sources: &[(String, String)]) -> V
             match include {
                 Err(reason) => out.push(format!("{path}: {reason}")),
                 Ok(Include::Generated(file)) => {
-                    if !(krate.build_script && REVIEWED_GENERATORS.contains(&file.as_str())) {
+                    if !krate.generates(&file) {
                         out.push(format!(
                             "{path}: crate `{}` includes `{file}` from `OUT_DIR`, which the gate can't read and which \
-                             is not a reviewed generator of a crate with a `build.rs`; add the generator to \
-                             REVIEWED_GENERATORS in xtask/src/models.rs in review",
+                             is not a reviewed generator for this crate; add the (crate, file, generator) to \
+                             GENERATED in xtask/src/models.rs in review",
                             krate.name
                         ));
                     }
@@ -727,8 +769,8 @@ pub fn report(workspace: &Workspace) -> bool {
         if let Ok(text) = fs::read_to_string(&cargo) {
             found.extend(target_problems(&text).into_iter().map(|p| format!("{dir}/{p}")));
         }
-        let build_script = workspace.root.join(&package.dir).join("build.rs").is_file();
-        let krate = Crate { name: &package.name, dir: &dir, build_script };
+        let build_script = fs::read_to_string(workspace.root.join(&package.dir).join("build.rs")).ok();
+        let krate = Crate { name: &package.name, dir: &dir, build_script: build_script.as_deref() };
         found.extend(unchecked_registrations(&krate, &sources));
         for (file, text) in &manifests {
             checked += 1;
@@ -776,9 +818,13 @@ mod tests {
         }
     }
 
+    /// A `build.rs` holding every reviewed generator's call.
+    const BUILD: &str =
+        "omuzaki_embed::modules(); omuzaki_link_build::emit(); migration_files::module_decls(); \"looks.rs\"";
+
     /// A crate in the fixture workspace, with a `build.rs`.
     fn krate(dir: &str) -> Crate<'_> {
-        Crate { name: "omuzaki-tiny", dir, build_script: true }
+        Crate { name: "omuzaki-stage", dir, build_script: Some(BUILD) }
     }
 
     fn row(item: &str, status: &str, condition: &str) -> Row {
@@ -786,7 +832,13 @@ mod tests {
     }
 
     fn row_of_kind(item: &str, kind: &str, status: &str, condition: &str) -> Row {
-        Row { item: item.to_owned(), kind: kind.to_owned(), status: status.to_owned(), condition: condition.to_owned() }
+        Row {
+            file: item.to_lowercase().replace(' ', "-"),
+            item: item.to_owned(),
+            kind: kind.to_owned(),
+            status: status.to_owned(),
+            condition: condition.to_owned(),
+        }
     }
 
     /// A good shipped manifest, citing the `Tiny model` row, with the given `urls` and `id`.
@@ -1347,7 +1399,7 @@ const DOC: &str = "register_model!(\"tiny\", include_str!(\"../models/tiny.model
             let found = problems(FILE, &manifest("tiny", HTTPS), &rows, &good_source("tiny"));
             assert_eq!(found.len(), 1, "{kind}: {found:?}");
             assert!(found[0].contains("`Tiny model`") && found[0].contains("model `tiny`"), "{found:?}");
-            assert!(found[0].contains(&format!("kind `{kind}`")), "{found:?}");
+            assert!(found[0].contains("are not a model") && found[0].contains(".toml`"), "{found:?}");
         }
         for kind in ["model", "model+code", "model+crate"] {
             let rows = vec![row_of_kind("Tiny model", kind, "yes", "MIT OR Apache-2.0")];
@@ -1453,14 +1505,32 @@ const DOC: &str = "register_model!(\"tiny\", include_str!(\"../models/tiny.model
     }
 
     #[test]
-    fn only_a_reviewed_generator_may_be_included_from_out_dir() {
-        for file in REVIEWED_GENERATORS {
-            let text = format!(r#"include!(concat!(env!("OUT_DIR"), "/{file}"));"#);
-            assert_eq!(unchecked(&text), Vec::<String>::new(), "{file}");
-            let none = Crate { build_script: false, ..krate("crates/omuzaki-tiny") };
-            let source = [("crates/omuzaki-tiny/src/lib.rs".to_owned(), text)];
-            assert_eq!(unchecked_registrations(&none, &source).len(), 1, "{file} needs a build.rs");
+    fn an_out_dir_file_is_allowed_only_for_the_crate_whose_build_script_generates_it() {
+        let included = |file: &str| {
+            [(
+                "crates/omuzaki-tiny/src/lib.rs".to_owned(),
+                format!(r#"include!(concat!(env!("OUT_DIR"), "/{file}"));"#),
+            )]
+        };
+        for (name, file, generator) in GENERATED {
+            let allowed = Crate { name, dir: "crates/omuzaki-tiny", build_script: Some(generator) };
+            assert_eq!(unchecked_registrations(&allowed, &included(file)), Vec::<String>::new(), "{name} {file}");
+            let no_build =
+                Crate { build_script: None, ..Crate { name, dir: "crates/omuzaki-tiny", build_script: None } };
+            assert_eq!(unchecked_registrations(&no_build, &included(file)).len(), 1, "{name} {file}: no build.rs");
+            let no_call = Crate { build_script: Some("fn main() {}"), ..Crate { name, dir: "x", build_script: None } };
+            assert_eq!(unchecked_registrations(&no_call, &included(file)).len(), 1, "{name} {file}: no generator");
+            // The same file under another crate that doesn't list it.
+            let other = Crate { name: "omuzaki-other", dir: "crates/omuzaki-tiny", build_script: Some(BUILD) };
+            assert_eq!(unchecked_registrations(&other, &included(file)).len(), 1, "{name} {file}: other crate");
         }
+        // `looks.rs` is the char crate's only; the stage crate has no such pairing.
+        let stage = Crate { name: "omuzaki-stage", dir: "crates/omuzaki-tiny", build_script: Some(BUILD) };
+        let found = unchecked_registrations(&stage, &included("looks.rs"));
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("crate `omuzaki-stage`") && found[0].contains("`looks.rs`"), "{found:?}");
+        assert!(found[0].contains("GENERATED"), "{found:?}");
+        assert!(GENERATED.iter().all(|(_, file, _)| *file != "seed.rs"));
         for text in [
             r#"include!(concat!(env!("OUT_DIR"), "/registrations.rs"));"#,
             r#"include!(concat!(env!("OUT_DIR"), "/sub/ops_mods.rs"));"#,
@@ -1468,17 +1538,45 @@ const DOC: &str = "register_model!(\"tiny\", include_str!(\"../models/tiny.model
             r#"include!(concat!(env!("OUT_DIR"), NAME));"#,
             r#"include!(concat!(env!("OUT_DIR")));"#,
         ] {
-            let found = unchecked(text);
-            assert_eq!(found.len(), 1, "{text}: {found:?}");
+            assert_eq!(unchecked(text).len(), 1, "{text}");
         }
-        let found = unchecked(r#"include!(concat!(env!("OUT_DIR"), "/registrations.rs"));"#);
-        assert!(found[0].contains("crate `omuzaki-tiny`") && found[0].contains("`registrations.rs`"), "{found:?}");
-        assert!(found[0].contains("REVIEWED_GENERATORS"), "{found:?}");
+    }
+
+    #[test]
+    fn zero_or_several_model_rows_for_an_item_fail_naming_the_rows() {
+        let mut twin = row("Tiny model", "yes", "MIT OR Apache-2.0");
+        twin.file = "tiny-twin".to_owned();
+        let mut first = row("Tiny model", "yes", "MIT OR Apache-2.0");
+        first.file = "tiny-model".to_owned();
+        let found = problems(FILE, &manifest("tiny", HTTPS), &[first.clone(), twin], &good_source("tiny"));
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("`tiny-model.toml`") && found[0].contains("`tiny-twin.toml`"), "{found:?}");
+        assert!(found[0].contains("exactly one"), "{found:?}");
+        let mut other = row_of_kind("Tiny model", "crate", "yes", "MIT OR Apache-2.0");
+        other.file = "tiny-crate".to_owned();
+        // A non-model row beside the one model row doesn't count.
+        assert_eq!(problems(FILE, &manifest("tiny", HTTPS), &[first, other.clone()], &good_source("tiny")).len(), 0);
+        let found = problems(FILE, &manifest("tiny", HTTPS), &[other], &good_source("tiny"));
+        assert!(found[0].contains("`tiny-crate.toml`"), "{found:?}");
+        assert!(found[0].contains("model `tiny`"), "{found:?}");
+    }
+
+    #[test]
+    fn windows_separators_do_not_hide_a_registration_for_a_manifest() {
+        let call = r#"register_model!("other", include_str!(r"..\models\tiny.model.toml"));"#;
+        let sources = vec![("crates\\omuzaki-tiny\\src\\lib.rs".to_owned(), call.to_owned())];
+        let windows_file = "crates\\omuzaki-tiny\\models\\tiny.model.toml";
+        for file in [FILE, windows_file] {
+            let found = problems(file, &manifest("tiny", HTTPS), &register(), &sources);
+            assert_eq!(found.len(), 1, "{file}: {found:?}");
+            assert!(found[0].contains("registers `other` for this file"), "{found:?}");
+        }
+        assert_eq!(base_name(r"..\models\tiny.model.toml"), "tiny.model.toml");
     }
 
     #[test]
     fn a_reviewed_path_outside_src_is_scanned_not_exempted() {
-        let krate = Crate { name: "omuzaki-doc", dir: "crates/omuzaki-doc", build_script: true };
+        let krate = Crate { name: "omuzaki-doc", dir: "crates/omuzaki-doc", build_script: None };
         let lib = (
             "crates/omuzaki-doc/src/lib.rs".to_owned(),
             "#[path = \"../build_support/migration_files.rs\"]\nmod m;".to_owned(),
