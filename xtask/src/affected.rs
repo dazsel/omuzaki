@@ -27,6 +27,18 @@ const WORKSPACE_WIDE_FILES: &[&str] = &[
 /// Root directories that configure every crate (cargo aliases, linker and target settings).
 const WORKSPACE_WIDE_DIRS: &[&str] = &[".cargo"];
 
+/// The crate whose tests run the licence-file lint on the repository (`lint_licences`).
+const LICENCE_LINT_CRATE: &str = "xtask";
+
+/// The crates that own a changed file, plus `xtask` when a file is an input of the licence lint.
+fn changed_crates<'a>(workspace: &'a Workspace, files: &[PathBuf]) -> BTreeSet<&'a str> {
+    let mut changed: BTreeSet<&str> = files.iter().filter_map(|file| owning_crate(workspace, file)).collect();
+    if files.iter().any(|file| crate::lint_licences::is_input(file)) {
+        changed.extend(workspace.package(LICENCE_LINT_CRATE).map(|package| package.name.as_str()));
+    }
+    changed
+}
+
 /// What a check run covers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Scope {
@@ -106,7 +118,7 @@ pub fn analyse_files(workspace: &Workspace, files: &[PathBuf]) -> Analysis {
     if matches!(scope, Scope::Workspace { .. }) {
         return Analysis { scope, ..whole_workspace(workspace) };
     }
-    let changed: BTreeSet<&str> = files.iter().filter_map(|file| owning_crate(workspace, file)).collect();
+    let changed = changed_crates(workspace, files);
     let mut direct: BTreeSet<String> = changed.iter().map(|name| (*name).to_owned()).collect();
     for package in &workspace.packages {
         if package.dependencies.iter().any(|dependency| changed.contains(dependency.name.as_str())) {
@@ -121,7 +133,7 @@ pub fn scope_for_files(workspace: &Workspace, files: &[PathBuf]) -> Scope {
     if let Some(trigger) = files.iter().find(|file| is_workspace_wide(file)) {
         return Scope::Workspace { trigger: Some(trigger.clone()) };
     }
-    let changed: BTreeSet<&str> = files.iter().filter_map(|file| owning_crate(workspace, file)).collect();
+    let changed = changed_crates(workspace, files);
     let (full, link_only) = with_dependents(workspace, &changed);
     Scope::Crates { full, link_only }
 }
@@ -361,6 +373,47 @@ mod tests {
     #[test]
     fn xtask_changes_stay_in_xtask() {
         assert_eq!(crates(&scope_for_files(&sample(), &files(&["xtask/src/main.rs"]))), ["xtask"]);
+    }
+
+    #[test]
+    fn a_licence_file_change_runs_the_xtask_tests_that_lint_it() {
+        let scope = scope_for_files(&sample(), &files(&["docs/licensing/deps/serde.toml", "docs/licensing-notes.md"]));
+        assert_eq!(crates(&scope), ["xtask"]);
+    }
+
+    #[test]
+    fn licence_lint_inputs_outside_any_crate_run_the_xtask_tests() {
+        for input in [".github/assets/new.png", ".github/workflows/ci.yml", "docs/licensing/policy.md"] {
+            let analysis = analyse_files(&sample(), &files(&[input]));
+            assert_eq!(crates(&analysis.scope), ["xtask"], "{input}");
+            assert_eq!(analysis.changed, BTreeSet::from(["xtask".to_owned()]), "{input}");
+            assert_eq!(analysis.direct, BTreeSet::from(["xtask".to_owned()]), "{input}");
+        }
+    }
+
+    #[test]
+    fn every_asset_type_the_lint_scans_schedules_xtask() {
+        for ext in crate::lint_licences::scanned_extensions() {
+            let input = format!("crates/omuzaki-render/assets/x.{ext}");
+            let analysis = analyse_files(&sample(), &files(&[input.as_str()]));
+            assert!(analysis.changed.contains("xtask"), "{input}");
+        }
+    }
+
+    #[test]
+    fn a_font_or_notices_file_keeps_its_crate_and_adds_xtask() {
+        for input in ["crates/omuzaki-render/assets/a.ttf", "crates/omuzaki-render/NOTICES.md"] {
+            let analysis = analyse_files(&sample(), &files(&[input]));
+            assert_eq!(crates(&analysis.scope), ["omuzaki-cli", "omuzaki-render", "xtask"], "{input}");
+            assert_eq!(analysis.changed, BTreeSet::from(["omuzaki-render".to_owned(), "xtask".to_owned()]), "{input}");
+            assert!(analysis.direct.contains("xtask") && analysis.direct.contains("omuzaki-cli"), "{input}");
+        }
+    }
+
+    #[test]
+    fn ordinary_crate_files_do_not_pull_in_xtask() {
+        let analysis = analyse_files(&sample(), &files(&["crates/omuzaki-render/src/lib.rs"]));
+        assert!(!analysis.changed.contains("xtask") && !analysis.direct.contains("xtask"));
     }
 
     #[test]

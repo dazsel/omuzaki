@@ -1,0 +1,7 @@
+section = "models"
+item = "Black Forest Labs FLUX API"
+kind = "service"
+used_for = "CN-06 hosted image adapter candidate"
+status = "unverified"
+condition = "output: ToS 1.2(a) \"We claim no ownership rights in and to Your Content\", 1.3(e) permits use of Output (https://bfl.ai/legal/terms-of-service, checked 2026-10-13); Developer Terms unread; BFL may train on Input/Output unless opted out; FLUX.2 [dev] weights are non-commercial (secondary) and rejected; only the paid API models could qualify (docs/research/2026-10-hosted-image-apis.md)"
+audit = "CN-06"

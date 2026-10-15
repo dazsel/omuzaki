@@ -1,0 +1,7 @@
+section = "rust"
+item = "Garage"
+kind = "native"
+used_for = "optional self-hosted S3-compatible team store (LB-07)"
+status = "unverified"
+condition = "AGPL-3.0 per GitHub's licence panel on the mirror (checked 2026-10-13); the `LICENSE` file on the primary host was not readable (bot challenge); if confirmed, a separate program a team runs, never linked or bundled; read its `LICENSE` first"
+audit = "upstream licence file"

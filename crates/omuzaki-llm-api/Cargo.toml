@@ -18,3 +18,7 @@ omuzaki-core = { path = "../omuzaki-core" }
 
 [lints]
 workspace = true
+
+[package.metadata.omuzaki]
+kind = "API"
+summary = "the LLM seam (CN-09, AG-01, AP-03; ADR 0032): `LlmClient` and the blocking pull-based `TurnStream` (`try_next`, `next_timeout`, `usage_so_far`, `collect`), `TurnRequest` with the provider-neutral append-only `Message`s and `ContentBlock`s, `LlmEvent`, `Cancel`, `Usage`, `MicroUsd`, the dated `PriceTable`, the offline `Ledger::bound`, `LlmError`, and `register_llm_provider!` with `ProviderConfig`; `SecretRef`, `SecretLabel`, `SecretStore` are local stand-ins until #281 and #784 land; no network stack, no runtime; design in `docs/design/llm-api.md`"

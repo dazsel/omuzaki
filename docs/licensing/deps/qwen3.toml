@@ -1,0 +1,7 @@
+section = "models"
+item = "Qwen3 open-weight LLMs (small sizes)"
+kind = "model"
+used_for = "caption translation candidate through the registry"
+status = "conditions"
+condition = "Qwen3 README: \"All our open-weight models are licensed under Apache 2.0\"; read the LICENSE of the exact repository before pinning (cards unreachable); training data undisclosed"
+audit = "research 2026-10-caption-translation.md"

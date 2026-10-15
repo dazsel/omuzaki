@@ -1,0 +1,7 @@
+section = "models"
+item = "Gemma open-weight models"
+kind = "model"
+used_for = "caption translation candidate"
+status = "conditions"
+condition = "Gemma Terms of Use (https://ai.google.dev/gemma/terms, read 2026-10-13): no non-commercial term, but flow-down of the terms and use restrictions to third parties, the Prohibited Use Policy by reference, a remote-restriction right for Google, and distillation outputs count as Model Derivatives; Gemma 4 has a separate licence not read; legal review before use; Qwen3 preferred"
+audit = "research 2026-10-caption-translation.md"

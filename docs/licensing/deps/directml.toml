@@ -1,0 +1,7 @@
+section = "rust"
+item = "DirectML"
+kind = "native"
+used_for = "Windows GPU inference"
+status = "conditions"
+condition = "redistribute inside our app only; Windows only"
+audit = "B2"

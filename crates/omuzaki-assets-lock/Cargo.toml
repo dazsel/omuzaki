@@ -11,6 +11,8 @@ repository.workspace = true
 # A format library (ADR 0011): omuzaki-doc re-exports it for the project loader, and implementations such as
 # omuzaki-git-ops read and write the same file through it. It depends on contracts only.
 [package.metadata.omuzaki]
+kind = "Lib"
+summary = "the project's `assets.lock` file (spec v3 §7, git design §3.2): one row per content hash with its provenance; `AssetsLock::parse` and the canonical `to_text` (rows sorted by hash), the file's only reader and writer; `omuzaki-doc` re-exports it"
 layer = "lib"
 
 [dependencies]

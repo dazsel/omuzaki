@@ -10,7 +10,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::ops::shared::edit::{effective, stored_face, to_json};
+use crate::ops_shared::edit::{effective, stored_face, to_json};
 
 /// Lists every mapping coefficient of a character's face: its path, default, current value and formula.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]

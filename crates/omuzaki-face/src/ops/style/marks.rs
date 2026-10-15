@@ -9,9 +9,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
-use crate::ops::shared::check::check_edit;
-use crate::ops::shared::edit::{changed, marks_len, stored_face, to_json};
-use crate::ops::shared::path::template;
+use crate::ops_shared::check::check_edit;
+use crate::ops_shared::edit::{changed, marks_len, stored_face, to_json};
+use crate::ops_shared::path::template;
 
 /// Adds a mark (freckles, a beauty mark, face paint or a scar) at the end of a character's marks list.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]

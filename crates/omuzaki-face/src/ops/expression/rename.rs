@@ -9,7 +9,7 @@ use serde_json::json;
 
 use super::rules::{check_kind, is_reserved, refuse_reserved};
 use super::store::{edited_face, entry, library, missing, patch_to, read_entry, taken};
-use crate::ops::shared::edit::{changed, stored_face, to_json};
+use crate::ops_shared::edit::{changed, stored_face, to_json};
 
 /// Gives a named expression a new name. The visemes and `blink` can't be renamed, and the new name must be free and must
 /// not be a viseme or blink name, since only the expression of that kind may hold one.

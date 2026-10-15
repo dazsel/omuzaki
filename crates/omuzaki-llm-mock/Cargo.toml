@@ -17,3 +17,7 @@ schemars.workspace = true
 
 [lints]
 workspace = true
+
+[package.metadata.omuzaki]
+kind = "Mock"
+summary = "`FakeLlm`: plays a JSON script of turns (expectations, chunking, usage, retries and error injection, delays on `FakeClock`) through the real `LlmClient`; deterministic; registers as provider `fake`, CN-01's mock connector for the LLM capability"

@@ -1,0 +1,7 @@
+section = "models"
+item = "MADLAD-400 MT checkpoints (Google; 3B, 7.2B, 10.7B)"
+kind = "model"
+used_for = "(not used)"
+status = "NO"
+condition = "weights Apache-2.0 (Hugging Face), but the parallel training data (arXiv 2309.04662 Table 11) includes TED talks, which TED publishes under CC BY-NC-ND 4.0; banned under the policy unless the maintainers rule the Apache-2.0 release by its authors a clearance"
+audit = "research 2026-10-caption-translation.md"

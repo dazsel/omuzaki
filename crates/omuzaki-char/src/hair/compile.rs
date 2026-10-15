@@ -293,7 +293,7 @@ pub enum CompileError {
     },
 }
 
-/// Compiles every enabled group of `params`, in id order, mirroring those that ask. `mid_x` is the plane of symmetry.
+/// Compiles every enabled group of `params`, in id order, mirroring those that ask (except a bilateral generator's, see [`is_bilateral`]). `mid_x` is the plane of symmetry.
 ///
 /// # Errors
 /// [`CompileError::ClumpCount`] if a generator disagrees with its own `clump_count`.
@@ -314,7 +314,7 @@ pub fn compile_groups(
         if compiled.clumps.len() != reported {
             return Err(CompileError::ClumpCount { group: id.clone(), made: compiled.clumps.len(), reported });
         }
-        if group.mirror {
+        if group.mirror && !is_bilateral(&group.generator) {
             compiled = compiled.with_mirror(mid_x);
         }
         entries.push(CompiledEntry { id: id.clone(), simulate: group.dynamics.simulate, group: compiled });
@@ -327,9 +327,24 @@ pub fn enabled(params: &HairParams) -> impl Iterator<Item = (&GroupId, &HairGrou
     params.groups.iter().filter(|(_, g)| g.enabled)
 }
 
-/// How many clumps an enabled group has once mirrored.
+/// Whether a generator already makes both sides of the head, so mirroring its group would lay a second copy exactly on
+/// the first. The match has no wildcard: a new generator has to say which kind it is.
+pub fn is_bilateral(generator: &Generator) -> bool {
+    match generator {
+        Generator::Cap(_) | Generator::PartSweep(_) => true,
+        Generator::Framing(_)
+        | Generator::Braid(_)
+        | Generator::Curtain(_)
+        | Generator::Bangs(_)
+        | Generator::Tail(_)
+        | Generator::Bun(_)
+        | Generator::Guides(_) => false,
+    }
+}
+
+/// How many clumps an enabled group has once mirrored (a [bilateral](is_bilateral) generator's group is never mirrored).
 pub fn clumps_in(group: &HairGroup, generators: &dyn GroupGenerator) -> usize {
-    generators.clump_count(&group.generator) * if group.mirror { 2 } else { 1 }
+    generators.clump_count(&group.generator) * if group.mirror && !is_bilateral(&group.generator) { 2 } else { 1 }
 }
 
 #[cfg(test)]
