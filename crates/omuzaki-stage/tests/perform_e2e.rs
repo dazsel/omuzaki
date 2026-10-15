@@ -56,8 +56,10 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static GLOBAL: Counting = Counting;
 
-/// The tracker's side and the stage's side of the mailbox, wired as the app wires them: `FakeTracker` polls the fake
-/// camera's script, the newest frame goes into the mailbox writer, and the perform loop polls the reader.
+/// The tracker's side and the stage's side of the mailbox. `FakeCamera::id()` only satisfies `Tracker::start`;
+/// `FakeTracker::scripted` replays the frames it is given, and `Chain::publish` polls that source and publishes each
+/// frame it returns into the mailbox writer, which the perform loop reads. The camera-to-tracker path is not covered
+/// here.
 struct Chain {
     feed: Box<dyn FrameSource>,
     writer: MailboxWriter,
@@ -152,6 +154,8 @@ fn the_trace_through_the_mailbox_matches_the_perform_golden() {
     assert_eq!(golden.len(), seen.len());
     for (want, (step, got)) in golden.iter().zip(&seen) {
         assert_eq!(want.step, *step);
+        // `zip` would stop at the shorter list and hide a missing value, so the lengths must match first.
+        assert_eq!(want.values().len(), got.len(), "step {step}: value count");
         for (w, g) in want.values().iter().zip(got) {
             assert!((w - g).abs() <= 1e-5, "step {step}: got {g}, want {w}");
         }
@@ -163,12 +167,13 @@ fn a_lost_gap_hands_over_to_life_through_the_mailbox_without_a_jump() {
     // The face is lost from 4 s to 12 s: the script (`synthetic_track`) carries a lost frame at every 30 fps frame
     // in the span, so the hand-off is driven by the script's lost frames.
     let mut chain = Chain::new(&track(14.0, Some((Seconds(4.0), Seconds(12.0)))));
-    let (mut biggest, mut owned_at, mut blinks, mut was_blinking) = (0.0_f32, None::<f64>, 0, false);
+    let (mut biggest, mut blinks, mut was_blinking, mut gaze_checked) = (0.0_f32, 0, false, false);
     let mut prev: Option<ChannelBuf> = None;
     for i in 0..(14 * 60) {
         chain.publish(i);
         let out = chain.perform.advance(mid_step(i)).expect("one step per call");
         let t = out.tick.time.0;
+        let owners = &out.bus.owners;
         if let Some(prev) = prev.filter(|_| (4.0..=4.75).contains(&t)) {
             // Life's saccades are quick by design, so the gaze channels are not a hand-off jump.
             for c in ChannelMask::ALL.iter().filter(|c| !ChannelMask::GAZE.contains(*c)) {
@@ -176,8 +181,30 @@ fn a_lost_gap_hands_over_to_life_through_the_mailbox_without_a_jump() {
             }
         }
         prev = Some(out.bus.values);
-        if t >= 4.75 && owned_at.is_none() && out.bus.owners.of(Channel::EYE_BLINK_LEFT) != Source::Tracker {
-            owned_at = Some(t);
+        // The hand-off checks cover the lost span only: from 12 s the tracker has the face back.
+        if (4.75..12.0).contains(&t) {
+            // At the first step at or after 4.75 s, life owns the gaze it is driving. `Life::step` claims only the
+            // channels whose value changed that step, so a gaze channel still at its neutral value is `Rest`, and a
+            // moved one must be life's. Life owns at least one gaze channel by then.
+            if !gaze_checked {
+                gaze_checked = true;
+                let life = owners.mask_of(Source::Life);
+                assert!(life.intersects(ChannelMask::GAZE), "step {i} ({t} s): life owns no gaze channel");
+                for c in ChannelMask::GAZE {
+                    if (out.bus.values[c] - ChannelBuf::NEUTRAL[c]).abs() > 1e-6 {
+                        assert_eq!(owners.of(c), Source::Life, "step {i} ({t} s): a moved gaze channel is not life's");
+                    }
+                }
+            }
+            // Once Life has the eyes, the tracker owns none of them while the face is lost.
+            assert!(
+                ChannelMask::EYES.iter().all(|c| owners.of(c) != Source::Tracker),
+                "step {i} ({t} s): the tracker still owns an eye channel"
+            );
+            // A blink after the hand-off is Life's: the blink channel is above half open only while Life drives it.
+            if out.bus.values[Channel::EYE_BLINK_LEFT] > 0.5 {
+                assert_eq!(owners.of(Channel::EYE_BLINK_LEFT), Source::Life, "step {i} ({t} s): blink is not life's");
+            }
         }
         let blinking = out.bus.values[Channel::EYE_BLINK_LEFT] > 0.5;
         if t > 4.75 && blinking && !was_blinking {
@@ -186,8 +213,7 @@ fn a_lost_gap_hands_over_to_life_through_the_mailbox_without_a_jump() {
         was_blinking = blinking;
     }
     assert!(biggest <= 0.15, "a channel moved {biggest} in one step");
-    let owned_at = owned_at.expect("life never took the eyes");
-    assert!(owned_at <= 4.75 + 1.0 / 60.0, "life owned the eyes only at {owned_at} s");
+    assert!(gaze_checked, "the run never reached 4.75 s");
     assert!(blinks > 0, "life never blinked after taking over");
 }
 
