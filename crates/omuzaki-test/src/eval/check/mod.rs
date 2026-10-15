@@ -4,6 +4,8 @@
 //! `eval-checker` with `read` and `render` only. A grade is a pure function of those and the transcript, so grading
 //! the same inputs twice gives the same bytes (ADR 0009).
 //!
+//! Names: only `[bind]` names are substituted into checks; a fixture's `exports` (such as `{main}`) are not.
+//!
 //! Not graded yet, and reported as an `error` outcome rather than skipped: the `doc.*` and `render.*` kinds and
 //! `judge`.
 

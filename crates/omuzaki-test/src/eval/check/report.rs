@@ -81,7 +81,8 @@ pub struct CheckResult {
     pub hard: bool,
     /// How it ended.
     pub outcome: Outcome,
-    /// For a soft check: 1 on a pass, 0 otherwise. Hard checks have no score.
+    /// For a soft check: 1 on a pass, 0 otherwise (a number is not yet mapped through the check's `range`). Hard
+    /// checks have no score.
     pub score: Option<f64>,
     /// The value on the fixture, when the check looked at one.
     pub before: Option<Value>,

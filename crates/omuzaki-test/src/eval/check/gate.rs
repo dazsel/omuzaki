@@ -9,9 +9,10 @@ use super::value::{call, pointer_all, result_failure};
 
 /// The op that lists a project's declared gates (VF-09).
 const DESCRIBE_OP: &str = "project.describe";
-/// Where `project.describe` lists the gates that fail, as an array.
+/// Where `project.describe` lists the gates that fail, as an array of names (confirmed shape for VF-09).
 const FAILED_GATES: &str = "/gates/failed";
-/// Where a gate op's output says whether it passed, as a boolean.
+/// Where a gate op's output says whether it passed, as a boolean. Anything else (absent, false, not a boolean) is a
+/// failed gate, so a gate op that answers nothing cannot pass vacuously.
 const PASSED: &str = "/passed";
 
 impl Checker {

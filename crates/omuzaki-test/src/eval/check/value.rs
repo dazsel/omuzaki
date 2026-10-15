@@ -9,7 +9,8 @@ use crate::eval::task::Change;
 /// Runs a read-only op as the checker and returns its output.
 ///
 /// The checker is a person named `eval-checker` holding `read` and `render` only: a person needs no session, and the
-/// grants cap what any check can reach.
+/// grants cap what any check can reach. Once #207 lands the checker becomes an agent principal with the same grants,
+/// and this actor changes with it.
 pub(super) fn call(runner: &dyn Runner, op: &str, args: &Map<String, Value>) -> Result<Value, OpError> {
     let request = Request {
         op: op.to_owned(),
