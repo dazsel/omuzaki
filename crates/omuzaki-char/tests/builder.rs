@@ -746,6 +746,8 @@ struct NoterParams {
     named: String,
     /// Fail to build when the palette has more than this many entries: a kind that breaks when a slot is added.
     slot_limit: usize,
+    /// Fail to build while the palette has the slot `named` names: a kind that breaks when a slot of that name appears.
+    fails_when_named: bool,
     /// Publish `tint`'s red channel only when the part's first random draw is under 0.2: a fact that depends on the seed.
     gated: bool,
     /// Publish `tint`'s red channel only in an offline build.
@@ -761,6 +763,7 @@ impl Default for NoterParams {
             from_slot: false,
             named: String::new(),
             slot_limit: usize::MAX,
+            fails_when_named: false,
             gated: false,
             offline_only: false,
             tint: ColourRef::slot_or("outfit", ColourRef::rgb(200, 200, 200)),
@@ -783,6 +786,11 @@ impl PartKind for Noter {
     }
 
     fn build(params: &NoterParams, ctx: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
+        let named_present =
+            params.named.strip_prefix('@').is_some_and(|name| ctx.palette.0.keys().any(|s| s.as_str() == name));
+        if params.fails_when_named && named_present {
+            return Err(ctx.fail(format!("the palette has the slot '{}'", params.named)));
+        }
         if ctx.palette.0.len() > params.slot_limit {
             return Err(ctx.fail(format!(
                 "the palette has {} entries, more than {}",
@@ -794,9 +802,7 @@ impl PartKind for Noter {
         let note = if params.from_len {
             u8::try_from(ctx.palette.0.len()).unwrap_or(u8::MAX)
         } else if params.from_slot {
-            let present =
-                params.named.strip_prefix('@').is_some_and(|name| ctx.palette.0.keys().any(|s| s.as_str() == name));
-            u8::from(present)
+            u8::from(named_present)
         } else if params.gated {
             if ctx.rng.next_f32() < 0.2 { tint.r } else { 7 }
         } else if params.offline_only {
@@ -1005,6 +1011,21 @@ fn a_part_of_another_kind_that_fails_when_a_slot_is_added_leaves_the_checked_kin
     let [(kind, why)] = report.unreached.as_slice() else { panic!("one unreached kind expected: {report:?}") };
     assert_eq!(kind, "t-note-reader");
     assert!(why.contains("part 'noter' does not build") && why.contains("alternative"), "{why}");
+}
+
+#[test]
+fn the_extra_slot_is_never_a_name_a_part_references() {
+    // The part references the check's extra-slot name and fails while the palette has it. The extra slot must take
+    // another name: one a part names would enter that part's cache key, so its failure proves nothing and is no violation.
+    let def = noted_with(json!({
+        "from_palette": false,
+        "named": "@unused_probe_slot",
+        "fails_when_named": true,
+        "tint": "#102030",
+    }));
+    let probes = conformance::Probes::default().fact::<NoteFact>();
+    let report = conformance::check(&def, Some(&["t-noter"]), &probes, &BuildServices::default());
+    assert!(report.violations.is_empty() && report.unreached.is_empty(), "{report:?}");
 }
 
 /// A pose that never moves: the simulations here ignore it.

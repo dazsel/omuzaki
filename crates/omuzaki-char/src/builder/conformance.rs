@@ -53,7 +53,7 @@ const SEED: u64 = 0x1598_fac7;
 
 /// The id of the part the check adds for a kind the character has no part of (a suffix is added if `base` has it).
 const PROBE: &str = "palette-probe";
-/// The slot of the alternative that has one more entry than the palette (a suffix is added if the palette has it).
+/// The slot of the alternative that has one more entry than the palette (a suffix is added if the palette or a part names it).
 const EXTRA_SLOT: &str = "unused_probe_slot";
 
 /// How one fact of two builds is compared: `None` when equal, else a description of both for the failure message.
@@ -156,7 +156,9 @@ pub fn alternatives(palette: &Palette, referenced: &BTreeSet<String>) -> Vec<Pal
     while all.len() < PALETTES {
         all.push(Palette(palette.0.iter().map(|(slot, c)| (slot.clone(), other(*c, &mut rng))).collect()));
     }
-    let free = unused_name(EXTRA_SLOT, '_', |n| palette.0.keys().any(|s| s.as_str() == n));
+    // A name a part references is no free name: the slot would enter that part's cache key, and a build error on it
+    // would prove nothing about the cache.
+    let free = unused_name(EXTRA_SLOT, '_', |n| referenced.contains(n) || palette.0.keys().any(|s| s.as_str() == n));
     if let Ok(slot) = PaletteSlot::new(&free) {
         let mut extra = palette.clone();
         extra.0.insert(slot, Colour::rgb(1, 2, 3));
