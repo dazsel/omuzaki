@@ -1,6 +1,7 @@
-//! The first end-to-end slice (PF-01, PF-24; spec v3 §8, §22): `FakeTracker` publishes its scripted frames through the
-//! track mailbox, and the perform loop reads the mailbox's reader with the real `ArkitRetarget`, `Life` (seed 7) and
-//! `BusAnimator`, stepped at 60 Hz on a fake clock.
+//! The first end-to-end slice (PF-01, PF-24; spec v3 §8, §22): each step, the test polls `FakeTracker`'s scripted
+//! frame source and publishes what it returns through the real track mailbox (`Chain::publish`), and the perform loop
+//! reads the mailbox's reader with the real `ArkitRetarget`, `Life` (seed 7) and `BusAnimator`, stepped at 60 Hz on a
+//! fake clock.
 //!
 //! The trace is checked against `tests/golden/perform_trace.json`, which the `MockAnimator` run of `perform.rs` wrote:
 //! `BusAnimator` is its counterpart, so the two must agree.
@@ -159,7 +160,8 @@ fn the_trace_through_the_mailbox_matches_the_perform_golden() {
 
 #[test]
 fn a_lost_gap_hands_over_to_life_through_the_mailbox_without_a_jump() {
-    // The face is lost from 4 s to 12 s: `FakeTracker` sends one lost frame 200 ms after the last tracked one.
+    // The face is lost from 4 s to 12 s: the script (`synthetic_track`) carries a lost frame at every 30 fps frame
+    // in the span, so the hand-off is driven by the script's lost frames.
     let mut chain = Chain::new(&track(14.0, Some((Seconds(4.0), Seconds(12.0)))));
     let (mut biggest, mut owned_at, mut blinks, mut was_blinking) = (0.0_f32, None::<f64>, 0, false);
     let mut prev: Option<ChannelBuf> = None;
