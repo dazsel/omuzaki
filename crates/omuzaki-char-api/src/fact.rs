@@ -20,6 +20,9 @@ use crate::ids::PartId;
 /// A fact's values are cloned when a part output is forked and for builder views; facts are build-time only.
 /// `Value` and `Merged` must therefore be `Clone` to be published ([`Publishes::put`](crate::Publishes::put) asks for
 /// it, not this trait).
+///
+/// A fact never depends on the palette (decision Q6: the caching builder keys readers on their publishers' geometry, not
+/// their colours); the palette-independence check (`omuzaki_char::builder::conformance`) enforces it.
 pub trait Fact: 'static {
     /// Stable, unique name: errors, describe output and the link gate use it.
     const NAME: &'static str;

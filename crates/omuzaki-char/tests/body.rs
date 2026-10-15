@@ -28,6 +28,7 @@ use omuzaki_char_api::{
     KindProvenance, MaterialName, PartMesh, Proportions, Quality, RegistryBuilder, find_kind,
 };
 use omuzaki_core::glam::{DVec3, Vec3};
+use omuzaki_core::mesh::MeshData;
 use omuzaki_core::rng::Rng;
 
 /// The regions of a body of `template` shaped by `shape`, built at `detail`.
@@ -352,31 +353,45 @@ struct Outline {
 /// The outline of `meshes` seen from the front (x) or the side (z) between `y0` and `y1`, sampled every `step`: each
 /// triangle that crosses a height contributes where it cuts that plane.
 fn outline(meshes: &[&PartMesh], side: bool, y0: f64, y1: f64, step: f64) -> Outline {
-    let n = ((y1 - y0) / step).round() as usize + 1;
-    let ys: Vec<f64> = (0..n).map(|k| y0 + step * k as f64).collect();
-    let mut xs = vec![f64::NAN; n];
+    let value: fn(Vec3) -> f64 = if side { |p| f64::from(p.z) } else { |p| f64::from(p.x) };
+    let xs = sweep(meshes, |p| f64::from(p.y), value, y0, y1, step);
+    let ys = (0..xs.len()).map(|k| y0 + step * k as f64).collect();
+    Outline { ys, xs }
+}
+
+/// The top edge of `meshes` seen from the front between `x0` and `x1`, sampled every `step`: at each `x`, the largest `y`
+/// of the triangle edges that cross that vertical plane, NaN where the meshes have nothing. [`outline`] with `x` and `y`
+/// swapped.
+fn top_edge(meshes: &[&PartMesh], x0: f64, x1: f64, step: f64) -> Vec<f64> {
+    sweep(meshes, |p| f64::from(p.x), |p| f64::from(p.y), x0, x1, step)
+}
+
+/// Samples the largest `value` of the triangle edges of `meshes` that cross each plane `key = s` for `s` from `s0` to
+/// `s1`, `step` apart: each triangle contributes where its edges cut the plane, and NaN where none do.
+fn sweep(meshes: &[&PartMesh], key: fn(Vec3) -> f64, value: fn(Vec3) -> f64, s0: f64, s1: f64, step: f64) -> Vec<f64> {
+    let n = ((s1 - s0) / step).round() as usize + 1;
+    let mut out = vec![f64::NAN; n];
     for m in meshes {
         let g = &m.geometry;
-        let pick = |p: omuzaki_core::glam::Vec3| if side { f64::from(p.z) } else { f64::from(p.x) };
         for t in g.indices.chunks_exact(3) {
             let v = [t[0], t[1], t[2]].map(|i| g.positions[i as usize]);
-            let (lo, hi) =
-                v.iter().fold((f64::MAX, f64::MIN), |(a, b), p| (a.min(f64::from(p.y)), b.max(f64::from(p.y))));
-            let first = ((lo - y0) / step).ceil().max(0.0) as usize;
-            for k in first..n.min(((hi - y0) / step).floor().max(-1.0) as usize + 1) {
-                let y = ys[k];
+            let (lo, hi) = v.iter().fold((f64::MAX, f64::MIN), |(a, b), p| (a.min(key(*p)), b.max(key(*p))));
+            let first = ((lo - s0) / step).ceil().max(0.0) as usize;
+            let last = n.min(((hi - s0) / step).floor().max(-1.0) as usize + 1);
+            for (k, slot) in out.iter_mut().enumerate().take(last).skip(first) {
+                let s = s0 + step * k as f64;
                 for e in [(0, 1), (1, 2), (2, 0)] {
                     let (a, b) = (v[e.0], v[e.1]);
-                    let (ya, yb) = (f64::from(a.y), f64::from(b.y));
-                    if (ya - y) * (yb - y) <= 0.0 && (ya - yb).abs() > 1e-12 {
-                        let x = pick(a) + (pick(b) - pick(a)) * (y - ya) / (yb - ya);
-                        xs[k] = if xs[k].is_nan() { x } else { xs[k].max(x) };
+                    let (ka, kb) = (key(a), key(b));
+                    if (ka - s) * (kb - s) <= 0.0 && (ka - kb).abs() > 1e-12 {
+                        let x = value(a) + (value(b) - value(a)) * (s - ka) / (kb - ka);
+                        *slot = if slot.is_nan() { x } else { slot.max(x) };
                     }
                 }
             }
         }
     }
-    Outline { ys, xs }
+    out
 }
 
 /// Steps in each chord of the turn measure: 3 mm at the metric's 1 mm step.
@@ -588,27 +603,35 @@ fn the_front_outline_has_no_waist_at_the_foot_dome() {
     }
 }
 
-/// Prints the ankle's worst front turn and waist over the ten presets and the 32 corners of the shape cube, per template.
-#[test]
-#[ignore = "prints the ankle table"]
-fn ankle_table() {
-    for template in registry::templates() {
-        let corner = |c: u32| {
+/// The 32 corners of the shape cube, `corner0` to `corner31`: bit 0 sets the height, 1 the build, 2 the curves, 3 the
+/// musculature and 4 the shoulder-hip, each at its high end (+1) when set and its low end (-1) when clear.
+fn shape_cube_corners() -> Vec<(String, BodyShape)> {
+    (0..32_u32)
+        .map(|c| {
             let pick = |bit: u32| if c >> bit & 1 == 1 { 1.0 } else { -1.0 };
-            BodyShape {
+            let shape = BodyShape {
                 height: pick(0),
                 build: pick(1),
                 curves: pick(2),
                 musculature: pick(3),
                 shoulder_hip: pick(4),
                 preset: None,
-            }
-        };
+            };
+            (format!("corner{c}"), shape)
+        })
+        .collect()
+}
+
+/// Prints the ankle's worst front turn and waist over the ten presets and the 32 corners of the shape cube, per template.
+#[test]
+#[ignore = "prints the ankle table"]
+fn ankle_table() {
+    for template in registry::templates() {
         let shapes: Vec<(String, BodyShape)> = shape::presets()
             .unwrap()
             .iter()
             .map(|p| (p.id.as_str().to_string(), p.shape.clone()))
-            .chain((0..32).map(|c| (format!("corner{c}"), corner(c))))
+            .chain(shape_cube_corners())
             .collect();
         for (detail, label) in [(Detail::OFFLINE, "offline"), (Detail::LIVE, "live")] {
             let mut worst = vec![(0.0_f64, String::new()); 2];
@@ -637,6 +660,93 @@ fn ankle_table() {
                 worst[0].1,
                 worst[1].0,
                 worst[1].1
+            );
+        }
+    }
+}
+
+/// The mesh twin of `shoulder_rise` in `tests/junctions.rs`, read from the `detail` mesh: how far the front-view top of
+/// the torso and the left arm climbs again after the outline has started down from the neck, as a fraction of the
+/// torso's greatest half-width. The layout's rise is the reference. The rise is reported here and asserted by #799,
+/// which fixes the mesher's torso corner; until then the mesh shows no climb and this reads (about) zero.
+fn mesh_shoulder_rise(template: &str, shape: &BodyShape, detail: Detail) -> f64 {
+    let layout = registry::find(template).unwrap().layout(&Proportions::default(), shape, &HandParams::default());
+    let unit = layout.head_base().unwrap().y / 0.56;
+    let r =
+        (0..=20).map(|k| layout.section64(BodyRegion::Torso, f64::from(k) / 20.0).unwrap().radii.x).fold(0.0, f64::max);
+    // From the neck's base outward: the torso's top is flat to there.
+    let neck = layout.section64(BodyRegion::Torso, 1.0).unwrap().radii.x;
+    let meshes = body(template, shape, detail);
+    let chosen: Vec<&PartMesh> =
+        meshes.iter().filter(|(k, _)| matches!(k, BodyRegion::Torso | BodyRegion::ArmL)).map(|(_, m)| m).collect();
+    let far = chosen.iter().flat_map(|m| &m.geometry.positions).map(|p| f64::from(p.x)).fold(f64::MIN, f64::max);
+    rise_of(&top_edge(&chosen, neck, far, 0.000_25 * unit)) / r
+}
+
+/// The climb of a top edge sampled by [`top_edge`]: the most any sample rises above the lowest sample before it. NaN
+/// samples, where the meshes have nothing, are skipped.
+fn rise_of(tops: &[f64]) -> f64 {
+    let (mut lowest, mut rise) = (f64::MAX, 0.0_f64);
+    for top in tops.iter().copied().filter(|t| !t.is_nan()) {
+        lowest = lowest.min(top);
+        rise = rise.max(top - lowest);
+    }
+    rise
+}
+
+/// A flat quad over `x0..x1` at height `0..top`, as a mesh for the rise tests: its top edge is what [`top_edge`] reads.
+fn quad(x0: f32, x1: f32, top: f32) -> PartMesh {
+    let positions =
+        vec![Vec3::new(x0, 0.0, 0.0), Vec3::new(x1, 0.0, 0.0), Vec3::new(x1, top, 0.0), Vec3::new(x0, top, 0.0)];
+    PartMesh {
+        name: "quad".to_owned(),
+        geometry: MeshData { positions, indices: vec![0, 1, 2, 0, 2, 3], ..MeshData::default() },
+        joint_bones: Vec::new(),
+        material: MaterialName::new("body-skin").unwrap(),
+        casts_shadow: false,
+        render_order: 0,
+        dynamic: false,
+    }
+}
+
+#[test]
+fn a_step_up_in_the_top_edge_is_the_rise_and_a_flat_top_has_none() {
+    let (slab, block) = (quad(0.0, 1.0, 1.0), quad(1.0, 2.0, 1.1));
+    let step = 0.01;
+    let rise = rise_of(&top_edge(&[&slab, &block], 0.0, 2.0, step));
+    assert!((rise - 0.1).abs() <= step, "a step of 0.1 reads as {rise}");
+    assert!(rise_of(&top_edge(&[&slab], 0.0, 2.0, step)).abs() < 1e-12);
+}
+
+/// The largest mesh shoulder rise over `shapes` and the name of the shape it is on (0 and "" for none).
+fn worst_rise<'a>(template: &str, detail: Detail, shapes: &'a [(String, BodyShape)]) -> (f64, &'a str) {
+    shapes
+        .iter()
+        .map(|(name, s)| (mesh_shoulder_rise(template, s, detail), name.as_str()))
+        .fold((0.0_f64, ""), |w, v| if v.0 > w.0 { v } else { w })
+}
+
+/// Prints each template's mesh shoulder rise as a percentage of its torso's half-width, offline then live: on its own
+/// shape, the worst over the ten presets and which one, and the worst over the 32 corners of the shape cube and which.
+#[test]
+#[ignore = "prints the shoulder table"]
+fn shoulder_table() {
+    for template in registry::templates() {
+        let id = template.id();
+        let presets: Vec<(String, BodyShape)> =
+            shape::presets().unwrap().iter().map(|p| (p.id.as_str().to_string(), p.shape.clone())).collect();
+        let corners = shape_cube_corners();
+        for (detail, label) in [(Detail::OFFLINE, "offline"), (Detail::LIVE, "live")] {
+            let own = mesh_shoulder_rise(id, &BodyShape::default(), detail);
+            let (preset, corner) = (worst_rise(id, detail, &presets), worst_rise(id, detail, &corners));
+            println!(
+                "{:8} {label:7} own {:.1}%  presets {:.1}% {}  corners {:.1}% {}",
+                id,
+                own * 100.0,
+                preset.0 * 100.0,
+                preset.1,
+                corner.0 * 100.0,
+                corner.1
             );
         }
     }
