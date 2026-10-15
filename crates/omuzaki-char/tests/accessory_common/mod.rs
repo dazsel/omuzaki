@@ -354,6 +354,18 @@ pub fn styles(kind: &str) -> Vec<(&'static str, Value)> {
             ("cat-eye", json!({ "style": "cat_eye" })),
             ("sunglasses", json!({ "style": "sunglasses" })),
         ],
+        "tail" => vec![
+            ("fox", json!({ "kind": "fox" })),
+            ("cat", json!({ "kind": "cat" })),
+            ("dragon", json!({ "kind": "dragon" })),
+            ("bunny", json!({ "kind": "bunny" })),
+        ],
+        "wings" => vec![
+            ("feathered", json!({ "kind": "feathered" })),
+            ("bat", json!({ "kind": "bat" })),
+            ("fairy", json!({ "kind": "fairy" })),
+            ("mechanical", json!({ "kind": "mechanical" })),
+        ],
         other => panic!("no styles listed for {other}"),
     }
 }

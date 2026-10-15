@@ -21,8 +21,14 @@ use omuzaki_render_mock::MockRenderer;
 const TILE: u32 = 256;
 
 /// The kinds on the sheets and the azimuths (degrees about the vertical) each is seen from.
-const KINDS: [(&str, &[f32]); 4] =
-    [("horns", &[0.0, 35.0]), ("headphones", &[0.0, 35.0]), ("hat", &[0.0, 35.0]), ("glasses", &[0.0, 35.0])];
+const KINDS: [(&str, &[f32]); 6] = [
+    ("horns", &[0.0, 35.0]),
+    ("headphones", &[0.0, 35.0]),
+    ("hat", &[0.0, 35.0]),
+    ("glasses", &[0.0, 35.0]),
+    ("tail", &[35.0, 90.0, 180.0]),
+    ("wings", &[35.0, 90.0, 180.0]),
+];
 
 /// What a tile is framed on: the head for what sits on it, the accessory itself for what hangs on the body.
 fn frame(kind: &str, built: &BuiltCharacter, head: &dyn HeadSurface) -> (Vec3, f32) {

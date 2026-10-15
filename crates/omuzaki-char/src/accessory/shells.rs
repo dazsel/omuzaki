@@ -10,9 +10,10 @@
 //! default frame the kind passes), then places them with the part's `attach`: with no `attach` that is the identity, and
 //! an `attach` on a surface kind moves the whole accessory as one rigid piece.
 
+use omuzaki_anim_api::{BoneId, SpringChain, SpringParams, Transform};
 use omuzaki_char_api::{
-    BuildCtx, BuildError, FitFact, JointFit, JointRef, MaterialName, PartMesh, PartOutput, RecolourCtx, Recoloured,
-    RigContribution,
+    BodyRegion, BoneName, BuildCtx, BuildError, ExtraBone, FitFact, JointFit, JointRef, MaterialName, PartMesh,
+    PartOutput, RecolourCtx, Recoloured, RigContribution,
 };
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::{DMat4, DVec3};
@@ -95,11 +96,39 @@ impl<'a> Shells<'a> {
         &mut self,
         slot: usize,
         grid: &Grid,
-        (wrap_i, wrap_j): (bool, bool),
+        wraps: (bool, bool),
         inside: &dyn Fn(usize, usize) -> DVec3,
         skin: Skin<'_>,
     ) -> Result<(), KitError> {
         let place = self.attach.to_bind * self.to_local;
+        self.add(slot, place, grid, wraps, inside, skin)
+    }
+
+    /// Adds a grid of points in the accessory's **local** frame (see [`ResolvedAttach`]) to slot `slot`, with the skin given.
+    /// `inside` gives the interior reference of vertex `(i, j)`, also in the local frame.
+    ///
+    /// # Errors
+    /// [`KitError`] from the grid.
+    pub fn local(
+        &mut self,
+        slot: usize,
+        grid: &Grid,
+        wraps: (bool, bool),
+        inside: &dyn Fn(usize, usize) -> DVec3,
+        skin: Skin<'_>,
+    ) -> Result<(), KitError> {
+        self.add(slot, self.attach.to_bind, grid, wraps, inside, skin)
+    }
+
+    fn add(
+        &mut self,
+        slot: usize,
+        place: DMat4,
+        grid: &Grid,
+        (wrap_i, wrap_j): (bool, bool),
+        inside: &dyn Fn(usize, usize) -> DVec3,
+        skin: Skin<'_>,
+    ) -> Result<(), KitError> {
         let placed =
             Grid::new(grid.rows(), grid.cols(), grid.points().iter().map(|&p| place.transform_point3(p)).collect())?;
         let inside = |i: usize, j: usize| place.transform_point3(inside(i, j));
@@ -173,15 +202,23 @@ pub(super) fn closed_tube(
     sweep(path, rad, seg, &options)
 }
 
-/// The frame a surface kind builds about (the head joint, no offset) and where the part is actually placed: its `attach`
-/// when it has one, else that same frame.
+/// The frame a kind that builds in bind space builds about (`joint`, no offset) and where the part is actually placed: its
+/// `attach` when it has one, else that same frame.
 ///
 /// # Errors
-/// [`BuildError`] if the head joint is not placed, or the `attach` does not resolve.
-pub(super) fn head_frames(ctx: &BuildCtx<'_>) -> Result<(ResolvedAttach, ResolvedAttach), BuildError> {
-    let default = super::attach::on_bone(ctx, &JointRef::HEAD)?;
+/// [`BuildError`] if the joint is not placed, or the `attach` does not resolve.
+pub(super) fn frames_on(ctx: &BuildCtx<'_>, joint: &JointRef) -> Result<(ResolvedAttach, ResolvedAttach), BuildError> {
+    let default = super::attach::on_bone(ctx, joint)?;
     let placed = super::attach::attachment(ctx, |_| Ok(default.clone()))?;
     Ok((placed, default))
+}
+
+/// [`frames_on`] the head joint.
+///
+/// # Errors
+/// As [`frames_on`].
+pub(super) fn head_frames(ctx: &BuildCtx<'_>) -> Result<(ResolvedAttach, ResolvedAttach), BuildError> {
+    frames_on(ctx, &JointRef::HEAD)
 }
 
 /// A closed ellipsoid of semi-axes `radii` centred on `centre`, as a grid (rows pole to pole, columns round).
@@ -206,4 +243,114 @@ pub(super) fn polar(theta: f64, phi: f64) -> DVec3 {
 pub(super) fn on_head(head: &dyn omuzaki_char_api::HeadSurface, dir: DVec3, offset: f64) -> DVec3 {
     #[allow(clippy::cast_possible_truncation)] // the surface is in f32 metres
     DVec3::from(head.point(dir.as_vec3(), offset as f32))
+}
+
+// ------------------------------------------------------------------------------------------------ the body
+
+/// The neck's height on a standard template, metres: the body size the wings' and tails' lengths are authored for.
+const STANDARD_NECK_HEIGHT: f64 = 1.328;
+
+/// How big the body is next to a standard one, from the height of its neck: lengths of wings and tails scale with it, so
+/// one parameter set fits the chibi and the tall template.
+///
+/// # Errors
+/// [`BuildError`] if no part placed the neck.
+pub(super) fn body_scale(ctx: &BuildCtx<'_>) -> Result<f64, BuildError> {
+    let neck =
+        ctx.joint(&JointRef::NECK).ok_or_else(|| ctx.fail("the body has no neck joint to size the accessory by"))?;
+    Ok(f64::from(neck.y) / STANDARD_NECK_HEIGHT)
+}
+
+/// The back of the torso at each height, bind space: `(y, z)` of the most backward point of the torso's cross-section,
+/// from the hips up to the base of the neck.
+///
+/// # Errors
+/// [`BuildError`] if the body publishes no torso.
+pub(super) fn torso_back(ctx: &BuildCtx<'_>) -> Result<Vec<(f64, f64)>, BuildError> {
+    const SAMPLES: usize = 21;
+    let fit = ctx.fit()?;
+    (0..SAMPLES)
+        .map(|k| {
+            #[allow(clippy::cast_possible_truncation)] // a fraction
+            let section = fit
+                .section(BodyRegion::Torso, fraction_f32(k, SAMPLES - 1))
+                .ok_or_else(|| ctx.fail("the body has no torso section to fit the accessory to"))?;
+            Ok((f64::from(section.centre.y), f64::from(section.centre.z) - f64::from(section.radii.y)))
+        })
+        .collect()
+}
+
+#[allow(clippy::cast_possible_truncation)] // a fraction
+fn fraction_f32(k: usize, last: usize) -> f32 {
+    crate::kit::curve::fraction(k, last) as f32
+}
+
+/// How a chain of spring bones is laid out.
+pub(super) struct Chain<'a> {
+    /// Appended to the part's name in the names of the chain and its bones (`<kind>_<part>_<tag>`), `""` for none.
+    pub tag: &'a str,
+    /// The bone the chain's first bone hangs from.
+    pub parent: JointRef,
+    /// Where each bone rests, bind space, root first.
+    pub points: &'a [DVec3],
+    /// The spring parameters at the root and at the tip ([`SpringChain::tapered`]).
+    pub root: SpringParams,
+    /// The parameters at the last bone.
+    pub tip: SpringParams,
+    /// The bone whose space the chain is simulated in: `None` for the world.
+    pub centre: Option<BoneId>,
+}
+
+/// Adds the bones of `chain` and a spring chain over them to `rig`, named `<kind>_<part>[_<tag>]`; the chain declares every
+/// collider group an earlier part published. Returns the bones' joints, root first.
+///
+/// # Errors
+/// [`BuildError`] if a name is not valid.
+pub(super) fn spring_chain(
+    ctx: &BuildCtx<'_>,
+    kind: &str,
+    rig: &mut RigContribution,
+    chain: &Chain<'_>,
+) -> Result<Vec<JointRef>, BuildError> {
+    let tag = if chain.tag.is_empty() { String::new() } else { format!("_{}", chain.tag) };
+    let mut ids = Vec::with_capacity(chain.points.len());
+    let mut joints: Vec<JointRef> = Vec::with_capacity(chain.points.len());
+    let mut parent = chain.parent.clone();
+    for (i, point) in chain.points.iter().enumerate() {
+        let name = BoneName::new(format!("{kind}_{}{tag}_{i}", ctx.part))
+            .map_err(|e| ctx.fail(format!("spring bone name: {e}")))?;
+        let rest = Transform::from_translation(point.as_vec3());
+        ids.push(rig.add_bone(ExtraBone { name: name.clone(), parent: parent.clone(), rest }));
+        parent = JointRef::Named(name);
+        joints.push(parent.clone());
+    }
+    let mut spring = SpringChain::tapered(format!("{kind}_{}{tag}", ctx.part), &ids, chain.root, chain.tip);
+    spring.collider_groups = ctx.colliders().iter().map(|group| group.name.clone()).collect();
+    spring.center = chain.centre;
+    rig.chains.push(spring);
+    Ok(joints)
+}
+
+/// The weights of a point at `position` along a chain of joints at `knots` (increasing, the first below and the last at
+/// or above any position used): a linear blend of the two joints either side of it, each joint's weight falling to
+/// nothing at its neighbours.
+pub(super) fn blend_along(joints: &[JointRef], knots: &[f64], position: f64) -> Vec<(JointRef, f32)> {
+    debug_assert_eq!(joints.len(), knots.len());
+    let last = joints.len() - 1;
+    let above = knots.iter().position(|&k| k >= position).unwrap_or(last);
+    if above == 0 {
+        return vec![(joints[0].clone(), 1.0)];
+    }
+    let below = above - 1;
+    let span = knots[above] - knots[below];
+    #[allow(clippy::cast_possible_truncation)] // a weight in 0..=1
+    let along = if span > 0.0 { ((position - knots[below]) / span).clamp(0.0, 1.0) as f32 } else { 1.0 };
+    vec![(joints[below].clone(), 1.0 - along), (joints[above].clone(), along)]
+}
+
+/// [`blend_along`] with the joints evenly spaced over `0..=1`.
+pub(super) fn chain_weights(joints: &[JointRef], position: f64) -> Vec<(JointRef, f32)> {
+    let last = joints.len() - 1;
+    let knots: Vec<f64> = (0..=last).map(|k| crate::kit::curve::fraction(k, last)).collect();
+    blend_along(joints, &knots, position)
 }
