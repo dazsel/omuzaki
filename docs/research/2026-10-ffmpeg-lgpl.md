@@ -90,7 +90,7 @@ Notes:
 
 ## 5. Encode timing
 
-Machine: a 4-core cloud VM without a GPU and without hardware encoders. Release build. Time is
+Machine: a cloud VM, software encoders only. Release build. Time is
 `send_frame` plus draining packets; the RGBA to YUVA conversion (swscale) is counted apart. Per-frame lines are printed by the
 binary.
 
