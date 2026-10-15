@@ -31,9 +31,14 @@ const MAX_PITCH_DEG: f32 = 90.0;
 const NEAREST_GAP: f32 = 1e-3;
 /// Once the distance is bracketed, bisect this many times: far more than f32 has bits, so it has converged.
 const BISECTIONS: u32 = 64;
-/// The near plane as a share of the camera distance, with a floor so a close shot keeps a usable depth range.
+/// The near plane lies this share of the way from the camera to the nearest framed corner, so no corner is cut.
+const NEAR_MARGIN: f32 = 0.5;
+/// When the camera is zoomed into the subject and no corner is in front of it, the near plane is this share of the
+/// camera distance (and never below `NEAR_FLOOR`).
 const NEAR_SHARE: f32 = 0.02;
 const NEAR_FLOOR: f32 = 0.01;
+/// How far outside the frame, in frame units, a corner of a finished shot may land (rounding).
+const FRAME_TOLERANCE: f32 = 1e-4;
 /// The far plane lies this many character heights behind the subject.
 const FAR_HEIGHTS: f32 = 10.0;
 
@@ -186,8 +191,9 @@ fn extent(points: &[Seen; 8], value: fn(&Seen) -> f32, lens: Lens, d: f32, slide
 
 /// How far along `value`'s axis the camera looks from the anchor: `wanted` (what puts the anchor where the preset
 /// aims), unless that pushes a projected corner past the frame's edge. Then it is the nearest slide that keeps every
-/// corner inside, so no part of the span is cut off by the aim. If the corners can't all fit at this distance, `wanted`.
-fn slide_into_frame(points: &[Seen; 8], value: fn(&Seen) -> f32, lens: Lens, d: f32, wanted: f32) -> f32 {
+/// corner inside, so no part of the span is cut off by the aim. `None` if no slide keeps every corner inside at this
+/// distance: the camera has to back off.
+fn slide_into_frame(points: &[Seen; 8], value: fn(&Seen) -> f32, lens: Lens, d: f32, wanted: f32) -> Option<f32> {
     // A corner is inside when `-1 <= (value - slide) / half <= 1`, that is `value - half <= slide <= value + half`.
     let (mut lowest, mut highest) = (f32::NEG_INFINITY, f32::INFINITY);
     for p in points {
@@ -195,7 +201,7 @@ fn slide_into_frame(points: &[Seen; 8], value: fn(&Seen) -> f32, lens: Lens, d: 
         lowest = lowest.max(value(p) - half);
         highest = highest.min(value(p) + half);
     }
-    if lowest <= highest { wanted.clamp(lowest, highest) } else { wanted }
+    (lowest <= highest).then(|| wanted.clamp(lowest, highest))
 }
 
 /// What the search for the distance that fits found.
@@ -206,6 +212,11 @@ enum Fit {
     At(f32),
     /// The extent was still too big at the farthest distance tried, so no distance was found.
     Unreachable,
+}
+
+/// The smallest `toward` of `points`: the farthest corner from the camera.
+fn farthest(points: &[Seen; 8]) -> f32 {
+    points.iter().map(|p| p.toward).fold(f32::INFINITY, f32::min)
 }
 
 /// The distance past `floor` at which `excess` (the projected extent over what is wanted, falling as the camera backs
@@ -292,19 +303,22 @@ pub fn frame(framing: Framing, landmarks: &Landmarks, def: &CameraDef, aspect: f
     // What the frame sees at distance `d` from the anchor: NDC = across or up over `(d - toward) * t`.
     let t = (def.fov.to_radians() * 0.5).tan();
     let b = &shot.bounds;
-    let span = seen(&corners(Vec3::new(b.min.x, shot.lo, b.min.z), Vec3::new(b.max.x, shot.hi, b.max.z)), shot.anchor, axes);
-    let width = seen(&corners(b.min, b.max), shot.anchor, axes);
+    let span_corners = corners(Vec3::new(b.min.x, shot.lo, b.min.z), Vec3::new(b.max.x, shot.hi, b.max.z));
+    let width_corners = corners(b.min, b.max);
+    let span = seen(&span_corners, shot.anchor, axes);
+    let width = seen(&width_corners, shot.anchor, axes);
     let floor = nearest(&span).max(nearest(&width));
     // Where the corners land when the camera looks `slide` metres along `value`'s axis from the anchor: across or up
     // over `(d - toward) * t * scale`, so -1 and 1 are the frame's edges.
     let lens = Lens { t, scale: 1.0 };
     let wide_lens = Lens { t, scale: aspect };
+    // A distance where no slide keeps every corner inside is too close, however the extent compares: back off.
     let tall = distance_where_it_fits(floor, |d| {
-        let slide = slide_into_frame(&span, |p| p.y, lens, d, -shot.aim * d * t);
+        let Some(slide) = slide_into_frame(&span, |p| p.y, lens, d, -shot.aim * d * t) else { return f32::INFINITY };
         extent(&span, |p| p.y, lens, d, slide) - 2.0 * shot.fill
     });
     let wide = distance_where_it_fits(floor, |d| {
-        let slide = slide_into_frame(&width, |p| p.x, wide_lens, d, 0.0);
+        let Some(slide) = slide_into_frame(&width, |p| p.x, wide_lens, d, 0.0) else { return f32::INFINITY };
         extent(&width, |p| p.x, wide_lens, d, slide) - 2.0 * shot.fill
     });
     let mut fit = 0.0_f32;
@@ -321,28 +335,64 @@ pub fn frame(framing: Framing, landmarks: &Landmarks, def: &CameraDef, aspect: f
     }
     let d = fit / def.zoom;
     if !(d.is_finite() && d > 0.0) {
-        return Err(StageError::Framing { reason: format!("the {framing:?} span has no extent to frame") });
+        // Neither extent exceeds its share even 1 mm in front of the nearest corner: the lens is so wide that the shot
+        // fits from inside the subject's box, where there is no camera to place. Or the span has no extent at all.
+        return Err(StageError::Framing {
+            reason: format!(
+                "the {framing:?} shot with a {} degree lens fits from closer than {NEAREST_GAP} m to the subject, or the \
+                 span has no extent: there is no camera distance to give it",
+                def.fov
+            ),
+        });
     }
 
     // Looking at a point `aim * d * t` above the anchor, in the camera's up, puts the anchor at `aim` in the frame,
     // unless that would push a corner out of it: then the camera slides just far enough to bring the corner back.
     let h = 2.0 * d * t;
-    let rise = slide_into_frame(&span, |p| p.y, lens, d, -shot.aim * d * t);
-    let across = slide_into_frame(&width, |p| p.x, wide_lens, d, 0.0);
+    // (Zoomed in past the fit, nothing may fit; the aim then stands.)
+    let rise = slide_into_frame(&span, |p| p.y, lens, d, -shot.aim * d * t).unwrap_or(-shot.aim * d * t);
+    let across = slide_into_frame(&width, |p| p.x, wide_lens, d, 0.0).unwrap_or(0.0);
     let target = shot.anchor + up * rise + right * across;
     let position = target + back * d;
     camera.transform.w_axis = position.extend(1.0);
+    // The near plane stops short of the nearest corner, the far plane lies past the farthest by some character heights.
+    let nearest_depth = d - floor;
+    let near = if nearest_depth > 0.0 { NEAR_MARGIN * nearest_depth } else { (NEAR_SHARE * d).max(NEAR_FLOOR) };
     camera.projection = Projection::Perspective {
         fov_y_deg: def.fov,
-        near: (NEAR_SHARE * d).max(NEAR_FLOOR),
-        far: d + FAR_HEIGHTS * landmarks.height_m,
+        near,
+        far: (d - farthest(&span).min(farthest(&width))) + FAR_HEIGHTS * landmarks.height_m,
     };
     // Moving the eye and the target together keeps the orientation, so the shift is a shift of the transform.
     let offset = right * (-def.shift[0] * aspect * h) + up * (-def.shift[1] * h);
     camera.transform.w_axis += offset.extend(0.0);
     // Fail closed: landmarks that came from outside `Landmarks::measure` can still give a non-finite camera.
     camera.validate().map_err(|e| StageError::Framing { reason: format!("the {framing:?} camera isn't usable: {e}") })?;
+    // The shot as asked (no zoom in, no shift) frames every corner, in f32 as the renderer will project it. Extreme
+    // lenses can defeat the fit by rounding, and a shot that cuts the subject is refused, not returned.
+    if def.zoom <= 1.0 && def.shift == [0.0, 0.0] && !frames(&camera, aspect, &span_corners, &width_corners) {
+        return Err(StageError::Framing {
+            reason: format!(
+                "the {framing:?} shot can't be framed with a {} degree lens at aspect {aspect}: a corner would fall outside the frame",
+                def.fov
+            ),
+        });
+    }
     Ok(camera)
+}
+
+/// Whether `camera` shows every span corner, and the box corners across, inside the frame and in front of its near
+/// plane. Uses the projection the renderers use (`Camera::projection_matrix` and `view`).
+fn frames(camera: &Camera, aspect: f32, span: &[Vec3; 8], width: &[Vec3; 8]) -> bool {
+    let Projection::Perspective { near, .. } = camera.projection else { return false };
+    let (view, to_clip) = (camera.view(), camera.projection_matrix(aspect) * camera.view());
+    let limit = 1.0 + FRAME_TOLERANCE;
+    let projects_inside = |p: Vec3, vertically: bool| {
+        let clip = to_clip * Vec4::from((p, 1.0));
+        let ahead = -(view * Vec4::from((p, 1.0))).z > near;
+        ahead && clip.w > 0.0 && (clip.x / clip.w).abs() <= limit && (!vertically || (clip.y / clip.w).abs() <= limit)
+    };
+    span.iter().all(|p| projects_inside(*p, true)) && width.iter().all(|p| projects_inside(*p, false))
 }
 
 #[cfg(test)]

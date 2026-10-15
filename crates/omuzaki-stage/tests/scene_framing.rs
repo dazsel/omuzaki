@@ -395,3 +395,125 @@ fn frame_accepts_what_the_scene_check_accepts() {
         check(CameraDef { shift: [0.0, v], ..base.clone() });
     }
 }
+
+/// Landmarks of a character that is one box: every preset frames it.
+fn boxed(mut l: Landmarks, b: Bounds, eyes: f32, chest: f32, height_m: f32) -> Landmarks {
+    l.body = b;
+    l.head = Some(b);
+    l.eyes = Some(eyes);
+    l.chest = Some(chest);
+    l.bust = Some(Bounds { min: Vec3::new(b.min.x, chest, b.min.z), max: b.max });
+    l.hands = Some(b);
+    l.height_m = height_m;
+    l
+}
+
+/// Whether every corner of the span (and of the box, across) is inside the frame and ahead of the near plane.
+fn all_framed(camera: &Camera, aspect: f32, lo: f32, hi: f32, bounds: &Bounds) -> bool {
+    let Projection::Perspective { near, .. } = camera.projection else { panic!("perspective") };
+    let ((low, high), (left, right)) = covered(camera, aspect, lo, hi, bounds);
+    let inside = |v: f32| v.abs() <= 1.0 + 1e-4;
+    let ahead = |p: Vec3| -(camera.view() * p.extend(1.0)).z > near;
+    let all = corners(Vec3::new(bounds.min.x, lo, bounds.min.z), Vec3::new(bounds.max.x, hi, bounds.max.z))
+        .into_iter()
+        .chain(corners(bounds.min, bounds.max));
+    [low, high, left, right].into_iter().all(inside) && all.into_iter().all(ahead)
+}
+
+/// A wide lens and a deep, tall box at a steep pitch: no slide of the camera fits it until it backs off.
+#[test]
+fn a_distance_where_no_slide_fits_makes_the_camera_back_off() {
+    let b = Bounds { min: Vec3::new(-0.3, 0.0, -0.15), max: Vec3::new(0.3, 1.8, 0.15) };
+    let l = boxed(landmarks("standard"), b, 1.6, 1.2, 1.8);
+    let def = CameraDef { yaw: -120.0, pitch: -45.0, fov: 150.0, ..CameraDef::preset(Framing::Full) };
+    let aspect = 9.0 / 16.0;
+    let camera = frame(Framing::Full, &l, &def, aspect).unwrap();
+    assert!(all_framed(&camera, aspect, 0.0, 1.8, &b), "{:?}", covered(&camera, aspect, 0.0, 1.8, &b));
+}
+
+/// A very wide lens looking straight down: the nearest corner is close to the camera, and the near plane must stop
+/// short of it.
+#[test]
+fn the_near_plane_stops_short_of_the_nearest_corner() {
+    let b = Bounds { min: Vec3::new(-0.3, 0.0, -0.15), max: Vec3::new(0.3, 1.8, 0.15) };
+    let l = boxed(landmarks("standard"), b, 1.6, 1.2, 1.8);
+    let def = CameraDef { pitch: -90.0, fov: 171.0, ..CameraDef::preset(Framing::Full) };
+    let aspect = 16.0 / 9.0;
+    let camera = frame(Framing::Full, &l, &def, aspect).unwrap();
+    assert!(all_framed(&camera, aspect, 0.0, 1.8, &b));
+}
+
+/// Whether moving the camera 4 % closer pushes a corner out of the frame or behind the near plane.
+fn closer_cuts_the_subject(framing: Framing, l: &Landmarks, def: &CameraDef, aspect: f32) -> bool {
+    let closer = CameraDef { zoom: 1.04, ..def.clone() };
+    let camera = frame(framing, l, &closer, aspect).unwrap();
+    let (lo, hi, bounds, _) = span(framing, l);
+    !all_framed(&camera, aspect, lo, hi, &bounds)
+}
+
+/// 4000 seeded cases over the whole camera contract: each is an error, or frames every corner and fills its share (or
+/// stays as far as it must to keep the subject whole).
+#[test]
+fn every_valid_camera_frames_its_corners_or_is_refused() {
+    use omuzaki_core::rng::Rng;
+    const CASES: usize = 4000;
+    let mut rng = Rng::new(0x00F2_A31E);
+    let base = landmarks("standard");
+    let (mut framed, mut refused, mut backed_off) = (0, 0, 0);
+    for case in 0..CASES {
+        let mut pick = |lo: f32, hi: f32| rng.range_f32(lo, hi);
+        let fov = match case % 4 {
+            0 => pick(1.0, 179.0),
+            1 => 10f32.powf(-pick(0.0, 6.0)),
+            2 => (180.0 - 10f32.powf(-pick(0.0, 6.0))).min(179.999_98),
+            _ => pick(20.0, 60.0),
+        };
+        let at_end = |v: f32, edge: f32, share: f32| if share < 0.1 { edge.copysign(v) } else { v };
+        let yaw = at_end(pick(-180.0, 180.0), 180.0, pick(0.0, 1.0));
+        let pitch = at_end(pick(-90.0, 90.0), 90.0, pick(0.0, 1.0));
+        let aspect = 10f32.powf(pick(f32::log10(9.0 / 16.0), f32::log10(21.0 / 9.0)));
+        let size = Vec3::new(pick(0.05, 2.5), pick(0.05, 2.5), pick(0.05, 2.5));
+        let centre = Vec3::new(pick(-2.0, 2.0), pick(-1.0, 1.0), pick(-2.0, 2.0));
+        let b = Bounds {
+            min: Vec3::new(centre.x - size.x / 2.0, centre.y, centre.z - size.z / 2.0),
+            max: Vec3::new(centre.x + size.x / 2.0, centre.y + size.y, centre.z + size.z / 2.0),
+        };
+        let (eyes, chest) = (centre.y + size.y * pick(0.2, 0.8), centre.y + size.y * pick(0.0, 0.6));
+        let l = boxed(base, b, eyes, chest, pick(0.3, 2.5));
+        let framing = PRESETS[case / 7 % PRESETS.len()];
+        let def = CameraDef { yaw, pitch, fov, ..CameraDef::preset(framing) };
+        let described = format!("case {case}: {framing:?} yaw {yaw} pitch {pitch} fov {fov} aspect {aspect} box {b:?}");
+
+        let camera = match frame(framing, &l, &def, aspect) {
+            Ok(camera) => camera,
+            Err(StageError::Framing { .. }) => {
+                refused += 1;
+                continue;
+            }
+            Err(other) => panic!("{described}: {other}"),
+        };
+        framed += 1;
+        let (lo, hi, bounds, fill) = span(framing, &l);
+        assert!(all_framed(&camera, aspect, lo, hi, &bounds), "{described}");
+        let (tall, wide) = shares(&camera, aspect, lo, hi, &bounds);
+        assert!(tall <= fill * 1.03 && wide <= fill * 1.03, "{described}: shares {tall} / {wide}");
+        if tall.max(wide) < fill * 0.97 {
+            backed_off += 1;
+            assert!(closer_cuts_the_subject(framing, &l, &def, aspect), "{described}: shares {tall} / {wide}");
+        }
+    }
+    eprintln!(
+        "{CASES} cases: {framed} framed ({backed_off} further back to keep the subject whole), {refused} refused"
+    );
+    assert!(framed >= CASES / 2, "too many refusals to mean anything: {refused}");
+}
+
+#[test]
+fn a_lens_too_wide_to_stand_outside_the_subject_is_refused_with_the_reason() {
+    let l = landmarks("standard");
+    let def = CameraDef { fov: 179.9, ..CameraDef::preset(Framing::Full) };
+    let Err(StageError::Framing { reason }) = frame(Framing::Full, &l, &def, 16.0 / 9.0) else {
+        panic!("expected a framing error")
+    };
+    assert!(reason.contains("179.9 degree lens"), "{reason}");
+}
