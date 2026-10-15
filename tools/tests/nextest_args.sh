@@ -66,19 +66,22 @@ if command -v cargo-nextest >/dev/null 2>&1; then
   : >"$crate/src/lib.rs"
   printf '#[test]\nfn a() {}\n#[test]\nfn b() {}\n' >"$crate/tests/fast.rs"
   printf '#[test]\nfn t1() {}\n#[test]\nfn t2() {}\n#[test]\nfn t3() {}\n' >"$crate/tests/slow.rs"
+  # CI sets CARGO_TERM_COLOR=always; nextest's colour codes would split the names the grep below looks for.
+  nextest() { (cd "$crate" && cargo nextest "$@" --color never 2>>"$work/nextest.err"); }
   run_items() { # run_items BINARY: the tests the plan's items for isolated BINARY run, one name per line
-    local binary=$1 item out status=0
-    (cd "$crate" && cargo nextest list --offline -p fixture --list-type binaries-only --message-format json >"$work/real.json" 2>/dev/null) || return 1
+    local binary=$1 item out rc
+    nextest list --offline -p fixture --list-type binaries-only --message-format json >"$work/real.json" || return 1
     for item in "fixture@=$binary" "fixture@1/2!$binary" "fixture@2/2!$binary"; do
-      out=$(python3 -I "$ARGS" "$item" --list "$work/real.json" 2>/dev/null) || { [[ $? -eq 10 ]] && continue; return 1; }
+      rc=0; out=$(python3 -I "$ARGS" "$item" --list "$work/real.json" 2>>"$work/nextest.err") || rc=$?
+      if ((rc == 10)); then continue; elif ((rc != 0)); then return 1; fi
       mapfile -t selection <<<"$out"
-      (cd "$crate" && cargo nextest list --offline "${selection[@]}" --message-format oneline 2>/dev/null)
+      nextest list --offline "${selection[@]}" --message-format oneline || return 1
     done
   }
   for binary in slow gone; do
     got=$(run_items "$binary" | grep -o 'fixture::[a-z]* [a-z0-9_]*' | sort | paste -sd',' -)
     want='fixture::fast a,fixture::fast b,fixture::slow t1,fixture::slow t2,fixture::slow t3'
-    if [[ $got == "$want" ]]; then pass "real nextest: isolating '$binary' lists every test exactly once"; else fail "real nextest, '$binary': got '$got'"; fi
+    if [[ $got == "$want" ]]; then pass "real nextest: isolating '$binary' lists every test exactly once"; else fail "real nextest, '$binary': got '$got'; stderr: $(tail -n 8 "$work/nextest.err" 2>/dev/null)"; fi
   done
 else
   echo "skip: cargo-nextest is not installed, so the real-nextest cases did not run"
