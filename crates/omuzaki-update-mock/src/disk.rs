@@ -1,8 +1,9 @@
 //! An in-memory [`Disk`] that fails on cue and forgets what was never synced, as a killed process would.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
+use std::ffi::OsString;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 
 use omuzaki_update_api::disk::{DirEntry, Disk, LinkKind};
@@ -38,6 +39,8 @@ pub enum Entry {
     Link {
         /// What it points at, as given.
         target: String,
+        /// What the caller said the target is.
+        kind: LinkKind,
     },
 }
 
@@ -45,7 +48,7 @@ pub enum Entry {
 enum Node {
     Dir,
     File { bytes: Vec<u8>, executable: bool, synced: bool },
-    Link { target: String },
+    Link { target: String, kind: LinkKind },
 }
 
 struct Failure {
@@ -67,6 +70,12 @@ struct Inner {
 ///
 /// Errors carry the kinds a unix disk gives (`IsADirectory`, `NotADirectory`, `DirectoryNotEmpty`, ...). One rule is
 /// stricter on purpose: [`Disk::rename`] never replaces a folder, empty or not, because Windows cannot.
+///
+/// Links are followed as on a real disk: a path through a [`LinkKind::Dir`] link reaches the target's contents, a link
+/// that is relative starts from its own folder, and a chain of more than 40 links is a loop and fails. A
+/// [`LinkKind::File`] link cannot be walked through (`NotADirectory`, as on Windows, where the kind is fixed when the
+/// link is made), and a link to nothing is `NotFound`. Reads, writes, `fsync` and `list_dir` follow a link at the end
+/// of the path; `rename`, `remove_dir_all`, `exists` and a new `symlink` act on the link itself.
 ///
 /// A file is durable only after [`Disk::fsync`]: [`FakeDisk::revive`], the next boot after a kill, empties every file
 /// that was written and never synced, which is how a missing `fsync` shows up in a test.
@@ -105,8 +114,49 @@ fn not_a_folder(path: &Path) -> io::Error {
     io::Error::new(io::ErrorKind::NotADirectory, format!("{} is not a folder", path.display()))
 }
 
+/// A link that `resolve` should have followed. Reported, not assumed away, in case a walk ever misses one.
+fn unresolved(path: &Path) -> io::Error {
+    io::Error::other(format!("{} is a link the fake disk failed to follow", path.display()))
+}
+
+/// `ELOOP`; `ErrorKind::FilesystemLoop` is not stable, so the kind is `Other` and the text says what happened.
+fn loop_error(path: &Path) -> io::Error {
+    io::Error::other(format!("too many levels of symbolic links at {}", path.display()))
+}
+
 fn invalid(why: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, why.to_owned())
+}
+
+/// How many links one path may pass through before it counts as a loop (the limit Linux uses).
+const MAX_LINK_HOPS: u32 = 40;
+
+/// One piece of a path being resolved.
+enum Step {
+    /// Start again from this root: an absolute path, or an absolute link target.
+    Reset(PathBuf),
+    /// `..`
+    Parent,
+    /// A name.
+    Name(OsString),
+}
+
+fn steps(path: &Path) -> VecDeque<Step> {
+    let mut root = PathBuf::new();
+    let mut out = VecDeque::new();
+    for part in path.components() {
+        match part {
+            Component::Prefix(_) => root.push(part.as_os_str()),
+            Component::RootDir => {
+                root.push(part.as_os_str());
+                out.push_back(Step::Reset(std::mem::take(&mut root)));
+            }
+            Component::CurDir => {}
+            Component::ParentDir => out.push_back(Step::Parent),
+            Component::Normal(name) => out.push_back(Step::Name(name.to_os_string())),
+        }
+    }
+    out
 }
 
 impl Inner {
@@ -147,21 +197,68 @@ impl Inner {
         Self::is_root(path) || matches!(self.nodes.get(path), Some(Node::Dir))
     }
 
-    /// Why nothing is at `path`: a file or link among its ancestors makes it `NotADirectory`, as on a real disk.
-    fn absent(&self, path: &Path) -> io::Error {
-        let blocked =
-            path.ancestors().skip(1).any(|a| matches!(self.nodes.get(a), Some(Node::File { .. } | Node::Link { .. })));
-        if blocked { not_a_folder(path) } else { not_found(path) }
-    }
-
-    fn parent_dir(&self, path: &Path) -> io::Result<()> {
+    /// Resolves `path` to the name it has in `nodes`: every link on the way is followed, as a real disk does, so
+    /// `link/child` is `real/child` when `link` points at `real`. The last component is followed only with
+    /// `follow_last` (a read, a write) and kept as the link itself otherwise (a rename, a new link). With `create`,
+    /// folders that are missing on the way are returned too, in order, for `create_dir_all` to make.
+    ///
+    /// A file, or a link marked [`LinkKind::File`], above the last component is `NotADirectory`; a missing one, or a
+    /// link to nothing, is `NotFound`; more than [`MAX_LINK_HOPS`] links in one path is a loop.
+    fn resolve(&self, path: &Path, follow_last: bool, create: bool) -> io::Result<(PathBuf, Vec<PathBuf>)> {
         if !path.is_absolute() {
             return Err(invalid("path is not absolute"));
         }
-        match path.parent() {
-            Some(parent) if !self.is_dir(parent) => Err(self.absent(path)),
-            _ => Ok(()),
+        let mut queue = steps(path);
+        let (mut found, mut missing, mut hops) = (PathBuf::new(), Vec::new(), 0_u32);
+        while let Some(step) = queue.pop_front() {
+            let name = match step {
+                Step::Reset(root) => {
+                    found = root;
+                    continue;
+                }
+                Step::Parent => {
+                    if !Self::is_root(&found) {
+                        found.pop();
+                    }
+                    continue;
+                }
+                Step::Name(name) => name,
+            };
+            let here = found.join(name);
+            let last = queue.is_empty();
+            match self.nodes.get(&here) {
+                Some(Node::Link { .. }) if last && !follow_last => found = here,
+                Some(Node::Link { target, kind }) => {
+                    hops += 1;
+                    if hops > MAX_LINK_HOPS {
+                        return Err(loop_error(path));
+                    }
+                    if !last && !matches!(kind, LinkKind::Dir) {
+                        // A file link cannot be walked through; a dangling one is still "not found", as on a real disk.
+                        let (goes_to, _) = self.resolve(&found.join(target), true, false)?;
+                        return Err(if self.is_dir(&goes_to) || self.nodes.contains_key(&goes_to) {
+                            not_a_folder(&here)
+                        } else {
+                            not_found(&goes_to)
+                        });
+                    }
+                    // The target is relative to the link's own folder (`found`) unless it starts at the root.
+                    for step in steps(Path::new(target)).into_iter().rev() {
+                        queue.push_front(step);
+                    }
+                }
+                Some(Node::File { .. }) if !last => return Err(not_a_folder(&here)),
+                Some(_) => found = here,
+                None if last || create => {
+                    if create && !Self::is_root(&here) {
+                        missing.push(here.clone());
+                    }
+                    found = here;
+                }
+                None => return Err(not_found(&here)),
+            }
         }
+        Ok((found, missing))
     }
 
     fn descendants(&self, path: &Path) -> Vec<PathBuf> {
@@ -232,7 +329,7 @@ impl FakeDisk {
                     Node::File { bytes, executable, .. } => {
                         Entry::File { bytes: bytes.clone(), executable: *executable }
                     }
-                    Node::Link { target } => Entry::Link { target: target.clone() },
+                    Node::Link { target, kind } => Entry::Link { target: target.clone(), kind: *kind },
                 };
                 (path.clone(), entry)
             })
@@ -244,33 +341,32 @@ impl Disk for FakeDisk {
     fn read(&self, path: &Path) -> io::Result<Vec<u8>> {
         let inner = locked(&self.inner);
         inner.alive()?;
-        match inner.nodes.get(path) {
+        let (path, _) = inner.resolve(path, true, false)?;
+        match inner.nodes.get(&path) {
             Some(Node::File { bytes, .. }) => Ok(bytes.clone()),
-            Some(Node::Dir) => Err(is_a_folder(path)),
-            Some(Node::Link { .. }) => Err(invalid("not a file")),
-            None if Inner::is_root(path) => Err(is_a_folder(path)),
-            None => Err(inner.absent(path)),
+            Some(Node::Dir) => Err(is_a_folder(&path)),
+            None if Inner::is_root(&path) => Err(is_a_folder(&path)),
+            Some(Node::Link { .. }) => Err(unresolved(&path)),
+            None => Err(not_found(&path)),
         }
     }
 
     fn write(&self, path: &Path, bytes: &[u8]) -> io::Result<()> {
         let mut inner = locked(&self.inner);
         inner.tick(Op::Write)?;
-        inner.parent_dir(path)?;
-        if Inner::is_root(path) {
-            return Err(is_a_folder(path));
+        let (path, _) = inner.resolve(path, true, false)?;
+        if Inner::is_root(&path) {
+            return Err(is_a_folder(&path));
         }
-        match inner.nodes.get_mut(path) {
+        match inner.nodes.get_mut(&path) {
             Some(Node::File { bytes: old, synced, .. }) => {
                 bytes.clone_into(old);
                 *synced = false;
             }
-            Some(Node::Dir) => return Err(is_a_folder(path)),
-            Some(Node::Link { .. }) => return Err(invalid("not a file")),
+            Some(Node::Dir) => return Err(is_a_folder(&path)),
+            Some(Node::Link { .. }) => return Err(unresolved(&path)),
             None => {
-                inner
-                    .nodes
-                    .insert(path.to_path_buf(), Node::File { bytes: bytes.to_vec(), executable: false, synced: false });
+                inner.nodes.insert(path, Node::File { bytes: bytes.to_vec(), executable: false, synced: false });
             }
         }
         Ok(())
@@ -279,17 +375,21 @@ impl Disk for FakeDisk {
     fn fsync(&self, path: &Path) -> io::Result<()> {
         let mut inner = locked(&self.inner);
         inner.tick(Op::Fsync)?;
-        if let Some(Node::File { synced, .. }) = inner.nodes.get_mut(path) {
+        let (path, _) = inner.resolve(path, true, false)?;
+        if let Some(Node::File { synced, .. }) = inner.nodes.get_mut(&path) {
             *synced = true;
             return Ok(());
         }
-        if inner.is_dir(path) || inner.nodes.contains_key(path) { Ok(()) } else { Err(inner.absent(path)) }
+        if inner.is_dir(&path) { Ok(()) } else { Err(not_found(&path)) }
     }
 
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
         let mut inner = locked(&self.inner);
         inner.tick(Op::Rename)?;
-        inner.parent_dir(to)?;
+        // A rename moves the link itself, never what it points at.
+        let (from, _) = inner.resolve(from, false, false)?;
+        let (to, _) = inner.resolve(to, false, false)?;
+        let (from, to) = (from.as_path(), to.as_path());
         if Inner::is_root(from) {
             return Err(root_busy(from));
         }
@@ -297,7 +397,7 @@ impl Disk for FakeDisk {
             return Err(root_busy(to));
         }
         if !inner.nodes.contains_key(from) {
-            return Err(inner.absent(from));
+            return Err(not_found(from));
         }
         // Renaming a path onto itself changes nothing, for a file and for a folder with contents alike.
         if from == to {
@@ -338,20 +438,17 @@ impl Disk for FakeDisk {
     fn create_dir_all(&self, path: &Path) -> io::Result<()> {
         let mut inner = locked(&self.inner);
         inner.alive()?;
-        if !path.is_absolute() {
-            return Err(invalid("path is not absolute"));
+        let (found, missing) = inner.resolve(path, false, true)?;
+        if matches!(inner.nodes.get(&found), Some(Node::Link { .. })) {
+            // Through a link to a folder it already exists; a link to a file, or to nothing, is in the way.
+            let (target, _) = inner.resolve(&found, true, false).map_err(|_| exists_already(&found))?;
+            return if inner.is_dir(&target) { Ok(()) } else { Err(exists_already(&found)) };
         }
-        let mut chain: Vec<&Path> = path.ancestors().filter(|p| p.parent().is_some()).collect();
-        chain.reverse();
-        for dir in chain {
-            match inner.nodes.get(dir) {
-                Some(Node::Dir) => {}
-                Some(_) if dir == path => return Err(exists_already(path)),
-                Some(_) => return Err(not_a_folder(dir)),
-                None => {
-                    inner.nodes.insert(dir.to_path_buf(), Node::Dir);
-                }
-            }
+        if matches!(inner.nodes.get(&found), Some(Node::File { .. })) {
+            return Err(exists_already(&found));
+        }
+        for dir in missing {
+            inner.nodes.insert(dir, Node::Dir);
         }
         Ok(())
     }
@@ -359,37 +456,43 @@ impl Disk for FakeDisk {
     fn remove_dir_all(&self, path: &Path) -> io::Result<()> {
         let mut inner = locked(&self.inner);
         inner.alive()?;
-        if Inner::is_root(path) {
-            return Err(root_busy(path));
+        let (path, _) = inner.resolve(path, false, false)?;
+        if Inner::is_root(&path) {
+            return Err(root_busy(&path));
         }
-        match inner.nodes.get(path) {
+        match inner.nodes.get(&path) {
             Some(Node::Dir) => {}
-            Some(_) => return Err(not_a_folder(path)),
-            None => return Err(inner.absent(path)),
+            Some(_) => return Err(not_a_folder(&path)),
+            None => return Err(not_found(&path)),
         }
-        for gone in inner.descendants(path) {
+        for gone in inner.descendants(&path) {
             inner.nodes.remove(&gone);
         }
-        inner.nodes.remove(path);
+        inner.nodes.remove(&path);
         Ok(())
     }
 
     fn exists(&self, path: &Path) -> bool {
         let inner = locked(&self.inner);
-        inner.alive().is_ok() && (inner.is_dir(path) || inner.nodes.contains_key(path))
+        // Something at the path counts, a dangling link too, as `symlink_metadata` does.
+        inner.alive().is_ok()
+            && inner
+                .resolve(path, false, false)
+                .is_ok_and(|(found, _)| inner.is_dir(&found) || inner.nodes.contains_key(&found))
     }
 
     fn list_dir(&self, path: &Path) -> io::Result<Vec<DirEntry>> {
         let inner = locked(&self.inner);
         inner.alive()?;
-        if !inner.is_dir(path) {
-            return Err(if inner.nodes.contains_key(path) { not_a_folder(path) } else { inner.absent(path) });
+        let (path, _) = inner.resolve(path, true, false)?;
+        if !inner.is_dir(&path) {
+            return Err(if inner.nodes.contains_key(&path) { not_a_folder(&path) } else { not_found(&path) });
         }
         // `nodes` is ordered by path, so the children come out sorted by name.
         Ok(inner
             .nodes
             .iter()
-            .filter(|(k, _)| k.parent() == Some(path))
+            .filter(|(k, _)| k.parent() == Some(path.as_path()))
             .filter_map(|(k, node)| {
                 Some(DirEntry {
                     name: k.file_name()?.to_string_lossy().into_owned(),
@@ -400,35 +503,37 @@ impl Disk for FakeDisk {
             .collect())
     }
 
-    fn symlink(&self, target: &str, link: &Path, _kind: LinkKind) -> io::Result<()> {
+    fn symlink(&self, target: &str, link: &Path, kind: LinkKind) -> io::Result<()> {
         let mut inner = locked(&self.inner);
         inner.alive()?;
-        inner.parent_dir(link)?;
-        if Inner::is_root(link) || inner.nodes.contains_key(link) {
-            return Err(exists_already(link));
+        let (link, _) = inner.resolve(link, false, false)?;
+        if Inner::is_root(&link) || inner.nodes.contains_key(&link) {
+            return Err(exists_already(&link));
         }
-        inner.nodes.insert(link.to_path_buf(), Node::Link { target: target.to_owned() });
+        inner.nodes.insert(link, Node::Link { target: target.to_owned(), kind });
         Ok(())
     }
 
     fn set_executable(&self, path: &Path, on: bool) -> io::Result<()> {
         let mut inner = locked(&self.inner);
         inner.alive()?;
-        match inner.nodes.get_mut(path) {
+        let (path, _) = inner.resolve(path, true, false)?;
+        match inner.nodes.get_mut(&path) {
             Some(Node::File { executable, .. }) => {
                 *executable = on;
                 Ok(())
             }
             Some(Node::Dir) => Ok(()),
-            Some(Node::Link { .. }) => Err(invalid("not a file")),
-            None if Inner::is_root(path) => Ok(()),
-            None => Err(inner.absent(path)),
+            Some(Node::Link { .. }) => Err(unresolved(&path)),
+            None if Inner::is_root(&path) => Ok(()),
+            None => Err(not_found(&path)),
         }
     }
 
     fn free_bytes(&self, path: &Path) -> io::Result<u64> {
         let inner = locked(&self.inner);
         inner.alive()?;
-        if inner.is_dir(path) || inner.nodes.contains_key(path) { Ok(inner.free) } else { Err(inner.absent(path)) }
+        let (path, _) = inner.resolve(path, true, false)?;
+        if inner.is_dir(&path) || inner.nodes.contains_key(&path) { Ok(inner.free) } else { Err(not_found(&path)) }
     }
 }

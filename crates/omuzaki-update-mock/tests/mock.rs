@@ -250,7 +250,7 @@ fn tree_operations() {
     assert!(!disk.exists(&p("sub")));
     let snap = disk.snapshot();
     assert_eq!(snap[&p("moved/f")], Entry::File { bytes: b"x".to_vec(), executable: true });
-    assert_eq!(snap[&p("link")], Entry::Link { target: "sub/f".into() });
+    assert_eq!(snap[&p("link")], Entry::Link { target: "sub/f".into(), kind: LinkKind::File });
 
     let names: Vec<_> = disk.list_dir(&root()).unwrap().into_iter().map(|e| (e.name, e.is_dir, e.is_symlink)).collect();
     assert_eq!(names, [("link".to_owned(), false, true), ("moved".to_owned(), true, false)]);
@@ -427,4 +427,100 @@ fn creating_what_already_exists_as_another_kind_is_refused() {
     assert_eq!(kind_of(disk.write(&p("full"), b"x")), ErrorKind::IsADirectory);
     disk.create_dir_all(&p("full")).unwrap();
     assert_eq!(disk.snapshot(), before);
+}
+
+/// A disk with `real/` holding `f`, and `via` a folder link to it.
+fn disk_with_dir_link() -> FakeDisk {
+    let disk = disk_with_dir();
+    disk.create_dir_all(&p("real")).unwrap();
+    disk.write(&p("real/f"), b"x").unwrap();
+    disk.symlink("real", &p("via"), LinkKind::Dir).unwrap();
+    disk
+}
+
+#[test]
+fn a_folder_link_is_walked_through_by_every_operation() {
+    let disk = disk_with_dir_link();
+    // Write through the link, read back through the target and through the link.
+    disk.write(&p("via/new"), b"n").unwrap();
+    assert_eq!(disk.read(&p("real/new")).unwrap(), b"n");
+    assert_eq!(disk.read(&p("via/f")).unwrap(), b"x");
+    assert_eq!(disk.list_dir(&p("via")).unwrap().len(), 2);
+    disk.fsync(&p("via/new")).unwrap();
+    disk.set_executable(&p("via/new"), true).unwrap();
+    assert!(disk.exists(&p("via/new")));
+    // Folders are made in the target; renames and removals under the link land there too.
+    disk.create_dir_all(&p("via/deep/er")).unwrap();
+    assert!(disk.exists(&p("real/deep/er")));
+    disk.rename(&p("via/new"), &p("via/renamed")).unwrap();
+    assert_eq!(disk.read(&p("real/renamed")).unwrap(), b"n");
+    disk.remove_dir_all(&p("via/deep")).unwrap();
+    assert!(!disk.exists(&p("real/deep")));
+    disk.symlink("f", &p("via/inner"), LinkKind::File).unwrap();
+    assert!(disk.snapshot().contains_key(&p("real/inner")));
+    // The link itself is a link: listed so, not removed as a folder, and a rename moves the link, not the target.
+    assert!(disk.list_dir(&p("")).unwrap().iter().any(|e| e.name == "via" && e.is_symlink));
+    assert_eq!(kind_of(disk.remove_dir_all(&p("via"))), ErrorKind::NotADirectory);
+    disk.rename(&p("via"), &p("moved-link")).unwrap();
+    assert_eq!(disk.read(&p("moved-link/f")).unwrap(), b"x");
+    assert!(!disk.exists(&p("via")));
+}
+
+#[test]
+fn links_resolve_relative_to_their_folder_absolute_and_through_dot_dot() {
+    let disk = disk_with_dir_link();
+    disk.symlink("../real", &p("sub/up"), LinkKind::Dir).unwrap();
+    assert_eq!(disk.read(&p("sub/up/f")).unwrap(), b"x");
+    disk.symlink(p("real").to_str().unwrap(), &p("abs"), LinkKind::Dir).unwrap();
+    assert_eq!(disk.read(&p("abs/f")).unwrap(), b"x");
+    // A short chain is followed.
+    disk.symlink("via", &p("hop"), LinkKind::Dir).unwrap();
+    assert_eq!(disk.read(&p("hop/f")).unwrap(), b"x");
+}
+
+#[test]
+fn a_file_link_above_a_path_is_not_a_folder_and_a_dangling_link_is_not_found() {
+    let disk = disk_with_dir_link();
+    disk.symlink("real/f", &p("flink"), LinkKind::File).unwrap();
+    assert_eq!(disk.read(&p("flink")).unwrap(), b"x");
+    assert_eq!(disk.read(&p("flink/child")).unwrap_err().kind(), ErrorKind::NotADirectory);
+    assert_eq!(kind_of(disk.write(&p("flink/child"), b"y")), ErrorKind::NotADirectory);
+    assert_eq!(kind_of(disk.create_dir_all(&p("flink/child"))), ErrorKind::NotADirectory);
+
+    disk.symlink("nowhere", &p("dangling"), LinkKind::Dir).unwrap();
+    assert_eq!(disk.read(&p("dangling/child")).unwrap_err().kind(), ErrorKind::NotFound);
+    assert_eq!(kind_of(disk.write(&p("dangling/child"), b"y")), ErrorKind::NotFound);
+    disk.symlink("nowhere", &p("dangling-file"), LinkKind::File).unwrap();
+    assert_eq!(disk.read(&p("dangling-file/child")).unwrap_err().kind(), ErrorKind::NotFound);
+    // The dangling link itself exists, and cannot be read as a file.
+    assert!(disk.exists(&p("dangling")));
+    assert_eq!(disk.read(&p("dangling")).unwrap_err().kind(), ErrorKind::NotFound);
+    // Naming something that is already there as a new folder is refused even through a dangling link.
+    assert_eq!(kind_of(disk.create_dir_all(&p("dangling"))), ErrorKind::AlreadyExists);
+}
+
+#[test]
+fn a_loop_of_links_fails_instead_of_hanging() {
+    let disk = disk_with_dir();
+    disk.symlink("b", &p("a"), LinkKind::Dir).unwrap();
+    disk.symlink("a", &p("b"), LinkKind::Dir).unwrap();
+    disk.symlink("self", &p("self"), LinkKind::Dir).unwrap();
+    for path in ["a/x", "b/x", "self/x", "a", "self"] {
+        let err = disk.read(&p(path)).unwrap_err();
+        assert!(err.to_string().contains("symbolic links"), "{path}: {err}");
+        assert!(disk.write(&p(path), b"y").is_err(), "{path}");
+    }
+    // The links themselves can still be seen, listed and renamed.
+    assert!(disk.exists(&p("a")));
+    disk.rename(&p("a"), &p("c")).unwrap();
+    // A chain longer than the bound is treated as a loop too.
+    disk.create_dir_all(&p("end")).unwrap();
+    let mut previous = "end".to_owned();
+    for n in 0..45 {
+        let name = format!("hop{n}");
+        disk.symlink(&previous, &p(&name), LinkKind::Dir).unwrap();
+        previous = name;
+    }
+    assert!(disk.read(&p("hop44/x")).unwrap_err().to_string().contains("symbolic links"));
+    assert_eq!(disk.read(&p("hop3/x")).unwrap_err().kind(), ErrorKind::NotFound);
 }
