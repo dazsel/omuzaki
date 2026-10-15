@@ -250,7 +250,9 @@ impl Worker {
             let late = self.late_callback(call);
             let reply = self.call_plain_with(&call.name, Self::arguments(call), Some(late))?;
             match refusal::classify(&reply) {
-                Some(Refusal::Queued(approval)) => {
+                Some(Refusal::Queued(approval, need)) => {
+                    // The resolution is not known here; the call's result carries it for the model and the log.
+                    self.shared.record(Entry::approval(approval, need, None));
                     self.shared.emit(AssistantEvent::waiting(approval));
                     return self.wait_approval(run, approval);
                 }

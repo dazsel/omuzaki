@@ -3,7 +3,7 @@
 //! The server renders an error as `structuredContent { ok: false, code, message, hint, detail? }`, where `detail` is the
 //! op layer's `ErrorDetail` as JSON. The host branches on the code and the detail; the text is for the model.
 
-use omuzaki_ops_api::{ApprovalId, EndReason, ErrorDetail};
+use omuzaki_ops_api::{ApprovalId, EndReason, ErrorDetail, Need};
 use serde_json::Value;
 
 use crate::link::ToolReply;
@@ -12,7 +12,7 @@ use crate::link::ToolReply;
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Refusal {
     /// Nothing ran; the request waits for a person.
-    Queued(ApprovalId),
+    Queued(ApprovalId, Need),
     /// The session is paused; nothing ran.
     Paused,
     /// A rate limit; retry after this many seconds.
@@ -28,7 +28,7 @@ pub(crate) fn classify(reply: &ToolReply) -> Option<Refusal> {
     let code = data.get("code").and_then(Value::as_str)?;
     let detail: ErrorDetail = serde_json::from_value(data.get("detail")?.clone()).ok()?;
     match (code, detail) {
-        ("waiting", ErrorDetail::Queued { approval, .. }) => Some(Refusal::Queued(approval)),
+        ("waiting", ErrorDetail::Queued { approval, need }) => Some(Refusal::Queued(approval, need)),
         ("waiting", ErrorDetail::Paused { .. }) => Some(Refusal::Paused),
         ("limited", ErrorDetail::RetryAfter { seconds, .. }) => Some(Refusal::RetryAfter(f64::from(seconds))),
         (_, ErrorDetail::Ended { reason }) => Some(Refusal::Ended(reason)),
@@ -51,7 +51,10 @@ mod tests {
     #[test]
     fn each_refusal_the_host_acts_on_is_read_from_the_detail() {
         let queued = ErrorDetail::Queued { approval: ApprovalId(7), need: Need::Person { reason: "r".into() } };
-        assert_eq!(classify(&reply("waiting", &queued)), Some(Refusal::Queued(ApprovalId(7))));
+        assert_eq!(
+            classify(&reply("waiting", &queued)),
+            Some(Refusal::Queued(ApprovalId(7), Need::Person { reason: "r".into() }))
+        );
         let paused = ErrorDetail::Paused { by: Actor::System, reason: PauseReason::Person };
         assert_eq!(classify(&reply("waiting", &paused)), Some(Refusal::Paused));
         let limited = ErrorDetail::RetryAfter { seconds: 1.5, limit: "edits_per_minute=600".into() };

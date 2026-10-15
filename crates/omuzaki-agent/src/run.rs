@@ -165,8 +165,9 @@ impl Worker {
             match self.sessions.request_budget(self.session, needed) {
                 Ok(()) => return Ok(()),
                 Err(error) => match error.detail.as_deref() {
-                    Some(omuzaki_ops_api::ErrorDetail::Queued { approval, .. }) => {
+                    Some(omuzaki_ops_api::ErrorDetail::Queued { approval, need }) => {
                         let approval = *approval;
+                        self.shared.record(Entry::approval(approval, need.clone(), None));
                         self.shared.emit(AssistantEvent::waiting(approval));
                         let reply = self.wait_approval(run, approval)?;
                         if reply.is_error {

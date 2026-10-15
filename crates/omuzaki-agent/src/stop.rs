@@ -13,6 +13,9 @@ use crate::worker::Worker;
 
 /// How often the executor is asked whether the stopped step has closed (D4).
 const CLOSE_POLL: f64 = 0.05;
+/// How long the host waits for the stopped step to close before it says `Done` anyway: six times the 10 s deadline of a
+/// cancelled job (ADR 0036), so a stuck executor cannot leave the panel's box disabled for good.
+const CLOSE_GIVE_UP_S: f64 = 60.0;
 
 impl Worker {
     /// Cuts the answer's text in the model's history to what the person had read, so the next request agrees with the
@@ -59,6 +62,7 @@ impl Worker {
     /// Polls the session every 50 ms until its open transaction is closed: a joined driver job is still reverting its
     /// edits and the executor commits the rest when it has ended.
     fn wait_step_closed(&self) {
+        let give_up = self.now().0 + CLOSE_GIVE_UP_S;
         loop {
             match self.session_info() {
                 Some(info)
@@ -68,7 +72,7 @@ impl Worker {
                 }
                 _ => return,
             }
-            if self.shared.lock().shutdown {
+            if self.shared.lock().shutdown || self.now().0 >= give_up {
                 return;
             }
         }

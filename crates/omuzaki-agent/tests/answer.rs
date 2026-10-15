@@ -89,6 +89,10 @@ fn with_no_budget_left_the_bound_is_requested_and_nothing_is_sent_until_the_pers
     assert!(seen.iter().any(|e| matches!(e, AssistantEvent::Waiting { approval, .. } if approval.0 == 7)));
     rig.sessions.raise_budget();
     let rest = rig.until_done(0.0);
+    let need_recorded = rig.sink.entries().iter().any(|e| {
+        matches!(e, omuzaki_agent_api::entry::Entry::Approval { need: omuzaki_ops_api::Need::Budget { .. }, .. })
+    });
+    assert!(need_recorded, "the budget approval is in the log");
     assert_eq!(rig.llm.requests().len(), 1);
     assert!(rest.iter().any(|e| matches!(e, AssistantEvent::Resumed)));
     assert_eq!(text_of(&rest), "done");

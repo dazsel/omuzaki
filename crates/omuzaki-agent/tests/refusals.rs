@@ -70,6 +70,12 @@ fn a_queued_approval_waits_and_gives_the_model_the_resolution_as_the_calls_resul
     assert_eq!(rig.server.called("face_set_profile"), 1, "nothing is re-sent while the approval is pending");
     rig.sessions.resolve_approvals();
     rig.until_done(0.0);
+    let recorded = rig
+        .sink
+        .entries()
+        .into_iter()
+        .any(|e| matches!(e, omuzaki_agent_api::entry::Entry::Approval { id, resolution: None, .. } if id.0 == 7));
+    assert!(recorded, "the approval the answer waited on is in the log");
     assert_eq!(last_results(&rig, 1), ["<data source=\"face_set_profile\">approval applied</data>"]);
     assert_eq!(rig.server.called("face_set_profile"), 1);
 }
