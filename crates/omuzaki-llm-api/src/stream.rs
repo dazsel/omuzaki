@@ -197,16 +197,26 @@ impl TurnStream {
     ///
     /// # Errors
     /// The turn's error; `Network` if nothing arrives within `idle`; `Malformed` if the events break the order of
-    /// llm-api D3 (no `Stop`, an unclosed call, invalid JSON arguments).
+    /// llm-api D3 (no `Stop`, no `Usage`, an unclosed or nested call, invalid JSON arguments).
     pub fn collect(&mut self, idle: Duration) -> Result<Turn, LlmError> {
         let mut fold = Fold::default();
-        loop {
-            match self.next_timeout(idle)? {
-                Next::Event(event) => fold.push(event)?,
-                Next::Wait => return Err(LlmError::Network(format!("no event within {} ms", idle.as_millis()))),
-                Next::End => return fold.finish(self.usage),
+        let result = loop {
+            match self.next_timeout(idle) {
+                Ok(Next::Event(event)) => {
+                    if let Err(e) = fold.push(event) {
+                        break Err(e);
+                    }
+                }
+                Ok(Next::Wait) => break Err(LlmError::Network(format!("no event within {} ms", idle.as_millis()))),
+                Ok(Next::End) => break fold.finish(self.usage),
+                Err(e) => break Err(e),
             }
+        };
+        // Whatever collect fails on ends the stream, as an error from the source does.
+        if result.is_err() {
+            self.done = true;
         }
+        result
     }
 }
 
@@ -240,6 +250,9 @@ impl Fold {
             LlmEvent::Start { model } => self.model = model,
             LlmEvent::TextDelta(t) => self.text.push_str(&t),
             LlmEvent::ToolUseStart { id, name } => {
+                if let Some(open) = &self.call {
+                    return Err(LlmError::Malformed(format!("tool call {id} starts inside open call {}", open.id)));
+                }
                 self.flush_text();
                 self.call = Some(OpenCall { id, name, json: String::new() });
             }
@@ -274,8 +287,9 @@ impl Fold {
             return Err(LlmError::Malformed("the stream ended inside a tool call".into()));
         }
         let stop = self.stop.ok_or_else(|| LlmError::Malformed("the stream ended without a stop".into()))?;
+        let usage = usage.ok_or_else(|| LlmError::Malformed("the turn stopped without reporting usage".into()))?;
         let message = Message { role: Role::Assistant, content: self.blocks };
-        Ok(Turn { model: self.model, message, usage: usage.unwrap_or_default(), stop, retries: self.retries })
+        Ok(Turn { model: self.model, message, usage, stop, retries: self.retries })
     }
 }
 
@@ -313,6 +327,35 @@ mod tests {
         assert_eq!(s.try_next(), Ok(Next::End));
     }
 
+    fn usage() -> LlmEvent {
+        LlmEvent::Usage(Usage { input: 1, output: 1, cache_read: 0, cache_write: 0 })
+    }
+
+    #[test]
+    fn a_stop_without_usage_is_malformed() {
+        let mut s = stream(vec![event(LlmEvent::Stop(StopReason::EndTurn))], &Cancel::new());
+        assert!(matches!(s.collect(Duration::ZERO), Err(LlmError::Malformed(_))));
+    }
+
+    #[test]
+    fn a_failed_collect_ends_the_stream() {
+        let items =
+            vec![event(LlmEvent::ToolUseInput("{".into())), event(usage()), event(LlmEvent::Stop(StopReason::EndTurn))];
+        let mut s = stream(items, &Cancel::new());
+        assert!(matches!(s.collect(Duration::ZERO), Err(LlmError::Malformed(_))));
+        assert_eq!(s.try_next(), Ok(Next::End));
+        let mut idle = stream(vec![Ok(Next::Wait)], &Cancel::new());
+        assert!(matches!(idle.collect(Duration::ZERO), Err(LlmError::Network(_))));
+        assert_eq!(idle.try_next(), Ok(Next::End));
+    }
+
+    #[test]
+    fn a_second_call_inside_an_open_call_is_malformed() {
+        let start = |id: &str| event(LlmEvent::ToolUseStart { id: id.into(), name: "n".into() });
+        let items = vec![start("a"), start("b"), event(usage()), event(LlmEvent::Stop(StopReason::ToolUse))];
+        assert!(matches!(stream(items, &Cancel::new()).collect(Duration::ZERO), Err(LlmError::Malformed(_))));
+    }
+
     #[test]
     fn a_stream_without_a_stop_is_malformed() {
         let mut s = stream(vec![event(LlmEvent::TextDelta("a".into()))], &Cancel::new());
@@ -327,6 +370,7 @@ mod tests {
             event(LlmEvent::ToolUseStart { id: "t".into(), name: "n".into() }),
             event(LlmEvent::ToolUseEnd { id: "t".into() }),
             event(LlmEvent::TextDelta("c".into())),
+            event(usage()),
             event(LlmEvent::Stop(StopReason::ToolUse)),
         ];
         let turn = stream(items, &Cancel::new()).collect(Duration::ZERO).unwrap_or_else(|e| panic!("{e}"));

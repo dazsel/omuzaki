@@ -178,7 +178,8 @@ fn an_injected_error_keeps_the_usage_seen_before_it() {
 #[test]
 fn retries_come_first_and_are_counted() {
     let json = r#"{"model": "m", "turns": [{"retries": 2, "events": [
-        {"Start": {"model": "m"}}, {"TextDelta": "é"}, {"Stop": "EndTurn"}]}]}"#;
+        {"Start": {"model": "m"}}, {"TextDelta": "é"},
+        {"Usage": {"input": 1, "output": 1, "cache_read": 0, "cache_write": 0}}, {"Stop": "EndTurn"}]}]}"#;
     let llm = FakeLlm::from_json(json).unwrap();
     let turn = llm.stream(request(vec![text(Role::User, "x")]), &Cancel::new()).unwrap().collect(IDLE).unwrap();
     assert_eq!(turn.retries, 2);

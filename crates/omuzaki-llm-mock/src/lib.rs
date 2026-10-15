@@ -8,6 +8,7 @@
 //!   the script, as JSON (anything else gives an empty script, which fails every turn).
 #![deny(missing_docs)]
 
+pub mod conformance;
 mod fake;
 mod script;
 

@@ -1,8 +1,11 @@
+src/conformance.rs: pub type Make<'a> = &'a dyn Fn(Script) -> Box<dyn LlmClient>;
+src/conformance.rs: pub fn run(make: Make<'_>) -> Result<(), String> {
 src/fake.rs: pub struct FakeLlm {
 src/fake.rs: pub fn new(script: Script) -> Self {
 src/fake.rs: pub fn from_json(json: &str) -> Result<Self, LlmError> {
 src/fake.rs: pub fn clock(&self) -> Arc<FakeClock> {
 src/fake.rs: pub fn requests(&self) -> Vec<TurnRequest> {
+src/lib.rs: pub mod conformance;
 src/lib.rs: pub use fake::FakeLlm;
 src/lib.rs: pub use script::{Expect, Injected, Script, ScriptTurn};
 src/script.rs: pub struct Script {
