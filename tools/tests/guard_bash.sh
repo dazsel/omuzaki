@@ -7,9 +7,12 @@ run() {  # run <want exit> <stdin> <label>
   python3 -I "$hook" <<<"$2" 2>/dev/null; local got=$?
   if [ "$got" = "$1" ]; then echo "PASS ($got) $3"; else echo "FAIL (got $got, want $1) $3"; fails=$((fails + 1)); fi
 }
-check() {  # check <want exit> <command>
-  run "$1" "$(python3 -I -c 'import json, sys; print(json.dumps({"tool_input": {"command": sys.argv[1]}}))' "$2")" "$2"
+check() {  # check <want exit> <command> [cwd]
+  run "$1" "$(python3 -I -c 'import json, sys; print(json.dumps({"cwd": sys.argv[2], "tool_input": {"command": sys.argv[1]}}))' "$2" "${3:-$PWD}")" "$2"
 }
+# A repository with `cloud/mine` checked out, for the lease checks.
+repo=$(mktemp -d); trap 'rm -rf "$repo"' EXIT
+git init -q -b cloud/mine "$repo" && git -C "$repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
 # Secret paths, including the bare directories.
 check 2 'cat .env'
 check 2 'cat .env.local'
@@ -23,6 +26,13 @@ check 2 'tar -cf /tmp/c.tar ~/.cache'
 check 2 'cat ~/.cache/huggingface/token'
 check 2 'cat ~/.netrc'
 check 2 'cat ~/.git-credentials'
+check 2 'cat $HOME/.config/x'
+check 2 'cat .config/gh/hosts.yml'
+# Commands that print a credential.
+check 2 'gh auth token'
+check 2 'gh auth status --show-token'
+check 2 'gh auth status -t'
+check 2 'echo url=https://github.com | git credential fill'
 # Director-only gh commands, in every argument position.
 check 2 'gh pr merge 12'
 check 2 'gh pr -R dazsel/omuzaki merge 12'
@@ -41,6 +51,11 @@ check 2 'gh api repos/o/r/git/refs/heads/x --method=delete'
 check 2 'gh api -XDELETE repos/o/r/issues/comments/1'
 check 2 'gh api -X PUT repos/o/r/pulls/12/merge'
 check 2 'gh api repos/o/r/merges -f base=main -f head=x'
+check 2 'gh api -X POST repos/o/r/releases -f tag_name=v1'
+check 2 'gh api -X PUT repos/o/r/actions/workflows/1/disable'
+check 2 'gh api repos/o/r/issues/1/comments -f body=hi'
+check 2 'gh api repos/o/r/issues/1/labels --input labels.json'
+check 2 'gh api --method=PATCH repos/o/r -F allow_auto_merge=true'
 check 2 "gh api graphql -f query='mutation { enqueuePullRequest(input: {pullRequestId: \"x\"}) { clientMutationId } }'"
 check 2 'sh -c "gh pr merge 12"'
 check 2 'bash -c "cd x && gh pr -R o/r merge 12"'
@@ -56,11 +71,17 @@ check 2 'git push --delete origin x'
 check 2 'git push origin -d x'
 check 2 'git -C ~/work/omuzaki push --force origin x'
 check 2 'git push --mirror origin'
+check 2 'git push --force-with-lease origin HEAD:cloud/other' "$repo"
+check 2 'git push --force-with-lease=cloud/other:abc123 origin HEAD:refs/heads/cloud/other' "$repo"
+check 2 'git -C not-a-repo push --force-with-lease origin cloud/mine' "$repo"
 # Ordinary commands pass.
 check 0 'cargo xtask check --affected'
 check 0 'git push origin cloud/1234-thing'
 check 0 'git push -u origin HEAD:refs/heads/cloud/1234-thing'
-check 0 'git push --force-with-lease=cloud/x:abc123 origin cloud/x'
+check 0 'git push --force-with-lease=cloud/mine:abc123 origin cloud/mine' "$repo"
+check 0 'git push --force-with-lease origin HEAD' "$repo"
+check 0 'git push --force-with-lease' "$repo"
+check 0 'git push --force-with-lease origin HEAD:refs/heads/cloud/mine' "$repo"
 check 0 'git -c core.hooksPath=/dev/null commit -m "merge main"'
 check 0 'git merge origin/main'
 check 0 'gh pr view 12 --json mergeable'
@@ -68,6 +89,11 @@ check 0 'gh pr list -R dazsel/omuzaki --state merged'
 check 0 'gh pr checks 12 -R dazsel/omuzaki'
 check 0 'gh api repos/o/r/pulls/12/merged'
 check 0 'gh repo view'
+check 0 'gh auth status'
+check 0 'gh api -X GET search/issues -f q=is:open'
+check 0 "gh api graphql -f query='query { viewer { login } }'"
+check 0 'cat .config/nextest.toml'
+check 0 'gh pr comment 12 --body-file fixed.md'
 check 0 'gh run view 123 --log-failed'
 check 0 'grep -rn environment crates/'
 check 0 'cat docs/maintainers/cloud-lane.md'

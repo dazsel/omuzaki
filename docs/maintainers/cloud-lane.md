@@ -119,12 +119,15 @@ lane's or were handed to it on #2.
   - Deny rules win over allow rules, but a `Bash(...)` rule matches the command only as written: `gh pr -R o/r merge 1`
     gets past `Bash(gh pr merge *)`. So a hook, `tools/hooks/guard_bash.py`, reads every shell command the way `gh`
     and `git` parse it, in any argument order and inside `sh -c "..."`, and blocks the same operations. It also
-    blocks merging through `gh api`, the REST merge endpoints and the GraphQL merge and queue mutations alike.
+    blocks every `gh api` call that writes (any method but GET, fields without a method, GraphQL mutations): write
+    through `gh` subcommands such as `gh pr comment` and `gh pr edit`. A `--force-with-lease` push may only target the
+    branch that's checked out.
   - A session only reads this file when this repository is its only repository. Give each session this repository
     alone.
   - **Secrets:** the `Read` denies stop Claude's file tools only, so the same hook refuses any shell command that
     names a secret path (`.env`, `~/.ssh`, `~/.config`, `~/.cache` and the Hugging Face cache, `.netrc`, git
-    credentials, private keys), including the bare directories.
+    credentials, private keys), including the bare directories, and the commands that print a credential
+    (`gh auth token`, `gh auth status --show-token`, `git credential`).
   - **The hook fails closed:** input it can't read blocks the call, and `onFailure: "block"` blocks the call if the hook
     can't start (Claude Code 2.1.295 or later). Tests: `tools/tests/guard_bash.sh`.
   - **It guards against mistakes, not a determined bypass.** A variable holding `merge`, a script file or `eval` gets

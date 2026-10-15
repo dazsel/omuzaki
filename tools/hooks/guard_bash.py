@@ -4,35 +4,43 @@
 The settings allow `Bash` wholesale, and their `Bash(...)` denies match a command only as written, so `gh pr -R o/r
 merge 1` would pass `Bash(gh pr merge *)`. This hook reads each command the way the tools parse it instead, in any
 argument order, and blocks:
-- secret paths: `.env`, `~/.ssh`, `~/.config`, `~/.cache` and the Hugging Face cache, `.netrc`, git credentials and
-  private keys, including the directories themselves (`tar ~/.config` reads every file in it);
-- `gh pr merge`, `gh release`, repository settings, secrets and variables, turning workflows on or off, `gh api`
-  DELETE calls, and merging through `gh api` (the REST merge endpoint and the GraphQL merge and auto-merge mutations);
+- secrets: secret paths (`.env`, `~/.ssh`, `~/.config`, `~/.cache` and the Hugging Face cache, `.netrc`, git
+  credentials, private keys), including the bare directories (`tar ~/.config` reads every file in it), and the commands
+  that print a credential (`gh auth token`, `gh auth status --show-token`, `git credential`);
+- `gh pr merge`, `gh release`, repository settings, secrets and variables, and turning workflows on or off;
+- every `gh api` call that writes: any method but GET, fields or `--input` without a method (gh then sends a POST), and
+  GraphQL mutations. A session writes through `gh` subcommands (`gh pr comment`, `gh pr edit`), whose reserved ones
+  are listed above, so an endpoint list can't fall behind;
 - a `git push` that forces (`--force`, `-f`, a `+` refspec, `--mirror`) or deletes (`--delete`, `-d`, a `:` refspec,
-  `--prune`). `--force-with-lease` on your own branch stays allowed.
+  `--prune`), and a `--force-with-lease` push to any branch but the one checked out.
 
 It guards against a session's mistakes, not a determined bypass: a variable holding `merge`, a script file or `eval`
 gets past any reading of the command line. The real boundaries are that a session VM holds no project secrets and
 GitHub's own permissions and rulesets.
 
-Input: the hook JSON on stdin ({"tool_input": {"command": ...}}). Exit 2 blocks the call and shows stderr to Claude.
-Anything this hook cannot read also exits 2 (fail closed), and settings.json sets `onFailure: "block"` so a hook that
-cannot start blocks too.
+Input: the hook JSON on stdin ({"cwd": ..., "tool_input": {"command": ...}}). Exit 2 blocks the call and shows stderr
+to Claude. Anything this hook cannot read also exits 2 (fail closed), and settings.json sets `onFailure: "block"` so a
+hook that cannot start blocks too.
 """
 
 import json
 import os
 import re
 import shlex
+import subprocess
 import sys
 
-# A secret path named as a path word (after a space, `/`, a quote, `=` and the like), including the bare directories:
-# `tar ~/.config` reads every file in it. `vite.config.ts`, `.envrc` and other caches (`~/.cache/pip`) stay allowed.
+# A secret path named as a path word (after a space, `/`, a quote, `=` and the like). `~/.config` and `~/.cache` count
+# only under a home directory, so the repository's own `.config/nextest.toml` stays readable; gh's credentials
+# (`.config/gh`) count anywhere. `vite.config.ts`, `.envrc` and other caches (`~/.cache/pip`) stay allowed.
 _START = r"(?:^|(?<=[\s/'\"\\=:(<>]))"
 _END = r"(?=[\s/'\"\\)<>;|&]|$)"
+_HOME = r"(?:~|\$HOME|\$\{HOME\}|/home/[^/\s]+|/root|/Users/[^/\s]+)/"
 SECRET_PATH = re.compile(
-    _START + r"(?:\.env(?:\.[\w.-]+)?|\.ssh|\.config|\.netrc|\.git-credentials)" + _END
-    + r"|" + _START + r"\.cache(?=[\s'\"\\)<>;|&]|$)"
+    _START + r"(?:\.env(?:\.[\w.-]+)?|\.ssh|\.netrc|\.git-credentials)" + _END
+    + r"|" + _HOME + r"\.config" + _END
+    + r"|" + _HOME + r"\.cache(?=[\s'\"\\)<>;|&]|$)"
+    + r"|\.config/gh(?=[/\s'\"\\)<>;|&]|$)"
     + r"|\.cache/huggingface"
     + r"|id_(?:rsa|ed25519|ecdsa)"
 )
@@ -50,15 +58,12 @@ GH_RESERVED = {
     "variable": None,
     "workflow": {"enable", "disable"},
 }
-# gh api calls that merge: the REST pull request and branch merge endpoints, and the GraphQL merge, queue and
-# auto-merge mutations.
-GH_API_MERGE = re.compile(
-    r"\bpulls/[^/\s]+/merge\b|\brepos/[^/\s]+/[^/\s]+/merges\b"
-    r"|mergePullRequest|enqueuePullRequest|enablePullRequestAutoMerge|mergeBranch",
-    re.IGNORECASE,
-)
-# git options that take a value before the subcommand (`git -C dir push`).
+# gh api options that send a request body, which makes gh default to POST.
+GH_API_BODY_OPTIONS = ("-f", "-F", "--field", "--raw-field", "--input")
+GRAPHQL_MUTATION = re.compile(r"\bmutation\b", re.IGNORECASE)
+# git options that take a value before the subcommand (`git -C dir push`), and git push options that take one.
 GIT_OPTIONS_WITH_VALUE = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"}
+PUSH_OPTIONS_WITH_VALUE = {"-o", "--push-option", "--repo", "--receive-pack", "--exec"}
 # Nesting depth for commands quoted inside commands (`sh -c "gh pr merge 1"`).
 MAX_DEPTH = 3
 
@@ -90,7 +95,8 @@ def without_repo_flags(args):
 
 
 def gh_api_method(args):
-    """The HTTP method of a `gh api` call, upper-cased, from `-X M`, `-XM`, `--method M` or `--method=M`."""
+    """The HTTP method of a `gh api` call, upper-cased: `-X M`, `-XM`, `--method M` or `--method=M`, else gh's default
+    (POST when the call sends fields or `--input`, GET otherwise)."""
     for i, arg in enumerate(args):
         if arg in ("-X", "--method") and i + 1 < len(args):
             return args[i + 1].upper()
@@ -98,7 +104,16 @@ def gh_api_method(args):
             return arg.split("=", 1)[1].upper()
         if arg.startswith("-X") and len(arg) > 2:
             return arg[2:].upper()
-    return ""
+    sends_body = any(a in GH_API_BODY_OPTIONS or a.startswith(tuple(o + "=" for o in GH_API_BODY_OPTIONS)) for a in args)
+    return "POST" if sends_body else "GET"
+
+
+def gh_api_refusal(args, endpoint):
+    """Why a `gh api` call writes, or None. GraphQL reads go by POST, so GraphQL is judged by its operation instead."""
+    if endpoint == "graphql":
+        return "a GraphQL mutation through `gh api`" if any(GRAPHQL_MUTATION.search(a) for a in args) else None
+    method = gh_api_method(args)
+    return None if method in ("GET", "HEAD") else f"a `gh api` {method} call"
 
 
 def gh_refusal(args):
@@ -108,24 +123,63 @@ def gh_refusal(args):
     if not words:
         return None
     group, sub = words[0], (words[1] if len(words) > 1 else "")
+    if group == "auth" and (sub == "token" or (sub == "status" and {"-t", "--show-token"} & set(args))):
+        return f"`gh auth {sub}` prints a credential and"
     if group in GH_RESERVED and (GH_RESERVED[group] is None or sub in GH_RESERVED[group]):
         return "`" + " ".join(w for w in ("gh", group, sub) if w) + "`"
     if group == "api":
-        if gh_api_method(args) == "DELETE":
-            return "a `gh api` DELETE call"
-        if any(GH_API_MERGE.search(a) for a in args):
-            return "merging through `gh api`"
+        return gh_api_refusal(args, sub)
     return None
 
 
-def git_push_refusal(args):
-    """Why a git call is a forcing or deleting push, or None."""
-    i = 0
-    while i < len(args) and args[i].startswith("-"):
-        i += 2 if args[i] in GIT_OPTIONS_WITH_VALUE else 1
-    if i >= len(args) or args[i] != "push":
+def current_branch(directory):
+    """The branch checked out in `directory`, or None when it can't be read (no repository, a detached HEAD)."""
+    try:
+        out = subprocess.run(
+            ["git", "-C", directory, "symbolic-ref", "--quiet", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
         return None
-    for arg in args[i + 1:]:
+    return out.stdout.strip() if out.returncode == 0 and out.stdout.strip() else None
+
+
+def lease_refusal(push_args, directory):
+    """Why a `--force-with-lease` push targets another branch, or None. With no refspec git pushes the current branch."""
+    positional, skip = [], False
+    for arg in push_args:
+        if skip:
+            skip = False
+        elif arg in PUSH_OPTIONS_WITH_VALUE:
+            skip = True
+        elif not arg.startswith("-"):
+            positional.append(arg)
+    refspecs = positional[1:]
+    if not refspecs:
+        return None
+    branch = current_branch(directory)
+    for spec in refspecs:
+        target = spec.split(":", 1)[1] if ":" in spec else spec
+        target = target.removeprefix("refs/heads/")
+        if target != "HEAD" and target != branch:
+            return f"a `--force-with-lease` push to `{target}`, which isn't the checked-out branch,"
+    return None
+
+
+def git_refusal(args, cwd):
+    """Why a git call is reserved, or None: it prints a credential, or it is a forcing or deleting push."""
+    i, directory = 0, cwd
+    while i < len(args) and args[i].startswith("-"):
+        if args[i] == "-C" and i + 1 < len(args):
+            directory = os.path.join(directory, os.path.expanduser(args[i + 1]))
+        i += 2 if args[i] in GIT_OPTIONS_WITH_VALUE else 1
+    sub = args[i] if i < len(args) else ""
+    if sub == "credential" or sub.startswith("credential-"):
+        return f"`git {sub}` prints a credential and"
+    if sub != "push":
+        return None
+    push_args = args[i + 1:]
+    for arg in push_args:
         if arg in ("--force", "--delete", "--mirror", "--prune") or arg.startswith(("+", ":")):
             return f"`git push {arg}`"
         # Short options combine (`-fu`); `f` forces and `d` deletes.
@@ -134,10 +188,12 @@ def git_push_refusal(args):
         # A refspec `src:dst` with a `+` forces only that ref.
         if ":" in arg and not arg.startswith("-") and arg.split(":", 1)[0].startswith("+"):
             return f"`git push {arg}`"
+    if any(a.startswith("--force-with-lease") for a in push_args):
+        return lease_refusal(push_args, directory)
     return None
 
 
-def refusal(command, depth=0):
+def refusal(command, cwd, depth=0):
     """Why this command is blocked, or None."""
     if SECRET_PATH.search(command):
         return "it names a secret path (.env, ~/.ssh, ~/.config, ~/.cache, .netrc, git credentials or a private key)"
@@ -148,14 +204,14 @@ def refusal(command, depth=0):
             if is_program(word, "gh"):
                 found = gh_refusal(words[i + 1:])
             elif is_program(word, "git"):
-                found = git_push_refusal(words[i + 1:])
+                found = git_refusal(words[i + 1:], cwd)
             if found:
                 return f"{found} is reserved for the Director"
         # A quoted word holding a command (`sh -c "..."`, `ssh host "..."`) is read the same way.
         if depth < MAX_DEPTH:
             for word in words:
                 if " " in word:
-                    found = refusal(word, depth + 1)
+                    found = refusal(word, cwd, depth + 1)
                     if found:
                         return found
     return None
@@ -163,15 +219,21 @@ def refusal(command, depth=0):
 
 def main():
     try:
-        command = json.load(sys.stdin).get("tool_input", {}).get("command", "")
-        if not isinstance(command, str):
-            raise TypeError("tool_input.command is not a string")
+        call = json.load(sys.stdin)
+        command = call.get("tool_input", {}).get("command", "")
+        cwd = call.get("cwd") or os.getcwd()
+        if not isinstance(command, str) or not isinstance(cwd, str):
+            raise TypeError("tool_input.command or cwd is not a string")
     except (ValueError, TypeError, AttributeError) as exc:
         print(f"Blocked by tools/hooks/guard_bash.py: the hook could not read the call ({exc}).", file=sys.stderr)
         return 2
-    why = refusal(command)
+    why = refusal(command, cwd)
     if why:
-        print(f"Blocked by tools/hooks/guard_bash.py: {why}. See docs/maintainers/cloud-lane.md.", file=sys.stderr)
+        print(
+            f"Blocked by tools/hooks/guard_bash.py: {why}. Write through gh subcommands (gh pr comment, gh pr edit) and"
+            " ask your lead for anything reserved. See docs/maintainers/cloud-lane.md.",
+            file=sys.stderr,
+        )
         return 2
     return 0
 
