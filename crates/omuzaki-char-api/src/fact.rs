@@ -336,7 +336,8 @@ where
 ///
 /// A `Default` may read the view it is made for (through a `static`), so it is made outside any cell, never inside a
 /// one-time initialiser that it could re-enter. Two threads that both miss a fact may each make one; the first one
-/// stored wins and the other is dropped.
+/// stored wins and the other is dropped. A `Default` that reads its own fact recurses forever: that is a bug in that
+/// `Default`, which nothing here guards against.
 #[derive(Default)]
 pub(crate) struct Defaults {
     head: OnceLock<Box<Node>>,
@@ -380,5 +381,52 @@ impl Clone for Defaults {
     /// A clone starts empty: it makes its own defaults, sharing none with the original.
     fn clone(&self) -> Self {
         Self::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::OnceLock;
+
+    use super::*;
+
+    struct Inner;
+    impl Fact for Inner {
+        const NAME: &'static str = "defaults-inner";
+        type Value = u8;
+        type Merged = u8;
+        fn merge(_: &mut u8, _: &PartId, _: u8) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    static VIEW: OnceLock<Defaults> = OnceLock::new();
+
+    #[derive(Default)]
+    struct Reader(u8);
+    impl Fact for Outer {
+        const NAME: &'static str = "defaults-outer";
+        type Value = u8;
+        type Merged = Reader;
+        fn merge(_: &mut Reader, _: &PartId, _: u8) -> Result<(), String> {
+            Ok(())
+        }
+    }
+    struct Outer;
+
+    // Nothing here reads the static from `Reader::default`; the nested read is made by hand below.
+    #[test]
+    fn a_nested_read_lands_first_and_the_outer_default_is_appended_after_it() {
+        let defaults = VIEW.get_or_init(Defaults::default);
+        // The outer default is "being made" while the inner fact is read: the inner node fills the empty head first.
+        let outer_spare =
+            Box::new(Node { fact: TypeId::of::<Outer>(), value: Box::new(Reader(1)), next: OnceLock::new() });
+        assert_eq!(*defaults.of::<Inner>(), 0);
+        // The outer's `set` at the head now loses; the node moves on to the next empty cell and stays.
+        let head = defaults.head.get().expect("the inner node is the head");
+        assert_eq!(head.fact, TypeId::of::<Inner>());
+        assert!(head.next.set(outer_spare).is_ok(), "the outer node goes after the inner one");
+        assert_eq!(defaults.of::<Outer>().0, 1);
+        assert_eq!(defaults.head.get().map(|n| n.fact), Some(TypeId::of::<Inner>()));
     }
 }
