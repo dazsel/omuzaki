@@ -56,6 +56,8 @@ workspace = true
 
 # Native only: the desktop command-line binary
 [package.metadata.omuzaki]
+kind = "App"
+summary = "the `omuzaki` command: ops, help, run (dry-run/JSON), undo/redo, all generated from the op registry"
 wasm = false
 # Held only to link their registrations in (`omuzaki_cli::link`, ADR 0015); this crate's source calls none of their API.
 # A change to one of them runs just `tests/registrations.rs` here (`cargo xtask check --affected`), not every test.

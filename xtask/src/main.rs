@@ -4,11 +4,14 @@
 //! - `lint-links`: enforce the `link()` wiring that keeps self-registrations in binaries (ADR 0015).
 //! - `lint-ui-writes`: UI code changes the document only through the `Runner` (QG-11).
 //! - `lint-seed`: a published seed version keeps its content, and no seed item names private material (library D15, D16).
+//! - `lint-crate-table`: every crate describes itself in its manifest, and `crates/README.md` has no crate table (ADR 0053).
+//! - `docs`: print the crate table generated from those manifests (ADR 0053).
 //! - `registry`: print the self-registrations the source declares, the expected side of the link gate.
 //! - `check`: run the CI gates on the crates a change affects (`--json` prints the scope for the CI plan job).
 
 mod affected;
 mod check;
+mod crate_table;
 mod error;
 mod links;
 mod lint_deps;
@@ -46,6 +49,10 @@ enum Command {
     LintUiWrites,
     /// Fail on a published seed version whose content changed without a bump, or a seed item that names private material.
     LintSeed(lint_seed::LintSeedArgs),
+    /// Fail on a crate without `kind` and `summary` under `[package.metadata.omuzaki]`, or a crate table in crates/README.md.
+    LintCrateTable,
+    /// Print the crate table (Markdown), generated from each crate's `[package.metadata.omuzaki]`.
+    Docs,
     /// Print every self-registration in the source (or, with `--app`, those a binary must contain), one per line.
     Registry(links::RegistryArgs),
     /// Run fmt, clippy, tests, cargo-deny, lint-deps, lint-links and lint-ui-writes on the crates a change affects, through the build
@@ -71,6 +78,8 @@ fn run(cli: &Cli) -> Result<ExitCode> {
         Command::LintLinks => links::run(&workspace),
         Command::LintUiWrites => lint_ui_writes::run(&workspace),
         Command::LintSeed(args) => lint_seed::run(&workspace, args),
+        Command::LintCrateTable => crate_table::lint(&workspace),
+        Command::Docs => crate_table::docs(&workspace),
         Command::Registry(args) => links::registry(&workspace, args),
         Command::Check(args) => check::run(&workspace, args),
     }
