@@ -179,11 +179,8 @@ pub fn scan(source: &str) -> FileScan {
                 }
             }
             Tok::Ident(word) => {
-                if word == "include" && is_punct(&toks, i + 1, '!') && !is_generated_include(&toks, i) {
-                    out.unsupported.push(UnsupportedAt { form: Unsupported::Include, line: token.line });
-                }
-                if word == "mod" && !item_level && mod_in_body(&toks, i, &matchers) {
-                    out.unsupported.push(UnsupportedAt { form: Unsupported::ModInBody, line: token.line });
+                if let Some(form) = body_form(&toks, i, item_level, &matchers) {
+                    out.unsupported.push(UnsupportedAt { form, line: token.line });
                 }
                 if word == "macro_rules" && is_punct(&toks, i + 1, '!') {
                     if let Some(kind) = ident_at(&toks, i + 2).and_then(|name| name.strip_prefix(MACRO_PREFIX)) {
@@ -318,12 +315,19 @@ fn closing(toks: &[Token], open: usize) -> Option<usize> {
     None
 }
 
-/// Whether the `mod` at `at`, found below item level, declares a module: a name or a `$name` after it, outside the
-/// `matchers` of a `macro_rules!`, where `mod $name;` is input the macro accepts. `mod $name;` in a transcriber is
-/// still a module the scan can't name.
-fn mod_in_body(toks: &[Token], at: usize, matchers: &[(usize, usize)]) -> bool {
+/// The unsupported form the identifier at `at` starts, if any: an `include!` that is not the generated one, or a `mod`
+/// below item level that declares a module (a name or a `$name` after it). Tokens inside the `matchers` of a
+/// `macro_rules!` are input patterns the macro accepts, not code it compiles, so they never count; a transcriber's
+/// `mod $name;` is still a module the scan can't name.
+fn body_form(toks: &[Token], at: usize, item_level: bool, matchers: &[(usize, usize)]) -> Option<Unsupported> {
+    if matchers.iter().any(|&(from, to)| (from..=to).contains(&at)) {
+        return None;
+    }
+    if toks[at].is_ident("include") && is_punct(toks, at + 1, '!') && !is_generated_include(toks, at) {
+        return Some(Unsupported::Include);
+    }
     let named = ident_at(toks, at + 1).is_some() || is_punct(toks, at + 1, '$');
-    named && !matchers.iter().any(|&(from, to)| (from..=to).contains(&at))
+    (toks[at].is_ident("mod") && !item_level && named).then_some(Unsupported::ModInBody)
 }
 
 /// The token ranges of the matchers in the `macro_rules!` body opening at `open`: in `{ (matcher) => { body }; ... }`
@@ -653,6 +657,13 @@ const B: &[u8] = include_bytes!("b.bin");
         assert_eq!(unsupported(source), [(Unsupported::ModInBody, 4)], "only the transcriber's `mod` declares one");
         let matcher_only = "macro_rules! parse { (mod $name:ident;) => { struct Parsed; } }\n";
         assert_eq!(unsupported(matcher_only), []);
+    }
+
+    #[test]
+    fn an_include_in_a_macro_matcher_is_input_but_one_in_a_transcriber_is_refused() {
+        let source = "macro_rules! take {\n    (include!($file:literal)) => { include!($file); };\n}\n";
+        assert_eq!(unsupported(source), [(Unsupported::Include, 2)]);
+        assert_eq!(unsupported("macro_rules! take { (include!($file:literal)) => { struct A; } }\n"), []);
     }
 
     #[test]
