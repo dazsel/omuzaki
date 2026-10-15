@@ -269,6 +269,29 @@ fn the_tongue_tab_fades_in_from_nothing_instead_of_popping() {
 }
 
 #[test]
+fn the_split_line_fades_in_with_the_lower_teeth() {
+    let profile = glossy();
+    let opacity = |lower: f32| {
+        let p = params(|m| {
+            (m.open, m.smile_left, m.smile_right, m.teeth_upper, m.teeth_lower) = (0.8, 1.5, 1.5, 1.0, lower);
+        });
+        piece(MouthPiece::Interior, &profile, &p).cmds().iter().find_map(|c| match c {
+            Cmd::Stroke { opacity, .. } => Some(*opacity),
+            _ => None,
+        })
+    };
+    assert_eq!(opacity(0.005), None, "below the threshold there is no row, and no line");
+    assert!(opacity(0.0101).unwrap() < 0.02, "just above it the line is nearly invisible");
+    let mut last = opacity(0.02).unwrap();
+    for i in 1..=98 {
+        let now = opacity(0.02 + 0.01 * i as f32).unwrap();
+        assert!(now >= last && now - last <= 0.011, "a steady ramp: {last} then {now}");
+        last = now;
+    }
+    assert_eq!(opacity(1.0), Some(1.0), "full with the row");
+}
+
+#[test]
 fn lower_teeth_show_on_a_real_smile_and_not_on_a_flat_mouth() {
     let profile = glossy();
     let ink = |smile: f32, lower: f32| {
