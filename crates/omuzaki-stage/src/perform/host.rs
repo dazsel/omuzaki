@@ -40,7 +40,9 @@ use omuzaki_face_api::ExpressionSet;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::triggers::{Baked, BindOutcome, Bound, MAX_KEY_CHARS, TriggerBinding, TriggerBook, TriggerInfo, check_key};
+use super::triggers::{
+    BindOutcome, Bound, MAX_KEY_CHARS, Rebaked, SlotChange, TriggerBinding, TriggerBook, TriggerInfo, check_key,
+};
 use super::{MAX_STEPS_PER_ADVANCE, PerformOutput, Performer, STEP_HZ, Tracking};
 
 /// Commands the queue holds before [`PerformError::QueueFull`].
@@ -281,8 +283,8 @@ enum Command {
     Calibration(Calibration),
     /// One trigger slot, baked on the control side; `None` empties it.
     Trigger { index: usize, slot: Option<TriggerSlot> },
-    /// Every trigger slot at once, from [`PerformHost::set_expressions`].
-    Triggers(Baked),
+    /// Every trigger slot whose values changed, from [`PerformHost::set_expressions`].
+    Triggers(Rebaked),
     /// A key press (`down`) or release on a trigger slot.
     Press { index: usize, down: bool },
 }
@@ -649,8 +651,8 @@ impl PerformHost for PerformHandle {
 
     fn set_expressions(&self, expressions: ExpressionSet, rest: ChannelBuf) -> Result<(), PerformError> {
         let mut book = lock(&self.shared.triggers);
-        let (next, baked) = book.with_expressions(expressions, &rest);
-        self.send(Command::Triggers(baked))?;
+        let (next, changes) = book.with_expressions(expressions, &rest);
+        self.send(Command::Triggers(changes))?;
         *book = next;
         Ok(())
     }
@@ -661,7 +663,7 @@ impl PerformHost for PerformHandle {
         let (slot, replaced) = book.place(&binding.key)?;
         let (shown, missing) = book.bake(&binding);
         self.send(Command::Trigger { index: slot, slot: shown })?;
-        book.put(slot, Some(Bound { binding, missing }));
+        book.put(slot, Some(Bound { binding, missing, slot: shown }));
         Ok(BindOutcome { slot, replaced })
     }
 
@@ -854,8 +856,10 @@ impl PerformControl {
             Command::Calibration(calibration) => self.set_calibration(performer, &calibration),
             Command::Trigger { index, slot } => self.set_trigger(index, slot.as_ref()),
             Command::Triggers(slots) => {
-                for (index, slot) in slots.iter().enumerate() {
-                    self.set_trigger(index, slot.as_ref());
+                for (index, change) in slots.iter().enumerate() {
+                    if let SlotChange::Set(slot) = change {
+                        self.set_trigger(index, slot.as_ref());
+                    }
                 }
             }
             Command::Press { index, down } => {

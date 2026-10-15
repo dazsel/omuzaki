@@ -9,14 +9,24 @@ use omuzaki_anim_api::ChannelBuf;
 use omuzaki_face_api::{ExpressionId, ExpressionSet};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use unicode_bidi::{BidiClass, bidi_class};
 
 use super::host::PerformError;
 
 /// The most characters a key may have.
 pub const MAX_KEY_CHARS: usize = 32;
 
-/// The baked slots, one per trigger slot index; `None` leaves the slot empty.
-pub type Baked = [Option<TriggerSlot>; MAX_TRIGGERS];
+/// What a rebake does to one trigger slot on the perform thread.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum SlotChange {
+    /// The slot's values did not change, so it is not touched: a key held or toggled across a reload stays on.
+    Keep,
+    /// The slot gets these values (`None` empties it). A slot that is shown fades out first.
+    Set(Option<TriggerSlot>),
+}
+
+/// The change for every trigger slot, by slot index, from one rebake.
+pub type Rebaked = [SlotChange; MAX_TRIGGERS];
 
 /// A key bound to an expression.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -54,6 +64,22 @@ pub struct TriggerInfo {
 /// (soft hyphen, zero-width and bidirectional marks, joiners, the invisible operators, variation selectors, the byte
 /// order mark, tag characters) that `char::is_control` lets through.
 fn is_printable(c: char) -> bool {
+    // The bidirectional formatting classes are the Unicode format characters (soft hyphen, the zero-width and joiner
+    // characters, the invisible operators, tags and every later addition), so a newer one is refused with no edit here.
+    let format = matches!(
+        bidi_class(c),
+        BidiClass::BN
+            | BidiClass::LRE
+            | BidiClass::LRO
+            | BidiClass::RLE
+            | BidiClass::RLO
+            | BidiClass::PDF
+            | BidiClass::LRI
+            | BidiClass::RLI
+            | BidiClass::FSI
+            | BidiClass::PDI
+    );
+    // Invisible too, but not format characters: fillers, variation selectors, the combining grapheme joiner.
     let invisible = matches!(
         c,
         '\u{00AD}' | '\u{034F}' | '\u{061C}' | '\u{115F}'..='\u{1160}' | '\u{17B4}'..='\u{17B5}'
@@ -61,7 +87,7 @@ fn is_printable(c: char) -> bool {
             | '\u{2060}'..='\u{206F}' | '\u{3164}' | '\u{FE00}'..='\u{FE0F}' | '\u{FEFF}' | '\u{FFA0}'
             | '\u{FFF9}'..='\u{FFFB}' | '\u{E0000}'..='\u{E0FFF}'
     );
-    !c.is_control() && !invisible && (c == ' ' || !c.is_whitespace())
+    !c.is_control() && !format && !invisible && (c == ' ' || !c.is_whitespace())
 }
 
 /// Checks a key: 1 to [`MAX_KEY_CHARS`] printable characters (see `is_printable`).
@@ -89,6 +115,8 @@ pub(super) struct Bound {
     pub(super) binding: TriggerBinding,
     /// Whether the expression is missing or shows nothing (see [`TriggerInfo::missing`]).
     pub(super) missing: bool,
+    /// The slot last sent to the perform thread for this key, so a rebake sends only what changed.
+    pub(super) slot: Option<TriggerSlot>,
 }
 
 /// The control side's table: the bindings by slot, the set they bake against and the rest face they blend onto.
@@ -147,19 +175,23 @@ impl TriggerBook {
         bake(&self.expressions, &self.rest, binding)
     }
 
-    /// The table for a new set and rest face: every bound key is re-baked, and the slots to send are returned with it.
-    /// `self` is left as it was, so a refused send changes nothing.
-    pub(super) fn with_expressions(&self, expressions: ExpressionSet, rest: &ChannelBuf) -> (Self, Baked) {
+    /// The table for a new set and rest face: every bound key is re-baked, and the slots whose values changed are
+    /// returned with it. A slot that bakes to the same values is kept, because replacing a slot ends the press that
+    /// shows it. `self` is left as it was, so a refused send changes nothing.
+    pub(super) fn with_expressions(&self, expressions: ExpressionSet, rest: &ChannelBuf) -> (Self, Rebaked) {
         let mut next = Self { expressions, rest: *rest, slots: self.slots.clone() };
-        let mut baked: Baked = std::array::from_fn(|_| None);
-        for (entry, out) in next.slots.iter_mut().zip(baked.iter_mut()) {
+        let mut changes: Rebaked = [SlotChange::Keep; MAX_TRIGGERS];
+        for (entry, out) in next.slots.iter_mut().zip(changes.iter_mut()) {
             if let Some(bound) = entry {
                 let (shown, missing) = bake(&next.expressions, &next.rest, &bound.binding);
                 bound.missing = missing;
-                *out = shown;
+                if shown != bound.slot {
+                    *out = SlotChange::Set(shown);
+                    bound.slot = shown;
+                }
             }
         }
-        (next, baked)
+        (next, changes)
     }
 }
 
@@ -186,7 +218,7 @@ mod tests {
 
     #[test]
     fn keys_refuse_invisible_and_exotic_whitespace_characters() {
-        for hidden in ["\u{200B}", "F\u{200B}1", "\u{FEFF}F1", "\u{00AD}", "\u{202E}F1", "\u{2060}", "\u{E0041}", "F\u{00A0}1", "F\u{2003}1"] {
+        for hidden in ["\u{200B}", "F\u{200B}1", "\u{FEFF}F1", "\u{00AD}", "\u{202E}F1", "\u{2060}", "\u{E0041}", "F\u{00A0}1", "F\u{2003}1", "\u{1BCA0}", "\u{1D173}", "\u{E0001}", "\u{200C}F"] {
             assert_eq!(check_key(hidden), Err(PerformError::InvalidKey), "{hidden:?}");
         }
         for shown in ["F1", "Ctrl+Shift+A", "Numpad +", "\u{FC}", "\u{3042}", "\u{2318}", "+"] {

@@ -204,6 +204,34 @@ fn a_hold_shows_while_the_key_is_down_and_fades_on_release() {
 }
 
 #[test]
+fn a_rebake_keeps_the_presses_whose_expressions_did_not_change() {
+    let mut rig = starter_rig();
+    rig.handle.press("F3", true).unwrap(); // held down for the rest of the test
+    rig.steps(40);
+    assert_eq!(rig.step().wide, Source::Trigger, "F3 is shown while held");
+    rig.handle.set_expressions(ExpressionSet::starter(), ChannelBuf::NEUTRAL).unwrap();
+    rig.steps(40);
+    assert_eq!(rig.step().wide, Source::Trigger, "the same set leaves the held key shown");
+
+    let mut without = ExpressionSet::starter();
+    assert!(without.0.remove(&id("surprised")).is_some());
+    rig.handle.set_expressions(without, ChannelBuf::NEUTRAL).unwrap();
+    rig.steps(40);
+    assert_ne!(rig.step().wide, Source::Trigger, "a set without the expression fades it out");
+}
+
+#[test]
+fn a_rebake_keeps_a_toggled_expression_shown() {
+    let mut rig = starter_rig();
+    rig.handle.press("F1", true).unwrap();
+    rig.steps(12);
+    assert_eq!(rig.step().smile, Source::Trigger);
+    rig.handle.set_expressions(ExpressionSet::starter(), ChannelBuf::NEUTRAL).unwrap();
+    rig.steps(40);
+    assert_eq!(rig.step().smile, Source::Trigger, "a reload with the same set leaves the toggle on");
+}
+
+#[test]
 fn the_seventeenth_binding_is_refused_and_a_repeated_key_replaces_its_binding() {
     let mut rig = starter_rig();
     let first = rig.bind("f1", "sad", TriggerMode::Hold).unwrap();
