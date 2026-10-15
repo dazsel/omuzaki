@@ -383,7 +383,7 @@ mod tests {
                 ("link-gate", "test -p omuzaki-cli --test registrations".to_owned()),
             ]
         );
-        assert_eq!(got.len(), 11, "the same trailing steps as ever: {got:?}");
+        assert_eq!(got.len(), 12, "the same trailing steps as ever: {got:?}");
     }
 
     #[test]
