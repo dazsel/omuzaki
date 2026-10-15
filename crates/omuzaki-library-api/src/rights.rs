@@ -1,4 +1,5 @@
-//! What an item records about rights (design D8).
+//! What an item records about rights (design D8; the attestation, terms hash and asset rights follow
+//! `docs/design/marketplace.md`: D5 rights table, D7 attestation, section 5.1).
 
 use omuzaki_identity_api::key::KeyId;
 use omuzaki_io_api::UseTerms;
@@ -10,7 +11,7 @@ use crate::{ItemId, Version};
 /// The licence of every first-party item (a project decision: free to use for any purpose).
 pub const FIRST_PARTY_LICENCE: &str = "CC0-1.0";
 
-/// Who asserts an item's rights, and the claim they stand on (marketplace design D5). It is signed with the rest of the
+/// Who asserts an item's rights, and the claim they stand on (marketplace design `docs/design/marketplace.md`, D5 rights table and D7). It is signed with the rest of the
 /// manifest, so a client can show who vouched for the rights without trusting anything outside the signature.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

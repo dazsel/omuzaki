@@ -1,4 +1,4 @@
-//! The pure join of rights (design D5): many rows of rights become the one record that allows no more than any of them.
+//! The pure join of rights (marketplace design `docs/design/marketplace.md`, D5 rights table and section 5.1): many rows of rights become the one record that allows no more than any of them.
 //!
 //! `licence.derive` joins a character's parts and application records with it; the marketplace client joins an item's
 //! rights with its assets' rights by the same rule, so the rule lives here, in a contract crate both can call. It reads
@@ -146,7 +146,7 @@ pub fn commercial_rank(status: Commercial) -> u8 {
 pub struct RightsRow {
     /// What the row is called in a message about it (a part id, `applied/<app>`, an asset key).
     pub name: String,
-    /// Its SPDX expression or `LicenseRef-<name>`, trimmed.
+    /// Its SPDX expression or `LicenseRef-<name>`. The join trims it; a blank one reads as [`UNKNOWN_LICENCE`].
     pub licence: String,
     /// Its commercial status.
     pub commercial: Commercial,
@@ -156,9 +156,9 @@ pub struct RightsRow {
     pub terms: UseTerms,
     /// Whether it is private test material.
     pub private_test: bool,
-    /// Who made it, if recorded and not blank.
+    /// Who made it, if recorded. The join trims it and drops a blank one.
     pub author: Option<String>,
-    /// The credit that must travel with it, if any and not blank.
+    /// The credit that must travel with it, if any. The join trims it and drops a blank one.
     pub attribution: Option<String>,
     /// Who marked it as the project's own, if anyone did.
     pub owned_by: Option<String>,
@@ -199,6 +199,11 @@ pub struct JoinedRights {
     pub consent: JointConsent,
 }
 
+/// The text without surrounding whitespace, or `None` when nothing is left.
+fn trimmed(text: &str) -> Option<&str> {
+    Some(text.trim()).filter(|t| !t.is_empty())
+}
+
 /// Each value once, in the order first met.
 fn unique(values: impl Iterator<Item = String>) -> Vec<String> {
     let mut seen: Vec<String> = Vec::new();
@@ -213,7 +218,7 @@ fn unique(values: impl Iterator<Item = String>) -> Vec<String> {
 /// Every distinct licence joined with SPDX `AND`, which says that all of them apply. An expression of its own
 /// (`MIT OR Apache-2.0`) is parenthesised, because `AND` binds tighter than `OR`.
 fn join_licences(rows: &[RightsRow]) -> String {
-    let mut licences: Vec<&str> = rows.iter().map(|r| r.licence.as_str()).collect();
+    let mut licences: Vec<&str> = rows.iter().map(|r| trimmed(&r.licence).unwrap_or(UNKNOWN_LICENCE)).collect();
     licences.sort_unstable();
     licences.dedup();
     match licences.as_slice() {
@@ -258,8 +263,8 @@ pub fn join_rights(rows: &[RightsRow]) -> JoinedRights {
         commercial,
         private_test,
         terms,
-        authors: unique(rows.iter().filter_map(|r| r.author.clone())),
-        attributions: unique(rows.iter().filter_map(|r| r.attribution.clone())),
+        authors: unique(rows.iter().filter_map(|r| r.author.as_deref().and_then(trimmed).map(str::to_owned))),
+        attributions: unique(rows.iter().filter_map(|r| r.attribution.as_deref().and_then(trimmed).map(str::to_owned))),
         owners,
         project_owned: !rows.is_empty() && !private_test && rows.iter().all(|r| r.owned_by.is_some()),
         consent: joint_consent(rows),
@@ -293,6 +298,19 @@ mod tests {
         let joined = join_rights(&[row("item", "MIT"), row("asset", "CC-BY-4.0")]);
         assert_eq!(joined.licence, "CC-BY-4.0 AND MIT");
         assert_eq!(join_rights(&[row("a", "MIT"), row("b", "MIT")]).licence, "MIT", "the same licence twice is once");
+    }
+
+    #[test]
+    fn surrounding_whitespace_does_not_make_a_second_term_and_blank_credits_are_dropped() {
+        assert_eq!(join_rights(&[row("a", " MIT "), row("b", "MIT")]).licence, "MIT");
+        assert_eq!(join_rights(&[row("a", "  ")]).licence, UNKNOWN_LICENCE, "a blank licence is unknown");
+        let rows = [
+            RightsRow { author: Some("  ".into()), attribution: Some(String::new()), ..row("a", "MIT") },
+            RightsRow { author: Some(" Amy ".into()), attribution: Some(" by Amy ".into()), ..row("b", "MIT") },
+            RightsRow { author: Some("Amy".into()), attribution: Some("by Amy".into()), ..row("c", "MIT") },
+        ];
+        let joined = join_rights(&rows);
+        assert_eq!((joined.authors, joined.attributions), (vec!["Amy".to_owned()], vec!["by Amy".to_owned()]));
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! The application record (design D5): the pin, what was bound and written, and the item's rights.
+//! The application record (design D5; `receipt` per `docs/design/marketplace.md`, section 5.1): the pin, what was bound and written, and the item's rights.
 //!
 //! After an apply the document holds every value the recipe wrote. The record beside it, at
 //! `characters/<id>/applied/<app>`, is the lock: `library.lock` reads these records, and `library.update` uses
@@ -109,9 +109,11 @@ pub enum RecordError {
     },
 }
 
-/// The record of one application of an item to a target.
+/// The record of one application of an item to a target. Build it with [`ApplicationRecord::new`] and set the optional
+/// fields on the result: the struct is `#[non_exhaustive]` (ADR 0054), so a new field never breaks a caller.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct ApplicationRecord {
     /// [`RECORD_SCHEMA`].
     pub schema: u32,
@@ -154,6 +156,26 @@ pub struct ApplicationRecord {
 }
 
 impl ApplicationRecord {
+    /// A record of `item` at `version` with manifest `hash`, resolved `from`, holding `rights`; everything else empty.
+    pub fn new(item: ItemId, version: Version, hash: ContentHash, from: Resolved, rights: ItemRights) -> Self {
+        Self {
+            schema: RECORD_SCHEMA,
+            item,
+            version,
+            hash,
+            publisher: None,
+            from,
+            slot: None,
+            bindings: RecordBindings::default(),
+            params: BTreeMap::new(),
+            deps: BTreeMap::new(),
+            rights,
+            receipt: None,
+            created: Vec::new(),
+            wrote: BTreeMap::new(),
+        }
+    }
+
     /// Reads a record from a document node. Unknown keys are refused, so a record from a newer build is not
     /// half-understood.
     ///
@@ -233,6 +255,14 @@ mod tests {
         assert_eq!(node["receipt"], json!(ContentHash::of(b"receipt").to_string()));
         assert_eq!(ApplicationRecord::from_node(&node).unwrap(), r);
         assert_eq!(ApplicationRecord::from_node(&node).unwrap().receipt, Some(ContentHash::of(b"receipt")));
+        let mut extra = node;
+        extra["receipt_typo"] = json!(1);
+        assert!(
+            matches!(ApplicationRecord::from_node(&extra), Err(RecordError::Shape(m)) if m.contains("receipt_typo"))
+        );
+        let mut malformed = r.to_node().unwrap();
+        malformed["receipt"] = json!("not a hash");
+        assert!(ApplicationRecord::from_node(&malformed).is_err());
     }
 
     #[test]

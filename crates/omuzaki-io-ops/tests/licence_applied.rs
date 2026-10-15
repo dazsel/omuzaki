@@ -7,7 +7,6 @@
 
 use omuzaki_char_mock::mock_character;
 use omuzaki_core::time::FakeClock;
-use std::collections::BTreeMap;
 
 use omuzaki_doc_api::DocWrite;
 use omuzaki_doc_mock::MemDoc;
@@ -19,7 +18,7 @@ use omuzaki_io_ops::ops::check_export::ExportCheck;
 use omuzaki_io_ops::ops::licence::derive::DerivedLicence;
 use omuzaki_io_ops::ops::licence::describe::LicenceDescription;
 use omuzaki_io_ops::ops::licence::source::{Ownership, PartSource};
-use omuzaki_library_api::{ApplicationRecord, ItemId, ItemRights, RECORD_SCHEMA, RecordBindings, Resolved, Version};
+use omuzaki_library_api::{ApplicationRecord, ItemId, ItemRights, Resolved, Version};
 use omuzaki_ops_api::{Actor, ErrorCode, OpCtx, OpError, Plan, find};
 use omuzaki_store_api::{Commercial, ContentHash};
 use serde_json::{Value, json};
@@ -27,22 +26,13 @@ use serde_json::{Value, json};
 const PARTS: [&str; 5] = ["body", "hair", "head", "shirt", "vest"];
 
 fn application(item: &str, rights: ItemRights) -> ApplicationRecord {
-    ApplicationRecord {
-        schema: RECORD_SCHEMA,
-        item: ItemId::new(item).unwrap(),
-        version: Version::new(1, 0, 0),
-        hash: ContentHash::of(item.as_bytes()),
-        publisher: None,
-        from: Resolved::FirstParty,
-        slot: None,
-        bindings: RecordBindings::default(),
-        params: BTreeMap::new(),
-        deps: BTreeMap::new(),
+    ApplicationRecord::new(
+        ItemId::new(item).unwrap(),
+        Version::new(1, 0, 0),
+        ContentHash::of(item.as_bytes()),
+        Resolved::FirstParty,
         rights,
-        receipt: None,
-        created: Vec::new(),
-        wrote: BTreeMap::new(),
-    }
+    )
 }
 
 /// Rights of a fixture item that is not cleared for commercial use.
