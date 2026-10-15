@@ -1,12 +1,13 @@
-//! The palette-independence conformance check: the conformance rule that makes the caching builder's key sound.
+//! The palette-independence conformance check: the rule that makes the caching builder's key sound.
 //!
 //! The caching builder keys a part that reads facts on the *geometry* keys of the parts that published them, never on
 //! their colours (decision Q6: a palette change never rebuilds geometry). That is exact only while no fact depends on the
 //! palette. `Fact` values are type-erased and have no equality, so the rule is enforced here instead: [`check`] builds a
-//! part of each kind under [`PALETTES`] palettes (the character's own and several others, each differing from it in
-//! *every* entry, so a kind that only reacts past a threshold is still caught) and compares what it published, fact by
-//! fact, through the `Debug` text of each value (which prints floats exactly). A kind that publishes something
-//! different under another palette is a [`Report::violations`] entry naming the kind, the part and the fact.
+//! part of each kind under the character's own palette and [`PALETTES`] others (each differing from it in *every*
+//! entry, so a kind that only reacts past a threshold is still caught) and compares what it published, fact by fact.
+//! Values are compared with `==`; only [`HeadFact`] and [`FitFact`], which hold trait objects with no equality, are
+//! compared through their `Debug` text ([`Probes::fact_by_debug`]). A kind that publishes something different under
+//! another palette is a [`Report::violations`] entry naming the kind, the part and the fact.
 //!
 //! Facts are compared by [`Probes`]: the built-in ones are registered, and a crate that adds a fact adds
 //! [`Probes::fact`] for it in the test that runs the check. A fact a kind publishes that no probe covers is listed in
@@ -145,16 +146,21 @@ fn publishes_of(def: &CharacterDef) -> Result<Vec<(PartId, Publishes)>, String> 
     Ok(all)
 }
 
+/// The kinds a check is asked for: `kinds`, or every registered kind.
+fn wanted_kinds(kinds: Option<&[&str]>) -> Vec<String> {
+    match kinds {
+        Some(kinds) => kinds.iter().map(|k| (*k).to_owned()).collect(),
+        None => omuzaki_char_api::kinds().map(|r| (r.meta)().id.to_owned()).collect(),
+    }
+}
+
 /// Checks the parts of `kinds` (every registered kind when `None`) against `base`, a character that builds.
 ///
 /// A kind `base` has an active part of (one the build plan reaches) is checked through that part; any other kind through one extra part with its default
 /// parameters (`base` supplies what it requires). A kind that can't be built that way is listed in
 /// [`Report::unreached`], not skipped silently.
 pub fn check(base: &CharacterDef, kinds: Option<&[&str]>, probes: &Probes) -> Report {
-    let wanted: Vec<String> = match kinds {
-        Some(kinds) => kinds.iter().map(|k| (*k).to_owned()).collect(),
-        None => omuzaki_char_api::kinds().map(|r| (r.meta)().id.to_owned()).collect(),
-    };
+    let wanted = wanted_kinds(kinds);
     let mut report = Report::default();
     // The kinds with an active part: the ones the build plan reaches (a disabled part, or one under a disabled ancestor,
     // is never built, so it covers nothing). A base that can't be planned covers nothing.
@@ -213,9 +219,15 @@ pub fn check(base: &CharacterDef, kinds: Option<&[&str]>, probes: &Probes) -> Re
 }
 
 /// [`check`] against several bases (the kit characters that have the parts different kinds need): a kind counts as reached
-/// when any base reaches it.
+/// when any base reaches it. With no bases nothing can be built, so every wanted kind (`kinds`, or every registered kind)
+/// is listed in [`Report::unreached`] rather than the report coming back clean.
 pub fn check_all(bases: &[CharacterDef], kinds: Option<&[&str]>, probes: &Probes) -> Report {
     let mut merged = Report::default();
+    if bases.is_empty() {
+        merged.unreached =
+            wanted_kinds(kinds).into_iter().map(|k| (k, "no base character to build it in".to_owned())).collect();
+        return merged;
+    }
     let mut unreached: Option<BTreeMap<String, String>> = None;
     for base in bases {
         let report = check(base, kinds, probes);

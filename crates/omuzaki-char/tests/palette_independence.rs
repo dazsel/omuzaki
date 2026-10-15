@@ -1,7 +1,7 @@
 //! Facts don't depend on the palette: every part kind linked into this binary (the mock kinds the kit characters are made
-//! of) publishes the same facts under the character's own palette and `PALETTES` others, each differing from it in every
-//! entry. The caching builder relies on it (see the `builder` module doc): it keys a part that reads facts on the
-//! geometry of their publishers, not their colours.
+//! of) publishes the same facts under the character's own palette and `PALETTES` (five) alternatives, each differing
+//! from it in every entry (six builds per kind). The caching builder relies on it (see the `builder` module doc): it keys
+//! a part that reads facts on the geometry of their publishers, not their colours.
 
 // Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
 #![allow(clippy::expect_used, clippy::unwrap_used)]
@@ -47,4 +47,16 @@ fn the_check_reaches_the_kit_characters_parts_and_sees_what_they_publish() {
     assert!(report.unprobed.iter().any(|(kind, _)| kind == "mock-body"), "{:?}", report.unprobed);
     assert!(report.unprobed.iter().any(|(kind, _)| kind == "mock-head"), "{:?}", report.unprobed);
     assert!(report.violations.is_empty() && report.unreached.is_empty(), "{report:?}");
+}
+
+#[test]
+fn a_check_with_no_base_character_reaches_nothing_and_says_so() {
+    omuzaki_char::link();
+    let asked = check_all(&[], Some(&["body", "head"]), &Probes::built_in());
+    let kinds: Vec<_> = asked.unreached.iter().map(|(kind, _)| kind.as_str()).collect();
+    assert_eq!(kinds, ["body", "head"]);
+    assert!(asked.violations.is_empty() && asked.unprobed.is_empty());
+
+    let everything = check_all(&[], None, &Probes::built_in());
+    assert_eq!(everything.unreached.len(), omuzaki_char_api::kinds().count(), "every registered kind");
 }
