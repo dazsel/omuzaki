@@ -18,8 +18,8 @@ use omuzaki_anim_api::{HumanoidBone, HumanoidPose};
 use omuzaki_char_api::BuiltCharacter;
 use omuzaki_core::glam::{Mat4, Quat, UVec2, Vec2, Vec3};
 use omuzaki_render_api::{
-    AlphaEncoding, Background, Camera, Image, Projection, Quality, RenderError, Renderer, ResourceRef, TargetDesc,
-    TargetId,
+    AlphaEncoding, Background, Camera, Image, Light, Post, Projection, Quality, RenderError, Renderer, ResourceRef,
+    Scene, TargetDesc, TargetId,
 };
 
 use crate::error::StageError;
@@ -38,8 +38,8 @@ pub const EYE_LINE_FRACTION: f32 = 0.6;
 /// `Landmarks::measure` (#131) measures the head.
 pub const HEAD_CENTRE_FRACTION: f32 = 0.5;
 /// The light rig every sheet is lit with. The sheet always uses it, replacing whatever lights the stage's scene had
-/// (and its post settings, background, fog and environment light); [`render_turnaround`] puts the caller's scene back
-/// afterwards.
+/// and every other render setting of the stage's scene (post, background, fog, environment light, outline light and
+/// the rest, which the sheet draws from a fresh scene); [`render_turnaround`] puts the caller's scene back afterwards.
 pub const LIGHT_RIG: &str = "viewer-studio";
 
 /// Which way the character faces the camera. The side and three-quarter views show the character's left.
@@ -310,7 +310,7 @@ impl Shot {
 
 /// Renders the four views of `spec.pose` of the character on `stage`.
 ///
-/// The stage's scene is borrowed for the sheet (camera, lights from [`LIGHT_RIG`], background, no fog or environment light) and put back after.
+/// The stage's scene is borrowed for the sheet (camera, lights from [`LIGHT_RIG`], background, and every other setting at its default) and put back after.
 /// The character is ticked at each yaw, settled, ticked again and then drawn offline from that one scene, tile by
 /// tile where the cell is too big for one target.
 ///
@@ -341,14 +341,7 @@ pub fn render_turnaround(
         .create_target(&TargetDesc { size: UVec2::splat(1), alpha: AlphaEncoding::Straight })
         .map_err(|e| StageError::render("the sheet's target", e))?;
     let saved = stage.scene().clone();
-    let scene = stage.scene_mut();
-    scene.lights = lights;
-    scene.post = look;
-    scene.background = spec.background;
-    scene.camera = shot.camera;
-    // Neutral studio: the caller's fog and sky light would tint the sheet, so they are off for it.
-    scene.fog = None;
-    scene.environment = None;
+    *stage.scene_mut() = neutral_scene(&saved, shot.camera, lights, look, spec.background);
     let run = Run { spec, subject, shot, pose, target, tile };
     let views = View::ALL.into_iter().map(|view| run.view(stage, renderer, view)).collect::<Result<Vec<_>, _>>();
     let released = renderer.release(ResourceRef::from(target));
@@ -356,6 +349,22 @@ pub fn render_turnaround(
     let views = views?;
     released.map_err(|e| StageError::render("the sheet's target", e))?;
     Ok(TurnaroundSheet { pose: spec.pose, views })
+}
+
+/// The scene a sheet is drawn from: built fresh, so nothing of the caller's look can reach it. Every render setting is
+/// the sheet's own or the [`Scene::new`] default (`frame`, `fog`, `environment` and `outline_light`; a new field of
+/// `Scene` is neutral here until the sheet sets it). Only what belongs to the character is carried over: its instances,
+/// joint palette and morph weights, which the next tick refills anyway.
+fn neutral_scene(saved: &Scene, camera: Camera, lights: Vec<Light>, post: Post, background: Background) -> Scene {
+    Scene {
+        lights,
+        post,
+        background,
+        instances: saved.instances.clone(),
+        joints: saved.joints.clone(),
+        morph_weights: saved.morph_weights.clone(),
+        ..Scene::new(camera)
+    }
 }
 
 /// The largest tile side: the renderer's limit, lowered by the spec.

@@ -19,9 +19,10 @@ use omuzaki_char_api::{BuildOptions, BuildServices, BuiltCharacter, CharId, Char
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::{UVec2, Vec3};
 use omuzaki_render_api::{
-    AlphaEncoding, Background, Camera, Capabilities, EnvironmentDesc, EnvironmentUse, Fog, FrameReport, Image, Light,
-    Material, MaterialId, MeshData, MeshId, MeshOptions, Painter, Quality, RenderError, Renderer, ResourceRef,
-    ResourceStats, Scene, TargetDesc, TargetId, TextureDesc, TextureId,
+    AlphaEncoding, Background, Bloom, Camera, Capabilities, ColourGrade, DepthOfField, EnvironmentDesc, EnvironmentUse,
+    FilmGrain, Fog, FrameReport, Image, Light, Material, MaterialId, MeshData, MeshId, MeshOptions, Painter, Post,
+    Projection, Quality, RenderError, Renderer, ResourceRef, ResourceStats, Scene, TargetDesc, TargetId, TextureDesc,
+    TextureId, Tonemap,
 };
 use omuzaki_render_mock::MockRenderer;
 use omuzaki_stage::UploadOptions;
@@ -325,6 +326,49 @@ fn the_callers_environment_light_does_not_light_the_sheet() {
     assert!(restored, "the caller's environment is back after the sheet");
     for (a, b) in clear.views.iter().zip(&lit.views) {
         assert_eq!(a.image.rgba8, b.image.rgba8, "{:?} is lit by the sheet's rig alone", a.view);
+    }
+}
+
+/// The class behind the fog, environment and outline findings: every render setting the caller can put on the scene.
+/// Covers `camera`, `lights`, `background`, `fog`, `environment`, `outline_light` and every field of `post`
+/// (`exposure`, `tonemap`, `bloom`, `depth_of_field`, `grain`, `grade`); `frame` is set by the stage on each tick, and
+/// `instances`, `joints` and `morph_weights` are the character's own.
+#[test]
+fn nothing_the_caller_sets_on_the_scene_reaches_the_sheet() {
+    let clear = sheet(&spec());
+    let (loud, restored) = with_stage(|stage, renderer| {
+        let sky = EnvironmentDesc::Sky { zenith: Colour::WHITE, horizon: Colour::WHITE, ground: Colour::WHITE };
+        let id = renderer.create_environment(&sky).expect("the mock makes a sky");
+        let scene = stage.scene_mut();
+        scene.camera = Camera::look_at(
+            Vec3::new(3.0, 1.0, 3.0),
+            Vec3::ZERO,
+            Vec3::Y,
+            Projection::Orthographic { height: 9.0, near: 0.1, far: 40.0 },
+        );
+        scene.lights = vec![Light::Hemisphere { sky: Colour::WHITE, ground: Colour::BLACK, intensity: 0.3 }];
+        scene.background = Background::Solid { colour: Colour::WHITE };
+        scene.fog = Some(Fog { colour: Colour::WHITE, near: 0.0, far: 0.5 });
+        scene.environment = Some(EnvironmentUse::new(id));
+        scene.outline_light = 0.2;
+        scene.post = Post {
+            exposure: 2.5,
+            tonemap: Tonemap::None,
+            bloom: Some(Bloom { strength: 2.0, radius: 0.5, threshold: 0.1 }),
+            depth_of_field: Some(DepthOfField { focus_distance: 1.0, focus_range: 0.1, max_blur: 4.0 }),
+            grain: Some(FilmGrain { strength: 0.5 }),
+            grade: Some(ColourGrade { saturation: 0.0, contrast: 2.0 }),
+        };
+        let before = stage.scene().clone();
+        let sheet = render_turnaround(stage, renderer, &spec()).expect("the sheet renders");
+        let restored = *stage.scene() == before;
+        stage.scene_mut().environment = None;
+        renderer.release(id.into()).expect("the sky is released");
+        (sheet, restored)
+    });
+    assert!(restored, "the caller's scene is back after the sheet");
+    for (a, b) in clear.views.iter().zip(&loud.views) {
+        assert_eq!(a.image.rgba8, b.image.rgba8, "{:?} is drawn from a neutral scene", a.view);
     }
 }
 
