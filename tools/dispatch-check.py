@@ -221,9 +221,24 @@ CLOSING_REFERENCE = re.compile(
 )
 
 
+# Markdown GitHub does not read keywords in: HTML comments, fenced code blocks and inline code spans. Fences first,
+# so a backtick inside a fence cannot open a span; an unclosed fence or comment runs to the end of the body, as it
+# renders.
+LITERAL_MARKDOWN = re.compile(
+    r"<!--.*?(?:-->|\Z)"
+    r"|^[ \t]{0,3}(?P<fence>`{3,}|~{3,}).*?(?:^[ \t]{0,3}(?P=fence)[`~]*[ \t]*$|\Z)"
+    r"|(?P<ticks>`+).+?(?P=ticks)",
+    re.DOTALL | re.MULTILINE,
+)
+
+
 def closes_in_body(body):
-    """The issue numbers in this repository a PR body closes, by GitHub's keyword rule (see CLOSING_REFERENCE)."""
-    return {int(number) for number in CLOSING_REFERENCE.findall(body or "")}
+    """The issue numbers in this repository a PR body closes, by GitHub's keyword rule (see CLOSING_REFERENCE).
+
+    Keywords inside literal Markdown (LITERAL_MARKDOWN) are examples, not references, so they are removed first.
+    """
+    prose = LITERAL_MARKDOWN.sub(" ", body or "")
+    return {int(number) for number in CLOSING_REFERENCE.findall(prose)}
 
 
 def check_list_limit(raw):
@@ -268,6 +283,10 @@ def load_prs_rest():
 
     REST has no closing references, so `closes` is read from the PR body by closes_in_body. GitHub honours closing
     keywords only on pull requests into the default branch, so a PR into any other base closes nothing.
+
+    REST cannot see an issue linked only from the Development sidebar. Such a PR closes nothing here, so a task's own
+    PR counts as an overlap and the check says wait, never go: the fallback errs on the safe side. Task PRs name their
+    issue with `Closes #<issue>` in the body (docs/maintainers/cloud-lane.md), which REST does see.
     """
     default = load_default_branch()
     raw = gh_json_pages(["api", "--paginate", f"repos/{REPO}/pulls?state=open&per_page=100"])

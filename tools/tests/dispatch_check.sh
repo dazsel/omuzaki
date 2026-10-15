@@ -626,7 +626,9 @@ spec = importlib.util.spec_from_file_location("dispatch_check", sys.argv[1])
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 for body in ["Fixes #42", "Closes: #7", "Does not close #42", "Fixes other/repo#42", "prefix #9", "bugfix #3",
-             "resolved #5 and Closed #6", "Fixes\n#8"]:
+             "resolved #5 and Closed #6", "Fixes\n#8", "Use `Fixes #10` to link", "a ``Fixes #11`` span",
+             "<!-- Fixes #12 --> Closes #13", "```\nFixes #14\n```\nFixes #15", "~~~md\nCloses #16\n",
+             "<!-- Fixes #17"]:
     print(body.replace("\n", " "), sorted(mod.closes_in_body(body)))
 ' "$CHECK" 2>"$work/err")
   expect_line "Fixes #42 [42]" "keyword: Fixes #42 closes 42"
@@ -637,6 +639,12 @@ for body in ["Fixes #42", "Closes: #7", "Does not close #42", "Fixes other/repo#
   expect_line "bugfix #3 []" "keyword: a suffix of a word does not count"
   expect_line "resolved #5 and Closed #6 [5, 6]" "keyword: every keyword in a body counts, case-insensitively"
   expect_line "Fixes #8 []" "keyword: a line break between keyword and number does not count"
+  expect_line "Use \`Fixes #10\` to link []" "keyword: an inline code span is an example, not a reference"
+  expect_line "a \`\`Fixes #11\`\` span []" "keyword: a double-backtick span is an example too"
+  expect_line "<!-- Fixes #12 --> Closes #13 [13]" "keyword: an HTML comment does not count; prose after it does"
+  expect_line "\`\`\` Fixes #14 \`\`\` Fixes #15 [15]" "keyword: a fenced block does not count; prose after it does"
+  expect_line "~~~md Closes #16  []" "keyword: an unclosed fence runs to the end of the body"
+  expect_line "<!-- Fixes #17 []" "keyword: an unclosed HTML comment runs to the end of the body"
 }
 parser_cases
 
