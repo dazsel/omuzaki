@@ -14,7 +14,7 @@ fn hats_path(id: &omuzaki_char_api::ids::CharId) -> omuzaki_doc_api::DocPath {
 }
 
 // A key of a feature that lives outside `omuzaki-char-api`.
-register_doc_key!("hats", Sibling, hats_path);
+register_doc_key!("hats", hats_path);
 
 fn base() -> serde_json::Value {
     json!({ "name": "Mira", "template": "kit-humanoid", "seed": 7 })
@@ -30,13 +30,16 @@ fn a_registered_key_is_validated_kept_and_saved() {
     def.to_node(&mut saved).expect("saves");
     assert_eq!(saved["hats"], json!({ "worn": "beret" }), "saving leaves the registered sub-tree alone");
     assert_eq!(CharacterDef::from_node(&saved).expect("reads back"), def);
-    assert!(doc_key::sibling_keys().contains(&"hats") && !doc_key::node_keys().contains(&"hats"));
+    assert!(doc_key::sibling_keys().contains(&"hats") && doc_key::collisions().is_empty());
 }
 
 #[test]
 fn a_registered_key_gives_its_path_and_the_typo_hint() {
     let id = omuzaki_char_api::ids::CharId::new("mira").expect("a valid id");
-    assert_eq!(doc_key::path("hats", &id).expect("registered").to_string(), "characters/mira/hats");
+    assert_eq!(
+        doc_key::path("hats", &id).expect("no collision").expect("registered").to_string(),
+        "characters/mira/hats"
+    );
     let mut node = base();
     node["hat"] = json!({});
     let message = CharacterDef::from_node(&node).expect_err("a typo is refused").to_string();
@@ -56,7 +59,7 @@ fn every_built_in_key_validates_and_saves_without_omuzaki_char() {
         assert_eq!(saved[key], json!({ "k": 1 }), "`{key}` survives a save");
     }
     for key in BUILT_IN_NODE_KEYS {
-        assert!(doc_key::node_keys().contains(&key));
+        assert!(doc_key::is_node_key(key));
     }
 }
 
