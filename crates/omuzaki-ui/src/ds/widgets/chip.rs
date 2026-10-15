@@ -113,7 +113,7 @@ impl Widget for ActorChip<'_> {
                 node.set_description(ds.text(self.kind.word()).into_owned());
             },
         );
-        if name_full > room { response.tip(Tip::new(self.name)) } else { response }
+        if name_full > room && response.hovered() { response.tip(Tip::new(self.name)) } else { response }
     }
 }
 
@@ -128,7 +128,9 @@ pub struct ScopeBadge<'a> {
 /// (`shell.md` section 10). The risk itself is defined by [`Scope::is_risky`]. A name that does not parse is treated
 /// as risky: an unknown scope should never look safe.
 pub fn is_risky_scope(name: &str) -> bool {
-    name.parse::<Scope>().map_or(true, Scope::is_risky)
+    // Looked up here rather than with `parse`: its error for an unknown name is a formatted `String`, and this runs
+    // every frame for every badge.
+    Scope::ALL.into_iter().find(|sc| sc.name() == name).is_none_or(Scope::is_risky)
 }
 
 impl<'a> ScopeBadge<'a> {
@@ -176,7 +178,7 @@ impl Widget for ScopeBadge<'_> {
                 node.set_description(ds.text(if risky { Msg::ScopeOutside } else { Msg::ScopeInside }).into_owned());
             },
         );
-        if text_full > room { response.tip(Tip::new(self.scope)) } else { response }
+        if text_full > room && response.hovered() { response.tip(Tip::new(self.scope)) } else { response }
     }
 }
 
@@ -277,7 +279,12 @@ impl Widget for CostChip<'_> {
             },
             |_| {},
         );
-        if truncated { response.tip(Tip::new(&self.parts.join(COST_SEPARATOR))) } else { response }
+        // The whole cost is joined only while the chip is hovered: a cut chip would otherwise allocate every frame.
+        if truncated && response.hovered() {
+            response.tip(Tip::new(&self.parts.join(COST_SEPARATOR)))
+        } else {
+            response
+        }
     }
 }
 
@@ -345,7 +352,7 @@ impl Widget for StatusChip<'_> {
                 node.set_description(ds.status_word(self.status).into_owned());
             },
         );
-        if text_full > room { response.tip(Tip::new(self.text)) } else { response }
+        if text_full > room && response.hovered() { response.tip(Tip::new(self.text)) } else { response }
     }
 }
 
@@ -428,7 +435,7 @@ impl Widget for GateChip<'_> {
                 node.set_description(ds.text(Msg::GateOpens).into_owned());
             },
         );
-        if metric_full > room { response.tip(Tip::new(self.metric)) } else { response }
+        if metric_full > room && response.hovered() { response.tip(Tip::new(self.metric)) } else { response }
     }
 }
 
