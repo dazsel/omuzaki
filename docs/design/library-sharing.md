@@ -83,8 +83,8 @@ A **team source** is a place that holds the files below. Which place is a store 
 
 - **`roster`** is the hash of the membership log's head entry. The client folds the log in the same source (team.md 6.2) against the root it pinned, and refuses a snapshot whose `roster` is not an entry of that log, or is older than the newest the client has seen.
 - **An `IndexEntry`** is `{ id, version, hash, publisher: KeyId, added_at: u64, assets: Vec<(ContentHash, u64)>, review: ReviewState, reviews: Vec<ContentHash>, listing: Option<Listing> }`. `added_at` is the log `seq` the snapshot's roster had when the entry first appeared (D3). `review` is the writer's summary for fast listing; **the client never trusts it**: it recomputes the state from the signed records (D8) before showing "approved" or applying anything. `listing` is the marketplace extension (D11) and absent for a team.
-- **Snapshots are separate files:** `index/<seq:06>-<hash8>.json`, created if absent, never edited. The head is the highest `seq`. Because every change is another snapshot and the content is hash-named, a synced folder cannot lose an update to a last-writer-wins overwrite.
-- **Two snapshots at the same highest `seq`** (two people wrote offline, or a git merge) are a **fork**, not an error: the status is `Forked`, the items both agree on stay usable, and the next writer with put rights makes a **merge snapshot** (`prev` lists both). Merging is a union, since every file is immutable; a union that has one `id@version` with two hashes is refused for that item only (D4).
+- **Snapshots are separate files:** `index/<seq:06>-<hash8>.json`, created if absent, never edited. A **head** is a snapshot that no other snapshot lists in `prev`. Because every change is another snapshot and the content is hash-named, a synced folder cannot lose an update to a last-writer-wins overwrite.
+- **More than one head** (two people wrote offline, or a git merge; the heads may have different `seq`, e.g. one branch at 6 and another at 5) is a **fork**, not an error: the status is `Forked`, the items both agree on stay usable, and the next writer with put rights makes a **merge snapshot** (`prev` lists both). Merging is a union, since every file is immutable; a union that has one `id@version` with two hashes is refused for that item only (D4).
 - **Why an index at all.** Listing a bucket or a share with thousands of files each sync is slow and, on a bucket, costs requests. The index also gives the client a number to pin (`seq`), which the files alone cannot. It carries no secret and no authority.
 
 ### D3. Trust: the storage is untrusted, the client verifies everything, and an item needs a roster key
@@ -94,7 +94,7 @@ The rule the whole page rests on: **a thing is used only if the client could re-
 1. **The log.** Fold `team/log/` from the pinned root (team.md 6.2). A bad signature, chain, signer role or invariant makes the source `Invalid` and read-only, with team.md's message. The root is pinned on first use by a person, who is shown the owner's fingerprint (`team.pin_root`, person-only). Nothing in the source can pin itself.
 2. **The index** chain: signature valid, signer a member with a right to write (below), `seq` not below the pin, `prev` present in the chain the client holds or a first sync, `roster` an entry of the log and not older than the previous snapshot's.
 3. **Each item used** (only when listed, applied, searched with details, or installed; the client does not verify what it never opens):
-   - the manifest bytes hash to the entry's `hash`, and the manifest's own canonical hash (library.md D2) agrees;
+   - the manifest parses (size-limited), and its canonical hash (`ItemManifest::hash()`, library.md D2: it excludes `publisher` and `signature` and normalises the TOML, so file formatting does not matter) equals the entry's `hash`. `IndexEntry.hash` is that canonical hash, never a hash of the file bytes;
    - the id begins with the team slug and `publisher.key` equals the entry's;
    - the signature verifies under `Domain::LibraryItem` for that key (identity D3, the legacy item hash);
    - **the key was allowed to publish when the entry was added:** in the roster folded up to `added_at`, `publisher` is a member whose role has `library_rights().put` (designer, admin, owner; team.md 11.2), and the key is not in `revoked` at the head;
@@ -125,7 +125,7 @@ The rule the whole page rests on: **a thing is used only if the client could re-
 
 ### D5. Review records are files, not fields
 
-A `ReviewRecord` is `Signed<ReviewBody>` under `Domain::Approval` (identity D10 already lists it for item reviews): `ReviewBody { team, item, version, hash, seq: u32, decision, note: Option<String> }`, `decision` one of `Request`, `Withdraw`, `Approve`, `Reject`, `Deprecate { reason }`. Its fields are `deny_unknown_fields` with a required `decision` and `item`/`hash`, so it can never parse as team-review's `ApprovalStatement` (identity D3's rule for types that share a tag). It binds **team, id, version and hash**, so a record cannot be replayed on another team, another version, or a manifest with different content. **Ordering is signed, per key.** `seq` is the signer's own counter for that `id@version@hash`, starting at 0 and rising by one with each record that key writes; it is inside the signed body, so no store, listing order or file name can change it. A key's **standing** is its record with the highest `seq`. Two different records from one key at the same `seq` are equivocation: that key's records are ignored for that hash and the client warns (`Tampered(Record)`). The fold (D8) never compares records of different keys, so it needs no global order and gives the same answer for any iteration order. Files live at `reviews/<id>/<version>/<seq:03>-<keyhex8>.json`; the name is a convenience and the fold reads `seq` from the body.
+A `ReviewRecord` is `Signed<ReviewBody>` under `Domain::Approval` (identity D10 already lists it for item reviews): `ReviewBody { team, item, version, hash, roster: ContentHash, seq: u32, decision, note: Option<String> }`, `decision` one of `Request`, `Withdraw`, `Approve`, `Reject`, `Deprecate { reason }`. Its fields are `deny_unknown_fields` with a required `decision` and `item`/`hash`, so it can never parse as team-review's `ApprovalStatement` (identity D3's rule for types that share a tag). It binds **team, id, version and hash**, and `roster` (the hash of the membership-log entry the signer saw, which must be an entry of the log), so a record cannot be replayed on another team, another version, or a manifest with different content. **Ordering is signed, per key.** `seq` is the signer's own counter for that `id@version@hash`, starting at 0 and rising by one with each record that key writes; it is inside the signed body, so no store, listing order or file name can change it. A key's **standing** is its record with the highest `seq`. Two different records from one key at the same `seq` are equivocation: that key's records are ignored for that hash and the client warns (`Tampered(Record)`). The fold (D8) never compares records of different keys, so it needs no global order and gives the same answer for any iteration order. Files live at `reviews/<id>/<version>/<seq:03>-<keyhex8>.json`; the name is a convenience and the fold reads `seq` from the body.
 
 ### D6. The cache is a verified copy; a project never needs the source
 
@@ -166,7 +166,7 @@ terms_url = ""                            # optional
 |---|---|
 | `Draft` | published, no `Request` from its publisher yet, or the publisher's standing is `Withdraw` (visible to designers and above; hidden from others' search) |
 | `InReview` | the publisher's standing is `Request`, and fewer than `library.approvals` valid approvals |
-| `Approved { by }` | at least `LibraryPolicy.approvals` approvals from distinct keys that are eligible approvers (reviewer, admin, owner) at the roster head, not revoked, and **not the publisher of that hash** ("N other people", VC-11), with no eligible key whose standing is `Reject`, and no `Deprecate` |
+| `Approved { by }` | at least `LibraryPolicy.approvals` approvals from distinct keys that are eligible approvers (reviewer, admin, owner) **both at the record's own `roster` and at the roster head** (so a viewer's pre-signed `Approve` does not start counting if that key is promoted later; the key must sign a new record, with a higher `seq`, after the promotion), not revoked, and **not the publisher of that hash** ("N other people", VC-11), with no eligible key whose standing is `Reject`, and no `Deprecate` |
 | `Deprecated` | a valid `Deprecate` |
 
 Rules: the fold uses each key's standing only (D5), so an `Approve` counts only while it is that key's latest record, and a key changes its mind by signing a higher `seq`. An approval by a key that is later revoked stops counting. A `Reject` standing from an eligible key puts the state back to `InReview` until that key signs a `Withdraw` or a new `Approve`. `Approved` needs the hash, so a new version starts again at `Draft`. `Deprecated` is terminal for that version. Review records are authenticated one by one, so one forged record ignored does not hide the real ones.
@@ -190,7 +190,7 @@ Rules: the fold uses each key's standing only (D5), so an `Approve` counts only 
 | `library.team.sync {team}` | job, `fs`/`net` by store | yes, within its grants | yes |
 | `library.team.add_source {kind, location}` / `remove_source {team}` | edit, `person_only` | no | yes (shows the root fingerprint, then `team.pin_root`) |
 | `library.publish {item, to: team}` | job, `publish` + `edit:library`, `person_only` | `needs_person` | yes |
-| `library.team.review {item, version, decision, note?}` | edit, `review`, `person_only` | no | yes, reviewer and above |
+| `library.team.review {item, version, decision, note?}` | edit, `review`, `person_only` | no | authorised by `decision`: `Request` and `Withdraw` by the item's publisher (designer and above); `Approve` and `Reject` by reviewer and above, never the publisher of that hash |
 | `library.team.deprecate {item, version, reason}` | edit, `person_only` | no | yes (own, or admin) |
 
 **Agents propose, people decide** (library.md D9). An agent prepares candidates with `library.save_as_item` and may describe, search, sync and apply team items; it never signs, publishes, approves or deprecates. Signing needs the person's key, which no agent op can reach (identity D8), so the refusal is structural, not a policy.
@@ -262,6 +262,9 @@ Items are recipes of ops, never code (library.md D1), so the worst a trusted-but
 | item signed by a revoked key | `RevokedKey` |
 | entry backdated with a removed key | `BackdatedEntry` |
 | review record for another hash/version/team, replayed | `Tampered(Record)` |
+| approval signed by a viewer, key promoted later | not counted until re-signed at a roster where it is eligible |
+| fork with heads at different `seq` | `Forked`, both heads kept |
+| manifest reformatted (same canonical hash) | accepted |
 | review by the publisher, a viewer, a revoked key | not counted |
 | two approvals by one key | counted once |
 | second manifest for one `id@version` | `Conflict`, item ignored, others usable |
@@ -279,7 +282,7 @@ Items are recipes of ops, never code (library.md D1), so the worst a trusted-but
 
 ```rust
 pub trait ItemStore: Send + Sync {                       // bytes in, bytes out: never decides
-    fn index(&self) -> Result<Vec<SignedIndex>, SourceError>;                    // every head snapshot: empty = none yet, two or more = a fork
+    fn index(&self, from_seq: u64) -> Result<Vec<SignedIndex>, SourceError>;     // every snapshot at or above from_seq (the pin); the client computes heads from `prev`
     fn fetch(&self, id: &ItemId, version: &Version) -> Result<Vec<u8>, SourceError>;   // the manifest bytes
     fn fetch_asset(&self, hash: &ContentHash) -> Result<Vec<u8>, SourceError>;         // assets by hash
     fn put(&self, item: &SignedItem) -> Result<PutReceipt, SourceError>;              // create-if-absent, manifest then assets
@@ -297,7 +300,7 @@ pub struct SignedIndex { pub team: TeamId, pub seq: u64, pub prev: Vec<ContentHa
 pub struct IndexEntry { pub id: ItemId, pub version: Version, pub hash: ContentHash, pub publisher: KeyId, pub added_at: u64,
                         pub assets: Vec<(ContentHash, u64)>, pub review: ReviewState, pub reviews: Vec<ContentHash>,
                         pub listing: Option<Listing> }
-pub struct ReviewBody { pub team: TeamId, pub item: ItemId, pub version: Version, pub hash: ContentHash, pub seq: u32,
+pub struct ReviewBody { pub team: TeamId, pub item: ItemId, pub version: Version, pub hash: ContentHash, pub roster: ContentHash, pub seq: u32,
                         pub decision: ReviewDecision, pub note: Option<String> }
 pub enum ReviewDecision { Request, Withdraw, Approve, Reject, Deprecate { reason: DeprecateReason } }
 pub struct SignedItem { pub manifest: Vec<u8>, pub assets: Vec<(ContentHash, Vec<u8>)> }   // the manifest carries its signature
@@ -313,7 +316,7 @@ pub struct Listing { pub creator: KeyId, pub title: String, pub summary: String,
                      pub commerce: Option<serde_json::Value> }                 // opaque until the owner decides (D11)
 ```
 
-Notes: `index()` returns every head (a `Vec`) so a fork is visible to the caller, not hidden by the store. `put_licence` rejects bytes whose hash is not `hash`. `ItemStore` is `Send + Sync` and synchronous like `Store`; the job wrapper does the waiting. There is no `delete`. `SourcePin { team, root: KeyId, seq: u64, snapshot: ContentHash }` is the local `state.toml`.
+Notes: `index(from_seq)` returns every snapshot from the pinned `seq` up, not a chosen head, so a fork (several heads, whatever their `seq`) is visible to the caller and never hidden by the store. `put_licence` rejects bytes whose hash is not `hash`. `ItemStore` is `Send + Sync` and synchronous like `Store`; the job wrapper does the waiting. There is no `delete`. `SourcePin { team, root: KeyId, seq: u64, snapshot: ContentHash }` is the local `state.toml`.
 
 ### 5.2 Crates
 

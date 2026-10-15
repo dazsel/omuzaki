@@ -24,6 +24,7 @@
 - `identity.md` and `team.md` refer to this design as 0046 or "planned"; they should read 0057.
 - A removed member's earlier items stay valid, a revoked key's never are.
 - Integrity is protected, confidentiality is not: whoever can read the shared place reads the items.
+- `IndexEntry.hash` is the manifest's canonical hash (`ItemManifest::hash()`), not a hash of the file bytes. Index heads are snapshots no other snapshot lists in `prev`; several heads is a fork whatever their `seq`, and `ItemStore::index(from_seq)` returns every snapshot from the pin up. Review records also bind the `roster` the signer saw; an approver must be eligible at that roster and at the head. `library.team.review` is authorised by decision (publisher for `Request`/`Withdraw`, reviewer and above for `Approve`/`Reject`).
 - Review records carry a signed per-key `seq`; the fold uses each key's latest record and never orders records of different keys. `ItemStore::index` returns every head, and `put_licence` lets the owner's client create the licence file.
 - Open, the owner's (design §6): Q1 hosted marketplace backend, Q2 payments and pricing, Q3 moderation. Tasks needing a hosted backend are blocked on them.
 
