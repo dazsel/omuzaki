@@ -68,8 +68,6 @@ A crate whose folder uses `omuzaki_embed::modules` (ADR 0054) lists that folder 
 
 **Planned crates** (not in the workspace yet):
 
-- `omuzaki-llm-api` (API): not in the workspace yet (design): the LLM seam (CN-09, AG-01, AP-03): `LlmClient`, `TurnRequest` and the provider-neutral `ContentBlock`s, the pull-based `TurnStream` of `LlmEvent`s, `Usage` with `cost` in integer micro-dollars from a dated `PriceTable`, the offline pre-request `Ledger` bound, `LlmError`, `Cancel`, `register_llm_provider!`; design in `docs/design/llm-api.md`, ADR 0032
-- `omuzaki-llm-mock` (Mock): not in the workspace yet (design): `FakeLlm` (scripted turns, chunking, usage and error injection on `FakeClock`; deterministic), CN-01's mock connector for the LLM capability, and the `conformance` suite every provider passes
 - `omuzaki-llm` (Implementation): not in the workspace yet (design): the Anthropic Messages and OpenAI-compatible chat providers (HTTP over the workspace `reqwest` and rustls stack shared with `omuzaki-http`, SSE, retries before the first event, cancellation within 50 ms), the price data, model listing and probing, and the MCP tool and result mapping; tested against a loopback fake server, no network in CI
 - `omuzaki-agent-api` (API): not in the workspace yet: the in-app assistant's panel contract (`Assistant`, `UserMessage`, `ContextChip`, `AssistantEvent`, `HostError`) and `RationaleSource` for "Explain this"; design in `docs/design/agent-runtime.md`, ADR 0040
 - `omuzaki-agent-mock` (Mock): not in the workspace yet: `ScriptedAssistant`, which plays an event script on `FakeClock` for panel tests and the gallery

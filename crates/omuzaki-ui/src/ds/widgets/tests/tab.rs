@@ -138,3 +138,38 @@ fn a_bar_with_no_tabs_is_inert_and_does_not_panic() {
     });
     assert!(h.query_by_role(Role::Tab).is_none());
 }
+
+#[test]
+fn a_closable_tabs_label_stays_clear_of_its_close_button_and_the_button_stays_inside_the_tab() {
+    for percent in [75, 100, 125, 150, 200] {
+        let settings = Settings { scale: crate::ds::tokens::Scale::nearest(percent), ..Settings::default() };
+        let mut h = harness_state(settings, vec2(360.0, 120.0), 1usize, |ui, sel| {
+            let tabs = [TabItem::new("Library").closable(), TabItem::new("History").closable().agent_active(true)];
+            ui.add(TabBar::new("Left dock", sel, &tabs).kind(TabKind::Dock));
+        });
+        h.run_steps(4);
+        let painted = crate::ds::audit::painted(h.output());
+        for label in ["Library", "History"] {
+            let tab_rect = h.get_by_role_and_label(Role::Tab, label).rect();
+            let close = h.get_by_role_and_label(Role::Button, &format!("Close {label}")).rect();
+            let text = painted.iter().find(|p| p.text == label).map(|p| p.rect).expect("the label is painted");
+            assert!(
+                text.right() <= close.left() + 0.5,
+                "{label} @ {percent}%: label {text:?} runs into close {close:?}"
+            );
+            assert!(tab_rect.expand(0.5).contains_rect(close), "{label} @ {percent}%: {close:?} outside {tab_rect:?}");
+        }
+    }
+}
+
+#[test]
+fn each_close_button_says_it_controls_its_own_tab() {
+    let h = rig(360.0);
+    for label in ["Library", "History"] {
+        let name = format!("Close {label}");
+        let close = h.get_by_role_and_label(Role::Button, &name);
+        let node = close.accesskit_node();
+        let controlled: Vec<_> = node.controls().map(|n| n.label()).collect();
+        assert_eq!(controlled, [Some(label.to_owned())], "Close {label} controls its tab");
+    }
+}
