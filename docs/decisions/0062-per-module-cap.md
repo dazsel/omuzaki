@@ -20,8 +20,10 @@ hour, which puts a 4 to 6 hour tail on independent work.
 
 ## Decision
 
-1. **In `omuzaki-char` and `omuzaki-face`, the cap of 3 counts per top-level module** (`src/<module>/`), with a
-   ceiling of 8 open pull requests for the crate.
+1. **In `omuzaki-char` and `omuzaki-face`, the cap of 3 counts per top-level module**, with a ceiling of 8 open pull
+   requests for the crate. A top-level module is a folder `src/<module>/` or a file `src/<module>.rs` (such as
+   `omuzaki-char/src/builder.rs` or `omuzaki-face/src/layer.rs`); each is one bucket, apart from `lib.rs`, which is
+   shared (§3).
 2. **Nested modules and test files count against their top-level module.** `src/painter/brows.rs` counts against
    `painter/`, and so does its test `tests/brows.rs`; `tests/hair_pipeline.rs` counts against `hair/`. A test file
    counts against the top-level module that contains the code it tests, whatever the test file is named.
@@ -36,8 +38,9 @@ hour, which puts a 4 to 6 hour tail on independent work.
 ## Consequences
 
 - `docs/maintainers/operating.md` and `docs/maintainers/cloud-lane.md` state the new rule.
-- `tools/dispatch-check.py` learns per-module counting (#1743). Until it lands, leads count modules by hand and run
-  the check for file overlap.
+- `tools/dispatch-check.py` learns per-module counting (#1743). Until it lands, leads run it with the crate ceiling
+  for tasks in these two crates, `tools/dispatch-check.py --crate-cap 8 <issue>`, which still checks file overlap and
+  the total, and count the modules by hand.
 - Rejected:
   - raising the per-crate cap for every crate, since small crates still share their files;
   - counting per file only, since review load per area still needs a bound.
