@@ -42,9 +42,10 @@ use omuzaki_anim_api::{BoneId, Channel, ChannelBuf, Pose, Region, Skeleton, Tran
 use omuzaki_core::glam::{Quat, Vec3};
 use serde::{Deserialize, Serialize};
 
-/// How a channel value maps onto `from..to`.
+/// How a channel value maps onto `from..to`. Non-exhaustive: later mappings (ease curves) are not breaking changes.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[non_exhaustive]
 pub enum Mapping {
     /// The value is clamped to `0..1` first. The default; the only mapping that exports.
     #[default]
@@ -83,9 +84,10 @@ impl RollAxis {
     }
 }
 
-/// What poses a driven bone.
+/// What poses a driven bone. Non-exhaustive: later drive kinds (VRM's aim constraint) are not breaking changes.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[non_exhaustive]
 pub enum Drive {
     /// A `custom` channel moves the bone between two local transforms.
     #[serde(rename_all = "camelCase")]
