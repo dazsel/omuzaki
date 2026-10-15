@@ -9,7 +9,7 @@
 //! Inspector's, the left dock a rail), the folded form is shown, and what the person changes there is saved under its
 //! own name (`Fold::key`), so a small window never overwrites the layout made on a big one and each is remembered.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use egui::{
@@ -115,6 +115,9 @@ pub struct Shell {
     /// The compact layouts changed this session, by name. A save is queued, not done, so a view rebuilt before the
     /// writer catches up reads these and not the older file.
     compact: HashMap<String, Layout>,
+    /// Layouts reset this session whose file may not be deleted yet, by name. They read as absent until a new save is
+    /// queued under the name, which the writer runs after the delete.
+    forgotten: HashSet<String>,
     workspaces: Vec<&'static WorkspaceDef>,
     views: Vec<Option<View>>,
     active: usize,
@@ -148,6 +151,7 @@ impl Shell {
             store,
             saver,
             compact: HashMap::new(),
+            forgotten: HashSet::new(),
             views: workspaces.iter().map(|_| None).collect(),
             workspaces,
             active: 0,
@@ -350,7 +354,7 @@ impl Shell {
     }
 
     /// The layout saved under `key`, repaired against the registry; `None` when there is none or it is unreadable.
-    fn stored(&self, key: &str, default: &Layout) -> Option<Layout> {
+    pub(super) fn stored(&self, key: &str, default: &Layout) -> Option<Layout> {
         let primary = default
             .panels()
             .into_iter()
@@ -359,6 +363,9 @@ impl Shell {
             debug_assert!(false, "{key}: the default layout has no primary panel");
             return None;
         };
+        if self.forgotten.contains(key) {
+            return None;
+        }
         let known = Known { exists: &|p| registry::panel(p).is_some(), primary };
         match self.store.as_ref()?.load(key) {
             Ok(saved) => saved.map(|saved| saved.repaired(&known, default)),
@@ -413,6 +420,7 @@ impl Shell {
         }
         if let Some(saver) = &self.saver {
             saver.save(&key, &current);
+            self.forgotten.remove(&key);
         }
     }
 
@@ -420,13 +428,14 @@ impl Shell {
     /// next frame.
     pub fn reset_layout(&mut self) {
         let Some(&workspace) = self.workspaces.get(self.active) else { return };
+        let keys: Vec<String> = Fold::all().map(|fold| fold.key(workspace.id)).collect();
         if let Some(saver) = &self.saver {
-            for fold in Fold::all() {
-                saver.reset(&fold.key(workspace.id));
+            for key in &keys {
+                saver.reset(key);
             }
+            self.forgotten.extend(keys.iter().cloned());
         }
-        let own = Fold::key(Fold::NONE, workspace.id);
-        self.compact.retain(|key, _| !key.starts_with(&own));
+        self.compact.retain(|key, _| !keys.contains(key));
         self.views[self.active] = None;
         self.fresh = true;
         self.maximised = false;

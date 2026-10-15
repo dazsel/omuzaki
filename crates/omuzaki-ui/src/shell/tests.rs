@@ -30,20 +30,7 @@ fn probe_layout() -> Layout {
 }
 
 fn record(seq: u64) -> OpRecord {
-    OpRecord {
-        seq,
-        op: "test.set".into(),
-        args: Value::Null,
-        actor: Actor::System,
-        cause: None,
-        tx: TxId(seq),
-        at: Seconds(0.0),
-        patch: Patch::new(),
-        version: DocVersion(seq),
-        on_behalf_of: None,
-        approval: None,
-        effect: None,
-    }
+    OpRecord::new(seq, "test.set", Value::Null, Actor::System, TxId(seq), Seconds(0.0), Patch::new(), DocVersion(seq))
 }
 
 /// A runner that remembers what the shell asked of it.
@@ -437,4 +424,18 @@ fn reset_removes_every_compact_layout_of_the_workspace_and_the_ones_held_in_memo
     harness.set_size(vec2(1366.0, 768.0));
     harness.run_steps(3);
     assert_eq!(harness.state().shown_layout(), fresh.state().shown_layout());
+}
+
+#[test]
+fn a_layout_reset_this_session_is_not_read_back_from_a_file_the_writer_has_not_deleted_yet() {
+    let (_keep, store) = store();
+    let layout =
+        Layout::new(Node::split(Dir::Horizontal, vec![Node::pane("viewport"), Node::pane("inspector")], &[3.0, 1.0]));
+    let mut harness = shell_at(vec2(1366.0, 768.0), Some(store.clone()), Arc::new(NullRunner));
+    harness.state_mut().reset_layout();
+    harness.state().flush();
+    // The file comes back as a delete that had not run yet would have left it.
+    store.save("build-compact-a", &layout).expect("saves");
+    assert_eq!(harness.state().stored("build-compact-a", &layout), None, "a reset layout reads as absent");
+    assert_eq!(harness.state().stored("probe", &layout), None, "nothing was saved for the other workspace");
 }
