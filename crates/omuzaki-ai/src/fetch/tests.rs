@@ -77,7 +77,7 @@ fn importing_over_a_blob_keeps_a_good_one_and_replaces_a_corrupted_one() {
     let leftovers: Vec<_> = fs::read_dir(&paths.dir)
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-        .filter(|n| n.ends_with(".tmp"))
+        .filter(|n| std::path::Path::new(n).extension().is_some_and(|e| e == "tmp"))
         .collect();
     assert!(leftovers.is_empty(), "no temporary file is left: {leftovers:?}");
 }
