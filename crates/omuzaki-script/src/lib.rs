@@ -10,9 +10,11 @@ mod convert;
 mod error;
 mod host;
 mod limits;
+mod macros;
 
 pub use calls::{Calls, Cancel, PlannedCall, RunnerCalls};
 pub use check::{CheckReport, Diagnostic, FieldError, FieldErrorKind, OpUse, Refused, effective_grants};
 pub use error::{LimitKind, OutputKind, OutputLine, ScriptError, ScriptErrorKind};
 pub use host::{RunRequest, ScriptHost, ScriptOutcome};
 pub use limits::Limits;
+pub use macros::{FileError, Macro, MacroRecorder, PlayError, PlayReport, RecordedCall, from_jsonl, play, to_jsonl};

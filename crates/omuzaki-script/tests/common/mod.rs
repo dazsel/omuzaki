@@ -4,7 +4,7 @@
 #![allow(clippy::unwrap_used, clippy::large_enum_variant, clippy::type_complexity)] // a test fake: a poisoned lock should panic
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 
 use omuzaki_core::time::{FakeClock, Seconds};
@@ -39,11 +39,18 @@ pub struct FakeRunner {
     pub fail_rollback: AtomicBool,
     /// What `get` reads; `Null` (nothing) until a test sets it.
     pub document: Mutex<Value>,
+    /// The subscribers' ends; `emit` sends to all of them.
+    senders: Mutex<Vec<Sender<Event>>>,
 }
 
 impl FakeRunner {
     pub fn entries(&self) -> Vec<Entry> {
         self.log.lock().unwrap().clone()
+    }
+
+    /// Sends `event` to every subscriber, as the runner does when something happens.
+    pub fn emit(&self, event: &Event) {
+        self.senders.lock().unwrap().iter().for_each(|sender| drop(sender.send(event.clone())));
     }
 
     pub fn requests(&self) -> Vec<Request> {
@@ -106,6 +113,13 @@ impl Runner for FakeRunner {
                 }),
             ),
             info_schema(
+                "face.set_blend",
+                OpKind::Edit,
+                Scope::EditCharacter,
+                serde_json::json!({ "type": "object", "properties": { "character": { "type": "string" }, "blend": { "type": "number" } } }),
+            )
+            .with_coalesces(true),
+            info_schema(
                 "export.publish_clip",
                 OpKind::Edit,
                 Scope::Publish,
@@ -131,7 +145,7 @@ impl Runner for FakeRunner {
             hook(n);
         }
         match op.as_str() {
-            "face.set_profile" | "export.publish_clip" => {
+            "face.set_profile" | "face.set_blend" | "export.publish_clip" => {
                 let mut plan = Plan::edit(Patch::default());
                 plan.output = Some(args);
                 Ok(Outcome::new(plan))
@@ -173,8 +187,13 @@ impl Runner for FakeRunner {
         Err(OpError::unsupported("fake"))
     }
 
-    fn subscribe(&self, _: &Grants) -> Result<Receiver<Event>, OpError> {
-        Err(OpError::unsupported("fake"))
+    fn subscribe(&self, grants: &Grants) -> Result<Receiver<Event>, OpError> {
+        if !grants.allows(Scope::Read) {
+            return Err(OpError::denied("subscribing needs read"));
+        }
+        let (sender, receiver) = channel();
+        self.senders.lock().unwrap().push(sender);
+        Ok(receiver)
     }
 
     fn get(&self, path: &DocPath, _: &Grants) -> Result<Option<Value>, OpError> {
