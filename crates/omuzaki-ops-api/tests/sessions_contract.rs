@@ -97,20 +97,9 @@ fn pending() -> PendingApproval {
 }
 
 fn record() -> OpRecord {
-    OpRecord {
-        seq: 1,
-        op: "test.set".into(),
-        args: json!({}),
-        actor: agent(),
-        cause: None,
-        tx: TxId(1),
-        at: Seconds(0.5),
-        patch: Patch::new(),
-        version: DocVersion(3),
-        on_behalf_of: Some(person()),
-        approval: Some(ApprovalRef { id: ApprovalId(2), by: person() }),
-        effect: None,
-    }
+    OpRecord::new(1, "test.set", json!({}), agent(), TxId(1), Seconds(0.5), Patch::new(), DocVersion(3))
+        .with_on_behalf_of(person())
+        .with_approval(ApprovalRef { id: ApprovalId(2), by: person() })
 }
 
 /// `value` encodes to JSON that decodes to an equal value, and its type has a JSON Schema.
@@ -208,7 +197,7 @@ fn approval_types_round_trip_and_have_schemas() {
     ] {
         round_trips(&decision);
     }
-    let outcome = Outcome { plan: Plan::default(), applied: Some(record()) };
+    let outcome = Outcome::new(Plan::default()).with_applied(record());
     for result in [
         Resolved::Applied { outcome },
         Resolved::Failed { error: OpError::invalid("x", "bad") },
@@ -305,33 +294,31 @@ fn old_json_without_the_new_fields_still_decodes() {
 #[test]
 fn events_round_trip_and_the_schema_names_every_variant() {
     let events = [
-        Event::OpApplied { record: record() },
-        Event::TxCommitted { tx: TxId(1), label: "l".into(), actor: person() },
-        Event::TxRolledBack { tx: TxId(1), actor: person(), version: DocVersion(2) },
-        Event::Undone { tx: TxId(1), label: "l".into(), actor: person(), owner: agent(), version: DocVersion(2) },
-        Event::Redone { tx: TxId(1), label: "l".into(), actor: person(), owner: agent(), version: DocVersion(3) },
-        Event::SessionOpened { session: info() },
-        Event::SessionChanged { session: info(), change: SessionChange::Spent },
-        Event::SessionEnded { session: info(), ended: ended() },
-        Event::SessionUndone { session: SessionId(1), by: person(), result: undo_result() },
-        Event::Clash {
-            session: SessionId(1),
-            actor: agent(),
-            op: "hair.set_style".into(),
-            path: DocPath::parse("a/b").unwrap(),
-            kind: ClashKind::Fenced,
-            other: Some(person()),
-            at: Seconds(7.0),
-        },
-        Event::ApprovalRequested { approval: pending() },
-        Event::ApprovalResolved {
-            resolution: Resolution {
-                id: ApprovalId(2),
-                by: None,
-                result: Resolved::Withdrawn { reason: EndReason::ProjectClosed },
-                at: Seconds(6.0),
-            },
-        },
+        Event::op_applied(record()),
+        Event::tx_committed(TxId(1), "l", person()),
+        Event::tx_rolled_back(TxId(1), person(), DocVersion(2)),
+        Event::undone(TxId(1), "l", person(), agent(), DocVersion(2)),
+        Event::redone(TxId(1), "l", person(), agent(), DocVersion(3)),
+        Event::session_opened(info()),
+        Event::session_changed(info(), SessionChange::Spent),
+        Event::session_ended(info(), ended()),
+        Event::session_undone(SessionId(1), person(), undo_result()),
+        Event::clash(
+            SessionId(1),
+            agent(),
+            "hair.set_style",
+            DocPath::parse("a/b").unwrap(),
+            ClashKind::Fenced,
+            Some(person()),
+            Seconds(7.0),
+        ),
+        Event::approval_requested(pending()),
+        Event::approval_resolved(Resolution {
+            id: ApprovalId(2),
+            by: None,
+            result: Resolved::Withdrawn { reason: EndReason::ProjectClosed },
+            at: Seconds(6.0),
+        }),
     ];
     let schema = serde_json::to_string(&schemars::schema_for!(Event)).unwrap();
     for event in &events {

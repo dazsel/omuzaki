@@ -265,10 +265,10 @@ impl Executor {
         }
         let plan = self.plan(state, op, meta, req)?;
         if req.mode == Mode::DryRun || meta.kind == OpKind::Query {
-            return Ok(Outcome { plan, applied: None });
+            return Ok(Outcome::new(plan));
         }
         let record = self.env.apply(state, op, (&req.actor, &req.cause, req.tx), &plan)?;
-        Ok(Outcome { plan, applied: Some(record) })
+        Ok(Outcome::new(plan).with_applied(record))
     }
 
     /// Runs `change` under the lock, then publishes whatever events it queued.

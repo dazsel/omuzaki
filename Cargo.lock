@@ -3840,6 +3840,7 @@ dependencies = [
  "omuzaki-doc-api",
  "omuzaki-doc-mock",
  "omuzaki-ops-api",
+ "omuzaki-ops-mock",
  "omuzaki-store-api",
  "omuzaki-store-mock",
  "proptest",
@@ -3900,6 +3901,19 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "omuzaki-ops-mock"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-doc-mock",
+ "omuzaki-ops-api",
+ "schemars",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
