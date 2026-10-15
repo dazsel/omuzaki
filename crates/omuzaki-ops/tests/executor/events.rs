@@ -19,10 +19,7 @@ fn applying_an_op_emits_op_applied_then_tx_committed() {
     let record = rig.set("a", json!(1)).applied.unwrap();
     assert_eq!(
         drain(&rx),
-        vec![
-            Event::OpApplied { record: record.clone() },
-            Event::TxCommitted { tx: record.tx, label: "test.set".into(), actor: person() }
-        ]
+        vec![Event::op_applied(record.clone()), Event::tx_committed(record.tx, "test.set", person())]
     );
 }
 
@@ -36,7 +33,7 @@ fn a_transaction_emits_each_op_then_one_commit_or_rollback() {
     }
     assert_eq!(drain(&rx).len(), 2, "no commit event until commit");
     rig.exec.commit(tx, &person()).unwrap();
-    assert_eq!(drain(&rx), vec![Event::TxCommitted { tx, label: "pair".into(), actor: person() }]);
+    assert_eq!(drain(&rx), vec![Event::tx_committed(tx, "pair", person())]);
 
     let doomed = rig.exec.begin("doomed", &person());
     rig.exec.run(Request { tx: Some(doomed), ..request("test.set", json!({"path": "c", "value": 1})) }).unwrap();
@@ -57,8 +54,8 @@ fn undo_and_redo_emit_their_events() {
     assert_eq!(
         drain(&rx),
         vec![
-            Event::Undone { tx, label: "test.set".into(), actor: person(), owner: person(), version: DocVersion(2) },
-            Event::Redone { tx, label: "test.set".into(), actor: person(), owner: person(), version: DocVersion(3) },
+            Event::undone(tx, "test.set", person(), person(), DocVersion(2)),
+            Event::redone(tx, "test.set", person(), person(), DocVersion(3)),
         ]
     );
 }
@@ -127,7 +124,7 @@ fn concurrent_ops_keep_the_log_gapless_and_events_in_log_order() {
 
     let applied: Vec<u64> = drain(&rx)
         .into_iter()
-        .filter_map(|e| if let Event::OpApplied { record } = e { Some(record.seq) } else { None })
+        .filter_map(|e| if let Event::OpApplied { record, .. } = e { Some(record.seq) } else { None })
         .collect();
     assert_eq!(applied, log.iter().map(|r| r.seq).collect::<Vec<_>>());
 }

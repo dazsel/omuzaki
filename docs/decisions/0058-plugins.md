@@ -1,3 +1,9 @@
+---
+title: "0058: Plugins are wasmtime components that call ops through one generic bridge, as their own sessioned actor, under fuel and memory caps (2026-10-15)"
+summary: "Plugins are wasmtime components that call ops through one generic bridge, as their own sessioned actor, under fuel and memory caps"
+area: decisions
+---
+
 # 0058: Plugins are wasmtime components that call ops through one generic bridge, as their own sessioned actor, under fuel and memory caps (2026-10-15)
 
 **Status:** proposed. It adds two approved `omuzaki-ops-api` variants. **Context:** PL-01, PL-03, PL-04; spec v3 §6, §9, §10,
@@ -23,6 +29,9 @@ manifest, rights, and how plugins relate to scripts (ADR 0034).
    `shutdown`). Each extension world includes it. A 0.x host serves its own minor and the one before through an adapter; from 1.0, semver. A node
    activation gets refusals for `ops`, `data` and `http`; its only effect is an asynchronous `run-op` in the show's
    session, within the plugin's ceiling and the needs that show approved (automation D15).
+   A node instance gets its clock and randomness only through `NodeCx`: show time, the step's wall time, and the
+   node's stream seeded from the show seed and the node's path. OS entropy and the OS clocks are not linked into node
+   instances, and replay tests prove two runs of one show give identical effects (automation D6).
 3. **The op bridge is generic:** `call`, `plan` (dry run), `describe` (the JSON Schema) and `list`. A WIT function per
    op would need a central list (§39 rule 2) and would break every plugin whenever any op changed. `op-error` maps
    `OpError` one to one.
@@ -32,21 +41,32 @@ manifest, rights, and how plugins relate to scripts (ADR 0034).
    Ceiling = manifest requests ∩ the person's approval ∩ the person's grants. `native`, `fs`, `process`, `input` and
    `script` are never granted; files only in the plugin's own data folder; network only through the host's `fetch`
    to hosts approved one by one; `publish`, `broadcast` and `spend` are queued for a person on every use.
-   Approvals attach to the content hash and the publisher key, never the name.
+   Approvals attach to the content hash and the publisher key, never the name. **Revocation bites at once:** every
+   `http` and `data` call checks the live grant, and revoking the session or removing a grant cancels the
+   outstanding `fetch`es (design 3.4, with the tests that prove it mid-request).
 6. **Sandbox:** no WASI except a fixed stub subset that grants nothing (so `std` guests link); 64 MiB memory, one
    table of 10,000 elements, 32 instances, a 512 KiB stack; fuel and an epoch deadline per call kind (`init` 10⁹
    fuel and 5 s; node activations 10⁶ fuel, about 1 ms on `R`, and 2 ms); a host-call bucket of 10,000 a second; `ops.call` and `plan` bytes capped at 1 MiB in and out; each call's fuel is the smaller of its cap and the plugin's remaining CPU share. A
    trap faults the plugin and ends its session with the new `EndReason::Faulted { reason }`; three faults in ten
    minutes disable it. Every import charges fuel (2,000 plus 1 per byte), so caps and the 100 ms a second CPU share
-   count host work. Blocking host calls carry the deadline: `fetch` is cancelled at it, and nothing is called after
-   it. `wasi:random/random` is OS entropy; only the `insecure` interfaces are seeded. `.zip` packages refuse absolute
+   count host work. Blocking host calls carry the deadline: `fetch` is cancelled at it, `wasi:io/poll` waits at most
+   until it (and never waits in a node instance), and nothing is called after it. In a worker, `wasi:random/random`
+   is OS entropy and only the `insecure` interfaces are seeded; a random request over 4,096 bytes traps before the
+   host allocates, in every instance. `.zip` packages refuse absolute
    and `..` paths, links, duplicate normalised names and oversize, and the hash is over the staged files.
 7. **Threads:** one worker thread per plugin; node activations only on the engine thread in a second 16 MiB
    instance; never the render, audio or tracking thread unless an extension design adds a number. Every path has a
    budget and a gate (design §5.2).
 8. **Lifecycle:** installed per machine, enabled per machine or per (machine, project) in a person-only `Machine`
    setting; nothing loads unless enabled (SE-04). Reload swaps by content hash, drains, and hands over no state.
-   The management ops (install, enable, disable, grant, reload, remove) are `person_only` and never queued;
+   **Kept data belongs to an identity:** a data folder is keyed by the verifying publisher key plus a per-install id,
+   never the plugin id, so another publisher's plugin with the same id never sees it; moving data between identities
+   is a person-only op the person confirms. Removing a plugin is an ordinary edit that keeps the data; deleting the
+   data is its own `Undo::None` op, confirmed first.
+   Plugin settings register at enable and leave at disable through a **runtime settings registry** in the settings
+   contract (design §7 states what it must provide), its own contract task that lands, with conformance tests,
+   before the plugin settings work builds on it.
+   The management ops (install, enable, disable, grant, reload, remove, remove_data, migrate_data) are `person_only` and never queued;
    `plugin.run` is a driver job (as `script.run`), `read` statically, whose driver checks the command's declared scope with `JobCtx::authorize` before the guest starts and runs every inner call inside
    `caller's grants ∩ declared scope ∩ plugin ceiling`, as `script.run` does; `plugin.list` and `plugin.describe` are `read`
    queries agents may use.
@@ -70,6 +90,8 @@ manifest, rights, and how plugins relate to scripts (ADR 0034).
   one task with #1535's `CauseKind::Review` that also marks both enums `#[non_exhaustive]` (ADR 0054 §4).
   `Actor::Plugin` and `Transport::Plugin` already exist.
 - The executor gains one plugin rule: per-use queueing of `publish`, `broadcast` and `spend` for plugin sessions.
+- `omuzaki-settings-api` gains the runtime settings registry (register, unregister, owner-tagged values), as its own
+  contract task.
 - The tasks of design §12 and the unlocked work (hot reload, the manager panel, the mutating ops and their cards,
   settings and the data folder, log lines in the Theatre, localisation, the SDK example and guide, the web opt-out
   check) are filed when this is accepted.
@@ -80,4 +102,5 @@ manifest, rights, and how plugins relate to scripts (ADR 0034).
   - plugins running as the person, like scripts: third-party code that acts later must have its own kill switch;
   - full WASI, or WASI filesystem with a preopen: the data interface is smaller and its quota checkable;
   - handing state over on reload;
+  - keying kept data or settings by the plugin id, which its author chooses;
   - a run-time op table, and "developer folders" that carry unsigned approvals forward (design §14).

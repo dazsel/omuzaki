@@ -13,7 +13,7 @@ mod common;
 use std::sync::Arc;
 use std::time::Duration;
 
-use common::FakeRunner;
+use common::fake_runner;
 use common::http::{Frozen, Port, Raw};
 use omuzaki_mcp::{AccessToken, HttpOptions, McpOptions, McpServer, ServerError};
 use reqwest::StatusCode;
@@ -310,7 +310,7 @@ fn the_defaults_are_the_documented_safe_ones() {
 
 #[tokio::test]
 async fn a_timeout_beyond_the_documented_maximum_is_refused_naming_the_field_and_the_maximum() {
-    let mcp = McpServer::new(Arc::new(FakeRunner::new()), McpOptions::default()).unwrap();
+    let mcp = McpServer::new(Arc::new(fake_runner()), McpOptions::default()).unwrap();
     let base = || HttpOptions::default().with_bind("127.0.0.1:0".parse().unwrap());
     let too_long = [Duration::MAX, HttpOptions::MAX_TIMEOUT + Duration::from_nanos(1)];
     for timeout in too_long {
@@ -342,7 +342,7 @@ async fn timeouts_at_the_maximum_are_accepted_and_requests_are_served() {
 
 #[tokio::test]
 async fn a_limit_that_would_refuse_every_client_is_an_error_naming_it() {
-    let mcp = McpServer::new(Arc::new(FakeRunner::new()), McpOptions::default()).unwrap();
+    let mcp = McpServer::new(Arc::new(fake_runner()), McpOptions::default()).unwrap();
     let base = || HttpOptions::default().with_bind("127.0.0.1:0".parse().unwrap());
     let cases: [(&str, HttpOptions); 4] = [
         ("max_sessions_per_token", base().with_max_sessions_per_token(0)),

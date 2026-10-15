@@ -35,22 +35,24 @@ fn mixed_patch() -> Patch {
 
 fn edit_outcome(applied: bool) -> Outcome {
     let patch = mixed_patch();
-    let applied = applied.then(|| OpRecord {
-        seq: 3,
-        op: "face.set_profile".to_owned(),
-        args: json!({"character": "mira", "blend": 0.6}),
-        actor: Actor::Person { name: "tester".to_owned() },
-        cause: None,
-        tx: TxId(3),
-        at: Seconds(1.5),
-        patch: patch.clone(),
-        version: DocVersion(7),
-        on_behalf_of: None,
-        approval: None,
-        effect: None,
+    let applied = applied.then(|| {
+        OpRecord::new(
+            3,
+            "face.set_profile",
+            json!({"character": "mira", "blend": 0.6}),
+            Actor::Person { name: "tester".to_owned() },
+            TxId(3),
+            Seconds(1.5),
+            patch.clone(),
+            DocVersion(7),
+        )
     });
     let cost = Some(CostHint { seconds: Some(2.5), gpu_mib: Some(4096), usd: Some(0.1) });
-    Outcome { plan: Plan { patch, output: None, cost, effect: None }, applied }
+    let outcome = Outcome::new(Plan { patch, output: None, cost, effect: None });
+    match applied {
+        Some(record) => outcome.with_applied(record),
+        None => outcome,
+    }
 }
 
 fn omuzaki(runner: &Arc<FakeRunner>, args: &[&str]) -> Result<String, OpError> {
@@ -90,14 +92,14 @@ fn apply_reports_the_log_record_and_sends_an_apply_request() {
 #[test]
 fn a_query_prints_its_output_and_no_diff() {
     let plan = Plan::answer(json!({"name": "my-show", "characters": 2}));
-    let runner = FakeRunner::answering(Outcome { plan, applied: None });
+    let runner = FakeRunner::answering(Outcome::new(plan));
     snapshot("run_query.txt", &omuzaki(&runner, &["run", "project.describe"]).unwrap());
 }
 
 #[test]
 fn a_plan_that_changes_nothing_says_so() {
     let noop = Patch::new().with(path("a"), Some(json!(1)), Some(json!(1)));
-    let runner = FakeRunner::answering(Outcome { plan: Plan::edit(noop), applied: None });
+    let runner = FakeRunner::answering(Outcome::new(Plan::edit(noop)));
     let text = omuzaki(&runner, &["run", "x.y", "--dry-run"]).unwrap();
     assert_eq!(text, "dry run of x.y: nothing was changed\nno changes\n");
 }
@@ -124,29 +126,28 @@ fn text_output_shows_values_with_sorted_keys_too() {
     let runner = FakeRunner::answering(edit_outcome(false));
     let text = omuzaki(&runner, &["run", "face.set_profile", "--dry-run"]).unwrap();
     assert!(text.find("\"name\": \"close-up\"") < text.find("\"weights\""), "{text}");
-    let answer =
-        FakeRunner::answering(Outcome { plan: Plan::answer(json!({"name": "x", "characters": 2})), applied: None });
+    let answer = FakeRunner::answering(Outcome::new(Plan::answer(json!({"name": "x", "characters": 2}))));
     let text = omuzaki(&answer, &["run", "project.describe"]).unwrap();
     assert!(text.find("\"characters\"") < text.find("\"name\""), "{text}");
 }
 
 #[test]
 fn omitted_args_default_to_an_empty_object() {
-    let runner = FakeRunner::answering(Outcome { plan: Plan::default(), applied: None });
+    let runner = FakeRunner::answering(Outcome::new(Plan::default()));
     omuzaki(&runner, &["run", "project.describe"]).unwrap();
     assert_eq!(runner.only_request().args, json!({}));
 }
 
 #[test]
 fn args_can_come_from_standard_input() {
-    let runner = FakeRunner::answering(Outcome { plan: Plan::default(), applied: None });
+    let runner = FakeRunner::answering(Outcome::new(Plan::default()));
     omuzaki_with_stdin(&runner, &["run", "face.set_profile", "--args", "@-"], br#"{"blend": 0.5}"#).unwrap();
     assert_eq!(runner.only_request().args, json!({"blend": 0.5}));
 }
 
 #[test]
 fn bad_args_never_reach_the_runner() {
-    let runner = FakeRunner::answering(Outcome { plan: Plan::default(), applied: None });
+    let runner = FakeRunner::answering(Outcome::new(Plan::default()));
     for (bad, code) in [("{not json", ErrorCode::Invalid), ("@/definitely/not/here.json", ErrorCode::NotFound)] {
         let e = omuzaki(&runner, &["run", "face.set_profile", "--args", bad]).unwrap_err();
         assert_eq!((e.code, e.field.as_deref()), (code, Some("args")), "{bad}: {e:?}");
@@ -156,7 +157,7 @@ fn bad_args_never_reach_the_runner() {
 
 #[test]
 fn undo_and_redo_name_the_step_or_say_there_is_nothing() {
-    let runner = FakeRunner::answering(Outcome { plan: Plan::default(), applied: None });
+    let runner = FakeRunner::answering(Outcome::new(Plan::default()));
     runner.set_history(Ok(Some("make the face more oval".to_owned())));
     assert_eq!(omuzaki(&runner, &["undo"]).unwrap(), "undid \"make the face more oval\"\n");
     assert_eq!(omuzaki(&runner, &["redo"]).unwrap(), "redid \"make the face more oval\"\n");

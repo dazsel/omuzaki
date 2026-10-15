@@ -1,3 +1,9 @@
+---
+title: "Design system"
+summary: "Design system"
+area: design
+---
+
 # Design system
 
 > Part of the UX direction. Principles are in `principles.md` (P1 to P12), screens in `shell.md`. This page is the contract for the component library in `omuzaki-ui` (`omuzaki-ui::ds`): tokens, type, spacing, icons, motion, component specs, the egui mapping and the UI performance rules.

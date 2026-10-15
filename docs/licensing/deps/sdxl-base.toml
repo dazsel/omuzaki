@@ -1,0 +1,7 @@
+section = "models"
+item = "SDXL base 1.0"
+kind = "model"
+used_for = "image generation"
+status = "conditions"
+condition = "OpenRAIL++-M use restrictions flow to users; legal review"
+audit = "B6"

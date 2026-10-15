@@ -1,0 +1,7 @@
+section = "in-use"
+item = "ONNX conversions of face_landmarker.task (`face_detector.onnx`, `face_landmarks_detector.onnx`, `face_blendshapes.onnx`)"
+kind = "model"
+used_for = "webcam tracking (the spike, then `omuzaki-track`): the same networks as ONNX; the files ship in the V0 zip"
+status = "conditions"
+condition = "derived from the MediaPipe row, so Apache-2.0 per the model cards; keep `manifest.json` and the numeric check (`tools/models/convert_mediapipe_face.py`, run by `tools/models/mediapipe-face.sh`) with the files; GHUM licence and Google ToS with legal review"
+audit = "A1, derived"

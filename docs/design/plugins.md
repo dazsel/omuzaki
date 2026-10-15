@@ -1,3 +1,9 @@
+---
+title: "Plugins: the WASM plugin host, its WIT contract, manifest, grants, sandbox, budgets and reload (PL-01)"
+summary: "the WASM plugin host (ADR 0058): crates, the WIT package and its compatibility window, the generic op bridge, the plugin's session, ceiling and live revocation, the sandbox and its numbers, deterministic node instances, threads and the budget table, lifecycle, identity-keyed data and hot reload, the manifest and its runtime settings, rights and how plugins relate to scripts."
+area: design
+---
+
 # Plugins: the WASM plugin host, its WIT contract, manifest, grants, sandbox, budgets and reload (PL-01)
 
 **Status:** proposed. **Feature:** PL-01. **Decision record:** [ADR 0058](../decisions/0058-plugins.md). **Spec:** v3 §30
@@ -21,6 +27,8 @@ The decisions in brief are ADR 0058's; this page gives the reasons and the numbe
 | `omuzaki-plugin-mock` | Mock | `MockPlugins` (in-memory `Plugins`), `MockGuest` (a plugin written as Rust closures against the same guest interface, no wasm), `conformance` | the API crates |
 | `omuzaki-plugin` | Implementation | the component host (wasmtime 49, Cranelift), the WASI stubs (§4.1), the bridge, the compiled-code cache, the watcher, the `plugin.*` ops; `[package.metadata.omuzaki] wasm = false` (a JIT host has no place in a browser) | the API crates, `omuzaki-http-api` |
 
+- **Manifests.** Each crate's `Cargo.toml` carries `[package.metadata.omuzaki]` with the `kind` above and a one-line
+  `summary` (`cargo xtask lint-crate-table`); until the crates land, `crates/README.md` lists them as planned.
 - **wasmtime, not extism.** Both are cleared in the register. extism's own ABI passes byte buffers through a plugin
   kernel and has no component model, so it gives no WIT, no typed `result`, and no versioned imports: the three
   things the compatibility window (1.1) rests on. wasmtime's component model gives all three, plus fuel, epochs and
@@ -50,7 +58,8 @@ version it was built against, so the binary, not the manifest, is the authority.
 - **Node activations never reach the base imports** (automation D15). The engine instance (§5.1) links `ops`, `data`
   and `http` to refusals (`denied`, detail "not in a node activation"); a node's only effect is the node world's
   `run-op`, which mirrors `NodeCx::run_op`: asynchronous, in the show's session, with the ceiling show session ∩ the
-  plugin's ceiling ∩ the needs that show approved for that node.
+  plugin's ceiling ∩ the needs that show approved for that node. Its clock and randomness (`host.monotonic-seconds`
+  included, which returns `cx.now()`) come only from `NodeCx` (§4.1), so a show stays deterministic (automation D6).
 
 ```wit
 package omuzaki:plugin@0.1.0;
@@ -210,28 +219,73 @@ redirects followed; `User-Agent: Omuzaki/<version> plugin/<id>`) with a 10 s tim
 response, and 4 requests a second (burst 8) per plugin. No secret is ever handed to a plugin: a plugin that needs an
 account uses a connector, not `fetch`.
 
+### 3.4 Revocation bites at once
+
+`ops.call` and `plan` are checked by the executor against the live session on every call (ADR 0020). `http` and
+`data` are host imports outside the executor, so the bridge gives them the same rule:
+
+- **Every call checks the live grant.** The bridge holds the plugin's `LiveGrants` (session state, approved hosts,
+  `data` on or off) behind one atomic pointer, swapped whole by every change. Each `fetch`, `read`, `write`, `remove`
+  and `list` loads it on entry; there is no copy taken at `init` or cached per instance. A refused call returns
+  `err("revoked")` (or `none`, `false`, an empty list) and adds one `warn` line.
+- **What narrows it:** the person revoking the session (`Revoked`), `plugin.grant` removing a host or `data`,
+  `plugin.disable`, `plugin.remove`, the project closing, and the session ending for any other reason.
+- **Outstanding requests are cancelled.** Every `fetch` in flight registers its `CancelFlag` with the session. A
+  narrowing swaps `LiveGrants` first, then sets the flag of every request the new grants no longer cover (all of them
+  when the session ends); `HttpTransport` stops within 50 ms and the guest gets `err("revoked")`, never the response.
+  A `data` call runs under the folder lock (§4.2), and the swap takes the same lock, so no write lands after the
+  revoking op returns.
+- **The running entry stops.** When the session ends, the host also moves the entry's deadline to now: the next
+  import refuses and the next epoch traps, and the entry's transaction rolls back (3.1).
+
+Tests (conformance, both hosts, on `FakeClock` with a loopback `HttpTransport` that holds each response until told):
+
+| Test | Proves |
+|---|---|
+| `revoke_session_cancels_fetch_in_flight` | a `fetch` is waiting on the transport; the person revokes the session; the transport sees the cancel within 50 ms, the guest gets `err("revoked")` and none of the response bytes, and the entry rolls back |
+| `grant_drops_host_mid_fetch` | `plugin.grant` removes `example.com` while a `fetch` to it waits: that request is cancelled, a concurrent `fetch` to a host still approved completes, the next `fetch` to `example.com` is "host not approved" |
+| `disable_and_remove_cancel_fetch` | the same as the first, triggered by `plugin.disable` and by `plugin.remove` |
+| `data_grant_removed_between_calls` | `write` succeeds; `plugin.grant { data: false }`; the very next `read`, `write`, `remove` and `list` are refused, and the folder is unchanged |
+| `revoke_races_write` | 1,000 rounds of a `write` racing a revocation: each write either completed before the revoking op returned or was refused; no file changes after it returns |
+| `revoked_entry_stops` | an entry looping over `log` stops at the next import or epoch after the session is revoked, with its transaction rolled back |
+
 ## 4. The sandbox
 
 ### 4.1 WASI: a fixed stub subset that grants nothing
 
 The base world imports no WASI. But Rust's standard library on `wasm32-wasip2` imports a few WASI interfaces even
 for a plugin that never reads a file, so a host that links none would refuse every `std` plugin. The host links
-exactly these, and refuses a component that imports any other (`PluginError::Imports { unexpected }`):
+exactly these, and refuses a component that imports any other (`PluginError::Imports { unexpected }`). The worker
+instance and the node instance (§5.1) link them differently: a node instance is part of a show, and a show is
+deterministic (automation D6), so it reaches no clock and no entropy except through `NodeCx`.
 
-| Interface | What the plugin gets |
-|---|---|
-| `wasi:cli/environment` | no variables, no arguments, cwd none |
-| `wasi:cli/exit` | a trap: the plugin is `Faulted { reason: "exited" }` |
-| `wasi:cli/stdout`, `stderr` | written into the plugin's log at `debug`, under the same caps as `log` (§7) |
-| `wasi:cli/stdin` | an empty stream |
-| `wasi:io/streams`, `error`, `poll` | what the three streams above need |
-| `wasi:clocks/monotonic-clock` | the runner's clock, as `monotonic-seconds` |
-| `wasi:clocks/wall-clock` | the runner's clock since 1970-01-01 at session start, so tests stay deterministic |
-| `wasi:random/random` | OS entropy: it backs the guest's `getrandom`, so keys and nonces must not be predictable |
-| `wasi:random/insecure`, `insecure-seed` | a ChaCha stream seeded from the content hash and the session id (deterministic, ADR 0009); tests also seed `random` through a test-only host option |
-| `wasi:filesystem/types`, `preopens` | no preopens: every file call fails cleanly; files go through `data` |
+| Interface | Worker instance | Node instance |
+|---|---|---|
+| `wasi:cli/environment` | no variables, no arguments, cwd none | same |
+| `wasi:cli/exit` | a trap: the plugin is `Faulted { reason: "exited" }` | a trap: the node faults |
+| `wasi:cli/stdout`, `stderr` | written into the plugin's log at `debug`, under the same caps as `log` (§7); a write never blocks | same |
+| `wasi:cli/stdin` | an empty stream, always ready | same |
+| `wasi:io/streams`, `error` | what the three streams above need | same |
+| `wasi:io/poll` | deadline-aware: the host's own `poll` and `pollable.block` wait at most until the entry's deadline (§4.3), and a wait still unready there traps "deadline in `<entry>`" | non-blocking: a pollable is ready or not at the step's time, which doesn't move during an activation, so a `poll` or `block` on an unready set traps "would block in a node activation" at once |
+| `wasi:clocks/monotonic-clock` | the runner's clock, as `monotonic-seconds` | `cx.now()`, the step's show time; `subscribe-*` pollables are ready when their instant ≤ that time |
+| `wasi:clocks/wall-clock` | the runner's clock since 1970-01-01 at session start, so tests stay deterministic | `cx.utc()`, the step's wall time, which D6 pins as part of the item; never the OS clock |
+| `wasi:random/random` | OS entropy: it backs the guest's `getrandom`, so keys and nonces must not be predictable | `cx.rng()`, the node's own stream (D6: the show seed forked by `"<graph>/<node>"`); never OS entropy |
+| `wasi:random/insecure`, `insecure-seed` | a ChaCha stream seeded from the content hash and the session id (deterministic, ADR 0009); tests also seed `random` through a test-only host option | `insecure` draws from `cx.rng()`; `insecure-seed` is the first 128 bits of the instance's stream, the show seed forked by `"plugin:<id>"` |
+| `wasi:filesystem/types`, `preopens` | no preopens: every file call fails cleanly; files go through `data` | same |
 
 `wasi:sockets` and `wasi:http` are never linked.
+
+- **Why poll is deadline-aware in the worker and non-blocking in nodes.** `std::thread::sleep` is a monotonic-clock
+  `subscribe-duration` and a `poll`, and a worker may wait inside its deadline, so the host implements `poll` itself
+  and caps every wait at the entry's deadline: the wait sits in a host import, where an epoch is never seen (§4.3),
+  so only a cap in the import stops it. A node activation has 2 ms and a frozen clock: any wait is either a
+  deadlock or a read of time the show doesn't control, so it is refused outright and the engine thread never blocks.
+- **Random requests are capped before the host allocates.** `get-random-bytes(len)` and `get-insecure-random-bytes(len)`
+  build the list on the host before it is lowered into guest memory, where `StoreLimits` would catch it, so a `len`
+  over 4,096 bytes traps "random request too large" before any allocation, in every instance kind. Rust's `getrandom`
+  asks for 8 to 32 bytes at a time; a guest that wants more calls again, each call paying its fuel (§4.3).
+- **Seeded randomness in a node is not secret.** A node instance has no `http`, `data` or `ops` (1.1), so a
+  predictable value has nowhere to leak; a plugin that needs secrets does that work in its worker.
 
 ### 4.2 Limits on the instance
 
@@ -256,9 +310,10 @@ bench fails if a charge falls below that import's measured p95.
 
 An epoch is only seen when control is back in wasm, so **blocking host calls carry the deadline themselves**: the
 bridge refuses every import once the entry's deadline has passed; `fetch` runs with timeout min(10 s, time left) and a
-`CancelFlag` the timer thread sets at the deadline (`HttpTransport` stops within 50 ms); an `ops.call` can't be
-cancelled mid-op, so it is checked on return, and the overrun is at most one op, which its own budget bounds. Node
-activations make no blocking call: `run-op` only enqueues (1.1).
+`CancelFlag` the timer thread sets at the deadline (`HttpTransport` stops within 50 ms); `wasi:io/poll` waits at most
+until the deadline (§4.1); an `ops.call` can't be cancelled mid-op, so it is checked on return, and the overrun is at
+most one op, which its own budget bounds. Node activations make no blocking call: `run-op` only enqueues (1.1), and
+`poll` never waits (§4.1). The same `CancelFlag` is set by revocation (3.4).
 
 | Call kind | Fuel | Epoch deadline | On breach |
 |---|---|---|---|
@@ -289,6 +344,11 @@ by the §10 single-thread ratio (1.43), and fails if 10⁶ fuel is outside 0.5 t
 - **The automation engine thread** runs node activations only (PL-03, automation D15), in a second instance of the
   same compiled component with its own `Store` and a 16 MiB memory cap. They share only the compiled code: a node
   activation acts in the show's session, never the plugin's, and has no `ops`, `http` or `data` (1.1; D15).
+- **Node instances are deterministic.** A node gets its clock and randomness only through `NodeCx`: show time, the
+  step's wall time and the node's seeded stream (§4.1); OS entropy and the OS clocks are not linked into a node
+  instance at all, so the same show, seed and items give the same effects (automation D6). Fuel is deterministic too,
+  so a node that runs out does so at the same point in both runs. Only the 2 ms epoch backstop depends on the
+  machine; it fires on a machine far slower than `R`, and the node then faults (D5), which the run reports.
 - **Never on the render, audio or tracking thread.** An extension design may allow one exception only with its own
   number and gate on the §10 table (say, a build-time part generator). Compiling runs on the worker, not the UI thread.
 
@@ -318,7 +378,8 @@ plugin CPU and memory as their own line.
 
 - **Installed packages:** `<local data dir>/plugins/<id>/<hash>/` (the settings design's machine directory: code and
   approvals are this machine's, so they never roam). The last two versions are kept for rollback.
-- **Data folders:** `<local data dir>/plugin-data/<id>/`, shared by its versions.
+- **Data folders belong to an identity, not a name** (6.4): `<local data dir>/plugin-data/<owner>/`, where `<owner>`
+  is the installation's `DataOwner`, never the author-chosen id. Its versions share it.
 - **Compiled code cache:** `<cache dir>/plugins/<hash>-<wasmtime version>-<cpu features>.cwasm`, a cache only: a
   mismatch or a bad file recompiles.
 - **Enabled:** the `Machine` setting `plugins.enabled` (`AgentWrite::Never`), each entry "on for every project" or "on
@@ -340,8 +401,38 @@ plugin CPU and memory as their own line.
   runs (1 s); the old session ends `Closed`; the new instance starts with a new session and `init`. Node instances
   swap between activations. **No state is handed over:** a hand-off needs a format both versions agree on, and a
   plugin that wants to keep something writes it to its data folder, which survives.
-- **Removal** (`plugin.remove {id, data: keep | delete}`, default `keep`) disables, ends the session, deletes the
-  packages and, if asked, the data folder. Its approvals are dropped; History keeps its steps under its actor.
+- **Removal** (`plugin.remove {id}`) disables, ends the session (3.4) and deletes the packages; the data folder stays
+  under its owner (6.4). Its approvals and settings values are dropped; History keeps its steps under its actor. It
+  is an ordinary edit.
+- **Deleting the data** (`plugin.remove_data {owner}`) deletes a data folder for good. It is `Undo::None`: the bytes
+  are gone and no inverse patch brings them back, so the person confirms it first, on a dialog that names the plugin,
+  the publisher and the folder's size. A data folder whose plugin is still installed is refused (remove it first).
+  The manager's "Remove and delete its data" runs the two ops in that order, behind the one confirmation.
+  `OpMeta::undo` is fixed per op, which is why the destructive half is its own op rather than an argument of
+  `plugin.remove`.
+
+### 6.4 Data ownership and migration
+
+- **The owner is the authenticated publisher plus the installation.** At first install the host mints a
+  `DataOwner { publisher, installation }`: `publisher` is the key that verified the package's signature (`dev:` and
+  the dev key for 3.2's development builds, `unsigned` for an unsigned plugin), and `installation` is a random 128-bit
+  id. `<owner>` on disk is `<publisher fingerprint or "unsigned">-<installation>`. The plugin's id is a display label
+  on the record, never part of the key.
+- **Updates keep the owner** only when the new package is verified by the same publisher key; an unsigned plugin's
+  update (a new hash, so a new approval, 3.2) gets a new owner, as does any update whose key differs.
+- **A different identity never sees the data.** A plugin installed later with the same id from another publisher, or
+  a reinstall of the same plugin after removal, gets a fresh owner and an empty folder. The `data` imports resolve
+  only the current installation's owner; there is no lookup by id.
+- **Moving data between identities needs the person's consent.** `plugin.migrate_data {from, to}` (person only,
+  never queued, `Undo::Explicit`: undo moves it back) moves a kept folder to an installed plugin's owner. The manager
+  offers it on the install card only when the new installation has the same publisher key as the kept folder ("Use the
+  data kept from Example by Example, 12 MiB?", default off); a folder from another publisher is moved only from the
+  kept-data list, where the dialog names both publishers. Nothing moves without that click.
+- **Tests:** `data_owner_is_identity` (remove with data kept, install a plugin with the same id signed by another key:
+  its `list` is empty and the old folder is untouched); `reinstall_starts_empty_until_migrated` (same key: empty until
+  `plugin.migrate_data`, then the old files); `update_same_key_keeps_data`, `update_other_key_gets_new_owner`;
+  `migrate_is_person_only` (an agent or plugin session gets `person_only`); `remove_data_is_undo_none` (the op's
+  `OpMeta::undo` is `None`, it refuses an installed plugin's folder, and History shows no undo for it).
 
 ## 7. The manifest
 
@@ -380,7 +471,30 @@ agent = "confirm"              # free, confirm or never; default never
   that is not a regular file or folder; two entries equal after normalising (Unicode NFC, case-folded, `/` only); more
   than 256 entries or 32 MiB uncompressed. The hash is taken over the staged files, so what is hashed is what loads.
 - **Settings** (at most 64, as are commands) register at enable under `plugin.<id>.*` with the manifest's scope and
-  agent rule (default `never`), and leave at disable; `init` receives them as JSON.
+  agent rule (default `never`), and leave at disable; `init` receives them as JSON. `settings.md` D2's registry is
+  static (`register_setting!` at link time), so this needs a **runtime settings registry** in the settings contract
+  first: its own contract task, which the Director approves before the plugin settings work (#1571) builds on it.
+  What that contract must provide:
+  - `register(owner, prefix, defs) -> Result<RuntimeRegistration, SettingError>` and `unregister(registration)`, each
+    one atomic snapshot swap and one `SettingsEvent` (new causes `Registered` and `Unregistered`), so a reader sees
+    all of a plugin's keys or none; `forget(owner)` drops an owner's stored values (plugin removal, 6.3).
+  - A def carries what a static `SettingMeta` does, as data: key, summary, scope (`User` or `Machine`), `AgentWrite`,
+    `Apply::Live`, a JSON Schema and a default that passes it. `InProfile::Excluded` always, so a profile never holds a
+    key that can vanish.
+  - Namespaces: a runtime prefix must sit under one a static registration reserves (`plugin.` for the host); it can
+    never shadow or extend a static key; two live registrations can't overlap; D2's prefix rule holds across both
+    kinds; at most 64 keys a registration.
+  - While registered, the keys behave as static ones: `get`, `list`, `set`, `reset`, the agent rules of D4, the Settings
+    page and the agent's schema. After `unregister`, `get` and `set` fail `NotFound` and the keys leave `list`.
+  - Stored values outlive `unregister` (D5's unknown keys are kept) and carry the registration's owner tag (for a
+    plugin, its publisher key, or its content hash when unsigned, so the tag roams with `User` settings); a
+    registration with a different owner never reads them and starts at the defaults (6.4's rule for settings). A
+    stored value the new schema rejects falls back to the default with a `SettingFinding`.
+  - Conformance tests in the settings mock's suite: register and unregister round trip with one event each; a
+    collision with a static key, a reserved prefix or another live registration is refused; values survive
+    unregister and register by the same owner; a different owner gets defaults; an invalid stored value falls back
+    with a finding; agent rules hold on runtime keys; a reader never sees half a registration; `forget` leaves no
+    value behind; the 64-key cap.
 - **Log lines:** `log` and stdout/stderr, at most 1 KiB each (longer is cut), 20 a second with a burst of 100, then
   one "N lines dropped" line. They appear in the Theatre and the plugin's page under its actor chip, never as raw
   stdout, and every refused call adds one `warn` line.
@@ -408,12 +522,14 @@ agent = "confirm"              # free, confirm or never; default never
 | `plugin.enable {id, project?}` / `plugin.disable {id, project?}` | Edit | `edit:settings` | person only | writes `plugins.enabled`; starts or stops the instance |
 | `plugin.grant {id, scopes?, hosts?, data?}` | Edit | `edit:settings` | person only | sets what the person approves, never beyond the requests |
 | `plugin.reload {id}` | Edit | `edit:settings` | person only | 6.3 |
-| `plugin.remove {id, data}` | Edit | `edit:settings` | person only | 6.3 |
+| `plugin.remove {id}` | Edit | `edit:settings` | person only | 6.3; the data folder stays |
+| `plugin.remove_data {owner}` | Edit (`Undo::None`, confirmed first) | `edit:settings` | person only | deletes a removed plugin's data folder (6.3) |
+| `plugin.migrate_data {from, to}` | Edit (`Undo::Explicit`) | `edit:settings` | person only | moves a kept data folder to an installed plugin's owner (6.4) |
 | `plugin.run {id, command, args}` | Driver job (as `script.run`) | `read`; the driver checks the command's declared scope first | anyone holding that scope | runs a plugin command (14.1) inside the caller's grants (3.2); the guest runs off the document lock and its inner calls go through `JobCtx::call` in one executor-owned transaction |
 
-The management ops (install, enable, disable, grant, reload, remove) return `OpError::person_only` to any agent or
-plugin and are **never queued**: an agent that installs, enables or grants a plugin hands its own work to an actor
-whose grants it chose, which is escalating its own privileges with extra steps. `plugin.run` is not one: before
+The management ops (install, enable, disable, grant, reload, remove, remove_data, migrate_data) return
+`OpError::person_only` to any agent or plugin and are **never queued**: an agent that installs, enables or grants a
+plugin hands its own work to an actor whose grants it chose, which is escalating its own privileges with extra steps. `plugin.run` is not one: before
 starting the guest the driver calls `JobCtx::authorize(scope)` (additive, `omuzaki-ops-api`) for the command's declared scope and refuses if the caller's grants don't cover it.
 
 ## 10. Scripts (PL-02) and plugins
@@ -449,9 +565,18 @@ pub trait Plugins: Send + Sync {
     fn set_enabled(&self, id: &PluginId, on: Enablement) -> Result<PluginInfo, PluginError>;
     fn set_grants(&self, id: &PluginId, approval: Approval) -> Result<PluginInfo, PluginError>;
     fn reload(&self, id: &PluginId) -> Result<PluginInfo, PluginError>;
-    fn remove(&self, id: &PluginId, data: DataOnRemove) -> Result<(), PluginError>;
+    fn remove(&self, id: &PluginId) -> Result<(), PluginError>;
+    /// Kept data folders, with the publisher and id they were made under and their size.
+    fn kept_data(&self) -> Vec<KeptData>;
+    fn remove_data(&self, owner: &DataOwner) -> Result<(), PluginError>;
+    fn migrate_data(&self, from: &DataOwner, to: &PluginId) -> Result<(), PluginError>;
 }
 ```
+
+`DataOwner { publisher: Publisher, installation: InstallationId }` (6.4) and `KeptData` join the types above.
+
+**`omuzaki-settings-api`** (its own contract task, approved by the Director before #1571): the runtime settings
+registry of §7.
 
 **`omuzaki-ops-api`** (approved by the Runtime lead on #1537): `CauseKind::Plugin` and `EndReason::Faulted { reason:
 String }`. One task adds them with `CauseKind::Review` (#1535), so the hub file changes once, and marks both enums
@@ -463,7 +588,21 @@ exist.
 - **The conformance suite** (`omuzaki-plugin-mock::conformance`) runs against `MockPlugins` with `MockGuest` and
   against the wasmtime host with WAT components, on `FakeClock`: lifecycle and states, the ceiling intersection,
   every error-code mapping, per-use queueing and `approval-resolved`, a trap ending the session `Faulted`, auto-disable
-  at the third fault, reload draining a running call, settings and Fluent resources added and removed.
+  at the third fault, reload draining a running call, settings and Fluent resources added and removed, the revocation
+  tests of 3.4 and the data-ownership tests of 6.4.
+- **Replay tests** (automation D6), in `crates/omuzaki-plugin/tests/` with `NodeHarness` (`omuzaki-live-mock`, a
+  dev-dependency) driving the wasmtime node instance through `DynNodeKind`, and a WAT node plugin that reads every
+  clock and random import (`monotonic-seconds`, both WASI clocks, `get-random-bytes`, `insecure`, `insecure-seed`)
+  and passes what it read to `run-op` as arguments:
+  - `node_plugin_replay_identical`: one seed and item script run twice gives byte-identical `log_json`, the
+    run-op arguments included; between the runs the host's OS clock and entropy source are advanced and reseeded.
+  - `node_plugin_seed_changes_draws`: a different show seed changes the random arguments and nothing else.
+  - `node_plugin_stream_is_per_node`: under one seed, nodes at two `<graph>/<node>` paths draw different values,
+    each equal to D6's `Rng::new(seed).fork(stream)` for its path, so adding a node never shifts another's draws.
+  - `node_instance_never_reaches_os`: the node linker is built with OS clock and entropy sources that panic, and the
+    script runs.
+  - `node_poll_never_blocks`: a `poll` on a timer later than the step's time traps "would block in a node activation"
+    within the activation, and the node faults.
 - **Hostile plugins**, each a WAT component in `crates/omuzaki-plugin/tests/hostile/`, each with its expected result:
 
 | Plugin | Expected |
@@ -481,6 +620,8 @@ exist.
 | `read`-only agent runs a `read` command that calls `edit:scene` | refused `MissingScope`, nothing changed, one `warn` line |
 | 10⁶ zero-length `data.write`s | the 4,097th is "over quota"; `list` returns at most 4,096 names |
 | `fetch` that outlives `init`'s 5 s | cancelled at the deadline, fault "deadline in init" |
+| `subscribe-duration(60 s)` then `poll` in `init` | the wait ends at the 5 s deadline, fault "deadline in init"; the worker thread is free again |
+| `get-random-bytes(2³²)`, and `get-insecure-random-bytes` the same, in a worker and in a node instance | trap "random request too large" before the host allocates (peak host memory unchanged) |
 | `.zip` with `../x`, a symlink, or `A.wasm` beside `a.wasm` | refused at install, nothing written outside staging |
 
 - **Bench** `crates/omuzaki-plugin/benches/call.rs`: `call_1kib`, `host_small`, `load_cached`, `install_2mib` and the

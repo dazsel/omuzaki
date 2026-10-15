@@ -1,0 +1,7 @@
+section = "models"
+item = "VTube Studio public plugin API (apiVersion 1.0; EULA v5.2 of 2024-04-15)"
+kind = "service"
+used_for = "CN-13 bridge: parameter injection, hotkeys, expressions and model info over VTS's local WebSocket"
+status = "conditions"
+condition = "plugins need no permission, fee or royalty (README \"Legal Info\", EULA §5 and §10); name VTube Studio in plain text only, no VTS or Live2D logos, and the non-affiliation line in docs and the connector UI; stable `pluginName` \"Omuzaki\" / `pluginDeveloper` \"Omuzaki Studio\"; no VTS code, files or `.moc3` reading; the user's own VTS licence duties (EULA §2.1, §2.2, §13) stay theirs; re-check the EULA at each release"
+audit = "research 2026-10-vts-plugin-api-terms.md"
