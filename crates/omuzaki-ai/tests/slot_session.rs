@@ -78,6 +78,13 @@ struct Extras {
     /// still works).
     #[serde(default)]
     panic_in_loader: bool,
+    /// Resetting a session panics when a slot session's loader thread does it.
+    #[serde(default)]
+    panic_reset_in_loader: bool,
+}
+
+fn in_loader() -> bool {
+    thread::current().name().is_some_and(|n| n.starts_with("slot-session"))
 }
 
 /// The `fake` runtime, slowed by the model file's `load_ms`, logging loads and resets.
@@ -87,6 +94,7 @@ struct ProbeRuntime;
 struct Probed {
     inner: Box<dyn Session>,
     log: Log,
+    panic_reset_in_loader: bool,
 }
 
 impl Session for Probed {
@@ -101,6 +109,7 @@ impl Session for Probed {
 
     fn reset(&mut self) {
         self.log.lock().unwrap().push(Event::Reset(thread::current().id()));
+        assert!(!(self.panic_reset_in_loader && in_loader()), "this model's reset was set to panic");
         self.inner.reset();
     }
 
@@ -134,10 +143,7 @@ impl Runtime for ProbeRuntime {
         let text = std::fs::read_to_string(&source.files[0].path).map_err(|e| LoadError::Format(e.to_string()))?;
         let extras: Extras = toml::from_str(&text).map_err(|e| LoadError::Format(e.to_string()))?;
         log_of(source.model).lock().unwrap().push(Event::Loading);
-        assert!(
-            !(extras.panic_in_loader && thread::current().name().is_some_and(|n| n.starts_with("slot-session"))),
-            "this model's load was set to panic"
-        );
+        assert!(!(extras.panic_in_loader && in_loader()), "this model's load was set to panic");
         std::thread::sleep(Duration::from_millis(extras.load_ms));
         if extras.fail_load_after.is_some_and(|n| count(source.model, &Event::Loaded) >= n) {
             return Err(LoadError::Format("this model's load was set to fail".into()));
@@ -145,7 +151,7 @@ impl Runtime for ProbeRuntime {
         let inner = FakeRuntime.load(source, slot, io, options)?;
         let log = log_of(source.model);
         log.lock().unwrap().push(Event::Loaded);
-        Ok(Box::new(Probed { inner, log }))
+        Ok(Box::new(Probed { inner, log, panic_reset_in_loader: extras.panic_reset_in_loader }))
     }
 }
 
@@ -703,6 +709,42 @@ fn a_load_that_panics_leaves_the_old_model_answering_and_says_why() {
     assert_eq!(session.info().model, v1);
     assert_eq!(session.info().fallback_for, Some(v2), "v1 stands in for the selection that won't load");
 }
+#[test]
+fn a_replacement_whose_reset_panics_is_a_load_failure_and_the_chain_goes_on() {
+    let rig = Rig::new(&[
+        ("1.0.0", model_file("reset-1", 0, None)),
+        ("2.0.0", model_file_with("reset-2", 0, "panic_reset_in_loader = true\n")),
+    ]);
+    let registry = rig.open();
+    let models = install(&registry, &["2.0.0", "1.0.0"]);
+    let (v2, v1) = (models[0].clone(), models[1].clone());
+    let mut session = registry.open(&echo_slot(), None).unwrap();
+    let mut out = TensorBuf::for_outputs(session.signature());
+    settle(&mut *session, &mut out);
+    let ran_before = (ran(&v1), ran(&v2));
+    let dropped_mark = mark(&v2);
+
+    registry.select(&echo_slot(), Some(&v2), Requester::Person).unwrap();
+    let during = run_until(&mut *session, &mut out, |_| {
+        status(&registry).fallback.is_some_and(|f| f.contains("failed while resetting"))
+    });
+    // The loader settled on v1 again: it keeps answering, and the replacement never does.
+    for _ in 0..10 {
+        assert_eq!(timed_run(&mut *session, &mut out).0, Ok(()));
+    }
+
+    assert!(during.iter().all(Result::is_ok), "the old model kept answering: {during:?}");
+    assert!(ran(&v1) > ran_before.0);
+    assert_eq!(ran(&v2), ran_before.1, "the replacement that failed its reset never answered");
+    wait_for("the failed replacement to be dropped off the caller's thread", || {
+        dropped_off_thread_since(&v2, dropped_mark)
+    });
+    let health = status(&registry);
+    assert_eq!(health.active, Some(v1.clone()));
+    assert_eq!(session.info().model, v1);
+    assert_eq!(session.info().fallback_for, Some(v2), "v1 stands in for the selection whose reset panicked");
+}
+
 #[test]
 fn a_result_that_finishes_during_a_slower_one_is_never_reported_as_running() {
     let files = [

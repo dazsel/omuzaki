@@ -316,16 +316,18 @@ impl Registry {
     }
 
     /// Loads the first model of `slot`'s choice chain that opens (see [`chain`](Self::chain)), skipping the ones that
-    /// don't. If the chain reaches a model in `held` first, that one is already the best that can run: nothing is
+    /// don't and the ones in `failed` (the caller couldn't prepare what this pass loaded of them; their failure is
+    /// recorded). If the chain reaches a model in `held` first, that one is already the best that can run: nothing is
     /// loaded. Returns the generation of the state the chain was read from.
     ///
     /// # Errors
-    /// The last load error, or `NoModel` when the chain is empty. Either way nothing in `held` is in the chain.
+    /// The last load error, or `NoModel` when nothing else is left. Either way nothing in `held` is in the chain.
     pub(crate) fn load_chain(
         &self,
         slot: &SlotRef,
         explicit: Option<&ModelRef>,
         held: &[ModelRef],
+        failed: &[ModelRef],
     ) -> (u64, Result<Chosen, RegistryError>) {
         let (generation, candidates) = {
             let state = self.lock();
@@ -337,7 +339,7 @@ impl Registry {
             Err(e) => return (generation, Err(e)),
         };
         let mut last = None;
-        for installed in &candidates {
+        for installed in candidates.iter().filter(|i| !failed.contains(&i.model)) {
             if held.contains(&installed.model) {
                 return (generation, Ok(Chosen::Keep(installed.model.clone())));
             }
@@ -348,15 +350,20 @@ impl Registry {
                 }
                 Err(e) => {
                     tracing::warn!(model = %installed.model, "couldn't open: {e}");
-                    let mut failures = self.load_failures_list();
-                    failures.retain(|(m, _)| m != &installed.model);
-                    failures.push((installed.model.clone(), e.to_string()));
+                    self.record_load_failure(&installed.model, e.to_string());
                     last = Some(e);
                 }
             }
         }
         let none = || RegistryError::NoModel { slot: slot.clone(), without_model: info.without_model.clone() };
         (generation, Err(last.unwrap_or_else(none)))
+    }
+
+    /// Records why a slot session couldn't load `model`, for `slots`, until a load of it succeeds.
+    pub(crate) fn record_load_failure(&self, model: &ModelRef, reason: String) {
+        let mut failures = self.load_failures_list();
+        failures.retain(|(m, _)| m != model);
+        failures.push((model.clone(), reason));
     }
 
     /// [`load`](Self::load), with a runtime that panics recorded as a load failure like any other: one broken runtime
@@ -646,7 +653,7 @@ impl ModelRegistry for Registry {
                 return Err(RegistryError::WrongSlot { model: wanted.clone(), wanted: slot.clone() });
             }
         }
-        let (generation, chosen) = self.load_chain(slot, model, &[]);
+        let (generation, chosen) = self.load_chain(slot, model, &[], &[]);
         let Chosen::Loaded { session, model: loaded } = chosen? else {
             // Nothing is held, so the chain can't reach a held model.
             return Err(RegistryError::NoModel { slot: slot.clone(), without_model: info.without_model });

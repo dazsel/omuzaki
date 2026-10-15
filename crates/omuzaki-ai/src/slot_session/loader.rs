@@ -90,8 +90,9 @@ impl Loader {
             }
             let Some(registry) = Registry::upgrade(registry) else { return };
             for session in registry.sessions_with_work() {
-                // A runtime that panics must not take the loader, and every other session, with it. Loads catch their
-                // own panics (`Registry::load_chain`); this is for the rest (a `reset`, a drop).
+                // A runtime that panics must not take the loader, and every other session, with it. Loads and the
+                // reset of a replacement catch their own panics (`Registry::load_chain`, `choose`); this is for the
+                // rest (a drop).
                 if catch_unwind(AssertUnwindSafe(|| serve(&registry, &session))).is_err() {
                     tracing::error!(slot = %session.slot, "a model runtime panicked in the loader thread");
                 }
@@ -145,6 +146,9 @@ fn switch_off(registry: &Registry, session: &Shared, model: &ModelRef, error: &R
     registry.disable_for_session(model, &reason);
 }
 
+/// What a replacement whose runtime panicked while it was reset is recorded as.
+const RESET_PANICKED: &str = "its runtime failed while resetting it";
+
 /// What the run side has and will have, as the loader last saw it. An answer is settled only if this hasn't moved.
 #[derive(PartialEq)]
 struct View {
@@ -184,7 +188,11 @@ enum Answer {
 
 /// Settles what `session` should run and publishes it. Nothing it loads is published if the registry or the run side
 /// moved on meanwhile: it chooses again, keeping the session it loaded in case it is still the choice.
+///
+/// A replacement whose runtime panics while it is reset counts as a load failure: it is recorded, dropped and skipped
+/// for the rest of this pass, so the chain goes on to the next model.
 fn choose(registry: &Registry, session: &Shared, mut in_hand: Option<Active>, graveyard: &mut Vec<Box<dyn Session>>) {
+    let mut failed: Vec<ModelRef> = Vec::new();
     loop {
         let view = View::of(session, &session.mailbox());
         let held: Vec<ModelRef> = [in_hand.as_ref().map(|a| &a.model), view.pending_model(), view.answering.as_ref()]
@@ -192,7 +200,7 @@ fn choose(registry: &Registry, session: &Shared, mut in_hand: Option<Active>, gr
             .flatten()
             .cloned()
             .collect();
-        let (generation, chosen) = registry.load_chain(&session.slot, session.explicit.as_ref(), &held);
+        let (generation, chosen) = registry.load_chain(&session.slot, session.explicit.as_ref(), &held, &failed);
         let mut answer = match chosen {
             Ok(Chosen::Keep(model)) if in_hand.as_ref().is_some_and(|a| a.model == model) => {
                 Answer::Publish(in_hand.take(), 0)
@@ -212,8 +220,14 @@ fn choose(registry: &Registry, session: &Shared, mut in_hand: Option<Active>, gr
         if let Answer::Publish(replacement, resets) = &mut answer {
             // Read before the reset: a `reset` after this moves the count on, and `run` won't apply this answer.
             *resets = session.resets.load(Ordering::Acquire);
-            if let Some(active) = replacement {
-                active.session.reset();
+            if let Some(active) = replacement.as_mut()
+                && catch_unwind(AssertUnwindSafe(|| active.session.reset())).is_err()
+            {
+                tracing::warn!(slot = %session.slot, model = %active.model, "{RESET_PANICKED}");
+                registry.record_load_failure(&active.model, RESET_PANICKED.to_owned());
+                failed.push(active.model.clone());
+                graveyard.extend(replacement.take().map(|a| a.session));
+                continue;
             }
         }
         match settle(registry, session, &view, generation, answer) {

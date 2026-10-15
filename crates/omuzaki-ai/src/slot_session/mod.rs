@@ -3,7 +3,8 @@
 //!
 //! - **An ordinary change** (another selection, a new default, an install): the replacement loads on the registry's
 //!   loader thread while the old session keeps answering, and the first `run` after it is ready hands over. A
-//!   replacement that fails to load, or whose runtime panics, leaves the old session answering; `slots` says why.
+//!   replacement that fails to load, or whose runtime panics while loading or resetting it, counts as a load failure:
+//!   the chain goes on to the next model, and `slots` says why.
 //! - **The model can no longer be used** (removed, disabled, its acknowledgement withdrawn): the old session stops at
 //!   once, and `run` answers `Unavailable` until its replacement is applied.
 //! - **A crash or a runtime error** switches the model off for the app session and falls back down the slot's chain,
