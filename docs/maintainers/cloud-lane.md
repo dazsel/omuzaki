@@ -39,7 +39,8 @@ lane carries most of the implementation work.
 
 There is no fixed number of sessions. Start as many as there are ready tasks whose fences don't overlap, within
 ADR 0053's limits:
-- at most **3 open pull requests that change the same crate**;
+- at most **3 open pull requests that change the same crate**. In `omuzaki-char` and `omuzaki-face` the 3 counts per
+  top-level module, with a crate ceiling of 8 and one shared slot for crate-level files (ADR 0062);
 - at most **40 open pull requests in total** across both lanes (raised as the merge rate rises; the current figure is
   on #2);
 - before starting a task, check its fence against open pull requests: `python3 tools/dispatch-check.py <issue>`.

@@ -83,7 +83,8 @@ goes to the Director first.
 
 - **Start anything that isn't truly blocked.** Only a real blocker (a file another open pull request is changing, a
   contract not yet merged) holds a task back.
-- **Limits:** at most 3 open pull requests per crate; at most 40 open in total (raised as the merge rate rises);
+- **Limits:** at most 3 open pull requests per crate, counted per top-level module in `omuzaki-char` and
+  `omuzaki-face` (ADR 0062); at most 40 open in total (raised as the merge rate rises);
   check a task's fence against open pull requests before starting (`tools/dispatch-check.py`). A pull request that
   only adds new files under a crate's `tests/` can't conflict with other work, so it is started first when a slot is
   free; it still counts toward the cap of 3 per crate (ADR 0053 §1.1), which only a recorded decision can raise.

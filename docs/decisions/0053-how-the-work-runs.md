@@ -45,12 +45,6 @@ may be in flight.
 1. **Limits on work in progress:**
    - at most **40 open pull requests** in total, about four hours of the merge rate;
    - at most **3 open pull requests that change the same crate**;
-     - **amendment (2026-10-15):** in a large crate whose top-level modules (`src/<module>/`) are independent, as in
-       `omuzaki-char` and `omuzaki-face`, the 3 counts per top-level module, with a ceiling of 8 for the crate. A pull
-       request that touches a crate-level shared file (`lib.rs`, `Cargo.toml`, the crate's tests root) takes the
-       crate's single shared slot. The file-overlap check at dispatch still applies. Why: the generated module lists
-       (ADR 0054) removed the shared file that made one crate one unit of conflict, and a per-crate 3 held
-       `omuzaki-char` to about 2 to 3 merges an hour against a queue of independent module tasks;
    - each lane has its own cap, set on the coordination issue (#2) from the measured merge rate.
 2. **Pull, not push.** A task starts only when the crates in its fence are under the per-crate limit. Whoever dispatches
    (the Director for the local lane, the cloud lead for the cloud lane) checks first, and tooling enforces it.
