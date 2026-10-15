@@ -31,6 +31,7 @@ stops rather than guess.
 import argparse
 import fnmatch
 import json
+import os
 import re
 import subprocess
 import sys
@@ -98,9 +99,28 @@ def gh_json_pages(args):
     return items
 
 
+def rest_only():
+    """True when DISPATCH_CHECK_REST=1 skips GraphQL, so the REST path can be tested where GraphQL works."""
+    return os.environ.get("DISPATCH_CHECK_REST") == "1"
+
+
+def note_fallback(exc):
+    """Say on stderr that a GraphQL read was refused and REST is used; the verdict on stdout does not change."""
+    print(f"dispatch-check: GraphQL refused, reading REST instead: {exc}", file=sys.stderr)
+
+
 def load_issue(number):
-    """The issue's number, title and body."""
-    return gh_json(["issue", "view", str(number), "-R", REPO, "--json", "number,title,body"])
+    """The issue's number, title and body, with a null body read as "".
+
+    GraphQL first; cloud sessions sit behind a proxy that refuses GraphQL, so a refused call falls back to REST.
+    """
+    if not rest_only():
+        try:
+            return gh_json(["issue", "view", str(number), "-R", REPO, "--json", "number,title,body"])
+        except GhError as exc:
+            note_fallback(exc)
+    data = gh_json(["api", f"repos/{REPO}/issues/{number}"])
+    return {"number": data["number"], "title": data["title"], "body": data.get("body") or ""}
 
 
 def load_dependencies(number):
@@ -126,7 +146,19 @@ def pr_files(number, listed, changed):
 
     Only the file list can be incomplete; the rename check is a separate read, and if it fails the list is None too.
     """
-    paths = listed_or_full_files(number, listed, changed)
+    return with_renamed_sources(number, listed_or_full_files(number, listed, changed))
+
+
+def rest_pr_files(number):
+    """The changed paths of a pull request read in full from REST, renamed files included, or None when unreadable.
+
+    REST has no 100-file cap, so this needs no `gh pr list` file list at all.
+    """
+    return with_renamed_sources(number, full_pr_files(number))
+
+
+def with_renamed_sources(number, paths):
+    """`paths` plus the old paths of the PR's renamed files; None when `paths` is None or the rename read fails."""
     if paths is None:
         return None
     try:
@@ -134,6 +166,14 @@ def pr_files(number, listed, changed):
     except GhError:
         return None
     return paths + [source for source in sources if source not in paths]
+
+
+def full_pr_files(number):
+    """Every changed path of a pull request from the REST files list, or None when the list cannot be read."""
+    try:
+        return [f["filename"] for f in gh_json_pages(["api", "--paginate", f"repos/{REPO}/pulls/{number}/files"])]
+    except GhError:
+        return None
 
 
 def listed_or_full_files(number, listed, changed):
@@ -146,12 +186,8 @@ def listed_or_full_files(number, listed, changed):
     total = len(paths) if changed is None else changed
     if total <= len(paths):
         return paths
-    try:
-        files = gh_json_pages(["api", "--paginate", f"repos/{REPO}/pulls/{number}/files"])
-    except GhError:
-        return None
-    paths = [f["filename"] for f in files]
-    return paths if len(paths) >= total else None
+    paths = full_pr_files(number)
+    return paths if paths is not None and len(paths) >= total else None
 
 
 def renamed_sources(number):
@@ -176,14 +212,41 @@ def closing_numbers(refs):
     }
 
 
-def load_prs():
-    """Every open pull request, with its draft flag, branch, creation time, changed paths and the issues it closes."""
-    raw = gh_json(
-        ["pr", "list", "-R", REPO, "--state", "open", "--limit", str(PR_LIMIT),
-         "--json", "number,headRefName,isDraft,createdAt,files,changedFiles,closingIssuesReferences"]
-    )
+# GitHub's closing keywords as REST has them in a PR body (GraphQL gives closingIssuesReferences instead). The keyword
+# must start a word, must not follow "not " (a deliberately simple rule: "Does not close #42" is prose), and must be
+# followed by `#N` directly, so `Fixes owner/repo#N` names another repository and is not counted.
+CLOSING_REFERENCE = re.compile(
+    r"(?<![\w-])(?<!not )(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?)[ \t]*:?[ \t]*#(\d+)(?!\d)", re.IGNORECASE
+)
+
+
+def closes_in_body(body):
+    """The issue numbers in this repository a PR body closes, by GitHub's keyword rule (see CLOSING_REFERENCE)."""
+    return {int(number) for number in CLOSING_REFERENCE.findall(body or "")}
+
+
+def check_list_limit(raw):
+    """Stop when the open PR list reached PR_LIMIT: the list may be cut, and a cut list would hide overlaps."""
     if len(raw) >= PR_LIMIT:
         raise GhError(f"{len(raw)} open pull requests reached the list limit of {PR_LIMIT}; the list may be cut")
+
+
+def load_prs():
+    """Every open pull request, with its draft flag, branch, creation time, changed paths and the issues it closes.
+
+    GraphQL first, in one `gh pr list` call. A refused call falls back to load_prs_rest, which reads the same list.
+    """
+    if rest_only():
+        return load_prs_rest()
+    try:
+        raw = gh_json(
+            ["pr", "list", "-R", REPO, "--state", "open", "--limit", str(PR_LIMIT),
+             "--json", "number,headRefName,isDraft,createdAt,files,changedFiles,closingIssuesReferences"]
+        )
+    except GhError as exc:
+        note_fallback(exc)
+        return load_prs_rest()
+    check_list_limit(raw)
     return [
         {
             "number": pr["number"],
@@ -194,6 +257,26 @@ def load_prs():
             # The issues GitHub itself says this PR closes in this repository; prose such as "Does not close #42" is
             # not a reference, and `Fixes other/repo#42` names another repository's issue 42.
             "closes": closing_numbers(pr.get("closingIssuesReferences")),
+        }
+        for pr in raw
+    ]
+
+
+def load_prs_rest():
+    """The same list as load_prs, read from REST: `pulls` for the PRs and `pulls/N/files` for each one's paths.
+
+    REST has no closing references, so `closes` is read from the PR body by closes_in_body.
+    """
+    raw = gh_json_pages(["api", "--paginate", f"repos/{REPO}/pulls?state=open&per_page=100"])
+    check_list_limit(raw)
+    return [
+        {
+            "number": pr["number"],
+            "branch": pr["head"]["ref"],
+            "draft": bool(pr.get("draft")),
+            "created": pr.get("created_at") or "",
+            "files": rest_pr_files(pr["number"]),
+            "closes": closes_in_body(pr.get("body")),
         }
         for pr in raw
     ]
