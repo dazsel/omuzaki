@@ -137,7 +137,8 @@ macro_rules! fact {
     };
 }
 
-/// Records a fact so the link gate and the describe ops can list it. Put it next to the fact.
+/// Records a fact, with its name and its type, so the link gate and the describe ops can list it ([`facts`]). Put it
+/// next to a fact that a crate other than this one defines; the facts of this crate are not registered yet.
 ///
 /// ```ignore
 /// omuzaki_char_api::register_fact!(HatFact);
@@ -145,8 +146,52 @@ macro_rules! fact {
 #[macro_export]
 macro_rules! register_fact {
     ($ty:ty) => {
+        $crate::__inventory::submit! { $crate::fact::FactRegistration::of::<$ty>() }
         $crate::__record_registration!("fact", $ty);
     };
+}
+
+/// A fact recorded with [`register_fact!`]: its name and its type.
+pub struct FactRegistration {
+    /// [`Fact::NAME`].
+    pub name: &'static str,
+    /// The fact's type, so two facts that share a name are told apart.
+    pub type_id: fn() -> TypeId,
+    /// The fact's type name, for errors and listings.
+    pub type_name: fn() -> &'static str,
+}
+
+impl FactRegistration {
+    /// The registration of fact `F`.
+    #[must_use]
+    pub const fn of<F: Fact>() -> Self {
+        Self { name: F::NAME, type_id: TypeId::of::<F>, type_name: std::any::type_name::<F> }
+    }
+}
+
+inventory::collect!(FactRegistration);
+
+/// Every registered fact, by name and then type name.
+///
+/// # Errors
+/// Two registered facts that share a name but are different types, naming both. (A fact registered twice is one fact.)
+pub fn facts() -> Result<Vec<&'static FactRegistration>, String> {
+    let mut all: Vec<_> = inventory::iter::<FactRegistration>.into_iter().collect();
+    all.sort_by_key(|r| (r.name, (r.type_name)()));
+    all.dedup_by_key(|r| (r.name, (r.type_id)()));
+    for pair in all.windows(2) {
+        if let [a, b] = pair
+            && a.name == b.name
+        {
+            return Err(clash_message(a.name, (a.type_name)(), (b.type_name)()));
+        }
+    }
+    Ok(all)
+}
+
+/// The error for two different facts called `name`.
+fn clash_message(name: &str, first: &str, second: &str) -> String {
+    format!("two different facts are called '{name}': `{first}` and `{second}`; a fact's name must be unique")
 }
 
 // ------------------------------------------------------------------------------------------------ storage
@@ -221,12 +266,7 @@ impl FactId {
 
     /// The error for `other` claiming `name` when `self` already has it, or `None` when they are one fact.
     pub(crate) fn clash(self, other: Self, name: &str) -> Option<String> {
-        (self.type_id != other.type_id).then(|| {
-            format!(
-                "two different facts are called '{name}': `{}` and `{}`; a fact's name must be unique",
-                self.type_name, other.type_name
-            )
-        })
+        (self.type_id != other.type_id).then(|| clash_message(name, self.type_name, other.type_name))
     }
 }
 

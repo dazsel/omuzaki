@@ -59,7 +59,7 @@ pub use drivers::{
     export_plan,
 };
 pub use error::BuildError;
-pub use fact::{Agree, Append, Fact, Keyed, Last, Rule};
+pub use fact::{Agree, Append, Fact, FactRegistration, Keyed, Last, Rule, facts};
 pub use geometry::{FaceOverlay, MaterialError, MaterialSpec, PartMesh, TextureData, face_texture_desc};
 pub use hair::{
     BangLayer, BangsGen, BraidGen, Bulge, BunGen, CapGen, CurtainGen, Dynamics, Falloff, Follow, FramingGen, Generator,

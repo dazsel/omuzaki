@@ -24,6 +24,8 @@ omuzaki_char_api::fact! {
     /// Must agree, under the same name and with the same payload type as `TakesLast`.
     MustAgree = "test-clash", Agree<u32>;
 }
+omuzaki_char_api::register_fact!(TakesLast);
+omuzaki_char_api::register_fact!(MustAgree);
 
 fn names_both(err: &BuildError, part: &str) {
     let BuildError::Part { part: who, message } = err else { panic!("a part error, got {err:?}") };
@@ -51,6 +53,13 @@ fn a_later_part_whose_fact_reuses_a_name_is_a_part_error_naming_both() {
     names_both(&err, "b");
     assert_eq!(*published.get::<TakesLast>(), Some(1), "the earlier fact is kept");
     assert_eq!(*published.get::<MustAgree>(), None, "a fact never reads another fact's merged value");
+}
+
+#[test]
+fn registering_two_facts_with_one_name_is_an_error_naming_both() {
+    let message = omuzaki_char_api::facts().err().expect("the registry finds the shared name");
+    assert!(message.contains("two different facts are called 'test-clash'"), "{message}");
+    assert!(message.contains("TakesLast") && message.contains("MustAgree"), "names both facts: {message}");
 }
 
 // ---- a default that reads another fact
