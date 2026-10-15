@@ -24,6 +24,7 @@ bytes = "1"
 clap = { version = "4.6", features = ["derive"] }
 constant_time_eq = "0.4"
 criterion = "0.8"
+directories = "6"   # the OS cache folder (MIT OR Apache-2.0), omuzaki-http `app_cache_dir`
 ed25519-dalek = { version = "2.2", default-features = false, features = ["std"] }   # verifies library item signatures (BSD-3-Clause), omuzaki-library-api; signing only in tests
 eframe = { version = "0.36", default-features = false, features = ["wgpu", "wayland", "x11", "accesskit", "default_fonts"] }
 egui = "0.36"
@@ -38,6 +39,7 @@ getrandom = "0.4"
 intl-memoizer = "0.5"   # named for the exact-integer FluentType in omuzaki-l10n-api (Apache-2.0 OR MIT; already a fluent-bundle dependency)
 harfrust = "0.14"   # OpenType shaping (MIT): Arabic joining, Devanagari conjuncts, Thai marks in the sheet text fallback, omuzaki-stage
 glam = { version = "0.34", features = ["serde", "bytemuck"] }
+httpdate = "1"   # `Retry-After` HTTP dates (MIT OR Apache-2.0), omuzaki-http; already in the lock through hyper
 hound = "3.5"   # WAV reading in the speech host benchmark (Apache-2.0), omuzaki-audio
 http-body-util = "0.1"
 hyper = { version = "1", default-features = false, features = ["http1", "server"] }
