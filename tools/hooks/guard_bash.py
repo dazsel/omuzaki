@@ -78,6 +78,8 @@ GH_RESERVED = {
 GH_API_BODY_LONG = ("--field", "--raw-field", "--input")
 GH_API_FIELD_FLAG = re.compile(r"-[A-Za-z]*?[fF](.*)", re.DOTALL)
 GRAPHQL_MUTATION = re.compile(r"\bmutation\b", re.IGNORECASE)
+# A raw-field flag that takes its value as the next word: `-f`, `--raw-field`, or a short group ending in `f` (`-pf`).
+RAW_FLAG_ALONE = re.compile(r"^(?:--raw-field|-[A-Za-z]*f)$")
 # git options that take a value before the subcommand (`git -C dir push`), and git push options that take one.
 GIT_OPTIONS_WITH_VALUE = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"}
 # git push options that take a value as the next word (`--recurse-submodules check`), from `git push -h`. Their `=` or
@@ -148,10 +150,31 @@ def field_text(arg):
     return text[1:] if text.startswith("=") else text
 
 
+def raw_field(arg):
+    """Whether a gh api word is a raw field (`-f`, `--raw-field`, attached or grouped). gh keeps a raw field's value
+    as a string, so a leading `@` there is not a file read; only `-F`/`--field` read files."""
+    if arg.startswith("--"):
+        return arg.split("=", 1)[0] == "--raw-field"
+    match = re.match(r"-[A-Za-z]*?([fF])", arg)
+    return match is not None and match.group(1) == "f"
+
+
 def reads_file(arg):
-    """Whether a gh api word is a field read from a file (`name=@file`, or `@file` with no name), bare or with its flag
-    (`-Fname=@file`, `-F=name=@file`)."""
+    """Whether a gh api field word reads a file (`name=@file`, or `@file` with no name), bare or with its flag
+    (`-Fname=@file`, `-F=name=@file`). A raw field never does."""
+    if raw_field(arg):
+        return False
     return re.match(r"^[\w.\[\]-]+=@", arg) or re.match(r"^(?:[\w.\[\]-]+=)?@", field_text(arg))
+
+
+def field_words(args):
+    """The gh api words that may read a file: all but the value of a raw field given as a separate word (`-f name=v`,
+    `--raw-field name=v`, `-pf name=v`), which gh keeps as a string. An attached value takes no next word."""
+    raw_value = False
+    for arg in args:
+        if not raw_value:
+            yield arg
+        raw_value = not raw_value and RAW_FLAG_ALONE.match(arg) is not None
 
 
 def gh_api_method(args):
@@ -175,7 +198,7 @@ def gh_api_refusal(args, endpoint):
         return f"`gh api {unknown.split('=', 1)[0]}`, a long option the hook doesn't recognise spelled in full,"
     if endpoint == "graphql":
         # A body or field read from a file or stdin (`--input`, `-F query=@file`) can't be inspected.
-        if any(a == "--input" or a.startswith("--input=") or reads_file(a) for a in args):
+        if any(a == "--input" or a.startswith("--input=") for a in args) or any(reads_file(a) for a in field_words(args)):
             return "a GraphQL body or field from a file (`--input`, `-F name=@file`), which the hook can't inspect,"
         return "a GraphQL mutation through `gh api`" if any(GRAPHQL_MUTATION.search(a) for a in args) else None
     method = gh_api_method(args)
@@ -183,7 +206,8 @@ def gh_api_refusal(args, endpoint):
 
 
 def gh_refusal(args):
-    """Why a gh call is reserved, or None."""
+    """Why a gh call is reserved, as (reason, whether the GitHub MCP tools do the same write), or None. Only `gh api`
+    writes have an MCP equivalent: `gh pr merge` and the rest are the Director's, and MCP has no route to them."""
     args = without_repo_flags(args)
     words = [a for a in args if not a.startswith("-")]
     if not words:
@@ -191,11 +215,12 @@ def gh_refusal(args):
     group, sub = words[0], (words[1] if len(words) > 1 else "")
     shows_token = any(re.match(r"^(?:-t|--show-token)(?:=(?!false$).*)?$", a, re.IGNORECASE) for a in args)
     if group == "auth" and (sub == "token" or (sub == "status" and shows_token)):
-        return f"`gh auth {sub}` prints a credential and"
+        return f"`gh auth {sub}` prints a credential and", False
     if group in GH_RESERVED and (GH_RESERVED[group] is None or sub in GH_RESERVED[group]):
-        return "`" + " ".join(w for w in ("gh", group, sub) if w) + "`"
+        return "`" + " ".join(w for w in ("gh", group, sub) if w) + "`", False
     if group == "api":
-        return gh_api_refusal(args, sub)
+        reason = gh_api_refusal(args, sub)
+        return (reason, True) if reason else None
     return None
 
 
@@ -411,15 +436,22 @@ def git_refusal(args, cwd):
 
 def program_words(words):
     """A simple command's words from the program on: leading `NAME=value` assignments and `builtin`/`command` wrappers
-    run nothing themselves, so `FOO=x declare -p GH_TOKEN` is the `declare` it names."""
+    run nothing themselves, so `FOO=x declare -p GH_TOKEN` is the `declare` it names. `command -v` and `command -V` only
+    look a name up and run nothing, so there the wrapper stays the program."""
     i = 0
     while i < len(words):
         if re.match(r"^[A-Za-z_]\w*=", words[i]):
             i += 1
         elif os.path.basename(words[i]) in ("builtin", "command"):
+            wrapper, start = os.path.basename(words[i]), i
             i += 1
             # The wrapper's own options come before the program (`command -p declare`, `command -- declare`).
             while i < len(words) and words[i].startswith("-"):
+                if words[i] == "--":
+                    i += 1
+                    break
+                if wrapper == "command" and not words[i].startswith("--") and set(words[i][1:]) & {"v", "V"}:
+                    return words[start:]
                 i += 1
         else:
             break
@@ -445,25 +477,27 @@ def env_refusal(words):
 
 
 def refusal(command, cwd, depth=0):
-    """Why this command is blocked, or None."""
+    """Why this command is blocked, as (the reason, whether the GitHub MCP tools do the same write), or None."""
     command = command.replace("\\\n", "")  # the shell joins a backslash-newline continuation before parsing
     if SECRET_PATH.search(command):
-        return "it names a secret path (.env, ~/.ssh, ~/.config, ~/.cache, .netrc, git credentials or a private key)"
+        return ("it names a secret path (.env, ~/.ssh, ~/.config, ~/.cache, .netrc, git credentials or a private key)",
+                False)
     if SECRET_VARIABLE.search(command):
-        return "it reads a secret variable (a name with TOKEN, SECRET, PASSWORD, API_KEY or CREDENTIAL in it)"
+        return "it reads a secret variable (a name with TOKEN, SECRET, PASSWORD, API_KEY or CREDENTIAL in it)", False
     for segment in SEPARATORS.split(command):
         words = tokens(segment)
         found = env_refusal(words)
         if found:
-            return f"{found} could print a credential and"
+            return f"{found} could print a credential and", False
         for i, word in enumerate(words):
-            found = None
             if is_program(word, "gh"):
                 found = gh_refusal(words[i + 1:])
+                if found:
+                    return f"{found[0]} is reserved for the Director", found[1]
             elif is_program(word, "git"):
                 found = git_refusal(words[i + 1:], cwd)
-            if found:
-                return f"{found} is reserved for the Director"
+                if found:
+                    return f"{found} is reserved for the Director", False
         # A quoted word holding a command (`sh -c "..."`, `ssh host "..."`) is read the same way.
         if depth < MAX_DEPTH:
             for word in words:
@@ -484,13 +518,16 @@ def main():
     except (ValueError, TypeError, AttributeError) as exc:
         print(f"Blocked by tools/hooks/guard_bash.py: the hook could not read the call ({exc}).", file=sys.stderr)
         return 2
-    why = refusal(command, cwd)
-    if why:
-        print(
-            f"Blocked by tools/hooks/guard_bash.py: {why}. Write through gh subcommands (gh pr comment, gh pr edit) and"
-            " ask your lead for anything reserved. See docs/maintainers/cloud-lane.md.",
-            file=sys.stderr,
+    found = refusal(command, cwd)
+    if found:
+        why, via_mcp = found
+        step = (
+            "Use the GitHub MCP tools (`mcp__github__*`) instead."
+            if via_mcp
+            else "Write through gh subcommands (gh pr comment, gh pr edit) and ask your lead for anything reserved."
         )
+        print(f"Blocked by tools/hooks/guard_bash.py: {why}. {step} See docs/maintainers/cloud-lane.md.",
+              file=sys.stderr)
         return 2
     return 0
 

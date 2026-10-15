@@ -10,6 +10,15 @@ run() {  # run <want exit> <stdin> <label>
 check() {  # check <want exit> <command> [cwd]
   run "$1" "$(python3 -I -c 'import json, sys; print(json.dumps({"cwd": sys.argv[2], "tool_input": {"command": sys.argv[1]}}))' "$2" "${3:-$PWD}")" "$2"
 }
+message() {  # message <present|absent> <text> <command> [cwd]: a refusal (exit 2) whose message does or doesn't name text
+  local input err got
+  input=$(python3 -I -c 'import json, sys; print(json.dumps({"cwd": sys.argv[2], "tool_input": {"command": sys.argv[1]}}))' "$3" "${4:-$PWD}")
+  err=$(python3 -I "$hook" <<<"$input" 2>&1 >/dev/null); got=$?
+  local named=no want=no; grep -qF -- "$2" <<<"$err" && named=yes; [ "$1" = present ] && want=yes
+  if [ "$got" = 2 ] && [ "$named" = "$want" ]; then
+    echo "PASS (message $1: $2) $3"
+  else echo "FAIL (exit $got; message $1 $2 wanted) $3"; fails=$((fails + 1)); fi
+}
 # Repositories with `cloud/mine` checked out, for the lease checks: plain, with `push.default=matching`, with a
 # `remote.origin.push` refspec, with `remote.pushDefault` naming another remote, with `matching` then `simple` in its own
 # config (the last value wins), and with one remote that isn't origin and widens its pushes. Global git config is off,
@@ -86,6 +95,11 @@ check 2 'command -- typeset -p gh_token'
 check 2 'builtin command -p declare -p GH_TOKEN'
 check 2 'command -p env'
 check 0 'command -p echo ok'
+# `command -v` and `command -V` only look a name up, so they pass; running the name still refuses.
+check 0 'command -v env'
+check 0 'command -V env'
+check 0 'builtin command -v env'
+check 2 'command env'
 check 2 'FOO=x env'
 check 0 'FOO=x declare -p PATH'
 check 0 'FOO=x echo ok'
@@ -115,19 +129,26 @@ check 2 'gh api --method=PATCH repos/o/r -F allow_auto_merge=true'
 check 2 "gh api graphql -f query='mutation { enqueuePullRequest(input: {pullRequestId: \"x\"}) { clientMutationId } }'"
 check 2 'gh api graphql --input payload.json'
 check 2 'gh api graphql -F query=@payload.graphql'
-check 2 'gh api graphql -f query=@-'
+# A raw field (`-f`, `--raw-field`) is a string, so its `@` is not a file read and these pass; the `-F`/`--field` ones
+# below still read the file, and the REST write still refuses as a POST.
+check 0 'gh api graphql -f query=@-'
+check 0 'gh api graphql --raw-field query=@-'
+check 2 'gh api graphql -f query=@- -F owner=@x'
+check 0 'gh api graphql -fquery=@-'
+check 0 'gh api graphql -f=@payload.graphql'
+check 0 'gh api graphql -f=query=@-'
+check 0 'gh api graphql --raw-field=query=@payload.graphql'
+check 2 'gh api repos/o/r/issues/1/comments -f body=@notes.md'
+check 0 'gh api -X GET search/issues -f q=@x'
 # Field flags attached to their value, or grouped with other short flags, send a body too.
 check 2 'gh api repos/o/r/issues/1/comments -Fbody=hi'
 check 2 'gh api repos/o/r/issues/1/comments -fbody=hi'
 check 2 'gh api repos/o/r/issues/1/comments -pFbody=hi'
 check 2 'gh api graphql -Fquery=@payload.graphql'
-check 2 'gh api graphql -fquery=@-'
-check 2 'gh api graphql -f=@payload.graphql'
+check 2 'gh api graphql -F=@payload.graphql'
 check 2 'gh api graphql -F=query=@payload.graphql'
-check 2 'gh api graphql -f=query=@-'
 check 2 'gh api graphql --field==query=@payload.graphql'
 check 2 'gh api graphql --field=query=@payload.graphql'
-check 2 'gh api graphql --raw-field=query=@payload.graphql'
 check 2 'gh auth status --show-token=true'
 check 2 'gh auth status -t=true'
 check 2 'git push --repo origin --force-with-lease HEAD:cloud/other' "$repo"
@@ -284,6 +305,15 @@ check 0 'cat .envrc'
 check 0 "cat > notes.md <<'X'
 it's fine
 X"
+# A refusal names the right next step: a GitHub write points to the MCP tools; a reserved gh command keeps the lead line,
+# since MCP has no route to a merge.
+message present 'mcp__github__' 'gh api -X DELETE repos/o/r/git/refs/heads/x'
+message present 'mcp__github__' 'gh api graphql --input payload.json'
+message present 'mcp__github__' "gh api graphql -f query='mutation { enqueuePullRequest(input: {pullRequestId: \"x\"}) { clientMutationId } }'"
+message present 'mcp__github__' 'gh api repos/o/r/issues/1/comments -f body=hi'
+message absent 'mcp__github__' 'gh pr merge 12'
+message present 'ask your lead' 'gh pr merge 12'
+message absent 'mcp__github__' 'git push --force origin x'
 # Input the hook can't read blocks.
 run 2 'not json' 'invalid JSON blocks'
 run 2 '{"tool_input": {"command": 5}}' 'a non-string command blocks'
