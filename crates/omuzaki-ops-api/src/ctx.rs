@@ -6,6 +6,7 @@ use omuzaki_core::time::Clock;
 use omuzaki_doc_api::DocRead;
 
 use crate::actor::NO_GRANTS;
+use crate::checks;
 use crate::file_access;
 use crate::services::{NO_SERVICES, Service, Services};
 use crate::{Actor, CanonicalPath, FsMode, Grants, OpError, ProjectDir};
@@ -145,6 +146,20 @@ impl<'a> OpCtx<'a> {
         } else {
             Err(OpError::needs_person(reason))
         }
+    }
+
+    /// Requires `scope` for what this run is about to do, when that depends on the data an op reads (a merge needs
+    /// the scope of every unit it changes). Passes in a dry-run, which needs only `read`, so a dry-run shows what
+    /// would be refused without being refused itself. Otherwise it checks the request's effective grants, which stay
+    /// hidden: the answer is only yes or a refusal naming `scope`.
+    ///
+    /// # Errors
+    /// `Denied` naming `scope` (see [`checks::denied`]) when this is not a dry-run and the grants lack it.
+    pub fn require_scope(&self, scope: crate::Scope) -> Result<(), OpError> {
+        if self.dry_run {
+            return Ok(());
+        }
+        if self.grants_allow(scope) { Ok(()) } else { Err(checks::denied(self.actor, "do this", scope)) }
     }
 
     /// Asks whether the actor may read or write `path`, and resolves it. The answer is the same in a dry-run and a

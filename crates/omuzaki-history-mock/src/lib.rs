@@ -3,6 +3,7 @@
 //! tests can make the journal slow, full or failing.
 #![deny(missing_docs)]
 
+pub mod branch;
 mod clock;
 mod sink;
 mod snapshots;

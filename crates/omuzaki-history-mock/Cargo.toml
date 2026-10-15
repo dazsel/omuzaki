@@ -20,4 +20,4 @@ workspace = true
 
 [package.metadata.omuzaki]
 kind = "Mock"
-summary = "a `RecordingSink` (scriptable `admit`, `wants_mark`, `sync`, `status`) and an in-memory `MemorySnapshots`"
+summary = "a `RecordingSink` (scriptable `admit`, `wants_mark`, `sync`, `status`) an in-memory `MemorySnapshots`, and in-memory branches (`MemoryBranchStore`, `MemoryHistoryView`, `FakeBranches`)"
