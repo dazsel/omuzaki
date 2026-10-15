@@ -23,6 +23,7 @@ toml.workspace = true
 tracing.workspace = true
 unicode-bidi.workspace = true
 unicode-normalization.workspace = true
+omuzaki-ai-api = { path = "../omuzaki-ai-api" }
 omuzaki-anim-api = { path = "../omuzaki-anim-api" }
 omuzaki-char-api = { path = "../omuzaki-char-api" }
 omuzaki-core = { path = "../omuzaki-core" }
@@ -50,6 +51,8 @@ wgpu = ["dep:omuzaki-render"]
 criterion.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
+omuzaki-ai = { path = "../omuzaki-ai" }
+omuzaki-ai-mock = { path = "../omuzaki-ai-mock" }
 omuzaki-anim-mock = { path = "../omuzaki-anim-mock" }
 omuzaki-char-mock = { path = "../omuzaki-char-mock" }
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }

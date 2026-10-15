@@ -6,6 +6,7 @@
 ## Design
 - `design/style-guide-soft-sd.md`: the default Soft SD character style.
 - `design/ai-performer.md`: the AI performer: crates, persona, the turn loop with barge-in, the inline-tag LLM output protocol and the intent API (ADR 0031).
+- `design/ai-performer-voice-face.md`: the AI performer's voice and face: the TTS host and its two `ai_voice` feeds, voices, consent and hosted TTS, voice to face ahead of playback with the viseme fallback, and the big-moves planner (ADR 0041).
 - `design/mcp-resources.md`: the MCP resource provider contract, the `omuzaki://` URI table and the `omuzaki://project` summary shape.
 - `design/team.md`: team roles over the scopes, the signed membership log, enforcement, agency accounts and the SSO, LB-07 and git hooks (ADR 0043).
 - `design/team-review.md`: review policy for publish and broadcast (VC-11) and the team audit trail (ADR 0043).

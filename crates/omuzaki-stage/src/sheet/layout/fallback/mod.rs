@@ -6,7 +6,7 @@
 //!
 //! - [`script`] says which families may draw a character and which regional forms of Han the sheet's language wants;
 //! - [`catalog`] pins each font file by URL, size and SHA-256 (nothing is committed; the CJK files are 4-8 MB);
-//! - [`source`] fetches, verifies and caches them, or reads them from a directory.
+//! - [`source`] reads them through the shared verified cache (`omuzaki_ai`), or from a directory.
 //!
 //! A sheet without a font source keeps working: its characters are reported by
 //! [`SheetLayout::font_report`](super::SheetLayout::font_report) as missing so export can warn, never silently drawn
@@ -24,7 +24,7 @@ use ab_glyph::{Font as _, FontVec};
 
 pub use catalog::{CATALOG, Family, FontSpec};
 pub use script::HanVariant;
-pub use source::{CachedDownloader, DirSource, Fetcher, FontError, FontSource, sha256_hex};
+pub use source::{DirSource, FontError, FontSource, PinnedFonts};
 
 use super::text::Weight;
 use script::{Class, classify};
@@ -77,7 +77,7 @@ pub(super) struct Face {
 impl Face {
     fn parse(spec: &'static FontSpec, bytes: Vec<u8>) -> Result<Self, FontError> {
         let parse_error = |reason: String| FontError::Parse { file: spec.file_name.to_owned(), reason };
-        let sha256 = sha256_hex(&bytes);
+        let sha256 = source::hash_of(&bytes).to_string();
         let outlines = FontVec::try_from_vec(bytes.clone()).map_err(|e| parse_error(e.to_string()))?;
         let shared: Arc<dyn AsRef<[u8]> + Send + Sync> = Arc::new(bytes);
         let shaper = harfrust::Font::new(shared, 0).ok_or_else(|| parse_error("not an OpenType font".into()))?;
