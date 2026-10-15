@@ -300,6 +300,70 @@ fn the_default_fang_is_six_millimetres_across_its_base() {
     assert!((triangles[0][0].x + triangles[0][1].x + triangles[1][0].x + triangles[1][1].x).abs() < 1e-5, "mirrored");
 }
 
+/// The two fangs' triangles, left one first. Each triangle is its two base corners, then the tip.
+fn fang_triangles(list: &DrawList) -> Vec<Vec<Vec2>> {
+    let mut triangles: Vec<Vec<Vec2>> = list
+        .cmds()
+        .iter()
+        .filter_map(|c| match c {
+            Cmd::Fill { path, .. } if points(list, *path).len() == 3 => Some(points(list, *path)),
+            _ => None,
+        })
+        .collect();
+    triangles.sort_by(|a, b| (a[0].x + a[1].x).total_cmp(&(b[0].x + b[1].x)));
+    triangles
+}
+
+#[test]
+fn fang_bases_stay_inside_a_narrow_mouth() {
+    for position in [0.72, 0.85, 1.0] {
+        let mut profile = FaceProfile::default();
+        profile.mouth.fang.position = position;
+        for wide in [0.3, 0.5, 1.0] {
+            for open in [0.3, 0.8, 1.5] {
+                let p = params(|m| (m.fangs, m.wide, m.open) = (1.0, wide, open));
+                let poly = outline(&profile, &p);
+                let (lo, hi) = (
+                    poly.iter().map(|v| v.x).fold(f32::MAX, f32::min),
+                    poly.iter().map(|v| v.x).fold(f32::MIN, f32::max),
+                );
+                let triangles = fang_triangles(&piece(MouthPiece::Interior, &profile, &p));
+                assert_eq!(triangles.len(), 2, "position {position}, wide {wide}, open {open}");
+                for t in &triangles {
+                    for corner in &t[..2] {
+                        assert!(
+                            corner.x >= lo - 1e-6 && corner.x <= hi + 1e-6,
+                            "corner x {} outside {lo}..{hi} (position {position}, wide {wide}, open {open})",
+                            corner.x,
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_fang_narrows_from_its_outer_side_only() {
+    let mut profile = FaceProfile::default();
+    profile.mouth.fang.position = 0.72;
+    let p = params(|m| (m.fangs, m.wide, m.open) = (1.0, 0.3, 0.8));
+    let poly = outline(&profile, &p);
+    let (lo, hi) =
+        (poly.iter().map(|v| v.x).fold(f32::MAX, f32::min), poly.iter().map(|v| v.x).fold(f32::MIN, f32::max));
+    let (centre, hw) = (lo.midpoint(hi), (hi - lo) / 2.0);
+    let grow = FaceProfile::default().mouth.open_scale as f32;
+    let half = 0.003 * grow;
+    let triangles = fang_triangles(&piece(MouthPiece::Interior, &profile, &p));
+    assert_eq!(triangles.len(), 2);
+    let (left, right) = (&triangles[0], &triangles[1]);
+    // The inner corner keeps its full half-width; the outer corner stops at the mouth's corner.
+    assert!((right[0].x - (centre + 0.72 * hw - half)).abs() < 1e-6, "right inner {}", right[0].x);
+    assert!((right[1].x - hi).abs() < 1e-6, "right outer {} is not the mouth's corner {hi}", right[1].x);
+    assert!((left[1].x - (centre - 0.72 * hw + half)).abs() < 1e-6, "left inner {}", left[1].x);
+    assert!((left[0].x - lo).abs() < 1e-6, "left outer {} is not the mouth's corner {lo}", left[0].x);
+}
+
 #[test]
 fn the_rim_and_the_gloss_follow_the_lip_strength() {
     let p = params(|m| m.open = 0.6);
