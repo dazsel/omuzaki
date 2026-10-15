@@ -676,15 +676,33 @@ fn rename_no_replace(_: &Path, to: &Path) -> Result<bool, StoreError> {
     ))
 }
 
-/// Deletes the file for the document path `segs`, then any folders it leaves empty (never `dir` itself).
-/// A file that is already gone is fine.
-pub(crate) fn remove_file(dir: &Path, segs: &[String]) -> Result<(), StoreError> {
+/// Deletes the file for the document path `segs` if its bytes are `expected`, then any folders it leaves empty (never
+/// `dir` itself); false if it holds anything else, in which case nothing is touched. A file that is already gone is
+/// fine.
+///
+/// Like a replacement, a deletion keeps what it removes: the file is backed up first into the replaced folder (see
+/// [`replace_checked`], step 3), so an editor that still holds it open can't lose what it writes there, and pruning
+/// deletes the backup later only while it is unchanged. The bytes are hashed before the backup is made; a change
+/// between that check and the unlink is a race of microseconds, and for a linked backup an in-place edit in it lands
+/// in the kept entry.
+pub(crate) fn remove_checked(dir: &Path, segs: &[String], expected: Option<ContentHash>) -> Result<bool, StoreError> {
     let path = file_path(dir, segs);
     refuse_links(dir, &path)?;
-    match fs::remove_file(&path) {
-        Ok(()) => {}
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        Err(e) => return Err(StoreError::io(&path, e)),
+    match back_up(dir, &path, expected)? {
+        Backup::Mismatch => return Ok(false),
+        Backup::Absent => {}
+        Backup::Held(held) => match fs::remove_file(&path) {
+            Ok(()) => {
+                if held.linked.is_none() {
+                    sync_folder(held.path.parent())?;
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => {
+                drop(fs::remove_file(&held.path));
+                return Err(StoreError::io(&path, e));
+            }
+        },
     }
     let mut folder = path.parent();
     while let Some(f) = folder.filter(|f| *f != dir) {
@@ -694,7 +712,7 @@ pub(crate) fn remove_file(dir: &Path, segs: &[String]) -> Result<(), StoreError>
         }
         folder = f.parent();
     }
-    Ok(())
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -806,7 +824,7 @@ mod tests {
             assert!(matches!(err, StoreError::Symlink { .. }), "{target}: {err}");
             assert!(err.to_string().contains("symbolic link"), "{err}");
         }
-        let err = remove_file(dir, &["linked".into(), "kept".into()]).unwrap_err();
+        let err = remove_checked(dir, &["linked".into(), "kept".into()], None).unwrap_err();
         assert!(matches!(err, StoreError::Symlink { .. }), "{err}");
         assert_eq!(fs::read_to_string(outside.path().join("kept.toml")).unwrap(), "a = 1\n");
         assert_eq!(all_names(outside.path()), ["kept.toml"]);
@@ -1252,10 +1270,26 @@ mod tests {
         write(d, "a/b/c.toml", "");
         write(d, "a/keep/x.track", "");
         write(d, "a/keep/y.toml", "");
-        remove_file(d, &["a".into(), "b".into(), "c".into()]).unwrap();
+        let empty = Some(ContentHash::of(b""));
+        assert!(remove_checked(d, &["a".into(), "b".into(), "c".into()], empty).unwrap());
         assert!(!d.join("a/b").exists() && d.join("a").exists());
-        remove_file(d, &["a".into(), "keep".into(), "y".into()]).unwrap();
+        assert!(remove_checked(d, &["a".into(), "keep".into(), "y".into()], empty).unwrap());
         assert!(d.join("a/keep/x.track").exists());
-        remove_file(d, &["a".into(), "keep".into(), "y".into()]).unwrap(); // already gone: fine
+        // already gone: fine
+        assert!(remove_checked(d, &["a".into(), "keep".into(), "y".into()], empty).unwrap());
+    }
+
+    #[test]
+    fn remove_checked_refuses_other_bytes_and_keeps_what_it_deletes() {
+        let tmp = TempDir::new().unwrap();
+        let d = tmp.path();
+        write(d, "a.toml", "x = 1\n");
+        let segs = ["a".to_owned()];
+        assert!(!remove_checked(d, &segs, Some(ContentHash::of(b"x = 2\n"))).unwrap());
+        assert!(!remove_checked(d, &segs, None).unwrap());
+        assert_eq!(fs::read_to_string(d.join("a.toml")).unwrap(), "x = 1\n");
+        assert!(remove_checked(d, &segs, Some(ContentHash::of(b"x = 1\n"))).unwrap());
+        assert!(!d.join("a.toml").exists());
+        assert_eq!(texts(&kept(d)), ["x = 1\n"]);
     }
 }

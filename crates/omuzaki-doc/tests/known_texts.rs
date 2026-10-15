@@ -230,3 +230,44 @@ fn project_toml_stays_openable_while_it_is_saved() {
         }
     });
 }
+
+fn remove_rig(project: &mut Project) {
+    project.apply(&change("characters/mia/rig", Some(json!({"template": "humanoid"})), None)).unwrap();
+}
+
+#[test]
+fn a_file_edited_outside_is_not_deleted_by_a_patch_that_removes_it() {
+    let tmp = folder();
+    let mut project = Project::open(tmp.path()).unwrap();
+    remove_rig(&mut project);
+    write(tmp.path(), "characters/mia/rig.toml", "template = \"humanoid\"\nextra = 1\n");
+    let err = project.save().unwrap_err();
+    assert!(matches!(&err, StoreError::ChangedOnDisk { path } if path.ends_with("rig.toml")), "{err}");
+    assert_eq!(read(tmp.path(), "characters/mia/rig.toml"), "template = \"humanoid\"\nextra = 1\n");
+    assert!(project.is_dirty(), "the deletion is still waiting");
+    assert!(project.file_hashes().contains_key(&PathBuf::from("characters/mia/rig.toml")), "the baseline is kept");
+}
+
+#[test]
+fn an_untouched_file_is_deleted_and_kept_under_the_replaced_folder() {
+    let tmp = folder();
+    let mut project = Project::open(tmp.path()).unwrap();
+    remove_rig(&mut project);
+    assert_eq!(project.save().unwrap().removed, 1);
+    assert!(!tmp.path().join("characters/mia/rig.toml").exists());
+    assert!(!project.is_dirty());
+    let kept = std::fs::read_dir(tmp.path().join(".omuzaki/replaced/characters/mia")).unwrap().count();
+    assert_eq!(kept, 1);
+}
+
+#[test]
+fn an_edit_undone_before_saving_still_rewrites_a_file_deleted_meanwhile() {
+    let tmp = folder();
+    let mut project = Project::open(tmp.path()).unwrap();
+    edit_blend(&mut project, 0.5, 0.9);
+    edit_blend(&mut project, 0.9, 0.5);
+    std::fs::remove_file(tmp.path().join("characters/mia/face.toml")).unwrap();
+    assert_eq!(project.save().unwrap().written, 1);
+    assert_eq!(read(tmp.path(), "characters/mia/face.toml"), FACE);
+    assert!(!project.is_dirty());
+}

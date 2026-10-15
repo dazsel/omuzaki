@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -230,7 +231,11 @@ impl Project {
         // Deleting before the last write means an interrupted save never leaves a hole where a file's replacement
         // should be, and never leaves files the new schema has no place for.
         for segs in self.layout.deleted() {
-            disk::remove_file(&self.dir, &segs)?;
+            // Like a replacement, a deletion needs the file to hold the bytes this project last saw.
+            if !disk::remove_checked(&self.dir, &segs, self.known.hash(&segs))? {
+                refused.get_or_insert(disk::why_changed(disk::file_path(&self.dir, &segs)));
+                continue;
+            }
             self.layout.mark_deleted(&segs);
             self.known.forget(&segs);
             report.removed += 1;
@@ -292,10 +297,24 @@ impl Project {
                 }
                 self.known.record(segs.clone(), rendered.text, rendered.hash);
                 report.written += 1;
+            } else if entry.pending == Pending::Edit && self.vanished(&segs) {
+                // An edit that was undone before this save renders the text the file had, but the file itself is gone:
+                // it is written again, from the last-known text, like any other file deleted behind our back.
+                let path = disk::file_path(&self.dir, &segs);
+                if disk::replace_checked(&self.dir, &path, &rendered.text, None)? == Replace::Refused {
+                    refused.get_or_insert(disk::why_changed(path));
+                    continue;
+                }
+                report.written += 1;
             }
             self.layout.mark_written(&segs);
         }
         Ok(())
+    }
+
+    /// True if nothing exists at the path of the file `segs` (not even a broken link).
+    fn vanished(&self, segs: &[String]) -> bool {
+        fs::symlink_metadata(disk::file_path(&self.dir, segs)).is_err_and(|e| e.kind() == io::ErrorKind::NotFound)
     }
 
     /// Applies one change to the tree if it matches and can be stored.
