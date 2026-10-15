@@ -9,7 +9,7 @@ mod common;
 
 use std::sync::Arc;
 
-use common::FakeRunner;
+use common::{FakeRunner, fake_runner};
 use omuzaki_mcp::{McpOptions, McpServer, ServerError};
 use rmcp::ClientLifecycleMode;
 use rmcp::model::{ClientCapabilities, ClientConfig, Implementation, ProtocolVersion};
@@ -77,7 +77,7 @@ async fn disconnect(mut connection: Connection) {
 }
 
 fn server() -> McpServer {
-    McpServer::new(Arc::new(FakeRunner::new()), McpOptions::default()).expect("server builds")
+    McpServer::new(Arc::new(fake_runner()), McpOptions::default()).expect("server builds")
 }
 
 #[tokio::test]

@@ -1,0 +1,21 @@
+[package]
+name = "omuzaki-ops-mock"
+description = "In-memory Runner for tests: dry-run, grants, transactions, undo/redo, events (spec v3 §39 rule 6, ADR 0054 §6)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-doc-api = { path = "../omuzaki-doc-api" }
+omuzaki-ops-api = { path = "../omuzaki-ops-api" }
+
+[dev-dependencies]
+serde_json.workspace = true
+omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
+
+[lints]
+workspace = true

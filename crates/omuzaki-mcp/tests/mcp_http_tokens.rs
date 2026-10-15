@@ -8,14 +8,14 @@ mod common;
 
 use std::sync::Arc;
 
-use common::FakeRunner;
+use common::{FakeRunner, fake_runner};
 use omuzaki_mcp::{HttpOptions, HttpServer, McpOptions, McpServer, ServerError, TokenRecord};
 use omuzaki_ops_api::{Actor, Grants};
 use reqwest::StatusCode;
 use serde_json::json;
 
 async fn start() -> HttpServer {
-    let mcp = McpServer::new(Arc::new(FakeRunner::new()), McpOptions::default()).expect("server builds");
+    let mcp = McpServer::new(Arc::new(fake_runner()), McpOptions::default()).expect("server builds");
     let options = HttpOptions::default().with_bind("127.0.0.1:0".parse().unwrap());
     mcp.serve_http(options).await.expect("port opens")
 }

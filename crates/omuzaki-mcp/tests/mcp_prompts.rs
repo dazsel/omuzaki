@@ -7,7 +7,7 @@ mod common;
 
 use std::sync::Arc;
 
-use common::FakeRunner;
+use common::{FakeRunner, fake_runner};
 use omuzaki_mcp::{McpOptions, McpServer, PromptArg, PromptDef};
 use rmcp::model::{
     ClientCapabilities, ClientConfig, ContentBlock, ErrorCode, GetPromptRequestParams, Implementation, ProtocolVersion,
@@ -48,7 +48,7 @@ const IMPOSSIBLE: PromptDef = PromptDef {
 };
 
 async fn connect(options: McpOptions) -> RunningService<RoleClient, Client> {
-    let server = McpServer::new(Arc::new(FakeRunner::new()), options).expect("server builds");
+    let server = McpServer::new(Arc::new(fake_runner()), options).expect("server builds");
     let (server_io, client_io) = tokio::io::duplex(64 * 1024);
     tokio::spawn(async move { server.serve(server_io).await });
     Client.serve_with_lifecycle(client_io, ClientLifecycleMode::Initialize).await.expect("client connects")
