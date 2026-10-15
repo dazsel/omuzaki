@@ -23,7 +23,7 @@ use omuzaki_io_api::{
 use omuzaki_io_vrm::{Vrm0Exporter, Vrm0Importer, Vrm1Importer};
 use serde_json::{Value, json};
 
-use common::{BONES0, avatar, export, glb, import, minimal0, parts, toon_numbers, vrm0_friendly};
+use common::{BONES0, avatar, export, export_with, glb, import, minimal0, options, parts, toon_numbers, vrm0_friendly};
 
 fn assert_close(a: &[f32], b: &[f32], what: &str) {
     assert_eq!(a.len(), b.len(), "{what}: lengths");
@@ -409,7 +409,7 @@ fn blend_shapes_spring_bones_look_at_and_first_person_are_converted() {
         omuzaki_io_api::ColliderShape::Sphere { offset, radius } => {
             assert_eq!((offset, radius), (Vec3::new(0.0, 0.1, -0.2), 0.05), "collider offsets turn with the model");
         }
-        omuzaki_io_api::ColliderShape::Capsule { .. } => panic!("0.x colliders are spheres"),
+        other => panic!("0.x colliders are spheres, got {other:?}"),
     }
 }
 
@@ -533,4 +533,63 @@ fn a_toon_material_survives_0x_with_the_numbers_it_started_with() {
     };
     let one = |t: &Toon| toon_numbers(t);
     assert_close(&one(b), &one(a), "skin toon");
+}
+
+/// 0.x has only outside spheres and no joint limits: the extended shapes and limits are dropped, each with its finding.
+#[test]
+fn extended_colliders_and_limits_are_dropped_with_warnings() {
+    let (mut scene, ids) = vrm0_friendly(avatar());
+    let head = ids.node("head");
+    let sb = &mut scene.avatar.as_mut().unwrap().spring_bones;
+    let before = sb.colliders.len();
+    sb.colliders.push(omuzaki_io_api::Collider {
+        node: head,
+        shape: omuzaki_io_api::ColliderShape::Plane { offset: Vec3::ZERO, normal: Vec3::Y },
+    });
+    sb.collider_groups[0].colliders.push(before as u32);
+    sb.chains[0].joints[0].limit = Some(omuzaki_io_api::JointLimit::Hinge { angle: 0.5, rotation: Quat::IDENTITY });
+    let lost =
+        |r: &omuzaki_io_api::Report| r.has_rule("vrm0.collider_unsupported") && r.has_rule("vrm0.limit_unsupported");
+
+    // The check sees the loss before anything is written, so strict mode refuses the export.
+    let checked = omuzaki_io_api::Exporter::check(&Vrm0Exporter, &scene, &options());
+    assert!(lost(&checked), "{checked:#?}");
+    match export_with(&Vrm0Exporter, &scene, &options().strict()) {
+        Err(omuzaki_io_api::IoError::Rejected(r)) => assert!(lost(&r), "{r:#?}"),
+        other => panic!("strict export must refuse the loss, got {:?}", other.map(|o| o.1)),
+    }
+
+    let (file, report) = export_with(&Vrm0Exporter, &scene, &options()).unwrap();
+    assert!(lost(&report), "{report:#?}");
+    let warned = report.findings.iter().filter(|f| f.rule.ends_with("_unsupported") && f.rule.starts_with("vrm0."));
+    assert_eq!(warned.count(), 2, "reported once each, by the check only: {report:#?}");
+    let back = import(&Vrm0Importer, &file).scene;
+    assert_eq!(back.avatar.unwrap().spring_bones.colliders.len(), before, "the plane is not written");
+}
+
+/// The warning counts every unsupported collider once: an ungrouped one is dropped too, a shared one is one collider.
+#[test]
+fn unsupported_colliders_are_counted_once_each_grouped_or_not() {
+    let (mut scene, ids) = vrm0_friendly(avatar());
+    let head = ids.node("head");
+    let sb = &mut scene.avatar.as_mut().unwrap().spring_bones;
+    let shape = omuzaki_io_api::ColliderShape::Plane { offset: Vec3::ZERO, normal: Vec3::Y };
+    let first = sb.colliders.len();
+    sb.colliders.push(omuzaki_io_api::Collider { node: head, shape }); // in two groups
+    sb.colliders.push(omuzaki_io_api::Collider { node: head, shape }); // in none
+    sb.collider_groups[0].colliders.push(first as u32);
+    sb.collider_groups[1].colliders.push(first as u32);
+    let (_, report) = export_with(&Vrm0Exporter, &scene, &options()).unwrap();
+    let finding = report.findings.iter().find(|f| f.rule == "vrm0.collider_unsupported").expect("the warning");
+    assert!(finding.message.contains(" 2 "), "two colliders, not three or one: {}", finding.message);
+}
+
+/// As for 1.0: the 0.x `secondaryAnimation` of a scene without extended shapes or limits is what `main` wrote before
+///.
+#[test]
+fn existing_secondary_animation_json_is_byte_identical_to_the_pre_extension_baseline() {
+    let (scene, _) = vrm0_friendly(avatar());
+    let (doc, _) = parts(&export(&Vrm0Exporter, &scene));
+    let baseline = include_str!("baseline/spring_vrm0.json").trim_end();
+    assert_eq!(doc["extensions"]["VRM"]["secondaryAnimation"].to_string(), baseline);
 }

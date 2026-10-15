@@ -8,13 +8,35 @@ use serde::Serialize;
 
 use crate::{exit, json};
 
+/// What a command prints on success, and the exit code it ends with. Most commands end with [`exit::OK`]; a store check
+/// that found problems prints its report and ends with [`exit::FOUND_PROBLEMS`].
+#[derive(Debug, PartialEq, Eq)]
+pub struct Reply {
+    /// The text for stdout.
+    pub text: String,
+    /// The process exit code (see [`exit`]).
+    pub code: u8,
+}
+
+impl Reply {
+    /// A successful reply: the text, and [`exit::OK`].
+    pub fn ok(text: String) -> Self {
+        Self { text, code: exit::OK }
+    }
+}
+
 /// Writes a command's result: the text to `out` on success, or the error to `err`. Returns the exit code
 /// (see [`exit`]).
+pub fn finish(result: Result<String, OpError>, json: bool, out: &mut dyn Write, err: &mut dyn Write) -> u8 {
+    finish_reply(result.map(Reply::ok), json, out, err)
+}
+
+/// [`finish`] for a command that can end with a code other than [`exit::OK`] while still printing its report.
 ///
 /// A reader that closes the pipe early (`omuzaki ops | head`) is not a failure, so a broken pipe leaves the code alone.
-pub fn finish(result: Result<String, OpError>, json: bool, out: &mut dyn Write, err: &mut dyn Write) -> u8 {
+pub fn finish_reply(result: Result<Reply, OpError>, json: bool, out: &mut dyn Write, err: &mut dyn Write) -> u8 {
     let (code, written) = match result {
-        Ok(text) => (exit::OK, send(out, &text)),
+        Ok(reply) => (reply.code, send(out, &reply.text)),
         Err(error) => (exit::for_error(error.code), send(err, &error_text(&error, json))),
     };
     match written {
