@@ -1,0 +1,548 @@
+//! The garment framework (#187): a synthetic tube garment through the conformance suite on every template and shape,
+//! a deliberately tight one that the suite refuses, two stacked tubes that keep their spacing, envelopes, region
+//! weights, rings, and the fabric tiles.
+
+#![allow(clippy::expect_used, clippy::unwrap_used)] // test helpers: a panic is a clear failure
+#![allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)] // test arithmetic
+#![allow(clippy::many_single_char_names, clippy::chunks_exact_to_as_chunks)] // geometry reads best as a, b, c
+
+#[path = "../../omuzaki-test-char/tests/support/outfit_conformance.rs"]
+mod conformance;
+
+use std::sync::Arc;
+
+use omuzaki_anim_api::HumanoidBone;
+use omuzaki_char::kit::grid::MeshBuilder;
+use omuzaki_char::outfit::common::{
+    ClothSpec, DEFAULT_EASE, Envelope, FabricStyle, Garment, GarmentCommon, GarmentOutput, LAYER_SHIRT, LAYER_VEST,
+    PlaidBand, StripeDirection, enclosing_scale, fabric_tile,
+};
+use omuzaki_char::outfit::loft::{RegionWeights, SOFT_SQUARE, Surface, ring_at};
+use omuzaki_char_api::{
+    BodyFit, BodyRegion, BuildCtx, BuildError, BuildServices, FitFact, JointRef, PartCategory, PartKind, PartMeta,
+    PartOutput,
+};
+use omuzaki_char_mock::TorsoFit;
+use omuzaki_core::colour::Colour;
+use omuzaki_core::glam::{DVec3, Vec2};
+use omuzaki_face_api::{Check, ColourRef, Validate};
+use omuzaki_face_mock::MockRasterizer;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+
+// ------------------------------------------------------------------------------------------------- the tube garment
+
+/// A plain tube round the torso: the least a garment can be.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+struct TubeParams {
+    common: GarmentCommon,
+    /// Where it starts and ends along the torso.
+    span: [f64; 2],
+    rings: usize,
+    segs: usize,
+    exponent: f64,
+    /// How much closer than its ease it is built (a broken garment, for the suite to catch).
+    sink: f64,
+}
+
+impl Default for TubeParams {
+    fn default() -> Self {
+        Self { common: GarmentCommon::default(), span: [0.2, 0.55], rings: 24, segs: 48, exponent: 2.0, sink: 0.0 }
+    }
+}
+
+impl Validate for TubeParams {
+    fn check(&self, c: &mut Check) {
+        c.nested("common", &self.common);
+    }
+}
+
+struct Tube;
+
+impl PartKind for Tube {
+    type Params = TubeParams;
+
+    fn meta() -> PartMeta {
+        PartMeta {
+            id: "test-tube",
+            summary: "a test tube garment",
+            category: PartCategory::Garment,
+            requires: &["body"],
+        }
+    }
+
+    fn build(p: &TubeParams, ctx: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
+        let fail = |e: omuzaki_char::outfit::common::GarmentError| ctx.fail(e.to_string());
+        let surface = Surface::new(ctx.fit()?, BodyRegion::Torso, p.exponent, p.common.ease - p.sink).map_err(fail)?;
+        let loft = surface.loft(p.span[0], p.span[1], p.rings, p.segs).map_err(fail)?;
+        let mut out = GarmentOutput::new(ctx, &p.common)?;
+        let mut builder = MeshBuilder::new();
+        loft.add_to(&mut builder, out.tile()).map_err(fail)?;
+        out.surface(ctx, "tube", builder)?;
+        out.finish(ctx, &p.common, &[BodyRegion::Torso], p.exponent)
+    }
+}
+
+impl Garment for Tube {
+    fn common(p: &TubeParams) -> &GarmentCommon {
+        &p.common
+    }
+
+    fn regions(_: &TubeParams) -> Vec<BodyRegion> {
+        vec![BodyRegion::Torso]
+    }
+
+    fn open_borders(_: &TubeParams) -> usize {
+        2
+    }
+}
+
+omuzaki_char_api::register_part_kind!(Tube);
+
+fn services() -> BuildServices {
+    BuildServices::default().with_rasterizer(|| Box::new(MockRasterizer))
+}
+
+fn plaid() -> FabricStyle {
+    FabricStyle::Plaid {
+        ground: ColourRef::rgb(0x2a, 0x3a, 0x5a),
+        period: 0.03,
+        bands: vec![
+            PlaidBand { colour: ColourRef::rgb(0xc8, 0x30, 0x30), offset: 0.004, width: 0.006 },
+            PlaidBand { colour: ColourRef::rgb(0xf0, 0xe0, 0x90), offset: 0.027, width: 0.002 },
+            PlaidBand { colour: ColourRef::rgb(0x10, 0x10, 0x10), offset: 0.026, width: 0.008 },
+        ],
+    }
+}
+
+// ------------------------------------------------------------------------------------------------------- the suite
+
+#[test]
+fn a_tube_garment_passes_the_suite_on_every_template_and_shape() {
+    let rows = conformance::assert_conforms::<Tube>(&TubeParams::default(), &services());
+    assert_eq!(rows.len(), 12, "4 templates x 3 shapes");
+    for row in &rows {
+        assert!((row.min_clearance_mm - DEFAULT_EASE * 1e3).abs() < 0.5, "{row:?}: a tube sits at its ease");
+    }
+}
+
+#[test]
+fn a_patterned_and_square_cut_tube_passes_too() {
+    let params = TubeParams {
+        common: GarmentCommon { ease: 0.006, fabric: plaid(), cloth: ClothSpec::default() },
+        exponent: SOFT_SQUARE,
+        // Wider and squarer: kept a little lower, clear of the arm roots.
+        span: [0.2, 0.5],
+        ..TubeParams::default()
+    };
+    conformance::assert_conforms::<Tube>(&params, &services());
+}
+
+#[test]
+fn an_ease_that_is_too_small_fails_naming_the_vertex_region_and_depth() {
+    // Built 3 mm closer than its 4 mm ease: 1 mm off the body, below half the ease.
+    let tight = TubeParams { sink: 0.003, ..TubeParams::default() };
+    let error = conformance::run::<Tube>(&tight, &services()).expect_err("a tight garment fails");
+    for word in ["vertex", "region Torso", "depth", "below half the ease"] {
+        assert!(error.contains(word), "the failure names the {word}: {error}");
+    }
+    // Built 6 mm in: through the body.
+    let sunk = TubeParams { sink: 0.010, ..TubeParams::default() };
+    let error = conformance::run::<Tube>(&sunk, &services()).expect_err("a garment inside the body fails");
+    for word in ["vertex", "inside the body", "region", "depth"] {
+        assert!(error.contains(word), "the failure names the {word}: {error}");
+    }
+}
+
+#[test]
+fn a_garment_that_lies_about_its_borders_fails_closure() {
+    struct Liar;
+    impl PartKind for Liar {
+        type Params = TubeParams;
+        fn meta() -> PartMeta {
+            PartMeta { id: "test-liar", summary: "a tube", category: PartCategory::Garment, requires: &["body"] }
+        }
+        fn build(p: &TubeParams, ctx: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
+            Tube::build(p, ctx)
+        }
+    }
+    impl Garment for Liar {
+        fn common(p: &TubeParams) -> &GarmentCommon {
+            &p.common
+        }
+        fn regions(_: &TubeParams) -> Vec<BodyRegion> {
+            vec![BodyRegion::Torso]
+        }
+        fn open_borders(_: &TubeParams) -> usize {
+            0
+        }
+    }
+    omuzaki_char_api::register_part_kind!(Liar);
+    let error = conformance::run::<Liar>(&TubeParams::default(), &services()).expect_err("a tube has two borders");
+    assert!(error.contains("2 open borders"), "{error}");
+}
+
+// ------------------------------------------------------------------------------------------------------ stacking
+
+/// The closest point of triangle `abc` to `p` (Ericson, Real-Time Collision Detection 5.1.5).
+fn closest_on_triangle(p: DVec3, a: DVec3, b: DVec3, c: DVec3) -> DVec3 {
+    let (ab, ac, ap) = (b - a, c - a, p - a);
+    let (d1, d2) = (ab.dot(ap), ac.dot(ap));
+    if d1 <= 0.0 && d2 <= 0.0 {
+        return a;
+    }
+    let bp = p - b;
+    let (d3, d4) = (ab.dot(bp), ac.dot(bp));
+    if d3 >= 0.0 && d4 <= d3 {
+        return b;
+    }
+    let vc = d1 * d4 - d3 * d2;
+    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
+        return a + ab * (d1 / (d1 - d3));
+    }
+    let cp = p - c;
+    let (d5, d6) = (ab.dot(cp), ac.dot(cp));
+    if d6 >= 0.0 && d5 <= d6 {
+        return c;
+    }
+    let vb = d5 * d2 - d1 * d6;
+    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
+        return a + ac * (d2 / (d2 - d6));
+    }
+    let va = d3 * d6 - d5 * d4;
+    if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 {
+        return b + (c - b) * ((d4 - d3) / ((d4 - d3) + (d5 - d6)));
+    }
+    let denom = 1.0 / (va + vb + vc);
+    a + ab * (vb * denom) + ac * (vc * denom)
+}
+
+/// Where the ray from `o` along `d` first meets triangle `abc` (Möller-Trumbore), as a distance along the ray.
+fn ray_hit(o: DVec3, d: DVec3, a: DVec3, b: DVec3, c: DVec3) -> Option<f64> {
+    let (e1, e2) = (b - a, c - a);
+    let h = d.cross(e2);
+    let det = e1.dot(h);
+    if det.abs() < 1e-14 {
+        return None;
+    }
+    let s = o - a;
+    let u = s.dot(h) / det;
+    let q = s.cross(e1);
+    let v = d.dot(q) / det;
+    let t = e2.dot(q) / det;
+    // A ray through a shared edge or vertex must not slip between the triangles either side.
+    let slack = 1e-9;
+    (u >= -slack && v >= -slack && u + v <= 1.0 + slack && t > 0.0).then_some(t)
+}
+
+fn triangles(output: &PartOutput) -> Vec<[DVec3; 3]> {
+    let g = &output.meshes[0].geometry;
+    g.indices.chunks_exact(3).map(|t| [0, 1, 2].map(|k| g.positions[t[k] as usize].as_dvec3())).collect()
+}
+
+#[test]
+fn two_stacked_garments_keep_their_spacing_at_100_heights() {
+    // The contract's example: a shirt 4 mm off the body and a vest 6 mm off the shirt.
+    let shirt = TubeParams { span: [0.2, 0.55], ..TubeParams::default() };
+    let vest = TubeParams {
+        common: GarmentCommon { ease: 0.006, ..GarmentCommon::default() },
+        span: [0.22, 0.53],
+        ..TubeParams::default()
+    };
+    for template in conformance::TEMPLATES {
+        for (label, shape) in conformance::shapes() {
+            let def = conformance::character(
+                template,
+                &shape,
+                &[
+                    ("shirt", "test-tube", LAYER_SHIRT, serde_json::to_value(&shirt).unwrap()),
+                    ("vest", "test-tube", LAYER_VEST, serde_json::to_value(&vest).unwrap()),
+                ],
+            );
+            let stack = conformance::build(def, &services()).unwrap();
+            let fits = &stack.published.get::<FitFact>().fits;
+            assert_eq!(fits.len(), 3, "the body, then each garment's envelope");
+            let body = fits[0].clone();
+            let (inner, outer) = (triangles(stack.output("shirt")), triangles(stack.output("vest")));
+            let (mut least, mut most, mut nearest) = (f64::INFINITY, 0.0_f64, f64::INFINITY);
+            for k in 0..100 {
+                let t = 0.23 + 0.29 * f64::from(k) / 99.0;
+                let ring = ring_at(body.as_ref(), BodyRegion::Torso, t, 2.0, 0.0).unwrap();
+                for a in 0..16 {
+                    let phi = std::f64::consts::TAU * f64::from(a) / 16.0;
+                    let dir = (ring.point(phi) - ring.centre).normalize();
+                    let first = |mesh: &[[DVec3; 3]], what: &str| {
+                        mesh.iter()
+                            .filter_map(|[a, b, c]| {
+                                Some((ray_hit(ring.centre, dir, *a, *b, *c)?, (*b - *a).cross(*c - *a)))
+                            })
+                            .min_by(|x, y| x.0.total_cmp(&y.0))
+                            .unwrap_or_else(|| panic!("{template}/{label}: no {what} at t = {t}, phi = {phi}"))
+                    };
+                    let ((shirt_at, normal), (vest_at, _)) = (first(&inner, "shirt"), first(&outer, "vest"));
+                    // The separation in this height's section plane: along the shirt's normal projected into it.
+                    let in_plane = (normal - ring.axis * normal.dot(ring.axis)).normalize();
+                    let gap = (vest_at - shirt_at) * dir.dot(in_plane).abs();
+                    least = least.min(gap);
+                    most = most.max(gap);
+                    let p = ring.centre + dir * vest_at;
+                    let surface = inner
+                        .iter()
+                        .map(|[a, b, c]| p.distance(closest_on_triangle(p, *a, *b, *c)))
+                        .fold(f64::INFINITY, f64::min);
+                    nearest = nearest.min(surface);
+                }
+            }
+            println!(
+                "{template}/{label}: vest over shirt {:.2}..{:.2} mm in each section, nearest {:.2} mm in 3D",
+                least * 1e3,
+                most * 1e3,
+                nearest * 1e3
+            );
+            assert!(
+                least >= 0.004 && most <= 0.006 + 1e-4 && nearest > 0.0,
+                "{template}/{label}: the vest is {:.2}..{:.2} mm off the shirt, outside 4..6 mm",
+                least * 1e3,
+                most * 1e3
+            );
+        }
+    }
+}
+
+// ------------------------------------------------------------------------------------------------------ envelopes
+
+fn torso() -> Arc<dyn BodyFit> {
+    Arc::new(TorsoFit::new(&omuzaki_char_api::BodyParams::default()))
+}
+
+#[test]
+fn envelopes_pass_joints_bind_and_uncovered_regions_through() {
+    let inner = torso();
+    let envelope = Envelope::new(inner.clone(), &[BodyRegion::Torso], 0.004, 2.0).unwrap();
+    for bone in HumanoidBone::ALL {
+        let joint = JointRef::Humanoid(bone);
+        assert_eq!(envelope.joint(&joint), inner.joint(&joint), "{bone:?} passes through");
+    }
+    assert_eq!(envelope.bind(), inner.bind());
+    assert!(envelope.envelope());
+    for t in [0.0, 0.25, 0.5, 1.0] {
+        let (a, b) = (inner.section(BodyRegion::Torso, t).unwrap(), envelope.section(BodyRegion::Torso, t).unwrap());
+        assert_eq!((a.centre, a.axis), (b.centre, b.axis));
+        assert!((b.radii - a.radii - Vec2::splat(0.004)).abs().max_element() < 1e-6, "ease on both radii");
+        assert_eq!(envelope.section(BodyRegion::ArmL, t), inner.section(BodyRegion::ArmL, t), "uncovered");
+    }
+    let square = Envelope::new(inner.clone(), &[BodyRegion::Torso], 0.004, 4.0).unwrap();
+    let (a, b) = (inner.section(BodyRegion::Torso, 0.5).unwrap(), square.section(BodyRegion::Torso, 0.5).unwrap());
+    let scale = enclosing_scale(4.0) as f32;
+    assert!(((a.radii + Vec2::splat(0.004)) * scale - b.radii).abs().max_element() < 1e-6, "a square cut is enclosed");
+}
+
+#[test]
+fn an_envelope_encloses_its_square_cut_and_an_ellipse_needs_no_widening() {
+    assert!((enclosing_scale(2.0) - 1.0).abs() < 1e-12);
+    for e in [2.2, 3.0, 5.0, 8.0] {
+        let ring = ring_at(torso().as_ref(), BodyRegion::Torso, 0.5, e, 0.0).unwrap();
+        let k = enclosing_scale(e);
+        let worst = (0..3600)
+            .map(|a| {
+                let q = ring.point(f64::from(a) * std::f64::consts::TAU / 3600.0) - ring.centre;
+                ((q.dot(ring.across) / ring.radii.x).powi(2) + (q.dot(ring.through) / ring.radii.y).powi(2)).sqrt()
+            })
+            .fold(0.0, f64::max);
+        assert!(worst <= k + 1e-9 && worst > k - 1e-3, "exponent {e}: reaches {worst}, scale {k}");
+    }
+}
+
+#[test]
+fn envelopes_refuse_bad_numbers() {
+    let inner = torso();
+    for (ease, exponent) in [(0.0, 2.0), (f64::NAN, 2.0), (0.5, 2.0), (0.004, 1.5), (0.004, 9.0), (0.004, f64::NAN)] {
+        assert!(Envelope::new(inner.clone(), &[BodyRegion::Torso], ease, exponent).is_err(), "{ease} {exponent}");
+    }
+    assert!(Envelope::new(inner, &[], 0.004, 2.0).is_err(), "no regions");
+}
+
+// ---------------------------------------------------------------------------------------------- rings and weights
+
+#[test]
+fn rings_are_tps_sections_with_outward_normals() {
+    let fit = torso();
+    let ring = ring_at(fit.as_ref(), BodyRegion::Torso, 0.5, 2.0, 0.01).unwrap();
+    let section = fit.section(BodyRegion::Torso, 0.5).unwrap();
+    assert!((ring.radii - (section.radii.as_dvec2() + 0.01)).abs().max_element() < 1e-9);
+    let front = ring.point(0.0) - ring.centre;
+    assert!((front.normalize() - ring.through).length() < 1e-9, "phi 0 is the front");
+    let left = ring.point(std::f64::consts::FRAC_PI_2) - ring.centre;
+    assert!(left.x > 0.0, "phi pi/2 is the character's left");
+    for a in 0..64 {
+        let phi = f64::from(a) * std::f64::consts::TAU / 64.0;
+        let n = ring.normal(phi);
+        assert!((n.length() - 1.0).abs() < 1e-9 && n.dot(ring.point(phi) - ring.centre) > 0.0, "outward at {phi}");
+        assert!(n.dot(ring.axis).abs() < 1e-9, "in the section's plane");
+    }
+}
+
+#[test]
+fn rings_refuse_bad_input() {
+    let fit = torso();
+    assert!(ring_at(fit.as_ref(), BodyRegion::Torso, f64::NAN, 2.0, 0.0).is_err());
+    assert!(ring_at(fit.as_ref(), BodyRegion::Torso, 0.5, 1.0, 0.0).is_err(), "rounder than an ellipse");
+    assert!(ring_at(fit.as_ref(), BodyRegion::Torso, 0.5, 2.0, -1.0).is_err(), "collapsed");
+    assert!(ring_at(fit.as_ref(), BodyRegion::ArmL, 0.5, 2.0, 0.0).is_err(), "the fit has no arms");
+}
+
+#[test]
+fn region_weights_sum_to_one_and_hand_over_bone_by_bone() {
+    let fit = torso();
+    let weights = RegionWeights::of(fit.as_ref(), BodyRegion::Torso).unwrap();
+    let chain = weights.chain();
+    assert!(chain.len() >= 3, "{chain:?}");
+    assert!(chain.windows(2).all(|w| w[0].1 <= w[1].1), "in order along the torso");
+    for k in 0..=200 {
+        let w = weights.at(f64::from(k) / 200.0);
+        let total: f32 = w.iter().map(|(_, w)| w).sum();
+        assert!((total - 1.0).abs() < 1e-5 && w.len() <= 4, "{w:?}");
+    }
+    let bottom = weights.at(0.0);
+    assert_eq!(bottom[0].0, chain[0].0, "the first bone owns the start");
+    let (last, at) = &chain[chain.len() - 1];
+    let share = |t: f64| weights.at(t).iter().find(|(j, _)| j == last).map_or(0.0, |(_, w)| *w);
+    assert!(share(1.0) >= 0.5 - 1e-6, "the last bone owns at least half the end");
+    assert!(share(*at - 0.2) < 1e-6, "and nothing well below its joint");
+}
+
+#[test]
+fn surfaces_and_lofts_refuse_bad_sizes() {
+    let surface = Surface::new(torso(), BodyRegion::Torso, 2.0, 0.004).unwrap();
+    assert!(surface.loft(0.2, 0.8, 1, 16).is_err(), "one ring");
+    assert!(surface.loft(0.2, 0.8, 8, 0).is_err(), "no segments");
+    assert!(surface.loft(0.8, 0.2, 8, 16).is_err(), "falling");
+    assert!(surface.loft(0.2, 1.5, 8, 16).is_err(), "past the end");
+    assert!(surface.loft_span((0.2, 0.8), (0.0, 7.0), 8, 16).is_err(), "more than a turn");
+    assert!(Surface::new(torso(), BodyRegion::Torso, 2.0, f64::INFINITY).is_err());
+    let panel = surface.loft_span((0.2, 0.8), (-0.5, 0.5), 8, 16).unwrap();
+    assert!(!panel.full_turn);
+    let tube = surface.loft(0.2, 0.8, 8, 16).unwrap();
+    assert!(tube.full_turn);
+    assert_eq!(tube.grid.at(3, 0), tube.grid.at(3, 16), "the seam repeats exactly");
+}
+
+#[test]
+fn a_surface_point_has_an_outward_frame_on_the_surface() {
+    let surface = Surface::new(torso(), BodyRegion::Torso, SOFT_SQUARE, 0.004).unwrap();
+    for (t, phi) in [(0.0, 0.0), (0.5, 1.0), (1.0, 4.0), (0.3, 2.5)] {
+        let s = surface.at(t, phi).unwrap();
+        assert_eq!(s.point, surface.point(t, phi).unwrap());
+        assert!(s.normal.dot(s.along).abs() < 1e-6 && s.normal.dot(s.around).abs() < 1e-6);
+        let ring = surface.ring(t).unwrap();
+        assert!(s.normal.dot(s.point - ring.centre) > 0.0, "outward");
+    }
+}
+
+// ---------------------------------------------------------------------------------------------- common settings
+
+#[test]
+fn common_settings_validate_and_round_trip() {
+    let common = GarmentCommon::default();
+    common.validate().unwrap();
+    assert!(!common.cloth.enabled, "garments are skinned until cloth lands");
+    let value = serde_json::to_value(&common).unwrap();
+    assert_eq!(serde_json::from_value::<GarmentCommon>(value).unwrap(), common);
+    let bad = |v: serde_json::Value| serde_json::from_value::<GarmentCommon>(v).map(|c| c.validate().is_err());
+    assert!(bad(json!({ "ease": 0.0 })).unwrap(), "no ease");
+    assert!(bad(json!({ "ease": 0.2 })).unwrap(), "too much ease");
+    assert!(bad(json!({ "cloth": { "enabled": true } })).unwrap(), "cloth is off");
+    assert!(
+        bad(json!({ "fabric": { "kind": "stripes", "ground": "#000000", "stripe": "#ffffff", "period": 0.01,
+        "width": 0.02, "direction": "vertical" } }))
+        .unwrap()
+    );
+    assert!(
+        bad(json!({ "fabric": { "kind": "weave", "warp": "#000000", "weft": "#ffffff", "thread": -1.0 } })).unwrap()
+    );
+    assert!(serde_json::from_value::<GarmentCommon>(json!({ "eaze": 0.004 })).is_err(), "unknown fields fail");
+    let many = (0..9).map(|_| json!({ "colour": "#ffffff", "offset": 0.0, "width": 0.001 })).collect::<Vec<_>>();
+    assert!(bad(json!({ "fabric": { "kind": "plaid", "ground": "#000000", "period": 0.02, "bands": many } })).unwrap());
+}
+
+// ------------------------------------------------------------------------------------------------------- textures
+
+/// Paints `fabric` over `repeats` x `repeats` repeats with the mock rasteriser.
+fn paint(fabric: &FabricStyle, repeats: u32) -> (u32, Vec<u8>) {
+    let resolve = |c: &ColourRef| match c {
+        ColourRef::Fixed(c) => Ok(*c),
+        ColourRef::Slot(_) => Ok(Colour::rgb(0, 0, 0)),
+    };
+    let tile = fabric_tile(fabric, repeats, resolve, |m| panic!("{m}")).unwrap().expect("a patterned fabric");
+    let services = services();
+    let factory = services.rasterizer.as_ref().unwrap();
+    let mut raster = omuzaki_face_api::Raster::new(tile.px, tile.px);
+    let px_per_m = tile.px as f32 / tile.rect.width();
+    let spec = omuzaki_face_api::FaceLayerSpec::for_rect(tile.rect, omuzaki_face_api::FaceLayerId::Base, px_per_m);
+    factory().rasterize(&spec, &tile.list, px_per_m, &mut raster).unwrap();
+    (tile.px, raster.pixels)
+}
+
+fn fabrics() -> Vec<(&'static str, FabricStyle)> {
+    let (a, b) = (ColourRef::rgb(0x20, 0x30, 0x60), ColourRef::rgb(0xe0, 0xd0, 0xa0));
+    let stripes = |direction| FabricStyle::Stripes {
+        ground: a.clone(),
+        stripe: b.clone(),
+        period: 0.012,
+        width: 0.004,
+        direction,
+    };
+    vec![
+        ("weave", FabricStyle::Weave { warp: a.clone(), weft: b.clone(), thread: 0.002 }),
+        ("vertical stripes", stripes(StripeDirection::Vertical)),
+        ("horizontal stripes", stripes(StripeDirection::Horizontal)),
+        ("diagonal stripes", stripes(StripeDirection::Diagonal)),
+        ("plaid", plaid()),
+    ]
+}
+
+#[test]
+fn fabric_tiles_are_deterministic_and_tile_seamlessly() {
+    for (name, fabric) in fabrics() {
+        let (px, one) = paint(&fabric, 1);
+        assert_eq!(paint(&fabric, 1).1, one, "{name}: deterministic");
+        // Two repeats each way: each quarter equals the single tile, so the tile's edges meet without a seam.
+        let (px2, two) = paint(&fabric, 2);
+        assert_eq!(px2, 2 * px, "{name}");
+        let mut worst = 0_u8;
+        for y in 0..px2 {
+            for x in 0..px2 {
+                for c in 0..4 {
+                    let a = two[((y * px2 + x) * 4 + c) as usize];
+                    let b = one[(((y % px) * px + x % px) * 4 + c) as usize];
+                    worst = worst.max(a.abs_diff(b));
+                }
+            }
+        }
+        assert!(worst <= 1, "{name}: the 2x2 repeat differs from the tile by {worst} levels");
+        // And the pattern shows: more than one colour.
+        let first = &one[0..4];
+        assert!(one.chunks_exact(4).any(|p| p != first), "{name}: a pattern, not a flat colour");
+    }
+}
+
+#[test]
+fn a_plain_fabric_needs_no_texture() {
+    let plain = FabricStyle::default();
+    assert!(fabric_tile(&plain, 1, |_| Ok(Colour::rgb(0, 0, 0)), |m| panic!("{m}")).unwrap().is_none());
+}
+
+#[test]
+fn a_patterned_garment_without_a_rasteriser_names_what_is_missing() {
+    let params =
+        TubeParams { common: GarmentCommon { fabric: plaid(), ..GarmentCommon::default() }, ..TubeParams::default() };
+    let def = conformance::character(
+        "soft-sd",
+        &omuzaki_char_api::BodyShape::default(),
+        &[("tube", "test-tube", LAYER_SHIRT, serde_json::to_value(params).unwrap())],
+    );
+    let error = conformance::build(def, &BuildServices::default()).err().expect("no rasteriser");
+    assert!(matches!(error, BuildError::Missing { .. }), "{error}");
+}
