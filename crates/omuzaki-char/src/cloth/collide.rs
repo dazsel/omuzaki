@@ -57,7 +57,10 @@ use super::runtime::{ClothGrid, ClothRuntimeError, SkinWeights};
 use crate::template::layout::section_basis;
 
 /// How far a body collider may stick out of the body, metres, after fitting.
-pub const FIT_TOLERANCE: f32 = 0.0005;
+pub const FIT_TOLERANCE: f32 = 0.0002;
+
+/// The thinnest body collider kept, metres: thinner than this a limb is left to the contacts' margin.
+const MIN_RADIUS: f32 = 0.004;
 
 /// Sections sampled along each body region.
 const SAMPLES: usize = 48;
@@ -214,7 +217,7 @@ impl ColliderSet {
         for (region, upper, lower) in limbs {
             let Some(limb) = body.region(region) else { continue };
             let bend = fit.joint(&joint_of(lower)).map_or(0.5, |p| limb.nearest_t(p)).clamp(0.2, 0.8);
-            for (t0, t1, bone) in [(0.03, bend, upper), (bend, 0.97, lower)] {
+            for (t0, t1, bone) in [(0.06, bend, upper), (bend, 0.97, lower)] {
                 let (a, b) = (limb.at(t0).centre, limb.at(t1).centre);
                 let r = limb.inscribed(t0, t1, a, b);
                 self.fit_add(&body, a, b, r, &joint_of(bone));
@@ -434,6 +437,9 @@ fn distance_to_segment(p: Vec3, a: Vec3, b: Vec3) -> f32 {
 struct Region {
     region: BodyRegion,
     sections: Vec<(f32, Section, Vec3, Vec3)>,
+    /// A sphere holding every section's ellipse, to skip the region for points far from it.
+    centre: Vec3,
+    reach: f32,
 }
 
 impl Region {
@@ -463,29 +469,46 @@ impl Region {
             .fold(f32::MAX, f32::min)
     }
 
-    /// How far `p` lies outside the region (negative inside), along the ray from the nearest section's centre, plus
-    /// any distance beyond the region's ends.
-    fn depth(&self, p: Vec3) -> f32 {
-        let mut best: Option<(f32, usize)> = None;
-        for (i, (_, s, ..)) in self.sections.iter().enumerate() {
-            let along = (p - s.centre).dot(s.axis).abs();
-            if best.is_none_or(|(b, _)| along < b) {
-                best = Some((along, i));
-            }
-        }
-        let Some((_, i)) = best else { return f32::MAX };
+    /// How far `p` lies outside section `i`'s ellipse, along the ray from its centre in its plane (negative inside).
+    fn radial(&self, i: usize, p: Vec3) -> f32 {
         let (_, s, x, y) = self.sections[i];
         let q = p - s.centre;
         let (u, v) = (q.dot(x), q.dot(y));
         let (rx, ry) = (s.radii.x.max(1e-6), s.radii.y.max(1e-6));
         let rho = ((u / rx).powi(2) + (v / ry).powi(2)).sqrt();
         let planar = (u * u + v * v).sqrt();
-        let radial = if rho > 1e-9 { planar * (1.0 - 1.0 / rho) } else { -rx.min(ry) };
-        // Beyond an end: how far past the first or last section's plane.
-        let (first, last) = (&self.sections[0].1, &self.sections[self.sections.len() - 1].1);
-        let before = -(p - first.centre).dot(first.axis);
-        let after = (p - last.centre).dot(last.axis);
-        radial.max(before).max(after)
+        if rho > 1e-9 { planar * (1.0 - 1.0 / rho) } else { -rx.min(ry) }
+    }
+
+    /// How far `p` lies outside the region (negative inside): between the two consecutive section planes it lies
+    /// between (the pair whose interpolated centre is nearest, where a bent region offers several), the radial depth
+    /// interpolated between them, so the measure is continuous along the region; beyond an end, the end section's
+    /// depth or the distance past its plane, whichever is larger.
+    fn depth(&self, p: Vec3) -> f32 {
+        let along = |i: usize| {
+            let s = &self.sections[i].1;
+            (p - s.centre).dot(s.axis)
+        };
+        let mut best: Option<(f32, f32)> = None;
+        for i in 0..self.sections.len() - 1 {
+            let (a0, a1) = (along(i), along(i + 1));
+            if a0 >= 0.0 && a1 <= 0.0 {
+                let t = if a0 - a1 > 1e-12 { a0 / (a0 - a1) } else { 0.0 };
+                let centre = self.sections[i].1.centre.lerp(self.sections[i + 1].1.centre, t);
+                let distance = centre.distance_squared(p);
+                if best.is_none_or(|(d, _)| distance < d) {
+                    let depth = self.radial(i, p) * (1.0 - t) + self.radial(i + 1, p) * t;
+                    best = Some((distance, depth));
+                }
+            }
+        }
+        if let Some((_, depth)) = best {
+            return depth;
+        }
+        let last = self.sections.len() - 1;
+        let before = -along(0);
+        let after = along(last);
+        if before > after { self.radial(0, p).max(before) } else { self.radial(last, p).max(after) }
     }
 }
 
@@ -521,7 +544,12 @@ impl Body {
                     })
                 })
                 .collect();
-            (sections.len() == SAMPLES).then_some(Region { region, sections })
+            (sections.len() == SAMPLES).then(|| {
+                let centre = sections.iter().map(|(_, s, ..)| s.centre).sum::<Vec3>() / SAMPLES as f32;
+                let reach =
+                    sections.iter().map(|(_, s, ..)| s.centre.distance(centre) + s.radii.max_element()).fold(0.0, f32::max);
+                Region { region, sections, centre, reach }
+            })
         })
         .collect();
         Self { regions }
@@ -532,42 +560,59 @@ impl Body {
     }
 
     fn depth(&self, p: Vec3) -> f32 {
-        self.regions.iter().map(|r| r.depth(p)).fold(f32::MAX, f32::min)
+        // A region whose bounding sphere is farther than the depth found so far cannot be the nearest.
+        let mut best = f32::MAX;
+        for region in &self.regions {
+            if p.distance(region.centre) - region.reach < best {
+                best = best.min(region.depth(p));
+            }
+        }
+        best
     }
 
     /// The largest radius up to `radius` for which the capsule `a`-`b` lies inside the body within [`FIT_TOLERANCE`]
-    /// at every sampled point; `None` if it would be under 5 mm.
+    /// at every sampled point; `None` if it would be under [`MIN_RADIUS`].
     fn fit(&self, a: Vec3, b: Vec3, radius: f32) -> Option<f32> {
         if !(radius.is_finite() && radius > 0.0 && a.is_finite() && b.is_finite()) {
             return None;
         }
-        let mut r = radius;
-        for _ in 0..24 {
-            let excess = capsule_points(a, b, r).map(|p| self.depth(p)).fold(f32::MIN, f32::max) - FIT_TOLERANCE;
-            if excess <= 0.0 {
-                return (r >= 0.005).then_some(r);
-            }
-            r -= excess + 1e-4;
-            if r < 0.005 {
-                return None;
-            }
+        let fits = |r: f32| capsule_points(a, b, r).map(|p| self.depth(p)).fold(f32::MIN, f32::max) <= FIT_TOLERANCE;
+        if fits(radius) {
+            return Some(radius);
         }
-        None
+        // Bisect for the largest radius that fits: 2^-20 of the start, well under a micrometre.
+        let (mut lo, mut hi) = (0.0_f32, radius);
+        for _ in 0..20 {
+            let mid = 0.5 * (lo + hi);
+            if fits(mid) { lo = mid } else { hi = mid }
+        }
+        if lo >= MIN_RADIUS { Some(lo) } else { None }
     }
 }
 
-/// Points on and in the capsule `a`-`b` of radius `r`: 9 stations along the axis, 26 directions from each.
+/// Points on the capsule `a`-`b` of radius `r`: 33 stations along the axis with 24 directions around it, and each
+/// cap at 12 latitudes (a sphere when `a == b` gets its caps both ways along +Y).
 #[allow(clippy::cast_precision_loss)] // small counts
 pub fn capsule_points(a: Vec3, b: Vec3, r: f32) -> impl Iterator<Item = Vec3> {
-    let directions = (0..27_u8).filter(|&i| i != 13).map(|i| {
-        let d = Vec3::new(f32::from(i % 3) - 1.0, f32::from(i / 3 % 3) - 1.0, f32::from(i / 9) - 1.0);
-        d.normalize()
+    let axis = (b - a).normalize_or(Vec3::Y);
+    let side = axis.any_orthonormal_vector();
+    let up = axis.cross(side);
+    let around = move |m: u32| {
+        let angle = std::f32::consts::TAU * m as f32 / 24.0;
+        side * angle.cos() + up * angle.sin()
+    };
+    let body = (0..33_u32).flat_map(move |k| {
+        let q = a.lerp(b, k as f32 / 32.0);
+        (0..24).map(move |m| q + around(m) * r)
     });
-    let directions: Vec<Vec3> = directions.collect();
-    (0..9).flat_map(move |k| {
-        let q = a.lerp(b, k as f32 / 8.0);
-        directions.clone().into_iter().map(move |d| q + d * r)
-    })
+    let caps = (1..=12_u32).flat_map(move |lat| {
+        let tilt = std::f32::consts::FRAC_PI_2 * lat as f32 / 12.0;
+        (0..24).flat_map(move |m| {
+            let d = around(m) * tilt.cos();
+            [a + (d - axis * tilt.sin()) * r, b + (d + axis * tilt.sin()) * r]
+        })
+    });
+    body.chain(caps)
 }
 
 /// How far `p` (bind space) lies outside the body `fit` describes, metres (negative inside), measured along the ray

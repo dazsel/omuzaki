@@ -52,7 +52,9 @@ impl Pose {
     /// Each joint's skin matrix (bind to world); bones rest with identity rotation, so bind = rest.
     pub fn matrices(&self) -> [Affine3A; 6] {
         let root = Affine3A::from_translation(self.root);
-        let hips = root * Affine3A::from_translation(Vec3::new(0.0, -self.drop, 0.0)) * about(HIPS, Quat::from_rotation_y(self.yaw));
+        let hips = root
+            * Affine3A::from_translation(Vec3::new(0.0, -self.drop, 0.0))
+            * about(HIPS, Quat::from_rotation_y(self.yaw));
         let upper_l = hips * about(HIP_L, Quat::from_rotation_x(-self.flex_l));
         let upper_r = hips * about(HIP_R, Quat::from_rotation_x(-self.flex_r));
         let lower_l = upper_l * about(KNEE_L, Quat::from_rotation_x(self.knee_l));
@@ -112,11 +114,12 @@ pub fn tube(rows: usize, cols: usize, y0: f32, r0: f32, y1: f32, r1: f32) -> Clo
         for c in 0..cols {
             let angle = TAU * c as f32 / cols as f32;
             positions.push(Vec3::new(radius * angle.sin(), y, radius * angle.cos()));
-            // Toward the thigh under it: the share grows down the garment and toward the side (sin = +x is left).
-            let side = angle.sin();
-            let leg = 0.5 * t * side.abs().powi(2);
-            let joint = if side >= 0.0 { 2 } else { 3 };
-            skin.push(SkinWeights { joints: [0, joint, 0, 0], weights: [1.0 - leg, leg, 0.0, 0.0] });
+            // Toward the thighs, as a skirt's auto weights put it: the share grows over the top 40% of the garment
+            // to 80%, from the back (a fifth of it) to the front (all of it), split between the left (+x, sin > 0)
+            // and right thighs by side.
+            let leg = 0.8 * (t / 0.4).min(1.0) * (0.6 + 0.4 * angle.cos());
+            let left = (0.5 + angle.sin() / 0.6).clamp(0.0, 1.0);
+            skin.push(SkinWeights { joints: [0, 2, 3, 0], weights: [1.0 - leg, leg * left, leg * (1.0 - left), 0.0] });
         }
     }
     ClothGrid { rows, cols, wrap: true, positions, skin, joints: joints() }
@@ -132,15 +135,24 @@ pub fn robe_grid() -> ClothGrid {
     tube(32, 48, 1.04, 0.18, 0.40, 0.29)
 }
 
-/// Thighs, shins and a hips capsule, on the rig's bones.
+/// The thigh capsules' radius, metres.
+pub const THIGH: f32 = 0.065;
+
+/// Thighs, shins and a hips capsule, on the rig's bones, all inside the skirt at rest.
 pub fn leg_colliders() -> ColliderSet {
     let mut set = ColliderSet::new();
     let j = |b| JointRef::Humanoid(b);
-    set.add_capsule(HIP_L, KNEE_L, 0.075, &j(HumanoidBone::LeftUpperLeg), ColliderKind::Body);
-    set.add_capsule(HIP_R, KNEE_R, 0.075, &j(HumanoidBone::RightUpperLeg), ColliderKind::Body);
+    set.add_capsule(HIP_L, KNEE_L, THIGH, &j(HumanoidBone::LeftUpperLeg), ColliderKind::Body);
+    set.add_capsule(HIP_R, KNEE_R, THIGH, &j(HumanoidBone::RightUpperLeg), ColliderKind::Body);
     set.add_capsule(KNEE_L, ANKLE_L, 0.05, &j(HumanoidBone::LeftLowerLeg), ColliderKind::Body);
     set.add_capsule(KNEE_R, ANKLE_R, 0.05, &j(HumanoidBone::RightLowerLeg), ColliderKind::Body);
-    set.add_capsule(Vec3::new(0.08, 0.97, 0.0), Vec3::new(-0.08, 0.97, 0.0), 0.11, &j(HumanoidBone::Hips), ColliderKind::Body);
+    set.add_capsule(
+        Vec3::new(0.04, 0.98, 0.0),
+        Vec3::new(-0.04, 0.98, 0.0),
+        0.1,
+        &j(HumanoidBone::Hips),
+        ColliderKind::Body,
+    );
     set
 }
 
@@ -153,8 +165,8 @@ pub fn skirt() -> ClothRuntime {
 pub fn thighs(pose: &Pose) -> [(Vec3, Vec3, f32); 2] {
     let m = pose.matrices();
     [
-        (m[2].transform_point3(HIP_L), m[2].transform_point3(KNEE_L), 0.075),
-        (m[3].transform_point3(HIP_R), m[3].transform_point3(KNEE_R), 0.075),
+        (m[2].transform_point3(HIP_L), m[2].transform_point3(KNEE_L), THIGH),
+        (m[3].transform_point3(HIP_R), m[3].transform_point3(KNEE_R), THIGH),
     ]
 }
 
@@ -174,7 +186,12 @@ pub fn skinned(grid: &ClothGrid, pose: &Pose) -> Vec<Vec3> {
         .zip(&grid.skin)
         .map(|(&p, s)| {
             let total: f32 = s.weights.iter().sum();
-            let w: Vec3 = s.joints.iter().zip(&s.weights).map(|(&j, &w)| m[usize::from(j)].transform_point3(p) * (w / total)).sum();
+            let w: Vec3 = s
+                .joints
+                .iter()
+                .zip(&s.weights)
+                .map(|(&j, &w)| m[usize::from(j)].transform_point3(p) * (w / total))
+                .sum();
             root_inv.transform_point3(w)
         })
         .collect()

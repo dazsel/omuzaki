@@ -23,11 +23,13 @@
 //! edge is also tested against the sheet's **triangles**: its axis, clipped to each nearby triangle's prism, must stay
 //! `radius + thickness + margin` on the side of the triangle it started the sub-step on, and a triangle that is closer
 //! is moved away by that depth, shared among its corners by barycentric weight and inverse mass (the triangle-point
-//! constraint of position-based dynamics, with the collider immovable). A 3 mm capsule swung at 5 m/s through a sheet
-//! of 1.9 cm cells crosses no triangle (`tests/cloth_contact.rs`). What remains: the side is judged from the axis's
-//! midpoint at the sub-step's start, so a collider already through the sheet stays through it, and a collider that
-//! moves more than a cell in one sub-step (over 7 m/s at 1.9 cm cells and the live 1/360 s sub-step) can still pass
-//! between triangles' prisms.
+//! constraint of position-based dynamics, with the collider immovable). The side is the one the same axis point was on
+//! at the sub-step's start; a collider that started within half its reach of the triangle's plane is already in
+//! contact and left to the particle contacts, and one push moves a triangle at most a reach, so a sheet crumpling
+//! around a collider is never flung. A 3 mm capsule swung at 5 m/s through a sheet of 1.9 cm cells crosses no
+//! triangle (`tests/cloth_contact.rs`). What remains: a collider already through the sheet stays through it, and one
+//! that moves more than a cell in one sub-step (over 7 m/s at 1.9 cm cells and the live 1/360 s sub-step) can still
+//! pass between triangles' prisms.
 //!
 //! **Overlapping colliders (limit 2, #129).** Colliders are met one after the other, so a particle pressed into the
 //! crease between two overlapping colliders could be pushed out of the second back into the first. A particle that
@@ -399,6 +401,9 @@ fn contact(pose: &Pose, friction: Friction, x0: Vec3A, x1: Vec3A, travel: f32) -
 /// Puts a particle at `x` outside the colliders it is inside at their end pose, two at a time (limit 2 in the
 /// [module docs](self)): on the crease of the two it is deepest in, or radially out of one.
 fn resolve_overlap(poses: &[Pose], mut x: Vec3A) -> Vec3A {
+    if !x.is_finite() {
+        return x; // the solver resets it
+    }
     for _ in 0..3 {
         // The two colliders `x` is deepest in, as (depth, nearest axis point, reach).
         let mut first: Option<(f32, Vec3A, f32)> = None;
@@ -460,7 +465,6 @@ fn triangle_contacts(
     let cols = shape.cols;
     let cell_cols = if shape.wrap { cols } else { cols - 1 };
     let at = |r: usize, c: usize| r * cols + c % cols;
-    let mid0 = pose.a0 + pose.e0 * 0.5;
     // A push never exceeds what one sub-step can make up: the collider's reach and travel and a cell.
     let most = pose.reach + pose.moved + spacing;
     for r in 0..shape.rows - 1 {
@@ -472,7 +476,7 @@ fn triangle_contacts(
                 continue;
             }
             for [i, j, k] in [[corners[0], corners[2], corners[1]], [corners[1], corners[2], corners[3]]] {
-                push_triangle(pose, [i, j, k], mid0, most, positions, previous, inv_mass);
+                push_triangle(pose, [i, j, k], most, positions, previous, inv_mass);
             }
         }
     }
@@ -482,7 +486,6 @@ fn triangle_contacts(
 fn push_triangle(
     pose: &Pose,
     [i, j, k]: [usize; 3],
-    mid0: Vec3A,
     most: f32,
     positions: &mut [Vec3A],
     previous: &[Vec3A],
@@ -491,20 +494,11 @@ fn push_triangle(
     let (x0, x1, x2) = (positions[i], positions[j], positions[k]);
     let normal = (x1 - x0).cross(x2 - x0);
     let area2 = normal.length();
-    if area2 < 1e-12 {
+    // A corner the solver has yet to repair (non-finite) must not spread to the others.
+    if !(area2 >= 1e-12 && area2.is_finite()) || !(previous[i] + previous[j] + previous[k]).is_finite() {
         return;
     }
     let mut n = normal / area2;
-    // The side the collider started on, from where the triangle and the axis's midpoint were.
-    let (y0, y1, y2) = (previous[i], previous[j], previous[k]);
-    let n0 = (y1 - y0).cross(y2 - y0);
-    let n0 = if n0.length_squared() > 1e-24 { n0 } else { n };
-    if n.dot(n0) < 0.0 {
-        n = -n;
-    }
-    if n0.dot(mid0 - y0) < 0.0 {
-        n = -n;
-    }
     // Clip the axis (at the end pose) to the triangle's prism.
     let (a, e) = (pose.a1, pose.e1);
     let (mut t0, mut t1) = (0.0_f32, 1.0_f32);
@@ -526,10 +520,25 @@ fn push_triangle(
             return;
         }
     }
+    // The side the collider started on: the same axis point at the sub-step's start, against the triangle where it
+    // was. A collider that started within half its reach of the triangle's plane is already in contact, and the
+    // particle contacts handle it; judging a side there would flip with every wrinkle.
+    let (y0, y1, y2) = (previous[i], previous[j], previous[k]);
+    let n0 = (y1 - y0).cross(y2 - y0).normalize_or(n);
+    let side_at = |t: f32| n0.dot(pose.a0 + pose.e0 * t - y0);
+    let start = if side_at(t0).abs() <= side_at(t1).abs() { side_at(t0) } else { side_at(t1) };
+    if start.abs() < 0.5 * pose.reach {
+        return;
+    }
+    if (n.dot(n0) < 0.0) != (start < 0.0) {
+        n = -n;
+    }
     // The axis's lowest point over the triangle, measured on the collider's side.
     let height = |t: f32| n.dot(a + e * t - x0);
     let t = if height(t0) <= height(t1) { t0 } else { t1 };
-    let depth = (pose.reach - height(t)).min(most);
+    // One push moves the surface at most a reach (and what the sub-step's motion can make up), so a sheet that
+    // crumples around a collider is never flung.
+    let depth = (pose.reach - height(t)).min(most).min(pose.reach);
     if depth <= 0.0 {
         return;
     }
@@ -550,8 +559,10 @@ fn push_triangle(
     if sum < 1e-12 {
         return;
     }
+    // The exact projection moves a corner by `depth · w b / Σ w b²`, which is unbounded when the point under the axis
+    // sits by a pinned corner and the movable ones carry almost no weight: no corner moves further than the depth.
     for (p, b) in weights {
-        positions[p] -= n * (depth * inv_mass[p] * b / sum);
+        positions[p] -= n * (depth * inv_mass[p] * b / sum).min(depth);
     }
 }
 

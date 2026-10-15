@@ -160,4 +160,3 @@ fn live_cost_is_unchanged() {
     assert_eq!(rt.cost().particles, 24 * 16, "Live steps the sheet as given");
     assert_eq!(offline().cost().particles, 48 * 31);
 }
-

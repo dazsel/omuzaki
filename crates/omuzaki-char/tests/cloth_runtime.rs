@@ -119,11 +119,19 @@ fn turn_and_settle(params: ClothParams) -> (f32, f32) {
 fn the_hem_lags_a_hips_turn_then_settles_within_0_6_s() {
     let toon = ClothParams { bend: 2.0e3, ..ClothParams::default() };
     let (lag, late) = turn_and_settle(toon);
-    println!("toon skirt: hem lag peak {:.1} mm; from 0.6 s after the turn within {:.1} mm of its rest", lag * 1e3, late * 1e3);
+    println!(
+        "toon skirt: hem lag peak {:.1} mm; from 0.6 s after the turn within {:.1} mm of its rest",
+        lag * 1e3,
+        late * 1e3
+    );
     assert!(lag > 0.03, "the hem should lag the turn, peak {lag} m");
     assert!(late < 0.03, "the hem should settle within 0.6 s, still {late} m from its rest");
     let (lag, late) = turn_and_settle(ClothParams::default());
-    println!("default fabric: hem lag peak {:.1} mm; from 0.6 s after the turn within {:.1} mm of its rest", lag * 1e3, late * 1e3);
+    println!(
+        "default fabric: hem lag peak {:.1} mm; from 0.6 s after the turn within {:.1} mm of its rest",
+        lag * 1e3,
+        late * 1e3
+    );
     assert!(late < 0.07, "the default fabric's hem is still {late} m from its rest");
 }
 
@@ -328,4 +336,3 @@ fn offline_quality_builds_finer_sheets_with_the_same_pins() {
     }
     assert_eq!((rt.solver_config().substeps, rt.solver_config().iterations), (4, 8));
 }
-
