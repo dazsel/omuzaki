@@ -366,10 +366,9 @@ impl PartKind for RigProbe {
             }
             Mode::PublishedOnExtraBone => {
                 two(rig);
-                let collider =
-                    Collider { bone: extra_id(0), shape: ColliderShape::Sphere { offset: Vec3::ZERO, radius: 0.1 } };
-                out.publishes
-                    .put::<CollidersFact>(ColliderGroup { name: "mine".to_owned(), colliders: vec![collider] });
+                let shape = ColliderShape::Sphere { offset: Vec3::ZERO, radius: 0.1 };
+                let colliders = vec![Collider { bone: extra_id(0), shape }];
+                out.publishes.put::<CollidersFact>(ColliderGroup { name: "mine".to_owned(), colliders });
             }
         }
         Ok(out)

@@ -4,9 +4,9 @@
 //! the space it is authored in than the person it stands for. A character is built at real size anyway, so that what
 //! works in metres agrees with the exported VRM: the body, the head and everything built on them (hair, cloth, garments,
 //! accessories, springs, colliders) are in metres, and a simulation is created at real size. The body part states its
-//! [`Stature`] when it publishes ([`StatureFact`](crate::StatureFact)) and the build applies one uniform scale to the body and the
-//! head, both authored in the template's space, *before* anything else is built: later parts read a body that is
-//! already in metres, so no physical constant (gravity, stiffness) is ever rescaled.
+//! [`Stature`] when it publishes ([`StatureFact`](crate::StatureFact)) and the build applies one uniform scale to the
+//! body and the head, both authored in the template's space, *before* anything else is built: later parts read a body
+//! that is already in metres, so no physical constant (gravity, stiffness) is ever rescaled.
 //!
 //! What this module does *not* do: stage framing, IK reach and light ranges live in other crates. They get a character
 //! at real size and can read [`BuiltCharacter::stature`](crate::BuiltCharacter::stature) and the mesh bounds, but this

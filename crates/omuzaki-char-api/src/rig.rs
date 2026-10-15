@@ -997,10 +997,12 @@ mod tests {
     }
 
     fn published_of(fits: Vec<Arc<dyn BodyFit>>) -> Published {
-        let mut publishes = Publishes::default();
-        fits.into_iter().for_each(|fit| publishes.put::<FitFact>(fit));
+        let mut out = Publishes::default();
+        for fit in fits {
+            out.put::<FitFact>(fit);
+        }
         let mut published = Published::default();
-        published.absorb(&PartId::new("body").unwrap(), publishes).unwrap();
+        published.absorb(&PartId::new("body").unwrap(), out).unwrap();
         published
     }
 
