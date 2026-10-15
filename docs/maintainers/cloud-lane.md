@@ -58,6 +58,10 @@ structure work (ADR 0054); then Phase 1.
 6. The Director enqueues; the merge queue merges. Never push to `main`; force-push only your own branch, with
    `--force-with-lease`.
 
+**Archive each session as soon as its work is done** (its pull request is ready, its fix round is pushed, or it has
+posted its one question): an archived session can't be re-prompted, so it costs nothing while it waits for review or
+CI. A later round gets a fresh session.
+
 **Branches the lane may push:** `cloud/*`, and the `port/*` and `local/*` branches of pull requests that were the
 lane's or were handed to it on #2.
 
@@ -118,13 +122,18 @@ least every few hours and before stopping:
 
 **For the outgoing lead**, when its account is near its limits:
 1. Stop starting new sessions.
-2. **Stop every implementer session:** send each one a message to stop and push nothing more (its sessions live on
-   this account, and a new lead on another account can't see, message or archive them).
+2. **Stop every implementer session:** each one first commits any uncommitted work as-is to a side branch
+   `<branch>-wip` and **pushes that branch** (no PR, no comments, the PR's own head untouched), then stops and pushes
+   nothing more. Its sessions live on this account: a new lead on another account can't see, message or archive
+   them, and can only reach work that was pushed.
 3. Update the state issue completely, including any session that was mid-task: its branch and last pushed head.
 4. Post on #2 that a handover is due, and stop. The owner then archives this account's sessions.
 
-**For a new lead inheriting branches:** start your own session on an inherited branch only after it has been quiet
-(nothing pushed for 30 minutes), so two sessions never push to the same branch.
+**For a new lead inheriting branches:** wait for the outgoing lead's list of archived sessions on #2 (or 30 quiet
+minutes on a branch) before starting your own session on it, so two sessions never push to the same branch. For each
+branch `X` with an `X-wip`: read `git diff X...X-wip` (unsaved, never self-gated work), keep what's sound by merging it
+into `X`, finish and self-gate it, push to `X` as a fix round that says what was kept and dropped, then delete
+`X-wip`. Never open a pull request from a `-wip` branch.
 
 ## Appendix: the launch brief (v4)
 
