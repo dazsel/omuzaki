@@ -26,7 +26,7 @@ use crate::frame::FrameView;
 use crate::gpu::{DEPTH_FORMAT, SCENE_FORMAT};
 use crate::resource::SceneResources;
 use crate::resource::material::GpuMaterial;
-use crate::resource::mesh::{GpuMesh, smooth_normal_layout, vertex_layout};
+use crate::resource::mesh::{GpuMesh, smooth_normal_layout, vertex_layouts};
 use crate::shared::Shared;
 
 const SOURCE: &str = concat!(include_str!("../shader/common.wgsl"), include_str!("../shader/outline.wgsl"));
@@ -105,7 +105,10 @@ fn build_pipeline(
             module,
             entry_point: Some("vs_main"),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
-            buffers: &[Some(vertex_layout()), Some(smooth_normal_layout())],
+            buffers: &{
+                let [shape, surface] = vertex_layouts();
+                [shape, surface, Some(smooth_normal_layout())]
+            },
         },
         primitive: wgpu::PrimitiveState {
             front_face: if variant.mirrored { wgpu::FrontFace::Cw } else { wgpu::FrontFace::Ccw },

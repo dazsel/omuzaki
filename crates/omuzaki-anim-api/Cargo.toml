@@ -25,3 +25,7 @@ harness = false
 
 [lints]
 workspace = true
+
+[package.metadata.omuzaki]
+kind = "API"
+summary = "animation and rig (§8, §20, §22): the channel table and fixed-size `ChannelBuf`, the normalised `TrackFrame`, retarget and calibration, blending order and ownership, the life layer, the `Skeleton` (a VRM humanoid with its `HumanoidMap`, or generic for creatures), spring bones, scores"

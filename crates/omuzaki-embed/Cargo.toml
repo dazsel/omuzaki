@@ -9,6 +9,8 @@ license.workspace = true
 repository.workspace = true
 
 [package.metadata.omuzaki]
+kind = "Lib"
+summary = "the build-script helper that embeds a data folder as a sorted table of (relative path, `include_str!`), so seed data is compiled in and wasm needs no file system (ADR 0019 D14); std only"
 layer = "lib"
 
 [dev-dependencies]

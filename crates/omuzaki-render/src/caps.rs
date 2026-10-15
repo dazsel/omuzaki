@@ -16,6 +16,7 @@ use omuzaki_render_api::limits::{GUARANTEED_TEXTURE_SIZE, MAX_JOINTS};
 
 use crate::frame::uniform::FrameUniform;
 use crate::resource::material::MaterialUniform;
+use crate::resource::mesh::MAX_VERTEX_BUFFERS;
 use crate::shared::MATERIAL_TEXTURES;
 
 /// The environment variable that picks a profile for any program (a test, a bench, the CLI): `native`, `webgpu` or
@@ -154,8 +155,9 @@ macro_rules! need {
     };
 }
 
-/// Bytes in one mesh vertex; a test keeps it equal to the real layout's stride.
-const MESH_VERTEX_STRIDE: u64 = 72;
+/// Bytes in the widest mesh vertex stream (the 48-byte surface stream; R2 split the vertex into shape and surface
+/// streams so dynamic updates rewrite only positions and normals); a test keeps it equal to the real layouts.
+const MESH_VERTEX_STRIDE: u64 = 48;
 
 /// What the renderer needs from the device, as data. Each entry comes from a layout or constant in the crate (the
 /// `why`), and the test `a_profile_that_meets_the_requirements_opens_a_renderer` keeps the list honest: every profile
@@ -173,9 +175,9 @@ pub const REQUIREMENTS: &[Requirement] = &[
     need!(max_uniform_buffers_per_shader_stage, 4, "frame, material, shadow and pass parameters"),
     need!(max_sampled_textures_per_shader_stage, MATERIAL_TEXTURES + 1, "material textures and the shadow map"),
     need!(max_samplers_per_shader_stage, MATERIAL_TEXTURES + 1, "material samplers and the shadow comparison"),
-    need!(max_vertex_buffers, 5, "the mesh stream and four extra attribute streams"),
+    need!(max_vertex_buffers, MAX_VERTEX_BUFFERS, "the shape and surface streams and four extra attribute streams"),
     need!(max_bindings_per_bind_group, MATERIAL_TEXTURES * 2 + 1, "the material group's bindings 0 to 10"),
-    need!(max_vertex_buffer_array_stride, MESH_VERTEX_STRIDE, "the mesh vertex (72 bytes)"),
+    need!(max_vertex_buffer_array_stride, MESH_VERTEX_STRIDE, "the widest mesh vertex stream (48 bytes)"),
     need!(max_vertex_attributes, 10, "six mesh attributes and four extra ones"),
     need!(max_texture_dimension_2d, GUARANTEED_TEXTURE_SIZE, "the texture size the render contract guarantees"),
     need!(max_color_attachments, 1, "every pass draws to at least one target"),
@@ -297,13 +299,22 @@ mod tests {
 
     #[test]
     fn lowering_the_bind_group_and_vertex_stride_limits_together_reports_both() {
-        assert_eq!(crate::resource::mesh::vertex_layout().array_stride, MESH_VERTEX_STRIDE);
+        let widest = crate::resource::mesh::vertex_layouts().into_iter().flatten().map(|l| l.array_stride).max();
+        assert_eq!(widest, Some(MESH_VERTEX_STRIDE), "the limit tracks the widest vertex stream");
         let limits = wgpu::Limits {
             max_bindings_per_bind_group: 10,
-            max_vertex_buffer_array_stride: 64,
+            max_vertex_buffer_array_stride: 32,
             ..wgpu::Limits::defaults()
         };
         let names: Vec<&str> = unmet(&limits).iter().map(|u| u.limit).collect();
         assert_eq!(names, ["max_bindings_per_bind_group", "max_vertex_buffer_array_stride"]);
+    }
+
+    #[test]
+    fn a_device_with_five_vertex_buffers_is_rejected_because_a_draw_binds_six() {
+        let limits = wgpu::Limits { max_vertex_buffers: 5, ..wgpu::Limits::defaults() };
+        let list = unmet(&limits);
+        assert_eq!(list.iter().map(|u| (u.limit, u.needed)).collect::<Vec<_>>(), [("max_vertex_buffers", 6)]);
+        assert_eq!(MAX_VERTEX_BUFFERS, 6);
     }
 }

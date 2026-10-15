@@ -21,3 +21,7 @@ serde_json.workspace = true
 
 [lints]
 workspace = true
+
+[package.metadata.omuzaki]
+kind = "API"
+summary = "the updater contract (SE-08, ADR 0035): the `Updater` and `ModelCatalogue` services, `Release`, `UpdateStatus`, `UpdateError`, RAII `Hold`s that defer a restart, bounded `UpdateEvents`, `state.toml` as `State` (unknown keys kept) with its `Watermark`, the install `Layout`, and the `Disk` and `WallClock` seams that the launcher and the updater share; no I/O; design in `docs/design/updates.md`"

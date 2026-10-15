@@ -227,7 +227,9 @@ fn the_wgsl_structs_read_the_bytes_the_rust_structs_write() {
         let (material_slot, material_generation) =
             resources.materials.insert(GpuMaterial::create(&shared, &resources.textures, &material));
         let quad = omuzaki_render_mock::shapes::quad(Vec2::ONE);
-        let (mesh_slot, mesh_generation) = resources.meshes.insert(GpuMesh::upload(&shared.gpu, &quad).unwrap());
+        let (mesh_slot, mesh_generation) = resources
+            .meshes
+            .insert(GpuMesh::upload(&shared.gpu, &quad, &omuzaki_render_api::MeshOptions::default()).unwrap());
         let scene = probe_scene(
             MeshId::from_parts(mesh_slot, mesh_generation),
             MaterialId::from_parts(material_slot, material_generation),
