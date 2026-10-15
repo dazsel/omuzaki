@@ -26,17 +26,19 @@ pub struct Shot {
     pub pseudo: bool,
     /// Only this group's stories (`None`: the whole gallery).
     pub group: Option<Group>,
+    /// Only this part of the group, counted from 0 (`None`: the whole group); see [`Gallery::with_group`].
+    pub part: Option<(usize, usize)>,
 }
 
 impl Shot {
     /// A 1680 x 1050 pt window at 1 px per point, the whole gallery.
     pub fn new(settings: Settings) -> Self {
-        Self { settings, size: vec2(1680.0, 1050.0), pixels_per_point: 1.0, pseudo: false, group: None }
+        Self { settings, size: vec2(1680.0, 1050.0), pixels_per_point: 1.0, pseudo: false, group: None, part: None }
     }
 
     /// The gallery this shot shows, before it is laid out.
     fn gallery(self) -> Gallery {
-        Gallery::new(self.settings).with_pseudo(self.pseudo).with_group(self.group)
+        Gallery::new(self.settings).with_pseudo(self.pseudo).with_group(self.group, self.part)
     }
 }
 
@@ -127,29 +129,39 @@ mod tests {
 
     /// The largest texture every GPU takes, per side, in pixels: a longer capture is refused at render time.
     const MAX_TEXTURE_SIDE: f32 = 8192.0;
-    /// The density the pseudo-locale sections are captured at: 200% is the UI scale (the zoom), and this is the pixels
-    /// per point on top of it (`tools/ci/evidence` gallery-pseudo). The 200% section at 1 px per point is 9594 px tall.
-    const PSEUDO_PIXELS_PER_POINT: f32 = 0.8;
+    /// The tallest a capture part may be: half the texture limit, so a story or two can be added before a split.
+    const MAX_PART_SIDE: f32 = MAX_TEXTURE_SIDE / 2.0;
+    /// How many parts each section of the pseudo-locale gallery is captured in at 200%, and so the parts
+    /// `tools/ci/evidence.py` runs for gallery-pseudo (crates/omuzaki-ui/evidence.toml). A section that grows past
+    /// [`MAX_PART_SIDE`] needs a bigger count here and one more step there.
+    const PSEUDO_PARTS: [(Group, usize); 5] = [
+        (Group::Foundations, 1),
+        (Group::Controls, 4),
+        (Group::Display, 2),
+        (Group::Feedback, 3),
+        (Group::Composites, 1),
+    ];
 
     #[test]
-    fn every_group_of_the_pseudo_gallery_at_200_percent_fits_one_texture() {
+    fn every_part_of_the_pseudo_gallery_at_200_percent_is_under_half_a_texture() {
         let settings = Settings { scale: Scale::nearest(200), ..Settings::default() };
-        for group in [Group::Foundations, Group::Controls, Group::Display, Group::Feedback, Group::Composites] {
-            let shot = Shot {
-                group: Some(group),
-                pseudo: true,
-                pixels_per_point: PSEUDO_PIXELS_PER_POINT,
-                ..Shot::new(settings)
-            };
-            // The texture is laid-out points x pixels per point x the zoom (the UI scale), as the renderer makes it.
-            let pixels = content_height(shot) * shot.pixels_per_point * shot.settings.scale.factor();
-            // A gallery that lays out to nothing would pass the limit for the wrong reason.
-            assert!(pixels > 0.0, "{}: nothing laid out", group.title());
-            assert!(
-                pixels <= MAX_TEXTURE_SIDE,
-                "{}: the pseudo-locale capture at 200% is {pixels} px tall, over the {MAX_TEXTURE_SIDE} px limit",
-                group.title()
-            );
+        for (group, parts) in PSEUDO_PARTS {
+            for index in 0..parts {
+                let shot = Shot { group: Some(group), part: Some((index, parts)), pseudo: true, ..Shot::new(settings) };
+                // The texture is laid-out points x pixels per point x the zoom (the UI scale), as the renderer makes it.
+                let pixels = content_height(shot) * shot.pixels_per_point * shot.settings.scale.factor();
+                // A part that lays out to nothing would pass the limit for the wrong reason.
+                assert!(pixels > 0.0, "{} part {} of {parts} laid out to nothing", group.title(), index + 1);
+                assert!(
+                    pixels <= MAX_PART_SIDE,
+                    "{} part {} of {parts} is {pixels} px tall, over the {MAX_PART_SIDE} px part limit. Split the {} \
+                     section into more parts: raise its count in PSEUDO_PARTS (crates/omuzaki-ui/src/ds/gallery/capture.rs) \
+                     and add the new `--part` steps to gallery-pseudo in crates/omuzaki-ui/evidence.toml.",
+                    group.title(),
+                    index + 1,
+                    group.title()
+                );
+            }
         }
     }
 }

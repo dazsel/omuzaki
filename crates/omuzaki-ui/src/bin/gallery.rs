@@ -7,6 +7,7 @@
 //! gallery --screenshots out/                # dark.png, light.png and high-contrast.png
 //! gallery --pseudo                          # the pseudo-locale: accented, 40% longer text (also with --screenshot)
 //! gallery --group controls --screenshot out/controls.png   # one section only, for a screenshot of it
+//! gallery --group controls --part 2/3 --screenshot out/controls-2.png  # its second of three parts
 //! gallery --bench 300                       # measure the UI frame time (layout + tessellation) and exit
 //! ```
 
@@ -74,6 +75,10 @@ struct Args {
     /// Only this section of the gallery (screenshots and the window).
     #[arg(long, value_enum)]
     group: Option<GroupArg>,
+    /// Only part I of N of the `--group` section (`2/3` is the middle third of its cards), for a section too tall for
+    /// one texture.
+    #[arg(long, value_parser = parse_part, requires = "group")]
+    part: Option<(usize, usize)>,
     /// Render one screenshot of the whole gallery to this PNG and exit.
     #[arg(long)]
     screenshot: Option<PathBuf>,
@@ -92,6 +97,17 @@ struct Args {
     /// Measure this many frames of the gallery (headless) and print the timings.
     #[arg(long)]
     bench: Option<u32>,
+}
+
+/// `I/N`: part I of N, counted from 1; returned counted from 0.
+fn parse_part(text: &str) -> Result<(usize, usize), String> {
+    let (index, parts) = text.split_once('/').ok_or("expected I/N, for example 2/3")?;
+    let index: usize = index.trim().parse().map_err(|e| format!("{e}"))?;
+    let parts: usize = parts.trim().parse().map_err(|e| format!("{e}"))?;
+    if index == 0 || parts == 0 || index > parts {
+        return Err(format!("there is no part {index} of {parts}"));
+    }
+    Ok((index - 1, parts))
 }
 
 fn parse_size(text: &str) -> Result<(f32, f32), String> {
@@ -131,7 +147,7 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     if args.screenshot.is_some() || args.screenshots.is_some() || args.popover.is_some() {
         return Err("built without the `capture` feature: no headless rendering".into());
     }
-    window(settings(args), args.pseudo, args.group.map(Group::from))
+    window(settings(args), args.pseudo, args.group.map(Group::from), args.part)
 }
 
 #[cfg(feature = "capture")]
@@ -143,6 +159,7 @@ fn screenshots(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         pixels_per_point: args.ppp,
         pseudo: args.pseudo,
         group: args.group.map(Group::from),
+        part: args.part,
     };
     let save = |path: &std::path::Path, image: image::RgbaImage| -> Result<(), Box<dyn std::error::Error>> {
         image.save(path)?;
@@ -168,7 +185,12 @@ fn screenshots(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn window(settings: Settings, pseudo: bool, group: Option<Group>) -> Result<(), Box<dyn std::error::Error>> {
+fn window(
+    settings: Settings,
+    pseudo: bool,
+    group: Option<Group>,
+    part: Option<(usize, usize)>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut native = eframe::NativeOptions::default();
     native.viewport = native
         .viewport
@@ -181,7 +203,7 @@ fn window(settings: Settings, pseudo: bool, group: Option<Group>) -> Result<(), 
         Box::new(move |cc| {
             // Applying before the first frame lets the bundled fonts activate on the second.
             omuzaki_ui::ds::apply_settings(&cc.egui_ctx, settings);
-            Ok(Box::new(App { gallery: Gallery::new(settings).with_pseudo(pseudo).with_group(group) }))
+            Ok(Box::new(App { gallery: Gallery::new(settings).with_pseudo(pseudo).with_group(group, part) }))
         }),
     )?;
     Ok(())
