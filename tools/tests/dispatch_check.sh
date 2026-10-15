@@ -628,7 +628,7 @@ spec.loader.exec_module(mod)
 for body in ["Fixes #42", "Closes: #7", "Does not close #42", "Fixes other/repo#42", "prefix #9", "bugfix #3",
              "resolved #5 and Closed #6", "Fixes\n#8", "Use `Fixes #10` to link", "a ``Fixes #11`` span",
              "<!-- Fixes #12 --> Closes #13", "```\nFixes #14\n```\nFixes #15", "~~~md\nCloses #16\n",
-             "<!-- Fixes #17"]:
+             "<!-- Fixes #17", "Example:\n\n    Fixes #18\n\nCloses #19", "\tFixes #20", "text\n    Fixes #21"]:
     print(body.replace("\n", " "), sorted(mod.closes_in_body(body)))
 ' "$CHECK" 2>"$work/err")
   expect_line "Fixes #42 [42]" "keyword: Fixes #42 closes 42"
@@ -645,6 +645,9 @@ for body in ["Fixes #42", "Closes: #7", "Does not close #42", "Fixes other/repo#
   expect_line "\`\`\` Fixes #14 \`\`\` Fixes #15 [15]" "keyword: a fenced block does not count; prose after it does"
   expect_line "~~~md Closes #16  []" "keyword: an unclosed fence runs to the end of the body"
   expect_line "<!-- Fixes #17 []" "keyword: an unclosed HTML comment runs to the end of the body"
+  expect_line "Example:      Fixes #18  Closes #19 [19]" "keyword: an indented code block after a blank line is an example"
+  expect_line "	Fixes #20 []" "keyword: a tab-indented block at the start is an example"
+  expect_line "text     Fixes #21 [21]" "keyword: an indented line that continues a paragraph is text"
 }
 parser_cases
 

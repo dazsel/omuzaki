@@ -222,12 +222,14 @@ CLOSING_REFERENCE = re.compile(
 )
 
 
-# Markdown GitHub does not read keywords in: HTML comments, fenced code blocks and inline code spans. Fences first,
-# so a backtick inside a fence cannot open a span; an unclosed fence or comment runs to the end of the body, as it
-# renders.
+# Markdown GitHub does not read keywords in: HTML comments, fenced code blocks, indented code blocks and inline code
+# spans. Fences first, so a backtick inside a fence cannot open a span; an unclosed fence or comment runs to the end of
+# the body, as it renders. An indented block is a run of lines indented by four spaces or a tab that starts the body or
+# follows a blank line; inside a list such lines are text, not code, and dropping them can only turn a go into a wait.
 LITERAL_MARKDOWN = re.compile(
     r"<!--.*?(?:-->|\Z)"
     r"|^[ \t]{0,3}(?P<fence>`{3,}|~{3,}).*?(?:^[ \t]{0,3}(?P=fence)[`~]*[ \t]*$|\Z)"
+    r"|(?:\A|(?<=\n)[ \t]*\n)(?:(?: {4}|\t)[^\n]*(?:\n|\Z))+"
     r"|(?P<ticks>`+).+?(?P=ticks)",
     re.DOTALL | re.MULTILINE,
 )
