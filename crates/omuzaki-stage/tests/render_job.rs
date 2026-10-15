@@ -51,24 +51,26 @@ fn sizes_outside_the_limits_are_refused() {
 
 #[test]
 fn the_cost_hint_counts_every_image_the_render_allocates() {
-    // High 4096 by 4096 at 4 samples: internal 6144 by 6144 at 8 + 8 * 4 + 4 * 4 = 56 bytes, 2016 MiB of attachments;
-    // a 2048 by 2048 shadow map at 4 bytes, 16 MiB; the 4096 by 4096 RGBA8 output, 64 MiB; the read-back, 64 MiB; and bloom
-    // at the target: the bright image at 2048 by 2048 and 2 images for each of 5 mips at 8 bytes, 117 MiB. The total is
-    // 2342 MiB with the meshes and textures.
+    // The bloom chain of a target T has the bright image at half T and two images for each of 5 mips, at 8 bytes. Of a
+    // 4096 target that is 117 MiB; the renderer keeps 3 chains, so the cache can hold 352 MiB of them for any job.
+    //
+    // High 4096 by 4096 at 4 samples: internal 6144 by 6144 at 56 bytes: 2016 MiB of attachments; a 2048 shadow map at 4
+    // bytes: 16 MiB; the output: 64 MiB; the read-back: 64 MiB; and the bloom cache: 352 MiB. Total 2512 MiB, and 2576 with
+    // the meshes and textures.
     let hint = cost(UVec2::splat(4096), 1, RenderQuality::High);
-    assert_eq!(hint.gpu_mib, Some(2342));
+    assert_eq!(hint.gpu_mib, Some(2576));
     assert_eq!(hint.seconds, Some(0.5), "a high still takes half a second");
     assert_eq!(hint.usd, None, "no money is spent");
 
     // Offline is 16 samples (200 bytes a pixel) at 1024 by 1024: 200 MiB of attachments, 16 MiB of shadow map at high
-    // shadows, 4 MiB of output, 4 MiB of read-back and 7.3 MiB of bloom: 232 MiB, and 296 with the meshes.
+    // shadows, 4 MiB of output, 4 MiB of read-back and 352 MiB of bloom cache: 576 MiB, and 640 with the meshes.
     let offline = cost(UVec2::splat(1024), 1, RenderQuality::Offline);
-    assert_eq!(offline.gpu_mib, Some(296));
+    assert_eq!(offline.gpu_mib, Some(640));
     assert_eq!(offline.seconds, Some(2.0), "an offline still takes two seconds");
 
-    // Live is 4 samples at the target's size, with the low shadow map (4 MiB) and no bloom: 64 by 64 is 0.22 MiB of
-    // attachments, so 5 MiB with the shadow map and the output, and 69 with the meshes.
-    assert_eq!(cost(UVec2::splat(64), 1, RenderQuality::Live).gpu_mib, Some(69));
+    // Live: 4 samples at 64 by 64, with the low shadow map (4 MiB): 4.25 MiB of images, and 356 with the bloom cache, which
+    // an earlier job's chains can fill whatever this preset's post effects are: 420 with the meshes and textures.
+    assert_eq!(cost(UVec2::splat(64), 1, RenderQuality::Live).gpu_mib, Some(420));
 }
 
 #[test]

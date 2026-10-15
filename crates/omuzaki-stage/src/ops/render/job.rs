@@ -95,6 +95,12 @@ const DEPTH_BYTES: u64 = 4;
 const BLOOM_MIPS: u64 = 5;
 /// Rows of a read-back copy are padded to this many bytes (`wgpu::COPY_BYTES_PER_ROW_ALIGNMENT`).
 const COPY_ROW_ALIGNMENT: u64 = 256;
+/// Bloom chains the renderer keeps across frames, one per target size, the oldest dropped (`pass/bloom.rs`,
+/// `CACHED_SIZES`). Every job on a renderer shares them, so any job's peak can include all of them.
+const BLOOM_CACHED_CHAINS: u64 = 3;
+/// The largest side a job renders, so the largest target a bloom chain is built for. A job's `size` is refused above it
+/// (`check_size`), so no cached chain is larger.
+const MAX_TARGET_SIDE: u32 = MAX_SIDE;
 
 /// The bytes a pixel of a render's scene attachments takes at `samples` samples: 8 of colour per sample, the resolved
 /// colour when multisampled, and 4 of depth per sample (`frame/attachments.rs`, `bytes`).
@@ -138,14 +144,18 @@ fn bloom_bytes(target: UVec2) -> u64 {
 /// - the shadow map, at the preset's shadow quality, though a still may have no casting light;
 /// - the output, RGBA8 at `size`;
 /// - the read-back staging buffer, RGBA8 at `size` with rows padded to 256 bytes;
-/// - bloom at `size`, on the presets with post effects on (High and Offline).
+/// - the bloom chains the renderer keeps: [`BLOOM_CACHED_CHAINS`] chains, each at the largest target a job renders
+///   ([`MAX_TARGET_SIDE`]). The cache keeps chains from earlier jobs whatever this job's preset, so this is charged for
+///   every preset, and it is the cache's worst case: the job's own chain is one of its three slots.
 ///
-/// Depth of field is not counted: a still's post settings never enable it (`LightRig::post`). Environment maps are not
-/// counted either: a still's scene names none.
+/// Not counted: depth of field, whose layers are cached the same way but which no still enables (`LightRig::post`);
+/// environment maps, which a still's scene never names; and the morph buffers, which are character data and so fall in
+/// the [`CHARACTER_MIB`] allowance with the meshes and textures.
 ///
 /// Worked: a 4096 by 4096 high still at 4 samples. Its internal size is 6144 by 6144, at 56 bytes a pixel: 2016 MiB of
-/// attachments. The shadow map is 2048 by 2048 at 4 bytes: 16 MiB. The output is 64 MiB, the read-back 64 MiB, and the
-/// bloom chain 117 MiB. Together with the 64 MiB of meshes and textures, the total is 2342 MiB.
+/// attachments. The shadow map is 2048 by 2048 at 4 bytes: 16 MiB. The output is 64 MiB and the read-back 64 MiB. The
+/// bloom chain of a 4096 target is 117 MiB, and three of them are 352 MiB. Together with the 64 MiB allowance, the total
+/// is 2576 MiB.
 ///
 /// Seconds per still: 0.2 live, 0.5 high, 2.0 offline. No money is spent. Setting `gpu_mib` puts the job on the GPU
 /// lane.
@@ -164,7 +174,8 @@ pub fn cost(size: UVec2, images: u32, quality: RenderQuality) -> CostHint {
     let shadow = shadow_side(preset.shadows).pow(2) * DEPTH_BYTES;
     let output = target * OUTPUT_BYTES;
     let readback = (u64::from(size.x) * OUTPUT_BYTES).next_multiple_of(COPY_ROW_ALIGNMENT) * u64::from(size.y);
-    let bloom = if preset.post_effects { bloom_bytes(size) } else { 0 };
+    let largest = UVec2::splat(MAX_TARGET_SIDE);
+    let bloom = BLOOM_CACHED_CHAINS * bloom_bytes(largest);
     let bytes = attachments + shadow + output + readback + bloom;
     let mib = u32::try_from(bytes.div_ceil(MIB) + CHARACTER_MIB).unwrap_or(u32::MAX);
     let per_image = match quality {
