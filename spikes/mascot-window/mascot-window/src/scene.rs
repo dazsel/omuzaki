@@ -88,21 +88,22 @@ impl Fit {
         inside.then_some((ix as u32, iy as u32))
     }
 
-    /// Whether the mascot (alpha at or above [`HIT_ALPHA`]) is under window pixel `(x, y)`.
-    pub fn hit(&self, scene: &Scene, x: f32, y: f32) -> bool {
-        self.to_image(x, y).is_some_and(|(ix, iy)| scene.alpha(ix, iy) >= HIT_ALPHA)
+    /// Whether the mascot is under window pixel `(x, y)`: its alpha as shown, which is the picture's times the window's
+    /// `opacity`, is at or above [`HIT_ALPHA`]. A fully faded mascot therefore catches no clicks.
+    pub fn hit(&self, scene: &Scene, opacity: f32, x: f32, y: f32) -> bool {
+        self.to_image(x, y).is_some_and(|(ix, iy)| f32::from(scene.alpha(ix, iy)) * opacity >= f32::from(HIT_ALPHA))
     }
 
     /// The mascot's footprint as horizontal runs of window pixels, for an OS input region (X11 input shape, a Wayland
     /// input region). One rectangle per run per row, merged vertically where consecutive rows have identical runs.
-    pub fn input_rects(&self, scene: &Scene) -> Vec<Rect> {
+    pub fn input_rects(&self, scene: &Scene, opacity: f32) -> Vec<Rect> {
         let mut rects: Vec<Rect> = Vec::new();
         let mut previous: Vec<Rect> = Vec::new();
         for y in 0..self.window.1 {
             let mut row: Vec<Rect> = Vec::new();
             let mut start: Option<u32> = None;
             for x in 0..=self.window.0 {
-                let on = x < self.window.0 && self.hit(scene, x as f32 + 0.5, y as f32 + 0.5);
+                let on = x < self.window.0 && self.hit(scene, opacity, x as f32 + 0.5, y as f32 + 0.5);
                 match (on, start) {
                     (true, None) => start = Some(x),
                     (false, Some(s)) => {
@@ -129,6 +130,29 @@ impl Fit {
         }
         rects.append(&mut previous);
         rects
+    }
+}
+
+/// The picture as a hit-test mask: where it sits in the window and how opaque the window shows it.
+#[derive(Clone, Copy, Debug)]
+pub struct Mask<'a> {
+    /// How the picture sits in the window.
+    pub fit: Fit,
+    /// The picture's pixels.
+    pub scene: &'a Scene,
+    /// The window's opacity, 0..=1.
+    pub opacity: f32,
+}
+
+impl Mask<'_> {
+    /// Whether the mascot is under window pixel `(x, y)`; see [`Fit::hit`].
+    pub fn hit(&self, x: f32, y: f32) -> bool {
+        self.fit.hit(self.scene, self.opacity, x, y)
+    }
+
+    /// The mascot's footprint for an OS input region; see [`Fit::input_rects`].
+    pub fn input_rects(&self) -> Vec<Rect> {
+        self.fit.input_rects(self.scene, self.opacity)
     }
 }
 
@@ -195,11 +219,11 @@ mod tests {
     fn hit_test_matches_alpha() {
         let scene = disc();
         let fit = Fit::new((SIZE, SIZE), (SIZE, SIZE));
-        assert!(fit.hit(&scene, 32.5, 32.5));
-        assert!(!fit.hit(&scene, 2.5, 2.5));
+        assert!(fit.hit(&scene, 1.0, 32.5, 32.5));
+        assert!(!fit.hit(&scene, 1.0, 2.5, 2.5));
         for y in 0..SIZE {
             for x in 0..SIZE {
-                assert_eq!(fit.hit(&scene, x as f32 + 0.5, y as f32 + 0.5), scene.alpha(x, y) >= HIT_ALPHA);
+                assert_eq!(fit.hit(&scene, 1.0, x as f32 + 0.5, y as f32 + 0.5), scene.alpha(x, y) >= HIT_ALPHA);
             }
         }
     }
@@ -210,7 +234,7 @@ mod tests {
         for window in [(SIZE, SIZE), (40, 30)] {
             let fit = Fit::new(window, (SIZE, SIZE));
             let mut covered = vec![0_u8; (window.0 * window.1) as usize];
-            for r in fit.input_rects(&scene) {
+            for r in fit.input_rects(&scene, 1.0) {
                 for y in r.y..r.y + r.h {
                     for x in r.x..r.x + r.w {
                         covered[(y * window.0 + x) as usize] += 1;
@@ -219,7 +243,7 @@ mod tests {
             }
             for y in 0..window.1 {
                 for x in 0..window.0 {
-                    let want = u8::from(fit.hit(&scene, x as f32 + 0.5, y as f32 + 0.5));
+                    let want = u8::from(fit.hit(&scene, 1.0, x as f32 + 0.5, y as f32 + 0.5));
                     assert_eq!(covered[(y * window.0 + x) as usize], want, "({x}, {y}) in {window:?}");
                 }
             }
@@ -227,10 +251,21 @@ mod tests {
     }
 
     #[test]
+    fn opacity_shrinks_the_hit_area_to_nothing() {
+        let scene = disc();
+        let fit = Fit::new((SIZE, SIZE), (SIZE, SIZE));
+        // The feather has alpha 100 and the body 255: at 0.05 only the body (255 * 0.05 = 12.75 >= 8) still hits.
+        assert!(fit.hit(&scene, 1.0, 32.5, 16.5));
+        assert!(!fit.hit(&scene, 0.05, 32.5, 16.5));
+        assert!(fit.hit(&scene, 0.05, 32.5, 32.5));
+        assert!(fit.input_rects(&scene, 0.0).is_empty(), "invisible pixels catch no clicks");
+    }
+
+    #[test]
     fn input_rects_merge_rows() {
         let scene = disc();
         let fit = Fit::new((SIZE, SIZE), (SIZE, SIZE));
-        let rects = fit.input_rects(&scene);
+        let rects = fit.input_rects(&scene, 1.0);
         assert!(rects.len() < (SIZE * SIZE / 8) as usize, "{} rectangles", rects.len());
         assert!(rects.iter().any(|r| r.h > 1));
     }

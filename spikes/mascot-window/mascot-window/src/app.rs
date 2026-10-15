@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use winit::application::ApplicationHandler;
+use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, NamedKey};
@@ -11,7 +12,7 @@ use winit::window::{Window, WindowId};
 
 use crate::gpu::{self, Frame, Renderer};
 use crate::platform;
-use crate::scene::{Fit, Scene};
+use crate::scene::{Fit, Mask, Scene};
 use crate::scene_pass::{self, ReferenceError};
 use crate::stats::{Series, Summary};
 
@@ -69,12 +70,16 @@ pub struct Outcome {
     pub presented: u32,
     /// Wall-clock seconds from the first frame to the last.
     pub seconds: f64,
-    /// CPU seconds the process used over that time, where the platform can say.
+    /// CPU seconds the process used between the first frame and the last report, where the platform can say.
     pub cpu_seconds: Option<f64>,
+    /// Wall-clock seconds that `cpu_seconds` covers.
+    pub cpu_wall_seconds: f64,
     /// CPU time inside `render` (acquire, encode, submit, present).
     pub render: Option<Summary>,
     /// GPU time per frame from timestamp queries, where the adapter has them.
     pub gpu: Option<Summary>,
+    /// Frames whose GPU timestamps could not be read back.
+    pub gpu_failures: u32,
 }
 
 impl std::fmt::Display for Outcome {
@@ -90,8 +95,8 @@ impl std::fmt::Display for Outcome {
         match self.gpu {
             Some(s) => write!(
                 f,
-                "; GPU ms mean {:.2}, p95 {:.2}, max {:.2} ({} frames timed)",
-                s.mean_ms, s.p95_ms, s.max_ms, s.frames
+                "; GPU ms mean {:.2}, p95 {:.2}, max {:.2} ({} frames timed, {} failed)",
+                s.mean_ms, s.p95_ms, s.max_ms, s.frames, self.gpu_failures
             ),
             None => write!(f, "; GPU time not measured"),
         }
@@ -101,7 +106,7 @@ impl std::fmt::Display for Outcome {
 impl Outcome {
     /// Process CPU use as a percentage of one core.
     pub fn cpu_percent(&self) -> Option<f64> {
-        self.cpu_seconds.filter(|_| self.seconds > 0.0).map(|cpu| 100.0 * cpu / self.seconds)
+        self.cpu_seconds.filter(|_| self.cpu_wall_seconds > 0.0).map(|cpu| 100.0 * cpu / self.cpu_wall_seconds)
     }
 }
 
@@ -116,6 +121,20 @@ pub fn run(config: Config) -> Result<Outcome, RunError> {
     let mut app = App::new(config);
     event_loop.run_app(&mut app)?;
     app.finish()
+}
+
+/// The process's CPU time at one moment, for the CPU percentage. Read once a report interval, not once a frame: the read
+/// is a system call (a file read on Linux) and would sit in the frame loop.
+#[derive(Clone, Copy, Debug)]
+struct CpuMark {
+    at: Instant,
+    seconds: f64,
+}
+
+impl CpuMark {
+    fn now() -> Option<Self> {
+        platform::process_cpu_seconds().map(|seconds| Self { at: Instant::now(), seconds })
+    }
 }
 
 /// The mascot window as a winit application. Standalone it is the whole event loop; in [`crate::host`] it shares the
@@ -134,15 +153,23 @@ pub struct App {
     last_report: Instant,
     presented: u32,
     total_presented: u32,
-    first_frame: Option<(Instant, Option<f64>)>,
-    last_frame: Option<(Instant, Option<f64>)>,
+    first_frame: Option<Instant>,
+    last_frame: Option<Instant>,
+    cpu_first: Option<CpuMark>,
+    cpu_last: Option<CpuMark>,
     failure: Option<RunError>,
+}
+
+/// Frames a run is expected to record, so the sample buffers are sized once instead of growing in the frame loop.
+fn expected_frames(config: &Config) -> usize {
+    config.seconds.map_or(4096, |s| (s.max(0.0) * f64::from(config.fps)).ceil() as usize + 64)
 }
 
 impl App {
     /// An application that has not opened its window yet.
     pub fn new(config: Config) -> Self {
         let now = Instant::now();
+        let frames = expected_frames(&config);
         Self {
             opacity: config.opacity,
             config,
@@ -150,8 +177,8 @@ impl App {
             window: None,
             renderer: None,
             platform: None,
-            render_ms: Series::default(),
-            gpu_ms: Series::default(),
+            render_ms: Series::with_capacity(frames),
+            gpu_ms: Series::with_capacity(frames),
             started: now,
             next_frame: now,
             last_report: now,
@@ -159,6 +186,8 @@ impl App {
             total_presented: 0,
             first_frame: None,
             last_frame: None,
+            cpu_first: None,
+            cpu_last: None,
             failure: None,
         }
     }
@@ -176,16 +205,24 @@ impl App {
         if let Some(e) = self.failure {
             return Err(e);
         }
-        let (seconds, cpu_seconds) = match (self.first_frame, self.last_frame) {
-            (Some((t0, c0)), Some((t1, c1))) => ((t1 - t0).as_secs_f64(), c0.zip(c1).map(|(a, b)| b - a)),
-            _ => (0.0, None),
+        let seconds = match (self.first_frame, self.last_frame) {
+            (Some(first), Some(last)) => (last - first).as_secs_f64(),
+            _ => 0.0,
+        };
+        // A run shorter than one report interval has no later mark, so the end of the run is the second one.
+        let last = self.cpu_last.or_else(CpuMark::now);
+        let (cpu_seconds, cpu_wall_seconds) = match (self.cpu_first, last) {
+            (Some(a), Some(b)) => (Some(b.seconds - a.seconds), (b.at - a.at).as_secs_f64()),
+            _ => (None, 0.0),
         };
         Ok(Outcome {
             presented: self.total_presented,
             seconds,
             cpu_seconds,
+            cpu_wall_seconds,
             render: self.render_ms.overall(),
             gpu: self.gpu_ms.overall(),
+            gpu_failures: self.renderer.as_ref().map_or(0, Renderer::gpu_failures),
         })
     }
 
@@ -194,9 +231,13 @@ impl App {
         event_loop.exit();
     }
 
-    fn fit(window: &Window, scene: &Scene) -> Fit {
-        let size = window.inner_size();
-        Fit::new((size.width, size.height), (scene.width, scene.height))
+    /// The picture drawn once at the window's current size, for the click-through mask.
+    fn reference(&self, size: PhysicalSize<u32>) -> Result<Scene, ReferenceError> {
+        scene_pass::render_reference(
+            self.config.gpu.backends,
+            self.config.gpu.fallback_adapter,
+            (size.width, size.height),
+        )
     }
 
     fn start(&mut self, event_loop: &ActiveEventLoop) -> Result<(), RunError> {
@@ -210,20 +251,21 @@ impl App {
             event_loop.exit();
             return Ok(());
         }
-        // The click-through mask comes from drawing the picture once on a device of its own, at the window's size.
-        let size = window.inner_size();
-        let scene = scene_pass::render_reference(
-            self.config.gpu.backends,
-            self.config.gpu.fallback_adapter,
-            (size.width, size.height),
-        )?;
-        let fit = Self::fit(&window, &scene);
-        let (state, features) = platform::State::new(&window, self.config.platform, &fit, &scene);
-        println!("window: {}x{} physical px, scale factor {}", fit.window.0, fit.window.1, window.scale_factor());
+        let scene = self.reference(window.inner_size())?;
+        let mask = mask(&window, &scene, self.opacity);
+        let (mut state, features) = platform::State::new(&window, self.config.platform, &mask);
+        println!(
+            "window: {}x{} physical px, scale factor {}",
+            mask.fit.window.0,
+            mask.fit.window.1,
+            window.scale_factor()
+        );
         for feature in &features {
             println!("{feature}");
         }
         if self.config.mode == Mode::Probe {
+            // Windows and macOS toggle per-pixel click-through from a cursor poll; do one so the readback shows it applied.
+            state.tick(&window, &mask);
             for line in state.describe(&window) {
                 println!("{line}");
             }
@@ -232,6 +274,9 @@ impl App {
             let renderer = Renderer::new(&window, &self.config.gpu)?;
             print_surface(&renderer);
             self.renderer = Some(renderer);
+            // The run's clock starts now: opening the GPU and drawing the reference picture are not part of it.
+            let now = Instant::now();
+            (self.started, self.next_frame, self.last_report) = (now, now, now);
         }
         self.platform = Some(state);
         self.scene = Some(scene);
@@ -244,11 +289,14 @@ impl App {
         match renderer.render(self.opacity) {
             Ok(Frame::Presented) => {
                 self.render_ms.record(begin.elapsed());
-                self.gpu_ms.extend_ms(renderer.take_gpu_times());
+                renderer.drain_gpu_times(&mut self.gpu_ms);
                 self.presented += 1;
                 self.total_presented += 1;
-                let now = (Instant::now(), timing_cpu());
-                self.first_frame.get_or_insert(now);
+                let now = Instant::now();
+                if self.first_frame.is_none() {
+                    self.first_frame = Some(now);
+                    self.cpu_first = CpuMark::now();
+                }
                 self.last_frame = Some(now);
             }
             Ok(Frame::Skipped) => {}
@@ -261,6 +309,7 @@ impl App {
         if elapsed < Duration::from_secs(2) {
             return;
         }
+        self.cpu_last = CpuMark::now();
         if let Some(s) = self.render_ms.take_window() {
             let gpu = self.gpu_ms.take_window().map_or_else(String::new, |g| {
                 format!("; GPU ms mean {:.2}, p95 {:.2}, max {:.2}", g.mean_ms, g.p95_ms, g.max_ms)
@@ -290,10 +339,8 @@ impl App {
             event_loop.exit();
             return;
         }
-        let size = window.inner_size();
-        let fit = Fit::new((size.width, size.height), (scene.width, scene.height));
         if let Some(state) = self.platform.as_mut() {
-            state.tick(&window, &fit, scene);
+            state.tick(&window, &mask(&window, scene, self.opacity));
             if let Some(e) = state.take_poll_error() {
                 println!("[FAILED]      click_through_pixel toggle: {e}");
             }
@@ -326,20 +373,42 @@ impl App {
         }
     }
 
+    /// Rebuilds the click-through mask after the window's size or the opacity changed, and tells the platform layer.
+    fn refresh_mask(&mut self) {
+        let (Some(window), Some(scene)) = (self.window.clone(), self.scene.as_ref()) else { return };
+        if let Some(feature) =
+            self.platform.as_mut().and_then(|p| p.refresh(&window, &mask(&window, scene, self.opacity)))
+        {
+            println!("{feature}");
+        }
+    }
+
+    /// The window changed size (a display scale change does this): the picture is drawn in window pixels, so it and the
+    /// mask built from it are redone at the new size. A size too small for the picture (a minimised window) is skipped.
+    fn resized(&mut self, size: PhysicalSize<u32>) {
+        if let Some(renderer) = self.renderer.as_mut() {
+            renderer.resize(size.width, size.height);
+        }
+        let current = self.scene.as_ref().map(|s| (s.width, s.height));
+        if current == Some((size.width, size.height))
+            || size.width < scene_pass::MIN_SIZE.0
+            || size.height < scene_pass::MIN_SIZE.1
+        {
+            return;
+        }
+        match self.reference(size) {
+            Ok(scene) => self.scene = Some(scene),
+            Err(e) => println!("[FAILED]      mask at {}x{}: {e}", size.width, size.height),
+        }
+        self.refresh_mask();
+    }
+
     /// Handles an event for this application's window.
     pub fn window_event(&mut self, event_loop: &ActiveEventLoop, event: WindowEvent) {
-        let (Some(window), Some(scene)) = (self.window.clone(), self.scene.as_ref()) else { return };
+        let Some(window) = self.window.clone() else { return };
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::Resized(size) => {
-                if let Some(renderer) = self.renderer.as_mut() {
-                    renderer.resize(size.width, size.height);
-                }
-                let fit = Fit::new((size.width, size.height), (scene.width, scene.height));
-                if let Some(feature) = self.platform.as_mut().and_then(|p| p.resized(&window, &fit, scene)) {
-                    println!("{feature}");
-                }
-            }
+            WindowEvent::Resized(size) => self.resized(size),
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
                 // Drag the mascot by any opaque pixel; click-through lets the rest of the window through before this.
                 if let Err(e) = window.drag_window() {
@@ -350,8 +419,14 @@ impl App {
                 event: KeyEvent { logical_key, state: ElementState::Pressed, .. }, ..
             } => match logical_key {
                 Key::Named(NamedKey::Escape) => event_loop.exit(),
-                Key::Named(NamedKey::ArrowUp) => self.opacity = (self.opacity + 0.1).min(1.0),
-                Key::Named(NamedKey::ArrowDown) => self.opacity = (self.opacity - 0.1).max(0.0),
+                Key::Named(NamedKey::ArrowUp) => {
+                    self.opacity = (self.opacity + 0.1).min(1.0);
+                    self.refresh_mask();
+                }
+                Key::Named(NamedKey::ArrowDown) => {
+                    self.opacity = (self.opacity - 0.1).max(0.0);
+                    self.refresh_mask();
+                }
                 _ => {}
             },
             _ => {}
@@ -359,8 +434,10 @@ impl App {
     }
 }
 
-fn timing_cpu() -> Option<f64> {
-    platform::process_cpu_seconds()
+/// The hit-test mask for `scene` in `window` at `opacity`.
+fn mask<'a>(window: &Window, scene: &'a Scene, opacity: f32) -> Mask<'a> {
+    let size = window.inner_size();
+    Mask { fit: Fit::new((size.width, size.height), (scene.width, scene.height)), scene, opacity }
 }
 
 fn print_surface(renderer: &Renderer) {

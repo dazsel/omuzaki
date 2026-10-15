@@ -89,8 +89,10 @@ fn paint_mascot(ui: &mut egui::Ui, texture: &TextureHandle, opacity: f32) {
     if ui.interact(rect, ui.id().with("drag"), Sense::drag()).drag_started() {
         ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
     }
-    if ui.ctx().input(|i| i.key_pressed(egui::Key::Escape)) {
-        ui.ctx().send_viewport_cmd(ViewportCommand::Close);
+    // The root shows the child viewport again every frame, so closing the child alone cannot work: Escape or the child's
+    // own close request (a window-manager close) ends the run through the root.
+    if ui.ctx().input(|i| i.key_pressed(egui::Key::Escape) || i.viewport().close_requested()) {
+        ui.ctx().send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);
     }
 }
 

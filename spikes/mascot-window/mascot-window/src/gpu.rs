@@ -6,6 +6,7 @@ use winit::window::Window;
 
 use crate::alpha::{self, Output, Picked};
 use crate::scene_pass::{self, ScenePass};
+use crate::stats::Series;
 use crate::timing::GpuTimer;
 
 /// The shader source, shared with the unit test that validates it without a GPU.
@@ -245,9 +246,16 @@ impl Renderer {
         &self.report
     }
 
-    /// Takes the GPU time of the frames measured since the last call (the two passes, in order, start to end).
-    pub fn take_gpu_times(&mut self) -> Vec<f64> {
-        self.timer.as_mut().map(GpuTimer::take).unwrap_or_default()
+    /// Moves the GPU time of the frames measured since the last call (the two passes, start to end) into `series`.
+    pub fn drain_gpu_times(&mut self, series: &mut Series) {
+        if let Some(timer) = self.timer.as_mut() {
+            timer.drain_into(series);
+        }
+    }
+
+    /// Frames whose GPU timestamps could not be read back.
+    pub fn gpu_failures(&self) -> u32 {
+        self.timer.as_ref().map_or(0, GpuTimer::failures)
     }
 
     /// Reconfigures the swap chain for a new window size and redraws the picture at that size.

@@ -12,7 +12,7 @@ use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS as _, Wi
 use winit::window::{Window, WindowAttributes};
 
 use super::{Feature, Options};
-use crate::scene::{Fit, Scene};
+use crate::scene::Mask;
 
 pub(super) fn attributes(attributes: WindowAttributes, _options: Options) -> WindowAttributes {
     // The system shadow would draw a dark halo around the transparent window's rectangle.
@@ -33,7 +33,7 @@ pub(super) fn is_wayland(_window: &Window) -> bool {
 pub(super) struct State;
 
 impl State {
-    pub(super) fn new(_window: &Window, options: Options, _fit: &Fit, _scene: &Scene) -> (Self, Vec<Feature>) {
+    pub(super) fn new(_window: &Window, options: Options, _mask: &Mask<'_>) -> (Self, Vec<Feature>) {
         let mut features = Vec::new();
         if options.hide_from_switcher {
             features.push(Feature::applied(
@@ -71,7 +71,7 @@ impl State {
             .map_err(|e| e.to_string())
     }
 
-    pub(super) fn resized(&mut self, _window: &Window, _fit: &Fit, _scene: &Scene) -> Option<Feature> {
+    pub(super) fn refresh(&mut self, _window: &Window, _mask: &Mask<'_>) -> Option<Feature> {
         None
     }
 

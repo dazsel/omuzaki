@@ -11,7 +11,7 @@ use winit::dpi::PhysicalPosition;
 use winit::event_loop::EventLoopBuilder;
 use winit::window::{Window, WindowAttributes, WindowLevel};
 
-use crate::scene::{Fit, Scene};
+use crate::scene::Mask;
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -154,10 +154,10 @@ pub struct State {
 
 impl State {
     /// Applies the options to a created window and returns what happened per feature.
-    pub fn new(window: &Window, options: Options, fit: &Fit, scene: &Scene) -> (Self, Vec<Feature>) {
+    pub fn new(window: &Window, options: Options, mask: &Mask<'_>) -> (Self, Vec<Feature>) {
         let mut features = Vec::new();
         features.push(window_level(window, options));
-        let (os, mut extra) = os::State::new(window, options, fit, scene);
+        let (os, mut extra) = os::State::new(window, options, mask);
         features.append(&mut extra);
         let mut state = Self { options, os, last_hit: None, poll_error: None };
         if options.click_through == ClickThrough::Window {
@@ -175,14 +175,14 @@ impl State {
 
     /// Called about 60 times a second. On Windows and macOS, per-pixel click-through needs the global cursor position,
     /// because a click-through window receives no mouse events to tell where the cursor is.
-    pub fn tick(&mut self, window: &Window, fit: &Fit, scene: &Scene) {
+    pub fn tick(&mut self, window: &Window, mask: &Mask<'_>) {
         if self.options.click_through != ClickThrough::Pixel || !self.os.polls_cursor() {
             return;
         }
         let Some(cursor) = self.os.cursor_position(window) else { return };
         let Ok(origin) = window.inner_position() else { return };
         let (x, y) = local(cursor, origin);
-        let hit = fit.hit(scene, x, y);
+        let hit = mask.hit(x, y);
         if self.last_hit != Some(hit) {
             self.last_hit = Some(hit);
             if let Err(e) = self.os.set_click_through(window, self.options, !hit) {
@@ -196,10 +196,13 @@ impl State {
         self.poll_error.take()
     }
 
-    /// Called when the window size changes: an input shape is in window pixels, so it is rebuilt.
-    pub fn resized(&mut self, window: &Window, fit: &Fit, scene: &Scene) -> Option<Feature> {
+    /// Called when the mask changes (the window size, or the opacity the mascot is shown at): an input shape is in window
+    /// pixels and covers only what is visible, so it is rebuilt.
+    pub fn refresh(&mut self, window: &Window, mask: &Mask<'_>) -> Option<Feature> {
+        // The poller's cached answer was for the old mask.
+        self.last_hit = None;
         if self.options.click_through == ClickThrough::Pixel {
-            return self.os.resized(window, fit, scene);
+            return self.os.refresh(window, mask);
         }
         None
     }

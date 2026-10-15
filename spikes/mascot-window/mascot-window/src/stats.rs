@@ -43,6 +43,11 @@ impl Summary {
 }
 
 impl Series {
+    /// An empty series with room for `frames` samples, so recording them allocates nothing.
+    pub fn with_capacity(frames: usize) -> Self {
+        Self { samples_ms: Vec::with_capacity(frames), mark: 0 }
+    }
+
     /// Records one frame's time.
     pub fn record(&mut self, elapsed: Duration) {
         self.samples_ms.push(elapsed.as_secs_f64() * 1000.0);

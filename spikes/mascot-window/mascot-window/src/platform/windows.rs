@@ -6,7 +6,7 @@
 #![allow(clippy::cast_possible_wrap, clippy::unused_self)]
 
 use raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
-use windows::Win32::Foundation::{COLORREF, HWND, POINT};
+use windows::Win32::Foundation::{COLORREF, GetLastError, HWND, POINT, SetLastError, WIN32_ERROR};
 use windows::Win32::UI::WindowsAndMessaging::{
     GWL_EXSTYLE, GetCursorPos, GetWindowLongPtrW, LWA_ALPHA, SetLayeredWindowAttributes, SetWindowLongPtrW,
     WS_EX_APPWINDOW, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
@@ -16,7 +16,7 @@ use winit::platform::windows::WindowAttributesExtWindows as _;
 use winit::window::{Window, WindowAttributes};
 
 use super::{Feature, HitTestBackend, Options};
-use crate::scene::{Fit, Scene};
+use crate::scene::Mask;
 
 pub(super) fn attributes(attributes: WindowAttributes, options: Options) -> WindowAttributes {
     // WS_EX_NOREDIRECTIONBITMAP: the window has no GDI surface, only the DirectComposition visual wgpu attaches.
@@ -36,31 +36,41 @@ fn hwnd(window: &Window) -> Option<HWND> {
     }
 }
 
-/// Reads the extended style, applies `edit`, writes it back.
-fn edit_ex_style(hwnd: HWND, edit: impl FnOnce(isize) -> isize) {
+/// Reads the extended style, applies `edit`, writes it back, and reports a refusal by Windows.
+fn edit_ex_style(hwnd: HWND, edit: impl FnOnce(isize) -> isize) -> Result<(), String> {
     // SAFETY: `hwnd` is the live window winit created on this thread; Get/SetWindowLongPtrW only read and write its
     // style word.
     unsafe {
         let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, edit(style));
+        // SetWindowLongPtrW returns the previous value, and 0 is a valid one, so a failure is told apart by clearing the
+        // thread's last error before the call and reading it after.
+        SetLastError(WIN32_ERROR(0));
+        let previous = SetWindowLongPtrW(hwnd, GWL_EXSTYLE, edit(style));
+        let error = GetLastError();
+        if previous == 0 && error.0 != 0 {
+            return Err(format!("SetWindowLongPtrW failed with error {}", error.0));
+        }
     }
+    Ok(())
+}
+
+/// WS_EX_TOOLWINDOW removes the window from Alt-Tab (winit's skip_taskbar only hides the taskbar button).
+fn hide_from_switcher(hwnd: HWND) -> Result<(), String> {
+    edit_ex_style(hwnd, |s| (s | WS_EX_TOOLWINDOW.0 as isize) & !(WS_EX_APPWINDOW.0 as isize))
 }
 
 pub(super) struct State;
 
 impl State {
-    pub(super) fn new(window: &Window, options: Options, _fit: &Fit, _scene: &Scene) -> (Self, Vec<Feature>) {
+    pub(super) fn new(window: &Window, options: Options, _mask: &Mask<'_>) -> (Self, Vec<Feature>) {
         let mut features = Vec::new();
         if options.hide_from_switcher {
-            features.push(match hwnd(window) {
-                Some(hwnd) => {
-                    // WS_EX_TOOLWINDOW removes the window from Alt-Tab (winit's skip_taskbar only hides the taskbar button).
-                    edit_ex_style(hwnd, |s| (s | WS_EX_TOOLWINDOW.0 as isize) & !(WS_EX_APPWINDOW.0 as isize));
-                    Feature::applied(
-                        "hide_from_switcher",
-                        "with_skip_taskbar(true) and WS_EX_TOOLWINDOW (check Alt-Tab and the taskbar)",
-                    )
-                }
+            features.push(match hwnd(window).map(hide_from_switcher) {
+                Some(Ok(())) => Feature::applied(
+                    "hide_from_switcher",
+                    "with_skip_taskbar(true) and WS_EX_TOOLWINDOW (check Alt-Tab and the taskbar)",
+                ),
+                Some(Err(e)) => Feature::failed("hide_from_switcher", e),
                 None => Feature::failed("hide_from_switcher", "no Win32 window handle"),
             });
         }
@@ -81,10 +91,14 @@ impl State {
 
     pub(super) fn set_click_through(&self, window: &Window, options: Options, through: bool) -> Result<String, String> {
         match options.hit_test {
-            HitTestBackend::Winit => window
-                .set_cursor_hittest(!through)
-                .map(|()| format!("winit set_cursor_hittest({})", !through))
-                .map_err(|e| e.to_string()),
+            HitTestBackend::Winit => {
+                window.set_cursor_hittest(!through).map_err(|e| e.to_string())?;
+                // winit rebuilds the extended style from its own flags, which drops the WS_EX_TOOLWINDOW added above.
+                if options.hide_from_switcher {
+                    hide_from_switcher(hwnd(window).ok_or("no Win32 window handle")?)?;
+                }
+                Ok(format!("winit set_cursor_hittest({})", !through))
+            }
             HitTestBackend::Native => {
                 let hwnd = hwnd(window).ok_or("no Win32 window handle")?;
                 edit_ex_style(hwnd, |s| {
@@ -94,7 +108,7 @@ impl State {
                     } else {
                         layered & !(WS_EX_TRANSPARENT.0 as isize)
                     }
-                });
+                })?;
                 // A window given WS_EX_LAYERED draws nothing until its layered attributes are set once.
                 // SAFETY: `hwnd` is our live window.
                 unsafe { SetLayeredWindowAttributes(hwnd, COLORREF(0), 255, LWA_ALPHA) }.map_err(|e| e.to_string())?;
@@ -103,7 +117,7 @@ impl State {
         }
     }
 
-    pub(super) fn resized(&mut self, _window: &Window, _fit: &Fit, _scene: &Scene) -> Option<Feature> {
+    pub(super) fn refresh(&mut self, _window: &Window, _mask: &Mask<'_>) -> Option<Feature> {
         None
     }
 

@@ -9,7 +9,7 @@ use x11rb::protocol::xproto::{self, ConnectionExt as _};
 use x11rb::rust_connection::RustConnection;
 
 use super::{ClickThrough, Feature, Level, Options};
-use crate::scene::{Fit, Scene};
+use crate::scene::Mask;
 
 pub(super) fn attributes(attributes: WindowAttributes, _options: Options) -> WindowAttributes {
     attributes
@@ -66,8 +66,8 @@ impl X11 {
         let second = second.map_or(Ok(0), |s| self.atom(s))?;
         let message = xproto::ClientMessageEvent::new(32, self.window, state, [1, self.atom(first)?, second, 1, 0]);
         let mask = xproto::EventMask::SUBSTRUCTURE_NOTIFY | xproto::EventMask::SUBSTRUCTURE_REDIRECT;
-        self.conn.send_event(false, self.root, mask, message)?;
-        self.conn.flush()?;
+        // `check` waits for the server's verdict: a bare request only fails later, as an unread error event.
+        self.conn.send_event(false, self.root, mask, message)?.check()?;
         Ok(())
     }
 
@@ -84,16 +84,17 @@ impl X11 {
                 })
             })
             .collect::<Result<Vec<_>, X11Error>>()?;
-        self.conn.shape_rectangles(
-            shape::SO::SET,
-            shape::SK::INPUT,
-            xproto::ClipOrdering::UNSORTED,
-            self.window,
-            0,
-            0,
-            &rectangles,
-        )?;
-        self.conn.flush()?;
+        self.conn
+            .shape_rectangles(
+                shape::SO::SET,
+                shape::SK::INPUT,
+                xproto::ClipOrdering::UNSORTED,
+                self.window,
+                0,
+                0,
+                &rectangles,
+            )?
+            .check()?;
         Ok(())
     }
 
@@ -127,7 +128,7 @@ pub(super) struct State {
 }
 
 impl State {
-    pub(super) fn new(window: &Window, options: Options, fit: &Fit, scene: &Scene) -> (Self, Vec<Feature>) {
+    pub(super) fn new(window: &Window, options: Options, mask: &Mask<'_>) -> (Self, Vec<Feature>) {
         let mut features = Vec::new();
         let Some(id) = x11_window(window) else {
             features
@@ -165,14 +166,14 @@ impl State {
         }
         let mut state = Self { x11: Some(x11) };
         if options.click_through == ClickThrough::Pixel {
-            features.push(state.apply_shape(fit, scene));
+            features.push(state.apply_shape(mask));
         }
         (state, features)
     }
 
-    fn apply_shape(&mut self, fit: &Fit, scene: &Scene) -> Feature {
+    fn apply_shape(&mut self, mask: &Mask<'_>) -> Feature {
         let Some(x11) = &self.x11 else { return Feature::unsupported("click_through_pixel", "no X11 connection") };
-        let rects = fit.input_rects(scene);
+        let rects = mask.input_rects();
         match x11.set_input_shape(&rects) {
             Ok(()) => {
                 Feature::applied("click_through_pixel", format!("XShape input shape of {} rectangles", rects.len()))
@@ -211,8 +212,8 @@ impl State {
     }
 
     #[allow(clippy::unused_self, clippy::unnecessary_wraps)]
-    pub(super) fn resized(&mut self, _window: &Window, fit: &Fit, scene: &Scene) -> Option<Feature> {
-        Some(self.apply_shape(fit, scene))
+    pub(super) fn refresh(&mut self, _window: &Window, mask: &Mask<'_>) -> Option<Feature> {
+        Some(self.apply_shape(mask))
     }
 
     pub(super) fn describe(&self, _window: &Window) -> Vec<String> {
