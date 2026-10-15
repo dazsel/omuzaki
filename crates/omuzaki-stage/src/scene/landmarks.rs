@@ -1,14 +1,20 @@
-//! Landmarks measured on the built subject in its bind pose (top, bottom, crown, chin, eyes, chest, hands, height).
+//! Landmarks measured on the built subject in the pose the stage draws it in at rest (top, bottom, crown, chin, eyes,
+//! chest, hands, height).
 //!
 //! Framing (design D5, ADR 0024) reads these numbers and nothing else of the character. Everything is metres in the
-//! character's own frame (feet near `y = 0`, facing +Z). The rig is not posed: the build is the bind pose
-//! (ADR 0014), so positions are read as built.
+//! character's own frame (feet near `y = 0`, facing +Z). The build is the bind pose (ADR 0014), but the stage draws
+//! [`HumanoidPose::REST`], the T-pose, so a skinned vertex and a joint are measured where that pose puts them: the
+//! arms of a template hang down in the bind pose and stand out at the shoulders in the drawn one, and framing the bind
+//! hands put the hands shot on the hips (#1978).
 
-use omuzaki_anim_api::HumanoidBone;
+use omuzaki_anim_api::{HumanoidBone, HumanoidPose, IkGoals, Tick};
 use omuzaki_char_api::{BuiltCharacter, JointRef, PartCategory, PartMesh, find_kind};
-use omuzaki_core::glam::Vec3;
+use omuzaki_core::glam::{Mat4, Vec3};
+use omuzaki_core::time::Seconds;
 
 use crate::error::StageError;
+use crate::frame::rig::RigFrame;
+use crate::frame::scene::{joint_bones, joint_matrix};
 
 /// An axis-aligned box in the character's bind space, metres.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -62,7 +68,8 @@ pub struct Landmarks {
     pub eyes: Option<f32>,
     /// The bind height of the `upperChest` joint, else of `chest`.
     pub chest: Option<f32>,
-    /// Every vertex at or above `chest`: the bust shot's width. `None` when `chest` is, or when no vertex reaches it.
+    /// Every vertex at or above `chest` except those that follow a forearm or a hand: the bust shot's width, the head
+    /// and shoulders and not the arms held out. `None` when `chest` is, or when no vertex reaches it.
     pub bust: Option<Bounds>,
     /// Both hands: every vertex whose largest skin weight is on a hand or finger bone.
     pub hands: Option<Bounds>,
@@ -71,7 +78,7 @@ pub struct Landmarks {
 }
 
 impl Landmarks {
-    /// Measures `built` in its bind pose.
+    /// Measures `built` in the stage's rest pose ([`HumanoidPose::REST`] through the character's rig).
     ///
     /// The head part is the first (by part id) enabled part whose kind is registered with
     /// [`PartCategory::Head`]; its head mesh is the one of that part named `head` or ending in `-head`, which leaves
@@ -83,9 +90,11 @@ impl Landmarks {
     /// body's extent in Y) that isn't finite and above zero, or a skinned mesh whose joint data doesn't fit its vertices.
     pub fn measure(built: &BuiltCharacter) -> Result<Self, StageError> {
         let inverse_bind = built.rig.inverse_bind();
+        let skin = rest_skin(built)?;
         let joint_height = |bone: HumanoidBone| -> Result<Option<f32>, StageError> {
             let Some(id) = built.rig.bone(&JointRef::Humanoid(bone)) else { return Ok(None) };
-            let height = inverse_bind.get(id.index()).map(|m| m.inverse().w_axis.y);
+            // The posed joint is its skinning matrix applied to where it sits in the bind pose.
+            let height = inverse_bind.get(id.index()).zip(skin.get(id.index())).map(|(ib, s)| (*s * ib.inverse()).w_axis.y);
             match height {
                 Some(h) if h.is_finite() => Ok(Some(h)),
                 _ => Err(framing(format!("the bind height of '{bone}' is not a finite number"))),
@@ -105,7 +114,10 @@ impl Landmarks {
         for built_mesh in &built.meshes {
             let mesh = &built_mesh.mesh;
             let is_head = head_part == Some(&built_mesh.part) && is_head_mesh(&mesh.name);
-            let hand_joints = hand_joints(mesh);
+            let hand_joints = joints_under(mesh, |bone| matches!(bone, HumanoidBone::LeftHand | HumanoidBone::RightHand));
+            let forearm_joints =
+                joints_under(mesh, |bone| matches!(bone, HumanoidBone::LeftLowerArm | HumanoidBone::RightLowerArm));
+            let bones = joint_bones(built, mesh);
             let geometry = &mesh.geometry;
             let skinned = geometry.is_skinned();
             if skinned && (geometry.joints.len() != geometry.positions.len() || geometry.weights.len() != geometry.positions.len())
@@ -119,21 +131,25 @@ impl Landmarks {
                     geometry.weights.len()
                 )));
             }
-            for (i, &position) in geometry.positions.iter().enumerate() {
-                if !position.is_finite() {
+            for (i, &bound) in geometry.positions.iter().enumerate() {
+                if !bound.is_finite() {
                     return Err(framing(format!(
                         "vertex {i} of mesh '{}' of part '{}' is not a finite position",
                         mesh.name, built_mesh.part
                     )));
                 }
+                let position = if skinned { skinned_position(bound, geometry.joints[i], geometry.weights[i], &bones, &skin) } else { bound };
                 Bounds::include(&mut body, position);
                 if is_head {
                     Bounds::include(&mut head, position);
                 }
-                if chest.is_some_and(|c| position.y >= c) {
+                let follows = |joints: &[bool]| -> Result<bool, StageError> {
+                    Ok(skinned && follows_joint(joints, geometry.joints[i], geometry.weights[i])?)
+                };
+                if chest.is_some_and(|c| position.y >= c) && !follows(&forearm_joints)? {
                     Bounds::include(&mut bust, position);
                 }
-                if skinned && is_hand_vertex(&hand_joints, geometry.joints[i], geometry.weights[i])? {
+                if follows(&hand_joints)? {
                     Bounds::include(&mut hands, position);
                 }
             }
@@ -172,6 +188,23 @@ impl Landmarks {
     }
 }
 
+/// The skinning matrices of the character's rig in [`HumanoidPose::REST`] with no goals, as the stage's first frame
+/// has them: bind space to model space, one per bone.
+fn rest_skin(built: &BuiltCharacter) -> Result<Vec<Mat4>, StageError> {
+    let mut rig = RigFrame::new(&built.rig)?;
+    rig.solve(Tick { index: 0, time: Seconds(0.0), dt: 0.0 }, &HumanoidPose::REST, &IkGoals::NONE);
+    Ok(rig.skin().to_vec())
+}
+
+/// Where the renderer puts a skinned vertex: its bind position blended by its four joints' skinning matrices.
+fn skinned_position(position: Vec3, joints: [u16; 4], weights: [f32; 4], bones: &[Option<usize>], skin: &[Mat4]) -> Vec3 {
+    let blend = joints.iter().zip(weights).fold(Mat4::ZERO, |sum, (joint, weight)| {
+        let bone = bones.get(usize::from(*joint)).copied().flatten();
+        sum + joint_matrix(bone, skin) * weight
+    });
+    blend.transform_point3(position)
+}
+
 fn framing(reason: String) -> StageError {
     StageError::Framing { reason }
 }
@@ -189,23 +222,22 @@ fn is_head_mesh(name: &str) -> bool {
     name == "head" || name.ends_with("-head")
 }
 
-/// For each entry of `mesh.joint_bones`: whether it is a hand bone, or a finger bone under one.
-fn hand_joints(mesh: &PartMesh) -> Vec<bool> {
-    let is_hand = |bone: HumanoidBone| matches!(bone, HumanoidBone::LeftHand | HumanoidBone::RightHand);
+/// For each entry of `mesh.joint_bones`: whether it is `is_root` or a bone under one (a finger under a hand).
+fn joints_under(mesh: &PartMesh, is_root: fn(HumanoidBone) -> bool) -> Vec<bool> {
     mesh.joint_bones
         .iter()
         .map(|joint| match joint {
-            JointRef::Humanoid(bone) => std::iter::successors(Some(*bone), |b| b.parent()).any(is_hand),
+            JointRef::Humanoid(bone) => std::iter::successors(Some(*bone), |b| b.parent()).any(is_root),
             JointRef::Named(_) => false,
         })
         .collect()
 }
 
-/// Whether the joint with the largest weight of a vertex is a hand joint (`hand_joints` says which are). The first
-/// of equal weights wins, so the answer doesn't depend on anything but the mesh.
-fn is_hand_vertex(hand_joints: &[bool], joints: [u16; 4], weights: [f32; 4]) -> Result<bool, StageError> {
+/// Whether the joint with the largest weight of a vertex is flagged in `flags` (`joints_under` says which are). The
+/// first of equal weights wins, so the answer doesn't depend on anything but the mesh.
+fn follows_joint(flags: &[bool], joints: [u16; 4], weights: [f32; 4]) -> Result<bool, StageError> {
     let strongest = (1..4).fold(0, |best, k| if weights[k] > weights[best] { k } else { best });
-    hand_joints.get(usize::from(joints[strongest])).copied().ok_or_else(|| {
-        framing(format!("a vertex is skinned to joint {} but its mesh names {} joints", joints[strongest], hand_joints.len()))
+    flags.get(usize::from(joints[strongest])).copied().ok_or_else(|| {
+        framing(format!("a vertex is skinned to joint {} but its mesh names {} joints", joints[strongest], flags.len()))
     })
 }

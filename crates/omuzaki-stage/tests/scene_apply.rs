@@ -168,7 +168,12 @@ fn a_camera_yaw_edit_and_a_light_colour_edit_show_in_the_next_scene() {
     applier.apply(&resolved, &mut target);
     assert_ne!(target.camera, camera_before, "the yaw moved the camera");
     assert_ne!(target.lights, lights_before, "the colour changed a light");
-    assert!(target.lights.iter().any(|l| matches!(l, Light::Directional { colour, .. } if *colour == Colour::rgb(255, 0, 0))));
+    assert!(
+        target
+            .lights
+            .iter()
+            .any(|l| matches!(l, Light::Directional { colour, .. } if *colour == Colour::rgb(255, 0, 0)))
+    );
 }
 
 #[test]
