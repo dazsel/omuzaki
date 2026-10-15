@@ -99,6 +99,15 @@ pub fn parse_size(text: &str) -> Result<(u32, u32), String> {
     Ok((parse(w)?, parse(h)?))
 }
 
+/// Parses an opacity: a number from 0 to 1.
+///
+/// # Errors
+/// A message for clap when the text is not a number in range.
+pub fn parse_opacity(text: &str) -> Result<f32, String> {
+    let value: f32 = text.parse().map_err(|_| format!("{text:?} is not a number"))?;
+    if (0.0..=1.0).contains(&value) { Ok(value) } else { Err(format!("{text} is outside 0 to 1")) }
+}
+
 /// GPU flags.
 #[derive(Args)]
 pub struct GpuArgs {
@@ -183,7 +192,7 @@ pub struct WindowArgs {
     #[arg(long)]
     seconds: Option<f64>,
     /// Starting opacity, 0 to 1 (Up and Down arrows change it while running).
-    #[arg(long, default_value_t = 1.0)]
+    #[arg(long, default_value_t = 1.0, value_parser = parse_opacity)]
     opacity: f32,
 }
 
@@ -221,6 +230,17 @@ impl WindowArgs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opacity_must_be_a_number_from_0_to_1() {
+        assert_eq!(parse_opacity("0.5"), Ok(0.5));
+        assert_eq!(parse_opacity("0"), Ok(0.0));
+        assert_eq!(parse_opacity("1"), Ok(1.0));
+        assert!(parse_opacity("2").is_err());
+        assert!(parse_opacity("-0.1").is_err());
+        assert!(parse_opacity("NaN").is_err());
+        assert!(parse_opacity("half").is_err());
+    }
 
     #[test]
     fn sizes_parse_and_refuse_nonsense() {

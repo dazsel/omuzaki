@@ -33,6 +33,11 @@ pub struct Scene {
 }
 
 impl Scene {
+    /// A picture of fully opaque pixels: a mask under which every pixel of the window takes mouse input.
+    pub fn opaque(width: u32, height: u32) -> Self {
+        Self { width, height, pixels: vec![255; width as usize * height as usize * 4] }
+    }
+
     /// The alpha byte at pixel `(x, y)`, or 0 outside the image.
     pub fn alpha(&self, x: u32, y: u32) -> u8 {
         if x >= self.width || y >= self.height {
@@ -248,6 +253,14 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn an_opaque_scene_catches_every_pixel() {
+        let scene = Scene::opaque(40, 30);
+        let fit = Fit::new((40, 30), (40, 30));
+        let rects = fit.input_rects(&scene, 1.0);
+        assert_eq!(rects, vec![Rect { x: 0, y: 0, w: 40, h: 30 }]);
     }
 
     #[test]

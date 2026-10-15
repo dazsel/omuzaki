@@ -21,7 +21,8 @@ use crate::stats::{Series, Summary};
 pub enum Mode {
     /// Open the window and draw until closed or the time is up.
     Run,
-    /// Open the window, apply the platform features, read the OS state back and exit. No GPU is touched.
+    /// Open the window, apply the platform features, read the OS state back and exit. No GPU is touched, except that
+    /// per-pixel click-through draws the picture once on a device of its own, because its mask comes from the pixels.
     Probe,
     /// List the alpha modes each wgpu backend offers for the window and exit.
     Caps,
@@ -160,7 +161,8 @@ pub struct App {
     failure: Option<RunError>,
 }
 
-/// Frames a run is expected to record, so the sample buffers are sized once instead of growing in the frame loop.
+/// Samples the frame series hold: a run with a deadline records every frame; one without keeps the most recent ones (the
+/// series are rings, so recording allocates nothing however long the run lasts).
 fn expected_frames(config: &Config) -> usize {
     config.seconds.map_or(4096, |s| (s.max(0.0) * f64::from(config.fps)).ceil() as usize + 64)
 }
@@ -171,7 +173,7 @@ impl App {
         let now = Instant::now();
         let frames = expected_frames(&config);
         Self {
-            opacity: config.opacity,
+            opacity: config.opacity.clamp(0.0, 1.0),
             config,
             scene: None,
             window: None,
@@ -209,8 +211,8 @@ impl App {
             (Some(first), Some(last)) => (last - first).as_secs_f64(),
             _ => 0.0,
         };
-        // A run shorter than one report interval has no later mark, so the end of the run is the second one.
-        let last = self.cpu_last.or_else(CpuMark::now);
+        // The end of the run is a mark of its own: the last report's mark can be a second or two before it.
+        let last = CpuMark::now().or(self.cpu_last);
         let (cpu_seconds, cpu_wall_seconds) = match (self.cpu_first, last) {
             (Some(a), Some(b)) => (Some(b.seconds - a.seconds), (b.at - a.at).as_secs_f64()),
             _ => (None, 0.0),
@@ -403,10 +405,18 @@ impl App {
         {
             return;
         }
-        match self.reference(size) {
-            Ok(scene) => self.scene = Some(scene),
-            Err(e) => println!("[FAILED]      mask at {}x{}: {e}", size.width, size.height),
-        }
+        self.scene = Some(match self.reference(size) {
+            Ok(scene) => scene,
+            Err(e) => {
+                // The old picture cannot be scaled to match what the shader now draws, so a mask from it would accept and
+                // reject the wrong pixels. Every pixel takes input instead: wrong in the safe direction, and reported.
+                println!(
+                    "[FAILED]      mask at {}x{}: {e}; per-pixel click-through is off until the size changes again",
+                    size.width, size.height
+                );
+                Scene::opaque(size.width, size.height)
+            }
+        });
         self.refresh_mask();
     }
 
