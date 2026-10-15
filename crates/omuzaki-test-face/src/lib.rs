@@ -11,7 +11,7 @@
 pub mod face_parity;
 
 // The face parity harness paints with `omuzaki-face`; crates that link this one reach its registrations through here
-// (ADR 0015).
+// (ADR 0015). `build.rs` writes the calls from the dependencies that set `registers = true` (ADR 0054 section 6).
 omuzaki_core::define_link! {
-    omuzaki_face::link();
+    include!(concat!(env!("OUT_DIR"), "/link_calls.rs"));
 }

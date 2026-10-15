@@ -23,6 +23,10 @@ omuzaki-test = { path = "../omuzaki-test" }
 [dev-dependencies]
 tempfile.workspace = true
 
+# The generator behind `build.rs`: the `link()` calls come from the dependencies' `registers` flags.
+[build-dependencies]
+omuzaki-link-build = { path = "../omuzaki-link-build" }
+
 [lints]
 workspace = true
 

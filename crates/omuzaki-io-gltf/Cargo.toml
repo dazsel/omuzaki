@@ -23,3 +23,4 @@ workspace = true
 [package.metadata.omuzaki]
 kind = "Implementation"
 summary = "plain glTF / GLB as format `glb`: the registration and the plain-glTF policy (VRM data is dropped with a warning, an avatar or `MToon` material on export is reported) over `omuzaki-gltf`"
+registers = true

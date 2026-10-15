@@ -14,7 +14,11 @@ fn a_binary_linking_the_stage_contains_every_registration_of_the_crates_it_links
         .collect();
 
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let expected = registry::expected(&root, "omuzaki-stage", None).expect("the workspace scans");
+    // The render backend is an optional dependency whose registrations are in the binary exactly when its implicit
+    // feature is on, however it was switched on.
+    let features: &[&str] = if cfg!(feature = "omuzaki-render") { &["omuzaki-render"] } else { &[] };
+    let expected =
+        registry::expected_with_features(&root, "omuzaki-stage", None, features).expect("the workspace scans");
     match registry::verify("omuzaki-stage", &expected, &linked) {
         Ok(summary) => println!("{summary}"),
         Err(report) => panic!("{report}"),
