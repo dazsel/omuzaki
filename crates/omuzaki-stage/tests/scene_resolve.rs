@@ -10,8 +10,8 @@ use std::cell::Cell;
 use std::collections::BTreeMap;
 
 use omuzaki_char_api::{BuildOptions, BuildServices, CharId, CharacterBuilder, RegistryBuilder};
-use omuzaki_core::glam::Vec3;
-use omuzaki_render_api::{Background, Bloom, Colour, ColourGrade, DepthOfField, FilmGrain, Tonemap};
+use omuzaki_core::glam::{Affine3A, Vec3};
+use omuzaki_render_api::{Background, Bloom, Colour, ColourGrade, DepthOfField, FilmGrain, Projection, Tonemap};
 use omuzaki_stage::StageError;
 use omuzaki_stage::scene::landmarks::Landmarks;
 use omuzaki_stage::scene::resolve::{Changes, CheckedScene, Figure, ResolvedScene};
@@ -441,4 +441,27 @@ fn a_ground_edit_is_not_value_only() {
     def.scene.ground.radius = Some(4.0);
     let changes = out.resolve_into(checked(&def), &figures, ASPECT).unwrap();
     assert!(changes.ground && !changes.structure && !changes.value_only(), "{changes:?}");
+}
+
+#[test]
+fn a_figure_that_isnt_finite_is_refused_and_keeps_the_last_scene() {
+    let (def, good) = (scene(), figures([0.0, 0.0]));
+    let mut out = resolved(&def, &good);
+    let before = out.clone();
+    let mut bad = good.clone();
+    bad.get_mut(&member("kiri")).unwrap().root = Affine3A::from_translation(Vec3::splat(f32::NAN));
+    let Err(StageError::Scene { source }) = out.resolve_into(checked(&def), &bad, ASPECT) else {
+        panic!("expected a scene error");
+    };
+    assert_eq!(source.path, "cast.kiri");
+    assert_eq!(out, before);
+}
+
+#[test]
+fn a_free_camera_without_a_subject_reaches_ten_unit_heights_past_its_target() {
+    let mut def = SceneDef::new(SceneSettings::named("Empty"));
+    def.cameras.insert(camera("free"), free_stage_camera([0.0, 0.0, 3.0], [0.0, 0.0, 0.0]));
+    let out = resolved(&def, &BTreeMap::new());
+    let Projection::Perspective { far, .. } = out.cameras[0].1.projection else { panic!("perspective") };
+    assert!((far - 13.0).abs() < 1e-4, "{far}");
 }
