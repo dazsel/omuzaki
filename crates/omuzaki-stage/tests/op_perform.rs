@@ -11,7 +11,9 @@ use omuzaki_core::time::{FakeClock, Seconds};
 use omuzaki_doc_mock::MemDoc;
 use omuzaki_ops_api::{Actor, ErrorCode, OpCtx, OpError, OpKind, Plan, Scope, Services, ServicesBuilder, Undo, find};
 use omuzaki_stage::perform::Tracking;
-use omuzaki_stage::perform::host::{CalibrationState, PerformError, PerformHost, PerformStatus, RetargetChange};
+use omuzaki_stage::perform::host::{
+    CalibrationState, PerformError, PerformHost, PerformStatus, RetargetChange, RetargetReceipt,
+};
 use serde_json::{Value, json};
 
 /// Records every call and answers from a script.
@@ -19,12 +21,27 @@ struct FakeHost {
     calls: Mutex<Vec<String>>,
     /// What every request answers with, when it is an error.
     refuse: Option<PerformError>,
-    config: Mutex<RetargetConfig>,
+    /// The settings as requested, the settings the "loop" has applied, and the last request number of each.
+    state: Mutex<Settings>,
+}
+
+#[derive(Default)]
+struct Settings {
+    requested: RetargetConfig,
+    applied: RetargetConfig,
+    requested_seq: u64,
+    applied_seq: u64,
 }
 
 impl FakeHost {
+    /// What the perform loop does on a later step: take what was requested.
+    fn loop_takes_requests(&self) {
+        let mut state = self.state.lock().unwrap();
+        (state.applied, state.applied_seq) = (state.requested.clone(), state.requested_seq);
+    }
+
     fn new(refuse: Option<PerformError>) -> Arc<Self> {
-        Arc::new(Self { calls: Mutex::default(), refuse, config: Mutex::default() })
+        Arc::new(Self { calls: Mutex::default(), refuse, state: Mutex::default() })
     }
 
     fn record(&self, call: String) -> Result<(), PerformError> {
@@ -42,14 +59,17 @@ impl PerformHost for FakeHost {
         self.record(format!("calibrate {frames}"))
     }
 
-    fn set_retarget(&self, change: RetargetChange) -> Result<RetargetConfig, PerformError> {
+    fn set_retarget(&self, change: RetargetChange) -> Result<RetargetReceipt, PerformError> {
         self.record(format!("set_retarget {change:?}"))?;
-        let mut config = self.config.lock().unwrap();
+        let mut state = self.state.lock().unwrap();
+        let config = &mut state.requested;
         config.smoothing = change.smoothing.unwrap_or(config.smoothing);
         config.exaggeration = change.exaggeration.unwrap_or(config.exaggeration);
         config.head_gain = change.head_gain.unwrap_or(config.head_gain);
         config.mirror = change.mirror.unwrap_or(config.mirror);
-        Ok(config.clone())
+        let requested = config.clone();
+        state.requested_seq += 1;
+        Ok(RetargetReceipt { seq: state.requested_seq, requested })
     }
 
     fn set_calibration(&self, _calibration: Calibration) -> Result<(), PerformError> {
@@ -62,10 +82,12 @@ impl PerformHost for FakeHost {
 
     fn status(&self) -> PerformStatus {
         self.calls.lock().unwrap().push("status".to_owned());
+        let state = self.state.lock().unwrap();
         PerformStatus {
             tracking: Tracking::Tracking,
             calibration: CalibrationState::Capturing { frames: 12, of: 150 },
-            retarget: self.config.lock().unwrap().clone(),
+            retarget: state.applied.clone(),
+            retarget_seq: state.applied_seq,
             source_fps: 29.5,
         }
     }
@@ -135,19 +157,31 @@ fn calibrate_rejects_frame_counts_outside_30_to_600_naming_the_field() {
 }
 
 #[test]
-fn set_retarget_changes_only_the_named_fields_and_returns_the_full_config() {
+fn set_retarget_replies_at_once_with_the_requested_settings_and_status_shows_them_once_applied() {
     let host = FakeHost::new(None);
     let out = run(&host, "perform.set_retarget", json!({ "smoothing": 0.7, "mirror": true })).unwrap().output.unwrap();
-    assert_eq!(out["smoothing"], json!(0.7f32));
-    assert_eq!(out["mirror"], json!(true));
-    assert_eq!(out["head_gain"], json!(1.0), "fields left out keep their value");
-    assert!(out.get("lost").is_some(), "the whole config comes back");
+    assert_eq!(out["seq"], json!(1));
+    assert_eq!(out["requested"]["smoothing"], json!(0.7f32));
+    assert_eq!(out["requested"]["mirror"], json!(true));
+    assert_eq!(out["requested"]["head_gain"], json!(1.0), "fields left out keep their value");
+    assert!(out["requested"].get("lost").is_some(), "the whole config comes back");
     assert_eq!(
         host.calls(),
         [
             "set_retarget RetargetChange { smoothing: Some(0.7), exaggeration: None, head_gain: None, mirror: Some(true) }"
         ]
     );
+
+    // The loop has not taken it yet, so the status is still the old settings, and says which request it includes.
+    let status = |host: &Arc<FakeHost>| run(host, "perform.status", json!({})).unwrap().output.unwrap();
+    let before = status(&host);
+    assert_eq!(before["retarget"]["smoothing"], json!(RetargetConfig::default().smoothing));
+    assert_eq!(before["retarget_seq"], json!(0));
+    host.loop_takes_requests();
+    let after = status(&host);
+    assert_eq!(after["retarget"]["smoothing"], json!(0.7f32));
+    assert_eq!(after["retarget"]["mirror"], json!(true));
+    assert_eq!(after["retarget_seq"], out["seq"], "the status reaches the receipt's seq once it is applied");
 }
 
 #[test]
@@ -255,6 +289,10 @@ fn the_argument_schemas_name_the_fields_and_their_types() {
     assert_eq!(
         props.keys().map(String::as_str).collect::<Vec<_>>(),
         ["exaggeration", "head_gain", "mirror", "smoothing"]
+    );
+    assert!(
+        set["description"].as_str().unwrap().contains("queued"),
+        "the schema says the change is queued, not waited for"
     );
     assert_eq!(schema("perform.status")["type"], "object");
 }

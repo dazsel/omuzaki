@@ -16,8 +16,9 @@
 //! # What is reported
 //!
 //! The handle keeps two views of the settings. **Requested** is the base of the next merge, so back-to-back changes
-//! compose; nothing outside the handle reads it. **Applied** is what the performer has acknowledged, and it is the
-//! only one [`PerformHost::status`] and the reply of [`PerformHost::set_retarget`] report. The handle is made from the
+//! compose; it is also what [`PerformHost::set_retarget`] answers with, labelled as requested and numbered
+//! ([`RetargetReceipt`]). **Applied** is what the performer has acknowledged, and it is the only view
+//! [`PerformHost::status`] reports, with the number of the newest request it includes. The handle is made from the
 //! performer ([`perform_channel`]), so both views start from the settings really in use.
 
 use std::collections::VecDeque;
@@ -45,11 +46,7 @@ pub const MAX_COMMANDS_PER_ADVANCE: usize = 4;
 /// Ticks (steps of the control's timeline, 1/[`STEP_HZ`] s each, skipped ones included) a neutral capture waits for its
 /// next tracked frame before it gives up: 10 s.
 pub const CAPTURE_STALL_STEPS: u64 = 600;
-/// How long [`PerformHost::set_retarget`] waits for the performer to apply a change before it reports
-/// [`PerformError::Stalled`]: several frames of the perform loop, which takes the queue at
-/// [`MAX_COMMANDS_PER_ADVANCE`] a frame.
-pub const REPLY_TIMEOUT: Duration = Duration::from_secs(1);
-/// How often a waiting reply looks for the performer's acknowledgement.
+/// How often [`PerformHandle::await_retarget`] looks for the performer's acknowledgement.
 #[cfg(not(target_arch = "wasm32"))]
 const REPLY_POLL: Duration = Duration::from_millis(1);
 /// Slack so a `now` that lands exactly on a step boundary is not lost to float rounding (as [`Performer::advance`]).
@@ -59,8 +56,8 @@ const FPS_SMOOTHING: f32 = 0.1;
 
 /// What the ops (and the UI) can ask of the live performer. Requests are queued for the perform thread. For
 /// [`calibrate`](Self::calibrate) and [`set_calibration`](Self::set_calibration) a reply means "accepted", not
-/// "applied"; [`status`](Self::status) shows what has happened since. [`set_retarget`](Self::set_retarget) waits, and its
-/// reply is the configuration the performer has applied.
+/// "applied"; [`status`](Self::status) shows what has happened since. That includes [`set_retarget`](Self::set_retarget):
+/// nothing here waits, because the ops call it while the executor holds the document lock.
 pub trait PerformHost: Send + Sync {
     /// Starts a neutral capture of `frames` tracked frames (clamped to the capture's own limits); the result applies
     /// itself when done.
@@ -70,16 +67,15 @@ pub trait PerformHost: Send + Sync {
     /// [`PerformError::Disconnected`].
     fn calibrate(&self, frames: usize) -> Result<(), PerformError>;
 
-    /// Applies a partial change and returns the full config the performer is now using, once it has applied it. The
-    /// change is merged into the settings requested so far, so back-to-back changes compose; a change made around the
-    /// host, directly on the performer's retarget, is not seen. Waits up to [`REPLY_TIMEOUT`]: call it from an ops
-    /// thread, never from the perform thread.
+    /// Queues a partial change and returns at once with a [`RetargetReceipt`]: the settings as requested, and the
+    /// sequence number to look for. The change is merged into the settings requested so far, so back-to-back changes
+    /// compose; a change made around the host, directly on the performer's retarget, is not seen. The performer
+    /// applies it on a later step: [`status`](Self::status) reports the applied settings and
+    /// [`retarget_seq`](PerformStatus::retarget_seq), which reaches the receipt's `seq` once it has.
     ///
     /// # Errors
-    /// [`PerformError::QueueFull`], [`PerformError::Disconnected`], or [`PerformError::Stalled`] when the performer
-    /// did not step in time (the change stays queued and applies when it does), or [`PerformError::Unsupported`] in
-    /// the web build, which has no performer thread to wait on (nothing is queued then).
-    fn set_retarget(&self, change: RetargetChange) -> Result<RetargetConfig, PerformError>;
+    /// [`PerformError::QueueFull`] or [`PerformError::Disconnected`]; nothing is queued then.
+    fn set_retarget(&self, change: RetargetChange) -> Result<RetargetReceipt, PerformError>;
 
     /// Replaces the calibration in use (a saved profile loading, say).
     ///
@@ -153,6 +149,15 @@ pub enum CalibrationState {
     },
 }
 
+/// The answer to a queued settings change: what was asked for, not what the performer is using.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct RetargetReceipt {
+    /// The request's number. [`PerformStatus::retarget_seq`] reaches it once the performer has applied the request.
+    pub seq: u64,
+    /// The full settings the request asks for: the change merged into the settings requested so far.
+    pub requested: RetargetConfig,
+}
+
 /// What the performer last published, read by [`PerformHost::status`].
 ///
 /// Each field is a consistent snapshot of its own: the tracking state, the capture state and the frame rate come from
@@ -167,6 +172,9 @@ pub struct PerformStatus {
     pub calibration: CalibrationState,
     /// The settings the performer has applied.
     pub retarget: RetargetConfig,
+    /// The newest [`RetargetReceipt::seq`] those settings include; `0` before any request. A request has been applied
+    /// once this reaches its `seq`.
+    pub retarget_seq: u64,
     /// Tracker frames per second as the performer sees them (a moving average; `0` before the first frame).
     pub source_fps: f32,
 }
@@ -180,12 +188,12 @@ pub enum PerformError {
     /// A neutral capture is already running.
     #[error("a calibration is already running")]
     CalibrationRunning,
-    /// The performer did not apply a settings change within [`REPLY_TIMEOUT`]: its loop is paused or very slow. The
-    /// change stays queued and applies when the loop runs.
+    /// [`PerformHandle::await_retarget`] gave up: the performer did not apply the change in time (its loop is paused
+    /// or very slow). The change stays queued and applies when the loop runs.
     #[error("the performer did not apply the change in time")]
     Stalled,
-    /// Live performance is not part of the web build: waiting on the performer needs a thread and a clock it lacks.
-    /// Only produced on `wasm32`.
+    /// Waiting on the performer is not available in the web build, which has no thread and no clock to wait with
+    /// ([`PerformHandle::await_retarget`]). Only produced on `wasm32`.
     #[error("live performance isn't available in the web build")]
     Unsupported,
     /// The performer has not caught up with the requests already queued (the queue holds [`COMMAND_QUEUE_LEN`]).
@@ -212,8 +220,9 @@ enum Command {
 struct RetargetBook {
     /// The settings once every request made so far has run: the base of the next merge.
     requested: RetargetConfig,
-    /// The settings the performer has acknowledged.
+    /// The settings the performer has acknowledged, and the request number they include.
     applied: RetargetConfig,
+    applied_seq: u64,
     /// The last sequence number handed out.
     last_seq: u64,
     /// Requests the performer has not acknowledged yet, with the config each asked for. At most the queue's length.
@@ -224,8 +233,8 @@ impl RetargetBook {
     /// Moves every acknowledged request from `in_flight` into `applied`.
     fn settle(&mut self, acknowledged: u64) {
         while self.in_flight.front().is_some_and(|(seq, _)| *seq <= acknowledged) {
-            if let Some((_, config)) = self.in_flight.pop_front() {
-                self.applied = config;
+            if let Some((seq, config)) = self.in_flight.pop_front() {
+                (self.applied, self.applied_seq) = (config, seq);
             }
         }
     }
@@ -404,10 +413,6 @@ impl Live {
     }
 }
 
-/// A settings request that has been queued: wait for it with [`PerformHandle::await_retarget`].
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct RetargetTicket(u64);
-
 /// The ops' side. Cheap to clone; every clone talks to the same performer.
 #[derive(Clone)]
 pub struct PerformHandle {
@@ -445,6 +450,7 @@ pub fn perform_channel(performer: &Performer) -> (PerformHandle, PerformControl)
         book: Mutex::new(RetargetBook {
             requested: config.clone(),
             applied: config,
+            applied_seq: 0,
             last_seq: 0,
             in_flight: VecDeque::with_capacity(COMMAND_QUEUE_LEN),
         }),
@@ -480,33 +486,18 @@ impl PerformHandle {
         book
     }
 
-    /// Queues a settings change without waiting for the performer to apply it.
-    ///
-    /// # Errors
-    /// [`PerformError::QueueFull`] or [`PerformError::Disconnected`]; nothing is queued then.
-    pub fn request_retarget(&self, change: RetargetChange) -> Result<RetargetTicket, PerformError> {
-        // Held across the send, so changes reach the performer in the order they are merged here.
-        let mut book = self.book();
-        let mut config = book.requested.clone();
-        change.apply_to(&mut config);
-        let seq = book.last_seq + 1;
-        self.send(Command::Config { seq, config: config.clone() })?;
-        book.last_seq = seq;
-        book.requested.clone_from(&config);
-        book.in_flight.push_back((seq, config));
-        Ok(RetargetTicket(seq))
-    }
-
-    /// Waits up to `timeout` for the performer to apply the request, and returns the settings it is then using.
+    /// Waits up to `timeout` for the performer to apply request number `seq` (a [`RetargetReceipt::seq`]), and returns
+    /// the settings it is then using. This blocks: call it from your own thread, never from an op (which runs under the
+    /// document lock) and never from the perform thread. The ops read [`PerformHost::status`] instead.
     ///
     /// # Errors
     /// [`PerformError::Stalled`] after `timeout`, or [`PerformError::Disconnected`] if the control is gone before it
     /// applied the request. In the web build ([`PerformError::Unsupported`]) it always refuses.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn await_retarget(&self, ticket: RetargetTicket, timeout: Duration) -> Result<RetargetConfig, PerformError> {
+    pub fn await_retarget(&self, seq: u64, timeout: Duration) -> Result<RetargetConfig, PerformError> {
         let deadline = Instant::now() + timeout;
         loop {
-            if self.shared.acknowledged.load(Ordering::Acquire) >= ticket.0 {
+            if self.shared.acknowledged.load(Ordering::Acquire) >= seq {
                 return Ok(self.book().applied.clone());
             }
             if !self.shared.running.load(Ordering::Acquire) {
@@ -525,7 +516,7 @@ impl PerformHandle {
     /// # Errors
     /// Always [`PerformError::Unsupported`].
     #[cfg(target_arch = "wasm32")]
-    pub fn await_retarget(&self, _ticket: RetargetTicket, _timeout: Duration) -> Result<RetargetConfig, PerformError> {
+    pub fn await_retarget(&self, _seq: u64, _timeout: Duration) -> Result<RetargetConfig, PerformError> {
         Err(PerformError::Unsupported)
     }
 }
@@ -542,16 +533,17 @@ impl PerformHost for PerformHandle {
         sent
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    fn set_retarget(&self, change: RetargetChange) -> Result<RetargetConfig, PerformError> {
-        let ticket = self.request_retarget(change)?;
-        self.await_retarget(ticket, REPLY_TIMEOUT)
-    }
-
-    /// Refused before anything is queued: a change whose reply cannot be waited for would apply with no one told.
-    #[cfg(target_arch = "wasm32")]
-    fn set_retarget(&self, _change: RetargetChange) -> Result<RetargetConfig, PerformError> {
-        Err(PerformError::Unsupported)
+    fn set_retarget(&self, change: RetargetChange) -> Result<RetargetReceipt, PerformError> {
+        // Held across the send, so changes reach the performer in the order they are merged here.
+        let mut book = self.book();
+        let mut requested = book.requested.clone();
+        change.apply_to(&mut requested);
+        let seq = book.last_seq + 1;
+        self.send(Command::Config { seq, config: requested.clone() })?;
+        book.last_seq = seq;
+        book.requested.clone_from(&requested);
+        book.in_flight.push_back((seq, requested.clone()));
+        Ok(RetargetReceipt { seq, requested })
     }
 
     fn set_calibration(&self, calibration: Calibration) -> Result<(), PerformError> {
@@ -564,8 +556,17 @@ impl PerformHost for PerformHandle {
 
     fn status(&self) -> PerformStatus {
         let live = Live::unpack(self.shared.live.load(Ordering::Acquire));
-        let retarget = self.book().applied.clone();
-        PerformStatus { tracking: live.tracking, calibration: live.calibration, retarget, source_fps: live.fps }
+        let (retarget, retarget_seq) = {
+            let book = self.book();
+            (book.applied.clone(), book.applied_seq)
+        };
+        PerformStatus {
+            tracking: live.tracking,
+            calibration: live.calibration,
+            retarget,
+            retarget_seq,
+            source_fps: live.fps,
+        }
     }
 }
 
@@ -808,7 +809,7 @@ mod wasm_tests {
     use crate::perform::PerformerParts;
 
     #[test]
-    fn the_web_build_refuses_to_wait_on_the_performer() {
+    fn the_web_build_queues_but_refuses_to_wait_on_the_performer() {
         let parts = PerformerParts {
             source: Box::new(TrackReplay::new(synthetic_track(&SyntheticSpec::default()))),
             retarget: Box::new(ArkitRetarget::new(DeviceProfile::Webcam)),
@@ -817,8 +818,7 @@ mod wasm_tests {
         };
         let performer = Performer::new(parts, ChannelBuf::NEUTRAL, HumanoidPose::REST);
         let (host, _control) = perform_channel(&performer);
-        assert_eq!(host.set_retarget(RetargetChange::default()), Err(PerformError::Unsupported));
-        let ticket = host.request_retarget(RetargetChange::default()).unwrap();
-        assert_eq!(host.await_retarget(ticket, Duration::ZERO), Err(PerformError::Unsupported));
+        let receipt = host.set_retarget(RetargetChange::default()).unwrap();
+        assert_eq!(host.await_retarget(receipt.seq, Duration::ZERO), Err(PerformError::Unsupported));
     }
 }

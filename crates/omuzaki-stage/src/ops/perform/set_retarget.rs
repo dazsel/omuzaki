@@ -17,7 +17,9 @@ pub const EXAGGERATION: RangeInclusive<f32> = 1.0..=3.0;
 /// Allowed head gain.
 pub const HEAD_GAIN: RangeInclusive<f32> = 0.0..=3.0;
 
-/// Change the retarget's settings; fields left out stay as they are. Returns the full settings now in use.
+/// Change the retarget's settings; fields left out stay as they are. The change is queued, not waited for (the op
+/// runs under the document lock): it returns the settings as requested and a `seq`, and `perform.status` shows the
+/// settings the performer is using, with `retarget_seq` reaching `seq` once it has applied this change.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct SetRetarget {
     /// Smoothing, `0` raw to `1` very smooth.
@@ -48,7 +50,7 @@ impl Op for SetRetarget {
     fn meta() -> OpMeta {
         OpMeta {
             name: "perform.set_retarget",
-            summary: "Tune the live face retarget: smoothing, exaggeration, head gain and mirror.",
+            summary: "Queue a change to the live face retarget (smoothing, exaggeration, head gain, mirror); returns the requested settings and a seq, and perform.status shows when it is applied.",
             kind: OpKind::Edit,
             scope: Scope::Perform,
             undo: Undo::None,
@@ -69,9 +71,9 @@ impl Op for SetRetarget {
         if ctx.dry_run {
             return Ok(Plan::answer(json!({ "dry_run": true, "change": change })));
         }
-        let config = host.set_retarget(change).map_err(op_error)?;
-        let config = serde_json::to_value(config).map_err(|e| OpError::internal(e.to_string()))?;
-        Ok(Plan::answer(config))
+        let receipt = host.set_retarget(change).map_err(op_error)?;
+        let receipt = serde_json::to_value(receipt).map_err(|e| OpError::internal(e.to_string()))?;
+        Ok(Plan::answer(receipt))
     }
 }
 

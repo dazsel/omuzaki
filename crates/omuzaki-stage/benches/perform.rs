@@ -5,6 +5,9 @@
 //! - `control_advance_4_configs` and `control_advance_4_calibrations`: one `advance` that takes a full share
 //!   (`MAX_COMMANDS_PER_ADVANCE`) of settings requests or calibrations. Only the `advance` call is timed; the handle
 //!   queues the requests outside it.
+//! - `control_advance_capture_done_150` and `_600`: the `advance` that finishes a neutral capture (the median over
+//!   every channel and the head, then the calibration swap), the most work the control does in one call. Feeding the
+//!   frames is outside the clock.
 
 use std::hint::black_box;
 use std::time::{Duration, Instant};
@@ -17,7 +20,8 @@ use omuzaki_anim_mock::animator::MockAnimator;
 use omuzaki_anim_mock::track::{SyntheticSpec, TrackReplay, synthetic_track};
 use omuzaki_core::time::Seconds;
 use omuzaki_stage::perform::host::{
-    MAX_COMMANDS_PER_ADVANCE, PerformControl, PerformHandle, PerformHost, RetargetChange, perform_channel,
+    CalibrationState, MAX_COMMANDS_PER_ADVANCE, PerformControl, PerformHandle, PerformHost, RetargetChange,
+    perform_channel,
 };
 use omuzaki_stage::perform::{Performer, PerformerParts, STEP_HZ};
 
@@ -76,7 +80,7 @@ fn control_advance(c: &mut Criterion) {
                 #[allow(clippy::cast_precision_loss)] // small
                 let smoothing = Some(((i + k as u64) % 10) as f32 / 10.0);
                 let change = RetargetChange { smoothing, ..RetargetChange::default() };
-                black_box(handle.request_retarget(change).ok());
+                black_box(handle.set_retarget(change).ok());
             }
         });
     });
@@ -87,6 +91,46 @@ fn control_advance(c: &mut Criterion) {
             }
         });
     });
+}
+
+/// The `advance` that completes a capture of `frames` tracked frames, timed alone.
+#[allow(clippy::cast_precision_loss)] // iteration counts are far below 2^52
+fn capture_done(c: &mut Criterion, name: &str, frames: usize) {
+    /// Criterion sizes its iteration count from the time reported, which leaves out the (much longer) feeding of the
+    /// frames; so run at most this many real iterations per call and scale the time to the count it asked for.
+    const MAX_REAL_ITERATIONS: u64 = 200;
+    let mut performer = performer();
+    let (handle, mut control) = perform_channel(&performer);
+    control.advance(&mut performer, mid_step(0));
+    let mut index = 0_u64;
+    c.bench_function(name, |b| {
+        b.iter_custom(|iters| {
+            let real = iters.clamp(1, MAX_REAL_ITERATIONS);
+            let mut total = Duration::ZERO;
+            for _ in 0..real {
+                handle.calibrate(frames).ok();
+                // Run until the last frame is in; the next `advance` is the one that takes the median.
+                loop {
+                    index += 1;
+                    control.advance(&mut performer, mid_step(index));
+                    if matches!(handle.status().calibration, CalibrationState::Capturing { frames: held, of } if held == of)
+                    {
+                        break;
+                    }
+                }
+                index += 1;
+                let start = Instant::now();
+                black_box(control.advance(&mut performer, mid_step(index)).map(|out| out.tick.index));
+                total += start.elapsed();
+            }
+            total.mul_f64(iters as f64 / real as f64)
+        });
+    });
+}
+
+fn control_capture_done(c: &mut Criterion) {
+    capture_done(c, "control_advance_capture_done_150", 150);
+    capture_done(c, "control_advance_capture_done_600", 600);
 }
 
 fn perform_step(c: &mut Criterion) {
@@ -100,5 +144,5 @@ fn perform_step(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, perform_step, control_advance);
+criterion_group!(benches, perform_step, control_advance, control_capture_done);
 criterion_main!(benches);

@@ -212,11 +212,10 @@ fn a_second_calibrate_while_one_runs_is_refused_and_a_finished_one_frees_the_slo
 fn a_full_queue_is_refused_and_leaves_no_capture_marked_running() {
     let (host, mut control, mut performer) = rig(replay(5.0));
     for _ in 0..COMMAND_QUEUE_LEN {
-        host.request_retarget(RetargetChange { mirror: Some(true), ..RetargetChange::default() }).unwrap();
+        host.set_retarget(RetargetChange { mirror: Some(true), ..RetargetChange::default() }).unwrap();
     }
     let change = RetargetChange { mirror: Some(false), ..RetargetChange::default() };
-    assert_eq!(host.request_retarget(change), Err(PerformError::QueueFull));
-    assert_eq!(host.set_retarget(change), Err(PerformError::QueueFull), "and set_retarget does not wait on a refusal");
+    assert_eq!(host.set_retarget(change), Err(PerformError::QueueFull));
     assert_eq!(host.set_calibration(*performer.retarget().calibration()), Err(PerformError::QueueFull));
     assert_eq!(host.calibrate(150), Err(PerformError::QueueFull));
     step(&mut control, &mut performer, 1);
@@ -392,11 +391,11 @@ fn a_handle_made_from_the_performer_starts_from_its_real_settings() {
     // Before any `advance`: no defaults, no stand-ins.
     assert_eq!(host.status().retarget, custom_config());
     assert_eq!(host.calibration(), own_calibration);
-    let ticket = host.request_retarget(RetargetChange { head_gain: Some(2.0), ..RetargetChange::default() }).unwrap();
+    let ticket = host.set_retarget(RetargetChange { head_gain: Some(2.0), ..RetargetChange::default() }).unwrap();
     control.advance(&mut performer, mid_step(0));
     let mut want = custom_config();
     want.head_gain = 2.0;
-    assert_eq!(host.await_retarget(ticket, Duration::ZERO), Ok(want.clone()), "merged into the real base");
+    assert_eq!(host.await_retarget(ticket.seq, Duration::ZERO), Ok(want.clone()), "merged into the real base");
     assert_eq!(*performer.retarget().config(), want);
 }
 
@@ -404,15 +403,15 @@ fn a_handle_made_from_the_performer_starts_from_its_real_settings() {
 fn status_and_replies_report_only_what_the_performer_applied() {
     let (host, mut control, mut performer) = rig(replay(5.0));
     let before = host.status().retarget;
-    let a = host.request_retarget(RetargetChange { mirror: Some(true), ..RetargetChange::default() }).unwrap();
-    let b = host.request_retarget(RetargetChange { head_gain: Some(2.0), ..RetargetChange::default() }).unwrap();
+    let a = host.set_retarget(RetargetChange { mirror: Some(true), ..RetargetChange::default() }).unwrap();
+    let b = host.set_retarget(RetargetChange { head_gain: Some(2.0), ..RetargetChange::default() }).unwrap();
     assert_eq!(host.status().retarget, before, "queued is not applied");
-    assert_eq!(host.await_retarget(b, Duration::from_millis(20)), Err(PerformError::Stalled));
+    assert_eq!(host.await_retarget(b.seq, Duration::from_millis(20)), Err(PerformError::Stalled));
     assert_eq!(host.status().retarget, before, "and a timed-out wait changes nothing");
     step(&mut control, &mut performer, 1);
     let mut want = before.clone();
     (want.mirror, want.head_gain) = (true, 2.0);
-    assert_eq!(host.await_retarget(a, Duration::ZERO), Ok(want.clone()));
+    assert_eq!(host.await_retarget(a.seq, Duration::ZERO), Ok(want.clone()));
     assert_eq!(host.status().retarget, want);
     assert_eq!(*performer.retarget().config(), want);
 }
@@ -421,32 +420,27 @@ fn status_and_replies_report_only_what_the_performer_applied() {
 fn a_wait_for_a_request_the_control_never_applies_ends_when_the_control_is_gone() {
     let (host, control, _performer) = rig(replay(5.0));
     let before = host.status().retarget;
-    let ticket = host.request_retarget(RetargetChange { mirror: Some(true), ..RetargetChange::default() }).unwrap();
+    let ticket = host.set_retarget(RetargetChange { mirror: Some(true), ..RetargetChange::default() }).unwrap();
     drop(control);
-    assert_eq!(host.await_retarget(ticket, Duration::from_secs(5)), Err(PerformError::Disconnected));
+    assert_eq!(host.await_retarget(ticket.seq, Duration::from_secs(5)), Err(PerformError::Disconnected));
     assert_eq!(host.status().retarget, before, "the unapplied request never shows");
 }
 
 #[test]
-fn set_retarget_waits_for_the_performer_and_returns_the_applied_settings() {
+fn set_retarget_returns_at_once_and_the_status_shows_it_applied_once_the_loop_takes_it() {
     let (host, mut control, mut performer) = rig(replay(5.0));
-    let stop = AtomicBool::new(false);
-    let reply = std::thread::scope(|scope| {
-        let stepper = scope.spawn(|| {
-            let mut i = 1;
-            while !stop.load(Ordering::Acquire) {
-                step(&mut control, &mut performer, i);
-                i += 1;
-                std::thread::sleep(Duration::from_millis(2));
-            }
-        });
-        let reply = host.set_retarget(RetargetChange { smoothing: Some(0.8), ..RetargetChange::default() });
-        stop.store(true, Ordering::Release);
-        stepper.join().unwrap();
-        reply
-    });
-    assert_eq!(reply.unwrap().smoothing, 0.8);
-    assert_eq!(host.status().retarget.smoothing, 0.8);
+    let before = host.status();
+    let started = std::time::Instant::now();
+    let receipt = host.set_retarget(RetargetChange { smoothing: Some(0.8), ..RetargetChange::default() }).unwrap();
+    // Nothing is stepping the performer: a reply that waited for it would sit out a timeout.
+    assert!(started.elapsed() < Duration::from_millis(200), "set_retarget waited {:?}", started.elapsed());
+    assert_eq!(receipt.requested.smoothing, 0.8, "the reply is what was asked for");
+    assert_eq!(host.status().retarget, before.retarget, "and the status is not changed by asking");
+    assert_eq!(host.status().retarget_seq, before.retarget_seq);
+    step(&mut control, &mut performer, 1);
+    let after = host.status();
+    assert_eq!(after.retarget, receipt.requested, "once the loop has taken it, the status shows it");
+    assert_eq!(after.retarget_seq, receipt.seq, "and says which request it includes");
 }
 
 #[test]
@@ -497,20 +491,20 @@ fn a_command_flood_cannot_starve_the_steps() {
     let (host, mut control, mut performer) = rig(replay(5.0));
     let change = RetargetChange { mirror: Some(true), ..RetargetChange::default() };
     for _ in 0..COMMAND_QUEUE_LEN {
-        host.request_retarget(change).unwrap();
+        host.set_retarget(change).unwrap();
     }
     step(&mut control, &mut performer, 1);
     for _ in 0..MAX_COMMANDS_PER_ADVANCE {
-        host.request_retarget(change).expect("one call took exactly its share and freed that many slots");
+        host.set_retarget(change).expect("one call took exactly its share and freed that many slots");
     }
-    assert_eq!(host.request_retarget(change), Err(PerformError::QueueFull));
+    assert_eq!(host.set_retarget(change), Err(PerformError::QueueFull));
 
     // And with a producer refilling the queue as fast as it can while the performer steps.
     let stop = AtomicBool::new(false);
     std::thread::scope(|scope| {
         scope.spawn(|| {
             while !stop.load(Ordering::Acquire) {
-                let _ = host.request_retarget(change);
+                let _ = host.set_retarget(change);
             }
         });
         for i in 2..800 {
@@ -547,12 +541,12 @@ fn requests_compose_in_order_and_the_reply_is_the_applied_config() {
     assert_eq!(host.status().retarget, want);
     let first = RetargetChange { smoothing: Some(0.8), mirror: Some(true), ..RetargetChange::default() };
     let second = RetargetChange { head_gain: Some(2.0), ..RetargetChange::default() };
-    let (t1, t2) = (host.request_retarget(first).unwrap(), host.request_retarget(second).unwrap());
+    let (t1, t2) = (host.set_retarget(first).unwrap(), host.set_retarget(second).unwrap());
     step(&mut control, &mut performer, 1);
     (want.smoothing, want.mirror) = (0.8, true);
     want.head_gain = 2.0;
-    assert_eq!(host.await_retarget(t1, Duration::ZERO), Ok(want.clone()), "the second change keeps the first");
-    assert_eq!(host.await_retarget(t2, Duration::ZERO), Ok(want.clone()));
+    assert_eq!(host.await_retarget(t1.seq, Duration::ZERO), Ok(want.clone()), "the second change keeps the first");
+    assert_eq!(host.await_retarget(t2.seq, Duration::ZERO), Ok(want.clone()));
     assert_eq!(*performer.retarget().config(), want);
     assert_eq!(host.status().retarget, want);
 }
@@ -576,9 +570,9 @@ fn four_threads_reading_and_writing_while_the_performer_steps_neither_deadlock_n
         exaggeration: Some(1.0 + k as f32 / 10.0),
         ..RetargetChange::default()
     };
-    let first = host.request_retarget(both(0)).unwrap();
+    let first = host.set_retarget(both(0)).unwrap();
     step(&mut control, &mut performer, 1);
-    host.await_retarget(first, Duration::ZERO).unwrap();
+    host.await_retarget(first.seq, Duration::ZERO).unwrap();
     let consistent = |c: &RetargetConfig| (c.exaggeration - (1.0 + c.smoothing)).abs() < 1e-6;
     let stop = AtomicBool::new(false);
     std::thread::scope(|scope| {
@@ -588,7 +582,7 @@ fn four_threads_reading_and_writing_while_the_performer_steps_neither_deadlock_n
                 let mut k = t;
                 while !stop.load(Ordering::Acquire) {
                     k = (k + 1) % 11;
-                    let reply = host.request_retarget(both(k)).and_then(|t| host.await_retarget(t, SHORT_WAIT));
+                    let reply = host.set_retarget(both(k)).and_then(|r| host.await_retarget(r.seq, SHORT_WAIT));
                     match reply {
                         Ok(config) => assert!(consistent(&config), "{config:?}"),
                         // Busy or stopped stepping at the end of the run: both are fine here.
@@ -651,9 +645,7 @@ fn advance_allocates_nothing_with_responses_configured_and_commands_arriving() {
             // The handle builds and sends its requests off the perform thread.
             0 => {
                 let smoothing = Some(if i % 600 == 0 { 0.3 } else { 0.7 });
-                unmeasured(|| {
-                    host.request_retarget(RetargetChange { smoothing, ..RetargetChange::default() }).unwrap()
-                });
+                unmeasured(|| host.set_retarget(RetargetChange { smoothing, ..RetargetChange::default() }).unwrap());
             }
             1 => unmeasured(|| host.set_calibration(calibration).unwrap()),
             2 if i < 3000 => unmeasured(|| host.calibrate(30).unwrap()),
