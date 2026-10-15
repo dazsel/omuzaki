@@ -270,3 +270,131 @@ fn description_is_trimmed_and_blank_is_none() {
     assert_eq!(description(padded.as_object().unwrap()), Some("Spaced."));
     assert_eq!(description(blank.as_object().unwrap()), None);
 }
+
+/// Holds an optional single-field struct.
+#[derive(JsonSchema)]
+struct OptionalSingle {
+    /// The optional struct.
+    inner: Option<Single>,
+}
+
+/// One field.
+#[derive(JsonSchema)]
+struct Single {
+    /// The only field.
+    #[schemars(title = "Only")]
+    only: u32,
+}
+
+#[test]
+fn an_option_of_a_single_field_struct_keeps_the_field() {
+    assert_eq!(
+        visited::<OptionalSingle>(),
+        vec![
+            (String::new(), Some("Holds an optional single-field struct.".to_owned())),
+            ("inner".into(), Some("The optional struct.".to_owned())),
+            ("inner--only".into(), Some("The only field.".to_owned())),
+        ]
+    );
+    assert_eq!(titles::<OptionalSingle>().last(), Some(&("inner--only".to_owned(), "Only".to_owned())));
+}
+
+#[test]
+fn an_any_of_with_a_null_branch_is_an_option_not_a_variant() {
+    // The `anyOf` form of `Option<T>`, which schemars does not emit for a struct but which the rule must hold for.
+    let schema = Schema::try_from(json!({
+        "type": "object",
+        "properties": {
+            "inner": {
+                "description": "The optional struct.",
+                "anyOf": [
+                    {
+                        "type": "object",
+                        "properties": { "only": { "title": "Only", "description": "The only field.", "type": "integer" } },
+                        "required": ["only"]
+                    },
+                    { "type": "null" }
+                ]
+            }
+        }
+    }))
+    .expect("a valid schema");
+    assert_eq!(
+        visited_in(&schema),
+        vec![
+            (String::new(), None),
+            ("inner".into(), Some("The optional struct.".to_owned())),
+            ("inner--only".into(), Some("The only field.".to_owned())),
+        ]
+    );
+}
+
+/// A pair of inner settings and a count.
+#[derive(JsonSchema)]
+struct Pair {
+    /// The pair.
+    pair: (Inner, u32),
+}
+
+#[test]
+fn a_tuple_walks_its_elements_transparently() {
+    assert_eq!(paths::<Pair>(), vec!["", "pair", "pair--max_size", "pair--twin_tails"],);
+}
+
+/// Entries by key, tagged by kind.
+#[derive(JsonSchema)]
+#[serde(tag = "kind")]
+enum Keyed {
+    /// Named entries.
+    Entries(BTreeMap<String, Inner>),
+}
+
+#[test]
+fn a_tagged_map_payload_keeps_its_values() {
+    assert_eq!(
+        visited::<Keyed>(),
+        vec![
+            (String::new(), Some("Entries by key, tagged by kind.".to_owned())),
+            ("Entries".into(), Some("Named entries.".to_owned())),
+            ("Entries--max_size".into(), Some("Its size.".to_owned())),
+            ("Entries--twin_tails".into(), Some("Its twin.".to_owned())),
+        ]
+    );
+}
+
+/// A figure, tagged by its variant name.
+#[derive(JsonSchema)]
+enum Figure {
+    /// A round one.
+    Round {
+        /// The radius.
+        radius: f32,
+    },
+    /// A boxy one.
+    Square {
+        /// The side.
+        side: f32,
+    },
+}
+
+/// A flat figure with a count.
+#[derive(JsonSchema)]
+#[serde(tag = "kind")]
+enum Flattened {
+    /// The flat variant.
+    Flat {
+        /// The figure, flattened in.
+        #[serde(flatten)]
+        figure: Figure,
+        /// A count.
+        count: u32,
+    },
+}
+
+#[test]
+fn a_flattened_union_inside_a_tagged_variant_is_walked() {
+    assert_eq!(
+        paths::<Flattened>(),
+        vec!["", "Flat", "Flat--count", "Flat--Round", "Flat--Round--radius", "Flat--Square", "Flat--Square--side"],
+    );
+}
