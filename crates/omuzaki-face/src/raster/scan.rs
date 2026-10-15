@@ -6,7 +6,8 @@
 //! rounds some positions to whole rows. To land on the same pixels this module repeats those steps, then sums the exact
 //! signed area of the resulting polygon per pixel by the accumulation-buffer method of `font-rs` (`add_span` is a port of
 //! its `draw_line`: each edge adds its trapezoid area to a row of deltas and a prefix sum turns the deltas into coverage). The non-zero rule is
-//! `min(|winding area|, 1)`, except in a row where layers of one winding overlap (the edge count passes 1): there
+//! `min(|winding area|, 1)`, except in a row where layers of one winding overlap (two same-direction edges cross one cell of a
+//! band): there
 //! the row is resolved again as a union, one quarter-row band at a time, from the edges themselves (see
 //! [`Scan::sweep`]).
 //!
@@ -255,31 +256,24 @@ fn cubic_chain(p: [Vec2; 4]) -> Chain {
     chain
 }
 
-/// One cell of the accumulation buffer.
-#[derive(Copy, Clone, Debug, Default, PartialEq)]
-struct Cell {
-    /// The signed area delta.
-    area: f32,
-    /// Where the edges that run down start and stop crossing, per quarter-row band: +1 in the first cell a band of an edge
-    /// reaches, -1 in the cell after its last (each saturates). A running sum along the row is the number of such edges
-    /// crossing each pixel in that band; `up` is the same for the edges that run up. Two edges of one direction in one
-    /// pixel and band are layers of one winding sharing its partial coverage, which the area sum cannot tell: an edge
-    /// that crosses half a row adds half, and a thin layer's two edges cancel.
-    down: [i8; BANDS],
-    up: [i8; BANDS],
-}
+/// One bit per quarter-row band in each of the cells' nibbles: the pattern `claim` repeats along a row.
+const EVERY_CELL: u64 = 0x1111_1111_1111_1111;
 
-impl Cell {
-    /// Adds `delta` to the start or stop marker of `band` for an edge of direction `dir` (1 down, -1 up).
-    fn mark(&mut self, band: usize, dir: i8, delta: i8) {
-        let lane = if dir > 0 { &mut self.down[band] } else { &mut self.up[band] };
-        *lane = lane.saturating_add(delta);
+/// Takes the cells `first..past` for the bands in `bands` (bit `b` for band `b`) in `words`, where cell `c`'s bands are
+/// bits `4c..4c + 4`, and returns whether any of them was taken already.
+fn claim(words: &mut [u64], first: usize, past: usize, bands: u64) -> bool {
+    let (lo, hi) = (first * 4, past * 4 - 1);
+    let (w0, w1) = (lo / 64, hi / 64);
+    let head = u64::MAX << (lo % 64);
+    let tail = u64::MAX >> (63 - hi % 64);
+    let mut hit = false;
+    for (w, word) in (w0..=w1).zip(&mut words[w0..=w1]) {
+        let mask =
+            (EVERY_CELL * bands) & (if w == w0 { head } else { u64::MAX }) & (if w == w1 { tail } else { u64::MAX });
+        hit |= *word & mask != 0;
+        *word |= mask;
     }
-
-    /// Whether the cell holds any marker.
-    fn marked(&self) -> bool {
-        u32::from_ne_bytes(self.down.map(i8::cast_unsigned)) | u32::from_ne_bytes(self.up.map(i8::cast_unsigned)) != 0
-    }
+    hit
 }
 
 /// One snapped, clipped edge as accumulated, kept so a row with overlapping layers can be resolved again: `a.y < b.y`
@@ -329,8 +323,18 @@ pub(super) struct Scan {
     height: usize,
     /// Cells per row: the raster width plus two, because an edge at the right border writes two cells.
     stride: usize,
-    /// Signed area deltas and edge counts, all zero between paths (the sweep clears what it reads).
-    acc: Vec<Cell>,
+    /// Signed area deltas, all zero between paths (the sweep clears what it reads).
+    acc: Vec<f32>,
+    /// Which cells the edges that run down (and up) cross in each quarter-row band, four bits per cell (one per band):
+    /// `occupied[(y * 2 + direction) * words..][..words]`. An edge that crosses a cell already taken by
+    /// another of the same direction in the same band is a second layer of one winding sharing that pixel's partial
+    /// coverage, which the area sum cannot tell (an edge that crosses half a row adds half, and a thin layer's two edges
+    /// cancel); it marks the row in `overlapping`. A bit set never wraps, however many contours are stacked.
+    occupied: Vec<u64>,
+    /// Words of `occupied` per row and direction.
+    words: usize,
+    /// The rows where a second layer shares a cell with the first.
+    overlapping: Vec<bool>,
     /// The rows and columns touched since the last sweep.
     dirty: Dirty,
     /// One row of alpha, handed to the sweep's consumer.
@@ -351,7 +355,7 @@ pub(super) struct Scan {
     /// One part of a band between crossings: the x of each piece at its start and end, and its direction.
     parts: Vec<(f32, f32, i8)>,
     /// One band's deltas (a row of cells) while a union is resolved.
-    band: Vec<Cell>,
+    band: Vec<f32>,
 }
 
 #[derive(Copy, Clone, Debug, Default)]
@@ -375,16 +379,23 @@ impl Scan {
             self.height = height;
             self.stride = width + 2;
             self.acc.clear();
-            self.acc.resize(self.stride * height, Cell::default());
+            self.acc.resize(self.stride * height, 0.0);
+            self.words = (self.stride * BANDS).div_ceil(64);
+            self.occupied.clear();
+            self.occupied.resize(height * 2 * self.words, 0);
+            self.overlapping.clear();
+            self.overlapping.resize(height, false);
             self.row.clear();
             self.row.resize(width, 0);
             self.union.clear();
             self.union.resize(width, 0.0);
             self.band.clear();
-            self.band.resize(self.stride, Cell::default());
+            self.band.resize(self.stride, 0.0);
         } else if self.dirty.min_y < self.dirty.max_y {
             // A path was fed and never swept: start clean.
-            self.acc.fill(Cell::default());
+            self.acc.fill(0.0);
+            self.occupied.fill(0);
+            self.overlapping.fill(false);
         }
         self.dirty = Dirty::NONE;
         self.edges.clear();
@@ -523,6 +534,13 @@ impl Scan {
         self.accumulate(a, b);
     }
 
+    /// Takes the cells `first..past` of row `y` in the bands `bands` (bit `b` for band `b`) for an edge of direction
+    /// `dir`; whether some were taken already.
+    fn claim_cells(&mut self, y: usize, dir: i8, first: usize, past: usize, bands: u64) -> bool {
+        let at = (y * 2 + usize::from(dir < 0)) * self.words;
+        claim(&mut self.occupied[at..at + self.words], first, past, bands)
+    }
+
     /// Adds the signed area of one edge (inside the raster, `y` increasing downward) to the accumulation buffer.
     fn accumulate(&mut self, a: Vec2, b: Vec2) {
         if a.y == b.y {
@@ -554,27 +572,17 @@ impl Scan {
             self.dirty.max_x = self.dirty.max_x.max(x1i + 1);
             add_span(&mut self.acc[row..row + self.stride], d, x0, x1);
             let bands = first_band.saturating_sub(y * BANDS)..(last_band - y * BANDS).min(BANDS);
-            if x1i <= x0i + 1 {
-                // Inside one cell for every band.
-                for band in bands {
-                    self.acc[row + x0i].mark(band, count_dir, 1);
-                    self.acc[row + x0i + 1].mark(band, count_dir, -1);
-                }
-            } else {
-                // Every cell a band of the edge crosses, so layers that share a pixel are seen wherever their ends are.
-                #[allow(clippy::cast_precision_loss)] // raster widths are far below 2^24
-                let (width, y_base) = (self.width as f32, (y * BANDS) as f32 * 0.25);
-                for band in bands {
-                    #[allow(clippy::cast_precision_loss)] // 0 to 3
-                    let (yt, yb) = (y_base + band as f32 * 0.25, y_base + (band + 1) as f32 * 0.25);
-                    let at = |y: f32| (a.x + dxdy * (y - a.y)).clamp(0.0, width);
-                    let (xt, xb) = (at(yt.max(a.y)), at(yb.min(b.y)));
-                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clamped to 0 <= x <= width
-                    let (first, past) = (xt.min(xb).floor() as usize, xt.max(xb).ceil() as usize);
-                    self.acc[row + first].mark(band, count_dir, 1);
-                    self.acc[row + past.max(first + 1)].mark(band, count_dir, -1);
-                }
-            }
+            // The cells the edge crosses in this row, for the bands it crosses. A band of it covers fewer cells than
+            // the row does, so two layers may be flagged that share no cell in one band; the union resolve then finds
+            // nothing to change, which costs time and not correctness. A layer is never missed.
+            let shared = self.claim_cells(
+                y,
+                count_dir,
+                x0i,
+                x1i.max(x0i + 1),
+                ((1 << bands.end) - 1) & !((1 << bands.start) - 1),
+            );
+            self.overlapping[y] |= shared;
             x = x_next;
         }
         self.dirty.min_y = self.dirty.min_y.min(y_first);
@@ -609,10 +617,10 @@ impl Scan {
     /// hole. The magnitude (`abs`) is taken because the sign of the winding carries no coverage, and the clamp then
     /// saturates a pixel that two same-winding layers fully cover.
     ///
-    /// A row where a band's winding (`count`) goes from or to zero by more than one in a cell holds layers of one winding
-    /// whose edges cross the same pixel, and there the sum is wrong at that partly covered pixel: it adds their partial
-    /// areas. Skia's analytic AA fills from the outer edge in, so the row is resolved again by [`Scan::union_row`], which keeps
-    /// only the edges where the winding enters or leaves zero. Chrome's alphas for such rows are in
+    /// A row where two edges of one direction cross the same cell in the same quarter-row band (found while the edges are
+    /// fed, from `occupied`) holds layers of one winding whose edges cross the same pixel, and there the sum is wrong at
+    /// that partly covered pixel: it adds their partial areas. Skia's analytic AA fills from the outer edge in, so the
+    /// row is resolved again by [`Scan::union_row`], which keeps only the edges where the winding enters or leaves zero. Chrome's alphas for such rows are in
     /// `omuzaki-test-face/tests/raster_supersample.rs`.
     ///
     /// Known limit: the sum is over area, so two regions that share a pixel subtract when their windings are opposite,
@@ -637,24 +645,15 @@ impl Scan {
         for y in dirty.min_y..dirty.max_y {
             let cells = &mut self.acc[y * self.stride..(y + 1) * self.stride];
             let mut sum = 0.0_f32;
-            let mut overlap = false;
-            let (mut down, mut up) = ([0_i32; BANDS], [0_i32; BANDS]);
             for x in dirty.min_x..=last {
-                let cell = std::mem::take(&mut cells[x]);
-                sum += cell.area;
-                if cell.marked() {
-                    // Two edges of one direction in a band cross this pixel: layers of one winding share its partial
-                    // coverage.
-                    for band in 0..BANDS {
-                        down[band] += i32::from(cell.down[band]);
-                        up[band] += i32::from(cell.up[band]);
-                        overlap |= (cell.down[band] > 0 && down[band] > 1) || (cell.up[band] > 0 && up[band] > 1);
-                    }
-                }
+                sum += cells[x];
+                cells[x] = 0.0;
                 if x < self.width {
                     row[x] = convert(sum.abs().min(1.0));
                 }
             }
+            let overlap = std::mem::take(&mut self.overlapping[y]);
+            self.occupied[y * 2 * self.words..(y + 1) * 2 * self.words].fill(0);
             if overlap {
                 if !bucketed {
                     self.bucket_edges();
@@ -733,8 +732,8 @@ impl Scan {
             at += len;
             let mut sum = 0.0_f32;
             for (i, cell) in self.band[lo..hi].iter_mut().enumerate() {
-                sum += cell.area;
-                *cell = Cell::default();
+                sum += *cell;
+                *cell = 0.0;
                 if let Some(out) = self.union.get_mut(lo + i) {
                     *out += 0.25 * sum.abs().min(1.0);
                 }
@@ -783,35 +782,35 @@ impl Scan {
 }
 
 /// Spreads `d` (a signed height) over the cells an edge piece crosses in one row, from `x0` to `x1` (x0 <= x1).
-fn add_span(acc: &mut [Cell], d: f32, x0: f32, x1: f32) {
+fn add_span(acc: &mut [f32], d: f32, x0: f32, x1: f32) {
     let x0_floor = x0.floor();
     let x1_ceil = x1.ceil();
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clipped to 0 <= x <= width
     let (x0i, x1i) = (x0_floor as usize, x1_ceil as usize);
     if x1i <= x0i + 1 {
         let xmf = 0.5 * (x0 + x1) - x0_floor;
-        acc[x0i].area += d - d * xmf;
-        acc[x0i + 1].area += d * xmf;
+        acc[x0i] += d - d * xmf;
+        acc[x0i + 1] += d * xmf;
     } else {
         let s = (x1 - x0).recip();
         let x0f = x0 - x0_floor;
         let a0 = 0.5 * s * (1.0 - x0f) * (1.0 - x0f);
         let x1f = x1 - x1_ceil + 1.0;
         let am = 0.5 * s * x1f * x1f;
-        acc[x0i].area += d * a0;
+        acc[x0i] += d * a0;
         if x1i == x0i + 2 {
-            acc[x0i + 1].area += d * (1.0 - a0 - am);
+            acc[x0i + 1] += d * (1.0 - a0 - am);
         } else {
             let a1 = s * (1.5 - x0f);
-            acc[x0i + 1].area += d * (a1 - a0);
+            acc[x0i + 1] += d * (a1 - a0);
             for cell in &mut acc[x0i + 2..x1i - 1] {
-                cell.area += d * s;
+                *cell += d * s;
             }
             #[allow(clippy::cast_precision_loss)] // the span is at most the raster width
             let a2 = a1 + (x1i - x0i - 3) as f32 * s;
-            acc[x1i - 1].area += d * (1.0 - a2 - am);
+            acc[x1i - 1] += d * (1.0 - a2 - am);
         }
-        acc[x1i].area += d * am;
+        acc[x1i] += d * am;
     }
 }
 
@@ -1068,8 +1067,8 @@ mod tests {
         assert!((cov[4 * W + 5] - want).abs() < 0.01, "pixel (5, 4): {} vs {want}", cov[4 * W + 5]);
     }
 
-    /// More repeated contours than any counter holds (the per-cell counts saturate, the winding does not wrap) draw
-    /// what one does.
+    /// More repeated contours than a small counter holds (the union's winding is a wide integer, and the
+    /// occupancy is a bit that cannot wrap) draw what one does.
     #[test]
     fn two_hundred_repeated_contours_draw_what_one_does() {
         let square = [(5.3, 4.6), (17.8, 4.6), (17.8, 12.9), (5.3, 12.9)];
