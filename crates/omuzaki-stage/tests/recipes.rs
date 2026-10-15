@@ -34,6 +34,7 @@ const RIGS: [&str; 7] =
 ///
 /// Read once per test process: the tests run in parallel, and several large reads at once over the Windows-drive
 /// mount (9p) have failed with "Cannot allocate memory" in CI.
+#[allow(clippy::disallowed_methods)] // test fixture: reads the repo's own asset manifest
 fn manifest() -> Option<&'static Value> {
     static MANIFEST_JSON: std::sync::OnceLock<Option<Value>> = std::sync::OnceLock::new();
     MANIFEST_JSON

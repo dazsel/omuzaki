@@ -374,6 +374,7 @@ fn golden_path(name: &str) -> PathBuf {
 }
 
 #[test]
+#[allow(clippy::disallowed_methods)] // test fixture: blesses and reads the golden image in the repo
 fn the_acceptance_sheet_matches_its_golden_at_150_dpi() {
     let actual = acceptance_sheet(a4(Dpi::D150), Some(shot_date())).image;
     assert_eq!((actual.width(), actual.height()), (1754, 1240));
@@ -568,6 +569,7 @@ fn every_page_preset_lays_out_a_full_sheet() {
 }
 
 #[test]
+#[allow(clippy::disallowed_methods)] // test fixture: reads the crate's own font and licence files
 fn the_font_is_embedded_small_and_licensed() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts");
     let size = |name: &str| std::fs::metadata(dir.join(name)).unwrap().len();
@@ -592,6 +594,7 @@ fn bad_inputs_are_errors_not_panics() {
 
 /// Writes the evidence renders when `OMUZAKI_SHEET_PNG` names a directory.
 #[test]
+#[allow(clippy::disallowed_methods)] // test fixture: optional evidence renders written to a developer-chosen folder
 fn write_evidence_when_asked() {
     let Some(dir) = std::env::var_os("OMUZAKI_SHEET_PNG") else { return };
     let dir = PathBuf::from(dir);

@@ -114,6 +114,7 @@ fn golden_path() -> PathBuf {
 }
 
 #[test]
+#[allow(clippy::disallowed_methods)] // test fixture: blesses and reads the golden trace in the repo
 fn the_trace_matches_its_golden() {
     let mut p = performer_with(replay_of(&spec(20.0)));
     let mut seen = Vec::new();

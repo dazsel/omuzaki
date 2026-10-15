@@ -216,6 +216,7 @@ fn rendering_is_deterministic_to_the_byte() {
 
 /// The evidence sheet: a title block with a mixed Latin and CJK name, then one row per script.
 #[test]
+#[allow(clippy::disallowed_methods)] // test fixture: optional evidence PNG written to a developer-chosen folder
 fn the_evidence_sheet_renders() {
     let mut s = sheet(config(HanVariant::Japanese));
     let content = s.title_block(&TitleBlock {

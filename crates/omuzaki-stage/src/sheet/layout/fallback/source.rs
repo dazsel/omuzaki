@@ -104,6 +104,7 @@ pub trait FontSource: Send + Sync {
 
 /// Reads the file at `path`, never more than the pinned size plus one byte: a longer file is [`FontError::TooLarge`]
 /// and reading stops there, so an oversized file cannot exhaust memory.
+#[allow(clippy::disallowed_methods)] // reads the pinned, checksum-verified fallback-font cache, never a person- or document-supplied path
 fn read_file_bounded(path: &Path, spec: &FontSpec) -> Result<Vec<u8>, FontError> {
     let file = File::open(path).map_err(|e| io_error(path, &e))?;
     let mut bytes = Vec::with_capacity(usize::try_from(spec.size).unwrap_or(0).min(1 << 24));
@@ -249,6 +250,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::disallowed_methods)] // test fixture in a temp dir
     fn a_directory_source_checks_pins_unless_told_not_to() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("Test.ttf"), b"other bytes").unwrap();
