@@ -76,8 +76,9 @@ pub struct PaintCtx<'a> {
     pub time: Seconds,
     /// Test hook: when set, only this section paints ([`RealPainter::paint_section`]).
     pub only: Option<Section>,
-    /// The open mouth's outline, left by the mouth shape for the pieces drawn after it (interior, teeth, rim, tongue).
-    /// `None` until the shape has painted an open mouth this frame, and for a closed mouth or a kiss.
+    /// The open mouth's outline, recorded by the mouth section before any of its pieces paints (`record_outline`), so
+    /// the pieces that need it (gloss, interior, rim, tongue) have it even when painted alone. `None` before the mouth
+    /// paints, and for a closed mouth or a kiss.
     pub open_mouth: Option<OpenMouth>,
     /// Test hook: when set, only this piece of the mouth paints ([`RealPainter::paint_mouth_piece`]).
     mouth_only: Option<MouthPiece>,

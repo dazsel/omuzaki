@@ -264,6 +264,320 @@ fn matches_the_spec_with_sphere_and_capsule_colliders() {
     assert!(moved > 0.02, "colliders changed the hair by only {moved}");
 }
 
+/// The three extended colliders, placed where the hair of `Fixture::hair(3, 4)` swings into them.
+fn extended_colliders() -> [(&'static str, ColliderShape); 5] {
+    [
+        // A capsule whose ends coincide is a ball: it must still collide (the spec's 0/0 would not).
+        (
+            "capsule_of_zero_length",
+            ColliderShape::Capsule {
+                offset: Vec3::new(0.0, -0.12, 0.0),
+                radius: 0.1,
+                tail: Vec3::new(0.0, -0.12, 0.0),
+            },
+        ),
+        (
+            "capsule_inside_of_zero_length",
+            ColliderShape::CapsuleInside {
+                offset: Vec3::new(0.0, -0.12, 0.0),
+                radius: 0.14,
+                tail: Vec3::new(0.0, -0.12, 0.0),
+            },
+        ),
+        ("sphere_inside", ColliderShape::SphereInside { offset: Vec3::new(0.0, -0.12, 0.0), radius: 0.14 }),
+        (
+            "capsule_inside",
+            ColliderShape::CapsuleInside {
+                offset: Vec3::new(0.0, -0.05, 0.0),
+                radius: 0.07,
+                tail: Vec3::new(0.0, -0.2, 0.02),
+            },
+        ),
+        (
+            "plane",
+            ColliderShape::Plane { offset: Vec3::new(0.0, -0.2, 0.0), normal: Vec3::new(0.1, 1.0, 0.05).normalize() },
+        ),
+    ]
+}
+
+#[test]
+fn matches_the_spec_with_inside_and_plane_colliders() {
+    let (fixture, ids) = Fixture::hair(2, 4);
+    for (name, shape) in extended_colliders() {
+        let group = ColliderGroup {
+            name: name.into(),
+            colliders: vec![omuzaki_anim_api::Collider { bone: fixture.head, shape }],
+        };
+        let with = |attach: bool| {
+            let mut chains = chains_of(&ids, SpringParams { stiffness: 4.0, drag_force: 0.4, ..windy() });
+            if attach {
+                for chain in &mut chains {
+                    chain.collider_groups = vec![name.to_owned()];
+                }
+            }
+            set_of(chains, vec![group.clone()])
+        };
+        let set = with(true);
+        set.validate(&fixture.skeleton).unwrap();
+        assert_agrees(&compare_with_spec(&fixture, &set, 60.0, 300), 0.1);
+        assert_agrees(&compare_with_spec(&fixture, &set, 30.0, 300), 0.1);
+
+        // The collider must be hit, or the comparison says nothing about it.
+        let run = |set: &SpringSet| {
+            let mut solver = VrmSpringSolver::new(set, &fixture.skeleton).unwrap();
+            let mut out = fixture.pose_at(0);
+            for frame in 0..120 {
+                out = fixture.pose_at(frame);
+                solver.step(Tick::at_rate(frame, 60.0), &fixture.skeleton, &mut out);
+            }
+            out
+        };
+        let (free, blocked) = (run(&with(false)), run(&set));
+        let moved = ids[0]
+            .iter()
+            .map(|b| distance(free.local[b.index()].rotation, blocked.local[b.index()].rotation))
+            .fold(0.0, f32::max);
+        assert!(moved > 0.02, "{name} changed the hair by only {moved}");
+    }
+}
+
+#[test]
+fn matches_the_spec_on_seeded_random_scenes_to_1e_5() {
+    let (fixture, ids) = Fixture::hair(2, 4);
+    let mut rng = Rng::new(984);
+    let mut point = |spread: f32| {
+        Vec3::new(rng.range_f32(-spread, spread), rng.range_f32(-0.2, -0.05), rng.range_f32(-spread, spread))
+    };
+    let mut engaged = 0;
+    for scene in 0..24 {
+        let shape = match scene % 3 {
+            0 => ColliderShape::SphereInside { offset: point(0.03), radius: 0.12 + 0.02 * (scene % 5) as f32 },
+            1 => ColliderShape::CapsuleInside {
+                offset: point(0.03),
+                radius: 0.07 + 0.01 * (scene % 4) as f32,
+                tail: point(0.03),
+            },
+            _ => ColliderShape::Plane {
+                offset: point(0.05),
+                normal: (point(0.3) * Vec3::new(1.0, -5.0, 1.0)).normalize(),
+            },
+        };
+        let group = ColliderGroup {
+            name: "g".into(),
+            colliders: vec![omuzaki_anim_api::Collider { bone: fixture.head, shape }],
+        };
+        let mut chains = chains_of(&ids, SpringParams { stiffness: 4.0, drag_force: 0.4, ..windy() });
+        for chain in &mut chains {
+            chain.collider_groups = vec!["g".into()];
+        }
+        let set = set_of(chains, vec![group]);
+        set.validate(&fixture.skeleton).unwrap();
+        let agreement = compare_with_spec(&fixture, &set, 60.0, 200);
+        // Joint positions agree to 1e-5 m. A violent scene (over 1 rad of swing) carries the `f32` rounding of a whole
+        // chain's turn: 2e-5 m there (the worst is 1.2e-5), and quaternion components to 5e-5 (the worst is 4.2e-5).
+        let position = if agreement.swing > 1.0 { 2e-5 } else { 1e-5 };
+        assert!(agreement.rotation < 5e-5 && agreement.position < position, "scene {scene} {shape:?}: {agreement:?}");
+        engaged += i32::from(agreement.swing > 0.43); // the free run's swing is 0.42 rad
+    }
+    assert!(engaged >= 12, "only {engaged} of 24 scenes changed the swing: the colliders were mostly missed");
+}
+
+/// A root bone at the head's origin with one bone of `length` hanging from it, simulated under `shape` on the head.
+/// Returns, per frame, the head's world transform and the world positions of the root and the tail.
+fn swing_into(shape: Option<ColliderShape>, length: f32, seed: u64) -> Vec<(Transform, Vec3, Vec3)> {
+    let mut ids = (BoneId(0), BoneId(0));
+    let fixture = Fixture::with(|head, first| {
+        ids = (BoneId(first), BoneId(first + 1));
+        vec![
+            bone("root".into(), head, Vec3::ZERO, Quat::IDENTITY),
+            bone("tip".into(), ids.0, Vec3::NEG_Y * length, Quat::IDENTITY),
+        ]
+    });
+    let params = SpringParams { stiffness: 0.5, gravity_power: 1.0, drag_force: 0.1, ..SpringParams::default() };
+    let mut chain = SpringChain::new("c", &[ids.0, ids.1], params);
+    chain.collider_groups = vec!["g".into()];
+    let colliders = shape.map(|shape| omuzaki_anim_api::Collider { bone: fixture.head, shape }).into_iter().collect();
+    let set = set_of(vec![chain], vec![ColliderGroup { name: "g".into(), colliders }]);
+    set.validate(&fixture.skeleton).unwrap();
+    let mut solver = VrmSpringSolver::new(&set, &fixture.skeleton).unwrap();
+    let mut rng = Rng::new(seed);
+    let mut world = Pose::default();
+    (0..90)
+        .map(|frame| {
+            let mut pose = fixture.skeleton.rest_pose();
+            pose.local[fixture.head.index()].rotation = Quat::from_euler(
+                omuzaki_core::glam::EulerRot::XYZ,
+                rng.range_f32(-1.5, 1.5),
+                rng.range_f32(-1.5, 1.5),
+                rng.range_f32(-1.5, 1.5),
+            );
+            solver.step(Tick::at_rate(frame, 60.0), &fixture.skeleton, &mut pose);
+            fixture.skeleton.world_pose(&pose, &mut world);
+            (
+                world.local[fixture.head.index()],
+                world.local[ids.0.index()].translation,
+                world.local[ids.1.index()].translation,
+            )
+        })
+        .collect()
+}
+
+mod properties {
+    use proptest::prelude::*;
+
+    use super::*;
+
+    fn at(frame: &Transform, p: Vec3) -> Vec3 {
+        frame.translation + frame.rotation * p
+    }
+
+    /// Distance from `p` to the segment `a`..`b`, written independently of the solver.
+    fn to_segment(p: Vec3, a: Vec3, b: Vec3) -> f32 {
+        let ab = b - a;
+        let t = if ab.length_squared() > 0.0 { ((p - a).dot(ab) / ab.length_squared()).clamp(0.0, 1.0) } else { 0.0 };
+        (p - (a + ab * t)).length()
+    }
+
+    fn vec3() -> impl Strategy<Value = Vec3> {
+        prop::array::uniform3(-0.1_f32..0.1).prop_map(Vec3::from_array)
+    }
+
+    fn bits(frames: &[(Transform, Vec3, Vec3)]) -> Vec<u32> {
+        frames
+            .iter()
+            .flat_map(|(_, root, tail)| [root.to_array(), tail.to_array()])
+            .flatten()
+            .map(f32::to_bits)
+            .collect()
+    }
+
+    /// Whether `frames` (a run without the collider) ever puts the tail where the collider would push it: more than
+    /// 1 mm behind `room`'s zero, with `room` measured in the head's frame of that frame.
+    fn reaches(free: &[(Transform, Vec3, Vec3)], room: impl Fn(&Transform, Vec3) -> f32) -> bool {
+        free.iter().any(|(head, _, tail)| room(head, *tail) < -1e-3)
+    }
+
+    /// The checks every collider property shares: the bone keeps its length through the whole step, the run is
+    /// bit-identical when repeated, and the collider changed the swing (so the contacts were real, not skipped).
+    fn check(
+        shape: ColliderShape,
+        length: f32,
+        seed: u64,
+        free: &[(Transform, Vec3, Vec3)],
+    ) -> Result<(), TestCaseError> {
+        let frames = swing_into(Some(shape), length, seed);
+        for (_, root, tail) in &frames {
+            prop_assert!(((*tail - *root).length() - length).abs() <= 1e-5, "bone length changed");
+        }
+        prop_assert_eq!(bits(&frames), bits(&swing_into(Some(shape), length, seed)));
+        prop_assert!(bits(&frames) != bits(free), "the collider never touched the tail");
+        Ok(())
+    }
+
+    proptest! {
+        /// Inside shapes whose wall the bone can reach (the radius is less than the root's room plus the bone's
+        /// length). The push itself is held to 1e-5 by `collide`'s `push_properties`; here the whole step keeps the
+        /// bone length and is deterministic, and the tail does hit the wall.
+        #[test]
+        fn a_tail_that_reaches_the_wall_of_an_inside_shape_collides(
+            centre in vec3(), end in vec3(), length in 0.05_f32..0.15, reach in 0.2_f32..0.8, capsule: bool, seed: u64,
+        ) {
+            // The root sits at the head's origin, so its distance to the shape is its distance to the centre or axis.
+            let axis_end = if capsule { end } else { centre };
+            let radius = to_segment(Vec3::ZERO, centre, axis_end) + length * reach;
+            let shape = if capsule {
+                ColliderShape::CapsuleInside { offset: centre, radius, tail: end }
+            } else {
+                ColliderShape::SphereInside { offset: centre, radius }
+            };
+            let free = swing_into(None, length, seed);
+            prop_assume!(reaches(&free, |head, tail| radius - to_segment(tail, at(head, centre), at(head, axis_end))));
+            check(shape, length, seed, &free)?;
+        }
+
+        /// Planes the bone can reach (the root is less than a bone length in front of the plane).
+        #[test]
+        fn a_tail_that_reaches_a_plane_collides(
+            tilt in vec3(), length in 0.05_f32..0.15, reach in 0.2_f32..0.8, sideways in vec3(), seed: u64,
+        ) {
+            let normal = (Vec3::Y + tilt * 5.0).normalize();
+            // The root at the origin is `length * reach` in front of the plane.
+            let offset = sideways - normal * (normal.dot(sideways) + length * reach);
+            let free = swing_into(None, length, seed);
+            prop_assume!(reaches(&free, |head, tail| (tail - at(head, offset)).dot(head.rotation * normal)));
+            check(ColliderShape::Plane { offset, normal }, length, seed, &free)?;
+        }
+    }
+}
+
+/// A plane whose normal is 0.9995 long (accepted by `validate`) must collide like the unit normal the oracle uses.
+#[test]
+fn matches_the_spec_for_a_plane_normal_that_is_not_quite_unit() {
+    let (fixture, ids) = Fixture::hair(2, 4);
+    let normal = Vec3::new(0.1, 1.0, 0.05).normalize() * 0.9995;
+    let group = ColliderGroup {
+        name: "g".into(),
+        colliders: vec![omuzaki_anim_api::Collider {
+            bone: fixture.head,
+            shape: ColliderShape::Plane { offset: Vec3::new(0.0, -0.2, 0.0), normal },
+        }],
+    };
+    let mut chains = chains_of(&ids, SpringParams { stiffness: 4.0, drag_force: 0.4, ..windy() });
+    for chain in &mut chains {
+        chain.collider_groups = vec!["g".into()];
+    }
+    let set = set_of(chains, vec![group]);
+    set.validate(&fixture.skeleton).unwrap();
+    let agreement = compare_with_spec(&fixture, &set, 60.0, 300);
+    assert!(agreement.position < 1e-5 && agreement.rotation < 5e-5, "{agreement:?}");
+    assert!(agreement.swing > 0.1, "{agreement:?}");
+}
+
+/// The spec collides and then restores the bone length, so a plane closer than a bone length is not a wall: the
+/// root 0.1 m in front of the plane and a 0.2 m bone hanging straight down ends the step 0.1 m behind it, as in the
+/// oracle (and three-vrm). `mod.rs` records this; the guarantee is on the push.
+#[test]
+fn a_bone_longer_than_its_root_clearance_ends_the_step_behind_the_plane_as_the_spec_does() {
+    let (length, clearance) = (0.2, 0.1);
+    let mut ids = (BoneId(0), BoneId(0));
+    let fixture = Fixture::with(|head, first| {
+        ids = (BoneId(first), BoneId(first + 1));
+        vec![
+            bone("root".into(), head, Vec3::ZERO, Quat::IDENTITY),
+            bone("tip".into(), ids.0, Vec3::NEG_Y * length, Quat::IDENTITY),
+        ]
+    });
+    // No gravity, the bone held at rest by stiffness: the tail wants to stay straight down every sub-step.
+    let params = SpringParams { stiffness: 1.0, gravity_power: 0.0, drag_force: 0.0, ..SpringParams::default() };
+    let mut chain = SpringChain::new("c", &[ids.0, ids.1], params);
+    chain.collider_groups = vec!["g".into()];
+    let plane = ColliderShape::Plane { offset: Vec3::NEG_Y * clearance, normal: Vec3::Y };
+    let group = ColliderGroup {
+        name: "g".into(),
+        colliders: vec![omuzaki_anim_api::Collider { bone: fixture.head, shape: plane }],
+    };
+    let set = set_of(vec![chain], vec![group]);
+    set.validate(&fixture.skeleton).unwrap();
+    let pose = fixture.skeleton.rest_pose();
+    let mut solver = VrmSpringSolver::new(&set, &fixture.skeleton).unwrap();
+    let mut oracle = Reference::new(&fixture.skeleton, &set, &pose);
+    let (mut out, mut world) = (pose.clone(), Pose::default());
+    for frame in 0..30 {
+        out = pose.clone();
+        solver.step(Tick::at_rate(frame, 60.0), &fixture.skeleton, &mut out);
+        for _ in 0..solver.stats().substeps {
+            oracle.substep(&pose);
+        }
+    }
+    fixture.skeleton.world_pose(&out, &mut world);
+    let (root, tail) = (world.local[ids.0.index()].translation, world.local[ids.1.index()].translation);
+    let behind = (root.y - clearance) - tail.y;
+    assert!((behind - (length - clearance)).abs() < 1e-4, "the tail ends {behind} m behind the plane");
+    assert!(((tail - root).length() - length).abs() < 1e-5, "the bone keeps its length");
+    let want = oracle.world(ids.1.index()).w_axis.truncate();
+    assert!((world.local[ids.1.index()].translation.as_dvec3() - want).length() < 1e-5, "the oracle agrees");
+}
+
 #[test]
 fn a_chain_only_collides_with_the_groups_it_names() {
     let (fixture, ids) = Fixture::hair(2, 3);

@@ -1,7 +1,7 @@
 //! Building the renderer's `Scene` each frame from the uploaded character: instances in render order, joint runs and
 //! shadow flags.
 
-use omuzaki_char_api::BuiltCharacter;
+use omuzaki_char_api::{BuiltCharacter, PartMesh};
 use omuzaki_core::glam::Mat4;
 use omuzaki_render_api::{Instance, JointRange, MaterialId, MeshId, Scene};
 
@@ -16,6 +16,16 @@ struct Draw {
     order: i16,
     /// The bone behind each entry of the mesh's joint run, in `joint_bones` order. Empty for a rigid or dynamic mesh.
     bones: Box<[Option<usize>]>,
+}
+
+/// The bone behind each entry of `mesh`'s joint run: what the scene's joint palette is built from.
+pub(crate) fn joint_bones(built: &BuiltCharacter, mesh: &PartMesh) -> Box<[Option<usize>]> {
+    mesh.joint_bones.iter().map(|joint| built.rig.bone(joint).map(omuzaki_anim_api::BoneId::index)).collect()
+}
+
+/// A palette entry: the skinning matrix of `bone`, or the identity for a joint the skeleton lacks.
+pub(crate) fn joint_matrix(bone: Option<usize>, skin: &[Mat4]) -> Mat4 {
+    bone.and_then(|b| skin.get(b)).copied().unwrap_or(Mat4::IDENTITY)
 }
 
 /// The character's meshes in draw order.
@@ -39,11 +49,7 @@ impl ScenePlan {
                 what: "mesh",
                 name: format!("{}#{}", built_mesh.part, built_mesh.local),
             })?;
-            let bones = mesh
-                .joint_bones
-                .iter()
-                .map(|joint| built.rig.bone(joint).map(omuzaki_anim_api::BoneId::index))
-                .collect::<Box<[_]>>();
+            let bones = joint_bones(built, mesh);
             let order =
                 i16::try_from(mesh.render_order.clamp(i32::from(i16::MIN), i32::from(i16::MAX))).unwrap_or_default();
             keyed.push((
@@ -74,9 +80,7 @@ impl ScenePlan {
             instance.order = draw.order;
             if !draw.bones.is_empty() {
                 let start = scene.joints.len();
-                scene.joints.extend(
-                    draw.bones.iter().map(|bone| bone.and_then(|b| skin.get(b)).copied().unwrap_or(Mat4::IDENTITY)),
-                );
+                scene.joints.extend(draw.bones.iter().map(|bone| joint_matrix(*bone, skin)));
                 instance.skin = Some(JointRange {
                     start: u32::try_from(start).unwrap_or(u32::MAX),
                     len: u32::try_from(draw.bones.len()).unwrap_or(u32::MAX),

@@ -37,6 +37,18 @@ fn solver(c: &mut Criterion) {
         b.iter(|| solver.warm_up(&rig.skeleton, black_box(&mut pose), 0.75));
     });
 
+    // The same hair with an inside sphere, an inside capsule and a plane added to every chain's colliders.
+    let extended = spring_rig::extended_hair_rig(30, 11);
+    let mut solver = VrmSpringSolver::new(&extended.set, &extended.skeleton).expect("the rig's springs are valid");
+    let mut frame = 0_u64;
+    c.bench_function("step, 300 joints, 60 fps (2 sub-steps), inside and plane colliders", |b| {
+        b.iter(|| {
+            frame += 1;
+            extended.animate(&mut pose, frame);
+            solver.step(Tick::at_rate(frame, 60.0), &extended.skeleton, black_box(&mut pose));
+        });
+    });
+
     c.bench_function("construct, 300 joints", |b| {
         b.iter(|| VrmSpringSolver::new(black_box(&rig.set), &rig.skeleton));
     });

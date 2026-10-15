@@ -269,6 +269,29 @@ fn the_tongue_tab_fades_in_from_nothing_instead_of_popping() {
 }
 
 #[test]
+fn the_split_line_fades_in_with_the_lower_teeth() {
+    let profile = glossy();
+    let opacity = |lower: f32| {
+        let p = params(|m| {
+            (m.open, m.smile_left, m.smile_right, m.teeth_upper, m.teeth_lower) = (0.8, 1.5, 1.5, 1.0, lower);
+        });
+        piece(MouthPiece::Interior, &profile, &p).cmds().iter().find_map(|c| match c {
+            Cmd::Stroke { opacity, .. } => Some(*opacity),
+            _ => None,
+        })
+    };
+    assert_eq!(opacity(0.005), None, "below the threshold there is no row, and no line");
+    assert!(opacity(0.0101).unwrap() < 0.02, "just above it the line is nearly invisible");
+    let mut last = opacity(0.02).unwrap();
+    for i in 1..=98 {
+        let now = opacity(0.02 + 0.01 * i as f32).unwrap();
+        assert!(now >= last && now - last <= 0.011, "a steady ramp: {last} then {now}");
+        last = now;
+    }
+    assert_eq!(opacity(1.0), Some(1.0), "full with the row");
+}
+
+#[test]
 fn lower_teeth_show_on_a_real_smile_and_not_on_a_flat_mouth() {
     let profile = glossy();
     let ink = |smile: f32, lower: f32| {
@@ -298,6 +321,70 @@ fn the_default_fang_is_six_millimetres_across_its_base() {
         assert!(((t[1].x - t[0].x) - 0.006 * grow).abs() < 1e-6, "base width {}", t[1].x - t[0].x);
     }
     assert!((triangles[0][0].x + triangles[0][1].x + triangles[1][0].x + triangles[1][1].x).abs() < 1e-5, "mirrored");
+}
+
+/// The two fangs' triangles, left one first. Each triangle is its two base corners, then the tip.
+fn fang_triangles(list: &DrawList) -> Vec<Vec<Vec2>> {
+    let mut triangles: Vec<Vec<Vec2>> = list
+        .cmds()
+        .iter()
+        .filter_map(|c| match c {
+            Cmd::Fill { path, .. } if points(list, *path).len() == 3 => Some(points(list, *path)),
+            _ => None,
+        })
+        .collect();
+    triangles.sort_by(|a, b| (a[0].x + a[1].x).total_cmp(&(b[0].x + b[1].x)));
+    triangles
+}
+
+#[test]
+fn fang_bases_stay_inside_a_narrow_mouth() {
+    for position in [0.72, 0.85, 1.0] {
+        let mut profile = FaceProfile::default();
+        profile.mouth.fang.position = position;
+        for wide in [0.3, 0.5, 1.0] {
+            for open in [0.3, 0.8, 1.5] {
+                let p = params(|m| (m.fangs, m.wide, m.open) = (1.0, wide, open));
+                let poly = outline(&profile, &p);
+                let (lo, hi) = (
+                    poly.iter().map(|v| v.x).fold(f32::MAX, f32::min),
+                    poly.iter().map(|v| v.x).fold(f32::MIN, f32::max),
+                );
+                let triangles = fang_triangles(&piece(MouthPiece::Interior, &profile, &p));
+                assert_eq!(triangles.len(), 2, "position {position}, wide {wide}, open {open}");
+                for t in &triangles {
+                    for corner in &t[..2] {
+                        assert!(
+                            corner.x >= lo - 1e-6 && corner.x <= hi + 1e-6,
+                            "corner x {} outside {lo}..{hi} (position {position}, wide {wide}, open {open})",
+                            corner.x,
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_fang_narrows_from_its_outer_side_only() {
+    let mut profile = FaceProfile::default();
+    profile.mouth.fang.position = 0.72;
+    let p = params(|m| (m.fangs, m.wide, m.open) = (1.0, 0.3, 0.8));
+    let poly = outline(&profile, &p);
+    let (lo, hi) =
+        (poly.iter().map(|v| v.x).fold(f32::MAX, f32::min), poly.iter().map(|v| v.x).fold(f32::MIN, f32::max));
+    let (centre, hw) = (lo.midpoint(hi), (hi - lo) / 2.0);
+    let grow = FaceProfile::default().mouth.open_scale as f32;
+    let half = 0.003 * grow;
+    let triangles = fang_triangles(&piece(MouthPiece::Interior, &profile, &p));
+    assert_eq!(triangles.len(), 2);
+    let (left, right) = (&triangles[0], &triangles[1]);
+    // The inner corner keeps its full half-width; the outer corner stops at the mouth's corner.
+    assert!((right[0].x - (centre + 0.72 * hw - half)).abs() < 1e-6, "right inner {}", right[0].x);
+    assert!((right[1].x - hi).abs() < 1e-6, "right outer {} is not the mouth's corner {hi}", right[1].x);
+    assert!((left[1].x - (centre - 0.72 * hw + half)).abs() < 1e-6, "left inner {}", left[1].x);
+    assert!((left[0].x - lo).abs() < 1e-6, "left outer {} is not the mouth's corner {lo}", left[0].x);
 }
 
 #[test]

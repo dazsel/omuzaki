@@ -42,7 +42,10 @@ pub mod js_params;
 pub mod sections;
 
 pub use js_params::ParamError;
-pub use sections::{CaseResult, InkDrift, Outcome, SectionCheck, SectionReport, check_section, report};
+pub use sections::{
+    CaseImages, CaseResult, InkDrift, Outcome, Paint, SectionCheck, SectionReport, Select, check_section, check_tags,
+    check_tags_painted, report, tag_images_painted,
+};
 
 /// The golden variants and the look of the character each one shows: the prototype's `game` variant is the character
 /// sheet's face, `close-up` is the rounder close-up face.

@@ -62,6 +62,11 @@ goes to the Director first.
     review.
   - **Large pull requests** (over 400 lines, design docs or ADRs, `xtask/`, `.github/`, `tools/`) also get one deep
     local review.
+  - **Round cap: after 6 Codex rounds, a pull request goes to the Director** instead of a seventh round. Later
+    rounds tend to find narrower cases of classes already fixed, at the cost of a round each. The lead posts the open
+    findings and a recommendation on the pull request. The Director rules on them at the decision level: fix now,
+    move to the acceptance line of a follow-up task, or accept as out of scope. Design documents follow the same
+    rule, and a design pull request stays under about 400 lines of doc (larger designs are an ADR plus parts).
   - **The Director's process-doc pull requests** (label `director-docs`) merge on a green gate without a review.
   - Why, with the data, is in `lessons.md`.
 - **A sign-off is a decision check, not a second review.** A lead (or the Director) signing off a contract or hub

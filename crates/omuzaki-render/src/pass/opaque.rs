@@ -193,7 +193,13 @@ impl FramePass for Opaque {
             pass.set_pipeline(pipeline);
             pass.set_bind_group(1, &material.bind_group, &[]);
             let attributes: &[AttributeSpec] = self.spec(variant.program).map_or(&[], |s| s.attributes);
-            mesh.draw_with_extras(&mut pass, draw.instance, attributes, &self.zeros);
+            mesh.draw_with_extras(
+                &mut pass,
+                draw.instance,
+                cx.resources.morphs.shapes(draw.instance),
+                attributes,
+                &self.zeros,
+            );
             cx.stats.draw_calls += 1;
             cx.stats.triangles += mesh.triangles;
         }
