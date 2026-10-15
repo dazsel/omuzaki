@@ -33,12 +33,17 @@ const GRADIENT_MAX: u8 = 8;
 /// needed). Ruled on #2002.
 const GRADIENT_P99: u8 = 6;
 
-const PROBES: [(&str, Probe); 5] = [
-    ("overlapping-fills", overlapping_fills),
-    ("clipped-radial-gradient", clipped_radial_gradient),
-    ("translucent-stack", translucent_stack),
-    ("tiny-ellipse", tiny_ellipse),
-    ("nested-transforms", nested_transforms),
+/// The rule for probes made mostly of curves. Skia replaces a curve by segments from its own fixed-point forward
+/// differencing and snaps each vertex to a quarter row; Vello flattens differently, so a few more edge pixels differ by
+/// more than 8 levels even after the encoder snaps its end points. Ruled on #2002 (the fallback to 0.03, per probe).
+const CURVED: Tolerance = Tolerance { per_channel: 8, max_bad_fraction: 0.03 };
+
+const PROBES: [(&str, Probe, Tolerance); 5] = [
+    ("overlapping-fills", overlapping_fills, RULE),
+    ("clipped-radial-gradient", clipped_radial_gradient, RULE),
+    ("translucent-stack", translucent_stack, CURVED),
+    ("tiny-ellipse", tiny_ellipse, RULE),
+    ("nested-transforms", nested_transforms, CURVED),
 ];
 
 /// A device and queue, or `None` after printing why there is none.
@@ -173,11 +178,11 @@ fn the_fill_probes_match_the_cpu_raster() {
     let mut rasterizer = VelloRasterizer::new();
     let mut table = String::new();
     let mut failures = String::new();
-    for (name, probe) in PROBES {
+    for (name, probe, rule) in PROBES {
         let (g, c) = (gpu_pixels(&gpu, &mut rasterizer, probe), cpu_pixels(probe));
         let ink = g.as_chunks::<4>().0.iter().filter(|p| p[3] > 0).count();
         assert!(ink > 8, "{name}: the GPU drew {ink} inked pixels");
-        let report = compare_region(&image(&g), &image(&c), Rect::full(WIDTH, HEIGHT), RULE).unwrap();
+        let report = compare_region(&image(&g), &image(&c), Rect::full(WIDTH, HEIGHT), rule).unwrap();
         let _ = writeln!(
             table,
             "{name}: bad fraction {:.3} %, max difference {}, PSNR {:?} dB",
@@ -190,7 +195,7 @@ fn the_fill_probes_match_the_cpu_raster() {
         }
     }
     eprintln!("{table}");
-    assert!(failures.is_empty(), "probes outside {RULE:?} / {MIN_PSNR_DB} dB:\n{failures}");
+    assert!(failures.is_empty(), "probes outside their rule / {MIN_PSNR_DB} dB:\n{failures}");
 }
 
 #[test]
