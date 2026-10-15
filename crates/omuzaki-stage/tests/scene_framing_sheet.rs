@@ -100,6 +100,8 @@ fn the_sheet_has_a_gutter_between_every_cell() {
 }
 
 #[test]
+// The evidence case writes its own scratch folder, which no op reaches; a test fixture may write by path.
+#[allow(clippy::disallowed_methods)]
 fn write_the_framing_sheet_when_asked() {
     let Some(dir) = std::env::var_os("OMUZAKI_FRAMING_PNG") else { return };
     for (name, cell, aspect) in SHEETS {
