@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use omuzaki_core::time::{Clock, SystemClock};
 use omuzaki_doc_api::Value;
-use omuzaki_ops_api::{Actor, Cause, CauseKind, Grants, Mode, OpError, OpInfo, Request, TxId};
+use omuzaki_ops_api::{Actor, Cause, CauseKind, Grants, Mode, OpError, OpInfo, OpKind, Request, TxId, Undo};
 use rhai::packages::{
     BasicArrayPackage, BasicMapPackage, BasicMathPackage, CorePackage, LogicPackage, MoreStringPackage, Package,
 };
@@ -55,6 +55,10 @@ enum Stop {
     Cancelled,
     Limit(LimitKind),
 }
+
+/// Why an op is not callable from a script, carried like [`Stop`] so a script can't catch it.
+#[derive(Clone)]
+struct Refusal(Arc<str>);
 
 /// The run's services, borrowed from `run`'s caller.
 struct Lent {
@@ -212,6 +216,10 @@ pub struct ScriptHost {
 impl ScriptHost {
     /// A host whose scripts can call `ops::area::verb({..})` for each op in `ops`, held to `limits`.
     ///
+    /// Only queries and edits that undo with their patch ([`Undo::Auto`]) can be called: the run's rollback can't undo
+    /// a job or an edit with outside effects, so those are bound to a refusal (`ScriptErrorKind::Refused`) that is
+    /// raised before anything is sent.
+    ///
     /// The bindings are the plain call path; the schema-aware generated bindings, `get`, `try_op` and the static check
     /// come with the next task.
     pub fn new(ops: &[OpInfo], limits: Limits) -> Self {
@@ -227,14 +235,25 @@ impl ScriptHost {
         for info in ops {
             let Some((area, verb)) = info.name.split_once('.') else { continue };
             let name = info.name.to_owned();
+            let refusal = refusal(info).map(|reason| Refusal(reason.into()));
+            let limits = limits.clone();
             areas.entry(format!("ops::{area}")).or_default().set_native_fn(
                 verb,
                 move |context: NativeCallContext<'_>, args: Map| -> Result<Dynamic, Box<EvalAltResult>> {
+                    let at = context.call_position();
+                    if let Some(refusal) = &refusal {
+                        return Err(EvalAltResult::ErrorTerminated(Dynamic::from(refusal.clone()), at).into());
+                    }
                     let args = from_dynamic::<Value>(&Dynamic::from_map(args)).map_err(|e| runtime(e.to_string()))?;
                     let value = run_of(&context)?.invoke(&name, args).map_err(|mut e| {
-                        e.set_position(context.call_position());
+                        e.set_position(at);
                         e
                     })?;
+                    // Checked before conversion, as `params` are: Rhai sizes a native result only after building it,
+                    // and never checks map keys.
+                    if let Some(kind) = oversized(&value, &limits) {
+                        return Err(EvalAltResult::ErrorTerminated(Dynamic::from(Stop::Limit(kind)), at).into());
+                    }
                     to_dynamic(value).map_err(|e| runtime(e.to_string()))
                 },
             );
@@ -334,7 +353,9 @@ impl ScriptHost {
         if cancel.is_cancelled() {
             return Err(fail(ScriptErrorKind::Cancelled, "the run was cancelled before it started"));
         }
-        if let Some(kind) = oversized(&run.request.params, &self.limits) {
+        let params_break = map_breaks(&run.request.params, &self.limits)
+            .or_else(|| run.request.params.values().find_map(|value| oversized(value, &self.limits)));
+        if let Some(kind) = params_break {
             return Err(fail(ScriptErrorKind::Limit(kind), "`params` holds a value larger than the script limits"));
         }
         let started = self.clock.now().0;
@@ -382,24 +403,46 @@ impl ScriptHost {
     }
 }
 
-/// The first collection limit a JSON value breaks, if any. Rhai checks only the values a script builds, so injected
-/// `params` are checked here before conversion. Iterative, so a deeply nested value can't overflow the stack.
-fn oversized(params: &JsonMap<String, Value>, limits: &Limits) -> Option<LimitKind> {
-    if params.len() > limits.map_len {
-        return Some(LimitKind::MapSize);
+/// Why `info` can't be called from a script, if it can't.
+fn refusal(info: &OpInfo) -> Option<String> {
+    let name = info.name;
+    match (info.kind, info.undo) {
+        (OpKind::Query, _) | (OpKind::Edit, Undo::Auto) => None,
+        (OpKind::Job, _) => Some(format!("`{name}` is a job, which a script can't start: run it as a job instead")),
+        (OpKind::Edit, _) => {
+            Some(format!("`{name}` has effects outside the document, which a script's rollback can't undo"))
+        }
     }
-    let mut pending: Vec<&Value> = params.values().collect();
+}
+
+/// The first collection limit a JSON value breaks, if any. Values converted outside the engine (`params`, op outputs)
+/// are checked with this before conversion: Rhai doesn't size values pushed into the scope, and never checks map keys.
+/// Iterative, so a deeply nested value can't overflow the stack.
+fn oversized(value: &Value, limits: &Limits) -> Option<LimitKind> {
+    let mut pending = vec![value];
     while let Some(value) = pending.pop() {
         match value {
             Value::String(text) if text.len() > limits.string_bytes => return Some(LimitKind::StringSize),
             Value::Array(items) if items.len() > limits.array_len => return Some(LimitKind::ArraySize),
-            Value::Object(fields) if fields.len() > limits.map_len => return Some(LimitKind::MapSize),
             Value::Array(items) => pending.extend(items),
-            Value::Object(fields) => pending.extend(fields.values()),
+            Value::Object(fields) => {
+                if let Some(kind) = map_breaks(fields, limits) {
+                    return Some(kind);
+                }
+                pending.extend(fields.values());
+            }
             _ => {}
         }
     }
     None
+}
+
+/// The limit a map itself breaks: its size, or a key (which becomes a Rhai string) over the string limit.
+fn map_breaks(fields: &JsonMap<String, Value>, limits: &Limits) -> Option<LimitKind> {
+    if fields.len() > limits.map_len {
+        return Some(LimitKind::MapSize);
+    }
+    fields.keys().any(|key| key.len() > limits.string_bytes).then_some(LimitKind::StringSize)
 }
 
 fn size_kind(typ: &str) -> LimitKind {
@@ -436,7 +479,10 @@ fn classify(error: &EvalAltResult) -> ScriptError {
         EvalAltResult::ErrorTerminated(token, _) => match token.clone().try_cast::<Stop>() {
             Some(Stop::Cancelled) => (ScriptErrorKind::Cancelled, None),
             Some(Stop::Limit(kind)) => (ScriptErrorKind::Limit(kind), None),
-            None => (ScriptErrorKind::Runtime, None),
+            None => match token.clone().try_cast::<Refusal>() {
+                Some(Refusal(reason)) => return located(ScriptErrorKind::Refused, reason.to_string(), at, None),
+                None => (ScriptErrorKind::Runtime, None),
+            },
         },
         EvalAltResult::ErrorRuntime(payload, _) => match op_error_of(payload) {
             Some(op_error) => (ScriptErrorKind::Op, Some(op_error)),

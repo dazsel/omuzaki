@@ -300,6 +300,8 @@ fn params_over_the_collection_limits_are_refused_before_the_run() {
         (serde_json::json!({ "deep": [[1, 2, 3]] }), LimitKind::ArraySize),
         (serde_json::json!({ "m": { "a": 1, "b": 2, "c": 3 } }), LimitKind::MapSize),
         (serde_json::json!({ "a": 1, "b": 2, "c": 3 }), LimitKind::MapSize),
+        (serde_json::json!({ "long_key": 1 }), LimitKind::StringSize),
+        (serde_json::json!({ "m": { "long_key": 1 } }), LimitKind::StringSize),
     ] {
         let mut req = request("params");
         req.params = params.as_object().expect("an object").clone();
@@ -311,4 +313,29 @@ fn params_over_the_collection_limits_are_refused_before_the_run() {
     fits.params = serde_json::json!({ "s": "1234" }).as_object().expect("an object").clone();
     let (_, result) = run_with(fits, &Flag::default(), limits, FakeRunner::default());
     assert_eq!(result.expect("fits").value, serde_json::json!("1234"));
+}
+
+#[test]
+fn an_op_output_over_a_collection_limit_stops_the_run() {
+    // 9 bytes lets the edit's `character` key through; the report's 10-byte key is over. Rhai checks the size of a
+    // native function's string, array and map values itself, but not map keys.
+    let limits = Limits { string_bytes: 9, ..Limits::console() };
+    let source = format!("{EDIT}\nlet r = ops::measure::report(#{{}}).len(); r");
+    let (runner, result) = run_with(request(&source), &Flag::default(), limits, FakeRunner::default());
+    assert_at(&result.expect_err("too long"), limit(LimitKind::StringSize), 2, 23);
+    runner.assert_rolled_back();
+}
+
+#[test]
+fn jobs_and_edits_with_outside_effects_are_refused_before_they_are_sent() {
+    // The position is the function name's, after `ops::area::`.
+    for (op, says, column) in [("render::video", "is a job", 22), ("file::write", "outside the document", 20)] {
+        let source = format!("{EDIT}\n  try {{ ops::{op}(#{{}}) }} catch {{ 0 }}");
+        let (runner, result) = run_with(request(&source), &Flag::default(), Limits::console(), FakeRunner::default());
+        let error = result.expect_err("refused");
+        assert_at(&error, ScriptErrorKind::Refused, 2, column);
+        assert!(error.message.contains(says), "{}", error.message);
+        assert_eq!(runner.requests().len(), 1, "only the first edit was sent");
+        runner.assert_rolled_back();
+    }
 }

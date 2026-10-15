@@ -25,7 +25,8 @@ pub enum Entry {
 }
 
 /// A runner that records every call. `face.set_profile` is an edit, `measure.likeness` a query, `face.fail` an edit
-/// that always fails.
+/// that always fails, `measure.report` a query answering a map with a 10-byte key. `render.video` (a job) and `file.write` (an
+/// edit with outside effects) are listed but must never be sent.
 #[derive(Default)]
 pub struct FakeRunner {
     pub log: Mutex<Vec<Entry>>,
@@ -72,6 +73,10 @@ impl FakeRunner {
 
 fn info(name: &'static str, kind: OpKind) -> OpInfo {
     let undo = if kind == OpKind::Edit { Undo::Auto } else { Undo::None };
+    info_with(name, kind, undo)
+}
+
+fn info_with(name: &'static str, kind: OpKind, undo: Undo) -> OpInfo {
     let meta = OpMeta { name, summary: "a fake op", kind, scope: Scope::Read, undo };
     OpInfo::new(meta, Schema::from(true))
 }
@@ -82,6 +87,9 @@ impl Runner for FakeRunner {
             info("face.fail", OpKind::Edit),
             info("face.set_profile", OpKind::Edit),
             info("measure.likeness", OpKind::Query),
+            info("measure.report", OpKind::Query),
+            info("render.video", OpKind::Job),
+            info_with("file.write", OpKind::Edit, Undo::Explicit),
         ]
     }
 
@@ -101,6 +109,9 @@ impl Runner for FakeRunner {
                 Ok(Outcome { plan: Plan { output: Some(args), ..Plan::edit(Patch::default()) }, applied: None })
             }
             "measure.likeness" => Ok(Outcome { plan: Plan::answer(Value::from(0.5)), applied: None }),
+            "measure.report" => {
+                Ok(Outcome { plan: Plan::answer(serde_json::json!({ "0123456789": 1 })), applied: None })
+            }
             "face.fail" => Err(OpError::invalid("blend", "blend must be between 0 and 1").hint("use 0.5")),
             _ => Err(OpError::not_found(format!("no op {op}"))),
         }
