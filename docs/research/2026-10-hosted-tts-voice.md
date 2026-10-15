@@ -36,16 +36,16 @@ those hosts (the follow-up list at the end).
 | Google Cloud Text-to-Speech | large cloud TTS | partly (price, service terms) | Chirp 3 HD US$30 / 1M chars (verified) | Instant custom voice: price verified, terms `unverified` | candidate, pending output-ownership and cloning terms |
 | Amazon Polly | large cloud TTS | no | `unverified` | Brand Voice only, `unverified (source not recorded)` | cannot rank |
 | Azure AI Speech | large cloud TTS | no | `unverified` | Personal Voice, "limited access" `unverified (source not recorded)` | cannot rank |
-| ElevenLabs | voice specialist, TTS + voice changer | no | `unverified` | `unverified (source not recorded)` | candidate to read first; no ranking reason yet |
+| ElevenLabs | voice specialist, TTS + voice changer | no | `unverified` | `unverified (source not recorded)` | not ranked: sources not recorded |
 | Resemble AI | specialist, speech-to-speech | no | `unverified (source not recorded)`, none usable | `unverified` | cannot rank (the voice-conversion candidate) |
 
 **Ranked recommendation (provisional):** 1. Google Cloud, because it is the only candidate whose price is verified, it
-bills per character as the `SpendGate` bound needs, and it needs no cloning for a stock-voice first adapter. 2. ElevenLabs
-is a candidate to read first, as the voice specialist, but **no ranking reason rests on it**: every claim about its terms
-comes from a search result whose page title and URL were not recorded, so those claims are `unverified (source not
-recorded)` and are left out of the ranking. Voice conversion has no pick: a hosted stream does not fit ML-14 and would
-need its own integration design (see the Resemble section). Neither pick may be adopted until the open items below are
-closed.
+bills per character as the `SpendGate` bound needs, and it needs no cloning for a stock-voice first adapter. There is no
+second pick. **Not ranked: sources not recorded:** ElevenLabs (and Polly, Azure and Resemble). Every claim about their
+terms comes from a search result whose page title and URL were not recorded, so those claims are `unverified (source not
+recorded)` and stay out of the ranking until a follow-up records real sources or reads the primary terms. Voice conversion
+has no pick: a hosted stream does not fit ML-14 and would need its own integration design (see the Resemble section). The
+pick may not be adopted until the open items below are closed.
 
 ## Google Cloud Text-to-Speech
 
@@ -261,8 +261,7 @@ Stock voices at Google's Standard price (US$4 per 1M characters) are not worth b
 ## Comparison and recommendation
 
 See the summary table above. Provisional ranking: Google Cloud first (the only verified price and the per-character
-billing the `SpendGate` bound needs), conditional on the open questions. ElevenLabs is the specialist to read next, with no
-ranking reason until its primary terms are read. Voice conversion: no pick.
+billing the `SpendGate` bound needs), conditional on the open questions. ElevenLabs is not ranked: its sources were not recorded, and it stays out until a follow-up records them. Voice conversion: no pick.
 
 ## Follow-up tasks I would file (not filed)
 
@@ -270,7 +269,7 @@ ranking reason until its primary terms are read. Voice conversion: no pick.
    ownership, data retention and training, cloning consent, content rules, API shape and price for all five candidates;
    re-verify Google's Instant custom voice terms.
 2. **Update the licence rows** in `docs/licensing/deps/` (added by this PR, status `unverified`) once the primary terms
-   are read, and move each to `conditions` or `cleared` with the quoted finding.
+   are read, and move each to a register status: `yes`, `conditions` or `NO`. An adverse output-ownership or cloning finding stays `NO`; `unverified` remains until the primary terms are read.
 3. **A hosted-TTS connector adapter** for the maintainer's pick, as its own task (an account, a key), per-character bound
    through `SpendGate`.
 4. **A conversion rule for per-token prices** (Gemini-TTS style) if a token-billed voice is ever wanted.
