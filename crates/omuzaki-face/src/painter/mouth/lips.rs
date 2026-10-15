@@ -3,7 +3,9 @@
 //!
 //! The gloss ([`paint_gloss`]) is drawn **before** the mouth shape, as the prototype does. The rim ([`paint_rim`]) is
 //! drawn after the interior, over the clipped teeth and tongue. Both follow the lip strength of the profile
-//! ([`Lips::strength`]): none on the flat sheet look, full on a close-up. The one exception is a kiss: pushed-forward
+//! ([`Lips::strength`]): none on the flat sheet look, full on a close-up. Just above the switch the rim *is* the closed
+//! line (its width and colour); over the openings 0.06 to 0.2 ([`OpenMouth::fade`]) it becomes the open mouth's, and the
+//! light inner rim fades in with it, so the mouth keeps its weight where the line gives way. The one exception is a kiss: pushed-forward
 //! lips always read as glossy, so its gloss never drops below [`KISS_LIPS`] even on a flat face. Every colour comes from
 //! the profile: the lip tint, the mouth line colour and the interior colours, lightened or darkened where the prototype
 //! shades them.
@@ -11,8 +13,9 @@
 //! [`Lips::strength`]: omuzaki_face_api::Lips::strength
 
 use omuzaki_core::glam::{Affine2, Vec2};
-use omuzaki_face_api::{Cmd, Colour, ColourExt, FaceLayerId, Paint, Stops, narrow};
+use omuzaki_face_api::{Cap, Cmd, Colour, ColourExt, FaceLayerId, Join, Paint, Stops, narrow};
 
+use super::OpenMouth;
 use super::shape::{Frame, Kind};
 use crate::painter::PaintCtx;
 
@@ -103,7 +106,9 @@ pub(super) fn paint_gloss(ctx: &mut PaintCtx<'_>) {
                 debug_assert!(false, "the mouth records its outline before any piece paints");
                 return;
             };
-            (open.half_width, open.centre.y + open.bottom(0.0), strength)
+            // It follows the lower edge as the lens takes over from the line, so it does not drop by the lens' depth at
+            // the switch.
+            (open.half_width, open.centre.y + open.bottom(0.0) * open.fade, strength)
         }
     };
     if strength < GLOSS_MIN {
@@ -149,16 +154,51 @@ pub(super) fn paint_gloss(ctx: &mut PaintCtx<'_>) {
 
 /// Paints the rim round an open mouth: a dark outer edge and, on a lip face, a light inner rim over it. A flat face
 /// gets the plain mouth line. Nothing for a closed mouth or a kiss.
+///
+/// At the switch the outer edge is the closed line (its colour, and a width that makes up what the lens does not cover
+/// of the line's thickness, so the painted height does not change), and it becomes the open mouth's rim over
+/// [`OpenMouth::fade`]. The light rim, which the line has none of, fades in over the same range.
 pub(super) fn paint_rim(ctx: &mut PaintCtx<'_>) {
     let Some(open) = ctx.open_mouth else { return };
     let lips = narrow(ctx.profile.mouth.lips.strength);
+    let glossy = lips > RIM_LIPS_ABOVE;
     let line = resolve(&ctx.profile.mouth.line_colour, DEFAULT_LINE);
     let tint = tint(ctx);
+    let (colour, width) =
+        if glossy { (darken(tint, DARKEN).faded(RIM_DARK_ALPHA), RIM_DARK_WIDTH) } else { (line, RIM_PLAIN_WIDTH) };
+    let fade = open.fade;
+    let outer = Paint::Solid(mix(line, colour, fade));
+    let outer_width = outer_width(ctx, &open, width);
     let list = ctx.list(FaceLayerId::Base);
-    if lips > RIM_LIPS_ABOVE {
-        list.stroke(open.path, solid(darken(tint, DARKEN), RIM_DARK_ALPHA), RIM_DARK_WIDTH);
-        list.stroke(open.path, solid(lighten(tint, RIM_LIGHT_WHITE), RIM_LIGHT_ALPHA * lips), RIM_LIGHT_WIDTH);
-    } else {
-        list.stroke(open.path, Paint::Solid(line), RIM_PLAIN_WIDTH);
+    list.stroke(open.path, outer, outer_width);
+    if glossy && fade > 0.0 {
+        let light = solid(lighten(tint, RIM_LIGHT_WHITE), RIM_LIGHT_ALPHA * lips);
+        list.push(Cmd::Stroke {
+            path: open.path,
+            paint: light,
+            width: RIM_LIGHT_WIDTH * fade,
+            cap: Cap::Round,
+            join: Join::Round,
+            opacity: fade,
+        });
     }
+}
+
+/// The width of the rim's outer edge: the open mouth's `full` width once the fade is done. Before that, the closed
+/// line's width less the part of its height the lens already covers beyond the line's own extent (its smile), so lens
+/// and rim together are as high as the line was.
+fn outer_width(ctx: &PaintCtx<'_>, open: &OpenMouth, full: f32) -> f32 {
+    // Most open mouths are past the fade, where none of the closed line is left to measure.
+    if open.fade >= 1.0 {
+        return full;
+    }
+    let (frame, style) = (Frame::of(ctx), &ctx.profile.mouth);
+    let from = (frame.line_width(style) + frame.closed_extent(style) - open.extent()).max(0.0);
+    from + (full - from) * open.fade
+}
+
+/// `from` moved `t` of the way to `to`, alpha included.
+fn mix(from: Colour, to: Colour, t: f32) -> Colour {
+    let blend = |a: u8, b: u8| byte(f32::from(a) + (f32::from(b) - f32::from(a)) * t);
+    Colour { r: blend(from.r, to.r), g: blend(from.g, to.g), b: blend(from.b, to.b), a: blend(from.a, to.a) }
 }

@@ -23,6 +23,7 @@ use omuzaki_ai_api::Session;
 use omuzaki_ai_mock::{FakeSession, echo_signature};
 use omuzaki_anim_api::{Channel, DeviceProfile, TrackStatus};
 use omuzaki_core::time::Seconds;
+use omuzaki_track::pipeline::ReuseConfig;
 use omuzaki_track::{FaceGraphs, FaceSample, FaceTrackError, FaceTracker, FaceTrackerConfig, Mode, to_track_frame};
 
 /// The scripted face at `pose`, as a tracker (counted graphs) in `mode`.
@@ -30,7 +31,8 @@ fn tracker_for(pose: &Pose, mode: Mode, presence_logit: f32) -> (FaceTracker, co
     let face = project(&canonical_face(), pose, SIDE, SIDE);
     let (graphs, runs) =
         counted_graphs(detector_script(true), landmarks_script(&face, FACE_ROI, presence_logit), blendshapes_script());
-    let config = FaceTrackerConfig { mode, ..FaceTrackerConfig::default() };
+    // These tests count what each graph does on every frame; `tests/roi_reuse.rs` covers skipping.
+    let config = FaceTrackerConfig { mode, reuse: ReuseConfig::OFF, ..FaceTrackerConfig::default() };
     (FaceTracker::new(graphs, &geometry(), config).unwrap(), runs)
 }
 

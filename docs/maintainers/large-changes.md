@@ -75,8 +75,10 @@ the change that follows absorbs what's left.
 - **Review:** one deep review at open, with every finding in one pass, then one verification after a single fix round
   (`operating.md`). After that, only a blocking correctness or security bug that the lead confirms gets another push.
   Everything else becomes a follow-up issue.
-- **Concurrency:** at most one change in flight per crate, or per top-level module in `omuzaki-char` and
-  `omuzaki-face`. File overlap stays absolute.
+- **Concurrency:** at most one change in flight per crate, or per top-level module where a crate's module map was
+  built for parallel work. The owning lead decides which of its crates qualify; `omuzaki-char`, `omuzaki-face` and
+  `omuzaki-stage` do. File overlap stays absolute. Files at the crate root and `lib.rs` are shared, so only one
+  change at a time holds them.
 - **A change that spans two areas** has one owning lead, named in its issue. The other lead co-signs the part in its
   crates.
 

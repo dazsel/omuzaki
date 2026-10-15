@@ -27,12 +27,19 @@ src/encoder.rs: pub fn validate(&self) -> Result<(), StreamError> {
 src/encoder.rs: pub trait Encoder: Send {
 src/encoder.rs: pub trait EncoderFactory: Send + Sync {
 src/error.rs: pub enum StreamError {
+src/input.rs: pub struct FrameStamp {
+src/input.rs: pub enum TailMode {
+src/input.rs: pub fn save(last_frame: i64, upto_lsn: Lsn) -> Self {
+src/input.rs: pub enum TailStep {
+src/input.rs: pub trait InputTap: Send {
 src/lib.rs: pub mod encoder;
 src/lib.rs: pub mod error;
+src/lib.rs: pub mod input;
 src/lib.rs: pub mod mux;
 src/lib.rs: pub mod output;
 src/lib.rs: pub mod packet;
 src/lib.rs: pub mod time;
+src/lib.rs: pub use input::{FrameStamp, InputTap, TailMode, TailStep};
 src/mux.rs: pub enum Container {
 src/mux.rs: pub struct MuxReport {
 src/mux.rs: pub fn new(packets: u64, bytes: u64) -> Self {

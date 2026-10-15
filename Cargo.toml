@@ -17,6 +17,7 @@ repository = "https://github.com/dazsel/omuzaki"
 # Pre-declared early so parallel changes don't collide on this file. Unused entries cost nothing.
 ab_glyph = "0.2"   # text rasteriser for character sheets (Apache-2.0; pure Rust, no shaping), omuzaki-stage
 base64 = "0.23"   # standard base64 for MCP blob resources (MIT OR Apache-2.0), omuzaki-mcp; already in the lock through rmcp
+crc32fast = "1.5"   # CRC-32 of journal frames (MIT OR Apache-2.0), omuzaki-doc; already in the lock
 blake3 = "1.8"
 bytemuck = { version = "1.25", features = ["derive"] }
 bytes = "1"

@@ -22,7 +22,9 @@ egui_tiles.workspace = true
 egui_kittest = { workspace = true, optional = true }
 image = { workspace = true, optional = true }
 inventory.workspace = true
+schemars.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 toml.workspace = true
 omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-doc-api = { path = "../omuzaki-doc-api" }
