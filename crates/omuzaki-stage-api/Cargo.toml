@@ -24,3 +24,7 @@ toml.workspace = true
 
 [lints]
 workspace = true
+
+[package.metadata.omuzaki]
+kind = "API"
+summary = "the scene contract (ADR 0024): `SceneDef` (settings, lighting, cameras, cast), ids, document paths, keys, limits and the one validator `check`"
