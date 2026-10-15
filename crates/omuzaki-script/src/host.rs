@@ -15,6 +15,7 @@ use rhai::{
     Dynamic, Engine, EvalAltResult, Map, Module, NativeCallContext, OptimizationLevel, ParseErrorType, Position, Scope,
     Shared,
 };
+use serde::Serialize;
 use serde_json::Map as JsonMap;
 
 use crate::bindings::Bindings;
@@ -41,7 +42,7 @@ pub struct RunRequest {
 }
 
 /// What a run that finished produced.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ScriptOutcome {
     /// The script's last value, as JSON.
     pub value: Value,
@@ -51,7 +52,9 @@ pub struct ScriptOutcome {
     pub calls: u32,
     /// The transaction the calls implementation committed, if it owns one.
     pub tx: Option<TxId>,
-    /// Each call a dry run planned; empty for a real run.
+    /// Each call a dry run planned; empty for a real run. A dry run sends every call against the document as it was
+    /// before the script, so a script whose later calls read what earlier ones wrote may plan differently from a real
+    /// run; the console says so on the result.
     pub plans: Vec<PlannedCall>,
 }
 

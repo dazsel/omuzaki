@@ -4128,9 +4128,13 @@ dependencies = [
 name = "omuzaki-script"
 version = "0.0.0"
 dependencies = [
+ "blake3",
  "omuzaki-core",
  "omuzaki-doc-api",
+ "omuzaki-doc-mock",
+ "omuzaki-embed",
  "omuzaki-ops-api",
+ "omuzaki-ops-mock",
  "proptest",
  "rhai",
  "schemars",

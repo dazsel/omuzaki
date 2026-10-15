@@ -9,7 +9,9 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+blake3.workspace = true
 rhai.workspace = true
+schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -18,12 +20,18 @@ omuzaki-doc-api = { path = "../omuzaki-doc-api" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 
 [dev-dependencies]
-schemars.workspace = true
 proptest.workspace = true
+omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
+omuzaki-ops-mock = { path = "../omuzaki-ops-mock" }
+
+[build-dependencies]
+omuzaki-embed = { path = "../omuzaki-embed" }
 
 [lints]
 workspace = true
 
 [package.metadata.omuzaki]
 kind = "Implementation"
+generated-mods = ["src/ops"]
+registers = true
 summary = "the script runtime (PL-02): Rhai engine, limits, generated op bindings, static check, macros, the `script.*` ops"

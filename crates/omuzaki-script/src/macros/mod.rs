@@ -8,6 +8,7 @@ mod play;
 mod record;
 
 use omuzaki_doc_api::Value;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub use file::{FileError, from_jsonl, to_jsonl};
@@ -15,7 +16,7 @@ pub use play::{PlayError, PlayReport, play};
 pub use record::MacroRecorder;
 
 /// One op call of a macro, as the person made it.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct RecordedCall {
     /// The op's registered name.
     pub op: String,
