@@ -28,11 +28,15 @@ const ERROR_SHARING_VIOLATION: i32 = 32;
 /// The text goes to a hidden temporary file (`.<name>.tmp`) next to the target. That file is flushed to disk, then
 /// renamed over the target. The rename replaces the target in one step on unix and on Windows (`std::fs::rename`
 /// over an existing file, never a remove followed by a rename), so no reader ever finds the file missing. A stale
-/// temporary file from an interrupted save is replaced. On failure the temporary file is removed and the old file, if
-/// there was one, is left as it was.
+/// temporary file from an earlier save is replaced. If the write or the rename fails, the temporary file is removed
+/// and the old file, if there was one, is left as it was.
 ///
 /// On unix the parent folder is flushed after the rename, so the new name survives a crash too. Windows does not offer
-/// that, so only the file's own contents are flushed there.
+/// that, so only the file's own contents are flushed there. Folders created on the way are not flushed.
+///
+/// A crash can leave the temporary file behind; the next save replaces it. The new file gets the default permissions
+/// of the process (the umask on unix), not those of the file it replaces, and it is a new file for any other process
+/// that has the old one open.
 ///
 /// What it does not do: take a lock. Two writers of the same path in different processes can interleave, and the last
 /// rename wins. Links are not refused here (a symlink at `path` is replaced, and a symlinked folder is followed); a
@@ -41,8 +45,8 @@ const ERROR_SHARING_VIOLATION: i32 = 32;
 ///
 /// # Errors
 ///
-/// Returns an error if `path` has no file name, or if any step fails. A failure after the rename (only the folder
-/// flush on unix can fail there) still leaves the new text in place.
+/// Returns an error if `path` has no file name, or if any step fails. An error from the folder flush on unix comes
+/// after the rename, so the new text is already in place when it is returned.
 pub fn write_atomic(path: &Path, text: &str) -> io::Result<()> {
     let name = path.file_name().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no file name"))?;
     let parent = match path.parent() {
