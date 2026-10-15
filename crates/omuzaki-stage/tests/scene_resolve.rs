@@ -505,7 +505,7 @@ fn refused_path(out: &mut ResolvedScene, def: &SceneDef, figures: &BTreeMap<Memb
     let result = out.resolve_into(checked(def), figures, ASPECT);
     assert_eq!(*out, before, "an error leaves the last scene in place");
     match result {
-        Err(StageError::Scene { source }) => source.path.to_string(),
+        Err(StageError::Scene { source }) => source.path.clone(),
         Err(StageError::Framing { .. }) => "framing".to_string(),
         other => panic!("expected an error, got {other:?}"),
     }
@@ -524,7 +524,7 @@ fn a_pitched_or_rolled_figure_root_is_refused() {
 
 #[test]
 fn a_ground_radius_that_overflows_is_refused() {
-    let (mut def, _) = (scene(), ());
+    let mut def = scene();
     def.cameras.clear();
     let huge = figures([f32::MAX, f32::MAX]);
     let mut out = resolved(&def, &figures([0.0, 0.0]));
