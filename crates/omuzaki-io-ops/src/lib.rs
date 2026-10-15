@@ -37,6 +37,7 @@ pub mod fit_bones;
 pub mod fit_decimate;
 pub mod fit_texture;
 pub mod gather;
+pub mod limits;
 pub mod ops;
 pub mod prepare;
 pub mod vrchat_rank;
