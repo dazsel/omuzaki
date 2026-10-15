@@ -7,7 +7,8 @@
 use omuzaki_char::hair::compile::{Dispatch, HairGenCtx, UnitStream, compile_groups, is_bilateral, stream};
 use omuzaki_char::hair::r#gen::braid;
 use omuzaki_char_api::{
-    BangsGen, BraidGen, CurtainGen, Dynamics, Generator, GroupId, HairGroup, HairParams, HairRng, HeadSurface, Quality,
+    BangsGen, BraidGen, CurtainGen, Dynamics, FramingGen, Generator, GroupId, HairGroup, HairParams, HairRng, HairSide,
+    HeadSurface, Quality,
 };
 use omuzaki_core::glam::Vec3;
 use omuzaki_core::rng::Rng;
@@ -157,4 +158,13 @@ fn the_generators_that_make_both_sides_are_bilateral() {
     assert!(is_bilateral(&Generator::Braid(BraidGen::default())));
     assert!(is_bilateral(&Generator::Curtain(CurtainGen::default())));
     assert!(is_bilateral(&Generator::Bangs(BangsGen::default())));
+}
+
+#[test]
+fn a_framing_group_is_bilateral_only_when_it_makes_both_sides() {
+    // The default framing is `Both`, so mirroring it would lay a second copy; a single side is mirrored as asked.
+    let framing = |side| Generator::Framing(FramingGen { side, ..FramingGen::default() });
+    assert!(is_bilateral(&framing(HairSide::Both)));
+    assert!(!is_bilateral(&framing(HairSide::Left)));
+    assert!(!is_bilateral(&framing(HairSide::Right)));
 }
