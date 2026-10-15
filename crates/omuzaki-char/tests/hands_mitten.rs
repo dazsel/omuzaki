@@ -14,6 +14,9 @@ use omuzaki_char::template::registry;
 use omuzaki_char_api::{BodyParams, HandParams, HandStyle, MaterialName, PartMesh, Proportions};
 use omuzaki_core::glam::Vec3;
 
+/// Every body template.
+const TEMPLATES: [&str; 4] = ["soft-sd", "standard", "mini", "tall"];
+
 /// A hand's triangle budget at Live quality (the issue's 1.2k; the hand's detail is one fixed level).
 const BUDGET: usize = 1200;
 
@@ -58,8 +61,8 @@ fn welded(m: &PartMesh) -> Vec<[usize; 3]> {
 
 /// The segments round the block's ring and the rings in the block, per style (`hands::mitten` and `hands::simple`).
 fn block_vertices(style: HandStyle) -> (usize, usize) {
-    let around = if style == HandStyle::Mitten { 24 } else { 30 };
-    (around + 1, 12 * (around + 1))
+    let around = if style == HandStyle::Mitten { 28 } else { 30 };
+    (around + 1, (4 + 8) * (around + 1))
 }
 
 /// Every directed edge once, and its reverse once, but for the two open ends the prototype leaves: the wrist ring (a
@@ -72,7 +75,7 @@ fn assert_watertight(label: &str, m: &PartMesh, style: HandStyle) {
     for (k, p) in m.geometry.positions.iter().enumerate() {
         let next = ids.len();
         let id = *ids.entry(q(*p)).or_insert(next);
-        if k < ring || (block..block + 17).contains(&k) {
+        if k < ring || (block..block + 19).contains(&k) {
             open.insert(id);
         }
     }
@@ -133,7 +136,7 @@ fn extremes() -> Vec<HandParams> {
 
 #[test]
 fn hands_are_closed_but_for_their_hidden_ends_at_hand_sizes_and_every_param_extreme() {
-    for template in ["soft-sd", "standard"] {
+    for template in TEMPLATES {
         for style in [HandStyle::Mitten, HandStyle::Simple] {
             for size in [0.5, 1.0, 2.0] {
                 for hand in extremes() {
@@ -262,16 +265,182 @@ fn non_finite_numbers_are_clamped_and_the_hand_still_builds() {
     assert!(parts.iter().all(|m| m.geometry.positions.iter().all(|p| p.is_finite())));
 }
 
+/// The layout of `template` for `p`, and the hands built on it.
+fn built(template: &str, p: &BodyParams) -> (omuzaki_char::template::layout::BodyLayout, Vec<PartMesh>) {
+    let layout = registry::find(template).unwrap().try_layout(&p.proportions, &p.shape, &p.hand).unwrap();
+    let parts = hands::build(p, &layout, &material()).unwrap();
+    (layout, parts)
+}
+
+/// How much longer a template's hand is than soft-sd's, by the middle finger's distal joint from the wrist.
+fn grown(template: &str) -> f32 {
+    let reach = |t: &str| {
+        let (layout, _) = built(t, &params(HandStyle::Mitten, HandParams::default(), 1.0));
+        let at = |b| layout.joint64(b).unwrap();
+        at(omuzaki_anim_api::HumanoidBone::LeftMiddleDistal).distance(at(omuzaki_anim_api::HumanoidBone::LeftHand))
+    };
+    (reach(template) / reach("soft-sd")) as f32
+}
+
 #[test]
-fn the_hand_reaches_the_finger_joints_the_layout_places() {
-    use omuzaki_anim_api::HumanoidBone::{LeftMiddleDistal, LeftThumbDistal};
-    let p = params(HandStyle::Mitten, HandParams::default(), 1.0);
-    let layout = registry::find("soft-sd").unwrap().try_layout(&p.proportions, &p.shape, &p.hand).unwrap();
-    let parts = hands::build(&p, &layout, &material()).unwrap();
-    let hand = mesh(&parts, "hand-l");
-    for bone in [LeftMiddleDistal, LeftThumbDistal] {
-        let joint = layout.joint64(bone).unwrap().as_vec3();
-        let nearest = hand.geometry.positions.iter().map(|v| v.distance(joint)).fold(f32::MAX, f32::min);
-        assert!(nearest < 0.012, "{bone:?} is {nearest} m from the skin");
+fn the_hand_reaches_every_finger_and_thumb_joint_the_layout_places_on_every_template() {
+    use omuzaki_anim_api::HumanoidBone::{
+        LeftIndexDistal, LeftLittleDistal, LeftMiddleDistal, LeftRingDistal, LeftThumbDistal,
+    };
+    for template in TEMPLATES {
+        for size in [0.5, 1.0, 2.0] {
+            // A mitten ignores the finger length (the API contract), so longer fingers than the block are not tested.
+            for hand in extremes().into_iter().map(|h| HandParams { finger_length: h.finger_length.min(1.0), ..h }) {
+                for style in [HandStyle::Mitten, HandStyle::Simple] {
+                    let (layout, parts) = built(template, &params(style, hand.clone(), size));
+                    let skin = &mesh(&parts, "hand-l").geometry.positions;
+                    // A simple hand's thumb is splayed 18 degrees past the layout's, so its thumb joints are not on it.
+                    let thumb = (style == HandStyle::Mitten).then_some(LeftThumbDistal);
+                    for bone in
+                        [LeftIndexDistal, LeftMiddleDistal, LeftRingDistal, LeftLittleDistal].into_iter().chain(thumb)
+                    {
+                        let joint = layout.joint64(bone).unwrap().as_vec3();
+                        let nearest = skin.iter().map(|v| v.distance(joint)).fold(f32::MAX, f32::min);
+                        // The skin wraps the joint within the thumb's radius (soft-sd's 12 mm, grown with the template's
+                        // hand), where a hand that ignored the template would end 150 mm short on `tall`.
+                        let tolerance = 0.012 * size as f32 * grown(template);
+                        assert!(
+                            nearest < tolerance,
+                            "{template} {style:?} size {size} {hand:?}: {bone:?} is {nearest} m from the skin"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn the_hand_grows_with_the_templates_hand() {
+    let reach = |template: &str| {
+        let (layout, parts) = built(template, &params(HandStyle::Mitten, HandParams::default(), 1.0));
+        let wrist = layout.joint64(omuzaki_anim_api::HumanoidBone::LeftHand).unwrap().as_vec3();
+        mesh(&parts, "hand-l").geometry.positions.iter().map(|p| p.distance(wrist)).fold(0.0, f32::max)
+    };
+    let (small, large) = (reach("soft-sd"), reach("tall"));
+    assert!(large > 2.5 * small, "tall's hand reaches {large} m, soft-sd's {small} m");
+}
+
+#[test]
+fn the_wrist_end_lies_inside_the_forearm_at_every_size_and_template() {
+    use omuzaki_anim_api::HumanoidBone::{LeftHand, LeftLowerArm};
+    for template in TEMPLATES {
+        for size in [0.5, 1.0, 2.0] {
+            for hand in extremes() {
+                let (layout, parts) = built(template, &params(HandStyle::Mitten, hand.clone(), size));
+                let (wrist, elbow) = (layout.joint64(LeftHand).unwrap(), layout.joint64(LeftLowerArm).unwrap());
+                let axis = (wrist - elbow).normalize().as_vec3();
+                let back = mesh(&parts, "hand-l")
+                    .geometry
+                    .positions
+                    .iter()
+                    .map(|p| (*p - wrist.as_vec3()).dot(axis))
+                    .fold(f32::MAX, f32::min);
+                // The arm ends in a cap that reaches about half a ring's width past the wrist and closes: the hand's
+                // opening has to start before the wrist, in the arm's full-width part.
+                assert!(back < 0.0, "{template} size {size} {hand:?}: the hand starts {back} m past the wrist");
+            }
+        }
+    }
+}
+
+#[test]
+fn the_thumb_root_lands_on_the_layouts_joint_whatever_the_palm_and_spread() {
+    use omuzaki_anim_api::HumanoidBone::LeftThumbProximal;
+    let (_, block) = block_vertices(HandStyle::Mitten);
+    let thumb_ring = 18; // the thumb's segments round a ring: the 19th vertex repeats the first
+    for template in TEMPLATES {
+        for (palm_length, palm_width, thumb_length, spread) in
+            [(2.0, 0.5, 1.0, 30.0), (0.5, 2.0, 2.0, -30.0), (2.0, 2.0, 0.5, 30.0), (1.0, 1.0, 1.0, 0.0)]
+        {
+            let hand =
+                HandParams { palm_length, palm_width, thumb_length, thumb_spread_deg: spread, ..Default::default() };
+            let (layout, parts) = built(template, &params(HandStyle::Mitten, hand, 1.0));
+            let positions = &mesh(&parts, "hand-l").geometry.positions;
+            let root = positions[block..block + thumb_ring].iter().copied().sum::<Vec3>() / thumb_ring as f32;
+            let joint = layout.joint64(LeftThumbProximal).unwrap().as_vec3();
+            let error = root.distance(joint);
+            assert!(
+                error < 1e-4,
+                "{template} length {palm_length} width {palm_width} spread {spread}: the thumb root is {error} m off"
+            );
+        }
+    }
+}
+
+/// Renders the left hand of the built body (front and side) through the mock toon renderer when
+/// `OMUZAKI_HANDS_PPM=<directory>` is set, as binary PPM files, on soft-sd and standard, with the thumb opened and
+/// lengthened so its placement shows. The fingertip tint is the hands' vertex colours.
+#[test]
+#[allow(clippy::disallowed_methods, reason = "test evidence, written to a folder the developer names; not an op")]
+fn render_the_hands_when_asked() {
+    use omuzaki_char_api::{BuildOptions, BuildServices, CharId, CharacterBuilder, CharacterDef, RegistryBuilder};
+    use omuzaki_core::colour::Colour;
+    use omuzaki_core::glam::{Mat4, UVec2};
+    use omuzaki_render_api::{
+        AlphaEncoding, Background, Camera, Instance, Light, Post, Quality, Renderer, RendererExt, Scene, Tonemap,
+    };
+    use omuzaki_render_mock::MockRenderer;
+
+    let Some(directory) = std::env::var_os("OMUZAKI_HANDS_PPM") else { return };
+    let directory = std::path::PathBuf::from(directory);
+    std::fs::create_dir_all(&directory).unwrap();
+    for template in ["soft-sd", "standard"] {
+        let node = serde_json::json!({
+            "name": "Hands",
+            "template": template,
+            "seed": 3,
+            "palette": { "skin": "#f9d3c5", "skin_shade": "#f2b4ab", "skin_line": "#c98a80" },
+            "parts": { "body": { "kind": "body", "params": { "hand": { "thumb_spread_deg": 25.0, "thumb_length": 1.3 } } } }
+        });
+        let def = CharacterDef::from_node(&node).unwrap();
+        let built = RegistryBuilder
+            .build(&CharId::new("t").unwrap(), &def, &BuildOptions::default(), &BuildServices::default())
+            .unwrap();
+        let hand = built.meshes.iter().find(|m| m.mesh.name == "hand-l").unwrap();
+        let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+        for p in &hand.mesh.geometry.positions {
+            (lo, hi) = (lo.min(*p), hi.max(*p));
+        }
+        let (centre, size) = ((lo + hi) / 2.0, (hi - lo).max_element());
+        for (view, azimuth_deg) in [("front", 0.0_f32), ("side", 90.0)] {
+            let mut renderer = MockRenderer::new();
+            let eye = centre
+                + Mat4::from_rotation_y(azimuth_deg.to_radians()).transform_vector3(Vec3::new(0.0, 0.0, 3.0 * size));
+            let mut scene = Scene::new(Camera::look_at(eye, centre, Vec3::Y, Camera::default().projection));
+            scene.background = Background::Solid { colour: Colour::hex(0x001e_1c24) };
+            scene.lights = vec![
+                Light::Hemisphere { sky: Colour::hex(0x00f1_eef8), ground: Colour::hex(0x004a_3e36), intensity: 0.75 },
+                Light::Directional {
+                    to_light: Vec3::new(1.6, 3.0, 2.4),
+                    colour: Colour::hex(0x00ff_f6ec),
+                    intensity: 1.7,
+                    casts_shadow: false,
+                },
+            ];
+            scene.post = Post { exposure: 1.0, tonemap: Tonemap::None, ..Post::default() };
+            for built_mesh in &built.meshes {
+                let mesh = renderer.create_mesh(&built_mesh.mesh.geometry).unwrap();
+                let mut spec = built.materials[&built_mesh.mesh.material].clone();
+                spec.overlays.clear();
+                let material = renderer.create_material(&spec.to_material(&|_| None, &|_| None).unwrap()).unwrap();
+                scene.instances.push(Instance::new(mesh, material, Mat4::IDENTITY));
+            }
+            let quality = Quality { samples: 4, ..Quality::offline() };
+            let image = renderer.render_image(UVec2::splat(384), AlphaEncoding::Straight, &scene, &quality).unwrap();
+            let mut ppm = format!("P6\n{} {}\n255\n", image.size.x, image.size.y).into_bytes();
+            for y in 0..image.size.y {
+                for x in 0..image.size.x {
+                    let [r, g, b, _] = image.pixel(x, y).unwrap();
+                    ppm.extend([r, g, b]);
+                }
+            }
+            std::fs::write(directory.join(format!("{template}-{view}.ppm")), ppm).unwrap();
+        }
     }
 }

@@ -42,3 +42,12 @@ steps = [
     { run = ["python3", "-I", "tools/stature_lineup.py", "{out}/lineup.json", "{out}/lineup.png"] },
 ]
 images = ["lineup.png"]
+
+[[case]]
+name = "hands"
+description = "The left hand (mitten, thumb opened 25 degrees and 1.3 long) on soft-sd and standard, front and side, 384 px, close camera."
+env = { OMUZAKI_HANDS_PPM = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-char", "--test", "hands_mitten", "render_the_hands_when_asked", "--", "--exact"] },
+]
+images = ["soft-sd-front.ppm", "soft-sd-side.ppm", "standard-front.ppm", "standard-side.ppm"]

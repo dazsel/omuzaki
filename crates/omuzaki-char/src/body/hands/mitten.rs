@@ -9,13 +9,12 @@ use crate::kit::grid::{GridOptions, MeshBuilder, Skin};
 use crate::kit::sweep::tube;
 
 /// A mitten's block has no grooves and a thumb at the template's rest angle.
-pub(super) const STYLE: Style = Style { around: 24, splay_deg: 0.0, groove: |_, _| 1.0 };
+pub(super) const STYLE: Style = Style { around: 28, splay_deg: 0.0, groove: |_, _| 1.0 };
 
-/// The lines' lateral offsets from the axis (symmetric about 0: they sit where the fingers part), where they start and
-/// end along the hand, how much they converge towards the tip (a fraction of the offset), their tube radius, and how
+/// The lines' lateral offsets from the axis (symmetric about 0: they sit where the fingers part), where they end along
+/// the hand (they start at the knuckle row), how much they converge towards the tip (a fraction of the offset), their tube radius, and how
 /// far they lie off the surface.
 const LINE_OFFSETS: [f64; 3] = [-0.0085, 0.0, 0.0085];
-const LINE_START: f64 = 0.030;
 const LINE_END: f64 = 0.046;
 const LINE_CONVERGE: f64 = 0.15;
 const LINE_RADIUS: f64 = 0.0006;
@@ -33,20 +32,22 @@ pub(super) fn lines(hand: &Hand, block: &Block) -> Result<MeshBuilder, KitError>
         let (a, b) = block.section(u);
         let s = clamp(lat / a, -0.98, 0.98);
         let back = b * BACK_PLUMP * (1.0 - s * s).sqrt();
-        hand.place(u, lat, Hand::curl(u) - (back + LINE_LIFT))
+        hand.place(u, lat, hand.curl(u) - (back + LINE_LIFT))
     };
     let last = count(LINE_POINTS - 1);
+    // The lines start where the fingers part, at the template's knuckle row.
+    let start = hand.knuckle();
     for offset in LINE_OFFSETS {
         let at = |k: usize| {
             let f = count(k) / last;
-            (LINE_START + (LINE_END - LINE_START) * f, offset * (1.0 - LINE_CONVERGE * f))
+            (start + (LINE_END - start) * f, offset * (1.0 - LINE_CONVERGE * f))
         };
         let points: Vec<DVec3> = (0..LINE_POINTS).map(|k| surface(at(k).0, at(k).1)).collect();
-        let sweep = tube(&points, |_| hand.size * LINE_RADIUS, LINE_SEGMENTS)?;
+        let sweep = tube(&points, |_| hand.size * hand.scale * LINE_RADIUS, LINE_SEGMENTS)?;
         let inside = |i: usize, _j: usize| sweep.centres[i];
         let skin = |_p: DVec3, i: usize, _j: usize| {
             let (along, across) = at(i);
-            palm_skin(along, across)
+            palm_skin(hand, along, across)
         };
         builder.add_grid(
             &sweep.grid,

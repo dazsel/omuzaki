@@ -5,10 +5,14 @@
 //! decals; [`simple`]: gap grooves between four fused fingers) and the thumb's rest angle. The left hand is built, and
 //! the right hand is its mirror image ([`MeshBuilder::mirrored`]), so the two cannot differ.
 //!
-//! The hand sits on the template's own numbers: the origin, the knuckle row, the finger lines, the thumb's root and
-//! direction and the curl come from the soft-sd hand table (the prototype's hand), placed on the layout's wrist and
-//! forearm, and scaled by `Proportions::hand_size` and the [`HandParams`] palm and thumb numbers. The finger numbers of
-//! [`HandParams`] shape the five-finger hands only, so a mitten ignores them (the API contract).
+//! The hand sits on the numbers of the template the layout was built from ([`BodyLayout::hand_table`]): the origin, the
+//! knuckle row, the finger lines, the thumb's root and direction and the curl, placed on the layout's wrist and forearm
+//! and scaled by `Proportions::hand_size` and the [`HandParams`](omuzaki_char_api::HandParams) palm and thumb numbers exactly as
+//! [`crate::template::layout`] places the finger and thumb joints (the palm is scaled, then the thumb turns about its
+//! metacarpal joint, the free thumb's own length is not scaled by the palm). The block's measurements (its widths, its
+//! thickness, the thumb's radius) are the prototype's, in the prototype's own metres, and grow with the template's hand
+//! by the ratio of its reach (knuckle row to middle fingertip) to the prototype's. The finger numbers of [`HandParams`](omuzaki_char_api::HandParams)
+//! shape the five-finger hands only, so a mitten ignores them (the API contract).
 //!
 //! Skin: the palm on the hand bone, its hidden wrist end fading up to half into the forearm, the finger block on the
 //! four proximal finger bones (by lateral position, so every hand style shares one skeleton), the thumb on its three
@@ -24,26 +28,27 @@ use crate::kit::KitError;
 use crate::kit::curve::{Pchip, TAU, clamp, fraction, lerp, sstep};
 use crate::kit::grid::{Grid, GridOptions, MeshBuilder, Skin};
 use crate::template::layout::{BodyLayout, HandFrame, HandTable};
-use crate::template::soft_sd::TABLE;
 
 pub mod five;
 pub mod mitten;
 pub mod simple;
 
-/// The hand table every style is built from: the prototype's hand.
-const HAND: HandTable = TABLE.hand;
-
-/// Hand length along the forearm axis, from the hand's origin to the tip of the mitt.
+/// Hand length along the forearm axis, from the hand's origin to the tip of the mitt, in the prototype's metres. A
+/// template's hand is this much longer by its reach over [`HAND_LENGTH`] ([`Hand::scale`]).
 const HAND_LENGTH: f64 = 0.050;
 /// Where the rounded end cap begins, and the last station of the section curves.
 const CAP_START: f64 = 0.040;
 const LAST_STATION: f64 = 0.048;
-/// Where the ring set starts: before the wrist, so the hand overlaps the sleeve end.
-const START: f64 = -0.012;
-/// Rings before the cap, evenly spaced from [`START`] to [`CAP_START`], and in the cap (spaced as a quarter sine).
-const BODY_RINGS: usize = 7;
-const CAP_RINGS: usize = 5;
+/// How far the ring set starts back inside the forearm, past the wrist joint, so the arm's rounded end cap (which
+/// reaches only about half a ring's width past the wrist) covers the hand's opening at every hand size.
+const WRIST_OVERLAP: f64 = 0.004;
+/// Rings before the cap, evenly spaced from the start to [`CAP_START`] (4), and in the cap, spaced as a quarter sine (8):
+/// the prototype's 12 rows.
+pub(super) const BODY_RINGS: usize = 4;
+pub(super) const CAP_RINGS: usize = 8;
 /// Semi-axes of the section along the thumb side (width) and the palm normal (thickness), by distance from the origin.
+/// The first knot is the prototype's ring at `-0.012`; the wrist end, which the prototype starts there, is held at its
+/// size back to the start ([`Hand::start`]).
 const WIDTH: [(f64, f64); 6] =
     [(-0.012, 0.0170), (0.0, 0.0185), (0.015, 0.0215), (0.030, 0.0235), (0.042, 0.0225), (0.048, 0.0210)];
 const THICKNESS: [(f64, f64); 6] =
@@ -60,7 +65,7 @@ const TIP_RAMP: (f64, f64) = (0.030, 0.050);
 
 /// The thumb's rings, from root to tip (dense at both ends so the root blends in and the tip rounds), and their size.
 const THUMB_T: [f64; 11] = [0.0, 0.1, 0.22, 0.36, 0.5, 0.64, 0.76, 0.86, 0.93, 0.975, 1.0];
-const THUMB_SEGMENTS: usize = 16;
+pub(super) const THUMB_SEGMENTS: usize = 18;
 /// The thumb curls towards the palm by `BEND_N * t^2` and sideways by `BEND_T * t`.
 const THUMB_BEND: (f64, f64) = (0.003, -0.002);
 const THUMB_RADIUS: f64 = 0.0075;
@@ -78,6 +83,11 @@ const THUMB_DISTAL: (f64, f64) = (0.50, 0.85);
 
 /// The left hand's frame and size: where its parts go.
 struct Hand {
+    /// The template's hand: where the origin, the knuckle row, the fingers and the thumb lie.
+    table: HandTable,
+    /// How much longer the template's hand is than the prototype's (its reach over [`HAND_LENGTH`]), which the block's
+    /// own measurements grow by.
+    scale: f64,
     /// The wrist joint.
     wrist: DVec3,
     /// Along the forearm, towards the thumb side, out of the palm (a right-handed frame).
@@ -100,10 +110,17 @@ impl Hand {
                 .ok_or(KitError::Degenerate { what: "a joint the hand hangs on" })
         };
         let (wrist, elbow) = (joint(HumanoidBone::LeftHand)?, joint(HumanoidBone::LeftLowerArm)?);
-        let frame = HandFrame::of(wrist - elbow, HAND.palm_hint, HAND.thumb_hint);
+        let table = *layout.hand_table().ok_or(KitError::Degenerate { what: "the template's hand table" })?;
+        let scale = (table.knuckle + table.finger_length[1]) / HAND_LENGTH;
+        if !(scale.is_finite() && scale > 0.0) {
+            return Err(KitError::Degenerate { what: "the template's hand reach" });
+        }
+        let frame = HandFrame::of(wrist - elbow, table.palm_hint, table.thumb_hint);
         let slider = |v: f64| if v.is_finite() { clamp(v, 0.5, 2.0) } else { 1.0 };
         let spread = params.hand.thumb_spread_deg;
         Ok(Self {
+            table,
+            scale,
             wrist,
             frame,
             size: slider(params.proportions.hand_size),
@@ -114,18 +131,37 @@ impl Hand {
         })
     }
 
-    /// The point `u` along the hand axis from its origin, `lat` towards the thumb and `nrm` out of the palm, in the
-    /// prototype's (unscaled, unit-size) numbers. The palm (up to the knuckles) is stretched by the palm length and the
-    /// width by the palm width, as the layout places the finger and thumb joints that skin it.
-    fn place(&self, u: f64, lat: f64, nrm: f64) -> DVec3 {
-        let along = (HAND.shift + u.min(HAND.knuckle)) * self.palm_length + (u - HAND.knuckle).max(0.0);
+    /// The point `c` of the hand's own numbers (along the forearm, towards the thumb, out of the palm; from the wrist),
+    /// in the world: scaled by the hand size about the wrist, as the layout places the joints.
+    fn world(&self, c: DVec3) -> DVec3 {
         let f = &self.frame;
-        self.wrist + (f.axis * along + f.thumb * (lat * self.palm_width) + f.palm * nrm) * self.size
+        self.wrist + (f.axis * c.x + f.thumb * c.y + f.palm * c.z) * self.size
     }
 
-    /// The fingertips' curl towards the palm at `u`.
-    fn curl(u: f64) -> f64 {
-        (HAND.curl)(u)
+    /// The point `u` along the hand axis from its origin, `lat` towards the thumb and `nrm` out of the palm, in the
+    /// prototype's metres. They grow by [`Self::scale`] to the template's own; the palm (up to the knuckles) is then
+    /// stretched by the palm length and the width by the palm width, as the layout places the finger joints that skin
+    /// it.
+    fn place(&self, u: f64, lat: f64, nrm: f64) -> DVec3 {
+        let (u, lat, nrm) = (u * self.scale, lat * self.scale, nrm * self.scale);
+        let t = &self.table;
+        let along = (t.shift + u.min(t.knuckle)) * self.palm_length + (u - t.knuckle).max(0.0);
+        self.world(DVec3::new(along, lat * self.palm_width, nrm))
+    }
+
+    /// The fingertips' curl towards the palm at `u` (prototype's metres, as [`Self::place`] takes it).
+    fn curl(&self, u: f64) -> f64 {
+        (self.table.curl)(u * self.scale) / self.scale
+    }
+
+    /// Where the knuckle row lies, in prototype's metres.
+    fn knuckle(&self) -> f64 {
+        self.table.knuckle / self.scale
+    }
+
+    /// Where the ring set starts: [`WRIST_OVERLAP`] behind the wrist joint (the origin lies `shift` past it).
+    fn start(&self) -> f64 {
+        -(self.table.shift / self.scale) - WRIST_OVERLAP
     }
 }
 
@@ -135,34 +171,40 @@ pub(super) struct Style {
     pub(super) around: usize,
     /// Added to the thumb's spread, degrees (a simple hand's thumb is splayed).
     pub(super) splay_deg: f64,
-    /// Scales a ring point's lateral position and height from `(u, lateral)`: the finger gap grooves.
+    /// Scales a ring point's lateral position and height from `(u, lateral)`: the finger gap grooves. `u` is measured
+    /// as if the knuckle row were the prototype's, [`PROTOTYPE_KNUCKLE`].
     pub(super) groove: fn(f64, f64) -> f64,
 }
+
+/// Where the prototype's knuckle row lies; the finger-hint lines and the grooves are drawn from it.
+pub(super) const PROTOTYPE_KNUCKLE: f64 = 0.030;
 
 fn bone(bone: HumanoidBone) -> JointRef {
     JointRef::Humanoid(bone)
 }
 
-/// The skin at distance `u` from the origin, `lat` towards the thumb: the hand bone with the wrist end fading up to
-/// half into the forearm; past the knuckle row, the nearest finger bones.
-fn palm_skin(u: f64, lat: f64) -> Vec<(JointRef, f32)> {
+/// The skin at distance `u` from the origin, `lat` towards the thumb (prototype's metres): the hand bone with the wrist
+/// end fading up to half into the forearm; past the knuckle row, the nearest finger bones.
+fn palm_skin(hand: &Hand, u: f64, lat: f64) -> Vec<(JointRef, f32)> {
     const FINGERS: [HumanoidBone; 4] = [
         HumanoidBone::LeftIndexProximal,
         HumanoidBone::LeftMiddleProximal,
         HumanoidBone::LeftRingProximal,
         HumanoidBone::LeftLittleProximal,
     ];
-    let forearm = 0.5 * sstep(WRIST_BLEND.0, WRIST_BLEND.1, u);
-    let fingers = sstep(HAND.knuckle - 0.004, HAND.knuckle + 0.004, u);
+    let (s, t) = (hand.scale, &hand.table);
+    let (u, lat) = (u * s, lat * s);
+    let forearm = 0.5 * sstep(WRIST_BLEND.0 * s, WRIST_BLEND.1 * s, u);
+    let fingers = sstep(t.knuckle - 0.004 * s, t.knuckle + 0.004 * s, u);
     let palm = 1.0 - fingers;
     let mut blend = vec![
         (bone(HumanoidBone::LeftHand), (palm * (1.0 - forearm)) as f32),
         (bone(HumanoidBone::LeftLowerArm), (palm * forearm) as f32),
     ];
     // A tent per finger over the finger lines' spacing: the four tents sum to 1 between the outer fingers.
-    let spacing = HAND.finger_across[0] - HAND.finger_across[1];
-    let lat = clamp(lat, HAND.finger_across[3], HAND.finger_across[0]);
-    for (finger, across) in FINGERS.into_iter().zip(HAND.finger_across) {
+    let spacing = t.finger_across[0] - t.finger_across[1];
+    let lat = clamp(lat, t.finger_across[3], t.finger_across[0]);
+    for (finger, across) in FINGERS.into_iter().zip(t.finger_across) {
         blend.push((bone(finger), (fingers * (1.0 - (lat - across).abs() / spacing).max(0.0)) as f32));
     }
     blend
@@ -207,18 +249,26 @@ impl Block {
         (self.width.eval(u) * cap, self.thickness.eval(u) * cap)
     }
 
-    fn new() -> Result<Self, KitError> {
-        let step = (CAP_START - START) / count(BODY_RINGS);
-        let mut stations: Vec<f64> = (0..BODY_RINGS).map(|k| START + step * count(k)).collect();
+    fn new(hand: &Hand) -> Result<Self, KitError> {
+        let start = hand.start();
+        let step = (CAP_START - start) / count(BODY_RINGS);
+        let mut stations: Vec<f64> = (0..BODY_RINGS).map(|k| start + step * count(k)).collect();
         stations.extend((0..CAP_RINGS).map(|k| {
             CAP_START + (HAND_LENGTH - CAP_START) * (fraction(k, CAP_RINGS - 1) * std::f64::consts::FRAC_PI_2).sin()
         }));
-        Ok(Self { stations, width: Pchip::new(&WIDTH)?, thickness: Pchip::new(&THICKNESS)? })
+        // The curves begin at the ring set's start, at the size the prototype's first ring has.
+        let curve = |knots: &[(f64, f64)]| {
+            let mut all = vec![(start, knots[0].1)];
+            all.extend_from_slice(knots);
+            Pchip::new(&all)
+        };
+        Ok(Self { stations, width: curve(&WIDTH)?, thickness: curve(&THICKNESS)? })
     }
 
     /// The block's grid, one ring per station, `style.around` segments round.
     fn grid(&self, hand: &Hand, style: &Style) -> Result<Grid, KitError> {
         let segments = style.around;
+        let from_knuckle = PROTOTYPE_KNUCKLE - hand.knuckle();
         Grid::from_fn(self.stations.len(), segments + 1, |i, j| {
             let u = self.stations[i];
             let (a, b) = self.section(u);
@@ -227,43 +277,43 @@ impl Block {
             // Flatten the palm side (sn > 0), plump the back.
             let b = b * if sn > 0.0 { PALM_FLATTEN } else { BACK_PLUMP };
             let lateral = a * ct;
-            let groove = (style.groove)(u, lateral);
-            hand.place(u, lateral * groove, b * sn * groove + Hand::curl(u))
+            let groove = (style.groove)(u + from_knuckle, lateral);
+            hand.place(u, lateral * groove, b * sn * groove + hand.curl(u))
         })
     }
 
     /// The centre of row `i`, for the interior reference of the normals.
     fn centre(&self, hand: &Hand, i: usize) -> DVec3 {
         let u = self.stations[i];
-        hand.place(u, 0.0, Hand::curl(u))
+        hand.place(u, 0.0, hand.curl(u))
     }
 }
 
 /// The thumb: its grid and the centres of its rings. Frames are rebuilt per ring from the tangent, with the palm normal
 /// projected off it, so the thumb does not twist.
+///
+/// It is placed as the layout places the thumb joints: the metacarpal joint and the root are scaled with the palm, the
+/// thumb turns about the metacarpal joint in the plane of the palm, and the free thumb (its direction, which the
+/// thumb length scales) is not scaled by the palm.
 fn thumb(hand: &Hand, splay_deg: f64) -> Result<(Grid, Vec<DVec3>), KitError> {
-    let t = &HAND.thumb;
-    // Spread opens the thumb about its metacarpal joint, in the plane of the palm.
+    let (t, s) = (&hand.table.thumb, hand.scale);
+    let on_palm = |p: DVec3| DVec3::new((hand.table.shift + p.x) * hand.palm_length, p.y * hand.palm_width, p.z);
+    let (base, root) = (on_palm(t.base), on_palm(t.root));
     let (sin, cos) = (hand.spread_deg + splay_deg).to_radians().sin_cos();
-    let turn = |p: DVec3| {
-        let v = p - t.base;
-        t.base + DVec3::new(v.x * cos - v.y * sin, v.x * sin + v.y * cos, v.z)
-    };
-    let root = turn(t.root);
-    let direction = turn(t.base + t.direction.normalize_or_zero()) - t.base;
+    let turn = |v: DVec3| DVec3::new(v.x * cos - v.y * sin, v.x * sin + v.y * cos, v.z);
+    let root = base + turn(root - base);
+    let direction = turn(t.direction.normalize_or_zero());
     let length = t.length * hand.thumb_length;
-    // Centres in the hand's own numbers (`x` along, `y` thumb side, `z` palm), then placed.
+    // Centres in the hand's own numbers (`x` along, `y` thumb side, `z` palm), then in the world.
+    let bend = (THUMB_BEND.0 * s, THUMB_BEND.1 * s);
     let centres: Vec<DVec3> = THUMB_T
         .iter()
-        .map(|&s| {
-            let p = root + direction * (length * s) + DVec3::new(0.0, THUMB_BEND.1 * s, THUMB_BEND.0 * s * s);
-            hand.place(p.x, p.y, p.z)
-        })
+        .map(|&k| hand.world(root + direction * (length * k) + DVec3::new(0.0, bend.1 * k, bend.0 * k * k)))
         .collect();
-    let radii = |s: f64| {
-        let base = THUMB_RADIUS * (1.0 - THUMB_TAPER * s);
+    let radii = |k: f64| {
+        let base = THUMB_RADIUS * (1.0 - THUMB_TAPER * k) * s;
         let cap =
-            if s < THUMB_CAP { 1.0 } else { (1.0 - ((s - THUMB_CAP) / (1.0 - THUMB_CAP)).powi(2)).max(0.0).sqrt() };
+            if k < THUMB_CAP { 1.0 } else { (1.0 - ((k - THUMB_CAP) / (1.0 - THUMB_CAP)).powi(2)).max(0.0).sqrt() };
         (base * cap * THUMB_ASPECT * hand.size, base * cap * hand.size)
     };
     let last = centres.len() - 1;
@@ -277,22 +327,22 @@ fn thumb(hand: &Hand, splay_deg: f64) -> Result<(Grid, Vec<DVec3>), KitError> {
         let normal = (hand.frame.palm - tangent * hand.frame.palm.dot(tangent)).normalize_or_zero();
         let binormal = tangent.cross(normal).normalize_or_zero();
         let (ra, rb) = radii(THUMB_T[k]);
-        let (s, c) = (fraction(j, THUMB_SEGMENTS) * TAU).sin_cos();
-        centres[k] + normal * (c * ra) + binormal * (s * rb)
+        let (sn, c) = (fraction(j, THUMB_SEGMENTS) * TAU).sin_cos();
+        centres[k] + normal * (c * ra) + binormal * (sn * rb)
     })?;
     Ok((grid, centres))
 }
 
 /// The left hand: the block and the thumb in one builder (the prototype's `mb`).
 fn left_hand(hand: &Hand, style: &Style) -> Result<(MeshBuilder, Block), KitError> {
-    let block = Block::new()?;
+    let block = Block::new(hand)?;
     let block_grid = block.grid(hand, style)?;
     let mut builder = MeshBuilder::with_colours();
     let inside = |i: usize, _j: usize| block.centre(hand, i);
     let colour = |i: usize, _j: usize, _p: DVec3| tone(sstep(TIP_RAMP.0, TIP_RAMP.1, block.stations[i]));
     let skin = |_p: DVec3, i: usize, j: usize| {
         let (a, _) = block.section(block.stations[i]);
-        palm_skin(block.stations[i], a * (fraction(j, style.around) * TAU).cos())
+        palm_skin(hand, block.stations[i], a * (fraction(j, style.around) * TAU).cos())
     };
     builder.add_grid(
         &block_grid,

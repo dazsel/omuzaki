@@ -219,6 +219,18 @@ fn the_kind_is_registered_project_owned_and_builds_a_rigged_body_on_every_templa
             t.id()
         );
         assert_eq!(material.base, omuzaki_core::colour::Colour::rgb(0xf9, 0xd3, 0xc5));
+        // The hands have their own copy with the vertex colours on (the fingertip tint); the body's skin has them off.
+        assert!(!material.vertex_colours, "{}", t.id());
+        let hand_id = MaterialName::new("body-hands").unwrap();
+        let hand_material = &built.materials[&hand_id];
+        assert!(hand_material.vertex_colours, "{}", t.id());
+        assert_eq!(hand_material.base, material.base, "{}", t.id());
+        for m in &built.meshes {
+            let hand = m.mesh.name.starts_with("hand-");
+            assert_eq!(m.mesh.material == hand_id, hand, "{}: {}", t.id(), m.mesh.name);
+            let lines = m.mesh.name.starts_with("hand-lines");
+            assert!(!hand || lines || !m.mesh.geometry.colours.is_empty(), "{}: {} has no tint", t.id(), m.mesh.name);
+        }
         // Every skinned bone exists in the rig the template published, and the body is bound in the template's pose.
         for m in &built.meshes {
             for bone in &m.mesh.joint_bones {
