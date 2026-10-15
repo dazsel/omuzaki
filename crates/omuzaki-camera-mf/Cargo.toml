@@ -12,6 +12,7 @@ repository.workspace = true
 omuzaki-track-api = { path = "../omuzaki-track-api" }
 
 [target.'cfg(windows)'.dependencies]
+tracing.workspace = true
 windows.workspace = true
 windows-core.workspace = true
 

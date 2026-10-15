@@ -1,8 +1,9 @@
 //! Capture modes, media subtypes and error codes, plus the pieces of the reader that need no Windows to build or test:
 //! frame bounds, row flipping, the device sequence and the timed hand-off between the capture callback and the caller.
 
-use std::num::NonZeroUsize;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::ffi::c_void;
+use std::ptr::NonNull;
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use omuzaki_track_api::camera::{CameraFormat, CameraFormatRequest, CameraId, PixelFormat};
@@ -253,6 +254,10 @@ impl SlotFailure {
 pub enum Take<T> {
     /// The newest item.
     Item(T),
+    /// The producer reported a change that the taker must handle before it uses any item (a new media type); the
+    /// item that was waiting, if any, comes back to be released unused. The flag stays set until this is returned, so
+    /// replacing the item cannot lose it.
+    Retype(Option<T>),
     /// Nothing arrived within the time.
     Timeout,
     /// The producer failed; stays so until the slot is dropped.
@@ -272,13 +277,15 @@ pub trait Signal: Send + Sync {
 
 /// A lock-free one-item mailbox with a timed wait: the capture callback puts, the caller takes, the newest wins.
 ///
-/// The item is a non-zero token (the owner turns a pointer into one and back, which is why the slot itself needs no
-/// `unsafe`). Every state is one atomic word, so neither side ever takes a lock or allocates; the only blocking is
-/// the taker's [`Signal::wait`]. Whoever holds a token owns what it stands for: `put` hands back every token it
-/// displaces through `release`, and `drain` hands back the one left.
+/// The item is a pointer (a COM object the owner turns into a raw pointer and back); the slot only moves it, never
+/// dereferences it, so it needs no `unsafe` and the pointer keeps its provenance. Every state is one atomic word, so
+/// neither side ever takes a lock or allocates; the only blocking is the taker's [`Signal::wait`]. Whoever holds a
+/// pointer owns what it stands for: `put` hands back every pointer it displaces through `release`, and `drain` hands
+/// back the one left.
 #[derive(Debug)]
 pub struct TokenSlot<S: Signal> {
-    item: AtomicUsize,
+    item: AtomicPtr<c_void>,
+    retype: AtomicBool,
     failure: AtomicU64,
     closed: AtomicBool,
     flushed: AtomicBool,
@@ -289,7 +296,8 @@ impl<S: Signal> TokenSlot<S> {
     /// An empty, open slot that wakes its taker through `signal`.
     pub const fn new(signal: S) -> Self {
         Self {
-            item: AtomicUsize::new(0),
+            item: AtomicPtr::new(std::ptr::null_mut()),
+            retype: AtomicBool::new(false),
             failure: AtomicU64::new(0),
             closed: AtomicBool::new(false),
             flushed: AtomicBool::new(false),
@@ -299,18 +307,25 @@ impl<S: Signal> TokenSlot<S> {
 
     /// Stores `token`, replacing any older one. Every token the slot lets go of, the older one or (once the slot is
     /// closed) `token` itself, goes to `release` exactly once, so nothing leaks and nothing is released twice.
-    pub fn put(&self, token: NonZeroUsize, mut release: impl FnMut(NonZeroUsize)) {
-        if let Some(old) = NonZeroUsize::new(self.item.swap(token.get(), Ordering::AcqRel)) {
+    pub fn put(&self, token: NonNull<c_void>, mut release: impl FnMut(NonNull<c_void>)) {
+        if let Some(old) = NonNull::new(self.item.swap(token.as_ptr(), Ordering::AcqRel)) {
             release(old);
         }
         // Checked after the swap: a close that lands after the check also drains, so one of the two reclaims it.
         if self.closed.load(Ordering::SeqCst) {
-            if let Some(mine) = NonZeroUsize::new(self.item.swap(0, Ordering::AcqRel)) {
+            if let Some(mine) = self.drain() {
                 release(mine);
             }
         } else {
             self.signal.notify();
         }
+    }
+
+    /// Tells the taker that the media type changed. Call it before putting the first item of the new type: the taker
+    /// that sees such an item then also sees this.
+    pub fn set_retype(&self) {
+        self.retype.store(true, Ordering::SeqCst);
+        self.signal.notify();
     }
 
     /// Records a failure for the taker (the first one stays).
@@ -331,8 +346,8 @@ impl<S: Signal> TokenSlot<S> {
     }
 
     /// The token left in the slot, if any, for its owner to release.
-    pub fn drain(&self) -> Option<NonZeroUsize> {
-        NonZeroUsize::new(self.item.swap(0, Ordering::AcqRel))
+    pub fn drain(&self) -> Option<NonNull<c_void>> {
+        NonNull::new(self.item.swap(std::ptr::null_mut(), Ordering::AcqRel))
     }
 
     /// Records that the producer finished flushing (see [`wait_flushed`](Self::wait_flushed)).
@@ -351,12 +366,18 @@ impl<S: Signal> TokenSlot<S> {
         true
     }
 
-    /// The newest token, waiting up to `timeout` for one. A token that arrived is returned before a failure or a
-    /// close. A zero `timeout` only looks.
-    pub fn take(&self, timeout: Duration) -> Take<NonZeroUsize> {
+    /// The newest token, waiting up to `timeout` for one. A pending type change is returned first, with the token
+    /// that was waiting (see [`Take::Retype`]); then a token that arrived before a failure or a close. A zero
+    /// `timeout` only looks.
+    pub fn take(&self, timeout: Duration) -> Take<NonNull<c_void>> {
         let deadline = Instant::now().checked_add(timeout);
         loop {
-            if let Some(token) = self.drain() {
+            // The token first, then the flag: a token put after the flag was set shows the flag.
+            let token = self.drain();
+            if self.retype.swap(false, Ordering::SeqCst) {
+                return Take::Retype(token);
+            }
+            if let Some(token) = token {
                 return Take::Item(token);
             }
             if let Some(failure) = SlotFailure::decode(self.failure.load(Ordering::SeqCst)) {

@@ -3445,6 +3445,7 @@ name = "omuzaki-camera-mf"
 version = "0.0.0"
 dependencies = [
  "omuzaki-track-api",
+ "tracing",
  "windows",
  "windows-core",
 ]

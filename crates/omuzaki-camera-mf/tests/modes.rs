@@ -4,7 +4,8 @@ use omuzaki_camera_mf::modes::{
     E_ACCESSDENIED, MF_E_HW_MFT_FAILED_START_STREAMING, MF_E_VIDEO_RECORDING_DEVICE_INVALIDATED, MJPG, ModeInfo, NV12,
     RGB32, YUY2, choose_mode, copy_top_down, frame_span, map_hresult, subtype_format,
 };
-use std::num::NonZeroUsize;
+use std::ffi::c_void;
+use std::ptr::NonNull;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -210,8 +211,9 @@ impl Signal for Flag {
     }
 }
 
-fn token(n: usize) -> NonZeroUsize {
-    NonZeroUsize::MIN.saturating_add(n) // n + 1: never zero
+/// A token that is never dereferenced: the slot only moves pointers.
+fn token(n: usize) -> NonNull<c_void> {
+    NonNull::new(std::ptr::without_provenance_mut(n + 1)).unwrap_or(NonNull::dangling())
 }
 
 #[test]
@@ -239,6 +241,22 @@ fn a_late_frame_is_replaced_by_a_newer_one() {
     assert_eq!(slot.take(Duration::ZERO), Take::Item(token(11)));
     assert_eq!(released, [token(10)]);
     assert_eq!(slot.take(Duration::ZERO), Take::Timeout, "and nothing stale is left behind");
+}
+
+/// A media-type change outlives the frame it came with: the taker retypes whichever frame is in the slot.
+#[test]
+fn a_type_change_survives_frame_replacement() {
+    let slot = TokenSlot::new(Flag::default());
+    let mut released = Vec::new();
+    slot.set_retype(); // the callback saw the flag on the first frame of the new type
+    slot.put(token(1), |t| released.push(t));
+    slot.put(token(2), |t| released.push(t)); // an ordinary frame replaces it
+    assert_eq!(slot.take(Duration::ZERO), Take::Retype(Some(token(2))), "still retypes, and hands the frame back");
+    assert_eq!(slot.take(Duration::ZERO), Take::Timeout, "handled once");
+    slot.put(token(3), |_| {});
+    assert_eq!(slot.take(Duration::ZERO), Take::Item(token(3)), "frames after it are ordinary");
+    slot.set_retype();
+    assert_eq!(slot.take(Duration::from_secs(10)), Take::Retype(None), "a change with no frame still wakes the taker");
 }
 
 #[test]

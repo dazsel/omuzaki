@@ -30,7 +30,7 @@
 #![allow(unsafe_code)] // Win32/COM FFI has no safe binding; each block carries its own `// SAFETY:` comment.
 
 use std::ffi::c_void;
-use std::num::NonZeroUsize;
+use std::ptr::NonNull;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 use std::time::Duration;
@@ -42,8 +42,8 @@ use omuzaki_track_api::error::TrackError;
 use windows::Win32::Foundation::RPC_E_CHANGED_MODE;
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::Media::MediaFoundation::{
-    IMF2DBuffer2, IMFActivate, IMFAttributes, IMFMediaBuffer, IMFMediaSource, IMFMediaType, IMFSample, IMFSourceReader,
-    IMFSourceReaderCallback, MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
+    IMF2DBuffer, IMF2DBuffer2, IMFActivate, IMFAttributes, IMFMediaBuffer, IMFMediaSource, IMFMediaType, IMFSample,
+    IMFSourceReader, IMFSourceReaderCallback, MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
     MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK,
     MF_E_NO_MORE_TYPES, MF_MT_DEFAULT_STRIDE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_SUBTYPE,
     MF_READWRITE_DISABLE_CONVERTERS, MF_SOURCE_READER_ASYNC_CALLBACK, MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING,
@@ -231,12 +231,6 @@ impl Drop for EventSignal {
     }
 }
 
-/// A sample in the slot is its `IMFSample` pointer; this low bit, free because COM objects are pointer-aligned, says
-/// the media type changed with it.
-const TYPE_CHANGED: usize = 1;
-/// A token that is no sample: the media type changed and the driver sent none with it.
-const RETYPE_ONLY: usize = TYPE_CHANGED;
-
 /// What a stream and its callback share. The callback holds its own `Arc`, so it never touches freed state.
 struct Shared {
     slot: TokenSlot<EventSignal>,
@@ -267,25 +261,16 @@ impl Shared {
     }
 
     /// Releases the sample a token stands for.
-    fn release(token: NonZeroUsize) {
-        if token.get() != RETYPE_ONLY {
-            // SAFETY: `into_token` made this token from a sample's raw pointer (plus the tag bit) and it is released
-            // exactly once, by the slot (`put`, `drain`) or by the caller that took it.
-            drop(unsafe { IMFSample::from_raw((token.get() & !TYPE_CHANGED) as *mut c_void) });
-        }
+    fn release(token: NonNull<c_void>) {
+        // SAFETY: `into_token` made this token from a sample's raw pointer (`IUnknown::into_raw`, which keeps its
+        // provenance) and it is released exactly once, by the slot (`put`, `drain`) or by the caller that took it.
+        drop(unsafe { IMFSample::from_raw(token.as_ptr()) });
     }
 }
 
-/// A sample as a slot token, tagged if the media type changed with it. `None` if its pointer is not aligned (it
-/// would collide with the tag).
-fn into_token(sample: IMFSample, type_changed: bool) -> Option<NonZeroUsize> {
-    let raw = sample.into_raw();
-    if raw.addr() & TYPE_CHANGED != 0 {
-        // SAFETY: `raw` came from `into_raw` just above and has not been shared.
-        drop(unsafe { IMFSample::from_raw(raw) });
-        return None;
-    }
-    NonZeroUsize::new(raw.addr() | usize::from(type_changed))
+/// A sample as a slot token: its raw COM pointer, which the token now owns a reference to.
+fn into_token(sample: IMFSample) -> Option<NonNull<c_void>> {
+    NonNull::new(sample.into_raw())
 }
 
 mod callback {
@@ -302,7 +287,7 @@ mod callback {
     };
     use windows::core::{HRESULT, Ref, implement};
 
-    use super::{RETYPE_ONLY, Shared, into_token};
+    use super::{Shared, into_token};
     use crate::modes::SlotFailure;
 
     /// Receives samples from the source reader on a Media Foundation worker thread, files the newest in the slot and
@@ -336,19 +321,16 @@ mod callback {
             if shared.slot.is_closed() {
                 return Ok(()); // the stream is going away; the sample is released on return
             }
-            let retyped = flags & retyped != 0;
-            let token = if let Some(sample) = sample.as_ref().cloned() {
-                let Some(token) = into_token(sample, retyped) else {
+            if flags & retyped != 0 {
+                // Before the sample is put, so whoever takes it (or a later one) sees the change.
+                shared.slot.set_retype();
+            }
+            // A stream tick has no sample: nothing to deliver.
+            if let Some(sample) = sample.as_ref().cloned() {
+                let Some(token) = into_token(sample) else {
                     shared.slot.fail(SlotFailure::Hresult(E_POINTER.0));
                     return Ok(());
                 };
-                Some(token)
-            } else if retyped {
-                std::num::NonZeroUsize::new(RETYPE_ONLY)
-            } else {
-                None // a stream tick: nothing to deliver
-            };
-            if let Some(token) = token {
                 shared.slot.put(token, Shared::release);
             }
             if let Err(e) = shared.rearm() {
@@ -482,6 +464,7 @@ fn open_stream(runtime: &Arc<MfRuntime>, id: &CameraId, request: &CameraFormatRe
         flip: Vec::new(),
         bottom_up,
         seq: SeqTracker::new(mode.fps_num, mode.fps_den),
+        packed_locks: 0,
         failed: None,
         _runtime: Arc::clone(runtime),
     };
@@ -521,10 +504,20 @@ fn is_bottom_up(media: &IMFMediaType) -> bool {
     unsafe { media.GetUINT32(&MF_MT_DEFAULT_STRIDE) }.is_ok_and(|v| v.cast_signed() < 0)
 }
 
+/// How a buffer was locked, which is also how it is unlocked.
+enum Lock {
+    /// `IMF2DBuffer2::Lock2DSize`: the real pitch and the real extent of the allocation.
+    Sized(IMF2DBuffer2),
+    /// `IMF2DBuffer::Lock2D`: the real pitch, without the extent.
+    Surface(IMF2DBuffer),
+    /// `IMFMediaBuffer::Lock`: packed rows; may copy a padded surface, so it is the last resort for one.
+    Packed,
+}
+
 /// The locked buffer of the frame last handed out.
 struct Held {
     buffer: IMFMediaBuffer,
-    two_d: Option<IMF2DBuffer2>,
+    lock: Lock,
     /// The start of the locked allocation, and where the frame's lowest row begins within it (`span_len` bytes).
     base: *const u8,
     span_start: usize,
@@ -538,9 +531,10 @@ impl Held {
         // SAFETY: the buffer was locked by the matching call in `lock_buffer`, and is unlocked exactly once (the
         // caller drops this value right after).
         let _ = unsafe {
-            match &self.two_d {
-                Some(two_d) => two_d.Unlock2D(),
-                None => self.buffer.Unlock(),
+            match &self.lock {
+                Lock::Sized(b) => b.Unlock2D(),
+                Lock::Surface(b) => b.Unlock2D(),
+                Lock::Packed => self.buffer.Unlock(),
             }
         };
     }
@@ -554,68 +548,104 @@ impl Held {
         // caller keeps the lock for `'a`.
         unsafe { std::slice::from_raw_parts(self.base.add(self.span_start), self.span_len) }
     }
+
+    /// Checks the locked frame against its allocation, `alloc_len` bytes with the top row `scanline0` bytes in, and
+    /// records where it lies.
+    fn fit(&mut self, mode: &ModeInfo, can_flip: bool, alloc_len: usize, scanline0: usize) -> Result<(), &'static str> {
+        if self.base.is_null() {
+            return Err("the buffer has no address");
+        }
+        let span = if mode.format == PixelFormat::Mjpg {
+            // An image has no rows; the whole locked length is the payload.
+            if alloc_len == 0 { Err("empty image") } else { Ok(FrameSpan { start: 0, len: alloc_len }) }
+        } else if self.pitch < 0 && !can_flip {
+            Err("bottom-up frames of this layout are not supported")
+        } else {
+            frame_span(mode.format, mode.width, mode.height, self.pitch, scanline0, alloc_len)
+        }?;
+        self.span_start = span.start;
+        self.span_len = span.len;
+        Ok(())
+    }
 }
 
-/// Locks `buffer`'s pixels and checks them against the real allocation. The buffer stays locked until
-/// [`Held::unlock`].
+/// What locking a buffer cost.
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum Cost {
+    /// A 2-D lock, or a buffer with no 2-D interface: no copy.
+    Free,
+    /// The buffer has a 2-D interface that could not be used, so the packed `Lock` ran and may have copied the frame.
+    MayCopy,
+}
+
+/// Locks `buffer`'s pixels and checks them against the real allocation, in Microsoft's order: `Lock2DSize`, then
+/// `Lock2D`, then the packed `Lock` as the last resort. The buffer stays locked until [`Held::unlock`].
 fn lock_buffer(
     buffer: IMFMediaBuffer,
     mode: &ModeInfo,
     bottom_up: bool,
     can_flip: bool,
     id: &CameraId,
-) -> Result<Held, TrackError> {
+) -> Result<(Held, Cost), TrackError> {
     let format = mode.format;
-    let two_d = if format == PixelFormat::Mjpg { None } else { buffer.cast::<IMF2DBuffer2>().ok() };
-    let mut held = Held { buffer, two_d, base: std::ptr::null(), span_start: 0, span_len: 0, pitch: 0 };
-    // The allocation length, and the offset of the top row in it.
-    let (alloc_len, scanline0) = if let Some(two_d) = &held.two_d {
-        let (mut top, mut pitch, mut start, mut len) =
-            (std::ptr::null_mut::<u8>(), 0_i32, std::ptr::null_mut::<u8>(), 0);
-        // SAFETY: the out-pointers outlive the call; a success locks the buffer until `Unlock2D` and reports the
-        // whole allocation (`start`, `len`), which `top` lies in.
-        unsafe {
-            two_d.Lock2DSize(MF2DBuffer_LockFlags_Read, &raw mut top, &raw mut pitch, &raw mut start, &raw mut len)
-        }
-        .map_err(|e| err(&e, id))?;
-        held.base = start;
-        held.pitch = pitch as isize;
-        (len as usize, top.addr().wrapping_sub(start.addr()))
-    } else {
-        let (mut start, mut len) = (std::ptr::null_mut::<u8>(), 0_u32);
-        // SAFETY: the out-pointers outlive the call; a success locks the buffer until `Unlock`.
-        unsafe { held.buffer.Lock(&raw mut start, None, Some(&raw mut len)) }.map_err(|e| err(&e, id))?;
-        held.base = start;
-        // `Lock` hands over packed rows: the default stride, which is negative for a bottom-up type.
-        let tight = format.tight_stride(mode.width).unwrap_or(0);
-        let tight = isize::try_from(tight).unwrap_or(0);
-        held.pitch = if bottom_up { -tight } else { tight };
-        let top = if held.pitch < 0 { (mode.height as usize).saturating_sub(1) * tight.unsigned_abs() } else { 0 };
-        (len as usize, top)
+    let fail = |held: &Held, why: &str, alloc_len: usize| {
+        held.unlock();
+        TrackError::Backend(format!("unusable {format:?} buffer: {why} (pitch {}, {alloc_len} bytes)", held.pitch))
     };
-    let span = if held.base.is_null() {
-        Err("the buffer has no address")
-    } else if format == PixelFormat::Mjpg {
-        // An image has no rows; the whole locked length is the payload.
-        if alloc_len == 0 { Err("empty image") } else { Ok(FrameSpan { start: 0, len: alloc_len }) }
-    } else if held.pitch < 0 && !can_flip {
-        Err("bottom-up frames of this layout are not supported")
-    } else {
-        frame_span(format, mode.width, mode.height, held.pitch, scanline0, alloc_len)
-    };
-    match span {
-        Ok(span) => {
-            held.span_start = span.start;
-            held.span_len = span.len;
-            Ok(held)
+    let mut held = Held { buffer, lock: Lock::Packed, base: std::ptr::null(), span_start: 0, span_len: 0, pitch: 0 };
+    let mut cost = Cost::Free;
+    if format != PixelFormat::Mjpg {
+        if let Ok(sized) = held.buffer.cast::<IMF2DBuffer2>() {
+            let (mut top, mut pitch, mut start, mut len) =
+                (std::ptr::null_mut::<u8>(), 0_i32, std::ptr::null_mut::<u8>(), 0);
+            // SAFETY: the out-pointers outlive the call; a success locks the buffer until `Unlock2D` and reports the
+            // whole allocation (`start`, `len`), which `top` lies in.
+            unsafe {
+                sized.Lock2DSize(MF2DBuffer_LockFlags_Read, &raw mut top, &raw mut pitch, &raw mut start, &raw mut len)
+            }
+            .map_err(|e| err(&e, id))?;
+            held.lock = Lock::Sized(sized);
+            held.base = start;
+            held.pitch = pitch as isize;
+            // SAFETY: `top` and `start` both point into the allocation just locked.
+            let scanline0 = usize::try_from(unsafe { top.offset_from(start) }).unwrap_or(usize::MAX);
+            return match held.fit(mode, can_flip, len as usize, scanline0) {
+                Ok(()) => Ok((held, cost)),
+                Err(why) => Err(fail(&held, why, len as usize)),
+            };
         }
-        Err(why) => {
+        if let Ok(surface) = held.buffer.cast::<IMF2DBuffer>() {
+            cost = Cost::MayCopy; // unless the surface turns out to be usable as it is
+            let (mut top, mut pitch) = (std::ptr::null_mut::<u8>(), 0_i32);
+            // SAFETY: the out-pointers outlive the call; a success locks the buffer until `Unlock2D`.
+            unsafe { surface.Lock2D(&raw mut top, &raw mut pitch) }.map_err(|e| err(&e, id))?;
+            // SAFETY: plain call on a live buffer.
+            let contiguous = unsafe { surface.GetContiguousLength() }.unwrap_or(0) as usize;
+            held.base = top;
+            held.pitch = pitch as isize;
+            held.lock = Lock::Surface(surface);
+            // Without the allocation's extent only the packed size is known, so only an unpadded top-down frame
+            // is trusted; anything else is left to the packed lock below.
+            if held.pitch > 0 && held.fit(mode, can_flip, contiguous, 0).is_ok() {
+                return Ok((held, Cost::Free));
+            }
             held.unlock();
-            Err(TrackError::Backend(format!(
-                "unusable {format:?} buffer: {why} (pitch {}, {alloc_len} bytes)",
-                held.pitch
-            )))
+            held.lock = Lock::Packed;
+            held.pitch = 0;
         }
+    }
+    let (mut start, mut len) = (std::ptr::null_mut::<u8>(), 0_u32);
+    // SAFETY: the out-pointers outlive the call; a success locks the buffer until `Unlock`.
+    unsafe { held.buffer.Lock(&raw mut start, None, Some(&raw mut len)) }.map_err(|e| err(&e, id))?;
+    held.base = start;
+    // `Lock` hands over packed rows: the default stride, which is negative for a bottom-up type.
+    let tight = format.tight_stride(mode.width).unwrap_or(0);
+    let tight = isize::try_from(tight).unwrap_or(0);
+    held.pitch = if bottom_up { -tight } else { tight };
+    let top = if held.pitch < 0 { (mode.height as usize).saturating_sub(1) * tight.unsigned_abs() } else { 0 };
+    match held.fit(mode, can_flip, len as usize, top) {
+        Ok(()) => Ok((held, cost)),
+        Err(why) => Err(fail(&held, why, len as usize)),
     }
 }
 
@@ -670,6 +700,8 @@ struct MfStream {
     /// The mode's default stride is negative, so a plain `Lock` hands over rows bottom-up.
     bottom_up: bool,
     seq: SeqTracker,
+    /// Frames locked the last-resort way (see [`Cost::MayCopy`]); logged when the first happens and again at drop.
+    packed_locks: u64,
     /// Set when the camera changed to something we cannot hand over; every later call repeats it.
     failed: Option<TrackError>,
     /// Last, so Media Foundation outlives every interface above.
@@ -705,23 +737,21 @@ impl MfStream {
     }
 
     /// One frame from `token`, which this call now owns.
-    fn frame_from(&mut self, token: NonZeroUsize) -> Result<Option<CameraFrame<'_>>, TrackError> {
-        let retyped = token.get() & TYPE_CHANGED != 0;
-        let sample = (token.get() != RETYPE_ONLY).then(|| {
-            // SAFETY: the token was made from a sample's raw pointer by `into_token`; this call owns it.
-            unsafe { IMFSample::from_raw((token.get() & !TYPE_CHANGED) as *mut c_void) }
-        });
-        if retyped && let Err(e) = self.retype() {
-            self.failed = Some(e.clone());
-            return Err(e);
-        }
-        let Some(sample) = sample else { return Ok(None) };
+    fn frame_from(&mut self, token: NonNull<c_void>) -> Result<Option<CameraFrame<'_>>, TrackError> {
+        // SAFETY: the token was made from a sample's raw pointer by `into_token`; this call owns it.
+        let sample = unsafe { IMFSample::from_raw(token.as_ptr()) };
         let live = self.live.as_mut().ok_or(TrackError::Lost)?;
         // SAFETY: plain calls on a live sample; an absent attribute means no discontinuity.
         let time = unsafe { sample.GetSampleTime() }.map_err(|e| err(&e, &self.id))?;
         let lost_before = unsafe { sample.GetUINT32(&MFSampleExtension_Discontinuity) }.is_ok_and(|v| v != 0);
         let buffer = live.contiguous(&sample, &self.id)?;
-        let held = lock_buffer(buffer, &self.mode, self.bottom_up, !self.flip.is_empty(), &self.id)?;
+        let (held, cost) = lock_buffer(buffer, &self.mode, self.bottom_up, !self.flip.is_empty(), &self.id)?;
+        if cost == Cost::MayCopy {
+            self.packed_locks += 1;
+            if self.packed_locks == 1 {
+                tracing::warn!(camera = %self.id.0, "camera buffers fell back to the packed Lock, which may copy every frame");
+            }
+        }
         let (width, height, pixel) = (self.mode.width, self.mode.height, self.mode.format);
         let captured = DeviceTime(u64::try_from(time).unwrap_or(0).saturating_mul(NS_PER_TICK));
         let seq = self.seq.next(time, lost_before);
@@ -747,7 +777,7 @@ impl CameraStream for MfStream {
     }
 
     /// The newest frame, waiting up to `timeout` for the device. `Ok(None)` means none arrived in time, or the driver
-    /// sent an empty tick or only announced a new media type. Capture does not depend on this call: the callback
+    /// sent an empty tick, or announced a new media type (the frame that came with it is dropped). Capture does not depend on this call: the callback
     /// keeps the next read armed, so a frame that arrives after a timeout is replaced by newer ones until you ask.
     /// A bottom-up BGRA frame is copied top-down into a buffer allocated at open; no other layout copies, except a
     /// sample the driver delivers in several buffers. `seq` follows the capture times (see [`SeqTracker`]), so a
@@ -765,6 +795,18 @@ impl CameraStream for MfStream {
         }
         match self.shared.slot.take(timeout) {
             Take::Item(token) => self.frame_from(token),
+            Take::Retype(token) => {
+                // The camera changed its media type. Whatever was waiting may predate the change, so it is dropped;
+                // the next frame is read under the new type.
+                if let Some(token) = token {
+                    Shared::release(token);
+                }
+                if let Err(e) = self.retype() {
+                    self.failed = Some(e.clone());
+                    return Err(e);
+                }
+                Ok(None)
+            }
             Take::Timeout => Ok(None),
             Take::Failed(SlotFailure::Lost) | Take::Closed => Err(TrackError::Lost),
             Take::Failed(SlotFailure::Hresult(hr)) => Err(map_hresult(hr, &self.id)),
@@ -779,6 +821,9 @@ impl Drop for MfStream {
     fn drop(&mut self) {
         // Entered first, dropped last: after every interface below. Without COM we still release what we can.
         let _com = ComScope::enter().ok();
+        if self.packed_locks > 0 {
+            tracing::warn!(camera = %self.id.0, frames = self.packed_locks, "frames locked through the packed Lock fallback");
+        }
         self.shared.slot.close();
         self.shared.reader.store(std::ptr::null_mut(), Ordering::SeqCst);
         // A callback that read the reader pointer before it was cleared is still using the reader: wait it out.
