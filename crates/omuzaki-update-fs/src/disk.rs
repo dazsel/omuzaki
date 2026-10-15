@@ -1,11 +1,20 @@
 //! `std::fs` as a [`Disk`].
 //!
+//! Durability follows `omuzaki-core`'s `fsx::write_atomic`. On unix and macOS a file and a folder are flushed with
+//! `fsync`. Windows cannot open a folder to flush it, so [`Disk::fsync`] of a folder does nothing there and a rename
+//! relies on NTFS journaling its metadata; `fs::rename` replaces atomically in practice but Microsoft does not document
+//! it, which `omuzaki-core` tracks as #1757. A caller that needs more on Windows must not rely on this crate.
+//!
 //! `write_atomic` is the trait's provided method (write `<path>.tmp`, fsync it, rename it over `path`, fsync the
 //! folder), so the crash-safe sequence is written once, in `omuzaki-update-api`, and runs here over the real calls.
 
-use std::fs::{self, File, OpenOptions};
+#[cfg(windows)]
+use std::fs::OpenOptions;
+use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::Path;
+#[cfg(windows)]
+use std::{thread, time::Duration};
 
 use omuzaki_update_api::disk::{DirEntry, Disk, LinkKind};
 
@@ -25,16 +34,11 @@ impl Disk for StdDisk {
     }
 
     fn fsync(&self, path: &Path) -> io::Result<()> {
-        // Opened read-write: Windows refuses to flush a handle without write access. A folder cannot be opened there,
-        // and its entries are journaled with the rename, so a folder is a no-op on Windows.
-        if cfg!(windows) && fs::metadata(path)?.is_dir() {
-            return Ok(());
-        }
-        OpenOptions::new().read(true).write(!path.is_dir()).open(path)?.sync_all()
+        sync_path(path)
     }
 
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
-        fs::rename(from, to)
+        rename_over(from, to)
     }
 
     fn create_dir_all(&self, path: &Path) -> io::Result<()> {
@@ -42,7 +46,7 @@ impl Disk for StdDisk {
     }
 
     fn remove_dir_all(&self, path: &Path) -> io::Result<()> {
-        // A link to a folder is removed as a link, never followed into its target.
+        // A symlink, even one to a folder, is refused: it is neither followed into its target nor removed.
         if fs::symlink_metadata(path)?.is_dir() {
             fs::remove_dir_all(path)
         } else {
@@ -82,6 +86,52 @@ impl Disk for StdDisk {
     }
 }
 
+/// Flushes a file, or on unix a folder, to disk.
+#[cfg(unix)]
+fn sync_path(path: &Path) -> io::Result<()> {
+    // A read-only handle can be synced, so a file the process may only read (mode 0444) still flushes.
+    File::open(path)?.sync_all()
+}
+
+/// Flushes a file. A folder is a no-op: Windows cannot open one to flush it (see the module docs).
+#[cfg(windows)]
+fn sync_path(path: &Path) -> io::Result<()> {
+    if fs::metadata(path)?.is_dir() {
+        return Ok(());
+    }
+    // Windows refuses to flush a handle that has no write access.
+    OpenOptions::new().read(true).write(true).open(path)?.sync_all()
+}
+
+#[cfg(not(windows))]
+fn rename_over(from: &Path, to: &Path) -> io::Result<()> {
+    fs::rename(from, to)
+}
+
+/// Renames `from` over `to`, retrying while another process (an editor, a sync client, a virus scanner) holds `to`
+/// open. Only a refusal that a moment can cure is retried, as in `omuzaki-core`'s `fsx`.
+#[cfg(windows)]
+fn rename_over(from: &Path, to: &Path) -> io::Result<()> {
+    /// Waits before each retry: three retries, about 100 ms in all.
+    const RETRY_DELAYS: [Duration; 3] =
+        [Duration::from_millis(20), Duration::from_millis(30), Duration::from_millis(50)];
+    /// `ERROR_SHARING_VIOLATION`: the target is open in another process without sharing it.
+    const SHARING_VIOLATION: i32 = 32;
+
+    let mut delays = RETRY_DELAYS.iter();
+    loop {
+        match fs::rename(from, to) {
+            Err(e) if e.kind() == io::ErrorKind::PermissionDenied || e.raw_os_error() == Some(SHARING_VIOLATION) => {
+                match delays.next() {
+                    Some(delay) => thread::sleep(*delay),
+                    None => return Err(e),
+                }
+            }
+            other => return other,
+        }
+    }
+}
+
 #[cfg(unix)]
 fn make_link(target: &str, link: &Path, _kind: LinkKind) -> io::Result<()> {
     std::os::unix::fs::symlink(target, link)
@@ -92,6 +142,8 @@ fn make_link(target: &str, link: &Path, kind: LinkKind) -> io::Result<()> {
     match kind {
         LinkKind::File => std::os::windows::fs::symlink_file(target, link),
         LinkKind::Dir => std::os::windows::fs::symlink_dir(target, link),
+        // `LinkKind` may grow; a kind this build does not know cannot be made into a link, so refuse rather than guess.
+        _ => Err(io::Error::new(io::ErrorKind::Unsupported, "unknown link kind")),
     }
 }
 
@@ -100,8 +152,9 @@ fn set_exec(path: &Path, on: bool) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let mut permissions = fs::metadata(path)?.permissions();
     let mode = permissions.mode();
-    // Read permission grants execute permission, as `chmod +x` does without a umask.
-    let exec = (mode & 0o444) >> 2;
+    // Execute goes wherever read is allowed, as `chmod +x` does, and always to the owner so a file with no read
+    // bits still becomes executable.
+    let exec = ((mode & 0o444) >> 2) | 0o100;
     permissions.set_mode(if on { mode | exec } else { mode & !0o111 });
     fs::set_permissions(path, permissions)
 }
@@ -130,6 +183,13 @@ fn free_space(path: &Path) -> io::Result<u64> {
     let mut available = 0_u64;
     // SAFETY: `wide` ends in NUL and outlives the call; `available` is a valid out pointer; the two optional out
     // pointers are null, which the API allows.
-    let ok = unsafe { GetDiskFreeSpaceExW(wide.as_ptr(), &mut available, std::ptr::null_mut(), std::ptr::null_mut()) };
+    let ok = unsafe {
+        GetDiskFreeSpaceExW(
+            wide.as_ptr(),
+            std::ptr::from_mut(&mut available),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
     if ok == 0 { Err(io::Error::last_os_error()) } else { Ok(available) }
 }

@@ -9,7 +9,7 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use omuzaki_update_api::clock::WallClock;
-use omuzaki_update_api::disk::{DirEntry, Disk, LinkKind};
+use omuzaki_update_api::disk::{DirEntry, Disk};
 use omuzaki_update_fs::clock::SystemWallClock;
 use omuzaki_update_fs::disk::StdDisk;
 
@@ -89,8 +89,11 @@ fn std_disk_behaves_as_the_table_says() {
     shared_cases(&StdDisk, tmp.path());
 }
 
-/// Links, where the platform allows creating one without special rights.
+/// Links, where the platform allows creating one without special rights (unix; Windows needs a privilege).
+#[cfg(unix)]
 fn link_cases(disk: &dyn Disk, root: &Path) {
+    use omuzaki_update_api::disk::LinkKind;
+
     disk.create_dir_all(&root.join("real")).unwrap();
     disk.write(&root.join("real/f"), b"x").unwrap();
     disk.symlink("real", &root.join("dir-link"), LinkKind::Dir).unwrap();
@@ -123,19 +126,59 @@ fn std_disk_links() {
 }
 
 #[cfg(unix)]
-#[test]
-fn set_executable_sets_and_clears_the_bits_on_unix() {
+fn mode_of(path: &Path) -> u32 {
     use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+}
+
+#[cfg(unix)]
+fn chmod(path: &Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn set_executable_adds_execute_where_read_is_allowed_and_keeps_the_read_bits() {
     let tmp = tempfile::tempdir().unwrap();
     let file = tmp.path().join("tool");
     StdDisk.write(&file, b"#!/bin/sh\n").unwrap();
-    let mode = || std::fs::metadata(&file).unwrap().permissions().mode() & 0o777;
-    let before = mode();
+    for (before, on, off) in [(0o600, 0o700, 0o600), (0o644, 0o755, 0o644), (0o640, 0o750, 0o640)] {
+        chmod(&file, before);
+        StdDisk.set_executable(&file, true).unwrap();
+        assert_eq!(mode_of(&file), on, "on from {before:o}");
+        StdDisk.set_executable(&file, false).unwrap();
+        assert_eq!(mode_of(&file), off, "off from {on:o}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn set_executable_gives_the_owner_execute_even_without_read_bits() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = tmp.path().join("tool");
+    StdDisk.write(&file, b"x").unwrap();
+    chmod(&file, 0o200);
     StdDisk.set_executable(&file, true).unwrap();
-    assert_eq!(mode() & 0o111, (before & 0o444) >> 2);
-    assert_ne!(mode() & 0o100, 0);
-    StdDisk.set_executable(&file, false).unwrap();
-    assert_eq!(mode() & 0o111, 0);
+    assert_eq!(mode_of(&file), 0o300);
+}
+
+#[cfg(unix)]
+#[test]
+fn fsync_works_on_a_file_that_is_only_readable() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = tmp.path().join("locked");
+    StdDisk.write(&file, b"x").unwrap();
+    chmod(&file, 0o444);
+    StdDisk.fsync(&file).unwrap();
+    StdDisk.fsync(tmp.path()).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn the_root_folder_cannot_be_written() {
+    assert_eq!(kind(StdDisk.write(Path::new("/"), b"x")), ErrorKind::IsADirectory);
+    assert_eq!(kind(StdDisk.read(Path::new("/"))), ErrorKind::IsADirectory);
 }
 
 #[test]
