@@ -211,14 +211,19 @@ fn drain_open(stream: &mut TcpStream) {
 /// The most real time a test waits for the server to get somewhere. A healthy run takes well under a second.
 const REAL_TIME_CEILING: Duration = Duration::from_secs(60);
 
-/// Whether a byte of the answer is actually waiting in the socket, found by peeking so that nothing is consumed.
-/// Readiness alone is not proof: tokio may report a socket readable when nothing is there, and a peek that would block
-/// is simply not ready yet.
-fn has_arrived_for_reading(stream: &TcpStream) -> bool {
+/// Whether the stalled client can stop waiting for the answer to start: a byte of it is actually waiting in the socket,
+/// found by peeking so that nothing is consumed, or the server has ended the stream (the test then fails further on,
+/// with the real reason). Readiness alone is not proof: tokio may report a socket readable when nothing is there, and a
+/// peek that would block is simply not ready yet. Any other error is a real failure and ends the test at once.
+fn answer_has_started(stream: &TcpStream) -> bool {
     let mut byte = [0; 1];
     let mut peek = std::pin::pin!(stream.peek(&mut byte));
     let mut context = std::task::Context::from_waker(std::task::Waker::noop());
-    matches!(peek.as_mut().poll(&mut context), std::task::Poll::Ready(Ok(n)) if n > 0)
+    match peek.as_mut().poll(&mut context) {
+        std::task::Poll::Pending => false,
+        std::task::Poll::Ready(Ok(_)) => true,
+        std::task::Poll::Ready(Err(error)) => panic!("the stalled connection failed before the answer started: {error}"),
+    }
 }
 
 /// Gives the server's tasks real time to run while the clock stays frozen: the server's I/O moves in real time, and
@@ -267,7 +272,7 @@ async fn a_client_that_never_reads_its_answer_loses_its_connection_at_the_write_
     // the machine makes it take. So the clock stays still until the first bytes of the answer reach the stalled
     // client (they are left unread): from then on the server fills the tiny buffers within moments and blocks.
     let began = std::time::Instant::now();
-    while !has_arrived_for_reading(&stalled) {
+    while !answer_has_started(&stalled) {
         assert!(began.elapsed() < REAL_TIME_CEILING, "the server never started to answer");
         let_the_server_run().await;
     }
