@@ -16,7 +16,10 @@ mod state;
 #[cfg(test)]
 mod tests;
 
+use std::borrow::Cow;
+use std::ops::Deref;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use omuzaki_ai_api::{
@@ -25,8 +28,9 @@ use omuzaki_ai_api::{
     SlotRef, SlotStatus, Stream, SyncReport, Version, find_slot, slots,
 };
 
+use crate::slot_session::SlotSession;
 use catalogue::Registered;
-use state::{Loaded, State};
+use state::{Health, Loaded, State};
 
 /// The person's settings the registry reads. Only what shipped models need today.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -41,7 +45,15 @@ pub struct RegistrySettings {
 pub const CACHE_DIR: &str = "cache";
 
 /// The registry for shipped models, in this process.
+///
+/// A cheap handle: the data lives in one shared [`Shared`], so the slot sessions it opens can keep following their
+/// slot from a loader thread of their own after `open` returns.
 pub struct Registry {
+    shared: Arc<Shared>,
+}
+
+/// What every handle to one [`Registry`] shares.
+pub struct Shared {
     data_dir: PathBuf,
     files: Arc<dyn FileSource>,
     app_version: Version,
@@ -51,6 +63,20 @@ pub struct Registry {
     /// Held for a whole install or rollback, so two of them never interleave their reads and writes of the state.
     changing: Mutex<()>,
     notes: Vec<String>,
+    /// Counts every committed state change. Slot sessions compare it with the value they last acted on, without a
+    /// lock, to learn that their slot's choice may have changed.
+    generation: AtomicU64,
+    /// Models switched off for this app session only, with the reason: a model that crashed. The state file never
+    /// records them, so they run again after a restart or a reinstall.
+    session_disabled: Mutex<Vec<(ModelRef, String)>>,
+}
+
+impl Deref for Registry {
+    type Target = Shared;
+
+    fn deref(&self) -> &Shared {
+        &self.shared
+    }
 }
 
 impl Registry {
@@ -103,14 +129,18 @@ impl Registry {
             tracing::warn!("{note}");
         }
         let registry = Self {
-            data_dir,
-            files,
-            app_version,
-            settings,
-            catalogue,
-            state: Mutex::new(state),
-            changing: Mutex::new(()),
-            notes,
+            shared: Arc::new(Shared {
+                data_dir,
+                files,
+                app_version,
+                settings,
+                catalogue,
+                state: Mutex::new(state),
+                changing: Mutex::new(()),
+                notes,
+                generation: AtomicU64::new(0),
+                session_disabled: Mutex::new(Vec::new()),
+            }),
         };
         registry.reinstall(&to_reinstall);
         Ok(registry)
@@ -128,11 +158,25 @@ impl Registry {
         self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Replaces the state with `next` once it is on disk.
+    /// Replaces the state with `next` once it is on disk, and counts the change for the slot sessions.
     fn commit(&self, state: &mut State, next: State) -> Result<(), RegistryError> {
-        state::save(&self.data_dir, &next)?;
+        state::save(&self.data_dir, &self.persistent(&next))?;
         *state = next;
+        self.generation.fetch_add(1, Ordering::Release);
         Ok(())
+    }
+
+    /// `state` as the file keeps it: without the models only this app session has switched off.
+    fn persistent<'a>(&self, state: &'a State) -> Cow<'a, State> {
+        let mut off = self.session_disabled.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        // A model that was reinstalled, or failed for another reason since, is no longer ours to hide.
+        off.retain(|(model, reason)| state.health(model).is_some_and(|h| &h.reason == reason));
+        if off.is_empty() {
+            return Cow::Borrowed(state);
+        }
+        let mut kept = state.clone();
+        kept.health.retain(|h| !off.iter().any(|(model, _)| model == &h.model));
+        Cow::Owned(kept)
     }
 
     /// True if the app is older than the model needs.
@@ -202,6 +246,68 @@ impl Registry {
         out
     }
 
+    /// Another handle to this registry, for a slot session's loader thread.
+    pub(crate) fn handle(&self) -> Self {
+        Self { shared: Arc::clone(&self.shared) }
+    }
+
+    /// How many state changes were committed so far (see [`Shared`]'s `generation`).
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
+    }
+
+    /// Loads the first model of `slot`'s choice chain that opens (see [`chain`](Self::chain)), skipping the ones that
+    /// don't. If the chain reaches `current` first, that model is already the best that can run: nothing is loaded.
+    ///
+    /// # Errors
+    /// The last load error, or `NoModel` when the chain is empty.
+    pub(crate) fn load_chain(
+        &self,
+        slot: &SlotRef,
+        explicit: Option<&ModelRef>,
+        current: Option<&ModelRef>,
+    ) -> Result<Chosen, RegistryError> {
+        let info = Self::slot_info(slot)?;
+        let (candidates, wanted) = {
+            let state = self.lock();
+            let candidates: Vec<state::Installed> = self.chain(&state, slot, explicit).into_iter().cloned().collect();
+            let selected = state.slot(slot).and_then(|r| r.selected.clone());
+            (candidates, explicit.cloned().or(selected))
+        };
+        let mut last = None;
+        for installed in &candidates {
+            if current == Some(&installed.model) {
+                return Ok(Chosen::Keep);
+            }
+            match self.load(installed, &info) {
+                Ok(session) => return Ok(Chosen::Loaded { session, model: installed.model.clone(), wanted }),
+                Err(e) => {
+                    tracing::warn!(model = %installed.model, "couldn't open: {e}");
+                    last = Some(e);
+                }
+            }
+        }
+        Err(last.unwrap_or(RegistryError::NoModel { slot: slot.clone(), without_model: info.without_model }))
+    }
+
+    /// Switches `model` off for this app session, with `reason`: it drops out of the choice chains and shows as
+    /// disabled in `models`. The state file doesn't keep it (see [`persistent`](Self::persistent)).
+    pub(crate) fn disable_for_session(&self, model: &ModelRef, reason: &str) {
+        let mut state = self.lock();
+        let mut next = state.clone();
+        next.set_health(Health { reason: reason.to_owned(), model: model.clone(), eval: None });
+        self.session_disabled
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((model.clone(), reason.to_owned()));
+        if let Err(e) = self.commit(&mut state, next.clone()) {
+            // The file isn't written for these anyway, so a failing disk must not keep a crashing model running.
+            tracing::warn!(%model, "couldn't save the model state: {e}");
+            *state = next;
+            self.generation.fetch_add(1, Ordering::Release);
+        }
+    }
+
     /// The slot's info, or `UnknownSlot`.
     fn slot_info(slot: &SlotRef) -> Result<SlotInfo, RegistryError> {
         find_slot(slot).map(|s| s.info()).ok_or_else(|| RegistryError::UnknownSlot(slot.clone()))
@@ -265,6 +371,21 @@ impl Registry {
         }
         out
     }
+}
+
+/// What [`Registry::load_chain`] found.
+pub(crate) enum Chosen {
+    /// The model the caller already runs is the best the chain offers.
+    Keep,
+    /// A freshly loaded session.
+    Loaded {
+        /// The session.
+        session: Box<dyn Session>,
+        /// The model it runs.
+        model: ModelRef,
+        /// The model that was asked for (explicit, else selected), which `model` replaces if they differ.
+        wanted: Option<ModelRef>,
+    },
 }
 
 fn entry_of(
@@ -335,18 +456,14 @@ impl ModelRegistry for Registry {
                 return Err(RegistryError::WrongSlot { model: wanted.clone(), wanted: slot.clone() });
             }
         }
-        let candidates: Vec<state::Installed> = self.chain(&self.lock(), slot, model).into_iter().cloned().collect();
-        let mut last = None;
-        for installed in &candidates {
-            match self.load(installed, &info) {
-                Ok(session) => return Ok(session),
-                Err(e) => {
-                    tracing::warn!(model = %installed.model, "couldn't open: {e}");
-                    last = Some(e);
-                }
+        // Read before the chain, so a change that lands meanwhile is noticed by the session's first run.
+        let generation = self.generation();
+        match self.load_chain(slot, model, None)? {
+            Chosen::Loaded { session, wanted, .. } => {
+                Ok(Box::new(SlotSession::start(self.handle(), slot, model.cloned(), generation, session, wanted)?))
             }
+            Chosen::Keep => Err(RegistryError::NoModel { slot: slot.clone(), without_model: info.without_model }),
         }
-        Err(last.unwrap_or(RegistryError::NoModel { slot: slot.clone(), without_model: info.without_model }))
     }
 
     fn open_stream(&self, slot: &SlotRef, _model: Option<&ModelRef>) -> Result<Stream, RegistryError> {
