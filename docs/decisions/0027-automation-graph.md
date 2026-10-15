@@ -98,8 +98,9 @@ tasks were filed without a contract. Five facts shape the answer:
 - **Revised 2026-10-15 for ADR 0054** (design D21): `omuzaki-live-api` exports by path; node and op folders get
   generated module lists; the event, payload, need and input types and their struct-like variants are
   `#[non_exhaustive]` with constructors (`PortType`, `Val` and `NodeClass` stay closed on purpose); keys other
-  features add to a show register with `register_show_key!`; tests across the live crates go in `omuzaki-test-live`;
-  the crates set `registers = true` and opt out of wasm.
+  features add to a show register with `register_show_key!`, are named after their owner crate and are kept by every
+  binary, checked only where the owner is linked; a node's wildcard input arm returns `Unhandled`, never `Ok`; tests
+  across the live crates go in `omuzaki-test-live`; the crates set `registers = true` and opt out of wasm.
 - Spec §6 lists `edit:show` (with `input` and `process`), §7 the show folder, §9 the four crates.
 - **Rejected:**
   - **Latched outputs only (the Blueprint model):** overlapping events overwrite each other's data after any wait.

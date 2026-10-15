@@ -145,8 +145,9 @@ project.toml: default_show = "<show>"
 - **Typed views:** `ShowDef` (`NODE_KEYS = ["show", "automations"]`, `SIBLING_KEYS = ["applied"]`) and `GraphDef`
   (`NODE_KEYS = ["graph", "nodes"]`) are read and written like `SceneDef`: `from_node` refuses an unknown key with the
   nearest valid one, `to_node` leaves sibling keys alone. Other broadcast features (outputs, overlays) add their own
-  keys as **registered sibling keys** (`register_show_key!`, ADR 0054 §5, the pattern of `omuzaki-char-api`'s
-  `doc_key`), never as new fields of `ShowDef` (D21).
+  keys as **registered sibling keys** (`register_show_key!`, ADR 0054 §5), never as new fields of `ShowDef`. Every
+  binary keeps such a key whether or not it links its owner (D21), so `from_node` refuses only a misspelt built-in
+  key.
 - **Empty collections are removed,** not saved as empty files (as for scenes). A graph with no nodes is only its
   `graph.toml`.
 - **The default show** is `project.default_show`; unset or dangling, the first show by id. With no show at all, the
@@ -310,7 +311,7 @@ pub struct EvalCx<'a> { host: &'a mut dyn EvalHost }           // input*, now, u
 pub struct WakeId(pub u64);
 pub struct CallId(pub u64);
 pub struct NodeError { pub code: NodeErrorCode, pub text: Text }   // a misuse or a fault, not an expected failure
-pub enum NodeErrorCode { UnknownPort, Type, Limit, NotLive, Internal }
+pub enum NodeErrorCode { UnknownPort, Type, Limit, NotLive, Unhandled, Internal }   // Unhandled: an Input the node doesn't know (D21)
 pub struct ParamErrors(pub Vec<ParamError>);                      // ParamError { path: String, text: Text }
 
 // ── registration (ADR 0015) ─────────────────────────────────────────────────────────────────────────
@@ -1060,6 +1061,8 @@ impl NodeHarness {
 | params failing the kind's schema or check; limits (D8) | a variable a node names isn't declared, or a global's type conflicts: inert |
 | a graph in a group that doesn't exist | a trigger on an event kind nobody registered: inert |
 | | an event input nothing is wired to (the node never runs) |
+| | a trigger whose `listens` is empty for its params (it never fires) |
+| | a show key whose owner this build doesn't include (D21): kept as is, not checked |
 
 The engine compiles with the same checks, so a show edited by hand on disk loads with findings instead of failing.
 
@@ -1108,19 +1111,50 @@ This design predates ADR 0054; these rules bring it in line, and the contract ta
   | `LiveEvent` | `#[non_exhaustive]` struct | `LiveEvent::new(kind, source, at, payload)`, `with_origin_id`, `with_utc`; `with_hops` and `with_acting` exist for the engine, and `EventSink::publish` refuses an event that sets `acting` (D9) |
   | `ChatMessage`, `ChatUser`, `EmoteSpan`, `ChannelRef` and every normalised payload (`Follow`, `Sub`, `Redeem`, ...) | `#[non_exhaustive]` structs (BR-10 adds fields) | `new(<the fields D9 fixes>)` plus `with_<field>` for each optional one |
   | `PortDecl`, `NodeMeta`, `EventKindRegistration`, `NodeRegistration` | `#[non_exhaustive]` structs | the `Ports` builders; `NodeMeta::new(id, summary, class, category)`; `const fn EventKindRegistration::new(kind, summary, schema)` with `.droppable()`; `const fn NodeRegistration::of::<K>()` |
-  | `Invocation`, `ShowKey`, `ShowApprovals`, `ParamError`, `NodeError` | `#[non_exhaustive]` structs | `Invocation::new(program)` with `with_script`, `with_args`, `with_cwd`; `ShowKey::new(project, show)`; `ShowApprovals::default()` with `with_*`; `ParamError::new(path, text)`; `NodeError::{unknown_port, type_mismatch, limit, not_live, internal}` |
+  | `Invocation`, `ShowKey`, `ShowApprovals`, `ParamError`, `NodeError` | `#[non_exhaustive]` structs | `Invocation::new(program)` with `with_script`, `with_args`, `with_cwd`; `ShowKey::new(project, show)`; `ShowApprovals::default()` with `with_*`; `ParamError::new(path, text)`; `NodeError::{unknown_port, type_mismatch, limit, not_live, unhandled, internal}` |
   | `Source`, `Need`, `Input`, `NodeErrorCode`, `PublishError`, `ValError`, `Role`, `Category`, `NetScheme`, `ArgTemplate` | `#[non_exhaustive]` enums | unit variants as they are |
   | the struct-like variants: `Source::{Platform, Graph, Manual, Plugin}`, `Need::{Op, Host, File, Secret, Process, Variable, Group}`, `Input::{Event, Trigger, Wake, Reply}` | `#[non_exhaustive]` on each variant | `Source::platform(platform, channel)`, `Source::graph(graph, node)`, `Source::manual(actor)`, `Source::plugin(id)`; `Need::op(op)`, `Need::host(scheme, host, port)`, `Need::file(path, write)`, `Need::secret(name, host)`, `Need::process(name)`, `Need::variable(name, ty)`, `Need::group(group)`; `Input::event(port)`, `Input::trigger(event)`, `Input::wake(id)`, `Input::reply(call, outcome)` |
 
-  A node matches the variants it handles with `..` (`Input::Event { port, .. }`) and ends with `_ => Ok(())`.
+  A node matches the variants it handles with `..` and returns `Ok(())` **by name** for each current input it
+  ignores on purpose. The wildcard arm, which only a variant added after the node was written can reach, is an error,
+  never a silent success:
+
+  ```rust
+  match input {
+      Input::Event { port, .. } => self.on_pulse(port, cx),
+      Input::Wake { .. } => self.on_wake(cx),
+      Input::Start | Input::Stop | Input::Trigger { .. } | Input::Reply { .. } => Ok(()),   // not used by this node
+      other => Err(NodeError::unhandled(&other)),   // Unhandled, naming the variant
+  }
+  ```
+
+  The engine treats `Unhandled` as a fault of that activation (D5: the branch is dropped, counted, and shown in
+  `automation.status` as "`<node>` doesn't handle `<input>`; update the node"), so a new input reaches a person
+  instead of vanishing. `NodeHarness` turns `Unhandled` for any input it sends (it sends `Start` and `Stop` in
+  every test) into a test failure, so a node task can't ship a wildcard in place of a named arm.
   **Closed on purpose:** `PortType`, `Val` and `NodeClass`. The wire checks, the D3 coercion table and the engine's
   dispatch match them exhaustively, so a new port type or class changes every one of them and is a contract change
   by decision record, not a variant someone adds.
-- **Document keys register themselves (§5).** The show's own keys (`show`, `automations`, `applied`) and the graph's
-  (`graph`, `nodes`) are the contract's built-in table. A key another feature adds under `shows/<id>/` (overlay
-  layouts, outputs) registers with `register_show_key!` next to its owner, as `omuzaki-char-api`'s `doc_key` does for
-  characters: `ShowDef` accepts it as a sibling key and leaves it alone, a collision is refused naming both, and
-  validation never depends on what a binary linked. The skeleton task (#730) adds the macro.
+- **Document keys register themselves (§5), and no rule depends on what a binary linked.** The show's own keys
+  (`show`, `automations`, `applied`) and the graph's (`graph`, `nodes`) are the contract's built-in table. A key
+  another feature adds under `shows/<id>/` (overlay layouts, outputs) registers with `register_show_key!` next to its
+  owner, which gives its owner's checks. Three rules keep the outcome the same in every binary:
+  1. **Naming decides ownership, not registration.** A feature key is a slug named after its owner crate:
+     `omuzaki-overlay` may register `overlay` or `overlay-<name>`, nothing else, checked when the macro expands
+     (against `CARGO_PKG_NAME`). Crate names are unique in the workspace, so two crates can never claim one key and
+     no collision depends on which of them is linked. A plugin's keys are `plugin-<plugin>-<name>`, and the plugin
+     host gives each plugin only its own prefix.
+  2. **Every binary keeps every feature key.** `ShowDef::from_node` holds any key that isn't built-in, is a slug and
+     isn't a misspelt built-in (within edit distance 2 of one: refused with the built-in it resembles) as an opaque
+     subtree; `to_node`, the show ops, copies and library applies write it back unchanged, and `show.delete` deletes
+     it with the show. Nothing drops or rewrites a key because its owner isn't linked.
+  3. **Content is checked only by its owner.** A binary that links the owner validates the subtree with the owner's
+     check and its ops edit it. A binary that doesn't (a headless CLI without overlays, an older build) shows it in
+     `show.describe` as "kept, not checked: `overlay` belongs to a feature this build doesn't include", never as an
+     error, and offers no edit of it.
+
+  The skeleton task (#730) adds the macro, the naming check and the opaque round-trip, tested with a show carrying a
+  key no test binary links.
 - **Tests across crates (§6)** live in `omuzaki-test-live` (D16), which the first template task (#957) creates.
 - **Contracts land first and alone (§7).** #730, #773, #952 and #774 (the API crate), #953 (the mock), #950 and #951
   (ops-api) merge before any engine or node task starts; each adds everything its dependants need, with defaults.
