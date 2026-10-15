@@ -56,7 +56,9 @@ impl Checker {
         }
         let output = call(&*self.result, DESCRIBE_OP, &Map::new()).map_err(|e| result_failure(DESCRIBE_OP, &e))?;
         match pointer_all(&output, FAILED_GATES).as_slice() {
-            [serde_json::Value::Array(names)] => Ok(names.iter().map(ToString::to_string).collect()),
+            [serde_json::Value::Array(names)] => {
+                Ok(names.iter().map(|n| n.as_str().map_or_else(|| n.to_string(), str::to_owned)).collect())
+            }
             _ => Err(Verdict::error(format!("`{DESCRIBE_OP}` has no `{FAILED_GATES}` list"))),
         }
     }
