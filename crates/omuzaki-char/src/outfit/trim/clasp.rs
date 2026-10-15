@@ -24,6 +24,9 @@ const ROUND: usize = 16;
 const PEARL_ROWS: usize = 6;
 /// The gap kept between a hanging piece and the surface, as a share of the clasp's size.
 const GAP: f64 = 0.02;
+/// Passes that push the hanging pieces out: each moves them by the worst shortfall, which settles in two on a
+/// convex garment; the third covers a section that turns.
+const STANDOFF_PASSES: usize = 3;
 
 /// What hangs under a clasp's ring.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -113,26 +116,44 @@ pub fn build(surface: &Surface, spec: &Clasp) -> Result<ClaspPieces, TrimError> 
     let stud = [(0.0, 0.0), (0.0, stud_r), (0.3 * stud_h, stud_r), (0.8 * stud_h, 0.6 * stud_r), (stud_h, 0.0)];
     lathe(&mut metal, frame.foot, frame.out, &stud, &skin)?;
 
-    // The hanging pieces, laid out first at the surface, then pushed out until the lowest clears it.
+    // The hanging pieces, laid out first at the stud, then pushed out until each clears the surface by the gap.
     let ring_r = 0.5 * s;
     let ring_wire = layout::RING.1 * s;
     let ring_centre_down = layout::RING.0 * s + ring_r;
-    let lowest_down = ring_centre_down
-        + ring_r
-        + match spec.style {
-            ClaspStyle::Medallion => layout::DROP.0 * s,
-            ClaspStyle::Cross => 5.0 * layout::PEARL.1 * s,
-        };
-    let mut standoff = stud_h.max(ring_wire) + GAP * s;
-    for k in 0..=4 {
-        let probe = frame.foot + frame.down * (lowest_down * fraction(k, 4)) + frame.out * standoff;
-        if let Some(p) = surface.project(probe)? {
-            standoff += (ring_wire + GAP * s - p.outside).max(0.0);
+    let below = ring_centre_down + ring_r;
+    let (bail_down, bail_r, bail_wire) = (layout::BAIL.0 * s, layout::BAIL.1 * s, layout::BAIL.2 * s);
+    let (drop_len, drop_wide) = (layout::DROP.0 * s, layout::DROP.1 * s);
+    let (pearl_r, pearl_step) = (layout::PEARL.0 * s, layout::PEARL.1 * s);
+    // A column of five pearls under the ring, and an arm of two each side across the second.
+    let pearls: Vec<(f64, f64)> = (0..5)
+        .map(|k| (below + pearl_step * (f64::from(k) + 0.5), 0.0))
+        .chain([-2.0, -1.0, 1.0, 2.0].map(|side| (below + pearl_step * 1.5, pearl_step * side)))
+        .collect();
+    // Points of every hanging piece as (down, across, how far the piece reaches back toward the surface).
+    let mut probes = vec![(bail_down, 0.0, bail_r + bail_wire)];
+    probes.extend((0..12).map(|k| {
+        let a = TAU * fraction(k, 12);
+        (ring_centre_down + ring_r * a.cos(), ring_r * a.sin(), ring_wire)
+    }));
+    match spec.style {
+        ClaspStyle::Medallion => {
+            probes.extend((0..=4).map(|k| (below - ring_wire + drop_len * fraction(k, 4), 0.0, drop_wide)));
         }
+        ClaspStyle::Cross => probes.extend(pearls.iter().map(|&(down, across)| (down, across, pearl_r))),
+    }
+    let mut standoff = stud_h.max(ring_wire) + GAP * s;
+    for _ in 0..STANDOFF_PASSES {
+        let mut deficit = 0.0_f64;
+        for &(down, across, reach) in &probes {
+            let probe = frame.foot + frame.down * down + frame.across * across + frame.out * standoff;
+            if let Some(p) = surface.project(probe)? {
+                deficit = deficit.max(reach + GAP * s - p.outside);
+            }
+        }
+        standoff += deficit.max(0.0);
     }
     let hang = |down: f64, out: f64| frame.foot + frame.down * down + frame.out * (standoff + out);
 
-    let (bail_down, bail_r, bail_wire) = (layout::BAIL.0 * s, layout::BAIL.1 * s, layout::BAIL.2 * s);
     let bail_centre = hang(bail_down, 0.0);
     torus(&mut metal, bail_centre, (frame.down, frame.out), (bail_r, bail_r), bail_wire, skin.clone())?;
     let ring_centre = hang(ring_centre_down, 0.0);
@@ -143,24 +164,16 @@ pub fn build(surface: &Surface, spec: &Clasp) -> Result<ClaspPieces, TrimError> 
         [(0.0, 0.0), (0.0, jewel_r), (0.35 * jewel_h, 0.95 * jewel_r), (0.8 * jewel_h, 0.5 * jewel_r), (jewel_h, 0.0)];
     lathe(&mut jewel, ring_centre - frame.out * (0.5 * ring_wire), frame.out, &gem, &skin)?;
 
-    let below = ring_centre_down + ring_r;
     match spec.style {
         ClaspStyle::Medallion => {
-            let (len, wide) = (layout::DROP.0 * s, layout::DROP.1 * s);
+            let (len, wide) = (drop_len, drop_wide);
             let drop =
                 [(0.0, 0.0), (0.12 * len, 0.45 * wide), (0.45 * len, wide), (0.75 * len, 0.8 * wide), (len, 0.0)];
             lathe(&mut metal, hang(below - ring_wire, 0.0), frame.down, &drop, &skin)?;
         }
         ClaspStyle::Cross => {
-            let (r, step) = (layout::PEARL.0 * s, layout::PEARL.1 * s);
-            // A column of five pearls under the ring, and an arm of two each side across the second.
-            let mut centres: Vec<DVec3> = (0..5).map(|k| hang(below + step * (f64::from(k) + 0.5), 0.0)).collect();
-            let arm = hang(below + step * 1.5, 0.0);
-            for side in [-2.0, -1.0, 1.0, 2.0] {
-                centres.push(arm + frame.across * (step * side));
-            }
-            for centre in centres {
-                pearl(&mut metal, centre, frame.out, r, &skin)?;
+            for &(down, across) in &pearls {
+                pearl(&mut metal, hang(down, 0.0) + frame.across * across, frame.out, pearl_r, &skin)?;
             }
         }
     }

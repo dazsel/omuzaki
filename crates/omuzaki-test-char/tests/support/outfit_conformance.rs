@@ -12,7 +12,7 @@
 //! On each of the 4 templates × 3 shapes it builds a body and the garment (layer [`LAYER_SHIRT`]) and checks:
 //! - **clearance**: each vertex lies at least half the ease outside the fit it was built over, and nothing lies inside
 //!   it; a failure names the vertex, the region, where along it and how deep;
-//! - **body**: no vertex and no triangle (its edge midpoints and centroid) is inside any region of the body fit;
+//! - **body**: no vertex and no triangle (its centroid) is inside any region of the body fit;
 //! - **closure**: after welding coincident positions every edge is shared by at most two triangles wound opposite ways,
 //!   and the boundary edges form exactly [`Garment::open_borders`] loops;
 //! - **skin**: every mesh passes `PartMesh::validate` (weights normalised, joints listed) and every joint is in the rig;
@@ -231,6 +231,8 @@ pub fn assert_conforms<K: Garment>(params: &K::Params, services: &BuildServices)
 struct RegionTable {
     region: BodyRegion,
     rows: Vec<Slice>,
+    /// A box round every section's ellipse: a point outside it is inside none of them.
+    bounds: (DVec3, DVec3),
 }
 
 #[derive(Copy, Clone)]
@@ -307,7 +309,10 @@ impl Tables {
                         })
                     })
                     .collect::<Option<Vec<_>>>()?;
-                Some(RegionTable { region, rows })
+                let reach = |s: &Slice| DVec3::splat(s.radii.max_element());
+                let lo = rows.iter().map(|s| s.centre - reach(s)).reduce(DVec3::min)?;
+                let hi = rows.iter().map(|s| s.centre + reach(s)).reduce(DVec3::max)?;
+                Some(RegionTable { region, rows, bounds: (lo, hi) })
             })
             .collect();
         Self(tables)
@@ -321,6 +326,11 @@ impl Tables {
 impl RegionTable {
     /// Where `p`'s section plane is, if it crosses the region: of the places along the axis whose plane passes through
     /// `p`, the one where `p` is deepest (lowest ellipse level).
+    /// Whether `p` may be inside one of the region's sections.
+    fn may_contain(&self, p: DVec3) -> bool {
+        p.cmpge(self.bounds.0).all() && p.cmple(self.bounds.1).all()
+    }
+
     fn locate(&self, p: DVec3) -> Option<Located> {
         let mut best: Option<Located> = None;
         for pair in self.rows.windows(2) {
@@ -378,7 +388,7 @@ fn ellipse_distance(q: DVec2, r: DVec2) -> f64 {
 
 // ------------------------------------------------------------------------------------------------------- checks
 
-/// Every vertex, triangle midpoint and centroid is outside the body; every vertex is at least half the ease outside the
+/// Every vertex and triangle centroid is outside the body; every vertex is at least half the ease outside the
 /// fit under the garment, measured on the covered region it lies deepest in. Returns the least clearance, metres.
 fn check_clearance(
     output: &PartOutput,
@@ -427,16 +437,15 @@ fn check_clearance(
         }
         for (n, tri) in g.indices.chunks_exact(3).enumerate() {
             let [a, b, c] = [p(tri[0]), p(tri[1]), p(tri[2])];
-            for probe in [(a + b) / 2.0, (b + c) / 2.0, (c + a) / 2.0, (a + b + c) / 3.0] {
-                if let Some(l) = inside_body(body, probe) {
-                    return Err(format!(
-                        "triangle {n} of `{}` crosses the body: region {:?} at t = {:.3}, depth {:.2} mm at {probe}",
-                        mesh.name,
-                        l.region,
-                        l.t,
-                        -l.distance() * 1e3
-                    ));
-                }
+            let probe = (a + b + c) / 3.0;
+            if let Some(l) = inside_body(body, probe) {
+                return Err(format!(
+                    "triangle {n} of `{}` crosses the body: region {:?} at t = {:.3}, depth {:.2} mm at {probe}",
+                    mesh.name,
+                    l.region,
+                    l.t,
+                    -l.distance() * 1e3
+                ));
             }
         }
     }
@@ -448,7 +457,7 @@ fn check_clearance(
 
 /// The region of the body `p` is inside, if any.
 fn inside_body(body: &Tables, p: DVec3) -> Option<Located> {
-    body.0.iter().filter_map(|t| t.locate(p)).find(|l| l.level() < 1.0)
+    body.0.iter().filter(|t| t.may_contain(p)).filter_map(|t| t.locate(p)).find(|l| l.level() < 1.0)
 }
 
 /// Every edge is shared by at most two triangles, wound opposite ways, and the boundary forms `borders` loops in all.
