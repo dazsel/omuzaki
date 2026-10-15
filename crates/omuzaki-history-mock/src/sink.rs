@@ -161,7 +161,8 @@ mod tests {
             "at": 0.5,
         }))
         .unwrap();
-        assert!(matches!(&started, HistoryEntry::JobStarted { job: JobId(1), at, .. } if at.0 == 0.5));
+        assert!(matches!(&started, HistoryEntry::JobStarted { job: JobId(1), .. }));
+        assert_eq!(serde_json::to_value(&started).unwrap()["at"], 0.5);
         let ended = HistoryEntry::JobEnded { job: JobId(1), state: JobState::Done { tx: TxId(5), seq: Some(12) } };
         let revert = HistoryEntry::TxRevert {
             tx: TxId(4),
