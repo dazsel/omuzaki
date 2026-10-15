@@ -102,9 +102,18 @@ fn a_bad_update_is_an_error_and_leaves_the_mesh_as_it_was() {
     let non_finite_normal = r.update_vertices(dynamic, &positions, &bad_normals);
     assert!(matches!(non_finite_normal, Err(RenderError::Invalid { .. })), "{non_finite_normal:?}");
     unchanged(&mut r, "non-finite normal");
+    // The attempt on a static mesh carries a different shape (a flat sheet against the waved one), so a mesh that
+    // accepted it would draw differently.
     let fixed = r.create_mesh(&mesh).unwrap();
-    let on_static = r.update_vertices(fixed, &positions, &normals);
+    let fixed_before = render(&mut r, fixed, material);
+    let (flat_positions, flat_normals) = mesh_vertices(&grid::grid(8, 4));
+    assert_ne!(flat_positions, positions, "the attempted shape must differ from the mesh");
+    let on_static = r.update_vertices(fixed, &flat_positions, &flat_normals);
     assert!(matches!(on_static, Err(RenderError::Invalid { .. })), "{on_static:?}");
+    assert_eq!(render(&mut r, fixed, material).rgba8, fixed_before.rgba8, "the static mesh changed");
+    let flat_mesh = r.create_mesh(&grid::grid(8, 4)).unwrap();
+    let flat = render(&mut r, flat_mesh, material);
+    assert_ne!(fixed_before.rgba8, flat.rgba8, "the two shapes must draw differently, or the check proves nothing");
     unchanged(&mut r, "update of a static mesh");
     r.release(dynamic.into()).unwrap();
     let released = r.update_vertices(dynamic, &positions, &normals);

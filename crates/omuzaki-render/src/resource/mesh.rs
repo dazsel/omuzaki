@@ -7,8 +7,6 @@
 //! vertex at the same position, averaged. The outline pass pushes vertices along it, because the shading normals of a
 //! hard-edged mesh differ at a corner and would tear the hull apart there.
 
-use std::collections::HashMap;
-
 use bytemuck::{Pod, Zeroable};
 use omuzaki_core::glam::{Vec2, Vec3};
 use omuzaki_core::id::Slug;
@@ -375,30 +373,41 @@ fn smoothed(sums: &[Vec3], slot: usize, own: Vec3) -> Vec3 {
 
 /// The grid cell holding coordinate `v`, for cells [`WELD_CELL`] wide. A float too large for a cell number saturates:
 /// such vertices share a cell and the distance test alone decides.
-#[allow(clippy::cast_possible_truncation)]
+#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
 fn cell_of(v: f32) -> i64 {
-    (v / WELD_CELL).floor() as i64
+    // `floor` without the library call (the baseline x86-64 target has no rounding instruction), once per cell number
+    // and six cell numbers per vertex: truncate, then step down for a negative fraction.
+    let scaled = v * (1.0 / WELD_CELL);
+    let truncated = scaled as i64;
+    truncated - i64::from(scaled < truncated as f32)
 }
 
-/// Cells twice the tolerance wide, so the vertices within the tolerance of a point lie in at most two cells per axis
-/// (at most eight cells in all, usually one).
-const WELD_CELL: f32 = 2.0 * WELD_TOLERANCE;
+/// Cells sixteen tolerances wide. A point's neighbours within the tolerance lie in at most two cells per axis, and since
+/// the box around it is a sixteenth of a cell wide, it straddles a border on an axis one time in eight: a lookup
+/// usually touches one cell and at most eight. Narrower cells make every lookup touch eight.
+const WELD_CELL: f32 = 16.0 * WELD_TOLERANCE;
 
-/// Marks the end of a chain of slots in [`Welder::grid`].
+/// Marks the end of a chain of slots in [`Welder::next`], and an empty entry of [`Welder::table`] is 0.
 const NO_SLOT: usize = usize::MAX;
 
 /// Welds vertices into slots: vertices within [`WELD_TOLERANCE`] of one another share a slot, and slots are numbered in
 /// order of first appearance. A vertex joins the slot of the first vertex found within the tolerance (the nearest, if
 /// several; the lower slot on a tie), so a chain of points each within tolerance of the next does not collapse into one.
 ///
-/// The buffers are sized once for the mesh and reused, so welding again after an update allocates nothing.
+/// The buffers are sized once for the mesh and reused, so welding again after an update allocates nothing. The grid is
+/// a flat open-addressing table, because welding runs once per frame for a mesh that moves every frame.
 struct Welder {
     /// Where each slot's first vertex is.
     firsts: Vec<Vec3>,
-    /// The newest slot whose first vertex is in each cell; [`next`](Self::next) chains to the older ones.
-    grid: HashMap<[i64; 3], usize>,
+    /// The grid cell each slot's first vertex is in.
+    cells: Vec<[i64; 3]>,
     /// For each slot, the next older slot in the same cell, or [`NO_SLOT`].
     next: Vec<usize>,
+    /// Open addressing by the hash of a cell, linear probing: 0 is empty, otherwise the high half is the rest of the
+    /// cell's hash (so that a probe past another cell's entry rarely has to look at [`cells`](Self::cells)) and the low
+    /// half is one more than the newest slot in the cell ([`next`](Self::next) chains to the older ones). Always a
+    /// power of two long and at most half full.
+    table: Vec<u64>,
 }
 
 impl Welder {
@@ -406,8 +415,62 @@ impl Welder {
     fn with_capacity(vertices: usize) -> Self {
         Self {
             firsts: Vec::with_capacity(vertices),
-            grid: HashMap::with_capacity(vertices),
+            cells: Vec::with_capacity(vertices),
             next: Vec::with_capacity(vertices),
+            table: vec![0; (2 * vertices).next_power_of_two().max(16)],
+        }
+    }
+
+    /// The table entry for `cell`: where it is, or the empty entry where it would go.
+    #[allow(clippy::cast_possible_truncation)]
+    fn entry(&self, cell: [i64; 3]) -> usize {
+        let mask = self.table.len() - 1;
+        let hash = hash_cell(cell);
+        let mut at = hash as usize & mask;
+        while let Some(&held) = self.table.get(at) {
+            // The low half is a slot number plus one, so it is never 0 in a held entry.
+            if held == 0 || (held >> 32 == hash >> 32 && self.cells.get(slot_of(held)) == Some(&cell)) {
+                break;
+            }
+            at = (at + 1) & mask;
+        }
+        at
+    }
+
+    /// The newest slot in `cell`, or [`NO_SLOT`].
+    fn newest_in(&self, cell: [i64; 3]) -> usize {
+        match self.table.get(self.entry(cell)) {
+            Some(&held) if held != 0 => slot_of(held),
+            _ => NO_SLOT,
+        }
+    }
+
+    /// Doubles the table until it is at most half full with `slots` slots, and files every slot again (oldest first,
+    /// so the newest ends up as the head of its cell). Only a mesh with more vertices than the welder was sized for
+    /// gets here.
+    fn grow(&mut self, slots: usize) {
+        let mut len = self.table.len();
+        while slots * 2 > len {
+            len *= 2;
+        }
+        self.table.clear();
+        self.table.resize(len, 0);
+        for slot in 0..self.cells.len() {
+            self.file(slot);
+        }
+    }
+
+    /// Makes `slot`, whose cell is already in [`cells`](Self::cells), the newest of its cell.
+    fn file(&mut self, slot: usize) {
+        let Some(&cell) = self.cells.get(slot) else { return };
+        let at = self.entry(cell);
+        let head = self.table.get(at).copied().filter(|&held| held != 0).map_or(NO_SLOT, slot_of);
+        if let Some(next) = self.next.get_mut(slot) {
+            *next = head;
+        }
+        if let Some(entry) = self.table.get_mut(at) {
+            // A mesh with 4 billion vertices cannot be indexed by the renderer anyway (indices are `u32`).
+            *entry = hash_cell(cell) & !0xFFFF_FFFF | u64::from(u32::try_from(slot + 1).unwrap_or(u32::MAX));
         }
     }
 
@@ -415,8 +478,9 @@ impl Welder {
     fn weld(&mut self, positions: impl Iterator<Item = Vec3>, slots: &mut Vec<usize>) -> usize {
         let tolerance = Vec3::splat(WELD_TOLERANCE);
         self.firsts.clear();
-        self.grid.clear();
+        self.cells.clear();
         self.next.clear();
+        self.table.fill(0);
         slots.clear();
         for position in positions {
             let [lo, hi] = [position - tolerance, position + tolerance].map(|corner| corner.to_array().map(cell_of));
@@ -424,7 +488,7 @@ impl Welder {
             for x in lo[0]..=hi[0] {
                 for y in lo[1]..=hi[1] {
                     for z in lo[2]..=hi[2] {
-                        let mut slot = self.grid.get(&[x, y, z]).copied().unwrap_or(NO_SLOT);
+                        let mut slot = self.newest_in([x, y, z]);
                         while slot != NO_SLOT {
                             let offset = self.firsts[slot] - position;
                             let distance = offset.length_squared();
@@ -441,9 +505,13 @@ impl Welder {
             let slot = best.map_or_else(
                 || {
                     let slot = self.firsts.len();
+                    if (slot + 1) * 2 > self.table.len() {
+                        self.grow(slot + 1);
+                    }
                     self.firsts.push(position);
-                    let head = self.grid.insert(position.to_array().map(cell_of), slot).unwrap_or(NO_SLOT);
-                    self.next.push(head);
+                    self.cells.push(position.to_array().map(cell_of));
+                    self.next.push(NO_SLOT);
+                    self.file(slot);
                     slot
                 },
                 |(slot, _)| slot,
@@ -452,6 +520,22 @@ impl Welder {
         }
         self.firsts.len()
     }
+}
+
+/// The slot a [`Welder::table`] entry stands for: its low half less one.
+#[allow(clippy::cast_possible_truncation)]
+fn slot_of(entry: u64) -> usize {
+    entry as u32 as usize - 1
+}
+
+/// A cheap, well-spread hash of a grid cell, the same on every platform (the table's layout never shows in the output,
+/// but a deterministic hash keeps runs reproducible).
+#[allow(clippy::cast_sign_loss)]
+fn hash_cell([x, y, z]: [i64; 3]) -> u64 {
+    let h = (x as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        ^ (y as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F)
+        ^ (z as u64).wrapping_mul(0x1656_67B1_9E37_79F9);
+    (h ^ (h >> 29)).wrapping_mul(0xBF58_476D_1CE4_E5B9)
 }
 
 /// One past the highest joint any vertex gives weight to. Joints with zero weight are ignored: exporters often leave
@@ -550,7 +634,7 @@ mod tests {
 
     #[test]
     fn welding_has_a_tolerance_in_each_axis_and_works_across_cell_borders() {
-        // The border between two cells is at a multiple of 2e-6. Two points 0.8e-6 apart straddle it and weld; one
+        // The border between two cells is at a multiple of the cell width. Two points 0.8e-6 apart straddle it and weld; one
         // 1.5e-5 along does not, and neither does one 1.5e-6 away on a single axis.
         let border = 4.0 * WELD_CELL;
         let mesh = MeshData {
@@ -568,6 +652,61 @@ mod tests {
         let smooth = smooth_normals(&mesh);
         assert!((smooth[0] - Vec3::new(1.0, 1.0, 0.0).normalize()).length() < 1e-6);
         assert_eq!(smooth[2..], mesh.normals[2..], "far vertices keep their own normals");
+    }
+
+    /// The definition of [`Welder::weld`], by comparing every vertex with every earlier slot.
+    fn weld_by_brute_force(positions: &[Vec3]) -> Vec<usize> {
+        let mut firsts: Vec<Vec3> = Vec::new();
+        let mut slots = Vec::new();
+        for &position in positions {
+            let mut best: Option<(usize, f32)> = None;
+            for (slot, first) in firsts.iter().enumerate() {
+                let offset = *first - position;
+                let distance = offset.length_squared();
+                if offset.abs().max_element() <= WELD_TOLERANCE && best.is_none_or(|(_, d)| distance < d) {
+                    best = Some((slot, distance));
+                }
+            }
+            slots.push(best.map_or_else(
+                || {
+                    firsts.push(position);
+                    firsts.len() - 1
+                },
+                |(slot, _)| slot,
+            ));
+        }
+        slots
+    }
+
+    #[test]
+    fn welding_agrees_with_comparing_every_pair_including_a_welder_that_must_grow() {
+        // Points on a lattice a few tolerances apart, each nudged by up to a tolerance either way, so that many are
+        // within the tolerance of others, some only just, and many sit near cell borders. A tiny linear congruential
+        // generator keeps the points the same on every run.
+        let mut state = 0x2545_F491_u32;
+        let mut unit = move || {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            f32::from((state >> 16) as u16) / 65_535.0
+        };
+        let positions: Vec<Vec3> = (0..1500)
+            .map(|_| {
+                let lattice = |u: f32| (u * 6.0).floor() * 1.5e-6 + 8.0 * WELD_CELL;
+                let nudge = |u: f32| (u - 0.5) * 2.0 * WELD_TOLERANCE;
+                Vec3::new(
+                    lattice(unit()) + nudge(unit()),
+                    lattice(unit()) + nudge(unit()),
+                    lattice(unit()) + nudge(unit()),
+                )
+            })
+            .collect();
+        let expected = weld_by_brute_force(&positions);
+        assert!(expected.iter().max().is_some_and(|&last| last > 20 && last < positions.len() - 20), "a mixed case");
+        let mut slots = Vec::new();
+        for capacity in [positions.len(), 3] {
+            let count = Welder::with_capacity(capacity).weld(positions.iter().copied(), &mut slots);
+            assert_eq!(slots, expected, "capacity {capacity}");
+            assert_eq!(count, expected.iter().max().map_or(0, |last| last + 1));
+        }
     }
 
     #[test]
