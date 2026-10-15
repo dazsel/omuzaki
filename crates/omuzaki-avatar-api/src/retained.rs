@@ -141,9 +141,7 @@ mod meta_serde {
 
     #[allow(clippy::ref_option)] // serde's `with` hands the field over by reference
     pub(super) fn serialize<S: serde::Serializer>(meta: &Option<VrmMeta>, serializer: S) -> Result<S::Ok, S::Error> {
-        meta.as_ref()
-            .map(|m| Written { vrm1: m.clone(), vrm0_extras: m.extras_vrm0.clone() })
-            .serialize(serializer)
+        meta.as_ref().map(|m| Written { vrm1: m.clone(), vrm0_extras: m.extras_vrm0.clone() }).serialize(serializer)
     }
 
     pub(super) fn deserialize<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<VrmMeta>, D::Error> {

@@ -10,9 +10,7 @@
 
 use std::collections::BTreeMap;
 
-use omuzaki_anim_api::{
-    ChannelMask, ConstraintSet, HumanoidBone, HumanoidPose, Region, Skeleton, SpringSet,
-};
+use omuzaki_anim_api::{ChannelMask, ConstraintSet, HumanoidBone, HumanoidPose, Region, Skeleton, SpringSet};
 use omuzaki_char_api::{Anchor, AnchorId, JointRef, MaterialName, MaterialSpec, PartMesh, TextureData, TextureName};
 use omuzaki_core::glam::Mat4;
 use omuzaki_io_api::{ExpressionName, FirstPersonFlag, LookAtKind};
@@ -246,7 +244,8 @@ impl ImportedAvatar {
 
     fn validate_expression(&self, index: usize, expression: &AvatarExpression) -> Result<(), AvatarError> {
         for bind in &expression.morph {
-            let target_exists = self.meshes.get(usize::from(bind.mesh)).is_some_and(|m| usize::from(bind.target) < m.morph_count());
+            let target_exists =
+                self.meshes.get(usize::from(bind.mesh)).is_some_and(|m| usize::from(bind.target) < m.morph_count());
             if !target_exists {
                 return Err(AvatarError::morph_out_of_range(index, bind.mesh, bind.target));
             }
@@ -293,4 +292,3 @@ pub fn texture_bytes(texture: &TextureData) -> u64 {
     }
     bytes
 }
-

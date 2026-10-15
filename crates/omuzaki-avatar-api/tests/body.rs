@@ -1,5 +1,6 @@
 //! `BodyView`: a built character's view is exactly what the stage reads from it, field for field (over the char mock);
 //! an imported avatar's view exposes its morphs, per-mesh inverse binds, constraints and anchors.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // fixture helpers outside #[test] functions
 
 mod common;
 
@@ -7,13 +8,22 @@ use std::ptr;
 
 use omuzaki_anim_api::{BoneConstraint, ConstraintKind, ConstraintSet, HumanoidBone};
 use omuzaki_avatar_api::body::{Body, BodyView};
-use omuzaki_char_api::{Anchor, AnchorId, BuildOptions, BuildServices, BuiltCharacter, CharId, CharacterBuilder, JointRef, RegistryBuilder};
+use omuzaki_char_api::{
+    Anchor, AnchorId, BuildOptions, BuildServices, BuiltCharacter, CharId, CharacterBuilder, JointRef, RegistryBuilder,
+};
 use omuzaki_core::glam::{Quat, Vec3};
+
+/// True if `a` and `b` are the same value in memory: the view borrows, it never copies.
+fn same<T: ?Sized>(a: &T, b: &T) -> bool {
+    ptr::eq(a, b)
+}
 
 fn built() -> BuiltCharacter {
     omuzaki_char_mock::link();
     let def = omuzaki_char_mock::mock_character().unwrap();
-    RegistryBuilder.build(&CharId::new("mock").unwrap(), &def, &BuildOptions::default(), &BuildServices::default()).unwrap()
+    RegistryBuilder
+        .build(&CharId::new("mock").unwrap(), &def, &BuildOptions::default(), &BuildServices::default())
+        .unwrap()
 }
 
 #[test]
@@ -25,17 +35,17 @@ fn a_built_view_is_what_the_stage_reads_field_for_field() {
 
     assert_eq!(view.meshes.len(), b.meshes.len());
     for (i, (m, built)) in view.meshes.iter().zip(&b.meshes).enumerate() {
-        assert!(ptr::eq(m.mesh, &built.mesh), "mesh {i} is the built mesh itself");
+        assert!(same(m.mesh, &built.mesh), "mesh {i} is the built mesh itself");
         assert_eq!((m.part, m.local), (Some(&built.part), built.local));
         assert_eq!((m.inverse_bind, m.morphs), (None, None), "built meshes use the rig's binds and have no morphs");
     }
-    assert!(ptr::eq(view.materials, &b.materials) && ptr::eq(view.textures, &b.textures));
-    assert!(ptr::eq(view.skeleton, &b.rig.skeleton) && ptr::eq(view.springs, &b.rig.springs));
-    assert!(ptr::eq(view.bind, &b.rig.bind) && ptr::eq(view.drivers, b.rig.drivers.as_slice()));
-    assert!(view.constraints.constraints.is_empty());
+    assert!(same(view.materials, &b.materials) && same(view.textures, &b.textures));
+    assert!(same(view.skeleton, &b.rig.skeleton) && same(view.springs, &b.rig.springs));
+    assert!(same(view.bind, &b.rig.bind) && same(view.drivers, b.rig.drivers.as_slice()));
+    assert_eq!(view.constraints, &ConstraintSet::default(), "a built character has no node constraints");
     assert_eq!(view.face, b.face.as_ref());
-    assert!(view.palette.is_some_and(|p| ptr::eq(p, &b.palette)));
-    assert!(ptr::eq(view.runtimes, b.runtimes.as_slice()));
+    assert!(view.palette.is_some_and(|p| same(p, &b.palette)));
+    assert!(same(view.runtimes, b.runtimes.as_slice()));
     assert_eq!(view.stature, b.stature);
 
     assert_eq!(view.anchors.len(), b.anchors.len());
@@ -68,14 +78,17 @@ fn an_imported_view_exposes_morphs_binds_constraints_and_anchors() {
     let view: BodyView<'_> = body.view();
     assert_eq!(view.meshes.len(), 1);
     let mesh = view.meshes.get(0).unwrap();
-    assert!(ptr::eq(mesh.mesh, &a.meshes[0].mesh));
+    assert!(same(mesh.mesh, &a.meshes[0].mesh));
     assert_eq!((mesh.part, mesh.local), (None, 0));
     assert_eq!(mesh.inverse_bind, Some(a.meshes[0].inverse_bind.as_slice()), "per joint run");
-    assert_eq!(mesh.morphs.map(|m| m.len()), Some(3));
+    assert_eq!(mesh.morphs.map(omuzaki_render_api::MorphSet::len), Some(3));
     assert!(view.meshes.get(1).is_none());
-    assert!(ptr::eq(view.constraints, &a.constraints));
-    assert!(ptr::eq(view.skeleton, &a.skeleton) && ptr::eq(view.materials, &a.materials));
+    assert!(same(view.constraints, &a.constraints));
+    assert!(same(view.skeleton, &a.skeleton) && same(view.materials, &a.materials));
     assert_eq!(view.anchors.find(None, &head_top), Some(&anchor));
     assert_eq!(view.anchors.all().next().map(|(p, _, _)| p), Some(None), "the body's own anchors have no part");
-    assert_eq!((view.face, view.palette, view.runtimes.len(), view.drivers.len(), view.stature), (None, None, 0, 0, None));
+    assert_eq!(
+        (view.face, view.palette, view.runtimes.len(), view.drivers.len(), view.stature),
+        (None, None, 0, 0, None)
+    );
 }

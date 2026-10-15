@@ -3442,6 +3442,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-avatar"
+version = "0.0.0"
+dependencies = [
+ "criterion",
+ "omuzaki-anim-api",
+ "omuzaki-avatar-api",
+ "omuzaki-char-api",
+ "omuzaki-core",
+ "omuzaki-io-api",
+ "omuzaki-render-api",
+ "omuzaki-store-api",
+]
+
+[[package]]
 name = "omuzaki-avatar-api"
 version = "0.0.0"
 dependencies = [

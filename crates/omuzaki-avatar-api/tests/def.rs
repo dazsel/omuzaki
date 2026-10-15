@@ -102,7 +102,9 @@ fn a_material_edit_names_each_colour_a_bind_can_move() {
     edit.outline = Some([0.0, 0.0, 0.1]);
     assert_eq!(edit.colour(ColorBindKind::Color), Some(Vec4::new(0.5, 0.123, 0.9999, 1.0)));
     assert_eq!(edit.colour(ColorBindKind::OutlineColor), Some(Vec4::new(0.0, 0.0, 0.1, 1.0)));
-    for kind in [ColorBindKind::EmissionColor, ColorBindKind::ShadeColor, ColorBindKind::MatcapColor, ColorBindKind::RimColor] {
+    for kind in
+        [ColorBindKind::EmissionColor, ColorBindKind::ShadeColor, ColorBindKind::MatcapColor, ColorBindKind::RimColor]
+    {
         assert_eq!(edit.colour(kind), None);
     }
     assert!(!edit.is_empty() && MaterialEdit::new().is_empty());

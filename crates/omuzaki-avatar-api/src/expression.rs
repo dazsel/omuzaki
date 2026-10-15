@@ -203,7 +203,14 @@ pub struct AvatarExpression {
 impl AvatarExpression {
     /// An expression called `name` that drives nothing yet, is not binary and overrides nothing.
     pub fn new(name: ExpressionName) -> Self {
-        Self { name, morph: Vec::new(), colour: Vec::new(), uv: Vec::new(), binary: false, overrides: Overrides::default() }
+        Self {
+            name,
+            morph: Vec::new(),
+            colour: Vec::new(),
+            uv: Vec::new(),
+            binary: false,
+            overrides: Overrides::default(),
+        }
     }
 
     /// Adds a morph bind (builder style).
@@ -326,7 +333,10 @@ mod tests {
     fn drivers_list_what_is_set_in_channel_order() {
         let mut d = ChannelDrivers::new().with(Channel::JAW_OPEN, ExprIx(2)).with(Channel::BROW_DOWN_LEFT, ExprIx(0));
         assert_eq!(d.get(Channel::JAW_OPEN), Some(ExprIx(2)));
-        assert_eq!(d.iter().collect::<Vec<_>>(), [(Channel::BROW_DOWN_LEFT, ExprIx(0)), (Channel::JAW_OPEN, ExprIx(2))]);
+        assert_eq!(
+            d.iter().collect::<Vec<_>>(),
+            [(Channel::BROW_DOWN_LEFT, ExprIx(0)), (Channel::JAW_OPEN, ExprIx(2))]
+        );
         d.set(Channel::JAW_OPEN, None);
         assert_eq!(d.iter().count(), 1);
     }

@@ -1,5 +1,6 @@
 //! `Retained` round-trips through serde bit for bit: off-grid linear colours, the whole `MToon` block, passthrough,
 //! the meta (with its 0.x extras) and the thumbnail.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // fixture helpers outside #[test] functions
 
 use omuzaki_anim_api::BoneId;
 use omuzaki_avatar_api::retained::{Retained, RetainedImage, RetainedMaterial, RetainedNode};
@@ -53,7 +54,14 @@ fn retained() -> Retained {
 
 fn colours(m: &Material) -> Vec<u32> {
     let Shading::Toon(t) = &m.shading else { panic!("toon") };
-    m.base_color.to_array().into_iter().chain(m.emissive.to_array()).chain(t.shade_color.to_array()).chain(t.rim_color.to_array()).map(f32::to_bits).collect()
+    m.base_color
+        .to_array()
+        .into_iter()
+        .chain(m.emissive.to_array())
+        .chain(t.shade_color.to_array())
+        .chain(t.rim_color.to_array())
+        .map(f32::to_bits)
+        .collect()
 }
 
 #[test]
@@ -85,7 +93,10 @@ fn passthrough_and_a_present_null_extras_survive() {
 
 #[test]
 fn an_empty_retained_writes_an_empty_table_and_unknown_keys_are_refused() {
-    assert_eq!(serde_json::to_value(Retained::new()).unwrap(), json!({ "materials": [], "textures": [], "images": [], "nodes": [] }));
+    assert_eq!(
+        serde_json::to_value(Retained::new()).unwrap(),
+        json!({ "materials": [], "textures": [], "images": [], "nodes": [] })
+    );
     assert_eq!(serde_json::from_value::<Retained>(json!({})).unwrap(), Retained::new());
     assert!(serde_json::from_value::<Retained>(json!({ "materails": [] })).is_err());
     assert!(serde_json::from_value::<Retained>(json!({ "meta": { "vrm1": {}, "vrm2": {} } })).is_err());

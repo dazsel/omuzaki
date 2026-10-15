@@ -1,5 +1,5 @@
 //! Hand-built avatars for the tests: a small humanoid, one skinned triangle with morph targets, one material.
-#![allow(dead_code)] // each test file uses part of this
+#![allow(dead_code, clippy::expect_used, clippy::cast_precision_loss)] // each test file uses part of this; fixture setup
 
 use omuzaki_anim_api::{HumanoidBone, Skeleton, Transform};
 use omuzaki_avatar_api::avatar::{AvatarMesh, ImportedAvatar};

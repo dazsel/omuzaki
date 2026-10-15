@@ -1,0 +1,32 @@
+[package]
+name = "omuzaki-avatar"
+description = "Imported avatars at run time (EX-12): the ExpressionEvaluator that turns channels into morph weights and material bind deltas with VRM 1.0's override and isBinary rules."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[package.metadata.omuzaki]
+kind = "Implementation"
+summary = "imported avatars at run time (EX-12): `ExpressionEvaluator` turns the channel buffer into morph weights and colour and UV bind deltas per frame, with VRM 1.0's override and `isBinary` rules and the presets gaze route, allocation-free on the frame thread; design in `docs/design/byom.md` D3"
+
+[dependencies]
+omuzaki-anim-api = { path = "../omuzaki-anim-api" }
+omuzaki-avatar-api = { path = "../omuzaki-avatar-api" }
+omuzaki-char-api = { path = "../omuzaki-char-api" }
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-io-api = { path = "../omuzaki-io-api" }
+
+[dev-dependencies]
+criterion.workspace = true
+omuzaki-render-api = { path = "../omuzaki-render-api" }
+omuzaki-store-api = { path = "../omuzaki-store-api" }
+
+[[bench]]
+name = "evaluate"
+harness = false
+
+[lints]
+workspace = true
