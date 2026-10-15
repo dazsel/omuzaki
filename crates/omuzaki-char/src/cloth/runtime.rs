@@ -8,15 +8,19 @@
 //! weights are the grid's own. Each render vertex keeps the four sheet particles around it in parameter space and its
 //! bilinear weights ([`ClothBinding`]).
 //!
-//! A frame then works in **displacements**, never in absolute positions:
+//! A frame then works **relative to the skin**, never in absolute positions:
 //!
 //! - `s_v` is the render vertex skinned as the static mesh would be (linear blend skinning through
-//!   [`PoseSource::skin_matrix`]), and `s_p` each sheet particle skinned the same way;
-//! - `d_p = x_p - s_p` is how far the simulation moved a particle from where the skin would put it;
-//! - the vertex is drawn at `s_v + f · Σ w_k d_k`, where `f` is the row's **follow** weight: 0 keeps the row on the
+//!   [`PoseSource::skin_matrix`]), and `s_k` each of its four particles skinned the same way, `x_k` where the sheet put
+//!   them;
+//! - the vertex follows its cell: `c_x + R (s_v - c_s)`, where `c_s` and `c_x` are the bilinear centres of the skinned
+//!   and simulated corners and `R` turns the skinned cell's frame into the simulated one's. With `R` the identity this
+//!   is the skinned vertex plus the interpolated displacement `Σ w_k (x_k - s_k)`; the turn keeps a sheet that rotates
+//!   against the skin (a hem lagging a hips turn, a coarse level) round instead of cutting across its chords;
+//! - the vertex is drawn at `s_v` moved toward that place by the row's **follow** weight `f`: 0 keeps the row on the
 //!   skin (a tight waistband never lags), 1 lets it follow the sheet, and a ramp in between is the hybrid skinning.
 //!
-//! So after [`reset`](PartRuntime::reset) (`x_p = s_p`) the output **is** the skinned static mesh to rounding, whatever
+//! So after [`reset`](PartRuntime::reset) (`x_k = s_k`) the output **is** the skinned static mesh to rounding, whatever
 //! the pose, and the sheet only ever adds the motion it simulated. Normals are re-derived from the drawn grid (central
 //! differences across rows and columns, oriented once at build so the rest normals face away from the grid's centre).
 //!
@@ -38,15 +42,17 @@
 //!
 //! # Levels of detail (#706)
 //!
-//! [`ClothSpec::levels`] are pre-built sheets of the same garment, finest first (for example 24 x 16, 12 x 8, 6 x 4),
-//! with the same material (the solver's compliances are resolution independent) and pins mapped by parameter. The
+//! [`ClothSpec::levels`] are pre-built sheets of the same garment, finest first (by default 24 x 16, 12 x 8 and 8 x 6:
+//! a 6 x 4 skirt has too few columns to hold its flare, 2 cm off the fine silhouette in a dance where 8 x 6 stays
+//! within 8 mm), with the same material (the solver's compliances are resolution independent) and pins mapped by parameter. The
 //! level follows the garment's projected height in pixels ([`StepCtx::pixels_per_metre`] times the garment's bind
 //! height) through [`LodPolicy`]'s thresholds with hysteresis, or is forced with [`ClothRuntime::force_level`]. A
-//! switch **resamples** the state: every particle of the new level takes the old level's displacement and velocity at
-//! its grid vertex (the bilinear embedding above), a pure function of the two states that allocates nothing. The drawn
-//! mesh does not pop: the difference between the old and the new level at the switch is kept and faded out over
-//! [`FADE_S`]. Below [`LodPolicy::sleep_px`] (or off screen) the sheet sleeps: it holds its last drawn pose, costs
-//! nothing, and wakes with a [`reset`](PartRuntime::reset) to the current pose, faded in the same way.
+//! switch **resamples** the state: every particle of the new level is placed in the old sheet as a drawn vertex on its
+//! grid vertex would be (the embedding above) and takes the old sheet's interpolated velocity there, a pure function
+//! of the two states that allocates nothing. The drawn mesh does not pop: the frame of a switch draws exactly what the
+//! last frame drew, and the difference to the new level's output fades out over [`FADE_S`]. Below
+//! [`LodPolicy::sleep_px`] (or off screen) the sheet sleeps: it holds its last drawn pose, costs nothing, and wakes
+//! with a [`reset`](PartRuntime::reset) to the current pose, faded in the same way.
 //!
 //! # Cost
 //!
@@ -56,7 +62,7 @@
 //! cloth_runtime`).
 
 use omuzaki_char_api::{DynamicMesh, JointRef, PartRuntime, PoseSource, Quality, RuntimeCost, StepCtx};
-use omuzaki_core::glam::{Affine3A, Mat4, Vec3, Vec3A};
+use omuzaki_core::glam::{Affine3A, Mat3A, Mat4, Vec3, Vec3A};
 
 use super::collide::ColliderSet;
 use super::contact::{ClothEnvironment, ContactError, ContactParams, Wind, WindParams};
@@ -208,7 +214,7 @@ pub struct LodPolicy {
 }
 
 impl Default for LodPolicy {
-    /// 24 x 16 above 240 px, 12 x 8 above 96 px, 6 x 4 above 24 px, asleep below, 15% hysteresis.
+    /// 24 x 16 above 240 px, 12 x 8 above 96 px, 8 x 6 above 24 px, asleep below, 15% hysteresis.
     fn default() -> Self {
         Self { level_px: vec![240.0, 96.0], sleep_px: 24.0, hysteresis: 0.15 }
     }
@@ -244,10 +250,10 @@ pub struct ClothSpec {
 }
 
 impl Default for ClothSpec {
-    /// The skirt class: 24 x 16, 12 x 8 and 6 x 4 levels, the waist row pinned, 0.2 kg/m² cotton, live quality.
+    /// The skirt class: 24 x 16, 12 x 8 and 8 x 6 levels, the waist row pinned, 0.2 kg/m² cotton, live quality.
     fn default() -> Self {
         Self {
-            levels: vec![SheetSize::new(24, 16), SheetSize::new(12, 8), SheetSize::new(6, 4)],
+            levels: vec![SheetSize::new(24, 16), SheetSize::new(12, 8), SheetSize::new(8, 6)],
             pin_rows: 1,
             density: 0.2,
             follow: Vec::new(),
@@ -416,6 +422,24 @@ impl ClothBinding {
         &self.cols
     }
 
+    /// Where the point `s` (skinned with grid vertex `v`) goes when the particles around `v` move from `skinned` to
+    /// `x`: the bilinear centre of its four particles, plus its skinned offset from their skinned centre turned by the
+    /// rotation that takes the skinned cell's frame to the simulated one. A sheet turning against the skin (a hem
+    /// lagging a hips turn) therefore carries its vertices round the turn instead of across its chords. A cell too
+    /// degenerate for a frame (collapsed) carries the offset unturned.
+    #[inline]
+    fn place(&self, v: usize, s: Vec3A, skinned: &[Vec3A], x: &[Vec3A]) -> Vec3A {
+        let e = &self.embed[v];
+        let corners = |values: &[Vec3A]| e.particles.map(|p| values[p as usize]);
+        let (ps, px) = (corners(skinned), corners(x));
+        let centre = |c: &[Vec3A; 4]| c.iter().zip(&e.weights).map(|(p, &w)| *p * w).sum::<Vec3A>();
+        let (cs, cx) = (centre(&ps), centre(&px));
+        match (cell_frame(&ps), cell_frame(&px)) {
+            (Some(fs), Some(fx)) => cx + fx * (fs.transpose() * (s - cs)),
+            _ => cx + (s - cs),
+        }
+    }
+
     /// `values` (one per particle) interpolated at grid vertex `v`.
     #[inline]
     fn sample(&self, values: &[Vec3A], v: usize) -> Vec3A {
@@ -426,6 +450,17 @@ impl ClothBinding {
         }
         out
     }
+}
+
+/// An orthonormal frame of a cell given as `[top-left, top-right, bottom-left, bottom-right]`: x along its rows, z its
+/// normal; `None` for a cell with no area.
+#[inline]
+fn cell_frame(c: &[Vec3A; 4]) -> Option<Mat3A> {
+    let across = (c[1] + c[3]) - (c[0] + c[2]);
+    let down = (c[2] + c[3]) - (c[0] + c[1]);
+    let normal = across.cross(down);
+    let (x, z) = (across.try_normalize()?, normal.try_normalize()?);
+    Some(Mat3A::from_cols(x, z.cross(x), z))
 }
 
 /// One level of detail: a binding, its sheet's solver and state, and its wind.
@@ -538,11 +573,11 @@ pub struct ClothRuntime {
     d: Dynamic,
     // Scratch, sized at build.
     skinned_particles: Vec<Vec3A>,
-    displacement: Vec<Vec3A>,
     targets: Vec<Vec3>,
     resampled: Vec<Vec3>,
     velocities: Vec<Vec3A>,
     previous_out: Vec<Vec3>,
+    previous_normals: Vec<Vec3>,
 }
 
 impl ClothRuntime {
@@ -638,11 +673,11 @@ impl ClothRuntime {
                 report: StepReport::default(),
             },
             skinned_particles: vec![Vec3A::ZERO; max_particles],
-            displacement: vec![Vec3A::ZERO; max_particles],
             targets: vec![Vec3::ZERO; max_pins],
             resampled: vec![Vec3::ZERO; max_particles],
             velocities: vec![Vec3A::ZERO; max_particles],
             previous_out: vec![Vec3::ZERO; vertices],
+            previous_normals: vec![Vec3::ZERO; vertices],
         };
         let mut normals = std::mem::take(&mut runtime.initial.normals);
         runtime.derive_normals_into(&runtime.initial.positions, &mut normals);
@@ -876,27 +911,23 @@ impl ClothRuntime {
             return;
         }
         self.place_targets(); // skinned particles of `from`
-        let n_from = self.levels[from].rest.len();
-        for ((d, s), x) in
-            self.displacement.iter_mut().zip(&self.skinned_particles[..n_from]).zip(self.d.states[from].positions())
-        {
-            *d = *x - *s;
-        }
         let substep = self.d.states[from].substep();
-        self.d.active = to;
-        self.place_targets(); // skinned particles of `to`
         let (from_level, to_level) = (&self.levels[from], &self.levels[to]);
         let n_to = to_level.rest.len();
-        let from_v = self.d.states[from].velocities();
+        let (from_x, from_v) = (self.d.states[from].positions(), self.d.states[from].velocities());
         for (k, &vertex) in to_level.binding.vertex.iter().enumerate() {
+            // The new particle sits on grid vertex `v`: skinned like it, placed in the old sheet like a drawn vertex.
             let v = vertex as usize;
-            let d = from_level.binding.sample(&self.displacement, v);
-            self.resampled[k] = (self.skinned_particles[k] + d).into();
+            let skinned = self.grid_skin[v].skin(&self.d.matrices, self.grid_rest[v]);
+            let placed = if to_level.pins.binary_search(&(k as u32)).is_ok() {
+                skinned
+            } else {
+                from_level.binding.place(v, skinned, &self.skinned_particles, from_x)
+            };
+            self.resampled[k] = placed.into();
             self.velocities[k] = from_level.binding.sample(from_v, v);
         }
-        for &p in &to_level.pins {
-            self.resampled[p as usize] = self.skinned_particles[p as usize].into();
-        }
+        self.d.active = to;
         let _ = to_level.solver.reset(&mut self.d.states[to], &self.resampled[..n_to]);
         self.d.states[to].velocities_mut().copy_from_slice(&self.velocities[..n_to]);
         #[allow(clippy::cast_possible_wrap)] // sub-step counts stay far below 2^63
@@ -911,16 +942,17 @@ impl ClothRuntime {
         self.d.env.set_sheet(Some(self.levels[to].shape), self.levels[to].spacing);
     }
 
-    /// Starts a fade from what is drawn now to the active level's current output.
-    fn start_fade(&mut self) {
-        self.previous_out.copy_from_slice(&self.d.positions);
-        self.d.fade_s = 0.0;
-        self.write_output();
-        for ((f, &old), &new) in self.d.fade.iter_mut().zip(&self.previous_out).zip(&self.d.positions) {
-            *f = old - new;
+    /// After the first step of a new level (or of a woken sheet), keeps what was drawn before it: the difference
+    /// to the new output becomes the fade, so the frame of the switch draws exactly the last frame and the difference
+    /// fades out over [`FADE_S`]. The revision and normals stay as they were.
+    fn hold_and_fade(&mut self, revision: u64) {
+        for ((f, &old), new) in self.d.fade.iter_mut().zip(&self.previous_out).zip(&mut self.d.positions) {
+            *f = old - *new;
+            *new = old;
         }
+        self.d.normals.copy_from_slice(&self.previous_normals);
+        self.d.revision = revision;
         self.d.fade_s = FADE_S;
-        self.d.positions.copy_from_slice(&self.previous_out);
     }
 
     /// The level the policy picks at `px` pixels from `current`, with hysteresis; `None` to sleep.
@@ -944,12 +976,7 @@ impl ClothRuntime {
     fn write_output(&mut self) {
         let active = self.d.active;
         let level = &self.levels[active];
-        let n = level.rest.len();
-        for ((d, s), x) in
-            self.displacement[..n].iter_mut().zip(&self.skinned_particles[..n]).zip(self.d.states[active].positions())
-        {
-            *d = *x - *s;
-        }
+        let x = self.d.states[active].positions();
         let cols = self.grid_shape.1;
         let fade = if self.d.fade_s > 0.0 { self.d.fade_s / FADE_S } else { 0.0 };
         let mut changed = false;
@@ -959,7 +986,7 @@ impl ClothRuntime {
             let follow = self.follow[v / cols];
             let mut p = skin.skin(&self.d.matrices, rest);
             if follow > 0.0 {
-                p += level.binding.sample(&self.displacement, v) * follow;
+                p += (level.binding.place(v, p, &self.skinned_particles, x) - p) * follow;
             }
             let mut p: Vec3 = self.d.root_inv.transform_point3a(p).into();
             if fade > 0.0 {
@@ -1212,17 +1239,20 @@ impl PartRuntime for ClothRuntime {
             self.d.report = StepReport::default();
             return;
         };
+        // A switch or a wake changes the sheet under the drawn mesh: keep what is drawn, and fade from it after the step.
+        let fade = self.d.asleep || level != self.d.active;
+        let revision = self.d.revision;
+        if fade {
+            self.previous_out.copy_from_slice(&self.d.positions);
+            self.previous_normals.copy_from_slice(&self.d.normals);
+            self.d.fade_s = 0.0;
+        }
+        if level != self.d.active {
+            self.switch(level);
+        }
         if self.d.asleep {
             self.d.asleep = false;
-            if level != self.d.active {
-                self.switch(level);
-            }
             self.snap_to_rest();
-            self.start_fade();
-        } else if level != self.d.active {
-            self.previous_out.copy_from_slice(&self.d.positions);
-            self.switch(level);
-            self.start_fade();
         }
         self.place_targets();
         self.colliders.place(&self.d.matrices, &mut self.d.env);
@@ -1238,6 +1268,9 @@ impl PartRuntime for ClothRuntime {
         self.d.report =
             self.levels[active].solver.step_with(dt, state, &self.targets[..count], &mut hook).unwrap_or_default();
         self.write_output();
+        if fade {
+            self.hold_and_fade(revision);
+        }
         if self.d.fade_s > 0.0 {
             self.d.fade_s = if ctx.dt.is_finite() { (self.d.fade_s - ctx.dt.max(0.0)).max(0.0) } else { self.d.fade_s };
         }

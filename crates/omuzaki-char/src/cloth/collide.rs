@@ -546,8 +546,10 @@ impl Body {
                 .collect();
             (sections.len() == SAMPLES).then(|| {
                 let centre = sections.iter().map(|(_, s, ..)| s.centre).sum::<Vec3>() / SAMPLES as f32;
-                let reach =
-                    sections.iter().map(|(_, s, ..)| s.centre.distance(centre) + s.radii.max_element()).fold(0.0, f32::max);
+                let reach = sections
+                    .iter()
+                    .map(|(_, s, ..)| s.centre.distance(centre) + s.radii.max_element())
+                    .fold(0.0, f32::max);
                 Region { region, sections, centre, reach }
             })
         })

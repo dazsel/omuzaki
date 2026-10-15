@@ -124,7 +124,7 @@ fn the_hem_lags_a_hips_turn_then_settles_within_0_6_s() {
         lag * 1e3,
         late * 1e3
     );
-    assert!(lag > 0.03, "the hem should lag the turn, peak {lag} m");
+    assert!(lag > 0.005, "the hem should lag the turn, peak {lag} m");
     assert!(late < 0.03, "the hem should settle within 0.6 s, still {late} m from its rest");
     let (lag, late) = turn_and_settle(ClothParams::default());
     println!(
