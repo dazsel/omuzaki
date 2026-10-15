@@ -5,7 +5,7 @@
 //! in use has no file: a direct dependency of a workspace crate (`Cargo.lock`), a tool a workflow installs, a committed
 //! font or `NOTICES.md`. It also fails on an orphaned file, one that claims a crate, tool or path that is gone.
 
-mod register;
+pub(crate) mod register;
 mod usage;
 
 use std::collections::BTreeMap;

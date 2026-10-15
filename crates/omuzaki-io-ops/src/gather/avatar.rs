@@ -181,7 +181,7 @@ pub fn add_avatar(gathered: &mut Gathered, built: &BuiltCharacter) -> Result<(),
     avatar.humanoid.bones.extend(skeleton::humanoid_nodes(&rig.skeleton)?);
     avatar.expressions =
         PresetExpression::ALL.into_iter().map(|preset| (ExpressionName::Preset(preset), Expression::new())).collect();
-    avatar.spring_bones = springs::to_io(&rig.springs, gathered.scale);
+    avatar.spring_bones = springs::to_io(&rig.springs, gathered.scale, &mut gathered.report);
     avatar.first_person = Some(first_person(built, &gathered.scene));
     avatar.look_at = look_at(&rig.skeleton, &gathered.scene.nodes);
     if avatar.look_at.is_none() {
