@@ -3,13 +3,12 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant, SystemTime};
 
 use omuzaki_doc_api::{Change, DocPath, DocRead, DocVersion, DocWrite, Patch, PatchError, lookup};
 use omuzaki_store_api::ContentHash;
 use serde_json::{Map, Value, json};
 
-use crate::disk::{self, FileState, Loaded, PROJECT_KEY, Replace};
+use crate::disk::{self, FileState, Loaded, PROJECT_KEY, Replace, Retention};
 use crate::error::StoreError;
 use crate::known::Known;
 use crate::layout::{Entry, Layout, Pending, Segs, doc_path};
@@ -67,13 +66,9 @@ pub struct Project {
     layout: Layout,
     known: Known,
     upgraded_from: Option<u32>,
-    /// When this project last pruned the replaced folder; `None` until its first save.
-    pruned_at: Option<Instant>,
+    /// The replaced folder's entries and their ages, for pruning (see `disk::Retention`).
+    retention: Retention,
 }
-
-/// How often saves prune the replaced folder: often enough to keep it small, rarely enough that walking it doesn't
-/// slow saves that come every few seconds.
-const PRUNE_EVERY: Duration = Duration::from_mins(1);
 
 impl Project {
     /// Opens the project in `dir`, upgrading it in memory if it was written by an older version.
@@ -110,7 +105,15 @@ impl Project {
                 .map_err(|e| StoreError::MigratedTree(e.to_string()))?;
             layout.commit(edit);
         }
-        Ok(Self { dir: dir.to_path_buf(), root, version: DocVersion(0), layout, known, upgraded_from, pruned_at: None })
+        Ok(Self {
+            dir: dir.to_path_buf(),
+            root,
+            version: DocVersion(0),
+            layout,
+            known,
+            upgraded_from,
+            retention: Retention::default(),
+        })
     }
 
     /// Creates a project called `name` in `dir` (making the folder if needed) and writes its `project.toml`.
@@ -138,7 +141,7 @@ impl Project {
             layout,
             known: Known::default(),
             upgraded_from: None,
-            pruned_at: None,
+            retention: Retention::default(),
         };
         project.save()?;
         Ok(project)
@@ -214,9 +217,9 @@ impl Project {
     /// date.
     ///
     /// Each file a save replaces is kept for a while under `.omuzaki/replaced/`, so an editor that still holds the
-    /// old file open can't lose what it writes there. The first save of a `Project`, and then at most one save a
-    /// minute, deletes up to 64 of those that are over 10 minutes old and that nothing wrote to since (see
-    /// `docs/design/journal.md` section 6.1).
+    /// old file open can't lose what it writes there. Every save then deletes some of those that nothing wrote to
+    /// since and that are at least 10 minutes old on both the monotonic clock and the wall clock: at least as many as
+    /// it kept, plus a share of any backlog (see `docs/design/journal.md` section 6.1).
     ///
     /// # Errors
     /// A file can't be read, written or deleted; a file about to be edited was broken by hand and is no longer valid
@@ -225,11 +228,15 @@ impl Project {
     /// ([`StoreError::ChangedOnDisk`]); or a change is in place but a step after it failed
     /// ([`StoreError::NotDurable`]): the project has recorded the change, so calling `save` again carries on.
     pub fn save(&mut self) -> Result<SaveReport, StoreError> {
-        let now = Instant::now();
-        if self.pruned_at.is_none_or(|at| now.duration_since(at) >= PRUNE_EVERY) {
-            disk::prune_replaced(&self.dir, SystemTime::now());
-            self.pruned_at = Some(now);
-        }
+        let saved = self.save_files();
+        // Every save prunes, whatever it did, at least as many entries as it (and any failed save before it) kept.
+        let (wall, mono) = disk::clock();
+        self.retention.prune(&self.dir, wall, mono);
+        saved
+    }
+
+    /// The writes and deletions of [`save`](Self::save).
+    fn save_files(&mut self) -> Result<SaveReport, StoreError> {
         let (project, others): (Vec<_>, Vec<_>) =
             self.layout.pending().into_iter().partition(|(segs, _)| segs.as_slice() == [PROJECT_KEY]);
         let mut report = SaveReport::default();
@@ -240,11 +247,12 @@ impl Project {
         for segs in self.layout.deleted() {
             // Like a replacement, a deletion needs the file to hold the bytes this project last saw. An error after the
             // file is gone from its name is returned only once the deletion is recorded, so a retry carries on.
-            let (removed, late) = match disk::remove_checked(&self.dir, &segs, self.known.hash(&segs)) {
-                Ok(removed) => (removed, None),
-                Err(error @ StoreError::NotDurable { .. }) => (true, Some(error)),
-                Err(error) => return Err(error),
-            };
+            let (removed, late) =
+                match disk::remove_checked(&self.dir, &segs, self.known.hash(&segs), &mut self.retention) {
+                    Ok(removed) => (removed, None),
+                    Err(error @ StoreError::NotDurable { .. }) => (true, Some(error)),
+                    Err(error) => return Err(error),
+                };
             if !removed {
                 refused.get_or_insert(disk::why_changed(disk::file_path(&self.dir, &segs)));
                 continue;
@@ -309,7 +317,7 @@ impl Project {
             let mut late = None;
             if rendered.changed {
                 let expected = self.known.hash(&segs);
-                match placed(disk::replace_checked(&self.dir, &path, &rendered.text, expected))? {
+                match placed(disk::replace_checked(&self.dir, &path, &rendered.text, expected, &mut self.retention))? {
                     Placed::No => {
                         refused.get_or_insert(disk::why_changed(path));
                         continue;
@@ -331,7 +339,13 @@ impl Project {
                     // The file is gone (seen at any step of the check): it is written again, from the last-known
                     // text, like any other file deleted behind our back.
                     FileState::Vanished => {
-                        match placed(disk::replace_checked(&self.dir, &path, &rendered.text, None))? {
+                        match placed(disk::replace_checked(
+                            &self.dir,
+                            &path,
+                            &rendered.text,
+                            None,
+                            &mut self.retention,
+                        ))? {
                             Placed::No => {
                                 refused.get_or_insert(disk::why_changed(path));
                                 continue;
@@ -446,16 +460,18 @@ impl DocWrite for Project {
     }
 }
 
-/// These need a swap with a copied backup, or a deletion without links, which Windows doesn't reach.
 #[cfg(test)]
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod tests {
+    use std::time::Duration;
+
     use tempfile::TempDir;
 
     use super::*;
     use crate::disk::faults;
 
-    /// Runs `f` with hard links off and folder flushes failing for this thread's saves.
+    /// Runs `f` with hard links off and folder flushes failing for this thread's saves. Needs a swap with a copied
+    /// backup, or a deletion without links, which Windows doesn't reach.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn with_failing_flush<T>(f: impl FnOnce() -> T) -> T {
         faults::LINKS_OFF.with(|on| on.set(true));
         faults::SYNC_OFF.with(|on| on.set(true));
@@ -478,6 +494,7 @@ mod tests {
 
     /// A replacement whose text is placed but whose flush then fails is recorded before the error is returned, so
     /// the project isn't left dirty and a retry carries on instead of reporting the file as changed on disk.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn a_replacement_that_fails_after_its_commit_is_recorded_and_a_retry_carries_on() {
         let tmp = folder();
@@ -494,6 +511,7 @@ mod tests {
     }
 
     /// The same for a deletion: the file is gone, the project has forgotten it, and a retry has nothing left to do.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn a_deletion_that_fails_after_its_commit_is_recorded_and_a_retry_carries_on() {
         let tmp = folder();
@@ -504,5 +522,37 @@ mod tests {
         assert!(!tmp.path().join("a.toml").exists());
         assert!(!project.is_dirty());
         assert_eq!(project.save().unwrap().removed, 0);
+    }
+
+    fn kept_entries(dir: &Path) -> usize {
+        fs::read_dir(dir.join(".omuzaki/replaced")).map_or(0, |entries| entries.count())
+    }
+
+    /// A burst of saves leaves one kept entry each; once those are old on both clocks, the saves that follow delete
+    /// them faster than they add new ones, and the folder is back to its steady size within a few saves.
+    #[test]
+    fn pruning_catches_up_after_a_burst_of_saves() {
+        let tmp = folder();
+        let mut project = Project::open(tmp.path()).unwrap();
+        let mut value = 1;
+        let mut edit = |project: &mut Project| {
+            project.apply(&change("a/v", Some(json!(value)), Some(json!(value + 1)))).unwrap();
+            project.save().unwrap();
+            value += 1;
+        };
+        for _ in 0..200 {
+            edit(&mut project);
+        }
+        assert_eq!(kept_entries(tmp.path()), 200);
+        // Both clocks move past the retention time.
+        let later = disk::RETAIN_UNCHANGED + Duration::from_secs(1);
+        disk::faults::CLOCK_SKEW.with(|skew| skew.set((later, later)));
+        let saves = 200 / disk::PRUNE_CATCH_UP + 1;
+        for _ in 0..saves {
+            edit(&mut project);
+        }
+        disk::faults::CLOCK_SKEW.with(|skew| skew.set((Duration::ZERO, Duration::ZERO)));
+        // What is left is what those saves kept, all of it young.
+        assert_eq!(kept_entries(tmp.path()), saves);
     }
 }

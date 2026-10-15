@@ -174,22 +174,24 @@ fn a_replaced_file_is_kept_in_the_replaced_folder_under_its_hash() {
     assert_eq!(bytes, before.as_bytes());
 }
 
+/// An entry an earlier process left is aged from when this process first finds it, not from the wall time in its name
+/// alone (here 1970): a wall clock that is wrong can never make it old early, so the first save keeps it. Pruning it
+/// once it is old on both clocks is tested in `disk`, where the clocks can be moved.
 #[test]
-fn the_first_save_prunes_old_unchanged_entries_and_keeps_changed_ones() {
+fn the_first_save_keeps_entries_an_earlier_process_left() {
     let tmp = folder();
     let hash = ContentHash::of(b"old = 1\n");
-    // Kept long ago (the time in the name is 1970): one untouched, one written to since.
     write(tmp.path(), &format!(".omuzaki/replaced/x.toml.1-1-0.{hash}.kept"), "old = 1\n");
     write(tmp.path(), &format!(".omuzaki/replaced/y.toml.1-1-1.{hash}.kept"), "old = 1\nedited = 2\n");
     let mut project = Project::open(tmp.path()).unwrap();
     edit_blend(&mut project, 0.5, 0.9);
     project.save().unwrap();
-    // Which files the entries left are of: the face this save replaced, and the changed one.
+    // Which files the entries are of: the face this save replaced, and both left before.
     let kept: Vec<_> = snapshot(tmp.path())
         .into_iter()
         .filter_map(|(name, _)| Some(name.strip_prefix(".omuzaki/replaced/")?.split(".toml.").next()?.to_owned()))
         .collect();
-    assert_eq!(kept, ["characters/mia/face", "y"]);
+    assert_eq!(kept, ["characters/mia/face", "x", "y"]);
 }
 
 /// The destination never goes missing during a replacement, so a reader opening the project while it is saved always

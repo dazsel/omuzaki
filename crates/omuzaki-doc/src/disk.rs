@@ -48,12 +48,13 @@
 //!
 //! Each cell of the first table is tested with the capabilities forced off through the test seam (`Hooks`).
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::collections::{HashSet, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use omuzaki_store_api::ContentHash;
 use serde_json::{Map, Value};
@@ -240,20 +241,17 @@ pub(crate) fn refuse_links(dir: &Path, path: &Path) -> Result<(), StoreError> {
 ///
 /// - `<path>.<time>-<pid>-<n>.<hash>.kept`: a file a save replaced as expected, kept as the same file (inode), with
 ///   the hash its bytes had when it was replaced. An editor that still holds it open writes into this entry, not
-///   into nothing. [`prune_replaced`] deletes it once it is older than [`RETAIN_UNCHANGED`] and still has that hash.
+///   into nothing. [`Retention::prune`] deletes it once it is older than [`RETAIN_UNCHANGED`] and still has that hash.
 /// - `<path>.<time>-<pid>-<n>.displaced`: a file that raced a save (an editor's save or write) or that an interrupted
 ///   save left behind. No hash is recorded, so nothing ever deletes it automatically.
 const REPLACED_DIR: &str = ".omuzaki/replaced";
 
-/// The suffix of an entry of the replaced folder that [`prune_replaced`] may delete.
+/// The suffix of an entry of the replaced folder that [`Retention::prune`] may delete.
 const KEPT: &str = ".kept";
 
 /// How long a replaced file is kept even if nothing wrote to it: an editor that still holds the old file open and
 /// writes within this time finds its bytes in the replaced folder.
 pub(crate) const RETAIN_UNCHANGED: Duration = Duration::from_mins(10);
-
-/// The most entries one [`prune_replaced`] call deletes, so a save never stalls on a large backlog.
-pub(crate) const PRUNE_MAX: usize = 64;
 
 /// What [`replace_checked`] did.
 #[derive(Debug, PartialEq, Eq)]
@@ -302,8 +300,22 @@ pub(crate) fn replace_checked(
     path: &Path,
     text: &str,
     expected: Option<ContentHash>,
+    retention: &mut Retention,
 ) -> Result<Replace, StoreError> {
-    replace_checked_with(dir, path, text, expected, &Hooks::default())
+    let hooks = Hooks::default();
+    let outcome = replace_checked_with(dir, path, text, expected, &hooks);
+    register_backup(&hooks, retention);
+    outcome
+}
+
+/// Registers the backup a call made with `retention`, if it is still there: the kept entry of a replacement or a
+/// deletion. One that was tidied away (nothing placed) is not.
+fn register_backup(hooks: &Hooks<'_>, retention: &mut Retention) {
+    if let Some(backup) = hooks.made.borrow_mut().take()
+        && fs::symlink_metadata(&backup).is_ok()
+    {
+        retention.created(backup, clock().1);
+    }
 }
 
 /// Points at which tests make an outside change; production code passes the no-op default.
@@ -334,6 +346,8 @@ struct Hooks<'a> {
     windows_shaped: Cell<bool>,
     /// Pretend the system has no file identities, as on Windows: a linked backup records none (tests only).
     ids_off: Cell<bool>,
+    /// The backup this call made, if any: the public functions register it for pruning if it is still there.
+    made: RefCell<Option<PathBuf>>,
 }
 
 fn noop() {}
@@ -347,6 +361,9 @@ pub(crate) mod faults {
         pub(crate) static LINKS_OFF: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
         /// Make flushing a folder fail.
         pub(crate) static SYNC_OFF: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        /// How far ahead of the real clocks the wall clock and the monotonic clock are.
+        pub(crate) static CLOCK_SKEW: std::cell::Cell<(std::time::Duration, std::time::Duration)> =
+            const { std::cell::Cell::new((std::time::Duration::ZERO, std::time::Duration::ZERO)) };
     }
 
     /// Whether this thread's test turned hard links off.
@@ -355,6 +372,14 @@ pub(crate) mod faults {
         return LINKS_OFF.with(std::cell::Cell::get);
         #[cfg(not(test))]
         false
+    }
+
+    /// How far this thread's test moved the wall clock and the monotonic clock ahead.
+    pub(super) fn clock_skew() -> (std::time::Duration, std::time::Duration) {
+        #[cfg(test)]
+        return CLOCK_SKEW.with(std::cell::Cell::get);
+        #[cfg(not(test))]
+        (std::time::Duration::ZERO, std::time::Duration::ZERO)
     }
 
     /// Whether this thread's test made flushing a folder fail.
@@ -424,6 +449,7 @@ impl Default for Hooks<'_> {
             sync_off: Cell::new(faults::sync_off()),
             windows_shaped: Cell::new(false),
             ids_off: Cell::new(false),
+            made: RefCell::new(None),
         }
     }
 }
@@ -774,45 +800,139 @@ fn move_no_replace(from: &Path, to: &Path, windows_cell: bool, hooks: &Hooks<'_>
     }
 }
 
-/// Deletes up to [`PRUNE_MAX`] `.kept` entries of the replaced folder of the project `dir` that are older than
-/// [`RETAIN_UNCHANGED`] at `now` and whose bytes still have the hash in their name; returns how many it deleted.
+/// How many entries a pruning pass deletes beyond those created since the last pass, to work off a backlog.
+pub(crate) const PRUNE_CATCH_UP: usize = 16;
+
+/// The most queued entries a pass looks at beyond its budget (ones not yet old by the wall clock, or written to), so
+/// a pass costs a small fixed amount on top of what it deletes.
+const PRUNE_EXAMINE_SLACK: usize = 16;
+
+/// Retention of a project's replaced folder: which `.kept` entries exist, and since when each has been known, on a
+/// monotonic clock. A `Project` keeps one and runs [`Retention::prune`] on every save.
 ///
-/// An entry that was written to after its save (an editor that held the old file open) no longer matches its hash
-/// and is never deleted here, nor is a `.displaced` entry or anything else in the folder. Best effort: what can't be
-/// read or deleted is left alone, and so is everything if the folder is reached through a symbolic link.
-pub(crate) fn prune_replaced(dir: &Path, now: SystemTime) -> usize {
-    let root = dir.join(REPLACED_DIR);
-    if refuse_links(dir, &root).is_err() {
-        return 0;
+/// An entry may be deleted only once **both** its age on the monotonic clock and its age on the wall clock (the time
+/// in its name) are at least [`RETAIN_UNCHANGED`], and its bytes still have the hash in its name. The monotonic age
+/// counts from when this process created the entry or, for one it didn't create, from when a pass first found it, so
+/// a wall clock that jumps forward never makes an entry old early, and an entry whose wall time is in the future
+/// waits for the wall clock too.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Retention {
+    /// Entries waiting to be old enough, each with the monotonic time its age counts from, oldest first (an entry
+    /// that wasn't yet old on the wall clock goes to the back again).
+    queue: VecDeque<(PathBuf, Instant)>,
+    /// Every entry in `queue`, and those found written to (never deleted), so a walk doesn't add one twice.
+    known: HashSet<PathBuf>,
+    /// Entries created since the last pass: the least the next pass may delete.
+    owed: usize,
+    /// Whether the folder was walked for the entries earlier processes left. Entries this process makes are
+    /// registered as they are made, and the project lock keeps other Omuzaki processes out, so one walk is enough.
+    scanned: bool,
+}
+
+impl Retention {
+    /// Registers `entry`, a `.kept` entry this process just created at `now` (monotonic).
+    pub(crate) fn created(&mut self, entry: PathBuf, now: Instant) {
+        if self.known.insert(entry.clone()) {
+            self.queue.push_back((entry, now));
+            self.owed += 1;
+        }
     }
-    let Some(cutoff) = now.checked_sub(RETAIN_UNCHANGED).and_then(|t| t.duration_since(UNIX_EPOCH).ok()) else {
-        return 0;
-    };
-    let mut pruned = 0;
-    let mut folders = vec![root];
-    while let Some(folder) = folders.pop() {
-        let Ok(entries) = fs::read_dir(&folder) else { continue };
-        for entry in entries.flatten() {
-            if pruned == PRUNE_MAX {
-                return pruned;
+
+    /// One pruning pass over the replaced folder of the project `dir` at the wall time `wall` and monotonic time
+    /// `mono`; returns how many entries it deleted.
+    ///
+    /// It deletes at most the entries created since the last pass plus [`PRUNE_CATCH_UP`], so pruning keeps pace with
+    /// saves and works off a backlog, and looks at no more than [`PRUNE_EXAMINE_SLACK`] entries beyond that. The first
+    /// pass also walks the folder once for entries earlier processes left. An entry that was written to after its save no
+    /// longer matches its hash and is never deleted, nor is a `.displaced` entry or anything else in the folder. Best
+    /// effort: what can't be read or deleted is tried again later, and nothing is touched if the folder is reached
+    /// through a symbolic link.
+    pub(crate) fn prune(&mut self, dir: &Path, wall: SystemTime, mono: Instant) -> usize {
+        let root = dir.join(REPLACED_DIR);
+        if refuse_links(dir, &root).is_err() {
+            return 0;
+        }
+        if !self.scanned {
+            self.scan(&root, mono);
+        }
+        let budget = self.owed + PRUNE_CATCH_UP;
+        self.owed = 0;
+        let wall_now = wall.duration_since(UNIX_EPOCH).unwrap_or_default();
+        let mut pruned = 0;
+        let mut examined = 0;
+        while pruned < budget && examined < budget + PRUNE_EXAMINE_SLACK {
+            let Some((entry, since)) = self.queue.pop_front() else { break };
+            if mono.saturating_duration_since(since) < RETAIN_UNCHANGED {
+                // The queue is in monotonic order, so nothing behind it is old enough either.
+                self.queue.push_front((entry, since));
+                break;
             }
-            let Ok(kind) = entry.file_type() else { continue };
-            if kind.is_dir() {
-                folders.push(entry.path());
+            examined += 1;
+            let Some((saved, hash)) = entry.file_name().and_then(|n| n.to_str()).and_then(kept_stamp) else {
+                self.known.remove(&entry);
+                continue;
+            };
+            // Not old on the wall clock (or stamped in the future): it waits.
+            if wall_now.checked_sub(saved).is_none_or(|age| age < RETAIN_UNCHANGED) {
+                self.queue.push_back((entry, since));
                 continue;
             }
-            let name = entry.file_name();
-            let Some((saved, hash)) = name.to_str().and_then(kept_stamp) else { continue };
-            if kind.is_file()
-                && saved < cutoff
-                && fs::read(entry.path()).is_ok_and(|bytes| ContentHash::of(&bytes) == hash)
-                && fs::remove_file(entry.path()).is_ok()
-            {
-                pruned += 1;
+            match fs::symlink_metadata(&entry) {
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                    self.known.remove(&entry);
+                    continue;
+                }
+                Ok(meta) if meta.is_file() => {}
+                // Not a plain file any more, or can't be looked at: never ours to delete.
+                _ => continue,
+            }
+            match fs::read(&entry) {
+                Ok(bytes) if ContentHash::of(&bytes) == hash => {
+                    if fs::remove_file(&entry).is_ok() {
+                        self.known.remove(&entry);
+                        pruned += 1;
+                    } else {
+                        self.queue.push_back((entry, since));
+                    }
+                }
+                // Written to after its save: someone's edits, which only a person deletes. It stays known.
+                Ok(_) => {}
+                Err(_) => self.queue.push_back((entry, since)),
+            }
+        }
+        pruned
+    }
+
+    /// Walks the replaced folder at `root` and queues every `.kept` entry not known yet, counting its age from `mono`.
+    fn scan(&mut self, root: &Path, mono: Instant) {
+        self.scanned = true;
+        let mut found = Vec::new();
+        let mut folders = vec![root.to_path_buf()];
+        while let Some(folder) = folders.pop() {
+            let Ok(entries) = fs::read_dir(&folder) else { continue };
+            for entry in entries.flatten() {
+                let Ok(kind) = entry.file_type() else { continue };
+                if kind.is_dir() {
+                    folders.push(entry.path());
+                } else if kind.is_file() && entry.file_name().to_str().and_then(kept_stamp).is_some() {
+                    found.push(entry.path());
+                }
+            }
+        }
+        // Read order is the operating system's; sorting keeps passes repeatable.
+        found.sort();
+        for entry in found {
+            if self.known.insert(entry.clone()) {
+                self.queue.push_back((entry, mono));
             }
         }
     }
-    pruned
+}
+
+/// The wall and monotonic time now. Tests can move both forward, or the wall clock alone (see [`faults`]).
+pub(crate) fn clock() -> (SystemTime, Instant) {
+    let (wall_skew, mono_skew) = faults::clock_skew();
+    (SystemTime::now() + wall_skew, Instant::now() + mono_skew)
 }
 
 /// The time and hash in the name of a `.kept` entry (`<name>.<nanos>-<pid>-<n>.<hash>.kept`), or `None` for any
@@ -877,12 +997,16 @@ fn back_up(dir: &Path, path: &Path, expected: Option<ContentHash>, hooks: &Hooks
         // Without an identity the link can't be trusted as the same file, so it is checked like a copy.
         Ok(()) => {
             let linked = if hooks.ids_off.get() { None } else { file_id(&fs::symlink_metadata(&backup)) };
+            *hooks.made.borrow_mut() = Some(backup.clone());
             Ok(Backup::Held(Held { path: backup, found, linked, by_link: true }))
         }
         // Deleted between the read and the link: nothing to protect.
         Err(e) if e.kind() == io::ErrorKind::NotFound && !path.exists() => Ok(Backup::Absent),
         // The file system has no links (or won't make this one): copy instead.
-        Err(e) if links_unsupported(&e) => copy_backup(path, &bytes, backup),
+        Err(e) if links_unsupported(&e) => {
+            *hooks.made.borrow_mut() = Some(backup.clone());
+            copy_backup(path, &bytes, backup)
+        }
         Err(e) => Err(StoreError::io(path, e)),
     }
 }
@@ -985,8 +1109,16 @@ fn rename_no_replace(_: &Path, _: &Path) -> io::Result<bool> {
 /// The move aside is a rename that won't replace (an occupied quarantine name is skipped for the next), so a system
 /// without one refuses with [`StoreError::NoSafeChange`] before the target is touched, outside the Windows cell of the
 /// module's table. Putting a file back is a no-replace hard link, or that rename where links fail.
-pub(crate) fn remove_checked(dir: &Path, segs: &[String], expected: Option<ContentHash>) -> Result<bool, StoreError> {
-    remove_checked_with(dir, segs, expected, &Hooks::default())
+pub(crate) fn remove_checked(
+    dir: &Path,
+    segs: &[String],
+    expected: Option<ContentHash>,
+    retention: &mut Retention,
+) -> Result<bool, StoreError> {
+    let hooks = Hooks::default();
+    let outcome = remove_checked_with(dir, segs, expected, &hooks);
+    register_backup(&hooks, retention);
+    outcome
 }
 
 fn remove_checked_with(
@@ -1455,7 +1587,7 @@ mod tests {
         assert!(items[0].0.ends_with(KEPT), "{items:?}");
         assert!(no_temporary_file(dir));
         // Long after, the entry still isn't pruned: its bytes are not the ones it was kept with.
-        assert_eq!(prune_replaced(dir, later()), 0);
+        assert_eq!(prune_later(dir), 0);
         assert_eq!(texts(&kept(dir)), ["mine = 1\nlate = 9\n"]);
     }
 
@@ -1497,7 +1629,7 @@ mod tests {
             assert_eq!(fs::read_to_string(&path).unwrap(), "ours = 3\n");
             assert_eq!(texts(&kept(dir)), ["mine = 1\nlate = 9\n"]);
             assert!(no_temporary_file(dir));
-            assert_eq!(prune_replaced(dir, later()), 0);
+            assert_eq!(prune_later(dir), 0);
         }
     }
 
@@ -1780,9 +1912,32 @@ mod tests {
         assert_eq!(texts(&kept(d)), ["x = 1\nlate = 9\n"]);
     }
 
-    /// Just past the retention time from now.
-    fn later() -> SystemTime {
-        SystemTime::now() + RETAIN_UNCHANGED + Duration::from_secs(1)
+    /// Just past the retention time.
+    fn past() -> Duration {
+        RETAIN_UNCHANGED + Duration::from_secs(1)
+    }
+
+    /// Prunes `dir` with a fresh retention that finds its entries now, then once more with both clocks just past the
+    /// retention time; returns how many the second pass deleted.
+    fn prune_later(dir: &Path) -> usize {
+        let (wall, mono) = (SystemTime::now(), Instant::now());
+        let mut retention = Retention::default();
+        assert_eq!(retention.prune(dir, wall, mono), 0, "nothing is old when first found");
+        retention.prune(dir, wall + past(), mono + past())
+    }
+
+    /// The public functions, with a retention nothing reads.
+    fn replace_checked(
+        dir: &Path,
+        path: &Path,
+        text: &str,
+        expected: Option<ContentHash>,
+    ) -> Result<Replace, StoreError> {
+        super::replace_checked(dir, path, text, expected, &mut Retention::default())
+    }
+
+    fn remove_checked(dir: &Path, segs: &[String], expected: Option<ContentHash>) -> Result<bool, StoreError> {
+        super::remove_checked(dir, segs, expected, &mut Retention::default())
     }
 
     /// Replaces `rel` in `dir` (writing it first if needed), so its old text is kept in the replaced folder.
@@ -1811,11 +1966,13 @@ mod tests {
         write(dir, ".omuzaki/replaced/d.toml.1-2-3.displaced", "raced = 1\n");
         write(dir, ".omuzaki/replaced/notes.txt", "mine\n");
 
+        let (wall, mono) = (SystemTime::now(), Instant::now());
+        let mut retention = Retention::default();
         // Young entries are kept, however unchanged.
-        assert_eq!(prune_replaced(dir, SystemTime::now()), 0);
+        assert_eq!(retention.prune(dir, wall, mono), 0);
         assert_eq!(kept(dir).len(), 5);
         // Old and unchanged go; changed, raced and anything else stay.
-        assert_eq!(prune_replaced(dir, later()), 2);
+        assert_eq!(retention.prune(dir, wall + past(), mono + past()), 2);
         let left: Vec<_> = kept(dir).into_iter().map(|(n, t)| (n.split('.').next().unwrap().to_owned(), t)).collect();
         assert_eq!(
             left,
@@ -1826,23 +1983,75 @@ mod tests {
             ]
         );
         // Nothing to prune is fine, and so is a project with no replaced folder.
-        assert_eq!(prune_replaced(dir, later()), 0);
-        assert_eq!(prune_replaced(&dir.join("deep"), later()), 0);
+        assert_eq!(retention.prune(dir, wall + past(), mono + past()), 0);
+        assert_eq!(prune_later(&dir.join("deep")), 0);
     }
 
+    /// Without entries created since the last pass, one pass deletes its catch-up share and the next the rest.
     #[test]
-    fn pruning_deletes_at_most_its_limit_per_call() {
+    fn a_pass_without_new_entries_deletes_its_catch_up_share() {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
-        for _ in 0..PRUNE_MAX + 6 {
+        for _ in 0..PRUNE_CATCH_UP + 6 {
             replace_once(dir, "a.toml");
             fs::write(dir.join("a.toml"), MINE).unwrap();
         }
-        assert_eq!(kept(dir).len(), PRUNE_MAX + 6);
-        assert_eq!(prune_replaced(dir, later()), PRUNE_MAX);
+        let (wall, mono) = (SystemTime::now(), Instant::now());
+        let mut retention = Retention::default();
+        assert_eq!(retention.prune(dir, wall, mono), 0);
+        assert_eq!(retention.prune(dir, wall + past(), mono + past()), PRUNE_CATCH_UP);
         assert_eq!(kept(dir).len(), 6);
-        assert_eq!(prune_replaced(dir, later()), 6);
+        assert_eq!(retention.prune(dir, wall + past(), mono + past()), 6);
         assert_eq!(kept(dir), []);
+    }
+
+    /// Entries created since the last pass raise its budget, so pruning keeps pace however many a burst made.
+    #[test]
+    fn a_pass_deletes_at_least_what_was_created_since_the_last() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut retention = Retention::default();
+        let created = 3 * PRUNE_CATCH_UP;
+        for _ in 0..created {
+            let path = dir.join("a.toml");
+            if !path.exists() {
+                write(dir, "a.toml", MINE);
+            }
+            let expected = Some(ContentHash::of(&fs::read(&path).unwrap()));
+            super::replace_checked(dir, &path, "ours = 3\n", expected, &mut retention).unwrap();
+            fs::write(&path, MINE).unwrap();
+        }
+        assert_eq!(kept(dir).len(), created);
+        let (wall, mono) = (SystemTime::now(), Instant::now());
+        assert_eq!(retention.prune(dir, wall + past(), mono + past()), created);
+        assert_eq!(kept(dir), []);
+    }
+
+    /// The wall clock alone never makes an entry old: a forward jump doesn't, and neither does an old wall time while
+    /// the monotonic age is short. An entry stamped in the future waits for the wall clock as well.
+    #[test]
+    fn a_wall_clock_jump_never_prunes_an_entry_early() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        replace_once(dir, "a.toml");
+        write(
+            dir,
+            &format!(".omuzaki/replaced/b.toml.{}-1-0.{}.kept", u64::MAX / 2, ContentHash::of(b"b = 1\n")),
+            "b = 1\n",
+        );
+        let (wall, mono) = (SystemTime::now(), Instant::now());
+        let mut retention = Retention::default();
+        let jumped = wall + Duration::from_secs(24 * 60 * 60);
+        // The clock jumped a day forward, but no time has passed.
+        assert_eq!(retention.prune(dir, jumped, mono), 0);
+        assert_eq!(retention.prune(dir, jumped, mono + RETAIN_UNCHANGED / 2), 0);
+        assert_eq!(kept(dir).len(), 2);
+        // Enough time has passed on the monotonic clock, but the wall clock went back.
+        assert_eq!(retention.prune(dir, wall - Duration::from_secs(60), mono + past()), 0);
+        assert_eq!(kept(dir).len(), 2);
+        // Both are old for the entry stamped now; the one stamped far in the future stays.
+        assert_eq!(retention.prune(dir, wall + past(), mono + past()), 1);
+        assert_eq!(texts(&kept(dir)), ["b = 1\n"]);
     }
 
     #[test]

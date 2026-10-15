@@ -364,8 +364,13 @@ check; no check can see a write through a handle that is already open. So the di
   are the last-known ones. After the swap that entry is the displaced file, so a late write lands in it. Where the
   file system has no hard links the backup is a verified copy, and after the swap the displaced file itself is renamed
   over it, keeping the name.
-- **Pruned by later saves.** The first save of an open project, and then at most one save a minute, deletes up to
-  **64** `.kept` entries that are older than **10 minutes** and whose bytes still have the hash in their name.
+- **Pruned by later saves.** Every save deletes `.kept` entries that are at least **10 minutes** old on both the
+  monotonic clock (counted from when this process made the entry, or first found one it didn't make) and the wall
+  clock (the time in the name), and whose bytes still have the hash in their name: at most as many as were kept since
+  the last save, plus **16**, so pruning keeps pace with saves and works off a backlog. A wall clock that jumps
+  forward never makes an entry old early, and one stamped in the future waits for the wall clock too. A project's
+  first save walks the folder once for entries an earlier process left; after that a save's pruning costs what it
+  deletes plus a small fixed amount.
 - **Written-to entries are never pruned.** An entry whose bytes no longer match its hash holds edits someone made after
   the save; only a person deletes it. `.displaced` entries (a file that raced a save, or a temporary file an
   interrupted save left) carry no hash and are never deleted automatically either.
