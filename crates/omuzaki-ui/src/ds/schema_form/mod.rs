@@ -17,11 +17,11 @@
 //! | `integer` with five or fewer values; `enum`, or `oneOf` of `const`s, with two to five options | `Segmented` |
 //! | an enum with one option or more than five | `Dropdown` |
 //! | `boolean` | `Toggle` |
-//! | `string` with a `pattern` | `TextField` that shows its pattern as the error while it does not match |
+//! | `string` with a `pattern`, `minLength` or `maxLength` | `TextField` that shows what it needs while the text does not satisfy it |
 //! | `string` | `TextField` |
-//! | `number`/`integer` missing a bound | `NumberField` |
+//! | `number`/`integer` with one bound, or none | `NumberField` that enforces the bound it has (exclusive ones as exclusive) |
 //! | `object` with `properties` | a `Section` |
-//! | anything else (`null`-able types, unions, arrays, a `pattern` this matcher cannot evaluate) | a read-only row naming the type |
+//! | anything else (`null`-able types, unions, arrays, a `pattern` this matcher cannot evaluate, a string with `format` or `contentEncoding`, `multipleOf`) | a read-only row naming the type |
 //!
 //! `$ref` and `$defs` are followed. A field's label is its `title`, else its property name.
 //!
@@ -40,8 +40,11 @@
 //!   [`FormValue::Raw`] unchanged. A value that does not fit its field is kept the same way.
 //! - **Words come from the [`Strings`](crate::ds::Strings) table**; labels, titles and option names come from the
 //!   schema, which is data.
-//! - **Allocation does not grow with the form** (`tests/no_alloc.rs`), except for a read-only row (one string), a
-//!   field that fails its pattern (one string), a dropdown of more than 32 options (one `Vec`), and the Advanced badge.
+//! - **Allocation does not grow with the form** (`tests/schema_form.rs`), except for a read-only row (one string), a
+//!   field that fails its pattern or length (one string), a dropdown of more than 32 options (one `Vec`), and the
+//!   Advanced badge. A `pattern` is matched when the text changes, not every frame, in time linear in the text.
+//! - **Integers stay integers.** An `integer` field holds an `i128` ([`FormValue::Integer`]) and sends an `i64` or
+//!   `u64`, so every value the schema allows round-trips exactly; a bound is enforced as written, exclusive or not.
 
 mod model;
 mod pattern;

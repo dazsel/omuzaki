@@ -3,8 +3,11 @@
 //! The workspace has no regex engine and a form must not grow one for `^[a-z0-9-]+$`. This matcher understands
 //! literals, `.`, classes (`[a-z0-9_-]`, negated, with `\d \w \s`), the quantifiers `* + ? {n} {n,} {n,m}` and the
 //! anchors `^` and `$`. Anything else (groups, alternation, look-around) is refused by [`Pattern::parse`], and the form
-//! then shows the field read-only instead of guessing. Matching is by backtracking over `&str` slices and allocates
-//! nothing, so it can run every frame.
+//! then shows the field read-only instead of guessing.
+//!
+//! Matching is a table over (piece, position), built from the last piece to the first, so it costs
+//! O(pieces × length) however ambiguous the pattern is: many adjacent `a*` pieces cannot make it exponential. It
+//! allocates a few vectors the length of the text, so the form runs it only when the text changes, not every frame.
 
 /// One thing a piece can match.
 #[derive(Clone, Debug)]
@@ -174,47 +177,26 @@ impl Pattern {
     /// Whether `text` matches: the whole string when the pattern is anchored at both ends, a substring otherwise,
     /// as JSON Schema's `pattern` is.
     pub(super) fn is_match(&self, text: &str) -> bool {
-        if self.anchored_start {
-            return self.match_from(0, text);
+        let chars: Vec<char> = text.chars().collect();
+        let n = chars.len();
+        // `next[p]`: the pieces after the one being added match from position `p`.
+        let mut next: Vec<bool> = (0..=n).map(|p| !self.anchored_end || p == n).collect();
+        let mut here = vec![false; n + 1];
+        let mut run = vec![0usize; n + 1];
+        let mut before = vec![0usize; n + 2];
+        for piece in self.pieces.iter().rev() {
+            // `before[q]`: how many positions below `q` the rest matches from, so "any in a range" is one subtraction.
+            for q in 0..=n {
+                before[q + 1] = before[q] + usize::from(next[q]);
+            }
+            for p in (0..=n).rev() {
+                run[p] = if p < n && piece.atom.matches(chars[p]) { run[p + 1] + 1 } else { 0 };
+                let most = run[p].min(piece.max);
+                here[p] = most >= piece.min && before[p + most + 1] > before[p + piece.min];
+            }
+            std::mem::swap(&mut next, &mut here);
         }
-        let mut rest = text;
-        loop {
-            if self.match_from(0, rest) {
-                return true;
-            }
-            let mut chars = rest.chars();
-            if chars.next().is_none() {
-                return false;
-            }
-            rest = chars.as_str();
-        }
-    }
-
-    fn match_from(&self, index: usize, text: &str) -> bool {
-        let Some(piece) = self.pieces.get(index) else {
-            return !self.anchored_end || text.is_empty();
-        };
-        // Greedy: take as many as allowed, then give them back one at a time.
-        let mut taken = 0;
-        let mut ends = text.char_indices().map(|(i, _)| i).chain(std::iter::once(text.len()));
-        let mut at = ends.next().unwrap_or(0);
-        for c in text.chars() {
-            if taken == piece.max || !piece.atom.matches(c) {
-                break;
-            }
-            taken += 1;
-            at = ends.next().unwrap_or(text.len());
-        }
-        loop {
-            if taken >= piece.min && self.match_from(index + 1, &text[at..]) {
-                return true;
-            }
-            if taken == 0 || taken <= piece.min {
-                return false;
-            }
-            taken -= 1;
-            at = text.char_indices().nth(taken).map_or(text.len(), |(i, _)| i);
-        }
+        if self.anchored_start { next[0] } else { next.iter().any(|&m| m) }
     }
 }
 
@@ -264,6 +246,17 @@ mod tests {
         assert!(!matches("^a\\.b$", "axb"));
         assert!(matches("^.{3}$", "héé"));
         assert!(matches("^[a-]+$", "a-a"));
+    }
+
+    #[test]
+    fn an_ambiguous_pattern_is_linear_not_exponential() {
+        let pieces = "a*".repeat(60);
+        let pattern = Pattern::parse(&format!("^{pieces}b$")).unwrap_or_else(|| panic!("a pattern"));
+        let text = format!("{}c", "a".repeat(20_000));
+        let start = std::time::Instant::now();
+        assert!(!pattern.is_match(&text));
+        assert!(pattern.is_match(&format!("{}b", "a".repeat(20_000))));
+        assert!(start.elapsed() < std::time::Duration::from_secs(5), "took {:?}", start.elapsed());
     }
 
     #[test]

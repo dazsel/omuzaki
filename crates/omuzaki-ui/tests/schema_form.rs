@@ -247,6 +247,147 @@ fn a_value_that_does_not_fit_its_field_is_kept_not_clamped() {
     assert_eq!(Value::from(&value), json!({"field": 7.5}));
 }
 
+// ---- integers, bounds, lengths and defaults ----
+
+fn round_trip(field: Value, given: &Value) -> (FormValue, Value) {
+    let form = Form::from_schema(&one_field(field));
+    let value = form.value_from_json(&json!({"field": given}));
+    let out = Value::from(&value);
+    (value, out["field"].clone())
+}
+
+#[test]
+fn integers_keep_their_json_type_across_the_whole_i64_and_u64_range() {
+    for given in [
+        json!(0),
+        json!(2_000_000_000),
+        json!(4_294_967_295_u64),
+        json!(9_007_199_254_740_993_i64),
+        json!(i64::MAX),
+        json!(i64::MIN),
+        json!(u64::MAX),
+        json!(-9_007_199_254_740_993_i64),
+    ] {
+        let (value, out) = round_trip(json!({"type": "integer"}), &given);
+        assert!(matches!(&value, FormValue::Object(f) if matches!(f[0].1, FormValue::Integer(_))), "{given}");
+        assert_eq!(out, given, "an integer comes back as the same integer");
+        assert!(out.is_i64() || out.is_u64(), "{out} is an integer, not a float");
+    }
+    let (_, out) = round_trip(json!({"type": "integer", "minimum": 0, "maximum": u64::MAX}), &json!(u64::MAX));
+    assert_eq!(out, json!(u64::MAX));
+}
+
+#[test]
+fn a_one_sided_bound_is_a_number_field_that_keeps_the_bound() {
+    let schema = one_field(json!({"title": "Seed", "type": "integer", "minimum": 5}));
+    let mut h = rig(&schema);
+    assert_eq!(json_of(&h), json!({"field": 5}), "the default respects the bound");
+    assert!(h.query_by_role_and_label(Role::Slider, "Seed").is_none(), "one bound is not a slider");
+    assert!(h.query_by_role_and_label(Role::SpinButton, "Seed").is_some());
+    let form = &h.state().form;
+    let kept = form.value_from_json(&json!({"field": 4}));
+    assert!(
+        matches!(&kept, FormValue::Object(f) if matches!(f[0].1, FormValue::Raw(_))),
+        "below the minimum is kept, not accepted"
+    );
+    let big = form.value_from_json(&json!({"field": 5_000_000_000_u64}));
+    assert_eq!(Value::from(&big), json!({"field": 5_000_000_000_u64}), "no hidden upper limit");
+    focus(&mut h, Role::SpinButton, "Seed");
+    press(&mut h, Modifiers::NONE, Key::ArrowDown);
+    assert_eq!(json_of(&h), json!({"field": 5}), "arrow down stops at the minimum");
+
+    let only_max = Form::from_schema(&one_field(json!({"type": "number", "maximum": -2.5})));
+    assert_eq!(Value::from(&only_max.default_value()), json!({"field": -2.5}));
+    assert!(
+        matches!(&only_max.value_from_json(&json!({"field": -2.0})), FormValue::Object(f) if matches!(f[0].1, FormValue::Raw(_)))
+    );
+}
+
+#[test]
+fn exclusive_bounds_are_exclusive() {
+    let whole = Form::from_schema(&one_field(json!({"type": "integer", "exclusiveMinimum": 0, "maximum": 100})));
+    assert_eq!(Value::from(&whole.default_value()), json!({"field": 1}));
+    for (given, kept) in [(0, true), (1, false), (100, false), (101, true)] {
+        let value = whole.value_from_json(&json!({"field": given}));
+        assert_eq!(matches!(&value, FormValue::Object(f) if matches!(f[0].1, FormValue::Raw(_))), kept, "{given}");
+    }
+    let real = Form::from_schema(&one_field(json!({"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1})));
+    let FormValue::Object(fields) = real.default_value() else { panic!("an object") };
+    assert!(matches!(fields[0].1, FormValue::Number(n) if n > 0.0 && n < 1.0), "{:?}", fields[0].1);
+    for (given, kept) in [(0.0, true), (1.0, true), (0.5, false)] {
+        let value = real.value_from_json(&json!({"field": given}));
+        assert_eq!(matches!(&value, FormValue::Object(f) if matches!(f[0].1, FormValue::Raw(_))), kept, "{given}");
+    }
+    let above = Form::from_schema(&one_field(json!({"type": "number", "exclusiveMinimum": 0})));
+    let FormValue::Object(fields) = above.default_value() else { panic!("an object") };
+    assert!(matches!(fields[0].1, FormValue::Number(n) if n > 0.0), "zero is excluded");
+}
+
+#[test]
+fn string_lengths_are_enforced_and_unenforceable_assertions_fail_closed() {
+    let mut h = rig(&one_field(json!({"title": "Name", "type": "string", "minLength": 3, "maxLength": 5})));
+    assert_eq!(h.state().form.invalid_count(&h.state().value), 1, "empty is shorter than three");
+    focus(&mut h, Role::TextInput, "Name");
+    h.event(Event::Text("abc".to_owned()));
+    h.run();
+    assert_eq!(json_of(&h), json!({"field": "abc"}));
+    assert_eq!(h.state().form.invalid_count(&h.state().value), 0);
+    h.event(Event::Text("defg".to_owned()));
+    h.run();
+    assert_eq!(h.state().form.invalid_count(&h.state().value), 1, "seven characters is longer than five");
+    assert!(h.query_by_label_contains("Use 3 to 5 characters").is_some());
+
+    // Characters, not bytes.
+    let form = Form::from_schema(&one_field(json!({"type": "string", "maxLength": 2})));
+    assert_eq!(form.invalid_count(&form.value_from_json(&json!({"field": "éé"}))), 0);
+
+    for (assertion, named) in [
+        (json!({"format": "uuid"}), "Not editable here (string with format)"),
+        (json!({"contentEncoding": "base64"}), "Not editable here (string with contentEncoding)"),
+        (json!({"minLength": -1}), "Not editable here (string with an unsupported length)"),
+    ] {
+        let mut field = json!({"title": "Id", "type": "string"});
+        field
+            .as_object_mut()
+            .unwrap_or_else(|| panic!("an object"))
+            .extend(assertion.as_object().cloned().unwrap_or_default());
+        let form = Form::from_schema(&one_field(field));
+        let value = form.value_from_json(&json!({"field": "x"}));
+        let mut h = harness_state(Settings::default(), vec2(420.0, 300.0), (form, value), |ui, s| {
+            SchemaForm::new(&s.0, &mut s.1).show(ui);
+        });
+        h.run();
+        assert!(h.query_by_label_contains(named).is_some(), "{named}");
+        assert_eq!(Value::from(&h.state().1), json!({"field": "x"}));
+    }
+}
+
+#[test]
+fn a_declared_object_default_is_applied() {
+    let schema = schema(json!({"type": "object", "properties": {
+        "eye": {
+            "type": "object",
+            "default": {"size": 0.8},
+            "properties": {
+                "size": {"type": "number", "minimum": 0, "maximum": 1},
+                "lids": {"type": "integer", "minimum": 0, "maximum": 40, "default": 4}
+            }
+        },
+        "brow": {
+            "type": "object",
+            "x-ui": {"default": {"lift": 3}},
+            "default": {"lift": 1},
+            "properties": {"lift": {"type": "integer", "minimum": 0, "maximum": 40}}
+        }
+    }}));
+    let form = Form::from_schema(&schema);
+    assert_eq!(
+        Value::from(&form.default_value()),
+        json!({"eye": {"size": 0.8, "lids": 4}, "brow": {"lift": 3}}),
+        "x-ui.default wins; a key the default leaves out takes the field's own default"
+    );
+}
+
 // ---- levels, groups, the Essentials cap ----
 
 fn many(count: usize, level: Option<&str>) -> Schema {
@@ -411,6 +552,7 @@ fn perturb(value: &mut FormValue) {
     match value {
         FormValue::Object(fields) => fields.iter_mut().for_each(|(_, v)| perturb(v)),
         FormValue::Number(n) => *n += 1.0,
+        FormValue::Integer(n) => *n += 1,
         FormValue::Bool(on) => *on = !*on,
         FormValue::Text(text) => text.push('x'),
         FormValue::Choice { index, value } => {

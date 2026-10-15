@@ -2,7 +2,7 @@
 
 use egui::{Id, RichText, Ui, WidgetInfo, WidgetType};
 
-use super::model::{Entry, Form, Kind, Layout, MAX_SEGMENTS, Node, Opt, UNBOUNDED};
+use super::model::{Entry, Form, Kind, Layout, MAX_SEGMENTS, Node, OPEN, Opt, TextRule};
 use super::value::FormValue;
 use crate::ds::a11y;
 use crate::ds::strings::Msg;
@@ -153,17 +153,39 @@ fn field(ui: &mut Ui, cx: &mut Cx<'_>, node: &Node, value: &mut FormValue) {
     let Cx { ds, changed, words } = &mut *cx;
     let ds: &Ds = ds;
     match (&node.kind, &mut *value) {
-        (Kind::Slider { min, max, integer }, FormValue::Number(n)) => {
-            *changed |= slider(ui, node, n, *min..=*max, *integer);
+        (Kind::Real { min, max, slider }, FormValue::Number(n)) => {
+            let range = min.unwrap_or(-OPEN)..=max.unwrap_or(OPEN);
+            if *slider {
+                *changed |= slider_over(ui, node, n, range, false);
+            } else {
+                row(ui, node, |ui, name| {
+                    *changed |= NumberField::new(name, n, range).id_salt(&node.path).show(ui).response.changed();
+                });
+            }
         }
-        (Kind::Number { integer }, FormValue::Number(n)) => {
-            row(ui, node, |ui, name| {
-                *changed |=
-                    NumberField::new(name, n, -UNBOUNDED..=UNBOUNDED).id_salt(&node.path).show(ui).response.changed();
-                if *integer {
-                    *n = n.round();
-                }
-            });
+        (Kind::Int { min, max, slider }, FormValue::Integer(n)) => {
+            // The widgets edit a float: an untouched integer is never converted, an edited one is read back whole
+            // and kept inside its bounds.
+            #[allow(clippy::cast_precision_loss, reason = "only an edited value passes through a float")]
+            let range = min.map_or(-OPEN, |m| m as f64)..=max.map_or(OPEN, |m| m as f64);
+            #[allow(clippy::cast_precision_loss, reason = "only an edited value passes through a float")]
+            let mut edited = *n as f64;
+            let moved = if *slider {
+                slider_over(ui, node, &mut edited, range, true)
+            } else {
+                let mut moved = false;
+                row(ui, node, |ui, name| {
+                    let field = NumberField::new(name, &mut edited, range).decimals(0).step(1.0);
+                    moved = field.id_salt(&node.path).show(ui).response.changed();
+                });
+                moved
+            };
+            if moved {
+                #[allow(clippy::cast_possible_truncation, reason = "a float cast saturates, and the bounds clamp it")]
+                let whole = edited.round() as i128;
+                *n = whole.clamp(min.unwrap_or(i128::MIN), max.unwrap_or(i128::MAX));
+                *changed = true;
+            }
         }
         (Kind::Choice(opts), FormValue::Choice { index, value }) => {
             row(ui, node, |ui, name| {
@@ -179,11 +201,15 @@ fn field(ui: &mut Ui, cx: &mut Cx<'_>, node: &Node, value: &mut FormValue) {
         (Kind::Toggle, FormValue::Bool(on)) => {
             *changed |= ui.add(Toggle::switch(&node.label, on).id_salt(&node.path)).changed();
         }
-        (Kind::Text(pattern), FormValue::Text(text)) => {
+        (Kind::Text(rule), FormValue::Text(text)) => {
+            let checked = ui.id().with(("checked", node.path.as_str()));
+            let pattern_ok = rule.pattern.as_ref().is_none_or(|p| pattern_holds(ui.ctx(), checked, p, text));
+            let length_ok = rule.length_ok(text);
             row(ui, node, |ui, name| {
-                let broken = pattern.as_ref().filter(|p| !p.is_match(text));
                 let mut field = TextField::new(name, text).id_salt(&node.path);
-                if let Some(pattern) = broken {
+                if !length_ok {
+                    field = field.error(say_length(words, ds, rule));
+                } else if let (false, Some(pattern)) = (pattern_ok, &rule.pattern) {
                     field = field.error(say(words, ds, Msg::FormPatternError, "pattern", pattern.source()));
                 }
                 *changed |= ui.add(field).changed();
@@ -200,17 +226,52 @@ fn field(ui: &mut Ui, cx: &mut Cx<'_>, node: &Node, value: &mut FormValue) {
     }
 }
 
-fn slider(ui: &mut Ui, node: &Node, n: &mut f64, range: std::ops::RangeInclusive<f64>, integer: bool) -> bool {
+fn slider_over(ui: &mut Ui, node: &Node, n: &mut f64, range: std::ops::RangeInclusive<f64>, integer: bool) -> bool {
     let mut slider = ParamSlider::new(&node.label, n, range).id_salt(&node.path);
     // A whole-number field steps by one and shows no decimals.
     if integer {
         slider = slider.step(1.0).decimals(0);
     }
-    let changed = slider.show(ui).response.changed();
-    if integer {
-        *n = n.round();
-    }
-    changed
+    slider.show(ui).response.changed()
+}
+
+/// What the last pattern check of one field was, so the matcher runs when the text changes and not every frame.
+#[derive(Clone)]
+struct Checked {
+    pattern: String,
+    text: String,
+    holds: bool,
+}
+
+fn pattern_holds(ctx: &egui::Context, id: Id, pattern: &super::pattern::Pattern, text: &str) -> bool {
+    ctx.data_mut(|d| {
+        let check = d.get_temp_mut_or_insert_with(id, || Checked {
+            pattern: pattern.source().to_owned(),
+            text: text.to_owned(),
+            holds: pattern.is_match(text),
+        });
+        if check.text != text || check.pattern != pattern.source() {
+            check.pattern.clear();
+            check.pattern.push_str(pattern.source());
+            check.text.clear();
+            check.text.push_str(text);
+            check.holds = pattern.is_match(text);
+        }
+        check.holds
+    })
+}
+
+/// What a text field's length needs, written into `buf`.
+fn say_length<'b>(buf: &'b mut String, ds: &Ds, rule: &TextRule) -> &'b str {
+    let (min, max) = (rule.min_len.to_string(), rule.max_len.map(|m| m.to_string()));
+    let text = match (rule.min_len, &max) {
+        (0, Some(max)) => ds.text_with(Msg::FormLengthMax, &[("max", max)]),
+        (_, Some(max)) => ds.text_with(Msg::FormLengthBetween, &[("min", &min), ("max", max)]),
+        (_, None) => ds.text_with(Msg::FormLengthMin, &[("min", &min)]),
+    };
+    buf.clear();
+    buf.push_str(&text);
+    buf
 }
 
 /// A segmented control for two to five options, a dropdown for the rest. True when the choice changed.
