@@ -5,6 +5,7 @@ use std::f64::consts::{PI, TAU};
 use omuzaki_core::rng::Rng;
 
 use super::SAMPLE_RATE;
+use super::math::{pow10, sin_cos};
 
 /// A delay followed by a random timbre filter: a peaking band and a low-pass. The clap test finds the delay by
 /// matching onsets between a signal and its changed copy, so the copy must be late and must not sound the same.
@@ -17,8 +18,8 @@ pub struct Changer {
 }
 
 impl Changer {
-    /// `signal` delayed by [`Changer::delay`] samples and filtered. The result is `delay` samples longer, so nothing
-    /// of the tail is cut off.
+    /// `signal` delayed by [`Changer::delay`] samples and filtered. The result is `signal.len() + delay + 64` samples long, so nothing
+    /// of the tail is cut off: the delay in front, and 64 samples of silence behind for the filters to ring out into.
     #[must_use]
     pub fn apply(&self, signal: &[f32]) -> Vec<f32> {
         let mut out = vec![0.0f32; self.delay];
@@ -55,23 +56,25 @@ struct Biquad {
 
 impl Biquad {
     fn peaking(centre: f64, q: f64, gain_db: f64) -> Self {
-        let a = 10f64.powf(gain_db / 40.0);
+        let a = pow10(gain_db / 40.0);
         let w = TAU * centre / f64::from(SAMPLE_RATE);
-        let alpha = w.sin() / (2.0 * q);
+        let (sin_w, cos_w) = sin_cos(w);
+        let alpha = sin_w / (2.0 * q);
         let a0 = 1.0 + alpha / a;
         Self {
-            b: [(1.0 + alpha * a) / a0, -2.0 * w.cos() / a0, (1.0 - alpha * a) / a0],
-            a: [-2.0 * w.cos() / a0, (1.0 - alpha / a) / a0],
+            b: [(1.0 + alpha * a) / a0, -2.0 * cos_w / a0, (1.0 - alpha * a) / a0],
+            a: [-2.0 * cos_w / a0, (1.0 - alpha / a) / a0],
         }
     }
 
     fn low_pass(cutoff: f64, q: f64) -> Self {
         let w = 2.0 * PI * cutoff / f64::from(SAMPLE_RATE);
-        let alpha = w.sin() / (2.0 * q);
+        let (sin_w, cos_w) = sin_cos(w);
+        let alpha = sin_w / (2.0 * q);
         let a0 = 1.0 + alpha;
         Self {
-            b: [(1.0 - w.cos()) / 2.0 / a0, (1.0 - w.cos()) / a0, (1.0 - w.cos()) / 2.0 / a0],
-            a: [-2.0 * w.cos() / a0, (1.0 - alpha) / a0],
+            b: [(1.0 - cos_w) / 2.0 / a0, (1.0 - cos_w) / a0, (1.0 - cos_w) / 2.0 / a0],
+            a: [-2.0 * cos_w / a0, (1.0 - alpha) / a0],
         }
     }
 

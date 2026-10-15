@@ -39,6 +39,10 @@ enum Flaw {
     AllocatesInSetParam,
     /// Panics in `process` after a while.
     Panics,
+    /// Frees a buffer it made at creation, in `process`.
+    Frees,
+    /// Leaks into the right channel only, so silence decays on a mono bus and not on a stereo one.
+    RightLeaks,
 }
 
 const SMOOTHED: &[ParamSpec] =
@@ -73,6 +77,7 @@ impl NodeKind for Fixture {
             gain: 1.0,
             target: 1.0,
             processed: 0,
+            spare: Some(Box::new([0; 16])),
         }))
     }
 }
@@ -85,6 +90,7 @@ struct FixtureNode {
     gain: f32,
     target: f32,
     processed: u64,
+    spare: Option<Box<[u8; 16]>>,
 }
 
 impl Node for FixtureNode {
@@ -107,6 +113,9 @@ impl Node for FixtureNode {
             black_box(Box::new([0u8; 16]));
         }
         assert!(self.flaw != Flaw::Panics || self.processed <= 20_000, "the fixture gave up");
+        if self.flaw == Flaw::Frees {
+            black_box(self.spare.take());
+        }
         let frames = block.frames();
         // 5 ms at 48 kHz is a time constant of 240 samples.
         let step = 1.0 - (-1.0f32 / 240.0).exp();
@@ -125,14 +134,14 @@ impl Node for FixtureNode {
             for (n, sample) in samples.iter_mut().enumerate() {
                 std::mem::swap(sample, &mut history[channel][at]);
                 at = (at + 1) % DELAY as usize;
-                if flaw == Flaw::None || flaw == Flaw::LyingLatency || flaw == Flaw::NoDecay || clip {
+                if matches!(flaw, Flaw::None | Flaw::LyingLatency | Flaw::NoDecay | Flaw::RightLeaks) || clip {
                     gain += (target - gain) * step;
                 }
                 *sample *= gain;
                 if clip {
                     *sample = sample.clamp(-0.3, 0.3);
                 }
-                if flaw == Flaw::NoDecay {
+                if flaw == Flaw::NoDecay || (flaw == Flaw::RightLeaks && channel == 1) {
                     *sample += 1e-3;
                 }
                 if flaw == Flaw::Nan && processed + n as u64 >= 100_000 {
@@ -142,7 +151,7 @@ impl Node for FixtureNode {
             end_gain = gain;
             channel += 1;
         });
-        if matches!(self.flaw, Flaw::None | Flaw::LyingLatency | Flaw::NoDecay) || self.clip {
+        if matches!(self.flaw, Flaw::None | Flaw::LyingLatency | Flaw::NoDecay | Flaw::RightLeaks) || self.clip {
             self.gain = end_gain;
         }
         self.position = (position + frames) % DELAY as usize;
@@ -238,8 +247,21 @@ fn a_block_size_dependent_node_fails_the_block_size_check() {
 
 #[test]
 fn an_allocating_node_fails_the_allocation_check() {
-    assert_only_fails(Flaw::Allocates, Check::Allocation, "`process or report` allocated");
-    assert_only_fails(Flaw::AllocatesInSetParam, Check::Allocation, "`set_param` allocated");
+    assert_only_fails(Flaw::Allocates, Check::Allocation, "`process or report` called the allocator");
+    assert_only_fails(Flaw::AllocatesInSetParam, Check::Allocation, "`set_param` called the allocator");
+}
+
+#[test]
+fn freeing_memory_on_the_audio_thread_fails_the_allocation_check_too() {
+    assert_only_fails(Flaw::Frees, Check::Allocation, "(allocating or freeing)");
+}
+
+#[test]
+fn a_leak_on_one_channel_only_fails_the_decay_check_on_stereo_and_names_the_channel() {
+    let report = check_with(&Fixture { flaw: Flaw::RightLeaks, clip: false }, &quick());
+    assert_eq!(failed_checks(&report), [Check::SilenceDecay], "{report}");
+    assert!(report.failures().all(|r| r.channels == Some(Channels::Stereo)), "{report}");
+    assert!(report.to_string().contains("channel 1 still has a peak of"), "{report}");
 }
 
 #[test]

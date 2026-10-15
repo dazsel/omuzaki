@@ -292,6 +292,33 @@ fn bad_streams_are_refused_and_the_real_buffer_size_is_reported() {
 }
 
 #[test]
+fn a_clock_that_cannot_run_is_refused_or_fails_the_stream_instead_of_hanging_the_step() {
+    let open = |device: FakeDevice| {
+        let backend = FakeBackend::new(vec![device], Script::new());
+        backend.open_input(&fake_id("mic"), config(256), Box::new(|_, _| {}), Box::new(|_| {})).map(|_| ())
+    };
+    assert!(matches!(
+        open(FakeDevice::input("mic", "Mic", 1).with_callback_frames(0)),
+        Err(BackendError::Unsupported(_))
+    ));
+    for ppm in [-1_000_000.0, -2_000_000.0, f64::NAN, f64::NEG_INFINITY] {
+        let refused = open(FakeDevice::input("mic", "Mic", 1).with_drift_ppm(ppm));
+        assert!(matches!(refused, Err(BackendError::Unsupported(_))), "{ppm}: {refused:?}");
+    }
+    // A script that stops the clock under a running stream: the stream fails, and the step ends.
+    let backend = FakeBackend::new(
+        vec![FakeDevice::input("mic", "Mic", 1)],
+        Script::new().at(300, Event::Drift { device: fake_id("mic"), ppm: -2_000_000.0 }),
+    );
+    let probe = open_probe(&backend, "mic", config(100));
+    backend.step(1000);
+    assert_eq!(backend.now(), 1000);
+    assert_eq!(probe.callbacks.load(Ordering::SeqCst), 2, "the callbacks before the drift event ran");
+    assert!(matches!(probe.errors.lock().unwrap()[..], [BackendError::Other(_)]));
+    assert_eq!(backend.open_streams(), 0);
+}
+
+#[test]
 fn the_same_script_gives_the_same_run() {
     let run = || {
         let backend = host(

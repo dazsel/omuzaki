@@ -9,6 +9,7 @@ use std::f64::consts::{PI, TAU};
 
 use omuzaki_core::rng::Rng;
 
+use super::math::{cos, exp};
 use super::{SAMPLE_RATE, normalise, samples_in};
 
 /// Formant centre frequencies and bandwidths of one vowel, in Hz.
@@ -105,7 +106,7 @@ pub struct VoiceSpec {
     pub seconds: f64,
     /// The fundamental frequency in Hz over time.
     pub f0: Trajectory,
-    /// The vowel at given times; the formants move in straight lines between them.
+    /// The vowel at given times, in any order; the formants move in straight lines between them in time order.
     pub vowels: Vec<(f64, Vowel)>,
     /// Random variation of each glottal period, as a fraction of it (0.005 is a steady voice).
     pub jitter: f64,
@@ -165,8 +166,8 @@ struct Resonator {
 impl Resonator {
     fn tune(&mut self, centre: f64, bandwidth: f64) {
         let rate = f64::from(SAMPLE_RATE);
-        self.c = -(-TAU * bandwidth / rate).exp();
-        self.b = 2.0 * (-PI * bandwidth / rate).exp() * (TAU * centre / rate).cos();
+        self.c = -exp(-TAU * bandwidth / rate);
+        self.b = 2.0 * exp(-PI * bandwidth / rate) * cos(TAU * centre / rate);
         self.a = 1.0 - self.b - self.c;
     }
 
@@ -181,9 +182,9 @@ impl Resonator {
 /// The Rosenberg pulse at `phase` in `[0, 1)`.
 fn rosenberg(phase: f64) -> f64 {
     if phase < OPEN {
-        0.5 * (1.0 - (PI * phase / OPEN).cos())
+        0.5 * (1.0 - cos(PI * phase / OPEN))
     } else if phase < OPEN + CLOSING {
-        (0.5 * PI * (phase - OPEN) / CLOSING).cos()
+        cos(0.5 * PI * (phase - OPEN) / CLOSING)
     } else {
         0.0
     }
@@ -193,6 +194,10 @@ fn rosenberg(phase: f64) -> f64 {
 #[must_use]
 pub fn voice(spec: &VoiceSpec) -> Vec<f32> {
     let len = samples_in(spec.seconds);
+    // The vowels may be given in any order; the formants follow them in time order.
+    let mut sorted = spec.clone();
+    sorted.vowels.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let spec = &sorted;
     let rate = f64::from(SAMPLE_RATE);
     let mut rng = Rng::new(spec.seed);
     let mut resonators = [Resonator::default(); 4];
@@ -279,6 +284,15 @@ mod tests {
         let (a, i) = (say(Vowel::A), say(Vowel::I));
         assert!(power_at(&a, 720.0) > 3.0 * power_at(&a, 240.0), "/a/ is strong near 720 Hz");
         assert!(power_at(&i, 240.0) > 3.0 * power_at(&i, 720.0), "/i/ is strong near 240 Hz");
+    }
+
+    #[test]
+    fn vowels_may_be_given_in_any_order() {
+        let mut ordered = VoiceSpec::steady(3, 0.4);
+        ordered.vowels = vec![(0.0, Vowel::A), (0.2, Vowel::I)];
+        let mut shuffled = ordered.clone();
+        shuffled.vowels.reverse();
+        assert_eq!(voice(&ordered), voice(&shuffled));
     }
 
     #[test]

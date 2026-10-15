@@ -177,7 +177,7 @@ pub(crate) fn block_sizes(cx: &Context<'_>, setting: Setting) -> Outcome {
     })
 }
 
-/// `process`, `set_param`, `reset` and `report` allocate nothing.
+/// `process`, `set_param`, `reset` and `report` neither allocate nor free.
 pub(crate) fn allocation(cx: &Context<'_>, setting: Setting) -> Outcome {
     if cx.config.allocations == AllocationCheck::Skip {
         return Outcome::Skipped("the allocation check was turned off".into());
@@ -232,7 +232,9 @@ pub(crate) fn allocation(cx: &Context<'_>, setting: Setting) -> Outcome {
         });
         for (name, count) in [("set_param", set_param), ("process or report", process_calls), ("reset", reset)] {
             if count > 0 {
-                return Err(format!("`{name}` allocated {count} time(s); the audio thread must never allocate"));
+                return Err(format!(
+                    "`{name}` called the allocator {count} time(s) (allocating or freeing); the audio thread must never do either"
+                ));
             }
         }
         Ok(Outcome::Pass)
@@ -249,9 +251,10 @@ pub(crate) fn finite_and_decay(cx: &Context<'_>, setting: Setting) -> (Outcome, 
     let channels = cx.channels.count();
     let mut first_sample = 0u64;
     // Runs `frames` frames of `source` through the node and reports the first non-finite value and the peak.
-    let mut run = |frames: usize, loud: bool| -> Result<(f32, Vec<f32>), String> {
+    let mut run = |frames: usize, loud: bool| -> Result<(f32, [f32; 2]), String> {
         let mut peak = 0.0f32;
-        let mut tail = Vec::new();
+        // The peak of each channel over the last second.
+        let mut tail = [0.0f32; 2];
         let mut left = vec![0.0f32; 256];
         let mut right = vec![0.0f32; 256];
         let mut done = 0;
@@ -280,10 +283,11 @@ pub(crate) fn finite_and_decay(cx: &Context<'_>, setting: Setting) -> (Outcome, 
                         if loud { "noise" } else { "silence" }
                     ));
                 }
-                peak = peak.max(data.iter().fold(0.0f32, |m, s| m.max(s.abs())));
-            }
-            if !loud && frames - done <= SAMPLE_RATE as usize {
-                tail.extend_from_slice(&left[..n]);
+                let block_peak = data.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+                peak = peak.max(block_peak);
+                if !loud && frames - done <= SAMPLE_RATE as usize {
+                    tail[channel] = tail[channel].max(block_peak);
+                }
             }
             first_sample += n as u64;
             done += n;
@@ -299,15 +303,20 @@ pub(crate) fn finite_and_decay(cx: &Context<'_>, setting: Setting) -> (Outcome, 
     };
     let decay = match run(samples_in(cx.config.decay_seconds), false) {
         Ok((_, tail)) => {
-            let last = tail.iter().fold(0.0f32, |m, s| m.max(s.abs()));
-            // -120 dBFS is 1e-6.
+            // The loudest channel decides. -120 dBFS is 1e-6.
+            let (channel, last) = tail
+                .iter()
+                .take(channels)
+                .copied()
+                .enumerate()
+                .fold((0, 0.0f32), |a, (c, p)| if p > a.1 { (c, p) } else { a });
             if last < 1e-6 {
                 Outcome::Pass
             } else {
                 fail(format!(
-                    "the last second of {} s of silence still has a peak of {last:e} ({:.1} dBFS); it must fall below -120 dBFS",
-                    cx.config.decay_seconds,
-                    20.0 * last.log10()
+                    "channel {channel} still has a peak of {last:e} ({:.1} dBFS) in the last second of {} s of silence; it must fall below -120 dBFS",
+                    20.0 * last.log10(),
+                    cx.config.decay_seconds
                 ))
             }
         }

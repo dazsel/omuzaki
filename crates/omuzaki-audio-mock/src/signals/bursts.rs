@@ -46,7 +46,7 @@ pub fn plosive(len: usize, seed: u64, amplitude: f32) -> Vec<f32> {
 /// The per-sample factor of an exponential that falls 60 dB in `decay_ms`.
 fn decay_ms_to_factor(decay_ms: f64) -> f64 {
     let samples = (decay_ms * 1e-3 * f64::from(SAMPLE_RATE)).max(1.0);
-    10f64.powf(-3.0 / samples)
+    super::math::pow10(-3.0 / samples)
 }
 
 #[cfg(test)]

@@ -110,7 +110,8 @@ impl FakeDevice {
         self
     }
 
-    /// Its clock runs fast by `ppm` parts per million (negative: slow).
+    /// Its clock runs fast by `ppm` parts per million (negative: slow). At -1 000 000 ppm or below the clock does not run
+    /// at all: a stream on such a device is refused, or fails if a script event brings the drift there.
     #[must_use]
     pub fn with_drift_ppm(mut self, ppm: f64) -> Self {
         self.drift_ppm = ppm;
@@ -132,7 +133,8 @@ impl FakeDevice {
         self
     }
 
-    /// The frames the device really delivers per callback, whatever was requested.
+    /// The frames the device really delivers per callback, whatever was requested. A device with 0 refuses every
+    /// stream with `BackendError::Unsupported`.
     #[must_use]
     pub fn with_callback_frames(mut self, frames: u32) -> Self {
         self.callback_frames = Some(frames);

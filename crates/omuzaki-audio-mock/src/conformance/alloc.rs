@@ -7,7 +7,7 @@
 //! static ALLOC: omuzaki_audio_mock::conformance::CountingAlloc = omuzaki_audio_mock::conformance::CountingAlloc;
 //! ```
 //!
-//! The count is per thread, so other test threads allocating at the same time do not disturb a measurement.
+//! It counts every call into the allocator: allocations, reallocations and frees. The count is per thread, so other test threads allocating at the same time do not disturb a measurement.
 
 // A global allocator is `unsafe` by definition; this one only counts and forwards to the system allocator.
 #![allow(unsafe_code)]
@@ -20,7 +20,7 @@ thread_local! {
     static COUNT: Cell<u64> = const { Cell::new(0) };
 }
 
-/// A [`GlobalAlloc`] that counts the allocations (and reallocations) of each thread and forwards to [`System`].
+/// A [`GlobalAlloc`] that counts the allocations, reallocations and frees of each thread and forwards to [`System`].
 #[derive(Debug, Default)]
 pub struct CountingAlloc;
 
@@ -34,6 +34,8 @@ unsafe impl GlobalAlloc for CountingAlloc {
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // Freeing takes the allocator's locks too, and the `Node` contract forbids it on the audio thread.
+        let _ = COUNT.try_with(|c| c.set(c.get() + 1));
         // SAFETY: `ptr` and `layout` come from the matching `alloc` of `System`.
         unsafe { System.dealloc(ptr, layout) }
     }
@@ -45,7 +47,7 @@ unsafe impl GlobalAlloc for CountingAlloc {
     }
 }
 
-/// How many allocations the calling thread makes while `f` runs. Zero for everything if [`CountingAlloc`] is not the
+/// How many calls into the allocator (allocate, reallocate or free) the calling thread makes while `f` runs. Zero for everything if [`CountingAlloc`] is not the
 /// global allocator, which the suite detects before it trusts a zero.
 pub fn allocations_during(f: &mut dyn FnMut()) -> u64 {
     let before = COUNT.with(Cell::get);

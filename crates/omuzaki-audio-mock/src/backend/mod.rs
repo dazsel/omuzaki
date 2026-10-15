@@ -100,6 +100,12 @@ fn period(config: StreamConfig, ppm: f64) -> f64 {
     f64::from(config.buffer_frames) / (f64::from(config.rate) * (1.0 + ppm * 1e-6))
 }
 
+/// Whether `seconds` is a usable time between callbacks. A zero, negative or non-finite one (drift below -1e6 ppm, or a
+/// device that delivers no frames) would stop time advancing, so a step would never end.
+fn valid_period(seconds: f64) -> bool {
+    seconds.is_finite() && seconds > 0.0
+}
+
 /// A callback that falls within this many seconds before a boundary counts as at the boundary: sums of periods are not
 /// exact in floating point, and a callback at exactly `k / 48000` must not move to the other side of an event at `k`.
 const BOUNDARY_SLACK: f64 = 1e-9;
@@ -228,7 +234,7 @@ impl FakeBackend {
                 (shared.script.next_index().map_or(target, |i| i.min(target)), killed)
             };
             for stream in killed {
-                stream.fail();
+                stream.fail(BackendError::DeviceNotAvailable);
             }
             if segment_end <= locked(&self.shared).now {
                 break;
@@ -258,6 +264,12 @@ impl FakeBackend {
                 stream.alive.store(false, Ordering::Release);
                 continue;
             };
+            if !valid_period(period(stream.config, ppm)) {
+                // A script event gave the device a drift that cannot be a clock: the stream fails like a lost device.
+                drop(state);
+                stream.fail(BackendError::Other(format!("the device's drift of {ppm} ppm is not a clock")));
+                continue;
+            }
             let at = stream.next_at();
             let channels = usize::from(stream.config.channels);
             let StreamState { callback, buffer, frames_done, .. } = &mut *state;
@@ -348,6 +360,15 @@ impl FakeBackend {
         let actual =
             StreamConfig { buffer_frames: state.device.callback_frames.unwrap_or(config.buffer_frames), ..config };
         let ppm = state.device.drift_ppm;
+        if actual.buffer_frames == 0 || !valid_period(period(actual, ppm)) {
+            return Err(BackendError::Unsupported(format!(
+                "{} would call back every {} s ({} frames at {} ppm)",
+                info.label,
+                period(actual, ppm),
+                actual.buffer_frames,
+                ppm
+            )));
+        }
         let stream = Arc::new(Stream {
             device: id.clone(),
             config: actual,
@@ -375,12 +396,12 @@ impl Stream {
     }
 
     /// The device went away under a running stream: report it once and stop.
-    fn fail(&self) {
+    fn fail(&self, error: BackendError) {
         let mut state = locked(&self.state);
         if self.alive.swap(false, Ordering::AcqRel)
             && let Some(on_error) = state.on_error.as_mut()
         {
-            on_error(BackendError::DeviceNotAvailable);
+            on_error(error);
         }
     }
 }

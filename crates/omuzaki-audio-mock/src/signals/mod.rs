@@ -13,8 +13,8 @@
 //! | [`impulse`], [`click_train`] | single clicks, for latency measurements |
 //! | [`changer`] | a delay plus a random timbre filter, for clap-test tests |
 //!
-//! "Bit-identical for a seed" means the same samples on the same machine and build. The voice and the changer use
-//! `f64` `sin`, `cos` and `exp`, which the platform's math library may round differently in the last place.
+//! "Bit-identical for a seed" holds on every target: the generators use only IEEE `+ - * /` and their own `sin`, `cos`,
+//! `exp` and `ln` (`math.rs`), never the platform's math library, whose last bit differs between targets.
 
 // Signals are `f32` made from `f64` arithmetic, and sample indices stay far below 2^52: the casts in this module are
 // exact enough by construction.
@@ -22,6 +22,7 @@
 
 mod bursts;
 mod changer;
+mod math;
 mod noise;
 mod tones;
 mod voice;

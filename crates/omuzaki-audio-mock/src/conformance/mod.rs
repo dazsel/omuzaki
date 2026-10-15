@@ -9,7 +9,7 @@
 //! | [`Check::Declaration`] | the kind's description is consistent, and a node of it can be made on every channel count it claims |
 //! | [`Check::Latency`] | an impulse (linear kinds) or a click train (the rest) comes out [`Node::latency`](omuzaki_audio_api::node::Node::latency) samples late, within a tolerance, and the latency never changes |
 //! | [`Check::BlockSizes`] | blocks of 1, 7, 64, 256, 1024 and random lengths give bit-identical output |
-//! | [`Check::Allocation`] | `process`, `set_param`, `reset` and `report` allocate nothing |
+//! | [`Check::Allocation`] | `process`, `set_param`, `reset` and `report` neither allocate nor free |
 //! | [`Check::Finite`] | a minute of white noise gives no NaN or infinity |
 //! | [`Check::SilenceDecay`] | after the noise, silence decays below -120 dBFS |
 //! | [`Check::Reset`] | after `reset` the output equals a fresh node's |
@@ -44,7 +44,7 @@ pub enum Check {
     Latency,
     /// The output does not depend on how the input is cut into blocks.
     BlockSizes,
-    /// The audio-thread methods allocate nothing.
+    /// The audio-thread methods neither allocate nor free.
     Allocation,
     /// The output is finite for any input.
     Finite,

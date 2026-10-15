@@ -3,12 +3,13 @@
 use std::f64::consts::TAU;
 
 use super::SAMPLE_RATE;
+use super::math::{exp, ln, sin};
 
 /// A sine of `hz` at `amplitude`, starting at phase 0.
 #[must_use]
 pub fn sine(len: usize, hz: f64, amplitude: f32) -> Vec<f32> {
     let step = TAU * hz / f64::from(SAMPLE_RATE);
-    (0..len).map(|n| amplitude * ((n as f64) * step).sin() as f32).collect()
+    (0..len).map(|n| amplitude * sin((n as f64) * step) as f32).collect()
 }
 
 /// How a sweep moves from its first frequency to its last.
@@ -31,11 +32,12 @@ pub fn sine_sweep(len: usize, from_hz: f64, to_hz: f64, shape: Sweep, amplitude:
             let phase = match shape {
                 Sweep::Linear => TAU * (from_hz * t + 0.5 * (to_hz - from_hz) * t * t / seconds),
                 Sweep::Logarithmic => {
-                    let k = (to_hz / from_hz).ln() / seconds;
-                    TAU * from_hz * ((k * t).exp() - 1.0) / k
+                    let k = ln(to_hz / from_hz) / seconds;
+                    // With (almost) no sweep (k = 0) the integral of the frequency is a straight line; the limit of the formula.
+                    if (k * seconds).abs() < 1e-9 { TAU * from_hz * t } else { TAU * from_hz * (exp(k * t) - 1.0) / k }
                 }
             };
-            amplitude * phase.sin() as f32
+            amplitude * sin(phase) as f32
         })
         .collect()
 }
@@ -86,6 +88,16 @@ mod tests {
             let (start, end) = (crossings(&s[..4800]), crossings(&s[96_000 - 4800..]));
             assert!((9..=12).contains(&start), "{shape:?} start {start}");
             assert!((90..=105).contains(&end), "{shape:?} end {end}");
+        }
+    }
+
+    #[test]
+    fn a_logarithmic_sweep_between_equal_frequencies_is_a_steady_tone() {
+        for to in [440.0, 440.000_000_01] {
+            let s = sine_sweep(4800, 440.0, to, Sweep::Logarithmic, 0.5);
+            assert!(s.iter().all(|v| v.is_finite()));
+            let steady = sine(4800, 440.0, 0.5);
+            assert!(s.iter().zip(&steady).all(|(a, b)| (a - b).abs() < 1e-4));
         }
     }
 
