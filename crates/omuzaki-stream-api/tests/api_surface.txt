@@ -17,7 +17,7 @@ src/encoder.rs: pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<By
 src/encoder.rs: pub struct Frame<'a> {
 src/encoder.rs: pub fn new(size: UVec2, index: u64, capture_time: Ticks) -> Self {
 src/encoder.rs: pub fn with_cpu(mut self, image: &'a Image) -> Self {
-src/encoder.rs: pub fn with_gpu(mut self, gpu: &'a mut dyn Any) -> Self {
+src/encoder.rs: pub fn with_gpu(mut self, gpu: &'a dyn Any) -> Self {
 src/encoder.rs: pub struct EncodeConfig {
 src/encoder.rs: pub fn new(video: VideoSpec, codec: CodecId) -> Result<Self, StreamError> {
 src/encoder.rs: pub fn validate(&self) -> Result<(), StreamError> {

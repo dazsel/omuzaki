@@ -6,7 +6,9 @@ use omuzaki_stream_api::encoder::{
     AlphaKind, AudioSpec, CodecId, EncodeConfig, Frame, StreamKind, StreamSpec, VideoSpec,
 };
 use omuzaki_stream_api::error::StreamError;
-use omuzaki_stream_api::output::{Feed, OutputConfig, OutputState, OutputStatus};
+use omuzaki_stream_api::output::{
+    AlphaNeed, Feed, Lanes, Output, OutputConfig, OutputInfo, OutputState, OutputStatus, SubmitReport,
+};
 use omuzaki_stream_api::time::{Ticks, Timebase};
 
 const TB: Timebase = Timebase { num: 1, den: 30 };
@@ -124,4 +126,41 @@ fn a_codec_of_the_wrong_kind_is_refused() {
     let mut cfg = EncodeConfig::new(video(), CodecId::H264).unwrap();
     cfg.codec = CodecId::PcmF32;
     assert!(cfg.validate().is_err());
+}
+
+/// An output that reads the GPU handles as a `u32` and remembers it.
+#[derive(Default)]
+struct GpuReader {
+    seen: Option<u32>,
+}
+
+impl Output for GpuReader {
+    fn info(&self) -> OutputInfo {
+        OutputInfo::new("test", AlphaNeed::Premultiplied, Lanes { gpu: None, cpu: false })
+    }
+
+    fn start(&mut self, _cfg: &OutputConfig) -> Result<(), StreamError> {
+        Ok(())
+    }
+
+    fn submit(&mut self, frame: &Frame<'_>) -> Result<SubmitReport, StreamError> {
+        self.seen = frame.gpu.and_then(|g| g.downcast_ref::<u32>()).copied();
+        Ok(SubmitReport::default())
+    }
+
+    fn status(&self) -> OutputStatus {
+        OutputStatus::default()
+    }
+
+    fn stop(&mut self) {}
+}
+
+#[test]
+fn one_frame_with_gpu_handles_fans_out_to_two_outputs() {
+    let handles: u32 = 42;
+    let frame = Frame::new(UVec2::new(2, 2), 0, Ticks(0)).with_gpu(&handles);
+    let (mut a, mut b) = (GpuReader::default(), GpuReader::default());
+    a.submit(&frame).unwrap();
+    b.submit(&frame).unwrap();
+    assert_eq!((a.seen, b.seen), (Some(42), Some(42)));
 }
