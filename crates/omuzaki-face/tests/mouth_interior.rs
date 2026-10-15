@@ -5,7 +5,13 @@
 
 // A counting allocator is the only way to *prove* "no allocation"; the workspace denies unsafe code by default. Test
 // helpers may panic: a panic is a clear test failure.
-#![allow(unsafe_code, clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    unsafe_code,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation
+)]
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -213,7 +219,7 @@ fn the_tongue_tab_hangs_below_the_lower_edge_and_never_rises_above_its_start() {
     let list = piece(MouthPiece::Tongue, &profile, &p);
     let Some(Cmd::Fill { path, .. }) = list.cmds().first() else { panic!("no tab") };
     let tab = points(&list, *path);
-    assert!(!tab.is_empty());
+    assert!(tab.len() > 3, "the tab has its curve and its end points");
     assert!(tab.iter().all(|v| v.y <= bottom_mid + 0.0012 + 1e-6), "the tab never rises above where it starts");
     assert!(tab.iter().any(|v| v.y < bottom_mid), "and it hangs below the lower edge");
 }

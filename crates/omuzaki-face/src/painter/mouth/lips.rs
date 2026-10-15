@@ -111,6 +111,10 @@ pub(super) fn paint_gloss(ctx: &mut PaintCtx<'_>) {
     let centre = Vec2::new(open.centre.x, open.centre.y - open.height - GLOSS_DROP - GLOSS_DROP_PUCKER * pucker);
     let rx = open.half_width * (GLOSS_WIDTH + GLOSS_WIDTH_PUCKER * pucker);
     let ry = GLOSS_HEIGHT + GLOSS_HEIGHT_PUCKER * pucker;
+    // A mouth with no width has nothing to swell under, and the squash below divides by it.
+    if rx <= f32::EPSILON {
+        return;
+    }
 
     // A circle squashed to the ellipse by a transform, so the radial gradient squashes with it.
     let squash = Affine2::from_translation(centre)
@@ -132,9 +136,10 @@ pub(super) fn paint_gloss(ctx: &mut PaintCtx<'_>) {
     list.push(Cmd::PopTransform);
 
     let spot = centre + Vec2::new(open.half_width * 0.12, ry * 0.25);
-    let tilt = Affine2::from_translation(spot) * Affine2::from_angle(HIGHLIGHT_TILT) * Affine2::from_translation(-spot);
+    let rotate =
+        Affine2::from_translation(spot) * Affine2::from_angle(HIGHLIGHT_TILT) * Affine2::from_translation(-spot);
     let highlight = list.path().ellipse(spot, open.half_width * 0.18, ry * 0.28).finish();
-    list.push(Cmd::PushTransform(tilt));
+    list.push(Cmd::PushTransform(rotate));
     list.fill(highlight, solid(lighten(tint, HIGHLIGHT_WHITE), HIGHLIGHT_ALPHA * strength));
     list.push(Cmd::PopTransform);
 }
