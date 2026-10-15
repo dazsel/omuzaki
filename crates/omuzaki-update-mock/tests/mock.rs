@@ -352,3 +352,79 @@ fn a_rejected_rename_moves_nothing() {
     assert!(disk.rename(&p("sub"), &p("sub/inner")).is_err());
     assert_eq!(disk.snapshot(), before);
 }
+
+/// A disk with a file, a link to it, an empty folder, a folder with a file in it, and a folder to move.
+fn disk_with_kinds() -> FakeDisk {
+    let disk = disk_with_dir();
+    disk.write(&p("file"), b"x").unwrap();
+    disk.write(&p("other"), b"y").unwrap();
+    disk.symlink("file", &p("link"), LinkKind::File).unwrap();
+    disk.create_dir_all(&p("empty")).unwrap();
+    disk.create_dir_all(&p("full")).unwrap();
+    disk.write(&p("full/g"), b"z").unwrap();
+    disk.write(&p("sub/f"), b"w").unwrap();
+    disk
+}
+
+fn kind_of(result: std::io::Result<()>) -> ErrorKind {
+    result.unwrap_err().kind()
+}
+
+#[test]
+fn rename_never_replaces_a_folder() {
+    let disk = disk_with_kinds();
+    let before = disk.snapshot();
+    // A file onto a folder: `EISDIR` on unix.
+    assert_eq!(kind_of(disk.rename(&p("file"), &p("full"))), ErrorKind::IsADirectory);
+    assert_eq!(kind_of(disk.rename(&p("file"), &p("empty"))), ErrorKind::IsADirectory);
+    // A folder onto a non-empty folder: `ENOTEMPTY`.
+    assert_eq!(kind_of(disk.rename(&p("sub"), &p("full"))), ErrorKind::DirectoryNotEmpty);
+    // A folder onto an empty folder: unix would replace it, Windows cannot, so the fake refuses.
+    assert_eq!(kind_of(disk.rename(&p("sub"), &p("empty"))), ErrorKind::AlreadyExists);
+    // A link onto a folder, and a folder onto a file or a link.
+    assert_eq!(kind_of(disk.rename(&p("link"), &p("empty"))), ErrorKind::IsADirectory);
+    assert_eq!(kind_of(disk.rename(&p("sub"), &p("file"))), ErrorKind::NotADirectory);
+    assert_eq!(kind_of(disk.rename(&p("sub"), &p("link"))), ErrorKind::NotADirectory);
+    assert_eq!(disk.snapshot(), before, "a refused rename changes nothing");
+}
+
+#[test]
+fn rename_replaces_files_and_links_and_keeps_the_same_path_a_no_op() {
+    let disk = disk_with_kinds();
+    disk.rename(&p("other"), &p("file")).unwrap();
+    assert_eq!(disk.read(&p("file")).unwrap(), b"y");
+    disk.rename(&p("file"), &p("link")).unwrap();
+    assert_eq!(disk.read(&p("link")).unwrap(), b"y");
+    let before = disk.snapshot();
+    disk.rename(&p("full"), &p("full")).unwrap();
+    assert_eq!(disk.snapshot(), before);
+}
+
+#[test]
+fn a_file_in_the_way_is_not_a_folder_for_every_mutator() {
+    let disk = disk_with_kinds();
+    let below = p("file/child");
+    assert_eq!(kind_of(disk.write(&below, b"x")), ErrorKind::NotADirectory);
+    assert_eq!(kind_of(disk.create_dir_all(&below)), ErrorKind::NotADirectory);
+    assert_eq!(kind_of(disk.symlink("t", &below, LinkKind::File)), ErrorKind::NotADirectory);
+    assert_eq!(kind_of(disk.rename(&p("other"), &below)), ErrorKind::NotADirectory);
+    assert_eq!(kind_of(disk.rename(&below, &p("elsewhere"))), ErrorKind::NotADirectory);
+    assert_eq!(disk.read(&below).unwrap_err().kind(), ErrorKind::NotADirectory);
+    assert_eq!(kind_of(disk.remove_dir_all(&p("file"))), ErrorKind::NotADirectory);
+    assert_eq!(disk.list_dir(&p("file")).unwrap_err().kind(), ErrorKind::NotADirectory);
+    // A missing path with only folders above it is plain `NotFound`.
+    assert_eq!(disk.read(&p("sub/none")).unwrap_err().kind(), ErrorKind::NotFound);
+}
+
+#[test]
+fn creating_what_already_exists_as_another_kind_is_refused() {
+    let disk = disk_with_kinds();
+    let before = disk.snapshot();
+    assert_eq!(kind_of(disk.create_dir_all(&p("file"))), ErrorKind::AlreadyExists);
+    assert_eq!(kind_of(disk.create_dir_all(&p("link"))), ErrorKind::AlreadyExists);
+    assert_eq!(kind_of(disk.symlink("t", &p("full"), LinkKind::Dir)), ErrorKind::AlreadyExists);
+    assert_eq!(kind_of(disk.symlink("t", &p("file"), LinkKind::File)), ErrorKind::AlreadyExists);
+    assert_eq!(kind_of(disk.write(&p("full"), b"x")), ErrorKind::IsADirectory);
+    disk.create_dir_all(&p("full")).unwrap();
+    assert_eq!(disk.snapshot(), before);
+}

@@ -65,6 +65,9 @@ struct Inner {
 
 /// A tree of folders, files and links in memory. Paths must be absolute; the root always exists.
 ///
+/// Errors carry the kinds a unix disk gives (`IsADirectory`, `NotADirectory`, `DirectoryNotEmpty`, ...). One rule is
+/// stricter on purpose: [`Disk::rename`] never replaces a folder, empty or not, because Windows cannot.
+///
 /// A file is durable only after [`Disk::fsync`]: [`FakeDisk::revive`], the next boot after a kill, empties every file
 /// that was written and never synced, which is how a missing `fsync` shows up in a test.
 pub struct FakeDisk {
@@ -96,6 +99,10 @@ fn is_a_folder(path: &Path) -> io::Error {
 /// What the real disk answers when the root folder is renamed or removed (`EBUSY`).
 fn root_busy(path: &Path) -> io::Error {
     io::Error::new(io::ErrorKind::ResourceBusy, format!("{} is the root folder", path.display()))
+}
+
+fn not_a_folder(path: &Path) -> io::Error {
+    io::Error::new(io::ErrorKind::NotADirectory, format!("{} is not a folder", path.display()))
 }
 
 fn invalid(why: &str) -> io::Error {
@@ -140,12 +147,19 @@ impl Inner {
         Self::is_root(path) || matches!(self.nodes.get(path), Some(Node::Dir))
     }
 
+    /// Why nothing is at `path`: a file or link among its ancestors makes it `NotADirectory`, as on a real disk.
+    fn absent(&self, path: &Path) -> io::Error {
+        let blocked =
+            path.ancestors().skip(1).any(|a| matches!(self.nodes.get(a), Some(Node::File { .. } | Node::Link { .. })));
+        if blocked { not_a_folder(path) } else { not_found(path) }
+    }
+
     fn parent_dir(&self, path: &Path) -> io::Result<()> {
         if !path.is_absolute() {
             return Err(invalid("path is not absolute"));
         }
         match path.parent() {
-            Some(parent) if !self.is_dir(parent) => Err(not_found(parent)),
+            Some(parent) if !self.is_dir(parent) => Err(self.absent(path)),
             _ => Ok(()),
         }
     }
@@ -235,7 +249,7 @@ impl Disk for FakeDisk {
             Some(Node::Dir) => Err(is_a_folder(path)),
             Some(Node::Link { .. }) => Err(invalid("not a file")),
             None if Inner::is_root(path) => Err(is_a_folder(path)),
-            None => Err(not_found(path)),
+            None => Err(inner.absent(path)),
         }
     }
 
@@ -269,7 +283,7 @@ impl Disk for FakeDisk {
             *synced = true;
             return Ok(());
         }
-        if inner.is_dir(path) || inner.nodes.contains_key(path) { Ok(()) } else { Err(not_found(path)) }
+        if inner.is_dir(path) || inner.nodes.contains_key(path) { Ok(()) } else { Err(inner.absent(path)) }
     }
 
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
@@ -283,7 +297,7 @@ impl Disk for FakeDisk {
             return Err(root_busy(to));
         }
         if !inner.nodes.contains_key(from) {
-            return Err(not_found(from));
+            return Err(inner.absent(from));
         }
         // Renaming a path onto itself changes nothing, for a file and for a folder with contents alike.
         if from == to {
@@ -293,12 +307,15 @@ impl Disk for FakeDisk {
             return Err(invalid("cannot move a folder into itself"));
         }
         let from_is_dir = matches!(inner.nodes.get(from), Some(Node::Dir));
+        // Only a file or a link is replaced. A folder target is always refused, even an empty one that a unix `rename`
+        // would replace, because Windows cannot; code that passes here must work on both.
         match inner.nodes.get(to) {
-            Some(Node::Dir) if !from_is_dir => return Err(invalid("target is a folder")),
-            Some(Node::Dir) if !inner.descendants(to).is_empty() => return Err(invalid("target folder is not empty")),
-            Some(Node::File { .. } | Node::Link { .. }) if from_is_dir => {
-                return Err(invalid("target is not a folder"));
+            Some(Node::Dir) if !from_is_dir => return Err(is_a_folder(to)),
+            Some(Node::Dir) if !inner.descendants(to).is_empty() => {
+                return Err(io::Error::new(io::ErrorKind::DirectoryNotEmpty, format!("{} is not empty", to.display())));
             }
+            Some(Node::Dir) => return Err(exists_already(to)),
+            Some(Node::File { .. } | Node::Link { .. }) if from_is_dir => return Err(not_a_folder(to)),
             _ => {}
         }
         // Every new name is worked out before anything moves, so a failure cannot leave half a folder behind.
@@ -329,7 +346,8 @@ impl Disk for FakeDisk {
         for dir in chain {
             match inner.nodes.get(dir) {
                 Some(Node::Dir) => {}
-                Some(_) => return Err(invalid("a part of the path is not a folder")),
+                Some(_) if dir == path => return Err(exists_already(path)),
+                Some(_) => return Err(not_a_folder(dir)),
                 None => {
                     inner.nodes.insert(dir.to_path_buf(), Node::Dir);
                 }
@@ -346,8 +364,8 @@ impl Disk for FakeDisk {
         }
         match inner.nodes.get(path) {
             Some(Node::Dir) => {}
-            Some(_) => return Err(invalid("not a folder")),
-            None => return Err(not_found(path)),
+            Some(_) => return Err(not_a_folder(path)),
+            None => return Err(inner.absent(path)),
         }
         for gone in inner.descendants(path) {
             inner.nodes.remove(&gone);
@@ -365,7 +383,7 @@ impl Disk for FakeDisk {
         let inner = locked(&self.inner);
         inner.alive()?;
         if !inner.is_dir(path) {
-            return Err(if inner.nodes.contains_key(path) { invalid("not a folder") } else { not_found(path) });
+            return Err(if inner.nodes.contains_key(path) { not_a_folder(path) } else { inner.absent(path) });
         }
         // `nodes` is ordered by path, so the children come out sorted by name.
         Ok(inner
@@ -404,13 +422,13 @@ impl Disk for FakeDisk {
             Some(Node::Dir) => Ok(()),
             Some(Node::Link { .. }) => Err(invalid("not a file")),
             None if Inner::is_root(path) => Ok(()),
-            None => Err(not_found(path)),
+            None => Err(inner.absent(path)),
         }
     }
 
     fn free_bytes(&self, path: &Path) -> io::Result<u64> {
         let inner = locked(&self.inner);
         inner.alive()?;
-        if inner.is_dir(path) || inner.nodes.contains_key(path) { Ok(inner.free) } else { Err(not_found(path)) }
+        if inner.is_dir(path) || inner.nodes.contains_key(path) { Ok(inner.free) } else { Err(inner.absent(path)) }
     }
 }
