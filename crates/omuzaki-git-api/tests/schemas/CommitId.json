@@ -1,0 +1,1 @@
+{"$schema":"https://json-schema.org/draft/2020-12/schema","title":"CommitId","description":"A full object id: 40 (SHA-1) or 64 (SHA-256) lowercase hex characters.","type":"string","pattern":"^([0-9a-f]{40}|[0-9a-f]{64})$"}

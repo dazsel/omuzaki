@@ -52,6 +52,7 @@ ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "
 pollster = "1"
 proptest = "1.12"
 reqwest = { version = "0.13", default-features = false }
+rhai = { version = "=1.26.1", default-features = false, features = ["std", "serde", "sync", "internals"] }   # the script runtime (MIT OR Apache-2.0); exact pin because `internals` is unstable API, omuzaki-script
 rmcp = { version = "3.5", features = ["server", "transport-io", "transport-streamable-http-server"] }
 rustix = { version = "1.1", default-features = false, features = ["std", "fs"] } # opens beneath a folder handle, never through a link (openat2, O_NOFOLLOW), omuzaki-ops-api; safe renameat2(RENAME_EXCHANGE), omuzaki-doc (Linux)
 schemars = "1.2"
@@ -78,6 +79,7 @@ windows = { version = "0.62", features = ["Win32_Media_MediaFoundation", "Win32_
 windows-core = "0.62"   # the `implement` macro for the camera's COM callback (MIT OR Apache-2.0), omuzaki-camera-mf
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem"] } # the Windows side of the same: reparse-point-aware opens, final-path checks
 zip = { version = "9", default-features = false, features = ["deflate-flate2"] } # unpacks the ONNX Runtime Windows.zip archives (MIT), omuzaki-ai-native
+vello = { version = "=0.11.0", default-features = false, features = ["wgpu"] }   # GPU vector face painter (Apache-2.0 OR MIT), omuzaki-face's GPU rasteriser (#1433)
 whisper-rs = "0.16"   # whisper.cpp built from source (Unlicense crate, MIT library); omuzaki-audio
 zune-jpeg = "0.5"   # pure-Rust JPEG decoder (MIT OR Apache-2.0 OR Zlib), MJPG webcam frames, omuzaki-pixfmt
 
