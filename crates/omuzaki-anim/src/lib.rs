@@ -9,12 +9,14 @@ pub mod grammar;
 pub mod hands;
 pub mod life;
 pub mod measure;
+pub mod neutral;
 pub mod poses;
 pub mod retarget;
 pub mod score_templates;
 pub mod triggers;
 
 pub use animator::{BusAnimator, BusAnimatorParams};
+pub use neutral::{MAX_NEUTRAL_FRAMES, MIN_NEUTRAL_FRAMES, NeutralCapture, NeutralError};
 pub use triggers::{MAX_TRIGGERS, TriggerError, TriggerFades, TriggerMode, TriggerSlot, Triggers, expression_slot};
 
 omuzaki_core::define_link!();
