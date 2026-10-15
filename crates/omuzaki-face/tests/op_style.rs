@@ -534,3 +534,19 @@ fn a_suggestion_is_made_only_when_a_name_is_close() {
     assert!(layout.message.contains("not a style section"), "{layout:?}");
     assert!(!layout.hint.as_deref().unwrap_or_default().contains("did you mean"), "{layout:?}");
 }
+
+/// #637: "no fangs" is a value an agent can write and read back.
+#[test]
+fn a_character_can_be_given_no_fangs_through_the_style_ops() {
+    let mut doc = doc_with_face(full_face());
+    let plan = run(&doc, "face.set_style", set_args("face/mouth/fang/kind", json!("none"))).expect("sets");
+    doc.apply(&plan.patch).expect("applies");
+    assert_eq!(value_at(&doc, "characters/mira/face/mouth/fang/kind"), json!("none"));
+    let mouth =
+        run(&doc, "face.describe_style", json!({ "character": "mira", "section": "mouth" })).expect("describes");
+    let mouth = &mouth.output.as_ref().expect("answers")["sections"]["mouth"];
+    assert_eq!(mouth["current"]["fang"]["kind"], json!("none"));
+    assert_eq!(mouth["defaults"]["fang"]["kind"], json!("pointed"));
+    let err = run(&doc, "face.set_style", set_args("face/mouth/fang/kind", json!("sharp"))).unwrap_err();
+    assert_eq!(err.field.as_deref(), Some("face/mouth/fang/kind"), "{err:?}");
+}

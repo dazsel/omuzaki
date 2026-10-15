@@ -43,8 +43,8 @@ pub use paint::{
 pub use palette::{ColourError, ColourRef, Palette, PaletteSlot};
 pub use profile::{
     Aperture, BlushKind, BrowStyle, CatchlightShape, CheekStyle, Crease, EyeStyle, FaceLayout, FaceMark, FaceProfile,
-    FaceRatios, FangStyle, Highlights, Iris, Lash, Lips, LowerLidStyle, MarkKind, MouthInterior, MouthStyle, NoseKind,
-    NoseStyle, Pupil, PupilShape, Sclera,
+    FaceRatios, FangKind, FangStyle, Highlights, Iris, Lash, Lips, LowerLidStyle, MarkKind, MouthInterior, MouthStyle,
+    NoseKind, NoseStyle, Pupil, PupilShape, Sclera,
 };
 pub use resolve::ResolveError;
 

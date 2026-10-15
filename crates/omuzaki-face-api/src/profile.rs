@@ -578,10 +578,23 @@ impl Validate for MouthInterior {
     fn check(&self, _: &mut Check) {}
 }
 
-/// Fangs at the upper mouth corners (yaeba); drawn when the `fang` channel is above 0.
+/// Whether the character has fangs at all (CB-22).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FangKind {
+    /// No fangs: none are painted whatever the `fangs` channel says, and the `grin-fangs` rule writes nothing.
+    None,
+    /// Small pointed fangs at the upper mouth corners (the default).
+    Pointed,
+}
+
+/// Fangs at the upper mouth corners (yaeba); drawn when the `fangs` channel is above 0 and the kind is not
+/// [`FangKind::None`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct FangStyle {
+    /// Whether this character has fangs.
+    pub kind: FangKind,
     /// Width of each fang's base, in metres.
     pub width: f64,
     /// Length, in metres.
@@ -592,7 +605,7 @@ pub struct FangStyle {
 
 impl Default for FangStyle {
     fn default() -> Self {
-        Self { width: 0.006, height: 0.0058, position: 0.72 }
+        Self { kind: FangKind::Pointed, width: 0.006, height: 0.0058, position: 0.72 }
     }
 }
 
@@ -828,6 +841,11 @@ pub struct FaceProfile {
 }
 
 impl FaceProfile {
+    /// Whether this character has fangs: its fang style is not [`FangKind::None`].
+    pub fn has_fangs(&self) -> bool {
+        self.mouth.fang.kind != FangKind::None
+    }
+
     /// The `rest` layer of the bus: neutral with this character's `rest` values written.
     pub fn rest_buf(&self) -> ChannelBuf {
         let mut buf = ChannelBuf::NEUTRAL;
@@ -918,6 +936,17 @@ mod tests {
         assert_eq!(a.lerp(&b, 0.0), a);
         assert_eq!(a.lerp(&b, 1.0), b);
         assert!((a.lerp(&b, 0.5).mouth_y - -0.175).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_profile_can_say_it_has_no_fangs() {
+        assert!(FaceProfile::default().has_fangs(), "fangs stay the default, so existing profiles don't change");
+        let p: FaceProfile = serde_json::from_str(r#"{"mouth":{"fang":{"kind":"none"}}}"#).unwrap();
+        assert!(!p.has_fangs());
+        assert_eq!(p.mouth.fang.width, FangStyle::default().width, "the rest of the style keeps its defaults");
+        p.validate().unwrap();
+        let back: FaceProfile = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
+        assert_eq!(back, p);
     }
 
     #[test]
