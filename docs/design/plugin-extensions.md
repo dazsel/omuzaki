@@ -67,8 +67,11 @@ interface tracker {
     record image { seq: u64, time: f64, width: u32, height: u32, format: pixels, data: list<u8> }
     record head { yaw: f32, pitch: f32, roll: f32, position: option<tuple<f32, f32, f32>> }   // HeadPose
     record eyes { left-yaw: f32, left-pitch: f32, right-yaw: f32, right-pitch: f32 }          // EyeAngles
-    record tracked { found: bool, blend: list<tuple<u8, f32>>, head: option<head>, eyes: option<eyes> }
+    record tracked { found: bool, head: option<head>, eyes: option<eyes> }   // flat: lifting it allocates nothing
     frame: func(input: image) -> tracked;
+}
+interface track-out {         // imported by tracker instances only; writes into the preallocated TrackFrame
+    blend: func(channel: u8, value: f32);                                  // checked when `frame` returns (§4.3)
 }
 interface exporter {
     record output-file { name: string, bytes: list<u8> }
@@ -77,12 +80,13 @@ interface exporter {
 interface part {
     record mesh { name: string, positions: list<f32>, normals: list<f32>, uvs: list<f32>, indices: list<u32>, colour: u8 }
     record build-input { kind: string, params: string, seed: u64, quality: u8, palette: list<u32> }   // rgba8 per slot
+    // part-local space: the host places the mesh at the resolved attachment (§4.5)
     build: func(input: build-input) -> result<list<mesh>, string>;
 }
 interface command { use types.{op-error}; run: func(command: string, args: string) -> result<string, op-error>; }
 
 world node-plugin { include plugin; import node-cx; export node; }      world adapter-plugin { include plugin; export adapter; }
-world tracker-plugin { include plugin; export tracker; }                world exporter-plugin { include plugin; export exporter; }
+world tracker-plugin { include plugin; import track-out; export tracker; } world exporter-plugin { include plugin; export exporter; }
 world part-plugin { include plugin; export part; }                      world command-plugin { include plugin; export command; }
 ```
 
@@ -91,7 +95,10 @@ world part-plugin { include plugin; export part; }                      world co
 Every extension runs in an instance of the plugin's one compiled component, each with its own `Store`, so no two
 kinds share guest memory and data can't pass between them except through the host. "Base only" means the base imports
 of `plugins.md` §1.1 under the plugin's ceiling; "pure" means `ops`, `data` and `http` are linked to refusals, `log`
-works, and clocks and randomness are the call's own seeded inputs (as node instances, `plugins.md` §4.1).
+works, and clocks and randomness are the call's own seeded inputs (as node instances, `plugins.md` §4.1). **Pure
+instances never run the `lifecycle` exports:** the host instantiates them and calls only their extension export, so
+`init`, `approval-resolved` and `shutdown` run once, on the worker, under its imports. A pure call gets everything it
+needs in its arguments (the frame, the GLB and options, the parameters); state set up by `init` is never there.
 
 | Key | Instance | Thread | Imports | Memory | Fuel, deadline per call | CPU share |
 |---|---|---|---|---|---|---|
@@ -100,7 +107,7 @@ works, and clocks and randomness are the call's own seeded inputs (as node insta
 | `command` | worker | `plugin:<id>` | base only, inside the caller's grants (ADR 0058 d. 11) | 64 MiB | 10⁹, 30 s (`plugins.md` §4.3) | the plugin's 100 ms/s |
 | `tracker` | tracker instance | `plugin-track:<id>` (dedicated) | pure; `time` is the frame's | 16 MiB | `frame` 2.5 × 10⁶ (≈2.5 ms), 5 ms | its own 150 ms/s |
 | `exporter` | a fresh export instance per job | the `io.export` job's `Cpu` thread | pure | 512 MiB | 10¹¹ (≈100 s), 120 s and the job's cancel | the job's |
-| `part` | a pool of 2 part instances | the character builder's thread (authoring plane) | pure; seed from `BuildCtx::rng` | 64 MiB | `build` 10⁸ (≈100 ms), 250 ms | the builder's |
+| `part` | a fresh part instance per build (§4.5) | the character builder's thread (authoring plane) | pure; seed from `BuildCtx::rng` | 64 MiB | `build` 10⁸ (≈100 ms), 250 ms | the builder's |
 
 - **Why pure instances for trackers, exporters and parts:** a camera frame, a whole avatar as GLB, or a character's
   parameters go in, and channels, files or a mesh come out; with no `http`, `data` or `ops` linked, the input has no
@@ -119,7 +126,7 @@ works, and clocks and randomness are the call's own seeded inputs (as node insta
 | Tracker tap to published `TrackFrame` | ≤ 3.2 ms (guest ≤ 2.5) | p95 | bench `track_plugin_frame`, nightly | out of fuel or deadline: trap, fault (§4.3) |
 | Tracker host-side allocations per frame | 0 | max | counting-allocator test | test fails |
 | Export of a 20 MiB GLB, host side (GLB write + file checks) | ≤ 400 ms | worst of 5 | bench `export_plugin_20mib` | reported |
-| Part build, host side (lift + checks + `MeshData`) for 65,536 vertices | ≤ 5 ms | p95 | bench `part_lift_64k` | reported |
+| Part build, host side (instantiate + lift + checks + placement + `MeshData`) for 65,536 vertices | ≤ 5 ms | p95 | bench `part_lift_64k` | reported |
 
 ## 4. Each extension
 
@@ -141,11 +148,13 @@ works, and clocks and randomness are the call's own seeded inputs (as node insta
 - **Polling, not pushing.** The host calls `poll` on the worker every `poll_ms` (manifest: 50 to 1,000, default 250).
   A guest has no threads or sockets, so a push would be one entry looping on `fetch` that holds the worker forever and
   blocks reload, `shutdown` and commands. A poll is a short transactional entry (`plugins.md` §2.2).
-- **What the host does with each event:** the kind must be in the manifest's `publishes`; the payload must pass the
-  kind's schema; at most 256 events a poll and 16 KiB a payload (more is a bad return value: nothing is published
-  and the plugin faults). It builds `LiveEvent { source: Source::Plugin { id },
-  acting: None, .. }` and sets the payload's `platform` to the manifest's `platform`, which may not be a first-party
-  one (`twitch`, `youtube`, `bilibili`, `tiktok`), so a plugin can never pass as Twitch. One `Source` for plugins:
+- **What the host does with each event, in order:** the kind must be in the manifest's `publishes`; at most 256 events
+  a poll and 16 KiB a payload (more is a bad return value: nothing is published and the plugin faults); for a
+  normalised platform kind it sets the payload's `platform` to the manifest's, which may not be a first-party one
+  (`twitch`, `youtube`, `bilibili`, `tiktok`), so a plugin can never pass as Twitch; **then** the final payload must
+  pass the kind's schema, and it builds `LiveEvent { source: Source::Plugin { id }, acting: None, .. }`. A plugin's
+  own kind gets no `platform` (its `Source` names the plugin); install refuses an own-kind schema that declares one.
+  One `Source` for plugins:
   D15's `Source::Plugin { id }` wins over D9's comment on `Source::Platform`, which task T2 corrects.
 - **Kinds a plugin may publish:** the normalised platform kinds of D9 (`chat.message`, `follow`, `sub`, `sub_gift`,
   `cheer`, `tip`, `redeem`, `raid`, `power_up`, `poll`, `prediction`, `hype_train`), and its own
@@ -168,9 +177,11 @@ works, and clocks and randomness are the call's own seeded inputs (as node insta
   first-party tracker (T5), and only if the person ticked "see your camera" on the card for this plugin (SE-04); off
   by default and never full resolution. The tracker instance is pure, so the pixels can't leave it.
 - **The hand-off, newest wins, nothing allocated:** the tap is a triple buffer allocated when the plugin starts; the
-  tracker thread writes into it and moves on. The `plugin-track:<id>` thread takes the newest frame, lowers it, calls
-  `frame`, checks the result (channel indices < 52, values finite and clamped to each channel's range, at most 52
-  pairs) into a preallocated `TrackFrame` and publishes it through `MailboxWriter`. The stage polls that mailbox
+  tracker thread writes into it and moves on. The `plugin-track:<id>` thread takes the newest frame, lowers it (into
+  guest memory through the guest's own `realloc`), calls `frame`, and each `track-out.blend` call writes one channel
+  straight into a preallocated `TrackFrame`; `tracked` is a flat record, so lifting it allocates nothing either. When
+  `frame` returns the host checks the frame (channel indices < 52, values finite and clamped to each channel's range,
+  at most 52 calls, unclaimed channels refused) and publishes it through `MailboxWriter`. The stage polls that mailbox
   beside the first-party one and overlays the claimed channels (T7). A frame that arrives while the guest runs
   replaces the waiting one and is counted as skipped.
 - **One frame, on `R`, 30 fps camera, 120 Hz stage** (the bench `track_plugin_frame` checks these):
@@ -181,8 +192,8 @@ works, and clocks and randomness are the call's own seeded inputs (as node insta
  0.30-5.00  first-party inference; TrackFrame N published by 5.00 at the latest   (tracker thread)
  0.30-0.35  plugin-track:dice unparks, takes seq N                               (plugin thread from here)
  0.35-0.40  lowers 76,800 bytes (fuel charge 2,000 + 76,800)
- 0.40-2.90  guest frame(): at most 2.5 x 10^6 fuel
- 2.90-2.95  lift, check, write the TrackFrame, MailboxWriter::publish
+ 0.40-2.90  guest frame(): at most 2.5 x 10^6 fuel, its track-out.blend calls included (2,000 each)
+ 2.90-2.95  lift the flat record, check the TrackFrame, MailboxWriter::publish
  8.33  stage tick: polls both mailboxes, takes jawOpen and tongueOut from the plugin's frame N, the rest from N
 ```
 
@@ -214,16 +225,27 @@ works, and clocks and randomness are the call's own seeded inputs (as node insta
 
 - **A run-time part-kind catalogue in `omuzaki-char-api`** (T10, the character area's contract, human lane):
   `DynPartKind` (the `PartKindRegistration` functions as `&self` methods, with owned `PartMeta`), registered with
-  `part_kinds::register_dyn(Arc<dyn DynPartKind>) -> Result<DynRegistration, BuildError>`; `find_part_kind` sees both
-  kinds. Ids are `plugin-<plugin>-<name>`, for the same reason as formats.
+  `part_kinds::register_dyn(Arc<dyn DynPartKind>) -> Result<DynRegistration, BuildError>`. Ids are
+  `plugin-<plugin>-<name>`, for the same reason as formats.
+- **One lookup for both kinds (Director sign-off: an existing signature changes):** `find_kind` and `kinds` return
+  `PartKindRef`, a cheap handle over a static `&'static PartKindRegistration` or an `Arc<dyn DynPartKind>` with the
+  same methods, so `build_part`, `recolour_part`, planning, `requires_of` and every part op find plugin kinds through
+  the path they use today. T10 changes the lookup and its `omuzaki-char-api` callers; T16 moves the callers in
+  `omuzaki-char`, `omuzaki-io-ops` and `omuzaki-stage` (about 25 sites) before any plugin part registers.
 - **Parameters** are JSON checked against the manifest's schema (`check` normalises defaults); **seeded and
   deterministic:** the seed is a `u64` drawn from `BuildCtx::rng` (character seed, part id), and the part instance is
-  pure, so the same character builds the same mesh on every machine. A test builds twice with OS entropy reseeded.
+  pure, so the same character builds the same mesh on every machine. Pure does not mean stateless (a guest may bump
+  a global on every call), so **every build gets a fresh instance** from the plugin's `InstancePre` on wasmtime's
+  pooling allocator, which resets linear memory and globals to the module's initial image; nothing carries from one
+  build to the next. The test builds A, B, then A again, with a WAT guest that counts calls in a global.
 - **Mesh data over WIT** as flat arrays: at most 8 meshes and 65,536 vertices and 65,536 triangles in all; three
   floats per position and normal, two per UV, indices in range, every float finite; `colour` is a palette slot.
   The host builds `MeshData` and `PartOutput`, renormalises normals, and refuses anything else with
-  `BuildError::Part` naming the plugin. 0.1 parts are rigid: they attach through `PartDef::attach`, with no joints,
-  weights, textures or spring chains.
+  `BuildError::Part` naming the plugin. 0.1 parts are rigid, with no joints, weights, textures or spring chains.
+- **Placement is the host's:** the guest builds in part-local space; the host resolves `BuildCtx::attach` against
+  `published` anchors and `BuildCtx::joint` as first-party accessories do, and transforms positions and normals.
+  `attach` is already in the part's build key, so editing it rebuilds; a plugin part with no `attach` is refused
+  with `BuildError::Part` ("plugin parts need an attachment").
 - **Provenance:** `KindProvenance::External`, always, and `DynPartKind::provenance_record()` gives the record its
   output carries: `Source::Generated { tool: "plugin <id>@<version>", model: "<content hash>", .. }`, the manifest's
   licence, the publisher as author. `licence.derive` uses it for a part with no source row (`io-api.md` D10), as it
@@ -274,13 +296,16 @@ Fluent id `plugin-<id>-<key>-<name>`.
 
 Four run-time catalogues take plugin kinds: the engine's (node and event kinds, `omuzaki-live-api`), the stage's
 tracker sources (`omuzaki-track-api` taps), the exporters (`omuzaki-io-api`) and the part kinds (`omuzaki-char-api`).
-Each add or remove is one atomic snapshot swap, so a reader sees all of a plugin's kinds in a catalogue or none.
+Each catalogue's `register_dyn` has two steps: it **reserves** (fallible: checks ids, collisions and schemas, holds
+the ids, publishes nothing) and returns an inactive `DynRegistration` whose `activate()` cannot fail and is one
+atomic snapshot swap. Lookups skip reserved entries; collision checks count them.
 
-- **Enable:** compile, start the worker, `init` returns `ok`; then add in order event kinds, node kinds, part kinds,
-  exporters, then start the tracker thread and adapter polling. Kinds that others depend on come first (a node may
-  listen to the plugin's own event kind). **All or nothing:** if any add fails (an id collision, a schema that does
-  not compile), the ones made are removed in reverse, the plugin is `Faulted { reason }` and the finding names the
-  kind.
+- **Enable:** compile, start the worker, `init` returns `ok`; then reserve every kind in every catalogue. **All or
+  nothing:** if any reservation fails (an id collision, a schema that does not compile), the reservations are
+  dropped, which no reader ever saw, the plugin is `Faulted { reason }` and the finding names the kind. Only when
+  all are reserved does the host activate, in order, event kinds, node kinds, part kinds, exporters, then start the
+  tracker thread and adapter polling; nothing after the first activation can fail. Kinds that others depend on come
+  first (a node may listen to the plugin's own event kind).
 - **Disable, unload, remove:** the reverse: stop polling (retained events are dropped and counted), stop the
   tracker (the stage falls back as in §4.3), cancel a running plugin export (the job ends `cancelled`, writes
   nothing), then remove exporters, part kinds, node kinds and event kinds. Events of a removed kind still in the
@@ -303,17 +328,19 @@ saving and syncing don't touch them, and a finding names the plugin by id and ve
 
 ## 7. Tests
 
-The conformance suite (`omuzaki-plugin-mock::conformance`) gains a `MockGuest` per world, so each case runs on the
-mock host and on wasmtime with WAT fixtures. Node: #1366's acceptance, and a node id colliding with a first-party one
-is refused. Adapter: 300 events in one poll publish none and fault "bad return value"; a forged `platform: "twitch"` is
-replaced; an undeclared kind is refused with a `warn` line; a stalled `EventSink` keeps 1,000 non-droppable events and
-delivers them in order. Tracker: no frame reaches the guest without the camera tick; index 52 or a NaN refuses the
-frame; a guest burning 10⁷ fuel faults at 2.5 × 10⁶ while first-party frames keep their timing; after a trap the
-claimed channels hold 200 ms, then fall back; no host allocation per frame. Exporter: `../x`, `a/b` and two `x.obj`
-are refused, as is 257 MiB of output; a cancelled job writes nothing; a failed preflight stops before the guest runs.
-Part: two builds with OS entropy reseeded are identical; 65,537 vertices, an index out of range or a NaN are refused;
-a part with no source row derives the plugin's licence. Lifecycle: a collision in the third catalogue leaves the first two
-unchanged; disable removes in reverse; a document round-trips byte for byte while its plugin is missing.
+The conformance suite (`omuzaki-plugin-mock::conformance`) gains a `MockGuest` per world, so each case runs on the mock
+host and on wasmtime with WAT fixtures. Node: #1366's acceptance, and a node id colliding with a first-party one is
+refused. Adapter: 300 events in one poll publish none and fault "bad return value"; a forged `platform: "twitch"` is
+replaced before the schema check; an undeclared kind is refused with a `warn` line; a stalled `EventSink` keeps 1,000
+non-droppable events and delivers them in order. Tracker: no frame reaches the guest without the camera tick; index 52,
+an unclaimed channel or a NaN refuses the frame; a guest burning 10⁷ fuel faults at 2.5 × 10⁶ while first-party frames
+keep their timing; after a trap the claimed channels hold 200 ms, then fall back; no host allocation per frame.
+Exporter: `../x`, `a/b` and two `x.obj` are refused, as is 257 MiB of output; a cancelled job writes nothing; a failed
+preflight stops before the guest runs. Part: two builds with OS entropy reseeded are identical, as are A, B, A from a
+guest that counts calls in a global; 65,537 vertices, an index out of range or a NaN are refused; editing the attachment
+moves the mesh; a part with no source row derives the plugin's licence. A pure instance never runs `init`. Lifecycle: a
+collision in the third catalogue leaves the first two unchanged and no reader ever saw the plugin's kinds; disable
+removes in reverse; a document round-trips byte for byte while its plugin is missing.
 
 ## 8. Worked example: one plugin node in a three-node show
 
@@ -345,17 +372,18 @@ Filed by the lead after review. Each fence adds its tests; "pr-check" means `too
 | # | Title | Fence | Contract | Acceptance | Blocked by | Model |
 |---|---|---|---|---|---|---|
 | T1 | `omuzaki-plugin-api`: the extension worlds and manifest sections | `crates/omuzaki-plugin-api/wit/*.wit`, `src/manifest/extensions.rs` | §2's WIT; §4.7's sections with `check` | every world parses with `wit-parser`; 12 bad manifests (bad id, 33 nodes, first-party platform, `hotkey` in `publishes`, 25-char name, …) each give one named finding; pr-check | #1082 | sonnet |
-| T2 | `omuzaki-live-api`: `DynEventKind` and the run-time event-kind catalogue (cross-area: Director) | `crates/omuzaki-live-api/src/event/dynamic.rs`; D9's `Source::Platform` comment in `automation.md` | `register_dyn`, `DynRegistration` (drop removes) | add and remove are atomic; a run-time kind can't shadow a static one; 10⁵ lookups during swaps never see half a set; pr-check | #773 | sonnet |
+| T2 | `omuzaki-live-api`: `DynEventKind` and the run-time event-kind catalogue (cross-area: Director) | `crates/omuzaki-live-api/src/event/dynamic.rs`; D9's `Source::Platform` comment in `automation.md` | `register_dyn` (reserve), `DynRegistration` (`activate`, drop removes) | §5's reserve and activate; add and remove are atomic; a run-time kind can't shadow a static one; 10⁵ lookups during swaps never see half a set; pr-check | #773 | sonnet |
 | T3 | Re-cut comment on #1366 | the issue only | WIT in `omuzaki-plugin-api` (T1), not `omuzaki-plugin`; §4.1 | posted | this design | haiku |
 | T4 | `omuzaki-plugin`: the event adapter and `fakechat` | `src/adapter.rs`, `tests/adapter.rs`, `examples/plugins/fakechat/` | §4.2 | §7's adapter rows; `fakechat` replays ten lines in order at 1 a second on `FakeClock`; bench `adapter_poll_256` ≤ 2 ms p95 | T1, T2, T13, #1330 | sonnet |
 | T5 | `omuzaki-track-api`: the frame tap (cross-area: Director) | `src/tap.rs` | `TapSpec { width ≤ 320, height ≤ 240, pixels }`, `TapReader` (triple buffer, newest wins) | 0 allocations after creation; the reader never sees a torn frame in 10⁶ swaps; the mock tracker honours it | — | sonnet |
 | T6 | `omuzaki-plugin`: the tracker adapter and its bench | `src/tracker.rs`, `benches/track.rs` | §4.3 | §7's tracker rows; `track_plugin_frame` ≤ 3.2 ms p95 on `R` (scaled from `Dev`) | T1, T5, T13 | sonnet |
 | T7 | `omuzaki-stage`: overlay plugin tracker frames | `src/track/overlay.rs` | claimed channels, 200 ms hold | a plugin frame overrides only its channels; the hold and fallback of §4.3 on `FakeClock`; no allocation per tick | T5 | sonnet |
-| T8 | `omuzaki-io-api`: the run-time exporter catalogue (human lane) | `src/format.rs` (additive), `src/format/dynamic.rs` | §4.4 | `formats()` lists both kinds; a static id can't be shadowed; drop removes; pr-check | — | sonnet |
+| T8 | `omuzaki-io-api`: the run-time exporter catalogue (human lane) | `src/format.rs` (additive), `src/format/dynamic.rs` | §4.4, §5 | `formats()` lists both kinds; reserved ids are invisible until `activate`; a static id can't be shadowed; drop removes; pr-check | — | sonnet |
 | T9 | `omuzaki-plugin`: the exporter adapter | `src/exporter.rs`, `tests/exporter.rs` | §4.4 | §7's exporter rows; `export_plugin_20mib` host side ≤ 400 ms | T1, T8, T13 | sonnet |
-| T10 | `omuzaki-char-api`: `DynPartKind` and the run-time part-kind catalogue (human lane) | `src/kind/dynamic.rs` | §4.5 | the builder finds both kinds; ids can't shadow; drop removes; pr-check | — | sonnet |
-| T11 | `omuzaki-char` and `omuzaki-io-ops`: missing plugin kinds and plugin provenance | `omuzaki-char` `src/build/missing.rs`; `omuzaki-io-ops` the export check and `licence.derive` | §4.5 provenance, §6 part row | a character with a missing kind builds without it, round-trips byte for byte and fails `io.check_export` naming the plugin; a part with no row derives the plugin's MIT record, an unknown licence stays most restrictive | T10 | sonnet |
-| T12 | `omuzaki-plugin`: the part adapter | `src/part.rs`, `tests/part.rs` | §4.5 | §7's part rows; `part_lift_64k` ≤ 5 ms p95 | T1, T10, T13 | sonnet |
+| T10 | `omuzaki-char-api`: `DynPartKind`, `PartKindRef` and the run-time part-kind catalogue (human lane, Director) | `src/kind/dynamic.rs`, `src/kind.rs`, `src/build.rs` and the crate's other `find_kind` callers | §4.5, §5 | `build_part` and `recolour_part` build a dynamic kind through `find_kind`; reserved ids invisible until `activate`; ids can't shadow; drop removes; pr-check | — | sonnet |
+| T11 | `omuzaki-char` and `omuzaki-io-ops`: missing plugin kinds and plugin provenance | `omuzaki-char` `src/build/missing.rs`; `omuzaki-io-ops` the export check and `licence.derive` | §4.5 provenance, §6 part row | a character with a missing kind builds without it, round-trips byte for byte and fails `io.check_export` naming the plugin; a part with no row derives the plugin's MIT record, an unknown licence stays most restrictive | T10, T16 | sonnet |
+| T12 | `omuzaki-plugin`: the part adapter | `src/part.rs`, `tests/part.rs` | §4.5 | §7's part rows; `part_lift_64k` ≤ 5 ms p95 | T1, T10, T13, T16 | sonnet |
 | T13 | `omuzaki-plugin`: the registration lifecycle | `src/extensions.rs` | §5 | §7's lifecycle rows with fake catalogues | T1, #1567 | sonnet |
 | T14 | Example plugins and a golden show | `examples/plugins/{dice,blink,objexport,ring}/` (built and committed, each under 200 KB) and a golden show | one per kind | each loads in CI; the §8 show's trace and fuel report match the golden on two runs | T4, T6, T9, T12, #1366 | haiku |
 | T15 | Authoring docs, one page per kind | `docs/plugins/*.md` | — | each page builds its example; `lint-docs-index` passes | T14 | haiku |
+| T16 | `omuzaki-char`, `omuzaki-io-ops`, `omuzaki-stage`: callers of `find_kind` take `PartKindRef` | the `find_kind` call sites in those crates | §4.5 | a dynamic kind adds, plans, describes and derives a licence through the existing ops; no behaviour change for static kinds; pr-check | T10 | sonnet |
