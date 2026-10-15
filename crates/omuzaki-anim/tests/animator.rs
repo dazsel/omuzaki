@@ -98,7 +98,7 @@ fn bus_yaw_splits_35_percent_to_the_neck_and_the_rest_to_the_head() {
 
 #[test]
 fn neck_times_head_is_the_bus_rotation_on_a_yaw_pitch_grid_and_random_targets() {
-    let mut check = |yaw: f32, pitch: f32, roll: f32, share: f32| {
+    let check = |yaw: f32, pitch: f32, roll: f32, share: f32| {
         let mut bus = Bus::default();
         bus.values[Channel::HEAD_YAW] = yaw;
         bus.values[Channel::HEAD_PITCH] = pitch;

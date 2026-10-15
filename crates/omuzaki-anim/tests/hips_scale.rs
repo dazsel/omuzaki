@@ -1,6 +1,8 @@
 //! Hips translation scaling between characters of different height (#77): a walk made on a tall character, scaled to a
 //! short one, keeps the feet on the floor.
 
+// Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 #![allow(clippy::cast_precision_loss)]
 
 use omuzaki_anim::poses::{HipsScaleError, hips_rest_height, retarget_hips, scale_hips};
@@ -14,8 +16,10 @@ fn character(size: f32) -> Skeleton {
             HumanoidBone::Hips => Vec3::new(0.0, 1.0, 0.0),
             HumanoidBone::LeftUpperLeg => Vec3::new(0.1, -0.05, 0.0),
             HumanoidBone::RightUpperLeg => Vec3::new(-0.1, -0.05, 0.0),
-            HumanoidBone::LeftLowerLeg | HumanoidBone::RightLowerLeg => Vec3::new(0.0, -0.45, 0.0),
-            HumanoidBone::LeftFoot | HumanoidBone::RightFoot => Vec3::new(0.0, -0.45, 0.0),
+            HumanoidBone::LeftLowerLeg
+            | HumanoidBone::RightLowerLeg
+            | HumanoidBone::LeftFoot
+            | HumanoidBone::RightFoot => Vec3::new(0.0, -0.45, 0.0),
             HumanoidBone::LeftToes | HumanoidBone::RightToes => Vec3::new(0.0, -0.05, 0.1),
             _ => Vec3::new(0.0, 0.1, 0.0),
         };
