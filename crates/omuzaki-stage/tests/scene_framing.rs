@@ -46,39 +46,88 @@ fn span(framing: Framing, l: &Landmarks) -> (f32, f32, Bounds, f32) {
     }
 }
 
+/// The eight corners of the box from `min` to `max`.
+fn corners(min: Vec3, max: Vec3) -> Vec<Vec3> {
+    let pick = |lo: f32, hi: f32, on: bool| if on { hi } else { lo };
+    (0..8)
+        .map(|i| {
+            Vec3::new(pick(min.x, max.x, i & 1 != 0), pick(min.y, max.y, i & 2 != 0), pick(min.z, max.z, i & 4 != 0))
+        })
+        .collect()
+}
+
+/// The share of the frame height the span's corners cover, and of the frame width the box's corners cover, with every
+/// corner projected through the camera.
+fn shares(camera: &Camera, aspect: f32, lo: f32, hi: f32, bounds: &Bounds) -> (f32, f32) {
+    let extent = |points: Vec<Vec3>, pick: fn((f32, f32)) -> f32| {
+        let values: Vec<f32> = points.into_iter().map(|p| pick(project(camera, aspect, p))).collect();
+        let (low, high) = values.iter().fold((f32::MAX, f32::MIN), |(l, h), v| (l.min(*v), h.max(*v)));
+        (high - low) * 0.5
+    };
+    let tall =
+        extent(corners(Vec3::new(bounds.min.x, lo, bounds.min.z), Vec3::new(bounds.max.x, hi, bounds.max.z)), |p| p.1);
+    (tall, extent(corners(bounds.min, bounds.max), |p| p.0))
+}
+
 #[test]
 fn presets_fill_their_span() {
-    let def = |f| CameraDef::preset(f);
     for id in templates::TEMPLATES {
         let l = landmarks(id);
         for aspect in ASPECTS {
             for framing in PRESETS {
-                let camera = frame(framing, &l, &def(framing), aspect).unwrap();
+                let camera = frame(framing, &l, &CameraDef::preset(framing), aspect).unwrap();
                 let (lo, hi, bounds, fill) = span(framing, &l);
-                let c = bounds.centre();
-                let t = (30.0_f32.to_radians() * 0.5).tan();
-                let d_v = (hi - lo) / (2.0 * fill * t);
-                let d_w = bounds.width_at(0.0) / (2.0 * fill * aspect * t);
-                let (share, what) = if d_v >= d_w {
-                    (
-                        (project(&camera, aspect, Vec3::new(c.x, hi, c.z)).1
-                            - project(&camera, aspect, Vec3::new(c.x, lo, c.z)).1)
-                            * 0.5,
-                        "height",
-                    )
-                } else {
-                    (
-                        (project(&camera, aspect, Vec3::new(bounds.max.x, c.y, c.z)).0
-                            - project(&camera, aspect, Vec3::new(bounds.min.x, c.y, c.z)).0)
-                            * 0.5,
-                        "width",
-                    )
-                };
-                eprintln!("{id} {aspect:.2} {framing:?}: {what} share {share:.3} (fill {fill})");
-                assert!((share - fill).abs() <= 0.03 * fill, "{id} {aspect} {framing:?}: {share} vs {fill}");
+                let (tall, wide) = shares(&camera, aspect, lo, hi, &bounds);
+                eprintln!("{id} {aspect:.2} {framing:?}: height {tall:.3}, width {wide:.3} (fill {fill})");
+                // Whichever binds fills its share; the other fits inside it.
+                assert!(tall <= fill * 1.03 && wide <= fill * 1.03, "{id} {aspect} {framing:?}: {tall} / {wide}");
+                assert!((tall.max(wide) - fill).abs() <= 0.03 * fill, "{id} {aspect} {framing:?}: {tall} / {wide}");
             }
         }
     }
+}
+
+#[test]
+fn pitch_60_keeps_the_full_body_fill_and_the_bust_crown_position() {
+    for id in templates::TEMPLATES {
+        let l = landmarks(id);
+        let aspect = 16.0 / 9.0;
+        let def = |f| CameraDef { pitch: 60.0, ..CameraDef::preset(f) };
+        let full = frame(Framing::Full, &l, &def(Framing::Full), aspect).unwrap();
+        let (tall, wide) = shares(&full, aspect, l.bottom(), l.top(), &l.body);
+        assert!((tall.max(wide) - FULL_FILL).abs() <= 0.03 * FULL_FILL, "{id}: full {tall} / {wide}");
+        let bust = frame(Framing::Bust, &l, &def(Framing::Bust), aspect).unwrap();
+        let (from, to, bounds, want) = span(Framing::Bust, &l);
+        let (tall, wide) = shares(&bust, aspect, from, to, &bounds);
+        assert!((tall.max(wide) - want).abs() <= 0.03 * want, "{id}: bust {tall} / {wide}");
+        let crown = from_top(&bust, aspect, &bounds, l.crown().unwrap());
+        assert!((crown - BUST_CROWN_FROM_TOP).abs() < 0.02, "{id}: crown at {crown}");
+    }
+}
+
+#[test]
+fn a_deep_box_keeps_its_near_corners_inside_the_requested_width() {
+    let mut l = landmarks("standard");
+    l.hands = Some(Bounds { min: Vec3::new(-0.2, 0.3, -0.2), max: Vec3::new(0.2, 0.7, 0.2) });
+    for aspect in ASPECTS {
+        let camera = frame(Framing::Hands, &l, &CameraDef::preset(Framing::Hands), aspect).unwrap();
+        let hands = l.hands.unwrap();
+        let (tall, wide) = shares(&camera, aspect, hands.min.y, hands.max.y, &hands);
+        assert!(wide <= HANDS_FILL * 1.01 && tall <= HANDS_FILL * 1.01, "{aspect}: {tall} / {wide}");
+        assert!((tall.max(wide) - HANDS_FILL).abs() <= 0.01, "{aspect}: {tall} / {wide}");
+    }
+}
+
+#[test]
+fn the_pitch_range_includes_straight_down_and_up() {
+    let l = landmarks("standard");
+    for pitch in [90.0, -90.0] {
+        let def = CameraDef { pitch, ..CameraDef::preset(Framing::Full) };
+        let camera = frame(Framing::Full, &l, &def, 1.0).unwrap();
+        assert!(camera.transform.is_finite() && camera.position().y * pitch.signum() > 0.0, "{pitch}");
+    }
+    let def = CameraDef { pitch: 90.5, ..CameraDef::preset(Framing::Full) };
+    assert!(matches!(frame(Framing::Full, &l, &def, 1.0), Err(StageError::Framing { .. })));
 }
 
 #[test]
@@ -139,8 +188,9 @@ fn yaw_90_looks_from_the_side() {
     let target = Vec3::new(l.body.centre().x, f32::midpoint(l.bottom(), l.top()), l.body.centre().z);
     let offset = side.position() - target;
     assert!(offset.x > 0.0 && offset.y.abs() < 1e-4 && offset.z.abs() < 1e-4, "{offset}");
-    // The height binds at yaw 0, and the body is narrower than tall, so the distance is the same from the side.
-    assert!((offset.length() - (front.position() - target).length()).abs() < 1e-3);
+    // The height binds from both sides; only the box's depth toward the lens differs, a few centimetres.
+    let ratio = offset.length() / (front.position() - target).length();
+    assert!((ratio - 1.0).abs() < 0.1, "{ratio}");
 }
 
 #[test]
@@ -199,7 +249,7 @@ fn free_and_missing_landmarks_are_framing_errors() {
         CameraDef { fov: 0.0, ..def.clone() },
         CameraDef { fov: 180.0, ..def.clone() },
         CameraDef { zoom: 0.0, ..def.clone() },
-        CameraDef { pitch: 90.0, ..def.clone() },
+        CameraDef { pitch: 90.5, ..def.clone() },
         CameraDef { yaw: f32::NAN, ..def.clone() },
     ] {
         assert!(is_framing(frame(Framing::Full, &l, &bad, 1.0)), "{bad:?}");
