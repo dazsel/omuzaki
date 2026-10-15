@@ -34,8 +34,6 @@
 //! a live setting elsewhere. It fails on an empty registry for the same reason `check_crate!` does. The per-key rules
 //! stay in `check_crate!`, so a problem is reported once, where its author can fix it.
 
-use std::fmt::Write as _;
-
 use omuzaki_doc_api::Value;
 
 use crate::meta::{InProfile, SettingScope};
@@ -232,11 +230,8 @@ fn reg_problems(reg: &SettingRegistration, all: &[&SettingRegistration], out: &m
 fn toml_round_trip(key: &str, default: &Value) -> Result<(), String> {
     let mut wrapped = serde_json::Map::new();
     wrapped.insert("v".into(), default.clone());
-    let text = toml::to_string(&Value::Object(wrapped.clone())).map_err(|e| {
-        let mut m = String::new();
-        let _ = write!(m, "the default cannot be written as TOML ({e})");
-        m
-    })?;
+    let text = toml::to_string(&Value::Object(wrapped.clone()))
+        .map_err(|e| format!("the default cannot be written as TOML ({e})"))?;
     let back: Value = toml::from_str(&text).map_err(|e| format!("the default does not read back from TOML ({e})"))?;
     if back == Value::Object(wrapped) {
         Ok(())
