@@ -71,6 +71,11 @@ omuzaki-track-mock = { path = "../omuzaki-track-mock" }
 # The registration scan behind the link gate (`tests/registrations.rs`, ADR 0015).
 xtask = { path = "../../xtask" }
 
+# The face painter drawing into the wgpu renderer's texture through `PaintTarget::native` (#151); needs the renderer backend.
+[[test]]
+name = "face_gpu_interop"
+required-features = ["wgpu"]
+
 # One bench target per hot path. A target needs its file to exist, so the skeleton declares it up front; the task named
 # in the file's `//!` line fills it.
 [[bench]]
