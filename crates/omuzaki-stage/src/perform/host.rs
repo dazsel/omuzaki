@@ -35,7 +35,9 @@ pub trait PerformHost: Send + Sync {
     /// [`PerformError::Disconnected`].
     fn calibrate(&self, frames: usize) -> Result<(), PerformError>;
 
-    /// Applies a partial change; returns the full config now in use (as the change will leave it).
+    /// Applies a partial change; returns the full config now in use (as the change will leave it). The result is built
+    /// from the last settings this host returned (or published), so a change made around the host, directly on the
+    /// performer's retarget, shows in it only after the next published status.
     ///
     /// # Errors
     /// [`PerformError::QueueFull`] or [`PerformError::Disconnected`].
@@ -301,8 +303,8 @@ pub struct PerformControl {
 
 impl PerformControl {
     /// Drains pending commands (`try_recv`), feeds the neutral capture, runs `performer.advance(now)` and publishes the
-    /// status. Never blocks, and allocates only when a command arrives (a settings change compiles the retarget's
-    /// tables, which its docs allow between frames).
+    /// status. Never blocks. It allocates only on the first call (publishing the performer's own settings) and when a
+    /// command arrives (a settings change compiles the retarget's tables, which its docs allow between frames).
     ///
     /// The capture sees the frame of the last step each call runs; on a call that catches up several steps the earlier
     /// steps' frames are skipped, which only makes the capture a little slower.
@@ -320,7 +322,7 @@ impl PerformControl {
         if let Some(out) = &output {
             self.tracking = out.tracking;
             if out.frame.is_some() {
-                self.fps.arrived(now.0);
+                self.fps.arrived(out.tick.time.0);
             }
             self.feed_capture(out);
         }
@@ -366,7 +368,8 @@ impl PerformControl {
             run.full = true;
         } else if held > run.held {
             (run.held, run.anchor) = (held, Some(index));
-        } else if index + 1 - anchor >= CAPTURE_STALL_STEPS {
+        } else if index.saturating_sub(anchor) + 1 >= CAPTURE_STALL_STEPS {
+            // `saturating_sub`: a performer `reset` restarts the tick index below the anchor.
             self.calibration_state = CalibrationState::Failed { got: held, need: run.frames };
             self.running = None;
             self.shared.capturing.store(false, Ordering::Release);
@@ -405,6 +408,13 @@ impl PerformControl {
         if let Some(calibration) = self.pending_calibration.take() {
             published.calibration = calibration;
         }
+    }
+}
+
+impl Drop for PerformControl {
+    /// A capture can never finish now: free the slot so the handle reports `Disconnected`, not `CalibrationRunning`.
+    fn drop(&mut self) {
+        self.shared.capturing.store(false, Ordering::Release);
     }
 }
 

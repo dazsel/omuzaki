@@ -173,6 +173,29 @@ fn a_dropped_control_disconnects_the_handle() {
 }
 
 #[test]
+fn a_control_dropped_mid_capture_frees_the_slot_so_the_handle_says_disconnected() {
+    let (host, control, _performer) = rig(replay(5.0));
+    host.calibrate(150).unwrap();
+    drop(control);
+    assert_eq!(host.calibrate(150), Err(PerformError::Disconnected));
+}
+
+#[test]
+fn a_performer_reset_during_a_capture_does_not_break_the_stall_clock() {
+    let (host, mut control, mut performer) = rig(Box::new(Silent));
+    host.calibrate(150).unwrap();
+    for i in 1..=100 {
+        step(&mut control, &mut performer, i);
+    }
+    performer.reset();
+    // The tick index restarts at 0, below the capture's anchor.
+    for i in 0..=700 {
+        step(&mut control, &mut performer, i);
+    }
+    assert!(matches!(host.status().calibration, CalibrationState::Failed { got: 0, need: 150 }));
+}
+
+#[test]
 fn set_retarget_merges_into_the_config_in_use_and_publishes_it() {
     let (host, mut control, mut performer) = rig(replay(5.0));
     let mut want = RetargetConfig::default();
