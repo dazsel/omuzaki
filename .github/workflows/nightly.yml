@@ -48,6 +48,15 @@ jobs:
       - name: Full matrix
         run: tools/ci/nightly-check.sh
 
+      # The WebAssembly link proof (ADR 0015) in the release profile the web player ships, where the linker drops
+      # unreferenced code hardest, and its --unlinked counterpart so the proof can fail. Pull requests run both in dev;
+      # the optimised build is too slow for them. Runs even when the matrix above failed, so one report shows both.
+      - name: WebAssembly link proof (release)
+        if: ${{ !cancelled() }}
+        run: |
+          cargo xtask wasm-link-proof --release
+          cargo xtask wasm-link-proof --release --unlinked
+
       # Last step: runs only when a step above failed. Opens or comments on the "CI: nightly failing" issue.
       - name: Report failure
         if: failure()
