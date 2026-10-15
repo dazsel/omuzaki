@@ -393,8 +393,8 @@ fn a_pucker_narrows_an_open_mouth_further() {
 // ------------------------------------------------------------------------------------------------ the sections around
 
 #[test]
-fn only_the_open_shape_leaves_an_outline_for_the_interior_and_the_pieces_after_it_draw_nothing_yet() {
-    // The in-crate unit tests read `PaintCtx::open_mouth`; here, the stubs for the interior, rim and tongue must not add commands.
+fn only_the_open_shape_leaves_an_outline_for_the_interior_and_the_section_paints_the_whole_mouth() {
+    // The in-crate unit tests read `PaintCtx::open_mouth`; here, the interior piece alone records the outline to clip against and then draws into it.
     let mut out = FaceDrawing::new();
     let p = params(|m| m.open = 0.5);
     let input = FaceInput { profile: &flat(), params: &p, time: Seconds(0.0), view: FaceView::default() };
