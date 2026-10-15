@@ -9,6 +9,10 @@
 //! - [`fixtures`]: synthetic events with invented names and messages. Recorded chat is never a fixture.
 #![deny(missing_docs)]
 
+omuzaki_core::define_link! {
+    omuzaki_live_api::link();
+}
+
 pub mod approvals;
 pub mod fixtures;
 pub mod harness;
