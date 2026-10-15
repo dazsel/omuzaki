@@ -1,9 +1,0 @@
-# Seeds for failure cases proptest has generated in the past. It is
-# automatically read and these particular cases re-run before any
-# novel cases are generated.
-#
-# It is recommended to check this file in to source control so that
-# everyone who runs the test benefits from these saved cases.
-cc 4979d62f092be7357f296457abcba1660414465d18155bc9c9dd71708ddd0bb7 # shrinks to pieces = [Loop(1, [Func([Call("face.set_profile")])])]
-cc ba913d6884401191be13bfcaec2ecfdf59c42e035716295e6de983086b750073 # shrinks to pieces = [Closure([Call("face.set_profile")])]
-cc 5751d3105696ffacabf84fa07c51c049f0fb4942a801195ec73288a7c2fcc3a5 # shrinks to pieces = [Func([Loop(1, [Closure([Closure([Call("face.set_profile")])])])])]
