@@ -11,6 +11,7 @@
 //! | [`Calls`], [`RunnerCalls`], [`JobScript`] | where a run's requests go: a `Runner` (console, CLI) or a driver job (`script.run`) |
 //! | [`Macro`], [`MacroRecorder`], [`play`], [`to_jsonl`] | macros: record a person's edits, replay them as one transaction, the file |
 //! | [`ops`] | the `script.check`, `script.run`, `script.save`, `script.delete` and `script.list` ops |
+//! | [`run_script`], [`check_script`] | the two commands behind `omuzaki script run` and `check`, as pure functions |
 //! | [`ScriptStore`], [`MemScriptStore`] | My scripts, the person's own scripts across projects |
 //!
 //! The ops register themselves with `register_op!`; a binary keeps them only if it calls [`link`] (ADR 0015).
@@ -21,6 +22,7 @@
 mod bindings;
 mod calls;
 mod check;
+mod commands;
 mod convert;
 mod error;
 mod host;
@@ -34,6 +36,7 @@ mod store;
 
 pub use calls::{Calls, Cancel, PlannedCall, RunnerCalls};
 pub use check::{CheckReport, Diagnostic, FieldError, FieldErrorKind, OpUse, Refused, effective_grants};
+pub use commands::{RunOptions, check_script, run_script};
 pub use error::{LimitKind, OutputKind, OutputLine, ScriptError, ScriptErrorKind};
 pub use host::{RunRequest, ScriptHost, ScriptOutcome};
 pub use job::JobScript;

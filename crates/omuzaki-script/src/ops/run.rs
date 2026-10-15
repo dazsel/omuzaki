@@ -206,23 +206,10 @@ fn replay(job: &JobCtx<'_>, steps: &[RecordedCall], dry_run: bool) -> Result<Val
     Ok(json!({ "value": null, "output": [], "calls": steps.len(), "tx": null, "plans": plans }))
 }
 
-/// How a failed run reaches the caller: a cancel as the job's cancellation; an inner call's failure as that call's own
-/// error; everything else (a parse error, a limit, a script error) as `Invalid` on `source`, with the position in the
-/// detail and at the end of the message, and what the script printed before it failed as the hint.
+/// How a failed run reaches the caller: a cancel as the job's cancellation, anything else as
+/// [`ScriptError::to_op_error`] says.
 fn run_error(job: &JobCtx<'_>, error: &ScriptError) -> OpError {
-    match (error.kind, &error.op_error) {
-        (ScriptErrorKind::Cancelled, _) => OpError::cancelled(job.id()),
-        (ScriptErrorKind::Op, Some(op_error)) => op_error.clone(),
-        _ => {
-            let mut mapped = OpError::invalid("source", format!("{} (line {}, column {})", error.message, error.line, error.column))
-                .with_detail(ErrorDetail::Position { line: error.line, column: error.column });
-            if !error.output.is_empty() {
-                let printed: Vec<&str> = error.output.iter().map(|line| line.text.as_str()).collect();
-                mapped = mapped.hint(format!("it printed before failing: {}", printed.join(" | ")));
-            }
-            mapped
-        }
-    }
+    if error.kind == ScriptErrorKind::Cancelled { OpError::cancelled(job.id()) } else { error.to_op_error() }
 }
 
 register_op!(ScriptRun);

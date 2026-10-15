@@ -337,12 +337,69 @@ impl ScriptHost {
         engine
     }
 
-    /// Runs a script. Any failure, limit or cancel rolls back through [`Calls::rollback`].
+    /// Runs a script on a worker thread whose stack is sized for the deepest value the limits let it build
+    /// ([`Limits::worker_stack_bytes`]), so a deeply nested value can't overflow the stack and abort the process. Any
+    /// failure, limit or cancel rolls back through [`Calls::rollback`].
+    ///
+    /// `calls` and `cancel` are used from the worker thread while the caller waits, which their `Send + Sync`
+    /// supertraits already allow; the call returns when the run is over, and nothing outlives it. A panic in the run
+    /// is raised again in the caller. Limits that would need more stack than [`Limits::MAX_WORKER_STACK_BYTES`] are
+    /// refused with [`ScriptErrorKind::Refused`]. On `wasm32`, which has no threads, the run happens on the caller's
+    /// thread.
     ///
     /// # Errors
     /// A [`ScriptError`] carrying the position, the kind and the output printed so far.
     #[allow(clippy::result_large_err)] // the error type and this signature are the contract's
     pub fn run(
+        &self,
+        request: RunRequest,
+        calls: &dyn Calls,
+        cancel: &dyn Cancel,
+    ) -> Result<ScriptOutcome, ScriptError> {
+        let Some(stack) = self.limits.worker_stack_bytes() else {
+            return Err(refused(
+                "the array and map limits allow nesting that needs more stack than a run may have; lower `array_len` or `map_len`",
+            ));
+        };
+        self.run_on_worker(stack, request, calls, cancel)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[allow(clippy::result_large_err)] // as `run`
+    fn run_on_worker(
+        &self,
+        stack: usize,
+        request: RunRequest,
+        calls: &dyn Calls,
+        cancel: &dyn Cancel,
+    ) -> Result<ScriptOutcome, ScriptError> {
+        std::thread::scope(|scope| {
+            let worker = std::thread::Builder::new()
+                .name("omuzaki-script".to_owned())
+                .stack_size(stack)
+                .spawn_scoped(scope, || self.run_here(request, calls, cancel));
+            match worker {
+                Ok(worker) => worker.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+                Err(error) => Err(refused(&format!("the worker thread for the run could not start: {error}"))),
+            }
+        })
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[allow(clippy::result_large_err)] // as `run`
+    fn run_on_worker(
+        &self,
+        _stack: usize,
+        request: RunRequest,
+        calls: &dyn Calls,
+        cancel: &dyn Cancel,
+    ) -> Result<ScriptOutcome, ScriptError> {
+        self.run_here(request, calls, cancel)
+    }
+
+    /// The run itself, on the calling thread.
+    #[allow(clippy::result_large_err)] // as `run`
+    fn run_here(
         &self,
         mut request: RunRequest,
         calls: &dyn Calls,
@@ -487,6 +544,18 @@ fn evaluate(
     })
 }
 
+/// A run that was not started, for a reason in the host's own setup.
+fn refused(message: &str) -> ScriptError {
+    ScriptError {
+        kind: ScriptErrorKind::Refused,
+        line: 1,
+        column: 1,
+        op_error: None,
+        message: message.to_owned(),
+        output: Vec::new(),
+    }
+}
+
 /// A position as 1-based `(line, column)`; `(1, 1)` for a failure with no place in the source.
 pub(crate) fn line_col(at: Position) -> (u32, u32) {
     let to_u32 = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
@@ -619,6 +688,50 @@ mod tests {
         assert!(kept.lent.read().unwrap().is_none(), "unwinding empties the slot too");
         assert!(is_cancel(&kept.invoke("face.set_profile", Value::Null, Position::NONE).unwrap_err()));
         assert_eq!(reached.load(Ordering::SeqCst), 0);
+    }
+
+    /// Scripts that nest a value one level per step until the size limits stop them.
+    const NESTERS: [&str; 3] = [
+        "let v = []; loop { v = [v]; }",
+        "let v = #{}; loop { v = #{ a: v }; }",
+        "let v = []; loop { v = [#{ a: v }]; }",
+    ];
+
+    /// Nesting as deep as the limits allow, run on a thread with only the per-level share of the worker stack (the
+    /// base is left out), must end with the size limit. This asserts the margin of `Limits::STACK_PER_LEVEL`: if a
+    /// level cost more than it is allotted, the thread would overflow and abort the test process.
+    #[test]
+    #[allow(clippy::result_large_err)] // the closures return the run's own result
+    fn the_per_level_share_of_the_worker_stack_holds_the_deepest_nesting_the_limits_allow() {
+        let limits = Limits { array_len: 5_000, map_len: 5_000, operations: 1_000_000_000, ..Limits::console() };
+        let stack = limits.worker_stack_bytes().unwrap() - Limits::STACK_BASE;
+        let host = ScriptHost::new(&[], limits);
+        for source in NESTERS {
+            let reached = std::thread::scope(|scope| {
+                std::thread::Builder::new()
+                    .stack_size(stack)
+                    .spawn_scoped(scope, || {
+                        let request = RunRequest {
+                            name: "nest".into(),
+                            source: source.into(),
+                            actor: Actor::Person { name: "tester".into() },
+                            grants: Grants::person(),
+                            tx: None,
+                            params: JsonMap::new(),
+                            dry_run: false,
+                        };
+                        host.run_here(request, &Counting(&AtomicUsize::new(0)), &Never)
+                    })
+                    .unwrap()
+                    .join()
+                    .unwrap()
+            });
+            let kind = reached.unwrap_err().kind;
+            assert!(
+                matches!(kind, ScriptErrorKind::Limit(LimitKind::ArraySize | LimitKind::MapSize)),
+                "{source}: {kind:?}"
+            );
+        }
     }
 
     /// Sets a flag when it is dropped; a script holds one in a local.
