@@ -239,7 +239,8 @@ impl Replay {
                 | Event::ApprovalRequested { .. }
                 | Event::ApprovalResolved { .. }
                 | Event::JobChanged { .. }
-                | Event::JobProgress { .. } => {}
+                | Event::JobProgress { .. }
+                | Event::Clash { .. } => {}
             }
         }
         Ok(())

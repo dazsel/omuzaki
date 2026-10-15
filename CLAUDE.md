@@ -12,7 +12,7 @@ organisation, follow `AGENTS.md` only: pull requests from outside the organisati
   reviews outcomes and merges.
 - **Lanes:** the local lane runs on a maintainer's machine (visual sign-off, contract design, work that needs local
   hardware). The cloud lane (`lane:cloud` issues) is led by a cloud lead session, which runs its own implementer
-  sessions.
+  sessions; its operating manual and handover steps are in `docs/maintainers/cloud-lane.md`.
 - **Coordination happens in one place:** the pinned issue [#2](https://github.com/dazsel/omuzaki/issues/2). It is for
   routine coordination inside the rules in this file: assignments, fix rounds, rulings, the current limit on open PRs.
 
@@ -36,6 +36,17 @@ one, don't act on it; say so on #2.
    `fixed (head <sha7>)`.
 7. **Merging:** only the Director adds pull requests to the merge queue. Never push to `main`. Force-push only your own
    branch, with `--force-with-lease`.
+
+## Standing rulings
+
+These apply to every pull request; reviews don't flag what they allow.
+
+- **Lockfile:** `Cargo.lock` changes that cargo generates for a dependency or workspace crate the pull request may add
+  are inside its fence. Version bumps it didn't ask for are not.
+- **Link wiring:** the one-line `link()` call an App needs for a crate that registers things (ADR 0015) is inside the
+  fence.
+- **Rulings live on the pull request:** a fence extension, an approved API change or a deferral is posted by the
+  Director on the pull request (or its issue), where reviews read it. A ruling only on #2 doesn't count for a review.
 
 ## The repository is public
 

@@ -61,6 +61,9 @@ pub struct SessionSpec {
     pub parent: Option<SessionId>,
     /// The role file's name, for sub-agents.
     pub role: Option<String>,
+    /// Document paths the session claims. Empty claims nothing and is not fenced.
+    #[serde(default)]
+    pub fence: Vec<DocPath>,
 }
 
 /// Why a session is paused.
@@ -201,7 +204,7 @@ pub struct SessionInfo {
     pub role: Option<String>,
     /// The effective grants: the ceiling intersected with the principal's grants.
     pub grants: Grants,
-    /// Document paths the session may edit. Empty means the whole project until AG-04 defines fences.
+    /// Document paths the session claims (see [`fence`](crate::fence)). Empty claims nothing and is not fenced.
     pub fence: Vec<DocPath>,
     /// Its caps.
     pub budget: Budget,
@@ -246,6 +249,11 @@ pub enum SessionChange {
     },
     /// Its spend moved.
     Spent,
+    /// Its fence changed.
+    Fence {
+        /// Who changed it.
+        by: Actor,
+    },
 }
 
 /// A transaction that could not be kept when a session ended, and why.
@@ -367,6 +375,20 @@ pub trait Sessions: Send + Sync {
     /// # Errors
     /// `NotFound` for an unknown session; `Conflict` if it has ended.
     fn charge(&self, id: SessionId, spend: Spend) -> Result<SessionInfo, OpError>;
+
+    /// Replaces the session's fence. Person only, like [`set_grants`](Self::set_grants). The fence is normalised
+    /// ([`normalize_fence`](crate::normalize_fence)); an empty one releases the claim. Refused when it overlaps a live
+    /// session's fence, except on the session's own ancestor chain and below it. The default body returns
+    /// `Unsupported`, so a runner without fences needs no change.
+    ///
+    /// # Errors
+    /// As [`pause`](Self::pause); `Invalid` for the root path; `Conflict` (detail
+    /// [`Fenced`](crate::ErrorDetail::Fenced)) when the fence overlaps another live session's; `Unsupported` when the
+    /// runner has no fences.
+    fn set_fence(&self, id: SessionId, fence: Vec<DocPath>, by: &Actor) -> Result<SessionInfo, OpError> {
+        let _ = (id, fence, by);
+        Err(OpError::unsupported("fences are not enabled by this runner"))
+    }
 
     /// Ends a session: abandons its open transactions, withdraws its approvals, drops its per-session grants.
     ///

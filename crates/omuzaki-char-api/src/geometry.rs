@@ -101,6 +101,19 @@ impl MaterialSpec {
         }
     }
 
+    /// The renderer's own material rules ([`Material::validate`]: ranges, finite numbers, counts) on this spec, so a
+    /// spec that would be refused at upload is caught while it is built. Texture handles are not part of those rules,
+    /// so placeholders stand in for them.
+    ///
+    /// # Errors
+    /// [`omuzaki_render_api::RenderError`] naming the first broken rule.
+    pub fn validate(&self) -> Result<(), omuzaki_render_api::RenderError> {
+        let placeholder = TextureId::from_parts(0, 0);
+        self.to_material(&|_| Some(placeholder), &|_| Some(placeholder))
+            .map_err(|e| omuzaki_render_api::RenderError::invalid("material", e.to_string()))?
+            .validate()
+    }
+
     /// The renderer's material, given the stage's handles: `textures` for named procedural textures, `layers` for the
     /// face layer textures.
     ///
