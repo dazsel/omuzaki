@@ -51,6 +51,13 @@ goes to the Director first.
   judgement to a mid-size one; leads and architecture to the largest.
 - **Code review is the automated Codex review,** on every pull request (the review loop the Director runs). No other
   model reviews pull requests, and leads don't re-review code line by line.
+  - **When it reviews:** when a pull request opens, then once per fix round. A session ends each round with one
+    `fixed (head <sha>)` comment, and never requests reviews itself. Merges of `main` and rebases don't trigger a
+    review.
+  - **Large pull requests** (over 400 lines, design docs or ADRs, `xtask/`, `.github/`, `tools/`) also get one deep
+    local review.
+  - **The Director's process-doc pull requests** (label `director-docs`) merge on a green gate without a review.
+  - Why, with the data, is in `lessons.md`.
 - **A sign-off is a decision check, not a second review.** A lead (or the Director) signing off a contract or hub
   change reads the pull request's summary, the API-surface change and Codex's verdict, and decides whether it is the
   right design; it opens the code only where the decision needs it. Rulings on Codex's findings work the same way.
