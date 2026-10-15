@@ -24,6 +24,7 @@ use omuzaki_ops_api::{
 };
 use omuzaki_store_api::{Commercial, ContentHash, Provenance, Source, Store, StoreError};
 use omuzaki_store_mock::MemStore;
+use omuzaki_store_mock::conformance::sample_provenance;
 use serde_json::{Value, json};
 
 /// A file that starts `PROBE`, then the number of images, then how many of them are distinct. Its meta is a VRM 1.0
@@ -60,6 +61,15 @@ impl Importer for ProbeImporter {
             CommercialUsage::PersonalProfit
         };
         scene.meta = meta;
+        // Bytes after the flags say `licence|credit`: the importer sets the record itself, as a real one may.
+        if let Some(text) = input.bytes.get(8..).filter(|text| !text.is_empty()) {
+            let text = String::from_utf8_lossy(text);
+            let (licence, credit) = text.split_once('|').unwrap_or((&text, ""));
+            let mut record = scene.meta.imported_provenance(Some(input.name.unwrap_or("model")));
+            licence.clone_into(&mut record.licence);
+            record.attribution = (!credit.is_empty()).then(|| credit.to_owned());
+            scene.provenance = Some(record);
+        }
         Ok(ImportOutcome::new(scene, LicenceEvidence::Imported))
     }
 }
@@ -485,38 +495,107 @@ fn a_model_that_refers_to_other_files_is_unsupported_and_says_to_use_a_glb() {
     assert!(rig.store.is_empty());
 }
 
-/// The probe file `count` images (all one image when `distinct` is 1) under non-profit terms.
+/// The probe file with `count` images (all one image when `distinct` is 1) under non-profit terms.
 fn restrictive_probe(count: u8, distinct: u8) -> Vec<u8> {
     let mut bytes = probe(count, distinct);
     bytes.push(NON_PROFIT);
     bytes
 }
 
-#[test]
-fn an_image_already_stored_under_wider_rights_refuses_the_import() {
-    let mut rig = Rig::new();
-    // The first model is commercial-ok; the second is non-profit and shares its one image.
-    rig.run(&bytes_op(&probe(1, 1))).unwrap();
-    let (objects, doc) = (rig.store.len(), rig.doc.root().clone());
+/// A probe file whose importer sets the record: `licence` and a credit line (empty for none), on commercial terms.
+fn licensed_probe(count: u8, distinct: u8, licence: &str, credit: &str) -> Vec<u8> {
+    let mut bytes = probe(count, distinct);
+    bytes.push(0);
+    bytes.extend(format!("{licence}|{credit}").bytes());
+    bytes
+}
 
-    let error = rig.run(&bytes_op(&restrictive_probe(1, 1))).unwrap_err();
-    assert_eq!(error.code, ErrorCode::Conflict);
-    assert!(error.message.contains("wider rights"), "{}", error.message);
-    assert!(error.message.contains("Ok") && error.message.contains("No"), "names both: {}", error.message);
+/// Imports `file` into `rig` and returns the refusal, checking that it stored nothing and changed no document.
+fn refused_without_a_trace(rig: &mut Rig, file: &[u8]) -> OpError {
+    let (objects, doc) = (rig.store.len(), rig.doc.root().clone());
+    let error = rig.run(&bytes_op(file)).unwrap_err();
+    assert_eq!(error.code, ErrorCode::Conflict, "{}", error.message);
     assert_eq!(rig.store.len(), objects, "nothing of the refused model was stored");
     assert_eq!(rig.doc.root(), &doc);
+    error
 }
 
 #[test]
-fn an_image_already_stored_under_equal_or_stricter_rights_is_fine() {
-    let mut rig = Rig::new();
-    let (strict, _) = rig.run(&bytes_op(&restrictive_probe(1, 1))).unwrap();
-    let image = hash(&strict["asset"]["images"][0]);
-    rig.run(&bytes_op(&probe(1, 1))).unwrap();
-    assert_eq!(rig.store.provenance(&image).unwrap().commercial, Commercial::No, "the stricter record stays");
-    rig.run(&bytes_op(&probe(1, 1))).unwrap();
+fn an_image_stored_under_a_different_commercial_status_refuses_the_import_both_ways() {
+    for (first, second) in [(probe(1, 1), restrictive_probe(1, 1)), (restrictive_probe(1, 1), probe(1, 1))] {
+        let mut rig = Rig::new();
+        rig.run(&bytes_op(&first)).unwrap();
+        let error = refused_without_a_trace(&mut rig, &second);
+        assert!(error.message.contains("different record"), "{}", error.message);
+        assert!(error.message.contains("Ok") && error.message.contains("No"), "names both: {}", error.message);
+        assert!(error.hint.as_deref().is_some_and(|h| h.contains("#1773")));
+    }
 }
 
+#[test]
+fn the_same_tuple_under_another_licence_or_credit_line_is_refused() {
+    let cases = [
+        (licensed_probe(1, 1, "CC-BY-4.0", ""), licensed_probe(1, 1, "CC-BY-SA-4.0", "")),
+        (licensed_probe(1, 1, "CC-BY-4.0", "Credit A"), licensed_probe(1, 1, "CC-BY-4.0", "Credit B")),
+        (licensed_probe(1, 1, "CC-BY-4.0", "Credit A"), licensed_probe(1, 1, "CC-BY-4.0", "")),
+    ];
+    for (first, second) in cases {
+        let mut rig = Rig::new();
+        rig.run(&bytes_op(&first)).unwrap();
+        refused_without_a_trace(&mut rig, &second);
+    }
+}
+
+#[test]
+fn models_with_an_identical_record_share_an_image() {
+    let mut rig = Rig::new();
+    let (one, _) = rig.run(&bytes_op(&probe(1, 1))).unwrap();
+    let (two, _) = rig.run(&bytes_op(&probe(2, 1))).unwrap();
+    assert_eq!(one["asset"]["images"], two["asset"]["images"], "one shared image");
+    assert_eq!(rig.store.len(), 3, "two originals and the one image");
+}
+
+/// A store that, on its first `put`, lets another import win the race: the object is stored first under `other`.
+struct LosesTheRace {
+    inner: Arc<MemStore>,
+    other: Provenance,
+}
+
+impl Store for LosesTheRace {
+    fn put(&self, bytes: &[u8], provenance: Provenance) -> Result<ContentHash, StoreError> {
+        if !self.inner.contains(&ContentHash::of(bytes)) {
+            self.inner.put(bytes, self.other.clone())?;
+        }
+        self.inner.put(bytes, provenance)
+    }
+
+    fn get(&self, hash: &ContentHash) -> Result<Vec<u8>, StoreError> {
+        self.inner.get(hash)
+    }
+
+    fn provenance(&self, hash: &ContentHash) -> Result<Provenance, StoreError> {
+        self.inner.provenance(hash)
+    }
+
+    fn contains(&self, hash: &ContentHash) -> bool {
+        self.inner.contains(hash)
+    }
+}
+
+#[test]
+fn a_record_that_changes_between_the_check_and_the_put_fails_the_import() {
+    let mut rig = Rig::new();
+    let racer = LosesTheRace { inner: rig.store.clone(), other: sample_provenance(Commercial::Ok) };
+    rig.services = ServicesBuilder::new().insert::<dyn Store>(Arc::new(racer)).build();
+    let op = bytes_op(&probe(1, 1));
+    rig.plan(&op).unwrap();
+
+    let error = rig.work(&op, &Signal::new(None)).unwrap_err();
+    assert_eq!(error.code, ErrorCode::Conflict, "{}", error.message);
+    assert!(rig.doc.get(&doc_path("assets")).is_none(), "no asset record: `work` failed, so `finish` never runs");
+    let file = probe(1, 1);
+    assert_eq!(rig.store.get(&ContentHash::of(&file)).unwrap(), file, "what was put is whole");
+}
 /// What a TOML-backed project can store: no `null` anywhere.
 fn assert_storable(value: &Value) {
     toml::Value::try_from(value).unwrap_or_else(|e| panic!("TOML cannot hold {value}: {e}"));

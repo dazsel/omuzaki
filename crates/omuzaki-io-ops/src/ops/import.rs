@@ -10,6 +10,8 @@
 //! rights (io-api D5: the conservative mapping, `Unknown` wherever the file does not settle it), and each image of the
 //! scene under that same record, so an image never carries more rights than the model it came from. The store is
 //! content addressed, so importing the same bytes again stores nothing new.
+//! An object is shared with another import only under an identical record; the check runs before the first write and again
+//! after each `put`, and any difference is a `Conflict` that names both records (joining records is #1773).
 //!
 //! **Cancellation.** The import is cancellable at every checkpoint the importer reaches. The store phase is not
 //! interrupted: the last check comes before the first `put`. The guarantee:
@@ -31,7 +33,7 @@ use omuzaki_io_api::{
     find_importer, formats, run_import, sniff,
 };
 use omuzaki_ops_api::{FsMode, JobCtx, Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op};
-use omuzaki_store_api::{Commercial, ContentHash, Provenance, Source, Store, StoreError};
+use omuzaki_store_api::{ContentHash, Provenance, Source, Store, StoreError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -164,32 +166,35 @@ impl Import {
             .ok_or_else(|| OpError::internal("run_import left the scene without a provenance record"))?;
         let mut objects = vec![(ContentHash::of(bytes), bytes, provenance.clone())];
         for (ix, image) in outcome.scene.images.iter().enumerate() {
+            let hash = ContentHash::of(image.bytes.as_slice());
+            // The same picture used twice in one model is one object, recorded by its first use.
+            if objects.iter().any(|(seen, ..)| *seen == hash) {
+                continue;
+            }
             let record = Provenance {
                 source: Source::Imported { file: format!("{name}#image{ix}"), origin: None },
                 ..provenance.clone()
             };
-            objects.push((ContentHash::of(image.bytes.as_slice()), image.bytes.as_slice(), record));
+            objects.push((hash, image.bytes.as_slice(), record));
         }
-        // Checked for every object before the first write: `put` keeps the record an object was first stored with, so
-        // an image that is already there under wider rights would carry more than this model grants.
+        // Checked for every object before the first write, so a refusal stores nothing.
         for (hash, _, record) in &objects {
-            refuse_wider_rights(store, hash, record, name)?;
+            if store.contains(hash) {
+                require_same_record(store, hash, record, name)?;
+            }
         }
-        let mut images = Vec::new();
+        let mut stored = Vec::with_capacity(objects.len());
         for (hash, bytes, record) in objects {
-            let stored = store
-                .put(bytes, record)
+            let put = store
+                .put(bytes, record.clone())
                 .map_err(|e: StoreError| OpError::internal(format!("storing {name}: {e}")))?;
-            debug_assert_eq!(stored, hash, "the store names an object by the hash of its bytes");
-            images.push(stored);
+            debug_assert_eq!(put, hash, "the store names an object by the hash of its bytes");
+            // `put` keeps the first record, and another import may have stored the object since the check above.
+            require_same_record(store, &put, &record, name)?;
+            stored.push(put);
         }
-        let original = images.remove(0);
-        let mut seen = Vec::new();
-        images.retain(|hash| {
-            let first = !seen.contains(hash);
-            seen.push(*hash);
-            first
-        });
+        let original = stored.remove(0);
+        let images = stored;
         progress.stage("done", 1.0);
         Ok(Imported {
             asset: AssetRecord {
@@ -270,37 +275,30 @@ fn strip_nulls(value: &mut Value) {
     }
 }
 
-/// How much a record lets people do with an object: higher grants more.
-fn permissiveness(record: &Provenance) -> (u8, bool, bool) {
-    let commercial = match record.commercial {
-        Commercial::No => 0,
-        Commercial::Unknown => 1,
-        Commercial::Ok => 2,
-    };
-    // Private test material is the stricter record; a missing credit line asks less of the user than a required one.
-    (commercial, !record.private_test, record.attribution.is_none())
+/// One record on a line, for the error that names two of them.
+fn describe_record(record: &Provenance) -> String {
+    format!(
+        "licence {}, commercial {:?}, attribution {:?}, private test {}, author {:?}, source {:?}",
+        record.licence, record.commercial, record.attribution, record.private_test, record.author, record.source
+    )
 }
 
-/// Refuses an import whose object is already stored under a record that grants more than `wanted`. `Store::put` keeps the
-/// first record and the store offers no way to join two, so the import fails closed; an equal or stricter stored record
-/// is fine.
-fn refuse_wider_rights(store: &dyn Store, hash: &ContentHash, wanted: &Provenance, name: &str) -> Result<(), OpError> {
-    if !store.contains(hash) {
-        return Ok(());
-    }
-    let existing = store
+/// Requires the store to hold `hash` under exactly `wanted`. `Store::put` keeps the first record and the store offers
+/// no way to join two, so an object is shared between imports only when their records are identical; anything else
+/// (wider, stricter, another licence or credit line) fails closed. Joining records is follow-up #1773.
+fn require_same_record(store: &dyn Store, hash: &ContentHash, wanted: &Provenance, name: &str) -> Result<(), OpError> {
+    let stored = store
         .provenance(hash)
         .map_err(|e| OpError::internal(format!("reading the record of {hash}: {e}")))?;
-    let (have, want) = (permissiveness(&existing), permissiveness(wanted));
-    if have.0 > want.0 || (have.1 && !want.1) || (have.2 && !want.2) {
-        return Err(OpError::conflict(format!(
-            "{name} holds an object ({hash}) that the store already has under wider rights: stored as {} ({:?}), \
-             but this model is {} ({:?})",
-            existing.licence, existing.commercial, wanted.licence, wanted.commercial,
-        ))
-        .hint("import the models in the order of their rights, or record the shared object's rights by hand first"));
+    if &stored == wanted {
+        return Ok(());
     }
-    Ok(())
+    Err(OpError::conflict(format!(
+        "{name} holds an object ({hash}) that the store has under a different record. Stored: {}. This model: {}",
+        describe_record(&stored),
+        describe_record(wanted),
+    ))
+    .hint("an object is shared between imports only under identical rights; sharing across different rights is not built yet (#1773)"))
 }
 
 /// `Invalid` over the input limit, the same error `run_import` gives, so a hostile file is refused before it is held.
