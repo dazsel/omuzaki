@@ -324,15 +324,12 @@ mod tests {
         };
         let request = TurnRequest {
             system: Vec::new(),
-            messages: vec![crate::Message {
-                role: crate::Role::User,
-                content: vec![ContentBlock::Text("abcd".into())],
-            }],
+            messages: vec![Message { role: Role::User, content: vec![ContentBlock::Text("abcd".into())] }],
             tools: Vec::new(),
-            tool_choice: crate::ToolChoice::Auto,
+            tool_choice: ToolChoice::Auto,
             max_output: 0,
-            effort: crate::Effort::Default,
-            cache: crate::CachePlan { conversation: false },
+            effort: Effort::Default,
+            cache: CachePlan { conversation: false },
         };
         let prompt = Ledger::new().prompt_estimate(&request, &info);
         assert!(prompt > 0);
