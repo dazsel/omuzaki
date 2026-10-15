@@ -188,7 +188,12 @@ const ARM_BACK: f64 = 0.0011;
 ///
 /// # Errors
 /// The kit's errors for a degenerate piece.
-pub fn pendant_cross(builder: &mut MeshBuilder, at: &Basis, scale: f64, skin: &[(JointRef, f32)]) -> Result<(), TrimError> {
+pub fn pendant_cross(
+    builder: &mut MeshBuilder,
+    at: &Basis,
+    scale: f64,
+    skin: &[(JointRef, f32)],
+) -> Result<(), TrimError> {
     let k = scale;
     let whole = TAU / 2.0;
     let (lv, down_share, lh) = CROSS_ARMS;
@@ -198,9 +203,12 @@ pub fn pendant_cross(builder: &mut MeshBuilder, at: &Basis, scale: f64, skin: &[
     let (ww, root, tip_v, tip_h) = ARM_OUTLINE;
     let (bt, bs, segments) = ARM_BEVEL;
     let bevel = Bevel { thickness: bt * k, size: bs * k, segments };
-    for (length, angle, tip) in
-        [(lv, 0.0, tip_v), (lv * down_share, std::f64::consts::PI, tip_v), (lh, -TAU / 4.0, tip_h), (lh, TAU / 4.0, tip_h)]
-    {
+    for (length, angle, tip) in [
+        (lv, 0.0, tip_v),
+        (lv * down_share, std::f64::consts::PI, tip_v),
+        (lh, -TAU / 4.0, tip_h),
+        (lh, TAU / 4.0, tip_h),
+    ] {
         // Counter-clockwise: the narrow root, then the flare out to the tip.
         let outline = [
             DVec2::new(-ww, 0.0),

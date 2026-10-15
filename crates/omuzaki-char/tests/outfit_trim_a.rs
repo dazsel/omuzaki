@@ -16,9 +16,9 @@ use omuzaki_char::outfit::common::{Garment, GarmentCommon, GarmentOutput, LAYER_
 use omuzaki_char::outfit::loft::Surface;
 use omuzaki_char::outfit::trim::braid::Braid;
 use omuzaki_char::outfit::trim::buttons::{self, Button, ButtonRow, ButtonShape, ButtonStyle};
-use omuzaki_char::outfit::trim::piping::{self, Piping};
+use omuzaki_char::outfit::trim::piping::{self, Cord, Lip, Piping, VEST_PIPING};
 use omuzaki_char::outfit::trim::{
-    Finish, LIFT, METAL_PROGRAM, MetalStyle, Rail, RailSpec, TrimError, TrimSpec, add_trim,
+    Finish, LIFT, METAL_PROGRAM, MetalStyle, RAIL_STEP, Rail, RailSpec, TrimError, TrimSpec, add_trim,
 };
 use omuzaki_char_api::{
     BodyFit, BodyRegion, BuildCtx, BuildError, BuildServices, MaterialClass, PartCategory, PartKind, PartMeta,
@@ -99,7 +99,7 @@ fn services() -> BuildServices {
 }
 
 fn rail(points: &[[f64; 2]], closed: bool) -> RailSpec {
-    RailSpec { points: points.to_vec(), closed, lift: LIFT }
+    RailSpec::new(points, closed)
 }
 
 /// The front placket's rail: straight down the front.
@@ -119,19 +119,26 @@ fn gold_dome(radius: f64) -> ButtonStyle {
 /// Every trim of this library, between them every option.
 fn trims() -> Vec<TrimSpec> {
     vec![
+        TrimSpec::Piping(strip(placket_side(), 0.006)),
         TrimSpec::Piping(Piping {
-            rail: rail(&[[0.5, 0.35], [0.26, 0.35]], false),
-            width: 0.006,
-            thickness: 0.002,
-            bevel: 0.0005,
-            finish: Finish::cloth(ColourRef::rgb(0xf2, 0xea, 0xd8)),
+            lip: None,
+            bevel: 0.5,
+            ramp: 5,
+            caps: true,
+            ..strip(rail(&[[0.5, 2.0], [0.3, 2.2]], false), 0.008)
         }),
-        TrimSpec::Piping(Piping {
-            rail: hem(),
-            width: 0.008,
-            thickness: 0.004,
-            bevel: 0.002,
-            finish: Finish::cloth(ColourRef::rgb(0x30, 0x20, 0x60)),
+        TrimSpec::Piping(Piping { flip: true, ..strip(hem(), 0.008) }),
+        TrimSpec::Cord(Cord {
+            rail: rail(&[[0.5, 0.0], [0.5, 2.1], [0.5, 4.2]], true),
+            radius: VEST_PIPING,
+            segments: 6,
+            finish: Finish::default(),
+        }),
+        TrimSpec::Cord(Cord {
+            rail: rail(&[[0.5, -1.0], [0.3, -1.1]], false),
+            radius: 0.0007,
+            segments: 5,
+            finish: Finish::default(),
         }),
         TrimSpec::Braid(Braid {
             rail: rail(&[[0.5, -0.4], [0.3, -0.5]], false),
@@ -160,6 +167,29 @@ fn trims() -> Vec<TrimSpec> {
             button: ButtonStyle { radius: 0.003, shank: 0.0, shape: ButtonShape::Rivet, finish: Finish::default() },
         }),
     ]
+}
+
+/// A strip along `rail`, `width` wide, thin enough to sit on a tube with the default ease: its rolled edge and lip
+/// reach under a millimetre under the cloth, which on a curvy bust's slope is more in its section.
+fn strip(rail: RailSpec, width: f64) -> Piping {
+    Piping {
+        rail,
+        width,
+        thickness: 0.0006,
+        bevel: 1.0,
+        lip: Some(Lip { height: 0.0003, width: 0.002 }),
+        bulge: 1.0,
+        ramp: 0,
+        caps: false,
+        flip: false,
+        tile: piping::TILE,
+        finish: Finish::cloth(ColourRef::rgb(0xf2, 0xea, 0xd8)),
+    }
+}
+
+/// A rail beside the placket, for a strip.
+fn placket_side() -> RailSpec {
+    rail(&[[0.52, 0.35], [0.24, 0.35]], false)
 }
 
 // ------------------------------------------------------------------------------------------------------- the suite
@@ -218,7 +248,7 @@ fn triangles_of(output: &PartOutput, name: &str) -> Vec<[DVec3; 3]> {
 
 #[test]
 fn trims_follow_the_garment_surface_within_half_a_millimetre_at_200_points() {
-    let spec = Piping { rail: placket(), width: 0.006, thickness: 0.002, bevel: 0.0, finish: Finish::default() };
+    let spec = strip(placket_side(), 0.006);
     let params = TrimmedParams { trims: vec![TrimSpec::Piping(spec.clone())], ..TrimmedParams::default() };
     let value = serde_json::to_value(&params).unwrap();
     for template in conformance::TEMPLATES {
@@ -230,29 +260,37 @@ fn trims_follow_the_garment_surface_within_half_a_millimetre_at_200_points() {
             // The rail, on the surface the garment was built from, at 200 points.
             let fit: Arc<dyn BodyFit> = stack.before("coat").outer_fit().unwrap().clone();
             let surface = Surface::new(fit, BodyRegion::Torso, 2.0, params.common.ease).unwrap();
-            let on = Rail::from_polyline_on_surface(&surface, &spec.rail, 200).unwrap();
-            assert_eq!(on.points().len(), 200);
+            let length = Rail::length_on(&surface, &spec.rail).unwrap();
+            let on = Rail::from_polyline_on_surface(&surface, &spec.rail, length / 199.5).unwrap();
+            assert_eq!(on.points().len(), 201, "{template}/{label}: 200 pieces");
             let mut worst = 0.0_f64;
-            for p in on.points() {
+            for p in &on.points()[..200] {
                 worst = worst.max((distance_to(&garment, p.point) - LIFT).abs());
             }
-            // The piping's own base: every vertex on the flat of its cross-section rides at the lift.
+            // The strip's own face: the vertex at its free edge rides at the lift plus the face's margin.
             let piping = output.meshes.iter().find(|m| m.name == "coat-trim0").unwrap();
-            let base: Vec<DVec3> = piping
-                .geometry
-                .positions
-                .iter()
-                .map(|p| p.as_dvec3())
-                .filter(|p| (distance_to(&garment, *p) - LIFT).abs() < 0.0006)
-                .collect();
-            assert!(base.len() >= 2 * on.points().len() / 10, "{template}/{label}: the piping's base was found");
-            println!("{template}/{label}: the rail is within {:.3} mm of its lift", worst * 1e3);
+            let rung = piping.geometry.positions.len() / on_count(&surface, &spec);
+            let face = rung - piping::FRACS.len();
+            let mut face_worst = 0.0_f64;
+            for k in (0..piping.geometry.positions.len() / rung).step_by(4) {
+                let p = piping.geometry.positions[k * rung + face].as_dvec3();
+                face_worst = face_worst.max((distance_to(&garment, p) - LIFT - piping::FACE_MARGIN).abs());
+            }
+            println!(
+                "{template}/{label}: the rail is within {:.3} mm of its lift, the strip's face within {:.3} mm",
+                worst * 1e3,
+                face_worst * 1e3
+            );
             assert!(worst <= 0.0005, "{template}/{label}: the rail strays {:.3} mm from the surface", worst * 1e3);
+            assert!(face_worst <= 0.0005, "{template}/{label}: the strip strays {:.3} mm", face_worst * 1e3);
         }
     }
 }
 
-// --------------------------------------------------------------------------------------------------------- rails
+/// The rungs the strip `spec` has on `surface`.
+fn on_count(surface: &Surface, spec: &Piping) -> usize {
+    Rail::from_polyline_on_surface(surface, &spec.rail, spec.rail.step).unwrap().points().len()
+}
 
 fn torso_surface() -> Surface {
     let fit: Arc<dyn BodyFit> = Arc::new(TorsoFit::new(&omuzaki_char_api::BodyParams::default()));
@@ -263,9 +301,11 @@ fn torso_surface() -> Surface {
 fn a_zero_length_rail_is_an_error_not_a_panic() {
     let surface = torso_surface();
     let still = rail(&[[0.4, 0.3], [0.4, 0.3]], false);
-    assert_eq!(Rail::from_polyline_on_surface(&surface, &still, 16), Err(TrimError::ZeroLengthRail));
-    let spec = Piping { rail: still.clone(), width: 0.005, thickness: 0.002, bevel: 0.0, finish: Finish::default() };
+    assert_eq!(Rail::from_polyline_on_surface(&surface, &still, RAIL_STEP), Err(TrimError::ZeroLengthRail));
+    let spec = strip(still.clone(), 0.005);
     assert!(matches!(piping::build(&surface, &spec), Err(TrimError::ZeroLengthRail)));
+    let cord = Cord { rail: still.clone(), radius: 0.001, segments: 6, finish: Finish::default() };
+    assert!(matches!(piping::build_cord(&surface, &cord), Err(TrimError::ZeroLengthRail)));
     let row = ButtonRow { rail: still, count: 3, spacing: None, button: gold_dome(0.004) };
     assert!(matches!(buttons::build_row(&surface, &row), Err(TrimError::ZeroLengthRail)));
     // And through a build: the garment fails, naming the trim.
@@ -280,20 +320,28 @@ fn a_zero_length_rail_is_an_error_not_a_panic() {
 }
 
 #[test]
-fn rails_are_even_framed_and_skinned_and_refuse_bad_specs() {
+fn rails_are_densified_as_the_prototype_framed_and_skinned_and_refuse_bad_specs() {
     let surface = torso_surface();
-    let open = Rail::from_polyline_on_surface(&surface, &placket(), 50).unwrap();
-    let steps: Vec<f64> = open.points().windows(2).map(|w| w[0].point.distance(w[1].point)).collect();
-    let mean = open.length() / 49.0;
-    assert!(steps.iter().all(|s| (s - mean).abs() < 0.05 * mean), "even spacing: {steps:?}");
+    let open = Rail::from_polyline_on_surface(&surface, &placket(), RAIL_STEP).unwrap();
+    // One step: max(2, ceil(length / step)) pieces, uniform in [t, phi].
+    let pieces = (Rail::length_on(&surface, &placket()).unwrap() / RAIL_STEP).ceil().max(2.0) as usize;
+    assert_eq!(open.points().len(), pieces + 1);
+    let dt: Vec<f64> = open.points().windows(2).map(|w| w[1].t - w[0].t).collect();
+    assert!(dt.iter().all(|d| (d - dt[0]).abs() < 1e-12), "uniform in t");
+    assert!(open.points().windows(2).all(|w| w[0].point.distance(w[1].point) < RAIL_STEP * 1.1));
     for p in open.points() {
         assert!(p.tangent.dot(p.normal).abs() < 1e-9 && (p.side - p.tangent.cross(p.normal)).length() < 1e-9);
+        assert!((p.point - p.on_surface - p.normal * LIFT).length() < 1e-12, "lifted along the normal");
         let total: f32 = p.skin.iter().map(|(_, w)| w).sum();
         assert!((total - 1.0).abs() < 1e-5);
     }
-    let closed = Rail::from_polyline_on_surface(&surface, &hem(), 60).unwrap();
-    assert_eq!(closed.points().len(), 61, "a loop repeats its first point");
-    assert_eq!(closed.points()[0].point, closed.points()[60].point);
+    // Two steps: no point repeated at the joint.
+    let bent = rail(&[[0.5, 0.0], [0.4, 0.2], [0.3, 0.0]], false);
+    let bent_rail = Rail::from_polyline_on_surface(&surface, &bent, RAIL_STEP).unwrap();
+    assert!(bent_rail.points().windows(2).all(|w| w[0].point.distance(w[1].point) > 1e-6));
+    let closed = Rail::from_polyline_on_surface(&surface, &hem(), RAIL_STEP).unwrap();
+    let last = closed.points().len() - 1;
+    assert_eq!(closed.points()[0].point, closed.points()[last].point, "a loop repeats its first point");
     // Each step goes the short way round: a hem given as 0 -> 4.2 -> 0 doesn't double back.
     let ring = surface.ring(0.23).unwrap();
     let around = 2.0 * std::f64::consts::PI * ring.radii.x.max(ring.radii.y);
@@ -304,47 +352,58 @@ fn rails_are_even_framed_and_skinned_and_refuse_bad_specs() {
         rail(&[[0.4, 0.0], [0.5, f64::NAN]], false),
         rail(&[[0.4, 0.0], [0.5, 0.0]], true),
         RailSpec { lift: -0.001, ..placket() },
+        RailSpec { step: 0.0, ..placket() },
     ] {
-        assert!(
-            matches!(Rail::from_polyline_on_surface(&surface, &bad, 16), Err(TrimError::Invalid { .. })),
-            "{bad:?}"
-        );
+        let refused = Rail::from_polyline_on_surface(&surface, &bad, RAIL_STEP);
+        assert!(matches!(refused, Err(TrimError::Invalid { .. })), "{bad:?}");
     }
-    assert!(Rail::from_polyline_on_surface(&surface, &placket(), 1).is_err());
-}
-
-// ----------------------------------------------------------------------------------------------- shapes and specs
-
-#[test]
-fn a_strip_section_is_convex_bevelled_and_bulging() {
-    for (bevel, rounded) in [(0.0, false), (0.001, false), (0.002, true)] {
-        let s = piping::section(0.008, 0.004, bevel);
-        let n = s.len();
-        for k in 0..n {
-            let (a, b, c) = (s[k], s[(k + 1) % n], s[(k + 2) % n]);
-            assert!((b - a).perp_dot(c - b) >= -1e-12, "bevel {bevel}: convex at {k}");
-        }
-        let top = s.iter().map(|p| p.y).fold(0.0, f64::max);
-        assert!((top - 0.004 * (1.0 + piping::BULGE)).abs() < 1e-9, "the top bulges");
-        let widest = s.iter().map(|p| p.x.abs()).fold(0.0, f64::max);
-        assert!((widest - 0.004).abs() < 1e-12);
-        if rounded {
-            assert!(s.iter().all(|p| p.y == 0.0 || p.x.abs() < 0.004 || p.y < 0.0025), "a rolled edge");
-        }
-    }
+    assert!(Rail::from_polyline_on_surface(&surface, &placket(), 0.0).is_err());
 }
 
 #[test]
-fn button_profiles_close_on_the_axis_and_rows_space_their_buttons() {
-    for shape in [ButtonShape::Dome, ButtonShape::Flat, ButtonShape::Rivet] {
-        for shank in [0.0, 0.002] {
-            let p = buttons::profile(&ButtonStyle { radius: 0.006, shank, shape, finish: Finish::default() });
-            assert_eq!(p[0], (0.0, 0.0));
-            assert_eq!(p[p.len() - 1].1, 0.0, "{shape:?}: closed at the crown");
-            assert!(p.windows(2).all(|w| w[1].0 >= w[0].0), "{shape:?}: rises along the normal");
-            assert!(p.iter().all(|(_, r)| *r <= 0.006 + 1e-12));
-        }
-    }
+fn a_strip_rung_is_lip_rolled_edge_and_bevelled_face() {
+    let surface = torso_surface();
+    let spec = strip(placket_side(), 0.02);
+    let mesh = piping::build(&surface, &spec).unwrap();
+    let rungs = on_count(&surface, &spec);
+    let g = mesh.mesh();
+    assert_eq!(g.positions.len(), rungs * 11, "lip 2, edge 3, face 6 a rung");
+    let rail = Rail::from_polyline_on_surface(&surface, &spec.rail, spec.rail.step).unwrap();
+    let k = rungs / 2;
+    let p = &rail.points()[k];
+    let height = |j: usize| (g.positions[k * 11 + j].as_dvec3() - p.on_surface).dot(p.normal);
+    let lip = spec.lip.as_ref().unwrap();
+    assert!((height(1) + spec.thickness + lip.height).abs() < 1e-6, "the lip's root under the cloth");
+    assert!((height(5) - (LIFT + piping::FACE_MARGIN)).abs() < 1e-6, "the face at the free edge");
+    let inner = surface.project(g.positions[k * 11 + 10].as_dvec3()).unwrap().unwrap().outside;
+    assert!((inner - piping::FACE_MARGIN).abs() < 1e-4, "bevelled down to the cloth at the inner border: {inner}");
+    // The rolled edge stands out past the free edge by the bulge.
+    let out = (g.positions[k * 11 + 3].as_dvec3() - p.on_surface).dot(-p.side);
+    assert!((out - piping::BULGE.0).abs() < 2e-4, "{out}");
+    let without = piping::build(&surface, &Piping { lip: None, ..spec }).unwrap();
+    assert_eq!(without.mesh().positions.len(), rungs * 9);
+}
+
+#[test]
+fn the_gold_button_is_the_prototypes_and_rows_space_their_buttons() {
+    let (foot, normal) = (DVec3::new(0.0, 1.0, 0.1), DVec3::Z);
+    let skin = [(omuzaki_char_api::JointRef::HIPS, 1.0)];
+    let mut builder = MeshBuilder::new();
+    let gold = ButtonStyle { shank: 0.0, ..gold_dome(buttons::GOLD_RADIUS) };
+    buttons::button(&mut builder, foot, normal, &gold, &skin).unwrap();
+    let points: Vec<DVec3> = builder.mesh().positions.iter().map(|p| p.as_dvec3() - foot).collect();
+    let height = points.iter().map(|p| p.dot(normal)).fold(f64::MIN, f64::max);
+    let base = points.iter().map(|p| p.dot(normal)).fold(f64::MAX, f64::min);
+    let widest = points.iter().map(|p| (*p - normal * p.dot(normal)).length()).fold(0.0, f64::max);
+    // The tip's top: 1 mm standoff, 2.1 mm up, half its 1.2 mm height; the disc's foot: 1 mm less half its 2 mm.
+    assert!((height - (0.0010 + 0.0021 + 0.0006)).abs() < 1e-6, "{height}");
+    assert!(base.abs() < 1e-6, "{base}");
+    assert!((widest - (0.0061 + 0.00095)).abs() < 1e-4, "the rim is the widest part: {widest}");
+    let mut small = MeshBuilder::new();
+    let half = ButtonStyle { radius: buttons::GOLD_RADIUS / 2.0, ..gold };
+    buttons::button(&mut small, foot, normal, &half, &skin).unwrap();
+    assert_eq!(small.vertex_count(), builder.vertex_count(), "scaled, not retessellated");
+
     let spaced = buttons::row_distances(0.2, 5, Some(0.03)).unwrap();
     assert_eq!(spaced.len(), 5);
     assert!((spaced[0] - 0.04).abs() < 1e-12 && (spaced[4] - 0.16).abs() < 1e-12, "centred: {spaced:?}");
