@@ -4,13 +4,19 @@
 //! whole range, later ones a window round the current value that narrows each time. The result depends only on the
 //! inputs and [`PARAM_ORDER`]: no threads, no randomness, and ties keep the earlier value, so a parameter the views
 //! cannot see stays at its default.
+//!
+//! **What a silhouette identifies.** Widths, arm length, foot size and the shape axes show in the outline. Sole and
+//! crown are aligned, so `leg_length`, `torso_length` and the `height` axis trade off: the share of the leg against
+//! the torso is identified, each one alone is not. `neck_length` is not visible (the neck lies inside the torso loft)
+//! and `hand_size` is not either until `hands::build` makes a mesh; both stay at their defaults. The search stops at
+//! [`MAX_EVALUATIONS`], at a sweep that gains under [`MIN_GAIN`] twice running, or when the budget is spent.
 
 use omuzaki_core::mesh::MeshData;
 
 use super::{FitError, FitParams, FitView, Objective, Score, Target};
 
 /// The most evaluations (builds and scores of a candidate) one fit makes.
-pub const MAX_EVALUATIONS: usize = 200;
+pub const MAX_EVALUATIONS: usize = 600;
 /// A sweep that gains less mean `IoU` than this ends the fit.
 pub const MIN_GAIN: f64 = 1e-4;
 /// Golden-section steps after the first two probes of a line search.
@@ -18,7 +24,7 @@ const STEPS: usize = 3;
 /// Width of the window of the second sweep, as a fraction of a parameter's range; later sweeps halve it.
 const WINDOW: f64 = 0.5;
 /// How much narrower each sweep's window is than the last.
-const SHRINK: f64 = 0.7;
+const SHRINK: f64 = 0.85;
 /// Two costs closer than this are the same: a parameter whose probes cost the same is not visible in the views.
 const FLAT: f64 = 1e-12;
 /// How far past its end a sweep's net displacement is searched, in displacements.
@@ -169,6 +175,7 @@ pub fn fit_ordered(input: &FitInput<'_>, order: &[Param]) -> Result<FitResult, F
     let first = objective.evaluate(&start)?;
     let mut search = Search { objective: &objective, params: start, best: first.clone(), evaluations: 1 };
     let mut width = WINDOW;
+    let mut stalled = false;
     loop {
         let before = search.best.iou;
         let sweep_start = search.params.clone();
@@ -188,10 +195,12 @@ pub fn fit_ordered(input: &FitInput<'_>, order: &[Param]) -> Result<FitResult, F
             }
         }
         search.pattern_move(&sweep_start)?;
-        if search.evaluations >= MAX_EVALUATIONS || search.best.iou - before < MIN_GAIN {
+        let gained = search.best.iou - before >= MIN_GAIN;
+        // A stalled sweep gets one more at the wide window before the fit ends: a narrow window can sit in a dip.
+        if search.evaluations >= MAX_EVALUATIONS || (!gained && stalled) {
             break;
         }
-        width *= SHRINK;
+        (width, stalled) = if gained { (width * SHRINK, false) } else { (WINDOW, true) };
     }
     let per_view = objective
         .views()
