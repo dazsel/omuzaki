@@ -4,6 +4,8 @@
 //! schema the same way, so one argument cannot get two ids. The walk follows only the keys the design names. `$ref`
 //! and `$defs` are not followed, because op schemas are fully inlined (`omuzaki-ops-api`'s `schema_of`).
 
+use std::fmt;
+
 use schemars::Schema;
 use serde_json::{Map, Value};
 
@@ -12,18 +14,60 @@ use serde_json::{Map, Value};
 /// The root is visited first with `[]`, then its properties, enum variants and tag values, depth first, in the
 /// schema's key order. A boolean schema has no text and is not visited.
 ///
-/// A branch is a variant (a key of its own) only where the schema says so. A constant or a one-value `enum` is always a
-/// variant. An object is an internally tagged variant, keyed by its tag, or an externally tagged one, keyed by its one
-/// required property, only as an entry of a `oneOf` that has no `null` sibling. Every other branch, including every
-/// `anyOf` entry, is transparent. So `Option<T>`, which schemars writes as an `anyOf` with a `null`, keeps `T`'s
-/// fields under the field's own key, even when `T` is a struct with a single field.
-pub fn walk(schema: &Schema, visit: impl FnMut(&[&str], &Map<String, Value>)) {
+/// Which branch is a variant, and so a key of its own, is decided here, and only here:
+/// - A constant, or an `enum` of one value, is a variant, wherever it sits.
+/// - An object branch of a `oneOf` with no `null` sibling is a variant. It is internally tagged when one of its
+///   properties has a `const` (keyed by that value, the tag itself not walked). Otherwise it is externally tagged when
+///   it has exactly one property, that property is required, and `additionalProperties` is `false` (keyed by the
+///   property's name).
+/// - Every other branch is transparent: its keys are the parent's. That includes every `anyOf` entry, so `Option<T>`,
+///   which schemars writes as an `anyOf` with a `null`, keeps `T`'s fields under the field's own key, even when `T` is
+///   a struct with a single field. Untagged enums are transparent for the same reason.
+///
+/// The externally tagged form is also what a `deny_unknown_fields` struct with one field looks like. So a `oneOf` must
+/// agree: when some of its object branches have that form and others do not, their keys cannot be told apart, and the
+/// walk returns a [`WalkError`] rather than guess. Such an enum needs a `serde(tag)`, or must not mix single-field
+/// `deny_unknown_fields` structs with other variants.
+///
+/// # Errors
+/// [`WalkError`] at the first `oneOf` that mixes the two forms. The visitor has seen the nodes before that point, so
+/// the caller must treat the whole schema as unusable and report the error.
+pub fn walk(schema: &Schema, visit: impl FnMut(&[&str], &Map<String, Value>)) -> Result<(), WalkError> {
     let Some(root) = schema.as_object() else {
-        return;
+        return Ok(());
     };
-    let mut walker = Walker { path: Vec::new(), visit };
+    let mut walker = Walker { path: Vec::new(), visit, error: None };
     walker.node(root);
+    match walker.error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
 }
+
+/// A schema the walk cannot read unambiguously: where it stopped, and why.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct WalkError {
+    /// The key path of the `oneOf` that cannot be read, keys joined with `--`; empty for the root.
+    pub path: String,
+    /// What is ambiguous, in one line.
+    pub problem: String,
+}
+
+impl WalkError {
+    fn new(path: &[String], problem: &str) -> Self {
+        Self { path: path.join("--"), problem: problem.to_owned() }
+    }
+}
+
+impl fmt::Display for WalkError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let at = if self.path.is_empty() { "the root" } else { self.path.as_str() };
+        write!(f, "{at}: {}", self.problem)
+    }
+}
+
+impl std::error::Error for WalkError {}
 
 /// The node's English title: its `title` if it has a non-empty one, else derived from `key`.
 ///
@@ -52,15 +96,19 @@ fn humanize(key: &str) -> String {
     }
 }
 
-/// The walk's state: the key path to the node being visited, and the visitor.
+/// The walk's state: the key path to the node being visited, the visitor, and the first ambiguity found.
 struct Walker<F> {
     path: Vec<String>,
     visit: F,
+    error: Option<WalkError>,
 }
 
 impl<F: FnMut(&[&str], &Map<String, Value>)> Walker<F> {
-    /// Visits `node` at the current path, then walks what it contains.
+    /// Visits `node` at the current path, then walks what it contains. Nothing is visited after an error.
     fn node(&mut self, node: &Map<String, Value>) {
+        if self.error.is_some() {
+            return;
+        }
         self.emit(node);
         self.children(node, None);
     }
@@ -105,6 +153,9 @@ impl<F: FnMut(&[&str], &Map<String, Value>)> Walker<F> {
     /// Walks what `node` contains, without visiting `node` itself. `skip` names a property that is not walked: the
     /// tag of an internally tagged variant, which is the variant's key rather than one of its fields.
     fn children(&mut self, node: &Map<String, Value>, skip: Option<&str>) {
+        if self.error.is_some() {
+            return;
+        }
         if let Some(Value::Object(properties)) = node.get("properties") {
             for (key, schema) in properties {
                 if Some(key.as_str()) != skip {
@@ -115,7 +166,14 @@ impl<F: FnMut(&[&str], &Map<String, Value>)> Walker<F> {
         // A `null` branch makes the node an `Option`: its other branch is the value itself, never a variant.
         let nullable = ["oneOf", "anyOf"].iter().any(|keyword| branches(node, keyword).iter().any(is_null));
         for (keyword, variants_allowed) in [("oneOf", !nullable), ("anyOf", false)] {
-            for branch in branches(node, keyword) {
+            let list = branches(node, keyword);
+            if variants_allowed {
+                self.check_agreement(list);
+                if self.error.is_some() {
+                    return;
+                }
+            }
+            for branch in list {
                 self.branch(branch, variants_allowed);
             }
         }
@@ -139,10 +197,32 @@ impl<F: FnMut(&[&str], &Map<String, Value>)> Walker<F> {
         }
     }
 
-    /// Handles one branch of a `oneOf` or `anyOf` by the rules of design 3.1: a null is skipped; a constant or a
-    /// one-value `enum` is a variant; an object is a tagged variant only in a `oneOf` that `variants_allowed` (see the
-    /// module docs); anything else is walked as if its keys were the parent's.
+    /// The object branches of a `oneOf` must all be externally tagged, or none of them: a mix cannot be keyed. Constant
+    /// branches and internally tagged ones do not take part.
+    fn check_agreement(&mut self, list: &[Value]) {
+        let objects: Vec<&Map<String, Value>> = list
+            .iter()
+            .filter(|branch| !is_null(branch))
+            .filter_map(Value::as_object)
+            .filter(|node| node.contains_key("properties") && internal_tag(node).is_none())
+            .collect();
+        let external = objects.iter().filter(|node| external_variant(node).is_some()).count();
+        if external > 0 && external < objects.len() {
+            self.error = Some(WalkError::new(
+                &self.path,
+                "a oneOf mixes externally tagged variants (one required property, `additionalProperties: false`) \
+                 with other object branches, so their keys cannot be told apart",
+            ));
+        }
+    }
+
+    /// Handles one branch of a `oneOf` or `anyOf` by the rules in [`walk`]: a null is skipped; a constant or a
+    /// one-value `enum` is a variant; an object is a tagged variant only when `variants_allowed`; anything else is
+    /// transparent.
     fn branch(&mut self, branch: &Value, variants_allowed: bool) {
+        if self.error.is_some() {
+            return;
+        }
         let Some(node) = branch.as_object() else {
             return;
         };
@@ -218,8 +298,12 @@ fn internal_tag(node: &Map<String, Value>) -> Option<(String, String)> {
     })
 }
 
-/// An externally tagged variant: an object whose only property is required, with that property's name and schema.
+/// An externally tagged variant: an object with exactly one property, which is required, and no other keys
+/// (`additionalProperties: false`). Returns that property's name and schema.
 fn external_variant(node: &Map<String, Value>) -> Option<(&str, &Value)> {
+    if node.get("additionalProperties") != Some(&Value::Bool(false)) {
+        return None;
+    }
     let properties = node.get("properties")?.as_object()?;
     let mut entries = properties.iter();
     let (name, schema) = entries.next()?;
