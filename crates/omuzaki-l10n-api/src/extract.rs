@@ -151,7 +151,9 @@ fn owner_entries(item: &RegisteredText, entries: &mut Vec<Entry>) {
     let Some(schema) = &item.schema else {
         return;
     };
-    walk(schema, |path, node| {
+    // An ambiguous schema is reported by the `registered` check, which fails the test run. Extraction keeps the entries
+    // walked before the ambiguity, so its output stays deterministic.
+    let outcome = walk(schema, |path, node| {
         // The root holds the owner's own text, which the owner entry already carries.
         if path.is_empty() {
             return;
@@ -169,6 +171,9 @@ fn owner_entries(item: &RegisteredText, entries: &mut Vec<Entry>) {
         }
         entries.push(Entry { group, id, text: lines.join("\n") });
     });
+    if let Err(_ambiguous) = outcome {
+        // Reported by the `registered` check; nothing more is written for this owner.
+    }
 }
 
 /// A message's entry: the translator note, one example line per argument, the verbatim marker, then the message.
