@@ -85,6 +85,20 @@ op!(Boom, "evaltest.boom", Query, Read, None, |_, _| Err(OpError::internal("a bu
 struct CounterGate {}
 op!(CounterGate, "evaltest.gate", Query, Read, None, |_, ctx| Ok(Plan::answer(json!({"passed": counter(ctx) <= 10}))));
 
+/// An edit that is registered with the `read` scope: the scope alone must not make it safe to run while grading.
+#[derive(Serialize, Deserialize, JsonSchema)]
+struct SneakyEdit {}
+op!(SneakyEdit, "evaltest.sneaky_edit", Edit, Read, Auto, |_, ctx| Ok(Plan::edit(Patch::new().with(
+    path("counter"),
+    ctx.doc.get(&path("counter")).cloned(),
+    Some(json!(999))
+))));
+
+/// A job that is registered with the `render` scope, as a render job is.
+#[derive(Serialize, Deserialize, JsonSchema)]
+struct RenderJob {}
+op!(RenderJob, "evaltest.render_job", Job, Render, None, |_, _| Ok(Plan::answer(json!({"passed": true}))));
+
 #[derive(Serialize, Deserialize, JsonSchema)]
 struct SetCounter {
     value: i64,
@@ -159,7 +173,7 @@ fn a_query_naming_an_edit_op_is_refused_before_it_runs() {
     let result = Arc::new(MockRunner::new(MemDoc::from_value(json!({"counter": 5}))));
     let report = Checker::new(fixture, result.clone(), Transcript::default()).grade(&task(toml));
     assert_eq!(report.results[0].outcome, Outcome::Error);
-    assert!(report.results[0].detail.contains("not read-only"), "{}", report.results[0].detail);
+    assert!(report.results[0].detail.contains("not a query"), "{}", report.results[0].detail);
     assert_eq!(
         result.get(&path("counter"), &omuzaki_ops_api::Grants::person()).unwrap(),
         Some(json!(5)),
@@ -599,12 +613,6 @@ fn malformed_rows() -> Vec<Row> {
         expect_row("a string equals beside a change", "{ equals = 'five', change = 'up' }", "equals"),
         expect_row("an expectation of nothing", "{}", "expect"),
         // Pointers, by RFC 6901.
-        pointer_row("an index with a leading zero", "/chars/01/name", "01"),
-        pointer_row("an index with a plus", "/chars/+1/name", "+1"),
-        pointer_row("an index with a space", "/chars/ 1/name", "canonical"),
-        pointer_row("an index with a fraction", "/chars/1.0/name", "1.0"),
-        pointer_row("the past-the-end index", "/chars/-", "canonical"),
-        pointer_row("a negative index", "/chars/-1", "-1"),
         pointer_row("an escape that is neither ~0 nor ~1", "/chars/a~2b", "~"),
         pointer_row("a dangling escape", "/chars/a~", "~"),
         pointer_row("no leading slash", "chars/a", "starts with"),
@@ -646,21 +654,6 @@ fn malformed_rows() -> Vec<Row> {
             "changed_fraction_at_least",
         ),
         (
-            "a render.diff region pointer with a leading zero",
-            on(
-                "kind='render.diff'\nrender={ op='render.preview' }\nregion={ op='evaltest.doc', at='/chars/01' }\nexpect={ changed_fraction_at_least = 0.1 }\n",
-            ),
-            "01",
-        ),
-        (
-            "a binding whose pointer has a leading zero",
-            format!(
-                "[bind]\nx = {{ op='evaltest.doc', at='/chars/01', pick='new' }}\n{}",
-                on("kind='log.applied'\nop='{x}'\n")
-            ),
-            "01",
-        ),
-        (
             "a binding with an empty op",
             format!("[bind]\nx = {{ op='', at='/ids/*', pick='new' }}\n{}", on("kind='log.applied'\nop='{x}'\n")),
             "bind op",
@@ -694,6 +687,8 @@ fn well_formed_expectations_and_pointers_are_not_errors() {
         query("/chars/a/name", "{ equals = 'A' }"),
         query("/chars/*/name", "{ equals = 'A' }"),
         query("/chars/0", "{ equals = 'A' }"),
+        query("/chars/01", "{ equals = 'A' }"),
+        query("/chars/-1", "{ equals = 'A' }"),
         query("/chars/10", "{ equals = 'A' }"),
         query("/chars/a~0b/c~1d", "{ equals = 'A' }"),
         query("/chars/~01", "{ equals = 'A' }"),
@@ -703,5 +698,53 @@ fn well_formed_expectations_and_pointers_are_not_errors() {
     for toml in valid {
         let result = &grade(&toml, Vec::new()).results[0];
         assert_ne!(result.outcome, Outcome::Error, "{toml}: {}", result.detail);
+    }
+}
+
+#[test]
+fn a_check_never_runs_an_edit_or_a_job_whatever_scope_it_is_registered_with() {
+    for op in ["evaltest.sneaky_edit", "evaltest.render_job"] {
+        let query = format!("[[check]]\nid='c'\nkind='query'\nop='{op}'\nat='/passed'\nexpect={{ equals = true }}\n");
+        let gate = format!("[[check]]\nid='c'\nkind='gate'\nops=['{op}']\n");
+        let binding = format!(
+            "[bind]\nx = {{ op='{op}', at='/passed', pick='new' }}\n[[check]]\nid='c'\nkind='log.applied'\nop='{{x}}'\n"
+        );
+        for toml in [query, gate, binding] {
+            let report = grade(&toml, Vec::new());
+            let result = &report.results[0];
+            assert_eq!(result.outcome, Outcome::Error, "{op}: {}", result.detail);
+            assert!(result.detail.contains("not a query"), "{op}: {}", result.detail);
+        }
+    }
+    // The refused edit never ran: the result's counter is still the one the document held.
+    let doc = MemDoc::from_value(json!({"counter": 5}));
+    let result: Arc<dyn Runner> = Arc::new(MockRunner::new(doc));
+    let refused = Checker::new(runner(&json!({"counter": 1})), result.clone(), Transcript::default())
+        .grade(&task("[[check]]\nid='c'\nkind='query'\nop='evaltest.sneaky_edit'\nat='/x'\nexpect={ equals = 1 }\n"));
+    assert_eq!(refused.results[0].outcome, Outcome::Error);
+    let after = Checker::new(runner(&json!({"counter": 1})), result, Transcript::default())
+        .grade(&task(&query("/counter", "{ equals = 5 }")));
+    assert_eq!(after.results[0].outcome, Outcome::Pass, "the refused edit must not have run");
+}
+
+#[test]
+fn a_pointer_indexing_an_array_must_be_canonical_but_an_object_key_may_look_like_a_number() {
+    let keyed = |at: &str| doc_query(at, "{ equals = 'x' }");
+    let doc = json!({"counter": 1, "chars": {"01": {"name": "x"}, "-1": {"name": "x"}}});
+    let ok = |at: &str| {
+        let report = Checker::new(runner(&doc), runner(&doc), Transcript::default()).grade(&task(&keyed(at)));
+        report.results[0].outcome
+    };
+    assert_eq!(ok("/chars/01/name"), Outcome::Pass);
+    assert_eq!(ok("/chars/-1/name"), Outcome::Pass);
+    // An array, by contrast, is never indexed by a token that only resembles an index.
+    let arrays = json!({"counter": 1, "chars": ["x", "y"]});
+    let on_array = |at: &str| {
+        Checker::new(runner(&arrays), runner(&arrays), Transcript::default()).grade(&task(&keyed(at))).results[0]
+            .outcome
+    };
+    assert_eq!(on_array("/chars/0"), Outcome::Pass);
+    for bad in ["/chars/01", "/chars/+0", "/chars/-1", "/chars/0.0"] {
+        assert_eq!(on_array(bad), Outcome::Error, "{bad}");
     }
 }

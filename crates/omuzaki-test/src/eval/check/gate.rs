@@ -57,6 +57,7 @@ impl Checker {
                 "declared gates are not available: no `{DESCRIBE_OP}` op is registered"
             )));
         }
+        allowed(&*self.result, DESCRIBE_OP)?;
         let output = call(&*self.result, DESCRIBE_OP, &Map::new()).map_err(|e| result_failure(DESCRIBE_OP, &e))?;
         match pointer_all(&output, FAILED_GATES)?.as_slice() {
             [Value::Array(names)] => names

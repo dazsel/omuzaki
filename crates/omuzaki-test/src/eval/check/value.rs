@@ -35,7 +35,10 @@ pub(super) fn result_failure(what: &str, error: &OpError) -> Verdict {
     }
 }
 
-/// Whether `pointer` is a JSON pointer: empty, or starting with `/`.
+/// Whether `pointer` is a JSON pointer: empty, or `/` tokens whose `~` escapes are `~0` or `~1` and nothing else.
+///
+/// Whether a token is a valid *array index* depends on what it indexes, so that rule runs in [`pointer_all`], where
+/// the value is known: `01` is a legal object key and an illegal array index.
 ///
 /// # Errors
 /// An `error` verdict when it is not: a pointer such as `counter` would otherwise read the whole output like the
@@ -48,52 +51,52 @@ pub(super) fn well_formed(pointer: &str) -> Result<(), Verdict> {
     let Some(rest) = pointer.strip_prefix('/') else {
         return Err(malformed("a non-empty pointer starts with `/`".to_owned()));
     };
-    rest.split('/').try_for_each(|token| valid_token(token).map_err(malformed))
-}
-
-/// One pointer token, by RFC 6901: `~` is `~0` or `~1` and nothing else, and a token that reads as a number is a
-/// canonical array index, `0` or a non-zero digit followed by digits (no leading zeros, `+`, `-`, spaces or fraction).
-/// A token that looks like a number but is not one is rejected rather than read as the index it resembles.
-fn valid_token(token: &str) -> Result<(), String> {
-    let mut chars = token.chars();
-    while let Some(c) = chars.next() {
-        if c == '~' && !matches!(chars.next(), Some('0' | '1')) {
-            return Err(format!("in `{token}`, `~` must be `~0` or `~1`"));
+    for token in rest.split('/') {
+        let mut chars = token.chars();
+        while let Some(c) = chars.next() {
+            if c == '~' && !matches!(chars.next(), Some('0' | '1')) {
+                return Err(malformed(format!("in `{token}`, `~` must be `~0` or `~1`")));
+            }
         }
     }
-    let number_like = !token.is_empty()
-        && token.chars().all(|c| c.is_ascii_digit() || matches!(c, '+' | '-' | '.') || c.is_whitespace())
-        && (token == "-" || token.chars().any(|c| c.is_ascii_digit()));
-    let canonical = token == "0"
-        || (token.starts_with(|c: char| ('1'..='9').contains(&c)) && token.chars().all(|c| c.is_ascii_digit()));
-    if number_like && !canonical {
-        return Err(format!("`{token}` is not a canonical array index (`0`, or a non-zero digit then digits)"));
-    }
     Ok(())
+}
+
+/// An array index by RFC 6901: `0`, or a non-zero digit followed by digits (no leading zero, sign, space or fraction).
+fn array_index(token: &str) -> Option<usize> {
+    let canonical = token == "0"
+        || (token.starts_with(|c: char| ('1'..='9').contains(&c)) && token.bytes().all(|b| b.is_ascii_digit()));
+    if canonical { token.parse().ok() } else { None }
 }
 
 /// Every value a JSON pointer reaches, where a `*` segment stands for each array item or object value.
 ///
 /// # Errors
-/// An `error` verdict when `pointer` is not empty and does not start with `/`: a pointer such as `counter` would
-/// otherwise read the whole output like the empty pointer, and a broken check could pass.
+/// An `error` verdict when the pointer is malformed (see [`well_formed`]), or when a token that indexes an array is not
+/// a canonical index: the pointer is never traversed on a guess at what it meant. Object keys may be anything.
 pub(super) fn pointer_all<'a>(value: &'a Value, pointer: &str) -> Result<Vec<&'a Value>, Verdict> {
     well_formed(pointer)?;
     let mut found = vec![value];
     for raw in pointer.split('/').skip(1) {
         let segment = raw.replace("~1", "/").replace("~0", "~");
-        found = found
-            .into_iter()
-            .flat_map(|v| match (v, segment.as_str()) {
-                (Value::Array(items), "*") => items.iter().collect(),
-                (Value::Object(map), "*") => map.values().collect(),
-                (Value::Array(items), index) => {
-                    index.parse::<usize>().ok().and_then(|i| items.get(i)).into_iter().collect()
+        let mut next = Vec::new();
+        for v in found {
+            match (v, segment.as_str()) {
+                (Value::Array(items), "*") => next.extend(items),
+                (Value::Object(map), "*") => next.extend(map.values()),
+                (Value::Array(items), token) => {
+                    let index = array_index(token).ok_or_else(|| {
+                        Verdict::error(format!(
+                            "pointer `{pointer}` is malformed: `{token}` indexes an array but is not a canonical index (`0`, or a non-zero digit then digits)"
+                        ))
+                    })?;
+                    next.extend(items.get(index));
                 }
-                (Value::Object(map), key) => map.get(key).into_iter().collect(),
-                _ => Vec::new(),
-            })
-            .collect();
+                (Value::Object(map), key) => next.extend(map.get(key)),
+                _ => {}
+            }
+        }
+        found = next;
     }
     Ok(found)
 }
@@ -122,21 +125,34 @@ mod tests {
     }
 
     #[test]
-    fn pointer_tokens_follow_rfc_6901() {
-        for good in ["", "/", "/a", "/a/0", "/a/10", "/a//b", "/a~0b", "/a~1b", "/~01", "/*", "/a-b", "/x.y", "/+"] {
+    fn pointer_escapes_are_checked_everywhere_and_indexes_only_where_they_index_an_array() {
+        for good in ["", "/", "/a", "/a/0", "/a//b", "/a~0b", "/a~1b", "/~01", "/*", "/a-b", "/x.y", "/+", "/01", "/-1"]
+        {
             assert!(well_formed(good).is_ok(), "{good}");
         }
-        for bad in [
-            "a", "/a/01", "/a/00", "/a/+1", "/a/-1", "/a/-", "/a/ 1", "/a/1 ", "/a/1.0", "/a/\t1", "/a~", "/a~2",
-            "/a~/b",
-        ] {
-            let verdict = well_formed(bad).unwrap_err();
-            assert_eq!(verdict.outcome, Outcome::Error, "{bad}");
+        for bad in ["a", "/a~", "/a~2", "/a~/b"] {
+            assert_eq!(well_formed(bad).unwrap_err().outcome, Outcome::Error, "{bad}");
         }
-        // A malformed pointer is never traversed: `/items/01` does not read element 1.
-        let v = json!({"items": ["zero", "one"]});
-        assert!(pointer_all(&v, "/items/01").is_err());
-        assert_eq!(pointer_all(&v, "/items/1").unwrap(), [&json!("one")]);
+        // Object keys may look like numbers: `01`, `-1`, `1.0` and `+1` are keys here.
+        let frames = json!({"frames": {"01": "a", "-1": "b", "1.0": "c", "+1": "d", " 1": "e"}});
+        for (pointer, want) in
+            [("/frames/01", "a"), ("/frames/-1", "b"), ("/frames/1.0", "c"), ("/frames/+1", "d"), ("/frames/ 1", "e")]
+        {
+            assert_eq!(pointer_all(&frames, pointer).unwrap(), [&json!(want)], "{pointer}");
+        }
+        // The same tokens index an array only when canonical, and a bad one is never read as the index it resembles.
+        let items = json!({"items": ["zero", "one"]});
+        for ok in [("/items/0", "zero"), ("/items/1", "one")] {
+            assert_eq!(pointer_all(&items, ok.0).unwrap(), [&json!(ok.1)]);
+        }
+        for bad in
+            ["/items/01", "/items/00", "/items/+1", "/items/-1", "/items/-", "/items/ 1", "/items/1 ", "/items/1.0"]
+        {
+            let verdict = pointer_all(&items, bad).unwrap_err();
+            assert_eq!(verdict.outcome, Outcome::Error, "{bad}");
+            assert!(verdict.detail.contains("canonical"), "{bad}: {}", verdict.detail);
+        }
+        assert_eq!(pointer_all(&items, "/items/2").unwrap().len(), 0);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! The `query` check: a read-only op's output at a pointer meets an expectation.
 
-use omuzaki_ops_api::{OpInfo, Runner, Scope};
+use omuzaki_ops_api::{OpInfo, OpKind, Runner, Scope};
 use serde_json::{Map, Value};
 
 use super::Checker;
@@ -18,13 +18,20 @@ fn single(output: &Value, at: &str, on_miss: fn(String) -> Verdict) -> Result<Va
     }
 }
 
-/// The op's info, if it exists and is safe for a check to call: its scope must be `read` or `render`.
+/// The op's info, if it exists and is safe for a check to call: a query (never an edit or a job, which would run in
+/// `Mode::Apply` during grading) with `read` or `render` scope. A scope alone does not make an op read-only.
 pub(super) fn allowed(runner: &dyn Runner, op: &str) -> Result<OpInfo, Verdict> {
     let info = runner
         .ops()
         .into_iter()
         .find(|info| info.name == op)
         .ok_or_else(|| Verdict::error(format!("`{op}` is not a registered op")))?;
+    if info.kind != OpKind::Query {
+        return Err(Verdict::error(format!(
+            "`{op}` is not a query (kind {:?}); a check may call only query ops, and never runs an edit or a job",
+            info.kind
+        )));
+    }
     if matches!(info.scope, Scope::Read | Scope::Render) {
         Ok(info)
     } else {
