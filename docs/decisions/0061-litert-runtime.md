@@ -32,10 +32,12 @@ the model.
    - The ONNX conversions of the face graphs stay loadable as the fallback and the second opinion in parity tests until
      a later decision retires them.
 
-2. **The C API we bind.** LiteRT's TFLite interpreter C API (`tflite/core/c/c_api.h`), 25 functions loaded with
-   `libloading` from a pinned library at run time, plus a three-function C shim of ours compiled into that library:
-   `omz_litert_abi`, `omz_litert_xnnpack_create(threads)` and `omz_litert_xnnpack_delete`. The shim keeps
-   `TfLiteXNNPackDelegateOptions`, a struct that grows between releases, out of Rust.
+2. **The C API we bind.** LiteRT's TFLite interpreter C API (`tflite/core/c/c_api.h`), 24 functions loaded with
+   `libloading` from a pinned library at run time, plus a four-function C shim of ours compiled into that library:
+   `omz_litert_abi`, `omz_litert_xnnpack_create(threads)`, `omz_litert_xnnpack_delete` and
+   `omz_litert_capture_errors`.
+   - The shim keeps `TfLiteXNNPackDelegateOptions`, a struct that grows between releases, out of Rust.
+   - It holds the error reporter, whose `va_list` callback stable Rust can't receive.
    - **Delegate options:** `TfLiteXNNPackDelegateOptionsDefault()`, then `num_threads` (0 when `threads` is 1, so no
      pool), `runtime_flags = XNN_FLAG_DONT_SPIN_WORKERS`, `FORCE_FP16` cleared, and no weight cache or cache file.
    - **Never bound:** custom-op registration, op-resolver setters, Flex. That alone doesn't refuse a custom op: LiteRT
@@ -59,7 +61,10 @@ the model.
      - `load` scans, builds the interpreter, resizes any `any` input to the slot's shape, checks the interpreter's ports
        against the scan, and matches the slot through `io` as `onnx` does. It has the CPU provider only and skips the
        others with a reason;
-     - `run` copies in and out of the interpreter's tensors and allocates nothing after warm-up;
+     - `run` copies in and out of the interpreter's tensors and allocates nothing after warm-up. It checks every
+       output's rank, dims and byte size against the slot before writing any caller buffer;
+     - every value that comes back from LiteRT is checked before it is used: pointers, statuses, counts, names, types,
+       dims and byte sizes (design §3.6);
      - the tests' `DirSource` works as for ONNX Runtime, against the run's own SHA-256 (decision 5).
    - **The shared loader:** the general pinned-archive loader moves out of `omuzaki-ai-ort` into a lib crate,
      `omuzaki-ai-native`, which both runtimes use, so it isn't copied.
@@ -99,17 +104,21 @@ the model.
      - A check job loads each library, runs a face graph fully delegated to XNNPACK, and compares it with the wheel
        (decision 4).
    - **Hosting now: a checksummed artifact of the same run.** Each platform's archive is uploaded with
-     `actions/upload-artifact`, and its SHA-256 is a job output of the build job. No new permission is needed.
+     `actions/upload-artifact`, and its digest in a small artifact of its own. No new permission is needed.
+     - A matrix job's output is a single value, so a non-matrix `collect` job merges the three digests into named
+       outputs (`sha256_linux_x64`, `sha256_win_x64`, `sha256_macos_arm64`) and a JSON map (`sha256`). A consumer reads
+       its platform's digest from the map, or the named output in a single-platform job (design §8.2).
      - **Consumers call the workflow in their own run.** A cross-run download would need `actions: read`, a new
        permission only the owner can grant (CLAUDE.md), so nothing depends on one. The nightly parity job and the `R`
        probe's job (#1731) each call the workflow as a job, then take the archive with `actions/download-artifact` from
        that same run.
-     - **A cache skips the rebuild:** `actions/cache`, keyed on the hash of `tools/litert/**` (version, commit, toolchain
-       pins), the platform and the runner image's version. Only `cache-warm.yml` saves it, as the repository's rule says:
+     - **A cache skips the rebuild:** `actions/cache`. Its key hashes every build input: `tools/litert/**` (the version,
+       commit, Bazelisk and toolchain pins, the shim, the overlay, every script the workflow runs), the workflow file,
+       the platform, and the runner image's name and version. The exact `key:` is in design §8.2. Only `cache-warm.yml` saves it, as the repository's rule says:
        it calls the workflow with `save-cache: true` on pushes to `main` that change `tools/litert/` or the workflow.
        Every other caller only restores, and on a miss builds without saving.
      - **What a consumer trusts:** a rebuild after a cache miss isn't promised to be byte-identical, so CI checks the
-       archive against the build job's SHA-256 output, not a hash committed in the repository. It then checks
+       archive against its platform's digest from `collect`, not a hash committed in the repository. It then checks
        `BUILDINFO.json` against `pins.toml` and, at load, the library's version and ABI number. The `R` probe's
        artifact carries that SHA-256 with the archive.
    - **Publishing to users is pending the owner's decision.** A GitHub Release (it needs `contents: write`) is how the
@@ -194,8 +203,13 @@ Sizes are changed lines. Each task's acceptance includes `timeout 3600 cargo xta
      `licences.toml`, the notices script, the C smoke program), and `docs/licensing/deps/` for decision 6's rows.
    - **Acceptance:**
      - the PR links a run on its branch: three archives as checksummed same-run artifacts, each archive's size and
-       SHA-256 as a job output, its notices list, the delegated-node count for the three face graphs, and the smoke
-       parity against the wheel;
+       SHA-256, its notices list, the delegated-node count for the three face graphs, and the smoke parity against the
+       wheel;
+     - a `collect` job exposes `sha256_linux_x64`, `sha256_win_x64`, `sha256_macos_arm64` and the `sha256` map as
+       workflow outputs. It fails unless there are exactly three well-formed digests, and `check` reads its own
+       platform's digest from the map;
+     - the cache key is exactly design §8.2's (hashing `tools/litert/**`, the workflow file and the runner image), and
+       a change to any of them misses the cache;
      - a second run shows a cache hit skipping the Bazel build, with the `check` job still run;
      - no permission beyond `contents: read`, and no cross-run artifact download;
      - answers design section 12's task-2 rows;
@@ -217,7 +231,11 @@ Sizes are changed lines. Each task's acceptance includes `timeout 3600 cargo xta
      - **Fence:** the same crate;
      - **Acceptance:** `load` and `run` against slots on a synthetic `ADD` graph built in the test; resizing an `any`
        input to the slot's shape; the shape-change path; no allocation after warm-up (a counting-allocator test); idle CPU
-       under 1 ms per second.
+       under 1 ms per second;
+       - a synthetic graph whose output is dynamic and comes back with a shape the slot forbids gives
+         `RunError::Mismatch` on the output, and leaves every caller buffer unchanged;
+       - each check of design §3.6 that a test can reach (a wrong name, type or count against the scan, a byte-size
+         mismatch) has a test.
    - Gated tests use `OMUZAKI_LITERT_CACHE` and skip without it.
 4. **Parity and determinism tests** (model: sonnet, about 300 lines).
    - **Fence:** `crates/omuzaki-ai-litert/tests/**`, `tools/models/litert_reference.py` (the pinned wheel in a throwaway

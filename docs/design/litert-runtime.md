@@ -56,7 +56,7 @@ LiteRT 2.3 has two C APIs:
   (`tflite/delegates/xnnpack/xnnpack_delegate.h`);
 - **the newer CompiledModel C API** (`LiteRt*`: environment, options, compiled model, tensor buffers, accelerators).
 
-**We bind the interpreter C API.** It is small (the 25 functions below), stable (`TfLiteVersion`, schema version 3),
+**We bind the interpreter C API.** It is small (the 24 functions below), stable (`TfLiteVersion`, schema version 3),
 and it is the path MediaPipe's CPU inference and #1732's measurement use. The CompiledModel API is the path to LiteRT's
 GPU and NPU accelerators; it is out of scope here and revisited when a TFLite slot wants a GPU (section 11).
 
@@ -69,17 +69,17 @@ pointers; a missing symbol fails the load with `LoadError::Runtime` naming it.
 |---|---|
 | Version | `TfLiteVersion`, `TfLiteSchemaVersion` |
 | Model | `TfLiteModelCreate` (from memory; it runs the FlatBuffer verifier: `FlatBufferModel::VerifyAndBuildFromBuffer` in `c_api.cc`), `TfLiteModelDelete` |
-| Options | `TfLiteInterpreterOptionsCreate`, `TfLiteInterpreterOptionsDelete`, `TfLiteInterpreterOptionsSetNumThreads`, `TfLiteInterpreterOptionsAddDelegate`, `TfLiteInterpreterOptionsSetErrorReporter` |
+| Options | `TfLiteInterpreterOptionsCreate`, `TfLiteInterpreterOptionsDelete`, `TfLiteInterpreterOptionsSetNumThreads`, `TfLiteInterpreterOptionsAddDelegate` |
 | Interpreter | `TfLiteInterpreterCreate`, `TfLiteInterpreterDelete`, `TfLiteInterpreterAllocateTensors`, `TfLiteInterpreterInvoke`, `TfLiteInterpreterResizeInputTensor`, `TfLiteInterpreterGetInputTensorCount`, `TfLiteInterpreterGetInputTensor`, `TfLiteInterpreterGetOutputTensorCount`, `TfLiteInterpreterGetOutputTensor` |
 | Tensor | `TfLiteTensorType`, `TfLiteTensorNumDims`, `TfLiteTensorDim`, `TfLiteTensorName`, `TfLiteTensorByteSize`, `TfLiteTensorCopyFromBuffer`, `TfLiteTensorCopyToBuffer` |
-| Ours (the shim, 3.3) | `omz_litert_abi`, `omz_litert_xnnpack_create`, `omz_litert_xnnpack_delete` |
+| Ours (the shim, 3.3) | `omz_litert_abi`, `omz_litert_xnnpack_create`, `omz_litert_xnnpack_delete`, `omz_litert_capture_errors` |
 
 Never bound: `TfLiteInterpreterOptionsAddOperator`, `AddCustomOp`, the op-resolver setters and anything Flex. Not
 registering custom ops is **not** enough to refuse them: LiteRT 2.3.0 keeps an unresolved custom op in the graph for a
 delegate to claim later (`tflite/core/interpreter_builder.cc`), so interpreter creation can succeed. The refusal is the
 model scan's job, before any LiteRT code sees the bytes (section 5).
 
-### 3.3 A three-function shim for the delegate
+### 3.3 A four-function shim: the delegate and the error reporter
 
 `TfLiteXNNPackDelegateOptions` is a C struct of nine fields that has grown between releases (weight-cache fields were
 added recently). Mirroring it in Rust would make every upstream bump an ABI risk the compiler can't see. So the
@@ -90,7 +90,12 @@ archive's library contains a small C file of ours, compiled against the pinned h
 uint32_t omz_litert_abi(void);                       /* OMZ_LITERT_ABI, bumped when these signatures change */
 TfLiteDelegate* omz_litert_xnnpack_create(int32_t threads);
 void omz_litert_xnnpack_delete(TfLiteDelegate* delegate);
+/* installs a reporter that vsnprintf's each message into buf (truncated, always NUL-terminated within cap) */
+void omz_litert_capture_errors(TfLiteInterpreterOptions* options, char* buf, size_t cap);
 ```
+
+The error reporter is in the shim because LiteRT's reporter callback takes a C `va_list`, which stable Rust can't
+receive. So `TfLiteInterpreterOptionsSetErrorReporter` is called from C, not bound in Rust.
 
 `omz_litert_xnnpack_create` starts from `TfLiteXNNPackDelegateOptionsDefault()` and sets:
 
@@ -148,8 +153,42 @@ A new implementation crate, `omuzaki-ai-litert` (kind Implementation, `registers
   a variable op (section 5), so no state can survive a run inside the interpreter.
 - **Threads:** `Send`, not `Sync`. The interpreter has no thread affinity, but it is not safe to call from two threads
   at once; `&mut self` in `run` gives exactly that. The `unsafe impl Send` carries that argument in its `SAFETY` note.
-- **Errors:** the error reporter writes LiteRT's messages into a buffer owned by the load (cold); `run` reports a failed
-  `Invoke` as `RunError::Failed` with a fixed message and logs the reporter's text, so the hot path doesn't format.
+- **Errors:** the shim's reporter writes LiteRT's messages into a fixed buffer the session owns (`ERROR_BYTES`, 1 KiB,
+  allocated at load). `run` reports a failed `Invoke` as `RunError::Failed` with a fixed message and logs the buffer's
+  text, read up to its first NUL and within `ERROR_BYTES`, as lossy UTF-8. So the hot path doesn't format.
+- **Outputs are checked before any caller buffer is written.** After `Invoke`, for every output, in one pass:
+  1. its rank (`TfLiteTensorNumDims`) and dims (`TfLiteTensorDim`) are read into a stack array of `MAX_RANK`;
+  2. they are checked against the slot's spec, as `omuzaki-ai-ort`'s `check_shape` does: same rank, and every fixed dim
+     equal (an `any` dim takes what came back);
+  3. `TfLiteTensorByteSize` must equal the element count times the type's size (checked multiplication).
+
+  Only when every output passes are the caller's `TensorBuf`s resized and filled. A failure is
+  `RunError::Mismatch { port: Output, .. }`, and no buffer has changed. This is what keeps a model with a dynamic output
+  from writing a shape the slot doesn't allow.
+
+### 3.6 What comes back from LiteRT, and its check
+
+Every value that crosses back from native code is checked before Rust relies on it. A failed check is an error, never
+a panic, and never a silent fallback.
+
+| Value | Where | Check |
+|---|---|---|
+| A symbol's address | library load | non-null for every symbol of 3.2, else `LoadError::Runtime` naming it |
+| `TfLiteVersion()` | library load | non-null, NUL within 64 bytes, valid UTF-8, equal to `LITERT_VERSION` |
+| `omz_litert_abi()` | library load | equal to `OMZ_LITERT_ABI` |
+| `TfLiteSchemaVersion()` | library load | equal to the schema version the scan reads (3) |
+| `TfLiteModelCreate`, `TfLiteInterpreterOptionsCreate`, `omz_litert_xnnpack_create`, `TfLiteInterpreterCreate` | load | non-null, else `LoadError::Format` (model) or `LoadError::Runtime` (the rest), with the captured error text |
+| every `TfLiteStatus` (`AllocateTensors`, `ResizeInputTensor`, `Invoke`, `CopyFromBuffer`, `CopyToBuffer`) | load and run | `kTfLiteOk` (0) or an error; an unknown value counts as an error |
+| input and output tensor counts | load | non-negative, and equal to the scan's counts |
+| `TfLiteInterpreterGetInputTensor` / `GetOutputTensor` | load, and again after any `AllocateTensors` | non-null for every index; the pointers are re-read after each reallocation, never kept across one |
+| `TfLiteTensorName` | load | non-null, NUL within `MAX_NAME_BYTES` (1 KiB), valid UTF-8, equal to the scan's name for that port |
+| `TfLiteTensorType` | load and run | a known value, mapping to the scan's `DType` for that port |
+| `TfLiteTensorNumDims`, `TfLiteTensorDim` | load (inputs), run (outputs) | rank in `0..=MAX_RANK`; each dim non-negative and fits `usize`; then the slot check above |
+| `TfLiteTensorByteSize` | before every copy | equal to element count × element size, computed with checked arithmetic; an input's byte length must also equal the caller's slice, so `CopyFromBuffer` can't overrun |
+| the reporter's text | on any error | read only within `ERROR_BYTES`, up to the first NUL, as lossy UTF-8 |
+
+The values are checked at load on the cold path. On the hot path only the output dims, byte sizes and statuses are
+re-checked, without allocating.
 
 ## 4. The pinned-archive loader is shared, not copied
 
@@ -299,10 +338,27 @@ downloads across runs. The build is a reusable workflow (`on: workflow_call`). E
 run and takes the archive from that run with `actions/download-artifact`, which needs no extra permission. The consumers
 are the nightly parity job (task 4), the `R` timing probe's job (#1731, task 6) and the build task's own evidence run.
 
-**Rebuilds are skipped with a cache.** The built archive is cached with `actions/cache`. The key is the hash of
-`tools/litert/**`, which holds the LiteRT tag and commit and the toolchain pins, plus the platform and the runner
-image's version. With a warm cache a consumer's call restores the archive in seconds, then runs the `check` job
-anyway. The repository's rule that only `cache-warm.yml` saves caches (CONTRIBUTING.md, "Continuous integration")
+**Rebuilds are skipped with a cache.** The built archive is cached with `actions/cache`. The key hashes every build
+input:
+- `tools/litert/**`, which holds the LiteRT tag and commit, the Bazelisk and toolchain pins, the shim, the Bazel overlay
+  and every script the workflow runs (the workflow runs no script and no composite action from anywhere else);
+- the workflow file itself;
+- the platform and the runner image, by name and version (`ImageOS` and `ImageVersion`, which GitHub-hosted runners
+  set). The image carries the toolchains: MSVC on Windows, Xcode on macOS, and the container runtime on Linux.
+
+Bazel's version is fixed by LiteRT's `.bazelversion` at the pinned commit, and the Linux container by its digest in
+`pins.toml`, so both are inside the hash of `tools/litert/**`. The `v1` prefix is bumped by hand to drop every entry.
+With a warm cache a consumer's call restores the archive in seconds, then runs the `check` job anyway.
+
+```yaml
+      - id: image   # runner env vars aren't in the `env` context, so read them in a step
+        shell: bash
+        run: echo "id=${ImageOS}-${ImageVersion}" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@<commit SHA>   # actions/cache@<commit SHA> only when inputs.save-cache
+        with:
+          path: out/omuzaki-litert-2.3.0-${{ matrix.platform }}.${{ matrix.ext }}
+          key: litert-v1-${{ matrix.platform }}-${{ steps.image.outputs.id }}-${{ hashFiles('tools/litert/**', '.github/workflows/runtime-litert.yml') }}
+``` The repository's rule that only `cache-warm.yml` saves caches (CONTRIBUTING.md, "Continuous integration")
 holds:
 - `cache-warm.yml` calls the workflow with `save-cache: true` on pushes to `main` that change `tools/litert/` or the
   workflow;
@@ -313,26 +369,38 @@ on:
   workflow_call:
     inputs:
       save-cache: { type: boolean, default: false }   # true only from cache-warm.yml
-    outputs:
-      sha256:      { value: ${{ jobs.build.outputs.sha256 }} }   # JSON map platform -> SHA-256 of the archive
+    outputs:   # one named output per platform, and the map; see collect
+      sha256_linux_x64:   { value: ${{ jobs.collect.outputs.sha256_linux_x64 }} }
+      sha256_win_x64:     { value: ${{ jobs.collect.outputs.sha256_win_x64 }} }
+      sha256_macos_arm64: { value: ${{ jobs.collect.outputs.sha256_macos_arm64 }} }
+      sha256:             { value: ${{ jobs.collect.outputs.sha256 }} }   # {"linux-x64": "…", "win-x64": "…", "macos-arm64": "…"}
   workflow_dispatch: {}                                # maintainers, on main, once the file is there
 permissions: {}
 jobs:
-  build:        # matrix: ubuntu (in a container pinned by digest), windows-2022, macos-14
+  build:        # matrix.platform: linux-x64 (ubuntu, in a container pinned by digest), win-x64 (windows-2022), macos-arm64 (macos-14)
     permissions: { contents: read }
     # 1. check out this repo (actions pinned by commit SHA)
-    # 2. restore the archive from actions/cache (key: hash of tools/litert/**, platform, runner image version);
-    #    on a hit, skip to 6
+    # 2. restore the archive from the cache (the key above); on a hit, skip to 6
     # 3. fetch LiteRT at tag v2.3.0 and check the tag's commit against tools/litert/pins.toml
     # 4. install Bazelisk by pinned release URL and SHA-256; Bazel 7.7.0 comes from LiteRT's .bazelversion
     # 5. copy tools/litert/BUILD.omuzaki and omz_litert_shim.c into the tree; build the shared-library target with
     #    -c opt and the flags in pins.toml (x86-64: the default ISA set, XNNPACK dispatches at run time); collect
     #    the notices (8.3) and BUILDINFO.json; pack the archive; save it to the cache only when save-cache is true
-    # 6. write its SHA-256 to SHA256SUMS and to the job output; upload archive and SHA256SUMS with
-    #    actions/upload-artifact as litert-2.3.0-<platform> (retention 7 days: consumers read it in the same run)
-  check:        # matrix as build; needs: build
+    # 6. hash the archive; upload it as artifact litert-2.3.0-<platform> and its digest, a one-line file
+    #    <platform>.sha256, as artifact litert-digest-<platform> (retention 7 days: consumers read them in the same run)
+  collect:      # not a matrix: a matrix job's output is a single value, so the three digests are merged here
+    needs: build
     permissions: { contents: read }
-    # download the same run's artifact; check its SHA-256 against the build job's output; load the library with a
+    outputs:
+      sha256_linux_x64:   ${{ steps.merge.outputs.linux_x64 }}
+      sha256_win_x64:     ${{ steps.merge.outputs.win_x64 }}
+      sha256_macos_arm64: ${{ steps.merge.outputs.macos_arm64 }}
+      sha256:             ${{ steps.merge.outputs.map }}
+    # actions/download-artifact with pattern litert-digest-*, merge-multiple; step `merge` checks that there are
+    # exactly three files, each a 64-character lowercase hex digest, and writes the four outputs
+  check:        # matrix as build; needs: [build, collect]
+    permissions: { contents: read }
+    # download the same run's artifact; check its SHA-256 against fromJSON(needs.collect.outputs.sha256)[matrix.platform]; load the library with a
     # small C smoke program: TfLiteVersion, omz_litert_abi, one face graph fetched by tools/models/mediapipe-face.sh,
     # all nodes delegated to XNNPACK (the delegate's log line), outputs within 1e-4 of the ai-edge-litert wheel (7.2)
   # no release job: publishing waits for the owner's decision (8.5)
@@ -344,11 +412,14 @@ A consumer job, for example nightly's parity job:
   litert:
     uses: ./.github/workflows/runtime-litert.yml
     permissions: { contents: read }
-  parity:
+  parity:       # matrix.platform: linux-x64, win-x64
     needs: litert
     permissions: { contents: read }
-    # actions/download-artifact (same run) into $OMUZAKI_LITERT_CACHE; OMUZAKI_LITERT_SHA256 from
-    # needs.litert.outputs.sha256 for this platform; then the gated tests
+    env:
+      OMUZAKI_LITERT_SHA256: ${{ fromJSON(needs.litert.outputs.sha256)[matrix.platform] }}
+    # actions/download-artifact name litert-2.3.0-${{ matrix.platform }} (same run) into $OMUZAKI_LITERT_CACHE;
+    # fail if OMUZAKI_LITERT_SHA256 is empty; then the gated tests. A job for one platform reads its named output
+    # instead, e.g. needs.litert.outputs.sha256_win_x64 in the R probe's Windows job.
 ```
 
 - **Pinned sources:** LiteRT by tag and commit (`tools/litert/pins.toml`). Its dependencies come from its own Bazel
@@ -362,8 +433,9 @@ A consumer job, for example nightly's parity job:
   The job prints every version into `BUILDINFO.json` and fails when one differs from `pins.toml`.
 - **What a consumer trusts.** A rebuild after a cache miss isn't promised to be byte-identical, so CI can't check a
   fixed SHA-256 committed in the repository. Inside a run, the trust root is the build job's output:
-  - the consumer checks the downloaded archive against the SHA-256 the build job reported, which travels as a job
-    output, not inside the artifact;
+  - the consumer checks the downloaded archive against its platform's SHA-256 from `collect`, computed on the runner
+    that built it. Within a run, artifacts and outputs share one trust domain, so this guards against a truncated,
+    mixed-up or wrong-platform file, not against someone who controls the run;
   - it checks `BUILDINFO.json` against `pins.toml`;
   - at load, it checks `TfLiteVersion()` and `omz_litert_abi()`.
 
@@ -495,7 +567,7 @@ Each is checked by the task named, from the pinned sources, and the answer goes 
 | Whether Google publishes an official per-platform LiteRT C library with notices at 2.3.0; if so, the task brings it to the Director before building our own | 2 |
 | Bazel's MSVC (or clang-cl) build of XNNPACK on the pinned Windows image, and the toolset version to pin | 2 |
 | The Linux glibc baseline the container gives, against our supported distributions | 2 |
-| How the cache key reads the runner image's version on each OS, so an image update rebuilds rather than reusing an archive built on another toolchain | 2 |
+| That `ImageOS` and `ImageVersion` are set on each OS where the `image` step runs (the Linux build runs in a container, where the runner's variables may not be passed through; if not, read them in a step on the host before the container starts) | 2 |
 | Whether `XNN_FLAG_DONT_SPIN_WORKERS` in the delegate's `runtime_flags` reaches pthreadpool's flags at this XNNPACK commit (the idle-CPU test proves the effect either way) | 3b |
 | That the default lazily-applied XNNPACK delegate is skipped once ours fully delegates the graph (`Interpreter::ApplyLazyDelegateProviders` returns early when `IsFullyDelegated()`), and what happens on a partially delegated user model (it would apply a second XNNPACK delegate with the interpreter's thread count, which is why `SetNumThreads` gets the same count) | 3a |
 | The scan's operator allow-list against the builtin operators the archive's build actually registers, and the scan's measured cost on the landmark graph | 3a |
