@@ -5,4 +5,5 @@
 //! it works inside test binaries on every platform.
 #![deny(missing_docs)]
 
+pub mod dist;
 pub mod registry;

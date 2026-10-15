@@ -45,6 +45,8 @@ omuzaki-io-ops = { path = "../omuzaki-io-ops" }
 omuzaki-io-vrm = { path = "../omuzaki-io-vrm" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-stage = { path = "../omuzaki-stage" }
+omuzaki-store = { path = "../omuzaki-store" }
+omuzaki-store-api = { path = "../omuzaki-store-api" }
 
 [dev-dependencies]
 tempfile.workspace = true
