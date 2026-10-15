@@ -157,6 +157,7 @@ mod error;
 mod events;
 mod gate;
 mod http;
+mod jobs;
 mod limits;
 mod names;
 mod prompts;
