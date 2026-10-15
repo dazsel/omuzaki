@@ -463,3 +463,38 @@ fn a_node_parameter_in_the_spec_is_applied() {
     let out = render(&graph(vec![a]), &input(8, &[("in", constant(1.0, 8))]));
     assert!(out.outputs[&role("out")][0].iter().all(|&s| (s - 0.1).abs() < EPS));
 }
+
+#[test]
+fn the_co_host_reaches_only_the_monitor_output_directly_too() {
+    // `ai_voice` plays on `program_out` and on `monitor_out` directly. In CohostOnly only the monitor hears it.
+    let mut ai = bus("ai_voice", Channels::Mono, Some("tts"));
+    ai.outputs = vec![role("program_out"), role("monitor_out")];
+    let g = graph(vec![ai]);
+    let run = |mode: MicMode| {
+        let mut i = input(480, &[("tts", constant(0.25, 480))]);
+        i.mic_mode = mode;
+        render(&g, &i)
+    };
+    let live = run(MicMode::Live);
+    assert!(live.outputs[&role("program_out")][0].iter().all(|&s| (s - 0.25).abs() < EPS));
+    let cohost = run(MicMode::CohostOnly);
+    assert!(cohost.outputs[&role("program_out")][0].iter().all(|&s| s == 0.0));
+    assert!(cohost.outputs[&role("monitor_out")][0].iter().all(|&s| (s - 0.25).abs() < EPS));
+}
+
+#[test]
+fn a_timed_gain_is_checked_like_the_live_one_and_a_zero_frame_render_answers_every_role() {
+    let mut a = bus("a", Channels::Stereo, Some("in"));
+    a.outputs = vec![role("out")];
+    let g = graph(vec![a]);
+    for db in [f32::NAN, 12.5] {
+        let change = TimedChange { at: 0, change: Change::BusGainDb { bus: bus_id("a"), db } };
+        let error = OfflineEngine
+            .render_with_changes(&g, &input(8, &[]), BlockPlan::Fixed { frames: 4 }, &[change])
+            .unwrap_err();
+        assert!(matches!(error, AudioError::Graph(GraphError::GainOutOfRange { .. })), "{db}: {error:?}");
+    }
+    let empty = render(&g, &input(0, &[]));
+    assert_eq!(empty.outputs[&role("out")], vec![Vec::<f32>::new(), Vec::new()]);
+    assert_eq!(empty.buses[&bus_id("a")].len(), 2);
+}

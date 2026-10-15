@@ -19,7 +19,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use omuzaki_audio_api::engine::{AudioError, Planar};
 use omuzaki_audio_api::graph::{
-    AI_VOICE_BUS, Channels, DuckTrigger, GraphSpec, MIC_BUS, MONITOR_OUT_ROLE, MicMode, SourceRef,
+    AI_VOICE_BUS, Channels, DuckTrigger, GraphError, GraphSpec, MAX_GAIN_DB, MIC_BUS, MONITOR_OUT_ROLE, MicMode,
+    SourceRef,
 };
 use omuzaki_audio_api::ids::{BusId, DeviceRole, NodeId};
 use omuzaki_audio_api::node::{BlockMut, Node, NodeError, ParamIndex, node_kind};
@@ -64,6 +65,8 @@ pub(crate) struct Bus {
     pub(crate) chain: Vec<Link>,
     gain: FaderRamp,
     mute: FaderRamp,
+    /// Applied to the outputs other than `monitor_out`: 0 for `ai_voice` while `CohostOnly` keeps its reply private.
+    private_out: FaderRamp,
     muted: bool,
     pub(crate) sends: Vec<SendState>,
     pub(crate) outputs: Vec<DeviceRole>,
@@ -167,22 +170,30 @@ impl Mixer {
                     })?;
                     node.set_param(param, *value);
                 }
-                let sidechain = node_spec.sidechain.as_ref().and_then(|bus| index.get(bus).copied());
+                // Validation guarantees the named bus exists; a miss would run the node without its reference.
+                let sidechain = match &node_spec.sidechain {
+                    Some(bus) => Some(*index.get(bus).ok_or_else(|| {
+                        AudioError::Internal(format!("node `{}` names the missing sidechain bus `{bus}`", node_spec.id))
+                    })?),
+                    None => None,
+                };
                 let delay = Delay::new(node.latency(), spec.channels.count());
                 chain.push(Link { id: node_spec.id.clone(), node, enabled: node_spec.enabled, delay, sidechain });
             }
-            let sends = spec
-                .sends
-                .iter()
-                .filter_map(|s| index.get(&s.to).map(|to| (s, *to)))
-                .map(|(s, to)| SendState {
+            let mut sends = Vec::with_capacity(spec.sends.len());
+            for send in &spec.sends {
+                // Validation guarantees the target exists; a miss would drop the send and misroute the audio.
+                let to = *index.get(&send.to).ok_or_else(|| {
+                    AudioError::Internal(format!("bus `{id}` sends to the missing bus `{}`", send.to))
+                })?;
+                sends.push(SendState {
                     to,
-                    gain_db: s.gain_db,
-                    pre_fader: s.pre_fader,
+                    gain_db: send.gain_db,
+                    pre_fader: send.pre_fader,
                     ramp: FaderRamp::new(0.0),
-                    private_cut: id.as_str() == AI_VOICE_BUS && private_roots.contains(&s.to),
-                })
-                .collect();
+                    private_cut: id.as_str() == AI_VOICE_BUS && private_roots.contains(&send.to),
+                });
+            }
             buses.push(Bus {
                 id: id.clone(),
                 channels: spec.channels,
@@ -190,6 +201,7 @@ impl Mixer {
                 chain,
                 gain: FaderRamp::new(db_to_gain(spec.gain_db)),
                 mute: FaderRamp::new(1.0),
+                private_out: FaderRamp::new(1.0),
                 muted: spec.muted,
                 sends,
                 outputs: spec.outputs.clone(),
@@ -216,6 +228,11 @@ impl Mixer {
         mixer.add_rules(graph)?;
         mixer.settle_ramps();
         Ok(mixer)
+    }
+
+    /// The channel count of every output role the graph names.
+    pub(crate) fn output_widths(&self) -> &BTreeMap<DeviceRole, usize> {
+        &self.output_channels
     }
 
     /// A mixer with no buses: what an engine runs before its first graph.
@@ -288,8 +305,10 @@ impl Mixer {
         let mutes: Vec<f32> = self.buses.iter().map(|b| self.mute_target(b)).collect();
         let sends: Vec<Vec<f32>> =
             self.buses.iter().map(|b| b.sends.iter().map(|s| self.send_target(s)).collect()).collect();
+        let cohost = self.mic_mode == MicMode::CohostOnly;
         for ((bus, mute), sends) in self.buses.iter_mut().zip(mutes).zip(sends) {
             bus.mute.set_target(mute);
+            bus.private_out.set_target(if cohost && bus.id.as_str() == AI_VOICE_BUS { 0.0 } else { 1.0 });
             for (send, target) in bus.sends.iter_mut().zip(sends) {
                 send.ramp.set_target(target);
             }
@@ -301,6 +320,7 @@ impl Mixer {
         self.retarget();
         for bus in &mut self.buses {
             bus.mute = FaderRamp::new(bus.mute.target());
+            bus.private_out = FaderRamp::new(bus.private_out.target());
             for send in &mut bus.sends {
                 send.ramp = FaderRamp::new(send.ramp.target());
             }
@@ -456,6 +476,7 @@ impl Mixer {
             let bus = &mut buses[at];
             let gain = bus.gain.next_gain();
             let mute = bus.mute.next_gain();
+            let private_out = bus.private_out.next_gain();
             let duck = duck_factor(bus.rules.iter().map(|&r| {
                 let active = rule_active(&rules[r], triggers, index);
                 rules[r].envelope.step(active)
@@ -480,9 +501,10 @@ impl Mixer {
             }
             for role in &bus.outputs {
                 if let Some(out) = capture.outputs.get_mut(role) {
+                    let cut = if role.as_str() == MONITOR_OUT_ROLE { 1.0 } else { private_out };
                     let frame = convert(post_frame, channels, out.len());
                     for (c, channel) in out.iter_mut().enumerate() {
-                        channel[n] += frame[c];
+                        channel[n] += frame[c] * cut;
                     }
                 }
             }
@@ -523,4 +545,12 @@ fn frame_mean(block: &Planar, n: usize) -> f32 {
         [mono] => mono[n],
         _ => 0.0,
     }
+}
+
+/// Refuses a fader gain that is NaN or above `MAX_GAIN_DB`, as `GraphSpec::validate_structure` does for the spec.
+pub(crate) fn check_gain(bus: &BusId, db: f32) -> Result<(), AudioError> {
+    if db.is_nan() || db > MAX_GAIN_DB {
+        return Err(GraphError::GainOutOfRange { bus: bus.clone(), db }.into());
+    }
+    Ok(())
 }

@@ -10,7 +10,7 @@ use omuzaki_audio_api::graph::GraphSpec;
 use omuzaki_audio_api::ids::{BusId, DeviceRole};
 use omuzaki_audio_api::tap::TapPoint;
 
-use crate::mixer::Mixer;
+use crate::mixer::{Mixer, check_gain};
 use crate::taps::{TapPlan, TapProcessor};
 
 /// A fader change at an exact sample of an offline render.
@@ -53,7 +53,8 @@ impl OfflineEngine {
     /// one sample apply in the order given.
     ///
     /// # Errors
-    /// As [`OfflineRender::render`], and [`AudioError::UnknownBus`] for a change that names a missing bus.
+    /// As [`OfflineRender::render`], [`AudioError::UnknownBus`] for a change that names a missing bus, and
+    /// [`AudioError::Graph`] for a gain that is NaN or above `MAX_GAIN_DB`. Changes are checked before rendering.
     pub fn render_with_changes(
         &self,
         graph: &GraphSpec,
@@ -62,6 +63,9 @@ impl OfflineEngine {
         changes: &[TimedChange],
     ) -> Result<OfflineOutput, AudioError> {
         let mut mixer = Mixer::new(graph, input.mic_mode)?;
+        for timed in changes {
+            validate(graph, &timed.change)?;
+        }
         let mut processors = Vec::with_capacity(input.taps.len());
         for (point, format) in &input.taps {
             processors.push((point, TapProcessor::new(TapPlan::resolve(graph, point)?, *format, 0), Vec::new()));
@@ -70,6 +74,10 @@ impl OfflineEngine {
         let mut output = OfflineOutput::default();
         for bus in &mixer.buses {
             output.buses.insert(bus.id.clone(), vec![Vec::new(); bus.channels.count()]);
+        }
+        // Every role the graph names is answered, even when no frame is rendered.
+        for (role, width) in mixer.output_widths() {
+            output.outputs.insert(role.clone(), vec![Vec::new(); *width]);
         }
         let mut pending: Vec<&TimedChange> = changes.iter().collect();
         pending.sort_by_key(|c| c.at);
@@ -95,6 +103,18 @@ impl OfflineEngine {
         }
         output.taps = processors.into_iter().map(|(point, _, samples)| (point.clone(), samples)).collect();
         Ok(output)
+    }
+}
+
+/// Checks a change before anything is rendered: the bus exists and a gain is one the live engine would accept.
+fn validate(graph: &GraphSpec, change: &Change) -> Result<(), AudioError> {
+    let (Change::BusGainDb { bus, .. } | Change::BusMuted { bus, .. }) = change;
+    if graph.bus(bus).is_none() {
+        return Err(AudioError::UnknownBus(bus.clone()));
+    }
+    match change {
+        Change::BusGainDb { bus, db } => check_gain(bus, *db),
+        Change::BusMuted { .. } => Ok(()),
     }
 }
 

@@ -11,6 +11,9 @@
 //! - `apply` rebuilds the mixer, so node state and ramps start fresh, and the live setters are applied to the running
 //!   mixer as ramps;
 //! - a feed is 48 kHz only (no resampling at the edge), and a closed feed goes silent from the next block with no fade;
+//! - a tap that is not mixed down is refused for a stereo point (one scalar ring cannot carry two channels with
+//!   frame-true positions), and `TapDrops` counts samples a ring or sink refused, not samples an `Overwrite` ring lost
+//!   (only its reader sees those);
 //! - meters are the peak and RMS of the **last block** (not 300 ms), and the program-only fields keep their neutral
 //!   values;
 //! - `LatencyChanged` events are not sent.
@@ -22,7 +25,7 @@ use omuzaki_audio_api::backend::BackendError;
 use omuzaki_audio_api::clock::{ClockSnapshot, EngineClock};
 use omuzaki_audio_api::device::{Binding, DeviceId, DeviceInfo, DeviceState, Direction};
 use omuzaki_audio_api::engine::{AudioEngine, AudioError, Planar};
-use omuzaki_audio_api::graph::{AecMode, GraphError, GraphSpec, MAX_GAIN_DB, MONITOR_OUT_ROLE, MicMode, SourceRef};
+use omuzaki_audio_api::graph::{AecMode, Channels, GraphSpec, MONITOR_OUT_ROLE, MicMode, SourceRef};
 use omuzaki_audio_api::ids::{BusId, DeviceRole, FeedId, NodeId};
 use omuzaki_audio_api::node::{MAX_BLOCK, NodeKind, ParamIndex, SAMPLE_RATE, node_kind};
 use omuzaki_audio_api::report::{
@@ -31,11 +34,12 @@ use omuzaki_audio_api::report::{
 };
 use omuzaki_audio_api::ring::{Consumer, Producer, TapFlags, ring};
 use omuzaki_audio_api::tap::{
-    DropPolicy, FeedRequest, FeedWriter, TapClosed, TapHandle, TapInfo, TapRate, TapReader, TapRequest, TapSink,
+    DropPolicy, FeedRequest, FeedWriter, TapClosed, TapHandle, TapInfo, TapPoint, TapRate, TapReader, TapRequest,
+    TapSink,
 };
 use omuzaki_core::time::Seconds;
 
-use crate::mixer::Mixer;
+use crate::mixer::{Mixer, check_gain};
 use crate::taps::{TapPlan, TapProcessor, first_sample};
 
 /// The block size `status()` reports before the first `advance`: the requested device buffer of design section 3.2.
@@ -65,29 +69,44 @@ pub fn mock_devices() -> Vec<DeviceInfo> {
 enum Link {
     /// The ring `tap_ring` made: closed when its reader is dropped.
     Ring(Producer),
-    /// A consumer's sink from `tap`: closed when its handle is dropped.
-    Sink(Box<dyn TapSink>, TapClosed),
+    /// A consumer's sink from `tap`: closed when its handle is dropped. The count is the samples it refused.
+    Sink(Box<dyn TapSink>, TapClosed, u64),
 }
 
 impl Link {
     fn is_closed(&self) -> bool {
         match self {
             Self::Ring(producer) => producer.reader_gone(),
-            Self::Sink(_, closed) => closed.is_closed(),
+            Self::Sink(_, closed, _) => closed.is_closed(),
         }
     }
 
-    fn sink(&mut self) -> &mut dyn TapSink {
+    fn flags(&mut self, flags: TapFlags) {
         match self {
-            Self::Ring(producer) => producer,
-            Self::Sink(sink, _) => sink.as_mut(),
+            Self::Ring(producer) => producer.set_flags(flags),
+            Self::Sink(sink, ..) => sink.flags(flags),
         }
     }
 
+    /// Hands `samples` over. A sink that accepts fewer than it was given has the rest counted as dropped.
+    fn push(&mut self, samples: &[f32]) {
+        match self {
+            Self::Ring(producer) => {
+                producer.push(samples);
+            }
+            Self::Sink(sink, _, refused) => {
+                let accepted = sink.push(samples).min(samples.len());
+                *refused += (samples.len() - accepted) as u64;
+            }
+        }
+    }
+
+    /// Samples refused so far. A `DropNewest` ring counts them itself; an `Overwrite` ring loses samples where only its
+    /// reader can see them (`Consumer::overwritten`), so they are not counted here.
     fn dropped(&self) -> u64 {
         match self {
             Self::Ring(producer) => producer.dropped(),
-            Self::Sink(..) => 0,
+            Self::Sink(_, _, refused) => *refused,
         }
     }
 }
@@ -230,12 +249,12 @@ impl State {
             let Some(raw) = capture.points.get(&tap.processor.plan().point) else { continue };
             let flags = tap.processor.flags(self.mic_mode);
             if tap.flags != Some(flags) {
-                tap.link.sink().flags(flags);
+                tap.link.flags(flags);
                 tap.flags = Some(flags);
             }
             let mut samples = Vec::new();
             tap.processor.process(raw, self.mic_mode, &mut samples);
-            tap.link.sink().push(&samples);
+            tap.link.push(&samples);
         }
         self.sample += frames as u64;
         self.last_block = u32::try_from(frames).unwrap_or(DEFAULT_BLOCK);
@@ -281,6 +300,19 @@ impl State {
 
     fn open_tap(&mut self, request: &TapRequest, link: Link) -> Result<TapInfo, AudioError> {
         let plan = TapPlan::resolve(&self.graph, &request.point)?;
+        let stereo_point = matches!(
+            &plan.point,
+            TapPoint::BusPreChain(bus) | TapPoint::BusPostChain(bus) | TapPoint::BusPostFader(bus)
+                if self.graph.bus(bus).is_some_and(|b| b.channels == Channels::Stereo)
+        );
+        if stereo_point && !request.format.mono && request.format.rate == TapRate::Graph48k {
+            // The ring is a scalar stream, and the contract's positions count scalars: two channels in one ring
+            // would stamp every run twice as late as the frame clock. Down-mix with `mono: true` instead.
+            return Err(AudioError::TapUnavailable(format!(
+                "a stereo point cannot be read as two channels through one ring ({:?}): ask for mono",
+                plan.point
+            )));
+        }
         let info = TapInfo {
             first_sample: first_sample(request.format.rate, self.sample),
             rate: request.format.rate.hz(),
@@ -293,13 +325,25 @@ impl State {
     }
 }
 
-/// Samples of a ring that holds `seconds` of a signal at `rate` with `channels` interleaved channels, at least one.
-fn ring_samples(seconds: Seconds, rate: u32, channels: u32) -> usize {
-    let wanted = (seconds.0.max(0.0) * f64::from(rate)).round() * f64::from(channels);
-    // Non-negative and rounded; a capacity beyond `usize` is not a real request.
+/// The largest ring the mock makes, in samples: about 87 s of mono 48 kHz audio, far above any default capacity.
+const MAX_RING_SAMPLES: u32 = 1 << 22;
+
+/// Samples of a ring that holds `seconds` of a signal at `rate`, at least one.
+///
+/// # Errors
+/// [`AudioError::Internal`] when `seconds` is negative, not finite, or asks for more than [`MAX_RING_SAMPLES`].
+fn ring_samples(seconds: Seconds, rate: u32) -> Result<usize, AudioError> {
+    let wanted = (seconds.0 * f64::from(rate)).round();
+    if !(0.0..=f64::from(MAX_RING_SAMPLES)).contains(&wanted) {
+        return Err(AudioError::Internal(format!(
+            "a ring of {} s at {rate} Hz is outside 0 to {MAX_RING_SAMPLES} samples",
+            seconds.0
+        )));
+    }
+    // Checked to be within `0..=MAX_RING_SAMPLES` just above, so the cast is exact.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     {
-        (wanted as usize).max(1)
+        Ok((wanted as usize).max(1))
     }
 }
 
@@ -335,8 +379,15 @@ impl AudioEngine for MockEngine {
         state.mixer = mixer;
         state.graph = graph.clone();
         let State { graph, taps, .. } = &mut *state;
-        // A tap whose point the new graph no longer has is closed.
-        taps.retain(|t| TapPlan::resolve(graph, &t.request.point).is_ok());
+        // A tap whose point the new graph no longer has is closed; one whose voice signal now resolves elsewhere
+        // (`voice_taps` changed) follows it.
+        taps.retain_mut(|tap| match TapPlan::resolve(graph, &tap.request.point) {
+            Ok(plan) => {
+                tap.processor.replan(plan);
+                true
+            }
+            Err(_) => false,
+        });
         Ok(())
     }
 
@@ -368,9 +419,7 @@ impl AudioEngine for MockEngine {
     fn set_bus_gain_db(&self, bus: &BusId, db: f32) -> Result<(), AudioError> {
         let mut state = self.state();
         unknown_bus(&state.graph, bus)?;
-        if db.is_nan() || db > MAX_GAIN_DB {
-            return Err(GraphError::GainOutOfRange { bus: bus.clone(), db }.into());
-        }
+        check_gain(bus, db)?;
         state.mixer.set_bus_gain_db(bus, db)?;
         state.graph.buses.iter_mut().filter(|b| &b.id == bus).for_each(|b| b.gain_db = db);
         Ok(())
@@ -410,15 +459,13 @@ impl AudioEngine for MockEngine {
 
     fn tap(&self, request: &TapRequest, sink: Box<dyn TapSink>) -> Result<(TapHandle, TapInfo), AudioError> {
         let (handle, closed) = TapHandle::new();
-        let info = self.state().open_tap(request, Link::Sink(sink, closed))?;
+        let info = self.state().open_tap(request, Link::Sink(sink, closed, 0))?;
         Ok((handle, info))
     }
 
     fn tap_ring(&self, request: &TapRequest) -> Result<(TapReader, TapInfo), AudioError> {
         let mut state = self.state();
-        // A stereo point at 48 kHz that is not mixed down is interleaved, so it holds twice the samples.
-        let interleave = if request.format.mono || request.format.rate == TapRate::Speech16k { 1 } else { 2 };
-        let capacity = ring_samples(request.capacity, request.format.rate.hz(), interleave);
+        let capacity = ring_samples(request.capacity, request.format.rate.hz())?;
         let (producer, reader) = ring(capacity, request.policy, first_sample(request.format.rate, state.sample));
         let info = state.open_tap(request, Link::Ring(producer))?;
         Ok((reader, info))
@@ -431,12 +478,10 @@ impl AudioEngine for MockEngine {
                 request.rate
             )));
         }
-        let channels: u32 = if request.mono { 1 } else { 2 };
-        let capacity = ring_samples(request.capacity, request.rate, channels);
+        let channels: usize = if request.mono { 1 } else { 2 };
+        let capacity = ring_samples(request.capacity, request.rate)?.saturating_mul(channels);
         let (writer, reader) = ring(capacity, DropPolicy::DropNewest, 0);
-        self.state()
-            .feeds
-            .insert(request.id.clone(), OpenFeed { reader, channels: channels as usize, underrun_samples: 0 });
+        self.state().feeds.insert(request.id.clone(), OpenFeed { reader, channels, underrun_samples: 0 });
         Ok(writer)
     }
 

@@ -90,6 +90,12 @@ impl TapProcessor {
         &self.plan
     }
 
+    /// Follows a new resolution of the same request (a `voice_taps` change moved the point). The stream position and the
+    /// decimator's state stay, so the consumer sees one contiguous stream.
+    pub(crate) fn replan(&mut self, plan: TapPlan) {
+        self.plan = plan;
+    }
+
     /// The flags for the samples the next block produces.
     pub(crate) fn flags(&self, mode: MicMode) -> TapFlags {
         self.plan.voice.map_or_else(TapFlags::default, |consumer| voice_flags(mode, consumer))

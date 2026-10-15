@@ -182,23 +182,88 @@ fn a_short_feed_plays_silence_and_is_counted() {
 }
 
 #[test]
-fn a_stereo_feed_is_interleaved_and_a_wrong_rate_is_refused() {
+fn a_stereo_feed_is_mixed_down_by_the_tap_and_a_wrong_rate_is_refused() {
+    // Frames (1, 1) and (2, 2) down-mixed: (L + R) * (1/sqrt 2) = 2 * 0.70710678 = 1.41421356 and 2.82842712.
     let engine = MockEngine::new();
     let mut a = bus("a", feed_source("f"));
     a.channels = Channels::Stereo;
     engine.apply(&GraphSpec { buses: vec![a], ..GraphSpec::default() }).unwrap();
     let mut writer = engine.feed(&feed_request("f", false)).unwrap();
+    let (mut reader, _) = engine.tap_ring(&ring_request(TapPoint::BusPostFader(bus_id("a")))).unwrap();
+    writer.push(&[1.0, 1.0, 2.0, 2.0]);
+    engine.advance(2);
+    let mut out = [0.0f32; 2];
+    let run = reader.read(&mut out);
+    assert_eq!((run.len, run.start_sample), (2, 0));
+    assert!(
+        (out[0] - std::f32::consts::SQRT_2).abs() < 1e-6 && (out[1] - 2.0 * std::f32::consts::SQRT_2).abs() < 1e-6,
+        "{out:?}"
+    );
+
+    // One scalar ring cannot carry two channels with frame-true positions, so it is refused.
     let mut both = ring_request(TapPoint::BusPostFader(bus_id("a")));
     both.format.mono = false;
-    let (mut reader, _) = engine.tap_ring(&both).unwrap();
-    writer.push(&[1.0, -1.0, 2.0, -2.0]);
-    engine.advance(2);
-    let mut out = [0.0f32; 4];
-    assert_eq!(reader.read(&mut out).len, 4);
-    assert_eq!(out, [1.0, -1.0, 2.0, -2.0]);
+    assert!(matches!(engine.tap_ring(&both), Err(AudioError::TapUnavailable(_))));
+
     let mut slow = feed_request("g", true);
     slow.rate = 24_000;
     assert!(matches!(engine.feed(&slow), Err(AudioError::Internal(_))));
+}
+
+#[test]
+fn a_ring_capacity_that_cannot_be_made_is_refused() {
+    let engine = MockEngine::new();
+    engine.apply(&one_bus()).unwrap();
+    for seconds in [f64::INFINITY, f64::NAN, -1.0, 1.0e12] {
+        let mut request = ring_request(TapPoint::BusPostFader(bus_id("a")));
+        request.capacity = Seconds(seconds);
+        assert!(matches!(engine.tap_ring(&request), Err(AudioError::Internal(_))), "tap {seconds}");
+        let mut feed = feed_request("f", true);
+        feed.capacity = Seconds(seconds);
+        assert!(matches!(engine.feed(&feed), Err(AudioError::Internal(_))), "feed {seconds}");
+    }
+}
+
+#[test]
+fn samples_a_sink_does_not_take_are_counted_as_dropped() {
+    struct Half;
+    impl omuzaki_audio_api::tap::TapSink for Half {
+        fn push(&mut self, samples: &[f32]) -> usize {
+            samples.len() / 2
+        }
+    }
+    let engine = MockEngine::new();
+    engine.apply(&one_bus()).unwrap();
+    let mut request = ring_request(TapPoint::BusPostFader(bus_id("a")));
+    request.consumer = "half".into();
+    let (_handle, _) = engine.tap(&request, Box::new(Half)).unwrap();
+    engine.advance(100);
+    let drops = engine.status().tap_drops;
+    assert_eq!((drops[0].consumer.as_str(), drops[0].dropped), ("half", 50));
+}
+
+#[test]
+fn a_voice_taps_change_moves_the_open_taps() {
+    // `mic` plays a 0.5 feed with its fader at minus infinity. `captions` defaults to raw (before the chain: 0.5);
+    // once `voice_taps` says heard (after the fader: 0), the tap that is already open follows.
+    let engine = MockEngine::new();
+    let mut mic = bus("mic", feed_source("f"));
+    mic.gain_db = f32::NEG_INFINITY;
+    let mut graph = GraphSpec { buses: vec![mic], ..GraphSpec::default() };
+    engine.apply(&graph).unwrap();
+    let mut writer = engine.feed(&feed_request("f", true)).unwrap();
+    let (mut reader, _) = engine.tap_ring(&TapRequest::voice(VoiceUse::Captions, "asr")).unwrap();
+    writer.push(&[0.5; 960]);
+    engine.advance(480);
+    let mut out = [9.0f32; 160];
+    assert_eq!(reader.read(&mut out).len, 160);
+    assert!(out.iter().all(|&s| s == 0.5), "raw hears the input");
+
+    graph.voice_taps.set(VoiceUse::Captions, omuzaki_audio_api::tap::VoiceSignal::Heard);
+    engine.apply(&graph).unwrap();
+    engine.advance(480);
+    assert_eq!(reader.read(&mut out).len, 160);
+    assert!(out.iter().all(|&s| s == 0.0), "heard is after the fader");
 }
 
 #[test]
