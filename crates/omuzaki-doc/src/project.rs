@@ -297,29 +297,44 @@ impl Project {
                 }
                 self.known.record(segs.clone(), rendered.text, rendered.hash);
                 report.written += 1;
-            } else if entry.pending == Pending::Edit && self.vanished(&segs) {
-                // An edit that was undone before this save renders the text the file had, but the file itself is gone:
-                // it is written again, from the last-known text, like any other file deleted behind our back.
+            } else if entry.pending == Pending::Edit {
+                // An edit that was undone renders the text the file had. It is clean only if the regular file that was
+                // loaded is still there with those bytes. A symbolic link at the file or at a folder above it is never
+                // followed (the same check `replace_checked` makes): it is an external change and the edit stays owed.
                 let path = disk::file_path(&self.dir, &segs);
-                if disk::replace_checked(&self.dir, &path, &rendered.text, None)? == Replace::Refused {
+                if let Err(e) = disk::refuse_links(&self.dir, &path) {
+                    refused.get_or_insert(e);
+                    continue;
+                }
+                if self.vanished(&segs) {
+                    // The file itself is gone: it is written again, from the last-known text, like any other file
+                    // deleted behind our back.
+                    if disk::replace_checked(&self.dir, &path, &rendered.text, None)? == Replace::Refused {
+                        refused.get_or_insert(disk::why_changed(path));
+                        continue;
+                    }
+                    report.written += 1;
+                } else if self.differs_on_disk(&segs)? {
+                    // The file was changed behind our back since: it is not ours to mark as written.
                     refused.get_or_insert(disk::why_changed(path));
                     continue;
                 }
-                report.written += 1;
-            } else if entry.pending == Pending::Edit && self.differs_on_disk(&segs)? {
-                // An edit that was undone renders the text the file had, but the file was changed behind our back since:
-                // it is not ours to mark as written, and it stays owed.
-                refused.get_or_insert(disk::why_changed(disk::file_path(&self.dir, &segs)));
-                continue;
             }
             self.layout.mark_written(&segs);
         }
         Ok(())
     }
 
-    /// True if a file exists at the path of `segs` and its bytes are not the last-known ones.
+    /// True if something exists at the path of `segs` that isn't a regular file with the last-known bytes. The caller
+    /// has already refused links on the path, so this never follows one.
     fn differs_on_disk(&self, segs: &[String]) -> Result<bool, StoreError> {
         let path = disk::file_path(&self.dir, segs);
+        match fs::symlink_metadata(&path) {
+            Ok(meta) if !meta.is_file() => return Ok(true),
+            Ok(_) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(StoreError::io(&path, e)),
+        }
         match fs::read(&path) {
             Ok(bytes) => Ok(Some(ContentHash::of(&bytes)) != self.known.hash(segs)),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),

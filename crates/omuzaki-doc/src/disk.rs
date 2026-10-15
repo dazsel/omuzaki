@@ -219,7 +219,7 @@ pub(crate) fn why_changed(path: PathBuf) -> StoreError {
 /// outside the project (through a linked folder) or silently replace the user's link (a linked file). Components
 /// that don't exist yet are fine: the store creates those as real folders. `dir` itself may be reached through a
 /// link, as a project opened by a shortcut path is.
-fn refuse_links(dir: &Path, path: &Path) -> Result<(), StoreError> {
+pub(crate) fn refuse_links(dir: &Path, path: &Path) -> Result<(), StoreError> {
     let below = path
         .strip_prefix(dir)
         .map_err(|_| StoreError::Internal(format!("{} isn't inside {}", path.display(), dir.display())))?;
