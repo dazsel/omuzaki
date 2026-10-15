@@ -18,10 +18,6 @@ serde_json.workspace = true
 thiserror.workspace = true
 toml.workspace = true
 omuzaki-core = { path = "../omuzaki-core" }
-# The face parity harness (`face_parity`) paints with the real painter and rasterises on the CPU; an app crate may
-# depend on implementation crates.
-omuzaki-face = { path = "../omuzaki-face" }
-omuzaki-face-api = { path = "../omuzaki-face-api" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-store-api = { path = "../omuzaki-store-api" }
 
@@ -38,9 +34,6 @@ omuzaki-char = { path = "../omuzaki-char" }
 omuzaki-char-api = { path = "../omuzaki-char-api" }
 omuzaki-render-api = { path = "../omuzaki-render-api" }
 omuzaki-rig = { path = "../omuzaki-rig" }
-# The CPU rasteriser's Chrome-canvas parity probes (tests/raster_probes.rs): an app crate may depend on impl crates.
-omuzaki-face = { path = "../omuzaki-face" }
-omuzaki-face-api = { path = "../omuzaki-face-api" }
 # The real-format round trip (tests/gather_real_gltf.rs): the gather of `omuzaki-io-ops` through omuzaki-io-gltf, which no
 # implementation crate may test against.
 omuzaki-char-mock = { path = "../omuzaki-char-mock" }
