@@ -175,3 +175,49 @@ fn a_refused_connection_is_an_error() {
     let error = read_all(&fetcher(), &format!("http://127.0.0.1:{port}/"), 0).expect_err("refused");
     assert!(matches!(error, FetchError::Network { .. }));
 }
+
+/// A one-connection server that writes `head`, then each `(pause, bytes)` step, over a raw socket so the body can
+/// trickle. The thread ends with the test process.
+fn trickle_server(head: &'static str, steps: Vec<(Duration, &'static str)>) -> SocketAddr {
+    use std::io::Write;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    std::thread::spawn(move || {
+        let Ok((mut stream, _)) = listener.accept() else { return };
+        let mut request = [0u8; 1024];
+        let _ = stream.read(&mut request);
+        let _ = stream.write_all(head.as_bytes());
+        for (pause, bytes) in steps {
+            std::thread::sleep(pause);
+            let _ = stream.write_all(bytes.as_bytes());
+            let _ = stream.flush();
+        }
+    });
+    addr
+}
+
+#[test]
+fn the_read_timeout_is_per_read_so_a_slow_steady_body_outlives_it() {
+    // Six bytes in three chunks 200 ms apart: 600+ ms in all, but never silent for longer than the 500 ms timeout.
+    let step = (Duration::from_millis(200), "ab");
+    let addr = trickle_server("HTTP/1.1 200 OK\r\ncontent-length: 6\r\n\r\n", vec![step, step, step]);
+    let fetcher =
+        HttpFetcher::builder().allow_loopback_http(true).read_timeout(Duration::from_millis(500)).retries(1).build();
+    let (_, bytes) = read_all(&fetcher, &format!("http://{addr}/"), 0).expect("a steady body is not cut off");
+    assert_eq!(bytes, b"ababab");
+}
+
+#[test]
+fn a_body_that_stalls_longer_than_the_read_timeout_fails() {
+    let addr = trickle_server(
+        "HTTP/1.1 200 OK\r\ncontent-length: 6\r\n\r\n",
+        vec![(Duration::ZERO, "ab"), (Duration::from_secs(5), "cdef")],
+    );
+    let fetcher =
+        HttpFetcher::builder().allow_loopback_http(true).read_timeout(Duration::from_millis(300)).retries(1).build();
+    let mut body = fetcher.open(&format!("http://{addr}/"), 0).expect("the headers arrive in time");
+    let started = std::time::Instant::now();
+    let mut bytes = Vec::new();
+    assert!(body.reader.read_to_end(&mut bytes).is_err(), "a stalled body must time out");
+    assert!(started.elapsed() < Duration::from_secs(4), "it must not wait for the stalled server");
+}

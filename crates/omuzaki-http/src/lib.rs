@@ -159,7 +159,7 @@ impl Fetcher for HttpFetcher {
         let mut last = String::new();
         for attempt in 0..self.tries {
             if attempt > 0 {
-                std::thread::sleep(self.backoff.saturating_mul(1 << (attempt - 1)));
+                std::thread::sleep(backoff_for(self.backoff, attempt));
             }
             let mut request = client.get(parsed.clone()).header(ACCEPT_ENCODING, "identity");
             if from > 0 {
@@ -174,6 +174,12 @@ impl Fetcher for HttpFetcher {
         }
         Err(net(format!("{last} (gave up after {} tries)", self.tries)))
     }
+}
+
+/// The wait before try number `attempt` (counting from 1 for the second try): `base` doubled each time, saturating.
+fn backoff_for(base: Duration, attempt: u32) -> Duration {
+    let factor = 1u32.checked_shl(attempt.saturating_sub(1)).unwrap_or(u32::MAX);
+    base.saturating_mul(factor)
 }
 
 /// Whether a status is worth another try: a server error or "too many requests".
@@ -225,6 +231,17 @@ mod tests {
         assert_eq!(range_start("bytes 5-9/10"), Some(5));
         assert_eq!(range_start("bytes */10"), None);
         assert_eq!(range_start("items 5-9/10"), None);
+    }
+
+    #[test]
+    fn backoff_doubles_and_saturates_for_huge_retry_counts() {
+        let base = Duration::from_millis(500);
+        assert_eq!(backoff_for(base, 1), base);
+        assert_eq!(backoff_for(base, 3), base * 4);
+        assert_eq!(backoff_for(base, 32), base.saturating_mul(1 << 31));
+        assert_eq!(backoff_for(base, 33), base.saturating_mul(u32::MAX));
+        assert_eq!(backoff_for(base, u32::MAX), base.saturating_mul(u32::MAX));
+        assert_eq!(backoff_for(Duration::ZERO, 100), Duration::ZERO);
     }
 
     #[test]
