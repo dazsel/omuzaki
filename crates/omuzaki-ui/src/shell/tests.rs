@@ -439,3 +439,16 @@ fn a_layout_reset_this_session_is_not_read_back_from_a_file_the_writer_has_not_d
     assert_eq!(harness.state().stored("build-compact-a", &layout), None, "a reset layout reads as absent");
     assert_eq!(harness.state().stored("probe", &layout), None, "nothing was saved for the other workspace");
 }
+
+#[test]
+fn a_layout_reset_without_a_saver_is_still_not_read_back_from_its_file() {
+    let (_keep, store) = store();
+    let layout =
+        Layout::new(Node::split(Dir::Horizontal, vec![Node::pane("viewport"), Node::pane("inspector")], &[3.0, 1.0]));
+    store.save("build-compact-a", &layout).expect("saves");
+    let mut harness = shell_at(vec2(1366.0, 768.0), Some(store), Arc::new(NullRunner));
+    harness.state_mut().lose_saver();
+    assert!(harness.state().stored("build-compact-a", &layout).is_some(), "the file is read before the reset");
+    harness.state_mut().reset_layout();
+    assert_eq!(harness.state().stored("build-compact-a", &layout), None, "a reset layout reads as absent");
+}

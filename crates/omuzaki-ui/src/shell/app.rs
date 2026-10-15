@@ -424,6 +424,12 @@ impl Shell {
         }
     }
 
+    /// Drops the background saver, as when the operating system refused to start its thread.
+    #[cfg(test)]
+    pub(super) fn lose_saver(&mut self) {
+        self.saver = None;
+    }
+
     /// Forgets every saved layout of the active workspace, the compact ones included; the default is built on the
     /// next frame.
     pub fn reset_layout(&mut self) {
@@ -433,8 +439,9 @@ impl Shell {
             for key in &keys {
                 saver.reset(key);
             }
-            self.forgotten.extend(keys.iter().cloned());
         }
+        // Remembered even when no saver could start: the files stay on disk, and must not be read back this session.
+        self.forgotten.extend(keys.iter().cloned());
         self.compact.retain(|key, _| !keys.contains(key));
         self.views[self.active] = None;
         self.fresh = true;
