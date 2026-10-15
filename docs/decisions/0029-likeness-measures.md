@@ -1,3 +1,9 @@
+---
+title: "0029: Likeness is measured from pixels and given landmarks, as a radial outline in eye distances (2026-10-13)"
+summary: "Likeness is measured from pixels and given landmarks, as a radial outline in eye distances"
+area: decisions
+---
+
 # 0029: Likeness is measured from pixels and given landmarks, as a radial outline in eye distances (2026-10-13)
 
 **Status:** accepted (2026-10-13; decisions folded in). **Context:** VF-01; spec v3 §15, §16 (ML-01, ML-02, ML-09,

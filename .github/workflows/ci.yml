@@ -117,6 +117,7 @@ jobs:
           cargo xtask lint-ui-writes
           cargo xtask lint-crate-table
           cargo xtask lint-mods
+          cargo xtask lint-docs-index
           cargo xtask lint-seed --base "$BASE"
       # Licences, bans and sources only: advisories come from a database that changes daily, so they run in nightly.yml
       # and a new advisory never fails an unrelated pull request.

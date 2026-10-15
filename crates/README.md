@@ -11,10 +11,16 @@ a shared file.
 | **Mock** | `*-mock` | API crates |
 | **Lib** (format libraries) | crates with `layer = "lib"` under `[package.metadata.omuzaki]` | API crates and other lib crates (mocks as dev-dependencies) |
 | **Implementation** | everything else under `crates/` | API crates and lib crates (mocks as dev-dependencies) |
-| **App** | `omuzaki-cli`, `omuzaki-ui`, `omuzaki-test`, `omuzaki-stage`, `xtask` | anything: they wire implementations together |
+| **App** | `omuzaki-cli`, `omuzaki-ui`, `omuzaki-test`, `omuzaki-stage`, `xtask`, the area test crates `omuzaki-test-<area>` | anything: they wire implementations together (area test crates: see below) |
 
 `cargo xtask lint-deps` enforces the table (§39 rule 10). API crates change rarely and go through maintainer
 review; breaking changes need a decision record (§39.2 item 8).
+
+**Area test crates** (ADR 0054 §6). A test across crates goes in its area's test crate, `omuzaki-test-<area>` (a new
+area is a new crate), not in the harness `omuzaki-test`. An area test crate may depend on API crates, mocks, the harness
+and its own area's implementation and lib crates: `omuzaki-<area>`, `omuzaki-<area>-*`, plus the few whose names don't
+say their area (`omuzaki-rig` and `omuzaki-anim` are `char`, `omuzaki-gltf` is `io`). A change to one area then doesn't
+put the other areas' tests in scope. `lint-deps` enforces it.
 
 **Lib crates** (ADR 0011) hold code that several implementations need and that is too large to write twice, and that is
 a *format* rather than behaviour: `omuzaki-gltf` is glTF 2.0 for both `omuzaki-io-gltf` and `omuzaki-io-vrm`. A lib crate

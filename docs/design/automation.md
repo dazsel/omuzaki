@@ -1,3 +1,9 @@
+---
+title: "The automation graph: shows, graphs, nodes, the event envelope and variables"
+summary: "shows, graphs, nodes, the event envelope and variables"
+area: design
+---
+
 # The automation graph: shows, graphs, nodes, the event envelope and variables
 
 **Status:** proposed. **Features:** BR-11, BR-26; the event

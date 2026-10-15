@@ -1,3 +1,9 @@
+---
+title: "Licence policy"
+summary: "Licence policy"
+area: licensing
+---
+
 # Licence policy
 
 **The rule: nothing non-commercial, ever.** No library, tool, model, dataset or asset with a non-commercial term, in the product or in the pipeline that builds it.

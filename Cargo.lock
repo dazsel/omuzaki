@@ -3855,6 +3855,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-obs"
+version = "0.0.0"
+dependencies = [
+ "base64",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "omuzaki-ops"
 version = "0.0.0"
 dependencies = [
@@ -4069,22 +4080,15 @@ dependencies = [
  "image",
  "omuzaki-ai-api",
  "omuzaki-ai-ort",
- "omuzaki-anim",
- "omuzaki-anim-api",
- "omuzaki-char",
  "omuzaki-char-api",
  "omuzaki-char-mock",
  "omuzaki-core",
- "omuzaki-face",
- "omuzaki-face-api",
  "omuzaki-io-api",
  "omuzaki-io-gltf",
  "omuzaki-io-mock",
  "omuzaki-io-ops",
  "omuzaki-link-build",
  "omuzaki-ops-api",
- "omuzaki-render-api",
- "omuzaki-rig",
  "omuzaki-store-api",
  "omuzaki-track",
  "schemars",
@@ -4094,6 +4098,39 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "toml",
+]
+
+[[package]]
+name = "omuzaki-test-char"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-anim",
+ "omuzaki-anim-api",
+ "omuzaki-char",
+ "omuzaki-char-api",
+ "omuzaki-char-mock",
+ "omuzaki-core",
+ "omuzaki-render-api",
+ "omuzaki-rig",
+ "omuzaki-test",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "omuzaki-test-face"
+version = "0.0.0"
+dependencies = [
+ "image",
+ "omuzaki-core",
+ "omuzaki-face",
+ "omuzaki-face-api",
+ "omuzaki-link-build",
+ "omuzaki-test",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

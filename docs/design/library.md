@@ -1,3 +1,9 @@
+---
+title: "The library contract: items as recipes, pins, search and the seed"
+summary: "items as recipes, pins, search and the seed"
+area: design
+---
+
 # The library contract: items as recipes, pins, search and the seed
 
 **Status:** accepted (2026-10-12); the review decisions are folded in and listed in §8. **Decision record:** `docs/decisions/0019-library-items.md`.

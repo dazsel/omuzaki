@@ -1,3 +1,9 @@
+---
+title: "0003: Heavy assets live outside git (2026-10-10)"
+summary: "Heavy assets live outside git"
+area: decisions
+---
+
 # 0003: Heavy assets live outside git (2026-10-10)
 
 **Decision.** Images, models, `.blend` files, renders, audio, video and datasets live in `$OMUZAKI_ASSETS/`. Git holds text and code only.

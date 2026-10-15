@@ -13,7 +13,7 @@ use common::FakeRunner;
 use common::http::{Frozen, Port, Raw};
 use common::{data, text, tool};
 use omuzaki_mcp::{AccessToken, HttpOptions, McpOptions, McpServer, ServerError};
-use omuzaki_ops_api::{Actor, Grants, Runner, Scope};
+use omuzaki_ops_api::{Actor, Grants, Scope};
 use reqwest::StatusCode;
 use rmcp::model::{CallToolRequestParams, CallToolResult, ClientCapabilities, ClientConfig, Implementation};
 use rmcp::service::{RoleClient, RunningService};
@@ -72,7 +72,9 @@ async fn an_agent_lists_tools_previews_applies_and_undoes_over_a_real_port() {
     let agent = port.connect(&port.agent_token(), "http-agent").await;
 
     let tools = agent.list_all_tools().await.unwrap();
-    let mut expected: Vec<String> = port.runner.ops().iter().map(|o| o.name.replace('.', "_")).collect();
+    // Ops withheld for a service this server doesn't wire are not tools (see `WITHHELD_WITHOUT_SERVICE`).
+    let mut expected: Vec<String> =
+        common::offered_ops(port.runner.as_ref()).iter().map(|o| o.name.replace('.', "_")).collect();
     expected.extend(BUILTINS.map(str::to_owned));
     expected.sort();
     assert_eq!(tools.iter().map(|t| t.name.to_string()).collect::<Vec<_>>(), expected);
