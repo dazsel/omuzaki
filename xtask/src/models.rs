@@ -194,7 +194,7 @@ fn lineage_problems(manifest: &ModelManifest) -> Vec<String> {
         if link.name.trim().is_empty() {
             out.push(format!("model `{id}`: a {} lineage link has a blank `name`", kind_name(link.kind)));
         }
-        let url = link.url.as_deref().map(str::trim).filter(|url| !url.is_empty());
+        let url = link.url.as_deref().filter(|url| !url.trim().is_empty());
         match url {
             None => out.push(format!("{named} names no source `url`")),
             Some(url) if !is_https_url(url) => {
