@@ -5,6 +5,7 @@
 //! files), so nothing is downloaded. All names are neutral samples. Set `OMUZAKI_FONT_SHEET_PNG=/some/dir` to write the
 //! evidence sheet there.
 
+#![allow(clippy::disallowed_methods, reason = "a test reading and writing its own fixtures and evidence; not an op")]
 // Integration-test helpers may panic: a panic is a clear test failure.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 // Pixel maths on small page coordinates.

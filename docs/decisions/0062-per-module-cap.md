@@ -20,7 +20,7 @@ hour, which puts a 4 to 6 hour tail on independent work.
 
 ## Decision
 
-1. **In `omuzaki-char` and `omuzaki-face`, the cap of 3 counts per top-level module**, with a ceiling of 8 open pull
+1. **In `omuzaki-char` and `omuzaki-face`, the cap of 3 counts per top-level module**, with a ceiling of 12 open pull
    requests for the crate. A top-level module is a folder `src/<module>/` or a file `src/<module>.rs` (such as
    `omuzaki-char/src/builder.rs` or `omuzaki-face/src/layer.rs`); each is one bucket, apart from `lib.rs`, which is
    shared (§3).
@@ -35,17 +35,17 @@ hour, which puts a 4 to 6 hour tail on independent work.
    that several modules use. A pull request that changes any of them takes the shared slot.
 4. **The file-overlap check at dispatch still applies** (`tools/dispatch-check.py`). Two pull requests that touch one
    file never run at once, whatever the counts say.
-5. Every other crate keeps ADR 0053's cap of 3, and the total cap of 40 is unchanged. Adding a crate to this list is a
+5. Every other crate keeps the per-crate cap (5 since 2026-10-15, `operating.md`), and this decision leaves the total cap (150) unchanged. Adding a crate to this list is a
    Director ruling on #2.
 
 ## Consequences
 
 - `docs/maintainers/operating.md` and `docs/maintainers/cloud-lane.md` state the new rule.
 - `tools/dispatch-check.py` learns per-module counting (#1743). Until it lands, a task whose fence lies only in these
-  two crates is checked with the crate ceiling, `tools/dispatch-check.py --crate-cap 8 <issue>`, which still checks
+  two crates is checked with the crate ceiling, `tools/dispatch-check.py --crate-cap 12 <issue>`, which still checks
   file overlap and the total, and the lead counts modules by hand. `--crate-cap` applies to every crate in the fence,
   so for a task whose fence also names another crate, the lead reads each crate's count from the right run: the
-  default run's count for the other crate (cap 3), and the `--crate-cap 8` run's verdict for these two. The default
+  default run's count for the other crate (cap 5), and the `--crate-cap 12` run's verdict for these two. The default
   run's verdict on `omuzaki-char` or `omuzaki-face` is ignored. The overlap and total checks are the same in both
   runs.
 - Rejected:

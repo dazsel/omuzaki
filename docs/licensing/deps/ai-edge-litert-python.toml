@@ -1,0 +1,7 @@
+section = "in-use"
+item = "ai-edge-litert 2.3.0 (Python)"
+kind = "python"
+used_for = "the reference for the LiteRT build's smoke parity check (`runtime-litert.yml`)"
+status = "yes"
+condition = "CI only, hash-pinned in `tools/litert/requirements-check.txt`; never shipped (its dist-info lacks the third-party notices)"
+audit = "(PyPI wheel; LiteRT's Apache-2.0)"
