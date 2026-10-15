@@ -79,7 +79,7 @@ pub enum Convention {
 pub struct MapError {
     /// The required bones that no node could be found for.
     pub missing_required: Vec<HumanBoneName>,
-    /// The findings, errors first-class: `humanoid.required_missing`, `humanoid.override_invalid`.
+    /// The findings, errors first-class: `humanoid.required_missing`, `humanoid.override_invalid`, `humanoid.scale_invalid`.
     pub report: Report,
 }
 
@@ -102,19 +102,21 @@ const VRM: Table = &[
     ("hips", "hips"), ("spine", "spine"), ("chest", "chest"), ("upper chest", "upperChest"), ("neck", "neck"),
     ("head", "head"), ("shoulder", "*shoulder"), ("upper arm", "*upperArm"), ("lower arm", "*lowerArm"),
     ("hand", "*hand"), ("upper leg", "*upperLeg"), ("lower leg", "*lowerLeg"), ("foot", "*foot"),
-    ("toe base", "*toes"),
+    ("toe base", "*toes"), ("face eye", "*eye"), ("jaw", "jaw"),
 ];
 #[rustfmt::skip]
 const MIXAMO: Table = &[
     ("hips", "hips"), ("spine", "spine"), ("spine 1", "chest"), ("spine 2", "upperChest"), ("neck", "neck"),
     ("head", "head"), ("shoulder", "*shoulder"), ("arm", "*upperArm"), ("fore arm", "*lowerArm"), ("hand", "*hand"),
     ("up leg", "*upperLeg"), ("leg", "*lowerLeg"), ("foot", "*foot"), ("toe base", "*toes"),
+    ("eye", "*eye"), ("jaw", "jaw"),
 ];
 #[rustfmt::skip]
 const UNITY_BIP: Table = &[
     ("pelvis", "hips"), ("spine", "spine"), ("spine 1", "chest"), ("spine 2", "upperChest"), ("neck", "neck"),
     ("head", "head"), ("clavicle", "*shoulder"), ("upper arm", "*upperArm"), ("forearm", "*lowerArm"),
     ("hand", "*hand"), ("thigh", "*upperLeg"), ("calf", "*lowerLeg"), ("foot", "*foot"), ("toe 0", "*toes"),
+    ("eye", "*eye"), ("jaw", "jaw"),
 ];
 // In the Rigify metarig `spine` is the pelvis bone and the torso chain starts at `spine.001`.
 #[rustfmt::skip]
@@ -122,14 +124,15 @@ const RIGIFY: Table = &[
     ("spine", "hips"), ("spine 001", "spine"), ("spine 002", "chest"), ("spine 003", "upperChest"),
     ("spine 004", "neck"), ("spine 006", "head"), ("shoulder", "*shoulder"), ("upper arm", "*upperArm"),
     ("forearm", "*lowerArm"), ("hand", "*hand"), ("thigh", "*upperLeg"), ("shin", "*lowerLeg"), ("foot", "*foot"),
-    ("toe", "*toes"),
+    ("toe", "*toes"), ("eye", "*eye"), ("jaw", "jaw"),
 ];
 // `センター` (center) is the root the legs hang from in practice; `下半身` (lower body) is left unmapped.
 #[rustfmt::skip]
 const MMD: Table = &[
     ("センター", "hips"), ("上半身", "spine"), ("上半身2", "chest"), ("上半身3", "upperChest"), ("首", "neck"), ("頭", "head"),
     ("肩", "*shoulder"), ("腕", "*upperArm"), ("ひじ", "*lowerArm"), ("手首", "*hand"), ("足", "*upperLeg"),
-    ("ひざ", "*lowerLeg"), ("足首", "*foot"), ("つま先", "*toes"),
+    ("ひざ", "*lowerLeg"), ("足首", "*foot"), ("つま先", "*toes"), ("目", "*eye"),
+    ("jaw", "jaw"),
 ];
 // Names common enough across tools to count as exact beside the VRM names themselves.
 #[rustfmt::skip]
@@ -433,6 +436,12 @@ impl<'a> Cx<'a> {
         d.y > 0.0 && d.y >= d.x.abs()
     }
 
+    /// Whether `b` is above `a` and further up than it is sideways or forward.
+    fn is_axial_up(&self, a: usize, b: usize) -> bool {
+        let d = self.delta(a, b);
+        self.is_up(a, b) && d.y >= d.z.abs()
+    }
+
     /// The children of `a` for which `pred` holds, left (+X) first and right (-X) last.
     fn extremes(&self, kids: &[usize]) -> Option<(usize, usize)> {
         let x = |n: &usize| self.world.get(*n).map_or(0.0, |p| p.x);
@@ -523,11 +532,12 @@ impl<'a> Cx<'a> {
         if let (Some(&u), true) = (spine.last(), spine.len() > 2) {
             put("upperChest".into(), u);
         }
-        let up_of = |n: usize| self.kids(n).into_iter().find(|&k| self.is_up(n, k));
-        if let Some(first) = up_of(cur) {
-            match up_of(first) {
-                Some(head) => (put("neck".into(), first), put("head".into(), head)),
-                None => ((), put("head".into(), first)),
+        if let Some(first) = self.kids(cur).into_iter().find(|&k| self.is_up(cur, k)) {
+            // The neck is a lone link with the head straight above it; a head's own children (eyes, jaw) sit forward
+            // of it or have siblings, so a node that branches is the head itself.
+            match self.kids(first).as_slice() {
+                &[head] if self.is_axial_up(first, head) => (put("neck".into(), first), put("head".into(), head)),
+                _ => ((), put("head".into(), first)),
             };
         }
         for (side, start) in [("left", l), ("right", r)] {
@@ -554,7 +564,7 @@ fn node_ix(n: usize) -> NodeIx {
 /// # Errors
 /// [`MapError`] if a required bone has no node (`humanoid.required_missing`, whose hint names the override table) or
 /// an override is not usable (`humanoid.override_invalid`: the node is not in the scene, is already used, or breaks the
-/// parent rule).
+/// parent rule), or an assigned node has a zero or negative scale (`humanoid.scale_invalid`).
 pub fn auto_map(scene: &IoScene, overrides: &BTreeMap<HumanBoneName, NodeIx>) -> Result<HumanoidProposal, MapError> {
     let cx = Cx::new(scene);
     let mut report = Report::new();
@@ -575,9 +585,8 @@ pub fn auto_map(scene: &IoScene, overrides: &BTreeMap<HumanBoneName, NodeIx>) ->
                 report.push(invalid(bone, "the node is not in the scene"));
             } else if found.values().any(|(v, _)| *v == ix) {
                 report.push(invalid(bone, "the node already plays another bone"));
-            } else if !cx.fits(&found, bone, ix) {
-                report.push(invalid(bone, "the node is not under the bone's parent bone"));
             } else {
+                // Whether it sits under the bone's parent bone is checked once inference has settled the parents.
                 found.insert(bone, (ix, MatchHow::Override));
             }
             continue;
@@ -618,24 +627,21 @@ pub fn auto_map(scene: &IoScene, overrides: &BTreeMap<HumanBoneName, NodeIx>) ->
             report.push(Finding::warning("humanoid.inferred", msg).hint("check the result, or set an override"));
         }
     }
+    // Overrides are judged first, against the assignments as they stand, so that dropping a name match below cannot
+    // make a wrong override look right.
+    while let Some(bone) =
+        found.iter().find(|(b, (n, how))| *how == MatchHow::Override && !cx.fits(&found, **b, *n)).map(|(b, _)| *b)
+    {
+        found.remove(&bone);
+        report.push(invalid(bone, "the node is not under the bone's parent bone"));
+    }
     // Assignments made later can change what an earlier one must sit under: drop what no longer fits.
     while let Some(bone) = found.iter().find(|(b, (n, _))| !cx.fits(&found, **b, *n)).map(|(b, _)| *b) {
         if let Some((_, MatchHow::Override)) = found.remove(&bone) {
             report.push(invalid(bone, "the node is not under the bone's parent bone"));
         }
     }
-    let side_x = |prefix: &str| -> f32 {
-        found
-            .iter()
-            .filter(|(b, _)| b.as_str().starts_with(prefix))
-            .filter_map(|(_, (n, _))| cx.world.get(*n))
-            .map(|p| p.x)
-            .sum()
-    };
-    if side_x("left") * side_x("right") > 0.0 {
-        let msg = "the left and right bones lie on the same side of the body in the rest pose";
-        report.push(Finding::warning("humanoid.sides_overlap", msg).hint("check the names, or set overrides"));
-    }
+    check_found(scene, &cx, &found, &mut report);
     let missing_required: Vec<HumanBoneName> =
         bones().filter(|b| b.spec().required && !found.contains_key(b)).collect();
     for bone in &missing_required {
@@ -650,6 +656,35 @@ pub fn auto_map(scene: &IoScene, overrides: &BTreeMap<HumanBoneName, NodeIx>) ->
         found.iter().map(|(&bone, &(n, how))| BoneMatch { bone, node: node_ix(n), how }).collect();
     let humanoid = Humanoid { bones: matches.iter().map(|m| (m.bone, m.node)).collect() };
     Ok(HumanoidProposal { humanoid, matches, report })
+}
+
+/// The findings about a finished assignment: nodes with a zero or negative scale, and sides that overlap.
+fn check_found(scene: &IoScene, cx: &Cx<'_>, found: &Found, report: &mut Report) {
+    for (bone, &(n, _)) in found {
+        if scene.nodes.get(n).is_some_and(|nd| nd.transform.scale.min_element() <= 0.0) {
+            let msg = format!("the node for {bone} has a zero or negative scale");
+            let hint = "give the node a positive scale, or map the bone to another node";
+            report.push(Finding::error("humanoid.scale_invalid", msg).at(format!("avatar/humanoid/{bone}")).hint(hint));
+        }
+    }
+    // Sides are judged relative to the body's centre, so a rig moved along X is still fine.
+    let centre = HumanBoneName::new("hips")
+        .ok()
+        .and_then(|h| found.get(&h))
+        .and_then(|(n, _)| cx.world.get(*n))
+        .map_or(0.0, |p| p.x);
+    let side_x = |prefix: &str| -> f32 {
+        found
+            .iter()
+            .filter(|(b, _)| b.as_str().starts_with(prefix))
+            .filter_map(|(_, (n, _))| cx.world.get(*n))
+            .map(|p| p.x - centre)
+            .sum()
+    };
+    if side_x("left") * side_x("right") > 0.0 {
+        let msg = "the left and right bones lie on the same side of the body in the rest pose";
+        report.push(Finding::warning("humanoid.sides_overlap", msg).hint("check the names, or set overrides"));
+    }
 }
 
 /// Sets `scene.avatar.humanoid` (creating the avatar if there is none).

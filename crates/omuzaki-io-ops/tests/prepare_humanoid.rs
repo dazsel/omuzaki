@@ -264,11 +264,11 @@ fn profile_errors(scene: &mut IoScene, p: &HumanoidProposal) -> Vec<String> {
     report.findings.iter().filter(|f| f.rule.starts_with("vrm.humanoid")).map(|f| f.message.clone()).collect()
 }
 
-/// Maps `names` and checks that the 22 non-face bones are matched through `conv`.
+/// Maps `names` and checks that all 25 bones, the optional eyes and jaw included, are matched through `conv`.
 fn convention(names: &[&str], conv: Convention) {
     let (mut scene, nodes) = rig(names, &[], false);
     let p = auto_map(&scene, &BTreeMap::new()).unwrap();
-    for (i, name) in BONES.iter().enumerate().filter(|(i, _)| !(6..=8).contains(i)) {
+    for (i, name) in BONES.iter().enumerate() {
         assert_eq!(p.humanoid.node(name), nodes[i], "{name}");
         assert_eq!(how(&p, name), Some(MatchHow::Convention(conv)), "{name}");
     }
@@ -408,4 +408,50 @@ fn tied_candidates_take_the_lower_node() {
 fn the_same_scene_gives_the_same_proposal() {
     let (scene, _) = rig(&UNITY_BIP, &[], false);
     assert_eq!(auto_map(&scene, &BTreeMap::new()).unwrap(), auto_map(&scene, &BTreeMap::new()).unwrap());
+}
+
+#[test]
+fn nameless_skeleton_without_a_neck_keeps_the_head() {
+    let owned = nameless();
+    let names: Vec<&str> = owned.iter().map(String::as_str).collect();
+    let (mut scene, nodes) = rig(&names, &[4], false);
+    let p = auto_map(&scene, &BTreeMap::new()).unwrap();
+    assert_eq!(p.humanoid.node("head"), nodes[5], "the eye must not become the head");
+    assert!(p.humanoid.node("neck").is_none());
+    assert_eq!(profile_errors(&mut scene, &p), Vec::<String>::new());
+}
+
+#[test]
+fn an_override_may_depend_on_an_inferred_parent() {
+    let owned = nameless();
+    let names: Vec<&str> = owned.iter().map(String::as_str).collect();
+    let (scene, nodes) = rig(&names, &[], false);
+    let overrides = BTreeMap::from([(bone("upperChest"), nodes[3].unwrap())]);
+    let p = auto_map(&scene, &overrides).unwrap();
+    assert_eq!(p.humanoid.node("upperChest"), nodes[3]);
+    assert_eq!(how(&p, "upperChest"), Some(MatchHow::Override));
+    assert_eq!(p.humanoid.node("chest"), nodes[2]);
+}
+
+#[test]
+fn a_zero_scaled_bone_is_refused() {
+    let (mut scene, nodes) = rig(&MIXAMO, &[], false);
+    scene.nodes[nodes[20].unwrap().index()].transform.scale = Vec3::new(1.0, 0.0, 1.0);
+    let e = auto_map(&scene, &BTreeMap::new()).unwrap_err();
+    let f = e.report.findings.iter().find(|f| f.rule == "humanoid.scale_invalid").unwrap();
+    assert_eq!(f.location.as_deref(), Some("avatar/humanoid/leftHand"));
+    assert!(f.hint.is_some());
+}
+
+#[test]
+fn moving_the_rig_along_x_keeps_the_sides() {
+    let owned = nameless();
+    let names: Vec<&str> = owned.iter().map(String::as_str).collect();
+    for (names, shift) in [(&MIXAMO[..], 5.0), (&names[..], -5.0), (&names[..], 5.0)] {
+        let (mut scene, _) = rig(names, &[], false);
+        let root = scene.roots[0].index();
+        scene.nodes[root].transform.translation.x += shift;
+        let p = auto_map(&scene, &BTreeMap::new()).unwrap();
+        assert!(!p.report.has_rule("humanoid.sides_overlap"), "{shift}");
+    }
 }
