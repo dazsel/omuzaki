@@ -8,9 +8,9 @@
 //!
 //! A shipped model's lineage (`card.lineage`: base models, training data, code, conversions) is checked too, since a
 //! model is only as clean as its chain. It must document at least one base model or training data link, and every
-//! link must name an SPDX licence and a source `url`. A non-commercial or unknown licence (words, `LicenseRef-`,
-//! `unknown`) fails, naming the model and the link. See "What counts as documented lineage" in
-//! `docs/licensing/policy.md`.
+//! link must name an `https://` source `url` and a licence on the allow-list ([`ALLOWED_LICENCES`], the "Allowed"
+//! section of the policy). Anything else fails, naming the model and the link: a banned licence, a non-commercial one,
+//! a made-up id, words. See "What counts as documented lineage" in `docs/licensing/policy.md`.
 //!
 //! The licence comparison is exact: the entry's `condition` must name the manifest's whole SPDX expression as
 //! whole tokens, and no non-commercial licence ships. Every `register_model!` of a crate must include one of its own
@@ -152,8 +152,32 @@ pub fn problems(file: &str, text: &str, register: &[Row], sources: &[(String, St
     out
 }
 
-/// Every problem with a shipped model's lineage: none documented, or a link without a source or with a
-/// non-commercial, unknown or missing licence. Each names the model and the link.
+/// The licence ids a lineage link may carry: the "Allowed" section of `docs/licensing/policy.md` for code, models and
+/// data (permissive code licences, MPL-2.0, OFL-1.1, CC0 and CC BY). Anything not listed is refused, like `deny.toml`
+/// for crates, so a new id is added here with the policy page, in review. Compared without regard to case.
+const ALLOWED_LICENCES: [&str; 18] = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "BSL-1.0",
+    "0BSD",
+    "Unlicense",
+    "CC0-1.0",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "MPL-2.0",
+    "OFL-1.1",
+    "CC-BY-3.0",
+    "CC-BY-4.0",
+    "LLVM-exception",
+];
+
+/// Every problem with a shipped model's lineage: none documented, or a link without an `https://` source or with a
+/// missing or disallowed licence. Each names the model and the link.
 fn lineage_problems(manifest: &ModelManifest) -> Vec<String> {
     let id = &manifest.id;
     let lineage = &manifest.card.lineage;
@@ -165,21 +189,21 @@ fn lineage_problems(manifest: &ModelManifest) -> Vec<String> {
     }
     for link in lineage {
         let named = format!("model `{id}`: lineage link `{}` ({})", link.name, kind_name(link.kind));
-        let source = link.url.as_deref().map(str::trim).filter(|url| !url.is_empty());
-        if source.is_none() {
-            out.push(format!("{named} names no source `url`"));
+        let url = link.url.as_deref().map(str::trim).filter(|url| !url.is_empty());
+        match url {
+            None => out.push(format!("{named} names no source `url`")),
+            Some(url) if !is_https_url(url) => {
+                out.push(format!("{named} has the source `{url}`, which is not an `https://` URL with a host"));
+            }
+            Some(_) => {}
         }
-        let at = source.map_or(String::new(), |url| format!(" ({url})"));
+        let at = url.map_or(String::new(), |url| format!(" ({url})"));
         match link.licence.as_deref().map(str::trim).filter(|licence| !licence.is_empty()) {
             None => out.push(format!("{named} names no licence{at}")),
-            Some(licence) if is_non_commercial(licence) => {
-                out.push(format!(
-                    "{named} has the non-commercial licence `{licence}`{at}; a shipped model can't use it"
-                ));
-            }
-            Some(licence) if !is_known_spdx(licence) => {
-                out.push(format!("{named} has an unknown licence `{licence}`{at}; name its SPDX id"));
-            }
+            Some(licence) if !is_allowed_expression(licence) => out.push(format!(
+                "{named} has the licence `{licence}`{at}, which is not an allowed SPDX licence; see \"Allowed\" in \
+                 docs/licensing/policy.md"
+            )),
             Some(_) => {}
         }
     }
@@ -196,33 +220,33 @@ fn kind_name(kind: LineageKind) -> &'static str {
     }
 }
 
-/// Whether `licence` is an SPDX expression: ids joined by `AND`, `OR` or `WITH`, with balanced parentheses. Words
-/// (`research only`), `LicenseRef-…` and placeholders (`unknown`, `NOASSERTION`) are not.
-fn is_known_spdx(licence: &str) -> bool {
+/// Whether `url` is `https://` with a host and no whitespace.
+fn is_https_url(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("https://") else { return false };
+    let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let host = host.rsplit('@').next().unwrap_or_default();
+    !host.is_empty() && !host.starts_with(':') && !url.contains(char::is_whitespace)
+}
+
+/// Whether `licence` is an SPDX expression (ids joined by `AND`, `OR` or `WITH`, balanced parentheses) whose every id
+/// is in [`ALLOWED_LICENCES`]. Words (`research only`), `LicenseRef-…`, placeholders and banned licences (`BUSL-1.1`,
+/// `SSPL-1.0`, `CC-BY-NC-4.0`) are not on the list, so they fail.
+fn is_allowed_expression(licence: &str) -> bool {
     let mut depth = 0_i32;
     let mut operand_next = true;
     for token in spdx_tokens(licence) {
-        match token.as_str() {
+        match token.to_ascii_uppercase().as_str() {
             "(" if operand_next => depth += 1,
             ")" if !operand_next && depth > 0 => depth -= 1,
             "AND" | "OR" | "WITH" if !operand_next => operand_next = true,
             "(" | ")" | "AND" | "OR" | "WITH" => return false,
-            id if operand_next && is_spdx_id(id) => operand_next = false,
+            _ if operand_next && ALLOWED_LICENCES.iter().any(|id| id.eq_ignore_ascii_case(&token)) => {
+                operand_next = false;
+            }
             _ => return false,
         }
     }
     depth == 0 && !operand_next
-}
-
-/// Whether `id` can be an SPDX licence or exception id: not a placeholder or a `LicenseRef-` (words, not an id).
-fn is_spdx_id(id: &str) -> bool {
-    let lower = id.to_ascii_lowercase();
-    !lower.starts_with("licenseref-")
-        && !lower.starts_with("documentref-")
-        && !matches!(
-            lower.as_str(),
-            "unknown" | "unverified" | "none" | "noassertion" | "tbd" | "n/a" | "proprietary" | "custom" | "other"
-        )
 }
 
 /// The last segment of a path, with `\` read as `/` (Windows paths come back with `\`).
@@ -966,14 +990,57 @@ url = "https://data.example/tiny-corpus"
     const FILE: &str = "crates/omuzaki-tiny/models/tiny.model.toml";
 
     #[test]
-    fn lineage_licences_are_classified() {
-        for ok in ["MIT", "CC-BY-4.0", "Apache-2.0 WITH LLVM-exception", "(MIT OR Apache-2.0) AND CC0-1.0"] {
-            assert!(is_known_spdx(ok), "{ok}");
+    fn only_listed_licences_pass_a_lineage_link() {
+        for ok in ["MIT", "cc-by-4.0", "Apache-2.0 WITH LLVM-exception", "(MIT OR Apache-2.0) AND CC0-1.0"] {
+            assert!(is_allowed_expression(ok), "{ok}");
         }
-        for bad in
-            ["", "unknown", "research only", "LicenseRef-custom", "MIT OR", "(MIT", "MIT Apache-2.0", "NOASSERTION"]
+        let bad = [
+            "",
+            "unknown",
+            "research only",
+            "research-only",
+            "totally-made-up",
+            "LicenseRef-custom",
+            "MIT OR",
+            "(MIT",
+            "MIT Apache-2.0",
+            "NOASSERTION",
+            "BUSL-1.1",
+            "SSPL-1.0",
+            "FSL-1.1-MIT",
+            "CC-BY-NC-4.0",
+            "MIT OR GPL-3.0-only",
+            "Apache-2.0 WITH Classpath-exception-2.0",
+        ];
+        for licence in bad {
+            assert!(!is_allowed_expression(licence), "{licence}");
+        }
+    }
+
+    #[test]
+    fn a_disallowed_lineage_licence_names_the_link_and_the_policy() {
+        for licence in ["research-only", "totally-made-up", "BUSL-1.1", "CC-BY-NC-4.0"] {
+            let text = manifest("tiny", HTTPS).replace("CC0-1.0", licence);
+            let found = problems(FILE, &text, &register(), &good_source("tiny"));
+            assert_eq!(found.len(), 1, "{licence}: {found:?}");
+            assert!(
+                found[0].contains("lineage link `Tiny corpus 1`")
+                    && found[0].contains(licence)
+                    && found[0].contains("docs/licensing/policy.md"),
+                "{found:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_lineage_url_must_be_https_with_a_host() {
+        for url in
+            ["http://data.example/tiny", "unknown", "data/tiny", "https://", "https:///tiny", "https://data example/x"]
         {
-            assert!(!is_known_spdx(bad), "{bad}");
+            let text = manifest("tiny", HTTPS).replace("https://data.example/tiny-corpus", url);
+            let found = problems(FILE, &text, &register(), &good_source("tiny"));
+            assert_eq!(found.len(), 1, "{url}: {found:?}");
+            assert!(found[0].contains("not an `https://` URL"), "{found:?}");
         }
     }
 
