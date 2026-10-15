@@ -71,7 +71,10 @@ mod tests {
         let decls = module_decls(dir.path()).unwrap();
         let mods: Vec<&str> = decls.lines().filter(|l| l.starts_with("mod ")).collect();
         assert_eq!(mods, ["mod m0002_add_field;", "mod m0003_rename_things;"]);
-        assert!(decls.contains(dir.path().to_str().unwrap()));
+        // The folder appears inside an escaped Rust string literal, so compare against the escaped form: on Windows
+        // every `\` in the path is written `\\`.
+        let folder = format!("{:?}", dir.path().to_string_lossy());
+        assert!(decls.contains(folder.trim_end_matches('"')), "{decls}");
     }
 
     #[test]
