@@ -304,16 +304,15 @@ impl Worker {
         let late = Arc::clone(&self.late);
         let (id, tool) = (call.id.clone(), call.name.clone());
         Box::new(move |result| {
-            let (ok, text) = match &result {
-                Ok(reply) => (!reply.is_error, plain_text(&reply.blocks)),
-                Err(_) => (false, "the connection closed".to_owned()),
-            };
-            // The id is suffixed so a resumed history does not read this as the answer to the original call.
-            shared.record(Entry::tool_result(format!("{id}:late"), ok, vec![StoredBlock::Text(text.clone())]));
+            // A link that closed before the result came is not a result.
+            let Ok(reply) = result else { return };
+            let (ok, text) = (!reply.is_error, plain_text(&reply.blocks));
             let outcome = if ok { "applied".to_owned() } else { format!("failed: {}", tx::first_line(&text)) };
             if let Ok(mut late) = late.lock() {
                 late.push(LateResult { tool, outcome });
             }
+            // The id is suffixed so a resumed history does not read this as the answer to the original call.
+            shared.record(Entry::tool_result(format!("{id}:late"), ok, vec![StoredBlock::Text(text)]));
         })
     }
 }

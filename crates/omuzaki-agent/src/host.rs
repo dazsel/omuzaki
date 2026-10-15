@@ -72,6 +72,9 @@ impl AssistantHost {
             tools: None,
             late: Arc::default(),
             plan: Vec::new(),
+            measured: 0,
+            last_describe: None,
+            model_checked: false,
             prompt_fetch: Default::default(),
             refetch_after_answer: false,
         };

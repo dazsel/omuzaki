@@ -14,13 +14,12 @@ use omuzaki_llm_api::message::ImageMime;
 use omuzaki_llm_api::provider::RuntimeHandle;
 use omuzaki_llm_api::stream::Cancel;
 use rmcp::model::{
-    CallToolRequest, CallToolRequestParams, CancelledNotification, CancelledNotificationParam, ClientCapabilities,
-    ClientConfig, ClientRequest, ContentBlock, GetPromptRequestParams, Implementation, JsonObject, ProtocolVersion,
+    CallToolRequest, CallToolRequestParams, ClientCapabilities, ClientConfig, ClientRequest, ContentBlock, CustomNotification, GetPromptRequestParams, Implementation, JsonObject, ProtocolVersion,
     ReadResourceRequestParams, ResourceContents, ServerResult,
 };
 use rmcp::service::{NotificationContext, PeerRequestOptions, RoleClient, RunningService, ServiceError};
 use rmcp::{ClientHandler, ClientLifecycleMode, ClientServiceExt};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 /// The `_meta` key `omuzaki-mcp` puts on each tool to name what a call will do (D2.5).
 const KIND_KEY: &str = "omuzaki/kind";
@@ -239,12 +238,14 @@ impl McpClientLink {
                     answer = &mut handle.rx => break answer,
                     _ = poll.tick() => {
                         if cancel.is_cancelled() {
-                            let note = CancelledNotificationParam::new(
-                                Some(handle.id.clone()),
-                                Some("stopped by the person".into()),
+                            // Sent as the plain notification it is on the wire: rmcp's typed `CancelledNotification` also
+                            // drops the local responder, and a result that still arrives must reach `late`.
+                            let note = CustomNotification::new(
+                                "notifications/cancelled",
+                                Some(json!({"requestId": handle.id, "reason": "stopped by the person"})),
                             );
                             // The server may already have finished; a failed notification changes nothing for us.
-                            let _ = peer.send_notification(CancelledNotification::new(note).into()).await;
+                            let _ = peer.send_notification(note.into()).await;
                             if let Some(late) = late {
                                 let waited = tokio::time::timeout(LATE_WAIT, &mut handle.rx).await;
                                 if let Ok(answer) = waited {

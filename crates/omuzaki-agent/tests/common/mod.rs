@@ -266,6 +266,48 @@ impl ServerHandler for ScriptedServer {
     }
 }
 
+/// A minimal JSON-RPC MCP server: it holds `render_preview` until the client cancels it, then answers anyway.
+async fn late_server(io: tokio::io::DuplexStream) {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let (read, mut write) = tokio::io::split(io);
+    let mut lines = BufReader::new(read).lines();
+    let tools = json!([{
+        "name": "render_preview",
+        "description": "renders",
+        "inputSchema": {"type": "object"},
+        "annotations": {"readOnlyHint": true},
+        "_meta": {"omuzaki/kind": "query"}
+    }]);
+    let mut held: Option<Value> = None;
+    while let Ok(Some(line)) = lines.next_line().await {
+        let Ok(msg) = serde_json::from_str::<Value>(&line) else { continue };
+        let id = msg.get("id").cloned();
+        let reply = |result: Value| json!({"jsonrpc": "2.0", "id": id, "result": result});
+        let answer = match msg["method"].as_str() {
+            Some("initialize") => Some(reply(json!({
+                "protocolVersion": msg["params"]["protocolVersion"],
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "late", "version": "1"}
+            }))),
+            Some("tools/list") => Some(reply(json!({"tools": tools}))),
+            Some("tools/call") => {
+                held = id.clone();
+                None
+            }
+            Some("notifications/cancelled") => held.take().map(|held_id| {
+                json!({"jsonrpc": "2.0", "id": held_id, "result": {"content": [{"type": "text", "text": "rendered"}]}})
+            }),
+            Some(_) if id.is_some() => Some(json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32601, "message": "no such method"}})),
+            _ => None,
+        };
+        if let Some(answer) = answer {
+            if write.write_all(format!("{answer}\n").as_bytes()).await.is_err() {
+                return;
+            }
+        }
+    }
+}
+
 // ----- the fake sessions ---------------------------------------------------------------------------------------
 
 #[derive(Clone, Copy, Debug)]
@@ -635,6 +677,7 @@ impl Gate {
 pub struct GatedLlm {
     inner: Arc<FakeLlm>,
     gate: Arc<Gate>,
+    info: ModelInfo,
 }
 
 struct Held {
@@ -659,7 +702,7 @@ impl EventSource for Held {
 
 impl LlmClient for GatedLlm {
     fn info(&self) -> &ModelInfo {
-        self.inner.info()
+        &self.info
     }
 
     fn stream(&self, req: TurnRequest, cancel: &Cancel) -> Result<TurnStream, LlmError> {
@@ -689,6 +732,13 @@ pub struct RigOptions {
     pub max_output: u32,
     /// Hold each stream after this many events until `rig.gate.open()`.
     pub hold_after: Option<usize>,
+    /// The model's context window, when a test needs a small one.
+    pub window: Option<u64>,
+    /// The reply language.
+    pub language: Option<omuzaki_agent::Language>,
+    /// Serve a hand-written JSON-RPC server that answers `render_preview` even after the call was cancelled, as a
+    /// server that finished the work first does. rmcp's own server never does.
+    pub late_server: bool,
 }
 
 impl Default for RigOptions {
@@ -700,6 +750,9 @@ impl Default for RigOptions {
             person_reply: None,
             max_output: 2_048,
             hold_after: None,
+            window: None,
+            language: None,
+            late_server: false,
         }
     }
 }
@@ -755,17 +808,24 @@ impl Rig {
         // `serve` returns only once the client has shaken hands, so it runs on the runtime while the client connects.
         let server_peer: Arc<Mutex<Option<rmcp::service::Peer<RoleServer>>>> = Arc::default();
         let peer_slot = Arc::clone(&server_peer);
-        rt.spawn(async move {
-            if let Ok(service) = serving.serve(server_io).await {
-                *lock(&peer_slot) = Some(service.peer().clone());
-                let _ = service.waiting().await;
-            }
-        });
+        if options.late_server {
+            rt.spawn(late_server(server_io));
+        } else {
+            rt.spawn(async move {
+                if let Ok(service) = serving.serve(server_io).await {
+                    *lock(&peer_slot) = Some(service.peer().clone());
+                    let _ = service.waiting().await;
+                }
+            });
+        }
         let link = McpClientLink::connect(client_io, &RuntimeHandle::new(rt.handle().clone())).expect("client connects");
         let mut cfg = HostConfig::new(person(), sink.clone(), clock.clone(), options.prices)
             .with_caps(options.caps)
             .with_history(options.history)
             .with_max_output(options.max_output);
+        if let Some(language) = options.language {
+            cfg = cfg.with_language(language);
+        }
         if let Some(reply) = options.person_reply {
             cfg = cfg.with_person_reply(reply);
         }
@@ -774,7 +834,11 @@ impl Rig {
             delivered: AtomicUsize::new(0),
             after: options.hold_after.unwrap_or(0),
         });
-        let client: Arc<dyn LlmClient> = Arc::new(GatedLlm { inner: llm.clone(), gate: Arc::clone(&gate) });
+        let mut info = llm.info().clone();
+        if let Some(window) = options.window {
+            info.context_window = window;
+        }
+        let client: Arc<dyn LlmClient> = Arc::new(GatedLlm { inner: llm.clone(), gate: Arc::clone(&gate), info });
         let host = AssistantHost::start(link, client, sessions.clone(), SessionId(1), cfg);
         let rx = host.events();
         Self { rt, server, sessions, sink, llm, clock, host, rx, gate, server_peer }

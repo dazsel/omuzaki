@@ -4,6 +4,7 @@ use omuzaki_agent_api::entry::{Entry, SessionNote};
 use omuzaki_agent_api::error::HostError;
 use omuzaki_agent_api::event::AssistantEvent;
 use omuzaki_agent_api::message::UserMessage;
+use omuzaki_llm_api::error::LlmError;
 use omuzaki_llm_api::message::{ContentBlock, ToolChoice};
 use omuzaki_llm_api::stream::StopReason;
 use omuzaki_ops_api::{EndReason, PauseReason, SessionState, SessionTx, Spend};
@@ -11,6 +12,7 @@ use omuzaki_ops_api::{EndReason, PauseReason, SessionState, SessionTx, Spend};
 use crate::caps::{Counters, limit_note};
 use crate::calls::tool_calls;
 use crate::store::cut_rationale;
+use crate::turn::TurnMode;
 use crate::tx;
 use crate::worker::Worker;
 
@@ -41,6 +43,8 @@ pub(crate) struct AnswerRun {
     pub continued: bool,
     /// Where the answer starts in the model's history.
     pub msg_from: usize,
+    /// The conversation was compacted during this answer.
+    pub compacted: bool,
 }
 
 impl Worker {
@@ -55,6 +59,7 @@ impl Worker {
             final_turn: false,
             continued: false,
             msg_from: self.messages.len(),
+            compacted: false,
         };
         let result = match self.drive(&mut run, msg) {
             // Stop pressed as the answer was finishing still stops it: the queue was already cut.
@@ -65,6 +70,7 @@ impl Worker {
     }
 
     fn drive(&mut self, run: &mut AnswerRun, msg: &UserMessage) -> Result<(), Flow> {
+        self.ensure_tools()?;
         self.admit(msg)?;
         loop {
             self.gate(run)?;
@@ -77,9 +83,23 @@ impl Worker {
             }
             let choice = if run.final_turn { ToolChoice::None } else { ToolChoice::Auto };
             self.ensure_tools()?;
-            let request = self.build_request(choice);
+            self.check_model()?;
+            if self.wants_compaction() {
+                self.compact(run)?;
+            }
+            let request = self.build_request(choice.clone());
             self.reserve_budget(run, &request)?;
-            let done = self.run_turn(run, &request)?;
+            let done = match self.run_turn(run, &request, TurnMode::Answer) {
+                // The prompt did not fit after all: compact and try the turn once more (D3).
+                Err(Flow::Fail(HostError::Llm(LlmError::ContextTooLong { .. }))) if !run.compacted => {
+                    self.compact(run)?;
+                    continue;
+                }
+                Err(Flow::Fail(HostError::Llm(LlmError::ContextTooLong { .. }))) => {
+                    return Err(Flow::Fail(HostError::ContextFull));
+                }
+                other => other?,
+            };
             let ended_by_cap = run.final_turn;
             match done.stop {
                 StopReason::ToolUse if !ended_by_cap => {
@@ -125,7 +145,7 @@ impl Worker {
     }
 
     /// Asks the executor whether the turn's bound fits the budget; if not, waits for the person (D2.2).
-    fn reserve_budget(&mut self, run: &mut AnswerRun, request: &omuzaki_llm_api::message::TurnRequest) -> Result<(), Flow> {
+    pub(crate) fn reserve_budget(&mut self, run: &mut AnswerRun, request: &omuzaki_llm_api::message::TurnRequest) -> Result<(), Flow> {
         loop {
             let bound = self.ledger.bound(request, self.llm.info(), &self.cfg.prices);
             let prompt = self.ledger.prompt_estimate(request, self.llm.info());

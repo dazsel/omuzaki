@@ -304,20 +304,18 @@ fn stop_while_waiting_leaves_the_approval_queued() {
 #[test]
 fn a_result_that_arrives_after_stop_is_recorded_for_the_next_message() {
     let rig = Rig::with(
-        script(vec![call_turn("", &[("c1", "render_preview", "{}")]), say_turn("ok")]),
-        RigOptions::default(),
-        |sessions| {
-            let server = standard_server(sessions);
-            // The server finishes the work whatever the client cancels: it answers after a pause it cannot be woken from.
-            server.add(tool("render_preview", "Render preview", "query", true), |_, _| {
-                std::thread::sleep(std::time::Duration::from_millis(150));
-                Outcome::text("rendered")
-            });
-            server
-        },
+        script(vec![call_turn("", &[("c1", "render_preview", "{}")]), say_turn("ok"), say_turn("ok again")]),
+        RigOptions { late_server: true, ..RigOptions::default() },
+        |sessions| standard_server(sessions),
     );
     rig.host.send(UserMessage::new("go")).unwrap();
-    rig.wait_for("the call", || rig.server.called("render_preview") == 1);
+    let mut seen = Vec::new();
+    rig.wait_for("the call", || {
+        while let Some(e) = rig.rx.try_recv() {
+            seen.push(e);
+        }
+        seen.iter().any(|e| matches!(e, AssistantEvent::ToolCall { .. }))
+    });
     rig.host.stop();
     rig.until_done(0.0);
     rig.wait_for("the late result", || {

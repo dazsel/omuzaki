@@ -21,6 +21,15 @@ const STREAM_STEP: Duration = Duration::from_millis(10);
 /// Text reaches the panel at most this often, in seconds of clock time (D2.3).
 const FLUSH_EVERY: f64 = 0.016;
 
+/// What a turn is for.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) enum TurnMode {
+    /// A turn of the answer: its text goes to the panel and its blocks join the history.
+    Answer,
+    /// The compaction's summary turn: charged like any turn, but its text is not shown and joins no history.
+    Summary,
+}
+
 /// A finished turn.
 pub(crate) struct TurnDone {
     pub blocks: Vec<ContentBlock>,
@@ -75,14 +84,16 @@ impl Worker {
     /// # Errors
     /// [`Flow::Stopped`] after Stop, [`Flow::Fail`] for a failed turn (the partial text is kept), or `Revoked` if the
     /// charge found the session gone.
-    pub(crate) fn run_turn(&mut self, run: &mut AnswerRun, request: &TurnRequest) -> Result<TurnDone, Flow> {
+    pub(crate) fn run_turn(&mut self, run: &mut AnswerRun, request: &TurnRequest, mode: TurnMode) -> Result<TurnDone, Flow> {
         let cancel = self.shared.fresh_cancel();
         let mut stream = match self.llm.stream(request.clone(), &cancel) {
             Ok(stream) => stream,
             Err(LlmError::Cancelled) => return Err(Flow::Stopped),
             Err(error) => return Err(llm_flow(error)),
         };
-        run.counters.turn();
+        if mode == TurnMode::Answer {
+            run.counters.turn();
+        }
         let mut fold = TurnFold::default();
         let mut buf = TextBuf::new();
         let failure = loop {
@@ -95,12 +106,12 @@ impl Worker {
                     if let Err(error) = fold.push(event) {
                         break Some(error);
                     }
-                    if buf.due(now) {
+                    if mode == TurnMode::Answer && buf.due(now) {
                         self.flush(&mut buf, now);
                     }
                 }
                 Ok(Next::Wait) => {
-                    if buf.due(now) {
+                    if mode == TurnMode::Answer && buf.due(now) {
                         self.flush(&mut buf, now);
                     }
                 }
@@ -118,14 +129,18 @@ impl Worker {
                 Err(Flow::Stopped)
             }
             Some(error) => {
-                self.flush(&mut buf, now);
+                if mode == TurnMode::Answer {
+                    self.flush(&mut buf, now);
+                }
                 self.charge(run, usage);
                 self.keep_partial_text(run);
                 Err(llm_flow(error))
             }
             None => {
-                self.flush(&mut buf, now);
-                self.finish_turn(run, request, fold, usage)
+                if mode == TurnMode::Answer {
+                    self.flush(&mut buf, now);
+                }
+                self.finish_turn(run, request, fold, usage, mode)
             }
         }
     }
@@ -136,6 +151,7 @@ impl Worker {
         request: &TurnRequest,
         fold: TurnFold,
         usage: Option<Usage>,
+        mode: TurnMode,
     ) -> Result<TurnDone, Flow> {
         let model = fold.model.clone();
         let (blocks, stop) = match fold.finish() {
@@ -151,6 +167,10 @@ impl Worker {
             return Err(llm_flow(LlmError::Malformed("the turn stopped without reporting usage".into())));
         };
         self.charge(run, Some(usage));
+        if mode == TurnMode::Summary {
+            return Ok(TurnDone { blocks, stop });
+        }
+        self.measured = usage.prompt().saturating_add(usage.output);
         let message = Message::new(Role::Assistant, blocks.clone());
         self.ledger.observe(request, &Turn::new(model, message, usage, stop));
         self.commit_assistant(run, blocks.clone());

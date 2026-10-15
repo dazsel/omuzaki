@@ -40,6 +40,12 @@ pub(crate) struct Worker {
     pub tools: Option<Vec<ToolInfo>>,
     pub late: Arc<Mutex<Vec<LateResult>>>,
     pub plan: Vec<PlanItem>,
+    /// Tokens of the last turn's prompt and answer: a lower bound of the next prompt, for the 75 % compaction trigger.
+    pub measured: u64,
+    /// The last `project.describe` text the model was given, so it is repeated only when it changed.
+    pub last_describe: Option<String>,
+    /// The model was checked for the assistant (window and prefix).
+    pub model_checked: bool,
     pub prompt_fetch: crate::prompts::PromptFetch,
     /// An answer just ended: the prompt list is refetched (§7).
     pub refetch_after_answer: bool,
