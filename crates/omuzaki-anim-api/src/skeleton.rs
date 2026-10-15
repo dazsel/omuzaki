@@ -767,7 +767,10 @@ pub trait Rig: Send {
 
     /// Solves one frame. `out` receives the local transform of every bone in [`Rig::skeleton`]: humanoid bones from
     /// `pose` (applied on top of the rest pose), hair, cloth and accessory bones from the spring solver, everything
-    /// else at rest. On a generic skeleton there are no humanoid bones, so `pose` is ignored and only the spring bones
+    /// else at rest. An implementation may also run a node-constraint stage between IK and the springs, set by its own
+    /// builder (`FullRig::with_constraints` in `omuzaki-rig`): a constrained bone then takes its constraint's rotation.
+    /// This is the VRM 1.0 order, in which UniVRM applies `VRMC_node_constraint` after the humanoid pose and before the
+    /// spring bones. On a generic skeleton there are no humanoid bones, so `pose` is ignored and only the spring bones
     /// move. Hot path: no allocation, no locking.
     fn solve(&mut self, tick: Tick, pose: &HumanoidPose, out: &mut Pose);
 
