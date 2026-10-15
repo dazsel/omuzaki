@@ -44,8 +44,10 @@ hour, which puts a 4 to 6 hour tail on independent work.
 - `tools/dispatch-check.py` learns per-module counting (#1743). Until it lands, a task whose fence lies only in these
   two crates is checked with the crate ceiling, `tools/dispatch-check.py --crate-cap 8 <issue>`, which still checks
   file overlap and the total, and the lead counts modules by hand. `--crate-cap` applies to every crate in the fence,
-  so a task whose fence also names another crate is checked twice: the default run decides for the other crate (its
-  cap stays 3), the `--crate-cap 8` run for these two, and the task starts only if both allow it.
+  so for a task whose fence also names another crate, the lead reads each crate's count from the right run: the
+  default run's count for the other crate (cap 3), and the `--crate-cap 8` run's verdict for these two. The default
+  run's verdict on `omuzaki-char` or `omuzaki-face` is ignored. The overlap and total checks are the same in both
+  runs.
 - Rejected:
   - raising the per-crate cap for every crate, since small crates still share their files;
   - counting per file only, since review load per area still needs a bound.
