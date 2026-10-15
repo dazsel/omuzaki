@@ -3360,12 +3360,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-ai-native"
+version = "0.0.0"
+dependencies = [
+ "flate2",
+ "tar",
+ "tempfile",
+ "zip",
+]
+
+[[package]]
 name = "omuzaki-ai-ort"
 version = "0.0.0"
 dependencies = [
  "flate2",
  "hound",
  "omuzaki-ai-api",
+ "omuzaki-ai-native",
  "omuzaki-core",
  "ort",
  "sha2",
@@ -3468,6 +3479,17 @@ dependencies = [
  "omuzaki-core",
  "omuzaki-render-api",
  "omuzaki-render-mock",
+]
+
+[[package]]
+name = "omuzaki-camera-mf"
+version = "0.0.0"
+dependencies = [
+ "criterion",
+ "omuzaki-track-api",
+ "tracing",
+ "windows",
+ "windows-core",
 ]
 
 [[package]]
@@ -3585,7 +3607,9 @@ dependencies = [
  "omuzaki-doc-api",
  "omuzaki-doc-mock",
  "omuzaki-stage-api",
+ "omuzaki-store-api",
  "proptest",
+ "rustix 1.1.5",
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
@@ -3732,6 +3756,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-identity-api"
+version = "0.0.0"
+dependencies = [
+ "ed25519-dalek",
+ "omuzaki-store-api",
+ "proptest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "omuzaki-identity-mock"
+version = "0.0.0"
+dependencies = [
+ "ed25519-dalek",
+ "omuzaki-identity-api",
+ "omuzaki-library-api",
+ "omuzaki-store-api",
+ "proptest",
+ "schemars",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "omuzaki-io-api"
 version = "0.0.0"
 dependencies = [
@@ -3783,6 +3834,7 @@ dependencies = [
  "omuzaki-face-api",
  "omuzaki-io-api",
  "omuzaki-io-mock",
+ "omuzaki-library-api",
  "omuzaki-ops-api",
  "omuzaki-render-api",
  "omuzaki-store-api",
@@ -3879,6 +3931,8 @@ dependencies = [
  "omuzaki-core",
  "omuzaki-doc-api",
  "omuzaki-doc-mock",
+ "omuzaki-history-api",
+ "omuzaki-history-mock",
  "omuzaki-ops-api",
  "omuzaki-ops-mock",
  "omuzaki-store-api",
@@ -4017,6 +4071,7 @@ dependencies = [
  "omuzaki-core",
  "omuzaki-render-api",
  "omuzaki-render-mock",
+ "proptest",
  "thiserror 2.0.21",
 ]
 
@@ -4032,6 +4087,23 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "omuzaki-settings-api"
+version = "0.0.0"
+dependencies = [
+ "inventory",
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-ops-api",
+ "schemars",
+ "semver",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "toml",
 ]
 
 [[package]]
@@ -4137,6 +4209,21 @@ dependencies = [
  "omuzaki-core",
  "omuzaki-render-api",
  "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "omuzaki-take-api"
+version = "0.0.0"
+dependencies = [
+ "inventory",
+ "omuzaki-anim-api",
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-history-api",
+ "omuzaki-stage-api",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -7084,6 +7171,7 @@ version = "0.0.0"
 dependencies = [
  "clap",
  "flate2",
+ "omuzaki-ai-api",
  "omuzaki-core",
  "omuzaki-embed",
  "omuzaki-library-api",

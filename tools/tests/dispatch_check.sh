@@ -13,13 +13,15 @@ fail() { echo "FAIL: $*" >&2; failures=$((failures + 1)); }
 pass() { echo "ok: $*"; }
 
 # The stub: answers `gh issue view N`, `gh pr list` and `gh api` from $DISPATCH_FIXTURES, and refuses anything else.
-# A fixture that is missing is a failed call (exit 1), except dependency links, which default to none.
+# A fixture that is missing is a failed call (exit 1), except dependency links, which default to none. A file named
+# graphql-refused in the scenario makes the two GraphQL-backed calls fail, as the cloud proxy does with a 403.
 mkdir -p "$work/bin"
 cat >"$work/bin/gh" <<'S'
 #!/usr/bin/env bash
+refused() { [[ -e "$DISPATCH_FIXTURES/graphql-refused" ]] && { echo "HTTP 403: GraphQL refused" >&2; return 0; }; return 1; }
 case "$1 $2" in
-  "issue view") cat "$DISPATCH_FIXTURES/issue-$3.json" ;;
-  "pr list") cat "$DISPATCH_FIXTURES/prs.json" ;;
+  "issue view") refused && exit 1; cat "$DISPATCH_FIXTURES/issue-$3.json" ;;
+  "pr list") refused && exit 1; cat "$DISPATCH_FIXTURES/prs.json" ;;
   "api "*)
     case "$*" in
       *"/dependencies/blocked_by"*|*"/dependencies/blocking"*)
@@ -29,8 +31,12 @@ case "$1 $2" in
         ;;
       *"/pulls/"*"/files"*)
         number=$(sed -n 's#.*/pulls/\([0-9]*\)/files.*#\1#p' <<<"$*")
+        echo "$number" >>"$DISPATCH_FIXTURES/files-calls"
         cat "$DISPATCH_FIXTURES/files-$number.json" 2>/dev/null || echo '[]'
         ;;
+      *"/pulls?state=open"*) cat "$DISPATCH_FIXTURES/pulls.json" || exit 1 ;;
+      *"/issues/"*) cat "$DISPATCH_FIXTURES/issue-$(sed -n 's#.*/issues/\([0-9]*\)$#\1#p' <<<"$*").json" || exit 1 ;;
+      *"repos/dazsel/omuzaki") cat "$DISPATCH_FIXTURES/repo.json" || exit 1 ;;
       *"/contents/crates"*) cat "$DISPATCH_FIXTURES/crates.json" || exit 1 ;;
       *"/contents") cat "$DISPATCH_FIXTURES/root.json" || exit 1 ;;
       *) echo "stub gh: unexpected api call: $*" >&2; exit 3 ;;
@@ -457,7 +463,7 @@ sys.exit(1 if bad else 0)
 P
 if [[ $? == 0 ]]; then pass "fence_entries: slashless words by root name"; else fail "fence_entries: slashless table"; fi
 
-# closing references come from GitHub, not the body: "Does not close #42" is not a reference, so the PR is other.
+# closing references come from GitHub's list, not the body: a body keyword GitHub didn't list doesn't count.
 scenario not-closes
 issue 42 <<'B'
 **Fence:** `tools/n.py`
@@ -535,6 +541,8 @@ cat >"$FX/files-663.json" <<'J'
 J
 run 9060
 expect_line "wait #9060: overlap with #663 (crates/a/x.rs)" "rename: the old path of a renamed file collides"
+[[ $(grep -cx 663 "$FX/files-calls") == 1 ]] && pass "one fetch: the rename list is read once" \
+  || fail "one fetch: #663 read $(grep -cx 663 "$FX/files-calls") times"
 
 # renamed files: an unreadable rename list makes the PR's files unknown, so the task waits.
 scenario rename-unreadable
@@ -608,5 +616,134 @@ scenario missing
 echo '[]' >"$FX/prs.json"
 run 9999
 expect_code 2 "missing issue: exit 2"
+
+# closes_in_body: GitHub's keyword rule on a PR body. A negated keyword and another repository's issue do not count.
+# Run through importlib because the script's name has a hyphen.
+parser_cases() {
+  out=$(python3 -I -c '
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("dispatch_check", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+for body in ["Fixes #42", "Closes: #7", "Does not close #42", "Fixes other/repo#42", "prefix #9", "bugfix #3",
+             "resolved #5 and Closed #6", "Fixes\n#8", "Use `Fixes #10` to link", "a ``Fixes #11`` span",
+             "<!-- Fixes #12 --> Closes #13", "```\nFixes #14\n```\nFixes #15", "~~~md\nCloses #16\n",
+             "<!-- Fixes #17", "Example:\n\n    Fixes #18\n\nCloses #19", "\tFixes #20", "text\n    Fixes #21", ">     Fixes #22", "> quoted Closes #23"]:
+    print(body.replace("\n", " "), sorted(mod.closes_in_body(body)))
+' "$CHECK" 2>"$work/err")
+  expect_line "Fixes #42 [42]" "keyword: Fixes #42 closes 42"
+  expect_line "Closes: #7 [7]" "keyword: an optional colon is allowed"
+  expect_line "Does not close #42 [42]" "keyword: GitHub's rule is lexical, so a negated keyword still counts"
+  expect_line "Fixes other/repo#42 []" "keyword: another repository's issue does not count"
+  expect_line "prefix #9 []" "keyword: a keyword inside a word does not count"
+  expect_line "bugfix #3 []" "keyword: a suffix of a word does not count"
+  expect_line "resolved #5 and Closed #6 [5, 6]" "keyword: every keyword in a body counts, case-insensitively"
+  expect_line "Fixes #8 []" "keyword: a line break between keyword and number does not count"
+  expect_line "Use \`Fixes #10\` to link []" "keyword: an inline code span is an example, not a reference"
+  expect_line "a \`\`Fixes #11\`\` span []" "keyword: a double-backtick span is an example too"
+  expect_line "<!-- Fixes #12 --> Closes #13 [13]" "keyword: an HTML comment does not count; prose after it does"
+  expect_line "\`\`\` Fixes #14 \`\`\` Fixes #15 [15]" "keyword: a fenced block does not count; prose after it does"
+  expect_line "~~~md Closes #16  []" "keyword: an unclosed fence runs to the end of the body"
+  expect_line "<!-- Fixes #17 []" "keyword: an unclosed HTML comment runs to the end of the body"
+  expect_line "Example:      Fixes #18  Closes #19 [19]" "keyword: an indented code block after a blank line is an example"
+  expect_line "	Fixes #20 []" "keyword: a tab-indented block at the start is an example"
+  expect_line "text     Fixes #21 [21]" "keyword: an indented line that continues a paragraph is text"
+  expect_line ">     Fixes #22 []" "keyword: indented code inside a block quote is an example"
+  expect_line "> quoted Closes #23 [23]" "keyword: quoted prose still counts, as on GitHub"
+}
+parser_cases
+
+# REST path, with GraphQL refused: the same verdicts as the GraphQL path. #9100 is closed by its own PR 610 (go);
+# #9101 overlaps PR 611, whose body only says "Related to #9101", so it does not close it and the overlap counts.
+rest_fixtures() {
+  touch "$FX/graphql-refused"
+  issue 9100 <<'B'
+**Fence:** `crates/omuzaki-ops/src/a.rs`
+B
+  issue 9101 <<'B'
+**Fence:** `crates/omuzaki-io-ops/src/b.rs`
+B
+  echo '[{"name":"omuzaki-ops","type":"dir"},{"name":"omuzaki-io-ops","type":"dir"}]' >"$FX/crates.json"
+  echo '[{"name":"crates","type":"dir"}]' >"$FX/root.json"
+  echo '{"default_branch":"main"}' >"$FX/repo.json"
+  cat >"$FX/pulls.json" <<'J'
+[{"number":610,"head":{"ref":"cloud/610-own"},"draft":false,"created_at":"2026-10-11T10:00:00Z","base":{"ref":"main"},"body":"Fixes #9100"},
+ {"number":611,"head":{"ref":"local/611-x"},"draft":false,"created_at":"2026-10-11T11:00:00Z","base":{"ref":"main"},"body":"Related to #9101"},
+ {"number":612,"head":{"ref":"local/612-draft"},"draft":true,"created_at":"2026-10-11T12:00:00Z","base":{"ref":"main"},"body":null}]
+J
+  echo '[{"filename":"crates/omuzaki-ops/src/a.rs","status":"modified"}]' >"$FX/files-610.json"
+  echo '[{"filename":"crates/omuzaki-io-ops/src/b.rs","status":"modified"}]' >"$FX/files-611.json"
+  echo '[{"filename":"crates/omuzaki-io-ops/src/b.rs","status":"modified"}]' >"$FX/files-612.json"
+}
+
+# refused: the GraphQL reads fail, so the script falls back to REST, says so on stderr, and gives the same verdicts.
+scenario rest-refused
+rest_fixtures
+run 9100
+expect_line "go #9100" "rest fallback: own PR closes the task by body keyword, so go"
+expect_code 0 "rest fallback: exit 0 for go"
+grep -q "GraphQL refused, reading REST instead" "$work/err" && pass "rest fallback: says so on stderr" \
+  || fail "rest fallback: no stderr notice: $(cat "$work/err")"
+run 9101
+expect_line "wait #9101: overlap with #611 (crates/omuzaki-io-ops/src/b.rs)" "rest fallback: a mention without a keyword leaves the overlap"
+expect_code 1 "rest fallback: exit 1 for wait"
+
+# DISPATCH_CHECK_REST=1: GraphQL is not tried at all (no notice), and the verdicts match. The prs.json fixture is an
+# empty list, so a GraphQL read that wrongly ran would say go for #9101 and fail the test.
+scenario rest-only
+rest_fixtures
+rm "$FX/graphql-refused"
+echo '[]' >"$FX/prs.json"
+DISPATCH_CHECK_REST=1 run 9101
+expect_line "wait #9101: overlap with #611 (crates/omuzaki-io-ops/src/b.rs)" "rest only: verdict from REST"
+[[ ! -s "$work/err" ]] && pass "rest only: GraphQL not tried, no notice" || fail "rest only: stderr: $(cat "$work/err")"
+
+# one fetch per PR: a REST run reads each open PR's file list once, drafts included.
+scenario rest-once
+rest_fixtures
+run 9100
+for pr in 610 611 612; do
+  [[ $(grep -cx "$pr" "$FX/files-calls") == 1 ]] && pass "one fetch: REST reads #$pr once" \
+    || fail "one fetch: #$pr read $(grep -cx "$pr" "$FX/files-calls") times"
+done
+
+# base: closing keywords count only on a pull request into the default branch. The same "Fixes #9102" PR into release
+# does not close #9102, so its overlap counts; into main it closes #9102, so the task is its own and goes.
+one_pull() {
+  printf '[{"number":%s,"head":{"ref":"local/%s-x"},"draft":false,"created_at":"2026-10-11T13:00:00Z","base":{"ref":"%s"},"body":"Fixes #9102"}]\n' \
+    "$1" "$1" "$2" >"$FX/pulls.json"
+  echo '[{"filename":"crates/omuzaki-ops/src/c.rs","status":"modified"}]' >"$FX/files-$1.json"
+}
+scenario rest-base
+rest_fixtures
+issue 9102 <<'B'
+**Fence:** `crates/omuzaki-ops/src/c.rs`
+B
+one_pull 613 release
+run 9102
+expect_line "wait #9102: overlap with #613 (crates/omuzaki-ops/src/c.rs)" "rest base: a PR into a non-default branch does not close the task"
+one_pull 614 main
+run 9102
+expect_line "go #9102" "rest base: a PR into the default branch closes the task"
+
+# cap: the REST files endpoint returns at most 3,000 files. A PR with 3,000 is unreadable, so the task waits; 2,999 is read.
+# big_pr NUMBER COUNT: the only open PR, into main with no closing keyword, whose REST list has COUNT files.
+big_pr() {
+  printf '[{"number":%s,"head":{"ref":"local/%s-big"},"draft":false,"created_at":"2026-10-11T14:00:00Z","base":{"ref":"main"},"body":""}]\n' \
+    "$1" "$1" >"$FX/pulls.json"
+  python3 -I -c 'import json,sys; print(json.dumps([{"filename": f"crates/omuzaki-io-ops/src/f{i}.rs", "status": "modified"} for i in range(int(sys.argv[1]))]))' \
+    "$2" >"$FX/files-$1.json"
+}
+scenario rest-cap
+rest_fixtures
+issue 9103 <<'B'
+**Fence:** `tools/x.py`
+B
+big_pr 615 3000
+run 9103
+expect_line "wait #9103: cannot read the changed files of #615; waiting until they can be read" "rest cap: 3,000 files is unreadable"
+big_pr 615 2999
+run 9103
+expect_line "go #9103" "rest cap: 2,999 files is read in full"
 
 ((failures == 0)) || exit 1

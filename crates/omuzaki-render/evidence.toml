@@ -1,0 +1,11 @@
+# Render cases for `tools/ci/evidence.py`: CI renders each at the PR's base and at the PR, for pull requests labelled
+# `visual` (.github/workflows/visual-evidence.yml). The format is documented at the top of tools/ci/evidence.py.
+
+[[case]]
+name = "morph"
+description = "Morph targets on the GPU renderer (software Vulkan): a quad sliding at weights 0, 0.5 and 1, then an outlined cube casting a shadow as a target stretches it and tilts its normals, at the same weights."
+env = { OMUZAKI_MORPH_PPM = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-render", "--test", "morph", "render_the_morph_pictures_when_asked", "--", "--exact"] },
+]
+images = ["quad-0.ppm", "quad-0.5.ppm", "quad-1.ppm", "outlined-0.ppm", "outlined-0.5.ppm", "outlined-1.ppm"]

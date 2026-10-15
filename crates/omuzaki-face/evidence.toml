@@ -1,0 +1,14 @@
+# Render cases for `tools/ci/evidence.py`: CI renders each at the PR's base and at the PR, for pull requests labelled
+# `visual` (.github/workflows/visual-evidence.yml). The format is documented at the top of tools/ci/evidence.py.
+#
+# The brows are painted by omuzaki-face and rasterised by its CPU rasteriser, so the case renders through the same
+# painter the app uses, with no GPU and no window.
+
+[[case]]
+name = "brows"
+description = "The brows over the skin: neutral, raised and lowered (Base layer), and the Brows layer alone that hair composites over the bangs."
+env = { OMUZAKI_FACE_EVIDENCE_DIR = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-face", "--test", "evidence", "--", "--exact", "render_the_brows_when_asked"] },
+]
+images = ["brows-neutral.png", "brows-raised.png", "brows-lowered.png", "brows-through-bangs.png"]
