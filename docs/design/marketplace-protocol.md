@@ -10,30 +10,32 @@ area: design
 
 ## 1. Market-signed documents
 
-Every document the market signs is `Signed<_>` under `Domain::Entitlement`, signed by the **current pinned market key** (or, for a receipt only, a retired one, §4). The domain set stays closed (identity D1); identity D3 allows several body types under one tag when each is `deny_unknown_fields` and has a required field no other has. Here that field is `doc`, a fixed string (`"receipt"`, `"head"`, `"revocations"`, `"takedowns"`), plus `market: KeyId` (the signer, so a document can't be lifted to another market that reuses text). A test proves no document parses as another.
+Every document the market signs is `Signed<_>` under `Domain::Entitlement`; the table says which keys each accepts (the **current pinned key**, or a **retired** key connected to it by confirmed rotations, §4). The domain set stays closed (identity D1); identity D3 allows several body types under one tag when each is `deny_unknown_fields` and has a required field no other has. Here that field is `doc`, a fixed string (`"receipt"`, `"head"`, `"revocations"`, `"takedowns"`), plus `market: KeyId`: the key that signed this document, which must equal the signature's key, so a document can't be lifted to another market that reuses text and the verifier knows which key to check (§4). A test proves no document parses as another.
 
-| `doc` | Body | Purpose |
-|---|---|---|
-| `receipt` | `EntitlementBody { listing, item, versions, holder, order, issued, terms_hash: Option<ContentHash> }` | one buyer's right to one item (main D3) |
-| `head` | `MarketHead { seq: u64, issued: u64, revocations: Tip, takedowns: Tip }`, `Tip { pages: u32, tip: Option<ContentHash> }` | the market's current state, small and cheap to fetch (§2) |
-| `revocations` | `MarketPage { index: u32, prev: Option<ContentHash>, entries: Revoked(Vec<ContentHash>) }` | receipt hashes that no longer count |
-| `takedowns` | `MarketPage { …, entries: Taken(Vec<Takedown>) }`, `Takedown { listing, item, version, manifest_hash, reason: TakedownReason }` | operator removals; `TakedownReason`: `Rights`, `Safety`, `Fraud`, `Legal` |
+| `doc` | Body | Purpose | Accepted signer (all `Domain::Entitlement`) |
+|---|---|---|---|
+| `receipt` | `EntitlementBody { listing, item, versions, holder, order, issued, terms_hash: Option<ContentHash> }` | one buyer's right to one item (main D3) | current or retired |
+| `head` | `MarketHead { seq: u64, issued: u64, revocations: Tip, takedowns: Tip }`, `Tip { pages: u32, tip: Option<ContentHash> }` | the market's current state, small and cheap to fetch (§2) | **current only** |
+| `revocations` | `MarketPage { index: u32, prev: Option<ContentHash>, entries: Revoked(Vec<ContentHash>) }` | receipt hashes that no longer count | current or retired, and only when reached from a current-key head |
+| `takedowns` | `MarketPage { …, entries: Taken(Vec<Takedown>) }`, `Takedown { listing, item, version, manifest_hash, reason: TakedownReason }` | operator removals; `TakedownReason`: `Rights`, `Safety`, `Fraud`, `Legal`; an entry is at most 400 bytes | same as `revocations` |
 
-**Pages are an append-only hash chain with no lifetime cap.** A page holds 1 to 4 096 entries (at most 256 KiB) and is never edited; `prev` is the `Signed::hash()` of the page before it and `index` is `prev.index + 1` (0 for the first). The head's `Tip` names the newest page and how many there are. The market appends a new page for each batch; there is no compaction, so a refund stays revoked forever (receipts never expire) at 32 bytes per entry. The client walks from the head's tip back until it reaches a page it already holds, verifying each (signature, `doc`, `market`, `index` and `prev` agree, the chain reaches index 0 or a held page, `pages` equals the tip's `index + 1`), then keeps every page it verified. It fetches at most 64 pages per call and resumes where it stopped. A held page the market no longer serves is kept and warned (`MissingRecord`, as sharing D9); a different page at a held `index` is `Tampered(Record)`. Takedown pages are the same, so the one verifier covers both.
+`KeyChange` statements are the one exception: they are `Signed<KeyStatement>` under `Domain::KeyStatement` (§4), not market documents.
 
-**What a takedown does:** it blocks **new installs and updates** of that `manifest_hash`, paid or free, with `TakenDown`. It never removes or disables an applied record (sharing Q6). A creator's own deprecation stays in the signed manifest (`deprecated`) and needs no page.
+**Pages are an append-only hash chain with no lifetime cap.** A page holds 1 to 4 096 entries (at most 2 MiB; 4 096 hash entries are about 280 KB) and is never edited, so a page is never empty; `prev` is the `Signed::hash()` of the page before it and `index` is `prev.index + 1` (0 for the first). The head's `Tip` names the newest page and how many there are. **An empty chain is `pages = 0` with `tip = None`**; `pages >= 1` always has a `tip`, and any other combination is `Malformed`. No empty page exists, so a market with no revocations serves none. The market appends a new page for each batch; there is no compaction, so a refund stays revoked forever (receipts never expire) at 32 bytes per entry. The client walks from the head's tip back until it reaches a page it already holds, verifying each (signature under the key its `market` field names, which must be an accepted key (§4); `doc`; `index` and `prev` agree; the chain reaches index 0 or a held page, `pages` equals the tip's `index + 1`), then keeps every page it verified. It fetches at most 64 pages per call and resumes where it stopped. A held page the market no longer serves is kept and warned (`MissingRecord`, as sharing D9); a different page at a held `index` is `Tampered(Record)`. Takedown pages are the same, so the one verifier covers both.
+
+**What a takedown does:** once the client has synced the page, it blocks **new installs and updates** of that `manifest_hash`, paid or free, with `TakenDown`. It never removes or disables an applied record (sharing Q6). A creator's own deprecation stays in the signed manifest (`deprecated`) and needs no page.
 
 ## 2. Freshness: how the client knows the lists are current
 
-A cached `seq` cannot tell a fresh machine which list is newest, so freshness comes from the head. The client **establishes freshness** when, during this attempt, it fetched `GET /v1/head`, the head verifies under the pinned key, its `seq` is at least the cached head's, and its `issued` is within `library.market.head_max_age_h` (default 24) of the client's clock, after which it has synced every page the head names. `issued` is the market's claim and is used only as a **replay bound on a market-signed head**; it never accepts a key, a statement or a receipt (identity D4: no timestamps decide trust). A skewed clock gives `Stale` with the words "check your clock".
+A cached `seq` cannot tell a fresh machine which list is newest, so freshness comes from the head. The client **establishes freshness** when, during this attempt, it fetched `GET /v1/head`, the head verifies under the pinned key, its `seq` is at least the cached head's, and its `issued` is within `library.market.head_max_age_h` (default 24) of the client's clock, after which it has synced and verified every page the head names (a page that fails verification means freshness is not established). `issued` is the market's claim and is used only as a **replay bound on a market-signed head**; it never accepts a key, a statement or a receipt (identity D4: no timestamps decide trust). A skewed clock gives `Stale` with the words "check your clock".
 
-| Situation | Paid item (`access = required`), install or update | Free item |
+| Situation | Paid item (`access = required`), **new install or update** | Free item |
 |---|---|---|
-| Fresh head fetched | proceeds | proceeds |
-| Offline or head fetch fails, cached head fetched less than `library.market.offline_days` (default 14) ago by the local clock, and it was fresh when fetched | proceeds; the panel says "revocations checked <time>" | proceeds, labelled |
-| No cached head (fresh install, first use), or cache older, or head `issued` too old (a replayed list) | refused: `Stale` | proceeds, labelled "takedowns not checked" |
+| Head fetched in this attempt and fresh | proceeds | proceeds |
+| Offline, head fetch fails, head `issued` too old (a replayed list), or `seq` below the cached one | refused: `Stale`, and the panel says why ("can't check that this purchase is still valid; connect to the market and try again") | proceeds from the pages already held, labelled "takedowns not checked" |
+| No cached head (fresh machine, first use) | refused: `Stale` (same words) | proceeds, labelled "takedowns not checked" |
 
-So an old validly signed list served to a new machine can never clear a paid install, and a free install never depends on the market being reachable. A free item can be installed before a takedown the client has not yet seen; the label says so.
+**A paid install or update never uses a cached head.** The 24 h age rule applies to the head fetched in that same attempt, so a refund the market has published is seen by the next paid install or update, and a head up to `head_max_age_h` old is the only window in which a replayed list can precede it. With no network a paid item cannot be newly installed or updated. **Items already installed keep working offline**: nothing is revoked on the machine retroactively; a refund or takedown affects new installs and updates only. A free item can be installed before a takedown the client has not yet synced; the label says so. There is no `offline_days` setting.
 
 ## 3. HTTP shape
 
@@ -75,12 +77,13 @@ Never sent: `Cookie`, `Referer`, `Origin`, `Range`, `If-*`, `Accept-Language`, a
 
 ## 4. Market key changes
 
-A market key rotates by identity's own rule (D5): `KeyStatement::Rotate { old, new }` is valid only when **both** keys sign the same body (two `Signed` values, one body). The market publishes them at `GET /v1/key-changes` as `KeyChange { old: Signed<KeyStatement>, new: Signed<KeyStatement> }` (at most 8, 64 KiB). The client never swaps a pin by itself:
-1. a change is accepted only when `old` is the currently pinned key, both signatures verify under `Domain::KeyStatement`, and the bodies are equal;
+A market key rotates by identity's own rule (D5): `KeyStatement::Rotate { old, new }` is valid only when **both** keys sign the same body (two `Signed` values, one body). The market publishes them at `GET /v1/key-changes` as `KeyChange { old: Signed<KeyStatement>, new: Signed<KeyStatement> }` (at most 8 links in the whole chain, 64 KiB). The client never swaps a pin by itself:
+1. a **forward** change is accepted only when `old` is the currently pinned key, both signatures verify under `Domain::KeyStatement`, and the bodies are equal;
 2. a document signed by a key that is not the pin makes the client look at `key-changes`; a valid change shows the person "<name> changed its key (old fingerprint → new fingerprint)" and the panel offers `library.market.rekey` (person-only), which writes the new pin and keeps the old as **retired** in `market.toml`;
 3. until the person confirms, paid installs from that market fail `MarketKeyChanged`; free installs and everything installed keep working;
-4. a **retired** key still verifies **receipts** signed while it was current (identity D5: a rotated key is retired, not revoked); heads, pages and takedowns must be signed by the current key;
-5. a statement can also be imported from a file (`trust.import`, identity D5). A compromised key is not a rotation: the person removes the market and adds it again with the new fingerprint.
+4. a **retired** key (identity D5: a rotated key is retired, not revoked) still verifies the documents it signed while it was current, so no page or receipt changes its hash. **Receipts** are accepted from the current key or any retired key in the chain. **Revocation and takedown pages** are accepted when signed by the current key or by any retired key connected to the pin through confirmed rotations, using the key named by the page's own signed `market` field (the key id is the choice, not the issue time, which only the market claims). A **head** must be signed by the current key, and a page is trusted only when it is reached by hash from such a head's tip, so a retired key cannot append pages by itself;
+5. **a fresh client** pins the current key when the person adds the market, then learns the older keys from `GET /v1/key-changes`. A **backward** link is accepted when its `new` is the pin or an already accepted retired key, both signatures verify under `Domain::KeyStatement` and the bodies are equal. The chain is at most 8 links (the stated limit), so a market has at most 8 rotations. The panel shows the whole chain with fingerprints and `library.market.rekey` (person-only) writes it to `retired` after the person confirms. Until then, paid installs fail `MarketKeyChanged` and pages signed by an unconfirmed key are not accepted (free installs proceed from the pages that verified, labelled); once confirmed, each held or fetched page is verified against the key its `market` field names, and a page whose key is not in the chain is `Tampered(Record)`;
+6. a statement can also be imported from a file (`trust.import`, identity D5). A compromised key is not a rotation: the person removes the market and adds it again with the new fingerprint.
 
 ## 5. Limits
 
@@ -88,7 +91,7 @@ Constants in `omuzaki-market-api`, tested at the limit and over; every read stop
 
 | Thing | Limit |
 |---|---|
-| any JSON response (except pages) | 1 MiB; a `Listing` 16 KiB (its `commerce` 4 KiB); a head 4 KiB; a page 256 KiB and 4 096 entries |
+| any JSON response (except pages) | 1 MiB; a `Listing` 16 KiB (its `commerce` 4 KiB); a head 4 KiB; a page 2 MiB and 4 096 entries |
 | manifest | the library's manifest limit |
 | custom licence text | 64 KiB, UTF-8, control characters other than newline and tab refused |
 | preview | 5 per listing, 5 MiB each |
