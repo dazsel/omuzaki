@@ -466,7 +466,7 @@ mod tests {
     crate::register_story! { id: "twice", title: "Later", group: StoryGroup::Controls, order: 9, state: u32,
     show: |_, _| {} }
     crate::register_story! { id: "twice", title: "Earlier", group: StoryGroup::Controls, order: 1, state: u32,
-    show: |_, _| {} }
+    show: |_, n| *n += 1 }
     crate::register_workspace! { id: "solo", title: "Solo", icon: "", order: 1, group: Group::Make,
     default_layout: || Node::pane("dup") }
     // A later group sorts after an earlier one whatever its `order`.
@@ -505,7 +505,7 @@ mod tests {
         let mut state = (story.new_state)();
         let ctx = egui::Context::default();
         ctx.run_ui(egui::RawInput::default(), |ui| (story.show)(ui, state.as_mut())).drop_without_applying_deltas();
-        assert_eq!(state.downcast_ref::<u32>(), Some(&0));
+        assert_eq!(state.downcast_ref::<u32>(), Some(&1), "the selected story's callback ran on its state");
         let layout = registry.workspace("solo").map(|w| (w.default_layout)());
         assert_eq!(layout, Some(Node::pane("dup")));
     }

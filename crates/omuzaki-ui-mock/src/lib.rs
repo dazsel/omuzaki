@@ -13,7 +13,7 @@ use std::panic::{self, AssertUnwindSafe};
 use egui::{Context, Pos2, RawInput, Rect, Ui, vec2};
 use omuzaki_ui_api::layout::Node;
 use omuzaki_ui_api::panel::{PaletteEntry, Panel, PanelCtx};
-use omuzaki_ui_api::registry::{Group, PanelDef, Region, Registry};
+use omuzaki_ui_api::registry::{DefKind, Group, PanelDef, Region, Registry};
 
 omuzaki_core::define_link!();
 
@@ -116,7 +116,8 @@ impl MockHost {
         Some((def, (def.build)(ctx)))
     }
 
-    /// Draws one frame of `panel`, registered as `def`, in a window of `size` points.
+    /// Draws one frame of `panel`, registered as `def`, in a window of `size` points. Like the shell, it keeps egui's
+    /// default pass count, so `Panel::ui` may run more than once when the panel asks egui to discard a pass.
     pub fn frame(&self, panel: &mut dyn Panel, def: &PanelDef, ctx: &PanelCtx<'_>, size: [f32; 2]) -> Frame {
         draw(&self.egui, panel, def, ctx, size)
     }
@@ -125,8 +126,9 @@ impl MockHost {
     /// line per problem, so `assert!(problems.is_empty(), "{problems:#?}")` names them all:
     ///
     /// - the id is registered once and is stable: non-empty, lower-case ASCII letters, digits, `.`, `_` or `-`;
-    /// - it has a title and a screen-reader label, and its frame gives AccessKit something to announce;
     /// - it draws with no document: its body, or (when unavailable) a registered empty state;
+    /// - it has a non-empty title (the panel's override, else the registered one) and, when it overrides the
+    ///   screen-reader label, a non-empty label; its frame gives AccessKit something to announce;
     /// - nothing panics at its minimum size, at half of it, or at 1 by 1 points.
     pub fn check(&self, id: &str, ctx: &PanelCtx<'_>) -> Vec<String> {
         let mut problems = Vec::new();
@@ -134,24 +136,42 @@ impl MockHost {
         if id.is_empty() || !id.chars().all(valid) {
             problems.push(format!("id {id:?} is not lower-case ASCII letters, digits, '.', '_' or '-'"));
         }
-        problems.extend(self.registry.duplicates().iter().filter(|d| d.id == id).map(ToString::to_string));
+        problems.extend(
+            self.registry
+                .duplicates()
+                .iter()
+                .filter(|d| d.kind == DefKind::Panel && d.id == id)
+                .map(ToString::to_string),
+        );
         let Some((def, mut panel)) = self.open(id, ctx) else {
             problems.push(format!("no panel is registered as {id:?}"));
             return problems;
         };
-        let label = panel.accessibility_label().or_else(|| panel.title()).unwrap_or(Cow::Borrowed(def.title));
-        if def.title.trim().is_empty() || label.trim().is_empty() {
-            problems.push(format!("{id}: the title or the screen-reader label is empty"));
+        // The title the tab shows, and (when the panel overrides it) the label a screen reader gets, each on its own.
+        let title = panel.title().unwrap_or(Cow::Borrowed(def.title));
+        if title.trim().is_empty() {
+            problems.push(format!("{id}: the title is empty"));
         }
-        let frame = self.frame(panel.as_mut(), def, ctx, def.min_size);
-        if !frame.body && def.empty.is_none() {
-            problems.push(format!("{id}: unavailable with no document, and registers no empty state"));
-        }
-        if frame.labels.is_empty() {
-            problems.push(format!("{id}: its frame gives AccessKit nothing to announce"));
+        if panel.accessibility_label().is_some_and(|label| label.trim().is_empty()) {
+            problems.push(format!("{id}: the screen-reader label is empty"));
         }
         let [w, h] = def.min_size;
-        for size in [[w, h], [w / 2.0, h / 2.0], [1.0, 1.0]] {
+        // A fresh context, so a panic can't leave state behind for the next draw.
+        let first = panic::catch_unwind(AssertUnwindSafe(|| {
+            draw(&accessible_context(), panel.as_mut(), def, ctx, def.min_size)
+        }));
+        match first {
+            Ok(frame) => {
+                if !frame.body && def.empty.is_none() {
+                    problems.push(format!("{id}: unavailable with no document, and registers no empty state"));
+                }
+                if frame.labels.is_empty() {
+                    problems.push(format!("{id}: its frame gives AccessKit nothing to announce"));
+                }
+            }
+            Err(_) => problems.push(format!("{id}: panics at {w} by {h} points")),
+        }
+        for size in [[w / 2.0, h / 2.0], [1.0, 1.0]] {
             // A fresh context each time, so a panic can't leave state behind for the next size.
             let egui = accessible_context();
             let drawn = panic::catch_unwind(AssertUnwindSafe(|| draw(&egui, panel.as_mut(), def, ctx, size)));

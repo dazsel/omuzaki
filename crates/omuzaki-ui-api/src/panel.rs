@@ -9,10 +9,16 @@ use omuzaki_ops_api::{Actor, Event, Runner};
 
 /// One panel instance, built by its registration's `build` function (see [`register_panel!`](crate::register_panel)).
 ///
-/// The shell owns it and calls [`ui`](Panel::ui) once per frame while it is shown. Every method but `ui` has a
+/// The shell owns it and calls [`ui`](Panel::ui) each frame while it is shown (egui may call it more than once in a
+/// frame, see below). Every method but `ui` has a
 /// default, so a new method here never breaks an existing panel.
 pub trait Panel {
     /// Draws the panel's body. Changes to the document go through [`PanelCtx::runner`], as [`PanelCtx::actor`].
+    ///
+    /// egui may run `ui` more than once in one frame when a pass is discarded (`Context::request_discard`; egui's
+    /// default allows a second pass), and each run sees the same [`PanelCtx::events`]. So `ui` must not treat events
+    /// as consumed: read them to update state that a second run can redo without harm, and put anything that must
+    /// happen once (counting, running an op) behind your own guard.
     fn ui(&mut self, ui: &mut Ui, ctx: &PanelCtx<'_>);
 
     /// A title for the tab that replaces the registered one (an inspector naming its selection), or `None` to keep it.
@@ -176,7 +182,9 @@ impl<'a> PanelCtx<'a> {
         self.actor
     }
 
-    /// The events the runner sent since the previous frame, oldest first. Every panel sees the same slice.
+    /// The events the runner sent since the previous frame, oldest first. Every panel sees the same slice, and a
+    /// panel whose [`ui`](Panel::ui) egui runs twice in a frame (a discarded pass) sees it twice: events are not
+    /// consumed by being read.
     pub fn events(&self) -> &'a [Event] {
         self.events
     }

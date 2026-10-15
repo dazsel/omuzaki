@@ -20,4 +20,4 @@ workspace = true
 
 [package.metadata.omuzaki]
 kind = "API"
-summary = "the UI shell contract (`shell.md` §3): `register_workspace!`, `register_panel!` and `register_story!` over `inventory`, a `Registry` ordered by order then id that reports duplicate ids, the `Panel` trait, `PanelCtx` (runner, actor, events, view models, theme) and the default-layout tree"
+summary = "the UI shell contract (`shell.md` §3): `register_workspace!`, `register_panel!` and `register_story!` over `inventory`, a `Registry` ordered by group (a panel's region), then order, then id, that reports duplicate ids, the `Panel` trait, `PanelCtx` (runner, actor, events, view models, theme) and the default-layout tree"

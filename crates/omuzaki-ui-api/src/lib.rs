@@ -4,7 +4,7 @@
 //! the gallery show whatever is compiled in and no pull request edits a shared list:
 //!
 //! - [`registry`]: [`register_workspace!`], [`register_panel!`], [`register_story!`] and the [`Registry`] that
-//!   collects them, ordered by `order` then id, with duplicate ids reported
+//!   collects them, ordered by group (a panel's region) then `order` then id, with duplicate ids reported
 //! - [`panel`]: the [`Panel`](panel::Panel) trait and [`PanelCtx`](panel::PanelCtx), what a panel may read and run
 //! - [`layout`]: the tree a workspace's default layout is written in
 //!
