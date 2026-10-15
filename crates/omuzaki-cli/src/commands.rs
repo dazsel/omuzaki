@@ -3,7 +3,6 @@
 //! Everything shown comes from [`Runner::ops`] and the op schemas; nothing here names an op.
 
 use std::collections::BTreeMap;
-use std::fmt::Write as _;
 use std::io::Read;
 use std::sync::Arc;
 
@@ -44,11 +43,15 @@ pub fn execute(cli: &Cli, runner: Arc<dyn Runner>, session: &Session, stdin: &mu
 /// Every self-registration linked into this binary, one line each (`omuzaki_core::link::Registered`'s text form). The
 /// link gate reads it back; it is the same in `--json` mode, since only that test reads it.
 fn registrations() -> String {
-    let mut out = String::new();
-    for registered in omuzaki_core::link::registered() {
-        let _ = writeln!(out, "{registered}"); // writing to a String cannot fail
-    }
-    out
+    omuzaki_core::link::registered().iter().copied().map(registration_line).collect()
+}
+
+/// One registration's line, newline included. The name loses its whitespace, which the gate ignores when it compares
+/// names: a macro whose first argument spans lines (`register_shading_program!(ProgramSpec { ... })`) would otherwise
+/// split its record over several lines.
+fn registration_line(r: &omuzaki_core::link::Registered) -> String {
+    let name: String = r.name.split_whitespace().collect();
+    format!("{}\t{}\t{}\t{}:{}\n", r.package, r.kind, name, r.file, r.line)
 }
 
 /// One row of `omuzaki ops --json`. The registry's [`OpInfo`](omuzaki_ops_api::OpInfo) also carries the schema; the
@@ -133,4 +136,37 @@ fn report_history(words: &HistoryWords, label: Option<String>, json: bool) -> Re
         Some(label) => format!("{} \"{label}\"\n", words.verb),
         None => format!("{}\n", words.nothing),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use omuzaki_core::link::Registered;
+    use xtask::registry::Registration;
+
+    use super::registration_line;
+
+    #[test]
+    fn a_registration_whose_name_spans_lines_prints_as_one_line_the_gate_reads() {
+        let multi_line = Registered {
+            package: "omuzaki-render",
+            kind: "shading_program",
+            name: "ProgramSpec\n{\n    name: \"hair\", params:\n    &[ParamSpec::colour(\"tint\")]\n}",
+            file: "crates/omuzaki-render/src/program/hair.rs",
+            line: 39,
+        };
+        let line = registration_line(&multi_line);
+        assert_eq!(line.matches('\n').count(), 1, "{line:?}");
+        let parsed = Registration::parse(line.trim_end()).expect("the gate reads the line");
+        assert_eq!(parsed.name, "ProgramSpec{name:\"hair\",params:&[ParamSpec::colour(\"tint\")]}");
+        assert_eq!(
+            (parsed.package.as_str(), parsed.kind.as_str(), parsed.line),
+            ("omuzaki-render", "shading_program", 39)
+        );
+    }
+
+    #[test]
+    fn a_plain_name_prints_as_registered_displays_it() {
+        let plain = Registered { package: "omuzaki-char", kind: "op", name: "Rename", file: "src/ops.rs", line: 3 };
+        assert_eq!(registration_line(&plain), format!("{plain}\n"));
+    }
 }
