@@ -4,6 +4,7 @@
 //! build on, so it stays small and changes rarely. It holds only what *every* subsystem needs:
 //! - [`assets`]: where heavy assets live (`$OMUZAKI_ASSETS`, default `assets-local`) and the skip-when-absent check
 //! - [`id`]: validated, human-readable ids used in project files and paths
+//! - [`fsx`]: crash-safe file writes ([`fsx::write_atomic`]); on Windows the replace is best effort, see #1757
 //! - [`colour`]: the sRGB colour type palettes and materials use, and its exact conversion to linear light
 //! - [`mesh`]: the CPU-side triangle mesh that parts, importers and the renderer exchange
 //! - [`rng`]: a seedable RNG, because replays and golden renders must be bit-identical (§8)
