@@ -92,7 +92,7 @@ A **team source** is a place that holds the files below. Which place is a store 
 The rule the whole page rests on: **a thing is used only if the client could re-derive its validity from the pinned team root.** The checks, in order, all in `omuzaki-library-source-api::verify`:
 
 1. **The log.** Fold `team/log/` from the pinned root (team.md 6.2). A bad signature, chain, signer role or invariant makes the source `Invalid` and read-only, with team.md's message. The root is pinned on first use by a person, who is shown the owner's fingerprint (`team.pin_root`, person-only). Nothing in the source can pin itself.
-2. **The index** chain: signature valid, signer a member with a right to write (below), `seq` not below the pin, `prev` present in the chain the client holds or a first sync, `roster` an entry of the log and not older than the previous snapshot's.
+2. **The index** chain (every snapshot not yet verified, found by `index(have)`, not only the highest `seq`): signature valid, signer a member with a right to write (below), `seq` not below the pin, `prev` present in the chain the client holds or a first sync, `roster` an entry of the log and not older than the previous snapshot's. **Every child preserves its parents:** each parent entry's immutable fields (`id`, `version`, `hash`, `publisher`, `added_at`, `assets`) appear unchanged in the child, and a merge holds the union of all its parents; an omitted entry is `Tampered(DroppedEntry)`, so a snapshot can never delete an item (D4).
 3. **Each item used** (only when listed, applied, searched with details, or installed; the client does not verify what it never opens):
    - the manifest parses (size-limited), and its canonical hash (`ItemManifest::hash()`, library.md D2: it excludes `publisher` and `signature` and normalises the TOML, so file formatting does not matter) equals the entry's `hash`. `IndexEntry.hash` is that canonical hash, never a hash of the file bytes;
    - the id begins with the team slug and `publisher.key` equals the entry's;
@@ -179,7 +179,7 @@ Rules: the fold uses each key's standing only (D5), so an `Approve` counts only 
 - **`library.team.sync {team}`** pulls the log, the index head and the review records, verifies them (D3), and replaces the cached copies only if everything passed, atomically. Items and assets are **fetched on demand**: describing or applying fetches and verifies that manifest and its assets, nothing else. A "make available offline" action fetches a whole section.
 - **When.** Manual by default; a Machine setting `library.team.sync_on_open` (default off) syncs when the app opens or the source is reached. Never in the background without it, and never for an agent session that has no `net` or `fs` grant (a folder needs only a file root under ADR 0013).
 - **Offline.** Everything cached and verified keeps working; the panel says "last synced <time>, seq N". A failed or invalid sync keeps the previous good state and reports why.
-- **Limits** (proposals, set as constants in the API crate and tested): index at most 20 000 entries and 8 MiB; manifest at most the library's manifest limit; asset at most 256 MiB each; a record at most 16 KiB; a cache budget `library.team.cache_mb` (default 2 048) with least-recently-used eviction of unreferenced assets only. Everything is checked before allocation, as `omuzaki-gltf` does. Over a limit is `SourceError::TooLarge`, not a truncated read.
+- **Limits** (proposals, set as constants in the API crate and tested): index at most 20 000 entries and 8 MiB per snapshot, and per sync at most 256 unverified snapshots and 64 MiB of them in total; at most 1 000 review records and 4 MiB per `id@version`; manifest at most the library's manifest limit; asset at most 256 MiB each; a record at most 16 KiB; a cache budget `library.team.cache_mb` (default 2 048) with least-recently-used eviction of unreferenced assets only. Everything is checked before allocation, as `omuzaki-gltf` does. Over a limit is `SourceError::TooLarge`, not a truncated read.
 - **After apply** the project holds what it pinned (D6). Removing a team from the app deletes the cache and nothing in any project.
 
 ### D10. Ops and agents
@@ -190,7 +190,7 @@ Rules: the fold uses each key's standing only (D5), so an `Approve` counts only 
 | `library.team.sync {team}` | job, `fs`/`net` by store | yes, within its grants | yes |
 | `library.team.add_source {kind, location}` / `remove_source {team}` | edit, `person_only` | no | yes (shows the root fingerprint, then `team.pin_root`) |
 | `library.publish {item, to: team}` | job, `publish` + `edit:library`, `person_only` | `needs_person` | yes |
-| `library.team.review {item, version, decision, note?}` | edit, `review`, `person_only` | no | authorised by `decision`: `Request` and `Withdraw` by the item's publisher (designer and above); `Approve` and `Reject` by reviewer and above, never the publisher of that hash |
+| `library.team.review {item, version, decision, note?}` | edit, `review`, `person_only` | no | authorised by `decision`: `Request` and `Withdraw` by the item's publisher (designer and above); `Approve` and `Reject` by reviewer and above, never the publisher of that hash; needs the store's `fs`/`net` scope like `sync`. The scope is the person's machine grant for the source they added; the role only decides what they may sign |
 | `library.team.deprecate {item, version, reason}` | edit, `person_only` | no | yes (own, or admin) |
 
 **Agents propose, people decide** (library.md D9). An agent prepares candidates with `library.save_as_item` and may describe, search, sync and apply team items; it never signs, publishes, approves or deprecates. Signing needs the person's key, which no agent op can reach (identity D8), so the refusal is structural, not a policy.
@@ -253,7 +253,7 @@ Items are recipes of ops, never code (library.md D1), so the worst a trusted-but
 | Mutation | Expected |
 |---|---|
 | index entry `hash`, `roster`, `seq`, `signer`, an entry added or removed | `Tampered(IndexSignature)` |
-| index signed by a reviewer-only key / a viewer | `NotAllowed` |
+| index signed by a viewer or any key with no write right (a reviewer may write: approve is a write right, D3) | `NotAllowed` |
 | older snapshot served after a newer pin | `Rollback` |
 | log entry edited, reordered, root changed | `Invalid` with team.md's reasons |
 | manifest byte flipped / id outside the team slug / signature of another item | `Tampered(Content)` / `BadId` / `Tampered(ItemSignature)` |
@@ -282,7 +282,7 @@ Items are recipes of ops, never code (library.md D1), so the worst a trusted-but
 
 ```rust
 pub trait ItemStore: Send + Sync {                       // bytes in, bytes out: never decides
-    fn index(&self, from_seq: u64) -> Result<Vec<SignedIndex>, SourceError>;     // every snapshot at or above from_seq (the pin); the client computes heads from `prev`
+    fn index(&self, have: &[ContentHash]) -> Result<Vec<SignedIndex>, SourceError>;  // every snapshot whose hash is not in `have`; the client computes heads from `prev`
     fn fetch(&self, id: &ItemId, version: &Version) -> Result<Vec<u8>, SourceError>;   // the manifest bytes
     fn fetch_asset(&self, hash: &ContentHash) -> Result<Vec<u8>, SourceError>;         // assets by hash
     fn put(&self, item: &SignedItem) -> Result<PutReceipt, SourceError>;              // create-if-absent, manifest then assets
@@ -316,7 +316,7 @@ pub struct Listing { pub creator: KeyId, pub title: String, pub summary: String,
                      pub commerce: Option<serde_json::Value> }                 // opaque until the owner decides (D11)
 ```
 
-Notes: `index(from_seq)` returns every snapshot from the pinned `seq` up, not a chosen head, so a fork (several heads, whatever their `seq`) is visible to the caller and never hidden by the store. `put_licence` rejects bytes whose hash is not `hash`. `ItemStore` is `Send + Sync` and synchronous like `Store`; the job wrapper does the waiting. There is no `delete`. `SourcePin { team, root: KeyId, seq: u64, snapshot: ContentHash }` is the local `state.toml`.
+Notes: `index(have)` returns every snapshot the client has not yet verified (by file name, `<seq>-<hash8>`, so known ones are not read), not a chosen head and not filtered by `seq`: a branch that arrives later with a lower `seq` than the pin is still returned, so a fork is always visible. `state.toml` keeps the hashes of verified snapshots. `put_licence` rejects bytes whose hash is not `hash`. `ItemStore` is `Send + Sync` and synchronous like `Store`; the job wrapper does the waiting. There is no `delete`. `SourcePin { team, root: KeyId, seq: u64, snapshot: ContentHash }` is the local `state.toml`.
 
 ### 5.2 Crates
 
