@@ -27,6 +27,7 @@ const MIN_FIT: usize = 8;
 
 /// Why a timestamp was not mapped.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum ClockError {
     /// The device clock went backwards. The frame is rejected (drop it); the map is unchanged.
     #[error("device time went backwards, from {last:?} to {got:?}")]

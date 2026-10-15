@@ -24,8 +24,10 @@ pub enum QualityTier {
     Light,
 }
 
-/// What [`Tracker::start`] runs with: a cold, serialisable setting.
+/// What [`Tracker::start`] runs with: a cold, serialisable setting. Built from [`Default`] and the `with_*` methods,
+/// so a new field edits only this crate (ADR 0054 §4).
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct TrackerConfig {
     /// The camera mode to ask for.
     #[serde(default)]
@@ -47,6 +49,29 @@ fn default_lost_after() -> Duration {
 impl Default for TrackerConfig {
     fn default() -> Self {
         Self { camera: CameraFormatRequest::default(), tier: QualityTier::default(), lost_after: default_lost_after() }
+    }
+}
+
+impl TrackerConfig {
+    /// With this camera mode request.
+    #[must_use]
+    pub fn with_camera(mut self, camera: CameraFormatRequest) -> Self {
+        self.camera = camera;
+        self
+    }
+
+    /// With this work per frame.
+    #[must_use]
+    pub fn with_tier(mut self, tier: QualityTier) -> Self {
+        self.tier = tier;
+        self
+    }
+
+    /// With this stall time before a lost frame.
+    #[must_use]
+    pub fn with_lost_after(mut self, lost_after: Duration) -> Self {
+        self.lost_after = lost_after;
+        self
     }
 }
 
@@ -88,4 +113,22 @@ pub trait Tracker: Send {
 
     /// Latency of the current (or last) session. Cheap; the UI may call it every frame.
     fn latency(&self) -> LatencyStats;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn with_methods_set_one_field_each() {
+        let camera = CameraFormatRequest { fps: 30, ..CameraFormatRequest::default() };
+        let config = TrackerConfig::default()
+            .with_camera(camera)
+            .with_tier(QualityTier::Light)
+            .with_lost_after(Duration::from_millis(50));
+        assert_eq!(config.camera, camera);
+        assert_eq!(config.tier, QualityTier::Light);
+        assert_eq!(config.lost_after, Duration::from_millis(50));
+        assert_eq!(TrackerConfig::default().lost_after, Duration::from_millis(200));
+    }
 }

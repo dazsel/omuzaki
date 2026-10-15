@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use omuzaki_char_api::{
-    Anchor, BuildCtx, BuildError, Cranium, FaceOverlay, HeadParams, HeadSurface, JointRef, MaterialSpec, PartCategory,
-    PartKind, PartMesh, PartMeta, PartOutput, Publishes, RecolourCtx, Recoloured,
+    Anchor, AnchorsFact, BuildCtx, BuildError, Cranium, FaceFact, FaceOverlay, HeadFact, HeadParams, HeadSurface,
+    JointRef, MaterialSpec, PartCategory, PartKind, PartMesh, PartMeta, PartOutput, Publishes, RecolourCtx, Recoloured,
 };
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::{Quat, Vec3};
@@ -130,13 +130,10 @@ impl PartKind for MockHead {
             position: surface.centre() + Vec3::Y * narrow(params.cranium.half_height_up),
             rotation: Quat::IDENTITY,
         };
-        let anchors = vec![(util::anchor(ctx, "top")?, top)];
-        Ok(PartOutput {
-            meshes: vec![mesh],
-            materials: vec![(material_name, material)],
-            publishes: Publishes { head: Some(surface), face: Some(projection), anchors, ..Publishes::default() },
-            ..PartOutput::default()
-        })
+        let anchor = (util::anchor(ctx, "top")?, top);
+        Ok(PartOutput::new().with_meshes(vec![mesh]).with_materials(vec![(material_name, material)]).with_publishes(
+            Publishes::default().with::<HeadFact>(surface).with::<FaceFact>(projection).with::<AnchorsFact>(anchor),
+        ))
     }
 
     fn recolour(params: &HeadParams, output: &mut PartOutput, ctx: &RecolourCtx<'_>) -> Result<Recoloured, BuildError> {

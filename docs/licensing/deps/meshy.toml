@@ -1,0 +1,7 @@
+section = "models"
+item = "Meshy"
+kind = "service"
+used_for = "image → 3D"
+status = "conditions"
+condition = "paid plan only; free tier NO; no third-party-IP inputs"
+audit = "B6"

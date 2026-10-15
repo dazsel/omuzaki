@@ -4,10 +4,12 @@
 use std::io;
 use std::process::ExitCode;
 
-use crate::cli::Command;
+use omuzaki_ops_api::OpError;
+
+use crate::cli::{Cli, Command};
 use crate::commands::execute;
 use crate::output::{Reply, finish_reply};
-use crate::session::{Session, open_runner};
+use crate::session::{Session, open_runner_with};
 use crate::store;
 
 /// Parses the command line, runs the command against the project and exits with the code for its result.
@@ -21,9 +23,15 @@ pub fn run() -> ExitCode {
         Command::Store { action } => store::run(action, cli.json),
         // Standard input is passed unlocked: `omuzaki mcp` reads the same stream through tokio, which takes the lock for
         // each read, so a lock held here would block the server forever.
-        _ => open_runner(&cli)
-            .and_then(|runner| execute(&cli, runner, &Session::from_env(), &mut io::stdin()))
-            .map(Reply::ok),
+        _ => run_with_runner(&cli),
     };
     ExitCode::from(finish_reply(result, cli.json, &mut io::stdout().lock(), &mut io::stderr().lock()))
+}
+
+/// Opens the runner for `cli` with the invocation's agent connections wired in, and runs the command on it.
+fn run_with_runner(cli: &Cli) -> Result<Reply, OpError> {
+    let session = Session::from_env();
+    open_runner_with(cli, &session.connections)
+        .and_then(|runner| execute(cli, runner, &session, &mut io::stdin()))
+        .map(Reply::ok)
 }

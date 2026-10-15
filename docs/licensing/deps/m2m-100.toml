@@ -1,0 +1,7 @@
+section = "models"
+item = "M2M-100 (Meta; 418M, 1.2B, 12B)"
+kind = "model"
+used_for = "caption translation candidate"
+status = "unverified"
+condition = "weights MIT (Hugging Face API and cards, 2026-10-13); fairseq code MIT; trained on CCMatrix and CCAligned (fairseq README) mined from Common Crawl, with no non-commercial source found but the dataset terms unread; to reach `conditions`, read the CCMatrix and CCAligned terms"
+audit = "research 2026-10-caption-translation.md"

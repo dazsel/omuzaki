@@ -1,3 +1,9 @@
+---
+title: "`omuzaki-track-api`: the tracker contract"
+summary: "the tracker contract (PF-01): the camera seam, the `Tracker` trait, threads and real-time rules, clock mapping, the newest-wins mailbox, lost tracking, budgets, the permission seam and the unlocked tracker tasks."
+area: design
+---
+
 # `omuzaki-track-api`: the tracker contract
 
 **Status:** proposed (2026-10-14). **Crates:** `crates/omuzaki-track-api` (API), `crates/omuzaki-track-mock` (Mock).

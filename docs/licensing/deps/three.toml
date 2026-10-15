@@ -1,0 +1,7 @@
+section = "in-use"
+item = "three 0.170.0"
+kind = "js"
+used_for = "prototype 3D rendering"
+status = "yes"
+condition = "keep notice; self-host in any shipped build"
+audit = "A1"

@@ -1,0 +1,7 @@
+section = "rust"
+item = "nokhwa"
+kind = "crate"
+used_for = "webcam capture"
+status = "yes"
+condition = "keep opencv/ffmpeg features off"
+audit = "B4"

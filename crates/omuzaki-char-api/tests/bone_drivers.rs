@@ -83,18 +83,17 @@ fn build(mode: &str) -> Result<BuiltCharacter, BuildError> {
         attach: None,
         params: serde_json::json!({ "mode": mode }),
     };
-    let def = CharacterDef {
-        name: "Test".to_owned(),
-        template: omuzaki_char_api::BodyTemplateId::new("soft-sd").unwrap(),
-        seed: 1,
-        palette: Palette::default(),
-        skin_tone: None,
-        parts: [(PartId::new("body").unwrap(), common::body_part()), (PartId::new("wings").unwrap(), probe)]
-            .into_iter()
-            .collect(),
-        face: FaceProfile::default(),
-        weight_brushes: std::collections::BTreeMap::new(),
-    };
+    let def = CharacterDef::new("Test".to_owned(), omuzaki_char_api::BodyTemplateId::new("soft-sd").unwrap())
+        .with_seed(1)
+        .with_palette(Palette::default())
+        .with_skin_tone(None)
+        .with_parts(
+            [(PartId::new("body").unwrap(), common::body_part()), (PartId::new("wings").unwrap(), probe)]
+                .into_iter()
+                .collect(),
+        )
+        .with_face(FaceProfile::default())
+        .with_weight_brushes(std::collections::BTreeMap::new());
     RegistryBuilder.build(&CharId::new("drv").unwrap(), &def, &BuildOptions::default(), &BuildServices::default())
 }
 

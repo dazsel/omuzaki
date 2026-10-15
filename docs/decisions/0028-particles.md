@@ -1,3 +1,9 @@
+---
+title: "0028: Stateless particles, evaluated on the GPU from spawn batches and drawn by coverage in their own pass (2026-10-13)"
+summary: "Stateless particles, evaluated on the GPU from spawn batches and drawn by coverage in their own pass"
+area: decisions
+---
+
 # 0028: Stateless particles, evaluated on the GPU from spawn batches and drawn by coverage in their own pass (2026-10-13)
 
 **Status:** accepted (2026-10-13). It changes `omuzaki-render-api` (a new resource,

@@ -16,6 +16,7 @@ pub struct CameraId(pub String);
 /// How a frame's bytes are laid out. Rows are `stride` bytes apart; only the first bytes of each row are pixels.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum PixelFormat {
     /// A `height`-row Y plane, then a `height / 2`-row plane of interleaved U, V pairs, both at `stride`.
     Nv12,

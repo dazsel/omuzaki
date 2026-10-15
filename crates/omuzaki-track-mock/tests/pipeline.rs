@@ -128,7 +128,7 @@ fn a_slow_poller_gets_only_the_newest_scripted_frame() {
 fn start_rejects_a_camera_request_the_device_cannot_meet() {
     let mut tracker = FakeTracker::scripted(vec![]);
     let camera = CameraFormatRequest { pixel: Some(PixelFormat::Bgra8), ..CameraFormatRequest::default() };
-    let config = TrackerConfig { camera, ..TrackerConfig::default() };
+    let config = TrackerConfig::default().with_camera(camera);
     assert_eq!(tracker.start(&FakeCamera::id(), &config).err(), Some(TrackError::FormatUnsupported(camera)));
 }
 

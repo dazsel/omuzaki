@@ -1,0 +1,7 @@
+section = "rust"
+item = "Vello's dependencies, 21 further crates: peniko 0.6.1, kurbo 0.13.1, color 0.3.3, linebender_resource_handle 0.1.1, polycool 0.4.0 (Apache-2.0 OR MIT); skrifa 0.44.0, read-fonts 0.41.0, font-types 0.12.6 (MIT OR Apache-2.0, Google fontations); png 0.18.1, fdeflate 0.3.7, flate2 1.1.10, crc32fast 1.5.2, futures-intrusive 0.5.0, futures-core 0.3.34, euclid 0.22.14 (MIT OR Apache-2.0); simd-adler32 0.3.10 (MIT); miniz_oxide 0.8.9 and 0.9.1 (MIT OR Zlib OR Apache-2.0); adler2 2.0.1 (0BSD OR MIT OR Apache-2.0); guillotiere 0.7.0 and svg_fmt 0.4.5 (MIT/Apache-2.0, i.e. MIT OR Apache-2.0)"
+kind = "crate"
+used_for = "transitive dependencies of vello over wgpu (`cargo tree -p vello` minus `cargo tree -p wgpu`, 2026-10-12)"
+status = "yes"
+condition = "all permissive; we take the MIT or Apache-2.0 option; none non-commercial. `cargo deny` stays the gate when adds vello to the workspace"
+audit = "(crates.io manifests)"

@@ -1,0 +1,8 @@
+section = "in-use"
+item = "cargo-deny (prebuilt, through `taiki-e/install-action`)"
+kind = "tool"
+used_for = "the CI licence, advisory and source checks (`deny.toml`)"
+status = "yes"
+condition = "MIT OR Apache-2.0; a build tool, nothing of it ships"
+audit = "(github.com/EmbarkStudios/cargo-deny)"
+tools = ["cargo-deny"]

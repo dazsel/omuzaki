@@ -40,8 +40,8 @@ impl FakeCamera {
         Self::new(format, Script::Frames(frames.into()))
     }
 
-    /// Serves `frames` test-pattern frames at `format.fps`, frame `i` captured at exactly `i / fps` seconds. Every
-    /// layout but [`PixelFormat::Mjpg`] (which fails to open with [`TrackError::FormatUnsupported`]); the luma of
+    /// Serves `frames` test-pattern frames at `format.fps`, frame `i` captured at exactly `i / fps` seconds. NV12,
+    /// YUY2, RGB8 and BGRA8 (any other layout fails to open with [`TrackError::FormatUnsupported`]); the luma of
     /// each pixel is [`synthetic_luma`](Self::synthetic_luma), chroma is neutral.
     pub fn synthetic(format: CameraFormat, frames: u64) -> Self {
         Self::new(format, Script::Synthetic(frames))
@@ -70,7 +70,7 @@ impl Camera for FakeCamera {
         }
         let format = request.pick(&self.info.formats).ok_or(TrackError::FormatUnsupported(*request))?;
         let synthetic = matches!(self.script, Script::Synthetic(_));
-        if synthetic && format.pixel == PixelFormat::Mjpg {
+        if synthetic && !drawable(format.pixel) {
             return Err(TrackError::FormatUnsupported(*request));
         }
         if self.in_use.swap(true, Ordering::AcqRel) {
@@ -146,6 +146,12 @@ impl Drop for FakeStream {
     }
 }
 
+/// Whether [`draw`] can paint this layout: the raw ones. `PixelFormat` is non-exhaustive, so a layout added later is
+/// refused at `open` until the pattern learns it.
+fn drawable(pixel: PixelFormat) -> bool {
+    matches!(pixel, PixelFormat::Nv12 | PixelFormat::Yuy2 | PixelFormat::Rgb8 | PixelFormat::Bgra8)
+}
+
 /// Draws test-pattern frame `i` into `buf` (sized by [`PixelFormat::frame_len`]).
 fn draw(buf: &mut [u8], format: CameraFormat, stride: usize, i: u64) {
     let (w, h) = (format.width as usize, format.height as usize);
@@ -158,7 +164,8 @@ fn draw(buf: &mut [u8], format: CameraFormat, stride: usize, i: u64) {
                 PixelFormat::Bgra8 => row[4 * x..4 * x + 4].copy_from_slice(&[v, v, v, 255]),
                 PixelFormat::Yuy2 => row[2 * x..2 * x + 2].copy_from_slice(&[v, 128]),
                 PixelFormat::Nv12 => row[x] = v,
-                PixelFormat::Mjpg => {}
+                // Not drawable: `open` refused it.
+                _ => {}
             }
         }
     }

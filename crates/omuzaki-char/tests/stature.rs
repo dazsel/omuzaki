@@ -13,8 +13,8 @@ use omuzaki_char::template::standard::HEAD;
 use omuzaki_char::template::{Template, registry};
 use omuzaki_char_api::{
     BodyFit, BodyShape, BuildCtx, BuildError, BuildOptions, BuildServices, BuiltCharacter, CharId, CharacterBuilder,
-    CharacterDef, HandParams, PartCategory, PartDef, PartId, PartKind, PartKindId, PartMeta, PartOutput, Proportions,
-    Publishes, RegistryBuilder,
+    CharacterDef, FitFact, HandParams, PartCategory, PartDef, PartId, PartKind, PartKindId, PartMeta, PartOutput,
+    Proportions, Publishes, RegistryBuilder, StatureFact,
 };
 use omuzaki_core::glam::Vec3;
 use omuzaki_face_api::{Check, FaceProfile, Palette, Validate};
@@ -60,14 +60,9 @@ impl PartKind for TemplateBody {
         let t = registry::find(&p.template).ok_or_else(|| ctx.fail("no such template"))?;
         let layout = layout_of(t, p.height);
         let stature = t.stature(&layout).ok_or_else(|| ctx.fail("no stature"))?;
-        Ok(PartOutput {
-            publishes: Publishes {
-                fit: Some(Arc::new(TemplateFit::new(layout))),
-                stature: Some(stature),
-                ..Publishes::default()
-            },
-            ..PartOutput::default()
-        })
+        Ok(PartOutput::new().with_publishes(
+            Publishes::default().with::<FitFact>(Arc::new(TemplateFit::new(layout))).with::<StatureFact>(stature),
+        ))
     }
 }
 omuzaki_char_api::register_part_kind!(TemplateBody);
@@ -81,16 +76,13 @@ fn build(id: &str, height: f64) -> BuiltCharacter {
         attach: None,
         params: json!({"template": id, "height": height}),
     };
-    let def = CharacterDef {
-        name: "Test".to_owned(),
-        template: omuzaki_char_api::BodyTemplateId::new(id).unwrap(),
-        seed: 1,
-        palette: Palette::default(),
-        skin_tone: None,
-        parts: BTreeMap::from([(PartId::new("body").unwrap(), part)]),
-        face: FaceProfile::default(),
-        weight_brushes: BTreeMap::new(),
-    };
+    let def = CharacterDef::new("Test".to_owned(), omuzaki_char_api::BodyTemplateId::new(id).unwrap())
+        .with_seed(1)
+        .with_palette(Palette::default())
+        .with_skin_tone(None)
+        .with_parts(BTreeMap::from([(PartId::new("body").unwrap(), part)]))
+        .with_face(FaceProfile::default())
+        .with_weight_brushes(BTreeMap::new());
     RegistryBuilder
         .build(&CharId::new("t").unwrap(), &def, &BuildOptions::default(), &BuildServices::default())
         .unwrap()

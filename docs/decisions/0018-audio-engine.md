@@ -1,3 +1,9 @@
+---
+title: "0018: One 48 kHz mixer graph on a real-time thread, cpal behind a seam, taps for every listener, and the A/V delay with the performance channels (2026-10-12)"
+summary: "One 48 kHz mixer graph on a real-time thread, cpal behind a seam, taps for every listener, and the A/V delay with the performance channels"
+area: decisions
+---
+
 # 0018: One 48 kHz mixer graph on a real-time thread, cpal behind a seam, taps for every listener, and the A/V delay with the performance channels (2026-10-12)
 
 **Status:** accepted (2026-10-12). The review answers are folded into decisions 6, 7, 13 and 14. **Context:** PF-08, PF-12, PF-26, BR-18, BR-21, BR-22, BR-24, ML-03, ML-14, SE-04,

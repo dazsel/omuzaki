@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use omuzaki_anim_api::HumanoidBone;
 use omuzaki_char_api::{
-    BuildCtx, BuildError, JointFit, JointRef, PartCategory, PartDef, PartKind, PartKindId, PartMeta, PartOutput,
-    Publishes,
+    BuildCtx, BuildError, FitFact, JointFit, JointRef, PartCategory, PartDef, PartKind, PartKindId, PartMeta,
+    PartOutput, Publishes,
 };
 use omuzaki_core::glam::Vec3;
 use omuzaki_face_api::{Check, Validate};
@@ -43,10 +43,7 @@ impl PartKind for TestBody {
             .into_iter()
             .filter(|b| b.is_required())
             .map(|b| (JointRef::Humanoid(b), Vec3::new(0.0, 0.05 * f32::from(b as u8), 0.0)));
-        Ok(PartOutput {
-            publishes: Publishes { fit: Some(Arc::new(JointFit::new(joints))), ..Publishes::default() },
-            ..PartOutput::default()
-        })
+        Ok(PartOutput::new().with_publishes(Publishes::default().with::<FitFact>(Arc::new(JointFit::new(joints)))))
     }
 }
 omuzaki_char_api::register_part_kind!(TestBody);
