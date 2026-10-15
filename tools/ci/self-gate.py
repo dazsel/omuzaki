@@ -19,7 +19,7 @@ Owned heads. The head commit, plus each earlier head reached by undoing a merge 
 commit whose second parent is on `main` and whose result takes every file it changed from that parent, so the pull
 request's own content is untouched. Such a merge keeps the attestation valid, and a push of just that merge needs no CI
 (`skip=true`): the merge queue tests against `main` anyway. A merge that resolves a conflict, or changes a file the
-pull request also changed, differs from its main-side parent in that file, so it is not skipped and needs a new line.
+pull request also changed, whichever parent's version it keeps, is not skipped and needs a new line.
 """
 
 import argparse
@@ -59,8 +59,16 @@ def main_only_parent(commit, main_ref):
     first, second = parents
     if not is_ancestor(second, main_ref):
         return None
-    # Every file the merge changed must equal the main side, so nothing of the pull request's own was touched.
-    if changed_paths(first, commit) & changed_paths(commit, second):
+    base = git("merge-base", first, second).strip()
+    from_pr, from_main = changed_paths(base, first), changed_paths(base, second)
+    taken_from_first, taken_from_second = changed_paths(first, commit), changed_paths(commit, second)
+    # Nothing of the pull request's own may be touched: the merge changes only files `main` changed, and takes each of
+    # them whole from `main`. Checked from both sides, because a resolution that picks one parent equals it there and
+    # so shows no difference against it:
+    #  - a file the merge changed that is neither parent's version (a combined or hand-edited result);
+    #  - a file the PR changed that the merge replaced (a conflict resolved to main's version, dropping PR work);
+    #  - a file `main` changed that the merge did not take (a conflict resolved to the PR's version, dropping main's).
+    if taken_from_first & taken_from_second or taken_from_first & from_pr or taken_from_second & from_main:
         return None
     return first
 

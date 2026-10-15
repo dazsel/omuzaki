@@ -99,6 +99,19 @@ heads "$resolved" main "$own2"
 expect skip false "a merge that resolves a conflict is not a main-only merge"
 expect owned "$resolved" "a resolved merge starts a new owned head"
 
+# A conflict resolved to either parent's version equals that parent, yet still discards work: not main-only either.
+conflict() { # NAME RESOLUTION: PR and main both change conflict.txt; the merge keeps `ours` (PR) or `theirs` (main).
+    g checkout -q -b "$1-pr" "$resolved"; echo "pr-$1" >"$repo/conflict.txt"; g add -A; g commit -qm "pr $1"
+    local before; before=$(g rev-parse HEAD)
+    g checkout -q main; echo "main-$1" >"$repo/conflict.txt"; g add -A; g commit -qm "main $1"
+    g checkout -q "$1-pr"; g merge -q -m "merge main ($1)" -X "$2" main >/dev/null 2>&1
+    heads "$(g rev-parse HEAD)" main "$before"
+}
+conflict keep-main theirs
+expect skip false "a conflict resolved to main's version is not a main-only merge"
+conflict keep-pr ours
+expect skip false "a conflict resolved to the PR's version is not a main-only merge"
+
 # A merge whose second parent is not on main is the PR's own work too.
 g checkout -q -b side "$own"; echo side >"$repo/side.txt"; g add -A; g commit -qm side
 g checkout -q pr; g merge -q --no-ff -m "merge side" side; sidemerge=$(g rev-parse HEAD)
