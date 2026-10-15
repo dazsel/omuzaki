@@ -235,7 +235,7 @@ runs one command) needs.
 
 One Windows x64 artifact, `r-gpu-probe-<run>.zip`, built by a workflow that does not run on the owner's PC. It holds:
 
-- **The probe**: the `track_roi` timing probe from #1731, or a sibling binary in `omuzaki-ai-ort` with the same output
+- **The probe**: the `track_roi` timing probe from #1731, or a sibling bench in `crates/omuzaki-test/benches/` with the same output
   shape, extended with `--provider cpu|webgpu` (and later `directml`, `openvino`). It loads the three face graphs
   (the ONNX conversions that ADR 0061 keeps) through the real `Runtime` seam, so the numbers include our wrapper.
 - **The pinned ONNX Runtime**: the same `onnxruntime-win-x64-1.28.3.zip` the app pins, plus the WebGPU plugin wheel
@@ -244,6 +244,11 @@ One Windows x64 artifact, `r-gpu-probe-<run>.zip`, built by a workflow that does
 - **A Python A/B script** (`python -I`, run from a bundled `python-3.x-embed-amd64.zip`) that times the same models with
   stock `onnxruntime` 1.28.3 + the plugin, and with `onnxruntime-directml` 1.24.4. It exists because the Rust probe is
   built at `api-27` and cannot load a 1.24.4 library, and it keeps DirectML out of the workspace entirely.
+  The embeddable Python holds neither ONNX Runtime nor NumPy, and the C archive has no Python extension, so the bundle
+  also carries ABI-matched wheels (cp3x, win_amd64, each with a SHA-256): `onnxruntime` 1.28.3, `onnxruntime-directml`
+  1.24.4 and `numpy`. The stock and DirectML wheels both install a module called `onnxruntime`, so they are unpacked
+  into two folders (`py-stock/`, `py-directml/`) and the script runs once per folder as a separate `python -I`
+  subprocess, with only that folder on `sys.path`. They are never imported together.
 - **Models**: the three face graphs from the verified bundle, and one ONNX-native non-face model (`vad@1`, the smallest),
   as fixtures the probe already knows how to fetch through `FileSource` (no private clips; the probe uses the kit's
   synthetic faces).
@@ -268,25 +273,47 @@ blendshapes, `vad`}:
 | --- | --- | --- |
 | Cold load | `load` wall time, including plugin registration and first shader compile | registry budget; first-run stall |
 | First `run` | wall time of run 1 after load | shader compilation can land here |
-| Steady latency | 50 warm-up, then 1,000 runs: mean, p50, p95, p99 | compare with `track.face` 5 ms p95 |
-| CPU per frame | process CPU time (Windows `GetProcessTimes`) over the 1,000 runs, divided by 1,000 | `cpu.total` counts every cycle (spec v3 section 10) |
+| Steady latency | paced at 30 fps, at least 20 s warm-up, then at least 3,000 timed runs: mean, p50, p95, p99. Deadline-based pacing, so a late run does not shift the next | the tier-R method (spec v3 section 10): a tight loop keeps the GPU at high clocks and reads faster than a stream will. Per-graph numbers are diagnostics |
+| CPU per frame | process CPU time (Windows `GetProcessTimes`) over the 3,000 paced runs, divided by 3,000 | `cpu.total` counts every cycle (spec v3 section 10) |
 | Idle CPU | load the session, then 10 s of no `run` calls; CPU ms per second | the "never spin-wait" rule: must be under 1 ms/s |
 | Placement | session log or `with_disable_cpu_fallback`: nodes on GPU against CPU | partial coverage means mixed execution |
-| Parity | max absolute difference of each output against the CPU output on the same inputs | ADR 0009 tier 2 tolerance |
-| Memory | working-set delta after load | RAM budget |
+| Parity | max absolute difference of each output against the CPU output on the same inputs, judged against the per-output tolerances in section 6.4 | ADR 0009 rule 2: a cross-platform numeric test states its tolerance |
+| Memory | as spec v3 section 10 defines `ram.runtime`: the maximum over the run of the summed private working set (`PrivateWorkingSetSize`) of the process and its children. Also reported: working set, commit, an empty-device baseline taken before load, and `gpu.mem` (dedicated and shared, from the GPU counters; no budget yet) | shared iGPU allocations do not show in a process working set, so `gpu.mem` is needed to see the plugin's real cost |
 | Missing-file ablation | WebGPU with `dxcompiler.dll` removed | tells us whether DXC is required or only helps |
 
 ### 6.4 Pass/fail rules (proposed; the Director owns the thresholds)
 
-A GPU provider becomes the Windows default for a slot only if, on `R`:
-1. every node runs on it (no CPU fallback) for that model;
-2. p95 latency is at most the CPU path's p95 and at most the slot's budget;
-3. CPU per frame is at least 25% lower than the CPU path (the GPU is only worth its copy if it frees CPU for a game);
-4. idle CPU is under 1 ms per second;
-5. outputs stay inside the parity tolerance of the CPU path;
-6. first-run latency is hidden by a warm-up inside `load`.
+The per-graph numbers in 6.3 are diagnostics. They cannot decide the default, because `track_roi` leaves out the
+detector, the frame hand-off and the rest of `track.face` (the bench says so itself). The decision uses the complete
+tracker path (camera frame in, channels out) in the budget scene of spec v3 section 10, once with the CPU provider and
+once with the candidate, both paced at 30 fps with the same warm-up and frame count. F3 therefore extends the probe
+to drive `FaceTracker` end to end, not only single graphs.
 
-If rank 1 fails 1 to 6 for the face graphs but passes for a larger model such as `tts@1`, GPU is enabled per slot, not
+**Parity tolerances (proposed, fixed here before the probe is built; a change needs a commit before the run).** FP32
+graphs on a GPU differ from the CPU in the last bits, so ADR 0009's `1e-5` channel default does not apply. Proposed
+per output, as max absolute difference against the CPU output on the same inputs:
+
+| Output | Tolerance |
+| --- | --- |
+| Landmarks (normalised image coordinates) | 2e-3 (about half a pixel on a 256 px crop) |
+| Blendshape scores (0 to 1) | 1e-2 |
+| Detector box coordinates (normalised) | 2e-3 |
+| Detector scores after sigmoid | 1e-2 |
+| `vad` speech probability | 1e-2 |
+| Final published tracker channels (full path) | 2e-2 |
+
+**Rules.** A GPU provider becomes the Windows default for a slot only if, on `R`:
+1. every node runs on it (no CPU fallback) for that model;
+2. the complete tracker path's p95 is at most the CPU path's p95 and at most the 5 ms `track.face` budget;
+3. CPU per frame is at least 25% lower than the CPU path, **and** `cpu.total` of the full budget scene, both
+   configurations (phone and webcam), passes its absolute gate (mean at most 3% of 8 cores). The relative drop alone
+   does not pass: 8% to 6% would still be twice the budget;
+4. idle CPU is under 1 ms per second;
+5. every output stays inside the tolerance table above;
+6. first-run latency is hidden by a warm-up inside `load`;
+7. `ram.runtime` of the budget scene with the provider on stays at or under 400 MB on each hardware graphics backend, measured as in section 6.3.
+
+If rank 1 fails 1 to 7 for the face graphs but passes for a larger model such as `tts@1`, GPU is enabled per slot, not
 globally (manifests already list providers per model). If it fails everywhere and DirectML 1.24.4 passes, the question
 for the Director is whether the api-24 cost in section 3.3 is worth it. If both fail, CPU is the answer and #959 closes
 with the numbers.
@@ -315,11 +342,14 @@ Sizes are changed lines, models per the haiku-first rule. Each acceptance includ
   `with_devices`; unregisters after sessions drop; the three skip reasons from section 5 item 5; unit tests with a fake
   library path; a gated test with `OMUZAKI_ORT_CACHE` that runs a synthetic `Add` graph on WebGPU and compares with CPU.
 - **F2. Plugin pin and licence rows** (haiku, about 120 lines, after F1's table shape). Fence: `omuzaki-ai-ort/src/builds.rs`,
-  `docs/licensing/deps/`, `docs/licensing/register.md`. Acceptance: the wheel's URL, SHA-256 and size; rows for the
+  `docs/licensing/deps/*.toml`. `docs/licensing/register.md` is generated from those files (`cargo xtask lint-licences
+  --print`); do not edit it by hand. Acceptance: the wheel's URL, SHA-256 and size; rows for the
   plugin (MIT), Dawn (BSD-3-Clause), the DXC/LLVM release licence (NCSA), abseil and protobuf, each `conditions: ship
   the notice` and each checked against the wheel's `ThirdPartyNotices.txt`.
-- **F3. `R` probe bundle** (sonnet, about 300 lines). Extends #1731 and #1734. Fence: the probe in `omuzaki-track` or
-  `omuzaki-ai-ort/examples`, `tools/r-probe/**`, one workflow job. Acceptance: section 6.1 to 6.3, with every metric
+- **F3. `R` probe bundle** (sonnet, about 300 lines). Extends #1731 and #1734. Fence: the existing app test crate,
+  `crates/omuzaki-test/benches/track.rs` (or a sibling bench there), which already depends on both `omuzaki-track` and
+  `omuzaki-ai-ort`, so the real `FaceTracker` runs on the real `OrtRuntime` with no new implementation-to-implementation
+  dependency; plus `tools/r-probe/**` and one workflow job. Acceptance: section 6.1 to 6.4, with every metric
   printed and no machine name.
 - **F4. Hosted-runner smoke job** (haiku, about 80 lines). Fence: one job in the probe workflow. Acceptance: the plugin
   registers on `windows-latest`, or the job records the exact skip reason.
