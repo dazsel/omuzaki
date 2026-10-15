@@ -6,7 +6,7 @@
  */
 #include <stdint.h>
 
-#include "tflite/core/c/common.h"
+#include "tflite/c/common.h"
 #include "tflite/delegates/xnnpack/xnnpack_delegate.h"
 #include "xnnpack.h"
 

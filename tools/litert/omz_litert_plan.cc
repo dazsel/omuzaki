@@ -9,7 +9,7 @@
 #include <cstdio>
 #include <memory>
 
-#include "tflite/core/c/common.h"
+#include "tflite/c/common.h"
 #include "tflite/interpreter.h"
 #include "tflite/interpreter_builder.h"
 #include "tflite/kernels/register.h"
