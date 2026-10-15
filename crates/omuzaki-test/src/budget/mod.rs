@@ -6,8 +6,9 @@
 //! - [`report`]: the markdown and JSON report, the comparison with the budgets and with the previous run
 //! - [`runner`]: the nightly run: a synthetic workload and the process memory, written as `report.md` and `report.json`
 //!
-//! Every number taken here is `reported` in the spec's sense: it names the machine (OS, architecture, vCPU count) and
-//! never counts as a tier's number. Nothing fails on a slow machine unless the run is asked to (`OMUZAKI_BUDGET_STRICT`).
+//! Every report names the machine (OS, architecture, vCPU count) and states its [`report::Class`] in the spec's sense.
+//! The nightly run is `reported` and never gates; only a caller that knows its numbers are `measured`, `scaled` or
+//! `relative` can ask for a failing run (`OMUZAKI_BUDGET_CLASS`, `OMUZAKI_BUDGET_STRICT`).
 //! The area test crates, which may depend on the systems being measured, register spans on a [`timing::Recorder`], drive
 //! their own deterministic workload and build a [`report::Report`] from its tracks.
 

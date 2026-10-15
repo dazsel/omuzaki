@@ -13,9 +13,37 @@ pub const REGRESSION_LIMIT: f64 = 0.10;
 pub const MIN_REGRESSION_SAMPLES: u64 = 30;
 /// Layout version of the JSON, bumped when a field changes meaning.
 pub const SCHEMA: u32 = 1;
-/// Every number this harness takes is `reported` (§10, "Numbers from other hardware"): it names the box it ran on and
-/// never counts as a tier's number.
-pub const CLASS: &str = "reported";
+
+/// What a report's numbers are, in the sense of spec §10 ("Numbers from other hardware"). The class decides what may
+/// fail a gating run; the caller states it because only the caller knows what machine it ran on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Class {
+    /// Taken on any other machine (a cloud runner, a laptop): printed with the machine, never gates.
+    Reported,
+    /// Taken on the tier it is claimed for: judged against the budget directly.
+    Measured,
+    /// Taken on another machine and converted by a spec rule: judged against the budget directly.
+    Scaled,
+    /// A PR against main on the same machine, alternating runs in one session: a metric more than 10% worse fails.
+    Relative,
+}
+
+impl Class {
+    /// The class named by `name` (`reported`, `measured`, `scaled` or `relative`).
+    ///
+    /// # Errors
+    /// [`BudgetError::Class`] for any other name.
+    pub fn parse(name: &str) -> Result<Self, BudgetError> {
+        match name {
+            "reported" => Ok(Self::Reported),
+            "measured" => Ok(Self::Measured),
+            "scaled" => Ok(Self::Scaled),
+            "relative" => Ok(Self::Relative),
+            other => Err(BudgetError::Class(other.to_owned())),
+        }
+    }
+}
 
 /// The box a report was taken on: counts only, no hardware names.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -124,8 +152,8 @@ pub struct Row {
 pub struct Report {
     /// [`SCHEMA`].
     pub schema: u32,
-    /// [`CLASS`].
-    pub class: String,
+    /// What the numbers are; only a class other than [`Class::Reported`] can fail a gating run.
+    pub class: Class,
     /// The box it ran on.
     pub machine: Machine,
     /// One row per metric, ordered by key.
@@ -142,6 +170,7 @@ impl Report {
         mut metrics: Vec<Metric>,
         budgets: &[Budget],
         previous: Option<&Report>,
+        class: Class,
         mut notes: Vec<String>,
     ) -> Self {
         metrics.sort_by(|a, b| a.key.cmp(&b.key));
@@ -153,23 +182,39 @@ impl Report {
             comparable
         });
         let rows = metrics.into_iter().map(|m| row(m, budgets, previous)).collect();
-        Self { schema: SCHEMA, class: CLASS.to_owned(), machine, rows, notes }
+        Self { schema: SCHEMA, class, machine, rows, notes }
     }
 
-    /// Rows over budget, with a unit mismatch, or more than [`REGRESSION_LIMIT`] worse than the previous run.
+    /// Every finding: rows over budget, with a unit mismatch, truncated, or more than [`REGRESSION_LIMIT`] worse than the
+    /// previous run. Whether a finding fails a run is [`Report::failures`].
     pub fn violations(&self) -> Vec<String> {
+        self.findings(true, true)
+    }
+
+    /// The findings that fail a gating run of this report's class. `reported` numbers never gate; `measured` and
+    /// `scaled` ones are judged against the budget; `relative` ones against the previous run. A truncated run or a unit
+    /// mismatch is a harness fault and fails every class but `reported`.
+    pub fn failures(&self) -> Vec<String> {
+        match self.class {
+            Class::Reported => Vec::new(),
+            Class::Measured | Class::Scaled => self.findings(true, false),
+            Class::Relative => self.findings(false, true),
+        }
+    }
+
+    fn findings(&self, budget: bool, regressions: bool) -> Vec<String> {
         let mut out = Vec::new();
         for r in &self.rows {
             let key = &r.metric.key;
             match r.verdict {
-                Verdict::Over => out.push(format!("{key}: over budget")),
+                Verdict::Over if budget => out.push(format!("{key}: over budget")),
                 Verdict::UnitMismatch => out.push(format!("{key}: unit differs from the budget")),
                 _ => {}
             }
             if r.metric.dropped > 0 {
                 out.push(format!("{key}: {} samples dropped", r.metric.dropped));
             }
-            if r.regression {
+            if regressions && r.regression {
                 out.push(format!("{key}: regression of {:.1}%", r.change_pct.unwrap_or(f64::NAN)));
             }
         }
@@ -187,9 +232,14 @@ impl Report {
     /// Read a report back from its JSON.
     ///
     /// # Errors
-    /// [`BudgetError::Json`] on malformed input.
+    /// [`BudgetError::Json`] on malformed input; [`BudgetError::Schema`] when the file's `schema` is not [`SCHEMA`], so
+    /// a layout whose fields mean something else is never compared as if it were this one.
     pub fn from_json(text: &str) -> Result<Self, BudgetError> {
-        Ok(serde_json::from_str(text)?)
+        let report: Self = serde_json::from_str(text)?;
+        if report.schema != SCHEMA {
+            return Err(BudgetError::Schema { found: report.schema, supported: SCHEMA });
+        }
+        Ok(report)
     }
 
     /// The report as markdown.
@@ -200,7 +250,10 @@ impl Report {
             String::new(),
             format!(
                 "Class `{}`: measured on {} {} with {} vCPUs; never a tier's number.",
-                self.class, m.os, m.arch, m.vcpus
+                format!("{:?}", self.class).to_lowercase(),
+                m.os,
+                m.arch,
+                m.vcpus
             ),
             String::new(),
             "| Key | Samples | p50 | p95 | p99 | max | Budget | Verdict | Change |".to_owned(),
@@ -288,7 +341,7 @@ mod tests {
     }
 
     fn report(m: Vec<Metric>, prev: Option<&Report>) -> Report {
-        Report::build(machine(4), m, &parse_spec(SPEC).unwrap(), prev, vec![])
+        Report::build(machine(4), m, &parse_spec(SPEC).unwrap(), prev, Class::Relative, vec![])
     }
 
     #[test]
@@ -319,6 +372,27 @@ mod tests {
         let slow = report(vec![us("physics.step", 450)], Some(&before));
         assert!(slow.rows[0].regression);
         assert_eq!(slow.violations(), ["physics.step: regression of 12.5%"]);
+    }
+
+    #[test]
+    fn only_a_gating_class_fails_and_each_judges_what_its_class_may() {
+        let before = report(vec![us("physics.step", 400)], None);
+        let slow_and_over = report(vec![us("physics.step", 900)], Some(&before));
+        let with = |class| Report { class, ..slow_and_over.clone() };
+        assert_eq!(slow_and_over.violations().len(), 2);
+        assert_eq!(with(Class::Reported).failures(), Vec::<String>::new());
+        assert_eq!(with(Class::Measured).failures(), ["physics.step: over budget"]);
+        assert_eq!(with(Class::Scaled).failures(), ["physics.step: over budget"]);
+        assert_eq!(with(Class::Relative).failures(), ["physics.step: regression of 125.0%"]);
+        assert!(Class::parse("relative").is_ok() && Class::parse("fast").is_err());
+    }
+
+    #[test]
+    fn an_unsupported_schema_is_a_typed_error() {
+        let mut r = report(vec![us("physics.step", 400)], None);
+        r.schema = SCHEMA + 1;
+        let err = Report::from_json(&r.to_json().unwrap()).unwrap_err();
+        assert!(matches!(err, BudgetError::Schema { found, supported } if found == SCHEMA + 1 && supported == SCHEMA));
     }
 
     #[test]

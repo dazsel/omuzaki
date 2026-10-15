@@ -24,7 +24,18 @@ pub enum BudgetError {
     /// A report could not be read back or written as JSON.
     #[error("report JSON: {0}")]
     Json(#[from] serde_json::Error),
-    /// A budget run was asked to fail on a violation, and there was one.
+    /// A report was written in a layout this harness does not read.
+    #[error("report schema {found} is not supported (this harness reads schema {supported})")]
+    Schema {
+        /// The version found in the file.
+        found: u32,
+        /// The version this harness reads.
+        supported: u32,
+    },
+    /// A gating run (class other than `reported`) had violations.
     #[error("{0}")]
     Violations(String),
+    /// A measurement class name was not one of `reported`, `measured`, `scaled`, `relative`.
+    #[error("unknown measurement class `{0}`")]
+    Class(String),
 }

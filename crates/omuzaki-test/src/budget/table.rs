@@ -39,16 +39,15 @@ pub enum Statistic {
 }
 
 impl Statistic {
+    /// The statistic is the cell's first word: qualifiers after it ("p95 over repainted frames", "mean over 5 min",
+    /// "worst of 5 launches") say over what, not which.
     fn parse(text: &str) -> Self {
-        let t = text.trim().to_ascii_lowercase();
-        if t == "p95" {
-            Self::P95
-        } else if t.starts_with("mean") {
-            Self::Mean
-        } else if t.starts_with("max") || t.starts_with("worst") || t == "count" || t == "exact" {
-            Self::Max
-        } else {
-            Self::Other
+        let first = text.split_whitespace().next().unwrap_or_default().to_ascii_lowercase();
+        match first.as_str() {
+            "p95" => Self::P95,
+            "mean" => Self::Mean,
+            "max" | "worst" | "count" | "exact" => Self::Max,
+            _ => Self::Other,
         }
     }
 }
@@ -180,5 +179,12 @@ mod tests {
         assert_eq!(find("physics.step").limit, Some(Limit { value: 0.5, unit: Unit::Ms }));
         assert_eq!(find("cpu.total").statistic, Statistic::Mean);
         assert!(b.len() >= 19);
+        // Row-kind sweep: every statistic cell and every limit cell of the real spec is understood, except the one row
+        // with two limits in its cell.
+        let other: Vec<_> = b.iter().filter(|b| b.statistic == Statistic::Other).map(|b| &b.key).collect();
+        assert!(other.is_empty(), "statistics the harness does not read: {other:?}");
+        let unparsed: Vec<_> = b.iter().filter(|b| b.limit.is_none()).map(|b| b.key.as_str()).collect();
+        assert_eq!(unparsed, ["asr.live"]);
+        assert_eq!(find("gpu.face_paint").statistic, Statistic::P95);
     }
 }

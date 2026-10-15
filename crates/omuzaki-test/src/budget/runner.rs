@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use super::error::BudgetError;
-use super::report::{Machine, Metric, Report};
+use super::report::{Class, Machine, Metric, Report};
 use super::table::{Unit, parse_spec};
 use super::timing::{Recorder, StartupTimer};
 
@@ -28,16 +28,19 @@ pub struct Config {
     pub out: PathBuf,
     /// The previous night's `report.json`, if there is one.
     pub previous: Option<PathBuf>,
-    /// Fail on an over-budget metric or a regression instead of only reporting it.
+    /// What the numbers are. Only a class other than [`Class::Reported`] can fail a strict run, because `reported`
+    /// numbers never gate (spec §10); a cloud runner is `reported`.
+    pub class: Class,
+    /// Fail on the findings this class gates on instead of only reporting them.
     pub strict: bool,
 }
 
 impl Config {
     /// Read the configuration from `OMUZAKI_BUDGET_OUT` (required), `OMUZAKI_BUDGET_SPEC`, `OMUZAKI_BUDGET_PREVIOUS`
-    /// and `OMUZAKI_BUDGET_STRICT` (`1` turns it on).
+    /// `OMUZAKI_BUDGET_CLASS` (default `reported`) and `OMUZAKI_BUDGET_STRICT` (`1` turns it on).
     ///
     /// # Errors
-    /// [`BudgetError::Spec`] when `OMUZAKI_BUDGET_OUT` is not set.
+    /// [`BudgetError::Spec`] when `OMUZAKI_BUDGET_OUT` is not set; [`BudgetError::Class`] for an unknown class.
     pub fn from_env() -> Result<Self, BudgetError> {
         let var = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
         Ok(Self {
@@ -47,6 +50,7 @@ impl Config {
             out: var("OMUZAKI_BUDGET_OUT")
                 .ok_or_else(|| BudgetError::Spec("OMUZAKI_BUDGET_OUT is not set".to_owned()))?,
             previous: var("OMUZAKI_BUDGET_PREVIOUS"),
+            class: var("OMUZAKI_BUDGET_CLASS").map_or(Ok(Class::Reported), |c| Class::parse(&c.to_string_lossy()))?,
             strict: std::env::var("OMUZAKI_BUDGET_STRICT").is_ok_and(|v| v == "1"),
         })
     }
@@ -101,7 +105,7 @@ pub fn measure(config: &Config) -> Result<Report, BudgetError> {
             "peak memory is not available on this OS; VRAM is not measured here (no GPU in the harness).".to_owned(),
         ),
     }
-    Ok(Report::build(Machine::current(), metrics, &budgets, previous.as_ref(), notes))
+    Ok(Report::build(Machine::current(), metrics, &budgets, previous.as_ref(), config.class, notes))
 }
 
 /// Measure, write `report.md` and `report.json` into the output folder and print the markdown.
@@ -119,9 +123,9 @@ pub fn run(config: &Config) -> Result<Report, BudgetError> {
     write("report.md", markdown.clone())?;
     write("report.json", report.to_json()?)?;
     println!("{markdown}");
-    let violations = report.violations();
-    if config.strict && !violations.is_empty() {
-        return Err(BudgetError::Violations(violations.join("; ")));
+    let failures = report.failures();
+    if config.strict && !failures.is_empty() {
+        return Err(BudgetError::Violations(failures.join("; ")));
     }
     Ok(report)
 }
@@ -136,6 +140,7 @@ mod tests {
             spec: Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/product/02-studio-spec-v3.md"),
             out: dir.to_owned(),
             previous: None,
+            class: Class::Relative,
             strict: true,
         }
     }
@@ -172,7 +177,7 @@ mod tests {
     }
 
     #[test]
-    fn strict_runs_fail_on_a_regression_and_lax_runs_do_not() {
+    fn strict_runs_fail_on_a_regression_only_for_a_gating_class() {
         let dir = tempfile::tempdir().unwrap();
         let mut c = config(dir.path());
         let mut previous = measure(&c).unwrap();
@@ -187,6 +192,10 @@ mod tests {
         c.previous = Some(prev_path);
         assert!(matches!(run(&c), Err(BudgetError::Violations(_))));
         c.strict = false;
+        assert!(run(&c).is_ok());
+        // Reported numbers never gate, however much slower than last night.
+        c.strict = true;
+        c.class = Class::Reported;
         assert!(run(&c).is_ok());
     }
 }

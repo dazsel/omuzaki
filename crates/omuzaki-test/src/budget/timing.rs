@@ -4,13 +4,21 @@
 //! buffer reserved up front and, for a span guard, two reads of the monotonic clock. The clock is read here only, so a
 //! system under test never sees a wall clock.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use super::error::BudgetError;
 
-/// Handle of a registered span, valid for the [`Recorder`] that issued it.
+/// Hands out one identity per [`Recorder`], so a handle can be checked against the recorder it is used on.
+static NEXT_RECORDER: AtomicU64 = AtomicU64::new(0);
+
+/// Handle of a registered span, valid only for the [`Recorder`] that issued it: using it on another recorder is an
+/// error and records nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SpanId(usize);
+pub struct SpanId {
+    recorder: u64,
+    index: usize,
+}
 
 /// One name's samples, in nanoseconds.
 #[derive(Debug)]
@@ -24,6 +32,7 @@ struct Track {
 /// Collects named timing spans without allocating per frame.
 #[derive(Debug)]
 pub struct Recorder {
+    identity: u64,
     capacity: usize,
     tracks: Vec<Track>,
 }
@@ -39,7 +48,7 @@ pub struct Span {
 impl Recorder {
     /// A recorder keeping up to `capacity` samples per span.
     pub fn new(capacity: usize) -> Self {
-        Self { capacity, tracks: Vec::new() }
+        Self { identity: NEXT_RECORDER.fetch_add(1, Ordering::Relaxed), capacity, tracks: Vec::new() }
     }
 
     /// Register a span (for example `"physics.step"`; use the §10 budget key to get it judged) and reserve its buffer.
@@ -51,7 +60,7 @@ impl Recorder {
             return Err(BudgetError::Span(format!("`{name}` is empty or already registered")));
         }
         self.tracks.push(Track { name: name.to_owned(), samples: Vec::with_capacity(self.capacity), dropped: 0 });
-        Ok(SpanId(self.tracks.len() - 1))
+        Ok(SpanId { recorder: self.identity, index: self.tracks.len() - 1 })
     }
 
     /// Start timing a span.
@@ -62,10 +71,13 @@ impl Recorder {
     /// Record a duration measured elsewhere, in nanoseconds. A full buffer counts a drop instead of growing.
     ///
     /// # Errors
-    /// [`BudgetError::Span`] when `id` was not issued by this recorder.
+    /// [`BudgetError::Span`] when `id` was not issued by this recorder; nothing is recorded then.
     pub fn record_ns(&mut self, id: SpanId, ns: u64) -> Result<(), BudgetError> {
         let capacity = self.capacity;
-        let track = self.tracks.get_mut(id.0).ok_or_else(|| BudgetError::Span(format!("unknown span id {}", id.0)))?;
+        let track = match self.tracks.get_mut(id.index) {
+            Some(track) if id.recorder == self.identity => track,
+            _ => return Err(BudgetError::Span("span handle was not issued by this recorder".to_owned())),
+        };
         if track.samples.len() < capacity {
             track.samples.push(ns);
         } else {
@@ -134,11 +146,22 @@ mod tests {
     #[test]
     fn duplicate_and_unknown_spans_are_errors() {
         let mut a = Recorder::new(4);
-        let id = a.register("x").unwrap();
+        a.register("x").unwrap();
         assert!(a.register("x").is_err());
         assert!(a.register("").is_err());
+    }
+
+    #[test]
+    fn a_handle_from_another_recorder_fails_closed_and_records_nothing() {
+        let mut a = Recorder::new(4);
         let mut b = Recorder::new(4);
-        assert!(b.record_ns(id, 1).is_err());
+        let from_a = a.register("x").unwrap();
+        let from_b = b.register("x").unwrap();
+        assert!(b.record_ns(from_a, 1).is_err());
+        let span = a.span(from_b);
+        assert!(a.end(span).is_err());
+        assert!(a.tracks().chain(b.tracks()).all(|(_, samples, dropped)| samples.is_empty() && dropped == 0));
+        assert!(a.record_ns(from_a, 1).is_ok() && b.record_ns(from_b, 1).is_ok());
     }
 
     #[test]

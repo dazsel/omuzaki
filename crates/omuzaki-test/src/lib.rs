@@ -11,6 +11,8 @@
 //! - [`summary`]: the PR-comment text built from what the checks found
 //! - [`meshcmp`]: [`meshcmp::compare_meshes`], per-vertex, Chamfer and Hausdorff mesh distances (the geometry parity oracle)
 //! - [`regioncmp`]: [`compare::compare`] inside a pixel rectangle, with a markdown table and a side-by-side picture
+//! - [`budget`]: the spec §10 budget harness: the budget table parsed from the spec, per-system timing spans, and a markdown
+//!   and JSON report compared with the budgets and the previous night (`tools/ci/budget-report.sh`)
 //! - [`eval`]: agent eval task files, fixtures and eval sets: format, discovery, loader, lint and provenance
 //! - [`jsref`]: the JS prototype's reference dumps (under the assets folder) loaded into meshes, hair clumps, materials and face state
 //!
