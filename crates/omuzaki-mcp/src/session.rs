@@ -262,10 +262,14 @@ impl Session {
     /// saved yet (the wait timed out, or saving fails) still succeeds: the result carries a warning with the status.
     async fn confirm_saved(&self, result: CallToolResult) -> CallToolResult {
         let Some(journal) = self.shared.journal.clone() else { return result };
-        let waited = tokio::task::spawn_blocking(move || (journal.sync(SAVE_WAIT), journal.status())).await;
+        let waited = tokio::task::spawn_blocking(move || match journal.sync(SAVE_WAIT) {
+            Ok(_) => None,
+            Err(_) => Some(journal.status()),
+        })
+        .await;
         match waited {
-            Ok((Ok(_), _)) => result,
-            Ok((Err(_), status)) => with_warning(result, &format!("applied, not yet saved: {}", describe(&status))),
+            Ok(None) => result,
+            Ok(Some(status)) => with_warning(result, &format!("applied, not yet saved: {}", describe(&status))),
             Err(_) => with_warning(result, "applied, not yet saved: the journal's status couldn't be read"),
         }
     }
