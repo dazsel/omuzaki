@@ -67,6 +67,9 @@ const HALF_FRAME_PER_WIDTH: f32 = 0.6;
 /// The half-height of the slab of the built head that gives the head's width at the join.
 const JOIN_SLAB: f32 = 0.005;
 
+/// The built mesh that is the head's surface. The ears and the neck are left out of the sheet.
+const HEAD_SURFACE: &str = "head-head";
+
 /// The views: a name and the azimuth of the camera around the join, in degrees.
 const VIEWS: [(&str, f32); 3] = [("front", 0.0), ("three-quarter", 35.0), ("side", 90.0)];
 
@@ -96,7 +99,13 @@ fn render_the_head_join_when_asked() {
         let built = build(&character(&serde_json::to_value(&params).unwrap())).unwrap();
         // The head's local origin is its cranium centre, lowered by the neck drop (as `tests/head_part.rs` places it).
         let join = Vec3::new(0.0, narrow(params.cranium.centre[1] - params.neck.drop + params.outline.top), 0.0);
-        let head = &built.meshes[0].mesh.geometry.positions;
+        // Only the head surface is drawn: the ears sit at eye level and would cover the side silhouette the sheet shows.
+        let surface: Vec<_> = built.meshes.iter().filter(|m| m.mesh.name == HEAD_SURFACE).collect();
+        assert_eq!(surface.len(), 1, "{id}: one {HEAD_SURFACE} mesh");
+        let drawn: Vec<&str> = surface.iter().map(|m| m.mesh.name.as_str()).collect();
+        assert!(built.meshes.iter().any(|m| m.mesh.name.starts_with("head-ear")), "{id}: the ears are built");
+        assert!(drawn.iter().all(|name| !name.contains("ear")), "{id}: no ear is drawn: {drawn:?}");
+        let head = &surface[0].mesh.geometry.positions;
         // The head's width at the join, measured on the built mesh in a thin slab at the join height.
         let (lo, hi) = head
             .iter()
@@ -120,7 +129,7 @@ fn render_the_head_join_when_asked() {
                 },
             ];
             scene.post = Post { exposure: 1.0, tonemap: Tonemap::None, ..Post::default() };
-            for built_mesh in &built.meshes {
+            for built_mesh in &surface {
                 let mesh = renderer.create_mesh(&built_mesh.mesh.geometry).unwrap();
                 let mut spec = built.materials[&built_mesh.mesh.material].clone();
                 spec.overlays.clear();

@@ -45,7 +45,7 @@ images = ["lineup.png"]
 
 [[case]]
 name = "head-join"
-description = "The eye-line join of the five head presets, front, three-quarter and side, 384 px, fixed camera per view."
+description = "The eye-line join of the five head presets, front, three-quarter and side, 384 px, fixed camera per view. The head surface only: the ears are left out."
 env = { OMUZAKI_HEAD_JOIN_PPM = "{out}" }
 steps = [
     { run = ["cargo", "test", "--locked", "-p", "omuzaki-char", "--test", "head_join_sheet", "render_the_head_join_when_asked", "--", "--exact"] },
