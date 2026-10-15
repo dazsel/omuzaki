@@ -3,7 +3,7 @@
 #![allow(clippy::unwrap_used)] // test helpers outside #[test] fns
 
 use omuzaki_identity_api::domain::Domain;
-use omuzaki_identity_api::key::KeyError;
+use omuzaki_identity_api::key::{KeyError, KeyId};
 use omuzaki_identity_api::service::Signer;
 use omuzaki_identity_api::service::{Check, Mismatch, SignError, Trust};
 use omuzaki_identity_api::signed::{Signed, hash_of};
@@ -219,4 +219,44 @@ mod shuffled {
             prop_assert_eq!(check_statement(&chosen, &trust), check_statement(&sorted, &trust));
         }
     }
+}
+
+#[test]
+fn the_trust_reported_always_describes_the_identity_reported() {
+    let a = MemorySigner::from_test_seed([20; 32], "Mira");
+    let b = MemorySigner::from_test_seed([21; 32], "Mira");
+    let (low, high) = if a.key_id() < b.key_id() { (&a, &b) } else { (&b, &a) };
+    let body = KeyStatement::also(low.key_id(), high.key_id());
+    let copies = [sign(low, Domain::KeyStatement, &body), sign(high, Domain::KeyStatement, &body)];
+    let cases = [
+        (MemoryTrust::new().trusted(high.key_id(), "High"), high.key_id(), Trust::Trusted { name: "High".into() }),
+        (MemoryTrust::new().revoked(high.key_id()), high.key_id(), Trust::Revoked),
+        (MemoryTrust::new().trusted(low.key_id(), "Low"), low.key_id(), Trust::Trusted { name: "Low".into() }),
+        (MemoryTrust::new().revoked(low.key_id()), low.key_id(), Trust::Revoked),
+        (MemoryTrust::new().trusted(low.key_id(), "Low").revoked(high.key_id()), high.key_id(), Trust::Revoked),
+        (MemoryTrust::new().revoked(low.key_id()).trusted(high.key_id(), "High"), low.key_id(), Trust::Revoked),
+        (
+            MemoryTrust::new().trusted(low.key_id(), "Low").trusted(high.key_id(), "High"),
+            low.key_id(),
+            Trust::Trusted { name: "Low".into() },
+        ),
+        (MemoryTrust::new(), low.key_id(), Trust::Unknown),
+    ];
+    for (store, key, expected) in cases {
+        for order in permutations(&copies) {
+            let check = check_statement(&order, &store);
+            assert!(
+                matches!(&check, Check::Valid { identity, trust } if identity.key == key && *trust == expected),
+                "{check:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_trust_list_prints_the_same_whatever_order_it_was_built_in() {
+    let (x, y, z) = (KeyId([1; 32]), KeyId([2; 32]), KeyId([3; 32]));
+    let one = MemoryTrust::new().trusted(x, "x").revoked(y).trusted(z, "z");
+    let two = MemoryTrust::new().trusted(z, "z").revoked(y).trusted(x, "x");
+    assert_eq!(format!("{one:?}"), format!("{two:?}"));
 }

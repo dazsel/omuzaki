@@ -3,7 +3,7 @@
 //! Test seeds exist only here, never in a shipped crate (design D1).
 #![deny(missing_docs)]
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::fmt;
 
 use ed25519_dalek::{Signer as _, SigningKey};
@@ -50,7 +50,7 @@ impl Signer for MemorySigner {
 /// A [`TrustStore`] held in memory. A key not added is `Unknown`; revoking wins over trusting.
 #[derive(Clone, Debug, Default)]
 pub struct MemoryTrust {
-    entries: HashMap<KeyId, Trust>,
+    entries: BTreeMap<KeyId, Trust>,
 }
 
 impl MemoryTrust {

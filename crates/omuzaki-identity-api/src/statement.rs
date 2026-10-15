@@ -140,8 +140,8 @@ fn badness(check: &Check) -> u8 {
 /// instead: the worst failure (`Malformed`, then `Tampered`), ties broken by the failure's text.
 ///
 /// Otherwise the result is `Valid`, read by role: `Rotate` and `Bind` report the old (or bound) key and the trust in
-/// it; `Also` reports the lower key, `Revoked` if either key is revoked, else `Trusted` by the first key of the two
-/// that is, else `Unknown`; `Revoke` reports the revoked key if it signed, else the lowest signing key. Where one key
+/// it; `Also` reports one key of the pair and that key's trust: a revoked key if either is, else a trusted one, else
+/// the lower key (ties go to the lower key); `Revoke` reports the revoked key if it signed, else the lowest signing key. Where one key
 /// signed under several names, the lowest name is reported.
 pub fn check_statement(copies: &[Signed<KeyStatement>], trust: &dyn TrustStore) -> Check {
     let Some(first) = copies.first() else {
@@ -188,7 +188,7 @@ pub fn check_statement(copies: &[Signed<KeyStatement>], trust: &dyn TrustStore) 
     let (reported, standing) = match &first.body {
         KeyStatement::Rotate { old, .. } => (*old, trust.trust(old)),
         KeyStatement::Bind { key, .. } => (*key, trust.trust(key)),
-        KeyStatement::Also { a, b } => (*a.min(b), both_keys(trust.trust(a.min(b)), trust.trust(a.max(b)))),
+        KeyStatement::Also { a, b } => linked_pair(*a.min(b), *a.max(b), trust),
         KeyStatement::Revoke { key, .. } => {
             let by = if signers.contains_key(key) { Some(*key) } else { signers.keys().next().copied() };
             let Some(by) = by else { return Check::Malformed("a revocation has no valid signature".to_owned()) };
@@ -201,13 +201,17 @@ pub fn check_statement(copies: &[Signed<KeyStatement>], trust: &dyn TrustStore) 
     }
 }
 
-/// The standing of a pair of linked keys, lower key first: revoked if either is, else the first trusted one.
-fn both_keys(lower: Trust, higher: Trust) -> Trust {
-    match (lower, higher) {
-        (Trust::Revoked, _) | (_, Trust::Revoked) => Trust::Revoked,
-        (trusted @ Trust::Trusted { .. }, _) | (_, trusted @ Trust::Trusted { .. }) => trusted,
-        _ => Trust::Unknown,
-    }
+/// The key to report for a linked pair, with that same key's trust, so `Valid.trust` always describes
+/// `Valid.identity.key`. A revoked key wins (its signatures are not to be relied on), then a trusted one, then the
+/// lower key; between two keys of the same standing the lower key wins.
+fn linked_pair(lower: KeyId, higher: KeyId, trust: &dyn TrustStore) -> (KeyId, Trust) {
+    let (low, high) = (trust.trust(&lower), trust.trust(&higher));
+    let rank = |t: &Trust| match t {
+        Trust::Revoked => 0,
+        Trust::Trusted { .. } => 1,
+        _ => 2,
+    };
+    if rank(&high) < rank(&low) { (higher, high) } else { (lower, low) }
 }
 
 #[cfg(test)]
