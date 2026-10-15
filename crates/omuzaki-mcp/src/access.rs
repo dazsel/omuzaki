@@ -397,7 +397,7 @@ impl Registry {
         }
         let entry = found.ok_or(Denied::Unknown)?;
         // Wall-clock time, shown to people and never replayed: ADR 0009 only forbids clock reads on replayed paths.
-        entry.last_used.store(now_millis(), Ordering::Relaxed);
+        record_use(&entry.last_used, now_millis());
         Ok(Arc::clone(&entry.endpoint))
     }
 
@@ -493,6 +493,12 @@ fn hash_secret(secret: &str) -> [u8; HASH_BYTES] {
 /// wrong time.
 fn now_millis() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).ok().and_then(|d| u64::try_from(d.as_millis()).ok()).unwrap_or(0)
+}
+
+/// Stores a use time without moving the recorded time backward. Two requests can read the clock in one order and store
+/// in the other, so an unconditional store could overwrite a later time with an earlier one; `fetch_max` never does.
+fn record_use(last_used: &AtomicU64, millis: u64) {
+    last_used.fetch_max(millis, Ordering::Relaxed);
 }
 
 fn millis_to_time(millis: u64) -> Option<SystemTime> {
@@ -674,5 +680,34 @@ mod tests {
         let used = last_used();
         assert!(before <= used && used <= now_millis(), "{used} is not between {before} and now");
         assert_eq!(millis_to_time(0), None);
+    }
+
+    #[test]
+    fn a_later_use_time_is_never_overwritten_by_an_earlier_one() {
+        let last_used = AtomicU64::new(0);
+        record_use(&last_used, 5_000);
+        record_use(&last_used, 4_000);
+        assert_eq!(last_used.load(Ordering::Relaxed), 5_000, "an earlier use must not move the time back");
+        record_use(&last_used, 6_000);
+        assert_eq!(last_used.load(Ordering::Relaxed), 6_000, "a later use must move the time forward");
+    }
+
+    #[test]
+    fn concurrent_uses_keep_the_latest_time() {
+        let last_used = Arc::new(AtomicU64::new(0));
+        let handles: Vec<_> = (1..=8u64)
+            .map(|t| {
+                let last_used = Arc::clone(&last_used);
+                std::thread::spawn(move || {
+                    for i in 0..1_000u64 {
+                        record_use(&last_used, t * 10_000 + i);
+                    }
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        assert_eq!(last_used.load(Ordering::Relaxed), 8 * 10_000 + 999);
     }
 }
