@@ -110,14 +110,16 @@ enum Standing {
     Outside,
     /// This guard holds a `CoInitializeEx` reference, released when the thread exits.
     Owner,
-    /// The thread was already in another apartment (`RPC_E_CHANGED_MODE`): usable as it is, nothing of ours to release.
+    /// The thread was in another apartment at the last probe (`RPC_E_CHANGED_MODE`): usable as it is, nothing of ours
+    /// to release, and probed again on the next call because that apartment may be gone by then.
     Guest,
 }
 
 /// The calling thread's COM apartment, entered once and kept until the thread exits (see [`enter_com`]).
 struct Apartment {
     standing: Cell<Standing>,
-    /// How many times `CoInitializeEx` ran on this thread: the counting seam behind the "once per thread" test.
+    /// How many times `CoInitializeEx` ran on this thread: the counting seam behind the "once per thread" test (a guest
+    /// thread counts every probe).
     inits: Cell<u32>,
 }
 
@@ -127,7 +129,10 @@ impl Apartment {
     }
 
     fn enter(&self) -> Result<(), TrackError> {
-        if self.standing.get() != Standing::Outside {
+        // Only a reference of ours is cached. A guest apartment is somebody else's and can be torn down under us, so it
+        // is probed again every time: `CoInitializeEx` on a thread already in another apartment just returns
+        // `RPC_E_CHANGED_MODE`, and if that apartment is gone it now succeeds and the guard becomes the owner.
+        if self.standing.get() == Standing::Owner {
             return Ok(());
         }
         self.inits.set(self.inits.get().saturating_add(1));
@@ -159,7 +164,7 @@ thread_local! {
 }
 
 /// Puts the calling thread in the multithreaded apartment, once: the first call on a thread runs `CoInitializeEx`, every
-/// later call is a thread-local read, and the apartment lives until the thread exits. COM is per thread, so every entry
+/// later call is a thread-local read, and the apartment lives until the thread exits. A thread that is a guest in someone else's apartment is probed on every call instead, because that apartment is not ours to keep alive. COM is per thread, so every entry
 /// point that touches Media Foundation calls this; the guard is thread-local rather than owned by the stream because a
 /// stream may be moved to another thread (`next_frame` on a capture loop's thread, the drop on the reaper's). A scope
 /// per call would tear the apartment down after every frame whenever the thread has no apartment of its own.
@@ -685,7 +690,7 @@ fn default_stride(media: &IMFMediaType, mode: &ModeInfo) -> isize {
 enum Lock {
     /// `IMF2DBuffer2::Lock2DSize`: the real pitch and the real extent of the allocation.
     Sized(IMF2DBuffer2),
-    /// `IMF2DBuffer::Lock2D`: the real pitch, with the extent the pitch implies (see `surface_extent`).
+    /// `IMF2DBuffer::Lock2D`: the real pitch, for an unpadded frame (see `unpadded_back`).
     Surface(IMF2DBuffer),
     /// `IMFMediaBuffer::Lock`: packed rows; may copy a padded surface, so it is the last resort for one.
     Packed,
@@ -746,14 +751,15 @@ impl Held {
     }
 }
 
-/// What a `Lock2D` of a frame at `pitch` guarantees to be readable: how far the lowest row lies before the top row
-/// (0 unless the image is bottom-up), and the frame's length from there ([`PixelFormat::frame_len`] at that pitch, so
-/// padding after each row and the NV12 chroma plane count). `None` for a layout with no rows or on overflow.
-fn surface_extent(mode: &ModeInfo, pitch: isize) -> Option<(usize, usize)> {
+/// For a frame locked through `Lock2D` at `pitch`: how far the lowest row lies before the top row (0 unless the image is
+/// bottom-up) if the rows are unpadded, so the frame is one run of pixel bytes. `None` for padded rows, a zero pitch
+/// and a layout with no rows.
+fn unpadded_back(mode: &ModeInfo, pitch: isize) -> Option<usize> {
     let step = pitch.unsigned_abs();
-    let len = mode.format.frame_len(mode.height, step)?;
-    let back = if pitch < 0 { (mode.height as usize).checked_sub(1)?.checked_mul(step)? } else { 0 };
-    Some((back, len))
+    if mode.format.tight_stride(mode.width) != Some(step) || step == 0 {
+        return None;
+    }
+    if pitch < 0 { (mode.height as usize).checked_sub(1)?.checked_mul(step) } else { Some(0) }
 }
 
 /// What locking a buffer cost.
@@ -806,14 +812,17 @@ fn lock_buffer(
             let (mut top, mut pitch) = (std::ptr::null_mut::<u8>(), 0_i32);
             // SAFETY: the out-pointers outlive the call; a success locks the buffer until `Unlock2D`.
             unsafe { surface.Lock2D(&raw mut top, &raw mut pitch) }.map_err(|e| err(&e, id))?;
+            // SAFETY: plain call on a live buffer.
+            let contiguous = unsafe { surface.GetContiguousLength() }.unwrap_or(0) as usize;
             held.lock = Lock::Surface(surface);
             held.pitch = pitch as isize;
-            // `Lock2D` gives the top row and the pitch but not the allocation, so the extent is the one the 2-D
-            // contract promises for that pitch (see `surface_extent`). Padding stays in the borrow and is skipped by
-            // the stride; a pitch that cannot describe the frame is left to the packed lock below.
-            if let Some((back, len)) = surface_extent(mode, held.pitch) {
+            // `Lock2D` gives the top row and the pitch but not the allocation, and padding is not promised readable, so
+            // only an unpadded frame is borrowed: every byte of its span is pixel data, checked against the packed
+            // length. A padded frame (or a pitch that cannot describe one) takes the packed lock below, which hands
+            // over tight rows; `Lock2DSize`, above, is what borrows a padded frame, since it reports the extent.
+            if let Some(back) = unpadded_back(mode, held.pitch) {
                 held.base = top.wrapping_sub(back);
-                if held.fit(mode, can_flip, len, back).is_ok() {
+                if held.fit(mode, can_flip, contiguous, back).is_ok() {
                     return Ok((held, Cost::Free));
                 }
             }
@@ -1041,6 +1050,21 @@ impl CameraStream for MfStream {
     }
 }
 
+/// Hands a camera's resources to a reaper thread and waits up to `wait` for it to finish: `work` must drop the
+/// [`ReleaseGuard`] that `make` puts in the resource once the camera is let go. Returns whether it had by then.
+/// Separate from the stream so the drop-then-reopen sequence can be tested with a fake source.
+fn release_and_wait<T: Send + 'static>(
+    id: &CameraId,
+    make: impl FnOnce(ReleaseGuard) -> T,
+    work: fn(T),
+    wait: Duration,
+) -> bool {
+    let release = ReleaseGuard::begin(id);
+    let waiter = Arc::clone(&release.release);
+    reap(make(release), work);
+    waiter.wait(wait)
+}
+
 /// Everything a dropped stream hands to its reaper thread.
 struct Reaped {
     live: Option<Live>,
@@ -1062,16 +1086,10 @@ impl Drop for MfStream {
         if self.packed_locks > 0 {
             tracing::warn!(camera = %self.id.0, frames = self.packed_locks, "frames locked through the packed Lock fallback");
         }
-        let release = ReleaseGuard::begin(&self.id);
-        let waiter = Arc::clone(&release.release);
-        let reaped = Reaped {
-            live: self.live.take(),
-            shared: Arc::clone(&self.shared),
-            runtime: Arc::clone(&self.runtime),
-            release,
-        };
-        reap(reaped, reap_stream);
-        if !waiter.wait(DROP_WAIT) {
+        let (live, shared, runtime) = (self.live.take(), Arc::clone(&self.shared), Arc::clone(&self.runtime));
+        let released =
+            release_and_wait(&self.id, |release| Reaped { live, shared, runtime, release }, reap_stream, DROP_WAIT);
+        if !released {
             tracing::warn!(camera = %self.id.0, "the camera is still being released; reopening it waits for that");
         }
     }
@@ -1327,20 +1345,90 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(5));
     }
 
-    /// With a camera present: drop a stream and reopen the same camera at once. It is free, or `open` waited for it.
+    /// With a camera present: every drop-then-reopen of the same camera succeeds. The test skips only when there is
+    /// no camera or the first open is unavailable; after that a reopen that fails, `Busy` included, is a regression.
     #[test]
     fn a_dropped_camera_can_be_reopened_at_once() {
         let mut camera = MfCamera::new().expect("Media Foundation starts");
         let Some(info) = camera.enumerate().into_iter().find(|c| !c.formats.is_empty()) else { return };
-        for _ in 0..3 {
-            let Ok(stream) = camera.open(&info.id, &CameraFormatRequest::default()) else { return };
+        let Ok(first) = camera.open(&info.id, &CameraFormatRequest::default()) else { return };
+        drop(first);
+        for round in 0..3 {
+            let stream = camera
+                .open(&info.id, &CameraFormatRequest::default())
+                .unwrap_or_else(|e| panic!("reopen {round} after a drop failed: {e}"));
             drop(stream);
         }
-        let reopened = camera.open(&info.id, &CameraFormatRequest::default());
-        assert!(!matches!(reopened, Err(TrackError::Busy(_))), "the camera was still held after the drop");
     }
 
-    /// A buffer with a 2-D interface and nothing else (`Lock2D`, no `Lock2DSize`), whose rows are padded.
+    /// A fake source: `held` is true while it holds the device, and its reaper lets go after a delay.
+    struct FakeSource {
+        held: Arc<std::sync::atomic::AtomicBool>,
+        delay: Duration,
+        release: ReleaseGuard,
+    }
+
+    fn let_go(source: FakeSource) {
+        std::thread::sleep(source.delay);
+        source.held.store(false, Ordering::SeqCst);
+        drop(source.release);
+    }
+
+    /// Drop, then reopen at once, with a source that takes a little while to let go: the drop waits for it, so the
+    /// device is free when the reopen looks, and the reopen has nothing to wait for. No hardware needed.
+    #[test]
+    fn drop_then_reopen_finds_the_device_free() {
+        let id = CameraId("fake-quick".into());
+        let held = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let source = |release| FakeSource { held: Arc::clone(&held), delay: Duration::from_millis(20), release };
+        assert!(release_and_wait(&id, source, let_go, Duration::from_secs(10)), "the drop saw the release");
+        assert!(!held.load(Ordering::SeqCst), "the device was still held when the drop returned");
+        assert!(await_released(&id, Duration::ZERO).is_ok(), "nothing is left to wait for");
+    }
+
+    /// A source slower than the drop's wait: the drop returns without it, the reopen then waits and finds the device
+    /// free, and a reopen that cannot wait that long gets `Busy` rather than a racing open.
+    #[test]
+    fn a_slow_release_makes_the_reopen_wait_or_report_busy() {
+        let id = CameraId("fake-slow".into());
+        let held = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let source = |release| FakeSource { held: Arc::clone(&held), delay: Duration::from_millis(400), release };
+        assert!(!release_and_wait(&id, source, let_go, Duration::from_millis(10)), "the drop gave up at its bound");
+        assert!(held.load(Ordering::SeqCst), "the fake is still holding the device");
+        assert!(matches!(await_released(&id, Duration::from_millis(10)), Err(TrackError::Busy(ref b)) if *b == id));
+        assert!(await_released(&id, Duration::from_secs(10)).is_ok(), "a patient reopen is let through");
+        assert!(!held.load(Ordering::SeqCst), "the device is free once the reopen is let through");
+    }
+
+    /// A thread that is a guest in another apartment is probed again on every call, so when that apartment goes the
+    /// guard takes over instead of trusting a stale answer: STA up, use, STA down, use again.
+    #[test]
+    fn a_guest_thread_is_probed_again_after_its_apartment_goes() {
+        use windows::Win32::System::Com::COINIT_APARTMENTTHREADED;
+
+        std::thread::spawn(|| {
+            let standing = || APARTMENT.with(|a| a.standing.get());
+            // SAFETY: plain calls on this test's own thread; the STA is torn down below, once.
+            unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.ok().expect("the STA starts");
+            enter_com().expect("a guest thread is usable");
+            assert!(standing() == Standing::Guest, "the STA is not ours");
+            let before = com_init_calls();
+            enter_com().expect("still usable");
+            assert_eq!(com_init_calls(), before + 1, "a guest is probed on every call");
+            // SAFETY: pairs the `CoInitializeEx` above.
+            unsafe { CoUninitialize() };
+            enter_com().expect("the thread is usable once the STA is gone");
+            assert!(standing() == Standing::Owner, "the guard took over");
+            let mut harness =
+                bench_support::Harness::new(PixelFormat::Nv12, 64, 48, 64).expect("Media Foundation works again");
+            harness.next_frame().expect("a frame after the STA went");
+        })
+        .join()
+        .expect("the thread finished");
+    }
+
+    /// Two doubles of a 2-D buffer: both have `Lock2D`; `SizedSurface` also has `Lock2DSize` (the readable extent). The
+    /// packed `Lock` of a `Surface` hands over tight rows, as Media Foundation's does; a `SizedSurface` refuses it.
     mod surface {
         #![allow(clippy::ref_as_ptr, clippy::inline_always)] // the `implement` expansion
 
@@ -1349,144 +1437,227 @@ mod tests {
 
         use windows::Win32::Foundation::{E_FAIL, E_NOTIMPL};
         use windows::Win32::Media::MediaFoundation::{
-            IMF2DBuffer, IMF2DBuffer_Impl, IMFMediaBuffer, IMFMediaBuffer_Impl,
+            IMF2DBuffer, IMF2DBuffer_Impl, IMF2DBuffer2, IMF2DBuffer2_Impl, IMFMediaBuffer, IMFMediaBuffer_Impl,
+            MF2DBuffer_LockFlags,
         };
-        use windows::core::{BOOL, implement};
+        use windows::core::{BOOL, Ref, implement};
 
-        #[implement(IMFMediaBuffer, IMF2DBuffer)]
-        pub(super) struct Surface {
+        /// The memory, where the top row starts and the signed pitch, the tight copy a packed `Lock` hands over (empty
+        /// to refuse it), and how many packed locks happened.
+        pub(super) struct Layout {
             pub(super) memory: Vec<u8>,
-            /// Where the top row starts in `memory`, and the signed pitch to the next row.
             pub(super) top: usize,
             pub(super) pitch: i32,
-            /// Counts the packed `Lock`, which this buffer refuses: a test that reaches it fails.
-            pub(super) packed: Arc<AtomicUsize>,
+            pub(super) packed: Vec<u8>,
+            pub(super) packed_locks: Arc<AtomicUsize>,
         }
 
-        impl IMFMediaBuffer_Impl for Surface_Impl {
-            fn Lock(&self, _: *mut *mut u8, _: *mut u32, _: *mut u32) -> windows::core::Result<()> {
-                self.packed.fetch_add(1, Ordering::SeqCst);
-                Err(E_FAIL.into())
-            }
-            fn Unlock(&self) -> windows::core::Result<()> {
-                Ok(())
-            }
-            fn GetCurrentLength(&self) -> windows::core::Result<u32> {
-                Ok(u32::try_from(self.memory.len()).unwrap_or(u32::MAX))
-            }
-            fn SetCurrentLength(&self, _: u32) -> windows::core::Result<()> {
-                Ok(())
-            }
-            fn GetMaxLength(&self) -> windows::core::Result<u32> {
-                Ok(u32::try_from(self.memory.len()).unwrap_or(u32::MAX))
-            }
+        macro_rules! buffer_impls {
+            ($ty:ident, $imp:ident) => {
+                impl IMFMediaBuffer_Impl for $imp {
+                    fn Lock(&self, start: *mut *mut u8, _: *mut u32, len: *mut u32) -> windows::core::Result<()> {
+                        self.0.packed_locks.fetch_add(1, Ordering::SeqCst);
+                        if self.0.packed.is_empty() {
+                            return Err(E_FAIL.into());
+                        }
+                        // SAFETY: the caller passes valid out-pointers; the copy is only read.
+                        unsafe {
+                            *start = self.0.packed.as_ptr().cast_mut();
+                            *len = u32::try_from(self.0.packed.len()).unwrap_or(u32::MAX);
+                        }
+                        Ok(())
+                    }
+                    fn Unlock(&self) -> windows::core::Result<()> {
+                        Ok(())
+                    }
+                    fn GetCurrentLength(&self) -> windows::core::Result<u32> {
+                        Ok(u32::try_from(self.0.memory.len()).unwrap_or(u32::MAX))
+                    }
+                    fn SetCurrentLength(&self, _: u32) -> windows::core::Result<()> {
+                        Ok(())
+                    }
+                    fn GetMaxLength(&self) -> windows::core::Result<u32> {
+                        Ok(u32::try_from(self.0.memory.len()).unwrap_or(u32::MAX))
+                    }
+                }
+
+                impl IMF2DBuffer_Impl for $imp {
+                    fn Lock2D(&self, scanline0: *mut *mut u8, pitch: *mut i32) -> windows::core::Result<()> {
+                        // SAFETY: valid out-pointers; `top` lies inside `memory`, which is only read.
+                        unsafe {
+                            *scanline0 = self.0.memory.as_ptr().add(self.0.top).cast_mut();
+                            *pitch = self.0.pitch;
+                        }
+                        Ok(())
+                    }
+                    fn Unlock2D(&self) -> windows::core::Result<()> {
+                        Ok(())
+                    }
+                    fn GetScanline0AndPitch(
+                        &self,
+                        scanline0: *mut *mut u8,
+                        pitch: *mut i32,
+                    ) -> windows::core::Result<()> {
+                        self.Lock2D(scanline0, pitch)
+                    }
+                    fn IsContiguousFormat(&self) -> windows::core::Result<BOOL> {
+                        Ok(BOOL(0))
+                    }
+                    fn GetContiguousLength(&self) -> windows::core::Result<u32> {
+                        Ok(u32::try_from(self.0.packed.len()).unwrap_or(u32::MAX))
+                    }
+                    fn ContiguousCopyTo(&self, _: *mut u8, _: u32) -> windows::core::Result<()> {
+                        Err(E_NOTIMPL.into())
+                    }
+                    fn ContiguousCopyFrom(&self, _: *const u8, _: u32) -> windows::core::Result<()> {
+                        Err(E_NOTIMPL.into())
+                    }
+                }
+            };
         }
 
-        impl IMF2DBuffer_Impl for Surface_Impl {
-            fn Lock2D(&self, scanline0: *mut *mut u8, pitch: *mut i32) -> windows::core::Result<()> {
-                // SAFETY: the caller passes valid out-pointers; `top` lies inside `memory`, which is only read.
+        #[implement(IMFMediaBuffer, IMF2DBuffer)]
+        pub(super) struct Surface(pub(super) Layout);
+        buffer_impls!(Surface, Surface_Impl);
+
+        #[implement(IMFMediaBuffer, IMF2DBuffer, IMF2DBuffer2)]
+        pub(super) struct SizedSurface(pub(super) Layout);
+        buffer_impls!(SizedSurface, SizedSurface_Impl);
+
+        impl IMF2DBuffer2_Impl for SizedSurface_Impl {
+            fn Lock2DSize(
+                &self,
+                _: MF2DBuffer_LockFlags,
+                scanline0: *mut *mut u8,
+                pitch: *mut i32,
+                start: *mut *mut u8,
+                len: *mut u32,
+            ) -> windows::core::Result<()> {
+                self.Lock2D(scanline0, pitch)?;
+                // SAFETY: valid out-pointers; the whole of `memory` is the readable extent.
                 unsafe {
-                    *scanline0 = self.memory.as_ptr().add(self.top).cast_mut();
-                    *pitch = self.pitch;
+                    *start = self.0.memory.as_ptr().cast_mut();
+                    *len = u32::try_from(self.0.memory.len()).unwrap_or(u32::MAX);
                 }
                 Ok(())
             }
-            fn Unlock2D(&self) -> windows::core::Result<()> {
-                Ok(())
-            }
-            fn GetScanline0AndPitch(&self, scanline0: *mut *mut u8, pitch: *mut i32) -> windows::core::Result<()> {
-                self.Lock2D(scanline0, pitch)
-            }
-            fn IsContiguousFormat(&self) -> windows::core::Result<BOOL> {
-                Ok(BOOL(0))
-            }
-            fn GetContiguousLength(&self) -> windows::core::Result<u32> {
-                Ok(0)
-            }
-            fn ContiguousCopyTo(&self, _: *mut u8, _: u32) -> windows::core::Result<()> {
-                Err(E_NOTIMPL.into())
-            }
-            fn ContiguousCopyFrom(&self, _: *const u8, _: u32) -> windows::core::Result<()> {
+            fn Copy2DTo(&self, _: Ref<'_, IMF2DBuffer2>) -> windows::core::Result<()> {
                 Err(E_NOTIMPL.into())
             }
         }
     }
+
+    const IMAGE_ROWS: usize = 4;
+    /// 32 YUY2 pixels: a row of 64 pixel bytes.
+    const ROW_BYTES: usize = 64;
 
     /// Row `row` of the test image: every pixel byte is `row + 1`, so a misplaced row or a padding byte shows.
     fn marker(row: usize) -> u8 {
         u8::try_from(row + 1).unwrap_or(u8::MAX)
     }
 
-    /// Locks a padded YUY2 surface (rows of 64 pixel bytes, 80 bytes apart, the padding 0xEE) the way `next_frame`
-    /// does, and returns the lock's cost, the packed-`Lock` count, the pitch and the frame's pixel rows.
-    fn lock_padded(bottom_up: bool) -> (Cost, usize, isize, Vec<Vec<u8>>) {
-        use std::sync::atomic::AtomicUsize;
-
-        const ROWS: usize = 4;
-        let mode = ModeInfo { format: PixelFormat::Yuy2, width: 32, height: 4, fps_num: 30, fps_den: 1 };
-        let (row, pitch) = (64_usize, 80_usize);
-        let mut memory = vec![0xEE_u8; pitch * ROWS];
-        for r in 0..ROWS {
-            // In memory order; a bottom-up image has its top row last.
-            let image_row = if bottom_up { ROWS - 1 - r } else { r };
-            memory[r * pitch..r * pitch + row].fill(marker(image_row));
+    /// A 32x4 YUY2 image in memory with rows `pitch` bytes apart (the padding 0xEE), bottom-up if asked, as a layout
+    /// whose packed copy has tight rows top-down.
+    fn layout(
+        pitch: usize,
+        bottom_up: bool,
+        packed_locks: &Arc<std::sync::atomic::AtomicUsize>,
+        offer_packed: bool,
+    ) -> surface::Layout {
+        let mut memory = vec![0xEE_u8; pitch * IMAGE_ROWS];
+        for r in 0..IMAGE_ROWS {
+            let image_row = if bottom_up { IMAGE_ROWS - 1 - r } else { r };
+            memory[r * pitch..r * pitch + ROW_BYTES].fill(marker(image_row));
         }
-        let packed = Arc::new(AtomicUsize::new(0));
-        let (top, signed) = if bottom_up { ((ROWS - 1) * pitch, -80) } else { (0, 80) };
-        let buffer: IMFMediaBuffer =
-            surface::Surface { memory, top, pitch: signed, packed: Arc::clone(&packed) }.into();
+        let packed = if offer_packed {
+            (0..IMAGE_ROWS).flat_map(|r| std::iter::repeat_n(marker(r), ROW_BYTES)).collect()
+        } else {
+            Vec::new()
+        };
+        let signed = i32::try_from(pitch).expect("a small pitch");
+        let (top, signed) = if bottom_up { ((IMAGE_ROWS - 1) * pitch, -signed) } else { (0, signed) };
+        surface::Layout { memory, top, pitch: signed, packed, packed_locks: Arc::clone(packed_locks) }
+    }
+
+    /// Locks `buffer` the way `next_frame` does and returns the cost, the pitch of the lock and the image's rows
+    /// top-down, each only its pixel bytes (what a consumer reads through the stride).
+    fn read_rows(buffer: IMFMediaBuffer) -> (Cost, isize, Vec<Vec<u8>>) {
+        let mode = ModeInfo { format: PixelFormat::Yuy2, width: 32, height: 4, fps_num: 30, fps_den: 1 };
         let id = CameraId("surface".into());
-        let (held, cost) = lock_buffer(buffer, &mode, 0, true, &id).expect("the surface locks through Lock2D");
+        // The packed lock's default stride is the tight, top-down one.
+        let (held, cost) = lock_buffer(buffer, &mode, ROW_BYTES.cast_signed(), true, &id).expect("the buffer locks");
         // SAFETY: the lock is held until `unlock` below, after the slice's last use.
         let bytes = unsafe { held.bytes() };
-        let mut flip = RowFlip::new(row * ROWS);
-        flip.set_len(row * ROWS).expect("the flip buffer is sized");
         let top_down: Vec<u8> = if held.pitch < 0 {
-            flip.fill(bytes, held.pitch, row, ROWS).expect("the rows flip").to_vec()
+            let mut flip = RowFlip::new(ROW_BYTES * IMAGE_ROWS);
+            flip.set_len(ROW_BYTES * IMAGE_ROWS).expect("the flip buffer is sized");
+            flip.fill(bytes, held.pitch, ROW_BYTES, IMAGE_ROWS).expect("the rows flip").to_vec()
         } else {
-            // What a consumer does with the borrow and its stride: the first `row` bytes of each row.
-            (0..ROWS).flat_map(|r| bytes[r * pitch..r * pitch + row].iter().copied()).collect()
+            let step = held.pitch.unsigned_abs();
+            (0..IMAGE_ROWS).flat_map(|r| bytes[r * step..r * step + ROW_BYTES].iter().copied()).collect()
         };
-        let pitch_seen = held.pitch;
+        let pitch = held.pitch;
         held.unlock();
-        (cost, packed.load(Ordering::SeqCst), pitch_seen, top_down.chunks(row).map(<[u8]>::to_vec).collect())
+        (cost, pitch, top_down.chunks(ROW_BYTES).map(<[u8]>::to_vec).collect())
     }
 
-    /// A padded top-down surface is borrowed as it lies: `Lock2D`'s pitch, no packed `Lock`, no copy, and every
-    /// pixel row right with no padding byte in it.
-    #[test]
-    fn a_padded_surface_is_locked_through_lock_2d() {
-        let (cost, packed_locks, pitch, rows) = lock_padded(false);
-        assert!(cost == Cost::Free, "a usable 2-D lock costs no copy");
-        assert_eq!(packed_locks, 0, "the packed Lock was used on a padded surface");
-        assert_eq!(pitch, 80);
+    fn assert_rows(rows: &[Vec<u8>]) {
+        assert_eq!(rows.len(), IMAGE_ROWS);
         for (r, pixels) in rows.iter().enumerate() {
             assert!(pixels.iter().all(|&b| b == marker(r)), "row {r} has foreign bytes: {pixels:?}");
         }
     }
 
-    /// A bottom-up padded surface comes out top-down with its pixels in the right rows and no padding.
+    /// A padded surface with a readable extent (`Lock2DSize`) is borrowed through its pitch: no packed lock, no copy,
+    /// right pixels, either way up.
     #[test]
-    fn a_padded_bottom_up_surface_flips_without_padding() {
-        let (cost, packed_locks, pitch, rows) = lock_padded(true);
-        assert!(cost == Cost::Free);
-        assert_eq!(packed_locks, 0);
-        assert_eq!(pitch, -80);
-        for (r, pixels) in rows.iter().enumerate() {
-            assert!(pixels.iter().all(|&b| b == marker(r)), "row {r} has foreign bytes: {pixels:?}");
+    fn a_padded_sized_surface_is_borrowed_through_its_pitch() {
+        for bottom_up in [false, true] {
+            let packed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let buffer: IMFMediaBuffer = surface::SizedSurface(layout(80, bottom_up, &packed, false)).into();
+            let (cost, pitch, rows) = read_rows(buffer);
+            assert!(cost == Cost::Free);
+            assert_eq!(packed.load(Ordering::SeqCst), 0, "the packed Lock was used");
+            assert_eq!(pitch, if bottom_up { -80 } else { 80 });
+            assert_rows(&rows);
         }
     }
 
-    /// What `Lock2D` guarantees is the frame's rows at the pitch: padding after every row counts, a bottom-up image
-    /// starts `height - 1` pitches before the top row, and MJPG has no rows.
+    /// With `Lock2D` alone (no extent), padding is not promised readable: a padded surface takes the packed lock and
+    /// its tight rows, so no padding byte is ever read or handed over as a pixel.
     #[test]
-    fn surface_extent_follows_the_pitch() {
+    fn a_padded_surface_without_an_extent_takes_the_packed_lock() {
+        let packed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let buffer: IMFMediaBuffer = surface::Surface(layout(80, false, &packed, true)).into();
+        let (cost, pitch, rows) = read_rows(buffer);
+        assert!(cost == Cost::MayCopy, "the fallback is counted");
+        assert_eq!(packed.load(Ordering::SeqCst), 1);
+        assert_eq!(pitch, ROW_BYTES.cast_signed());
+        assert_rows(&rows);
+    }
+
+    /// An unpadded `Lock2D` surface is borrowed as it lies, either way up: no packed lock, no copy.
+    #[test]
+    fn an_unpadded_surface_is_borrowed_through_lock_2d() {
+        for bottom_up in [false, true] {
+            let packed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let buffer: IMFMediaBuffer = surface::Surface(layout(ROW_BYTES, bottom_up, &packed, true)).into();
+            let (cost, pitch, rows) = read_rows(buffer);
+            assert!(cost == Cost::Free);
+            assert_eq!(packed.load(Ordering::SeqCst), 0, "the packed Lock was used");
+            assert_eq!(pitch, if bottom_up { -(ROW_BYTES.cast_signed()) } else { ROW_BYTES.cast_signed() });
+            assert_rows(&rows);
+        }
+    }
+
+    /// Only unpadded rows are borrowed through `Lock2D` alone; a bottom-up one starts `height - 1` pitches back.
+    #[test]
+    fn unpadded_back_accepts_only_tight_rows() {
         let yuy2 = ModeInfo { format: PixelFormat::Yuy2, width: 32, height: 4, fps_num: 30, fps_den: 1 };
-        assert_eq!(surface_extent(&yuy2, 80), Some((0, 320)));
-        assert_eq!(surface_extent(&yuy2, -80), Some((240, 320)));
-        let nv12 = ModeInfo { format: PixelFormat::Nv12, ..yuy2 };
-        assert_eq!(surface_extent(&nv12, 48), Some((0, 288)));
-        let mjpg = ModeInfo { format: PixelFormat::Mjpg, ..yuy2 };
-        assert_eq!(surface_extent(&mjpg, 80), None);
+        assert_eq!(unpadded_back(&yuy2, 64), Some(0));
+        assert_eq!(unpadded_back(&yuy2, -64), Some(192));
+        assert_eq!(unpadded_back(&yuy2, 80), None);
+        assert_eq!(unpadded_back(&yuy2, 0), None);
+        assert_eq!(unpadded_back(&ModeInfo { format: PixelFormat::Mjpg, ..yuy2 }, 64), None);
     }
 }
