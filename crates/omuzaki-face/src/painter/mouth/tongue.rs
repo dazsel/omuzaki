@@ -51,7 +51,7 @@ const SHINE_RY: f32 = 0.18;
 pub(super) fn paint(ctx: &mut PaintCtx<'_>) {
     let strength = ctx.params.mouth.tongue;
     let Some(open) = ctx.open_mouth else { return };
-    let opacity = ((strength - MIN) / FADE_IN).clamp(0.0, 1.0);
+    let opacity = ((strength - MIN) / FADE_IN).clamp(0.0, 1.0) * open.reveal;
     if opacity <= 0.0 {
         return;
     }

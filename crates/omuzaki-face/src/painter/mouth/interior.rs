@@ -109,9 +109,9 @@ fn tongue(ctx: &mut PaintCtx<'_>, open: &OpenMouth) {
     let (c, w, h) = (open.centre, open.half_width, open.height);
     let list = ctx.list(FaceLayerId::Base);
     let body = list.path().ellipse(c - Vec2::new(0.0, h * TONGUE_AT), w * TONGUE_RX, h * TONGUE_RY).finish();
-    list.fill(body, Paint::Solid(colour));
+    list.push(Cmd::Fill { path: body, paint: Paint::Solid(colour), opacity: open.reveal });
     let shine = list.path().ellipse(c + Vec2::new(w * SHINE_X, -h * SHINE_AT), w * SHINE_RX, h * SHINE_RY).finish();
-    list.fill(shine, solid(lighten(colour, SHINE_WHITE), SHINE_ALPHA));
+    list.push(Cmd::Fill { path: shine, paint: solid(lighten(colour, SHINE_WHITE), SHINE_ALPHA), opacity: open.reveal });
 }
 
 fn upper_teeth(ctx: &mut PaintCtx<'_>, open: &OpenMouth) {
@@ -136,7 +136,7 @@ fn upper_teeth(ctx: &mut PaintCtx<'_>, open: &OpenMouth) {
         outline = outline.line_to(edge(i) - Vec2::new(0.0, depth));
     }
     let band = outline.close().finish();
-    list.fill(band, Paint::Solid(colour));
+    list.push(Cmd::Fill { path: band, paint: Paint::Solid(colour), opacity: open.reveal });
 }
 
 fn lower_teeth(ctx: &mut PaintCtx<'_>, open: &OpenMouth) {
@@ -159,7 +159,7 @@ fn lower_teeth(ctx: &mut PaintCtx<'_>, open: &OpenMouth) {
         .line_to(Vec2::new(c.x - w, top - row_height))
         .close()
         .finish();
-    list.push(Cmd::Fill { path: row, paint: Paint::Solid(colour), opacity: strength.min(1.0) });
+    list.push(Cmd::Fill { path: row, paint: Paint::Solid(colour), opacity: strength.min(1.0) * open.reveal });
     if clenched {
         let y = c.y - h * SPLIT_AT;
         let split = list.path().move_to(Vec2::new(c.x - w, y)).line_to(Vec2::new(c.x + w, y)).finish();
@@ -170,7 +170,7 @@ fn lower_teeth(ctx: &mut PaintCtx<'_>, open: &OpenMouth) {
             width: SPLIT_WIDTH,
             cap: Cap::Round,
             join: Join::Round,
-            opacity: strength.min(1.0),
+            opacity: strength.min(1.0) * open.reveal,
         });
     }
 }
@@ -203,7 +203,7 @@ fn fangs(ctx: &mut PaintCtx<'_>, open: &OpenMouth) {
             .line_to(base + Vec2::new(side * FANG_LEAN, -length))
             .close()
             .finish();
-        list.push(Cmd::Fill { path: fang, paint: Paint::Solid(colour), opacity: strength.min(1.0) });
+        list.push(Cmd::Fill { path: fang, paint: Paint::Solid(colour), opacity: strength.min(1.0) * open.reveal });
     }
 }
 

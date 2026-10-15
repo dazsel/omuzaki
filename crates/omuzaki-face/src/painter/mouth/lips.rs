@@ -16,7 +16,7 @@ use omuzaki_core::glam::{Affine2, Vec2};
 use omuzaki_face_api::{Cap, Cmd, Colour, ColourExt, FaceLayerId, Join, Paint, Stops, narrow};
 
 use super::OpenMouth;
-use super::shape::{Frame, Kind};
+use super::shape::{Frame, Kind, lerp};
 use crate::painter::PaintCtx;
 
 // The tongue (outside this change) takes its helpers from here.
@@ -97,7 +97,18 @@ pub(super) fn paint_gloss(ctx: &mut PaintCtx<'_>) {
     let strength = narrow(ctx.profile.mouth.lips.strength);
     // `(half-width, the lower edge of the lips as drawn, strength)`.
     let (half_width, edge, strength) = match frame.kind() {
-        Kind::Kiss => (frame.half_width, frame.centre.y - KISS_DEPTH, strength.max(KISS_LIPS)),
+        Kind::Kiss => {
+            let kiss = (frame.half_width, frame.centre.y - KISS_DEPTH, strength.max(KISS_LIPS));
+            match ctx.open_mouth {
+                // The kiss is giving way to the open lens: the gloss moves from one to the other with it.
+                Some(open) => {
+                    let lens = (open.half_width, open.centre.y + open.bottom(0.0) * open.fade, strength);
+                    let to = |from: f32, to: f32| lerp(from, to, open.reveal);
+                    (to(kiss.0, lens.0), to(kiss.1, lens.1), to(kiss.2, lens.2))
+                }
+                None => kiss,
+            }
+        }
         Kind::Closed => (frame.half_width, frame.centre.y, strength),
         // Under the lower edge as drawn, which a smile lowers by `drop` (the prototype hangs it from the nominal edge,
         // so at a strong smile its gloss floats off the lip).
@@ -170,7 +181,14 @@ pub(super) fn paint_rim(ctx: &mut PaintCtx<'_>) {
     let outer = Paint::Solid(mix(line, colour, fade));
     let outer_width = outer_width(ctx, &open, width);
     let list = ctx.list(FaceLayerId::Base);
-    list.stroke(open.path, outer, outer_width);
+    list.push(Cmd::Stroke {
+        path: open.path,
+        paint: outer,
+        width: outer_width,
+        cap: Cap::Round,
+        join: Join::Round,
+        opacity: open.reveal,
+    });
     if glossy && fade > 0.0 {
         let light = solid(lighten(tint, RIM_LIGHT_WHITE), RIM_LIGHT_ALPHA * lips);
         list.push(Cmd::Stroke {
@@ -179,7 +197,7 @@ pub(super) fn paint_rim(ctx: &mut PaintCtx<'_>) {
             width: RIM_LIGHT_WIDTH * fade,
             cap: Cap::Round,
             join: Join::Round,
-            opacity: fade,
+            opacity: fade * open.reveal,
         });
     }
 }
