@@ -3,9 +3,14 @@
 
 [[case]]
 name = "morph"
-description = "Morph targets on the GPU renderer (software Vulkan): a quad sliding at weights 0, 0.5 and 1, then an outlined cube casting a shadow as a target stretches it and tilts its normals, at the same weights."
+description = "Morph targets (software Vulkan): a quad sliding at weights 0, 0.5 and 1 as the CPU path (the reference) draws it, as the GPU path does, and their difference; then an outlined, shadow-casting cube on the GPU path as a target stretches it and tilts its normals, at the same weights."
 env = { OMUZAKI_MORPH_PPM = "{out}" }
 steps = [
     { run = ["cargo", "test", "--locked", "-p", "omuzaki-render", "--test", "morph", "render_the_morph_pictures_when_asked", "--", "--exact"] },
 ]
-images = ["quad-0.ppm", "quad-0.5.ppm", "quad-1.ppm", "outlined-0.ppm", "outlined-0.5.ppm", "outlined-1.ppm"]
+images = [
+    "quad-cpu-0.ppm", "quad-gpu-0.ppm", "quad-diff-0.ppm",
+    "quad-cpu-0.5.ppm", "quad-gpu-0.5.ppm", "quad-diff-0.5.ppm",
+    "quad-cpu-1.ppm", "quad-gpu-1.ppm", "quad-diff-1.ppm",
+    "outlined-0.ppm", "outlined-0.5.ppm", "outlined-1.ppm",
+]
