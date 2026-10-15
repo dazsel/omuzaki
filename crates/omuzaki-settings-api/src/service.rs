@@ -115,14 +115,25 @@ impl ListFilter {
 /// Taking the snapshot is an `Arc` clone with no lock beyond the pointer swap in the service, and [`value`](Self::value)
 /// is a map lookup. The typed [`get`](Self::get) clones and deserialises, so it allocates for strings and lists: a
 /// real-time consumer copies the value it needs when its key's event arrives and never calls it per frame (D6).
-/// A snapshot holds every registered key, so a lookup of a registered key always succeeds.
-#[derive(Clone, Debug, Default, PartialEq)]
+/// A snapshot built by [`defaults`](Snapshot::defaults), [`Default`] or a service holds every registered key, so a
+/// lookup of a registered key always succeeds; [`new`](Snapshot::new) keeps exactly the entries it is given.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Snapshot {
     entries: BTreeMap<String, (Value, Source)>,
 }
 
+impl Default for Snapshot {
+    /// Every registered key at its default, the same as [`defaults`](Snapshot::defaults): an empty snapshot would
+    /// break the rule that a registered key is always found.
+    fn default() -> Self {
+        Self::defaults()
+    }
+}
+
 impl Snapshot {
-    /// A snapshot of `entries`, which a service builds from the registry, the layers and the active profile.
+    /// A snapshot of `entries`, which a service builds from the registry, the layers and the active profile. It holds
+    /// what it is given, so a service passes every registered key; a key left out reads as unknown from
+    /// [`get`](Self::get).
     #[must_use]
     pub fn new(entries: BTreeMap<String, (Value, Source)>) -> Self {
         Self { entries }

@@ -132,6 +132,71 @@ fn the_schema_is_derived_and_a_secret_ref_is_a_plain_string() {
 }
 
 #[test]
+fn the_default_snapshot_holds_every_registered_key_and_a_hand_built_one_only_what_it_is_given() {
+    let snap = Snapshot::default();
+    assert_eq!(snap, Snapshot::defaults());
+    assert_eq!(snap.get::<Scale>().unwrap(), 100, "a registered key is always found");
+    assert_eq!(snap.get::<Conn>().unwrap().api_key.unwrap().label(), "connector/openai");
+    let empty = Snapshot::new(std::collections::BTreeMap::new());
+    let e = empty.get::<Scale>().unwrap_err();
+    assert!(matches!(e.kind, SettingErrorKind::UnknownKey) && e.key == "ui.scale", "{e}");
+}
+
+/// A setting whose `check` and `migrate` put the wrong key, or none, in their errors.
+struct Careless;
+impl Setting for Careless {
+    type Value = u8;
+    const META: SettingMeta = SettingMeta::new(
+        "ui.careless",
+        "Errors with the wrong key",
+        SettingScope::User,
+        AgentWrite::Free,
+        InProfile::Member,
+        Apply::Live,
+        2,
+    );
+    fn default() -> u8 {
+        0
+    }
+    fn check(v: &u8) -> Result<(), SettingError> {
+        match v {
+            1 => Err(SettingError::invalid("", "no key at all")),
+            2 => Err(SettingError::invalid("audio.device", "somebody else's key")),
+            3 => SettingError::range("ui.careless", *v, 0, 2),
+            _ => Ok(()),
+        }
+    }
+    fn migrate(from: u32, old: serde_json::Value) -> Result<serde_json::Value, SettingError> {
+        match from {
+            0 => Err(SettingError::invalid("", "no key at all")),
+            1 => Err(SettingError::wrong_type("audio.device", "somebody else's key")),
+            _ => Ok(old),
+        }
+    }
+}
+
+#[test]
+fn errors_from_a_settings_own_callbacks_always_name_the_registered_key() {
+    let reg = SettingRegistration::of::<Careless>("t");
+    for value in [1, 2, 3] {
+        let e = reg.validate(&json!(value)).unwrap_err();
+        assert_eq!(e.key, "ui.careless", "check returned a key of its own for {value}: {e}");
+        assert!(e.to_string().contains("`ui.careless`"), "{e}");
+    }
+    assert!(reg.validate(&json!(0)).is_ok());
+    for from in [0, 1] {
+        let e = reg.migrate(from, json!(7)).unwrap_err();
+        assert_eq!(e.key, "ui.careless", "migrate from {from}: {e}");
+    }
+    assert_eq!(reg.migrate(2, json!(7)).unwrap(), json!(7));
+    // The reason and the kind are the callback's own; only the key is normalised.
+    assert!(matches!(reg.validate(&json!(1)).unwrap_err().kind, SettingErrorKind::Invalid { .. }));
+    assert!(matches!(reg.migrate(1, json!(7)).unwrap_err().kind, SettingErrorKind::WrongType { .. }));
+    // And the checker reports the default's failure under the registered key too.
+    assert_eq!(SettingError::invalid("a.b", "x").for_key("c.d").key, "c.d");
+}
+
+#[test]
 fn a_snapshot_of_defaults_reads_typed_values() {
     let snap = Snapshot::defaults();
     assert_eq!(snap.get::<Scale>().unwrap(), 100);

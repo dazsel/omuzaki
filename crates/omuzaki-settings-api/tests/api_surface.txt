@@ -23,6 +23,7 @@ src/error.rs: enum SettingErrorKind: BadProfileName { reason: String }
 src/error.rs: enum SettingErrorKind: Storage { reason: String }
 src/error.rs: impl SettingErrorKind: #[must_use] pub const fn id(&self) -> &'static str
 src/error.rs: impl SettingError: #[must_use] pub fn new(key: impl Into<String>, kind: SettingErrorKind) -> Self
+src/error.rs: impl SettingError: #[must_use] pub fn for_key(mut self, key: impl Into<String>) -> Self
 src/error.rs: impl SettingError: #[must_use] pub fn unknown_key(key: impl Into<String>) -> Self
 src/error.rs: impl SettingError: #[must_use] pub fn wrong_type(key: impl Into<String>, reason: impl fmt::Display) -> Self
 src/error.rs: impl SettingError: #[must_use] pub fn invalid(key: impl Into<String>, reason: impl Into<String>) -> Self
@@ -158,7 +159,8 @@ src/service.rs: struct ListFilter: pub changed: bool
 src/service.rs: impl ListFilter: #[must_use] pub fn all() -> Self
 src/service.rs: impl ListFilter: #[must_use] pub fn with_area(mut self, area: impl Into<String>) -> Self
 src/service.rs: impl ListFilter: #[must_use] pub fn only_changed(mut self) -> Self
-src/service.rs: #[derive(Clone, Debug, Default, PartialEq)] pub struct Snapshot
+src/service.rs: #[derive(Clone, Debug, PartialEq)] pub struct Snapshot
+src/service.rs: impl Default for Snapshot
 src/service.rs: impl Snapshot: #[must_use] pub fn new(entries: BTreeMap<String, (Value, Source)>) -> Self
 src/service.rs: impl Snapshot: #[must_use] pub fn defaults() -> Self
 src/service.rs: impl Snapshot: #[must_use] pub fn value(&self, key: &str) -> Option<&Value>
