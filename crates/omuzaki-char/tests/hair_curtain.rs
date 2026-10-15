@@ -54,10 +54,27 @@ impl UnitStream for Script {
     }
 }
 
-fn compile_with(g: &CurtainGen, stream: &mut dyn UnitStream) -> CompiledGroup {
+/// The [`Egg`] moved `dx` along x.
+#[derive(Debug)]
+struct Moved(f32);
+
+impl HeadSurface for Moved {
+    fn centre(&self) -> Vec3 {
+        Egg.centre() + Vec3::X * self.0
+    }
+    fn radius(&self, dir: Vec3) -> f32 {
+        Egg.radius(dir)
+    }
+}
+
+fn compile_on(head: &dyn HeadSurface, g: &CurtainGen, stream: &mut dyn UnitStream) -> CompiledGroup {
     let (palette, id, dynamics) = (Palette::default(), GroupId::new("curtain").unwrap(), Dynamics::default());
-    let mut ctx = HairGenCtx::new(&Egg, &palette, Quality::Live, &id, &dynamics, stream);
+    let mut ctx = HairGenCtx::new(head, &palette, Quality::Live, &id, &dynamics, stream);
     curtain::compile(g, &mut ctx)
+}
+
+fn compile_with(g: &CurtainGen, stream: &mut dyn UnitStream) -> CompiledGroup {
+    compile_on(&Egg, g, stream)
 }
 
 fn compile_forked(g: &CurtainGen, seed: u64) -> CompiledGroup {
@@ -132,28 +149,72 @@ fn each_guide_draws_six_numbers_and_nothing_else() {
     assert_eq!(s.drawn, 6 * 20);
 }
 
+/// The synthetic envelope, evaluated by hand: linear between rows, the rows running down from the neck.
+fn envelope_by_hand(y: f64) -> f64 {
+    let rows = [(1.6, 0.11), (1.4, 0.17), (1.2, 0.22), (0.9, 0.26), (0.5, 0.3)];
+    let (hi, lo) = rows.windows(2).map(|w| (w[0], w[1])).find(|(hi, lo)| y <= hi.0 && y >= lo.0).expect("in range");
+    hi.1 + (lo.1 - hi.1) * (hi.0 - y) / (hi.0 - lo.0)
+}
+
+/// Where the tip of guide `n` of `count` must stand for the six draws `d` of its turn (each in `0..1`), worked out from
+/// the issue's formulas alone: at `t = 1` the smoothsteps are all 1, and the resample ends exactly on the last point.
+fn expected_tip(g: &CurtainGen, n: usize, root_y: f64, d: [f64; 6]) -> [f64; 3] {
+    let u = n as f64 / f64::from(g.count - 1);
+    let azimuth = ((-g.spread_deg + 2.0 * g.spread_deg * u).to_radians() + std::f64::consts::PI)
+        .rem_euclid(std::f64::consts::TAU);
+    let (sin, cos) = (azimuth.sin(), azimuth.cos());
+    let backness = cos.abs();
+    let jitter = |lo: f64, hi: f64, v: f64| lo + (hi - lo) * v;
+    let length = (g.length_front + (g.length_back - g.length_front) * backness)
+        * (0.95 + 0.05 * (23.0 * u).sin() + jitter(-0.03, 0.03, d[0]));
+    let amplitude = g.wave.amplitude + jitter(-0.006, 0.006, d[1]);
+    let swing = std::f64::consts::TAU * g.wave.frequency
+        + jitter(-1.0, 1.0, d[2])
+        + g.wave.phase
+        + 10.0 * u
+        + jitter(-0.6, 0.6, d[3]);
+    let curl = jitter(0.5, 1.0, d[4]) * if d[5] < 0.5 { -1.0 } else { 1.0 } * g.wave.curl;
+    let tip_y = root_y - length;
+    let outer = envelope_by_hand(tip_y) * 0.98 * (1.0 - 0.2 * backness);
+    let out = outer + swing.cos() * amplitude * 0.7;
+    let side = swing.sin() * amplitude + curl;
+    // The curl's pull and lift at the prototype's curl size (`wave.curl = 0.045`).
+    [sin * (out - 0.015) + cos * side, tip_y + 0.045, -0.03 + cos * (out - 0.015) - sin * side]
+}
+
 #[test]
 fn the_six_draws_come_in_the_prototypes_order() {
-    // Vary one draw of the first guide at a time (the stream is otherwise 0.5) and see which quantity moves.
     let mut g = params(8);
     g.wave.curl = 0.045;
-    let base = |slot: usize, v: f64| {
-        let mut values = vec![0.5; 6];
-        values[slot] = v;
-        let mut s = Script { values, drawn: 0 };
-        compile_with(&g, &mut s).clumps.swap_remove(0).rest
-    };
-    let length = |r: &[Vec3]| r[0].y - r[GUIDE_POINTS - 1].y;
-    let (lo, hi) = (base(0, 0.0), base(0, 1.0));
-    assert!(length(&hi) > length(&lo), "draw 1 is the length jitter");
-    for slot in 1..6 {
-        let (lo, hi) = (base(slot, 0.0), base(slot, 1.0));
-        assert_ne!(lo, hi, "draw {} changes the guide", slot + 1);
-        assert!((length(&lo) - length(&hi)).abs() < 0.02, "draw {} is not the length", slot + 1);
+    // Distinct values, so that swapping any two draws moves the tip; the last decides the curl's side.
+    for draws in [[0.2, 0.9, 0.7, 0.1, 0.8, 0.3], [0.6, 0.15, 0.95, 0.4, 0.05, 0.8]] {
+        let mut s = Script { values: draws.to_vec(), drawn: 0 };
+        let group = compile_with(&g, &mut s);
+        for n in [0, 3, 7] {
+            let rest = &group.clumps[n].rest;
+            let want = expected_tip(&g, n, f64::from(rest[0].y), draws);
+            let tip = rest[GUIDE_POINTS - 1];
+            let got = [f64::from(tip.x), f64::from(tip.y), f64::from(tip.z)];
+            for axis in 0..3 {
+                assert!((got[axis] - want[axis]).abs() < 1e-4, "draws {draws:?} guide {n}: tip {got:?}, want {want:?}");
+            }
+        }
     }
-    // Draw 6 is the curl sign: below 0.5 curls one way, at or above the other, mirrored about the heading.
-    let (neg, pos) = (base(5, 0.2), base(5, 0.8));
-    assert_ne!(neg[GUIDE_POINTS - 1], pos[GUIDE_POINTS - 1]);
+}
+
+#[test]
+fn a_head_moved_along_x_gives_the_same_guides_moved_by_as_much() {
+    let g = params(24);
+    for dx in [1.0_f32, -0.7] {
+        let (mut a, mut b) =
+            (Script { values: vec![0.37, 0.81, 0.52], drawn: 0 }, Script { values: vec![0.37, 0.81, 0.52], drawn: 0 });
+        let (home, moved) = (compile_on(&Egg, &g, &mut a), compile_on(&Moved(dx), &g, &mut b));
+        for (h, m) in home.clumps.iter().zip(&moved.clumps) {
+            for (p, q) in h.rest.iter().zip(&m.rest) {
+                assert!((*q - (*p + Vec3::X * dx)).abs().max_element() < 1e-5, "dx {dx}: {p} became {q}");
+            }
+        }
+    }
 }
 
 #[test]
@@ -195,6 +256,11 @@ fn degenerate_parameters_still_build_every_guide() {
     let group = compile_forked(&g, 1);
     assert_eq!(group.clumps.len(), 8);
     assert!(group.clumps.iter().all(|c| c.rest.len() == GUIDE_POINTS));
+}
+
+#[test]
+fn a_non_finite_parameter_still_makes_every_clump() {
+    // Pins the clump count only (the contract check that rejects such a group is #1775); the points are not promised.
     let nan = CurtainGen { count: 8, spread_deg: f64::NAN, ..CurtainGen::default() };
     assert_eq!(compile_forked(&nan, 1).clumps.len(), 8);
 }

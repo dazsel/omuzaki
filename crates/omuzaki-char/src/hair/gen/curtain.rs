@@ -16,8 +16,8 @@
 //! wave frequency, wave phase, curl size, curl sign.
 //!
 //! **Axis.** Like the prototype, a guide is measured from the body axis at `x` of the head centre and
-//! `z = `[`BODY_AXIS_Z`], but its fall starts from the root's distance from the origin's `z`, so the first step runs a
-//! little outward. That is the prototype's look, kept for parity.
+//! `z = `[`BODY_AXIS_Z`], but its fall starts from the root's distance from the axis in `x` and from the origin in `z`,
+//! so the first step runs a little outward. That is the prototype's look, kept for parity.
 //!
 //! The group's stiffness and follow are its [`Dynamics`](omuzaki_char_api::Dynamics), applied by the context.
 
@@ -164,7 +164,7 @@ fn guide(params: &CurtainGen, ctx: &HairGenCtx<'_>, centre: Vec3, u: f64, draws:
         lerp(params.length_front, params.length_back, backness) * (0.95 + 0.05 * (u * 23.0).sin() + draws.length);
     let axis = DVec3::new(f64::from(centre.x), 0.0, BODY_AXIS_Z);
     let (sin, cos) = phi.sin_cos();
-    let root_reach = root.x.hypot(root.z);
+    let root_reach = (root.x - axis.x).hypot(root.z);
     let amplitude = params.wave.amplitude + draws.amplitude;
     let frequency = std::f64::consts::TAU * params.wave.frequency + draws.frequency;
     let phase = params.wave.phase + u * 10.0 + draws.phase;
