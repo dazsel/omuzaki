@@ -1,4 +1,9 @@
-//! The test every crate that registers settings runs (the `check_crate!` pattern of l10n-ops §10.1).
+//! The two tests that keep the settings registry well formed: [`check_crate!`](crate::check_crate) in every crate that registers
+//! settings (the pattern of l10n-ops §10.1), and [`check_app!`](crate::check_app) once in every App.
+//!
+//! A crate's own test sees only that crate and the crates it links, so two sibling crates that never depend on each
+//! other can both pass it while registering the same key or a key under the other's. They meet only in an App that
+//! links both, which is why the App runs the second test, over everything its `link()` reaches: see [`check_app!`](crate::check_app).
 //!
 //! ```ignore
 //! // crates/<crate>/tests/settings.rs
@@ -11,10 +16,23 @@
 //! exactly like an empty one.
 //!
 //! It also fails a key with a bad name, a key that is a prefix of another or that another is a prefix of (either
-//! side, whichever crate owns it), a default that fails its own `check` or does not round-trip through TOML, a missing
+//! side, among the crates the test binary links), a default that fails its own `check` or does not round-trip through TOML, a missing
 //! or multi-line summary, a `Machine` key marked `Member`, a version of 0, a bad `RENAMED_FROM`, and a schema
 //! containing `format: "secret"`. The problems are plain strings, so [`problems`] is also how this crate tests the
 //! checker itself.
+//!
+//! # The App test
+//!
+//! ```ignore
+//! // crates/<app>/tests/settings.rs
+//! omuzaki_settings_api::check_app!(my_app);
+//! ```
+//!
+//! It calls the App's `link()` (which forwards to every registering crate it depends on), then checks the complete
+//! registry for what no single crate can see: a key registered by two crates, a key that is a prefix of another
+//! crate's key (in either direction), an old key two settings both retire in `RENAMED_FROM`, and an old key that is
+//! a live setting elsewhere. It fails on an empty registry for the same reason `check_crate!` does. The per-key rules
+//! stay in `check_crate!`, so a problem is reported once, where its author can fix it.
 
 use std::fmt::Write as _;
 
@@ -65,6 +83,89 @@ pub fn problems(all: &[&SettingRegistration], package: &str) -> Vec<String> {
         reg_problems(reg, all, &mut out);
     }
     out
+}
+
+/// Expands to the test an App runs once over the whole settings registry: `check_app!(my_app)` calls
+/// `my_app::link()` and then [`check::registry_problems`](crate::check::registry_problems).
+#[macro_export]
+macro_rules! check_app {
+    ($app:ident) => {
+        #[test]
+        fn the_settings_of_every_linked_crate_fit_together() {
+            $crate::check::assert_app($app::link);
+        }
+    };
+}
+
+/// Calls `link` (the App's `link()`), then panics with every problem in the complete registry.
+///
+/// # Panics
+/// When [`registry_problems`] finds any: this is a test helper.
+#[allow(clippy::panic)]
+pub fn assert_app(link: fn()) {
+    link();
+    let all: Vec<_> = registry::registrations().collect();
+    let found = registry_problems(&all);
+    assert!(found.is_empty(), "settings problems across the registry:\n  {}", found.join("\n  "));
+}
+
+/// The problems that need the whole registry (`all` must hold every registration the App links), each reported once.
+/// Empty means the crates' settings fit together; an empty registry is a problem.
+#[must_use]
+pub fn registry_problems(all: &[&SettingRegistration]) -> Vec<String> {
+    let mut out = Vec::new();
+    if all.is_empty() {
+        out.push("no settings are registered: the App's link() reaches no crate that registers them".to_owned());
+        return out;
+    }
+    let mut sorted = all.to_vec();
+    sorted.sort_by_key(|r| (r.meta.key, r.package));
+    // In key order a key is followed by exactly its duplicates and descendants, so each run ends at the first other key.
+    for (i, a) in sorted.iter().enumerate() {
+        let (key, owner) = (a.meta.key, a.package);
+        for b in &sorted[i + 1..] {
+            let (other, other_owner) = (b.meta.key, b.package);
+            if other == key {
+                out.push(if owner == other_owner {
+                    format!("`{key}` is registered twice by `{owner}`")
+                } else {
+                    format!("`{key}` is registered by both `{owner}` and `{other_owner}`")
+                });
+            } else if is_ancestor(key, other) {
+                out.push(format!(
+                    "`{key}` ({owner}) is a prefix of `{other}` ({other_owner}): a value and a table cannot share one TOML path"
+                ));
+            } else {
+                break;
+            }
+        }
+    }
+    retired_problems(&sorted, &mut out);
+    out
+}
+
+/// `RENAMED_FROM` entries that are claimed twice, or that are still live keys.
+fn retired_problems(sorted: &[&SettingRegistration], out: &mut Vec<String>) {
+    let mut retired: Vec<(&str, &SettingRegistration)> =
+        sorted.iter().flat_map(|r| r.renamed_from.iter().map(move |old| (*old, *r))).collect();
+    retired.sort_by_key(|(old, r)| (*old, r.meta.key));
+    for pair in retired.windows(2) {
+        let ((old, first), (again, second)) = (pair[0], pair[1]);
+        if old == again {
+            out.push(format!(
+                "`{old}` is retired by both `{}` ({}) and `{}` ({}): a stored value could migrate to either",
+                first.meta.key, first.package, second.meta.key, second.package
+            ));
+        }
+    }
+    for (old, by) in &retired {
+        if let Some(live) = sorted.iter().find(|r| r.meta.key == *old) {
+            out.push(format!(
+                "`{old}`, retired by `{}` ({}), is still the key of a setting in `{}`",
+                by.meta.key, by.package, live.package
+            ));
+        }
+    }
 }
 
 /// Whether `outer` is a dotted ancestor of `inner` (`mascot.size` of `mascot.size.max`), which TOML cannot hold as

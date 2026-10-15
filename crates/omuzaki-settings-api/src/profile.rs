@@ -53,6 +53,7 @@ pub struct ProfileInfo {
     /// The stable id.
     pub id: ProfileId,
     /// The display name (any text, 1 to [`NAME_MAX`] characters).
+    #[schemars(length(min = 1, max = NAME_MAX))]
     pub name: String,
     /// How many keys the profile overrides.
     pub keys: u32,
@@ -111,6 +112,13 @@ mod tests {
             ProfileId::STEM_MAX + 1 + ProfileId::SUFFIX_LEN
         );
         assert!(ProfileId::from_name("x", "K3F9").is_err());
+    }
+
+    #[test]
+    fn the_schema_of_a_listed_name_carries_the_length_limits_validate_name_enforces() {
+        let json = serde_json::to_value(schemars::schema_for!(ProfileInfo)).unwrap();
+        let name = &json["properties"]["name"];
+        assert_eq!((&name["minLength"], &name["maxLength"]), (&1.into(), &NAME_MAX.into()), "{name}");
     }
 
     #[test]
