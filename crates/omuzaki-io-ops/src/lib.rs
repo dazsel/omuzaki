@@ -22,6 +22,7 @@
 //! | [`gather::springs`], [`gather::avatar`] | the VRM avatar block and spring bones |
 //! | [`prepare::humanoid`] | `auto_map`, `apply`: propose the humanoid bones of a skinned skeleton, with an override table |
 //! | [`fit_bones`] | `reduce_bones`: cut a skin's joints to a budget, the `fit.bones` stage |
+//! | [`ops::progress::JobProgress`] | the adapter from a job's context to the io progress trait |
 //!
 //! Ops register themselves with `omuzaki_ops_api::register_op!` next to their definition, so nothing here lists them.
 //! A binary keeps them only if it links this crate, so an app that wants the ops calls [`link`] at startup (ADR 0015).

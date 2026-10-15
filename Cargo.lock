@@ -3868,6 +3868,8 @@ dependencies = [
  "omuzaki-core",
  "omuzaki-doc-api",
  "omuzaki-doc-mock",
+ "omuzaki-history-api",
+ "omuzaki-history-mock",
  "omuzaki-ops-api",
  "omuzaki-ops-mock",
  "omuzaki-store-api",
@@ -4109,8 +4111,11 @@ name = "omuzaki-stream-api"
 version = "0.0.0"
 dependencies = [
  "bytes",
+ "omuzaki-core",
+ "omuzaki-render-api",
  "schemars",
  "serde",
+ "serde_json",
  "thiserror 2.0.21",
 ]
 
@@ -6991,6 +6996,7 @@ version = "0.0.0"
 dependencies = [
  "clap",
  "flate2",
+ "omuzaki-ai-api",
  "omuzaki-core",
  "omuzaki-embed",
  "omuzaki-library-api",

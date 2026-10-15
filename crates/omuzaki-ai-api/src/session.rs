@@ -24,8 +24,10 @@ pub enum Provider {
 }
 
 /// How to load a session. The registry builds it: the manifest's provider preferences, filtered by the person's
-/// settings, and the slot's thread count.
+/// settings, and the slot's thread count. Build one with [`SessionOptions::new`] (the contract grows, so it is
+/// `#[non_exhaustive]` and a field added later does not break callers).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct SessionOptions {
     /// Providers to try, best first. A runtime skips any it doesn't have and always ends with [`Provider::Cpu`].
     pub providers: Vec<Provider>,
@@ -34,10 +36,44 @@ pub struct SessionOptions {
     pub threads: u16,
 }
 
+impl SessionOptions {
+    /// Options for `providers` and `threads`.
+    #[must_use]
+    pub fn new(providers: Vec<Provider>, threads: u16) -> Self {
+        Self { providers, threads }
+    }
+}
+
 impl Default for SessionOptions {
     /// CPU only, one thread: the cheapest setting, right for small per-frame models.
     fn default() -> Self {
-        Self { providers: vec![Provider::Cpu], threads: 1 }
+        Self::new(vec![Provider::Cpu], 1)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_default_is_cpu_and_one_thread() {
+        let options = SessionOptions::default();
+        assert_eq!((options.providers.as_slice(), options.threads), ([Provider::Cpu].as_slice(), 1));
+        assert_eq!(options, SessionOptions::new(vec![Provider::Cpu], 1));
+    }
+
+    #[test]
+    fn the_constructor_keeps_what_it_is_given() {
+        let options = SessionOptions::new(vec![Provider::Cuda, Provider::Cpu], 3);
+        assert_eq!((options.providers, options.threads), (vec![Provider::Cuda, Provider::Cpu], 3));
+    }
+
+    #[test]
+    fn options_round_trip_through_serde() {
+        let options = SessionOptions::new(vec![Provider::Cpu], 2);
+        let json = serde_json::to_string(&options).unwrap();
+        assert_eq!(json, r#"{"providers":["cpu"],"threads":2}"#);
+        assert_eq!(serde_json::from_str::<SessionOptions>(&json).unwrap(), options);
     }
 }
 
