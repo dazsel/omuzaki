@@ -21,7 +21,9 @@ use std::time::{Duration, Instant};
 
 use omuzaki_anim_api::{ARKIT_COUNT, ChannelMask, FrameSource, TrackFrame, TrackStatus};
 use omuzaki_core::time::{Clock, FakeClock, Seconds, SystemClock};
-use omuzaki_track::webcam::{Failures, FrameConverter, FrameTracker, PreviewFrame, WebcamConfig, WebcamTracker};
+use omuzaki_track::webcam::{
+    Failures, FrameConverter, FrameTracker, PreviewFrame, WebcamConfig, WebcamTracker, tier_camera, tier_stride,
+};
 use omuzaki_track::{FaceSample, FaceTrackError, NormRect, RgbFrame, StageTimings};
 use omuzaki_track_api::camera::{
     Camera, CameraFormat, CameraFormatRequest, CameraFrame, CameraId, CameraInfo, CameraStream, DeviceTime, PixelFormat,
@@ -101,12 +103,23 @@ struct Scripted {
     measure: Option<std::ops::Range<usize>>,
     /// Sends on this when frame `.0` arrives, so a test can end the session on that frame, not on a timer.
     signal_at: Option<(usize, Sender<()>)>,
+    /// Sends on this as each frame arrives, before waiting for its token: the previous frame is then done with.
+    waiting: Option<Sender<()>>,
     calls: usize,
 }
 
 impl Scripted {
     fn new(faces: Vec<bool>) -> Self {
-        Self { faces, gate: None, seen: None, resets: Arc::default(), measure: None, signal_at: None, calls: 0 }
+        Self {
+            faces,
+            gate: None,
+            seen: None,
+            resets: Arc::default(),
+            measure: None,
+            signal_at: None,
+            waiting: None,
+            calls: 0,
+        }
     }
 
     fn gated(faces: Vec<bool>) -> (Self, Sender<()>) {
@@ -121,6 +134,9 @@ impl FrameTracker for Scripted {
         frame: &RgbFrame<'_>,
         _: Seconds,
     ) -> Result<(Option<FaceSample>, StageTimings), FaceTrackError> {
+        if let Some(waiting) = &self.waiting {
+            waiting.send(()).ok();
+        }
         if let Some(gate) = &self.gate {
             // A token per frame; a test that fails early must not hang the join in `Drop`.
             gate.recv_timeout(BACKSTOP / 2).ok();
@@ -478,6 +494,44 @@ fn the_camera_thread_allocates_nothing_over_three_hundred_frames() {
 }
 
 #[test]
+fn the_preview_reader_allocates_nothing_as_the_face_is_lost_and_found() {
+    // Two frames with a face, three without, over and over; each preview is read once the camera thread has finished
+    // with its frame, so no read can be skipped for finding the slot busy.
+    let faces: Vec<bool> = (0..60).map(|i| i % 5 < 2).collect();
+    let (arrived, at_gate) = channel();
+    let (scripted, tokens) = Scripted::gated(faces.clone());
+    let scripted = Scripted { waiting: Some(arrived), ..scripted };
+    let camera = FakeCamera::synthetic(nv12(64, 48), 1_000);
+    let mut tracker = webcam(camera, scripted, WebcamConfig::default().with_mode(64, 48, 30));
+    tracker.set_preview(true);
+    let mut source = start(&mut tracker);
+    let mut out = PreviewFrame::default();
+    let mut allocated = 0;
+    for i in 0..=faces.len() {
+        at_gate.recv_timeout(BACKSTOP).expect("the camera thread reached the next frame");
+        if i > 0 {
+            let frame = next(&mut *source);
+            MEASURING.with(|m| m.set(true));
+            let before = THREAD_ALLOCS.with(Cell::get);
+            let fresh = tracker.preview(&mut out);
+            let spent = THREAD_ALLOCS.with(Cell::get) - before;
+            MEASURING.with(|m| m.set(false));
+            assert!(fresh, "frame {}", i - 1);
+            assert_eq!((out.seq, out.landmarks.is_some()), (frame.seq, faces[i - 1]), "frame {}", i - 1);
+            // Frames 0 to 9 warm every buffer up: the thread's two, and ours.
+            if i > 10 {
+                allocated += spent;
+            }
+        }
+        if i < faces.len() {
+            tokens.send(()).unwrap();
+        }
+    }
+    assert_eq!(allocated, 0);
+    drop(tokens);
+}
+
+#[test]
 fn reading_the_latency_allocates_nothing() {
     let camera = FakeCamera::synthetic(nv12(64, 48), 10_000_000);
     let mut tracker = webcam(camera, Scripted::new(vec![true]), WebcamConfig::default().with_mode(64, 48, 30));
@@ -590,15 +644,71 @@ fn start_forwards_the_camera_request_and_refuses_what_it_cannot_do() {
     tracker.start(&FakeCamera::id(), &config).expect("the fake camera opens");
     assert_eq!(requests.lock().unwrap()[0].fps, 25);
     tracker.stop();
+}
 
-    // One quality tier only: others are refused before the camera is touched, and the tracker stays usable.
-    let (mut tracker, requests) = spy(WebcamConfig::default());
+#[test]
+fn each_quality_tier_maps_to_a_camera_size_and_a_tracking_stride() {
+    let big = CameraFormatRequest::new(1920, 1080, 60).with_pixel(Some(PixelFormat::Yuy2));
+    let small = CameraFormatRequest::new(320, 240, 30);
+    // Full is as asked. Lowered tiers cap the size at 640x480, never enlarge it, and keep the rate and the format.
+    assert_eq!(tier_camera(QualityTier::Full, &big), big);
     for tier in [QualityTier::Balanced, QualityTier::Light] {
-        let refused = tracker.start(&FakeCamera::id(), &TrackerConfig::default().with_tier(tier));
-        assert!(matches!(refused, Err(TrackError::Backend(_))), "{tier:?}");
+        assert_eq!(tier_camera(tier, &big), CameraFormatRequest::new(640, 480, 60).with_pixel(Some(PixelFormat::Yuy2)));
+        assert_eq!(tier_camera(tier, &small), small);
     }
-    assert!(requests.lock().unwrap().is_empty());
-    assert!(tracker.start(&FakeCamera::id(), &TrackerConfig::default()).is_ok());
+    assert_eq!(tier_stride(QualityTier::Full), 1);
+    assert_eq!(tier_stride(QualityTier::Balanced), 1);
+    assert_eq!(tier_stride(QualityTier::Light), 2);
+
+    // `start` forwards the camera size each tier asks for.
+    for (tier, size) in
+        [(QualityTier::Full, (1280, 720)), (QualityTier::Balanced, (640, 480)), (QualityTier::Light, (640, 480))]
+    {
+        let (mut tracker, requests) = spy(WebcamConfig::default());
+        let asked = TrackerConfig::default().with_camera(CameraFormatRequest::new(1280, 720, 30)).with_tier(tier);
+        tracker.start(&FakeCamera::id(), &asked).expect("the fake camera opens");
+        let first = requests.lock().unwrap()[0];
+        assert_eq!((first.width, first.height, first.fps), (size.0, size.1, 30), "{tier:?}");
+    }
+}
+
+#[test]
+fn a_light_tier_tracks_every_second_frame() {
+    for (tier, tracked) in [(QualityTier::Full, 10), (QualityTier::Balanced, 10), (QualityTier::Light, 5)] {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let scripted = Scripted { seen: Some(Arc::clone(&seen)), ..Scripted::new(vec![true]) };
+        let mut tracker = webcam(FakeCamera::synthetic(nv12(64, 48), 10), scripted, WebcamConfig::default());
+        let config = tracker.tracker_config().with_tier(tier);
+        let mut source = tracker.start(&FakeCamera::id(), &config).expect("the fake camera opens");
+        wait_for_error(&tracker);
+        tracker.stop();
+        assert_eq!(seen.lock().unwrap().len(), tracked, "{tier:?}");
+        // The skipped frames are neither published nor counted as drops: the camera's `seq` has no gap.
+        assert_eq!(tracker.latency().dropped, 0, "{tier:?}");
+        assert_eq!(tracker.latency().frames, tracked as u64 + 1, "{tier:?} (and the end of the stream)");
+        assert!(source.poll(Seconds(0.0)).is_none());
+    }
+}
+
+#[test]
+fn a_failed_thread_start_hands_the_tracker_back_and_start_can_be_retried() {
+    let resets = Arc::new(AtomicU32::new(0));
+    let scripted = Scripted { resets: Arc::clone(&resets), ..Scripted::new(vec![true]) };
+    let camera = FakeCamera::synthetic(nv12(64, 48), 10_000_000);
+    let mut tracker = webcam(camera, scripted, WebcamConfig::default().with_mode(64, 48, 30));
+    tracker.fail_next_spawns(2);
+    for _ in 0..2 {
+        let config = tracker.tracker_config();
+        let refused = tracker.start(&FakeCamera::id(), &config);
+        assert!(matches!(refused, Err(TrackError::Backend(ref e)) if e.contains("camera thread")), "refused");
+    }
+    // The tracker came back each time, and the camera was released (the fake one answers `Busy` otherwise).
+    let mut source = start(&mut tracker);
+    assert_eq!(next(&mut *source).status, TrackStatus::Tracking);
+    tracker.stop();
+    assert_eq!(tracker.devices().len(), 1);
+    drop(tracker);
+    assert_eq!(resets.load(Ordering::Relaxed), 3);
 }
 
 #[test]

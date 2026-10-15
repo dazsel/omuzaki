@@ -31,24 +31,31 @@ pub struct PreviewFrame {
     pub seq: u64,
     /// The face's 478 landmarks as `[x, y]` in preview pixels, or `None` when no face was found in this frame.
     pub landmarks: Option<Points>,
+    /// The landmark box while `landmarks` is `None`, so a face that comes back allocates nothing. Every write to
+    /// `landmarks` in this module goes through [`set_landmarks`](Self::set_landmarks).
+    spare: Option<Points>,
 }
 
-/// The camera thread's private preview buffer: filled without any lock, then swapped into the shared slot.
-pub(super) struct Scratch {
-    frame: PreviewFrame,
-    /// Landmark boxes not in use. At most two exist (one in the slot, one being filled), so the pool never grows
-    /// past its reserve and a face that comes back, however often it is lost, allocates nothing.
-    pool: Vec<Points>,
-}
-
-impl Default for Scratch {
-    fn default() -> Self {
-        Self { frame: PreviewFrame::default(), pool: Vec::with_capacity(POOL) }
+impl PreviewFrame {
+    /// Sets `landmarks` to `points` (written by `fill`) or to `None`, keeping the box in either case: the one place
+    /// the landmark storage changes hands, whether the camera thread fills a preview or the UI copies one.
+    fn set_landmarks(&mut self, fill: Option<impl FnOnce(&mut [[f32; 2]; NUM_LANDMARKS])>) {
+        match fill {
+            Some(fill) => {
+                let spare = &mut self.spare;
+                let points = self
+                    .landmarks
+                    .get_or_insert_with(|| spare.take().unwrap_or_else(|| Box::new([[0.0; 2]; NUM_LANDMARKS])));
+                fill(points);
+            }
+            None => {
+                if let Some(points) = self.landmarks.take() {
+                    self.spare = Some(points);
+                }
+            }
+        }
     }
 }
-
-/// Room for the landmark boxes in circulation, with one to spare.
-const POOL: usize = 3;
 
 #[derive(Default)]
 struct Slot {
@@ -83,29 +90,25 @@ impl PreviewTap {
     #[allow(clippy::cast_precision_loss)]
     pub(super) fn offer(
         &self,
-        scratch: &mut Scratch,
+        scratch: &mut PreviewFrame,
         rgb: &RgbFrame<'_>,
         seq: u64,
         landmarks: Option<&[[f32; 3]; NUM_LANDMARKS]>,
     ) {
-        if !self.on.load(Ordering::Relaxed) || !downscale(rgb, &mut scratch.frame) {
+        if !self.on.load(Ordering::Relaxed) || !downscale(rgb, scratch) {
             return;
         }
-        scratch.frame.seq = seq;
-        let (w, h) = (scratch.frame.width as f32, scratch.frame.height as f32);
-        // The frame swapped back from the slot may carry a box; keep it for the next face.
-        if let Some(spare) = scratch.frame.landmarks.take().filter(|_| scratch.pool.len() < POOL) {
-            scratch.pool.push(spare);
-        }
-        if let Some(src) = landmarks {
-            let mut points = scratch.pool.pop().unwrap_or_else(|| Box::new([[0.0; 2]; NUM_LANDMARKS]));
-            for (d, s) in points.iter_mut().zip(src) {
-                *d = [s[0] * w, s[1] * h];
+        scratch.seq = seq;
+        let (w, h) = (scratch.width as f32, scratch.height as f32);
+        scratch.set_landmarks(landmarks.map(|src| {
+            move |dst: &mut [[f32; 2]; NUM_LANDMARKS]| {
+                for (d, s) in dst.iter_mut().zip(src) {
+                    *d = [s[0] * w, s[1] * h];
+                }
             }
-            scratch.frame.landmarks = Some(points);
-        }
+        }));
         if let Ok(mut slot) = self.slot.try_lock() {
-            std::mem::swap(&mut slot.frame, &mut scratch.frame);
+            std::mem::swap(&mut slot.frame, scratch);
             slot.fresh = true;
         }
     }
@@ -122,10 +125,7 @@ impl PreviewTap {
         out.rgb.clear();
         out.rgb.extend_from_slice(&src.rgb);
         (out.width, out.height, out.seq) = (src.width, src.height, src.seq);
-        match (&mut out.landmarks, &src.landmarks) {
-            (Some(dst), Some(points)) => **dst = **points,
-            (dst, points) => dst.clone_from(points),
-        }
+        out.set_landmarks(src.landmarks.as_deref().map(|points| |dst: &mut [[f32; 2]; NUM_LANDMARKS]| *dst = *points));
         true
     }
 }

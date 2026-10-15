@@ -152,9 +152,37 @@ impl Failures {
     }
 }
 
+/// The camera size a lowered tier asks for, in pixels (the design's lever for a weak machine: `track-api.md` §9).
+const REDUCED_SIZE: (u32, u32) = (640, 480);
+
+/// The camera request `tier` makes of `request`. `Full` asks for what was asked. `Balanced` and `Light` cap the size
+/// at [`REDUCED_SIZE`], which cuts the conversion and the crop work for every frame; the rate and the format stay.
+/// The design leaves a tier's settings to this tracker; this is the cheapest mapping that needs nothing from the
+/// face tracker itself, whose own reduced settings (blendshapes on alternate frames) would live in `pipeline.rs`.
+pub fn tier_camera(tier: QualityTier, request: &CameraFormatRequest) -> CameraFormatRequest {
+    let (w, h) = REDUCED_SIZE;
+    match tier {
+        QualityTier::Full => *request,
+        QualityTier::Balanced | QualityTier::Light => {
+            let reduced = u64::from(request.width) * u64::from(request.height) > u64::from(w) * u64::from(h);
+            let (width, height) = if reduced { (w, h) } else { (request.width, request.height) };
+            CameraFormatRequest::new(width, height, request.fps).with_pixel(request.pixel)
+        }
+    }
+}
+
+/// How many camera frames go by per frame tracked at `tier`: every frame, then every frame, then every second one
+/// (`Light` tracks at half the camera's rate; the frames between are not converted, tracked or published).
+pub const fn tier_stride(tier: QualityTier) -> u32 {
+    match tier {
+        QualityTier::Full | QualityTier::Balanced => 1,
+        QualityTier::Light => 2,
+    }
+}
+
 /// One running session: its thread and the flags that end it.
 struct Session {
-    handle: JoinHandle<Outcome>,
+    handle: JoinHandle<Option<Outcome>>,
     stop: Arc<AtomicBool>,
     live: Arc<AtomicBool>,
 }
@@ -182,8 +210,11 @@ impl FrameSource for Source {
 /// skipped (gaps in the camera's `seq`) and nothing else; [`failures`](Self::failures) counts the rest.
 ///
 /// `start` honours [`TrackerConfig::camera`] (size, rate and, if it names one, the format; otherwise the
-/// [`WebcamConfig`] preference is tried in order) and [`TrackerConfig::lost_after`]. The tracker has no quality
-/// tiers, so a [`TrackerConfig::tier`] other than `Full` is refused with [`TrackError::Backend`].
+/// [`WebcamConfig`] preference is tried in order), [`TrackerConfig::lost_after`] and [`TrackerConfig::tier`], which
+/// [`tier_camera`] and [`tier_stride`] map to concrete settings.
+///
+/// If the camera thread panics, the [`FrameTracker`] it held is gone and every later `start` says so; a failure to
+/// open the camera or to start the thread, by contrast, hands the tracker back, so `start` can be retried.
 pub struct WebcamTracker {
     camera: Box<dyn Camera>,
     /// `None` while a session runs, or for good if the camera thread panicked.
@@ -195,6 +226,8 @@ pub struct WebcamTracker {
     error: Arc<Mutex<Option<TrackError>>>,
     next_seq: u64,
     session: Option<Session>,
+    /// Test seam: how many of the next thread spawns to fail.
+    failing_spawns: u32,
 }
 
 impl WebcamTracker {
@@ -216,6 +249,7 @@ impl WebcamTracker {
             error: Arc::default(),
             next_seq: 0,
             session: None,
+            failing_spawns: 0,
         }
     }
 
@@ -232,6 +266,13 @@ impl WebcamTracker {
     /// A [`TrackerConfig`] asking for the mode in the [`WebcamConfig`], for `start`.
     pub fn tracker_config(&self) -> TrackerConfig {
         TrackerConfig::default().with_camera(self.config.request())
+    }
+
+    /// Makes the next `n` attempts to start the camera thread fail as if the OS refused, to test that `start` hands
+    /// everything back and can be retried.
+    #[doc(hidden)]
+    pub fn fail_next_spawns(&mut self, n: u32) {
+        self.failing_spawns = n;
     }
 
     /// Frames discarded or lost to a failure in the current (or last) session.
@@ -277,17 +318,10 @@ impl Tracker for WebcamTracker {
 
     fn start(&mut self, device: &CameraId, config: &TrackerConfig) -> Result<Box<dyn FrameSource>, TrackError> {
         self.stop();
-        if config.tier != QualityTier::Full {
-            return Err(TrackError::Backend(format!(
-                "the webcam tracker has one quality tier, {:?}; {:?} was asked for",
-                QualityTier::Full,
-                config.tier
-            )));
-        }
         let mut tracker = self.tracker.take().ok_or_else(|| {
             TrackError::Backend("the face tracker was lost when the camera thread panicked".to_owned())
         })?;
-        let stream = match self.open(device, &config.camera) {
+        let stream = match self.open(device, &tier_camera(config.tier, &config.camera)) {
             Ok(stream) => stream,
             Err(e) => {
                 self.tracker = Some(tracker);
@@ -299,23 +333,42 @@ impl Tracker for WebcamTracker {
         let (stop, live) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(true)));
         self.stats = Arc::new(Stats::new());
         *self.error.lock().unwrap_or_else(PoisonError::into_inner) = None;
-        let run = Run {
+        // The thread is handed its `Run` through a cell, so that if it cannot be started, the closure's drop does
+        // not take the tracker (or the camera stream) with it: both are recovered from the cell below.
+        let cell = Arc::new(Mutex::new(Some(Run {
             stream,
             tracker,
             writer,
             clock: Arc::clone(&self.clock),
             first_seq: self.next_seq,
             lost_after: config.lost_after,
+            stride: tier_stride(config.tier),
             stop: Arc::clone(&stop),
             preview: Arc::clone(&self.preview),
             stats: Arc::clone(&self.stats),
             error: Arc::clone(&self.error),
+        })));
+        let body = {
+            let cell = Arc::clone(&cell);
+            move || cell.lock().unwrap_or_else(PoisonError::into_inner).take().map(Run::run)
         };
-        // If the spawn fails the tracker goes with the closure; a later `start` says so.
-        let handle = std::thread::Builder::new()
-            .name("omuzaki-webcam".to_owned())
-            .spawn(move || run.run())
-            .map_err(|e| TrackError::Backend(format!("camera thread: {e}")))?;
+        let spawned = if self.failing_spawns > 0 {
+            self.failing_spawns -= 1;
+            drop(body);
+            Err(std::io::Error::other("injected spawn failure"))
+        } else {
+            std::thread::Builder::new().name("omuzaki-webcam".to_owned()).spawn(body)
+        };
+        let handle = match spawned {
+            Ok(handle) => handle,
+            Err(e) => {
+                // No thread ran: the tracker goes back where a camera-open failure puts it, and the stream with the
+                // rest of the run is dropped, which releases the camera.
+                let run = cell.lock().unwrap_or_else(PoisonError::into_inner).take();
+                self.tracker = run.map(|run| run.tracker);
+                return Err(TrackError::Backend(format!("camera thread: {e}")));
+            }
+        };
         self.session = Some(Session { handle, stop, live: Arc::clone(&live) });
         Ok(Box::new(Source { reader, live }))
     }
@@ -325,11 +378,12 @@ impl Tracker for WebcamTracker {
         stop.store(true, Ordering::Relaxed);
         live.store(false, Ordering::Relaxed);
         match handle.join() {
-            Ok(Outcome { tracker, next_seq }) => {
+            Ok(Some(Outcome { tracker, next_seq })) => {
                 self.tracker = Some(tracker);
                 self.next_seq = next_seq;
             }
-            Err(_) => {
+            // `None` cannot happen: the cell is only emptied by the thread that runs. Treated like a panic.
+            Ok(None) | Err(_) => {
                 *self.error.lock().unwrap_or_else(PoisonError::into_inner) =
                     Some(TrackError::Backend("the camera thread panicked".to_owned()));
             }

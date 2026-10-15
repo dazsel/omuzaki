@@ -13,7 +13,7 @@ use omuzaki_track_api::mailbox::MailboxWriter;
 use omuzaki_track_api::tracker::LatencyStats;
 
 use super::convert::FrameConverter;
-use super::preview::{PreviewTap, Scratch};
+use super::preview::{PreviewFrame, PreviewTap};
 use super::{Failures, FrameTracker};
 use crate::sample::{FaceSample, to_track_frame};
 
@@ -112,6 +112,8 @@ pub(super) struct Run {
     pub(super) clock: Arc<dyn Clock>,
     pub(super) first_seq: u64,
     pub(super) lost_after: Duration,
+    /// Track one camera frame in this many (see `tier_stride`).
+    pub(super) stride: u32,
     pub(super) stop: Arc<AtomicBool>,
     pub(super) preview: Arc<PreviewTap>,
     pub(super) stats: Arc<Stats>,
@@ -148,16 +150,18 @@ impl Publisher {
 impl Run {
     /// Runs until `stop` is set or the stream fails. A failure publishes one lost frame and is kept in `error`.
     pub(super) fn run(self) -> Outcome {
-        let Self { mut stream, mut tracker, writer, clock, first_seq, lost_after, stop, preview, stats, error } = self;
+        let Self { mut stream, mut tracker, writer, clock, first_seq, lost_after, stride, stop, preview, stats, error } =
+            self;
         let mut out = Publisher { writer, seq: first_seq, last: f64::NEG_INFINITY, stats: Arc::clone(&stats) };
         // Sized for the mode the camera opened with, so the first frame allocates nothing either.
         let mode = stream.format();
         let mut converter = FrameConverter::with_size(mode.width, mode.height);
-        let (mut device_clock, mut scratch) = (ClockMap::new(), Scratch::default());
+        let (mut device_clock, mut scratch) = (ClockMap::new(), PreviewFrame::default());
         let timeout = lost_after.min(POLL);
         let mut last_arrival = clock.now().0;
         let mut told_lost = false;
         let mut camera_seq = None::<u64>;
+        let mut accepted = 0_u64;
         while !stop.load(Ordering::Relaxed) {
             let frame = match stream.next_frame(timeout) {
                 Ok(Some(frame)) => frame,
@@ -189,6 +193,11 @@ impl Run {
                 continue;
             };
             (last_arrival, told_lost) = (arrived.0, false);
+            // A lowered tier skips frames between the ones it tracks; the camera is alive all the same.
+            accepted += 1;
+            if !(accepted - 1).is_multiple_of(u64::from(stride.max(1))) {
+                continue;
+            }
             // A frame that cannot be converted or tracked is a lost frame: the pipeline must not hold a stale face.
             let Ok(rgb) = converter.convert(&frame) else {
                 stats.conversion.fetch_add(1, Ordering::Relaxed);
