@@ -181,12 +181,15 @@ fn render_shots(
         stage.set_face(renderer, FaceRig::standard())?;
     }
     stage.settle(SETTLE_STEPS);
+    // One tick after the warm-up puts the rig and the face in their frame state; every shot then redraws that state, so
+    // a shot's pixels don't depend on how many shots came before it.
+    stage.tick(renderer, &FrameInput::default())?;
     let target = stage.target();
     let mut stills = Vec::with_capacity(shots.len());
     for shot in shots {
         stage.scene_mut().camera = shot.camera;
         let input = FrameInput { channels: channels_of(stage, shot)?, ..FrameInput::default() };
-        let frame = stage.tick(renderer, &input)?;
+        let frame = stage.redraw(renderer, &input)?;
         let image = renderer.read_target(target).map_err(|source| StageError::render("the still", source))?;
         stills.push(Still { image, report: frame.report });
     }

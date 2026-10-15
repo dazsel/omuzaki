@@ -188,3 +188,12 @@ fn a_straight_image_is_written_as_it_is() {
     let image = Image { size: UVec2::new(2, 1), alpha: AlphaEncoding::Straight, rgba8: rgba8.clone() };
     assert_eq!(decoded(&image), rgba8);
 }
+
+#[test]
+fn a_shot_renders_the_same_pixels_at_any_position() {
+    // The mock's hair simulates in time, so a shot that came after more steps would differ if the shots advanced it.
+    let spec = spec();
+    let mut renderer = MockRenderer::new();
+    let stills = render_stills(&mut renderer, character(), &spec, &[front(), side(), front()]).expect("renders");
+    assert_eq!(stills[0].image, stills[2].image, "the same shot at positions 0 and 2 is identical");
+}

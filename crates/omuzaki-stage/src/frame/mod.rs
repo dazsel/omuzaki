@@ -26,6 +26,7 @@ pub(crate) mod scene;
 use omuzaki_anim_api::{ChannelBuf, HumanoidPose, IkGoals, Tick};
 use omuzaki_char_api::{BuiltCharacter, StepCtx};
 use omuzaki_core::glam::{Mat4, Vec3};
+use omuzaki_core::time::Seconds;
 use omuzaki_render_api::{FrameInfo, FrameReport, Quality, Renderer, Scene, TargetId};
 
 use self::face::FaceRig;
@@ -118,6 +119,11 @@ pub struct Stage {
     face: Option<Box<FaceRig>>,
     /// The character's world matrix of the last frame: the face system's and [`settle`](Stage::settle)'s.
     root: Mat4,
+    /// The pose and goals of the last frame: what [`settle`](Stage::settle) solves the rig with.
+    pose: HumanoidPose,
+    goals: IkGoals,
+    /// The last frame's tick. Before the first frame it is time zero, which [`redraw`](Stage::redraw) renders at.
+    tick: Tick,
     scene: Scene,
     target: TargetId,
     quality: Quality,
@@ -150,6 +156,9 @@ impl Stage {
                 plan,
                 face: None,
                 root: Mat4::IDENTITY,
+                pose: HumanoidPose::REST,
+                goals: IkGoals::NONE,
+                tick: Tick { index: 0, time: Seconds(0.0), dt: 0.0 },
                 scene,
                 target,
                 quality,
@@ -182,6 +191,9 @@ impl Stage {
         self.swap_variant(renderer)?;
         let tick = self.clock.next(input.dt);
         self.root = input.root;
+        self.pose = input.pose;
+        self.goals = input.goals;
+        self.tick = tick;
         self.rig.solve(tick, &input.pose, &input.goals);
         let pose = SkinPose { character: &self.built.rig, skin: self.rig.skin(), root: input.root };
         let ctx = StepCtx { dt: tick.dt, time: tick.time, pose: &pose, wind: input.wind };
@@ -199,6 +211,27 @@ impl Stage {
     /// The scene as the next frame will start from: set the camera, lights and post settings here.
     pub fn scene_mut(&mut self) -> &mut Scene {
         &mut self.scene
+    }
+
+    /// Renders the state the last [`tick`](Stage::tick) left, with `input`'s face channels and the camera and lights of
+    /// the scene, for a still that differs from the last frame only by its camera or expression.
+    ///
+    /// Nothing advances: the clock, the rig and the part runtimes stay where the last tick left them, so the same shot
+    /// renders the same pixels however many shots came before it. The face is repainted for `input.channels`; the pose
+    /// and goals of `input` and its `dt`, `wind` and `root` are not read, so a change of pose needs a
+    /// [`tick`](Stage::tick). A variant switch that is pending completes on a tick, not here. It allocates nothing in
+    /// steady state, and uploads nothing to the renderer but the frame itself.
+    ///
+    /// # Errors
+    /// As [`tick`](Stage::tick) for the face and the render: [`StageError::Render`] if the renderer refuses the frame,
+    /// or whatever the face update reports.
+    pub fn redraw(&mut self, renderer: &mut dyn Renderer, input: &FrameInput) -> Result<FrameOutput, StageError> {
+        self.update_face(renderer, self.tick, input)?;
+        self.plan.fill(&mut self.scene, self.rig.skin(), self.root);
+        let report = renderer
+            .render(self.target, &self.scene, &self.quality)
+            .map_err(|source| StageError::render("the still", source))?;
+        Ok(FrameOutput { tick: self.tick, report, uploads: 0 })
     }
 
     /// The scene as last rendered.
