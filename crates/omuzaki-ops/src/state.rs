@@ -7,7 +7,7 @@ use std::collections::{BTreeSet, HashMap};
 
 use omuzaki_core::time::Seconds;
 use omuzaki_doc_api::{DocPath, DocRead, DocWrite, Patch, Value};
-use omuzaki_ops_api::{Actor, Cause, Event, Grants, OpError, OpRecord, Scope, TxId, Undo};
+use omuzaki_ops_api::{Actor, Cause, Event, Grants, OpError, OpRecord, Scope, TxId, Undo, checks};
 
 use crate::error;
 
@@ -31,30 +31,22 @@ impl Step {
         Self { tx, label: label.to_owned(), patch: Patch::new(), scopes: BTreeSet::new(), explicit: None }
     }
 
-    /// Adds one applied op. Ops that changed nothing (queries inside a transaction, no-op edits) add no scope. An
-    /// `Explicit` op is recorded even with an empty patch: its effect outside the document still needs reversing, and
-    /// its scope must still gate the refusal, so a caller without it gets `Denied` and the step stays.
+    /// Adds one applied op, recording the scope [`checks::step_scope`] gives it.
     fn absorb(&mut self, op: &'static str, scope: Scope, undo: Undo, patch: &Patch) {
-        if !patch.is_empty() || undo == Undo::Explicit {
-            self.scopes.insert(scope);
-        }
+        self.scopes.extend(checks::step_scope(scope, undo, patch));
         if undo == Undo::Explicit && self.explicit.is_none() {
             self.explicit = Some(op);
         }
         self.patch.extend(patch.clone());
     }
 
-    /// Whether the step belongs in history: a step with an effect outside the document does, even if its patch is
-    /// empty, so that undo can refuse it instead of silently skipping it.
+    /// Whether the step belongs in history ([`checks::in_history`]).
     fn changes_document(&self) -> bool {
-        !self.patch.is_empty() || self.explicit.is_some()
+        checks::in_history(&self.patch, self.explicit.is_some())
     }
 
     fn require(&self, actor: &Actor, grants: &Grants, verb: &str) -> Result<(), OpError> {
-        match self.scopes.iter().find(|scope| !grants.allows(**scope)) {
-            Some(scope) => Err(error::denied(actor, &format!("{verb} {:?}", self.label), *scope)),
-            None => Ok(()),
-        }
+        checks::require_step_scopes(self.scopes.iter().copied(), grants, actor, verb, &self.label)
     }
 }
 
@@ -172,11 +164,7 @@ impl State {
         // Borrowing the open transaction first checks it *before* the document changes, and lets us add to it after
         // without a lookup that could fail.
         let joined = tx.map(|id| Self::open_tx(&mut self.open, id, &actor)).transpose()?;
-        let version = if patch.changes.is_empty() {
-            self.doc.version()
-        } else {
-            self.doc.apply(patch).map_err(|e| error::apply_failed(op, e))?
-        };
+        let version = checks::apply_patch(&mut *self.doc, patch).map_err(|e| error::apply_failed(op, e))?;
 
         let tx = joined.as_ref().map_or_else(|| next_tx(&mut self.last_tx), |open| open.step.tx);
         let record =
@@ -275,7 +263,7 @@ impl State {
         }
         // Refused and dropped, not pushed back: the document is untouched, and the next call reaches the step before.
         if let Some(op) = step.explicit {
-            return Err(error::explicit_refused(verb, &step.label, op));
+            return Err(checks::explicit_refused(verb, &step.label, op));
         }
         let patch = match direction {
             Direction::Undo => step.patch.inverse(),
