@@ -15,7 +15,7 @@
     clippy::cast_possible_truncation
 )]
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use omuzaki_anim_api::HumanoidBone;
 use omuzaki_char::builder::CachingBuilder;
@@ -26,6 +26,7 @@ use omuzaki_char_api::{
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::{UVec2, Vec3};
 use omuzaki_face::FaceSystem;
+use omuzaki_face_api::{FaceDrawing, FaceError, FaceInput, FaceLayerSpec, FacePainter};
 use omuzaki_face_mock::{MockPainter, MockRasterizer};
 use omuzaki_render_api::{
     AlphaEncoding, Background, Bloom, Camera, Capabilities, ColourGrade, DepthOfField, EnvironmentDesc, EnvironmentUse,
@@ -37,8 +38,8 @@ use omuzaki_render_mock::MockRenderer;
 use omuzaki_stage::frame::face::{CharacterSource, FaceRig, InlineExecutor};
 use omuzaki_stage::frame::{FrameInput, Stage, StageClock};
 use omuzaki_stage::sheet::turnaround::{
-    EYE_LINE_FRACTION, HEAD_CENTRE_FRACTION, Lens, MARGIN, SheetPose, TurnaroundError, TurnaroundSheet, TurnaroundSpec,
-    View, hero_pose, render_turnaround,
+    EYE_LINE_FRACTION, HEAD_CENTRE_FRACTION, Lens, MARGIN, SHEET_TICK, SheetPose, TurnaroundError, TurnaroundSheet,
+    TurnaroundSpec, View, hero_pose, render_turnaround,
 };
 use omuzaki_stage::{StageError, UploadOptions};
 
@@ -59,6 +60,8 @@ fn stage_on(renderer: &mut dyn Renderer) -> Stage {
 /// the last reset, as a spring chain carries its swing. Only a reset (or the same number of steps) gives the same shape.
 struct Drifting {
     inner: Box<dyn PartRuntime>,
+    /// Metres of drift per step.
+    per_step: Vec3,
     steps: u32,
     shifted: Vec<Vec3>,
     revision: u64,
@@ -70,7 +73,7 @@ impl PartRuntime for Drifting {
         self.steps += 1;
         self.revision += 1;
         if let Some(view) = self.inner.dynamic_mesh(0) {
-            let drift = Vec3::X * 1e-3 * self.steps as f32;
+            let drift = self.per_step * self.steps as f32;
             self.shifted.clear();
             self.shifted.extend(view.positions.iter().map(|p| *p + drift));
         }
@@ -100,14 +103,19 @@ impl PartRuntime for Drifting {
     }
 }
 
-/// The mock character with every runtime wrapped in [`Drifting`].
+/// The mock character with every runtime wrapped in [`Drifting`] sideways.
 fn drifting() -> BuiltCharacter {
+    drifting_by(Vec3::X * 1e-3)
+}
+
+/// The mock character with every runtime wrapped in [`Drifting`], `per_step` metres per step.
+fn drifting_by(per_step: Vec3) -> BuiltCharacter {
     let mut character = built();
     for slot in &mut character.runtimes {
         let placeholder: Box<dyn PartRuntime> =
-            Box::new(Drifting { inner: Box::new(NoRuntime), steps: 0, shifted: Vec::new(), revision: 0 });
+            Box::new(Drifting { inner: Box::new(NoRuntime), per_step, steps: 0, shifted: Vec::new(), revision: 0 });
         let inner = std::mem::replace(&mut slot.runtime, placeholder);
-        slot.runtime = Box::new(Drifting { inner, steps: 0, shifted: Vec::new(), revision: 0 });
+        slot.runtime = Box::new(Drifting { inner, per_step, steps: 0, shifted: Vec::new(), revision: 0 });
     }
     character
 }
@@ -137,7 +145,7 @@ fn stage_clocked(renderer: &mut dyn Renderer, built: BuiltCharacter, clock: Stag
     let target = renderer
         .create_target(&TargetDesc { size: UVec2::new(32, 32), alpha: AlphaEncoding::Straight })
         .expect("a target");
-    let options = UploadOptions { face_px_per_m: 600.0 };
+    let options = UploadOptions { face_px_per_m: 2000.0 };
     Stage::new(renderer, built, options, Scene::new(Camera::default()), target, Quality::live(), clock)
         .expect("the mock character uploads")
 }
@@ -809,7 +817,10 @@ fn the_crown_and_soles_are_projected_where_the_geometry_is_in_every_lens() {
     // looks along: points on the axis (z = 0) would be rows off in a perspective lens.
     let shifted = || {
         let mut character = built();
+        // No runtimes: the hair stays as built, so what the renderer draws is exactly the shifted data.
+        character.runtimes.clear();
         for mesh in &mut character.meshes {
+            mesh.mesh.dynamic = false;
             for p in &mut mesh.mesh.geometry.positions {
                 p.z += 1.0;
             }
@@ -844,6 +855,103 @@ fn the_crown_and_soles_are_projected_where_the_geometry_is_in_every_lens() {
     let crown = |lens, view| seen.iter().find(|s| s.0 == lens && s.1 == view).map(|s| s.2).expect("seen");
     assert!((crown(Lens::Telephoto, View::Front) - crown(Lens::Telephoto, View::Back)).abs() > 2.0);
     assert!((crown(Lens::Orthographic, View::Front) - crown(Lens::Orthographic, View::Back)).abs() < 0.05);
+}
+
+/// A face painter that notes the time of every paint.
+struct TimeRecorder {
+    inner: MockPainter,
+    times: Arc<Mutex<Vec<f64>>>,
+}
+
+impl FacePainter for TimeRecorder {
+    fn layers(&self) -> &[FaceLayerSpec] {
+        self.inner.layers()
+    }
+
+    fn paint(&mut self, input: &FaceInput<'_>, out: &mut FaceDrawing) -> Result<(), FaceError> {
+        self.times.lock().expect("the notes").push(input.time.0);
+        self.inner.paint(input, out)
+    }
+}
+
+#[test]
+fn the_sheet_is_drawn_at_one_time_whatever_the_clock_and_the_frames_before() {
+    let run = |clock: StageClock, prior: u32| {
+        let mut renderer = MockRenderer::new();
+        let times = Arc::new(Mutex::new(Vec::new()));
+        let mut stage = stage_clocked(&mut renderer, built(), clock);
+        let noted = Arc::clone(&times);
+        let rig = FaceRig::new(Box::new(move |projection, _| {
+            let painter = TimeRecorder { inner: MockPainter::new(*projection), times: Arc::clone(&noted) };
+            FaceSystem::new(Box::new(painter), Box::new(MockRasterizer))
+        }))
+        .with_executor(Box::new(InlineExecutor));
+        stage.set_face(&mut renderer, rig).expect("the face binds");
+        for _ in 0..prior {
+            stage.tick(&mut renderer, &FrameInput { dt: 1.0 / 30.0, ..FrameInput::default() }).expect("a frame");
+        }
+        times.lock().expect("the notes").clear();
+        let sheet = render_turnaround(&mut stage, &mut renderer, &spec()).expect("the sheet renders");
+        let seen = times.lock().expect("the notes").clone();
+        // The frame after the sheet is the one the clock would have given without it.
+        let next = stage.tick(&mut renderer, &FrameInput::default()).expect("a frame").tick.index;
+        stage.release(&mut renderer).expect("released");
+        (sheet, seen, next)
+    };
+    let (fixed, fixed_times, fixed_next) = run(StageClock::fixed(60.0), 0);
+    let (live, live_times, _) = run(StageClock::live(), 12);
+    let (slow, slow_times, slow_next) = run(StageClock::fixed(24.0), 7);
+    assert!(fixed_times.len() >= 4, "the face is painted for the views: {fixed_times:?}");
+    assert!(fixed_times.iter().all(|t| t.to_bits() == SHEET_TICK.time.0.to_bits()), "one sheet time: {fixed_times:?}");
+    assert!(live_times.iter().all(|t| t.to_bits() == SHEET_TICK.time.0.to_bits()), "{live_times:?}");
+    assert!(slow_times.iter().all(|t| t.to_bits() == SHEET_TICK.time.0.to_bits()), "{slow_times:?}");
+    assert_eq!(pixels(&fixed), pixels(&live), "a fixed clock and a live clock with earlier frames agree");
+    assert_eq!(pixels(&fixed), pixels(&slow));
+    assert_eq!(fixed_next, 0, "the sheet did not move the clock: the next frame is the first");
+    assert_eq!(slow_next, 7, "and after seven frames the next one is the eighth");
+}
+
+/// The first and last rows with an opaque pixel of the first view, as `(top, bottom + 1)`.
+fn silhouette(sheet: &TurnaroundSheet) -> (f32, f32) {
+    let (top, bottom) = extent(&sheet.views[0].image);
+    (top as f32, bottom as f32 + 1.0)
+}
+
+#[test]
+fn the_rows_follow_a_runtime_that_deforms_the_hair() {
+    let draw = |character: BuiltCharacter| {
+        with_built(character, |stage, renderer| render_turnaround(stage, renderer, &spec()).expect("a sheet"))
+    };
+    let still = draw(drifting_by(Vec3::ZERO));
+    // The hair rises 5 mm for each of the four settle steps: 2 cm, a few rows, and the framing was made without it.
+    let lifted = draw(drifting_by(Vec3::Y * 0.005));
+    let (a, b) = (still.views[0].framing, lifted.views[0].framing);
+    assert!(
+        (a.crown_row - b.crown_row).abs() > 1.0 || (a.ground_row - b.ground_row).abs() > 1.0,
+        "the deformation moves the extremes, or this test aims at nothing: {a:?} vs {b:?}"
+    );
+    let (top, bottom) = silhouette(&lifted);
+    assert!((b.crown_row - top).abs() <= 1.5, "crown {} vs the picture's {top}", b.crown_row);
+    assert!((b.ground_row - bottom).abs() <= 1.5, "soles {} vs the picture's {bottom}", b.ground_row);
+}
+
+#[test]
+fn the_rows_follow_a_pose_that_moves_skinned_geometry() {
+    let draw = |pose: SheetPose| {
+        with_stage(|stage, renderer| render_turnaround(stage, renderer, &spec().with_pose(pose)).expect("a sheet"))
+    };
+    let rest = draw(SheetPose::Rest);
+    let mut lowered = built().rig.bind;
+    lowered.hips_offset = Vec3::new(0.0, -0.02, 0.0);
+    let posed = draw(SheetPose::custom(lowered));
+    let (a, b) = (rest.views[0].framing, posed.views[0].framing);
+    assert!(
+        (a.crown_row - b.crown_row).abs() > 1.0 || (a.ground_row - b.ground_row).abs() > 1.0,
+        "the pose moves the extremes, or this test aims at nothing: {a:?} vs {b:?}"
+    );
+    let (top, bottom) = silhouette(&posed);
+    assert!((b.crown_row - top).abs() <= 1.5, "crown {} vs the picture's {top}", b.crown_row);
+    assert!((b.ground_row - bottom).abs() <= 1.5, "soles {} vs the picture's {bottom}", b.ground_row);
 }
 
 #[test]

@@ -109,6 +109,15 @@ pub struct FrameOutput {
     pub uploads: u32,
 }
 
+/// What [`Stage::pin_time`] took from the stage, to give back with [`Stage::unpin_time`]: the state of the last frame.
+#[derive(Clone, Debug)]
+pub struct TimePin {
+    tick: Tick,
+    root: Mat4,
+    pose: HumanoidPose,
+    goals: IkGoals,
+}
+
 /// A character on a renderer with everything its frame loop needs.
 pub struct Stage {
     built: BuiltCharacter,
@@ -128,6 +137,8 @@ pub struct Stage {
     target: TargetId,
     quality: Quality,
     clock: StageClock,
+    /// While set, every tick takes this one instead of the clock's ([`Stage::pin_time`]).
+    pinned: Option<Tick>,
 }
 
 impl Stage {
@@ -163,6 +174,7 @@ impl Stage {
                 target,
                 quality,
                 clock,
+                pinned: None,
             }),
             Err(error) => {
                 if let Err(cleanup) = character.release(renderer) {
@@ -190,7 +202,7 @@ impl Stage {
     /// abandoned and the live character stays.
     pub fn tick(&mut self, renderer: &mut dyn Renderer, input: &FrameInput) -> Result<FrameOutput, StageError> {
         self.swap_variant(renderer)?;
-        let tick = self.clock.next(input.dt);
+        let tick = self.pinned.unwrap_or_else(|| self.clock.next(input.dt));
         self.root = input.root;
         self.pose = input.pose;
         self.goals = input.goals;
@@ -212,6 +224,69 @@ impl Stage {
             .render(self.target, &self.scene, &self.quality)
             .map_err(|source| StageError::render("the frame", source))?;
         Ok(FrameOutput { tick, report, uploads })
+    }
+
+    /// Makes every [`tick`](Stage::tick) and [`redraw`](Stage::redraw) run at `tick` (its index and time, and the `dt`
+    /// the runtimes step by) instead of the stage clock's, until [`unpin_time`](Stage::unpin_time): whatever reads the
+    /// frame's time (the face painter, the scene's frame info that seeds grain and sample jitter) then sees the same time
+    /// on every frame, whatever the clock is and however many frames ran before. The clock itself does not move. For
+    /// renders that must not depend on history: a character sheet, a still.
+    pub fn pin_time(&mut self, tick: Tick) -> TimePin {
+        let pin = TimePin { tick: self.tick, root: self.root, pose: self.pose, goals: self.goals };
+        self.pinned = Some(tick);
+        pin
+    }
+
+    /// Ends [`pin_time`](Stage::pin_time) and puts the last frame's tick, root, pose and goals back, with the rig and
+    /// the scene's instances following them, so the stage looks as it did before the pin (what the runtimes settled to
+    /// stays). Nothing is sent to the renderer.
+    pub fn unpin_time(&mut self, pin: &TimePin) {
+        self.pinned = None;
+        (self.tick, self.root, self.pose, self.goals) = (pin.tick, pin.root, pin.pose, pin.goals);
+        // A solve for no time: the bones follow the restored pose without stepping the springs.
+        self.rig.solve(Tick { dt: 0.0, ..pin.tick }, &pin.pose, &pin.goals);
+        self.plan.fill(&mut self.scene, self.rig.skin(), pin.root);
+    }
+
+    /// Where every vertex of the character is in the frame the stage last prepared, in world space: a dynamic mesh at
+    /// the shape its runtime holds now (the vertices [`tick`](Stage::tick) and [`redraw`](Stage::redraw) send the
+    /// renderer), a skinned mesh blended by the current joint palette, as the renderer does, and everything under the
+    /// character's root. Morph targets are not applied. Cold: allocates.
+    pub fn drawn_vertices(&self) -> Vec<Vec3> {
+        let skin = self.rig.skin();
+        let mut out = Vec::new();
+        for built_mesh in &self.built.meshes {
+            let mesh = &built_mesh.mesh;
+            let positions = self.runtime_positions(built_mesh).unwrap_or(&mesh.geometry.positions);
+            let bones = scene::joint_bones(&self.built, mesh);
+            for (i, p) in positions.iter().enumerate() {
+                let local = match (mesh.geometry.joints.get(i), mesh.geometry.weights.get(i)) {
+                    (Some(joints), Some(weights)) => {
+                        let blend = joints.iter().zip(weights).fold(Mat4::ZERO, |sum, (joint, weight)| {
+                            let bone = bones.get(usize::from(*joint)).copied().flatten();
+                            sum + scene::joint_matrix(bone, skin) * *weight
+                        });
+                        blend.transform_point3(*p)
+                    }
+                    _ => *p,
+                };
+                out.push(self.root.transform_point3(local));
+            }
+        }
+        out
+    }
+
+    /// The vertices a runtime holds for `mesh` now, if it rewrites it.
+    fn runtime_positions<'a>(&'a self, mesh: &omuzaki_char_api::BuiltMesh) -> Option<&'a [Vec3]> {
+        if !mesh.mesh.dynamic {
+            return None;
+        }
+        self.built.runtimes.iter().filter(|slot| slot.part == mesh.part).find_map(|slot| {
+            (0..slot.runtime.dynamic_count())
+                .filter_map(|index| slot.runtime.dynamic_mesh(index))
+                .find(|view| view.mesh == mesh.local)
+                .map(|view| view.positions)
+        })
     }
 
     /// The scene as the next frame will start from: set the camera, lights and post settings here.

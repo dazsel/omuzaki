@@ -16,7 +16,9 @@
 
 use omuzaki_anim_api::{HumanoidBone, HumanoidPose};
 use omuzaki_char_api::BuiltCharacter;
+use omuzaki_anim_api::Tick;
 use omuzaki_core::glam::{Mat4, Quat, UVec2, Vec2, Vec3};
+use omuzaki_core::time::Seconds;
 use omuzaki_render_api::{
     AlphaEncoding, Background, Camera, Image, Light, Post, Projection, Quality, RenderError, Renderer, ResourceRef,
     Scene, TargetDesc, TargetId,
@@ -40,6 +42,10 @@ pub const HEAD_CENTRE_FRACTION: f32 = 0.5;
 /// The most bytes one view's cell may take (RGBA8): a 300 dpi A4 page is 35 MB, so this is room for a poster while a
 /// mistyped size is refused before it asks the allocator for terabytes.
 pub const MAX_CELL_BYTES: u64 = 1 << 30;
+/// The one moment every view of a sheet is drawn at: time zero, and no frame time. The stage's time is pinned to it for
+/// the whole render ([`Stage::pin_time`]), so anything that reads the frame's time (the face painter, the frame info
+/// that seeds sample jitter) sees the same time in all four views, whatever the stage clock is and whatever ran before.
+pub const SHEET_TICK: Tick = Tick { index: 0, time: Seconds(0.0), dt: 0.0 };
 /// The light rig every sheet is lit with. The sheet always uses it, replacing whatever lights the stage's scene had
 /// and every other render setting of the stage's scene (post, background, fog, environment light, outline light and
 /// the rest, which the sheet draws from a fresh scene); [`render_turnaround`] puts the caller's settings back afterwards.
@@ -75,7 +81,7 @@ impl View {
 }
 
 /// The pose a sheet shows.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Default)]
+#[derive(Clone, Debug, PartialEq, Default)]
 #[non_exhaustive]
 pub enum SheetPose {
     /// The character's own base pose, its bind (the A-pose it was sculpted in).
@@ -83,6 +89,15 @@ pub enum SheetPose {
     Rest,
     /// A confident stance, [`hero_pose`].
     Hero,
+    /// Any pose, in the normalised space of [`HumanoidPose`]: what the pose library (RG-06) will hand a sheet.
+    Custom(Box<HumanoidPose>),
+}
+
+impl SheetPose {
+    /// A sheet in `pose`.
+    pub fn custom(pose: HumanoidPose) -> Self {
+        Self::Custom(Box::new(pose))
+    }
 }
 
 /// The lens a sheet is shot with.
@@ -232,10 +247,11 @@ pub struct Framing {
     pub eye_line_row: f32,
     /// The head's centre ([`HEAD_CENTRE_FRACTION`] of the way from the head joint to the crown).
     pub head_centre: Vec2,
-    /// The row of the lowest point of the character: its meshes as built (the bind pose), turned with the view and
-    /// projected through its camera, so in a perspective lens a vertex nearer the camera counts where it lands.
+    /// The row of the lowest point of the picture: every vertex as drawn (skinned by the pose, deformed by the settled
+    /// hair and cloth, turned with the view) projected through the view's camera, so in a perspective lens a vertex
+    /// nearer the camera counts where it lands.
     pub ground_row: f32,
-    /// The row of the highest point of the character, found the same way as [`ground_row`](Self::ground_row).
+    /// The row of the highest point of the picture, found the same way as [`ground_row`](Self::ground_row).
     pub crown_row: f32,
 }
 
@@ -342,8 +358,11 @@ impl Shot {
 /// Each view ticks the character to its yaw and pose, settles the hair and cloth from rest (so no view depends on the
 /// views before it or on what the stage did earlier), redraws to upload the settled meshes, and then draws offline from
 /// that scene, tile by tile where the cell is too big for one target. The tick and the redraw also draw a throwaway
-/// frame into the stage's own target. The stage is left as the last view left it (the character turned away, in the
-/// sheet's pose, settled, the clock moved on): the caller's next tick sets its own pose and root.
+/// frame into the stage's own target.
+///
+/// The stage's time is pinned to [`SHEET_TICK`] for the whole render, so no view depends on the stage clock or on
+/// earlier frames, and afterwards the stage's last frame (tick, root, pose, goals) is put back; what the hair and cloth
+/// settled to stays.
 ///
 /// # Errors
 /// [`TurnaroundError`] for an unusable spec ([`TurnaroundSpec::validate`]), a character with nothing to frame, a
@@ -362,7 +381,9 @@ pub fn render_turnaround(
         .map_err(|e| StageError::render("the sheet's target", e))?;
     let saved = stage.scene().clone();
     *stage.scene_mut() = neutral_scene(&saved, Camera::default(), lights, look, spec.background);
+    let pin = stage.pin_time(SHEET_TICK);
     let sheet = draw_sheet(stage, renderer, spec, target);
+    stage.unpin_time(&pin);
     let released = renderer.release(ResourceRef::from(target));
     restore_settings(stage.scene_mut(), saved);
     match (sheet, released) {
@@ -403,14 +424,15 @@ fn draw_sheet(
     if matches!(spec.lens, Lens::Telephoto) && (spec.cell.x > tile || spec.cell.y > tile) {
         return Err(TurnaroundError::TilingNeedsOrthographic { cell: spec.cell, tile });
     }
-    let pose = match spec.pose {
+    let pose = match &spec.pose {
         SheetPose::Rest => stage.built().rig.bind,
         SheetPose::Hero => hero_pose(&stage.built().rig.bind),
+        SheetPose::Custom(pose) => **pose,
     };
     stage.scene_mut().camera = shot.camera;
     let run = Run { spec, subject, shot, pose, target, tile };
     let views = View::ALL.into_iter().map(|view| run.view(stage, renderer, view)).collect::<Result<Vec<_>, _>>()?;
-    Ok(TurnaroundSheet { pose: spec.pose, views })
+    Ok(TurnaroundSheet { pose: spec.pose.clone(), views })
 }
 
 /// The scene a sheet is drawn from: built fresh, so nothing of the caller's look can reach it. Every render setting is
@@ -536,7 +558,7 @@ fn framing(stage: &Stage, subject: &Subject, shot: &Shot, root: Mat4) -> Framing
     let up = skin.transform_vector3(Vec3::Y);
     let along = |fraction: f32| root.transform_point3(joint + up * ((subject.crown - subject.head_joint.y) * fraction));
     let head_centre = shot.pixel(along(HEAD_CENTRE_FRACTION));
-    let (crown_row, ground_row) = extreme_rows(stage.built(), shot, root);
+    let (crown_row, ground_row) = extreme_rows(&stage.drawn_vertices(), shot);
     Framing {
         px_per_m: shot.px_per_m,
         eye_line_row: shot.pixel(along(EYE_LINE_FRACTION)).y,
@@ -546,14 +568,12 @@ fn framing(stage: &Stage, subject: &Subject, shot: &Shot, root: Mat4) -> Framing
     }
 }
 
-/// The topmost and bottom-most rows any vertex of the character lands on in this view: every vertex is projected, so
-/// the rows are where the geometry is, not where a point on the character's axis would be (a crown that stands out
-/// toward the camera lands higher in a perspective lens).
-fn extreme_rows(built: &BuiltCharacter, shot: &Shot, root: Mat4) -> (f32, f32) {
-    built
-        .meshes
+/// The topmost and bottom-most rows any drawn vertex lands on in this view: every vertex the renderer draws (skinned
+/// by the pose, deformed by the settled runtimes, turned with the view, see [`Stage::drawn_vertices`]) is projected, so
+/// the rows are where the picture's geometry is, in every lens.
+fn extreme_rows(drawn: &[Vec3], shot: &Shot) -> (f32, f32) {
+    drawn
         .iter()
-        .flat_map(|m| m.mesh.geometry.positions.iter())
-        .map(|p| shot.pixel(root.transform_point3(*p)).y)
+        .map(|p| shot.pixel(*p).y)
         .fold((f32::INFINITY, f32::NEG_INFINITY), |(top, bottom), row| (top.min(row), bottom.max(row)))
 }
