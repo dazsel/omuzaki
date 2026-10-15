@@ -200,12 +200,17 @@ pub struct ImageSpec {
 /// outside the frame. Writing into a caller-owned buffer keeps the hot path allocation-free. The frame must have
 /// passed [`RgbFrame::validate`].
 ///
+/// A zero `spec.width` or `spec.height` has an empty `out` and writes nothing.
+///
 /// # Errors
 /// [`FaceTrackError::Shape`] (graph `"input"`) when `out` has the wrong length.
 #[allow(clippy::cast_precision_loss)] // pixel counts are tiny next to f32's 24 bits
 pub fn warp_to_tensor(frame: &RgbFrame<'_>, roi: &RotatedRect, spec: ImageSpec, out: &mut [f32]) -> Result<()> {
     if out.len() != spec.width * spec.height * 3 {
         return Err(FaceTrackError::Shape { graph: "input" });
+    }
+    if spec.width == 0 || spec.height == 0 {
+        return Ok(()); // an empty tensor has nothing to write; the row loop below reads the last column
     }
     let (cos, sin) = (roi.rotation.cos(), roi.rotation.sin());
     // Source position of tensor pixel (xd, yd): centre + R * ((u - 0.5) * w, (v - 0.5) * h), with u = xd / W, v = yd / H.
@@ -412,6 +417,25 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn an_empty_tensor_writes_nothing() {
+        let image = gradient(4, 4);
+        let frame = image.frame();
+        for (width, height) in [(0, 3), (3, 0), (0, 0)] {
+            let spec = ImageSpec { width, height, range: (0.0, 1.0), border: Border::Zero };
+            assert_eq!(
+                warp_to_tensor(&frame, &roi(2.0, 2.0, 4.0, 4.0, 0.0), spec, &mut []),
+                Ok(()),
+                "{width}x{height}"
+            );
+            // A buffer for a non-empty tensor is still the wrong length.
+            assert_eq!(
+                warp_to_tensor(&frame, &roi(2.0, 2.0, 4.0, 4.0, 0.0), spec, &mut [0.0; 3]),
+                Err(FaceTrackError::Shape { graph: "input" })
+            );
         }
     }
 
