@@ -26,6 +26,9 @@ omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-render-api = { path = "../omuzaki-render-api" }
 omuzaki-store-api = { path = "../omuzaki-store-api" }
 
+[build-dependencies]
+omuzaki-embed = { path = "../omuzaki-embed" }
+
 [dev-dependencies]
 criterion.workspace = true
 proptest.workspace = true
