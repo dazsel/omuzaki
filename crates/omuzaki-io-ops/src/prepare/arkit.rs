@@ -10,15 +10,19 @@
 //!    binding it at weight 1).
 //! 2. **From a morph.** A morph target whose name matches ignoring case, underscores and a `blendShape.`-style prefix,
 //!    or the `VRoid` name in [`VROID_MORPHS`], gets an expression binding it.
-//! 3. **From a preset.** The VRM preset in [`PRESET_RULES`] exists and has binds: the new expression copies them with
-//!    weights scaled by the rule's gain.
+//! 3. **From a preset.** The VRM preset in [`PRESET_RULES`] exists and has binds: the new expression copies them, morph
+//!    weights scaled by the rule's gain and colour and texture-transform targets interpolated from their rest values.
 //! 4. **Missing.** Nothing is added.
 //!
 //! An existing expression is never replaced or edited.
 
 use std::collections::BTreeMap;
 
-use omuzaki_io_api::{ARKIT_52, Expression, ExpressionName, IoScene, MorphBind, NodeIx, PresetExpression};
+use omuzaki_core::glam::{Vec2, Vec4};
+use omuzaki_io_api::{
+    ARKIT_52, ColorBind, ColorBindKind, Expression, ExpressionName, IoScene, Material, MorphBind, NodeIx,
+    PresetExpression, Shading, UvBind,
+};
 
 /// Morph targets of a `VRoid`-made model and the channels they feed, with the weight each binds at. `E`, `Joy` and
 /// `Angry` drive both sides of a pair at half weight because the source shape is symmetric.
@@ -135,7 +139,7 @@ pub fn synthesise(scene: &mut IoScene) -> Arkit52Report {
     let mut channels = Vec::with_capacity(ARKIT_52.len());
     let mut added = Vec::new();
     for channel in ARKIT_52 {
-        let built = scene.avatar.as_ref().and_then(|avatar| build(channel, &morphs, &avatar.expressions));
+        let built = scene.avatar.as_ref().and_then(|avatar| build(channel, &morphs, scene, &avatar.expressions));
         let (how, expression) = match built {
             Some((how, expression)) => (how, expression),
             None => (Synthesis::Missing, None),
@@ -161,54 +165,98 @@ pub fn synthesise(scene: &mut IoScene) -> Arkit52Report {
 
 /// How `channel` is obtained and the expression to add for it (`None` for [`Synthesis::Present`] by an expression),
 /// or `None` when it is missing.
+///
+/// Within the naming tier that matches (exact, then alias, then `VRoid`), the expression binds **every** matching morph
+/// target, so a face mesh and a teeth mesh that both carry `jawOpen` move together.
 fn build(
     channel: &str,
     morphs: &[Morph<'_>],
+    scene: &IoScene,
     expressions: &BTreeMap<ExpressionName, Expression>,
 ) -> Option<(Synthesis, Option<Expression>)> {
     if ExpressionName::parse(channel).is_ok_and(|name| expressions.contains_key(&name)) {
         return Some((Synthesis::Present, None));
     }
-    if let Some(m) = morphs.iter().find(|m| m.name == channel) {
-        return Some((Synthesis::Present, Some(bind_morph(m, 1.0))));
-    }
-    let key = name_key(channel);
-    let vroid = || {
-        VROID_MORPHS.iter().filter(|r| r.1 == channel).find_map(|&(alias, _, weight)| {
-            morphs.iter().find(|m| name_key(m.name) == name_key(alias)).map(|m| (m, weight))
-        })
+    let matching = |wanted: &str, exact: bool| -> Vec<&Morph<'_>> {
+        let key = name_key(wanted);
+        morphs.iter().filter(|m| if exact { m.name == wanted } else { name_key(m.name) == key }).collect()
     };
-    let alias = morphs.iter().find(|m| name_key(m.name) == key).map(|m| (m, 1.0)).or_else(vroid);
-    if let Some((m, weight)) = alias {
-        return Some((Synthesis::FromMorph { target: m.name.to_owned() }, Some(bind_morph(m, weight))));
+    let exact = matching(channel, true);
+    if !exact.is_empty() {
+        return Some((Synthesis::Present, Some(bind_morphs(&exact, 1.0))));
+    }
+    let alias = Some((matching(channel, false), 1.0))
+        .into_iter()
+        .chain(
+            VROID_MORPHS.iter().filter(|r| r.1 == channel).map(|&(alias, _, weight)| (matching(alias, false), weight)),
+        )
+        .find(|(found, _)| !found.is_empty());
+    if let Some((found, weight)) = alias {
+        return Some((Synthesis::FromMorph { target: found[0].name.to_owned() }, Some(bind_morphs(&found, weight))));
     }
     PRESET_RULES.iter().filter(|r| r.0 == channel).find_map(|&(_, preset, gain)| {
-        let expression = scale(expressions.get(&ExpressionName::Preset(preset))?, gain)?;
+        let expression = scale(expressions.get(&ExpressionName::Preset(preset))?, gain, &scene.materials)?;
         Some((Synthesis::FromPreset { preset, gain }, Some(expression)))
     })
 }
 
-/// An expression driving `morph` at `weight`.
-fn bind_morph(morph: &Morph<'_>, weight: f32) -> Expression {
+/// An expression driving each of `morphs` at `weight`.
+fn bind_morphs(morphs: &[&Morph<'_>], weight: f32) -> Expression {
     let mut expression = Expression::new();
-    expression.morph_binds.push(MorphBind { node: morph.node, index: morph.index, weight });
+    expression.morph_binds = morphs.iter().map(|m| MorphBind { node: m.node, index: m.index, weight }).collect();
     expression
 }
 
 /// A copy of `source` driving everything it drives at `gain` times the strength, or `None` if that leaves nothing.
 ///
-/// Morph weights scale directly. Colour and texture-transform binds name the value reached at weight 1 and carry no
-/// weight of their own, so they cannot be scaled: they are copied only at a gain of 1, and dropped below it rather
-/// than applied at the wrong strength.
-fn scale(source: &Expression, gain: f32) -> Option<Expression> {
+/// Morph weights scale directly. A colour bind moves its material colour from the base value to its target as the
+/// weight rises, and a texture-transform bind moves from the identity (scale 1, offset 0), so scaling interpolates
+/// the target from that base (`docs/design/byom.md` D3). A colour bind whose material or colour does not exist is
+/// dropped: it drives nothing. At a gain of 1 everything is copied as it is, including `is_binary`; below it the copy
+/// is continuous, because a stepped expression cannot be halved.
+fn scale(source: &Expression, gain: f32, materials: &[Material]) -> Option<Expression> {
     let mut expression = Expression::new();
-    expression.morph_binds = source.morph_binds.iter().map(|b| MorphBind { weight: b.weight * gain, ..*b }).collect();
     if (gain - 1.0).abs() < f32::EPSILON {
         expression.is_binary = source.is_binary;
+        expression.morph_binds.clone_from(&source.morph_binds);
         expression.color_binds.clone_from(&source.color_binds);
         expression.uv_binds.clone_from(&source.uv_binds);
+    } else {
+        expression.morph_binds =
+            source.morph_binds.iter().map(|b| MorphBind { weight: b.weight * gain, ..*b }).collect();
+        expression.color_binds = source
+            .color_binds
+            .iter()
+            .filter_map(|b| {
+                let base = base_color(materials.get(b.material.index())?, b.kind, b.target.w)?;
+                Some(ColorBind { target: base + (b.target - base) * gain, ..*b })
+            })
+            .collect();
+        expression.uv_binds = source
+            .uv_binds
+            .iter()
+            .map(|b| UvBind { scale: Vec2::ONE + (b.scale - Vec2::ONE) * gain, offset: b.offset * gain, ..*b })
+            .collect();
     }
     (!expression.is_inert()).then_some(expression)
+}
+
+/// The value of the colour `kind` on `material` at rest, or `None` if the material has no such colour (an `MToon`
+/// colour on a plain PBR material). Colours without an alpha take `alpha`, so interpolating leaves it alone.
+fn base_color(material: &Material, kind: ColorBindKind, alpha: f32) -> Option<Vec4> {
+    let toon = match &material.shading {
+        Shading::Toon(toon) => Some(toon),
+        _ => None,
+    };
+    let rgb = match kind {
+        ColorBindKind::Color => return Some(material.base_color),
+        ColorBindKind::EmissionColor => material.emissive,
+        ColorBindKind::ShadeColor => toon?.shade_color,
+        ColorBindKind::MatcapColor => toon?.matcap_color,
+        ColorBindKind::RimColor => toon?.rim_color,
+        ColorBindKind::OutlineColor => toon?.outline_color,
+    };
+    Some(rgb.extend(alpha))
 }
 
 /// Every morph target of every mesh node, in node order then target order, so the first match is deterministic.

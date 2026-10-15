@@ -3,10 +3,10 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use omuzaki_core::glam::Vec3;
+use omuzaki_core::glam::{Vec2, Vec3, Vec4};
 use omuzaki_io_api::{
-    ARKIT_52, Avatar, Expression, ExpressionName, IoScene, Mesh, MeshData, MorphBind, MorphTarget, Node, NodeIx,
-    PresetExpression, Primitive,
+    ARKIT_52, Avatar, ColorBind, ColorBindKind, Expression, ExpressionName, IoScene, Material, MaterialIx, Mesh,
+    MeshData, MorphBind, MorphTarget, Node, NodeIx, PresetExpression, Primitive, Shading, UvBind,
 };
 use omuzaki_io_api::{ExportOptions, preflight};
 use omuzaki_io_mock::fixtures::{BODY_NODE, tiny_avatar};
@@ -169,22 +169,106 @@ fn never_replaces() {
     assert_eq!(binds(&scene, "jawOpen"), [MorphBind { node: face, index: 0, weight: 0.25 }]);
 }
 
+/// Adds a second mesh node (a "Teeth" mesh) carrying morph targets `names`, and returns its node.
+fn add_mesh_node(scene: &mut IoScene, name: &str, names: &[&str]) -> NodeIx {
+    let (other, _) = scene_with_targets(names);
+    let mut mesh = other.meshes[0].clone();
+    name.clone_into(&mut mesh.name);
+    let mesh = scene.add_mesh(mesh);
+    let mut node = Node::new(name);
+    node.mesh = Some(mesh);
+    scene.add_node(node)
+}
+
 #[test]
-fn a_colour_only_preset_is_copied_whole_at_gain_one_and_skipped_below_it() {
-    let (mut scene, _) = scene_with_targets(&[]);
+fn an_exact_name_on_two_meshes_binds_both() {
+    let (mut scene, face) = scene_with_targets(&["Brow", "jawOpen"]);
+    let teeth = add_mesh_node(&mut scene, "Teeth", &["jawOpen"]);
+    let report = synthesise(&mut scene);
+    assert_eq!(outcome(&report, "jawOpen"), &Synthesis::Present);
+    let want = [MorphBind { node: face, index: 1, weight: 1.0 }, MorphBind { node: teeth, index: 0, weight: 1.0 }];
+    assert_eq!(binds(&scene, "jawOpen"), want);
+}
+
+#[test]
+fn an_alias_on_two_meshes_binds_both() {
+    for (face_names, teeth_names, channel, weight) in
+        [(["Fcl_MTH_A"], ["fcl_mth_a"], "jawOpen", 1.0), (["Fcl_BRW_Angry"], ["Fcl_BRW_Angry"], "browDownLeft", 0.5)]
+    {
+        let (mut scene, face) = scene_with_targets(&face_names);
+        let teeth = add_mesh_node(&mut scene, "Teeth", &teeth_names);
+        let report = synthesise(&mut scene);
+        assert_eq!(outcome(&report, channel), &Synthesis::FromMorph { target: face_names[0].to_owned() });
+        let want = [MorphBind { node: face, index: 0, weight }, MorphBind { node: teeth, index: 0, weight }];
+        assert_eq!(binds(&scene, channel), want, "{channel}");
+    }
+}
+
+#[test]
+fn the_exact_tier_wins_over_aliases() {
+    let (mut scene, face) = scene_with_targets(&["JAWOPEN", "jawOpen"]);
+    synthesise(&mut scene);
+    assert_eq!(binds(&scene, "jawOpen"), [MorphBind { node: face, index: 1, weight: 1.0 }]);
+}
+
+/// A scene with a skin and a toon material, for the colour and texture-transform bind tests.
+fn scene_with_material() -> (IoScene, NodeIx, MaterialIx) {
+    let (mut scene, face) = scene_with_targets(&["Smile"]);
+    let mut material = Material::new("skin", Shading::Toon(Box::default()));
+    material.base_color = Vec4::new(1.0, 0.5, 0.25, 1.0);
+    let material = scene.add_material(material);
+    (scene, face, material)
+}
+
+fn blush(material: MaterialIx) -> ColorBind {
+    ColorBind { material, kind: ColorBindKind::Color, target: Vec4::new(1.0, 0.0, 0.75, 1.0) }
+}
+
+#[test]
+fn a_material_only_preset_is_scaled_from_the_rest_values() {
+    let (mut scene, _, material) = scene_with_material();
+    let mut happy = Expression::new();
+    happy.color_binds.push(blush(material));
+    happy.uv_binds.push(UvBind { material, scale: Vec2::new(0.5, 3.0), offset: Vec2::new(0.5, 0.25) });
+    scene.avatar.as_mut().unwrap().expressions.insert(ExpressionName::Preset(PresetExpression::Happy), happy);
+    let report = synthesise(&mut scene);
+    let want = Synthesis::FromPreset { preset: PresetExpression::Happy, gain: 0.5 };
+    assert_eq!(outcome(&report, "mouthSmileLeft"), &want);
+    let e = &expressions(&scene)[&name("mouthSmileRight")];
+    assert_eq!(e.color_binds, [ColorBind { target: Vec4::new(1.0, 0.25, 0.5, 1.0), ..blush(material) }]);
+    assert_eq!(e.uv_binds[0].scale, Vec2::new(0.75, 2.0));
+    assert_eq!(e.uv_binds[0].offset, Vec2::new(0.25, 0.125));
+    assert!(e.morph_binds.is_empty() && !e.is_binary);
+}
+
+#[test]
+fn a_mixed_preset_keeps_its_morphs_and_its_blush() {
+    let (mut scene, face, material) = scene_with_material();
+    let mut happy = morph_expression(face, 0, 1.0);
+    happy.color_binds.push(blush(material));
+    scene.avatar.as_mut().unwrap().expressions.insert(ExpressionName::Preset(PresetExpression::Happy), happy);
+    synthesise(&mut scene);
+    let e = &expressions(&scene)[&name("mouthSmileLeft")];
+    assert_eq!(e.morph_binds, [MorphBind { node: face, index: 0, weight: 0.5 }]);
+    assert_eq!(e.color_binds[0].target, Vec4::new(1.0, 0.25, 0.5, 1.0));
+}
+
+#[test]
+fn a_colour_the_material_lacks_is_dropped_and_a_gain_of_one_copies_whole() {
+    let (mut scene, _, material) = scene_with_material();
+    let pbr = scene.add_material(Material::new("plain", Shading::Pbr(omuzaki_io_api::Pbr::default())));
+    let mut happy = Expression::new();
+    happy.color_binds.push(ColorBind { material: pbr, kind: ColorBindKind::RimColor, target: Vec4::ONE });
     let mut blink = Expression::new();
     blink.is_binary = true;
-    blink.uv_binds.push(omuzaki_io_api::UvBind {
-        material: omuzaki_io_api::MaterialIx(0),
-        scale: omuzaki_core::glam::Vec2::ONE,
-        offset: omuzaki_core::glam::Vec2::new(0.5, 0.0),
-    });
+    blink.color_binds.push(ColorBind { material: pbr, kind: ColorBindKind::RimColor, target: Vec4::ONE });
+    blink.uv_binds.push(UvBind { material, scale: Vec2::ONE, offset: Vec2::new(0.5, 0.0) });
     let av = scene.avatar.as_mut().unwrap();
+    av.expressions.insert(ExpressionName::Preset(PresetExpression::Happy), happy);
     av.expressions.insert(ExpressionName::Preset(PresetExpression::BlinkLeft), blink.clone());
-    av.expressions.insert(ExpressionName::Preset(PresetExpression::Happy), blink.clone());
     let report = synthesise(&mut scene);
+    assert_eq!(outcome(&report, "mouthSmileLeft"), &Synthesis::Missing, "nothing left to drive");
     assert_eq!(expressions(&scene)[&name("eyeBlinkLeft")], blink);
-    assert_eq!(outcome(&report, "mouthSmileLeft"), &Synthesis::Missing, "a texture move cannot be halved");
 }
 
 #[test]
