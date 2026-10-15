@@ -23,19 +23,19 @@ fn v(x: f32, y: f32) -> Vec2 {
 }
 
 /// Overlapping translucent ellipses, as in the `translucent-stack` probe.
-fn fills(d: &mut DrawList) {
+fn fills(d: &mut DrawList, shift: f32) {
     for (cx, cy, rx, ry, colour) in [
         (-0.05, 0.02, 0.05, 0.04, Colour::rgba(220, 40, 60, 200)),
         (0.0, 0.0, 0.05, 0.05, Colour::rgba(40, 120, 230, 160)),
         (0.05, 0.02, 0.045, 0.045, Colour::rgba(250, 200, 20, 120)),
     ] {
-        let path = d.path().ellipse(v(cx, cy), rx, ry).finish();
+        let path = d.path().ellipse(v(cx + shift, cy), rx, ry).finish();
         d.push(Cmd::Fill { path, paint: Paint::Solid(colour), opacity: 0.8 });
     }
 }
 
 /// A four-stop radial gradient inside an elliptical clip, as in the `clipped-radial-gradient` probe.
-fn clipped_gradient(d: &mut DrawList) {
+fn clipped_gradient(d: &mut DrawList, shift: f32) {
     let clip = d.path().ellipse(v(0.0, 0.0), 0.1, 0.06).finish();
     d.push(Cmd::PushClip(clip));
     let sheet = d.path().polyline(&[v(-0.13, -0.09), v(0.13, -0.09), v(0.13, 0.09), v(-0.13, 0.09)]).close().finish();
@@ -47,7 +47,7 @@ fn clipped_gradient(d: &mut DrawList) {
     ]);
     d.push(Cmd::Fill {
         path: sheet,
-        paint: Paint::Radial { centre: v(-0.02, 0.01), radius: 0.085, stops },
+        paint: Paint::Radial { centre: v(-0.02 + shift, 0.01), radius: 0.085, stops },
         opacity: 1.0,
     });
     d.push(Cmd::PopClip);
@@ -93,15 +93,19 @@ fn main() {
     let mut native: Box<dyn Any> = Box::new((device.clone(), queue, texture));
     let mut rasterizer = VelloRasterizer::new();
     println!(
-        "gpu_face: {width}x{height} px, {FRAMES} repaints after {WARM_UP} warm-up (CPU encode + GPU render + resolve)"
+        "gpu_face: {width}x{height} px, {FRAMES} repaints (alternating two lists) after {WARM_UP} warm-up (CPU encode + GPU render + resolve)"
     );
-    for (name, build) in [("fills", fills as fn(&mut DrawList)), ("clipped radial gradient", clipped_gradient)] {
-        let mut list = DrawList::new();
-        build(&mut list);
+    for (name, build) in [("fills", fills as fn(&mut DrawList, f32)), ("clipped radial gradient", clipped_gradient)] {
+        // A repaint of an unchanged list does no work, so the frames alternate two lists that differ by a small shift.
+        let lists = [0.0, 0.004].map(|shift| {
+            let mut list = DrawList::new();
+            build(&mut list, shift);
+            list
+        });
         let mut times_ms = Vec::with_capacity(FRAMES);
         for frame in 0..WARM_UP + FRAMES {
             let start = Instant::now();
-            let drawn = rasterizer.rasterize_native(&spec, &list, native.as_mut());
+            let drawn = rasterizer.rasterize_native(&spec, &lists[frame % 2], native.as_mut());
             if !matches!(drawn, Ok(true)) {
                 println!("{name}: the rasteriser did not draw: {drawn:?}");
                 return;
