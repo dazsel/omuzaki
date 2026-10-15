@@ -11,6 +11,7 @@ use crate::packet::{Packet, StreamId};
 
 /// A container format.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum Container {
     /// `QuickTime` (`ProRes`).
@@ -70,4 +71,22 @@ pub trait MuxerFactory: Send + Sync {
     /// [`StreamError::Unavailable`] with a hint if the container is not supported here, [`StreamError::Io`] if the file
     /// cannot be created.
     fn create(&self, path: &Path, container: Container) -> Result<Box<dyn Muxer>, StreamError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn containers_use_snake_case_names() {
+        for (c, text) in [
+            (Container::Mov, "\"mov\""),
+            (Container::Webm, "\"webm\""),
+            (Container::Mp4, "\"mp4\""),
+            (Container::Mkv, "\"mkv\""),
+        ] {
+            assert_eq!(serde_json::to_string(&c).ok().as_deref(), Some(text));
+            assert_eq!(serde_json::from_str::<Container>(text).ok(), Some(c));
+        }
+    }
 }
