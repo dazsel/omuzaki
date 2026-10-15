@@ -5,7 +5,7 @@
 //! score, are painted with the real face painter on the default face profile (a synthetic face), rasterised on the CPU
 //! as `face_parity` does, and written as one row per template. The caption under the row names the channels the
 //! score drives that the sheet does not show: head and body channels are "not painted", the eye effects whose painters
-//! are still stubs ([`UNDRAWN`]) are "not drawn yet", and the clips and expressions that cues ask for are "not played",
+//! have no painter ([`UNDRAWN`]) are "not drawn yet", and the clips and expressions that cues ask for are "not played",
 //! so the reviewer knows what is missing.
 //!
 //! `sheet` is ignored and writes `$OMUZAKI_SHEET_DIR/<id>.png` (the evidence case `score-templates` runs it).
@@ -152,19 +152,23 @@ fn over(dst: &mut [u8; 4], src: [u8; 4]) {
     }
 }
 
-/// Channels the face region paints but whose painter is still a stub in `omuzaki-face`. The caption names them as "not
-/// drawn yet", so a sheet never hides an effect the score asks for. Each entry says which stub file holds it, and the
-/// list shrinks as those files are implemented.
-const UNDRAWN: [Channel; 4] = [
-    // eyeArc*: `painter/eyes/closed.rs`
+/// Channels a score can drive that the face does not show: no painter draws them, because the painter is a stub or has
+/// no branch for them. The caption names them as "not drawn yet", so a sheet never hides an effect the score asks for.
+/// Each entry says where its painter is, and the entry goes when that painter lands. The test
+/// [`every_undrawn_channel_paints_as_nothing_or_as_a_blink`] checks the list against the frames.
+const UNDRAWN: [Channel; 7] = [
+    // eyeArc*: the happy `^` is not drawn. An arc closes the eye like a blink (`aperture.rs`, `lid()`); the arc itself is
+    // in `lid.rs` and `closed.rs`, both stubs.
     Channel::EYE_ARC_LEFT,
     Channel::EYE_ARC_RIGHT,
-    // eyesHeart: `painter/eyes/effects.rs`
-    Channel::EYES_HEART,
-    // tears: `painter/eyes/effects.rs`
+    // eyesGloom and sweatDrop: `overlay.rs`, a stub.
+    Channel::EYES_GLOOM,
+    Channel::SWEAT_DROP,
+    // eyesSqueeze, eyesSpiral and tears: `painter/eyes/effects.rs`, a stub.
+    Channel::EYES_SQUEEZE,
+    Channel::EYES_SPIRAL,
     Channel::TEARS,
 ];
-
 /// A channel's name as words: `headShiftX` becomes `head shift x`.
 fn words(channel: Channel) -> String {
     let mut words = String::new();
@@ -358,6 +362,51 @@ fn a_brow_is_drawn_once_on_the_flat_sheet() {
     assert_ne!(flat.get_pixel(x, y), doubled.get_pixel(x, y), "compositing Brows changes the brow pixel");
     let frame = paint_frame(&compiled, at, &profile);
     assert_eq!(frame.as_raw(), flat.as_raw(), "the sheet's frame is Base over Overlay, with Brows left out");
+}
+
+/// A score with no tracks, lasting one second.
+fn at_rest() -> Score {
+    parse("[score]\nduration = 1.0\ntracks = []\n")
+}
+
+/// A score that holds `channel` at `value` for its whole length.
+fn holding(channel: Channel, value: f32) -> Score {
+    parse(&format!(
+        "[score]\nduration = 1.0\n\n[[score.tracks]]\nchannel = \"{}\"\nkeys = [\n  {{ time = 0.0, value = {value}, over = 0.0 }},\n  {{ time = 1.0, value = {value}, over = 0.0 }},\n]\n",
+        channel.name()
+    ))
+}
+
+/// The blink that an eye arc closes the eye like: `eyeArcLeft` shuts the same eye as `eyeBlinkLeft`.
+fn blink_twin(channel: Channel) -> Option<Channel> {
+    match channel {
+        Channel::EYE_ARC_LEFT => Some(Channel::EYE_BLINK_LEFT),
+        Channel::EYE_ARC_RIGHT => Some(Channel::EYE_BLINK_RIGHT),
+        _ => None,
+    }
+}
+
+#[test]
+fn every_undrawn_channel_paints_as_nothing_or_as_a_blink() {
+    let profile = default_profile();
+    let at = Seconds(0.5);
+    let rest = paint_frame(&parse_and_compile(&at_rest()), at, &profile);
+    let mismatched: Vec<Channel> = UNDRAWN
+        .into_iter()
+        .filter(|&channel| {
+            let driven = paint_frame(&parse_and_compile(&holding(channel, 1.0)), at, &profile);
+            let expected = match blink_twin(channel) {
+                Some(blink) => paint_frame(&parse_and_compile(&holding(blink, 1.0)), at, &profile),
+                None => rest.clone(),
+            };
+            driven.as_raw() != expected.as_raw()
+        })
+        .collect();
+    assert!(mismatched.is_empty(), "listed as not drawn yet, but these paint something: {mismatched:?}");
+}
+
+fn parse_and_compile(score: &Score) -> CompiledScore {
+    score.compile().expect("the test score compiles")
 }
 
 #[test]
