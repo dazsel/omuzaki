@@ -27,9 +27,28 @@ const WORKSPACE_WIDE_FILES: &[&str] = &[
 /// Root directories that configure every crate (cargo aliases, linker and target settings).
 const WORKSPACE_WIDE_DIRS: &[&str] = &[".cargo"];
 
-/// Folders outside every crate whose content a crate's tests check: a change there puts that crate in scope.
-/// `xtask`'s tests run the licence-file lint on the repository (`lint_licences`).
-const CHECKED_BY: &[(&str, &str)] = &[("docs/licensing", "xtask")];
+/// The crate whose tests run the licence-file lint on the repository (`lint_licences`).
+const LICENCE_LINT_CRATE: &str = "xtask";
+
+/// Whether `file` is an input of the licence-file lint (`xtask lint-licences`): the licence files and policy, the
+/// workflows whose `tools:` it reads, `.github/assets/`, and the fonts and `NOTICES.md` under `crates/`. Changing one
+/// of these can break the lint without touching any crate, so `xtask` joins the changed and test sets.
+fn is_licence_lint_input(file: &Path) -> bool {
+    let font = file.extension().is_some_and(|ext| ext == "ttf" || ext == "otf");
+    file.starts_with("docs/licensing")
+        || file.starts_with(".github/assets")
+        || file.starts_with(".github/workflows")
+        || (file.starts_with("crates") && (font || file.file_name().is_some_and(|name| name == "NOTICES.md")))
+}
+
+/// The crates that own a changed file, plus `xtask` when a file is an input of the licence lint.
+fn changed_crates<'a>(workspace: &'a Workspace, files: &[PathBuf]) -> BTreeSet<&'a str> {
+    let mut changed: BTreeSet<&str> = files.iter().filter_map(|file| owning_crate(workspace, file)).collect();
+    if files.iter().any(|file| is_licence_lint_input(file)) {
+        changed.extend(workspace.package(LICENCE_LINT_CRATE).map(|package| package.name.as_str()));
+    }
+    changed
+}
 
 /// What a check run covers.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -110,7 +129,7 @@ pub fn analyse_files(workspace: &Workspace, files: &[PathBuf]) -> Analysis {
     if matches!(scope, Scope::Workspace { .. }) {
         return Analysis { scope, ..whole_workspace(workspace) };
     }
-    let changed: BTreeSet<&str> = files.iter().filter_map(|file| owning_crate(workspace, file)).collect();
+    let changed = changed_crates(workspace, files);
     let mut direct: BTreeSet<String> = changed.iter().map(|name| (*name).to_owned()).collect();
     for package in &workspace.packages {
         if package.dependencies.iter().any(|dependency| changed.contains(dependency.name.as_str())) {
@@ -125,7 +144,7 @@ pub fn scope_for_files(workspace: &Workspace, files: &[PathBuf]) -> Scope {
     if let Some(trigger) = files.iter().find(|file| is_workspace_wide(file)) {
         return Scope::Workspace { trigger: Some(trigger.clone()) };
     }
-    let changed: BTreeSet<&str> = files.iter().filter_map(|file| owning_crate(workspace, file)).collect();
+    let changed = changed_crates(workspace, files);
     let (full, link_only) = with_dependents(workspace, &changed);
     Scope::Crates { full, link_only }
 }
@@ -138,9 +157,6 @@ fn is_workspace_wide(file: &Path) -> bool {
 
 /// The crate whose directory contains `file`; the deepest one wins if directories nest.
 fn owning_crate<'a>(workspace: &'a Workspace, file: &Path) -> Option<&'a str> {
-    if let Some((_, checker)) = CHECKED_BY.iter().find(|(dir, _)| file.starts_with(dir)) {
-        return workspace.package(checker).map(|package| package.name.as_str());
-    }
     workspace
         .packages
         .iter()
@@ -374,6 +390,32 @@ mod tests {
     fn a_licence_file_change_runs_the_xtask_tests_that_lint_it() {
         let scope = scope_for_files(&sample(), &files(&["docs/licensing/deps/serde.toml", "docs/licensing-notes.md"]));
         assert_eq!(crates(&scope), ["xtask"]);
+    }
+
+    #[test]
+    fn licence_lint_inputs_outside_any_crate_run_the_xtask_tests() {
+        for input in [".github/assets/new.png", ".github/workflows/ci.yml", "docs/licensing/policy.md"] {
+            let analysis = analyse_files(&sample(), &files(&[input]));
+            assert_eq!(crates(&analysis.scope), ["xtask"], "{input}");
+            assert_eq!(analysis.changed, BTreeSet::from(["xtask".to_owned()]), "{input}");
+            assert_eq!(analysis.direct, BTreeSet::from(["xtask".to_owned()]), "{input}");
+        }
+    }
+
+    #[test]
+    fn a_font_or_notices_file_keeps_its_crate_and_adds_xtask() {
+        for input in ["crates/omuzaki-render/assets/a.ttf", "crates/omuzaki-render/NOTICES.md"] {
+            let analysis = analyse_files(&sample(), &files(&[input]));
+            assert_eq!(crates(&analysis.scope), ["omuzaki-cli", "omuzaki-render", "xtask"], "{input}");
+            assert_eq!(analysis.changed, BTreeSet::from(["omuzaki-render".to_owned(), "xtask".to_owned()]), "{input}");
+            assert!(analysis.direct.contains("xtask") && analysis.direct.contains("omuzaki-cli"), "{input}");
+        }
+    }
+
+    #[test]
+    fn ordinary_crate_files_do_not_pull_in_xtask() {
+        let analysis = analyse_files(&sample(), &files(&["crates/omuzaki-render/src/lib.rs"]));
+        assert!(!analysis.changed.contains("xtask") && !analysis.direct.contains("xtask"));
     }
 
     #[test]
