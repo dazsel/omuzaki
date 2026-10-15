@@ -390,7 +390,7 @@ impl Renderer for WgpuRenderer {
             let outlined = |instance: &Instance| {
                 materials
                     .get(instance.material.index(), instance.material.generation())
-                    .is_some_and(|m| m.material.outline.is_some())
+                    .is_some_and(GpuMaterial::draws_outline)
             };
             morphs.prepare(&gpu.device, &gpu.queue, meshes, scene, outlined)
         })?;

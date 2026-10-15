@@ -330,3 +330,24 @@ fn releasing_a_morphed_mesh_gives_back_the_pooled_buffers() {
     r.render(target, &empty, &quality).unwrap();
     assert_eq!(r.stats().gpu_bytes, before, "releasing the mesh frees the pooled buffers with it");
 }
+
+#[test]
+fn a_zero_wide_outline_holds_no_outline_direction_stream() {
+    let gpu_bytes_with = |width: Option<f32>| {
+        let mut r = support::renderer();
+        let cube = shapes::cuboid(Vec3::splat(0.3));
+        let mesh = r.create_mesh_with(&cube, &slide_options(&cube, MeshUsage::Static)).unwrap();
+        let mut material = Material::unlit(Colour::WHITE);
+        material.outline = width.map(|width| Outline { colour: Colour::BLACK, width });
+        let material = r.create_material(&material).unwrap();
+        let target = r.create_target(&TargetDesc { size: UVec2::splat(32), alpha: AlphaEncoding::Straight }).unwrap();
+        let mut scene = Scene::new(Camera::default());
+        scene.instances.push(morphing(Instance::new(mesh, material, Mat4::IDENTITY)));
+        scene.morph_weights.push(0.5);
+        r.render(target, &scene, &plain()).unwrap();
+        r.stats().gpu_bytes
+    };
+    let (none, zero, drawn) = (gpu_bytes_with(None), gpu_bytes_with(Some(0.0)), gpu_bytes_with(Some(0.02)));
+    assert_eq!(zero, none, "a 0-wide outline pools the same as no outline");
+    assert!(drawn > none, "a drawn outline pools its direction stream: {none} against {drawn}");
+}

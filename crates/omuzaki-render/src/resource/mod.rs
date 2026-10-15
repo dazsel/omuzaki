@@ -65,7 +65,7 @@ impl Resources {
             let outlined = self
                 .materials
                 .get(instance.material.index(), instance.material.generation())
-                .is_some_and(|m| m.material.outline.is_some());
+                .is_some_and(GpuMaterial::draws_outline);
             if let Some(mesh) = self.meshes.get_mut(instance.mesh.index(), instance.mesh.generation()) {
                 mesh.refresh(queue, outlined);
             }

@@ -54,7 +54,7 @@ fn hulls<'a>(frame: &'a FrameView<'_>, resources: SceneResources<'a>) -> impl It
     frame.draws.for_pass(Pass::Outlines).filter_map(move |draw| {
         let mesh = resources.meshes.at(draw.mesh)?;
         let material = resources.materials.at(draw.material)?;
-        if !material.material.outline.is_some_and(|outline| outline.width > 0.0) {
+        if !material.draws_outline() {
             return None;
         }
         Some(Hull {
