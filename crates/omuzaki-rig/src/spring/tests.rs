@@ -356,10 +356,10 @@ fn matches_the_spec_on_seeded_random_scenes_to_1e_5() {
         let set = set_of(chains, vec![group]);
         set.validate(&fixture.skeleton).unwrap();
         let agreement = compare_with_spec(&fixture, &set, 60.0, 200);
-        // Joint positions agree to 2e-5 m and quaternion components to 5e-5: the `f32` rounding of a whole chain's
-        // turn shows up in both on a violent scene (2 rad of swing; the worst reaches 1.2e-5 m and 4.2e-5). The
-        // calm scenes agree to 1e-5 (see the plane-normal test).
-        assert!(agreement.rotation < 5e-5 && agreement.position < 2e-5, "scene {scene} {shape:?}: {agreement:?}");
+        // Joint positions agree to 1e-5 m. A violent scene (over 1 rad of swing) carries the `f32` rounding of a whole
+        // chain's turn: 2e-5 m there (the worst is 1.2e-5), and quaternion components to 5e-5 (the worst is 4.2e-5).
+        let position = if agreement.swing > 1.0 { 2e-5 } else { 1e-5 };
+        assert!(agreement.rotation < 5e-5 && agreement.position < position, "scene {scene} {shape:?}: {agreement:?}");
         engaged += i32::from(agreement.swing > 0.43); // the free run's swing is 0.42 rad
     }
     assert!(engaged >= 12, "only {engaged} of 24 scenes changed the swing: the colliders were mostly missed");

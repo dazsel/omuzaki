@@ -254,7 +254,8 @@ mod tests {
                 let beyond = match kind {
                     0 => a - normal * 0.2,
                     1 => a + Vec3::X * (radius + 0.2),
-                    _ => b + Vec3::X * (radius + 0.2),
+                    // Past the end cap, along the axis (X for a degenerate capsule): never on the segment.
+                    _ => b + (b - a).normalize_or(Vec3::X) * (radius + 0.2),
                 };
                 let mut pushed = 0;
                 for point in std::iter::once(beyond).chain(points) {
