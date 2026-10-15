@@ -185,6 +185,7 @@ pub fn validate_ports(ports: &Ports, class: NodeClass) -> Result<(), ParamErrors
                 fail(name, l10n::port_output_default(name));
             }
             if let Some(default) = &port.default
+                && !port.ty.is_event()
                 && PortType::coercion(default.ty(), port.ty) != Coercion::Same
                 && port.ty != PortType::Json
             {

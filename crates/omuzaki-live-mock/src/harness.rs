@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use omuzaki_core::rng::Rng;
 use omuzaki_core::time::{Clock, FakeClock, Seconds};
-use omuzaki_l10n_api::{Catalog, Text};
+use omuzaki_l10n_api::{MessageTable, Text};
 use omuzaki_live_api::event::payloads::EngineTick;
 use omuzaki_live_api::event::{LiveEvent, Source, UtcMillis, check_payload};
 use omuzaki_live_api::ids::{EventKind, GraphId, GroupId, NodeId, PortName, VarName};
@@ -127,6 +127,20 @@ struct Host {
     emitted: Vec<LiveEvent>,
     faults: Vec<Fault>,
     stopping: bool,
+}
+
+/// `text` in English: its message's declared English with the placeables filled in, as `cx.fail` sets `error`. No
+/// package ships its Fluent files yet, so the declaration is the one English source every binary has; a message the
+/// binary doesn't declare falls back to the text's last-resort form.
+fn english(text: &Text) -> String {
+    let declared =
+        inventory::iter::<MessageTable>.into_iter().flat_map(|table| table.messages).find(|decl| decl.id == text.id);
+    match declared {
+        Some(decl) => text.args.iter().fold(decl.english.to_owned(), |english, (name, arg)| {
+            english.replace(&format!("{{ ${name} }}"), &arg.to_string())
+        }),
+        None => text.to_string(),
+    }
 }
 
 fn ids() -> (GraphId, NodeId) {
@@ -261,7 +275,7 @@ impl NodeHost for Host {
 
     fn fail(&mut self, port: &str, why: Text) -> Result<(), NodeError> {
         if self.value_output("error").is_ok_and(|(_, ty)| ty == PortType::Text) {
-            self.set("error", Val::text(Catalog::english().render(&why)))?;
+            self.set("error", Val::text(english(&why)))?;
         }
         let name = PortName::new(port).map_err(|_| NodeError::unknown_port(port))?;
         if !self.stopping {
@@ -541,7 +555,8 @@ impl NodeHarness {
                 (None, None) => break,
             }
         }
-        let to = if at.0 > self.host.last_step.0 { at } else { self.host.last_step };
+        let to =
+            [at, self.host.last_step, self.host.clock.now()].into_iter().fold(at, |a, b| if b.0 > a.0 { b } else { a });
         self.host.clock.set(to);
     }
 
