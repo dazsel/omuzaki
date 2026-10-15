@@ -4,7 +4,7 @@
 //! sentence and a fix, shown at import beside the other rights notes (`rights.unrecognised_license_url`,
 //! `rights.import_restricted`) so the import op, the licence ops and the go-live notice share one copy.
 
-use super::{AvatarPermission, CommercialUsage, CreditNotation, UseTerms, VrmMeta, spelled};
+use super::{AvatarPermission, CommercialUsage, CreditNotation, UseTerms, VrmMeta, credit_line};
 use crate::Finding;
 
 impl UseTerms {
@@ -17,20 +17,16 @@ impl UseTerms {
 
 impl VrmMeta {
     /// [`UseTerms::perform_findings`] plus `rights.credit_required` when the model asks for credit, in the order
-    /// avatar permission, non-profit, credit, content. The credit line names the model and every author, in file order.
+    /// avatar permission, non-profit, credit, content. The credit line is the one the provenance record derives
+    /// (`imported_provenance`), so a stream title and the record never disagree.
     pub fn perform_findings(&self) -> Vec<Finding> {
         let credit = (self.terms.credit_notation == CreditNotation::Required).then(|| self.credit_finding());
         perform_rows(&self.terms, credit)
     }
 
-    /// The credit line to put in stream titles: the model's name, then its authors in file order.
+    /// The credit line to put in stream titles, from the same helper as the provenance attribution.
     fn credit_finding(&self) -> Finding {
-        let authors = self.authors.join(", ");
-        let line = match (self.name.is_empty(), authors.is_empty()) {
-            (_, true) => self.name.clone(),
-            (true, false) => authors,
-            (false, false) => format!("{} - {authors}", self.name),
-        };
+        let line = credit_line(&self.name, self.copyright_information.as_deref(), &self.authors);
         Finding::info("rights.credit_required", format!("credit is required; put this line in stream titles: {line}"))
             .at("meta/creditNotation")
             .hint("copy the credit line into the stream title")
@@ -41,19 +37,8 @@ impl VrmMeta {
 /// rows so the output is the same on every call.
 fn perform_rows(terms: &UseTerms, credit: Option<Finding>) -> Vec<Finding> {
     let mut out = Vec::new();
-    if terms.avatar_permission != AvatarPermission::Everyone {
-        out.push(
-            Finding::warning(
-                "rights.avatar_permission",
-                format!(
-                    "only its author, or people licensed separately, may perform as this avatar \
-                     (avatarPermission is {}); confirm that is you",
-                    spelled(&terms.avatar_permission)
-                ),
-            )
-            .at("meta/avatarPermission")
-            .hint("confirm you are the author, or hold a separate licence, before performing as it"),
-        );
+    if let Some(finding) = avatar_permission_row(terms) {
+        out.push(finding);
     }
     if terms.commercial_usage == CommercialUsage::PersonalNonProfit {
         out.push(
@@ -85,6 +70,25 @@ fn perform_rows(terms: &UseTerms, credit: Option<Finding>) -> Vec<Finding> {
         );
     }
     out
+}
+
+/// The avatar-permission row. Each restricted value says its own thing, because they grant different permissions:
+/// `onlyAuthor` is the author alone, `onlySeparatelyLicensedPerson` is people with their own licence. `everyone` has
+/// no row.
+fn avatar_permission_row(terms: &UseTerms) -> Option<Finding> {
+    let (message, hint) = match terms.avatar_permission {
+        AvatarPermission::Everyone => return None,
+        AvatarPermission::OnlyAuthor => (
+            "only the author may perform as this avatar (avatarPermission is \"onlyAuthor\"); confirm that is you",
+            "confirm you are the author before performing as it",
+        ),
+        AvatarPermission::OnlySeparatelyLicensedPerson => (
+            "only people licensed separately may perform as this avatar \
+             (avatarPermission is \"onlySeparatelyLicensedPerson\"); confirm you hold a separate licence",
+            "confirm you hold a separate licence from the author before performing as it",
+        ),
+    };
+    Some(Finding::warning("rights.avatar_permission", message).at("meta/avatarPermission").hint(hint))
 }
 
 #[cfg(test)]
@@ -138,18 +142,35 @@ mod tests {
     }
 
     #[test]
-    fn the_avatar_row_is_a_warning_for_either_restricted_permission_and_absent_for_everyone() {
-        let only_author = UseTerms::default().perform_findings();
-        let f = &only_author[0];
+    fn only_author_has_its_own_avatar_row() {
+        let rows = UseTerms::default().perform_findings();
+        let f = &rows[0];
         assert_eq!((f.rule.as_str(), f.severity), ("rights.avatar_permission", crate::Severity::Warning));
+        assert!(f.message.contains("only the author may perform"), "{}", f.message);
         assert!(f.message.contains("\"onlyAuthor\"") && f.message.contains("confirm that is you"), "{}", f.message);
-        assert!(f.hint.is_some());
+        assert!(!f.message.contains("licensed separately"), "{}", f.message);
+        assert_eq!(f.hint.as_deref(), Some("confirm you are the author before performing as it"));
+    }
 
+    #[test]
+    fn only_separately_licensed_has_its_own_avatar_row() {
         let licensed = UseTerms { avatar_permission: AvatarPermission::OnlySeparatelyLicensedPerson, ..open() };
         let rows = licensed.perform_findings();
         assert_eq!(rules(&rows), ["rights.avatar_permission"]);
-        assert!(rows[0].message.contains("\"onlySeparatelyLicensedPerson\""));
-        assert!(open().perform_findings().is_empty(), "everyone is not a row");
+        let f = &rows[0];
+        assert_eq!(f.severity, crate::Severity::Warning);
+        assert!(f.message.contains("only people licensed separately may perform"), "{}", f.message);
+        assert!(f.message.contains("\"onlySeparatelyLicensedPerson\""), "{}", f.message);
+        assert!(!f.message.contains("only the author"), "{}", f.message);
+        assert_eq!(
+            f.hint.as_deref(),
+            Some("confirm you hold a separate licence from the author before performing as it")
+        );
+    }
+
+    #[test]
+    fn everyone_has_no_avatar_row() {
+        assert!(rules(&open().perform_findings()).iter().all(|r| *r != "rights.avatar_permission"));
     }
 
     #[test]
@@ -166,32 +187,35 @@ mod tests {
     }
 
     #[test]
-    fn the_credit_row_is_info_with_the_name_and_every_author_in_file_order() {
-        let rows = meta(open()).perform_findings();
-        assert!(rows.is_empty(), "credit unnecessary, so no credit row");
+    fn the_credit_row_is_info_and_absent_when_credit_is_unnecessary() {
+        assert!(meta(open()).perform_findings().is_empty(), "credit unnecessary, so no credit row");
 
-        let required = VrmMeta {
-            terms: UseTerms { credit_notation: CreditNotation::Required, ..open() },
-            copyright_information: Some("Someone Else".into()),
-            ..meta(open())
-        };
+        let required =
+            VrmMeta { terms: UseTerms { credit_notation: CreditNotation::Required, ..open() }, ..meta(open()) };
         let rows = required.perform_findings();
         assert_eq!(rules(&rows), ["rights.credit_required"]);
         assert_eq!(rows[0].severity, crate::Severity::Info);
         assert!(rows[0].message.ends_with("Model - Ann, Ben"), "{}", rows[0].message);
-        assert!(!rows[0].message.contains("Someone Else"), "the copyright holder is not the credit line here");
         assert!(rows[0].hint.is_some());
     }
 
     #[test]
-    fn the_credit_line_leaves_out_an_empty_name_or_no_authors() {
+    fn the_credit_line_is_the_provenance_attribution_with_or_without_a_copyright_holder() {
         let required = UseTerms { credit_notation: CreditNotation::Required, ..open() };
-        let line = |m: VrmMeta| m.perform_findings().remove(0).message;
-        let no_name = VrmMeta { name: String::new(), terms: required.clone(), ..meta(open()) };
-        assert!(line(no_name).ends_with(": Ann, Ben"));
-        let no_authors = VrmMeta { authors: vec![], terms: required.clone(), ..meta(open()) };
-        assert!(line(no_authors).ends_with(": Model"));
-        assert!(line(VrmMeta { terms: required, ..meta(open()) }).ends_with(": Model - Ann, Ben"));
+        for copyright in [None, Some("Someone Else")] {
+            let m = VrmMeta {
+                copyright_information: copyright.map(str::to_owned),
+                terms: required.clone(),
+                ..meta(open())
+            };
+            let notice = m.perform_findings().remove(0).message;
+            let attribution = m.imported_provenance(None).attribution.expect("credit required gives an attribution");
+            assert!(notice.ends_with(&attribution), "{notice:?} vs {attribution:?}");
+        }
+        let with_holder =
+            VrmMeta { copyright_information: Some("Someone Else".into()), terms: required, ..meta(open()) };
+        let notice = with_holder.perform_findings().remove(0).message;
+        assert!(notice.ends_with("Model - Someone Else"), "the holder is the credit when one is set: {notice}");
     }
 
     #[test]
