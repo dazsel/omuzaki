@@ -481,7 +481,7 @@ Implemented by `omuzaki-char` and `omuzaki-face` (vertical slices, §39.1 rule 3
 |---|---|
 | `character.create`, `part.add`, `part.remove`, `part.set_enabled`, `part.reorder`, `part.duplicate` | `parts/<id>`, `enabled`, `layer`, `parent` (`part.duplicate` also copies `weight_brushes/<id>`) |
 | `character.rename { character, name }` | `name` |
-| `part.set_param { character, part, path, value }` | `parts/<id>/params/<path>`, validated through the kind's `check` |
+| `part.set_param { character, part, path, value, replace? }` | `parts/<id>/params/<path>`, validated through the kind's `check`. An object merges into the current one unless `replace` is true; setting a tagged enum's tag switches the variant; `null` removes an optional parameter or a map entry |
 | `face.set_profile { character, profile, blend }` | head `outline` and face `layout` together |
 | `face.set_style { character, path, value }` | `face/eyes`, `brows`, `mouth`, `nose`, `cheeks`, `marks` |
 | `face.set_mapping { character, path, value }` | `face/mapping/...` (exaggeration profiles) |

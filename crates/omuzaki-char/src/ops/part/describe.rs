@@ -1,8 +1,8 @@
 //! `part.describe`: what a part's parameters are and what each one accepts. The same parameter model is what
 //! `part.set_param` edits against, so the two cannot disagree about which paths exist.
 //!
-//! The model ([`Params`]) walks the kind's JSON Schema together with the part's current values and lists every node as
-//! a [`Param`], parents before children, keys in alphabetical order (the order of the schema's keys depends on a
+//! The model (`Params`) walks the kind's JSON Schema together with the part's current values and lists every node as
+//! a `Param`, parents before children, keys in alphabetical order (the order of the schema's keys depends on a
 //! `serde_json` feature, so it is never relied on). The schema gives each node its type, allowed names, description and
 //! unit; the values decide which branch of a tagged enum, and which entries of a map or list, are there to list.
 //!
@@ -13,7 +13,15 @@
 //! bound changes. Two limits: a rule that ties two parameters together (a chin point that must stay below the stretch
 //! top) shows up as a bound that moves with the other one, and a parameter whose section is absent (an optional section
 //! that is off) has no value to probe from, so it reports none.
+//!
+//! **The cost is linear.** A probe checks a copy of the part in which the other entries of the maps on the way to the
+//! number are left out, so it costs one entry rather than the whole part, and one scratch copy per number is written
+//! into by every probe instead of being cloned per probe. If the kind refuses that smaller copy (a rule that ties
+//! entries together), the number is probed in the whole part. A part whose stored parameters fail the check is
+//! described from the defaults with the stored values laid over them, so its own entries are listed; a number only
+//! the part holds has no default to probe from and reports no range.
 
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::num::FpCategory;
 
@@ -161,8 +169,11 @@ pub(crate) struct Param {
     unit: Option<String>,
     /// The pattern text must match.
     pattern: Option<String>,
-    /// Whether the schema allows `null`, which here means "not set": the value can be removed.
+    /// Whether the value can be removed: the schema allows `null` (which here means "not set"), or it is an entry of a
+    /// map (a hair group), which `null` deletes.
     pub(crate) optional: bool,
+    /// Whether this is the tag of a tagged enum, whose names are the variants: setting it switches the variant.
+    pub(crate) tag: bool,
     /// Whether its members are listed after it. A container that is not expanded is a value of its own (a list of
     /// numbers, an empty map) and is set whole.
     expanded: bool,
@@ -181,11 +192,14 @@ pub(crate) struct Params {
     pub(crate) stored: Value,
     /// Every node, parents before children.
     entries: Vec<Param>,
+    /// Where each path is in `entries`, so a lookup does not scan the part.
+    index: HashMap<String, usize>,
 }
 
 impl Params {
     /// The parameters of a part of `kind` that holds `stored`. A part whose stored parameters fail the kind's check is
-    /// still described (from the defaults) so it can be repaired.
+    /// still described so it can be repaired: from the defaults with the stored values laid over them, so the entries
+    /// only the part holds (a hair group the defaults lack) are listed and reachable.
     ///
     /// # Errors
     /// `internal` if the schema cannot be written as JSON, which would be a bug in the kind.
@@ -195,8 +209,15 @@ impl Params {
         let defaults = (kind.defaults)();
         let current = (kind.check)(stored);
         let mut entries = Vec::new();
-        members(&schema, Some(current.as_ref().unwrap_or(&defaults)), "", None, &mut entries);
-        Ok(Self { kind, schema, defaults, current, stored: stored.clone(), entries })
+        if let Ok(normalised) = &current {
+            members(&schema, Some(normalised), "", None, &mut entries);
+        } else {
+            let mut overlay = defaults.clone();
+            assign(&mut overlay, stored.clone());
+            members(&schema, Some(&overlay), "", None, &mut entries);
+        }
+        let index = entries.iter().enumerate().map(|(i, p)| (p.path.clone(), i)).collect();
+        Ok(Self { kind, schema, defaults, current, stored: stored.clone(), entries, index })
     }
 
     /// The values to show as current: the normalised ones, or the stored ones when they do not pass the check.
@@ -206,7 +227,7 @@ impl Params {
 
     /// The node at `path`, if there is one.
     pub(crate) fn entry(&self, path: &str) -> Option<&Param> {
-        self.entries.iter().find(|p| p.path == path)
+        self.index.get(path).and_then(|&i| self.entries.get(i))
     }
 
     /// The node `path` names.
@@ -258,24 +279,79 @@ impl Params {
         OpError::invalid("path", message).hint(format!("{suggestion}the parameters {place} are: {}", list(siblings)))
     }
 
-    /// Whether the kind accepts `value` at `path`, with every other parameter as it is now (or as the defaults have
-    /// it, when the stored ones do not pass the check).
-    fn accepts(&self, path: &str, value: Value) -> bool {
-        let mut probe = self.current.as_ref().unwrap_or(&self.defaults).clone();
-        set_at(&mut probe, path, Some(value)).is_ok() && (self.kind.check)(&probe).is_ok()
+    /// The parameters probes start from: the normalised ones, or the defaults when the stored ones fail the check.
+    fn base(&self) -> &Value {
+        self.current.as_ref().unwrap_or(&self.defaults)
+    }
+
+    /// The tree to probe the number at `path` in, which the probes then write that number into (every probe writes the
+    /// same slot, so nothing needs restoring between them). The entries of the maps on the way, other than the one the
+    /// path goes through, are left out: a bound is a rule on the parameter and its own entry, so the check costs what
+    /// one entry costs rather than what the whole part does, which keeps `describe` linear in the part. If the kind
+    /// refuses the smaller tree (a rule that ties entries together), the whole of `base` is used instead.
+    fn scratch(&self, path: &str, prune: bool) -> Value {
+        let steps: Vec<&str> = path.split('/').collect();
+        let pruned = if prune { self.spine(self.base(), "", &steps) } else { self.base().clone() };
+        if prune && (self.kind.check)(&pruned).is_err() { self.base().clone() } else { pruned }
+    }
+
+    /// A copy of `node`, at `prefix`, without the map entries that `steps` do not go through.
+    fn spine(&self, node: &Value, prefix: &str, steps: &[&str]) -> Value {
+        let Some((step, rest)) = steps.split_first() else { return node.clone() };
+        let child = |name: &str| if prefix.is_empty() { name.to_owned() } else { format!("{prefix}/{name}") };
+        match node {
+            Value::Object(fields) => {
+                let is_map = self.entry(prefix).is_some_and(|p| p.ty == Ty::Map);
+                Value::Object(
+                    fields
+                        .iter()
+                        .filter(|(key, _)| !is_map || key == step)
+                        .map(|(key, item)| {
+                            let item = if key == step { self.spine(item, &child(key), rest) } else { item.clone() };
+                            (key.clone(), item)
+                        })
+                        .collect(),
+                )
+            }
+            Value::Array(items) => Value::Array(
+                items
+                    .iter()
+                    .enumerate()
+                    .map(|(i, item)| {
+                        if step.parse::<usize>().is_ok_and(|s| s == i) {
+                            self.spine(item, &child(&i.to_string()), rest)
+                        } else {
+                            item.clone()
+                        }
+                    })
+                    .collect(),
+            ),
+            other => other.clone(),
+        }
+    }
+
+    /// Whether the kind accepts `value` at `path` of `probe`, which is left holding it.
+    fn accepts(&self, probe: &mut Value, path: &str, value: Value) -> bool {
+        set_at(probe, path, Some(value), false).is_ok() && (self.kind.check)(probe).is_ok()
     }
 
     /// The legal range of the number at `param`, found by probing (see the module docs). `None` for anything that is
     /// not a number or has no value to probe from.
     fn range(&self, param: &Param) -> Option<Range> {
-        let here = at(self.current.as_ref().unwrap_or(&self.defaults), &param.path)?;
+        self.range_in(param, true)
+    }
+
+    /// [`Self::range`], probing the pruned tree or (`prune` false) the whole of the part.
+    fn range_in(&self, param: &Param, prune: bool) -> Option<Range> {
+        let here = at(self.base(), &param.path)?;
+        let mut probe = self.scratch(&param.path, prune);
         match param.ty {
             Ty::Number => Some(Range::of_floats(here.as_f64()?, |x| {
-                Number::from_f64(x).is_some_and(|n| self.accepts(&param.path, Value::Number(n)))
+                Number::from_f64(x).is_some_and(|n| self.accepts(&mut probe, &param.path, Value::Number(n)))
             })),
-            Ty::Integer => {
-                Some(Range::of_integers(here.as_i64()?, |i| self.accepts(&param.path, Value::Number(Number::from(i)))))
-            }
+            Ty::Integer => Some(Range::of_integers(here.as_i64()?, |i| {
+                self.accepts(&mut probe, &param.path, Value::Number(Number::from(i)))
+            })),
             _ => None,
         }
     }
@@ -361,7 +437,12 @@ fn members(alt: &Value, current: Option<&Value>, path: &str, described: Option<&
         let mut held: Vec<(&String, &Value)> = held.iter().collect();
         held.sort_unstable_by_key(|(key, _)| *key);
         for (key, item) in &held {
+            let at = out.len();
             node(values, Some(item), &child(key), None, out);
+            // `null` deletes an entry.
+            if let Some(entry) = out.get_mut(at) {
+                entry.optional = true;
+            }
         }
         return !held.is_empty();
     }
@@ -389,6 +470,7 @@ fn node(schema: &Value, current: Option<&Value>, path: &str, described: Option<&
         .or_else(|| described.map(str::to_owned));
     let mut children = Vec::new();
     let expanded = chosen.is_some_and(|alt| members(alt, current, path, description.as_deref(), &mut children));
+    mark_tag(&alternatives, path, &mut children);
     out.push(Param {
         path: path.to_owned(),
         ty: ty_of(chosen.or_else(|| alternatives.first().copied()), choices(&alternatives)),
@@ -396,9 +478,36 @@ fn node(schema: &Value, current: Option<&Value>, path: &str, described: Option<&
         unit: unit_of(schema),
         pattern: text(schema, "pattern"),
         optional: nullable(schema),
+        tag: false,
         expanded,
     });
     out.extend(children);
+}
+
+/// Makes the tag of a tagged enum a choice of every variant's name, not just the one the value is in: `children` are the
+/// members of the branch the value holds, and the tag is the property each object branch fixes to a constant.
+fn mark_tag(alternatives: &[&Value], path: &str, children: &mut [Param]) {
+    let branches: Vec<&Map<String, Value>> = alternatives
+        .iter()
+        .filter(|a| type_name(a) == Some("object"))
+        .filter_map(|a| a.get("properties")?.as_object())
+        .collect();
+    let [first, _, ..] = branches.as_slice() else { return };
+    let tags = first.iter().filter_map(|(key, p)| p.get("const")?.as_str().map(|_| key));
+    let mut names: Vec<(&String, Vec<String>)> = tags
+        .map(|key| (key, branches.iter().filter_map(|b| b.get(key)?.get("const")?.as_str().map(str::to_owned)).collect()))
+        .filter(|(_, names): &(_, Vec<String>)| names.len() == branches.len())
+        .collect();
+    names.sort_unstable_by_key(|(key, _)| *key);
+    let Some((key, names)) = names.into_iter().next() else { return };
+    let tag_path = if path.is_empty() { key.clone() } else { format!("{path}/{key}") };
+    if let Some(child) = children.iter_mut().find(|c| c.path == tag_path) {
+        child.ty = Ty::Choice(names);
+        child.tag = true;
+        child.description.get_or_insert_with(|| {
+            "Which variant this is; setting it switches to that variant, which starts from its own defaults.".to_owned()
+        });
+    }
 }
 
 /// The schemas `schema` may be, without `null`: itself, or the branches of its `oneOf` / `anyOf` (an enum, an option),
@@ -522,12 +631,13 @@ pub(crate) fn at<'a>(root: &'a Value, path: &str) -> Option<&'a Value> {
     })
 }
 
-/// Writes `value` at `path` below `root`, creating the sections on the way. An object written over an object sets the
-/// fields it names and leaves the others; anything else replaces what was there. `None` removes the key.
+/// Writes `value` at `path` below `root`, creating the sections on the way. With `merge`, an object written over an
+/// object sets the fields it names and leaves the others; otherwise, and for anything else, it replaces what was
+/// there. `None` removes the key.
 ///
 /// # Errors
 /// `invalid` if a step lands on a value that cannot hold the next one, or on a list position that does not exist.
-pub(crate) fn set_at(root: &mut Value, path: &str, value: Option<Value>) -> Result<(), OpError> {
+pub(crate) fn set_at(root: &mut Value, path: &str, value: Option<Value>, merge: bool) -> Result<(), OpError> {
     let steps: Vec<&str> = path.split('/').collect();
     let Some((last, parents)) = steps.split_last() else {
         return Err(OpError::invalid("path", "the path is empty"));
@@ -549,7 +659,8 @@ pub(crate) fn set_at(root: &mut Value, path: &str, value: Option<Value>) -> Resu
     }
     match (node, value) {
         (Value::Object(fields), Some(value)) => match fields.get_mut(*last) {
-            Some(slot) => assign(slot, value),
+            Some(slot) if merge => assign(slot, value),
+            Some(slot) => *slot = value,
             None => {
                 fields.insert((*last).to_owned(), value);
             }
@@ -560,7 +671,12 @@ pub(crate) fn set_at(root: &mut Value, path: &str, value: Option<Value>) -> Resu
         (Value::Array(items), Some(value)) => {
             let len = items.len();
             let slot = last.parse::<usize>().ok().and_then(|i| items.get_mut(i));
-            assign(slot.ok_or_else(|| blocked(above(parents.len()), last, &format!("a list of {len}")))?, value);
+            let slot = slot.ok_or_else(|| blocked(above(parents.len()), last, &format!("a list of {len}")))?;
+            if merge {
+                assign(slot, value);
+            } else {
+                *slot = value;
+            }
         }
         (other, _) => return Err(blocked(above(parents.len()), last, kind_name(other))),
     }
@@ -794,16 +910,32 @@ mod tests {
         assert_eq!(at(&params, "a/b/1/c"), Some(&json!(2)));
         assert_eq!(at(&params, "a/b/5"), None);
 
-        set_at(&mut params, "a/b/1/c", Some(json!(9))).unwrap();
-        set_at(&mut params, "new/inside/x", Some(json!(true))).unwrap();
-        set_at(&mut params, "a", Some(json!({"extra": 1}))).unwrap();
+        set_at(&mut params, "a/b/1/c", Some(json!(9)), true).unwrap();
+        set_at(&mut params, "new/inside/x", Some(json!(true)), true).unwrap();
+        set_at(&mut params, "a", Some(json!({"extra": 1})), true).unwrap();
         assert_eq!(params, json!({"a": {"b": [1, {"c": 9}], "extra": 1}, "keep": 1, "new": {"inside": {"x": true}}}));
 
-        set_at(&mut params, "keep", None).unwrap();
+        set_at(&mut params, "keep", None, true).unwrap();
         assert_eq!(at(&params, "keep"), None);
-        let blocked = set_at(&mut params, "a/extra/deeper", Some(json!(1))).unwrap_err();
+        let blocked = set_at(&mut params, "a/extra/deeper", Some(json!(1)), true).unwrap_err();
         assert!(blocked.message.contains("`a/extra` holds a number"), "{}", blocked.message);
-        let missing = set_at(&mut params, "a/b/7", Some(json!(1))).unwrap_err();
+        let missing = set_at(&mut params, "a/b/7", Some(json!(1)), true).unwrap_err();
         assert!(missing.message.contains("`a/b` holds a list of 2"), "{}", missing.message);
+
+        set_at(&mut params, "a", Some(json!({"only": 1})), false).unwrap();
+        assert_eq!(at(&params, "a"), Some(&json!({"only": 1})), "replacing keeps nothing of the old object");
+    }
+
+    #[test]
+    fn probing_the_pruned_tree_gives_the_ranges_probing_the_whole_part_gives() {
+        let mut probed = 0;
+        for kind in omuzaki_char_api::kinds() {
+            let params = Params::new(kind, &(kind.defaults)()).unwrap();
+            for param in params.entries.iter().filter(|p| matches!(p.ty, Ty::Number | Ty::Integer)) {
+                assert_eq!(params.range_in(param, true), params.range_in(param, false), "{} {}", (kind.meta)().id, param.path);
+                probed += 1;
+            }
+        }
+        assert!(probed > 100, "the registered kinds have many numbers; probed {probed}");
     }
 }
