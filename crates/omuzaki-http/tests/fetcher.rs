@@ -338,3 +338,12 @@ fn loopback_bypasses_the_proxy_settings() {
         .expect("the child test ran");
     assert!(status.status.success(), "{}", String::from_utf8_lossy(&status.stdout));
 }
+
+/// Construction is documented as infallible, so it must not panic where reqwest's blocking builder would: on a thread
+/// that runs async tasks.
+#[tokio::test(flavor = "multi_thread")]
+async fn building_a_fetcher_inside_an_async_runtime_does_not_panic() {
+    let from_new = HttpFetcher::new();
+    let from_builder = HttpFetcher::builder().allow_loopback_http(true).build();
+    drop((from_new, from_builder));
+}

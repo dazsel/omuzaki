@@ -126,7 +126,10 @@ impl HttpFetcherBuilder {
             // Loopback bypasses the proxy (llm-api D11); the test aid is the only way to reach it.
             builder = builder.no_proxy();
         }
-        let client = builder.build().map_err(|e| e.to_string());
+        // reqwest's blocking builder panics on a thread that runs async tasks, so it builds on a short-lived plain thread
+        // of its own: construction stays infallible wherever `new` is called.
+        let client = std::thread::scope(|scope| scope.spawn(|| builder.build().map_err(|e| e.to_string())).join())
+            .unwrap_or_else(|_| Err("the client builder panicked".to_owned()));
         HttpFetcher { client, tries: self.retries, backoff: self.backoff, allow_loopback_http: allow }
     }
 }
