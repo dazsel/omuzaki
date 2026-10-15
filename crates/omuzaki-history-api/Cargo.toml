@@ -24,3 +24,7 @@ serde_json.workspace = true
 
 [lints]
 workspace = true
+
+[package.metadata.omuzaki]
+kind = "API"
+summary = "the journal and snapshot contract (§6, §7, §29; ADR 0021): `HistoryEntry` and the `JournalSink` the executor appends to, `HistoryExport` (undo and redo stacks as data), snapshot ids, refs and triggers, the `Snapshots` service, and `register_derived_path!` for caches that snapshots leave out; design in `docs/design/journal.md`"

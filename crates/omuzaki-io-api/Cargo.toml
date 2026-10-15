@@ -19,3 +19,7 @@ omuzaki-store-api = { path = "../omuzaki-store-api" }
 
 [lints]
 workspace = true
+
+[package.metadata.omuzaki]
+kind = "API"
+summary = "glTF and VRM import/export (§27): importer and exporter traits that self-register by format, the glTF-shaped `IoScene`, VRM meta mapped to provenance, perfect-sync baking, validation reports; design in `docs/design/io-api.md`"
