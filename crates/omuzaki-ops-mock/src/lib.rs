@@ -200,8 +200,8 @@ impl<D: DocWrite + Send> Runner for MockRunner<D> {
             return Ok(Outcome::new(plan));
         }
         let args = checks::record_args(&*op)?;
-        let version =
-            inner.doc.apply(&plan.patch).map_err(|e| OpError::conflict(e.to_string()).hint("re-plan and retry"))?;
+        let version = checks::apply_patch(&mut inner.doc, &plan.patch)
+            .map_err(|e| OpError::conflict(e.to_string()).hint("re-plan and retry"))?;
         let tx = inner.attach(req.tx, &req.actor, meta, &plan.patch);
         let record = OpRecord::new(
             inner.log.len() as u64 + 1,

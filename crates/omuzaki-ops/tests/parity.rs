@@ -96,6 +96,21 @@ impl Op for Peek {
 }
 register_op!(Peek);
 
+/// An edit that plans a patch with no changes at all.
+#[derive(Serialize, Deserialize, JsonSchema)]
+struct Nothing;
+
+impl Op for Nothing {
+    fn meta() -> OpMeta {
+        meta("parity.nothing", OpKind::Edit, Scope::EditScene, Undo::Auto)
+    }
+
+    fn plan(&self, _: &OpCtx<'_>) -> Result<Plan, OpError> {
+        Ok(Plan::edit(Patch::new()))
+    }
+}
+register_op!(Nothing);
+
 /// A query that wrongly plans a change.
 #[derive(Serialize, Deserialize, JsonSchema)]
 struct SneakyQuery;
@@ -306,6 +321,24 @@ fn no_op_edits_stay_out_of_history_and_keep_redo() {
     pair.undo(&Grants::person()).unwrap();
     assert_eq!(pair.counter(), None, "the second undo reached the first real edit, not the no-op");
     assert_eq!(pair.undo(&Grants::person()).unwrap(), None);
+}
+
+#[test]
+fn an_empty_patch_keeps_the_version_and_redo() {
+    let pair = Pair::new();
+    pair.run(&request("parity.set", json!({"value": 1}))).unwrap();
+    pair.run(&request("parity.set", json!({"value": 2}))).unwrap();
+    pair.undo(&Grants::person()).unwrap();
+    let logged = pair.log().as_array().unwrap().len();
+    // `pair.run` compares the whole outcome, the record's version included, and `pair.log` the whole log.
+    let once = pair.run(&request("parity.nothing", json!(null))).unwrap();
+    let twice = pair.run(&request("parity.nothing", json!(null))).unwrap();
+    assert_eq!(once["applied"]["version"], twice["applied"]["version"], "an empty patch keeps the version");
+    assert_eq!(pair.log().as_array().unwrap().len(), logged + 2, "each run is still logged");
+    assert_eq!(pair.redo(&Grants::person()).unwrap().as_deref(), Some("parity.set"));
+    assert_eq!(pair.counter(), Some(json!(2)));
+    assert_eq!(pair.undo(&Grants::person()).unwrap().as_deref(), Some("parity.set"));
+    assert_eq!(pair.counter(), Some(json!(1)), "undo skipped the empty step");
 }
 
 #[test]

@@ -12,11 +12,13 @@
 //!    ([`record_args`]), so an op whose `Serialize` fails still answers dry-runs and queries, and is refused
 //!    `Denied` rather than `Internal` when the caller lacks its scope.
 //!
+//! An apply goes through [`apply_patch`], which leaves the document's version alone for a patch with no changes.
+//!
 //! History: an applied op adds [`step_scope`] to its undo step, the step belongs in history only if
 //! [`in_history`] says so, undo and redo need every recorded scope ([`require_step_scopes`]), and a step holding an
 //! [`Undo::Explicit`] op is refused with [`explicit_refused`].
 
-use omuzaki_doc_api::{Patch, Value};
+use omuzaki_doc_api::{DocVersion, DocWrite, Patch, PatchError, Value};
 
 use crate::{
     Actor, DynOp, Grants, Mode, OpCtx, OpError, OpInfo, OpKind, OpMeta, OpRegistration, Plan, Request, Scope, Undo,
@@ -121,6 +123,16 @@ pub fn answers_only(meta: OpMeta, mode: Mode) -> bool {
 /// `Internal` if the op's own `Serialize` fails.
 pub fn record_args(op: &dyn DynOp) -> Result<Value, OpError> {
     op.args()
+}
+
+/// Applies an op's planned patch to `doc` and returns the version its record carries. A patch with no changes at all
+/// leaves the document, and so its version, alone. A patch whose changes all leave their values as they were is still
+/// applied, so each `before` is checked.
+///
+/// # Errors
+/// The patch no longer applies; the document is then unchanged. The runner words the refusal.
+pub fn apply_patch<D: DocWrite + ?Sized>(doc: &mut D, patch: &Patch) -> Result<DocVersion, PatchError> {
+    if patch.changes.is_empty() { Ok(doc.version()) } else { doc.apply(patch) }
 }
 
 /// What a surface lists for a registered op, `coalesces` included.

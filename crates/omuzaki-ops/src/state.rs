@@ -164,11 +164,7 @@ impl State {
         // Borrowing the open transaction first checks it *before* the document changes, and lets us add to it after
         // without a lookup that could fail.
         let joined = tx.map(|id| Self::open_tx(&mut self.open, id, &actor)).transpose()?;
-        let version = if patch.changes.is_empty() {
-            self.doc.version()
-        } else {
-            self.doc.apply(patch).map_err(|e| error::apply_failed(op, e))?
-        };
+        let version = checks::apply_patch(&mut *self.doc, patch).map_err(|e| error::apply_failed(op, e))?;
 
         let tx = joined.as_ref().map_or_else(|| next_tx(&mut self.last_tx), |open| open.step.tx);
         let record =
