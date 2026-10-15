@@ -5,25 +5,17 @@
 //! index and trailer. This crate holds only the types, constants and traits that every user of the format shares:
 //! the codec is `omuzaki-take`, the scripted oracle is `omuzaki-take-mock`. Subsystems with live state add it to each
 //! `State` with [`register_take_state!`] next to the code that owns it.
+//!
+//! Callers import by module path (ADR 0054 §2): `omuzaki_take_api::chunk::RecordKind`,
+//! `omuzaki_take_api::state::StateRecord`.
 #![deny(missing_docs)]
 
-mod chunk;
-mod error;
-mod header;
-mod record;
-mod source;
-mod state;
-
-pub use chunk::{
-    CHUNK_HEADER_LEN, CHUNK_MAGIC, ChunkFlags, ChunkHeader, FILE_MAGIC, MAJOR, MINOR, RECORD_HEADER_LEN, RecordKind,
-};
-pub use error::TakeError;
-pub use header::{SnapshotAt, TakeHeader, TakeKind};
-pub use record::{EventRecord, Incomplete, Record, TakeEntry};
-pub use source::{ChunkView, TakeReport, TakeSource};
-pub use state::{
-    CastEntry, SourceEntry, StateProvider, StateRecord, VoiceEntry, Withheld, WithheldCause, state_providers,
-};
+pub mod chunk;
+pub mod error;
+pub mod header;
+pub mod record;
+pub mod source;
+pub mod state;
 
 #[doc(hidden)]
 pub use inventory as __inventory;

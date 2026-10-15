@@ -111,12 +111,12 @@ pub struct StateRecord {
     /// True for the minimal State: the cast and live state are unknown for this group.
     #[serde(default)]
     pub overflow: bool,
-    /// Live state by provider name (see [`register_take_state!`]). A reader skips a name it does not know and reports it.
+    /// Live state by provider name (see [`register_take_state!`](crate::register_take_state!)). A reader skips a name it does not know and reports it.
     #[serde(default)]
     pub live: BTreeMap<String, Value>,
 }
 
-/// One registered live-state provider. Built by [`register_take_state!`]; never by hand.
+/// One registered live-state provider. Built by [`register_take_state!`](crate::register_take_state!); never by hand.
 #[derive(Copy, Clone)]
 pub struct StateProvider {
     /// The key in [`StateRecord::live`].
@@ -141,7 +141,7 @@ pub fn state_providers() -> Vec<StateProvider> {
 macro_rules! register_take_state {
     ($name:literal, $capture:expr) => {
         $crate::__inventory::submit! {
-            $crate::StateProvider { name: $name, capture: $capture }
+            $crate::state::StateProvider { name: $name, capture: $capture }
         }
         $crate::__record_registration!("take_state", $name);
     };

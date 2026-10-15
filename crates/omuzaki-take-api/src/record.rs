@@ -85,9 +85,9 @@ pub enum Record<'a> {
     },
     /// Events are complete through this frame.
     Watermark(i64),
-    /// A `StateRecord` as JSON.
+    /// A [`StateRecord`](crate::state::StateRecord) as JSON.
     State(&'a [u8]),
-    /// A [`Withheld`](crate::Withheld) as JSON.
+    /// A [`Withheld`](crate::state::Withheld) as JSON.
     Withheld(&'a [u8]),
     /// An [`Incomplete`] as JSON.
     Incomplete(&'a [u8]),

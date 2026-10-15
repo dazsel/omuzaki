@@ -1,6 +1,7 @@
 //! `register_take_state!` fills a registry that no list names. This test binary registers exactly two providers.
 
-use omuzaki_take_api::{register_take_state, state_providers};
+use omuzaki_take_api::register_take_state;
+use omuzaki_take_api::state::state_providers;
 use serde_json::{Value, json};
 
 fn expressions() -> Value {

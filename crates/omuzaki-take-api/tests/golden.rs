@@ -6,7 +6,9 @@
 
 use std::fmt::Debug;
 
-use omuzaki_take_api::{EventRecord, StateRecord, TakeEntry, TakeHeader};
+use omuzaki_take_api::header::TakeHeader;
+use omuzaki_take_api::record::{EventRecord, TakeEntry};
+use omuzaki_take_api::state::StateRecord;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;

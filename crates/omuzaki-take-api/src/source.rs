@@ -2,7 +2,11 @@
 
 use std::collections::BTreeMap;
 
-use crate::{ChunkHeader, Incomplete, TakeError, TakeHeader, Withheld};
+use crate::chunk::ChunkHeader;
+use crate::error::TakeError;
+use crate::header::TakeHeader;
+use crate::record::Incomplete;
+use crate::state::Withheld;
 
 /// One chunk read from a take: its header and its payload of records, borrowed from the reader's buffer.
 #[derive(Clone, Copy, Debug, PartialEq)]
