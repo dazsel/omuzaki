@@ -161,6 +161,7 @@ pub fn decimate_scene(
 /// The triangle count each area gets out of `total`: proportional to area, none under [`MIN_SHARE`]. A floor that
 /// binds is paid for by the rest, which are shared out again until none is under it. Remainders go to the largest
 /// fractions, ties to the lowest index, so the shares add up to `total` exactly (or to the floors, if they exceed it).
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)] // counts are far below 2^52; ideals are >= 0
 fn split_budget(areas: &[f64], total: usize) -> Vec<usize> {
     let mut floored = vec![false; areas.len()];
     loop {
@@ -193,6 +194,12 @@ fn split_budget(areas: &[f64], total: usize) -> Vec<usize> {
             floored[i] = true;
         }
     }
+}
+
+/// A vertex or triangle index as the `u32` the mesh uses. The mesh's own indices are `u32`, so a count that does not
+/// fit cannot be indexed anyway; the saturation documents that and never fires.
+fn id(i: usize) -> u32 {
+    u32::try_from(i).unwrap_or(u32::MAX)
 }
 
 fn surface_area(p: &Primitive) -> f64 {
@@ -237,7 +244,7 @@ impl Quadric {
 
 /// A queue entry: cost bits (costs are non-negative, so bits order like numbers), the edge, the candidate, and the
 /// versions of both ends it was priced at.
-type Entry = Reverse<(u64, u32, u32, u8, u32, u32)>;
+type Entry = Reverse<(u64, u32, u32, usize, u32, u32)>;
 
 /// The mesh while it is being collapsed. Per-vertex data that a collapse interpolates lives in one `attrs` array of
 /// `stride` floats per vertex: morph position deltas first, then UVs, colours, extra attributes and morph normal
@@ -349,7 +356,7 @@ impl Work {
     fn index_topology(&mut self) {
         for (t, tri) in self.tris.iter().enumerate() {
             for &v in tri {
-                self.vertex_tris[v as usize].push(t as u32);
+                self.vertex_tris[v as usize].push(id(t));
             }
         }
         let mut edges: Vec<(u32, u32, u32)> = Vec::with_capacity(self.tris.len() * 3);
@@ -362,7 +369,7 @@ impl Work {
             }
             for e in 0..3 {
                 let (a, b) = (tri[e], tri[(e + 1) % 3]);
-                edges.push((a.min(b), a.max(b), t as u32));
+                edges.push((a.min(b), a.max(b), id(t)));
             }
         }
         edges.sort_unstable();
@@ -378,7 +385,7 @@ impl Work {
             }
         }
         let mut by_position: Vec<(u32, u32, u32, u32)> =
-            self.pos.iter().enumerate().map(|(i, p)| (p.x.to_bits(), p.y.to_bits(), p.z.to_bits(), i as u32)).collect();
+            self.pos.iter().enumerate().map(|(i, p)| (p.x.to_bits(), p.y.to_bits(), p.z.to_bits(), id(i))).collect();
         by_position.sort_unstable();
         for run in by_position.chunk_by(|x, y| (x.0, x.1, x.2) == (y.0, y.1, y.2)).filter(|r| r.len() > 1) {
             for &(_, _, _, v) in run {
@@ -410,6 +417,7 @@ impl Work {
 
     /// Collapses the cheapest edges until the target is met, nothing allowed is left or the error cap is hit.
     /// Returns the largest error of a collapse made, as a fraction of the diagonal.
+    #[allow(clippy::cast_possible_truncation)] // a fraction of the diagonal fits f32
     fn run(&mut self, options: &DecimateOptions) -> f32 {
         let cap = (f64::from(options.max_error) * self.diag).powi(2);
         let mut queue = BinaryHeap::new();
@@ -434,7 +442,7 @@ impl Work {
             if self.removed[ai] || self.removed[bi] || self.version[ai] != va || self.version[bi] != vb {
                 continue;
             }
-            let t = CANDIDATES[usize::from(candidate)];
+            let t = CANDIDATES[candidate];
             let p = self.pos[ai].lerp(self.pos[bi], t);
             if !self.link_ok(a, b) || self.flips(a, b, p) {
                 continue;
@@ -467,8 +475,10 @@ impl Work {
         let best = CANDIDATES
             .iter()
             .enumerate()
-            .filter(|&(_, &t)| {
-                (t != 0.0 || !fixed(bi)) && (t != 1.0 || !fixed(ai)) && (t != 0.5 || !(fixed(ai) || fixed(bi)))
+            .filter(|&(c, _)| match c {
+                0 => !fixed(bi),
+                1 => !fixed(ai),
+                _ => !(fixed(ai) || fixed(bi)),
             })
             .map(|(c, &t)| {
                 let p = pa.lerp(pb, t);
@@ -480,7 +490,7 @@ impl Work {
             })
             .min_by(|x, y| x.0.total_cmp(&y.0).then(x.1.cmp(&y.1)));
         if let Some((cost, c)) = best {
-            queue.push(Reverse((cost.to_bits(), a, b, c as u8, self.version[ai], self.version[bi])));
+            queue.push(Reverse((cost.to_bits(), a, b, c, self.version[ai], self.version[bi])));
         }
     }
 
@@ -541,33 +551,34 @@ impl Work {
     }
 
     /// Merges `b` into `a`'s slot at `p`, `t` of the way from `a` to `b`.
-    fn collapse(&mut self, a: u32, b: u32, t: f32, p: Vec3) {
+    fn collapse(&mut self, a: u32, b: u32, along: f32, to: Vec3) {
         let (ai, bi) = (a as usize, b as usize);
-        self.pos[ai] = p;
+        self.pos[ai] = to;
         for i in 0..self.stride {
-            let (x, y) = (self.attrs[ai * self.stride + i], self.attrs[bi * self.stride + i]);
-            self.attrs[ai * self.stride + i] = x * (1.0 - t) + y * t;
+            let (from, other) = (self.attrs[ai * self.stride + i], self.attrs[bi * self.stride + i]);
+            self.attrs[ai * self.stride + i] = from * (1.0 - along) + other * along;
         }
         if !self.joints.is_empty() {
-            let (j, w) = blend_influences((self.joints[ai], self.weights[ai]), (self.joints[bi], self.weights[bi]), t);
-            self.joints[ai] = j;
-            self.weights[ai] = w;
+            let (joints, weights) =
+                blend_influences((self.joints[ai], self.weights[ai]), (self.joints[bi], self.weights[bi]), along);
+            self.joints[ai] = joints;
+            self.weights[ai] = weights;
         }
         self.quadric[ai] = self.quadric[ai].sum(self.quadric[bi]);
         self.boundary[ai] |= self.boundary[bi];
         self.seam[ai] |= self.seam[bi];
         self.removed[bi] = true;
         self.version[ai] += 1;
-        for t in std::mem::take(&mut self.vertex_tris[bi]) {
-            if self.tris[t as usize].contains(&a) {
-                self.kill(t);
+        for tri in std::mem::take(&mut self.vertex_tris[bi]) {
+            if self.tris[tri as usize].contains(&a) {
+                self.kill(tri);
             } else {
-                for v in &mut self.tris[t as usize] {
+                for v in &mut self.tris[tri as usize] {
                     if *v == b {
                         *v = a;
                     }
                 }
-                self.vertex_tris[ai].push(t);
+                self.vertex_tris[ai].push(tri);
             }
         }
     }
@@ -593,7 +604,7 @@ impl Work {
         let mut new_index = vec![u32::MAX; n];
         let kept: Vec<usize> = (0..n).filter(|&v| used[v]).collect();
         for (i, &v) in kept.iter().enumerate() {
-            new_index[v] = i as u32;
+            new_index[v] = id(i);
         }
         let indices: Vec<u32> = self
             .tris

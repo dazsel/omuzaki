@@ -60,6 +60,7 @@ fn fixture() -> Primitive {
 }
 
 /// The peak resident size in MB, or 0 where `/proc` is not there.
+#[allow(clippy::disallowed_methods)] // a benchmark reading its own process status, not an op reaching a file
 fn peak_mb() -> u64 {
     let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
     let kb = status
