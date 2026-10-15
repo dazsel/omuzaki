@@ -15,6 +15,7 @@
 - `design/git.md`: the git integration (ADR 0045): the person's own `git` as a process, what "commits cleanly" promises, binaries via the second location, the commit view with render previews, person-only commit and push, and the `Git` trait.
 - `design/identity.md`: keys, signatures and trust (ADR 0042): one ed25519 key per person per machine by default, one per project when needed, in the OS keychain, the domain-tagged signature envelope, the trust list, signed exports (`OMUZAKI_signed_export`), key statements, agent rules and the watermark hook.
 - `design/agent-runtime.md`: the in-app assistant's host: crates, the turn loop, Stop, context and compaction, conversation storage, settings, host-local tools and the chat panel contract (ADR 0040).
+- `design/plugins.md`: the WASM plugin host (ADR 0058): crates, the WIT package and its compatibility window, the generic op bridge, the plugin's session and ceiling, the sandbox and its numbers, threads and the budget table, lifecycle and hot reload, the manifest, rights and how plugins relate to scripts.
 
 ## Research
 Dated notes. Licences and facts go stale, so always check the date.

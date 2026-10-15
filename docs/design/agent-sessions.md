@@ -86,6 +86,7 @@ documented in the code; section 11 lists them exactly once, for the contract tas
   Omuzaki's own (migrations) and needs none. Automations (BR-11) and scripts (PL-02) may open sessions
   (`Automation` with the person who configured them as principal; scripts run as the person today); BR-11 and PL-02
   decide.
+  Plugin sessions are decided in `plugins.md` §3 (PL-01, ADR 0058).
 
 ### 3.3 Grants: never wider than the person (VC-10)
 
@@ -284,6 +285,8 @@ A request from a session is **queued** instead of refused when a person could al
 | `Budget { needed, left }` | Running it, or the session's spend or time, would pass its budget (8.1). The session is paused too | Approve once, Raise budget, Reject (the session stays paused) |
 | `Pairing { client }` | A bridge connection presents a credential the studio has not paired (10.2). No request; the session waits paused | Approve = Pair (remembered for that credential), Reject = Refuse (the session ends, revoked) |
 | `Review { policy }` | VC-11 (phase 5): a team policy needs a reviewer for `publish` or a `broadcast` grant. Reserved now | Approve, Reject (by a person with the reviewer role; `team-review.md` §8.3: N distinct reviewer, admin or owner keys, never the requester; §8.2: `PendingApproval.own` marks a person's own request) |
+
+For a `Transport::Plugin` session, `publish`, `broadcast` and `spend` are queued as `Person` on every use and offer only "Approve" (`plugins.md` §3.2).
 
 How it runs:
 1. Before queueing, the executor **dry-runs** the request (that needs only `read`). If the dry-run fails

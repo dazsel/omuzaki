@@ -107,6 +107,9 @@ wasm only if it calls into the crate's code, so the wiring is explicit (ADR 0015
 | `omuzaki-agent-api` | API | not in the workspace yet: the in-app assistant's panel contract (`Assistant`, `UserMessage`, `ContextChip`, `AssistantEvent`, `HostError`) and `RationaleSource` for "Explain this"; design in `docs/design/agent-runtime.md`, ADR 0040 |
 | `omuzaki-agent-mock` | Mock | not in the workspace yet: `ScriptedAssistant`, which plays an event script on `FakeClock` for panel tests and the gallery |
 | `omuzaki-agent` | Implementation | not in the workspace yet: `AssistantHost`, the assistant's turn loop over an in-process MCP client and `dyn LlmClient`, the context builder and compaction, the host-local tools and the conversation store; links API crates and rmcp's client only, never `omuzaki-mcp` or `omuzaki-ops` |
+| `omuzaki-plugin-api` | API | not in the workspace yet (design): the plugin contract (PL-01): the WIT package `omuzaki:plugin`, `Manifest`, `PluginId`, `PluginInfo`, `PluginState`, `PluginError`, the per-call-kind budgets and the `Plugins` service; no wasmtime; design in `docs/design/plugins.md`, ADR 0058 |
+| `omuzaki-plugin-mock` | Mock | not in the workspace yet (design): `MockPlugins`, `MockGuest` (a plugin as Rust closures) and the `conformance` suite both hosts pass |
+| `omuzaki-plugin` | Implementation | not in the workspace yet (design): the wasmtime component host: the WASI stubs, limits, fuel and epochs, the op bridge, the compiled-code cache, reload and the `plugin.*` ops; native only |
 
 The other API crates (§39.1) arrive in later phases, each with its mock.
 
