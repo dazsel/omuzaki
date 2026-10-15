@@ -128,7 +128,8 @@ pub struct FakeEncoderFactory(pub FakeEncoderConfig);
 
 impl EncoderFactory for FakeEncoderFactory {
     fn probe(&self) -> Vec<EncoderInfo> {
-        vec![EncoderInfo::new(CodecId::H264, "fake", false, false)]
+        // Fail closed: if the constructor ever rejects this info, offer nothing rather than panic.
+        EncoderInfo::new(CodecId::H264, "fake", false, false).into_iter().collect()
     }
 
     fn create(&self, cfg: &EncodeConfig) -> Result<Box<dyn Encoder>, StreamError> {
