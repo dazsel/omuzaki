@@ -397,32 +397,31 @@ impl App {
     }
 
     /// The window changed size (a display scale change does this): the picture is drawn in window pixels, so it is redone
-    /// at the new size, and so is the click-through mask built from it. The mask only matters for per-pixel click-through,
-    /// and a size too small for the picture (a minimised window) is skipped.
+    /// at the new size, and so is the click-through mask built from it. The mask only matters for per-pixel click-through.
+    /// A zero size (a minimised window) changes nothing: the renderer keeps its last size and so does the mask.
     fn resized(&mut self, size: PhysicalSize<u32>) {
         if let Some(renderer) = self.renderer.as_mut() {
             renderer.resize(size.width, size.height);
         }
         let current = self.scene.as_ref().map(|s| (s.width, s.height));
-        let too_small = size.width < scene_pass::MIN_SIZE.0 || size.height < scene_pass::MIN_SIZE.1;
+        let size = (size.width, size.height);
         if self.config.platform.click_through != ClickThrough::Pixel
-            || current == Some((size.width, size.height))
-            || too_small
+            || size.0 == 0
+            || size.1 == 0
+            || current == Some(size)
         {
             return;
         }
-        self.scene = Some(match self.reference(size) {
-            Ok(scene) => scene,
-            Err(e) => {
-                // The old picture cannot be scaled to match what the shader now draws, so a mask from it would accept and
-                // reject the wrong pixels. Every pixel takes input instead: wrong in the safe direction, and reported.
-                println!(
-                    "[FAILED]      mask at {}x{}: {e}; per-pixel click-through is off until the size changes again",
-                    size.width, size.height
-                );
-                Scene::opaque(size.width, size.height)
-            }
+        let (scene, degraded) = scene_for_size(size, |size| {
+            scene_pass::render_reference(self.config.gpu.backends, self.config.gpu.fallback_adapter, size)
         });
+        if let Some(reason) = degraded {
+            println!(
+                "[FAILED]      mask at {}x{}: {reason}; per-pixel click-through is off until the size changes",
+                size.0, size.1
+            );
+        }
+        self.scene = Some(scene);
         self.refresh_mask();
     }
 
@@ -454,6 +453,24 @@ impl App {
             },
             _ => {}
         }
+    }
+}
+
+/// The picture for the click-through mask at `size`, drawn by `render`, and the reason when it could not be. A size below
+/// the picture's minimum, or a failed draw, gives a fully opaque scene instead: the old picture cannot be scaled to match
+/// what the shader now draws, so a mask from it would accept and reject the wrong pixels. Every pixel then takes input,
+/// which is wrong in the safe direction, and the caller reports why.
+fn scene_for_size(
+    size: (u32, u32),
+    render: impl FnOnce((u32, u32)) -> Result<Scene, ReferenceError>,
+) -> (Scene, Option<String>) {
+    if size.0 < scene_pass::MIN_SIZE.0 || size.1 < scene_pass::MIN_SIZE.1 {
+        let reason = format!("the picture needs at least {}x{}", scene_pass::MIN_SIZE.0, scene_pass::MIN_SIZE.1);
+        return (Scene::opaque(size.0, size.1), Some(reason));
+    }
+    match render(size) {
+        Ok(scene) => (scene, None),
+        Err(e) => (Scene::opaque(size.0, size.1), Some(e.to_string())),
     }
 }
 
@@ -527,6 +544,25 @@ mod tests {
         assert_eq!(expected_frames(&config(30, Some(60.0))), 1800 + 64);
         // The loop reads a zero rate as 1, so a 100 s run holds 100 frames, not the 64 spare slots alone.
         assert_eq!(expected_frames(&config(0, Some(100.0))), 100 + 64);
+    }
+
+    #[test]
+    fn a_resize_gets_the_drawn_picture_when_it_can_be_drawn() {
+        let drawn = Scene { width: 1280, height: 720, pixels: vec![7; 1280 * 720 * 4] };
+        let (scene, degraded) = scene_for_size((1280, 720), |_| Ok(drawn.clone()));
+        assert_eq!((scene, degraded), (drawn, None));
+    }
+
+    #[test]
+    fn a_resize_below_the_minimum_or_a_failed_draw_opens_the_whole_window() {
+        let (scene, degraded) = scene_for_size((800, 200), |_| panic!("a size below the minimum is never drawn"));
+        assert_eq!(scene, Scene::opaque(800, 200));
+        assert!(degraded.is_some_and(|reason| reason.contains("1024x256")));
+
+        let failed = |_| Err(ReferenceError::Readback("lost".to_owned()));
+        let (scene, degraded) = scene_for_size((1280, 720), failed);
+        assert_eq!(scene, Scene::opaque(1280, 720));
+        assert!(degraded.is_some_and(|reason| reason.contains("lost")));
     }
 
     #[test]
