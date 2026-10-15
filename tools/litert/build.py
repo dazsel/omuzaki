@@ -12,6 +12,7 @@ when what it finds differs from tools/litert/pins.toml:
   digest   hash the archive (built or restored from the cache) into <platform>.sha256 and the run summary
   collect  merge the three platforms' digests into the workflow's outputs, refusing anything but three valid digests
   check    verify an archive, load it with the smoke program and compare three face graphs with the official wheel
+  verify   before the cache save: the archive against the build's digest, and the cache key the build used
 
 `container` prints the image the Linux build runs in, for the workflow's `docker run`.
 
@@ -109,6 +110,10 @@ def bazel_path(tools: Path) -> Path:
 def bazel_env(plat: str) -> dict:
     """The environment Bazel runs in: Bazelisk checks the Bazel binary, Windows gets the pinned MSVC toolset."""
     env = dict(os.environ, BAZELISK_VERIFY_SHA256=platform_pins(plat)["bazel_sha256"])
+    # Runner images point this at an Android NDK. LiteRT's WORKSPACE then instantiates an NDK repository, which fails
+    # on Windows and is an image input outside the cache key elsewhere; nothing Android is built (LiteRT's own Windows
+    # CI blanks it too).
+    env.pop("ANDROID_NDK_HOME", None)
     if plat == "win-x64":
         env["BAZEL_VC"] = str(visual_studio() / "VC")
         env["BAZEL_VC_FULL_VERSION"] = platform_pins(plat)["msvc_toolset"]
@@ -283,7 +288,7 @@ def notices(repos: set[str], licences: dict, roots: dict, rows: Path) -> tuple[s
             if not source.is_file():
                 problems.append(f"{repo}: licence file {name} is missing from the tree that was built")
                 continue
-            files[f"{repo}-{name}.txt"] = source
+            files[f"{repo}-{name.replace('/', '-')}.txt"] = source  # flat: licences/ has no subfolders
             texts.append(f"#### {name}\n\n```\n{source.read_text(encoding='utf-8', errors='replace').rstrip()}\n```\n")
         sections.append(f"## {entry['name']}\n\nBazel repository `{repo}`, {entry['spdx']}.\n\n" + "\n".join(texts))
     if problems:
@@ -404,6 +409,26 @@ def cmd_collect(args):
     write_output("sha256", json.dumps(digests, sort_keys=True, separators=(",", ":")))
 
 
+def cache_key(folder: Path, plat: str) -> tuple[str, bool]:
+    """(key, whether the build restored it) as the build job wrote them; a key for another platform fails."""
+    key = (folder / "key").read_text().strip()
+    if not re.fullmatch(rf"litert-v\d+-{re.escape(plat)}-[\w.-]+-[0-9a-f]{{64}}", key):
+        raise Mismatch(f"cache key {key!r} is not a litert key for {plat}")
+    hit = (folder / "hit").read_text().strip()
+    if hit not in ("true", "false"):
+        raise Mismatch(f"cache hit flag {hit!r} is neither true nor false")
+    return key, hit == "true"
+
+
+def cmd_verify(args):
+    """Before the cache save, which runs only after every check passed: the bytes about to be saved are the checked
+    ones, and the key is the one the build restored from."""
+    check_digest(archive_in(Path(args.dist), args.platform), os.environ.get("EXPECTED_SHA256", ""))
+    key, hit = cache_key(Path(args.cachekey), args.platform)
+    write_output("key", key)
+    write_output("hit", "true" if hit else "false")
+
+
 def cmd_container(args):
     print(platform_pins(args.platform).get("container", ""))
 
@@ -421,11 +446,16 @@ def write_output(key: str, value: str):
             fh.write(f"{key}={value}\n")
 
 
-def unpack(asset: Path, digest: str, into: Path) -> Path:
-    """Checks `asset` against `digest`, the build job's, and unpacks it; returns its folder. An empty digest fails."""
+def check_digest(asset: Path, digest: str):
+    """`asset` against `digest`, the build job's; an empty or malformed digest fails."""
     if not re.fullmatch(r"[0-9a-f]{64}", digest):
         raise Mismatch(f"no valid SHA-256 from the build job for {asset.name}: {digest!r}")
     expect(f"SHA-256 of {asset.name}", sha256(asset), digest)
+
+
+def unpack(asset: Path, digest: str, into: Path) -> Path:
+    """Checks `asset` against `digest` (check_digest) and unpacks it; returns its folder."""
+    check_digest(asset, digest)
     if asset.name.endswith(".zip"):
         with zipfile.ZipFile(asset) as archive:
             archive.extractall(into)
@@ -442,6 +472,16 @@ def delegated(printed: str) -> tuple[int, int, int]:
         raise Mismatch(f"omz_litert_plan printed no count: {printed.strip()}")
     taken, total, partitions = (int(group) for group in found.groups())
     return taken, total, partitions
+
+
+def max_abs_diff(ours, reference, what: str) -> float:
+    """The largest |ours - reference|; a NaN or infinity on either side fails, since NaN compares false to any gate."""
+    import numpy as np  # installed by the check job
+
+    for side, values in (("ours", ours), ("the wheel's", reference)):
+        if not np.all(np.isfinite(values)):
+            raise Mismatch(f"{what}: {side} has a non-finite value")
+    return float(np.max(np.abs(ours.astype(np.float64) - reference.astype(np.float64)), initial=0.0))
 
 
 def seeded_input(graph: str, shape, dtype, rng):
@@ -491,23 +531,26 @@ def cmd_check(args):
         reference.invoke()
         expected = [reference.get_tensor(detail["index"]) for detail in reference.get_output_details()]
         produced = work / f"{graph}.out"
-        run([*smoke, model, produced, *inputs])
+        printed = dict(line.split(" ", 1) for line in run([*smoke, model, produced, *inputs]).splitlines())
         taken, total, partitions = delegated(run([programs / f"omz_litert_plan{executable}", model]))
         if taken != total or partitions != 1:
             raise Mismatch(f"{graph}: XNNPACK took {taken} of {total} nodes in {partitions} partitions, not all in one")
         ours = produced.read_bytes()
         expect(f"{graph} output bytes", len(ours), sum(tensor.nbytes for tensor in expected))
         worst, offset = 0.0, 0
-        for tensor in expected:
+        for index, tensor in enumerate(expected):
             mine = np.frombuffer(ours, dtype=tensor.dtype, count=tensor.size, offset=offset)
-            worst = max(worst, float(np.max(np.abs(mine.astype(np.float64) - tensor.ravel().astype(np.float64)))))
+            worst = max(worst, max_abs_diff(mine, tensor.ravel(), f"{graph} output {index}"))
             offset += tensor.nbytes
-        rows.append(f"| {graph} | {taken} of {total} | {worst:.3g} |")
+        if not printed.get("error"):
+            raise Mismatch(f"{graph}: omz_litert_capture_errors caught no text for a refused shape")
+        rows.append(f"| {graph} | {taken} of {total} | {worst:.3g} | {printed['error'][:80].replace('|', '/')} |")
         if worst > tolerance:
             raise Mismatch(f"{graph}: max |ours - wheel| = {worst:.3g}, over the {tolerance} gate")
     write_summary(f"### Check {args.platform}\n\n`TfLiteVersion()` {loaded['version']}, "
                   f"`omz_litert_abi()` {loaded['abi']}, {loaded['symbols']} symbols resolved.\n\n"
-                  "| graph | nodes delegated to XNNPACK | max abs diff vs ai-edge-litert |\n|---|---|---|\n"
+                  "| graph | nodes delegated to XNNPACK | max abs diff vs ai-edge-litert | captured error (bad shape) |\n"
+                  "|---|---|---|---|\n"
                   + "\n".join(rows) + "\n")
 
 
@@ -515,7 +558,7 @@ def main():
     steps = {"setup": (cmd_setup, ("litert", "tools")), "notices": (cmd_notices, ("litert", "tools", "out")),
              "build": (cmd_build, ("litert", "tools", "out")), "pack": (cmd_pack, ("litert", "out")),
              "digest": (cmd_digest, ("dist", "digests")), "collect": (cmd_collect, ("digests",)),
-             "container": (cmd_container, ()),
+             "container": (cmd_container, ()), "verify": (cmd_verify, ("dist", "cachekey")),
              "check": (cmd_check, ("dist", "programs", "models", "work"))}
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)

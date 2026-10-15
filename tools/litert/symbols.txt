@@ -9,7 +9,6 @@ TfLiteInterpreterOptionsCreate
 TfLiteInterpreterOptionsDelete
 TfLiteInterpreterOptionsSetNumThreads
 TfLiteInterpreterOptionsAddDelegate
-TfLiteInterpreterOptionsSetErrorReporter
 TfLiteInterpreterCreate
 TfLiteInterpreterDelete
 TfLiteInterpreterAllocateTensors
@@ -29,3 +28,4 @@ TfLiteTensorCopyToBuffer
 omz_litert_abi
 omz_litert_xnnpack_create
 omz_litert_xnnpack_delete
+omz_litert_capture_errors

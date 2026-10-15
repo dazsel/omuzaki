@@ -10,7 +10,7 @@
 #   row    its file in docs/licensing/deps/, without `.toml`
 #   files  its licence files, relative to the repository root, copied into the archive's licences/ folder
 #
-# Each licence was read at the commit LiteRT v2.3.0 pins, except KleidiAI's (see its row).
+# Each licence was read at the commit LiteRT v2.3.0 pins.
 
 [repo.litert]
 name = "LiteRT"
@@ -72,13 +72,12 @@ spdx = "MIT"
 row = "litert-slinky"
 files = ["LICENSE"]
 
-# arm64 only (macos-arm64). Its licence host was out of reach for this review; the notices step copies the file from
-# the tree that was built, and the macOS run's notices list confirms it.
+# arm64 only (macos-arm64). REUSE layout: its README says it is distributed under the licences in LICENSES/.
 [repo.KleidiAI]
 name = "KleidiAI"
-spdx = "Apache-2.0"
+spdx = "Apache-2.0 AND BSD-3-Clause"
 row = "litert-kleidiai"
-files = ["LICENSE"]
+files = ["LICENSES/Apache-2.0.txt", "LICENSES/BSD-3-Clause.txt"]
 
 [repo.ruy]
 name = "ruy"

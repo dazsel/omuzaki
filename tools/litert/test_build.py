@@ -23,9 +23,12 @@ class Pins(unittest.TestCase):
 
     def test_symbols_are_the_design_list(self):
         names = build.symbols()
-        self.assertEqual(len(names), 28)  # design §3.2: 25 C API functions and the shim's 3
+        self.assertEqual(len(names), 28)  # design §3.2: 24 C API functions and the shim's 4
         self.assertEqual(len(set(names)), len(names))
-        self.assertEqual(names[-3:], ["omz_litert_abi", "omz_litert_xnnpack_create", "omz_litert_xnnpack_delete"])
+        shim = ["omz_litert_abi", "omz_litert_xnnpack_create", "omz_litert_xnnpack_delete", "omz_litert_capture_errors"]
+        self.assertEqual(names[-4:], shim)
+        # The reporter takes a va_list, so only the shim calls it (design §3.3).
+        self.assertNotIn("TfLiteInterpreterOptionsSetErrorReporter", names)
 
     def test_every_platform_names_its_tools_and_library(self):
         for name, plat in build.PINS["platform"].items():
@@ -61,6 +64,28 @@ class ReadBack(unittest.TestCase):
             build.delegated("")
 
 
+try:
+    import numpy
+except ImportError:  # the build job has no numpy; the check job runs these too, with it
+    numpy = None
+
+
+@unittest.skipIf(numpy is None, "numpy is installed in the check job")
+class Parity(unittest.TestCase):
+    def test_the_largest_difference_is_returned(self):
+        ours, reference = numpy.array([1.0, 2.0], numpy.float32), numpy.array([1.0, 2.5], numpy.float32)
+        self.assertEqual(build.max_abs_diff(ours, reference, "out"), 0.5)
+
+    def test_a_non_finite_value_on_either_side_fails(self):
+        finite = numpy.zeros(2, numpy.float32)
+        for bad in (numpy.nan, numpy.inf):
+            broken = numpy.array([0.0, bad], numpy.float32)
+            with self.assertRaisesRegex(build.Mismatch, "non-finite"):
+                build.max_abs_diff(broken, finite, "out")
+            with self.assertRaisesRegex(build.Mismatch, "non-finite"):
+                build.max_abs_diff(finite, broken, "out")
+
+
 class Notices(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -83,6 +108,13 @@ class Notices(unittest.TestCase):
         self.assertIn("## XNNPACK", text)
         self.assertIn("XNNPACK licence text", text)
         self.assertEqual(sorted(files), ["XNNPACK-LICENSE.txt", "litert-LICENSE.txt"])
+
+    def test_licence_files_in_subfolders_are_copied_flat(self):
+        (self.root / "XNNPACK" / "LICENSES").mkdir()
+        (self.root / "XNNPACK" / "LICENSES" / "MIT.txt").write_text("text")
+        entry = dict(LICENCES["XNNPACK"], files=["LICENSES/MIT.txt"])
+        _, files = build.notices({"XNNPACK"}, {"XNNPACK": entry}, self.roots, DEPS)
+        self.assertEqual(list(files), ["XNNPACK-LICENSES-MIT.txt.txt"])
 
     def test_a_repository_without_an_entry_fails(self):
         with self.assertRaisesRegex(build.Mismatch, "unknown: linked, but has no entry"):
@@ -131,6 +163,27 @@ class Archive(unittest.TestCase):
             (dist / "SHA256SUMS").write_text(f"{'0' * 64}  {asset.name}\n")
             with self.assertRaisesRegex(build.Mismatch, "SHA256SUMS of"):
                 build.archive_in(dist, "win-x64")
+
+
+class CacheKey(unittest.TestCase):
+    def write(self, folder: Path, key: str, hit: str):
+        (folder / "key").write_text(key + "\n")
+        (folder / "hit").write_text(hit + "\n")
+
+    def test_the_build_key_reads_back(self):
+        key = f"litert-v1-win-x64-win22-20261005.1-{'a' * 64}"
+        with tempfile.TemporaryDirectory() as tmp:
+            self.write(Path(tmp), key, "false")
+            self.assertEqual(build.cache_key(Path(tmp), "win-x64"), (key, False))
+
+    def test_another_platform_or_a_bad_flag_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.write(Path(tmp), f"litert-v1-linux-x64-ubuntu24-1-{'a' * 64}", "false")
+            with self.assertRaisesRegex(build.Mismatch, "not a litert key for win-x64"):
+                build.cache_key(Path(tmp), "win-x64")
+            self.write(Path(tmp), f"litert-v1-win-x64-win22-1-{'a' * 64}", "")
+            with self.assertRaisesRegex(build.Mismatch, "neither true nor false"):
+                build.cache_key(Path(tmp), "win-x64")
 
 
 class Digests(unittest.TestCase):

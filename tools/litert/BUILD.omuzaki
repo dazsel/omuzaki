@@ -14,6 +14,7 @@ cc_library(
     # Windows: TFL_COMPILE_LIBRARY, so TFL_CAPI_EXPORT marks the shim's functions for export.
     copts = tflite_copts(),
     deps = [
+        "//tflite/c:c_api",
         "//tflite/c:common",
         "//tflite/delegates/xnnpack:xnnpack_delegate",
         "@XNNPACK",

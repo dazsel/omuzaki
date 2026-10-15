@@ -5,7 +5,9 @@
  *       SYMBOLS file (symbols.txt), and prints `version <TfLiteVersion()>` and `abi <omz_litert_abi()>`.
  *   omz_litert_smoke LIBRARY SYMBOLS MODEL OUTPUT INPUT...
  *       also runs MODEL once on one thread through the shim's XNNPACK delegate: each INPUT file holds the raw bytes
- *       of one input tensor, in order, and OUTPUT receives every output tensor's bytes, in order.
+ *       of one input tensor, in order, and OUTPUT receives every output tensor's bytes, in order. Then it resizes the
+ *       first input to a shape no face graph takes and prints `error <text>`: the message omz_litert_capture_errors
+ *       caught when AllocateTensors refused it.
  *
  * Exits non-zero, naming the problem, on any failure. Built from the LiteRT tree by Bazel (BUILD.omuzaki).
  */
@@ -47,8 +49,12 @@ typedef size_t (*byte_size_fn)(const Opaque*);
 typedef int (*copy_from_fn)(Opaque*, const void*, size_t);
 typedef int (*copy_to_fn)(const Opaque*, void*, size_t);
 typedef Opaque* (*xnnpack_create_fn)(int32_t);
+typedef void (*capture_errors_fn)(Opaque*, char*, size_t);
+typedef int (*resize_fn)(Opaque*, int32_t, const int*, int32_t);
 
 static library_t library;
+/* Where omz_litert_capture_errors writes LiteRT's messages; the size the Rust session uses (ERROR_BYTES). */
+static char errors[1024];
 
 static void fail(const char* what, const char* detail) {
   fprintf(stderr, "omz_litert_smoke: %s%s%s\n", what, detail ? ": " : "", detail ? detail : "");
@@ -102,6 +108,7 @@ static void run_model(const char* model_path, const char* output_path, int input
   Opaque* options = ((options_create_fn)need("TfLiteInterpreterOptionsCreate"))();
   ((set_threads_fn)need("TfLiteInterpreterOptionsSetNumThreads"))(options, 1);
   ((add_delegate_fn)need("TfLiteInterpreterOptionsAddDelegate"))(options, delegate);
+  ((capture_errors_fn)need("omz_litert_capture_errors"))(options, errors, sizeof errors);
   Opaque* interpreter = ((interpreter_create_fn)need("TfLiteInterpreterCreate"))(model, options);
   if (!interpreter) fail("TfLiteInterpreterCreate failed", model_path);
   if (((status_fn)need("TfLiteInterpreterAllocateTensors"))(interpreter) != 0) fail("AllocateTensors failed", NULL);
@@ -133,6 +140,16 @@ static void run_model(const char* model_path, const char* output_path, int input
   }
   if (fclose(out) != 0) fail("cannot write", output_path);
   printf("outputs %d\n", (int)outputs);
+
+  /* A rank-1 input of one element fits none of the face graphs, so AllocateTensors must fail and say why. */
+  const int bad_shape[1] = {1};
+  if (((resize_fn)need("TfLiteInterpreterResizeInputTensor"))(interpreter, 0, bad_shape, 1) != 0) {
+    fail("ResizeInputTensor refused the shape", errors);
+  }
+  if (((status_fn)need("TfLiteInterpreterAllocateTensors"))(interpreter) == 0) fail("a bad shape was allocated", NULL);
+  if (errors[0] == 0) fail("AllocateTensors failed but no error text was captured", NULL);
+  errors[strcspn(errors, "\r\n")] = 0;
+  printf("error %s\n", errors);
 
   /* The interpreter goes before the delegate it uses (design §3.5). */
   ((delete_fn)need("TfLiteInterpreterDelete"))(interpreter);
