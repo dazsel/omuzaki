@@ -35,7 +35,7 @@
 
 use std::f32::consts::{FRAC_PI_2, PI};
 
-use omuzaki_anim_api::JointLimit;
+use omuzaki_anim_api::spring::JointLimit;
 use omuzaki_core::glam::{Quat, Vec3};
 
 /// `axisRotation` of the spec's `Rotation` listing: the shortest rotation taking +Y to the unit `bone_axis`, or the
@@ -92,56 +92,61 @@ pub(super) fn apply(limit: &JointLimit, frame: Quat, dir: Vec3) -> Vec3 {
 }
 
 /// The cone listing. `None` when `dir` is inside.
+///
+/// The listing compares `y` with `cos(angle)`, which is blind to a tilt below about 5e-4 rad (`cos` of it rounds to 1),
+/// so a zero-angle cone would let such a tail through. The tilt is measured as `atan2(horizontal, y)`, which keeps its
+/// digits at every angle; the boundary it produces is the listing's.
 fn cone(angle: f32, dir: Vec3) -> Option<Vec3> {
     let limit = angle.clamp(0.0, PI);
-    let cos = limit.cos();
-    if dir.y >= cos {
+    // Computed as `x * x + z * z`, the listing's `1 - y * y` for a unit vector, without the cancellation near -Y.
+    let horizontal = (dir.x * dir.x + dir.z * dir.z).sqrt();
+    if horizontal.atan2(dir.y) <= limit {
         return None;
     }
     // `sin(pi)` is a hair below zero in `f32`; a negative scale would mirror the boundary.
-    let sin = limit.sin().max(0.0);
-    // The listing has `1 - y * y`, which is the same for a unit vector but loses most of its digits near -Y.
-    let horizontal_sq = dir.x * dir.x + dir.z * dir.z;
-    if horizontal_sq == 0.0 {
+    let (sin, cos) = (limit.sin().max(0.0), limit.cos());
+    if horizontal == 0.0 {
         // Straight down: the positive Z side of the boundary.
         return Some(Vec3::new(0.0, cos, sin));
     }
-    let scale = sin / horizontal_sq.sqrt();
+    let scale = sin / horizontal;
     Some(Vec3::new(dir.x * scale, cos, dir.z * scale))
 }
 
-/// The hinge listing. `None` when `dir` is inside, which includes lying in the hinge's plane.
+/// The hinge listing. `None` when `dir` is inside, which includes lying in the hinge's plane. The angle in the
+/// hinge's plane is measured with `atan2` for the reason given at [`cone`].
 fn hinge(angle: f32, dir: Vec3) -> Option<Vec3> {
     let limit = angle.clamp(0.0, PI);
-    let cos = limit.cos();
-    let projected_sq = dir.y * dir.y + dir.z * dir.z;
-    if projected_sq == 0.0 {
+    let projected = dir.y.hypot(dir.z);
+    if projected == 0.0 {
         // Along X: straight up the hinge.
         return Some(Vec3::Y);
     }
-    let length = projected_sq.sqrt();
-    let (y, z) = (dir.y / length, dir.z / length);
-    if y >= cos {
+    let (y, z) = (dir.y / projected, dir.z / projected);
+    if dir.z.abs().atan2(dir.y) <= limit {
         // Inside the angle; only a component along X has to go.
         return (dir.x != 0.0).then(|| Vec3::new(0.0, y, z));
     }
     // Straight down (z == 0) takes the positive Z side.
     let z_sign = if z < 0.0 { -1.0 } else { 1.0 };
-    Some(Vec3::new(0.0, cos, limit.sin().max(0.0) * z_sign))
+    Some(Vec3::new(0.0, limit.cos(), limit.sin().max(0.0) * z_sign))
 }
 
-/// The spherical listing. `None` when `dir` is inside.
-#[allow(clippy::float_cmp)] // the spec's singular directions are the exact -Y and exact +-X
+/// The spherical listing. `None` when `dir` is inside. Yaw is `atan2(x, hypot(y, z))` rather than the listing's
+/// `asin(x)`, which loses half its digits as `x` nears 1; for a unit vector they are the same angle.
 fn spherical(pitch: f32, yaw: f32, dir: Vec3) -> Option<Vec3> {
     let (limit_pitch, limit_yaw) = (pitch.clamp(0.0, PI), yaw.clamp(0.0, FRAC_PI_2));
-    let mut pitch = if dir.y == -1.0 {
+    let across = dir.y.hypot(dir.z);
+    let mut pitch = if dir.y < 0.0 && dir.z == 0.0 {
+        // Straight down in the plane (either sign of zero): the positive Z side, pitch pi.
         PI
-    } else if dir.x.abs() == 1.0 {
+    } else if across == 0.0 {
+        // Along X: no pitch.
         0.0
     } else {
         dir.z.atan2(dir.y)
     };
-    let mut yaw = dir.x.clamp(-1.0, 1.0).asin();
+    let mut yaw = dir.x.atan2(across);
     let mut limited = false;
     if pitch.abs() > limit_pitch {
         limited = true;

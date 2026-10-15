@@ -5,7 +5,8 @@
 //! Where the spec's pseudocode is loose, this follows the structure the spec describes: tails are stored in centre
 //! space, inertia is evaluated there, and gravity, stiffness and collisions are in world space.
 
-use omuzaki_anim_api::{ColliderShape, JointLimit, PHYSICS_STEP, Pose, Skeleton, SpringSet};
+use omuzaki_anim_api::spring::JointLimit;
+use omuzaki_anim_api::{ColliderShape, PHYSICS_STEP, Pose, Skeleton, SpringSet};
 use omuzaki_core::glam::{DMat4, DQuat, DVec3};
 
 /// The spec's `SpringBoneJointState` plus the joint's properties.
@@ -242,7 +243,6 @@ fn collide(world: &DMat4, shape: ColliderShape, next_tail: DVec3, joint_radius: 
 /// limit and the joint's bone length kept. The `Rotation` listing, then the limit's listing, written as printed.
 #[allow(clippy::float_cmp)] // the listings test for exactly -Y, +-X and a zero length, as printed
 fn limit_tail(joint: &Joint, parent_world_rotation: DQuat, world_position: DVec3, next_tail: DVec3) -> DVec3 {
-    use std::f64::consts::{FRAC_PI_2, PI};
     let Some(limit) = joint.limit else { return next_tail };
     let rotation = match limit {
         JointLimit::Cone { rotation, .. }
@@ -257,8 +257,15 @@ fn limit_tail(joint: &Joint, parent_world_rotation: DQuat, world_position: DVec3
         DQuat::from_xyzw(axis.z, 0.0, -axis.x, axis.y + 1.0).normalize()
     };
     let frame = parent_world_rotation * joint.initial_local_rotation * axis_rotation * rotation;
-    let mut tail_dir = frame.inverse() * (next_tail - world_position).normalize();
-    match limit {
+    let tail_dir = limit_direction(&limit, frame.inverse() * (next_tail - world_position).normalize());
+    world_position + (frame * tail_dir) * joint.bone_length
+}
+
+/// The limit listings of the appendix as printed: the unit `tail_dir` in the limit's own space, held inside `limit`.
+#[allow(clippy::float_cmp)] // the listings test for exactly -Y, +-X and a zero length, as printed
+pub fn limit_direction(limit: &JointLimit, mut tail_dir: DVec3) -> DVec3 {
+    use std::f64::consts::{FRAC_PI_2, PI};
+    match *limit {
         JointLimit::Cone { angle, .. } => {
             let limit_angle = f64::from(angle).clamp(0.0, PI);
             let cos_limit = limit_angle.cos();
@@ -312,5 +319,5 @@ fn limit_tail(joint: &Joint, parent_world_rotation: DQuat, world_position: DVec3
         }
         _ => {}
     }
-    world_position + (frame * tail_dir) * joint.bone_length
+    tail_dir
 }

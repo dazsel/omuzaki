@@ -9,7 +9,8 @@
 use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use omuzaki_anim_api::{JointLimit, SpringSolver, Tick};
+use omuzaki_anim_api::spring::JointLimit;
+use omuzaki_anim_api::{SpringSolver, Tick};
 use omuzaki_rig::spring::VrmSpringSolver;
 
 #[path = "../tests/support/spring_rig.rs"]

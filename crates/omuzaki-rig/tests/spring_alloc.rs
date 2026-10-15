@@ -12,7 +12,8 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use omuzaki_anim_api::{JointLimit, SpringSolver, Tick};
+use omuzaki_anim_api::spring::JointLimit;
+use omuzaki_anim_api::{SpringSolver, Tick};
 use omuzaki_rig::spring::VrmSpringSolver;
 
 #[path = "support/spring_rig.rs"]
