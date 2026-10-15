@@ -118,9 +118,16 @@ def layout(fps, events):
     }
 
 
+def clear_old_frames(out_dir):
+    """Remove the `frame_*.png` files a previous, longer clip left in `out_dir`, so ffmpeg reads only the new frames."""
+    for name in os.listdir(out_dir):
+        if name.startswith("frame_") and name.endswith(".png"):
+            os.remove(os.path.join(out_dir, name))
+
+
 def main(argv):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("out_dir")
+    ap.add_argument("out_dir", help="folder for the frames; frame_*.png files already in it are deleted first")
     ap.add_argument("--fps", type=int, default=60)
     ap.add_argument("--events", type=int, default=60, help="mouth-open events (at least 50 are needed)")
     args = ap.parse_args(argv)
@@ -128,6 +135,7 @@ def main(argv):
         print("stimulus: --events and --fps must be positive and the clip must fit the counter", file=sys.stderr)
         return 2
     os.makedirs(args.out_dir, exist_ok=True)
+    clear_old_frames(args.out_dir)
     faces = (base_face(False), base_face(True))
     for n in range(clip_length(args.events)):
         write_png(os.path.join(args.out_dir, f"frame_{n:05d}.png"), render_frame(n, faces))

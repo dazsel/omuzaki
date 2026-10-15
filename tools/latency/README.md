@@ -29,7 +29,7 @@ The analysis reads a small rectangle of the output window whose mean grey level 
 
 By default the closed and open levels are the 2nd and 98th percentile of what the recording shows. If the jaw never
 reaches both ends during the run, pass the grey levels the signal has at `jawOpen` 0 and 1 as
-`--out-range CLOSED,OPEN`, exactly as they appear in the recording (so `--out-range 230,40` for a dark-when-open mouth).
+`--out-range CLOSED,OPEN`, as they appear in the recording (so `--out-range 230,40` for a dark-when-open mouth; the two numbers may be given in either order).
 
 An event whose avatar does not respond within `--max-latency-ms` (600 by default) is reported as "no response within
 the window" and counts as that whole window in p50, p95 and max, so a stuck tracker fails the budget instead of
@@ -42,7 +42,7 @@ Commands below are for PowerShell (Python 3 and ffmpeg on the `PATH`). Run them 
 1. Generate the clip (60 events, 90 frames each, about 90 s):
 
    ```powershell
-   python tools\latency\stimulus.py stimulus --fps 60 --events 60
+   python tools\latency\stimulus.py stimulus --fps 60 --events 60   # deletes frame_*.png already in stimulus\
    ffmpeg -framerate 60 -i stimulus\frame_%05d.png -c:v libx264 -crf 12 -pix_fmt yuv420p stimulus.mp4
    ```
 
@@ -63,7 +63,7 @@ Commands below are for PowerShell (Python 3 and ffmpeg on the `PATH`). Run them 
    cmd /c "ffmpeg -hide_banner -loglevel error -i rec.mkv -pix_fmt gray -f rawvideo - | python tools\latency\analyze.py - --width 1920 --height 1080 --fps 60 --layout stimulus\layout.json --stim-origin 100,100 --out-roi 1200,300,40,20 --out-polarity dark --budget-ms 100"
    ```
 
-   Add `--json` for every delay. In Git Bash or any POSIX shell the same pipeline works without `cmd /c`.
+   Add `--json` for the full report: every event with its frame, status (`answered` or `timed_out`) and delay (`null` when timed out), and the window, so the percentiles can be recomputed from the list. In Git Bash or any POSIX shell the same pipeline works without `cmd /c`.
 
    The command exits 0 when p95 is within the budget, 1 when it is above it, and 2 when the recording can't be
    analysed (fewer than 50 usable events, no response at all, a flat signal, a truncated recording).
@@ -81,7 +81,7 @@ at least 50 events with the mouth closed and open on the screenshots, and attach
 ## What to attach as V0 evidence
 
 - The command line and the tool's output (events, p50, p95, max).
-- The `--json` report, which lists every delay.
+- The `--json` report, which lists every event.
 - The screenshot used for the regions, and the machine's CPU, GPU, webcam model and capture mode (the webcam's own
   exposure and USB time is part of the glass-to-glass figure).
 - The Omuzaki build and the tracker settings.
