@@ -364,3 +364,21 @@ fn a_multi_line_signature_is_recorded_whole_and_arrays_do_not_split_it() {
         scan("src/t.rs", "pub trait Wide {\n    fn put(\n        &self,\n        key: [u8; 4],\n    ) -> u8;\n}\n");
     assert!(text.contains("src/t.rs: Wide: fn put( &self, key: [u8; 4], ) -> u8;\n"), "{text}");
 }
+
+#[test]
+fn a_one_line_trait_does_not_swallow_later_items() {
+    let text = scan("src/m.rs", "pub trait Marker {}\npub fn after() {}\npub struct S;\n");
+    assert!(text.contains("src/m.rs: pub trait Marker {}\n"), "{text}");
+    assert!(text.contains("src/m.rs: pub fn after() {}\n"), "{text}");
+    assert!(text.contains("src/m.rs: pub struct S;\n"), "{text}");
+    let text = scan("src/m.rs", "pub trait A { fn f(&self); }\npub fn after() {}\n");
+    assert!(text.contains("src/m.rs: A: fn f(&self);\n"), "{text}");
+    assert!(text.contains("src/m.rs: pub fn after() {}\n"), "{text}");
+}
+
+#[test]
+fn a_trait_header_over_several_lines_is_followed() {
+    let text = scan("src/m.rs", "pub trait T\nwhere\n    Self: Sized,\n{\n    fn f(&self);\n}\npub fn after() {}\n");
+    assert!(text.contains("src/m.rs: T: fn f(&self);\n"), "{text}");
+    assert!(text.contains("src/m.rs: pub fn after() {}\n"), "{text}");
+}

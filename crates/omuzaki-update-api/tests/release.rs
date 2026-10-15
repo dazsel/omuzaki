@@ -100,7 +100,14 @@ fn numeric_hosts_must_be_valid_dotted_quads() {
 
 #[test]
 fn ports_are_one_to_65535() {
-    for text in ["https://example.com:0/", "https://example.com:65536/", "https://example.com:99999999999/"] {
+    for text in [
+        "https://example.com:0/",
+        "https://example.com:65536/",
+        "https://example.com:99999999999/",
+        "https://example.com:",
+        "https://example.com:+80",
+        "https://example.com:-1",
+    ] {
         assert!(Url::new(text).is_err(), "accepted {text:?}");
     }
     for text in ["https://example.com:1/", "https://example.com:65535/"] {
