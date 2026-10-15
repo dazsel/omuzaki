@@ -90,6 +90,7 @@ pub const ASSET_EXTENSIONS: &[&str] = &[
     "tif",
     "tiff",
     "ico",
+    "svg",
     "hdr",
     "exr",
     "dds",
