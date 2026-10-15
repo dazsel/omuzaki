@@ -19,10 +19,11 @@ fuzz_target!(|data: &[u8]| {
     let host = HOST.get_or_init(|| ScriptHost::new(&FakeRunner::default().ops(), Limits::console()));
     let source = String::from_utf8_lossy(data);
     let report = host.check(&source);
-    let lines = source.lines().count().max(1);
+    // A problem at the end of the input sits on the line after the last break.
+    let last_line = source.chars().filter(|c| matches!(c, '\n' | '\r')).count() + 1;
     for problem in report.problems() {
         assert!(problem.line >= 1 && problem.column >= 1, "unpositioned problem: {problem:?}");
-        assert!(problem.line as usize <= lines + 1, "a line past the end of the source: {problem:?}");
+        assert!(problem.line as usize <= last_line, "a line past the end of the source: {problem:?}");
     }
     for call in report.ops.iter().chain(&report.unknown_ops) {
         assert!(call.line >= 1 && call.column >= 1, "unpositioned call: {call:?}");

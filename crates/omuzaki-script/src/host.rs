@@ -4,8 +4,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use omuzaki_core::time::{Clock, SystemClock};
-use omuzaki_doc_api::DocPath;
-use omuzaki_doc_api::Value;
+use omuzaki_doc_api::{DocPath, Value};
 use omuzaki_ops_api::{Actor, Cause, CauseKind, Grants, Mode, OpError, OpInfo, Request, TxId};
 use rhai::packages::{
     BasicArrayPackage, BasicMapPackage, BasicMathPackage, CorePackage, LogicPackage, MoreStringPackage, Package,

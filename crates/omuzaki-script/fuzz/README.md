@@ -15,6 +15,7 @@ where they live so a new escape or example is a seed without copying it.
 Install once: `cargo install cargo-fuzz --locked` and `rustup toolchain install nightly`. Then, from `crates/omuzaki-script`:
 
 ```sh
+mkdir -p fuzz/corpus/check fuzz/corpus/run
 cargo +nightly fuzz run check fuzz/corpus/check tests/escapes examples -- -max_total_time=600
 cargo +nightly fuzz run run fuzz/corpus/run tests/escapes examples -- -max_total_time=600
 ```
