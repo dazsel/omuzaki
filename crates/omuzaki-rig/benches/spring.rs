@@ -33,6 +33,21 @@ fn solver(c: &mut Criterion) {
         });
     }
 
+    // The same frames with the animated pose interpolated across the sub-steps (#79): the cost of re-placing the
+    // animated bones and colliders every sub-step instead of once a frame.
+    let mut interpolated = VrmSpringSolver::new(&rig.set, &rig.skeleton).expect("the rig's springs are valid");
+    interpolated.set_pose_interpolation(true);
+    for (name, fps) in [("60 fps (2 sub-steps)", 60.0), ("30 fps (4 sub-steps)", 30.0)] {
+        let mut frame = 0_u64;
+        c.bench_function(&format!("step, 300 joints, {name}, pose interpolated"), |b| {
+            b.iter(|| {
+                frame += 1;
+                rig.animate(&mut pose, frame);
+                interpolated.step(Tick::at_rate(frame, fps), &rig.skeleton, black_box(&mut pose));
+            });
+        });
+    }
+
     // The prototype settled hair with 45 frames before the first one is shown: 0.75 s, 90 sub-steps.
     c.bench_function("warm_up 0.75 s, 300 joints", |b| {
         b.iter(|| solver.warm_up(&rig.skeleton, black_box(&mut pose), 0.75));

@@ -306,6 +306,18 @@ pub struct VrmSpringSolver {
     stats: SpringStats,
     /// Set at construction and by [`SpringSolver::reset`]: the next step starts every spring at rest.
     needs_rest: bool,
+    /// Whether a frame's sub-steps see the animated pose interpolated from the previous frame's
+    /// ([`VrmSpringSolver::set_pose_interpolation`]).
+    interpolate: bool,
+    /// The bones whose local transform the step reads from the animated pose: every bone of `animated` and of `nodes`,
+    /// ascending. Only these are interpolated.
+    read: Vec<usize>,
+    /// The previous frame's local transforms of the `read` bones, same order; meaningful while `has_previous`.
+    previous: Vec<Transform>,
+    /// This frame's local transforms of the `read` bones as they came in, so the pose is left as it was given (scratch).
+    incoming: Vec<Transform>,
+    /// Whether `previous` holds a frame: false at construction, after a reset and when interpolation is switched on.
+    has_previous: bool,
 }
 
 impl VrmSpringSolver {
@@ -345,18 +357,67 @@ impl VrmSpringSolver {
     }
 
     /// One frame's work: place the animated bones, run `substeps` sub-steps (or just re-aim the bones when there are
-    /// none), and write the solved rotations into `pose`.
-    fn advance(&mut self, pose: &mut Pose, substeps: u32) {
-        let Self { animated, nodes, chains, segments, collider_defs, placed, group_spans, world, needs_rest, .. } =
-            self;
+    /// none), and write the solved rotations into `pose`. With interpolation on, a frame of two or more sub-steps
+    /// runs them one at a time, sub-step `i` of `n` seeing the pose `i/n` of the way from the previous frame's.
+    fn advance(&mut self, pose: &mut Pose, substeps: u32, interpolate: bool) {
+        let rest = std::mem::take(&mut self.needs_rest);
+        if interpolate && self.has_previous && !rest && substeps > 1 {
+            self.advance_interpolated(pose, substeps);
+        } else {
+            // A frame too short for a sub-step still re-aims the bones at their tails, unless they were just placed.
+            let (phase, count) =
+                if substeps > 0 { (Phase::Integrate, substeps) } else { (Phase::Hold, u32::from(!rest)) };
+            self.run_span(&pose.local, rest, phase, count);
+        }
+        if interpolate {
+            for (slot, &bone) in self.previous.iter_mut().zip(&self.read) {
+                *slot = pose.local[bone];
+            }
+            self.has_previous = true;
+        }
+        for segment in &self.segments {
+            pose.local[segment.bone].rotation = segment.rotation;
+        }
+    }
+
+    /// The sub-steps of one frame, each with the animated bones of `pose` blended from the previous frame's: the
+    /// translations lerped and the rotations slerped, `i/n` of the way for sub-step `i` of `n`. The blend is written
+    /// into `pose` for the sub-step and the incoming values are put back after, so the caller's pose is unchanged.
+    fn advance_interpolated(&mut self, pose: &mut Pose, substeps: u32) {
+        for (slot, &bone) in self.incoming.iter_mut().zip(&self.read) {
+            *slot = pose.local[bone];
+        }
+        #[allow(clippy::cast_precision_loss)] // a few sub-steps, far inside f32
+        let share = 1.0 / substeps as f32;
+        for i in 1..=substeps {
+            #[allow(clippy::cast_precision_loss)]
+            let t = i as f32 * share;
+            for ((&bone, from), to) in self.read.iter().zip(&self.previous).zip(&self.incoming) {
+                // A bone that did not move keeps its exact value, so a still pose steps bit for bit as a held one.
+                pose.local[bone] = if i == substeps || from == to {
+                    *to
+                } else {
+                    Transform {
+                        translation: from.translation.lerp(to.translation, t),
+                        rotation: from.rotation.slerp(to.rotation, t),
+                    }
+                };
+            }
+            self.run_span(&pose.local, false, Phase::Integrate, 1);
+        }
+    }
+
+    /// Runs `count` sub-steps (or places the springs at rest, when `rest`) with the animated pose held at `locals`:
+    /// places the animated bones and the colliders, maps every chain's tails to world space, and back after.
+    fn run_span(&mut self, locals: &[Transform], rest: bool, phase: Phase, count: u32) {
+        let Self { animated, nodes, chains, segments, collider_defs, placed, group_spans, world, .. } = self;
         let world = &mut world.local[..];
-        rebuild(world, &pose.local, animated);
+        rebuild(world, locals, animated);
         for (slot, def) in placed.iter_mut().zip(collider_defs.iter()) {
             *slot = def.place(world);
         }
-        let scene = Scene { nodes, group_spans, placed, locals: &pose.local };
+        let scene = Scene { nodes, group_spans, placed, locals };
 
-        let rest = std::mem::take(needs_rest);
         for chain in chains.iter_mut() {
             let segments = &mut segments[chain.segments.clone()];
             chain.frame = chain.center.map_or(Transform::IDENTITY, |c| world[c]);
@@ -366,8 +427,6 @@ impl VrmSpringSolver {
                 chain.to_world(segments);
             }
         }
-        // A frame too short for a sub-step still re-aims the bones at their tails, unless they were just placed there.
-        let (phase, count) = if substeps > 0 { (Phase::Integrate, substeps) } else { (Phase::Hold, u32::from(!rest)) };
         for _ in 0..count {
             for chain in chains.iter() {
                 run_chain(chain, &mut segments[chain.segments.clone()], &scene, world, phase);
@@ -376,9 +435,23 @@ impl VrmSpringSolver {
         for chain in chains.iter() {
             chain.to_centre(&mut segments[chain.segments.clone()]);
         }
-        for segment in segments.iter() {
-            pose.local[segment.bone].rotation = segment.rotation;
+    }
+
+    /// Whether the sub-steps of a frame see the animated pose interpolated from the previous frame's (on, the default)
+    /// or held at this frame's (off, as the spec's single step per frame and three-vrm do). See the module docs'
+    /// measurement: on, the hair of a 30 fps render follows a 120 fps run to about 1 mm instead of 47 mm, at the cost
+    /// of re-placing the animated bones and colliders every sub-step. The first frame after switching it on, after
+    /// [`SpringSolver::reset`] or after a warm-up has no previous frame and is held. Cold: never allocates.
+    pub fn set_pose_interpolation(&mut self, on: bool) {
+        if on != self.interpolate {
+            self.interpolate = on;
+            self.has_previous = false;
         }
+    }
+
+    /// Whether the animated pose is interpolated across a frame's sub-steps ([`Self::set_pose_interpolation`]).
+    pub fn pose_interpolation(&self) -> bool {
+        self.interpolate
     }
 
     /// Gives one joint of a running chain new parameters without moving anything: the tails and velocities carry on,
@@ -464,7 +537,7 @@ impl SpringSolver for VrmSpringSolver {
     fn step(&mut self, tick: Tick, skeleton: &Skeleton, pose: &mut Pose) {
         if self.is_for(skeleton) {
             let substeps = self.take_substeps(tick.dt);
-            self.advance(pose, substeps);
+            self.advance(pose, substeps, self.interpolate);
         }
     }
 
@@ -473,12 +546,15 @@ impl SpringSolver for VrmSpringSolver {
             let seconds = if seconds.is_finite() { seconds.clamp(0.0, MAX_WARM_UP_S) } else { 0.0 };
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // 0 <= seconds <= 60
             let substeps = (f64::from(seconds) * f64::from(PHYSICS_HZ)).round() as u32;
-            self.advance(pose, substeps);
+            // A warm-up settles in one held pose; the frame after it has nothing to interpolate from.
+            self.advance(pose, substeps, false);
+            self.has_previous = false;
         }
     }
 
     fn reset(&mut self) {
         self.needs_rest = true;
+        self.has_previous = false;
         self.owed_s = 0.0;
         self.stats = SpringStats::default();
     }
@@ -526,11 +602,21 @@ impl<'a> Builder<'a> {
             max_substeps: DEFAULT_MAX_SUBSTEPS,
             stats: SpringStats::default(),
             needs_rest: true,
+            interpolate: true,
+            read: Vec::new(),
+            previous: Vec::new(),
+            incoming: Vec::new(),
+            has_previous: false,
         };
         let mut builder = Self { bones: skeleton.bones(), rest_world, is_joint, group_colliders: Vec::new(), solver };
         builder.add_colliders(set);
         builder.add_chains(set);
         builder.solver.animated = builder.animated_bones();
+        let read: BTreeSet<usize> =
+            builder.solver.animated.iter().chain(&builder.solver.nodes).map(|node| node.bone).collect();
+        builder.solver.read = read.into_iter().collect();
+        builder.solver.previous = vec![Transform::IDENTITY; builder.solver.read.len()];
+        builder.solver.incoming = vec![Transform::IDENTITY; builder.solver.read.len()];
         builder.solver.placed = vec![Collider::sphere(Vec3::ZERO, 0.0); builder.solver.collider_defs.len()];
         builder
     }

@@ -124,11 +124,20 @@ struct Agreement {
     swing: f64,
 }
 
+/// A solver with the animated pose held across a frame's sub-steps, as the spec's oracle and three-vrm run: the
+/// comparisons with them use it. Interpolation (#79) has its own comparison,
+/// `interpolated_sub_steps_match_the_spec_fed_the_same_blend`.
+fn held(set: &SpringSet, skeleton: &Skeleton) -> VrmSpringSolver {
+    let mut solver = VrmSpringSolver::new(set, skeleton).unwrap();
+    solver.set_pose_interpolation(false);
+    solver
+}
+
 /// Steps the solver and the oracle through `frames` frames of the fixture's animation and measures the worst
 /// disagreement in rotations and joint positions.
 fn compare_with_spec(fixture: &Fixture, set: &SpringSet, fps: f32, frames: u64) -> Agreement {
     let skeleton = &fixture.skeleton;
-    let mut solver = VrmSpringSolver::new(set, skeleton).unwrap();
+    let mut solver = held(set, skeleton);
     let mut oracle = Reference::new(skeleton, set, &fixture.pose_at(0));
     let swinging: Vec<usize> =
         set.chains.iter().flat_map(|c| &c.joints[..c.joints.len() - 1]).map(|j| j.bone.index()).collect();
@@ -238,7 +247,7 @@ fn a_frame_with_no_sub_step_is_one_in_six_at_144_fps_and_the_oracle_holds_it_too
 
     // Without the hold, the oracle lags a frame on exactly those frames: the comparison would fail.
     let mut oracle = Reference::new(&fixture.skeleton, &set, &fixture.pose_at(0));
-    let mut solver = VrmSpringSolver::new(&set, &fixture.skeleton).unwrap();
+    let mut solver = held(&set, &fixture.skeleton);
     let tip = ids[0][3].index();
     let mut world = Pose::default();
     let mut lag = 0.0_f64;
@@ -1340,7 +1349,7 @@ mod three_vrm {
             vec![chain(ids, centre.then_some(fixture.hips), collider_set.is_some())],
             collider_set.map_or_else(Vec::new, |groups| groups(&fixture)),
         );
-        let mut solver = VrmSpringSolver::new(&set, &fixture.skeleton).unwrap();
+        let mut solver = held(&set, &fixture.skeleton);
         let expected = recorded(scenario);
         assert_eq!(expected.len(), 100);
         let mut worst = 0.0_f32;
@@ -1834,4 +1843,171 @@ mod limit_data {
     }
 
     const PI_OR_MORE: f32 = 3.5;
+}
+
+/// #79's two motions, in continuous time (seconds) so that every frame rate samples the same animation: the fixture's
+/// walk and sway, and a sharp head turn (a quarter turn in 0.25 s, held, and back, every second).
+fn motion(fixture: &Fixture, turn: bool, seconds: f64) -> Pose {
+    if turn {
+        let mut pose = fixture.skeleton.rest_pose();
+        let phase = (seconds % 1.0) as f32 / 0.25;
+        let a = match phase {
+            p if p < 1.0 => p,
+            p if p < 2.0 => 1.0,
+            p if p < 3.0 => 3.0 - p,
+            _ => 0.0,
+        };
+        pose.local[fixture.head.index()].rotation =
+            Quat::from_rotation_y(std::f32::consts::FRAC_PI_2 * a * a * (3.0 - 2.0 * a));
+        pose
+    } else {
+        // `pose_at` advances its animation by one unit per 60 fps frame.
+        let mut pose = fixture.pose_at(0);
+        let t = (seconds * 60.0) as f32;
+        let hips = &mut pose.local[fixture.hips.index()];
+        let rest = fixture.skeleton.bones()[fixture.hips.index()].rest.translation;
+        hips.translation = rest + Vec3::new(0.4 * (0.07 * t).sin(), 0.05 * (0.11 * t).sin(), 0.2 * (0.05 * t).cos());
+        hips.rotation = Quat::from_rotation_y(0.5 * (0.05 * t).sin());
+        pose.local[fixture.head.index()].rotation = Quat::from_euler(
+            omuzaki_core::glam::EulerRot::XYZ,
+            0.3 * (0.13 * t).sin(),
+            0.5 * (0.09 * t).sin(),
+            0.2 * (0.17 * t).sin(),
+        );
+        pose
+    }
+}
+
+/// The hair tips' positions after each frame of three seconds of `motion` at `fps`, by the solver.
+fn tip_track(fixture: &Fixture, set: &SpringSet, turn: bool, fps: f64, interpolate: bool) -> Vec<Vec<Vec3>> {
+    let tips: Vec<usize> = set.chains.iter().map(|c| c.joints[c.joints.len() - 1].bone.index()).collect();
+    let mut solver = VrmSpringSolver::new(set, &fixture.skeleton).unwrap();
+    solver.set_pose_interpolation(interpolate);
+    let mut world = Pose::default();
+    (0..=(3.0 * fps) as u64)
+        .map(|frame| {
+            let mut pose = motion(fixture, turn, frame as f64 / fps);
+            // Frame 0 only places the hair at rest, so that frame `k` has run exactly the sub-steps up to its time at
+            // every rate, and each sub-step sees the pose of the time it ends at (or a blend towards it).
+            let dt = if frame == 0 { 0.0 } else { 1.0 / fps as f32 };
+            solver.step(Tick { dt, ..Tick::at_rate(frame, fps as f32) }, &fixture.skeleton, &mut pose);
+            fixture.skeleton.world_pose(&pose, &mut world);
+            tips.iter().map(|&t| world.local[t].translation).collect()
+        })
+        .collect()
+}
+
+/// The worst and root-mean-square distance of the tips at `fps` from where a 120 fps run has them at the same times.
+fn tip_error(fixture: &Fixture, set: &SpringSet, turn: bool, fps: f64, interpolate: bool) -> (f32, f32) {
+    let truth = tip_track(fixture, set, turn, 120.0, false);
+    let every = (120.0 / fps) as usize;
+    let track = tip_track(fixture, set, turn, fps, interpolate);
+    let distances: Vec<f32> = track
+        .iter()
+        .enumerate()
+        .flat_map(|(frame, tips)| tips.iter().zip(&truth[frame * every]).map(|(a, b)| a.distance(*b)))
+        .collect();
+    let rms = (distances.iter().map(|d| d * d).sum::<f32>() / distances.len() as f32).sqrt();
+    (distances.iter().copied().fold(0.0, f32::max), rms)
+}
+
+/// #79's measurement, recorded in the module docs: interpolating the animated pose across a frame's sub-steps brings
+/// the hair of a 30 fps (or 60 fps) run close to a 120 fps run's, where holding it leaves the swing a frame behind.
+#[test]
+fn interpolating_the_pose_brings_low_frame_rates_close_to_120_fps() {
+    let (fixture, ids) = Fixture::hair(3, 4);
+    let set = set_of(chains_of(&ids, windy()), vec![]);
+    for turn in [false, true] {
+        for fps in [30.0, 60.0] {
+            let (held, held_rms) = tip_error(&fixture, &set, turn, fps, false);
+            let (lerped, lerped_rms) = tip_error(&fixture, &set, turn, fps, true);
+            println!(
+                "{} at {fps} fps: held {:.1} mm (rms {:.1}), interpolated {:.1} mm (rms {:.1})",
+                if turn { "head turn" } else { "walk and sway" },
+                held * 1e3,
+                held_rms * 1e3,
+                lerped * 1e3,
+                lerped_rms * 1e3
+            );
+            assert!(lerped * 5.0 < held, "interpolation should cut the worst error clearly: {lerped} vs {held}");
+            assert!(lerped < 2e-3, "interpolated tips are {lerped} m from the 120 fps run");
+        }
+    }
+}
+
+/// With interpolation on, the solver still computes the spec's numbers: the oracle, fed the same blended pose for
+/// each sub-step, agrees at every frame rate (60 fps and below interpolate; above, a frame has at most one sub-step).
+#[test]
+fn interpolated_sub_steps_match_the_spec_fed_the_same_blend() {
+    let (fixture, ids) = Fixture::hair(2, 4);
+    let mut chains = chains_of(&ids, windy());
+    chains[1].center = Some(fixture.hips);
+    let set = set_of(chains, vec![]);
+    let skeleton = &fixture.skeleton;
+    let blend = |from: &Pose, to: &Pose, t: f32| {
+        let mut pose = to.clone();
+        for (out, (a, b)) in pose.local.iter_mut().zip(from.local.iter().zip(&to.local)) {
+            *out = Transform {
+                translation: a.translation.lerp(b.translation, t),
+                rotation: a.rotation.slerp(b.rotation, t),
+            };
+        }
+        pose
+    };
+    for fps in [30.0, 50.0, 60.0] {
+        let mut solver = VrmSpringSolver::new(&set, skeleton).unwrap();
+        solver.set_pose_interpolation(true);
+        let mut oracle = Reference::new(skeleton, &set, &fixture.pose_at(0));
+        let (mut worst, mut world) = (0.0_f64, Pose::default());
+        let mut previous = fixture.pose_at(0);
+        for frame in 0..200 {
+            let input = fixture.pose_at(frame);
+            let mut out = input.clone();
+            solver.step(Tick::at_rate(frame, fps), skeleton, &mut out);
+            let n = solver.stats().substeps;
+            if n == 0 {
+                oracle.hold(&input);
+            }
+            for i in 1..=n {
+                let pose = if frame == 0 || n == 1 || i == n {
+                    input.clone()
+                } else {
+                    blend(&previous, &input, i as f32 / n as f32)
+                };
+                oracle.substep(&pose);
+            }
+            previous = input;
+            skeleton.world_pose(&out, &mut world);
+            for b in ids.iter().flatten() {
+                worst = worst.max(
+                    (world.local[b.index()].translation.as_dvec3() - oracle.world(b.index()).w_axis.truncate())
+                        .length(),
+                );
+            }
+        }
+        assert!(worst < TOLERANCE, "{fps} fps: joints differ from the spec by {worst} m");
+    }
+}
+
+#[test]
+fn interpolation_is_on_by_default_and_leaves_the_incoming_pose_as_given() {
+    let (fixture, ids) = Fixture::hair(1, 4);
+    let set = set_of(chains_of(&ids, windy()), vec![]);
+    let mut lerped = VrmSpringSolver::new(&set, &fixture.skeleton).unwrap();
+    assert!(lerped.pose_interpolation());
+    let mut held = held(&set, &fixture.skeleton);
+    assert!(!held.pose_interpolation());
+    let (mut a, mut b) = (Pose::default(), Pose::default());
+    for frame in 0..30 {
+        a = fixture.pose_at(frame);
+        b = a.clone();
+        held.step(Tick::at_rate(frame, 30.0), &fixture.skeleton, &mut a);
+        lerped.step(Tick::at_rate(frame, 30.0), &fixture.skeleton, &mut b);
+    }
+    let input = fixture.pose_at(29);
+    let hair: Vec<usize> = ids[0].iter().map(|b| b.index()).collect();
+    for bone in (0..fixture.skeleton.len()).filter(|i| !hair.contains(i)) {
+        assert_eq!(b.local[bone], input.local[bone], "bone {bone} is not the pose the caller gave");
+    }
+    assert!(largest_turn(&ids[0], &a, &b) > 1e-3, "interpolation changed nothing");
 }

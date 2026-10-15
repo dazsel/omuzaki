@@ -355,7 +355,9 @@ fn a_full_frame_allocates_nothing() {
 }
 
 /// World translations of four bones (the root, its child, the middle and the last bone of an 87-bone rig) at four
-/// frames of the 240-frame run, recorded before the constraint stage existed. Checked within 1e-5 (ADR 0009, joint
+/// frames of the 240-frame run, recorded before the constraint stage existed and re-recorded when the springs began
+/// to interpolate the animated pose across a frame's sub-steps (#79; the hair bones moved by up to 4 mm, the
+/// animated ones not at all). Checked within 1e-5 (ADR 0009, joint
 /// transforms): libm and FMA differ across platforms, so this baseline is not bit-exact. Same-machine bit equality is
 /// covered by `the_same_inputs_give_the_same_bits_over_600_ticks`.
 const PINNED_FRAMES: [u64; 4] = [0, 60, 120, 239];
@@ -365,9 +367,9 @@ const PINNED_BONES: [usize; 4] = [0, 1, 43, 86];
 #[rustfmt::skip]
 const PINNED:[[[f32; 3]; 4]; 4] = [
     [[0.0, 1.0, 0.1], [0.0, 1.1, 0.1], [-0.099812, 1.004964, 0.084052], [-0.014463, 0.969203, 0.042957]],
-    [[-0.174315, 1.0, -0.098999], [-0.174315, 1.1, -0.098999], [-0.270631, 1.021725, -0.209813], [-0.144640, 0.965800, -0.265387]],
-    [[0.170920, 1.0, 0.096017], [0.170920, 1.1, 0.096017], [0.084921, 1.018171, -0.003902], [0.208903, 0.957913, -0.066230]],
-    [[-0.170634, 1.0, 0.081598], [-0.170634, 1.1, 0.081598], [-0.303061, 1.026121, 0.080870], [-0.276370, 0.953423, 0.024879]],
+    [[-0.174315, 1.0, -0.098999], [-0.174315, 1.1, -0.098999], [-0.270698, 1.021774, -0.209964], [-0.142570, 0.965120, -0.264870]],
+    [[0.170920, 1.0, 0.096017], [0.170920, 1.1, 0.096017], [0.085329, 1.017467, -0.002901], [0.209898, 0.958196, -0.067614]],
+    [[-0.170634, 1.0, 0.081598], [-0.170634, 1.1, 0.081598], [-0.302548, 1.025914, 0.080473], [-0.275975, 0.952389, 0.028502]],
 ];
 
 #[test]
