@@ -517,23 +517,22 @@ fn the_front_silhouette_has_no_step_at_any_junction_on_any_template_or_preset() 
 }
 
 /// The live mesh (what viewers see while streaming, with half the rings) holds the ankle to the same turn as the
-/// offline one.
+/// offline one, on the ten presets and the 32 corners of the shape cube: a corner's shin can end outside the foot's dome,
+/// where a coarse end cap would cut across it.
 #[test]
 fn the_live_ankle_turns_no_more_than_the_offline_limit() {
     let limit = FRONT_LIMITS.iter().find(|l| l.0 == "ankle").unwrap().1;
+    let shapes: Vec<(String, BodyShape)> = shape::presets()
+        .unwrap()
+        .iter()
+        .map(|p| (p.id.as_str().to_string(), p.shape.clone()))
+        .chain(shape_cube_corners())
+        .collect();
     for template in registry::templates() {
-        for preset in shape::presets().unwrap() {
-            let turn = junction_turns(template.id(), &preset.shape, Detail::LIVE)
-                .into_iter()
-                .find(|j| j.0 == "ankle")
-                .unwrap()
-                .1;
-            assert!(
-                turn <= limit,
-                "{} {}: the live ankle turns {turn:.1} degrees (limit {limit})",
-                template.id(),
-                preset.id.as_str()
-            );
+        for (name, shape) in &shapes {
+            let turn =
+                junction_turns(template.id(), shape, Detail::LIVE).into_iter().find(|j| j.0 == "ankle").unwrap().1;
+            assert!(turn <= limit, "{} {name}: the live ankle turns {turn:.1} degrees (limit {limit})", template.id());
         }
     }
 }

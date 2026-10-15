@@ -11,7 +11,8 @@
 //! of its lowest rings is then dilated over the foot's dome ([`fill_ankle`]), so the shin runs into the foot as one arc,
 //! not a stub sitting on a dome with a waist between. The shin's width is measured to the outer edge, so it lands on
 //! the dome's widest point whether or not the leg's and foot's centres share an x; a step there reads as a notch on the
-//! Live mesh, whose end cap is a coarse bevel.
+//! Live mesh, whose end cap is a coarse bevel. The rings therefore go on down the dome's lower outline past its widest
+//! point, so the cap starts inside the foot and never cuts across the dome.
 //!
 //! **Hip.** Between the pelvis and the thighs the template's outline can dip (a thigh narrower at its top than the pelvis
 //! above it). [`fill_hip`] bridges the dip with a smooth arc, so the silhouette runs from the pelvis into the thigh.
@@ -36,6 +37,10 @@ const ROOT_TAPER: f64 = 0.4;
 const ANKLE_RHO: f64 = 0.11;
 /// Points taken round each of the foot's cross-sections to find its dome.
 const DOME_SAMPLES: usize = 24;
+/// How far round the widest section's lower half the leg follows the dome, as an angle from its widest point.
+const DOME_TAIL: f64 = 1.0;
+/// The narrowest a ring on the dome's lower outline gets, as a fraction of the widest section's half-width.
+const MIN_TAIL: f64 = 0.05;
 /// How far above the foot's top the leg's rings are dilated, in arc radii.
 const ANKLE_ZONE: f64 = 0.5;
 
@@ -194,8 +199,9 @@ fn on_left(ring: &mut Ring, mirrored: bool, f: impl FnOnce(&mut Ring)) {
 }
 
 /// The rings that lead down from the end of a leg, ordered downwards: the shin keeps going straight down into the
-/// foot, its width following a cubic Hermite curve that leaves the leg's last ring at the shin's own slope (taken from
-/// its last two rings) and arrives vertical at the width of the foot's widest section, where the foot's own outline is
+/// foot (the last `count.div_ceil(4)` of the `count` rings go on down the dome's lower outline, a quarter ellipse of the
+/// widest section), its width following a cubic Hermite curve that leaves the leg's last ring at the shin's own slope
+/// (taken from its last two rings) and arrives vertical at the width of the foot's widest section, where the foot's own outline is
 /// vertical. The shin's outline then runs into the foot's as one smooth arc. `side` is +1 for the left leg and -1 for the
 /// right: the edge that has to meet the dome is the outer one, so the width is measured to it. Nothing if the foot's widest
 /// section is not below the leg's end.
@@ -217,16 +223,33 @@ fn grow_ankle(leg: &[Ring], foot: &[Ring], count: usize, side: f64) -> Vec<Ring>
     };
     // The width that puts the shin's outer edge on the dome's widest point: the two centres need not share an x.
     let end_width = widest.radii.x + side * (widest.centre.x - (last.centre.x + last.axis.x * length));
-    (1..=count)
-        .map(|k| {
-            let s = fraction(k, count);
-            let (s2, s3) = (s * s, s * s * s);
-            let width = last.radii.x * (2.0 * s3 - 3.0 * s2 + 1.0)
-                + slope * length * (s3 - 2.0 * s2 + s)
-                + end_width * (3.0 * s2 - 2.0 * s3);
-            Ring { centre: last.centre + last.axis * (s * length), radii: DVec2::new(width, last.radii.y), ..*last }
-        })
-        .collect()
+    let drop = (widest.across.y * widest.radii.x).hypot(widest.through.y * widest.radii.y);
+    // The tail takes a quarter of the rings, so the leg's triangle count stays what it was.
+    let tail = if drop > 1e-9 { count.div_ceil(4).min(count.saturating_sub(1)) } else { 0 };
+    let reach = count - tail;
+    let upper = (1..=reach).map(|k| {
+        let s = fraction(k, reach);
+        let (s2, s3) = (s * s, s * s * s);
+        let width = last.radii.x * (2.0 * s3 - 3.0 * s2 + 1.0)
+            + slope * length * (s3 - 2.0 * s2 + s)
+            + end_width * (3.0 * s2 - 2.0 * s3);
+        Ring { centre: last.centre + last.axis * (s * length), radii: DVec2::new(width, last.radii.y), ..*last }
+    });
+    // Then on down the dome's lower outline, a quarter ellipse as wide as the widest section and as deep as its height,
+    // so the leg's end cap starts inside the foot and a coarse Live bevel never cuts across the dome.
+    let dome = (1..=tail).map(move |k| {
+        let angle = fraction(k, tail) * DOME_TAIL;
+        let (sin, cos) = angle.sin_cos();
+        Ring {
+            centre: last.centre + last.axis * (length + drop * sin / last.axis.y.abs()),
+            radii: DVec2::new(
+                (end_width - widest.radii.x * (1.0 - cos)).max(MIN_TAIL * widest.radii.x),
+                last.radii.y * cos,
+            ),
+            ..*last
+        }
+    });
+    upper.chain(dome).collect()
 }
 
 /// Appends [`grow_ankle`]'s rings to both legs.
