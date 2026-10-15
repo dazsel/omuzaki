@@ -45,6 +45,21 @@ pub fn build_script_emits(source: &str) -> bool {
             && toks[at + 1..to].starts_with_emit_call()
             // A statement starts after the body's `{`, a `;` or a block's `}`; `|| emit()` or `#[cfg(..)] emit()` do not.
             && (at == from || toks[at - 1].is_punct(';') || toks[at - 1].is_punct('}'))
+            && !can_leave_main(&toks[from..at])
+    })
+}
+
+/// Whether any of these tokens, at any depth, could end `main` before the statement that follows them: `return`, `?`,
+/// `exit(` (`process::exit`), or `panic!`, `unreachable!`, `todo!` or `unimplemented!`. A build script that leaves early
+/// leaves a stale `link_calls.rs` behind.
+fn can_leave_main(before: &[Token]) -> bool {
+    before.iter().enumerate().any(|(at, token)| {
+        let next = before.get(at + 1);
+        token.is_punct('?')
+            || token.is_ident("return")
+            || (token.is_ident("exit") && next.is_some_and(|t| t.is_punct('(')))
+            || (["panic", "unreachable", "todo", "unimplemented"].iter().any(|m| token.is_ident(m))
+                && next.is_some_and(|t| t.is_punct('!')))
     })
 }
 
@@ -63,25 +78,27 @@ impl EmitCall for [Token] {
     }
 }
 
-/// Whether the crate root's `define_link!` invocation contains `include!(concat!(env!("OUT_DIR"), "/link_calls.rs"))`
-/// unconditionally.
+/// Whether the crate root's only `define_link!` is `define_link! { include!(concat!(env!("OUT_DIR"),
+/// "/link_calls.rs")); }` and nothing else.
 ///
-/// Unconditional means: the invocation is at the top level of the root file (not inside a `mod`, a function or a
-/// macro body, where it would not define the exported `link()`), no attribute sits on it or anywhere inside it, and the
-/// include is a direct item of the invocation, not inside a block, closure or `if`.
+/// The file has exactly one `define_link!`, at its top level (not in a `mod`, function or any other item) with no
+/// attribute on it, so it defines the exported `link()`. Its contents are the bare include and an optional `;`:
+/// nothing else at all, so a closure, a block or a condition around the include cannot hide it.
 pub fn library_includes_generated(source: &str) -> bool {
     let toks = tokens(source);
     let depth = depths(&toks);
-    (0..toks.len()).any(|at| {
-        depth[at] == 0
-            && toks[at].is_ident("define_link")
-            && toks.get(at + 1).is_some_and(|t| t.is_punct('!'))
-            && !attribute_before(&toks, at)
-            && group_at(&toks, at + 2).is_some_and(|(from, to)| {
-                let inside = &toks[from..to];
-                !inside.iter().any(|t| t.is_punct('#')) && includes_at_top_level(inside)
-            })
-    })
+    let invocations: Vec<usize> = (0..toks.len())
+        .filter(|&at| toks[at].is_ident("define_link") && toks.get(at + 1).is_some_and(|t| t.is_punct('!')))
+        .collect();
+    let [at] = invocations[..] else { return false };
+    depth[at] == 0
+        && !attribute_before(&toks, at)
+        && group_at(&toks, at + 2).is_some_and(|(from, to)| {
+            let inside = &toks[from..to];
+            is_bare_include(inside)
+                && matches!(inside.len(), 15 | 16)
+                && (inside.len() == 15 || inside[15].is_punct(';'))
+        })
 }
 
 /// Whether the tokens before the path that ends at `at` end an attribute (`#[cfg(...)]`).
@@ -92,23 +109,6 @@ fn attribute_before(toks: &[Token], at: usize) -> bool {
         start -= 3;
     }
     start > 0 && toks[start - 1].is_punct(']')
-}
-
-/// Whether `inside` has, at nesting depth zero, exactly `include!(concat!(env!("OUT_DIR"), "/link_calls.rs"));`.
-fn includes_at_top_level(inside: &[Token]) -> bool {
-    let mut depth = 0usize;
-    for (at, token) in inside.iter().enumerate() {
-        match token.tok {
-            Tok::Punct('{' | '(' | '[') => depth += 1,
-            Tok::Punct('}' | ')' | ']') => depth = depth.saturating_sub(1),
-            _ => {}
-        }
-        let starts_item = at == 0 || inside[at - 1].is_punct(';') || inside[at - 1].is_punct('}');
-        if depth == 0 && starts_item && token.is_ident("include") && is_bare_include(&inside[at..]) {
-            return true;
-        }
-    }
-    false
 }
 
 /// Whether the tokens start with `include ! ( concat ! ( env ! ( "OUT_DIR" ) , "/link_calls.rs" ) )`, optionally
@@ -176,11 +176,37 @@ mod tests {
             "{ omuzaki_link_build::emit(); }",
             "#[cfg(any())]\n    omuzaki_link_build::emit();",
             "let f = |_| omuzaki_link_build::emit();",
+            "if skip() { return; }\n    omuzaki_link_build::emit();",
+            "check()?;\n    omuzaki_link_build::emit();",
+            "if skip() { std::process::exit(0); }\n    omuzaki_link_build::emit();",
+            "if skip() { panic!(\"no\"); }\n    omuzaki_link_build::emit();",
+            "todo!();\n    omuzaki_link_build::emit();",
         ] {
             assert!(!build_script_emits(&format!("fn main() {{\n    {body}\n}}\n")), "{body}");
         }
+        // Work before `emit()` is fine as long as it cannot leave `main`.
         assert!(build_script_emits("fn main() {\n    println!(\"x\");\n    omuzaki_link_build::emit();\n}\n"));
         assert!(!build_script_emits("mod m { fn main() { omuzaki_link_build::emit(); } }\nfn other() {}\n"));
+    }
+
+    #[test]
+    fn exactly_one_define_link_with_only_the_include_counts() {
+        let include = "include!(concat!(env!(\"OUT_DIR\"), \"/link_calls.rs\"))";
+        assert!(library_includes_generated(&format!("omuzaki_core::define_link! {{ {include}; }}\n")));
+        assert!(library_includes_generated(&format!("omuzaki_core::define_link! {{ {include} }}\n")));
+        for other in [
+            // A disabled nested definition beside an empty root one.
+            format!(
+                "#[cfg(any())]\nmod off {{ omuzaki_core::define_link! {{ {include}; }} }}\nomuzaki_core::define_link!();\n"
+            ),
+            // The root one is wired but a second definition exists.
+            format!("omuzaki_core::define_link! {{ {include}; }}\nmod m {{ omuzaki_core::define_link!(); }}\n"),
+            format!("omuzaki_core::define_link! {{ {include}; other::link(); }}\n"),
+            format!("omuzaki_core::define_link! {{ let _ = || {include}; }}\n"),
+            format!("omuzaki_core::define_link! {{ {include}; {include}; }}\n"),
+        ] {
+            assert!(!library_includes_generated(&other), "{other}");
+        }
     }
 
     #[test]
