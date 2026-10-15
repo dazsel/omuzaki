@@ -175,6 +175,13 @@ pub(crate) struct GpuMaterial {
 }
 
 impl GpuMaterial {
+    /// Whether an instance drawn with this material gets an outline hull: the one rule the outline pass, the dynamic
+    /// refresh and the morph pool share. A hull of no thickness would still leave a hairline where its back faces meet
+    /// the front ones at the silhouette, so a 0-wide outline is none.
+    pub(crate) fn draws_outline(&self) -> bool {
+        self.material.outline.is_some_and(|outline| outline.width > 0.0)
+    }
+
     /// Builds the uniform and bind group for `material`, whose textures the caller has checked are live.
     pub(crate) fn create(shared: &Shared, textures: &Arena<GpuTexture>, material: &Material) -> Self {
         use wgpu::util::DeviceExt;
