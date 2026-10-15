@@ -107,7 +107,7 @@ How our code may relate to other people's code, from most to least common:
 ## Adding anything new
 
 1. **Read the licence at the primary source:** the LICENSE file, the model card or the service terms. For a model, check three things: the weights licence, the training data and the runtime dependencies.
-2. **Add or update its row in `register.md` in the same PR.** If a verdict needs judgement, research it and record the sources.
+2. **Add or update its file in `docs/licensing/deps/` in the same PR.** If a verdict needs judgement, research it and record the sources.
 3. **For crates, `cargo deny check` must pass** (`deny.toml`). A change to `deny.toml` (allow list, exceptions, bans) needs a maintainer's review, with a register row.
 4. **Nothing `unverified` merges into a shippable path.**
 5. **For services, record the plan tier and the output-ownership clause** in the asset's provenance.

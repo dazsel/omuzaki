@@ -1,0 +1,6 @@
+section = "models"
+item = "FLUX.1 [schnell]"
+kind = "model"
+used_for = "image generation"
+status = "yes"
+audit = "B6"

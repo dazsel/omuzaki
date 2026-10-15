@@ -1,0 +1,6 @@
+section = "models"
+item = "git-lfs"
+kind = "tool"
+used_for = "not used; evaluated for binaries (git.md section 4)"
+status = "yes"
+condition = "MIT, copyright GitHub, Inc. and Git LFS contributors (`LICENSE.md`, read 2026-10-13); if ever used it would be the person's own install, as a separate program"

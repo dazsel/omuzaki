@@ -1,0 +1,7 @@
+section = "models"
+item = "OpenAI image API (`gpt-image` family)"
+kind = "service"
+used_for = "CN-06 hosted image adapter candidate"
+status = "unverified"
+condition = "output: secondary only (business terms of May 2025 reportedly assign Output to the customer \"to the extent permitted by applicable law\"); governing agreement for a plain API account, retention and use policy unread (docs/research/2026-10-hosted-image-apis.md)"
+audit = "CN-06"

@@ -1,0 +1,7 @@
+section = "rust"
+item = "cpal"
+kind = "crate"
+used_for = "audio I/O"
+status = "conditions"
+condition = "`asio` feature banned"
+audit = "B4"

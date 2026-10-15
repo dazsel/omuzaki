@@ -1,0 +1,8 @@
+section = "rust"
+item = "Skia and tiny-skia ports in `omuzaki-face/src/raster` (`scan`, `geom`, `stroke/`, `hairline`)"
+kind = "code"
+used_for = "the CPU face rasteriser: ports of Skia's analytic edge walking, stroker and hairlines (through tiny-skia's port), so it draws what the canvas draws"
+status = "yes"
+condition = "BSD-3-Clause: the copyright notices are in each file's header and the full text in `crates/omuzaki-face/src/raster/NOTICES.md`; ship that file with the licences screen"
+audit = "(Skia: Google, The Android Open Source Project; tiny-skia: Yevhenii Reizner)"
+paths = ["crates/omuzaki-face/src/raster/NOTICES.md"]

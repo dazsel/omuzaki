@@ -1,0 +1,8 @@
+section = "rust"
+item = "three.js ACES filmic tone-map constants (`aces` in `omuzaki-render/src/shader/post_resolve.wgsl`)"
+kind = "code"
+used_for = "the GPU resolve pass's tone curve (Stephen Hill's fit as three.js has it)"
+status = "conditions"
+condition = "MIT via three.js: notice in `crates/omuzaki-render/src/shader/NOTICES.md`; confirm the Hill fit's own MIT terms from the BakingLab source"
+audit = "(three 0.170.0 LICENSE)"
+paths = ["crates/omuzaki-render/src/shader/NOTICES.md"]

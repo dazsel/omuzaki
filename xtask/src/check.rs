@@ -13,6 +13,7 @@ use crate::crate_table;
 use crate::error::Result;
 use crate::links;
 use crate::lint_deps;
+use crate::lint_licences;
 use crate::lint_registers;
 use crate::lint_seed;
 use crate::lint_ui_writes;
@@ -75,6 +76,8 @@ enum Action {
     LintLinks,
     /// The `registers` flag lint (ADR 0054), run in this process.
     LintRegisters,
+    /// The licence-file lint (ADR 0053 §3), run in this process.
+    LintLicences,
     /// The UI-writes lint (QG-11), run in this process.
     LintUiWrites,
     /// The crate-table lint (ADR 0053), run in this process.
@@ -99,6 +102,7 @@ impl Step {
             Action::LintDeps => "lint-deps".to_owned(),
             Action::LintLinks => "lint-links".to_owned(),
             Action::LintRegisters => "lint-registers".to_owned(),
+            Action::LintLicences => "lint-licences".to_owned(),
             Action::LintUiWrites => "lint-ui-writes".to_owned(),
             Action::LintCrateTable => "lint-crate-table".to_owned(),
             Action::LintSeed => "lint-seed".to_owned(),
@@ -137,6 +141,7 @@ fn plan(scope: &Scope) -> Vec<Step> {
         Step { name: "lint-deps", action: Action::LintDeps },
         Step { name: "lint-links", action: Action::LintLinks },
         Step { name: "lint-registers", action: Action::LintRegisters },
+        Step { name: "lint-licences", action: Action::LintLicences },
         Step { name: "lint-ui-writes", action: Action::LintUiWrites },
         Step { name: "lint-crate-table", action: Action::LintCrateTable },
         Step { name: "lint-seed", action: Action::LintSeed },
@@ -282,6 +287,7 @@ fn run_step(workspace: &Workspace, step: &Step, base: &str) -> bool {
             eprintln!("lint-registers: {error}");
             false
         }),
+        Action::LintLicences => lint_licences::report(workspace),
         Action::LintUiWrites => lint_ui_writes::report(workspace).unwrap_or_else(|error| {
             eprintln!("lint-ui-writes: {error}");
             false
@@ -328,6 +334,7 @@ mod tests {
             Action::LintDeps => "<lint-deps>".to_owned(),
             Action::LintLinks => "<lint-links>".to_owned(),
             Action::LintRegisters => "<lint-registers>".to_owned(),
+            Action::LintLicences => "<lint-licences>".to_owned(),
             Action::LintUiWrites => "<lint-ui-writes>".to_owned(),
             Action::LintCrateTable => "<lint-crate-table>".to_owned(),
             Action::LintSeed => "<lint-seed>".to_owned(),
@@ -352,6 +359,7 @@ mod tests {
                 ("lint-deps", "<lint-deps>".to_owned()),
                 ("lint-links", "<lint-links>".to_owned()),
                 ("lint-registers", "<lint-registers>".to_owned()),
+                ("lint-licences", "<lint-licences>".to_owned()),
                 ("lint-ui-writes", "<lint-ui-writes>".to_owned()),
                 ("lint-crate-table", "<lint-crate-table>".to_owned()),
                 ("lint-seed", "<lint-seed>".to_owned()),
@@ -372,7 +380,7 @@ mod tests {
                 ("link-gate", "test -p omuzaki-cli --test registrations".to_owned()),
             ]
         );
-        assert_eq!(got.len(), 11, "the same trailing steps as ever: {got:?}");
+        assert_eq!(got.len(), 12, "the same trailing steps as ever: {got:?}");
     }
 
     #[test]
@@ -408,6 +416,7 @@ mod tests {
                 "lint-deps",
                 "lint-links",
                 "lint-registers",
+                "lint-licences",
                 "lint-ui-writes",
                 "lint-crate-table",
                 "lint-seed"

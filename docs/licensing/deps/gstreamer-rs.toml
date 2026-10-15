@@ -1,0 +1,7 @@
+section = "rust"
+item = "gstreamer-rs + GStreamer base/good"
+kind = "crate+native"
+used_for = "alternative pipeline"
+status = "conditions"
+condition = "LGPL dynamic; pick one of FFmpeg or GStreamer"
+audit = "B4"

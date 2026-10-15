@@ -3,6 +3,7 @@
 //! - `lint-deps`: enforce the crate layering table (`crates/README.md`).
 //! - `lint-links`: enforce the `link()` wiring that keeps self-registrations in binaries (ADR 0015).
 //! - `lint-registers`: a crate that registers sets `registers = true`, which Apps generate their `link()` calls from (ADR 0054).
+//! - `lint-licences`: one licence file per dependency, tool and asset; `--print` prints the register made from them.
 //! - `lint-ui-writes`: UI code changes the document only through the `Runner` (QG-11).
 //! - `lint-seed`: a published seed version keeps its content, and no seed item names private material (library D15, D16).
 //! - `lint-crate-table`: every crate describes itself in its manifest, and `crates/README.md` has no crate table (ADR 0053).
@@ -17,6 +18,7 @@ mod crate_table;
 mod error;
 mod links;
 mod lint_deps;
+mod lint_licences;
 mod lint_registers;
 mod lint_seed;
 mod lint_ui_writes;
@@ -50,6 +52,8 @@ enum Command {
     LintLinks,
     /// Fail on a crate that makes a registration without `registers = true` in its manifest (ADR 0054).
     LintRegisters,
+    /// Fail on a dependency, tool or asset in use without a file in `docs/licensing/deps/`, or an orphaned file.
+    LintLicences(lint_licences::LintLicencesArgs),
     /// Fail on UI code that changes the document outside the `Runner` (QG-11).
     LintUiWrites,
     /// Fail on a published seed version whose content changed without a bump, or a seed item that names private material.
@@ -60,7 +64,8 @@ enum Command {
     CrateTable,
     /// Print every self-registration in the source (or, with `--app`, those a binary must contain), one per line.
     Registry(links::RegistryArgs),
-    /// Run fmt, clippy, tests, cargo-deny, lint-deps, lint-links, lint-registers and lint-ui-writes on the crates a change affects, through the build
+    /// Run fmt, clippy, tests, cargo-deny, lint-deps, lint-links, lint-registers, lint-licences and lint-ui-writes on the crates a change
+    /// affects, through the build
     /// queue.
     Check(check::CheckArgs),
     /// Pack the Windows zip: omuzaki.exe, the models, the notices (and the ONNX Runtime DLL), deterministically.
@@ -96,6 +101,7 @@ fn run(cli: &Cli) -> Result<ExitCode> {
         Command::LintDeps => Ok(lint_deps::run(&workspace)),
         Command::LintLinks => links::run(&workspace),
         Command::LintRegisters => lint_registers::run(&workspace),
+        Command::LintLicences(args) => Ok(lint_licences::run(&workspace, args)),
         Command::LintUiWrites => lint_ui_writes::run(&workspace),
         Command::LintSeed(args) => lint_seed::run(&workspace, args),
         Command::LintCrateTable => crate_table::lint(&workspace),
