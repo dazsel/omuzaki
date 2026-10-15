@@ -7,13 +7,16 @@
 mod english;
 mod messages;
 mod registered;
+mod translations;
 
 use std::collections::BTreeSet;
 
+use crate::registry::Resource;
 pub use english::english_current;
 use fluent_syntax::ast::{CallArguments, Expression, InlineExpression, Pattern, PatternElement};
 pub use messages::{messages, prefixes};
 pub use registered::registered;
+pub use translations::translations;
 
 /// Every variable a Fluent pattern references (`$name`), in placeables and selectors, at any depth. The translations
 /// check uses it too, so both checks agree on what a placeable is.
@@ -65,6 +68,11 @@ fn collect_call<'s>(arguments: &CallArguments<&'s str>, names: &mut BTreeSet<&'s
     for named in &arguments.named {
         collect_inline(&named.value, names);
     }
+}
+
+/// The registered `Resource`s of `package` (from `inventory`), for `check_crate!`.
+pub fn resources(package: &str) -> Vec<Resource> {
+    inventory::iter::<Resource>.into_iter().filter(|resource| resource.package == package).copied().collect()
 }
 
 /// One problem a check found: which check, which id, and what to fix.
