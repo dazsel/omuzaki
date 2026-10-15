@@ -13,12 +13,15 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+#[path = "common/palette_facts.rs"]
+mod palette_facts;
+
 use omuzaki_char::builder::PartSource::{Built, Cached};
 use omuzaki_char::builder::{BuildTimings, CachingBuilder};
 use omuzaki_char_api::{
     Anchor, AnchorId, AnchorsFact, Attach, AttachOffset, BrushFalloff, BuildCtx, BuildError, BuildOptions,
     BuildServices, BuiltCharacter, CharId, CharacterBuilder, CharacterDef, CollidersFact, ContentHash, DynamicMesh,
-    FitFact, HeadFact, JointRef, MaterialName, MaterialSpec, MeshData, PartCategory, PartDef, PartId, PartKind,
+    FitFact, HeadFact, JointRef, Last, MaterialName, MaterialSpec, MeshData, PartCategory, PartDef, PartId, PartKind,
     PartKindId, PartMesh, PartMeta, PartOutput, PartRuntime, PoseSource, Publishes, Quality, RecolourCtx, Recoloured,
     RegistryBuilder, RuntimeCost, StepCtx, TextureData, TextureName, VariantId, VariantSet, WeightBrush, find_kind,
     resolve_variant,
@@ -735,6 +738,118 @@ fn signature(b: &BuiltCharacter) -> Vec<(&'static str, u64)> {
         ("report", digest(&b.report)),
         ("runtimes", digest(&runtimes)),
     ]
+}
+
+// ------------------------------------------------------------------------------------------------ facts and the palette
+
+omuzaki_char_api::fact! {
+    /// A byte a part publishes: constant, or (on purpose, to be refused) a channel of a palette colour.
+    pub NoteFact = "t-note", Last<u8>;
+}
+omuzaki_char_api::register_fact!(NoteFact);
+
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+struct NoterParams {
+    /// Publish the red channel of `tint` instead of 7: a fact that depends on the palette.
+    from_palette: bool,
+    tint: ColourRef,
+}
+
+impl Default for NoterParams {
+    fn default() -> Self {
+        Self { from_palette: false, tint: ColourRef::slot_or("outfit", ColourRef::rgb(200, 200, 200)) }
+    }
+}
+
+impl Validate for NoterParams {
+    fn check(&self, _: &mut Check) {}
+}
+
+/// Publishes a [`NoteFact`] and names a palette slot (so a palette change rebuilds it), without a recolour.
+struct Noter;
+
+impl PartKind for Noter {
+    type Params = NoterParams;
+
+    fn meta() -> PartMeta {
+        PartMeta { id: "t-noter", summary: "Publishes a note.", category: PartCategory::Accessory, requires: &[] }
+    }
+
+    fn build(params: &NoterParams, ctx: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
+        let tint = ctx.colour(&params.tint)?;
+        let note = if params.from_palette { tint.r } else { 7 };
+        Ok(PartOutput { publishes: Publishes::default().with::<NoteFact>(note), ..PartOutput::default() })
+    }
+}
+omuzaki_char_api::register_part_kind!(Noter);
+
+/// Reads the [`NoteFact`] into its report: a stale view shows in the report of a cached build.
+struct Reader;
+
+impl PartKind for Reader {
+    type Params = LampParams;
+
+    fn meta() -> PartMeta {
+        PartMeta {
+            id: "t-note-reader",
+            summary: "Reports the note.",
+            category: PartCategory::Accessory,
+            requires: &["t-noter"],
+        }
+    }
+
+    fn build(_: &LampParams, ctx: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
+        Ok(PartOutput {
+            warnings: vec![format!("note {:?}", ctx.published.get::<NoteFact>())],
+            ..PartOutput::default()
+        })
+    }
+}
+omuzaki_char_api::register_part_kind!(Reader);
+
+/// The mock character with a `noter` (publishing from the palette or not), and a `reader` after it.
+fn noted(from_palette: bool) -> CharacterDef {
+    let mut def = mock_character().unwrap();
+    add(&mut def, "noter", "t-noter", 10, json!({ "from_palette": from_palette }));
+    add(&mut def, "reader", "t-note-reader", 40, json!({ "publish": false }));
+    def
+}
+
+#[test]
+fn a_palette_dependent_fact_is_refused_by_the_conformance_check_naming_the_kind_and_the_fact() {
+    let probes = palette_facts::Probes::default().fact::<NoteFact>();
+    let report = palette_facts::check(&noted(true), Some(&["t-noter"]), &probes);
+    let [violation] = report.violations.as_slice() else { panic!("one violation expected: {report:?}") };
+    assert!(violation.contains("kind 't-noter'") && violation.contains("part 'noter'"), "{violation}");
+    assert!(violation.contains("fact 't-note' depends on the palette"), "{violation}");
+
+    // Why the check exists: the reader is keyed on the publisher's geometry, so the cache serves it a stale note.
+    let (options, services) = live();
+    let (builder, mut def) = (CachingBuilder::new(), noted(true));
+    cached(&builder, &def, &options, &services).unwrap();
+    def.palette.0.insert(slot("outfit"), Colour::rgb(9, 8, 7));
+    let stale = cached(&builder, &def, &options, &services).unwrap().0;
+    let fresh = reference(&def, &options, &services).unwrap();
+    assert_ne!(
+        signature(&stale),
+        signature(&fresh),
+        "a palette-dependent fact is served stale: the check must refuse it"
+    );
+}
+
+#[test]
+fn a_palette_independent_fact_gives_the_same_cached_build_after_a_palette_change_and_never_rebuilds_the_reader() {
+    let probes = palette_facts::Probes::default().fact::<NoteFact>();
+    palette_facts::check(&noted(false), Some(&["t-noter", "t-note-reader"]), &probes).assert_independent();
+
+    let (options, services) = live();
+    let (builder, mut def) = (CachingBuilder::new(), noted(false));
+    same_as_reference("first", &builder, &def, &options, &services).unwrap();
+    def.palette.0.insert(slot("outfit"), Colour::rgb(9, 8, 7));
+    let t = same_as_reference("after a palette change", &builder, &def, &options, &services).unwrap();
+    assert!(built(&t).contains("noter"), "the publisher names the slot: {:?}", built(&t));
+    assert!(!built(&t).contains("reader") && !recoloured(&t).contains("reader"), "Q6: the reader is served");
 }
 
 /// A pose that never moves: the simulations here ignore it.

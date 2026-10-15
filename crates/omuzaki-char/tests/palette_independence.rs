@@ -1,0 +1,52 @@
+//! Facts don't depend on the palette: every part kind linked into this binary (the mock kinds the kit characters are made
+//! of) publishes the same facts under two palettes that differ in every slot. The caching builder relies on it (see the
+//! `builder` module doc): it keys a part that reads facts on the geometry of their publishers, not their colours.
+
+// Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
+#[path = "common/palette_facts.rs"]
+mod palette_facts;
+
+use omuzaki_char_api::{CharacterDef, PartDef, PartId, PartKindId};
+use omuzaki_char_mock::mock_character;
+use palette_facts::{Probes, check, check_all};
+use serde_json::json;
+
+/// The kit characters: the mock one, and the real body, head and hair (what the real accessories sit on).
+fn kit_characters() -> Vec<CharacterDef> {
+    let part = |kind: &str| PartDef {
+        kind: PartKindId::new(kind).unwrap(),
+        parent: None,
+        enabled: true,
+        layer: 0,
+        attach: None,
+        params: json!({}),
+    };
+    let mut real = mock_character().unwrap();
+    real.parts.clear();
+    for kind in ["body", "head", "hair"] {
+        real.parts.insert(PartId::new(kind).unwrap(), part(kind));
+    }
+    vec![mock_character().unwrap(), real]
+}
+
+#[test]
+fn every_registered_kind_publishes_the_same_facts_under_any_palette() {
+    omuzaki_char::link();
+    let report = check_all(&kit_characters(), None, &Probes::built_in());
+    report.assert_independent();
+    assert!(report.unprobed.is_empty(), "facts nothing compares (add a probe): {:?}", report.unprobed);
+    assert!(report.unreached.is_empty(), "kinds the check cannot build: {:?}", report.unreached);
+}
+
+#[test]
+fn the_check_reaches_the_kit_characters_parts_and_sees_what_they_publish() {
+    omuzaki_char::link();
+    let kinds = ["mock-body", "mock-head", "mock-hair", "mock-garment"];
+    let report = check(&kit_characters()[0], Some(&kinds), &Probes::default());
+    // With no probes every published fact is unprobed, which shows the body and head do publish and are looked at.
+    assert!(report.unprobed.iter().any(|(kind, _)| kind == "mock-body"), "{:?}", report.unprobed);
+    assert!(report.unprobed.iter().any(|(kind, _)| kind == "mock-head"), "{:?}", report.unprobed);
+    assert!(report.violations.is_empty() && report.unreached.is_empty(), "{report:?}");
+}
