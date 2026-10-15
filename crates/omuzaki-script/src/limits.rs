@@ -1,4 +1,8 @@
 //! The sandbox limits (`docs/design/scripting.md` section 5).
+//!
+//! Open: the nesting depth of data inside a script is bounded only by the operation limit, and a deep enough value
+//! overflows the stack inside Rhai itself; that is tracked in #1877. [`Limits::value_depth`] bounds only what the host
+//! converts.
 
 /// Every limit a run is held to. The fields are public so a caller can tighten one; [`Limits::console`] and
 /// [`Limits::job`] are the two shipped tables.
