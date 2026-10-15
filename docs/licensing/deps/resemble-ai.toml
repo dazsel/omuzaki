@@ -1,0 +1,7 @@
+section = "models"
+item = "Resemble AI (speech-to-speech)"
+kind = "service"
+used_for = "CN-10 hosted voice-conversion candidate"
+status = "unverified"
+condition = "no primary source read (host refused 2026-10-15); a hosted conversion stream is not an ML-14 runtime and needs its own integration design; terms and price unread"
+audit = "research 2026-10-hosted-tts-voice.md"

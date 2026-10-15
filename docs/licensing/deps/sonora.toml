@@ -1,0 +1,7 @@
+section = "rust"
+item = "sonora family 0.2.0 (sonora, sonora-aec3, sonora-agc2, sonora-common-audio, sonora-fft, sonora-ns, sonora-simd)"
+kind = "crate"
+used_for = "echo cancellation candidate for `fx.aec`: pure-Rust port of WebRTC's AEC3 (research 2026-10-echo-cancellation.md, #920)"
+status = "conditions"
+condition = "BSD-3-Clause in all seven manifests (`license = \"BSD-3-Clause\"`, including `sonora-agc2` and `sonora-ns`, which the `sonora` crate compiles even with its gain-control and noise-suppression stages off) and in the repository LICENSE (read 2026-10-15); keep the notice. The repository ships no PATENTS file, so the WebRTC patent grant is not restated: legal review reads it before #1268 ships. Not in a shippable path until #1268 adds it and `cargo deny check` passes"
+audit = "research 2026-10-echo-cancellation.md section 2"
