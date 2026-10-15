@@ -4,7 +4,7 @@
     dispatch-check.py ISSUE [ISSUE ...]    `go #N` or `wait #N: reasons` per task; exit 0 only if all are go
     dispatch-check.py --report             open pull requests by crate and by lane, oldest first
     options: --crate-cap N (default 3), --total-cap N (default 40), --module-cap N (default 3), --module-ceiling N
-    (default 8), --json (for the checks)
+    (default 12), --json (for the checks)
 
 Why a script: conflicts are decided when a task starts, not when it merges (ADR 0053 sections 1.2 and 2.1). The
 Director or the cloud lead runs it once before starting work. Standard library plus `gh`; it only reads GitHub.
@@ -63,7 +63,7 @@ CRATE_NAME = re.compile(r"[A-Za-z0-9_-]+")
 # The crates counted per top-level module (ADR 0062), with the cap per module and the ceiling for the whole crate.
 MODULE_CAPPED = frozenset({"omuzaki-char", "omuzaki-face"})
 MODULE_CAP = 3
-MODULE_CEILING = 8
+MODULE_CEILING = 12
 # The bucket of every file that belongs to no single module: the crate's one shared slot.
 SHARED = "shared"
 # The bucket a fence entry names when it could reach any module (a glob or a folder holding several): every bucket.
