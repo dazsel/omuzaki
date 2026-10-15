@@ -92,7 +92,7 @@ fn a_dynamic_meshes_morphs_follow_its_updated_vertices() {
 // ---- a morphed instance is everything a mesh created at the blended geometry is ----
 
 use omuzaki_render::WgpuRenderer;
-use omuzaki_render_api::{AlphaMode, Image, Light, Outline, ShadowQuality};
+use omuzaki_render_api::{AlphaMode, Image, Light, Outline, ShadowQuality, TargetDesc};
 use omuzaki_render_mock::morph_vertices;
 
 fn plain() -> Quality {
@@ -300,4 +300,33 @@ fn render_the_morph_pictures_when_asked() {
         let body = morphing(Instance::new(cube_mesh, outlined, Mat4::from_translation(Vec3::new(0.0, 0.3, 0.0))));
         save(&format!("outlined-{weight}.ppm"), &draw(&mut r, scene, vec![floor, body], weight));
     }
+}
+
+#[test]
+fn releasing_a_morphed_mesh_gives_back_the_pooled_buffers() {
+    let mut r = support::renderer();
+    let empty = Scene::new(Camera::default());
+    let quality = plain();
+    let target = r.create_target(&TargetDesc { size: UVec2::splat(32), alpha: AlphaEncoding::Straight }).unwrap();
+    r.render(target, &empty, &quality).unwrap();
+    let before = r.stats().gpu_bytes;
+
+    let cube = shapes::cuboid(Vec3::splat(0.3));
+    let mesh = r.create_mesh_with(&cube, &slide_options(&cube, MeshUsage::Static)).unwrap();
+    let mut outlined = Material::unlit(Colour::WHITE);
+    outlined.outline = Some(Outline { colour: Colour::BLACK, width: 0.02 });
+    let material = r.create_material(&outlined).unwrap();
+    let mut scene = Scene::new(Camera::default());
+    scene.instances.push(morphing(Instance::new(mesh, material, Mat4::IDENTITY)));
+    scene.morph_weights.push(0.5);
+    r.render(target, &scene, &quality).unwrap();
+    let with = r.stats().gpu_bytes;
+    // Shape and outline-direction streams, 24 and 12 bytes a vertex, on top of the mesh and material themselves.
+    let pooled = (cube.positions.len() * (24 + 12)) as u64;
+    assert!(with >= before + pooled, "the pool's buffers are counted: {before} then {with}");
+
+    r.release(mesh.into()).unwrap();
+    r.release(material.into()).unwrap();
+    r.render(target, &empty, &quality).unwrap();
+    assert_eq!(r.stats().gpu_bytes, before, "releasing the mesh frees the pooled buffers with it");
 }

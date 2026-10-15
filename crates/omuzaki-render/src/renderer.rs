@@ -347,7 +347,12 @@ impl Renderer for WgpuRenderer {
         // The handle dies now. Dropping the wgpu objects frees them once the queue is done with them, which is the
         // deferred release the contract describes: a frame in flight keeps what it uses alive.
         match resource {
-            ResourceRef::Mesh(id) => resources.meshes.remove(id.index(), id.generation()).map(drop).ok_or_else(unknown),
+            ResourceRef::Mesh(id) => {
+                let removed = resources.meshes.remove(id.index(), id.generation()).map(drop).ok_or_else(unknown);
+                // The pooled morph streams sized for the mesh go with it.
+                resources.morphs.forget(id.index(), id.generation());
+                removed
+            }
             ResourceRef::Material(id) => {
                 resources.materials.remove(id.index(), id.generation()).map(drop).ok_or_else(unknown)
             }

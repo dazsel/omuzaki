@@ -78,7 +78,8 @@ impl Resources {
             + self.textures.iter().map(|t| t.bytes).sum::<u64>()
             + self.materials.iter().map(|_| material::UNIFORM_BYTES).sum::<u64>()
             + self.targets.iter().map(GpuTarget::bytes).sum::<u64>()
-            + self.environments.iter().map(|e| e.bytes).sum::<u64>();
+            + self.environments.iter().map(|e| e.bytes).sum::<u64>()
+            + self.morphs.bytes();
         // Counts are bounded by memory long before they reach u32::MAX.
         #[allow(clippy::cast_possible_truncation)]
         ResourceStats {

@@ -14,7 +14,9 @@
 //! **What follows the blend**, as it does for [`update_vertices`](crate::Renderer::update_vertices): the slot's bounds
 //! (shadow fitting and the transparent sort read them in place of the mesh's) are refitted whenever it re-blends, and
 //! for an instance whose material outlines, its smooth normals are re-welded from the blended vertices with the mesh's
-//! weld table, so the hull follows the morph without a second weld.
+//! weld table, so the hull follows the morph without a second weld. As for a dynamic mesh, those welds are the ones
+//! found at creation: a morph that pulls a seam apart or brings two points together does not change which vertices
+//! share an outline direction.
 
 use omuzaki_core::glam::Vec3;
 use omuzaki_render_api::{Instance, MorphSet, RenderError, Scene};
@@ -188,6 +190,22 @@ pub(crate) struct MorphPool {
 impl MorphPool {
     fn active(&self, instance: u32) -> Option<&Slot> {
         self.slots.get(instance as usize).filter(|s| s.active)
+    }
+
+    /// The GPU memory the pool holds: every slot's buffers at their capacity.
+    pub(crate) fn bytes(&self) -> u64 {
+        let size = |stream: &Stream| stream.buffer.as_ref().map_or(0, wgpu::Buffer::size);
+        self.slots.iter().map(|s| size(&s.shapes) + size(&s.smooth)).sum()
+    }
+
+    /// Drops every slot last blended from the mesh at `index` and `generation`, buffers and CPU copies with them, so
+    /// releasing a mesh frees what was sized for it. A slot last blended from a live mesh keeps its capacity.
+    pub(crate) fn forget(&mut self, index: u32, generation: u32) {
+        for slot in &mut self.slots {
+            if slot.source.is_some_and(|s| s.mesh == (index, generation)) {
+                *slot = Slot::default();
+            }
+        }
     }
 
     /// The shape stream instance `instance` draws with this frame, or `None` for the mesh's own.
