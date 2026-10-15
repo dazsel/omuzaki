@@ -14,8 +14,8 @@ use std::io::{self, Read, Write};
 use std::path::PathBuf;
 
 use omuzaki_ai_api::{
-    DType, LoadError, MAX_RANK, ModelRef, Provider, RunError, RuntimeId, SessionOptions, Sha256, Signature, Stage,
-    TensorBuf, TensorData, TensorDataMut, TensorRef,
+    DType, Dim, LoadError, MAX_RANK, ModelRef, Provider, RunError, RuntimeId, SessionOptions, Sha256, Signature, Stage,
+    TensorBuf, TensorData, TensorDataMut, TensorRef, TensorSpec,
 };
 use serde::{Deserialize, Serialize};
 
@@ -73,6 +73,12 @@ pub(crate) fn write_frame(w: &mut impl Write, kind: Kind, payload: &[u8]) -> io:
 /// Reads one frame into `buf` (grown only when a frame is larger than any before) and returns its kind.
 /// `Ok(None)` at a clean end of the stream, before a frame starts.
 pub(crate) fn read_frame(r: &mut impl Read, buf: &mut Vec<u8>) -> io::Result<Option<Kind>> {
+    read_frame_within(r, buf, MAX_FRAME)
+}
+
+/// [`read_frame`], refusing a frame longer than `max` bytes before anything is allocated for it: what the registry
+/// reads from a worker, which may run hostile code, is bounded by what it asked for.
+pub(crate) fn read_frame_within(r: &mut impl Read, buf: &mut Vec<u8>, max: usize) -> io::Result<Option<Kind>> {
     let mut header = [0u8; 5];
     let mut got = 0;
     while got < header.len() {
@@ -86,7 +92,7 @@ pub(crate) fn read_frame(r: &mut impl Read, buf: &mut Vec<u8>) -> io::Result<Opt
     }
     let kind = Kind::of(header[0])?;
     let len = u32::from_le_bytes([header[1], header[2], header[3], header[4]]) as usize;
-    if len > MAX_FRAME {
+    if len > max.min(MAX_FRAME) {
         return Err(broken(format!("a frame of {len} bytes is over the limit")));
     }
     buf.resize(len, 0);
@@ -311,6 +317,33 @@ pub(crate) fn decode_tensor(payload: &[u8], buf: &mut TensorBuf) -> io::Result<(
     Ok(())
 }
 
+/// The largest output a tensor of `spec` may need for one run whose dimensions are all fixed; for one with an `any`
+/// dimension, [`MAX_OPEN_OUTPUT`].
+pub(crate) fn frame_limit(spec: &TensorSpec) -> usize {
+    let fixed: Option<Vec<usize>> =
+        spec.shape.iter().map(|d| if let Dim::Fixed(n) = d { Some(*n) } else { None }).collect();
+    let Some(dims) = fixed else { return MAX_OPEN_OUTPUT };
+    let elements = dims.iter().try_fold(1usize, |n, &d| n.checked_mul(d));
+    elements
+        .and_then(|n| n.checked_mul(element_size(spec.dtype)))
+        .and_then(|n| n.checked_add(2 + 8 * dims.len()))
+        .map_or(MAX_FRAME, |n| n.min(MAX_FRAME))
+}
+
+/// The most one output with an `any` dimension may carry in a run: 256 MiB, four 4K RGB frames in `f32`.
+pub(crate) const MAX_OPEN_OUTPUT: usize = 256 << 20;
+
+/// True if `buf`, as a worker filled it, has `spec`'s rank and every fixed dimension: callers index outputs by the
+/// slot's signature, so a worker must not be able to hand them another shape.
+pub(crate) fn fits(spec: &TensorSpec, buf: &TensorBuf) -> bool {
+    let shape = buf.shape();
+    shape.len() == spec.shape.len()
+        && spec.shape.iter().zip(shape).all(|(d, &n)| match d {
+            Dim::Fixed(fixed) => *fixed == n,
+            Dim::Any(_) => true,
+        })
+}
+
 /// The element type a tensor frame carries, for a side that keeps no buffer of it yet.
 pub(crate) fn frame_dtype(payload: &[u8]) -> io::Result<DType> {
     dtype_of(*payload.first().ok_or_else(|| broken("an empty tensor frame"))?)
@@ -344,6 +377,24 @@ mod tests {
         wire.pop();
         assert!(decode_tensor(&wire, &mut TensorBuf::new(DType::F32)).is_err(), "short data");
         assert!(decode_tensor(&[0, 9], &mut TensorBuf::new(DType::F32)).is_err(), "rank over the limit");
+    }
+
+    #[test]
+    fn outputs_are_held_to_the_slots_shape_and_size() {
+        let spec = TensorSpec::new("y", DType::F32, [Dim::Fixed(2), Dim::ANY]);
+        let mut buf = TensorBuf::new(DType::F32);
+        buf.resize(&[2, 5]).unwrap();
+        assert!(fits(&spec, &buf));
+        buf.resize(&[3, 5]).unwrap();
+        assert!(!fits(&spec, &buf), "a fixed dimension");
+        buf.resize(&[2]).unwrap();
+        assert!(!fits(&spec, &buf), "the rank");
+        assert_eq!(frame_limit(&spec), MAX_OPEN_OUTPUT);
+        let fixed = TensorSpec::new("y", DType::F32, [Dim::Fixed(2), Dim::Fixed(3)]);
+        assert_eq!(frame_limit(&fixed), 2 + 16 + 24);
+        let mut wire = Vec::new();
+        write_frame(&mut wire, Kind::Tensor, &[0; 100]).unwrap();
+        assert!(read_frame_within(&mut wire.as_slice(), &mut Vec::new(), 99).is_err(), "over its bound");
     }
 
     #[test]

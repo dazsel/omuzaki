@@ -79,6 +79,14 @@ impl Op for ModelAdd {
         for path in self.paths() {
             ctx.fs_access(path, FsMode::Read)?;
         }
+        // The model's files are known by their names, so two of the same name can't both be its files.
+        let mut names: Vec<_> =
+            std::iter::once(&self.path).chain(&self.more).map(|p| Path::new(p).file_name()).collect();
+        names.sort();
+        if names.windows(2).any(|w| w[0] == w[1]) {
+            return Err(OpError::invalid("more", "two of the model's files have the same name")
+                .hint("a model's files are known by their names: rename one"));
+        }
         Ok(Plan::default())
     }
 

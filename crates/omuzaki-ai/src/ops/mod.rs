@@ -11,7 +11,8 @@
 //! | `model.acknowledge` | edit | `edit:library` | a person only |
 //!
 //! Each op registers itself next to its type. `select`, `remove` and `acknowledge` change the registry (not the
-//! document), so a dry run checks and changes nothing, and there is nothing to undo.
+//! document), so a dry run resolves the names and changes nothing; the registry's own rules (the requester rule, a
+//! model's status) are checked by the real call. There is nothing to undo.
 
 pub mod acknowledge;
 pub mod add;

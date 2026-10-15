@@ -319,7 +319,7 @@ impl Registry {
             return ModelStatus::Disabled { reason };
         }
         if entry.origin == Origin::User {
-            if !state.acknowledged(&entry.model) {
+            if !state.acknowledged(&entry.model, &entry.manifest) {
                 return ModelStatus::NeedsAcknowledgement;
             }
         } else if state.installed(&entry.model).is_none() {

@@ -13,8 +13,19 @@ use omuzaki_ai_api::{
 };
 
 use super::limits::{self, Contained, MEMORY_ENV};
-use super::wire::{self, Control, Kind, MAGIC, broken, read_frame, write_control, write_frame};
+use super::wire::{self, Control, Kind, MAGIC, broken, read_frame, read_frame_within, write_control, write_frame};
 use super::{LOAD_LIMIT, LoadSpec, Model, START_LIMIT, SandboxSettings};
+
+/// The most a worker's answer to a run may hold besides its tensors: a run error's words.
+const MAX_RUN_CONTROL: usize = 64 * 1024;
+
+/// How many native libraries a worker may ask for while it probes or loads one model.
+const MAX_FETCHES: usize = 8;
+
+/// The variables a worker keeps from the app's environment: what an OS needs to start a process and find its temporary
+/// folder. Everything else (tokens, keys, the person's settings) stays with the app.
+const KEPT_ENV: [&str; 10] =
+    ["PATH", "SystemRoot", "SYSTEMROOT", "windir", "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL", "HOME"];
 
 /// How much a worker may print before [`MAGIC`] (a test binary's harness banner) before it counts as broken.
 const MAX_PREAMBLE: usize = 64 * 1024;
@@ -83,6 +94,8 @@ impl Worker {
         let name = settings.program.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
         let mut command = Command::new(&settings.program);
         command
+            .env_clear()
+            .envs(KEPT_ENV.iter().filter_map(|k| std::env::var_os(k).map(|v| (k, v))))
             .args(&settings.args)
             .envs(settings.env.iter().map(|(k, v)| (k, v)))
             .env(MEMORY_ENV, settings.memory_mib.to_string())
@@ -187,6 +200,7 @@ impl Worker {
     fn exchange(&mut self, message: &Control, natives: &dyn FileSource) -> io::Result<Control> {
         write_control(&mut self.stdin, message)?;
         self.stdin.flush()?;
+        let mut fetches = 0;
         loop {
             match read_frame(&mut self.stdout, &mut self.buf)? {
                 Some(Kind::Control) => {}
@@ -196,14 +210,41 @@ impl Worker {
             let Control::Fetch { urls, sha256, size } = wire::control(&self.buf)? else {
                 return wire::control(&self.buf);
             };
-            // A download is the registry's time, not the worker's.
+            fetches += 1;
+            if fetches > MAX_FETCHES {
+                return Err(broken(format!("the worker asked for more than {MAX_FETCHES} libraries")));
+            }
+            // A download is the registry's time, not the worker's: the deadline pauses, it doesn't start again.
+            let left = self.remaining();
             self.disarm();
-            let result = natives.get(&PinnedFile::new(urls, sha256, size), &NoProgress).map_err(|e| e.to_string());
-            self.arm(LOAD_LIMIT);
+            let result = native(natives, &PinnedFile::new(urls, sha256, size));
+            self.arm(left);
             write_control(&mut self.stdin, &Control::Fetched { result })?;
             self.stdin.flush()?;
         }
     }
+
+    /// How long the armed deadline has left.
+    fn remaining(&self) -> Duration {
+        let deadline = self.watch.deadline.load(Ordering::Acquire);
+        let now = nanos(self.watch.base.elapsed());
+        Duration::from_nanos(deadline.saturating_sub(1).saturating_sub(now))
+    }
+}
+
+/// Answers a worker's request for a native library. The request comes from a process that may run hostile code, so
+/// it can only fetch over `https` into the verified cache, and it gets a blob already there only by its exact hash and
+/// size: it can never make the cache drop or replace a blob it holds (another model's files). Errors name no path.
+fn native(natives: &dyn FileSource, pin: &PinnedFile) -> Result<std::path::PathBuf, String> {
+    let words = |e: omuzaki_ai_api::FetchError| crate::fetch::words_without_path(&e);
+    if let Some(path) = natives.lookup(pin.sha256).map_err(words)? {
+        let size = std::fs::metadata(&path).map(|m| m.len()).map_err(|e| format!("the model cache: {e}"))?;
+        return if size == pin.size { Ok(path) } else { Err("that library's size isn't the one pinned".into()) };
+    }
+    if pin.urls.is_empty() || !pin.urls.iter().all(|u| u.starts_with("https://")) {
+        return Err("a native library is fetched over https only".into());
+    }
+    natives.get(pin, &NoProgress).map_err(words)
 }
 
 impl Drop for Worker {
@@ -243,6 +284,8 @@ pub struct SandboxedSession {
     dead: bool,
     /// Where each input tensor is encoded; it only grows.
     scratch: Vec<u8>,
+    /// The largest frame each output may arrive in ([`wire::frame_limit`]).
+    output_limits: Vec<usize>,
 }
 
 impl SandboxedSession {
@@ -263,6 +306,7 @@ impl SandboxedSession {
         };
         Ok(Self {
             worker,
+            output_limits: spec.slot.outputs.iter().map(wire::frame_limit).collect(),
             signature: spec.slot.clone(),
             info: info(model.model, provider),
             stall: spec.stall,
@@ -280,16 +324,22 @@ impl SandboxedSession {
             write_frame(&mut w.stdin, Kind::Tensor, &self.scratch)?;
         }
         w.stdin.flush()?;
-        match read_frame(&mut w.stdout, &mut w.buf)? {
+        // A worker may run hostile code: what it sends back is bounded and checked against the slot before anyone
+        // reads it.
+        match read_frame_within(&mut w.stdout, &mut w.buf, MAX_RUN_CONTROL)? {
             Some(Kind::Ran) => {
                 if wire::read_count(&w.buf)? != outputs.len() {
                     return Err(broken("a run answered with the wrong number of outputs"));
                 }
-                for out in outputs.iter_mut() {
-                    if read_frame(&mut w.stdout, &mut w.buf)? != Some(Kind::Tensor) {
+                let specs = self.signature.outputs.iter().zip(&self.output_limits);
+                for (out, (spec, &limit)) in outputs.iter_mut().zip(specs) {
+                    if read_frame_within(&mut w.stdout, &mut w.buf, limit)? != Some(Kind::Tensor) {
                         return Err(broken("a run answered without its outputs"));
                     }
                     wire::decode_tensor(&w.buf, out)?;
+                    if !wire::fits(spec, out) {
+                        return Err(broken(format!("output {} doesn't have the slot's shape", spec.name)));
+                    }
                 }
                 Ok(Ok(()))
             }
@@ -359,5 +409,33 @@ impl Session for SandboxedSession {
 
     fn info(&self) -> SessionInfo {
         self.info.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use omuzaki_ai_api::{FileSource, PinnedFile, Sha256};
+    use omuzaki_ai_mock::MemFetcher;
+    use sha2::{Digest, Sha256 as Hasher};
+
+    use super::native;
+    use crate::VerifiedCache;
+
+    #[test]
+    fn a_worker_cannot_drop_a_cached_blob_or_fetch_anywhere_but_https() {
+        let root = tempfile::tempdir().unwrap();
+        let bytes = b"another model's file";
+        let sha256 = Sha256(Hasher::digest(bytes).into());
+        let cache = VerifiedCache::new(root.path(), MemFetcher::new().serving("https://x.invalid/lib", &bytes[..]));
+        let good = PinnedFile::new(["https://x.invalid/lib"], sha256, bytes.len() as u64);
+        let stored = cache.get(&good, &omuzaki_ai_api::NoProgress).unwrap();
+
+        let wrong_size = PinnedFile::new(Vec::<String>::new(), sha256, 1);
+        assert!(native(&cache, &wrong_size).is_err());
+        assert_eq!(std::fs::read(&stored).unwrap(), bytes, "the blob is still there");
+        assert_eq!(native(&cache, &good).unwrap(), stored, "the exact pin gets it");
+
+        let plain = PinnedFile::new(["http://x.invalid/other"], Sha256([1; 32]), 3);
+        assert!(native(&cache, &plain).unwrap_err().contains("https"));
     }
 }

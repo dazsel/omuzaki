@@ -306,3 +306,37 @@ fn removing_one_model_keeps_the_files_another_still_uses() {
     registry.remove(&given.model).unwrap();
     assert_eq!(rig.blobs(), Vec::<String>::new());
 }
+
+#[test]
+fn an_acknowledgement_covers_the_manifest_too_so_another_card_asks_again() {
+    let rig = Rig::new();
+    let registry = rig.registry();
+    let file = rig.fake("mine.fake.toml", "1.0", PORTS_X_Y);
+    let accepted = add(&registry, &echo(), vec![file.clone()], Some(manifest(&echo(), &[&file], "")), Some("Pat"));
+    assert_eq!(accepted.status, ModelStatus::Ready);
+    // The same files, id and version under another card: the same ModelRef, but not what the person accepted.
+    let mut other = manifest(&echo(), &[&file], "");
+    other.card.authors = Some("someone else".into());
+    let replaced = add(&registry, &echo(), vec![file], Some(other), None);
+    assert_eq!(replaced.model, accepted.model);
+    assert_eq!(replaced.status, ModelStatus::NeedsAcknowledgement);
+}
+
+#[test]
+fn a_manifest_that_copies_a_shipped_model_is_refused() {
+    let rig = Rig::new();
+    let files = std::sync::Arc::new(omuzaki_ai::VerifiedCache::new(
+        rig.data.path().join(omuzaki_ai::CACHE_DIR),
+        omuzaki_ai_mock::fixtures_fetcher(),
+    ));
+    let app = "1.0.0".parse().unwrap();
+    let registry = Registry::new(rig.data.path(), files, app, omuzaki_ai::RegistrySettings::default()).unwrap();
+    let shipped = registry.models(Some(&echo())).remove(0);
+    let file = rig.pick("echo.fake.toml", omuzaki_ai_mock::ECHO_MODEL);
+    let mut copy = ModelManifest::from_toml(include_str!("../../omuzaki-ai-mock/models/echo-fake.model.toml")).unwrap();
+    copy.files[0].urls.clear();
+    let request = AddModel { slot: echo(), files: vec![file], manifest: Some(copy), acknowledged_by: None };
+    let refused = registry.add(request, &NoProgress).unwrap_err();
+    assert!(matches!(refused, RegistryError::NotUsable { ref model, .. } if *model == shipped.model), "{refused:?}");
+    assert_eq!(registry.models(Some(&echo())), vec![shipped], "the shipped model is listed once, as it was");
+}

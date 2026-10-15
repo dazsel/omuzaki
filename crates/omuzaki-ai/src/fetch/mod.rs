@@ -384,6 +384,15 @@ fn net(url: &str, reason: &str) -> FetchError {
     FetchError::Network { url: url.to_owned(), reason: reason.to_owned() }
 }
 
+/// A fetch error's words without the cache's path, for anything an agent can read (where the person's data folder is,
+/// is theirs).
+pub(crate) fn words_without_path(e: &FetchError) -> String {
+    match e {
+        FetchError::Io { reason, .. } => format!("the model cache: {reason}"),
+        other => other.to_string(),
+    }
+}
+
 fn io_err(path: &Path, e: &io::Error) -> FetchError {
     FetchError::Io { path: path.display().to_string(), reason: e.to_string() }
 }
