@@ -107,10 +107,12 @@ lane's or were handed to it on #2.
   freezes.
 - **Start every session in Auto mode** (owner, 2026-10-15), or in `acceptEdits` if its model doesn't offer Auto.
   - Auto is the highest mode a cloud session has, and a session can't be more permissive than its lead.
-  - The mode is chosen when the session is created. `permissions.defaultMode` in a project file has no effect, and a
-    running session's mode changes only from its own mode menu.
+  - The mode is chosen when the session is created. A project file can't start a session in `auto` or
+    `bypassPermissions` (project settings ignore those two values), and a running session's mode changes only from
+    its own mode menu.
 - **The committed `.claude/settings.json` approves most commands** without a prompt: every shell command, file reads
-  and edits, web search and fetch, and the GitHub tools.
+  and edits, web search and fetch. The GitHub tools are left to the session's mode, and merging through them is
+  denied.
   - It denies what only the Director does or what can't be undone: merging pull requests, releases, repository
     settings, secrets and variables, turning workflows on or off, `DELETE` API calls, deleting branches and plain
     force-pushes. `--force-with-lease` on your own branch stays allowed.
@@ -118,6 +120,10 @@ lane's or were handed to it on #2.
     GitHub, so the deny list is a second guard, not the only one.
   - A session only reads this file when this repository is its only repository. Give each session this repository
     alone.
+  - **Secrets:** the `Read` denies stop Claude's file tools only, so a hook (`tools/hooks/deny-secret-paths.sh`)
+    also refuses any shell command that names a secret path (`.env`, `~/.ssh`, `~/.config`, the Hugging Face cache,
+    `.netrc`, git credentials, private keys). It guards against accidents, not a determined bypass. The real boundary
+    is that a session VM holds no project secrets.
   - Auto still doesn't approve every call. That is why the ban on `send_message` and `send_later` above stays.
 - The lead answers a session with `send_message` (that direction works).
 - `interrupt_session` drops messages queued for that session: after interrupting, send again.
