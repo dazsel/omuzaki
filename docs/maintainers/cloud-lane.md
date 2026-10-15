@@ -49,6 +49,10 @@ structure work (ADR 0054); then Phase 1.
 6. The Director enqueues; the merge queue merges. Never push to `main`; force-push only your own branch, with
    `--force-with-lease`.
 
+**Archive each session as soon as its work is done** (its pull request is ready, its fix round is pushed, or it has
+posted its one question): an archived session can't be re-prompted, so it costs nothing while it waits for review or
+CI. A later round gets a fresh session.
+
 **Branches the lane may push:** `cloud/*`, and the `port/*` and `local/*` branches of pull requests that were the
 lane's or were handed to it on #2.
 
