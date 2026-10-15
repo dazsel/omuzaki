@@ -1,19 +1,25 @@
 //! The Rhai engine: one fresh engine per run, the limits, cancel, output and error mapping.
 
-use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use omuzaki_core::time::{Clock, SystemClock};
+use omuzaki_doc_api::DocPath;
 use omuzaki_doc_api::Value;
-use omuzaki_ops_api::{Actor, Cause, CauseKind, Grants, Mode, OpError, OpInfo, OpKind, Request, TxId, Undo};
+use omuzaki_ops_api::{Actor, Cause, CauseKind, Grants, Mode, OpError, OpInfo, Request, TxId};
 use rhai::packages::{
     BasicArrayPackage, BasicMapPackage, BasicMathPackage, CorePackage, LogicPackage, MoreStringPackage, Package,
 };
 use rhai::serde::{from_dynamic, to_dynamic};
-use rhai::{Dynamic, Engine, EvalAltResult, Map, Module, NativeCallContext, ParseErrorType, Position, Scope, Shared};
+use rhai::{
+    Dynamic, Engine, EvalAltResult, Map, Module, NativeCallContext, OptimizationLevel, ParseErrorType, Position, Scope,
+    Shared,
+};
 use serde_json::Map as JsonMap;
 
+use crate::bindings::Bindings;
+use crate::check::{Diagnostic, effective_grants};
+use crate::convert::{Convert, from_json, map_breaks, oversized, oversized_in, size_kind, to_json};
 use crate::{Calls, Cancel, LimitKind, Limits, OutputKind, OutputLine, PlannedCall, ScriptError, ScriptErrorKind};
 
 /// What to run and as whom.
@@ -51,14 +57,14 @@ pub struct ScriptOutcome {
 
 /// Why the engine was told to stop; carried as the `ErrorTerminated` token, which a script cannot catch.
 #[derive(Copy, Clone)]
-enum Stop {
+pub(crate) enum Stop {
     Cancelled,
     Limit(LimitKind),
 }
 
 /// Why an op is not callable from a script, carried like [`Stop`] so a script can't catch it.
 #[derive(Clone)]
-struct Refusal(Arc<str>);
+pub(crate) struct Refusal(pub(crate) Arc<OpError>);
 
 /// The run's services, borrowed from `run`'s caller.
 struct Lent {
@@ -75,7 +81,7 @@ struct Output {
 }
 
 /// The state of one run, shared by the engine's callbacks (which must be `'static`).
-struct Run {
+pub(crate) struct Run {
     /// Cleared by [`Lease`] before `run` returns, so no callback can reach the borrowed services afterwards.
     lent: RwLock<Option<Lent>>,
     limits: Limits,
@@ -97,11 +103,17 @@ impl Drop for Clear<'_> {
 
 #[allow(clippy::unnecessary_box_returns)] // Rhai's callbacks return `Box<EvalAltResult>`
 fn terminate(stop: Stop) -> Box<EvalAltResult> {
-    EvalAltResult::ErrorTerminated(Dynamic::from(stop), Position::NONE).into()
+    terminate_at(stop, Position::NONE)
+}
+
+/// Ends the run at `at` with `token`, which a script can't catch.
+#[allow(clippy::unnecessary_box_returns)] // as above
+pub(crate) fn terminate_at<T: Clone + Send + Sync + 'static>(token: T, at: Position) -> Box<EvalAltResult> {
+    EvalAltResult::ErrorTerminated(Dynamic::from(token), at).into()
 }
 
 #[allow(clippy::unnecessary_box_returns)] // as above
-fn runtime(message: impl Into<String>) -> Box<EvalAltResult> {
+pub(crate) fn runtime(message: impl Into<String>) -> Box<EvalAltResult> {
     EvalAltResult::ErrorRuntime(message.into().into(), Position::NONE).into()
 }
 
@@ -129,8 +141,9 @@ impl Run {
         f()
     }
 
-    /// The one call path the bindings use: stops on cancel and at the call limit, then sends the request.
-    fn invoke(&self, op: &str, args: Value) -> Result<Value, Box<EvalAltResult>> {
+    /// The one call path the bindings use: stops on cancel and at the call limit, then sends the request. A failed op
+    /// is raised at `at` as a map of the `OpError` with the `op`, `line` and `column`.
+    pub(crate) fn invoke(&self, op: &str, args: Value, at: Position) -> Result<Value, Box<EvalAltResult>> {
         let lent = self.lent.read().unwrap_or_else(PoisonError::into_inner);
         let Some(lent) = lent.as_ref() else { return Err(terminate(Stop::Cancelled)) };
         if lent.cancel.is_cancelled() {
@@ -163,14 +176,27 @@ impl Run {
                 }
                 Ok(value)
             }
-            Err(error) => {
-                let mut map = to_dynamic(&error).map_err(|e| runtime(e.to_string()))?;
-                if let Some(fields) = map.write_lock::<Map>().as_mut() {
-                    fields.insert("op".into(), Dynamic::from(op.to_owned()));
-                }
-                Err(EvalAltResult::ErrorRuntime(map, Position::NONE).into())
-            }
+            Err(error) => Err(raise(&error, op, at)),
         }
+    }
+
+    /// `get(path)`: reads the document through [`Calls::get`], as a script value (`()` when there is nothing there).
+    pub(crate) fn read(&self, path: &str, at: Position) -> Result<Dynamic, Box<EvalAltResult>> {
+        let lent = self.lent.read().unwrap_or_else(PoisonError::into_inner);
+        let Some(lent) = lent.as_ref() else { return Err(terminate(Stop::Cancelled)) };
+        if lent.cancel.is_cancelled() {
+            return Err(terminate(Stop::Cancelled));
+        }
+        let path = DocPath::parse(path).map_err(|e| {
+            let error =
+                OpError::invalid("path", e.to_string()).hint("write a document path such as `characters/aki/face`");
+            raise(&error, "get", at)
+        })?;
+        let Some(value) = lent.calls.get(&path).map_err(|e| raise(&e, "get", at))? else { return Ok(Dynamic::UNIT) };
+        if let Some(kind) = oversized(&value, &self.limits) {
+            return Err(terminate_at(Stop::Limit(kind), at));
+        }
+        from_json(&value).map_err(runtime)
     }
 
     /// Why the run must stop now, if it must: cancelled (or the lease is over), or out of wall-clock time.
@@ -201,27 +227,48 @@ impl Run {
     }
 }
 
-fn run_of(context: &NativeCallContext<'_>) -> Result<Arc<Run>, Box<EvalAltResult>> {
+pub(crate) fn run_of(context: &NativeCallContext<'_>) -> Result<Arc<Run>, Box<EvalAltResult>> {
     context.tag().and_then(|tag| tag.clone().try_cast::<Arc<Run>>()).ok_or_else(|| runtime("no run is active"))
+}
+
+/// A failed op as the error a script sees: the `OpError` as a map, plus the `op` and the `line` and `column` of the call.
+#[allow(clippy::unnecessary_box_returns)] // as above
+fn raise(error: &OpError, op: &str, at: Position) -> Box<EvalAltResult> {
+    let to_int = |n: Option<usize>| Dynamic::from(i64::try_from(n.unwrap_or(1)).unwrap_or(i64::MAX));
+    let mut map = match to_dynamic(error) {
+        Ok(map) => map,
+        Err(e) => return runtime(e.to_string()),
+    };
+    if let Some(fields) = map.write_lock::<Map>().as_mut() {
+        // `field` and `hint` are always there, `()` when the error has none, so a script can read them unguarded.
+        for key in ["field", "hint"] {
+            fields.entry(key.into()).or_insert(Dynamic::UNIT);
+        }
+        fields.insert("op".into(), Dynamic::from(op.to_owned()));
+        fields.insert("line".into(), to_int(at.line()));
+        fields.insert("column".into(), to_int(at.position()));
+    }
+    EvalAltResult::ErrorRuntime(map, at).into()
 }
 
 /// Runs scripts. Holds the engine's shared parts; each [`run`](Self::run) builds a fresh engine from them.
 pub struct ScriptHost {
     packages: Vec<Shared<Module>>,
-    bindings: Vec<(String, Shared<Module>)>,
+    pub(crate) bindings: Arc<Bindings>,
     limits: Limits,
     clock: Arc<dyn Clock>,
 }
 
 impl ScriptHost {
-    /// A host whose scripts can call `ops::area::verb({..})` for each op in `ops`, held to `limits`.
+    /// A host whose scripts can call `ops::area::verb({..})` for each op in `ops`, held to `limits`. The bindings are
+    /// generated once from `ops` and shared by every run; each call takes one map, which the op checks against its own
+    /// schema. `get(path)` and `try_op(f)` come with them.
     ///
-    /// Only queries and edits that undo with their patch ([`Undo::Auto`]) can be called: the run's rollback can't undo
-    /// a job or an edit with outside effects, so those are bound to a refusal (`ScriptErrorKind::Refused`) that is
-    /// raised before anything is sent.
-    ///
-    /// The bindings are the plain call path; the schema-aware generated bindings, `get`, `try_op` and the static check
-    /// come with the next task.
+    /// Only queries and edits that undo with their patch ([`Undo::Auto`](omuzaki_ops_api::Undo::Auto)) can be called:
+    /// the run's rollback can't undo a job (which also can't join a transaction) or an edit with outside effects, and
+    /// a script can't start another `script.run`. Those are bound to a refusal ([`ScriptErrorKind::Refused`], the
+    /// `Unsupported` error and its hint in [`ScriptError::op_error`]) that is raised before anything is sent;
+    /// [`check`](Self::check) reports the same refusals.
     pub fn new(ops: &[OpInfo], limits: Limits) -> Self {
         let packages = vec![
             CorePackage::new().as_shared_module(),
@@ -231,50 +278,13 @@ impl ScriptHost {
             BasicMapPackage::new().as_shared_module(),
             BasicMathPackage::new().as_shared_module(),
         ];
-        let mut areas: BTreeMap<String, Module> = BTreeMap::new();
-        for info in ops {
-            let Some((area, verb)) = info.name.split_once('.') else { continue };
-            let name = info.name.to_owned();
-            let refusal = refusal(info).map(|reason| Refusal(reason.into()));
-            let limits = limits.clone();
-            areas.entry(format!("ops::{area}")).or_default().set_native_fn(
-                verb,
-                move |context: NativeCallContext<'_>, args: Map| -> Result<Dynamic, Box<EvalAltResult>> {
-                    let at = context.call_position();
-                    if let Some(refusal) = &refusal {
-                        return Err(EvalAltResult::ErrorTerminated(Dynamic::from(refusal.clone()), at).into());
-                    }
-                    let args = match to_json(Dynamic::from_map(args), limits.value_depth) {
-                        Ok(args) => args,
-                        Err(Convert::Depth) => {
-                            return Err(EvalAltResult::ErrorTerminated(
-                                Dynamic::from(Stop::Limit(LimitKind::Depth)),
-                                at,
-                            )
-                            .into());
-                        }
-                        Err(Convert::Other(message)) => return Err(runtime(message)),
-                    };
-                    // Rhai never sizes map keys, so the converted arguments get the same check as `params` and op
-                    // outputs before the op sees them.
-                    if let Some(kind) = oversized(&args, &limits) {
-                        return Err(EvalAltResult::ErrorTerminated(Dynamic::from(Stop::Limit(kind)), at).into());
-                    }
-                    let value = run_of(&context)?.invoke(&name, args).map_err(|mut e| {
-                        e.set_position(at);
-                        e
-                    })?;
-                    // Checked before conversion, as `params` are: Rhai sizes a native result only after building it,
-                    // and never checks map keys.
-                    if let Some(kind) = oversized(&value, &limits) {
-                        return Err(EvalAltResult::ErrorTerminated(Dynamic::from(Stop::Limit(kind)), at).into());
-                    }
-                    to_dynamic(value).map_err(|e| runtime(e.to_string()))
-                },
-            );
-        }
-        let bindings = areas.into_iter().map(|(path, module)| (path, Shared::new(module))).collect();
+        let bindings = Arc::new(Bindings::new(ops, &limits));
         Self { packages, bindings, limits, clock: Arc::new(SystemClock::new()) }
+    }
+
+    /// The limits this host holds its runs to.
+    pub(crate) fn limits(&self) -> &Limits {
+        &self.limits
     }
 
     /// Reads the wall-clock limit from `clock`, so tests need no sleep.
@@ -284,14 +294,15 @@ impl ScriptHost {
         self
     }
 
-    fn engine(&self, run: &Arc<Run>, started: f64) -> Engine {
+    /// The engine a run and the check both parse with: the same packages, bindings, limits and disabled symbols, so
+    /// what the check accepts is what the run accepts. No optimizer: it would fold calls away and leave the syntax
+    /// tree the check reads different from the code that runs.
+    pub(crate) fn base_engine(&self) -> Engine {
         let mut engine = Engine::new_raw();
         for package in &self.packages {
             engine.register_global_module(package.clone());
         }
-        for (path, module) in &self.bindings {
-            engine.register_static_module(path, module.clone());
-        }
+        self.bindings.install(&mut engine);
         let limits = &self.limits;
         engine
             .set_max_operations(limits.operations)
@@ -300,10 +311,16 @@ impl ScriptHost {
             .set_max_string_size(limits.string_bytes)
             .set_max_array_size(limits.array_len)
             .set_max_map_size(limits.map_len)
-            .set_default_tag(Dynamic::from(run.clone()));
+            .set_optimization_level(OptimizationLevel::None);
         for symbol in ["eval", "Fn", "call", "curry", "import"] {
             engine.disable_symbol(symbol);
         }
+        engine
+    }
+
+    fn engine(&self, run: &Arc<Run>, started: f64) -> Engine {
+        let mut engine = self.base_engine();
+        engine.set_default_tag(Dynamic::from(run.clone()));
         let sink = run.clone();
         engine.on_print(move |text| sink.print(OutputKind::Print, text));
         let sink = run.clone();
@@ -325,10 +342,16 @@ impl ScriptHost {
     #[allow(clippy::result_large_err)] // the error type and this signature are the contract's
     pub fn run(
         &self,
-        request: RunRequest,
+        mut request: RunRequest,
         calls: &dyn Calls,
         cancel: &dyn Cancel,
     ) -> Result<ScriptOutcome, ScriptError> {
+        // The run's grants are the caller's, narrowed to what the script names (design section 3). A source that does
+        // not analyse cleanly is refused below, so its grants are never used.
+        let analysis = self.analyze(&request.source);
+        if analysis.report.parse_errors.is_empty() {
+            request.grants = effective_grants(&request.grants, &analysis.report);
+        }
         let run = Arc::new(Run {
             lent: RwLock::new(None),
             limits: self.limits.clone(),
@@ -337,7 +360,7 @@ impl ScriptHost {
             output: Mutex::new(Output::default()),
             plans: Mutex::new(Vec::new()),
         });
-        let result = run.lend(calls, cancel, || self.execute(&run, calls, cancel));
+        let result = run.lend(calls, cancel, || self.execute(&run, calls, cancel, analysis.ceiling_error.as_ref()));
         let mut rolled = Ok(());
         if result.is_err() {
             rolled = calls.rollback();
@@ -352,7 +375,13 @@ impl ScriptHost {
     }
 
     #[allow(clippy::result_large_err)] // as `run`
-    fn execute(&self, run: &Arc<Run>, calls: &dyn Calls, cancel: &dyn Cancel) -> Result<ScriptOutcome, ScriptError> {
+    fn execute(
+        &self,
+        run: &Arc<Run>,
+        calls: &dyn Calls,
+        cancel: &dyn Cancel,
+        ceiling_error: Option<&Diagnostic>,
+    ) -> Result<ScriptOutcome, ScriptError> {
         let fail = |kind, message: &str| ScriptError {
             kind,
             line: 1,
@@ -373,6 +402,14 @@ impl ScriptHost {
         }
         if cancel.is_cancelled() {
             return Err(fail(ScriptErrorKind::Cancelled, "the run was cancelled before it started"));
+        }
+        if let Some(problem) = ceiling_error {
+            // A ceiling that can't be read must not silently stop narrowing the run.
+            return Err(ScriptError {
+                line: problem.line,
+                column: problem.column,
+                ..fail(ScriptErrorKind::Parse, &problem.message)
+            });
         }
         let params_break = map_breaks(&run.request.params, &self.limits)
             .or_else(|| run.request.params.values().find_map(|value| oversized_in(value, &self.limits, 1)));
@@ -448,179 +485,15 @@ fn evaluate(
     })
 }
 
-/// Why `info` can't be called from a script, if it can't.
-fn refusal(info: &OpInfo) -> Option<String> {
-    let name = info.name;
-    match (info.kind, info.undo) {
-        (OpKind::Query, _) | (OpKind::Edit, Undo::Auto) => None,
-        (OpKind::Job, _) => Some(format!("`{name}` is a job, which a script can't start: run it as a job instead")),
-        (OpKind::Edit, _) => {
-            Some(format!("`{name}` has effects outside the document, which a script's rollback can't undo"))
-        }
-    }
-}
-
-/// The first collection limit a JSON value breaks, if any. Values converted outside the engine (`params`, op outputs)
-/// are checked with this before conversion: Rhai doesn't size values pushed into the scope, and never checks map keys.
-/// Iterative, so a deeply nested value can't overflow the stack.
-fn oversized(value: &Value, limits: &Limits) -> Option<LimitKind> {
-    oversized_in(value, limits, 0)
-}
-
-/// [`oversized`] for a value that sits `outer` containers deep already (a `params` field is inside the `params` map).
-/// Nesting beyond [`Limits::value_depth`] is [`LimitKind::Depth`], so the recursive conversion into Rhai is bounded.
-fn oversized_in(value: &Value, limits: &Limits, outer: usize) -> Option<LimitKind> {
-    let mut pending = vec![(value, outer)];
-    while let Some((value, depth)) = pending.pop() {
-        match value {
-            Value::String(text) if text.len() > limits.string_bytes => return Some(LimitKind::StringSize),
-            Value::Array(_) | Value::Object(_) if depth >= limits.value_depth => return Some(LimitKind::Depth),
-            Value::Array(items) if items.len() > limits.array_len => return Some(LimitKind::ArraySize),
-            Value::Array(items) => pending.extend(items.iter().map(|item| (item, depth + 1))),
-            Value::Object(fields) => {
-                if let Some(kind) = map_breaks(fields, limits) {
-                    return Some(kind);
-                }
-                pending.extend(fields.values().map(|field| (field, depth + 1)));
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-/// Why [`to_json`] failed.
-enum Convert {
-    /// Arrays and maps nest deeper than [`Limits::value_depth`].
-    Depth,
-    /// A value with no JSON form.
-    Other(String),
-}
-
-/// One array or map being converted: what is left to visit and what has been converted so far.
-struct Frame {
-    rest: Box<dyn Iterator<Item = (String, Dynamic)>>,
-    key: String,
-    done: Done,
-}
-
-enum Done {
-    Array(Vec<Value>),
-    Object(JsonMap<String, Value>),
-}
-
-/// A script value as JSON, walked with an explicit stack: rhai's `from_dynamic` recurses once per level, so a script
-/// that wraps a value in an array in a loop could overflow the stack from inside the limits on size and operations.
-/// Fails with [`Convert::Depth`] beyond `max_depth` levels of arrays and maps. The value is consumed, and on failure
-/// whatever is left is taken apart without recursion as well, so dropping a deep value can't overflow either.
-fn to_json(root: Dynamic, max_depth: usize) -> Result<Value, Convert> {
-    let mut stack: Vec<Frame> = Vec::new();
-    let mut next = Some(root);
-    let mut finished: Option<Value> = None;
-    loop {
-        if let Some(item) = next.take() {
-            let item = item.flatten();
-            if item.is_array() || item.is_map() {
-                if stack.len() >= max_depth {
-                    abandon(stack, Some(item));
-                    return Err(Convert::Depth);
-                }
-                stack.push(open(item));
-            } else {
-                match from_dynamic::<Value>(&item) {
-                    Ok(value) => finished = Some(value),
-                    Err(e) => {
-                        abandon(stack, None);
-                        return Err(Convert::Other(e.to_string()));
-                    }
-                }
-            }
-        }
-        if let Some(value) = finished.take() {
-            let Some(top) = stack.last_mut() else { return Ok(value) };
-            match &mut top.done {
-                Done::Array(items) => items.push(value),
-                Done::Object(fields) => {
-                    fields.insert(std::mem::take(&mut top.key), value);
-                }
-            }
-        }
-        let Some(top) = stack.last_mut() else {
-            return Err(Convert::Other("the conversion lost its place".to_owned()));
-        };
-        match top.rest.next() {
-            Some((key, item)) => {
-                top.key = key;
-                next = Some(item);
-            }
-            None => {
-                finished = stack.pop().map(|frame| match frame.done {
-                    Done::Array(items) => Value::Array(items),
-                    Done::Object(fields) => Value::Object(fields),
-                });
-            }
-        }
-    }
-}
-
-/// Starts converting an array or map.
-fn open(container: Dynamic) -> Frame {
-    if container.is_array() {
-        let items = container.into_array().unwrap_or_default();
-        let done = Done::Array(Vec::with_capacity(items.len()));
-        Frame { rest: Box::new(items.into_iter().map(|item| (String::new(), item))), key: String::new(), done }
-    } else {
-        let fields = container.try_cast::<Map>().unwrap_or_default();
-        let done = Done::Object(JsonMap::new());
-        Frame { rest: Box::new(fields.into_iter().map(|(k, v)| (k.to_string(), v))), key: String::new(), done }
-    }
-}
-
-/// Drops what a failed conversion still holds, one level at a time, so no destructor recurses.
-fn abandon(stack: Vec<Frame>, extra: Option<Dynamic>) {
-    let mut pending: Vec<Dynamic> = extra.into_iter().collect();
-    for frame in stack {
-        pending.extend(frame.rest.map(|(_, item)| item));
-    }
-    while let Some(item) = pending.pop() {
-        let item = item.flatten();
-        if item.is_array() {
-            pending.extend(item.into_array().unwrap_or_default());
-        } else if item.is_map() {
-            pending.extend(item.try_cast::<Map>().unwrap_or_default().into_values());
-        }
-    }
-}
-
-/// The limit a map itself breaks: its size, or a key (which becomes a Rhai string) over the string limit.
-fn map_breaks(fields: &JsonMap<String, Value>, limits: &Limits) -> Option<LimitKind> {
-    if fields.len() > limits.map_len {
-        return Some(LimitKind::MapSize);
-    }
-    fields.keys().any(|key| key.len() > limits.string_bytes).then_some(LimitKind::StringSize)
-}
-
-fn size_kind(typ: &str) -> LimitKind {
-    let typ = typ.to_ascii_lowercase();
-    if typ.contains("string") {
-        LimitKind::StringSize
-    } else if typ.contains("array") {
-        LimitKind::ArraySize
-    } else {
-        LimitKind::MapSize
-    }
-}
-
-fn located(kind: ScriptErrorKind, message: String, at: Position, op_error: Option<OpError>) -> ScriptError {
+/// A position as 1-based `(line, column)`; `(1, 1)` for a failure with no place in the source.
+pub(crate) fn line_col(at: Position) -> (u32, u32) {
     let to_u32 = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
-    ScriptError {
-        kind,
-        line: at.line().map_or(1, to_u32),
-        column: at.position().map_or(1, to_u32),
-        op_error,
-        message,
-        output: Vec::new(),
-    }
+    (at.line().map_or(1, to_u32), at.position().map_or(1, to_u32))
+}
+
+pub(crate) fn located(kind: ScriptErrorKind, message: String, at: Position, op_error: Option<OpError>) -> ScriptError {
+    let (line, column) = line_col(at);
+    ScriptError { kind, line, column, op_error, message, output: Vec::new() }
 }
 
 /// Maps Rhai's error to ours, looking through the wrappers a call inside a script function adds.
@@ -635,7 +508,9 @@ fn classify(error: &EvalAltResult) -> ScriptError {
             Some(Stop::Cancelled) => (ScriptErrorKind::Cancelled, None),
             Some(Stop::Limit(kind)) => (ScriptErrorKind::Limit(kind), None),
             None => match token.clone().try_cast::<Refusal>() {
-                Some(Refusal(reason)) => return located(ScriptErrorKind::Refused, reason.to_string(), at, None),
+                Some(Refusal(error)) => {
+                    return located(ScriptErrorKind::Refused, error.message.clone(), at, Some((*error).clone()));
+                }
                 None => (ScriptErrorKind::Runtime, None),
             },
         },
@@ -721,12 +596,12 @@ mod tests {
         let kept = run();
         {
             let calls = Counting(&reached);
-            let inside = kept.lend(&calls, &Never, || kept.invoke("face.set_profile", Value::Null));
+            let inside = kept.lend(&calls, &Never, || kept.invoke("face.set_profile", Value::Null, Position::NONE));
             assert!(inside.is_err(), "the counted call answers an error");
             assert_eq!(reached.load(Ordering::SeqCst), 1, "inside the lease the call reaches the services");
         } // `calls` is dropped here; the lease ended before it.
         assert!(kept.lent.read().unwrap().is_none(), "the slot is empty once `lend` returns");
-        let after = kept.invoke("face.set_profile", Value::Null).unwrap_err();
+        let after = kept.invoke("face.set_profile", Value::Null, Position::NONE).unwrap_err();
         assert!(is_cancel(&after), "a late call stops as cancelled");
         assert!(kept.progress(0.0, &SystemClock::new()).is_some(), "a late progress tick stops the engine");
         assert_eq!(reached.load(Ordering::SeqCst), 1, "nothing reached the services after the lease");
@@ -740,7 +615,7 @@ mod tests {
         let panicked = catch_unwind(AssertUnwindSafe(|| kept.lend(&calls, &Never, || panic!("inside the run"))));
         assert!(panicked.is_err());
         assert!(kept.lent.read().unwrap().is_none(), "unwinding empties the slot too");
-        assert!(is_cancel(&kept.invoke("face.set_profile", Value::Null).unwrap_err()));
+        assert!(is_cancel(&kept.invoke("face.set_profile", Value::Null, Position::NONE).unwrap_err()));
         assert_eq!(reached.load(Ordering::SeqCst), 0);
     }
 

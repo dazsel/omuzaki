@@ -3,12 +3,16 @@
 
 #![deny(missing_docs)]
 
+mod bindings;
 mod calls;
+mod check;
+mod convert;
 mod error;
 mod host;
 mod limits;
 
 pub use calls::{Calls, Cancel, PlannedCall, RunnerCalls};
+pub use check::{CheckReport, Diagnostic, FieldError, FieldErrorKind, OpUse, Refused, effective_grants};
 pub use error::{LimitKind, OutputKind, OutputLine, ScriptError, ScriptErrorKind};
 pub use host::{RunRequest, ScriptHost, ScriptOutcome};
 pub use limits::Limits;
