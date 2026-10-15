@@ -206,7 +206,7 @@ fn skinned_nodes(scene: &IoScene) -> usize {
 /// Rotates a few nodes, a different set per `k`, so the joints move relative to each other.
 fn pose(scene: &mut IoScene, k: usize) {
     for (i, node) in scene.nodes.iter_mut().enumerate().skip(1) {
-        if (i + k) % 3 == 0 {
+        if (i + k).is_multiple_of(3) {
             node.transform.rotation *= Quat::from_rotation_x(0.2 * k as f32) * Quat::from_rotation_y(0.1);
         }
     }
@@ -252,7 +252,7 @@ fn body_stays_and_hair_joins_outfit() {
 
     assert_eq!(report.skinned, (3, 2));
     assert_eq!(report.merged, [rig.outfit]);
-    assert!(report.apart.is_empty());
+    assert_eq!(report.apart, Vec::new());
     assert_eq!(skinned_nodes(&rig.scene), 2);
     assert_eq!(rig.scene.nodes.len(), before.nodes.len(), "nodes are never added or removed");
     assert_eq!(totals(&rig.scene), totals(&before), "vertices and triangles are unchanged");
@@ -321,7 +321,7 @@ fn a_shared_joint_with_a_different_inverse_bind_keeps_the_pair_apart() {
     let report = merge_meshes(&mut rig.scene).unwrap();
     assert_eq!(rig.scene, before, "nothing changes");
     assert_eq!(report.skinned, (3, 3));
-    assert!(report.merged.is_empty());
+    assert_eq!(report.merged, Vec::new());
     let pair = report.apart.iter().find(|p| p.target == rig.hair && p.other == rig.outfit).expect("the pair is named");
     assert_eq!(pair.reason, ApartReason::InverseBind { joint: rig.nodes["neck"] });
     assert!(pair.reason.to_string().contains("inverse bind"));
@@ -410,7 +410,7 @@ fn a_morph_bound_or_morphing_or_shared_mesh_is_never_joined() {
     let before = rig.scene.clone();
     let report = merge_meshes(&mut rig.scene).unwrap();
     assert_eq!(rig.scene, before, "Body is bound, Outfit morphs: only Hair remains and it has nobody to join");
-    assert!(report.merged.is_empty());
+    assert_eq!(report.merged, Vec::new());
 
     // A mesh drawn by two nodes can't be emptied.
     let mut rig = new_rig();
@@ -626,7 +626,7 @@ fn two_runs_are_identical_and_a_second_pass_changes_nothing() {
     assert_eq!((&one, &r1), (&two, &r2));
     let again = merge_meshes(&mut one).unwrap();
     assert_eq!(one, two);
-    assert!(again.merged.is_empty());
+    assert_eq!(again.merged, Vec::new());
 }
 
 #[test]
