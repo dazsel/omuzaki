@@ -9,9 +9,11 @@ use omuzaki_avatar_api::error::AvatarError;
 use omuzaki_avatar_api::expression::{ColourBind, ExprIx, MorphBind, UvBind};
 use omuzaki_avatar_api::gaze::{AvatarGaze, AvatarLookAt};
 use omuzaki_char_api::{BoneName, JointRef, MaterialName, TextureData, TextureName};
+use omuzaki_core::glam::Vec3;
 use omuzaki_core::glam::{UVec2, Vec2, Vec4};
+use omuzaki_core::id::Slug;
 use omuzaki_io_api::{ColorBindKind, LookAtKind, RangeMap};
-use omuzaki_render_api::TextureDesc;
+use omuzaki_render_api::{MorphSet, SparseMorph, TextureDesc};
 
 #[test]
 fn a_well_formed_avatar_validates() {
@@ -50,6 +52,22 @@ fn a_morph_bind_out_of_range_is_refused() {
     let mut a = avatar(false, 0, &["happy"]);
     a.expressions[0].morph = vec![MorphBind::new(0, 0, 1.0)];
     assert_eq!(a.validate(), Err(AvatarError::morph_out_of_range(0, 0, 0)), "a mesh without morphs");
+}
+
+#[test]
+fn morph_targets_must_fit_their_own_mesh() {
+    // Targets made for a 10-vertex mesh, moving vertex 5, on the 3-vertex test mesh: the renderer would refuse it.
+    let target = |i: u32| SparseMorph {
+        name: Slug::new("wide").unwrap(),
+        indices: vec![i],
+        positions: vec![Vec3::Z],
+        normals: Vec::new(),
+    };
+    let mut a = avatar(false, 0, &[]);
+    a.meshes[0].morphs = Some(MorphSet::from_targets(10, vec![target(5)]).unwrap());
+    assert!(matches!(a.validate(), Err(AvatarError::Morphs { mesh: 0, .. })), "{:?}", a.validate());
+    a.meshes[0].morphs = Some(MorphSet::from_targets(10, vec![target(2)]).unwrap());
+    assert_eq!(a.validate(), Ok(()), "the same targets with an index inside the mesh fit");
 }
 
 #[test]

@@ -18,12 +18,14 @@
 //! in fixed order, allocates nothing, locks nothing, and gives the same output for the same input.
 
 use omuzaki_anim_api::{Channel, ChannelBuf, Region};
-use omuzaki_avatar_api::avatar::{AvatarMesh, ImportedAvatar};
+use omuzaki_avatar_api::avatar::{AvatarFace, AvatarMesh, ImportedAvatar};
+use omuzaki_avatar_api::body::BodyView;
 use omuzaki_avatar_api::expression::{ExprIx, Procedural};
 use omuzaki_avatar_api::gaze::{AvatarGaze, LookDirection, look_degrees, map_range};
 use omuzaki_char_api::MaterialName;
 use omuzaki_core::glam::{Vec2, Vec4};
 use omuzaki_io_api::{ExpressionName, Override, RangeMap};
+use omuzaki_render_api::MorphSet;
 
 use crate::buffers::{BindDeltas, MorphWeights, colour_slot};
 
@@ -98,7 +100,19 @@ impl ExpressionEvaluator {
     /// The avatar is expected to have passed [`ImportedAvatar::validate`]. A bind or driver that names nothing (which
     /// validation refuses) is left out of the tables, and a debug build stops on it.
     pub fn new(avatar: &ImportedAvatar) -> Self {
-        let targets_per_mesh: Vec<usize> = avatar.meshes.iter().map(AvatarMesh::morph_count).collect();
+        Self::build(avatar.meshes.iter().map(AvatarMesh::morph_count).collect(), &avatar.face())
+    }
+
+    /// Cold: the evaluator of the body `view` shows, from the view alone, or `None` for a body without imported
+    /// expressions (a built character, whose face is painted). The same tables as [`new`](Self::new) on the avatar.
+    pub fn from_view(view: &BodyView<'_>) -> Option<Self> {
+        let face = view.expressions?;
+        let targets_per_mesh = view.meshes.iter().map(|m| m.morphs.map_or(0, MorphSet::len)).collect();
+        Some(Self::build(targets_per_mesh, &face))
+    }
+
+    /// The tables for meshes with `targets_per_mesh` morph targets, driven by `face`.
+    fn build(targets_per_mesh: Vec<usize>, face: &AvatarFace<'_>) -> Self {
         let mesh_starts: Vec<usize> = targets_per_mesh
             .iter()
             .scan(0, |start, n| {
@@ -107,7 +121,7 @@ impl ExpressionEvaluator {
                 Some(here)
             })
             .collect();
-        let mut materials: Vec<MaterialName> = avatar
+        let mut materials: Vec<MaterialName> = face
             .expressions
             .iter()
             .flat_map(|e| e.colour.iter().map(|b| &b.material).chain(e.uv.iter().map(|b| &b.material)))
@@ -118,7 +132,7 @@ impl ExpressionEvaluator {
         let material_slot = |m: &MaterialName| materials.binary_search(m).ok();
 
         let (mut morphs, mut colours, mut uvs) = (Vec::new(), Vec::new(), Vec::new());
-        for (expression, e) in avatar.expressions.iter().enumerate() {
+        for (expression, e) in face.expressions.iter().enumerate() {
             for bind in &e.morph {
                 let mesh = usize::from(bind.mesh);
                 let target = usize::from(bind.target);
@@ -149,7 +163,7 @@ impl ExpressionEvaluator {
             }
         }
 
-        let rules = avatar
+        let rules = face
             .expressions
             .iter()
             .map(|e| ExpressionRule {
@@ -159,25 +173,22 @@ impl ExpressionEvaluator {
             })
             .collect();
 
-        let native = avatar.gaze == AvatarGaze::NativeArkit;
-        let drivers = avatar
+        let native = face.gaze == AvatarGaze::NativeArkit;
+        let drivers = face
             .drivers
             .iter()
             .filter(|(channel, _)| native || channel.region() != Region::Gaze)
             .filter_map(|(channel, e)| {
-                let known = e.index() < avatar.expressions.len();
+                let known = e.index() < face.expressions.len();
                 debug_assert!(known, "channel {channel} drives an expression that does not exist");
                 known.then_some(Driver { channel: channel.index(), expression: e.index() })
             })
             .collect();
 
-        let gaze = (avatar.gaze == AvatarGaze::Presets).then(|| {
-            let look_at = avatar.look_at();
-            PresetGaze {
-                presets: LookDirection::ALL
-                    .map(|d| avatar.expression(&ExpressionName::Preset(d.preset())).map(ExprIx::index)),
-                maps: LookDirection::ALL.map(|d| look_at.preset_map(d)),
-            }
+        let gaze = (face.gaze == AvatarGaze::Presets).then(|| PresetGaze {
+            presets: LookDirection::ALL
+                .map(|d| face.expression(&ExpressionName::Preset(d.preset())).map(ExprIx::index)),
+            maps: LookDirection::ALL.map(|d| face.look_at.preset_map(d)),
         });
 
         Self { drivers, gaze, rules, morphs, colours, uvs, targets_per_mesh, materials }

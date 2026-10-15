@@ -2,8 +2,8 @@
 //!
 //! The stage, recording, export, the tracking doctor and agents see a performer only through a [`BodyView`], whether
 //! it is a built character or an imported avatar, so nothing downstream branches on where a body came from. A built
-//! character has no morphs and no node constraints; an imported avatar has no face binding, no palette and no part
-//! runtimes of its own. The view says so with empty or absent fields, never with a kind to match on.
+//! character has no morphs, no node constraints and no expressions; an imported avatar has no face binding, no palette
+//! and no part runtimes of its own. The view says so with empty or absent fields, never with a kind to match on.
 //!
 //! The view lives here, not in the stage, because `omuzaki-io-ops` (export) and the tracking doctor read it and may not
 //! depend on an App crate.
@@ -19,7 +19,7 @@ use omuzaki_core::glam::Mat4;
 use omuzaki_face_api::Palette;
 use omuzaki_render_api::MorphSet;
 
-use crate::avatar::{AvatarMesh, ImportedAvatar};
+use crate::avatar::{AvatarExport, AvatarFace, AvatarMesh, ImportedAvatar};
 
 /// A performer's body: built from parts by the kit, or imported from a file. Both are boxed: a body is large, long
 /// lived and read through its view, so the indirection costs nothing that matters.
@@ -75,6 +75,12 @@ pub struct BodyView<'a> {
     pub runtimes: &'a [RuntimeSlot],
     /// The real-world stature the body was scaled to; `None` when it is authored in metres (every imported avatar).
     pub stature: Option<Stature>,
+    /// What drives an imported face: expressions, drivers, gaze route and look-at, which the expression evaluator
+    /// and the look-at stage read; `None` for a built character, whose face is painted ([`face`](Self::face)).
+    pub expressions: Option<AvatarFace<'a>>,
+    /// What export reads beyond the body (the original, first-person flags, the retained source data); `None` for a
+    /// built character, which exports from its parts.
+    pub export: Option<AvatarExport<'a>>,
 }
 
 impl<'a> BodyView<'a> {
@@ -94,6 +100,8 @@ impl<'a> BodyView<'a> {
             palette: Some(&built.palette),
             runtimes: &built.runtimes,
             stature: built.stature,
+            expressions: None,
+            export: None,
         }
     }
 
@@ -113,6 +121,8 @@ impl<'a> BodyView<'a> {
             palette: None,
             runtimes: &[],
             stature: None,
+            expressions: Some(avatar.face()),
+            export: Some(avatar.export()),
         }
     }
 }

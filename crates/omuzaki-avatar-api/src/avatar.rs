@@ -134,8 +134,17 @@ impl ImportedAvatar {
 
     /// The expression called `name`, if the avatar has one.
     pub fn expression(&self, name: &ExpressionName) -> Option<ExprIx> {
-        let index = self.expressions.iter().position(|e| &e.name == name)?;
-        u16::try_from(index).ok().map(ExprIx)
+        find_expression(&self.expressions, name)
+    }
+
+    /// What drives the avatar's face: its expressions, drivers, gaze route and look-at.
+    pub fn face(&self) -> AvatarFace<'_> {
+        AvatarFace { expressions: &self.expressions, drivers: &self.drivers, gaze: self.gaze, look_at: self.look_at() }
+    }
+
+    /// What export reads beyond the body: the original, the first-person flags and the retained source data.
+    pub fn export(&self) -> AvatarExport<'_> {
+        AvatarExport { source: &self.source, first_person: &self.first_person, retained: &self.retained }
     }
 
     /// The look-at the gaze routes read: the file's, or the defaults of its route (bone type on the bone route,
@@ -195,8 +204,8 @@ impl ImportedAvatar {
 
     /// Checks the avatar's references, so the stage and the evaluator can index without bounds worries:
     /// - at most [`MAX_INDEXED`] meshes and expressions;
-    /// - every mesh validates, follows bones the skeleton has, has as many inverse bind matrices as joints, and draws
-    ///   a material the avatar has;
+    /// - every mesh validates, follows bones the skeleton has, has as many inverse bind matrices as joints, has morph
+    ///   targets that fit its vertices, and draws a material the avatar has;
     /// - every anchor follows a bone the skeleton has;
     /// - every morph bind names a mesh and a target that exist, and every colour and UV bind a material that exists;
     /// - every driver names an expression that exists, and gaze channels drive expressions only on the native `ARKit`
@@ -240,6 +249,11 @@ impl ImportedAvatar {
         if mesh.inverse_bind.len() != mesh.mesh.joint_bones.len() {
             return Err(AvatarError::inverse_bind_length(index, mesh.inverse_bind.len(), mesh.mesh.joint_bones.len()));
         }
+        // The renderer checks the targets against the geometry at upload; check the same rule here, so a valid
+        // avatar uploads.
+        if let Some(morphs) = &mesh.morphs {
+            morphs.validate(mesh.mesh.geometry.positions.len()).map_err(|why| AvatarError::morphs(index, why))?;
+        }
         self.material(&mesh.mesh.material, || format!("mesh {index}"))
     }
 
@@ -279,6 +293,46 @@ impl ImportedAvatar {
     pub fn texture_bytes(&self) -> u64 {
         self.textures.values().map(texture_bytes).sum()
     }
+}
+
+/// The index of the expression called `name` in `expressions`.
+fn find_expression(expressions: &[AvatarExpression], name: &ExpressionName) -> Option<ExprIx> {
+    let index = expressions.iter().position(|e| &e.name == name)?;
+    u16::try_from(index).ok().map(ExprIx)
+}
+
+/// What drives an imported avatar's face, borrowed: what the expression evaluator and the look-at stage read
+/// ([`ImportedAvatar::face`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct AvatarFace<'a> {
+    /// The expressions, in file order.
+    pub expressions: &'a [AvatarExpression],
+    /// Which expression each channel drives.
+    pub drivers: &'a ChannelDrivers,
+    /// How the `eyeLook*` channels reach the model.
+    pub gaze: AvatarGaze,
+    /// The look-at the gaze routes read: the file's, or the route's defaults ([`ImportedAvatar::look_at`]).
+    pub look_at: AvatarLookAt,
+}
+
+impl AvatarFace<'_> {
+    /// The expression called `name`, if there is one.
+    pub fn expression(&self, name: &ExpressionName) -> Option<ExprIx> {
+        find_expression(self.expressions, name)
+    }
+}
+
+/// What export reads from an imported avatar beyond its body, borrowed ([`ImportedAvatar::export`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct AvatarExport<'a> {
+    /// The original file, in the store.
+    pub source: &'a ContentHash,
+    /// First-person flags by mesh.
+    pub first_person: &'a [FirstPersonFlag],
+    /// The source data export writes back exactly.
+    pub retained: &'a Retained,
 }
 
 /// GPU bytes of one texture: four bytes a texel, over the full mip chain down to 1×1 when it has mips.

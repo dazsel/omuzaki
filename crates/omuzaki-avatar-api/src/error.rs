@@ -6,6 +6,7 @@
 use omuzaki_anim_api::{Channel, ConstraintError, SpringError};
 use omuzaki_char_api::{JointRef, MaterialName};
 use omuzaki_core::mesh::MeshError;
+use omuzaki_render_api::RenderError;
 
 use crate::expression::ExprIx;
 
@@ -91,6 +92,15 @@ pub enum AvatarError {
         /// The broken rule.
         why: MeshError,
     },
+    /// A mesh's morph targets do not fit its geometry: an index past its vertices, or deltas that don't line up.
+    #[error("mesh {mesh}'s morph targets: {why}")]
+    #[non_exhaustive]
+    Morphs {
+        /// The mesh index.
+        mesh: usize,
+        /// The renderer's own morph rule that is broken.
+        why: RenderError,
+    },
     /// The spring set does not fit the skeleton.
     #[error("springs: {0}")]
     Springs(SpringError),
@@ -145,6 +155,11 @@ impl AvatarError {
     /// [`AvatarError::Mesh`].
     pub const fn mesh(mesh: usize, why: MeshError) -> Self {
         Self::Mesh { mesh, why }
+    }
+
+    /// [`AvatarError::Morphs`].
+    pub fn morphs(mesh: usize, why: RenderError) -> Self {
+        Self::Morphs { mesh, why }
     }
 
     /// [`AvatarError::UnknownSchema`].

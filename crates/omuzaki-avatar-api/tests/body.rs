@@ -47,6 +47,7 @@ fn a_built_view_is_what_the_stage_reads_field_for_field() {
     assert!(view.palette.is_some_and(|p| same(p, &b.palette)));
     assert!(same(view.runtimes, b.runtimes.as_slice()));
     assert_eq!(view.stature, b.stature);
+    assert_eq!((view.expressions, view.export), (None, None), "a built face is painted and exports from its parts");
 
     assert_eq!(view.anchors.len(), b.anchors.len());
     let listed: Vec<_> = view.anchors.all().map(|(p, id, a)| (p.cloned(), id.clone(), a.clone())).collect();

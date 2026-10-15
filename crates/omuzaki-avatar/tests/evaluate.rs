@@ -12,6 +12,7 @@ mod common;
 use common::{Run, avatar, ix};
 use omuzaki_anim_api::Channel;
 use omuzaki_avatar::buffers::MOVE_THRESHOLD;
+use omuzaki_avatar::evaluator::ExpressionEvaluator;
 use omuzaki_avatar_api::avatar::ImportedAvatar;
 use omuzaki_avatar_api::expression::{ColourBind, ExprIx, Overrides, UvBind};
 use omuzaki_avatar_api::gaze::{AvatarGaze, AvatarLookAt};
@@ -432,4 +433,19 @@ fn buffers_are_laid_out_mesh_after_mesh() {
     assert_eq!(run.weights.as_slice().len(), 5);
     assert_eq!(run.weights.expressions().len(), 2);
     assert!(run.binds.is_empty());
+}
+
+#[test]
+fn an_evaluator_from_the_body_view_matches_one_from_the_avatar() {
+    let mut a = binds();
+    a.gaze = AvatarGaze::Presets;
+    a.expressions.push(omuzaki_avatar_api::expression::AvatarExpression::new(common::name("lookUp")));
+    let mut from_avatar = Run::new(&a);
+    let body = omuzaki_avatar_api::body::Body::Imported(Box::new(a.clone()));
+    let evaluator = ExpressionEvaluator::from_view(&body.view()).expect("an imported body has expressions");
+    let mut from_view = Run { weights: evaluator.morph_weights(), binds: evaluator.bind_deltas(), evaluator };
+    let inputs = [(Channel::CUSTOM_00, 0.6), (Channel::EYE_LOOK_UP_LEFT, 0.5)];
+    from_avatar.eval(&inputs);
+    from_view.eval(&inputs);
+    assert_eq!((&from_view.weights, &from_view.binds), (&from_avatar.weights, &from_avatar.binds));
 }

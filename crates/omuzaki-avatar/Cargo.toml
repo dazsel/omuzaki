@@ -18,10 +18,10 @@ omuzaki-avatar-api = { path = "../omuzaki-avatar-api" }
 omuzaki-char-api = { path = "../omuzaki-char-api" }
 omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-io-api = { path = "../omuzaki-io-api" }
+omuzaki-render-api = { path = "../omuzaki-render-api" }
 
 [dev-dependencies]
 criterion.workspace = true
-omuzaki-render-api = { path = "../omuzaki-render-api" }
 omuzaki-store-api = { path = "../omuzaki-store-api" }
 
 [[bench]]
