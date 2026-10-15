@@ -262,6 +262,53 @@ fn replacing_a_shown_slot_fades_the_old_one_out_and_clear_fades_out_too() {
     assert_eq!(run(&mut t, &mut out, 0.25), 0.0);
 }
 
+/// Shows happy in slot 0, lets `replace` set slot 0 again mid fade-out, presses 0, and checks happy only fades out
+/// (it never climbs back) and angry then fades in from zero to full.
+fn repress_after_replacing(mode: TriggerMode, replace: impl FnOnce(&mut Triggers)) {
+    let mut t = rig(mode);
+    let mut out = layer();
+    t.press(0);
+    run(&mut t, &mut out, 0.5);
+    let happy = out.values;
+    replace(&mut t);
+    run(&mut t, &mut out, 0.05);
+    let mut last = out.weight;
+    assert!(last > 0.0 && last < 1.0 && out.values == happy, "still fading happy out");
+
+    t.press(0);
+    while out.is_active() && out.values == happy {
+        t.step(DT, &mut out);
+        assert!(out.weight <= last, "the replaced happy must not fade back in");
+        last = out.weight;
+    }
+    let angry = slot("angry", mode);
+    run(&mut t, &mut out, 0.5);
+    assert_eq!(out.weight, 1.0, "the replacement comes in while {mode:?} is down");
+    assert_eq!((out.values, out.mask), (angry.target, angry.mask));
+    assert_eq!(t.active(), Some(0));
+}
+
+#[test]
+fn pressing_a_replaced_slot_mid_fade_out_shows_the_replacement() {
+    for mode in [TriggerMode::Toggle, TriggerMode::Hold] {
+        repress_after_replacing(mode, |t| {
+            t.set_slot(0, Some(slot("angry", mode))).unwrap_or_else(|e| panic!("{e}"));
+        });
+    }
+}
+
+#[test]
+fn emptying_and_refilling_a_slot_mid_fade_out_shows_the_new_value() {
+    for mode in [TriggerMode::Toggle, TriggerMode::Hold] {
+        repress_after_replacing(mode, |t| {
+            t.set_slot(0, None).unwrap_or_else(|e| panic!("{e}"));
+            t.step(DT, &mut layer());
+            t.press(0);
+            t.set_slot(0, Some(slot("angry", mode))).unwrap_or_else(|e| panic!("{e}"));
+        });
+    }
+}
+
 #[test]
 fn expression_slot_masks_the_expression_channels() {
     let s = slot("happy", TriggerMode::Toggle);

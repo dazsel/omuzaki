@@ -72,6 +72,9 @@ pub enum TriggerError {
 struct Shown {
     index: usize,
     slot: TriggerSlot,
+    /// The slot was set again since this copy was taken: the copy only fades out, never back in, and whatever the
+    /// slot holds then comes in from zero.
+    replaced: bool,
 }
 
 /// Up to [`MAX_TRIGGERS`] expression slots, one shown at a time, faded.
@@ -90,7 +93,8 @@ impl Triggers {
         Self { slots: [None; MAX_TRIGGERS], fades, shown: None, wanted: None, fade: Fade(0.0) }
     }
 
-    /// Replaces a slot (`None` empties it). If it is shown, it fades out first.
+    /// Replaces a slot (`None` empties it). If it is shown, the old values fade out completely first, even if the
+    /// slot is pressed again meanwhile; then the new values fade in.
     ///
     /// # Errors
     /// [`TriggerError::SlotOutOfRange`] for a slot past the last, [`TriggerError::EmptyMask`] for a slot that overrides
@@ -101,6 +105,11 @@ impl Triggers {
             return Err(TriggerError::EmptyMask);
         }
         *entry = value;
+        if let Some(shown) = self.shown.as_mut()
+            && shown.index == slot
+        {
+            shown.replaced = true;
+        }
         if self.wanted == Some(slot) {
             self.wanted = None;
         }
@@ -134,11 +143,11 @@ impl Triggers {
             && let Some(index) = self.wanted
             && let Some(Some(slot)) = self.slots.get(index)
         {
-            self.shown = Some(Shown { index, slot: *slot });
+            self.shown = Some(Shown { index, slot: *slot, replaced: false });
             self.fade = Fade(0.0);
         }
         if let Some(shown) = self.shown {
-            if self.wanted == Some(shown.index) {
+            if self.wanted == Some(shown.index) && !shown.replaced {
                 self.fade.toward(1.0, dt, self.fades.in_s);
             } else if self.fade.toward(0.0, dt, self.fades.out_s) <= 0.0 {
                 // Fully out: the next step brings in whatever is wanted, so two expressions never share a step.
