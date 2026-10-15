@@ -20,12 +20,10 @@ use omuzaki_llm_api::provider::SecretValue;
 use serde_json::Value;
 
 use super::wire::probe_body;
-use crate::http::{Endpoint, HeaderValue, Http, Request};
+use crate::http::{Endpoint, HeaderValue, Http, MAX_METADATA_BODY, Request, bearer};
 
 /// The context window assumed when neither the server nor the configuration says (llm-api D6).
 pub(crate) const FALLBACK_CONTEXT: u64 = 8_192;
-/// The largest metadata answer that is read.
-const MAX_METADATA: usize = 4 * 1024 * 1024;
 
 /// What was found out about one model.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,7 +61,7 @@ impl Ask<'_> {
     fn headers(&self) -> Vec<(&'static str, HeaderValue)> {
         let mut headers = vec![("content-type", HeaderValue::Plain("application/json".into()))];
         if let Some(key) = self.key {
-            headers.push(("authorization", HeaderValue::Secret(SecretValue::new(format!("Bearer {}", key.expose())))));
+            headers.push(bearer(key));
         }
         headers
     }
@@ -72,7 +70,7 @@ impl Ask<'_> {
     async fn run(&self, request: Request) -> Result<(u16, Vec<u8>), LlmError> {
         let response = self.http.send(request).await.map_err(LlmError::from)?;
         let status = response.status;
-        let body = response.read_limited(MAX_METADATA).await.map_err(LlmError::from)?;
+        let body = response.read_limited(MAX_METADATA_BODY).await.map_err(LlmError::from)?;
         if matches!(status, 401 | 403) {
             return Err(LlmError::Auth);
         }

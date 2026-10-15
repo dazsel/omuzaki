@@ -20,7 +20,6 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["time"] }
 tokio-util.workspace = true
 toml.workspace = true
-tracing.workspace = true
 omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-llm-api = { path = "../omuzaki-llm-api" }
 
@@ -28,7 +27,6 @@ omuzaki-llm-api = { path = "../omuzaki-llm-api" }
 http-body-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
-proptest.workspace = true
 tokio = { workspace = true, features = ["net", "time", "test-util"] }
 omuzaki-llm-mock = { path = "../omuzaki-llm-mock" }
 

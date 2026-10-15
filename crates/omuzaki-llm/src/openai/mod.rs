@@ -25,7 +25,7 @@ use tokio::runtime::Handle;
 
 use crate::common::{KeyRef, key_ref, refuse_camera};
 use crate::engine::{self, Decoder, Fail, Job, Protocol, Timeouts};
-use crate::http::{Endpoint, HeaderValue, Http, Request};
+use crate::http::{Endpoint, HeaderValue, Http, MAX_METADATA_BODY, Request, bearer};
 use crate::prices::local_prices;
 use crate::retry::random_seed;
 use crate::runtime::{block_on, handle_of};
@@ -54,9 +54,7 @@ impl Protocol for Wire {
             ("content-type", HeaderValue::Plain("application/json".into())),
             ("accept", HeaderValue::Plain("text/event-stream".into())),
         ];
-        headers.extend(
-            key.map(|k| ("authorization", HeaderValue::Secret(SecretValue::new(format!("Bearer {}", k.expose()))))),
-        );
+        headers.extend(key.map(bearer));
         Ok(headers)
     }
 
@@ -225,12 +223,10 @@ fn list_models(config: &ProviderConfig, env: &ProviderEnv) -> Result<Vec<ModelIn
     let window = config.context_window;
     block_on(&handle, async move {
         let mut headers = vec![("accept", HeaderValue::Plain("application/json".into()))];
-        headers.extend(
-            key.map(|k| ("authorization", HeaderValue::Secret(SecretValue::new(format!("Bearer {}", k.expose()))))),
-        );
+        headers.extend(key.as_ref().map(bearer));
         let response = http.send(Request::get(endpoint.url("/v1/models"), headers)).await.map_err(LlmError::from)?;
         let status = response.status;
-        let body = response.read_limited(4 * 1024 * 1024).await.map_err(LlmError::from)?;
+        let body = response.read_limited(MAX_METADATA_BODY).await.map_err(LlmError::from)?;
         if status != 200 {
             return Err(match decode::classify(status, None, &body, window.unwrap_or(FALLBACK_CONTEXT)) {
                 Fail::Fatal(e) | Fail::Retry { error: e, .. } => e,

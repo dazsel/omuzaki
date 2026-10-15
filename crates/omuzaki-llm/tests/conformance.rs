@@ -7,6 +7,7 @@
 
 mod common;
 
+use std::fmt::Write as _;
 use std::time::Duration;
 
 use common::{End, Reply, Server, config, env, runtime_handle};
@@ -193,7 +194,7 @@ fn anthropic_wire(events: &[LlmEvent]) -> String {
     let mut index = 0u32;
     let mut text_open = false;
     let mut last_usage: Option<Usage> = None;
-    let mut close_text = |out: &mut String, index: &mut u32, open: &mut bool| {
+    let close_text = |out: &mut String, index: &mut u32, open: &mut bool| {
         if *open {
             out.push_str(&sse_event("content_block_stop", &json!({"type": "content_block_stop", "index": *index})));
             *index += 1;
@@ -282,11 +283,12 @@ fn anthropic_replies(script: &Script) -> Vec<Reply> {
     replies
 }
 
+// The scripts name a stand-in model; the client serves a priced one. The signature is `conformance::Make`'s.
+#[allow(clippy::needless_pass_by_value)]
 fn anthropic(script: Script) -> Box<dyn LlmClient> {
     let server = Server::start(anthropic_replies(&script));
     let runtime = runtime_handle();
-    let model = if script.model == "claude-haiku-5-5" { "claude-haiku-5-5" } else { "claude-haiku-5-5" };
-    let client = AnthropicClient::new(&config("anthropic", &server, model), &env(&runtime))
+    let client = AnthropicClient::new(&config("anthropic", &server, "claude-haiku-5-5"), &env(&runtime))
         .unwrap()
         .with_timeouts(quick())
         .with_seed(11);
@@ -354,7 +356,7 @@ fn openai_wire(events: &[LlmEvent]) -> String {
                 let usage = json!({"prompt_tokens": u.input + u.cache_read, "completion_tokens": u.output,
                                    "prompt_tokens_details": {"cached_tokens": u.cache_read}});
                 let body = json!({"id": "chatcmpl-1", "object": "chat.completion.chunk", "model": model, "choices": [], "usage": usage});
-                out.push_str(&format!("data: {body}\n\n"));
+                let _ = write!(out, "data: {body}\n\n");
             }
             LlmEvent::Stop(reason) => {
                 let finish = match reason {
@@ -379,6 +381,8 @@ fn accepts() -> Reply {
     Reply::status(200, r#"{"id":"p","object":"chat.completion","choices":[]}"#)
 }
 
+// The signature is `conformance::Make`'s.
+#[allow(clippy::needless_pass_by_value)]
 fn openai(script: Script) -> Box<dyn LlmClient> {
     // The first two answers belong to the capability probes (tools, then images).
     let mut replies = vec![accepts(), accepts()];

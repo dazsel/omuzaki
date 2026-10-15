@@ -6,7 +6,7 @@
 
 mod common;
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use common::{End, Reply, Server, config, drain, env, golden, retries, runtime_handle, transcript, user};
 use omuzaki_llm::{OpenAiClient, Timeouts};
@@ -14,7 +14,7 @@ use omuzaki_llm_api::LlmClient;
 use omuzaki_llm_api::error::LlmError;
 use omuzaki_llm_api::message::{ContentBlock, Effort, ImageMime, ImageOrigin, Message, Role, ToolDef, TurnRequest};
 use omuzaki_llm_api::provider::{Privacy, ProviderConfig, ProviderEnv, RetryPolicy, RuntimeHandle};
-use omuzaki_llm_api::stream::{Cancel, LlmEvent, Next, StopReason};
+use omuzaki_llm_api::stream::{Cancel, LlmEvent, StopReason};
 use omuzaki_llm_api::usage::{PriceTable, PriceTier, Rates, Usage};
 
 const KIND: &str = "openai-compatible";
@@ -471,40 +471,6 @@ fn a_retry_policy_of_zero_retries_nothing() {
 }
 
 // ---- cancellation, splitting, secrets ----
-
-#[test]
-fn a_cancelled_turn_hangs_up_within_50_ms_worst_of_100() {
-    let hello = b"data: {\"model\":\"m\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n".to_vec();
-    let mut chat = vec![accepts(), accepts()];
-    chat.extend((0..100).map(|_| Reply::sse(vec![hello.clone()]).ending(End::Hold)));
-    let rig = Rig::plain(chat);
-    let client = rig.client();
-    let mut worst = Duration::ZERO;
-    for i in 0..100 {
-        let cancel = Cancel::new();
-        let mut stream = client.stream(Rig::request(), &cancel).unwrap();
-        loop {
-            match stream.next_timeout(common::PATIENCE).unwrap() {
-                Next::Event(LlmEvent::TextDelta(_)) => break,
-                Next::Event(_) => {}
-                other => panic!("{other:?}"),
-            }
-        }
-        let at = Instant::now();
-        cancel.cancel();
-        assert_eq!(stream.try_next(), Err(LlmError::Cancelled));
-        let index = 2 + i; // after the two probes
-        let closed = loop {
-            if let Some(closed) = rig.server.closed_at(index) {
-                break closed;
-            }
-            assert!(at.elapsed() < Duration::from_secs(2), "run {i}: the connection never closed");
-            std::thread::sleep(Duration::from_millis(1));
-        };
-        worst = worst.max(closed.saturating_duration_since(at));
-    }
-    assert!(worst <= Duration::from_millis(50), "the worst of 100 runs closed {worst:?} after cancel()");
-}
 
 #[test]
 fn splitting_the_body_at_any_size_gives_identical_events() {

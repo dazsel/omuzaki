@@ -20,8 +20,8 @@ use tokio::runtime::Handle;
 
 use crate::common::{KeyRef, key_ref, refuse_camera};
 use crate::engine::{self, Decoder, Fail, Job, Protocol, Timeouts};
-use crate::http::{Endpoint, HeaderValue, Http, Request};
-use crate::prices::{anthropic_model, anthropic_models};
+use crate::http::{Endpoint, HeaderValue, Http, MAX_METADATA_BODY, Request};
+use crate::prices::anthropic_model;
 use crate::retry::random_seed;
 use crate::runtime::{block_on, handle_of};
 
@@ -213,7 +213,7 @@ fn list_models(config: &ProviderConfig, env: &ProviderEnv) -> Result<Vec<ModelIn
             ];
             let response = http.send(Request::get(url, headers)).await.map_err(LlmError::from)?;
             let status = response.status;
-            let body = response.read_limited(4 * 1024 * 1024).await.map_err(LlmError::from)?;
+            let body = response.read_limited(MAX_METADATA_BODY).await.map_err(LlmError::from)?;
             if status != 200 {
                 return Err(match decode::classify(status, None, &body, 0) {
                     Fail::Fatal(e) | Fail::Retry { error: e, .. } => e,
@@ -236,11 +236,3 @@ fn list_models(config: &ProviderConfig, env: &ProviderEnv) -> Result<Vec<ModelIn
 }
 
 register_llm_provider! { kind: "anthropic", manifest: manifest, build: build, list_models: list_models }
-
-/// Every model of the shipped table, for a caller that wants the list without the network.
-///
-/// # Errors
-/// `Malformed` if `prices.toml` does not parse.
-pub fn shipped_models() -> Result<Vec<ModelInfo>, LlmError> {
-    Ok(anthropic_models()?.iter().map(|m| m.info.clone()).collect())
-}

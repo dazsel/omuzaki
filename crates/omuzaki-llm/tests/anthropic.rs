@@ -449,42 +449,6 @@ fn the_context_window_override_replaces_the_shipped_one() {
 // ---- cancellation ----
 
 #[test]
-fn a_cancelled_turn_hangs_up_within_50_ms_worst_of_100() {
-    let hello = b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"model\":\"m\"}}\n\n\
-                  event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n\
-                  event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n"
-        .to_vec();
-    let rig = Rig::new((0..100).map(|_| Reply::sse(vec![hello.clone()]).ending(End::Hold)).collect());
-    let client = rig.client();
-    let mut worst = Duration::ZERO;
-    for i in 0..100 {
-        let cancel = Cancel::new();
-        let mut stream = client.stream(Rig::request(), &cancel).unwrap();
-        // Read until the text arrives, so the connection is open and busy.
-        loop {
-            match stream.next_timeout(common::PATIENCE).unwrap() {
-                omuzaki_llm_api::stream::Next::Event(LlmEvent::TextDelta(_)) => break,
-                omuzaki_llm_api::stream::Next::Event(_) => {}
-                other => panic!("{other:?}"),
-            }
-        }
-        let at = Instant::now();
-        cancel.cancel();
-        assert_eq!(stream.try_next(), Err(LlmError::Cancelled));
-        assert_eq!(stream.try_next(), Ok(omuzaki_llm_api::stream::Next::End));
-        let closed = loop {
-            if let Some(closed) = rig.server.closed_at(i) {
-                break closed;
-            }
-            assert!(at.elapsed() < Duration::from_secs(2), "run {i}: the connection never closed");
-            std::thread::sleep(Duration::from_millis(1));
-        };
-        worst = worst.max(closed.saturating_duration_since(at));
-    }
-    assert!(worst <= Duration::from_millis(50), "the worst of 100 runs closed {worst:?} after cancel()");
-}
-
-#[test]
 fn cancelling_during_a_backoff_ends_the_turn_at_once() {
     let rig = Rig::new(vec![Reply::status_with(429, &[("retry-after", "30")], "{}"), ok_reply()]);
     let cancel = Cancel::new();

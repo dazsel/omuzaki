@@ -21,6 +21,8 @@ pub(crate) const USER_AGENT: &str = concat!("Omuzaki/", env!("CARGO_PKG_VERSION"
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// The most of an error body that is read; the provider's message is short.
 pub(crate) const MAX_ERROR_BODY: usize = 64 * 1024;
+/// The most of a model list or other metadata answer that is read.
+pub(crate) const MAX_METADATA_BODY: usize = 4 * 1024 * 1024;
 
 /// A checked endpoint: where requests go, and whether that is this machine.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -88,6 +90,11 @@ impl From<HttpFail> for LlmError {
             HttpFail::Request(_) => Self::Malformed(fail.to_string()),
         }
     }
+}
+
+/// The `authorization` header that carries `key` as a bearer token.
+pub(crate) fn bearer(key: &SecretValue) -> (&'static str, HeaderValue) {
+    ("authorization", HeaderValue::Secret(SecretValue::new(format!("Bearer {}", key.expose()))))
 }
 
 /// The verbs the providers use: GET for listing and probing, POST for turns.

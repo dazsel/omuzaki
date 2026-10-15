@@ -4042,7 +4042,6 @@ dependencies = [
  "omuzaki-core",
  "omuzaki-llm-api",
  "omuzaki-llm-mock",
- "proptest",
  "reqwest",
  "serde",
  "serde_json",
@@ -4051,7 +4050,6 @@ dependencies = [
  "tokio",
  "tokio-util",
  "toml",
- "tracing",
 ]
 
 [[package]]
