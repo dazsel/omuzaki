@@ -21,14 +21,14 @@ use super::{FitError, FitParams, FitView, Objective, Score, Target};
 pub const MAX_EVALUATIONS: usize = 600;
 /// A sweep that gains less mean `IoU` than this has stalled; two stalled sweeps in a row end the fit.
 pub const MIN_GAIN: f64 = 1e-4;
-/// Golden-section steps after the first two probes of a line search.
-const STEPS: usize = 3;
+/// A line search ends when its bracket is this fraction of the width it started with (three golden steps), or when the
+/// evaluation budget is spent; nothing else ends it, in particular not equal costs.
+const BRACKET_TOLERANCE: f64 = 0.25;
 /// Width of the first sweep's window (and of the restart after a stalled sweep), as a fraction of a parameter's range.
 const WINDOW: f64 = 0.5;
 /// How much narrower each sweep's window is than the last, while the sweeps keep gaining.
 const SHRINK: f64 = 0.85;
-/// Two costs closer than this are the same. A parameter is not visible only if seven samples across its bracket all
-/// cost the same.
+/// Two costs closer than this are the same sample.
 const FLAT: f64 = 1e-12;
 /// How far past its end a sweep's net displacement is searched, in displacements.
 const PATTERN_REACH: f64 = 3.0;
@@ -279,10 +279,11 @@ impl Search<'_> {
 
 /// Golden-section search over `(a, b)` of `cost`, which gives `None` once the budget is spent (then this is `false`).
 ///
-/// Two interior probes that cost the same prove nothing at low resolution, where distinct values can rasterise alike,
-/// and four samples can straddle a dip between them. On a tie the ends and the midpoints of the three intervals are
-/// probed too: the parameter is called flat only if all seven agree. Otherwise the search goes on in the bracket
-/// round the lowest of the seven, so a dip found by the extra probes is followed, not forgotten.
+/// Equal costs never end the search. Two interior probes that cost the same prove nothing at low resolution, where
+/// distinct values can rasterise alike, and the samples can straddle a dip between them. On a tie the ends and the
+/// midpoints of the three intervals are probed too, and if one of the seven is lower the search goes on in the bracket
+/// round it. If all seven agree it goes on in the whole bracket, and a tie always keeps the lower half, so the search
+/// is deterministic and narrows towards the lower end; it stops at [`BRACKET_TOLERANCE`] or the budget.
 fn golden((a, b): (f64, f64), cost: &mut dyn FnMut(f64) -> Result<Option<f64>, FitError>) -> Result<bool, FitError> {
     let (c, d) = (b - INV_PHI * (b - a), a + INV_PHI * (b - a));
     let Some(fc) = cost(c)? else { return Ok(false) };
@@ -304,7 +305,7 @@ fn golden((a, b): (f64, f64), cost: &mut dyn FnMut(f64) -> Result<Option<f64>, F
         *f = v;
     }
     if samples.iter().all(|(_, f)| (f - fc).abs() < FLAT) {
-        return Ok(true);
+        return steps((a, b), (c, d), (fc, fd), cost);
     }
     let low = samples.iter().enumerate().fold(0, |m, (i, (_, f))| if *f < samples[m].1 { i } else { m });
     let (lo, hi) = (samples[low.saturating_sub(1)].0, samples[(low + 1).min(samples.len() - 1)].0);
@@ -314,15 +315,17 @@ fn golden((a, b): (f64, f64), cost: &mut dyn FnMut(f64) -> Result<Option<f64>, F
     steps((lo, hi), (c, d), (fc, fd), cost)
 }
 
-/// The golden-section steps from the bracket `(a, b)` whose interior probes `(c, d)` cost `(fc, fd)`.
+/// The golden-section steps from the bracket `(a, b)` whose interior probes `(c, d)` cost `(fc, fd)`, until the
+/// bracket is [`BRACKET_TOLERANCE`] of its starting width. A tie keeps the lower half.
 fn steps(
     (mut a, mut b): (f64, f64),
     (mut c, mut d): (f64, f64),
     (mut fc, mut fd): (f64, f64),
     cost: &mut dyn FnMut(f64) -> Result<Option<f64>, FitError>,
 ) -> Result<bool, FitError> {
-    for _ in 0..STEPS {
-        let probed = if fc < fd {
+    let stop = (b - a) * BRACKET_TOLERANCE;
+    while b - a > stop {
+        let probed = if fc <= fd {
             (b, d, fd) = (d, c, fc);
             c = b - INV_PHI * (b - a);
             cost(c)?.map(|f| fc = f)
@@ -373,13 +376,41 @@ mod tests {
         assert!(lowest == 0.0, "the dip near 0.5 was never probed");
     }
 
+    /// Equal costs end nothing: a constant cost is searched to the tolerance, not given up on after the extra probes.
     #[test]
-    fn a_constant_cost_is_flat_after_seven_probes() {
-        let mut probes = 0;
-        let ok = golden((0.0, 1.0), &mut |_| {
-            probes += 1;
+    fn a_constant_cost_is_searched_to_the_tolerance() {
+        let mut probes = Vec::new();
+        let ok = golden((0.0, 1.0), &mut |t| {
+            probes.push(t);
             Ok(Some(0.5))
         });
-        assert_eq!((ok, probes), (Ok(true), 7));
+        assert_eq!(ok, Ok(true));
+        assert!(probes.len() > 7, "{probes:?}");
+        let (lo, hi) =
+            (probes.iter().copied().fold(f64::MAX, f64::min), probes.iter().copied().fold(f64::MIN, f64::max));
+        assert!((lo, hi) == (0.0, 1.0), "{probes:?}");
+    }
+
+    /// A dip only near 0.1: no sample of the first seven lands in it, and the search still reaches it.
+    #[test]
+    fn a_dip_near_the_lower_end_is_reached() {
+        let mut lowest = f64::MAX;
+        let ok = golden((0.0, 1.0), &mut |t| {
+            let f = if (t - 0.1).abs() < 0.02 { 0.0 } else { 1.0 };
+            lowest = lowest.min(f);
+            Ok(Some(f))
+        });
+        assert_eq!(ok, Ok(true));
+        assert!(lowest == 0.0, "the dip near 0.1 was never probed");
+    }
+
+    #[test]
+    fn the_budget_ends_a_search_early() {
+        let mut left = 5;
+        let ok = golden((0.0, 1.0), &mut |_| {
+            left -= 1;
+            Ok((left >= 0).then_some(0.5))
+        });
+        assert_eq!(ok, Ok(false));
     }
 }
