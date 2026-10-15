@@ -130,7 +130,7 @@ fn two_tasks_three_attempts_recorded_give_six_history_lines_and_a_run_record() {
     let ws = workspace();
     let tmp = tempfile::tempdir().unwrap();
     let folders = Folders::new(tmp.path());
-    let report = play(ws.path(), &folders, "2026-10-13T10:00Z-manual", 3, 4, true);
+    let report = play(ws.path(), &folders, "2026-10-13T1000Z-manual", 3, 4, true);
     assert!(report.ok(), "{:?}", report.deviations);
 
     let history = history::read_attempts(&folders.status.join(HISTORY_FILE)).unwrap();
@@ -147,7 +147,7 @@ fn two_tasks_three_attempts_recorded_give_six_history_lines_and_a_run_record() {
     assert_eq!((first.checks[0].passed, first.checks[0].after.clone()), (Some(true), Some(json!("down"))));
     assert_eq!((first.tool_calls, first.tool_errors, first.turns, first.usd_micros), (1, 0, 0, 0));
     assert_eq!(first.commit, "abc1234");
-    assert_eq!(first.transcript, "evals/runs/2026-10-13T10:00Z-manual/demo.down/1/");
+    assert_eq!(first.transcript, "evals/runs/2026-10-13T1000Z-manual/demo.down/1/");
     assert!(
         first.tools_hash.starts_with("b3:")
             && first.prompt_hash.starts_with("b3:")
@@ -163,12 +163,12 @@ fn two_tasks_three_attempts_recorded_give_six_history_lines_and_a_run_record() {
     assert_eq!((run.oracles.played, run.oracles.deviations), (4, 0));
 
     // Evidence for every attempt and oracle; nothing left in the scratch.
-    let task_dir = folders.out.join("runs/2026-10-13T10:00Z-manual/demo.up");
+    let task_dir = folders.out.join("runs/2026-10-13T1000Z-manual/demo.up");
     for folder in ["1", "2", "3", "oracle-nope-fail", "oracle-null"] {
         assert!(task_dir.join(folder).join("transcript.jsonl").is_file(), "{folder}");
         assert!(task_dir.join(folder).join("checks.json").is_file(), "{folder}");
     }
-    assert!(!folders.scratch.join("2026-10-13T10:00Z-manual").exists(), "the scratch is gone");
+    assert!(!folders.scratch.join("2026-10-13T1000Z-manual").exists(), "the scratch is gone");
 }
 
 #[test]
@@ -176,7 +176,7 @@ fn nothing_is_recorded_without_record() {
     let ws = workspace();
     let tmp = tempfile::tempdir().unwrap();
     let folders = Folders::new(tmp.path());
-    let report = play(ws.path(), &folders, "2026-10-13T10:00Z-manual", 1, 2, false);
+    let report = play(ws.path(), &folders, "2026-10-13T1000Z-manual", 1, 2, false);
     assert!(report.ok());
     assert!(!folders.status.exists());
     assert_eq!(report.attempts.len(), 2);
@@ -188,7 +188,7 @@ fn the_order_of_the_history_does_not_depend_on_how_many_jobs_run_at_once() {
     let lines = |jobs: usize| -> Vec<AttemptRecord> {
         let tmp = tempfile::tempdir().unwrap();
         let folders = Folders::new(tmp.path());
-        play(ws.path(), &folders, "2026-10-13T10:00Z-manual", 2, jobs, true);
+        play(ws.path(), &folders, "2026-10-13T1000Z-manual", 2, jobs, true);
         let mut records = history::read_attempts(&folders.status.join(HISTORY_FILE)).unwrap();
         for record in &mut records {
             record.wall_ms = 0;
@@ -211,7 +211,7 @@ fn an_oracle_that_does_not_end_as_it_must_fails_the_run() {
     let report = play_with(
         ws.path(),
         &folders,
-        "2026-10-13T10:00Z-manual",
+        "2026-10-13T1000Z-manual",
         Selection { tasks: vec!["demo.up".to_owned()], ..Selection::default() },
         1,
         1,
@@ -238,7 +238,7 @@ fn a_script_that_cannot_run_is_an_error_attempt_and_too_many_make_the_run_invali
     );
     let tmp = tempfile::tempdir().unwrap();
     let folders = Folders::new(tmp.path());
-    let report = play(ws.path(), &folders, "2026-10-13T10:00Z-manual", 1, 2, true);
+    let report = play(ws.path(), &folders, "2026-10-13T1000Z-manual", 1, 2, true);
     assert!(!report.ok());
     let up = report.attempts.iter().find(|a| a.task == "demo.up").unwrap();
     assert_eq!(up.outcome, AttemptOutcome::Error);
@@ -267,7 +267,7 @@ fn a_caps_override_reaches_the_attempt() {
     let report = play_with(
         ws.path(),
         &folders,
-        "2026-10-13T10:00Z-manual",
+        "2026-10-13T1000Z-manual",
         Selection { tasks: vec!["demo.up".to_owned()], ..Selection::default() },
         1,
         1,
@@ -295,13 +295,13 @@ fn a_task_whose_fixture_is_on_the_private_list_is_refused_before_any_attempt() {
     write(&ws.path().join("crates/c/evals/clip.toml"), &clip.replace("fixture = 'fx'", "fixture = 'private'"));
     let tmp = tempfile::tempdir().unwrap();
     let folders = Folders::new(tmp.path());
-    let report = play(ws.path(), &folders, "2026-10-13T10:00Z-manual", 1, 2, true);
+    let report = play(ws.path(), &folders, "2026-10-13T1000Z-manual", 1, 2, true);
     assert!(!report.ok());
     let [refused] = report.refused.as_slice() else { panic!("{:?}", report.refused) };
     assert_eq!(refused.task, "demo.clip");
     assert!(refused.why.contains("private list"), "{}", refused.why);
     assert!(report.attempts.iter().all(|a| a.task != "demo.clip"), "no attempt of a refused task");
-    assert!(!folders.out.join("runs/2026-10-13T10:00Z-manual/demo.clip").exists());
+    assert!(!folders.out.join("runs/2026-10-13T1000Z-manual/demo.clip").exists());
     // The other two tasks still ran, and the refused task is in the run record with why.
     assert_eq!(report.run.tasks_run, ["demo.down", "demo.up"]);
     assert_eq!(report.run.tasks_skipped.len(), 1);
@@ -316,7 +316,7 @@ fn a_fixture_that_does_not_build_refuses_its_tasks() {
     );
     let tmp = tempfile::tempdir().unwrap();
     let folders = Folders::new(tmp.path());
-    let report = play(ws.path(), &folders, "2026-10-13T10:00Z-manual", 1, 1, false);
+    let report = play(ws.path(), &folders, "2026-10-13T1000Z-manual", 1, 1, false);
     assert!(!report.ok());
     assert_eq!(report.refused.len(), 2);
     assert!(report.refused[0].why.contains("did not build"), "{}", report.refused[0].why);
@@ -329,10 +329,10 @@ fn selectors_add_up() {
     let tmp = tempfile::tempdir().unwrap();
     let folders = Folders::new(tmp.path());
     let one = Selection { tasks: vec!["demo.d*".to_owned()], ..Selection::default() };
-    let report = play_with(ws.path(), &folders, "2026-10-13T10:00Z-manual", one, 1, 1, false);
+    let report = play_with(ws.path(), &folders, "2026-10-13T1000Z-manual", one, 1, 1, false);
     assert_eq!(report.run.tasks_run, ["demo.down"]);
     let both = Selection { tasks: vec!["demo.d*".to_owned()], crates: vec!["c".to_owned()], ..Selection::default() };
-    let report = play_with(ws.path(), &folders, "2026-10-13T10:00Z-second", both, 1, 1, false);
+    let report = play_with(ws.path(), &folders, "2026-10-13T1000Z-second", both, 1, 1, false);
     assert_eq!(report.run.tasks_run, ["demo.down", "demo.up"]);
 }
 
@@ -350,7 +350,7 @@ fn the_command_line_plays_the_sample_task_and_gc_keeps_what_an_issue_names() {
     let (out, status) = (tmp.path().join("out"), tmp.path().join("status"));
     let envs = [("OMUZAKI_EVAL_OUT", common::arg(&out)), ("OMUZAKI_EVAL_STATUS", common::arg(&status))];
     let root = common::arg(ws.path());
-    let old = "2026-01-01T00:00Z-manual";
+    let old = "2026-01-01T0000Z-manual";
     let run = |args: &[&str]| common::run(&[&["eval"], args, &["--root", root]].concat(), &envs);
 
     let done = run(&["run", "--attempts", "2", "--record", "--run-id", old]);
@@ -363,11 +363,11 @@ fn the_command_line_plays_the_sample_task_and_gc_keeps_what_an_issue_names() {
     fs::write(&issues, format!("Eval regression: transcripts in {old}/sample.rename-character/1")).unwrap();
     let kept = run(&["gc", "--apply", "--issues", common::arg(&issues)]);
     assert_eq!(common::code(&kept), 0, "{}", common::text(&kept.stderr));
-    assert!(common::text(&kept.stdout).contains("keep   2026-01-01T00:00Z-manual: named in an open issue"));
+    assert!(common::text(&kept.stdout).contains("keep   2026-01-01T0000Z-manual: named in an open issue"));
     assert!(out.join("runs").join(old).is_dir());
     fs::write(&issues, "nothing here").unwrap();
     let dry = run(&["gc", "--issues", common::arg(&issues)]);
-    assert!(common::text(&dry.stdout).contains("remove 2026-01-01T00:00Z-manual"), "{}", common::text(&dry.stdout));
+    assert!(common::text(&dry.stdout).contains("remove 2026-01-01T0000Z-manual"), "{}", common::text(&dry.stdout));
     assert!(out.join("runs").join(old).is_dir(), "a dry run removes nothing");
     let applied = run(&["gc", "--apply", "--issues", common::arg(&issues)]);
     assert_eq!(common::code(&applied), 0);
@@ -426,7 +426,7 @@ fn a_task_whose_id_cannot_be_a_folder_name_is_refused() {
     write(&ws.path().join("crates/c/evals/up.toml"), &toml.replace("id = 'demo.up'", "id = '..'"));
     let tmp = tempfile::tempdir().unwrap();
     let folders = Folders::new(tmp.path());
-    let report = play(ws.path(), &folders, "2026-10-13T10:00Z-manual", 1, 1, false);
+    let report = play(ws.path(), &folders, "2026-10-13T1000Z-manual", 1, 1, false);
     assert!(
         report.refused.iter().any(|r| r.task == ".." && r.why.contains("cannot name a folder")),
         "{:?}",
@@ -446,9 +446,9 @@ fn scripts_with_dotted_names_get_their_own_oracle_folders() {
     let tmp = tempfile::tempdir().unwrap();
     let folders = Folders::new(tmp.path());
     let select = Selection { tasks: vec!["demo.up".to_owned()], ..Selection::default() };
-    let report = play_with(ws.path(), &folders, "2026-10-13T10:00Z-manual", select, 1, 4, false);
+    let report = play_with(ws.path(), &folders, "2026-10-13T1000Z-manual", select, 1, 4, false);
     assert!(report.ok(), "{:?}", report.deviations);
-    let task_dir = folders.out.join("runs/2026-10-13T10:00Z-manual/demo.up");
+    let task_dir = folders.out.join("runs/2026-10-13T1000Z-manual/demo.up");
     for name in ["oracle-a.b-fail", "oracle-c.b-fail", "oracle-null-fail", "oracle-nope-fail", "oracle-null"] {
         assert!(task_dir.join(name).join("checks.json").is_file(), "{name}");
     }
@@ -506,11 +506,11 @@ fn the_gate_command_reads_the_history_and_exits_by_what_it_finds() {
         for day in 1..=10 {
             for i in 0..3 {
                 let outcome = if day <= 3 && i == 0 { "fail" } else { "pass" };
-                lines.push(history_line(&format!("2026-09-{day:02}T00:00Z-nightly"), outcome));
+                lines.push(history_line(&format!("2026-09-{day:02}T0000Z-nightly"), outcome));
             }
         }
         for i in 0..10 {
-            lines.push(history_line("2026-09-12T00:00Z-nightly", if i < window_passes { "pass" } else { "fail" }));
+            lines.push(history_line("2026-09-12T0000Z-nightly", if i < window_passes { "pass" } else { "fail" }));
         }
         fs::write(status.join(HISTORY_FILE), lines.join("\n") + "\n").unwrap();
     };

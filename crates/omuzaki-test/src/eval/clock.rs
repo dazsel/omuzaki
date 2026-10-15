@@ -14,20 +14,31 @@ pub fn utc_minute(time: SystemTime) -> String {
     format!("{year:04}-{month:02}-{day:02}T{:02}:{:02}Z", in_day / 3600, in_day % 3600 / 60)
 }
 
-/// The time a run id begins with (`2026-10-13T10:00Z-nightly` is 2026-10-13 10:00 UTC), if it begins with one.
+/// The minute `time` falls in, as a run id begins: `YYYY-MM-DDTHHMMZ`, with no colon, which Windows does not allow in a
+/// folder name.
+#[must_use]
+pub fn run_stamp(time: SystemTime) -> String {
+    utc_minute(time).replace(':', "")
+}
+
+/// The time a run id begins with (`2026-10-13T1000Z-nightly` is 2026-10-13 10:00 UTC), if it begins with one. The older
+/// form with a colon (`2026-10-13T10:00Z-nightly`) is read too.
 #[must_use]
 pub fn run_started(run_id: &str) -> Option<SystemTime> {
-    let stamp = run_id.get(..17)?;
+    let (stamp, hour_end, minute_from, minute_to, z) = match run_id.as_bytes().get(13) {
+        Some(b':') => (run_id.get(..17)?, 13, 14, 16, 16),
+        _ => (run_id.get(..16)?, 13, 13, 15, 15),
+    };
     let b = stamp.as_bytes();
     let digits = |from: usize, to: usize| -> Option<i64> {
         let part = stamp.get(from..to)?;
         part.bytes().all(|c| c.is_ascii_digit()).then(|| part.parse().ok()).flatten()
     };
-    if b[4] != b'-' || b[7] != b'-' || b[10] != b'T' || b[13] != b':' || b[16] != b'Z' {
+    if b[4] != b'-' || b[7] != b'-' || b[10] != b'T' || b[z] != b'Z' {
         return None;
     }
     let (year, month, day, hour, minute) =
-        (digits(0, 4)?, digits(5, 7)?, digits(8, 10)?, digits(11, 13)?, digits(14, 16)?);
+        (digits(0, 4)?, digits(5, 7)?, digits(8, 10)?, digits(11, hour_end)?, digits(minute_from, minute_to)?);
     if !(1..=12).contains(&month) || !(1..=31).contains(&day) || hour > 23 || minute > 59 {
         return None;
     }
@@ -78,15 +89,17 @@ mod tests {
     #[test]
     fn a_run_id_gives_back_the_time_it_began_with() {
         for secs in [0_u64, 951_868_800 + 3600 * 5 + 60 * 7, 1_709_164_800, 1_792_000_000] {
-            let id = format!("{}-nightly", utc_minute(at(secs)));
-            assert_eq!(run_started(&id), Some(at(secs - secs % 60)), "{id}");
+            for stamp in [utc_minute(at(secs)), run_stamp(at(secs))] {
+                let id = format!("{stamp}-nightly");
+                assert_eq!(run_started(&id), Some(at(secs - secs % 60)), "{id}");
+            }
         }
     }
 
     #[test]
     fn an_id_that_does_not_begin_with_a_time_has_none() {
         for bad in
-            ["", "manual-1", "2026-13-01T00:00Z-x", "2026-10-13T25:00Z", "2026-10-13 10:00Z", "2026-1O-13T10:00Z"]
+            ["", "manual-1", "2026-13-01T00:00Z-x", "2026-10-13T25:00Z", "2026-10-13T2500Z", "2026-10-13T10", "2026-10-13 10:00Z", "2026-1O-13T10:00Z"]
         {
             assert_eq!(run_started(bad), None, "{bad}");
         }

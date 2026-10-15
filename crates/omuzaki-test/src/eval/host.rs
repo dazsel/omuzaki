@@ -127,11 +127,11 @@ impl Host {
         let options = McpOptions::with_grants(grants).with_connections(connections);
         let server = McpServer::new(runner.clone(), options).map_err(|e| HostError::Connection(e.to_string()))?;
         let tool_names = ToolNames::of_server(&server);
-        let tools_hash = hash_tools(&server.tools());
+        let tools_hash = hash_tools(&server.tools())?;
         let (server_io, client_io) = tokio::io::duplex(PIPE_BYTES);
         let serving = server.clone();
         let task = runtime.spawn(async move { serving.serve(server_io).await });
-        let client = runtime.block_on(().serve(client_io)).map_err(|e| HostError::Connection(e.to_string()))?;
+        let client = bounded(&runtime, STARTUP, "the connection", ().serve(client_io))?;
         let reader = Reader::Runner(runner);
         let start_doc = read_document(&reader)?;
         Ok(Self {
@@ -178,8 +178,9 @@ impl Host {
         let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
             return Err(spawn_error("the child's pipes are not open".to_owned()));
         };
-        let client = runtime.block_on(().serve((stdout, stdin))).map_err(|e| HostError::Connection(e.to_string()))?;
-        let tools = runtime.block_on(client.list_all_tools()).map_err(|e| HostError::Connection(e.to_string()))?;
+        // A binary that never answers must not hang the run: past the limit the early return drops the child, which kills it.
+        let client = bounded(&runtime, STARTUP, "the connection", ().serve((stdout, stdin)))?;
+        let tools = bounded(&runtime, STARTUP, "the tool list", client.list_all_tools())?;
         let reader = Reader::Project(project.to_owned());
         let start_doc = read_document(&reader)?;
         Ok(Self {
@@ -189,7 +190,7 @@ impl Host {
             child: Some(child),
             reader,
             tool_names: ToolNames::of_tools(&tools),
-            tools_hash: hash_tools(&tools),
+            tools_hash: hash_tools(&tools)?,
             start_doc,
         })
     }
@@ -256,21 +257,27 @@ impl Host {
     fn shutdown(&mut self) -> Result<(), HostError> {
         let mut outcome = Ok(());
         if let Some(mut client) = self.client.take() {
-            // A closed pipe is the expected end of a session; what matters is that the server then stops.
-            let _ = self.runtime.block_on(client.close());
+            // A closed pipe is the expected end of a session; what matters is that the server then stops. A peer that
+            // does not answer is given up on after a while.
+            let _ = bounded(&self.runtime, SHUTDOWN, "closing the session", client.close());
         }
-        if let Some(task) = self.server.take() {
-            match self.runtime.block_on(task) {
-                Ok(Ok(())) => {}
+        if let Some(mut task) = self.server.take() {
+            match self.runtime.block_on(async { tokio::time::timeout(SHUTDOWN, &mut task).await }) {
+                Ok(Ok(Ok(()))) => {}
+                Ok(Ok(Err(e))) => outcome = Err(HostError::Connection(e.to_string())),
                 Ok(Err(e)) => outcome = Err(HostError::Connection(e.to_string())),
-                Err(e) => outcome = Err(HostError::Connection(e.to_string())),
+                Err(_) => {
+                    task.abort();
+                    outcome = Err(HostError::Connection("the server did not stop in time".to_owned()));
+                }
             }
         }
         if let Some(mut child) = self.child.take() {
             // Killed, then reaped: no child outlives the attempt (machine rules).
             let _ = self.runtime.block_on(async {
                 child.start_kill()?;
-                child.wait().await
+                let _ = tokio::time::timeout(SHUTDOWN, child.wait()).await;
+                Ok::<(), std::io::Error>(())
             });
         }
         outcome
@@ -285,12 +292,31 @@ impl Drop for Host {
 }
 
 /// The hash of a `tools/list` answer: the tools sorted by name, as JSON.
-fn hash_tools(tools: &[Tool]) -> String {
+fn hash_tools(tools: &[Tool]) -> Result<String, HostError> {
     let mut sorted: Vec<&Tool> = tools.iter().collect();
     sorted.sort_by(|a, b| a.name.cmp(&b.name));
-    // A tool serialises to JSON without failing; if it somehow did not, the empty hash would show the fault in history.
-    let bytes = serde_json::to_vec(&sorted).unwrap_or_default();
-    format!("b3:{}", blake3::hash(&bytes).to_hex())
+    // A hash of nothing would group the attempt under a tool surface that does not exist: a failure is harness trouble.
+    let bytes = serde_json::to_vec(&sorted)
+        .map_err(|e| HostError::Connection(format!("the tool list cannot be written as JSON: {e}")))?;
+    Ok(format!("b3:{}", blake3::hash(&bytes).to_hex()))
+}
+
+/// How long a session may take to start (the connection and the tool list), and to end.
+const STARTUP: Duration = Duration::from_secs(30);
+const SHUTDOWN: Duration = Duration::from_secs(10);
+
+/// Runs `future` on `runtime`, giving up after `limit`: a server that never answers is a harness error, not a hang.
+fn bounded<T, E: std::fmt::Display>(
+    runtime: &Runtime,
+    limit: Duration,
+    what: &str,
+    future: impl std::future::Future<Output = Result<T, E>>,
+) -> Result<T, HostError> {
+    match runtime.block_on(async { tokio::time::timeout(limit, future).await }) {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(e)) => Err(HostError::Connection(e.to_string())),
+        Err(_) => Err(HostError::Connection(format!("{what} did not complete within {}s", limit.as_secs()))),
+    }
 }
 
 fn runtime() -> Result<Runtime, HostError> {

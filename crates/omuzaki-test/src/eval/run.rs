@@ -110,6 +110,9 @@ pub enum RunError {
     /// The options are not usable.
     #[error("{0}")]
     Options(String),
+    /// Another run has the run id: its folder exists or its record is in the history. Nothing was written.
+    #[error("run `{0}` already has a folder or a record; give --run-id another name")]
+    Taken(String),
 }
 
 /// An attempt that did not end as it must.
@@ -207,7 +210,7 @@ pub fn run_scripted(
     if !KINDS.contains(&options.kind.as_str()) {
         return Err(RunError::Options(format!("run kind `{}` is not one of {}", options.kind, KINDS.join(", "))));
     }
-    check_run_id(options)?;
+    claim_run_id(options)?;
     let started = Instant::now();
     let mut selected: Vec<&TaskFile> = discovery.tasks.iter().filter(|f| options.select.picks(f)).collect();
     selected.sort_by(|a, b| a.task.id.cmp(&b.task.id));
@@ -278,25 +281,45 @@ pub fn run_scripted(
     Ok(RunReport { run, attempts, deviations, refused })
 }
 
-/// The characters of a run id: it becomes a folder name under the evidence and scratch folders.
-const RUN_ID_CHARS: &str = "letters, digits and `:._-`";
+/// The characters of a run id: it becomes a folder name under the evidence and scratch folders, on every platform.
+const RUN_ID_CHARS: &str = "letters, digits and `._-`";
 
-/// Refuses a run id that is not a plain folder name, or that names a run that already has a folder: two runs that share
-/// an id would share their scratch (one deleting the other's attempts) and overwrite each other's evidence.
-fn check_run_id(options: &Options<'_>) -> Result<(), RunError> {
+/// Refuses a run id that is not a plain folder name, then claims it: the evidence and scratch folders are created
+/// (`create_dir` fails when the folder exists, so of two runs that start together only one gets the id) and a record in
+/// the history counts as taken. Two runs that shared an id would share scratch and overwrite each other's evidence.
+fn claim_run_id(options: &Options<'_>) -> Result<(), RunError> {
     let id = &options.run_id;
     let plain = !id.is_empty()
         && id.len() <= 100
         && !id.starts_with('.')
-        && id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, ':' | '.' | '_' | '-'));
+        && id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
     if !plain {
         return Err(RunError::Options(format!(
             "run id `{id}` is not a folder name: use {RUN_ID_CHARS}, not starting with a dot"
         )));
     }
-    let taken = options.out.join("runs").join(id).exists() || options.scratch.join(id).exists();
-    if taken {
-        return Err(RunError::Options(format!("run `{id}` already has a folder; give --run-id another name")));
+    if let Some(status) = &options.status {
+        if history::read_runs(&status.join(RUNS_FILE))?.iter().any(|r| &r.run == id) {
+            return Err(RunError::Taken(id.clone()));
+        }
+    }
+    let evidence = options.out.join("runs").join(id);
+    let scratch = options.scratch.join(id);
+    let claim = |dir: &Path| -> Result<(), RunError> {
+        if let Some(parent) = dir.parent() {
+            fs::create_dir_all(parent).map_err(|source| RunError::Io { path: parent.to_owned(), source })?;
+        }
+        match fs::create_dir(dir) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Err(RunError::Taken(id.clone())),
+            Err(source) => Err(RunError::Io { path: dir.to_owned(), source }),
+        }
+    };
+    claim(&evidence)?;
+    if let Err(e) = claim(&scratch) {
+        // The evidence folder is the one just made, and empty.
+        let _ = fs::remove_dir(&evidence);
+        return Err(e);
     }
     Ok(())
 }
@@ -636,10 +659,10 @@ pub fn head_commit(root: &Path) -> String {
         .map_or_else(|| "unknown".to_owned(), |s| s.trim().to_owned())
 }
 
-/// A run id for a run that begins at `now`: the minute, then the kind (`2026-10-13T10:00Z-nightly`).
+/// A run id for a run that begins at `now`: the minute, then the kind (`2026-10-13T1000Z-nightly`).
 #[must_use]
 pub fn default_run_id(now: SystemTime, kind: &str) -> String {
-    format!("{}-{kind}", super::clock::utc_minute(now))
+    format!("{}-{kind}", super::clock::run_stamp(now))
 }
 
 #[cfg(test)]
@@ -666,7 +689,7 @@ mod tests {
 
     #[test]
     fn a_run_id_and_a_task_id_must_be_plain_folder_names() {
-        for good in ["2026-10-13T10:00Z-nightly", "manual-2", "a.b_c"] {
+        for good in ["2026-10-13T1000Z-nightly", "manual-2", "a.b_c"] {
             assert!(good.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, ':' | '.' | '_' | '-')), "{good}");
         }
         for good in ["face.more-oval", "a", "x-1.y"] {
@@ -680,7 +703,7 @@ mod tests {
     #[test]
     fn a_run_id_begins_with_the_minute_and_ends_with_the_kind() {
         let id = default_run_id(SystemTime::UNIX_EPOCH, "nightly");
-        assert_eq!(id, "1970-01-01T00:00Z-nightly");
+        assert_eq!(id, "1970-01-01T0000Z-nightly");
     }
 
     #[test]

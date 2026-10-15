@@ -676,11 +676,13 @@ fn eval_run(root: &Path, select: Selection, args: RunArgs) -> Verdict {
     let now = SystemTime::now();
     let out = assets_folder("OMUZAKI_EVAL_OUT", "evals")?;
     let status = if args.record { Some(assets_folder("OMUZAKI_EVAL_STATUS", "status")?) } else { None };
-    // Two runs in one minute must not share an id (they would share scratch and evidence): the second gets a suffix.
-    let run_id = match args.run_id {
-        Some(id) => id,
-        None => unused_run_id(&run::default_run_id(now, &args.kind), &out, status.as_deref())?,
+    // Two runs in one minute must not share an id (they would share scratch and evidence). The run claims its id
+    // atomically; a default id that is taken is tried again with a suffix.
+    let (run_id, generated) = match args.run_id {
+        Some(id) => (id, false),
+        None => (run::default_run_id(now, &args.kind), true),
     };
+    let base_id = run_id.clone();
     // Only a fixture that refers to an eval-set item needs the store, so a store that is not configured is not yet a fault.
     let store = SetStore::locate().ok();
     let item_path = |item: &eval::fixture::SetItemRef| -> Result<String, String> {
@@ -690,7 +692,7 @@ fn eval_run(root: &Path, select: Selection, args: RunArgs) -> Verdict {
         let hash = sets::store::parse_hash(&item.item).map_err(|e| e.to_string())?;
         store.verified_path(&hash).map(|path| path.display().to_string()).map_err(|e| e.to_string())
     };
-    let options = Options {
+    let mut options = Options {
         select,
         attempts: args.attempts,
         jobs: args.jobs,
@@ -704,24 +706,18 @@ fn eval_run(root: &Path, select: Selection, args: RunArgs) -> Verdict {
         item_path: &item_path,
         store: None,
     };
-    let report = run::run_scripted(&discovery, defaults, &private, &options)?;
+    let mut suffix = 1_u32;
+    let report = loop {
+        match run::run_scripted(&discovery, defaults, &private, &options) {
+            Err(run::RunError::Taken(_)) if generated && suffix < 1000 => {
+                suffix += 1;
+                options.run_id = format!("{base_id}-{suffix}");
+            }
+            other => break other?,
+        }
+    };
     print_run(&report);
     Ok(report.ok())
-}
-
-/// `base`, or `base-2`, `base-3`, ... : the first id that has no run folder and no run record yet.
-fn unused_run_id(base: &str, out: &Path, status: Option<&Path>) -> Result<String, Box<dyn Error>> {
-    let known: Vec<String> = match status {
-        Some(dir) => history::read_runs(&dir.join(history::RUNS_FILE))?.into_iter().map(|r| r.run).collect(),
-        None => Vec::new(),
-    };
-    for n in 1_u32.. {
-        let id = if n == 1 { base.to_owned() } else { format!("{base}-{n}") };
-        if !out.join("runs").join(&id).exists() && !known.contains(&id) {
-            return Ok(id);
-        }
-    }
-    Err("no unused run id".into())
 }
 
 fn print_run(report: &RunReport) {

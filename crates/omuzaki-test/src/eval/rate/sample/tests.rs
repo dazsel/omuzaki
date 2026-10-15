@@ -36,7 +36,7 @@ fn discovery() -> Discovery {
 fn record(task: &str, attempt: u32, outcome: AttemptOutcome, driver: &str) -> AttemptRecord {
     AttemptRecord {
         v: SCHEMA,
-        run: "2026-10-13T10:00Z-nightly".to_owned(),
+        run: "2026-10-13T1000Z-nightly".to_owned(),
         commit: "c".to_owned(),
         family: "task".to_owned(),
         driver: driver.to_owned(),
@@ -95,7 +95,7 @@ fn the_sample_takes_one_task_after_another_so_none_fills_it() {
     assert_eq!(ids(&sample), ["a.one#4", "b.two#2", "a.one#3", "b.two#1"]);
     assert_eq!(sample[1].questions, ["Is it blue?", "Is it tall?"]);
     assert_eq!(sample[0].prompt, "Prompt of a.one.");
-    assert_eq!(sample[0].id, "2026-10-13T10:00Z-nightly/a.one/4");
+    assert_eq!(sample[0].id, "2026-10-13T1000Z-nightly/a.one/4");
     // Asked for more than there are, it returns what there is.
     assert_eq!(super::sample(&discovery(), &history, &[], 50).len(), 6);
 }
@@ -111,7 +111,7 @@ fn rated_items_and_unfit_attempts_are_skipped() {
         record("c.none", 1, AttemptOutcome::Pass, "reference"),
         record("gone.task", 1, AttemptOutcome::Pass, "reference"),
     ];
-    let already = rated("2026-10-13T10:00Z-nightly/a.one/2", "2026-10-13T10:00Z");
+    let already = rated("2026-10-13T1000Z-nightly/a.one/2", "2026-10-13T10:00Z");
     assert_eq!(ids(&sample(&discovery(), &history, std::slice::from_ref(&already), 10)), ["a.one#1"]);
     history.truncate(2);
     assert_eq!(ids(&sample(&discovery(), &history, &[already], 10)), ["a.one#1"]);

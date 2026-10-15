@@ -20,8 +20,8 @@ const TOKEN: &str = "0123456789abcdef";
 
 fn item(task: &str, attempt: u32, questions: &[&str]) -> Item {
     Item {
-        id: format!("2026-10-13T10:00Z-nightly/{task}/{attempt}"),
-        run: "2026-10-13T10:00Z-nightly".to_owned(),
+        id: format!("2026-10-13T1000Z-nightly/{task}/{attempt}"),
+        run: "2026-10-13T1000Z-nightly".to_owned(),
         task: task.to_owned(),
         attempt,
         prompt: format!("Make it <b>{task}</b>"),
@@ -72,7 +72,7 @@ fn post_rate(port: u16, body: &str) -> Reply {
 fn start(dir: &Path) -> (u16, thread::JoinHandle<Ended>, Vec<Item>) {
     let items = vec![item("a.one", 1, &["Round?", "Blue?"]), item("b.two", 2, &["Tall?"])];
     // Item 0 has a "before" picture and no "after"; item 1 has none.
-    let kept = dir.join("runs/2026-10-13T10:00Z-nightly/a.one/1");
+    let kept = dir.join("runs/2026-10-13T1000Z-nightly/a.one/1");
     fs::create_dir_all(&kept).unwrap();
     fs::write(kept.join("before.png"), b"\x89PNG not really").unwrap();
     let session = Session {
@@ -242,7 +242,7 @@ fn agreement_world(dir: &Path) -> (String, String) {
         let score = if attempt <= 10 { 1.0 } else { 0.0 };
         lines.push(
             json!({
-                "v": 1, "run": "2026-10-13T10:00Z-nightly", "commit": "abc1234", "family": "task", "driver": "reference",
+                "v": 1, "run": "2026-10-13T1000Z-nightly", "commit": "abc1234", "family": "task", "driver": "reference",
                 "model": "m", "effort": null, "task": "face.oval", "task_version": 1, "task_hash": "b3:x", "feature": "QG-03",
                 "attempt": attempt, "outcome": "pass", "reason": null,
                 "checks": [{"id": "hard", "hard": true, "passed": true}, {"id": "reads-oval", "hard": false, "score": score}],
@@ -258,7 +258,7 @@ fn agreement_world(dir: &Path) -> (String, String) {
     let ratings = dir.join("evals/ratings");
     fs::create_dir_all(&ratings).unwrap();
     let rating = |attempt: u32, answer: &str| {
-        json!({"item": format!("2026-10-13T10:00Z-nightly/face.oval/{attempt}"), "task": "face.oval", "attempt": attempt,
+        json!({"item": format!("2026-10-13T1000Z-nightly/face.oval/{attempt}"), "task": "face.oval", "attempt": attempt,
                "question": "Is the face more oval?", "answer": answer, "rater": "r", "at": "2026-10-13T11:00Z"})
         .to_string()
     };

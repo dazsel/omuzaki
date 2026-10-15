@@ -365,10 +365,10 @@ mod tests {
 
     #[test]
     fn a_promoted_script_remembers_the_run_it_came_from() {
-        let script = Script::from_log(&EventLog::new()).promoted_from("2026-10-13T10:00Z-nightly/t.x/2");
-        assert_eq!(script.promoted_run(), Some("2026-10-13T10:00Z-nightly"));
+        let script = Script::from_log(&EventLog::new()).promoted_from("2026-10-13T1000Z-nightly/t.x/2");
+        assert_eq!(script.promoted_run(), Some("2026-10-13T1000Z-nightly"));
         let text = script.to_jsonl().unwrap();
-        assert_eq!(text, "{\"promoted_from\":\"2026-10-13T10:00Z-nightly/t.x/2\"}\n");
+        assert_eq!(text, "{\"promoted_from\":\"2026-10-13T1000Z-nightly/t.x/2\"}\n");
         assert_eq!(Script::parse(&text).unwrap().promoted_from, script.promoted_from);
         for bad in ["{\"promoted_from\": 3}", "{\"promoted_from\": \"a\", \"call\": \"x\"}"] {
             assert!(Script::parse(bad).is_err(), "{bad}");
