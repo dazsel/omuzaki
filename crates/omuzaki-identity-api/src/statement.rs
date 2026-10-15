@@ -160,7 +160,7 @@ mod tests {
     fn required_signers_name_both_keys_of_a_two_key_statement() {
         assert_eq!(KeyStatement::rotate(key(1), key(2)).required_signers(), vec![key(1), key(2)]);
         assert_eq!(KeyStatement::also(key(3), key(4)).required_signers(), vec![key(3), key(4)]);
-        assert!(KeyStatement::revoke(key(1), RevokeReason::Compromised).required_signers().is_empty());
+        assert_eq!(KeyStatement::revoke(key(1), RevokeReason::Compromised).required_signers(), Vec::<KeyId>::new());
         assert_eq!(KeyStatement::bind("i", "s", key(5)).required_signers(), vec![key(5)]);
     }
 }
