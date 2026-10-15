@@ -9,8 +9,11 @@ use omuzaki_char_api::{BuiltCharacter, BuiltMesh, MaterialName, MaterialSpec, Pa
 use omuzaki_face_api::{DEFAULT_PX_PER_M, FaceLayerId, FaceLayerSpec};
 use omuzaki_render_api::{Material, MaterialId, MeshId, MeshOptions, MeshUsage, Renderer, TextureId};
 
+use self::release::{discard_textures, release_in_order};
 use crate::error::StageError;
-use crate::release::{discard_textures, release_in_order};
+
+// Private: the release order is an upload detail, so it lives here and not in the crate's public module list.
+mod release;
 
 /// How to upload.
 #[derive(Copy, Clone, Debug, PartialEq)]

@@ -11,9 +11,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Number, Value, json};
 
 use crate::ops::mapping::repaint_report;
-use crate::ops::shared::check::check_edit;
-use crate::ops::shared::edit::{changed, diff, stored_face};
-use crate::ops::shared::path::{channel, template};
+use crate::ops_shared::check::check_edit;
+use crate::ops_shared::edit::{changed, diff, stored_face};
+use crate::ops_shared::path::{channel, template};
 
 /// Sets channel values in a character's `rest` layer, the face's resting bus: a name of a channel and its number. Channels
 /// that aren't named keep their values. Use `face.set_rest` for the resting face in paint terms instead.

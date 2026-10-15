@@ -27,7 +27,7 @@ use omuzaki_render_api::{AlphaMode, Light, Pass, RenderError};
 
 use super::{FramePass, Outcome, PassCx};
 use crate::gpu::DEPTH_FORMAT;
-use crate::resource::mesh::vertex_layout;
+use crate::resource::mesh::vertex_layouts;
 use crate::shadow::bounds::MeshBounds;
 use crate::shadow::fit::{self, Aabb};
 use crate::shadow::map::{self, NORMAL_BIAS};
@@ -90,7 +90,7 @@ impl Shadows {
                 module: &self.module,
                 entry_point: Some("vs_main"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[Some(vertex_layout())],
+                buffers: &vertex_layouts(),
             },
             primitive: wgpu::PrimitiveState {
                 front_face: if variant.mirrored { wgpu::FrontFace::Cw } else { wgpu::FrontFace::Ccw },

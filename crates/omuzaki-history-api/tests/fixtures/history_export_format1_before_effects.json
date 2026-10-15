@@ -1,0 +1,69 @@
+{
+  "format": 1,
+  "actors": [
+    {
+      "actor": {
+        "kind": "person",
+        "name": "pat"
+      },
+      "undo": [
+        {
+          "tx": 2,
+          "label": "rename",
+          "patch": {
+            "changes": [
+              {
+                "path": "layers/a",
+                "before": null,
+                "after": 3
+              }
+            ]
+          },
+          "scopes": [
+            "read"
+          ]
+        }
+      ],
+      "redo": [
+        {
+          "tx": 3,
+          "label": "move",
+          "patch": {
+            "changes": [
+              {
+                "path": "layers/a",
+                "before": null,
+                "after": 3
+              }
+            ]
+          },
+          "scopes": []
+        }
+      ],
+      "last_seen": 1760000000000
+    }
+  ],
+  "open": [
+    {
+      "owner": {
+        "kind": "system"
+      },
+      "tx": 4,
+      "label": "open",
+      "patch": {
+        "changes": [
+          {
+            "path": "layers/a",
+            "before": null,
+            "after": 3
+          }
+        ]
+      },
+      "scopes": [
+        "read"
+      ]
+    }
+  ],
+  "next_tx": 5,
+  "next_seq": 9
+}

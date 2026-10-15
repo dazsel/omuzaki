@@ -189,7 +189,20 @@ impl Gpu {
     /// # Errors
     /// `Backend` if the GPU is still busy when `limit` has passed.
     pub(crate) fn wait_idle(&self, limit: Duration) -> Result<(), RenderError> {
-        wait_outcome(&self.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(limit) }), limit)
+        // Writes queued by `write_buffer` (a dynamic mesh's update) only reach the GPU, and free their staging memory,
+        // with the next submission; an empty one flushes them so the wait covers them. Flushing can fail (the
+        // command encoder may not allocate), and wgpu panics on an error nobody captured, so it runs in a scope.
+        let flushed = scope_errors(&self.device, "a queue flush", || {
+            self.queue.submit(std::iter::empty());
+            Ok(())
+        });
+        let polled = self.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(limit) });
+        let waited = wait_outcome(&polled, limit);
+        // Polling is what delivers a device loss, and a flush on a lost device failing is the loss, not a new fault.
+        match flushed {
+            Err(_) if self.check_alive().is_err() => waited,
+            flushed => flushed.and(waited),
+        }
     }
 
     /// `DeviceLost` if the device has gone.
@@ -417,6 +430,15 @@ mod tests {
         assert_eq!(gpu.wait_idle(Duration::from_secs(30)), Ok(()));
         // Out of time before it starts: an error or an answer, but it returns.
         let _ = gpu.wait_idle(Duration::ZERO);
+    }
+
+    #[test]
+    fn waiting_on_a_destroyed_device_flushes_inside_a_scope_and_never_panics() {
+        let gpu = Gpu::open_headless(HeadlessOptions { adapter: AdapterPreference::Software }).unwrap();
+        gpu.device.destroy();
+        // Whatever the flush reports, it is a value (or the loss delivered by the poll), never wgpu's default panic.
+        let _ = gpu.wait_idle(Duration::from_secs(30));
+        let _ = gpu.wait_idle(Duration::from_secs(30));
     }
 
     #[test]

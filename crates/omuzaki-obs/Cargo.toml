@@ -18,6 +18,8 @@ thiserror.workspace = true
 [lints]
 workspace = true
 
-# Native only: the later client task opens a WebSocket to a local app
 [package.metadata.omuzaki]
+kind = "Implementation"
+summary = "the OBS Studio remote-control protocol (obs-websocket v5) as data (BR-19): the `Frame` and `Message`, the handshake, the supported requests with their responses, `ObsEvent`, the `auth_response` answer, `EventSubscription` and `CloseCode`; clean-room from the public protocol document, no I/O, native only"
+# Native only: the later client task opens a WebSocket to a local app
 wasm = false
