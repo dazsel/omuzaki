@@ -15,9 +15,13 @@ libloading = "0.9"
 omuzaki-ai-api = { path = "../omuzaki-ai-api" }
 omuzaki-ai-native = { path = "../omuzaki-ai-native" }
 omuzaki-core = { path = "../omuzaki-core" }
+# Stages the copy of the archive under its digest's folder (src/library.rs).
+tempfile.workspace = true
 
 [dev-dependencies]
+flate2.workspace = true
 sha2.workspace = true
+tar.workspace = true
 
 [lints]
 workspace = true

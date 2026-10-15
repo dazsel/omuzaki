@@ -4,7 +4,7 @@
 #![allow(unsafe_code)] // loading a native library and resolving its C functions; each call says why it is sound
 
 use std::ffi::{c_char, c_int, c_void};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use libloading::Library;
 use omuzaki_ai_api::LoadError;
@@ -92,8 +92,14 @@ pub struct Loaded {
     /// The build whose library was loaded.
     pub build: &'static Build,
     /// Its function table, kept by the session (#1750).
-    #[expect(dead_code, reason = "read by the session (#1750)")]
     pub(crate) api: &'static Api,
+}
+
+/// Two results are the same load when they share the one function table a process keeps.
+impl PartialEq for Loaded {
+    fn eq(&self, other: &Self) -> bool {
+        self.build == other.build && std::ptr::eq(self.api, other.api)
+    }
 }
 
 /// The library this process loaded, once [`load_archive`] has loaded one.
@@ -102,28 +108,60 @@ pub fn loaded() -> Option<Loaded> {
     PROCESS.get().and_then(Result::ok).map(|api| Loaded { build, api })
 }
 
-/// Loads LiteRT from `archive` once per process: the library is unpacked beside it, loaded, every symbol of design
-/// §3.2 resolved, and `TfLiteVersion()`, `TfLiteSchemaVersion()` and `omz_litert_abi()` checked. Later calls return
-/// the first result, whichever archive they name.
+/// Loads LiteRT from `archive` once per process: the library is unpacked into a folder named by the archive's
+/// SHA-256, loaded, every symbol of design §3.2 resolved, and `TfLiteVersion()`, `TfLiteSchemaVersion()` and
+/// `omz_litert_abi()` checked. Later calls return the first result, success or error, without reading `archive`.
 ///
 /// The caller must have checked `archive` against `sha256` first: until a published pin exists (#1748) the archive's
 /// trust root is the SHA-256 of the CI run that built it (`OMUZAKI_LITERT_SHA256`), not a hash in this repository.
 ///
 /// # Errors
-/// [`LoadError::Runtime`] when there is no build for this platform, or the archive can't be unpacked, or the library
-/// can't be loaded, lacks a symbol or reports another version, schema or ABI.
+/// [`LoadError::Runtime`] when there is no build for this platform, `sha256` is not 64 hex digits, or the archive
+/// can't be unpacked, or the library can't be loaded, lacks a symbol or reports another version, schema or ABI.
 pub fn load_archive(archive: &Path, sha256: &str) -> Result<Loaded, LoadError> {
     let (os, arch) = (std::env::consts::OS, std::env::consts::ARCH);
     let build = select_here().ok_or_else(|| LoadError::Runtime(format!("there is no LiteRT build for {os}-{arch}")))?;
+    let api = load_in(&PROCESS, build, archive, sha256, &open)?;
+    Ok(Loaded { build, api })
+}
+
+/// [`load_archive`] over an explicit once-guard and `open`, so tests can count what is opened without a library.
+fn load_in<T: Clone>(
+    process: &LoadOnce<T, LoadError>,
+    build: &Build,
+    archive: &Path,
+    sha256: &str,
+    open: &dyn Fn(&Path) -> Result<T, LoadError>,
+) -> Result<T, LoadError> {
+    // Settled first: a later call needs neither the archive nor the folder it was unpacked into.
+    if let Some(settled) = process.get() {
+        return settled;
+    }
+    let dir =
+        unpack(build, archive, sha256).map_err(|e| LoadError::Runtime(format!("unpacking {}: {e}", build.asset)))?;
+    process.get_or_init(build.asset, sha256, || open(&dir.join(build.library)))
+}
+
+/// The library of `archive` unpacked under `<archive's folder>/litert-<sha256>/`, so a new archive under the same file
+/// name never reuses another build's unpacked library. The archive is copied there first, because the shared
+/// unpacker names its folder after the archive's path.
+fn unpack(build: &Build, archive: &Path, sha256: &str) -> std::io::Result<PathBuf> {
+    if sha256.len() != 64 || !sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "the SHA-256 is not 64 hex digits"));
+    }
+    let folder = archive.parent().unwrap_or(Path::new(".")).join(format!("litert-{}", sha256.to_ascii_lowercase()));
+    let keyed = folder.join(build.asset);
+    if !keyed.is_file() {
+        std::fs::create_dir_all(&folder)?;
+        let staged = tempfile::NamedTempFile::new_in(&folder)?;
+        std::fs::copy(archive, staged.path())?;
+        staged.persist(&keyed).map_err(|e| e.error)?;
+    }
     let kind = match build.archive {
         Archive::TarGz => ArchiveKind::TarGz,
         Archive::Zip => ArchiveKind::Zip,
     };
-    let dir = Unpack::new(kind, &build.lib_dir(), build.library)
-        .run(archive)
-        .map_err(|e| LoadError::Runtime(format!("unpacking {}: {e}", build.asset)))?;
-    let api = PROCESS.get_or_init(build.asset, sha256, || open(&dir.join(build.library)))?;
-    Ok(Loaded { build, api })
+    Unpack::new(kind, &build.lib_dir(), build.library).run(&keyed)
 }
 
 /// Loads the library at `path`, resolves its table and checks it; the table is kept for the life of the process.
@@ -213,6 +251,76 @@ mod tests {
         let long = [b'x'; MAX_VERSION_BYTES + 1];
         assert_eq!(read(&long), None, "no NUL within the cap");
         assert_eq!(unsafe { c_text(std::ptr::null()) }, None);
+    }
+
+    const SHA_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const SHA_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    /// Writes an archive of `build` whose library holds `library`, under the build's asset name in `dir`.
+    fn archive(dir: &Path, build: &Build, library: &[u8]) -> PathBuf {
+        use std::io::Write as _;
+        let mut tar = tar::Builder::new(Vec::new());
+        let mut header = tar::Header::new_gnu();
+        header.set_size(library.len() as u64);
+        header.set_mode(0o755);
+        header.set_cksum();
+        tar.append_data(&mut header, format!("{}/{}", build.lib_dir(), build.library), library).unwrap();
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        gz.write_all(&tar.into_inner().unwrap()).unwrap();
+        let path = dir.join(build.asset);
+        std::fs::write(&path, gz.finish().unwrap()).unwrap();
+        path
+    }
+
+    /// An `open` that returns the library's bytes and counts its calls.
+    fn reading(count: &std::cell::Cell<u32>) -> impl Fn(&Path) -> Result<Vec<u8>, LoadError> + '_ {
+        move |path| {
+            count.set(count.get() + 1);
+            Ok(std::fs::read(path).unwrap())
+        }
+    }
+
+    #[test]
+    fn a_new_archive_under_the_same_name_unpacks_its_own_library() {
+        let (dir, build, count) = (tempfile::tempdir().unwrap(), &crate::builds::BUILDS[0], std::cell::Cell::new(0));
+        let path = archive(dir.path(), build, b"first build");
+        assert_eq!(load_in(&LoadOnce::new(), build, &path, SHA_A, &reading(&count)), Ok(b"first build".to_vec()));
+        // A later process: the same file name in the same folder, another build.
+        archive(dir.path(), build, b"second build");
+        assert_eq!(load_in(&LoadOnce::new(), build, &path, SHA_B, &reading(&count)), Ok(b"second build".to_vec()));
+    }
+
+    #[test]
+    fn later_calls_return_the_first_result_without_reading_the_archive() {
+        let (dir, build, count) = (tempfile::tempdir().unwrap(), &crate::builds::BUILDS[0], std::cell::Cell::new(0));
+        let path = archive(dir.path(), build, b"library");
+        let process = LoadOnce::new();
+        let first = load_in(&process, build, &path, SHA_A, &reading(&count));
+        std::fs::remove_dir_all(dir.path()).unwrap();
+        assert_eq!(load_in(&process, build, &path, SHA_A, &reading(&count)), first);
+        assert_eq!(count.get(), 1, "opened once");
+        // A failure is settled the same way.
+        let failing = LoadOnce::new();
+        let refuse = |_: &Path| -> Result<Vec<u8>, LoadError> { Err(LoadError::Runtime("refused".to_owned())) };
+        let dir = tempfile::tempdir().unwrap();
+        let path = archive(dir.path(), build, b"library");
+        let first = load_in(&failing, build, &path, SHA_A, &refuse);
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(load_in(&failing, build, &path, SHA_A, &reading(&count)), first);
+        assert_eq!(count.get(), 1, "never opened after the failure");
+    }
+
+    #[test]
+    fn a_digest_that_is_not_64_hex_digits_is_refused_before_any_path_is_made() {
+        let (dir, build, count) = (tempfile::tempdir().unwrap(), &crate::builds::BUILDS[0], std::cell::Cell::new(0));
+        let path = archive(dir.path(), build, b"library");
+        for digest in ["", "../../etc", &SHA_A[1..], &format!("{}g", &SHA_A[1..])] {
+            assert!(matches!(
+                load_in(&LoadOnce::new(), build, &path, digest, &reading(&count)),
+                Err(LoadError::Runtime(_))
+            ));
+        }
+        assert_eq!(count.get(), 0);
     }
 
     #[test]
