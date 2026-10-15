@@ -43,6 +43,8 @@ one state issue (only three issues can be pinned, so the table is the index).
 Work that spans areas has one owner: the Render, stage and V0 lead owns V0 integration. A new crate joins the area
 whose table row names its domain. Ask on #2 when that isn't clear.
 
+How work is cut into large changes, one agent and one PR each, is in [`large-changes.md`](large-changes.md).
+
 ### Decision rights
 
 - **Leads decide inside their area,** without asking the Director: review rulings, how a change is cut,
