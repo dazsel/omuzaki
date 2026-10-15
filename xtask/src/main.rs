@@ -83,6 +83,7 @@ enum Command {
 }
 
 fn main() -> ExitCode {
+    xtask::link(); // the library contract's registrations (ADR 0015)
     let cli = Cli::parse();
     match run(&cli) {
         Ok(code) => code,
