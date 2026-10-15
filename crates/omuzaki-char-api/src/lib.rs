@@ -34,6 +34,7 @@ pub mod geometry;
 pub mod hair;
 pub mod head;
 pub mod ids;
+pub mod keying;
 pub mod kind;
 pub mod look;
 pub mod rig;

@@ -37,6 +37,7 @@ fn workspace() -> Fixture {
         "crates/omuzaki-cli/src/lib.rs",
         "omuzaki_core::define_link! {\n    include!(concat!(env!(\"OUT_DIR\"), \"/link_calls.rs\"));\n}\n",
     );
+    fixture.write("crates/omuzaki-cli/build.rs", "fn main() {\n    omuzaki_link_build::emit();\n}\n");
     add_under(
         &fixture,
         "omuzaki-cli",
@@ -78,4 +79,86 @@ fn a_registering_dependency_without_the_flag_is_not_generated_and_lint_links_say
     let run = fixture.xtask(&["lint-links"]);
     assert!(!run.success, "{}", run.stdout);
     assert!(run.stdout.contains("omuzaki-cli → omuzaki-char: never calls `omuzaki_char::link()`"), "{}", run.stdout);
+}
+
+#[test]
+fn listing_the_generator_is_not_enough_the_build_script_must_call_it_and_the_library_include_its_output() {
+    let no_emit = workspace();
+    no_emit.write("crates/omuzaki-cli/build.rs", "fn main() {}\n");
+    let run = no_emit.xtask(&["lint-links"]);
+    assert!(!run.success, "{}", run.stdout);
+    assert!(run.stdout.contains("omuzaki-cli → omuzaki-char: never calls"), "{}", run.stdout);
+
+    let commented = workspace();
+    commented.write(
+        "crates/omuzaki-cli/src/lib.rs",
+        "omuzaki_core::define_link! {\n    // include!(concat!(env!(\"OUT_DIR\"), \"/link_calls.rs\"));\n}\n",
+    );
+    let run = commented.xtask(&["lint-links"]);
+    assert!(!run.success, "a commented-out include is not wiring: {}", run.stdout);
+
+    let conditional = workspace();
+    conditional.write(
+        "crates/omuzaki-cli/src/lib.rs",
+        "omuzaki_core::define_link! {\n    #[cfg(any())]\n    include!(concat!(env!(\"OUT_DIR\"), \"/link_calls.rs\"));\n}\n",
+    );
+    let run = conditional.xtask(&["lint-links"]);
+    assert!(!run.success, "a cfg-disabled include is not wiring: {}", run.stdout);
+    assert!(
+        run.stdout.contains("omuzaki-cli: lists `omuzaki-link-build`, but its generated link list is not wired"),
+        "{}",
+        run.stdout
+    );
+    assert!(run.stdout.contains("omuzaki-cli → omuzaki-char: never calls"), "{}", run.stdout);
+
+    let unused_emit = workspace();
+    unused_emit
+        .write("crates/omuzaki-cli/build.rs", "fn main() {}\nfn unused() {\n    omuzaki_link_build::emit();\n}\n");
+    let run = unused_emit.xtask(&["lint-links"]);
+    assert!(!run.success, "an emit() nobody calls is not wiring: {}", run.stdout);
+
+    let no_include = workspace();
+    no_include.write("crates/omuzaki-cli/src/lib.rs", "omuzaki_core::define_link!();\n");
+    let run = no_include.xtask(&["lint-links"]);
+    assert!(!run.success, "{}", run.stdout);
+    assert!(run.stdout.contains("omuzaki-cli → omuzaki-char: never calls"), "{}", run.stdout);
+}
+
+/// The same App, but its dependencies are inherited from `[workspace.dependencies]`.
+fn inheriting_workspace() -> Fixture {
+    let fixture = workspace();
+    fixture.write(
+        "Cargo.toml",
+        "[workspace]\nresolver = \"3\"\nmembers = [\"crates/*\"]\n[workspace.dependencies]\nomuzaki-char = { path = \"crates/omuzaki-char\" }\n",
+    );
+    let path = "crates/omuzaki-cli/Cargo.toml";
+    let manifest = std::fs::read_to_string(fixture.root().join(path)).unwrap();
+    fixture.write(
+        path,
+        &manifest.replace("omuzaki-char = { path = \"../omuzaki-char\" }", "omuzaki-char.workspace = true"),
+    );
+    fixture
+}
+
+#[test]
+fn a_workspace_inherited_registering_dependency_is_generated_and_seen_by_the_gate() {
+    let fixture = inheriting_workspace();
+    assert!(generated(&fixture).contains("    omuzaki_char::link();\n"), "{}", generated(&fixture));
+    let run = fixture.xtask(&["lint-links"]);
+    assert!(run.success, "{}{}", run.stdout, run.stderr);
+
+    // With the wiring broken the scanner must still see the dependency, so the gate names the missing call.
+    fixture.write("crates/omuzaki-cli/build.rs", "fn main() {}\n");
+    let run = fixture.xtask(&["lint-links"]);
+    assert!(!run.success, "an inherited dependency must not hide from the scan: {}", run.stdout);
+    assert!(run.stdout.contains("omuzaki-cli → omuzaki-char: never calls"), "{}", run.stdout);
+}
+
+#[test]
+fn an_inherited_dependency_the_workspace_does_not_define_fails_the_scan_loudly() {
+    let fixture = inheriting_workspace();
+    fixture.write("Cargo.toml", "[workspace]\nresolver = \"3\"\nmembers = [\"crates/*\"]\n");
+    // Cargo itself rejects this workspace; the scan used by the Apps' link gates (which never run cargo) must too.
+    let error = xtask::registry::Sources::scan(fixture.root()).unwrap_err().to_string();
+    assert!(error.contains("has no `omuzaki-char`"), "{error}");
 }

@@ -186,12 +186,10 @@ impl PartKind for MockBody {
         let fit = Arc::new(TorsoFit::new(params));
         let (mesh, id) = torso_mesh(ctx, fit.as_ref(), "torso", "mock-body-skin")?;
         let material = skin_material(params, |r| ctx.colour(r))?;
-        Ok(PartOutput {
-            meshes: vec![mesh],
-            materials: vec![(id, material)],
-            publishes: Publishes::default().with::<FitFact>(fit).with::<CollidersFact>(TorsoFit::colliders()),
-            ..PartOutput::default()
-        })
+        Ok(PartOutput::new()
+            .with_meshes(vec![mesh])
+            .with_materials(vec![(id, material)])
+            .with_publishes(Publishes::default().with::<FitFact>(fit).with::<CollidersFact>(TorsoFit::colliders())))
     }
 
     fn recolour(params: &BodyParams, output: &mut PartOutput, ctx: &RecolourCtx<'_>) -> Result<Recoloured, BuildError> {
@@ -253,12 +251,10 @@ impl PartKind for MockGarment {
         let name = ctx.part.to_string();
         let (mesh, id) = torso_mesh(ctx, envelope.as_ref(), &name, &format!("mock-garment-{name}"))?;
         let material = garment_material(params, |r| ctx.colour(r))?;
-        Ok(PartOutput {
-            meshes: vec![mesh],
-            materials: vec![(id, material)],
-            publishes: Publishes::default().with::<FitFact>(envelope),
-            ..PartOutput::default()
-        })
+        Ok(PartOutput::new()
+            .with_meshes(vec![mesh])
+            .with_materials(vec![(id, material)])
+            .with_publishes(Publishes::default().with::<FitFact>(envelope)))
     }
 
     fn recolour(

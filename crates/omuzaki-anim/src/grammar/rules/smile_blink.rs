@@ -18,7 +18,6 @@
 use omuzaki_anim_api::Channel;
 
 use crate::grammar::{GrammarRule, RuleCtx};
-use crate::register_grammar_rule;
 
 /// The smile level above which the face counts as smiling (the prototype's `0.42`).
 const SMILE_ON: f32 = 0.42;

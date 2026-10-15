@@ -37,7 +37,7 @@ pub fn lint_links(sources: &Sources) -> Vec<String> {
             .filter_map(|dep| sources.get(dep).ok())
             .collect();
         if linkable.contains(name) && !defines_link(krate) {
-            let registrations = krate.lib.len();
+            let registrations = krate.library_registrations().len();
             let why = if registrations > 0 {
                 format!("its library makes {registrations} registration(s)")
             } else {
@@ -49,6 +49,13 @@ pub fn lint_links(sources: &Sources) -> Vec<String> {
             };
             let root = krate.krate.lib.as_ref().map_or_else(String::new, |(_, root)| root.display().to_string());
             out.push(format!("{name}: defines no `link()` (`omuzaki_core::define_link!`) in {root}, but {why}"));
+        }
+        if krate.krate.lists_link_build && !krate.krate.generates_links {
+            out.push(format!(
+                "{name}: lists `omuzaki-link-build`, but its generated link list is not wired: `build.rs` `main` must call \
+                 `omuzaki_link_build::emit()`, and `define_link!` must contain an unconditional (no attribute, not nested) \
+                 `include!(concat!(env!(\"OUT_DIR\"), \"/link_calls.rs\"))`"
+            ));
         }
         let calls = krate.link_calls();
         for dep in linkable_deps {
@@ -79,7 +86,7 @@ fn is_linkable<'a>(sources: &'a Sources, krate: &'a ScannedCrate, memo: &mut BTr
     }
     let mut linkable = false;
     if krate.krate.lib.is_some() {
-        linkable = defines_link(krate) || !krate.lib.is_empty();
+        linkable = defines_link(krate) || !krate.library_registrations().is_empty();
         for dep in krate.krate.deps.iter().filter_map(|dep| sources.get(dep).ok()) {
             linkable |= is_linkable(sources, dep, memo);
         }
