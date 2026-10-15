@@ -1,3 +1,9 @@
+---
+title: "Live caption translation"
+summary: "Live caption translation"
+area: research
+---
+
 # Live caption translation
 
 Question: BR-13 says "captions can be translated live into another language". Which licence-clean models can do it on the device, for English and the five other launch languages (ja, ko, zh-Hans, es-419, pt-BR), at what latency, and should it be a model slot in the registry (`translate_text@1`), a connector the person pays for, or both?

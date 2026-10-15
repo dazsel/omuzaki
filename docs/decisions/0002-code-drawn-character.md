@@ -1,3 +1,9 @@
+---
+title: "0002: Characters are drawn in code, on a VRM skeleton (2026-10-11)"
+summary: "Characters are drawn in code, on a VRM skeleton"
+area: decisions
+---
+
 # 0002: Characters are drawn in code, on a VRM skeleton (2026-10-11)
 
 **Context.** Generated meshes never matched the sheets and carried no usable expressions (journals 04–05). A code-drawn character (parametric parts plus a painted canvas face) matched the sheet and could be edited part by part.

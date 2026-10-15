@@ -1,3 +1,9 @@
+---
+title: "Licence audit (2026-10-11)"
+summary: "Licence audit (2026-10-11)"
+area: research
+---
+
 # Licence audit (2026-10-11)
 
 **Policy.** The product must not depend on any non-commercial-licensed library, software, model, dataset or asset. Copyleft is allowed only where we can comply commercially (LGPL dynamically linked, MPL-2.0 at file level). GPL or AGPL code must not be linked into the shipped product. GPL tools run as separate external programs (Blender, ComfyUI) are fine, and are noted where they appear.

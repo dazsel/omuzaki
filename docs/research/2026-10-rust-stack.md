@@ -1,3 +1,9 @@
+---
+title: "Rust stack survey (2026-10-11)"
+summary: "Rust crates for rendering, UI, assets, ML, media, MCP, plugins, collab."
+area: research
+---
+
 # Rust stack survey (2026-10-11)
 
 > Research pass for the v3 spec. Versions and licences as checked on 2026-10-11; "(?)" = unverified.

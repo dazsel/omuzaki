@@ -1,3 +1,9 @@
+---
+title: "Platform export: limit tables, the fit pipeline and platform profiles"
+summary: "platform exports (ADR 0047): limit tables as data, the fit pipeline (strip, drop, meshes, textures, atlas, bones, decimate), platform profiles, the `platform.*` ops, variants and the worked Quest example."
+area: design
+---
+
 # Platform export: limit tables, the fit pipeline and platform profiles
 
 **Status:** proposal. **ADR:** 0047.

@@ -1,3 +1,9 @@
+---
+title: "How the project operates"
+summary: "How the project operates"
+area: maintainers
+---
+
 # How the project operates
 
 The operating rules for everyone who builds Omuzaki: the Director, the area leads and every implementer session. The

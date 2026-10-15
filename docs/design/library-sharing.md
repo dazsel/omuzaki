@@ -1,3 +1,9 @@
+---
+title: "Shared library sources: the team library, the marketplace client and the signed index"
+summary: "shared library sources: the team library and marketplace client, the signed index, review state and the team licence (ADR 0057)."
+area: design
+---
+
 # Shared library sources: the team library, the marketplace client and the signed index
 
 **Status:** accepted in part: the crate placement and Q4 to Q9 of §6 are ruled (Runtime lead, on #1534); Q1 to Q3 stay open as the owner's. **Feature:** LB-07 (and the client half of LB-08). **Decision record:** `docs/decisions/0057-library-sharing.md`.
