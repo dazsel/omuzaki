@@ -5,7 +5,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use omuzaki_history_api::JournalStatus;
-use omuzaki_ops_api::{Actor, Cause, CauseKind, Mode, OpError, OpKind, Request, Runner, Scope};
+use omuzaki_ops_api::{
+    Actor, Budget, Cause, CauseKind, Limits, Mode, OpError, OpKind, Request, Runner, Scope, SessionSpec, Transport,
+};
 use rmcp::ErrorData as McpError;
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::{
@@ -118,7 +120,29 @@ impl Session {
     fn actor(&self, context: &RequestContext<RoleServer>) -> &Actor {
         self.actor.get_or_init(|| {
             let client = context.client_info().map_or_else(|| "mcp-client".to_owned(), |info| info.name);
-            Actor::Agent { id: format!("{client}#{}", self.serial), model: None }
+            let named = Actor::Agent { id: format!("{client}#{}", self.serial), model: None };
+            let Some(host) = &self.shared.sessions else { return named };
+            // The registry names the agent. If it will not open a session the agent keeps the name it would have had,
+            // and an executor refuses it, so a failure here never widens anything.
+            let spec = SessionSpec {
+                transport: if self.http { Transport::Http { token: "mcp".to_owned() } } else { Transport::Stdio },
+                client,
+                model: None,
+                on_behalf_of: host.person.clone(),
+                grants: self.view.grants.clone(),
+                budget: Budget::default(),
+                limits: Limits::default(),
+                parent: None,
+                role: None,
+                fence: Vec::new(),
+            };
+            host.sessions.open(spec).map_or_else(
+                |e| {
+                    tracing::warn!(error = %e, "couldn't open a session for a connection");
+                    named
+                },
+                |info| info.actor,
+            )
         })
     }
 

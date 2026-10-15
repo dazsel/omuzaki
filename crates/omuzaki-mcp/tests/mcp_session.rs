@@ -11,7 +11,10 @@ use std::time::Duration;
 
 use common::{FakeRunner, FakeRunnerExt, data, fake_runner, text, tool};
 use omuzaki_mcp::{McpOptions, McpServer, ServerError};
-use omuzaki_ops_api::{Actor, Cause, CauseKind, Grants, OpKind, Scope};
+use omuzaki_ops_api::{
+    Actor, ApprovalId, Budget, Cause, CauseKind, Decision, EndReason, Ended, Grants, OpError, OpKind, PendingApproval,
+    Resolution, Scope, SessionId, SessionInfo, SessionSpec, SessionUndo, Sessions, Spend,
+};
 use rmcp::ClientLifecycleMode;
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ClientCapabilities, ClientConfig, Implementation, ProtocolVersion,
@@ -603,6 +606,72 @@ async fn a_transaction_left_open_is_rolled_back_when_the_agent_disconnects() {
 }
 
 // ---- identity and protocol versions -------------------------------------------------------------------------------
+
+/// A registry that refuses every session, and keeps what it was asked for.
+#[derive(Default)]
+struct OneSession(std::sync::Mutex<Vec<SessionSpec>>);
+
+impl Sessions for OneSession {
+    fn open(&self, spec: SessionSpec) -> Result<SessionInfo, OpError> {
+        self.0.lock().unwrap().push(spec);
+        Err(OpError::unsupported("not needed by this test"))
+    }
+    fn sessions(&self) -> Vec<SessionInfo> {
+        Vec::new()
+    }
+    fn session(&self, _: SessionId) -> Option<SessionInfo> {
+        None
+    }
+    fn session_of(&self, _: &Actor) -> Option<SessionInfo> {
+        None
+    }
+    fn pause(&self, _: SessionId, _: &Actor) -> Result<SessionInfo, OpError> {
+        Err(OpError::unsupported("no"))
+    }
+    fn resume(&self, _: SessionId, _: &Actor) -> Result<SessionInfo, OpError> {
+        Err(OpError::unsupported("no"))
+    }
+    fn set_grants(&self, _: SessionId, _: Grants, _: &Actor) -> Result<SessionInfo, OpError> {
+        Err(OpError::unsupported("no"))
+    }
+    fn set_budget(&self, _: SessionId, _: Budget, _: &Actor) -> Result<SessionInfo, OpError> {
+        Err(OpError::unsupported("no"))
+    }
+    fn charge(&self, _: SessionId, _: Spend) -> Result<SessionInfo, OpError> {
+        Err(OpError::unsupported("no"))
+    }
+    fn end(&self, _: SessionId, _: EndReason) -> Result<Ended, OpError> {
+        Err(OpError::unsupported("no"))
+    }
+    fn undo_session(&self, _: SessionId, _: &Actor) -> Result<SessionUndo, OpError> {
+        Err(OpError::unsupported("no"))
+    }
+    fn approvals(&self) -> Vec<PendingApproval> {
+        Vec::new()
+    }
+    fn resolve(&self, _: ApprovalId, _: Decision, _: &Actor) -> Result<Resolution, OpError> {
+        Err(OpError::unsupported("no"))
+    }
+}
+
+#[tokio::test]
+async fn a_connection_asks_the_registry_for_its_session_and_keeps_its_own_name_if_refused() {
+    let registry = Arc::new(OneSession::default());
+    let alice = Actor::Person { name: "alice".into() };
+    let options = McpOptions::default().with_sessions(registry.clone(), alice.clone());
+    let h = Harness::connect_with(options, Lifecycle::Initialize).await;
+    h.call("face_set_blend", json!({"character": "mira", "blend": 0.4})).await;
+
+    // The registry saw the client, the person and the server's grants.
+    let specs = registry.0.lock().unwrap();
+    assert_eq!(specs.len(), 1, "one session per connection");
+    assert_eq!((specs[0].client.as_str(), &specs[0].on_behalf_of), ("test-client", &alice));
+    assert_eq!(specs[0].grants, Grants::agent_default());
+    drop(specs);
+    // It refused, so the agent keeps the name it would have had: a runner that checks sessions refuses it too.
+    assert_eq!(h.runner.records()[0].actor, Actor::Agent { id: "test-client#1".into(), model: None });
+    h.disconnect().await;
+}
 
 #[tokio::test]
 async fn edits_are_attributed_to_the_connected_client() {

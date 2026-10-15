@@ -20,7 +20,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::{Rig, agent, agent_request, drain, path, person, request, rig};
+use super::{Rig, agent, agent_request, drain, open_agents, path, person, request, rig};
 
 /// What a test job's `work` does once it is running.
 #[derive(Serialize, Deserialize, JsonSchema, Default)]
@@ -307,6 +307,7 @@ fn budgeted(usd_micros: u64) -> Rig {
     let clock = Arc::new(FakeClock::new(Seconds(0.0)));
     let exec =
         Executor::new(Box::new(MemDoc::from_value(json!({}))), clock.clone()).unwrap().with_job_budget(usd_micros);
+    open_agents(&exec);
     Rig { exec, clock }
 }
 
@@ -925,6 +926,7 @@ fn a_shutdown_during_a_slow_finish_leaves_the_document_unchanged() {
 fn journalled(log: Arc<Mutex<Vec<String>>>) -> Executor {
     let clock = Arc::new(FakeClock::new(Seconds(0.0)));
     let exec = Executor::new(Box::new(MemDoc::from_value(json!({}))), clock).unwrap().with_job_budget(1_000_000);
+    open_agents(&exec);
     exec.with_job_journal(move |_, args| {
         let key = args["key"].as_str().unwrap_or_default().to_owned();
         assert_ne!(key, "panics", "the journal panicked");

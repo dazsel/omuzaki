@@ -9,7 +9,7 @@ use std::sync::Arc;
 use omuzaki_core::time::Seconds;
 use omuzaki_ops_api::{
     Actor, EndReason, ErrorCode, ErrorDetail, Grants, OpError, PauseReason, Principals, SessionChange, SessionId,
-    SessionInfo, SessionSpec, SessionState,
+    SessionInfo, SessionSpec, SessionState, Spend,
 };
 
 /// Longest client name kept in an agent id.
@@ -111,7 +111,7 @@ impl Registry {
             grants: spec.grants,
             fence: Vec::new(),
             budget: spec.budget,
-            spent: Default::default(),
+            spent: Spend::default(),
             limits: spec.limits,
             state: SessionState::Active,
             open_tx: None,
@@ -194,21 +194,20 @@ impl Registry {
     /// here: those resume through their own flows.
     pub(crate) fn resume(&mut self, id: SessionId, by: &Actor) -> Result<Vec<(SessionId, SessionChange)>, OpError> {
         let root = self.control(id, by)?;
-        match &self.sessions[root].state {
-            SessionState::Paused { reason: reason @ (PauseReason::Budget | PauseReason::Pairing), .. } => {
-                return Err(OpError::denied(format!(
-                    "session {} is paused for {reason:?} and cannot be resumed here",
-                    id.0
-                ))
-                .hint("resolve what it waits for first"));
-            }
-            _ => {}
+        if let SessionState::Paused { reason: reason @ (PauseReason::Budget | PauseReason::Pairing), .. } =
+            &self.sessions[root].state
+        {
+            return Err(OpError::denied(format!(
+                "session {} is paused for {reason:?} and cannot be resumed here",
+                id.0
+            ))
+            .hint("resolve what it waits for first"));
         }
-        if let Some(parent) = self.sessions[root].parent.and_then(|p| self.find(p)) {
-            if parent.state != SessionState::Active {
-                return Err(OpError::conflict(format!("its parent, session {}, is not active", parent.id.0))
-                    .hint("resume the parent first"));
-            }
+        if let Some(parent) = self.sessions[root].parent.and_then(|p| self.find(p))
+            && parent.state != SessionState::Active
+        {
+            return Err(OpError::conflict(format!("its parent, session {}, is not active", parent.id.0))
+                .hint("resume the parent first"));
         }
         let resumable = |s: &SessionInfo| {
             matches!(
@@ -314,6 +313,41 @@ fn paused(by: &Actor, reason: PauseReason) -> OpError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn spec() -> SessionSpec {
+        SessionSpec {
+            transport: omuzaki_ops_api::Transport::Stdio,
+            client: "claude".into(),
+            model: None,
+            on_behalf_of: Actor::Person { name: "alice".into() },
+            grants: Grants::agent_default(),
+            budget: omuzaki_ops_api::Budget::default(),
+            limits: omuzaki_ops_api::Limits::default(),
+            parent: None,
+            role: None,
+            fence: Vec::new(),
+        }
+    }
+
+    /// Nothing sets these pauses yet (budgets and pairing are other tasks), so the state is put there by hand.
+    #[test]
+    fn a_person_cannot_resume_a_budget_or_pairing_pause_and_an_ended_session_is_refused() {
+        let alice = Actor::Person { name: "alice".into() };
+        let mut registry = Registry::new();
+        let info = registry.open(spec(), Seconds(0.0)).unwrap();
+        for reason in [PauseReason::Budget, PauseReason::Pairing] {
+            registry.sessions[0].state = SessionState::Paused { by: info.actor.clone(), reason };
+            let e = registry.resume(info.id, &alice).unwrap_err();
+            assert_eq!(e.code, ErrorCode::Denied, "{reason:?}");
+            let refused = registry.admit(&info.actor, &Grants::person(), Seconds(1.0)).unwrap_err();
+            assert_eq!(refused.code, ErrorCode::Waiting);
+        }
+        let reason = EndReason::Closed;
+        registry.sessions[0].state = SessionState::Ended { reason: reason.clone(), at: Seconds(2.0) };
+        let e = registry.admit(&info.actor, &Grants::person(), Seconds(3.0)).unwrap_err();
+        assert_eq!((e.code, e.detail.as_deref()), (ErrorCode::Denied, Some(&ErrorDetail::Ended { reason })));
+        assert_eq!(registry.pause(info.id, &alice).unwrap_err().code, ErrorCode::Conflict);
+    }
 
     #[test]
     fn client_names_cannot_spell_the_id_separator() {
