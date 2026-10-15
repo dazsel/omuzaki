@@ -14,7 +14,7 @@ use omuzaki_core::glam::Vec3;
 use omuzaki_render_api::{Background, Bloom, Colour, ColourGrade, DepthOfField, FilmGrain, Tonemap};
 use omuzaki_stage::StageError;
 use omuzaki_stage::scene::landmarks::Landmarks;
-use omuzaki_stage::scene::resolve::{Changes, Figure, ResolvedScene};
+use omuzaki_stage::scene::resolve::{Changes, CheckedScene, Figure, ResolvedScene};
 use omuzaki_stage_api::{
     Anchor, Backdrop, BloomDef, CameraDef, CameraId, CastMember, DepthOfFieldDef, Focus, FocusSubject, Framing,
     GradeDef, GroundKind, LightDef, LightId, LightShape, MemberId, SceneDef, SceneSettings,
@@ -108,9 +108,13 @@ fn scene() -> SceneDef {
 
 const ASPECT: f32 = 16.0 / 9.0;
 
+fn checked(def: &SceneDef) -> CheckedScene<'_> {
+    CheckedScene::new(def).expect("the scene passes its check")
+}
+
 fn resolved(def: &SceneDef, figures: &BTreeMap<MemberId, Figure>) -> ResolvedScene {
     let mut out = ResolvedScene::new();
-    out.resolve_into(def, figures, ASPECT).unwrap();
+    out.resolve_into(checked(def), figures, ASPECT).unwrap();
     out
 }
 
@@ -118,7 +122,8 @@ fn resolved(def: &SceneDef, figures: &BTreeMap<MemberId, Figure>) -> ResolvedSce
 fn an_unchanged_scene_resolves_without_allocating() {
     let (def, figures) = (scene(), figures([0.0, 0.0]));
     let mut out = resolved(&def, &figures);
-    let (changes, allocations) = counted(|| out.resolve_into(&def, &figures, ASPECT).unwrap());
+    let proof = checked(&def);
+    let (changes, allocations) = counted(|| out.resolve_into(proof, &figures, ASPECT).unwrap());
     assert!(changes.is_empty(), "{changes:?}");
     assert_eq!(allocations, 0);
 }
@@ -126,7 +131,7 @@ fn an_unchanged_scene_resolves_without_allocating() {
 #[test]
 fn the_first_resolve_reports_everything() {
     let (def, figures) = (scene(), figures([0.0, 0.0]));
-    let changes = ResolvedScene::new().resolve_into(&def, &figures, ASPECT).unwrap();
+    let changes = ResolvedScene::new().resolve_into(checked(&def), &figures, ASPECT).unwrap();
     assert!(changes.lights && changes.cameras && changes.structure);
 }
 
@@ -135,7 +140,8 @@ fn a_camera_yaw_edit_is_value_only() {
     let (mut def, figures) = (scene(), figures([0.0, 0.0]));
     let mut out = resolved(&def, &figures);
     def.cameras.get_mut(&camera("front")).unwrap().yaw = 20.0;
-    let (changes, allocations) = counted(|| out.resolve_into(&def, &figures, ASPECT).unwrap());
+    let proof = checked(&def);
+    let (changes, allocations) = counted(|| out.resolve_into(proof, &figures, ASPECT).unwrap());
     assert!(changes.cameras && !changes.structure && !changes.lights && changes.value_only(), "{changes:?}");
     assert_eq!(allocations, 0);
 }
@@ -145,7 +151,8 @@ fn a_light_colour_edit_is_value_only() {
     let (mut def, figures) = (scene(), figures([0.0, 0.0]));
     let mut out = resolved(&def, &figures);
     def.lighting.lights.get_mut(&LightId::new("key").unwrap()).unwrap().colour = Colour::rgb(255, 128, 128);
-    let (changes, allocations) = counted(|| out.resolve_into(&def, &figures, ASPECT).unwrap());
+    let proof = checked(&def);
+    let (changes, allocations) = counted(|| out.resolve_into(proof, &figures, ASPECT).unwrap());
     assert!(changes.lights && !changes.structure && !changes.cameras && changes.value_only(), "{changes:?}");
     assert_eq!(allocations, 0);
 }
@@ -155,10 +162,10 @@ fn adding_a_camera_is_structural() {
     let (mut def, figures) = (scene(), figures([0.0, 0.0]));
     let mut out = resolved(&def, &figures);
     def.cameras.insert(camera("side"), CameraDef { yaw: 90.0, ..CameraDef::preset(Framing::Full) });
-    let changes = out.resolve_into(&def, &figures, ASPECT).unwrap();
+    let changes = out.resolve_into(checked(&def), &figures, ASPECT).unwrap();
     assert!(changes.structure && changes.cameras && !changes.value_only());
     assert_eq!(out.cameras.len(), 3);
-    assert_eq!(out.resolve_into(&def, &figures, ASPECT).unwrap(), Changes::default());
+    assert_eq!(out.resolve_into(checked(&def), &figures, ASPECT).unwrap(), Changes::default());
 }
 
 #[test]
@@ -198,7 +205,8 @@ fn the_active_camera_is_the_scene_camera_else_the_first() {
     def.scene.camera = Some(camera("front"));
     assert_eq!(resolved(&def, &figures).active, Some(1));
     def.scene.camera = Some(camera("nope"));
-    assert!(matches!(ResolvedScene::new().resolve_into(&def, &figures, ASPECT), Err(StageError::Scene { .. })));
+    // The check refuses it before resolve sees it.
+    assert!(matches!(CheckedScene::new(&def), Err(StageError::Scene { .. })));
     def.scene.camera = None;
     def.cameras.clear();
     assert_eq!(resolved(&def, &figures).active, None);
@@ -206,9 +214,9 @@ fn the_active_camera_is_the_scene_camera_else_the_first() {
 
 #[test]
 fn an_unknown_member_anchor_is_a_scene_error() {
-    let (mut def, figures) = (scene(), figures([0.0, 0.0]));
+    let mut def = scene();
     def.lighting.lights.insert(LightId::new("ghost").unwrap(), light(Anchor::Member(member("nobody")), Colour::WHITE));
-    let Err(StageError::Scene { source }) = ResolvedScene::new().resolve_into(&def, &figures, ASPECT) else {
+    let Err(StageError::Scene { source }) = CheckedScene::new(&def) else {
         panic!("expected a scene error");
     };
     assert_eq!(source.path, "lighting.lights.ghost.anchor");
@@ -217,7 +225,8 @@ fn an_unknown_member_anchor_is_a_scene_error() {
 #[test]
 fn a_preset_without_a_figure_is_a_scene_error() {
     let def = scene();
-    let Err(StageError::Scene { source }) = ResolvedScene::new().resolve_into(&def, &BTreeMap::new(), ASPECT) else {
+    let Err(StageError::Scene { source }) = ResolvedScene::new().resolve_into(checked(&def), &BTreeMap::new(), ASPECT)
+    else {
         panic!("expected a scene error");
     };
     assert_eq!(source.path, "cameras.close.subject");
@@ -228,8 +237,10 @@ fn an_error_leaves_the_last_resolve_in_place() {
     let (mut def, figures) = (scene(), figures([0.0, 0.0]));
     let mut out = resolved(&def, &figures);
     let before = out.clone();
-    def.cameras.get_mut(&camera("front")).unwrap().subject = Anchor::Member(member("nobody"));
-    assert!(out.resolve_into(&def, &figures, ASPECT).is_err());
+    // A member that is in the cast but has no figure (hidden), so the check passes and resolve itself refuses.
+    def.cast.insert(member("hidden"), cast_member());
+    def.cameras.get_mut(&camera("front")).unwrap().subject = Anchor::Member(member("hidden"));
+    assert!(out.resolve_into(checked(&def), &figures, ASPECT).is_err());
     assert_eq!(out, before);
 }
 
@@ -275,14 +286,14 @@ fn each_row_of_the_mapping() {
     assert_eq!(out.background, Background::Solid { colour: Colour::rgb(10, 20, 30) });
     assert_eq!(out.post.bloom, None);
 
-    // A subject focus is the distance from the active camera to the middle of the head box.
+    // A subject focus is the depth, along the view axis, of the middle of the head box.
     def.scene.post.depth_of_field = Some(dof(Focus::Subject(FocusSubject::Subject)));
     def.scene.ground.radius = None;
     let out = resolved(&def, &figures);
     let figure = figures.values().next().unwrap();
     let head = figure.landmarks.head.unwrap().centre();
     let camera = out.cameras[out.active.unwrap()].1;
-    let expected = camera.position().distance(figure.root.transform_point3(head));
+    let expected = -camera.view().transform_point3(figure.root.transform_point3(head)).z;
     assert!((out.post.depth_of_field.unwrap().focus_distance - expected).abs() < 1e-5);
     // The absent radius reaches the farthest member plus 0.83 subject units.
     assert!((out.ground.radius_m - (2.0 + 0.83 * h)).abs() < 1e-5, "{}", out.ground.radius_m);
@@ -292,7 +303,8 @@ fn each_row_of_the_mapping() {
 fn a_subject_focus_without_a_subject_is_a_scene_error() {
     let mut def = SceneDef::new(SceneSettings::named("Empty"));
     def.scene.post.depth_of_field = Some(dof(Focus::Subject(FocusSubject::Subject)));
-    let Err(StageError::Scene { source }) = ResolvedScene::new().resolve_into(&def, &BTreeMap::new(), ASPECT) else {
+    let Err(StageError::Scene { source }) = ResolvedScene::new().resolve_into(checked(&def), &BTreeMap::new(), ASPECT)
+    else {
         panic!("expected a scene error");
     };
     assert_eq!(source.path, "scene.post.depth_of_field.focus");
@@ -303,7 +315,8 @@ fn only_flag(edit: fn(&mut SceneDef), pick: fn(&Changes) -> bool) {
     let (mut def, figures) = (scene(), figures([0.0, 0.0]));
     let mut out = resolved(&def, &figures);
     edit(&mut def);
-    let (changes, allocations) = counted(|| out.resolve_into(&def, &figures, ASPECT).unwrap());
+    let proof = checked(&def);
+    let (changes, allocations) = counted(|| out.resolve_into(proof, &figures, ASPECT).unwrap());
     assert!(pick(&changes), "{changes:?}");
     let flags = [
         changes.lights,
@@ -345,4 +358,87 @@ fn a_transparent_backdrop_is_transparent() {
     let (mut def, figures) = (scene(), figures([0.0, 0.0]));
     def.scene.backdrop = Backdrop::Transparent {};
     assert_eq!(resolved(&def, &figures).background, Background::Transparent);
+}
+
+fn free_stage_camera(position: [f32; 3], target: [f32; 3]) -> CameraDef {
+    CameraDef {
+        framing: Framing::Free,
+        anchor: Some(Anchor::Stage),
+        position: Some(position),
+        target: Some(target),
+        ..CameraDef::preset(Framing::Free)
+    }
+}
+
+#[test]
+fn a_subject_focus_is_view_depth_not_distance() {
+    let (mut def, figures) = (scene(), figures([0.0, 0.0]));
+    def.cameras.clear();
+    // Level with the feet and 3 m to the side: the head is off the view axis, so its distance exceeds its depth.
+    def.cameras.insert(camera("side"), free_stage_camera([3.0, 0.0, 0.0], [0.0, 0.0, 0.0]));
+    def.scene.post.depth_of_field = Some(dof(Focus::Subject(FocusSubject::Subject)));
+    let out = resolved(&def, &figures);
+    let figure = figures.values().next().unwrap();
+    let head = figure.root.transform_point3(figure.landmarks.head.unwrap().centre());
+    let focus = out.post.depth_of_field.unwrap().focus_distance;
+    assert!((focus - (3.0 - head.x)).abs() < 1e-4, "{focus}");
+    assert!(focus < out.cameras[0].1.position().distance(head) - 0.1);
+}
+
+#[test]
+fn the_default_subject_is_the_first_cast_member_even_when_it_is_hidden() {
+    let (mut def, figures) = (scene(), figures([0.0, 0.0]));
+    // `aoi` sorts before `kiri` but has no figure: the subject is unavailable, not `kiri`.
+    def.cast.insert(member("aoi"), cast_member());
+    def.cameras.clear();
+    def.cameras.insert(camera("side"), free_stage_camera([3.0, 0.0, 0.0], [0.0, 0.0, 0.0]));
+    def.scene.post.depth_of_field = Some(dof(Focus::Subject(FocusSubject::Subject)));
+    let Err(StageError::Scene { source }) = ResolvedScene::new().resolve_into(checked(&def), &figures, ASPECT) else {
+        panic!("expected a scene error");
+    };
+    assert_eq!(source.path, "scene.post.depth_of_field.focus");
+    // Naming the visible member as the subject resolves it.
+    def.scene.subject = Some(member("kiri"));
+    assert!(ResolvedScene::new().resolve_into(checked(&def), &figures, ASPECT).is_ok());
+}
+
+#[test]
+fn a_scene_that_breaks_a_rule_is_refused() {
+    let mut def = scene();
+    def.lighting.exposure = f32::NAN;
+    assert!(matches!(CheckedScene::new(&def), Err(StageError::Scene { .. })));
+    def.lighting.exposure = 1.0;
+    def.scene.subject = Some(member("nobody"));
+    assert!(matches!(CheckedScene::new(&def), Err(StageError::Scene { .. })));
+    def.scene.subject = None;
+    assert!(CheckedScene::new(&def).is_ok());
+}
+
+#[test]
+fn a_subject_free_camera_without_a_cast_uses_the_unit_figure_at_the_origin() {
+    let mut def = SceneDef::new(SceneSettings::named("Empty"));
+    let free = CameraDef { anchor: Some(Anchor::Subject), ..free_stage_camera([0.0, 0.5, 3.0], [0.0, 0.5, 0.0]) };
+    def.cameras.insert(camera("free"), free);
+    let out = resolved(&def, &BTreeMap::new());
+    assert!((out.cameras[0].1.position() - Vec3::new(0.0, 0.5, 3.0)).length() < 1e-5);
+}
+
+#[test]
+fn a_free_camera_with_an_unusable_projection_is_refused_and_keeps_the_last_scene() {
+    let (mut def, figures) = (scene(), figures([0.0, 0.0]));
+    let mut out = resolved(&def, &figures);
+    let before = out.clone();
+    // Finite endpoints whose distance overflows `f32`.
+    def.cameras.insert(camera("far"), free_stage_camera([0.0, 0.0, 1e20], [0.0, 0.0, 0.0]));
+    assert!(out.resolve_into(checked(&def), &figures, ASPECT).is_err());
+    assert_eq!(out, before);
+}
+
+#[test]
+fn a_ground_edit_is_not_value_only() {
+    let (mut def, figures) = (scene(), figures([0.0, 0.0]));
+    let mut out = resolved(&def, &figures);
+    def.scene.ground.radius = Some(4.0);
+    let changes = out.resolve_into(checked(&def), &figures, ASPECT).unwrap();
+    assert!(changes.ground && !changes.structure && !changes.value_only(), "{changes:?}");
 }

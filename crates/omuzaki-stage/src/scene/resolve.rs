@@ -1,8 +1,10 @@
 //! Resolve: a scene document to fixed-capacity render-api values in metres (anchors, subject units, angles to vectors).
 //!
-//! [`ResolvedScene::resolve_into`] is design D10 step 1 for the lights and the cameras: the lights go through
+//! [`ResolvedScene::resolve_into`] is design D10 step 1: the lights go through
 //! [`Lighting::resolve_into`](omuzaki_stage_api::Lighting::resolve_into), the cameras through [`frame`] or, for a free
-//! camera, its own position and target. A resolve of an unchanged scene allocates nothing and says nothing changed.
+//! camera, its own position and target. It also resolves the backdrop, the post look (with the depth-of-field focus
+//! measured from the active camera), the outline light, the ground and the skin floor. A resolve of an unchanged
+//! scene allocates nothing and says nothing changed.
 
 use std::collections::BTreeMap;
 
@@ -26,7 +28,7 @@ const FREE_NEAR_FLOOR: f32 = 0.01;
 /// A free camera's far plane lies this many subject heights behind its target.
 const FREE_FAR_HEIGHTS: f32 = 10.0;
 
-/// How far past the farthest member an unset ground radius reaches, in subject units (the design's D3 fit).
+/// How far past the farthest member an unset ground radius reaches, in subject units (the design's D2 ground fit, in the subject's units as D4 has it).
 const GROUND_MARGIN: f32 = 0.83;
 
 /// One visible cast member as resolve sees it.
@@ -55,6 +57,29 @@ impl Figure {
     }
 }
 
+/// A scene that has passed [`SceneDef::check`] (design D13), so resolving it can rely on every rule of the contract.
+///
+/// The check allocates, so it runs once per edit here and not inside [`ResolvedScene::resolve_into`], which stays
+/// allocation-free for a scene that hasn't changed. Holding the scene by reference means an edit needs a new proof.
+#[derive(Clone, Copy, Debug)]
+pub struct CheckedScene<'a>(&'a SceneDef);
+
+impl<'a> CheckedScene<'a> {
+    /// Checks `def` against every rule that doesn't need the rest of the project.
+    ///
+    /// # Errors
+    /// [`StageError::Scene`] with the first rule `def` breaks.
+    pub fn new(def: &'a SceneDef) -> Result<Self, StageError> {
+        def.check().map_err(scene_error)?;
+        Ok(Self(def))
+    }
+
+    /// The checked scene.
+    pub fn def(&self) -> &'a SceneDef {
+        self.0
+    }
+}
+
 /// What the last resolve changed, so `Stage::set_scene` touches only that.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
@@ -71,7 +96,7 @@ pub struct Changes {
     pub backdrop: bool,
     /// The post settings changed (the exposure, the tone map, bloom, depth of field, grain or grade).
     pub post: bool,
-    /// The ground changed.
+    /// The ground changed. Apply may recreate its mesh, so this is not a value-only change.
     pub ground: bool,
     /// The skin-floor override, or the outline light, changed.
     pub skin_floor: bool,
@@ -83,9 +108,10 @@ impl Changes {
         *self == Self::default()
     }
 
-    /// No structural change: apply allocates nothing.
+    /// Only values changed: apply allocates nothing. A ground change is not one, because apply recreates or releases
+    /// the ground-disc mesh (#274).
     pub fn value_only(&self) -> bool {
-        !self.structure
+        !(self.structure || self.ground)
     }
 }
 
@@ -147,6 +173,9 @@ impl ResolvedScene {
     /// Resolves `def` for a target of `aspect` into `self` and says what changed. `figures` holds the visible members
     /// by id. The subject is `scene.subject`, else the first member by id.
     ///
+    /// `scene` proves that `def` passed [`SceneDef::check`], so a hand-built or deserialised scene is held to the
+    /// same rules as an edited one.
+    ///
     /// Nothing is written on an error, so `self` still holds the last scene that resolved.
     ///
     /// # Errors
@@ -154,14 +183,17 @@ impl ResolvedScene {
     /// [`MAX_CAMERAS`] cameras, for a `scene.camera` that isn't one of them, for a preset camera whose subject has no
     /// figure (path `cameras.<id>.subject`), for a free camera without a position, a target or its anchor's figure,
     /// and for depth of field focused on the subject when there is no subject figure or no camera to measure from.
-    /// [`StageError::Framing`] from [`frame`].
+    /// [`StageError::Framing`] from [`frame`], and for a free camera whose completed projection isn't usable.
     pub fn resolve_into(
         &mut self,
-        def: &SceneDef,
+        scene: CheckedScene<'_>,
         figures: &BTreeMap<MemberId, Figure>,
         aspect: f32,
     ) -> Result<Changes, StageError> {
-        let subject = def.scene.subject.as_ref().map_or_else(|| figures.values().next(), |id| figures.get(id));
+        let def = scene.def();
+        // The default subject is the first member of the cast, visible or not: a hidden one leaves the subject
+        // unavailable rather than handing its role to the next member.
+        let subject = def.scene.subject.as_ref().or_else(|| def.cast.keys().next()).and_then(|id| figures.get(id));
         let frame_of = |anchor: &Anchor| match anchor {
             Anchor::Stage => None,
             Anchor::Subject => subject.map(Figure::anchor_frame),
@@ -285,20 +317,17 @@ fn free_camera(
     let anchor = camera.anchor.as_ref().unwrap_or(&Anchor::Stage);
     let missing = |field: &str| scene_error(SceneError::new(format!("cameras.{id}.{field}"), "a free camera needs it"));
     let (position, target) = (camera.position.ok_or_else(|| missing("position"))?, camera.target.ok_or_else(|| missing("target"))?);
-    let figure = match anchor {
-        Anchor::Stage => None,
-        Anchor::Subject => Some(subject),
-        Anchor::Member(member) => Some(figures.get(member)),
-    };
-    let (root, unit) = match figure {
-        None => (Affine3A::IDENTITY, 1.0),
-        Some(Some(f)) => (f.root, f.height_m),
-        Some(None) => {
-            return Err(scene_error(SceneError::new(
+    // Without a subject the anchor is the 1 m figure at the origin (D4), as for the lights.
+    let unit_frame = (Affine3A::IDENTITY, 1.0);
+    let (root, unit) = match anchor {
+        Anchor::Stage => unit_frame,
+        Anchor::Subject => subject.map_or(unit_frame, |f| (f.root, f.height_m)),
+        Anchor::Member(member) => figures.get(member).map(|f| (f.root, f.height_m)).ok_or_else(|| {
+            scene_error(SceneError::new(
                 format!("cameras.{id}.anchor"),
                 format!("`{anchor}` has no visible figure to measure from"),
-            )));
-        }
+            ))
+        })?,
     };
     let place = |p: [f32; 3]| root.transform_point3(Vec3::from_array(p) * unit);
     let (eye, at) = (place(position), place(target));
@@ -314,7 +343,10 @@ fn free_camera(
         near: (FREE_NEAR_SHARE * distance).max(FREE_NEAR_FLOOR),
         far: distance + FREE_FAR_HEIGHTS * height,
     };
-    Ok(Camera::look_at(eye, at, Vec3::Y, projection))
+    let framed = Camera::look_at(eye, at, Vec3::Y, projection);
+    // Finite endpoints can still overflow the distance or leave `far` at or below `near`.
+    framed.validate().map_err(|e| StageError::Framing { reason: format!("camera '{id}': {e}") })?;
+    Ok(framed)
 }
 
 /// The render-api post: the lighting's exposure and bloom (when the scene switches it on) with the scene's own
@@ -339,7 +371,8 @@ fn resolve_post(
                         ))
                     })?;
                     let aim = figure.landmarks.head.unwrap_or(figure.landmarks.body).centre();
-                    camera.position().distance(figure.root.transform_point3(aim))
+                    // The shader compares depth along the view axis, not the distance to the eye.
+                    -camera.view().transform_point3(figure.root.transform_point3(aim)).z
                 }
             };
             Ok(DepthOfField { focus_distance, focus_range: dof.range * unit, max_blur: dof.max_blur })
