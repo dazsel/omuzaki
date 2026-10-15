@@ -377,14 +377,15 @@ fn sweep(meshes: &[&PartMesh], key: fn(Vec3) -> f64, value: fn(Vec3) -> f64, s0:
             let v = [t[0], t[1], t[2]].map(|i| g.positions[i as usize]);
             let (lo, hi) = v.iter().fold((f64::MAX, f64::MIN), |(a, b), p| (a.min(key(*p)), b.max(key(*p))));
             let first = ((lo - s0) / step).ceil().max(0.0) as usize;
-            for k in first..n.min(((hi - s0) / step).floor().max(-1.0) as usize + 1) {
+            let last = n.min(((hi - s0) / step).floor().max(-1.0) as usize + 1);
+            for (k, slot) in out.iter_mut().enumerate().take(last).skip(first) {
                 let s = s0 + step * k as f64;
                 for e in [(0, 1), (1, 2), (2, 0)] {
                     let (a, b) = (v[e.0], v[e.1]);
                     let (ka, kb) = (key(a), key(b));
                     if (ka - s) * (kb - s) <= 0.0 && (ka - kb).abs() > 1e-12 {
                         let x = value(a) + (value(b) - value(a)) * (s - ka) / (kb - ka);
-                        out[k] = if out[k].is_nan() { x } else { out[k].max(x) };
+                        *slot = if slot.is_nan() { x } else { slot.max(x) };
                     }
                 }
             }
