@@ -19,6 +19,7 @@ use omuzaki_render_api::{MeshData, MeshOptions, MeshUsage, RenderError};
 use wgpu::util::DeviceExt;
 
 use crate::gpu::Gpu;
+use crate::morph::{MeshMorphs, MorphInput};
 use crate::program::AttributeSpec;
 use crate::shadow::bounds::MeshBounds;
 
@@ -160,6 +161,10 @@ pub(crate) struct GpuMesh {
     pub(crate) bounds: MeshBounds,
     pub(crate) triangles: u64,
     pub(crate) bytes: u64,
+    /// The sparse morph targets, if the mesh was created with any (`morph.rs`).
+    morphs: Option<MeshMorphs>,
+    /// Counts the changes of the base vertices, so a morphed copy knows when it is stale.
+    vertex_version: u64,
 }
 
 impl GpuMesh {
@@ -204,6 +209,14 @@ impl GpuMesh {
             })
             .collect();
         let extra_bytes: usize = mesh.extra.iter().map(|a| a.data.len() * size_of::<f32>()).sum();
+        // A static morphed mesh keeps its base vertices for the blend; a dynamic one's are the shadow's below.
+        let morphs = options.morphs.as_ref().map(|set| MeshMorphs {
+            set: set.clone(),
+            base: if dynamic { Vec::new() } else { shapes.clone() },
+            skin: if dynamic || !skinned { Vec::new() } else { surface.clone() },
+            welds: if dynamic { Vec::new() } else { welds.clone() },
+            weld_count,
+        });
         // A dynamic mesh rewrites its vertices, so it keeps them on the CPU; a static one keeps nothing.
         let shadow = dynamic.then(|| Shadow {
             shapes: shapes.clone(),
@@ -232,6 +245,8 @@ impl GpuMesh {
             bytes: (shapes.len() * (size_of::<Shape>() + size_of::<Surface>() + size_of::<[f32; 3]>())
                 + mesh.indices.len() * size_of::<u32>()
                 + extra_bytes) as u64,
+            morphs,
+            vertex_version: 0,
         })
     }
 
@@ -243,6 +258,35 @@ impl GpuMesh {
     /// How many vertices the mesh has.
     pub(crate) fn vertex_count(&self) -> usize {
         self.shadow.as_ref().map_or(0, |s| s.shapes.len())
+    }
+
+    /// What a blend of the mesh's morph targets needs, if it has targets: the vertices they apply to (the current ones,
+    /// for a dynamic mesh), the skin data and welds for the bounds and outline directions of the result.
+    pub(crate) fn morph_input(&self) -> Option<MorphInput<'_>> {
+        let morphs = self.morphs.as_ref()?;
+        Some(match &self.shadow {
+            Some(s) => MorphInput {
+                set: &morphs.set,
+                base: &s.shapes,
+                skin: &s.skin,
+                welds: &s.welds,
+                weld_count: s.weld_count,
+                joints_needed: self.joints_needed,
+            },
+            None => MorphInput {
+                set: &morphs.set,
+                base: &morphs.base,
+                skin: &morphs.skin,
+                welds: &morphs.welds,
+                weld_count: morphs.weld_count,
+                joints_needed: self.joints_needed,
+            },
+        })
+    }
+
+    /// Changes whenever the base vertices do.
+    pub(crate) fn vertex_version(&self) -> u64 {
+        self.vertex_version
     }
 
     /// Replaces the positions and normals of a dynamic mesh with one `queue.write_buffer` of its shape stream (24 bytes
@@ -257,6 +301,7 @@ impl GpuMesh {
             *shape = Shape { position: position.to_array(), normal: normal.to_array() };
         }
         queue.write_buffer(&self.shapes, 0, bytemuck::cast_slice(&shadow.shapes));
+        self.vertex_version += 1;
         shadow.smooth_stale = true;
         shadow.bounds_stale = true;
     }
@@ -305,8 +350,8 @@ impl GpuMesh {
     }
 
     /// Draws the mesh as instance number `instance` of the frame's instance buffer.
-    pub(crate) fn draw(&self, pass: &mut wgpu::RenderPass<'_>, instance: u32) {
-        self.bind_vertices(pass);
+    pub(crate) fn draw(&self, pass: &mut wgpu::RenderPass<'_>, instance: u32, morphed: Option<wgpu::BufferSlice<'_>>) {
+        self.bind_vertices(pass, morphed);
         self.draw_indexed(pass, instance);
     }
 
@@ -316,10 +361,11 @@ impl GpuMesh {
         &self,
         pass: &mut wgpu::RenderPass<'_>,
         instance: u32,
+        morphed: Option<wgpu::BufferSlice<'_>>,
         attributes: &[AttributeSpec],
         zeros: &wgpu::Buffer,
     ) {
-        self.bind_vertices(pass);
+        self.bind_vertices(pass, morphed);
         for slot in 0..crate::program::MAX_ATTRIBUTES {
             let buffer = attributes.get(slot).and_then(|a| self.extra(a.name, a.components)).unwrap_or(zeros);
             pass.set_vertex_buffer(EXTRA_FIRST_SLOT + u32::try_from(slot).unwrap_or(0), buffer.slice(..));
@@ -327,16 +373,23 @@ impl GpuMesh {
         self.draw_indexed(pass, instance);
     }
 
-    /// Like [`draw`](Self::draw), with the smooth-normal stream bound to vertex buffer slot 1.
-    pub(crate) fn draw_with_smooth_normals(&self, pass: &mut wgpu::RenderPass<'_>, instance: u32) {
-        self.bind_vertices(pass);
-        pass.set_vertex_buffer(FIRST_FREE_SLOT, self.smooth_normals.slice(..));
+    /// Like [`draw`](Self::draw), with the smooth-normal stream bound to vertex buffer slot 1: the mesh's own, or
+    /// `morphed`'s `(shapes, smooth normals)` for an instance that morphs.
+    pub(crate) fn draw_with_smooth_normals(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        instance: u32,
+        morphed: Option<(wgpu::BufferSlice<'_>, wgpu::BufferSlice<'_>)>,
+    ) {
+        self.bind_vertices(pass, morphed.map(|(shapes, _)| shapes));
+        pass.set_vertex_buffer(FIRST_FREE_SLOT, morphed.map_or(self.smooth_normals.slice(..), |(_, smooth)| smooth));
         self.draw_indexed(pass, instance);
     }
 
-    /// Binds the two vertex streams to slots 0 and 1.
-    fn bind_vertices(&self, pass: &mut wgpu::RenderPass<'_>) {
-        pass.set_vertex_buffer(0, self.shapes.slice(..));
+    /// Binds the two vertex streams to slots 0 and 1, with `morphed` (an instance's blended shapes) in place of the
+    /// mesh's own shape stream.
+    fn bind_vertices(&self, pass: &mut wgpu::RenderPass<'_>, morphed: Option<wgpu::BufferSlice<'_>>) {
+        pass.set_vertex_buffer(0, morphed.unwrap_or_else(|| self.shapes.slice(..)));
         pass.set_vertex_buffer(1, self.surface.slice(..));
     }
 
@@ -379,7 +432,7 @@ fn smooth_by_slots(slots: &[usize], count: usize, normals: &[Vec3]) -> Vec<Vec3>
 
 /// [`smooth_by_slots`] over a dynamic mesh's current vertices into `out`, with `sums` as scratch: no allocation once
 /// `sums` has grown to `count`.
-fn resmooth(slots: &[usize], count: usize, sums: &mut Vec<Vec3>, shapes: &[Shape], out: &mut [[f32; 3]]) {
+pub(crate) fn resmooth(slots: &[usize], count: usize, sums: &mut Vec<Vec3>, shapes: &[Shape], out: &mut [[f32; 3]]) {
     sum_by_slot(slots, count, shapes.iter().map(|v| Vec3::from(v.normal)), sums);
     for ((&slot, shape), out) in slots.iter().zip(shapes).zip(out) {
         *out = smoothed(sums, slot, Vec3::from(shape.normal)).to_array();
