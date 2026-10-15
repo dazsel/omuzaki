@@ -242,13 +242,8 @@ async fn attempt_with(job: &Job, tx: &Sender, started: &mut bool, secret: Option
         wait = job.timeouts.idle;
         let event = match item {
             None => {
-                for out in decoder.end()? {
-                    let done = matches!(out, LlmEvent::Stop(_));
-                    *started |= matches!(out, LlmEvent::Start { .. });
-                    tx.event(out).await.map_err(|Closed| Fail::Fatal(LlmError::Cancelled))?;
-                    if done {
-                        return Ok(());
-                    }
+                if send_all(tx, decoder.end()?, started).await? {
+                    return Ok(());
                 }
                 return Err(Fail::network("the event stream ended before the turn completed"));
             }
@@ -258,15 +253,23 @@ async fn attempt_with(job: &Job, tx: &Sender, started: &mut bool, secret: Option
             }
             Some(Ok(event)) => event,
         };
-        for out in decoder.event(event)? {
-            let done = matches!(out, LlmEvent::Stop(_));
-            *started |= matches!(out, LlmEvent::Start { .. });
-            tx.event(out).await.map_err(|Closed| Fail::Fatal(LlmError::Cancelled))?;
-            if done {
-                return Ok(());
-            }
+        if send_all(tx, decoder.event(event)?, started).await? {
+            return Ok(());
         }
     }
+}
+
+/// Queues `events` for the consumer, noting whether `Start` went out. True once `Stop` has: the turn is over.
+async fn send_all(tx: &Sender, events: Vec<LlmEvent>, started: &mut bool) -> Result<bool, Fail> {
+    for out in events {
+        let done = matches!(out, LlmEvent::Stop(_));
+        *started |= matches!(out, LlmEvent::Start { .. });
+        tx.event(out).await.map_err(|Closed| Fail::Fatal(LlmError::Cancelled))?;
+        if done {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn http_fail(fail: HttpFail, secret: Option<&SecretValue>) -> Fail {

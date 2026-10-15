@@ -21,7 +21,7 @@ use tokio::runtime::Handle;
 use crate::common::{KeyRef, key_ref, refuse_camera};
 use crate::engine::{self, Decoder, Fail, Job, Protocol, Timeouts};
 use crate::http::{Endpoint, HeaderValue, Http, MAX_METADATA_BODY, Request};
-use crate::prices::anthropic_model;
+use crate::prices::{ANTHROPIC_IMAGE_TILE, anthropic_model};
 use crate::retry::random_seed;
 use crate::runtime::{block_on, handle_of};
 
@@ -193,7 +193,7 @@ fn listed(entry: &Value) -> Option<ModelInfo> {
     }
     // Listed but not usable until priced: `build` refuses it. Its limits are what the API reports.
     let limit = |key| entry.get(key).and_then(Value::as_u64).unwrap_or(0);
-    Some(ModelInfo::new(id, limit("max_input_tokens"), limit("max_tokens"), ImageCost::tiles(28)))
+    Some(ModelInfo::new(id, limit("max_input_tokens"), limit("max_tokens"), ImageCost::tiles(ANTHROPIC_IMAGE_TILE)))
 }
 
 fn list_models(config: &ProviderConfig, env: &ProviderEnv) -> Result<Vec<ModelInfo>, LlmError> {

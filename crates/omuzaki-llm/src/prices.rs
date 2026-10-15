@@ -8,7 +8,7 @@ use omuzaki_llm_api::usage::{ImageCost, ModelInfo, PriceTable, PriceTier, Rates}
 use serde::Deserialize;
 
 /// Anthropic counts an image in tiles of 28 pixels (retrieved 2026-10-13 from docs.claude.com/en/docs/build-with-claude/vision).
-const ANTHROPIC_IMAGE_TILE: u32 = 28;
+pub(crate) const ANTHROPIC_IMAGE_TILE: u32 = 28;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

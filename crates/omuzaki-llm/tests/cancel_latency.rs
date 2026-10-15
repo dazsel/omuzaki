@@ -24,9 +24,8 @@ const LIMIT: Duration = Duration::from_millis(50);
 static ALONE: Mutex<()> = Mutex::new(());
 
 /// Starts `RUNS` turns on `client`, cancels each once its first text has arrived, and returns the longest time the
-/// server saw between `cancel()` and the connection closing. `first_run_index` is the server's request number of the
-/// first turn (after any probes).
-fn worst_close(server: &Server, client: &dyn LlmClient, first_run_index: usize) -> Duration {
+/// server saw between `cancel()` and the connection closing.
+fn worst_close(server: &Server, client: &dyn LlmClient) -> Duration {
     let mut worst = Duration::ZERO;
     for run in 0..RUNS {
         let cancel = Cancel::new();
@@ -39,18 +38,21 @@ fn worst_close(server: &Server, client: &dyn LlmClient, first_run_index: usize) 
                 other => panic!("{other:?}"),
             }
         }
+        // Turns run one at a time, so the newest request is this turn's.
+        let index = server.requests().len() - 1;
         let at = Instant::now();
         cancel.cancel();
-        assert_eq!(stream.try_next(), Err(LlmError::Cancelled));
-        assert_eq!(stream.try_next(), Ok(Next::End));
         let closed = loop {
-            if let Some(closed) = server.closed_at(first_run_index + run) {
+            if let Some(closed) = server.closed_at(index) {
                 break closed;
             }
             assert!(at.elapsed() < Duration::from_secs(2), "run {run}: the connection never closed");
             std::thread::sleep(Duration::from_millis(1));
         };
         worst = worst.max(closed.saturating_duration_since(at));
+        // The caller touched the stream only after the hang-up, so the turn task's own 10 ms tick did the closing.
+        assert_eq!(stream.try_next(), Err(LlmError::Cancelled));
+        assert_eq!(stream.try_next(), Ok(Next::End));
     }
     worst
 }
@@ -66,7 +68,8 @@ fn an_anthropic_turn_hangs_up_within_50_ms_worst_of_100() {
     let runtime = runtime_handle();
     let client =
         AnthropicClient::new(&config("anthropic", &server, "claude-haiku-5-5"), &common::env(&runtime)).unwrap();
-    let worst = worst_close(&server, &client, 0);
+    let worst = worst_close(&server, &client);
+    eprintln!("worst of {RUNS} runs: {worst:?}");
     assert!(worst <= LIMIT, "the worst of {RUNS} runs closed {worst:?} after cancel()");
 }
 
@@ -81,6 +84,7 @@ fn an_openai_compatible_turn_hangs_up_within_50_ms_worst_of_100() {
     let server = Server::routed(vec![("POST /v1/chat/completions", chat)]);
     let runtime = runtime_handle();
     let client = OpenAiClient::new(&config("openai-compatible", &server, "llama3.2"), &common::env(&runtime)).unwrap();
-    let worst = worst_close(&server, &client, 2);
+    let worst = worst_close(&server, &client);
+    eprintln!("worst of {RUNS} runs: {worst:?}");
     assert!(worst <= LIMIT, "the worst of {RUNS} runs closed {worst:?} after cancel()");
 }
