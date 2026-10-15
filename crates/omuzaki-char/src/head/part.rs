@@ -8,10 +8,10 @@
 //!
 //! **Publishes.** The head as built as a [`HeadSurface`] ([`mesh::build_head`]: the cranium with the lower face
 //! reshaped, so hair roots and ears sit on the face as drawn), the
-//! [`FaceProjection`](omuzaki_face_api::FaceProjection), the `top` anchor, and a joint-only [`JointFit`] for `head`,
-//! `leftEye`, `rightEye` and `jaw`. A joint-only fit wins over the body
-//! whatever the build order ([`Published::joint`](omuzaki_char_api::Published::joint)), so the dropped head joint is the one
-//! the skeleton gets.
+//! [`FaceProjection`](omuzaki_face_api::FaceProjection), the `top` anchor, the [`EarCoverFact`] of each shell ear, and a
+//! joint-only [`JointFit`] for `head`, `leftEye`, `rightEye` and `jaw`. A joint-only fit wins over the body whatever the
+//! build order ([`Published::joint`](omuzaki_char_api::Published::joint)), so the dropped head joint is the one the
+//! skeleton gets.
 
 use std::sync::Arc;
 
@@ -24,6 +24,7 @@ use omuzaki_core::glam::{Quat, Vec3};
 use omuzaki_core::mesh::MeshData;
 use omuzaki_face_api::narrow;
 
+use super::ears::fact::EarCoverFact;
 use super::ears::{self, Side};
 use super::material;
 use super::mesh::{self, Resolution};
@@ -89,7 +90,7 @@ impl PartKind for Head {
             meshes.push(part_mesh(ctx, "neck", neck_mesh, bones, "skin-neck")?);
         }
 
-        let (ear_meshes, ear_anchors) = ears(ctx, &placed, surface.as_ref())?;
+        let (ear_meshes, ear_anchors, ear_covers) = ears(ctx, &placed, surface.as_ref())?;
         meshes.extend(ear_meshes);
 
         let materials = vec![
@@ -118,6 +119,9 @@ impl PartKind for Head {
         for ear in ear_anchors {
             publishes.put::<AnchorsFact>(ear);
         }
+        for cover in ear_covers {
+            publishes.put::<EarCoverFact>(cover);
+        }
         Ok(PartOutput::new()
             .with_meshes(meshes)
             .with_materials(materials)
@@ -128,15 +132,15 @@ impl PartKind for Head {
 
 omuzaki_char_api::register_part_kind!(Head);
 
-/// What the ears add to the part: their meshes and anchors.
-type EarParts = (Vec<PartMesh>, Vec<(AnchorId, Anchor)>);
+/// What the ears add to the part: their meshes, their `ear_l` and `ear_r` anchors and the covers they publish.
+type EarParts = (Vec<PartMesh>, Vec<(AnchorId, Anchor)>, Vec<(Side, ears::EarCover)>);
 
-/// The ear meshes (rigid on the head, in the `skin-ear` material) and their `ear_l` and `ear_r` anchors. The left ear
-/// roots on the head as built, the right mirrors it across the head's centre; a kind with no ear on the side builds
-/// neither.
+/// The ear meshes (rigid on the head, in the `skin-ear` material), their `ear_l` and `ear_r` anchors and the
+/// [`EarCoverFact`] of each. The left ear roots on the head as built, the right mirrors it across the head's centre; a
+/// kind with no ear on the side builds none of them.
 fn ears(ctx: &BuildCtx<'_>, placed: &HeadParams, surface: &dyn HeadSurface) -> Result<EarParts, BuildError> {
     let left_root = ears::root(&placed.ears, surface);
-    let (mut meshes, mut anchors) = (vec![], vec![]);
+    let (mut meshes, mut anchors, mut covers) = (vec![], vec![], vec![]);
     for side in Side::BOTH {
         let root = match side {
             Side::Left => left_root,
@@ -155,8 +159,11 @@ fn ears(ctx: &BuildCtx<'_>, placed: &HeadParams, surface: &dyn HeadSurface) -> R
         if let Some(bind) = ears::anchor(&placed.ears, side, root) {
             anchors.push((name.parse().map_err(|e| ctx.fail(format!("anchor '{name}': {e}")))?, bind));
         }
+        if let Some(cover) = ears::cover(&placed.ears, side, root) {
+            covers.push((side, cover));
+        }
     }
-    Ok((meshes, anchors))
+    Ok((meshes, anchors, covers))
 }
 
 /// `params` with the whole head lowered by the neck's drop.

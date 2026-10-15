@@ -7,7 +7,7 @@
 //! **Human and elf** ([`human`], [`elf`]) are one shell, the port of the prototype's `buildEar` (`head.js` 142 to 175):
 //! a 40 x 8 grid on a C-shaped outline with a rolled rim and a concha, placed by [`Frame`] at the root. The elf draws
 //! the same shell out into a pointed tip. [`build`] makes the mesh of either, [`anchor`] the attachment point hair and
-//! hats read, and [`cover`] the disc of head the ear hides. Animal ears are.
+//! hats read, and [`cover`] the disc of head the ear hides, which `head` publishes as [`fact::EarCoverFact`]. Animal ears are.
 //!
 //! **Orientation.** The prototype hard-codes the left ear's shell normal `(0.74, 0.05, 0.66)` and height direction
 //! `(0, 1, 0.12)`. The contract's defaults, [`Ears::default`]'s `flare_deg` 42 and `tilt_deg` 7, *are* those two vectors
@@ -17,6 +17,7 @@
 
 pub mod animal;
 pub mod elf;
+pub mod fact;
 pub mod human;
 
 use omuzaki_char_api::{Anchor, EarKind, Ears, HeadSurface, JointRef};
@@ -40,8 +41,9 @@ const SEGMENTS: u32 = 40;
 /// Rows of the ear grid: steps from the concha's centre to the rim.
 const RINGS: u32 = 8;
 
-/// Which side of the head an ear is on. The character's left is +X.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+/// Which side of the head an ear is on. The character's left is +X. Ordered left first, so a map keyed by side lists the
+/// left ear before the right.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Side {
     /// The character's left, +X.
     Left,
