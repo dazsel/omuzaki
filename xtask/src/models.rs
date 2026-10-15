@@ -92,35 +92,45 @@ pub fn problems(file: &str, text: &str, register: &[Row], sources: &[(String, St
 
 /// The `(id, file name)` of every `register_model!("<id>", include_str!("<path>"))` in one Rust source. It reads the
 /// registry's lexer, so a commented-out or quoted example never counts, and whitespace or newlines inside the call don't
-/// matter.
+/// matter. Either macro may use any of Rust's delimiters, `(…)`, `[…]` or `{…}`, as long as each closes with its match.
 fn registrations(source: &str) -> Vec<(String, String)> {
     let toks = tokens(source);
     let mut found = Vec::new();
     for at in 0..toks.len() {
-        let call = toks[at].is_ident("register_model") && is_punct(&toks, at + 1, '!') && is_punct(&toks, at + 2, '(');
-        if !call {
+        if !toks[at].is_ident("register_model") || !is_punct(&toks, at + 1, '!') {
             continue;
         }
-        let id = toks.get(at + 3).and_then(string_value);
-        let file = include_file(&toks, at + 4);
-        if let (Some(id), Some(file)) = (id, file) {
+        let Some(close) = toks.get(at + 2).and_then(closer) else { continue };
+        let Some(id) = toks.get(at + 3).and_then(string_value) else { continue };
+        let Some((file, end)) = include_file(&toks, at + 4) else { continue };
+        let end = if is_punct(&toks, end, ',') { end + 1 } else { end };
+        if is_punct(&toks, end, close) {
             found.push((id, file));
         }
     }
     found
 }
 
-/// The file name of `, include_str!("<path>")` starting at `at`: the last component of the path.
-fn include_file(toks: &[Token], at: usize) -> Option<String> {
+/// The closing delimiter for a macro's opening one: `(`, `[` or `{`; `None` for any other token.
+fn closer(token: &Token) -> Option<char> {
+    [('(', ')'), ('[', ']'), ('{', '}')].into_iter().find(|&(open, _)| token.is_punct(open)).map(|(_, close)| close)
+}
+
+/// The file name of `, include_str!("<path>")` starting at `at` (the last component of the path), and the index of the
+/// token after its closing delimiter.
+fn include_file(toks: &[Token], at: usize) -> Option<(String, usize)> {
     let include = is_punct(toks, at, ',')
         && toks.get(at + 1).is_some_and(|t| t.is_ident("include_str"))
-        && is_punct(toks, at + 2, '!')
-        && is_punct(toks, at + 3, '(');
+        && is_punct(toks, at + 2, '!');
     if !include {
         return None;
     }
+    let close = closer(toks.get(at + 3)?)?;
     let path = string_value(toks.get(at + 4)?)?;
-    path.rsplit('/').next().map(str::to_owned)
+    if !is_punct(toks, at + 5, close) {
+        return None;
+    }
+    Some((path.rsplit('/').next()?.to_owned(), at + 6))
 }
 
 fn is_punct(toks: &[Token], at: usize, c: char) -> bool {
@@ -367,6 +377,43 @@ spdx = "MIT OR Apache-2.0"
         assert_eq!(registrations(spread), [("tiny".to_owned(), "tiny.model.toml".to_owned())]);
         let raw = r##"register_model!(r#"tiny"#, include_str!("../models/tiny.model.toml"));"##;
         assert_eq!(registrations(raw), [("tiny".to_owned(), "tiny.model.toml".to_owned())]);
+    }
+
+    #[test]
+    fn each_macro_delimiter_form_is_found() {
+        let forms = [
+            r#"register_model!("tiny", include_str!("../models/tiny.model.toml"));"#,
+            r#"register_model!["tiny", include_str!["../models/tiny.model.toml"]];"#,
+            r#"register_model! { "tiny", include_str! { "../models/tiny.model.toml" } }"#,
+            r#"register_model! { "tiny", include_str!("../models/tiny.model.toml"), }"#,
+        ];
+        for form in forms {
+            assert_eq!(registrations(form), [("tiny".to_owned(), "tiny.model.toml".to_owned())], "{form}");
+        }
+    }
+
+    #[test]
+    fn a_mismatched_closer_is_not_a_registration() {
+        let text = r#"register_model! { "tiny", include_str!("../models/tiny.model.toml") )"#;
+        assert!(registrations(text).is_empty(), "{:?}", registrations(text));
+    }
+
+    #[test]
+    fn an_id_mismatch_in_braces_gives_one_finding() {
+        let text = r#"register_model! { "other", include_str!("../models/tiny.model.toml") }"#;
+        let sources = vec![("crates/omuzaki-tiny/src/lib.rs".to_owned(), text.to_owned())];
+        let found = problems(FILE, &manifest("tiny", HTTPS), &register(), &sources);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("registers `other` for this file"), "{found:?}");
+    }
+
+    #[test]
+    fn an_id_mismatch_in_brackets_gives_one_finding() {
+        let text = r#"register_model!["other", include_str!("../models/tiny.model.toml")];"#;
+        let sources = vec![("crates/omuzaki-tiny/src/lib.rs".to_owned(), text.to_owned())];
+        let found = problems(FILE, &manifest("tiny", HTTPS), &register(), &sources);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("registers `other` for this file"), "{found:?}");
     }
 
     #[test]
