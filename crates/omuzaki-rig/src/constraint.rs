@@ -22,6 +22,8 @@ use omuzaki_anim_api::{
 };
 use omuzaki_core::glam::{Quat, Vec3};
 
+use crate::ik::look_at::swing;
+
 /// Runs a [`ConstraintSet`] over a pose, in dependency order.
 #[derive(Clone, Debug)]
 pub struct VrmConstraintSolver {
@@ -85,6 +87,14 @@ fn signed_axis_vec(axis: SignedAxis) -> Vec3 {
     }
 }
 
+/// The part of `q` that turns about the unit `axis` (swing-twist decomposition by projection); the identity when `q`
+/// is a half turn across it, where the twist is undefined.
+fn twist(q: Quat, axis: Vec3) -> Quat {
+    let along = axis * Vec3::new(q.x, q.y, q.z).dot(axis);
+    let t = Quat::from_xyzw(along.x, along.y, along.z, q.w);
+    if t.length_squared() > f32::EPSILON { t.normalize() } else { Quat::IDENTITY }
+}
+
 fn solve_one(c: &BoneConstraint, skeleton: &Skeleton, pose: &Pose) -> Quat {
     let d = c.bone.index();
     let s = c.source.index();
@@ -101,9 +111,7 @@ fn solve_one(c: &BoneConstraint, skeleton: &Skeleton, pose: &Pose) -> Quat {
             let delta_parent = pose.local[s].rotation * s_rest.inverse();
             let delta = d_rest.inverse() * delta_parent * d_rest;
             let axis = axis_vec(axis);
-            // Remove the swing that moves the axis; what is left is the twist about it.
-            let swing = Quat::from_rotation_arc(axis, (delta * axis).try_normalize().unwrap_or(axis));
-            d_rest * (swing.inverse() * delta)
+            d_rest * twist(delta, axis)
         }
         ConstraintKind::Aim { axis } => {
             let parent_world = skeleton
@@ -116,8 +124,8 @@ fn solve_one(c: &BoneConstraint, skeleton: &Skeleton, pose: &Pose) -> Quat {
                 Some(to) => {
                     let q_parent = parent_world.rotation;
                     let from = q_parent * d_rest * signed_axis_vec(axis);
-                    let swing = Quat::from_rotation_arc(from, to);
-                    q_parent.inverse() * swing * q_parent * d_rest
+                    let turn = swing(from, to);
+                    q_parent.inverse() * turn * q_parent * d_rest
                 }
                 None => d_rest,
             }

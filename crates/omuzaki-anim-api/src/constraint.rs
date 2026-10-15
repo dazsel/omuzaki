@@ -147,8 +147,9 @@ impl ConstraintSet {
         self.order().map(|_| ())
     }
 
-    /// Indices into `constraints` so that every constraint comes after the one that drives its source. Constraints
-    /// with no dependency between them keep their declaration order.
+    /// Indices into `constraints` so that every constraint comes after the one that drives its source. This is a
+    /// stable topological sort: at each step the earliest-declared constraint whose driver is already placed goes
+    /// next, so constraints with no dependency between them keep their declaration order.
     ///
     /// # Errors
     /// [`ConstraintError::Duplicate`] if a bone has two constraints, [`ConstraintError::SelfSource`] if one follows
@@ -166,36 +167,41 @@ impl ConstraintSet {
         }
         // The constraint each one waits for: the one that writes its source bone, if any.
         let dep: Vec<Option<usize>> = self.constraints.iter().map(|c| driver_of.get(&c.source).copied()).collect();
-
-        // 0 = unvisited, 1 = on the current chain, 2 = placed.
-        let mut state = vec![0_u8; n];
-        let mut out = Vec::with_capacity(n);
-        let mut chain: Vec<usize> = Vec::new();
-        for start in 0..n {
-            let mut cur = Some(start);
-            // Walk down the dependency chain until something already placed (or nothing) is reached.
-            while let Some(i) = cur {
-                match state[i] {
-                    2 => break,
-                    1 => {
-                        let from = chain.iter().position(|&j| j == i).unwrap_or(0);
-                        let bones = chain[from..].iter().map(|&j| self.constraints[j].bone.0).collect();
-                        return Err(ConstraintError::Cycle { bones });
-                    }
-                    _ => {
-                        state[i] = 1;
-                        chain.push(i);
-                        cur = dep[i];
-                    }
-                }
-            }
-            // The chain ends at a root; dependencies were pushed last, so place them first.
-            while let Some(i) = chain.pop() {
-                state[i] = 2;
-                out.push(i);
+        let mut waiting_on_me: Vec<Vec<usize>> = vec![Vec::new(); n];
+        for (i, d) in dep.iter().enumerate() {
+            if let Some(d) = *d {
+                waiting_on_me[d].push(i);
             }
         }
-        Ok(out)
+
+        // Kahn's algorithm, always taking the earliest-declared ready constraint.
+        let mut ready: std::collections::BinaryHeap<std::cmp::Reverse<usize>> =
+            (0..n).filter(|&i| dep[i].is_none()).map(std::cmp::Reverse).collect();
+        let mut out = Vec::with_capacity(n);
+        while let Some(std::cmp::Reverse(i)) = ready.pop() {
+            out.push(i);
+            ready.extend(waiting_on_me[i].iter().map(|&j| std::cmp::Reverse(j)));
+        }
+        if out.len() == n {
+            return Ok(out);
+        }
+
+        // Whatever was never placed waits on something unplaced; following those waits from the first one must loop.
+        let mut placed = vec![false; n];
+        for &i in &out {
+            placed[i] = true;
+        }
+        let mut walk: Vec<usize> = Vec::new();
+        let mut cur = (0..n).find(|&i| !placed[i]);
+        while let Some(i) = cur {
+            if let Some(at) = walk.iter().position(|&j| j == i) {
+                let bones = walk[at..].iter().map(|&j| self.constraints[j].bone.0).collect();
+                return Err(ConstraintError::Cycle { bones });
+            }
+            walk.push(i);
+            cur = dep[i];
+        }
+        Err(ConstraintError::Cycle { bones: Vec::new() })
     }
 }
 
@@ -230,6 +236,13 @@ mod tests {
         let s = set(&[(4, 1), (1, 2), (2, 3)]);
         assert_eq!(s.order(), Ok(vec![2, 1, 0]));
         assert_eq!(set(&[(1, 5), (2, 6)]).order(), Ok(vec![0, 1]), "independent constraints keep their order");
+    }
+
+    #[test]
+    fn the_order_is_stable_for_independent_constraints() {
+        // 0 waits for 2 (bone 3); 1 and 2 are independent. Earliest ready first: 1, 2, then 0.
+        let s = set(&[(4, 3), (1, 7), (3, 8)]);
+        assert_eq!(s.order(), Ok(vec![1, 2, 0]));
     }
 
     #[test]

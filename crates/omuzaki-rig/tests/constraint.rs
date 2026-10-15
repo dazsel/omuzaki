@@ -254,3 +254,29 @@ fn outputs_are_unit_quaternions() {
         assert!((t.rotation.length() - 1.0).abs() < 1e-5);
     }
 }
+
+#[test]
+fn a_half_turn_across_the_roll_axis_is_no_roll_and_a_tiny_roll_passes_through() {
+    let sk = pair(Quat::IDENTITY, Quat::IDENTITY, Vec3::Y);
+    let roll = ConstraintKind::Roll { axis: Axis::X };
+    let got = solve(&sk, &one(roll, 1.0), Quat::from_rotation_y(std::f32::consts::PI));
+    assert!(near(got, Quat::IDENTITY), "{got:?}");
+    let got = solve(&sk, &one(roll, 0.5), Quat::from_rotation_x(1e-4));
+    assert!((twist_about_x(got) - 0.5e-4).abs() < 1e-7, "{}", twist_about_x(got));
+}
+
+#[test]
+fn small_aim_errors_are_corrected_and_the_result_is_continuous() {
+    let aim = one(ConstraintKind::Aim { axis: SignedAxis::PositiveX }, 1.0);
+    let mut last = 0.0_f32;
+    for k in 1..=40_u16 {
+        let y = f32::from(k) * 5e-5; // crosses the ~7e-4 rad threshold of a naive arc
+        let sk = pair(Quat::IDENTITY, Quat::IDENTITY, Vec3::new(1.0, y, 0.0));
+        let got = solve(&sk, &aim, Quat::IDENTITY);
+        let want = Vec3::new(1.0, y, 0.0).normalize();
+        assert!((got * Vec3::X - want).length() < 1e-6, "y = {y}");
+        let angle = got.to_scaled_axis().length();
+        assert!(angle > last, "the turn grows smoothly with the error");
+        last = angle;
+    }
+}
