@@ -42,7 +42,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"$CLAUDE_PROJECT_DIR\"/tools/hooks/deny-secret-paths.sh"
+            "command": "python3 -I \"$CLAUDE_PROJECT_DIR\"/tools/hooks/guard_bash.py",
+            "onFailure": "block"
           }
         ]
       }

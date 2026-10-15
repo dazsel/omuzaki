@@ -116,14 +116,20 @@ lane's or were handed to it on #2.
   - It denies what only the Director does or what can't be undone: merging pull requests, releases, repository
     settings, secrets and variables, turning workflows on or off, `DELETE` API calls, deleting branches and plain
     force-pushes. `--force-with-lease` on your own branch stays allowed.
-  - Deny rules win over allow rules, and a rule matches the command as written. `main` also has a ruleset on
-    GitHub, so the deny list is a second guard, not the only one.
+  - Deny rules win over allow rules, but a `Bash(...)` rule matches the command only as written: `gh pr -R o/r merge 1`
+    gets past `Bash(gh pr merge *)`. So a hook, `tools/hooks/guard_bash.py`, reads every shell command the way `gh`
+    and `git` parse it, in any argument order and inside `sh -c "..."`, and blocks the same operations. It also
+    blocks merging through `gh api`, the REST merge endpoints and the GraphQL merge and queue mutations alike.
   - A session only reads this file when this repository is its only repository. Give each session this repository
     alone.
-  - **Secrets:** the `Read` denies stop Claude's file tools only, so a hook (`tools/hooks/deny-secret-paths.sh`)
-    also refuses any shell command that names a secret path (`.env`, `~/.ssh`, `~/.config`, the Hugging Face cache,
-    `.netrc`, git credentials, private keys). It guards against accidents, not a determined bypass. The real boundary
-    is that a session VM holds no project secrets.
+  - **Secrets:** the `Read` denies stop Claude's file tools only, so the same hook refuses any shell command that
+    names a secret path (`.env`, `~/.ssh`, `~/.config`, `~/.cache` and the Hugging Face cache, `.netrc`, git
+    credentials, private keys), including the bare directories.
+  - **The hook fails closed:** input it can't read blocks the call, and `onFailure: "block"` blocks the call if the hook
+    can't start (Claude Code 2.1.295 or later). Tests: `tools/tests/guard_bash.sh`.
+  - **It guards against mistakes, not a determined bypass.** A variable holding `merge`, a script file or `eval` gets
+    past any reading of a command line. The real boundaries are that a session VM holds no project secrets, and
+    GitHub's permissions and the ruleset on `main`.
   - Auto still doesn't approve every call. That is why the ban on `send_message` and `send_later` above stays.
 - The lead answers a session with `send_message` (that direction works).
 - `interrupt_session` drops messages queued for that session: after interrupting, send again.
