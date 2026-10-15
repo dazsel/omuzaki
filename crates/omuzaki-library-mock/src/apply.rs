@@ -191,10 +191,10 @@ fn library_error(field: &str, e: &LibraryError) -> OpError {
     let message = format!("{field}: {e}");
     let on_field = |error: OpError| OpError { field: Some(field.to_owned()), ..error };
     match e {
-        LibraryError::NotFound(_) => on_field(OpError::not_found(message)),
-        LibraryError::NoMatchingVersion { installed, .. } => {
-            on_field(OpError::invalid(field, message)).hint(format!("installed versions: {installed:?}"))
-        }
+        LibraryError::NotFound(item) => on_field(OpError::not_found(message))
+            .hint(format!("install `{item}` (library.install), or remove the step")),
+        LibraryError::NoMatchingVersion { installed, .. } => on_field(OpError::invalid(field, message))
+            .hint(format!("installed versions: {installed:?}; install one in the range (library.install)")),
         LibraryError::Ambiguous { .. } => on_field(OpError::invalid(field, message)).hint("name one publisher"),
         LibraryError::Unsupported { .. } => on_field(OpError::unsupported(message)),
         LibraryError::Storage(_) => on_field(OpError::internal(message)),

@@ -20,6 +20,7 @@ mod facts;
 pub mod fixtures;
 mod library;
 pub mod seed;
+mod text;
 
 pub use apply::{apply_for_test, apply_with_library};
 pub use facts::CharacterFacts;

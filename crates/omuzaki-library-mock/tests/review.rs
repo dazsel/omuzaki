@@ -6,6 +6,8 @@
 
 mod support;
 
+use std::fmt::Write as _;
+
 use omuzaki_doc_api::DocRead;
 use omuzaki_library_api::{Bindings, ItemManifest, ItemScope, ItemSource, Library, LibraryError, Query, VersionReq};
 use omuzaki_library_mock::{MockLibrary, apply_for_test, fixtures, seed};
@@ -389,4 +391,162 @@ fn compatible_with_filters_by_body_template_and_parts_and_keeps_style_mismatches
     let page = library.search(&query).unwrap();
     let row = page.items.iter().find(|i| i.id.as_str() == "test/colourways/versioned").unwrap();
     assert_eq!(row.version.to_string(), "1.0.0", "the row shows the newest version that fits");
+}
+
+// --- Round 3: one visibility rule for every candidate, bundle key ownership, localised and ranked text ---
+
+fn character_query() -> Query {
+    use omuzaki_library_api::CompatTarget;
+    Query { compatible_with: Some(CompatTarget::Character(support::character())), limit: 100, ..Query::default() }
+}
+
+fn shown_version(library: &MockLibrary, id: &str) -> Option<String> {
+    let page = library.search(&character_query()).unwrap();
+    page.items.iter().find(|i| i.id.as_str() == id).map(|i| i.version.to_string())
+}
+
+#[test]
+fn the_compatibility_fallback_never_picks_a_hidden_version() {
+    let mut library = MockLibrary::new();
+    library.set_characters(fixtures::characters());
+    let version = |v: &str, edit: &dyn Fn(&mut ItemManifest)| {
+        let mut m = fixtures::fits();
+        m.id = "test/colourways/history".into();
+        m.version = v.into();
+        edit(&mut m);
+        m
+    };
+    // 3.0.0 is listed but refuses the character; 2.0.0 fits but is deprecated; 1.0.0 fits and is listed.
+    for m in [
+        version("1.0.0", &|_| {}),
+        version("2.0.0", &|m| m.deprecated = Some("replaced".into())),
+        version("3.0.0", &|m| m.compat.templates = vec!["tall".into()]),
+    ] {
+        library.insert(m, ItemScope::FirstParty).unwrap();
+    }
+    assert_eq!(shown_version(&library, "test/colourways/history").as_deref(), Some("1.0.0"));
+    // An unlisted release is just as hidden, and a hidden newest release hides the item.
+    library.insert(version("1.5.0", &|m| m.listed = false), ItemScope::FirstParty).unwrap();
+    assert_eq!(shown_version(&library, "test/colourways/history").as_deref(), Some("1.0.0"));
+    library.insert(version("4.0.0", &|m| m.listed = false), ItemScope::FirstParty).unwrap();
+    assert_eq!(shown_version(&library, "test/colourways/history"), None);
+    // Hidden versions still resolve and list, for pins.
+    let id = "test/colourways/history".parse().unwrap();
+    assert_eq!(library.versions(&id).unwrap().len(), 5);
+    assert_eq!(library.resolve(&id, &VersionReq::parse("^2").unwrap()).unwrap().manifest.version, "2.0.0");
+}
+
+fn creator(id: &str) -> ItemManifest {
+    let mut m = ribbon_part();
+    m.id = id.into();
+    m
+}
+
+fn bundle_applying(id: &str, items: &[&str]) -> ItemManifest {
+    let steps = items.iter().fold(String::new(), |mut steps, i| {
+        let _ = writeln!(steps, "[[step]]\nitem = \"{i}\"\nversion = \"^1\"");
+        steps
+    });
+    item(id, "outfits", "bundle", "", &steps)
+}
+
+#[test]
+fn two_items_of_a_bundle_creating_one_key_are_refused_naming_both() {
+    let (a, b) = ("omuzaki/hair/seed-ribbon-a", "omuzaki/hair/seed-ribbon-b");
+    let siblings = bundle_applying("omuzaki/outfits/seed-pair", &[a, b]);
+    let inner = bundle_applying("omuzaki/outfits/seed-inner", &[a]);
+    let nested = bundle_applying("omuzaki/outfits/seed-outer", &["omuzaki/outfits/seed-inner", b]);
+    let twice = bundle_applying("omuzaki/outfits/seed-twice", &[a, a]);
+    let source = Source(vec![creator(a), creator(b), inner, siblings, nested, twice]);
+    let mut library = MockLibrary::new();
+    for m in source.items() {
+        library.insert(m, ItemScope::FirstParty).unwrap();
+    }
+    let unavailable = |id: &str| library.describe(&id.parse().unwrap(), None).unwrap().info.unavailable;
+    for outer in ["omuzaki/outfits/seed-pair", "omuzaki/outfits/seed-outer"] {
+        let why = unavailable(outer).unwrap_or_else(|| panic!("{outer} must be refused"));
+        assert!(why.contains(a) && why.contains(b) && why.contains("ribbon"), "{outer}: {why}");
+    }
+    assert!(unavailable("omuzaki/outfits/seed-twice").is_some_and(|w| w.contains(a)), "the same item twice collides");
+    assert_eq!(unavailable("omuzaki/outfits/seed-inner"), None, "one creator is fine");
+    let problems = seed::check_source(&source, &support::doc());
+    let library_rule: Vec<&str> = problems.iter().filter(|p| p.rule == "library").map(|p| p.item.as_str()).collect();
+    assert_eq!(
+        library_rule,
+        ["omuzaki/outfits/seed-pair", "omuzaki/outfits/seed-outer", "omuzaki/outfits/seed-twice"],
+        "{problems:?}"
+    );
+}
+
+#[test]
+fn a_bundle_cycle_is_named_in_its_reason_and_in_the_seed_check() {
+    let (a, b) = ("omuzaki/outfits/seed-a", "omuzaki/outfits/seed-b");
+    let source = Source(vec![bundle_applying(a, &[b]), bundle_applying(b, &[a])]);
+    let mut library = MockLibrary::new();
+    for m in source.items() {
+        library.insert(m, ItemScope::FirstParty).unwrap();
+    }
+    let why = library.describe(&a.parse().unwrap(), None).unwrap().info.unavailable.expect("a cycle is refused");
+    assert!(why.contains(&format!("{a} -> {b} -> {a}")), "{why}");
+    let problems = seed::check_source(&source, &support::doc());
+    assert!(problems.iter().any(|p| p.rule == "library" && p.detail.contains(&format!("{a} -> {b} -> {a}"))));
+}
+
+#[test]
+fn a_localised_tag_alone_makes_an_item_a_search_hit_and_ranks_like_an_english_tag() {
+    fn hits(library: &MockLibrary, text: &str) -> Vec<String> {
+        let q = Query { text: Some(text.into()), limit: 100, ..Query::default() };
+        library.search(&q).unwrap().items.into_iter().map(|i| i.id.to_string()).collect()
+    }
+    let mut library = MockLibrary::fixtures();
+    assert_eq!(hits(&library, "veilleuse"), ["test/colourways/lantern"]);
+    assert_eq!(hits(&library, "提灯"), ["test/colourways/lantern"]);
+    // The English text has neither word: before this was searched, both queries found nothing.
+    let lantern = fixtures::lantern();
+    assert!(!lantern.tags.iter().any(|t| t == "veilleuse") && !lantern.summary.contains("veilleuse"));
+    // A localised tag ranks as a tag: above a prefix match on a summary word, below an exact title.
+    let mut tagged = fixtures::setting();
+    tagged.id = "test/colourways/other".into();
+    tagged.summary = "Mentions veilleuses in passing.".into();
+    library.insert(tagged, ItemScope::FirstParty).unwrap();
+    let order = hits(&library, "veilleuse");
+    assert_eq!(order, ["test/colourways/lantern", "test/colourways/other"], "tag before summary prefix");
+}
+
+#[test]
+fn text_ranks_exact_then_tag_then_prefix_then_fuzzy_and_ties_go_by_section_then_id() {
+    let mut library = MockLibrary::new();
+    let make = |id: &str, title: &str, tags: &[&str]| {
+        let mut m = fixtures::setting();
+        m.id = id.into();
+        m.title = title.into();
+        m.summary = "Nothing relevant.".into();
+        m.tags = tags.iter().map(|t| (*t).to_owned()).collect();
+        m
+    };
+    for m in [
+        make("test/colourways/d", "Garnat", &[]),        // one edit away
+        make("test/colourways/c", "Garnetine", &[]),     // starts with the word
+        make("test/colourways/b", "Plain", &["garnet"]), // a tag
+        make("test/colourways/a", "Garnet", &[]),        // the exact title
+        make("test/colourways/e", "Unrelated", &[]),     // no match
+    ] {
+        library.insert(m, ItemScope::FirstParty).unwrap();
+    }
+    let q = Query { text: Some("Garnet".into()), limit: 100, ..Query::default() };
+    let ids: Vec<String> = library.search(&q).unwrap().items.into_iter().map(|i| i.id.to_string()).collect();
+    assert_eq!(ids, ["test/colourways/a", "test/colourways/b", "test/colourways/c", "test/colourways/d"]);
+    // Accents and case fold, and every query word must match.
+    let q = Query { text: Some("GARNÉT plain".into()), limit: 100, ..Query::default() };
+    let ids: Vec<String> = library.search(&q).unwrap().items.into_iter().map(|i| i.id.to_string()).collect();
+    assert_eq!(ids, ["test/colourways/b"], "only the item with both words");
+}
+
+#[test]
+fn a_bundle_is_publishable_only_if_everything_it_applies_is() {
+    let library = MockLibrary::fixtures();
+    let publish_ok = |id: &str| library.describe(&id.parse().unwrap(), None).unwrap().info.rights.publish_ok;
+    assert!(!publish_ok("anon/colourways/mint"));
+    assert!(!publish_ok("test/outfits/with-mint"), "it applies a non-commercial item");
+    assert!(publish_ok("test/outfits/casual"));
 }

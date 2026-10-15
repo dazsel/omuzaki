@@ -6,9 +6,7 @@ use std::fmt;
 
 use omuzaki_char_api::{BodyTemplateId, CharId, PartId, paths};
 use omuzaki_doc_api::{DocPath, DocRead};
-use omuzaki_library_api::{
-    Bindings, ItemId, ItemManifest, ItemRights, ItemScope, ItemSource, Library, Step, VersionReq, check_ops,
-};
+use omuzaki_library_api::{Bindings, ItemManifest, ItemRights, ItemScope, ItemSource, check_ops};
 use omuzaki_ops_api::find;
 
 use crate::{MockLibrary, apply_with_library};
@@ -36,7 +34,8 @@ impl fmt::Display for SeedProblem {
 /// [`apply_with_library`] on the character in `doc` (bundles resolve in the source's own items).
 ///
 /// `$target` is bound to the one part of a `target_part` kind, and the dry run fails naming the candidates when there
-/// is none or more than one. A bundle binds `$parts.<key>` only for the keys its own dependency closure creates.
+/// is none or more than one. A bundle binds `$parts.<key>` only for the keys its own dependency closure creates, and
+/// the `library` rule reports a key two of its items create (naming both), a cycle, or nesting past four levels.
 ///
 /// The source has already been parsed by the time `items()` returns, so parse errors surface where the source is
 /// built. Returns every problem, not just the first.
@@ -95,37 +94,18 @@ fn check_item(m: &ItemManifest, library: &MockLibrary, doc: &dyn DocRead) -> Vec
     if !m.assets.is_empty() {
         out.push(found("assets", "first-party items carry no binary assets".to_owned()));
     }
-    match character_bindings(m, &part_keys(m, library), doc) {
-        Err(why) => out.push(found("apply", why)),
-        Ok(bindings) => {
-            if let Err(e) = apply_with_library(library, m, doc, &bindings) {
-                out.push(found("apply", e.to_string()));
+    match library.closure_keys(m) {
+        Err(why) => out.push(found("library", why)),
+        Ok(owners) => match character_bindings(m, &owners.into_keys().collect(), doc) {
+            Err(why) => out.push(found("apply", why)),
+            Ok(bindings) => {
+                if let Err(e) = apply_with_library(library, m, doc, &bindings) {
+                    out.push(found("apply", e.to_string()));
+                }
             }
-        }
+        },
     }
     out
-}
-
-/// The `creates` keys of `m` and of every item its steps apply, found through `library`. A key outside this closure
-/// stays unbound, so a bundle that names a part nothing in its own tree creates fails its dry run. Steps that don't
-/// resolve are skipped here; the apply reports them.
-fn part_keys(m: &ItemManifest, library: &MockLibrary) -> BTreeSet<String> {
-    fn walk(m: &ItemManifest, library: &MockLibrary, visited: &mut BTreeSet<String>, keys: &mut BTreeSet<String>) {
-        if !visited.insert(m.id.clone()) {
-            return;
-        }
-        keys.extend(m.creates.keys().cloned());
-        for step in &m.steps {
-            let Step::Item(nested) = step else { continue };
-            let (Ok(id), Ok(req)) = (ItemId::new(&nested.item), VersionReq::parse(&nested.version)) else { continue };
-            if let Ok(found) = library.resolve(&id, &req) {
-                walk(&found.manifest, library, visited, keys);
-            }
-        }
-    }
-    let mut keys = BTreeSet::new();
-    walk(m, library, &mut BTreeSet::new(), &mut keys);
-    keys
 }
 
 /// Bindings for a dry run on the first character in `doc`: a fresh id per part key, `$target` as the one part of a

@@ -131,7 +131,68 @@ impl MockLibrary {
     /// isn't registered or is above the recipe ceiling, or a bundle item that doesn't resolve or is itself unavailable.
     /// The first failure in step order is the reason.
     fn unavailable(&self, m: &ItemManifest) -> Option<String> {
+        // Loading a bundle refuses a part key two of its items create, and a cycle, before any step is considered.
+        if let Err(why) = self.closure_keys(m) {
+            return Some(why);
+        }
         self.unavailable_at(m, 0)
+    }
+
+    /// Who creates each `$parts.<key>` across `m` and every item its steps apply, nested and sibling alike (design D7):
+    /// key to the creating item's id. A key two items create is an error naming both, a repeated item counts as two,
+    /// and so does a cycle (named) or nesting past [`MAX_DEPTH`]. Steps that don't resolve are skipped here; the
+    /// availability walk and the apply report them.
+    pub(crate) fn closure_keys(&self, m: &ItemManifest) -> Result<BTreeMap<String, String>, String> {
+        let mut owners = BTreeMap::new();
+        self.collect_keys(m, &mut Vec::new(), &mut owners)?;
+        Ok(owners)
+    }
+
+    fn collect_keys(
+        &self,
+        m: &ItemManifest,
+        path: &mut Vec<String>,
+        owners: &mut BTreeMap<String, String>,
+    ) -> Result<(), String> {
+        path.push(m.id.clone());
+        for key in m.creates.keys() {
+            if let Some(first) = owners.insert(key.clone(), m.id.clone()) {
+                return Err(format!(
+                    "`$parts.{key}` is created by both {first} and {}; a bundle can't hold both",
+                    m.id
+                ));
+            }
+        }
+        for step in &m.steps {
+            let Step::Item(nested) = step else { continue };
+            let (Ok(id), Ok(req)) = (ItemId::new(&nested.item), VersionReq::parse(&nested.version)) else { continue };
+            let Ok(found) = self.pick(&id, &req) else { continue };
+            let found = &found.item.manifest;
+            if path.contains(&found.id) {
+                return Err(format!("bundles cycle: {} -> {}", path.join(" -> "), found.id));
+            }
+            if path.len() > MAX_DEPTH {
+                return Err(format!("bundles nest deeper than {MAX_DEPTH}: {} -> {}", path.join(" -> "), found.id));
+            }
+            self.collect_keys(found, path, owners)?;
+        }
+        path.pop();
+        Ok(())
+    }
+
+    /// Whether what `m` makes may be published: its own rights, and for a bundle every item it applies (the record
+    /// carries the strictest join of the rights, design D8), so one non-commercial item blocks the whole bundle.
+    fn publishable(&self, e: &Entry, depth: usize) -> bool {
+        let m = &e.item.manifest;
+        let own = licence_gate(&m.rights.to_provenance(&e.id, &e.version), false).is_ok();
+        own && depth <= MAX_DEPTH
+            && m.steps.iter().all(|step| {
+                let Step::Item(nested) = step else { return true };
+                let (Ok(id), Ok(req)) = (ItemId::new(&nested.item), VersionReq::parse(&nested.version)) else {
+                    return true;
+                };
+                self.pick(&id, &req).map_or(true, |found| self.publishable(found, depth + 1))
+            })
     }
 
     fn unavailable_at(&self, m: &ItemManifest, depth: usize) -> Option<String> {
@@ -178,7 +239,6 @@ impl MockLibrary {
 
     fn info(&self, e: &Entry, facts: Option<&CharacterFacts>) -> ItemInfo {
         let m = &e.item.manifest;
-        let provenance = m.rights.to_provenance(&e.id, &e.version);
         ItemInfo {
             id: e.id.clone(),
             version: e.version,
@@ -194,7 +254,7 @@ impl MockLibrary {
                 commercial: m.rights.commercial,
                 owned: m.rights.owned,
                 private_test: m.rights.private_test,
-                publish_ok: licence_gate(&provenance, false).is_ok(),
+                publish_ok: self.publishable(e, 0),
             },
             compat: Self::compat(e, facts),
             preview: None,
@@ -207,10 +267,33 @@ impl MockLibrary {
         facts.map_or(CompatStatus::Compatible, |f| status(&e.item.manifest.compat, f))
     }
 
-    /// The newest version per (id, scope, publisher key) that search may show: the rows of a listing. `listed = false`
-    /// and deprecated items are hidden here, before ranking, paging and facets, but stay resolvable. The newest version
-    /// decides, so a deprecated release never lets an older one resurface. Given a character, items that don't fit it
-    /// drop out, and a row shows the newest version that does.
+    /// Whether search may show this manifest: `listed = false` and deprecated manifests are hidden from search, though
+    /// they stay resolvable for pins and dependencies. Asked of every candidate, never only of the newest.
+    fn hidden_from_search(e: &Entry) -> bool {
+        !e.item.manifest.listed || e.item.manifest.deprecated.is_some()
+    }
+
+    /// The versions of one (id, scope, publisher) that search may show, for a query with or without a character: the
+    /// single place visibility and compatibility are decided, so no path can apply one without the other. A hidden
+    /// newest release hides the whole item (a retired item must not resurface as an older release); otherwise a
+    /// version is a candidate when it is not hidden itself and, given a character, does not refuse it.
+    fn visible_candidates<'a>(group: &[&'a Entry], facts: Option<&CharacterFacts>) -> Vec<&'a Entry> {
+        let Some(newest) = group.iter().copied().max_by(|a, b| a.version.cmp(&b.version)) else { return Vec::new() };
+        if Self::hidden_from_search(newest) {
+            return Vec::new();
+        }
+        group
+            .iter()
+            .copied()
+            .filter(|e| !Self::hidden_from_search(e))
+            .filter(|e| !matches!(Self::compat(e, facts), CompatStatus::Incompatible { .. }))
+            .collect()
+    }
+
+    /// The rows of a listing: per (id, scope, publisher key), the newest of its [`visible_candidates`]. Hidden and
+    /// incompatible items drop out here, before ranking, paging and facets.
+    ///
+    /// [`visible_candidates`]: Self::visible_candidates
     fn rows(&self, facts: Option<&CharacterFacts>) -> Vec<&Entry> {
         let mut groups: BTreeMap<(&ItemId, &ItemScope, Option<&str>), Vec<&Entry>> = BTreeMap::new();
         for e in &self.entries {
@@ -220,15 +303,7 @@ impl MockLibrary {
         groups
             .into_values()
             .filter_map(|group| {
-                let newest = group.iter().copied().max_by(|a, b| a.version.cmp(&b.version))?;
-                if !newest.item.manifest.listed || newest.item.manifest.deprecated.is_some() {
-                    return None;
-                }
-                // With a target, the row shows the newest version that fits it (the contract's "newest compatible").
-                group
-                    .into_iter()
-                    .filter(|e| !matches!(Self::compat(e, facts), CompatStatus::Incompatible { .. }))
-                    .max_by(|a, b| a.version.cmp(&b.version))
+                Self::visible_candidates(&group, facts).into_iter().max_by(|a, b| a.version.cmp(&b.version))
             })
             .collect()
     }
@@ -335,6 +410,7 @@ fn ensure_one_publisher(item: &ItemId, entries: &[&Entry]) -> Result<(), Library
     Err(LibraryError::Ambiguous { item: item.clone(), candidates: named })
 }
 
+/// The text rank of `e` for `q` (0 with no text), or `None` when a filter or the text rules it out.
 fn rank(q: &Query, e: &Entry) -> Option<u8> {
     let m = &e.item.manifest;
     let wanted = q.section.is_none_or(|s| s == e.section)
@@ -344,18 +420,9 @@ fn rank(q: &Query, e: &Entry) -> Option<u8> {
     if !wanted {
         return None;
     }
-    let Some(text) = q.text.as_deref().map(str::to_lowercase).filter(|t| !t.is_empty()) else { return Some(0) };
-    let has = |s: &str| s.to_lowercase().contains(&text);
-    if e.id.as_str() == text {
-        Some(4)
-    } else if has(&m.title) || m.titles.values().any(|t| has(t)) {
-        Some(3)
-    } else if m.tags.iter().any(|t| has(t)) {
-        Some(2)
-    } else if has(&m.summary) || has(e.id.as_str()) {
-        Some(1)
-    } else {
-        None
+    match q.text.as_deref().filter(|t| !t.trim().is_empty()) {
+        None => Some(0),
+        Some(text) => crate::text::rank(text, &e.id, m),
     }
 }
 

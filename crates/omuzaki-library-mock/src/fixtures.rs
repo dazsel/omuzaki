@@ -173,6 +173,22 @@ pub fn ghosted_bundle() -> ItemManifest {
     parse(&(header("test/outfits/ghosted", "1.0.0", "outfits", "bundle", FIRST_PARTY, "") + steps))
 }
 
+/// An item with localised titles and tags: `lantern`'s French tag `veilleuse` and Japanese tag `提灯` appear nowhere
+/// in its English text, so a query for them finds it only through `tags_i18n`.
+pub fn lantern() -> ItemManifest {
+    let extra = "titles = { fr = \"Éclat doré\" }\ntags_i18n = { fr = [\"veilleuse\"], ja = [\"提灯\"] }\n";
+    parse(
+        &(header("test/colourways/lantern", "1.0.0", "colourways", "setting", FIRST_PARTY, extra)
+            + &palette("#775522")),
+    )
+}
+
+/// A bundle that applies [`unverified`] (non-commercial), so what it makes can't be published either.
+pub fn bundle_with_mint() -> ItemManifest {
+    let steps = "[[step]]\nitem = \"anon/colourways/mint\"\nversion = \"^1\"\n";
+    parse(&(header("test/outfits/with-mint", "1.0.0", "outfits", "bundle", FIRST_PARTY, "") + steps))
+}
+
 /// `signer/colourways/tide` at `version`, signed with [`SIGNER_SEED`]: held by two teams in [`all`].
 pub fn tide(version: &str) -> ItemManifest {
     let toml = header("signer/colourways/tide", version, "colourways", "setting", PERMISSIVE, "");
@@ -227,6 +243,8 @@ pub fn all() -> Vec<Fixture> {
         held(other_template(), ItemScope::FirstParty),
         held(needs_wings(), ItemScope::FirstParty),
         held(gothic(), ItemScope::FirstParty),
+        held(lantern(), ItemScope::FirstParty),
+        held(bundle_with_mint(), ItemScope::FirstParty),
         held(dangling_bundle(), ItemScope::FirstParty),
         held(ghosted_bundle(), ItemScope::FirstParty),
         held(tide("1.0.0"), ItemScope::Team("atelier".to_owned())),

@@ -30,6 +30,7 @@ pub fn run(library: &dyn Library) {
     version_selection(library);
     hash_clash_and_publishers(library);
     deterministic_search(library);
+    localised_text_is_searched(library);
     team_scopes_are_one_tier(library);
     unavailable_with_reasons(library);
     refusals(library);
@@ -74,6 +75,21 @@ pub fn compat(library: &dyn Library, character: &CharId) {
 
 fn id_of(name: &str) -> CharId {
     must(name, CharId::new(name))
+}
+
+/// Localised titles and tags are searched like the English ones (design D1, D13), accents folded, CJK by bigram.
+fn localised_text_is_searched(library: &dyn Library) {
+    let hit = |text: &str| {
+        let page =
+            must("text search", library.search(&Query { text: Some(text.into()), limit: 100, ..Query::default() }));
+        page.items.iter().any(|i| i.id.as_str() == "test/colourways/lantern")
+    };
+    assert!(hit("veilleuse"), "a French tag, which the English text lacks");
+    assert!(hit("提灯"), "a Japanese tag, by bigram");
+    assert!(hit("eclat"), "a French title, accent folded");
+    assert!(hit("ÉCLAT dore"), "case and accents fold on the query too");
+    assert!(hit("lanterne"), "one edit from `lantern` still matches, by the fuzzy tier");
+    assert!(!hit("xylophone"), "a word nowhere in the item finds nothing");
 }
 
 /// All teams are one precedence tier: the newest matching version wins across them whatever the teams are called, and
@@ -159,6 +175,10 @@ fn deterministic_search(library: &dyn Library) {
         "non-commercial items are hidden"
     );
     assert!(first.items.iter().any(|i| i.id.as_str() == "anon/colourways/mint"));
+    assert!(
+        publishable.items.iter().all(|i| i.id.as_str() != "test/outfits/with-mint"),
+        "a bundle is as publishable as the strictest item it applies"
+    );
 }
 
 fn unavailable_with_reasons(library: &dyn Library) {
