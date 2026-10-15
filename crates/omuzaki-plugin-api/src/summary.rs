@@ -9,7 +9,8 @@ use omuzaki_ops_api::Scope;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{LicenceClass, Manifest};
+use crate::grants::Approval;
+use crate::manifest::{LicenceClass, Manifest};
 
 omuzaki_l10n_api::messages! {
     /// A plugin wants to read the project.
@@ -113,8 +114,11 @@ pub struct PermissionSummary {
 /// What an update asks for beyond what the person approved.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct PermissionDiff {
-    /// New scopes, as card lines in the card's order.
+    /// New scopes, as card lines in the card's order. `net` is here when it is new or asks for a host not yet
+    /// approved; its detail then names only those hosts.
     pub added: Vec<PermLine>,
+    /// The data folder, when the update asks for it and it was not approved.
+    pub data: Option<DataLine>,
     /// Approved scopes the update no longer asks for, by scope name.
     pub removed: Vec<Scope>,
 }
@@ -122,7 +126,7 @@ pub struct PermissionDiff {
 impl PermissionDiff {
     /// Whether the update asks for nothing new and drops nothing.
     pub fn is_empty(&self) -> bool {
-        self.added.is_empty() && self.removed.is_empty()
+        self.added.is_empty() && self.data.is_none() && self.removed.is_empty()
     }
 }
 
@@ -175,12 +179,18 @@ pub fn summarise(manifest: &Manifest) -> PermissionSummary {
     }
 }
 
-/// What `new` asks for that the person has not approved (`approved`), and what approved scopes it drops.
-pub fn diff(new: &Manifest, approved: &[Scope]) -> PermissionDiff {
+/// What `new` asks for that the person has not approved (`approved`): new scopes, hosts not yet approved, the data
+/// folder; and what approved scopes it drops.
+pub fn diff(new: &Manifest, approved: &Approval) -> PermissionDiff {
     let requests = &new.requests;
-    let added = lines(requests.scopes.iter().copied().filter(|s| !approved.contains(s)), &requests.net_hosts);
-    let mut removed: Vec<Scope> = approved.iter().copied().filter(|s| !requests.scopes.contains(s)).collect();
+    let new_hosts: Vec<String> = requests.net_hosts.iter().filter(|h| !approved.hosts.contains(h)).cloned().collect();
+    let asks = |s: &Scope| !approved.scopes.contains(s) || (*s == Scope::Net && !new_hosts.is_empty());
+    let hosts = if approved.scopes.contains(&Scope::Net) { &new_hosts } else { &requests.net_hosts };
+    let added = lines(requests.scopes.iter().copied().filter(asks), hosts);
+    let data = (requests.data && !approved.data)
+        .then(|| DataLine { quota_mb: requests.data_quota_mb, text: perm_data(i64::from(requests.data_quota_mb)) });
+    let mut removed: Vec<Scope> = approved.scopes.iter().copied().filter(|s| !requests.scopes.contains(s)).collect();
     removed.sort_by_key(|s| s.name());
     removed.dedup();
-    PermissionDiff { added, removed }
+    PermissionDiff { added, data, removed }
 }

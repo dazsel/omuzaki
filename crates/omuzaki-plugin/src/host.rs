@@ -11,11 +11,11 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
 use omuzaki_core::time::Seconds;
 use omuzaki_ops_api::{Actor, Budget, EndReason, Grants, Limits, Scope, SessionId, SessionSpec, Sessions, Transport};
+use omuzaki_plugin_api::grants::{Approval, ceiling};
 use omuzaki_plugin_api::limits::{FAULT_WINDOW_SECONDS, FAULTS_TO_DISABLE, RESTART_BACKOFF_SECONDS};
-use omuzaki_plugin_api::{
-    Approval, DisabledReason, FaultRecord, LogLevel, LogLine, Manifest, PluginError, PluginId, PluginInfo, PluginState,
-    Plugins, ceiling,
-};
+use omuzaki_plugin_api::manifest::Manifest;
+use omuzaki_plugin_api::state::{DisabledReason, FaultRecord, LogLevel, LogLine, PluginInfo, PluginState};
+use omuzaki_plugin_api::{PluginError, PluginId, Plugins};
 use wasmtime::component::Component;
 
 use crate::bridge::{NoBridge, OpBridge};
@@ -107,21 +107,27 @@ impl WasmPlugins {
         }
     }
 
-    /// Installs a plugin from its manifest and component bytes, off, with everything its manifest asks for approved.
-    /// `hash` is the package's content hash, which seeds its `insecure` stream. The component is compiled and its
-    /// imports and version checked now, so a refused plugin never reaches the list.
+    /// Installs a plugin from its manifest and component bytes, off, with everything its manifest asks for approved:
+    /// for embedders and tests that hold the person's approval already. A package a person installs goes through
+    /// [`install`](Self::install), which approves nothing. `hash` is the package's content hash, which seeds its
+    /// `insecure` stream. The component is compiled and its imports and version checked now, so a refused plugin never
+    /// reaches the list.
     ///
     /// # Errors
-    /// [`PluginError::Manifest`] when the manifest's check has errors or the id is taken; the errors of
-    /// [`load::compile`](crate::load::compile) and [`load::check`](crate::load::check).
+    /// [`PluginError::Manifest`] when the manifest's check has errors, the id is taken or names an op family; the
+    /// errors of [`load::compile`](crate::load::compile) and [`load::check`](crate::load::check).
     pub fn add(&self, manifest: Manifest, component: &[u8], hash: [u8; 32]) -> Result<PluginId, PluginError> {
         let compiled = crate::load::compile(&self.engine, component)?;
-        self.add_compiled(manifest, compiled, hash)
+        self.admissible(&manifest, &compiled)?;
+        let approval = Approval::all_of(&manifest.requests);
+        self.register(manifest, compiled, hash, approval)
     }
 
     /// Installs a package from `path` (a folder or a `.zip`) for the person `by`: reads it as hostile input, checks its
-    /// signature against its publisher, copies its files into `storage`'s install folder (keeping the last two
-    /// versions), compiles it through the compiled-code cache and adds it, off and fully approved.
+    /// signature against its publisher, compiles it through the compiled-code cache and checks it, and only then copies
+    /// its files into `storage`'s install folder (keeping the last two versions) and adds it, off and with nothing
+    /// approved: the person approves what the card shows through [`Plugins::set_approval`]. A refused package changes
+    /// nothing in the install folder.
     ///
     /// # Errors
     /// [`PluginError::Denied`] when `by` is not a person; [`PluginError::Package`] for a refused package;
@@ -138,24 +144,40 @@ impl WasmPlugins {
         if package.publisher() == PublisherCheck::Mismatch {
             return Err(PluginError::Signature("the signature does not match the package or its publisher".into()));
         }
+        let (component, _) = storage.cache.load(&self.engine, &package.hash, package.component())?;
+        self.admissible(&package.manifest, &component)?;
         let installed = storage.install.install(&package)?;
-        let (component, _) = storage.cache.load(&self.engine, &installed.hash, package.component())?;
-        let id = self.add_compiled(package.manifest, component, installed.hash.0)?;
+        let id = self.register(package.manifest, component, installed.hash.0, Approval::default())?;
         self.info(&id)
     }
 
-    fn add_compiled(&self, manifest: Manifest, compiled: Component, hash: [u8; 32]) -> Result<PluginId, PluginError> {
+    /// Everything that can refuse a new plugin, run before anything is kept: the manifest's check, an id that names
+    /// an op family, the component's imports and version, an id already installed.
+    fn admissible(&self, manifest: &Manifest, compiled: &Component) -> Result<(), PluginError> {
         if let Some(error) = manifest.check().errors().next() {
             return Err(PluginError::Manifest(error.to_string()));
         }
-        crate::load::check(&self.engine, &compiled, &manifest)?;
+        let ops = omuzaki_ops_api::registrations().map(|r| (r.meta)().name);
+        if let Some(op) = op_of_family(&manifest.id, ops) {
+            let id = &manifest.id;
+            return Err(PluginError::Manifest(format!("`{id}` is reserved: it is the family of the op `{op}`")));
+        }
+        crate::load::check(&self.engine, compiled, manifest)?;
+        not_taken(&self.lock(), &manifest.id)
+    }
+
+    /// Adds a checked plugin to the list, off, under `approval`.
+    fn register(
+        &self,
+        manifest: Manifest,
+        compiled: Component,
+        hash: [u8; 32],
+        approval: Approval,
+    ) -> Result<PluginId, PluginError> {
         let id = manifest.id.clone();
         let mut plugins = self.lock();
-        if plugins.contains_key(&id) {
-            return Err(PluginError::Manifest(format!("a plugin `{id}` is already installed")));
-        }
+        not_taken(&plugins, &id)?;
         let log = Arc::new(PluginLog::new(id.clone(), self.engine.clock().clone(), self.writer.as_ref()));
-        let approval = Approval::all_of(&manifest.requests);
         plugins.insert(
             id.clone(),
             Entry {
@@ -337,15 +359,17 @@ impl Plugins for WasmPlugins {
         let mut plugins = self.lock();
         let entry = plugins.get_mut(id).ok_or(PluginError::NotFound)?;
         let requests = &entry.manifest.requests;
-        entry.approval = Approval {
+        let approval = Approval {
             scopes: approval.scopes.into_iter().filter(|s| requests.scopes.contains(s)).collect(),
             hosts: approval.hosts.into_iter().filter(|h| requests.net_hosts.contains(h)).collect(),
             data: approval.data && requests.data,
         };
+        // The live session's grants change first: when that is refused, the approval stays as it was.
         if let Some(session) = entry.session {
-            let grants = ceiling(requests, &entry.approval, &self.person);
+            let grants = ceiling(requests, &approval, &self.person);
             self.sessions.set_grants(session, grants, by).map_err(|e| PluginError::Instantiate(e.message))?;
         }
+        entry.approval = approval;
         Ok(info_of(id, entry))
     }
 
@@ -384,6 +408,19 @@ impl Plugins for WasmPlugins {
     }
 }
 
+fn not_taken(plugins: &BTreeMap<PluginId, Entry>, id: &PluginId) -> Result<(), PluginError> {
+    if plugins.contains_key(id) {
+        return Err(PluginError::Manifest(format!("a plugin `{id}` is already installed")));
+    }
+    Ok(())
+}
+
+/// The first of `ops` whose family (the name before its first `.`) is `id`: a plugin with that id would collide with
+/// it (design §7: every first-party op family is reserved).
+fn op_of_family<'a>(id: &PluginId, ops: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
+    ops.into_iter().find(|op| op.split('.').next() == Some(id.as_str()))
+}
+
 impl Drop for WasmPlugins {
     fn drop(&mut self) {
         // Stop every worker before the engine goes, so no thread outlives the service.
@@ -392,5 +429,19 @@ impl Drop for WasmPlugins {
             // Every id was just listed and nothing removes one, so this can only stop the plugin.
             let _stopped = self.stop(&id, PluginState::Installed);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_id_naming_an_op_family_is_found_and_a_prefix_is_not() {
+        let ops = ["face.blink", "session.open", "io.read"];
+        let id = |s: &str| PluginId::new(s).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(op_of_family(&id("session"), ops), Some("session.open"));
+        assert_eq!(op_of_family(&id("faces"), ops), None);
+        assert_eq!(op_of_family(&id("example"), ops), None);
     }
 }

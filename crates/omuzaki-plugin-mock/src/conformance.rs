@@ -13,10 +13,11 @@ use std::time::{Duration, Instant};
 
 use omuzaki_core::time::{FakeClock, Seconds};
 use omuzaki_ops_api::{Actor, EndReason, Scope, Sessions, Transport};
+use omuzaki_plugin_api::grants::Approval;
 use omuzaki_plugin_api::limits::RESTART_BACKOFF_SECONDS;
-use omuzaki_plugin_api::{
-    Approval, DisabledReason, FaultKind, LogLevel, Manifest, PluginError, PluginId, PluginState, Plugins,
-};
+use omuzaki_plugin_api::manifest::Manifest;
+use omuzaki_plugin_api::state::{DisabledReason, FaultKind, LogLevel, PluginState};
+use omuzaki_plugin_api::{PluginError, PluginId, Plugins};
 
 use crate::{MockOp, MockSessions, ScriptedCall};
 
@@ -120,7 +121,7 @@ fn id(text: &str) -> PluginId {
     }
 }
 
-fn info<P: Plugins>(plugins: &P, name: &str) -> omuzaki_plugin_api::PluginInfo {
+fn info<P: Plugins>(plugins: &P, name: &str) -> omuzaki_plugin_api::state::PluginInfo {
     match plugins.info(&id(name)) {
         Ok(info) => info,
         Err(error) => panic!("info({name}): {error}"),

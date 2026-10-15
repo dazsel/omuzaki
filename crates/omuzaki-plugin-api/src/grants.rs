@@ -5,7 +5,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::manifest::NEVER_GRANTED;
-use crate::{PER_USE, Requests};
+use crate::manifest::Requests;
+use crate::summary::PER_USE;
 
 /// What the person approved, attached to the package's content hash and publisher key (never its name).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

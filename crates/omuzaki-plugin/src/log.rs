@@ -6,24 +6,30 @@
 //! - **The ring:** the last [`LOG_RING_LINES`] lines, each with a sequence number that keeps rising, so a reader pages
 //!   with `after` even once the oldest lines are gone.
 //! - **The file:** a [`LogWriter`] thread hands kept lines to a [`LineSink`]; [`FileSink`] appends them to
-//!   `<dir>/<id>.log` and rotates at [`LOG_FILE_MAX_BYTES`] to one `<id>.log.1`. Pushing a line only sends it to the
-//!   thread, so a slow disk never blocks `host.log`.
+//!   `<dir>/<id>.log` and rotates at [`LOG_FILE_MAX_BYTES`] to one `<id>.log.1`. Pushing a line only offers it to the
+//!   thread's queue of [`LOG_QUEUE_LINES`], so a slow disk never blocks `host.log` and never holds more than that;
+//!   a line the full queue refuses stays in the ring and is counted in [`LogWriter::failures`].
 
 use std::collections::VecDeque;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write as _};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 
 use omuzaki_core::time::{Clock, Seconds};
+use omuzaki_plugin_api::PluginId;
 use omuzaki_plugin_api::limits::{LOG_BURST, LOG_LINE_MAX_BYTES, LOG_LINES_PER_SECOND, LOG_RING_LINES};
-use omuzaki_plugin_api::{LogLevel, LogLine, PluginId};
+use omuzaki_plugin_api::state::{LogLevel, LogLine};
 
 /// The size at which a plugin's log file rotates, in bytes.
 pub const LOG_FILE_MAX_BYTES: u64 = 1024 * 1024;
+
+/// Kept lines waiting for the writer thread, across every plugin: with lines of at most [`LOG_LINE_MAX_BYTES`], a
+/// few MiB at most however slow the disk is.
+pub const LOG_QUEUE_LINES: usize = 4096;
 
 /// `text` cut to at most [`LOG_LINE_MAX_BYTES`] bytes, never inside a character.
 pub fn cut_line(text: &str) -> &str {
@@ -47,7 +53,7 @@ struct State {
 pub struct PluginLog {
     id: PluginId,
     clock: Arc<dyn Clock>,
-    sink: Option<Sender<Message>>,
+    sink: Option<Queue>,
     state: Mutex<State>,
 }
 
@@ -56,7 +62,7 @@ impl PluginLog {
     pub fn new(id: PluginId, clock: Arc<dyn Clock>, writer: Option<&LogWriter>) -> Self {
         let at = clock.now();
         let state = State { lines: VecDeque::new(), next_seq: 1, tokens: f64::from(LOG_BURST), at, dropped: 0 };
-        Self { id, clock, sink: writer.and_then(LogWriter::sender), state: Mutex::new(state) }
+        Self { id, clock, sink: writer.and_then(LogWriter::queue), state: Mutex::new(state) }
     }
 
     /// Adds a line, cut to size, unless the bucket is empty; true when it was kept. A line written during a dry run
@@ -85,8 +91,7 @@ impl PluginLog {
         let line = LogLine { seq: state.next_seq, at, level, text, dry_run };
         state.next_seq += 1;
         if let Some(sink) = &self.sink {
-            // The writer outlives every log in normal use; once it has stopped, the ring still keeps the line.
-            let _gone = sink.send(Message::Line(self.id.clone(), line.clone()));
+            sink.offer(Message::Line(self.id.clone(), line.clone()));
         }
         state.lines.push_back(line);
         if state.lines.len() > LOG_RING_LINES {
@@ -121,6 +126,23 @@ enum Message {
     Stop,
 }
 
+/// The writer thread's queue as a log holds it.
+#[derive(Clone)]
+struct Queue {
+    tx: SyncSender<Message>,
+    failures: Arc<AtomicU64>,
+}
+
+impl Queue {
+    /// Offers a line without waiting. A full queue counts it as not written; a stopped writer drops it (the writer
+    /// outlives every log in normal use). Either way the ring still keeps the line.
+    fn offer(&self, message: Message) {
+        if let Err(TrySendError::Full(_)) = self.tx.try_send(message) {
+            self.failures.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+}
+
 /// Where the log writer thread puts kept lines.
 pub trait LineSink: Send {
     /// Writes one line of `plugin`'s log.
@@ -132,7 +154,7 @@ pub trait LineSink: Send {
 
 /// The thread that writes every plugin's kept lines to a [`LineSink`]. Dropping it stops and joins the thread.
 pub struct LogWriter {
-    tx: Option<Sender<Message>>,
+    tx: Option<SyncSender<Message>>,
     thread: Option<JoinHandle<()>>,
     failures: Arc<AtomicU64>,
 }
@@ -143,7 +165,7 @@ impl LogWriter {
     /// # Errors
     /// The OS refused to start a thread.
     pub fn spawn(sink: Box<dyn LineSink>) -> io::Result<Self> {
-        let (tx, rx) = channel::<Message>();
+        let (tx, rx) = sync_channel::<Message>(LOG_QUEUE_LINES);
         let failures = Arc::new(AtomicU64::new(0));
         let counted = failures.clone();
         let thread =
@@ -151,13 +173,13 @@ impl LogWriter {
         Ok(Self { tx: Some(tx), thread: Some(thread), failures })
     }
 
-    /// Lines the sink failed to write so far.
+    /// Lines not written so far: the sink failed, or the queue was full.
     pub fn failures(&self) -> u64 {
         self.failures.load(Ordering::Acquire)
     }
 
-    fn sender(&self) -> Option<Sender<Message>> {
-        self.tx.clone()
+    fn queue(&self) -> Option<Queue> {
+        self.tx.clone().map(|tx| Queue { tx, failures: self.failures.clone() })
     }
 }
 

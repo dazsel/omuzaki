@@ -84,9 +84,13 @@ impl Drop for Reservation {
     }
 }
 
+/// How many pollables a plugin may hold at once. A dropped one's slot is used again, so the host keeps at most this
+/// many, however many a long-lived plugin makes.
+pub const MAX_POLLABLES: usize = 256;
+
 /// The store's `ResourceLimiter`: one memory of at most `memory_bytes`, [`MAX_TABLES`] table of
 /// [`MAX_TABLE_ELEMENTS`], [`MAX_INSTANCES`] core instances, and every byte of linear memory also reserved in the
-/// all-plugins budget. A refused grow makes `memory.grow` return -1 and is remembered, so the trap the guest's abort
+/// all-plugins budget. A refused grow makes `memory.grow` or `table.grow` return -1 and is remembered, so the trap the guest's abort
 /// then raises is reported as out of memory.
 #[derive(Debug)]
 pub struct Limiter {
@@ -118,7 +122,9 @@ impl wasmtime::ResourceLimiter for Limiter {
     }
 
     fn table_growing(&mut self, _current: usize, desired: usize, _maximum: Option<usize>) -> wasmtime::Result<bool> {
-        Ok(desired <= MAX_TABLE_ELEMENTS)
+        let fits = desired <= MAX_TABLE_ELEMENTS;
+        self.refused_grow |= !fits;
+        Ok(fits)
     }
 
     fn instances(&self) -> usize {

@@ -4,7 +4,7 @@
 //! - [`load`]: the component checks: size, component not core module, imports inside the stub subset, the WIT
 //!   version window and the manifest's `api`.
 //! - [`LoadedPlugin`]: one instance under its limits; entry calls run under fuel and an epoch deadline per
-//!   [`CallKind`](omuzaki_plugin_api::CallKind), within the CPU share, and every way they stop becomes a [`Fault`].
+//!   [`CallKind`](omuzaki_plugin_api::limits::CallKind), within the CPU share, and every way they stop becomes a [`Fault`].
 //! - [`WasmPlugins`]: the [`Plugins`](omuzaki_plugin_api::Plugins) service: a worker thread per plugin, its session,
 //!   faults, restart backoff and auto-disable.
 //! - [`package`], [`install`] and [`cache`]: packages read as hostile input, their content hash and signature, the

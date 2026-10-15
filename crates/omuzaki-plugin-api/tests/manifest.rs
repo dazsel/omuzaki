@@ -4,8 +4,7 @@
 use std::fmt::Write as _;
 
 use omuzaki_ops_api::Scope;
-use omuzaki_plugin_api::manifest::{AgentRule, SettingScope, SettingType};
-use omuzaki_plugin_api::{LicenceClass, Manifest, Severity};
+use omuzaki_plugin_api::manifest::{AgentRule, LicenceClass, Manifest, SettingScope, SettingType, Severity};
 
 /// Every field the design names, valid.
 const FULL: &str = r#"

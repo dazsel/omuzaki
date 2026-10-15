@@ -24,7 +24,9 @@ pub use sessions::MockSessions;
 use std::time::Duration;
 
 use omuzaki_ops_api::Grants;
-use omuzaki_plugin_api::{FaultKind, LogLevel, Manifest, PluginError};
+use omuzaki_plugin_api::PluginError;
+use omuzaki_plugin_api::manifest::Manifest;
+use omuzaki_plugin_api::state::{FaultKind, LogLevel};
 
 use conformance::{Behaviour, OpSubject, Subject, World};
 

@@ -1,7 +1,7 @@
 //! `MockGuest`: a plugin written as Rust closures against the guest interface of the WIT world, with no wasm.
 
 use omuzaki_ops_api::OpError;
-use omuzaki_plugin_api::{FaultKind, LogLevel};
+use omuzaki_plugin_api::state::{FaultKind, LogLevel};
 use serde::{Deserialize, Serialize};
 
 /// What a guest can ask of its host: the base world's `ops` and `host` imports.

@@ -11,7 +11,8 @@ use omuzaki_core::time::{Clock, FakeClock, Seconds};
 use omuzaki_plugin::bridge::NoBridge;
 use omuzaki_plugin::log::PluginLog;
 use omuzaki_plugin::{HostConfig, InstanceKind, InstanceSetup, LoadedPlugin, PluginEngine, StartError};
-use omuzaki_plugin_api::{Manifest, PluginId};
+use omuzaki_plugin_api::PluginId;
+use omuzaki_plugin_api::manifest::Manifest;
 use wasmtime::component::Component;
 
 /// `omuzaki:plugin/host` as a component import type.
@@ -47,7 +48,8 @@ pub const WORLD_IMPORTS: &str = r#"
 
 /// One import the guest's core module sees: its component-level alias, how it is lowered, and its core type.
 pub struct Lowered {
-    /// `(alias export $host "log" (func $log'))`.
+    /// `(alias export $host "log" (func $log'))`. A definition that starts `(core func` is the core func itself
+    /// (`(core func $drop-core (canon resource.drop $pollable))`) and is not lowered again.
     pub alias: String,
     /// The core func name in the `env` instance, e.g. `log`.
     pub name: String,
@@ -91,6 +93,7 @@ pub fn component_text(imports: &str, lowered: &[Lowered], main: &str, memory_pag
     let aliases: String = lowered.iter().map(|l| l.alias.clone()).collect::<Vec<_>>().join("\n  ");
     let lowers: String = lowered
         .iter()
+        .filter(|l| !l.alias.starts_with("(core func"))
         .map(|l| {
             format!("(core func ${n}-core (canon lower (func ${n}') (memory $memory) (realloc $realloc)))", n = l.name)
         })

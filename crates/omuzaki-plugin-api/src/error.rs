@@ -6,7 +6,7 @@ use omuzaki_ops_api::{ErrorCode, ErrorDetail, OpError, Scope};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::FaultKind;
+use crate::state::FaultKind;
 
 /// Why a request about a plugin failed. Converts to [`OpError`] for the `plugin.*` ops.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, thiserror::Error)]

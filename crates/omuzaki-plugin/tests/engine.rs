@@ -11,8 +11,11 @@ use std::time::{Duration, Instant};
 use common::*;
 use omuzaki_core::time::Seconds;
 use omuzaki_plugin::{HostConfig, InstanceKind, StartError, load};
-use omuzaki_plugin_api::limits::{CPU_SHARE_FUEL_PER_SECOND, HOST_CALL_BURST, IMPORT_FUEL, LOG_BURST, MIB};
-use omuzaki_plugin_api::{CallKind, FaultKind, LogLevel, PluginError};
+use omuzaki_plugin_api::PluginError;
+use omuzaki_plugin_api::limits::{
+    CPU_SHARE_FUEL_PER_SECOND, CallKind, HOST_CALL_BURST, IMPORT_FUEL, LOG_BURST, MAX_TABLE_ELEMENTS, MIB, OP_BYTES_MAX,
+};
+use omuzaki_plugin_api::state::{FaultKind, LogLevel};
 
 fn texts(log: &omuzaki_plugin::log::PluginLog) -> Vec<String> {
     log.page(0, usize::MAX).into_iter().map(|l| l.text).collect()
@@ -354,4 +357,36 @@ fn approval_resolved_without_the_export_is_ignored_and_shutdown_denies_effects()
     plugin.init("{}").unwrap();
     assert_eq!(plugin.approval_resolved(1, Ok("{}".into())), Ok(()), "a component without the export ignores it");
     assert_eq!(plugin.shutdown(), Ok(()), "a component without shutdown stops cleanly");
+}
+
+#[test]
+fn growing_a_table_past_its_cap_is_out_of_memory() {
+    let (engine, clock) = engine();
+    let grow = format!(
+        "(if (i32.eq (table.grow $t (ref.null func) (i32.const {MAX_TABLE_ELEMENTS})) (i32.const -1)) (then unreachable))"
+    );
+    let main = format!("(table $t 1 funcref)\n    {}", init_doing(&grow));
+    let mut plugin =
+        start(&engine, &component("", &[], &main, 1), log("table", clock)).unwrap_or_else(|e| panic!("{e:?}"));
+    let fault = plugin.init("{}").unwrap_err();
+    assert_eq!((fault.kind, fault.detail.as_str()), (FaultKind::OutOfMemory, "out of memory in init"));
+}
+
+#[test]
+fn an_op_argument_over_its_cap_faults_before_the_host_copies_it() {
+    let (engine, clock) = engine();
+    let call = Lowered {
+        alias: r#"(alias export $ops "call" (func $call'))"#.into(),
+        name: "call".into(),
+        core_import: r#"(import "env" "call" (func $call (param i32 i32 i32 i32 i32)))"#.into(),
+    };
+    let imports = format!("{HOST_IMPORT}{WORLD_IMPORTS}");
+    let len = 2 * OP_BYTES_MAX;
+    let body = format!("(call $call (i32.const 100) (i32.const 4) (i32.const 65536) (i32.const {len}) (i32.const 32))");
+    let pages = u32::try_from(len / 65536 + 2).unwrap();
+    let bytes = component(&imports, &[call], &init_doing(&body), pages);
+    let mut plugin = start(&engine, &bytes, log("big", clock)).unwrap_or_else(|e| panic!("{e:?}"));
+    let fault = plugin.init("{}").unwrap_err();
+    let detail = format!("bad return value in init: ops.call arguments is {len} bytes, over {OP_BYTES_MAX}");
+    assert_eq!((fault.kind, fault.detail), (FaultKind::BadReturn, detail));
 }

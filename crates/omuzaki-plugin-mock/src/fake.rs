@@ -13,13 +13,14 @@ use omuzaki_ops_api::{
     Actor, ApprovalId, Budget, EndReason, ErrorCode, ErrorDetail, Grants, Limits, Need, OpError, Scope, SessionId,
     SessionSpec, SessionState, Sessions, Transport,
 };
+use omuzaki_plugin_api::grants::{Approval, ceiling, needs_person_each_use};
 use omuzaki_plugin_api::limits::{
-    FAULT_WINDOW_SECONDS, FAULTS_TO_DISABLE, LOG_LINE_MAX_BYTES, LOG_RING_LINES, RESTART_BACKOFF_SECONDS,
+    CallKind, FAULT_WINDOW_SECONDS, FAULTS_TO_DISABLE, LOG_BURST, LOG_LINE_MAX_BYTES, LOG_LINES_PER_SECOND,
+    LOG_RING_LINES, RESTART_BACKOFF_SECONDS,
 };
-use omuzaki_plugin_api::{
-    Approval, CallKind, DisabledReason, FaultKind, FaultRecord, LogLevel, LogLine, Manifest, PluginError, PluginId,
-    PluginInfo, PluginState, Plugins, ceiling, needs_person_each_use,
-};
+use omuzaki_plugin_api::manifest::Manifest;
+use omuzaki_plugin_api::state::{DisabledReason, FaultKind, FaultRecord, LogLevel, LogLine, PluginInfo, PluginState};
+use omuzaki_plugin_api::{PluginError, PluginId, Plugins};
 
 use crate::guest::{GuestHost, MockGuest, Trap};
 
@@ -56,6 +57,11 @@ struct Entry {
     restart_at: Option<Seconds>,
     log: Vec<LogLine>,
     next_seq: u64,
+    /// The log's token bucket, as the host keeps it: tokens, when they were counted, and lines refused since the last
+    /// kept one.
+    log_tokens: f64,
+    log_at: Seconds,
+    log_dropped: u64,
     /// An entry call is running outside the lock.
     busy: bool,
 }
@@ -134,6 +140,9 @@ impl MockPlugins {
                 restart_at: None,
                 log: Vec::new(),
                 next_seq: 1,
+                log_tokens: f64::from(LOG_BURST),
+                log_at: Seconds(0.0),
+                log_dropped: 0,
                 busy: false,
             },
         );
@@ -322,8 +331,27 @@ fn fault_name(fault: FaultKind) -> &'static str {
     }
 }
 
+/// Keeps one line under the host's rule (design §7): [`LOG_LINES_PER_SECOND`] sustained, [`LOG_BURST`] at once; a
+/// refused line is counted, and the next kept one is preceded by "N lines dropped".
 fn push_line(entry: &mut Entry, at: Seconds, level: LogLevel, text: &str) {
-    entry.log.push(LogLine { seq: entry.next_seq, at, level, text: cut(text).to_owned(), dry_run: false });
+    let elapsed = (at.0 - entry.log_at.0).max(0.0);
+    entry.log_tokens = (entry.log_tokens + elapsed * f64::from(LOG_LINES_PER_SECOND)).min(f64::from(LOG_BURST));
+    entry.log_at = Seconds(entry.log_at.0.max(at.0));
+    if entry.log_tokens < 1.0 {
+        entry.log_dropped += 1;
+        return;
+    }
+    entry.log_tokens -= 1.0;
+    if entry.log_dropped > 0 {
+        let notice = format!("{} lines dropped", entry.log_dropped);
+        entry.log_dropped = 0;
+        keep_line(entry, at, LogLevel::Warn, notice);
+    }
+    keep_line(entry, at, level, cut(text).to_owned());
+}
+
+fn keep_line(entry: &mut Entry, at: Seconds, level: LogLevel, text: String) {
+    entry.log.push(LogLine { seq: entry.next_seq, at, level, text, dry_run: false });
     entry.next_seq += 1;
     if entry.log.len() > LOG_RING_LINES {
         entry.log.remove(0);

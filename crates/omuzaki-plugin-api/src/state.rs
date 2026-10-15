@@ -98,7 +98,8 @@ pub enum FaultKind {
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum PluginState {
-    /// On disk and off: the component is not compiled.
+    /// On disk and off: compiled once at install (into the compiled-code cache) so a refused component never
+    /// reaches the list, but never instantiated and never run until the person enables it.
     Installed,
     /// Off, and kept off until the person turns it on again.
     #[non_exhaustive]

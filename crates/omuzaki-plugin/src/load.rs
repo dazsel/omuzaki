@@ -1,8 +1,9 @@
 //! Loading a component (design §1.1, §4.1, §4.2): the size cap, the component check, compiling, and the check of its
 //! imports and exports against what this host serves and what the manifest says.
 
+use omuzaki_plugin_api::PluginError;
 use omuzaki_plugin_api::limits::COMPONENT_MAX_BYTES;
-use omuzaki_plugin_api::{Manifest, PluginError};
+use omuzaki_plugin_api::manifest::Manifest;
 use wasmtime::component::Component;
 
 use crate::engine::PluginEngine;

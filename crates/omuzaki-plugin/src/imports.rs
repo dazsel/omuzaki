@@ -3,10 +3,11 @@
 //! [`enter`](crate::instance::enter) first. A node instance gets refusals for `ops`, `data` and `http`.
 
 use omuzaki_ops_api::OpError;
+use omuzaki_plugin_api::WIT_PACKAGE;
 use omuzaki_plugin_api::limits::{EXPORT_LIST_BYTES_MAX, OP_BYTES_MAX};
-use omuzaki_plugin_api::{FaultKind, LogLevel, WIT_PACKAGE};
+use omuzaki_plugin_api::state::{FaultKind, LogLevel};
 use wasmtime::StoreContextMut;
-use wasmtime::component::{ComponentType, Lift, Linker, Lower};
+use wasmtime::component::{ComponentType, Lift, Linker, Lower, WasmList, WasmStr};
 
 use crate::bridge::{WitErrorCode, WitOpError};
 use crate::instance::{InstanceKind, StoreData, enter, enter_or_trap, trap};
@@ -41,14 +42,14 @@ impl From<WitLevel> for LogLevel {
     }
 }
 
-/// The WIT `http.request`.
-#[derive(ComponentType, Lift, Lower, Clone, Debug)]
+/// The WIT `http.request`, read in place in the guest's memory: nothing of it is copied until its size is known.
+#[derive(ComponentType, Lift)]
 #[component(record)]
 struct WitRequest {
-    method: String,
-    url: String,
-    headers: Vec<(String, String)>,
-    body: Vec<u8>,
+    method: WasmStr,
+    url: WasmStr,
+    headers: WasmList<(WasmStr, WasmStr)>,
+    body: WasmList<u8>,
 }
 
 /// The WIT `http.response`.
@@ -104,16 +105,37 @@ fn cap(len: usize, cap: usize, what: &str, entry: &str) -> wasmtime::Result<()> 
     Ok(())
 }
 
+/// The byte length of a guest string, read in place in the guest's memory: no copy is made, so a string near the
+/// guest's whole memory costs the host nothing before its cap is checked. (A UTF-16 component's string is transcoded
+/// here; every component the SDK builds is UTF-8, which is read in place.)
+pub(crate) fn guest_len(cx: &StoreContextMut<'_, StoreData>, text: &WasmStr) -> wasmtime::Result<usize> {
+    Ok(text.to_str(cx)?.len())
+}
+
+/// Copies a guest string of at most `max` bytes into the host; a longer one faults the plugin before any copy.
+fn guest_string(
+    cx: &StoreContextMut<'_, StoreData>,
+    text: &WasmStr,
+    max: usize,
+    what: &str,
+) -> wasmtime::Result<String> {
+    let text = text.to_str(cx)?;
+    cap(text.len(), max, what, cx.data().entry())?;
+    Ok(text.into_owned())
+}
+
 /// The shared body of `ops.call` and `ops.plan`.
 fn op(
     mut cx: StoreContextMut<'_, StoreData>,
     name: &str,
-    op: &str,
-    args: &str,
+    op: &WasmStr,
+    args: &WasmStr,
     run: fn(&dyn crate::bridge::OpBridge, &str, &str) -> Result<String, OpError>,
 ) -> wasmtime::Result<(Result<String, WitOpError>,)> {
+    let op = guest_string(&cx, op, OP_BYTES_MAX, &format!("{name}'s op name"))?;
+    let args = guest_string(&cx, args, OP_BYTES_MAX, &format!("{name} arguments"))?;
+    let (op, args) = (op.as_str(), args.as_str());
     let entry = cx.data().entry();
-    cap(args.len(), OP_BYTES_MAX, &format!("{name} arguments"), entry)?;
     if !enter(&mut cx, op.len() + args.len())? {
         return Ok((Err(limited()),));
     }
@@ -140,13 +162,14 @@ pub(crate) fn add(linker: &mut Linker<StoreData>, _kind: InstanceKind) -> wasmti
     linker.instance(&interface("types"))?;
 
     let mut ops = linker.instance(&interface("ops"))?;
-    ops.func_wrap("call", |cx, (name, args): (String, String)| {
+    ops.func_wrap("call", |cx, (name, args): (WasmStr, WasmStr)| {
         op(cx, "ops.call", &name, &args, |b, o, a| b.call(o, a))
     })?;
-    ops.func_wrap("plan", |cx, (name, args): (String, String)| {
+    ops.func_wrap("plan", |cx, (name, args): (WasmStr, WasmStr)| {
         op(cx, "ops.plan", &name, &args, |b, o, a| b.plan(o, a))
     })?;
-    ops.func_wrap("describe", |mut cx: StoreContextMut<'_, StoreData>, (name,): (String,)| {
+    ops.func_wrap("describe", |mut cx: StoreContextMut<'_, StoreData>, (name,): (WasmStr,)| {
+        let name = guest_string(&cx, &name, OP_BYTES_MAX, "ops.describe's op name")?;
         enter_or_trap(&mut cx, name.len())?;
         if refusal(cx.data()).is_some() {
             return Ok((None,));
@@ -169,9 +192,12 @@ pub(crate) fn add(linker: &mut Linker<StoreData>, _kind: InstanceKind) -> wasmti
     })?;
 
     let mut host = linker.instance(&interface("host"))?;
-    host.func_wrap("log", |mut cx: StoreContextMut<'_, StoreData>, (level, message): (WitLevel, String)| {
-        enter_or_trap(&mut cx, message.len())?;
-        cx.data().log.push(level.into(), &message, false);
+    host.func_wrap("log", |mut cx: StoreContextMut<'_, StoreData>, (level, message): (WitLevel, WasmStr)| {
+        let bytes = guest_len(&cx, &message)?;
+        enter_or_trap(&mut cx, bytes)?;
+        // Read in place: the log keeps at most a line's cap of it.
+        let text = message.to_str(&cx)?;
+        cx.data().log.push(level.into(), &text, false);
         Ok(())
     })?;
     host.func_wrap("monotonic-seconds", |mut cx: StoreContextMut<'_, StoreData>, (): ()| {
@@ -180,19 +206,22 @@ pub(crate) fn add(linker: &mut Linker<StoreData>, _kind: InstanceKind) -> wasmti
     })?;
 
     let mut data = linker.instance(&interface("data"))?;
-    data.func_wrap("read", |mut cx: StoreContextMut<'_, StoreData>, (name,): (String,)| {
-        enter_or_trap(&mut cx, name.len())?;
+    data.func_wrap("read", |mut cx: StoreContextMut<'_, StoreData>, (name,): (WasmStr,)| {
+        let bytes = guest_len(&cx, &name)?;
+        enter_or_trap(&mut cx, bytes)?;
         warn_refused(&cx, "data.read", data_refusal(cx.data()));
         Ok((None::<Vec<u8>>,))
     })?;
-    data.func_wrap("write", |mut cx: StoreContextMut<'_, StoreData>, (name, bytes): (String, Vec<u8>)| {
-        enter_or_trap(&mut cx, name.len() + bytes.len())?;
+    data.func_wrap("write", |mut cx: StoreContextMut<'_, StoreData>, (name, contents): (WasmStr, WasmList<u8>)| {
+        let bytes = guest_len(&cx, &name)? + contents.len();
+        enter_or_trap(&mut cx, bytes)?;
         let why = data_refusal(cx.data());
         warn_refused(&cx, "data.write", why);
         Ok((Err::<(), String>(why.to_owned()),))
     })?;
-    data.func_wrap("remove", |mut cx: StoreContextMut<'_, StoreData>, (name,): (String,)| {
-        enter_or_trap(&mut cx, name.len())?;
+    data.func_wrap("remove", |mut cx: StoreContextMut<'_, StoreData>, (name,): (WasmStr,)| {
+        let bytes = guest_len(&cx, &name)?;
+        enter_or_trap(&mut cx, bytes)?;
         warn_refused(&cx, "data.remove", data_refusal(cx.data()));
         Ok((false,))
     })?;
@@ -204,17 +233,20 @@ pub(crate) fn add(linker: &mut Linker<StoreData>, _kind: InstanceKind) -> wasmti
 
     let mut http = linker.instance(&interface("http"))?;
     http.func_wrap("fetch", |mut cx: StoreContextMut<'_, StoreData>, (request,): (WitRequest,)| {
-        let bytes = request.method.len()
-            + request.url.len()
+        // Each header counts its two lengths' worth of bytes once the bridge serves `fetch`; refused here, only
+        // their number is charged, so none of them is read.
+        let bytes = guest_len(&cx, &request.method)?
+            + guest_len(&cx, &request.url)?
             + request.body.len()
-            + request.headers.iter().map(|(k, v)| k.len() + v.len()).sum::<usize>();
+            + request.headers.len();
         enter_or_trap(&mut cx, bytes)?;
         let why = refusal(cx.data()).unwrap_or(if cx.data().net_requested {
             "host not approved"
         } else {
             "the plugin did not ask for net"
         });
-        warn_refused(&cx, &format!("http.fetch {}", request.url), why);
+        let url = request.url.to_str(&cx)?;
+        warn_refused(&cx, &format!("http.fetch {}", crate::log::cut_line(&url)), why);
         Ok((Err::<WitResponse, String>(why.to_owned()),))
     })?;
     Ok(())

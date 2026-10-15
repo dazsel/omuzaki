@@ -21,7 +21,8 @@ use omuzaki_plugin::package::{
     PackageError, PackageLimits, PackageSignature, PluginPackage, PublisherCheck, content_hash, hash_folder,
 };
 use omuzaki_plugin::{Storage, WasmPlugins};
-use omuzaki_plugin_api::{PluginError, PluginState, Plugins};
+use omuzaki_plugin_api::state::PluginState;
+use omuzaki_plugin_api::{PluginError, Plugins};
 use omuzaki_plugin_mock::conformance::{World, person};
 use omuzaki_store_api::ContentHash;
 use zip::write::SimpleFileOptions;
@@ -292,4 +293,66 @@ fn installing_a_package_end_to_end_and_refusing_a_bad_signature() {
     let bad = root.path().join("bad.zip");
     std::fs::write(&bad, zip_of(&entries)).unwrap();
     assert!(matches!(plugins.install(&bad, &storage, &person()), Err(PluginError::Signature(_))));
+}
+
+#[test]
+fn an_install_approves_nothing_and_a_refused_one_changes_nothing_on_disk() {
+    let world = World::new();
+    let engine = Arc::new(
+        omuzaki_plugin::PluginEngine::new(omuzaki_plugin::HostConfig::default(), world.clock.clone()).unwrap(),
+    );
+    let plugins = WasmPlugins::new(engine, world.sessions.clone(), Grants::person(), None);
+    let root = tempfile::tempdir().unwrap();
+    let storage = Storage {
+        install: InstallRoot::new(root.path().join("data")),
+        cache: CodeCache::new(root.path().join("cache")),
+    };
+    let package = |note: u8| {
+        let mut entries = files(false, &common::ok_component());
+        entries[0].1 = manifest_text(false, "[requests]\nscopes = [\"read\"]\n").into_bytes();
+        entries.push(("note.txt".into(), vec![note]));
+        let path = root.path().join(format!("example-{note}.zip"));
+        std::fs::write(&path, zip_of(&entries)).unwrap();
+        path
+    };
+    let info = plugins.install(&package(1), &storage, &person()).unwrap();
+    assert_eq!(info.approved, [], "nothing is approved until the person confirms the card");
+    let id = info.id.clone();
+    let versions = storage.install.versions(&id);
+    assert_eq!(versions.len(), 1);
+
+    assert!(matches!(plugins.install(&package(2), &storage, &person()), Err(PluginError::Manifest(_))));
+    assert_eq!(storage.install.versions(&id), versions, "the refused version was never copied in");
+    let dirs =
+        std::fs::read_dir(storage.install.plugin_dir(&id)).unwrap().filter(|e| e.as_ref().unwrap().path().is_dir());
+    assert_eq!(dirs.count(), 1);
+}
+
+/// A folder with the package's files written out.
+#[cfg(unix)]
+fn folder_of(entries: &[(String, Vec<u8>)]) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    for (name, bytes) in entries {
+        let path = dir.path().join(name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, bytes).unwrap();
+    }
+    dir
+}
+
+#[cfg(unix)]
+#[test]
+fn a_folder_with_a_hardlink_or_a_non_utf8_name_is_refused() {
+    use std::os::unix::ffi::OsStrExt;
+    let limits = PackageLimits::default();
+    let entries = files(false, &common::ok_component());
+    let linked = folder_of(&entries);
+    std::fs::hard_link(linked.path().join("plugin.wasm"), linked.path().join("again.wasm")).unwrap();
+    assert!(matches!(PluginPackage::open_folder(linked.path(), &limits), Err(PackageError::NotRegular(_))));
+
+    let odd = folder_of(&entries);
+    let name = std::ffi::OsStr::from_bytes(b"bad-\xff.txt");
+    std::fs::write(odd.path().join(name), b"x").unwrap();
+    let refused = PluginPackage::open_folder(odd.path(), &limits);
+    assert!(matches!(refused, Err(PackageError::UnsafePath { why: "is not UTF-8", .. })), "{refused:?}");
 }

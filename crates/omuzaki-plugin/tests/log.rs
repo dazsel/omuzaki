@@ -9,9 +9,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use omuzaki_core::time::{FakeClock, Seconds};
-use omuzaki_plugin::log::{FileSink, LOG_FILE_MAX_BYTES, LineSink, LogWriter, PluginLog};
+use omuzaki_plugin::log::{FileSink, LOG_FILE_MAX_BYTES, LOG_QUEUE_LINES, LineSink, LogWriter, PluginLog};
+use omuzaki_plugin_api::PluginId;
 use omuzaki_plugin_api::limits::{LOG_BURST, LOG_LINE_MAX_BYTES, LOG_LINES_PER_SECOND, LOG_RING_LINES};
-use omuzaki_plugin_api::{LogLevel, LogLine, PluginId};
+use omuzaki_plugin_api::state::{LogLevel, LogLine};
 
 fn id() -> PluginId {
     PluginId::new("example").unwrap()
@@ -133,4 +134,26 @@ fn a_blocked_file_never_blocks_the_log() {
     assert_eq!(written[9], "line 9");
     drop(writer);
     assert_eq!(log.page(0, 100).len(), 10, "the ring outlives the writer");
+}
+
+#[test]
+fn a_blocked_file_holds_at_most_the_queue_and_counts_the_rest() {
+    let (release, wait) = channel();
+    let (seen, _lines) = channel();
+    let writer = LogWriter::spawn(Box::new(Blocked { release: Arc::new(Mutex::new(wait)), seen })).unwrap();
+    let clock = Arc::new(FakeClock::new(Seconds(0.0)));
+    let log = log_on(&clock, Some(&writer));
+    let over = 50;
+    for i in 0..LOG_QUEUE_LINES + over {
+        clock.advance(Seconds(0.05)); // one bucket token a line: every line is kept
+        assert!(log.push(LogLevel::Info, &format!("line {i}"), false));
+    }
+    // The writer may have taken one line off the queue before blocking on it.
+    let refused = writer.failures();
+    assert!(refused == over as u64 || refused == over as u64 - 1, "{refused}");
+    assert_eq!(log.page(0, usize::MAX).len(), LOG_RING_LINES, "the ring keeps its lines whatever the queue does");
+    for _ in 0..=LOG_QUEUE_LINES {
+        release.send(()).unwrap();
+    }
+    drop(writer);
 }

@@ -9,8 +9,10 @@ mod common;
 use std::time::{Duration, Instant};
 
 use common::*;
+use omuzaki_plugin::limits::MAX_POLLABLES;
 use omuzaki_plugin::{InstanceKind, LoadedPlugin, load};
-use omuzaki_plugin_api::{CallKind, FaultKind, LogLevel};
+use omuzaki_plugin_api::limits::CallKind;
+use omuzaki_plugin_api::state::{FaultKind, LogLevel};
 
 const POLL_IMPORTS: &str = r#"
   (import "wasi:io/poll@0.2.0" (instance $poll
@@ -104,4 +106,40 @@ fn stdout_lands_in_the_log_at_debug() {
     assert_eq!(plugin.init("{}"), Ok(()));
     let lines: Vec<(LogLevel, String)> = log.page(0, 10).into_iter().map(|l| (l.level, l.text)).collect();
     assert_eq!(lines, [(LogLevel::Debug, "hello".to_owned()), (LogLevel::Debug, "world".to_owned())]);
+}
+
+/// A plugin whose `init` subscribes `count` times, dropping each pollable when `drop_each`.
+fn subscriber(count: u32, drop_each: bool) -> Vec<u8> {
+    let subscribe = Lowered {
+        alias: r#"(alias export $clock "subscribe-duration" (func $sub'))"#.into(),
+        name: "sub".into(),
+        core_import: r#"(import "env" "sub" (func $sub (param i64) (result i32)))"#.into(),
+    };
+    let release = Lowered {
+        alias: "(core func $release-core (canon resource.drop $pollable))".into(),
+        name: "release".into(),
+        core_import: r#"(import "env" "release" (func $release (param i32)))"#.into(),
+    };
+    let each = if drop_each { "(call $release (call $sub (i64.const 0)))" } else { "(drop (call $sub (i64.const 0)))" };
+    let body = format!(
+        "(local $i i32)
+      (block $done (loop $next
+        (br_if $done (i32.ge_u (local.get $i) (i32.const {count})))
+        {each}
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $next)))"
+    );
+    component(POLL_IMPORTS, &[subscribe, release], &init_doing(&body), 1)
+}
+
+#[test]
+fn dropped_pollables_are_reused_and_live_ones_are_capped() {
+    let (_, clock) = engine();
+    let reused = u32::try_from(MAX_POLLABLES).unwrap() + 100;
+    let mut plugin = started(InstanceKind::Worker, &subscriber(reused, true), log("reuse", clock.clone()));
+    assert_eq!(plugin.init("{}"), Ok(()), "dropped pollables free their slots");
+
+    let mut plugin = started(InstanceKind::Worker, &subscriber(reused, false), log("hoard", clock));
+    let fault = plugin.init("{}").unwrap_err();
+    assert_eq!((fault.kind, fault.detail), (FaultKind::Trap, format!("more than {MAX_POLLABLES} pollables at once")));
 }

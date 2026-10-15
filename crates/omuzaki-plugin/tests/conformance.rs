@@ -11,7 +11,7 @@ use std::sync::Arc;
 use common::*;
 use omuzaki_ops_api::Grants;
 use omuzaki_plugin::{HostConfig, PluginEngine, WasmPlugins};
-use omuzaki_plugin_api::Manifest;
+use omuzaki_plugin_api::manifest::Manifest;
 use omuzaki_plugin_mock::conformance::{self, Behaviour, Subject, World};
 
 /// The host as a conformance subject: each behaviour as a WAT component.

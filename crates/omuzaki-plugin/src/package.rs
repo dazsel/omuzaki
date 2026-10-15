@@ -22,9 +22,9 @@ use std::path::{Path, PathBuf};
 use omuzaki_identity_api::domain::Domain;
 use omuzaki_identity_api::key::{KeyId, Signature};
 use omuzaki_identity_api::verify::verify;
+use omuzaki_plugin_api::PluginError;
 use omuzaki_plugin_api::limits::{COMPONENT_MAX_BYTES, MIB};
-use omuzaki_plugin_api::manifest::component_path_problem;
-use omuzaki_plugin_api::{Manifest, PluginError};
+use omuzaki_plugin_api::manifest::{Manifest, component_path_problem};
 use omuzaki_store_api::ContentHash;
 use serde::{Deserialize, Serialize};
 use unicode_normalization::UnicodeNormalization;
@@ -341,7 +341,8 @@ impl PluginPackage {
     /// is not a regular file inside the folder.
     pub fn stage(&self, staging_root: &Path) -> Result<(PathBuf, ContentHash), PackageError> {
         fs::create_dir_all(staging_root).map_err(|e| io(&e))?;
-        let dir = fresh_dir(staging_root)?;
+        let guard = Staged { dir: fresh_dir(staging_root)?, kept: false };
+        let dir = guard.dir.clone();
         for (path, bytes) in &self.files {
             let target = dir.join(path);
             if let Some(parent) = target.parent() {
@@ -364,7 +365,29 @@ impl PluginPackage {
             return Err(PackageError::MissingComponent(self.manifest.component.clone()));
         }
         let staged = PluginPackage::open_folder(&dir, &PackageLimits::default())?;
-        Ok((dir, staged.hash))
+        Ok((guard.keep(), staged.hash))
+    }
+}
+
+/// A staging folder that is removed, with whatever was written into it, unless staging finished and kept it.
+struct Staged {
+    dir: PathBuf,
+    kept: bool,
+}
+
+impl Staged {
+    fn keep(mut self) -> PathBuf {
+        self.kept = true;
+        self.dir.clone()
+    }
+}
+
+impl Drop for Staged {
+    fn drop(&mut self) {
+        if !self.kept {
+            // Best effort: the staging error is the one reported.
+            let _cleaned = fs::remove_dir_all(&self.dir);
+        }
     }
 }
 
@@ -394,18 +417,21 @@ fn walk(root: &Path, dir: &Path, collector: &mut Collector) -> Result<(), Packag
     for entry in entries {
         let path = entry.path();
         let relative = path.strip_prefix(root).map_err(|_| PackageError::Io("a path left the folder".into()))?;
-        let raw: Vec<String> = relative.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+        let raw: Option<Vec<&str>> = relative.components().map(|c| c.as_os_str().to_str()).collect();
+        let Some(raw) = raw else {
+            let path = relative.to_string_lossy().into_owned();
+            return Err(PackageError::UnsafePath { path, why: "is not UTF-8" });
+        };
         let name = canonical(raw.join("/").as_bytes())?;
-        let meta = fs::symlink_metadata(&path).map_err(|e| io(&e))?;
-        let kind = meta.file_type();
-        if kind.is_file() && hard_linked(&meta) {
-            return Err(PackageError::NotRegular(name));
-        }
+        let kind = fs::symlink_metadata(&path).map_err(|e| io(&e))?.file_type();
         if kind.is_dir() {
             collector.entry(&name)?;
             walk(root, &path, collector)?;
         } else if kind.is_file() {
             let mut file = fs::File::open(&path).map_err(|e| io(&e))?;
+            if hard_linked(&file).map_err(|e| io(&e))? {
+                return Err(PackageError::NotRegular(name));
+            }
             let declared = file.metadata().map_err(|e| io(&e))?.len();
             collector.file(name, declared, &mut file)?;
         } else {
@@ -415,14 +441,34 @@ fn walk(root: &Path, dir: &Path, collector: &mut Collector) -> Result<(), Packag
     Ok(())
 }
 
-/// Whether a regular file has other names: a hardlink could make one staged file another file's bytes.
+/// Whether an open regular file has other names: a hardlink could make one staged file another file's bytes. Read
+/// from the open handle, so the file checked is the file read.
 #[cfg(unix)]
-fn hard_linked(meta: &fs::Metadata) -> bool {
-    std::os::unix::fs::MetadataExt::nlink(meta) > 1
+fn hard_linked(file: &fs::File) -> std::io::Result<bool> {
+    Ok(std::os::unix::fs::MetadataExt::nlink(&file.metadata()?) > 1)
 }
 
-/// Windows and other platforms: the link count is not read; a hardlink there reads as its own regular file.
-#[cfg(not(unix))]
-fn hard_linked(_: &fs::Metadata) -> bool {
-    false
+/// Windows: the link count from `FILE_STANDARD_INFO` (std's `number_of_links` is not stable).
+#[cfg(windows)]
+#[allow(unsafe_code)] // One OS call with no safe std equivalent; its SAFETY reasoning is below.
+fn hard_linked(file: &fs::File) -> std::io::Result<bool> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{FILE_STANDARD_INFO, FileStandardInfo, GetFileInformationByHandleEx};
+    // SAFETY: `info` is a zeroed `FILE_STANDARD_INFO` (plain data, so zero is a valid value) and the call is told its
+    // exact size; the handle is the open `file`'s and outlives the call.
+    let mut info: FILE_STANDARD_INFO = unsafe { std::mem::zeroed() };
+    let size = u32::try_from(std::mem::size_of::<FILE_STANDARD_INFO>()).map_err(std::io::Error::other)?;
+    let ok = unsafe {
+        GetFileInformationByHandleEx(file.as_raw_handle(), FileStandardInfo, std::ptr::from_mut(&mut info).cast(), size)
+    };
+    if ok == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(info.NumberOfLinks > 1)
+}
+
+/// Elsewhere the link count can't be read, so every file is refused rather than a hardlink accepted.
+#[cfg(not(any(unix, windows)))]
+fn hard_linked(_: &fs::File) -> std::io::Result<bool> {
+    Ok(true)
 }

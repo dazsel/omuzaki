@@ -8,10 +8,12 @@ use std::time::Instant;
 use chacha20::ChaCha20;
 use chacha20::cipher::{KeyIvInit, StreamCipher};
 use omuzaki_core::time::Clock;
+use omuzaki_plugin_api::PluginError;
 use omuzaki_plugin_api::limits::{
-    HOST_SIDE_BYTES, IMPORT_FUEL, IMPORT_FUEL_PER_BYTE, INIT_CONFIG_BYTES_MAX, NODE_MEMORY_BYTES, OP_BYTES_MAX,
+    CallKind, HOST_SIDE_BYTES, IMPORT_FUEL, IMPORT_FUEL_PER_BYTE, INIT_CONFIG_BYTES_MAX, NODE_MEMORY_BYTES,
+    OP_BYTES_MAX,
 };
-use omuzaki_plugin_api::{CallKind, FaultKind, PluginError};
+use omuzaki_plugin_api::state::FaultKind;
 use wasmtime::component::{Component, ComponentExportIndex, Instance, Linker, TypedFunc};
 use wasmtime::{Store, StoreContextMut};
 

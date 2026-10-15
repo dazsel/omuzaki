@@ -5,7 +5,9 @@
 
 use omuzaki_l10n_api::{Catalog, Locale, MessageTable, Resource, extract};
 use omuzaki_ops_api::Scope;
-use omuzaki_plugin_api::{LicenceClass, Manifest, Requests, Risk, diff, summarise};
+use omuzaki_plugin_api::grants::Approval;
+use omuzaki_plugin_api::manifest::{LicenceClass, Manifest, Requests};
+use omuzaki_plugin_api::summary::{Risk, diff, summarise};
 
 /// A manifest asking for `scopes` (and `example.com` when `net` is among them), `licence` and an optional publisher.
 fn manifest(scopes: &[Scope], licence: &str, signed: bool) -> Manifest {
@@ -49,16 +51,38 @@ fn per_use_scopes_the_licence_and_an_unsigned_plugin_are_reported() {
     assert_eq!(order, [Scope::Publish, Scope::Spend, Scope::Read], "same risk: by scope name");
 }
 
+/// An approval of `scopes`, the hosts in `hosts` and the data folder.
+fn approval(scopes: &[Scope], hosts: &[&str]) -> Approval {
+    Approval { scopes: scopes.to_vec(), hosts: hosts.iter().map(|h| (*h).to_owned()).collect(), data: true }
+}
+
 #[test]
 fn the_diff_shows_what_an_update_adds_and_drops() {
-    let approved = [Scope::Read, Scope::Perform];
+    let approved = approval(&[Scope::Read, Scope::Perform], &[]);
     let adds_net = diff(&manifest(&[Scope::Read, Scope::Perform, Scope::Net], "MIT", true), &approved);
     assert_eq!(adds_net.added.iter().map(|l| l.scope).collect::<Vec<_>>(), [Scope::Net]);
     assert_eq!(adds_net.removed, []);
     let drops_perform = diff(&manifest(&[Scope::Read], "MIT", true), &approved);
     assert_eq!(drops_perform.added, []);
     assert_eq!(drops_perform.removed, [Scope::Perform]);
-    assert!(diff(&manifest(&approved, "MIT", true), &approved).is_empty());
+    assert!(diff(&manifest(&[Scope::Read, Scope::Perform], "MIT", true), &approved).is_empty());
+}
+
+#[test]
+fn the_diff_shows_a_new_host_under_an_approved_net_and_a_new_data_folder() {
+    let mut update = manifest(&[Scope::Read, Scope::Net], "MIT", true);
+    update.requests.net_hosts.push("other.example".into());
+    let new_host = diff(&update, &approval(&[Scope::Read, Scope::Net], &["example.com"]));
+    let added: Vec<_> = new_host.added.iter().map(|l| (l.scope, l.detail.as_deref())).collect();
+    assert_eq!(added, [(Scope::Net, Some("other.example"))], "only the host not yet approved");
+    assert!(!new_host.is_empty());
+    let all_hosts = approval(&[Scope::Read, Scope::Net], &["example.com", "other.example"]);
+    assert!(diff(&update, &all_hosts).is_empty());
+
+    let no_data = Approval { data: false, ..approval(&[Scope::Read], &[]) };
+    let wants_data = diff(&manifest(&[Scope::Read], "MIT", true), &no_data);
+    assert_eq!(wants_data.added, []);
+    assert_eq!(wants_data.data.map(|d| d.quota_mb), Some(64));
 }
 
 #[test]

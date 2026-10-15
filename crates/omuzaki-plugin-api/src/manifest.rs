@@ -324,6 +324,19 @@ const CONDITIONS_LICENCES: [&str; 14] = [
 const RESTRICTED_PREFIXES: [&str; 6] =
     ["PolyForm-Noncommercial", "BUSL-1.1", "SSPL-1.0", "Elastic-2.0", "Commons-Clause", "LicenseRef-Commons-Clause"];
 
+/// SPDX exceptions that only add permissions to their base licence, so `<licence> WITH <exception>` keeps the base's
+/// class. Any other exception may take permissions away: unknown, or restricted when its id is a restricted family.
+const PERMISSIVE_EXCEPTIONS: [&str; 8] = [
+    "LLVM-exception",
+    "Classpath-exception-2.0",
+    "GCC-exception-3.1",
+    "GCC-exception-2.0",
+    "Autoconf-exception-3.0",
+    "Bison-exception-2.2",
+    "Font-exception-2.0",
+    "OCaml-LGPL-linking-exception",
+];
+
 /// The marker of a non-commercial Creative Commons or similar id (`CC-BY-NC-4.0`).
 const NON_COMMERCIAL_MARK: &str = "-NC";
 
@@ -341,8 +354,19 @@ fn licence_id_class(id: &str) -> LicenceClass {
     }
 }
 
-/// The class of an SPDX expression: `OR` takes the best side, `AND` the worst, `WITH` the base licence (an exception
-/// only adds permissions), parentheses group. A malformed expression is [`LicenceClass::Unknown`].
+/// The class an exception that is not one of [`PERMISSIVE_EXCEPTIONS`] gives: restricted for a restricted family's
+/// id, else unknown.
+fn exception_class(exception: &str) -> LicenceClass {
+    if RESTRICTED_PREFIXES.iter().any(|p| exception.starts_with(p)) {
+        LicenceClass::NonCommercial
+    } else {
+        LicenceClass::Unknown
+    }
+}
+
+/// The class of an SPDX expression: `OR` takes the best side, `AND` the worst, `WITH` the base licence when the
+/// exception is one of [`PERMISSIVE_EXCEPTIONS`] and the worse of the base and the exception's own class otherwise,
+/// parentheses group. A malformed expression is [`LicenceClass::Unknown`].
 pub fn licence_class(expression: &str) -> LicenceClass {
     let spaced = expression.replace('(', " ( ").replace(')', " ) ");
     let tokens: Vec<&str> = spaced.split_whitespace().collect();
@@ -391,6 +415,9 @@ impl<'a> Spdx<'a> {
                 return None;
             }
             self.at += 1;
+            if !PERMISSIVE_EXCEPTIONS.contains(&exception) {
+                return Some(class.max(exception_class(exception)));
+            }
         }
         Some(class)
     }
@@ -713,6 +740,10 @@ mod tests {
         assert_eq!(licence_class("MIT AND CC-BY-NC-4.0"), LicenceClass::NonCommercial);
         assert_eq!(licence_class("(MIT AND LGPL-3.0-only) OR LicenseRef-Mine"), LicenceClass::Conditions);
         assert_eq!(licence_class("Apache-2.0 WITH LLVM-exception"), LicenceClass::Allowed);
+        assert_eq!(licence_class("GPL-2.0-only WITH Classpath-exception-2.0"), LicenceClass::Conditions);
+        assert_eq!(licence_class("MIT WITH Commons-Clause"), LicenceClass::NonCommercial, "a restriction, not a grant");
+        assert_eq!(licence_class("MIT WITH Made-Up-exception"), LicenceClass::Unknown);
+        assert_eq!(licence_class("MIT WITH Commons-Clause OR Apache-2.0"), LicenceClass::Allowed);
         assert_eq!(licence_class("GPL-2.0+"), LicenceClass::Unknown, "a bare + of an unknown id stays unknown");
         assert_eq!(licence_class("LGPL-2.1-or-later+"), LicenceClass::Conditions);
         for malformed in ["", "MIT OR", "(MIT", "MIT)", "AND MIT", "MIT WITH", "MIT WITH (x)"] {

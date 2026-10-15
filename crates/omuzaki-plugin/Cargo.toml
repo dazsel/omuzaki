@@ -27,6 +27,9 @@ omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-plugin-api = { path = "../omuzaki-plugin-api" }
 omuzaki-store-api = { path = "../omuzaki-store-api" }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
 [dev-dependencies]
 criterion.workspace = true
 ed25519-dalek.workspace = true

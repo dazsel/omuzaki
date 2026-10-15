@@ -2,7 +2,9 @@
 
 use omuzaki_ops_api::{Actor, Scope};
 
-use crate::{Approval, LogLine, PluginError, PluginId, PluginInfo};
+use crate::grants::Approval;
+use crate::state::{LogLine, PluginInfo};
+use crate::{PluginError, PluginId};
 
 /// The installed plugins, their switches and their logs. The host (`omuzaki-plugin`) implements it; the mock fakes it.
 ///

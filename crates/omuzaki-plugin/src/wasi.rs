@@ -7,11 +7,12 @@
 use std::time::{Duration, Instant};
 
 use omuzaki_plugin_api::limits::RANDOM_REQUEST_MAX;
-use omuzaki_plugin_api::{FaultKind, LogLevel};
+use omuzaki_plugin_api::state::{FaultKind, LogLevel};
 use wasmtime::StoreContextMut;
-use wasmtime::component::{ComponentType, Lift, Linker, Lower, Resource, ResourceType, Val};
+use wasmtime::component::{ComponentType, Lift, Linker, Lower, Resource, ResourceType, Val, WasmList};
 
 use crate::instance::{InstanceKind, StoreData, enter_or_trap, fill, trap};
+use crate::limits::MAX_POLLABLES;
 
 /// The WASI release the stubs are defined at; components built for any 0.2 release link to them.
 const WASI_VERSION: &str = "0.2.12";
@@ -85,9 +86,18 @@ fn seconds(nanos: u64) -> f64 {
     nanos as f64 / 1e9
 }
 
+/// A new pollable in the first free slot (a dropped one's, or a new one up to [`MAX_POLLABLES`]); more at once traps.
 fn new_pollable(data: &mut StoreData, wait: Wait) -> wasmtime::Result<Resource<Pollable>> {
-    let rep = u32::try_from(data.pollables.len()).map_err(|_| trap(FaultKind::Trap, "too many pollables"))?;
-    data.pollables.push(Some(wait));
+    let slot = match data.pollables.iter().position(Option::is_none) {
+        Some(free) => free,
+        None if data.pollables.len() < MAX_POLLABLES => {
+            data.pollables.push(None);
+            data.pollables.len() - 1
+        }
+        None => return Err(trap(FaultKind::Trap, format!("more than {MAX_POLLABLES} pollables at once"))),
+    };
+    data.pollables[slot] = Some(wait);
+    let rep = u32::try_from(slot).map_err(|_| trap(FaultKind::Trap, "a pollable slot past u32"))?;
     Ok(Resource::new_own(rep))
 }
 
@@ -233,9 +243,12 @@ fn add_io(linker: &mut Linker<StoreData>) -> wasmtime::Result<()> {
     for method in ["write", "blocking-write-and-flush"] {
         streams.func_wrap(
             &format!("[method]output-stream.{method}"),
-            |mut cx: Data<'_>, (_, contents): (Resource<OutputStream>, Vec<u8>)| {
+            |mut cx: Data<'_>, (_, contents): (Resource<OutputStream>, WasmList<u8>)| {
                 enter_or_trap(&mut cx, contents.len())?;
-                write_out(&cx, &contents);
+                // Read in place, and only as much as `check-write` permits; the rest is not kept.
+                let bytes = contents.as_le_slice(&cx);
+                let budget = usize::try_from(WRITE_BUDGET).unwrap_or(usize::MAX);
+                write_out(&cx, &bytes[..bytes.len().min(budget)]);
                 Ok((Ok::<(), StreamError>(()),))
             },
         )?;
