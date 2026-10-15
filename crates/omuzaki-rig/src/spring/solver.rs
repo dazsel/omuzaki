@@ -234,6 +234,14 @@ impl ColliderDef {
             ColliderShape::Capsule { offset, radius, tail } => {
                 Collider::capsule(place(frame, offset), place(frame, tail), radius)
             }
+            ColliderShape::SphereInside { offset, radius } => Collider::sphere_inside(place(frame, offset), radius),
+            ColliderShape::CapsuleInside { offset, radius, tail } => {
+                Collider::capsule_inside(place(frame, offset), place(frame, tail), radius)
+            }
+            ColliderShape::Plane { offset, normal } => Collider::plane(place(frame, offset), frame.rotation * normal),
+            // A shape this solver predates: no collision, never a panic. `validate` cannot know which shapes a
+            // solver supports, so the gap shows up in review of the new variant, not at run time.
+            _ => Collider::inert(),
         }
     }
 }

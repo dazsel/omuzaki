@@ -1,21 +1,39 @@
 //! Collision of a joint's tail sphere against a sphere or capsule collider (`VRMC_springBone` 1.0, "Collision with
-//! colliders").
+//! colliders"), and against the extended colliders (`VRMC_springBone_extended_collider`): the inside of a sphere or
+//! capsule, and a plane.
 //!
-//! A sphere is a capsule of zero length, so one code path serves both and the hot loop has no branch on the shape.
+//! A sphere is a capsule of zero length, so one code path serves both and the hot loop has no branch on the shape;
+//! the inside shapes reuse the same nearest-axis-point maths and differ only in which side of the radius they push
+//! from, and a plane is a dot product.
 
 use omuzaki_core::glam::Vec3;
 
 /// A collider placed in world space for this frame.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub(super) struct Collider {
-    /// Centre of the start cap (the centre, for a sphere).
+    /// Which side of the shape is solid.
+    kind: Kind,
+    /// Centre of the start cap (the centre, for a sphere; a point on the plane, for a plane).
     start: Vec3,
-    /// From the start cap to the end cap; zero for a sphere.
+    /// From the start cap to the end cap; zero for a sphere. A plane's unit normal.
     span: Vec3,
     /// `1 / |span|²`, or 0 when the span is too short to point anywhere (a sphere, or a degenerate capsule).
     inv_span_sq: f32,
-    /// Radius of the caps and the cylinder.
+    /// Radius of the caps and the cylinder (unused by a plane).
     radius: f32,
+}
+
+/// Which side of a collider the joint must stay on.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum Kind {
+    /// Outside a sphere or capsule.
+    Outside,
+    /// Inside a sphere or capsule.
+    Inside,
+    /// On the side of a plane its normal points to.
+    Plane,
+    /// Collides with nothing: a shape this solver doesn't know.
+    Inert,
 }
 
 /// Capsules shorter than this (squared, metres) are spheres: dividing by their length would only amplify rounding.
@@ -28,7 +46,7 @@ pub(super) const DEGENERATE_DISTANCE: f32 = 1e-5;
 impl Collider {
     /// A ball.
     pub(super) fn sphere(centre: Vec3, radius: f32) -> Self {
-        Self { start: centre, span: Vec3::ZERO, inv_span_sq: 0.0, radius }
+        Self { kind: Kind::Outside, start: centre, span: Vec3::ZERO, inv_span_sq: 0.0, radius }
     }
 
     /// The volume within `radius` of the segment `start` to `end`.
@@ -36,11 +54,31 @@ impl Collider {
         let span = end - start;
         let span_sq = span.length_squared();
         let inv_span_sq = if span_sq > MIN_SPAN_SQ { span_sq.recip() } else { 0.0 };
-        Self { start, span, inv_span_sq, radius }
+        Self { kind: Kind::Outside, start, span, inv_span_sq, radius }
     }
 
-    /// How far to move a sphere of `joint_radius` at `point` to get it out of this collider, or `None` if it is
-    /// already clear.
+    /// The volume within `radius` of `centre`, which a joint must stay inside.
+    pub(super) fn sphere_inside(centre: Vec3, radius: f32) -> Self {
+        Self { kind: Kind::Inside, ..Self::sphere(centre, radius) }
+    }
+
+    /// The volume within `radius` of the segment `start` to `end`, which a joint must stay inside.
+    pub(super) fn capsule_inside(start: Vec3, end: Vec3, radius: f32) -> Self {
+        Self { kind: Kind::Inside, ..Self::capsule(start, end, radius) }
+    }
+
+    /// A collider that touches nothing, standing in for a shape added to the contract after this solver.
+    pub(super) fn inert() -> Self {
+        Self { kind: Kind::Inert, ..Self::sphere(Vec3::ZERO, 0.0) }
+    }
+
+    /// The half-space on the side of `normal` (a unit vector in world space) from the plane through `point`.
+    pub(super) fn plane(point: Vec3, normal: Vec3) -> Self {
+        Self { kind: Kind::Plane, start: point, span: normal, inv_span_sq: 0.0, radius: 0.0 }
+    }
+
+    /// How far to move a sphere of `joint_radius` at `point` to get it out of this collider (back into it, for an
+    /// inside shape; onto the allowed side, for a plane), or `None` if it is already clear.
     ///
     /// This is the spec's `distance < 0` test and `nextTail - direction * distance` push in one: the offset is along
     /// the line from the collider's nearest axis point to `point`. A point on that axis (within
@@ -49,16 +87,29 @@ impl Collider {
     /// `fallback` is the one place this departs from the spec, and it is a choice the module docs record.
     pub(super) fn push_out(&self, point: Vec3, joint_radius: f32, fallback: Vec3) -> Option<Vec3> {
         let delta = point - self.start;
+        if self.kind == Kind::Inert {
+            return None;
+        }
+        if self.kind == Kind::Plane {
+            let distance = delta.dot(self.span) - joint_radius;
+            return (distance < 0.0).then(|| self.span * -distance);
+        }
         // The spec's three cases (before the start cap, along the cylinder, past the end cap) are one clamp.
         let along = (self.span.dot(delta) * self.inv_span_sq).clamp(0.0, 1.0);
         let from_axis = delta - self.span * along;
         let length = from_axis.length();
+        let outward = || if length >= DEGENERATE_DISTANCE { from_axis / length } else { fallback };
+        if self.kind == Kind::Inside {
+            // Leaves the shape when the joint's far side passes the radius; pushed back toward the axis. A point on
+            // the axis (only possible when the joint is larger than the shape) is pushed against `fallback`.
+            let excess = length + joint_radius - self.radius;
+            return (excess > 0.0).then(|| outward() * -excess);
+        }
         let distance = length - self.radius - joint_radius;
         if distance >= 0.0 {
             return None;
         }
-        let outward = if length >= DEGENERATE_DISTANCE { from_axis / length } else { fallback };
-        Some(outward * -distance)
+        Some(outward() * -distance)
     }
 }
 
@@ -121,6 +172,46 @@ mod tests {
         // Clear of every region.
         assert_eq!(capsule.push_out(Vec3::new(0.0, 2.6, 0.0), 0.0, Vec3::Z), None);
         assert_eq!(capsule.push_out(Vec3::new(0.6, 1.0, 0.0), 0.0, Vec3::Z), None);
+    }
+
+    #[test]
+    fn a_plane_pushes_a_joint_back_to_its_side_by_the_deficit() {
+        let plane = Collider::plane(Vec3::ZERO, Vec3::Y);
+        let push = plane.push_out(Vec3::new(0.0, -0.1, 0.0), 0.02, Vec3::X).unwrap();
+        assert!(close(push, Vec3::new(0.0, 0.12, 0.0)), "{push}");
+        assert!(close(Vec3::new(0.0, -0.1, 0.0) + push, Vec3::new(0.0, 0.02, 0.0)));
+        assert_eq!(plane.push_out(Vec3::new(3.0, 0.02, 1.0), 0.02, Vec3::X), None, "touching is allowed");
+        assert_eq!(plane.push_out(Vec3::new(0.0, 0.5, 0.0), 0.02, Vec3::X), None);
+    }
+
+    #[test]
+    fn an_inside_sphere_pushes_a_joint_back_toward_the_centre() {
+        let ball = Collider::sphere_inside(Vec3::ZERO, 0.5);
+        let push = ball.push_out(Vec3::new(0.6, 0.0, 0.0), 0.0, Vec3::Z).unwrap();
+        assert!(close(push, Vec3::new(-0.1, 0.0, 0.0)), "{push}");
+        assert_eq!(ball.push_out(Vec3::new(0.4, 0.0, 0.0), 0.0, Vec3::Z), None);
+        assert_eq!(ball.push_out(Vec3::new(0.5, 0.0, 0.0), 0.0, Vec3::Z), None, "touching stays");
+        // The joint's own radius counts toward leaving.
+        let push = ball.push_out(Vec3::new(0.4, 0.0, 0.0), 0.2, Vec3::Z).unwrap();
+        assert!(close(push, Vec3::new(-0.1, 0.0, 0.0)), "{push}");
+    }
+
+    #[test]
+    fn an_inside_capsule_measures_from_its_axis() {
+        let capsule = Collider::capsule_inside(Vec3::ZERO, Vec3::Y, 0.1);
+        let push = capsule.push_out(Vec3::new(0.2, 0.5, 0.0), 0.0, Vec3::Z).unwrap();
+        assert!(close(push, Vec3::new(-0.1, 0.0, 0.0)), "{push}");
+        // Past the end cap the cap is a ball about the end point.
+        let push = capsule.push_out(Vec3::new(0.0, 1.3, 0.0), 0.0, Vec3::Z).unwrap();
+        assert!(close(push, Vec3::new(0.0, -0.2, 0.0)), "{push}");
+        assert_eq!(capsule.push_out(Vec3::new(0.05, 0.5, 0.0), 0.0, Vec3::Z), None);
+    }
+
+    #[test]
+    fn a_joint_larger_than_an_inside_shape_on_its_axis_uses_the_fallback() {
+        let ball = Collider::sphere_inside(Vec3::ZERO, 0.1);
+        let push = ball.push_out(Vec3::ZERO, 0.3, Vec3::X).unwrap();
+        assert!(close(push, Vec3::X * -0.2), "{push}");
     }
 
     #[test]

@@ -3,7 +3,8 @@
 //! [`VrmSpringSolver`] implements the reference algorithm of `VRMC_springBone` 1.0
 //! (<https://github.com/vrm-c/vrm-specification/tree/master/specification/VRMC_springBone-1.0#springbone-algorithm>,
 //! the section `SpringBone Algorithm`): Verlet integration of each joint's tail with inertia, stiffness and gravity, a constraint
-//! that keeps the tail at the bone's length, push-out from sphere and capsule colliders, and then the bone is rotated
+//! that keeps the tail at the bone's length, push-out from sphere and capsule colliders (and, from `VRMC_springBone_extended_collider`, push-in to the
+//! inside of a sphere or capsule and push-out of a plane's back side), and then the bone is rotated
 //! to point at the tail. Chains are updated root to tip, and a chain hanging off another chain's joint after it.
 //!
 //! # Provenance
@@ -41,7 +42,9 @@
 //! - **Colliders on a bone below a spring joint** see that bone as the incoming pose has it.
 //! - **A tail exactly on a collider's axis** (its centre, for a sphere) has no direction to be pushed in. It is pushed
 //!   out along the bone's direction as it stood before the sub-step, or along the rest direction if the bone has no
-//!   length, so two runs always agree. The spec's `normalized` of a zero vector would leave it where it is.
+//!   length, so two runs always agree. The spec's `normalized` of a zero vector would leave it where it is. An inside
+//!   shape only meets this when the joint's own radius exceeds the shape's; it is then pushed back against that same
+//!   direction. A plane has no such case.
 //! - **Bone length is fixed at rest.** The spec fixes `boneLength` at initialisation, so the solver never re-measures
 //!   it. three-vrm 3.5.5 re-measures it from the child's world matrix on every update, and a child that is itself a
 //!   spring joint has not moved yet that sub-step, so the length wobbles by however far the parents just swung. Left
