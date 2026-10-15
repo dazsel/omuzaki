@@ -664,3 +664,30 @@ fn an_option_of_a_one_value_enum_skips_the_null() {
         ]
     );
 }
+
+#[test]
+fn a_node_level_const_is_a_sole_value() {
+    let schema = Schema::try_from(json!({
+        "type": "object",
+        "properties": { "mode": { "const": "Fast", "description": "Fast mode." } }
+    }))
+    .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        visited_in(&schema),
+        vec![(String::new(), None), ("mode".into(), Some("Fast mode.".to_owned())), ("mode--Fast".into(), None),]
+    );
+}
+
+/// Declares its fields out of key order, so a walk that followed declaration order would differ.
+#[derive(JsonSchema)]
+struct OutOfOrder {
+    /// Declared first.
+    zeta: u32,
+    /// Declared second.
+    alpha: u32,
+}
+
+#[test]
+fn properties_are_walked_in_key_order() {
+    assert_eq!(paths::<OutOfOrder>(), vec!["", "alpha", "zeta"]);
+}
