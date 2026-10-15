@@ -12,27 +12,15 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use criterion::{Criterion, criterion_group};
-use omuzaki_ai_api::{FetchError, FileSource, PinnedFile, Progress, SessionOptions};
+use omuzaki_ai_api::SessionOptions;
 use omuzaki_ai_ort::OrtRuntime;
 use omuzaki_core::time::Seconds;
 use omuzaki_track::models::ModelDir;
 use omuzaki_track::{FaceTracker, FaceTrackerConfig, Mode, NormRect, RgbFrame};
+use track_support::DirSource;
 
-/// Archives from the `OMUZAKI_ORT_CACHE` folder under their release file names; never downloads.
-struct DirSource(PathBuf);
-
-impl FileSource for DirSource {
-    fn get(&self, pin: &PinnedFile, _: &dyn Progress) -> Result<PathBuf, FetchError> {
-        let asset = pin.urls[0].rsplit('/').next().unwrap();
-        let path = self.0.join(asset);
-        let io = |e: std::io::Error| FetchError::Io { path: path.display().to_string(), reason: e.to_string() };
-        let actual = std::fs::metadata(&path).map_err(io)?.len();
-        if actual != pin.size {
-            return Err(FetchError::Size { url: asset.to_owned(), expected: pin.size, actual });
-        }
-        Ok(path)
-    }
-}
+#[path = "../tests/track_support/mod.rs"]
+mod track_support;
 
 const W: u32 = 640;
 const H: u32 = 480;
@@ -58,10 +46,11 @@ fn bench_track_roi(c: &mut Criterion) {
     }
     let frame = RgbFrame { data: &pixels, width: W, height: H, stride: (W * 3) as usize };
     let mut index = 0_u32;
+    // Every call must succeed: a failed call would time partial work, so it stops the bench.
     let mut run = |tracker: &mut FaceTracker| {
         index += 1;
-        let result = tracker.track_roi(&frame, ROI, Seconds(f64::from(index) / 30.0));
-        black_box(result.is_ok())
+        let sample = tracker.track_roi(&frame, ROI, Seconds(f64::from(index) / 30.0));
+        black_box(sample.unwrap_or_else(|e| panic!("track_roi call {index} failed: {e}")))
     };
     for _ in 0..20 {
         run(&mut tracker); // warm-up: buffers grown, lazies initialised

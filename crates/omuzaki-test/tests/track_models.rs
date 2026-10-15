@@ -10,11 +10,15 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::path::PathBuf;
 
-use omuzaki_ai_api::{FetchError, FileSource, PinnedFile, Progress, SessionOptions};
+use omuzaki_ai_api::{FetchError, FileSource, NoProgress, PinnedFile, SessionOptions, Sha256};
 use omuzaki_ai_ort::OrtRuntime;
 use omuzaki_core::time::Seconds;
 use omuzaki_track::models::{MODEL_FILES, ModelDir, ModelError};
-use omuzaki_track::{FaceTracker, FaceTrackerConfig, Mode, NormRect, RgbFrame};
+use omuzaki_track::{FaceSample, FaceTracker, FaceTrackerConfig, Mode, NormRect, RgbFrame};
+use sha2::Digest;
+use track_support::DirSource;
+
+mod track_support;
 
 thread_local! {
     static WATCHING: Cell<bool> = const { Cell::new(false) };
@@ -45,23 +49,6 @@ unsafe impl GlobalAlloc for Counting {
 
 #[global_allocator]
 static ALLOCATOR: Counting = Counting;
-
-/// Archives from the `OMUZAKI_ORT_CACHE` folder under their release file names; never downloads. Checks the pinned
-/// size (the runtime itself refuses a library that does not load).
-struct DirSource(PathBuf);
-
-impl FileSource for DirSource {
-    fn get(&self, pin: &PinnedFile, _: &dyn Progress) -> Result<PathBuf, FetchError> {
-        let asset = pin.urls[0].rsplit('/').next().unwrap();
-        let path = self.0.join(asset);
-        let io = |e: std::io::Error| FetchError::Io { path: path.display().to_string(), reason: e.to_string() };
-        let actual = std::fs::metadata(&path).map_err(io)?.len();
-        if actual != pin.size {
-            return Err(FetchError::Size { url: asset.to_owned(), expected: pin.size, actual });
-        }
-        Ok(path)
-    }
-}
 
 /// The model folder and the runtime cache, or `None` (with a line on stderr) when either variable is unset.
 fn env(test: &str) -> Option<(PathBuf, DirSource)> {
@@ -137,8 +124,25 @@ fn track_roi_is_bit_identical_across_runs() {
         tracker.track_roi(&frame(&pixels), ROI, Seconds(0.0))
     };
     let (a, b) = (run().unwrap(), run().unwrap());
-    assert_eq!(a, b);
+    // Bits, not `PartialEq`: that one counts +0.0 and -0.0 as equal.
+    assert_eq!(bits(&a), bits(&b));
+    assert_eq!(a.present, b.present);
     assert!(a.landmarks.iter().flatten().all(|v| v.is_finite()));
+}
+
+/// Every float of a sample as its bit pattern, in field order.
+fn bits(sample: &FaceSample) -> Vec<u32> {
+    let roi = &sample.roi;
+    let rect = [roi.x_center, roi.y_center, roi.width, roi.height, roi.rotation];
+    sample
+        .blendshapes
+        .iter()
+        .chain(&sample.pose)
+        .chain(sample.landmarks.iter().flatten())
+        .chain([&sample.presence])
+        .chain(&rect)
+        .map(|v| v.to_bits())
+        .collect()
 }
 
 /// Allocations the calling thread makes inside `body`.
@@ -191,4 +195,34 @@ fn a_corrupted_file_fails_open() {
             other => panic!("{name}: {other:?}"),
         }
     }
+}
+
+/// The runtime source checks the pinned SHA-256, not only the length: a same-length file with one byte changed is
+/// refused. Not gated: it runs on a file it writes itself.
+#[test]
+fn the_runtime_source_refuses_a_same_length_corruption() {
+    let cache = tempfile::tempdir().unwrap();
+    let bytes: Vec<u8> = (0..1000u32).map(|i| u8::try_from(i % 251).unwrap()).collect();
+    let sha256 = Sha256(sha2::Sha256::digest(&bytes).into());
+    let pin = PinnedFile::new(["https://example.invalid/releases/runtime.tgz"], sha256, 1000);
+    let source = DirSource(cache.path().to_path_buf());
+    let path = cache.path().join("runtime.tgz");
+
+    std::fs::write(&path, &bytes).unwrap();
+    assert_eq!(source.get(&pin, &NoProgress).unwrap(), path);
+
+    let mut corrupted = bytes;
+    corrupted[500] ^= 0x01;
+    std::fs::write(&path, &corrupted).unwrap();
+    match source.get(&pin, &NoProgress) {
+        Err(FetchError::Hash { url, expected, actual }) => {
+            assert_eq!(url, "runtime.tgz");
+            assert_eq!(expected, sha256);
+            assert_eq!(actual, Sha256(sha2::Sha256::digest(&corrupted).into()));
+        }
+        other => panic!("{other:?}"),
+    }
+
+    std::fs::write(&path, &corrupted[..999]).unwrap();
+    assert!(matches!(source.get(&pin, &NoProgress), Err(FetchError::Size { expected: 1000, actual: 999, .. })));
 }

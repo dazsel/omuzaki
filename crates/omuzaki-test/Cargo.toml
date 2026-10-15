@@ -54,6 +54,8 @@ criterion.workspace = true
 omuzaki-ai-api = { path = "../omuzaki-ai-api" }
 omuzaki-ai-ort = { path = "../omuzaki-ai-ort" }
 omuzaki-track = { path = "../omuzaki-track" }
+# The runtime-archive source of those tests checks the pinned SHA-256 (ADR 0017).
+sha2.workspace = true
 
 [[bench]]
 name = "track"
