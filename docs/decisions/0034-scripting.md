@@ -1,3 +1,9 @@
+---
+title: "0034: Scripts are Rhai, run as their caller inside one transaction, and macros are recorded op lines (2026-10-13)"
+summary: "Scripts are Rhai, run as their caller inside one transaction, and macros are recorded op lines"
+area: decisions
+---
+
 # 0034: Scripts are Rhai, run as their caller inside one transaction, and macros are recorded op lines (2026-10-13)
 
 **Status:** proposed. It adds one `omuzaki-ops-api` scope. **Context:** PL-02;

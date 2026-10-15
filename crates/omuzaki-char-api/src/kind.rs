@@ -26,7 +26,7 @@ use serde::de::DeserializeOwned;
 
 use crate::character::Attach;
 use crate::error::BuildError;
-use crate::fact::{Append, Cell, Fact, FactId, Keyed, Last, Merged, Slot, default_of};
+use crate::fact::{Append, Cell, Defaults, Fact, FactId, Keyed, Last, Merged, Slot};
 use crate::geometry::{FaceOverlay, MaterialSpec, PartMesh, TextureData};
 use crate::ids::{AnchorId, BodyTemplateId, JointRef, MaterialName, PartId, PartKindId, TextureName};
 use crate::rig::RigContribution;
@@ -449,6 +449,8 @@ impl Debug for Publishes {
 pub struct Published {
     /// The merged value of every fact published so far, by fact name.
     merged: BTreeMap<&'static str, Merged>,
+    /// The empty values of the facts nothing published, made on first read. Never shared with a clone.
+    defaults: Defaults,
 }
 
 impl Debug for Published {
@@ -464,15 +466,21 @@ crate::fact! {
     pub HeadFact = "head", Last<Arc<dyn HeadSurface>>;
 }
 
+crate::register_fact!(HeadFact);
+
 crate::fact! {
     /// Where painted face layers land on the head (published by `head`); the last part that publishes one wins.
     pub FaceFact = "face", Last<FaceProjection>;
 }
 
+crate::register_fact!(FaceFact);
+
 crate::fact! {
     /// Anchors for accessories, keyed by the publishing part and the anchor name.
     pub AnchorsFact = "anchors", Keyed<AnchorId, Anchor>;
 }
+
+crate::register_fact!(AnchorsFact);
 
 crate::fact! {
     /// Collider groups later parts may use ([`BuildCtx::colliders`]): hair and cloth keep out of the head and
@@ -480,6 +488,8 @@ crate::fact! {
     /// [`humanoid_id`](crate::humanoid_id)): the only bones another part can locate. Appended in part order.
     pub CollidersFact = "colliders", Append<ColliderGroup>;
 }
+
+crate::register_fact!(CollidersFact);
 
 /// A part's outer envelope, for garments built over it ([`FitFact`]).
 #[derive(Clone, Debug, Default)]
@@ -519,6 +529,8 @@ impl Fact for FitFact {
     }
 }
 
+crate::register_fact!(FitFact);
+
 /// The character's real-world stature, published by the body part (nothing for a body authored in metres). The build
 /// scales the body and the head by [`Stature::scale`] before any later part is built
 /// ([`scale_output`](crate::scale_output)); what the body publishes here is therefore the size it already has. It must
@@ -540,6 +552,8 @@ impl Fact for StatureFact {
     }
 }
 
+crate::register_fact!(StatureFact);
+
 /// How far two bind poses may differ, per quaternion component and per axis of the hips offset, and still be the same
 /// pose: the rounding of two parts that each computed it.
 const BIND_TOLERANCE: f32 = 1e-6;
@@ -556,13 +570,14 @@ fn same_bind(a: &HumanoidPose, b: &HumanoidPose) -> bool {
 }
 
 impl Published {
-    /// What fact `F` has merged so far: its `Default` when no part published it.
+    /// What fact `F` has merged so far: its `Default` when no part published it. That default belongs to this
+    /// `Published` alone (a clone makes its own): the first read of a missing fact allocates it, later reads don't.
     pub fn get<F: Fact>(&self) -> &F::Merged {
         self.merged
             .get(F::NAME)
             .filter(|merged| merged.id.is::<F>())
             .and_then(|merged| merged.cell.get::<F::Merged>())
-            .unwrap_or_else(|| default_of::<F::Merged>())
+            .unwrap_or_else(|| self.defaults.of::<F>())
     }
 
     /// Adds what `part` published, merging each fact in name order and each fact's values in the order they were put.
@@ -644,6 +659,10 @@ pub enum Quality {
 }
 
 /// What a part sees while it builds.
+///
+/// `#[non_exhaustive]`: other crates build one with [`BuildCtx::new`] and the `with_*` methods, and read its fields (all
+/// public) but never write a struct literal, so a field added here edits only this crate.
+#[non_exhaustive]
 pub struct BuildCtx<'a> {
     /// The part being built.
     pub part: &'a PartId,
@@ -672,6 +691,54 @@ pub struct BuildCtx<'a> {
     /// skeleton. Accessories resolve it against `published` (anchors) and [`BuildCtx::joint`]. The builder keys the
     /// part's output on it, so editing the attachment rebuilds the part.
     pub attach: Option<&'a Attach>,
+    /// Growth probe (feature `growth-probe`): a field no other crate knows about. See `tests/growth_probe.rs`.
+    #[cfg(feature = "growth-probe")]
+    pub growth_probe: u8,
+}
+
+impl<'a> BuildCtx<'a> {
+    /// A context with the required inputs: not for export ([`with_rig_export`](Self::with_rig_export)) and no
+    /// attachment ([`with_attach`](Self::with_attach)).
+    #[allow(clippy::too_many_arguments)] // one argument per required input; a builder would only rename them
+    pub fn new(
+        part: &'a PartId,
+        template: &'a BodyTemplateId,
+        palette: &'a Palette,
+        face: &'a FaceProfile,
+        rng: Rng,
+        published: &'a Published,
+        quality: Quality,
+        services: &'a BuildServices,
+    ) -> Self {
+        Self {
+            part,
+            template,
+            palette,
+            face,
+            rng,
+            published,
+            quality,
+            services,
+            rig_export: false,
+            attach: None,
+            #[cfg(feature = "growth-probe")]
+            growth_probe: 0,
+        }
+    }
+
+    /// Sets whether the build is for export ([`BuildCtx::rig_export`]).
+    #[must_use]
+    pub fn with_rig_export(mut self, rig_export: bool) -> Self {
+        self.rig_export = rig_export;
+        self
+    }
+
+    /// Sets where the part is fixed ([`BuildCtx::attach`]).
+    #[must_use]
+    pub fn with_attach(mut self, attach: Option<&'a Attach>) -> Self {
+        self.attach = attach;
+        self
+    }
 }
 
 impl BuildCtx<'_> {
@@ -740,7 +807,11 @@ impl BuildCtx<'_> {
 }
 
 /// What a built part hands back.
+///
+/// `#[non_exhaustive]`: other crates start from [`PartOutput::new`] and add what the part produces with the `with_*`
+/// methods (or assign the public fields), so a field added here edits only this crate.
 #[derive(Default)]
+#[non_exhaustive]
 pub struct PartOutput {
     /// Drawable meshes.
     pub meshes: Vec<PartMesh>,
@@ -760,6 +831,9 @@ pub struct PartOutput {
     pub rig: RigContribution,
     /// Non-fatal notes for the report card (a clump that clips, a texture that was downsized).
     pub warnings: Vec<String>,
+    /// Growth probe (feature `growth-probe`): a field no other crate knows about. See `tests/growth_probe.rs`.
+    #[cfg(feature = "growth-probe")]
+    pub growth_probe: u8,
 }
 
 impl Debug for PartOutput {
@@ -778,6 +852,67 @@ impl Debug for PartOutput {
 }
 
 impl PartOutput {
+    /// An output with nothing in it.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Sets the drawable meshes.
+    #[must_use]
+    pub fn with_meshes(mut self, meshes: Vec<PartMesh>) -> Self {
+        self.meshes = meshes;
+        self
+    }
+
+    /// Sets the materials the meshes use.
+    #[must_use]
+    pub fn with_materials(mut self, materials: Vec<(MaterialName, MaterialSpec)>) -> Self {
+        self.materials = materials;
+        self
+    }
+
+    /// Sets the declared classes of materials ([`PartOutput::material_classes`]).
+    #[must_use]
+    pub fn with_material_classes(mut self, classes: Vec<(MaterialName, crate::look::MaterialClass)>) -> Self {
+        self.material_classes = classes;
+        self
+    }
+
+    /// Sets the procedural textures.
+    #[must_use]
+    pub fn with_textures(mut self, textures: Vec<(TextureName, TextureData)>) -> Self {
+        self.textures = textures;
+        self
+    }
+
+    /// Sets the simulation.
+    #[must_use]
+    pub fn with_runtime(mut self, runtime: Box<dyn PartRuntime>) -> Self {
+        self.runtime = Some(runtime);
+        self
+    }
+
+    /// Sets what later parts may use.
+    #[must_use]
+    pub fn with_publishes(mut self, publishes: Publishes) -> Self {
+        self.publishes = publishes;
+        self
+    }
+
+    /// Sets what the part adds to the rig.
+    #[must_use]
+    pub fn with_rig(mut self, rig: RigContribution) -> Self {
+        self.rig = rig;
+        self
+    }
+
+    /// Sets the non-fatal notes.
+    #[must_use]
+    pub fn with_warnings(mut self, warnings: Vec<String>) -> Self {
+        self.warnings = warnings;
+        self
+    }
+
     /// A copy of this output: the meshes, materials, textures, publishes, rig and warnings are cloned (the surfaces and
     /// fits in `publishes` are shared read-only handles), and the simulation is [forked](PartRuntime::fork), so the copy
     /// steps on its own, starting in the generator's initial state. A caching builder keeps one fork of a part and serves
@@ -790,7 +925,8 @@ impl PartOutput {
             Some(runtime) => Some(runtime.fork()?),
             None => None,
         };
-        Some(PartOutput {
+        // A copy of `self` with the fork for the simulation: `Self { runtime, ..clone }` would need `PartOutput: Clone`.
+        Some(Self {
             meshes: self.meshes.clone(),
             materials: self.materials.clone(),
             material_classes: self.material_classes.clone(),
@@ -799,6 +935,8 @@ impl PartOutput {
             publishes: self.publishes.clone(),
             rig: self.rig.clone(),
             warnings: self.warnings.clone(),
+            #[cfg(feature = "growth-probe")]
+            growth_probe: self.growth_probe,
         })
     }
 }
@@ -867,11 +1005,9 @@ mod tests {
 
     #[test]
     fn a_fork_copies_the_pieces_and_forks_the_simulation() {
-        let mut output = PartOutput {
-            warnings: vec!["a clump clips the shoulder".to_owned()],
-            runtime: Some(Box::new(Counting { steps: 0, copyable: true })),
-            ..PartOutput::default()
-        };
+        let mut output = PartOutput::new()
+            .with_warnings(vec!["a clump clips the shoulder".to_owned()])
+            .with_runtime(Box::new(Counting { steps: 0, copyable: true }));
         step_once(output.runtime.as_deref_mut().expect("the output has a simulation"));
 
         let mut fork = output.fork().expect("a counting simulation can be forked");
@@ -890,8 +1026,7 @@ mod tests {
 
     #[test]
     fn a_simulation_that_cannot_be_forked_makes_the_output_uncopyable() {
-        let output =
-            PartOutput { runtime: Some(Box::new(Counting { steps: 0, copyable: false })), ..PartOutput::default() };
+        let output = PartOutput::new().with_runtime(Box::new(Counting { steps: 0, copyable: false }));
         assert!(output.fork().is_none(), "the trait's default fork is None, so the output is not copyable");
         assert!(PartOutput::default().fork().is_some(), "an output without a simulation always copies");
     }

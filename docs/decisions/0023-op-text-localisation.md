@@ -1,3 +1,9 @@
+---
+title: "0023: Op text keeps its English in the code, gets derived message ids and typed arguments, and is rendered for the reader: agents read English, people read their language (2026-10-12)"
+summary: "Op text keeps its English in the code, gets derived message ids and typed arguments, and is rendered for the reader: agents read English, people read their language"
+area: decisions
+---
+
 # 0023: Op text keeps its English in the code, gets derived message ids and typed arguments, and is rendered for the reader: agents read English, people read their language (2026-10-12)
 
 **Status:** accepted (2026-10-12). **Context:** SE-03, SE-09; spec v3 §6, §11, §31,

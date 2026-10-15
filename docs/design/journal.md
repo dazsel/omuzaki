@@ -1,3 +1,9 @@
+---
+title: "The journal, snapshots and crash recovery (VC-08), and the snapshot format backups reuse (VC-09)"
+summary: "The journal, snapshots and crash recovery (VC-08), and the snapshot format backups reuse (VC-09)"
+area: design
+---
+
 # The journal, snapshots and crash recovery (VC-08), and the snapshot format backups reuse (VC-09)
 
 **Status:** accepted (2026-10-12; decisions in section 15). Adds a new API crate and a

@@ -17,7 +17,7 @@ use omuzaki_face_api::{
     BrowParams, EyeEffects, EyeParams, FaceProfile, FaceView, MouthParams, NoseKind, PaintParams, narrow,
 };
 
-use crate::jsref::{FaceCase, Xy};
+use omuzaki_test::jsref::{FaceCase, Xy};
 
 /// A smile-lid strength above this draws the lower lid as a full lash line (`eyes.lower_lid.cheek_line`).
 const SMILE_LIDS_ON: f64 = 0.5;

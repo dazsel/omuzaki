@@ -1,3 +1,9 @@
+---
+title: "0024: A scene is a folder of materialised values in subject units, resolved off the frame path (2026-10-12)"
+summary: "A scene is a folder of materialised values in subject units, resolved off the frame path"
+area: decisions
+---
+
 # 0024: A scene is a folder of materialised values in subject units, resolved off the frame path (2026-10-12)
 
 **Status:** accepted (2026-10-12). **Context:** ST-01, LB-12; spec v3 §7, §8, §21 (LK-04,

@@ -21,8 +21,8 @@ use serde::Deserialize;
 
 use super::js_params::case_inputs;
 use super::{LOOKS, ParityError, SectionTolerance, Setup, load_setup};
-use crate::jsref::{FaceStates, JsRef};
-use crate::regioncmp::{Rect, compare_region, write_side_by_side};
+use omuzaki_test::jsref::{FaceStates, JsRef};
+use omuzaki_test::regioncmp::{Rect, compare_region, write_side_by_side};
 
 /// Pixels added around the tags' bounding boxes, so a shape that lands a little outside still counts as compared.
 pub const PAD: u32 = 8;
@@ -107,8 +107,8 @@ pub enum Outcome {
     Compared {
         /// The rectangle compared.
         rect: Rect,
-        /// [`compare`](crate::compare::compare)'s numbers for it.
-        stats: crate::compare::Stats,
+        /// [`compare`](omuzaki_test::compare::compare)'s numbers for it.
+        stats: omuzaki_test::compare::Stats,
         /// Painted pixels (alpha above the rule's per-channel limit) outside the rectangle.
         stray: u64,
         /// Where the painter's ink sits and how much there is, against the reference's, inside the rectangle.

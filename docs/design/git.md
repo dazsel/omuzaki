@@ -1,3 +1,9 @@
+---
+title: "Git integration: access, clean commits, binaries, the commit view and ops (VC-04)"
+summary: "the git integration (ADR 0045): the person's own `git` as a process, what \"commits cleanly\" promises, binaries via the second location, the commit view with render previews, person-only commit and push, and the `Git` trait."
+area: design
+---
+
 # Git integration: access, clean commits, binaries, the commit view and ops (VC-04)
 
 **Status:** proposed (2026-10-13).

@@ -1,3 +1,9 @@
+---
+title: "Evals: agent tasks through MCP, model suites, and the judges that score them"
+summary: "agent tasks through MCP, model suites, and the judges that score them"
+area: design
+---
+
 # Evals: agent tasks through MCP, model suites, and the judges that score them
 
 **Status:** accepted (2026-10-12). **Decision record:** `docs/decisions/0022-evals.md`.

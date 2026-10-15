@@ -14,6 +14,10 @@
 //! their own tasks.
 #![deny(missing_docs)]
 
+omuzaki_core::define_link! {
+    omuzaki_char_api::link();
+}
+
 pub mod anchor;
 pub mod camera;
 pub mod cast;
