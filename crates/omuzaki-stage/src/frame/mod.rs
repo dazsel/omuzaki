@@ -219,13 +219,16 @@ impl Stage {
     /// Nothing advances: the clock, the rig and the part runtimes stay where the last tick left them, so the same shot
     /// renders the same pixels however many shots came before it. The face is repainted for `input.channels`; the pose
     /// and goals of `input` and its `dt`, `wind` and `root` are not read, so a change of pose needs a
-    /// [`tick`](Stage::tick). A variant switch that is pending completes on a tick, not here. It allocates nothing in
-    /// steady state, and uploads nothing to the renderer but the frame itself.
+    /// [`tick`](Stage::tick). A variant switch that is pending completes on a tick, not here. It sends the renderer the
+    /// dynamic meshes whose revision moved since the last upload, as a tick does, and reports how many in
+    /// [`FrameOutput::uploads`]: after [`settle`](Stage::settle) the still shows the settled hair. It allocates nothing
+    /// in steady state.
     ///
     /// # Errors
     /// As [`tick`](Stage::tick) for the face and the render: [`StageError::Render`] if the renderer refuses the frame,
     /// or whatever the face update reports.
     pub fn redraw(&mut self, renderer: &mut dyn Renderer, input: &FrameInput) -> Result<FrameOutput, StageError> {
+        let uploads = self.dynamic.upload(&self.built.runtimes, renderer)?;
         self.update_face(renderer, self.tick, input)?;
         self.plan.fill(&mut self.scene, self.rig.skin(), self.root);
         // What the last tick wrote into the scene, so a redraw before any tick doesn't render the caller's frame info.
@@ -233,7 +236,7 @@ impl Stage {
         let report = renderer
             .render(self.target, &self.scene, &self.quality)
             .map_err(|source| StageError::render("the still", source))?;
-        Ok(FrameOutput { tick: self.tick, report, uploads: 0 })
+        Ok(FrameOutput { tick: self.tick, report, uploads })
     }
 
     /// The scene as last rendered.

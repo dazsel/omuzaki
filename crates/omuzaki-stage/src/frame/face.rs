@@ -437,6 +437,21 @@ impl Stage {
         }
     }
 
+    /// [`settle`](Stage::settle) from a clean start: the spring bones and the part runtimes are reset to rest under
+    /// the last frame's pose, goals and root, so the result depends on that pose and `steps` alone, not on the frames
+    /// before it (a sheet or a still must not depend on history). The stage clock doesn't move and nothing is sent to
+    /// the renderer: [`redraw`](Stage::redraw) or the next [`tick`](Stage::tick) uploads the meshes that moved.
+    pub fn settle_from_rest(&mut self, steps: u32) {
+        self.rig.reset();
+        // One solve at the last frame's pose: the springs start from rest and the runtimes reset against that skin.
+        self.rig.solve(self.tick, &self.pose, &self.goals);
+        let pose = SkinPose { character: &self.built.rig, skin: self.rig.skin(), root: self.root };
+        for slot in &mut self.built.runtimes {
+            slot.runtime.reset(&pose);
+        }
+        self.settle(steps);
+    }
+
     /// Changes the face texture density (the frame-budget scheduler's knob) and repaints every layer on the next frame.
     ///
     /// # Errors

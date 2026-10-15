@@ -19,8 +19,8 @@ use std::sync::Arc;
 
 use omuzaki_char::builder::CachingBuilder;
 use omuzaki_char_api::{
-    BuildOptions, BuildServices, BuiltCharacter, CharId, CharacterBuilder, JointRef, RegistryBuilder, VariantId,
-    VariantSet, resolve_variant,
+    BuildOptions, BuildServices, BuiltCharacter, CharId, CharacterBuilder, DynamicMesh, JointRef, PartRuntime,
+    PoseSource, RegistryBuilder, RuntimeCost, StepCtx, VariantId, VariantSet, resolve_variant,
 };
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::{UVec2, Vec3};
@@ -51,13 +51,91 @@ fn built() -> BuiltCharacter {
 }
 
 fn stage_on(renderer: &mut dyn Renderer) -> Stage {
+    stage_of(renderer, built())
+}
+
+/// Wraps a runtime with a history the mock hair lacks: its first mesh drifts sideways by a little for every step since
+/// the last reset, as a spring chain carries its swing. Only a reset (or the same number of steps) gives the same shape.
+struct Drifting {
+    inner: Box<dyn PartRuntime>,
+    steps: u32,
+    shifted: Vec<Vec3>,
+    revision: u64,
+}
+
+impl PartRuntime for Drifting {
+    fn step(&mut self, ctx: &StepCtx<'_>) {
+        self.inner.step(ctx);
+        self.steps += 1;
+        self.revision += 1;
+        if let Some(view) = self.inner.dynamic_mesh(0) {
+            let drift = Vec3::X * 1e-3 * self.steps as f32;
+            self.shifted.clear();
+            self.shifted.extend(view.positions.iter().map(|p| *p + drift));
+        }
+    }
+
+    fn reset(&mut self, pose: &dyn PoseSource) {
+        self.inner.reset(pose);
+        self.steps = 0;
+        self.shifted.clear();
+        self.revision += 1;
+    }
+
+    fn dynamic_count(&self) -> usize {
+        self.inner.dynamic_count()
+    }
+
+    fn dynamic_mesh(&self, index: usize) -> Option<DynamicMesh<'_>> {
+        let view = self.inner.dynamic_mesh(index)?;
+        if index == 0 && !self.shifted.is_empty() {
+            return Some(DynamicMesh { positions: &self.shifted, revision: self.revision, ..view });
+        }
+        Some(DynamicMesh { revision: view.revision + self.revision, ..view })
+    }
+
+    fn cost(&self) -> RuntimeCost {
+        self.inner.cost()
+    }
+}
+
+/// The mock character with every runtime wrapped in [`Drifting`].
+fn drifting() -> BuiltCharacter {
+    let mut character = built();
+    for slot in &mut character.runtimes {
+        let placeholder: Box<dyn PartRuntime> =
+            Box::new(Drifting { inner: Box::new(NoRuntime), steps: 0, shifted: Vec::new(), revision: 0 });
+        let inner = std::mem::replace(&mut slot.runtime, placeholder);
+        slot.runtime = Box::new(Drifting { inner, steps: 0, shifted: Vec::new(), revision: 0 });
+    }
+    character
+}
+
+/// Stands in while a runtime is moved out of its slot.
+struct NoRuntime;
+
+impl PartRuntime for NoRuntime {
+    fn step(&mut self, _: &StepCtx<'_>) {}
+    fn reset(&mut self, _: &dyn PoseSource) {}
+    fn dynamic_count(&self) -> usize {
+        0
+    }
+    fn dynamic_mesh(&self, _: usize) -> Option<DynamicMesh<'_>> {
+        None
+    }
+    fn cost(&self) -> RuntimeCost {
+        RuntimeCost::default()
+    }
+}
+
+fn stage_of(renderer: &mut dyn Renderer, built: BuiltCharacter) -> Stage {
     let target = renderer
         .create_target(&TargetDesc { size: UVec2::new(32, 32), alpha: AlphaEncoding::Straight })
         .expect("a target");
     let options = UploadOptions { face_px_per_m: 600.0 };
     Stage::new(
         renderer,
-        built(),
+        built,
         options,
         Scene::new(Camera::default()),
         target,
@@ -134,8 +212,13 @@ fn spec() -> TurnaroundSpec {
 
 /// Runs `f` on a stage over a fresh mock renderer, then gives the stage's resources back.
 fn with_stage<R>(f: impl FnOnce(&mut Stage, &mut MockRenderer) -> R) -> R {
+    with_built(built(), f)
+}
+
+/// [`with_stage`] for a character other than the plain mock.
+fn with_built<R>(character: BuiltCharacter, f: impl FnOnce(&mut Stage, &mut MockRenderer) -> R) -> R {
     let mut renderer = MockRenderer::new();
-    let mut stage = stage_on(&mut renderer);
+    let mut stage = stage_of(&mut renderer, character);
     let result = f(&mut stage, &mut renderer);
     stage.release(&mut renderer).expect("the stage releases");
     result
@@ -420,9 +503,9 @@ fn camera_for(stage: &Stage, coverage: f64) -> Camera {
     )
 }
 
-#[test]
-fn a_variant_staged_before_the_call_is_framed_as_the_new_character() {
-    // The close-up lengthens the torso, so its rig and height differ from the wide variant's.
+/// A stage on the mock character in its wide variant, with a face rig that can switch to the close-up (which has a
+/// longer torso, so its rig and height differ). It has run a few frames at wide framing.
+fn variant_stage(renderer: &mut MockRenderer) -> Stage {
     let variants: VariantSet = serde_json::from_str(
         r#"{
             "game": { "shot": { "min": 0.0, "max": 0.35 } },
@@ -439,13 +522,11 @@ fn a_variant_staged_before_the_call_is_framed_as_the_new_character() {
     let def = resolve_variant(&base, &variants, &id("game")).expect("the variant resolves");
     let built = builder.build(&CharId::new("mock").expect("an id"), &def, &options, &services).expect("builds");
     let source = CharacterSource::new(builder, base, variants, options, services);
-
-    let mut renderer = MockRenderer::new();
     let target = renderer
         .create_target(&TargetDesc { size: UVec2::splat(32), alpha: AlphaEncoding::Straight })
         .expect("a target");
     let mut stage = Stage::new(
-        &mut renderer,
+        renderer,
         built,
         UploadOptions { face_px_per_m: 2000.0 },
         Scene::new(Camera::default()),
@@ -459,14 +540,27 @@ fn a_variant_staged_before_the_call_is_framed_as_the_new_character() {
     }))
     .with_executor(Box::new(InlineExecutor))
     .with_source(source);
-    stage.set_face(&mut renderer, rig).expect("the face binds");
+    stage.set_face(renderer, rig).expect("the face binds");
     stage.scene_mut().camera = camera_for(&stage, 0.15);
     for _ in 0..5 {
-        stage.tick(&mut renderer, &FrameInput::default()).expect("warm-up frame");
+        stage.tick(renderer, &FrameInput::default()).expect("warm-up frame");
     }
-    stage.scene_mut().camera = camera_for(&stage, 0.8);
-    stage.service_variants(&mut renderer, &FrameInput::default()).expect("the close-up is staged");
-    assert_eq!(stage.built().variant, Some(id("game")), "staged, not yet swapped");
+    stage
+}
+
+/// Stages the close-up on `stage`: the swap happens on its next tick.
+fn stage_close_up(stage: &mut Stage, renderer: &mut MockRenderer) {
+    stage.scene_mut().camera = camera_for(stage, 0.8);
+    stage.service_variants(renderer, &FrameInput::default()).expect("the close-up is staged");
+    assert_eq!(stage.built().variant, Some(VariantId::new("game").expect("an id")), "staged, not yet swapped");
+}
+
+#[test]
+fn a_variant_staged_before_the_call_is_framed_as_the_new_character() {
+    let id = |s: &str| VariantId::new(s).expect("a valid id");
+    let mut renderer = MockRenderer::new();
+    let mut stage = variant_stage(&mut renderer);
+    stage_close_up(&mut stage, &mut renderer);
     let wide = expected_eye_row(stage.built());
 
     let sheet = render_turnaround(&mut stage, &mut renderer, &spec()).expect("the sheet renders");
@@ -487,6 +581,104 @@ fn a_variant_staged_before_the_call_is_framed_as_the_new_character() {
     }
     stage.service_variants(&mut renderer, &FrameInput::default()).expect("the retired character is released");
     stage.release(&mut renderer).expect("the stage releases");
+}
+
+fn pixels(sheet: &TurnaroundSheet) -> Vec<&Vec<u8>> {
+    sheet.views.iter().map(|v| &v.image.rgba8).collect()
+}
+
+#[test]
+fn settle_then_redraw_shows_the_settled_hair() {
+    let mut renderer = MockRenderer::new();
+    let mut stage = stage_on(&mut renderer);
+    let input = FrameInput::default();
+    stage.scene_mut().camera = Camera::look_at(
+        Vec3::new(0.0, 0.0, 6.0),
+        Vec3::ZERO,
+        Vec3::Y,
+        Projection::Orthographic { height: 3.0, near: 0.1, far: 20.0 },
+    );
+    stage.tick(&mut renderer, &input).expect("a frame");
+    let before = renderer.read_target(stage.target()).expect("the frame");
+    stage.settle(37);
+    let after = stage.redraw(&mut renderer, &input).expect("the still");
+    assert!(after.uploads > 0, "the settled meshes are uploaded: {}", after.uploads);
+    let settled = renderer.read_target(stage.target()).expect("the still");
+    assert_ne!(before.rgba8, settled.rgba8, "the still shows the settled hair, not the last tick's");
+    let again = stage.redraw(&mut renderer, &input).expect("the same still");
+    assert_eq!(again.uploads, 0, "nothing moved since");
+    assert_eq!(settled.rgba8, renderer.read_target(stage.target()).expect("the still").rgba8);
+    stage.release(&mut renderer).expect("the stage releases");
+}
+
+#[test]
+fn settling_from_rest_forgets_the_frames_before_it() {
+    let mut renderer = MockRenderer::new();
+    let mut busy = stage_of(&mut renderer, drifting());
+    let mut fresh = stage_of(&mut renderer, drifting());
+    for stage in [&mut busy, &mut fresh] {
+        stage.scene_mut().camera = Camera::look_at(
+            Vec3::new(0.0, 0.0, 6.0),
+            Vec3::ZERO,
+            Vec3::Y,
+            Projection::Orthographic { height: 3.0, near: 0.1, far: 20.0 },
+        );
+    }
+    let mut moving = FrameInput::default();
+    for frame in 0..25 {
+        moving.pose = hero_pose(&busy.built().rig.bind);
+        moving.wind = Vec3::new(frame as f32, 0.0, 0.0);
+        busy.tick(&mut renderer, &moving).expect("a busy frame");
+    }
+    let last = FrameInput::default();
+    let mut stills = Vec::new();
+    for stage in [&mut busy, &mut fresh] {
+        stage.tick(&mut renderer, &last).expect("the frame to settle under");
+        stage.settle_from_rest(30);
+        stage.redraw(&mut renderer, &last).expect("the still");
+        stills.push(renderer.read_target(stage.target()).expect("the still").rgba8);
+    }
+    assert_eq!(stills[0], stills[1], "a stage that was animated settles to the same still as a fresh one");
+    busy.release(&mut renderer).expect("released");
+    fresh.release(&mut renderer).expect("released");
+}
+
+#[test]
+fn a_sheet_does_not_depend_on_what_the_stage_did_before() {
+    let fresh = with_built(drifting(), |stage, renderer| render_turnaround(stage, renderer, &spec()).expect("a sheet"));
+    let (first, second, busy) = with_built(drifting(), |stage, renderer| {
+        let first = render_turnaround(stage, renderer, &spec()).expect("the first sheet");
+        let second = render_turnaround(stage, renderer, &spec()).expect("the second sheet");
+        let mut moving = FrameInput::default();
+        for frame in 0..25 {
+            moving.pose = hero_pose(&stage.built().rig.bind);
+            moving.wind = Vec3::new(frame as f32, 0.0, 0.0);
+            stage.tick(renderer, &moving).expect("a busy frame");
+        }
+        let busy = render_turnaround(stage, renderer, &spec()).expect("the sheet after animation");
+        (first, second, busy)
+    });
+    assert_eq!(pixels(&fresh), pixels(&first), "the first sheet of a used stage is a fresh stage's");
+    assert_eq!(pixels(&fresh), pixels(&second), "back to back on one stage");
+    assert_eq!(pixels(&fresh), pixels(&busy), "a stage animated beforehand gives the fresh stage's sheet");
+    assert_eq!(fresh.views[0].framing, busy.views[0].framing);
+}
+
+#[test]
+fn a_pending_variant_gives_the_sheet_a_swapped_stage_would() {
+    let mut renderer = MockRenderer::new();
+    let mut pending = variant_stage(&mut renderer);
+    stage_close_up(&mut pending, &mut renderer);
+    let mut swapped = variant_stage(&mut renderer);
+    stage_close_up(&mut swapped, &mut renderer);
+    swapped.tick(&mut renderer, &FrameInput::default()).expect("the swapping tick");
+    assert_eq!(swapped.built().variant, Some(VariantId::new("close-up").expect("an id")));
+    let a = render_turnaround(&mut pending, &mut renderer, &spec()).expect("the pending stage's sheet");
+    let b = render_turnaround(&mut swapped, &mut renderer, &spec()).expect("the swapped stage's sheet");
+    assert_eq!(pixels(&a), pixels(&b));
+    for stage in [pending, swapped] {
+        stage.release(&mut renderer).expect("released");
+    }
 }
 
 #[test]

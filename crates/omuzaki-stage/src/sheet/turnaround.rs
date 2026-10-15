@@ -324,13 +324,19 @@ impl Shot {
 
 /// Renders the four views of `spec.pose` of the character on `stage`.
 ///
-/// The stage ticks once first, so a staged face variant is in before anything is measured. The stage's scene is borrowed for the sheet (camera, lights from [`LIGHT_RIG`], background, and every other setting at its default) and put back after.
-/// The character is ticked at each yaw, settled, ticked again and then drawn offline from that one scene, tile by
-/// tile where the cell is too big for one target.
+/// The stage ticks once first, so a staged face variant is in before anything is measured. The stage's scene is
+/// borrowed for the sheet (camera, lights from [`LIGHT_RIG`], background, and every other setting at its default) and
+/// its settings are put back after.
+///
+/// Each view ticks the character to its yaw and pose, settles the hair and cloth from rest (so no view depends on the
+/// views before it or on what the stage did earlier), redraws to upload the settled meshes, and then draws offline from
+/// that scene, tile by tile where the cell is too big for one target. The tick and the redraw also draw a throwaway
+/// frame into the stage's own target.
 ///
 /// # Errors
-/// [`TurnaroundError`] for an empty cell or character, a perspective cell that needs tiles, or a stage or renderer
-/// failure. The scene is restored and the sheet's target released either way.
+/// [`TurnaroundError`] for an unusable spec ([`TurnaroundSpec::validate`]), a character with nothing to frame, a
+/// perspective cell that needs tiles, or a stage or renderer failure. The scene's settings are restored and the
+/// sheet's target released either way.
 pub fn render_turnaround(
     stage: &mut Stage,
     renderer: &mut dyn Renderer,
@@ -338,7 +344,7 @@ pub fn render_turnaround(
 ) -> Result<TurnaroundSheet, TurnaroundError> {
     spec.validate()?;
     let (lights, look) = LightRig::load(LIGHT_RIG).and_then(|rig| Ok((rig.to_lights()?, rig.post(false))))?;
-    // Everything that can fail without touching the stage comes first, so an error here leaves the caller's scene as it was.
+    // What can fail without touching the stage comes first, so an error here leaves the caller's scene as it was.
     let target = renderer
         .create_target(&TargetDesc { size: UVec2::splat(1), alpha: AlphaEncoding::Straight })
         .map_err(|e| StageError::render("the sheet's target", e))?;
@@ -441,10 +447,12 @@ impl Run<'_> {
     fn view(&self, stage: &mut Stage, renderer: &mut dyn Renderer, view: View) -> Result<TurnaroundView, TurnaroundError> {
         let root = Mat4::from_rotation_y(view.yaw_deg().to_radians());
         let input = FrameInput { pose: self.pose, root, ..FrameInput::default() };
-        // The second tick uploads what the settling moved; both draw a throwaway frame into the stage's own target.
+        // The tick turns the character and sets its pose; the settle then starts from rest, so a view depends on the
+        // pose and the step count alone, not on the views before it or on frames the caller ran; the redraw uploads the
+        // settled meshes and draws.
         stage.tick(renderer, &input)?;
-        stage.settle(self.spec.settle_steps);
-        stage.tick(renderer, &input)?;
+        stage.settle_from_rest(self.spec.settle_steps);
+        stage.redraw(renderer, &input)?;
         let image = self.tiles(stage, renderer)?;
         Ok(TurnaroundView { view, image, framing: framing(stage, &self.subject, &self.shot, root) })
     }
