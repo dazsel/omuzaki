@@ -77,18 +77,41 @@ pub fn check_size(size: [u32; 2]) -> Result<UVec2, OpError> {
         .hint("pick a size between the limits; the offline quality is slowest at the largest"))
 }
 
-/// Bytes a pixel of a render takes on the GPU: a 16-bit float target and its depth.
-const BYTES_PER_PIXEL: u64 = 16;
-/// MiB the character's meshes take, whatever the size.
+/// One mebibyte, in bytes.
+const MIB: u64 = 1 << 20;
+/// MiB the character's meshes take, added to a render's images. An allowance, not a measurement.
 const CHARACTER_MIB: u64 = 64;
 
-/// The cost hint of `images` stills of `size`. GPU memory is the target and depth plus the character's meshes, which
-/// puts the job on the GPU lane. Seconds per still: 0.2 live, 0.5 high, 2.0 offline. No money is spent.
+/// The GPU bytes a pixel of a render's image attachments takes at `samples` samples: 8 of colour per sample, the
+/// resolved colour when multisampled, and 4 of depth per sample. This is what `omuzaki-render`'s `frame/attachments.rs`
+/// allocates for a target.
+fn attachment_bytes_per_pixel(samples: u64) -> u64 {
+    8 + if samples > 1 { 8 * samples } else { 0 } + 4 * samples
+}
+
+/// The cost hint of `images` stills of `size`, as an upper bound for the images. The GPU figure is their attachments at
+/// the preset's internal size (`size` times the preset's render scale, rounded up) and the preset's sample count, plus
+/// [`CHARACTER_MIB`] for the meshes. The sample count is the most the preset asks for, so the renderer's own choice can
+/// only be lower. Post effects are not counted.
+///
+/// Worked: a 4096 by 4096 high still at 4 samples has 6144 by 6144 internal pixels, at 56 bytes each: 2016 MiB of
+/// attachments, so 2080 MiB with the meshes. An offline 1024 by 1024 still has 16 samples: 200 bytes a pixel, 200 MiB,
+/// so 264 MiB.
+///
+/// Seconds per still: 0.2 live, 0.5 high, 2.0 offline. No money is spent. Setting `gpu_mib` puts the job on the GPU lane.
 #[must_use]
-#[allow(clippy::cast_precision_loss)] // a job's image count stays far below 2^24
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "a job's image count stays far below 2^24, and a rounded-up pixel count is a non-negative whole number"
+)]
 pub fn cost(size: UVec2, images: u32, quality: RenderQuality) -> CostHint {
-    let bytes = u64::from(size.x) * u64::from(size.y) * BYTES_PER_PIXEL;
-    let mib = u32::try_from(bytes.div_ceil(1 << 20) + CHARACTER_MIB).unwrap_or(u32::MAX);
+    let preset = quality.quality();
+    let internal = |side: u32| (f64::from(side) * f64::from(preset.render_scale)).ceil() as u64;
+    let pixels = internal(size.x) * internal(size.y);
+    let bytes = pixels * attachment_bytes_per_pixel(u64::from(preset.samples));
+    let mib = u32::try_from(bytes.div_ceil(MIB) + CHARACTER_MIB).unwrap_or(u32::MAX);
     let per_image = match quality {
         RenderQuality::Live => 0.2,
         RenderQuality::High => 0.5,
@@ -152,10 +175,17 @@ fn read_variants(doc: &dyn DocRead, id: &CharId) -> Result<VariantSet, OpError> 
         .map_err(|e| OpError::invalid("variant", format!("the variants of '{id}' don't read: {e}")))
 }
 
-/// Maps a variant failure to an op error, naming the variant.
+/// Maps a variant failure to an op error. A missing variant is the one asked for; a missing parent is named as the
+/// parent, and as inherited through `extends` from the variant asked for.
 fn variant_error(id: &CharId, variant: &VariantId, error: VariantError) -> OpError {
     match error {
-        VariantError::Unknown(_) => OpError::not_found(format!("there is no variant '{variant}' on '{id}'")),
+        VariantError::Unknown(missing) if &missing == variant => {
+            OpError::not_found(format!("there is no variant '{variant}' on '{id}'"))
+        }
+        VariantError::Unknown(parent) => OpError::not_found(format!(
+            "variant '{variant}' inherits from '{parent}' through extends, and '{parent}' isn't a variant of '{id}'"
+        ))
+        .hint("create the parent variant, or change what the variant extends"),
         other => OpError::invalid("variant", other.to_string()),
     }
 }

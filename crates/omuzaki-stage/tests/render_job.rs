@@ -8,7 +8,9 @@
 mod support;
 
 use omuzaki_char_api::{CharId, VariantId};
+use omuzaki_char_mock::CHARACTER_JSON;
 use omuzaki_core::glam::UVec2;
+use omuzaki_doc_mock::MemDoc;
 use omuzaki_ops_api::{ErrorCode, JobCtx, Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo};
 use omuzaki_render_api::{AlphaEncoding, Image, Renderer};
 use omuzaki_stage::StageError;
@@ -22,7 +24,7 @@ use omuzaki_store_api::Store;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use support::{Harness, Missing, mock_doc};
+use support::{Harness, Missing, TestDoc, mock_doc};
 
 fn mock() -> CharId {
     CharId::new("mock").expect("a valid id")
@@ -48,11 +50,36 @@ fn sizes_outside_the_limits_are_refused() {
 }
 
 #[test]
-fn the_cost_hint_sets_gpu_memory() {
-    let hint = cost(UVec2::new(1024, 1024), 1, RenderQuality::Offline);
-    assert_eq!(hint.gpu_mib, Some(80), "16 MiB of target and depth plus 64 MiB of meshes");
-    assert_eq!(hint.seconds, Some(2.0), "an offline still takes two seconds");
+fn the_cost_hint_counts_the_attachments_at_the_preset_scale_and_samples() {
+    // High renders at 1.5 times the size, so 4096 by 4096 is 6144 by 6144 internal pixels; at 4 samples each pixel takes
+    // 8 + 8 * 4 + 4 * 4 = 56 bytes: 2016 MiB, and 64 MiB of meshes.
+    let hint = cost(UVec2::splat(4096), 1, RenderQuality::High);
+    assert_eq!(hint.gpu_mib, Some(2080), "2016 MiB of attachments plus the meshes");
+    assert_eq!(hint.seconds, Some(0.5), "a high still takes half a second");
     assert_eq!(hint.usd, None, "no money is spent");
+
+    // Offline is 16 samples: 8 + 128 + 64 = 200 bytes a pixel, so 1024 by 1024 is 200 MiB, and 264 with the meshes.
+    let offline = cost(UVec2::splat(1024), 1, RenderQuality::Offline);
+    assert_eq!(offline.gpu_mib, Some(264));
+    assert_eq!(offline.seconds, Some(2.0), "an offline still takes two seconds");
+}
+
+#[test]
+fn a_missing_parent_variant_is_named_as_inherited() {
+    // `broken` extends a variant the document lacks: the error names that parent, not `broken`.
+    let mut character: Value = serde_json::from_str(CHARACTER_JSON).expect("the fixture parses");
+    let broken = json!({ "description": "extends a missing variant", "extends": "missing", "overrides": {} });
+    character.as_object_mut().expect("a table").insert("variants".to_owned(), json!({ "broken": broken }));
+    let harness = Harness::new(TestDoc(MemDoc::from_value(json!({ "characters": { "mock": character } }))));
+
+    let broken = VariantId::new("broken").expect("a valid id");
+    let error = harness
+        .with_job(|job| build_character(job, &mock(), Some(&broken), RenderQuality::Offline))
+        .expect_err("the parent is missing");
+    assert_eq!(error.code, ErrorCode::NotFound);
+    assert!(error.message.contains("'missing'"), "the error names the parent: {}", error.message);
+    assert!(error.message.contains("extends"), "and says it is inherited: {}", error.message);
+    assert!(!error.message.contains("there is no variant"), "not the variant asked for: {}", error.message);
 }
 
 #[test]
