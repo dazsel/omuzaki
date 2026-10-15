@@ -97,6 +97,17 @@ pub enum StoreError {
         /// The missing operation, in words.
         missing: &'static str,
     },
+    /// A change to `path` is in place (a new text at the target, or the file deleted), but a step after it failed:
+    /// flushing it to disk, or tidying up the backup of what it replaced. The project has recorded the change, so the
+    /// next save carries on from it; what the change promised about surviving a crash may not hold.
+    #[error("{}: the change is in place but couldn't be made durable: {source}", path.display())]
+    NotDurable {
+        /// The file or folder the failed step was about.
+        path: PathBuf,
+        /// What the operating system said.
+        #[source]
+        source: io::Error,
+    },
     /// `project.toml` has no usable `schema = N`.
     #[error("project.toml: {0}")]
     BadSchema(String),

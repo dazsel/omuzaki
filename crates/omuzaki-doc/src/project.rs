@@ -2,7 +2,6 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -10,7 +9,7 @@ use omuzaki_doc_api::{Change, DocPath, DocRead, DocVersion, DocWrite, Patch, Pat
 use omuzaki_store_api::ContentHash;
 use serde_json::{Map, Value, json};
 
-use crate::disk::{self, Loaded, PROJECT_KEY, Replace};
+use crate::disk::{self, FileState, Loaded, PROJECT_KEY, Replace};
 use crate::error::StoreError;
 use crate::known::Known;
 use crate::layout::{Entry, Layout, Pending, Segs, doc_path};
@@ -49,6 +48,13 @@ pub struct RenderedFile {
 /// The project keeps the exact text and hash of every file as it last read or wrote it. Saves are rendered against
 /// that text, never a fresh read, and before a file is replaced its hash on disk must still be the last-known one:
 /// a file edited outside Omuzaki is refused with [`StoreError::ChangedOnDisk`], never overwritten.
+///
+/// **The Windows exception.** Windows can't swap two files atomically, so there a file is replaced by one atomic
+/// rename of the new one over it, with POSIX semantics, right after that check (the old one is kept by hard link under
+/// `.omuzaki/replaced/` first; a volume without that rename is refused). Unlike the swap, the rename can't hand back
+/// what it displaced, so an editor's save that lands in the microseconds between the check and the rename is replaced,
+/// though the checked file survives in the replaced folder. Elsewhere the swap is checked afterwards, and a raced save
+/// is put back. See `docs/design/journal.md` section 6.1.
 ///
 /// Cloning a project copies the tree, the layout and the known texts, so the clone is independent.
 ///
@@ -215,8 +221,9 @@ impl Project {
     /// # Errors
     /// A file can't be read, written or deleted; a file about to be edited was broken by hand and is no longer valid
     /// TOML (nothing is overwritten in that case); a file or folder to write into is a symbolic link
-    /// ([`StoreError::Symlink`]: the store never writes through or over a link); or a file was changed on disk
-    /// ([`StoreError::ChangedOnDisk`]).
+    /// ([`StoreError::Symlink`]: the store never writes through or over a link); a file was changed on disk
+    /// ([`StoreError::ChangedOnDisk`]); or a change is in place but a step after it failed
+    /// ([`StoreError::NotDurable`]): the project has recorded the change, so calling `save` again carries on.
     pub fn save(&mut self) -> Result<SaveReport, StoreError> {
         let now = Instant::now();
         if self.pruned_at.is_none_or(|at| now.duration_since(at) >= PRUNE_EVERY) {
@@ -231,14 +238,23 @@ impl Project {
         // Deleting before the last write means an interrupted save never leaves a hole where a file's replacement
         // should be, and never leaves files the new schema has no place for.
         for segs in self.layout.deleted() {
-            // Like a replacement, a deletion needs the file to hold the bytes this project last saw.
-            if !disk::remove_checked(&self.dir, &segs, self.known.hash(&segs))? {
+            // Like a replacement, a deletion needs the file to hold the bytes this project last saw. An error after the
+            // file is gone from its name is returned only once the deletion is recorded, so a retry carries on.
+            let (removed, late) = match disk::remove_checked(&self.dir, &segs, self.known.hash(&segs)) {
+                Ok(removed) => (removed, None),
+                Err(error @ StoreError::NotDurable { .. }) => (true, Some(error)),
+                Err(error) => return Err(error),
+            };
+            if !removed {
                 refused.get_or_insert(disk::why_changed(disk::file_path(&self.dir, &segs)));
                 continue;
             }
             self.layout.mark_deleted(&segs);
             self.known.forget(&segs);
             report.removed += 1;
+            if let Some(error) = late {
+                return Err(error);
+            }
         }
         // `project.toml` holds the schema, so it goes last: if the save stops anywhere before this, the project still
         // says it is the old schema and the migrations run again on the next open. The other order could record the
@@ -288,12 +304,17 @@ impl Project {
     ) -> Result<(), StoreError> {
         for (segs, entry) in files {
             let rendered = self.render_file(&segs, entry)?;
+            let path = disk::file_path(&self.dir, &segs);
+            // An error after our text is committed at the target: the baseline is recorded first, then it is returned.
+            let mut late = None;
             if rendered.changed {
-                let path = disk::file_path(&self.dir, &segs);
                 let expected = self.known.hash(&segs);
-                if disk::replace_checked(&self.dir, &path, &rendered.text, expected)? == Replace::Refused {
-                    refused.get_or_insert(disk::why_changed(path));
-                    continue;
+                match placed(disk::replace_checked(&self.dir, &path, &rendered.text, expected))? {
+                    Placed::No => {
+                        refused.get_or_insert(disk::why_changed(path));
+                        continue;
+                    }
+                    Placed::Yes(error) => late = error,
                 }
                 self.known.record(segs.clone(), rendered.text, rendered.hash);
                 report.written += 1;
@@ -301,50 +322,37 @@ impl Project {
                 // An edit that was undone renders the text the file had. It is clean only if the regular file that was
                 // loaded is still there with those bytes. A symbolic link at the file or at a folder above it is never
                 // followed (the same check `replace_checked` makes): it is an external change and the edit stays owed.
-                let path = disk::file_path(&self.dir, &segs);
                 if let Err(e) = disk::refuse_links(&self.dir, &path) {
                     refused.get_or_insert(e);
                     continue;
                 }
-                if self.vanished(&segs) {
-                    // The file itself is gone: it is written again, from the last-known text, like any other file
-                    // deleted behind our back.
-                    if disk::replace_checked(&self.dir, &path, &rendered.text, None)? == Replace::Refused {
+                match disk::file_state(&path, self.known.hash(&segs))? {
+                    FileState::Same => {}
+                    // The file is gone (seen at any step of the check): it is written again, from the last-known
+                    // text, like any other file deleted behind our back.
+                    FileState::Vanished => {
+                        match placed(disk::replace_checked(&self.dir, &path, &rendered.text, None))? {
+                            Placed::No => {
+                                refused.get_or_insert(disk::why_changed(path));
+                                continue;
+                            }
+                            Placed::Yes(error) => late = error,
+                        }
+                        report.written += 1;
+                    }
+                    // The file was changed behind our back since: it is not ours to mark as written.
+                    FileState::Different => {
                         refused.get_or_insert(disk::why_changed(path));
                         continue;
                     }
-                    report.written += 1;
-                } else if self.differs_on_disk(&segs)? {
-                    // The file was changed behind our back since: it is not ours to mark as written.
-                    refused.get_or_insert(disk::why_changed(path));
-                    continue;
                 }
             }
             self.layout.mark_written(&segs);
+            if let Some(error) = late {
+                return Err(error);
+            }
         }
         Ok(())
-    }
-
-    /// True if something exists at the path of `segs` that isn't a regular file with the last-known bytes. The caller
-    /// has already refused links on the path, so this never follows one.
-    fn differs_on_disk(&self, segs: &[String]) -> Result<bool, StoreError> {
-        let path = disk::file_path(&self.dir, segs);
-        match fs::symlink_metadata(&path) {
-            Ok(meta) if !meta.is_file() => return Ok(true),
-            Ok(_) => {}
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
-            Err(e) => return Err(StoreError::io(&path, e)),
-        }
-        match fs::read(&path) {
-            Ok(bytes) => Ok(Some(ContentHash::of(&bytes)) != self.known.hash(segs)),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
-            Err(e) => Err(StoreError::io(&path, e)),
-        }
-    }
-
-    /// True if nothing exists at the path of the file `segs` (not even a broken link).
-    fn vanished(&self, segs: &[String]) -> bool {
-        fs::symlink_metadata(disk::file_path(&self.dir, segs)).is_err_and(|e| e.kind() == io::ErrorKind::NotFound)
     }
 
     /// Applies one change to the tree if it matches and can be stored.
@@ -383,6 +391,24 @@ struct Rendered {
     changed: bool,
 }
 
+/// Whether a replacement put our text at the target, and the error of a step after that, if one failed.
+enum Placed {
+    /// Refused: the target was not the expected file, and nothing of ours is there.
+    No,
+    /// Our text is at the target; a later step may have failed ([`StoreError::NotDurable`]).
+    Yes(Option<StoreError>),
+}
+
+/// Sorts the result of `disk::replace_checked`: an error after the commit still means the text was placed.
+fn placed(result: Result<Replace, StoreError>) -> Result<Placed, StoreError> {
+    match result {
+        Ok(Replace::Placed) => Ok(Placed::Yes(None)),
+        Ok(Replace::Refused) => Ok(Placed::No),
+        Err(error @ StoreError::NotDurable { .. }) => Ok(Placed::Yes(Some(error))),
+        Err(error) => Err(error),
+    }
+}
+
 fn missing_text(segs: &[String]) -> StoreError {
     StoreError::Internal(format!("no last-known text for {}", segs.join("/")))
 }
@@ -417,5 +443,66 @@ impl DocWrite for Project {
         }
         self.version = DocVersion(self.version.0 + 1);
         Ok(self.version)
+    }
+}
+
+/// These need a swap with a copied backup, or a deletion without links, which Windows doesn't reach.
+#[cfg(test)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod tests {
+    use tempfile::TempDir;
+
+    use super::*;
+    use crate::disk::faults;
+
+    /// Runs `f` with hard links off and folder flushes failing for this thread's saves.
+    fn with_failing_flush<T>(f: impl FnOnce() -> T) -> T {
+        faults::LINKS_OFF.with(|on| on.set(true));
+        faults::SYNC_OFF.with(|on| on.set(true));
+        let out = f();
+        faults::LINKS_OFF.with(|on| on.set(false));
+        faults::SYNC_OFF.with(|on| on.set(false));
+        out
+    }
+
+    fn folder() -> TempDir {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("project.toml"), "name = \"x\"\nschema = 1\n").unwrap();
+        fs::write(tmp.path().join("a.toml"), "v = 1\n").unwrap();
+        tmp
+    }
+
+    fn change(path: &str, before: Option<Value>, after: Option<Value>) -> Patch {
+        Patch::new().with(DocPath::parse(path).unwrap(), before, after)
+    }
+
+    /// A replacement whose text is placed but whose flush then fails is recorded before the error is returned, so
+    /// the project isn't left dirty and a retry carries on instead of reporting the file as changed on disk.
+    #[test]
+    fn a_replacement_that_fails_after_its_commit_is_recorded_and_a_retry_carries_on() {
+        let tmp = folder();
+        let mut project = Project::open(tmp.path()).unwrap();
+        project.apply(&change("a/v", Some(json!(1)), Some(json!(2)))).unwrap();
+        let err = with_failing_flush(|| project.save()).unwrap_err();
+        assert!(matches!(err, StoreError::NotDurable { .. }), "{err}");
+        assert_eq!(fs::read_to_string(tmp.path().join("a.toml")).unwrap(), "v = 2\n");
+        assert!(!project.is_dirty());
+        project.save().unwrap();
+        project.apply(&change("a/v", Some(json!(2)), Some(json!(3)))).unwrap();
+        project.save().unwrap();
+        assert_eq!(fs::read_to_string(tmp.path().join("a.toml")).unwrap(), "v = 3\n");
+    }
+
+    /// The same for a deletion: the file is gone, the project has forgotten it, and a retry has nothing left to do.
+    #[test]
+    fn a_deletion_that_fails_after_its_commit_is_recorded_and_a_retry_carries_on() {
+        let tmp = folder();
+        let mut project = Project::open(tmp.path()).unwrap();
+        project.apply(&change("a", Some(json!({"v": 1})), None)).unwrap();
+        let err = with_failing_flush(|| project.save()).unwrap_err();
+        assert!(matches!(err, StoreError::NotDurable { .. }), "{err}");
+        assert!(!tmp.path().join("a.toml").exists());
+        assert!(!project.is_dirty());
+        assert_eq!(project.save().unwrap().removed, 0);
     }
 }
