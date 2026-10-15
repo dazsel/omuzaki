@@ -1,9 +1,11 @@
-//! Draped chains: links hanging as a catenary between two points on a garment (the robe's drooping chain).
+//! Draped chains: links hanging between two points on a garment, as the robe's chain between its clasps (#189's
+//! reference, C).
 //!
-//! The chain hangs under gravity (-y in bind space) in the vertical plane through its two anchors, as the catenary of
-//! its length: the chord times `1 + slack`. Where that curve would pass into the garment it rests on it instead, pushed
-//! out along the section's radius. Each link is a torus stretched along the chain, every other one turned a quarter
-//! turn about the chain, as real links interlock.
+//! The chain's centre line is the prototype's parabola, not a catenary (the Director's ruling on #189): the straight
+//! line between its ends, dropped by `sag` and bowed out by `bow`, both weighted by `1 - (2t - 1)^2`. It is sampled at
+//! [`CURVE_SAMPLES`] + 1 points, and the links sit at even distances along it, every other one a quarter turn round the
+//! chain, as real links interlock. Where a link would sink into the garment it rests on it instead, pushed out along
+//! its section's radius. A chain can carry the small pearled cross at its middle ([`super::clasp::pendant_cross`]).
 
 use omuzaki_char_api::JointRef;
 use omuzaki_core::glam::DVec3;
@@ -11,28 +13,33 @@ use omuzaki_face_api::{Check, Validate};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::{Finish, TrimError, checked, feature, position};
-use crate::kit::curve::{TAU, fraction};
-use crate::kit::grid::{Grid, GridOptions, MeshBuilder, Skin};
+use super::clasp::pendant_cross;
+use super::{Basis, Finish, TrimError, checked, feature, position, torus};
+use crate::kit::curve::fraction;
+use crate::kit::grid::MeshBuilder;
 use crate::kit::skin::{MAX_INFLUENCES, limit_influences, normalise};
 use crate::outfit::loft::Surface;
 
-/// The most slack a chain may have: its length is at most this many times the chord, plus one.
-pub const MAX_SLACK: f64 = 2.0;
+/// The prototype's sag and bow, metres.
+pub const SAG: (f64, f64) = (0.026, 0.004);
+/// The most a chain may sag, metres.
+pub const MAX_SAG: f64 = 0.5;
+/// The prototype's link: ring radius and wire radius, metres.
+pub const LINK: (f64, f64) = (0.0024, 0.00105);
+/// The link's segments round its wire and round its ring.
+pub const LINK_SEGMENTS: (usize, usize) = (4, 10);
+/// How much longer than wide a link is, along the chain.
+pub const LINK_STRETCH: f64 = 1.45;
+/// From one link's centre to the next, metres, for the prototype's link.
+pub const PITCH: f64 = 0.0052;
+/// The fewest links a chain has unless told otherwise.
+pub const MIN_LINKS: u32 = 8;
 /// The most links a chain may have.
 pub const MAX_LINKS: u32 = 400;
-/// How far apart neighbouring links sit, as a share of a link's length: they overlap to interlock.
-pub const PITCH: f64 = 0.78;
-/// The wire of a link, as a share of its length, unless set.
-pub const WIRE: f64 = 0.16;
-/// A link's width, as a share of its length.
-const LINK_WIDTH: f64 = 0.62;
-/// Segments round a link.
-const AROUND: usize = 12;
-/// Segments round its wire.
-const WIRE_ROUND: usize = 6;
-/// Bisections that solve the catenary's parameter.
-const SOLVE_STEPS: usize = 200;
+/// Pieces the centre line is measured in.
+pub const CURVE_SAMPLES: usize = 200;
+/// How far either side of a link its direction is taken, metres, for the prototype's link.
+const TANGENT_REACH: f64 = 0.002;
 
 /// A chain hanging between two points on the surface.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -42,144 +49,190 @@ pub struct Chain {
     pub from: [f64; 2],
     /// Where it ends.
     pub to: [f64; 2],
-    /// How much longer than the straight line between its ends it is, as a share of that line (0 hangs it taut), up
-    /// to [`MAX_SLACK`].
-    pub slack: f64,
-    /// The length of one link, metres.
+    /// How far its middle drops below the straight line between its ends, metres, 0 to [`MAX_SAG`].
+    #[serde(default = "sag")]
+    pub sag: f64,
+    /// How far its middle bows out from the garment, metres.
+    #[serde(default = "bow")]
+    pub bow: f64,
+    /// A link's ring radius, metres (the prototype's [`LINK`]); the wire, the pitch and the pendant are in proportion.
+    #[serde(default = "link")]
     pub link_size: f64,
-    /// How many links; `None` fits as many as its length takes at [`PITCH`].
+    /// How many links; `None` fits one every pitch, at least [`MIN_LINKS`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link_count: Option<u32>,
-    /// The thickness of a link's wire, metres; `None` is [`WIRE`] of the link size.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub wire: Option<f64>,
+    /// Hang the pearled cross at its middle.
+    #[serde(default)]
+    pub pendant: bool,
     /// What it is made of (gold unless set).
     #[serde(default)]
     pub finish: Finish,
+}
+
+fn sag() -> f64 {
+    SAG.0
+}
+
+fn bow() -> f64 {
+    SAG.1
+}
+
+fn link() -> f64 {
+    LINK.0
 }
 
 impl Validate for Chain {
     fn check(&self, c: &mut Check) {
         position(c, "from", self.from);
         position(c, "to", self.to);
-        c.range("slack", self.slack, 0.0, MAX_SLACK);
+        c.range("sag", self.sag, 0.0, MAX_SAG);
+        c.range("bow", self.bow, -super::MAX_FEATURE, super::MAX_FEATURE);
         feature(c, "link_size", self.link_size);
         if let Some(count) = self.link_count
             && !(1..=MAX_LINKS).contains(&count)
         {
             c.fail("link_count", format!("{count}: a chain has 1 to {MAX_LINKS} links"));
         }
-        if let Some(wire) = self.wire {
-            c.range("wire", wire, super::MIN_FEATURE, self.link_size * 0.4);
-        }
         c.nested("finish", &self.finish);
     }
 }
 
-/// The catenary of `length` hanging from `a` to `b` under gravity (-y), as `n + 1` points evenly spaced along it.
-/// A length no longer than the chord gives the straight line.
-///
-/// # Errors
-/// [`TrimError::Invalid`] for ends that are one above the other (a hanging chain then folds on itself), non-finite
-/// input, or `n` of 0.
-#[allow(clippy::many_single_char_names)] // the catenary's textbook names: ends a and b, parameter c, spans h and v
-pub fn catenary(a: DVec3, b: DVec3, length: f64, n: usize) -> Result<Vec<DVec3>, TrimError> {
-    if !(a.is_finite() && b.is_finite() && length.is_finite()) || n == 0 {
-        return Err(TrimError::invalid("chain", "the ends, the length and the link count must be finite and positive"));
-    }
-    let across = DVec3::new(b.x - a.x, 0.0, b.z - a.z);
-    let h = across.length();
-    let v = b.y - a.y;
-    let chord = a.distance(b);
-    if length <= chord * (1.0 + 1e-9) {
-        return Ok((0..=n).map(|k| a.lerp(b, fraction(k, n))).collect());
-    }
-    if h < super::MIN_FEATURE {
-        return Err(TrimError::invalid("chain", "its ends are one above the other: a hanging chain needs them apart"));
-    }
-    let dir = across / h;
-    // 2 c sinh(h / 2c) = sqrt(L^2 - v^2): the left side falls as c grows, so bisect c on a log scale.
-    let target = (length * length - v * v).sqrt();
-    let (mut lo, mut hi) = ((h / 1400.0).ln(), (h * 1e6).ln());
-    for _ in 0..SOLVE_STEPS {
-        let mid = f64::midpoint(lo, hi);
-        let c = mid.exp();
-        if 2.0 * c * (h / (2.0 * c)).sinh() > target {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
-    let c = f64::midpoint(lo, hi).exp();
-    // The lowest point sits at x0 along the ground line from a; y(x) = c cosh((x - x0) / c) + k.
-    let x0 = h / 2.0 - c * (v / length).atanh();
-    let s0 = (-x0 / c).sinh();
-    let y = |x: f64| c * ((x - x0) / c).cosh() - c * (x0 / c).cosh();
-    let total = c * ((h - x0) / c).sinh() - c * s0;
-    Ok((0..=n)
-        .map(|k| {
-            let s = total * fraction(k, n);
-            let x = x0 + c * (s / c + s0).asinh();
-            a + dir * x + DVec3::Y * y(x)
-        })
-        .collect())
+/// The shape a chain hangs in: its ends, which way is up and which way is out from the garment, and how far it drops
+/// and bows.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Hang {
+    /// The start.
+    pub from: DVec3,
+    /// The end.
+    pub to: DVec3,
+    /// Up (unit): the chain sags against it.
+    pub up: DVec3,
+    /// Out from the garment (unit): the chain bows along it.
+    pub out: DVec3,
+    /// The drop at the middle, metres.
+    pub sag: f64,
+    /// The bow at the middle, metres.
+    pub bow: f64,
 }
 
-/// How far the lowest point of `points` sags below the straight line between its ends, measured straight down.
-pub fn sag(points: &[DVec3]) -> f64 {
-    let (Some(&a), Some(&b)) = (points.first(), points.last()) else {
-        return 0.0;
+impl Hang {
+    /// The centre line at `t` from 0 to 1 (the prototype's curve).
+    pub fn at(&self, t: f64) -> DVec3 {
+        let w = 1.0 - (2.0 * t - 1.0).powi(2);
+        self.from.lerp(self.to, t) - self.up * (self.sag * w) + self.out * (self.bow * w)
+    }
+}
+
+/// One link of a chain: its centre and the chain's direction there.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Link {
+    /// Where its centre is.
+    pub centre: DVec3,
+    /// The unit direction along the chain.
+    pub along: DVec3,
+}
+
+/// The links of a chain hanging as `hang`: `count` of them when given, else one per `pitch` and at least
+/// [`MIN_LINKS`]; link `k` centred `(k + 0.5) / n` of the way along the sampled centre line, its direction the chord
+/// `reach` either side of it.
+///
+/// # Errors
+/// [`TrimError::Invalid`] for a centre line of no length.
+pub fn links(hang: &Hang, pitch: f64, count: Option<u32>, reach: f64) -> Result<Vec<Link>, TrimError> {
+    let samples: Vec<DVec3> = (0..=CURVE_SAMPLES).map(|i| hang.at(fraction(i, CURVE_SAMPLES))).collect();
+    let mut lengths = Vec::with_capacity(samples.len());
+    let mut total = 0.0;
+    lengths.push(0.0);
+    for pair in samples.windows(2) {
+        total += pair[0].distance(pair[1]);
+        lengths.push(total);
+    }
+    if !(total.is_finite() && total > 0.0) {
+        return Err(TrimError::invalid("chain", "its ends coincide and it doesn't sag: it has no length"));
+    }
+    let along = |distance: f64| {
+        let distance = distance.clamp(0.0, total);
+        let k = lengths.partition_point(|l| *l < distance).clamp(1, samples.len() - 1);
+        let (before, after) = (lengths[k - 1], lengths[k]);
+        let share = if after > before { (distance - before) / (after - before) } else { 0.0 };
+        samples[k - 1].lerp(samples[k], share)
     };
-    let ground = DVec3::new(b.x - a.x, 0.0, b.z - a.z);
-    let h = ground.length_squared();
-    points
-        .iter()
-        .map(|p| {
-            let s = if h > 0.0 { (DVec3::new(p.x - a.x, 0.0, p.z - a.z).dot(ground) / h).clamp(0.0, 1.0) } else { 0.0 };
-            a.y + (b.y - a.y) * s - p.y
+    let n = match count {
+        Some(n) => n,
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // a positive ratio, clamped
+        None => ((total / pitch).round().clamp(f64::from(MIN_LINKS), f64::from(MAX_LINKS))) as u32,
+    };
+    (0..n)
+        .map(|k| {
+            let d = (f64::from(k) + 0.5) * total / f64::from(n);
+            let direction = (along(d + reach) - along(d - reach))
+                .try_normalize()
+                .ok_or_else(|| TrimError::invalid("chain", "a link has no direction"))?;
+            Ok(Link { centre: along(d), along: direction })
         })
-        .fold(0.0, f64::max)
+        .collect()
 }
 
-/// The link centres of the chain `spec` describes on `surface`: the catenary between its anchors, rested on the
-/// surface where it would pass into it. Returns the points (one more than the links) and the clearance kept.
+/// The skin `share` of the way from `a` to `b`.
+fn mix(a: &[(JointRef, f32)], b: &[(JointRef, f32)], share: f64) -> Vec<(JointRef, f32)> {
+    #[allow(clippy::cast_possible_truncation)] // a share in 0..=1
+    let s = share as f32;
+    let mut blend: Vec<(JointRef, f32)> =
+        a.iter().map(|(j, w)| (j.clone(), w * (1.0 - s))).chain(b.iter().map(|(j, w)| (j.clone(), w * s))).collect();
+    limit_influences(&mut blend, MAX_INFLUENCES);
+    normalise(&mut blend);
+    blend
+}
+
+/// Adds the links of a chain to `builder`: each the prototype's stretched torus, facing out from the garment (`out`)
+/// and every other one turned a quarter turn round the chain, at `scale` of the prototype's link; `skin(k)` skins link
+/// `k`.
 ///
 /// # Errors
-/// As [`catenary`]; the surface's errors.
-pub fn drape(surface: &Surface, spec: &Chain) -> Result<Vec<DVec3>, TrimError> {
+/// The kit's errors for a degenerate link.
+pub fn add_links(
+    builder: &mut MeshBuilder,
+    links: &[Link],
+    out: DVec3,
+    scale: f64,
+    skin: &dyn Fn(usize) -> Vec<(JointRef, f32)>,
+) -> Result<(), TrimError> {
+    let stretch = DVec3::new(LINK_STRETCH, 1.0, 1.0);
+    for (k, link) in links.iter().enumerate() {
+        let x = link.along;
+        let facing = out.cross(x).try_normalize().unwrap_or_else(|| x.any_orthonormal_vector());
+        let y = if k % 2 == 0 { facing } else { out };
+        let basis = Basis { origin: link.centre, x, y, z: x.cross(y).normalize_or_zero() };
+        torus(builder, &basis, (LINK.0 * scale, LINK.1 * scale), LINK_SEGMENTS, stretch, &skin(k))?;
+    }
+    Ok(())
+}
+
+/// How the chain `spec` hangs on `surface`: from its anchors lifted clear of the garment by a link, up the world's up,
+/// out along the anchors' normals.
+///
+/// # Errors
+/// The surface's errors; [`TrimError::Invalid`] for a spec that fails validation.
+pub fn hang(surface: &Surface, spec: &Chain) -> Result<Hang, TrimError> {
     checked(spec)?;
     let clearance = clearance(spec);
-    let end = |at: [f64; 2]| -> Result<DVec3, TrimError> {
-        let frame = surface.at(at[0], at[1])?;
-        Ok(frame.point + frame.normal * clearance)
-    };
-    let (a, b) = (end(spec.from)?, end(spec.to)?);
-    let length = a.distance(b) * (1.0 + spec.slack);
-    let count = links(spec, length)?;
-    let mut points = catenary(a, b, length, count)?;
-    for p in &mut points {
-        rest_on(surface, p, clearance)?;
-    }
-    Ok(points)
+    let (a, b) = (surface.at(spec.from[0], spec.from[1])?, surface.at(spec.to[0], spec.to[1])?);
+    let up = DVec3::Y;
+    let normal = a.normal + b.normal;
+    let out = (normal - up * normal.dot(up)).try_normalize().unwrap_or(DVec3::Z);
+    Ok(Hang {
+        from: a.point + a.normal * clearance,
+        to: b.point + b.normal * clearance,
+        up,
+        out,
+        sag: spec.sag,
+        bow: spec.bow,
+    })
 }
 
-/// How far a link's centre keeps off the surface: half its width and its wire.
+/// How far a link's centre keeps off the garment: its stretched half-length and its wire.
 fn clearance(spec: &Chain) -> f64 {
-    0.5 * LINK_WIDTH * spec.link_size + wire(spec)
-}
-
-fn wire(spec: &Chain) -> f64 {
-    spec.wire.unwrap_or(WIRE * spec.link_size)
-}
-
-/// The number of links of a chain of `length`.
-fn links(spec: &Chain, length: f64) -> Result<usize, TrimError> {
-    let count = match spec.link_count {
-        Some(count) => count,
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // a positive ratio, clamped
-        None => (length / (PITCH * spec.link_size)).round().clamp(1.0, f64::from(MAX_LINKS)) as u32,
-    };
-    usize::try_from(count).map_err(|_| TrimError::invalid("link_count", "too many links"))
+    (LINK.0 * LINK_STRETCH + LINK.1) * spec.link_size / LINK.0
 }
 
 /// Pushes `p` out along its section's radius until it is `clearance` outside the surface's plain ring.
@@ -198,76 +251,28 @@ fn rest_on(surface: &Surface, p: &mut DVec3, clearance: f64) -> Result<(), TrimE
     Ok(())
 }
 
-/// The skin `share` of the way from `a` to `b`.
-fn mix(a: &[(JointRef, f32)], b: &[(JointRef, f32)], share: f64) -> Vec<(JointRef, f32)> {
-    #[allow(clippy::cast_possible_truncation)] // a share in 0..=1
-    let s = share as f32;
-    let mut blend: Vec<(JointRef, f32)> =
-        a.iter().map(|(j, w)| (j.clone(), w * (1.0 - s))).chain(b.iter().map(|(j, w)| (j.clone(), w * s))).collect();
-    limit_influences(&mut blend, MAX_INFLUENCES);
-    normalise(&mut blend);
-    blend
-}
-
-/// The chain `spec` describes on `surface`: one closed torus per link, skinned from the start's surface to the end's.
+/// The chain `spec` describes on `surface`: its links, skinned from the start's surface to the end's, and the pendant
+/// cross at its middle when it has one.
 ///
 /// # Errors
-/// As [`drape`]; the kit's errors for a degenerate link.
+/// As [`hang`] and [`links`]; the kit's errors for a degenerate link.
 pub fn build(surface: &Surface, spec: &Chain) -> Result<MeshBuilder, TrimError> {
-    let points = drape(surface, spec)?;
+    let hang = hang(surface, spec)?;
+    let scale = spec.link_size / LINK.0;
+    let clearance = clearance(spec);
+    let mut chain = links(&hang, PITCH * scale, spec.link_count, TANGENT_REACH * scale)?;
+    for link in &mut chain {
+        rest_on(surface, &mut link.centre, clearance)?;
+    }
     let (from, to) = (surface.weights().at(spec.from[0]), surface.weights().at(spec.to[0]));
-    let last = points.len() - 1;
-    let r = wire(spec) / 2.0;
+    let last = chain.len().max(2) - 1;
     let mut builder = MeshBuilder::new();
-    for k in 0..last {
-        let (a, b) = (points[k], points[k + 1]);
-        let centre = a.lerp(b, 0.5);
-        let along = (b - a).try_normalize().ok_or_else(|| TrimError::invalid("chain", "two links coincide"))?;
-        // Every other link a quarter turn round the chain.
-        let first = DVec3::Y.cross(along).try_normalize().unwrap_or_else(|| along.any_orthonormal_vector());
-        let across = if k % 2 == 0 { first } else { along.cross(first) };
-        let length = (a.distance(b) / PITCH).max(spec.link_size * 0.5);
-        let radii = (length / 2.0 - r, 0.5 * LINK_WIDTH * spec.link_size - r);
-        let skin = mix(&from, &to, f64::midpoint(fraction(k, last), fraction(k + 1, last)));
-        torus(&mut builder, centre, (along, across), radii, r, skin)?;
+    add_links(&mut builder, &chain, hang.out, scale, &|k| mix(&from, &to, fraction(k.min(last), last)))?;
+    if spec.pendant {
+        let mut middle = hang.at(0.5);
+        rest_on(surface, &mut middle, clearance)?;
+        let basis = Basis { origin: middle, x: hang.up.cross(hang.out), y: hang.up, z: hang.out };
+        pendant_cross(&mut builder, &basis, scale, &mix(&from, &to, 0.5))?;
     }
     Ok(builder)
-}
-
-/// Adds a closed torus to `builder`: its centre line the ellipse of semi-axes `radii` along the unit vectors `axes`
-/// round `centre`, its tube of radius `r`, skinned with `skin`. A link, a bail, a clasp's ring.
-///
-/// # Errors
-/// The kit's errors for a degenerate shape.
-#[allow(clippy::many_single_char_names)] // axes a and b, radii, tube radius r
-pub fn torus(
-    builder: &mut MeshBuilder,
-    centre: DVec3,
-    (a, b): (DVec3, DVec3),
-    (ra, rb): (f64, f64),
-    r: f64,
-    skin: Vec<(JointRef, f32)>,
-) -> Result<(), TrimError> {
-    let normal = a.cross(b).normalize_or_zero();
-    let ring = |i: usize| {
-        let u = TAU * fraction(i % AROUND, AROUND);
-        // The point on the centre line, and the ellipse's outward normal there (its gradient).
-        let out = (a * (u.cos() * rb) + b * (u.sin() * ra)).normalize_or_zero();
-        (centre + a * (ra * u.cos()) + b * (rb * u.sin()), out)
-    };
-    let grid = Grid::from_fn(AROUND + 1, WIRE_ROUND + 1, |i, j| {
-        let (p, out) = ring(i);
-        let w = TAU * fraction(j % WIRE_ROUND, WIRE_ROUND);
-        p + (out * w.cos() + normal * w.sin()) * r
-    })?;
-    let inside = |i: usize, _: usize| ring(i).0;
-    let options = GridOptions {
-        wrap_i: true,
-        wrap_j: true,
-        inside: Some(&inside),
-        skin: Skin::Blend(skin),
-        ..GridOptions::default()
-    };
-    builder.add_grid(&grid, &options)?;
-    Ok(())
 }
