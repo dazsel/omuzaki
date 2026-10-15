@@ -22,6 +22,7 @@
 //! | [`gather::springs`], [`gather::avatar`] | the VRM avatar block and spring bones |
 //! | [`prepare::humanoid`] | `auto_map`, `apply`: propose the humanoid bones of a skinned skeleton, with an override table |
 //! | [`fit_bones`] | `reduce_bones`: cut a skin's joints to a budget, the `fit.bones` stage |
+//! | [`fit_decimate`] | `decimate`, `decimate_scene`: cut triangles to a budget, morph targets and skin weights kept consistent |
 //! | [`ops::progress::JobProgress`] | the adapter from a job's context to the io progress trait |
 //!
 //! Ops register themselves with `omuzaki_ops_api::register_op!` next to their definition, so nothing here lists them.
@@ -32,6 +33,7 @@
 pub mod convert;
 mod error;
 pub mod fit_bones;
+pub mod fit_decimate;
 pub mod gather;
 pub mod ops;
 pub mod prepare;
