@@ -177,11 +177,7 @@ fn not_painted(score: &Score) -> String {
     if !not_drawn_yet.is_empty() {
         parts.push(format!("not drawn yet: {}", not_drawn_yet.join(", ")));
     }
-    if parts.is_empty() {
-        "nothing the score drives is left out".into()
-    } else {
-        parts.join("; ")
-    }
+    if parts.is_empty() { "nothing the score drives is left out".into() } else { parts.join("; ") }
 }
 
 /// The row for one template: the five frames side by side, then the caption.
