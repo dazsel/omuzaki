@@ -372,11 +372,11 @@ check; no check can see a write through a handle that is already open. So the di
 - **The residual window.** An editor that holds the old file open for more than 10 minutes after a save and only then
   writes into it can lose that write, once a later save prunes the entry. Editors that write in place do so within
   seconds of a save; a longer grace time is a one-constant change (`RETAIN_UNCHANGED`).
-- **No atomic swap, no save over a file.** A file that exists is replaced only by an atomic swap (`renameat2` with
-  `RENAME_EXCHANGE`); where the system or file system has none, the save refuses with `StoreError::NoSafeChange`
-  before the file is touched, never falling back to a plain rename. A new file needs a hard link or a rename that
-  won't replace, and a deletion the same, or it is refused the same way. Today that refuses replacing a file on macOS
-  and Windows; the capability table is in the `omuzaki-doc` `disk` module.
+- **No atomic swap, no save over a file.** A file that exists is replaced only by an atomic swap (`RENAME_EXCHANGE`
+  on Linux, `RENAME_SWAP` on macOS); where the system or file system has none, the save refuses with
+  `StoreError::NoSafeChange` before the file is touched, never falling back to a plain rename. A new file needs a hard
+  link or a rename that won't replace, and a deletion the same, or it is refused the same way. Today that refuses
+  replacing a file on Windows; the capability table is in the `omuzaki-doc` `disk` module.
 - **What is tested where.** CI (Linux) tests a write through a handle opened before the save: made before the check
   it is refused and nothing is lost, made after the check its bytes are in the `.kept` entry and pruning keeps it. It
   also tests the pruning rules: young entries, changed entries,

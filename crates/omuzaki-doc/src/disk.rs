@@ -6,9 +6,10 @@
 //! fallback. A refusal is [`StoreError::NoSafeChange`] naming what is missing, and the save reports it. Three
 //! capabilities decide which; each depends on the system and on the file system:
 //!
-//! - **Exchange**: swap two names atomically (Linux `renameat2` with `RENAME_EXCHANGE`).
+//! - **Exchange**: swap two names atomically (Linux `renameat2` with `RENAME_EXCHANGE`, macOS `renameatx_np` with
+//!   `RENAME_SWAP`).
 //! - **No-replace rename**: rename only if the new name is free, atomically (Linux `renameat2` with
-//!   `RENAME_NOREPLACE`).
+//!   `RENAME_NOREPLACE`, macOS `renameatx_np` with `RENAME_EXCL`).
 //! - **Hard links**: `link` fails if the new name exists, so it is also a placement that never replaces.
 //!
 //! | Exchange | No-replace rename | Hard links | Replace a file ([`replace_checked`]) | Write a new file | Delete ([`remove_checked`]) |
@@ -25,7 +26,7 @@
 //! | Platform | Exchange | No-replace rename | Hard links |
 //! |---|---|---|---|
 //! | Linux | yes where the file system supports the flag (ext4, XFS, Btrfs, tmpfs); otherwise the kernel says `EINVAL` and the change is refused | the same | yes, except FAT and exFAT |
-//! | macOS | no (`renamex_np` with `RENAME_SWAP` is not reached yet): replacing a file is refused | no (`RENAME_EXCL` likewise) | yes on APFS and HFS+ |
+//! | macOS | yes on APFS and HFS+ (macOS 10.12 or later); a file system without it says `ENOTSUP` and the change is refused | the same | yes on APFS and HFS+ |
 //! | Windows | no (Windows has no atomic exchange): replacing a file is refused | no (`MoveFileExW` without `MOVEFILE_REPLACE_EXISTING` is not reached yet) | yes on NTFS, no on FAT and exFAT |
 //!
 //! Each cell of the first table is tested with the capabilities forced off through the test seam (`Hooks`).
@@ -346,10 +347,10 @@ impl Hooks<'_> {
 }
 
 /// What a refusal names as missing when there is no atomic swap.
-const NO_EXCHANGE: &str = "atomic exchange of two file names (renameat2 RENAME_EXCHANGE)";
+const NO_EXCHANGE: &str = "atomic exchange of two file names (RENAME_EXCHANGE, RENAME_SWAP)";
 
 /// What a refusal names as missing when a file can't be placed without risking replacing another.
-const NO_NO_REPLACE: &str = "hard links and no rename that refuses to replace a file (renameat2 RENAME_NOREPLACE)";
+const NO_NO_REPLACE: &str = "hard links and no rename that refuses to replace a file (RENAME_NOREPLACE, RENAME_EXCL)";
 
 /// Maps an error of a capability-dependent call: [`io::ErrorKind::Unsupported`] (the capability is missing) becomes
 /// [`StoreError::NoSafeChange`] naming `missing`, anything else an I/O error for `path`.
@@ -470,30 +471,37 @@ fn file_id(meta: &io::Result<fs::Metadata>) -> Option<FileId> {
     meta.as_ref().ok().map(|m| (m.dev(), m.ino()))
 }
 
-/// Hard links exist off Unix too, but the swap that needs this check is Linux-only.
+/// Windows has hard links too, but no swap, so there this check is never needed.
 #[cfg(not(unix))]
 fn file_id(_: &io::Result<fs::Metadata>) -> Option<FileId> {
     None
 }
 
-/// Swaps the names `a` and `b` atomically. [`io::ErrorKind::Unsupported`] if this system or file system can't (then
-/// nothing was changed).
-#[cfg(target_os = "linux")]
+/// Swaps the names `a` and `b` atomically: `renameat2` with `RENAME_EXCHANGE` on Linux, `renameatx_np` with
+/// `RENAME_SWAP` on macOS. [`io::ErrorKind::Unsupported`] if this system or file system can't (then nothing was
+/// changed).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn exchange(a: &Path, b: &Path) -> io::Result<()> {
     use rustix::fs::{CWD, RenameFlags, renameat_with};
+
+    renameat_with(CWD, a, CWD, b, RenameFlags::EXCHANGE).map_err(rename_error)
+}
+
+/// The error of a flagged rename: the kernel or file system not knowing the flag (`EINVAL`, `ENOSYS`, `ENOTSUP`,
+/// `EOPNOTSUPP`) is [`io::ErrorKind::Unsupported`]; anything else is itself.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn rename_error(e: rustix::io::Errno) -> io::Error {
     use rustix::io::Errno;
 
-    match renameat_with(CWD, a, CWD, b, RenameFlags::EXCHANGE) {
-        Ok(()) => Ok(()),
-        // The kernel or the file system doesn't know the flag.
-        Err(Errno::INVAL | Errno::NOSYS) => Err(io::ErrorKind::Unsupported.into()),
-        Err(e) => Err(e.into()),
+    if [Errno::INVAL, Errno::NOSYS, Errno::NOTSUP, Errno::OPNOTSUPP].contains(&e) {
+        io::ErrorKind::Unsupported.into()
+    } else {
+        e.into()
     }
 }
 
-/// No atomic swap is reachable here yet (macOS's `renamex_np` and Windows have none in this crate's dependencies), so
-/// replacing an existing file is refused; see the module's table.
-#[cfg(not(target_os = "linux"))]
+/// Windows has no atomic swap of two names, so replacing an existing file is refused there; see the module's table.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn exchange(_: &Path, _: &Path) -> io::Result<()> {
     Err(io::ErrorKind::Unsupported.into())
 }
@@ -718,9 +726,10 @@ fn place_no_replace(from: &Path, to: &Path, hooks: &Hooks<'_>) -> Result<bool, S
     Ok(placed)
 }
 
-/// Renames `from` to `to` only if `to` doesn't exist, atomically (`renameat2` with `RENAME_NOREPLACE`); false if it
-/// does. [`io::ErrorKind::Unsupported`] if the kernel or file system can't (then nothing was changed).
-#[cfg(target_os = "linux")]
+/// Renames `from` to `to` only if `to` doesn't exist, atomically (`renameat2` with `RENAME_NOREPLACE` on Linux,
+/// `renameatx_np` with `RENAME_EXCL` on macOS); false if it does. [`io::ErrorKind::Unsupported`] if the system or
+/// file system can't (then nothing was changed).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn rename_no_replace(from: &Path, to: &Path) -> io::Result<bool> {
     use rustix::fs::{CWD, RenameFlags, renameat_with};
     use rustix::io::Errno;
@@ -728,15 +737,14 @@ fn rename_no_replace(from: &Path, to: &Path) -> io::Result<bool> {
     match renameat_with(CWD, from, CWD, to, RenameFlags::NOREPLACE) {
         Ok(()) => Ok(true),
         Err(Errno::EXIST) => Ok(false),
-        Err(Errno::INVAL | Errno::NOSYS) => Err(io::ErrorKind::Unsupported.into()),
-        Err(e) => Err(e.into()),
+        Err(e) => Err(rename_error(e)),
     }
 }
 
-/// No rename that refuses to replace is reachable here yet (`std::fs::rename` overwrites; macOS's `renamex_np` and
-/// Windows's `MoveFileExW` are not in this crate's dependencies), so this is always unsupported; it is reached only on
-/// a file system without hard links (FAT, exFAT).
-#[cfg(not(target_os = "linux"))]
+/// No rename that refuses to replace is reachable on Windows yet (`std::fs::rename` overwrites, and `MoveFileExW` is
+/// not in this crate's dependencies), so this is always unsupported; it is reached only on a file system without hard
+/// links (FAT, exFAT).
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn rename_no_replace(_: &Path, _: &Path) -> io::Result<bool> {
     Err(io::ErrorKind::Unsupported.into())
 }
@@ -1048,7 +1056,7 @@ mod tests {
         assert!(no_temporary_file(dir));
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn an_in_place_edit_after_the_backup_is_refused_and_both_versions_survive() {
         let tmp = TempDir::new().unwrap();
@@ -1065,7 +1073,7 @@ mod tests {
         assert!(no_temporary_file(dir));
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn an_atomic_save_before_the_swap_is_swapped_back_and_both_files_survive() {
         let tmp = TempDir::new().unwrap();
@@ -1081,7 +1089,7 @@ mod tests {
         assert!(no_temporary_file(dir));
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn an_edit_between_the_swap_and_the_undo_is_kept() {
         let tmp = TempDir::new().unwrap();
@@ -1098,7 +1106,7 @@ mod tests {
         assert!(no_temporary_file(dir));
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn an_error_while_undoing_the_swap_keeps_the_displaced_file() {
         let tmp = TempDir::new().unwrap();
@@ -1153,7 +1161,7 @@ mod tests {
         }
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn our_file_exposed_by_a_lost_race_is_kept_even_if_an_editor_writes_into_it_after_the_undo() {
         use std::cell::RefCell;
@@ -1183,7 +1191,7 @@ mod tests {
 
     /// An editor that opened the file before the save and writes through that handle after the save checked the
     /// displaced bytes writes into the kept entry, so nothing is lost, and pruning never deletes that entry.
-    #[cfg(unix)]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn a_write_through_a_handle_held_across_the_save_survives_in_the_replaced_folder() {
         use std::io::Write as _;
@@ -1191,16 +1199,8 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let (dir, (path, expected)) = (tmp.path(), with_file(tmp.path()));
         let handle = OpenOptions::new().append(true).open(&path).unwrap();
-        // `exchange` is Linux-only; elsewhere this runs at the end of the save, which is the same window or later.
-        let done = std::cell::Cell::new(false);
-        let late_write = || {
-            handle.try_clone().unwrap().write_all(b"late = 9\n").unwrap();
-            done.set(true);
-        };
+        let late_write = || handle.try_clone().unwrap().write_all(b"late = 9\n").unwrap();
         let out = replace_with(dir, expected, &Hooks { verified: &late_write, ..Hooks::default() }).unwrap();
-        if !done.get() {
-            late_write();
-        }
         handle.sync_all().unwrap();
         assert_eq!(out, Replace::Placed);
         assert_eq!(fs::read_to_string(&path).unwrap(), "ours = 3\n");
@@ -1215,7 +1215,7 @@ mod tests {
 
     /// An editor that holds the original open and writes through it after the swap but before the check is caught by
     /// the check: the swap is undone, the editor's bytes are at the target and our file is kept.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn a_write_through_a_held_handle_before_the_check_is_never_lost() {
         use std::os::unix::fs::FileExt;
@@ -1235,7 +1235,7 @@ mod tests {
 
     /// Matrix, exchange without links (with or without a no-replace rename): a write through a handle opened before
     /// the save lands in the kept original, which replaced the copied backup.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn with_exchange_but_no_links_the_original_inode_is_kept_for_a_held_handle() {
         use std::io::Write as _;
@@ -1296,7 +1296,7 @@ mod tests {
         };
         let (out, text) = new_file(false, true);
         assert_eq!((out.unwrap(), text.as_deref()), (Replace::Placed, Some("ours = 3\n")));
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             let (out, text) = new_file(true, false);
             assert_eq!((out.unwrap(), text.as_deref()), (Replace::Placed, Some("ours = 3\n")));
@@ -1347,7 +1347,8 @@ mod tests {
     /// no-replace rename fails).
     #[test]
     fn a_restore_that_fails_after_a_raced_deletion_is_an_error_and_the_file_stays_beside_the_target() {
-        let cases: &[bool] = if cfg!(target_os = "linux") { &[false, true] } else { &[false] };
+        let cases: &[bool] =
+            if cfg!(any(target_os = "linux", target_os = "macos")) { &[false, true] } else { &[false] };
         for &links_off in cases {
             let tmp = TempDir::new().unwrap();
             let d = tmp.path();
@@ -1381,7 +1382,7 @@ mod tests {
     }
 
     /// The same for a deletion: the quarantined original is renamed over the copy, not unlinked.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn without_links_a_deleted_file_keeps_its_inode_for_a_held_handle() {
         use std::io::Write as _;
@@ -1473,7 +1474,7 @@ mod tests {
         }
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn the_no_replace_rename_refuses_an_existing_target_and_leaves_both_files() {
         let tmp = TempDir::new().unwrap();
@@ -1491,7 +1492,7 @@ mod tests {
         assert!(!from.exists());
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn a_file_created_while_links_fail_is_never_replaced() {
         let tmp = TempDir::new().unwrap();
