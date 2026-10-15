@@ -1,0 +1,7 @@
+section = "in-use"
+item = "MediaPipe face_landmarker.task"
+kind = "model"
+used_for = "478 landmarks + 52 blendshapes"
+status = "conditions"
+condition = "Apache-2.0 per the three model cards; archive cards + hashes; GHUM licence and Google ToS with legal review"
+audit = "A1"

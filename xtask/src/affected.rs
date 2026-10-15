@@ -27,6 +27,10 @@ const WORKSPACE_WIDE_FILES: &[&str] = &[
 /// Root directories that configure every crate (cargo aliases, linker and target settings).
 const WORKSPACE_WIDE_DIRS: &[&str] = &[".cargo"];
 
+/// Folders outside every crate whose content a crate's tests check: a change there puts that crate in scope.
+/// `xtask`'s tests run the licence-file lint on the repository (`lint_licences`).
+const CHECKED_BY: &[(&str, &str)] = &[("docs/licensing", "xtask")];
+
 /// What a check run covers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Scope {
@@ -134,6 +138,9 @@ fn is_workspace_wide(file: &Path) -> bool {
 
 /// The crate whose directory contains `file`; the deepest one wins if directories nest.
 fn owning_crate<'a>(workspace: &'a Workspace, file: &Path) -> Option<&'a str> {
+    if let Some((_, checker)) = CHECKED_BY.iter().find(|(dir, _)| file.starts_with(dir)) {
+        return workspace.package(checker).map(|package| package.name.as_str());
+    }
     workspace
         .packages
         .iter()
@@ -361,6 +368,12 @@ mod tests {
     #[test]
     fn xtask_changes_stay_in_xtask() {
         assert_eq!(crates(&scope_for_files(&sample(), &files(&["xtask/src/main.rs"]))), ["xtask"]);
+    }
+
+    #[test]
+    fn a_licence_file_change_runs_the_xtask_tests_that_lint_it() {
+        let scope = scope_for_files(&sample(), &files(&["docs/licensing/deps/serde.toml", "docs/licensing-notes.md"]));
+        assert_eq!(crates(&scope), ["xtask"]);
     }
 
     #[test]

@@ -1,0 +1,7 @@
+section = "rust"
+item = "v4l2loopback"
+kind = "tool"
+used_for = "Linux virtual camera"
+status = "external"
+condition = "user installs it; we only write frames"
+audit = "B4"

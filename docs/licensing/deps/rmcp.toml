@@ -1,0 +1,8 @@
+section = "rust"
+item = "rmcp"
+kind = "crate"
+used_for = "MCP server (stdio, and the Streamable HTTP server feature `transport-streamable-http-server`)"
+status = "yes"
+condition = "ship both MIT and Apache notices; pin version"
+audit = "B2"
+crates = ["rmcp"]

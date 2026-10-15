@@ -1,0 +1,7 @@
+section = "rust"
+item = "serde, serde_json, schemars, thiserror"
+kind = "crate"
+used_for = "serialisation, schemas, errors"
+status = "yes"
+audit = "(crates.io: MIT OR Apache-2.0)"
+crates = ["schemars", "serde", "serde_json", "thiserror"]

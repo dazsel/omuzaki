@@ -12,6 +12,7 @@ use crate::affected::{self, Scope};
 use crate::error::Result;
 use crate::links;
 use crate::lint_deps;
+use crate::lint_licences;
 use crate::lint_seed;
 use crate::lint_ui_writes;
 use crate::process::{cargo, describe};
@@ -71,6 +72,8 @@ enum Action {
     LintDeps,
     /// The `link()` wiring lint (ADR 0015), run in this process.
     LintLinks,
+    /// The licence-file lint (ADR 0053 §3), run in this process.
+    LintLicences,
     /// The UI-writes lint (QG-11), run in this process.
     LintUiWrites,
     /// The seed lint (library D15, D16), run in this process when a file under `crates/*/library/` changed.
@@ -92,6 +95,7 @@ impl Step {
             Action::Cargo(args) => format!("cargo {}", args.join(" ")),
             Action::LintDeps => "lint-deps".to_owned(),
             Action::LintLinks => "lint-links".to_owned(),
+            Action::LintLicences => "lint-licences".to_owned(),
             Action::LintUiWrites => "lint-ui-writes".to_owned(),
             Action::LintSeed => "lint-seed".to_owned(),
         }
@@ -128,6 +132,7 @@ fn plan(scope: &Scope) -> Vec<Step> {
         Step::cargo("deny", &["deny", "--log-level", "error", "check", "licenses", "bans", "sources"], &[], &[]),
         Step { name: "lint-deps", action: Action::LintDeps },
         Step { name: "lint-links", action: Action::LintLinks },
+        Step { name: "lint-licences", action: Action::LintLicences },
         Step { name: "lint-ui-writes", action: Action::LintUiWrites },
         Step { name: "lint-seed", action: Action::LintSeed },
     ]);
@@ -268,6 +273,7 @@ fn run_step(workspace: &Workspace, step: &Step, base: &str) -> bool {
             eprintln!("lint-links: {error}");
             false
         }),
+        Action::LintLicences => lint_licences::report(workspace),
         Action::LintUiWrites => lint_ui_writes::report(workspace).unwrap_or_else(|error| {
             eprintln!("lint-ui-writes: {error}");
             false
@@ -306,6 +312,7 @@ mod tests {
             Action::Cargo(args) => args.join(" "),
             Action::LintDeps => "<lint-deps>".to_owned(),
             Action::LintLinks => "<lint-links>".to_owned(),
+            Action::LintLicences => "<lint-licences>".to_owned(),
             Action::LintUiWrites => "<lint-ui-writes>".to_owned(),
             Action::LintSeed => "<lint-seed>".to_owned(),
         }
@@ -328,6 +335,7 @@ mod tests {
                 ("deny", "deny --log-level error check licenses bans sources".to_owned()),
                 ("lint-deps", "<lint-deps>".to_owned()),
                 ("lint-links", "<lint-links>".to_owned()),
+                ("lint-licences", "<lint-licences>".to_owned()),
                 ("lint-ui-writes", "<lint-ui-writes>".to_owned()),
                 ("lint-seed", "<lint-seed>".to_owned()),
             ]
@@ -347,7 +355,7 @@ mod tests {
                 ("link-gate", "test -p omuzaki-cli --test registrations".to_owned()),
             ]
         );
-        assert_eq!(got.len(), 9, "the same trailing steps as ever: {got:?}");
+        assert_eq!(got.len(), 10, "the same trailing steps as ever: {got:?}");
     }
 
     #[test]
@@ -373,7 +381,20 @@ mod tests {
         let steps = plan(&crates(&["omuzaki-core"]));
         let results = execute(&steps, |step| step.name != "clippy");
         let names: Vec<&str> = results.iter().map(|result| result.name).collect();
-        assert_eq!(names, ["fmt", "clippy", "test", "deny", "lint-deps", "lint-links", "lint-ui-writes", "lint-seed"]);
+        assert_eq!(
+            names,
+            [
+                "fmt",
+                "clippy",
+                "test",
+                "deny",
+                "lint-deps",
+                "lint-links",
+                "lint-licences",
+                "lint-ui-writes",
+                "lint-seed"
+            ]
+        );
         assert_eq!(results.iter().filter(|result| !result.passed).count(), 1);
     }
 

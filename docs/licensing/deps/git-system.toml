@@ -1,0 +1,7 @@
+section = "in-use"
+item = "git (system program)"
+kind = "tool"
+used_for = "`omuzaki-doc` tests only (`tests/git_clean.rs`): git reads a saved project"
+status = "external"
+condition = "separate program, never bundled or linked; the tests fail, not skip, when it is missing"
+audit = "(git-scm.com: GPL-2.0, used as a separate program)"

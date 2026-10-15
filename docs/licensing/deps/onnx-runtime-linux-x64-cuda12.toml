@@ -1,0 +1,7 @@
+section = "rust"
+item = "ONNX Runtime 1.28.3 linux-x64 CUDA 12"
+kind = "native"
+used_for = "the `onnx` runtime's pinned build (`omuzaki-ai-ort`, `builds.rs`)"
+status = "yes"
+condition = "MIT (the archive's `LICENSE`: \"Copyright (c) Microsoft Corporation\"); ship it and `ThirdPartyNotices.txt` with the licences screen. Only on request (the person opts in to CUDA); needs the CUDA 12 and cuDNN libraries on the machine, which we do not ship. Fetched through the verified `FileSource`, never committed. URL `https://github.com/microsoft/onnxruntime/releases/download/v1.28.3/onnxruntime-linux-x64-gpu_cuda12-1.28.3.tgz`, 423,745,424 bytes, sha256 `4e16d2ec66521a24fe917bd848eb8ae3a9107cb8b4aec978fb2b3ab1a640fcb7`"
+audit = "B2"
