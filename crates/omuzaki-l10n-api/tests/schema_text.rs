@@ -1,0 +1,833 @@
+//! The schema walk and the title rule (`schema_text`), on schemas generated the way `omuzaki-ops-api` generates them.
+//! The fixture types exist only for their generated schemas, so their fields are never read.
+#![allow(dead_code)]
+
+use std::collections::BTreeMap;
+
+use omuzaki_l10n_api::schema_text::{WalkError, description, title, walk};
+use schemars::{JsonSchema, Schema};
+use serde_json::{Map, Value, json};
+
+/// The schema settings of `omuzaki-ops-api`'s `schema_of`: draft 2020-12, every subschema inlined.
+fn schema_of<T: JsonSchema>() -> Schema {
+    schemars::generate::SchemaSettings::draft2020_12()
+        .with(|s| s.inline_subschemas = true)
+        .into_generator()
+        .into_root_schema_for::<T>()
+}
+
+/// Every visited node as `(path, description)`, with the path's keys joined by `--` (the root is `""`).
+fn visited<T: JsonSchema>() -> Vec<(String, Option<String>)> {
+    visited_in(&schema_of::<T>())
+}
+
+fn visited_in(schema: &Schema) -> Vec<(String, Option<String>)> {
+    read(schema).unwrap_or_else(|error| panic!("{error}"))
+}
+
+/// Every visited node as `(path, description)`, or the walk's error.
+fn read(schema: &Schema) -> Result<Vec<(String, Option<String>)>, WalkError> {
+    let mut out = Vec::new();
+    walk(schema, |path, node| out.push((path.join("--"), description(node).map(str::to_owned))))?;
+    Ok(out)
+}
+
+/// The same paths as `visited`, without descriptions.
+fn paths<T: JsonSchema>() -> Vec<String> {
+    visited::<T>().into_iter().map(|(path, _)| path).collect()
+}
+
+/// A visited node's `(path, title)`, where the title is derived from the path's last key.
+fn titles<T: JsonSchema>() -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    walk(&schema_of::<T>(), |path, node| {
+        let key = path.last().copied().unwrap_or_default();
+        out.push((path.join("--"), title(node, key)));
+    })
+    .unwrap_or_else(|error| panic!("{error}"));
+    out
+}
+
+/// A tuning pass.
+#[derive(JsonSchema)]
+struct Tune {
+    /// The blend.
+    blend: f32,
+    /// Nested settings.
+    inner: Inner,
+}
+
+/// Inner settings.
+#[derive(JsonSchema)]
+struct Inner {
+    /// Its size.
+    max_size: u32,
+    /// Its twin.
+    twin_tails: bool,
+}
+
+#[test]
+fn a_struct_visits_its_fields() {
+    let got = visited::<Tune>();
+    assert_eq!(
+        got,
+        vec![
+            (String::new(), Some("A tuning pass.".to_owned())),
+            ("blend".into(), Some("The blend.".to_owned())),
+            ("inner".into(), Some("Nested settings.".to_owned())),
+            ("inner--max_size".into(), Some("Its size.".to_owned())),
+            ("inner--twin_tails".into(), Some("Its twin.".to_owned())),
+        ]
+    );
+}
+
+/// Easing mode.
+#[derive(JsonSchema)]
+enum Mode {
+    /// Reaches the target at once.
+    Instant,
+    /// Reaches the target in a third of the time.
+    Fast,
+}
+
+#[test]
+fn a_unit_enum_with_docs_visits_each_variant() {
+    assert_eq!(
+        visited::<Mode>(),
+        vec![
+            (String::new(), Some("Easing mode.".to_owned())),
+            ("Instant".into(), Some("Reaches the target at once.".to_owned())),
+            ("Fast".into(), Some("Reaches the target in a third of the time.".to_owned())),
+        ]
+    );
+}
+
+/// A pick with no docs on its values.
+#[derive(JsonSchema)]
+enum Plain {
+    Slow,
+    Quick,
+}
+
+#[test]
+fn a_plain_enum_visits_each_value_with_no_description() {
+    assert_eq!(
+        visited::<Plain>(),
+        vec![
+            (String::new(), Some("A pick with no docs on its values.".to_owned())),
+            ("Slow".into(), None),
+            ("Quick".into(), None)
+        ]
+    );
+}
+
+/// A shape, tagged by its kind.
+#[derive(JsonSchema)]
+#[serde(tag = "kind")]
+enum Shape {
+    /// A round one.
+    Circle {
+        /// The radius.
+        radius: f32,
+        /// The centre.
+        centre: f32,
+    },
+    /// A boxy one.
+    Square {
+        /// The side.
+        side: f32,
+    },
+}
+
+#[test]
+fn an_internally_tagged_enum_keys_by_its_tag_and_skips_the_tag() {
+    assert_eq!(
+        visited::<Shape>(),
+        vec![
+            (String::new(), Some("A shape, tagged by its kind.".to_owned())),
+            ("Circle".into(), Some("A round one.".to_owned())),
+            ("Circle--centre".into(), Some("The centre.".to_owned())),
+            ("Circle--radius".into(), Some("The radius.".to_owned())),
+            ("Square".into(), Some("A boxy one.".to_owned())),
+            ("Square--side".into(), Some("The side.".to_owned())),
+        ]
+    );
+}
+
+/// Holds a count.
+#[derive(JsonSchema)]
+struct Count {
+    /// The count.
+    count: u32,
+    /// The step.
+    step: u32,
+}
+
+/// A pick, tagged by its variant name.
+#[derive(JsonSchema)]
+enum Pick {
+    /// Holds a number.
+    Num(Count),
+    /// Holds a name.
+    Named {
+        /// The name.
+        name: String,
+    },
+}
+
+#[test]
+fn an_externally_tagged_enum_keys_by_the_variant_name() {
+    assert_eq!(
+        visited::<Pick>(),
+        vec![
+            (String::new(), Some("A pick, tagged by its variant name.".to_owned())),
+            ("Num".into(), Some("Holds a number.".to_owned())),
+            ("Num--count".into(), Some("The count.".to_owned())),
+            ("Num--step".into(), Some("The step.".to_owned())),
+            ("Named".into(), Some("Holds a name.".to_owned())),
+            ("Named--name".into(), Some("The name.".to_owned())),
+        ]
+    );
+}
+
+/// Holds optional, repeated and keyed inner settings.
+#[derive(JsonSchema)]
+struct Holder {
+    /// Optional settings.
+    opt: Option<Inner>,
+    /// Repeated settings.
+    list: Vec<Inner>,
+    /// Keyed settings.
+    map: BTreeMap<String, Inner>,
+}
+
+#[test]
+fn option_vec_and_map_add_no_key() {
+    assert_eq!(
+        paths::<Holder>(),
+        vec![
+            "",
+            "list",
+            "list--max_size",
+            "list--twin_tails",
+            "map",
+            "map--max_size",
+            "map--twin_tails",
+            "opt",
+            "opt--max_size",
+            "opt--twin_tails"
+        ]
+    );
+}
+
+/// Sizes by name.
+#[derive(JsonSchema)]
+struct Titled {
+    /// Derived from the key.
+    max_size: u32,
+    /// Derived from the key too.
+    twin_tails: bool,
+    /// Explicit wins.
+    #[schemars(title = "Maximum size")]
+    limit: u32,
+}
+
+#[test]
+fn titles_explicit_or_derived_from_the_key() {
+    assert_eq!(
+        titles::<Titled>(),
+        vec![
+            (String::new(), "Titled".to_owned()),
+            ("limit".into(), "Maximum size".into()),
+            ("max_size".into(), "Max size".into()),
+            ("twin_tails".into(), "Twin tails".into()),
+        ]
+    );
+}
+
+#[test]
+fn a_derived_title_keeps_a_capital_and_handles_variant_names() {
+    let mut map = Map::new();
+    map.insert("title".into(), Value::String("   ".into()));
+    assert_eq!(title(&map, "Fast"), "Fast");
+    assert_eq!(title(&map, "max-size"), "Max size");
+    assert_eq!(title(&map, "a__b"), "A b");
+}
+
+#[test]
+fn a_ref_is_not_followed() {
+    let schema = Schema::try_from(json!({
+        "$ref": "#/$defs/A",
+        "$defs": { "A": { "type": "object", "properties": { "b": { "type": "integer", "description": "Hidden." } } } }
+    }))
+    .unwrap();
+    assert_eq!(visited_in(&schema), vec![(String::new(), None)]);
+}
+
+#[test]
+fn a_boolean_schema_is_not_visited() {
+    assert_eq!(visited_in(&Schema::from(true)), Vec::new());
+}
+
+#[test]
+fn description_is_trimmed_and_blank_is_none() {
+    let padded = json!({ "description": "  Spaced.  " });
+    let blank = json!({ "description": "   " });
+    assert_eq!(description(padded.as_object().unwrap()), Some("Spaced."));
+    assert_eq!(description(blank.as_object().unwrap()), None);
+}
+
+/// Holds an optional single-field struct.
+#[derive(JsonSchema)]
+struct OptionalSingle {
+    /// The optional struct.
+    inner: Option<Single>,
+}
+
+/// One field.
+#[derive(JsonSchema)]
+struct Single {
+    /// The only field.
+    #[schemars(title = "Only")]
+    only: u32,
+}
+
+#[test]
+fn an_option_of_a_single_field_struct_keeps_the_field() {
+    assert_eq!(
+        visited::<OptionalSingle>(),
+        vec![
+            (String::new(), Some("Holds an optional single-field struct.".to_owned())),
+            ("inner".into(), Some("The optional struct.".to_owned())),
+            ("inner--only".into(), Some("The only field.".to_owned())),
+        ]
+    );
+    assert_eq!(titles::<OptionalSingle>().last(), Some(&("inner--only".to_owned(), "Only".to_owned())));
+}
+
+#[test]
+fn an_any_of_with_a_null_branch_is_an_option_not_a_variant() {
+    // The `anyOf` form of `Option<T>`, which schemars does not emit for a struct but which the rule must hold for.
+    let schema = Schema::try_from(json!({
+        "type": "object",
+        "properties": {
+            "inner": {
+                "description": "The optional struct.",
+                "anyOf": [
+                    {
+                        "type": "object",
+                        "properties": { "only": { "title": "Only", "description": "The only field.", "type": "integer" } },
+                        "required": ["only"]
+                    },
+                    { "type": "null" }
+                ]
+            }
+        }
+    }))
+    .expect("a valid schema");
+    assert_eq!(
+        visited_in(&schema),
+        vec![
+            (String::new(), None),
+            ("inner".into(), Some("The optional struct.".to_owned())),
+            ("inner--only".into(), Some("The only field.".to_owned())),
+        ]
+    );
+}
+
+/// A pair of inner settings and a count.
+#[derive(JsonSchema)]
+struct Pair {
+    /// The pair.
+    pair: (Inner, u32),
+}
+
+#[test]
+fn a_tuple_walks_its_elements_transparently() {
+    assert_eq!(paths::<Pair>(), vec!["", "pair", "pair--max_size", "pair--twin_tails"],);
+}
+
+/// Entries by key, tagged by kind.
+#[derive(JsonSchema)]
+#[serde(tag = "kind")]
+enum Keyed {
+    /// Named entries.
+    Entries(BTreeMap<String, Inner>),
+}
+
+#[test]
+fn a_tagged_map_payload_keeps_its_values() {
+    assert_eq!(
+        visited::<Keyed>(),
+        vec![
+            (String::new(), Some("Entries by key, tagged by kind.".to_owned())),
+            ("Entries".into(), Some("Named entries.".to_owned())),
+            ("Entries--max_size".into(), Some("Its size.".to_owned())),
+            ("Entries--twin_tails".into(), Some("Its twin.".to_owned())),
+        ]
+    );
+}
+
+/// A figure, tagged by its variant name.
+#[derive(JsonSchema)]
+enum Figure {
+    /// A round one.
+    Round {
+        /// The radius.
+        radius: f32,
+    },
+    /// A boxy one.
+    Square {
+        /// The side.
+        side: f32,
+    },
+}
+
+/// A flat figure with a count.
+#[derive(JsonSchema)]
+#[serde(tag = "kind")]
+enum Flattened {
+    /// The flat variant.
+    Flat {
+        /// The figure, flattened in.
+        #[serde(flatten)]
+        figure: Figure,
+        /// A count.
+        count: u32,
+    },
+}
+
+#[test]
+fn a_flattened_union_inside_a_tagged_variant_is_walked() {
+    assert_eq!(
+        paths::<Flattened>(),
+        vec!["", "Flat", "Flat--count", "Flat--Round", "Flat--Round--radius", "Flat--Square", "Flat--Square--side"],
+    );
+}
+
+/// What the walk must say about one generated schema: the paths and descriptions it visits, or the rejection.
+enum Expect {
+    Paths(Vec<(&'static str, Option<&'static str>)>),
+    Rejected { path: &'static str, problem: &'static str },
+}
+
+/// Externally tagged: data variants and a unit variant.
+#[derive(JsonSchema)]
+enum External {
+    /// Holds inner settings.
+    Inner(Inner),
+    /// Two numbers.
+    Pair {
+        /// First.
+        first: u32,
+        /// Second.
+        second: u32,
+    },
+    /// Nothing.
+    Unit,
+}
+
+/// Internally tagged.
+#[derive(JsonSchema)]
+#[serde(tag = "kind")]
+enum Internal {
+    /// Round.
+    Circle {
+        /// Radius.
+        radius: f32,
+    },
+    /// Square.
+    Square {
+        /// Side.
+        side: f32,
+    },
+}
+
+/// Adjacently tagged.
+#[derive(JsonSchema)]
+#[serde(tag = "t", content = "c")]
+enum Adjacent {
+    /// Holds inner settings.
+    Holds(Inner),
+    /// No payload.
+    Empty,
+}
+
+/// Untagged, with a multi-field and a single-field variant.
+#[derive(JsonSchema)]
+#[serde(untagged)]
+enum Untagged {
+    /// Two fields.
+    Multi {
+        /// A.
+        a: u32,
+        /// B.
+        b: u32,
+    },
+    /// One field.
+    Single {
+        /// Only.
+        only: u32,
+    },
+}
+
+/// A single-field struct that rejects unknown keys.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct Strict {
+    /// Only.
+    only: u32,
+}
+
+/// Untagged, with a single-field `deny_unknown_fields` variant next to a multi-field one.
+#[derive(JsonSchema)]
+#[serde(untagged)]
+enum MixedUntagged {
+    /// Two fields.
+    Multi {
+        /// A.
+        a: u32,
+        /// B.
+        b: u32,
+    },
+    /// Strict.
+    Strict(Strict),
+}
+
+/// The serde representations, each read the way the rule says, or rejected where its keys cannot be told apart.
+/// The rows generated by serde's own representations.
+fn generated_rows() -> Vec<(&'static str, Schema, Expect)> {
+    vec![
+        (
+            "external",
+            schema_of::<External>(),
+            Expect::Paths(vec![
+                ("", Some("Externally tagged: data variants and a unit variant.")),
+                ("Inner", Some("Holds inner settings.")),
+                ("Inner--max_size", Some("Its size.")),
+                ("Inner--twin_tails", Some("Its twin.")),
+                ("Pair", Some("Two numbers.")),
+                ("Pair--first", Some("First.")),
+                ("Pair--second", Some("Second.")),
+                ("Unit", Some("Nothing.")),
+            ]),
+        ),
+        (
+            "internal",
+            schema_of::<Internal>(),
+            Expect::Paths(vec![
+                ("", Some("Internally tagged.")),
+                ("Circle", Some("Round.")),
+                ("Circle--radius", Some("Radius.")),
+                ("Square", Some("Square.")),
+                ("Square--side", Some("Side.")),
+            ]),
+        ),
+        (
+            "adjacent",
+            schema_of::<Adjacent>(),
+            Expect::Paths(vec![
+                ("", Some("Adjacently tagged.")),
+                ("Holds", Some("Holds inner settings.")),
+                ("Holds--c", Some("Inner settings.")),
+                ("Holds--c--max_size", Some("Its size.")),
+                ("Holds--c--twin_tails", Some("Its twin.")),
+                ("Empty", Some("No payload.")),
+            ]),
+        ),
+        (
+            "untagged, multi and single field",
+            schema_of::<Untagged>(),
+            Expect::Paths(vec![
+                ("", Some("Untagged, with a multi-field and a single-field variant.")),
+                ("a", Some("A.")),
+                ("b", Some("B.")),
+                ("only", Some("Only.")),
+            ]),
+        ),
+        (
+            "Option of a single-field struct",
+            schema_of::<OptionalSingle>(),
+            Expect::Paths(vec![
+                ("", Some("Holds an optional single-field struct.")),
+                ("inner", Some("The optional struct.")),
+                ("inner--only", Some("The only field.")),
+            ]),
+        ),
+        (
+            "deny_unknown_fields single-field struct",
+            schema_of::<Strict>(),
+            Expect::Paths(vec![
+                ("", Some("A single-field struct that rejects unknown keys.")),
+                ("only", Some("Only.")),
+            ]),
+        ),
+        (
+            "untagged, single-field deny variant next to multi-field",
+            schema_of::<MixedUntagged>(),
+            Expect::Paths(vec![
+                ("", Some("Untagged, with a single-field `deny_unknown_fields` variant next to a multi-field one.")),
+                ("a", Some("A.")),
+                ("b", Some("B.")),
+                ("only", Some("Only.")),
+            ]),
+        ),
+    ]
+}
+
+/// The rows of hand-written schemas: a `oneOf` that mixes the two forms, which serde never generates.
+fn hand_written_rows() -> Vec<(&'static str, Schema, Expect)> {
+    vec![(
+        "hand-written oneOf that mixes the two forms",
+        Schema::try_from(json!({
+            "oneOf": [
+                {
+                    "type": "object",
+                    "properties": { "Named": { "type": "integer" } },
+                    "required": ["Named"],
+                    "additionalProperties": false
+                },
+                {
+                    "type": "object",
+                    "properties": { "a": { "type": "integer" }, "b": { "type": "integer" } },
+                    "required": ["a", "b"]
+                }
+            ]
+        }))
+        .unwrap_or_else(|error| panic!("{error}")),
+        Expect::Rejected { path: "", problem: "mixes externally tagged variants" },
+    )]
+}
+
+/// The serde representations, each read the way the rule says, or rejected where its keys cannot be told apart.
+#[test]
+fn the_serde_representations_are_read_or_rejected() {
+    let rows: Vec<_> = generated_rows().into_iter().chain(hand_written_rows()).collect();
+    for (name, schema, expect) in rows {
+        match expect {
+            Expect::Paths(expected) => {
+                let want: Vec<(String, Option<String>)> =
+                    expected.into_iter().map(|(path, text)| (path.to_owned(), text.map(str::to_owned))).collect();
+                let got = read(&schema).unwrap_or_else(|error| panic!("{name}: {error}"));
+                assert_eq!(got, want, "{name}");
+            }
+            Expect::Rejected { path, problem } => {
+                let error = read(&schema).expect_err(name);
+                assert_eq!(error.path, path, "{name}");
+                assert!(error.problem.contains(problem), "{name}: {}", error.problem);
+            }
+        }
+    }
+}
+
+/// Holds an optional plain enum.
+#[derive(JsonSchema)]
+struct OptionalPlain {
+    /// The optional pick.
+    pick: Option<Plain>,
+}
+
+#[test]
+fn an_option_of_a_plain_enum_skips_the_null() {
+    assert_eq!(
+        visited::<OptionalPlain>(),
+        vec![
+            (String::new(), Some("Holds an optional plain enum.".to_owned())),
+            ("pick".into(), Some("The optional pick.".to_owned())),
+            ("pick--Slow".into(), None),
+            ("pick--Quick".into(), None),
+        ]
+    );
+}
+
+/// One value.
+#[derive(JsonSchema)]
+enum LoneValue {
+    Only,
+}
+
+/// Holds an optional one-value enum.
+#[derive(JsonSchema)]
+struct OptionalLone {
+    /// The optional lone value.
+    lone: Option<LoneValue>,
+}
+
+#[test]
+fn an_option_of_a_one_value_enum_skips_the_null() {
+    assert_eq!(
+        visited::<OptionalLone>(),
+        vec![
+            (String::new(), Some("Holds an optional one-value enum.".to_owned())),
+            ("lone".into(), Some("The optional lone value.".to_owned())),
+            ("lone--Only".into(), None),
+        ]
+    );
+}
+
+#[test]
+fn a_node_level_const_is_a_sole_value() {
+    let schema = Schema::try_from(json!({
+        "type": "object",
+        "properties": { "mode": { "const": "Fast", "description": "Fast mode." } }
+    }))
+    .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        visited_in(&schema),
+        vec![(String::new(), None), ("mode".into(), Some("Fast mode.".to_owned())), ("mode--Fast".into(), None),]
+    );
+}
+
+/// Declares its fields out of key order, so a walk that followed declaration order would differ.
+#[derive(JsonSchema)]
+struct OutOfOrder {
+    /// Declared first.
+    zeta: u32,
+    /// Declared second.
+    alpha: u32,
+}
+
+#[test]
+fn properties_are_walked_in_key_order() {
+    assert_eq!(paths::<OutOfOrder>(), vec!["", "alpha", "zeta"]);
+}
+
+/// The three forms of an optional `null` branch: each is skipped, and it does not make the other branch a variant.
+#[test]
+fn each_null_form_is_an_optional_branch_and_not_a_variant() {
+    let null_forms = [json!({ "type": "null" }), json!({ "const": null }), json!({ "enum": [null] })];
+    for null_form in null_forms {
+        let schema = Schema::try_from(json!({
+            "oneOf": [
+                {
+                    "description": "The variant.",
+                    "type": "object",
+                    "properties": { "Named": { "type": "integer", "description": "Inner." } },
+                    "required": ["Named"],
+                    "additionalProperties": false
+                },
+                null_form
+            ]
+        }))
+        .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(
+            visited_in(&schema),
+            vec![(String::new(), None), ("Named".into(), Some("Inner.".to_owned()))],
+            "{schema:?}"
+        );
+    }
+}
+
+#[test]
+fn a_branch_with_two_constants_is_rejected() {
+    let schema = Schema::try_from(json!({
+        "oneOf": [
+            {
+                "type": "object",
+                "properties": { "kind": { "const": "A" }, "other": { "const": "B" } },
+                "required": ["kind", "other"]
+            }
+        ]
+    }))
+    .unwrap_or_else(|error| panic!("{error}"));
+    let error = read(&schema).expect_err("two constants are ambiguous");
+    assert_eq!(error.path, "");
+    assert!(error.problem.contains("more than one constant"), "{}", error.problem);
+}
+
+#[test]
+fn a_constant_that_is_not_required_is_not_a_tag() {
+    let schema = Schema::try_from(json!({
+        "oneOf": [
+            {
+                "description": "Tagged.",
+                "type": "object",
+                "properties": { "kind": { "const": "A" }, "x": { "type": "integer", "description": "X." } },
+                "required": ["x"]
+            }
+        ]
+    }))
+    .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        visited_in(&schema),
+        vec![
+            (String::new(), None),
+            ("kind".into(), None),
+            ("kind--A".into(), None),
+            ("x".into(), Some("X.".to_owned())),
+        ]
+    );
+}
+
+/// A tagged `oneOf` next to an `anyOf` that holds a `null`: the `null` belongs to the `anyOf`, so the variants stay.
+#[test]
+fn a_null_in_a_sibling_any_of_does_not_turn_off_the_one_of() {
+    let schema = Schema::try_from(json!({
+        "oneOf": [
+            {
+                "description": "A round one.",
+                "type": "object",
+                "properties": {
+                    "kind": { "const": "Circle" },
+                    "radius": { "type": "integer", "description": "Radius." }
+                },
+                "required": ["kind", "radius"]
+            }
+        ],
+        "anyOf": [{ "type": "null" }]
+    }))
+    .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        visited_in(&schema),
+        vec![
+            (String::new(), None),
+            ("Circle".into(), Some("A round one.".to_owned())),
+            ("Circle--radius".into(), Some("Radius.".to_owned())),
+        ]
+    );
+}
+
+/// An optional constant beside a required one: the required constant is the tag, and the optional one is a field.
+#[test]
+fn only_a_required_constant_is_the_tag() {
+    let schema = Schema::try_from(json!({
+        "oneOf": [
+            {
+                "description": "Tagged.",
+                "type": "object",
+                "properties": {
+                    "kind": { "const": "A" },
+                    "mode": { "const": "fast", "description": "Mode." }
+                },
+                "required": ["kind"]
+            }
+        ]
+    }))
+    .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        visited_in(&schema),
+        vec![
+            (String::new(), None),
+            ("A".into(), Some("Tagged.".to_owned())),
+            ("A--mode".into(), Some("Mode.".to_owned())),
+            ("A--mode--fast".into(), None),
+        ]
+    );
+}
+
+/// Two required constants on one branch are ambiguous, even when one of them is a field of the variant.
+#[test]
+fn two_required_constants_are_rejected_and_an_optional_one_is_not_counted() {
+    let schema = Schema::try_from(json!({
+        "oneOf": [
+            {
+                "type": "object",
+                "properties": { "kind": { "const": "A" }, "other": { "const": "B" } },
+                "required": ["kind", "other"]
+            }
+        ]
+    }))
+    .unwrap_or_else(|error| panic!("{error}"));
+    let error = read(&schema).expect_err("two required constants are ambiguous");
+    assert!(error.problem.contains("more than one constant"), "{}", error.problem);
+}
