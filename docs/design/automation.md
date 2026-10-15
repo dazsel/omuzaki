@@ -351,12 +351,7 @@ pub struct Wait { pending: Vec<WakeId> }
 impl NodeKind for Wait {
     type Params = WaitParams;
     fn meta() -> NodeMeta {
-        NodeMeta {
-            id: "flow.wait",
-            summary: "Wait, then pass the event on.",
-            class: NodeClass::Active,
-            category: Category::Flow,
-        }
+        NodeMeta::new("flow.wait", "Wait, then pass the event on.", NodeClass::Active, Category::Flow)
     }
     fn ports(_: &WaitParams) -> Ports {
         Ports::new()
@@ -371,18 +366,23 @@ impl NodeKind for Wait {
 impl Node for Wait {
     fn handle(&mut self, input: Input<'_>, cx: &mut NodeCx<'_>) -> Result<(), NodeError> {
         match input {
-            Input::Event { port: "in" } => {
+            Input::Event { port: "in", .. } => {
                 let seconds = cx.input_number("seconds")?.max(0.0);
                 self.pending.push(cx.wake_after(Seconds(seconds))?);
+                Ok(())
             }
-            Input::Event { port: "cancel" } => self.pending.drain(..).for_each(|id| cx.cancel_wake(id)),
-            Input::Wake { id } => {
+            Input::Event { port: "cancel", .. } => {
+                self.pending.drain(..).for_each(|id| cx.cancel_wake(id));
+                Ok(())
+            }
+            Input::Event { port, .. } => Err(NodeError::unknown_port(port)),
+            Input::Wake { id, .. } => {
                 self.pending.retain(|p| *p != id);
-                cx.fire("out")?;
+                cx.fire("out")
             }
-            _ => {}
+            Input::Start | Input::Stop | Input::Trigger { .. } | Input::Reply { .. } => Ok(()),   // not used here
+            other => Err(NodeError::unhandled(&other)),   // an input added after this node (D21)
         }
-        Ok(())
     }
 }
 register_node!(Wait);
@@ -1020,11 +1020,22 @@ impl NodeHarness {
 - **`ShowHarness`** (`omuzaki-live`) runs a whole `ShowDef` on the real engine with a `FakeRunner`, `FakeApprovals` and
   scripted events: `publish(event)`, `advance(..)`, `requests()` (the op requests as golden JSON), `values()`. The
   engine tests use it with test node kinds. Template runs need the real nodes too, and an implementation crate can't
-  depend on another (not even for tests), so they live in the area test crate `omuzaki-test-live` (an App that
-  `lint-deps` holds to API crates, mocks, the harness and the `omuzaki-live*` crates; ADR 0054 §6), not in the
-  harness `omuzaki-test`. An op a template calls from another area (BR-12's throw) isn't linked there:
-  `ShowHarness::with_op(name, schema)` gives `op.run`'s compile check its schema, and the `FakeRunner` answers it.
-  Running the same script twice and comparing `log_json` is the D6 test, required in the engine and template tasks.
+  depend on another (not even for tests). Template tests come in two kinds, in two places:
+  - **Graph runs (mocked)** live in the area test crate `omuzaki-test-live` (an App that `lint-deps` holds to API
+    crates, mocks, the harness and the `omuzaki-live*` crates; ADR 0054 §6). Each template's manifest is expanded
+    with `omuzaki_library_api`'s pure recipe expansion (an API crate, so allowed) into its `automation.add_graph`
+    arguments, the graph is loaded into a `ShowHarness` with the real nodes, and a scripted synthetic event stream
+    gives the golden op requests. An op from another area (BR-12's throw) isn't linked there:
+    `ShowHarness::with_op(name, schema)` gives `op.run`'s compile check its schema, and the `FakeRunner` answers it.
+    No executor, no library implementation.
+  - **Apply and undo (integration)** need the real executor (`omuzaki-ops`), the library implementation
+    (`omuzaki-library`) and the `automation.*` ops together, which no area test crate may link. They live in the App
+    `omuzaki-cli` (`crates/omuzaki-cli/tests/automation_templates.rs`), which links the executor already and gains
+    `omuzaki-library`, `omuzaki-live` and `omuzaki-live-nodes` (the binary that runs headless shows needs them
+    anyway): each template applied through `library.apply` on a fresh project writes the expected show files and
+    one record, `library.detach` and undo each restore the project byte for byte, and the applied nodes hold
+    `"$in.…"` exactly (D14).
+  Running the same script twice and comparing `log_json` is the D6 test, required in the engine and graph-run tests.
 - **Fixtures** are synthetic (invented names and messages). Recorded chat from a real stream is never a fixture.
 
 ### D17. Editing: the graph editor, the Rules table, accessibility
@@ -1153,9 +1164,13 @@ This design predates ADR 0054; these rules bring it in line, and the contract ta
      `show.describe` as "kept, not checked: `overlay` belongs to a feature this build doesn't include", never as an
      error, and offers no edit of it.
 
-  The skeleton task (#730) adds the macro, the naming check and the opaque round-trip, tested with a show carrying a
-  key no test binary links.
-- **Tests across crates (§6)** live in `omuzaki-test-live` (D16), which the first template task (#957) creates.
+  The skeleton task (#730) adds the macro, the naming check and the opaque round-trip. Its required test runs in
+  `omuzaki-live-api`'s own tests, where no feature crate is linked: a show holding `overlay` and `plugin-x-layout`
+  subtrees goes through `from_node` and `to_node` byte-identical, is reported "kept, not checked", and a misspelt
+  `automatons` is refused naming `automations`; the `show.*` op task (#1177) repeats it through rename, copy and
+  delete in `omuzaki-live`, which links no feature that owns a show key.
+- **Tests across crates (§6):** mocked graph runs in `omuzaki-test-live`, apply and undo in `omuzaki-cli`'s tests (D16);
+  the first template task (#957) creates both.
 - **Contracts land first and alone (§7).** #730, #773, #952 and #774 (the API crate), #953 (the mock), #950 and #951
   (ops-api) merge before any engine or node task starts; each adds everything its dependants need, with defaults.
 
@@ -1331,7 +1346,8 @@ inert `post` until they approve it themselves.
 |---|---|
 | `omuzaki-live-api` (new, API) | D4, D9, D10, D11 types with D21's attributes and constructors; the normalised payloads; the service traits; `paths`; `register_show_key!`; limits. Needs maintainer review |
 | `omuzaki-live-mock` (new, mock) | D16 |
-| `omuzaki-test-live` (new, App: area test crate) | whole-show and template runs with the real nodes (D16) |
+| `omuzaki-test-live` (new, App: area test crate) | whole-show and template graph runs with the real nodes, mocked ops (D16) |
+| `omuzaki-cli` | tests only: template apply and undo through the real executor and library (D16); gains `omuzaki-library`, `omuzaki-live`, `omuzaki-live-nodes` |
 | `omuzaki-live` (new, implementation) | the engine, stores, ops, `ShowHarness`, templates |
 | `omuzaki-live-nodes` (new, implementation) | the catalogue (§6) and the effect ops |
 | `omuzaki-ops-api` | `Actor::Automation { id }` (`System` stays Omuzaki's own; its doc stops saying "automation rules"), a `#[non_exhaustive]` variant built with `Actor::automation(id)`; `Actor` is an exhaustive enum, so that task also updates the two matches outside ops-api (`omuzaki-ops` `error.rs`, `omuzaki-mcp` `changes.rs`; §9 question 1). The `edit:show` scope, in `Grants::agent_default()` like the other edit scopes. `Transport::Automation` and the `input` and `process` scopes are already on `main` |
@@ -1452,7 +1468,7 @@ and BR-26, except where the parent's milestone differs.
 | the Rules panel: the graph table, inline simple rules, the approval card, Start, Pause, Stop | #1324 |
 | the values monitor (re-pointed at `automation.values`) | #739 |
 | the library's `show` target, and `omuzaki-live`'s library source for the seed templates | #1280 |
-| seed templates: bonk, hat redeem, raid welcome, death counter, with golden runs in `omuzaki-test-live`; needs the ops they call (BR-10, BR-12, BR-21, ST-03's props) | #957 |
+| seed templates: bonk, hat redeem, raid welcome, death counter, with graph runs in `omuzaki-test-live` and apply and undo in `omuzaki-cli`'s tests (D16); needs the ops they call (BR-10, BR-12, BR-21, ST-03's props) | #957 |
 
 **Re-checked elsewhere:** AP-10's listener (#1322) publishes `voice.command` through `EventSink` without the
 transcript, and its phrase list is a `User` setting in the person's profile, not the show (§8 answer 3); its template (#1323)
