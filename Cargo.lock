@@ -3357,6 +3357,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-agent-mock"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-agent-api",
+ "omuzaki-core",
+ "omuzaki-ops-api",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "omuzaki-ai"
 version = "0.0.0"
 dependencies = [
