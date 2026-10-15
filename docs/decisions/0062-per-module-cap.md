@@ -35,8 +35,8 @@ hour, which puts a 4 to 6 hour tail on independent work.
    that several modules use. A pull request that changes any of them takes the shared slot.
 4. **The file-overlap check at dispatch still applies** (`tools/dispatch-check.py`). Two pull requests that touch one
    file never run at once, whatever the counts say.
-5. Every other crate keeps the per-crate cap (5 since 2026-10-15, `operating.md`), and this decision leaves the total cap (150) unchanged. Adding a crate to this list is a
-   Director ruling on #2.
+5. Every other crate keeps the per-crate cap (5 since 2026-10-15, `operating.md`), and this decision leaves the
+   total cap (150) unchanged. Adding a crate to this list is a Director ruling on #2.
 
 ## Consequences
 
