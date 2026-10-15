@@ -815,7 +815,7 @@ fn noted(from_palette: bool) -> CharacterDef {
 #[test]
 fn a_palette_dependent_fact_is_refused_by_the_conformance_check_naming_the_kind_and_the_fact() {
     let probes = conformance::Probes::default().fact::<NoteFact>();
-    let report = conformance::check(&noted(true), Some(&["t-noter"]), &probes);
+    let report = conformance::check(&noted(true), Some(&["t-noter"]), &probes, &BuildServices::default());
     let [violation] = report.violations.as_slice() else { panic!("one violation expected: {report:?}") };
     assert!(violation.contains("kind 't-noter'") && violation.contains("part 'noter'"), "{violation}");
     assert!(violation.contains("fact 't-note' depends on the palette"), "{violation}");
@@ -842,7 +842,7 @@ fn a_palette_dependent_publisher_whose_only_part_is_disabled_is_still_caught() {
     let probes = conformance::Probes::default().fact::<NoteFact>();
     // The disabled part is never built, so it covers nothing: the kind is checked through a standalone part with its
     // default parameters, which publish from the palette.
-    let report = conformance::check(&def, Some(&["t-noter"]), &probes);
+    let report = conformance::check(&def, Some(&["t-noter"]), &probes, &BuildServices::default());
     let [violation] = report.violations.as_slice() else { panic!("one violation expected: {report:?}") };
     assert!(
         violation.contains("kind 't-noter'") && violation.contains("fact 't-note' depends on the palette"),
@@ -866,7 +866,7 @@ fn only_violation(report: &conformance::Report) -> &str {
 fn a_fact_that_depends_on_how_many_slots_the_palette_has_is_caught() {
     let probes = conformance::Probes::default().fact::<NoteFact>();
     let def = noted_with(json!({ "from_palette": false, "from_len": true }));
-    let report = conformance::check(&def, Some(&["t-noter"]), &probes);
+    let report = conformance::check(&def, Some(&["t-noter"]), &probes, &BuildServices::default());
     assert!(only_violation(&report).contains("fact 't-note' depends on the palette"), "{report:?}");
 }
 
@@ -874,7 +874,7 @@ fn a_fact_that_depends_on_how_many_slots_the_palette_has_is_caught() {
 fn a_fact_that_depends_on_the_build_options_is_caught_and_names_them() {
     let probes = conformance::Probes::default().fact::<NoteFact>();
     let def = noted_with(json!({ "from_palette": false, "offline_only": true }));
-    let report = conformance::check(&def, Some(&["t-noter"]), &probes);
+    let report = conformance::check(&def, Some(&["t-noter"]), &probes, &BuildServices::default());
     let violation = only_violation(&report);
     assert!(violation.contains("depends on the palette") && violation.contains("Offline quality"), "{violation}");
 }
@@ -885,14 +885,31 @@ fn the_probe_part_never_replaces_a_part_of_the_base() {
     let mut def = mock_character().unwrap();
     add(&mut def, "palette-probe", "t-noter", 10, json!({ "from_palette": false }));
     let probes = conformance::Probes::default().fact::<NoteFact>();
-    let report = conformance::check(&def, Some(&["t-note-reader"]), &probes);
+    let report = conformance::check(&def, Some(&["t-note-reader"]), &probes, &BuildServices::default());
+    assert!(report.unreached.is_empty() && report.violations.is_empty(), "{report:?}");
+}
+
+#[test]
+fn a_kind_that_needs_build_services_is_checked_when_they_are_supplied_and_unreached_when_not() {
+    let mut assets = MemAssets::new();
+    let hash = assets.put(&[200, 30, 30]);
+    let mut def = mock_character().unwrap();
+    add(&mut def, "stripe", "t-stripe", 5, json!({ "asset": hash.to_string(), "tint": "@outfit" }));
+    let probes = conformance::Probes::built_in();
+
+    let bare = conformance::check(&def, Some(&["t-stripe"]), &probes, &BuildServices::default());
+    assert_eq!(bare.unreached.len(), 1, "without the asset and the rasteriser it can't build: {bare:?}");
+
+    let full = BuildServices::default().with_assets(assets).with_rasterizer(|| Box::new(MockRasterizer));
+    let report = conformance::check(&def, Some(&["t-stripe"]), &probes, &full);
     assert!(report.unreached.is_empty() && report.violations.is_empty(), "{report:?}");
 }
 
 #[test]
 fn a_palette_independent_fact_gives_the_same_cached_build_after_a_palette_change_and_never_rebuilds_the_reader() {
     let probes = conformance::Probes::default().fact::<NoteFact>();
-    let report = conformance::check(&noted(false), Some(&["t-noter", "t-note-reader"]), &probes);
+    let report =
+        conformance::check(&noted(false), Some(&["t-noter", "t-note-reader"]), &probes, &BuildServices::default());
     assert!(report.violations.is_empty(), "{:?}", report.violations);
 
     let (options, services) = live();

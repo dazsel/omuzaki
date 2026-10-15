@@ -190,13 +190,17 @@ fn fact_names(publishes: &Publishes) -> Vec<String> {
 type PartsPublished = [(PartId, Publishes)];
 
 /// What every part of `def` published, in build order, built with `quality` and `rig_export`.
-fn publishes_of(def: &CharacterDef, quality: Quality, rig_export: bool) -> Result<Vec<(PartId, Publishes)>, String> {
+fn publishes_of(
+    def: &CharacterDef,
+    quality: Quality,
+    rig_export: bool,
+    services: &BuildServices,
+) -> Result<Vec<(PartId, Publishes)>, String> {
     let options = BuildOptions { quality, rig_export, ..BuildOptions::default() };
-    let services = BuildServices::default();
     let mut published = Published::default();
     let mut all = Vec::new();
     for part in plan(def).map_err(|e| e.to_string())? {
-        let output = build_part(def, &part, &options, &services, &published).map_err(|e| format!("{part}: {e}"))?;
+        let output = build_part(def, &part, &options, services, &published).map_err(|e| format!("{part}: {e}"))?;
         published.absorb(&part, output.publishes.clone()).map_err(|e| e.to_string())?;
         all.push((part, output.publishes));
     }
@@ -214,9 +218,10 @@ fn wanted_kinds(kinds: Option<&[&str]>) -> Vec<String> {
 /// Checks the parts of `kinds` (every registered kind when `None`) against `base`, a character that builds.
 ///
 /// A kind `base` has an active part of (one the build plan reaches) is checked through that part; any other kind through one extra part with its default
-/// parameters (`base` supplies what it requires). A kind that can't be built that way is listed in
+/// parameters (`base` supplies what it requires). Every build gets `services` (the assets and rasteriser a kind needs; a kind
+/// that needs one that isn't there is `unreached`). A kind that can't be built that way is listed in
 /// [`Report::unreached`], not skipped silently.
-pub fn check(base: &CharacterDef, kinds: Option<&[&str]>, probes: &Probes) -> Report {
+pub fn check(base: &CharacterDef, kinds: Option<&[&str]>, probes: &Probes, services: &BuildServices) -> Report {
     let wanted = wanted_kinds(kinds);
     let mut report = Report::default();
     // The kinds with an active part: the ones the build plan reaches (a disabled part, or one under a disabled ancestor,
@@ -255,8 +260,10 @@ pub fn check(base: &CharacterDef, kinds: Option<&[&str]>, probes: &Probes) -> Re
     // The runs are independent builds, so they go on separate threads; the reports are merged in run order, so the
     // result doesn't depend on which finishes first.
     let reports: Vec<Report> = thread::scope(|scope| {
-        let handles: Vec<_> =
-            runs.iter().map(|(def, run_kinds)| scope.spawn(move || check_run(def, run_kinds, probes))).collect();
+        let handles: Vec<_> = runs
+            .iter()
+            .map(|(def, run_kinds)| scope.spawn(move || check_run(def, run_kinds, probes, services)))
+            .collect();
         handles
             .into_iter()
             .zip(&runs)
@@ -277,11 +284,11 @@ pub fn check(base: &CharacterDef, kinds: Option<&[&str]>, probes: &Probes) -> Re
 }
 
 /// Builds `def` under every option set and alternative palette and reports what `run_kinds` published differently.
-fn check_run(def: &CharacterDef, run_kinds: &[String], probes: &Probes) -> Report {
+fn check_run(def: &CharacterDef, run_kinds: &[String], probes: &Probes, services: &BuildServices) -> Report {
     let mut report = Report::default();
     let alternatives = alternatives(&def.palette, &referenced_slots(def));
     for (quality, rig_export) in OPTIONS {
-        let under_own = match publishes_of(def, quality, rig_export) {
+        let under_own = match publishes_of(def, quality, rig_export, services) {
             Ok(own) => own,
             Err(e) => {
                 let why = format!("does not build ({quality:?}, rig_export {rig_export}): {e}");
@@ -293,7 +300,7 @@ fn check_run(def: &CharacterDef, run_kinds: &[String], probes: &Probes) -> Repor
         for (n, palette) in alternatives.iter().enumerate() {
             let mut changed = def.clone();
             changed.palette = palette.clone();
-            match publishes_of(&changed, quality, rig_export) {
+            match publishes_of(&changed, quality, rig_export, services) {
                 Ok(under_other) => {
                     compare(def, run_kinds, (&under_own, &under_other), (n, &options), probes, &mut report);
                 }
@@ -315,7 +322,7 @@ fn check_run(def: &CharacterDef, run_kinds: &[String], probes: &Probes) -> Repor
 /// [`check`] against several bases (the kit characters that have the parts different kinds need): a kind counts as reached
 /// when any base reaches it. With no bases nothing can be built, so every wanted kind (`kinds`, or every registered kind)
 /// is listed in [`Report::unreached`] rather than the report coming back clean.
-pub fn check_all(bases: &[CharacterDef], kinds: Option<&[&str]>, probes: &Probes) -> Report {
+pub fn check_all(bases: &[CharacterDef], kinds: Option<&[&str]>, probes: &Probes, services: &BuildServices) -> Report {
     let mut merged = Report::default();
     if bases.is_empty() {
         merged.unreached =
@@ -324,7 +331,7 @@ pub fn check_all(bases: &[CharacterDef], kinds: Option<&[&str]>, probes: &Probes
     }
     let mut unreached: Option<BTreeMap<String, String>> = None;
     for base in bases {
-        let report = check(base, kinds, probes);
+        let report = check(base, kinds, probes, services);
         merged.violations.extend(report.violations);
         merged.unprobed.extend(report.unprobed);
         let these: BTreeMap<_, _> = report.unreached.into_iter().collect();
