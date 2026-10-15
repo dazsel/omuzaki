@@ -752,11 +752,13 @@ impl Held {
 }
 
 /// For a frame locked through `Lock2D` at `pitch`: how far the lowest row lies before the top row (0 unless the image is
-/// bottom-up) if the rows are unpadded, so the frame is one run of pixel bytes. `None` for padded rows, a zero pitch
-/// and a layout with no rows.
+/// bottom-up) if the frame is one run of pixel bytes. `None` for padded rows, a zero pitch, a layout with no rows and
+/// every planar layout (NV12): `Lock2D` gives the first plane's pointer only, and `GetContiguousLength` is the size of
+/// a packed copy, not a promise that the planes sit next to each other, so a planar frame without an extent is read
+/// through the packed lock instead.
 fn unpadded_back(mode: &ModeInfo, pitch: isize) -> Option<usize> {
     let step = pitch.unsigned_abs();
-    if mode.format.tight_stride(mode.width) != Some(step) || step == 0 {
+    if mode.format == PixelFormat::Nv12 || mode.format.tight_stride(mode.width) != Some(step) || step == 0 {
         return None;
     }
     if pitch < 0 { (mode.height as usize).checked_sub(1)?.checked_mul(step) } else { Some(0) }
@@ -1659,5 +1661,39 @@ mod tests {
         assert_eq!(unpadded_back(&yuy2, 80), None);
         assert_eq!(unpadded_back(&yuy2, 0), None);
         assert_eq!(unpadded_back(&ModeInfo { format: PixelFormat::Mjpg, ..yuy2 }, 64), None);
+        // A planar frame is never one run of bytes behind a single pointer.
+        assert_eq!(unpadded_back(&ModeInfo { format: PixelFormat::Nv12, width: 64, ..yuy2 }, 64), None);
+    }
+
+    /// An NV12 surface with only `Lock2D`, whose Y pitch equals the width but whose UV plane is not next to the Y plane
+    /// in memory: it is not borrowed as one span (that would read the gap as chroma); the packed lock's copy is used.
+    #[test]
+    fn a_planar_surface_with_apart_planes_takes_the_packed_lock() {
+        const WIDTH: usize = 32;
+        const HEIGHT: usize = 4;
+        let mode = ModeInfo { format: PixelFormat::Nv12, width: 32, height: 4, fps_num: 30, fps_den: 1 };
+        let (y_len, uv_len, gap) = (WIDTH * HEIGHT, WIDTH * HEIGHT / 2, 64);
+        // Y, then a gap that is not chroma, then UV.
+        let mut memory = vec![0xEE_u8; y_len + gap + uv_len];
+        memory[..y_len].fill(0x10);
+        memory[y_len + gap..].fill(0x80);
+        let packed: Vec<u8> = std::iter::repeat_n(0x10, y_len).chain(std::iter::repeat_n(0x80, uv_len)).collect();
+        let locks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let layout = surface::Layout {
+            memory,
+            top: 0,
+            pitch: i32::try_from(WIDTH).expect("a small pitch"),
+            packed: packed.clone(),
+            packed_locks: Arc::clone(&locks),
+        };
+        let buffer: IMFMediaBuffer = surface::Surface(layout).into();
+        let id = CameraId("planar".into());
+        let (held, cost) = lock_buffer(buffer, &mode, WIDTH.cast_signed(), true, &id).expect("the buffer locks");
+        // SAFETY: the lock is held until `unlock` below, after the slice's last use.
+        let bytes = unsafe { held.bytes() }.to_vec();
+        held.unlock();
+        assert!(cost == Cost::MayCopy, "the fallback is counted");
+        assert_eq!(locks.load(Ordering::SeqCst), 1, "the packed Lock was not used");
+        assert_eq!(bytes, packed, "the chroma plane was read from the wrong place");
     }
 }
