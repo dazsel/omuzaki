@@ -429,6 +429,7 @@ pub trait AudioEngine: Send + Sync {
 - **Lifetimes:**
   - dropping a `TapHandle` or a `TapReader` closes its tap;
   - dropping a `FeedWriter` closes its feed, and its source plays silence;
+  - a closing feed fades out over 2.5 ms; `FeedWriter::closer()` raises the close flag from another thread, and `FeedWriter::playhead()` is a bounded log (about 2 s) of per-block records saying which feed samples entered the bus at which engine sample, plus the engine sample where a closed feed went silent (`cut_at_sample`, the authority on what played) (`ai-performer-voice-face.md` §3.2, §3.3, ADR 0041);
   - closing sets a flag the audio thread reads at the next block and never waits for it. The slot is reclaimed at the
     next compile.
 - **Events:** each `subscribe()` gets its own bounded queue of 256 that drops the oldest event and counts drops, so
@@ -546,6 +547,7 @@ One follow-up keeps it DRY: once the API crate carries the ring, the speech host
 (TTS, a music decoder). An underrun plays silence and is counted. A feed declares its rate, and the engine resamples it
 at the edge. TTS writes the AI voice ahead of time; the soundboard and music use the player source (BR-21), whose
 decoded samples are shared buffers made off-thread.
+The AI performer's TTS host writes two alternating feeds into `ai_voice` and drives its mouth from the PCM ahead of playback, not from the bus tap (`ai-performer-voice-face.md` §3, §4.1, ADR 0041). Its private turns go to a third feed on an `ai_voice_private` bus whose only output is `monitor_out`, so they never depend on how long `CohostOnly` lasts (§3.2 there).
 
 ### 4.5 Streaming model slots in the graph (ML-14)
 
@@ -755,7 +757,7 @@ no clicks, block-size invariance, no allocation, and CPU.
 ### 6.2 Presets per character
 
 A preset is data: a name and the chain (`NodeSpec`s with parameters).
-- **Storage:** with the character (`characters/<id>/voice.toml`), so a character's voice travels with it. The active
+- **Storage:** with the character (`characters/<id>/voice.toml`), so a character's voice travels with it (the TTS voice assignment is a separate `voice-assignment.toml`, `ai-performer-voice-face.md` §3.4). The active
   preset is a perform setting.
 - **Switching:** by hotkey, scene or op. Each is a call to `audio.fx.apply`, which is a parameter change when the
   chain's shape matches and a structural one otherwise (section 3.3).
