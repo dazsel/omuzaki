@@ -2,7 +2,7 @@
 //! structured, actionable [`OpError`]s the contract promises (spec §6).
 
 use omuzaki_doc_api::{DocPath, PatchError};
-use omuzaki_ops_api::{Actor, OpError, Scope, TxId};
+use omuzaki_ops_api::{Actor, OpError, TxId};
 
 /// Why an [`Executor`](crate::Executor) couldn't be built.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -28,12 +28,6 @@ fn who(actor: &Actor) -> String {
         Actor::Plugin { id } => format!("plugin {id}"),
         Actor::System => "the system".to_owned(),
     }
-}
-
-/// The actor lacks `scope` for `doing` (e.g. "run `face.set_profile`"). The hint names the scope to grant.
-pub(crate) fn denied(actor: &Actor, doing: &str, scope: Scope) -> OpError {
-    OpError::denied(format!("{} may not {doing}: it needs the {scope} scope", who(actor)))
-        .hint(format!("grant the {scope} scope for this session, then retry"))
 }
 
 /// Applying an op's own patch failed. A conflict means the document no longer matches what the op planned against.
@@ -65,18 +59,6 @@ pub(crate) fn patch_error_path(error: &PatchError) -> &DocPath {
 pub(crate) fn revert_failed(what: &str, error: &PatchError, changed_by: Option<&Actor>, hint: &str) -> OpError {
     let by = changed_by.map(|actor| format!(" (last by {})", who(actor))).unwrap_or_default();
     OpError::conflict(format!("can't {what}: {} was changed since{by}", patch_error_path(error))).hint(hint)
-}
-
-/// A step holds `op`, which has effects outside the document. Undo and redo can't revert those yet, so they refuse the
-/// whole step rather than revert only its document part (ADR 0036 decision 9).
-pub(crate) fn explicit_refused(verb: &str, label: &str, op: &str) -> OpError {
-    OpError::unsupported(format!(
-        "can't {verb} {label:?}: {op} has effects outside the document, and that effect was not reverted"
-    ))
-    .hint(format!(
-        "that step is dropped from your {verb} history, so the next {verb} reaches the step before it; \
-         reverse the effect of {op} by hand"
-    ))
 }
 
 /// `tx` isn't an open transaction.
