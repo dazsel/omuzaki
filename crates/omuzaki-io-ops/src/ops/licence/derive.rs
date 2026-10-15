@@ -213,9 +213,15 @@ impl From<&DerivedLicence> for DerivedSummary {
 }
 
 impl DerivedLicence {
-    /// Every contribution to the join, the parts first and then the applications, as part rows.
+    /// Every contribution to the join, the parts first and then the applications, as part rows; a character with no
+    /// parts also has the floor, so a refusal can name what limits the record.
     pub(crate) fn contributions(&self) -> Vec<PartRow> {
-        self.parts.iter().cloned().chain(self.applications.iter().map(ApplicationRow::as_row)).collect()
+        let mut all: Vec<PartRow> =
+            self.parts.iter().cloned().chain(self.applications.iter().map(ApplicationRow::as_row)).collect();
+        if self.parts.is_empty() {
+            all.push(no_parts_floor());
+        }
+        all
     }
 }
 

@@ -282,3 +282,18 @@ fn a_character_with_no_parts_keeps_the_most_restrictive_floor_whatever_it_has_ap
     assert!(!derived.project_owned && !derived.complete);
     assert_eq!(derived.record.meta.terms, UseTerms::default());
 }
+
+#[test]
+fn licence_set_names_the_floor_when_a_character_with_no_parts_claims_more_than_it_allows() {
+    let mut root = json!({ "characters": { "mira": serde_json::to_value(mock_character().unwrap()).unwrap() } });
+    root["characters"]["mira"]["parts"] = json!({});
+    root["characters"]["mira"]["applied"]["hair-style"] = node("omuzaki/hair/twintails", ItemRights::first_party());
+    let doc = MemDoc::from_value(root);
+    let mut record = derive(&doc).record;
+    record.provenance.commercial = Commercial::Ok;
+    record.provenance.licence = "CC0-1.0".into();
+    let args = json!({ "character": "mira", "record": serde_json::to_value(&record).unwrap() });
+    let error = plan(&doc, "licence.set", args).expect_err("the floor limits the record");
+    assert!(error.message.contains("limited by `(no parts)`"), "{}", error.message);
+    assert!(!error.message.contains("limited by )") && !error.message.contains("limited by  "), "{}", error.message);
+}
