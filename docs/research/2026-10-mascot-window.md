@@ -264,10 +264,12 @@ premultiplied result, and record the colour of the known patches.
 ## 9. The spike binaries and what has been run
 
 `spikes/mascot-window/` is its own workspace root with its own `Cargo.lock` (winit 0.30.13, wgpu 30.0.1, eframe 0.36.2;
-not in the main workspace). `cargo build --release --locked` from that folder builds four binaries. All four draw the
-Spout spike's `scene.wgsl` (copied in unmodified, premultiplied, soft edges and known-value patches) into an offscreen
-texture and copy it to the swap chain, applying `--opacity` and, for a `PostMultiplied` surface, the division by alpha.
-The window's per-pixel click-through mask is that same picture read back from the GPU once.
+not in the main workspace). `cargo build --release --locked` from that folder builds four binaries. `window`,
+`egui-viewport` and `cost` draw the Spout spike's `scene.wgsl` (copied in unmodified, premultiplied, soft edges and
+known-value patches); `window` and `cost` draw it into an offscreen texture and copy it to the swap chain, applying
+`--opacity` and, for a `PostMultiplied` surface, the division by alpha, and `egui-viewport` uploads it as an egui texture.
+`caps` draws nothing: it only asks each backend what a window surface offers. The window's per-pixel click-through mask is
+the picture read back from the GPU, redone when the window's size changes and applied at the opacity the window is shown at.
 
 | Binary | What it does | Section 9 item |
 |---|---|---|
@@ -307,7 +309,9 @@ warnings` on `aarch64-apple-darwin` pass; nothing was linked or run there.
 
 ### 9.2 Still not verified (needs a machine)
 
-Run each on its OS with the binaries from the `spike-build.yml` artifact and record, per machine, the OS build, GPU and
+Run each on its OS with the binaries from the `spike-build.yml` workflow (`workflow_dispatch`, `spike` =
+`mascot-window`; the Director has approved it and the broadcast lead is adding it, so it may not be on `main` yet; until
+it is, `cargo build --release --locked` in `spikes/mascot-window/` makes the same binaries) and record, per machine, the OS build, GPU and
 driver, desktop and compositor and `XDG_SESSION_TYPE` (item 5), and screenshots of the window over solid white and solid
 black (item 6; `--probe` prints the OS state read back).
 
