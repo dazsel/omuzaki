@@ -87,6 +87,6 @@ pub use skeleton::{
     Rig, Skeleton, SkeletonError, Transform,
 };
 pub use spring::{
-    Collider, ColliderGroup, ColliderShape, PHYSICS_HZ, PHYSICS_STEP, SpringChain, SpringError, SpringJoint,
-    SpringParams, SpringSet, SpringSolver, SpringStats,
+    Collider, ColliderGroup, ColliderShape, JointLimit, PHYSICS_HZ, PHYSICS_STEP, SpringChain, SpringError,
+    SpringJoint, SpringParams, SpringSet, SpringSolver, SpringStats,
 };

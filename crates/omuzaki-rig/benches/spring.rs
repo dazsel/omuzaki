@@ -9,7 +9,7 @@
 use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use omuzaki_anim_api::{SpringSolver, Tick};
+use omuzaki_anim_api::{JointLimit, SpringSolver, Tick};
 use omuzaki_rig::spring::VrmSpringSolver;
 
 #[path = "../tests/support/spring_rig.rs"]
@@ -46,6 +46,27 @@ fn solver(c: &mut Criterion) {
             frame += 1;
             extended.animate(&mut pose, frame);
             solver.step(Tick::at_rate(frame, 60.0), &extended.skeleton, black_box(&mut pose));
+        });
+    });
+
+    // The base hair with a cone, hinge or spherical limit on every joint (a third of the chains each).
+    let mut limited = spring_rig::hair_rig(30, 11);
+    for (i, chain) in limited.set.chains.iter_mut().enumerate() {
+        for joint in &mut chain.joints {
+            joint.limit = Some(match i % 3 {
+                0 => JointLimit::cone(0.3),
+                1 => JointLimit::hinge(0.4),
+                _ => JointLimit::spherical(0.3, 0.2),
+            });
+        }
+    }
+    let mut solver = VrmSpringSolver::new(&limited.set, &limited.skeleton).expect("the rig's springs are valid");
+    let mut frame = 0_u64;
+    c.bench_function("step, 300 joints, 60 fps (2 sub-steps), cone, hinge and spherical limits", |b| {
+        b.iter(|| {
+            frame += 1;
+            limited.animate(&mut pose, frame);
+            solver.step(Tick::at_rate(frame, 60.0), &limited.skeleton, black_box(&mut pose));
         });
     });
 
