@@ -27,6 +27,7 @@ tokio-util.workspace = true
 tracing.workspace = true
 omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-doc-api = { path = "../omuzaki-doc-api" }
+omuzaki-history-api = { path = "../omuzaki-history-api" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-store-api = { path = "../omuzaki-store-api" }
 
@@ -38,6 +39,7 @@ reqwest.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
+omuzaki-history-mock = { path = "../omuzaki-history-mock" }
 omuzaki-ops-mock = { path = "../omuzaki-ops-mock" }
 omuzaki-store-mock = { path = "../omuzaki-store-mock" }
 
