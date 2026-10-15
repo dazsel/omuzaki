@@ -5,6 +5,7 @@
 //! - `lint-ui-writes`: UI code changes the document only through the `Runner` (QG-11).
 //! - `lint-seed`: a published seed version keeps its content, and no seed item names private material (library D15, D16).
 //! - `lint-crate-table`: every crate describes itself in its manifest, and `crates/README.md` has no crate table (ADR 0053).
+//! - `lint-mods`: a folder whose module list is generated declares no module by hand (ADR 0054).
 //! - `crate-table`: print the crate table generated from those manifests (ADR 0053).
 //! - `registry`: print the self-registrations the source declares, the expected side of the link gate.
 //! - `dist`: pack the Windows zip (`omuzaki.exe`, models, notices).
@@ -16,6 +17,7 @@ mod crate_table;
 mod error;
 mod links;
 mod lint_deps;
+mod lint_mods;
 mod lint_seed;
 mod lint_ui_writes;
 mod process;
@@ -52,6 +54,8 @@ enum Command {
     LintSeed(lint_seed::LintSeedArgs),
     /// Fail on a crate without `kind` and `summary` under `[package.metadata.omuzaki]`, or a crate table in crates/README.md.
     LintCrateTable,
+    /// Fail on a crate that lists a folder under `generated-mods` but declares its modules by hand there, or not at all.
+    LintMods,
     /// Print the crate table (Markdown), generated from each crate's manifest.
     CrateTable,
     /// Print every self-registration in the source (or, with `--app`, those a binary must contain), one per line.
@@ -94,6 +98,7 @@ fn run(cli: &Cli) -> Result<ExitCode> {
         Command::LintUiWrites => lint_ui_writes::run(&workspace),
         Command::LintSeed(args) => lint_seed::run(&workspace, args),
         Command::LintCrateTable => crate_table::lint(&workspace),
+        Command::LintMods => lint_mods::lint(&workspace),
         Command::CrateTable => crate_table::print(&workspace),
         Command::Registry(args) => links::registry(&workspace, args),
         Command::Check(args) => check::run(&workspace, args),
