@@ -1,0 +1,7 @@
+section = "rust"
+item = "dirs-sys"
+kind = "crate"
+used_for = "the OS folder lookup behind `directories`"
+status = "yes"
+audit = "(crates.io: MIT OR Apache-2.0)"
+crates = ["dirs-sys"]

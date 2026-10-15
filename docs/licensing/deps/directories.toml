@@ -1,0 +1,7 @@
+section = "rust"
+item = "directories"
+kind = "crate"
+used_for = "the OS config and local data folders of the settings store (`omuzaki-settings`)"
+status = "yes"
+audit = "(crates.io: MIT OR Apache-2.0)"
+crates = ["directories"]

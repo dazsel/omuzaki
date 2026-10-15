@@ -1,0 +1,8 @@
+section = "rust"
+item = "option-ext"
+kind = "crate"
+used_for = "an `Option` helper that `dirs-sys` uses"
+status = "conditions"
+condition = "MPL-2.0 file-level: keep unmodified, ship notice"
+audit = "B3"
+crates = ["option-ext"]
