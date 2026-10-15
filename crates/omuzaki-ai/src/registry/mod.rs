@@ -19,17 +19,18 @@ mod tests;
 
 use std::borrow::Cow;
 use std::ops::Deref;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
 use omuzaki_ai_api::{
-    CatalogueEntry, EvalReport, FileSource, ImportError, ModelEntry, ModelManifest, ModelRef, ModelRegistry,
+    CatalogueEntry, EvalReport, FileSource, ImportError, LoadError, ModelEntry, ModelManifest, ModelRef, ModelRegistry,
     ModelStatus, NoProgress, Origin, Provider, RegistryError, Requester, Session, SessionOptions, SlotInfo, SlotMode,
     SlotRef, SlotStatus, Stream, SyncReport, Version, find_slot, slots,
 };
 
-use crate::slot_session::SlotSession;
+use crate::slot_session::{self, Loader, SlotSession};
 use catalogue::Registered;
 use state::{Health, Loaded, State};
 
@@ -48,7 +49,7 @@ pub const CACHE_DIR: &str = "cache";
 /// The registry for shipped models, in this process.
 ///
 /// A cheap handle: the data lives in one shared [`Shared`], so the slot sessions it opens can keep following their
-/// slot from a loader thread of their own after `open` returns.
+/// slot from the registry's loader thread after `open` returns.
 pub struct Registry {
     shared: Arc<Shared>,
 }
@@ -64,29 +65,30 @@ pub struct Shared {
     /// Held for a whole install or rollback, so two of them never interleave their reads and writes of the state.
     changing: Mutex<()>,
     notes: Vec<String>,
-    /// Counts every committed state change. Slot sessions compare it with the value they last acted on, without a
-    /// lock, to learn that their slot's choice may have changed.
+    /// Counts every committed state change. Changed only with the state locked, so a chain read with the state
+    /// locked knows which change it reflects; the loader publishes nothing chosen from an older one.
     generation: AtomicU64,
     /// Models switched off for this app session only, with the reason: a model that crashed. The state file never
     /// records them, so they run again after a restart or a reinstall.
     session_disabled: Mutex<Vec<(ModelRef, String)>>,
-    /// What each open slot session has loaded right now (`None`: nothing, e.g. while a fallback loads), so `slots`
-    /// reports a model as active only once it is. Keyed by a per-session id; the newest session of a slot wins.
-    running: Mutex<Vec<Running>>,
+    /// The open slot sessions, oldest first. Each one's applied record says what answers in it; for `slots` and
+    /// `models` the newest session of a slot speaks for it.
+    sessions: Mutex<Vec<Arc<slot_session::Shared>>>,
     next_session: AtomicU64,
+    /// The one loader thread every slot session shares, started on first need.
+    loader: Arc<Loader>,
+    /// Why the loader thread couldn't be started, while it can't. Also held while starting it.
+    loader_failure: Mutex<Option<String>>,
     /// Models that failed to load as a slot session's replacement, with the runtime's words: `slots` says why the
     /// model it expected isn't the one running. Forgotten when the model loads.
     load_failures: Mutex<Vec<(ModelRef, String)>>,
 }
 
-/// What a slot session has loaded: a model, or nothing.
-struct Held(Option<ModelRef>);
-
-/// One slot session's loaded model, for [`Shared`]'s `running`.
-struct Running {
-    id: u64,
-    slot: SlotRef,
-    model: Option<ModelRef>,
+impl Drop for Shared {
+    /// The registry is gone: so is its loader thread.
+    fn drop(&mut self) {
+        self.loader.close();
+    }
 }
 
 impl Deref for Registry {
@@ -158,8 +160,10 @@ impl Registry {
                 notes,
                 generation: AtomicU64::new(0),
                 session_disabled: Mutex::new(Vec::new()),
-                running: Mutex::new(Vec::new()),
+                sessions: Mutex::new(Vec::new()),
                 next_session: AtomicU64::new(0),
+                loader: Arc::new(Loader::new()),
+                loader_failure: Mutex::new(None),
                 load_failures: Mutex::new(Vec::new()),
             }),
         };
@@ -185,8 +189,23 @@ impl Registry {
         *state = next;
         // Only now, with the file written and the change taken, is a record that no longer applies safe to forget.
         self.session_off().retain(|(model, reason)| state.health(model).is_some_and(|h| &h.reason == reason));
-        self.generation.fetch_add(1, Ordering::Release);
+        self.changed(state);
         Ok(())
+    }
+
+    /// Counts a change to `state` (still locked) and tells the open slot sessions: one whose model can't be used any
+    /// more stops answering at once, and the loader looks at each of them.
+    fn changed(&self, state: &State) {
+        let generation = self.generation.fetch_add(1, Ordering::AcqRel) + 1;
+        let sessions = self.session_list();
+        for session in sessions.iter() {
+            session.withdraw(generation, &|model| self.usable(state, model).is_some());
+            self.loader.poke(session);
+        }
+        if !sessions.is_empty() {
+            drop(sessions);
+            self.start_loader();
+        }
     }
 
     fn session_off(&self) -> MutexGuard<'_, Vec<(ModelRef, String)>> {
@@ -286,7 +305,7 @@ impl Registry {
         out
     }
 
-    /// Another handle to this registry, for a slot session's loader thread.
+    /// Another handle to this registry, for a slot session it opens.
     pub(crate) fn handle(&self) -> Self {
         Self { shared: Arc::clone(&self.shared) }
     }
@@ -297,31 +316,35 @@ impl Registry {
     }
 
     /// Loads the first model of `slot`'s choice chain that opens (see [`chain`](Self::chain)), skipping the ones that
-    /// don't. If the chain reaches `current` first, that model is already the best that can run: nothing is loaded.
+    /// don't. If the chain reaches a model in `held` first, that one is already the best that can run: nothing is
+    /// loaded. Returns the generation of the state the chain was read from.
     ///
     /// # Errors
-    /// The last load error, or `NoModel` when the chain is empty. Either way `current`, if any, is not in the chain.
+    /// The last load error, or `NoModel` when the chain is empty. Either way nothing in `held` is in the chain.
     pub(crate) fn load_chain(
         &self,
         slot: &SlotRef,
         explicit: Option<&ModelRef>,
-        current: Option<&ModelRef>,
-    ) -> Result<Chosen, RegistryError> {
-        let info = Self::slot_info(slot)?;
-        let (candidates, wanted) = {
+        held: &[ModelRef],
+    ) -> (u64, Result<Chosen, RegistryError>) {
+        let (generation, candidates) = {
             let state = self.lock();
             let candidates: Vec<state::Installed> = self.chain(&state, slot, explicit).into_iter().cloned().collect();
-            (candidates, self.ideal(&state, slot, explicit))
+            (self.generation(), candidates)
+        };
+        let info = match Self::slot_info(slot) {
+            Ok(info) => info,
+            Err(e) => return (generation, Err(e)),
         };
         let mut last = None;
         for installed in &candidates {
-            if current == Some(&installed.model) {
-                return Ok(Chosen::Keep { wanted });
+            if held.contains(&installed.model) {
+                return (generation, Ok(Chosen::Keep(installed.model.clone())));
             }
-            match self.load(installed, &info) {
+            match self.load_caught(installed, &info) {
                 Ok(session) => {
                     self.load_failures_list().retain(|(m, _)| m != &installed.model);
-                    return Ok(Chosen::Loaded { session, model: installed.model.clone(), wanted });
+                    return (generation, Ok(Chosen::Loaded { session, model: installed.model.clone() }));
                 }
                 Err(e) => {
                     tracing::warn!(model = %installed.model, "couldn't open: {e}");
@@ -332,7 +355,15 @@ impl Registry {
                 }
             }
         }
-        Err(last.unwrap_or(RegistryError::NoModel { slot: slot.clone(), without_model: info.without_model }))
+        let none = || RegistryError::NoModel { slot: slot.clone(), without_model: info.without_model.clone() };
+        (generation, Err(last.unwrap_or_else(none)))
+    }
+
+    /// [`load`](Self::load), with a runtime that panics recorded as a load failure like any other: one broken runtime
+    /// must not take the loader thread (and every slot session) or the caller with it.
+    fn load_caught(&self, installed: &state::Installed, info: &SlotInfo) -> Result<Box<dyn Session>, RegistryError> {
+        catch_unwind(AssertUnwindSafe(|| self.load(installed, info)))
+            .unwrap_or_else(|_| Err(RegistryError::Load(LoadError::Runtime(LOAD_PANICKED.to_owned()))))
     }
 
     /// Switches `model` off for this app session, with `reason`: it drops out of the choice chains and shows as
@@ -346,46 +377,123 @@ impl Registry {
             // The file isn't written for these anyway, so a failing disk must not keep a crashing model running.
             tracing::warn!(%model, "couldn't save the model state: {e}");
             *state = next;
-            self.generation.fetch_add(1, Ordering::Release);
+            self.changed(&state);
         }
     }
 
-    /// Notes that a slot session for `slot` is open and runs `model`. Returns its id for the calls below.
-    pub(crate) fn register_session(&self, slot: &SlotRef, model: Option<ModelRef>) -> u64 {
-        let id = self.next_session.fetch_add(1, Ordering::Relaxed);
-        self.running_list().push(Running { id, slot: slot.clone(), model });
-        id
+    /// A fresh id for a slot session.
+    pub(crate) fn next_session_id(&self) -> u64 {
+        self.next_session.fetch_add(1, Ordering::Relaxed)
     }
 
-    /// Notes what session `id` has loaded now (`None`: nothing).
-    pub(crate) fn report_running(&self, id: u64, model: Option<ModelRef>) {
-        if let Some(entry) = self.running_list().iter_mut().find(|r| r.id == id) {
-            entry.model = model;
-        }
+    /// Notes that `session` is open: commits tell it about changes, and `slots` reads what answers in it.
+    pub(crate) fn add_session(&self, session: Arc<slot_session::Shared>) {
+        self.session_list().push(session);
     }
 
     /// Notes that session `id` is gone.
     pub(crate) fn forget_session(&self, id: u64) {
-        self.running_list().retain(|r| r.id != id);
+        self.session_list().retain(|s| s.id != id);
+    }
+
+    /// The open sessions that asked the loader for something, for the loader thread.
+    pub(crate) fn sessions_with_work(&self) -> Vec<Arc<slot_session::Shared>> {
+        self.session_list().iter().filter(|s| s.take_work()).cloned().collect()
+    }
+
+    fn session_list(&self) -> MutexGuard<'_, Vec<Arc<slot_session::Shared>>> {
+        self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// True if `model` can run now.
+    pub(crate) fn is_usable(&self, model: &ModelRef) -> bool {
+        self.usable(&self.lock(), model).is_some()
+    }
+
+    /// The model `slot` would run if nothing had crashed or failed to load in this app session: what a slot session
+    /// that runs another one stands in for.
+    pub(crate) fn wanted(&self, slot: &SlotRef, explicit: Option<&ModelRef>) -> Option<ModelRef> {
+        self.ideal(&self.lock(), slot, explicit)
+    }
+
+    /// The loader thread's handle. Every slot session of this registry shares it.
+    pub(crate) fn loader(&self) -> Arc<Loader> {
+        Arc::clone(&self.loader)
+    }
+
+    /// Starts the loader thread if it isn't running. If the OS refuses it, the reason shows in `slots` and the next
+    /// `open`, `reset` or commit tries again; meanwhile every slot session keeps what it runs.
+    pub(crate) fn start_loader(&self) {
+        let mut failure = self.loader_failure.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.loader.started() {
+            return;
+        }
+        match self.loader.start(Arc::downgrade(&self.shared)) {
+            Ok(()) => *failure = None,
+            Err(e) => {
+                tracing::error!("couldn't start the thread that loads models: {e}");
+                *failure = Some(format!("Omuzaki couldn't start the thread that loads models ({e})"));
+            }
+        }
+    }
+
+    /// A handle to the registry `shared` points at, if it still exists.
+    pub(crate) fn upgrade(shared: &Weak<Shared>) -> Option<Self> {
+        shared.upgrade().map(|shared| Self { shared })
     }
 
     fn load_failures_list(&self) -> MutexGuard<'_, Vec<(ModelRef, String)>> {
         self.load_failures.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Why `model` isn't running when it should be: it crashed in this app session, or a slot session couldn't load it.
-    fn trouble_with(&self, model: &ModelRef) -> Option<String> {
+    /// Why `model` isn't running when it should be: it crashed in this app session, a slot session couldn't load it,
+    /// it can't be used, or there is no loader to load it. `None`: nothing is known against it (it is loading).
+    fn trouble_with(&self, state: &State, model: &ModelRef) -> Option<String> {
         let crashed = self.session_off().iter().find(|(m, _)| m == model).map(|(_, reason)| reason.clone());
-        crashed.or_else(|| self.load_failures_list().iter().find(|(m, _)| m == model).map(|(_, e)| e.clone()))
+        crashed
+            .or_else(|| self.load_failures_list().iter().find(|(m, _)| m == model).map(|(_, e)| e.clone()))
+            .or_else(|| self.unusable_because(state, model))
+            .or_else(|| self.loader_failure.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone())
     }
 
-    fn running_list(&self) -> MutexGuard<'_, Vec<Running>> {
-        self.running.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    /// Why `model` can't be used, if it can't.
+    fn unusable_because(&self, state: &State, model: &ModelRef) -> Option<String> {
+        if self.usable(state, model).is_some() {
+            return None;
+        }
+        if state.installed(model).is_none() {
+            return Some("it isn't installed".to_owned());
+        }
+        if state.revoked(model) {
+            return Some("it was withdrawn by the model catalogue".to_owned());
+        }
+        let registered = self.catalogue.iter().find(|r| &r.model == model).and_then(|r| self.disabled(state, r));
+        Some(
+            registered
+                .or_else(|| state.health(model).map(|h| h.reason.clone()))
+                .unwrap_or_else(|| format!("it needs a newer Omuzaki than {}", self.app_version)),
+        )
     }
 
-    /// What the newest open session of `slot` has loaded; `None` if no session is open.
-    fn running_in(&self, slot: &SlotRef) -> Option<Held> {
-        self.running_list().iter().rev().find(|r| &r.slot == slot).map(|r| Held(r.model.clone()))
+    /// What answers in `slot` now: what its newest open slot session runs, or with none open, what `open` would load.
+    fn active_in(&self, state: &State, slot: &SlotRef) -> Option<ModelRef> {
+        let newest = self.session_list().iter().rev().find(|s| &s.slot == slot).cloned();
+        match newest {
+            Some(session) => session.answering(),
+            None => self.chain(state, slot, None).first().map(|i| i.model.clone()),
+        }
+    }
+
+    /// The `fallback` line of `slots`: `expected` should run, and `active` does instead.
+    fn fallback_text(&self, state: &State, expected: &ModelRef, active: Option<&ModelRef>, info: &SlotInfo) -> String {
+        let then = match active {
+            Some(active) => format!("so the slot runs {active}"),
+            None => info.without_model.clone(),
+        };
+        match self.trouble_with(state, expected) {
+            Some(why) => format!("{expected} can't run ({why}), {then}"),
+            None => format!("{expected} is loading, {then} until it is ready"),
+        }
     }
 
     /// The slot's info, or `UnknownSlot`.
@@ -455,22 +563,19 @@ impl Registry {
 
 /// What [`Registry::load_chain`] found.
 pub(crate) enum Chosen {
-    /// The model the caller already runs is the best the chain offers.
-    Keep {
-        /// The model that would run if nothing had crashed in this app session (see [`Chosen::Loaded`]).
-        wanted: Option<ModelRef>,
-    },
+    /// This model, which the caller holds, is the best the chain offers.
+    Keep(ModelRef),
     /// A freshly loaded session.
     Loaded {
         /// The session.
         session: Box<dyn Session>,
         /// The model it runs.
         model: ModelRef,
-        /// The model that would run if nothing had crashed in this app session (the explicit one, the selection or
-        /// the shipped default); `model` stands in for it if they differ.
-        wanted: Option<ModelRef>,
     },
 }
+
+/// What a runtime that panicked while loading is recorded as.
+const LOAD_PANICKED: &str = "its runtime failed while loading it";
 
 fn entry_of(
     manifest: &ModelManifest,
@@ -501,20 +606,12 @@ impl ModelRegistry for Registry {
             .map(|slot| {
                 let info = slot.info();
                 let selected = state.slot(&info.slot).and_then(|r| r.selected.clone());
-                let best = self.chain(&state, &info.slot, None).first().map(|i| i.model.clone());
-                // A slot session reports what it has loaded; a fallback is active only once it is.
-                let active = self.running_in(&info.slot).map_or_else(|| best.clone(), |held| held.0);
-                // What the person asked for, and so what "running something else" is measured against. A model that is
-                // only loading, with nothing known against it, is no fallback yet.
+                let active = self.active_in(&state, &info.slot);
+                // What the person asked for (else the shipped default): whenever something else answers, say why.
                 let expected = selected.clone().or_else(|| self.ideal(&state, &info.slot, None));
-                let fallback = expected.filter(|e| Some(e) != active.as_ref()).and_then(|e| {
-                    let trouble = self.trouble_with(&e);
-                    (Some(&e) != best.as_ref() || trouble.is_some()).then(|| {
-                        let why = trouble.map(|t| format!(" ({t})")).unwrap_or_default();
-                        let then = if active.is_some() { "so the slot runs its default" } else { &info.without_model };
-                        format!("{e} can't run{why}, {then}")
-                    })
-                });
+                let fallback = expected
+                    .filter(|e| Some(e) != active.as_ref())
+                    .map(|e| self.fallback_text(&state, &e, active.as_ref(), &info));
                 SlotStatus { info, selected, active, fallback }
             })
             .collect();
@@ -529,7 +626,7 @@ impl ModelRegistry for Registry {
             .iter()
             .filter(|r| slot.is_none_or(|s| &r.manifest.slot == s))
             .map(|r| {
-                let active = self.chain(&state, &r.manifest.slot, None).first().map(|i| i.model.clone());
+                let active = self.active_in(&state, &r.manifest.slot);
                 self.entry(&state, r, active.as_ref())
             })
             .collect();
@@ -549,16 +646,13 @@ impl ModelRegistry for Registry {
                 return Err(RegistryError::WrongSlot { model: wanted.clone(), wanted: slot.clone() });
             }
         }
-        // Read before the chain, so a change that lands meanwhile is noticed by the session's first run.
-        let generation = self.generation();
-        match self.load_chain(slot, model, None)? {
-            Chosen::Loaded { session, wanted, .. } => {
-                Ok(Box::new(SlotSession::start(self.handle(), slot, model.cloned(), generation, session, wanted)?))
-            }
-            Chosen::Keep { .. } => {
-                Err(RegistryError::NoModel { slot: slot.clone(), without_model: info.without_model })
-            }
-        }
+        let (generation, chosen) = self.load_chain(slot, model, &[]);
+        let Chosen::Loaded { session, model: loaded } = chosen? else {
+            // Nothing is held, so the chain can't reach a held model.
+            return Err(RegistryError::NoModel { slot: slot.clone(), without_model: info.without_model });
+        };
+        self.start_loader();
+        Ok(Box::new(SlotSession::start(self.handle(), slot, model.cloned(), generation, session, loaded)?))
     }
 
     fn open_stream(&self, slot: &SlotRef, _model: Option<&ModelRef>) -> Result<Stream, RegistryError> {

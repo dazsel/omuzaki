@@ -1,5 +1,6 @@
 //! `run` on a slot session allocates nothing: not in the steady state (1000 runs, once the output buffers have
-//! grown), and not across a selection change or a crash either, where the loader thread does the allocating. The
+//! grown), and not across a selection change or a crash either, where the loader thread does the allocating; also
+//! while commits and the loader contend for the session's mailbox. The
 //! counting allocator is the one from `omuzaki-ai-mock`'s `hot_loop` test; it counts only on the measuring thread.
 
 // A counting allocator is the only way to *prove* "no allocation"; the workspace denies unsafe code by default.
@@ -7,7 +8,7 @@
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 mod common;
 
@@ -107,12 +108,13 @@ fn allocated_until(
     }
 }
 
-#[test]
-fn run_allocates_nothing_in_the_steady_state_or_across_a_change_or_a_crash() {
+/// A registry with three echo models: 1.0.0 is the shipped default, 2.0.0 works and 3.0.0 crashes after three runs.
+/// Each test tags its files apart, so the two tests' models never share a digest.
+fn rig(tag: &str) -> (tempfile::TempDir, Registry, [ModelRef; 3]) {
     let files = [
-        ("1.0.0", model_file("alloc-1", None)),
-        ("2.0.0", model_file("alloc-2", None)),
-        ("3.0.0", model_file("alloc-3", Some(3))),
+        ("1.0.0", model_file(&format!("{tag}-1"), None)),
+        ("2.0.0", model_file(&format!("{tag}-2"), None)),
+        ("3.0.0", model_file(&format!("{tag}-3"), Some(3))),
     ];
     let mut net = MemFetcher::new();
     for (version, bytes) in &files {
@@ -129,10 +131,16 @@ fn run_allocates_nothing_in_the_steady_state_or_across_a_change_or_a_crash() {
         let v = v.parse().unwrap();
         registry.models(Some(&slot)).into_iter().find(|e| e.model.version == v).unwrap().model
     };
-    let (v1, v2, v3) = (by_version("1.0.0"), by_version("2.0.0"), by_version("3.0.0"));
-    for model in [&v3, &v2, &v1] {
+    let models = [by_version("1.0.0"), by_version("2.0.0"), by_version("3.0.0")];
+    for model in models.iter().rev() {
         registry.install(model, &NoProgress).unwrap(); // the last one, v1, is the shipped default
     }
+    (dir, registry, models)
+}
+
+/// 1000 steady runs, a selection change and a crash with its fallback, every run measured.
+fn steady_change_and_crash(registry: &Registry, [v1, v2, v3]: &[ModelRef; 3]) {
+    let slot = "test_echo@1".parse().unwrap();
     let mut session = registry.open(&slot, None).unwrap();
     let mut out = TensorBuf::for_outputs(session.signature());
     let frame = [0.5f32; 480];
@@ -141,15 +149,54 @@ fn run_allocates_nothing_in_the_steady_state_or_across_a_change_or_a_crash() {
     let steady = (0..1000).map(|_| measured_run(&mut *session, &mut out, &frame).1).sum::<usize>();
     assert_eq!(steady, 0, "steady-state runs allocated");
 
-    registry.select(&slot, Some(&v2), Requester::Person).unwrap();
-    let change = allocated_until(&mut *session, &mut out, &frame, |s, r| r.is_ok() && s.info().model == v2);
+    registry.select(&slot, Some(v2), Requester::Person).unwrap();
+    let change = allocated_until(&mut *session, &mut out, &frame, |s, r| r.is_ok() && s.info().model == *v2);
     assert_eq!(change, 0, "runs across a selection change allocated");
 
-    registry.select(&slot, Some(&v3), Requester::Person).unwrap();
+    registry.select(&slot, Some(v3), Requester::Person).unwrap();
     let mut crashed = false;
     let crash = allocated_until(&mut *session, &mut out, &frame, |s, r| {
-        crashed |= s.info().model == v3 && r.is_ok(); // v3 answers, then dies after its third run
-        crashed && r.is_ok() && s.info().model == v1
+        crashed |= s.info().model == *v3 && r.is_ok(); // v3 answers, then dies after its third run
+        crashed && r.is_ok() && s.info().model == *v1
     });
     assert_eq!(crash, 0, "runs across a crash and its fallback allocated");
+}
+
+#[test]
+fn run_allocates_nothing_in_the_steady_state_or_across_a_change_or_a_crash() {
+    let (_dir, registry, models) = rig("alloc");
+    steady_change_and_crash(&registry, &models);
+}
+
+/// Stops the other thread even when an assertion fails, so the scope can end.
+struct Stop<'a>(&'a AtomicBool);
+
+impl Drop for Stop<'_> {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Commits on another slot, as fast as they go, lock every session's mailbox (to check its model) and wake the loader
+/// (which locks it again), so `run` often finds the mailbox taken: its retired sessions then wait in its own fixed
+/// queue, and a replacement waits until two places are free.
+#[test]
+fn run_allocates_nothing_while_commits_and_the_loader_contend_for_the_mailbox() {
+    let (_dir, registry, models) = rig("contend");
+    let other: omuzaki_ai_api::SlotRef = "test_stream@1".parse().unwrap();
+    let stop = AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        let churn = scope.spawn(|| {
+            let mut commits = 0usize;
+            while !stop.load(Ordering::Relaxed) {
+                registry.select(&other, None, Requester::Person).unwrap();
+                commits += 1;
+            }
+            commits
+        });
+        let stopping = Stop(&stop);
+        steady_change_and_crash(&registry, &models);
+        drop(stopping);
+        assert!(churn.join().unwrap() > 0, "the other thread committed while the session ran");
+    });
 }
