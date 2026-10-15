@@ -13,10 +13,11 @@ use omuzaki_anim_api::{
     Collider, ColliderGroup, ColliderShape, HumanoidBone, HumanoidPose, Pose, SpringChain, SpringParams, Transform,
 };
 use omuzaki_char_api::{
-    Anchor, AnchorId, BodyFit, BodyRegion, BoneName, BuildCtx, BuildError, BuildOptions, BuildServices, BuiltCharacter,
-    BuiltMesh, CharId, CharacterBuilder, CharacterDef, ExtraBone, FaceOverlay, HeadSurface, JointFit, JointRef,
-    MaterialName, MaterialSpec, MeshData, PartCategory, PartDef, PartId, PartKind, PartKindId, PartMesh, PartMeta,
-    PartOutput, PartRuntime, Publishes, RegistryBuilder, RigContribution, Section, Stature, extra_id, humanoid_id,
+    Anchor, AnchorId, AnchorsFact, BodyFit, BodyRegion, BoneName, BuildCtx, BuildError, BuildOptions, BuildServices,
+    BuiltCharacter, BuiltMesh, CharId, CharacterBuilder, CharacterDef, CollidersFact, ExtraBone, FaceFact, FaceOverlay,
+    FitFact, HeadFact, HeadSurface, JointFit, JointRef, MaterialName, MaterialSpec, MeshData, PartCategory, PartDef,
+    PartId, PartKind, PartKindId, PartMesh, PartMeta, PartOutput, PartRuntime, Publishes, RegistryBuilder,
+    RigContribution, Section, Stature, StatureFact, extra_id, humanoid_id,
 };
 use omuzaki_core::glam::{Mat4, Quat, Vec2, Vec3};
 use omuzaki_face_api::{Check, FaceLayerId, FaceProfile, FaceProjection, FaceRect, Palette, Validate};
@@ -169,20 +170,19 @@ impl PartKind for StatureBody {
         };
         let anchor =
             Anchor { bone: JointRef::HEAD, position: Vec3::new(0.0, 1.95, 0.0), rotation: Quat::from_rotation_y(0.3) };
-        Ok(PartOutput {
-            meshes: vec![mesh],
-            materials: vec![material],
-            runtime: p.simulate.then(|| Box::new(Idle) as Box<dyn PartRuntime>),
-            publishes: Publishes {
-                fit: Some(Arc::new(Torso { bind: if p.a_pose { a_pose() } else { HumanoidPose::REST } })),
-                colliders: vec![ColliderGroup { name: "body".to_owned(), colliders: vec![head] }],
-                anchors: vec![(AnchorId::new("crown").unwrap(), anchor)],
-                stature: Some(Stature { scale: p.scale, height_m: 1.9 * p.scale }),
-                ..Publishes::default()
-            },
-            rig,
-            ..PartOutput::default()
-        })
+        let mut out = PartOutput::new()
+            .with_meshes(vec![mesh])
+            .with_materials(vec![material])
+            .with_publishes(
+                Publishes::default()
+                    .with::<FitFact>(Arc::new(Torso { bind: if p.a_pose { a_pose() } else { HumanoidPose::REST } }))
+                    .with::<CollidersFact>(ColliderGroup { name: "body".to_owned(), colliders: vec![head] })
+                    .with::<AnchorsFact>((AnchorId::new("crown").unwrap(), anchor))
+                    .with::<StatureFact>(Stature { scale: p.scale, height_m: 1.9 * p.scale }),
+            )
+            .with_rig(rig);
+        out.runtime = p.simulate.then(|| Box::new(Idle) as Box<dyn PartRuntime>);
+        Ok(out)
     }
 }
 omuzaki_char_api::register_part_kind!(StatureBody);
@@ -242,17 +242,12 @@ impl PartKind for StatureHead {
         let (mesh, (name, mut spec)) = skinned("head", "stature-head-skin");
         spec.overlays.push(FaceOverlay::of(&projection, Ball.centre(), FaceLayerId::Base));
         let fit = JointFit::new([(JointRef::Humanoid(HumanoidBone::Head), Vec3::new(0.0, 1.78, 0.0))]);
-        Ok(PartOutput {
-            meshes: vec![mesh],
-            materials: vec![(name, spec)],
-            publishes: Publishes {
-                head: Some(Arc::new(Ball)),
-                face: Some(projection),
-                fit: Some(Arc::new(fit)),
-                ..Publishes::default()
-            },
-            ..PartOutput::default()
-        })
+        Ok(PartOutput::new().with_meshes(vec![mesh]).with_materials(vec![(name, spec)]).with_publishes(
+            Publishes::default()
+                .with::<HeadFact>(Arc::new(Ball))
+                .with::<FaceFact>(projection)
+                .with::<FitFact>(Arc::new(fit)),
+        ))
     }
 }
 omuzaki_char_api::register_part_kind!(StatureHead);
@@ -292,13 +287,11 @@ impl PartKind for StatureHair {
         let params = SpringParams { hit_radius: 0.01, stiffness: 0.5, gravity_power: 1.0, ..SpringParams::default() };
         rig.chains.push(SpringChain::new("hair_lock", &[a, b], params));
         let _ = extra_id(0);
-        Ok(PartOutput {
-            meshes: vec![mesh],
-            materials: vec![(name, spec)],
-            rig,
-            warnings: vec![format!("head_radius={} torso_radius={torso}", head.radius(Vec3::Y))],
-            ..PartOutput::default()
-        })
+        Ok(PartOutput::new()
+            .with_meshes(vec![mesh])
+            .with_materials(vec![(name, spec)])
+            .with_rig(rig)
+            .with_warnings(vec![format!("head_radius={} torso_radius={torso}", head.radius(Vec3::Y))]))
     }
 }
 omuzaki_char_api::register_part_kind!(StatureHair);
@@ -310,16 +303,13 @@ fn part(kind: &str, layer: i32, params: serde_json::Value) -> PartDef {
 }
 
 fn character(parts: &[(&str, PartDef)]) -> CharacterDef {
-    CharacterDef {
-        name: "Test".to_owned(),
-        template: omuzaki_char_api::BodyTemplateId::new("soft-sd").unwrap(),
-        seed: 1,
-        palette: Palette::default(),
-        skin_tone: None,
-        parts: parts.iter().map(|(n, p)| (PartId::new(*n).unwrap(), p.clone())).collect(),
-        face: FaceProfile::default(),
-        weight_brushes: BTreeMap::new(),
-    }
+    CharacterDef::new("Test".to_owned(), omuzaki_char_api::BodyTemplateId::new("soft-sd").unwrap())
+        .with_seed(1)
+        .with_palette(Palette::default())
+        .with_skin_tone(None)
+        .with_parts(parts.iter().map(|(n, p)| (PartId::new(*n).unwrap(), p.clone())).collect())
+        .with_face(FaceProfile::default())
+        .with_weight_brushes(BTreeMap::new())
 }
 
 fn full(scale: f32, a_pose: bool) -> Result<BuiltCharacter, BuildError> {

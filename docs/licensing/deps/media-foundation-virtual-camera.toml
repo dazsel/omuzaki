@@ -1,0 +1,7 @@
+section = "rust"
+item = "Media Foundation virtual camera"
+kind = "os"
+used_for = "Windows virtual camera"
+status = "conditions"
+condition = "Windows 11; signing requirement unverified"
+audit = "B4"

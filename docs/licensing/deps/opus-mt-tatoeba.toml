@@ -1,0 +1,7 @@
+section = "models"
+item = "OPUS-MT Tatoeba-Challenge builds (`opus-tatoeba-*` and the `opus-mt-*` repos listed above)"
+kind = "model"
+used_for = "(not used)"
+status = "NO"
+condition = "the Tatoeba-Challenge README states \"Training data is released under the CC-BY-NC-SA 4.0 license\"; banned unless the authors clear commercial use"
+audit = "research 2026-10-caption-translation.md"

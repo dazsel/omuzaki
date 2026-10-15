@@ -1,3 +1,9 @@
+---
+title: "Can loro carry the project document and our ops? (2026-10-13)"
+summary: "can loro carry the project document and our patches? A three-peer spike: convergence, last-writer-wins conflicts, costs, alternatives (automerge, yrs, a sequencer), recommendation."
+area: research
+---
+
 # Can loro carry the project document and our ops? (2026-10-13)
 
 > Research pass (VC-06), under spec v3 §7 and §12. Everything in section 3 was **run** on the cloud box with the spike in `spikes/crdt-doc/` (loro 1.16.2, Rust 1.99.0). The alternatives (section 5) are from reading crate source only; nothing was run for them. The cloud box reaches github.com and the package registries only, so product websites and papers were not read; claims that rest on them are marked `unverified (unreachable from the build box)` or are left out.

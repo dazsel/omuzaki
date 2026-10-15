@@ -1,0 +1,7 @@
+section = "models"
+item = "fal.ai model API"
+kind = "service"
+used_for = "CN-06 hosted image adapter candidate (model host)"
+status = "unverified"
+condition = "output: Terms (updated 2026-09-08) assign nothing and grant only \"personal or internal business use\" of the service: not cleared (https://fal.ai/legal/terms-of-service, checked 2026-10-13); each hosted model's own licence also applies and needs its own row; files public on the CDN for 7 days by default; terms read, commercial rights in Output not granted (docs/research/2026-10-hosted-image-apis.md)"
+audit = "CN-06"

@@ -1,0 +1,6 @@
+section = "models"
+item = "gix (gitoxide)"
+kind = "code"
+used_for = "not used; evaluated as the git access layer (ADR 0045)"
+status = "yes"
+condition = "`Apache-2.0 OR MIT` (README, read 2026-10-13); rejected on function, not licence: push and commit hooks are unfinished on its roadmap"

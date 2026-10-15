@@ -16,9 +16,10 @@ use omuzaki_anim_api::{Collider, ColliderGroup, ColliderShape, HumanoidBone, Pos
 use omuzaki_char::accessory::attach::{self, AttachTarget, attach_points};
 use omuzaki_char::accessory::rigid::{MAX_REACH, MAX_SWING_DEG};
 use omuzaki_char_api::{
-    Anchor, Assembler, Attach, AttachOffset, BuildCtx, BuildError, BuildOptions, BuildServices, BuiltCharacter, CharId,
-    CharacterBuilder, CharacterDef, JointFit, JointRef, PartCategory, PartDef, PartId, PartKind, PartKindId, PartMesh,
-    PartMeta, PartOutput, Published, Publishes, RegistryBuilder, build_part, find_kind, plan,
+    Anchor, AnchorsFact, Assembler, Attach, AttachOffset, BuildCtx, BuildError, BuildOptions, BuildServices,
+    BuiltCharacter, CharId, CharacterBuilder, CharacterDef, CollidersFact, FitFact, JointFit, JointRef, PartCategory,
+    PartDef, PartId, PartKind, PartKindId, PartMesh, PartMeta, PartOutput, Published, Publishes, RegistryBuilder,
+    build_part, find_kind, plan,
 };
 use omuzaki_char_mock::mock_character;
 use omuzaki_core::glam::{Mat4, Quat, Vec3};
@@ -64,14 +65,9 @@ impl PartKind for HeadCollider {
             position: head.point(Vec3::new(1.0, 0.15, 0.0).normalize(), 0.045),
             rotation: Quat::IDENTITY,
         };
-        Ok(PartOutput {
-            publishes: Publishes {
-                colliders: vec![group],
-                anchors: vec![("ear".parse().unwrap(), ear)],
-                ..Publishes::default()
-            },
-            ..PartOutput::default()
-        })
+        Ok(PartOutput::new().with_publishes(
+            Publishes::default().with::<CollidersFact>(group).with::<AnchorsFact>(("ear".parse().unwrap(), ear)),
+        ))
     }
 }
 
@@ -238,9 +234,9 @@ fn the_kinds_are_accessories_registered_with_their_parameters() {
 fn published() -> Published {
     let mut p = Published::default();
     let fit = JointFit::new([(JointRef::HEAD, Vec3::new(0.0, 1.5, 0.0)), (JointRef::NECK, Vec3::new(0.0, 1.4, 0.0))]);
-    p.absorb(&pid("body"), Publishes { fit: Some(std::sync::Arc::new(fit)), ..Publishes::default() }).unwrap();
+    p.absorb(&pid("body"), Publishes::default().with::<FitFact>(std::sync::Arc::new(fit))).unwrap();
     let top = Anchor { bone: JointRef::HEAD, position: Vec3::new(0.0, 1.7, 0.0), rotation: Quat::from_rotation_y(0.5) };
-    p.absorb(&pid("head"), Publishes { anchors: vec![("top".parse().unwrap(), top)], ..Publishes::default() }).unwrap();
+    p.absorb(&pid("head"), Publishes::default().with::<AnchorsFact>(("top".parse().unwrap(), top))).unwrap();
     p
 }
 

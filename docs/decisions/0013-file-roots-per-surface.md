@@ -1,3 +1,9 @@
+---
+title: "0013: File roots come from what the person chose, never from the whole disk (2026-10-12)"
+summary: "File roots come from what the person chose, never from the whole disk"
+area: decisions
+---
+
 # 0013: File roots come from what the person chose, never from the whole disk (2026-10-12)
 
 **Status:** accepted. **Context:** `OpCtx::fs_access` (fail-closed file roots); spec v3 §6 (`fs:<path>` grants); the `io.import` and `io.export` ops.

@@ -1,3 +1,9 @@
+---
+title: "0053: How the work runs: finish before starting, schedule for disjoint work, structure code so parallel PRs can't collide (2026-10-13)"
+summary: "How the work runs: finish before starting, schedule for disjoint work, structure code so parallel PRs can't collide"
+area: decisions
+---
+
 # 0053: How the work runs: finish before starting, schedule for disjoint work, structure code so parallel PRs can't collide (2026-10-13)
 
 **Status:** accepted (2026-10-14). **Context:** spec v3 §39 (parallel development), `CONTRIBUTING.md`, `CLAUDE.md`,

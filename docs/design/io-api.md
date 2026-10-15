@@ -1,3 +1,9 @@
+---
+title: "`omuzaki-io-api`: the glTF / VRM import and export contract"
+summary: "the glTF / VRM import and export contract"
+area: design
+---
+
 # `omuzaki-io-api`: the glTF / VRM import and export contract
 
 **Status:** proposal. **Spec:** v3 §9 (`omuzaki-io`), §27 (EX-01, EX-02), §19 (FE-09), §7 (provenance), §39.

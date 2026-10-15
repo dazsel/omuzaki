@@ -18,9 +18,9 @@ use std::f64::consts::{PI, TAU};
 
 use omuzaki_anim_api::{SpringChain, SpringParams, Transform};
 use omuzaki_char_api::{
-    Attach, AttachOffset, BodyRegion, BoneName, BuildCtx, BuildError, ExtraBone, JointFit, JointRef, MaterialName,
-    MaterialSpec, PartCategory, PartKind, PartMesh, PartMeta, PartOutput, Quality, RecolourCtx, Recoloured,
-    RigContribution, humanoid_id,
+    AnchorsFact, Attach, AttachOffset, BodyRegion, BoneName, BuildCtx, BuildError, ExtraBone, FitFact, JointFit,
+    JointRef, MaterialName, MaterialSpec, PartCategory, PartKind, PartMesh, PartMeta, PartOutput, Quality, RecolourCtx,
+    Recoloured, RigContribution, humanoid_id,
 };
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::{DMat3, DMat4, DQuat, DVec3, Vec3};
@@ -393,12 +393,12 @@ fn output(
     glow: f32,
     rig: RigContribution,
 ) -> Result<PartOutput, BuildError> {
-    let mut out = PartOutput { rig, ..PartOutput::default() };
+    let mut out = PartOutput::new().with_rig(rig);
     // Publish the bones this part contributes, so another part can attach to one (`halo_acc_0`): a joint-only fit never
     // hides the body from garments, and the rig still gets the bones from the contribution.
     let bones: Vec<_> = out.rig.bones.iter().map(|b| (JointRef::Named(b.name.clone()), b.rest.translation)).collect();
     if !bones.is_empty() {
-        out.publishes.fit = Some(std::sync::Arc::new(JointFit::new(bones)));
+        out.publishes.put::<FitFact>(std::sync::Arc::new(JointFit::new(bones)));
     }
     for (slot, builder) in Slot::ALL.into_iter().zip(shells.meshes) {
         if builder.vertex_count() == 0 {
@@ -991,7 +991,7 @@ impl Halo {
     fn over_top(ctx: &BuildCtx<'_>) -> Result<ResolvedAttach, BuildError> {
         let ((part, anchor), _) = ctx
             .published
-            .anchors
+            .get::<AnchorsFact>()
             .iter()
             .find(|((_, name), _)| name.as_str() == "top")
             .ok_or_else(|| ctx.fail("a halo floats over the `top` anchor of the head, and no part published one: add a head part, or give the halo an `attach`"))?;
