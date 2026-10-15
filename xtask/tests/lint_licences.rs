@@ -172,7 +172,8 @@ fn external_is_only_for_tools() {
     let fixture = workspace();
     fixture.write(".github/workflows/ci.yml", "    with:\n      tools: blender\n");
     fixture.write("crates/app/assets/a.png", "");
-    let external = |claims: &str| licence_file("x", claims).replace("\"yes\"", "\"external\"");
+    let external =
+        |claims: &str| licence_file("x", claims).replace("\"yes\"", "\"external\"").replace("\"crate\"", "\"tool\"");
     fixture.write("docs/licensing/deps/blender.toml", &external("tools = [\"blender\"]"));
     fixture.write("docs/licensing/deps/a.toml", &external("paths = [\"crates/app/assets/a.png\"]"));
     let run = fixture.xtask(&["lint-licences"]);
@@ -203,4 +204,21 @@ fn a_new_asset_under_a_claimed_folder_has_no_file_until_it_is_audited() {
     assert!(!run.success, "{}", run.stdout);
     assert!(run.stdout.contains("path `crates/app/assets/` is a folder"), "{}", run.stdout);
     assert!(run.stdout.contains("`crates/app/assets/a.png` has no file"), "{}", run.stdout);
+}
+
+#[test]
+fn external_needs_the_tool_kind_even_without_claims() {
+    let fixture = workspace();
+    for kind in ["model", "native"] {
+        let text =
+            licence_file(kind, "").replace("\"yes\"", "\"external\"").replace("\"crate\"", &format!("\"{kind}\""));
+        fixture.write(&format!("docs/licensing/deps/{kind}.toml"), &text);
+    }
+    let run = fixture.xtask(&["lint-licences"]);
+    assert!(!run.success, "{}", run.stdout);
+    for kind in ["model", "native"] {
+        let expected =
+            format!("{kind}.toml: status `external` is for tools installed separately, yet the kind is `{kind}`");
+        assert!(run.stdout.contains(&expected), "missing `{expected}` in:\n{}", run.stdout);
+    }
 }

@@ -15,6 +15,9 @@ const BARRED: &[&str] = &["NO", "unverified", "private-test"];
 /// The verdict for a separately installed tool; only a tool may carry it.
 const EXTERNAL: &str = "external";
 
+/// The `kind` an `external` file must have.
+const TOOL_KIND: &str = "tool";
+
 /// The line in `register.md` that the table of one section replaces: `<!-- licence-table: <section> -->`.
 const MARKER: (&str, &str) = ("<!-- licence-table: ", " -->");
 
@@ -72,6 +75,9 @@ impl Entry {
                 "status `{}` bars the item from use, yet the file claims a crate, tool or path that is in use",
                 self.status
             ));
+        }
+        if self.status == EXTERNAL && self.kind != TOOL_KIND {
+            found.push(format!("status `external` is for tools installed separately, yet the kind is `{}`", self.kind));
         }
         if self.status == EXTERNAL && !(self.crates.is_empty() && self.paths.is_empty()) {
             found.push(
@@ -199,8 +205,14 @@ mod tests {
     fn external_is_for_tools_only() {
         let mut e = entry("a", "x", "");
         e.status = "external".into();
+        e.kind = "tool".into();
         e.tools = vec!["git".into()];
         assert!(e.problems().is_empty(), "{:?}", e.problems());
+        for kind in ["model", "native", "crate"] {
+            e.kind = kind.into();
+            assert_eq!(e.problems().len(), 1, "{kind}: {:?}", e.problems());
+        }
+        e.kind = "tool".into();
         e.crates = vec!["x".into()];
         assert_eq!(e.problems().len(), 1, "{:?}", e.problems());
         e.crates.clear();
