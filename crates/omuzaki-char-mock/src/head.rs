@@ -86,6 +86,7 @@ fn skin_material(
         vertex_colours: false,
         outline: Some(Outline { colour: colour(&params.skin.line)?, width: 0.0014 }),
         receives_shadows: false,
+        uv_transform: omuzaki_render_api::UvTransform::IDENTITY,
     })
 }
 
