@@ -1,3 +1,9 @@
+---
+title: "Review comments and tasks (VC-07)"
+summary: "review comments and tasks (VC-07): flat `comments/<id>` nodes, anchors (part, frame, view, project), threads, the `review` scope, external reviewers' imports, tasks mapped onto the plan document, keeping reviewer text from steering an agent, MCP resources and the prompt, and the UI contract (ADR 0056)."
+area: design
+---
+
 # Review comments and tasks (VC-07)
 
 **Status:** proposed (cloud lead to accept on the PR). **Features:** VC-07, with VC-05 (review links) and VC-11

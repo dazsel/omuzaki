@@ -1,3 +1,9 @@
+---
+title: "0020: Agent sessions live in the executor; agents never exceed their person, never overwrite blind, and only a person approves (2026-10-12)"
+summary: "Agent sessions live in the executor; agents never exceed their person, never overwrite blind, and only a person approves"
+area: decisions
+---
+
 # 0020: Agent sessions live in the executor; agents never exceed their person, never overwrite blind, and only a person approves (2026-10-12)
 
 **Status:** accepted (2026-10-12). **Context:** AG-02; spec v3 §6, §11, §12, §13, VC-10, VC-11; ADR 0013, ADR 0016, ADR 0018 (in flight). Design:

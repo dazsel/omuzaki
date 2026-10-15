@@ -73,7 +73,10 @@ fn adding_a_dependency_needs_only_its_own_file_and_changes_the_generated_registe
 #[test]
 fn orphaned_files_and_uncovered_tools_and_assets_are_caught() {
     let fixture = workspace();
-    fixture.write("docs/licensing/deps/gone.toml", &licence_file("gone", "crates = [\"gone\"]\npaths = [\"fonts/\"]"));
+    fixture.write(
+        "docs/licensing/deps/gone.toml",
+        &licence_file("gone", "crates = [\"gone\"]\npaths = [\"fonts/a.ttf\"]"),
+    );
     fixture.write(".github/workflows/ci.yml", "    with:\n      tools: cargo-deny,cargo-about@0.9.2\n");
     fixture.write("docs/licensing/deps/cargo-deny.toml", &licence_file("cargo-deny", "tools = [\"cargo-deny\"]"));
     fixture.write("crates/app/assets/Font.ttf", "");
@@ -81,7 +84,7 @@ fn orphaned_files_and_uncovered_tools_and_assets_are_caught() {
     assert!(!run.success, "{}", run.stdout);
     for expected in [
         "docs/licensing/deps/gone.toml: orphaned: crate `gone` is no workspace crate's direct dependency (not in Cargo.lock)",
-        "docs/licensing/deps/gone.toml: orphaned: path `fonts/` does not exist",
+        "docs/licensing/deps/gone.toml: orphaned: path `fonts/a.ttf` does not exist",
         "tool `cargo-about` (installed by a workflow) has no file in docs/licensing/deps/",
         "`crates/app/assets/Font.ttf` has no file in docs/licensing/deps/ (list it under `paths`)",
         "lint-licences: 4 problem(s)",
@@ -149,5 +152,73 @@ fn a_committed_model_or_image_under_crates_needs_a_file() {
     let run = fixture.xtask(&["lint-licences"]);
     for asset in ["crates/app/assets/model.onnx", "crates/app/assets/face.png"] {
         assert!(run.stdout.contains(&format!("`{asset}` has no file")), "{}", run.stdout);
+    }
+}
+
+#[test]
+fn model_formats_tflite_and_task_need_a_file() {
+    let fixture = workspace();
+    fixture.write("crates/app/assets/face.tflite", "");
+    fixture.write("crates/app/assets/hand.task", "");
+    let run = fixture.xtask(&["lint-licences"]);
+    assert!(!run.success, "{}", run.stdout);
+    for asset in ["crates/app/assets/face.tflite", "crates/app/assets/hand.task"] {
+        assert!(run.stdout.contains(&format!("`{asset}` has no file")), "{}", run.stdout);
+    }
+}
+
+#[test]
+fn external_is_only_for_tools() {
+    let fixture = workspace();
+    fixture.write(".github/workflows/ci.yml", "    with:\n      tools: blender\n");
+    fixture.write("crates/app/assets/a.png", "");
+    let external =
+        |claims: &str| licence_file("x", claims).replace("\"yes\"", "\"external\"").replace("\"crate\"", "\"tool\"");
+    fixture.write("docs/licensing/deps/blender.toml", &external("tools = [\"blender\"]"));
+    fixture.write("docs/licensing/deps/a.toml", &external("paths = [\"crates/app/assets/a.png\"]"));
+    let run = fixture.xtask(&["lint-licences"]);
+    assert!(!run.success, "{}", run.stdout);
+    assert!(run.stdout.contains("a.toml: status `external` is for tools"), "{}", run.stdout);
+    assert!(!run.stdout.contains("blender.toml"), "a tool may be external:\n{}", run.stdout);
+
+    fixture.write("docs/licensing/deps/a.toml", &licence_file("a", "paths = [\"crates/app/assets/a.png\"]"));
+    fixture.write("docs/licensing/deps/serde.toml", &external("crates = [\"serde\"]"));
+    let run = fixture.xtask(&["lint-licences"]);
+    assert!(run.stdout.contains("serde.toml: status `external` is for tools"), "{}", run.stdout);
+}
+
+#[test]
+fn a_new_asset_under_a_claimed_folder_has_no_file_until_it_is_audited() {
+    let fixture = workspace();
+    fixture.write("crates/app/assets/a.png", "");
+    fixture.write("docs/licensing/deps/assets.toml", &licence_file("assets", "paths = [\"crates/app/assets/a.png\"]"));
+    let run = fixture.xtask(&["lint-licences"]);
+    assert!(run.success, "{}", run.stdout);
+
+    fixture.write("crates/app/assets/b.png", "");
+    let run = fixture.xtask(&["lint-licences"]);
+    assert!(!run.success && run.stdout.contains("`crates/app/assets/b.png` has no file"), "{}", run.stdout);
+
+    fixture.write("docs/licensing/deps/assets.toml", &licence_file("assets", "paths = [\"crates/app/assets/\"]"));
+    let run = fixture.xtask(&["lint-licences"]);
+    assert!(!run.success, "{}", run.stdout);
+    assert!(run.stdout.contains("path `crates/app/assets/` is a folder"), "{}", run.stdout);
+    assert!(run.stdout.contains("`crates/app/assets/a.png` has no file"), "{}", run.stdout);
+}
+
+#[test]
+fn external_needs_the_tool_kind_even_without_claims() {
+    let fixture = workspace();
+    for kind in ["model", "native"] {
+        let text =
+            licence_file(kind, "").replace("\"yes\"", "\"external\"").replace("\"crate\"", &format!("\"{kind}\""));
+        fixture.write(&format!("docs/licensing/deps/{kind}.toml"), &text);
+    }
+    let run = fixture.xtask(&["lint-licences"]);
+    assert!(!run.success, "{}", run.stdout);
+    for kind in ["model", "native"] {
+        let expected =
+            format!("{kind}.toml: status `external` is for tools installed separately, yet the kind is `{kind}`");
+        assert!(run.stdout.contains(&expected), "missing `{expected}` in:\n{}", run.stdout);
     }
 }

@@ -1,3 +1,9 @@
+---
+title: "0009: Determinism policy (2026-10-12)"
+summary: "Determinism policy"
+area: decisions
+---
+
 # 0009: Determinism policy (2026-10-12)
 
 **Status:** accepted. **Context:** spec v3 §8 (determinism), §34 (golden renders); the render-api and anim-api contracts.

@@ -9,20 +9,22 @@
 use std::io;
 use std::sync::Arc;
 
-use omuzaki_mcp::{McpOptions, McpServer, ServerError};
+use omuzaki_mcp::{Connections, McpOptions, McpServer, ServerError};
 use omuzaki_ops_api::{OpError, Runner};
 use tracing_subscriber::EnvFilter;
 
 /// Serves `runner` to one MCP client on stdin/stdout, with the default agent grants (read, edit, render). Returns when
-/// the client closes the connection. Warnings and errors are logged to stderr; set `RUST_LOG` (for example
-/// `RUST_LOG=debug`) for more.
+/// the client closes the connection. `connections` is the handle the runner's services hold (see
+/// [`open_runner_with`](crate::session::open_runner_with)), which is what makes `agent.connection` listed and
+/// answerable. Warnings and errors are logged to stderr; set `RUST_LOG` (for example `RUST_LOG=debug`) for more.
 ///
 /// # Errors
 /// `Internal` if the server can't start (an op that can't be a tool), the async runtime can't be created, or the
 /// connection fails: the client sent something that isn't MCP, or went away before the handshake finished.
-pub fn serve_stdio(runner: Arc<dyn Runner>) -> Result<(), OpError> {
+pub fn serve_stdio(runner: Arc<dyn Runner>, connections: Connections) -> Result<(), OpError> {
     log_to_stderr();
-    let server = McpServer::new(runner, McpOptions::default()).map_err(|e| server_error(&e))?;
+    let server =
+        McpServer::new(runner, McpOptions::default().with_connections(connections)).map_err(|e| server_error(&e))?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()

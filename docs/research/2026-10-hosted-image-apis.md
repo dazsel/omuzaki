@@ -1,3 +1,9 @@
+---
+title: "Hosted image-generation APIs for CN-06: terms, output ownership, price, API shape"
+summary: "terms, output ownership, price, API shape"
+area: research
+---
+
 # Hosted image-generation APIs for CN-06: terms, output ownership, price, API shape
 
 **Status: verified by the local lane on 2026-10-13 (checked 2026-10-13), except where a claim still says `unverified`.** The cloud box that wrote this note could reach only `cloud.google.com`; the local lane re-read the vendor sources (Google terms and pricing, Stability and fal.ai and BFL terms, OpenAI pricing and data docs).

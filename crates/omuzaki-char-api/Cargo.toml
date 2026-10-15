@@ -21,6 +21,11 @@ omuzaki-face-api = { path = "../omuzaki-face-api" }
 omuzaki-render-api = { path = "../omuzaki-render-api" }
 omuzaki-store-api = { path = "../omuzaki-store-api" }
 
+[features]
+# Adds one defaulted field to each contract struct that features extend, to prove a new field edits only this crate:
+# `cargo check --workspace --all-targets --features omuzaki-char-api/growth-probe` must pass. Not for normal builds.
+growth-probe = []
+
 [dev-dependencies]
 criterion.workspace = true
 

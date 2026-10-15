@@ -1,3 +1,9 @@
+---
+title: "0055: The avatar scene models extended colliders and spring joint limits, a breaking `omuzaki-io-api` change (2026-10-15)"
+summary: "The avatar scene models extended colliders and spring joint limits, a breaking `omuzaki-io-api` change"
+area: decisions
+---
+
 # 0055: The avatar scene models extended colliders and spring joint limits, a breaking `omuzaki-io-api` change (2026-10-15)
 
 **Status:** proposed (PR #1491); accepted by the Director when merged. **Context:** #982, EX-11 (#607);
