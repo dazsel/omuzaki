@@ -224,7 +224,7 @@ LB-08's client is `MarketStore: ItemStore`, an HTTPS implementation. Everything 
 | Reviews and ratings by users | a `Listing` slot to display them; not signed by the client | storing, abuse handling |
 | Moderation and takedown | the client honours a hosted-key-signed `Deprecate { reason: takedown }` like any deprecation | policy, who signs, appeals |
 
-Nothing here sets what is sold, for how much, or whether anything is. The point of the table is that the client's trust code is written once for both cases and a `commerce` value changes no verification rule. The hosted backend, payments and pricing are open questions for the owner (§6, Q1 to Q3). Until they are decided `MarketStore` is not built; whether it shares a base store contract with the team-only methods (log, licence, roster) is decided when its design is written.
+Nothing here sets what is sold, for how much, or whether anything is. The point of the table is that the client's trust code is written once for both cases and a `commerce` value changes no verification rule. The hosted backend, payments and pricing are open questions for the owner (§6, Q1 to Q3). Until they are decided `MarketStore` is not built; whether it shares a base store contract with the team-only methods (log, licence, roster) is decided when its design is written. *The marketplace client design (ADR 0063, `docs/design/marketplace.md`) decides it: a market is its own `Market` trait, not an `ItemStore`, sharing only the pure verifier.*
 
 ### D12. Privacy
 
@@ -351,7 +351,7 @@ Every task below is docs-complete here: a fence, its contract, its acceptance nu
 | T7 | bucket store against a fake object client | sonnet | `omuzaki-library-source-s3` | the same conformance suite and tamper matrix green with no network; create-if-absent maps to `If-None-Match`; credentials only from the secret store | T1, T2 |
 | T8 | Library panel Team tab (sources, review badges, approve/reject, sync status, licence change marker) | sonnet, visual | `omuzaki-ui` library panel | rendered at the three themes, review states and the five `Check` outcomes shown as identity D4 words; keyboard and AccessKit labels | T4, T5, T6 |
 
-The marketplace store, entitlements and any hosted piece are not in this cut: they wait for the owner's decisions.
+The marketplace store, entitlements and any hosted piece are not in this cut: they wait for the owner's decisions. The client side is cut in `docs/design/marketplace.md` §5.3.
 
 ## 6. Open questions
 

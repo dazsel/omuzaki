@@ -1,0 +1,9 @@
+# Key pose "stand-neutral" for the clips beside it (RG-06). Degrees, Euler XYZ, VRM normalised space; see src/poses/mod.rs.
+id = "stand-neutral"
+summary = "Standing at rest with the arms relaxed down: the start and end of a one-shot clip."
+tags = ["clip-key"]
+mirrorable = true
+
+[bones]
+leftUpperArm = [0.0, 0.0, -65.0]
+rightUpperArm = [0.0, 0.0, 65.0]
