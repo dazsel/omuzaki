@@ -35,6 +35,10 @@ enum How {
     Coop,
     /// Runs until cancelled, then returns what it completed.
     Partial,
+    /// Runs until cancelled, then fails with its own error.
+    FailWhenCancelled,
+    /// Runs until cancelled, then panics.
+    PanicWhenCancelled,
     /// Spends `before`, signals, waits for the gate, then spends `after` (late, past any cancel).
     Spend { before: u64, after: u64 },
     /// Spends twice `each`, so the second report passes a cap of less than twice that.
@@ -163,6 +167,14 @@ impl Op for TestJob {
                     std::thread::yield_now();
                 }
                 Ok(json!("partial"))
+            }
+            How::FailWhenCancelled | How::PanicWhenCancelled => {
+                gate.unwrap().announce();
+                while !job.is_cancelled() {
+                    std::thread::yield_now();
+                }
+                assert!(matches!(self.how, How::FailWhenCancelled), "the job's work panicked after its cancel");
+                Err(OpError::invalid("key", "boom after the cancel"))
             }
             How::Spend { before, after } => {
                 let gate = gate.unwrap();
@@ -775,6 +787,45 @@ fn a_result_returned_after_shutdown_began_is_discarded() {
     let ended = rig.exec.wait(info.id, None).unwrap();
     assert_eq!(ended.state, JobState::Cancelled { by: None, reason: CancelReason::Shutdown });
     assert_eq!(rig.at("sd"), None, "the document changed after shutdown began");
+}
+
+#[test]
+fn shutdown_cancels_a_job_whose_work_then_fails_or_panics() {
+    for (key, how) in [("sx-fail", "fail_when_cancelled"), ("sx-panic", "panic_when_cancelled")] {
+        let rig = rig(json!({}));
+        let gate = Gate::new(key);
+        let error = std::thread::scope(|scope| {
+            let running = scope.spawn(|| rig.exec.run(job(key, &json!(how))));
+            gate.wait_entered();
+            rig.exec.shutdown_jobs();
+            running.join().unwrap().unwrap_err()
+        });
+        // Within the grace period `work` failed or panicked: shutdown still wins, and the run says so.
+        assert_eq!(code(&error), ErrorCode::Cancelled, "{how}: {error:?}");
+        assert!(
+            matches!(error.detail.as_deref(), Some(ErrorDetail::Cancelled { reason: CancelReason::Shutdown, .. })),
+            "{how}: {error:?}"
+        );
+        let ended = &rig.exec.jobs(&Grants::person()).unwrap()[0];
+        assert_eq!(ended.state, JobState::Cancelled { by: None, reason: CancelReason::Shutdown }, "{how}");
+    }
+}
+
+#[test]
+fn a_builder_called_after_a_job_started_keeps_the_job_manager() {
+    let Rig { exec, clock: _clock } = rig(json!({}));
+    let gate = Gate::new("rb");
+    let info = exec.start(job("rb", &json!("coop"))).unwrap();
+    gate.wait_entered();
+    // A budget of one micro-dollar would refuse the job below: the call must change nothing.
+    let exec = exec.with_job_budget(1);
+    assert_eq!(exec.jobs(&Grants::person()).unwrap()[0].id, info.id, "the running job is no longer listed");
+    let cheap = exec.start(job_with("rb2", &json!("echo"), json!({"usd": 0.5}))).unwrap();
+    assert_eq!(cheap.id, JobId(info.id.0 + 1), "the job ids restarted");
+    assert!(matches!(exec.wait(cheap.id, None).unwrap().state, JobState::Done { .. }));
+    exec.cancel(info.id, &person()).unwrap();
+    let ended = exec.wait(info.id, None).unwrap();
+    assert_eq!(ended.state, JobState::Cancelled { by: Some(person()), reason: CancelReason::Requested });
 }
 
 #[test]

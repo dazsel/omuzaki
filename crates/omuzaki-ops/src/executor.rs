@@ -85,6 +85,10 @@ impl Env {
 }
 
 /// Runs ops against one document. See the [crate docs](crate) for the behaviour.
+///
+/// The `with_*` builders configure an executor before it starts jobs. Once a job has been admitted, a builder returns
+/// the executor unchanged: its jobs stay listed, cancellable and waitable, and the configuration they run under stays
+/// the one every op sees.
 pub struct Executor {
     ops: OpIndex,
     /// The document and everything that must change with it (one lock: this is the authoring plane, where
@@ -128,10 +132,17 @@ impl Executor {
         Ok(Self { ops: OpIndex::build(registrations)?, env, jobs, job_budget: u64::MAX })
     }
 
-    /// Rebuilds the job manager over the changed environment. Builders take `self` by value before any job starts,
-    /// so there is nothing running to carry over.
-    fn rewired(mut self, change: impl FnOnce(&mut Env)) -> Self {
-        change(&mut self.env);
+    /// Applies a builder's change to the environment and the job budget, then rebuilds the job manager over them.
+    ///
+    /// Once a job has been admitted the manager owns it: its worker holds the manager, and only the manager can list,
+    /// cancel, wait on or shut down the job, and it keeps the job ids and the money history. Replacing it would cut
+    /// those jobs off, and changing the environment alone would leave ops and jobs seeing two configurations, so the
+    /// executor is returned unchanged instead.
+    fn rewired(mut self, change: impl FnOnce(&mut Env, &mut u64)) -> Self {
+        if self.jobs.admitted() {
+            return self;
+        }
+        change(&mut self.env, &mut self.job_budget);
         self.jobs = Manager::new(self.env.clone(), self.job_budget);
         self
     }
@@ -142,7 +153,7 @@ impl Executor {
     /// fails with [`ErrorCode::Unavailable`](omuzaki_ops_api::ErrorCode::Unavailable).
     #[must_use]
     pub fn with_services(self, services: Services) -> Self {
-        self.rewired(|env| env.services = Arc::new(services))
+        self.rewired(|env, _| env.services = Arc::new(services))
     }
 
     /// The same executor, told which folder holds the project, so that ops can check file paths against it with
@@ -153,7 +164,7 @@ impl Executor {
     /// every file needs an `fs` root, so forgetting to wire it refuses access rather than widening it.
     #[must_use]
     pub fn with_project_dir(self, dir: ProjectDir) -> Self {
-        self.rewired(|env| env.project_dir = Some(Arc::new(dir)))
+        self.rewired(|env, _| env.project_dir = Some(Arc::new(dir)))
     }
 
     /// The same executor, with `record` called for every job as it starts, with its snapshot and arguments (the
@@ -166,17 +177,15 @@ impl Executor {
         self,
         record: impl Fn(&JobInfo, &Value) -> Result<(), OpError> + Send + Sync + 'static,
     ) -> Self {
-        self.rewired(|env| env.job_started = Some(Arc::new(record)))
+        self.rewired(|env, _| env.job_started = Some(Arc::new(record)))
     }
 
     /// The same executor, with `usd_micros` (millionths of a dollar) as the most that jobs may reserve and spend in
     /// all (ADR 0036 decision 3). A job whose reservation would not fit is refused with `Limited`. Without it the
     /// budget is unlimited: the session rules, which own the real budget, come with the sessions task.
     #[must_use]
-    pub fn with_job_budget(mut self, usd_micros: u64) -> Self {
-        self.job_budget = usd_micros;
-        self.jobs = Manager::new(self.env.clone(), usd_micros);
-        self
+    pub fn with_job_budget(self, usd_micros: u64) -> Self {
+        self.rewired(|_, budget| *budget = usd_micros)
     }
 
     /// Enforces the jobs' time caps and cancel deadlines against the executor's clock. A supervisor thread calls it

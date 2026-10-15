@@ -143,6 +143,12 @@ impl Manager {
         self.env.clock.now().0
     }
 
+    /// Whether any job was ever admitted: from then on this manager owns jobs (or their ids and money history), and
+    /// must not be replaced.
+    pub(crate) fn admitted(&self) -> bool {
+        lock(&self.inner).next_id > 0
+    }
+
     /// Queues `JobChanged` for `job`'s current snapshot and wakes waiters. Called with the manager lock held.
     fn announce(&self, job: &Job) {
         lock(&self.env.state).queue_event(Event::JobChanged { job: job.info.clone() });
@@ -414,30 +420,35 @@ impl Manager {
         let Some(job) = inner.jobs.get(&id) else { return };
         let (lane, cancelling) = (job.info.lane, job.cancelling.clone());
         inner.lanes.finished(lane);
-        let (state, outcome) = match result {
-            Ok(outcome) => {
-                let done =
-                    outcome.applied.as_ref().map(|record| JobState::Done { tx: record.tx, seq: Some(record.seq) });
-                if let Some(state) = done {
-                    (state, Ok(outcome))
-                } else {
-                    let error = OpError::internal("a job's finish applied nothing");
-                    (JobState::Failed { error: error.clone() }, Err(error))
-                }
+        let done = result
+            .as_ref()
+            .ok()
+            .and_then(|outcome| outcome.applied.as_ref())
+            .map(|record| JobState::Done { tx: record.tx, seq: Some(record.seq) });
+        let (state, outcome) = match (done, result, cancelling) {
+            // The edit is in. Under shutdown too: `finish` holds the shutdown flag through its apply, so the apply
+            // came before the shutdown began, and the job's state must not deny an edit the log holds.
+            (Some(state), result, _) => (state, result),
+            // Shutdown promises every job ends cancelled with its result discarded: whatever `work` or `finish`
+            // returned instead, an error or a panic, gives way to it.
+            (None, _, Some(c)) if c.reason == CancelReason::Shutdown => {
+                (JobState::Cancelled { by: c.by, reason: c.reason }, Err(cancelled(id, c.reason)))
+            }
+            (None, Ok(_), _) => {
+                let error = OpError::internal("a job's finish applied nothing");
+                (JobState::Failed { error: error.clone() }, Err(error))
             }
             // A cancelled job whose work stopped with `Cancelled`, or on the money cap with `Limited`, is cancelled,
             // not failed; the run still returns the work's own error.
-            Err(error) => match cancelling {
-                Some(c) if matches!(error.code, ErrorCode::Cancelled | ErrorCode::Limited) => {
-                    let error = if error.code == ErrorCode::Cancelled && error.detail.is_none() {
-                        error.with_detail(ErrorDetail::Cancelled { job: id, reason: c.reason })
-                    } else {
-                        error
-                    };
-                    (JobState::Cancelled { by: c.by, reason: c.reason }, Err(error))
-                }
-                _ => (JobState::Failed { error: error.clone() }, Err(error)),
-            },
+            (None, Err(error), Some(c)) if matches!(error.code, ErrorCode::Cancelled | ErrorCode::Limited) => {
+                let error = if error.code == ErrorCode::Cancelled && error.detail.is_none() {
+                    error.with_detail(ErrorDetail::Cancelled { job: id, reason: c.reason })
+                } else {
+                    error
+                };
+                (JobState::Cancelled { by: c.by, reason: c.reason }, Err(error))
+            }
+            (None, Err(error), _) => (JobState::Failed { error: error.clone() }, Err(error)),
         };
         self.end(&mut inner, id, state, outcome);
         self.dispatch(&mut inner);
