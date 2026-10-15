@@ -20,7 +20,7 @@ use std::thread::{Builder, JoinHandle};
 
 pub use clock::{Clock, FakeClock};
 use state::State;
-pub use state::{Event, MockModel, Received};
+pub use state::{Event, MockHotkey, MockModel, Received};
 use tungstenite::Message;
 
 /// How the mock starts. The scripted behaviour can also be changed while it runs, with the methods on [`MockVts`].
@@ -32,22 +32,36 @@ pub struct MockConfig {
     pub model: Option<MockModel>,
     /// The reported framerate; zero counts as one frame per second.
     pub framerate: u32,
-    /// The clock every timestamp, keep-alive and cooldown reads.
+    /// The clock every keep-alive, cooldown and arrival time reads: elapsed time, as for `uptime`.
     pub clock: Arc<dyn Clock>,
+    /// Milliseconds since the Unix epoch at the clock's zero: a reply's `timestamp` is this plus the elapsed time.
+    pub start_epoch_ms: i64,
 }
 
 impl Default for MockConfig {
     fn default() -> Self {
-        Self { approve_token: true, model: None, framerate: 60, clock: Arc::new(FakeClock::default()) }
+        Self {
+            approve_token: true,
+            model: None,
+            framerate: 60,
+            clock: Arc::new(FakeClock::default()),
+            start_epoch_ms: 1_700_000_000_000,
+        }
     }
 }
 
 struct Shared {
     state: Mutex<State>,
     clock: Arc<dyn Clock>,
+    /// Connections the server could not set up or serve, for [`MockVts::setup_failures`].
+    failures: Mutex<Vec<String>>,
 }
 
 impl Shared {
+    fn fail(&self, what: String) {
+        self.failures.lock().unwrap_or_else(PoisonError::into_inner).push(what);
+    }
+
     fn lock(&self) -> MutexGuard<'_, State> {
         // A panic while holding the lock leaves plain data behind, so a poisoned lock is still usable.
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
@@ -78,10 +92,11 @@ impl MockVts {
     ///
     /// # Errors
     /// The I/O error when the socket cannot be bound or a thread cannot be started.
-    pub fn start(config: MockConfig) -> io::Result<Self> {
+    pub fn start(config: &MockConfig) -> io::Result<Self> {
         let shared = Arc::new(Shared {
             clock: Arc::clone(&config.clock),
-            state: Mutex::new(State::new(config.approve_token, config.model, config.framerate)),
+            state: Mutex::new(State::new(config)),
+            failures: Mutex::new(Vec::new()),
         });
         let mut mock = Self { shared, port: 0, running: None };
         mock.running = Some(mock.bind(0)?);
@@ -114,13 +129,15 @@ impl MockVts {
     /// Stops listening and closes every connection. The scripted state and the records are kept.
     ///
     /// # Errors
-    /// The I/O error when a connection cannot be shut down for a reason other than being closed already.
+    /// The I/O error when a connection cannot be shut down for a reason other than being closed already, or
+    /// [`ErrorKind::Other`] when the acceptor or a connection thread panicked.
     pub fn stop(&mut self) -> io::Result<()> {
         let Some(run) = self.running.take() else { return Ok(()) };
         run.stopping.store(true, Ordering::SeqCst);
         // Wakes the blocked `accept`. A refused connect means the acceptor already ended, which is what we want.
+        let mut panicked = false;
         if TcpStream::connect(run.addr).is_ok() {
-            join(run.acceptor);
+            panicked |= join(run.acceptor);
         }
         let conns = std::mem::take(&mut *run.conns.lock().unwrap_or_else(PoisonError::into_inner));
         let mut result = Ok(());
@@ -129,9 +146,12 @@ impl MockVts {
                 Err(e) if e.kind() != ErrorKind::NotConnected => result = Err(e),
                 _ => {}
             }
-            join(conn.thread);
+            panicked |= join(conn.thread);
         }
         self.shared.lock().end_sessions();
+        if panicked {
+            return Err(io::Error::other("a mock server thread panicked"));
+        }
         result
     }
 
@@ -157,6 +177,17 @@ impl MockVts {
         let mut state = self.shared.lock();
         state.settle(self.shared.clock.now());
         state.events.clone()
+    }
+
+    /// What went wrong setting up or serving connections (a failed accept, socket clone, thread start or handshake).
+    /// Empty in a healthy run, so a test can assert it.
+    pub fn setup_failures(&self) -> Vec<String> {
+        self.shared.failures.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
+    /// The value a parameter has now, composed from every plugin's live feeds (`set` blended by weight, plus `add`s).
+    pub fn param_value(&self, name: &str) -> Option<f64> {
+        self.shared.lock().value_of(name)
     }
 
     /// The user revokes API access: every token is void and every client's next request fails as not authenticated.
@@ -192,44 +223,59 @@ impl Drop for MockVts {
     }
 }
 
-fn join(thread: JoinHandle<()>) {
-    // A thread only ends by returning or by a panic, which `join` reports; the panic message is already printed.
-    drop(thread.join());
+/// Joins `thread`; true when it panicked.
+fn join(thread: JoinHandle<()>) -> bool {
+    thread.join().is_err()
 }
 
 fn accept_loop(listener: &TcpListener, shared: &Arc<Shared>, stopping: &AtomicBool, conns: &Mutex<Vec<Conn>>) {
     for incoming in listener.incoming() {
-        let Ok(stream) = incoming else { break };
+        let stream = match incoming {
+            Ok(stream) => stream,
+            Err(e) => {
+                shared.fail(format!("accept failed: {e}"));
+                break;
+            }
+        };
         if stopping.load(Ordering::SeqCst) {
             break;
         }
-        let Ok(handle) = stream.try_clone() else { continue };
-        let shared = Arc::clone(shared);
-        let spawned = Builder::new().name("vts-mock-conn".into()).spawn(move || serve(&shared, stream));
-        if let Ok(thread) = spawned {
-            conns.lock().unwrap_or_else(PoisonError::into_inner).push(Conn { stream: handle, thread });
+        let handle = match stream.try_clone() {
+            Ok(handle) => handle,
+            Err(e) => {
+                shared.fail(format!("socket clone failed: {e}"));
+                continue;
+            }
+        };
+        let worker = Arc::clone(shared);
+        match Builder::new().name("vts-mock-conn".into()).spawn(move || serve(&worker, stream)) {
+            Ok(thread) => conns.lock().unwrap_or_else(PoisonError::into_inner).push(Conn { stream: handle, thread }),
+            Err(e) => shared.fail(format!("connection thread failed to start: {e}")),
         }
     }
 }
 
 fn serve(shared: &Shared, stream: TcpStream) {
     let session = shared.lock().open_session();
-    if let Ok(mut ws) = tungstenite::accept(stream) {
-        while let Ok(message) = ws.read() {
-            match message {
-                Message::Text(text) => {
-                    let now = shared.clock.now();
-                    let reply = shared.lock().handle(session, &text, now);
-                    // A reply that cannot be built or sent ends the connection: the client sees a closed socket.
-                    let sent = reply.is_ok_and(|r| ws.send(Message::text(r)).is_ok());
-                    if !sent {
-                        break;
+    match tungstenite::accept(stream) {
+        Ok(mut ws) => {
+            while let Ok(message) = ws.read() {
+                match message {
+                    Message::Text(text) => {
+                        let now = shared.clock.now();
+                        let reply = shared.lock().handle(session, &text, now);
+                        // A reply that cannot be built or sent ends the connection: the client sees a closed socket.
+                        let sent = reply.is_ok_and(|r| ws.send(Message::text(r)).is_ok());
+                        if !sent {
+                            break;
+                        }
                     }
+                    Message::Close(_) => break,
+                    _ => {}
                 }
-                Message::Close(_) => break,
-                _ => {}
             }
         }
+        Err(e) => shared.fail(format!("WebSocket handshake failed: {e}")),
     }
     shared.lock().close_session(session);
 }

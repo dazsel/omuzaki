@@ -7,12 +7,13 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
+use super::MockConfig;
 use crate::limits::{HOTKEY_MIN_FRAMES, HOTKEY_QUEUE, KEEPALIVE, MAX_PLUGIN_PARAMS, PARAM_VALUE_LIMIT};
 use crate::protocol::{
     API_ERROR_TYPE, API_NAME, API_VERSION, ApiError, ApiStateResponse, AuthenticationRequest, AuthenticationResponse,
     AuthenticationTokenRequest, AuthenticationTokenResponse, CurrentModelResponse, Envelope, Expression,
-    ExpressionActivationRequest, ExpressionActivationResponse, ExpressionStateResponse, Hotkey, HotkeyTriggerRequest,
-    HotkeyTriggerResponse, HotkeysInCurrentModelResponse, InjectMode, InjectParameterDataRequest,
+    ExpressionActivationRequest, ExpressionActivationResponse, ExpressionStateRequest, ExpressionStateResponse, Hotkey,
+    HotkeyTriggerRequest, HotkeyTriggerResponse, HotkeysInCurrentModelResponse, InjectMode, InjectParameterDataRequest,
     InjectParameterDataResponse, InputParameter, InputParameterListResponse, Message, ParameterCreationRequest,
     ParameterCreationResponse, ParameterValueRequest, ParameterValueResponse, StatisticsResponse,
 };
@@ -34,13 +35,25 @@ const UNKNOWN_EXPRESSION: i32 = 651;
 const PARAM_LIMIT: i32 = 450;
 const PARAM_EXISTS: i32 = 452;
 
-/// The model VTS has loaded. A hotkey's id is its name; an expression's file is `<name>.exp3.json`.
+/// Who VTS reports as the owner of its own (built-in) parameters.
+const BUILT_IN_OWNER: &str = "VTube Studio";
+
+/// A hotkey of the mock model: triggered by `id`, or by `name` ignoring case.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct MockHotkey {
+    /// The hotkey's unique id.
+    pub id: String,
+    /// The hotkey's display name.
+    pub name: String,
+}
+
+/// The model VTS has loaded. An expression's file is `<name>.exp3.json`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MockModel {
     /// The model's name.
     pub name: String,
-    /// The hotkey names; each is also the hotkey's id.
-    pub hotkeys: Vec<String>,
+    /// The hotkeys.
+    pub hotkeys: Vec<MockHotkey>,
     /// The expression names.
     pub expressions: Vec<String>,
     /// The `Live2D` parameters, which can be injected like VTS's default parameters.
@@ -86,6 +99,14 @@ struct Session {
     plugin: String,
 }
 
+/// What one plugin last fed into one parameter, and when.
+struct Feed {
+    mode: InjectMode,
+    value: f64,
+    weight: f64,
+    at: Duration,
+}
+
 struct CustomParam {
     owner: String,
     min: f64,
@@ -100,13 +121,15 @@ pub(super) struct State {
     pub claimed: BTreeSet<String>,
     pub received: Vec<Received>,
     pub events: Vec<Event>,
-    tokens: BTreeSet<String>,
+    start_epoch_ms: i64,
+    /// Each issued token with the `(pluginName, pluginDeveloper)` it was issued to.
+    tokens: BTreeMap<String, (String, String)>,
     issued: u32,
     next_session: u64,
     sessions: BTreeMap<u64, Session>,
     custom: BTreeMap<String, CustomParam>,
-    values: BTreeMap<String, f64>,
-    last_fed: BTreeMap<String, Duration>,
+    /// The live feeds, keyed by (parameter, plugin).
+    feeds: BTreeMap<(String, String), Feed>,
     active_expressions: BTreeSet<String>,
     last_trigger: BTreeMap<String, Duration>,
     queue: VecDeque<Duration>,
@@ -132,21 +155,21 @@ fn frame_nanos(framerate: u32) -> u64 {
 }
 
 impl State {
-    pub fn new(approve_token: bool, model: Option<MockModel>, framerate: u32) -> Self {
+    pub fn new(config: &MockConfig) -> Self {
         Self {
-            approve_token,
-            model,
-            framerate: framerate.max(1),
+            approve_token: config.approve_token,
+            model: config.model.clone(),
+            framerate: config.framerate.max(1),
+            start_epoch_ms: config.start_epoch_ms,
             claimed: BTreeSet::new(),
             received: Vec::new(),
             events: Vec::new(),
-            tokens: BTreeSet::new(),
+            tokens: BTreeMap::new(),
             issued: 0,
             next_session: 0,
             sessions: BTreeMap::new(),
             custom: BTreeMap::new(),
-            values: BTreeMap::new(),
-            last_fed: BTreeMap::new(),
+            feeds: BTreeMap::new(),
             active_expressions: BTreeSet::new(),
             last_trigger: BTreeMap::new(),
             queue: VecDeque::new(),
@@ -172,19 +195,18 @@ impl State {
         self.sessions.values_mut().for_each(|s| s.authenticated = false);
     }
 
-    /// Lapses every parameter not fed for [`KEEPALIVE`] by `now` (research line 63, README "Feeding in data for default
+    /// Lapses every feed not repeated for [`KEEPALIVE`] by `now` (research line 63, README "Feeding in data for default
     /// or custom parameters": re-send "at least once every second").
     pub fn settle(&mut self, now: Duration) {
         let lapsed: Vec<_> = self
-            .last_fed
+            .feeds
             .iter()
-            .filter(|&(_, &fed)| now.saturating_sub(fed) >= KEEPALIVE)
-            .map(|(n, &t)| (n.clone(), t))
+            .filter(|&(_, feed)| now.saturating_sub(feed.at) >= KEEPALIVE)
+            .map(|(key, feed)| (key.clone(), feed.at))
             .collect();
-        for (name, fed) in lapsed {
-            self.last_fed.remove(&name);
-            self.values.remove(&name);
-            self.events.push(Event::keepalive_lapse(name, fed + KEEPALIVE));
+        for (key, at) in lapsed {
+            self.feeds.remove(&key);
+            self.events.push(Event::keepalive_lapse(key.0, at + KEEPALIVE));
         }
     }
 
@@ -217,7 +239,7 @@ impl State {
             request_id,
             message_type: message_type.into(),
             data,
-            timestamp: Some(i64::try_from(now.as_millis()).unwrap_or(i64::MAX)),
+            timestamp: Some(self.start_epoch_ms.saturating_add(i64::try_from(now.as_millis()).unwrap_or(i64::MAX))),
         };
         serde_json::to_string(&env)
     }
@@ -234,7 +256,7 @@ impl State {
             "AuthenticationRequest" => self.authenticate(session, &parse(data)?),
             _ if !authenticated => Err(error(NOT_AUTHENTICATED, "not authenticated")),
             "StatisticsRequest" => ok(&StatisticsResponse {
-                uptime: now.as_secs(),
+                uptime: u64::try_from(now.as_millis()).unwrap_or(u64::MAX),
                 framerate: self.framerate,
                 v_tube_studio_version: "mock".into(),
                 allowed_plugins: 1,
@@ -248,32 +270,40 @@ impl State {
             "InputParameterListRequest" => ok(&self.parameter_list()),
             "ParameterCreationRequest" => self.create_param(session, &parse(data)?),
             "ParameterValueRequest" => self.param_value(&parse(data)?),
-            "InjectParameterDataRequest" => self.inject(data, now),
+            "InjectParameterDataRequest" => self.inject(session, data, now),
             "HotkeysInCurrentModelRequest" => self.hotkeys(),
             "HotkeyTriggerRequest" => self.trigger(&parse(data)?, now),
-            "ExpressionStateRequest" => self.expression_state(),
+            "ExpressionStateRequest" => self.expression_state(&parse(data)?),
             "ExpressionActivationRequest" => self.activate(&parse(data)?),
             other => Err(error(UNKNOWN_MESSAGE, &format!("the mock does not speak {other}"))),
         }
     }
 
-    fn token(&mut self, _request: &AuthenticationTokenRequest) -> Reply {
+    fn token(&mut self, request: &AuthenticationTokenRequest) -> Reply {
         if !self.approve_token {
             return Err(error(TOKEN_DENIED, "the user denied the token request"));
         }
         self.issued += 1;
         let authentication_token = format!("mock-token-{}", self.issued);
-        self.tokens.insert(authentication_token.clone());
+        let identity = (request.plugin_name.clone(), request.plugin_developer.clone());
+        self.tokens.insert(authentication_token.clone(), identity);
         ok(&AuthenticationTokenResponse { authentication_token })
     }
 
+    /// A token only works for the plugin name and developer it was issued to (research line 43, section 5: the token
+    /// is tied to both).
     fn authenticate(&mut self, session: u64, request: &AuthenticationRequest) -> Reply {
-        let valid = self.tokens.contains(&request.authentication_token);
+        let identity = (request.plugin_name.clone(), request.plugin_developer.clone());
+        let valid = self.tokens.get(&request.authentication_token) == Some(&identity);
         if let Some(s) = self.sessions.get_mut(&session) {
             s.authenticated = valid;
             s.plugin.clone_from(&request.plugin_name);
         }
-        let reason = if valid { "" } else { "the token is not valid (revoked or never issued)" };
+        let reason = if valid {
+            ""
+        } else {
+            "the token is not valid for this plugin (revoked, never issued, or issued to another)"
+        };
         ok(&AuthenticationResponse { authenticated: valid, reason: reason.into() })
     }
 
@@ -288,15 +318,41 @@ impl State {
         }
     }
 
-    fn input(&self, name: &str, added_by: &str, (min, max, default): (f64, f64, f64)) -> InputParameter {
+    /// The (min, max, default) of a parameter: its own for a custom one, VTS's usual -1..=1 for a built-in.
+    fn range(&self, name: &str) -> (f64, f64, f64) {
+        self.custom.get(name).map_or((-1.0, 1.0, 0.0), |c| (c.min, c.max, c.default))
+    }
+
+    /// The parameter as VTS lists it, with the value composed from the live feeds.
+    fn input(&self, name: &str) -> InputParameter {
+        let (min, max, default_value) = self.range(name);
         InputParameter {
             name: name.into(),
-            added_by: added_by.into(),
-            value: self.values.get(name).copied().unwrap_or(default),
+            added_by: self.custom.get(name).map_or(BUILT_IN_OWNER, |c| c.owner.as_str()).into(),
+            value: self.value_of(name).unwrap_or(default_value),
             min,
             max,
-            default_value: default,
+            default_value,
         }
+    }
+
+    /// The value a parameter has now: the `set` feed blended with the user's tracking by its `weight`, plus every `add`
+    /// feed (research line 62: `add` stacks across plugins, `weight` "blends with the user's real face tracking").
+    /// The README gives no formula, so the blend is linear and the mock's tracking input is the parameter's default.
+    pub fn value_of(&self, name: &str) -> Option<f64> {
+        if !self.is_param(name) {
+            return None;
+        }
+        let (_, _, tracking) = self.range(name);
+        let mut base = tracking;
+        let mut added = 0.0;
+        for feed in self.feeds.iter().filter(|((param, _), _)| param == name).map(|(_, feed)| feed) {
+            match feed.mode {
+                InjectMode::Set => base = tracking * (1.0 - feed.weight) + feed.value * feed.weight,
+                InjectMode::Add => added += feed.value,
+            }
+        }
+        Some(base + added)
     }
 
     fn parameter_list(&self) -> InputParameterListResponse {
@@ -305,12 +361,8 @@ impl State {
             model_loaded: self.model.is_some(),
             model_name: model.name.clone(),
             model_id: model.name,
-            custom_parameters: self
-                .custom
-                .iter()
-                .map(|(n, c)| self.input(n, &c.owner, (c.min, c.max, c.default)))
-                .collect(),
-            default_parameters: model.parameters.iter().map(|n| self.input(n, "", (-1.0, 1.0, 0.0))).collect(),
+            custom_parameters: self.custom.keys().map(|n| self.input(n)).collect(),
+            default_parameters: model.parameters.iter().map(|n| self.input(n)).collect(),
         }
     }
 
@@ -319,17 +371,19 @@ impl State {
     }
 
     /// At most 100 custom parameters per plugin: research `docs/research/2026-10-vts-plugin-api-terms.md` line 60,
-    /// from the public `DenchiSoft/VTubeStudio` README ("Adding new tracking parameters").
+    /// from the public `DenchiSoft/VTubeStudio` README ("Adding new tracking parameters"). The creating plugin may
+    /// repeat the request to change the range and default; a name owned by another plugin or built in is refused.
     fn create_param(&mut self, session: u64, request: &ParameterCreationRequest) -> Reply {
         let owner = self.sessions.get(&session).map(|s| s.plugin.clone()).unwrap_or_default();
         let name = request.parameter_name.as_str();
-        if self.is_param(name) {
+        let (min, max, default) = (request.min.get(), request.max.get(), request.default_value.get());
+        let own = self.custom.get(name).map(|c| c.owner == owner);
+        if own == Some(false) || (own.is_none() && self.is_param(name)) {
             return Err(error(PARAM_EXISTS, "a parameter with this name exists"));
         }
-        if self.custom.values().filter(|c| c.owner == owner).count() >= MAX_PLUGIN_PARAMS {
+        if own.is_none() && self.custom.values().filter(|c| c.owner == owner).count() >= MAX_PLUGIN_PARAMS {
             return Err(error(PARAM_LIMIT, &format!("a plugin may create {MAX_PLUGIN_PARAMS} custom parameters")));
         }
-        let (min, max, default) = (request.min.get(), request.max.get(), request.default_value.get());
         self.custom.insert(name.to_owned(), CustomParam { owner, min, max, default });
         ok(&ParameterCreationResponse { parameter_name: name.to_owned() })
     }
@@ -338,15 +392,14 @@ impl State {
         if !self.is_param(&request.name) {
             return Err(error(UNKNOWN_PARAM, "unknown parameter"));
         }
-        let range = self.custom.get(&request.name).map_or((-1.0, 1.0, 0.0), |c| (c.min, c.max, c.default));
-        ok(&ParameterValueResponse(self.input(&request.name, "", range)))
+        ok(&ParameterValueResponse(self.input(&request.name)))
     }
 
     /// A parameter not fed for 1 s reverts: research line 63, README "Feeding in data for default or custom
     /// parameters" (see [`State::settle`]). `set` on a parameter another plugin controls errors, `add` stacks: line 62.
     ///
     /// All-or-nothing: one bad value, unknown parameter or claimed parameter in `set` mode rejects the request.
-    fn inject(&mut self, data: Value, now: Duration) -> Reply {
+    fn inject(&mut self, session: u64, data: Value, now: Duration) -> Reply {
         let out_of_range = data["parameterValues"].as_array().is_some_and(|values| {
             values.iter().any(|v| v["value"].as_f64().is_some_and(|x| !x.is_finite() || x.abs() > PARAM_VALUE_LIMIT))
         });
@@ -354,17 +407,23 @@ impl State {
             return Err(error(VALUE_OUT_OF_RANGE, "a value is outside the allowed range"));
         }
         let request: InjectParameterDataRequest = parse(data)?;
+        let plugin = self.sessions.get(&session).map(|s| s.plugin.clone()).unwrap_or_default();
         for v in &request.parameter_values {
             if !self.is_param(&v.id) {
                 return Err(error(UNKNOWN_PARAM, &format!("unknown parameter {}", v.id)));
             }
-            if request.mode == InjectMode::Set && self.claimed.contains(&v.id) {
+            let held_by_other = self
+                .feeds
+                .iter()
+                .any(|((param, owner), feed)| *param == v.id && *owner != plugin && feed.mode == InjectMode::Set);
+            if request.mode == InjectMode::Set && (self.claimed.contains(&v.id) || held_by_other) {
                 return Err(error(PARAM_OWNED, &format!("{} is controlled by another plugin", v.id)));
             }
         }
         for v in &request.parameter_values {
-            self.values.insert(v.id.clone(), v.value.get());
-            self.last_fed.insert(v.id.clone(), now);
+            let weight = v.weight.filter(|w| w.is_finite()).map_or(1.0, |w| w.clamp(0.0, 1.0));
+            let feed = Feed { mode: request.mode, value: v.value.get(), weight, at: now };
+            self.feeds.insert((v.id.clone(), plugin.clone()), feed);
         }
         ok(&InjectParameterDataResponse {})
     }
@@ -379,12 +438,12 @@ impl State {
             .hotkeys
             .iter()
             .enumerate()
-            .map(|(i, name)| Hotkey {
-                name: name.clone(),
+            .map(|(i, h)| Hotkey {
+                name: h.name.clone(),
                 kind: "TriggerAnimation".into(),
                 description: String::new(),
                 file: String::new(),
-                hotkey_id: name.clone(),
+                hotkey_id: h.id.clone(),
                 on_screen_button_id: i32::try_from(i).unwrap_or(i32::MAX),
             })
             .collect();
@@ -399,10 +458,12 @@ impl State {
     /// Refuses a hotkey inside its 5-frame cooldown at the reported framerate, and any trigger when 32 are queued
     /// (research line 66, README "Requesting execution of hotkeys"). VTS plays one per frame.
     fn trigger(&mut self, request: &HotkeyTriggerRequest, now: Duration) -> Reply {
-        let id = &request.hotkey_id;
-        if !self.loaded_model(NO_MODEL)?.hotkeys.contains(id) {
-            return Err(error(UNKNOWN_HOTKEY, "unknown hotkey"));
-        }
+        let key = &request.hotkey_id;
+        // The real API takes the hotkey's id or its name (ignoring case); cooldowns follow the hotkey, not the spelling.
+        let hotkeys = &self.loaded_model(NO_MODEL)?.hotkeys;
+        let found =
+            hotkeys.iter().find(|h| h.id == *key).or_else(|| hotkeys.iter().find(|h| h.name.eq_ignore_ascii_case(key)));
+        let id = &found.ok_or_else(|| error(UNKNOWN_HOTKEY, "unknown hotkey"))?.id.clone();
         let frame = Duration::from_nanos(frame_nanos(self.framerate));
         if self.last_trigger.get(id).is_some_and(|&last| now.saturating_sub(last) < frame * HOTKEY_MIN_FRAMES) {
             return Err(error(HOTKEY_COOLDOWN, &format!("a hotkey fires once every {HOTKEY_MIN_FRAMES} frames")));
@@ -419,11 +480,14 @@ impl State {
         ok(&HotkeyTriggerResponse { hotkey_id: id.clone() })
     }
 
-    fn expression_state(&self) -> Reply {
+    fn expression_state(&self, request: &ExpressionStateRequest) -> Reply {
         let model = self.loaded_model(EXPRESSION_NO_MODEL)?;
+        let wanted =
+            |name: &String| request.expression_file.as_ref().is_none_or(|file| *file == format!("{name}.exp3.json"));
         let expressions = model
             .expressions
             .iter()
+            .filter(|name| wanted(name))
             .map(|name| Expression {
                 name: name.clone(),
                 file: format!("{name}.exp3.json"),

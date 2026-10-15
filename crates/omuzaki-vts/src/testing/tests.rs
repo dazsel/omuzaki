@@ -8,7 +8,7 @@ use std::net::TcpStream;
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::{Event, FakeClock, MockConfig, MockModel, MockVts};
+use super::{Event, FakeClock, MockConfig, MockHotkey, MockModel, MockVts};
 use serde_json::{Value, json};
 use tungstenite::{Message, WebSocket};
 
@@ -42,14 +42,26 @@ impl Client {
 
     /// Requests a token and authenticates with it.
     fn login(&mut self) {
-        let token = self
-            .call("AuthenticationTokenRequest", json!({"pluginName": "Omuzaki", "pluginDeveloper": "Omuzaki Studio"}));
+        self.login_as("Omuzaki", "Omuzaki Studio");
+    }
+
+    /// Like [`Client::login`], for another plugin identity.
+    fn login_as(&mut self, plugin: &str, developer: &str) {
+        let token =
+            self.call("AuthenticationTokenRequest", json!({"pluginName": plugin, "pluginDeveloper": developer}));
         let token = token["data"]["authenticationToken"].as_str().expect("a token").to_owned();
         let auth = self.call(
             "AuthenticationRequest",
-            json!({"pluginName": "Omuzaki", "pluginDeveloper": "Omuzaki Studio", "authenticationToken": token}),
+            json!({"pluginName": plugin, "pluginDeveloper": developer, "authenticationToken": token}),
         );
         assert_eq!(auth["data"]["authenticated"], true);
+    }
+
+    fn create(&mut self, name: &str, max: f64) -> Value {
+        self.call(
+            "ParameterCreationRequest",
+            json!({"parameterName": name, "min": 0.0, "max": max, "defaultValue": 0.0}),
+        )
     }
 
     fn inject(&mut self, mode: &str, id: &str, value: f64) -> Value {
@@ -67,7 +79,7 @@ impl Client {
 fn model(hotkeys: usize) -> MockModel {
     MockModel {
         name: "Kit".into(),
-        hotkeys: (0..hotkeys).map(|i| format!("hk{i}")).collect(),
+        hotkeys: (0..hotkeys).map(|i| MockHotkey { id: format!("hk{i}"), name: format!("Wave{i}") }).collect(),
         expressions: vec!["smile".into()],
         parameters: vec!["MouthOpen".into()],
     }
@@ -76,7 +88,7 @@ fn model(hotkeys: usize) -> MockModel {
 fn mock(hotkeys: usize) -> (MockVts, FakeClock) {
     let clock = FakeClock::default();
     let config = MockConfig { model: Some(model(hotkeys)), clock: Arc::new(clock.clone()), ..MockConfig::default() };
-    (MockVts::start(config).expect("starts"), clock)
+    (MockVts::start(&config).expect("starts"), clock)
 }
 
 fn error_id(reply: &Value) -> i64 {
@@ -172,7 +184,7 @@ fn custom_parameters_are_capped_at_100_per_plugin() {
         assert_eq!(create(&mut client, i)["messageType"], "ParameterCreationResponse");
     }
     assert_eq!(error_id(&create(&mut client, 100)), 450);
-    assert_eq!(error_id(&create(&mut client, 0)), 452, "a duplicate name is refused");
+    assert_eq!(create(&mut client, 0)["messageType"], "ParameterCreationResponse", "updating one at the cap is fine");
 }
 
 #[test]
@@ -266,4 +278,132 @@ fn a_bad_frame_and_an_unknown_message_get_errors() {
     assert_eq!(error_id(&reply), 1);
     client.login();
     assert_eq!(error_id(&client.call("NoSuchRequest", json!({}))), 2);
+}
+
+#[test]
+fn uptime_is_milliseconds_and_the_timestamp_is_epoch_milliseconds() {
+    let (mock, clock) = mock(1);
+    let mut client = Client::connect(&mock);
+    client.login();
+    clock.advance(Duration::from_millis(1500));
+    let stats = client.call("StatisticsRequest", json!({}));
+    assert_eq!(stats["data"]["uptime"], 1500);
+    assert_eq!(stats["timestamp"], 1_700_000_000_000_i64 + 1500, "the epoch base plus the elapsed time");
+}
+
+#[test]
+fn expression_state_honours_the_file_filter_and_rejects_bad_data() {
+    let (mock, _) = mock(1);
+    let mut client = Client::connect(&mock);
+    client.login();
+    mock.set_model(Some(MockModel { expressions: vec!["smile".into(), "frown".into()], ..model(1) }));
+    let all = client.call("ExpressionStateRequest", json!({"details": false}));
+    assert_eq!(all["data"]["expressions"].as_array().map(Vec::len), Some(2));
+    let one = client.call("ExpressionStateRequest", json!({"details": false, "expressionFile": "frown.exp3.json"}));
+    assert_eq!(one["data"]["expressions"].as_array().map(Vec::len), Some(1));
+    assert_eq!(one["data"]["expressions"][0]["name"], "frown");
+    assert_eq!(error_id(&client.call("ExpressionStateRequest", json!({"details": "yes"}))), 1);
+}
+
+#[test]
+fn a_token_only_works_for_the_plugin_it_was_issued_to() {
+    let (mock, _) = mock(1);
+    let mut client = Client::connect(&mock);
+    let token = client
+        .call("AuthenticationTokenRequest", json!({"pluginName": "Omuzaki", "pluginDeveloper": "Omuzaki Studio"}));
+    let token = token["data"]["authenticationToken"].clone();
+    for (name, developer) in [("Omuzaki", "Someone Else"), ("Other Plugin", "Omuzaki Studio")] {
+        let auth = client.call(
+            "AuthenticationRequest",
+            json!({"pluginName": name, "pluginDeveloper": developer, "authenticationToken": token}),
+        );
+        assert_eq!(auth["data"]["authenticated"], false, "{name} / {developer}");
+    }
+    let auth = client.call(
+        "AuthenticationRequest",
+        json!({"pluginName": "Omuzaki", "pluginDeveloper": "Omuzaki Studio", "authenticationToken": token}),
+    );
+    assert_eq!(auth["data"]["authenticated"], true);
+}
+
+#[test]
+fn creating_a_parameter_again_updates_it_only_for_its_owner() {
+    let (mock, _) = mock(1);
+    let (mut owner, mut other) = (Client::connect(&mock), Client::connect(&mock));
+    owner.login();
+    other.login_as("Other Plugin", "Other Dev");
+    assert_eq!(owner.create("Shared01", 1.0)["messageType"], "ParameterCreationResponse");
+    assert_eq!(owner.create("Shared01", 5.0)["messageType"], "ParameterCreationResponse", "the owner may update");
+    let listed = owner.call("InputParameterListRequest", json!({}));
+    assert_eq!(listed["data"]["customParameters"][0]["max"], 5.0);
+    assert_eq!(error_id(&other.create("Shared01", 9.0)), 452, "another plugin's parameter");
+    assert_eq!(error_id(&owner.create("MouthOpen", 1.0)), 452, "a built-in parameter");
+}
+
+#[test]
+fn owners_are_reported_in_the_list_and_in_a_single_lookup() {
+    let (mock, _) = mock(1);
+    let mut client = Client::connect(&mock);
+    client.login();
+    client.create("Custom001", 1.0);
+    let listed = client.call("InputParameterListRequest", json!({}));
+    assert_eq!(listed["data"]["defaultParameters"][0]["addedBy"], "VTube Studio");
+    assert_eq!(listed["data"]["customParameters"][0]["addedBy"], "Omuzaki");
+    let one = |client: &mut Client, name: &str| client.call("ParameterValueRequest", json!({"name": name}));
+    assert_eq!(one(&mut client, "Custom001")["data"]["addedBy"], "Omuzaki");
+    assert_eq!(one(&mut client, "MouthOpen")["data"]["addedBy"], "VTube Studio");
+}
+
+#[test]
+fn injections_compose_across_plugins() {
+    let (mock, _) = mock(1);
+    let (mut a, mut b) = (Client::connect(&mock), Client::connect(&mock));
+    a.login();
+    b.login_as("Other Plugin", "Other Dev");
+    assert_eq!(a.inject("add", "MouthOpen", 0.25)["messageType"], "InjectParameterDataResponse");
+    assert_eq!(b.inject("add", "MouthOpen", 0.5)["messageType"], "InjectParameterDataResponse");
+    assert_eq!(mock.param_value("MouthOpen"), Some(0.75), "add stacks across plugins");
+
+    let weighted = a.call(
+        "InjectParameterDataRequest",
+        json!({"faceFound": true, "mode": "set", "parameterValues": [{"id": "MouthOpen", "value": 1.0, "weight": 0.5}]}),
+    );
+    assert_eq!(weighted["messageType"], "InjectParameterDataResponse");
+    assert_eq!(
+        mock.param_value("MouthOpen"),
+        Some(0.5 * 0.0 + 0.5 * 1.0 + 0.5),
+        "tracking 0, weight 0.5, plus b's add"
+    );
+    assert_eq!(error_id(&b.inject("set", "MouthOpen", 0.1)), 454, "a live set from another plugin owns the parameter");
+    let read = a.call("ParameterValueRequest", json!({"name": "MouthOpen"}));
+    assert_eq!(read["data"]["value"], 1.0);
+}
+
+#[test]
+fn hotkeys_resolve_by_id_or_name_ignoring_case_and_share_one_cooldown() {
+    let (mock, clock) = mock(2);
+    let mut client = Client::connect(&mock);
+    client.login();
+    let reply = client.trigger("wAvE0");
+    assert_eq!(reply["data"]["hotkeyID"], "hk0", "the response carries the canonical id");
+    clock.advance(Duration::from_millis(20));
+    assert_eq!(error_id(&client.trigger("hk0")), 203, "the id shares the cooldown of the name");
+    assert_eq!(error_id(&client.trigger("nope")), 202);
+}
+
+#[test]
+fn a_failed_handshake_is_recorded_and_a_healthy_run_has_no_failures() {
+    let (mut mock, _) = mock(1);
+    let mut client = Client::connect(&mock);
+    client.call("APIStateRequest", json!({}));
+    assert_eq!(mock.setup_failures(), Vec::<String>::new());
+
+    let mut raw = TcpStream::connect(("127.0.0.1", mock.port())).expect("connects");
+    std::io::Write::write_all(&mut raw, b"GET / HTTP/1.1\r\n\r\n").expect("writes");
+    drop(raw);
+    // `stop` joins every connection thread, so the failure is recorded by the time it returns.
+    mock.stop().expect("stops cleanly");
+    let failures = mock.setup_failures();
+    assert_eq!(failures.len(), 1, "{failures:?}");
+    assert!(failures[0].contains("handshake"), "{failures:?}");
 }

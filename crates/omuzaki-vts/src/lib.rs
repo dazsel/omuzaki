@@ -1,6 +1,6 @@
 //! The `VTube Studio` (VTS) plugin API as plain data: message types, validators and limits for the CN-13 bridge.
 //!
-//! Nothing here does I/O. The client, the parameter injector, hotkeys and ops are later tasks built on these types.
+//! Nothing here does I/O in a default build; the `testing` feature adds a loopback mock server (below). The client, the parameter injector, hotkeys and ops are later tasks built on these types.
 //!
 //! # Clean-room
 //!
@@ -15,6 +15,7 @@
 //! |---|---|
 //! | [`protocol`] | the [`Envelope`](protocol::Envelope), [`ApiError`](protocol::ApiError), [`ErrorKind`](protocol::ErrorKind) and every request, response and event |
 //! | [`limits`] | the API limits as constants and the validated newtypes ([`CustomParamName`](limits::CustomParamName), [`ParamValue`](limits::ParamValue), [`FadeTime`](limits::FadeTime)) |
+//! | `testing` (feature `testing`, and this crate's tests) | an in-process mock `VTube Studio` server on loopback for tests of the bridge: no VTS, account or network needed; the only module that does I/O |
 #![deny(missing_docs)]
 
 pub mod limits;
