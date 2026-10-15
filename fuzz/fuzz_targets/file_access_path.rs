@@ -6,9 +6,9 @@ use libfuzzer_sys::fuzz_target;
 use omuzaki_ops_api::fuzzing::check_path;
 
 fuzz_target!(|data: &[u8]| {
-    if let Ok(raw) = std::str::from_utf8(data) {
-        if let Err(broken) = check_path(raw) {
-            panic!("{broken}");
-        }
+    if let Ok(raw) = std::str::from_utf8(data)
+        && let Err(broken) = check_path(raw)
+    {
+        panic!("{broken}");
     }
 });
