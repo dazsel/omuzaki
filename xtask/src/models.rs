@@ -78,7 +78,14 @@ pub fn problems(file: &str, text: &str, register: &[Row], sources: &[(String, St
     }
     let file_name = file.rsplit('/').next().unwrap_or(file);
     for (path, source) in sources {
-        for (id, include) in registrations(source) {
+        for registration in registrations(source) {
+            let (id, include) = match registration {
+                Ok(found) => found,
+                Err(reason) => {
+                    out.push(format!("`register_model!` in {path} has a literal the gate cannot decode: {reason}"));
+                    continue;
+                }
+            };
             if include == file_name && id != manifest.id.as_str() {
                 out.push(format!(
                     "`register_model!` in {path} registers `{id}` for this file; its manifest's id is `{}`",
@@ -92,8 +99,9 @@ pub fn problems(file: &str, text: &str, register: &[Row], sources: &[(String, St
 
 /// The `(id, file name)` of every `register_model!("<id>", include_str!("<path>"))` in one Rust source. It reads the
 /// registry's lexer, so a commented-out or quoted example never counts, and whitespace or newlines inside the call don't
-/// matter. Either macro may use any of Rust's delimiters, `(…)`, `[…]` or `{…}`, as long as each closes with its match.
-fn registrations(source: &str) -> Vec<(String, String)> {
+/// matter. Either macro may use any of Rust's delimiters, `(…)`, `[…]` or `{…}`, as long as each closes with its match,
+/// and either may end in a trailing comma. A string literal that can't be decoded is an `Err`, never skipped.
+fn registrations(source: &str) -> Vec<Result<(String, String), String>> {
     let toks = tokens(source);
     let mut found = Vec::new();
     for at in 0..toks.len() {
@@ -104,9 +112,13 @@ fn registrations(source: &str) -> Vec<(String, String)> {
         let Some(id) = toks.get(at + 3).and_then(string_value) else { continue };
         let Some((file, end)) = include_file(&toks, at + 4) else { continue };
         let end = if is_punct(&toks, end, ',') { end + 1 } else { end };
-        if is_punct(&toks, end, close) {
-            found.push((id, file));
+        if !is_punct(&toks, end, close) {
+            continue;
         }
+        found.push(match (id, file) {
+            (Ok(id), Ok(file)) => Ok((id, file)),
+            (Err(reason), _) | (_, Err(reason)) => Err(reason),
+        });
     }
     found
 }
@@ -116,9 +128,9 @@ fn closer(token: &Token) -> Option<char> {
     [('(', ')'), ('[', ']'), ('{', '}')].into_iter().find(|&(open, _)| token.is_punct(open)).map(|(_, close)| close)
 }
 
-/// The file name of `, include_str!("<path>")` starting at `at` (the last component of the path), and the index of the
-/// token after its closing delimiter.
-fn include_file(toks: &[Token], at: usize) -> Option<(String, usize)> {
+/// The file name of `, include_str!("<path>")` starting at `at` (the last component of the decoded path), and the index
+/// of the token after its closing delimiter. The path may be followed by a trailing comma.
+fn include_file(toks: &[Token], at: usize) -> Option<(Result<String, String>, usize)> {
     let include = is_punct(toks, at, ',')
         && toks.get(at + 1).is_some_and(|t| t.is_ident("include_str"))
         && is_punct(toks, at + 2, '!');
@@ -127,25 +139,81 @@ fn include_file(toks: &[Token], at: usize) -> Option<(String, usize)> {
     }
     let close = closer(toks.get(at + 3)?)?;
     let path = string_value(toks.get(at + 4)?)?;
-    if !is_punct(toks, at + 5, close) {
+    let end = if is_punct(toks, at + 5, ',') { at + 6 } else { at + 5 };
+    if !is_punct(toks, end, close) {
         return None;
     }
-    Some((path.rsplit('/').next()?.to_owned(), at + 6))
+    let file = path.map(|path| path.rsplit('/').next().unwrap_or_default().to_owned());
+    Some((file, end + 1))
 }
 
 fn is_punct(toks: &[Token], at: usize, c: char) -> bool {
     toks.get(at).is_some_and(|t| t.is_punct(c))
 }
 
-/// The value of a string literal token, without its quotes or raw-string hashes; `None` for anything else.
-fn string_value(token: &Token) -> Option<String> {
+/// The value of a string literal token as Rust reads it; `None` if the token isn't a string literal, `Err` if it is one
+/// but can't be decoded.
+fn string_value(token: &Token) -> Option<Result<String, String>> {
     let Tok::Literal(text) = &token.tok else { return None };
     if let Some(raw) = text.strip_prefix('r') {
-        let body = raw.trim_start_matches('#').strip_prefix('"')?;
-        return Some(body.trim_end_matches('#').strip_suffix('"')?.to_owned());
+        let hashes = raw.len() - raw.trim_start_matches('#').len();
+        let body = raw[hashes..].strip_prefix('"')?;
+        let tail = format!("\"{}", "#".repeat(hashes));
+        return Some(match body.strip_suffix(tail.as_str()) {
+            Some(body) => Ok(body.to_owned()),
+            None => Err(format!("malformed raw string {text}")),
+        });
     }
     let body = text.strip_prefix('"')?.strip_suffix('"')?;
-    Some(body.to_owned())
+    Some(unescape(body).ok_or_else(|| format!("cannot decode the string literal {text}")))
+}
+
+/// Decodes the escapes of a (non-raw) string literal body the way Rust does: `\\ \" \' \n \r \t \0`, `\xNN` (up to
+/// `7F`), `\u{…}` and a line continuation, which skips the newline and the whitespace after it. `None` on anything else.
+fn unescape(body: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut chars = body.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next()? {
+            '\\' => out.push('\\'),
+            '"' => out.push('"'),
+            '\'' => out.push('\''),
+            'n' => out.push('\n'),
+            'r' => out.push('\r'),
+            't' => out.push('\t'),
+            '0' => out.push('\0'),
+            'x' => {
+                let digits: String = [chars.next()?, chars.next()?].into_iter().collect();
+                let value = u8::from_str_radix(&digits, 16).ok().filter(u8::is_ascii)?;
+                out.push(char::from(value));
+            }
+            'u' => {
+                if chars.next()? != '{' {
+                    return None;
+                }
+                let mut digits = String::new();
+                loop {
+                    match chars.next()? {
+                        '}' => break,
+                        '_' => {}
+                        d if d.is_ascii_hexdigit() => digits.push(d),
+                        _ => return None,
+                    }
+                }
+                if digits.is_empty() || digits.len() > 6 {
+                    return None;
+                }
+                out.push(char::from_u32(u32::from_str_radix(&digits, 16).ok()?)?);
+            }
+            '\n' | '\r' => while chars.next_if(|c| matches!(c, ' ' | '\t' | '\n' | '\r')).is_some() {},
+            _ => return None,
+        }
+    }
+    Some(out)
 }
 
 /// Every `.rs` file under `dir`, recursively, as `(workspace-relative path, text)`. An unreadable file is reported as its
@@ -364,8 +432,8 @@ spdx = "MIT OR Apache-2.0"
         assert_eq!(
             registrations(text),
             [
-                ("echo-fake".to_owned(), "echo-fake.model.toml".to_owned()),
-                ("other".to_owned(), "other.model.toml".to_owned()),
+                Ok(("echo-fake".to_owned(), "echo-fake.model.toml".to_owned())),
+                Ok(("other".to_owned(), "other.model.toml".to_owned())),
             ]
         );
     }
@@ -374,9 +442,9 @@ spdx = "MIT OR Apache-2.0"
     fn whitespace_newlines_and_raw_strings_do_not_hide_a_registration() {
         let spread =
             "register_model!(\n    \"tiny\",\n    include_str!(\n        \"../models/tiny.model.toml\"\n    ),\n);";
-        assert_eq!(registrations(spread), [("tiny".to_owned(), "tiny.model.toml".to_owned())]);
+        assert_eq!(registrations(spread), [Ok(("tiny".to_owned(), "tiny.model.toml".to_owned()))]);
         let raw = r##"register_model!(r#"tiny"#, include_str!("../models/tiny.model.toml"));"##;
-        assert_eq!(registrations(raw), [("tiny".to_owned(), "tiny.model.toml".to_owned())]);
+        assert_eq!(registrations(raw), [Ok(("tiny".to_owned(), "tiny.model.toml".to_owned()))]);
     }
 
     #[test]
@@ -387,9 +455,11 @@ spdx = "MIT OR Apache-2.0"
             r#"register_model! { "tiny", include_str! { "../models/tiny.model.toml" } }"#,
             r#"register_model! { "tiny", include_str!("../models/tiny.model.toml"), }"#,
             r#"register_model!["tiny", include_str!["../models/tiny.model.toml"],];"#,
+            r#"register_model!("tiny", include_str!("../models/tiny.model.toml",));"#,
+            r#"register_model!("tiny", include_str!("../models/tiny.model.toml",),);"#,
         ];
         for form in forms {
-            assert_eq!(registrations(form), [("tiny".to_owned(), "tiny.model.toml".to_owned())], "{form}");
+            assert_eq!(registrations(form), [Ok(("tiny".to_owned(), "tiny.model.toml".to_owned()))], "{form}");
         }
     }
 
@@ -417,6 +487,59 @@ spdx = "MIT OR Apache-2.0"
         let found = problems(FILE, &manifest("tiny", HTTPS), &register(), &sources);
         assert_eq!(found.len(), 1, "{found:?}");
         assert!(found[0].contains("registers `other` for this file"), "{found:?}");
+    }
+
+    /// The one finding `problems` gives for `text` registered against `FILE`'s manifest (id `tiny`).
+    fn findings_for(text: &str) -> Vec<String> {
+        let sources = vec![("crates/omuzaki-tiny/src/lib.rs".to_owned(), text.to_owned())];
+        problems(FILE, &manifest("tiny", HTTPS), &register(), &sources)
+    }
+
+    #[test]
+    fn an_inner_trailing_comma_does_not_hide_a_mismatch() {
+        let found = findings_for(r#"register_model!("other", include_str!("../models/tiny.model.toml",));"#);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("registers `other` for this file"), "{found:?}");
+    }
+
+    #[test]
+    fn an_escaped_path_does_not_hide_a_mismatch() {
+        let found = findings_for(r#"register_model!("other", include_str!("../models/\x74iny.model.toml"));"#);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("registers `other` for this file"), "{found:?}");
+        let unicode = findings_for(r#"register_model!("ot\u{68}er", include_str!("../models/ti\u{6e}y.model.toml"));"#);
+        assert!(unicode[0].contains("registers `other` for this file"), "{unicode:?}");
+    }
+
+    #[test]
+    fn a_raw_string_path_does_not_hide_a_mismatch() {
+        let found = findings_for(r##"register_model!("other", include_str!(r#"../models/tiny.model.toml"#));"##);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("registers `other` for this file"), "{found:?}");
+    }
+
+    #[test]
+    fn an_undecodable_literal_fails_the_gate() {
+        let found = findings_for(r#"register_model!("tiny", include_str!("../models/\q.model.toml"));"#);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("cannot decode the string literal"), "{found:?}");
+        let out_of_range = findings_for(r#"register_model!("t\xFFny", include_str!("../models/tiny.model.toml"));"#);
+        assert!(out_of_range[0].contains("cannot decode"), "{out_of_range:?}");
+    }
+
+    #[test]
+    fn rust_escapes_decode_like_rust() {
+        let cases = [
+            (r#"a\\b\"c\'d\ne\rf\tg\0h"#, "a\\b\"c'd\ne\rf\tg\0h"),
+            (r"\x41\u{1F600}\u{4_1}", "A\u{1F600}A"),
+            ("ab\\\n   \t cd", "abcd"),
+        ];
+        for (body, want) in cases {
+            assert_eq!(unescape(body).as_deref(), Some(want), "{body}");
+        }
+        for bad in ["\\", "\\x4", "\\x80", "\\u41", "\\u{}", "\\u{110000}", "\\u{D800}", "\\u{1234567}"] {
+            assert_eq!(unescape(bad), None, "{bad}");
+        }
     }
 
     #[test]
