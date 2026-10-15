@@ -44,7 +44,7 @@ fn builtin_clips_load() {
 fn key_times_return_the_keys_exactly() {
     let rest = HandRest::nominal();
     for c in ClipLibrary::builtin().unwrap().iter() {
-        for k in &c.keys {
+        for k in c.keys() {
             assert_eq!(c.sample_posture(k.t), k.posture, "{} at {}", c.id, k.t);
             assert_eq!(c.sample(k.t, &rest), k.posture.to_humanoid(&rest));
         }
@@ -54,9 +54,9 @@ fn key_times_return_the_keys_exactly() {
 #[test]
 fn one_shot_holds_its_ends_and_a_loop_wraps() {
     let yawn = clip("yawn");
-    assert_eq!(yawn.sample_posture(-3.0), yawn.keys[0].posture);
-    assert_eq!(yawn.sample_posture(99.0), yawn.keys.last().unwrap().posture);
-    assert_eq!(yawn.sample_posture(f32::NAN), yawn.keys[0].posture);
+    assert_eq!(yawn.sample_posture(-3.0), yawn.keys()[0].posture);
+    assert_eq!(yawn.sample_posture(99.0), yawn.keys().last().unwrap().posture);
+    assert_eq!(yawn.sample_posture(f32::NAN), yawn.keys()[0].posture);
     let wave = clip("wave");
     assert_same(&wave.sample(0.1, &HandRest::nominal()), &wave.sample(0.7, &HandRest::nominal()), 1e-5);
     assert_same(&wave.sample(-0.5, &HandRest::nominal()), &wave.sample(0.1, &HandRest::nominal()), 1e-5);
@@ -65,7 +65,7 @@ fn one_shot_holds_its_ends_and_a_loop_wraps() {
 #[test]
 fn yawn_peak_is_held_between_its_two_keys() {
     let yawn = clip("yawn");
-    let peak = yawn.keys[2].posture;
+    let peak = yawn.keys()[2].posture;
     assert_same(&yawn.sample_posture(2.4).body, &peak.body, 1e-6);
     assert_ne!(yawn.sample_posture(1.5), peak);
 }
@@ -85,9 +85,9 @@ fn the_loop_seam_is_c1() {
         let c = clip(id);
         // Both segments at the seam come to rest at it: a hundredth of a segment away they move at a small part of
         // their mid-segment speed.
-        let (last, first) = (c.keys.last().unwrap().t, c.keys[1].t - c.keys[0].t);
+        let (last, first) = (c.keys().last().unwrap().t, c.keys()[1].t - c.keys()[0].t);
         let before = c.length - last;
-        let (mid_in, mid_out) = (speed(&c, last + before / 2.0), speed(&c, c.keys[0].t + first / 2.0));
+        let (mid_in, mid_out) = (speed(&c, last + before / 2.0), speed(&c, c.keys()[0].t + first / 2.0));
         assert!(mid_in > 0.1 && mid_out > 0.1, "{id} moves between its keys");
         assert!(speed(&c, c.length - before * 0.01) < mid_in * 0.1, "{id} into the seam");
         assert!(speed(&c, first * 0.01) < mid_out * 0.1, "{id} out of the seam");
@@ -133,14 +133,14 @@ fn sampling_is_deterministic() {
 #[test]
 fn contacts_are_read_back_from_the_toml_and_swap_when_mirrored() {
     let walk = clip("walk");
-    assert_eq!(walk.keys[0].contacts, [Some(true), Some(true)]);
+    assert_eq!(walk.keys()[0].contacts, [Some(true), Some(true)]);
     assert_eq!(walk.contacts(0.3), [Some(true), Some(false)]);
     assert_eq!(walk.contacts(0.8), [Some(false), Some(true)]);
     assert_eq!(walk.contacts(1.3), walk.contacts(0.3));
     assert_eq!(walk.mirrored().contacts(0.3), [Some(false), Some(true)]);
     // A side left out is the planter's own detection.
     let c = parse(&file(OK_HEAD, &format!("{KEY_A}contacts = {{ right = false }}\n"))).unwrap();
-    assert_eq!(c.keys[0].contacts, [None, Some(false)]);
+    assert_eq!(c.keys()[0].contacts, [None, Some(false)]);
     assert_eq!(clip("wave").contacts(0.2), [None, None]);
 }
 
@@ -149,7 +149,7 @@ fn a_mirrored_key_is_the_mirror_of_its_pose() {
     let c = parse(&file(OK_HEAD, &format!("{KEY_A}mirror = true\n"))).unwrap();
     let lib = PoseLibrary::builtin().unwrap();
     let plain = lib.get("wave-right").unwrap().posture(HandLibrary::builtin().unwrap()).unwrap();
-    assert_eq!(c.keys[0].posture, Posture::mirrored(&plain));
+    assert_eq!(c.keys()[0].posture, Posture::mirrored(&plain));
 }
 
 #[test]
@@ -184,7 +184,7 @@ fn rejects_an_empty_summary() {
 
 #[test]
 fn rejects_a_bad_length() {
-    for len in ["0.0", "-1.0", "nan", "inf"] {
+    for len in ["0.0", "-1.0", "nan", "inf", "3601.0", "3e38"] {
         let head = OK_HEAD.replace("1.0", len);
         assert!(matches!(parse(&file(&head, KEY_A)), Err(ClipError::BadLength { .. })), "{len}");
     }
@@ -268,4 +268,20 @@ fn easing_is_exact_at_the_ends() {
         assert_eq!((e.apply(0.0), e.apply(1.0)), (0.0, 1.0));
         assert_eq!(Easing::from_name(e.name()), Some(e));
     }
+}
+
+#[test]
+fn a_long_clip_with_a_late_first_key_blends_across_its_seam() {
+    // The overflow case of the review, at the longest length allowed: keys late in the clip, sampled on the seam.
+    let keys = "[[keys]]\nt = 2000.0\npose = \"wave-right\"\n[[keys]]\nt = 2500.0\npose = \"wave-left\"\n";
+    let c = parse(&file("length = 3600.0\nlooped = true\neasing = \"smooth\"", keys)).unwrap();
+    let (right, left) = (c.keys()[0].posture, c.keys()[1].posture);
+    // The seam runs from 2500 s through the end to 2000 s of the next cycle: 3100 s, and 3050 s is the middle.
+    let mid = c.sample_posture(3050.0);
+    assert_ne!(mid, left);
+    assert_ne!(mid, right);
+    assert_same(&c.sample_posture(100.0).body, &c.sample_posture(100.0 + 3600.0).body, 1e-5);
+    let after = c.sample_posture(1000.0);
+    assert_ne!(after, left);
+    assert_ne!(after, right);
 }

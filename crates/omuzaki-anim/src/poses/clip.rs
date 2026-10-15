@@ -59,7 +59,7 @@ pub enum ClipError {
     #[error("clip {0} has no summary")]
     EmptySummary(String),
     /// The length is not finite and above zero.
-    #[error("clip {id}: length {length} is not a finite number above zero")]
+    #[error("clip {id}: length {length} is not a finite number above zero and at most 3600 s")]
     BadLength {
         /// The clip.
         id: String,
@@ -182,6 +182,9 @@ impl Easing {
     }
 }
 
+/// The longest clip, in seconds. It keeps every time sum in sampling far from overflow and precision loss.
+pub const MAX_LENGTH: f32 = 3600.0;
+
 /// One key of a clip: a pose at a time, with the foot contacts there.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
@@ -212,8 +215,8 @@ pub struct PoseClip {
     pub looped: bool,
     /// How each segment is paced.
     pub easing: Easing,
-    /// The keys, in strictly increasing time.
-    pub keys: Vec<ClipKey>,
+    /// The keys, in strictly increasing time; never empty (see [`PoseClip::keys`]).
+    keys: Vec<ClipKey>,
 }
 
 /// One key in a file.
@@ -272,7 +275,7 @@ impl PoseClip {
         if file.summary.trim().is_empty() {
             return Err(ClipError::EmptySummary(id));
         }
-        if !(file.length.is_finite() && file.length > 0.0) {
+        if !(file.length.is_finite() && file.length > 0.0 && file.length <= MAX_LENGTH) {
             return Err(ClipError::BadLength { id, length: file.length });
         }
         let Some(easing) = Easing::from_name(&file.easing) else {
@@ -311,6 +314,11 @@ impl PoseClip {
         Ok(Self { id, summary: file.summary, length: file.length, looped: file.looped, easing, keys })
     }
 
+    /// The keys, in strictly increasing time. A parsed clip has at least one.
+    pub fn keys(&self) -> &[ClipKey] {
+        &self.keys
+    }
+
     /// The clip with left and right swapped: every key posture mirrored and the contacts exchanged. Exact: mirroring
     /// twice gives back the same clip. A walk mirrored and shifted by half a cycle is the walk.
     #[must_use]
@@ -338,22 +346,23 @@ impl PoseClip {
         if !t.is_finite() {
             return first.posture;
         }
-        let (t, segment) = if self.looped {
+        // The segment to play, how far into it `t` is, and how long it is: every sum is of differences inside `0..=length`
+        // (at most `MAX_LENGTH`), so none can overflow.
+        let seam = (self.length - last.t) + first.t;
+        let last_index = self.keys.len() - 1;
+        let (segment, elapsed, span) = if self.looped {
             let t = t.rem_euclid(self.length);
             // Before the first key the clip is still on the seam that began at the last key one cycle ago.
-            if t < first.t { (t + self.length, self.keys.len() - 1) } else { (t, self.segment(t)) }
+            if t < first.t { (last_index, (self.length - last.t) + t, seam) } else { self.within(t, seam) }
         } else if t <= first.t {
             return first.posture;
         } else if t >= last.t {
             return last.posture;
         } else {
-            (t, self.segment(t))
+            self.within(t, seam)
         };
-        let (from, to_t, to) = match self.keys.get(segment + 1) {
-            Some(next) => (&self.keys[segment], next.t, next),
-            None => (&self.keys[segment], first.t + self.length, first),
-        };
-        let u = (t - from.t) / (to_t - from.t);
+        let (from, to) = (&self.keys[segment], self.keys.get(segment + 1).unwrap_or(first));
+        let u = elapsed / span;
         Posture::blend(&from.posture, &to.posture, self.easing.apply(u))
     }
 
@@ -382,6 +391,17 @@ impl PoseClip {
             return if self.looped { last.contacts } else { first.contacts };
         }
         self.keys[self.segment(t)].contacts
+    }
+
+    /// The segment `t` is in, how far into it, and how long it is, for `t` at or after the first key and (when
+    /// looped) before `length`. `seam` is the length of the segment from the last key to the first.
+    fn within(&self, t: f32, seam: f32) -> (usize, f32, f32) {
+        let i = self.segment(t);
+        let from = self.keys[i].t;
+        match self.keys.get(i + 1) {
+            Some(next) => (i, t - from, next.t - from),
+            None => (i, t - from, seam),
+        }
     }
 
     /// The index of the last key at or before `t`; `t` is at or after the first key.
