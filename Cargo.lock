@@ -4031,6 +4031,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-stream-api"
+version = "0.0.0"
+dependencies = [
+ "bytes",
+ "schemars",
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "omuzaki-take-api"
 version = "0.0.0"
 dependencies = [
