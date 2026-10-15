@@ -1,0 +1,7 @@
+section = "rust"
+item = "librtmp"
+kind = "native"
+used_for = "RTMP"
+status = "conditions"
+condition = "LGPL dynamic; never rtmpdump"
+audit = "B4"

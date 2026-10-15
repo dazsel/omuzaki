@@ -1,0 +1,7 @@
+section = "rust"
+item = "candle, burn"
+kind = "crate"
+used_for = "own models"
+status = "conditions"
+condition = "candle's `mkl` feature banned"
+audit = "B2"

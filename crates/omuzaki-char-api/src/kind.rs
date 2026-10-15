@@ -26,6 +26,7 @@ use serde::de::DeserializeOwned;
 
 use crate::character::Attach;
 use crate::error::BuildError;
+use crate::fact::{Append, Cell, Fact, FactId, Keyed, Last, Merged, Slot, default_of};
 use crate::geometry::{FaceOverlay, MaterialSpec, PartMesh, TextureData};
 use crate::ids::{AnchorId, BodyTemplateId, JointRef, MaterialName, PartId, PartKindId, TextureName};
 use crate::rig::RigContribution;
@@ -368,44 +369,175 @@ pub struct Anchor {
     pub rotation: Quat,
 }
 
-/// What one part makes available to the parts after it.
-#[derive(Clone, Debug, Default)]
+/// What one part makes available to the parts after it: a [`Fact`] value per [`Publishes::put`]. The facts of this
+/// crate are [`HeadFact`], [`FaceFact`], [`FitFact`], [`AnchorsFact`], [`CollidersFact`] and [`StatureFact`]; any crate
+/// may define more ([`fact!`](crate::fact)).
+#[derive(Clone, Default)]
 pub struct Publishes {
-    /// The head surface (published by `head`).
-    pub head: Option<Arc<dyn HeadSurface>>,
-    /// Where painted face layers land on the head (published by `head`).
-    pub face: Option<FaceProjection>,
-    /// The part's outer envelope, for garments built over it.
-    pub fit: Option<Arc<dyn BodyFit>>,
-    /// Anchors for accessories.
-    pub anchors: Vec<(AnchorId, Anchor)>,
-    /// Collider groups later parts may use ([`BuildCtx::colliders`]): hair and cloth keep out of the head and
-    /// shoulders. They also join the rig's spring set. Colliders must sit on humanoid bones (provisional ids from
-    /// [`humanoid_id`](crate::humanoid_id)): the only bones another part can locate.
-    pub colliders: Vec<ColliderGroup>,
-    /// The character's real-world stature, published by the body part (`None` for a body authored in metres). The
-    /// build scales the body and the head by [`Stature::scale`] before any later part is built
-    /// ([`scale_output`](crate::scale_output)); what the body publishes here is therefore the size it already has.
-    pub stature: Option<Stature>,
+    /// By fact name, so the merge order is deterministic.
+    slots: BTreeMap<&'static str, Slot>,
+    /// The first value put for a fact whose name another fact already has here: [`Published::absorb`] refuses it.
+    clash: Option<String>,
+}
+
+impl Publishes {
+    /// Publishes one value of fact `F`. An [`Append`] or [`Keyed`] fact takes several `put`s, merged in the order they
+    /// were made.
+    pub fn put<F: Fact>(&mut self, value: F::Value)
+    where
+        F::Value: Clone,
+        F::Merged: Clone,
+    {
+        let slot = self.slots.entry(F::NAME).or_insert_with(Slot::new::<F>);
+        match slot.id.clash(FactId::of::<F>(), F::NAME) {
+            None => slot.values.push(Cell::new(value)),
+            Some(message) => {
+                self.clash.get_or_insert(message);
+            }
+        }
+    }
+
+    /// [`Publishes::put`] for building a value in one expression.
+    #[must_use]
+    pub fn with<F: Fact>(mut self, value: F::Value) -> Self
+    where
+        F::Value: Clone,
+        F::Merged: Clone,
+    {
+        self.put::<F>(value);
+        self
+    }
+
+    /// The values of fact `F` put so far, in order (what the part itself published, before any merge).
+    pub fn values<F: Fact>(&self) -> impl Iterator<Item = &F::Value> {
+        self.slots
+            .get(F::NAME)
+            .filter(|slot| slot.id.is::<F>())
+            .into_iter()
+            .flat_map(|slot| slot.values.iter())
+            .filter_map(Cell::get::<F::Value>)
+    }
+
+    /// The values of fact `F` put so far, in order, to change in place (the build scales them to real size).
+    pub fn values_mut<F: Fact>(&mut self) -> impl Iterator<Item = &mut F::Value> {
+        self.slots
+            .get_mut(F::NAME)
+            .filter(|slot| slot.id.is::<F>())
+            .into_iter()
+            .flat_map(|slot| slot.values.iter_mut())
+            .filter_map(Cell::get_mut::<F::Value>)
+    }
+
+    /// Whether nothing was put: the part is silent to the parts after it.
+    pub fn is_empty(&self) -> bool {
+        self.slots.is_empty() && self.clash.is_none()
+    }
+}
+
+impl Debug for Publishes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut facts = f.debug_map();
+        for (name, slot) in &self.slots {
+            facts.entry(name, &slot.values.len());
+        }
+        facts.finish()
+    }
 }
 
 /// Everything published so far during one build. Later parts read it; [`Published::absorb`] is the only writer.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct Published {
-    /// The head surface, if a head part built.
-    pub head: Option<Arc<dyn HeadSurface>>,
-    /// The face projection, if a head part built.
-    pub face: Option<FaceProjection>,
+    /// The merged value of every fact published so far, by fact name.
+    merged: BTreeMap<&'static str, Merged>,
+}
+
+impl Debug for Published {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(self.merged.keys()).finish()
+    }
+}
+
+// ------------------------------------------------------------------------------------------------ facts
+
+crate::fact! {
+    /// The head surface (published by `head`); the last part that publishes one wins.
+    pub HeadFact = "head", Last<Arc<dyn HeadSurface>>;
+}
+
+crate::fact! {
+    /// Where painted face layers land on the head (published by `head`); the last part that publishes one wins.
+    pub FaceFact = "face", Last<FaceProjection>;
+}
+
+crate::fact! {
+    /// Anchors for accessories, keyed by the publishing part and the anchor name.
+    pub AnchorsFact = "anchors", Keyed<AnchorId, Anchor>;
+}
+
+crate::fact! {
+    /// Collider groups later parts may use ([`BuildCtx::colliders`]): hair and cloth keep out of the head and
+    /// shoulders. They also join the rig's spring set. Colliders must sit on humanoid bones (provisional ids from
+    /// [`humanoid_id`](crate::humanoid_id)): the only bones another part can locate. Appended in part order.
+    pub CollidersFact = "colliders", Append<ColliderGroup>;
+}
+
+/// A part's outer envelope, for garments built over it ([`FitFact`]).
+#[derive(Clone, Debug, Default)]
+pub struct Fits {
     /// Fit surfaces, innermost first: the bare body, then each garment's envelope in build order.
-    pub fit: Vec<Arc<dyn BodyFit>>,
-    /// Anchors by `(part, name)`.
-    pub anchors: BTreeMap<(PartId, AnchorId), Anchor>,
-    /// Every collider group published so far, in build order.
-    pub colliders: Vec<ColliderGroup>,
+    pub fits: Vec<Arc<dyn BodyFit>>,
     /// The first part that published a fit bound in anything but the T-pose, and that pose ([`Published::bind`]).
     pub bound_by: Option<(PartId, HumanoidPose)>,
-    /// The stature the body published, once it has built. Parts built after it see everything in metres.
-    pub stature: Option<Stature>,
+}
+
+/// The fit surfaces parts publish, appended in part order. Every fit not in the T-pose must share one bind pose
+/// (decision 0014): a character has one, so the build refuses instead of picking one. Fits that agree within 1e-6 per
+/// component, or that are in the T-pose, are fine.
+pub struct FitFact;
+
+impl Fact for FitFact {
+    const NAME: &'static str = "fit";
+    type Value = Arc<dyn BodyFit>;
+    type Merged = Fits;
+
+    fn merge(merged: &mut Fits, part: &PartId, fit: Arc<dyn BodyFit>) -> Result<(), String> {
+        let bind = fit.bind();
+        if bind != HumanoidPose::REST {
+            match &merged.bound_by {
+                Some((first, pose)) if !same_bind(pose, &bind) => {
+                    return Err(format!(
+                        "its fit is bound in a different pose than the fit of part '{first}': a character has one \
+                         bind pose (decision 0014), so both parts must sculpt in the same one"
+                    ));
+                }
+                Some(_) => {}
+                None => merged.bound_by = Some((part.clone(), bind)),
+            }
+        }
+        merged.fits.push(fit);
+        Ok(())
+    }
+}
+
+/// The character's real-world stature, published by the body part (nothing for a body authored in metres). The build
+/// scales the body and the head by [`Stature::scale`] before any later part is built
+/// ([`scale_output`](crate::scale_output)); what the body publishes here is therefore the size it already has. It must
+/// pass [`Stature::check`], and a second, different stature is an error (an equal one is fine).
+pub struct StatureFact;
+
+impl Fact for StatureFact {
+    const NAME: &'static str = "stature";
+    type Value = Stature;
+    type Merged = Option<Stature>;
+
+    fn merge(merged: &mut Option<Stature>, _part: &PartId, stature: Stature) -> Result<(), String> {
+        stature.check()?;
+        if merged.is_some_and(|first| first != stature) {
+            return Err("it publishes a different stature than an earlier part: a character has one stature".to_owned());
+        }
+        *merged = Some(stature);
+        Ok(())
+    }
 }
 
 /// How far two bind poses may differ, per quaternion component and per axis of the hips offset, and still be the same
@@ -424,51 +556,34 @@ fn same_bind(a: &HumanoidPose, b: &HumanoidPose) -> bool {
 }
 
 impl Published {
-    /// Adds what `part` published. A later head or face replaces an earlier one (a character has one head).
+    /// What fact `F` has merged so far: its `Default` when no part published it.
+    pub fn get<F: Fact>(&self) -> &F::Merged {
+        self.merged
+            .get(F::NAME)
+            .filter(|merged| merged.id.is::<F>())
+            .and_then(|merged| merged.cell.get::<F::Merged>())
+            .unwrap_or_else(|| default_of::<F::Merged>())
+    }
+
+    /// Adds what `part` published, merging each fact in name order and each fact's values in the order they were put.
     ///
     /// # Errors
-    /// [`BuildError::Part`] if `part`'s fit is bound in a pose that differs from the one an earlier part's fit is bound
-    /// in (neither being the T-pose): a character has one bind pose, so the build refuses instead of picking one.
-    /// Nothing is absorbed then. Fits that agree within 1e-6 per component, or that are in the T-pose, are fine.
+    /// [`BuildError::Part`] with the message of the first fact that refuses a value, for example a fit bound in a pose
+    /// that differs from the one an earlier part's fit is bound in (neither being the T-pose), or a second, different
+    /// stature, or a fact whose name a different fact already has. Nothing is absorbed then.
     pub fn absorb(&mut self, part: &PartId, p: Publishes) -> Result<(), BuildError> {
-        let bind = p.fit.as_ref().map(|f| f.bind()).filter(|b| *b != HumanoidPose::REST);
-        if let Some(bind) = bind {
-            match &self.bound_by {
-                Some((first, pose)) if !same_bind(pose, &bind) => {
-                    return Err(BuildError::Part {
-                        part: part.clone(),
-                        message: format!(
-                            "its fit is bound in a different pose than the fit of part '{first}': a character has one \
-                             bind pose (decision 0014), so both parts must sculpt in the same one"
-                        ),
-                    });
-                }
-                Some(_) => {}
-                None => self.bound_by = Some((part.clone(), bind)),
-            }
+        if let Some(message) = p.clash {
+            return Err(BuildError::Part { part: part.clone(), message });
         }
-        if let Some(stature) = p.stature {
-            stature.check().map_err(|message| BuildError::Part { part: part.clone(), message })?;
-            if self.stature.is_some_and(|first| first != stature) {
-                return Err(BuildError::Part {
-                    part: part.clone(),
-                    message: "it publishes a different stature than an earlier part: a character has one stature"
-                        .to_owned(),
-                });
-            }
-            self.stature = Some(stature);
+        if p.slots.is_empty() {
+            // A silent part changes nothing, so it copies nothing.
+            return Ok(());
         }
-        if p.head.is_some() {
-            self.head = p.head;
+        let mut next = self.merged.clone();
+        for slot in p.slots.into_values() {
+            slot.merge_into(&mut next, part).map_err(|message| BuildError::Part { part: part.clone(), message })?;
         }
-        if p.face.is_some() {
-            self.face = p.face;
-        }
-        self.fit.extend(p.fit);
-        self.colliders.extend(p.colliders);
-        for (name, anchor) in p.anchors {
-            self.anchors.insert((part.clone(), name), anchor);
-        }
+        self.merged = next;
         Ok(())
     }
 
@@ -476,17 +591,22 @@ impl Published {
     /// T-pose ([`BodyFit::bind`]), the T-pose when none is. The rig is bound in it. [`Published::absorb`] refuses two
     /// fits that disagree, so there is only one to find.
     pub fn bind(&self) -> HumanoidPose {
-        self.fit.iter().map(|f| f.bind()).find(|b| *b != HumanoidPose::REST).unwrap_or(HumanoidPose::REST)
+        self.get::<FitFact>()
+            .fits
+            .iter()
+            .map(|f| f.bind())
+            .find(|b| *b != HumanoidPose::REST)
+            .unwrap_or(HumanoidPose::REST)
     }
 
     /// The factor the body and head were scaled by to reach real size (`1` when the body published no stature).
     pub fn scale(&self) -> f32 {
-        self.stature.map_or(1.0, |s| s.scale)
+        self.get::<StatureFact>().map_or(1.0, |s| s.scale)
     }
 
     /// The outermost fit that garments wrap ([`BodyFit::envelope`]).
     pub fn outer_fit(&self) -> Option<&Arc<dyn BodyFit>> {
-        self.fit.iter().rev().find(|f| f.envelope())
+        self.get::<FitFact>().fits.iter().rev().find(|f| f.envelope())
     }
 
     /// Where `joint` is in the rig: fits that only move joints ([`JointFit`](crate::JointFit), `!envelope()`) are asked
@@ -494,12 +614,12 @@ impl Published {
     /// therefore wins over the body it moves it on whatever the build order, and over a garment envelope that merely
     /// repeats the body's joints. The rig is assembled from this.
     pub fn joint(&self, joint: &JointRef) -> Option<Vec3> {
-        self.fit
-            .iter()
+        let fits = &self.get::<FitFact>().fits;
+        fits.iter()
             .rev()
             .filter(|f| !f.envelope())
             .find_map(|f| f.joint(joint))
-            .or_else(|| self.fit.iter().filter(|f| f.envelope()).find_map(|f| f.joint(joint)))
+            .or_else(|| fits.iter().filter(|f| f.envelope()).find_map(|f| f.joint(joint)))
     }
 }
 
@@ -524,6 +644,10 @@ pub enum Quality {
 }
 
 /// What a part sees while it builds.
+///
+/// `#[non_exhaustive]`: other crates build one with [`BuildCtx::new`] and the `with_*` methods, and read its fields (all
+/// public) but never write a struct literal, so a field added here edits only this crate.
+#[non_exhaustive]
 pub struct BuildCtx<'a> {
     /// The part being built.
     pub part: &'a PartId,
@@ -552,6 +676,54 @@ pub struct BuildCtx<'a> {
     /// skeleton. Accessories resolve it against `published` (anchors) and [`BuildCtx::joint`]. The builder keys the
     /// part's output on it, so editing the attachment rebuilds the part.
     pub attach: Option<&'a Attach>,
+    /// Growth probe (feature `growth-probe`): a field no other crate knows about. See `tests/growth_probe.rs`.
+    #[cfg(feature = "growth-probe")]
+    pub growth_probe: u8,
+}
+
+impl<'a> BuildCtx<'a> {
+    /// A context with the required inputs: not for export ([`with_rig_export`](Self::with_rig_export)) and no
+    /// attachment ([`with_attach`](Self::with_attach)).
+    #[allow(clippy::too_many_arguments)] // one argument per required input; a builder would only rename them
+    pub fn new(
+        part: &'a PartId,
+        template: &'a BodyTemplateId,
+        palette: &'a Palette,
+        face: &'a FaceProfile,
+        rng: Rng,
+        published: &'a Published,
+        quality: Quality,
+        services: &'a BuildServices,
+    ) -> Self {
+        Self {
+            part,
+            template,
+            palette,
+            face,
+            rng,
+            published,
+            quality,
+            services,
+            rig_export: false,
+            attach: None,
+            #[cfg(feature = "growth-probe")]
+            growth_probe: 0,
+        }
+    }
+
+    /// Sets whether the build is for export ([`BuildCtx::rig_export`]).
+    #[must_use]
+    pub fn with_rig_export(mut self, rig_export: bool) -> Self {
+        self.rig_export = rig_export;
+        self
+    }
+
+    /// Sets where the part is fixed ([`BuildCtx::attach`]).
+    #[must_use]
+    pub fn with_attach(mut self, attach: Option<&'a Attach>) -> Self {
+        self.attach = attach;
+        self
+    }
 }
 
 impl BuildCtx<'_> {
@@ -575,7 +747,7 @@ impl BuildCtx<'_> {
     /// `Missing` if no head part built before this one.
     pub fn head(&self) -> Result<Arc<dyn HeadSurface>, BuildError> {
         self.published
-            .head
+            .get::<HeadFact>()
             .clone()
             .ok_or_else(|| BuildError::Missing { part: self.part.clone(), needs: "a head surface" })
     }
@@ -588,9 +760,7 @@ impl BuildCtx<'_> {
     /// `Missing` if no head part built before this one.
     pub fn face_overlay(&self, layer: FaceLayerId) -> Result<FaceOverlay, BuildError> {
         let head = self.head()?;
-        let projection = self
-            .published
-            .face
+        let projection = (*self.published.get::<FaceFact>())
             .ok_or_else(|| BuildError::Missing { part: self.part.clone(), needs: "a face projection" })?;
         // The projection is in the painter's head-local units; the head centre is in metres at the character's real
         // size, so the window is scaled to match (the same scaling `scale_output` applies to the head's own overlay).
@@ -606,7 +776,7 @@ impl BuildCtx<'_> {
 
     /// The collider groups earlier parts published, to point a spring chain at by name or to keep geometry clear of.
     pub fn colliders(&self) -> &[ColliderGroup] {
-        &self.published.colliders
+        self.published.get::<CollidersFact>()
     }
 
     /// The outermost fit garments wrap ([`Published::outer_fit`]), or [`BuildError::Missing`]. A shared handle, like [`BuildCtx::head`].
@@ -622,7 +792,11 @@ impl BuildCtx<'_> {
 }
 
 /// What a built part hands back.
+///
+/// `#[non_exhaustive]`: other crates start from [`PartOutput::new`] and add what the part produces with the `with_*`
+/// methods (or assign the public fields), so a field added here edits only this crate.
 #[derive(Default)]
+#[non_exhaustive]
 pub struct PartOutput {
     /// Drawable meshes.
     pub meshes: Vec<PartMesh>,
@@ -642,6 +816,9 @@ pub struct PartOutput {
     pub rig: RigContribution,
     /// Non-fatal notes for the report card (a clump that clips, a texture that was downsized).
     pub warnings: Vec<String>,
+    /// Growth probe (feature `growth-probe`): a field no other crate knows about. See `tests/growth_probe.rs`.
+    #[cfg(feature = "growth-probe")]
+    pub growth_probe: u8,
 }
 
 impl Debug for PartOutput {
@@ -660,6 +837,67 @@ impl Debug for PartOutput {
 }
 
 impl PartOutput {
+    /// An output with nothing in it.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Sets the drawable meshes.
+    #[must_use]
+    pub fn with_meshes(mut self, meshes: Vec<PartMesh>) -> Self {
+        self.meshes = meshes;
+        self
+    }
+
+    /// Sets the materials the meshes use.
+    #[must_use]
+    pub fn with_materials(mut self, materials: Vec<(MaterialName, MaterialSpec)>) -> Self {
+        self.materials = materials;
+        self
+    }
+
+    /// Sets the declared classes of materials ([`PartOutput::material_classes`]).
+    #[must_use]
+    pub fn with_material_classes(mut self, classes: Vec<(MaterialName, crate::look::MaterialClass)>) -> Self {
+        self.material_classes = classes;
+        self
+    }
+
+    /// Sets the procedural textures.
+    #[must_use]
+    pub fn with_textures(mut self, textures: Vec<(TextureName, TextureData)>) -> Self {
+        self.textures = textures;
+        self
+    }
+
+    /// Sets the simulation.
+    #[must_use]
+    pub fn with_runtime(mut self, runtime: Box<dyn PartRuntime>) -> Self {
+        self.runtime = Some(runtime);
+        self
+    }
+
+    /// Sets what later parts may use.
+    #[must_use]
+    pub fn with_publishes(mut self, publishes: Publishes) -> Self {
+        self.publishes = publishes;
+        self
+    }
+
+    /// Sets what the part adds to the rig.
+    #[must_use]
+    pub fn with_rig(mut self, rig: RigContribution) -> Self {
+        self.rig = rig;
+        self
+    }
+
+    /// Sets the non-fatal notes.
+    #[must_use]
+    pub fn with_warnings(mut self, warnings: Vec<String>) -> Self {
+        self.warnings = warnings;
+        self
+    }
+
     /// A copy of this output: the meshes, materials, textures, publishes, rig and warnings are cloned (the surfaces and
     /// fits in `publishes` are shared read-only handles), and the simulation is [forked](PartRuntime::fork), so the copy
     /// steps on its own, starting in the generator's initial state. A caching builder keeps one fork of a part and serves
@@ -672,7 +910,8 @@ impl PartOutput {
             Some(runtime) => Some(runtime.fork()?),
             None => None,
         };
-        Some(PartOutput {
+        // A copy of `self` with the fork for the simulation: `Self { runtime, ..clone }` would need `PartOutput: Clone`.
+        Some(Self {
             meshes: self.meshes.clone(),
             materials: self.materials.clone(),
             material_classes: self.material_classes.clone(),
@@ -681,6 +920,8 @@ impl PartOutput {
             publishes: self.publishes.clone(),
             rig: self.rig.clone(),
             warnings: self.warnings.clone(),
+            #[cfg(feature = "growth-probe")]
+            growth_probe: self.growth_probe,
         })
     }
 }
@@ -749,11 +990,9 @@ mod tests {
 
     #[test]
     fn a_fork_copies_the_pieces_and_forks_the_simulation() {
-        let mut output = PartOutput {
-            warnings: vec!["a clump clips the shoulder".to_owned()],
-            runtime: Some(Box::new(Counting { steps: 0, copyable: true })),
-            ..PartOutput::default()
-        };
+        let mut output = PartOutput::new()
+            .with_warnings(vec!["a clump clips the shoulder".to_owned()])
+            .with_runtime(Box::new(Counting { steps: 0, copyable: true }));
         step_once(output.runtime.as_deref_mut().expect("the output has a simulation"));
 
         let mut fork = output.fork().expect("a counting simulation can be forked");
@@ -772,8 +1011,7 @@ mod tests {
 
     #[test]
     fn a_simulation_that_cannot_be_forked_makes_the_output_uncopyable() {
-        let output =
-            PartOutput { runtime: Some(Box::new(Counting { steps: 0, copyable: false })), ..PartOutput::default() };
+        let output = PartOutput::new().with_runtime(Box::new(Counting { steps: 0, copyable: false }));
         assert!(output.fork().is_none(), "the trait's default fork is None, so the output is not copyable");
         assert!(PartOutput::default().fork().is_some(), "an output without a simulation always copies");
     }

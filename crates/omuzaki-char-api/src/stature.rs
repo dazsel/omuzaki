@@ -4,9 +4,9 @@
 //! the space it is authored in than the person it stands for. A character is built at real size anyway, so that what
 //! works in metres agrees with the exported VRM: the body, the head and everything built on them (hair, cloth, garments,
 //! accessories, springs, colliders) are in metres, and a simulation is created at real size. The body part states its
-//! [`Stature`] when it publishes ([`Publishes::stature`]) and the build applies one uniform scale to the body and the
-//! head, both authored in the template's space, *before* anything else is built: later parts read a body that is
-//! already in metres, so no physical constant (gravity, stiffness) is ever rescaled.
+//! [`Stature`] when it publishes ([`StatureFact`](crate::StatureFact)) and the build applies one uniform scale to the
+//! body and the head, both authored in the template's space, *before* anything else is built: later parts read a body
+//! that is already in metres, so no physical constant (gravity, stiffness) is ever rescaled.
 //!
 //! What this module does *not* do: stage framing, IK reach and light ranges live in other crates. They get a character
 //! at real size and can read [`BuiltCharacter::stature`](crate::BuiltCharacter::stature) and the mesh bounds, but this
@@ -24,7 +24,10 @@ use omuzaki_core::glam::Vec3;
 
 use crate::error::BuildError;
 use crate::ids::{JointRef, PartId};
-use crate::kind::{Anchor, BodyFit, BodyRegion, HeadSurface, PartOutput, Publishes, Section};
+use crate::kind::{
+    Anchor, AnchorsFact, BodyFit, BodyRegion, CollidersFact, FitFact, HeadFact, HeadSurface, PartOutput, Publishes,
+    Section,
+};
 use crate::rig::RigContribution;
 
 /// How tall a character is, and the uniform scale that made it so.
@@ -91,12 +94,16 @@ pub fn scale_output(part: &PartId, output: &mut PartOutput, s: f32) -> Result<()
 }
 
 fn scale_publishes(p: &mut Publishes, s: f32) {
-    p.head = p.head.take().map(|head| Arc::new(ScaledHead { inner: head, scale: s }) as Arc<dyn HeadSurface>);
-    p.fit = p.fit.take().map(|fit| Arc::new(ScaledFit { inner: fit, scale: s }) as Arc<dyn BodyFit>);
-    for (_, anchor) in &mut p.anchors {
+    for head in p.values_mut::<HeadFact>() {
+        *head = Arc::new(ScaledHead { inner: head.clone(), scale: s });
+    }
+    for fit in p.values_mut::<FitFact>() {
+        *fit = Arc::new(ScaledFit { inner: fit.clone(), scale: s });
+    }
+    for (_, anchor) in p.values_mut::<AnchorsFact>() {
         scale_anchor(anchor, s);
     }
-    p.colliders.iter_mut().for_each(|g| scale_group(g, s));
+    p.values_mut::<CollidersFact>().for_each(|g| scale_group(g, s));
 }
 
 fn scale_anchor(anchor: &mut Anchor, s: f32) {

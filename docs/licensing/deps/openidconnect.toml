@@ -1,0 +1,7 @@
+section = "models"
+item = "openidconnect 4.0.1 (ramosbugs/openidconnect-rs)"
+kind = "crate"
+used_for = "OIDC discovery, JWKS and ID-token verification for SSO (VC-12), if the maintainers accept the advisory below"
+status = "conditions"
+condition = "MIT (crates.io index); depends on `rsa`, which carries unpatched RUSTSEC-2023-0071 (timing side channel on private-key operations), so `deny.toml` needs a maintainer-approved ignore; the other 237 resolved crates are permissive (checked with `cargo deny`, 2026-10-13)"
+audit = "(crates.io: MIT)"

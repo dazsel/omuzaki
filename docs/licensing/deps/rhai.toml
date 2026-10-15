@@ -1,0 +1,6 @@
+section = "rust"
+item = "rhai, mlua"
+kind = "crate"
+used_for = "scripting"
+status = "yes"
+audit = "B3"

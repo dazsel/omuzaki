@@ -1,0 +1,7 @@
+section = "models"
+item = "chatterbox-tts Python package"
+kind = "python"
+used_for = "TTS runtime"
+status = "NO"
+condition = "pins GPL `pykakasi`"
+audit = "B5"

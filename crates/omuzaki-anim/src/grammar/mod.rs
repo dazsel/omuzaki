@@ -34,6 +34,7 @@
 //! effect. A rule's own numbers (its thresholds) are the profile's `params` for it, handed over through
 //! [`GrammarRule::configure`]; each rule's page names the ones it reads.
 
+#[macro_use]
 mod framework;
 pub mod rules;
 

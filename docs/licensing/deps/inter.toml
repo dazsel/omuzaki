@@ -1,0 +1,8 @@
+section = "rust"
+item = "Inter 4.1 (Regular, SemiBold; Latin subset plus combining diacritics, 56 + 59 KB)"
+kind = "font"
+used_for = "character-sheet type, embedded in `omuzaki-stage` (`crates/omuzaki-stage/assets/fonts/`)"
+status = "conditions"
+condition = "OFL-1.1: ship the notice (`OFL.txt`, `NOTICES.md` there); never sold alone; no Reserved Font Name, so the subset (`make_subset.py`) keeps the name; Latin only; other scripts via the Noto fallback fonts below"
+audit = "(rsms/inter v4.1)"
+paths = ["crates/omuzaki-stage/assets/fonts/"]

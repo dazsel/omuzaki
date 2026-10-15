@@ -1,0 +1,7 @@
+section = "models"
+item = "TRELLIS / TRELLIS.2 as shipped"
+kind = "model+code"
+used_for = "image → 3D"
+status = "NO"
+condition = "nvdiffrast, Inria rasterizer, RMBG-2.0 are non-commercial"
+audit = "B6"

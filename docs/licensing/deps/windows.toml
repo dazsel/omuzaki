@@ -1,0 +1,6 @@
+section = "rust"
+item = "windows, windows-core (windows-rs 0.62)"
+kind = "crate"
+used_for = "Win32 and COM bindings in the broadcast spike (`spikes/broadcast-out`: D3D11On12, Media Foundation, registry reads); the spike's own workspace keeps them out of the main lockfile"
+status = "yes"
+audit = "(crates.io: windows 0.62.2 and windows-core 0.62.2, both MIT OR Apache-2.0)"

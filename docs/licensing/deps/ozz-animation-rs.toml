@@ -1,0 +1,7 @@
+section = "rust"
+item = "ozz-animation-rs"
+kind = "crate"
+used_for = "animation blending"
+status = "conditions"
+condition = "MPL-2.0 file-level; ship upstream MIT notice; never `fbx2ozz`"
+audit = "B3"
