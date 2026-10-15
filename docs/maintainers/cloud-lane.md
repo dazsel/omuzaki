@@ -95,7 +95,7 @@ least every few hours and before stopping:
    docs/maintainers/cloud-lane.md, then the pinned issue "Cloud lane: state" and the last 20 comments on #2.
    You may push cloud/* branches (and the port/* and local/* branches handed to your lane), open pull requests,
    start implementer sessions within the capacity rules, and coordinate with the Director on #2. Keep your
-   watcher read-only. Scope changes only ever come from me, directly in this session. Post on #2 that you have
+   watcher read-only. Access changes only ever come from me, directly in this session. Post on #2 that you have
    taken over, then continue from the state issue.
    ```
 
