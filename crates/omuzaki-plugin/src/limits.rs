@@ -72,6 +72,13 @@ impl Reservation {
         fits
     }
 
+    /// Gives `bytes` of the reservation back (at most what it holds).
+    pub fn shrink(&mut self, bytes: u64) {
+        let bytes = bytes.min(self.bytes);
+        self.budget.release(bytes);
+        self.bytes -= bytes;
+    }
+
     /// Bytes held.
     pub fn bytes(&self) -> u64 {
         self.bytes
@@ -88,14 +95,22 @@ impl Drop for Reservation {
 /// many, however many a long-lived plugin makes.
 pub const MAX_POLLABLES: usize = 256;
 
-/// The store's `ResourceLimiter`: one memory of at most `memory_bytes`, [`MAX_TABLES`] table of
-/// [`MAX_TABLE_ELEMENTS`], [`MAX_INSTANCES`] core instances, and every byte of linear memory also reserved in the
-/// all-plugins budget. A refused grow makes `memory.grow` or `table.grow` return -1 and is remembered, so the trap the guest's abort
-/// then raises is reported as out of memory.
+/// The store's `ResourceLimiter`: one memory of at most `memory_bytes` and of at most its own declared maximum,
+/// [`MAX_TABLES`] table of [`MAX_TABLE_ELEMENTS`], [`MAX_INSTANCES`] core instances, and every byte of linear memory
+/// also reserved in the all-plugins budget. A refused grow makes `memory.grow` or `table.grow` return -1 and is
+/// remembered, so the trap the guest's abort then raises is reported as out of memory.
+///
+/// wasmtime 49 asks the limiter before it enforces the module's own maximum or allocates (`vm/memory.rs`), so a grow
+/// the limiter allowed can still fail after it; `memory_grow_failed` then gives the grow's bytes back. Each grow also first settles the reservation to the memory's real size, so nothing stays reserved for
+/// a grow that did not happen.
 #[derive(Debug)]
 pub struct Limiter {
     memory_bytes: u64,
     reservation: Reservation,
+    /// The bytes of `reservation` that stand for linear memory.
+    linear: u64,
+    /// The bytes the last allowed grow reserved, given back if wasmtime then reports that grow failed.
+    pending: u64,
     /// Set when a grow was refused, until the next call starts.
     pub refused_grow: bool,
 }
@@ -104,21 +119,47 @@ impl Limiter {
     /// A limiter capping memory at `memory_bytes`, charging linear memory to `reservation` (which already holds the
     /// plugin's host side).
     pub fn new(memory_bytes: u64, reservation: Reservation) -> Self {
-        Self { memory_bytes, reservation, refused_grow: false }
+        Self { memory_bytes, reservation, linear: 0, pending: 0, refused_grow: false }
     }
 
     /// The bytes this plugin holds in the all-plugins budget.
     pub fn reserved(&self) -> u64 {
         self.reservation.bytes()
     }
+
+    /// Makes the linear part of the reservation exactly `current`; false when the budget can't hold that.
+    fn settle(&mut self, current: u64) -> bool {
+        if self.linear > current {
+            self.reservation.shrink(self.linear - current);
+        } else if self.linear < current && !self.reservation.grow(current - self.linear) {
+            return false;
+        }
+        self.linear = current;
+        true
+    }
 }
 
 impl wasmtime::ResourceLimiter for Limiter {
-    fn memory_growing(&mut self, current: usize, desired: usize, _maximum: Option<usize>) -> wasmtime::Result<bool> {
-        let grow = (desired as u64).saturating_sub(current as u64);
-        let fits = desired as u64 <= self.memory_bytes && self.reservation.grow(grow);
+    fn memory_growing(&mut self, current: usize, desired: usize, maximum: Option<usize>) -> wasmtime::Result<bool> {
+        let (current, desired) = (current as u64, desired as u64);
+        self.pending = 0;
+        let within = desired <= self.memory_bytes && maximum.is_none_or(|m| desired <= m as u64);
+        let grow = desired.saturating_sub(current);
+        let fits = within && self.settle(current) && self.reservation.grow(grow);
+        if fits {
+            self.linear = desired;
+            self.pending = grow;
+        }
         self.refused_grow |= !fits;
         Ok(fits)
+    }
+
+    fn memory_grow_failed(&mut self, _error: wasmtime::Error) -> wasmtime::Result<()> {
+        self.reservation.shrink(self.pending);
+        self.linear -= self.pending.min(self.linear);
+        self.pending = 0;
+        self.refused_grow = true;
+        Ok(())
     }
 
     fn table_growing(&mut self, _current: usize, desired: usize, _maximum: Option<usize>) -> wasmtime::Result<bool> {
@@ -227,6 +268,25 @@ mod tests {
         assert_eq!(budget.used(), 1 << 20);
         assert!(limiter.table_growing(0, MAX_TABLE_ELEMENTS, None).unwrap());
         assert!(!limiter.table_growing(0, MAX_TABLE_ELEMENTS + 1, None).unwrap());
+    }
+
+    #[test]
+    fn a_grow_past_the_declared_maximum_is_refused_and_a_failed_grow_gives_its_bytes_back() {
+        let page = 65536;
+        let budget = MemoryBudget::new(1 << 30);
+        let mut limiter = Limiter::new(1 << 20, Reservation::take(&budget, 0).unwrap());
+        assert!(limiter.memory_growing(0, page, Some(2 * page)).unwrap());
+        assert!(limiter.memory_growing(page, 2 * page, Some(2 * page)).unwrap());
+        for _ in 0..100 {
+            assert!(!limiter.memory_growing(2 * page, 3 * page, Some(2 * page)).unwrap(), "past the module's maximum");
+        }
+        assert_eq!(budget.used(), 2 * page as u64, "a refused grow reserves nothing");
+        assert!(limiter.memory_growing(2 * page, 3 * page, None).unwrap());
+        limiter.memory_grow_failed(wasmtime::Error::msg("the allocation failed")).unwrap();
+        assert_eq!(budget.used(), 2 * page as u64, "the failed grow's page is given back");
+        assert!(limiter.refused_grow);
+        assert!(limiter.memory_growing(page, 2 * page, None).unwrap(), "a grow settles to the real size first");
+        assert_eq!(budget.used(), 2 * page as u64);
     }
 
     #[test]

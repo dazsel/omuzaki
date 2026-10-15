@@ -141,6 +141,7 @@ pub fn run<S: OpSubject>(subject: &S) {
     faults(subject);
     restart_and_disable(subject);
     reload_drains(subject);
+    concurrent_enables(subject);
     logs(subject);
     ceiling_and_queueing(subject);
 }
@@ -299,6 +300,39 @@ where
     assert_ne!(reloaded.session, Some(ends[0].0), "with a new session");
     let done = log_texts(plugins.as_ref(), "slow").iter().filter(|t| *t == "init done").count();
     assert_eq!(done, 2, "both instances finished init");
+}
+
+/// Enables of one plugin from several threads at once start it once: one session, one instance (design §6.3).
+pub fn concurrent_enables<S: Subject>(subject: &S) {
+    let world = World::new();
+    let plugins = Arc::new(subject.build(&world, vec![(manifest("slow", &[]), Behaviour::Slow)]));
+    let slow = id("slow");
+    let gate = Arc::new(std::sync::Barrier::new(4));
+    let threads: Vec<_> = (0..4)
+        .map(|_| {
+            let (plugins, slow, gate) = (plugins.clone(), slow.clone(), gate.clone());
+            std::thread::spawn(move || {
+                gate.wait();
+                plugins.enable(&slow, &person())
+            })
+        })
+        .collect();
+    let results: Vec<_> =
+        threads.into_iter().map(|t| t.join().unwrap_or_else(|_| panic!("an enabling thread panicked"))).collect();
+    let sessions: Vec<_> = results
+        .iter()
+        .map(|r| match r {
+            Ok(info) => (info.state.clone(), info.session),
+            Err(error) => panic!("enable: {error}"),
+        })
+        .collect();
+    assert!(sessions.iter().all(|s| s.0 == PluginState::Running && s.1.is_some()), "{sessions:?}");
+    assert!(sessions.iter().all(|s| s.1 == sessions[0].1), "every enable sees the one session: {sessions:?}");
+    let done = log_texts(plugins.as_ref(), "slow").iter().filter(|t| *t == "init done").count();
+    assert_eq!(done, 1, "one instance ran init");
+    assert!(plugins.disable(&slow, &person()).is_ok());
+    let ends = world.sessions.end_reasons();
+    assert_eq!(ends.len(), 1, "no session was left open: {ends:?}");
 }
 
 /// Log lines keep their order and page by sequence number.

@@ -268,9 +268,12 @@ impl WasmPlugins {
     }
 
     /// Starts `id` for `by`: opens its session, starts its worker and runs `init` there, off the lock.
-    fn start(&self, id: &PluginId, by: &Actor) -> Result<PluginInfo, PluginError> {
-        let mut plugins = self.lock();
+    fn start(&self, id: &PluginId, by: &Actor, why: Start) -> Result<PluginInfo, PluginError> {
+        let mut plugins = self.drained(id);
         let entry = plugins.get_mut(id).ok_or(PluginError::NotFound)?;
+        if let Some(answer) = may_start(id, entry, why) {
+            return answer;
+        }
         let spec = SessionSpec {
             transport: Transport::Plugin,
             client: format!("plugin:{}@{}", entry.manifest.id, entry.manifest.version),
@@ -337,16 +340,7 @@ impl Plugins for WasmPlugins {
 
     fn enable(&self, id: &PluginId, by: &Actor) -> Result<PluginInfo, PluginError> {
         person_only(by)?;
-        {
-            let mut plugins = self.drained(id);
-            let entry = plugins.get_mut(id).ok_or(PluginError::NotFound)?;
-            if entry.state == PluginState::Running {
-                return Ok(info_of(id, entry));
-            }
-            // The person turning it on clears the fault history, so the next fault starts a fresh count.
-            entry.faults.clear();
-        }
-        self.start(id, by)
+        self.start(id, by, Start::Enable)
     }
 
     fn disable(&self, id: &PluginId, by: &Actor) -> Result<PluginInfo, PluginError> {
@@ -383,7 +377,7 @@ impl Plugins for WasmPlugins {
             }
         }
         self.stop(id, PluginState::Unloading)?;
-        self.start(id, by)
+        self.start(id, by, Start::Reload)
     }
 
     fn run_due(&self) -> Vec<PluginId> {
@@ -396,7 +390,7 @@ impl Plugins for WasmPlugins {
             .collect();
         for (id, by) in &due {
             // A restart that faults again is recorded on the plugin; the next backoff applies.
-            let _restarted = self.start(id, by);
+            let _restarted = self.start(id, by, Start::Restart(now));
         }
         due.into_iter().map(|(id, _)| id).collect()
     }
@@ -413,6 +407,34 @@ fn not_taken(plugins: &BTreeMap<PluginId, Entry>, id: &PluginId) -> Result<(), P
         return Err(PluginError::Manifest(format!("a plugin `{id}` is already installed")));
     }
     Ok(())
+}
+
+/// Why a plugin is being started; `start`'s check of its state, made in the same lock hold that marks it busy, so two
+/// starts of one plugin never both run.
+#[derive(Clone, Copy)]
+enum Start {
+    /// The person turned it on: a running plugin is left as it is; the fault history is cleared.
+    Enable,
+    /// A scheduled restart: only a faulted plugin whose backoff has passed by `now`.
+    Restart(Seconds),
+    /// A reload's second half: only a plugin its first half left unloading.
+    Reload,
+}
+
+/// What `start` does with a plugin in `entry`'s state for `why`: go on, or return the answer now.
+fn may_start(id: &PluginId, entry: &mut Entry, why: Start) -> Option<Result<PluginInfo, PluginError>> {
+    match (why, &entry.state) {
+        (Start::Enable | Start::Reload, PluginState::Running) => Some(Ok(info_of(id, entry))),
+        (Start::Enable, _) => {
+            // The person turning it on clears the fault history, so the next fault starts a fresh count.
+            entry.faults.clear();
+            None
+        }
+        (Start::Restart(now), PluginState::Faulted { .. }) if entry.restart_at.is_some_and(|t| t <= now) => None,
+        (Start::Restart(_), _) => Some(Err(PluginError::Instantiate(format!("`{id}` is not due for a restart")))),
+        (Start::Reload, PluginState::Unloading) => None,
+        (Start::Reload, _) => Some(Err(PluginError::Instantiate(format!("`{id}` is not running")))),
+    }
 }
 
 /// The first of `ops` whose family (the name before its first `.`) is `id`: a plugin with that id would collide with

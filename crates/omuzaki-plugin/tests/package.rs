@@ -200,7 +200,23 @@ fn staging_writes_only_inside_its_fresh_folder_and_hashes_what_it_wrote() {
     let top: Vec<_> = std::fs::read_dir(root.path()).unwrap().map(|e| e.unwrap().file_name()).collect();
     assert_eq!(top, ["staging"], "nothing outside staging");
     assert_eq!(std::fs::read(dir.join("plugin.wasm")).unwrap(), component);
-    assert!(!dir.join("plugin.sig").exists(), "the signature is read, not staged");
+    assert!(dir.join("plugin.sig").is_file(), "the signature is staged with the files");
+}
+
+#[test]
+fn a_staged_and_an_installed_signed_package_verify_again_when_reopened() {
+    let package = open(&signed_zip(&common::ok_component(), false)).unwrap();
+    let PublisherCheck::Verified(key) = package.publisher() else {
+        panic!("the fixture is signed: {:?}", package.publisher())
+    };
+    let root = tempfile::tempdir().unwrap();
+    let (dir, _) = package.stage(&root.path().join("staging")).unwrap();
+    let reopened = PluginPackage::open_folder(&dir, &PackageLimits::default()).unwrap();
+    assert_eq!((reopened.hash, reopened.publisher()), (package.hash, PublisherCheck::Verified(key)));
+
+    let installed = InstallRoot::new(root.path().join("data")).install(&package).unwrap();
+    let reopened = PluginPackage::open_folder(&installed.dir, &PackageLimits::default()).unwrap();
+    assert_eq!(reopened.publisher(), PublisherCheck::Verified(key), "the installed copy is still signed");
 }
 
 #[test]

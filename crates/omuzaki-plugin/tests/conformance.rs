@@ -97,6 +97,11 @@ fn reload_drains() {
 }
 
 #[test]
+fn concurrent_enables() {
+    conformance::concurrent_enables(&WasmSubject);
+}
+
+#[test]
 fn logs_page() {
     conformance::logs(&WasmSubject);
 }

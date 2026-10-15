@@ -390,3 +390,19 @@ fn an_op_argument_over_its_cap_faults_before_the_host_copies_it() {
     let detail = format!("bad return value in init: ops.call arguments is {len} bytes, over {OP_BYTES_MAX}");
     assert_eq!((fault.kind, fault.detail), (FaultKind::BadReturn, detail));
 }
+
+#[test]
+fn growing_past_a_declared_maximum_never_leaks_the_all_plugins_budget() {
+    let (engine, clock) = engine();
+    let body = "(local $i i32) (loop $l (drop (memory.grow (i32.const 1)))
+                (local.set $i (i32.add (local.get $i) (i32.const 1))) (br_if $l (i32.lt_u (local.get $i) (i32.const 1000))))";
+    let text = component_text("", &[], &init_doing(body), 1)
+        .replace(r#"(memory (export "memory") 1)"#, r#"(memory (export "memory") 1 2)"#);
+    assert!(text.contains("1 2)"), "the memory declares a maximum of 2 pages");
+    let bytes = wat::parse_str(&text).unwrap();
+    let mut plugin = start(&engine, &bytes, log("capped", clock)).unwrap_or_else(|e| panic!("{e:?}"));
+    assert_eq!(plugin.init("{}"), Ok(()), "a refused grow returns -1 and the guest goes on");
+    let linear = plugin.reserved_bytes() - omuzaki_plugin_api::limits::HOST_SIDE_BYTES;
+    assert_eq!(linear, 2 * 65536, "two pages reserved, however many grows were refused");
+    assert_eq!(engine.memory().used(), plugin.reserved_bytes());
+}

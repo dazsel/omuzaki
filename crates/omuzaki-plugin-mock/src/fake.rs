@@ -231,9 +231,12 @@ impl MockPlugins {
     }
 
     /// Starts `id`: opens its session and runs `init`. Called with the plugin idle.
-    fn start(&self, id: &PluginId, by: &Actor) -> Result<PluginInfo, PluginError> {
-        let mut inner = self.lock();
+    fn start(&self, id: &PluginId, by: &Actor, why: Start) -> Result<PluginInfo, PluginError> {
+        let mut inner = self.drained(id);
         let entry = inner.plugins.get_mut(id).ok_or(PluginError::NotFound)?;
+        if let Some(answer) = may_start(id, entry, why) {
+            return answer;
+        }
         let grants = ceiling(&entry.manifest.requests, &entry.approval, &self.person);
         let spec = SessionSpec {
             transport: Transport::Plugin,
@@ -252,6 +255,8 @@ impl MockPlugins {
         entry.enabled_by = Some(by.clone());
         entry.restart_at = None;
         entry.state = PluginState::Loading;
+        // Busy from this lock hold on, so no other start, stop or call of this plugin runs until `init` settles.
+        entry.busy = true;
         let config = settings_json(&entry.manifest);
         drop(inner);
         self.run_entry(id, CallKind::Init, |guest, host| guest.init(host, &config).map(|r| r.map_err(Some)))?;
@@ -315,6 +320,34 @@ fn settings_json(manifest: &Manifest) -> String {
     let map: serde_json::Map<String, serde_json::Value> =
         manifest.settings.iter().map(|s| (s.key.clone(), s.default.clone())).collect();
     serde_json::Value::Object(map).to_string()
+}
+
+/// Why a plugin is being started; `start`'s check of its state, made in the same lock hold that marks it busy, so two
+/// starts of one plugin never both run.
+#[derive(Clone, Copy)]
+enum Start {
+    /// The person turned it on: a running plugin is left as it is; the fault history is cleared.
+    Enable,
+    /// A scheduled restart: only a faulted plugin whose backoff has passed by `now`.
+    Restart(Seconds),
+    /// A reload's second half: only a plugin its first half left unloading.
+    Reload,
+}
+
+/// What `start` does with a plugin in `entry`'s state for `why`: go on, or return the answer now.
+fn may_start(id: &PluginId, entry: &mut Entry, why: Start) -> Option<Result<PluginInfo, PluginError>> {
+    match (why, &entry.state) {
+        (Start::Enable | Start::Reload, PluginState::Running) => Some(Ok(info_of(id, entry))),
+        (Start::Enable, _) => {
+            // The person turning it on clears the fault history, so the next fault starts a fresh count.
+            entry.faults.clear();
+            None
+        }
+        (Start::Restart(now), PluginState::Faulted { .. }) if entry.restart_at.is_some_and(|t| t <= now) => None,
+        (Start::Restart(_), _) => Some(Err(PluginError::Instantiate(format!("`{id}` is not due for a restart")))),
+        (Start::Reload, PluginState::Unloading) => None,
+        (Start::Reload, _) => Some(Err(PluginError::Instantiate(format!("`{id}` is not running")))),
+    }
 }
 
 fn fault_name(fault: FaultKind) -> &'static str {
@@ -444,16 +477,7 @@ impl Plugins for MockPlugins {
 
     fn enable(&self, id: &PluginId, by: &Actor) -> Result<PluginInfo, PluginError> {
         person_only(by)?;
-        {
-            let mut inner = self.drained(id);
-            let entry = inner.plugins.get_mut(id).ok_or(PluginError::NotFound)?;
-            if entry.state == PluginState::Running {
-                return Ok(info_of(id, entry));
-            }
-            // The person turning it on clears the fault history, so the next fault starts a fresh count.
-            entry.faults.clear();
-        }
-        self.start(id, by)
+        self.start(id, by, Start::Enable)
     }
 
     fn disable(&self, id: &PluginId, by: &Actor) -> Result<PluginInfo, PluginError> {
@@ -494,7 +518,7 @@ impl Plugins for MockPlugins {
             self.stop(entry);
             entry.state = PluginState::Unloading;
         }
-        self.start(id, by)
+        self.start(id, by, Start::Reload)
     }
 
     fn run_due(&self) -> Vec<PluginId> {
@@ -508,7 +532,7 @@ impl Plugins for MockPlugins {
             .collect();
         for (id, by) in &due {
             // A restart that faults again is recorded on the plugin; the next backoff applies.
-            let _restarted = self.start(id, by);
+            let _restarted = self.start(id, by, Start::Restart(now));
         }
         due.into_iter().map(|(id, _)| id).collect()
     }

@@ -247,6 +247,8 @@ pub struct PluginPackage {
     pub hash: ContentHash,
     /// `plugin.sig`, when present.
     pub signature: Option<PackageSignature>,
+    /// `plugin.sig` as it was read, staged with the files so an installed package verifies again when reopened.
+    pub signature_file: Option<Vec<u8>>,
 }
 
 /// The `S_IFMT` bits of a Unix mode, and the two kinds a package may hold.
@@ -305,12 +307,13 @@ impl PluginPackage {
         if !files.contains_key(&manifest.component) {
             return Err(PackageError::MissingComponent(manifest.component.clone()));
         }
-        let signature = match files.remove(SIGNATURE_FILE) {
-            Some(bytes) => Some(serde_json::from_slice(&bytes).map_err(|e| PackageError::Signature(e.to_string()))?),
+        let signature_file = files.remove(SIGNATURE_FILE);
+        let signature = match &signature_file {
+            Some(bytes) => Some(serde_json::from_slice(bytes).map_err(|e| PackageError::Signature(e.to_string()))?),
             None => None,
         };
         let hash = content_hash(files.iter().map(|(p, b)| (p.as_str(), b.as_slice())));
-        Ok(Self { manifest, files, hash, signature })
+        Ok(Self { manifest, files, hash, signature, signature_file })
     }
 
     /// The component's bytes, one of the hashed files.
@@ -334,7 +337,8 @@ impl PluginPackage {
         }
     }
 
-    /// Writes the files into a fresh folder under `staging_root` and returns it with the hash of what was written.
+    /// Writes the files and `plugin.sig` into a fresh folder under `staging_root` and returns it with the hash of what
+    /// was written. The signature is staged so the installed package verifies again when it is reopened.
     ///
     /// # Errors
     /// [`PackageError::Io`] when a file can't be written; [`PackageError::MissingComponent`] when the staged component
@@ -343,7 +347,8 @@ impl PluginPackage {
         fs::create_dir_all(staging_root).map_err(|e| io(&e))?;
         let guard = Staged { dir: fresh_dir(staging_root)?, kept: false };
         let dir = guard.dir.clone();
-        for (path, bytes) in &self.files {
+        let signature = self.signature_file.as_ref().map(|bytes| (SIGNATURE_FILE, bytes));
+        for (path, bytes) in self.files.iter().map(|(p, b)| (p.as_str(), b)).chain(signature) {
             let target = dir.join(path);
             if let Some(parent) = target.parent() {
                 fs::create_dir_all(parent).map_err(|e| io(&e))?;
