@@ -52,4 +52,6 @@ pub use layer::{FaceLayerPainter, GpuRasterizer};
 pub use painter::{MouthPiece, OpenMouth, PaintCtx, RealPainter, Section};
 pub use system::{FaceSystem, FaceTimings, FaceUpdate};
 
-omuzaki_core::define_link!();
+omuzaki_core::define_link! {
+    omuzaki_char_api::link();
+}

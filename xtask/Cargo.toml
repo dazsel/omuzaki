@@ -21,6 +21,8 @@ zip.workspace = true
 flate2.workspace = true
 # The library contract: `lint-seed` reads manifests and compares their canonical form exactly as the library hashes them.
 omuzaki-library-api = { path = "../crates/omuzaki-library-api" }
+# `define_link!`: the library contract registers, so `link()` keeps its registrations in this binary (ADR 0015).
+omuzaki-core = { path = "../crates/omuzaki-core" }
 # `lint-mods` asks the generator itself which children a folder declares, so the lint and the build share one rule.
 omuzaki-embed = { path = "../crates/omuzaki-embed" }
 
