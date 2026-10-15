@@ -1,7 +1,8 @@
 //! Capture modes, media subtypes and error codes, plus the pieces of the reader that need no Windows to build or test:
 //! frame bounds, row flipping, the device sequence and the timed hand-off between the capture callback and the caller.
 
-use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
+use std::num::NonZeroUsize;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use omuzaki_track_api::camera::{CameraFormat, CameraFormatRequest, CameraId, PixelFormat};
@@ -191,6 +192,11 @@ impl SeqTracker {
         Self { interval, last: None }
     }
 
+    /// Changes the nominal rate after the camera renegotiated, keeping the numbering going.
+    pub fn set_rate(&mut self, fps_num: u32, fps_den: u32) {
+        self.interval = Self::new(fps_num, fps_den).interval;
+    }
+
     /// The number of the frame captured at `time` (100 ns units). The first is 0. `discontinuity` is the driver's
     /// flag that frames were lost before this one, so it steps by at least 2 even if the times look regular.
     pub fn next(&mut self, time: i64, discontinuity: bool) -> u64 {
@@ -212,7 +218,7 @@ impl SeqTracker {
     }
 }
 
-/// Why a wait on a [`Slot`] ended without a frame.
+/// Why a wait on a [`TokenSlot`] ended without a frame.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum SlotFailure {
     /// The stream ended or errored.
@@ -221,7 +227,28 @@ pub enum SlotFailure {
     Hresult(i32),
 }
 
-/// What [`Slot::take`] found.
+impl SlotFailure {
+    const LOST: u64 = 1;
+    const HRESULT_TAG: u64 = 2 << 32;
+
+    const fn encode(self) -> u64 {
+        match self {
+            Self::Lost => Self::LOST,
+            Self::Hresult(hr) => Self::HRESULT_TAG | hr.cast_unsigned() as u64,
+        }
+    }
+
+    #[allow(clippy::cast_possible_truncation)] // the low 32 bits are the code
+    const fn decode(bits: u64) -> Option<Self> {
+        match bits {
+            0 => None,
+            Self::LOST => Some(Self::Lost),
+            _ => Some(Self::Hresult((bits as u32).cast_signed())),
+        }
+    }
+}
+
+/// What [`TokenSlot::take`] found.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Take<T> {
     /// The newest item.
@@ -234,100 +261,112 @@ pub enum Take<T> {
     Closed,
 }
 
-/// A one-item mailbox with a timed wait: the capture callback puts, the caller takes, the newest item wins.
+/// How a [`TokenSlot`] wakes its taker. `notify` must be latched: a `notify` with nobody waiting makes the next
+/// `wait` return at once (a Win32 auto-reset event, or a flag and a condition variable in a test).
+pub trait Signal: Send + Sync {
+    /// Wakes the taker, now or at its next `wait`. Called from the producer's thread; must not block.
+    fn notify(&self);
+    /// Waits up to `timeout` for a `notify`, consuming it. May return early; the slot rechecks.
+    fn wait(&self, timeout: Duration);
+}
+
+/// A lock-free one-item mailbox with a timed wait: the capture callback puts, the caller takes, the newest wins.
+///
+/// The item is a non-zero token (the owner turns a pointer into one and back, which is why the slot itself needs no
+/// `unsafe`). Every state is one atomic word, so neither side ever takes a lock or allocates; the only blocking is
+/// the taker's [`Signal::wait`]. Whoever holds a token owns what it stands for: `put` hands back every token it
+/// displaces through `release`, and `drain` hands back the one left.
 #[derive(Debug)]
-pub struct Slot<T> {
-    state: Mutex<SlotState<T>>,
-    signal: Condvar,
+pub struct TokenSlot<S: Signal> {
+    item: AtomicUsize,
+    failure: AtomicU64,
+    closed: AtomicBool,
+    flushed: AtomicBool,
+    signal: S,
 }
 
-#[derive(Debug)]
-struct SlotState<T> {
-    item: Option<T>,
-    failure: Option<SlotFailure>,
-    closed: bool,
-    flushed: bool,
-}
-
-impl<T> Default for Slot<T> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<T> Slot<T> {
-    /// An empty, open slot.
-    pub const fn new() -> Self {
+impl<S: Signal> TokenSlot<S> {
+    /// An empty, open slot that wakes its taker through `signal`.
+    pub const fn new(signal: S) -> Self {
         Self {
-            state: Mutex::new(SlotState { item: None, failure: None, closed: false, flushed: false }),
-            signal: Condvar::new(),
+            item: AtomicUsize::new(0),
+            failure: AtomicU64::new(0),
+            closed: AtomicBool::new(false),
+            flushed: AtomicBool::new(false),
+            signal,
         }
     }
 
-    fn lock(&self) -> MutexGuard<'_, SlotState<T>> {
-        // A panic elsewhere cannot leave this state half-written: every update is a single assignment.
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    /// Stores `item` for the taker. Returns what the caller must drop: the item it replaced, or `item` itself if the
-    /// slot is closed. Dropping outside the lock keeps releases off the hand-off path.
-    pub fn put(&self, item: T) -> Option<T> {
-        let mut state = self.lock();
-        if state.closed {
-            return Some(item);
+    /// Stores `token`, replacing any older one. Every token the slot lets go of, the older one or (once the slot is
+    /// closed) `token` itself, goes to `release` exactly once, so nothing leaks and nothing is released twice.
+    pub fn put(&self, token: NonZeroUsize, mut release: impl FnMut(NonZeroUsize)) {
+        if let Some(old) = NonZeroUsize::new(self.item.swap(token.get(), Ordering::AcqRel)) {
+            release(old);
         }
-        let old = state.item.replace(item);
-        drop(state);
-        self.signal.notify_all();
-        old
+        // Checked after the swap: a close that lands after the check also drains, so one of the two reclaims it.
+        if self.closed.load(Ordering::SeqCst) {
+            if let Some(mine) = NonZeroUsize::new(self.item.swap(0, Ordering::AcqRel)) {
+                release(mine);
+            }
+        } else {
+            self.signal.notify();
+        }
     }
 
-    /// Records a failure for the taker.
+    /// Records a failure for the taker (the first one stays).
     pub fn fail(&self, failure: SlotFailure) {
-        self.lock().failure.get_or_insert(failure);
-        self.signal.notify_all();
+        let _ = self.failure.compare_exchange(0, failure.encode(), Ordering::SeqCst, Ordering::SeqCst);
+        self.signal.notify();
     }
 
-    /// Closes the slot: later puts are handed back and takes return [`Take::Closed`].
+    /// Closes the slot: takes return [`Take::Closed`] and puts hand their token straight back.
     pub fn close(&self) {
-        self.lock().closed = true;
-        self.signal.notify_all();
+        self.closed.store(true, Ordering::SeqCst);
+        self.signal.notify();
+    }
+
+    /// Whether [`close`](Self::close) was called.
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::SeqCst)
+    }
+
+    /// The token left in the slot, if any, for its owner to release.
+    pub fn drain(&self) -> Option<NonZeroUsize> {
+        NonZeroUsize::new(self.item.swap(0, Ordering::AcqRel))
     }
 
     /// Records that the producer finished flushing (see [`wait_flushed`](Self::wait_flushed)).
     pub fn mark_flushed(&self) {
-        self.lock().flushed = true;
-        self.signal.notify_all();
+        self.flushed.store(true, Ordering::SeqCst);
+        self.signal.notify();
     }
 
     /// Waits up to `timeout` for the producer's flush to finish; whether it did.
     pub fn wait_flushed(&self, timeout: Duration) -> bool {
         let deadline = Instant::now().checked_add(timeout);
-        let mut state = self.lock();
-        while !state.flushed {
+        while !self.flushed.load(Ordering::SeqCst) {
             let Some(left) = remaining(deadline) else { return false };
-            state = self.signal.wait_timeout(state, left).unwrap_or_else(PoisonError::into_inner).0;
+            self.signal.wait(left);
         }
         true
     }
 
-    /// The newest item, waiting up to `timeout` for one. An item that arrived is returned before a failure or a
+    /// The newest token, waiting up to `timeout` for one. A token that arrived is returned before a failure or a
     /// close. A zero `timeout` only looks.
-    pub fn take(&self, timeout: Duration) -> Take<T> {
+    pub fn take(&self, timeout: Duration) -> Take<NonZeroUsize> {
         let deadline = Instant::now().checked_add(timeout);
-        let mut state = self.lock();
         loop {
-            if let Some(item) = state.item.take() {
-                return Take::Item(item);
+            if let Some(token) = self.drain() {
+                return Take::Item(token);
             }
-            if let Some(failure) = state.failure {
+            if let Some(failure) = SlotFailure::decode(self.failure.load(Ordering::SeqCst)) {
                 return Take::Failed(failure);
             }
-            if state.closed {
+            if self.closed.load(Ordering::SeqCst) {
                 return Take::Closed;
             }
             let Some(left) = remaining(deadline) else { return Take::Timeout };
-            state = self.signal.wait_timeout(state, left).unwrap_or_else(PoisonError::into_inner).0;
+            self.signal.wait(left);
         }
     }
 }

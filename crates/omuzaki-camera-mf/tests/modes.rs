@@ -4,10 +4,12 @@ use omuzaki_camera_mf::modes::{
     E_ACCESSDENIED, MF_E_HW_MFT_FAILED_START_STREAMING, MF_E_VIDEO_RECORDING_DEVICE_INVALIDATED, MJPG, ModeInfo, NV12,
     RGB32, YUY2, choose_mode, copy_top_down, frame_span, map_hresult, subtype_format,
 };
-use std::sync::Arc;
+use std::num::NonZeroUsize;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use omuzaki_camera_mf::modes::{FrameSpan, SeqTracker, Slot, SlotFailure, Take};
+use omuzaki_camera_mf::modes::{FrameSpan, SeqTracker, Signal, SlotFailure, Take, TokenSlot};
 use omuzaki_track_api::camera::{CameraFormat, CameraFormatRequest, CameraId, PixelFormat};
 use omuzaki_track_api::error::TrackError;
 
@@ -187,48 +189,105 @@ fn sequence_ignores_a_slightly_fast_clock_and_honours_discontinuities() {
     assert_eq!((none.next(5, false), none.next(5, false), none.next(1, false)), (0, 1, 2));
 }
 
+/// A latched signal for the tests: a flag and a condition variable.
+#[derive(Default)]
+struct Flag {
+    set: Mutex<bool>,
+    cond: Condvar,
+}
+
+impl Signal for Flag {
+    fn notify(&self) {
+        *self.set.lock().unwrap_or_else(PoisonError::into_inner) = true;
+        self.cond.notify_all();
+    }
+
+    fn wait(&self, timeout: Duration) {
+        let guard = self.set.lock().unwrap_or_else(PoisonError::into_inner);
+        let (mut guard, _) =
+            self.cond.wait_timeout_while(guard, timeout, |set| !*set).unwrap_or_else(PoisonError::into_inner);
+        *guard = false;
+    }
+}
+
+fn token(n: usize) -> NonZeroUsize {
+    NonZeroUsize::MIN.saturating_add(n) // n + 1: never zero
+}
+
 #[test]
 fn a_slot_times_out_then_delivers_the_newest() {
-    let slot = Slot::new();
+    let slot = TokenSlot::new(Flag::default());
+    let mut released = Vec::new();
     assert_eq!(slot.take(Duration::ZERO), Take::Timeout);
     let started = Instant::now();
     assert_eq!(slot.take(Duration::from_millis(30)), Take::Timeout);
     assert!(started.elapsed() >= Duration::from_millis(30));
-    assert_eq!(slot.put(1), None);
-    assert_eq!(slot.put(2), Some(1), "the older frame is handed back to be dropped");
-    assert_eq!(slot.take(Duration::ZERO), Take::Item(2));
+    slot.put(token(1), |t| released.push(t));
+    slot.put(token(2), |t| released.push(t));
+    assert_eq!(released, [token(1)], "the older frame is handed back to be released");
+    assert_eq!(slot.take(Duration::ZERO), Take::Item(token(2)));
+}
+
+/// A read that timed out delivers late; the capture keeps going and a newer frame replaces it.
+#[test]
+fn a_late_frame_is_replaced_by_a_newer_one() {
+    let slot = TokenSlot::new(Flag::default());
+    let mut released = Vec::new();
+    assert_eq!(slot.take(Duration::from_millis(5)), Take::Timeout, "the caller gave up");
+    slot.put(token(10), |t| released.push(t)); // the late delivery
+    slot.put(token(11), |t| released.push(t)); // the next capture, armed by the callback
+    assert_eq!(slot.take(Duration::ZERO), Take::Item(token(11)));
+    assert_eq!(released, [token(10)]);
+    assert_eq!(slot.take(Duration::ZERO), Take::Timeout, "and nothing stale is left behind");
 }
 
 #[test]
 fn a_waiting_taker_wakes_for_a_put_from_another_thread() {
-    let slot = Arc::new(Slot::new());
+    let slot = Arc::new(TokenSlot::new(Flag::default()));
     let producer = Arc::clone(&slot);
     let thread = std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(20));
-        producer.put(7);
+        producer.put(token(7), |_| {});
     });
-    assert_eq!(slot.take(Duration::from_secs(10)), Take::Item(7));
+    assert_eq!(slot.take(Duration::from_secs(10)), Take::Item(token(7)));
     thread.join().unwrap();
 }
 
 #[test]
-fn failures_and_closing_end_the_wait() {
-    let slot = Slot::new();
-    slot.put(1);
-    slot.fail(SlotFailure::Hresult(-5));
-    assert_eq!(slot.take(Duration::ZERO), Take::Item(1), "a frame that arrived comes first");
-    assert_eq!(slot.take(Duration::ZERO), Take::Failed(SlotFailure::Hresult(-5)));
-    assert_eq!(slot.take(Duration::ZERO), Take::Failed(SlotFailure::Hresult(-5)), "and it stays failed");
+fn a_put_before_the_wait_is_not_lost() {
+    let slot = TokenSlot::new(Flag::default());
+    slot.put(token(4), |_| {});
+    assert_eq!(slot.take(Duration::from_secs(10)), Take::Item(token(4)));
+}
 
-    let slot = Slot::new();
+#[test]
+fn failures_and_closing_end_the_wait() {
+    let slot = TokenSlot::new(Flag::default());
+    slot.put(token(1), |_| {});
+    slot.fail(SlotFailure::Hresult(-5));
+    slot.fail(SlotFailure::Lost);
+    assert_eq!(slot.take(Duration::ZERO), Take::Item(token(1)), "a frame that arrived comes first");
+    assert_eq!(slot.take(Duration::ZERO), Take::Failed(SlotFailure::Hresult(-5)), "the first failure stays");
+    assert_eq!(slot.take(Duration::ZERO), Take::Failed(SlotFailure::Hresult(-5)));
+
+    let slot = TokenSlot::new(Flag::default());
+    slot.fail(SlotFailure::Lost);
+    assert_eq!(slot.take(Duration::ZERO), Take::Failed(SlotFailure::Lost));
+
+    let slot = TokenSlot::new(Flag::default());
+    let mut released = Vec::new();
+    slot.put(token(8), |_| {});
     slot.close();
+    assert_eq!(slot.drain(), Some(token(8)), "the owner reclaims what was left");
     assert_eq!(slot.take(Duration::from_secs(10)), Take::Closed);
-    assert_eq!(slot.put(3), Some(3), "a late callback gets its frame back");
+    slot.put(token(3), |t| released.push(t));
+    assert_eq!(released, [token(3)], "a late callback's frame goes straight back");
+    assert_eq!(slot.drain(), None);
 }
 
 #[test]
 fn a_flush_can_be_waited_for() {
-    let slot: Slot<u8> = Slot::new();
+    let slot = TokenSlot::new(Flag::default());
     assert!(!slot.wait_flushed(Duration::from_millis(10)));
     slot.mark_flushed();
     assert!(slot.wait_flushed(Duration::ZERO));
@@ -236,12 +295,48 @@ fn a_flush_can_be_waited_for() {
 
 #[test]
 fn an_unrepresentable_timeout_does_not_panic() {
-    let slot = Arc::new(Slot::new());
+    let slot = Arc::new(TokenSlot::new(Flag::default()));
     let producer = Arc::clone(&slot);
     let thread = std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(10));
-        producer.put(1);
+        producer.put(token(1), |_| {});
     });
-    assert_eq!(slot.take(Duration::MAX), Take::Item(1));
+    assert_eq!(slot.take(Duration::MAX), Take::Item(token(1)));
     thread.join().unwrap();
+}
+
+/// Every token is released exactly once however a producer and a closing taker interleave.
+#[test]
+fn racing_puts_and_a_close_leak_nothing() {
+    for _ in 0..200 {
+        let slot = Arc::new(TokenSlot::new(Flag::default()));
+        let live = Arc::new(AtomicUsize::new(0));
+        let (producer, count) = (Arc::clone(&slot), Arc::clone(&live));
+        let thread = std::thread::spawn(move || {
+            for n in 1..=50 {
+                count.fetch_add(1, Ordering::SeqCst);
+                producer.put(token(n), |_| {
+                    count.fetch_sub(1, Ordering::SeqCst);
+                });
+            }
+        });
+        slot.close();
+        if slot.drain().is_some() {
+            live.fetch_sub(1, Ordering::SeqCst);
+        }
+        thread.join().unwrap();
+        if slot.drain().is_some() {
+            live.fetch_sub(1, Ordering::SeqCst);
+        }
+        assert_eq!(live.load(Ordering::SeqCst), 0, "every token was released once");
+    }
+}
+
+#[test]
+fn a_renegotiated_rate_keeps_the_numbering() {
+    let mut seq = SeqTracker::new(30, 1);
+    assert_eq!((seq.next(0, false), seq.next(333_333, false)), (0, 1));
+    seq.set_rate(60, 1);
+    assert_eq!(seq.next(333_333 + 166_667, false), 2);
+    assert_eq!(seq.next(333_333 + 3 * 166_667, false), 4, "at 60 fps one capture is missing");
 }

@@ -11,10 +11,28 @@
 //!   shut down when the last of them is gone. A stream declares it as its last field so it outlives every interface.
 //! - COM is per thread. Every entry point enters a [`ComScope`] first, and every interface is released while the
 //!   scope is still alive: streams drop their interfaces explicitly inside `Drop`, not as fields after it.
-//! - The callback owns its own `Arc<Slot>`, so a late callback after the stream is gone touches only memory it owns.
+//! - The callback owns its own `Arc<Shared>`, so a late callback after the stream is gone touches only memory it owns.
+//!   The one thing it borrows, the reader it re-arms, is detached (and awaited) before the reader is released.
+//!
+//! ## From callback to caller (the real-time path)
+//!
+//! 1. Media Foundation calls `OnReadSample` on a worker thread; the callback turns the sample into a token (an
+//!    `AddRef`, no allocation) and puts it in the [`TokenSlot`]: one atomic swap that displaces and releases the older,
+//!    unread frame (newest wins).
+//! 2. It sets the slot's [`EventSignal`] (a kernel event, no lock of ours) and re-arms the next `ReadSample` itself, so
+//!    capture never waits for the caller and a late frame is simply replaced.
+//! 3. `next_frame` swaps the token out (or waits on the event with the timeout), rebuilds the sample, borrows its
+//!    single buffer directly, checks it against the real allocation and returns the borrow.
+//!
+//! No step locks or allocates. A multi-buffer sample is copied into one reusable buffer that grows only if a frame is
+//! larger than any before; a bottom-up BGRA frame goes through a buffer sized at open; both change only when the
+//! camera renegotiates its media type.
 #![allow(unsafe_code)] // Win32/COM FFI has no safe binding; each block carries its own `// SAFETY:` comment.
 
+use std::ffi::c_void;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use omuzaki_track_api::camera::{
@@ -22,6 +40,7 @@ use omuzaki_track_api::camera::{
 };
 use omuzaki_track_api::error::TrackError;
 use windows::Win32::Foundation::RPC_E_CHANGED_MODE;
+use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::Media::MediaFoundation::{
     IMF2DBuffer2, IMFActivate, IMFAttributes, IMFMediaBuffer, IMFMediaSource, IMFMediaType, IMFSample, IMFSourceReader,
     IMFSourceReaderCallback, MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
@@ -29,15 +48,16 @@ use windows::Win32::Media::MediaFoundation::{
     MF_E_NO_MORE_TYPES, MF_MT_DEFAULT_STRIDE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_SUBTYPE,
     MF_READWRITE_DISABLE_CONVERTERS, MF_SOURCE_READER_ASYNC_CALLBACK, MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING,
     MF_SOURCE_READER_FIRST_VIDEO_STREAM, MF_VERSION, MF2DBuffer_LockFlags_Read, MFCreateAttributes,
-    MFCreateSourceReaderFromMediaSource, MFEnumDeviceSources, MFSTARTUP_FULL, MFSampleExtension_Discontinuity,
-    MFShutdown, MFStartup,
+    MFCreateMemoryBuffer, MFCreateSourceReaderFromMediaSource, MFEnumDeviceSources, MFSTARTUP_FULL,
+    MFSampleExtension_Discontinuity, MFShutdown, MFStartup,
 };
 use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoTaskMemFree, CoUninitialize};
-use windows::core::{GUID, Interface, PWSTR};
+use windows::Win32::System::Threading::{CreateEventW, SetEvent, WaitForSingleObject};
+use windows::core::{GUID, Interface, PCWSTR, PWSTR};
 
 use crate::modes::{
-    FrameSpan, ModeInfo, SeqTracker, Slot, SlotFailure, Take, choose_mode, copy_top_down, frame_span, map_hresult,
-    subtype_format,
+    FrameSpan, ModeInfo, SeqTracker, Signal, SlotFailure, Take, TokenSlot, choose_mode, copy_top_down, frame_span,
+    map_hresult, subtype_format,
 };
 
 /// The reader's first video stream, as the `u32` the calls take.
@@ -174,17 +194,99 @@ fn devices() -> windows::core::Result<Vec<Device>> {
     Ok(out)
 }
 
-/// A capture sample on its way from the callback to the caller.
-struct Delivery {
-    sample: Option<SendSample>,
-    time: i64,
+/// A kernel event the capture callback sets and the caller waits on: the [`Signal`] of the slot. Auto-reset, so a
+/// `notify` before the `wait` is kept (latched) and wakes it at once.
+struct EventSignal(HANDLE);
+
+impl EventSignal {
+    fn new() -> windows::core::Result<Self> {
+        // SAFETY: plain call; no security attributes, auto-reset, initially clear, unnamed.
+        unsafe { CreateEventW(None, false, false, PCWSTR::null()) }.map(Self)
+    }
 }
 
-/// An `IMFSample` that may change threads.
-struct SendSample(IMFSample);
-// SAFETY: Media Foundation samples are free-threaded (multithreaded-apartment) objects; one thread uses a sample at
-// a time here, since the callback hands it over through the slot and keeps no copy.
-unsafe impl Send for SendSample {}
+// SAFETY: an event handle may be set and waited on from any thread; it is closed once, when the last owner drops.
+unsafe impl Send for EventSignal {}
+// SAFETY: as above.
+unsafe impl Sync for EventSignal {}
+
+impl Signal for EventSignal {
+    fn notify(&self) {
+        // SAFETY: the handle is a live event owned by `self`. A failure leaves the taker to its timeout.
+        let _ = unsafe { SetEvent(self.0) };
+    }
+
+    fn wait(&self, timeout: Duration) {
+        // Round up so a wait never ends early, and stay below `INFINITE` (`u32::MAX`); the slot loops for the rest.
+        let ms = u32::try_from(timeout.as_millis().saturating_add(1)).unwrap_or(u32::MAX - 1).min(u32::MAX - 1);
+        // SAFETY: the handle is a live event owned by `self`.
+        let _ = unsafe { WaitForSingleObject(self.0, ms) };
+    }
+}
+
+impl Drop for EventSignal {
+    fn drop(&mut self) {
+        // SAFETY: closes the handle `new` created, once.
+        let _ = unsafe { CloseHandle(self.0) };
+    }
+}
+
+/// A sample in the slot is its `IMFSample` pointer; this low bit, free because COM objects are pointer-aligned, says
+/// the media type changed with it.
+const TYPE_CHANGED: usize = 1;
+/// A token that is no sample: the media type changed and the driver sent none with it.
+const RETYPE_ONLY: usize = TYPE_CHANGED;
+
+/// What a stream and its callback share. The callback holds its own `Arc`, so it never touches freed state.
+struct Shared {
+    slot: TokenSlot<EventSignal>,
+    /// The reader the callback re-arms, borrowed (no reference of ours): the stream detaches it and waits for
+    /// `in_flight` to reach 0 before it releases the reader.
+    reader: AtomicPtr<c_void>,
+    in_flight: AtomicUsize,
+}
+
+impl Shared {
+    /// Asks the reader for the next sample, if it is still attached.
+    fn rearm(&self) -> windows::core::Result<()> {
+        self.in_flight.fetch_add(1, Ordering::SeqCst);
+        let raw = self.reader.load(Ordering::SeqCst);
+        let result = if raw.is_null() {
+            Ok(())
+        } else {
+            // SAFETY: `raw` is the stream's live reader: the stream detaches it, then waits for `in_flight` to drop
+            // to 0 (which this call holds above 0) before releasing it.
+            match unsafe { IMFSourceReader::from_raw_borrowed(&raw) } {
+                // SAFETY: plain call; the result arrives at this callback.
+                Some(reader) => unsafe { reader.ReadSample(VIDEO, 0, None, None, None, None) },
+                None => Ok(()),
+            }
+        };
+        self.in_flight.fetch_sub(1, Ordering::SeqCst);
+        result
+    }
+
+    /// Releases the sample a token stands for.
+    fn release(token: NonZeroUsize) {
+        if token.get() != RETYPE_ONLY {
+            // SAFETY: `into_token` made this token from a sample's raw pointer (plus the tag bit) and it is released
+            // exactly once, by the slot (`put`, `drain`) or by the caller that took it.
+            drop(unsafe { IMFSample::from_raw((token.get() & !TYPE_CHANGED) as *mut c_void) });
+        }
+    }
+}
+
+/// A sample as a slot token, tagged if the media type changed with it. `None` if its pointer is not aligned (it
+/// would collide with the tag).
+fn into_token(sample: IMFSample, type_changed: bool) -> Option<NonZeroUsize> {
+    let raw = sample.into_raw();
+    if raw.addr() & TYPE_CHANGED != 0 {
+        // SAFETY: `raw` came from `into_raw` just above and has not been shared.
+        drop(unsafe { IMFSample::from_raw(raw) });
+        return None;
+    }
+    NonZeroUsize::new(raw.addr() | usize::from(type_changed))
+}
 
 mod callback {
     //! The `implement` macro expands to code that trips two pedantic lints; the expansion is not ours to change.
@@ -192,19 +294,22 @@ mod callback {
 
     use std::sync::Arc;
 
+    use windows::Win32::Foundation::E_POINTER;
     use windows::Win32::Media::MediaFoundation::{
-        IMFMediaEvent, IMFSample, IMFSourceReaderCallback, IMFSourceReaderCallback_Impl, MF_SOURCE_READERF_ENDOFSTREAM,
-        MF_SOURCE_READERF_ERROR,
+        IMFMediaEvent, IMFSample, IMFSourceReaderCallback, IMFSourceReaderCallback_Impl,
+        MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED, MF_SOURCE_READERF_ENDOFSTREAM, MF_SOURCE_READERF_ERROR,
+        MF_SOURCE_READERF_NATIVEMEDIATYPECHANGED,
     };
     use windows::core::{HRESULT, Ref, implement};
 
-    use super::{Delivery, SendSample};
-    use crate::modes::{Slot, SlotFailure};
+    use super::{RETYPE_ONLY, Shared, into_token};
+    use crate::modes::SlotFailure;
 
-    /// Receives samples from the source reader on a Media Foundation worker thread.
+    /// Receives samples from the source reader on a Media Foundation worker thread, files the newest in the slot and
+    /// asks for the next, so capture keeps running whether or not anyone is waiting.
     #[implement(IMFSourceReaderCallback)]
     pub(super) struct Callback {
-        pub(super) slot: Arc<Slot<Delivery>>,
+        pub(super) shared: Arc<Shared>,
     }
 
     impl IMFSourceReaderCallback_Impl for Callback_Impl {
@@ -213,23 +318,47 @@ mod callback {
             status: HRESULT,
             _stream: u32,
             flags: u32,
-            time: i64,
+            _time: i64,
             sample: Ref<'_, IMFSample>,
         ) -> windows::core::Result<()> {
+            let shared = &self.shared;
+            let ended = (MF_SOURCE_READERF_ERROR.0 | MF_SOURCE_READERF_ENDOFSTREAM.0).cast_unsigned();
+            let retyped = (MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED.0 | MF_SOURCE_READERF_NATIVEMEDIATYPECHANGED.0)
+                .cast_unsigned();
             if status.is_err() {
-                self.slot.fail(SlotFailure::Hresult(status.0));
-            } else if flags & (MF_SOURCE_READERF_ERROR.0 | MF_SOURCE_READERF_ENDOFSTREAM.0).cast_unsigned() != 0 {
-                self.slot.fail(SlotFailure::Lost);
+                shared.slot.fail(SlotFailure::Hresult(status.0));
+                return Ok(());
+            }
+            if flags & ended != 0 {
+                shared.slot.fail(SlotFailure::Lost);
+                return Ok(());
+            }
+            if shared.slot.is_closed() {
+                return Ok(()); // the stream is going away; the sample is released on return
+            }
+            let retyped = flags & retyped != 0;
+            let token = if let Some(sample) = sample.as_ref().cloned() {
+                let Some(token) = into_token(sample, retyped) else {
+                    shared.slot.fail(SlotFailure::Hresult(E_POINTER.0));
+                    return Ok(());
+                };
+                Some(token)
+            } else if retyped {
+                std::num::NonZeroUsize::new(RETYPE_ONLY)
             } else {
-                let sample = sample.as_ref().cloned().map(SendSample);
-                // The older sample (or this one, after the stream closed) is released here, on the worker thread.
-                drop(self.slot.put(Delivery { sample, time }));
+                None // a stream tick: nothing to deliver
+            };
+            if let Some(token) = token {
+                shared.slot.put(token, Shared::release);
+            }
+            if let Err(e) = shared.rearm() {
+                shared.slot.fail(SlotFailure::Hresult(e.code().0));
             }
             Ok(())
         }
 
         fn OnFlush(&self, _stream: u32) -> windows::core::Result<()> {
-            self.slot.mark_flushed();
+            self.shared.slot.mark_flushed();
             Ok(())
         }
 
@@ -329,8 +458,13 @@ fn open_stream(runtime: &Arc<MfRuntime>, id: &CameraId, request: &CameraFormatRe
         .into_iter()
         .find(|d| d.id == *id)
         .ok_or_else(|| TrackError::NoDevice(id.clone()))?;
-    let slot = Arc::new(Slot::new());
-    let callback: IMFSourceReaderCallback = Callback { slot: Arc::clone(&slot) }.into();
+    let signal = EventSignal::new().map_err(|e| err(&e, id))?;
+    let shared = Arc::new(Shared {
+        slot: TokenSlot::new(signal),
+        reader: AtomicPtr::new(std::ptr::null_mut()),
+        in_flight: AtomicUsize::new(0),
+    });
+    let callback: IMFSourceReaderCallback = Callback { shared: Arc::clone(&shared) }.into();
     let configured = configure(&device, &callback, id, request);
     let (reader, mode, bottom_up) = match configured {
         Ok(done) => done,
@@ -340,21 +474,25 @@ fn open_stream(runtime: &Arc<MfRuntime>, id: &CameraId, request: &CameraFormatRe
             return Err(e);
         }
     };
-    // One top-down copy buffer for the life of the stream, only for the layout that arrives bottom-up.
-    let flip_len = match (mode.format, mode.format.tight_stride(mode.width)) {
-        (PixelFormat::Bgra8, Some(row)) => row.saturating_mul(mode.height as usize),
-        _ => 0,
-    };
-    Ok(MfStream {
-        live: Some(Live { reader, activate: device.activate, held: None, pending: false }),
-        slot,
+    let mut stream = MfStream {
+        live: Some(Live { reader, activate: device.activate, held: None, gather: None }),
+        shared,
         id: id.clone(),
         mode,
-        flip: vec![0; flip_len],
+        flip: Vec::new(),
         bottom_up,
         seq: SeqTracker::new(mode.fps_num, mode.fps_den),
+        failed: None,
         _runtime: Arc::clone(runtime),
-    })
+    };
+    stream.size_flip();
+    // Start capture: from here the callback re-arms itself. If this fails the stream is dropped, which shuts the
+    // camera down.
+    let live = stream.live.as_ref().ok_or(TrackError::Lost)?;
+    stream.shared.reader.store(live.reader.as_raw(), Ordering::SeqCst);
+    // SAFETY: plain call on the live reader; the result arrives at the callback.
+    unsafe { live.reader.ReadSample(VIDEO, 0, None, None, None, None) }.map_err(|e| err(&e, id))?;
+    Ok(stream)
 }
 
 /// Opens the device's reader and sets the mode `request` picks: the reader, the mode and whether its rows arrive
@@ -373,9 +511,14 @@ fn configure(
     let media = media.ok_or_else(|| TrackError::Backend("chosen mode vanished from the list".into()))?;
     // SAFETY: `media` is one of the reader's own native types, so no conversion is needed.
     unsafe { reader.SetCurrentMediaType(VIDEO, None, media) }.map_err(|e| err(&e, id))?;
-    // SAFETY: plain call on a live media type; an absent attribute means top-down.
-    let bottom_up = unsafe { media.GetUINT32(&MF_MT_DEFAULT_STRIDE) }.is_ok_and(|v| v.cast_signed() < 0);
-    Ok((reader, mode, bottom_up))
+    Ok((reader, mode, is_bottom_up(media)))
+}
+
+/// Whether a media type's default stride is negative, so a plain `Lock` hands over rows bottom-up. An absent
+/// attribute means top-down.
+fn is_bottom_up(media: &IMFMediaType) -> bool {
+    // SAFETY: plain call on a live media type.
+    unsafe { media.GetUINT32(&MF_MT_DEFAULT_STRIDE) }.is_ok_and(|v| v.cast_signed() < 0)
 }
 
 /// The locked buffer of the frame last handed out.
@@ -392,7 +535,7 @@ struct Held {
 
 impl Held {
     fn unlock(&self) {
-        // SAFETY: the buffer was locked by the matching call in `lock_sample`, and is unlocked exactly once (the
+        // SAFETY: the buffer was locked by the matching call in `lock_buffer`, and is unlocked exactly once (the
         // caller drops this value right after).
         let _ = unsafe {
             match &self.two_d {
@@ -413,18 +556,16 @@ impl Held {
     }
 }
 
-/// Locks `sample`'s pixels and checks them against the real allocation. The buffer stays locked until
+/// Locks `buffer`'s pixels and checks them against the real allocation. The buffer stays locked until
 /// [`Held::unlock`].
-fn lock_sample(
-    sample: &IMFSample,
+fn lock_buffer(
+    buffer: IMFMediaBuffer,
     mode: &ModeInfo,
     bottom_up: bool,
     can_flip: bool,
     id: &CameraId,
 ) -> Result<Held, TrackError> {
     let format = mode.format;
-    // SAFETY: plain call on a live sample.
-    let buffer = unsafe { sample.ConvertToContiguousBuffer() }.map_err(|e| err(&e, id))?;
     let two_d = if format == PixelFormat::Mjpg { None } else { buffer.cast::<IMF2DBuffer2>().ok() };
     let mut held = Held { buffer, two_d, base: std::ptr::null(), span_start: 0, span_len: 0, pitch: 0 };
     // The allocation length, and the offset of the top row in it.
@@ -484,8 +625,33 @@ struct Live {
     /// Owns the camera; shut down on drop so it is released at once.
     activate: IMFActivate,
     held: Option<Held>,
-    /// A `ReadSample` is outstanding, so the callback will deliver one more item.
-    pending: bool,
+    /// Where a sample with several buffers is gathered into one; made when the first such sample arrives and kept.
+    gather: Option<(IMFMediaBuffer, u32)>,
+}
+
+impl Live {
+    /// The sample's pixels as one buffer: its only buffer, borrowed as it is, or, for a sample in pieces, a copy in
+    /// the reusable gather buffer (grown, rarely, if a frame is bigger than any before).
+    fn contiguous(&mut self, sample: &IMFSample, id: &CameraId) -> Result<IMFMediaBuffer, TrackError> {
+        // SAFETY: plain calls on a live sample.
+        let count = unsafe { sample.GetBufferCount() }.map_err(|e| err(&e, id))?;
+        if count == 1 {
+            // SAFETY: as above; index 0 exists since the count is 1.
+            return unsafe { sample.GetBufferByIndex(0) }.map_err(|e| err(&e, id));
+        }
+        // SAFETY: plain call on a live sample.
+        let total = unsafe { sample.GetTotalLength() }.map_err(|e| err(&e, id))?;
+        let fits = self.gather.as_ref().is_some_and(|(_, capacity)| *capacity >= total);
+        if !fits {
+            // SAFETY: plain call; the buffer is owned by this stream from here.
+            let buffer = unsafe { MFCreateMemoryBuffer(total) }.map_err(|e| err(&e, id))?;
+            self.gather = Some((buffer, total));
+        }
+        let Some((buffer, _)) = &self.gather else { return Err(TrackError::Backend("gather buffer missing".into())) };
+        // SAFETY: both are live; the gather buffer is unlocked (the previous frame was released) and big enough.
+        unsafe { sample.CopyToBuffer(buffer) }.map_err(|e| err(&e, id))?;
+        Ok(buffer.clone())
+    }
 }
 
 // SAFETY: the reader and activator are free-threaded (multithreaded-apartment) objects; `held` points into a buffer
@@ -495,55 +661,71 @@ unsafe impl Send for Live {}
 
 struct MfStream {
     live: Option<Live>,
-    slot: Arc<Slot<Delivery>>,
+    shared: Arc<Shared>,
     id: CameraId,
     mode: ModeInfo,
-    /// Where bottom-up frames are turned top-down; allocated once at open, only for BGRA (the layout Windows
-    /// delivers bottom-up). Empty for the other layouts.
+    /// Where bottom-up frames are turned top-down; sized at open (and when the camera changes its media type), only
+    /// for BGRA, the layout Windows delivers bottom-up. Empty for the other layouts.
     flip: Vec<u8>,
     /// The mode's default stride is negative, so a plain `Lock` hands over rows bottom-up.
     bottom_up: bool,
     seq: SeqTracker,
+    /// Set when the camera changed to something we cannot hand over; every later call repeats it.
+    failed: Option<TrackError>,
     /// Last, so Media Foundation outlives every interface above.
     _runtime: Arc<MfRuntime>,
 }
 
-impl CameraStream for MfStream {
-    fn format(&self) -> CameraFormat {
-        self.mode.to_format()
+impl MfStream {
+    /// Sizes the flip buffer for the current mode.
+    fn size_flip(&mut self) {
+        let len = match (self.mode.format, self.mode.format.tight_stride(self.mode.width)) {
+            (PixelFormat::Bgra8, Some(row)) => row.saturating_mul(self.mode.height as usize),
+            _ => 0,
+        };
+        self.flip.clear();
+        self.flip.resize(len, 0);
     }
 
-    /// The newest frame, waiting up to `timeout` for the device. `Ok(None)` means none arrived in time (the request
-    /// stays outstanding, so a frame arriving later is returned by the next call) or the driver sent an empty tick.
-    /// A bottom-up BGRA frame is copied top-down into a buffer allocated at open; no other layout copies.
-    /// `seq` follows the capture times (see [`SeqTracker`]), so a skipped capture is a gap.
-    fn next_frame(&mut self, timeout: Duration) -> Result<Option<CameraFrame<'_>>, TrackError> {
-        let _com = ComScope::enter()?;
+    /// Re-reads the current media type after the camera renegotiated, so no sample is described by the old one.
+    fn retype(&mut self) -> Result<(), TrackError> {
+        let live = self.live.as_ref().ok_or(TrackError::Lost)?;
+        // SAFETY: plain call on the live reader.
+        let media = unsafe { live.reader.GetCurrentMediaType(VIDEO) }.map_err(|e| err(&e, &self.id))?;
+        let mode = mode_of(&media)
+            .map_err(|e| err(&e, &self.id))?
+            .ok_or_else(|| TrackError::Backend("the camera changed to a format that cannot be handed over".into()))?;
+        self.bottom_up = is_bottom_up(&media);
+        self.seq.set_rate(mode.fps_num, mode.fps_den);
+        if mode != self.mode {
+            self.mode = mode;
+            self.size_flip();
+        }
+        Ok(())
+    }
+
+    /// One frame from `token`, which this call now owns.
+    fn frame_from(&mut self, token: NonZeroUsize) -> Result<Option<CameraFrame<'_>>, TrackError> {
+        let retyped = token.get() & TYPE_CHANGED != 0;
+        let sample = (token.get() != RETYPE_ONLY).then(|| {
+            // SAFETY: the token was made from a sample's raw pointer by `into_token`; this call owns it.
+            unsafe { IMFSample::from_raw((token.get() & !TYPE_CHANGED) as *mut c_void) }
+        });
+        if retyped && let Err(e) = self.retype() {
+            self.failed = Some(e.clone());
+            return Err(e);
+        }
+        let Some(sample) = sample else { return Ok(None) };
         let live = self.live.as_mut().ok_or(TrackError::Lost)?;
-        // The previous frame's borrow ended with this call, so its buffer can be released.
-        if let Some(held) = live.held.take() {
-            held.unlock();
-        }
-        if !live.pending {
-            // SAFETY: plain call; the result arrives at the callback, which owns what it touches.
-            unsafe { live.reader.ReadSample(VIDEO, 0, None, None, None, None) }.map_err(|e| err(&e, &self.id))?;
-            live.pending = true;
-        }
-        let delivery = match self.slot.take(timeout) {
-            Take::Item(delivery) => delivery,
-            Take::Timeout => return Ok(None),
-            Take::Failed(SlotFailure::Lost) | Take::Closed => return Err(TrackError::Lost),
-            Take::Failed(SlotFailure::Hresult(hr)) => return Err(map_hresult(hr, &self.id)),
-        };
-        live.pending = false;
-        let Some(sample) = delivery.sample else { return Ok(None) };
-        // SAFETY: plain call on a live sample; an absent attribute means no discontinuity.
-        let lost_before = unsafe { sample.0.GetUINT32(&MFSampleExtension_Discontinuity) }.is_ok_and(|v| v != 0);
-        let held = lock_sample(&sample.0, &self.mode, self.bottom_up, !self.flip.is_empty(), &self.id)?;
+        // SAFETY: plain calls on a live sample; an absent attribute means no discontinuity.
+        let time = unsafe { sample.GetSampleTime() }.map_err(|e| err(&e, &self.id))?;
+        let lost_before = unsafe { sample.GetUINT32(&MFSampleExtension_Discontinuity) }.is_ok_and(|v| v != 0);
+        let buffer = live.contiguous(&sample, &self.id)?;
+        let held = lock_buffer(buffer, &self.mode, self.bottom_up, !self.flip.is_empty(), &self.id)?;
         let (width, height, pixel) = (self.mode.width, self.mode.height, self.mode.format);
-        let captured = DeviceTime(u64::try_from(delivery.time).unwrap_or(0).saturating_mul(NS_PER_TICK));
-        let seq = self.seq.next(delivery.time, lost_before);
-        // SAFETY: the lock is held until the next call to this method, which needs `&mut self` and so ends the
+        let captured = DeviceTime(u64::try_from(time).unwrap_or(0).saturating_mul(NS_PER_TICK));
+        let seq = self.seq.next(time, lost_before);
+        // SAFETY: the lock is held until the next call to `next_frame`, which needs `&mut self` and so ends the
         // borrow this slice lives in first.
         let bytes = unsafe { held.bytes() };
         if held.pitch < 0 {
@@ -559,26 +741,73 @@ impl CameraStream for MfStream {
     }
 }
 
+impl CameraStream for MfStream {
+    fn format(&self) -> CameraFormat {
+        self.mode.to_format()
+    }
+
+    /// The newest frame, waiting up to `timeout` for the device. `Ok(None)` means none arrived in time, or the driver
+    /// sent an empty tick or only announced a new media type. Capture does not depend on this call: the callback
+    /// keeps the next read armed, so a frame that arrives after a timeout is replaced by newer ones until you ask.
+    /// A bottom-up BGRA frame is copied top-down into a buffer allocated at open; no other layout copies, except a
+    /// sample the driver delivers in several buffers. `seq` follows the capture times (see [`SeqTracker`]), so a
+    /// skipped capture is a gap. If the camera switches to a format that cannot be handed over, this and every later
+    /// call return that error.
+    fn next_frame(&mut self, timeout: Duration) -> Result<Option<CameraFrame<'_>>, TrackError> {
+        let _com = ComScope::enter()?;
+        if let Some(e) = &self.failed {
+            return Err(e.clone());
+        }
+        let live = self.live.as_mut().ok_or(TrackError::Lost)?;
+        // The previous frame's borrow ended with this call, so its buffer can be released.
+        if let Some(held) = live.held.take() {
+            held.unlock();
+        }
+        match self.shared.slot.take(timeout) {
+            Take::Item(token) => self.frame_from(token),
+            Take::Timeout => Ok(None),
+            Take::Failed(SlotFailure::Lost) | Take::Closed => Err(TrackError::Lost),
+            Take::Failed(SlotFailure::Hresult(hr)) => Err(map_hresult(hr, &self.id)),
+        }
+    }
+}
+
 impl Drop for MfStream {
-    /// Releases the camera even with a read outstanding: flushes the reader, waits (bounded) for the flush to finish,
-    /// shuts the source down, then drops every interface while COM is still initialised.
+    /// Releases the camera even with a read outstanding: stops the callback re-arming, waits for any in flight,
+    /// flushes the reader, waits (bounded) for the flush to finish, shuts the source down, then drops every
+    /// interface while COM is still initialised.
     fn drop(&mut self) {
         // Entered first, dropped last: after every interface below. Without COM we still release what we can.
         let _com = ComScope::enter().ok();
+        self.shared.slot.close();
+        self.shared.reader.store(std::ptr::null_mut(), Ordering::SeqCst);
+        // A callback that read the reader pointer before it was cleared is still using the reader: wait it out.
+        let deadline = std::time::Instant::now() + FLUSH_WAIT;
+        while self.shared.in_flight.load(Ordering::SeqCst) != 0 && std::time::Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        let safe_to_release = self.shared.in_flight.load(Ordering::SeqCst) == 0;
         if let Some(mut live) = self.live.take() {
             if let Some(held) = live.held.take() {
                 held.unlock();
             }
-            // Anything the callback delivered but nobody took is released here, then late deliveries are refused.
-            drop(self.slot.take(Duration::ZERO));
-            self.slot.close();
-            // SAFETY: plain call on a live reader; completion is reported to `OnFlush`.
-            if unsafe { live.reader.Flush(VIDEO) }.is_ok() {
-                self.slot.wait_flushed(FLUSH_WAIT);
+            if safe_to_release {
+                // SAFETY: plain call on a live reader; completion is reported to `OnFlush`.
+                if unsafe { live.reader.Flush(VIDEO) }.is_ok() {
+                    self.shared.slot.wait_flushed(FLUSH_WAIT);
+                }
+                // SAFETY: plain call; asks Media Foundation to release the camera now rather than at the last
+                // reference.
+                let _ = unsafe { live.activate.ShutdownObject() };
+                drop(live);
+            } else {
+                // A callback is stuck inside the reader: releasing it would be a use after free. Leak it instead.
+                std::mem::forget(live);
             }
-            // SAFETY: plain call; asks Media Foundation to release the camera now rather than at the last reference.
-            let _ = unsafe { live.activate.ShutdownObject() };
-            drop(live);
+        }
+        // Anything the callback delivered but nobody took.
+        if let Some(token) = self.shared.slot.drain() {
+            Shared::release(token);
         }
     }
 }
