@@ -55,6 +55,10 @@ harness = false
 name = "mouth_shape"
 harness = false
 
+[[bench]]
+name = "mouth_interior"
+harness = false
+
 [lints]
 workspace = true
 
