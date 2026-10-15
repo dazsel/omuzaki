@@ -441,7 +441,8 @@ spec.loader.exec_module(dc)
 root = {"tools", "LICENSE-MIT", "CLAUDE.md", "crates", "README.md"}
 table = [
     ("Fence: tools, LICENSE-MIT, CLAUDE.md, only", root, ["tools", "LICENSE-MIT", "CLAUDE.md"], []),
-    ("Fence: `tools`, `only`", root, ["tools"], []),
+    ("Fence: `tools`, `only`", root, ["tools", "only"], []),  # quoted slashless tokens stay even when absent from main
+    ("Fence: `tools`, only", root, ["tools"], []),  # an unquoted word that names no root entry is prose
     ("Fence: none", root, [], []),
     ("Fence: tools, LICENSE-MIT", None, [], ["tools", "LICENSE-MIT"]),
     ("Fence: tools/x.py, only", None, ["tools/x.py"], ["only"]),
@@ -576,6 +577,31 @@ cat >"$FX/prs.json" <<'J'
 J
 run 9063
 expect_line "go #9063" "dependencies: a 'Depends on:' line chains the overlap"
+
+# a wildcard fence also names crates that open PRs add (not on main yet): contract first fires for the new -api crate.
+scenario newcrate
+issue 9070 <<'B'
+**Fence:** `crates/*-api/src/types.rs`
+B
+echo '[{"name":"omuzaki-core","type":"dir"}]' >"$FX/crates.json"
+echo '[{"name":"crates","type":"dir"}]' >"$FX/root.json"
+cat >"$FX/prs.json" <<'J'
+[{"number":701,"headRefName":"cloud/701","isDraft":false,"createdAt":"2026-10-09T10:00:00Z","files":[{"path":"crates/new-api/src/lib.rs"}],"body":""}]
+J
+run 9070
+expect_line "wait #9070: contract first: new-api has open PR(s) #701; a contract lands alone" "new crate from an open PR: waits"
+
+# a backtick-quoted slashless fence entry is kept even when main lacks it, so an open PR adding it collides.
+scenario newroot
+issue 9071 <<'B'
+**Fence:** `NEWROOT`
+B
+echo '[{"name":"tools","type":"dir"}]' >"$FX/root.json"
+cat >"$FX/prs.json" <<'J'
+[{"number":702,"headRefName":"cloud/702","isDraft":false,"createdAt":"2026-10-09T10:00:00Z","files":[{"path":"NEWROOT"}],"body":""}]
+J
+run 9071
+expect_line "wait #9071: overlap with #702 (NEWROOT)" "quoted slashless path absent from main: overlaps"
 
 # a missing fixture is a gh failure: exit 2 with a message, not a crash.
 scenario missing
