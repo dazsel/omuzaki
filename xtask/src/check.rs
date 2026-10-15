@@ -16,6 +16,7 @@ use crate::links;
 use crate::lint_deps;
 use crate::lint_licences;
 use crate::lint_mods;
+use crate::lint_registers;
 use crate::lint_seed;
 use crate::lint_ui_writes;
 use crate::process::{cargo, describe};
@@ -75,6 +76,8 @@ enum Action {
     LintDeps,
     /// The `link()` wiring lint (ADR 0015), run in this process.
     LintLinks,
+    /// The `registers` flag lint (ADR 0054), run in this process.
+    LintRegisters,
     /// The licence-file lint (ADR 0053 §3), run in this process.
     LintLicences,
     /// The UI-writes lint (QG-11), run in this process.
@@ -104,6 +107,7 @@ impl Step {
             Action::Cargo(args) => format!("cargo {}", args.join(" ")),
             Action::LintDeps => "lint-deps".to_owned(),
             Action::LintLinks => "lint-links".to_owned(),
+            Action::LintRegisters => "lint-registers".to_owned(),
             Action::LintLicences => "lint-licences".to_owned(),
             Action::LintUiWrites => "lint-ui-writes".to_owned(),
             Action::LintCrateTable => "lint-crate-table".to_owned(),
@@ -144,6 +148,7 @@ fn plan(scope: &Scope) -> Vec<Step> {
         Step::cargo("deny", &["deny", "--log-level", "error", "check", "licenses", "bans", "sources"], &[], &[]),
         Step { name: "lint-deps", action: Action::LintDeps },
         Step { name: "lint-links", action: Action::LintLinks },
+        Step { name: "lint-registers", action: Action::LintRegisters },
         Step { name: "lint-licences", action: Action::LintLicences },
         Step { name: "lint-ui-writes", action: Action::LintUiWrites },
         Step { name: "lint-crate-table", action: Action::LintCrateTable },
@@ -288,6 +293,10 @@ fn run_step(workspace: &Workspace, step: &Step, base: &str) -> bool {
             eprintln!("lint-links: {error}");
             false
         }),
+        Action::LintRegisters => lint_registers::report(workspace).unwrap_or_else(|error| {
+            eprintln!("lint-registers: {error}");
+            false
+        }),
         Action::LintLicences => lint_licences::report(workspace),
         Action::LintUiWrites => lint_ui_writes::report(workspace).unwrap_or_else(|error| {
             eprintln!("lint-ui-writes: {error}");
@@ -348,6 +357,7 @@ mod tests {
             Action::Cargo(args) => args.join(" "),
             Action::LintDeps => "<lint-deps>".to_owned(),
             Action::LintLinks => "<lint-links>".to_owned(),
+            Action::LintRegisters => "<lint-registers>".to_owned(),
             Action::LintLicences => "<lint-licences>".to_owned(),
             Action::LintUiWrites => "<lint-ui-writes>".to_owned(),
             Action::LintCrateTable => "<lint-crate-table>".to_owned(),
@@ -374,6 +384,7 @@ mod tests {
                 ("deny", "deny --log-level error check licenses bans sources".to_owned()),
                 ("lint-deps", "<lint-deps>".to_owned()),
                 ("lint-links", "<lint-links>".to_owned()),
+                ("lint-registers", "<lint-registers>".to_owned()),
                 ("lint-licences", "<lint-licences>".to_owned()),
                 ("lint-ui-writes", "<lint-ui-writes>".to_owned()),
                 ("lint-crate-table", "<lint-crate-table>".to_owned()),
@@ -397,7 +408,7 @@ mod tests {
                 ("link-gate", "test -p omuzaki-cli --test registrations".to_owned()),
             ]
         );
-        assert_eq!(got.len(), 13, "the same trailing steps as ever: {got:?}");
+        assert_eq!(got.len(), 14, "the same trailing steps as ever: {got:?}");
     }
 
     #[test]
@@ -432,6 +443,7 @@ mod tests {
                 "deny",
                 "lint-deps",
                 "lint-links",
+                "lint-registers",
                 "lint-licences",
                 "lint-ui-writes",
                 "lint-crate-table",

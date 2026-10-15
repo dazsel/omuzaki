@@ -46,11 +46,13 @@ omuzaki-render = { path = "../omuzaki-render", optional = true }
 [features]
 # The wgpu renderer. The stage is written against `dyn Renderer`, so nothing here needs it; the feature links the
 # `omuzaki-render` backend. Tests use the render mock.
-wgpu = ["dep:omuzaki-render"]
+wgpu = ["omuzaki-render"]
 
-# The build script declares the feature modules from their folders (ADR 0054 §1).
+# The build script declares the feature modules from their folders (ADR 0054 §1) and writes the `link()` calls from the
+# dependencies' `registers` flags (§6).
 [build-dependencies]
 omuzaki-embed = { path = "../omuzaki-embed" }
+omuzaki-link-build = { path = "../omuzaki-link-build" }
 
 [dev-dependencies]
 criterion.workspace = true
@@ -88,3 +90,4 @@ workspace = true
 kind = "App"
 generated-mods = ["src", "src/ops"]
 summary = "not in the workspace yet: the character stage, which uploads a `BuiltCharacter` to the renderer and runs the rig, the runtimes and the face painter each frame. It is wiring, not an API+impl pair, because the UI, the CLI, the web player and the golden runner all link the same wiring"
+registers = true
