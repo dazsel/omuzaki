@@ -14,6 +14,7 @@ use crate::time::{Ticks, Timebase};
 
 /// What a stream carries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum StreamKind {
     /// Pictures.
     Video,
@@ -25,9 +26,12 @@ pub enum StreamKind {
 
 /// How a stream's bytes are coded. Grows with the formats of `docs/design/record.md` D1.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum CodecId {
     /// Apple `ProRes` 4444, with alpha.
+    #[serde(rename = "prores_4444")]
+    #[schemars(rename = "prores_4444")]
     ProRes4444,
     /// VP9 with the alpha plane as side data (the default record format).
     Vp9Alpha,
@@ -58,6 +62,7 @@ impl CodecId {
 
 /// How alpha relates to colour in a frame or stream.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum AlphaKind {
     /// No alpha channel.
     None,
@@ -363,8 +368,22 @@ pub struct EncoderInfo {
 
 impl EncoderInfo {
     /// Describes one encoder.
-    pub fn new(codec: CodecId, name: impl Into<String>, hardware: bool, alpha: bool) -> Self {
-        Self { codec, name: name.into(), hardware, alpha }
+    ///
+    /// # Errors
+    /// [`StreamError::Config`] if `codec` is not a video codec: an [`EncodeConfig`] can only select video codecs, so
+    /// an encoder for another kind could never be asked for.
+    pub fn new(codec: CodecId, name: impl Into<String>, hardware: bool, alpha: bool) -> Result<Self, StreamError> {
+        let info = Self { codec, name: name.into(), hardware, alpha };
+        info.validate()?;
+        Ok(info)
+    }
+
+    /// Checks an info built field by field: its codec is a video codec, as [`EncodeConfig::validate`] requires.
+    ///
+    /// # Errors
+    /// [`StreamError::Config`] naming the codec and its kind.
+    pub fn validate(&self) -> Result<(), StreamError> {
+        check_codec(self.codec, StreamKind::Video)
     }
 }
 
@@ -417,5 +436,53 @@ mod tests {
     fn keyint_defaults_to_one_second() {
         let v = VideoSpec { size: UVec2::new(8, 8), fps: (30000, 1001), alpha: AlphaKind::None };
         assert_eq!(EncodeConfig::new(v, CodecId::H264).map(|c| c.keyint), Ok(30));
+    }
+
+    fn json<T: serde::Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug>(v: T, text: &str) {
+        assert_eq!(serde_json::to_string(&v).ok().as_deref(), Some(text));
+        assert_eq!(serde_json::from_str::<T>(text).ok(), Some(v));
+    }
+
+    #[test]
+    fn codec_ids_use_the_design_names() {
+        json(CodecId::ProRes4444, "\"prores_4444\"");
+        json(CodecId::Vp9Alpha, "\"vp9_alpha\"");
+        json(CodecId::Png, "\"png\"");
+        json(CodecId::H264, "\"h264\"");
+        json(CodecId::PcmS24, "\"pcm_s24\"");
+        json(CodecId::PcmF32, "\"pcm_f32\"");
+        json(CodecId::Opus, "\"opus\"");
+        json(CodecId::InputRecords, "\"input_records\"");
+    }
+
+    #[test]
+    fn stream_and_alpha_kinds_are_snake_case() {
+        json(StreamKind::Video, "\"video\"");
+        json(StreamKind::Audio, "\"audio\"");
+        json(StreamKind::Data, "\"data\"");
+        json(AlphaKind::None, "\"none\"");
+        json(AlphaKind::Straight, "\"straight\"");
+        json(AlphaKind::Premultiplied, "\"premultiplied\"");
+    }
+
+    #[test]
+    fn encode_config_golden_json() {
+        let v = VideoSpec { size: UVec2::new(8, 8), fps: (30, 1), alpha: AlphaKind::Straight };
+        let Ok(cfg) = EncodeConfig::new(v, CodecId::Vp9Alpha) else { panic!("valid config") };
+        let text = serde_json::to_string(&cfg).unwrap_or_default();
+        assert!(text.contains("\"codec\":\"vp9_alpha\""), "{text}");
+        assert!(text.contains("\"alpha\":\"straight\""), "{text}");
+        assert_eq!(serde_json::from_str::<EncodeConfig>(&text).ok(), Some(cfg));
+    }
+
+    #[test]
+    fn encoder_info_requires_a_video_codec() {
+        assert!(EncoderInfo::new(CodecId::H264, "h264_nvenc", true, false).is_ok());
+        for codec in [CodecId::Opus, CodecId::PcmS24, CodecId::PcmF32, CodecId::InputRecords] {
+            assert!(matches!(EncoderInfo::new(codec, "x", false, false), Err(StreamError::Config(_))), "{codec:?}");
+        }
+        let Ok(mut info) = EncoderInfo::new(CodecId::Png, "png", false, true) else { panic!("valid info") };
+        info.codec = CodecId::Opus;
+        assert!(info.validate().is_err());
     }
 }

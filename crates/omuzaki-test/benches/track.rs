@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use criterion::{Criterion, criterion_group};
-use omuzaki_ai_api::SessionOptions;
+use omuzaki_ai_api::{Provider, SessionOptions};
 use omuzaki_ai_ort::OrtRuntime;
 use omuzaki_core::time::Seconds;
 use omuzaki_track::models::ModelDir;
@@ -34,7 +34,7 @@ fn bench_track_roi(c: &mut Criterion) {
         return;
     };
     let dir = ModelDir::open(&PathBuf::from(models)).expect("the model folder opens");
-    let options = SessionOptions { threads: 1, ..SessionOptions::default() };
+    let options = SessionOptions::new(vec![Provider::Cpu], 1);
     let graphs = dir.load(&OrtRuntime, &DirSource(PathBuf::from(cache)), &options).expect("the graphs load");
     let config = FaceTrackerConfig { mode: Mode::Video, ..FaceTrackerConfig::default() };
     let mut tracker = FaceTracker::new(graphs, &dir.geometry().unwrap(), config).expect("the graphs fit their slots");
