@@ -50,7 +50,8 @@ use crate::skeleton::RigSkeleton;
 use crate::skin::Skinner;
 use crate::spring::VrmSpringSolver;
 
-/// Humanoid pose, IK and spring bones on one skeleton, with the skinning pass folded in. One per character.
+/// Humanoid pose, IK, optional node constraints and spring bones on one skeleton, with the skinning pass folded in. One
+/// per character.
 #[derive(Debug)]
 pub struct FullRig<I = TwoBoneIk, S = VrmSpringSolver> {
     humanoid: HumanoidRig,
