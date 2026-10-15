@@ -181,7 +181,8 @@ pub fn check(key: &str) -> Result<(), DocKeyError> {
 }
 
 /// The path of the registered key `key` for character `id`: `characters/<id>/<key>`. `None` if no crate registered it.
-/// A built-in name is refused here, so it gets the error, not a path; the built-in keys have their own functions in
+/// A built-in name with a colliding registration is refused here, so it gets the error, not a path. A built-in name with
+/// no registration gives `None`, like any other unregistered key; the built-in keys have their own functions in
 /// [`paths`](crate::paths).
 ///
 /// # Errors

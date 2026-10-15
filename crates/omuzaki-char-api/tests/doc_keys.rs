@@ -42,6 +42,15 @@ fn a_registered_key_is_its_own_path_under_the_character() {
 }
 
 #[test]
+fn a_built_in_name_with_no_registration_is_not_refused() {
+    // Only a built-in name with a colliding registration is refused; this crate registers `rig` nowhere.
+    let id = CharId::new("mira").expect("a valid id");
+    assert_eq!(doc_key::check("rig"), Ok(()));
+    assert_eq!(doc_key::path("rig", &id), Ok(None));
+    assert!(doc_key::sibling_keys().contains(&"rig"));
+}
+
+#[test]
 fn a_registered_key_gives_the_typo_hint() {
     let mut node = base();
     node["hat"] = json!({});
