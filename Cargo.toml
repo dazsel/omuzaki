@@ -19,6 +19,7 @@ ab_glyph = "0.2"   # text rasteriser for character sheets (Apache-2.0; pure Rust
 base64 = "0.23"   # standard base64 for MCP blob resources (MIT OR Apache-2.0), omuzaki-mcp; already in the lock through rmcp
 blake3 = "1.8"
 bytemuck = { version = "1.25", features = ["derive"] }
+chacha20 = { version = "0.10", default-features = false, features = ["cipher"] }   # the seeded `wasi:random/insecure` stream of plugins (MIT OR Apache-2.0), omuzaki-plugin
 bytes = "1"
 clap = { version = "4.6", features = ["derive"] }
 constant_time_eq = "0.4"
@@ -73,6 +74,11 @@ unicode-normalization = "0.1"   # NFC before font selection so a base and its ma
 unicode-bidi = "0.3"   # visual order of mixed right-to-left and left-to-right sheet text (MIT OR Apache-2.0), omuzaki-stage
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# The plugin host (ADR 0058): a component-model JIT with fuel and epochs and nothing else (no WASI, no cache, no async,
+# no GC, no wat); `=49.0.0` because the host's WASI stubs and limits are written against this release (Apache-2.0 WITH
+# LLVM-exception), omuzaki-plugin.
+wasmtime = { version = "=49.0.0", default-features = false, features = ["cranelift", "component-model", "runtime", "std"] }
+wat = "1"   # WAT text to wasm for the plugin host's test components (Apache-2.0 WITH LLVM-exception); dev-dependency only
 wgpu = "30"
 windows = { version = "0.62", features = ["Win32_Media_MediaFoundation", "Win32_System_Com", "Win32_Foundation", "Win32_Security", "Win32_System_Threading"] }   # Media Foundation and COM (MIT OR Apache-2.0), omuzaki-camera-mf
 windows-core = "0.62"   # the `implement` macro for the camera's COM callback (MIT OR Apache-2.0), omuzaki-camera-mf
