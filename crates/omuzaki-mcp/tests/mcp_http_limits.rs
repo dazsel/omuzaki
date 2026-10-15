@@ -211,11 +211,14 @@ fn drain_open(stream: &mut TcpStream) {
 /// The most real time a test waits for the server to get somewhere. A healthy run takes well under a second.
 const REAL_TIME_CEILING: Duration = Duration::from_secs(60);
 
-/// Whether the socket has something to read right now: the answer's first bytes, as long as nothing has been read.
+/// Whether a byte of the answer is actually waiting in the socket, found by peeking so that nothing is consumed.
+/// Readiness alone is not proof: tokio may report a socket readable when nothing is there, and a peek that would block
+/// is simply not ready yet.
 fn has_arrived_for_reading(stream: &TcpStream) -> bool {
-    let mut readable = std::pin::pin!(stream.readable());
+    let mut byte = [0; 1];
+    let mut peek = std::pin::pin!(stream.peek(&mut byte));
     let mut context = std::task::Context::from_waker(std::task::Waker::noop());
-    readable.as_mut().poll(&mut context).is_ready()
+    matches!(peek.as_mut().poll(&mut context), std::task::Poll::Ready(Ok(n)) if n > 0)
 }
 
 /// Gives the server's tasks real time to run while the clock stays frozen: the server's I/O moves in real time, and
