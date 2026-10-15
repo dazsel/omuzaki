@@ -106,7 +106,7 @@ pub fn generate(manifest_dir: &Path) -> Result<Generated, Error> {
         }
         let _ = writeln!(source, "    {}::link();", library_name(key, spec, &dependency));
     }
-    reject_flagged_target_dependencies(&own, manifest_dir)?;
+    inputs.extend(reject_flagged_target_dependencies(&own, manifest_dir)?);
     source.push_str("}\n");
     Ok(Generated { source, inputs })
 }
@@ -171,12 +171,18 @@ fn enabling_features(manifest: &Table, key: &str) -> BTreeSet<String> {
     }
 }
 
-fn reject_flagged_target_dependencies(own: &Table, manifest_dir: &Path) -> Result<(), Error> {
+/// Errors on a flagged dependency under `[target.*.dependencies]`; otherwise returns the manifests it read, which are
+/// build inputs too: one that gains the flag later must rerun the build script and reach the error.
+fn reject_flagged_target_dependencies(own: &Table, manifest_dir: &Path) -> Result<Vec<PathBuf>, Error> {
+    let mut read_manifests = Vec::new();
     for (target, table) in own.get("target").and_then(Value::as_table).into_iter().flatten() {
         let dependencies = table.get("dependencies").and_then(Value::as_table);
         for (key, spec) in dependencies.into_iter().flatten() {
             let Some(path) = spec.get("path").and_then(Value::as_str) else { continue };
-            if registers(&read(&manifest_dir.join(path).join("Cargo.toml"))?) {
+            let manifest = manifest_dir.join(path).join("Cargo.toml");
+            let flagged = registers(&read(&manifest)?);
+            read_manifests.push(manifest);
+            if flagged {
                 return Err(Error(format!(
                     "`{key}` registers but is declared under [target.{target}.dependencies], which the generated \
                      link list does not read"
@@ -184,7 +190,7 @@ fn reject_flagged_target_dependencies(own: &Table, manifest_dir: &Path) -> Resul
             }
         }
     }
-    Ok(())
+    Ok(read_manifests)
 }
 
 #[cfg(test)]
@@ -277,6 +283,19 @@ mod tests {
         );
         let error = generate(&dir.path().join("app")).unwrap_err();
         assert!(error.to_string().contains("[target.cfg(unix).dependencies]"), "{error}");
+    }
+
+    #[test]
+    fn an_unflagged_target_dependency_is_still_a_build_input() {
+        let dir = tempfile::tempdir().unwrap();
+        crate_dir(dir.path(), "omuzaki-doc", "");
+        let generated =
+            app(dir.path(), "[target.'cfg(unix)'.dependencies]\nomuzaki-doc = { path = \"../omuzaki-doc\" }\n");
+        assert!(
+            generated.inputs.iter().any(|input| input.ends_with("omuzaki-doc/Cargo.toml")),
+            "{:?}",
+            generated.inputs
+        );
     }
 
     #[test]

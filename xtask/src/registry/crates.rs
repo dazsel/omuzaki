@@ -31,8 +31,8 @@ pub struct Crate {
     /// Whether its manifest sets `registers = true` under `[package.metadata.omuzaki]`: Apps generate a `link()` call
     /// for it (ADR 0054 section 6).
     pub registers: bool,
-    /// Whether it lists `omuzaki-link-build` under `[build-dependencies]`, so its `link()` calls are generated from the
-    /// `registers` flags of its dependencies and appear in no source file.
+    /// Whether its `link()` calls are generated from the `registers` flags of its dependencies and appear in no source
+    /// file: it lists `omuzaki-link-build`, its `build.rs` calls `emit`, and its library includes `link_calls.rs`.
     pub generates_links: bool,
 }
 
@@ -75,10 +75,7 @@ pub fn load(root: &Path) -> Result<Vec<Crate>, Error> {
                     .get("package")
                     .and_then(|p| p.get("metadata")?.get("omuzaki")?.get("registers")?.as_bool())
                     .unwrap_or(false),
-                generates_links: manifest
-                    .get("build-dependencies")
-                    .and_then(Value::as_table)
-                    .is_some_and(|table| table.contains_key(LINK_BUILD)),
+                generates_links: generates_links(&dir, &manifest),
                 dir: dir.strip_prefix(root).unwrap_or(&dir).to_path_buf(),
                 name,
                 deps,
@@ -114,6 +111,21 @@ fn path_deps<'a>(dir: &'a Path, manifest: &'a Table) -> impl Iterator<Item = Pat
         let path = spec.get("path").and_then(Value::as_str).filter(|_| !optional)?;
         Some(normalise(&dir.join(path)))
     })
+}
+
+/// Whether the crate's `link()` calls really are generated: it lists `omuzaki-link-build` under `[build-dependencies]`,
+/// its build script calls `omuzaki_link_build::emit`, and its library includes the generated `link_calls.rs`. Any one
+/// missing leaves the list empty or unused, so the crate must not be credited with calls it does not make.
+fn generates_links(dir: &Path, manifest: &Table) -> bool {
+    let listed = manifest
+        .get("build-dependencies")
+        .and_then(Value::as_table)
+        .is_some_and(|table| table.contains_key(LINK_BUILD));
+    let build = manifest.get("package").and_then(|p| p.get("build")).and_then(Value::as_str).unwrap_or("build.rs");
+    let lib = library(dir, "", manifest).map_or_else(|| PathBuf::from("src/lib.rs"), |(_, root)| root);
+    let contains =
+        |file: &Path, needle: &str| fs::read_to_string(dir.join(file)).is_ok_and(|text| text.contains(needle));
+    listed && contains(Path::new(build), "omuzaki_link_build::emit(") && contains(&lib, "/link_calls.rs")
 }
 
 /// `[lib]` as cargo reads it: a declared path or `src/lib.rs`, named after the package unless `[lib] name` says.

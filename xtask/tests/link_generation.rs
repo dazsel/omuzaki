@@ -37,6 +37,7 @@ fn workspace() -> Fixture {
         "crates/omuzaki-cli/src/lib.rs",
         "omuzaki_core::define_link! {\n    include!(concat!(env!(\"OUT_DIR\"), \"/link_calls.rs\"));\n}\n",
     );
+    fixture.write("crates/omuzaki-cli/build.rs", "fn main() {\n    omuzaki_link_build::emit();\n}\n");
     add_under(
         &fixture,
         "omuzaki-cli",
@@ -78,4 +79,19 @@ fn a_registering_dependency_without_the_flag_is_not_generated_and_lint_links_say
     let run = fixture.xtask(&["lint-links"]);
     assert!(!run.success, "{}", run.stdout);
     assert!(run.stdout.contains("omuzaki-cli → omuzaki-char: never calls `omuzaki_char::link()`"), "{}", run.stdout);
+}
+
+#[test]
+fn listing_the_generator_is_not_enough_the_build_script_must_call_it_and_the_library_include_its_output() {
+    let no_emit = workspace();
+    no_emit.write("crates/omuzaki-cli/build.rs", "fn main() {}\n");
+    let run = no_emit.xtask(&["lint-links"]);
+    assert!(!run.success, "{}", run.stdout);
+    assert!(run.stdout.contains("omuzaki-cli → omuzaki-char: never calls"), "{}", run.stdout);
+
+    let no_include = workspace();
+    no_include.write("crates/omuzaki-cli/src/lib.rs", "omuzaki_core::define_link!();\n");
+    let run = no_include.xtask(&["lint-links"]);
+    assert!(!run.success, "{}", run.stdout);
+    assert!(run.stdout.contains("omuzaki-cli → omuzaki-char: never calls"), "{}", run.stdout);
 }
