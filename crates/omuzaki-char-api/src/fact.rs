@@ -217,6 +217,7 @@ pub fn facts() -> Result<Vec<&'static FactRegistration>, String> {
 macro_rules! register_fact_probe {
     ($ty:ty) => {
         $crate::__inventory::submit! { $crate::fact::FactProbe::by_eq::<$ty>() }
+        $crate::__record_registration!("fact_probe", $ty);
     };
     ($ty:ty, $same:expr) => {
         $crate::__inventory::submit! {
@@ -227,6 +228,7 @@ macro_rules! register_fact_probe {
                 differs
             })
         }
+        $crate::__record_registration!("fact_probe", $ty);
     };
 }
 
