@@ -3,6 +3,8 @@
 //! A chip is small, quiet text on a pill. Status chips always carry an icon and a word as well as a colour (P9), and
 //! the actor chip always carries the name: an initial alone is not an identity.
 
+use std::borrow::Cow;
+
 use egui::{Align2, Rect, Response, Sense, Stroke, StrokeKind, Ui, Widget, WidgetInfo, WidgetType, pos2, vec2};
 
 use crate::ds::a11y;
@@ -26,6 +28,17 @@ const MIN_LABEL: f32 = 16.0;
 /// that needs more than this is cut and its tooltip says the whole of it.
 fn label_room(fit: f32, fixed: f32) -> f32 {
     (fit - fixed).max(MIN_LABEL)
+}
+
+/// Completes a cut label with its tooltip: the whole text, shown on hover or on keyboard focus. `whole` builds it only
+/// then, so a chip that is neither hovered nor focused allocates nothing.
+fn cut_tip<'a>(response: Response, cut: bool, whole: impl FnOnce() -> Cow<'a, str>) -> Response {
+    if cut && (response.hovered() || response.has_focus()) {
+        let whole = whole();
+        response.tip(Tip::new(&whole))
+    } else {
+        response
+    }
 }
 
 /// Who did something. Agents are violet, people use the accent, plugins and the system stay neutral.
@@ -63,6 +76,8 @@ impl ActorKind {
 }
 
 /// "● Designer": a circle with the initial plus the name. Always includes the name.
+///
+/// A name too long for the room the layout gives ends in an ellipsis. The tooltip, on hover or keyboard focus, gives the whole name.
 #[derive(Clone, Copy, Debug)]
 #[must_use = "a chip does nothing until it is added to a Ui"]
 pub struct ActorChip<'a> {
@@ -113,11 +128,13 @@ impl Widget for ActorChip<'_> {
                 node.set_description(ds.text(self.kind.word()).into_owned());
             },
         );
-        if name_full > room && response.hovered() { response.tip(Tip::new(self.name)) } else { response }
+        cut_tip(response, name_full > room, || Cow::Borrowed(self.name))
     }
 }
 
 /// `edit:character`: what an op or an agent may touch. `broadcast`, `publish`, `spend`, `native`, `input` and `process` get a warning icon.
+///
+/// A name too long for the room the layout gives ends in an ellipsis. The tooltip, on hover or keyboard focus, gives the whole name.
 #[derive(Clone, Copy, Debug)]
 #[must_use = "a chip does nothing until it is added to a Ui"]
 pub struct ScopeBadge<'a> {
@@ -178,11 +195,13 @@ impl Widget for ScopeBadge<'_> {
                 node.set_description(ds.text(if risky { Msg::ScopeOutside } else { Msg::ScopeInside }).into_owned());
             },
         );
-        if text_full > room && response.hovered() { response.tip(Tip::new(self.scope)) } else { response }
+        cut_tip(response, text_full > room, || Cow::Borrowed(self.scope))
     }
 }
 
 /// `~40 s · 1.2 GB · $0.12`: what running an op will cost, before it runs (P2). Omit it when the cost is trivial.
+///
+/// A cost too long for the room the layout gives is cut at the end with an ellipsis. The tooltip, on hover or keyboard focus, gives the whole cost.
 #[derive(Clone, Copy, Debug)]
 #[must_use = "a chip does nothing until it is added to a Ui"]
 pub struct CostChip<'a> {
@@ -221,23 +240,28 @@ pub(super) fn paint_cost(painter: &egui::Painter, ds: &Ds, at: egui::Pos2, parts
     paint_cost_in(painter, ds, at, parts, f32::INFINITY);
 }
 
-/// [`paint_cost`] cut at `room` pt from `at`: the run that runs over ends in an ellipsis and nothing after it is drawn.
+/// [`paint_cost`] cut at `room` pt from `at`. A cost that does not fit keeps room for its ellipsis at the end: the run
+/// that runs over is cut with one, and a cut that falls between two runs is marked with a bare ellipsis.
 fn paint_cost_in(painter: &egui::Painter, ds: &Ds, at: egui::Pos2, parts: &[&str], room: f32) {
     let font = cost_font();
-    let end = at.x + room;
+    let limit = if cost_width(painter.ctx(), parts) > room { at.x + room } else { f32::INFINITY };
+    let limit = limit - paint::text_width(painter.ctx(), ELLIPSIS, &font);
     let mut x = at.x;
     for (i, part) in parts.iter().enumerate() {
         if i > 0 {
-            let Some(right) = cost_run(painter, x, at.y, end, COST_SEPARATOR, &font, ds.theme.text3) else { return };
+            let Some(right) = cost_run(painter, x, at.y, limit, COST_SEPARATOR, &font, ds.theme.text3) else { return };
             x = right;
         }
-        let Some(right) = cost_run(painter, x, at.y, end, part, &font, ds.theme.text2) else { return };
+        let Some(right) = cost_run(painter, x, at.y, limit, part, &font, ds.theme.text2) else { return };
         x = right;
     }
 }
 
+/// The mark a cut leaves: a single character, so it is the same width in every locale.
+const ELLIPSIS: &str = "\u{2026}";
+
 /// Paints one run of cost text from `x`, or the part of it that fits before `end`. Returns where it ends, or `None`
-/// once it has been cut, so the caller draws nothing after it.
+/// once it has been cut, so the caller draws nothing after it. `end` leaves room for the ellipsis of a cut run.
 fn cost_run(
     painter: &egui::Painter,
     x: f32,
@@ -250,9 +274,12 @@ fn cost_run(
     if x + paint::text_width(painter.ctx(), text, font) <= end {
         return Some(paint::text(painter, pos2(x, cy), Align2::LEFT_CENTER, text, font, colour).right());
     }
-    if end > x {
+    if end - x > paint::text_width(painter.ctx(), ELLIPSIS, font) {
         let area = Rect::from_min_max(pos2(x, cy - BADGE_HEIGHT / 2.0), pos2(end, cy + BADGE_HEIGHT / 2.0));
         paint::text_in(painter, area, Align2::LEFT_CENTER, text, font, colour);
+    } else {
+        // Too little room for any letter, but the room reserved for the ellipsis still holds one.
+        paint::text(painter, pos2(x, cy), Align2::LEFT_CENTER, ELLIPSIS, font, colour);
     }
     None
 }
@@ -279,12 +306,8 @@ impl Widget for CostChip<'_> {
             },
             |_| {},
         );
-        // The whole cost is joined only while the chip is hovered: a cut chip would otherwise allocate every frame.
-        if truncated && response.hovered() {
-            response.tip(Tip::new(&self.parts.join(COST_SEPARATOR)))
-        } else {
-            response
-        }
+        // The whole cost is joined only while the chip is hovered or focused: a cut chip would otherwise allocate every frame.
+        cut_tip(response, truncated, || Cow::Owned(self.parts.join(COST_SEPARATOR)))
     }
 }
 
@@ -305,6 +328,8 @@ fn pill(ui: &Ui, ds: &Ds, rect: egui::Rect, status: Status, hover: f32) -> egui:
 }
 
 /// A status as an icon, a word and a colour: "✓ Connected".
+///
+/// A text too long for the room the layout gives ends in an ellipsis. The tooltip, on hover or keyboard focus, gives the whole text.
 #[derive(Clone, Copy, Debug)]
 #[must_use = "a chip does nothing until it is added to a Ui"]
 pub struct StatusChip<'a> {
@@ -352,11 +377,13 @@ impl Widget for StatusChip<'_> {
                 node.set_description(ds.status_word(self.status).into_owned());
             },
         );
-        if text_full > room && response.hovered() { response.tip(Tip::new(self.text)) } else { response }
+        cut_tip(response, text_full > room, || Cow::Borrowed(self.text))
     }
 }
 
 /// A measured number next to what it checks: `✓ likeness 0.88` or `▲ likeness 0.81 < 0.85`. Click opens the evidence.
+///
+/// A metric too long for the room the layout gives ends in an ellipsis; the value and the limit stay whole. The tooltip, on hover or keyboard focus, gives the whole metric.
 #[derive(Clone, Copy, Debug)]
 #[must_use = "a chip does nothing until it is added to a Ui"]
 pub struct GateChip<'a> {
@@ -435,7 +462,7 @@ impl Widget for GateChip<'_> {
                 node.set_description(ds.text(Msg::GateOpens).into_owned());
             },
         );
-        if metric_full > room && response.hovered() { response.tip(Tip::new(self.metric)) } else { response }
+        cut_tip(response, metric_full > room, || Cow::Borrowed(self.metric))
     }
 }
 

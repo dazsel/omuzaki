@@ -178,10 +178,42 @@ fn a_chip_whose_name_fits_is_not_cut_and_has_no_tooltip() {
         ui.add(ActorChip::new("Ada", ActorKind::Person));
         ui.add(StatusChip::new(Status::Ok, "Connected"));
     });
-    let at = chip_nodes(&h).first().map_or(pos2(0.0, 0.0), |n| n.rect().center());
-    h.hover_at(at);
+    let ada = h.root().children_recursive().find(|n| n.accesskit_node().value().is_some_and(|v| v == "Ada"));
+    let at = ada.map(|n| n.rect().center());
+    assert!(at.is_some(), "the Ada chip is in the panel");
+    h.hover_at(at.unwrap_or(pos2(0.0, 0.0)));
     h.run_steps(8);
     let shown = painted(h.output());
     assert!(shown.iter().all(|p| !p.elided), "nothing is cut");
     assert_eq!(shown.iter().filter(|p| p.text == "Ada").count(), 1, "and no tooltip repeats the name");
+}
+
+#[test]
+fn a_focused_cut_gate_chip_shows_its_whole_name_without_a_pointer() {
+    let mut h = chips();
+    // The gate chip is the only focusable chip in the panel, so one Tab lands on it.
+    press(&mut h, Modifiers::NONE, Key::Tab);
+    h.run_steps(8);
+    assert!(
+        painted(h.output()).iter().any(|p| p.text == NAME70 && !p.elided),
+        "keyboard focus shows the whole name in the tooltip"
+    );
+}
+
+#[test]
+fn a_cut_cost_marks_its_cut_when_a_part_ends_at_the_edge_of_the_room() {
+    // The room ends one point past the first part and its ellipsis, so the separator starts with too little room for
+    // a letter. The cut must still show an ellipsis, and nothing after the separator is drawn.
+    let mut h = crate::ds::testing::harness_state(Settings::default(), vec2(PANEL, 400.0), 0.0_f32, |ui, room| {
+        ui.set_max_width(*room);
+        ui.add(CostChip::new(&["~40 s", "1.2 GB"]));
+    });
+    let mono = egui::FontId::monospace(11.5);
+    let first = crate::ds::paint::text_width(&h.ctx, "~40 s", &mono);
+    let ellipsis = crate::ds::paint::text_width(&h.ctx, "\u{2026}", &mono);
+    *h.state_mut() = first + ellipsis + 1.0;
+    h.run_steps(3);
+    let shown = painted(h.output());
+    assert!(shown.iter().any(|p| p.text == "\u{2026}"), "the cut is marked with an ellipsis: {shown:?}");
+    assert!(shown.iter().all(|p| p.text != "1.2 GB"), "nothing after the cut is drawn");
 }
