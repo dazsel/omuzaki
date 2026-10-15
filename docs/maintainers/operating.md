@@ -10,11 +10,12 @@ ADR 0054 (how code is structured so parallel work doesn't collide). How an area 
 | Who | Decides | Escalates |
 |---|---|---|
 | **Owner** | the product: what Omuzaki is and does (the spec in `docs/plan/`, and any change to it); **access changes** (new repositories, accounts, permissions, automation that acts on its own, changes to these rules); money | raises these itself; is never asked to answer routine questions |
-| **Director** | goals and priorities within the spec, the high-level architecture and the contracts *between* areas, the operating details in this file, the foundation (ADR 0053/0054), hub-file sign-off, licences within the policy, system health, escalations between areas | a proposed change to the spec, access changes and money, to the owner |
-| **Area lead** | its area's backlog and task specs, low-level design and the contracts *inside* its area, budgets within the spec's targets, routine fence extensions, its fleet of sessions | cross-area contracts, hub files, anything that conflicts with a ruling, to the Director |
+| **Director** | goals and priorities within the spec, the architecture **between** areas and contract changes that force code in another area to change, the operating rules in this file, the foundation (ADR 0053/0054), workspace-wide hub files (CI workflows, the root `Cargo.toml`, `xtask`, decision records that span areas, `CLAUDE.md`, `AGENTS.md`, these docs), licences within the policy, system health, disputes between areas | a proposed change to the spec, access changes and money, to the owner |
+| **Area lead** | **everything inside its area:** the backlog and task specs; low-level design and the area's design records; changes to its contract crates that don't force code in another area to change; sign-off of hub files inside its crates (the `lead-approved` label, or a `**<Area> lead:** approved` comment); budgets within the spec's targets, including a deferral with the measured number; visual sign-off from CI's renders; fence rulings; its fleet of sessions | a change that breaks another area's code, workspace-wide hubs, a spec target, a dispute with another area, to the Director |
 | **Implementer session** | how to do its one task inside the fence | anything outside the fence, to its lead, as one comment on its pull request |
 
-A question always comes with options and a recommendation. A ruling is posted on the pull request or issue it applies
+Leads own their area for real: a lead decides and acts, it doesn't relay. The Director spot-checks and widens or
+narrows a lead's authority as results show. A question always comes with options and a recommendation. A ruling is posted on the pull request or issue it applies
 to, where reviews can read it.
 
 ## Areas
