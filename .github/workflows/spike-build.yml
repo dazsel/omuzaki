@@ -1,8 +1,8 @@
 # Builds one spike (a folder under spikes/, each its own small Cargo workspace) on one OS and uploads its release
 # binaries with a SHA256SUMS file, so the owner can take a measurement that needs hardware the cloud lacks (a GPU, a
-# hardware encoder, a kernel module) without building anything on their machine (lead practice 13 in
-# docs/maintainers/cloud-lane.md). The lead who asked for the run files the `needs-owner` issue by hand, naming the
-# run's artifact and the one command to run; this workflow posts nothing.
+# hardware encoder, a kernel module) without building anything on their machine (docs/maintainers/cloud-lane.md, Lead
+# practices: real-hardware numbers come from owner runs). The lead who asked for the run files the `needs-owner` issue
+# by hand, naming the run's artifact and the one command to run; this workflow posts nothing.
 #
 # Dispatch only: a maintainer starts it from the Actions tab (or `gh workflow run spike-build.yml -f spike=<name>
 # -f os=<runner> -f target=<target>`), so it runs no pull request code and costs no pull request CI minutes. The spike is
@@ -119,8 +119,8 @@ jobs:
 
       # The top level of the release folder holds the spike's binaries and libraries; build scripts, dependency info and
       # debug files stay behind. The licence texts that travel with them go in `notices/`: the repository's own, the
-      # spike's, and those of any source a fetch script put under the spike's third_party/. The files are packed in one
-      # tarball, because an uploaded artifact loses the executable bit.
+      # spike's, those of any source a fetch script put under the spike's third_party/, and those of every crate the
+      # build resolved. The files are packed in one tarball, because an uploaded artifact loses the executable bit.
       - name: Collect the binaries
         env:
           SPIKE: ${{ inputs.spike }}
@@ -152,6 +152,24 @@ jobs:
               exit 1
             fi
           done
+          # Every crate the build resolved for this target: its licence files, and one index line (name, version,
+          # licence expression) in notices/crates/LICENSES.tsv, so a crate that ships no licence file is still named.
+          platform=$TARGET
+          if [ "$platform" = host ]; then platform=$(rustc -vV | sed -n 's/^host: //p'); fi
+          mkdir -p "$out/notices/crates"
+          (cd "spikes/$SPIKE" && cargo metadata --format-version 1 --locked --filter-platform "$platform") \
+            | jq -r '(.resolve.nodes | map({key: .id, value: true}) | from_entries) as $used
+                | .packages[] | select(.source != null and $used[.id])
+                | [.name, .version, (.license // "see files"), .manifest_path] | @tsv' \
+            | sort > "$RUNNER_TEMP/crates.tsv"
+          while IFS=$'\t' read -r name version licence manifest; do
+            printf '%s\t%s\t%s\n' "$name" "$version" "$licence" >> "$out/notices/crates/LICENSES.tsv"
+            if command -v cygpath >/dev/null; then manifest=$(cygpath -u "$manifest"); fi
+            dir="$out/notices/crates/$name-$version"
+            mkdir -p "$dir"
+            find "$(dirname "$manifest")" -maxdepth 1 -type f \( -iname 'LICENSE*' -o -iname 'LICENCE*' -o -iname 'COPYING*' -o -iname 'NOTICE*' \) -exec cp {} "$dir/" \;
+            rmdir "$dir" 2>/dev/null || true
+          done < "$RUNNER_TEMP/crates.tsv"
           cd "$out"
           files=$(find . -maxdepth 1 -type f ! -name SHA256SUMS | sed 's|^\./||' | sort)
           if command -v sha256sum >/dev/null; then sha256sum -- $files > SHA256SUMS; else shasum -a 256 -- $files > SHA256SUMS; fi
