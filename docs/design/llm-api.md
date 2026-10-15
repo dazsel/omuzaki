@@ -305,6 +305,10 @@ framework wraps each registered provider as a connector with the LLM or vision c
 licence and privacy from the manifest, and FakeLlm registers as `kind: "fake"`, which is CN-01's mock connector for
 the LLM capability. `list_models` is a blocking call for the Settings page only, never on a hot path.
 
+A kind is registered once. Two registrations of one kind are a configuration error, never resolved by link order:
+`provider(kind)` returns `RegistryError::DuplicateKind` naming both (package and `file:line`), and Apps call
+`check_providers()` once at startup to fail early with the same error.
+
 ### D9. What the eval driver and judge share
 
 **Shared** (they use `omuzaki-llm`): the Anthropic client (HTTP, TLS, SSE, retries, `Retrying` records), `Usage`,
@@ -321,7 +325,8 @@ stored without headers; the judge's forced tool, random image order and agreemen
   (the last user content contains a string, or answers tool ids), the events to send, a `chunk` size in bytes for
   `TextDelta` and `ToolUseInput` splitting, an optional `error` injected before event `n`, `retries` to emit, and a
   per-event delay on `FakeClock`. A request with no turn left, or one that fails `expect`, is `Malformed` naming the
-  turn. Same script, same events, always.
+  turn. Same script, same events, always. A script that does not load strictly is an error: unknown fields (a
+  misspelled `expect`, say) are rejected at every level, including inside events and their usage.
 - **Golden transcripts:** each provider test stores `{request, events}` as JSON lines (requests without headers) and
   diffs against a blessed file; SSE fixtures are hand-written from the providers' documented examples, never captured
   with a key.

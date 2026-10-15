@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 /// Why a call or a turn failed. Refusal is not here: it is [`StopReason::Refused`](crate::stream::StopReason::Refused),
 /// because a refused turn still costs money. No variant ever carries a key or a request header.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 #[non_exhaustive]
 pub enum LlmError {
     /// The provider throttled the request. `None` means it gave no `retry-after`, which is not worth retrying.

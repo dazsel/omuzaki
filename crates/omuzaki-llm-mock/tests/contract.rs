@@ -200,8 +200,44 @@ fn a_bad_call_is_malformed() {
 #[test]
 fn the_fake_registers_as_a_provider() {
     omuzaki_llm_mock::link();
-    let provider = omuzaki_llm_api::provider::provider("fake").unwrap();
+    let provider = omuzaki_llm_api::provider::provider("fake").unwrap().unwrap();
     assert_eq!((provider.manifest)().cost, omuzaki_llm_api::provider::CostModel::Free);
+    assert_eq!(omuzaki_llm_api::provider::check_providers(), Ok(()));
     let recorded = omuzaki_core::link::registered();
     assert!(recorded.iter().any(|r| r.kind == "llm_provider" && r.name == "\"fake\""), "{recorded:?}");
+}
+
+fn load_error(json: &str) -> String {
+    match FakeLlm::from_json(json) {
+        Err(LlmError::Malformed(why)) => why,
+        other => panic!("the script must not load: {:?}", other.map(|_| ())),
+    }
+}
+
+#[test]
+fn a_misspelled_field_in_a_script_fails_to_load_at_every_level() {
+    // A turn: `expect` misspelled.
+    let why = load_error(r#"{"model":"m","turns":[{"expct":{"user_contains":"x"},"events":[]}]}"#);
+    assert!(why.contains("expct"), "{why}");
+    // The script itself.
+    assert!(load_error(r#"{"model":"m","turn":[]}"#).contains("turn"));
+    // An expectation.
+    let why = load_error(r#"{"model":"m","turns":[{"expect":{"user_contain":"x"},"events":[]}]}"#);
+    assert!(why.contains("user_contain"), "{why}");
+    // An injected error.
+    let why = load_error(r#"{"model":"m","turns":[{"events":[],"error":{"befor":1,"error":"Auth"}}]}"#);
+    assert!(why.contains("befor"), "{why}");
+    // An event's fields, and the usage inside one.
+    let why = load_error(r#"{"model":"m","turns":[{"events":[{"Start":{"modle":"m"}}]}]}"#);
+    assert!(why.contains("modle"), "{why}");
+    let why = load_error(
+        r#"{"model":"m","turns":[{"events":[{"Usage":{"input":1,"output":1,"cache_read":0,"cache_write":0,"cache_wrte":1}}]}]}"#,
+    );
+    assert!(why.contains("cache_wrte"), "{why}");
+}
+
+#[test]
+fn a_correct_script_still_loads() {
+    let json = r#"{"model":"m","turns":[{"expect":{"user_contains":"x"},"events":[{"Start":{"model":"m"}}],"chunk":4}]}"#;
+    assert!(FakeLlm::from_json(json).is_ok());
 }

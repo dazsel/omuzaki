@@ -259,20 +259,68 @@ pub struct LlmProvider {
     pub build: BuildFn,
     /// Lists models.
     pub list_models: ListModelsFn,
+    /// The package that registered it; set by [`register_llm_provider!`](crate::register_llm_provider).
+    pub package: &'static str,
+    /// Where it was registered, as `file:line`; set by the macro.
+    pub site: &'static str,
+}
+
+impl LlmProvider {
+    /// `package (file:line)`, for errors that name a registration.
+    fn origin(&self) -> String {
+        format!("{} ({})", self.package, self.site)
+    }
+}
+
+/// Why the provider registry cannot be used.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum RegistryError {
+    /// Two registrations share a kind, so a [`ProviderConfig`] naming it would pick one by link order.
+    #[error("two LLM providers are registered as kind \"{kind}\": {first} and {second}")]
+    DuplicateKind {
+        /// The kind both registered.
+        kind: &'static str,
+        /// The first registration (by package, then place), as `package (file:line)`.
+        first: String,
+        /// The second.
+        second: String,
+    },
 }
 
 inventory::collect!(LlmProvider);
 
-/// Every provider linked into this binary, sorted by kind so the order never depends on link order.
+/// Every provider linked into this binary, sorted by kind, then package and place, so the order never depends on link
+/// order. A kind registered twice appears twice here; [`check_providers`] and [`provider`] refuse it.
 pub fn providers() -> Vec<&'static LlmProvider> {
     let mut all: Vec<&'static LlmProvider> = inventory::iter::<LlmProvider>.into_iter().collect();
-    all.sort_by_key(|p| p.kind);
+    all.sort_by_key(|p| (p.kind, p.package, p.site));
     all
 }
 
-/// The provider registered under `kind`.
-pub fn provider(kind: &str) -> Option<&'static LlmProvider> {
-    providers().into_iter().find(|p| p.kind == kind)
+/// Checks that no kind is registered twice. An App calls it once at startup.
+///
+/// # Errors
+/// [`RegistryError::DuplicateKind`], naming the two registrations, for the first kind (in sorted order) that has two.
+pub fn check_providers() -> Result<(), RegistryError> {
+    first_duplicate(&providers())
+}
+
+fn first_duplicate(sorted: &[&LlmProvider]) -> Result<(), RegistryError> {
+    match sorted.windows(2).find(|w| w[0].kind == w[1].kind) {
+        Some(w) => Err(RegistryError::DuplicateKind { kind: w[0].kind, first: w[0].origin(), second: w[1].origin() }),
+        None => Ok(()),
+    }
+}
+
+/// The provider registered under `kind`, or `None` if there is none.
+///
+/// # Errors
+/// [`RegistryError::DuplicateKind`] if `kind` is registered twice: it never picks one.
+pub fn provider(kind: &str) -> Result<Option<&'static LlmProvider>, RegistryError> {
+    let same: Vec<&'static LlmProvider> = providers().into_iter().filter(|p| p.kind == kind).collect();
+    first_duplicate(&same)?;
+    Ok(same.first().copied())
 }
 
 /// Registers an [`LlmProvider`] so [`providers`] finds it, and records it for the link gate (ADR 0015).
@@ -286,7 +334,14 @@ pub fn provider(kind: &str) -> Option<&'static LlmProvider> {
 macro_rules! register_llm_provider {
     (kind: $kind:literal, manifest: $manifest:expr, build: $build:expr, list_models: $list:expr $(,)?) => {
         $crate::__inventory::submit! {
-            $crate::provider::LlmProvider { kind: $kind, manifest: $manifest, build: $build, list_models: $list }
+            $crate::provider::LlmProvider {
+                kind: $kind,
+                manifest: $manifest,
+                build: $build,
+                list_models: $list,
+                package: ::core::env!("CARGO_PKG_NAME"),
+                site: ::core::concat!(::core::file!(), ":", ::core::line!()),
+            }
         }
         $crate::__record_registration!("llm_provider", $kind);
     };

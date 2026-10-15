@@ -51,6 +51,7 @@ pub enum StopReason {
 
 /// One event of a turn. Order: `Retrying`*, `Start`, content events, `Usage`, `Stop`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 #[non_exhaustive]
 pub enum LlmEvent {
     /// The client is retrying; only before `Start`.

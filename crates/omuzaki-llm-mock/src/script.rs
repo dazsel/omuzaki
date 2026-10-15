@@ -8,6 +8,7 @@ use omuzaki_llm_api::stream::LlmEvent;
 
 /// A whole script: the model the fake pretends to be, and its turns in order.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 #[non_exhaustive]
 pub struct Script {
     /// The model id reported by [`LlmClient::info`](omuzaki_llm_api::LlmClient::info).
@@ -18,6 +19,7 @@ pub struct Script {
 
 /// One scripted turn.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 #[non_exhaustive]
 pub struct ScriptTurn {
     /// What the request must look like; a request that does not match is `Malformed`, naming the turn.
@@ -41,6 +43,7 @@ pub struct ScriptTurn {
 
 /// What a turn's request must contain.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 #[non_exhaustive]
 pub struct Expect {
     /// The text of the last user message (tool-result text included) contains this.
@@ -53,6 +56,7 @@ pub struct Expect {
 
 /// An error injected into a turn.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 #[non_exhaustive]
 pub struct Injected {
     /// The error is returned in place of the event at this index (after chunking); past the end, after the last.

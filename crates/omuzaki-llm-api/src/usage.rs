@@ -8,6 +8,7 @@ use crate::stream::Turn;
 
 /// Tokens a turn used. `input` excludes the two cache counters.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 #[non_exhaustive]
 pub struct Usage {
     /// Prompt tokens that were neither read from nor written to the cache.

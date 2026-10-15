@@ -58,8 +58,10 @@ src/provider.rs: pub fn new(
 src/provider.rs: pub type BuildFn = fn(&ProviderConfig, &ProviderEnv) -> Result<Box<dyn LlmClient>, LlmError>;
 src/provider.rs: pub type ListModelsFn = fn(&ProviderConfig, &ProviderEnv) -> Result<Vec<ModelInfo>, LlmError>;
 src/provider.rs: pub struct LlmProvider {
+src/provider.rs: pub enum RegistryError {
 src/provider.rs: pub fn providers() -> Vec<&'static LlmProvider> {
-src/provider.rs: pub fn provider(kind: &str) -> Option<&'static LlmProvider> {
+src/provider.rs: pub fn check_providers() -> Result<(), RegistryError> {
+src/provider.rs: pub fn provider(kind: &str) -> Result<Option<&'static LlmProvider>, RegistryError> {
 src/provider.rs: macro_rules! register_llm_provider {
 src/stream.rs: pub struct Cancel(Arc<AtomicBool>);
 src/stream.rs: pub fn new() -> Self {
