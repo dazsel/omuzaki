@@ -1,6 +1,6 @@
 ---
 title: "The marketplace client: browse, install, publish, receipts and licences"
-summary: "the marketplace client: listings, signed receipts verified offline, install order and licence gate, publish preflight, reports, privacy (ADR 0063)."
+summary: "the marketplace client: listings, signed receipts, freshness from a signed head, install order and licence gate, publish preflight, reports, privacy (ADR 0063)."
 area: design
 ---
 
@@ -26,9 +26,9 @@ Read on 2026-10-15 (search results, not source audits; the claims below are the 
 **Where this design beats them** (each is tested, §7):
 1. **Per-creator signatures, verified in the client.** A hostile or buggy store can only refuse to serve, never swap an item (reuse of ADR 0057). Open VSX trusts the registry; Flatpak trusts one remote key.
 2. **Licence is data the client enforces.** The same gate that blocks a publish blocks an install in publish-ready mode, and the listing can't misdescribe the item (D2, D5).
-3. **A receipt is verified offline** and bound to the holder's key, so a stolen file is useless and a lost connection costs nothing; a replayed old revocation list cannot clear a paid install (D3, protocol §2).
+3. **A receipt is checked in the client** and bound to the holder's key, so a stolen file is useless; a paid install or update also needs a fresh signed head, so a replayed old revocation list cannot clear it (D3, protocol §2). Installed items keep working offline.
 4. **No tracking by construction:** a listing carries paths, never hosts; the client contacts one pinned base address and sends a fixed header set (D10, protocol §3).
-5. **What was installed stays installed:** the project holds what it pinned, with its rights and receipt hash, and runs with the store gone or the receipt expired.
+5. **What was installed stays installed:** the project holds what it pinned, with its rights and receipt hash, and runs with the store gone or the receipt refunded.
 
 ## 2. The shape of it
 
@@ -99,20 +99,20 @@ A purchase refused for no receipt (`lst-0001` without `receipts/lst-0001.json`, 
 
 A `Listing` is data the backend serves. The client treats every field as a claim to be checked against the signed manifest before it affects anything:
 - `manifest_hash` must equal `ItemManifest::hash()` of the fetched manifest, `creator` its `publisher.key`, `item`/`version` its id and version (`Tampered(Listing)` otherwise);
-- `licence` must equal the item's **effective rights**: the manifest's declared `rights` joined strictest-first with every asset's rights in the signed manifest (library.md D8; D5 step 5), including `terms_hash`. Any difference is `LicenceMismatch`. (The team-licence join of sharing D7 is not used: a market has no team licence);
+- `licence` must equal the item's **effective rights**, computed by D5's rights table (declared `rights` combined with every asset's rights in the signed manifest). Any difference is `LicenceMismatch`. (The team-licence join of sharing D7 is not used: a market has no team licence);
 - `section`, `kind`, `target` are display and filters only; the install re-derives them from the manifest. There is deliberately **no app-version field**: the signed manifest has none (`compat.requires` lists part kinds), and adding one needs a manifest contract change for little gain, since an item that needs an op this app lacks already fails `ItemManifest::check`. A store-supplied version requirement would be a claim nobody could verify (Q12 keeps the option).
 Text is plain: `title` at most 80 characters, `summary` 500, per language, control characters and markup stripped on parse, never rendered as links. Previews are paths on the pinned base (never hosts, shape rules in protocol §3), at most 5 and 5 MiB each, decoded by the existing image path and shown labelled "from the store, not checked".
 
-### D3. The receipt: a signature the client verifies offline
+### D3. The receipt: a signature the client verifies, and a fresh head for paid installs
 
-An entitlement (the receipt) is `Signed<EntitlementBody>` under `Domain::Entitlement` (identity reserved it). `EntitlementBody { doc, market, listing, item, versions: VersionReq, holder: KeyId, order: String, issued: u64, terms_hash: Option<ContentHash> }` is `deny_unknown_fields` with required fields no other body has (identity D3); protocol §1 lists its siblings under the same tag. It is checked in this order, with no network:
+An entitlement (the receipt) is `Signed<EntitlementBody>` under `Domain::Entitlement` (identity reserved it). `EntitlementBody { doc, market, listing, item, versions: VersionReq, holder: KeyId, order: String, issued: u64, terms_hash: Option<ContentHash> }` is `deny_unknown_fields` with required fields no other body has (identity D3); protocol §1 lists its siblings under the same tag. Its four checks need no network of their own (the head is fetched separately, below), in this order:
 1. signed by the **pinned market key**, or by a **retired** key connected to it through confirmed rotations (protocol §4: a rotation needs both keys' signatures and the person's confirmation); the key is the one the body's `market` field names;
 2. `holder` equals the key of the identity slot the person installs with (a receipt is useless to anyone else; the market that issued it knows the holder and order, nobody else is sent them, D8);
 3. `item` and `listing` equal the listing's, the version is in `versions`, and `terms_hash` equals the **manifest's** `rights.terms_hash` (both absent for an SPDX licence);
 4. its hash is not in the verified **revocation chain** (protocol §1: append-only signed pages, no size cap, synced under the freshness rule of protocol §2, every page signed by an accepted key, protocol §4).
-`issued` is the market's claim and only displayed (identity D4). A refund revokes: once it is in a page the head names, it stops **new paid installs and updates** (each fetches a head in the same attempt, so there is no cached-head window; a head up to 24 h old may precede the refund), never an item already installed or an applied record (sharing Q6: no silent recall). A receipt can also be imported from a file (`library.market.import_receipt`), so a gift or an offline machine works; an imported receipt passes the same four checks.
+`issued` is the market's claim and only displayed (identity D4). A refund revokes: once it is in a page the head names, it stops **new paid installs and updates** (each fetches a head in the same attempt, so there is no cached-head window; a head up to 24 h old may precede the refund), never an item already installed or an applied record (sharing Q6: no silent recall). A receipt can also be imported from a file (`library.market.import_receipt`) so a person who bought elsewhere can use it on a machine that is not signed in; it passes the same four checks and the same freshness rule, so it still needs the network for the head.
 
-**Freshness (summary; the rule is protocol §2).** A paid install or update needs a market head fetched **in that same attempt** and recent (default 24 h); a cached head never counts. Offline, or with a market serving an old signed list, a paid item cannot be newly installed or updated: `Stale`, and the person sees why. Items already installed keep working offline. Free items install without a receipt, from the pages already held; they are labelled "takedowns not checked" when no head was fetched.
+**Freshness (summary; the rule is protocol §2).** A paid install or update needs a market head fetched **in that same attempt** and recent (default 24 h); a cached head never counts. Offline, or with a market serving an old signed list, a paid item cannot be newly installed or updated, whether its receipt was fetched or imported: `Stale`, and the person sees why. **A paid item cannot be newly installed offline; a free item can** (no receipt, from the pages already held, labelled "takedowns not checked" when no head was fetched); **an item already installed keeps working offline**, including applying it.
 
 ### D4. Entitlement is the listing's, the client only checks it
 
@@ -125,13 +125,21 @@ An entitlement (the receipt) is `Signed<EntitlementBody>` under `Domain::Entitle
 2. **Freshness:** fetch the head and sync the new revocation and takedown pages (protocol §2), each verified under an accepted key (protocol §4; an unconfirmed key is `MarketKeyChanged`). A paid item with no freshness established in this attempt is `Stale`; a free item goes on, labelled.
 3. Fetch the manifest (size-limited); `manifest_hash`, id and creator match (D2); the `LibraryItem` signature verifies for `creator`; identity `Check` is not `Revoked` (`Unknown` offers "Trust this key…", `Tampered` refuses).
 4. **Cheap refusals, in this order:** *compatibility* (`ItemManifest::check`: targets, templates, required parts and every op available; a failure says which is missing); *status* (the manifest is not `deprecated`, unless a project already pinned it; no takedown for this `manifest_hash`, `TakenDown`); *entitlement* (D3) only if `access = required`; *item limits* (the signed manifest's `asset_info`: at most 64 assets, 1 GiB in total, 256 MiB each; `TooLarge`; enough free disk).
-5. **Rights, computed once:** `effective = declared rights ⋈ every asset's complete ItemRights` from the manifest's `asset_info` (the strictest join over every field, library.md D8; the new fields follow D7). The join is exact: nothing of an asset's rights is left out. Then, in order: `effective` equals the listing's licence (`LicenceMismatch`); `private_test` is refused (`PrivateTest`); a market item has its creator attestation (D7); a `LicenseRef-` licence has `terms_hash` and the text is fetched (≤ 64 KiB) and its hash matches (`Tampered(Terms)`); then the **item-level gate**: with `publish_ready` on, `derive_item(&effective)` must pass (`NotCleared`). There is no target document at install time, so the gate runs `licence.derive`'s join over one synthetic source row built from `effective`, not over a project (T4 adds that entry point in `omuzaki-io-ops`; the join is unchanged). The person then acknowledges.
+5. **Rights, computed once** by the rights table below (`effective_item_rights`; a differing asset `terms_hash` is `TermsConflict`). Then, in order: `effective` equals the listing's licence (`LicenceMismatch`); `private_test` is refused (`PrivateTest`); a market item has its creator attestation (D7); a `LicenseRef-` licence has `terms_hash` and the text is fetched (≤ 64 KiB) and its hash matches (`Tampered(Terms)`); then the **item-level gate**: with `publish_ready` on, `derive_item(&effective)` must pass (`NotCleared`). There is no target document at install time, so the gate runs `licence.derive`'s join over one synthetic source row built from `effective`, not over a project (T4 adds that entry point in `omuzaki-io-ops`; the join is unchanged). The person then acknowledges.
 6. **Stage the assets** (streaming, below). Each asset not already in the store is fetched by hash through a bounded sink that hashes while it writes into a staging folder (`<data dir>/omuzaki/library/staging/<install>/`); the stream stops at the declared size plus one byte; a hash or size mismatch is `Tampered(Asset)` and the staging folder is deleted.
 7. **Promote:** only when every asset has verified, the staged files are moved into the content-addressed store (idempotent, first write wins), then the manifest, the **entitlement** and the terms text are written into My library, the manifest last, so the item is visible only when complete. A crash leaves staging files only, which the next start removes.
 
 Each refusal is a located finding with a hint and an op record, with nothing partial in My library (steps 1 to 5 touch memory only; step 6 only the staging folder).
 
-**Where the entitlement lives.** `library.install` has no document and so no application record. The signed receipt is stored **with the installed market item in user data**, as a sidecar of its manifest in My library (library.md D11 layout), with the market's identity (base, key) and the terms text beside it. `library.update` re-checks the receipt for the new version without the network (the item keeps the receipt's `versions` range), but a paid update still needs a head fetched in that attempt (protocol §2), so a refunded item cannot update. When the item is applied (`library.apply`, a later and separate op) only the **receipt hash** is copied into that application record's `receipt` field; apply never contacts the market and never re-checks the receipt, so a refund cannot disable an applied record or a later apply of an installed item.
+**The rights table (the one definition; D2, D7, T2 and §7 point here).** `effective` starts as the item's declared `ItemRights` and combines each asset's `asset_info` rights (the same type), field by field:
+
+| `ItemRights` field | How an asset's value combines with the item's |
+|---|---|
+| `commercial`, `licence`, `private_test`, `attribution`, `consent`, use terms, ownership / `grant` | strictest wins (library.md D8's join); nothing of an asset's value is dropped |
+| `attestation` | item-level only: the item's is the effective value; an asset's own is ignored (not joined, not refused) |
+| `terms_hash` | must equal the item's when the asset sets one; a differing value is refused `TermsConflict`; an asset that sets none adds nothing |
+
+**Where the entitlement lives.** `library.install` has no document and so no application record. The signed receipt is stored **with the installed market item in user data**, as a sidecar of its manifest in My library (library.md D11 layout), with the market's identity (base, key) and the terms text beside it. `library.update` re-checks the receipt for the new version (a local signature check; the item keeps the receipt's `versions` range), but a paid update still needs a head fetched in that attempt (protocol §2), so an offline or refunded item cannot update. When the item is applied (`library.apply`, a later and separate op) only the **receipt hash** is copied into that application record's `receipt` field; apply never contacts the market and never re-checks the receipt, so a refund cannot disable an applied record or a later apply of an installed item.
 
 ### D6. Licence enforcement is provenance and the gate, not copy protection
 
@@ -145,7 +153,7 @@ An item is data; once on a machine it can be copied. The design says so and does
 
 `library.market.publish {item, meta}` is person-only, needs `publish`, `edit:library` and the market's `net` scope, and agents get `needs_person`. A dry-run returns one finding list; nothing leaves the machine until the person confirms and sees exactly what is sent. It extends sharing D10's six checks (valid manifest, signature made and verified before upload, version bump matches the diff) with:
 1. rights complete, **`commercial: ok`** (a market listing for published work can't be a trap), no `private_test` on the item or any asset, previews rendered from the item's recipe on the kit (no user character);
-2. every asset has provenance with a licence, and none contradicts another record in the person's store for the same hash. The preflight copies each asset's size and its complete `ItemRights` into the manifest's signed `asset_info`, and the item's `rights` must already be at least as strict as every asset's (D5 step 5 recomputes it). For the two fields new in T2 the join is: the effective `attestation` is the item's own (an asset's is shown, not required), and an asset whose `terms_hash` is set and differs from the item's is refused (`LicenceMismatch` at install, a finding at preflight);
+2. every asset has provenance with a licence, and none contradicts another record in the person's store for the same hash. The preflight copies each asset's size and complete `ItemRights` into the signed `asset_info`, and the item's `rights` must already be at least as strict as every asset's by D5's rights table (a `TermsConflict` is a finding at preflight; install recomputes it);
 3. **the attestation.** The client cannot detect third-party IP it has not been told about, so the creator attests, in the signed manifest, "I made this or hold the right to licence it". The signed `ItemRights` gains `attestation: Option<Attestation { by: KeyId, claim: String }>`, where `claim` is the id of a shipped, versioned text (`own-or-licensed-v1`) shown to the person before signing, so the signature names exactly what was said. `by` must equal `publisher.key`; a market item without it is refused at install;
 4. a **licence template** chosen from the shipped list (`CC0-1.0`, `CC-BY-4.0`; templates that forbid commercial use are not offered) or a custom `LicenseRef-` text. A custom text is stored by hash: `ItemRights.terms_hash: Option<ContentHash>` is signed with the manifest, so a store cannot swap the terms. The text (≤ 64 KiB) is sent with `publish`, and installs fetch it from `GET /v1/terms/{hash}`, check the hash, keep it beside the installed item and show it before the acknowledgement;
 5. title, summary and language tags within D2's limits; the listing `licence` is generated from the manifest, never typed twice.
@@ -189,7 +197,7 @@ pub trait Market: Send + Sync {                          // the client's view of
     fn listing(&self, id: &ListingId) -> Result<Listing, MarketError>;
     fn head(&self) -> Result<Signed<MarketHead>, MarketError>;                          // protocol §2
     fn page(&self, doc: PageDoc, hash: &ContentHash) -> Result<Signed<MarketPage>, MarketError>;   // revocations / takedowns
-    fn key_changes(&self) -> Result<Vec<KeyChange>, MarketError>;                       // protocol §4
+    fn key_changes(&self, before: Option<u32>) -> Result<KeyChangePage, MarketError>;   // protocol §4: ≤ 64 links per call
     fn manifest(&self, id: &ListingId, version: &Version) -> Result<Vec<u8>, MarketError>;   // bytes, verified by the client
     fn terms(&self, hash: &ContentHash) -> Result<Vec<u8>, MarketError>;                // ≤ 64 KiB
     fn asset(&self, hash: &ContentHash, max: u64, sink: &mut dyn AssetSink) -> Result<u64, MarketError>;   // streamed; stops at max + 1
@@ -200,6 +208,7 @@ pub trait Market: Send + Sync {                          // the client's view of
     fn reviews(&self, id: &ListingId, page: Option<Cursor>) -> Result<ReviewPage, MarketError>;
     fn post_review(&self, id: &ListingId, review: &ReviewPost) -> Result<(), MarketError>;
 }
+pub struct KeyChangePage { pub links: Vec<KeyChange>, pub next: Option<u32> }   // newest first; next = cursor for the older links, None at the first
 pub trait AssetSink { fn write(&mut self, chunk: &[u8]) -> Result<(), MarketError>; }   // the client's staging writer: hashes, counts, refuses past `max`
 pub struct MarketPin { pub base: String, pub key: KeyId, pub retired: Vec<KeyId> }     // market.toml: base and key shown, then pinned by a person
 pub struct Listing { pub id: ListingId, pub item: ItemId, pub version: Version, pub manifest_hash: ContentHash, pub creator: KeyId,
@@ -207,13 +216,13 @@ pub struct Listing { pub id: ListingId, pub item: ItemId, pub version: Version, 
     pub licence: ListingLicence, pub previews: Vec<String>, pub stats: Option<Stats>,
     pub access: Access, pub commerce: Option<serde_json::Value> /* opaque, never read */ }
 pub enum Access { Free, Required }
-pub enum InstallRefusal { Malformed, Tampered(Tamper), NoEntitlement, Revoked, Stale, TakenDown, MarketKeyChanged, LicenceMismatch,
+pub enum InstallRefusal { Malformed, Tampered(Tamper), NoEntitlement, Revoked, Stale, TakenDown, MarketKeyChanged, LicenceMismatch, TermsConflict,
     PrivateTest, NotCleared, Incompatible(String), Deprecated, TooLarge { what: String, limit: u64 }, NotAllowed(String) }
 pub fn verify_install(market: &dyn Market, plan: &InstallPlan, trust: &dyn TrustStore, state: &MarketState, clock: &dyn Clock)
     -> Result<VerifiedPlan, InstallRefusal>;   // D5 steps 1 to 5: metadata only, no asset bytes; the implementation crate stages and promotes
 pub fn verify_receipt(r: &Signed<EntitlementBody>, pins: &MarketPin, holder: &KeyId, listing: &Listing,
     manifest_terms: Option<&ContentHash>, revoked: &RevocationSet) -> Result<(), InstallRefusal>;
-pub fn effective_item_rights(m: &ItemManifest) -> ItemRights;   // D5 step 5: declared ⋈ asset_info, pure
+pub fn effective_item_rights(m: &ItemManifest) -> Result<ItemRights, InstallRefusal>;   // D5 rights table, pure
 pub enum MarketError { NotFound, Unavailable(String), Forbidden, TooLarge { what: String, limit: u64 }, Malformed(String), Rejected(String) }
 ```
 
@@ -231,10 +240,10 @@ pub enum MarketError { NotFound, Unavailable(String), Forbidden, TooLarge { what
 
 | # | Task | Model, lane | Fence | Acceptance | Blocked by |
 |---|---|---|---|---|---|
-| T1 | `omuzaki-market-api` and `omuzaki-market-mock` (`FakeMarket`, loopback server, conformance suite) | sonnet, human lane | the two crates, root `Cargo.toml` (hub sign-off), `docs/design/identity.md` D10 row (done in this PR) | every row of §7's matrix has a test; the §3 tree matches goldens byte for byte; loopback serves with no outside network; wasm32 check green; page chains tested at 100 000 entries, an empty chain (`pages = 0`) and a chain across two rotations; every document in the §3 tree passes protocol §1 to §5 | T2 (types); library-sharing T1 (incl. an additive reader-based asset check, asked on its issue); the Director's approval of the new API crate on its issue |
-| T2 | **contract:** `omuzaki-library-api` additive: `ItemRights.attestation` and `terms_hash`, `ItemManifest.asset_info`, record `receipt` | sonnet, human lane | `omuzaki-library-api` only | existing manifests keep their hash and signature byte for byte; new fields round-trip and are skipped when absent; `AssetInfo.rights` is the `ItemRights` type itself and a join test covers every field of it (including attestation and `terms_hash`); unknown-field behaviour unchanged; a manifest with assets but no `asset_info` is flagged for market use only | the Director's approval of the contract change on its issue (lands before T1, T4, T5) |
+| T1 | `omuzaki-market-api` and `omuzaki-market-mock` (`FakeMarket`, loopback server, conformance suite) | sonnet, human lane | the two crates, root `Cargo.toml` (hub sign-off), `docs/design/identity.md` D10 row (done in this PR) | every row of §7's matrix has a test; the §3 tree matches goldens byte for byte; loopback serves with no outside network; wasm32 check green; page chains tested at 100 000 entries, an empty chain (`pages = 0`), a chain across two rotations and a key-change list of 130 links paged at 64 per call; every document in the §3 tree passes protocol §1 to §5 | T2 (types); library-sharing T1 (incl. an additive reader-based asset check, asked on its issue); the Director's approval of the new API crate on its issue |
+| T2 | **contract:** `omuzaki-library-api` additive: `ItemRights.attestation` and `terms_hash`, `ItemManifest.asset_info`, record `receipt` | sonnet, human lane | `omuzaki-library-api` only | existing manifests keep their hash and signature byte for byte; new fields round-trip and are skipped when absent; `AssetInfo.rights` is the `ItemRights` type itself and one test per row of D5's rights table covers every field (including both exceptions: an asset's `attestation` ignored, a differing `terms_hash` is `TermsConflict`); unknown-field behaviour unchanged; a manifest with assets but no `asset_info` is flagged for market use only | the Director's approval of the contract change on its issue (lands before T1, T4, T5) |
 | T3 | the HTTP client (`Market` over `ureq`/`reqwest` as the workspace allows) | sonnet | `omuzaki-market` (client module) | conformance suite green against `FakeMarket` over loopback; a recording server sees exactly the header set of protocol §3 on every route; same-origin redirect followed twice, cross-origin and downgrade refused; response over its limit `TooLarge`; asset stream stops at max + 1 and never buffers an asset; stall timeout tested | T1 |
-| T4 | install with receipt, freshness and gate (`library.install {from: market}`; staging and atomic promote; entitlement sidecar; `receipt` hash copied on `library.apply`; `derive_item`) | sonnet | `omuzaki-market` (install), `omuzaki-library-ops` (apply copies the receipt hash), `omuzaki-io-ops` (item-level derive, join unchanged) | the §3 pass and refusals reproduce; D5's steps each have a failing case in order and no asset request precedes steps 1 to 5; nothing in My library on any refusal and staging cleaned after a crash; imported receipt passes the same checks; offline, no-cached-head and replayed-head cases per protocol §2 (paid refused with the reason, free labelled, installed items unaffected); key change and takedown handled | T1, T2, T3, library-sharing T6 (gate), the Director's approval of the `derive_item` entry point if it changes a public signature |
+| T4 | install with receipt, freshness and gate (`library.install {from: market}`; staging and atomic promote; entitlement sidecar; `receipt` hash copied on `library.apply`; `derive_item`) | sonnet | `omuzaki-market` (install), `omuzaki-library-ops` (apply copies the receipt hash), `omuzaki-io-ops` (item-level derive, join unchanged) | the §3 pass and refusals reproduce; D5's steps each have a failing case in order and no asset request precedes steps 1 to 5; nothing in My library on any refusal and staging cleaned after a crash; imported receipt passes the same checks and the same freshness rule (offline: `Stale`); offline, no-cached-head and replayed-head cases per protocol §2 (paid refused with the reason, free labelled, installed items unaffected); key change and takedown handled | T1, T2, T3, library-sharing T6 (gate), the Director's approval of the `derive_item` entry point if it changes a public signature |
 | T5 | publish preflight (`library.market.publish` dry run, attestation, terms, `asset_info`) | haiku | `omuzaki-market` (preflight) | all D7 checks and sharing D10's six have a failing case; `commercial: no` and `private_test` refused; a missing attestation refused; agent gets `needs_person` | T1, T2 |
 | T6 | the browse panel (search, filters, detail, install, report, hide, rekey card) | sonnet, visual | `omuzaki-ui` market panel | rendered at the three themes; every state in words; keyboard and AccessKit labels; six languages; check Listbox pattern | T3, T4 |
 
@@ -247,12 +256,12 @@ pub enum MarketError { NotFound, Unavailable(String), Forbidden, TooLarge { what
 | market / network | serves an old signed head or lists (first use, replay, offline) | `issued` outside the window or no head fetched this attempt: paid new install or update `Stale` (reason shown); free labelled; installed items untouched |
 | someone | refund published after the last head the client saw | seen by the next paid install or update, which fetches a head; the replay window is the head age limit (24 h); no cached head is used |
 | market | omits a held revocation or takedown page | kept and warned (`MissingRecord`); a different page at a held index is `Tampered(Record)` |
-| market | grows the revocation list | append-only pages, no cap, 64 per call (protocol §1) |
+| market | grows the revocation, takedown or key-change list | append-only, no cap, at most 64 pages or links per call (protocol §1, §4) |
 | someone | reuses a receipt file | `holder` is not the person's key: `NoEntitlement` |
-| market | rotates its key, or forges a rotation | needs both keys' signatures and the person's confirmation; else `MarketKeyChanged` |
+| market | rotates its key, or forges a rotation | needs both keys' signatures and the person's confirmation; else `MarketKeyChanged`; any number of rotations verifies |
 | market / retired key | signs a page after rotating | pages count only when reached from a current-key head; a page by a key outside the confirmed chain is `Tampered(Record)` |
-| creator | lists a `private_test` item, or hides a restricted asset | refused at preflight and at install; the asset's own rights join into the item's |
-| creator / store | swaps custom terms, drops the attestation | `terms_hash` and `attestation` are in the signed manifest |
+| creator | lists a `private_test` item, or hides a restricted asset | refused at preflight and at install; the asset's own rights combine into the item's by D5's rights table |
+| creator / store | swaps custom terms, drops the attestation | `terms_hash` and `attestation` are in the signed manifest; an asset carrying other terms is `TermsConflict` |
 | market | huge or many assets, endless stream | limits from the signed manifest before download; stream stops at size + 1; staging only |
 | market | tracks browsing | one pinned address, paths only, fixed header set, no ids (D10) |
 | market | hostile text, huge fields, control characters | limits and stripping at parse (D2) |
@@ -269,15 +278,19 @@ pub enum MarketError { NotFound, Unavailable(String), Forbidden, TooLarge { what
 | receipt in the revocation chain, including a page 1 000 pages back | `Revoked` |
 | old signed head on a fresh machine / head `issued` over 24 h old / `seq` below the cached one | paid `Stale`; free installs, labelled |
 | offline (or head fetch fails) with a cached head, however recent | paid install and update `Stale` with the reason shown; free installs, labelled; an installed item still opens and applies |
+| receipt imported on a machine not signed in: online / offline | installs, same checks / paid `Stale` (free items unaffected) |
 | receipt refunded after the head was cached, client online | the new head names the page: `Revoked` |
 | empty chain (`pages = 0`, no tip) / a page with 0 entries / `pages` 0 with a tip | accepted / `Malformed` / `Malformed` |
+| fresh client, market rotated 130 times (3 calls of ≤ 64 links) | the whole chain walks and, once confirmed, every page verifies |
 | fresh client, market rotated twice, pages signed by each key | accepted after the person confirms the chain; before: paid `MarketKeyChanged`; page by a key outside the chain `Tampered(Record)` |
 | a held revocation page omitted / a different page at a held index | kept and warned / `Tampered(Record)` |
 | takedown of the manifest hash (paid and free) / applied record afterwards | `TakenDown` / unchanged |
 | market key changed: both signatures / one signature / not confirmed | accepted after confirmation / refused / `MarketKeyChanged` |
 | receipt signed by a retired key in the confirmed chain | passes |
 | listing `commercial: ok`, an asset `commercial: no` in `asset_info` | `LicenceMismatch` (manifest and listing both say ok; the join says no) |
-| an asset's attribution, consent, use terms, grant or `terms_hash` stricter than the item's | joined into the effective rights; `LicenceMismatch` against a listing that omits it |
+| rights table, one case per row: an asset stricter than the item in `commercial`, `licence`, `attribution`, `consent`, use terms, ownership / `grant` | combined into the effective rights; `LicenceMismatch` against a listing that omits it |
+| asset has its own `attestation` (item has one / item lacks one) | ignored, the item's counts / `Malformed` (missing attestation); never refused for the asset's |
+| asset `terms_hash` equal to the item's / differing / unset | no change / `TermsConflict` / no effect |
 | manifest `commercial: ok`, an asset `no`, the listing honestly says `no`, `publish_ready` on / off | `NotCleared` / installs |
 | `private_test` on the item or an asset | `PrivateTest` |
 | missing attestation / custom licence without `terms_hash` | `Malformed` |
@@ -297,7 +310,7 @@ The suite is `omuzaki_market_mock::conformance::<M: Market>(factory)`; goldens a
 
 Carried from library-sharing Q1 to Q3, now with what this design needs:
 - **Q1. Who runs a backend** (none, the maintainers, or a partner) and whether a market key ships built in. The client needs only a base address and a pinned key.
-- **Q2. Payments:** whether any item needs an entitlement, who issues receipts and handles refunds. The client verifies receipts and ignores `commerce`.
+- **Q2. Payments:** whether any item needs an entitlement, who issues receipts and handles refunds. The client verifies receipts and ignores `commerce`; it has no offline purchase window (a paid item needs a fresh head, D3), and any other policy is the market's to offer.
 - **Q3. Moderation and takedown:** who signs a takedown, what appeals exist, how reports are handled. The client sends reports and honours a takedown page signed by the pinned key.
 - **Q10. Which licence templates ship** beyond `CC0-1.0` and `CC-BY-4.0`, and whether custom `LicenseRef-` text is allowed.
 - **Q11. Packs:** whether a later extension adds them (a collection type, a receipt that covers a set, an atomic multi-item install). Not in this design.
