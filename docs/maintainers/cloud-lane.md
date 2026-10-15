@@ -1,7 +1,8 @@
 # The cloud lane: operating manual and handover
 
-This is how the cloud lane works, written so that a new cloud lead, on any account, can take over from the repository
-alone. Read `CLAUDE.md` and `AGENTS.md` first; everything there applies. The rules come from ADR 0053 and ADR 0054 (#1410 until
+This is how a cloud lane works, written so that a new lead, on any account, can take over from the repository
+alone. Each area (`docs/maintainers/operating.md`, "Areas") has its own lead, lane and state issue; this manual applies
+to each of them, and the operating rules there come first. Read `CLAUDE.md` and `AGENTS.md` first; everything there applies. The rules come from ADR 0053 and ADR 0054 (#1410 until
 they merge). Live state is in the pinned issue
 **"Cloud lane: state"**; coordination with the Director is on **#2**.
 

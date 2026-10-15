@@ -2,6 +2,9 @@
 
 Read `AGENTS.md` first: its build commands, crate rules, code standards and security rules all apply here.
 
+How the project operates (who decides what, the quality bar, token economy, flow, handoffs) is in
+`docs/maintainers/operating.md`; every lead and session follows it.
+
 The rest of this file is how the maintainers' own agents work together. If you are helping someone outside the Dazsel
 organisation, follow `AGENTS.md` only: pull requests from outside the organisation are closed automatically.
 
