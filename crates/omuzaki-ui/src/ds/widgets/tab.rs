@@ -15,6 +15,7 @@ use egui::{
     WidgetType, accesskit, pos2, vec2,
 };
 
+use super::ids;
 use super::segmented::roving_target;
 use super::tooltip::{Tip, TipExt as _};
 use crate::ds::a11y;
@@ -25,6 +26,9 @@ use crate::ds::strings::Msg;
 use crate::ds::theme::{Ds, ds};
 use crate::ds::tokens::{Theme, radius, size, space};
 use crate::register_contrast;
+
+/// What a tab bar's salt is namespaced by (see [`ids`]).
+const KIND: &str = "ds.tab_bar";
 
 /// Which bar a tab belongs to: it sets the height.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -188,7 +192,7 @@ impl<'a> Show<'a> {
             if wanted > room && wanted > floor { ((room - floor) / (wanted - floor)).clamp(0.0, 1.0) } else { 1.0 };
 
         let (rect, outer) = ui.allocate_exact_size(vec2(wanted.min(room), height), Sense::hover());
-        let gid = self.bar.salt.map_or(outer.id, |salt| ui.make_persistent_id(salt));
+        let gid = self.bar.salt.map_or(outer.id, |salt| ids::salted(ui, KIND, salt));
         let mut group = if self.bar.salt.is_some() { ui.interact(rect, gid, Sense::hover()) } else { outer };
         let rect = paint::snap(&self.ctx, rect);
         // The list's node first, so the tabs attach to it; `accessibility` below completes it once its size is known.
