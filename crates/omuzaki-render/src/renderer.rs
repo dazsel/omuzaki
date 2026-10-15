@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use omuzaki_core::glam::{UVec2, Vec3};
 use omuzaki_render_api::{
-    Capabilities, EnvironmentDesc, EnvironmentId, FrameReport, Image, Material, MaterialId, MeshData, MeshId,
+    Capabilities, EnvironmentDesc, EnvironmentId, FrameReport, Image, Instance, Material, MaterialId, MeshData, MeshId,
     MeshOptions, MtoonSupport, Painter, Quality, RenderError, Renderer, ResourceRef, ResourceStats, Scene, TargetDesc,
     TargetId, TextureDesc, TextureId, TextureUsage,
 };
@@ -381,8 +381,13 @@ impl Renderer for WgpuRenderer {
         })?;
         let gpu = &shared.gpu;
         gpu.scoped("a morph blend", || {
-            let Resources { meshes, morphs, .. } = resources;
-            morphs.prepare(&gpu.device, &gpu.queue, meshes, scene)
+            let Resources { meshes, materials, morphs, .. } = resources;
+            let outlined = |instance: &Instance| {
+                materials
+                    .get(instance.material.index(), instance.material.generation())
+                    .is_some_and(|m| m.material.outline.is_some())
+            };
+            morphs.prepare(&gpu.device, &gpu.queue, meshes, scene, outlined)
         })?;
         let (scene_resources, targets) = resources.split();
         let entry = targets

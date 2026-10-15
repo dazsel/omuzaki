@@ -15,8 +15,8 @@ mod grid;
 use omuzaki_core::glam::{Mat4, UVec2, Vec3};
 use omuzaki_core::id::Slug;
 use omuzaki_render_api::{
-    AlphaEncoding, Camera, Colour, Instance, Material, MeshOptions, MorphRange, MorphSet, Quality, Renderer, Scene,
-    TargetDesc,
+    AlphaEncoding, Camera, Colour, Instance, Material, MeshOptions, MorphRange, MorphSet, Outline, Quality, Renderer,
+    Scene, TargetDesc,
 };
 
 #[test]
@@ -32,7 +32,10 @@ fn morphing_allocates_nothing_in_this_crate_after_warm_up() {
     let targets: Vec<_> = (0..4).map(|i| (Slug::new(format!("t{i}")).unwrap(), &ramp[..], &[][..])).collect();
     let set = MorphSet::from_dense(n, &targets, 0.0).unwrap();
     let id = r.create_mesh_with(&mesh, &MeshOptions { morphs: Some(set), ..MeshOptions::default() }).unwrap();
-    let material = r.create_material(&Material::toon(Colour::hex(0x00c9_b8f0))).unwrap();
+    // Outlined, so each re-blend also re-welds the outline directions.
+    let mut material = Material::toon(Colour::hex(0x00c9_b8f0));
+    material.outline = Some(Outline { colour: Colour::BLACK, width: 0.01 });
+    let material = r.create_material(&material).unwrap();
     let target = r.create_target(&TargetDesc { size: UVec2::splat(64), alpha: AlphaEncoding::Straight }).unwrap();
     let mut scene =
         Scene::new(Camera::look_at(Vec3::new(0.0, 0.0, 3.0), Vec3::ZERO, Vec3::Y, Camera::default().projection));

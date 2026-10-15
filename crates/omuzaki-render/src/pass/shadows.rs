@@ -127,7 +127,11 @@ fn scene_bounds(cx: &PassCx<'_>) -> (Aabb, Aabb) {
             let start = range.start as usize;
             scene.joints.get(start..start + range.len as usize)
         });
-        Some(MeshBounds::instance(&mesh.bounds, &instance.transform, palette))
+        Some(MeshBounds::instance(
+            resources.morphs.bounds(draw.instance).unwrap_or(&mesh.bounds),
+            &instance.transform,
+            palette,
+        ))
     };
     let mut casters = Aabb::EMPTY;
     for draw in cx.frame.draws.for_pass(Pass::Shadows) {

@@ -205,7 +205,12 @@ impl Transparent {
                 let start = range.start as usize;
                 scene.joints.get(start..start.checked_add(range.len as usize)?)
             });
-            let bounds = mesh.bounds.instance(&instance.transform, palette);
+            let bounds = cx
+                .resources
+                .morphs
+                .bounds(draw.instance)
+                .unwrap_or(&mesh.bounds)
+                .instance(&instance.transform, palette);
             let centre =
                 if bounds.is_empty() { instance.transform.w_axis.truncate() } else { (bounds.min + bounds.max) * 0.5 };
             // Camera space looks down -Z, so distance is -z.
