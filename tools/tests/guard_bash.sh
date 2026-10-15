@@ -69,6 +69,15 @@ check 2 'typeset -p gh_token'
 check 2 'declare -px API_KEY'
 check 2 'declare -p'
 check 2 'typeset -p'
+# Leading assignments and `builtin`/`command` run the builtin they name, so they don't hide it.
+check 2 'FOO=x declare -p GH_TOKEN'
+check 2 'FOO=x typeset -p gh_token'
+check 2 'FOO=1 BAR=2 declare -px API_KEY'
+check 2 'builtin declare -p GH_TOKEN'
+check 2 'command typeset -p GH_TOKEN'
+check 2 'FOO=x env'
+check 0 'FOO=x declare -p PATH'
+check 0 'FOO=x echo ok'
 # Director-only gh commands, in every argument position.
 check 2 'gh pr merge 12'
 check 2 'gh pr -R dazsel/omuzaki merge 12'
@@ -145,6 +154,10 @@ check 2 'git push --repo=origin --force-with-lease' "$pushspec"
 check 2 'git push --force-with-lease origin' "$pushdefault"
 check 2 'git -c push.default=matching push --force-with-lease' "$repo"
 check 2 'git -c remote.origin.push=refs/heads/cloud/mine:refs/heads/cloud/mine push --force-with-lease' "$repo"
+# `--config-env` sets push.default from the environment, which the hook can't read: a lease push with no refspec is
+# refused, but one with an explicit refspec (which config doesn't widen) still passes.
+check 2 'MODE=matching git --config-env=push.default=MODE push --force-with-lease' "$repo"
+check 2 'git --config-env=remote.origin.push=RS push --force-with-lease origin' "$repo"
 # `upstream` (or `tracking`) pushes to `branch.<name>.merge`: another branch is refused, and no upstream at all is too.
 check 2 'git push --force-with-lease' "$upstream"
 check 2 'git push --force-with-lease origin' "$upstream"
@@ -193,6 +206,7 @@ check 0 'git push origin cloud/1234-thing'
 check 0 'git push -u origin HEAD:refs/heads/cloud/1234-thing'
 check 0 'git push --force-with-lease=cloud/mine:abc123 origin cloud/mine' "$repo"
 check 0 'git push --force-with-lease origin HEAD' "$repo"
+check 0 'git --config-env=push.default=MODE push --force-with-lease origin HEAD' "$repo"
 check 0 'git push --force-with-lease' "$repo"
 check 0 'git push --force-with-lease origin' "$repo"
 check 0 'git push --force-with-lease origin HEAD' "$matching"

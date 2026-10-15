@@ -345,13 +345,15 @@ def lease_refusal(push_args, directory, overrides):
 
 def git_refusal(args, cwd):
     """Why a git call is reserved, or None: it prints a credential, or it is a forcing or deleting push."""
-    i, directory, overrides = 0, cwd, []
+    i, directory, overrides, config_env = 0, cwd, [], False
     while i < len(args) and args[i].startswith("-"):
         if args[i] == "-C" and i + 1 < len(args):
             directory = os.path.join(directory, os.path.expanduser(args[i + 1]))
         # `git -c name=value` overrides the configuration that the lease check reads.
         if args[i] == "-c" and i + 1 < len(args):
             overrides.append(args[i + 1].partition("="))
+        # `--config-env=name=ENVVAR` sets a config value from the environment, which the hook can't read.
+        config_env = config_env or args[i].startswith("--config-env")
         i += 2 if args[i] in GIT_OPTIONS_WITH_VALUE else 1
     sub = args[i] if i < len(args) else ""
     if sub == "credential" or sub.startswith("credential-"):
@@ -375,12 +377,30 @@ def git_refusal(args, cwd):
         many = next((a for a in push_args if a in ("--all", "--branches", "--tags")), None)
         if many:
             return f"a `--force-with-lease` push with `{many}`, which reaches other branches,"
+        positional, repo = push_words(push_args)
+        refspecs = positional if repo is not None else positional[1:]
+        if config_env and not refspecs:
+            return ("a `--force-with-lease` push with no refspec, which depends on `--config-env` config the hook"
+                    " can't read,")
         return lease_refusal(push_args, directory, overrides)
     return None
 
 
+def program_words(words):
+    """A simple command's words from the program on: leading `NAME=value` assignments and `builtin`/`command` wrappers
+    run nothing themselves, so `FOO=x declare -p GH_TOKEN` is the `declare` it names."""
+    i = 0
+    while i < len(words):
+        if re.match(r"^[A-Za-z_]\w*=", words[i]) or os.path.basename(words[i]) in ("builtin", "command"):
+            i += 1
+        else:
+            break
+    return words[i:]
+
+
 def env_refusal(words):
     """Why a simple command prints the environment or a secret variable, or None."""
+    words = program_words(words)
     if not words:
         return None
     program, args = os.path.basename(words[0]), words[1:]
