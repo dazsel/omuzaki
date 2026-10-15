@@ -1,0 +1,68 @@
+# What the LiteRT build pins (ADR 0061 decision 5, design §8.2). `.github/workflows/runtime-litert.yml` runs
+# tools/litert/build.py, which checks each value here against what the job actually has and fails on a difference;
+# the versions and flags land in the archive's BUILDINFO.json. Any change here ships as a new build number, never
+# under an old one.
+
+[litert]
+version = "2.3.0"
+repository = "https://github.com/google-ai-edge/LiteRT.git"
+tag = "v2.3.0"
+commit = "4352e261d3f1b3cda00345db5dbd75859d3bf0d3"
+# What `TfLiteVersion()` returns at this tag: LiteRT 2.3.0 still reports the TensorFlow-style string in
+# tflite/version.h, not its own version.
+tflite_version = "2.19.0"
+
+[shim]
+# OMZ_LITERT_ABI in omz_litert_shim.c.
+abi = 1
+
+[bazel]
+# Must equal the tag's `.bazelversion`. Bazelisk verifies the Bazel binary it downloads (BAZELISK_VERIFY_SHA256).
+version = "7.7.0"
+bazelisk = "v1.27.0"
+target = "//omuzaki:omuzaki_litert"
+# LiteRT's .bazelrc adds its linux, windows or macos config itself (--enable_platform_specific_config).
+flags = ["-c", "opt", "--repo_env=HERMETIC_PYTHON_VERSION=3.11"]
+
+# The check's parity gate against the official wheel at the version built (design §7), which the check job installs
+# from tools/litert/requirements-check.txt: the largest absolute difference allowed on any output element.
+[reference]
+tolerance = 1e-4
+
+[platform.linux-x64]
+# The build runs in LiteRT's own CI image at the tag (`docker run`; its workflows pin this digest). The compiler and
+# the sysroot are not the image's: LiteRT's workspace pins a hermetic clang and a glibc 2.27 sysroot
+# (rules_ml_toolchain), so the image only hosts Bazel and Python.
+container = "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:d6b429665f5269698f88ccd00bcb8a6eb685332c302f08f29fe0738cd6a6610c"
+bazelisk_asset = "bazelisk-linux-amd64"
+bazelisk_sha256 = "e1508323f347ad1465a887bc5d2bfb91cffc232d11e8e997b623227c6b32fb76"
+bazel_sha256 = "fe7e799cbc9140f986b063e06800a3d4c790525075c877d00a7112669824acbf"
+flags = []
+library = "libomuzaki_litert.so"
+archive = "tar.gz"
+# Read back from the built library: the compiler in its `.comment` section, the newest glibc symbol version it needs.
+compiler = "clang version 18.1.8"
+glibc_max = "2.27"
+
+[platform.win-x64]
+bazelisk_asset = "bazelisk-windows-amd64.exe"
+bazelisk_sha256 = "d4b5e1cea61fcdb0bed60f8868c2e37684221b65feae898d1124482cd39ec89e"
+bazel_sha256 = "36f82b752d59948a9b839738d7c96f1bcca384154619b3cdb041cabdbf105ae1"
+# TFL_STATIC_LIBRARY_BUILD empties TFL_CAPI_EXPORT, so the DLL exports only the .def file's names (symbols.txt).
+flags = ["--define=protobuf_allow_msvc=true", "--copt=/DTFL_STATIC_LIBRARY_BUILD"]
+library = "omuzaki_litert.dll"
+archive = "zip"
+# Bazel's MSVC toolset, selected with BAZEL_VC_FULL_VERSION; setup fails when the image lacks it.
+msvc_toolset = "14.44.35207"
+
+[platform.macos-arm64]
+bazelisk_asset = "bazelisk-darwin-arm64"
+bazelisk_sha256 = "8bf08c894ccc19ef37f286e58184c3942c58cb08da955e990522703526ddb720"
+bazel_sha256 = "2533ddc8628a96d1da3c5e99f45442d30fec93ee724316fd9687c78e56a84049"
+flags = ["--config=macos_arm64", "--macos_minimum_os=13.0"]
+library = "libomuzaki_litert.dylib"
+archive = "tar.gz"
+# The runner is macos-15 (ARM64). DEVELOPER_DIR points at this Xcode, which must be on that image: setup checks
+# `xcodebuild -version`, build checks the library's minimum OS, and the image's version is in the cache key.
+xcode = "16.4"
+macos_minimum = "13.0"
