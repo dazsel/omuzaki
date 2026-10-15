@@ -10,9 +10,19 @@ run() {  # run <want exit> <stdin> <label>
 check() {  # check <want exit> <command> [cwd]
   run "$1" "$(python3 -I -c 'import json, sys; print(json.dumps({"cwd": sys.argv[2], "tool_input": {"command": sys.argv[1]}}))' "$2" "${3:-$PWD}")" "$2"
 }
-# A repository with `cloud/mine` checked out, for the lease checks.
-repo=$(mktemp -d); trap 'rm -rf "$repo"' EXIT
-git init -q -b cloud/mine "$repo" && git -C "$repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+# Repositories with `cloud/mine` checked out, for the lease checks: plain, with `push.default=matching`, with a
+# `remote.origin.push` refspec, and with `remote.pushDefault` naming another remote. Global git config is off, so a
+# developer's own settings can't change a result.
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
+repo="$work/plain"; matching="$work/matching"; pushspec="$work/pushspec"; pushdefault="$work/pushdefault"
+for dir in "$repo" "$matching" "$pushspec" "$pushdefault"; do
+  git init -q -b cloud/mine "$dir" && git -C "$dir" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+done
+git -C "$matching" config push.default matching
+git -C "$pushspec" config remote.origin.push 'refs/heads/cloud/mine:refs/heads/cloud/mine'
+git -C "$pushdefault" config remote.origin.push 'refs/heads/cloud/mine:refs/heads/cloud/mine'
+git -C "$pushdefault" config remote.pushDefault upstream
 # Secret paths, including the bare directories.
 check 2 'cat .env'
 check 2 'cat .env.local'
@@ -42,6 +52,12 @@ check 2 'printenv'
 check 2 'export -p'
 check 2 'set'
 check 2 'cat /proc/self/environ'
+# `declare -p` and `typeset -p` print a value, so a secret name is refused.
+check 2 'declare -p GH_TOKEN'
+check 2 'typeset -p gh_token'
+check 2 'declare -px API_KEY'
+check 2 'declare -p'
+check 2 'typeset -p'
 # Director-only gh commands, in every argument position.
 check 2 'gh pr merge 12'
 check 2 'gh pr -R dazsel/omuzaki merge 12'
@@ -69,6 +85,15 @@ check 2 "gh api graphql -f query='mutation { enqueuePullRequest(input: {pullRequ
 check 2 'gh api graphql --input payload.json'
 check 2 'gh api graphql -F query=@payload.graphql'
 check 2 'gh api graphql -f query=@-'
+# Field flags attached to their value, or grouped with other short flags, send a body too.
+check 2 'gh api repos/o/r/issues/1/comments -Fbody=hi'
+check 2 'gh api repos/o/r/issues/1/comments -fbody=hi'
+check 2 'gh api repos/o/r/issues/1/comments -pFbody=hi'
+check 2 'gh api graphql -Fquery=@payload.graphql'
+check 2 'gh api graphql -fquery=@-'
+check 2 'gh api graphql -f=@payload.graphql'
+check 2 'gh api graphql --field=query=@payload.graphql'
+check 2 'gh api graphql --raw-field=query=@payload.graphql'
 check 2 'gh auth status --show-token=true'
 check 2 'gh auth status -t=true'
 check 2 'git push --repo origin --force-with-lease HEAD:cloud/other' "$repo"
@@ -95,6 +120,17 @@ check 2 'git -C not-a-repo push --force-with-lease origin cloud/mine' "$repo"
 check 2 'git push --force-with-lease --all origin' "$repo"
 check 2 'git push --force-with-lease --branches origin' "$repo"
 check 2 'git push --force-with-lease --tags origin' "$repo"
+# A lease push with no refspec reaches other refs under push.default=matching, or through remote.<name>.push.
+check 2 'git push --force-with-lease' "$matching"
+check 2 'git push --force-with-lease origin' "$matching"
+check 2 'git push --force-with-lease=cloud/mine:abc123' "$matching"
+check 2 'git push --force-with-lease' "$pushspec"
+check 2 'git push --force-with-lease origin' "$pushspec"
+check 2 'git push --repo origin --force-with-lease' "$pushspec"
+check 2 'git push --repo=origin --force-with-lease' "$pushspec"
+check 2 'git push --force-with-lease origin' "$pushdefault"
+check 2 'git -c push.default=matching push --force-with-lease' "$repo"
+check 2 'git -c remote.origin.push=refs/heads/cloud/mine:refs/heads/cloud/mine push --force-with-lease' "$repo"
 # Ordinary commands pass.
 check 0 'cargo xtask check --affected'
 check 0 'git push origin cloud/1234-thing'
@@ -102,6 +138,11 @@ check 0 'git push -u origin HEAD:refs/heads/cloud/1234-thing'
 check 0 'git push --force-with-lease=cloud/mine:abc123 origin cloud/mine' "$repo"
 check 0 'git push --force-with-lease origin HEAD' "$repo"
 check 0 'git push --force-with-lease' "$repo"
+check 0 'git push --force-with-lease origin' "$repo"
+check 0 'git push --force-with-lease origin HEAD' "$matching"
+check 0 'git push --force-with-lease origin HEAD' "$pushspec"
+check 0 'git -c push.default=simple push --force-with-lease' "$matching"
+check 0 'git push --force-with-lease' "$pushdefault"
 check 0 'git push --force-with-lease origin HEAD:refs/heads/cloud/mine' "$repo"
 check 0 'git -c core.hooksPath=/dev/null commit -m "merge main"'
 check 0 'git merge origin/main'
@@ -115,6 +156,9 @@ check 0 'gh auth status --show-token=false'
 check 0 'git push --repo origin --force-with-lease HEAD:cloud/mine' "$repo"
 check 0 "gh api graphql -F owner=dazsel -f query='query { viewer { login } }'"
 check 0 'gh api -X GET search/issues -f q=is:open'
+check 0 'gh api -X GET search/issues -Fq=is:open'
+check 0 'gh api --paginate repos/o/r/pulls/12/merged'
+check 0 "gh api graphql -Fowner=dazsel -fquery='query { viewer { login } }'"
 check 0 "gh api graphql -f query='query { viewer { login } }'"
 check 0 'cat .config/nextest.toml'
 check 0 'gh pr comment 12 --body-file fixed.md'
@@ -122,6 +166,8 @@ check 0 'set -euo pipefail'
 check 0 'env RUST_LOG=debug cargo xtask check'
 check 0 'export PATH="$HOME/bin:$PATH"'
 check 0 'printenv PATH'
+check 0 'declare -p PATH'
+check 0 'typeset -i count=1'
 check 0 'echo "$HOME"'
 check 0 $'cargo xtask check \\\n  --affected'
 check 0 'gh run view 123 --log-failed'
