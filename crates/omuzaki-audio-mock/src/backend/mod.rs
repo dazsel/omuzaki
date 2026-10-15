@@ -275,7 +275,7 @@ impl FakeBackend {
                 }
             }
             *frames_done += u64::from(stream.config.buffer_frames);
-            if state.ppm == ppm {
+            if state.ppm.to_bits() == ppm.to_bits() {
                 state.count += 1;
             } else {
                 // The drift changed: the new rate counts from this callback.
