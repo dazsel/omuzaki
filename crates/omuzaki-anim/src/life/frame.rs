@@ -3,7 +3,7 @@
 use omuzaki_anim_api::{ChannelBuf, ChannelMask, LifeParams, LifeSystems, LifeTraits};
 
 use super::noise::{NoiseSeeds, Texture};
-use super::spring::{SIDE_SKEW, Substeps};
+use super::spring::{Substeps, side_skew};
 
 /// Which side of the face a channel sits on (the character's own sides, as in `ARKit`).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -113,7 +113,7 @@ impl Frame<'_> {
             return 1.0;
         }
         let lead = if self.traits.left_leads { 1.0 } else { -1.0 };
-        1.0 + SIDE_SKEW * lead * side.sign()
+        1.0 + side_skew(&self.params.springs) * lead * side.sign()
     }
 }
 

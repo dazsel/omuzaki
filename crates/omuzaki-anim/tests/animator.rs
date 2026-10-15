@@ -104,8 +104,12 @@ fn neck_times_head_is_the_bus_rotation_on_a_yaw_pitch_grid_and_random_targets() 
         bus.values[Channel::HEAD_PITCH] = pitch;
         bus.values[Channel::HEAD_ROLL] = roll;
         let mut pose = HumanoidPose::REST;
-        BusAnimator::new(BusAnimatorParams { neck_share: share, ..BusAnimatorParams::default() })
-            .animate(tick(), &bus, &[], &mut pose);
+        BusAnimator::new(BusAnimatorParams { neck_share: share, ..BusAnimatorParams::default() }).animate(
+            tick(),
+            &bus,
+            &[],
+            &mut pose,
+        );
         let (neck, head) = (pose.get(HumanoidBone::Neck), pose.get(HumanoidBone::Head));
         let whole = Quat::from_euler(EulerRot::YXZ, yaw, pitch, roll);
         let err = quat_gap(neck * head, whole);

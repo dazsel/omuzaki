@@ -75,7 +75,10 @@ fn a_tall_walk_scaled_to_a_short_character_keeps_its_feet_on_the_floor_within_a_
     }
     println!("feet-height error through the walk: unscaled {worst_unscaled:.5} m, scaled {worst_scaled:.6} m");
     assert!(worst_scaled < 1e-3, "scaled hips float or sink by {worst_scaled} m");
-    assert!(worst_unscaled > 0.01, "the unscaled walk should miss the floor by well over a millimetre, got {worst_unscaled} m");
+    assert!(
+        worst_unscaled > 0.01,
+        "the unscaled walk should miss the floor by well over a millimetre, got {worst_unscaled} m"
+    );
 }
 
 #[test]

@@ -72,8 +72,8 @@ pub use frame::{DeviceProfile, EyeAngles, FrameSource, HeadPose, NotArkit, Tick,
 pub use humanoid_frames::HumanoidFrames;
 pub use ik::{IkGoals, IkSolver, Limb, LookAt};
 pub use life::{
-    BlinkParams, Cues, Dynamics, FaceParams, GazeParams, HeadParams, LifeConfig, LifeDynamics, LifeLayer, LifeParams,
-    LifeStreams, LifeSystems, LifeTraits, Personality, Span,
+    BlinkParams, Cues, Dynamics, FaceParams, GazeParams, HeadParams, LaughParams, LifeConfig, LifeDynamics, LifeLayer,
+    LifeParams, LifeStreams, LifeSystems, LifeTraits, Personality, Span,
 };
 pub use playout::{DEFAULT_CAPACITY, DelayRamp, MAX_SLEW, PlayoutDelay, PlayoutError};
 pub use pose_layer::{BoneMask, PoseLayer, PoseLayers, PoseMode};

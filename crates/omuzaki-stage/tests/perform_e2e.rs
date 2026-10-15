@@ -254,7 +254,8 @@ fn the_neck_and_head_split_the_bus_head_rotation_by_slerp_on_every_step() {
         chain.publish(i);
         let out = chain.perform.advance(mid_step(i)).expect("one step per call");
         let v = &out.bus.values;
-        let whole = Quat::from_euler(EulerRot::YXZ, v[Channel::HEAD_YAW], v[Channel::HEAD_PITCH], v[Channel::HEAD_ROLL]);
+        let whole =
+            Quat::from_euler(EulerRot::YXZ, v[Channel::HEAD_YAW], v[Channel::HEAD_PITCH], v[Channel::HEAD_ROLL]);
         let (neck, head) = (out.pose.get(HumanoidBone::Neck), out.pose.get(HumanoidBone::Head));
         let product = neck * head;
         assert!(gap(product, whole) <= 1e-5, "step {i}: Neck·Head is off the bus rotation");

@@ -181,14 +181,14 @@ impl LifeLayer for Life {
 
         let blink = &config.params.blink;
         let blinking = frame.gate.eyes && frame.systems.blink;
-        let shut = already_shut(&src, laugh.arcs);
+        let shut = already_shut(blink, &src, laugh.arcs);
         if blinking {
             self.blink.update(&frame, &mut self.streams.blink, shut);
             if lead.started && self.streams.blink.next_f32() < blink.on_head_turn_chance {
                 self.blink.extra(&frame, &mut self.streams.blink, shut);
             }
         } else {
-            self.blink.hold_off(self.clock);
+            self.blink.hold_off(self.clock, blink.settle_s);
         }
         let gaze = self.gaze.step(&frame, &mut self.streams.gaze, lead.gaze, lead.active, &mut out);
         if blinking && gaze.glance_started && self.streams.blink.next_f32() < blink.on_glance_chance {
