@@ -6,6 +6,7 @@ pub mod clip;
 pub mod fill;
 pub mod gradient;
 pub mod resolve;
+mod snap;
 pub mod stroke;
 
 use std::any::Any;
@@ -18,13 +19,17 @@ use vello::peniko::{ColorStop, Fill};
 use vello::{AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene};
 
 use self::clip::{OpenStack, Transforms};
-use self::fill::{Bounds, fill_bez, fill_bez_snapped};
+use self::fill::{Bounds, fill_bez};
 use self::gradient::brush;
 use self::resolve::Resolve;
+use self::snap::snapped_path;
 use crate::layer::GpuRasterizer;
 
 /// The most a layer may be per side, as in the CPU raster.
 const MAX_SIDE: u32 = 16_384;
+/// Vello evaluates a gradient at a pixel's corner, where Skia (and the canvas) evaluate it at the centre. Moving the
+/// gradient half a pixel up and left puts the corner's value where the centre's would be.
+const GRADIENT_SHIFT: Affine = Affine::new([1.0, 0.0, 0.0, 1.0, -0.5, -0.5]);
 /// The miter limit the CPU raster and the canvas use.
 const MITER_LIMIT: f64 = 10.0;
 
@@ -114,7 +119,7 @@ impl SceneEncoder {
                 self.transforms.pop(index, "Transform")?;
             }
             Cmd::PushClip(path) => {
-                fill_bez_snapped(list.elements(path), to_px, &mut self.path);
+                snapped_path(list.elements(path), to_px, &mut self.path);
                 scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &self.path);
                 self.clips.push(index, ());
             }
@@ -123,11 +128,11 @@ impl SceneEncoder {
                 scene.pop_layer();
             }
             Cmd::Fill { path, ref paint, opacity } => {
-                fill_bez_snapped(list.elements(path), to_px, &mut self.path);
+                snapped_path(list.elements(path), to_px, &mut self.path);
                 self.bounds.add(&self.path, Affine::IDENTITY, 0.0);
                 // The path is in pixels already; paint coordinates stay in the command's local space.
                 let paint = brush(paint, opacity, &mut self.stops);
-                scene.fill(Fill::NonZero, Affine::IDENTITY, &paint, Some(to_px), &self.path);
+                scene.fill(Fill::NonZero, Affine::IDENTITY, &paint, Some(GRADIENT_SHIFT * to_px), &self.path);
             }
             Cmd::Stroke { path, ref paint, width, cap, join, opacity } => {
                 fill_bez(list.elements(path), &mut self.path);
