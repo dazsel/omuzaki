@@ -13,7 +13,7 @@ use crate::painter::{LayerSections, RealPainter};
 /// The painter a system owns. The real one is kept by value so its section ranges reach the GPU rasteriser (Q2 of #1433);
 /// any other (the mock) goes through the contract only.
 enum Painter {
-    Real(RealPainter),
+    Real(Box<RealPainter>),
     Other(Box<dyn FacePainter>),
 }
 
@@ -122,7 +122,7 @@ impl FaceSystem {
     /// A system around the real painter, which it keeps by value so that a registered GPU rasteriser gets each section's
     /// command range and repaints only the sections that changed.
     pub fn real(painter: RealPainter, cpu: Box<dyn FaceRasterizer>) -> Self {
-        Self::with(Painter::Real(painter), cpu)
+        Self::with(Painter::Real(Box::new(painter)), cpu)
     }
 
     fn with(painter: Painter, cpu: Box<dyn FaceRasterizer>) -> Self {

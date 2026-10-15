@@ -367,7 +367,7 @@ fn pixel_rect(damage: Rect, width: u32, height: u32) -> Option<[u32; 4]> {
     let (w, h) = (f64::from(width), f64::from(height));
     let (x0, y0) = ((damage.x0.floor() - 1.0).clamp(0.0, w), (damage.y0.floor() - 1.0).clamp(0.0, h));
     let (x1, y1) = ((damage.x1.ceil() + 1.0).clamp(0.0, w), (damage.y1.ceil() + 1.0).clamp(0.0, h));
-    (x1 > x0 && y1 > y0).then(|| [x0 as u32, y0 as u32, (x1 - x0) as u32, (y1 - y0) as u32])
+    (x1 > x0 && y1 > y0).then_some([x0 as u32, y0 as u32, (x1 - x0) as u32, (y1 - y0) as u32])
 }
 
 impl VelloRasterizer {
