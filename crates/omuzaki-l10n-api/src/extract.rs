@@ -63,6 +63,9 @@ pub fn english(package: &str) -> String {
 
 /// The English file of `text`. The same text, in any input order, gives the same bytes.
 ///
+/// An argument's comment states its facts exactly or not at all: where a schema's facts cannot be stated exactly (see
+/// the rule on the comment's facts in the source), the comment reads "constraints not shown" rather than a guess.
+///
 /// The order is fixed by the output: groups in their order, entries by id, an owner's attributes by name. The one
 /// order the output keeps is the caller's own, because it is part of the text: an enum's values follow the schema's
 /// order, and a message's `# $arg` lines follow its declaration. Both come from the same schema or declaration every
@@ -242,12 +245,35 @@ fn type_range_default(node: &Map<String, Value>) -> String {
 /// constant, they gather into one `one of` phrase. A keyword the comment cannot show (`$ref`, `not`, `if`, or any
 /// keyword it does not know) reports "constraints not shown", so a constraint that could change the type or range is
 /// never dropped silently. The default is the first alternative's.
+///
+/// Fail closed: wherever the facts cannot be stated exactly, the whole comment reads "constraints not shown" instead of
+/// a guess. That covers two or more of `allOf`, `oneOf` and `anyOf` on one node, a constant or enum that conflicts
+/// under `allOf` (two constants that differ, an enum with no common value, a constant outside the enum), and any bound
+/// comparison the exact arithmetic cannot decide. An exact case always renders its facts.
 fn facts(node: &Map<String, Value>) -> String {
     let alternatives = expand(node);
     let default = alternatives.first().and_then(|alternative| alternative.default);
+    let mut text = if alternatives.iter().any(|alternative| alternative.unstated) {
+        "constraints not shown".to_owned()
+    } else {
+        alternatives_text(&alternatives)
+    };
+    if let Some(default) = default {
+        if !text.is_empty() {
+            text.push_str(", ");
+        }
+        text.push_str("default ");
+        text.push_str(&literal(default));
+    }
+    text
+}
+
+/// The alternatives as one phrase: each described alternative once, joined with " or ", and the bare constants of
+/// several alternatives gathered into one `one of`.
+fn alternatives_text(alternatives: &[Facts<'_>]) -> String {
     let mut parts: Vec<String> = Vec::new();
     let mut values: Vec<String> = Vec::new();
-    for alternative in &alternatives {
+    for alternative in alternatives {
         if let (true, Some(constant)) = (alternatives.len() > 1, alternative.bare_constant()) {
             let text = literal(constant);
             if !values.contains(&text) {
@@ -263,15 +289,7 @@ fn facts(node: &Map<String, Value>) -> String {
     if !values.is_empty() {
         parts.push(format!("one of {}", values.join(", ")));
     }
-    let mut text = parts.join(" or ");
-    if let Some(default) = default {
-        if !text.is_empty() {
-            text.push_str(", ");
-        }
-        text.push_str("default ");
-        text.push_str(&literal(default));
-    }
-    text
+    parts.join(" or ")
 }
 
 /// The keywords the comment understands. Any other keyword means the comment cannot show every constraint.
@@ -338,6 +356,8 @@ struct Facts<'a> {
     default: Option<&'a Value>,
     /// A keyword the comment cannot show is present.
     not_shown: bool,
+    /// The comment cannot state this alternative exactly, so its whole node reads "constraints not shown".
+    unstated: bool,
 }
 
 /// A numeric bound. `exclusive` means the bound itself is not allowed.
@@ -452,6 +472,11 @@ impl Facts<'_> {
 /// The alternatives a node allows: its own keywords, intersected with each `allOf` member, and with the union of its
 /// non-null `oneOf` and `anyOf` branches. Each branch is expanded the same way, so the nesting has no depth limit.
 fn expand(node: &Map<String, Value>) -> Vec<Facts<'_>> {
+    // Sibling combinators need an intersection of unions that the comment cannot state, so the node is unstated.
+    let combinators = ["allOf", "oneOf", "anyOf"].into_iter().filter(|keyword| node.contains_key(*keyword)).count();
+    if combinators > 1 {
+        return vec![Facts { unstated: true, default: node.get("default"), ..Facts::default() }];
+    }
     let mut current = vec![own(node)];
     if let Some(members) = node.get("allOf").and_then(Value::as_array) {
         for member in members.iter().filter_map(Value::as_object) {
@@ -482,33 +507,69 @@ fn cross<'a>(left: &[Facts<'a>], right: &[Facts<'a>]) -> Vec<Facts<'a>> {
 /// The intersection of two alternatives: the types they both allow, the tighter bounds and counts, the values they both
 /// admit, and every pattern and multiple. A keyword only one of them states is kept.
 fn merge<'a>(a: Facts<'a>, b: Facts<'a>) -> Facts<'a> {
+    let mut unstated = a.unstated || b.unstated;
+    let kinds = match (a.kinds, b.kinds) {
+        (Some(x), Some(y)) => Some(common_kinds(&x, &y)),
+        (x, y) => x.or(y),
+    };
+    let values = match (a.values, b.values) {
+        (Some(x), Some(y)) => {
+            let both: Vec<&Value> = x.into_iter().filter(|value| y.contains(value)).collect();
+            // Two enums with no common value admit nothing, which the comment does not state; it reads as not shown.
+            unstated |= both.is_empty();
+            Some(both)
+        }
+        (x, y) => x.or(y),
+    };
+    let constant = match (a.constant, b.constant) {
+        (Some(x), Some(y)) => {
+            unstated |= x != y;
+            Some(x)
+        }
+        (x, y) => x.or(y),
+    };
+    unstated |= matches!((constant, &values), (Some(value), Some(allowed)) if !allowed.contains(&value));
+    let lower = tighter_lower(a.lower, b.lower, &mut unstated);
+    let upper = tighter_upper(a.upper, b.upper, &mut unstated);
     Facts {
-        kinds: match (a.kinds, b.kinds) {
-            (Some(x), Some(y)) => Some(x.into_iter().filter(|kind| y.contains(kind)).collect()),
-            (x, y) => x.or(y),
-        },
-        lower: tighter_lower(a.lower, b.lower),
-        upper: tighter_upper(a.upper, b.upper),
+        kinds,
+        lower,
+        upper,
         multiple_of: a.multiple_of.into_iter().chain(b.multiple_of).collect(),
-        min_length: larger(a.min_length, b.min_length),
-        max_length: smaller(a.max_length, b.max_length),
-        min_items: larger(a.min_items, b.min_items),
-        max_items: smaller(a.max_items, b.max_items),
-        min_properties: larger(a.min_properties, b.min_properties),
-        max_properties: smaller(a.max_properties, b.max_properties),
+        min_length: larger(a.min_length, b.min_length, &mut unstated),
+        max_length: smaller(a.max_length, b.max_length, &mut unstated),
+        min_items: larger(a.min_items, b.min_items, &mut unstated),
+        max_items: smaller(a.max_items, b.max_items, &mut unstated),
+        min_properties: larger(a.min_properties, b.min_properties, &mut unstated),
+        max_properties: smaller(a.max_properties, b.max_properties, &mut unstated),
         unique_items: a.unique_items || b.unique_items,
         patterns: a.patterns.into_iter().chain(b.patterns).collect(),
         format: a.format.or(b.format),
-        values: match (a.values, b.values) {
-            (Some(x), Some(y)) => Some(x.into_iter().filter(|value| y.contains(value)).collect()),
-            (x, y) => x.or(y),
-        },
-        constant: a.constant.or(b.constant),
+        values,
+        constant,
         default: a.default.or(b.default),
         not_shown: a.not_shown || b.not_shown,
+        unstated,
     }
 }
 
+/// The types both alternatives allow. An integer is a number, so `integer` with `number` allows integers.
+fn common_kinds<'a>(x: &[&'a str], y: &[&'a str]) -> Vec<&'a str> {
+    let mut kinds = Vec::new();
+    for &left in x {
+        for &right in y {
+            let kind = match (left, right) {
+                _ if left == right => left,
+                ("integer", "number") | ("number", "integer") => "integer",
+                _ => continue,
+            };
+            if !kinds.contains(&kind) {
+                kinds.push(kind);
+            }
+        }
+    }
+    kinds
+}
 /// The keywords of one node, without its combinators.
 fn own(node: &Map<String, Value>) -> Facts<'_> {
     let number = |key: &str| node.get(key).filter(|value| value.is_number());
@@ -523,10 +584,11 @@ fn own(node: &Map<String, Value>) -> Facts<'_> {
     let exclusive_minimum = number("exclusiveMinimum").map(|value| Bound { value, exclusive: true });
     let maximum = number("maximum").map(|value| Bound { value, exclusive: false });
     let exclusive_maximum = number("exclusiveMaximum").map(|value| Bound { value, exclusive: true });
+    let mut unstated = false;
     Facts {
         kinds,
-        lower: tighter_lower(minimum, exclusive_minimum),
-        upper: tighter_upper(maximum, exclusive_maximum),
+        lower: tighter_lower(minimum, exclusive_minimum, &mut unstated),
+        upper: tighter_upper(maximum, exclusive_maximum, &mut unstated),
         multiple_of: number("multipleOf").into_iter().collect(),
         min_length: number("minLength"),
         max_length: number("maxLength"),
@@ -544,57 +606,101 @@ fn own(node: &Map<String, Value>) -> Facts<'_> {
         constant: node.get("const").filter(|value| !value.is_null()),
         default: node.get("default"),
         not_shown: node.keys().any(|key| !KNOWN_KEYWORDS.contains(&key.as_str())),
+        unstated,
     }
 }
 
 /// The tighter of two lower bounds: the greater value, and exclusive when either is.
-fn tighter_lower<'a>(a: Option<Bound<'a>>, b: Option<Bound<'a>>) -> Option<Bound<'a>> {
+fn tighter_lower<'a>(a: Option<Bound<'a>>, b: Option<Bound<'a>>, unstated: &mut bool) -> Option<Bound<'a>> {
     match (a, b) {
-        (Some(x), Some(y)) => Some(match compare(x.value, y.value) {
-            Ordering::Greater => x,
-            Ordering::Less => y,
-            Ordering::Equal => Bound { value: x.value, exclusive: x.exclusive || y.exclusive },
-        }),
+        (Some(x), Some(y)) => match compare(x.value, y.value) {
+            Some(Ordering::Greater) => Some(x),
+            Some(Ordering::Less) => Some(y),
+            Some(Ordering::Equal) => Some(Bound { value: x.value, exclusive: x.exclusive || y.exclusive }),
+            None => {
+                *unstated = true;
+                Some(x)
+            }
+        },
         (x, y) => x.or(y),
     }
 }
 
 /// The tighter of two upper bounds: the smaller value, and exclusive when either is.
-fn tighter_upper<'a>(a: Option<Bound<'a>>, b: Option<Bound<'a>>) -> Option<Bound<'a>> {
+fn tighter_upper<'a>(a: Option<Bound<'a>>, b: Option<Bound<'a>>, unstated: &mut bool) -> Option<Bound<'a>> {
     match (a, b) {
-        (Some(x), Some(y)) => Some(match compare(x.value, y.value) {
-            Ordering::Less => x,
-            Ordering::Greater => y,
-            Ordering::Equal => Bound { value: x.value, exclusive: x.exclusive || y.exclusive },
-        }),
+        (Some(x), Some(y)) => match compare(x.value, y.value) {
+            Some(Ordering::Less) => Some(x),
+            Some(Ordering::Greater) => Some(y),
+            Some(Ordering::Equal) => Some(Bound { value: x.value, exclusive: x.exclusive || y.exclusive }),
+            None => {
+                *unstated = true;
+                Some(x)
+            }
+        },
         (x, y) => x.or(y),
     }
 }
 
 /// The larger of two counts or lengths that both bound from below.
-fn larger<'a>(a: Option<&'a Value>, b: Option<&'a Value>) -> Option<&'a Value> {
+fn larger<'a>(a: Option<&'a Value>, b: Option<&'a Value>, unstated: &mut bool) -> Option<&'a Value> {
     match (a, b) {
-        (Some(x), Some(y)) => Some(if compare(x, y) == Ordering::Less { y } else { x }),
+        (Some(x), Some(y)) => match compare(x, y) {
+            Some(Ordering::Less) => Some(y),
+            Some(_) => Some(x),
+            None => {
+                *unstated = true;
+                Some(x)
+            }
+        },
         (x, y) => x.or(y),
     }
 }
 
 /// The smaller of two counts or lengths that both bound from above.
-fn smaller<'a>(a: Option<&'a Value>, b: Option<&'a Value>) -> Option<&'a Value> {
+fn smaller<'a>(a: Option<&'a Value>, b: Option<&'a Value>, unstated: &mut bool) -> Option<&'a Value> {
     match (a, b) {
-        (Some(x), Some(y)) => Some(if compare(x, y) == Ordering::Greater { y } else { x }),
+        (Some(x), Some(y)) => match compare(x, y) {
+            Some(Ordering::Greater) => Some(y),
+            Some(_) => Some(x),
+            None => {
+                *unstated = true;
+                Some(x)
+            }
+        },
         (x, y) => x.or(y),
     }
 }
 
 /// Orders two numbers exactly where both are integers, and as floats otherwise.
-fn compare(a: &Value, b: &Value) -> Ordering {
+fn compare(a: &Value, b: &Value) -> Option<Ordering> {
     match (exact_integer(a), exact_integer(b)) {
-        (Some(x), Some(y)) => x.cmp(&y),
-        _ => a.as_f64().partial_cmp(&b.as_f64()).unwrap_or(Ordering::Equal),
+        (Some(x), Some(y)) => Some(x.cmp(&y)),
+        (Some(x), None) => compare_int_float(x, b.as_f64()?),
+        (None, Some(y)) => compare_int_float(y, a.as_f64()?).map(Ordering::reverse),
+        (None, None) => a.as_f64()?.partial_cmp(&b.as_f64()?),
     }
 }
 
+/// An integer against a float, exactly. Past 2^100 the float lies beyond every integer held here (`i64` and `u64`), so
+/// its sign decides; below it the float's whole part is an exact integer and its fraction breaks a tie. `None` for a
+/// float that is not finite.
+#[allow(clippy::cast_possible_truncation, reason = "the whole part is below 2^100, so it fits an i128 exactly")]
+fn compare_int_float(int: i128, float: f64) -> Option<Ordering> {
+    if !float.is_finite() {
+        return None;
+    }
+    if float.abs() >= 2f64.powi(100) {
+        return Some(if float > 0.0 { Ordering::Less } else { Ordering::Greater });
+    }
+    let whole = float.trunc();
+    let fraction = float - whole;
+    Some(match int.cmp(&(whole as i128)) {
+        Ordering::Equal if fraction > 0.0 => Ordering::Less,
+        Ordering::Equal if fraction < 0.0 => Ordering::Greater,
+        other => other,
+    })
+}
 /// An integer as an `i128`, which holds every `i64` and `u64`; `None` for a float.
 fn exact_integer(value: &Value) -> Option<i128> {
     let number = value.as_number()?;

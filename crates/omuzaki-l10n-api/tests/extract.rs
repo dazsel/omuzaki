@@ -314,6 +314,33 @@ fn the_comment_renders_each_constraint() {
         (json!({"type": "integer", "minimum": 0, "not": {"const": 3}}), "integer, at least 0, constraints not shown"),
         (json!({"type": "string", "pattern": "^a+$"}), "string, pattern \"^a+$\""),
         (json!({"type": "string", "format": "uri"}), "string, format \"uri\""),
+        // Fail closed: the comment cannot state these exactly, so the node reads "constraints not shown".
+        (json!({"oneOf": [{"type": "integer"}], "anyOf": [{"type": "string"}]}), "constraints not shown"),
+        (json!({"allOf": [{"minimum": 0}], "anyOf": [{"type": "integer"}]}), "constraints not shown"),
+        (json!({"allOf": [{"const": 1}, {"const": 2}]}), "constraints not shown"),
+        (json!({"allOf": [{"enum": ["a"]}, {"enum": ["b"]}]}), "constraints not shown"),
+        (json!({"allOf": [{"enum": ["a", "b"]}, {"const": "c"}]}), "constraints not shown"),
+        // Exact cases still render their facts.
+        (json!({"allOf": [{"const": "x"}, {"const": "x"}]}), "only \"x\""),
+        (json!({"allOf": [{"type": "integer"}, {"type": "number", "minimum": 0}]}), "integer, at least 0"),
+        (
+            json!({"allOf": [
+                {"type": "integer", "minimum": 9_007_199_254_740_993_i64},
+                {"type": "number", "minimum": 9_007_199_254_740_992.0}
+            ]}),
+            "integer, at least 9007199254740993",
+        ),
+        (
+            json!({"allOf": [
+                {"type": "number", "minimum": 9_007_199_254_740_992.0},
+                {"type": "integer", "minimum": 9_007_199_254_740_993_i64}
+            ]}),
+            "integer, at least 9007199254740993",
+        ),
+        (
+            json!({"allOf": [{"type": "number", "minimum": 0.5}, {"type": "integer", "minimum": 0}]}),
+            "integer, at least 0.5",
+        ),
     ];
     let mut misses = Vec::new();
     for (node, expected) in rows {
