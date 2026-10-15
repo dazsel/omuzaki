@@ -172,6 +172,11 @@ impl Default for Slot {
 }
 
 impl Slot {
+    /// Whether the slot holds a blend or any buffer, i.e. anything worth releasing.
+    fn holds_memory(&self) -> bool {
+        self.source.is_some() || self.shapes.buffer.is_some() || self.smooth.buffer.is_some()
+    }
+
     /// Blends if `source` or `weights` differ from what the slot holds, refitting the bounds; true if it did.
     fn refresh(&mut self, source: Source, input: &MorphInput<'_>, weights: &[f32], flags: &mut Vec<bool>) -> bool {
         if self.source == Some(source) && self.weights == weights {
@@ -214,14 +219,28 @@ impl MorphPool {
                 *slot = Slot::default();
             }
         }
-        self.release_scratch_if_unused();
+        self.trim();
     }
 
-    /// Gives back the scratch (sized for the largest mesh blended) once no slot holds a blend.
-    fn release_scratch_if_unused(&mut self) {
-        if self.slots.iter().all(|s| s.source.is_none()) {
-            self.flags = Vec::new();
-            self.sums = Vec::new();
+    /// Shrinks what grows with the scene or the mesh back to what the slots still hold: trailing empty slots go, and
+    /// the scratch (sized for the largest mesh blended) shrinks to the largest blend left, to nothing if there is none.
+    fn trim(&mut self) {
+        let before = self.slots.len();
+        while self.slots.last().is_some_and(|s| !s.active && !s.holds_memory()) {
+            self.slots.pop();
+        }
+        if self.slots.len() < before {
+            self.slots.shrink_to_fit();
+        }
+        let largest = self.slots.iter().map(|s| s.blended.len()).max().unwrap_or(0);
+        if self.flags.capacity() > largest {
+            self.flags.truncate(largest);
+            self.flags.shrink_to(largest);
+        }
+        if self.sums.capacity() > largest {
+            // Scratch: cleared before each use, so there is nothing to keep.
+            self.sums.clear();
+            self.sums.shrink_to(largest);
         }
     }
 
@@ -260,8 +279,11 @@ impl MorphPool {
             let start = range.start as usize;
             scene.morph_weights.get(start..start + range.len as usize)
         };
-        for instance in &scene.instances {
+        // Slots are kept only as far as the last morphing instance, so a scene that shrinks gives its tail back.
+        let mut needed = 0;
+        for (i, instance) in scene.instances.iter().enumerate() {
             let Some(range) = instance.morph else { continue };
+            needed = i + 1;
             let Some(mesh) = meshes.get(instance.mesh.index(), instance.mesh.generation()) else { continue };
             let Some(input) = mesh.morph_input() else {
                 return Err(RenderError::invalid("instance", "it has morph weights but its mesh has no morph targets"));
@@ -271,8 +293,8 @@ impl MorphPool {
                 return Err(RenderError::invalid("instance", reason));
             }
         }
-        if self.slots.len() < scene.instances.len() {
-            self.slots.resize_with(scene.instances.len(), Slot::default);
+        if self.slots.len() < needed {
+            self.slots.resize_with(needed, Slot::default);
         }
         for (slot, instance) in
             self.slots.iter_mut().zip(scene.instances.iter().map(Some).chain(std::iter::repeat(None)))
@@ -284,9 +306,12 @@ impl MorphPool {
                 Some((instance, weights, mesh, mesh.morph_input()?))
             });
             let Some((instance, weights, mesh, input)) = morphing else {
-                slot.idle = slot.idle.saturating_add(1);
-                if slot.idle > IDLE_FRAMES {
-                    *slot = Slot::default();
+                // Counts only while there is something to release, so a released slot is reset once, not every frame.
+                if slot.holds_memory() {
+                    slot.idle += 1;
+                    if slot.idle > IDLE_FRAMES {
+                        *slot = Slot::default();
+                    }
                 }
                 continue;
             };
@@ -314,7 +339,7 @@ impl MorphPool {
             }
             slot.active = true;
         }
-        self.release_scratch_if_unused();
+        self.trim();
         Ok(())
     }
 }
@@ -521,5 +546,32 @@ mod tests {
             pool.prepare(&gpu.device, &gpu.queue, &meshes, &empty, |_| true).unwrap();
         }
         assert_eq!((pool.bytes(), pool.flags.capacity()), (0, 0), "a long one frees them, scratch included");
+        assert_eq!(pool.slots.len(), 0, "and the empty slot goes");
+    }
+
+    #[test]
+    fn a_large_scene_followed_by_small_ones_gives_slots_and_buffers_back() {
+        let gpu = crate::gpu::Gpu::open_headless(crate::gpu::HeadlessOptions {
+            adapter: crate::gpu::AdapterPreference::Software,
+        })
+        .unwrap();
+        let (mut pool, meshes, _, one) = warmed_pool(&gpu);
+        let per_slot = pool.bytes();
+        let mut large = one.clone();
+        let instance = one.instances[0];
+        large.instances = vec![instance; 40];
+        large.morph_weights = vec![0.5];
+        pool.prepare(&gpu.device, &gpu.queue, &meshes, &large, |_| true).unwrap();
+        assert_eq!((pool.slots.len(), pool.bytes()), (40, 40 * per_slot));
+        // Only the first instance morphs from now on: the tail idles for IDLE_FRAMES, then goes, once.
+        for _ in 0..=IDLE_FRAMES + 1 {
+            pool.prepare(&gpu.device, &gpu.queue, &meshes, &one, |_| true).unwrap();
+        }
+        assert_eq!((pool.slots.len(), pool.bytes()), (1, per_slot), "back to the morphing count");
+        let empty = Scene::new(omuzaki_render_api::Camera::default());
+        for _ in 0..=IDLE_FRAMES {
+            pool.prepare(&gpu.device, &gpu.queue, &meshes, &empty, |_| true).unwrap();
+        }
+        assert_eq!((pool.slots.len(), pool.bytes(), pool.flags.capacity()), (0, 0, 0), "and to nothing");
     }
 }
