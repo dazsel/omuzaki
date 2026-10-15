@@ -55,6 +55,9 @@ harness = false
 name = "mouth_shape"
 harness = false
 
+[build-dependencies]
+omuzaki-embed = { path = "../omuzaki-embed" }
+
 [lints]
 workspace = true
 
