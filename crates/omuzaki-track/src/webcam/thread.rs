@@ -20,6 +20,9 @@ use crate::sample::{FaceSample, to_track_frame};
 /// The longest the thread waits inside the camera, so `stop` is noticed within this (the join budget is 200 ms).
 const POLL: Duration = Duration::from_millis(20);
 
+// `stop` waits at most one poll for the camera, plus the frame in hand; the task's budget for it is 200 ms.
+const _: () = assert!(POLL.as_millis() * 5 <= 200);
+
 /// Width of one latency bucket, in microseconds.
 const BUCKET_US: u64 = 100;
 

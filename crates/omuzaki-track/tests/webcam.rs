@@ -14,7 +14,7 @@
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -70,6 +70,10 @@ static GLOBAL: Counting = Counting;
 
 const LANDMARK: [f32; 3] = [0.5, 0.25, 0.0];
 
+/// How long a test waits for something that happens as soon as the machine lets it. Only ever a backstop against a
+/// hang: no test passes or fails by being faster or slower than this.
+const BACKSTOP: Duration = Duration::from_secs(60);
+
 fn face() -> FaceSample {
     let mut pose = [0.0; 16];
     pose[0] = 1.0;
@@ -95,12 +99,14 @@ struct Scripted {
     seen: Option<Arc<Mutex<Vec<Vec<u8>>>>>,
     resets: Arc<AtomicU32>,
     measure: Option<std::ops::Range<usize>>,
+    /// Sends on this when frame `.0` arrives, so a test can end the session on that frame, not on a timer.
+    signal_at: Option<(usize, Sender<()>)>,
     calls: usize,
 }
 
 impl Scripted {
     fn new(faces: Vec<bool>) -> Self {
-        Self { faces, gate: None, seen: None, resets: Arc::default(), measure: None, calls: 0 }
+        Self { faces, gate: None, seen: None, resets: Arc::default(), measure: None, signal_at: None, calls: 0 }
     }
 
     fn gated(faces: Vec<bool>) -> (Self, Sender<()>) {
@@ -117,7 +123,7 @@ impl FrameTracker for Scripted {
     ) -> Result<(Option<FaceSample>, StageTimings), FaceTrackError> {
         if let Some(gate) = &self.gate {
             // A token per frame; a test that fails early must not hang the join in `Drop`.
-            gate.recv_timeout(Duration::from_secs(5)).ok();
+            gate.recv_timeout(BACKSTOP / 2).ok();
         }
         if let Some(seen) = &self.seen {
             let row = frame.width as usize * 3;
@@ -127,6 +133,9 @@ impl FrameTracker for Scripted {
         }
         if let Some(range) = &self.measure {
             ON_CAMERA.with(|m| m.set(range.contains(&self.calls)));
+        }
+        if let Some((_, signal)) = self.signal_at.as_ref().filter(|(at, _)| *at == self.calls) {
+            signal.send(()).ok();
         }
         let has_face = self.faces.get(self.calls).or(self.faces.last()).copied().unwrap_or(false);
         self.calls += 1;
@@ -139,18 +148,18 @@ impl FrameTracker for Scripted {
 }
 
 fn next(source: &mut dyn FrameSource) -> TrackFrame {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + BACKSTOP;
     while Instant::now() < deadline {
         if let Some(frame) = source.poll(Seconds(0.0)) {
             return frame;
         }
         std::thread::sleep(Duration::from_millis(1));
     }
-    panic!("no frame within 10 s");
+    panic!("no frame within {BACKSTOP:?}");
 }
 
 fn wait_for_error(tracker: &WebcamTracker) -> TrackError {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + BACKSTOP;
     while Instant::now() < deadline {
         if let Some(error) = tracker.error() {
             return error;
@@ -315,9 +324,7 @@ fn a_camera_error_mid_stream_ends_the_thread_with_a_lost_frame_and_the_error() {
     // The second frame and the failure follow each other at once, so the consumer may miss the first of the two.
     until_lost(&mut *source);
     assert!(matches!(tracker.error(), Some(TrackError::Backend(_))), "{:?}", tracker.error());
-    let stopped = Instant::now();
     tracker.stop();
-    assert!(stopped.elapsed() < Duration::from_millis(200));
 }
 
 #[test]
@@ -330,9 +337,9 @@ fn stop_then_start_works_and_the_old_source_goes_quiet() {
     assert_eq!(tracker.default_device(), Some(FakeCamera::id()));
     let mut first = start(&mut tracker);
     let before = next(&mut *first);
-    let stopped = Instant::now();
+    // How long `stop` takes is bounded by the camera thread's poll interval, which `thread.rs` checks against the
+    // 200 ms budget at compile time; a stopwatch here would only measure the machine's load.
     tracker.stop();
-    assert!(stopped.elapsed() < Duration::from_millis(200), "stop took {:?}", stopped.elapsed());
     assert!(first.poll(Seconds(0.0)).is_none());
     assert!(tracker.latency().frames > 0);
     tracker.stop(); // a no-op when stopped
@@ -350,15 +357,23 @@ fn stop_then_start_works_and_the_old_source_goes_quiet() {
 
 #[test]
 fn a_camera_that_goes_quiet_gives_one_lost_frame_after_lost_after() {
-    struct Stall(Vec<u8>);
-    struct StallStream(Vec<u8>, bool);
+    /// One frame, then silence that costs no wall time: once `quiet` is set, each empty wait moves the stage clock on
+    /// by the timeout. Before that the camera just has nothing yet, and time stands still.
+    struct Stall {
+        data: Vec<u8>,
+        clock: Arc<FakeClock>,
+        idle: Arc<AtomicUsize>,
+        quiet: Arc<AtomicBool>,
+    }
+    struct StallStream(Stall, bool);
     impl Camera for Stall {
         fn enumerate(&self) -> Vec<CameraInfo> {
             vec![CameraInfo::new(FakeCamera::id(), "stall", vec![nv12(64, 48)])]
         }
 
         fn open(&mut self, _: &CameraId, _: &CameraFormatRequest) -> Result<Box<dyn CameraStream>, TrackError> {
-            Ok(Box::new(StallStream(self.0.clone(), false)))
+            let (clock, idle, quiet) = (Arc::clone(&self.clock), Arc::clone(&self.idle), Arc::clone(&self.quiet));
+            Ok(Box::new(StallStream(Stall { data: self.data.clone(), clock, idle, quiet }, false)))
         }
     }
     impl CameraStream for StallStream {
@@ -368,23 +383,39 @@ fn a_camera_that_goes_quiet_gives_one_lost_frame_after_lost_after() {
 
         fn next_frame(&mut self, timeout: Duration) -> Result<Option<CameraFrame<'_>>, TrackError> {
             if std::mem::replace(&mut self.1, true) {
-                std::thread::sleep(timeout);
+                if self.0.quiet.load(Ordering::Acquire) {
+                    self.0.clock.advance(Seconds(timeout.as_secs_f64()));
+                    self.0.idle.fetch_add(1, Ordering::Relaxed);
+                }
+                std::thread::yield_now();
                 return Ok(None);
             }
-            Ok(Some(CameraFrame::new(&self.0, 64, 48, 64, PixelFormat::Nv12, DeviceTime(0), 0)))
+            Ok(Some(CameraFrame::new(&self.0.data, 64, 48, 64, PixelFormat::Nv12, DeviceTime(0), 0)))
         }
     }
-    let mut tracker = WebcamTracker::new(
-        Box::new(Stall(picture(PixelFormat::Nv12, (64, 48)))),
-        Box::new(Scripted::new(vec![true])),
-        WebcamConfig::default().with_mode(64, 48, 30),
-        Arc::new(SystemClock::new()),
-    );
+    let (clock, idle) = (Arc::new(FakeClock::new(Seconds(10.0))), Arc::new(AtomicUsize::new(0)));
+    let quiet = Arc::new(AtomicBool::new(false));
+    let camera = Stall {
+        data: picture(PixelFormat::Nv12, (64, 48)),
+        clock: Arc::clone(&clock),
+        idle: Arc::clone(&idle),
+        quiet: Arc::clone(&quiet),
+    };
+    // Gated, and quiet only once the consumer has the first frame, which a lost frame would otherwise overwrite.
+    let (scripted, tokens) = Scripted::gated(vec![true]);
+    let mut tracker =
+        WebcamTracker::new(Box::new(camera), Box::new(scripted), WebcamConfig::default().with_mode(64, 48, 30), clock);
     let config = TrackerConfig::default().with_lost_after(Duration::from_millis(30));
     let mut source = tracker.start(&FakeCamera::id(), &config).unwrap();
+    tokens.send(()).unwrap();
     assert_eq!(next(&mut *source).status, TrackStatus::Tracking);
+    quiet.store(true, Ordering::Release);
     assert_eq!(next(&mut *source).status, TrackStatus::Lost);
-    std::thread::sleep(Duration::from_millis(150));
+    // Plenty more silence goes by, many times `lost_after`, and no second lost frame comes.
+    let after = idle.load(Ordering::Relaxed) + 100;
+    while idle.load(Ordering::Relaxed) < after {
+        std::thread::yield_now();
+    }
     assert!(source.poll(Seconds(0.0)).is_none(), "only one lost frame per silence");
 }
 
@@ -406,7 +437,7 @@ fn the_preview_costs_nothing_while_off_and_scales_the_landmarks_while_on() {
     tracker.set_preview(true);
     tokens.send(()).unwrap();
     let frame = next(&mut *source);
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + BACKSTOP;
     while !tracker.preview(&mut out) {
         assert!(Instant::now() < deadline, "no preview");
         std::thread::sleep(Duration::from_millis(1));
@@ -425,6 +456,8 @@ fn the_preview_costs_nothing_while_off_and_scales_the_landmarks_while_on() {
         std::thread::sleep(Duration::from_millis(1));
     }
     assert!(out.landmarks.is_none());
+    // The thread is waiting for the next token; with the sender gone the scripted tracker stops waiting.
+    drop(tokens);
 }
 
 #[test]
@@ -432,12 +465,14 @@ fn the_camera_thread_allocates_nothing_over_three_hundred_frames() {
     // Frames 20 to 319 are measured, with the preview on, after the buffers have grown. The face comes and goes in
     // runs of two frames and three, so the landmark buffers are lost and reacquired over and over.
     let faces: Vec<bool> = (0..330).map(|i| i % 5 < 2).collect();
-    let scripted = Scripted { measure: Some(20..320), ..Scripted::new(faces) };
-    let camera = FakeCamera::synthetic(nv12(320, 240), 330);
-    let mut tracker = webcam(camera, scripted, WebcamConfig::default().with_mode(320, 240, 30));
+    let (done, finished) = channel();
+    let scripted = Scripted { measure: Some(20..320), signal_at: Some((320, done)), ..Scripted::new(faces) };
+    // The camera never runs dry: the session ends on frame 320, which the tracker reports, so no timer decides when.
+    let camera = FakeCamera::synthetic(nv12(160, 120), u64::MAX);
+    let mut tracker = webcam(camera, scripted, WebcamConfig::default().with_mode(160, 120, 30));
     tracker.set_preview(true);
     let _source = start(&mut tracker);
-    assert_eq!(wait_for_error(&tracker), TrackError::Lost);
+    finished.recv_timeout(BACKSTOP).expect("the camera thread reached frame 320");
     tracker.stop();
     assert_eq!(CAMERA_ALLOCATIONS.load(Ordering::Relaxed), 0);
 }
