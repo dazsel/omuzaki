@@ -30,7 +30,7 @@ use serde_json::Value;
 
 use super::source::{PartSource, source_path, sources_path};
 use super::terms::{self, commercial_rank};
-use crate::gather::avatar::LicenceRecord;
+use crate::gather::avatar::{LicenceRecord, blank_rights_field};
 
 /// The licence of a part made by one of the project's own generators. Terms stay the most restrictive: a kind says whose
 /// rights they are, not what is granted.
@@ -530,6 +530,10 @@ fn load_applications(ctx: &OpCtx<'_>, id: &CharId) -> Result<Vec<ApplicationInpu
                     "a record is written by library.apply; remove it with library.detach, or apply the item again",
                 )
             })?;
+            if let Some(fault) = blank_rights_field(&record.rights.licence, record.rights.consent.as_ref()) {
+                return Err(OpError::invalid(format!("applied/{app}"), format!("the application record at {path}: {fault}"))
+                    .hint("a record is written by library.apply; remove it with library.detach, or apply the item again"));
+            }
             Ok(ApplicationInput { app: app.clone(), path: path.to_string(), record })
         })
         .collect()

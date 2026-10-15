@@ -103,8 +103,28 @@ impl LicenceRecord {
     /// [`RecordError::Schema`] for a missing or unknown `schema`, [`RecordError::Invalid`] for anything else.
     pub fn from_node(node: &Value) -> Result<Self, RecordError> {
         check_schema(node)?;
-        Self::deserialize(node).map_err(|e| RecordError::Invalid(e.to_string()))
+        let record = Self::deserialize(node).map_err(|e| RecordError::Invalid(e.to_string()))?;
+        match blank_rights_field(&record.provenance.licence, record.provenance.consent.as_ref()) {
+            Some(fault) => Err(RecordError::Invalid(fault)),
+            None => Ok(record),
+        }
     }
+}
+
+/// The first required rights field that is blank, as a sentence naming it: the licence (give `LicenseRef-Unknown` when
+/// nobody knows) or the person or scope of a consent. The one rule for every stored layout of rights, so a record, a
+/// source row and an application record cannot disagree about what blank means.
+pub(crate) fn blank_rights_field(licence: &str, consent: Option<&omuzaki_store_api::Consent>) -> Option<String> {
+    if licence.trim().is_empty() {
+        return Some(
+            "`provenance.licence` is blank: give an SPDX id, or `LicenseRef-Unknown` if nobody knows".to_owned(),
+        );
+    }
+    let consent = consent?;
+    [("person", &consent.person), ("scope", &consent.scope)]
+        .into_iter()
+        .find(|(_, text)| text.trim().is_empty())
+        .map(|(field, _)| format!("`provenance.consent.{field}` is blank: a consent names who agreed and to what"))
 }
 
 /// Checks that `node` says it is [`SCHEMA`], before anything else about it is read. Shared by every stored layout of

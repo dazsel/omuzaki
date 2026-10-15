@@ -8,8 +8,8 @@
 //! never disagree about it.
 //!
 //! The same module raises what the library's application records say (`characters/<id>/applied/<app>`): an applied item
-//! that is not cleared for commercial use blocks `publish` (`rights.item_not_cleared`), and a first-party licence that
-//! is still pending warns on it (`rights.licence_pending`). Neither stops a file for the user's own machine.
+//! that is not cleared for commercial use blocks `publish` (`rights.item_not_cleared`). It does not stop a file for the
+//! user's own machine.
 
 use omuzaki_char_api::CharId;
 use omuzaki_io_api::{Finding, Purpose};
@@ -46,15 +46,6 @@ pub(crate) fn gate_hint(error: &GateError) -> &'static str {
     }
 }
 
-/// The licence of first-party items until the project decides on one. A `LicenseRef-` prefix and the case are ignored.
-const PENDING_LICENCE: &str = "pending-first-party";
-
-fn licence_is_pending(licence: &str) -> bool {
-    let licence = licence.trim();
-    let licence = licence.strip_prefix("LicenseRef-").unwrap_or(licence);
-    licence.eq_ignore_ascii_case(PENDING_LICENCE)
-}
-
 /// Whether the file is for anything but the user's own machine. These are the purposes the licence gate applies to.
 pub(crate) const fn leaves_the_machine(purpose: Purpose) -> bool {
     !matches!(purpose, Purpose::Private)
@@ -76,7 +67,7 @@ pub(crate) fn against_stored_record(
     let mut found = Vec::new();
     let record_flags_private = record.is_some_and(|r| r.provenance.private_test);
     found.extend(private_parts_finding(id, purpose, record_flags_private, derived));
-    found.extend(item_findings(id, purpose, derived));
+    found.extend(item_findings(purpose, derived));
     if let Some(record) = record {
         let base = record_path(id).to_string();
         found.extend(
@@ -88,31 +79,15 @@ pub(crate) fn against_stored_record(
     found
 }
 
-/// What the contributions say about a file that leaves the machine; nothing for one that stays on it.
+/// What the application records say about a file that leaves the machine; nothing for one that stays on it.
 /// - **`rights.item_not_cleared`** (an error), located at the application record: an applied item whose rights are
 ///   `commercial: no` or `unknown`, or private test material.
-/// - **`rights.licence_pending`** (a warning, never an error), one per contribution, located at the record or the part's
-///   row: its licence is the first-party one that is still pending.
-fn item_findings(id: &CharId, purpose: Purpose, derived: &DerivedLicence) -> Vec<Finding> {
+fn item_findings(purpose: Purpose, derived: &DerivedLicence) -> Vec<Finding> {
     if !leaves_the_machine(purpose) {
         return Vec::new();
     }
-    let mut found: Vec<Finding> = derived.applications.iter().filter_map(item_not_cleared).collect();
-    found.extend(derived.parts.iter().filter(|p| p.recorded && licence_is_pending(&p.licence)).map(|p| {
-        let message = format!("part `{}`: {}", p.part, PENDING_WHY);
-        Finding::warning("rights.licence_pending", message).at(sources_path(id).join(&p.part).to_string()).hint(PENDING_HINT)
-    }));
-    found.extend(derived.applications.iter().filter(|a| licence_is_pending(&a.licence)).map(|a| {
-        let message = format!("`{}@{}`: {}", a.item, a.version, PENDING_WHY);
-        Finding::warning("rights.licence_pending", message).at(a.path.clone()).hint(PENDING_HINT)
-    }));
-    found
+    derived.applications.iter().filter_map(item_not_cleared).collect()
 }
-
-const PENDING_WHY: &str =
-    "its licence is `pending-first-party`: the first-party licence text is pending, so what it grants is not final";
-
-const PENDING_HINT: &str = "nothing to fix yet: the first-party licence text is pending, and the project will say when it is final";
 
 /// The error for an applied item that is not cleared for commercial use, or `None` for one that is.
 fn item_not_cleared(app: &ApplicationRow) -> Option<Finding> {

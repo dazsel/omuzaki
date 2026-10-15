@@ -25,9 +25,6 @@ use serde_json::{Value, json};
 
 const PARTS: [&str; 5] = ["body", "hair", "head", "shirt", "vest"];
 
-/// The licence first-party items carry until the project decides.
-const PENDING: &str = "pending-first-party";
-
 fn application(item: &str, rights: ItemRights) -> ApplicationRecord {
     ApplicationRecord {
         schema: RECORD_SCHEMA,
@@ -49,11 +46,6 @@ fn application(item: &str, rights: ItemRights) -> ApplicationRecord {
 /// Rights of a fixture item that is not cleared for commercial use.
 fn non_commercial() -> ItemRights {
     ItemRights { licence: "CC-BY-NC-4.0".into(), commercial: Commercial::No, owned: false, ..ItemRights::first_party() }
-}
-
-/// First-party rights with the licence the project has not decided yet.
-fn pending() -> ItemRights {
-    ItemRights { licence: PENDING.into(), ..ItemRights::first_party() }
 }
 
 /// A part row as the library writes it: the item's rights, owned when the item says so.
@@ -160,45 +152,53 @@ fn an_unknown_status_and_private_test_material_are_not_cleared_either() {
 
 #[test]
 fn check_export_and_describe_agree_about_the_applied_items() {
-    let applied = [("face", node("test/face-style", non_commercial())), ("sash", node("omuzaki/kit/sash", pending()))];
+    let applied = [
+        ("face", node("test/face-style", non_commercial())),
+        ("sash", node("omuzaki/kit/sash", ItemRights::first_party())),
+    ];
     let doc = with_derived_record(doc(&ItemRights::first_party(), &applied));
     for purpose in ["publish", "private"] {
         let (export, described) = (check(&doc, purpose), describe(&doc, purpose));
-        for name in ["rights.item_not_cleared", "rights.licence_pending"] {
-            let key = |f: &&Finding| (f.severity, f.location.clone(), f.message.clone());
-            let mut a: Vec<_> = rule(&export.report.findings, name).iter().map(key).collect();
-            let mut b: Vec<_> = rule(&described.report.findings, name).iter().map(key).collect();
-            a.sort();
-            b.sort();
-            assert_eq!(a, b, "{purpose} {name}");
-        }
+        let key = |f: &&Finding| (f.severity, f.location.clone(), f.message.clone());
+        let mut a: Vec<_> = rule(&export.report.findings, "rights.item_not_cleared").iter().map(key).collect();
+        let mut b: Vec<_> = rule(&described.report.findings, "rights.item_not_cleared").iter().map(key).collect();
+        a.sort();
+        b.sort();
+        assert_eq!(a, b, "{purpose}");
         assert_eq!(export.ok, described.ok, "{purpose}");
     }
 }
 
 #[test]
-fn a_character_of_first_party_items_publishes_with_one_pending_warning_per_contribution() {
-    let rights = pending();
+fn a_character_of_first_party_items_publishes_without_findings_about_them() {
+    let rights = ItemRights::first_party();
     let applied = [("hair-style", node("omuzaki/hair/twintails", rights.clone()))];
     let doc = with_derived_record(doc(&rights, &applied));
-
     let derived = derive(&doc);
     assert!(derived.complete && derived.project_owned, "{:#?}", derived.report);
-    assert_eq!(derived.record.provenance.licence, PENDING);
-
+    assert_eq!(derived.record.provenance.licence, "CC0-1.0");
     let publish = check(&doc, "publish");
     assert!(publish.ok, "{:#?}", publish.report);
-    let warnings = rule(&publish.report.findings, "rights.licence_pending");
-    // Five part rows and one record.
-    assert_eq!(warnings.len(), PARTS.len() + 1, "{:#?}", publish.report);
-    assert!(warnings.iter().all(|f| f.severity == Severity::Warning));
-    assert!(warnings.iter().any(|f| f.location.as_deref() == Some("characters/mira/applied/hair-style")));
-    assert!(warnings.iter().any(|f| f.location.as_deref() == Some("characters/mira/sources/body")));
-    assert!(warnings.iter().all(|f| f.hint.as_deref().is_some_and(|h| h.contains("pending"))));
+    assert_eq!(rule(&publish.report.findings, "rights.item_not_cleared").len(), 0);
     assert!(describe(&doc, "publish").ok);
+}
 
-    let private = check(&doc, "private");
-    assert!(private.ok && rule(&private.report.findings, "rights.licence_pending").is_empty());
+#[test]
+fn a_whitespace_only_licence_is_an_error_in_derive_describe_and_check_export() {
+    let blank = ItemRights { licence: "  \t".into(), ..ItemRights::first_party() };
+    let doc = doc(&ItemRights::first_party(), &[("face", node("test/face-style", blank))]);
+    let input = json!({ "character": "mira" });
+    let derive_error = plan(&doc, "licence.derive", input.clone()).expect_err("blank licence");
+    assert_eq!(derive_error.field.as_deref(), Some("applied/face"));
+    assert!(derive_error.message.contains("characters/mira/applied/face"), "{}", derive_error.message);
+    assert!(derive_error.message.contains("blank"), "{}", derive_error.message);
+    let describe_error = plan(&doc, "licence.describe", json!({ "character": "mira", "purpose": "publish" }))
+        .expect_err("describe refuses too");
+    assert_eq!(describe_error.field.as_deref(), Some("applied/face"));
+    let export_error =
+        plan(&doc, "io.check_export", json!({ "character": "mira", "format": "glb", "purpose": "publish" }))
+            .expect_err("check_export refuses too");
+    assert_eq!(export_error.field.as_deref(), Some("applied/face"));
 }
 
 #[test]
