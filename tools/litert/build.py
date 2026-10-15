@@ -184,7 +184,9 @@ def cmd_setup(args):
         bazelisk_path.write_bytes(response.read())
     expect("Bazelisk SHA-256", sha256(bazelisk_path), plat["bazelisk_sha256"])
     bazelisk_path.chmod(0o755)
-    expect("Bazel", bazel(["--version"], litert, tools, args.platform).strip(), f"bazel {PINS['bazel']['version']}")
+    # `--version` is itself a startup option, so it goes without the Windows output root `bazel()` adds.
+    reported = run([bazel_path(tools), "--version"], cwd=litert, env=bazel_env(args.platform)).strip()
+    expect("Bazel", reported, f"bazel {PINS['bazel']['version']}")
 
     # LiteRT's configure.py asks its questions on stdin; these answers match LiteRT's own CI.
     env = dict(bazel_env(args.platform), PYTHON_BIN_PATH=sys.executable, TF_NEED_ROCM="0", TF_NEED_CUDA="0",
