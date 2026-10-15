@@ -71,8 +71,8 @@ doesn't wake twice for the same thing. Implementer sessions don't watch anything
    (a 👍 on the pull request when it finds nothing).
 5. **Answer every finding:** fixed, or dismissed with a one-line reason (a maintainer ruling settles a finding; point
    to it). Answer in the finding's thread, or in the comment that ends the fix round: it starts `fixed (head <sha7>)`
-   and has one line per finding. Then ask Codex for a new review (pushes don't trigger one). Sessions don't resolve
-   threads or react; the merge loop resolves answered threads. A pull request merges when Codex has reviewed its
+   and has one line per finding. Then ask Codex for a new review (pushes don't trigger one). Resolving the thread (and
+   a 👎 on a false positive) is welcome if your tool can, but optional: the merge loop resolves answered threads. A pull request merges when Codex has reviewed its
    current head, every finding is answered, `gate` is green and the sign-offs are in.
 6. The Director enqueues; the merge queue merges. Never push to `main`; force-push only your own branch, with
    `--force-with-lease`.
