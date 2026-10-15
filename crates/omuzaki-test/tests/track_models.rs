@@ -10,7 +10,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::path::PathBuf;
 
-use omuzaki_ai_api::{FetchError, FileSource, NoProgress, PinnedFile, SessionOptions, Sha256};
+use omuzaki_ai_api::{FetchError, FileSource, GraphOptimisation, NoProgress, PinnedFile, SessionOptions, Sha256};
 use omuzaki_ai_ort::OrtRuntime;
 use omuzaki_core::time::Seconds;
 use omuzaki_track::models::{MODEL_FILES, ModelDir, ModelError};
@@ -62,8 +62,12 @@ fn env(test: &str) -> Option<(PathBuf, DirSource)> {
 }
 
 fn tracker(models: &std::path::Path, natives: &DirSource, mode: Mode) -> FaceTracker {
+    tracker_with(models, natives, mode, &SessionOptions::default())
+}
+
+fn tracker_with(models: &std::path::Path, natives: &DirSource, mode: Mode, options: &SessionOptions) -> FaceTracker {
     let dir = ModelDir::open(models).unwrap();
-    let graphs = dir.load(&OrtRuntime, natives, &SessionOptions::default()).unwrap();
+    let graphs = dir.load(&OrtRuntime, natives, options).unwrap();
     FaceTracker::new(graphs, &dir.geometry().unwrap(), FaceTrackerConfig { mode, ..FaceTrackerConfig::default() })
         .unwrap()
 }
@@ -128,6 +132,27 @@ fn track_roi_is_bit_identical_across_runs() {
     assert_eq!(bits(&a), bits(&b));
     assert_eq!(a.present, b.present);
     assert!(a.landmarks.iter().flatten().all(|v| v.is_finite()));
+}
+
+/// A level above the default is allowed on a graph only while its runs repeat bit for bit; this holds for every graph
+/// at both levels (the numeric check against TFLite is what keeps the face slots on the default: #1730).
+#[test]
+fn track_roi_is_bit_identical_across_runs_at_every_graph_optimisation_level() {
+    let Some((models, natives)) = env("track_roi_is_bit_identical_across_runs_at_every_graph_optimisation_level")
+    else {
+        return;
+    };
+    let pixels = gradient();
+    for level in [GraphOptimisation::Basic, GraphOptimisation::Extended] {
+        let options = SessionOptions::default().with_graph_optimisation(level);
+        let run = || {
+            let mut tracker = tracker_with(&models, &natives, Mode::Video, &options);
+            (0..3)
+                .flat_map(|i| bits(&tracker.track_roi(&frame(&pixels), ROI, Seconds(f64::from(i) / 30.0)).unwrap()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(run(), run(), "{level:?}");
+    }
 }
 
 /// Every float of a sample as its bit pattern, in field order.
