@@ -144,7 +144,7 @@ impl Frame<'_> {
 pub enum FrameEnd {
     /// Fewer than 20 bytes remain.
     Short,
-    /// The length is 0: a zero-filled tail.
+    /// The length is 0: a zero-filled tail. [`write_frame`] never writes one, so a zero length is never a record.
     Zero,
     /// The length is over [`MAX_PAYLOAD`].
     Oversize,
@@ -165,10 +165,16 @@ fn frame_crc(len: [u8; 4], rest: &[u8; FRAME_HEADER_LEN - 8], payload: &[u8]) ->
 
 /// Appends one frame (length, CRC, LSN, kind, flags, reserved 0, payload) to `out`.
 ///
+/// Every frame this accepts is one [`read_frame`] reads back: a zero length reads as the end of the log, so an empty
+/// payload is refused.
+///
 /// # Errors
-/// [`JournalError::Unencodable`] when the payload is over [`MAX_PAYLOAD`]; `out` is unchanged then.
+/// [`JournalError::Unencodable`] when the payload is empty or over [`MAX_PAYLOAD`]; `out` is unchanged then.
 pub fn write_frame(lsn: Lsn, kind: u8, flags: u8, payload: &[u8], out: &mut Vec<u8>) -> Result<(), JournalError> {
     let unencodable = |reason: String| JournalError::Unencodable { lsn: lsn.0, reason };
+    if payload.is_empty() {
+        return Err(unencodable("the payload is empty, and a zero length reads as the end of the log".into()));
+    }
     if payload.len() > MAX_PAYLOAD {
         return Err(unencodable(format!("the payload is {} bytes, over the {} byte cap", payload.len(), MAX_PAYLOAD)));
     }

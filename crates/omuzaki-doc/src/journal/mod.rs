@@ -2,6 +2,9 @@
 //!
 //! This module holds the byte format only: segment headers, record frames and segment file names. Writing and
 //! reading whole journals builds on it in later changes.
+//!
+//! The invariant: every frame [`write_frame`] accepts is one [`read_frame`] reads back. A zero length marks the end
+//! of the log, so [`write_frame`] refuses an empty payload.
 
 mod format;
 

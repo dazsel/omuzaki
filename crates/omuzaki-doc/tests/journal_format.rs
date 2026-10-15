@@ -120,6 +120,63 @@ fn an_oversize_payload_is_not_written() {
 }
 
 #[test]
+fn an_empty_payload_is_not_written() {
+    let mut out = Vec::new();
+    write_frame(Lsn(1), 1, 0, b"first", &mut out).unwrap();
+    let before = out.clone();
+    let result = write_frame(Lsn(2), 1, 0, b"", &mut out);
+    assert!(matches!(result, Err(JournalError::Unencodable { lsn: 2, .. })));
+    assert_eq!(out, before, "the rejection leaves the existing bytes unchanged");
+    let first = read_frame(&out).unwrap();
+    assert_eq!(read_frame(&out[first.len()..]), Err(FrameEnd::Short));
+}
+
+#[test]
+fn every_accepted_frame_reads_back() {
+    // One buffer for the largest payload, so the 64 MiB is allocated once.
+    let big = vec![0xa5u8; MAX_PAYLOAD];
+    let lengths = [1, 2, 19, 20, 21, 255, 256, 65_535, 65_536, MAX_PAYLOAD];
+    for len in lengths {
+        let payload = &big[..len];
+        for kind in [0u8, 1, 127, 128, 255] {
+            for flags in [0u8, SKIPPABLE, 0xff] {
+                let lsn = Lsn(u64::from(kind) + 1);
+                let mut out = Vec::new();
+                write_frame(lsn, kind, flags, payload, &mut out).unwrap();
+                let frame =
+                    read_frame(&out).unwrap_or_else(|end| panic!("len {len} kind {kind} flags {flags}: {end:?}"));
+                assert_eq!(frame, Frame { lsn, kind, flags, payload });
+                assert_eq!(frame.len(), out.len());
+            }
+        }
+    }
+}
+
+#[test]
+fn an_oversize_payload_is_refused_before_it_is_copied() {
+    // The length check reads only the slice length, so a slice that is never touched is enough; the one 64 MiB buffer
+    // is shared with the largest accepted payload.
+    let big = vec![0u8; MAX_PAYLOAD + 1];
+    let mut out = Vec::new();
+    let result = write_frame(Lsn(1), 1, 0, &big, &mut out);
+    assert!(matches!(result, Err(JournalError::Unencodable { .. })));
+    assert_eq!(out.len(), 0);
+    assert_eq!(out.capacity(), 0, "nothing was reserved");
+}
+
+#[test]
+fn every_accepted_header_reads_back() {
+    for first in [0u64, 1, 2, u64::from(u32::MAX), u64::MAX - 1, u64::MAX] {
+        let header = SegmentHeader::new(Lsn(first));
+        assert_eq!(SegmentHeader::decode(&header.encode()), Ok(header), "first {first}");
+        assert_eq!(header.is_prepared(), first == 0);
+    }
+    let prepared = SegmentHeader::prepared();
+    assert_eq!(SegmentHeader::decode(&prepared.encode()), Ok(prepared));
+    assert!(SegmentHeader::decode(&prepared.encode()).unwrap().is_prepared());
+}
+
+#[test]
 fn segment_names() {
     assert_eq!(segment_name(42), "segment-000000000042.tjl");
     assert_eq!(segment_seq(&segment_name(42)), Some(42));
