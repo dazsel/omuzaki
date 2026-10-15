@@ -115,9 +115,7 @@ impl Validate for FaceLayout {
         c.range("mouth_y", self.mouth_y, -0.4, 0.3);
         c.range("blush_y", self.blush_y, -0.4, 0.3);
         c.range("blush_spacing", self.blush_spacing, 0.0, 0.25);
-        if self.mouth_y >= self.eye_y {
-            c.fail("mouth_y", "the mouth must be below the eye line");
-        }
+        c.rule(&["mouth_y", "eye_y"], self.mouth_y < self.eye_y, "the mouth must be below the eye line");
     }
 }
 
@@ -516,9 +514,11 @@ impl Validate for BrowStyle {
         c.range("outer_x", self.outer_x, 0.02, 0.25);
         c.range("thickness", self.thickness, 0.0003, 0.01);
         c.range("arch", self.arch, 0.0, 0.02);
-        if self.outer_x <= self.inner_x {
-            c.fail("outer_x", "the outer end must be farther from the midline than the inner end");
-        }
+        c.rule(
+            &["outer_x", "inner_x"],
+            self.outer_x > self.inner_x,
+            "the outer end must be farther from the midline than the inner end",
+        );
     }
 }
 

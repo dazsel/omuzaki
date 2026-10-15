@@ -37,11 +37,27 @@ impl fmt::Display for ParamErrors {
     }
 }
 
+/// The interval one numeric field accepts, as data an op can show (JSON Schema's `minimum` and `maximum`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct FieldRange {
+    /// Where, as a `/`-separated path from the struct that was asked (for example `iris/width`).
+    pub path: String,
+    /// The smallest accepted value.
+    pub lo: f64,
+    /// The largest accepted value.
+    pub hi: f64,
+    /// A rule between fields that also applies to this one (`mouth_y` must be below `eye_y`), when there is one.
+    pub note: Option<String>,
+}
+
 /// Collects errors while walking a struct tree.
 #[derive(Debug, Default)]
 pub struct Check {
     path: Vec<String>,
     errors: Vec<ParamError>,
+    /// `Some` while ranges are being read: the checks then test nothing and name their intervals here, so they are the
+    /// numbers that validation uses.
+    recorded: Option<Vec<FieldRange>>,
 }
 
 impl Check {
@@ -55,10 +71,34 @@ impl Check {
         self.path.iter().map(String::as_str).chain(leaf).collect::<Vec<_>>().join("/")
     }
 
+    /// A collector that records ranges instead of testing values (see [`Validate::ranges`]).
+    fn recording() -> Self {
+        Self { recorded: Some(Vec::new()), ..Self::default() }
+    }
+
     /// Records a failure for field `name` (an empty name means the current section itself).
     pub fn fail(&mut self, name: &str, message: impl Into<String>) {
         let path = self.at(name);
         self.errors.push(ParamError { path, message: message.into() });
+    }
+
+    /// A rule between the fields `names`: `ok` must hold. A failure is reported at the first name. When ranges are
+    /// being read, `message` becomes the note of the range of every field in `names`, so an agent sees the rule next
+    /// to each interval it limits.
+    pub fn rule(&mut self, names: &[&str], ok: bool, message: &str) {
+        let paths: Vec<String> = names.iter().map(|name| self.at(name)).collect();
+        match &mut self.recorded {
+            Some(ranges) => {
+                for range in ranges.iter_mut().filter(|r| paths.contains(&r.path)) {
+                    range.note = Some(message.to_owned());
+                }
+            }
+            None if !ok => {
+                let path = paths.into_iter().next().unwrap_or_default();
+                self.errors.push(ParamError { path, message: message.to_owned() });
+            }
+            None => {}
+        }
     }
 
     /// Validates `item` as the section `name`; its errors get the section as a path prefix.
@@ -70,6 +110,11 @@ impl Check {
 
     /// `value` must be finite and within `lo..=hi`.
     pub fn range(&mut self, name: &str, value: f64, lo: f64, hi: f64) {
+        let path = self.at(name);
+        if let Some(ranges) = &mut self.recorded {
+            ranges.push(FieldRange { path, lo, hi, note: None });
+            return;
+        }
         if !(value.is_finite() && (lo..=hi).contains(&value)) {
             self.fail(name, format!("{value} is out of range: use a number from {lo} to {hi}"));
         }
@@ -96,6 +141,15 @@ pub trait Validate {
     /// Records every problem in `c`. Implementations only describe their own fields and call [`Check::nested`] for
     /// sub-structs, so path prefixes are right everywhere.
     fn check(&self, c: &mut Check);
+
+    /// Every interval this struct's [`check`](Validate::check) names, in the order it names them, with the paths
+    /// `validate` reports. They are read from the checks themselves, so they cannot drift from what is enforced. A
+    /// rule between fields ([`Check::rule`]) appears as the `note` of each field it names.
+    fn ranges(&self) -> Vec<FieldRange> {
+        let mut c = Check::recording();
+        self.check(&mut c);
+        c.recorded.unwrap_or_default()
+    }
 
     /// Validates on its own.
     ///
@@ -124,6 +178,22 @@ mod tests {
             c.nested("iris", &self.0);
             c.positive("size", -1.0);
         }
+    }
+
+    #[test]
+    fn ranges_are_read_from_the_checks_with_their_paths_and_rules() {
+        struct Rule(f64);
+        impl Validate for Rule {
+            fn check(&self, c: &mut Check) {
+                c.range("outer", self.0, 0.0, 2.0);
+                c.rule(&["outer"], self.0 > 1.0, "must be above the inner end");
+            }
+        }
+        let r = Outer(Inner(2.0)).ranges();
+        assert_eq!(r, [FieldRange { path: "iris/width".into(), lo: 0.0, hi: 1.0, note: None }]);
+        let r = Rule(0.0).ranges();
+        assert_eq!(r[0].note.as_deref(), Some("must be above the inner end"));
+        assert!(Rule(0.0).validate().is_err() && Rule(1.5).validate().is_ok());
     }
 
     #[test]

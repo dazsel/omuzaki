@@ -24,7 +24,7 @@ pub mod profile;
 mod resolve;
 
 pub use baker::{BakerInput, FaceBakerConflict, FaceBakerFactory, FaceBakerRegistration, face_baker};
-pub use check::{Check, ParamError, ParamErrors, Validate};
+pub use check::{Check, FieldRange, ParamError, ParamErrors, Validate};
 pub use expression::{
     ChannelValues, Expression, ExpressionId, ExpressionKind, ExpressionSet, IntensityCurve, UnknownExpression, VISEMES,
     Weight,

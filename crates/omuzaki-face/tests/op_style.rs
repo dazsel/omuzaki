@@ -353,6 +353,44 @@ fn describe_covers_every_section_and_the_marks_list() {
 }
 
 #[test]
+fn describe_reports_each_numeric_fields_range_and_set_style_agrees() {
+    let doc = doc_with_face(full_face());
+    let all = run(&doc, "face.describe_style", json!({ "character": "mira" })).expect("describes");
+    let sections = &all.output.as_ref().expect("answers")["sections"];
+    let mut checked = 0;
+    for name in ["eyes", "brows", "mouth", "nose", "cheeks"] {
+        for range in sections[name]["ranges"].as_array().expect("a list of ranges") {
+            let (path, lo, hi) =
+                (range["path"].as_str().expect("path"), range["lo"].as_f64().unwrap(), range["hi"].as_f64().unwrap());
+            let step = (hi - lo) * 1e-3;
+            // A field with a rule between fields may fail that rule at an end; only its outside is checked.
+            let ends: &[f64] = if range.get("note").is_some() { &[] } else { &[lo, hi] };
+            for end in ends {
+                let sets = run(&doc, "face.set_style", set_args(path, json!(end)));
+                assert!(sets.is_ok(), "{path} refuses its own end {end}: {sets:?}");
+            }
+            for outside in [lo - step, hi + step] {
+                let err = run(&doc, "face.set_style", set_args(path, json!(outside))).unwrap_err();
+                assert!(err.message.contains(path), "{path} = {outside}: {err:?}");
+            }
+            checked += 1;
+        }
+    }
+    assert!(checked > 40, "only {checked} ranges");
+    let marks = &sections["marks"];
+    assert!(
+        marks["item_ranges"].as_array().expect("a list").iter().any(|r| r["path"] == json!("face/marks/<i>/opacity"))
+    );
+    let brow = sections["brows"]["ranges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["path"] == json!("face/brows/outer_x"))
+        .unwrap();
+    assert!(brow["note"].as_str().unwrap().contains("farther from the midline"), "{brow}");
+}
+
+#[test]
 fn describe_refuses_an_unknown_section_and_a_missing_character() {
     let doc = doc_with_face(full_face());
     let err = run(&doc, "face.describe_style", json!({ "character": "mira", "section": "mouht" })).unwrap_err();
