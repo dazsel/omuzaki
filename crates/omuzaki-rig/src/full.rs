@@ -7,7 +7,9 @@
 //! 1. [`HumanoidRig::apply_humanoid`]: the animated pose onto the skeleton's rest;
 //! 2. the IK stage ([`IkSolver`], by default [`TwoBoneIk`]) on the goals set with [`FullRig::set_goals`];
 //! 3. the constraint stage ([`VrmConstraintSolver`]), only when one was set with [`FullRig::with_constraints`];
-//! 4. the spring stage ([`SpringSolver`], by default [`VrmSpringSolver`]) for hair, cloth and accessory chains,
+//! 4. the caller's own pre-spring stage, only through [`FullRig::solve_and_skin_with`]: whatever else poses bones the
+//!    springs must follow in the same frame (a character's bone drivers, #800);
+//! 5. the spring stage ([`SpringSolver`], by default [`VrmSpringSolver`]) for hair, cloth and accessory chains,
 //!    stepped by the `dt` of the [`Tick`].
 //!
 //! The order is what makes the stages compose: constraints read their sources as IK left them (a bone constrained to
@@ -142,9 +144,45 @@ impl<I: IkSolver, S: SpringSolver> FullRig<I, S> {
     /// [`BoneId`](omuzaki_anim_api::BoneId); a shorter slice is filled as far as it goes), with a single forward-kinematics
     /// pass shared with [`world`](Self::world). Hot path: no allocation.
     pub fn solve_and_skin(&mut self, tick: Tick, pose: &HumanoidPose, out: &mut Pose, joints: &mut [Mat4]) {
-        self.solve(tick, pose, out);
+        self.solve_and_skin_with(tick, pose, out, joints, |_, _| {});
+    }
+
+    /// [`solve_and_skin`](Self::solve_and_skin) with `before_springs` run on the local pose after the constraint stage
+    /// and before the springs (stage 4 of the module docs), so the springs see what it posed in the same frame. Hot
+    /// path: no allocation here; `before_springs` must not allocate either.
+    pub fn solve_and_skin_with(
+        &mut self,
+        tick: Tick,
+        pose: &HumanoidPose,
+        out: &mut Pose,
+        joints: &mut [Mat4],
+        before_springs: impl FnMut(&Skeleton, &mut Pose),
+    ) {
+        self.solve_with(tick, pose, out, before_springs);
         self.humanoid.rig_skeleton().skeleton().world_pose(out, &mut self.world);
         self.skinner.skin_from_world(&self.world, joints);
+    }
+
+    /// Stages 1 to 5 of the module docs, with `before_springs` as stage 4.
+    fn solve_with(
+        &mut self,
+        tick: Tick,
+        pose: &HumanoidPose,
+        out: &mut Pose,
+        mut before_springs: impl FnMut(&Skeleton, &mut Pose),
+    ) {
+        self.humanoid.apply_humanoid(pose, out);
+        let skeleton = self.humanoid.rig_skeleton().skeleton();
+        if !self.goals.is_idle() {
+            self.ik.solve(skeleton, &self.goals, out);
+        }
+        if let Some(constraints) = &self.constraints {
+            constraints.apply(skeleton, out);
+        }
+        before_springs(skeleton, out);
+        if let Some(springs) = &mut self.springs {
+            springs.step(tick, skeleton, out);
+        }
     }
 }
 
@@ -154,17 +192,7 @@ impl<I: IkSolver, S: SpringSolver> Rig for FullRig<I, S> {
     }
 
     fn solve(&mut self, tick: Tick, pose: &HumanoidPose, out: &mut Pose) {
-        self.humanoid.apply_humanoid(pose, out);
-        let skeleton = self.humanoid.rig_skeleton().skeleton();
-        if !self.goals.is_idle() {
-            self.ik.solve(skeleton, &self.goals, out);
-        }
-        if let Some(constraints) = &self.constraints {
-            constraints.apply(skeleton, out);
-        }
-        if let Some(springs) = &mut self.springs {
-            springs.step(tick, skeleton, out);
-        }
+        self.solve_with(tick, pose, out, |_, _| {});
     }
 
     /// Clears the IK solver's and the springs' carried state; the goals stay. The constraint stage carries none, so it
