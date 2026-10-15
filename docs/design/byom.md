@@ -27,7 +27,7 @@ drop ─► io.inspect {as: avatar}  ─► prepare (io-ops): humanoid map (BY2)
                                    ─► ImportedAvatar + one Report ─► the stage performs it while the report shows
 confirm ─► io.import {as: avatar} ─► store the original, write characters/<id>/{name, avatar, sources/avatar}
 each frame: channels ─► ExpressionEvaluator ─► morph weights (Scene) + colour and UV binds (update_material)
-            HumanoidPose ─► HumanoidRig on the imported skeleton ─► springs ─► constraints ─► per-mesh skinning
+            HumanoidPose ─► HumanoidRig on the imported skeleton ─► look-at and IK ─► constraints ─► springs ─► per-mesh skinning
 ```
 
 Morph targets become part of the render contract (sparse targets uploaded once, weights in the `Scene` beside the
@@ -234,7 +234,7 @@ when it cannot. Bone names: imported nodes become `JointRef::Named` bones with s
 converter keeps the node-to-bone table for export.
 
 **At run time** the imported skeleton goes through the same stages as a built one (spec §8 order): `HumanoidRig`
-(D1), springs with the extended colliders and limits, then node constraints, then skinning.
+(D1), look-at and IK (below), node constraints (`FullRig::with_constraints`, the VRM 1.0 order), springs with the extended colliders and limits, then skinning.
 - **Look-at:** `eyeLook*` channels become yaw and pitch, the file's range maps (`horizontalInner/Outer`,
   `verticalDown/Up`) turn them into eye-bone rotations (bone route) or `lookUp/Down/Left/Right` weights (presets
   route), in the IK stage. On the native ARKit route the look-at stage does nothing (D3 chooses the route).

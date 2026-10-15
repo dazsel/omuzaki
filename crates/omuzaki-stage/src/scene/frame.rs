@@ -44,6 +44,20 @@ struct Shot {
 }
 
 impl Shot {
+    /// Refuses a span that is not finite or runs downward, which `Landmarks::measure` never gives but a hand-made
+    /// `Landmarks` can.
+    fn check(&self, framing: Framing) -> Result<(), StageError> {
+        let finite = [self.lo, self.hi, self.anchor].iter().all(|v| v.is_finite())
+            && self.bounds.min.is_finite()
+            && self.bounds.max.is_finite();
+        if !finite || self.hi < self.lo || self.bounds.max.cmplt(self.bounds.min).any() {
+            return Err(StageError::Framing {
+                reason: format!("the {framing:?} landmarks are not a finite box with its minimum below its maximum"),
+            });
+        }
+        Ok(())
+    }
+
     fn centred(lo: f32, hi: f32, bounds: Bounds, fill: f32) -> Self {
         Self { lo, hi, bounds, fill, anchor: f32::midpoint(lo, hi), lift: 0.0 }
     }
@@ -125,10 +139,17 @@ fn check_inputs(def: &CameraDef, aspect: f32) -> Result<(), StageError> {
 /// [`StageError::Framing`] for [`Framing::Free`], which has its own position. Also for a landmark the framing needs and
 /// the character lacks: `face` without a head or eyes, `bust` without a chest or head, `hands` without hands. Also
 /// for a non-finite or out-of-range input: `aspect <= 0`, `fov` outside (0, 180), `zoom <= 0`, `|pitch| >= 89.9`; and
-/// for a span with no height and no width, which has no distance to frame it from.
+/// for landmarks that aren't a finite, upright box or a character height that isn't finite and above zero; for a span with no height and no width, which has no distance to
+/// frame it from; and for a camera that comes out non-finite or with an unusable depth range.
 pub fn frame(framing: Framing, landmarks: &Landmarks, def: &CameraDef, aspect: f32) -> Result<Camera, StageError> {
     check_inputs(def, aspect)?;
     let shot = shot(framing, landmarks)?;
+    shot.check(framing)?;
+    if !(landmarks.height_m.is_finite() && landmarks.height_m > 0.0) {
+        return Err(StageError::Framing {
+            reason: format!("the character's height {} m is not usable: it sets the far plane, so give a finite number above zero", landmarks.height_m),
+        });
+    }
 
     let t = (def.fov.to_radians() * 0.5).tan();
     let d_v = (shot.hi - shot.lo) / (2.0 * shot.fill * t);
@@ -157,5 +178,7 @@ pub fn frame(framing: Framing, landmarks: &Landmarks, def: &CameraDef, aspect: f
     let (right, up) = (camera.transform.x_axis.truncate(), camera.transform.y_axis.truncate());
     let offset = right * (-def.shift[0] * aspect * h) + up * (-def.shift[1] * h);
     camera.transform.w_axis += offset.extend(0.0);
+    // Fail closed: landmarks that came from outside `Landmarks::measure` can still give a non-finite camera.
+    camera.validate().map_err(|e| StageError::Framing { reason: format!("the {framing:?} camera isn't usable: {e}") })?;
     Ok(camera)
 }

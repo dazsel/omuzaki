@@ -208,3 +208,20 @@ fn free_and_missing_landmarks_are_framing_errors() {
         assert!(is_framing(frame(Framing::Full, &l, &def, aspect)), "aspect {aspect}");
     }
 }
+
+#[test]
+fn degenerate_landmarks_are_framing_errors() {
+    let l = landmarks("standard");
+    let is_framing =
+        |l: &Landmarks, f: Framing| matches!(frame(f, l, &CameraDef::preset(f), 1.0), Err(StageError::Framing { .. }));
+    let with = |edit: fn(&mut Landmarks)| {
+        let mut l = l;
+        edit(&mut l);
+        l
+    };
+    assert!(is_framing(&with(|l| l.eyes = Some(f32::NAN)), Framing::Face), "a NaN eye line");
+    assert!(is_framing(&with(|l| l.body.max.y = l.body.min.y - 1.0), Framing::Full), "an inverted box");
+    assert!(is_framing(&with(|l| l.body.max.x = f32::INFINITY), Framing::Full), "an infinite box");
+    assert!(is_framing(&with(|l| l.height_m = 0.0), Framing::Full), "no height for the far plane");
+    assert!(is_framing(&with(|l| l.height_m = -1.0), Framing::Full), "a negative height");
+}
