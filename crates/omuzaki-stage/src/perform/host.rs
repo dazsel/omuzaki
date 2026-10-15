@@ -24,7 +24,9 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering, fence};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
 
 use omuzaki_anim::{MAX_NEUTRAL_FRAMES, MIN_NEUTRAL_FRAMES, NeutralCapture, NeutralError};
 use omuzaki_anim_api::{ARKIT_COUNT, Calibration, Channel, DeviceProfile, HeadPose, RetargetConfig, Tick};
@@ -48,6 +50,7 @@ pub const CAPTURE_STALL_STEPS: u64 = 600;
 /// [`MAX_COMMANDS_PER_ADVANCE`] a frame.
 pub const REPLY_TIMEOUT: Duration = Duration::from_secs(1);
 /// How often a waiting reply looks for the performer's acknowledgement.
+#[cfg(not(target_arch = "wasm32"))]
 const REPLY_POLL: Duration = Duration::from_millis(1);
 /// Slack so a `now` that lands exactly on a step boundary is not lost to float rounding (as [`Performer::advance`]).
 const BOUNDARY_EPS: f64 = 1e-9;
@@ -74,7 +77,8 @@ pub trait PerformHost: Send + Sync {
     ///
     /// # Errors
     /// [`PerformError::QueueFull`], [`PerformError::Disconnected`], or [`PerformError::Stalled`] when the performer
-    /// did not step in time (the change stays queued and applies when it does).
+    /// did not step in time (the change stays queued and applies when it does), or [`PerformError::Unsupported`] in
+    /// the web build, which has no performer thread to wait on (nothing is queued then).
     fn set_retarget(&self, change: RetargetChange) -> Result<RetargetConfig, PerformError>;
 
     /// Replaces the calibration in use (a saved profile loading, say).
@@ -86,7 +90,8 @@ pub trait PerformHost: Send + Sync {
     /// The calibration the performer is using (the last one it applied).
     fn calibration(&self) -> Calibration;
 
-    /// The status the perform thread published last. Reports applied state only.
+    /// The status the perform thread published last. Reports applied state only. Its parts are read one after the
+    /// other, so they can describe slightly different instants (see [`PerformStatus`]).
     fn status(&self) -> PerformStatus;
 }
 
@@ -148,7 +153,12 @@ pub enum CalibrationState {
     },
 }
 
-/// What the perform thread last published. One value is always internally consistent: it is copied under one lock.
+/// What the performer last published, read by [`PerformHost::status`].
+///
+/// Each field is a consistent snapshot of its own: the tracking state, the capture state and the frame rate come from
+/// one atomic word (they describe the same instant), and `retarget` is the settings the performer had acknowledged
+/// when it was read. The two parts are read one after the other, so they can describe different instants: a status
+/// read just as a settings change is applied can show the old tracking state with the new settings.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct PerformStatus {
     /// Whether a face is tracked.
@@ -174,6 +184,10 @@ pub enum PerformError {
     /// change stays queued and applies when the loop runs.
     #[error("the performer did not apply the change in time")]
     Stalled,
+    /// Live performance is not part of the web build: waiting on the performer needs a thread and a clock it lacks.
+    /// Only produced on `wasm32`.
+    #[error("live performance isn't available in the web build")]
+    Unsupported,
     /// The performer has not caught up with the requests already queued (the queue holds [`COMMAND_QUEUE_LEN`]).
     #[error("the performer has too many requests waiting; try again in a moment")]
     QueueFull,
@@ -487,7 +501,8 @@ impl PerformHandle {
     ///
     /// # Errors
     /// [`PerformError::Stalled`] after `timeout`, or [`PerformError::Disconnected`] if the control is gone before it
-    /// applied the request.
+    /// applied the request. In the web build ([`PerformError::Unsupported`]) it always refuses.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn await_retarget(&self, ticket: RetargetTicket, timeout: Duration) -> Result<RetargetConfig, PerformError> {
         let deadline = Instant::now() + timeout;
         loop {
@@ -503,6 +518,16 @@ impl PerformHandle {
             std::thread::sleep(REPLY_POLL);
         }
     }
+
+    /// The web build has no thread to wait on and no clock to time a wait with (`Instant` and `thread::sleep` panic
+    /// on `wasm32-unknown-unknown`), so waiting is refused, not attempted.
+    ///
+    /// # Errors
+    /// Always [`PerformError::Unsupported`].
+    #[cfg(target_arch = "wasm32")]
+    pub fn await_retarget(&self, _ticket: RetargetTicket, _timeout: Duration) -> Result<RetargetConfig, PerformError> {
+        Err(PerformError::Unsupported)
+    }
 }
 
 impl PerformHost for PerformHandle {
@@ -517,9 +542,16 @@ impl PerformHost for PerformHandle {
         sent
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn set_retarget(&self, change: RetargetChange) -> Result<RetargetConfig, PerformError> {
         let ticket = self.request_retarget(change)?;
         self.await_retarget(ticket, REPLY_TIMEOUT)
+    }
+
+    /// Refused before anything is queued: a change whose reply cannot be waited for would apply with no one told.
+    #[cfg(target_arch = "wasm32")]
+    fn set_retarget(&self, _change: RetargetChange) -> Result<RetargetConfig, PerformError> {
+        Err(PerformError::Unsupported)
     }
 
     fn set_calibration(&self, calibration: Calibration) -> Result<(), PerformError> {
@@ -619,6 +651,27 @@ impl PerformControl {
         self.observe(&out);
         self.publish();
         Some(out)
+    }
+
+    /// Resets the performer and restarts the control's timeline with it: the next [`advance`](Self::advance) runs
+    /// tick 0 again. This is the reset to use (after a seek in a recorded track, say). A bare [`Performer::reset`]
+    /// clears the stages but leaves the control's tick count running, which is harmless but does not restart the
+    /// clock; this call does both together.
+    ///
+    /// A running neutral capture keeps the frames it holds and its stall clock starts over at the next `advance`;
+    /// the tracking state reads `NoFrames` and the frame rate starts over, as after a new source.
+    pub fn reset(&mut self, performer: &mut Performer) {
+        performer.reset();
+        self.origin = None;
+        self.next_step = 0;
+        self.skipped = 0;
+        self.fps = FpsMeter::default();
+        self.live.tracking = Tracking::NoFrames;
+        self.live.fps = 0.0;
+        if let Some(run) = self.running.as_mut() {
+            run.progress_tick = None;
+        }
+        self.publish();
     }
 
     /// Steps dropped because the loop fell more than [`MAX_STEPS_PER_ADVANCE`] behind.
@@ -740,5 +793,32 @@ impl PerformControl {
 impl std::fmt::Debug for PerformControl {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PerformControl").field("calibration", &self.live.calibration).finish_non_exhaustive()
+    }
+}
+
+#[cfg(all(test, target_arch = "wasm32"))]
+mod wasm_tests {
+    use omuzaki_anim::life::Life;
+    use omuzaki_anim::retarget::ArkitRetarget;
+    use omuzaki_anim_api::{ChannelBuf, HumanoidPose, LifeConfig};
+    use omuzaki_anim_mock::animator::MockAnimator;
+    use omuzaki_anim_mock::track::{SyntheticSpec, TrackReplay, synthetic_track};
+
+    use super::*;
+    use crate::perform::PerformerParts;
+
+    #[test]
+    fn the_web_build_refuses_to_wait_on_the_performer() {
+        let parts = PerformerParts {
+            source: Box::new(TrackReplay::new(synthetic_track(&SyntheticSpec::default()))),
+            retarget: Box::new(ArkitRetarget::new(DeviceProfile::Webcam)),
+            life: Box::new(Life::new(LifeConfig::new(7))),
+            animator: Box::new(MockAnimator),
+        };
+        let performer = Performer::new(parts, ChannelBuf::NEUTRAL, HumanoidPose::REST);
+        let (host, _control) = perform_channel(&performer);
+        assert_eq!(host.set_retarget(RetargetChange::default()), Err(PerformError::Unsupported));
+        let ticket = host.request_retarget(RetargetChange::default()).unwrap();
+        assert_eq!(host.await_retarget(ticket, Duration::ZERO), Err(PerformError::Unsupported));
     }
 }

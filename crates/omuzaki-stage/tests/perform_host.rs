@@ -331,6 +331,39 @@ fn the_frame_rate_reads_the_trackers_30_fps_off_the_frames_own_timestamps() {
 }
 
 #[test]
+fn the_controls_reset_restarts_the_performer_and_its_timeline_together() {
+    let (host, mut control, mut performer) = rig(replay(20.0));
+    for i in 1..=120 {
+        step(&mut control, &mut performer, i);
+    }
+    assert_eq!(host.status().tracking, omuzaki_stage::perform::Tracking::Tracking);
+    control.reset(&mut performer);
+    assert_eq!(host.status().tracking, omuzaki_stage::perform::Tracking::NoFrames, "and the status says so at once");
+    assert_eq!(host.status().source_fps, 0.0);
+    let out = control.advance(&mut performer, mid_step(0)).expect("a step is due");
+    assert_eq!(out.tick.index, 0, "the next output is tick 0");
+    let out = control.advance(&mut performer, mid_step(1)).expect("a step is due");
+    assert_eq!(out.tick.index, 1);
+}
+
+#[test]
+fn a_reset_during_a_capture_restarts_its_stall_clock_with_the_timeline() {
+    let (host, mut control, mut performer) = rig(Box::new(Silent));
+    host.calibrate(150).unwrap();
+    for i in 1..=300 {
+        step(&mut control, &mut performer, i);
+    }
+    control.reset(&mut performer);
+    // The new timeline starts at tick 0, and the capture's window with it: 600 ticks from the first call after.
+    for j in 0..600 {
+        control.advance(&mut performer, mid_step(j)).expect("a step is due");
+        assert!(matches!(host.status().calibration, CalibrationState::Capturing { .. }), "call {j}");
+    }
+    control.advance(&mut performer, mid_step(600)).expect("a step is due");
+    assert_eq!(host.status().calibration, CalibrationState::Failed { got: 0, need: 150 });
+}
+
+#[test]
 fn every_catch_up_step_feeds_the_capture_and_the_frame_rate() {
     // 30 fps arrives on every other 60 Hz step; calls come every two steps, so each call's frame is on its FIRST step.
     let (host, mut control, mut performer) = rig(replay(20.0));
