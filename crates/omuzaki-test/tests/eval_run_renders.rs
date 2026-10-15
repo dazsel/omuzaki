@@ -94,7 +94,9 @@ fn the_renders_a_check_compared_are_kept_beside_the_transcript() {
     let dir = ws.path().join("crates/c/evals");
     write(
         &dir.join("fixtures/fx.toml"),
-        &format!("id = 'fx'\nsummary = 's'\nsteps = [{{ op = 'evaltest.set_shot', args = {{ address = '{before}' }} }}]\n"),
+        &format!(
+            "id = 'fx'\nsummary = 's'\nsteps = [{{ op = 'evaltest.set_shot', args = {{ address = '{before}' }} }}]\n"
+        ),
     );
     write(
         &dir.join("look.toml"),

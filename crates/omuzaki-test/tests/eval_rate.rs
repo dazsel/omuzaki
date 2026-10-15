@@ -309,7 +309,18 @@ fn eval_agreement_refuses_a_question_the_raters_were_not_asked() {
     let (ws, base) = agreement_world(dir.path());
     let envs = [("OMUZAKI_EVAL_OUT", format!("{base}/evals")), ("OMUZAKI_EVAL_STATUS", format!("{base}/status"))];
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (*k, v.as_str())).collect();
-    let args = ["eval", "agreement", "--judge", "reads-oval", "--set", "review-1", "--question", "Is the face moer oval?", "--root", &ws];
+    let args = [
+        "eval",
+        "agreement",
+        "--judge",
+        "reads-oval",
+        "--set",
+        "review-1",
+        "--question",
+        "Is the face moer oval?",
+        "--root",
+        &ws,
+    ];
     let refused = common::run(&args, &envs);
     assert_eq!(common::code(&refused), 2, "{}", common::text(&refused.stderr));
     assert!(common::text(&refused.stderr).contains("rubric_for_people"), "{}", common::text(&refused.stderr));

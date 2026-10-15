@@ -98,9 +98,16 @@ mod tests {
 
     #[test]
     fn an_id_that_does_not_begin_with_a_time_has_none() {
-        for bad in
-            ["", "manual-1", "2026-13-01T00:00Z-x", "2026-10-13T25:00Z", "2026-10-13T2500Z", "2026-10-13T10", "2026-10-13 10:00Z", "2026-1O-13T10:00Z"]
-        {
+        for bad in [
+            "",
+            "manual-1",
+            "2026-13-01T00:00Z-x",
+            "2026-10-13T25:00Z",
+            "2026-10-13T2500Z",
+            "2026-10-13T10",
+            "2026-10-13 10:00Z",
+            "2026-1O-13T10:00Z",
+        ] {
             assert_eq!(run_started(bad), None, "{bad}");
         }
     }

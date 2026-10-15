@@ -448,7 +448,9 @@ fn of_two_runs_that_start_together_with_one_id_only_one_gets_it() {
                     start.wait();
                     run_scripted(&discovery, caps(), &PrivateList::default(), &options)
                         .map(|_| true)
-                        .or_else(|e| if matches!(e, omuzaki_test::eval::run::RunError::Taken(_)) { Ok(false) } else { Err(e) })
+                        .or_else(|e| {
+                            if matches!(e, omuzaki_test::eval::run::RunError::Taken(_)) { Ok(false) } else { Err(e) }
+                        })
                         .unwrap()
                 })
             })
@@ -616,7 +618,8 @@ fn the_gate_command_reads_the_history_and_exits_by_what_it_finds() {
         }
         fs::write(status.join(HISTORY_FILE), lines.join("\n") + "\n").unwrap();
         // Every night's run is finished and valid; a run that is not never reaches the gate.
-        let mut runs: Vec<String> = (1..=10).map(|d| run_line(&format!("2026-09-{d:02}T0000Z-nightly"), true)).collect();
+        let mut runs: Vec<String> =
+            (1..=10).map(|d| run_line(&format!("2026-09-{d:02}T0000Z-nightly"), true)).collect();
         runs.push(run_line("2026-09-12T0000Z-nightly", true));
         fs::write(status.join(RUNS_FILE), runs.join("\n") + "\n").unwrap();
     };

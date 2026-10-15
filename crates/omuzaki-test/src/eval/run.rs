@@ -311,10 +311,10 @@ fn claim_run_id(options: &Options<'_>) -> Result<(), RunError> {
             "run id `{id}` is not a folder name: use {RUN_ID_CHARS}, not starting with a dot"
         )));
     }
-    if let Some(status) = &options.status {
-        if history::read_runs(&status.join(RUNS_FILE))?.iter().any(|r| &r.run == id) {
-            return Err(RunError::Taken(id.clone()));
-        }
+    if let Some(status) = &options.status
+        && history::read_runs(&status.join(RUNS_FILE))?.iter().any(|r| &r.run == id)
+    {
+        return Err(RunError::Taken(id.clone()));
     }
     let evidence = options.out.join("runs").join(id);
     let scratch = options.scratch.join(id);
@@ -600,9 +600,11 @@ fn pictures_of(
 ) -> Result<Vec<(String, Vec<u8>)>, String> {
     let mut pictures = Vec::new();
     for (n, result) in report.results.iter().filter(|r| !r.renders.is_empty()).enumerate() {
-        let store = store.ok_or_else(|| format!("check `{}` made renders, and there is no store to fetch them from", result.id))?;
+        let store = store
+            .ok_or_else(|| format!("check `{}` made renders, and there is no store to fetch them from", result.id))?;
         for (hash, side) in result.renders.iter().zip(["before", "after"]) {
-            let parsed = hash.parse::<omuzaki_store_api::ContentHash>().map_err(|e| format!("render hash `{hash}`: {e}"))?;
+            let parsed =
+                hash.parse::<omuzaki_store_api::ContentHash>().map_err(|e| format!("render hash `{hash}`: {e}"))?;
             let bytes = store.get(&parsed).map_err(|e| format!("render {hash} of check `{}`: {e}", result.id))?;
             let name = if n == 0 { format!("{side}.png") } else { format!("{}.{side}.png", result.id) };
             pictures.push((name, bytes));

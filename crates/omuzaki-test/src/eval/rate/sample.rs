@@ -5,10 +5,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, SystemTime};
 
 use super::{Rating, WEEK_SECS, WEEKLY_ITEMS};
-use crate::eval::provenance::{PrivateList, fixture_refusals};
-use crate::eval::{Discovery, TaskFile};
 use crate::eval::clock::run_started;
 use crate::eval::history::{AttemptOutcome, AttemptRecord};
+use crate::eval::provenance::{PrivateList, fixture_refusals};
+use crate::eval::{Discovery, TaskFile};
 
 /// A result to rate.
 #[derive(Debug, Clone, PartialEq, Eq)]

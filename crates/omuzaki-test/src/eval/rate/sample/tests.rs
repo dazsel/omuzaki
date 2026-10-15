@@ -6,8 +6,8 @@ use std::time::{Duration, UNIX_EPOCH};
 use super::*;
 use crate::eval::clock::utc_minute;
 use crate::eval::history::{SCHEMA, Usage};
-use crate::eval::rate::Answer;
 use crate::eval::provenance::{EvalSet, PrivateList};
+use crate::eval::rate::Answer;
 use crate::eval::{Discovery, FixtureFile, TaskFile};
 
 fn task(id: &str, questions: &[&str]) -> TaskFile {
@@ -51,9 +51,8 @@ fn discovery_with_set(kind: &str, split: &str) -> Discovery {
     ))
     .unwrap();
     let mut found = discovery();
-    found.fixtures = vec![fixture(&format!(
-        "[[steps]]\nop='x.y'\nargs={{ file = {{ set = 's1', item = '{item}' }} }}\n"
-    ))];
+    found.fixtures =
+        vec![fixture(&format!("[[steps]]\nop='x.y'\nargs={{ file = {{ set = 's1', item = '{item}' }} }}\n"))];
     found.sets.insert("s1".to_owned(), set);
     found
 }
@@ -69,10 +68,11 @@ fn record(task: &str, attempt: u32, outcome: AttemptOutcome, driver: &str) -> At
         effort: None,
         task: task.to_owned(),
         task_version: 1,
-        task_hash: discovery().tasks.iter().find(|t| t.task.id == task).map_or_else(
-            || "b3:x".to_owned(),
-            |file| discovery().task_hash(file),
-        ),
+        task_hash: discovery()
+            .tasks
+            .iter()
+            .find(|t| t.task.id == task)
+            .map_or_else(|| "b3:x".to_owned(), |file| discovery().task_hash(file)),
         feature: "QG-03".to_owned(),
         attempt,
         outcome,
@@ -140,7 +140,10 @@ fn rated_items_and_unfit_attempts_are_skipped() {
         record("gone.task", 1, AttemptOutcome::Pass, "reference"),
     ];
     let already = rated("2026-10-13T1000Z-nightly/a.one/2", "2026-10-13T10:00Z");
-    assert_eq!(ids(&sample(&discovery(), &PrivateList::default(), &history, std::slice::from_ref(&already), 10)), ["a.one#1"]);
+    assert_eq!(
+        ids(&sample(&discovery(), &PrivateList::default(), &history, std::slice::from_ref(&already), 10)),
+        ["a.one#1"]
+    );
     history.truncate(2);
     assert_eq!(ids(&sample(&discovery(), &PrivateList::default(), &history, &[already], 10)), ["a.one#1"]);
     assert_eq!(sample(&discovery(), &PrivateList::default(), &history, &[], 0).len(), 0);
