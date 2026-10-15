@@ -2,6 +2,7 @@
 
 use std::fmt;
 
+use omuzaki_core::time::Seconds;
 use omuzaki_ops_api::{Scope, SessionId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -88,20 +89,24 @@ pub enum FaultKind {
     BadReturn,
 }
 
-/// Where a plugin is in its life. Nothing loads at launch that the person has not enabled.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+/// Where a plugin is in its life (design §6.2). Nothing loads at launch that the person has not enabled.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum PluginState {
     /// On disk and off: the component is not compiled.
     Installed,
-    /// Turned off by the person.
-    Disabled,
+    /// Off, and kept off until the person turns it on again.
+    #[non_exhaustive]
+    Disabled {
+        /// Why.
+        reason: DisabledReason,
+    },
     /// Being compiled and started.
     Loading,
     /// Running, with an open session.
     Running,
-    /// Stopped by a fault; the host may restart it.
+    /// Stopped by a fault; the host restarts it after its backoff ([`PluginInfo::restart_at`]).
     #[non_exhaustive]
     Faulted {
         /// What went wrong.
@@ -116,10 +121,86 @@ impl PluginState {
     pub fn faulted(fault: FaultKind) -> Self {
         Self::Faulted { fault }
     }
+
+    /// A plugin kept off for `reason`.
+    pub fn disabled(reason: DisabledReason) -> Self {
+        Self::Disabled { reason }
+    }
+}
+
+/// Why a plugin is kept off.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "why", rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum DisabledReason {
+    /// The person turned it off.
+    Person,
+    /// It faulted [`FAULTS_TO_DISABLE`](crate::limits::FAULTS_TO_DISABLE) times within
+    /// [`FAULT_WINDOW_SECONDS`](crate::limits::FAULT_WINDOW_SECONDS); only the person turns it back on.
+    Faults,
+    /// Its WIT version is outside this host's window: it needs an update.
+    #[non_exhaustive]
+    Incompatible {
+        /// The version its imports name (`"0.1"`).
+        built_for: String,
+        /// The versions this host serves, newest first.
+        host: Vec<String>,
+    },
+    /// The person revoked the key that signed it.
+    PublisherRevoked,
+}
+
+impl DisabledReason {
+    /// A plugin built for `built_for`, on a host that serves `host`.
+    pub fn incompatible(built_for: impl Into<String>, host: Vec<String>) -> Self {
+        Self::Incompatible { built_for: built_for.into(), host }
+    }
+}
+
+/// One fault, for the manager's list of the last three.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct FaultRecord {
+    /// What went wrong.
+    pub fault: FaultKind,
+    /// The trap kind and the entry, one plain sentence: "out of fuel in init".
+    pub detail: String,
+    /// When, on the runner's clock.
+    pub at: Seconds,
+}
+
+/// How loud a log line is; the WIT `level`, one to one.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LogLevel {
+    /// Tracing detail.
+    Trace,
+    /// Debugging detail; stdout and stderr land here.
+    Debug,
+    /// Normal operation.
+    Info,
+    /// Something the person may want to know; every refused call adds one.
+    Warn,
+    /// A failure.
+    Error,
+}
+
+/// One line of a plugin's log.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct LogLine {
+    /// Rises by one per line kept, and never repeats, so a reader pages with `after`.
+    pub seq: u64,
+    /// When, on the runner's clock.
+    pub at: Seconds,
+    /// How loud.
+    pub level: LogLevel,
+    /// The text, at most [`LOG_LINE_MAX_BYTES`](crate::limits::LOG_LINE_MAX_BYTES).
+    pub text: String,
+    /// Written during a dry run (`plan`), so not an effect.
+    pub dry_run: bool,
 }
 
 /// What the manager shows about one plugin.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct PluginInfo {
     /// The id.
     pub id: PluginId,
@@ -135,6 +216,12 @@ pub struct PluginInfo {
     pub approved: Vec<Scope>,
     /// Its open session while it runs; none otherwise.
     pub session: Option<SessionId>,
+    /// Its last faults, oldest first, at most [`FAULTS_TO_DISABLE`](crate::limits::FAULTS_TO_DISABLE).
+    #[serde(default)]
+    pub faults: Vec<FaultRecord>,
+    /// When a faulted plugin restarts, on the runner's clock.
+    #[serde(default)]
+    pub restart_at: Option<Seconds>,
 }
 
 #[cfg(test)]
@@ -172,7 +259,10 @@ mod tests {
         ];
         let mut states = vec![
             PluginState::Installed,
-            PluginState::Disabled,
+            PluginState::disabled(DisabledReason::Person),
+            PluginState::disabled(DisabledReason::Faults),
+            PluginState::disabled(DisabledReason::incompatible("0.1", vec!["0.3".into(), "0.2".into()])),
+            PluginState::disabled(DisabledReason::PublisherRevoked),
             PluginState::Loading,
             PluginState::Running,
             PluginState::Unloading,
@@ -188,6 +278,8 @@ mod tests {
         }
         let json = serde_json::to_value(PluginState::faulted(FaultKind::OutOfFuel)).unwrap();
         assert_eq!(json, serde_json::json!({ "kind": "faulted", "fault": "out_of_fuel" }));
+        let json = serde_json::to_value(PluginState::disabled(DisabledReason::Faults)).unwrap();
+        assert_eq!(json, serde_json::json!({ "kind": "disabled", "reason": { "why": "faults" } }));
     }
 
     #[test]
@@ -200,6 +292,8 @@ mod tests {
             requested: vec![Scope::Read, Scope::Perform],
             approved: vec![Scope::Read],
             session: Some(SessionId(7)),
+            faults: vec![FaultRecord { fault: FaultKind::Trap, detail: "trap in init".into(), at: Seconds(2.0) }],
+            restart_at: Some(Seconds(3.0)),
         };
         let json = serde_json::to_string(&info).unwrap();
         assert_eq!(serde_json::from_str::<PluginInfo>(&json).unwrap(), info);

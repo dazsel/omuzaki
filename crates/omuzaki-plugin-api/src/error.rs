@@ -16,13 +16,32 @@ pub enum PluginError {
     /// The manifest is malformed or disagrees with the component.
     #[error("manifest: {0}")]
     Manifest(String),
-    /// The component imports something the host does not provide.
-    #[error("the plugin imports `{name}`, which this host does not provide")]
+    /// The component imports something the host does not provide: a WASI interface outside the stub subset, or
+    /// anything else (design §4.1).
+    #[error("the plugin imports {}, which this host does not provide", unexpected.join(", "))]
     #[non_exhaustive]
-    Import {
-        /// The import's name.
-        name: String,
+    Imports {
+        /// The imports the host refuses, sorted.
+        unexpected: Vec<String>,
     },
+    /// The component targets a WIT version outside this host's window.
+    #[error("the plugin was built for omuzaki:plugin {built_for}; this host serves {}", host.join(" and "))]
+    #[non_exhaustive]
+    Incompatible {
+        /// The version its imports name.
+        built_for: String,
+        /// The versions this host serves, newest first.
+        host: Vec<String>,
+    },
+    /// The package's signature does not verify, or its key is revoked.
+    #[error("signature: {0}")]
+    Signature(String),
+    /// The package itself is refused: a hostile archive, a missing file, a size cap.
+    #[error("package: {0}")]
+    Package(String),
+    /// Reading or writing the plugin's files failed.
+    #[error("files: {0}")]
+    Io(String),
     /// The component could not be instantiated.
     #[error("could not start the plugin: {0}")]
     Instantiate(String),
@@ -52,9 +71,17 @@ pub enum PluginError {
 }
 
 impl PluginError {
-    /// An import the host does not provide.
-    pub fn import(name: impl Into<String>) -> Self {
-        Self::Import { name: name.into() }
+    /// Imports the host does not provide; sorted so the message is stable.
+    pub fn imports(unexpected: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        let mut unexpected: Vec<String> = unexpected.into_iter().map(Into::into).collect();
+        unexpected.sort();
+        unexpected.dedup();
+        Self::Imports { unexpected }
+    }
+
+    /// A component built for `built_for` on a host serving `host`.
+    pub fn incompatible(built_for: impl Into<String>, host: Vec<String>) -> Self {
+        Self::Incompatible { built_for: built_for.into(), host }
     }
 
     /// A missing or unapproved scope.
@@ -74,11 +101,15 @@ impl From<PluginError> for OpError {
         let plain = |code| OpError { code, message: message.clone(), field: None, hint: None, detail: None };
         match error {
             PluginError::Manifest(_) => OpError::invalid("manifest", message),
+            PluginError::Package(_) => OpError::invalid("package", message),
+            PluginError::Signature(_) => OpError::invalid("signature", message),
+            PluginError::Incompatible { .. } => plain(ErrorCode::Unsupported),
+            PluginError::Io(_) => plain(ErrorCode::Unavailable),
             PluginError::Denied { scope } => OpError::denied(message).with_detail(ErrorDetail::MissingScope { scope }),
             PluginError::Limit { .. } => plain(ErrorCode::Limited),
             PluginError::NotFound => OpError::not_found(message),
             PluginError::Cancelled => plain(ErrorCode::Cancelled),
-            PluginError::Import { .. } | PluginError::Instantiate(_) | PluginError::Fault(_) => {
+            PluginError::Imports { .. } | PluginError::Instantiate(_) | PluginError::Fault(_) => {
                 OpError::internal(message)
             }
         }
@@ -92,7 +123,11 @@ mod tests {
     fn all() -> Vec<PluginError> {
         vec![
             PluginError::Manifest("no id".into()),
-            PluginError::import("wasi:sockets/tcp"),
+            PluginError::imports(["wasi:sockets/tcp"]),
+            PluginError::incompatible("0.1", vec!["0.3".into(), "0.2".into()]),
+            PluginError::Signature("mismatch".into()),
+            PluginError::Package("`../x` leaves the package".into()),
+            PluginError::Io("disk full".into()),
             PluginError::Instantiate("bad magic".into()),
             PluginError::Fault(FaultKind::Timeout),
             PluginError::denied(Scope::Perform),
@@ -119,6 +154,10 @@ mod tests {
             [
                 ErrorCode::Invalid,
                 ErrorCode::Internal,
+                ErrorCode::Unsupported,
+                ErrorCode::Invalid,
+                ErrorCode::Invalid,
+                ErrorCode::Unavailable,
                 ErrorCode::Internal,
                 ErrorCode::Internal,
                 ErrorCode::Denied,
