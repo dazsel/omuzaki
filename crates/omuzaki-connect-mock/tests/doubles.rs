@@ -7,7 +7,7 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use omuzaki_ai_api::NoProgress;
+use omuzaki_ai_api::{NoProgress, Progress};
 use omuzaki_connect_api::{ConfigSource, ConnectError, ConnectorConfig, ConnectorId, Inputs, Meter, Pace};
 use omuzaki_connect_mock::{FakePace, MemoryConfig, MemoryInputs, RecordingMeter};
 use omuzaki_core::time::{Clock, FakeClock, Seconds};
@@ -19,6 +19,25 @@ fn fake_pace_advances_the_clock_exactly() {
     let pace = FakePace::new(Arc::clone(&clock));
     pace.wait(2.5, &NoProgress);
     assert_eq!((clock.now(), pace.waits.load(Ordering::SeqCst)), (Seconds(3.5), 1));
+}
+
+#[test]
+fn a_cancelled_wait_returns_at_once() {
+    let clock = Arc::new(FakeClock::new(Seconds(1.0)));
+    let pace = FakePace::new(Arc::clone(&clock));
+    pace.wait(2.5, &Cancelled);
+    assert_eq!((clock.now(), pace.waits.load(Ordering::SeqCst)), (Seconds(1.0), 1));
+}
+
+/// Progress that has been cancelled.
+struct Cancelled;
+
+impl Progress for Cancelled {
+    fn stage(&self, _: &str, _: f32) {}
+
+    fn is_cancelled(&self) -> bool {
+        true
+    }
 }
 
 #[test]

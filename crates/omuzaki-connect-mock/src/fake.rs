@@ -112,10 +112,17 @@ impl Connector for FakeConnector {
         if m.declares(capability).is_none() || capability != self.generator.capability() {
             return Err(ConnectError::unsupported(format!("{} does not make {capability}", m.id)));
         }
-        let price = self.script.usd_micros_per_output;
+        let count = req.count();
+        let estimate =
+            if self.script.bill_by_manifest { Some(estimate_from_manifest(m, req)?.usd_micros) } else { None };
+        let price_of = |index: u32| match estimate {
+            Some(total) => share(total, index + 1, count) - share(total, index, count),
+            None => self.script.usd_micros_per_output,
+        };
         let mut outputs = Vec::new();
         let mut usage = Usage::default();
-        for index in 0..req.count() {
+        for index in 0..count {
+            let price = price_of(index);
             if cx.progress.is_cancelled() {
                 return stop(outputs, usage, ConnectError::Cancelled);
             }
@@ -150,6 +157,12 @@ impl Connector for FakeConnector {
         self.counters.pings.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
+}
+
+/// The first `of` of `n` equal shares of `total`, rounded down: shares of consecutive outputs sum to `total` exactly.
+fn share(total: u64, of: u32, n: u32) -> u64 {
+    let micros = u128::from(total) * u128::from(of) / u128::from(n.max(1));
+    u64::try_from(micros).unwrap_or(u64::MAX)
 }
 
 /// The seed of output `index`: the request's seed (0 when it has none) plus the index.

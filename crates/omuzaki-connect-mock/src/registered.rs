@@ -67,10 +67,11 @@ mock!(
     Script::priced(200_000)
 );
 mock!(
-    /// `mock-voice`: WAV speech that plays a hosted service at $0.03 a thousand characters (one unit per output).
+    /// `mock-voice`: WAV speech that plays a hosted service at $0.03 a thousand characters, billed as its manifest
+    /// prices the text.
     MockVoice,
     voice,
-    Script::priced(30_000)
+    Script::by_manifest()
 );
 mock!(
     /// `mock-music`: free, local WAV music and sound effects.

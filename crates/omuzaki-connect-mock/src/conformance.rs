@@ -22,7 +22,7 @@ use omuzaki_connect_api::{
     AuthSpec, Capability, ChatMessage, ConnectError, Connector, ConnectorConfig, ConnectorManifest, DccRequest,
     Deliver, ImageRequest, Inputs, LlmRequest, MediaKind, Model3dRequest, MotionRequest, MotionSource, MusicRequest,
     Output, Pace, Request, Role, RunCx, RunEnv, RunOutput, Target, TextureRequest, Transport, VisionRequest,
-    VoiceChoice, VoiceRequest,
+    VoiceChoice, VoiceRequest, usd,
 };
 use omuzaki_core::time::{FakeClock, Seconds};
 use omuzaki_http_api::{Cancel, CancelFlag, HttpError, HttpRequest, HttpResponse, HttpStream, HttpTransport};
@@ -54,13 +54,15 @@ pub const ESTIMATE_IS_PURE: &str = "estimate_is_pure";
 pub const ESTIMATE_BOUNDS_USAGE: &str = "estimate_bounds_usage";
 /// The sum reported to the meter equals `Usage::usd_micros`.
 pub const USAGE_IS_METERED: &str = "usage_is_metered";
-/// A paid connector stops with `CapReached` once the meter refuses, before its next billable request.
+/// A paid connector charges the meter for a request that costs something, and stops with `CapReached` once the
+/// meter refuses, before its next billable request.
 pub const METER_REFUSAL_STOPS: &str = "meter_refusal_stops";
 /// An already cancelled run is `Err(Cancelled)` and sends nothing.
 pub const CANCELLED_MAKES_NO_REQUEST: &str = "cancelled_makes_no_request";
 /// A paid connector with a cap of 0 is `Err(CapReached)` and sends nothing.
 pub const CAP_IS_CHECKED_FIRST: &str = "cap_is_checked_first";
-/// Every output fits the capability's declaration, has a model and media type, and the first carries the seed.
+/// A declared request succeeds, and every output fits the capability's declaration, has a model and media type, and
+/// the first carries the seed.
 pub const OUTPUTS_MATCH_MANIFEST: &str = "outputs_match_manifest";
 /// A request of an undeclared capability is `Unsupported`: no panic, no request.
 pub const UNSUPPORTED_IS_REFUSED: &str = "unsupported_is_refused";
@@ -329,6 +331,12 @@ impl Suite<'_, '_> {
             };
             let ran = self.run(target, req, &run);
             let charges = meter.charges().len();
+            if charges == 0 && estimate.usd_micros > 0 {
+                self.finding(
+                    METER_REFUSAL_STOPS,
+                    format!("{} costs {} but never charged the meter", req.capability(), usd(estimate.usd_micros)),
+                );
+            }
             if charges > 1 {
                 self.finding(
                     METER_REFUSAL_STOPS,
@@ -408,7 +416,10 @@ impl Suite<'_, '_> {
             let (ran, _) = self.plain(target, req, self.env.http, cap);
             let out = match ran {
                 Ok(Ok(out)) => out,
-                Ok(Err(_)) => continue,
+                Ok(Err(error)) => {
+                    self.finding(OUTPUTS_MATCH_MANIFEST, format!("a {} run failed: {error}", req.capability()));
+                    continue;
+                }
                 Err(panic) => {
                     self.finding(OUTPUTS_MATCH_MANIFEST, format!("a {} run panicked: {panic}", req.capability()));
                     continue;

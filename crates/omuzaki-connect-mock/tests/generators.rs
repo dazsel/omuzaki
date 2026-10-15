@@ -162,7 +162,8 @@ fn cases() -> Vec<Case> {
     vec![
         (FakeConnector::texture(Script::default()), "mock-texture", texture(false, 1), |s| texture(false, s)),
         (FakeConnector::model3d(Script::priced(200_000)), "mock-3d", mesh(1), mesh),
-        (FakeConnector::voice(Script::priced(30_000)), "mock-voice", voice(30, 1), |s| voice(30, s)),
+        // 2,001 characters are three thousand-character units: $0.09, not one output's $0.03.
+        (FakeConnector::voice(Script::by_manifest()), "mock-voice", voice(2_001, 1), |s| voice(30, s)),
         (FakeConnector::music(Script::default()), "mock-music", music(1, MusicKind::Music, 1), |s| {
             music(1, MusicKind::Music, s)
         }),

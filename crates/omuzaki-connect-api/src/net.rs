@@ -37,7 +37,10 @@ impl Endpoint {
         }
         let (host, port) = if let Some(bracketed) = authority.strip_prefix('[') {
             let (host, after) = bracketed.split_once(']')?;
-            (host, after.strip_prefix(':'))
+            match after {
+                "" => (host, None),
+                _ => (host, Some(after.strip_prefix(':')?)),
+            }
         } else {
             match authority.split_once(':') {
                 Some((host, port)) => (host, Some(port)),
@@ -81,8 +84,19 @@ mod tests {
         let e = Endpoint::parse("HTTPS://API.Example.com").unwrap();
         assert_eq!((e.scheme, e.host.as_str(), e.is_loopback()), (Scheme::Https, "api.example.com", false));
         assert_eq!(Endpoint::parse("http://[::1]:9/x").unwrap().host, "::1");
+        assert_eq!(Endpoint::parse("http://[::1]/x").unwrap().host, "::1");
         assert!(Endpoint::parse("http://localhost").unwrap().is_loopback());
-        for bad in ["ftp://x", "http://", "http://u:p@host", "http://host:", "http://host:8a", "host", "http://a b"] {
+        for bad in [
+            "ftp://x",
+            "http://",
+            "http://u:p@host",
+            "http://host:",
+            "http://host:8a",
+            "host",
+            "http://a b",
+            "http://[::1]junk",
+            "http://[::1]:",
+        ] {
             assert_eq!(Endpoint::parse(bad), None, "{bad}");
         }
     }

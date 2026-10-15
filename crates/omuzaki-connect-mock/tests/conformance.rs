@@ -159,9 +159,60 @@ fn every_finding_is_reported() {
 #[test]
 fn a_cap_the_connector_ignores_is_found() {
     let m = manifest("mock-image-paid");
-    // Free per output though the manifest is paid: a cap of 0 does not stop it.
+    // Free per output though the manifest is paid: a cap of 0 does not stop it, and it never bills.
     let found = findings(&FakeConnector::image(Script::default()), &m, vec![image()], None);
-    assert_eq!(checks(&found), [conformance::CAP_IS_CHECKED_FIRST]);
+    assert_eq!(checks(&found), [conformance::METER_REFUSAL_STOPS, conformance::CAP_IS_CHECKED_FIRST]);
+}
+
+/// Checks the cap first but bills nobody: it runs against a meter that keeps nothing and reports no usage.
+struct NeverMeters(FakeConnector);
+
+/// Takes every charge and keeps none of them.
+struct Unwatched;
+
+impl omuzaki_connect_api::Meter for Unwatched {
+    fn charge(&self, _: u64) -> Result<(), ConnectError> {
+        Ok(())
+    }
+}
+
+impl Connector for NeverMeters {
+    fn run(&self, m: &ConnectorManifest, req: &Request, cx: &RunCx<'_>) -> Result<RunOutput, ConnectError> {
+        let env = RunEnv { progress: cx.progress, cancel: Arc::clone(&cx.cancel), meter: &Unwatched };
+        let unbilled = RunCx::new(cx.target, cx.http, cx.inputs, &env, cx.pace, cx.clock, cx.cap_usd_micros);
+        self.0.run(m, req, &unbilled).map(|out| RunOutput { usage: Usage::default(), ..out })
+    }
+
+    fn ping(&self, m: &ConnectorManifest, cx: &RunCx<'_>) -> Result<(), ConnectError> {
+        self.0.ping(m, cx)
+    }
+}
+
+/// Never makes anything: a run that would have made something fails instead.
+struct AlwaysFails(FakeConnector);
+
+impl Connector for AlwaysFails {
+    fn run(&self, m: &ConnectorManifest, req: &Request, cx: &RunCx<'_>) -> Result<RunOutput, ConnectError> {
+        self.0.run(m, req, cx).and_then(|_| Err(ConnectError::failed("down")))
+    }
+
+    fn ping(&self, m: &ConnectorManifest, cx: &RunCx<'_>) -> Result<(), ConnectError> {
+        self.0.ping(m, cx)
+    }
+}
+
+#[test]
+fn a_paid_run_that_never_meters_is_found() {
+    let m = manifest("mock-image-paid");
+    let found = findings(&NeverMeters(FakeConnector::image(Script::priced(40_000))), &m, vec![image()], None);
+    assert_eq!(checks(&found), [conformance::METER_REFUSAL_STOPS]);
+}
+
+#[test]
+fn a_connector_that_never_makes_anything_is_found() {
+    let m = manifest("mock-image");
+    let found = findings(&AlwaysFails(FakeConnector::image(Script::default())), &m, vec![image()], None);
+    assert_eq!(checks(&found), [conformance::OUTPUTS_MATCH_MANIFEST]);
 }
 
 /// A small HTTP adapter written the way real ones are: cap and cancel first, the shared error mapping, the charge as

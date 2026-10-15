@@ -9,6 +9,9 @@ pub struct Script {
     pub latency_s: f64,
     /// Billed per output, in micro-dollars.
     pub usd_micros_per_output: u64,
+    /// Bill the manifest's estimate of the request instead, spread over its outputs (a price per thousand
+    /// characters is not a price per output).
+    pub bill_by_manifest: bool,
     /// Fail at output index `.0` (0-based) with this error instead of producing it.
     pub fail: Option<(u32, ConnectError)>,
 }
@@ -17,5 +20,11 @@ impl Script {
     /// Free, instant and never failing, billing `usd_micros` per output.
     pub fn priced(usd_micros: u64) -> Self {
         Self { usd_micros_per_output: usd_micros, ..Self::default() }
+    }
+
+    /// Free, instant and never failing, billing what the manifest estimates for the request: output `i` of `n` costs
+    /// `estimate * (i + 1) / n - estimate * i / n`, so the outputs sum to the estimate exactly.
+    pub fn by_manifest() -> Self {
+        Self { bill_by_manifest: true, ..Self::default() }
     }
 }
