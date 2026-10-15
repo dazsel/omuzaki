@@ -1,0 +1,7 @@
+section = "models"
+item = "Live2D Cubism SDK (Core, Native/Web)"
+kind = "native+sdk"
+used_for = "`.moc3` import and runtime (not used)"
+status = "unverified"
+condition = "proprietary, closed Core; VTuber apps are \"Expandable Applications\" needing Live2D's approval and a special Publication License Agreement whose terms are not public; the policy treats unverified as NO (decision 0010)"
+audit = "(live2d.com licence pages, read 2026-10-11)"

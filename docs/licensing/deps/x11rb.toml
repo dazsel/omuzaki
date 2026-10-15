@@ -1,0 +1,6 @@
+section = "rust"
+item = "x11rb"
+kind = "crate"
+used_for = "X11 input shape and window-manager hints in `spikes/mascot-window`; the spike's own workspace keeps it out of the main lockfile"
+status = "yes"
+audit = "(crates.io: x11rb 0.13.2, MIT OR Apache-2.0)"

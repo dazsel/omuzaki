@@ -8,8 +8,11 @@
 //! **Access.** The op's scope is `read`. A `path` goes through [`OpCtx::fs_access`]: inside the project folder `read`
 //! alone is enough; anywhere else the actor needs `fs` and a root that covers the path (ops-api.md §5). The file is
 //! opened through the returned [`CanonicalPath`](omuzaki_ops_api::CanonicalPath), so a link swapped in after the check
-//! cannot redirect the read. An `asset` is read from the store service and needs no file access at all. The sidecar
-//! files of a `.gltf` wait for the resolver (see [`Inspect::inspect_bytes_with`]).
+//! cannot redirect the read. An `asset` is read from the store service and needs no file access at all.
+//!
+//! **Sidecars.** The files a `.gltf` refers to are read through a [`DirResolver`], confined to the folder of the file
+//! the person named, so a `path` read resolves them. An `asset` has no folder, so its sidecars are refused with
+//! [`NoResolver`].
 
 use std::io::Read;
 use std::path::Path;
@@ -23,7 +26,8 @@ use omuzaki_store_api::{ContentHash, Store, StoreError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::error::from_io;
+use crate::error::from_io;
+use super::sidecar::DirResolver;
 
 /// Reads a model file and reports what is in it, without importing it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -188,13 +192,14 @@ impl Op for Inspect {
                 if path.is_empty() {
                     return Err(OpError::invalid("path", "the path is empty").hint("pass the path of a model file"));
                 }
-                let file = ctx.fs_access(path, FsMode::Read)?.open_read()?;
-                let bytes = read_limited(file, max_bytes)?;
+                let file = ctx.fs_access(path, FsMode::Read)?;
+                let bytes = read_limited(file.open_read()?, max_bytes)?;
                 if bytes.is_empty() {
                     return Err(OpError::invalid("path", format!("{path} is empty")));
                 }
                 let name = Path::new(path).file_name().and_then(|name| name.to_str()).unwrap_or(path);
-                self.inspect_bytes(name, &bytes)?
+                let sidecars = DirResolver::new(ctx, &file, path, max_bytes);
+                self.inspect_bytes_with(name, &bytes, &sidecars)?
             }
             (None, Some(hash)) => {
                 let bytes = read_asset(ctx, hash, max_bytes)?;

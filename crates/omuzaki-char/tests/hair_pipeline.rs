@@ -201,7 +201,7 @@ fn exact(out: &PartOutput) -> String {
 }
 
 fn static_mesh(out: &PartOutput) -> &omuzaki_char_api::PartMesh {
-    out.meshes.iter().find(|m| !m.dynamic).expect("a static mesh")
+    out.meshes.iter().find(|m| m.name == "hair-static").expect("a static mesh")
 }
 
 // ------------------------------------------------------------------------------------------------ the kind
@@ -217,14 +217,15 @@ fn the_kind_is_registered_project_owned_and_needs_the_head() {
 }
 
 #[test]
-fn the_real_kind_builds_the_default_style_on_the_template_body_with_no_stub_clumps_yet() {
-    // Every generator is a stub until they are written: the default style builds, empty, and says so.
+fn the_real_kind_builds_the_default_style_on_the_template_body_with_its_cap_shell() {
+    // The cap is a real generator: the default style's static mesh holds its shell, and it is no longer reported as a
+    // stub. (The default style has no part sweep.)
     let mut def = character(&HairParams::default());
     def.parts.insert(pid("hair"), part("hair", json!({})));
     let out = hair_output(&def).unwrap();
-    assert!(out.meshes.is_empty());
-    assert!(out.warnings.iter().any(|w| w.contains("a-cap")), "{:?}", out.warnings);
-    assert_eq!(out.materials.len(), 1, "the material is still there for a recolour");
+    assert!(out.meshes.iter().any(|m| m.name == "hair-static" && !m.geometry.positions.is_empty()));
+    assert!(!out.warnings.iter().any(|w| w.contains("a-cap")), "{:?}", out.warnings);
+    assert_eq!(out.materials.len(), 1);
 }
 
 // ------------------------------------------------------------------------------------------------ compile
@@ -357,7 +358,7 @@ fn two_group_style() -> HairParams {
 }
 
 #[test]
-fn static_groups_make_one_head_skinned_mesh_and_simulated_groups_a_dynamic_one() {
+fn static_groups_make_one_head_skinned_mesh_and_simulated_groups_a_second_one() {
     let out = hair_output(&character(&two_group_style())).unwrap();
     let names: Vec<_> = out.meshes.iter().map(|m| m.name.as_str()).collect();
     assert_eq!(names, ["hair-static", "hair-dynamic"]);
@@ -367,12 +368,31 @@ fn static_groups_make_one_head_skinned_mesh_and_simulated_groups_a_dynamic_one()
         stat.geometry.joints.iter().all(|j| *j == [0; 4])
             && stat.geometry.weights.iter().all(|w| *w == [1.0, 0.0, 0.0, 0.0])
     );
-    assert!(dynamic.dynamic && dynamic.joint_bones.is_empty() && !dynamic.geometry.is_skinned());
+    assert!(!dynamic.dynamic && dynamic.joint_bones == [omuzaki_char_api::JointRef::HEAD]);
+    assert!(
+        dynamic.geometry.joints.iter().all(|j| *j == [0; 4])
+            && dynamic.geometry.weights.iter().all(|w| *w == [1.0, 0.0, 0.0, 0.0])
+    );
     // 4 static clumps (2 locks, mirrored), 1 dynamic, 4 rings of 8 each.
     assert_eq!(stat.geometry.positions.len(), 4 * 4 * RING);
     assert_eq!(dynamic.geometry.positions.len(), 4 * RING);
     assert!(stat.casts_shadow && stat.render_order == 1);
     assert!(out.runtime.is_none(), "the simulation is not built yet");
+}
+
+#[test]
+fn a_simulated_group_is_skinned_to_the_head_while_the_part_has_no_runtime() {
+    // Until #322 lands, nothing moves the simulated groups, so they must follow the head: no mesh is unskinned or
+    // dynamic, and each one's weights and joints validate against the head as its only bone.
+    let out = hair_output(&character(&two_group_style())).unwrap();
+    assert!(out.runtime.is_none(), "no runtime yet");
+    assert!(out.meshes.iter().any(|m| m.name == "hair-dynamic"), "the simulated group has a mesh");
+    for mesh in &out.meshes {
+        assert!(!mesh.dynamic, "{} is not dynamic without a runtime", mesh.name);
+        assert!(mesh.geometry.is_skinned(), "{} is skinned", mesh.name);
+        assert_eq!(mesh.joint_bones, [omuzaki_char_api::JointRef::HEAD], "{} is rigid to the head", mesh.name);
+        mesh.validate().unwrap();
+    }
 }
 
 #[test]
@@ -447,7 +467,7 @@ fn a_shell_follows_the_tubes_and_a_strip_is_reported_not_drawn() {
         "the shell's triangle is renumbered after the tubes"
     );
     assert!(out.warnings.iter().any(|w| w.contains("z-curtain") && w.contains("strip")), "{:?}", out.warnings);
-    let dynamic = out.meshes.iter().find(|m| m.dynamic).unwrap();
+    let dynamic = out.meshes.iter().find(|m| m.name == "hair-dynamic").unwrap();
     assert_eq!(dynamic.geometry.positions.len(), 4 * RING, "the strip's clumps add nothing to the tube mesh");
 }
 
@@ -575,11 +595,11 @@ fn a_missing_tube_mesh_asks_for_a_rebuild_instead_of_claiming_done() {
     let built = || hair_output(&def).unwrap();
 
     let mut no_dynamic = built();
-    no_dynamic.meshes.retain(|m| !m.dynamic);
+    no_dynamic.meshes.retain(|m| m.name != "hair-dynamic");
     assert_eq!(recolour_part(&def, &pid("hair"), &services, &mut no_dynamic), Ok(Recoloured::NeedsRebuild));
 
     let mut no_static = built();
-    no_static.meshes.retain(|m| m.dynamic);
+    no_static.meshes.retain(|m| m.name == "hair-dynamic");
     assert_eq!(recolour_part(&def, &pid("hair"), &services, &mut no_static), Ok(Recoloured::NeedsRebuild));
 
     let mut none = built();

@@ -21,8 +21,8 @@
 
 use omuzaki_anim_api::{HumanoidBone, HumanoidPose};
 use omuzaki_char_api::{
-    Anchor, AnchorId, Attach, AttachOffset, BoneName, BuildCtx, BuildError, BuiltCharacter, CharId, JointRef, PartId,
-    Published,
+    Anchor, AnchorId, AnchorsFact, Attach, AttachOffset, BoneName, BuildCtx, BuildError, BuiltCharacter, CharId,
+    JointRef, PartId, Published,
 };
 use omuzaki_core::glam::{DMat4, DQuat, DVec3, EulerRot, Quat, Vec3};
 use omuzaki_ops_api::{Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op};
@@ -128,7 +128,7 @@ fn anchor_frame(anchor: &Anchor) -> DMat4 {
 
 /// The names of the anchors `owner` has published, for an error that says what is there.
 fn published_by(published: &Published, owner: &PartId) -> Vec<String> {
-    published.anchors.keys().filter(|(part, _)| part == owner).map(|(_, name)| name.to_string()).collect()
+    published.get::<AnchorsFact>().keys().filter(|(part, _)| part == owner).map(|(_, name)| name.to_string()).collect()
 }
 
 /// Resolves `attach` for `part` against what was published so far.
@@ -150,7 +150,7 @@ pub fn resolve(part: &PartId, attach: &Attach, published: &Published) -> Result<
             (bone.clone(), frame)
         }
         Attach::Anchor { part: owner, anchor, .. } => {
-            let found = published.anchors.get(&(owner.clone(), anchor.clone())).ok_or_else(|| {
+            let found = published.get::<AnchorsFact>().get(&(owner.clone(), anchor.clone())).ok_or_else(|| {
                 let names = published_by(published, owner);
                 let there = if names.is_empty() {
                     format!(

@@ -47,5 +47,27 @@ expect has_tests false "a docs-only change has no tests"
 expect has_cross false "a docs-only change builds nothing"
 expect empty true "a docs-only change is empty"
 
+# A change to the op contract reaches the CLI in full scope, with no link-only crate: the link-gate job still runs
+# the CLI's product configuration, on a PR and in the queue (#1632).
+cat >"$work/ops-api.json" <<'J'
+{"mode":"crates","trigger":null,"empty":false,"changed":["omuzaki-ops-api"],
+ "direct":["omuzaki-ops-api","omuzaki-cli"],"full":["omuzaki-cli","omuzaki-ops-api"],"link_only":[],
+ "shards_changed":[["omuzaki-ops-api"]],"shards_full":[["omuzaki-cli","omuzaki-ops-api"]]}
+J
+for event in pull_request merge_group; do
+  out=$(python3 -I "$PLAN" "$work/ops-api.json" "$event")
+  expect cli_in_scope true "$event: the CLI in full scope runs its product configuration"
+  expect has_link_gates false "$event: no link-only crate, so no other link gate"
+done
+out=$(python3 -I "$PLAN" "$work/leaf.json" pull_request)
+expect cli_in_scope false "a change that doesn't reach the CLI skips its product configuration"
+cat >"$work/cli-link-only.json" <<'J'
+{"mode":"crates","trigger":null,"empty":false,"changed":["omuzaki-io-ops"],"direct":["omuzaki-io-ops"],
+ "full":["omuzaki-io-ops"],"link_only":["omuzaki-cli"],"shards_changed":[["omuzaki-io-ops"]],
+ "shards_full":[["omuzaki-io-ops"]]}
+J
+out=$(python3 -I "$PLAN" "$work/cli-link-only.json" pull_request)
+expect cli_in_scope true "the CLI reached only through a link-only dependency runs it too"
+
 python3 -I "$PLAN" >/dev/null 2>&1 && fail "missing arguments should be an error" || pass "missing arguments are an error"
 exit $((failures > 0))

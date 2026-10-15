@@ -1,3 +1,9 @@
+---
+title: "0031: The AI performer is a `perform`-only session that speaks with inline intent tags (2026-10-13)"
+summary: "The AI performer is a `perform`-only session that speaks with inline intent tags"
+area: decisions
+---
+
 # 0031: The AI performer is a `perform`-only session that speaks with inline intent tags (2026-10-13)
 
 **Status:** proposed. It adds a new API crate

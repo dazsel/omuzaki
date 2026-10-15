@@ -45,17 +45,25 @@ omuzaki-io-ops = { path = "../omuzaki-io-ops" }
 omuzaki-io-vrm = { path = "../omuzaki-io-vrm" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-stage = { path = "../omuzaki-stage" }
+omuzaki-store = { path = "../omuzaki-store" }
+omuzaki-store-api = { path = "../omuzaki-store-api" }
 
 [dev-dependencies]
 tempfile.workspace = true
 # The registration scan behind the link gate (`tests/registrations.rs`, ADR 0015).
 xtask = { path = "../../xtask" }
 
+# The generator behind `build.rs`: the `link()` calls come from the dependencies' `registers` flags.
+[build-dependencies]
+omuzaki-link-build = { path = "../omuzaki-link-build" }
+
 [lints]
 workspace = true
 
 # Native only: the desktop command-line binary
 [package.metadata.omuzaki]
+kind = "App"
+summary = "the `omuzaki` command: ops, help, run (dry-run/JSON), undo/redo, all generated from the op registry"
 wasm = false
 # Held only to link their registrations in (`omuzaki_cli::link`, ADR 0015); this crate's source calls none of their API.
 # A change to one of them runs just `tests/registrations.rs` here (`cargo xtask check --affected`), not every test.

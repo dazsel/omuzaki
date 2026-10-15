@@ -12,6 +12,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use omuzaki_anim_api::spring::JointLimit;
 use omuzaki_anim_api::{SpringSolver, Tick};
 use omuzaki_rig::spring::VrmSpringSolver;
 
@@ -46,8 +47,33 @@ static GLOBAL: Counting = Counting;
 
 #[test]
 fn a_spring_step_allocates_nothing() {
+    allocates_nothing(&spring_rig::hair_rig(30, 11));
+}
+
+#[test]
+fn a_spring_step_with_inside_and_plane_colliders_allocates_nothing() {
+    let rig = spring_rig::extended_hair_rig(30, 11);
+    assert_eq!(rig.set.groups[1].colliders.len(), 3);
+    allocates_nothing(&rig);
+}
+
+#[test]
+fn a_spring_step_with_every_kind_of_limit_allocates_nothing() {
+    let mut rig = spring_rig::extended_hair_rig(30, 11);
+    for (i, chain) in rig.set.chains.iter_mut().enumerate() {
+        for joint in &mut chain.joints {
+            joint.limit = Some(match i % 3 {
+                0 => JointLimit::cone(0.3),
+                1 => JointLimit::hinge(0.4),
+                _ => JointLimit::spherical(0.3, 0.2),
+            });
+        }
+    }
+    allocates_nothing(&rig);
+}
+
+fn allocates_nothing(rig: &spring_rig::HairRig) {
     // Everything that allocates is built before the counter starts.
-    let rig = spring_rig::hair_rig(30, 11);
     let mut solver = VrmSpringSolver::new(&rig.set, &rig.skeleton).expect("the rig's springs are valid");
     let mut pose = rig.skeleton.rest_pose();
     rig.animate(&mut pose, 0);

@@ -19,3 +19,8 @@ tempfile.workspace = true
 
 [lints]
 workspace = true
+
+[package.metadata.omuzaki]
+kind = "Mock"
+summary = "a `fake` runtime and deterministic sessions (affine, delay line, scripted, crash on cue), an in-memory fetcher, the `test_echo@1` and `test_stream@1` slots with a shipped test model, and `InlineStream`, the reference stream with scripted late blocks"
+registers = true

@@ -1,0 +1,7 @@
+section = "rust"
+item = "serde_path_to_error"
+kind = "crate"
+used_for = "argument paths in op decode errors (`params/ease`)"
+status = "yes"
+audit = "(crates.io: MIT OR Apache-2.0)"
+crates = ["serde_path_to_error"]

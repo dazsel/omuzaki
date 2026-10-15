@@ -12,21 +12,30 @@ repository.workspace = true
 # The provider features only compile ort's CUDA / DirectML / Core ML / WebGPU option types; `load-dynamic` (the workspace
 # setting) means no ONNX Runtime is linked or downloaded at build time.
 ort = { workspace = true, features = ["cuda", "directml", "coreml", "webgpu"] }
+tracing.workspace = true
+omuzaki-ai-api = { path = "../omuzaki-ai-api" }
+omuzaki-ai-native = { path = "../omuzaki-ai-native" }
+omuzaki-core = { path = "../omuzaki-core" }
+
+[dev-dependencies]
 flate2.workspace = true
 tar.workspace = true
 tempfile.workspace = true
-tracing.workspace = true
-omuzaki-ai-api = { path = "../omuzaki-ai-api" }
-omuzaki-core = { path = "../omuzaki-core" }
 zip.workspace = true
-
-[dev-dependencies]
 hound.workspace = true
 sha2.workspace = true
+
+# Gated on OMUZAKI_ORT_CACHE; a plain `main` with `Instant`, so it adds no dependency.
+[[bench]]
+name = "pipeline"
+harness = false
 
 [lints]
 workspace = true
 
 # Native only: ONNX Runtime has no wasm32 build
 [package.metadata.omuzaki]
+kind = "Implementation"
+summary = "the `onnx` runtime (§16 ML-01): pinned Microsoft ONNX Runtime builds fetched through `FileSource` on first use, providers tried in order with the CPU last, no spin-waiting, custom-op domains and external data refused before ONNX Runtime sees the bytes; native only; design in `docs/design/ai-api.md` §9, ADR 0017"
+registers = true
 wasm = false

@@ -10,7 +10,7 @@
 //! Spring chains are authored by the character builder (hair clumps become chains, CB-33) and simulated by the rig;
 //! the [`SpringSolver`] trait is the boundary between them.
 
-use omuzaki_core::glam::Vec3;
+use omuzaki_core::glam::{Quat, Vec3};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -88,7 +88,102 @@ pub struct SpringJoint {
     /// Its parameters.
     #[serde(flatten)]
     pub params: SpringParams,
+    /// How far the bone may swing from its rest direction (`VRMC_springBone_limit`). `None` is unlimited. Ignored on
+    /// the last joint of a chain, which is only a tail.
+    #[serde(default)]
+    pub limit: Option<JointLimit>,
 }
+
+/// `VRMC_springBone_limit`: constrains the Head-to-Tail direction of a joint. Angles are in radians.
+///
+/// Each limit is a shape in its own space, which `rotation` turns relative to the joint's rest frame (the frame whose
+/// +Y axis is the bone's rest direction; the solver module docs give the exact frame). An angle, pitch or yaw that is
+/// negative or not finite, or a `rotation` that is not a unit quaternion, is refused by [`SpringSet::validate`].
+///
+/// `#[non_exhaustive]`: a match outside this crate needs a wildcard arm, so the next limit breaks nothing.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum JointLimit {
+    /// The direction stays within `angle` of the limit's +Y axis. An `angle` of pi or more is a sphere (no limit).
+    Cone {
+        /// Half-angle of the cone.
+        angle: f32,
+        /// The cone's orientation relative to the joint's rest frame.
+        #[serde(default = "unit_rotation")]
+        #[schemars(with = "[f32; 4]")]
+        rotation: Quat,
+    },
+    /// The direction turns only about the limit's X axis, within `angle` of +Y. An `angle` of pi or more is a disk.
+    Hinge {
+        /// How far either way the hinge opens.
+        angle: f32,
+        /// The hinge's orientation relative to the joint's rest frame.
+        #[serde(default = "unit_rotation")]
+        #[schemars(with = "[f32; 4]")]
+        rotation: Quat,
+    },
+    /// Pitch (about X) and yaw (about Z) each bounded around +Y.
+    Spherical {
+        /// Largest turn about X; pi or more is unbounded.
+        pitch: f32,
+        /// Largest turn about Z; pi/2 or more is unbounded.
+        yaw: f32,
+        /// The limit's orientation relative to the joint's rest frame.
+        #[serde(default = "unit_rotation")]
+        #[schemars(with = "[f32; 4]")]
+        rotation: Quat,
+    },
+}
+
+fn unit_rotation() -> Quat {
+    Quat::IDENTITY
+}
+
+impl JointLimit {
+    /// A cone of half-angle `angle` opening along the rest direction.
+    pub fn cone(angle: f32) -> Self {
+        Self::Cone { angle, rotation: Quat::IDENTITY }
+    }
+
+    /// A hinge opening `angle` either way along the rest direction.
+    pub fn hinge(angle: f32) -> Self {
+        Self::Hinge { angle, rotation: Quat::IDENTITY }
+    }
+
+    /// A spherical limit of `pitch` about X and `yaw` about Z around the rest direction.
+    pub fn spherical(pitch: f32, yaw: f32) -> Self {
+        Self::Spherical { pitch, yaw, rotation: Quat::IDENTITY }
+    }
+
+    /// The same limit turned by `rotation` relative to the joint's rest frame.
+    #[must_use]
+    pub fn rotated(self, rotation: Quat) -> Self {
+        match self {
+            Self::Cone { angle, .. } => Self::Cone { angle, rotation },
+            Self::Hinge { angle, .. } => Self::Hinge { angle, rotation },
+            Self::Spherical { pitch, yaw, .. } => Self::Spherical { pitch, yaw, rotation },
+        }
+    }
+
+    /// The first thing wrong with this limit, if anything.
+    fn check(&self) -> Option<&'static str> {
+        let (angles, rotation) = match *self {
+            Self::Cone { angle, rotation } | Self::Hinge { angle, rotation } => ([angle, 0.0], rotation),
+            Self::Spherical { pitch, yaw, rotation } => ([pitch, yaw], rotation),
+        };
+        if angles.iter().any(|a| !a.is_finite() || *a < 0.0) {
+            return Some("limit angles must be finite and not negative");
+        }
+        if !rotation.is_finite() || (rotation.length() - 1.0).abs() > UNIT_TOLERANCE {
+            return Some("limit rotation must be a unit quaternion");
+        }
+        None
+    }
+}
+
+/// How far a limit's `rotation` may stray from unit length.
+const UNIT_TOLERANCE: f32 = 1e-3;
 
 /// A chain of joints swinging together: one lock of hair, one ear, one skirt panel edge.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -120,15 +215,19 @@ impl SpringChain {
         let joints = bones
             .iter()
             .enumerate()
-            .map(|(i, &bone)| SpringJoint { bone, params: root.lerp(&tip, i as f32 / last) })
+            .map(|(i, &bone)| SpringJoint { bone, params: root.lerp(&tip, i as f32 / last), limit: None })
             .collect();
         Self { name: name.into(), joints, collider_groups: Vec::new(), center: None }
     }
 }
 
-/// A collision shape attached to a bone, in the bone's local space (VRM `sphere` and `capsule`).
+/// A collision shape attached to a bone, in the bone's local space (VRM `sphere` and `capsule`, and the extended
+/// colliders' `sphere_inside`, `capsule_inside` and `plane`).
+///
+/// `#[non_exhaustive]`: a match outside this crate needs a wildcard arm, so the next shape breaks nothing.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ColliderShape {
     /// A ball.
     Sphere {
@@ -149,12 +248,71 @@ pub enum ColliderShape {
         #[schemars(with = "[f32; 3]")]
         tail: Vec3,
     },
+    /// The inside of a ball: pushes a joint back toward the centre when it would leave it.
+    SphereInside {
+        /// Centre.
+        #[schemars(with = "[f32; 3]")]
+        offset: Vec3,
+        /// Radius, metres.
+        radius: f32,
+    },
+    /// The inside of a capsule (see [`Self::Capsule`]): pushes a joint back toward its axis when it would leave.
+    CapsuleInside {
+        /// Centre of the start cap.
+        #[schemars(with = "[f32; 3]")]
+        offset: Vec3,
+        /// Radius of the caps and the cylinder, metres.
+        radius: f32,
+        /// Centre of the end cap.
+        #[schemars(with = "[f32; 3]")]
+        tail: Vec3,
+    },
+    /// A half-space. A joint behind the plane is pushed back to the side `normal` points to. The spec keeps the bone
+    /// length after collisions, so a tail whose root is closer to the plane than a bone length can still end a step
+    /// behind it.
+    Plane {
+        /// A point on the plane.
+        #[schemars(with = "[f32; 3]")]
+        offset: Vec3,
+        /// Unit-length direction of the allowed side (not scaled with the character).
+        #[schemars(with = "[f32; 3]")]
+        normal: Vec3,
+    },
 }
 
+/// How far a plane normal's length may stray from 1.
+const NORMAL_TOLERANCE: f32 = 1e-3;
+
 impl ColliderShape {
-    fn radius(&self) -> f32 {
+    /// The shape's radius, or `None` for a plane, which has none.
+    fn radius(&self) -> Option<f32> {
         match *self {
-            Self::Sphere { radius, .. } | Self::Capsule { radius, .. } => radius,
+            Self::Sphere { radius, .. }
+            | Self::Capsule { radius, .. }
+            | Self::SphereInside { radius, .. }
+            | Self::CapsuleInside { radius, .. } => Some(radius),
+            Self::Plane { .. } => None,
+        }
+    }
+
+    /// Why the shape is malformed, if it is: a negative or non-finite radius, or a plane normal that isn't unit length.
+    fn check(&self) -> Option<&'static str> {
+        match *self {
+            _ if !self.radius().is_none_or(|r| r >= 0.0 && r.is_finite()) => Some("radius must be 0 or more"),
+            Self::Sphere { offset, .. } | Self::SphereInside { offset, .. } if !offset.is_finite() => {
+                Some("offset must be finite")
+            }
+            Self::Capsule { offset, tail, .. } | Self::CapsuleInside { offset, tail, .. }
+                if !(offset.is_finite() && tail.is_finite()) =>
+            {
+                Some("offset and tail must be finite")
+            }
+            Self::Plane { offset, normal }
+                if !offset.is_finite() || !normal.is_finite() || (normal.length() - 1.0).abs() > NORMAL_TOLERANCE =>
+            {
+                Some("plane normal must be unit length (within the normal tolerance) and the offset finite")
+            }
+            _ => None,
         }
     }
 }
@@ -295,8 +453,8 @@ impl SpringSet {
             for (i, c) in group.colliders.iter().enumerate() {
                 let what = format!("collider {i} of group {:?}", group.name);
                 bone_ok(&what, c.bone)?;
-                if !(c.shape.radius() >= 0.0 && c.shape.radius().is_finite()) {
-                    return Err(SpringError::BadParams { what, reason: "radius must be 0 or more" });
+                if let Some(reason) = c.shape.check() {
+                    return Err(SpringError::BadParams { what, reason });
                 }
             }
         }
@@ -353,6 +511,10 @@ impl SpringSet {
             let what = format!("joint {i} of chain {name:?}");
             bone_ok(&what, joint.bone)?;
             if let Some(reason) = joint.params.check() {
+                return Err(SpringError::BadParams { what, reason });
+            }
+            // A limit on the last joint is ignored, but a malformed one is still a mistake worth refusing.
+            if let Some(reason) = joint.limit.as_ref().and_then(JointLimit::check) {
                 return Err(SpringError::BadParams { what, reason });
             }
             if i > 0 {
@@ -468,6 +630,54 @@ mod tests {
         SpringSet { chains: vec![chain], groups: vec![group] }
     }
 
+    fn with_shape(shape: ColliderShape) -> (SpringSet, Skeleton) {
+        let (sk, ids, head) = skeleton();
+        let mut set = valid_set(ids, head);
+        set.groups[0].colliders[0].shape = shape;
+        (set, sk)
+    }
+
+    #[test]
+    fn extended_shapes_round_trip_through_json() {
+        let shapes = [
+            ColliderShape::Sphere { offset: Vec3::Y, radius: 0.1 },
+            ColliderShape::Capsule { offset: Vec3::Y, radius: 0.1, tail: Vec3::Z },
+            ColliderShape::SphereInside { offset: Vec3::Y, radius: 0.5 },
+            ColliderShape::CapsuleInside { offset: Vec3::Y, radius: 0.5, tail: Vec3::Z },
+            ColliderShape::Plane { offset: Vec3::Y, normal: Vec3::X },
+        ];
+        let names = ["sphere", "capsule", "sphere_inside", "capsule_inside", "plane"];
+        for (shape, name) in shapes.into_iter().zip(names) {
+            let json = serde_json::to_value(shape).unwrap();
+            assert!(json.get(name).is_some(), "{json}");
+            assert_eq!(serde_json::from_value::<ColliderShape>(json).unwrap(), shape);
+            let (set, sk) = with_shape(shape);
+            set.validate(&sk).unwrap();
+        }
+    }
+
+    #[test]
+    fn bad_radii_and_plane_normals_are_rejected() {
+        let bad = [
+            ColliderShape::Sphere { offset: Vec3::ZERO, radius: -0.1 },
+            ColliderShape::Capsule { offset: Vec3::ZERO, radius: f32::NAN, tail: Vec3::Y },
+            ColliderShape::SphereInside { offset: Vec3::ZERO, radius: -1.0 },
+            ColliderShape::CapsuleInside { offset: Vec3::ZERO, radius: f32::INFINITY, tail: Vec3::Y },
+            ColliderShape::Plane { offset: Vec3::ZERO, normal: Vec3::new(0.0, 2.0, 0.0) },
+            ColliderShape::Plane { offset: Vec3::ZERO, normal: Vec3::ZERO },
+            ColliderShape::Plane { offset: Vec3::ZERO, normal: Vec3::new(f32::NAN, 1.0, 0.0) },
+            ColliderShape::Sphere { offset: Vec3::new(f32::NAN, 0.0, 0.0), radius: 0.1 },
+            ColliderShape::CapsuleInside { offset: Vec3::ZERO, radius: 0.1, tail: Vec3::new(0.0, f32::INFINITY, 0.0) },
+        ];
+        for shape in bad {
+            let (set, sk) = with_shape(shape);
+            assert!(matches!(set.validate(&sk), Err(SpringError::BadParams { .. })), "{shape:?}");
+        }
+        // A normal within the tolerance is accepted.
+        let (set, sk) = with_shape(ColliderShape::Plane { offset: Vec3::ZERO, normal: Vec3::new(0.0, 1.0005, 0.0) });
+        set.validate(&sk).unwrap();
+    }
+
     #[test]
     fn defaults_are_vrm_1_0s() {
         let p = SpringParams::default();
@@ -498,6 +708,35 @@ mod tests {
         assert_eq!(serde_json::from_str::<SpringSet>(&json).unwrap(), set);
         let partial: SpringJoint = serde_json::from_str(r#"{"bone": 3, "stiffness": 0.3}"#).unwrap();
         assert_eq!((partial.params.stiffness, partial.params.drag_force), (0.3, 0.5), "VRM defaults fill the rest");
+    }
+
+    #[test]
+    fn limits_round_trip_default_to_none_and_are_validated() {
+        let (sk, ids, head) = skeleton();
+        let mut set = valid_set(ids, head);
+        set.chains[0].joints[0].limit = Some(JointLimit::spherical(0.3, 0.2).rotated(Quat::from_rotation_x(0.5)));
+        assert_eq!(set.validate(&sk), Ok(()));
+        let json = serde_json::to_string(&set).unwrap();
+        assert_eq!(serde_json::from_str::<SpringSet>(&json).unwrap(), set);
+        let joint: SpringJoint = serde_json::from_str(r#"{"bone": 3}"#).unwrap();
+        assert_eq!(joint.limit, None);
+        let cone: JointLimit = serde_json::from_str(r#"{"cone": {"angle": 0.5}}"#).unwrap();
+        assert_eq!(cone, JointLimit::cone(0.5), "the rotation defaults to the identity");
+        let tapered =
+            SpringChain::tapered("t", &[BoneId(1), BoneId(2)], SpringParams::default(), SpringParams::default());
+        assert!(tapered.joints.iter().all(|j| j.limit.is_none()));
+
+        let bad = [
+            JointLimit::cone(-0.1),
+            JointLimit::hinge(f32::NAN),
+            JointLimit::spherical(0.5, f32::INFINITY),
+            JointLimit::cone(0.5).rotated(Quat::from_xyzw(0.0, 0.0, 0.0, 1.01)),
+        ];
+        for limit in bad {
+            let mut s = set.clone();
+            s.chains[0].joints[0].limit = Some(limit);
+            assert!(matches!(s.validate(&sk), Err(SpringError::BadParams { .. })), "{limit:?}");
+        }
     }
 
     #[test]

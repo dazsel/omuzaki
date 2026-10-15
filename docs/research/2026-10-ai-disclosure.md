@@ -1,3 +1,9 @@
+---
+title: "AI disclosure and viewer-data rules for an AI performer (2026-10-14)"
+summary: "AI-disclosure and viewer-data rules for an AI performer (EU AI Act Art. 50, CA SB 243, China, Korea, platform labels, GDPR/CCPA for memory), with a default per feature; draft, primary sources not yet read."
+area: research
+---
+
 # AI disclosure and viewer-data rules for an AI performer (2026-10-14)
 
 > Research (SE-06, AP-07, AP-08, AP-06, AP-11, SE-05). Spec: v3 §23, §31. **These are engineering notes, not legal advice; a legal review comes before release.** Names no private material and no people.

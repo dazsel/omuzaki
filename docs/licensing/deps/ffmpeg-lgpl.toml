@@ -1,0 +1,7 @@
+section = "rust"
+item = "FFmpeg (LGPL build)"
+kind = "native"
+used_for = "encode, decode, RTMP/SRT"
+status = "conditions"
+condition = "shared libs, no gpl/nonfree, source offer, hardware encoders. Shown on n9.0.2 (2026-10-15, Linux): configure without --enable-gpl or --enable-nonfree reports `License: LGPL version 2.1 or later`, ldd shows dynamic libav*.so, prores_ks and libvpx-vp9 (libvpx, BSD-3) encode alpha clips; hardware encoders, the Windows and macOS builds and the ffmpeg.org legal checklist text are still open (docs/research/2026-10-ffmpeg-lgpl.md)"
+audit = "B4"

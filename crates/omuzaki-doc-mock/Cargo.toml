@@ -14,3 +14,7 @@ omuzaki-doc-api = { path = "../omuzaki-doc-api" }
 
 [lints]
 workspace = true
+
+[package.metadata.omuzaki]
+kind = "Mock"
+summary = "in-memory document for tests"

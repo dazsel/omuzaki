@@ -1,5 +1,5 @@
 //! The production CPU rasteriser: [`SkiaRasterizer`] draws a [`DrawList`] the way Skia's software pipeline does, so it
-//! draws what the 2D canvas the prototype painted the face with draws (`crates/omuzaki-test/tests/raster_probes.rs`
+//! draws what the 2D canvas the prototype painted the face with draws (`crates/omuzaki-test-face/tests/raster_probes.rs`
 //! measures it against Chrome).
 //!
 //! The GPU painter is the performance path; this one is for everything that needs exact, deterministic pixels: tests and

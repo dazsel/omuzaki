@@ -3,6 +3,7 @@
 //! Each subsystem is one module, added by its own task (one `mod` line here), so parallel PRs never edit the same code.
 #![deny(missing_docs)]
 
+pub mod constraint;
 pub mod full;
 pub mod ik;
 pub mod pose;

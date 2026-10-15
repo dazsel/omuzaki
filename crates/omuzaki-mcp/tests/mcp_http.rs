@@ -9,11 +9,11 @@ mod common;
 use std::sync::Arc;
 use std::time::Duration;
 
-use common::FakeRunner;
 use common::http::{Frozen, Port, Raw};
+use common::{FakeRunnerExt, fake_runner};
 use common::{data, text, tool};
 use omuzaki_mcp::{AccessToken, HttpOptions, McpOptions, McpServer, ServerError};
-use omuzaki_ops_api::{Actor, Grants, Runner, Scope};
+use omuzaki_ops_api::{Actor, Grants, Scope};
 use reqwest::StatusCode;
 use rmcp::model::{CallToolRequestParams, CallToolResult, ClientCapabilities, ClientConfig, Implementation};
 use rmcp::service::{RoleClient, RunningService};
@@ -72,7 +72,9 @@ async fn an_agent_lists_tools_previews_applies_and_undoes_over_a_real_port() {
     let agent = port.connect(&port.agent_token(), "http-agent").await;
 
     let tools = agent.list_all_tools().await.unwrap();
-    let mut expected: Vec<String> = port.runner.ops().iter().map(|o| o.name.replace('.', "_")).collect();
+    // Ops withheld for a service this server doesn't wire are not tools (see `WITHHELD_WITHOUT_SERVICE`).
+    let mut expected: Vec<String> =
+        common::offered_ops(port.runner.as_ref()).iter().map(|o| o.name.replace('.', "_")).collect();
     expected.extend(BUILTINS.map(str::to_owned));
     expected.sort();
     assert_eq!(tools.iter().map(|t| t.name.to_string()).collect::<Vec<_>>(), expected);
@@ -84,7 +86,7 @@ async fn an_agent_lists_tools_previews_applies_and_undoes_over_a_real_port() {
     let applied = call(&agent, "face_set_blend", json!({"character": "mira", "blend": 0.6})).await;
     assert_eq!(data(&applied)["applied"], true, "{}", text(&applied));
     assert_eq!(port.runner.blend(), Some(json!(0.6_f32)));
-    assert_eq!(port.runner.log()[0].actor, Actor::Agent { id: "http-agent#1".into(), model: None });
+    assert_eq!(port.runner.records()[0].actor, Actor::Agent { id: "http-agent#1".into(), model: None });
 
     let undone = call(&agent, "history_undo", json!({})).await;
     assert_eq!(undone.is_error, Some(false), "{}", text(&undone));
@@ -199,7 +201,7 @@ async fn an_origin_the_host_lists_is_let_through() {
 
 #[tokio::test]
 async fn the_port_only_opens_on_loopback_and_at_a_real_path() {
-    let runner = Arc::new(FakeRunner::new());
+    let runner = Arc::new(fake_runner());
     let mcp = McpServer::new(runner, McpOptions::default()).unwrap();
 
     for open in ["0.0.0.0:0", "192.168.1.20:0", "[::]:0"] {
@@ -221,7 +223,7 @@ async fn the_port_only_opens_on_loopback_and_at_a_real_path() {
 
 #[tokio::test]
 async fn the_port_also_works_on_the_ipv6_loopback() {
-    let runner = Arc::new(FakeRunner::new());
+    let runner = Arc::new(fake_runner());
     let mcp = McpServer::new(runner, McpOptions::default()).unwrap();
     let options = HttpOptions::default().with_bind("[::1]:0".parse().unwrap());
     let Ok(server) = mcp.serve_http(options).await else {
@@ -350,7 +352,7 @@ async fn agents_on_one_token_are_still_separate_actors_with_their_own_undo() {
     let (first, second) = (port.connect(&token, "codex").await, port.connect(&token, "codex").await);
 
     call(&first, "face_set_blend", json!({"character": "mira", "blend": 0.3})).await;
-    let actors: Vec<Actor> = port.runner.log().into_iter().map(|r| r.actor).collect();
+    let actors: Vec<Actor> = port.runner.records().into_iter().map(|r| r.actor).collect();
     assert_eq!(actors, [Actor::Agent { id: "codex#1".into(), model: None }]);
 
     let nothing = call(&second, "history_undo", json!({})).await;

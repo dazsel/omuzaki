@@ -1,0 +1,6 @@
+section = "rust"
+item = "ufbx, gltf"
+kind = "crate"
+used_for = "FBX and glTF I/O"
+status = "yes"
+audit = "B3"

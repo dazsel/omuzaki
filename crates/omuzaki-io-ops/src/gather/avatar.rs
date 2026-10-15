@@ -36,7 +36,7 @@ pub const SCHEMA: u32 = 1;
 ///
 /// It lives in the document at [`record_path`]. A character with no record exports nothing but a failing check
 /// (`rights.provenance_missing`): rights are never guessed from the parts. `licence.derive` computes the record the
-/// parts allow and `licence.set` stores one (`ops::licence`). Read one from its document node with
+/// parts and application records allow and `licence.set` stores one (`ops::licence`). Read one from its document node with
 /// [`LicenceRecord::from_node`], which names an unknown `schema` before anything else.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -103,8 +103,35 @@ impl LicenceRecord {
     /// [`RecordError::Schema`] for a missing or unknown `schema`, [`RecordError::Invalid`] for anything else.
     pub fn from_node(node: &Value) -> Result<Self, RecordError> {
         check_schema(node)?;
-        Self::deserialize(node).map_err(|e| RecordError::Invalid(e.to_string()))
+        let record = Self::deserialize(node).map_err(|e| RecordError::Invalid(e.to_string()))?;
+        match blank_rights_field(&record.provenance.licence, record.provenance.consent.as_ref()) {
+            Some((_, fault)) => Err(RecordError::Invalid(fault)),
+            None => Ok(record),
+        }
     }
+}
+
+/// The first required rights field that is blank: its path below `provenance` (`licence`, `consent/person`,
+/// `consent/scope`) and a sentence naming it. The licence is blank when nobody gave one (give `LicenseRef-Unknown` when
+/// nobody knows); a consent names who agreed and to what. The one rule for every stored layout of rights, so a record, a
+/// source row and an application record cannot disagree about what blank means.
+pub(crate) fn blank_rights_field(
+    licence: &str,
+    consent: Option<&omuzaki_store_api::Consent>,
+) -> Option<(&'static str, String)> {
+    if licence.trim().is_empty() {
+        return Some((
+            "licence",
+            "`provenance.licence` is blank: give an SPDX id, or `LicenseRef-Unknown` if nobody knows".to_owned(),
+        ));
+    }
+    let consent = consent?;
+    [("consent/person", "person", &consent.person), ("consent/scope", "scope", &consent.scope)]
+        .into_iter()
+        .find(|(_, _, text)| text.trim().is_empty())
+        .map(|(path, field, _)| {
+            (path, format!("`provenance.consent.{field}` is blank: a consent names who agreed and to what"))
+        })
 }
 
 /// Checks that `node` says it is [`SCHEMA`], before anything else about it is read. Shared by every stored layout of
@@ -181,7 +208,7 @@ pub fn add_avatar(gathered: &mut Gathered, built: &BuiltCharacter) -> Result<(),
     avatar.humanoid.bones.extend(skeleton::humanoid_nodes(&rig.skeleton)?);
     avatar.expressions =
         PresetExpression::ALL.into_iter().map(|preset| (ExpressionName::Preset(preset), Expression::new())).collect();
-    avatar.spring_bones = springs::to_io(&rig.springs, gathered.scale);
+    avatar.spring_bones = springs::to_io(&rig.springs, gathered.scale, &mut gathered.report);
     avatar.first_person = Some(first_person(built, &gathered.scene));
     avatar.look_at = look_at(&rig.skeleton, &gathered.scene.nodes);
     if avatar.look_at.is_none() {

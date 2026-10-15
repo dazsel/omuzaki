@@ -1,0 +1,7 @@
+section = "rust"
+item = "iroh-relay server binary (1.3.0)"
+kind = "native"
+used_for = "self-hosted collab relay (VC-06, ST-10)"
+status = "yes"
+condition = "`MIT OR Apache-2.0`, verified from `iroh-relay/Cargo.toml` and the `LICENSE-MIT`/`LICENSE-APACHE` files (n0-computer/iroh at d8c93d8, 2026-10-09); a separate program a team runs; access list or shared token so strangers cannot use the bandwidth"
+audit = "upstream licence files"

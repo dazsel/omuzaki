@@ -1,0 +1,7 @@
+section = "models"
+item = "FLUX.2 klein-4B"
+kind = "model"
+used_for = "image generation"
+status = "unverified"
+condition = "card says Apache-2.0; licence text unread"
+audit = "B6"

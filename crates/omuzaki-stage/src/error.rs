@@ -2,6 +2,7 @@
 
 use omuzaki_char_api::{MaterialError, MaterialName, PartId};
 use omuzaki_render_api::RenderError;
+use omuzaki_stage_api::SceneError;
 
 /// A stage operation failed. Whatever the operation had created on the renderer before failing is released again, so
 /// an error never leaves resources behind.
@@ -48,11 +49,35 @@ pub enum StageError {
         /// What is wrong, as the rig crates say it.
         reason: String,
     },
+    /// The face system could not map, resolve or paint a frame.
+    #[error("the face system failed: {reason}")]
+    Face {
+        /// What the face crates reported.
+        reason: String,
+    },
+    /// A variant or palette change could not rebuild the character.
+    #[error("the character could not be rebuilt: {reason}")]
+    Rebuild {
+        /// What the builder or the variant resolution reported.
+        reason: String,
+    },
     /// A face density that can't make a texture.
     #[error("face density {px_per_m} px/m is not usable: give a finite number above zero")]
     FaceDensity {
         /// The offending value.
         px_per_m: f32,
+    },
+    /// The character can't be framed: a landmark is missing or a number isn't usable.
+    #[error("the character can't be framed: {reason}")]
+    Framing {
+        /// What is missing or unusable.
+        reason: String,
+    },
+    /// The scene breaks a rule (D13).
+    #[error("the scene can't be resolved: {source}")]
+    Scene {
+        /// The rule and where it is broken.
+        source: SceneError,
     },
 }
 

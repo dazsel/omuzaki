@@ -2,17 +2,19 @@
 
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
+use omuzaki_history_api::JournalStatus;
 use omuzaki_ops_api::{Actor, Cause, CauseKind, Mode, OpError, OpKind, Request, Runner, Scope};
 use rmcp::ErrorData as McpError;
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, DiscoverRequestMethod, DiscoverResult,
-    GetPromptRequestParams, GetPromptResponse, Implementation, JsonObject, ListPromptsResult,
-    ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams, ProtocolVersion,
-    ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, Resource, ResourceContents, ResourceTemplate,
-    ResourceUpdatedNotificationParam, ServerCapabilities, ServerConfig, SubscribeRequestParams, SubscriptionFilter,
-    Tool, UnsubscribeRequestParams,
+    GetPromptRequestParams, GetPromptResponse, Implementation, InitializeRequestParams, InitializeResult, JsonObject,
+    ListPromptsResult, ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
+    ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, Resource, ResourceContents,
+    ResourceTemplate, ResourceUpdatedNotificationParam, ServerCapabilities, ServerConfig, SubscribeRequestParams,
+    SubscriptionFilter, Tool, UnsubscribeRequestParams,
 };
 use rmcp::service::{RequestContext, RoleServer, SubscriptionContext};
 use serde_json::{Value, json};
@@ -26,6 +28,9 @@ use crate::render::{self, Call, OpenTx};
 use crate::resources::protocol_error;
 use crate::schema::{DRY_RUN, check_args};
 use crate::server::{Shared, View};
+
+/// How long a reply to a change waits for the journal to save it (spec v3 §6, journal design §5.5).
+const SAVE_WAIT: Duration = Duration::from_secs(5);
 
 /// The handler for one client connection (an rmcp [`ServerHandler`]).
 ///
@@ -74,6 +79,7 @@ impl Drop for AbortOnDrop {
 
 impl Session {
     pub(crate) fn new(shared: Arc<Shared>, view: Arc<View>, serial: u64) -> Self {
+        shared.connections.open(serial);
         let state = State { seen: shared.hub.latest(), ..State::default() };
         Self { shared, view, serial, http: false, actor: OnceLock::new(), state: Mutex::new(state) }
     }
@@ -95,6 +101,18 @@ impl Session {
     /// Whether `uri` can be subscribed to: the log, or a resource some provider serves.
     fn subscribable(&self, uri: &str) -> bool {
         uri == LOG_URI || self.shared.providers.serving(uri).is_some()
+    }
+
+    /// Names this session's client from the identity a request carries in its own metadata, which is what makes it
+    /// count as connected (`agent.connection`). Outside HTTP a session may start with `discover` or with any request
+    /// (`subscriptions/listen` included), skipping both `initialize` and `discover`, so every request handler calls this
+    /// first. Over HTTP a session starts with `initialize`, which names it.
+    fn name_client(&self, context: &RequestContext<RoleServer>) {
+        if !self.http
+            && let Some(info) = context.meta.client_info()
+        {
+            self.shared.connections.name(self.serial, &info.name);
+        }
     }
 
     fn actor(&self, context: &RequestContext<RoleServer>) -> &Actor {
@@ -178,10 +196,10 @@ impl Session {
     }
 
     /// Every call lands here and always yields a tool result: failures become tool errors, never protocol errors.
-    async fn dispatch(&self, request: CallToolRequestParams, context: &RequestContext<RoleServer>) -> CallToolResult {
+    async fn dispatch(&self, request: CallToolRequestParams, context: &RequestContext<RoleServer>) -> Reply {
         let name = request.name.as_ref();
         let Some(entry) = self.view.catalog.get(name) else {
-            return render::unknown_tool(name, &self.view.catalog.similar(name));
+            return render::unknown_tool(name, &self.view.catalog.similar(name)).into();
         };
         let actor = self.actor(context).clone();
         let mut args = request.arguments.unwrap_or_default();
@@ -200,7 +218,10 @@ impl Session {
             },
         };
         let tool = entry.tool.name.as_ref();
-        outcome.unwrap_or_else(|e| render::failure(tool, &in_tool_names(e, &entry.op, tool), Some(&entry.signature)))
+        match outcome {
+            Ok(reply) => reply,
+            Err(e) => render::failure(tool, &in_tool_names(e, &entry.op, tool), Some(&entry.signature)).into(),
+        }
     }
 
     async fn run_op(
@@ -211,7 +232,7 @@ impl Session {
         args: JsonObject,
         dry_run: bool,
         actor: Actor,
-    ) -> Result<CallToolResult, OpError> {
+    ) -> Result<Reply, OpError> {
         // A query has nothing to preview. It always runs as a normal call, so a stray `dry_run` can't skip the
         // scope check the runner makes on applied calls.
         let mode = if dry_run && kind != OpKind::Query { Mode::DryRun } else { Mode::Apply };
@@ -236,10 +257,29 @@ impl Session {
             lock(&self.state).own.remember(record.tx);
         }
         let call = Call { op: &entry.tool.name, kind, mode, tx: tx.as_ref(), verify: self.shared.guidance.verify() };
-        Ok(render::success(&call, &outcome))
+        let result = render::success(&call, &outcome);
+        Ok(if outcome.applied.is_some() { self.confirm_saved(result).await } else { result.into() })
     }
 
-    async fn run_builtin(&self, builtin: Builtin, args: JsonObject, actor: Actor) -> Result<CallToolResult, OpError> {
+    /// Waits until the journal has saved the change `result` reports, then returns it. A change that applied but isn't
+    /// saved yet (the wait timed out, or saving fails) still succeeds: the reply carries the warning, which
+    /// `call_tool` puts first.
+    async fn confirm_saved(&self, result: CallToolResult) -> Reply {
+        let Some(journal) = self.shared.journal.clone() else { return result.into() };
+        let waited = tokio::task::spawn_blocking(move || match journal.sync(SAVE_WAIT) {
+            Ok(_) => None,
+            Err(_) => Some(journal.status()),
+        })
+        .await;
+        let unsaved = match waited {
+            Ok(None) => None,
+            Ok(Some(status)) => Some(format!("applied, not yet saved: {}", describe(&status))),
+            Err(_) => Some("applied, not yet saved: the journal's status couldn't be read".to_owned()),
+        };
+        Reply { result, unsaved }
+    }
+
+    async fn run_builtin(&self, builtin: Builtin, args: JsonObject, actor: Actor) -> Result<Reply, OpError> {
         match builtin {
             Builtin::Undo | Builtin::Redo => {
                 let grants = self.view.grants.clone();
@@ -249,10 +289,12 @@ impl Session {
                         _ => runner.redo(&actor, &grants),
                     })
                     .await??;
-                Ok(render::history(builtin, label.as_deref()))
+                let changed = label.is_some();
+                let result = render::history(builtin, label.as_deref());
+                Ok(if changed { self.confirm_saved(result).await } else { result.into() })
             }
-            Builtin::Log => self.history_log(&args),
-            Builtin::TxBegin => self.begin_tx(args, actor).await,
+            Builtin::Log => self.history_log(&args).map(Reply::from),
+            Builtin::TxBegin => self.begin_tx(args, actor).await.map(Reply::from),
             Builtin::TxCommit | Builtin::TxRollback => self.finish_tx(builtin == Builtin::TxCommit, actor).await,
         }
     }
@@ -294,7 +336,7 @@ impl Session {
         Ok(render::confirmation(text, json!({"ok": true, "tx": id.0, "label": label})))
     }
 
-    async fn finish_tx(&self, commit: bool, actor: Actor) -> Result<CallToolResult, OpError> {
+    async fn finish_tx(&self, commit: bool, actor: Actor) -> Result<Reply, OpError> {
         let open = lock(&self.state).tx.clone().ok_or_else(|| {
             OpError::not_found("no transaction is open in this session").hint("start one with tx_begin")
         })?;
@@ -313,13 +355,15 @@ impl Session {
             ("Rolled back", "Every edit made since tx_begin was reverted.")
         };
         let text = format!("{verb} transaction {} ({:?}). {tail}", id.0, open.label);
-        Ok(render::confirmation(text, json!({"ok": true, "tx": id.0, "label": open.label})))
+        let result = render::confirmation(text, json!({"ok": true, "tx": id.0, "label": open.label}));
+        Ok(self.confirm_saved(result).await)
     }
 }
 
 impl Drop for Session {
     /// A connection that ends mid-transaction rolls it back: nothing else could ever finish it.
     fn drop(&mut self) {
+        self.shared.connections.close(self.serial);
         let open = lock(&self.state).tx.take();
         // A transaction can only exist once the actor is fixed, by the same call that opened it.
         if let (Some(open), Some(actor)) = (open, self.actor.get())
@@ -327,6 +371,29 @@ impl Drop for Session {
         {
             tracing::warn!(tx = open.id.0, label = %open.label, error = %e, "couldn't roll back an abandoned tx");
         }
+    }
+}
+
+/// A tool's reply, and the save warning that must lead it when the change applied but isn't saved yet. The warning
+/// is kept apart from the result so that `call_tool` can put it in front of everything else, including the heads-up.
+struct Reply {
+    result: CallToolResult,
+    unsaved: Option<String>,
+}
+
+impl From<CallToolResult> for Reply {
+    fn from(result: CallToolResult) -> Self {
+        Self { result, unsaved: None }
+    }
+}
+
+/// What the journal's status says about a save, for the warning.
+fn describe(status: &JournalStatus) -> String {
+    match status {
+        JournalStatus::Healthy => "the journal is healthy and should save it shortly".to_owned(),
+        JournalStatus::Behind { pending } => format!("saving is behind, with {pending} entries waiting"),
+        JournalStatus::Failing { reason } => format!("saving is failing: {reason}"),
+        _ => "the journal's status is unknown".to_owned(),
     }
 }
 
@@ -419,12 +486,27 @@ fn unknown_resource(uri: &str, templates: &[ResourceTemplate]) -> McpError {
 // make them harder to read.
 #[allow(clippy::unused_async_trait_impl)]
 impl ServerHandler for Session {
+    /// The handshake names this session's client, which is what makes it count as connected (`agent.connection`).
+    /// The rest is the default: record the peer, then negotiate the protocol version.
+    async fn initialize(
+        &self,
+        request: InitializeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<InitializeResult, McpError> {
+        self.shared.connections.name(self.serial, &request.client_info.name);
+        context.peer.set_peer_info(request.clone());
+        self.negotiate_initialize(&request)
+    }
+
     /// Over HTTP, answered as a server without a stateless mode would (clients then fall back to `initialize`); over
     /// other transports, the default.
-    async fn discover(&self, _context: RequestContext<RoleServer>) -> Result<DiscoverResult, McpError> {
+    async fn discover(&self, context: RequestContext<RoleServer>) -> Result<DiscoverResult, McpError> {
         if self.http {
             return Err(McpError::method_not_found::<DiscoverRequestMethod>());
         }
+        // rmcp's discovery request carries the client's identity and completes its startup, so an idle client is
+        // already connected. Over HTTP it is refused above and the client falls back to `initialize`.
+        self.name_client(&context);
         Ok(DiscoverResult::from_server_info(self.supported_protocol_versions().into_owned(), self.get_info()))
     }
 
@@ -443,8 +525,9 @@ impl ServerHandler for Session {
     async fn list_tools(
         &self,
         _request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
+        self.name_client(&context);
         Ok(ListToolsResult::with_all_items(self.view.catalog.tools().cloned().collect()))
     }
 
@@ -457,13 +540,14 @@ impl ServerHandler for Session {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
+        self.name_client(&context);
         // Matched on the resolved route, so the dotted alias (`history.log`) counts as the same tool.
         let reads_log = self
             .view
             .catalog
             .get(request.name.as_ref())
             .is_some_and(|entry| matches!(entry.route, Route::Builtin(Builtin::Log)));
-        let result = self.dispatch(request, &context).await;
+        let Reply { result, unsaved } = self.dispatch(request, &context).await;
         // A successful `history_log` is the log itself as its whole text, so nothing may be put in front of it. Its
         // snapshot already caught this session up, so later events are reported by the next call, not lost.
         let log_text = reads_log && result.is_error != Some(true);
@@ -474,30 +558,39 @@ impl ServerHandler for Session {
             Some(report) => render::with_heads_up(result, &report),
             None => result,
         };
+        // Last, so the save warning leads the text, ahead of the heads-up: a client that shows only the first line
+        // still sees that the change isn't saved.
+        let result = match unsaved {
+            Some(warning) => render::with_warning(result, &warning),
+            None => result,
+        };
         Ok(result.into())
     }
 
     async fn list_prompts(
         &self,
         _request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ListPromptsResult, McpError> {
+        self.name_client(&context);
         Ok(ListPromptsResult::with_all_items(self.shared.prompts.list(&self.view.catalog)))
     }
 
     async fn get_prompt(
         &self,
         request: GetPromptRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<GetPromptResponse, McpError> {
+        self.name_client(&context);
         Ok(self.shared.prompts.get(&self.view.catalog, &request.name, request.arguments)?.into())
     }
 
     async fn list_resources(
         &self,
         _request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, McpError> {
+        self.name_client(&context);
         let mut resources = vec![log_resource()];
         // Listing reads the document, so it needs `read` like reading does; without it only the log (which names
         // nothing from the document) is listed, as before.
@@ -518,16 +611,18 @@ impl ServerHandler for Session {
     async fn list_resource_templates(
         &self,
         _request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ListResourceTemplatesResult, McpError> {
+        self.name_client(&context);
         Ok(ListResourceTemplatesResult::with_all_items(self.shared.providers.templates()))
     }
 
     async fn read_resource(
         &self,
         request: ReadResourceRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, McpError> {
+        self.name_client(&context);
         if request.uri == LOG_URI {
             return self.read_log();
         }
@@ -553,6 +648,7 @@ impl ServerHandler for Session {
         request: SubscribeRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<(), McpError> {
+        self.name_client(&context);
         let uri = request.uri;
         let what =
             if uri == LOG_URI { "subscribing to the op log".to_owned() } else { format!("subscribing to {uri}") };
@@ -583,8 +679,9 @@ impl ServerHandler for Session {
     async fn unsubscribe(
         &self,
         request: UnsubscribeRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<(), McpError> {
+        self.name_client(&context);
         self.require_read(&format!("unsubscribing from {}", request.uri))?;
         if !self.subscribable(&request.uri) {
             return Err(unknown_resource(&request.uri, &self.shared.providers.templates()));
@@ -619,7 +716,14 @@ impl ServerHandler for Session {
         })
     }
 
+    /// A ping may be a session's first request, and it carries the client's identity like any other.
+    async fn ping(&self, context: RequestContext<RoleServer>) -> Result<(), McpError> {
+        self.name_client(&context);
+        Ok(())
+    }
+
     async fn listen(&self, context: SubscriptionContext) -> Result<(), McpError> {
+        self.name_client(context.request_context());
         let wanted: BTreeSet<String> = context.accepted().resource_subscriptions.iter().flatten().cloned().collect();
         // `accepted_subscription_filter` already refuses everything without `read`; checking again keeps this loop safe
         // on its own.

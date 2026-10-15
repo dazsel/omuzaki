@@ -1,0 +1,7 @@
+section = "rust"
+item = "SpeexDSP echo canceller (libspeexdsp, with aec-rs 1.0.0 and aec-rs-sys, speexdsp 0.1.2 and speexdsp-sys)"
+kind = "crate"
+used_for = "echo cancellation candidate for `fx.aec`: SpeexDSP's MDF canceller and preprocessor (research 2026-10-echo-cancellation.md, #920)"
+status = "conditions"
+condition = "libspeexdsp BSD-3-Clause (Xiph.Org; `COPYING` read 2026-10-15, identical to the copy vendored in aec-rs-sys); aec-rs, aec-rs-sys, speexdsp and speexdsp-sys are MIT. Keep the Xiph notice. aec-rs-sys builds the vendored C with CMake and bindgen (clang). Not selected"
+audit = "research 2026-10-echo-cancellation.md section 2"

@@ -1,0 +1,7 @@
+section = "rust"
+item = "bytemuck"
+kind = "crate"
+used_for = "GPU buffer casts; uniform blocks in `spikes/mascot-window`"
+status = "yes"
+audit = "(crates.io: Zlib OR Apache-2.0 OR MIT)"
+crates = ["bytemuck"]

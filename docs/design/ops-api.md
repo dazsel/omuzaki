@@ -1,3 +1,9 @@
+---
+title: "`omuzaki-ops-api`: what an op can reach (`OpCtx`: injected services, file access)"
+summary: "what an op can reach (`OpCtx`: injected services, file access)"
+area: design
+---
+
 # `omuzaki-ops-api`: what an op can reach (`OpCtx`: injected services, file access)
 
 **Status:** merged contract: services, file access, and jobs and
@@ -347,7 +353,7 @@ holds a lane slot, and waiting on a second lane from inside one is how a pool de
 
 - `crates/omuzaki-cli/tests/surface.rs` describes a render job that "returns at once with a job id". Under this design
   the CLI's `run` waits, showing progress; `Jobs::start` is the returns-at-once path.
-- `omuzaki-io-api::Progress` and `omuzaki-ai-api::Progress` say they will merge into the job manager's type. They stay as
-  they are, because they are used outside jobs (the CLI importing a file); op crates adapt `JobCtx` to them.
+- `omuzaki-io-api::Progress` and `omuzaki-ai-api::Progress` stay as they are, because they are used outside jobs (the CLI
+  importing a file). `omuzaki_io_ops::ops::progress::JobProgress` adapts a job's `JobCtx` to the io trait (#875).
 - `omuzaki-mcp`'s tool descriptions say `history_undo` reverses an Explicit op's effects. That is true once decision 8
   lands; until then the executor refuses those undos, so the text is corrected with the interim task.

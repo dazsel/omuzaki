@@ -6,6 +6,7 @@
 //! wires in `ArkitRetarget` and `Life` and tests swap in mocks. It runs on the perform thread; the hand-off from the
 //! tracker thread is the source's job (a newest-frame-wins mailbox).
 
+pub mod host;
 mod performer;
 
 pub use performer::{
