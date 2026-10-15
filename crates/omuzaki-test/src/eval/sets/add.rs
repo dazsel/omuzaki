@@ -192,7 +192,13 @@ pub fn add(
         return Err(invalid("the manifest would not read back as the item that was added"));
     }
 
-    store.put_file(&request.file)?;
+    let stored = store.put_file(&request.file)?;
+    if stored.hash != hash {
+        return Err(invalid(format!(
+            "the file changed while it was being added ({text_hash} became {HASH_PREFIX}{})",
+            stored.hash
+        )));
+    }
     let path = root.join(&relative);
     if created_set {
         if let Some(dir) = path.parent() {
@@ -243,7 +249,14 @@ fn find_target(root: &Path, discovery: &Discovery, request: &Request, text_hash:
             let bad = |e: &dyn std::fmt::Display| invalid(format!("{}: set `{}`: {e}", path.display(), set.id));
             set.kind_of().map_err(|e| bad(&e))?;
             set.is_holdout().map_err(|e| bad(&e))?;
-            if set.items.iter().any(|item| item.hash.eq_ignore_ascii_case(text_hash)) {
+            if let Some(item) = set.items.iter().find(|item| item.hash.eq_ignore_ascii_case(text_hash)) {
+                // Said again with another record: not a no-op. The manifest's record stands until someone edits it.
+                if item.provenance.as_ref() != Some(&request.record) {
+                    return Err(invalid(format!(
+                        "{text_hash} is already in set `{}` with a different provenance record; edit the manifest if the record is wrong",
+                        set.id
+                    )));
+                }
                 return Ok(Found::Already(path.clone()));
             }
             let file = root.join(path);
@@ -255,6 +268,17 @@ fn find_target(root: &Path, discovery: &Discovery, request: &Request, text_hash:
             let set: EvalSet = toml::from_str(&draft).map_err(|e| invalid(format!("the new set is not valid: {e}")))?;
             set.kind_of().map_err(|e| invalid(e.to_string()))?;
             set.is_holdout().map_err(|e| invalid(e.to_string()))?;
+            let plain = !new.crate_name.is_empty()
+                && new
+                    .crate_name
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_'));
+            if !plain {
+                return Err(invalid(format!(
+                    "`{}` is not a crate name: lowercase letters, digits, dashes and underscores",
+                    new.crate_name
+                )));
+            }
             if !root.join("crates").join(&new.crate_name).is_dir() {
                 return Err(invalid(format!("no crate `{}` under crates/", new.crate_name)));
             }

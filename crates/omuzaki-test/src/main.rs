@@ -674,8 +674,13 @@ fn eval_run(root: &Path, select: Selection, args: RunArgs) -> Verdict {
     let defaults = eval::load_defaults(root)?;
     let private = eval::load_private(root)?;
     let now = SystemTime::now();
-    let run_id = args.run_id.unwrap_or_else(|| run::default_run_id(now, &args.kind));
+    let out = assets_folder("OMUZAKI_EVAL_OUT", "evals")?;
     let status = if args.record { Some(assets_folder("OMUZAKI_EVAL_STATUS", "status")?) } else { None };
+    // Two runs in one minute must not share an id (they would share scratch and evidence): the second gets a suffix.
+    let run_id = match args.run_id {
+        Some(id) => id,
+        None => unused_run_id(&run::default_run_id(now, &args.kind), &out, status.as_deref())?,
+    };
     // Only a fixture that refers to an eval-set item needs the store, so a store that is not configured is not yet a fault.
     let store = SetStore::locate().ok();
     let item_path = |item: &eval::fixture::SetItemRef| -> Result<String, String> {
@@ -693,14 +698,30 @@ fn eval_run(root: &Path, select: Selection, args: RunArgs) -> Verdict {
         kind: args.kind,
         run_id,
         commit: run::head_commit(root),
-        out: assets_folder("OMUZAKI_EVAL_OUT", "evals")?,
+        out,
         status,
         scratch: std::env::temp_dir().join("scratch").join("evals"),
         item_path: &item_path,
+        store: None,
     };
     let report = run::run_scripted(&discovery, defaults, &private, &options)?;
     print_run(&report);
     Ok(report.ok())
+}
+
+/// `base`, or `base-2`, `base-3`, ... : the first id that has no run folder and no run record yet.
+fn unused_run_id(base: &str, out: &Path, status: Option<&Path>) -> Result<String, Box<dyn Error>> {
+    let known: Vec<String> = match status {
+        Some(dir) => history::read_runs(&dir.join(history::RUNS_FILE))?.into_iter().map(|r| r.run).collect(),
+        None => Vec::new(),
+    };
+    for n in 1_u32.. {
+        let id = if n == 1 { base.to_owned() } else { format!("{base}-{n}") };
+        if !out.join("runs").join(&id).exists() && !known.contains(&id) {
+            return Ok(id);
+        }
+    }
+    Err("no unused run id".into())
 }
 
 fn print_run(report: &RunReport) {
@@ -872,7 +893,9 @@ fn eval_sets(command: SetsCommand) -> Verdict {
         }
         SetsCommand::HoldoutCheck { manifests, root } => {
             let discovery = eval::discover(&workspace_root(root.root)?)?;
-            let leaks = sets::holdout::holdout_check(&discovery, &manifests)?;
+            // Without a store only the BLAKE3 names can be looked for; with one, an item's SHA-256 is looked for too.
+            let store = SetStore::locate().ok();
+            let leaks = sets::holdout::holdout_check(&discovery, &manifests, store.as_ref())?;
             for leak in &leaks {
                 println!(
                     "{}: names item {} of set `{}` ({}), which is test-only and must never be training data",
@@ -950,7 +973,7 @@ fn eval_gc(root: &Path, apply: bool, issues: Option<&Path>) -> Verdict {
     let discovery = eval::discover(root)?;
     let bodies = match issues {
         Some(file) => vec![std::fs::read_to_string(file).map_err(|e| format!("{}: {e}", file.display()))?],
-        None => run_gc::open_issue_bodies()?,
+        None => run_gc::open_issue_bodies(root)?,
     };
     let named = run_gc::Named { issues: bodies, scripts: Vec::new() }.with_scripts_of(&discovery);
     let out = assets_folder("OMUZAKI_EVAL_OUT", "evals")?;

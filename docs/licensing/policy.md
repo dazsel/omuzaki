@@ -96,7 +96,7 @@ Blender, ComfyUI and v4l2loopback are fine to use as separate programs. The user
 
 Material that is not licensed for the product (for example a third party's character or a recording of a person) is never committed, shipped, shown or used as training data.
 
-The list of what counts (names, path prefixes and hashes) is one file, `docs/licensing/private-material.toml`, read at run time by `cargo xtask lint-seed` and by the eval harness (`omuzaki-test eval`), so the two cannot drift. Add an entry there, with a comment naming this section as its source. The entries stand in for the real names, prefixes and hashes until the owner supplies them.
+The list of what counts (names, path prefixes and hashes) is one file, `docs/licensing/private-material.toml`, read at run time by the eval harness (`omuzaki-test eval`) and, once its change lands (#802), by `cargo xtask lint-seed`, so the two cannot drift. Add an entry there, with a comment naming this section as its source. The entries stand in for the real names, prefixes and hashes until the owner supplies them.
 
 ## Ports, and interop with closed products (added 2026-10-12)
 

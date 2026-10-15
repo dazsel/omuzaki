@@ -335,15 +335,33 @@ fn reply_of(answer: &CallToolResult) -> Reply {
     }
 }
 
-/// The environment a child may inherit: everything except keys, tokens, secrets and the eval's own settings
-/// (`*_API_KEY`, `*_TOKEN`, `*_SECRET`, `*_PASSWORD`, `OMUZAKI_EVAL_*`). A child that calls a hosted model, or reads the
-/// eval's spend caps, is not an eval of the tools.
+/// The environment a child may inherit: **only** what a program needs to run (the search path, the home and temporary
+/// folders, locale and time zone, Windows' system variables, logging) and the `OMUZAKI_*` settings of the product, never
+/// the eval's own (`OMUZAKI_EVAL_*`). Anything else, whatever it is called, stays out: a list of what to hold back would
+/// miss the next credential variable. A child that calls a hosted model, or reads the eval's spend caps, is not an eval
+/// of the tools.
 pub fn scrubbed(vars: impl IntoIterator<Item = (OsString, OsString)>) -> Vec<(OsString, OsString)> {
-    const SECRET_SUFFIXES: [&str; 4] = ["_API_KEY", "_TOKEN", "_SECRET", "_PASSWORD"];
+    const ALLOWED: [&str; 14] = [
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "TMPDIR",
+        "TEMP",
+        "TMP",
+        "TZ",
+        "LANG",
+        "SYSTEMROOT",
+        "USERPROFILE",
+        "LOCALAPPDATA",
+        "RUST_LOG",
+        "RUST_BACKTRACE",
+    ];
     vars.into_iter()
         .filter(|(name, _)| {
             let name = name.to_string_lossy().to_ascii_uppercase();
-            !name.starts_with("OMUZAKI_EVAL_") && !SECRET_SUFFIXES.iter().any(|s| name.ends_with(s))
+            let product = name.starts_with("OMUZAKI_") && !name.starts_with("OMUZAKI_EVAL_");
+            product || name.starts_with("LC_") || ALLOWED.contains(&name.as_str())
         })
         .collect()
 }
@@ -364,10 +382,11 @@ mod tests {
     }
 
     #[test]
-    fn keys_tokens_and_eval_settings_are_scrubbed_and_the_rest_kept() {
+    fn only_what_a_program_needs_and_the_products_settings_reach_a_child() {
         let kept = scrubbed(os(&[
             ("PATH", "/bin"),
             ("HOME", "/home/x"),
+            ("LC_ALL", "C"),
             ("ANTHROPIC_API_KEY", "k"),
             ("omuzaki_eval_api_key", "k"),
             ("OMUZAKI_EVAL_OUT", "/x"),
@@ -375,9 +394,13 @@ mod tests {
             ("GITHUB_TOKEN", "t"),
             ("DB_PASSWORD", "p"),
             ("MY_SECRET", "s"),
+            ("AWS_SECRET_ACCESS_KEY", "s"),
+            ("AWS_ACCESS_KEY_ID", "s"),
+            ("GOOGLE_APPLICATION_CREDENTIALS", "/c.json"),
+            ("SSH_AUTH_SOCK", "/s"),
         ]));
         let names: Vec<String> = kept.iter().map(|(k, _)| k.to_string_lossy().into_owned()).collect();
-        assert_eq!(names, ["PATH", "HOME", "OMUZAKI_ASSETS"]);
+        assert_eq!(names, ["PATH", "HOME", "LC_ALL", "OMUZAKI_ASSETS"]);
     }
 
     #[test]

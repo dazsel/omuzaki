@@ -7,7 +7,7 @@
 //!   (`pass` and `fail`; refusals, errors and skips are not scored) is provisional: reported, never flagged.
 //! - **Per task:** the window is the latest [`WINDOW`] scored attempts. The baseline rate `p0` is the pooled pass rate of
 //!   the series' scored attempts in the [`BASELINE_DAYS`] days before the window began. The task regressed when
-//!   `P(X <= k | n = 10, p0) < ` [`ALPHA`], with `k` the window's passes.
+//!   `P(X <= k | n = 10, p0) < ` [`ALPHA`], with `k` the window's passes (`p0` held to at most [`P0_MAX`]).
 //! - **Per suite** (per model): the night's rate is the mean of the per-task pass rates of the non-provisional tasks that
 //!   ran that night. The suite regressed when it is below the median of the previous [`NIGHTS`] nights by more than
 //!   `max(`[`FLOOR_POINTS`]` points, 3 x MAD of those nights)`.
@@ -47,6 +47,10 @@ pub const WEAK_BELOW: f64 = 0.5;
 pub const COST_JUMP: f64 = 0.25;
 /// Pass rates within this many points count as equal when cost is compared.
 pub const EQUAL_RATE: f64 = 0.10;
+/// The largest baseline rate the tail is taken under. A pooled rate of 100% is a measurement of the past, not a promise: with
+/// `p0 = 1` a single miss in the window would be "impossible" and flag. Under 99%, one miss in ten (`P = 0.096`) is a
+/// normal night, and two (`0.004`) are not.
+pub const P0_MAX: f64 = 0.99;
 /// The z value of a 95% interval.
 const Z95: f64 = 1.96;
 /// The most failing or passing transcripts a task's entry lists.
@@ -275,7 +279,7 @@ fn task_gate(key: &SeriesKey, scored: &[&AttemptRecord]) -> TaskGate {
     let baseline = (!baseline_records.is_empty()).then(|| Rate::new(passes(&baseline_records), baseline_records.len()));
     let provisional = scored.len() < PROVISIONAL_UNDER;
     let probability = match (&baseline, window.len() == WINDOW) {
-        (Some(base), true) => Some(binomial_cdf(WINDOW, base.rate, window_rate.passes)),
+        (Some(base), true) => Some(binomial_cdf(WINDOW, base.rate.min(P0_MAX), window_rate.passes)),
         _ => None,
     };
     let status = if provisional {

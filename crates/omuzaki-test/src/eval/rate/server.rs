@@ -11,7 +11,7 @@
 //! 5. **Only what was asked.** A rating must name an item of this session, one of its questions, and an answer; a
 //!    question is answered once. Images are addressed by position in the session, never by a path.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
@@ -92,6 +92,9 @@ pub fn serve(listener: &TcpListener, session: &Session) -> Result<Ended, RateErr
     let port =
         listener.local_addr().map_err(|source| RateError::Io { path: PathBuf::from("127.0.0.1"), source })?.port();
     let mut answered: BTreeSet<(String, String)> = BTreeSet::new();
+    // Answers wait here until the item's last question is answered, and only then go to the file together: an item that is
+    // half rated when the rater leaves has no rating at all, so it is asked about again in full.
+    let mut pending: BTreeMap<String, Vec<Rating>> = BTreeMap::new();
     let total: usize = session.items.iter().map(|i| i.questions.len()).sum();
     loop {
         let (mut stream, _) =
@@ -104,7 +107,7 @@ pub fn serve(listener: &TcpListener, session: &Session) -> Result<Ended, RateErr
             drop(respond(&mut stream, 400, "text/plain", b"bad request"));
             continue;
         };
-        let outcome = handle(&request, session, port, &mut answered);
+        let outcome = handle(&request, session, port, &mut answered, &mut pending);
         let (status, kind, body, ended) = match outcome {
             Ok((kind, body, ended)) => (200, kind, body, ended),
             Err(Refusal(status, why)) => (status, "text/plain", why.as_bytes().to_vec(), None),
@@ -198,7 +201,13 @@ fn respond(stream: &mut TcpStream, status: u16, kind: &str, body: &[u8]) -> io::
 
 type Handled = Result<(&'static str, Vec<u8>, Option<Ended>), Refusal>;
 
-fn handle(request: &Request, session: &Session, port: u16, answered: &mut BTreeSet<(String, String)>) -> Handled {
+fn handle(
+    request: &Request,
+    session: &Session,
+    port: u16,
+    answered: &mut BTreeSet<(String, String)>,
+    pending: &mut BTreeMap<String, Vec<Rating>>,
+) -> Handled {
     let host = request.header("host").unwrap_or_default();
     if host != format!("127.0.0.1:{port}") && host != format!("localhost:{port}") {
         return Err(Refusal(403, "this page is served to the local machine only"));
@@ -228,7 +237,7 @@ fn handle(request: &Request, session: &Session, port: u16, answered: &mut BTreeS
         ("GET", path) if path.starts_with("/img/") => picture(session, &path["/img/".len()..]),
         ("POST", "/api/rate") => {
             check_post(request, session, port)?;
-            rate(request, session, answered)
+            rate(request, session, answered, pending)
         }
         ("POST", "/api/quit") => {
             check_post(request, session, port)?;
@@ -266,7 +275,12 @@ fn picture(session: &Session, rest: &str) -> Handled {
     Ok(("image/png", bytes, None))
 }
 
-fn rate(request: &Request, session: &Session, answered: &mut BTreeSet<(String, String)>) -> Handled {
+fn rate(
+    request: &Request,
+    session: &Session,
+    answered: &mut BTreeSet<(String, String)>,
+    pending: &mut BTreeMap<String, Vec<Rating>>,
+) -> Handled {
     let body: Value = serde_json::from_slice(&request.body).map_err(|_| Refusal(400, "the body is not JSON"))?;
     let field =
         |name: &str| body.get(name).and_then(Value::as_str).ok_or(Refusal(400, "item, question and answer are text"));
@@ -295,7 +309,14 @@ fn rate(request: &Request, session: &Session, answered: &mut BTreeSet<(String, S
         rater: session.rater.clone(),
         at: utc_minute((session.clock)()),
     };
-    append(&session.ratings, &rating).map_err(|_| Refusal(500, "the rating could not be written"))?;
+    let waiting = pending.entry(item.id.clone()).or_default();
+    waiting.push(rating);
+    if waiting.len() == item.questions.len() {
+        for rating in waiting.iter() {
+            append(&session.ratings, rating).map_err(|_| Refusal(500, "the ratings could not be written"))?;
+        }
+        pending.remove(&item.id);
+    }
     answered.insert(key);
     let total: usize = session.items.iter().map(|i| i.questions.len()).sum();
     let left = total - answered.len();

@@ -120,6 +120,7 @@ fn play_with(
         status: record.then(|| folders.status.clone()),
         scratch: folders.scratch.clone(),
         item_path: &no_items,
+        store: None,
     };
     run_scripted(&discovery, caps(), &private, &options).unwrap()
 }
@@ -163,7 +164,7 @@ fn two_tasks_three_attempts_recorded_give_six_history_lines_and_a_run_record() {
 
     // Evidence for every attempt and oracle; nothing left in the scratch.
     let task_dir = folders.out.join("runs/2026-10-13T10:00Z-manual/demo.up");
-    for folder in ["1", "2", "3", "oracle-nope", "oracle-null"] {
+    for folder in ["1", "2", "3", "oracle-nope-fail", "oracle-null"] {
         assert!(task_dir.join(folder).join("transcript.jsonl").is_file(), "{folder}");
         assert!(task_dir.join(folder).join("checks.json").is_file(), "{folder}");
     }
@@ -331,7 +332,7 @@ fn selectors_add_up() {
     let report = play_with(ws.path(), &folders, "2026-10-13T10:00Z-manual", one, 1, 1, false);
     assert_eq!(report.run.tasks_run, ["demo.down"]);
     let both = Selection { tasks: vec!["demo.d*".to_owned()], crates: vec!["c".to_owned()], ..Selection::default() };
-    let report = play_with(ws.path(), &folders, "2026-10-13T10:00Z-manual", both, 1, 1, false);
+    let report = play_with(ws.path(), &folders, "2026-10-13T10:00Z-second", both, 1, 1, false);
     assert_eq!(report.run.tasks_run, ["demo.down", "demo.up"]);
 }
 
@@ -379,6 +380,82 @@ fn the_command_line_plays_the_sample_task_and_gc_keeps_what_an_issue_names() {
 }
 
 #[test]
+fn a_run_id_that_is_not_a_plain_folder_name_or_is_taken_is_refused_before_anything_is_written() {
+    let ws = workspace();
+    let tmp = tempfile::tempdir().unwrap();
+    let victim = tmp.path().join("victim");
+    fs::create_dir_all(&victim).unwrap();
+    fs::write(victim.join("keep.txt"), "x").unwrap();
+    let discovery = eval::discover(ws.path()).unwrap();
+    let no_items = |_: &eval::fixture::SetItemRef| Err(String::new());
+    let attempt = |id: &str, scratch: &Path| {
+        let options = Options {
+            select: Selection::default(),
+            attempts: 1,
+            jobs: 1,
+            binary: None,
+            kind: "manual".to_owned(),
+            run_id: id.to_owned(),
+            commit: "c".to_owned(),
+            out: tmp.path().join("out"),
+            status: None,
+            scratch: scratch.to_owned(),
+            item_path: &no_items,
+            store: None,
+        };
+        run_scripted(&discovery, caps(), &PrivateList::default(), &options)
+    };
+    let scratch = tmp.path().join("scratch");
+    // An absolute path would replace the scratch folder in a join, and `..` would climb out of it: both would end with a
+    // `remove_dir_all` of somebody else's folder.
+    for bad in [victim.to_str().unwrap(), "..", ".", "", ".hidden", "a/b", "a b"] {
+        let error = attempt(bad, &scratch).unwrap_err().to_string();
+        assert!(error.contains("not a folder name"), "{bad:?}: {error}");
+    }
+    assert_eq!(fs::read_to_string(victim.join("keep.txt")).unwrap(), "x");
+    // A run id that already has a folder is refused: it would share scratch and evidence with the first.
+    fs::create_dir_all(tmp.path().join("out/runs/taken")).unwrap();
+    assert!(attempt("taken", &scratch).unwrap_err().to_string().contains("already has a folder"));
+    assert!(attempt("fresh", &scratch).is_ok());
+}
+
+#[test]
+fn a_task_whose_id_cannot_be_a_folder_name_is_refused() {
+    let ws = workspace();
+    let toml = fs::read_to_string(ws.path().join("crates/c/evals/up.toml")).unwrap();
+    write(&ws.path().join("crates/c/evals/up.toml"), &toml.replace("id = 'demo.up'", "id = '..'"));
+    let tmp = tempfile::tempdir().unwrap();
+    let folders = Folders::new(tmp.path());
+    let report = play(ws.path(), &folders, "2026-10-13T10:00Z-manual", 1, 1, false);
+    assert!(
+        report.refused.iter().any(|r| r.task == ".." && r.why.contains("cannot name a folder")),
+        "{:?}",
+        report.refused
+    );
+    assert!(report.attempts.iter().all(|a| a.task != ".."), "nothing of it ran");
+}
+
+#[test]
+fn scripts_with_dotted_names_get_their_own_oracle_folders() {
+    let ws = workspace();
+    let dir = ws.path().join("crates/c/evals");
+    let call = |text: &str| format!("{{\"call\": \"evaltest_set_note\", \"args\": {{\"text\": \"{text}\"}}}}\n");
+    write(&dir.join("up.a.b.fail.jsonl"), &call("x"));
+    write(&dir.join("up.c.b.fail.jsonl"), &call("y"));
+    write(&dir.join("up.null.fail.jsonl"), &call("z"));
+    let tmp = tempfile::tempdir().unwrap();
+    let folders = Folders::new(tmp.path());
+    let select = Selection { tasks: vec!["demo.up".to_owned()], ..Selection::default() };
+    let report = play_with(ws.path(), &folders, "2026-10-13T10:00Z-manual", select, 1, 4, false);
+    assert!(report.ok(), "{:?}", report.deviations);
+    let task_dir = folders.out.join("runs/2026-10-13T10:00Z-manual/demo.up");
+    for name in ["oracle-a.b-fail", "oracle-c.b-fail", "oracle-null-fail", "oracle-nope-fail", "oracle-null"] {
+        assert!(task_dir.join(name).join("checks.json").is_file(), "{name}");
+    }
+    assert_eq!(report.run.oracles.played, 5);
+}
+
+#[test]
 fn options_that_make_no_sense_are_refused_before_anything_runs() {
     let ws = workspace();
     let tmp = tempfile::tempdir().unwrap();
@@ -396,6 +473,7 @@ fn options_that_make_no_sense_are_refused_before_anything_runs() {
         status: None,
         scratch: tmp.path().join("scratch"),
         item_path: &no_items,
+        store: None,
     };
     for (attempts, kind, word) in [(0, "manual", "--attempts"), (1, "sometimes", "run kind")] {
         let error = run_scripted(&discovery, caps(), &PrivateList::default(), &options(attempts, kind)).unwrap_err();

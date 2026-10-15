@@ -89,6 +89,8 @@ pub struct Options<'a> {
     pub scratch: PathBuf,
     /// How a fixture's reference to an eval-set item becomes a file path.
     pub item_path: ItemPath<'a>,
+    /// The asset store the render ops write to, for the `render.*` checks. `None` until the stage's render ops exist.
+    pub store: Option<std::sync::Arc<dyn omuzaki_store_api::Store>>,
 }
 
 /// Why a run could not be made at all: harness trouble, not a result.
@@ -205,6 +207,7 @@ pub fn run_scripted(
     if !KINDS.contains(&options.kind.as_str()) {
         return Err(RunError::Options(format!("run kind `{}` is not one of {}", options.kind, KINDS.join(", "))));
     }
+    check_run_id(options)?;
     let started = Instant::now();
     let mut selected: Vec<&TaskFile> = discovery.tasks.iter().filter(|f| options.select.picks(f)).collect();
     selected.sort_by(|a, b| a.task.id.cmp(&b.task.id));
@@ -227,7 +230,6 @@ pub fn run_scripted(
         Err(e) if e.kind() != io::ErrorKind::NotFound => Err(RunError::Io { path: scratch, source: e }),
         _ => Ok(()),
     };
-    cleanup?;
 
     let mut counts = Counts::default();
     let mut oracles = Oracles::default();
@@ -271,7 +273,40 @@ pub fn run_scripted(
         }
         history::append(&status.join(RUNS_FILE), &run)?;
     }
+    // Reported only now, so a scratch that could not be removed does not throw a finished run away.
+    cleanup?;
     Ok(RunReport { run, attempts, deviations, refused })
+}
+
+/// The characters of a run id: it becomes a folder name under the evidence and scratch folders.
+const RUN_ID_CHARS: &str = "letters, digits and `:._-`";
+
+/// Refuses a run id that is not a plain folder name, or that names a run that already has a folder: two runs that share
+/// an id would share their scratch (one deleting the other's attempts) and overwrite each other's evidence.
+fn check_run_id(options: &Options<'_>) -> Result<(), RunError> {
+    let id = &options.run_id;
+    let plain = !id.is_empty()
+        && id.len() <= 100
+        && !id.starts_with('.')
+        && id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, ':' | '.' | '_' | '-'));
+    if !plain {
+        return Err(RunError::Options(format!(
+            "run id `{id}` is not a folder name: use {RUN_ID_CHARS}, not starting with a dot"
+        )));
+    }
+    let taken = options.out.join("runs").join(id).exists() || options.scratch.join(id).exists();
+    if taken {
+        return Err(RunError::Options(format!("run `{id}` already has a folder; give --run-id another name")));
+    }
+    Ok(())
+}
+
+/// Whether a task id can name a folder: lowercase letters, digits, dots and dashes, not starting with a dot.
+fn task_id_is_a_folder_name(id: &str) -> bool {
+    !id.is_empty()
+        && !id.starts_with('.')
+        && !id.contains("..")
+        && id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '-'))
 }
 
 /// Why a task is not played.
@@ -283,6 +318,12 @@ enum Refusal {
 }
 
 fn refusal(discovery: &Discovery, private: &PrivateList, file: &TaskFile, options: &Options<'_>) -> Option<Refusal> {
+    if !task_id_is_a_folder_name(&file.task.id) {
+        return Some(Refusal::Refused(format!(
+            "task id `{}` cannot name a folder (lowercase letters, digits, dots, dashes)",
+            file.task.id
+        )));
+    }
     let Some(fixture) = discovery.fixture(&file.task.fixture) else {
         return Some(Refusal::Refused(format!("unknown fixture `{}`", file.task.fixture)));
     };
@@ -370,6 +411,7 @@ fn plan(file: &TaskFile, attempts: u32) -> Vec<Job<'_>> {
         script: parse_script(script),
         expected,
     };
+    let stem = file.path.file_stem().and_then(|s| s.to_str()).unwrap_or_default().to_owned();
     let mut jobs = Vec::new();
     let mut used = BTreeSet::new();
     for n in 1..=attempts {
@@ -380,10 +422,10 @@ fn plan(file: &TaskFile, attempts: u32) -> Vec<Job<'_>> {
         }
     }
     for script in passes.iter().enumerate().filter(|(i, _)| !used.contains(i)).map(|(_, s)| s) {
-        jobs.push(job(script, Label::Oracle(label_of(&script.file_name)), AttemptOutcome::Pass));
+        jobs.push(job(script, Label::Oracle(label_of(&stem, &script.file_name)), AttemptOutcome::Pass));
     }
     for script in fails {
-        jobs.push(job(script, Label::Oracle(label_of(&script.file_name)), AttemptOutcome::Fail));
+        jobs.push(job(script, Label::Oracle(label_of(&stem, &script.file_name)), AttemptOutcome::Fail));
     }
     let null_expected = if file.task.null_passes { AttemptOutcome::Pass } else { AttemptOutcome::Fail };
     jobs.push(Job {
@@ -396,10 +438,17 @@ fn plan(file: &TaskFile, attempts: u32) -> Vec<Job<'_>> {
     jobs
 }
 
-/// `task.name.pass.jsonl` as `name`.
-fn label_of(file_name: &str) -> String {
-    let without = file_name.trim_end_matches(".jsonl").trim_end_matches(".pass").trim_end_matches(".fail");
-    without.rsplit('.').next().unwrap_or(without).to_owned()
+/// The folder label of an oracle script: `<stem>.<name>.<pass|fail>.jsonl` as `<name>-<pass|fail>`. The whole name and the
+/// verdict are kept, so no two script files of a task share a label (and none can be the empty script's `null`).
+fn label_of(stem: &str, file_name: &str) -> String {
+    let without = file_name.strip_suffix(".jsonl").unwrap_or(file_name);
+    let (rest, verdict) = match (without.strip_suffix(".pass"), without.strip_suffix(".fail")) {
+        (Some(rest), _) => (rest, "pass"),
+        (_, Some(rest)) => (rest, "fail"),
+        _ => (without, "x"),
+    };
+    let name = rest.strip_prefix(stem).and_then(|r| r.strip_prefix('.')).unwrap_or(rest);
+    format!("{name}-{verdict}")
 }
 
 fn parse_script(script: &super::Script) -> Result<Script, String> {
@@ -521,10 +570,14 @@ fn play_one(
     // The checker's own runners: one on the pristine fixture, one on the result folder, reopened from disk.
     let fixture_runner = open_project_runner(fixture_dir).map_err(|e| e.to_string())?;
     let result_runner = open_project_runner(work).map_err(|e| e.to_string())?;
-    let report = Checker::new(fixture_runner, result_runner, attempt.log.transcript())
+    let checker = Checker::new(fixture_runner, result_runner, attempt.log.transcript())
         .with_exports(built.exports.clone())
-        .with_tool_names(names)
-        .grade(task);
+        .with_tool_names(names);
+    let checker = match &options.store {
+        Some(store) => checker.with_store(store.clone()),
+        None => checker,
+    };
+    let report = checker.grade(task);
     Ok(Played { log: attempt.log, stop: attempt.stop, tool_calls: attempt.tool_calls, tools_hash, report })
 }
 
@@ -594,10 +647,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_script_file_name_gives_its_label() {
-        assert_eq!(label_of("face-more-oval.rounder.fail.jsonl"), "rounder");
-        assert_eq!(label_of("sample-rename.extra-edit.fail.jsonl"), "extra-edit");
-        assert_eq!(label_of("t.run-1.pass.jsonl"), "run-1");
+    fn a_script_file_name_gives_its_label_with_its_whole_name_and_verdict() {
+        assert_eq!(label_of("face-more-oval", "face-more-oval.rounder.fail.jsonl"), "rounder-fail");
+        assert_eq!(label_of("sample-rename", "sample-rename.extra-edit.fail.jsonl"), "extra-edit-fail");
+        assert_eq!(label_of("t", "t.run-1.pass.jsonl"), "run-1-pass");
+        // Names with dots, the same name as a pass and a fail script, and a script called `null` stay apart.
+        let labels = [
+            label_of("t", "t.a.b.fail.jsonl"),
+            label_of("t", "t.c.b.fail.jsonl"),
+            label_of("t", "t.x.pass.jsonl"),
+            label_of("t", "t.x.fail.jsonl"),
+            label_of("t", "t.null.fail.jsonl"),
+        ];
+        let distinct: std::collections::BTreeSet<&String> = labels.iter().collect();
+        assert_eq!(distinct.len(), labels.len(), "{labels:?}");
+        assert!(!labels.contains(&"null".to_owned()));
+    }
+
+    #[test]
+    fn a_run_id_and_a_task_id_must_be_plain_folder_names() {
+        for good in ["2026-10-13T10:00Z-nightly", "manual-2", "a.b_c"] {
+            assert!(good.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, ':' | '.' | '_' | '-')), "{good}");
+        }
+        for good in ["face.more-oval", "a", "x-1.y"] {
+            assert!(task_id_is_a_folder_name(good), "{good}");
+        }
+        for bad in ["", "..", ".hidden", "a/b", "a..b", "A", "a b", "/etc"] {
+            assert!(!task_id_is_a_folder_name(bad), "{bad:?}");
+        }
     }
 
     #[test]

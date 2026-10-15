@@ -168,16 +168,29 @@ fn a_rating_needs_the_token_the_right_host_and_origin_and_a_known_question() {
     }
     assert_eq!(post_rate(port, &good).status, 409, "a question is answered once, and the first answer stands");
     assert_eq!(request(port, "POST", "/api/quit", &[], "").status, 403, "quitting needs the token too");
+    // The item's second question completes it, and only then do its ratings reach the file.
+    assert_eq!(post_rate(port, &rate_body(&items[0].id, "Blue?", "yes")).status, 200);
 
     assert_eq!(request(port, "POST", "/api/quit", &[("X-Rating-Token", TOKEN)], "").status, 200);
     handle.join().unwrap();
-    // Only the accepted rating is in the file, as one line.
+    // Only the accepted ratings of the completed item are in the file, one line each.
     let lines = rate::read(&dir.path().join("ratings/review-1.jsonl")).unwrap();
-    assert_eq!(lines.len(), 1);
+    assert_eq!(lines.len(), 2);
+    assert_eq!((lines[1].question.as_str(), lines[1].answer), ("Blue?", Answer::Yes));
     assert_eq!(
         (lines[0].question.as_str(), lines[0].answer, lines[0].rater.as_str()),
         ("Round?", Answer::No, "tester")
     );
+}
+
+#[test]
+fn an_item_left_half_rated_leaves_no_rating_so_it_is_asked_about_again_in_full() {
+    let dir = tempfile::tempdir().unwrap();
+    let (port, handle, items) = start(dir.path());
+    assert_eq!(post_rate(port, &rate_body(&items[0].id, "Round?", "yes")).status, 200);
+    assert_eq!(request(port, "POST", "/api/quit", &[("X-Rating-Token", TOKEN)], "").status, 200);
+    assert_eq!(handle.join().unwrap(), Ended::Quit);
+    assert_eq!(rate::read(&dir.path().join("ratings/review-1.jsonl")).unwrap().len(), 0);
 }
 
 #[test]

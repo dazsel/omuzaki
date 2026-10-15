@@ -239,6 +239,21 @@ impl SetStore {
         Ok((found == hash && found_sha == *sha256).then_some((hash, path)))
     }
 
+    /// The SHA-256 of an intact item, as hex, or `None` when the item is missing or damaged.
+    ///
+    /// # Errors
+    /// [`SetsError::Io`] for a read failure other than the file not being there.
+    pub fn sha256_hex(&self, hash: &ContentHash) -> Result<Option<String>, SetsError> {
+        let path = self.object_path(hash);
+        let file = match File::open(&path) {
+            Ok(file) => file,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(io_err(&path)(e)),
+        };
+        let (found, sha256, _) = hash_reader(file).map_err(io_err(&path))?;
+        Ok((found == *hash).then(|| sha256.to_string()))
+    }
+
     /// How the item is in the store and whether the SHA-256 index names it, from one pass over its bytes.
     ///
     /// # Errors

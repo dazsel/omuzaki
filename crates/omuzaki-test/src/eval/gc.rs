@@ -171,12 +171,15 @@ fn why_kept(run: &str, oldest: Option<SystemTime>, named: &Named) -> Option<Why>
     named.scripts.iter().find(|(_, text)| text.contains(run)).map(|(path, _)| Why::Script(path.clone()))
 }
 
-/// The bodies of the open issues, read with `gh api` (REST: it works where GraphQL does not).
+/// The bodies of the open issues of the repository `root` is a checkout of, read with `gh api` (REST: it works where
+/// GraphQL does not).
 ///
 /// # Errors
 /// [`GcError::Issues`] when `gh` is missing, fails or says anything but success.
-pub fn open_issue_bodies() -> Result<Vec<String>, GcError> {
+pub fn open_issue_bodies(root: &Path) -> Result<Vec<String>, GcError> {
+    // `{owner}/{repo}` is the repository of the folder `gh` runs in: the workspace being cleaned, not the shell's.
     let output = Command::new("gh")
+        .current_dir(root)
         .args([
             "api",
             "--paginate",

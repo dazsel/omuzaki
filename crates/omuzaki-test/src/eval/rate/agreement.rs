@@ -30,6 +30,9 @@ pub const FAMILY_JUDGE: &str = "judge";
 pub struct Agreement {
     /// Clear-cut ratings the judge answered: what the rate is over.
     pub items: usize,
+    /// The results those ratings are about. The promotion threshold counts these, not ratings: ten results with four
+    /// questions each are ten results.
+    pub results: usize,
     /// Of those, the ones the judge answered as the rater did.
     pub agree: usize,
     /// Ratings left out because the rater was unsure.
@@ -46,17 +49,18 @@ impl Agreement {
         (self.items > 0).then(|| self.agree as f64 / self.items as f64)
     }
 
-    /// Whether the numbers allow promotion: at least [`PROMOTE_AGREEMENT`] over at least [`PROMOTE_ITEMS`] items.
+    /// Whether the numbers allow promotion: at least [`PROMOTE_AGREEMENT`] over at least [`PROMOTE_ITEMS`] results.
     #[must_use]
     pub fn meets_threshold(&self) -> bool {
-        self.items >= PROMOTE_ITEMS && self.rate().is_some_and(|rate| rate >= PROMOTE_AGREEMENT)
+        self.results >= PROMOTE_ITEMS && self.rate().is_some_and(|rate| rate >= PROMOTE_AGREEMENT)
     }
 }
 
 /// The agreement of `judge` with `ratings`. `judge` answers a rating's question as the judge would (`true` for yes), or
 /// `None` when it has no answer for that result.
 pub fn agreement(ratings: &[Rating], judge: &dyn Fn(&Rating) -> Option<bool>) -> Agreement {
-    let mut result = Agreement { items: 0, agree: 0, unsure: 0, unjudged: 0 };
+    let mut result = Agreement { items: 0, results: 0, agree: 0, unsure: 0, unjudged: 0 };
+    let mut judged_results = std::collections::BTreeSet::new();
     for rating in ratings {
         let said = match rating.answer {
             Answer::Unsure => {
@@ -70,10 +74,12 @@ pub fn agreement(ratings: &[Rating], judge: &dyn Fn(&Rating) -> Option<bool>) ->
             None => result.unjudged += 1,
             Some(answer) => {
                 result.items += 1;
+                judged_results.insert(rating.item.as_str());
                 result.agree += usize::from(answer == said);
             }
         }
     }
+    result.results = judged_results.len();
     result
 }
 
@@ -154,6 +160,8 @@ pub struct JudgeRecord {
     pub review_set: String,
     /// Clear-cut ratings the judge answered.
     pub items: usize,
+    /// The results they are about.
+    pub results: usize,
     /// Of those, the agreeing ones.
     pub agree: usize,
     /// Ratings left out as unsure.
@@ -162,7 +170,7 @@ pub struct JudgeRecord {
     pub unjudged: usize,
     /// `agree / items`, when there are items.
     pub agreement: Option<f64>,
-    /// Whether the numbers meet [`PROMOTE_AGREEMENT`] over [`PROMOTE_ITEMS`] items.
+    /// Whether the numbers meet [`PROMOTE_AGREEMENT`] over [`PROMOTE_ITEMS`] results.
     pub meets_threshold: bool,
 }
 
@@ -178,6 +186,7 @@ impl JudgeRecord {
             judge: judge.to_owned(),
             review_set: review_set.to_owned(),
             items: measured.items,
+            results: measured.results,
             agree: measured.agree,
             unsure: measured.unsure,
             unjudged: measured.unjudged,
@@ -210,7 +219,10 @@ mod tests {
         ratings.push(rating("r/t/9", Answer::No));
         ratings.push(rating("r/t/10", Answer::Unsure));
         let measured = agreement(&ratings, &|_| Some(true));
-        assert_eq!((measured.items, measured.agree, measured.unsure, measured.unjudged), (10, 9, 1, 0));
+        assert_eq!(
+            (measured.items, measured.results, measured.agree, measured.unsure, measured.unjudged),
+            (10, 10, 9, 1, 0)
+        );
         assert_eq!(measured.rate(), Some(0.9));
         assert!(!measured.meets_threshold(), "ten items are not forty");
     }
@@ -226,11 +238,13 @@ mod tests {
 
     #[test]
     fn the_threshold_is_ninety_percent_over_forty_clear_items() {
-        let at = |agree, items| Agreement { items, agree, unsure: 0, unjudged: 0 };
+        let at = |agree, results| Agreement { items: results, results, agree, unsure: 0, unjudged: 0 };
         assert!(at(36, 40).meets_threshold());
         assert!(!at(35, 40).meets_threshold());
         assert!(!at(39, 39).meets_threshold());
         assert!(at(41, 41).meets_threshold());
+        // Forty clear-cut ratings about ten results are ten results.
+        assert!(!Agreement { items: 40, results: 10, agree: 40, unsure: 0, unjudged: 0 }.meets_threshold());
     }
 
     #[test]
@@ -240,7 +254,7 @@ mod tests {
             "abc1234",
             "reads-oval",
             "review-1",
-            &Agreement { items: 10, agree: 9, unsure: 2, unjudged: 1 },
+            &Agreement { items: 10, results: 5, agree: 9, unsure: 2, unjudged: 1 },
         );
         let json: serde_json::Value = serde_json::to_value(&record).unwrap();
         assert_eq!(json["family"], "judge");

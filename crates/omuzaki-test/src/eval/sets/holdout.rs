@@ -7,7 +7,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::store::{SetsError, parse_hash};
+use super::store::{SetStore, SetsError, parse_hash};
 use crate::eval::Discovery;
 
 /// A protected item found in a training manifest.
@@ -27,16 +27,22 @@ pub struct Leak {
 struct Protected {
     set: String,
     item: String,
-    hex: String,
+    /// The hashes the item can be named by: its BLAKE3 name, and its SHA-256 when the store has the item (the model
+    /// contract pins items by SHA-256, ADR 0017).
+    hexes: Vec<String>,
     why: &'static str,
 }
 
-/// Names the protected item hashes `manifests` contain.
+/// Names the protected items `manifests` contain, by their BLAKE3 hash or, for an item `store` holds, their SHA-256.
 ///
 /// # Errors
 /// [`SetsError::Io`] when a manifest cannot be read; [`SetsError::Invalid`] when a protected set holds an item whose hash
 /// is malformed, since such an item cannot be searched for and a check that skipped it would pass for the wrong reason.
-pub fn holdout_check(discovery: &Discovery, manifests: &[PathBuf]) -> Result<Vec<Leak>, SetsError> {
+pub fn holdout_check(
+    discovery: &Discovery,
+    manifests: &[PathBuf],
+    store: Option<&SetStore>,
+) -> Result<Vec<Leak>, SetsError> {
     let mut protected = Vec::new();
     for (path, set) in &discovery.set_files {
         if !set.is_protected() {
@@ -52,13 +58,17 @@ pub fn holdout_check(discovery: &Discovery, manifests: &[PathBuf]) -> Result<Vec
                     item.hash
                 ))
             })?;
-            protected.push(Protected { set: set.id.clone(), item: item.hash.clone(), hex: hash.to_string(), why });
+            let mut hexes = vec![hash.to_string()];
+            if let Some(store) = store {
+                hexes.extend(store.sha256_hex(&hash)?);
+            }
+            protected.push(Protected { set: set.id.clone(), item: item.hash.clone(), hexes, why });
         }
     }
     let mut leaks = Vec::new();
     for manifest in manifests {
         let text = read_lowercase(manifest)?;
-        for p in protected.iter().filter(|p| text.contains(p.hex.as_str())) {
+        for p in protected.iter().filter(|p| p.hexes.iter().any(|hex| text.contains(hex.as_str()))) {
             leaks.push(Leak { manifest: manifest.clone(), set: p.set.clone(), item: p.item.clone(), why: p.why });
         }
     }

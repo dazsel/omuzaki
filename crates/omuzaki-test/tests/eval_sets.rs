@@ -279,6 +279,40 @@ fn a_protected_set_with_a_malformed_hash_cannot_be_checked_and_says_so() {
 }
 
 #[test]
+fn add_refuses_a_crate_name_that_is_a_path_and_a_record_that_contradicts_the_manifest() {
+    let world = World::new();
+    let file = world.file("a", "sheet.png", b"sheet");
+    for bad in ["..", "/etc", "a/b", "A"] {
+        let new = ["--new-in", bad, "--kind", "synthetic", "--split", "dev", "--summary", "s"];
+        let refused = add_synthetic(&world, "sheets-1", &file, &new);
+        assert_eq!(common::code(&refused), 2, "{bad}");
+        assert!(out(&refused).contains("not a crate name"), "{bad}: {}", out(&refused));
+    }
+    assert!(!world.ws.path().join("evalsets").exists());
+    assert_eq!(common::code(&add_synthetic(&world, "sheets-1", &file, NEW)), 0);
+    // The same bytes said again as another kind of source are not "already in": the manifest's record would be wrong.
+    let contradicts = world.sets(&["add", "sheets-1", &file, "--source", "cc0"]);
+    assert_eq!(common::code(&contradicts), 2, "{}", out(&contradicts));
+    assert!(out(&contradicts).contains("different provenance record"), "{}", out(&contradicts));
+    let same = add_synthetic(&world, "sheets-1", &file, &[]);
+    assert!(out(&same).contains("already in"), "{}", out(&same));
+}
+
+#[test]
+fn holdout_check_also_finds_a_held_out_item_named_by_its_sha256() {
+    let world = World::new();
+    let held = world.file("a", "held.png", b"held out by sha");
+    let held_set = ["--new-in", "c", "--kind", "synthetic", "--split", "holdout", "--summary", "Held out."];
+    assert_eq!(common::code(&add_synthetic(&world, "held-1", &held, &held_set)), 0);
+    let sha = world.store().put(b"held out by sha").unwrap().sha256.to_string();
+    let training = world.ws.path().join("training.toml");
+    write(&training, &format!("pin = \"{sha}\"\n"));
+    let checked = world.sets(&["holdout-check", common::arg(&training)]);
+    assert_eq!(common::code(&checked), 1, "{}", out(&checked));
+    assert!(out(&checked).contains("set `held-1` (holdout)"), "{}", out(&checked));
+}
+
+#[test]
 fn the_file_source_returns_the_path_of_verified_bytes_for_a_pin() {
     let dir = tempfile::tempdir().unwrap();
     let store = SetStore::new(dir.path());

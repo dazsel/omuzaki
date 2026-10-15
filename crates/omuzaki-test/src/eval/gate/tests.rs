@@ -120,6 +120,23 @@ fn at_ninety_percent_five_of_ten_regresses_and_six_of_ten_does_not() {
 }
 
 #[test]
+fn a_perfect_baseline_does_not_make_one_miss_a_regression_but_two_are() {
+    let history = |window_passes: usize| {
+        let mut all = Vec::new();
+        for day in 20..30 {
+            all.extend(night(day, "t", 3, 3));
+        }
+        all.extend(night(30, "t", window_passes, 10));
+        all
+    };
+    let report = gate(&history(9), &[]);
+    assert_eq!(only(&report).baseline.map(|b| b.rate), Some(1.0));
+    assert_eq!(only(&report).status, Status::Ok);
+    assert!(!report.failed());
+    assert_eq!(only(&gate(&history(8), &[])).status, Status::Regression);
+}
+
+#[test]
 fn a_regression_names_the_window_the_commits_and_the_transcripts_to_read() {
     let report = gate(&history_at_ninety_percent(5), &[]);
     let task = only(&report);
