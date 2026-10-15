@@ -628,6 +628,10 @@ pub struct PartOutput {
     pub meshes: Vec<PartMesh>,
     /// Materials the meshes use, by id.
     pub materials: Vec<(MaterialName, MaterialSpec)>,
+    /// The class of a material, for the look (LK-06), where inferring it would be wrong: metal and modelled eyes,
+    /// or a body part's cloth. A material not listed takes [`MaterialClass::infer`](crate::MaterialClass::infer).
+    /// Every name must be one of `materials`.
+    pub material_classes: Vec<(MaterialName, crate::look::MaterialClass)>,
     /// Procedural textures the materials use.
     pub textures: Vec<(TextureName, TextureData)>,
     /// The simulation, for dynamic parts.
@@ -645,6 +649,7 @@ impl Debug for PartOutput {
         f.debug_struct("PartOutput")
             .field("meshes", &self.meshes.len())
             .field("materials", &self.materials.len())
+            .field("material_classes", &self.material_classes)
             .field("textures", &self.textures.len())
             .field("runtime", &self.runtime.is_some())
             .field("publishes", &self.publishes)
@@ -670,6 +675,7 @@ impl PartOutput {
         Some(PartOutput {
             meshes: self.meshes.clone(),
             materials: self.materials.clone(),
+            material_classes: self.material_classes.clone(),
             textures: self.textures.clone(),
             runtime,
             publishes: self.publishes.clone(),

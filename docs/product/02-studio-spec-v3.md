@@ -149,7 +149,7 @@ pub struct SetFaceProfile { pub character: CharId, pub profile: FaceProfileId, p
 > Amended 2026-10-12 (ADR 0027): `edit:show` (automation graphs and other show setup), `input` and `process` are added.
 
 - `read`
-- `edit:character`, `edit:scene`, `edit:show`, `edit:library`
+- `edit:character`, `edit:scene`, `edit:show`, `edit:library`, `edit:settings` (the person's settings, profiles and session list; never project data)
 - `perform` (drive the avatar live)
 - `broadcast` (go live, switch scenes)
 - `publish` (export or upload outside the machine)
@@ -160,7 +160,7 @@ pub struct SetFaceProfile { pub character: CharId, pub profile: FaceProfileId, p
 - `process` (start other programs, or see whether named programs are running)
 - `input` (capture OS keyboard, mouse and gamepad input)
 
-Defaults: people get everything; agents get `read` + `edit:*` + `render`; `broadcast`, `publish` and `spend` need a per-session grant.
+Defaults: people get everything; agents get `read` + `edit:*` (including `edit:settings`) + `render`; `broadcast`, `publish` and `spend` need a per-session grant.
 
 **One registry, five surfaces.** The op registry generates:
 1. MCP tools (§11)

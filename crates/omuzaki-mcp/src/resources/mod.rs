@@ -6,6 +6,8 @@
 //! never editing a list in this crate. The built-in [`DocProvider`](doc::DocProvider) serves the document.
 
 pub(crate) mod doc;
+pub(crate) mod measure;
+pub(crate) mod renders;
 
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -15,6 +17,9 @@ use omuzaki_ops_api::{ErrorCode, Grants, OpError, Runner};
 use rmcp::ErrorData as McpError;
 use rmcp::model::{Resource, ResourceContents, ResourceTemplate};
 use serde_json::json;
+
+pub use measure::MeasureProvider;
+pub use renders::RenderProvider;
 
 /// A family of readable `omuzaki://` resources.
 ///

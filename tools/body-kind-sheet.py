@@ -60,9 +60,10 @@ def project(v, view):
 
 
 def rotate_normal(n, view):
+    """Normals turned with the view, so the three-quarter view is lit like the others (project() turns the points)."""
     if view == "three-quarter":
         return np.stack([(n[:, 0] + n[:, 2]) * SQ, n[:, 1], (n[:, 2] - n[:, 0]) * SQ], axis=1)
-    return n if view == "front" else np.stack([n[:, 2], n[:, 1], -n[:, 0]], axis=1) * np.array([1, 1, 1])
+    return n if view == "front" else np.stack([n[:, 2], n[:, 1], -n[:, 0]], axis=1)
 
 
 def render(mesh, view, window, px_per_m):
@@ -73,10 +74,7 @@ def render(mesh, view, window, px_per_m):
     w, h = round((x1 - x0) * px_per_m), round((y1 - y0) * px_per_m)
     sx, sy, depth = project(v, view)
     px, py = (sx - x0) * px_per_m, (y1 - sy) * px_per_m
-    if view == "front":
-        nrm = n
-    else:
-        nrm = np.stack([n[:, 2], n[:, 1], -n[:, 0]], axis=1)
+    nrm = rotate_normal(n, view)
     zbuf = np.full((h, w), -1e9)
     normal = np.zeros((h, w, 3))
     for a, b, c in tris:

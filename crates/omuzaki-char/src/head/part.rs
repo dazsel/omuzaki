@@ -17,13 +17,14 @@ use std::sync::Arc;
 
 use omuzaki_anim_api::HumanoidBone;
 use omuzaki_char_api::{
-    Anchor, BuildCtx, BuildError, HeadParams, HeadSurface, JointFit, JointRef, KindProvenance, PartCategory, PartKind,
-    PartMesh, PartMeta, PartOutput, Publishes,
+    Anchor, AnchorId, BuildCtx, BuildError, HeadParams, HeadSurface, JointFit, JointRef, KindProvenance, PartCategory,
+    PartKind, PartMesh, PartMeta, PartOutput, Publishes,
 };
 use omuzaki_core::glam::{Quat, Vec3};
 use omuzaki_core::mesh::MeshData;
 use omuzaki_face_api::narrow;
 
+use super::ears::{self, Side};
 use super::material;
 use super::mesh::{self, Resolution};
 use super::neck;
@@ -88,6 +89,9 @@ impl PartKind for Head {
             meshes.push(part_mesh(ctx, "neck", neck_mesh, bones, "skin-neck")?);
         }
 
+        let (ear_meshes, ear_anchors) = ears(ctx, &placed, surface.as_ref())?;
+        meshes.extend(ear_meshes);
+
         let materials = vec![
             (material::name(ctx, "skin-head")?, material::skin_head(ctx, &placed, surface.centre())?),
             (material::name(ctx, "skin-ear")?, material::skin_ear(ctx, &placed)?),
@@ -113,7 +117,7 @@ impl PartKind for Head {
                 head: Some(surface),
                 face: Some(projection),
                 fit: Some(Arc::new(fit)),
-                anchors: vec![(anchor("top")?, top)],
+                anchors: [(anchor("top")?, top)].into_iter().chain(ear_anchors).collect(),
                 ..Publishes::default()
             },
             warnings,
@@ -123,6 +127,37 @@ impl PartKind for Head {
 }
 
 omuzaki_char_api::register_part_kind!(Head);
+
+/// What the ears add to the part: their meshes and anchors.
+type EarParts = (Vec<PartMesh>, Vec<(AnchorId, Anchor)>);
+
+/// The ear meshes (rigid on the head, in the `skin-ear` material) and their `ear_l` and `ear_r` anchors. The left ear
+/// roots on the head as built, the right mirrors it across the head's centre; a kind with no ear on the side builds
+/// neither.
+fn ears(ctx: &BuildCtx<'_>, placed: &HeadParams, surface: &dyn HeadSurface) -> Result<EarParts, BuildError> {
+    let left_root = ears::root(&placed.ears, surface);
+    let (mut meshes, mut anchors) = (vec![], vec![]);
+    for side in Side::BOTH {
+        let root = match side {
+            Side::Left => left_root,
+            Side::Right => Vec3::new(2.0 * surface.centre().x - left_root.x, left_root.y, left_root.z),
+        };
+        let Some(mut geometry) =
+            ears::build(&placed.ears, side, root, surface).map_err(|e| ctx.fail(format!("ear: {e}")))?
+        else {
+            continue;
+        };
+        // Rigid on the head bone: an ear does not follow the neck.
+        geometry.joints = vec![[0; 4]; geometry.positions.len()];
+        geometry.weights = vec![[1.0, 0.0, 0.0, 0.0]; geometry.positions.len()];
+        let name = ears::anchor_name(side);
+        meshes.push(part_mesh(ctx, &name.replace('_', "-"), geometry, vec![JointRef::HEAD], "skin-ear")?);
+        if let Some(bind) = ears::anchor(&placed.ears, side, root) {
+            anchors.push((name.parse().map_err(|e| ctx.fail(format!("anchor '{name}': {e}")))?, bind));
+        }
+    }
+    Ok((meshes, anchors))
+}
 
 /// `params` with the whole head lowered by the neck's drop.
 fn lowered(params: &HeadParams) -> HeadParams {

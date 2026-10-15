@@ -18,15 +18,23 @@
 
 use std::collections::BTreeMap;
 
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 /// Raw JSON an importer didn't interpret, for one scene object. Empty for almost every object.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Passthrough {
     /// Extension objects by extension name (`extensions` in the glTF object), verbatim.
     pub extensions: BTreeMap<String, Value>,
     /// The object's `extras`, verbatim.
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "present_value")]
     pub extras: Option<Value>,
+}
+
+/// Reads a present `extras` as `Some`, even when it is JSON `null`; serde's default for `Option` would turn that into
+/// `None` and a round trip would drop an `"extras": null` the file had.
+fn present_value<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<Value>, D::Error> {
+    Value::deserialize(deserializer).map(Some)
 }
 
 impl Passthrough {
