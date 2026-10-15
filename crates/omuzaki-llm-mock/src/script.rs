@@ -3,7 +3,8 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use omuzaki_llm_api::{LlmError, LlmEvent};
+use omuzaki_llm_api::error::LlmError;
+use omuzaki_llm_api::stream::LlmEvent;
 
 /// A whole script: the model the fake pretends to be, and its turns in order.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]

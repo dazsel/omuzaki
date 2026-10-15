@@ -8,7 +8,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{ContentBlock, LlmError, Message, Role, Usage};
+use crate::error::LlmError;
+use crate::message::{ContentBlock, Message, Role};
+use crate::usage::Usage;
 
 /// A cancel handle. Clones share one flag, so a caller keeps a clone and the stream holds another.
 #[derive(Clone, Debug, Default)]

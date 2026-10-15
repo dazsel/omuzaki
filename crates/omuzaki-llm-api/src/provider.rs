@@ -6,7 +6,9 @@ use std::sync::Arc;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{LlmClient, LlmError, ModelInfo, PriceTable};
+use crate::LlmClient;
+use crate::error::LlmError;
+use crate::usage::{ModelInfo, PriceTable};
 
 /// The name of a secret in the secret store (`connector/llm/<provider id>`). It names a secret; it never holds one.
 ///
@@ -201,7 +203,7 @@ pub fn provider(kind: &str) -> Option<&'static LlmProvider> {
 macro_rules! register_llm_provider {
     (kind: $kind:literal, manifest: $manifest:expr, build: $build:expr, list_models: $list:expr $(,)?) => {
         $crate::__inventory::submit! {
-            $crate::LlmProvider { kind: $kind, manifest: $manifest, build: $build, list_models: $list }
+            $crate::provider::LlmProvider { kind: $kind, manifest: $manifest, build: $build, list_models: $list }
         }
         $crate::__record_registration!("llm_provider", $kind);
     };

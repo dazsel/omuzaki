@@ -1,9 +1,9 @@
 src/error.rs: pub enum LlmError {
-src/lib.rs: pub use error::LlmError;
-src/lib.rs: pub use message::{
-src/lib.rs: pub use provider::{
-src/lib.rs: pub use stream::{Cancel, EventSource, LlmEvent, Next, StopReason, Turn, TurnStream};
-src/lib.rs: pub use usage::{ImageCost, Ledger, MicroUsd, ModelInfo, PriceTable, PriceTier, Rates, Usage};
+src/lib.rs: pub mod error;
+src/lib.rs: pub mod message;
+src/lib.rs: pub mod provider;
+src/lib.rs: pub mod stream;
+src/lib.rs: pub mod usage;
 src/lib.rs: pub use inventory as __inventory;
 src/lib.rs: pub use omuzaki_core::__record_registration;
 src/lib.rs: pub trait LlmClient: Send + Sync {

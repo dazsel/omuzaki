@@ -5,11 +5,14 @@
 
 use std::time::Duration;
 
-use omuzaki_llm_api::Cancel;
-use omuzaki_llm_api::{
-    CachePlan, ContentBlock, Effort, ImageMime, ImageOrigin, Ledger, LlmClient, LlmError, LlmEvent, Message, MicroUsd,
-    Next, PriceTable, PriceTier, Rates, Role, StopReason, SystemBlock, ToolChoice, ToolDef, TurnRequest, Usage,
+use omuzaki_llm_api::LlmClient;
+use omuzaki_llm_api::error::LlmError;
+use omuzaki_llm_api::message::{
+    CachePlan, ContentBlock, Effort, ImageMime, ImageOrigin, Message, Role, SystemBlock, ToolChoice, ToolDef,
+    TurnRequest,
 };
+use omuzaki_llm_api::stream::{Cancel, LlmEvent, Next, StopReason, Turn};
+use omuzaki_llm_api::usage::{Ledger, MicroUsd, PriceTable, PriceTier, Rates, Usage};
 use omuzaki_llm_mock::FakeLlm;
 
 const SCRIPT: &str = r#"{"model": "claude-haiku-5-5", "turns": [
@@ -49,7 +52,7 @@ fn request(messages: Vec<Message>) -> TurnRequest {
 }
 
 /// The history of turn 2: the question, the tool call, and its result (29 bytes of text and a 512 x 512 PNG header).
-fn turn_two(first: &omuzaki_llm_api::Turn) -> TurnRequest {
+fn turn_two(first: &Turn) -> TurnRequest {
     let mut png = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, b'I', b'H', b'D', b'R'];
     png.extend_from_slice(&512u32.to_be_bytes());
     png.extend_from_slice(&512u32.to_be_bytes());
@@ -77,7 +80,7 @@ fn haiku_prices() -> PriceTable {
     }
 }
 
-fn play() -> (FakeLlm, omuzaki_llm_api::Turn, omuzaki_llm_api::Turn) {
+fn play() -> (FakeLlm, Turn, Turn) {
     let llm = FakeLlm::from_json(SCRIPT).unwrap();
     let cancel = Cancel::new();
     let one = llm.stream(request(vec![text(Role::User, "show me the front")]), &cancel).unwrap().collect(IDLE).unwrap();
@@ -214,8 +217,8 @@ fn a_bad_call_is_malformed() {
 #[test]
 fn the_fake_registers_as_a_provider() {
     omuzaki_llm_mock::link();
-    let provider = omuzaki_llm_api::provider("fake").unwrap();
-    assert_eq!((provider.manifest)().cost, omuzaki_llm_api::CostModel::Free);
+    let provider = omuzaki_llm_api::provider::provider("fake").unwrap();
+    assert_eq!((provider.manifest)().cost, omuzaki_llm_api::provider::CostModel::Free);
     let recorded = omuzaki_core::link::registered();
     assert!(recorded.iter().any(|r| r.kind == "llm_provider" && r.name == "\"fake\""), "{recorded:?}");
 }
