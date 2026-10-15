@@ -67,6 +67,12 @@ authors = "Omuzaki"
 
 [card.licence]
 spdx = "MIT OR Apache-2.0"
+
+[[card.lineage]]
+kind = "training_data"
+name = "Tiny corpus 1"
+licence = "CC0-1.0"
+url = "https://data.example/tiny-corpus"
 "#;
 
 /// A committed workspace whose base already ships `tiny` with its licence file, so a later change to only the licence files

@@ -4,11 +4,15 @@
 //! A character's node holds the keys of its own definition (node keys: exactly the fields of
 //! [`CharacterDef`](crate::CharacterDef), read into it) and the roots of its other files (sibling keys, each a
 //! sub-tree with its own contract). A new file of the character is a new sibling key in the file that owns it, plus
-//! [`register_doc_key!`]; nobody edits a central list. [`CharacterDef::from_node`](crate::CharacterDef::from_node) and
-//! [`to_node`](crate::CharacterDef::to_node) leave sibling keys alone and read [`sibling_keys`] to accept them.
+//! [`register_doc_key!`]; nobody edits a central list. A sibling key's path is `characters/<id>/<key>`, so the key is
+//! also the name of a file or folder in the project, and must be a slug.
+//! [`CharacterDef::from_node`](crate::CharacterDef::from_node) and [`to_node`](crate::CharacterDef::to_node) leave
+//! sibling keys alone and read [`sibling_keys`] to accept them.
 //!
-//! A key can be registered once. A key registered twice, or under the name of a built-in key, is a collision: it is
-//! refused everywhere, with an error that names it ([`collisions`]), so no binary picks a winner by link order.
+//! A key can be registered once, and it must be a slug. A registration that breaks either rule is refused, with an error
+//! that names it ([`refused`]), so no binary picks a winner by link order. Only the refused registration is discarded: a
+//! built-in key that another crate registered under its name stays a sibling key, listed once by [`sibling_keys`]. The
+//! refused registrations share one list because they share one outcome: each has a reason, and none adds a sibling key.
 //!
 //! The keys this crate's own types own, and the sibling keys whose owners are not linked by every binary that parses a
 //! character, are the built-in table ([`BUILT_IN_NODE_KEYS`], [`BUILT_IN_SIBLING_KEYS`]), so validation never depends
@@ -16,19 +20,19 @@
 //! registrations (`omuzaki registrations`), so one list shows every key; that record needs this crate's `link()`, the
 //! table does not.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::OnceLock;
 
+use omuzaki_core::id::{Slug, SlugError};
 use omuzaki_doc_api::DocPath;
 
 use crate::ids::CharId;
+use crate::paths;
 
-/// One registered document key, collected by [`register_doc_key!`]. A registered key is always a sibling key.
+/// One registered document key, collected by [`register_doc_key!`]. A registration that is not refused is a sibling key.
 pub struct DocKeyRegistration {
-    /// The key, as it is spelt in the project and in saved files.
+    /// The key, as it is spelt in the project and in saved files. Its path is `characters/<id>/<key>`.
     pub key: &'static str,
-    /// The path of the key in the document, for the character `id`.
-    pub path: fn(&CharId) -> DocPath,
 }
 
 inventory::collect!(DocKeyRegistration);
@@ -39,6 +43,14 @@ pub enum DocKeyError {
     /// The key is registered more than once, or has the name of a built-in key.
     #[error("document key `{0}` is registered more than once or collides with a built-in key")]
     Collision(String),
+    /// The key isn't a slug, so the project could not store it as a file or folder name.
+    #[error("document key `{key}` can't name a file or folder: {why}")]
+    NotASlug {
+        /// The key.
+        key: String,
+        /// The slug rule it breaks.
+        why: SlugError,
+    },
 }
 
 /// The keys of `characters/<id>` that make up a [`CharacterDef`](crate::CharacterDef) (`character.toml` and
@@ -56,23 +68,23 @@ pub const BUILT_IN_NODE_KEYS: [&str; 8] =
 pub const BUILT_IN_SIBLING_KEYS: [&str; 10] =
     ["variants", "colourways", "rig", "look", "licence", "sources", "applied", "poses", "emotes", "avatar"];
 
-/// Registers a sibling document key next to the file of the character that owns it (ADR 0054 §5). `path` is a
-/// `fn(&CharId) -> DocPath`.
+/// Registers a sibling document key next to the file of the character that owns it (ADR 0054 §5). The key is the last
+/// segment of the path, `characters/<id>/<key>`, so it must be a slug.
 ///
 /// ```ignore
-/// omuzaki_char_api::register_doc_key!("hats", hats_path);
+/// omuzaki_char_api::register_doc_key!("hats");
 /// ```
 ///
 /// The marker form `register_doc_key!("name", @built_in)` is for this module only: it records the key for the listing and
-/// registers nothing. `@built_in` can't parse as a path, so every path argument means what it always did.
+/// registers nothing. Its second argument is `@built_in`, which the one-argument form never matches.
 #[macro_export]
 macro_rules! register_doc_key {
     ($key:literal, @built_in) => {
         $crate::__record_registration!("doc_key", $key);
     };
-    ($key:literal, $path:path) => {
+    ($key:literal) => {
         $crate::__inventory::submit! {
-            $crate::DocKeyRegistration { key: $key, path: $path }
+            $crate::DocKeyRegistration { key: $key }
         }
         $crate::__record_registration!("doc_key", $key);
     };
@@ -80,7 +92,7 @@ macro_rules! register_doc_key {
 
 // The built-in keys, listed beside the registered ones (ADR 0054 §5). The record is in a binary exactly when this crate's
 // `link()` is called; the tables above are what validation reads, so it never depends on that. The test below keeps the
-// two in step. `@built_in` is not a path, so no path argument can match it.
+// two in step. `@built_in` is a second argument, so no one-argument registration can match it.
 register_doc_key!("name", @built_in);
 register_doc_key!("template", @built_in);
 register_doc_key!("seed", @built_in);
@@ -100,37 +112,46 @@ register_doc_key!("poses", @built_in);
 register_doc_key!("emotes", @built_in);
 register_doc_key!("avatar", @built_in);
 
-/// The registered keys, resolved once: usable ones by key, and the collisions.
+/// The registered keys, resolved once: the usable ones, and the refused ones with the reason for each.
 struct Resolved {
-    usable: BTreeMap<&'static str, &'static DocKeyRegistration>,
+    usable: BTreeSet<&'static str>,
     sibling_keys: Vec<&'static str>,
-    collisions: Vec<&'static str>,
+    refused: BTreeMap<&'static str, DocKeyError>,
 }
 
 fn resolved() -> &'static Resolved {
     static RESOLVED: OnceLock<Resolved> = OnceLock::new();
     RESOLVED.get_or_init(|| {
-        let mut by_key: BTreeMap<&'static str, Vec<&'static DocKeyRegistration>> = BTreeMap::new();
+        let mut by_key: BTreeMap<&'static str, usize> = BTreeMap::new();
         for registration in inventory::iter::<DocKeyRegistration> {
-            by_key.entry(registration.key).or_default().push(registration);
+            *by_key.entry(registration.key).or_default() += 1;
         }
-        let (mut usable, mut collisions) = (BTreeMap::new(), Vec::new());
-        for (key, registrations) in by_key {
+        let (mut usable, mut refused) = (BTreeSet::new(), BTreeMap::new());
+        for (key, count) in by_key {
             let built_in = BUILT_IN_NODE_KEYS.contains(&key) || BUILT_IN_SIBLING_KEYS.contains(&key);
-            match registrations.as_slice() {
-                [only] if !built_in => {
-                    usable.insert(key, *only);
+            // A key that isn't a slug gives its own reason first: the project can't store it whatever else is true.
+            let refusal = match Slug::new(key) {
+                Err(why) => Some(DocKeyError::NotASlug { key: key.to_owned(), why }),
+                Ok(_) if built_in || count > 1 => Some(DocKeyError::Collision(key.to_owned())),
+                Ok(_) => None,
+            };
+            match refusal {
+                Some(refusal) => {
+                    refused.insert(key, refusal);
                 }
-                _ => collisions.push(key),
+                None => {
+                    usable.insert(key);
+                }
             }
         }
         // Sorted after the built-ins: the same list, and the same errors, in every binary.
-        let sibling_keys = BUILT_IN_SIBLING_KEYS.iter().copied().chain(usable.keys().copied()).collect();
-        Resolved { usable, sibling_keys, collisions }
+        let sibling_keys = BUILT_IN_SIBLING_KEYS.iter().copied().chain(usable.iter().copied()).collect();
+        Resolved { usable, sibling_keys, refused }
     })
 }
 
-/// Every sibling key: the built-in ones, then the usable registered ones in sorted order. Collisions are not in it.
+/// Every sibling key: the built-in ones, then the usable registered ones in sorted order. A refused registration adds
+/// nothing, and a built-in key stays listed once whatever is registered under its name.
 pub fn sibling_keys() -> &'static [&'static str] {
     &resolved().sibling_keys
 }
@@ -142,30 +163,35 @@ pub fn is_node_key(key: &str) -> bool {
 
 /// True if `key` is a usable sibling key.
 pub fn is_sibling_key(key: &str) -> bool {
-    BUILT_IN_SIBLING_KEYS.contains(&key) || resolved().usable.contains_key(key)
+    BUILT_IN_SIBLING_KEYS.contains(&key) || resolved().usable.contains(key)
 }
 
-/// The keys that are registered more than once or under a built-in key's name, sorted. Empty in a healthy binary.
-pub fn collisions() -> &'static [&'static str] {
-    &resolved().collisions
+/// The registered keys that are refused, sorted by key, each with its reason. Empty in a healthy binary.
+pub fn refused() -> &'static BTreeMap<&'static str, DocKeyError> {
+    &resolved().refused
 }
 
-/// The error for `key` if it is a collision.
+/// The error for `key` if it is refused.
 ///
 /// # Errors
-/// [`DocKeyError::Collision`] naming the key.
+/// The [`DocKeyError`] for the reason `key` is refused.
 pub fn check(key: &str) -> Result<(), DocKeyError> {
-    if collisions().contains(&key) { Err(DocKeyError::Collision(key.to_owned())) } else { Ok(()) }
+    match resolved().refused.get(key) {
+        Some(refusal) => Err(refusal.clone()),
+        None => Ok(()),
+    }
 }
 
-/// The path of the registered key `key` for character `id`: `None` if no crate registered it (the built-in keys have
-/// their own functions in [`paths`](crate::paths)).
+/// The path of the registered key `key` for character `id`: `characters/<id>/<key>`. `None` if no crate registered it.
+/// A built-in name with a colliding registration is refused here, so it gets the error, not a path. A built-in name with
+/// no registration gives `None`, like any other unregistered key; the built-in keys have their own functions in
+/// [`paths`](crate::paths).
 ///
 /// # Errors
-/// [`DocKeyError::Collision`] if the key is a collision.
+/// The [`DocKeyError`] if the key is refused.
 pub fn path(key: &str, id: &CharId) -> Result<Option<DocPath>, DocKeyError> {
     check(key)?;
-    Ok(resolved().usable.get(key).map(|r| (r.path)(id)))
+    Ok(resolved().usable.contains(key).then(|| paths::character(id).join(key)))
 }
 
 #[cfg(test)]
@@ -196,6 +222,6 @@ mod tests {
         assert_eq!(&sibling_keys()[..BUILT_IN_SIBLING_KEYS.len()], &BUILT_IN_SIBLING_KEYS);
         assert!(!is_sibling_key("nope") && !is_node_key("nope"));
         assert_eq!(path("nope", &CharId::new("mira").expect("a valid id")), Ok(None));
-        assert_eq!(collisions(), [] as [&str; 0]);
+        assert!(refused().is_empty());
     }
 }

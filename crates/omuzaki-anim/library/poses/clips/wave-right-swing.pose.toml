@@ -1,0 +1,16 @@
+# Key pose "wave-right-swing" for the clips beside it (RG-06). Degrees, Euler XYZ, VRM normalised space; see src/poses/mod.rs.
+id = "wave-right-swing"
+summary = "The right wave with the forearm swung out: the other half of a wave loop."
+tags = ["clip-key"]
+mirrorable = true
+
+[bones]
+leftUpperArm = [0.0, 0.0, -65.0]
+leftLowerArm = [0.0, -10.0, 0.0]
+rightUpperArm = [0.0, 20.0, -20.0]
+rightLowerArm = [0.0, 0.0, -60.0]
+rightHand = [0.0, 0.0, 25.0]
+head = [0.0, -8.0, -4.0]
+
+[hands.right]
+shape = "open"

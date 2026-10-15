@@ -1,0 +1,6 @@
+section = "rust"
+item = "libc"
+kind = "crate"
+used_for = "process CPU time (`getrusage`) on macOS in `spikes/mascot-window`"
+status = "yes"
+audit = "(crates.io: libc 0.2.190, MIT OR Apache-2.0)"

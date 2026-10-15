@@ -1,6 +1,6 @@
 //! Controls: Button.
 
-use egui::Ui;
+use egui::{Key, Ui};
 
 use crate::ds::gallery::Group;
 use crate::ds::gallery::layout::{caption, specimen};
@@ -10,6 +10,7 @@ use crate::ds::paint::{self, RingPlacement};
 use crate::ds::theme::ds;
 use crate::ds::tokens::radius;
 use crate::ds::widgets::Button;
+use crate::ds::widgets::keycap::Shortcut;
 use crate::register_story;
 
 #[derive(Default)]
@@ -43,9 +44,9 @@ fn show(ui: &mut Ui, state: &mut State) {
         ui.add(Button::new(tr!(ds, "Open")).icon(icons::FOLDER).ghost());
     });
     specimen(ui, ds, "Shortcut", |ui| {
-        ui.add(Button::new(tr!(ds, "Approve")).primary().shortcut("Enter"));
-        ui.add(Button::new(tr!(ds, "Approve for session")).shortcut("Ctrl Enter"));
-        ui.add(Button::new(tr!(ds, "Reject…")).shortcut("Backspace"));
+        ui.add(Button::new(tr!(ds, "Approve")).primary().shortcut(Key::Enter));
+        ui.add(Button::new(tr!(ds, "Approve for session")).shortcut(Shortcut::command(Key::Enter)));
+        ui.add(Button::new(tr!(ds, "Reject…")).shortcut(Key::Backspace));
     });
     specimen(ui, ds, "Hovered", |ui| {
         ui.add(Button::new(tr!(ds, "Approve")).primary()).highlight();

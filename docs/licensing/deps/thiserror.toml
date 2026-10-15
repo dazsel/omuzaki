@@ -1,0 +1,6 @@
+section = "rust"
+item = "thiserror"
+kind = "crate"
+used_for = "error types in `spikes/mascot-window`"
+status = "yes"
+audit = "(crates.io: thiserror 2.0.21, MIT OR Apache-2.0)"
