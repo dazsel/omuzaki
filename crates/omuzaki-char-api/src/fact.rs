@@ -11,7 +11,7 @@
 use std::any::{Any, TypeId};
 use std::collections::BTreeMap;
 use std::marker::PhantomData;
-use std::sync::{LazyLock, Mutex, PoisonError};
+use std::sync::OnceLock;
 
 use crate::ids::PartId;
 
@@ -326,21 +326,51 @@ where
     Ok(())
 }
 
-/// The `Default` of a merged type, made once and kept for the life of the process: what a reader sees when nothing was
-/// published. One small allocation per fact type, at build time.
+/// The empty values of the facts nothing published, for one [`Published`](crate::Published): what a reader sees when a
+/// fact is missing. Each view makes its own, so a `Merged` with interior mutability can't carry a change from one build
+/// into another, or from one fact into another with the same merged type.
 ///
-/// The default is made outside the table's lock, so a `Default` that itself reads a fact that was never published
-/// doesn't deadlock. Two threads that both miss may each make one; the first one stored wins.
-pub(crate) fn default_of<M: Default + Send + Sync + 'static>() -> &'static M {
-    type Table = BTreeMap<TypeId, &'static (dyn Any + Send + Sync)>;
-    static DEFAULTS: LazyLock<Mutex<Table>> = LazyLock::new(|| Mutex::new(BTreeMap::new()));
-    let lock = || DEFAULTS.lock().unwrap_or_else(PoisonError::into_inner);
-    let stored = lock().get(&TypeId::of::<M>()).copied();
-    if let Some(m) = stored.and_then(|any| any.downcast_ref::<M>()) {
-        return m;
+/// An append-only list of cells, one per missing fact, keyed by the fact. A read walks the list and allocates only the
+/// first time a fact is missing here, never again. Published facts never reach it. Cloning gives the clone an empty
+/// list, so no default is ever shared between two views.
+///
+/// A `Default` can't read the `Published` it is made for, so making it inside the cell's one-time initialiser can't
+/// deadlock. Two threads that miss the same fact wait for one winner.
+#[derive(Default)]
+pub(crate) struct Defaults {
+    head: OnceLock<Box<Node>>,
+}
+
+struct Node {
+    fact: TypeId,
+    value: Box<dyn Any + Send + Sync>,
+    next: OnceLock<Box<Node>>,
+}
+
+impl Defaults {
+    /// The empty value of fact `F` in this view, made on the first read.
+    pub(crate) fn of<F: Fact>(&self) -> &F::Merged {
+        let key = TypeId::of::<F>();
+        let mut link = &self.head;
+        loop {
+            let node = link.get_or_init(|| {
+                Box::new(Node { fact: key, value: Box::new(F::Merged::default()), next: OnceLock::new() })
+            });
+            if node.fact == key {
+                if let Some(m) = node.value.downcast_ref::<F::Merged>() {
+                    return m;
+                }
+                // The key is the fact's own type, so its value has the fact's merged type: unreachable. Fall through
+                // to a fresh cell rather than panic.
+            }
+            link = &node.next;
+        }
     }
-    let fresh: &'static M = Box::leak(Box::new(M::default()));
-    let any = *lock().entry(TypeId::of::<M>()).or_insert(fresh);
-    // The entry for `TypeId::of::<M>()` was made from an `M`.
-    any.downcast_ref::<M>().unwrap_or(fresh)
+}
+
+impl Clone for Defaults {
+    /// A clone starts empty: it makes its own defaults, sharing none with the original.
+    fn clone(&self) -> Self {
+        Self::default()
+    }
 }

@@ -26,7 +26,7 @@ use serde::de::DeserializeOwned;
 
 use crate::character::Attach;
 use crate::error::BuildError;
-use crate::fact::{Append, Cell, Fact, FactId, Keyed, Last, Merged, Slot, default_of};
+use crate::fact::{Append, Cell, Defaults, Fact, FactId, Keyed, Last, Merged, Slot};
 use crate::geometry::{FaceOverlay, MaterialSpec, PartMesh, TextureData};
 use crate::ids::{AnchorId, BodyTemplateId, JointRef, MaterialName, PartId, PartKindId, TextureName};
 use crate::rig::RigContribution;
@@ -449,6 +449,8 @@ impl Debug for Publishes {
 pub struct Published {
     /// The merged value of every fact published so far, by fact name.
     merged: BTreeMap<&'static str, Merged>,
+    /// The empty values of the facts nothing published, made on first read. Never shared with a clone.
+    defaults: Defaults,
 }
 
 impl Debug for Published {
@@ -556,13 +558,14 @@ fn same_bind(a: &HumanoidPose, b: &HumanoidPose) -> bool {
 }
 
 impl Published {
-    /// What fact `F` has merged so far: its `Default` when no part published it.
+    /// What fact `F` has merged so far: its `Default` when no part published it. That default belongs to this
+    /// `Published` alone (a clone makes its own): the first read of a missing fact allocates it, later reads don't.
     pub fn get<F: Fact>(&self) -> &F::Merged {
         self.merged
             .get(F::NAME)
             .filter(|merged| merged.id.is::<F>())
             .and_then(|merged| merged.cell.get::<F::Merged>())
-            .unwrap_or_else(|| default_of::<F::Merged>())
+            .unwrap_or_else(|| self.defaults.of::<F>())
     }
 
     /// Adds what `part` published, merging each fact in name order and each fact's values in the order they were put.
