@@ -1,6 +1,6 @@
 # Licence register
 
-Everything we use or plan to use, with its verdict (see `policy.md`). Evidence and sources are in `docs/research/2026-10-licence-audit.md`; the "Audit" column points at its section. Update a row in the same PR that adds, upgrades or drops the item.
+Everything we use or plan to use, with its verdict (see `policy.md`). Evidence and sources are in `docs/research/2026-10-licence-audit.md`; the "Audit" column points at its section. Add or update its file in `docs/licensing/deps/` in the same PR that adds, upgrades or drops the item.
 
 Format rule (the repo licence gate will parse this): one row per item, with columns in this order. `Status` is one of `yes`, `conditions`, `external`, `NO`, `unverified`, `private-test`.
 
