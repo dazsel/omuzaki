@@ -8,8 +8,10 @@
 - `design/ai-performer.md`: the AI performer: crates, persona, the turn loop with barge-in, the inline-tag LLM output protocol and the intent API (ADR 0031).
 - `design/ai-performer-voice-face.md`: the AI performer's voice and face: the TTS host and its two `ai_voice` feeds, voices, consent and hosted TTS, voice to face ahead of playback with the viseme fallback, and the big-moves planner (ADR 0041).
 - `design/mcp-resources.md`: the MCP resource provider contract, the `omuzaki://` URI table and the `omuzaki://project` summary shape.
+- `design/comments.md`: review comments and tasks (VC-07): flat `comments/<id>` nodes, anchors (part, frame, view, project), threads, the `review` scope, external reviewers' imports, tasks mapped onto the plan document, keeping reviewer text from steering an agent, MCP resources and the prompt, and the UI contract (ADR 0056).
 - `design/team.md`: team roles over the scopes, the signed membership log, enforcement, agency accounts and the SSO, LB-07 and git hooks (ADR 0043).
 - `design/team-review.md`: review policy for publish and broadcast (VC-11) and the team audit trail (ADR 0043).
+- `design/library-sharing.md`: shared library sources: the team library and marketplace client, the signed index, review state and the team licence (ADR 0057).
 - `design/platform-export.md`: platform exports (ADR 0047): limit tables as data, the fit pipeline (strip, drop, meshes, textures, atlas, bones, decimate), platform profiles, the `platform.*` ops, variants and the worked Quest example.
 - `design/llm-api.md`: the LLM seam (ADR 0032): the `LlmClient` trait, blocking streams, the provider-neutral message model and MCP mapping, micro-dollar pricing and the pre-request bound, retries and cancellation, providers, privacy, `FakeLlm` and the conformance suite.
 - `design/git.md`: the git integration (ADR 0045): the person's own `git` as a process, what "commits cleanly" promises, binaries via the second location, the commit view with render previews, person-only commit and push, and the `Git` trait.

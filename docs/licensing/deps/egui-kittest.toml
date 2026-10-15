@@ -1,0 +1,7 @@
+section = "rust"
+item = "egui_kittest, kittest"
+kind = "crate"
+used_for = "headless UI tests and gallery screenshots (software rasteriser)"
+status = "yes"
+audit = "(crates.io: MIT OR Apache-2.0)"
+crates = ["egui_kittest"]

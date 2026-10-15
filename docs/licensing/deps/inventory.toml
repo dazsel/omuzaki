@@ -1,0 +1,7 @@
+section = "rust"
+item = "inventory"
+kind = "crate"
+used_for = "self-registration"
+status = "yes"
+audit = "(crates.io: MIT OR Apache-2.0)"
+crates = ["inventory"]

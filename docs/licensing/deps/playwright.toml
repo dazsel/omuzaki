@@ -1,0 +1,7 @@
+section = "in-use"
+item = "playwright 1.63.0"
+kind = "node"
+used_for = "headless screenshots and tests"
+status = "conditions"
+condition = "dev only; never redistribute its browsers (Widevine)"
+audit = "A3"

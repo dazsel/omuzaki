@@ -1,0 +1,7 @@
+section = "models"
+item = "FLORES-200 devtest"
+kind = "dataset"
+used_for = "translation quality evaluation only (chrF++)"
+status = "conditions"
+condition = "CC-BY-SA 4.0 (`LICENSE_CC-BY-SA` read); evaluation only, never shipped, never used for training or tuning"
+audit = "research 2026-10-caption-translation.md"

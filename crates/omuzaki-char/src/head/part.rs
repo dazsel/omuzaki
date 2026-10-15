@@ -17,8 +17,8 @@ use std::sync::Arc;
 
 use omuzaki_anim_api::HumanoidBone;
 use omuzaki_char_api::{
-    Anchor, AnchorId, BuildCtx, BuildError, HeadParams, HeadSurface, JointFit, JointRef, KindProvenance, PartCategory,
-    PartKind, PartMesh, PartMeta, PartOutput, Publishes,
+    Anchor, AnchorId, AnchorsFact, BuildCtx, BuildError, FaceFact, FitFact, HeadFact, HeadParams, HeadSurface,
+    JointFit, JointRef, KindProvenance, PartCategory, PartKind, PartMesh, PartMeta, PartOutput, Publishes,
 };
 use omuzaki_core::glam::{Quat, Vec3};
 use omuzaki_core::mesh::MeshData;
@@ -110,19 +110,15 @@ impl PartKind for Head {
             .iter()
             .map(|_| "the traced radius map is not applied yet: the head is the analytic cranium".to_owned())
             .collect();
-        Ok(PartOutput {
-            meshes,
-            materials,
-            publishes: Publishes {
-                head: Some(surface),
-                face: Some(projection),
-                fit: Some(Arc::new(fit)),
-                anchors: [(anchor("top")?, top)].into_iter().chain(ear_anchors).collect(),
-                ..Publishes::default()
-            },
-            warnings,
-            ..PartOutput::default()
-        })
+        let mut publishes = Publishes::default()
+            .with::<HeadFact>(surface)
+            .with::<FaceFact>(projection)
+            .with::<FitFact>(Arc::new(fit))
+            .with::<AnchorsFact>((anchor("top")?, top));
+        for ear in ear_anchors {
+            publishes.put::<AnchorsFact>(ear);
+        }
+        Ok(PartOutput { meshes, materials, publishes, warnings, ..PartOutput::default() })
     }
 }
 

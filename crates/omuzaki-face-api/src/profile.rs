@@ -591,7 +591,7 @@ pub struct FangStyle {
 
 impl Default for FangStyle {
     fn default() -> Self {
-        Self { width: 0.003, height: 0.0058, position: 0.72 }
+        Self { width: 0.006, height: 0.0058, position: 0.72 }
     }
 }
 

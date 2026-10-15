@@ -24,6 +24,7 @@ use serde_json::{Map, Value};
 use crate::licence::no_licence_finding;
 use crate::{Finding, ImageIx};
 
+mod perform;
 mod vrm0;
 
 pub use vrm0::{Vrm0Licence, Vrm0Meta};

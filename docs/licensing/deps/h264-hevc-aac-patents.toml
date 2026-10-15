@@ -1,0 +1,7 @@
+section = "rust"
+item = "H.264 / HEVC / AAC patents"
+kind = "other"
+used_for = "encoded output"
+status = "unverified"
+condition = "legal review decision"
+audit = "B4"

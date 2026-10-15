@@ -1,0 +1,7 @@
+section = "models"
+item = "CTranslate2"
+kind = "native"
+used_for = "translation runtime for Marian, M2M-100, MADLAD-400 and Whisper models"
+status = "yes"
+condition = "MIT, \"Copyright (c) 2018- SYSTRAN\" (verified, LICENSE); PyPI 4.8.3 MIT; keep the notice"
+audit = "research 2026-10-caption-translation.md"

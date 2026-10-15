@@ -13,10 +13,11 @@ use omuzaki_anim_api::{
     Collider, ColliderGroup, ColliderShape, HumanoidBone, HumanoidPose, Pose, SpringChain, SpringParams, Transform,
 };
 use omuzaki_char_api::{
-    Anchor, AnchorId, BodyFit, BodyRegion, BoneName, BuildCtx, BuildError, BuildOptions, BuildServices, BuiltCharacter,
-    BuiltMesh, CharId, CharacterBuilder, CharacterDef, ExtraBone, FaceOverlay, HeadSurface, JointFit, JointRef,
-    MaterialName, MaterialSpec, MeshData, PartCategory, PartDef, PartId, PartKind, PartKindId, PartMesh, PartMeta,
-    PartOutput, PartRuntime, Publishes, RegistryBuilder, RigContribution, Section, Stature, extra_id, humanoid_id,
+    Anchor, AnchorId, AnchorsFact, BodyFit, BodyRegion, BoneName, BuildCtx, BuildError, BuildOptions, BuildServices,
+    BuiltCharacter, BuiltMesh, CharId, CharacterBuilder, CharacterDef, CollidersFact, ExtraBone, FaceFact, FaceOverlay,
+    FitFact, HeadFact, HeadSurface, JointFit, JointRef, MaterialName, MaterialSpec, MeshData, PartCategory, PartDef,
+    PartId, PartKind, PartKindId, PartMesh, PartMeta, PartOutput, PartRuntime, Publishes, RegistryBuilder,
+    RigContribution, Section, Stature, StatureFact, extra_id, humanoid_id,
 };
 use omuzaki_core::glam::{Mat4, Quat, Vec2, Vec3};
 use omuzaki_face_api::{Check, FaceLayerId, FaceProfile, FaceProjection, FaceRect, Palette, Validate};
@@ -173,13 +174,11 @@ impl PartKind for StatureBody {
             meshes: vec![mesh],
             materials: vec![material],
             runtime: p.simulate.then(|| Box::new(Idle) as Box<dyn PartRuntime>),
-            publishes: Publishes {
-                fit: Some(Arc::new(Torso { bind: if p.a_pose { a_pose() } else { HumanoidPose::REST } })),
-                colliders: vec![ColliderGroup { name: "body".to_owned(), colliders: vec![head] }],
-                anchors: vec![(AnchorId::new("crown").unwrap(), anchor)],
-                stature: Some(Stature { scale: p.scale, height_m: 1.9 * p.scale }),
-                ..Publishes::default()
-            },
+            publishes: Publishes::default()
+                .with::<FitFact>(Arc::new(Torso { bind: if p.a_pose { a_pose() } else { HumanoidPose::REST } }))
+                .with::<CollidersFact>(ColliderGroup { name: "body".to_owned(), colliders: vec![head] })
+                .with::<AnchorsFact>((AnchorId::new("crown").unwrap(), anchor))
+                .with::<StatureFact>(Stature { scale: p.scale, height_m: 1.9 * p.scale }),
             rig,
             ..PartOutput::default()
         })
@@ -245,12 +244,10 @@ impl PartKind for StatureHead {
         Ok(PartOutput {
             meshes: vec![mesh],
             materials: vec![(name, spec)],
-            publishes: Publishes {
-                head: Some(Arc::new(Ball)),
-                face: Some(projection),
-                fit: Some(Arc::new(fit)),
-                ..Publishes::default()
-            },
+            publishes: Publishes::default()
+                .with::<HeadFact>(Arc::new(Ball))
+                .with::<FaceFact>(projection)
+                .with::<FitFact>(Arc::new(fit)),
             ..PartOutput::default()
         })
     }
