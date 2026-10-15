@@ -1044,12 +1044,7 @@ impl PoseSource for Still {
 /// Steps every simulation of `b` through `frames` frames of a windy scene and returns what they look like afterwards.
 fn simulate(b: &mut BuiltCharacter, frames: u32) -> u64 {
     for frame in 0..frames {
-        let ctx = StepCtx {
-            dt: 1.0 / 60.0,
-            time: Seconds(f64::from(frame) / 60.0),
-            pose: &Still,
-            wind: Vec3::new(1.0, 0.0, 0.5),
-        };
+        let ctx = StepCtx::new(1.0 / 60.0, Seconds(f64::from(frame) / 60.0), &Still, Vec3::new(1.0, 0.0, 0.5));
         for slot in &mut b.runtimes {
             slot.runtime.step(&ctx);
         }
@@ -1745,7 +1740,7 @@ fn every_build_has_its_own_simulations() {
             .map(|m| m.revision)
             .collect()
     };
-    let ctx = StepCtx { dt: 1.0 / 60.0, time: Seconds(1.0), pose: &RestPose, wind: Vec3::ZERO };
+    let ctx = StepCtx::new(1.0 / 60.0, Seconds(1.0), &RestPose, Vec3::ZERO);
     for slot in &mut a.runtimes {
         slot.runtime.step(&ctx);
     }
