@@ -478,7 +478,7 @@ fn replace_checked_with(
     refuse_links(dir, path)?;
     let tmp = stage(dir, path, text, hooks)?;
     (hooks.staged)();
-    let outcome = match back_up(dir, path, expected, hooks)? {
+    let mut outcome = match back_up(dir, path, expected, hooks)? {
         Backup::Absent => {
             (hooks.backed_up)();
             place_no_replace(&tmp, path, hooks).map(|placed| if placed { Replace::Placed } else { Replace::Refused })
@@ -486,12 +486,12 @@ fn replace_checked_with(
         Backup::Mismatch => Ok(Replace::Refused),
         Backup::Held(held) => {
             let mut committed = false;
-            let outcome = replace_held(dir, path, &tmp, &held, &mut committed, hooks);
+            let mut outcome = replace_held(dir, path, &tmp, &held, &mut committed, hooks);
             // Once our file is committed at the target the backup is the kept entry (step 5), even if a later step
             // failed: it may already be the original itself. Otherwise the target is as it was (or the editor's) and
             // any displaced file is kept separately by `preserve`, so the backup can go.
             if !committed {
-                drop(fs::remove_file(&held.path));
+                tidy(&mut outcome, &held.path);
             }
             outcome
         }
@@ -500,9 +500,24 @@ fn replace_checked_with(
     // behind. After any other error it may hold a displaced file, so it stays until the next save moves it into the
     // replaced folder.
     if matches!(outcome, Ok(Replace::Refused) | Err(StoreError::NoSafeChange { .. })) {
-        drop(fs::remove_file(&tmp));
+        tidy(&mut outcome, &tmp);
     }
     outcome
+}
+
+/// Removes `file`, one of our own that the outcome no longer needs, before anything of ours was committed. A failure
+/// doesn't pass silently: it becomes the error, unless the outcome already is one (that error says more, and only one
+/// can be returned; the leftover is ours and the next save or pruning deals with it).
+fn tidy(outcome: &mut Result<Replace, StoreError>, file: &Path) {
+    match fs::remove_file(file) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => {
+            if outcome.is_ok() {
+                *outcome = Err(StoreError::io(file, e));
+            }
+        }
+    }
 }
 
 /// Steps 4 and 5 for a target that has a backup.
@@ -910,8 +925,13 @@ fn place_no_replace(from: &Path, to: &Path, hooks: &Hooks<'_>) -> Result<bool, S
         Err(e) => return Err(StoreError::io(to, e)),
     };
     if placed {
-        // After a hard link this drops the second name of the same file; after the rename it is already gone.
-        drop(fs::remove_file(from));
+        // After a hard link this drops the second name of the same file; after the rename it is already gone. The
+        // file is placed either way, so a failure here is reported as one after the commit.
+        match fs::remove_file(from) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(StoreError::NotDurable { path: from.to_path_buf(), source: e }),
+        }
     }
     Ok(placed)
 }
@@ -1013,12 +1033,23 @@ fn unlink_held(dir: &Path, path: &Path, held: &Held, hooks: &Hooks<'_>) -> Resul
         Ok(Some(quarantine)) => quarantine,
         Ok(None) => return Ok(true),
         Err(e) => {
+            // The move's error is the one returned; a backup left behind still has its hash, so pruning removes it.
             drop(fs::remove_file(&held.path));
             return Err(e);
         }
     };
     (hooks.quarantined)();
     if held.is_file_at(&quarantine) {
+        // An editor may have created the file again since it was moved aside. Then that file is theirs and the
+        // deletion is a conflict: the file moved aside is kept in the replaced folder, never deleted.
+        match fs::symlink_metadata(path) {
+            Ok(_) => {
+                preserve(dir, &quarantine, hooks)?;
+                return Ok(false);
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(StoreError::io(path, e)),
+        }
         // The target is gone from its name: the deletion has happened, and what follows only tidies up.
         let tidied = if held.linked.is_some() {
             fs::remove_file(&quarantine)
@@ -1037,6 +1068,18 @@ fn unlink_held(dir: &Path, path: &Path, held: &Held, hooks: &Hooks<'_>) -> Resul
             preserve(dir, &quarantine, hooks)?;
             Ok(false)
         }
+        // The editor's file is back at the target, but its hidden second name beside it couldn't be removed. The
+        // deletion did not happen, so this is a plain error, not one after a commit.
+        Err(StoreError::NotDurable { path: second, source }) => Err(StoreError::io(
+            &second,
+            io::Error::new(
+                source.kind(),
+                format!(
+                    "the file that took the place of {} was put back, but this second name of it stayed: {source}",
+                    path.display()
+                ),
+            ),
+        )),
         // It stays beside the target, where the error says, not out of sight in the replaced folder.
         Err(e) => Err(StoreError::io(
             &quarantine,
@@ -1896,6 +1939,23 @@ mod tests {
         assert!(!remove_checked_with(d, &segs, Some(ContentHash::of(b"x = 1\n")), &hooks).unwrap());
         assert_eq!(fs::read_to_string(&path).unwrap(), "theirs = 2\n");
         assert_eq!(texts(&kept(d)), ["x = 1\n"]);
+        let names: Vec<_> = fs::read_dir(d).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert!(names.iter().all(|n| !n.to_string_lossy().ends_with(".del")), "{names:?}");
+    }
+
+    /// A file created again at the target after our file was moved aside makes the deletion a conflict: the new file
+    /// stays, the file moved aside is kept (not deleted), and nothing is left under a hidden name.
+    #[test]
+    fn a_target_recreated_after_the_move_aside_makes_the_deletion_a_conflict() {
+        let tmp = TempDir::new().unwrap();
+        let d = tmp.path();
+        write(d, "a.toml", "x = 1\n");
+        let recreate = || fs::write(d.join("a.toml"), "theirs = 2\n").unwrap();
+        let hooks = Hooks { quarantined: &recreate, ..Hooks::default() };
+        assert!(!remove_checked_with(d, &["a".to_owned()], Some(ContentHash::of(b"x = 1\n")), &hooks).unwrap());
+        assert_eq!(fs::read_to_string(d.join("a.toml")).unwrap(), "theirs = 2\n");
+        let items = kept(d);
+        assert!(items.iter().any(|(n, t)| n.ends_with(".displaced") && t == "x = 1\n"), "{items:?}");
         let names: Vec<_> = fs::read_dir(d).unwrap().map(|e| e.unwrap().file_name()).collect();
         assert!(names.iter().all(|n| !n.to_string_lossy().ends_with(".del")), "{names:?}");
     }
