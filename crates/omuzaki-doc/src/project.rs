@@ -35,7 +35,8 @@ pub struct RenderedFile {
     pub text: String,
     /// The hash of `text`'s bytes.
     pub hash: ContentHash,
-    /// Whether a save would write it: the text differs from the last-known text, or the file is new.
+    /// Whether the rendered text differs from the last-known text, or the file is a new layout entry. It says nothing
+    /// about what a save will do with the file on disk.
     pub changed: bool,
 }
 

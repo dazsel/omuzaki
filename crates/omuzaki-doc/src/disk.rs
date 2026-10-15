@@ -332,6 +332,8 @@ struct Hooks<'a> {
     sync_off: Cell<bool>,
     /// Take Windows's replacement without a swap on any system (tests only).
     windows_shaped: Cell<bool>,
+    /// Pretend the system has no file identities, as on Windows: a linked backup records none (tests only).
+    ids_off: Cell<bool>,
 }
 
 fn noop() {}
@@ -421,6 +423,7 @@ impl Default for Hooks<'_> {
             no_replace_off: Cell::new(false),
             sync_off: Cell::new(faults::sync_off()),
             windows_shaped: Cell::new(false),
+            ids_off: Cell::new(false),
         }
     }
 }
@@ -554,8 +557,10 @@ fn replace_held(
     if held.is_file_at(tmp) {
         *committed = true;
         (hooks.verified)();
-        if held.linked.is_some() {
-            // The backup is the same file, so it is the kept entry and this second name can go.
+        if held.by_link {
+            // The backup is a hard link to the file we displaced (on a system without file identities, Windows, the
+            // check above was by bytes alone), so it is the kept entry and this second name can go. Renaming one name
+            // of a file over another of the same file changes nothing, so the copy's branch would leave it behind.
             fs::remove_file(tmp).map_err(|e| StoreError::NotDurable { path: tmp.to_path_buf(), source: e })?;
         } else {
             // A copy doesn't follow an editor that still holds the original open, so the original takes the copy's
@@ -635,7 +640,8 @@ fn file_id(meta: &io::Result<fs::Metadata>) -> Option<FileId> {
     meta.as_ref().ok().map(|m| (m.dev(), m.ino()))
 }
 
-/// Windows has hard links too, but no swap, so there this check is never needed.
+/// No cheap file identity here (Windows). A linked backup is then checked by its bytes alone, and the code that tidies
+/// up after a check branches on [`Held::by_link`], never on an identity.
 #[cfg(not(unix))]
 fn file_id(_: &io::Result<fs::Metadata>) -> Option<FileId> {
     None
@@ -664,7 +670,8 @@ fn rename_error(e: rustix::io::Errno) -> io::Error {
     }
 }
 
-/// Windows has no atomic swap of two names, so replacing an existing file is refused there; see the module's table.
+/// Atomic exchange is unavailable on Windows; the caller supplies the documented fallback for a hard-linked backup (see
+/// the module's table).
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn exchange(_: &Path, _: &Path) -> io::Result<()> {
     Err(io::ErrorKind::Unsupported.into())
@@ -869,7 +876,7 @@ fn back_up(dir: &Path, path: &Path, expected: Option<ContentHash>, hooks: &Hooks
     match linked {
         // Without an identity the link can't be trusted as the same file, so it is checked like a copy.
         Ok(()) => {
-            let linked = file_id(&fs::symlink_metadata(&backup));
+            let linked = if hooks.ids_off.get() { None } else { file_id(&fs::symlink_metadata(&backup)) };
             Ok(Backup::Held(Held { path: backup, found, linked, by_link: true }))
         }
         // Deleted between the read and the link: nothing to protect.
@@ -998,7 +1005,7 @@ fn remove_checked_with(
             if !unlink_held(dir, &path, &held, hooks)? {
                 return Ok(false);
             }
-            if held.linked.is_none() {
+            if !held.by_link {
                 hooks.sync_folder(held.path.parent()).map_err(not_durable)?;
             }
         }
@@ -1051,7 +1058,9 @@ fn unlink_held(dir: &Path, path: &Path, held: &Held, hooks: &Hooks<'_>) -> Resul
             Err(e) => return Err(StoreError::io(path, e)),
         }
         // The target is gone from its name: the deletion has happened, and what follows only tidies up.
-        let tidied = if held.linked.is_some() {
+        // A linked backup is the kept entry (keyed on the link, not on a file identity, which Windows doesn't give):
+        // the name moved aside goes.
+        let tidied = if held.by_link {
             fs::remove_file(&quarantine)
         } else {
             // The backup is only a copy, so the original inode (which an editor may still hold open) is renamed over
@@ -1517,6 +1526,7 @@ mod tests {
         let exchange = cfg!(any(target_os = "linux", target_os = "macos"));
         let cases = [
             ("swap, linked backup", exchange, Hooks::default()),
+            ("swap, linked backup, no file identities", exchange, Hooks { ids_off: true.into(), ..Hooks::default() }),
             ("swap, copied backup", exchange, Hooks { links_off: true.into(), ..Hooks::default() }),
             (
                 "Windows-shaped",
@@ -1941,6 +1951,22 @@ mod tests {
         assert_eq!(texts(&kept(d)), ["x = 1\n"]);
         let names: Vec<_> = fs::read_dir(d).unwrap().map(|e| e.unwrap().file_name()).collect();
         assert!(names.iter().all(|n| !n.to_string_lossy().ends_with(".del")), "{names:?}");
+    }
+
+    /// A deletion with a hard-linked backup on a system without file identities (Windows, forced here on any system)
+    /// keeps the backup as the kept entry and leaves no hidden name behind.
+    #[test]
+    fn a_linked_deletion_without_file_identities_leaves_no_hidden_name() {
+        let tmp = TempDir::new().unwrap();
+        let d = tmp.path();
+        write(d, "a.toml", "x = 1\n");
+        let hooks = Hooks { ids_off: true.into(), ..Hooks::default() };
+        assert!(remove_checked_with(d, &["a".to_owned()], Some(ContentHash::of(b"x = 1\n")), &hooks).unwrap());
+        assert!(!d.join("a.toml").exists());
+        let items = kept(d);
+        assert_eq!(texts(&items), ["x = 1\n"]);
+        assert!(items[0].0.ends_with(KEPT), "{items:?}");
+        assert_eq!(all_names(d), [".omuzaki"]);
     }
 
     /// A file created again at the target after our file was moved aside makes the deletion a conflict: the new file
