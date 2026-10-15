@@ -261,6 +261,20 @@ pub(crate) fn with_heads_up(mut result: CallToolResult, report: &Report) -> Call
     result
 }
 
+/// Puts `warning` at the top of `result`'s text, as a `Warning:` line, and under `structuredContent.warning`. It goes
+/// in front of whatever is already there, the heads-up included, so it is the first line of the reply.
+pub(crate) fn with_warning(mut result: CallToolResult, warning: &str) -> CallToolResult {
+    let line = format!("Warning: {warning}");
+    match result.content.first().and_then(ContentBlock::as_text) {
+        Some(first) => result.content[0] = ContentBlock::text(format!("{line}\n\n{}", first.text)),
+        None => result.content.insert(0, ContentBlock::text(line)),
+    }
+    if let Some(Value::Object(data)) = result.structured_content.as_mut() {
+        data.insert("warning".to_owned(), json!(warning));
+    }
+    result
+}
+
 /// A plain confirmation with structured data (`tx.*`).
 pub(crate) fn confirmation(text: String, data: Value) -> CallToolResult {
     result(vec![text], data, false)

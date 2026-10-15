@@ -66,6 +66,12 @@ pub enum StageError {
         /// The offending value.
         px_per_m: f32,
     },
+    /// The character can't be framed: a landmark is missing or a number isn't usable.
+    #[error("the character can't be framed: {reason}")]
+    Framing {
+        /// What is missing or unusable.
+        reason: String,
+    },
 }
 
 impl StageError {

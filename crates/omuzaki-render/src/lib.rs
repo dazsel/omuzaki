@@ -81,6 +81,7 @@ mod caps;
 mod environment;
 mod frame;
 mod gpu;
+mod morph;
 mod paint;
 mod pass;
 mod program;

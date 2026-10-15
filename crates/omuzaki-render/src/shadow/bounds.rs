@@ -21,6 +21,11 @@ pub(crate) struct MeshBounds {
 }
 
 impl MeshBounds {
+    /// No boxes yet: the starting point of a box that is only ever [`refit`](Self::refit).
+    pub(crate) fn empty() -> Self {
+        Self { whole: Aabb::EMPTY, joints: Vec::new() }
+    }
+
     /// The boxes of `mesh`, whose joint count (one past the highest weighted joint) is `joints_needed`.
     pub(crate) fn of(mesh: &MeshData, joints_needed: u32) -> Self {
         let mut whole = Aabb::EMPTY;
