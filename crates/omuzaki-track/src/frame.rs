@@ -111,6 +111,57 @@ impl RgbFrame<'_> {
     }
 }
 
+impl RgbFrame<'_> {
+    /// [`sample`](Self::sample) for a position whose four neighbours are all inside the frame and whose snapped
+    /// coordinates `qx`, `qy` are non-negative: the same arithmetic without the border logic.
+    // The weights sum to 1024, so the shifted blend is a level in 0..=255; the caller checked the neighbours.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[inline]
+    fn sample_inside(&self, qx: i32, qy: i32) -> [u8; 3] {
+        let (xu, yu) = ((qx >> SUBPIXEL_BITS) as usize, (qy >> SUBPIXEL_BITS) as usize);
+        let (fx, fy) = (qx & SUBPIXEL_MASK as i32, qy & SUBPIXEL_MASK as i32);
+        let steps = SUBPIXEL_STEPS_INT;
+        let weights = [(steps - fx) * (steps - fy), fx * (steps - fy), (steps - fx) * fy, fx * fy];
+        let top = &self.data[yu * self.stride + xu * 3..][..6];
+        let bottom = &self.data[(yu + 1) * self.stride + xu * 3..][..6];
+        let mut out = [0u8; 3];
+        for c in 0..3 {
+            let sum = i32::from(top[c]) * weights[0]
+                + i32::from(top[c + 3]) * weights[1]
+                + i32::from(bottom[c]) * weights[2]
+                + i32::from(bottom[c + 3]) * weights[3];
+            out[c] = ((sum + ROUND_HALF) >> (2 * SUBPIXEL_BITS)) as u8;
+        }
+        out
+    }
+
+    /// The snapped (1/32 pixel) integer position of a sample point, as [`sample`](Self::sample) computes it.
+    #[allow(clippy::cast_possible_truncation)] // coordinates are far inside i64
+    fn snap(x: f32, y: f32) -> (i64, i64) {
+        ((x * SUBPIXEL_STEPS).round() as i64, (y * SUBPIXEL_STEPS).round() as i64)
+    }
+
+    /// Whether every sample of a row between the snapped positions `a` and `b` has all four neighbours inside the
+    /// frame. A row's positions are monotone in x (float multiply and add keep the order), so its two ends bound
+    /// the rest.
+    fn row_is_inside(&self, a: (i64, i64), b: (i64, i64)) -> bool {
+        let inside = |(qx, qy): (i64, i64)| {
+            let (xi, yi) = (qx >> SUBPIXEL_BITS, qy >> SUBPIXEL_BITS);
+            xi >= 0 && yi >= 0 && xi + 1 < i64::from(self.width) && yi + 1 < i64::from(self.height)
+        };
+        inside(a) && inside(b)
+    }
+}
+
+/// Round half away from zero for a value known to be above -0.5 and below 2^31, which is [`f32::round`] without
+/// the library call: the fraction of an `f32` below 2^23 is exact.
+#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)] // the caller bounds the value
+#[inline]
+fn round_small(v: f32) -> i32 {
+    let whole = v as i32;
+    whole + i32::from(v - whole as f32 >= 0.5)
+}
+
 /// OpenCV snaps sample positions to 1/32 pixel (`INTER_BITS = 5`).
 const SUBPIXEL_BITS: u32 = 5;
 const SUBPIXEL_STEPS: f32 = 32.0; // 1 << SUBPIXEL_BITS
@@ -166,17 +217,23 @@ pub fn warp_to_tensor(frame: &RgbFrame<'_>, roi: &RotatedRect, spec: ImageSpec, 
     let mut o = 0;
     for yd in 0..spec.height {
         let row_start = [start[0] + yd as f32 * per_row[0], start[1] + yd as f32 * per_row[1]];
-        for xd in 0..spec.width {
-            let px = frame.sample(
-                row_start[0] + xd as f32 * per_column[0],
-                row_start[1] + xd as f32 * per_column[1],
-                spec.border,
-            );
-            for c in 0..3 {
-                out[o + c] = f32::from(px[c]) * scale + spec.range.0;
+        let at = |xd: usize| (row_start[0] + xd as f32 * per_column[0], row_start[1] + xd as f32 * per_column[1]);
+        let last = at(spec.width - 1);
+        let row = &mut out[o..o + spec.width * 3];
+        // A face ROI usually lies inside the frame: those rows skip the border logic, with identical results.
+        if frame.row_is_inside(RgbFrame::snap(at(0).0, at(0).1), RgbFrame::snap(last.0, last.1)) {
+            for (xd, pixel) in row.as_chunks_mut::<3>().0.iter_mut().enumerate() {
+                let (x, y) = at(xd);
+                let px = frame.sample_inside(round_small(x * SUBPIXEL_STEPS), round_small(y * SUBPIXEL_STEPS));
+                *pixel = px.map(|v| f32::from(v) * scale + spec.range.0);
             }
-            o += 3;
+        } else {
+            for (xd, pixel) in row.as_chunks_mut::<3>().0.iter_mut().enumerate() {
+                let (x, y) = at(xd);
+                *pixel = frame.sample(x, y, spec.border).map(|v| f32::from(v) * scale + spec.range.0);
+            }
         }
+        o += spec.width * 3;
     }
     Ok(())
 }
@@ -317,6 +374,42 @@ mod tests {
                 for j in -40..220 {
                     let (x, y) = (i as f32 * 0.0371, j as f32 * 0.0293);
                     assert_eq!(frame.sample(x, y, border), reference(x, y, border), "({x}, {y}) {border:?}");
+                }
+            }
+        }
+    }
+
+    /// The row fast path must give the same tensor as sampling every pixel through the border logic, for ROIs that
+    /// are inside, cross an edge, are rotated, shrink or enlarge.
+    #[test]
+    fn warp_matches_per_pixel_sampling() {
+        let image = gradient(40, 30);
+        let frame = image.frame();
+        let rois = [
+            roi(20.0, 15.0, 20.0, 20.0, 0.0),
+            roi(20.0, 15.0, 31.7, 22.3, 0.4),
+            roi(3.0, 4.0, 18.0, 18.0, -0.7),
+            roi(38.0, 28.0, 25.0, 25.0, 1.9),
+            roi(20.0, 15.0, 80.0, 60.0, 0.0),
+            roi(20.0, 15.0, 6.5, 6.5, 2.5),
+        ];
+        for border in [Border::Zero, Border::Replicate] {
+            let spec = ImageSpec { width: 16, height: 16, range: (-1.0, 1.0), border };
+            for roi in rois {
+                let mut out = vec![0.0; 16 * 16 * 3];
+                warp_to_tensor(&frame, &roi, spec, &mut out).unwrap();
+                let (cos, sin) = (roi.rotation.cos(), roi.rotation.sin());
+                let scale = 2.0 / 255.0;
+                for yd in 0..16 {
+                    for xd in 0..16 {
+                        let (u, v) = ((xd as f32 / 16.0 - 0.5) * roi.width, (yd as f32 / 16.0 - 0.5) * roi.height);
+                        let expected = frame.sample(roi.cx + cos * u - sin * v, roi.cy + sin * u + cos * v, border);
+                        for c in 0..3 {
+                            let got = out[(yd * 16 + xd) * 3 + c];
+                            let want = f32::from(expected[c]) * scale - 1.0;
+                            assert!((got - want).abs() < 1e-5, "{roi:?} {border:?} ({xd}, {yd}) channel {c}");
+                        }
+                    }
                 }
             }
         }
