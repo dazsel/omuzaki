@@ -3563,6 +3563,7 @@ version = "0.0.0"
 dependencies = [
  "glam 0.34.1",
  "inventory",
+ "proptest",
  "schemars",
  "serde",
  "serde_json",
@@ -4072,6 +4073,16 @@ version = "0.0.0"
 dependencies = [
  "blake3",
  "omuzaki-store-api",
+]
+
+[[package]]
+name = "omuzaki-stream-api"
+version = "0.0.0"
+dependencies = [
+ "bytes",
+ "schemars",
+ "serde",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

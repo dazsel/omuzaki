@@ -47,6 +47,7 @@ fn chain_to_io(chain: &SpringChain, springs: &SpringSet, scale: f32) -> io::Spri
                     gravity_power: p.gravity_power,
                     gravity_dir: p.gravity_dir,
                     drag_force: p.drag_force,
+                    limit: None,
                 }
             })
             .collect(),
