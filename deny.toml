@@ -50,6 +50,9 @@ unused-allowed-license = "allow"
 # Per-crate exceptions for licences that are fine in one place only (e.g. fonts bundled by egui).
 # Add with a register row; never widen the global allow list for one crate.
 exceptions = [
+    # libFuzzer, which libfuzzer-sys bundles, is under LLVM's earlier NCSA licence: permissive and fine for commercial
+    # use. Only fuzz/ uses it, and fuzz/ ships nothing (register: libfuzzer-sys, "yes"). Allowed for this one crate only.
+    { crate = "libfuzzer-sys", allow = ["NCSA"] },
     # egui's bundled UI fonts (Hack, Ubuntu-Light, emoji icons): font licences, fine to ship with their notices
     # (register: egui/eframe, "conditions"; notices generated). Allowed for this one crate only.
     { crate = "epaint_default_fonts", allow = ["OFL-1.1", "Ubuntu-font-1.0"] },
