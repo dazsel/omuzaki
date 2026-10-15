@@ -1,3 +1,9 @@
+---
+title: "Face GPU rasteriser: Vello against a custom coverage rasteriser (CB-24)"
+summary: "Vello against a custom coverage rasteriser (CB-24)"
+area: research
+---
+
 # Face GPU rasteriser: Vello against a custom coverage rasteriser (CB-24)
 
 **Decision: use Vello (`vello 0.11`, which requires `wgpu ^30`, the workspace's version) for the GPU face rasteriser.**

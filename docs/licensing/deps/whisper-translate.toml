@@ -1,0 +1,7 @@
+section = "models"
+item = "Whisper multilingual `translate` task (into English only)"
+kind = "model"
+used_for = "caption translation into English, no new weights"
+status = "yes"
+condition = "same MIT weights and code as the Whisper row above; needs the multilingual (non-`.en`) sizes; into English only"
+audit = "research 2026-10-caption-translation.md"

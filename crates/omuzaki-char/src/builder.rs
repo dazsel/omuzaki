@@ -68,10 +68,11 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 use std::{mem, thread};
 
+use omuzaki_char_api::keying::{CommonKeyInputs, PartKeyInputs, common_key_inputs, part_key_inputs};
 use omuzaki_char_api::{
-    Assembler, AssetError, AssetSource, BuildCtx, BuildError, BuildOptions, BuildServices, BuiltCharacter, CharId,
-    CharacterBuilder, CharacterDef, ContentHash, PartDef, PartId, PartKindId, PartMesh, PartOutput, PartRuntime,
-    Published, Publishes, Quality, RasterizerFactory, Recoloured, build_part, find_kind, plan, recolour_part,
+    Assembler, AssetError, AssetSource, BuildError, BuildOptions, BuildServices, BuiltCharacter, CharId,
+    CharacterBuilder, CharacterDef, ContentHash, PartId, PartKindId, PartMesh, PartOutput, PartRuntime, Published,
+    Publishes, Quality, RasterizerFactory, Recoloured, build_part, find_kind, plan, recolour_part,
 };
 use omuzaki_core::colour::Colour;
 use omuzaki_doc_api::Value;
@@ -161,18 +162,15 @@ struct Run<'a> {
 
 impl<'a> Run<'a> {
     fn new(def: &'a CharacterDef, options: &'a BuildOptions, services: &'a BuildServices) -> Self {
-        // Exhaustive on purpose (no `..`): a field added to the definition or the options fails to compile here until
-        // it is keyed or excluded with a reason. `build_part` reads the seed, the palette, the face and the parts of
-        // the definition. Excluded: `name` and `skin_tone` (no part sees them), `weight_brushes` (applied by the assembler, after the part is built), `variant` (recorded
-        // in the result; the caller applied it to `def`). The palette and the parts are keyed per part, in `keys`.
-        let CharacterDef { name: _, template, seed, palette: _, skin_tone: _, parts: _, face, weight_brushes: _ } = def;
-        let BuildOptions { variant: _, quality, rig_export } = options;
+        // `common_key_inputs` destructures the definition and the options exhaustively: a field added to either fails
+        // to compile there until it is keyed or excluded with a reason.
+        let CommonKeyInputs { template, seed, quality, rig_export, face } = common_key_inputs(def, options);
         let quality = match quality {
             Quality::Live => 0,
             Quality::Offline => 1,
         };
         let mut h = Fnv::new();
-        h.text(template.as_str()).word(u64::from(*seed)).word(quality).word(u64::from(*rig_export));
+        h.text(template.as_str()).word(u64::from(seed)).word(quality).word(u64::from(rig_export));
         // Can't fail: `Fnv::write` is infallible, and a profile that couldn't serialise couldn't be stored either.
         let _ = serde_json::to_writer(&mut h, face);
         Self { def, options, services, common: h.finish() }
@@ -183,10 +181,8 @@ impl<'a> Run<'a> {
         let mut h = Fnv::new();
         h.print(self.common).print(chain).text(part.as_str());
         let params = self.def.parts.get(part).map(|part_def| {
-            // Exhaustive for the same reason as in `new`. `parent`, `enabled` and `layer` only decide whether and
-            // when the part builds, which the plan and the chain cover. `attach` reaches the part through `BuildCtx::attach`,
-            // so it is keyed: editing it rebuilds the part and everything chained after it.
-            let PartDef { kind, params, parent: _, enabled: _, layer: _, attach } = part_def;
+            // Exhaustive for the same reason as in `new`: see `part_key_inputs`.
+            let PartKeyInputs { kind, params, attach } = part_key_inputs(part_def);
             h.text(kind.as_str());
             let _ = serde_json::to_writer(&mut h, attach); // an `Option<Attach>` always serialises
             // Invalid parameters hash as stored; they fail to build, and failures are never cached.
@@ -221,24 +217,6 @@ struct Keys {
     geometry: Fingerprint,
     /// The geometry key and the colours the parameters name: the key of the part's whole output, materials included.
     full: Fingerprint,
-}
-
-/// A compile-time guard that is never called: it names every [`BuildCtx`] field next to what covers it in the key, so
-/// a field added to the context fails to compile here until someone decides how it is keyed.
-#[allow(dead_code)] // its only job is to fail to compile
-fn every_context_field_is_keyed_or_excluded(ctx: &BuildCtx<'_>) {
-    let BuildCtx {
-        part: _,       // keyed: the part's id
-        template: _,   // keyed: `Run::common`
-        palette: _,    // keyed: the values of the slots the parameters name (contract 1)
-        face: _,       // keyed: `Run::common`
-        rng: _,        // keyed: `part_rng` depends on the seed (`Run::common`) and the part's id
-        published: _,  // keyed: the chain over the geometry keys of the earlier publishers
-        quality: _,    // keyed: `Run::common`
-        rig_export: _, // keyed: `Run::common`
-        attach: _,     // keyed: hashed into the geometry key in `Run::keys`
-        services: _,   // excluded (ADR 0012); `Stored::usable_with` checks what the part used
-    } = ctx;
 }
 
 fn resolve(palette: &Palette, slot: &str) -> Option<Colour> {
@@ -359,8 +337,7 @@ impl Stored {
 
 /// Whether a part's output changes what later parts see. Mirrors [`Published::absorb`], which adds nothing for it.
 fn is_silent(p: &Publishes) -> bool {
-    let Publishes { head, face, fit, anchors, colliders, stature } = p;
-    head.is_none() && face.is_none() && fit.is_none() && anchors.is_empty() && colliders.is_empty() && stature.is_none()
+    p.is_empty()
 }
 
 struct Resident {
@@ -829,7 +806,7 @@ mod tests {
 
     #[test]
     fn a_simulations_hidden_state_counts_toward_the_byte_budget() {
-        let output = PartOutput { runtime: Some(Box::new(Hidden(4096))), ..PartOutput::default() };
+        let output = PartOutput::new().with_runtime(Box::new(Hidden(4096)));
         let stored = Stored::of(&output, &Used::default()).expect("forks");
         assert_eq!(stored.bytes, 4096, "no mesh and no texture: the runtime's own size is all there is");
         let mut store = Store::default();

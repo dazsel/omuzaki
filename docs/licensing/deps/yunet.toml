@@ -1,0 +1,7 @@
+section = "in-use"
+item = "YuNet 2023mar"
+kind = "model"
+used_for = "(a local copy exists, unused)"
+status = "NO"
+condition = "trained on WIDER FACE (cc by-nc-nd)"
+audit = "A5"

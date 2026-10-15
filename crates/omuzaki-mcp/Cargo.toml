@@ -38,6 +38,7 @@ reqwest.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
+omuzaki-ops-mock = { path = "../omuzaki-ops-mock" }
 omuzaki-store-mock = { path = "../omuzaki-store-mock" }
 
 [lints]
@@ -48,3 +49,4 @@ workspace = true
 kind = "Implementation"
 summary = "the MCP server (§11): every registered op is a tool, served over stdio or a local Streamable HTTP port; native only, over `omuzaki-ops-api`, `omuzaki-doc-api` and `omuzaki-store-api`"
 wasm = false
+registers = true

@@ -15,6 +15,20 @@ pub struct DirEntry {
     pub is_symlink: bool,
 }
 
+/// What a symbolic link points at, for [`Disk::symlink`].
+///
+/// Windows must know this when it creates the link, and a dangling or not-yet-unpacked target cannot tell it, so the
+/// caller states it. Unix ignores it. The caller takes it from the entry type the package carries for the link's
+/// target (a link to a path inside the same package: that entry's type), never by looking at the disk.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum LinkKind {
+    /// The target is a file.
+    File,
+    /// The target is a directory.
+    Dir,
+}
+
 /// File operations. Paths are absolute.
 pub trait Disk: Send + Sync {
     /// The whole file.
@@ -54,11 +68,12 @@ pub trait Disk: Send + Sync {
     /// # Errors
     /// The directory is missing or unreadable.
     fn list_dir(&self, path: &Path) -> io::Result<Vec<DirEntry>>;
-    /// Makes a symbolic link at `link` pointing at `target`.
+    /// Makes a symbolic link at `link` pointing at `target`. `kind` is what the target is; Unix ignores it, Windows
+    /// picks a file or a directory link by it when the link is created.
     ///
     /// # Errors
     /// `link` exists or cannot be made.
-    fn symlink(&self, target: &str, link: &Path) -> io::Result<()>;
+    fn symlink(&self, target: &str, link: &Path, kind: LinkKind) -> io::Result<()>;
     /// Sets or clears the executable bit (a no-op where there is none).
     ///
     /// # Errors

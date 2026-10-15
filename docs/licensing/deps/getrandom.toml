@@ -1,0 +1,7 @@
+section = "rust"
+item = "getrandom, constant_time_eq"
+kind = "crate"
+used_for = "random MCP access tokens and the random names of `CanonicalPath::replace`'s temporary files; constant-time token comparison"
+status = "yes"
+audit = "(crates.io: MIT OR Apache-2.0; CC0-1.0 OR MIT-0 OR Apache-2.0)"
+crates = ["constant_time_eq", "getrandom"]

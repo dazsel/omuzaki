@@ -55,6 +55,10 @@ harness = false
 name = "mouth_shape"
 harness = false
 
+[[bench]]
+name = "mouth_interior"
+harness = false
+
 [build-dependencies]
 omuzaki-embed = { path = "../omuzaki-embed" }
 
@@ -68,4 +72,6 @@ harness = false
 
 [package.metadata.omuzaki]
 kind = "Implementation"
+generated-mods = ["src/ops"]
 summary = "the procedural face (spec v3 §19, CB-20..25): turns the channel bus into painted face layers, on the contracts of `omuzaki-face-api` (what the face does) and `omuzaki-render-api` (where the pixels go)"
+registers = true

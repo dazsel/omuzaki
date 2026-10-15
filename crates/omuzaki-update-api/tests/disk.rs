@@ -9,7 +9,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use omuzaki_update_api::disk::{DirEntry, Disk};
+use omuzaki_update_api::disk::{DirEntry, Disk, LinkKind};
 
 /// The step that fails, if any.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -25,12 +25,13 @@ enum Fail {
 struct MemDisk {
     files: Mutex<BTreeMap<PathBuf, Vec<u8>>>,
     fail: Fail,
+    links: Mutex<Vec<(String, PathBuf, LinkKind)>>,
 }
 
 impl MemDisk {
     fn new(fail: Fail) -> Self {
         let files = BTreeMap::from([(PathBuf::from("/install/state.toml"), b"old".to_vec())]);
-        Self { files: Mutex::new(files), fail }
+        Self { files: Mutex::new(files), fail, links: Mutex::new(Vec::new()) }
     }
 
     fn injected(&self, step: Fail) -> io::Result<()> {
@@ -70,7 +71,8 @@ impl Disk for MemDisk {
     fn list_dir(&self, _: &Path) -> io::Result<Vec<DirEntry>> {
         Ok(Vec::new())
     }
-    fn symlink(&self, _: &str, _: &Path) -> io::Result<()> {
+    fn symlink(&self, target: &str, link: &Path, kind: LinkKind) -> io::Result<()> {
+        self.links.lock().unwrap().push((target.to_owned(), link.to_path_buf(), kind));
         Ok(())
     }
     fn set_executable(&self, _: &Path, _: bool) -> io::Result<()> {
@@ -109,4 +111,18 @@ fn a_failed_folder_fsync_reports_an_error_after_the_replacement() {
     let (result, bytes) = attempt(Fail::FsyncDir);
     assert!(result.is_err());
     assert_eq!(bytes, b"new");
+}
+
+#[test]
+fn symlink_records_the_kind_it_was_given() {
+    let disk = MemDisk::new(Fail::Nothing);
+    disk.symlink("lib/real", Path::new("/install/dir-link"), LinkKind::Dir).unwrap();
+    disk.symlink("bin/tool", Path::new("/install/file-link"), LinkKind::File).unwrap();
+    assert_eq!(
+        *disk.links.lock().unwrap(),
+        [
+            ("lib/real".to_owned(), PathBuf::from("/install/dir-link"), LinkKind::Dir),
+            ("bin/tool".to_owned(), PathBuf::from("/install/file-link"), LinkKind::File),
+        ]
+    );
 }

@@ -1,0 +1,7 @@
+section = "rust"
+item = "tokio"
+kind = "crate"
+used_for = "async runtime for MCP"
+status = "yes"
+audit = "(crates.io: MIT)"
+crates = ["tokio"]

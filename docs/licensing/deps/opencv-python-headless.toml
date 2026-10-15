@@ -1,0 +1,7 @@
+section = "in-use"
+item = "opencv-python-headless 5.0.0.93"
+kind = "python"
+used_for = "video decode in tooling"
+status = "conditions"
+condition = "dev only; bundles LGPL FFmpeg"
+audit = "A2"

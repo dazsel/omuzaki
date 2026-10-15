@@ -44,7 +44,7 @@ mod tests {
     use super::*;
 
     fn rolled_back(n: u64) -> Event {
-        Event::TxRolledBack { tx: TxId(n), actor: Actor::System, version: DocVersion(n) }
+        Event::tx_rolled_back(TxId(n), Actor::System, DocVersion(n))
     }
 
     #[test]

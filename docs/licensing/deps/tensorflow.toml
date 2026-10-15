@@ -1,0 +1,7 @@
+section = "in-use"
+item = "TensorFlow 2.16.2"
+kind = "python"
+used_for = "reads the TFLite models in the conversion tooling"
+status = "yes"
+condition = "dev only, throwaway venv; never shipped"
+audit = "(PyPI: Apache-2.0)"

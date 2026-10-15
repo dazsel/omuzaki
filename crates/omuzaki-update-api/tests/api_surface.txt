@@ -1,6 +1,7 @@
 src/clock.rs: pub struct Timestamp(pub i64);
 src/clock.rs: pub trait WallClock: Send + Sync {
 src/disk.rs: pub struct DirEntry {
+src/disk.rs: pub enum LinkKind {
 src/disk.rs: pub trait Disk: Send + Sync {
 src/error.rs: pub enum UpdateError {
 src/event.rs: pub const EVENT_QUEUE_CAPACITY: usize = 64;

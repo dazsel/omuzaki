@@ -1,0 +1,7 @@
+section = "models"
+item = "sherpa-onnx Rust crates"
+kind = "crate"
+used_for = "speech host"
+status = "NO"
+condition = "links GPL espeak-ng; banned in `deny.toml` (negative control in `spikes/speech/README.md`)"
+audit = "B5"

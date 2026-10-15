@@ -1,3 +1,9 @@
+---
+title: "0052: Takes record what entered the performance pipeline and what it resolved to, as one checksummed chunk per frame period, in `<stem>.input` (2026-10-13)"
+summary: "Takes record what entered the performance pipeline and what it resolved to, as one checksummed chunk per frame period, in `<stem>.input`"
+area: decisions
+---
+
 # 0052: Takes record what entered the performance pipeline and what it resolved to, as one checksummed chunk per frame period, in `<stem>.input` (2026-10-13)
 
 **Status:** proposed (PR); accepted by the cloud lead when merged. **Context:** SH-01,

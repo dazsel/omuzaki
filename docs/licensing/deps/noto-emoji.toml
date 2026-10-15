@@ -1,0 +1,7 @@
+section = "rust"
+item = "Noto Emoji (monochrome, variable, 1.98 MB)"
+kind = "font"
+used_for = "character-sheet emoji fallback, downloaded on first need, SHA-256 pinned; default instance (wght 400) for every weight"
+status = "conditions"
+condition = "OFL-1.1: ship the notice. \"Copyright 2013 Google LLC\". Source: google/fonts `ofl/notoemoji` commit bd8f81d"
+audit = "(google/fonts)"
