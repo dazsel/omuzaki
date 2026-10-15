@@ -105,6 +105,10 @@ pub fn resize(image: &EncodedImage, width: u32, height: u32, usage: TextureUse) 
 /// # Errors
 /// As [`resize`]; a `max_side` of zero is [`IoError::Unsupported`].
 pub fn downscale_to(image: &EncodedImage, max_side: u32, usage: TextureUse) -> Result<Option<EncodedImage>, IoError> {
+    // Refused before the image is read at all: a zero budget has no output, whatever the input is.
+    if max_side == 0 {
+        return Err(empty_target());
+    }
     let size = source_size(image)?;
     let (width, height) = size;
     if width.max(height) <= max_side {
@@ -121,6 +125,14 @@ pub fn downscale_to(image: &EncodedImage, max_side: u32, usage: TextureUse) -> R
     resample(image, size, target_width, target_height, usage).map(Some)
 }
 
+/// The error for a target with no pixels, which is the caller's fault and is refused before any input is read.
+fn empty_target() -> IoError {
+    IoError::Unsupported {
+        what: "a texture with no pixels".to_owned(),
+        hint: Some("ask for at least one pixel on each side".to_owned()),
+    }
+}
+
 /// The side that keeps the aspect: `short` scaled by `to / long`, rounded to the nearest whole pixel, and at least one.
 #[allow(clippy::cast_possible_truncation)] // `short * to / long` is at most `to`, which is a `u32`
 fn scaled_side(short: u32, to: u32, long: u32) -> u32 {
@@ -131,10 +143,7 @@ fn scaled_side(short: u32, to: u32, long: u32) -> u32 {
 /// Refuses a target that is empty or too large. Every output allocation goes through this.
 fn check_size(width: u32, height: u32) -> Result<(), IoError> {
     if width == 0 || height == 0 {
-        return Err(IoError::Unsupported {
-            what: "a texture with no pixels".to_owned(),
-            hint: Some("ask for at least one pixel on each side".to_owned()),
-        });
+        return Err(empty_target());
     }
     for side in [width, height] {
         if side > MAX_SIDE {
@@ -310,6 +319,8 @@ fn resample(
     height: u32,
     usage: TextureUse,
 ) -> Result<EncodedImage, IoError> {
+    // Every caller checks the target first; a zero side here would reach the encoder as an empty image.
+    check_size(width, height)?;
     let source = decode(image, size)?;
     let pixels =
         if source.dimensions() == (width, height) { source.into_raw() } else { average(&source, width, height, usage) };

@@ -223,6 +223,20 @@ fn the_gradient_resizes_match_their_fixed_hashes_on_every_target() {
     assert_eq!(fnv1a(odd.as_raw()), COLOUR_1000X750_HASH, "colour 1000x750");
 }
 
+#[test]
+fn a_zero_target_is_unsupported_before_the_input_is_read() {
+    // The payload is cut short, so reading it would be Malformed. A zero target has to be refused first.
+    let full = png("zero", &gradient_small());
+    let bytes = full.bytes.as_slice();
+    let cut = EncodedImage::new("zero", ImageMime::Png, Blob::new(bytes[..bytes.len() / 2].to_vec()));
+    assert!(matches!(resize(&cut, 0, 4, TextureUse::Colour), Err(IoError::Unsupported { .. })));
+    assert!(matches!(resize(&cut, 4, 0, TextureUse::Colour), Err(IoError::Unsupported { .. })));
+    assert!(matches!(downscale_to(&cut, 0, TextureUse::Colour), Err(IoError::Unsupported { .. })));
+    // The same holds for a valid image: a zero budget is never a no-op or a resample.
+    assert!(matches!(downscale_to(&full, 0, TextureUse::Data), Err(IoError::Unsupported { .. })));
+    assert!(matches!(resize(&full, 0, 0, TextureUse::Data), Err(IoError::Unsupported { .. })));
+}
+
 /// A 4 by 4 gradient, for tests that only need some texels.
 fn gradient_small() -> RgbaImage {
     RgbaImage::from_fn(4, 4, |x, y| Rgba([(x * 60) as u8, (y * 60) as u8, 128, 255]))
