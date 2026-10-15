@@ -274,8 +274,9 @@ pub struct Frame<'a> {
     /// The pixels on the CPU (`read_target`'s result), already in the alpha form the output asked for.
     pub cpu: Option<&'a Image>,
     /// The target's native GPU handles, the painters' convention (`(wgpu::Device, wgpu::Queue, wgpu::Texture)`);
-    /// the consumer downcasts. No GPU type enters this crate.
-    pub gpu: Option<&'a mut dyn Any>,
+    /// the consumer calls `downcast_ref`. The borrow is shared because one frame fans out to several outputs in
+    /// turn. No GPU type enters this crate.
+    pub gpu: Option<&'a dyn Any>,
 }
 
 impl<'a> Frame<'a> {
@@ -293,7 +294,7 @@ impl<'a> Frame<'a> {
 
     /// Attaches the native GPU handles.
     #[must_use]
-    pub fn with_gpu(mut self, gpu: &'a mut dyn Any) -> Self {
+    pub fn with_gpu(mut self, gpu: &'a dyn Any) -> Self {
         self.gpu = Some(gpu);
         self
     }

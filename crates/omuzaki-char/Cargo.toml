@@ -26,6 +26,9 @@ omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-render-api = { path = "../omuzaki-render-api" }
 omuzaki-store-api = { path = "../omuzaki-store-api" }
 
+[build-dependencies]
+omuzaki-embed = { path = "../omuzaki-embed" }
+
 [dev-dependencies]
 criterion.workspace = true
 proptest.workspace = true
@@ -53,6 +56,10 @@ name = "hair_runtime"
 harness = false
 
 [[bench]]
+name = "hair_cap_sweep"
+harness = false
+
+[[bench]]
 name = "cloth_solver"
 harness = false
 
@@ -69,4 +76,6 @@ workspace = true
 
 [package.metadata.omuzaki]
 kind = "Implementation"
+generated-mods = ["src/ops"]
 summary = "the procedural character (§18): geometry kit, body templates, head, hair, outfit, accessories, cloth, palette and the character ops; module map in the crate docs (`crates/omuzaki-char/src/lib.rs`), over the API crates only"
+registers = true

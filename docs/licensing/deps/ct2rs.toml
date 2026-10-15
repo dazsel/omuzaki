@@ -1,0 +1,7 @@
+section = "models"
+item = "ct2rs"
+kind = "crate"
+used_for = "Rust binding of CTranslate2"
+status = "conditions"
+condition = "crates.io 0.10.1 MIT; read its native build and sentencepiece dependency licences before adding it"
+audit = "(crates.io: MIT)"

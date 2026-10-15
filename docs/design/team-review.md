@@ -1,3 +1,9 @@
+---
+title: "Teams: review policy (VC-11) and the audit trail"
+summary: "review policy for publish and broadcast (VC-11) and the team audit trail (ADR 0043)."
+area: design
+---
+
 # Teams: review policy (VC-11) and the audit trail
 
 **Status:** proposed (cloud lead to accept on the PR). **Features:** VC-11, VC-10's audit

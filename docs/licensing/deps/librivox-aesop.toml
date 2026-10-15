@@ -1,0 +1,7 @@
+section = "models"
+item = "LibriVox \"Aesop's Fables, Volume 03\" sections 51, 52, 54, 67 + Project Gutenberg text"
+kind = "audio+text"
+used_for = "speech test clips (`datasets/speech-pd` in the assets folder)"
+status = "yes"
+condition = "public domain (LibriVox donates recordings to the public domain; Gutenberg text 1912); never committed"
+audit = "(spike)"

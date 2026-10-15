@@ -1,3 +1,9 @@
+---
+title: "App shell: layout, workspaces and flows"
+summary: "layout, workspaces and flows"
+area: design
+---
+
 # App shell: layout, workspaces and flows
 
 > Part of the UX direction. Principles are in `principles.md` (cited as P1 to P12), components and tokens in `design-system.md`. The wireframes are SVG files in `wireframes/` (open them at full size; the callout numbers match the legends below).

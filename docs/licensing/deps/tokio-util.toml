@@ -1,0 +1,7 @@
+section = "rust"
+item = "tokio-util"
+kind = "crate"
+used_for = "cancellation tokens for the MCP HTTP port"
+status = "yes"
+audit = "(crates.io: MIT)"
+crates = ["tokio-util"]

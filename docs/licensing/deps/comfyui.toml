@@ -1,0 +1,7 @@
+section = "models"
+item = "ComfyUI"
+kind = "tool"
+used_for = "image workflows"
+status = "external"
+condition = "user-installed; we talk over HTTP/WebSocket"
+audit = "B6"

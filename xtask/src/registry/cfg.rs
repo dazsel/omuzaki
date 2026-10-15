@@ -75,6 +75,46 @@ impl Cfg {
     }
 }
 
+impl Cfg {
+    /// Whether the predicate can be `want` on some target a build could ship for, ignoring which one this is: target
+    /// options (`unix`, `target_os`, `target_arch`, ...) and `debug_assertions` can go either way, `test` is never true
+    /// in a shipped library, and anything else (a cargo feature) is `None`. `lint-registers` asks it with `want = true`,
+    /// so a registration behind `cfg(target_arch = "wasm32")` still counts on a Linux host.
+    ///
+    /// Predicates are treated as independent, so `all(unix, windows)` can hold here: the answer errs towards "ships",
+    /// which is the safe side for a lint that demands a flag.
+    pub fn can_be(&self, want: bool) -> Option<bool> {
+        match self {
+            Self::Flag(flag) => match flag.as_str() {
+                "test" => Some(!want),
+                "debug_assertions" | "unix" | "windows" => Some(true),
+                _ => None,
+            },
+            Self::KeyValue(key, _) => {
+                matches!(key.as_str(), "target_os" | "target_family" | "target_arch" | "target_pointer_width")
+                    .then_some(true)
+            }
+            Self::Not(inner) => inner.can_be(!want),
+            Self::Any(options) => reachable(options, want, want),
+            Self::All(options) => reachable(options, want, !want),
+            Self::Unreadable(_) => None,
+        }
+    }
+}
+
+/// `can_be` of `any`/`all`: the group can be `want` if one option can (`one_suffices`) or every option can.
+fn reachable(options: &[Cfg], want: bool, one_suffices: bool) -> Option<bool> {
+    let mut undecided = false;
+    for option in options {
+        match option.can_be(want) {
+            Some(value) if value == one_suffices => return Some(one_suffices),
+            Some(_) => {}
+            None => undecided = true,
+        }
+    }
+    if undecided { None } else { Some(!one_suffices) }
+}
+
 /// `any` (`decisive = true`) or `all` (`decisive = false`): one decisive value settles it; otherwise any undecided
 /// option leaves the whole undecided.
 fn three_valued(options: &[Cfg], decisive: bool) -> Option<bool> {
@@ -171,6 +211,19 @@ mod tests {
         assert_eq!(cfg("any(test, debug_assertions)").eval(), Some(cfg!(debug_assertions)));
         assert_eq!(cfg("all()").eval(), Some(true));
         assert_eq!(cfg("any()").eval(), Some(false));
+    }
+
+    #[test]
+    fn every_target_branch_counts_but_test_code_does_not() {
+        for text in ["unix", "windows", "target_arch = \"wasm32\"", "not(unix)", "target_os = \"plan9\"", "not(test)"] {
+            assert_eq!(cfg(text).can_be(true), Some(true), "{text}");
+        }
+        for text in ["test", "all(test, unix)", "not(not(test))"] {
+            assert_eq!(cfg(text).can_be(true), Some(false), "{text}");
+        }
+        assert_eq!(cfg("any(test, target_arch = \"wasm32\")").can_be(true), Some(true));
+        assert_eq!(cfg("feature = \"x\"").can_be(true), None);
+        assert_eq!(cfg("all(test, feature = \"x\")").can_be(true), Some(false));
     }
 
     #[test]

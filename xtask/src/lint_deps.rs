@@ -8,6 +8,8 @@ use std::process::ExitCode;
 
 use crate::workspace::{DepKind, Dependency, Package, Workspace};
 
+mod test_crates;
+
 /// The role a crate plays in the layering, derived from its name and, for libraries, its manifest (see
 /// `crates/README.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,7 +23,8 @@ pub enum CrateKind {
     Lib,
     /// Everything else under `crates/`: the real behaviour.
     Implementation,
-    /// `omuzaki-cli`, `omuzaki-ui`, `omuzaki-test`, `omuzaki-stage`, `xtask`: they wire implementations together.
+    /// `omuzaki-cli`, `omuzaki-ui`, `omuzaki-test`, `omuzaki-stage`, `xtask`: they wire implementations together. The
+    /// area test crates (`omuzaki-test-<area>`) are apps too, held to their area (`test_crates.rs`).
     App,
 }
 
@@ -36,6 +39,7 @@ impl CrateKind {
             "omuzaki-cli" | "omuzaki-ui" | "omuzaki-test" | "omuzaki-stage" | "xtask" => Self::App,
             _ if name.ends_with("-api") => Self::Api,
             _ if name.ends_with("-mock") => Self::Mock,
+            _ if test_crates::area_of(name).is_some() => Self::App,
             _ => Self::Implementation,
         }
     }
@@ -140,7 +144,8 @@ fn violation(workspace: &Workspace, package: &Package, from: CrateKind, dependen
     // A dependency whose own layer is invalid is reported on that crate; here it counts as its name says.
     let to = CrateKind::of_package(target).unwrap_or_else(|_| CrateKind::of(&target.name));
     if permitted(from, to, dependency.kind) {
-        return None;
+        // The table lets an app depend on anything; the area test crates are the apps held to less.
+        return test_crates::violation(package, dependency, target, to);
     }
     Some(Violation {
         from: package.name.clone(),

@@ -1,3 +1,9 @@
+---
+title: "`omuzaki-ops-api`: what an op can reach (`OpCtx`: injected services, file access)"
+summary: "what an op can reach (`OpCtx`: injected services, file access)"
+area: design
+---
+
 # `omuzaki-ops-api`: what an op can reach (`OpCtx`: injected services, file access)
 
 **Status:** merged contract: services, file access, and jobs and

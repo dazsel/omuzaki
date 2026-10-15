@@ -1,0 +1,8 @@
+section = "rust"
+item = "libm 0.2"
+kind = "crate"
+used_for = "deterministic `acosf`, `cosf`, `powf` for the rasteriser's stroker (bit-identical output across platforms, ADR 0009)"
+status = "yes"
+condition = "MIT OR Apache-2.0; pure Rust"
+audit = "(crates.io: MIT OR Apache-2.0)"
+crates = ["libm"]

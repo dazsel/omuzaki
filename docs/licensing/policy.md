@@ -1,3 +1,9 @@
+---
+title: "Licence policy"
+summary: "Licence policy"
+area: licensing
+---
+
 # Licence policy
 
 **The rule: nothing non-commercial, ever.** No library, tool, model, dataset or asset with a non-commercial term, in the product or in the pipeline that builds it.
@@ -107,7 +113,7 @@ How our code may relate to other people's code, from most to least common:
 ## Adding anything new
 
 1. **Read the licence at the primary source:** the LICENSE file, the model card or the service terms. For a model, check three things: the weights licence, the training data and the runtime dependencies.
-2. **Add or update its row in `register.md` in the same PR.** If a verdict needs judgement, research it and record the sources.
+2. **Add or update its file in `docs/licensing/deps/` in the same PR.** If a verdict needs judgement, research it and record the sources.
 3. **For crates, `cargo deny check` must pass** (`deny.toml`). A change to `deny.toml` (allow list, exceptions, bans) needs a maintainer's review, with a register row.
 4. **Nothing `unverified` merges into a shippable path.**
 5. **For services, record the plan tier and the output-ownership clause** in the asset's provenance.
@@ -115,7 +121,7 @@ How our code may relate to other people's code, from most to least common:
 ## Enforcement
 
 - **Every PR:** `cargo deny check` (licences, bans, sources), using `deny.toml`.
-- **Repo licence gate**: `cargo xtask licences` checks shippable crates and assets against the register. Release builds generate the third-party notices.
+- **Repo licence gate**: `cargo xtask lint-licences` checks that every direct dependency, CI tool and committed asset has a file in `docs/licensing/deps/`, and generates the register from them. A file claims assets by exact path (a folder claim is a problem, so a new asset needs an audit), and only an item of kind `tool` may be `external`. Release builds generate the third-party notices.
 - **In the product:** the licence gate (spec §7, §15) blocks `publish` of anything whose commercial status is `no` or `unknown`.
 - **Release checklist:**
   - the notices bundle

@@ -1,0 +1,7 @@
+section = "in-use"
+item = "mediapipe (Python) 1.1.0"
+kind = "python"
+used_for = "the earlier prototype's `track_face.py` (not published), local dev only"
+status = "conditions"
+condition = "dev only; versions ≥ 0.10.35 send telemetry; nothing shipped"
+audit = "A2"

@@ -7,3 +7,7 @@
 
 pub mod dist;
 pub mod registry;
+
+omuzaki_core::define_link! {
+    omuzaki_library_api::link();
+}

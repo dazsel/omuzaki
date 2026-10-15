@@ -1,3 +1,9 @@
+---
+title: "VRMA export: animation in the io contract, the `VRMC_vrm_animation` mapping, and clip and emote conversion"
+summary: "animation in the io contract, the `VRMC_vrm_animation` mapping, and clip and emote conversion"
+area: design
+---
+
 # VRMA export: animation in the io contract, the `VRMC_vrm_animation` mapping, and clip and emote conversion
 
 **Status:** proposed. **Feature:** EX-16, spec v3 §27 (export and interop); builds on RG-06 (the pose library), SH-07 (emotes) and the hips-scale helper (`scale_hips`).

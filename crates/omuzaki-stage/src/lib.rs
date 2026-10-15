@@ -49,10 +49,7 @@ pub use upload::{StageCharacter, UploadOptions};
 use omuzaki_rig as _;
 
 // The stage's `link()` forwards to every registering crate it builds on; Apps call it once at startup (ADR 0015).
+// `build.rs` writes the calls: one for every dependency that sets `registers = true` (ADR 0054 section 6).
 omuzaki_core::define_link! {
-    omuzaki_anim::link();
-    omuzaki_char::link();
-    omuzaki_face::link();
-    #[cfg(feature = "wgpu")]
-    omuzaki_render::link();
+    include!(concat!(env!("OUT_DIR"), "/link_calls.rs"));
 }

@@ -1,3 +1,9 @@
+---
+title: "Particles and reactions: particle systems, the particle pass, weather and bursts"
+summary: "particle systems, the particle pass, weather and bursts"
+area: design
+---
+
 # Particles and reactions: particle systems, the particle pass, weather and bursts
 
 **Status:** accepted (2026-10-13; the review decisions are in §6). It changes `omuzaki-render-api` and

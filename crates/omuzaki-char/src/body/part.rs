@@ -4,8 +4,8 @@
 use std::sync::Arc;
 
 use omuzaki_char_api::{
-    BodyParams, BuildCtx, BuildError, KindProvenance, MaterialName, MaterialSpec, PartCategory, PartKind, PartMesh,
-    PartMeta, PartOutput, Publishes, register_part_kind,
+    BodyParams, BuildCtx, BuildError, FitFact, KindProvenance, MaterialName, MaterialSpec, PartCategory, PartKind,
+    PartMesh, PartMeta, PartOutput, Publishes, StatureFact, register_part_kind,
 };
 use omuzaki_core::colour::Colour;
 use omuzaki_render_api::{Outline, Rim, Shading, Skin, Toon};
@@ -55,12 +55,14 @@ impl PartKind for Body {
         let mut meshes: Vec<PartMesh> = regions.into_iter().map(|(_, m)| m).collect();
         meshes.extend(hands::build(params, fit.layout(), &material_id).map_err(to_build_error)?);
         let material = skin_material(params, ctx)?;
-        Ok(PartOutput {
-            meshes,
-            materials: vec![(material_id, material)],
-            publishes: Publishes { fit: Some(fit), stature, ..Publishes::default() },
-            ..PartOutput::default()
-        })
+        let mut publishes = Publishes::default().with::<FitFact>(fit);
+        if let Some(stature) = stature {
+            publishes.put::<StatureFact>(stature);
+        }
+        Ok(PartOutput::new()
+            .with_meshes(meshes)
+            .with_materials(vec![(material_id, material)])
+            .with_publishes(publishes))
     }
 }
 
