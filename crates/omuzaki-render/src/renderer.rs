@@ -224,6 +224,17 @@ impl Renderer for WgpuRenderer {
         if positions.iter().chain(normals).any(|v| !v.is_finite()) {
             return Err(RenderError::invalid("vertex update", "positions and normals must be finite"));
         }
+        // A dynamic mesh's seams are found once, at creation (`resource/mesh.rs`). Tearing one apart is cheap to spot, so
+        // debug builds refuse it rather than draw an outline that still joins the torn copies.
+        if cfg!(debug_assertions)
+            && let Some(vertex) = entry.split_seam(positions)
+        {
+            let reason = format!(
+                "vertex {vertex} moved away from the vertex it was welded to when the mesh was created; a dynamic mesh's \
+                 seams are fixed at creation"
+            );
+            return Err(RenderError::invalid("vertex update", reason));
+        }
         gpu.scoped("a vertex update", || {
             entry.update_vertices(&gpu.queue, positions, normals);
             Ok(())

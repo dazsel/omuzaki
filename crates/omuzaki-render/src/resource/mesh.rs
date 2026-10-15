@@ -6,6 +6,11 @@
 //! Beside the vertex buffer sits a second, smaller one holding each vertex's *smooth normal*: the normals of every
 //! vertex at the same position, averaged. The outline pass pushes vertices along it, because the shading normals of a
 //! hard-edged mesh differ at a corner and would tear the hull apart there.
+//!
+//! A dynamic mesh finds those points once, when it is created: [`GpuMesh::update_vertices`] cannot change which
+//! vertices form a triangle, so the vertices welded at creation stay welded and the seams of the bind pose are the seams
+//! of every frame. A frame then only re-averages the normals (`resmooth`), which costs a pass over the vertices instead
+//! of a weld.
 
 use bytemuck::{Pod, Zeroable};
 use omuzaki_core::glam::{Vec2, Vec3};
@@ -118,13 +123,13 @@ struct Shadow {
     skin: Vec<Surface>,
     /// [`GpuMesh::smooth_normals`]'s contents.
     smooth: Vec<[f32; 3]>,
-    /// Scratch for welding again from the current positions ([`GpuMesh::refresh`]).
-    welder: Welder,
-    /// The weld slot of every vertex at the positions of the last refresh: vertices at one point share a slot, exactly
-    /// as in a mesh created from the same geometry.
+    /// The weld slot of every vertex, found once from the positions the mesh was created with: vertices at one point
+    /// share a slot. Updates never weld again (see the module documentation).
     welds: Vec<usize>,
     /// How many welded points there are, for the scratch below.
     weld_count: usize,
+    /// The first vertex of each slot, against which [`GpuMesh::split_seam`] checks that welded vertices still meet.
+    anchors: Vec<usize>,
     /// Scratch for the per-point sums of [`resmooth`], sized once so a refresh allocates nothing.
     sums: Vec<Vec3>,
     /// `smooth` (and its GPU buffer) lags the vertices; the outline pass is the only reader ([`GpuMesh::refresh`]).
@@ -204,7 +209,7 @@ impl GpuMesh {
             shapes: shapes.clone(),
             skin: if skinned { surface.clone() } else { Vec::new() },
             smooth: smooth.clone(),
-            welder,
+            anchors: anchors_of(&welds, weld_count),
             welds,
             weld_count,
             sums: Vec::with_capacity(shapes.len()),
@@ -244,7 +249,8 @@ impl GpuMesh {
     /// a vertex: the UVs, colours and skin data are another stream and stay). The caller has checked that the mesh is
     /// dynamic, that both slices have [`vertex_count`](Self::vertex_count) elements and that all are finite.
     ///
-    /// The shadow bounds and the outline directions (welding included) follow when a frame draws the mesh ([`refresh`](Self::refresh)).
+    /// The shadow bounds and the outline directions follow when a frame draws the mesh ([`refresh`](Self::refresh)).
+    /// The outline directions keep the welds of creation: vertices that only come together in an update stay apart.
     pub(crate) fn update_vertices(&mut self, queue: &wgpu::Queue, positions: &[Vec3], normals: &[Vec3]) {
         let Some(shadow) = self.shadow.as_mut() else { return };
         for ((shape, position), normal) in shadow.shapes.iter_mut().zip(positions).zip(normals) {
@@ -255,14 +261,23 @@ impl GpuMesh {
         shadow.bounds_stale = true;
     }
 
+    /// The first vertex of `positions` that has moved more than [`SEAM_SLACK`] on some axis away from the vertex it was
+    /// welded to at creation, or `None`. Such an update tears a seam the mesh's outline directions still treat as one
+    /// point; the renderer refuses it in debug builds. A static mesh has no welds to check.
+    pub(crate) fn split_seam(&self, positions: &[Vec3]) -> Option<usize> {
+        let shadow = self.shadow.as_ref()?;
+        shadow.welds.iter().zip(positions).position(|(&slot, &position)| {
+            let anchor = shadow.anchors.get(slot).and_then(|&a| positions.get(a)).copied().unwrap_or(position);
+            (anchor - position).abs().max_element() > SEAM_SLACK
+        })
+    }
+
     /// Brings what an update left behind up to date: the shadow bounds, and the outline directions if `hull` (an
     /// outline will draw the mesh).
     pub(crate) fn refresh(&mut self, queue: &wgpu::Queue, hull: bool) {
         let Some(shadow) = self.shadow.as_mut() else { return };
-        let Shadow { shapes, skin, smooth, welder, welds, weld_count, sums, smooth_stale, bounds_stale } = shadow;
+        let Shadow { shapes, skin, smooth, welds, weld_count, sums, smooth_stale, bounds_stale, .. } = shadow;
         if hull && *smooth_stale {
-            // An update can pull welded vertices apart or push separate ones together, so the seams are found again.
-            *weld_count = welder.weld(shapes.iter().map(|v| Vec3::from(v.position)), welds);
             resmooth(welds, *weld_count, sums, shapes, smooth);
             queue.write_buffer(&self.smooth_normals, 0, bytemuck::cast_slice(smooth));
             *smooth_stale = false;
@@ -337,6 +352,22 @@ impl GpuMesh {
 /// hull.
 const WELD_TOLERANCE: f32 = 1e-6;
 
+/// How far, in metres on any axis, a dynamic mesh's vertex may drift from the vertex it was welded to at creation
+/// before an update counts as tearing the seam ([`GpuMesh::split_seam`]). Copies of one point deformed by the same
+/// skin or simulation round a little differently, so this is a hundred weld tolerances: 0.1 mm.
+pub(crate) const SEAM_SLACK: f32 = 100.0 * WELD_TOLERANCE;
+
+/// The first vertex of each of `count` slots: slots are numbered in order of first appearance.
+fn anchors_of(slots: &[usize], count: usize) -> Vec<usize> {
+    let mut anchors = Vec::with_capacity(count);
+    for (vertex, &slot) in slots.iter().enumerate() {
+        if slot == anchors.len() {
+            anchors.push(vertex);
+        }
+    }
+    anchors
+}
+
 /// Each vertex's normal averaged with those of every vertex at the same point (see [`Welder`]), so a hard-edged
 /// mesh (a cube has three normals per corner) keeps one direction per corner and an outline pushed along it stays
 /// closed. A vertex whose neighbours cancel it out (two sheets back to back) keeps its own normal.
@@ -378,8 +409,10 @@ fn cell_of(v: f32) -> i64 {
     // `floor` without the library call (the baseline x86-64 target has no rounding instruction), once per cell number
     // and six cell numbers per vertex: truncate, then step down for a negative fraction.
     let scaled = v * (1.0 / WELD_CELL);
+    // The cast saturates for a coordinate beyond the cell numbers, so the step down saturates too: below `i64::MIN`
+    // cells the scaled value is still less than the truncated one.
     let truncated = scaled as i64;
-    truncated - i64::from(scaled < truncated as f32)
+    truncated.saturating_sub(i64::from(scaled < truncated as f32))
 }
 
 /// Cells sixteen tolerances wide. A point's neighbours within the tolerance lie in at most two cells per axis, and since
@@ -394,8 +427,8 @@ const NO_SLOT: usize = usize::MAX;
 /// order of first appearance. A vertex joins the slot of the first vertex found within the tolerance (the nearest, if
 /// several; the lower slot on a tie), so a chain of points each within tolerance of the next does not collapse into one.
 ///
-/// The buffers are sized once for the mesh and reused, so welding again after an update allocates nothing. The grid is
-/// a flat open-addressing table, because welding runs once per frame for a mesh that moves every frame.
+/// The grid is a flat open-addressing table with a cheap hash, so welding a large mesh at creation stays quick, and the
+/// buffers are sized once for the mesh, so welding again with the same welder allocates nothing.
 struct Welder {
     /// Where each slot's first vertex is.
     firsts: Vec<Vec3>,
@@ -729,6 +762,32 @@ mod tests {
         assert_eq!(welder.weld(cube.positions.iter().copied(), &mut slots), 8);
         assert_eq!(slots, weld_slots(&cube.positions));
         assert_eq!((slots.capacity(), welder.firsts.capacity()), (cap_slots, cap_firsts), "no growth");
+    }
+
+    #[test]
+    fn cell_numbers_saturate_for_coordinates_beyond_them_instead_of_overflowing() {
+        assert_eq!(cell_of(-1e20), i64::MIN, "the -1e20 of the review");
+        assert_eq!(cell_of(f32::MIN), i64::MIN);
+        assert_eq!(cell_of(f32::MAX), i64::MAX);
+        // At the boundary: -2^63 cells scales back to exactly `i64::MIN` (no fraction to step down for), and the next
+        // float below it is past the boundary and saturates.
+        let boundary = -(2.0_f32.powi(63)) * WELD_CELL;
+        assert_eq!(cell_of(boundary), i64::MIN);
+        assert_eq!(cell_of(boundary.next_down()), i64::MIN);
+        assert_eq!(cell_of(-0.5 * WELD_CELL), -1, "an ordinary negative fraction still steps down");
+        assert_eq!(cell_of(-WELD_CELL), -1, "and a whole number does not");
+    }
+
+    #[test]
+    fn welding_vertices_at_huge_negative_and_positive_coordinates_does_not_panic() {
+        let positions = [Vec3::splat(-1e20), Vec3::splat(-1e20), Vec3::splat(f32::MIN), Vec3::splat(f32::MAX)];
+        assert_eq!(weld_slots(&positions), [0, 0, 1, 2]);
+    }
+
+    #[test]
+    fn anchors_are_the_first_vertex_of_each_slot() {
+        assert_eq!(anchors_of(&[0, 1, 0, 2, 1, 2], 3), [0, 1, 3]);
+        assert_eq!(anchors_of(&[], 0), Vec::<usize>::new());
     }
 
     #[test]

@@ -5,7 +5,7 @@
 //! worst) of three things:
 //! - `update_vertices` alone;
 //! - the whole dynamic frame: the update plus the `render` call that draws the outlined instance next, which does the
-//!   work the update defers (welding, smoothing, the outline upload and the bounds refit);
+//!   work the update defers (smoothing along the welds found at creation, the outline upload and the bounds refit);
 //! - the same `render` call on unchanged geometry, which defers nothing.
 //!
 //! The dynamic frame minus the unchanged render is the incremental cost of moving the mesh; the budget is 0.2 ms of it

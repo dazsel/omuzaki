@@ -141,30 +141,43 @@ fn exploded(mesh: &MeshData, distance: f32) -> MeshData {
 }
 
 #[test]
-fn an_update_that_splits_welded_vertices_and_joins_them_again_outlines_like_a_fresh_mesh() {
+fn seams_are_fixed_when_the_mesh_is_created() {
     let mut r = support::renderer();
-    let material = r.create_material(&outlined()).unwrap();
-    let cube = omuzaki_render_mock::shapes::cuboid(Vec3::splat(0.5));
+    // A light outline around a small cube, so that its corners show whether their copies share an outline direction.
+    let mut light = outlined();
+    light.outline = Some(Outline { colour: Colour::WHITE, width: 0.08 });
+    let material = r.create_material(&light).unwrap();
+    let cube = omuzaki_render_mock::shapes::cuboid(Vec3::splat(0.3));
     let apart = exploded(&cube, 0.3);
+    let whole = r.create_mesh(&cube).unwrap();
+    let joined = render(&mut r, whole, material);
 
-    // Welded at creation, split by an update (the corner's three normals no longer share one outline direction).
+    // Welded at creation, then torn apart by an update: debug builds refuse it and keep the mesh; release builds take
+    // it, and the outline still treats each corner as one point, so it is not the outline of a fresh exploded cube.
     let dynamic = r.create_mesh_with(&cube, &DYNAMIC).unwrap();
     let (positions, normals) = mesh_vertices(&apart);
-    r.update_vertices(dynamic, &positions, &normals).unwrap();
-    let split = render(&mut r, dynamic, material);
-    let fresh_apart = r.create_mesh(&apart).unwrap();
-    assert_eq!(split.rgba8, render(&mut r, fresh_apart, material).rgba8, "split: differs from a fresh upload");
+    let torn = r.update_vertices(dynamic, &positions, &normals);
+    if cfg!(debug_assertions) {
+        assert!(matches!(torn, Err(RenderError::Invalid { .. })), "{torn:?}");
+        assert_eq!(render(&mut r, dynamic, material).rgba8, joined.rgba8, "the refused update changed the mesh");
+    } else {
+        torn.unwrap();
+        let fresh = r.create_mesh(&apart).unwrap();
+        let fresh_apart = render(&mut r, fresh, material);
+        assert_ne!(render(&mut r, dynamic, material).rgba8, fresh_apart.rgba8, "the update welded again");
+    }
 
-    // ... and welded again by the next one.
-    let (positions, normals) = mesh_vertices(&cube);
-    r.update_vertices(dynamic, &positions, &normals).unwrap();
-    let joined = render(&mut r, dynamic, material);
-    let fresh_cube = r.create_mesh(&cube).unwrap();
-    assert_eq!(joined.rgba8, render(&mut r, fresh_cube, material).rgba8, "joined: differs from a fresh upload");
-    assert_ne!(split.rgba8, joined.rgba8, "the two shapes must differ, or the comparison proves nothing");
-
-    // Created apart, then joined: the welds cannot have been fixed at creation.
+    // Created apart, then joined: joining is not checked (it would need a weld), and the corners stay apart, so the
+    // outline differs from a cube created whole.
     let from_apart = r.create_mesh_with(&apart, &DYNAMIC).unwrap();
+    let (positions, normals) = mesh_vertices(&cube);
     r.update_vertices(from_apart, &positions, &normals).unwrap();
-    assert_eq!(render(&mut r, from_apart, material).rgba8, joined.rgba8, "created apart: differs once joined");
+    assert_ne!(render(&mut r, from_apart, material).rgba8, joined.rgba8, "the update welded again");
+
+    // Copies of a point may drift apart by rounding, up to 0.1 mm, without being refused.
+    let mut drifted = cube.positions.clone();
+    for (i, position) in drifted.iter_mut().enumerate() {
+        position.x += if i % 2 == 0 { 4e-5 } else { -4e-5 };
+    }
+    r.update_vertices(dynamic, &drifted, &cube.normals).unwrap();
 }
