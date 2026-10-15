@@ -1,3 +1,9 @@
+---
+title: "The updater: delta updates, channels, rollback, models by hash (SE-08)"
+summary: "delta updates, channels, rollback, models by hash (SE-08)"
+area: design
+---
+
 # The updater: delta updates, channels, rollback, models by hash (SE-08)
 
 **Status:** proposed (2026-10-13). It adds a new API crate (`omuzaki-update-api`); no `omuzaki-ops-api` change (section 12 reuses existing scopes). **Decision record:** ADR 0035. **Spec:** v3 §31 (SE-08, SE-04), §10 (`installer.size`), §34 (QG-06). **Builds on:** `docs/design/settings.md` (D5, D9, D10, ADR 0026), `docs/design/ai-api.md` (`Fetcher`, `FileSource`, ADR 0017), `docs/design/journal.md` (pre-migration snapshots), ADR 0016.

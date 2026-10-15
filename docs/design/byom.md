@@ -1,3 +1,9 @@
+---
+title: "Bring your own model: from an imported `IoScene` to a performing character"
+summary: "from an imported `IoScene` to a performing character"
+area: design
+---
+
 # Bring your own model: from an imported `IoScene` to a performing character
 
 **Status:** D1 and D2 accepted with conditions (written into D1, D2 and D8); D4 to D6 and D8 accepted. **Feature:** EX-12. **ADR:** [0033](../decisions/0033-imported-avatars.md).

@@ -1,3 +1,9 @@
+---
+title: "The AI performer: crates, persona, the turn loop, the LLM output protocol and intents"
+summary: "the AI performer: crates, persona, the turn loop with barge-in, the inline-tag LLM output protocol and the intent API (ADR 0031)."
+area: design
+---
+
 # The AI performer: crates, persona, the turn loop, the LLM output protocol and intents
 
 **Status:** proposed (2026-10-13). **Features:** AP-01, AP-03, AP-04, with PF-12, ML-03, ST-12.

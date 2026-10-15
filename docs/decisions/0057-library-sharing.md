@@ -1,3 +1,9 @@
+---
+title: "0057: A shared library source is a bag of immutable signed files; the client verifies everything (2026-10-15)"
+summary: "A shared library source is a bag of immutable signed files; the client verifies everything"
+area: decisions
+---
+
 # 0057: A shared library source is a bag of immutable signed files; the client verifies everything (2026-10-15)
 
 **Status:** proposed; the crate placement and Q4 to Q9 are ruled (Runtime lead, #1534); Q1 to Q3 remain the owner's. It adds a new API crate, `omuzaki-library-source-api`, and later additive changes to `omuzaki-library-api`. **Context:** LB-07, LB-08, VC-10, VC-11; spec v3 §28, §29, §37; ADR 0019 (library items), ADR 0042 (identity), ADR 0043 (team). Design: `docs/design/library-sharing.md`.

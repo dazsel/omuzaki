@@ -1,3 +1,9 @@
+---
+title: "0027: Automations are deterministic graphs of nodes that act only through ops, in a session the person approved (2026-10-12)"
+summary: "Automations are deterministic graphs of nodes that act only through ops, in a session the person approved"
+area: decisions
+---
+
 # 0027: Automations are deterministic graphs of nodes that act only through ops, in a session the person approved (2026-10-12)
 
 **Status:** proposed. **Context:** BR-11, BR-26, BR-10, AP-10,

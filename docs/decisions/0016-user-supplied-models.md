@@ -1,3 +1,9 @@
+---
+title: "0016: People can put their own models in any model slot; the licence is theirs, and the provenance is ours to keep (2026-10-12)"
+summary: "People can put their own models in any model slot; the licence is theirs, and the provenance is ours to keep"
+area: decisions
+---
+
 # 0016: People can put their own models in any model slot; the licence is theirs, and the provenance is ours to keep (2026-10-12)
 
 **Status:** accepted (2026-10-12). **Amended 2026-10-12:** voice conversion (ML-14) joins the slots below; a converted voice that imitates a real person also needs that person's consent record (SE-05). **Context:** ML-01 (the model registry), ML-02 to ML-05 (the built-in slots), CN-01 (connectors), licence records (strictest of parts), ADR 0013 (file roots), `docs/licensing/policy.md`.
