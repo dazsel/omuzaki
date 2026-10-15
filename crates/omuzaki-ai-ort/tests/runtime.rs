@@ -178,10 +178,7 @@ fn asking_for_gpu_providers_a_machine_lacks_falls_back_to_the_cpu_and_says_so() 
     };
     let path = fixture("identity.onnx");
     let files = [local("model.onnx", &path)];
-    let options = SessionOptions {
-        providers: vec![Provider::DirectMl, Provider::Cuda, Provider::WebGpu, Provider::Cpu],
-        threads: 1,
-    };
+    let options = SessionOptions::new(vec![Provider::DirectMl, Provider::Cuda, Provider::WebGpu, Provider::Cpu], 1);
     let session =
         with_source(&files, &[], &natives, |s| OrtRuntime.load_session(s, &identity_slot(), &io(), &options)).unwrap();
     assert_eq!(session.info().provider, Provider::Cpu, "no GPU in the test environment");

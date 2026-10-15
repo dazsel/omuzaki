@@ -79,8 +79,8 @@ impl Landmarks {
     /// head.
     ///
     /// # Errors
-    /// [`StageError::Framing`] for a character with no vertex, a non-finite position, joint height or stature, or a
-    /// skinned mesh whose joint data doesn't fit its vertices.
+    /// [`StageError::Framing`] for a character with no vertex, a non-finite position or joint height, a height (the stature's, else the
+    /// body's extent in Y) that isn't finite and above zero, or a skinned mesh whose joint data doesn't fit its vertices.
     pub fn measure(built: &BuiltCharacter) -> Result<Self, StageError> {
         let inverse_bind = built.rig.inverse_bind();
         let joint_height = |bone: HumanoidBone| -> Result<Option<f32>, StageError> {
@@ -141,8 +141,12 @@ impl Landmarks {
         let body = body.ok_or_else(|| framing("the character has no vertex to measure".to_owned()))?;
 
         let height_m = built.stature.map_or_else(|| body.height(), |s| s.height_m);
-        if !height_m.is_finite() {
-            return Err(framing(format!("the stature {height_m} m is not a finite number")));
+        // `Stature::check`'s rule: a usable height is positive and finite. A body with no stature and no extent in Y
+        // (every vertex at one height) fails it too, which framing could not divide by.
+        if !(height_m.is_finite() && height_m > 0.0) {
+            return Err(framing(format!(
+                "the height {height_m} m, from the stature or else the body's extent, is not usable: give a finite number above zero"
+            )));
         }
         Ok(Self { body, head, eyes, chest, bust, hands, height_m })
     }
