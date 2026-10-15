@@ -1,0 +1,7 @@
+section = "models"
+item = "ElevenLabs (TTS and voice changer)"
+kind = "service"
+used_for = "CN-10 hosted TTS candidate"
+status = "unverified"
+condition = "no primary source read (host refused 2026-10-15); output ownership, vendor licence on content, training, cloning consent and price unread"
+audit = "research 2026-10-hosted-tts-voice.md"
