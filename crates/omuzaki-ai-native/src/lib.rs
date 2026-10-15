@@ -125,7 +125,9 @@ impl<'a> Unpack<'a> {
     /// The reuse check looks only at the main library, and the folder's name comes from `archive`'s path. That is safe
     /// only because the path is content-addressed, named by the archive's SHA-256 as the `FileSource` store names its
     /// blobs: a re-pinned archive has another hash, so another path and folder, and never reuses a stale one. A caller
-    /// that passes a path that is not content-addressed breaks this rule.
+    /// that passes a path that is not content-addressed breaks this rule. The folder holds whatever the first unpack of
+    /// that path extracted, so the recipe (`lib_dir`, `library`, `wanted`) must stay fixed for a given archive path; a
+    /// different recipe needs a different destination, or the reused folder is wrong for it.
     ///
     /// # Errors
     /// An I/O error when the archive can't be read or the folder can't be written, [`io::ErrorKind::NotFound`] when the
