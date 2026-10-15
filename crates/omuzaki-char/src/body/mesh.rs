@@ -330,7 +330,52 @@ pub fn skin_region(
 ) -> Result<(), KitError> {
     segments.skin_mesh(mesh, &bones_of(region), params)?;
     smooth(mesh, SMOOTH_PASSES);
+    if let Some(left) = match region {
+        BodyRegion::ArmL => Some(true),
+        BodyRegion::ArmR => Some(false),
+        _ => None,
+    } {
+        let side = |l: omuzaki_anim_api::HumanoidBone| if left { l } else { l.mirrored() };
+        use omuzaki_anim_api::HumanoidBone as B;
+        narrow_hand_over(mesh, &JointRef::Humanoid(side(B::LeftShoulder)), &JointRef::Humanoid(side(B::LeftUpperArm)));
+    }
     Ok(())
+}
+
+/// The half-width, in the shoulder's share of the shoulder and upper-arm weight, of the band [`narrow_hand_over`] leaves
+/// between a vertex the shoulder bone owns and one the upper arm owns: the share runs `0.5 - HAND_OVER_HALF_BAND` to
+/// `0.5 + HAND_OVER_HALF_BAND` across it. The capsule fall-off plus the smoothing leave a share of 0.25 to 0.45 halfway
+/// down the upper arm, which a raised arm blends into most of its length.
+const HAND_OVER_HALF_BAND: f32 = 0.2;
+
+/// Narrows the hand-over from `shoulder` to `upper_arm` on an arm: each vertex keeps the weight the two bones hold
+/// together, but splits it by a smoothstep of their share across a band `2 * HAND_OVER_HALF_BAND` wide, so the shoulder
+/// bone's weight is zero wherever its share fell under the band and the arm follows the upper arm from there. The
+/// other bones' weights, and every sum, are unchanged; a vertex with only one of the two bones is left alone.
+fn narrow_hand_over(mesh: &mut PartMesh, shoulder: &JointRef, upper_arm: &JointRef) {
+    let slot = |j: &JointRef| mesh.joint_bones.iter().position(|b| b == j).and_then(|i| u16::try_from(i).ok());
+    let (Some(shoulder), Some(upper)) = (slot(shoulder), slot(upper_arm)) else { return };
+    let g = &mut mesh.geometry;
+    for (joints, weights) in g.joints.iter().zip(g.weights.iter_mut()) {
+        let on = |bone: u16| -> f32 { joints.iter().zip(&*weights).filter(|(j, _)| **j == bone).map(|(_, w)| *w).sum() };
+        let (s, u) = (on(shoulder), on(upper));
+        let both = s + u;
+        if s <= 0.0 || u <= 0.0 || both <= 0.0 {
+            continue;
+        }
+        let x = ((s / both - 0.5) / (2.0 * HAND_OVER_HALF_BAND) + 0.5).clamp(0.0, 1.0);
+        let share = x * x * (3.0 - 2.0 * x);
+        let (new_s, new_u) = (both * share, both * (1.0 - share));
+        // The first slot of each bone takes its new weight; a duplicate slot (never produced by the kit) is zeroed.
+        let (mut seen_s, mut seen_u) = (false, false);
+        for (j, w) in joints.iter().zip(weights.iter_mut()) {
+            if *j == shoulder && *w > 0.0 {
+                *w = if std::mem::replace(&mut seen_s, true) { 0.0 } else { new_s };
+            } else if *j == upper && *w > 0.0 {
+                *w = if std::mem::replace(&mut seen_u, true) { 0.0 } else { new_u };
+            }
+        }
+    }
 }
 
 /// Passes of the kit's weight smoothing after the capsule weights: they take the sharpest hand-overs (where four bones
