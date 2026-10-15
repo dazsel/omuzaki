@@ -502,13 +502,17 @@ fn a_particle_wedged_between_head_and_neck_ends_outside_both() {
 
 /// Two overlapping spheres (bone: the head) and a fully stiff tip styled at `target` below `parent`; the tip's deepest
 /// depth inside `radius + margin` after one step.
-fn wedged(spheres: [(Vec3, f32); 2], parent: Vec3, target: Vec3, iterations: u8) -> f32 {
+fn wedged(spheres: &[(Vec3, f32)], parent: Vec3, target: Vec3, iterations: u8) -> f32 {
     let collider = |(c, r): (Vec3, f32)| SphereCollider {
         bone: JointRef::HEAD,
         centre: [c.x.into(), c.y.into(), c.z.into()],
         radius: r.into(),
     };
-    let physics = HairPhysics { iterations, colliders: spheres.map(collider).to_vec(), ..HairPhysics::default() };
+    let physics = HairPhysics {
+        iterations,
+        colliders: spheres.iter().copied().map(collider).collect(),
+        ..HairPhysics::default()
+    };
     let mut set = ChainSet::from_clumps(&[clump(vec![parent, target], Follow::Head)], &physics, &[]).unwrap();
     set.set_stiffness(&[1.0, 1.0]).unwrap();
     set.reset(&Pose::REST).unwrap();
@@ -522,9 +526,9 @@ fn a_tip_on_the_line_through_both_centres_still_ends_outside_both() {
     // Alternating pushes never leave this line (Codex's case on #1991, then exactly on the axis).
     let (head, neck) = ((Vec3::new(0.0, 0.778, 0.0), 0.09), (Vec3::new(0.0, 0.66, -0.01), 0.045));
     let (parent, target) = (Vec3::new(0.0, 0.825, -0.01), Vec3::new(0.0, 0.70, -0.01));
-    assert!(wedged([head, neck], parent, target, 1) <= 1e-5, "near the line");
+    assert!(wedged(&[head, neck], parent, target, 1) <= 1e-5, "near the line");
     let neck = (Vec3::new(0.0, 0.66, 0.0), 0.045);
-    let depth = wedged([head, neck], Vec3::new(0.0, 0.825, 0.0), Vec3::new(0.0, 0.70, 0.0), 1);
+    let depth = wedged(&[head, neck], Vec3::new(0.0, 0.825, 0.0), Vec3::new(0.0, 0.70, 0.0), 1);
     assert!(depth <= 1e-5, "on the line: {depth} m inside");
 }
 
@@ -542,9 +546,36 @@ fn a_seeded_sweep_of_overlapping_pairs_leaves_no_tip_inside() {
             let cb = ca + unit(&mut rng) * (ra + rb) * rng.range_f32(0.2, 0.95);
             let near_line = ca.lerp(cb, rng.range_f32(0.0, 1.0)) + unit(&mut rng) * rng.range_f32(0.0, 0.01);
             let parent = near_line + unit(&mut rng) * 0.1;
-            deepest = deepest.max(wedged([(ca, ra), (cb, rb)], parent, near_line, iterations));
+            deepest = deepest.max(wedged(&[(ca, ra), (cb, rb)], parent, near_line, iterations));
         }
     }
     eprintln!("10 000 overlapping pairs: deepest tip {deepest:.2e} m inside radius + margin");
     assert!(deepest <= 1e-5, "{deepest} m inside");
+}
+
+#[test]
+fn a_seeded_sweep_of_overlapping_triples_leaves_no_tip_inside() {
+    // Head, neck and shoulder-like spheres overlapping one spot: the fallback for one pair can land in the third.
+    let unit = |rng: &mut Rng| {
+        Vec3::new(rng.range_f32(-1.0, 1.0), rng.range_f32(-1.0, 1.0), rng.range_f32(-1.0, 1.0)).normalize_or(Vec3::Y)
+    };
+    let mut deepest = f32::NEG_INFINITY;
+    for seed in [1991, 7, 42] {
+        let mut rng = Rng::new(seed);
+        for iterations in [1, 2] {
+            for _ in 0..5000 {
+                let ca = Vec3::new(0.0, 0.7, 0.0);
+                let ra = rng.range_f32(0.03, 0.1);
+                let rb = rng.range_f32(0.02, 0.08);
+                let rc = rng.range_f32(0.02, 0.08);
+                let cb = ca + unit(&mut rng) * (ra + rb) * rng.range_f32(0.2, 0.95);
+                let cc = ca + unit(&mut rng) * (ra + rc) * rng.range_f32(0.2, 0.95);
+                let near = ca.lerp(cb, rng.range_f32(0.0, 1.0)) + unit(&mut rng) * rng.range_f32(0.0, 0.01);
+                let parent = near + unit(&mut rng) * 0.1;
+                deepest = deepest.max(wedged(&[(ca, ra), (cb, rb), (cc, rc)], parent, near, iterations));
+            }
+        }
+    }
+    eprintln!("30 000 overlapping triples: deepest tip {deepest:.2e} m inside radius + margin");
+    assert!(deepest <= 1e-4, "{deepest} m inside");
 }

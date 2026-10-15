@@ -25,7 +25,11 @@
 //!    goes to the nearest point of the circle where that sphere's surface meets the surface of the overlapping sphere
 //!    it is closest to leaving: on both, inside neither. Measured over 120 000 seeded overlapping pairs (seven seeds,
 //!    one and two iterations), a particle ends at most 3.4e-6 m inside `radius + collider_margin` (the tests assert
-//!    1e-5 m). Only a third sphere overlapping the same spot can still hold a particle inside.
+//!    1e-5 m). The fallback can move a particle into a third sphere over the same spot, so after it the passes run
+//!    again, and the fallback again if they still push, up to [`UNWEDGE_ROUNDS`] times in all (a bounded cost per
+//!    frame). Measured over 30 000 seeded overlapping triples (three seeds, one and two iterations),
+//!    a particle ends at most 1.2e-5 m inside `radius + collider_margin`, inside the accepted 1e-4 m (the test asserts
+//!    that). A cluster of four or more spheres over one spot is not measured.
 //!
 //! Not in the prototype: wind (beside gravity), [`ChainSet::reset`] also clearing the carried time (#68), the repeated
 //! collider passes, and a particle at a collider's exact centre leaving along its segment instead of staying inside.
@@ -51,6 +55,9 @@ pub const MAX_DT: f32 = 0.1;
 pub const COLLIDER_PASSES: u32 = 4;
 /// How deep inside a collider a particle may sit before a pass counts it as pushed, metres: the rounding of a push
 /// that put it exactly on the surface.
+/// How many times the fallback may run per chain and iteration; each is followed by up to [`COLLIDER_PASSES`] more
+/// collider passes, so a sphere the fallback moved a particle into is checked again.
+pub const UNWEDGE_ROUNDS: u32 = 12;
 const SURFACE_TOLERANCE: f32 = 1e-6;
 /// The largest rest-point or collider-centre coordinate accepted, metres (bind space): far beyond any character.
 pub const MAX_COORDINATE: f32 = 1e3;
@@ -401,9 +408,13 @@ impl ChainSet {
             for n in 0..self.chains.len() {
                 let chain = self.chains[n];
                 self.distance_pass(chain);
-                let settled = (0..COLLIDER_PASSES).any(|_| !self.collider_pass(chain));
-                if !settled {
-                    self.unwedge(chain);
+                for round in 0..=UNWEDGE_ROUNDS {
+                    if (0..COLLIDER_PASSES).any(|_| !self.collider_pass(chain)) {
+                        break;
+                    }
+                    if round < UNWEDGE_ROUNDS {
+                        self.unwedge(chain);
+                    }
                 }
             }
         }
