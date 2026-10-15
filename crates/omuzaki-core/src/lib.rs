@@ -16,6 +16,7 @@
 
 pub mod assets;
 pub mod colour;
+pub mod fsx;
 pub mod id;
 pub mod link;
 pub mod mesh;
