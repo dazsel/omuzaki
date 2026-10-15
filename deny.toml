@@ -53,8 +53,9 @@ exceptions = [
     # egui's bundled UI fonts (Hack, Ubuntu-Light, emoji icons): font licences, fine to ship with their notices
     # (register: egui/eframe, "conditions"; notices generated). Allowed for this one crate only.
     { crate = "epaint_default_fonts", allow = ["OFL-1.1", "Ubuntu-font-1.0"] },
-    # Mozilla's root certificates, reached only on wasm32 through rustls-platform-verifier: a permissive data licence,
-    # fine to ship with its text (register: webpki-root-certs, "conditions"; notices generated). Allowed for this one crate only.
+    # Mozilla's root certificates: a wasm32-only dependency of rustls-platform-verifier that no target we build links (it
+    # appears only in `cargo tree --target all`). A permissive data licence, fine to ship with its text (register:
+    # webpki-root-certs, "conditions"). Allowed for this one crate only.
     { crate = "webpki-root-certs", allow = ["CDLA-Permissive-2.0"] },
 ]
 

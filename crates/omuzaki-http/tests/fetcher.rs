@@ -81,7 +81,7 @@ fn reply(status: u16, body: &'static str) -> Reply {
     Response::builder().status(status).body(Full::new(Bytes::from_static(body.as_bytes()))).expect("a valid response")
 }
 
-/// The test fetcher: loopback http on, no backoff, and the system proxy left out of the way by `NO_PROXY` on CI.
+/// The test fetcher: loopback http on (which also bypasses any proxy) and no backoff.
 fn fetcher() -> HttpFetcher {
     HttpFetcher::builder().allow_loopback_http(true).backoff(Duration::ZERO).build()
 }
@@ -220,4 +220,121 @@ fn a_body_that_stalls_longer_than_the_read_timeout_fails() {
     let mut bytes = Vec::new();
     assert!(body.reader.read_to_end(&mut bytes).is_err(), "a stalled body must time out");
     assert!(started.elapsed() < Duration::from_secs(4), "it must not wait for the stalled server");
+}
+
+fn redirect(location: &str) -> Reply {
+    Response::builder().status(302).header("location", location).body(Full::new(Bytes::new())).expect("a redirect")
+}
+
+/// A server whose `/hop/<k>` redirects to `/hop/<k+1>` until `k == hops`, which answers 200.
+fn hop_server(hops: usize) -> Server {
+    Server::start(move |_, req| {
+        let k = req.uri().path().strip_prefix("/hop/").and_then(|k| k.parse::<usize>().ok()).unwrap_or(0);
+        if k < hops { redirect(&format!("/hop/{}", k + 1)) } else { reply(200, "arrived") }
+    })
+}
+
+#[test]
+fn two_redirects_are_followed() {
+    let server = hop_server(2);
+    let (_, bytes) = read_all(&fetcher(), &server.url("/hop/0"), 0).expect("two redirects are fine");
+    assert_eq!(bytes, b"arrived");
+    assert_eq!(server.hits(), 3);
+}
+
+#[test]
+fn five_redirects_are_followed_and_six_are_refused() {
+    let five = hop_server(5);
+    assert!(read_all(&fetcher(), &five.url("/hop/0"), 0).is_ok(), "the limit itself is allowed");
+    let six = hop_server(6);
+    let error = read_all(&fetcher(), &six.url("/hop/0"), 0).expect_err("six redirects must fail");
+    assert!(matches!(error, FetchError::Network { .. }));
+    assert_eq!(six.hits(), 6, "the sixth redirect is not followed");
+}
+
+#[test]
+fn a_redirect_to_plain_http_is_refused() {
+    // A non-loopback http target: refused by the redirect policy, so nothing connects to it.
+    let server = Server::start(|_, _| redirect("http://192.0.2.1/model.bin"));
+    let error = read_all(&fetcher(), &server.url("/a"), 0).expect_err("an http redirect must fail");
+    assert!(matches!(error, FetchError::Network { .. }));
+    assert_eq!(server.hits(), 1);
+}
+
+#[test]
+fn plain_http_to_a_non_loopback_host_fails_without_connecting() {
+    // Loopback http is refused too when the test aid is off, and the server never sees a connection.
+    let server = Server::start(|_, _| reply(200, "never"));
+    let strict = HttpFetcher::builder().backoff(Duration::ZERO).build();
+    assert!(reason(strict.open(&server.url("/a"), 0).map(|_| ()).expect_err("refused")).contains("https"));
+    assert_eq!(server.hits(), 0);
+    // A non-loopback host with the test aid on: refused before any connection (192.0.2.1 is reserved, so a connect
+    // attempt would hang for the connect timeout rather than fail at once).
+    let started = std::time::Instant::now();
+    let error = fetcher().open("http://192.0.2.1/a", 0).map(|_| ()).expect_err("refused");
+    assert!(reason(error).contains("https"));
+    assert!(started.elapsed() < Duration::from_secs(2), "it must fail without trying to connect");
+}
+
+#[test]
+fn an_endless_body_is_dropped_at_the_limit_and_the_server_sees_the_close() {
+    use std::io::Write;
+    use std::sync::mpsc::channel;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let (tx, rx) = channel();
+    std::thread::spawn(move || {
+        let Ok((mut stream, _)) = listener.accept() else { return };
+        let mut request = [0u8; 1024];
+        let _ = stream.read(&mut request);
+        if stream.write_all(b"HTTP/1.1 200 OK\r\nconnection: close\r\n\r\n").is_err() {
+            return;
+        }
+        let chunk = [b'x'; 8192];
+        let mut written = 0usize;
+        // Writes until the client closes (a write error); an endless body never ends on its own.
+        while stream.write_all(&chunk).is_ok() {
+            written += chunk.len();
+        }
+        let _ = tx.send(written);
+    });
+    let wanted = 10_000;
+    let mut body = fetcher().open(&format!("http://{addr}/"), 0).expect("opened");
+    let mut got = vec![0u8; wanted];
+    body.reader.read_exact(&mut got).expect("the first bytes arrive");
+    drop(body);
+    let written = rx.recv_timeout(Duration::from_secs(10)).expect("the server sees the connection close");
+    // The kernel's socket buffers hold some of what was written before the close; the bound is that the writer
+    // stopped, far short of anything unbounded.
+    assert!(written < 32 * 1024 * 1024, "the server wrote {written} bytes before the close");
+}
+
+/// Re-run by `loopback_bypasses_the_proxy_settings` in a child process with dead proxies in the environment; run on
+/// its own it passes trivially, because the environment is the machine's.
+#[test]
+#[ignore = "run by loopback_bypasses_the_proxy_settings in a child process"]
+fn loopback_fetch_child() {
+    let server = Server::start(|_, _| reply(200, "direct"));
+    let (_, bytes) = read_all(&fetcher(), &server.url("/a"), 0).expect("loopback must not go through the proxy");
+    assert_eq!(bytes, b"direct");
+}
+
+#[test]
+fn loopback_bypasses_the_proxy_settings() {
+    // Process environment is shared by parallel tests, so the dead proxies go to a child copy of this test binary.
+    let exe = std::env::current_exe().expect("the test binary");
+    let dead = "http://127.0.0.1:1";
+    let status = std::process::Command::new(exe)
+        .args(["--ignored", "--exact", "loopback_fetch_child"])
+        .env("HTTP_PROXY", dead)
+        .env("HTTPS_PROXY", dead)
+        .env("ALL_PROXY", dead)
+        .env("http_proxy", dead)
+        .env("https_proxy", dead)
+        .env("all_proxy", dead)
+        .env_remove("NO_PROXY")
+        .env_remove("no_proxy")
+        .output()
+        .expect("the child test ran");
+    assert!(status.status.success(), "{}", String::from_utf8_lossy(&status.stdout));
 }

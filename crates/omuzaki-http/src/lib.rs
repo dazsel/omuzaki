@@ -85,7 +85,8 @@ impl HttpFetcherBuilder {
     }
 
     /// A test aid: lets plain `http://` reach loopback hosts (`127.0.0.1`, `::1`, `localhost`) so tests can use a local
-    /// server. Any other plain-http URL is still refused. Never set it in the app.
+    /// server. Any other plain-http URL is still refused. It also makes the client ignore proxy settings (environment
+    /// and system), so loopback is never sent through a proxy. Never set it in the app.
     #[must_use]
     pub fn allow_loopback_http(mut self, allow: bool) -> Self {
         self.allow_loopback_http = allow;
@@ -106,20 +107,32 @@ impl HttpFetcherBuilder {
                 attempt.follow()
             }
         });
-        let client = Client::builder()
+        let mut builder = Client::builder()
             .user_agent(self.user_agent.clone())
             .connect_timeout(self.connect_timeout)
             // The blocking client applies this to the wait for the headers and again to each body read, which is
             // an idle timeout for the body.
             .timeout(self.read_timeout)
-            .redirect(policy)
-            .build()
-            .map_err(|e| e.to_string());
+            .redirect(policy);
+        if allow {
+            // Loopback bypasses the proxy (llm-api D11); the test aid is the only way to reach it.
+            builder = builder.no_proxy();
+        }
+        let client = builder.build().map_err(|e| e.to_string());
         HttpFetcher { client, tries: self.retries, backoff: self.backoff, allow_loopback_http: allow }
     }
 }
 
 /// The HTTPS [`Fetcher`]. Build one with [`HttpFetcher::new`] or [`HttpFetcher::builder`].
+///
+/// # Blocking
+///
+/// [`Fetcher::open`] blocks the calling thread and cannot be cancelled. With the defaults it can take about 90 s
+/// before it returns an error: three tries, each waiting up to the 30 s read timeout for the response headers, plus
+/// the backoff between them. Call it from a worker thread, never from a UI or frame loop.
+///
+/// It also must not be called from inside an async runtime: reqwest's blocking client panics there. Use
+/// `spawn_blocking` (or a plain thread) when the caller is async.
 #[derive(Debug)]
 pub struct HttpFetcher {
     client: Result<Client, String>,
