@@ -25,7 +25,8 @@ cargo xtask lint-registers             # a crate that registers sets `registers 
 ```
 
 Optional heavy assets (models, audio) are not in the repository. If a test needs them, `OMUZAKI_ASSETS` points at the
-folder; without it those tests skip. Do not download or generate assets to make a test pass. Wrap long commands in a
+folder; without it those tests skip. Do not download or generate assets to make a test pass. The one exception is an upstream model fetched under
+the conditions in `docs/maintainers/cloud-lane.md` ("The one model exception"). Wrap long commands in a
 timeout and do not leave background processes running.
 
 ## Layout and the API-crate rules

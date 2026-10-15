@@ -2,7 +2,7 @@
 //! layer's draw list, and that painting it allocates nothing once the lists are warm.
 //!
 //! The curves themselves (the prototype's numbers, the shape properties) are tested beside the code, in
-//! `painter/eyes/aperture.rs`; the comparison with the prototype's pixels is `omuzaki-test`'s
+//! `painter/eyes/aperture.rs`; the comparison with the prototype's pixels is `omuzaki-test-face`'s
 //! `face_parity_eye_aperture.rs`.
 
 // A counting allocator is the only way to *prove* "no allocation"; the workspace denies unsafe code by default.

@@ -1,0 +1,37 @@
+# Spike: does an LGPL FFmpeg, built without --enable-gpl and --enable-nonfree and linked as shared libraries, encode our
+# alpha record formats (ProRes 4444, VP9 with alpha) through ffmpeg-next? Its own workspace root on purpose, never a member
+# of the main workspace, so the dispatch-only spike-build workflow can run `cargo build --release --locked` here.
+[workspace]
+members = ["encode"]
+resolver = "3"
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+# No `static` and no `build` feature, ever: those compile FFmpeg in and break the LGPL checklist (ADR 0039, record.md D1).
+# Only `format` and `software-scaling` are on, so the build links libavcodec, libavformat, libavutil and libswscale.
+ffmpeg-next = { version = "9.0.0", default-features = false, features = ["format", "software-scaling"] }
+thiserror = "2"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+unused_must_use = "deny"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+unwrap_used = "deny"
+expect_used = "deny"
+dbg_macro = "deny"
+todo = "deny"
+
+[profile.release]
+lto = "thin"
+codegen-units = 16

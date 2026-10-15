@@ -13,6 +13,7 @@ use omuzaki_anim_api::{
 use omuzaki_core::glam::{Quat, Vec3};
 
 use super::collide::{Collider, DEGENERATE_DISTANCE};
+use super::limit::Limiter;
 
 /// Warm-ups longer than this are cut short: springs are damped, so more settles nothing, and a typo'd duration must
 /// not stall the app.
@@ -120,6 +121,8 @@ struct Segment {
     axis: Vec3,
     /// Distance from the head to the tail: VRM's `boneLength`. Zero pins the bone at its rest rotation.
     length: f32,
+    /// The joint's `VRMC_springBone_limit`, if it has one.
+    limit: Option<Limiter>,
     // Set at construction, or between steps by `set_params`.
     /// The joint's parameters as the sub-steps use them.
     tuning: Tuning,
@@ -143,7 +146,7 @@ impl Segment {
             match phase {
                 Phase::Rest => self.place_at_rest(head, frame * self.axis),
                 Phase::Integrate => {
-                    let tail = self.integrate(head, frame * self.axis, colliders);
+                    let tail = self.integrate(head, frame, colliders);
                     self.aim(frame, head, tail);
                 }
                 Phase::Hold => self.aim(frame, head, self.current),
@@ -167,16 +170,19 @@ impl Segment {
         self.rotation = self.rest.rotation;
     }
 
-    /// The spec's "Inertia calculation" and "Collision with colliders", for one sub-step. Returns the new tail.
-    fn integrate(&mut self, head: Vec3, rest_dir: Vec3, colliders: &Colliders<'_>) -> Vec3 {
+    /// The spec's "Inertia calculation" and "Collision with colliders", for one sub-step, with the limit of
+    /// `VRMC_springBone_limit` applied right after the inertia and after each push. `frame` is the head's rest frame
+    /// in the world. Returns the new tail.
+    fn integrate(&mut self, head: Vec3, frame: Quat, colliders: &Colliders<'_>) -> Vec3 {
         let Tuning { keep, stiffness, gravity, hit_radius } = self.tuning;
+        let rest_dir = frame * self.axis;
         let inertia = (self.current - self.prev) * keep;
         let mut next = self.current + inertia + rest_dir * stiffness + gravity;
-        next = self.keep_length(head, next, rest_dir);
+        next = self.constrain(head, next, frame);
         let outward = self.outward(head, rest_dir);
         for collider in colliders.iter() {
             if let Some(push) = collider.push_out(next, hit_radius, outward) {
-                next = self.keep_length(head, next + push, rest_dir);
+                next = self.constrain(head, next + push, frame);
             }
         }
         if !next.is_finite() {
@@ -198,10 +204,14 @@ impl Segment {
         if length >= DEGENERATE_DISTANCE { bone / length } else { rest_dir }
     }
 
-    /// Puts `tail` back at `length` from `head` ("constrain the length"). A tail on the head has no direction, so it
-    /// falls back to `rest_dir`.
-    fn keep_length(&self, head: Vec3, tail: Vec3, rest_dir: Vec3) -> Vec3 {
-        head + (tail - head).normalize_or(rest_dir) * self.length
+    /// Puts `tail` back at `length` from `head` ("constrain the length"), then holds its direction inside the joint's
+    /// limit, which keeps the length. A tail on the head has no direction, so it falls back to the rest direction.
+    fn constrain(&self, head: Vec3, tail: Vec3, frame: Quat) -> Vec3 {
+        let mut dir = (tail - head).normalize_or(frame * self.axis);
+        if let Some(limit) = &self.limit {
+            dir = limit.apply(frame, dir);
+        }
+        head + dir * self.length
     }
 }
 
@@ -633,6 +643,7 @@ impl<'a> Builder<'a> {
             rest: self.bones[head].rest,
             axis: if length > 0.0 { to_tail / length } else { Vec3::Y },
             length,
+            limit: joint.limit.map(|limit| Limiter::new(limit, if length > 0.0 { to_tail / length } else { Vec3::Y })),
             tuning: Tuning::of(&joint.params),
             prev: Vec3::ZERO,
             current: Vec3::ZERO,

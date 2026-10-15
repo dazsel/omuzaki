@@ -46,7 +46,7 @@ Everything public, one line each (the PR summary repeats this list).
 | `CameraStream` | `format`, `next_frame(timeout)`: the newest frame, borrowed until the next call |
 | `QualityTier` | `Full`, `Balanced`, `Light` (PF-01 tiers) |
 | `TrackerConfig` | camera request, tier, `lost_after` (saved as whole milliseconds, `lost_after_ms`, at least 1); `Default` and `with_*` |
-| `LatencyStats` | frames, dropped, p50, p95, max of capture-to-publish; `Default` and `new` |
+| `LatencyStats` | frames, dropped, p50, p95, max of arrival-floor-to-publish (capture plus the smallest transport delay, to publish; the constant best-case delay is left out); `Default` and `new` |
 | `Tracker` | `devices`, `start(device, config) -> Box<dyn FrameSource>`, `stop`, `latency` |
 | `ClockMap` | `new`, `reset`, `map(captured, arrived) -> Seconds` |
 | `ClockError` | `Backwards { last, got }` |
@@ -133,8 +133,9 @@ filters and the A/V playout delay (anim-api `PlayoutDelay`) see the camera's rea
    is 1.
 2. **Offset:** the line goes through the lowest arrival in the window (the frame that waited least), not the mean,
    because transport delay is never negative: the lower envelope is the best estimate of "capture plus the
-   smallest delay". That smallest delay is constant and cannot be seen from timestamps; the tracker's measured
-   latency (`LatencyStats`) reports it.
+   smallest delay". That smallest delay is constant and cannot be seen from timestamps, so `LatencyStats` does not
+   report it: it measures from this arrival floor to publish, and the constant delay is left out. A calibrated
+   device-to-stage offset would put the capture time back in; this contract has none.
 3. **Strictly increasing output:** a mapped time is at least `MIN_STEP` (1 µs) after the previous one, so a refit
    cannot make time step back, and a drop of the lower envelope (each new lowest arrival, often in the first window)
    or a repeated device time cannot give two frames the same stage time: the retarget's filters never see `dt = 0`.

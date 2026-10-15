@@ -64,6 +64,8 @@
 
 mod disk;
 mod error;
+pub mod journal;
+mod known;
 mod layout;
 mod lock;
 mod migrate;
@@ -81,7 +83,7 @@ pub use error::StoreError;
 pub use lock::ProjectLock;
 pub use migrate::{BASE_SCHEMA, Migration, MigrationError, supported_schema};
 pub use omuzaki_assets_lock::{AssetsLock, LockError, LockRow};
-pub use project::{Project, SaveReport};
+pub use project::{Project, RenderedFile, SaveReport};
 
 #[doc(hidden)]
 pub use inventory as __inventory;
