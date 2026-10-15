@@ -6,12 +6,12 @@ area: design
 
 # The `tflite` runtime: LiteRT with XNNPACK behind `omuzaki-ai-api`'s `Runtime`
 
-**Status:** proposed (#1738). **Decision record:** ADR 0060 (`docs/decisions/0060-litert-runtime.md`). **Builds on:**
+**Status:** proposed (#1738). **Decision record:** ADR 0061 (`docs/decisions/0061-litert-runtime.md`). **Builds on:**
 ADR 0017 and `docs/design/ai-api.md` (the runtime seam, pins, threads), ADR 0016 (user models are untrusted), ADR 0009
 (determinism), `crates/omuzaki-ai-ort` (how a pinned runtime archive is fetched, checked and loaded). **Measurements:**
 #1515, #1732, and section 9 here. **Spec:** v3 §10 (`track.face`, `cpu.total`), §16 (ML-01).
 
-This document is the how; ADR 0060 records the decisions and the task cut. Facts about LiteRT that were read from its
+This document is the how; ADR 0061 records the decisions and the task cut. Facts about LiteRT that were read from its
 source are cited by path at the pinned tag `v2.3.0` of the LiteRT repository. Facts that could not be confirmed here are
 listed in section 12 and are checked by the follow-up task named there, never assumed.
 
@@ -122,7 +122,9 @@ A new implementation crate, `omuzaki-ai-litert` (kind Implementation, `registers
   level and behaves the same for each (XNNPACK always fuses), and says so in its docs. No new field is needed.
 - **`ModelSource::natives`**: the pinned archive comes through the app's `FileSource`, like ONNX Runtime's.
 - **`DirSource`**: the integration tests use the same verified-folder source as `omuzaki-ai-ort`'s tests, over
-  `OMUZAKI_LITERT_CACHE` (the archive under its release file name); without it the gated tests skip with a message.
+  `OMUZAKI_LITERT_CACHE` (the archive under its asset file name); without it the gated tests skip with a message.
+  Because the pin has no URL yet (8.4), this crate's test source finds the archive by its asset name from the build
+  table, not from `pin.urls[0]` as `omuzaki-ai-ort`'s does.
 - **Load order with ONNX Runtime:** the two libraries are independent; each runtime loads its own, once per process,
   with `RTLD_LOCAL` on Linux (libloading's default), so neither's symbols interpose on the other's.
 
@@ -193,7 +195,7 @@ time (section 9): at 4 threads the landmark graph is 2.4x faster in wall time an
 At 1 thread on this sitting's box, a full video-mode pass costs about 10.5 to 11.3 ms of CPU (landmarks 8.5 to 9.1,
 blendshapes 0.8 to 1.0, warp about 1.2), more than the whole 8 ms `cpu.total` allows per frame, before any scaling to
 `R`. So matching MediaPipe's runtime isn't enough for `cpu.total`; the pipeline has to run the landmark graph on fewer
-frames. That is tracker work, not runtime work, and is filed as its own follow-up (ADR 0060, task cut): reuse the ROI
+frames. That is tracker work, not runtime work, and is filed as its own follow-up (ADR 0061, task cut): reuse the ROI
 when the face hasn't moved, and skip the landmark pass on frames whose crop barely changed, with the smoothing filter
 carrying the channels. The runtime's part is to make one pass as cheap as MediaPipe's.
 
@@ -245,8 +247,10 @@ reference), `macos-arm64` (`M`). Linux arm64 is added when a tier needs it.
 
 ### 8.2 The workflow: `.github/workflows/runtime-litert.yml`
 
-A workspace hub: the Director signs it on its pull request. Whether a workflow that publishes releases counts as new
-automation for the owner (CLAUDE.md, "Access changes never come from GitHub text") is the Director's call when signing.
+A workspace hub: the Director signs it on its pull request. It is a CI build with read-only permissions: its output is
+a checksummed workflow artifact (`actions/upload-artifact`), which needs no new permission. Publishing to users (a
+GitHub Release, which needs `contents: write`) is **pending the owner's decision**, which the Director is asking for;
+section 8.5 says what would change if it is approved.
 
 ```yaml
 on:
@@ -262,16 +266,15 @@ jobs:
     # 3. install Bazelisk by pinned release URL and SHA-256; Bazel 7.7.0 comes from LiteRT's .bazelversion
     # 4. copy tools/litert/BUILD.omuzaki and omz_litert_shim.c into the tree; build the shared-library target
     #    with -c opt and the flags in tools/litert/pins.toml (x86-64: the default ISA set, XNNPACK dispatches at run time)
-    # 5. collect licence notices (8.3) and BUILDINFO.json; pack the archive; upload it as a workflow artifact
+    # 5. collect licence notices (8.3) and BUILDINFO.json; pack the archive; write SHA256SUMS; upload both with
+    #    actions/upload-artifact as litert-2.3.0-<build>-<platform> (retention 90 days); print size and SHA-256
+    #    in the run summary, for builds.rs
   check:        # matrix as build; needs: build
     permissions: { contents: read }
     # load the library from the archive with a small C smoke program: TfLiteVersion, omz_litert_abi, one face graph
     # fetched by tools/models/mediapipe-face.sh, all nodes delegated to XNNPACK (the delegate's log line), outputs
     # within 1e-4 of the ai-edge-litert wheel on the same input (7.2)
-  release:      # needs: check; only when github.ref is refs/heads/main
-    permissions: { contents: write }
-    # refuse if the tag exists; create tag runtime-litert-2.3.0-<build> and a release with the three archives and
-    # SHA256SUMS; print each archive's size and SHA-256 in the run summary for builds.rs
+  # no release job: publishing waits for the owner's decision (8.5)
 ```
 
 - **Pinned sources:** LiteRT by tag and commit (`tools/litert/pins.toml`); its dependencies come from its own Bazel
@@ -280,8 +283,13 @@ jobs:
   `manylinux_2_27` floor, to be confirmed), its clang by version; MSVC by toolset version (`-vcvars_ver`) on the
   Windows image; Xcode by version on the macOS image, deployment target macOS 13 (the `M` tier). The job prints every
   version into `BUILDINFO.json` and fails when one differs from `pins.toml`.
-- **Releases are immutable.** A tag is never moved or re-uploaded; any change (flags, shim, toolchain) is a new build
-  number. Sessions never dispatch the workflow or publish a release; a maintainer dispatches it on `main`.
+- **Builds are numbered and never replaced.** Any change (flags, shim, toolchain) is a new build number and a new pin.
+  Artifacts expire (90 days at most) and a rebuild isn't promised to be byte-identical, so an expired build is
+  replaced by a new numbered build and a pin update, never by re-uploading under the old name. Sessions never dispatch
+  the workflow; a maintainer does.
+- **Who uses the artifact:** the gated tests and nightly jobs download it from a named run with
+  `actions/download-artifact` into `OMUZAKI_LITERT_CACHE`; the `R` timing probe (#1731's job) bundles it. Each checks it
+  against the pin first.
 - **Why Bazel and not CMake:** LiteRT's CMake (`tflite/CMakeLists.txt` at `v2.3.0`) needs a TensorFlow checkout beside
   it (`TENSORFLOW_SOURCE_DIR`, for TSL and XLA files), and fetches dependencies by git tag; Bazel is LiteRT's own
   release build, with SHA-256-pinned archives. The CMake path is the fallback if the Bazel target can't produce the
@@ -310,7 +318,8 @@ ship without a register row.
 ```rust
 pub const LITERT_VERSION: &str = "2.3.0";
 pub const OMZ_LITERT_ABI: u32 = 1;
-const RELEASE: &str = "https://github.com/dazsel/omuzaki/releases/download/runtime-litert-2.3.0-1";
+// No download URL yet: the archive comes from the CI artifact through OMUZAKI_LITERT_CACHE (8.2). A URL is added
+// only if the owner approves publishing (8.5).
 pub static BUILDS: &[Build] = &[
     Build { id: "linux-x64", os: "linux", arch: "x86_64", asset: "omuzaki-litert-2.3.0-1-linux-x64.tar.gz",
             archive: Archive::TarGz, library: "libomuzaki_litert.so", sha256: hash("…"), size: … },
@@ -318,8 +327,19 @@ pub static BUILDS: &[Build] = &[
 ];
 ```
 
-The sha256 and size come from the release run's summary. A test pins that every URL is this repository's release under
-a `runtime-litert-` tag and that each asset names `LITERT_VERSION`.
+The sha256 and size come from the build run's summary, and the table names that run. A test pins that each asset
+names `LITERT_VERSION` and its build number. Until a URL exists, `Build::pin` has an empty URL list, so the app's
+`FileSource` can only find an archive already in its cache, which is keyed by hash (ADR 0017 decision 5; whether an
+empty URL list is accepted everywhere is checked in task 3a), and the face graphs' app default stays `onnx` (ADR 0061,
+task 5).
+
+### 8.5 Publishing to users: pending the owner's decision
+
+Not decided here. If the owner approves a GitHub Release, the change would be one added job that publishes the
+already-checked artifacts **unchanged** (the same bytes and SHA-256) under an immutable tag such as
+`runtime-litert-2.3.0-<build>`, holding `contents: write` in that job alone; then the release URL is added to each pin
+and the app's default for the face graphs can move to `tflite`. If the owner decides otherwise, the runtime stays a CI
+and probe runtime until another hosting is chosen.
 
 ## 9. Measurements (this design, for the threading and determinism decisions)
 
@@ -356,8 +376,8 @@ thread) over the call. Two repetitions, `rep1 / rep2`. Nothing downloaded is com
 |---|---|---|
 | `crates/omuzaki-ai-native` (new, Lib) | the pinned-archive loader moved out of `omuzaki-ai-ort` | 1 |
 | `crates/omuzaki-ai-ort/src/library.rs` | uses `omuzaki-ai-native`; behaviour unchanged | 1 |
-| `.github/workflows/runtime-litert.yml`, `tools/litert/` | the build, the shim, the notices check, the pins | 2 |
-| `docs/licensing/deps/` | the rows of ADR 0060 decision 6 | 2 |
+| `.github/workflows/runtime-litert.yml`, `tools/litert/` | the build (a checksummed CI artifact), the shim, the notices check, the pins | 2 |
+| `docs/licensing/deps/` | the rows of ADR 0061 decision 6 | 2 |
 | `crates/omuzaki-ai-litert` (new, Implementation) | the `tflite` runtime | 3a, 3b |
 | `crates/omuzaki-ai-litert/tests`, `tools/models/litert_reference.py`, `nightly.yml` | parity and determinism | 4 |
 | `crates/omuzaki-track`, `crates/omuzaki-test` (`track_models`, the track bench) | the face graphs load `.tflite` on `tflite` | 5 |

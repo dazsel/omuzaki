@@ -1,10 +1,10 @@
 ---
-title: "0060: A `tflite` runtime (LiteRT with XNNPACK) behind `Runtime` for the slots whose models are TFLite (2026-10-15)"
+title: "0061: A `tflite` runtime (LiteRT with XNNPACK) behind `Runtime` for the slots whose models are TFLite (2026-10-15)"
 summary: "A `tflite` runtime (LiteRT with XNNPACK) behind `Runtime` for the slots whose models are TFLite"
 area: decisions
 ---
 
-# 0060: A `tflite` runtime (LiteRT with XNNPACK) behind `Runtime` for the slots whose models are TFLite (2026-10-15)
+# 0061: A `tflite` runtime (LiteRT with XNNPACK) behind `Runtime` for the slots whose models are TFLite (2026-10-15)
 
 **Status:** proposed (#1738); accepted by the Director when merged. **Context:** #1515 and #1732 (the measurements),
 the Director's ruling on #2 (comment 6187918433), ADR 0017 (the runtime seam), ADR 0016 (user models), ADR 0009
@@ -75,9 +75,9 @@ the model.
        XNNPACK against LiteRT's own kernels already differs by 5.6e-4, so a misconfigured runtime fails the gate.
      - **Against the ONNX path:** `tflite` also stays inside the converter's ONNX gate (5.5e-5, 3.8e-4, 1.8e-6).
 
-5. **Build and hosting.**
-   - **The workflow:** `.github/workflows/runtime-litert.yml`, dispatched by a maintainer on `main` only, never by a
-     session.
+5. **Build and hosting.** The build is decided; publishing to users is not.
+   - **The workflow:** `.github/workflows/runtime-litert.yml`, a CI build with read-only permissions
+     (`contents: read`, nothing more), dispatched by a maintainer (`workflow_dispatch`), never by a session.
      - It builds one shared library per platform (`linux-x64`, `win-x64`, `macos-arm64`) from LiteRT at tag `v2.3.0`,
        its commit pinned, with LiteRT's own Bazel (7.7.0 from its `.bazelversion`, Bazelisk pinned by SHA-256). LiteRT's
        Bazel workspace pins every dependency archive by SHA-256.
@@ -85,17 +85,27 @@ the model.
        as the deployment target. A job fails when a version drifts from `tools/litert/pins.toml`.
      - A check job loads each library, runs a face graph fully delegated to XNNPACK, and compares it with the wheel
        (decision 4).
-     - A release job, the only one with `contents: write`, publishes tag `runtime-litert-2.3.0-<build>` with the archives
-       and `SHA256SUMS`. It never moves a tag: any rebuild is a new build number.
+   - **Hosting now: a checksummed workflow artifact.** Each platform's archive is uploaded with
+     `actions/upload-artifact` as `litert-2.3.0-<build>-<platform>`, next to a `SHA256SUMS` file, and the run summary
+     prints each archive's size and SHA-256. No new permission is needed.
+     - **CI and the `R` probe use it from there.** The gated tests and the nightly jobs fetch the artifact of a named run
+       with `actions/download-artifact` and put it in `OMUZAKI_LITERT_CACHE`. The `R` timing probe (#1731's job)
+       bundles it. Every consumer checks it against the pin before use.
+     - **Retention:** artifacts expire after at most 90 days, and a rebuild isn't promised to be byte-identical. So a
+       rebuild means a new build number and a new pin, landed by a pull request.
+   - **Publishing to users is pending the owner's decision.** A GitHub Release (it needs `contents: write`) is how the
+     app would fetch the archive through `FileSource`, but whether to publish one is asked of the owner by the Director.
+     Until the owner answers, nothing is published and the pin carries no download URL for the app. If a release is
+     approved, it is one added job that publishes the already-checked artifacts unchanged under an immutable tag such as
+     `runtime-litert-2.3.0-<build>`, and the URL is added to the pin. That step is not decided by this record.
    - **The archive** holds `lib/`, LiteRT's `LICENSE`, `THIRD_PARTY_NOTICES.md` and `licences/` copied from the source
      tree that was built, and `BUILDINFO.json`. The notices step fails on a linked dependency that has no licence file
      or no entry in `tools/litert/licences.toml`.
    - **The pins:** each archive's SHA-256 and size go into `crates/omuzaki-ai-litert/src/builds.rs`, like ONNX Runtime's
-     table. On load, the crate checks `TfLiteVersion()` and the shim's ABI number.
+     table, with the run that produced it. On load, the crate checks `TfLiteVersion()` and the shim's ABI number.
    - **Why Bazel, not CMake:** LiteRT's CMake build at `v2.3.0` needs a TensorFlow checkout beside it and fetches by git
      tag. CMake is the fallback.
-   - **The sign-off:** the workflow is a hub and needs the Director's sign-off. Whether a release-publishing workflow
-     is automation that needs the owner is the Director's call.
+   - **The sign-off:** the workflow is a hub and needs the Director's sign-off.
 
 6. **Licence rows** (`docs/licensing/deps/`, added with the build task, each `conditions: ship the notice in the
    archive`). Each is checked against the source tree that was actually built; "seen" means its licence file was read at
@@ -133,6 +143,9 @@ the model.
 
 - Two new crates (`omuzaki-ai-native`, a Lib; `omuzaki-ai-litert`, an Implementation), one workflow, `tools/litert/`,
   and about fifteen licence rows. No contract crate changes.
+- Until the owner decides on publishing, the `tflite` runtime runs in CI and in the `R` probe only; the app can't fetch
+  it for people, so the shipped default for the face graphs moves to `tflite` only once a download URL exists (task 5
+  keeps `onnx` as the app's default until then).
 - The V0 face path no longer depends on the ONNX conversion. The `.tflite` files come straight from the verified
   bundle, which `tools/models/mediapipe-face.sh` already writes and lists in `manifest.json`.
 - We own a native build per platform and its upkeep on LiteRT bumps; the notices gate makes a bump's new dependencies
@@ -154,14 +167,14 @@ Sizes are changed lines. Each task's acceptance includes `timeout 3600 cargo xta
    - **Fence:** `.github/workflows/runtime-litert.yml`, `tools/litert/**` (the shim, the Bazel overlay, `pins.toml`,
      `licences.toml`, the notices script, the C smoke program), and `docs/licensing/deps/` for decision 6's rows.
    - **Acceptance:**
-     - the PR links a dispatched run on its branch: three archives as workflow artifacts (the release job skipped off
-       `main`), each archive's size and SHA-256, its notices list, the delegated-node count for the three face graphs,
-       and the smoke parity against the wheel;
+     - the PR links a run on its branch: three archives as checksummed workflow artifacts, each archive's size and
+       SHA-256, its notices list, the delegated-node count for the three face graphs, and the smoke parity against the
+       wheel;
      - answers design section 12's task-2 rows;
-     - the first release is dispatched by a maintainer after merge.
+     - no release job and no `contents: write`: publishing waits for the owner's decision (decision 5).
 3. **`omuzaki-ai-litert`: the `tflite` runtime,** in two PRs (model: opus).
    - **3a, the library and the probe** (about 400 lines):
-     - **Fence:** `crates/omuzaki-ai-litert/**` (new): `builds.rs` with task 2's pins, the FFI table, library loading
+     - **Fence:** `crates/omuzaki-ai-litert/**` (new): `builds.rs` with the pins of task 2's artifacts, the FFI table, library loading
        through `omuzaki-ai-native`, `probe`, refusals, small `.tflite` fixtures with the script that makes them;
      - **Acceptance:** a probe of each fixture, refusal of a custom-op fixture and of a truncated file, and the version
        and ABI checks.
@@ -184,6 +197,8 @@ Sizes are changed lines. Each task's acceptance includes `timeout 3600 cargo xta
      and the face model rows in `docs/licensing/deps/`.
    - **Acceptance:**
      - the gated `track_models` tests pass on both runtimes;
+     - `tflite` is the face graphs' runtime in CI and the probe; the app's default stays `onnx` until the pin has a
+       download URL (decision 5);
      - the PR body shows `track_roi` before and after on the same box (mean, p50 and p95 of 1,000 calls at 1 thread);
      - the landmark run is within 10% of the wheel's time on that box in the same sitting.
 6. **The timing probe on `R`** (extends #1731 and #1734; model: sonnet, about 200 lines).
