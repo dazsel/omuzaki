@@ -313,20 +313,20 @@ unsafe impl Send for Held {}
 impl MfStream {
     /// Locks `sample`'s pixels and keeps them locked until the next read.
     fn lock(&mut self, sample: &IMFSample) -> Result<(), TrackError> {
-        let id = self.id.clone();
+        let id = &self.id;
         let (format, height) = (self.mode.format, self.mode.height as usize);
         // SAFETY: plain calls on a live sample and its buffer.
-        let buffer = unsafe { sample.ConvertToContiguousBuffer() }.map_err(|e| err(&e, &id))?;
+        let buffer = unsafe { sample.ConvertToContiguousBuffer() }.map_err(|e| err(&e, id))?;
         let two_d = if format == PixelFormat::Mjpg { None } else { buffer.cast::<IMF2DBuffer>().ok() };
         let (mut ptr, mut pitch, mut len) = (std::ptr::null_mut::<u8>(), 0_i32, 0_u32);
         if let Some(two_d) = &two_d {
             // SAFETY: the out-pointers outlive the calls; a success locks the buffer until `Unlock2D`.
-            unsafe { two_d.Lock2D(&raw mut ptr, &raw mut pitch) }.map_err(|e| err(&e, &id))?;
+            unsafe { two_d.Lock2D(&raw mut ptr, &raw mut pitch) }.map_err(|e| err(&e, id))?;
             // SAFETY: plain call on a live buffer.
             len = unsafe { two_d.GetContiguousLength() }.unwrap_or(0);
         } else {
             // SAFETY: as above; a success locks the buffer until `Unlock`.
-            unsafe { buffer.Lock(&raw mut ptr, None, Some(&raw mut len)) }.map_err(|e| err(&e, &id))?;
+            unsafe { buffer.Lock(&raw mut ptr, None, Some(&raw mut len)) }.map_err(|e| err(&e, id))?;
             let tight = format.tight_stride(self.mode.width).unwrap_or(0);
             pitch = i32::try_from(tight).unwrap_or(0);
             if self.bottom_up {
