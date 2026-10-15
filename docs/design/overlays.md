@@ -174,7 +174,10 @@ pub struct LayoutPatch {                  // every field optional; `None` inheri
     pub safe: Option<bool>, pub visible: Option<bool>, pub z: Option<i16>,
 }
 impl Layout { pub fn patched(&self, patch: &LayoutPatch) -> Layout; }
-pub struct SafeMargins { pub left: f32, pub top: f32, pub right: f32, pub bottom: f32 }   // fractions; default 0.05
+/// Fractions of the output; default 0.05 each. Only `SafeMargins::new` builds one: each side finite and in 0..=0.4,
+/// `left + right <= 0.8` and `top + bottom <= 0.8`, so the safe region is never empty or inverted.
+pub struct SafeMargins { left: f32, top: f32, right: f32, bottom: f32 }
+impl SafeMargins { pub fn new(left: f32, top: f32, right: f32, bottom: f32) -> Result<Self, OverlayError>; }
 pub struct RectPx { pub x: i32, pub y: i32, pub w: u32, pub h: u32 }
 /// `content`: the content's aspect (height over width) for `Fit::Width`, from the widget's last `View`.
 pub fn resolve(layout: &Layout, output: UVec2, safe: SafeMargins, content_aspect: Option<f32>) -> RectPx;
@@ -184,7 +187,11 @@ pub fn resolve(layout: &Layout, output: UVec2, safe: SafeMargins, content_aspect
 times the output size) when `layout.safe`, else the whole output. The box is `size` times the output; for `Fit::Width`
 its height is its width times `content_aspect`, or times 0.25 when `None`. It is placed so that its anchor point lies on
 the region's matching point, `offset` times the output size is added, and the box is clamped inside the region (a box
-larger than the region is first shrunk to it). Arithmetic in `f64`, `round` to whole pixels. #1032's acceptance
+larger than the region is first shrunk to it). Arithmetic in `f64`, `round` to whole pixels.
+**Inputs are valid by construction:** `SafeMargins` comes only from `new` (above), and `check_overlay` refuses a
+`Layout` or `LayoutPatch` with a non-finite number, an offset outside -1..=1 or a size outside 0.01..=1 before it is
+stored (#1032's `check`), so `resolve` never sees an inverted region or a non-finite size; it `debug_assert!`s both.
+The region is at least 20 % of each side, so a resolved box is never zero-sized. #1032's acceptance
 numbers stand unchanged: at 1920 x 1080 with 5 % margins, `BottomRight`, `size [0.25, 0.1]`, `safe` gives
 (1344, 918, 480, 108), and the rest of its table.
 
@@ -217,7 +224,9 @@ pub struct Style {
     pub text_size: f32,                   // body text height, a fraction of the output height, 0.01..=0.2 (0.025)
 }
 pub fn contrast_ratio(a: Colour, b: Colour) -> f32;   // WCAG 2.x relative luminance ratio, on opaque colours
-pub fn worst_contrast(text: Colour, surface: Colour) -> f32;   // a translucent surface over black and over white
+/// The lowest ratio of `text` against `surface` composited over any backdrop: 1.0 when the text's luminance lies
+/// between the surface over black and the surface over white, else the ratio to the nearer of those two.
+pub fn worst_contrast(text: Colour, surface: Colour) -> f32;
 ```
 
 - **Where tokens come from** (#1031 item 7): one palette per show, resolved in three layers, each overriding the last:
@@ -230,10 +239,14 @@ pub fn worst_contrast(text: Colour, surface: Colour) -> f32;   // a translucent 
   can name and what the contrast check walks. Kinds never take raw colours, so a palette change restyles every widget
   and a single changed token changes only the widgets that use it (#1036's golden check).
 - **The contrast rule:** for each widget, `text` and `text_muted` against `surface` and `surface_alt` must reach 4.5:1
-  (WCAG 2.x, normal text); `accent` against `surface` must reach 3:1 (non-text contrast, WCAG 1.4.11). A translucent
-  surface is checked over black and over white and the lower ratio counts (`worst_contrast`), because the backdrop is
-  the game or the camera and can be either. With `outline` on, text is checked against the opaque surface colour, since
-  the ring guarantees that edge. A breach is a **finding** (`overlay-low-contrast`, naming the widget, the two tokens
+  (WCAG 2.x, normal text), and so must every extra token the kind draws text in (`WidgetKindInfo::text_tokens`: the
+  chat box's role colours `accent`, `positive` and `warning`, D8); `accent` against `surface` must also reach 3:1
+  as a non-text colour (WCAG 1.4.11). **A translucent surface is checked against every backdrop,** because the
+  backdrop is the game or the camera and can be any colour: compositing is monotone in the backdrop, so the surface's
+  luminance over any backdrop lies between its luminance over black and over white, and `worst_contrast` is 1:1 when
+  the text's luminance falls inside that interval (a fully transparent surface always fails), else the ratio to the
+  nearer end. With `outline` on, text is checked against the opaque surface colour, since the ring guarantees that
+  edge whatever lies behind. A breach is a **finding** (`overlay-low-contrast`, naming the widget, the two tokens
   and the ratio), not an error: the person sees it and may keep a stylistic choice.
 - **Chat name colours** (`ChatUser::colour`) are used when they pass 4.5:1 on the widget's surface, else the name takes
   the role's token (D8), so a dark-blue name never vanishes on a dark box.
@@ -251,8 +264,9 @@ pub struct WidgetKindInfo {
     pub needs: Needs,
     pub hides_on_panic: bool,                        // BR-14's panic hides it (the AI bubble)
     pub content_fit: bool,                           // supports Fit::Width (its View reports a height)
+    pub text_tokens: &'static [PaletteToken],        // tokens it draws text in beyond the style's (D4's check)
 }
-pub struct Needs { pub camera: bool, pub files: bool, pub network: bool, pub transcript: bool }   // all false: none
+pub struct Needs { pub camera: bool, pub files: bool, pub network: bool, pub transcript: bool, pub viewer_data: bool }   // all false: none
 pub trait WidgetKind: Send + Sync + 'static {
     type Params: Serialize + DeserializeOwned + JsonSchema + Default + Send + Sync + 'static;   // deny_unknown_fields
     fn info() -> WidgetKindInfo;
@@ -262,7 +276,7 @@ pub trait WidgetKind: Send + Sync + 'static {
 pub struct KindCx<'a> { pub grants: &'a WidgetGrants, pub language: &'a Locale }
 pub struct WidgetGrants { /* what the person approved for this show on this machine: camera, files (roots), network
                              (hosts), transcript; built by the host from the automation `Approvals` store */ }
-pub enum WidgetNeed { Camera, Files, Network, Transcript }                        // what NeedsGrant names
+pub enum WidgetNeed { Camera, Files, Network, Transcript, ViewerData }                        // what NeedsGrant names
 pub enum KindError { NeedsGrant { need: WidgetNeed }, Params(ParamErrors) }      // ParamErrors: live-api's (node)
 pub struct WidgetKindRegistration { /* fn pointers like automation's NodeRegistration: info, schema, defaults,
                                        check (normalised params), create */ }
@@ -293,6 +307,11 @@ pub trait TextMeasure: Send + Sync {
 }
 pub struct MeasureStyle { pub px: f32, pub bold: bool, pub lang: Option<Locale> }   // Locale: omuzaki-l10n-api's
 pub enum Command { Clear, Alert(AlertRequest) }
+impl View {
+    /// Every number finite; `alpha` 0..=1; `slide` -1..=1; `content_aspect` 0.01..=100; image sizes and bar values
+    /// 0..=1; at most `MAX_VIEW_ITEMS` (64) items, 512 spans and 4 KiB of plain text in all.
+    pub fn validate(&self) -> Result<(), OverlayError>;
+}
 
 // ── view ────────────────────────────────────────────────────────────────────────────────────────────
 pub struct View {
@@ -300,7 +319,7 @@ pub struct View {
     pub alpha: f32,                                  // whole-widget opacity, applied at composite: no repaint
     pub slide: [f32; 2],                             // offset as a fraction of the box, applied at composite
     pub content_aspect: Option<f32>,                 // for Fit::Width
-    pub revision: u64,                               // bumps when items change; the painter repaints only then
+    pub revision: u64,                               // bumps when items change; one input of the paint key (D10)
 }
 pub enum ViewItem {
     Text { spans: Vec<Span>, lang: Option<Locale>, align: Align, size: TextSize, max_lines: u8 },
@@ -336,7 +355,8 @@ pub enum ImageRef { Asset(ContentHash), Emote(EmoteRef) }
   refused widget is **inert** with a finding and an approval card in the Broadcast workspace, as an unapproved
   automation node is (automation D11), and approvals live in the same machine-local store. No first-party native
   kind needs anything except `captions`, which needs `transcript` (D7), granted by default to first-party kinds
-  only. **Camera** has no grant in v1 at all: no kind or web widget may read it, and a manifest that declares it is
+  only. `viewer_data` is for web packages only (D13): first-party native kinds hold viewer data in Omuzaki's
+  memory under D7's rules and need no grant for it. **Camera** has no grant in v1 at all: no kind or web widget may read it, and a manifest that declares it is
   refused with that reason; a camera scope is an `omuzaki-ops-api` addition when a feature needs one.
 - **What a kind can reach:** nothing but its `StepCx`. Images come by `ContentHash` from the project store or as emotes
   from the emote cache, both through the painter; a kind gets no file, socket or clock API, so the needs are enforced by
@@ -375,7 +395,7 @@ pub trait OverlayFrame: Send {
 
 - **One overlay thread** owns every `WidgetLogic` of the current show. It wakes at the program's frame rate on the
   runner clock (and on an event), runs `on_event` for queued events in arrival order, `step`s every visible widget,
-  and paints widgets whose `revision` changed (D10). It never runs on the render or audio thread and never takes the
+  and repaints widgets whose paint key changed (D10). It never runs on the render or audio thread and never takes the
   executor's lock. An idle overlay (nothing visible, no events) sleeps.
 - **Why its own thread, not the automation engine's:** overlays run with no show running, the painter's work (shaping,
   rasterising) is not graph work, and a busy show must not delay captions.
@@ -386,6 +406,10 @@ pub trait OverlayFrame: Send {
   widget whose kind and params are unchanged keeps its logic and state (a layout or style edit restyles without losing
   the chat history); a changed one is recreated.
 - **Faults:** a panic in a kind is caught, the widget becomes faulted (hidden, a finding), the rest keep running.
+  **Every `View` is validated** (`View::validate`) after each `step` that bumped its revision or moved its alpha or
+  slide, before anything reaches the painter or the frame seam; an invalid view faults that widget the same way and
+  its last picture is withdrawn. So a first-party bug or an untrusted plugin (D15) can only lose its own widget, and
+  `prepare` never hands `composite` an opacity outside 0..=1 or a non-finite rectangle.
 - **The frame seam:** `OverlayFrame::prepare` is the only thing the render thread calls. It takes the newest finished
   picture of each widget from a per-widget triple buffer (lock-free), uploads only changed ones, resolves each visible
   widget's `RectPx` for the target size and the live scene, and pushes one `Layer` per widget in (`z`, id) order with
@@ -425,10 +449,14 @@ pub trait OverlayFrame: Send {
   never reaches the stream. Deletes, timeouts and clears arrive as three kinds BR-10 publishes and #773's table gains
   (ask L1): `chat.delete {platform, channel, message_id}`, `chat.clear_user {platform, channel, user_id}`, `chat.clear
   {platform, channel}`; the chat box drops the matching lines at once, shown or held.
-- **Viewer data is kept nowhere** (SE-04): names, messages, avatars and amounts live only in the widget's memory for
+- **Viewer data is kept nowhere by Omuzaki** (SE-04): names, messages, avatars and amounts live only in the widget's memory for
   as long as it shows them (`max_messages`, `ttl_s`, the alert queue), are never written to a file, a log, the op log
   or `WidgetLive`, and every `Debug` impl over them prints lengths, not text. Emote images are cached by the emote
-  cache under their platform id (public images, LRU, D16), never with who sent them.
+  cache under their platform id (public images, LRU, D16), never with who sent them. **Web widgets are the
+  exception, said plainly:** their page is untrusted code running in OBS's browser, where Omuzaki can't stop it from
+  writing what it receives to the browser's storage. So viewer data reaches a web widget only through the
+  `viewer_data` need (D13), approved per show with a card that says so, and each load clears what the page stored
+  before.
 - **The AI disclosure** (SE-06): the AI bubble puts a `Chip` with the message `overlay-ai-disclosure` ("AI") in every
   non-empty view; params may restyle it, not remove it. `ai.line` comes through the performer's `TrustedEventSink`, and
   private turns publish nothing (ai-performer §8), so the bubble never shows a private exchange.
@@ -462,8 +490,9 @@ The behaviour, parameters and acceptance of #1035 stand; the design fixes what t
   a graph action for free (#780) and agents call it like any tool.
 - **Chat box** (`chat_box`): the newest `max_messages`, each leaving after `ttl_s`; text over `max_chars` cut with an
   ellipsis, keeping emote spans entirely inside the cut and dropping the others (emote offsets are byte offsets into
-  `text`, automation D9); commands (`!…`) hidden when `hide_commands`; names in the user's colour when it passes the
-  contrast rule, else coloured by the top role (Broadcaster `accent`, Moderator `positive`, Vip `warning`, Subscriber
+  `text`, automation D9); commands (`!…`) hidden when `hide_commands`; names in the user's colour when it passes 4.5:1
+  on the box's surface, else coloured by the top role (each role token is in the kind's `text_tokens`, so D4
+  checks it at 4.5:1 on that surface) (Broadcaster `accent`, Moderator `positive`, Vip `warning`, Subscriber
   `text`, others `text_muted`); `/me` lines in italic-free `text_muted`; a reply shows its parent's author only (never
   the parent's text). Plus `delay_s` and the moderation kinds (D7).
 - **AI bubble** (`ai_bubble`): reveals the line at `cps` characters a second, or over `duration_s` when the event gives
@@ -496,15 +525,24 @@ pub struct CaptionParams { pub max_lines: u8 /* 2 */, pub hold_base_s: f32 /* 3.
   and Chinese, a CJK run may break between any two ideographs or kana, Korean prefers spaces between words where
   present; **kinsoku:** no line starts with closing punctuation (`。、」』）〉！？` and the full-width comma and full
   stop) or a small kana, and no line ends with opening brackets; such a character pulls one character back with it.
-- **No jumpy reflow:** a line that is complete (another line follows it) never changes when later text of the same
-  utterance arrives, in text or position; only the last line grows. Only the last `max_lines` lines show; older ones
+- **No jumpy reflow from partials:** a line that is complete (another line follows it) never changes when a later
+  *partial* of the same utterance arrives, in text or position; only the last line grows. A partial that revises
+  words on a completed line changes only the open last line (the recogniser's revision shows once the final comes).
+- **One bounded correction at the final:** the final is authoritative, so the utterance is laid out again from the
+  final text once. Leading lines whose text is unchanged keep their exact position; from the first line that differs,
+  the lines are replaced in place (same slots, no scroll), and any extra line is appended at the end. After the final
+  nothing of that utterance changes again. #1187's tests gain: a final that corrects a word on the first of two
+  completed lines replaces that line in place, keeps the lines before it, and changes nothing after its hold starts. Only the last `max_lines` lines show; older ones
   scroll off. Text carries its `lang`, so the painter picks the regional Han forms (D10).
 - **Timing against the voice** (#1031 item 9, audio-api §5.2): captions are recognised from the `raw` tap, which leads
   the voice viewers hear by the A/V delay `D` when a changer is in use. With `follow_av_delay` (the default) a line
   appears no earlier than `start + D` on the runner clock, so a caption never leads the voice it captions. ASR's own
   latency (300 ms to 1 s for a final) is usually larger than `D`, so this mostly costs nothing; it matters for fast
   partials on an RVC-class changer (`D` = 200 ms). `D` comes from the perform settings through a read-only service the
-  host is given (`AvDelay::current()`); audio-api §5.2's "overlays and alerts are not delayed" still holds for
+  host is given: `omuzaki-overlay-api`'s `trait AvDelay: Send + Sync { fn current(&self) -> Seconds; }`, which the
+  stage implements over the delay its frame loop already ramps (one atomic, written by the frame loop and read by the
+  overlay thread) and hands to the host as part of ask R1. Until R1 lands the host uses 0 and shows the finding
+  `overlay-captions-not-delay-aligned` when the perform delay is above 0. Audio-api §5.2's "overlays and alerts are not delayed" still holds for
   everything except this alignment of captions to their own audio.
 - **Latency from speech to pixels:** the speech host's part is ML-03's (VAD end-of-speech plus the recogniser); the
   overlay part, transcript published to the composited frame, is at most 50 ms p95 at 60 fps (D16).
@@ -528,9 +566,16 @@ impl TextMeasure for PainterMeasure { /* the same shaping, without rasterising *
 ```
 
 - **Where pixels are made:** each widget is painted **on the CPU** on the overlay thread into its own picture at its
-  resolved size in output pixels, only when its `View::revision` changes, and the render thread uploads that picture
+  resolved size in output pixels, only when its **paint key** changes, and the render thread uploads that picture
   into the widget's dynamic texture with `paint_texture` (`PaintTarget::write_rgba` of the changed rectangle). The GPU
   then only composites (D11).
+- **The paint key** is everything a picture depends on: `View::revision`; the resolved box size (a scene switch, a
+  layout edit or a new program size); a revision of the widget's `Style`; the show palette's revision; the overlay
+  language; and the revision of the painter's asset state (a fallback font, an emote image or a store image that
+  arrived after a paint that had to draw `alt` or U+FFFD). Each is a `u64` counter or a size, so the key is compared,
+  never hashed per frame, and a style, palette or language edit repaints every widget it touches while their logic
+  keeps its state (D6's hot reload). A size change reallocates the picture once and recreates the texture only when
+  the new size exceeds the texture's (textures are sized to the widget's largest box over the show's scenes).
 - **Why the CPU, against reusing `omuzaki-face-api`'s vector `DrawList` and its rasterisers, or a new retained 2D list
   drawn on the GPU:** widgets change a few times a second, not every frame (fades and slides are composite-time,
   D5), so the cost is in the rare repaint, not the frame; a repaint of a chat box at 1080p is about a millisecond
@@ -616,7 +661,8 @@ pub trait Renderer {
   leaves pixels outside every layer untouched.
 - **Ask R1 also covers the frame loop** in `omuzaki-stage` (V0 integration is that lead's): after `render`, when a
   clean feed is active `copy_target(program, clean)`, then `OverlayFrame::prepare(renderer, size, live_scene,
-  &mut layers)` and `composite(program, &layers)`, then the outputs. The `Vec<Layer>` is the loop's, reused.
+  &mut layers)` and `composite(program, &layers)`, then the outputs. The `Vec<Layer>` is the loop's, reused. It
+  also publishes the ramped A/V delay through an `AvDelay` (D9) that the App hands to the overlay host.
 - **Cost:** the composite is at most 64 small quads; the clean copy, when on, is one full-target copy (about 16 MB of
   memory traffic at 1080p), which replaces record D9's second render for a clean feed (§6 notes the record update).
 
@@ -658,6 +704,13 @@ and to a preview; native kinds draw in our output. The rest:
   unless the person approved a host, no camera, no microphone and no file reads. Emote images and store assets are
   proxied under `/w/<token>/img/…` so `img-src 'self'` holds. In the editor preview the page runs in an
   `<iframe sandbox="allow-scripts">` without `allow-same-origin` in addition.
+- **Viewer data and storage:** OBS loads the page as a normal origin, so the CSP can't stop its script from writing
+  to `localStorage`, IndexedDB, cookies or caches. The design doesn't pretend otherwise: a package whose `consumes`
+  includes a kind carrying viewer names or messages declares the `viewer_data` need, and without the person's
+  approval for this show its feed carries those kinds with `user`, `name`, `login`, `message`, `text` and avatar
+  fields removed (counts and amounts stay). Each page load is served with `Clear-Site-Data: "storage", "cache",
+  "cookies"` and `Cache-Control: no-store`, so nothing a page stored survives a reload of the source; it can still
+  keep data for as long as the page stays open, which the approval card states.
 - **Packages:** a web widget is a package: `widget.toml` (id `<publisher>/<name>`, version, title, summary, entry
   file, `consumes`, `needs`, a JSON Schema for its settings, licence and provenance like library items, ADR 0019) and
   its files. Installed packages live in the store by content hash and are **pinned by hash** in the widget's params
@@ -719,7 +772,8 @@ unknown widget is an error naming the nearest id; an unknown kind lists the regi
   objects to the catalogue as plugins load; ids are `plugin.<plugin>.<name>`. The WIT interface mirrors
   `WidgetKind::{info, check, create}` and `WidgetLogic::{on_event, on_command, step}`; `View` crosses the boundary as
   data (it is serde), so plugin logic never touches pixels and the same painter draws it. A plugin's `step` runs on the
-  overlay thread under a fuel cap (0.25 ms per step); running out faults the widget (D6). Needs come from the plugin's
+  overlay thread under a fuel cap (0.25 ms per step); running out faults the widget (D6). The guest's `View` is
+  decoded through a fallible path and validated like every view (D6), so a malformed one faults that widget only. Needs come from the plugin's
   manifest and are approved per show like first-party ones; a plugin kind gets the plugin's own grants intersected
   with the show's.
 - A missing plugin leaves its widgets inert with a finding naming the plugin; the document keeps them.
@@ -729,9 +783,10 @@ unknown widget is an error naming the nearest id; an unknown kind lists the regi
 | Limit | Value | When it trips |
 |---|---|---|
 | Widgets per show (`MAX_WIDGETS`) | 64 | `overlay.add` refused, naming the constant |
-| Visible widgets per scene | 16 | a finding; the host draws the 16 lowest `z` |
+| Visible widgets per scene | 16 | refused by `overlay.add`, `.set`, `.set_layout` and `overlay.show` (document and live visibility); a hand-edited show over it is a finding, and the host draws the 16 highest `z` (ties: the lower id first), so foreground widgets such as alerts and captions stay |
 | Scene patches per show | 64 × the show's scenes | (bounded by the two above) |
-| Widget texture memory per show | 64 MiB at the program size (the sum of every widget's largest box over all scenes × 4 bytes) | a finding; the largest widgets above the cap are inert |
+| Widget picture memory per show | 128 MiB: four copies of every widget's largest box over all scenes at the program size, × 4 bytes (three CPU slots of the triple buffer and the GPU texture), so the boxes themselves total at most 32 MiB (about 3.8 full 1080p screens) | `overlay.add` and `.set_layout` refuse an edit over it; a hand-edited show over it is a finding, and the largest widgets above the cap are inert |
+| Painter caches per show | glyphs 16 MiB; decoded store images 32 MiB (emotes are the emote cache's, below) | least recently used out |
 | Text: alert `text` and templates, chat `max_chars` | 500 characters | refused by the op or the params check |
 | Images per widget; one image | 64; 4,096 × 4,096 and 16 MiB decoded | refused at `check`; a bigger image is scaled down once on load |
 | Emote cache | 2,000 images or 64 MiB, least recently used out | evicted, repainted from `alt` until refetched |
@@ -928,7 +983,7 @@ change (the captions re-break their lines once, for the new width).
 | `omuzaki-speech` | `voice.transcript` (`Transcript`, `transcript_event`, feed-only) | Broadcast and live (audio) |
 | `omuzaki-live-api` (**ask L1**, into #773 and #774 before they land) | `EventFeed` and its `Subscription`; `EventKindRegistration::feed_only()` (the engine ignores such kinds); `Source::Overlay { widget }` with `Source::overlay(widget)`; the normalised kinds `chat.delete`, `chat.clear_user`, `chat.clear` | Broadcast and live (the area's own contract) |
 | `omuzaki-render-api`, `omuzaki-render-mock`, `omuzaki-render` (**ask R1**) | `Layer`, `LayerRect`, `CompositeReport`, `Renderer::composite`, `Renderer::copy_target`, `Capabilities::composite`, `MAX_LAYERS`; the mock's reference and conformance checks; the GPU implementation | Render, stage and V0 |
-| `omuzaki-stage` (**ask R1**) | the frame loop: clean copy, `OverlayFrame::prepare`, `composite`, before the outputs | Render, stage and V0 |
+| `omuzaki-stage` (**ask R1**) | the frame loop: clean copy, `OverlayFrame::prepare`, `composite`, before the outputs; an `AvDelay` over its delay ramp (D9) | Render, stage and V0 |
 | `omuzaki-text` (new, lib; **ask R2**) | the sheet's shaping, fallback fonts, bidi, measuring and coverage rasterising, shared | Render, stage and V0 (or Broadcast, D10) |
 | `omuzaki-ops-api` | nothing new (`edit:show` is #951's) | |
 | Spec | §9's `omuzaki-live` row names the overlay crates; BR-20's note says web widgets are browser sources in v1 | the Director (outside this change's fence) |
@@ -945,7 +1000,7 @@ issues become four changes along the contract seams, plus the asks:
 | Change | Covers | Crates | Depends on |
 |---|---|---|---|
 | **A. The overlay contract** | #1032 (re-cut: the layout lives in the show's `overlay` key, D2, so no `omuzaki-stage-api` edit), #1033 (re-cut: `StepCx`, `Content`, `Command`, `OverlayFrame`; no stub files, D17) | `omuzaki-overlay-api`, `omuzaki-overlay-mock` (new), `crates/README.md` rows | #773, #952 (live-api), L1 |
-| **B. The overlay host, kinds and ops** | #1034 (re-cut: `edit:show`; the extra layout ops), #1035, #1187 (both halves; re-cut: no `private` field, feed-only, `follow_av_delay`) | `omuzaki-overlay` (all but `src/draw`, `src/web`), `omuzaki-speech/src/events.rs`, the alert-sounds seed template, `omuzaki-cli` link | A, #139, #951, L1 |
+| **B. The overlay host, kinds and ops** | #1034 (re-cut: `edit:show`; the extra layout ops), #1035, #1187 (both halves; re-cut: no `private` field, feed-only, `follow_av_delay`) | `omuzaki-overlay` (all but `src/draw`, `src/web`), `omuzaki-speech/src/events.rs`, the alert-sounds seed template, `omuzaki-cli` link | A, #139, #951, L1; captions' delay alignment needs R1's `AvDelay` (0 with a finding until then) |
 | **C. The draw path** | #1036 (fence: `omuzaki-overlay/src/draw/**`, its tests, goldens, the contact sheet, the bench) | `omuzaki-overlay/src/draw`, `omuzaki-text` if R2 is declined | A, R1, R2 |
 | **D. Web widgets** (new issue) | the server, the feed, the sandbox, packages and their licence gate, the browser preview | `omuzaki-overlay/src/web` | A |
 
