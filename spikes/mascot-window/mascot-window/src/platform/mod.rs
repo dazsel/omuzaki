@@ -47,11 +47,32 @@ pub enum HitTestBackend {
     Native,
 }
 
+/// Where the window sits in the stacking order (winit's `WindowLevel`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Level {
+    /// An ordinary window.
+    Normal,
+    /// Above other windows.
+    Top,
+    /// Below other windows.
+    Bottom,
+}
+
+impl From<Level> for WindowLevel {
+    fn from(level: Level) -> Self {
+        match level {
+            Level::Normal => Self::Normal,
+            Level::Top => Self::AlwaysOnTop,
+            Level::Bottom => Self::AlwaysOnBottom,
+        }
+    }
+}
+
 /// What to ask of the window.
 #[derive(Clone, Copy, Debug)]
 pub struct Options {
-    /// Keep the window above other windows.
-    pub always_on_top: bool,
+    /// Stacking level.
+    pub level: Level,
     /// Hide it from the taskbar or Dock and from Alt-Tab, Cmd-Tab or the pager.
     pub hide_from_switcher: bool,
     /// Click-through behaviour.
@@ -106,19 +127,18 @@ impl fmt::Display for Feature {
 
 /// Window attributes shared by every OS, plus the OS's own.
 pub fn window_attributes(size: (u32, u32), options: &Options) -> WindowAttributes {
-    let level = if options.always_on_top { WindowLevel::AlwaysOnTop } else { WindowLevel::Normal };
     let attributes = WindowAttributes::default()
         .with_title("Omuzaki mascot window spike")
         .with_inner_size(winit::dpi::PhysicalSize::new(size.0, size.1))
         .with_decorations(false)
         .with_transparent(true)
         .with_resizable(false)
-        .with_window_level(level);
+        .with_window_level(options.level.into());
     os::attributes(attributes, *options)
 }
 
 /// OS-specific event loop settings (macOS activation policy).
-pub fn configure_event_loop(builder: &mut EventLoopBuilder<()>, options: &Options) {
+pub fn configure_event_loop<T: 'static>(builder: &mut EventLoopBuilder<T>, options: &Options) {
     os::configure_event_loop(builder, *options);
 }
 
@@ -136,7 +156,7 @@ impl State {
     /// Applies the options to a created window and returns what happened per feature.
     pub fn new(window: &Window, options: Options, fit: &Fit, scene: &Scene) -> (Self, Vec<Feature>) {
         let mut features = Vec::new();
-        features.push(always_on_top(window, options));
+        features.push(window_level(window, options));
         let (os, mut extra) = os::State::new(window, options, fit, scene);
         features.append(&mut extra);
         let mut state = Self { options, os, last_hit: None, poll_error: None };
@@ -195,16 +215,24 @@ fn local(cursor: (f64, f64), origin: PhysicalPosition<i32>) -> (f32, f32) {
     ((cursor.0 - f64::from(origin.x)) as f32, (cursor.1 - f64::from(origin.y)) as f32)
 }
 
-fn always_on_top(window: &Window, options: Options) -> Feature {
-    if !options.always_on_top {
-        return Feature::unsupported("always_on_top", "not requested");
+fn window_level(window: &Window, options: Options) -> Feature {
+    if options.level == Level::Normal {
+        return Feature::unsupported("window_level", "not requested (normal level)");
     }
     // winit sets the level at creation; Wayland ignores it (no such protocol outside layer-shell).
     if os::is_wayland(window) {
-        return Feature::unsupported("always_on_top", "Wayland has no always-on-top request for ordinary windows");
+        return Feature::unsupported("window_level", "Wayland has no stacking request for ordinary windows");
     }
-    window.set_window_level(WindowLevel::AlwaysOnTop);
-    Feature::applied("always_on_top", "WindowLevel::AlwaysOnTop (check by overlapping another window)")
+    window.set_window_level(options.level.into());
+    Feature::applied(
+        "window_level",
+        format!("WindowLevel for {:?} (check by overlapping another window)", options.level),
+    )
+}
+
+/// CPU time this process has used so far (user plus system, all threads), or `None` where the platform call fails.
+pub fn process_cpu_seconds() -> Option<f64> {
+    os::process_cpu_seconds()
 }
 
 #[cfg(test)]

@@ -1,19 +1,17 @@
 [package]
 name = "mascot-window"
-description = "Spike: a transparent, always-on-top, click-through winit window with a wgpu surface"
+description = "Spike: a transparent, always-on-top, click-through window with a wgpu surface, on its own winit loop or eframe's"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
 
-[[bin]]
-name = "mascot-winit"
-path = "src/main.rs"
-
 [dependencies]
 bytemuck.workspace = true
 clap.workspace = true
+eframe = { version = "0.36", default-features = false, features = ["wgpu", "wayland", "x11", "default_fonts"] }
+env_logger = { version = "0.11", default-features = false }
 image.workspace = true
 pollster.workspace = true
 raw-window-handle.workspace = true
@@ -30,10 +28,12 @@ windows = { version = "0.62", features = [
     "Win32_Graphics_DirectComposition",
     "Win32_Graphics_Dxgi_Common",
     "Win32_Graphics_Gdi",
+    "Win32_System_Threading",
     "Win32_UI_WindowsAndMessaging",
 ] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["NSEvent", "NSScreen", "NSResponder"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["NSGeometry", "NSArray"] }

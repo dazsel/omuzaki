@@ -2,7 +2,7 @@
 # purpose, like spikes/toon-viewport: nothing here touches the main workspace's lockfile or the shared build slots'
 # dependency set.
 [workspace]
-members = ["mascot-window", "mascot-egui"]
+members = ["mascot-window"]
 resolver = "3"
 
 [workspace.package]

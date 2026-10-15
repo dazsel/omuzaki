@@ -8,14 +8,14 @@ use x11rb::protocol::shape::{self, ConnectionExt as _};
 use x11rb::protocol::xproto::{self, ConnectionExt as _};
 use x11rb::rust_connection::RustConnection;
 
-use super::{ClickThrough, Feature, Options};
+use super::{ClickThrough, Feature, Level, Options};
 use crate::scene::{Fit, Scene};
 
 pub(super) fn attributes(attributes: WindowAttributes, _options: Options) -> WindowAttributes {
     attributes
 }
 
-pub(super) fn configure_event_loop(_builder: &mut EventLoopBuilder<()>, _options: Options) {}
+pub(super) fn configure_event_loop<T: 'static>(_builder: &mut EventLoopBuilder<T>, _options: Options) {}
 
 /// Whether the window lives on a Wayland compositor.
 pub(super) fn is_wayland(window: &Window) -> bool {
@@ -153,10 +153,15 @@ impl State {
                 Err(e) => Feature::failed("hide_from_switcher", e),
             });
         }
-        if options.always_on_top
-            && let Err(e) = x11.add_states("_NET_WM_STATE_ABOVE", None)
+        let state = match options.level {
+            Level::Top => Some("_NET_WM_STATE_ABOVE"),
+            Level::Bottom => Some("_NET_WM_STATE_BELOW"),
+            Level::Normal => None,
+        };
+        if let Some(name) = state
+            && let Err(e) = x11.add_states(name, None)
         {
-            features.push(Feature::failed("always_on_top_ewmh", e));
+            features.push(Feature::failed("window_level_ewmh", e));
         }
         let mut state = Self { x11: Some(x11) };
         if options.click_through == ClickThrough::Pixel {
@@ -216,4 +221,17 @@ impl State {
             None => vec!["wayland: nothing to read back from the client side".to_owned()],
         }
     }
+}
+
+/// CPU time this process has used so far (user plus system, all threads).
+pub(super) fn process_cpu_seconds() -> Option<f64> {
+    // /proc/self/stat fields 14 and 15 (utime, stime) in clock ticks; the command name in field 2 may hold spaces, so
+    // count from the closing parenthesis.
+    let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
+    let rest = stat.rsplit_once(')')?.1;
+    let mut fields = rest.split_whitespace().skip(11);
+    let user: f64 = fields.next()?.parse().ok()?;
+    let system: f64 = fields.next()?.parse().ok()?;
+    // The kernel's USER_HZ is 100 on every Linux ABI that matters here.
+    Some((user + system) / 100.0)
 }

@@ -1,6 +1,7 @@
 //! macOS: winit for the window, the Dock icon and the app switcher through the activation policy, and AppKit for the
 //! global cursor. Not compiled or run in the session that wrote it (no macOS toolchain there): the first build on a
 //! Mac is part of the verification.
+#![allow(unsafe_code)]
 
 use objc2::MainThreadMarker;
 use objc2_app_kit::{NSEvent, NSScreen};
@@ -16,7 +17,7 @@ pub(super) fn attributes(attributes: WindowAttributes, _options: Options) -> Win
     attributes.with_has_shadow(false)
 }
 
-pub(super) fn configure_event_loop(builder: &mut EventLoopBuilder<()>, options: Options) {
+pub(super) fn configure_event_loop<T: 'static>(builder: &mut EventLoopBuilder<T>, options: Options) {
     if options.hide_from_switcher {
         // Accessory: no Dock icon, not in Cmd-Tab.
         builder.with_activation_policy(ActivationPolicy::Accessory);
@@ -75,4 +76,18 @@ impl State {
     pub(super) fn describe(&self, _window: &Window) -> Vec<String> {
         Vec::new()
     }
+}
+
+/// CPU time this process has used so far (user plus system, all threads).
+pub(super) fn process_cpu_seconds() -> Option<f64> {
+    let mut usage = std::mem::MaybeUninit::<libc::rusage>::uninit();
+    // SAFETY: getrusage fills the whole struct when it returns 0, and `usage` is only read after that check.
+    let usage = unsafe {
+        if libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) != 0 {
+            return None;
+        }
+        usage.assume_init()
+    };
+    let seconds = |t: libc::timeval| t.tv_sec as f64 + f64::from(t.tv_usec) / 1.0e6;
+    Some(seconds(usage.ru_utime) + seconds(usage.ru_stime))
 }

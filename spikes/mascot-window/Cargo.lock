@@ -1335,23 +1335,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
-name = "mascot-egui"
-version = "0.0.0"
-dependencies = [
- "clap",
- "eframe",
- "env_logger",
- "mascot-window",
- "wgpu",
-]
-
-[[package]]
 name = "mascot-window"
 version = "0.0.0"
 dependencies = [
  "bytemuck",
  "clap",
+ "eframe",
+ "env_logger",
  "image",
+ "libc",
  "naga",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",

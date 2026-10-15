@@ -20,7 +20,7 @@ pub(super) fn attributes(attributes: WindowAttributes, options: Options) -> Wind
     attributes.with_no_redirection_bitmap(true).with_skip_taskbar(options.hide_from_switcher)
 }
 
-pub(super) fn configure_event_loop(_builder: &mut EventLoopBuilder<()>, _options: Options) {}
+pub(super) fn configure_event_loop<T: 'static>(_builder: &mut EventLoopBuilder<T>, _options: Options) {}
 
 pub(super) fn is_wayland(_window: &Window) -> bool {
     false
@@ -117,4 +117,17 @@ impl State {
             has(WS_EX_APPWINDOW.0)
         )]
     }
+}
+
+/// CPU time this process has used so far (user plus system, all threads).
+pub(super) fn process_cpu_seconds() -> Option<f64> {
+    use windows::Win32::Foundation::FILETIME;
+    use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
+    let (mut created, mut exited, mut kernel, mut user) =
+        (FILETIME::default(), FILETIME::default(), FILETIME::default(), FILETIME::default());
+    // SAFETY: the pseudo handle from GetCurrentProcess is always valid and the four out-pointers are live locals.
+    unsafe { GetProcessTimes(GetCurrentProcess(), &mut created, &mut exited, &mut kernel, &mut user).ok()? };
+    let ticks = |t: FILETIME| (u64::from(t.dwHighDateTime) << 32 | u64::from(t.dwLowDateTime)) as f64;
+    // FILETIME counts 100 ns intervals.
+    Some((ticks(kernel) + ticks(user)) / 1.0e7)
 }

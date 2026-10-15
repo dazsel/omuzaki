@@ -2,18 +2,19 @@
 
 use std::time::Duration;
 
-/// CPU time spent inside one `render` call (acquire, encode, submit, present), collected over a window of frames.
+/// Milliseconds per frame, with a moving mark so the same samples give both a rolling window and an overall summary.
 #[derive(Debug, Default)]
-pub struct FrameStats {
-    samples: Vec<Duration>,
+pub struct Series {
+    samples_ms: Vec<f64>,
+    mark: usize,
 }
 
-/// A summary of a window of frames.
+/// A summary of some frames.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Summary {
-    /// Frames in the window.
+    /// Frames summarised.
     pub frames: usize,
-    /// Mean time in `render`, milliseconds.
+    /// Mean, milliseconds.
     pub mean_ms: f64,
     /// 95th percentile, milliseconds.
     pub p95_ms: f64,
@@ -21,23 +22,18 @@ pub struct Summary {
     pub max_ms: f64,
 }
 
-impl FrameStats {
-    /// Records one frame's time in `render`.
-    pub fn record(&mut self, elapsed: Duration) {
-        self.samples.push(elapsed);
-    }
-
-    /// Summarises and clears the window; `None` if no frame was recorded.
-    pub fn take_summary(&mut self) -> Option<Summary> {
-        if self.samples.is_empty() {
+impl Summary {
+    /// Summarises `samples_ms`; `None` when there are none.
+    pub fn of(samples_ms: &[f64]) -> Option<Self> {
+        if samples_ms.is_empty() {
             return None;
         }
-        let mut ms: Vec<f64> = self.samples.drain(..).map(|d| d.as_secs_f64() * 1000.0).collect();
+        let mut ms = samples_ms.to_vec();
         ms.sort_by(f64::total_cmp);
         let frames = ms.len();
         // Nearest-rank percentile: the smallest value with at least 95% of samples at or below it.
         let rank = (frames * 95).div_ceil(100).max(1);
-        Some(Summary {
+        Some(Self {
             frames,
             mean_ms: ms.iter().sum::<f64>() / frames as f64,
             p95_ms: ms[rank - 1],
@@ -46,26 +42,52 @@ impl FrameStats {
     }
 }
 
+impl Series {
+    /// Records one frame's time.
+    pub fn record(&mut self, elapsed: Duration) {
+        self.samples_ms.push(elapsed.as_secs_f64() * 1000.0);
+    }
+
+    /// Records frames already in milliseconds.
+    pub fn extend_ms(&mut self, samples_ms: impl IntoIterator<Item = f64>) {
+        self.samples_ms.extend(samples_ms);
+    }
+
+    /// Summarises the frames recorded since the last call; `None` if there were none.
+    pub fn take_window(&mut self) -> Option<Summary> {
+        let summary = Summary::of(&self.samples_ms[self.mark..]);
+        self.mark = self.samples_ms.len();
+        summary
+    }
+
+    /// Summarises every frame recorded.
+    pub fn overall(&self) -> Option<Summary> {
+        Summary::of(&self.samples_ms)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn empty_window_has_no_summary() {
-        assert_eq!(FrameStats::default().take_summary(), None);
+    fn empty_series_has_no_summary() {
+        assert_eq!(Series::default().take_window(), None);
+        assert_eq!(Series::default().overall(), None);
     }
 
     #[test]
     fn summary_uses_nearest_rank() {
-        let mut stats = FrameStats::default();
+        let mut series = Series::default();
         for ms in 1..=100 {
-            stats.record(Duration::from_millis(ms));
+            series.record(Duration::from_millis(ms));
         }
-        let s = stats.take_summary().unwrap();
+        let s = series.take_window().unwrap();
         assert_eq!(s.frames, 100);
         assert!((s.mean_ms - 50.5).abs() < 1e-9);
         assert!((s.p95_ms - 95.0).abs() < 1e-9);
         assert!((s.max_ms - 100.0).abs() < 1e-9);
-        assert_eq!(stats.take_summary(), None, "taking the summary clears the window");
+        assert_eq!(series.take_window(), None, "the window starts again after a take");
+        assert_eq!(series.overall().unwrap().frames, 100, "the overall summary keeps everything");
     }
 }
