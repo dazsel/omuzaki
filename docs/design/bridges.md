@@ -127,8 +127,10 @@ agent-sessions 10.2 (#405) alike:
   session `Paused { by: <its principal>, reason: Pairing }` and queues `Need::Pairing { client }`. `Conflict` if the
   session has ended or has already been paired in this run.
 - `fn gate(&self, id: SessionId) -> Result<Arc<SessionGate>, OpError>`: `SessionGate` is an `AtomicBool` the executor
-  sets false under its lock, **before** `pause`, `stop`, `end` or `set_grants` (when it drops `perform`) returns, and
-  true again on `resume`. Readers call `SessionGate::is_live()`; nothing else writes it.
+  sets false under its lock, **before** the call returns, on every transition that leaves `Active`: `pause`, `stop`,
+  `end`, `set_grants` (when it drops `perform`) **and the budget pauses inside `charge` and `request_budget`**, which
+  pause without going through `pause`. It sets it true again on `resume`. Readers call `SessionGate::is_live()`;
+  nothing else writes it.
 
 **Pairing (agent-sessions 10.2, 7.1).**
 1. `AuthenticationTokenRequest` opens the session and calls `request_pairing`. The card (built by the UI from
@@ -149,7 +151,11 @@ agent-sessions 10.2 (#405) alike:
 paired_at, last_used }`. `hash` = HMAC-SHA256 of the token under a per-machine shim key kept in the OS keychain
 (CN-05). `principal` binds the credential to the person who paired it: authentication opens its session on their
 behalf, and if `Sessions::open` refuses that principal (a VC-10 key revoked later, `Denied`), the reply is
-`authenticated: false`. The records live in the machine data dir (`bridges/vts-pairings.toml`, owner-only), not in
+`authenticated: false`. **Revocation does not wait for an event.** The shim keeps, per record, the ids of the sessions
+it opened under it in this run; `AuthenticationRequest` first reads each with `Sessions::session` (a synchronous read
+of the executor's registry, which keeps ended sessions) and, if any is `Ended { reason: Revoked { credential: true } }`,
+deletes the record and answers `authenticated: false`. So a revoke from the Agent panel invalidates the token the
+moment `Sessions::end` returns; the `SessionEnded` event only closes the live connection and persists the deletion. The records live in the machine data dir (`bridges/vts-pairings.toml`, owner-only), not in
 settings (settings are listed to agents) and not in a project. Pairing is **machine-wide**: a stream tool is not tied
 to a project (open question 1). The token is never logged, put in an op record, event, status or error text.
 
@@ -160,7 +166,7 @@ match opens an `Active` session with no card; a mismatch is `authenticated: fals
 
 | Transition | Triggered by | Effect |
 |---|---|---|
-| connected → authenticated or pairing | the tool's request | as above; a connection that has neither within **10 s** of the upgrade is closed by the housekeeping tick |
+| connected → authenticated or pairing | the tool's request | as above; a connection that has neither within **10 s** of the upgrade is closed by the housekeeping tick. The 10 s is suspended while the token request waits on the card and **restarts when the token is sent**, so a person who approves late still leaves the tool 10 s to send `AuthenticationRequest` |
 | active → paused, and back | a person (Agent panel `pause`, `stop`, `resume`) or the budget | the executor flips the gate before returning; triggers get `Waiting` |
 | any → ended `Revoked { credential: true }` | `vts_server.revoke` (the shim calls `Sessions::end`), or a person in the Agent panel (the executor ends it) | the gate flips under the lock; the shim deletes the record on `SessionEnded` with `credential: true`; the live connection gets 50 to every request and its token authenticates `false` |
 | any → ended `Disconnected` | the socket closes (the shim calls `Sessions::end`) | slot and claims released |
@@ -179,6 +185,12 @@ the **authority** is an op and the **values** are data under it:
   parameter outside the armed set, first runs `vts_server.feed { params, mode }` as the session: it checks `perform`,
   the session's state and limits and the `set` claims (454), and is logged once. It returns the tool's slot (one of
   `MAX_CLIENTS`) with the session's `SessionGate`.
+- **A slot's authorization is cached only while nothing it rests on has changed.** The slot is disarmed, so that the
+  next request runs `feed` again, when: its `set` claim is released (keep-alive expiry, below); its gate goes false
+  (so a `resume` never revives old authorization); its connection's session is replaced (`project_opened`), which
+  also installs the new session's gate; or `param_delete` removes a parameter in its armed set. Disarming is done by
+  the same code that releases the claim or replaces the session, on the shim's thread, before it answers anything
+  else on that connection.
 - Values go to the slot in an `InjectTable` (a triple buffer per slot, the pattern of `omuzaki-track-api::mailbox`),
   each with its arrival time on the frame clock: newest wins, nothing queues, both sides wait-free.
 - **Disarm is synchronous with the session controls.** The frame thread reads the slot's `SessionGate` every frame.
@@ -210,15 +222,15 @@ and to audio's `Max` mouth exactly as the camera does, and the life layer must t
 source would change `omuzaki-anim-api` (`Source::COUNT`, `ALL`, every `Ownership` array) for no behaviour the tracker
 layer lacks. The stage merges the live slots into the tracker's `ChannelBuf` before `LayerStack::resolve`, **in an
 order that does not depend on connection order**: per channel, first the one `set` value (claims make it unique),
-then the sum of the `add` values taken in `ToolKey` order (name, then developer), so identical inputs give identical
-output across reconnects.
+then the sum of the `add` values taken in the total order (`ToolKey` name, developer, then `SessionId`, which breaks
+ties between connections that share a token), so identical inputs give identical output across reconnects.
 
 | Rule (README) | Omuzaki |
 |---|---|
 | `set` mode, `weight` w (0..=1, default 1) | `t = lerp(tracker[c], v, w)`; the channel joins the tracker layer's mask |
 | `add` mode (weight ignored) | `tracker[c] = t + Σ add[c]` |
-| one owner per parameter in `set` mode | a second tool's `set` on a claimed parameter is 454; `add` is allowed. A claim ends when its owner's value for that parameter expires (below), its session ends or pauses, or its mode changes |
-| re-send at least once a second | a channel whose newest value is older than `KEEPALIVE` (1 s) on the frame clock leaves the mask, eased out over 100 ms (no pop). The frame thread applies it; the shim's housekeeping tick releases the `set` claim at the same deadline |
+| one owner per parameter in `set` mode | a second tool's `set` on a claimed parameter is 454; `add` is allowed. A claim ends when its owner's value for that parameter has expired **and finished easing out** (below: 1.1 s after its last value), its session ends or pauses (the gate drops the value at once, so nothing is left to ease), or its mode changes. Until then a second tool's `set` is 454, so the merge never has two `set` values |
+| re-send at least once a second | a channel whose newest value is older than `KEEPALIVE` (1 s) on the frame clock leaves the mask, eased out over 100 ms (no pop). The frame thread applies it; the shim's housekeeping tick releases the `set` claim when the ease-out has finished (`KEEPALIVE` + 100 ms) |
 | `faceFound: true` | stored with its arrival time; the tracker counts as `Tracking` only while that flag is under 1 s old **and** the gate is live, so a tool that goes quiet lets the PF-23 hand-off start after 1 s |
 | values within ±1,000,000 | 451 beyond (`ParamValue`); then clamped to `Channel::range()` (or ±90° head, ±1 gaze) |
 | weight outside 0..=1 | 452 |
@@ -238,7 +250,8 @@ percentile on the CI runner, no allocation, no lock (a `criterion` bench in task
 - **No discovery.** The shim never opens a UDP socket and never broadcasts; a test asserts it opens one port.
 - **Caps.** `max_clients` 4 (a fifth is refused at the upgrade), of which at most 2 may be unauthenticated; an
   unauthenticated connection is closed 10 s after the upgrade unless its token request is waiting on the card (then
-  the 120 s pairing deadline applies), so idle sockets cannot hold every slot; a message over 64 KiB closes the socket (1009);
+  the 120 s pairing deadline applies, and a fresh 10 s starts when the token is sent), so idle sockets cannot hold
+  every slot; a message over 64 KiB closes the socket (1009);
   per client, injection 120 messages a second (burst 240; above it values coalesce, newest wins, each still answered)
   and other requests 20 a second (burst 40; above it error 0 "rate limited"); any client past 1,000 messages in one
   second is closed (1008); hotkeys one per target every 5 frames (203) with a queue of `HOTKEY_QUEUE` (32, then 200); the shim's
@@ -315,7 +328,7 @@ a generic OSC sender), recorded as evidence.
 | `vts_server.catalog` | query | `perform` | may | `{}` → the subject (name, opaque id), hotkeys, expressions, the parameter table; what a tool may see |
 | `vts_server.feed` | live action | `perform` | refused unless the actor is a shim session (a `Transport::Plugin` session whose client starts `vts-`) | `{params, mode}` → the slot and gate; refused 454 / 453 as §5.3 |
 | `vts_server.param_create` | live action | `perform` | as `feed` | `{name, min, max, default}` → created; over 100 refused |
-| `vts_server.param_delete` | live action | `perform` | as `feed` | `{name}` → deleted, its claims released |
+| `vts_server.param_delete` | live action | `perform` | as `feed` | `{name}` → deleted, its claims released, every armed slot that names it disarmed |
 | `vts_server.start` | live action | `perform` | never (`OpError::person_only`) | `{port?}` → binds if `bridges.vts_server.enabled` |
 | `vts_server.stop` | live action | `perform` | never | `{}` |
 | `vts_server.revoke` | live action | `perform` | never | `{tool: {name, developer}}` → forgets the record, ends its sessions |
@@ -342,7 +355,7 @@ nothing. `S` = session, `G` = effective grants.
 | 8 | `HotkeyTriggerRequest {hotkeyID: "c41e…"}` | `Runner::run(<PF-25 press>, {trigger: smug})` as S7; journal: live action, actor `vts-bonktool#7`, `on_behalf_of` the person | `HotkeyTriggerResponse {hotkeyID}`; `HotkeyTriggeredEvent` to subscribers | S7 / `{perform}` |
 | 9 | `InjectParameterDataRequest {faceFound: false, mode: "set", parameterValues: [{id: "FaceAngleZ", value: 12, weight: 0.5}]}` | first use: `Runner::run(vts_server.feed {params: [FaceAngleZ], mode: set})` → slot 0 and S7's gate; claim on `FaceAngleZ` (set); value written to slot 0 | `InjectParameterDataResponse` | S7 / `{perform}` |
 | 10 | the same request every frame | values only, no op; frame thread: `roll = lerp(roll, 12°, 0.5)` in the tracker layer | `InjectParameterDataResponse` | S7 / `{perform}` |
-| 11 | (the tool stops sending) | 1 s after the last value: the frame thread eases `FaceAngleZ` out over 100 ms; the housekeeping tick releases the claim | none | S7 / `{perform}` |
+| 11 | (the tool stops sending) | 1 s after the last value: the frame thread eases `FaceAngleZ` out over 100 ms; the housekeeping tick then releases the claim and disarms the slot | none | S7 / `{perform}` |
 | 12 | (the person revokes BonkTool with `vts_server.revoke`) | `Sessions::end(S7, Revoked { credential: true })`: S7's gate is cleared before it returns; `SessionEnded` → record deleted | next request: `APIError` 50 | ended / none |
 
 ## 12. Tests
@@ -368,8 +381,8 @@ Each task: Parent #529, `lane:cloud`, priority P1 unless stated. File when ADR 0
   tests and API snapshot; `crates/omuzaki-ops/src/**` (the executor's implementation); `omuzaki-ops-mock`'s
   `FakeSessions`. Contract: `request_pairing`, `gate`, `SessionGate` (§4). Acceptance: `request_pairing` pauses
   `Pairing` and queues exactly one `Need::Pairing`; Pair resumes, Refuse ends `Revoked`; the gate reads false before
-  `pause`, `stop`, `end` and a `perform`-dropping `set_grants` return (a test reads it from another thread inside a
-  hook), true after `resume`; default bodies return `Unsupported`. Model sonnet. Needs the Director's approval on
+  `pause`, `stop`, `end`, a `perform`-dropping `set_grants`, and the budget pauses in `charge` and `request_budget`
+  return (a test reads it from another thread inside a hook), true after `resume`; default bodies return `Unsupported`. Model sonnet. Needs the Director's approval on
   the issue (Platform area contract, shared with #405). Blocked by #1218.
 - **S1 (re-cut #1086), server core.** Fence: `crates/omuzaki-vts/src/server/{mod,listener,session,auth,pairing}.rs`,
   `tests/server.rs`. Contract: `ShimConfig`, `ShimLink { runner, sessions, principal, pairings: Arc<dyn PairingStore>,
@@ -378,8 +391,11 @@ Each task: Parent #529, `lane:cloud`, priority P1 unless stated. File when ADR 0
   `principal`). Changes to #1086: default port 8011; client `vts-<name>`; `Host` and `Origin` checks; the 100 ms
   housekeeping tick with the 10 s authentication deadline, the 120 s pairing deadline and the 60 s refusal hold; at
   most 2 unauthenticated connections; the transition table of §4. Acceptance: #1086's list plus a foreign `Origin`
-  is 403, a second token request is 51, four idle connections are closed after 10 s and a fifth then connects, a
-  pairing left unanswered ends `Closed` at 120 s, and an authentication opens its session for the stored principal.
+  is 403, a second token request is 51, two idle unauthenticated connections are closed after 10 s while a third, opened
+  meanwhile, is refused at the upgrade and a new one connects once they are gone, a token sent after a pairing that
+  took longer than 10 s still leaves 10 s to authenticate, an authentication after a Revoked-with-credential end is
+  `false` before the `SessionEnded` event is processed, a pairing left unanswered ends `Closed` at 120 s, and an
+  authentication opens its session for the stored principal.
   Model sonnet. Blocked by #1085, S0, #726, #316.
 - **S2 (re-cut #1212), hotkeys, expressions, current model.** `ShimModel` is dropped: lists come from
   `vts_server.catalog` through the runner. Acceptance as #1212, plus each trigger is exactly one PF-25 op and the
@@ -390,11 +406,13 @@ Each task: Parent #529, `lane:cloud`, priority P1 unless stated. File when ADR 0
   `tests/server_inject.rs`. Contract: `inject_table() -> (InjectWriter, InjectReader)`, `InjectSlot` (values,
   arrival times, mode, `faceFound` time, the `SessionGate`), the published frame counter, `DEFAULT_PARAMS`.
   Acceptance: set, add, weight, 454 on a second `set`, 453, 451, 452; a mode change runs `feed` again; the claim is
-  released at 1.0 s ± one tick and a second tool's `set` then succeeds; `faceFound` stops counting 1 s after the last
+  held through the 100 ms ease-out (a second tool's `set` is still 454), released at 1.1 s ± one tick, and the slot is
+  disarmed so the same tool's next request runs `feed` again; a `param_delete`, a resume and a `project_opened` each
+  disarm too; `faceFound` stops counting 1 s after the last
   injection; custom parameters only through their ops, 100 then refusal. Model sonnet. Blocked by S0, S1, S3.
 - **S5, the stage merges injected slots into the tracker layer.** Fence: `crates/omuzaki-stage/src/perform/bridge.rs`
   (new; one `mod` line in `perform/mod.rs`) and `benches/bridge_merge.rs`. Acceptance: §5.3 table as unit tests;
-  the same inputs give bit-identical output for every permutation of slot order; a cleared gate drops the slot on the
+  the same inputs give bit-identical output for every permutation of slot order, including slots that share a `ToolKey`; a cleared gate drops the slot on the
   next frame; under 10 µs p99 at 4 slots × 128 channels; zero allocations (counting allocator). Model sonnet.
   Blocked by S4.
 - **S6, items, props and the other refusals.** Fence: `src/server/requests/refused.rs`, `tests/server_refused.rs`.
