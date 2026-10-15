@@ -36,6 +36,8 @@ omuzaki-llm-mock = { path = "../omuzaki-llm-mock" }
 workspace = true
 
 [package.metadata.omuzaki]
+# Native only: tokio, a TLS stack with a C crypto library and a socket per turn
+wasm = false
 kind = "Implementation"
 registers = true
 summary = "the LLM providers (llm-api D5, D6, D11): the Anthropic Messages and OpenAI-compatible chat clients over one HTTP, SSE and retry stack on the host's tokio runtime, the dated price data, model listing and probing; tested against loopback fake servers, no network in CI"

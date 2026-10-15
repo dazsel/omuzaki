@@ -1,7 +1,8 @@
 section = "rust"
-item = "reqwest (no TLS, dev only)"
+item = "reqwest (rustls with aws-lc-rs, system-proxy, stream, http2)"
 kind = "crate"
-used_for = "HTTP client in the MCP HTTP tests (rmcp's client transport and raw requests); not in any shipped build"
+used_for = "the one HTTP client of the LLM providers (`omuzaki-llm`, llm-api D11) with the workspace's TLS stack; also the HTTP client of the MCP HTTP tests (rmcp's client transport and raw requests, no TLS)"
 status = "yes"
+condition = "MIT OR Apache-2.0 (the `license` field of reqwest 0.13.5, checked 2026-10-15). TLS comes in through its `rustls` feature with `aws-lc-rs` as the one crypto provider (no second provider): rustls 0.23 (Apache-2.0 OR ISC OR MIT), rustls-webpki (ISC), aws-lc-rs (ISC AND (Apache-2.0 OR ISC)), aws-lc-sys (ISC AND (Apache-2.0 OR ISC) AND Apache-2.0 AND MIT AND BSD-3-Clause), rustls-platform-verifier (MIT OR Apache-2.0, the OS trust store), tokio-rustls and hyper-rustls; all allowed by deny.toml, checked with `cargo deny check licenses`. Keep the notices"
 audit = "(crates.io: MIT OR Apache-2.0)"
 crates = ["reqwest"]
