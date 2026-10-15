@@ -3516,6 +3516,8 @@ dependencies = [
  "omuzaki-ops",
  "omuzaki-ops-api",
  "omuzaki-stage",
+ "omuzaki-store",
+ "omuzaki-store-api",
  "schemars",
  "serde",
  "serde_json",
@@ -3812,6 +3814,7 @@ dependencies = [
 name = "omuzaki-mcp"
 version = "0.0.0"
 dependencies = [
+ "base64",
  "blake3",
  "bytes",
  "constant_time_eq",
@@ -3823,6 +3826,8 @@ dependencies = [
  "omuzaki-doc-api",
  "omuzaki-doc-mock",
  "omuzaki-ops-api",
+ "omuzaki-store-api",
+ "omuzaki-store-mock",
  "proptest",
  "reqwest",
  "rmcp",
@@ -3861,6 +3866,7 @@ dependencies = [
  "omuzaki-core",
  "omuzaki-doc-api",
  "omuzaki-doc-mock",
+ "proptest",
  "rustix 1.1.5",
  "schemars",
  "serde",
@@ -4022,6 +4028,16 @@ version = "0.0.0"
 dependencies = [
  "blake3",
  "omuzaki-store-api",
+]
+
+[[package]]
+name = "omuzaki-stream-api"
+version = "0.0.0"
+dependencies = [
+ "bytes",
+ "schemars",
+ "serde",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -6834,12 +6850,15 @@ name = "xtask"
 version = "0.0.0"
 dependencies = [
  "clap",
+ "flate2",
  "omuzaki-library-api",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "thiserror 2.0.21",
  "toml",
+ "zip",
 ]
 
 [[package]]
