@@ -222,9 +222,9 @@ fn a_mirrored_bangs_group_compiles_to_clump_count_clumps() {
 
 /// The smallest distance from the head to any vertex, or any triangle or edge midpoint, of the lock's tube
 /// (negative: inside).
-fn surface_gap(clump: &HairClump) -> f32 {
-    let centre = Egg.centre();
-    let gap = |p: Vec3| (p - centre).length() - Egg.radius((p - centre).normalize());
+fn surface_gap(head: &dyn HeadSurface, clump: &HairClump) -> f32 {
+    let centre = head.centre();
+    let gap = |p: Vec3| (p - centre).length() - head.radius((p - centre).normalize());
     let mut mesh = TubeMesh::new();
     let polar = vec![0.5; clump.rest.len()];
     let look = TubeLook { seed: 0.5, shade: 1.0, polar: &polar, tint: None, flip: 1.0 };
@@ -253,7 +253,7 @@ fn the_tube_surface_stays_outside_the_head_for_the_defaults_and_for_offsets_of_0
     }
     for (name, g) in styles {
         for clump in compile(&g, &mut Counting::default()).clumps {
-            let gap = surface_gap(&clump);
+            let gap = surface_gap(&Egg, &clump);
             assert!(gap >= 0.0, "{name}: the tube surface is {gap} m inside the head");
         }
     }
@@ -272,28 +272,39 @@ impl HeadSurface for Ball {
     }
 }
 
+/// The tube mesh, not the rest points, is what must clear the head: across spreads, hook and sweep from -90 to 90
+/// degrees, and the least and 1 mm offsets, on a sphere and on the ellipsoid.
 #[test]
-fn the_resampled_points_keep_the_thickness_clearance_at_the_extremes_of_hook_and_sweep() {
-    let layer = BangLayer {
-        count: 2,
-        spread_deg: 5.0,
-        hook_deg: 90.0,
-        root_offset: 0.002,
-        tip_offset: 0.002,
-        ..BangLayer::default()
-    };
-    let g = BangsGen { layers: vec![layer], wisps: vec![], sweep_deg: 90.0 };
-    let (id, dynamics, palette) = (GroupId::new("bangs").unwrap(), Dynamics::default(), Palette::default());
-    let mut stream = Counting::default();
-    let mut ctx = HairGenCtx::new(&Ball, &palette, Quality::Live, &id, &dynamics, &mut stream);
-    let clumps = bangs::compile(&g, &mut ctx).clumps;
-    assert_eq!(clumps.len(), 2);
-    for clump in &clumps {
-        for (k, p) in clump.rest.iter().enumerate() {
-            let t = k as f32 / (REST_POINTS - 1) as f32;
-            let need = clump.thickness.at(t) * 0.5;
-            let gap = p.length() - 0.11;
-            assert!(gap >= need - 1e-6, "point {k}: {gap} m out, the tube needs {need}");
+fn the_tube_mesh_clears_the_head_across_spread_hook_sweep_and_offset() {
+    let heads: [(&str, &dyn HeadSurface); 2] = [("Egg", &Egg), ("Ball", &Ball)];
+    for (name, head) in heads {
+        for spread_deg in [5.0, 90.0] {
+            for hook_deg in [-90.0, 0.0, 90.0] {
+                for sweep_deg in [-90.0, 0.0, 90.0] {
+                    for offset in [0.0, 0.001] {
+                        let layer = |count: u8| BangLayer {
+                            count,
+                            spread_deg,
+                            hook_deg,
+                            root_offset: offset,
+                            tip_offset: offset,
+                            ..BangLayer::default()
+                        };
+                        let g = BangsGen { layers: vec![layer(2), layer(3)], wisps: vec![Wisp::default()], sweep_deg };
+                        let (id, dynamics, palette) =
+                            (GroupId::new("bangs").unwrap(), Dynamics::default(), Palette::default());
+                        let mut stream = Counting::default();
+                        let mut ctx = HairGenCtx::new(head, &palette, Quality::Live, &id, &dynamics, &mut stream);
+                        for (n, clump) in bangs::compile(&g, &mut ctx).clumps.iter().enumerate() {
+                            let gap = surface_gap(head, clump);
+                            assert!(
+                                gap >= 0.0,
+                                "{name}: clump {n} is {gap} m inside (spread {spread_deg}, hook {hook_deg}, sweep {sweep_deg}, offset {offset})"
+                            );
+                        }
+                    }
+                }
+            }
         }
     }
 }

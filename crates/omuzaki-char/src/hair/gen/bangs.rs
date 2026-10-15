@@ -16,9 +16,10 @@
 //! prototype's fixed `hj(k) = 0.5 sin(12.9898 k + 1.7)`; the generator draws no random numbers, so the long hair's
 //! stream is untouched.
 //!
-//! **Clearance.** After the resample, every point stands off the head by at least half the lock's thickness there plus
-//! 1 mm ([`SURFACE_CLEARANCE`]), pushed out along the line from the head's centre; the spline can cut inside the head
-//! where a large hook or sweep turns the lock sharply. The offsets are limited the same way at the ends.
+//! **Clearance.** After the resample, the lock's tube (built as the mesh builder builds it) is measured against the head
+//! at every ring vertex and at the middle of every edge and triangle, and the rest points are pushed out along the line
+//! from the head's centre until all stand at least 1 mm ([`SURFACE_CLEARANCE`]) off it; the spline can cut inside the
+//! head where a large hook or sweep turns the lock sharply. The offsets are limited at the ends the same way.
 //!
 //! **Width.** The prototype's outline `lerp(0.040, w, ss(t, 0, 0.45)) (1 - ss(t, 0.5, 1))^0.7 + 0.0015` is not a
 //! [`Taper`]. This uses the closest current `Taper`: [`ROOT_WIDTH`] at the root, `MID_GAIN w + FLOOR` at `TIP_AT`,
@@ -30,6 +31,7 @@ use omuzaki_core::glam::{DVec3, Vec3};
 
 use super::cap::smoothstep;
 use crate::hair::compile::{CompiledGroup, HairGenCtx};
+use crate::hair::tube::{RING, tube_vertices};
 use crate::kit::catmull::spaced_points_into;
 
 /// Control points per lock, before the Catmull-Rom resample.
@@ -85,6 +87,8 @@ const MAX_OFFSET: f64 = 0.2;
 const MIN_OFFSET: f64 = THICKNESS.base * 0.5 + SURFACE_CLEARANCE;
 /// How far the tube's surface stays off the head beyond its own half-thickness, metres.
 pub const SURFACE_CLEARANCE: f64 = 0.001;
+/// How many times the clearance pass re-measures the tube and pushes it out.
+const CLEARANCE_PASSES: usize = 16;
 /// Thickness of every lock (the prototype's `0.005 + 0.005 sin(pi t)`).
 pub const THICKNESS: Bulge = Bulge { base: 0.005, swell: 0.005 };
 /// Width fit: the outline's width at the root, metres, including [`FLOOR`].
@@ -233,28 +237,64 @@ fn rest_points(g: &BangsGen, head: &dyn HeadSurface, lock: &Lock) -> [Vec3; REST
             *p = controls[(k * (CONTROL_POINTS - 1) + REST_POINTS / 2) / (REST_POINTS - 1)];
         }
     }
-    for (k, point) in spaced.iter_mut().enumerate() {
-        keep_clear(head, k, point);
-    }
-    spaced.map(DVec3::as_vec3)
+    let mut rest = spaced.map(DVec3::as_vec3);
+    keep_clear(head, taper(lock.width), &mut rest);
+    rest
 }
 
-/// Pushes the resampled point `k` out along the line from the head's centre until it stands at least half the lock's
-/// thickness there plus [`SURFACE_CLEARANCE`] off the head. The Catmull-Rom between control points can cut inside the
-/// head where the lock turns sharply (a large hook or sweep); the control points alone are clear, the curve between them
-/// need not be. A point already clear is not moved, so the points keep their order.
-#[allow(clippy::cast_precision_loss)] // point indices are tiny
-fn keep_clear(head: &dyn HeadSurface, k: usize, point: &mut DVec3) {
-    let t = k as f32 / (REST_POINTS - 1) as f32;
-    let wanted = f64::from(THICKNESS.at(t)) * 0.5 + SURFACE_CLEARANCE;
-    let from_centre = *point - head.centre().as_dvec3();
-    let dir = from_centre.normalize_or_zero();
-    if dir == DVec3::ZERO {
-        return;
-    }
-    let surface = f64::from(head.radius(dir.as_vec3()));
-    if from_centre.length() < surface + wanted {
-        *point = head.centre().as_dvec3() + dir * (surface + wanted);
+/// Pushes the rest points out along the lines from the head's centre until the lock's tube, as [`tube_vertices`] builds
+/// it, stands at least [`SURFACE_CLEARANCE`] off the head at every ring vertex and at the middle of every edge and
+/// triangle of its surface. The tube is measured in the mesh builder's own frame, so the cross-section's inward reach
+/// (it is not along the radius where the lock turns) and the head's curve between rings are both included. The
+/// Catmull-Rom between control points can cut inside the head where a large hook or sweep turns the lock sharply. A
+/// ring that is already clear is not moved, so the points keep their order. Runs [`CLEARANCE_PASSES`] times at most: a
+/// push changes the frames of its neighbours, so the passes converge on a clear tube rather than reach it in one step.
+#[allow(clippy::cast_possible_truncation)] // a millimetre fits an f32
+fn keep_clear(head: &dyn HeadSurface, width: Taper, rest: &mut [Vec3; REST_POINTS]) {
+    let centre = head.centre();
+    let outward = |p: Vec3| (p - centre).normalize_or_zero();
+    let gap = |p: Vec3| {
+        let d = p - centre;
+        d.length() - head.radius(d.normalize_or_zero())
+    };
+    let target = SURFACE_CLEARANCE as f32;
+    let mut positions = [Vec3::ZERO; REST_POINTS * RING];
+    let mut normals = [Vec3::ZERO; REST_POINTS * RING];
+    for _ in 0..CLEARANCE_PASSES {
+        if tube_vertices(rest, &width, &THICKNESS, outward, &mut positions, &mut normals).is_err() {
+            return;
+        }
+        let mut deficit = [0.0_f32; REST_POINTS];
+        for ring in 0..REST_POINTS - 1 {
+            for k in 0..RING {
+                let at = |r: usize, k: usize| positions[r * RING + k % RING];
+                let (a, b, c, d) = (at(ring, k), at(ring, k + 1), at(ring + 1, k), at(ring + 1, k + 1));
+                let samples = [
+                    a,
+                    b,
+                    c,
+                    d,
+                    (a + b) / 2.0,
+                    (c + d) / 2.0,
+                    (a + c) / 2.0,
+                    (b + d) / 2.0,
+                    (b + c) / 2.0,
+                    (a + b + c) / 3.0,
+                    (b + c + d) / 3.0,
+                ];
+                let worst = samples.iter().map(|p| target - gap(*p)).fold(f32::MIN, f32::max);
+                deficit[ring] = deficit[ring].max(worst);
+                deficit[ring + 1] = deficit[ring + 1].max(worst);
+            }
+        }
+        if deficit.iter().all(|d| *d <= 0.0) {
+            return;
+        }
+        for (point, d) in rest.iter_mut().zip(deficit) {
+            if d > 0.0 {
+                *point += outward(*point) * d;
+            }
+        }
     }
 }
 
