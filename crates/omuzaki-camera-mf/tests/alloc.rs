@@ -4,6 +4,7 @@
 //! top-down copy (across a renegotiation to a larger mode), the capture clock and the sequence.
 
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
 use std::ffi::c_void;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -18,10 +19,18 @@ struct Counting;
 
 static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
 
+thread_local! {
+    // The allocator is global, so it would also count the harness and runtime threads. Only the test's own thread
+    // counts, and the flag is `const`-initialised so reading it inside `alloc` cannot itself allocate.
+    static COUNTING_THIS_THREAD: Cell<bool> = const { Cell::new(false) };
+}
+
 // SAFETY: forwards every call to the system allocator, only counting allocations on the way.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        ALLOCATIONS.fetch_add(1, Ordering::SeqCst);
+        if COUNTING_THIS_THREAD.with(Cell::get) {
+            ALLOCATIONS.fetch_add(1, Ordering::SeqCst);
+        }
         // SAFETY: the caller's layout, passed through unchanged.
         unsafe { System.alloc(layout) }
     }
@@ -61,6 +70,7 @@ fn nothing_allocates_after_open_even_across_a_renegotiation() {
     let pointee = 0_u8;
     let token = NonNull::from(&pointee).cast::<c_void>();
 
+    COUNTING_THIS_THREAD.with(|counting| counting.set(true));
     let before = ALLOCATIONS.load(Ordering::SeqCst);
     for round in 0..1000_i64 {
         // The camera renegotiates between the two modes: only the length in use changes.
@@ -80,5 +90,6 @@ fn nothing_allocates_after_open_even_across_a_renegotiation() {
         clock.stamp(Some(u64::try_from(round).unwrap() * 333_333), round * 333_333);
         seq.next(round * 333_333, false);
     }
+    COUNTING_THIS_THREAD.with(|counting| counting.set(false));
     assert_eq!(ALLOCATIONS.load(Ordering::SeqCst) - before, 0, "the per-frame path allocated");
 }
