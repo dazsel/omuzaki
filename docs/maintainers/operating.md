@@ -106,15 +106,22 @@ whose table row names its domain. Ask on #2 when that isn't clear.
 
 - **Start anything that isn't truly blocked.** Only a real blocker (a file another open pull request is changing, a
   contract not yet merged) holds a task back.
-- **Limits:** at most 3 open pull requests per crate; at most 40 open in total (raised as the merge rate rises);
-  check a task's fence against open pull requests before starting (`tools/dispatch-check.py`). A pull request that
-  only adds new files under a crate's `tests/` can't conflict with other work, so it is started first when a slot is
-  free; it still counts toward the cap of 3 per crate (ADR 0053 §1.1), which only a recorded decision can raise.
-- **Freeze triggers** (ADR 0053 §1.3): the open total passes its limit, CI waits over 30 minutes, or opens exceed
+- **Caps:** at most **150** open pull requests in total and **5** per crate. In `omuzaki-char` and `omuzaki-face`,
+  **3** per top-level module, with a crate ceiling of **12** and one shared slot for crate-level files (ADR 0062).
+  Check every fence before starting: `python3 tools/dispatch-check.py --crate-cap 5 --total-cap 150 <issue>`.
+- **File overlap is absolute:** two pull requests that change one file never run at once. **The one exception is a
+  pure addition of lines to a `Cargo.toml`** (any table), together with the `Cargo.lock` lines cargo generates. The
+  merge queue catches the rare clash. Editing or removing an existing line still counts as overlap.
+- **Claim before starting:** the `claimed` label on the issue, put on before the session starts. The earliest claim
+  wins, and `dispatch-check.py` treats a claimed issue as taken.
+- **Start sessions about one a minute.** The platform refuses a burst (`Sandbox allocation failed`, `rate_limited`);
+  a session left `PENDING` and disconnected was refused, so message it to retry.
+- **A split or follow-up issue gets its parent's milestone** when it's filed. GitHub doesn't copy it, and phase
+  progress is read from milestones.
+- **Merge `main` into a pull request only on a conflict.** When a failure in `main` itself is fixed, the Director
+  updates every pull request that was red on it, in the same check-in.
+- **Freeze triggers** (ADR 0053 §1.3): the open total passes its cap, CI waits over 30 minutes, or opens exceed
   merges for two check-ins in a row while open pull requests pile up. While frozen, only fix rounds and merges.
-- **Caps (Director ruling, 2026-10-15, to scale out):** at most **150** open pull requests in total and **5** per
-  crate; in `omuzaki-char` and `omuzaki-face`, **3** per top-level module with a crate ceiling of **12** (ADR 0062).
-  These replace the numbers above until they are edited. The file-overlap check stays absolute.
 - **Start everything that's ready.** No rationing: every `ready` task starts as soon as its fence is free, V0 first,
   then by how many tasks it unblocks (the Director posts a ranked blocker list). A lead runs as many implementer
   sessions as it can direct well (10 to 15), and asks for its area to be split when its attention is the limit.

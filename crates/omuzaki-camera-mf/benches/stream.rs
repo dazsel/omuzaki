@@ -2,6 +2,10 @@
 //! callback hand-off (a token through the lock-free slot, waking the kernel event), the buffer choice, the lock, the
 //! bounds check against the allocation, and, for a bottom-up BGRA image, the top-down copy.
 //!
+//! `next_frame` enters COM on every call, as the real loop does: the first call on the thread sets the apartment up and
+//! every later one is a thread-local read, so `next_frame_nv12` is the steady-state per-frame cost with no apartment
+//! set-up or tear-down in it (#1878).
+//!
 //! The device itself, `ReadSample` and the worker thread are not in the numbers: they need a camera. Everything else
 //! `next_frame` does per frame is. Elsewhere this bench is empty.
 
@@ -23,6 +27,10 @@ mod windows_bench {
         // The hand-off alone, which does not depend on the layout.
         if let Ok(harness) = Harness::new(PixelFormat::Nv12, WIDTH, HEIGHT, tight(PixelFormat::Nv12)) {
             group.bench_function("hand_off", |b| b.iter(|| black_box(harness.hand_off())));
+        }
+        // The whole per-frame path with the COM entry the real loop makes on every call.
+        if let Ok(mut harness) = Harness::new(PixelFormat::Nv12, WIDTH, HEIGHT, tight(PixelFormat::Nv12)) {
+            group.bench_function("next_frame_nv12", |b| b.iter(|| black_box(harness.next_frame())));
         }
         // Lock and bounds check, borrowing the buffer.
         for (name, format) in [("lock_nv12", PixelFormat::Nv12), ("lock_yuy2", PixelFormat::Yuy2)] {
