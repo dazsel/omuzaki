@@ -198,6 +198,7 @@ pub fn plausible(outline: &HeadOutline, cranium: &Cranium) -> HeadOutline {
         top,
         height: length,
         exponent,
+        exponent_lower: None,
         chin: Some(Chin { y: chin_y, stretch_top, min_ratio }),
         cheek_puff: clamp(outline.cheek_puff, 0.0, MAX_CHEEK_PUFF),
     }
@@ -564,7 +565,15 @@ mod tests {
     use super::*;
 
     fn outline() -> HeadOutline {
-        HeadOutline { half_width: 0.13, top: -0.09, height: 0.1, exponent: 2.1, chin: None, cheek_puff: 0.0 }
+        HeadOutline {
+            half_width: 0.13,
+            top: -0.09,
+            height: 0.1,
+            exponent: 2.1,
+            exponent_lower: None,
+            chin: None,
+            cheek_puff: 0.0,
+        }
     }
 
     /// An outline inside the plausible space of the default cranium (synthetic numbers).
@@ -574,6 +583,7 @@ mod tests {
             top: -0.095,
             height: 0.105,
             exponent: 2.0,
+            exponent_lower: None,
             chin: Some(Chin { y: -0.2, stretch_top: -0.085, min_ratio: 0.65 }),
             cheek_puff: 0.005,
         }
@@ -627,6 +637,7 @@ mod tests {
             top: u(-0.3, 0.2),
             height: u(0.02, 0.4),
             exponent: u(1.0, 4.0),
+            exponent_lower: None,
             chin: (u(0.0, 1.0) < 0.5).then_some(chin),
             cheek_puff: u(0.0, 0.05),
         }
@@ -642,6 +653,7 @@ mod tests {
             top: 0.0,
             height: 0.4,
             exponent: 1.0,
+            exponent_lower: None,
             chin: Some(Chin { y: -0.5, stretch_top: 0.0, min_ratio: 0.2 }),
             cheek_puff: 0.0,
         };
