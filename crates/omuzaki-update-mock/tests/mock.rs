@@ -118,9 +118,12 @@ fn defaults_and_failures() {
     updater.script_stage(Err(UpdateError::DiskFull { need: 9 }));
     assert_eq!(updater.stage(&release(2)), Err(UpdateError::DiskFull { need: 9 }));
     assert_eq!(updater.status(), UpdateStatus::Idle { last_checked: None });
-    updater.healthy();
-    updater.healthy();
-    assert_eq!(updater.healthy_calls(), 2);
+    assert_eq!(updater.healthy(), Ok(()));
+    // A marker that cannot be written is an error the caller sees, and the call still counts.
+    updater.script_healthy(Err(UpdateError::Io("disk full".to_owned())));
+    assert_eq!(updater.healthy(), Err(UpdateError::Io("disk full".to_owned())));
+    assert_eq!(updater.healthy(), Ok(()));
+    assert_eq!(updater.healthy_calls(), 3);
 }
 
 #[test]

@@ -22,6 +22,7 @@ struct Scripts {
     download: Script<()>,
     stage: Script<()>,
     rollback: Script<()>,
+    healthy: Script<()>,
 }
 
 /// Holds in the order they were taken, each with an id so a drop removes its own.
@@ -39,9 +40,9 @@ struct Inner {
     checks: Vec<Channel>,
 }
 
-/// An [`Updater`] for tests. Each of `check`, `download`, `stage` and `rollback` answers from a queue the test fills
-/// with the `script_*` methods; an empty queue answers with a default (no update, success, success, and
-/// [`UpdateError::NothingToRollBack`]).
+/// An [`Updater`] for tests. Each of `check`, `download`, `stage`, `rollback` and `healthy` answers from a queue the
+/// test fills with the `script_*` methods; an empty queue answers with a default (no update, success, success,
+/// [`UpdateError::NothingToRollBack`], and success).
 ///
 /// Status follows the answers: a `check` that finds a release is `Available`, one that finds none is `Idle`, a `stage`
 /// that succeeds is `Staged` with the holds taken at that moment; failures leave it alone. [`MockUpdater::set_status`]
@@ -93,6 +94,11 @@ impl MockUpdater {
         locked(&self.inner).scripts.rollback.push_back(answer);
     }
 
+    /// Queues the answer to the next `healthy`, for a test of a marker that cannot be written (a full disk).
+    pub fn script_healthy(&self, answer: Result<(), UpdateError>) {
+        locked(&self.inner).scripts.healthy.push_back(answer);
+    }
+
     /// Sets the status and tells the subscribers.
     pub fn set_status(&self, status: UpdateStatus) {
         let mut inner = locked(&self.inner);
@@ -105,7 +111,7 @@ impl MockUpdater {
         locked(&self.holds).live.iter().map(|(_, why)| *why).collect()
     }
 
-    /// How many times `healthy` was called.
+    /// How many times `healthy` was called, whether it succeeded or not.
     #[must_use]
     pub fn healthy_calls(&self) -> u32 {
         locked(&self.inner).healthy_calls
@@ -180,8 +186,10 @@ impl Updater for MockUpdater {
         Hold::new(move || locked(&holds).live.retain(|(held, _)| *held != id))
     }
 
-    fn healthy(&self) {
-        locked(&self.inner).healthy_calls += 1;
+    fn healthy(&self) -> Result<(), UpdateError> {
+        let mut inner = locked(&self.inner);
+        inner.healthy_calls += 1;
+        inner.scripts.healthy.pop_front().unwrap_or(Ok(()))
     }
 
     fn subscribe(&self) -> UpdateEvents {
