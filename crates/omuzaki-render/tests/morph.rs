@@ -140,15 +140,13 @@ fn a_caster_morphed_out_of_its_base_bounds_still_casts_its_shadow() {
     let morph = r.create_mesh_with(&cube, &MeshOptions { morphs: Some(set), ..MeshOptions::default() }).unwrap();
     let baked = r.create_mesh(&baked).unwrap();
     let ground = {
-        let mut disc = MeshData::default();
-        disc.positions = vec![
-            Vec3::new(-3.0, 0.0, -3.0),
-            Vec3::new(3.0, 0.0, -3.0),
-            Vec3::new(3.0, 0.0, 3.0),
-            Vec3::new(-3.0, 0.0, 3.0),
-        ];
-        disc.normals = vec![Vec3::Y; 4];
-        disc.indices = vec![0, 2, 1, 0, 3, 2];
+        let corners = |y: f32| [(-3.0, -3.0), (3.0, -3.0), (3.0, 3.0), (-3.0, 3.0)].map(|(x, z)| Vec3::new(x, y, z));
+        let disc = MeshData {
+            positions: corners(0.0).to_vec(),
+            normals: vec![Vec3::Y; 4],
+            indices: vec![0, 2, 1, 0, 3, 2],
+            ..MeshData::default()
+        };
         r.create_mesh(&disc).unwrap()
     };
     let material = r.create_material(&Material::toon(Colour::hex(0x00c9_b8f0))).unwrap();
@@ -242,7 +240,7 @@ fn render_the_morph_pictures_when_asked() {
     let Some(directory) = std::env::var_os("OMUZAKI_MORPH_PPM") else { return };
     let directory = std::path::PathBuf::from(directory);
     std::fs::create_dir_all(&directory).unwrap();
-    let write = |name: &str, image: &Image| {
+    let save = |name: &str, image: &Image| {
         let mut ppm = format!("P6\n{} {}\n255\n", image.size.x, image.size.y).into_bytes();
         for pixel in image.rgba8.chunks(4) {
             ppm.extend(&pixel[..3]);
@@ -253,7 +251,7 @@ fn render_the_morph_pictures_when_asked() {
 
     let quad = shapes::quad(Vec2::splat(0.25));
     let quad_mesh = r.create_mesh_with(&quad, &slide_options(&quad, MeshUsage::Static)).unwrap();
-    let white = r.create_material(&Material::unlit(Colour::WHITE)).unwrap();
+    let paint = r.create_material(&Material::unlit(Colour::WHITE)).unwrap();
     let ortho = Camera::look_at(
         Vec3::new(0.0, 0.0, 5.0),
         Vec3::ZERO,
@@ -262,8 +260,8 @@ fn render_the_morph_pictures_when_asked() {
     );
     for weight in [0.0, 0.5, 1.0] {
         let image =
-            draw(&mut r, Scene::new(ortho), vec![morphing(Instance::new(quad_mesh, white, Mat4::IDENTITY))], weight);
-        write(&format!("quad-{weight}.ppm"), &image);
+            draw(&mut r, Scene::new(ortho), vec![morphing(Instance::new(quad_mesh, paint, Mat4::IDENTITY))], weight);
+        save(&format!("quad-{weight}.ppm"), &image);
     }
 
     let cube = shapes::cuboid(Vec3::splat(0.3));
@@ -300,6 +298,6 @@ fn render_the_morph_pictures_when_asked() {
         let mut floor = Instance::new(floor_mesh, ground, Mat4::IDENTITY);
         floor.casts_shadow = false;
         let body = morphing(Instance::new(cube_mesh, outlined, Mat4::from_translation(Vec3::new(0.0, 0.3, 0.0))));
-        write(&format!("outlined-{weight}.ppm"), &draw(&mut r, scene, vec![floor, body], weight));
+        save(&format!("outlined-{weight}.ppm"), &draw(&mut r, scene, vec![floor, body], weight));
     }
 }
