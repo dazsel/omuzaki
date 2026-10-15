@@ -760,7 +760,7 @@ impl PartKind for Noter {
     fn build(params: &NoterParams, ctx: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
         let tint = ctx.colour(&params.tint)?;
         let note = if params.from_palette { tint.r } else { 7 };
-        Ok(PartOutput { publishes: Publishes::default().with::<NoteFact>(note), ..PartOutput::default() })
+        Ok(PartOutput::new().with_publishes(Publishes::default().with::<NoteFact>(note)))
     }
 }
 omuzaki_char_api::register_part_kind!(Noter);
@@ -781,10 +781,7 @@ impl PartKind for Reader {
     }
 
     fn build(_: &LampParams, ctx: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
-        Ok(PartOutput {
-            warnings: vec![format!("note {:?}", ctx.published.get::<NoteFact>())],
-            ..PartOutput::default()
-        })
+        Ok(PartOutput::new().with_warnings(vec![format!("note {:?}", ctx.published.get::<NoteFact>())]))
     }
 }
 omuzaki_char_api::register_part_kind!(Reader);
