@@ -23,6 +23,10 @@ omuzaki-store-api = { path = "../omuzaki-store-api" }
 
 [dev-dependencies]
 tempfile.workspace = true
+# The eval check library's tests (tests/eval_checks.rs): the shared mock runner over an in-memory document, with demo ops.
+omuzaki-doc-api = { path = "../omuzaki-doc-api" }
+omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
+omuzaki-ops-mock = { path = "../omuzaki-ops-mock" }
 # The real-format round trip (tests/gather_real_gltf.rs): the gather of `omuzaki-io-ops` through omuzaki-io-gltf, which no
 # implementation crate may test against.
 omuzaki-char-api = { path = "../omuzaki-char-api" }

@@ -57,6 +57,8 @@ pub enum Trigger {
     Manual,
     /// A named version (VC-01), pinned until the name is removed.
     Named,
+    /// The state a recording or replay save pins (ADR 0052).
+    Take,
 }
 
 /// How a snapshot was checked.
@@ -266,6 +268,14 @@ mod tests {
     fn triggers_serialise_as_the_ref_strings() {
         let text = serde_json::to_string(&Trigger::PreAgentSession).unwrap_or_default();
         assert_eq!(text, "\"pre-agent-session\"");
+    }
+
+    #[test]
+    fn a_take_trigger_round_trips_as_take() {
+        let text = serde_json::to_string(&Trigger::Take).unwrap_or_default();
+        assert_eq!(text, "\"take\"");
+        let back: Result<Trigger, _> = serde_json::from_str(&text);
+        assert_eq!(back.ok(), Some(Trigger::Take));
     }
 
     #[test]

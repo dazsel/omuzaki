@@ -1,0 +1,6 @@
+section = "rust"
+item = "naga"
+kind = "crate"
+used_for = "validating the picture's and the copy pass's WGSL in unit tests in `spikes/mascot-window` (dev-dependency)"
+status = "yes"
+audit = "(crates.io: naga 30.0.1, MIT OR Apache-2.0)"

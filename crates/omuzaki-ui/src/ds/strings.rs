@@ -219,10 +219,6 @@ messages! {
     CurveEndPinned = "ds-curve-end-pinned" => "The first and last points stay at the ends of the axis",
 
     /// Key legends and format hints are conventions, not prose: the pseudo-locale leaves them as they are.
-    KeyEnter = "ds-key-enter" => "Enter",
-    KeysApproveSession = "ds-keys-approve-session" => "Ctrl Enter",
-    KeyBackspace = "ds-key-backspace" => "Backspace",
-    KeysReset = "ds-keys-reset" => "Ctrl Backspace",
     HexHint = "ds-hex-hint" => "#RRGGBB",
 
     ThemeDark = "ds-theme-dark" => "Dark",
@@ -237,16 +233,7 @@ impl Msg {
     /// A key legend, a format hint, a one-letter badge or a list separator: a convention rather than prose, so [`Pseudo`] does not
     /// touch it.
     pub const fn is_verbatim(self) -> bool {
-        matches!(
-            self,
-            Self::KeyEnter
-                | Self::KeysApproveSession
-                | Self::KeyBackspace
-                | Self::KeysReset
-                | Self::HexHint
-                | Self::ParamVariantBadge
-                | Self::ListSeparator
-        )
+        matches!(self, Self::HexHint | Self::ParamVariantBadge | Self::ListSeparator)
     }
 }
 
@@ -339,9 +326,9 @@ mod tests {
     }
 
     #[test]
-    fn pseudo_leaves_key_legends_alone_and_fills_like_the_original() {
+    fn pseudo_leaves_format_hints_alone_and_fills_like_the_original() {
         let table = Pseudo(English);
-        assert_eq!(table.pattern(Msg::KeyEnter), "Enter");
+        assert_eq!(table.pattern(Msg::HexHint), "#RRGGBB");
         let filled = fill(&table.pattern(Msg::ParamReset), &[("label", "Largeur")]);
         assert!(filled.contains("Largeur") && !filled.contains('{'), "{filled}");
     }

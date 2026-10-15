@@ -78,8 +78,8 @@ const NOT_FOR_PEOPLE: &[&str] = &[
     "#![",
     "include_",
     "concat!(",
-    // `KeyCaps` maps the key names a caller writes ("Enter", "Left") to the picture or arrow that draws them.
-    "Face::",
+    // The key-label table in `keycap.rs`: names printed on keyboards, by platform and language. Not messages.
+    "// key name",
 ];
 
 #[test]
@@ -131,5 +131,7 @@ fn the_lint_reads_literals_and_skips_comments_and_lifetimes() {
     let found: Vec<String> = literals(source).into_iter().map(|l| l.text).collect();
     assert_eq!(found, ["Reset to default"]);
     assert_eq!(plain_english(["Reset to default"]), ["Reset to default"]);
-    assert_eq!(plain_english(["hair.root", "#8A6FD1", "×", "Ctrl Enter"]), Vec::<String>::new());
+    assert_eq!(plain_english(["hair.root", "#8A6FD1", "×"]), Vec::<String>::new());
+    // Key names are no longer exempt as words: they come from the key-label table, not the message table.
+    assert_eq!(plain_english(["Ctrl Enter"]), ["Ctrl Enter"]);
 }

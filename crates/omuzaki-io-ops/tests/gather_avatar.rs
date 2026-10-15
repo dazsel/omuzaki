@@ -114,7 +114,7 @@ fn rich_with(rest_of: impl Fn(HumanoidBone) -> Transform) -> BuiltCharacter {
             tail: Vec3::new(0.0, 0.02, 0.01),
         },
     };
-    let joint = |bone, params| SpringJoint { bone, params };
+    let joint = |bone, params| SpringJoint { bone, params, limit: None };
     let springs = SpringSet {
         groups: vec![
             ColliderGroup { name: "head".into(), colliders: vec![sphere(head, 0.2, 0.19), capsule] },
@@ -370,6 +370,7 @@ fn set_from_io(sb: &SpringBones) -> SpringSet {
                     .map(|j| SpringJoint {
                         bone: bone(j.node),
                         params: params(j.stiffness, j.gravity_power, j.gravity_dir, j.drag_force, j.hit_radius),
+                        limit: None,
                     })
                     .collect(),
                 collider_groups: c
