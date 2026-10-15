@@ -7,12 +7,19 @@
 use std::path::PathBuf;
 use std::{env, fs};
 
-#[allow(clippy::disallowed_methods, reason = "a build script writes its generated file at build time")]
+// `main` carries no attribute: `lint-links` only reads an unattributed `main` as running the generator.
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     omuzaki_link_build::emit();
     if env::var_os("CARGO_FEATURE_UNLINKED").is_some() {
-        let out = PathBuf::from(env::var("OUT_DIR")?).join(omuzaki_link_build::OUT_FILE);
-        fs::write(out, "{}\n")?;
+        unlink()?;
     }
+    Ok(())
+}
+
+/// Replaces the generated calls with the generator's empty block.
+#[allow(clippy::disallowed_methods, reason = "a build script writes its generated file at build time")]
+fn unlink() -> Result<(), Box<dyn std::error::Error>> {
+    let out = PathBuf::from(env::var("OUT_DIR")?).join(omuzaki_link_build::OUT_FILE);
+    fs::write(out, "{}\n")?;
     Ok(())
 }
