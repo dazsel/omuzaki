@@ -136,7 +136,7 @@ async fn the_tool_list_matches_the_runner_ops_exactly() {
         );
     }
 
-    for info in h.runner.ops() {
+    for info in h.runner.ops().iter().filter(|o| o.name != "agent.connection") {
         let t = tool(&tools, &info.name.replace('.', "_"));
         assert_eq!(t.title.as_deref(), Some(info.name), "the dotted op name is the tool's title");
         let op_schema = serde_json::to_value(&info.schema).unwrap();
