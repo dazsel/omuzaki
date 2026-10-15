@@ -210,7 +210,7 @@ impl Cut<'_> {
             HatStyle::Beret => {
                 // A puffed pillow: widest a little above the rim, flat on top, tilted with the hat.
                 let lean = 1.0 + 0.25 * phi.cos();
-                h * lean * (PI * (0.15 + 0.85 * (1.0 - u)).min(1.0)).sin().powf(0.8) * sstep(0.0, 0.25, 1.0 - u + 0.2)
+                h * lean * (PI * (0.15 + 0.85 * (1.0 - u))).sin().powf(0.8)
             }
             HatStyle::Cap => h * (1.0 - u * u),
             HatStyle::Beanie => h * (1.0 - u) * 0.5 + 0.8 * h * sstep(0.78, 0.9, u) * (1.0 - sstep(0.97, 1.0, u)),
