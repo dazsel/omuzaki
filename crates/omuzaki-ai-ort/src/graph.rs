@@ -1,10 +1,10 @@
 //! Reading a model's signature from a loaded `ort` session, and building sessions: the session options that keep the
 //! runtime quiet (one inter-op thread, no spinning) and the provider chain that ends on the CPU.
 
-use omuzaki_ai_api::{DType, Dim, LoadError, Provider, SessionOptions, Signature, TensorSpec};
+use omuzaki_ai_api::{DType, Dim, GraphOptimisation, LoadError, Provider, SessionOptions, Signature, TensorSpec};
 use ort::ep::{ExecutionProvider, ExecutionProviderDispatch};
 use ort::session::Session;
-use ort::session::builder::SessionBuilder;
+use ort::session::builder::{GraphOptimizationLevel, SessionBuilder};
 use ort::value::{Outlet, TensorElementType, ValueType};
 
 /// A provider that was asked for and not used, and why: shown to people when a model runs on the CPU.
@@ -55,17 +55,32 @@ pub fn signature_of(session: &Session) -> Result<Signature, LoadError> {
     })
 }
 
+/// The level to set on the builder, or `None` to leave ONNX Runtime's own default untouched, so that
+/// [`GraphOptimisation::Default`] loads exactly as it did before the option existed.
+fn optimisation_level(level: GraphOptimisation) -> Option<GraphOptimizationLevel> {
+    match level {
+        GraphOptimisation::Basic => Some(GraphOptimizationLevel::Level1),
+        GraphOptimisation::Extended => Some(GraphOptimizationLevel::Level2),
+        // `Default` and any level a later version of the contract adds, until this runtime maps it.
+        _ => None,
+    }
+}
+
 /// A builder with the settings every session of ours has. `threads` is ONNX Runtime's intra-op pool; with one thread
 /// the work runs on the caller's. Inter-op is 1 and neither pool spins while idle: `cpu.total` counts every cycle
 /// (spec §10), and a spinning pool burns a core between runs. The config keys are the documented
 /// `session.{intra,inter}_op.allow_spinning`.
-fn builder(threads: u16) -> Result<SessionBuilder, LoadError> {
+fn builder(threads: u16, level: GraphOptimisation) -> Result<SessionBuilder, LoadError> {
     let build = || -> ort::Result<SessionBuilder> {
-        Ok(Session::builder()?
+        let builder = Session::builder()?
             .with_intra_threads(usize::from(threads.max(1)))?
             .with_inter_threads(1)?
             .with_intra_op_spinning(false)?
-            .with_inter_op_spinning(false)?)
+            .with_inter_op_spinning(false)?;
+        match optimisation_level(level) {
+            Some(level) => Ok(builder.with_optimization_level(level)?),
+            None => Ok(builder),
+        }
     };
     build().map_err(|e| runtime_error(&e))
 }
@@ -96,7 +111,7 @@ fn dispatch(provider: Provider) -> Option<(ExecutionProviderDispatch, bool)> {
 
 /// Commits `model` as a session on `provider` (the CPU needs no registration). `Err` carries the reason in words.
 fn commit(model: &[u8], options: &SessionOptions, provider: Provider, build: &str) -> Result<Session, String> {
-    let mut builder = builder(options.threads).map_err(|e| e.to_string())?;
+    let mut builder = builder(options.threads, options.graph_optimisation).map_err(|e| e.to_string())?;
     if provider != Provider::Cpu {
         let Some((dispatch, available)) = dispatch(provider) else {
             return Err("this runtime does not know the provider".to_owned());
@@ -139,4 +154,16 @@ pub fn create(
     }
     let session = commit(model, options, Provider::Cpu, build).map_err(LoadError::Runtime)?;
     Ok((session, Provider::Cpu, skipped))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_level_maps_onto_the_runtimes_and_the_default_sets_nothing() {
+        assert_eq!(optimisation_level(GraphOptimisation::Default), None);
+        assert_eq!(optimisation_level(GraphOptimisation::Basic), Some(GraphOptimizationLevel::Level1));
+        assert_eq!(optimisation_level(GraphOptimisation::Extended), Some(GraphOptimizationLevel::Level2));
+    }
 }

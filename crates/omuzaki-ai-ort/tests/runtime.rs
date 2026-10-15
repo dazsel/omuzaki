@@ -8,8 +8,8 @@ use std::collections::BTreeMap;
 
 use common::{NoNetwork, cache, fixture, local, with_source};
 use omuzaki_ai_api::{
-    DType, Dim, LoadError, Provider, RunError, Runtime, Session as _, SessionOptions, Signature, TensorBuf, TensorRef,
-    TensorSpec, find_runtime,
+    DType, Dim, GraphOptimisation, LoadError, Provider, RunError, Runtime, Session as _, SessionOptions, Signature,
+    TensorBuf, TensorRef, TensorSpec, find_runtime,
 };
 use omuzaki_ai_ort::OrtRuntime;
 
@@ -156,6 +156,26 @@ fn the_slot_names_ports_through_io_and_dynamic_sizes_follow_the_call() {
 }
 
 #[test]
+fn every_graph_optimisation_level_loads_and_runs_the_same_model() {
+    let Some(natives) = cache("every_graph_optimisation_level_loads_and_runs_the_same_model") else { return };
+    let path = fixture("add.onnx");
+    let files = [local("model.onnx", &path)];
+    let slot = Signature {
+        inputs: vec![spec("a", &[Dim::ANY, Dim::Fixed(3)]), spec("b", &[Dim::ANY, Dim::Fixed(3)])],
+        outputs: vec![spec("c", &[Dim::ANY, Dim::Fixed(3)])],
+    };
+    for level in [GraphOptimisation::Default, GraphOptimisation::Basic, GraphOptimisation::Extended] {
+        let options = SessionOptions::default().with_graph_optimisation(level);
+        let mut session = with_source(&files, &[], &natives, |s| OrtRuntime.load(s, &slot, &io(), &options))
+            .unwrap_or_else(|e| panic!("{level:?}: {e}"));
+        let mut out = TensorBuf::for_outputs(session.signature());
+        let (a, b) = ([1.0_f32, 2.0, 3.0], [10.0_f32, 20.0, 30.0]);
+        session.run(&[TensorRef::f32(&a, &[1, 3]), TensorRef::f32(&b, &[1, 3])], &mut out).unwrap();
+        assert_eq!(out[0].as_f32().unwrap(), [11.0, 22.0, 33.0], "{level:?}");
+    }
+}
+
+#[test]
 fn a_model_that_does_not_fit_the_slot_is_not_loaded() {
     let Some(natives) = cache("a_model_that_does_not_fit_the_slot_is_not_loaded") else { return };
     let path = fixture("identity.onnx");
@@ -178,10 +198,7 @@ fn asking_for_gpu_providers_a_machine_lacks_falls_back_to_the_cpu_and_says_so() 
     };
     let path = fixture("identity.onnx");
     let files = [local("model.onnx", &path)];
-    let options = SessionOptions {
-        providers: vec![Provider::DirectMl, Provider::Cuda, Provider::WebGpu, Provider::Cpu],
-        threads: 1,
-    };
+    let options = SessionOptions::new(vec![Provider::DirectMl, Provider::Cuda, Provider::WebGpu, Provider::Cpu], 1);
     let session =
         with_source(&files, &[], &natives, |s| OrtRuntime.load_session(s, &identity_slot(), &io(), &options)).unwrap();
     assert_eq!(session.info().provider, Provider::Cpu, "no GPU in the test environment");
