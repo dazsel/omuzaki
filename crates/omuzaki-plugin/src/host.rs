@@ -210,12 +210,21 @@ impl WasmPlugins {
         }
     }
 
-    /// Ends the session `Closed` and runs `shutdown`; a breach there only drops the instance, and is logged.
-    fn stop(&self, entry: &mut Entry) {
-        if let Some(session) = entry.session.take() {
-            let _ended = self.sessions.end(session, EndReason::Closed);
-        }
-        if let Some(worker) = entry.worker.take() {
+    /// Stops `id`: under the lock it ends the session `Closed` and takes the worker, marking the plugin busy; off the
+    /// lock `shutdown` runs (a breach there only drops the instance, and is logged), so other plugins' calls never
+    /// wait for it; then the plugin is left in `after`.
+    fn stop(&self, id: &PluginId, after: PluginState) -> Result<PluginInfo, PluginError> {
+        let (worker, log) = {
+            let mut plugins = self.drained(id);
+            let entry = plugins.get_mut(id).ok_or(PluginError::NotFound)?;
+            if let Some(session) = entry.session.take() {
+                let _ended = self.sessions.end(session, EndReason::Closed);
+            }
+            entry.state = PluginState::Unloading;
+            entry.busy = true;
+            (entry.worker.take(), entry.log.clone())
+        };
+        if let Some(worker) = worker {
             let note = match worker.shutdown() {
                 Ok(Ok(())) => None,
                 Ok(Err(fault)) => Some(format!("shutdown stopped: {fault}")),
@@ -223,10 +232,17 @@ impl WasmPlugins {
             };
             if let Some(note) = note {
                 // A line the bucket refuses here is counted in the next "lines dropped" line, like any other.
-                let _kept = entry.log.push(LogLevel::Warn, &note, false);
+                let _kept = log.push(LogLevel::Warn, &note, false);
             }
         }
-        entry.log.flush();
+        log.flush();
+        let mut plugins = self.lock();
+        let entry = plugins.get_mut(id).ok_or(PluginError::NotFound)?;
+        entry.busy = false;
+        entry.state = after;
+        entry.restart_at = None;
+        self.idle.notify_all();
+        Ok(info_of(id, entry))
     }
 
     /// Starts `id` for `by`: opens its session, starts its worker and runs `init` there, off the lock.
@@ -313,12 +329,7 @@ impl Plugins for WasmPlugins {
 
     fn disable(&self, id: &PluginId, by: &Actor) -> Result<PluginInfo, PluginError> {
         person_only(by)?;
-        let mut plugins = self.drained(id);
-        let entry = plugins.get_mut(id).ok_or(PluginError::NotFound)?;
-        self.stop(entry);
-        entry.state = PluginState::disabled(DisabledReason::Person);
-        entry.restart_at = None;
-        Ok(info_of(id, entry))
+        self.stop(id, PluginState::disabled(DisabledReason::Person))
     }
 
     fn set_approval(&self, id: &PluginId, approval: Approval, by: &Actor) -> Result<PluginInfo, PluginError> {
@@ -346,9 +357,8 @@ impl Plugins for WasmPlugins {
             if entry.state != PluginState::Running {
                 return Err(PluginError::Instantiate(format!("`{id}` is not running")));
             }
-            self.stop(entry);
-            entry.state = PluginState::Unloading;
         }
+        self.stop(id, PluginState::Unloading)?;
         self.start(id, by)
     }
 
@@ -377,12 +387,10 @@ impl Plugins for WasmPlugins {
 impl Drop for WasmPlugins {
     fn drop(&mut self) {
         // Stop every worker before the engine goes, so no thread outlives the service.
-        let mut plugins = self.lock();
-        let ids: Vec<PluginId> = plugins.keys().cloned().collect();
+        let ids: Vec<PluginId> = self.lock().keys().cloned().collect();
         for id in ids {
-            if let Some(entry) = plugins.get_mut(&id) {
-                self.stop(entry);
-            }
+            // Every id was just listed and nothing removes one, so this can only stop the plugin.
+            let _stopped = self.stop(&id, PluginState::Installed);
         }
     }
 }

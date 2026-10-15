@@ -346,3 +346,12 @@ fn idle_plugins_fill_the_all_plugins_budget_and_the_next_start_is_refused() {
     assert_eq!(engine.memory().used(), 0, "a stopped plugin gives its memory back");
     assert!(start_one().is_ok());
 }
+
+#[test]
+fn approval_resolved_without_the_export_is_ignored_and_shutdown_denies_effects() {
+    let (engine, clock) = engine();
+    let mut plugin = start(&engine, &ok_component(), log("quiet", clock)).unwrap();
+    plugin.init("{}").unwrap();
+    assert_eq!(plugin.approval_resolved(1, Ok("{}".into())), Ok(()), "a component without the export ignores it");
+    assert_eq!(plugin.shutdown(), Ok(()), "a component without shutdown stops cleanly");
+}

@@ -77,8 +77,10 @@ impl InstallRoot {
         let dir = plugin_dir.join(hash.to_string());
         if dir.exists() {
             fs::remove_dir_all(&staged).map_err(|e| io(&e))?;
-        } else {
-            fs::rename(&staged, &dir).map_err(|e| io(&e))?;
+        } else if let Err(error) = fs::rename(&staged, &dir) {
+            // Leave no staging folder behind; the rename's error is the one to report.
+            let _cleaned = fs::remove_dir_all(&staged);
+            return Err(io(&error));
         }
         let mut versions: Vec<ContentHash> = self.versions(&id).into_iter().filter(|h| *h != hash).collect();
         versions.push(hash);
