@@ -51,3 +51,15 @@ fn main() -> ExitCode {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_zero_frame_rate_is_refused_and_the_defaults_are_the_1080p30_run() {
+        assert!(Cli::try_parse_from(["cost", "--fps", "0"]).is_err());
+        let cli = Cli::try_parse_from(["cost"]).unwrap();
+        assert_eq!((cli.size, cli.fps, cli.seconds), ((1920, 1080), 30, 60.0));
+    }
+}
