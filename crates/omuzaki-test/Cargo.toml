@@ -11,6 +11,8 @@ repository.workspace = true
 [dependencies]
 blake3.workspace = true
 clap.workspace = true
+# A random token for the rating page's session (the OS source, as `omuzaki-mcp` uses for its access tokens).
+getrandom.workspace = true
 image.workspace = true
 # The scripted driver is an MCP client of the in-process (or spawned) server: the child-process pipes are plain async
 # streams, and the duplex pipe of the in-process host needs tokio's io utilities.

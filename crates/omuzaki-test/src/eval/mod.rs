@@ -26,6 +26,7 @@ pub mod host;
 pub mod lint;
 mod placeholder;
 pub mod provenance;
+pub mod rate;
 pub mod run;
 pub mod script;
 pub mod sets;

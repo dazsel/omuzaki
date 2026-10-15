@@ -4287,6 +4287,7 @@ dependencies = [
  "blake3",
  "clap",
  "criterion",
+ "getrandom 0.4.3",
  "image",
  "omuzaki-ai-api",
  "omuzaki-ai-ort",

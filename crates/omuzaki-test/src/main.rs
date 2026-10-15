@@ -19,7 +19,7 @@ use omuzaki_test::eval::run::{self, Options, RunReport, Selection};
 use omuzaki_test::eval::script::{self, Script};
 use omuzaki_test::eval::sets::{self, SetStore};
 use omuzaki_test::eval::transcript::EventLog;
-use omuzaki_test::eval::{self, gate, gc as run_gc, history, lint};
+use omuzaki_test::eval::{self, gate, gc as run_gc, history, lint, rate};
 use omuzaki_test::gc::{self, MIN_AGE, Object, Plan, Removal, total_bytes};
 use omuzaki_test::goldens::{GoldenId, Goldens, Mode, Outcome, load_png, save_png};
 use omuzaki_test::migrate::migrate;
@@ -213,6 +213,48 @@ enum EvalCommand {
         /// The status folder holding the history (default: `$OMUZAKI_EVAL_STATUS`, else `$OMUZAKI_ASSETS/status`).
         #[arg(long, value_name = "DIR")]
         status: Option<PathBuf>,
+    },
+    /// Rate a few results yourself, on a page served on this machine only (design 10.3).
+    ///
+    /// Picks up to 20 unrated results a week (reference attempts of tasks that have questions for people, spread across
+    /// the tasks), serves them on `127.0.0.1` and appends your yes/no/unsure answers to `<evals>/ratings/<set>.jsonl`.
+    /// Nothing is uploaded. The page works from the keyboard: Y, N and U answer, the arrows move between results.
+    Rate {
+        /// The review set's name, such as `review-1`.
+        #[arg(long)]
+        set: String,
+        /// How many results to rate this time (at most 20 a week).
+        #[arg(long, default_value_t = 20)]
+        sample: usize,
+        /// Who is rating, as the ratings file records it.
+        #[arg(long, default_value = "maintainer")]
+        rater: String,
+        /// The port to serve on (0 lets the system choose).
+        #[arg(long, default_value_t = 0)]
+        port: u16,
+        #[command(flatten)]
+        root: RootArg,
+    },
+    /// How often a judge agrees with the raters on the clear-cut items of a review set; appended to the history.
+    ///
+    /// The judge is a check id: its answers are read from the history's attempts. A hard check answers yes when it passed,
+    /// a soft one when its score is at least a half. A `judge` check answers its only rubric question; any other check needs
+    /// `--question`. A judge may become a hard check at 90% over 40 items (design 10.4) and after its known-negatives test.
+    Agreement {
+        /// The check id of the judge.
+        #[arg(long)]
+        judge: String,
+        /// The review set the raters' answers are in.
+        #[arg(long)]
+        set: String,
+        /// The rubric question the check answers, when the check does not say.
+        #[arg(long)]
+        question: Option<String>,
+        /// Print the measurement without appending it to the history.
+        #[arg(long)]
+        no_record: bool,
+        #[command(flatten)]
+        root: RootArg,
     },
     /// Eval sets: manifests in git, items in the content store (design 11).
     #[command(subcommand)]
@@ -508,6 +550,12 @@ fn run(cli: Cli) -> Verdict {
             let plan = RunArgs { driver, attempts, jobs, record, binary, omuzaki_bin, spend_usd, kind, run_id };
             eval_run(&root, select, plan)
         }
+        Command::Eval(EvalCommand::Rate { set, sample, rater, port, root }) => {
+            eval_rate(&workspace_root(root.root)?, &set, sample, &rater, port)
+        }
+        Command::Eval(EvalCommand::Agreement { judge, set, question, no_record, root }) => {
+            eval_agreement(&workspace_root(root.root)?, &judge, &set, question.as_deref(), no_record)
+        }
         Command::Eval(EvalCommand::Sets(sets)) => eval_sets(sets),
         Command::Eval(EvalCommand::Gate { json, status }) => eval_gate(json, status),
         Command::Eval(EvalCommand::Gc { apply, issues, root }) => {
@@ -686,6 +734,76 @@ fn print_run(report: &RunReport) {
         report.refused.len(),
         if run.valid { "valid" } else { "NOT valid: more than 10% of the attempts errored" },
     );
+}
+
+/// `eval rate`: serves a sample of unrated results until they are rated or the rater finishes.
+fn eval_rate(root: &Path, set: &str, sample: usize, rater: &str, port: u16) -> Verdict {
+    let evals = assets_folder("OMUZAKI_EVAL_OUT", "evals")?;
+    let status = assets_folder("OMUZAKI_EVAL_STATUS", "status")?;
+    let ratings_path = rate::ratings_path(&evals, set)?;
+    let discovery = eval::discover(root)?;
+    let history = history::read_attempts(&status.join(history::HISTORY_FILE))?;
+    let ratings = rate::read(&ratings_path)?;
+    let now = SystemTime::now();
+    let count = sample.min(rate::sample::budget_left(&ratings, now));
+    if count == 0 {
+        println!("Nothing to rate: this week's limit of {} results is reached (or --sample is 0).", rate::WEEKLY_ITEMS);
+        return Ok(true);
+    }
+    let items = rate::sample::sample(&discovery, &history, &ratings, count);
+    if items.is_empty() {
+        println!("Nothing to rate: no unrated reference result of a task with questions for people.");
+        return Ok(true);
+    }
+    let listener = rate::server::bind(port)?;
+    let session = rate::server::Session {
+        items,
+        ratings: ratings_path,
+        runs: evals.join("runs"),
+        rater: rater.to_owned(),
+        token: rate::server::new_token()?,
+        clock: SystemTime::now,
+    };
+    let url = format!("http://127.0.0.1:{}/", listener.local_addr()?.port());
+    println!("Rating {} result(s). Open {url} in a browser on this machine; nothing is uploaded.", session.items.len());
+    let ended = rate::server::serve(&listener, &session)?;
+    println!("{}", if ended == rate::server::Ended::Done { "All rated." } else { "Finished before all were rated." });
+    Ok(true)
+}
+
+/// `eval agreement`: measures a judge against the ratings and appends the record.
+fn eval_agreement(root: &Path, judge: &str, set: &str, question: Option<&str>, no_record: bool) -> Verdict {
+    let evals = assets_folder("OMUZAKI_EVAL_OUT", "evals")?;
+    let status = assets_folder("OMUZAKI_EVAL_STATUS", "status")?;
+    let discovery = eval::discover(root)?;
+    let history = history::read_attempts(&status.join(history::HISTORY_FILE))?;
+    let ratings = rate::read(&rate::ratings_path(&evals, set)?)?;
+    let source = rate::agreement::HistoryJudge::from_history(&discovery, &history, judge, question)?;
+    let measured = rate::agreement::agreement(&ratings, &|rating| source.answer(rating));
+    let rate_text =
+        measured.rate().map_or_else(|| "no clear-cut item was judged".to_owned(), |r| format!("{:.1}%", r * 100.0));
+    println!(
+        "judge `{judge}` agrees with the raters on {} of {} clear-cut items ({rate_text}); {} unsure left out, {} without a judge answer.",
+        measured.agree, measured.items, measured.unsure, measured.unjudged
+    );
+    println!(
+        "To become a hard check it needs {:.0}% over {} items{} and the known-negatives test.",
+        rate::agreement::PROMOTE_AGREEMENT * 100.0,
+        rate::agreement::PROMOTE_ITEMS,
+        if measured.meets_threshold() { " (these numbers meet that)" } else { " (these numbers do not)" }
+    );
+    if !no_record {
+        let now = SystemTime::now();
+        let record = rate::agreement::JudgeRecord::new(
+            &run::default_run_id(now, "agreement"),
+            &run::head_commit(root),
+            judge,
+            set,
+            &measured,
+        );
+        history::append(&status.join(history::HISTORY_FILE), &record)?;
+    }
+    Ok(true)
 }
 
 /// `eval sets ...`.
