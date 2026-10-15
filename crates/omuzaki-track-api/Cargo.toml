@@ -1,0 +1,31 @@
+[package]
+name = "omuzaki-track-api"
+description = "Contract for live trackers: cameras and their frames, the Tracker device trait, clock mapping and the newest-wins frame mailbox (spec v3 §8, §10, §22 PF-01)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+schemars.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+omuzaki-anim-api = { path = "../omuzaki-anim-api" }
+omuzaki-core = { path = "../omuzaki-core" }
+
+[dev-dependencies]
+criterion.workspace = true
+serde_json.workspace = true
+
+[[bench]]
+name = "hot_path"
+harness = false
+
+[lints]
+workspace = true
+
+[package.metadata.omuzaki]
+kind = "API"
+summary = "the tracker contract (PF-01): the camera seam (`Camera`, `CameraStream`, borrowed `CameraFrame`s in NV12, YUY2, MJPG, RGB8 or BGRA8, `CameraFormatRequest::pick`), the `Tracker` device trait with `LatencyStats`, `ClockMap` (device time onto the stage clock: drift fit, lower-envelope offset, backwards times rejected) and the wait-free newest-wins mailbox behind anim-api's `FrameSource`; `TrackFrame` stays in anim-api; design in `docs/design/track-api.md`"
