@@ -4,7 +4,7 @@
 //! parameter once; its brackets are a window round the current value, [`WINDOW`] of the parameter's range wide in the
 //! first sweep and [`SHRINK`] times the last one's after each sweep that gained. A sweep that gains nothing is run once
 //! more at the wide window. A last move along the sweep's net displacement follows each sweep. The result depends only on the
-//! inputs and [`PARAM_ORDER`]: no threads, no randomness, and ties keep the earlier value, so a parameter the views
+//! inputs and [`PARAM_ORDER`]: no threads, no randomness, and a tie keeps the lower parameter value within a line search and the earlier line's value across them, so a parameter the views
 //! cannot see stays at its default.
 //!
 //! **What a silhouette identifies.** Widths, arm length, foot size and the shape axes show in the outline. Sole and
@@ -188,7 +188,8 @@ pub fn fit_ordered(input: &FitInput<'_>, order: &[Param]) -> Result<FitResult, F
     let objective = Objective::new(input.template, input.targets, input.fixed)?;
     let start = FitParams::default();
     let first = objective.evaluate(&start)?;
-    let mut search = Search { objective: &objective, params: start, best: first.clone(), evaluations: 1 };
+    let mut search =
+        Search { objective: &objective, params: start, best: first.clone(), keep: Keep::new(first.cost), evaluations: 1 };
     let mut width = WINDOW;
     let mut stalled = false;
     loop {
@@ -236,19 +237,50 @@ struct Search<'a> {
     objective: &'a Objective,
     params: FitParams,
     best: Score,
+    keep: Keep,
     evaluations: usize,
 }
 
+/// Which candidate a search stores: the first strictly cheaper one, and among equal costs found by one line search
+/// the one at the lowest value `t` along it. A tie with a candidate from an earlier line search keeps that one.
+#[derive(Clone, Copy, Debug)]
+struct Keep {
+    /// The cost of the stored candidate.
+    cost: f64,
+    /// Where along the current line search the stored candidate lies, if it came from this line search.
+    t: Option<f64>,
+}
+
+impl Keep {
+    fn new(cost: f64) -> Self {
+        Self { cost, t: None }
+    }
+
+    /// A new line search starts: the stored candidate is no longer one to compare values with.
+    fn new_line(&mut self) {
+        self.t = None;
+    }
+
+    /// Whether the candidate at `t` with `cost` replaces the stored one (and then records it).
+    fn replaces(&mut self, cost: f64, t: f64) -> bool {
+        let wins = cost < self.cost || (cost == self.cost && self.t.is_some_and(|held| t < held));
+        if wins {
+            (self.cost, self.t) = (cost, Some(t));
+        }
+        wins
+    }
+}
+
 impl Search<'_> {
-    /// Scores `candidate`, keeping it if it beats the best so far. `None` once the budget is spent.
-    fn probe(&mut self, candidate: FitParams) -> Result<Option<f64>, FitError> {
+    /// Scores `candidate` found at `t` along the line search, keeping it per [`Keep`]. `None` once the budget is spent.
+    fn probe(&mut self, t: f64, candidate: FitParams) -> Result<Option<f64>, FitError> {
         if self.evaluations >= MAX_EVALUATIONS {
             return Ok(None);
         }
         self.evaluations += 1;
         let score = self.objective.evaluate(&candidate)?;
         let cost = score.cost;
-        if cost < self.best.cost {
+        if self.keep.replaces(cost, t) {
             self.params = candidate;
             self.best = score;
         }
@@ -273,7 +305,8 @@ impl Search<'_> {
 
     /// Golden-section search of `at(t)` for `t` in `(a, b)`; `false` when the budget ran out.
     fn line(&mut self, at: &dyn Fn(f64) -> FitParams, bracket: (f64, f64)) -> Result<bool, FitError> {
-        golden(bracket, &mut |t| self.probe(at(t)))
+        self.keep.new_line();
+        golden(bracket, &mut |t| self.probe(t, at(t)))
     }
 }
 
@@ -283,8 +316,8 @@ impl Search<'_> {
 /// resolution, where distinct values can rasterise alike, and the samples can straddle a dip between them. On a tie
 /// the ends and the midpoints of the three intervals are probed too (seven samples, six intervals), and the golden
 /// search runs in every interval that has a lowest sample at either end: when all seven tie, in all six, lowest first.
-/// [`Search::probe`] keeps the first strictly better result, so of equal results the lowest value wins and the outcome
-/// is deterministic. Inside one interval a tie keeps the lower half. The tolerance is [`BRACKET_TOLERANCE`] of the whole
+/// [`Search::probe`] stores a strictly cheaper result, and of equal results the one at the lowest value ([`Keep`]), so
+/// the outcome is deterministic. Inside one interval a tie keeps the lower half. The tolerance is [`BRACKET_TOLERANCE`] of the whole
 /// bracket, so an interval of a sixth is probed at its two interior points and no further. The search stops at the
 /// tolerance or the budget.
 fn golden((a, b): (f64, f64), cost: &mut dyn FnMut(f64) -> Result<Option<f64>, FitError>) -> Result<bool, FitError> {
@@ -437,6 +470,36 @@ mod tests {
         });
         assert_eq!(ok, Ok(true));
         assert!(lowest == 0.0, "the dip near 0.1 was never probed");
+    }
+
+    /// The stored candidate of a staircase search is the lowest tied value, though the interior probe at 0.382 is the
+    /// first to reach the tied cost and the end at 0.0 is probed later.
+    #[test]
+    fn the_stored_candidate_of_a_tie_is_the_lowest_value() {
+        // Cost 0.5 up to 0.9 beats the starting 1.0; the tied probes then differ only in value.
+        let mut keep = Keep::new(1.0);
+        let mut stored = None;
+        let ok = golden((0.0, 1.0), &mut |t| {
+            let cost = if t <= 0.9 { 0.5 } else { 1.0 };
+            if keep.replaces(cost, t) {
+                stored = Some(t);
+            }
+            Ok(Some(cost))
+        });
+        assert_eq!(ok, Ok(true));
+        assert_eq!(stored, Some(0.0), "the tied probes at 0.382 and 0.618 were kept over the end at 0");
+    }
+
+    #[test]
+    fn a_tie_with_an_earlier_line_search_keeps_the_earlier_value() {
+        let mut keep = Keep::new(0.5);
+        keep.new_line();
+        assert!(!keep.replaces(0.5, 0.1));
+        assert!(keep.replaces(0.4, 0.8));
+        assert!(!keep.replaces(0.4, 0.9));
+        assert!(keep.replaces(0.4, 0.2));
+        keep.new_line();
+        assert!(!keep.replaces(0.4, 0.0));
     }
 
     #[test]
