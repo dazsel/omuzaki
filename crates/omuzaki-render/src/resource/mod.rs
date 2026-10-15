@@ -13,6 +13,7 @@ pub(crate) mod texture;
 
 use crate::arena::Arena;
 use crate::environment::GpuEnvironment;
+use crate::morph::MorphPool;
 use material::GpuMaterial;
 use mesh::GpuMesh;
 use omuzaki_render_api::{ResourceStats, Scene};
@@ -27,6 +28,8 @@ pub(crate) struct Resources {
     pub(crate) materials: Arena<GpuMaterial>,
     pub(crate) targets: Arena<GpuTarget>,
     pub(crate) environments: Arena<GpuEnvironment>,
+    /// The per-instance morphed vertex streams of the frame (`morph.rs`).
+    pub(crate) morphs: MorphPool,
 }
 
 /// The resources a scene draws with, read-only: meshes, textures, materials and environments. Split from the targets so a frame can
@@ -37,6 +40,7 @@ pub(crate) struct SceneResources<'a> {
     pub(crate) textures: &'a Arena<GpuTexture>,
     pub(crate) materials: &'a Arena<GpuMaterial>,
     pub(crate) environments: &'a Arena<GpuEnvironment>,
+    pub(crate) morphs: &'a MorphPool,
 }
 
 impl Resources {
@@ -47,6 +51,7 @@ impl Resources {
             textures: &self.textures,
             materials: &self.materials,
             environments: &self.environments,
+            morphs: &self.morphs,
         };
         (scene, &mut self.targets)
     }

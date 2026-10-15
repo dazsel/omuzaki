@@ -169,7 +169,7 @@ impl FramePass for Outlines {
             let Some(pipeline) = self.pipelines.get(&hull.variant) else { continue };
             pass.set_pipeline(pipeline);
             pass.set_bind_group(1, &hull.material.bind_group, &[]);
-            hull.mesh.draw_with_smooth_normals(&mut pass, hull.instance);
+            hull.mesh.draw_with_smooth_normals(&mut pass, hull.instance, resources.morphs.shapes(hull.instance));
             cx.stats.draw_calls += 1;
             cx.stats.triangles += hull.mesh.triangles;
         }
