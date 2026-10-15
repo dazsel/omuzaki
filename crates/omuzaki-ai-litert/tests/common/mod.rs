@@ -61,3 +61,37 @@ pub fn with_model<R>(path: &Path, stages: &[omuzaki_ai_api::Stage], body: impl F
     let files = [LocalFile { name: "model.tflite".to_owned(), path: path.to_path_buf() }];
     body(&ModelSource { model: &model, files: &files, stages, natives: &NoNetwork })
 }
+
+/// Loads this platform's checked archive for `test`, or returns `false` (with a message) when there is none.
+pub fn library(test: &str) -> bool {
+    let Some((archive, sha256)) = litert_archive(test) else { return false };
+    omuzaki_ai_litert::load_archive(&archive, &sha256).unwrap();
+    true
+}
+
+/// Loads the model file at `path` as a session presenting `slot`, with `threads` threads and model names as slot names.
+pub fn load_file(path: &Path, slot: &omuzaki_ai_api::Signature, threads: u16) -> omuzaki_ai_litert::LiteRtSession {
+    let options = omuzaki_ai_api::SessionOptions::new(vec![omuzaki_ai_api::Provider::Cpu], threads);
+    with_model(path, &[], |source| {
+        omuzaki_ai_litert::LiteRtRuntime.load_session(source, slot, &std::collections::BTreeMap::new(), &options)
+    })
+    .unwrap()
+}
+
+/// Loads the synthetic `model` (written to a scratch file) as [`load_file`] does.
+pub fn load_synthetic(
+    model: &model::Table,
+    slot: &omuzaki_ai_api::Signature,
+    threads: u16,
+) -> omuzaki_ai_litert::LiteRtSession {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("model.tflite");
+    std::fs::write(&path, model::bytes(model)).unwrap();
+    load_file(&path, slot, threads)
+}
+
+/// The `ADD` graph's slot: inputs `a` and `b`, output `out`, each `FLOAT32` with `dims`.
+pub fn add_slot(dims: &[omuzaki_ai_api::Dim]) -> omuzaki_ai_api::Signature {
+    let spec = |name: &str| omuzaki_ai_api::TensorSpec::new(name, omuzaki_ai_api::DType::F32, dims.to_vec());
+    omuzaki_ai_api::Signature { inputs: vec![spec("a"), spec("b")], outputs: vec![spec("out")] }
+}
