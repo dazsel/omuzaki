@@ -11,8 +11,9 @@
 //! rights (io-api D5: the conservative mapping, `Unknown` wherever the file does not settle it), and each image of the
 //! scene under that same record, so an image never carries more rights than the model it came from. The store is
 //! content addressed, so importing the same bytes again stores nothing new.
-//! An asset already recorded is never overwritten: a re-import without a character, or with the same one, changes
-//! nothing, and one with a different character is a `Conflict` (several characters per asset is #1792).
+//! An asset already recorded is never overwritten: a re-import of the same files without a character, or with the same
+//! one, changes nothing; one with a different character is a `Conflict` (several characters per asset is #1792), and so
+//! is one whose images or sidecars differ from the recorded ones (a file the model refers to changed).
 //! An object is shared with another import only under an identical record; the check runs before the first write and again
 //! after each `put`, and any difference is a `Conflict` that names both records (joining records is #1773).
 //!
@@ -367,10 +368,13 @@ impl<'a, 'j> FolderFiles<'a, 'j> {
         Self { job, folder_text, folder, max_bytes, state: Mutex::new((Vec::new(), file_bytes)) }
     }
 
-    /// What was served, taking it from the resolver.
+    /// What was served, taking it from the resolver, sorted by URI: the order the importer's reads finished in must
+    /// not reach the record or the choice of which equal file is stored under which name.
     fn served(&self) -> Result<Served, OpError> {
         let mut state = self.state.lock().map_err(|_| OpError::internal("the sidecar list was poisoned"))?;
-        Ok(std::mem::take(&mut state.0))
+        let mut served = std::mem::take(&mut state.0);
+        served.sort_by(|(a, _), (b, _)| a.cmp(b));
+        Ok(served)
     }
 }
 
@@ -486,8 +490,8 @@ fn require_character(doc: &dyn DocRead, id: &str) -> Result<(), OpError> {
 /// The patch that records `asset` under `assets/<original>`, creating `assets` when the document has none (a change
 /// needs its parent to exist).
 ///
-/// An entry that already exists is never overwritten, so a re-import cannot drop what it recorded. With no `character`,
-/// or the same one, the patch is empty; a `character` on an entry that has none is added; a different `character` is a
+/// An entry that already exists is never overwritten, so a re-import cannot drop what it recorded. Different `images` or
+/// `sidecars` than the recorded ones are a `Conflict`. Otherwise, with no `character`, or the same one, the patch is empty; a `character` on an entry that has none is added; a different `character` is a
 /// `Conflict` naming the existing one (several characters per asset is #1792).
 fn record_patch(doc: &dyn DocRead, asset: &AssetRecord) -> Result<Patch, OpError> {
     let value = serde_json::to_value(asset).map_err(|e| OpError::internal(format!("serialising the asset: {e}")))?;
@@ -692,6 +696,39 @@ mod tests {
         let error = from_io(folder.read("b.png").unwrap_err(), "path");
         assert_eq!(error.code, omuzaki_ops_api::ErrorCode::Invalid, "{}", error.message);
         assert!(error.message.contains("input size in bytes"), "{}", error.message);
+    }
+
+    #[test]
+    #[allow(clippy::disallowed_methods, reason = "tests set up their fixtures on disk; the fence is for ops")]
+    fn the_served_files_are_in_uri_order_whatever_order_the_reads_finish_in() {
+        use omuzaki_ops_api::{Actor, Grants, JobId, ProjectDir};
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("m.gltf"), [0_u8; 1]).unwrap();
+        let names = ["a.bin", "b.bin", "c.png", "d.png"];
+        for name in names {
+            std::fs::write(dir.path().join(name), name.as_bytes()).unwrap();
+        }
+        let (actor, signal, doc) = (Actor::Person { name: "t".into() }, Quiet(omuzaki_ops_api::CancelFlag::new()), NoDoc);
+        let (grants, project) = (Grants::person(), ProjectDir::open(dir.path()).unwrap());
+        let job = JobCtx::new(JobId(1), &actor, &doc, &signal).with_grants(&grants).with_project_dir(&project);
+        let main = job.fs_access("m.gltf", FsMode::Read).unwrap();
+        let uris = |folder: &FolderFiles<'_, '_>| -> Vec<String> {
+            folder.served().unwrap().into_iter().map(|(uri, _)| uri).collect()
+        };
+
+        let reversed = FolderFiles::new(&job, &main, "m.gltf", 1 << 20, 1);
+        names.iter().rev().for_each(|name| drop(reversed.read(name).unwrap()));
+        assert_eq!(uris(&reversed), names);
+
+        // Reads from several threads finish in an order the scheduler picks; the result does not depend on it.
+        let threaded = FolderFiles::new(&job, &main, "m.gltf", 1 << 20, 1);
+        std::thread::scope(|scope| {
+            for name in names.iter().rev() {
+                let threaded = &threaded;
+                scope.spawn(move || drop(threaded.read(name).unwrap()));
+            }
+        });
+        assert_eq!(uris(&threaded), names);
     }
 
     #[test]
