@@ -116,7 +116,7 @@ impl ShowDef {
                     findings.extend(owned.into_iter().map(|f| f.at_key(key.as_str())));
                 }
                 Ok(KeyKind::Unchecked) => {
-                    findings.push(Finding::note(l10n::key_kept_unchecked(key.as_str())).at_key(key.as_str()))
+                    findings.push(Finding::note(l10n::key_kept_unchecked(key.as_str())).at_key(key.as_str()));
                 }
                 // `from_node` refuses these, so only a hand-built `ShowDef` reaches here.
                 Ok(KeyKind::BuiltIn) => {

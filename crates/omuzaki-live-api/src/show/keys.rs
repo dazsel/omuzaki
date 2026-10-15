@@ -137,12 +137,6 @@ const fn slug_bytes(key: &[u8]) -> bool {
 /// ```
 #[macro_export]
 macro_rules! register_show_key {
-    ($key:literal) => {
-        $crate::register_show_key!(@submit $key, ::core::option::Option::None);
-    };
-    ($key:literal, check = $check:path) => {
-        $crate::register_show_key!(@submit $key, ::core::option::Option::Some($check));
-    };
     (@submit $key:literal, $check:expr) => {
         const _: () = ::core::assert!(
             $crate::show::keys::named_for($key, ::core::env!("CARGO_PKG_NAME")),
@@ -156,6 +150,12 @@ macro_rules! register_show_key {
             }
         }
         $crate::__record_registration!("show_key", $key);
+    };
+    ($key:literal) => {
+        $crate::register_show_key!(@submit $key, ::core::option::Option::None);
+    };
+    ($key:literal, check = $check:path) => {
+        $crate::register_show_key!(@submit $key, ::core::option::Option::Some($check));
     };
 }
 
