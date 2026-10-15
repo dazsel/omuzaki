@@ -1,3 +1,9 @@
+---
+title: "The LLM seam: client trait, streaming, usage and price, errors, fakes"
+summary: "the LLM seam (ADR 0032): the `LlmClient` trait, blocking streams, the provider-neutral message model and MCP mapping, micro-dollar pricing and the pre-request bound, retries and cancellation, providers, privacy, `FakeLlm` and the conformance suite."
+area: design
+---
+
 # The LLM seam: client trait, streaming, usage and price, errors, fakes
 
 **Status:** proposed, awaiting acceptance. **Feature:** AG-01. **Decision record:**

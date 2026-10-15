@@ -6,6 +6,8 @@
 //! - `lint-seed`: a published seed version keeps its content, and no seed item names private material (library D15, D16).
 //! - `lint-crate-table`: every crate describes itself in its manifest, and `crates/README.md` has no crate table (ADR 0053).
 //! - `crate-table`: print the crate table generated from those manifests (ADR 0053).
+//! - `lint-docs-index`: every doc under `docs/` has front matter, and `docs/README.md` has no index list (ADR 0053).
+//! - `docs-index`: print the docs index generated from that front matter (ADR 0053).
 //! - `registry`: print the self-registrations the source declares, the expected side of the link gate.
 //! - `dist`: pack the Windows zip (`omuzaki.exe`, models, notices).
 //! - `check`: run the CI gates on the crates a change affects (`--json` prints the scope for the CI plan job).
@@ -13,6 +15,7 @@
 mod affected;
 mod check;
 mod crate_table;
+mod docs_index;
 mod error;
 mod links;
 mod lint_deps;
@@ -54,9 +57,13 @@ enum Command {
     LintCrateTable,
     /// Print the crate table (Markdown), generated from each crate's manifest.
     CrateTable,
+    /// Fail on a doc under docs/ without `title`, `summary` and `area` front matter, or an index list in docs/README.md.
+    LintDocsIndex,
+    /// Print the docs index (Markdown), generated from each doc's front matter.
+    DocsIndex,
     /// Print every self-registration in the source (or, with `--app`, those a binary must contain), one per line.
     Registry(links::RegistryArgs),
-    /// Run fmt, clippy, tests, cargo-deny, lint-deps, lint-links and lint-ui-writes on the crates a change affects, through the build
+    /// Run fmt, clippy, tests, cargo-deny, lint-deps, lint-links, lint-ui-writes and the docs and crate lints on the crates a change affects, through the build
     /// queue.
     Check(check::CheckArgs),
     /// Pack the Windows zip: omuzaki.exe, the models, the notices (and the ONNX Runtime DLL), deterministically.
@@ -95,6 +102,8 @@ fn run(cli: &Cli) -> Result<ExitCode> {
         Command::LintSeed(args) => lint_seed::run(&workspace, args),
         Command::LintCrateTable => crate_table::lint(&workspace),
         Command::CrateTable => crate_table::print(&workspace),
+        Command::LintDocsIndex => docs_index::lint(&workspace),
+        Command::DocsIndex => docs_index::print(&workspace),
         Command::Registry(args) => links::registry(&workspace, args),
         Command::Check(args) => check::run(&workspace, args),
         Command::Dist(_) => unreachable!("handled above"),

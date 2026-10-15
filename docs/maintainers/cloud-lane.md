@@ -1,3 +1,9 @@
+---
+title: "The cloud lane: operating manual and handover"
+summary: "operating manual and handover"
+area: maintainers
+---
+
 # The cloud lane: operating manual and handover
 
 This is how a cloud lane works, written so that a new lead, on any account, can take over from the repository

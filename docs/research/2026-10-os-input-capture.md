@@ -1,3 +1,9 @@
+---
+title: "Capturing keyboard, mouse, pen and gamepad input outside the app (2026-10-12)"
+summary: "Capturing keyboard, mouse, pen and gamepad input outside the app (2026-10-12)"
+area: research
+---
+
 # Capturing keyboard, mouse, pen and gamepad input outside the app (2026-10-12)
 
 > Research pass (PF-29 input-driven body motion, PF-05 bindings, PF-25 triggers; PF-30 reuses the same layer). Checked 2026-10-12 against vendor docs, crate manifests and repos. "(unverified)" means I found no primary source and did not test it. Nothing here was built or run on Windows or macOS: every behaviour claim is from documentation or source, not from a measurement. The constraint is the spec's: "no game hooks, only OS input the user allows (scope-gated by the `input` scope)", and nothing non-commercial (`docs/licensing/policy.md`).

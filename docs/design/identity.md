@@ -1,3 +1,9 @@
+---
+title: "Identity: keys, signatures and trust"
+summary: "keys, signatures and trust (ADR 0042): one ed25519 key per person per machine by default, one per project when needed, in the OS keychain, the domain-tagged signature envelope, the trust list, signed exports (`OMUZAKI_signed_export`), key statements, agent rules and the watermark hook."
+area: design
+---
+
 # Identity: keys, signatures and trust
 
 **Status:** awaiting acceptance. **Feature:** SE-07. **Decision record:** `docs/decisions/0042-identity.md`.

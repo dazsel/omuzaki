@@ -1,3 +1,9 @@
+---
+title: "Answering the VTube Studio API as a server: terms, wire facts, tools, naming (2026-10-13)"
+summary: "answering the VTube Studio API as a server (PL-05): terms, wire identity, what stream tools send, safety, which requests to answer or refuse, naming rules."
+area: research
+---
+
 # Answering the VTube Studio API as a server: terms, wire facts, tools, naming (2026-10-13)
 
 > Research, under PL-05 (spec v3 §30), next to CN-13 (§14). `docs/research/2026-10-vts-plugin-api-terms.md` (the CN-13 note) covers Omuzaki as a plugin of VTube Studio (VTS). This note covers the other direction: a server that answers the same documented API so that stream tools can talk to Omuzaki. An engineering reading, not legal advice; open legal points.

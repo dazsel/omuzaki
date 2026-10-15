@@ -1,3 +1,9 @@
+---
+title: "Teams: roles, membership, review policy and the audit trail"
+summary: "team roles over the scopes, the signed membership log, enforcement, agency accounts and the SSO, LB-07 and git hooks (ADR 0043)."
+area: design
+---
+
 # Teams: roles, membership, review policy and the audit trail
 
 **Status:** proposed (cloud lead to accept on the PR). **Features:** VC-10, VC-11,

@@ -1,3 +1,9 @@
+---
+title: "Branches: storage, switching, side-by-side compare and part-level merge (VC-02)"
+summary: "storage, switching, side-by-side compare and part-level merge (VC-02)"
+area: design
+---
+
 # Branches: storage, switching, side-by-side compare and part-level merge (VC-02)
 
 **Status:** accepted (2026-10-12). Additions to `omuzaki-history-api` and `omuzaki-ops-api`, a new

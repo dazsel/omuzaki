@@ -1,3 +1,9 @@
+---
+title: "0017: One model registry: self-registered slots, tensor sessions behind a runtime seam, SHA-256 pins, block-counted stream deadlines (2026-10-12)"
+summary: "One model registry: self-registered slots, tensor sessions behind a runtime seam, SHA-256 pins, block-counted stream deadlines"
+area: decisions
+---
+
 # 0017: One model registry: self-registered slots, tensor sessions behind a runtime seam, SHA-256 pins, block-counted stream deadlines (2026-10-12)
 
 **Status:** accepted (2026-10-12), with the review answers folded into decisions 3, 5, 9 and 10. **Context:** ML-01, ML-13 (ADR 0016),

@@ -39,7 +39,7 @@ The workspace is `crates/*` plus `xtask`. The full table is printed by `cargo xt
 - **App crates** (`omuzaki-cli`, `omuzaki-ui`, `omuzaki-test`, `omuzaki-stage`, `xtask`) may depend on anything.
 - Registrations (operations, part kinds, formats) are made with `register_<kind>!` next to what they register. Never
   add a central list that every feature must edit.
-- Do not hand-edit generated files (MCP schemas, CLI help, docs indexes).
+- Do not hand-edit generated files (MCP schemas, CLI help, docs indexes). The docs index is printed by `cargo xtask docs-index` from each doc's front matter.
 
 ## Code standards
 

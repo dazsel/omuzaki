@@ -1,3 +1,9 @@
+---
+title: "0036: Jobs plan under the lock, work off it and finish as one undo step; effects outside the document are undone by paired ops (2026-10-13)"
+summary: "Jobs plan under the lock, work off it and finish as one undo step; effects outside the document are undone by paired ops"
+area: decisions
+---
+
 # 0036: Jobs plan under the lock, work off it and finish as one undo step; effects outside the document are undone by paired ops (2026-10-13)
 
 **Status:** accepted, with the conditions in "Contract". It adds a `omuzaki-ops-api` change (hub crate) and two
