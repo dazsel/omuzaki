@@ -4487,10 +4487,18 @@ dependencies = [
  "egui_tiles",
  "image",
  "inventory",
+ "omuzaki-char",
+ "omuzaki-char-api",
+ "omuzaki-char-mock",
  "omuzaki-core",
  "omuzaki-doc-api",
+ "omuzaki-doc-mock",
  "omuzaki-l10n-api",
  "omuzaki-ops-api",
+ "omuzaki-ops-mock",
+ "omuzaki-render",
+ "omuzaki-render-api",
+ "omuzaki-stage",
  "rustix 1.1.5",
  "schemars",
  "serde",
@@ -4498,6 +4506,7 @@ dependencies = [
  "tempfile",
  "toml",
  "tracing",
+ "wgpu",
 ]
 
 [[package]]

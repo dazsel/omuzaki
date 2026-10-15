@@ -26,11 +26,16 @@ schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
+omuzaki-char-api = { path = "../omuzaki-char-api" }
 omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-doc-api = { path = "../omuzaki-doc-api" }
 omuzaki-l10n-api = { path = "../omuzaki-l10n-api" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
+omuzaki-render = { path = "../omuzaki-render" }
+omuzaki-render-api = { path = "../omuzaki-render-api" }
+omuzaki-stage = { path = "../omuzaki-stage", features = ["wgpu"] }
 tracing.workspace = true
+wgpu.workspace = true
 
 # Unix only: signal a probe's whole process group when it ends
 [target.'cfg(unix)'.dependencies]
@@ -39,6 +44,10 @@ rustix = { workspace = true, features = ["process"] }
 [dev-dependencies]
 egui_kittest.workspace = true
 image.workspace = true
+omuzaki-char = { path = "../omuzaki-char" }
+omuzaki-char-mock = { path = "../omuzaki-char-mock" }
+omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
+omuzaki-ops-mock = { path = "../omuzaki-ops-mock" }
 tempfile.workspace = true
 
 [lints]

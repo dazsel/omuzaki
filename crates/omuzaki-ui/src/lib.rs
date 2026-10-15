@@ -4,6 +4,7 @@
 #![deny(missing_docs)]
 
 pub mod ds;
+pub mod panels;
 pub mod shell;
 
 // Lets `register_story!` and `register_contrast!` record each registration for the link gate (ADR 0015).
