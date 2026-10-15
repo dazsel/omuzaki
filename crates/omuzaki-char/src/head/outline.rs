@@ -158,6 +158,7 @@ pub fn half_width_at(outline: &HeadOutline, y: f64) -> f64 {
 ///   the top stays);
 /// - the stretch line within [`STRETCH_LINE_RANGE`] of the top and [`MIN_STRETCH_DEPTH`] above the cranium's bottom;
 /// - the exponent within [`EXPONENT_RANGE`], raised until the front chin is no pointier than [`MIN_TIP_DEG`];
+/// - the lower exponent, if set, within [`EXPONENT_RANGE`] (it is not raised for the tip);
 /// - `min_ratio` within [`MIN_RATIO_RANGE`] and the puff at most [`MAX_CHEEK_PUFF`].
 ///
 /// An outline inside the space comes back with the same numbers. Every limit is continuous in the parameters, so a
@@ -193,12 +194,13 @@ pub fn plausible(outline: &HeadOutline, cranium: &Cranium) -> HeadOutline {
     let min_ratio =
         outline.chin.map_or(IMPLICIT_MIN_RATIO, |c| clamp(c.min_ratio, MIN_RATIO_RANGE.0, MIN_RATIO_RANGE.1));
     let exponent = blunt_exponent(clamp(outline.exponent, EXPONENT_RANGE.0, EXPONENT_RANGE.1), half_width, length);
+    let exponent_lower = outline.exponent_lower.map(|e| clamp(e, EXPONENT_RANGE.0, EXPONENT_RANGE.1));
     HeadOutline {
         half_width,
         top,
         height: length,
         exponent,
-        exponent_lower: None,
+        exponent_lower,
         chin: Some(Chin { y: chin_y, stretch_top, min_ratio }),
         cheek_puff: clamp(outline.cheek_puff, 0.0, MAX_CHEEK_PUFF),
     }
@@ -644,6 +646,16 @@ mod tests {
     }
 
     /// The pointiest face the plausible space allows: the lowest exponent, the longest face, the highest eye line.
+    #[test]
+    fn a_lower_exponent_passes_through_plausible_clamped_to_its_range() {
+        let c = Cranium::default();
+        let set = |e: Option<f64>| plausible(&HeadOutline { exponent_lower: e, ..inside() }, &c).exponent_lower;
+        assert_eq!(set(None), None);
+        assert_eq!(set(Some(2.0)), Some(2.0), "an in-range value comes back unchanged");
+        assert_eq!(set(Some(0.5)), Some(EXPONENT_RANGE.0), "below the range stops at the floor");
+        assert_eq!(set(Some(9.0)), Some(EXPONENT_RANGE.1), "above the range stops at the ceiling");
+    }
+
     #[test]
     fn the_lowest_exponent_is_kept_and_its_chin_is_a_visible_point_but_no_spike() {
         let c = Cranium::default();

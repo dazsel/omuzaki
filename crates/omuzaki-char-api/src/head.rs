@@ -155,13 +155,16 @@ impl HeadOutline {
         self.chin.map_or(self.top - self.height, |c| c.y)
     }
 
-    /// Linear blend (CB-10 "blendable"). If only one side has a chin, the chin switches at `t = 0.5`. A `None`
-    /// `exponent_lower` counts as that side's `exponent`, so the blend stays continuous; two `None`s stay `None`.
+    /// Linear blend (CB-10 "blendable"). If only one side has a chin, the chin switches at `t = 0.5`. `exponent_lower`
+    /// is exact at the ends: `t = 0` gives `self`'s value and `t = 1` gives `other`'s, `None` included. Between them a
+    /// `None` side counts as that side's `exponent`, so the blend stays continuous; two `None`s stay `None`.
     #[must_use]
     pub fn lerp(&self, other: &Self, t: f64) -> Self {
         let m = |a: f64, b: f64| a + (b - a) * t;
         let exponent_lower = match (self.exponent_lower, other.exponent_lower) {
             (None, None) => None,
+            _ if t <= 0.0 => self.exponent_lower,
+            _ if t >= 1.0 => other.exponent_lower,
             (a, b) => Some(m(a.unwrap_or(self.exponent), b.unwrap_or(other.exponent))),
         };
         let chin = match (self.chin, other.chin) {
@@ -445,10 +448,22 @@ mod tests {
         let none = HeadOutline { exponent: 1.8, ..HeadOutline::default() };
         assert_eq!(some.lerp(&none, 0.0).exponent_lower, Some(1.5));
         assert!((some.lerp(&none, 0.5).exponent_lower.unwrap() - 1.65).abs() < 1e-6);
-        assert!((some.lerp(&none, 1.0).exponent_lower.unwrap() - 1.8).abs() < 1e-6);
+        assert_eq!(some.lerp(&none, 1.0).exponent_lower, None, "t = 1 is `other`, exactly");
         // The `None` side on the left counts as its own `exponent` (1.8 here), so the blend is symmetric.
         assert!((none.lerp(&some, 0.5).exponent_lower.unwrap() - 1.65).abs() < 1e-6);
         assert_eq!(none.lerp(&some, 1.0).exponent_lower, Some(1.5));
+    }
+
+    #[test]
+    fn a_mixed_lower_exponent_is_exact_at_the_ends() {
+        let some = HeadOutline { exponent: 2.0, exponent_lower: Some(1.5), ..HeadOutline::default() };
+        let none = HeadOutline { exponent: 1.8, ..HeadOutline::default() };
+        // `t = 0` is `self` and `t = 1` is `other`, so no no-op blend gains or loses the key.
+        assert_eq!(none.lerp(&some, 0.0).exponent_lower, None);
+        assert_eq!(some.lerp(&none, 1.0).exponent_lower, None);
+        assert_eq!(some.lerp(&none, 0.0).exponent_lower, Some(1.5));
+        assert_eq!(none.lerp(&some, 1.0).exponent_lower, Some(1.5));
+        assert_eq!(none.lerp(&some, 0.0), none);
     }
 
     #[test]
