@@ -10,13 +10,13 @@ Research for #1117 (parent #573, CN-08). Source marks: **verified** = I read the
 
 ## 1. The answer
 
-- **Recommendation 1: use the `ag-psd` crate (MIT) behind a thin `omuzaki-io-psd` adapter.** It is the only licence-clean Rust crate found that both reads and writes layers, groups, names, opacity, blend modes (including pass-through), clipping and layer masks, in 8, 16 and 32 bit RGB. The adapter exposes only our subset, so the crate can be swapped out.
+- **Recommendation 1: use the `ag-psd` crate (MIT) behind a thin `omuzaki-io-psd` adapter.** It is the only licence-clean Rust crate found that both reads and writes layers, groups, names, opacity, blend modes (including pass-through), clipping and layer masks, in 8, 16 and 32 bit RGB. Through our adapter the round trip is **8-bit only**: the crate decodes editable pixels to RGBA8, so 16 and 32 bit files are read, edited and written back at 8 bit (section 3.1). The adapter exposes only our subset, so the crate can be swapped out.
 - **Condition:** `ag-psd` is young (crate created 2026-06-28, v0.3.0 released 2026-09-06), has one maintainer, about 1,500 downloads, and says in its own README that most of it was written by an AI and "has not been hand-audited line by line". So we gate it: our own synthetic fixtures, a read, write, read stability test, a fuzz target on the reader, and a pinned version. It is a derivative of a mature MIT library (`Agamnentzar/ag-psd`, TypeScript, v31) whose test fixtures drive it.
-- **Recommendation 2 (fallback): a clean-room reader and writer for our subset**, about 1,500 to 2,500 lines of Rust, built from Adobe's public spec, using `rawpsd` (CC0) as a read-side reference. Take this path if `ag-psd` fails the gates, goes unmaintained, or the licence review asks for a smaller surface.
+- **Recommendation 2 (fallback): a clean-room reader and writer for our subset**, about 1,500 to 2,500 lines of Rust, because a PSD is a closed product's file format (`docs/licensing/policy.md`, rule 3). One author writes the format spec in the issue from Adobe's public spec and our own synthetic files only. A separate implementer builds from that spec alone and may not read `rawpsd` or other code for it. The issue and PR record who wrote the spec, from which sources, and that the implementer used only the spec. (`rawpsd` is CC0, so a licensed port with notices is the other route; that is a Director choice, see section 9.) Take this path if `ag-psd` fails the gates, goes unmaintained, or the licence review asks for a smaller surface.
 - **Not recommended:** the `psd` crate (read only, no layer masks, no blend in flatten, no write), `psd-rs` (a binding to C++, no licence file on GitHub, tiny and unmaintained), `psd_sdk` (C++; limited export; BSD-2 is fine, but it adds a C++ build for little gain).
 - **Open fallback exchange format:** OpenRaster (`.ora`) is the cleaner interchange format on paper (PNG per layer, groups, opacity, visibility, blend modes), supported by Krita, GIMP, MyPaint and Scribus, but **not Photoshop** and no layer masks in its layer-stack spec as I read it. Offer it as a second format, not a replacement. Its spec carries no licence statement (see section 6).
-- **Decision this supports:** CN-08's "Krita and Photoshop through a layered PSD round trip" is buildable now without writing a PSD codec first. It unlocks the tasks in section 9.
-- **One legal caveat that applies to every option, including clean-room:** Adobe's spec says "The software described in this document is furnished under license and may only be used or copied in accordance with the terms of such license." That is the Photoshop software, not the format document, but the commercial-implementation terms were not confirmed. This needs a lawyer's one-time look before release. See section 5.
+- **Decision this supports:** CN-08's "Krita and Photoshop through a layered PSD round trip" is buildable now without writing a PSD codec first. It unlocks the tasks in section 10.
+- **One legal caveat that applies to every option, including clean-room:** Adobe's spec says "The software described in this document is furnished under license and may only be used or copied in accordance with the terms of such license." That is the Photoshop software, not the format document, but the commercial-implementation terms were not confirmed. This needs a lawyer's one-time look before release. See section 4.
 
 ## 2. Summary table
 
@@ -59,7 +59,7 @@ Research for #1117 (parent #573, CN-08). Source marks: **verified** = I read the
 - Upstream warning (README, line "This library does NOT generate new composite canvas based on the layer data"): after we change layers, the stored composite and thumbnail go stale. Photoshop does not need the composite; other apps may show a stale or blank preview. Our writer must write a fresh composite, or none. Photoshop's "Maximize Compatibility" preference does the same job for files Photoshop saves (see section 5).
 - I did not run the crate. Whether ICC bytes survive a read, write cycle is not verified (open question).
 
-**Fit with Omuzaki's subset.** High. Everything in section 7 maps onto `Layer`/`LayerAdditionalInfo` fields. The adapter converts to and from our own `LayerStack` type, keeps unknown blocks out, and reports what it drops (section 7). The `PixelData` RGBA8 buffer is a 4x memory cost for 16-bit files; acceptable for 8-bit first.
+**Fit with Omuzaki's subset.** High. Everything in section 7 maps onto `Layer`/`LayerAdditionalInfo` fields. The adapter converts to and from our own `LayerStack` type, keeps unknown blocks out, and reports what it drops (section 7). The `PixelData` RGBA8 buffer is 4 bytes per decoded pixel whatever the file depth (a 16-bit RGBA file holds 8 bytes per pixel natively, so this is a quantisation to 8 bit, not extra memory). Compressed file size gives no fixed multiplier, so budget by pixel count times 4, and count any retained raw channels and the input bytes on top. The crate keeps full precision only through its verbatim raw-channel path, which our adapter leaves out; so 16 and 32 bit files lose precision on a read, edit, write cycle. Deep-colour round trip needs raw or full-precision storage in `LayerStack`, which is out of scope for the first version.
 
 **Open questions.**
 1. Does a file written by it open without a repair prompt in Photoshop, and with groups and masks intact in Krita? Needs a person with Photoshop to check once (section 10).
@@ -193,7 +193,7 @@ Because there is no spec licence, the format is a ZIP of PNGs and one XML file, 
 
 **Written:** the same subset, plus a fresh composite image so previews work in other tools.
 
-**Safety:** all decoding goes through a byte budget; read the structure first, check sizes, then decode layers one at a time.
+**Safety:** all decoding goes through a byte budget (bytes, like `ag-psd`'s `total_memory_limit`); read the structure first, check sizes, then decode layers one at a time.
 
 ## 8. Licence register rows (for the PR that follows)
 
@@ -217,6 +217,8 @@ This note does not edit `docs/licensing/` (the repo's register is generated; the
 4. **Pass-through groups and masks in the current Krita.** Settled by loading our synthetic file in the current stable Krita and reading the layer panel (no source reading).
 5. **Is a missing licence on the OpenRaster spec acceptable?** Director ruling.
 6. **Maintainer continuity of `ag-psd`.** Revisit at each release; the adapter keeps the swap path open.
+7. **How does a layer stack reach the registry?** `Importer` returns `IoScene` and `Exporter` takes `&IoScene`, with no layer type. Either `omuzaki-io-ops` depends on `omuzaki-io-psd` directly (no API change; recommended for v1), or a separate layer-stack contract is proposed and approved first. Director ruling; T1 and T4 wait on it.
+8. **Fallback route:** a clean-room build (spec author and implementer split) or a licensed port of `rawpsd` with notices. Director ruling, with the lawyer's look from section 4.
 
 ## 10. Tasks this unlocks
 
@@ -224,10 +226,10 @@ Fixtures are synthetic and generated by us in code (solid and gradient rectangle
 
 | ID | Task | Fence | Size | Model |
 |---|---|---|---|---|
-| T1 | `omuzaki-io-psd` skeleton: `LayerStack` types, subset mapping table, findings list, registers with `omuzaki-io-api` | new crate `crates/omuzaki-io-psd`, its Cargo.toml and docs | about 400 lines | Sonnet |
-| T2 | `ag-psd` adapter: read, write, bit-budget, ICC test, fuzz target | same crate, `src/adapter.rs`, `fuzz/` | about 500 lines | Sonnet |
+| T1 | `omuzaki-io-psd` skeleton: `LayerStack` types, subset mapping table, findings list. It does **not** register with `omuzaki-io-api`: that registry's `Importer` and `Exporter` carry `IoScene`, which has no layers (see section 9, question 7) | new crate `crates/omuzaki-io-psd`, its Cargo.toml and docs | about 400 lines | Sonnet |
+| T2 | `ag-psd` adapter: read, write, byte budget (covers decoded pixels, retained raw channels and input bytes), ICC test, fuzz target | same crate, `src/adapter.rs`, `fuzz/` | about 500 lines | Sonnet |
 | T3 | Synthetic fixture generator and golden round-trip tests (read, write, read stable; findings reported) | same crate, `tests/`, a fixture-builder test helper | about 300 lines | Haiku |
-| T4 | Import and export ops that use the format (layers become parts or texture layers; export from a texture) | `omuzaki-ops` PSD ops module | about 400 lines | Sonnet |
+| T4 | Import and export ops that use the format (layers become parts or texture layers; export from a texture) | `omuzaki-io-ops` PSD ops module (the op layer for `io.*`, per `docs/design/io-api.md`; `omuzaki-ops` is the generic executor and must not depend on `omuzaki-io-psd`) | about 400 lines | Sonnet |
 | T5 | Manual interop check list for Krita and Photoshop with synthetic files, recorded as a short doc | `docs/` page | about 80 lines | Haiku (a person runs it) |
 | T6 | `.ora` read and write (second format) | same crate, `src/ora.rs` | about 400 lines | Haiku |
 | T7 | Clean-room fallback reader/writer, only if T2 fails review | new crate, own fence | about 2,000 lines | Opus or Sonnet |
