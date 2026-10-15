@@ -84,7 +84,7 @@ fn check_schema(
     sources: &mut BTreeMap<String, Vec<String>>,
 ) {
     let mut node_number = 0;
-    walk(schema, |path, node| {
+    let outcome = walk(schema, |path, node| {
         node_number += 1;
         // Each visited key is the last one of its path, so checking the last key checks each key once.
         let Some(&key) = path.last() else {
@@ -103,6 +103,9 @@ fn check_schema(
         }
         sources.entry(id).or_default().push(format!("the schema of `{}`, node {node_number}", item.owner));
     });
+    if let Err(error) = outcome {
+        failures.push(Failure::new(CHECK, &item.owner, format!("the argument schema is ambiguous at {error}")));
+    }
 }
 
 /// Why `text` is not a one-line, non-empty summary, or `None` when it is one.
