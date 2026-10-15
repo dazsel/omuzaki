@@ -3726,6 +3726,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-identity-api"
+version = "0.0.0"
+dependencies = [
+ "ed25519-dalek",
+ "omuzaki-store-api",
+ "proptest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "omuzaki-identity-mock"
+version = "0.0.0"
+dependencies = [
+ "ed25519-dalek",
+ "omuzaki-identity-api",
+ "omuzaki-library-api",
+ "omuzaki-store-api",
+ "proptest",
+ "schemars",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "omuzaki-io-api"
 version = "0.0.0"
 dependencies = [
