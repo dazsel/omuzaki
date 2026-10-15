@@ -8,7 +8,7 @@
 
 use std::collections::BTreeMap;
 
-use omuzaki_core::glam::{Affine3A, Mat4, Vec3};
+use omuzaki_core::glam::{Affine3A, Mat3A, Mat4, Vec3};
 use omuzaki_render_api::{
     Background, Bloom, Camera, DepthOfField, FilmGrain, Post, Projection,
 };
@@ -179,11 +179,14 @@ impl ResolvedScene {
     /// Nothing is written on an error, so `self` still holds the last scene that resolved.
     ///
     /// # Errors
-    /// [`StageError::Scene`] for a lighting error (an unknown member anchor, too many lights), for more than
+    /// [`StageError::Scene`] for a figure whose root isn't a translation and a rotation (path `cast.<id>`) or whose
+    /// height isn't finite and above 0, for a cast whose subject has no figure (path `scene.subject`; an empty cast
+    /// uses the 1 m figure at the origin instead), for a lighting error (an unknown member anchor, too many lights), for more than
     /// [`MAX_CAMERAS`] cameras, for a `scene.camera` that isn't one of them, for a preset camera whose subject has no
     /// figure (path `cameras.<id>.subject`), for a free camera without a position, a target or its anchor's figure,
     /// and for depth of field focused on the subject when there is no subject figure or no camera to measure from.
-    /// [`StageError::Framing`] from [`frame`], and for a free camera whose completed projection isn't usable.
+    /// [`StageError::Framing`] from [`frame`], and for a preset or free camera that isn't usable once placed in the
+    /// world.
     pub fn resolve_into(
         &mut self,
         scene: CheckedScene<'_>,
@@ -193,16 +196,22 @@ impl ResolvedScene {
         let def = scene.def();
         // Everything below applies a figure's root and height; an unusable one fails here, not in a later result.
         for (id, figure) in figures {
-            if !(figure.root.is_finite() && figure.height_m.is_finite() && figure.height_m > 0.0) {
+            if !(is_rigid(&figure.root) && figure.height_m.is_finite() && figure.height_m > 0.0) {
                 return Err(scene_error(SceneError::new(
                     format!("cast.{id}"),
-                    "the figure's root and height must be finite, and the height above 0",
+                    "the figure's root must be a translation and a rotation, and its height finite and above 0",
                 )));
             }
         }
         // The default subject is the first member of the cast, visible or not: a hidden one leaves the subject
         // unavailable rather than handing its role to the next member.
-        let subject = def.scene.subject.as_ref().or_else(|| def.cast.keys().next()).and_then(|id| figures.get(id));
+        let subject_id = def.scene.subject.as_ref().or_else(|| def.cast.keys().next());
+        let subject = subject_id.and_then(|id| figures.get(id));
+        // The 1 m figure at the origin (D4) stands in for the subject only when the cast is empty. With a cast, an
+        // unavailable subject would otherwise move the lights and cameras and rescale the ground without a word.
+        if let (Some(id), None) = (subject_id, subject) {
+            return Err(scene_error(SceneError::new("scene.subject", format!("`{id}` has no visible figure"))));
+        }
         let frame_of = |anchor: &Anchor| match anchor {
             Anchor::Stage => None,
             Anchor::Subject => subject.map(Figure::anchor_frame),
@@ -265,6 +274,15 @@ impl ResolvedScene {
         }
         Ok(changes)
     }
+}
+
+/// True when `root` is a translation and a rotation: finite, orthonormal axes and a determinant of +1.
+fn is_rigid(root: &Affine3A) -> bool {
+    const TOLERANCE: f32 = 1e-4;
+    let axes = root.matrix3;
+    root.is_finite()
+        && (axes.transpose() * axes).abs_diff_eq(Mat3A::IDENTITY, TOLERANCE)
+        && (axes.determinant() - 1.0).abs() <= TOLERANCE
 }
 
 /// Stores `new` in `slot`; true if that changed it.
