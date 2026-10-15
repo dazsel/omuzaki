@@ -5,6 +5,7 @@
 //! - `lint-registers`: a crate that registers sets `registers = true`, which Apps generate their `link()` calls from (ADR 0054).
 //! - `lint-licences`: one licence file per dependency, tool and asset; `--print` prints the register made from them.
 //! - `lint-ui-writes`: UI code changes the document only through the `Runner` (QG-11).
+//! - `models`: every shipped model's manifest is backed by an allowed licence-register row (ML-01, ADR 0017).
 //! - `lint-seed`: a published seed version keeps its content, and no seed item names private material (library D15, D16).
 //! - `lint-crate-table`: every crate describes itself in its manifest, and `crates/README.md` has no crate table (ADR 0053).
 //! - `lint-mods`: a folder whose module list is generated declares no module by hand (ADR 0054).
@@ -29,6 +30,7 @@ mod lint_mods;
 mod lint_registers;
 mod lint_seed;
 mod lint_ui_writes;
+mod models;
 mod process;
 mod report;
 mod wasm_link_proof;
@@ -64,6 +66,8 @@ enum Command {
     LintLicences(lint_licences::LintLicencesArgs),
     /// Fail on UI code that changes the document outside the `Runner` (QG-11).
     LintUiWrites,
+    /// Fail on a shipped model whose manifest isn't backed by an allowed entry in `docs/licensing/deps/` (ML-01, ADR 0017).
+    Models,
     /// Fail on a published seed version whose content changed without a bump, or a seed item that names private material.
     LintSeed(lint_seed::LintSeedArgs),
     /// Fail on a crate without `kind` and `summary` under `[package.metadata.omuzaki]`, or a crate table in crates/README.md.
@@ -119,6 +123,7 @@ fn run(cli: &Cli) -> Result<ExitCode> {
         Command::LintRegisters => lint_registers::run(&workspace),
         Command::LintLicences(args) => Ok(lint_licences::run(&workspace, args)),
         Command::LintUiWrites => lint_ui_writes::run(&workspace),
+        Command::Models => Ok(models::run(&workspace)),
         Command::LintSeed(args) => lint_seed::run(&workspace, args),
         Command::LintCrateTable => crate_table::lint(&workspace),
         Command::LintMods => lint_mods::lint(&workspace),

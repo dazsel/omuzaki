@@ -1,7 +1,8 @@
 //! Progress and cancellation for long registry work (downloads, adding a model, evaluations).
 
-/// Receives progress from long work and lets the caller stop it. Same shape as `omuzaki_io_api::Progress`; both merge
-/// into the job manager's type when `omuzaki-ops-api` grows jobs.
+/// Receives progress from long work and lets the caller stop it. Same shape as `omuzaki_io_api::Progress`, and the two
+/// stay separate types. An ai op that runs as a job passes an adapter over its `JobCtx`, as
+/// `omuzaki_io_ops::ops::progress::JobProgress` does for io; no ai op runs as a job yet, so there is no such adapter yet.
 pub trait Progress: Send + Sync {
     /// Reports that `stage` is `fraction` (0..=1) done.
     fn stage(&self, name: &str, fraction: f32);

@@ -15,7 +15,7 @@ fn frame(op: u8, d: Value) -> Frame {
 fn round_trip(wire: Value) -> Message {
     let f: Frame = serde_json::from_value(wire.clone()).expect("frame parses");
     let m = Message::from_frame(&f).expect("message parses");
-    assert_eq!(serde_json::to_value(m.to_frame()).expect("serialises"), wire);
+    assert_eq!(serde_json::to_value(m.to_frame().expect("serialises")).expect("serialises"), wire);
     m
 }
 
@@ -57,11 +57,11 @@ fn identified_and_reidentify() {
 
 #[test]
 fn request_and_response() {
-    let req = RequestMsg::new("r1", &SetCurrentProgramScene { scene_name: "Main".into() });
+    let req = RequestMsg::new("r1", &SetCurrentProgramScene { scene_name: "Main".into() }).expect("serialises");
     let wire = json!({"op": 6, "d": {"requestType": "SetCurrentProgramScene", "requestId": "r1",
         "requestData": {"sceneName": "Main"}}});
     assert_eq!(round_trip(wire), Message::Request(req));
-    let none = RequestMsg::new("r2", &StartStream {});
+    let none = RequestMsg::new("r2", &StartStream {}).expect("serialises");
     assert_eq!(none.request_data, None);
     assert_eq!(none.request_type, "StartStream");
 
@@ -80,11 +80,12 @@ fn typed_responses() {
         "r",
         RequestStatus::success(),
         Some(&GetSceneItemIdResponse { scene_item_id: 7 }),
-    );
+    )
+    .expect("serialises");
     assert_eq!(resp.response_data, Some(json!({"sceneItemId": 7})));
     assert_eq!(resp.data::<GetSceneItemId>().expect("typed").scene_item_id, 7);
     // A request with no response fields parses from a response with no data.
-    let empty = ResponseMsg::new::<StartRecord>("r", RequestStatus::success(), None);
+    let empty = ResponseMsg::new::<StartRecord>("r", RequestStatus::success(), None).expect("serialises");
     assert_eq!(empty.data::<StartRecord>().expect("empty"), Empty {});
     let stream = json!({"outputActive": true, "outputReconnecting": false, "outputTimecode": "00:00:01.000",
         "outputDuration": 1000, "outputCongestion": 0.5, "outputBytes": 10, "outputSkippedFrames": 0, "outputTotalFrames": 30,
@@ -185,8 +186,8 @@ fn every_event_variant_round_trips() {
         let typed = ObsEvent::from_msg(&msg).expect("types");
         assert_eq!(typed, expected);
         // The typed form drops fields it does not model (the scene UUIDs), so compare the typed round trip.
-        assert_eq!(ObsEvent::from_msg(&typed.to_msg()), Ok(typed.clone()));
-        assert_eq!(typed.to_msg().event_type, msg.event_type);
+        assert_eq!(ObsEvent::from_msg(&typed.to_msg().expect("serialises")), Ok(typed.clone()));
+        assert_eq!(typed.to_msg().expect("serialises").event_type, msg.event_type);
         assert_eq!(typed.intent().0, msg.event_intent);
     }
 }

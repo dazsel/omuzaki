@@ -1,0 +1,33 @@
+[package]
+name = "omuzaki-camera-mf"
+description = "The Windows Media Foundation camera behind the Camera trait: raw NV12, YUY2, MJPG and RGB32 frames from an asynchronous source reader with a timed, lock-free hand-off (PF-01)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+omuzaki-track-api = { path = "../omuzaki-track-api" }
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "stream"
+harness = false
+
+[target.'cfg(windows)'.dependencies]
+tracing.workspace = true
+windows.workspace = true
+windows-core.workspace = true
+
+# Native only: Media Foundation exists on Windows alone; the mode and error tables compile everywhere.
+[package.metadata.omuzaki]
+kind = "Implementation"
+summary = "the Windows camera (PF-01) behind `omuzaki-track-api`'s `Camera`: Media Foundation's asynchronous source reader (video processing and converters off) with a lock-free newest-frame hand-off and a timed wait, so frames arrive raw (NV12, YUY2, MJPG, RGB32) and borrowed, with the real pitch checked against the buffer's allocation; `choose_mode` delegates to `CameraFormatRequest::pick`, `map_hresult` turns camera-privacy, unplugged and busy codes into `TrackError`; the tables build and test on every platform, the reader on Windows only"
+wasm = false
+
+[lints]
+workspace = true
