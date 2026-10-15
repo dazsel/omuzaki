@@ -997,7 +997,7 @@ fn a_job_whose_session_is_paused_while_it_works_changes_nothing() {
         ended.state
     );
     assert_eq!(rig.at("p1"), None, "the finish was refused");
-    assert!(rig.log().is_empty());
+    assert_eq!(rig.log().len(), 0);
 }
 
 #[test]

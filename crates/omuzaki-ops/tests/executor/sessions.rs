@@ -358,7 +358,7 @@ fn grants_are_recomputed_under_the_lock_that_applies_the_edit() {
     let e = exec.run(req).unwrap_err();
     assert_eq!(e.code, ErrorCode::Denied, "{e}");
     assert_eq!(exec.get(&super::path("a"), &Grants::person()).unwrap(), None);
-    assert!(exec.log(0, 10, &Grants::person()).unwrap().is_empty());
+    assert_eq!(exec.log(0, 10, &Grants::person()).unwrap().len(), 0);
 }
 
 /// A principal source whose next question waits for the test: the thread asking holds the executor's lock meanwhile.
