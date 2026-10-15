@@ -192,24 +192,7 @@ fn the_kind_is_registered_project_owned_and_builds_a_rigged_body_on_every_templa
     for t in registry::templates() {
         let built = build(&character(t.id(), &serde_json::json!({})), Quality::Live);
         let names: Vec<&str> = built.meshes.iter().map(|m| m.mesh.name.as_str()).collect();
-        assert_eq!(
-            names,
-            [
-                "torso",
-                "arm.L",
-                "arm.R",
-                "leg.L",
-                "leg.R",
-                "foot.L",
-                "foot.R",
-                "hand-l",
-                "hand-lines-l",
-                "hand-r",
-                "hand-lines-r"
-            ],
-            "{}",
-            t.id()
-        );
+        assert_eq!(names, ["torso", "arm.L", "arm.R", "leg.L", "leg.R", "foot.L", "foot.R"], "{}", t.id());
         // The skin material: toon with the skin treatment and a coloured outline, from the palette's slots.
         let material = &built.materials[&MaterialName::new("body-skin").unwrap()];
         assert!(material.outline.is_some(), "{}", t.id());
@@ -239,16 +222,7 @@ fn the_kind_is_registered_project_owned_and_builds_a_rigged_body_on_every_templa
             "{}: the body reaches {top} m, the neck base is at {authored} m",
             t.id()
         );
-        // Two budgets: the body's own (§10, 6 000, the meshes that are not hands) and the whole character's, which adds
-        // the two hands' 1.2k each (#157).
-        let body_triangles: usize = built
-            .meshes
-            .iter()
-            .filter(|m| !m.mesh.name.starts_with("hand-"))
-            .map(|m| m.mesh.geometry.triangle_count())
-            .sum();
-        assert!(body_triangles <= 6000, "{}: the body is {body_triangles} triangles", t.id());
-        assert!(built.report.triangles() <= 6000 + 2 * 1200, "{}: {}", t.id(), built.report.triangles());
+        assert!(built.report.triangles() <= 6000, "{}: {}", t.id(), built.report.triangles());
     }
 }
 
