@@ -19,9 +19,9 @@ fn the_pinned_library_loads_once_with_its_version_and_abi_checked() {
     let Some((archive, sha256)) = common::litert_archive("the library test") else { return };
     let first = load_archive(&archive, &sha256).unwrap();
     assert_eq!(first.build, select_here().unwrap());
-    // Once per process: a second call, or a lookup, gives the same library.
-    assert_eq!(load_archive(&archive, &sha256).unwrap().build, first.build);
-    assert!(loaded().is_some());
+    // Once per process: a second call, or a lookup, gives the same function table, not a second load.
+    assert_eq!(load_archive(&archive, &sha256).unwrap(), first);
+    assert_eq!(loaded(), Some(first));
 }
 
 #[test]

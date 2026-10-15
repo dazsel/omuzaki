@@ -3333,11 +3333,13 @@ name = "omuzaki-ai-litert"
 version = "0.0.0"
 dependencies = [
  "flatbuffers",
+ "flate2",
  "libloading 0.9.0",
  "omuzaki-ai-api",
  "omuzaki-ai-native",
  "omuzaki-core",
  "sha2",
+ "tar",
  "tempfile",
 ]
 
