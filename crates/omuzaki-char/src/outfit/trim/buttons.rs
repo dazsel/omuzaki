@@ -15,6 +15,12 @@ pub const MAX_BUTTONS: u32 = 64;
 const ROUND: usize = 20;
 /// The stem under a raised button, as a share of its radius.
 const STEM: f64 = 0.35;
+/// The head of a dome button, `(height, radius)` in button radii from its foot.
+pub const DOME: &[(f64, f64)] = &[(0.0, 0.92), (0.08, 1.0), (0.22, 0.97), (0.4, 0.75), (0.5, 0.4), (0.53, 0.0)];
+/// The head of a flat button.
+pub const FLAT: &[(f64, f64)] = &[(0.0, 0.94), (0.05, 1.0), (0.18, 1.0), (0.24, 0.9), (0.26, 0.0)];
+/// The head of a rivet.
+pub const RIVET: &[(f64, f64)] = &[(0.0, 1.0), (0.06, 1.0), (0.1, 0.62), (0.22, 0.6), (0.32, 0.42), (0.36, 0.0)];
 /// A row's rail is sampled about this often to place its buttons, metres.
 const STEP: f64 = 0.002;
 
@@ -110,10 +116,10 @@ pub fn profile(style: &ButtonStyle) -> Vec<(f64, f64)> {
     if s > 0.0 {
         out.extend([(0.0, STEM * r), (s, STEM * r)]);
     }
-    let head: &[(f64, f64)] = match style.shape {
-        ButtonShape::Dome => &[(0.0, 0.92), (0.08, 1.0), (0.22, 0.97), (0.4, 0.75), (0.5, 0.4), (0.53, 0.0)],
-        ButtonShape::Flat => &[(0.0, 0.94), (0.05, 1.0), (0.18, 1.0), (0.24, 0.9), (0.26, 0.0)],
-        ButtonShape::Rivet => &[(0.0, 1.0), (0.06, 1.0), (0.1, 0.62), (0.22, 0.6), (0.32, 0.42), (0.36, 0.0)],
+    let head = match style.shape {
+        ButtonShape::Dome => DOME,
+        ButtonShape::Flat => FLAT,
+        ButtonShape::Rivet => RIVET,
     };
     out.extend(head.iter().map(|(u, k)| (s + u * r, k * r)));
     out
