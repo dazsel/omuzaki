@@ -5,6 +5,10 @@
 //! `conditions`, or that doesn't name the same licence. It also refuses a `register_model!` that registers a different id
 //! for the file than the manifest says. Mock crates ship test fixtures, so their `models/` folders are exempt.
 //!
+//! The licence comparison is exact: the row's `Key condition` cell must name the manifest's whole SPDX expression as
+//! whole tokens, and no non-commercial licence ships. Every `register_model!` of a crate must include one of its own
+//! `models/*.model.toml`, or the gate fails: it can't check a manifest it doesn't scan.
+//!
 //! Checked: every `models/*.model.toml` of a workspace crate whose name doesn't end in `-mock`. It runs no build, only
 //! parsing and reads. `cargo xtask check` runs it on the whole repo, since it is cheap.
 
@@ -23,16 +27,16 @@ const ALLOWED_STATUS: [&str; 2] = ["yes", "conditions"];
 /// The register the rows are read from, relative to the workspace root.
 const REGISTER: &str = "docs/licensing/register.md";
 
-/// One row of the register table: its `Item` cell, its `Status` cell and the whole line (for the licence check).
+/// One row of the register table: its `Item`, `Status` and `Key condition` cells (the last names the licence).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
     item: String,
     status: String,
-    line: String,
+    condition: String,
 }
 
 /// The table rows of `register.md`, in order. The format rule at its top fixes the columns: `Item` first, `Status`
-/// fourth. Header and separator lines parse too, but no real item is named `Status` or `---`.
+/// fourth, `Key condition` fifth. Header and separator lines parse too, but no real item is named `Status` or `---`.
 pub fn rows(register: &str) -> Vec<Row> {
     register
         .lines()
@@ -43,7 +47,7 @@ pub fn rows(register: &str) -> Vec<Row> {
             (cells.len() >= 5).then(|| Row {
                 item: cells[0].to_owned(),
                 status: cells[3].to_owned(),
-                line: line.to_owned(),
+                condition: cells[4].to_owned(),
             })
         })
         .collect()
@@ -68,24 +72,21 @@ pub fn problems(file: &str, text: &str, register: &[Row], sources: &[(String, St
                 row.status
             )),
             Some(row) => {
-                if let Some(spdx) = &manifest.card.licence.spdx
-                    && !row.line.contains(spdx.as_str())
-                {
-                    out.push(format!("the row for `{item}` in {REGISTER} doesn't name its licence `{spdx}`"));
+                if let Some(spdx) = &manifest.card.licence.spdx {
+                    if !names_licence(&row.condition, spdx) {
+                        out.push(format!("the row for `{item}` in {REGISTER} doesn't name its licence `{spdx}`"));
+                    }
+                    if is_non_commercial(spdx) {
+                        out.push(format!("the licence `{spdx}` is non-commercial; a shipped model can't use it"));
+                    }
                 }
             }
         }
     }
     let file_name = file.rsplit('/').next().unwrap_or(file);
     for (path, source) in sources {
-        for registration in registrations(source) {
-            let (id, include) = match registration {
-                Ok(found) => found,
-                Err(reason) => {
-                    out.push(format!("`register_model!` in {path} has a literal the gate cannot decode: {reason}"));
-                    continue;
-                }
-            };
+        for (id, include) in registrations(source).into_iter().flatten() {
+            let include = include.rsplit('/').next().unwrap_or_default();
             if include == file_name && id != manifest.id.as_str() {
                 out.push(format!(
                     "`register_model!` in {path} registers `{id}` for this file; its manifest's id is `{}`",
@@ -97,10 +98,95 @@ pub fn problems(file: &str, text: &str, register: &[Row], sources: &[(String, St
     out
 }
 
-/// The `(id, file name)` of every `register_model!("<id>", include_str!("<path>"))` in one Rust source. It reads the
+/// The SPDX tokens of `text`: runs of identifier characters (a trailing `.` or `:` is sentence punctuation) and the
+/// parentheses of an expression. Everything else, backticks and commas included, only separates.
+fn spdx_tokens(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut word = String::new();
+    let flush = |word: &mut String, out: &mut Vec<String>| {
+        let trimmed = word.trim_end_matches(['.', ':']);
+        if !trimmed.is_empty() {
+            out.push(trimmed.to_owned());
+        }
+        word.clear();
+    };
+    for c in text.chars() {
+        if c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '+' | ':') {
+            word.push(c);
+        } else {
+            flush(&mut word, &mut out);
+            if matches!(c, '(' | ')') {
+                out.push(c.to_string());
+            }
+        }
+    }
+    flush(&mut word, &mut out);
+    out
+}
+
+/// Whether a register `condition` cell names the whole SPDX expression `spdx`: its tokens appear in a row, as whole
+/// tokens (`MIT` is not in `MIT-0`) and not as part of a longer expression (`MIT` is not in `MIT OR GPL-3.0-only`).
+fn names_licence(condition: &str, spdx: &str) -> bool {
+    let want = spdx_tokens(spdx);
+    let have = spdx_tokens(condition);
+    let joins = |token: Option<&String>| token.is_some_and(|t| matches!(t.as_str(), "AND" | "OR" | "WITH"));
+    !want.is_empty()
+        && have.windows(want.len()).enumerate().any(|(at, window)| {
+            window == want.as_slice() && !(at > 0 && joins(have.get(at - 1))) && !joins(have.get(at + want.len()))
+        })
+}
+
+/// Whether an SPDX expression names a non-commercial licence (`CC-BY-NC-4.0`): nothing non-commercial ships.
+fn is_non_commercial(spdx: &str) -> bool {
+    spdx_tokens(spdx).iter().any(|token| token.split('-').any(|part| part == "NC" || part == "NonCommercial"))
+}
+
+/// Every problem with the `register_model!` calls of one crate that no manifest check can see: a call whose literals
+/// can't be read, and one that includes anything but `<crate>/models/<name>.model.toml`, the only files the gate scans.
+/// `dir` is the crate's workspace-relative folder; `sources` the `(path, text)` of its `.rs` files.
+fn unchecked_registrations(dir: &str, sources: &[(String, String)]) -> Vec<String> {
+    let mut out = Vec::new();
+    for (path, source) in sources {
+        for registration in registrations(source) {
+            let include = match registration {
+                Ok((_, include)) => include,
+                Err(reason) => {
+                    out.push(format!("{path}: {reason}"));
+                    continue;
+                }
+            };
+            let from = path.rsplit_once('/').map_or("", |(parent, _)| parent);
+            let resolved = normalise(&format!("{from}/{include}"));
+            let name = resolved.strip_prefix(&format!("{}/models/", normalise(dir)));
+            if !name.is_some_and(|name| name.ends_with(".model.toml") && !name.contains('/')) {
+                out.push(format!(
+                    "{path}: `register_model!` includes `{include}`, which is not a `models/*.model.toml` of its own \
+                     crate, so the gate can't check its licence"
+                ));
+            }
+        }
+    }
+    out
+}
+
+/// A `/`-separated path with its `.` and `..` segments resolved (a `..` past the start stays, so it never matches).
+fn normalise(path: &str) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    for part in path.split('/').filter(|part| !part.is_empty() && *part != ".") {
+        if part == ".." && parts.last().is_some_and(|last| *last != "..") {
+            parts.pop();
+        } else {
+            parts.push(part);
+        }
+    }
+    parts.join("/")
+}
+
+/// The `(id, path)` of every `register_model!("<id>", include_str!("<path>"))` in one Rust source. It reads the
 /// registry's lexer, so a commented-out or quoted example never counts, and whitespace or newlines inside the call don't
 /// matter. Either macro may use any of Rust's delimiters, `(…)`, `[…]` or `{…}`, as long as each closes with its match,
-/// and either may end in a trailing comma. A string literal that can't be decoded is an `Err`, never skipped.
+/// and either may end in a trailing comma. A call of any other shape, or a string literal that can't be decoded, is an
+/// `Err` with the reason, never skipped.
 fn registrations(source: &str) -> Vec<Result<(String, String), String>> {
     let toks = tokens(source);
     let mut found = Vec::new();
@@ -108,16 +194,27 @@ fn registrations(source: &str) -> Vec<Result<(String, String), String>> {
         if !toks[at].is_ident("register_model") || !is_punct(&toks, at + 1, '!') {
             continue;
         }
-        let Some(close) = toks.get(at + 2).and_then(closer) else { continue };
-        let Some(id) = toks.get(at + 3).and_then(string_value) else { continue };
-        let Some((file, end)) = include_file(&toks, at + 4) else { continue };
+        let line = toks[at].line;
+        let unreadable = || {
+            format!("line {line}: `register_model!` isn't `(\"<id>\", include_str!(\"<path>\"))` with string literals")
+        };
+        let Some(close) = toks.get(at + 2).and_then(closer) else {
+            found.push(Err(unreadable()));
+            continue;
+        };
+        let call = toks.get(at + 3).and_then(string_value).zip(include_file(&toks, at + 4));
+        let Some((id, (file, end))) = call else {
+            found.push(Err(unreadable()));
+            continue;
+        };
         let end = if is_punct(&toks, end, ',') { end + 1 } else { end };
         if !is_punct(&toks, end, close) {
+            found.push(Err(unreadable()));
             continue;
         }
         found.push(match (id, file) {
             (Ok(id), Ok(file)) => Ok((id, file)),
-            (Err(reason), _) | (_, Err(reason)) => Err(reason),
+            (Err(reason), _) | (_, Err(reason)) => Err(format!("line {line}: {reason}")),
         });
     }
     found
@@ -128,8 +225,8 @@ fn closer(token: &Token) -> Option<char> {
     [('(', ')'), ('[', ']'), ('{', '}')].into_iter().find(|&(open, _)| token.is_punct(open)).map(|(_, close)| close)
 }
 
-/// The file name of `, include_str!("<path>")` starting at `at` (the last component of the decoded path), and the index
-/// of the token after its closing delimiter. The path may be followed by a trailing comma.
+/// The decoded path of `, include_str!("<path>")` starting at `at`, and the index of the token after its closing
+/// delimiter. The path may be followed by a trailing comma.
 fn include_file(toks: &[Token], at: usize) -> Option<(Result<String, String>, usize)> {
     let include = is_punct(toks, at, ',')
         && toks.get(at + 1).is_some_and(|t| t.is_ident("include_str"))
@@ -143,8 +240,7 @@ fn include_file(toks: &[Token], at: usize) -> Option<(Result<String, String>, us
     if !is_punct(toks, end, close) {
         return None;
     }
-    let file = path.map(|path| path.rsplit('/').next().unwrap_or_default().to_owned());
-    Some((file, end + 1))
+    Some((path, end + 1))
 }
 
 fn is_punct(toks: &[Token], at: usize, c: char) -> bool {
@@ -272,11 +368,9 @@ pub fn report(workspace: &Workspace) -> bool {
             skipped += manifests.len();
             continue;
         }
-        if manifests.is_empty() {
-            continue;
-        }
         let mut sources = Vec::new();
         rust_sources(&workspace.root, &workspace.root.join(&package.dir).join("src"), &mut sources);
+        found.extend(unchecked_registrations(&package.dir.to_string_lossy(), &sources));
         for (file, text) in &manifests {
             checked += 1;
             found.extend(problems(file, text, &register, &sources).into_iter().map(|p| format!("{file}: {p}")));
@@ -432,8 +526,8 @@ spdx = "MIT OR Apache-2.0"
         assert_eq!(
             registrations(text),
             [
-                Ok(("echo-fake".to_owned(), "echo-fake.model.toml".to_owned())),
-                Ok(("other".to_owned(), "other.model.toml".to_owned())),
+                Ok(("echo-fake".to_owned(), "../models/echo-fake.model.toml".to_owned())),
+                Ok(("other".to_owned(), "../models/other.model.toml".to_owned())),
             ]
         );
     }
@@ -442,9 +536,9 @@ spdx = "MIT OR Apache-2.0"
     fn whitespace_newlines_and_raw_strings_do_not_hide_a_registration() {
         let spread =
             "register_model!(\n    \"tiny\",\n    include_str!(\n        \"../models/tiny.model.toml\"\n    ),\n);";
-        assert_eq!(registrations(spread), [Ok(("tiny".to_owned(), "tiny.model.toml".to_owned()))]);
+        assert_eq!(registrations(spread), [Ok(("tiny".to_owned(), "../models/tiny.model.toml".to_owned()))]);
         let raw = r##"register_model!(r#"tiny"#, include_str!("../models/tiny.model.toml"));"##;
-        assert_eq!(registrations(raw), [Ok(("tiny".to_owned(), "tiny.model.toml".to_owned()))]);
+        assert_eq!(registrations(raw), [Ok(("tiny".to_owned(), "../models/tiny.model.toml".to_owned()))]);
     }
 
     #[test]
@@ -459,16 +553,22 @@ spdx = "MIT OR Apache-2.0"
             r#"register_model!("tiny", include_str!("../models/tiny.model.toml",),);"#,
         ];
         for form in forms {
-            assert_eq!(registrations(form), [Ok(("tiny".to_owned(), "tiny.model.toml".to_owned()))], "{form}");
+            assert_eq!(
+                registrations(form),
+                [Ok(("tiny".to_owned(), "../models/tiny.model.toml".to_owned()))],
+                "{form}"
+            );
         }
     }
 
     #[test]
-    fn a_mismatched_closer_is_not_a_registration() {
+    fn a_mismatched_closer_fails_the_gate_instead_of_being_skipped() {
         let outer = r#"register_model! { "tiny", include_str!("../models/tiny.model.toml") )"#;
-        assert!(registrations(outer).is_empty(), "{:?}", registrations(outer));
         let inner = r#"register_model!("tiny", include_str!["../models/tiny.model.toml"));"#;
-        assert!(registrations(inner).is_empty(), "{:?}", registrations(inner));
+        for text in [outer, inner] {
+            assert!(matches!(registrations(text).as_slice(), [Err(_)]), "{:?}", registrations(text));
+            assert_eq!(unchecked(text).len(), 1, "{text}");
+        }
     }
 
     #[test]
@@ -518,13 +618,105 @@ spdx = "MIT OR Apache-2.0"
         assert!(found[0].contains("registers `other` for this file"), "{found:?}");
     }
 
+    /// What `unchecked_registrations` says about `text`, as if it were `crates/omuzaki-tiny/src/lib.rs`.
+    fn unchecked(text: &str) -> Vec<String> {
+        unchecked_registrations(
+            "crates/omuzaki-tiny",
+            &[("crates/omuzaki-tiny/src/lib.rs".to_owned(), text.to_owned())],
+        )
+    }
+
     #[test]
     fn an_undecodable_literal_fails_the_gate() {
-        let found = findings_for(r#"register_model!("tiny", include_str!("../models/\q.model.toml"));"#);
+        let found = unchecked(r#"register_model!("tiny", include_str!("../models/\q.model.toml"));"#);
         assert_eq!(found.len(), 1, "{found:?}");
         assert!(found[0].contains("cannot decode the string literal"), "{found:?}");
-        let out_of_range = findings_for(r#"register_model!("t\xFFny", include_str!("../models/tiny.model.toml"));"#);
+        let out_of_range = unchecked(r#"register_model!("t\xFFny", include_str!("../models/tiny.model.toml"));"#);
         assert!(out_of_range[0].contains("cannot decode"), "{out_of_range:?}");
+    }
+
+    #[test]
+    fn a_manifest_outside_the_crates_models_folder_fails_the_gate() {
+        for path in [
+            "../assets/x.toml",
+            "../models/sub/x.model.toml",
+            "../../omuzaki-other/models/x.model.toml",
+            "../models/x.toml",
+        ] {
+            let found = unchecked(&format!(r#"register_model!("x", include_str!("{path}"));"#));
+            assert_eq!(found.len(), 1, "{path}: {found:?}");
+            assert!(found[0].contains("can't check its licence"), "{found:?}");
+        }
+        assert_eq!(
+            unchecked(r#"register_model!("x", include_str!("../models/./x.model.toml"));"#),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            unchecked(r#"register_model!("x", include_str!("../src/../models/x.model.toml"));"#),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn a_call_that_is_not_two_literals_fails_the_gate() {
+        for call in [
+            r#"register_model!("x", include_str!(concat!("../models/", "x.model.toml")));"#,
+            r#"register_model!(ID, include_str!("../models/x.model.toml"));"#,
+            r#"register_model!("x", MANIFEST);"#,
+        ] {
+            let found = unchecked(call);
+            assert_eq!(found.len(), 1, "{call}: {found:?}");
+            assert!(found[0].contains("isn't"), "{found:?}");
+        }
+        assert_eq!(unchecked("macro_rules! register_model { () => {} }"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_crate_without_models_is_scanned_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("docs/licensing")).unwrap();
+        fs::write(root.join(REGISTER), REGISTER_TEXT).unwrap();
+        let tiny = root.join("crates/omuzaki-tiny");
+        fs::create_dir_all(tiny.join("src")).unwrap();
+        fs::write(tiny.join("src/lib.rs"), r#"register_model!("x", include_str!("../assets/x.toml"));"#).unwrap();
+        let mut ws = workspace(&[("omuzaki-tiny", &[])]);
+        ws.root = root.to_path_buf();
+        assert!(!report(&ws));
+    }
+
+    #[test]
+    fn the_licence_must_be_named_whole() {
+        assert!(names_licence("keep notice; MIT OR Apache-2.0", "MIT OR Apache-2.0"));
+        assert!(names_licence("`MIT`, verified. Keep the notice", "MIT"));
+        assert!(names_licence("Apache-2.0 per the model cards", "Apache-2.0"));
+        assert!(names_licence("licence: GPL-2.0+.", "GPL-2.0+"));
+        assert!(!names_licence("MIT-0; keep notice", "MIT"));
+        assert!(!names_licence("Apache-2.0-or-later", "Apache-2.0"));
+        assert!(!names_licence("MIT OR GPL-3.0-only", "MIT"));
+        assert!(!names_licence("GPL-3.0-only AND MIT", "MIT"));
+        assert!(!names_licence("keep notice", "MIT"));
+        assert!(!names_licence("MIT", ""));
+    }
+
+    #[test]
+    fn mit_does_not_match_a_row_that_only_names_mit_zero() {
+        let rows = rows("| Tiny model | model | a test | yes | MIT-0; keep notice | A1 |\n");
+        let text = manifest("tiny", HTTPS).replace("MIT OR Apache-2.0\"\n", "MIT\"\n");
+        let found = problems(FILE, &text, &rows, &good_source("tiny"));
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("doesn't name its licence `MIT`"), "{found:?}");
+    }
+
+    #[test]
+    fn a_non_commercial_licence_fails_even_when_the_row_mentions_it() {
+        let rows = rows("| Tiny model | model | a test | yes | not CC-BY-NC-4.0; keep notice | A1 |\n");
+        let text = manifest("tiny", HTTPS).replace("MIT OR Apache-2.0\"\n", "CC-BY-NC-4.0\"\n");
+        let found = problems(FILE, &text, &rows, &good_source("tiny"));
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("non-commercial"), "{found:?}");
+        assert!(is_non_commercial("MIT OR CC-BY-NC-SA-4.0"));
+        assert!(!is_non_commercial("MIT OR Apache-2.0"));
     }
 
     #[test]
