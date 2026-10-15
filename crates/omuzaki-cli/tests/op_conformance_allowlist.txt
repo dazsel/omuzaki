@@ -33,6 +33,9 @@ face.set_rest
 face.set_rest_channels
 face.set_style
 hand.list_shapes
+# Owned by another area; no example arguments yet.
+hair.bangs.list_presets
+hair.bangs.set
 io.check_export
 io.import
 io.inspect

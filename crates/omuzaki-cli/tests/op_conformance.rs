@@ -90,6 +90,10 @@ fn files_under(root: &Path) -> BTreeMap<String, Vec<u8>> {
         for entry in std::fs::read_dir(dir).expect("list the folder") {
             let path = entry.expect("read the entry").path();
             let name = path.strip_prefix(root).expect("under the root").to_string_lossy().into_owned();
+            // The app's own bookkeeping (`.omuzaki/`, e.g. backups of replaced files) is not the user's files.
+            if name == ".omuzaki" {
+                continue;
+            }
             if path.is_dir() {
                 // A directory is recorded too (as a trailing-slash key with no bytes), so an empty one counts.
                 into.insert(format!("{name}/"), Vec::new());
@@ -463,4 +467,14 @@ fn the_allowlist_may_only_shrink() {
     assert!(found.iter().any(|p| p.starts_with("a.new:")));
     assert!(found.iter().any(|p| p.starts_with("a.done:")));
     assert!(found.iter().any(|p| p.starts_with("a.gone:")));
+}
+
+#[test]
+fn the_snapshot_leaves_out_the_apps_own_folder_only() {
+    let dir = tempfile::tempdir().expect("make a temp folder");
+    std::fs::create_dir_all(dir.path().join(".omuzaki/replaced")).expect("make the bookkeeping folder");
+    std::fs::write(dir.path().join(".omuzaki/replaced/a.kept"), b"old").expect("write a backup");
+    std::fs::write(dir.path().join("marker.txt"), b"stray").expect("write a stray file");
+    let files: Vec<String> = files_under(dir.path()).into_keys().collect();
+    assert_eq!(files, vec!["marker.txt".to_string()]);
 }
