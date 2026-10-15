@@ -91,3 +91,37 @@ fn a_new_output_is_idle_and_a_frame_starts_without_pixels() {
     assert!(frame.cpu.is_none() && frame.gpu.is_none());
     assert_eq!(frame.index, 7);
 }
+
+#[test]
+fn every_codec_belongs_to_one_kind() {
+    use CodecId::*;
+    for c in [ProRes4444, Vp9Alpha, Png, H264] {
+        assert_eq!(c.kind(), StreamKind::Video);
+    }
+    for c in [PcmS24, PcmF32, Opus] {
+        assert_eq!(c.kind(), StreamKind::Audio);
+    }
+    assert_eq!(InputRecords.kind(), StreamKind::Data);
+}
+
+#[test]
+fn a_codec_of_the_wrong_kind_is_refused() {
+    let audio = AudioSpec { rate: 48000, channels: 2 };
+    for codec in [CodecId::Opus, CodecId::InputRecords] {
+        assert!(StreamSpec::video(codec, "x", TB, video()).is_err(), "{codec:?} on video");
+        assert!(EncodeConfig::new(video(), codec).is_err(), "{codec:?} in an encode config");
+    }
+    for codec in [CodecId::H264, CodecId::InputRecords] {
+        assert!(StreamSpec::audio(codec, "x", TB, audio).is_err(), "{codec:?} on audio");
+    }
+    for codec in [CodecId::H264, CodecId::PcmF32] {
+        assert!(StreamSpec::data(codec, "x", TB).is_err(), "{codec:?} on data");
+    }
+    // A spec or config edited after construction is caught by validate().
+    let mut spec = StreamSpec::video(CodecId::H264, "x", TB, video()).unwrap();
+    spec.codec = CodecId::Opus;
+    assert!(spec.validate().is_err());
+    let mut cfg = EncodeConfig::new(video(), CodecId::H264).unwrap();
+    cfg.codec = CodecId::PcmF32;
+    assert!(cfg.validate().is_err());
+}

@@ -45,6 +45,17 @@ pub enum CodecId {
     InputRecords,
 }
 
+impl CodecId {
+    /// The kind of stream this codec codes; a [`StreamSpec`] or [`EncodeConfig`] with another kind is invalid.
+    pub fn kind(self) -> StreamKind {
+        match self {
+            Self::ProRes4444 | Self::Vp9Alpha | Self::Png | Self::H264 => StreamKind::Video,
+            Self::PcmS24 | Self::PcmF32 | Self::Opus => StreamKind::Audio,
+            Self::InputRecords => StreamKind::Data,
+        }
+    }
+}
+
 /// How alpha relates to colour in a frame or stream.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub enum AlphaKind {
@@ -135,7 +146,7 @@ impl StreamSpec {
     /// A video stream, with empty extradata.
     ///
     /// # Errors
-    /// [`StreamError::Config`] if the picture format or timebase is invalid.
+    /// [`StreamError::Config`] if the picture format or timebase is invalid, or the codec is not a video codec.
     pub fn video(
         codec: CodecId,
         name: impl Into<String>,
@@ -144,6 +155,7 @@ impl StreamSpec {
     ) -> Result<Self, StreamError> {
         video.validate()?;
         check_timebase(timebase)?;
+        check_codec(codec, StreamKind::Video)?;
         Ok(Self {
             kind: StreamKind::Video,
             codec,
@@ -158,7 +170,7 @@ impl StreamSpec {
     /// An audio stream, with empty extradata.
     ///
     /// # Errors
-    /// [`StreamError::Config`] if the sample format or timebase is invalid.
+    /// [`StreamError::Config`] if the sample format or timebase is invalid, or the codec is not an audio codec.
     pub fn audio(
         codec: CodecId,
         name: impl Into<String>,
@@ -167,6 +179,7 @@ impl StreamSpec {
     ) -> Result<Self, StreamError> {
         audio.validate()?;
         check_timebase(timebase)?;
+        check_codec(codec, StreamKind::Audio)?;
         Ok(Self {
             kind: StreamKind::Audio,
             codec,
@@ -181,9 +194,10 @@ impl StreamSpec {
     /// A data stream, with empty extradata.
     ///
     /// # Errors
-    /// [`StreamError::Config`] if the timebase is invalid.
+    /// [`StreamError::Config`] if the timebase is invalid or the codec is not a data codec.
     pub fn data(codec: CodecId, name: impl Into<String>, timebase: Timebase) -> Result<Self, StreamError> {
         check_timebase(timebase)?;
+        check_codec(codec, StreamKind::Data)?;
         Ok(Self {
             kind: StreamKind::Data,
             codec,
@@ -208,6 +222,7 @@ impl StreamSpec {
     /// [`StreamError::Config`] describing the first problem.
     pub fn validate(&self) -> Result<(), StreamError> {
         check_timebase(self.timebase)?;
+        check_codec(self.codec, self.kind)?;
         match (self.kind, &self.video, &self.audio) {
             (StreamKind::Video, Some(v), None) => v.validate(),
             (StreamKind::Audio, None, Some(a)) => a.validate(),
@@ -215,6 +230,13 @@ impl StreamSpec {
             _ => Err(StreamError::Config(format!("a {:?} stream has the wrong video/audio payload", self.kind))),
         }
     }
+}
+
+fn check_codec(codec: CodecId, kind: StreamKind) -> Result<(), StreamError> {
+    if codec.kind() != kind {
+        return Err(StreamError::Config(format!("{codec:?} is a {:?} codec, not {kind:?}", codec.kind())));
+    }
+    Ok(())
 }
 
 fn check_timebase(tb: Timebase) -> Result<(), StreamError> {
@@ -299,9 +321,10 @@ impl EncodeConfig {
     /// A config with defaults: encoder-chosen bitrate and threads, a keyframe every second, real time.
     ///
     /// # Errors
-    /// [`StreamError::Config`] if the picture format is invalid.
+    /// [`StreamError::Config`] if the picture format is invalid or the codec is not a video codec.
     pub fn new(video: VideoSpec, codec: CodecId) -> Result<Self, StreamError> {
         video.validate()?;
+        check_codec(codec, StreamKind::Video)?;
         let keyint = video.fps.0.div_ceil(video.fps.1).max(1);
         Ok(Self { video, codec, bitrate_kbps: None, keyint, threads: None, realtime: true })
     }
@@ -312,6 +335,7 @@ impl EncodeConfig {
     /// [`StreamError::Config`] describing the first problem.
     pub fn validate(&self) -> Result<(), StreamError> {
         self.video.validate()?;
+        check_codec(self.codec, StreamKind::Video)?;
         if self.keyint == 0 {
             return Err(StreamError::Config("keyint is zero".into()));
         }
