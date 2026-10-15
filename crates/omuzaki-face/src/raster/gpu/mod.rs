@@ -193,6 +193,8 @@ struct Gpu {
     renderer: Renderer,
     resolve: Resolve,
     private: Option<Private>,
+    /// The last target and its level-0 view, kept because making a view allocates.
+    target: Option<(wgpu::Texture, wgpu::TextureView)>,
 }
 
 /// The Vello rasteriser: encodes a list with [`SceneEncoder`], renders it with Vello into a private straight-alpha
@@ -238,6 +240,7 @@ impl Gpu {
             renderer,
             resolve: Resolve::new(device, format),
             private: None,
+            target: None,
         });
         let rejected = ready(scope.pop()).flatten();
         match (made, rejected) {
@@ -252,6 +255,14 @@ impl Gpu {
         if self.resolve.format() != format {
             self.resolve = Resolve::new(device, format);
             self.private = None;
+            self.target = None;
+        }
+    }
+
+    /// Makes the level-0 view of `target`, unless it is the last texture.
+    fn ensure_target(&mut self, target: &wgpu::Texture) {
+        if self.target.as_ref().is_none_or(|(texture, _)| texture != target) {
+            self.target = Some((target.clone(), Resolve::level_zero(target)));
         }
     }
 
@@ -314,9 +325,12 @@ impl GpuRasterizer for VelloRasterizer {
         };
         gpu.fit_format(device, target.format());
         gpu.ensure_private(device, width, height);
-        let Gpu { renderer, resolve, private } = gpu;
-        let Some(private) = private.as_ref() else {
-            return Err(FaceError::Raster("the private texture is missing after it was made".to_owned()));
+        gpu.ensure_target(target);
+        let Gpu { renderer, resolve, private, target: cached } = gpu;
+        let (Some(private), Some((_, level_zero))) = (private.as_ref(), cached.as_ref()) else {
+            return Err(FaceError::Raster(
+                "the private texture or the target view is missing after it was made".to_owned(),
+            ));
         };
         let params =
             RenderParams { base_color: Color::TRANSPARENT, width, height, antialiasing_method: AaConfig::Area };
@@ -325,7 +339,7 @@ impl GpuRasterizer for VelloRasterizer {
             .map_err(|e| FaceError::Raster(format!("Vello could not render the layer: {e}")))?;
         let mut commands =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("face-resolve") });
-        resolve.encode(&mut commands, &private.bind, target);
+        resolve.encode(&mut commands, &private.bind, level_zero);
         queue.submit([commands.finish()]);
         Ok(true)
     }

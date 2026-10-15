@@ -74,16 +74,21 @@ impl Resolve {
         })
     }
 
-    /// Records the pass: every pixel of `target`'s level 0 is overwritten with the premultiplied `source` pixel.
-    pub fn encode(&self, encoder: &mut wgpu::CommandEncoder, source: &wgpu::BindGroup, target: &wgpu::Texture) {
-        let level_zero = target.create_view(&wgpu::TextureViewDescriptor {
+    /// A view of `target`'s level 0 alone, which is all [`encode`](Self::encode) writes. Keep it while the texture lives:
+    /// making one allocates.
+    pub fn level_zero(target: &wgpu::Texture) -> wgpu::TextureView {
+        target.create_view(&wgpu::TextureViewDescriptor {
             mip_level_count: Some(1),
             ..wgpu::TextureViewDescriptor::default()
-        });
+        })
+    }
+
+    /// Records the pass: every pixel of `level_zero` is overwritten with the premultiplied `source` pixel.
+    pub fn encode(&self, encoder: &mut wgpu::CommandEncoder, source: &wgpu::BindGroup, level_zero: &wgpu::TextureView) {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("face-resolve"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &level_zero,
+                view: level_zero,
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
