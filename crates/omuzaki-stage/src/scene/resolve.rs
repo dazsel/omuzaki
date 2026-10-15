@@ -345,10 +345,11 @@ fn finite_or_error(lights: &LightBuf, post: &Post, ground: &ResolvedGround) -> R
     if !lights.as_slice().iter().all(light_finite) {
         return unusable("lighting.lights", "a resolved light");
     }
-    if let Some(dof) = &post.depth_of_field {
-        if !(dof.focus_distance.is_finite() && dof.focus_range.is_finite() && dof.max_blur.is_finite()) {
-            return unusable("scene.post.depth_of_field", "the depth of field");
-        }
+    let dof_finite = post
+        .depth_of_field
+        .is_none_or(|dof| dof.focus_distance.is_finite() && dof.focus_range.is_finite() && dof.max_blur.is_finite());
+    if !dof_finite {
+        return unusable("scene.post.depth_of_field", "the depth of field");
     }
     if !(ground.radius_m.is_finite() && ground.opacity.is_finite()) {
         return unusable("scene.ground", "the ground radius");
