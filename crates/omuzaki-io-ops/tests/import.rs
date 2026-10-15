@@ -76,6 +76,44 @@ impl Importer for ProbeImporter {
 
 register_importer!(ProbeImporter);
 
+/// Reads a JSON model the way a `.gltf` importer does: the first buffer names the root node and the first image is the
+/// picture, each from a `data:` URI (the text after the colon is the content) or through the resolver.
+#[derive(Default)]
+struct GltfProbe;
+
+impl GltfProbe {
+    fn load(ctx: &ImportCtx<'_>, uri: &str) -> Result<Vec<u8>, IoError> {
+        match uri.strip_prefix("data:") {
+            Some(content) => Ok(content.as_bytes().to_vec()),
+            None => ctx.resolver.read(uri),
+        }
+    }
+}
+
+impl Importer for GltfProbe {
+    fn info(&self) -> FormatInfo {
+        FormatInfo { id: "gltf-probe", name: "Probe glTF", extensions: &["gltf"], media_type: "model/gltf+json" }
+    }
+
+    fn sniff(&self, input: &ImportInput<'_>) -> Confidence {
+        if input.bytes.starts_with(b"{") { Confidence::Certain } else { Confidence::No }
+    }
+
+    fn import(&self, input: &ImportInput<'_>, ctx: &ImportCtx<'_>) -> Result<ImportOutcome, IoError> {
+        let json: Value = serde_json::from_slice(input.bytes).map_err(|e| IoError::malformed(e.to_string()))?;
+        let mut scene = IoScene::new();
+        let buffer = Self::load(ctx, json["buffers"][0]["uri"].as_str().unwrap_or("data:"))?;
+        let root = scene.add_node(Node::new(String::from_utf8_lossy(&buffer)));
+        scene.roots = vec![root];
+        if let Some(uri) = json["images"][0]["uri"].as_str() {
+            scene.add_image(EncodedImage::new("img", ImageMime::Png, Blob::new(Self::load(ctx, uri)?)));
+        }
+        Ok(ImportOutcome::new(scene, LicenceEvidence::Absent))
+    }
+}
+
+register_importer!(GltfProbe);
+
 /// The image count that makes the probe read a file beside it, as a `.gltf` with a `.bin` does.
 const SIDECAR: u8 = 255;
 
@@ -757,4 +795,83 @@ fn a_character_is_added_to_a_record_that_has_none() {
     assert_eq!(recorded_character(&rig, &first), None);
     import_for(&mut rig, Some("kai")).unwrap();
     assert_eq!(recorded_character(&rig, &first).as_deref(), Some("kai"));
+}
+
+/// Writes `file` under the rig's project folder, creating its folders.
+fn write_project_file(rig: &Rig, file: &str, bytes: &[u8]) {
+    let path = rig.dir.path().join(file);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, bytes).unwrap();
+}
+
+#[test]
+fn a_gltf_with_a_bin_and_a_png_imports_like_the_self_contained_one() {
+    let mut rig = Rig::new();
+    write_project_file(&rig, "models/hero.bin", b"buf");
+    write_project_file(&rig, "models/tex/hero.png", b"PNGDATA");
+    let external = json!({ "buffers": [{ "uri": "hero.bin" }], "images": [{ "uri": "tex/hero.png" }] });
+    let inline = json!({ "buffers": [{ "uri": "data:buf" }], "images": [{ "uri": "data:PNGDATA" }] });
+    write_project_file(&rig, "models/hero.gltf", external.to_string().as_bytes());
+    write_project_file(&rig, "models/inline.gltf", inline.to_string().as_bytes());
+
+    let (split, _) = rig.run(&Rig::op(json!({ "path": "models/hero.gltf", "name": "hero.gltf" }))).unwrap();
+    let (joined, _) = rig.run(&Rig::op(json!({ "path": "models/inline.gltf", "name": "hero.gltf" }))).unwrap();
+    assert_eq!(split["asset"]["images"].as_array().unwrap().len(), 1);
+    assert_eq!(split["asset"]["images"], joined["asset"]["images"], "the same picture is the same object");
+    assert_eq!(split["summary"], joined["summary"]);
+    assert_eq!(split["report"], joined["report"]);
+    assert_eq!(split["provenance"], joined["provenance"], "the same record");
+    assert_eq!(rig.store.get(&hash(&split["asset"]["images"][0])).unwrap(), b"PNGDATA");
+
+    // Nothing the import used is lost: both files are stored and the asset names them. The picture is the same object
+    // as the scene's image, so it is stored once.
+    let sidecars = split["asset"]["sidecars"].as_array().unwrap();
+    let uris: Vec<&str> = sidecars.iter().map(|s| s["uri"].as_str().unwrap()).collect();
+    assert_eq!(uris, ["hero.bin", "tex/hero.png"]);
+    assert_eq!(rig.store.get(&hash(&sidecars[0]["hash"])).unwrap(), b"buf");
+    assert_eq!(sidecars[1]["hash"], split["asset"]["images"][0]);
+    assert!(joined["asset"].get("sidecars").is_none(), "a self-contained model has none");
+    let record = rig.store.provenance(&hash(&sidecars[0]["hash"])).unwrap();
+    assert_eq!(record.licence, split_original_record(&rig, &split).licence);
+}
+
+/// The record the original was stored with.
+fn split_original_record(rig: &Rig, result: &Value) -> Provenance {
+    rig.store.provenance(&hash(&result["asset"]["original"])).unwrap()
+}
+
+#[test]
+fn a_sidecar_outside_the_files_folder_is_refused_and_nothing_is_stored() {
+    let mut rig = Rig::new();
+    write_project_file(&rig, "x.bin", b"outside the folder");
+    write_project_file(&rig, "models/hero.gltf", json!({ "buffers": [{ "uri": "../x.bin" }] }).to_string().as_bytes());
+    let error = rig.run(&Rig::op(json!({ "path": "models/hero.gltf" }))).unwrap_err();
+    assert_eq!(error.code, ErrorCode::NotFound, "{}", error.message);
+    assert!(error.message.contains("refused"), "{}", error.message);
+    assert!(rig.store.is_empty());
+}
+
+#[test]
+fn a_missing_sidecar_is_not_found_and_nothing_is_stored() {
+    let mut rig = Rig::new();
+    write_project_file(&rig, "models/hero.gltf", json!({ "buffers": [{ "uri": "gone.bin" }] }).to_string().as_bytes());
+    let error = rig.run(&Rig::op(json!({ "path": "models/hero.gltf" }))).unwrap_err();
+    assert_eq!(error.code, ErrorCode::NotFound, "{}", error.message);
+    assert!(rig.store.is_empty());
+}
+
+#[test]
+fn a_reimport_after_a_sidecar_changed_is_a_conflict_and_an_unchanged_one_is_not() {
+    let mut rig = Rig::new();
+    write_project_file(&rig, "hero.bin", b"v1");
+    write_project_file(&rig, "hero.gltf", json!({ "buffers": [{ "uri": "hero.bin" }] }).to_string().as_bytes());
+    let op = Rig::op(json!({ "path": "hero.gltf" }));
+    rig.run(&op).unwrap();
+    let (_, patch) = rig.run(&op).unwrap();
+    assert!(patch.changes.is_empty(), "the same files again change nothing");
+
+    write_project_file(&rig, "hero.bin", b"v2");
+    let error = rig.run(&op).unwrap_err();
+    assert_eq!(error.code, ErrorCode::Conflict, "{}", error.message);
+    assert!(error.message.contains("sidecars"), "{}", error.message);
 }
