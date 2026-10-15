@@ -235,6 +235,28 @@ fn extended_spring_rules_fire_on_one_line_mutations() {
     assert!(tail.has_rule("avatar.limit_on_tail"), "{tail:#?}");
 }
 
+/// The profile reports the spring data each version's exporter cannot write, under that version's ids, as warnings.
+#[test]
+fn vrm_profile_reports_extended_spring_losses_per_version() {
+    let s = scene_with_extended_springs();
+    let rules = |v| {
+        let r = vrm_profile(&s, v);
+        let losses = r.findings.iter().filter(|f| f.rule.contains("_dropped") || f.rule.contains("_unsupported"));
+        let mut ids: Vec<String> = losses
+            .map(|f| {
+                assert_eq!(f.severity, Severity::Warning, "{f:#?}");
+                f.rule.clone()
+            })
+            .collect();
+        ids.sort();
+        ids
+    };
+    assert_eq!(rules(VrmVersion::V1), ["vrm.collider_dropped", "vrm.limit_dropped"]);
+    assert_eq!(rules(VrmVersion::V0), ["vrm0.collider_unsupported", "vrm0.limit_unsupported"]);
+    let plain = tiny_avatar();
+    assert!(!vrm_profile(&plain, VrmVersion::V1).has_rule("vrm.collider_dropped"));
+}
+
 #[test]
 fn vrm_profile_rules() {
     let v1 = |s: &IoScene| vrm_profile(s, VrmVersion::V1);

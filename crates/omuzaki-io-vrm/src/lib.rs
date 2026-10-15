@@ -39,12 +39,12 @@
 //!
 //! **Findings** this crate adds, by area (ids are part of the contract): `gltf.layout_unsupported` (a VRM is one
 //! binary file; the other `gltf.*` rules are `omuzaki-gltf`'s, listed in its documentation); `vrm.*` for the avatar layer (`humanoid_unknown_bone`, `expression_name_invalid`,
-//! `bind_dropped`, `bind_weight_clamped`, `collider_shapeless`, `collider_dropped`, `limit_dropped`, `spring_chain_dropped`,
+//! `bind_dropped`, `bind_weight_clamped`, `collider_shapeless`, `collider_dropped`, `spring_chain_dropped`,
 //! `spring_center_dropped`, `constraint_invalid`, `constraint_dropped`, `constraint_duplicate`, `annotation_dropped`,
 //! `mtoon_invalid`, `mtoon_queue_clamped`, `meta_licence_condition`, `perfect_sync_complete`,
 //! `perfect_sync_partial`, `tpose`); `vrm0.*` for 0.x (`meta_missing`, `meta_licence`, `meta_commercial`, `meta_content_flags`,
 //! `meta_third_party_licenses`, `expression_renamed`, `bind_dropped`, `material_value_dropped`, `cull_front`,
-//! `constraints_dropped`, `collider_capsule`, `collider_unsupported`, `limit_unsupported`, `spring_approximated`, `preset_surprised`, `annotation_dropped`,
+//! `constraints_dropped`, `collider_capsule`, `spring_approximated`, `preset_surprised`, `annotation_dropped`,
 //! `mtoon_shift_texture`, `texture_transform_shared`). The contract's own rules (`scene.*`, `avatar.*`, `vrm.*`
 //! profile and `vrm.meta_unknown_keys`, `rights.*`, `perfect_sync.*`) come from `run_import` and `run_export`.
 //!

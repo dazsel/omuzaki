@@ -18,8 +18,8 @@ mod common;
 
 use omuzaki_core::glam::{Quat, Vec3};
 use omuzaki_io_api::{
-    Collider, ColliderGroup, ColliderShape, Confidence, ExpressionName, ImportInput, ImportOptions, Importer, IoError,
-    IoScene, JointLimit, Severity, Shading,
+    Collider, ColliderGroup, ColliderShape, Confidence, Exporter, ExpressionName, ImportInput, ImportOptions, Importer,
+    IoError, IoScene, JointLimit, Severity, Shading,
 };
 use omuzaki_io_vrm::{Vrm1Exporter, Vrm1Importer};
 use serde_json::{Value, json};
@@ -350,9 +350,20 @@ fn extended_colliders_and_limits_leave_as_the_inert_fallback_with_warnings() {
     sb.collider_groups
         .push(ColliderGroup { name: "extended".into(), colliders: vec![before as u32, before as u32 + 1] });
     sb.chains[0].joints[0].limit = Some(JointLimit::Cone { angle: 0.5, rotation: Quat::IDENTITY });
+    let lost = |r: &omuzaki_io_api::Report| r.has_rule("vrm.collider_dropped") && r.has_rule("vrm.limit_dropped");
+
+    // The check sees the loss before anything is written, so strict mode refuses the export.
+    let checked = Vrm1Exporter.check(&scene, &options());
+    assert!(lost(&checked), "{checked:#?}");
+    match export_with(&Vrm1Exporter, &scene, &options().strict()) {
+        Err(IoError::Rejected(r)) => assert!(lost(&r), "{r:#?}"),
+        other => panic!("strict export must refuse the loss, got {:?}", other.map(|o| o.1)),
+    }
 
     let (file, report) = export_with(&Vrm1Exporter, &scene, &options()).unwrap();
-    assert!(report.has_rule("vrm.collider_dropped") && report.has_rule("vrm.limit_dropped"), "{report:#?}");
+    assert!(lost(&report), "{report:#?}");
+    let warned = report.findings.iter().filter(|f| f.rule == "vrm.collider_dropped" || f.rule == "vrm.limit_dropped");
+    assert_eq!(warned.count(), 2, "reported once each, by the check only: {report:#?}");
     let (doc, _) = parts(&file);
     let spring = &doc["extensions"]["VRMC_springBone"];
     for i in [before, before + 1] {

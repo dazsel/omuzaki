@@ -222,7 +222,7 @@ fn an_avatar_without_springs_writes_no_spring_extension_and_constraints_are_stil
 }
 
 #[test]
-fn extended_colliders_and_limits_are_written_as_the_inert_fallback_and_reported() {
+fn extended_colliders_and_limits_are_written_as_the_inert_fallback_and_refused_in_strict_mode() {
     let mut scene = rich_scene();
     let node = ix(&scene, "head");
     let sb = &mut scene.avatar.as_mut().unwrap().spring_bones;
@@ -230,9 +230,21 @@ fn extended_colliders_and_limits_are_written_as_the_inert_fallback_and_reported(
     sb.colliders.push(Collider { node, shape: ColliderShape::Plane { offset: Vec3::ZERO, normal: Vec3::Y } });
     sb.chains[0].joints[0].limit =
         Some(omuzaki_io_api::JointLimit::Cone { angle: 0.5, rotation: omuzaki_core::glam::Quat::IDENTITY });
+    let lost = |r: &omuzaki_io_api::Report| r.has_rule("vrm.collider_dropped") && r.has_rule("vrm.limit_dropped");
+
+    // The check sees the loss before anything is written, so strict mode refuses the export.
+    let checked = omuzaki_io_api::Exporter::check(&MockVrm1Exporter, &scene, &options_without_face_channels());
+    assert!(lost(&checked), "{checked:#?}");
+    let strict = options_without_face_channels().strict();
+    match run_export(&MockVrm1Exporter, &scene, &ExportCtx::new(&strict)) {
+        Err(IoError::Rejected(r)) => assert!(lost(&r), "{r:#?}"),
+        other => panic!("strict export must refuse the loss, got {:?}", other.map(|o| o.report)),
+    }
+
     let out = export_outcome(&scene);
-    let dropped = out.report.findings.iter().filter(|f| f.rule == "gltf.extension_dropped").count();
-    assert_eq!(dropped, 2, "one for the collider, one for the limit: {:#?}", out.report);
+    let dropped =
+        out.report.findings.iter().filter(|f| f.rule == "vrm.collider_dropped" || f.rule == "vrm.limit_dropped");
+    assert_eq!(dropped.count(), 2, "one for the collider, one for the limit: {:#?}", out.report);
     let (doc, _) = glb_parts(&out.files[0].bytes).expect("a GLB");
     let shape = &doc["extensions"]["VRMC_springBone"]["colliders"][before]["shape"];
     assert_eq!(*shape, json!({ "sphere": { "offset": [0.0, -10000.0, 0.0], "radius": 0.0 } }));
