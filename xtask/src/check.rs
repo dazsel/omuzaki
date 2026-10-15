@@ -15,6 +15,7 @@ use crate::error::Result;
 use crate::links;
 use crate::lint_deps;
 use crate::lint_licences;
+use crate::lint_mods;
 use crate::lint_seed;
 use crate::lint_ui_writes;
 use crate::process::{cargo, describe};
@@ -80,6 +81,8 @@ enum Action {
     LintUiWrites,
     /// The crate-table lint (ADR 0053), run in this process.
     LintCrateTable,
+    /// The generated-modules lint (ADR 0054), run in this process.
+    LintMods,
     /// The docs-index lint (ADR 0053), run in this process.
     LintDocsIndex,
     /// The seed lint (library D15, D16), run in this process when a file under `crates/*/library/` changed.
@@ -104,6 +107,7 @@ impl Step {
             Action::LintLicences => "lint-licences".to_owned(),
             Action::LintUiWrites => "lint-ui-writes".to_owned(),
             Action::LintCrateTable => "lint-crate-table".to_owned(),
+            Action::LintMods => "lint-mods".to_owned(),
             Action::LintDocsIndex => "lint-docs-index".to_owned(),
             Action::LintSeed => "lint-seed".to_owned(),
         }
@@ -143,6 +147,7 @@ fn plan(scope: &Scope) -> Vec<Step> {
         Step { name: "lint-licences", action: Action::LintLicences },
         Step { name: "lint-ui-writes", action: Action::LintUiWrites },
         Step { name: "lint-crate-table", action: Action::LintCrateTable },
+        Step { name: "lint-mods", action: Action::LintMods },
         Step { name: "lint-docs-index", action: Action::LintDocsIndex },
         Step { name: "lint-seed", action: Action::LintSeed },
     ]);
@@ -295,6 +300,13 @@ fn run_step(workspace: &Workspace, step: &Step, base: &str) -> bool {
             },
             |code| code == ExitCode::SUCCESS,
         ),
+        Action::LintMods => lint_mods::lint(workspace).map_or_else(
+            |error| {
+                eprintln!("lint-mods: {error}");
+                false
+            },
+            |code| code == ExitCode::SUCCESS,
+        ),
         Action::LintDocsIndex => docs_index::lint(workspace).map_or_else(
             |error| {
                 eprintln!("lint-docs-index: {error}");
@@ -339,6 +351,7 @@ mod tests {
             Action::LintLicences => "<lint-licences>".to_owned(),
             Action::LintUiWrites => "<lint-ui-writes>".to_owned(),
             Action::LintCrateTable => "<lint-crate-table>".to_owned(),
+            Action::LintMods => "<lint-mods>".to_owned(),
             Action::LintDocsIndex => "<lint-docs-index>".to_owned(),
             Action::LintSeed => "<lint-seed>".to_owned(),
         }
@@ -364,6 +377,7 @@ mod tests {
                 ("lint-licences", "<lint-licences>".to_owned()),
                 ("lint-ui-writes", "<lint-ui-writes>".to_owned()),
                 ("lint-crate-table", "<lint-crate-table>".to_owned()),
+                ("lint-mods", "<lint-mods>".to_owned()),
                 ("lint-docs-index", "<lint-docs-index>".to_owned()),
                 ("lint-seed", "<lint-seed>".to_owned()),
             ]
@@ -383,7 +397,7 @@ mod tests {
                 ("link-gate", "test -p omuzaki-cli --test registrations".to_owned()),
             ]
         );
-        assert_eq!(got.len(), 12, "the same trailing steps as ever: {got:?}");
+        assert_eq!(got.len(), 13, "the same trailing steps as ever: {got:?}");
     }
 
     #[test]
@@ -421,6 +435,7 @@ mod tests {
                 "lint-licences",
                 "lint-ui-writes",
                 "lint-crate-table",
+                "lint-mods",
                 "lint-docs-index",
                 "lint-seed"
             ]

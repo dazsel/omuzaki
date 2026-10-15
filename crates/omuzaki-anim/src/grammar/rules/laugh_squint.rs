@@ -42,7 +42,6 @@ use omuzaki_anim_api::Channel;
 
 use super::common::{Band, Presence, Timing, net_smile, raise};
 use crate::grammar::{GrammarRule, RuleCtx, RuleParams};
-use crate::register_grammar_rule;
 
 /// The prototype's laugh timing: a flicker shorter than 0.12 s is ridden out, and a laugh fades over 0.15 s. There is
 /// no attack hold: the prototype starts a laugh on the first frame, and this rule keeps its parity.

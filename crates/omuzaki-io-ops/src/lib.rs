@@ -27,7 +27,9 @@
 //! A binary keeps them only if it links this crate, so an app that wants the ops calls [`link`] at startup (ADR 0015).
 #![deny(missing_docs)]
 
+// How a failed import or export reaches a caller. Private: the ops use it, the public API does not show it.
 pub mod convert;
+mod error;
 pub mod fit_bones;
 pub mod gather;
 pub mod ops;

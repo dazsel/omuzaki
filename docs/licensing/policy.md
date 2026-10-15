@@ -121,7 +121,7 @@ How our code may relate to other people's code, from most to least common:
 ## Enforcement
 
 - **Every PR:** `cargo deny check` (licences, bans, sources), using `deny.toml`.
-- **Repo licence gate**: `cargo xtask licences` checks shippable crates and assets against the register. Release builds generate the third-party notices.
+- **Repo licence gate**: `cargo xtask lint-licences` checks that every direct dependency, CI tool and committed asset has a file in `docs/licensing/deps/`, and generates the register from them. A file claims assets by exact path (a folder claim is a problem, so a new asset needs an audit), and only an item of kind `tool` may be `external`. Release builds generate the third-party notices.
 - **In the product:** the licence gate (spec §7, §15) blocks `publish` of anything whose commercial status is `no` or `unknown`.
 - **Release checklist:**
   - the notices bundle
