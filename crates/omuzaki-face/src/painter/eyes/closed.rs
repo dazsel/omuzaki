@@ -31,12 +31,17 @@ const LASH_OUT: f32 = 0.003;
 const LASH_DOWN: f32 = 0.005;
 const LASH_WIDTH: f32 = 0.0018;
 
+/// A squeeze above this takes the place of the relaxed curve.
+const SQUEEZE_OFF: f32 = 0.01;
+
 /// Paints one eye if it is shut, as the happy arc or the relaxed curve.
 pub(super) fn paint(ctx: &mut PaintCtx<'_>, side: Side) {
     let eye = Eye::new(ctx.profile, ctx.params, side);
     let height: fn(f32) -> f32 = match eye.lid() {
         Lid::Open => return,
         Lid::Arc => |u| ARC_BASE + ARC_HEIGHT * (1.0 - u * u),
+        // A squeezed eye is the chevron of `effects`, not the relaxed curve.
+        Lid::Relaxed if ctx.params.effects.squeeze > SQUEEZE_OFF => return,
         Lid::Relaxed => |u| RELAXED_BASE - RELAXED_BOW * (1.0 - u * u) + RELAXED_SLOPE * u,
     };
     let colour = fixed_colour(&ctx.profile.eyes.lash.colour);

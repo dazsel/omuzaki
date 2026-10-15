@@ -1,0 +1,420 @@
+//! The eye effects and the Overlay layer through the public painter: star eyes, gloom, shock, spiral, squeeze, tears and
+//! the sweat drop (the heart catchlight and the sparkle dot are covered in `eyes_iris.rs`).
+//!
+//! Every effect scales smoothly from 0 to 1, draws nothing at 0, composes with the others, stays inside the face rect,
+//! changes the picture visibly (more than 200 pixels at full strength), and allocates nothing once the lists are warm.
+//! The tear is the prototype's (`face.js` 257-263) and has a parity check in `omuzaki-test-face`; the rest are new
+//! designs, signed on a contact sheet (the `evidence.toml` `eye-effects` case).
+
+// A counting allocator is the only way to *prove* "no allocation"; the workspace denies unsafe code by default.
+#![allow(unsafe_code, clippy::unwrap_used)]
+
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
+use std::hint::black_box;
+
+use omuzaki_core::glam::Vec2;
+use omuzaki_core::time::Seconds;
+use omuzaki_face::raster::SkiaRasterizer;
+use omuzaki_face::{RealPainter, Section};
+use omuzaki_face_api::{
+    Cmd, DEFAULT_PX_PER_M, DrawList, EyeEffects, FaceDrawing, FaceInput, FaceLayerId, FaceLayerSpec, FaceMapping,
+    FacePainter, FaceProfile, FaceProjection, FaceRasterizer, FaceRect, FaceView, PaintParams, PathEl, Raster,
+};
+
+struct Counting;
+
+thread_local! {
+    // `const`-initialised without a destructor, so touching them never allocates (see `hot_loop.rs`).
+    static MEASURING: Cell<bool> = const { Cell::new(false) };
+    static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
+}
+
+// SAFETY: every method forwards to `System` unchanged; the counter is the only addition.
+unsafe impl GlobalAlloc for Counting {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        if MEASURING.try_with(Cell::get).unwrap_or(false) {
+            let _ = ALLOCATIONS.try_with(|n| n.set(n.get() + 1));
+        }
+        unsafe { System.alloc(layout) }
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        unsafe { System.dealloc(ptr, layout) }
+    }
+}
+
+#[global_allocator]
+static GLOBAL: Counting = Counting;
+
+// ------------------------------------------------------------------------------------------------ helpers
+
+fn projection() -> FaceProjection {
+    FaceProjection { rect: FaceRect { x0: -0.2, x1: 0.2, y0: -0.26, y1: 0.03 }, front_fade: [0.0, 0.07] }
+}
+
+fn painter() -> RealPainter {
+    RealPainter::new(projection(), DEFAULT_PX_PER_M)
+}
+
+/// Rest parameters with `edit` applied to the effects and the sweat.
+fn params(edit: impl FnOnce(&mut EyeEffects, &mut f32)) -> PaintParams {
+    let mut p = FaceMapping::default().rest_params();
+    let mut sweat = p.sweat;
+    edit(&mut p.effects, &mut sweat);
+    p.sweat = sweat;
+    p
+}
+
+fn profile() -> FaceProfile {
+    let mut profile = FaceProfile::default();
+    // Face-plane numbers of the mock face, so the temple and forehead sit inside the rect.
+    profile.layout.eye_y = -0.09;
+    profile
+}
+
+fn paint(profile: &FaceProfile, p: &PaintParams) -> FaceDrawing {
+    let input = FaceInput { profile, params: p, time: Seconds(0.0), view: FaceView::default() };
+    let mut out = FaceDrawing::new();
+    for section in [Section::Eyes, Section::Overlay] {
+        let mut part = FaceDrawing::new();
+        painter().paint_section(section, &input, &mut part).unwrap();
+        for layer in FaceLayerId::ALL {
+            for cmd in part[layer].cmds() {
+                // Paths are per list: copy each command's path across.
+                match *cmd {
+                    Cmd::Fill { path, paint, opacity } => {
+                        let copied = copy_path(&part[layer], path, &mut out[layer]);
+                        out[layer].push(Cmd::Fill { path: copied, paint, opacity });
+                    }
+                    Cmd::Stroke { path, paint, width, cap, join, opacity } => {
+                        let copied = copy_path(&part[layer], path, &mut out[layer]);
+                        out[layer].push(Cmd::Stroke { path: copied, paint, width, cap, join, opacity });
+                    }
+                    other => out[layer].push(other),
+                }
+            }
+        }
+    }
+    out
+}
+
+fn copy_path(src: &DrawList, path: omuzaki_face_api::PathRef, out: &mut DrawList) -> omuzaki_face_api::PathRef {
+    let mut builder = out.path();
+    for el in src.elements(path) {
+        builder = match *el {
+            PathEl::Move(p) => builder.move_to(p),
+            PathEl::Line(p) => builder.line_to(p),
+            PathEl::Quad(c, p) => builder.quad_to(c, p),
+            PathEl::Cubic(a, b, p) => builder.cubic_to(a, b, p),
+            PathEl::Close => builder.close(),
+        };
+    }
+    builder.finish()
+}
+
+/// Pixels (all four channels) where two rasterisations of `layer` differ.
+fn changed_pixels(layer: FaceLayerId, a: &DrawList, b: &DrawList) -> usize {
+    let spec = FaceLayerSpec::for_layer(layer, &projection(), DEFAULT_PX_PER_M);
+    let raster = |list: &DrawList| {
+        let mut r = Raster::new(1, 1);
+        SkiaRasterizer::new().rasterize(&spec, list, spec.px_per_m, &mut r).unwrap();
+        r
+    };
+    let (ra, rb) = (raster(a), raster(b));
+    assert_eq!((ra.width, ra.height), (rb.width, rb.height));
+    ra.pixels.as_chunks::<4>().0.iter().zip(rb.pixels.as_chunks::<4>().0).filter(|(x, y)| x != y).count()
+}
+
+/// All the points of a list's paths.
+fn points(list: &DrawList) -> Vec<Vec2> {
+    list.cmds()
+        .iter()
+        .filter_map(|c| match c {
+            Cmd::Fill { path, .. } | Cmd::Stroke { path, .. } | Cmd::PushClip(path) => Some(*path),
+            _ => None,
+        })
+        .flat_map(|path| list.elements(path).to_vec())
+        .flat_map(|el| match el {
+            PathEl::Move(p) | PathEl::Line(p) => vec![p],
+            PathEl::Quad(c, p) => vec![c, p],
+            PathEl::Cubic(a, b, p) => vec![a, b, p],
+            PathEl::Close => vec![],
+        })
+        .collect()
+}
+
+/// The effects, one at a time at full strength, by name.
+fn each() -> [(&'static str, PaintParams); 7] {
+    [
+        ("star", params(|e, _| e.star = 1.0)),
+        ("gloom", params(|e, _| e.gloom = 1.0)),
+        ("shock", params(|e, _| e.shock = 1.0)),
+        ("spiral", params(|e, _| e.spiral = 1.0)),
+        ("squeeze", params(|e, _| e.squeeze = 1.0)),
+        ("tears", params(|e, _| e.tears = 1.0)),
+        ("sweat", params(|_, s| *s = 1.0)),
+    ]
+}
+
+// ------------------------------------------------------------------------------------------------ the effects
+
+#[test]
+fn effects_at_zero_add_nothing() {
+    let profile = profile();
+    let rest = paint(&profile, &params(|_, _| {}));
+    let zero = paint(
+        &profile,
+        &params(|e, s| {
+            (e.star, e.gloom, e.shock, e.spiral, e.squeeze, e.tears, *s) = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        }),
+    );
+    for layer in FaceLayerId::ALL {
+        assert_eq!(rest[layer].cmds(), zero[layer].cmds());
+    }
+    assert_eq!(rest[FaceLayerId::Overlay].cmds().len(), 0, "no sweat and no gloom, no overlay");
+}
+
+#[test]
+fn every_effect_changes_the_picture_and_stays_within_its_command_budget() {
+    let profile = profile();
+    let rest = paint(&profile, &params(|_, _| {}));
+    for (name, p) in each() {
+        let on = paint(&profile, &p);
+        let changed: usize = [FaceLayerId::Base, FaceLayerId::Overlay]
+            .into_iter()
+            .map(|layer| changed_pixels(layer, &rest[layer], &on[layer]))
+            .sum();
+        assert!(changed > 200, "{name} changed only {changed} pixels");
+        let added: usize = [FaceLayerId::Base, FaceLayerId::Overlay]
+            .into_iter()
+            .map(|layer| on[layer].cmds().len().saturating_sub(rest[layer].cmds().len()))
+            .sum();
+        assert!(added <= 300, "{name} adds {added} commands");
+    }
+    // The heart and the sparkle are `highlight`'s: they change the eye too.
+    for (name, p) in [("heart", params(|e, _| e.heart = 1.0)), ("sparkle", params(|e, _| e.sparkle = 1.0))] {
+        let on = paint(&profile, &p);
+        let changed = changed_pixels(FaceLayerId::Base, &rest[FaceLayerId::Base], &on[FaceLayerId::Base]);
+        assert!(changed > 50, "{name} changed only {changed} pixels");
+    }
+}
+
+#[test]
+fn every_effect_scales_with_its_strength() {
+    let profile = profile();
+    // The opacity of each effect's own commands grows with the channel: half the strength paints less than the full.
+    let rest = paint(&profile, &params(|_, _| {}));
+    for (name, edit) in [
+        ("star", (|e: &mut EyeEffects, v: f32, _: &mut f32| e.star = v) as fn(&mut EyeEffects, f32, &mut f32)),
+        ("gloom", |e, v, _| e.gloom = v),
+        ("shock", |e, v, _| e.shock = v),
+        ("spiral", |e, v, _| e.spiral = v),
+        ("squeeze", |e, v, _| e.squeeze = v),
+        ("tears", |e, v, _| e.tears = v),
+        ("sweat", |_, v, s| *s = v),
+    ] {
+        let pixels = |v: f32| {
+            let on = paint(&profile, &params(|e, s| edit(e, v, s)));
+            [FaceLayerId::Base, FaceLayerId::Overlay]
+                .into_iter()
+                .map(|layer| changed_pixels(layer, &rest[layer], &on[layer]))
+                .sum::<usize>()
+        };
+        let (quarter, half, full) = (pixels(0.25), pixels(0.5), pixels(1.0));
+        assert!(quarter > 0 && quarter <= half + half / 4, "{name}: {quarter} then {half}");
+        assert!(half > 0 && full > 0, "{name}");
+    }
+}
+
+#[test]
+fn effects_compose_and_stay_inside_the_face_rect() {
+    let profile = profile();
+    let all = params(|e, s| {
+        (e.heart, e.star, e.gloom, e.shock, e.spiral, e.squeeze, e.sparkle, e.tears, *s) =
+            (1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0);
+    });
+    let drawing = paint(&profile, &all);
+    let rect = projection().rect;
+    for layer in [FaceLayerId::Base, FaceLayerId::Overlay] {
+        for p in points(&drawing[layer]) {
+            assert!(
+                p.x >= rect.x0 && p.x <= rect.x1 && p.y >= rect.y0 && p.y <= rect.y1,
+                "{layer:?}: a point at {p:?} is outside the face rect"
+            );
+        }
+    }
+    // A heart with tears and blush together draws all three.
+    let some = params(|e, _| (e.heart, e.tears) = (1.0, 1.0));
+    let mut with_blush = some;
+    with_blush.blush = 1.0;
+    let (a, b) = (paint(&profile, &some), paint(&profile, &with_blush));
+    assert_eq!(a[FaceLayerId::Base].cmds().len(), b[FaceLayerId::Base].cmds().len());
+}
+
+// ------------------------------------------------------------------------------------------------ each design
+
+#[test]
+fn a_tear_hangs_below_the_eye_toward_the_nose_and_only_fades() {
+    let profile = profile();
+    let tear = |v: f32| {
+        let list = paint(&profile, &params(|e, _| e.tears = v)).into_base();
+        // The tear is the fill in the style's tear colour (the default `rgba(190,225,255,0.85)`).
+        list.cmds()
+            .iter()
+            .filter_map(|c| match c {
+                Cmd::Fill { path, paint: omuzaki_face_api::Paint::Solid(c), opacity }
+                    if (c.r, c.g, c.b) == (190, 225, 255) =>
+                {
+                    Some((points(&one(&list, *path)), *opacity))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let (half, full) = (tear(0.5), tear(1.0));
+    assert_eq!(full.len(), 2, "one drop per eye");
+    assert!((half[0].1 - 0.5).abs() < 1e-6 && (full[0].1 - 1.0).abs() < 1e-6, "only the opacity animates");
+    // Same drop at any strength: the size is fixed.
+    assert_eq!(half[0].0, full[0].0);
+    let (lo, hi) = full[0].0.iter().fold((Vec2::MAX, Vec2::MIN), |(lo, hi), p| (lo.min(*p), hi.max(*p)));
+    assert!((hi.y - lo.y - 0.013).abs() < 1e-6, "13 mm tall");
+    assert!(hi.x - lo.x < 0.0085 && hi.x - lo.x > 0.003, "about 4 to 8 mm wide");
+    // The left eye's drop (the first) sits toward the nose of that eye: left of its centre at +0.09, and below it.
+    assert!(lo.x < 0.09 && hi.y < -0.09 - 0.062 * 0.051 + 1e-3);
+}
+
+#[test]
+fn gloom_darkens_the_iris_and_takes_the_light_out_of_the_highlights() {
+    let profile = profile();
+    let light = |gloom: f32| {
+        let list = paint(&profile, &params(|e, _| e.gloom = gloom)).into_base();
+        // The catchlight is the white fill at 0.95 of its strength.
+        list.cmds()
+            .iter()
+            .filter_map(|c| match c {
+                Cmd::Fill { paint: omuzaki_face_api::Paint::Solid(c), opacity, .. }
+                    if (c.r, c.g, c.b) == (255, 255, 255) =>
+                {
+                    Some(*opacity)
+                }
+                _ => None,
+            })
+            .fold(0.0_f32, f32::max)
+    };
+    assert!((light(0.0) - 0.95).abs() < 1e-5);
+    assert!((light(0.5) - 0.475).abs() < 1e-5, "half the light at half the gloom");
+    assert!(light(1.0) < 1e-5, "no white highlight left");
+}
+
+#[test]
+fn a_squeezed_eye_closes_into_a_chevron_pointing_at_the_nose() {
+    let profile = profile();
+    let list = paint(&profile, &params(|e, _| e.squeeze = 1.0)).into_base();
+    // Fully squeezed there is no aperture (no clip): the lids are shut and the chevron stands in for the relaxed curve.
+    assert_eq!(list.cmds().iter().filter(|c| matches!(c, Cmd::PushClip(_))).count(), 0);
+    let chevrons: Vec<Vec<Vec2>> = list
+        .cmds()
+        .iter()
+        .filter_map(|c| match c {
+            Cmd::Stroke { path, width, .. } if (*width - 0.0048).abs() < 1e-7 => Some(points(&one(&list, *path))),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(chevrons.len(), 2);
+    for (i, chevron) in chevrons.iter().enumerate() {
+        assert_eq!(chevron.len(), 3, "two arms and a vertex");
+        // The vertex is the innermost point: toward the midline of the face.
+        let vertex = chevron[1];
+        let side = if i == 0 { 1.0 } else { -1.0 };
+        assert!(side * vertex.x < side * chevron[0].x && side * vertex.x < side * chevron[2].x, "{chevron:?}");
+    }
+}
+
+#[test]
+fn the_sweat_drop_sits_at_the_left_temple_in_front_of_the_hair() {
+    let profile = profile();
+    let drawing = paint(&profile, &params(|_, s| *s = 1.0));
+    assert_eq!(
+        drawing[FaceLayerId::Base].cmds().len(),
+        paint(&profile, &params(|_, _| {}))[FaceLayerId::Base].cmds().len()
+    );
+    let pts = points(&drawing[FaceLayerId::Overlay]);
+    assert_ne!(pts.len(), 0);
+    assert!(pts.iter().all(|p| p.x > 0.09), "the character's left (+x) temple");
+    assert!(pts.iter().all(|p| p.y > -0.09), "above the eye line");
+}
+
+#[test]
+fn gloom_draws_its_band_and_hatch_on_the_overlay() {
+    let drawing = paint(&profile(), &params(|e, _| e.gloom = 1.0));
+    let overlay = &drawing[FaceLayerId::Overlay];
+    // The band, then nine hatch lines.
+    assert_eq!(overlay.cmds().len(), 1 + 9);
+}
+
+// ------------------------------------------------------------------------------------------------ allocation
+
+/// One command's path copied into a fresh list, so its elements can be read without the rest.
+fn one(list: &DrawList, path: omuzaki_face_api::PathRef) -> DrawList {
+    let mut out = DrawList::new();
+    let copied = copy_path(list, path, &mut out);
+    out.push(Cmd::Fill {
+        path: copied,
+        paint: omuzaki_face_api::Paint::Solid(omuzaki_core::colour::Colour::rgb(0, 0, 0)),
+        opacity: 1.0,
+    });
+    out
+}
+
+trait IntoBase {
+    fn into_base(self) -> DrawList;
+}
+
+impl IntoBase for FaceDrawing {
+    fn into_base(self) -> DrawList {
+        self[FaceLayerId::Base].clone()
+    }
+}
+
+fn count_allocations(f: impl FnOnce()) -> usize {
+    let before = ALLOCATIONS.with(Cell::get);
+    MEASURING.with(|m| m.set(true));
+    f();
+    MEASURING.with(|m| m.set(false));
+    ALLOCATIONS.with(Cell::get) - before
+}
+
+#[test]
+fn painting_the_effects_allocates_nothing_once_the_list_is_warm() {
+    let profile = profile();
+    let mut poses: Vec<PaintParams> = each().into_iter().map(|(_, p)| p).collect();
+    poses.push(params(|e, s| (e.heart, e.sparkle, e.tears, *s) = (1.0, 1.0, 0.5, 0.5)));
+    let mut out = FaceDrawing::new();
+    let mut painter = painter();
+    for pose in &poses {
+        let input = FaceInput { profile: &profile, params: pose, time: Seconds(0.0), view: FaceView::default() };
+        painter.paint(&input, &mut out).unwrap();
+    }
+    let allocations = count_allocations(|| {
+        for i in 0..1000 {
+            let input = FaceInput {
+                profile: &profile,
+                params: &poses[i % poses.len()],
+                time: Seconds(0.0),
+                view: FaceView::default(),
+            };
+            painter.paint(&input, &mut out).unwrap();
+            black_box(&out);
+        }
+    });
+    assert_eq!(allocations, 0, "1000 paints made {allocations} allocations");
+}
+
+#[test]
+fn the_counter_sees_an_allocation() {
+    let allocations = count_allocations(|| {
+        black_box(Vec::<u8>::with_capacity(64));
+    });
+    assert_eq!(allocations, 1, "without this the zero-allocation test proves nothing");
+}

@@ -185,7 +185,12 @@ impl Eye {
         };
         let x = sign * layout.eye_spacing * (1.0 + (style.scale - 1.0) * SPACING_PER_SCALE);
         // A blink or wink closes the lid in proportion; an arc closes it too (the prototype's `1 - smileEye`).
-        let open = eye.open.clamp(0.0, MAX_OPEN) * (1.0 - eye.close.clamp(0.0, 1.0)) * (1.0 - eye.arc.clamp(0.0, 1.0));
+        // A squeeze closes the lid too, as it turns the eye into a `>` or `<`.
+        let squeeze = params.effects.squeeze.clamp(0.0, 1.0);
+        let open = eye.open.clamp(0.0, MAX_OPEN)
+            * (1.0 - eye.close.clamp(0.0, 1.0))
+            * (1.0 - eye.arc.clamp(0.0, 1.0))
+            * (1.0 - squeeze);
         Self {
             side,
             centre: Vec2::new(x as f32, (layout.eye_y - style.drop) as f32),

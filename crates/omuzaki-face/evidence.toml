@@ -57,3 +57,30 @@ steps = [
     { run = ["cargo", "test", "--locked", "-p", "omuzaki-face", "--test", "evidence", "--", "--exact", "render_the_closed_and_smiling_eyes_when_asked"] },
 ]
 images = ["eyes-wink.png", "eyes-happy.png", "eyes-blink-closed.png", "eyes-smiling-lids.png"]
+
+[[case]]
+name = "eye-effects"
+description = "The eye effects, each at 0, 0.5 and 1 on the character's left eye (heart, star, gloom, shock, squeeze, spiral, sparkle, tears), and the Overlay layer: the sweat drop at the temple and the gloom's band and hatch over the forehead."
+env = { OMUZAKI_FACE_EVIDENCE_DIR = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-face", "--test", "evidence", "--", "--exact", "render_the_eye_effects_when_asked"] },
+]
+images = ["eye-effect-heart.png", "eye-effect-star.png", "eye-effect-gloom.png", "eye-effect-shock.png", "eye-effect-squeeze.png", "eye-effect-spiral.png", "eye-effect-sparkle.png", "eye-effect-tears.png", "overlay-sweat.png", "overlay-gloom.png"]
+
+[[case]]
+name = "kiss-to-open"
+description = "The kiss giving way to the open mouth: pucker 1 with the opening from 0.20 to 0.26 in steps of 0.01. The slit fades out and the lens fades in over 0.21 to 0.25; before the change it was one jump at 0.25."
+env = { OMUZAKI_FACE_EVIDENCE_DIR = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-face", "--test", "evidence", "--", "--exact", "render_the_kiss_to_open_sweep_when_asked"] },
+]
+images = ["mouth-kiss-to-open.png"]
+
+[[case]]
+name = "pout-and-brows"
+description = "A pout (cheek puff 0, 0.5 and 1, with the lips pushed forward and the brows coming down) and the brows at height -1, 0 and +1: the inner end leads and the arch flattens as the brow comes down."
+env = { OMUZAKI_FACE_EVIDENCE_DIR = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-face", "--test", "evidence", "--", "--exact", "render_the_pout_and_the_brows_when_asked"] },
+]
+images = ["pout-cheek-puff.png", "brows-height.png"]

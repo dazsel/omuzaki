@@ -138,47 +138,55 @@ pub(super) fn paint(ctx: &mut PaintCtx<'_>, side: Side) {
     let style = &profile.eyes.highlights;
     let glide = ctx.view.highlight_shift * style.view_motion as f32;
 
-    catchlight(ctx, &iris, glide);
+    // A gloomy eye loses its light: every highlight fades with the effect.
+    let keep = 1.0 - params.effects.gloom.clamp(0.0, 1.0);
+    catchlight(ctx, &iris, glide, keep);
     if style.second > 0.0 {
         let list = ctx.list(FaceLayerId::Base);
         let path = list
             .path()
             .ellipse(iris.at(SECOND_PLACE.x, SECOND_PLACE.y), iris.rx * SECOND_RADII.x, iris.ry * SECOND_RADII.y)
             .finish();
-        list.push(Cmd::Fill { path, paint: Paint::Solid(WHITE), opacity: style.second as f32 });
+        list.push(Cmd::Fill { path, paint: Paint::Solid(WHITE), opacity: style.second as f32 * keep });
     }
-    let shimmer = style.shimmer as f32;
+    let shimmer = style.shimmer as f32 * keep;
     if shimmer > OFF {
         shimmer_band(ctx, &iris, side, glide, shimmer);
         twinkles(ctx, &iris, side, glide, shimmer);
     }
     let spark = params.effects.sparkle;
-    if spark > OFF {
+    if spark * keep > OFF {
         let list = ctx.list(FaceLayerId::Base);
         let r = iris.rx * SPARK_RADIUS;
         let path = list.path().ellipse(iris.at(SPARK_PLACE.x, SPARK_PLACE.y), r, r).finish();
-        list.push(Cmd::Fill { path, paint: Paint::Solid(WHITE), opacity: spark.min(1.0) });
+        list.push(Cmd::Fill { path, paint: Paint::Solid(WHITE), opacity: spark.min(1.0) * keep });
     }
 }
 
-/// Which shape the main catchlight takes: the effects switch it, as `P.heart` did.
-fn shape(ctx: &PaintCtx<'_>) -> CatchlightShape {
-    let effects = &ctx.params.effects;
-    if effects.heart > 0.5 {
-        CatchlightShape::Heart
-    } else if effects.star > 0.5 {
-        CatchlightShape::Star
-    } else {
-        ctx.profile.eyes.highlights.shape
+/// The main catchlight, slid by `glide` iris radii, with the effects' shapes crossfaded in: the profile's own shape gives
+/// way to the heart or the star as `effects.heart` or `effects.star` grows (the prototype switched at 0.5, which pops),
+/// and every shape loses its light with `keep` (one less the gloom).
+fn catchlight(ctx: &mut PaintCtx<'_>, iris: &Iris, glide: Vec2, keep: f32) {
+    let effects = ctx.params.effects;
+    let (heart, star) = (effects.heart.clamp(0.0, 1.0), effects.star.clamp(0.0, 1.0));
+    let own = 1.0 - heart.max(star);
+    if own > 0.0 {
+        let shape = ctx.profile.eyes.highlights.shape;
+        draw_shape(ctx, iris, glide, shape, MAIN_OPACITY * own * keep);
+    }
+    if heart > OFF {
+        draw_shape(ctx, iris, glide, CatchlightShape::Heart, MAIN_OPACITY * heart * keep);
+    }
+    if star > OFF {
+        draw_shape(ctx, iris, glide, CatchlightShape::Star, MAIN_OPACITY * star * keep);
     }
 }
 
-/// The main catchlight, slid by `glide` iris radii.
-#[allow(clippy::cast_possible_truncation)] // see `paint`
-fn catchlight(ctx: &mut PaintCtx<'_>, iris: &Iris, glide: Vec2) {
+/// One catchlight of `shape` at `opacity`.
+#[allow(clippy::cast_possible_truncation)] // the profile is f64 for the file's sake; the painter works in f32
+fn draw_shape(ctx: &mut PaintCtx<'_>, iris: &Iris, glide: Vec2, shape: CatchlightShape, opacity: f32) {
     let style = &ctx.profile.eyes.highlights;
     let (size, offset) = (style.size as f32, Vec2::new(style.offset[0] as f32, style.offset[1] as f32));
-    let shape = shape(ctx);
     let list = ctx.list(FaceLayerId::Base);
     let place = |offset: Vec2| iris.at(offset.x + glide.x, offset.y + glide.y);
     let path = match shape {
@@ -190,7 +198,7 @@ fn catchlight(ctx: &mut PaintCtx<'_>, iris: &Iris, glide: Vec2) {
         CatchlightShape::Heart => heart(list, place(offset - HEART_PULL), iris.rx * size * HEART_SCALE),
         CatchlightShape::Star => star(list, place(offset), iris.rx * size * STAR_REACH),
     };
-    list.push(Cmd::Fill { path, paint: Paint::Solid(WHITE), opacity: MAIN_OPACITY });
+    list.push(Cmd::Fill { path, paint: Paint::Solid(WHITE), opacity });
 }
 
 /// The soft band of light gliding across the lower iris, cut by the iris.

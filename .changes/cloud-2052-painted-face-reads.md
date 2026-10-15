@@ -12,3 +12,7 @@
   lower lid), the crease, the lash line with the cat-eye flick, the small lower lash, the inner tick, and the closed
   eyes (the happy `^` arc and the relaxed lash curve with its three lashes). `lash.thickness` is the thick end of the
   lash line (0.0076 m in the prototype) and `lash.flick` 1 is the prototype's full flick.
+- Eye effects: star eyes, gloom, shock, spiral, squeeze (the eye closes into a `>` or `<`) and the tear drop, each
+  scaling smoothly from 0 to 1 and composing with the others. The heart and star catchlights now crossfade with the
+  profile's own shape instead of switching at 0.5, and every highlight fades with the gloom.
+- The Overlay layer draws the sweat drop at the temple and the gloom's band and hatch over the forehead.

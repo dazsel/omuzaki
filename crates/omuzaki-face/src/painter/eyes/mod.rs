@@ -57,6 +57,7 @@ pub(super) fn paint(ctx: &mut PaintCtx<'_>) {
             sclera::paint(ctx, &eye, outline);
             ctx.list(FaceLayerId::Base).push(Cmd::PushClip(outline));
             iris::paint(ctx, side);
+            effects::paint_iris(ctx, side);
             highlight::paint(ctx, side);
             ctx.list(FaceLayerId::Base).push(Cmd::PopClip);
         }
