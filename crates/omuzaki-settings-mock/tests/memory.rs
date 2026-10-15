@@ -7,7 +7,7 @@ use std::path::Path;
 
 use omuzaki_ops_api::Actor;
 use omuzaki_settings_api::error::SettingErrorKind;
-use omuzaki_settings_api::event::ChangeCause;
+use omuzaki_settings_api::event::{CHANGE_LOG_CAPACITY, ChangeCause};
 use omuzaki_settings_api::meta::{AgentWrite, Apply, InProfile, SettingMeta, SettingScope};
 use omuzaki_settings_api::profile::ProfileSource;
 use omuzaki_settings_api::service::{Layer, ListFilter, Settings, SettingsExt, Source};
@@ -123,7 +123,12 @@ impl Setting for Density {
 }
 register_setting!(Density);
 
-check_crate!();
+/// The keys above are registered by this test binary itself, so there is no other crate whose `link()` to call.
+mod this_binary {
+    pub fn link() {}
+}
+
+check_crate!(this_binary);
 
 fn person() -> Actor {
     Actor::Person { name: "test".into() }
@@ -299,12 +304,12 @@ fn deleting_the_active_profile_switches_to_none_first() {
 #[test]
 fn the_change_log_is_newest_first_and_capped() {
     let s = MemorySettings::default();
-    for i in 0..250u16 {
+    for i in 0..u16::try_from(CHANGE_LOG_CAPACITY + 50).unwrap() {
         s.set::<UiScale>(&(75 + i % 100 + 1), Layer::Auto, &person()).unwrap();
     }
     let log = s.changes(1000);
-    assert_eq!(log.len(), 200);
-    assert_eq!(log[0].change.after, json!(75 + 249 % 100 + 1));
+    assert_eq!(log.len(), CHANGE_LOG_CAPACITY);
+    assert_eq!(log[0].change.after, json!(75 + (CHANGE_LOG_CAPACITY + 49) % 100 + 1));
     assert_eq!(s.changes(3).len(), 3);
 }
 
@@ -316,6 +321,8 @@ fn session_state_is_kept_and_the_opening_guard_survives_until_opened() {
     assert_eq!(session.state().opening.as_deref(), Some(Path::new("/p/a")));
     session.opened(Path::new("/p/a"), "A");
     session.mark_version_seen("0.9.0");
+    session.mark_version_seen("0.9.0-beta.1");
+    assert_eq!(session.state().last_seen_version.as_deref(), Some("0.9.0"), "a beta never replaces its release");
     session.set_window("main", omuzaki_settings_api::session::WindowGeometry::new(0, 0, 800, 600));
     let state = session.state();
     assert!(state.opening.is_none() && state.recent.len() == 1 && state.windows.contains_key("main"));
