@@ -1,6 +1,6 @@
 # 0041: The performer's voice is a two-feed TTS pump with a playhead; its face hears the voice ahead of playback; big moves are rules inside the score layer (2026-10-13)
 
-**Status:** proposed (the cloud lead accepts it on the PR). **Context:** AP-02, AP-05, CN-10,
+**Status:** accepted (2026-10-15) by the Director. **Context:** AP-02, AP-05, CN-10,
 ML-04, ML-05, ML-07, ML-14, PF-12, PF-23, PF-24, SE-05, AP-11; ADR 0016 (user models), 0017 (registry), 0018 (audio),
 0031 (the performer loop), 0032 (the LLM seam), 0040 (assistant runtime, pending in). Design:
 `docs/design/ai-performer-voice-face.md`.
