@@ -22,7 +22,7 @@ b64() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
 token() {
   local now exp tok
   now=$(date +%s)
-  if [ -f "$CACHE" ] && read -r exp tok < "$CACHE" && [ -n "${tok:-}" ] && [ "${exp:-0}" -gt $((now + 600)) ]; then
+  if [ -f "$CACHE" ] && [ ! -L "$CACHE" ] && [ -O "$CACHE" ] && read -r exp tok < "$CACHE" && [ -n "${tok:-}" ] && [ "${exp:-0}" -gt $((now + 600)) ]; then
     printf '%s' "$tok"; return 0
   fi
   [ -n "${OMUZAKI_READ_APP_ID:-}" ] && [ -n "${OMUZAKI_READ_APP_KEY_B64:-}" ] \
@@ -48,7 +48,12 @@ import json, sys, datetime
 d = json.load(sys.stdin)
 print(d["token"], int(datetime.datetime.fromisoformat(d["expires_at"].replace("Z", "+00:00")).timestamp()))') \
     || { echo "gh-read-token: unexpected token response" >&2; return 1; }
-  (umask 077; printf '%s %s\n' "$exp" "$tok" > "$CACHE")
+  # A fresh private file renamed over the cache: writing through `>` would follow a planted file or symlink and keep
+  # its permissions. A failed cache write only costs a new token next time.
+  local tmp
+  if tmp=$(umask 077; mktemp "$CACHE.XXXXXX"); then
+    { printf '%s %s\n' "$exp" "$tok" > "$tmp" && mv -f "$tmp" "$CACHE"; } || rm -f "$tmp"
+  fi
   printf '%s' "$tok"
 }
 
