@@ -10,7 +10,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use omuzaki_anim_api::{Channel, DeviceProfile, FrameSource, HeadPose, TrackFrame};
 use omuzaki_core::time::Seconds;
-use omuzaki_track_api::{ClockMap, DeviceTime, mailbox};
+use omuzaki_track_api::camera::DeviceTime;
+use omuzaki_track_api::clock::ClockMap;
+use omuzaki_track_api::mailbox::mailbox;
 
 struct Counting;
 

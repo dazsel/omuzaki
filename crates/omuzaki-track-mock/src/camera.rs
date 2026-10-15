@@ -4,10 +4,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use omuzaki_track_api::{
-    Camera, CameraFormat, CameraFormatRequest, CameraFrame, CameraId, CameraInfo, CameraStream, DeviceTime,
-    PixelFormat, TrackError,
+use omuzaki_track_api::camera::{
+    Camera, CameraFormat, CameraFormatRequest, CameraFrame, CameraId, CameraInfo, CameraStream, DeviceTime, PixelFormat,
 };
+use omuzaki_track_api::error::TrackError;
 
 #[derive(Clone)]
 enum Script {
