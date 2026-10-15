@@ -1,6 +1,9 @@
 //! Windows: winit for the window, the `windows` crate for the switcher, click-through and the global cursor.
 
 #![allow(unsafe_code)]
+// The extended-style flags are small bit masks, far below `isize::MAX`. The `State` methods have the same shape on every
+// OS, so on Windows some take `&self` without using it.
+#![allow(clippy::cast_possible_wrap, clippy::unused_self)]
 
 use raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
 use windows::Win32::Foundation::{COLORREF, HWND, POINT};
@@ -72,7 +75,7 @@ impl State {
     pub(super) fn cursor_position(&self, _window: &Window) -> Option<(f64, f64)> {
         let mut point = POINT::default();
         // SAFETY: `point` is a valid out pointer for the duration of the call.
-        unsafe { GetCursorPos(&mut point) }.ok()?;
+        unsafe { GetCursorPos(&raw mut point) }.ok()?;
         Some((f64::from(point.x), f64::from(point.y)))
     }
 
@@ -126,7 +129,9 @@ pub(super) fn process_cpu_seconds() -> Option<f64> {
     let (mut created, mut exited, mut kernel, mut user) =
         (FILETIME::default(), FILETIME::default(), FILETIME::default(), FILETIME::default());
     // SAFETY: the pseudo handle from GetCurrentProcess is always valid and the four out-pointers are live locals.
-    unsafe { GetProcessTimes(GetCurrentProcess(), &mut created, &mut exited, &mut kernel, &mut user).ok()? };
+    unsafe {
+        GetProcessTimes(GetCurrentProcess(), &raw mut created, &raw mut exited, &raw mut kernel, &raw mut user).ok()?;
+    }
     let ticks = |t: FILETIME| (u64::from(t.dwHighDateTime) << 32 | u64::from(t.dwLowDateTime)) as f64;
     // FILETIME counts 100 ns intervals.
     Some((ticks(kernel) + ticks(user)) / 1.0e7)

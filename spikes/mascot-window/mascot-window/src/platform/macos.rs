@@ -1,7 +1,9 @@
-//! macOS: winit for the window, the Dock icon and the app switcher through the activation policy, and AppKit for the
+//! macOS: winit for the window, the Dock icon and the app switcher through the activation policy, and `AppKit` for the
 //! global cursor. Not compiled or run in the session that wrote it (no macOS toolchain there): the first build on a
 //! Mac is part of the verification.
 #![allow(unsafe_code)]
+// The `State` methods have the same shape on every OS, so on macOS some take `&self` without using it.
+#![allow(clippy::unused_self)]
 
 use objc2::MainThreadMarker;
 use objc2_app_kit::{NSEvent, NSScreen};
