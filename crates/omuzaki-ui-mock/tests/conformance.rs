@@ -148,6 +148,10 @@ omuzaki_ui_api::register_panel! {
     build: |_| Box::new(FirstDrawOnly::default()),
 }
 omuzaki_ui_api::register_panel! {
+    id: "unbuildable", title: "Unbuildable", icon: "", region: Region::Left, min_size: [240.0, 160.0], order: 9,
+    build: |_| panic!("cannot be built"),
+}
+omuzaki_ui_api::register_panel! {
     id: "narrow", title: "Narrow", icon: "", region: Region::Left, min_size: [240.0, 160.0], order: 2,
     build: |_| Box::new(Narrow),
 }
@@ -228,4 +232,13 @@ fn every_size_is_drawn_on_a_freshly_built_panel() {
         host.check("first-draw-only", &ctx),
         ["first-draw-only: panics at 120 by 80 points", "first-draw-only: panics at 1 by 1 points"]
     );
+}
+
+#[test]
+fn a_build_that_panics_is_a_problem_not_a_crash() {
+    let runner = MockRunner::new(MemDoc::new());
+    let actor = Actor::System;
+    let ctx = PanelCtx::new(&runner, &actor);
+    let host = MockHost::new();
+    assert_eq!(host.check("unbuildable", &ctx), ["unbuildable: panics when it is built"]);
 }

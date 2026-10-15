@@ -144,7 +144,12 @@ impl MockHost {
                 .filter(|d| d.kind == DefKind::Panel && d.id == id)
                 .map(ToString::to_string),
         );
-        let Some((def, mut panel)) = self.open(id, ctx) else {
+        // Building is guarded like every draw: a `build` that panics is a problem to report, not to unwind out of.
+        let Ok(opened) = panic::catch_unwind(AssertUnwindSafe(|| self.open(id, ctx))) else {
+            problems.push(format!("{id}: panics when it is built"));
+            return problems;
+        };
+        let Some((def, mut panel)) = opened else {
             problems.push(format!("no panel is registered as {id:?}"));
             return problems;
         };
