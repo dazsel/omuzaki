@@ -59,12 +59,11 @@ pub const BUILT_IN_SIBLING_KEYS: [&str; 9] =
 /// omuzaki_char_api::register_doc_key!("hats", hats_path);
 /// ```
 ///
-/// The form `register_doc_key!("name", built_in)` is for this module only: it records the key for the listing
-/// ([`omuzaki_core::link::registered`], `omuzaki registrations`) and registers nothing, because the built-in keys are the
-/// table above and validation never reads the registry for them.
+/// The marker form `register_doc_key!("name", @built_in)` is for this module only: it records the key for the listing and
+/// registers nothing. `@built_in` can't parse as a path, so every path argument means what it always did.
 #[macro_export]
 macro_rules! register_doc_key {
-    ($key:literal, built_in) => {
+    ($key:literal, @built_in) => {
         $crate::__record_registration!("doc_key", $key);
     };
     ($key:literal, $path:path) => {
@@ -77,24 +76,24 @@ macro_rules! register_doc_key {
 
 // The built-in keys, listed beside the registered ones (ADR 0054 §5). The record is in a binary exactly when this crate's
 // `link()` is called; the tables above are what validation reads, so it never depends on that. The test below keeps the
-// two in step.
-register_doc_key!("name", built_in);
-register_doc_key!("template", built_in);
-register_doc_key!("seed", built_in);
-register_doc_key!("palette", built_in);
-register_doc_key!("skin_tone", built_in);
-register_doc_key!("parts", built_in);
-register_doc_key!("face", built_in);
-register_doc_key!("weight_brushes", built_in);
-register_doc_key!("variants", built_in);
-register_doc_key!("colourways", built_in);
-register_doc_key!("rig", built_in);
-register_doc_key!("look", built_in);
-register_doc_key!("licence", built_in);
-register_doc_key!("sources", built_in);
-register_doc_key!("applied", built_in);
-register_doc_key!("poses", built_in);
-register_doc_key!("emotes", built_in);
+// two in step. `@built_in` is not a path, so no path argument can match it.
+register_doc_key!("name", @built_in);
+register_doc_key!("template", @built_in);
+register_doc_key!("seed", @built_in);
+register_doc_key!("palette", @built_in);
+register_doc_key!("skin_tone", @built_in);
+register_doc_key!("parts", @built_in);
+register_doc_key!("face", @built_in);
+register_doc_key!("weight_brushes", @built_in);
+register_doc_key!("variants", @built_in);
+register_doc_key!("colourways", @built_in);
+register_doc_key!("rig", @built_in);
+register_doc_key!("look", @built_in);
+register_doc_key!("licence", @built_in);
+register_doc_key!("sources", @built_in);
+register_doc_key!("applied", @built_in);
+register_doc_key!("poses", @built_in);
+register_doc_key!("emotes", @built_in);
 
 /// The registered keys, resolved once: usable ones by key, and the collisions.
 struct Resolved {
