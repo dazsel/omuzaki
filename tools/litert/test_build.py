@@ -130,6 +130,19 @@ def minimal_pe(names: list[str], magic: int = 0x20B) -> bytes:
     return bytes(image)
 
 
+class Exports(unittest.TestCase):
+    def test_exactly_the_list_passes(self):
+        build.check_exports(set(build.symbols()), build.symbols())
+
+    def test_an_extra_symbol_fails(self):
+        with self.assertRaisesRegex(build.Mismatch, r"extra \['TfLiteTensorData'\], missing \[\]"):
+            build.check_exports({*build.symbols(), "TfLiteTensorData"}, build.symbols())
+
+    def test_a_missing_symbol_fails(self):
+        with self.assertRaisesRegex(build.Mismatch, r"extra \[\], missing \['omz_litert_capture_errors'\]"):
+            build.check_exports(set(build.symbols()) - {"omz_litert_capture_errors"}, build.symbols())
+
+
 class WindowsExports(unittest.TestCase):
     def test_the_def_file_lists_every_name(self):
         self.assertEqual(build.module_definition(["A", "B"]), "EXPORTS\n    A\n    B\n")

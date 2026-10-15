@@ -262,9 +262,16 @@ def max_version(text: str, prefix: str) -> str:
     return ".".join(map(str, max(found))) if found else ""
 
 
+def check_exports(exported: set[str], names: list[str]):
+    """The library's complete export table must be exactly `names` (design §3.2, §8.1): nothing extra, nothing missing."""
+    extra, missing = sorted(exported - set(names)), sorted(set(names) - exported)
+    if extra or missing:
+        raise Mismatch(f"exported symbols differ from symbols.txt: extra {extra}, missing {missing}")
+
+
 def read_back(plat: str, library: Path, litert: Path, tools: Path) -> dict:
     """The toolchain facts read back from the built library, checked against the pins."""
-    pins, names = platform_pins(plat), set(symbols())
+    pins, names = platform_pins(plat), symbols()
     if plat == "linux-x64":
         # LLVM's tools from the hermetic toolchain the build used, so the container needs no binutils.
         llvm = Path(bazel(["info", "output_base"], litert, tools, plat).strip()) / "external/llvm18_linux_x86_64/bin"
@@ -276,17 +283,16 @@ def read_back(plat: str, library: Path, litert: Path, tools: Path) -> dict:
             raise Mismatch(f"the library needs glibc {glibc}, newer than the pinned floor {pins['glibc_max']}")
         # Names carry their version node (`TfLiteVersion@@VERS_1.0`), and the node itself is listed as a symbol.
         listed = run([llvm / "llvm-nm", "-D", "--defined-only", "--format=just-symbols", library]).split()
-        exported = {name.split("@")[0] for name in listed} - {"VERS_1.0"}
-        expect("exported symbols", sorted(exported), sorted(names))
+        check_exports({name.split("@")[0] for name in listed} - {"VERS_1.0"}, names)
         return {"compiler": pins["compiler"], "glibc": glibc}
     if plat == "macos-arm64":
         loads = run(["otool", "-l", library])
         minos = re.search(r"minos (\S+)", loads)
         expect("the library's minimum macOS", minos.group(1) if minos else None, pins["macos_minimum"])
-        exported = set(run(["nm", "-gU", "-j", library]).split())
-        expect("exported symbols", sorted(exported), sorted(f"_{n}" for n in names))
+        # Mach-O C symbols carry a leading underscore.
+        check_exports({name.removeprefix("_") for name in run(["nm", "-gU", "-j", library]).split()}, names)
         return {"xcode": pins["xcode"], "macos_minimum": pins["macos_minimum"]}
-    expect("exported symbols", sorted(pe_exports(library.read_bytes())), sorted(names))
+    check_exports(set(pe_exports(library.read_bytes())), names)
     return {"msvc_toolset": pins["msvc_toolset"]}
 
 
