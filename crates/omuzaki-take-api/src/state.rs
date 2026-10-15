@@ -71,6 +71,7 @@ impl VoiceEntry {
 /// Why a voice's derived values were not recorded (T5).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum WithheldCause {
     /// The voice was muted.
     Muted,
@@ -369,11 +370,19 @@ impl StateRecord {
 
 /// One registered live-state provider. Built by [`register_take_state!`](crate::register_take_state!); never by hand.
 #[derive(Copy, Clone)]
+#[non_exhaustive]
 pub struct StateProvider {
     /// The key in [`StateRecord::live`].
     pub name: &'static str,
     /// Captures the subsystem's live state now, off the frame thread.
     pub capture: fn() -> Value,
+}
+
+impl StateProvider {
+    /// A provider's name and capture function; what [`register_take_state!`](crate::register_take_state!) builds.
+    pub const fn new(name: &'static str, capture: fn() -> Value) -> Self {
+        Self { name, capture }
+    }
 }
 
 inventory::collect!(StateProvider);
@@ -392,7 +401,7 @@ pub fn state_providers() -> Vec<StateProvider> {
 macro_rules! register_take_state {
     ($name:literal, $capture:expr) => {
         $crate::__inventory::submit! {
-            $crate::state::StateProvider { name: $name, capture: $capture }
+            $crate::state::StateProvider::new($name, $capture)
         }
         $crate::__record_registration!("take_state", $name);
     };

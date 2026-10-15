@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 /// What the take belongs to.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum TakeKind {
     /// A recording of a whole session.
     Recording,
@@ -19,6 +20,7 @@ pub enum TakeKind {
 /// Which side of the take the pinned snapshot sits on (T6).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum SnapshotAt {
     /// Taken at the start: entries replay forward.
     Start,

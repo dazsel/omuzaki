@@ -10,11 +10,19 @@ use crate::state::Withheld;
 
 /// One chunk read from a take: its header and its payload of records, borrowed from the reader's buffer.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct ChunkView<'a> {
     /// The decoded header.
     pub header: ChunkHeader,
     /// The records, `header.len` bytes. The codec (`omuzaki-take`) decodes them into `Record`s.
     pub payload: &'a [u8],
+}
+
+impl<'a> ChunkView<'a> {
+    /// A chunk with its header and its payload.
+    pub fn new(header: ChunkHeader, payload: &'a [u8]) -> Self {
+        Self { header, payload }
+    }
 }
 
 /// What a read found. Filled as chunks are read.
@@ -148,4 +156,19 @@ pub trait TakeSource {
 
     /// What the reads so far found.
     fn report(&self) -> &TakeReport;
+}
+
+#[cfg(test)]
+mod tests {
+    use omuzaki_core::time::Seconds;
+
+    use super::*;
+    use crate::chunk::ChunkFlags;
+
+    #[test]
+    fn a_chunk_view_holds_its_header_and_payload() {
+        let header = ChunkHeader::new(1, 0, ChunkFlags(ChunkFlags::GROUP_START), 7, Seconds(0.25), 3);
+        let view = ChunkView::new(header, &[1, 2, 3]);
+        assert_eq!((view.header, view.payload), (header, &[1u8, 2, 3][..]));
+    }
 }

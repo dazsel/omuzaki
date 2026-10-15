@@ -107,6 +107,7 @@ impl ChunkFlags {
 
 /// A decoded chunk header. The magic and the CRC are checked while decoding and not kept.
 #[derive(Copy, Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct ChunkHeader {
     /// The chunk's major version.
     pub major: u8,
@@ -123,6 +124,11 @@ pub struct ChunkHeader {
 }
 
 impl ChunkHeader {
+    /// A header with every field the 32-byte layout carries.
+    pub fn new(major: u8, minor: u8, flags: ChunkFlags, frame: i64, tick: Seconds, len: u32) -> Self {
+        Self { major, minor, flags, frame, tick, len }
+    }
+
     /// Whether this reader may decode the chunk (T3): a newer major, or a must-understand flag it does not know (it
     /// knows none yet), is refused as [`TakeError::Newer`], the one upgrade path.
     ///
@@ -150,7 +156,7 @@ mod tests {
     }
 
     fn header(major: u8, flags: u16) -> ChunkHeader {
-        ChunkHeader { major, minor: 1, flags: ChunkFlags(flags), frame: 0, tick: Seconds(0.0), len: 0 }
+        ChunkHeader::new(major, 1, ChunkFlags(flags), 0, Seconds(0.0), 0)
     }
 
     #[test]
