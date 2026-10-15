@@ -152,11 +152,11 @@ pub type SignedIndex = Signed<IndexBody>;
   A store keeps at most 20 versions per id in the list; older ones stay downloadable at their `url` for pins.
 - **Versions are immutable,** within an index and across indexes. A second entry for one `id@version` with another
   hash makes the whole index `Tampered(Duplicate)`; the same bytes are idempotent. The client also persists, per
-  store in the plugin state file, the `id@version → hash` of the latest accepted index plus every version the person
-  installed or pinned, and rejects any later index, whatever its sequence, that maps a recorded `id@version` to another
-  hash, the same `Tampered(Duplicate)`. The map is rewritten on each accepted index, so a version that has left the
-  listing and was never installed is forgotten; it is bounded by the 10,000-entry cap plus the person's own installs
-  (under 1 MB). Only an authenticated `Rotate` to a new key or the person's re-add of the store (§3) clears it; a higher `epoch` signed by the
+  store in the plugin state file, an append-only `id@version → hash` record of every entry in every accepted index,
+  never evicted while the store stays configured, and rejects any later index, whatever its sequence, that maps a
+  recorded `id@version` to another hash, the same `Tampered(Duplicate)`, so an entry that leaves the listing stays
+  fixed. The record holds at most 50,000 entries (about 5 MB); an index that would exceed it is refused as `Tampered`
+  (history full) and offers nothing new until the person re-adds the store. Only an authenticated `Rotate` to a new key or the person's re-add of the store (§3) clears it; a higher `epoch` signed by the
   pinned key moves the watermark but clears nothing. A fix is a new version. Delete is `yanked: true`, never removal,
   so a pin or a rollback still resolves (crates.io's rule).
 - **Replay and freeze are the updater's rules** (`updates.md` §4): the client stores the highest accepted
@@ -374,7 +374,7 @@ All against `MemoryStore` on a `FakeClock`; no test touches the network. The hos
 | `signature_outside_hash` | listing `plugin.sig` as content is refused; changing only `plugin.sig` leaves the hash unchanged |
 | `wrong_domain_and_key` | a signature over the same hash under `Domain::Export`, `LibraryIndex` or `Plugin` fails as an index signature (and the reverse); an index signed by any key but the pinned one is `BadSignature` |
 | `publisher_key_continuity` | a package signed by a valid key other than `entry.publisher.key` is refused; an update whose entry and signer both carry a new key, without `Rotate`, reaches the card with `publisher_changed` and needs the typed confirmation, and declined changes nothing; a package `url` with a scheme, `//`, backslash or `..` is refused before any request |
-| `index_replay_expiry_epoch` | a lower `(epoch, sequence)` is `Replay`; past `expires` is `Expired` and offers nothing; a raised epoch resets the pin only after a verified `Rotate` or a person's re-add; one `id@version` with two hashes is `Tampered(Duplicate)`, in one file or in a higher-sequence index after a recorded lower-sequence one |
+| `index_replay_expiry_epoch` | a lower `(epoch, sequence)` is `Replay`; past `expires` is `Expired` and offers nothing; a raised epoch resets the pin only after a verified `Rotate` or a person's re-add; one `id@version` with two hashes is `Tampered(Duplicate)`, in one file or in a higher-sequence index after a recorded lower-sequence one, including one omitted from an index in between; a record past 50,000 entries refuses the index |
 | `listing_lies_refused` | an entry that understates `permissions` or shows another licence is `ListingMismatch` at install |
 | `nc_licence_refused` | `listing::check` refuses a non-commercial or unknown SPDX id; the client refuses a store entry with one |
 | `mid_run_revocation` | a running plugin with a `fetch` waiting; the list names its hash: `Disabled { StoreRevoked }`, the fetch is cancelled, the entry rolls back (the assertions of `plugins.md` §3.4) |
