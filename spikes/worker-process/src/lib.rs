@@ -5,8 +5,10 @@
 //! measures what the output saw. Linux runs the CPU lane (frames in shared memory, lavapipe renderer); Windows runs the
 //! DX12 lane (a shared texture and a shared fence, then Spout), which is compile-checked only so far.
 
+pub mod ack;
 pub mod analysis;
 pub mod options;
+pub mod pacing;
 pub mod protocol;
 pub mod schedule;
 pub mod supervise;
@@ -49,6 +51,16 @@ pub enum Error {
         worker: u32,
         /// The wait that ran out.
         secs: u64,
+    },
+    /// A worker ended by itself, which is a renderer failure and not one of the scheduled kills.
+    #[error("worker {worker} exited by itself {at_ms:.0} ms into the run: {reason}")]
+    WorkerExited {
+        /// The worker's number.
+        worker: u32,
+        /// When its pipe closed, ms since the run started.
+        at_ms: f64,
+        /// How the process ended.
+        reason: String,
     },
     /// A bad command line.
     #[error("{0}")]

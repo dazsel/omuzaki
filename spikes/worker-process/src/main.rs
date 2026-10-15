@@ -32,6 +32,9 @@ enum Command {
         /// Seconds the first worker runs undisturbed, for the per-frame cost.
         #[arg(long, default_value_t = 30)]
         baseline_s: u64,
+        /// Workers started and stopped one at a time, for uncensored cold-start timings.
+        #[arg(long, default_value_t = 30)]
+        cold_starts: u32,
         /// Earliest kill, ms after a worker is spawned.
         #[arg(long, default_value_t = 20)]
         kill_min_ms: u64,
@@ -80,7 +83,8 @@ struct HostArgs {
 }
 
 fn host_args(command: Command) -> Result<HostArgs, Error> {
-    let Command::Host { kills, seed, size, fps, baseline_s, kill_min_ms, kill_max_ms, worker_env, json } = command
+    let Command::Host { kills, seed, size, fps, baseline_s, cold_starts, kill_min_ms, kill_max_ms, worker_env, json } =
+        command
     else {
         return Err(Error::Config("not a host command".into()));
     };
@@ -92,12 +96,16 @@ fn host_args(command: Command) -> Result<HostArgs, Error> {
                 .ok_or_else(|| Error::Config(format!("--worker-env wants KEY=VALUE, got {pair:?}")))
         })
         .collect::<Result<Vec<_>, _>>()?;
+    if !(fps.is_finite() && fps > 0.0) {
+        return Err(Error::Config(format!("--fps must be a positive number, got {fps}")));
+    }
     let options = worker_process::options::HostOptions {
         kills,
         seed,
         size: parse_size(&size)?,
         fps,
         baseline_s,
+        cold_starts,
         kill_window_ms: (kill_min_ms, kill_max_ms),
         worker_env,
     };

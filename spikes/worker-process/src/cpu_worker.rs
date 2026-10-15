@@ -11,6 +11,7 @@ use spout_out::gpu;
 use spout_out::scene::{SceneParams, SceneRenderer};
 
 use crate::Error;
+use crate::ack::SlotGate;
 use crate::protocol::Msg;
 use crate::shm::{SLOTS, SlotFile};
 
@@ -45,6 +46,8 @@ pub fn run(args: &WorkerArgs) -> Result<(), Error> {
     let scene = SceneRenderer::new(&gpu.device, &gpu.queue, args.size)?;
     let frame_bytes = u64::from(args.size.0) * u64::from(args.size.1) * 4;
     let ring = SlotFile::open(&args.shm, frame_bytes)?;
+    let mut gate = SlotGate::<{ SLOTS as usize }>::new();
+    let mut acks = std::io::stdin().lock();
     post(Msg::Ready { gpu_ns, scene_ns: ns(scene_started) })?;
 
     let clock = Clock::new();
@@ -63,9 +66,12 @@ pub fn run(args: &WorkerArgs) -> Result<(), Error> {
         let pixels = scene.read_back()?;
         let render_ns = ns(draw_started);
 
-        let write_started = Instant::now();
         let slot = u32::try_from(index % u64::from(SLOTS)).unwrap_or(0);
+        // Do not overwrite a slot the host may still be reading: wait until it has handed the slot back.
+        gate.take(slot as usize, &mut acks)?;
+        let write_started = Instant::now();
         ring.write(slot, &pixels)?;
+        gate.give(slot as usize);
         post(Msg::Frame { slot, index, render_ns, write_ns: ns(write_started) })?;
     }
     Ok(())

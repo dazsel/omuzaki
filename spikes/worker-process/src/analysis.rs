@@ -3,7 +3,7 @@
 use serde::Serialize;
 use spout_out::stats::Summary;
 
-use crate::supervise::Timeline;
+use crate::supervise::{Phase, Timeline};
 
 /// A present is an interval longer than this many output periods; at 30 fps that is a skipped tick, not jitter.
 const GAP_PERIODS: f64 = 2.0;
@@ -67,16 +67,21 @@ pub struct Analysis {
     pub hold_ms: Summary,
     /// Gap between consecutive frames in the kill phase, ms (the longest is the worst hold of the run).
     pub arrival_gap_ms: Summary,
-    /// Process creation to the Ready message, ms.
+    /// Process creation to the Ready message, ms. Only workers that were left alone until their first frame
+    /// (baseline, cold-start and probe workers), so the sample is not censored by the kill schedule.
     pub spawn_to_ready_ms: Summary,
-    /// Process creation to the first frame the host could use, ms.
+    /// Process creation to the first frame the host could use, ms; the same uncensored workers.
     pub spawn_to_first_frame_ms: Summary,
     /// The same for the very first worker of the run (nothing of the worker was in the page cache).
     pub first_worker_spawn_to_first_frame_ms: Option<f64>,
-    /// Inside the worker: instance, adapter and device, ms.
+    /// Inside the worker: instance, adapter and device, ms; the same uncensored workers.
     pub worker_gpu_init_ms: Summary,
-    /// Inside the worker: pipeline build, ms.
+    /// Inside the worker: pipeline build, ms; the same uncensored workers.
     pub worker_scene_build_ms: Summary,
+    /// Workers the kill schedule started.
+    pub kill_phase_workers: usize,
+    /// Of those, how many were killed before posting a frame: their start-up time is unknown (censored), not zero.
+    pub kill_phase_workers_without_a_frame: usize,
     /// Kill call to the next process creation, ms (the host's own reaction time).
     pub respawn_latency_ms: Summary,
     /// Worker's draw + readback per frame in the baseline phase, ms.
@@ -91,6 +96,13 @@ fn intervals(presents: &[Present]) -> Vec<(f64, f64)> {
     presents.windows(2).map(|w| (w[1].t_ms, w[1].t_ms - w[0].t_ms)).collect()
 }
 
+fn uncensored_readies<'a>(
+    timeline: &'a Timeline,
+    uncensored: &'a [&crate::supervise::Spawn],
+) -> impl Iterator<Item = &'a crate::supervise::Ready> {
+    timeline.readies.iter().filter(move |r| uncensored.iter().any(|s| s.worker == r.worker))
+}
+
 fn summary(values: impl Iterator<Item = f64>) -> Summary {
     Summary::of(&values.collect::<Vec<_>>())
 }
@@ -99,8 +111,9 @@ fn summary(values: impl Iterator<Item = f64>) -> Summary {
 #[must_use]
 pub fn analyse(timeline: &Timeline, presents: &[Present], host_ingest_ms: &[f64], period_ms: f64) -> Analysis {
     let boundary = timeline.boundary_ms.unwrap_or(0.0);
-    let (baseline_presents, kill_presents): (Vec<Present>, Vec<Present>) =
-        presents.iter().partition(|p| p.t_ms < boundary);
+    let kill_start = timeline.kill_start_ms.unwrap_or(boundary);
+    let baseline_presents: Vec<Present> = presents.iter().copied().filter(|p| p.t_ms < boundary).collect();
+    let kill_presents: Vec<Present> = presents.iter().copied().filter(|p| p.t_ms >= kill_start).collect();
     let kill_intervals = intervals(&kill_presents);
     let mut worst: Vec<Gap> = kill_intervals
         .iter()
@@ -125,10 +138,13 @@ pub fn analyse(timeline: &Timeline, presents: &[Present], host_ingest_ms: &[f64]
         after_kill.push((started, to_first, hold));
     }
 
-    let kill_phase_arrivals: Vec<_> = timeline.arrivals.iter().filter(|a| a.t_ms >= boundary).collect();
+    let kill_phase_arrivals: Vec<_> = timeline.arrivals.iter().filter(|a| a.t_ms >= kill_start).collect();
     let first_frame_of = |worker: u32| timeline.arrivals.iter().find(|a| a.worker == worker).map(|a| a.t_ms);
-    let spawn_to_first: Vec<f64> =
-        timeline.spawns.iter().filter_map(|s| Some(first_frame_of(s.worker)? - s.t_ms)).collect();
+    // Start-up timings come only from workers nothing interrupted; a kill-phase worker killed early would leave a short,
+    // biased sample (or none).
+    let uncensored: Vec<_> = timeline.spawns.iter().filter(|s| s.phase != Phase::Kill).collect();
+    let spawn_to_first: Vec<f64> = uncensored.iter().filter_map(|s| Some(first_frame_of(s.worker)? - s.t_ms)).collect();
+    let kill_spawns: Vec<_> = timeline.spawns.iter().filter(|s| s.phase == Phase::Kill).collect();
     let baseline_arrivals = timeline.arrivals.iter().filter(|a| a.t_ms < boundary);
 
     Analysis {
@@ -148,15 +164,16 @@ pub fn analyse(timeline: &Timeline, presents: &[Present], host_ingest_ms: &[f64]
         hold_ms: summary(after_kill.iter().filter_map(|k| k.2)),
         arrival_gap_ms: summary(kill_phase_arrivals.windows(2).map(|w| w[1].t_ms - w[0].t_ms)),
         spawn_to_ready_ms: summary(
-            timeline
-                .spawns
+            uncensored
                 .iter()
                 .filter_map(|s| Some(timeline.readies.iter().find(|r| r.worker == s.worker)?.t_ms - s.t_ms)),
         ),
         spawn_to_first_frame_ms: summary(spawn_to_first.iter().copied()),
         first_worker_spawn_to_first_frame_ms: spawn_to_first.first().copied(),
-        worker_gpu_init_ms: summary(timeline.readies.iter().map(|r| r.gpu_ms)),
-        worker_scene_build_ms: summary(timeline.readies.iter().map(|r| r.scene_ms)),
+        worker_gpu_init_ms: summary(uncensored_readies(timeline, &uncensored).map(|r| r.gpu_ms)),
+        worker_scene_build_ms: summary(uncensored_readies(timeline, &uncensored).map(|r| r.scene_ms)),
+        kill_phase_workers: kill_spawns.len(),
+        kill_phase_workers_without_a_frame: kill_spawns.iter().filter(|s| first_frame_of(s.worker).is_none()).count(),
         respawn_latency_ms: summary(
             counted
                 .iter()
@@ -182,10 +199,15 @@ mod tests {
             // Worker 1 posts every 100 ms until 900, is killed at 1000; worker 2 is spawned at 1010 and posts at 1400.
             arrivals: (1..=9).map(|i| arrival(1, f64::from(i) * 100.0)).chain([arrival(2, 1400.0)]).collect(),
             readies: vec![Ready { worker: 2, t_ms: 1300.0, gpu_ms: 200.0, scene_ms: 50.0 }],
-            spawns: vec![Spawn { worker: 1, t_ms: 0.0 }, Spawn { worker: 2, t_ms: 1010.0 }],
+            spawns: vec![
+                Spawn { worker: 1, phase: Phase::Kill, t_ms: 0.0 },
+                Spawn { worker: 2, phase: Phase::Probe, t_ms: 1010.0 },
+            ],
             kills: vec![Kill { worker: 1, t_ms: 1000.0, counted: true }],
             rejected: 0,
+            exits: vec![],
             boundary_ms: None,
+            kill_start_ms: None,
         }
     }
 
@@ -199,7 +221,19 @@ mod tests {
         assert_eq!(a.hold_ms.max, 500.0);
         assert_eq!(a.respawn_latency_ms.max, 10.0);
         assert_eq!(a.spawn_to_ready_ms.max, 290.0);
-        assert_eq!(a.first_worker_spawn_to_first_frame_ms, Some(100.0));
+        assert_eq!(a.first_worker_spawn_to_first_frame_ms, Some(390.0));
+    }
+
+    #[test]
+    fn start_up_timings_ignore_workers_the_schedule_could_interrupt() {
+        // Worker 1 (kill phase) started fast; worker 2 (probe) took 390 ms. Only worker 2 is a start-up sample.
+        let a = analyse(&timeline(), &[], &[], 33.3);
+        assert_eq!(a.spawn_to_first_frame_ms.count, 1);
+        assert_eq!(a.spawn_to_first_frame_ms.max, 390.0);
+        assert_eq!((a.kill_phase_workers, a.kill_phase_workers_without_a_frame), (1, 0));
+        let mut t = timeline();
+        t.arrivals.retain(|a| a.worker != 1);
+        assert_eq!(analyse(&t, &[], &[], 33.3).kill_phase_workers_without_a_frame, 1);
     }
 
     #[test]

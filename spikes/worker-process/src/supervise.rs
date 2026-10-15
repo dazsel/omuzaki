@@ -3,8 +3,8 @@
 //! Platform-neutral: how a frame reaches the output is the caller's `on_frame` hook, so the Linux lane (shared memory)
 //! and the Windows lane (shared texture) run the same kill loop.
 
-use std::io::Read;
-use std::process::{Child, ChildStdout};
+use std::io::{Read, Write};
+use std::process::{Child, ChildStdin, ChildStdout};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -44,11 +44,26 @@ pub struct Ready {
     pub scene_ms: f64,
 }
 
+/// Why a worker was started.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Phase {
+    /// The undisturbed first worker (per-frame costs).
+    Baseline,
+    /// A worker left alone until its first frame, then stopped: an uncensored cold start.
+    Cold,
+    /// A worker the kill schedule may stop at any moment, startup included (its start-up samples are censored).
+    Kill,
+    /// The last worker, left alone until its first frame so the final kill has a frame to measure to.
+    Probe,
+}
+
 /// A worker was started.
 #[derive(Clone, Copy, Debug)]
 pub struct Spawn {
     /// Worker number.
     pub worker: u32,
+    /// Why it was started.
+    pub phase: Phase,
     /// Just before the process was created, ms since the run started.
     pub t_ms: f64,
 }
@@ -77,8 +92,12 @@ pub struct Timeline {
     pub kills: Vec<Kill>,
     /// Frames the host refused (a torn or stale slot).
     pub rejected: u64,
-    /// When the baseline phase ended and the kill phase began.
+    /// Workers whose pipe closed (or failed) and when, ms since the run started. A killed worker appears here too.
+    pub exits: Vec<(u32, f64)>,
+    /// When the baseline phase ended.
     pub boundary_ms: Option<f64>,
+    /// When the kill phase began (after the baseline and the cold starts).
+    pub kill_start_ms: Option<f64>,
 }
 
 /// The timeline plus the clock and the wake-up for waiters.
@@ -143,8 +162,19 @@ pub struct SuperviseConfig {
     pub kills: u32,
     /// Seconds one worker runs undisturbed before the kills start (0 skips the phase).
     pub baseline: Duration,
+    /// Workers started and stopped one at a time, with no kill before the first frame, for uncensored cold-start timings.
+    pub cold_starts: u32,
     /// When, after a spawn, each kill falls.
     pub schedule: KillSchedule,
+}
+
+/// Phase boundaries the caller samples its own counters at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mark {
+    /// The baseline worker has been stopped.
+    BaselineEnd,
+    /// The kills are about to start.
+    KillStart,
 }
 
 /// Called on the reader thread for each frame message; stores the frame for the output. Returns whether it was accepted.
@@ -160,22 +190,64 @@ struct Worker {
 impl Worker {
     fn start(
         worker: u32,
+        phase: Phase,
         spawn: &mut impl FnMut(u32) -> std::io::Result<Child>,
         shared: &Arc<Shared>,
         on_frame: &OnFrame,
     ) -> Result<Self, Error> {
         let t_ms = shared.now_ms();
         let mut child = spawn(worker).map_err(Error::io("spawning the worker"))?;
-        shared.update(|t| t.spawns.push(Spawn { worker, t_ms }));
-        let Some(stdout) = child.stdout.take() else {
-            // Reap the worker before reporting: it has no way to talk to us.
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(Error::Config("the worker was started without a piped stdout".into()));
+        shared.update(|t| t.spawns.push(Spawn { worker, phase, t_ms }));
+        let (Some(stdout), Some(stdin)) = (child.stdout.take(), child.stdin.take()) else {
+            // Reap the worker before reporting: it has no way to talk to us. A failed teardown is reported with the cause.
+            let teardown = child.kill().and_then(|()| child.wait());
+            return Err(match teardown {
+                Ok(_) => Error::Config("the worker was started without piped stdin and stdout".into()),
+                Err(e) => Error::io("stopping a worker that was started without pipes")(e),
+            });
         };
         let (shared, on_frame) = (Arc::clone(shared), Arc::clone(on_frame));
-        let reader = thread::spawn(move || read_loop(stdout, worker, &shared, &on_frame));
+        let reader = thread::spawn(move || read_loop(stdout, stdin, worker, &shared, &on_frame));
         Ok(Self { number: worker, child, reader: Some(reader) })
+    }
+
+    /// The error for a worker whose pipe closed without our killing it: when, and how the process ended.
+    fn exited_early(&mut self, shared: &Shared) -> Error {
+        let after_ms = shared.lock().exits.iter().find(|e| e.0 == self.number).map_or(0.0, |e| e.1);
+        let reason = match self.child.try_wait() {
+            Ok(Some(status)) => status.to_string(),
+            Ok(None) => "its pipe closed but the process is still running".to_owned(),
+            Err(e) => format!("its status could not be read: {e}"),
+        };
+        Error::WorkerExited { worker: self.number, at_ms: after_ms, reason }
+    }
+
+    fn has_exited(&self, shared: &Shared) -> bool {
+        shared.lock().exits.iter().any(|e| e.0 == self.number)
+    }
+
+    /// Sleeps up to `duration`, failing at once (with the real exit time and reason) if the worker dies on its own.
+    fn wait_or_exit(&mut self, shared: &Shared, duration: Duration) -> Result<(), Error> {
+        let number = self.number;
+        if shared.wait_for(duration, |t| t.exits.iter().any(|e| e.0 == number)) {
+            return Err(self.exited_early(shared));
+        }
+        Ok(())
+    }
+
+    /// Waits for the worker's first accepted frame; a worker that dies first fails the run with its exit.
+    fn await_first_frame(&mut self, shared: &Shared) -> Result<(), Error> {
+        let number = self.number;
+        shared.wait_for(FIRST_FRAME_TIMEOUT, |t| {
+            t.arrivals.iter().any(|a| a.worker == number) || t.exits.iter().any(|e| e.0 == number)
+        });
+        if shared.lock().arrivals.iter().any(|a| a.worker == number) {
+            Ok(())
+        } else if self.has_exited(shared) {
+            Err(self.exited_early(shared))
+        } else {
+            Err(Error::NoFrames { worker: number, secs: FIRST_FRAME_TIMEOUT.as_secs() })
+        }
     }
 
     /// SIGKILLs the worker, reaps it and waits for its reader to see the pipe close.
@@ -199,8 +271,22 @@ impl Drop for Worker {
     }
 }
 
-/// Reads messages until the pipe closes. A closed pipe is the normal end of a killed worker.
-fn read_loop(mut out: ChildStdout, worker: u32, shared: &Shared, on_frame: &OnFrame) -> Result<(), Error> {
+/// Reads messages until the pipe closes, handing each slot back to the worker once the host has read it. A closed pipe is
+/// the normal end of a killed worker; `wait_or_exit` tells that apart from a worker that died by itself.
+fn read_loop(out: ChildStdout, ack: ChildStdin, worker: u32, shared: &Shared, on_frame: &OnFrame) -> Result<(), Error> {
+    let result = read_messages(out, ack, worker, shared, on_frame);
+    let t_ms = shared.now_ms();
+    shared.update(|t| t.exits.push((worker, t_ms)));
+    result
+}
+
+fn read_messages(
+    mut out: ChildStdout,
+    mut ack: ChildStdin,
+    worker: u32,
+    shared: &Shared,
+    on_frame: &OnFrame,
+) -> Result<(), Error> {
     let mut bytes = [0u8; MSG_BYTES];
     loop {
         match out.read_exact(&mut bytes) {
@@ -214,7 +300,7 @@ fn read_loop(mut out: ChildStdout, worker: u32, shared: &Shared, on_frame: &OnFr
                 let t_ms = shared.now_ms();
                 shared.update(|t| t.readies.push(Ready { worker, t_ms, gpu_ms: ms(gpu_ns), scene_ms: ms(scene_ns) }));
             }
-            Msg::Frame { index, render_ns, write_ns, .. } => {
+            Msg::Frame { slot, index, render_ns, write_ns } => {
                 let accepted = on_frame(worker, &msg);
                 let t_ms = shared.now_ms();
                 shared.update(|t| {
@@ -230,6 +316,12 @@ fn read_loop(mut out: ChildStdout, worker: u32, shared: &Shared, on_frame: &OnFr
                         t.rejected += 1;
                     }
                 });
+                // The slot is the worker's again, accepted or not. A broken pipe means the worker is already gone.
+                match ack.write_all(&crate::ack::encode(slot)).and_then(|()| ack.flush()) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => return Ok(()),
+                    Err(e) => return Err(Error::io("acknowledging a slot")(e)),
+                }
             }
         }
     }
@@ -240,46 +332,79 @@ fn ms(ns: u64) -> f64 {
     ns as f64 / 1e6
 }
 
-/// Runs the baseline phase, then `config.kills` kill/respawn cycles, then one probe worker. `on_boundary` runs when the baseline ends.
+/// Runs the baseline phase, the cold starts, `config.kills` kill/respawn cycles, then one probe worker. `mark` is called
+/// at each phase boundary.
 ///
 /// # Errors
-/// Fails when a worker cannot be started, produces no frame within a minute, or cannot be killed.
+/// Fails when a worker cannot be started, dies by itself (the error names when and how), produces no frame within a
+/// minute, or cannot be killed.
 pub fn run(
     shared: &Arc<Shared>,
     mut config: SuperviseConfig,
     mut spawn: impl FnMut(u32) -> std::io::Result<Child>,
     on_frame: &OnFrame,
-    on_boundary: impl FnOnce(),
+    mut mark: impl FnMut(Mark),
 ) -> Result<(), Error> {
     let mut number = 0;
     if !config.baseline.is_zero() {
         number += 1;
-        let mut worker = Worker::start(number, &mut spawn, shared, on_frame)?;
-        wait_first_frame(shared, number)?;
-        thread::sleep(config.baseline);
+        let mut worker = Worker::start(number, Phase::Baseline, &mut spawn, shared, on_frame)?;
+        worker.await_first_frame(shared)?;
+        worker.wait_or_exit(shared, config.baseline)?;
         worker.stop(shared, false)?;
         let t_ms = shared.now_ms();
         shared.update(|t| t.boundary_ms = Some(t_ms));
-        on_boundary();
+        mark(Mark::BaselineEnd);
     }
+    for _ in 0..config.cold_starts {
+        number += 1;
+        let mut worker = Worker::start(number, Phase::Cold, &mut spawn, shared, on_frame)?;
+        worker.await_first_frame(shared)?;
+        worker.stop(shared, false)?;
+    }
+    let t_ms = shared.now_ms();
+    shared.update(|t| t.kill_start_ms = Some(t_ms));
+    mark(Mark::KillStart);
     for _ in 0..config.kills {
         number += 1;
         let spawned = Instant::now();
-        let mut worker = Worker::start(number, &mut spawn, shared, on_frame)?;
-        thread::sleep(config.schedule.next_delay().saturating_sub(spawned.elapsed()));
+        let mut worker = Worker::start(number, Phase::Kill, &mut spawn, shared, on_frame)?;
+        worker.wait_or_exit(shared, config.schedule.next_delay().saturating_sub(spawned.elapsed()))?;
         worker.stop(shared, true)?;
     }
-    // One last worker, left alone until its first frame, so the final kill has a "first new frame" to measure to.
     number += 1;
-    let mut worker = Worker::start(number, &mut spawn, shared, on_frame)?;
-    wait_first_frame(shared, number)?;
+    let mut worker = Worker::start(number, Phase::Probe, &mut spawn, shared, on_frame)?;
+    worker.await_first_frame(shared)?;
     worker.stop(shared, false)
 }
 
-fn wait_first_frame(shared: &Shared, worker: u32) -> Result<(), Error> {
-    if shared.wait_for(FIRST_FRAME_TIMEOUT, |t| t.arrivals.iter().any(|a| a.worker == worker)) {
-        Ok(())
-    } else {
-        Err(Error::NoFrames { worker, secs: FIRST_FRAME_TIMEOUT.as_secs() })
+#[cfg(all(test, unix))]
+mod tests {
+    use std::process::{Command, Stdio};
+
+    use super::*;
+
+    #[test]
+    fn a_worker_that_dies_by_itself_fails_the_run_with_its_exit() {
+        let shared = Arc::new(Shared::new());
+        let config = SuperviseConfig {
+            kills: 1,
+            baseline: Duration::ZERO,
+            cold_starts: 0,
+            // A kill 5 s out; the worker exits after 0.2 s, so the run must notice long before.
+            schedule: KillSchedule::new(1, 5000, 5000),
+        };
+        let spawn = |_| {
+            Command::new("sh").args(["-c", "sleep 0.2; exit 3"]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn()
+        };
+        let on_frame: OnFrame = Arc::new(|_, _| true);
+        let started = Instant::now();
+        let err = run(&shared, config, spawn, &on_frame, |_| {}).unwrap_err();
+        assert!(started.elapsed() < Duration::from_secs(3), "noticed after {:?}", started.elapsed());
+        match err {
+            Error::WorkerExited { worker: 1, reason, .. } => assert!(reason.contains('3'), "{reason}"),
+            other => panic!("wrong error: {other}"),
+        }
+        assert!(shared.take().kills.is_empty(), "an early exit must not be recorded as an injected kill");
     }
 }

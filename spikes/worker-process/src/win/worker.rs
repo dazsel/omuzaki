@@ -13,6 +13,7 @@ use spout_out::scene::{FORMAT, SceneParams, SceneRenderer};
 use super::shared::{create_shared_fence, create_shared_texture, raw_device_and_queue};
 use super::{SLOTS, object_name};
 use crate::Error;
+use crate::ack::SlotGate;
 use crate::protocol::Msg;
 
 /// What the worker is told on its command line.
@@ -62,6 +63,13 @@ fn wrap(
     unsafe { device.create_texture_from_hal::<wgpu::hal::api::Dx12>(hal, &desc, wgpu::TextureUses::UNINITIALIZED) }
 }
 
+fn wait_for_gpu(device: &wgpu::Device) -> Result<(), Error> {
+    device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .map(|_| ())
+        .map_err(|e| Error::Config(format!("waiting for the GPU: {e}")))
+}
+
 /// Renders until killed.
 ///
 /// # Errors
@@ -72,6 +80,7 @@ pub fn run(args: &WorkerArgs) -> Result<(), Error> {
     let gpu_ns = ns(started);
     let scene_started = Instant::now();
     let scene = SceneRenderer::new(&gpu.device, &gpu.queue, args.size)?;
+    let scene_ns = ns(scene_started);
     let (device12, queue12) = raw_device_and_queue(&gpu.device)?;
     // The handles stay open until the process dies; closing them would unpublish the names.
     let mut handles = Vec::new();
@@ -84,8 +93,10 @@ pub fn run(args: &WorkerArgs) -> Result<(), Error> {
     }
     let (fence, fence_handle) = create_shared_fence(&device12, &object_name(args.host, args.worker, None))?;
     handles.push(fence_handle);
-    post(Msg::Ready { gpu_ns, scene_ns: ns(scene_started) })?;
+    post(Msg::Ready { gpu_ns, scene_ns })?;
 
+    let mut gate = SlotGate::<{ SLOTS as usize }>::new();
+    let mut acks = std::io::stdin().lock();
     let clock = Clock::new();
     let period = Duration::from_secs_f64(1.0 / args.fps);
     let mut deadline = Instant::now();
@@ -98,7 +109,13 @@ pub fn run(args: &WorkerArgs) -> Result<(), Error> {
         #[allow(clippy::cast_precision_loss)] // an animation phase: losing low bits of a huge frame number is harmless
         let t = index as f32 * 0.02;
         scene.render(&SceneParams { tag: FrameTag { frame, ticks: clock.now() }, t, truth: false });
+        // Finish the draw first, so its time does not include the hand-off.
+        wait_for_gpu(&gpu.device)?;
+        let render_ns = ns(draw_started);
+
         let slot = u32::try_from(index % u64::from(SLOTS)).unwrap_or(0);
+        // Do not overwrite a slot the host's copy may still be reading: wait until the host has handed it back.
+        gate.take(slot as usize, &mut acks)?;
         let copy_started = Instant::now();
         let mut encoder = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("to slot") });
         let size = wgpu::Extent3d { width: args.size.0, height: args.size.1, depth_or_array_layers: 1 };
@@ -108,11 +125,11 @@ pub fn run(args: &WorkerArgs) -> Result<(), Error> {
         // value `index + 1` because a fence starts at 0.
         // SAFETY: the queue and fence are valid COM objects owned by this function.
         unsafe { queue12.Signal(&fence, index + 1) }.map_err(|source| Error::Win32 { what: "queue Signal", source })?;
-        // Wait for the GPU so the posted frame is real and the timings below mean something; the 30 fps cap leaves room.
-        gpu.device
-            .poll(wgpu::PollType::wait_indefinitely())
-            .map_err(|e| Error::Config(format!("waiting for the GPU: {e}")))?;
-        post(Msg::Frame { slot, index, render_ns: ns(draw_started), write_ns: ns(copy_started) })?;
+        // Wait for the GPU so the posted frame is real; the 30 fps cap leaves room.
+        wait_for_gpu(&gpu.device)?;
+        let write_ns = ns(copy_started);
+        gate.give(slot as usize);
+        post(Msg::Frame { slot, index, render_ns, write_ns })?;
     }
     drop(handles);
     Ok(())

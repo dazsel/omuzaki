@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use spout_out::gpu;
-use spout_out::interop::SpoutBridge;
+use spout_out::interop::{BridgedSender, SpoutBridge};
 use spout_out::scene::FORMAT;
 use windows::Win32::Graphics::Direct3D12::{ID3D12CommandQueue, ID3D12Device, ID3D12Fence, ID3D12Resource};
 
@@ -21,6 +21,7 @@ use super::{SLOTS, object_name};
 use crate::Error;
 use crate::analysis::{self, Analysis, Present};
 use crate::options::HostOptions;
+use crate::pacing;
 use crate::protocol::Msg;
 use crate::schedule::KillSchedule;
 use crate::supervise::{self, OnFrame, Shared, SuperviseConfig};
@@ -111,8 +112,51 @@ impl HostGpu {
             multiview_mask: None,
         }));
         self.queue.submit([encoder.finish()]);
+        // The slot goes back to the worker only once the copy out of it has finished on the GPU.
+        self.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .map_err(|e| Error::Config(format!("waiting for the slot copy: {e}")))?;
         Ok(())
     }
+}
+
+/// What the output loop produced.
+struct Presented {
+    presents: Vec<Present>,
+    send_errors: u64,
+    skipped_ticks: u64,
+}
+
+/// The steady output tick: sends the hold texture to Spout every period, whether or not a new frame arrived.
+fn present_loop(
+    sender: &mut BridgedSender<'_>,
+    bridge: &SpoutBridge,
+    shared: &Shared,
+    frames_taken: &AtomicU64,
+    last_arrival_ms: &Mutex<(u64, f64)>,
+    stop: &AtomicBool,
+    period: Duration,
+) -> Presented {
+    let mut out = Presented { presents: Vec::new(), send_errors: 0, skipped_ticks: 0 };
+    while frames_taken.load(Ordering::Acquire) == 0 && !stop.load(Ordering::Acquire) {
+        thread::sleep(Duration::from_millis(1));
+    }
+    let (mut seen, mut next) = (0u64, Instant::now());
+    while !stop.load(Ordering::Acquire) {
+        let (count, arrived_ms) = *last_arrival_ms.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if sender.send().and_then(|()| bridge.wait_gpu().map_err(|_| spout_out::spout::SpoutError::Send)).is_err() {
+            out.send_errors += 1;
+        }
+        sender.sender().signal_sync();
+        let now_ms = shared.now_ms();
+        out.presents.push(Present { t_ms: now_ms, index: count, fresh: count != seen, age_ms: now_ms - arrived_ms });
+        seen = count;
+        let (following, skipped) = pacing::advance(next, period, Instant::now());
+        next = following;
+        out.skipped_ticks += skipped;
+        thread::sleep(next.saturating_duration_since(Instant::now()));
+    }
+    out
 }
 
 /// The host's report: the timings, plus what Windows can say cheaply about handles.
@@ -120,10 +164,18 @@ impl HostGpu {
 pub struct Report {
     /// Adapter name and backend.
     pub adapter: String,
-    /// Kill count, seed, size.
+    /// Kills performed.
     pub kills: u32,
     /// Seed of the kill schedule.
     pub seed: u64,
+    /// Frame size.
+    pub size: (u32, u32),
+    /// Output rate.
+    pub fps: f64,
+    /// Graphics backend of the probed adapter.
+    pub backend: String,
+    /// Output deadlines skipped after a late tick.
+    pub skipped_ticks: u64,
     /// The timings.
     pub analysis: Analysis,
     /// Frames the Spout sender failed to send.
@@ -190,45 +242,39 @@ pub fn run(options: &HostOptions) -> Result<Report, Error> {
             .arg(format!("{}x{}", options.size.0, options.size.1))
             .arg("--fps")
             .arg(options.fps.to_string())
-            .stdin(Stdio::null())
+            .envs(options.worker_env.iter().map(|(k, v)| (k, v)))
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
     };
     let config = SuperviseConfig {
         kills: options.kills,
         baseline: Duration::from_secs(options.baseline_s),
+        cold_starts: options.cold_starts,
         schedule: KillSchedule::new(options.seed, options.kill_window_ms.0, options.kill_window_ms.1),
     };
 
     let period = Duration::from_secs_f64(1.0 / options.fps);
-    let (presents, send_errors) = thread::scope(|scope| {
+    let presented = thread::scope(|scope| {
         let supervisor = scope.spawn(|| {
-            let result = supervise::run(&shared, config, spawn, &on_frame, || {});
+            let result = supervise::run(&shared, config, spawn, &on_frame, |_| {});
             stop.store(true, Ordering::Release);
             result
         });
-        let mut presents = Vec::new();
-        let mut send_errors = 0u64;
-        while frames_taken.load(Ordering::Acquire) == 0 && !stop.load(Ordering::Acquire) {
-            thread::sleep(Duration::from_millis(1));
-        }
-        let (mut seen, mut next) = (0u64, Instant::now());
-        while !stop.load(Ordering::Acquire) {
-            let (count, arrived_ms) = *last_arrival_ms.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            // Sent whether or not a new frame arrived: the hold texture is the last frame.
-            if sender.send().and_then(|()| bridge.wait_gpu().map_err(|_| spout_out::spout::SpoutError::Send)).is_err() {
-                send_errors += 1;
-            }
-            sender.sender().signal_sync();
-            let now_ms = shared.now_ms();
-            presents.push(Present { t_ms: now_ms, index: count, fresh: count != seen, age_ms: now_ms - arrived_ms });
-            seen = count;
-            next += period;
-            thread::sleep(next.saturating_duration_since(Instant::now()));
-        }
-        supervisor.join().map_err(|_| Error::Panicked).and_then(|result| result).map(|()| (presents, send_errors))
+        let presented = present_loop(&mut sender, &bridge, &shared, &frames_taken, &last_arrival_ms, &stop, period);
+        supervisor.join().map_err(|_| Error::Panicked).and_then(|result| result).map(|()| presented)
     })?;
 
-    let analysis = analysis::analyse(&shared.take(), &presents, &[], period.as_secs_f64() * 1000.0);
-    Ok(Report { adapter: gpu.adapter, kills: options.kills, seed: options.seed, analysis, send_errors })
+    let analysis = analysis::analyse(&shared.take(), &presented.presents, &[], period.as_secs_f64() * 1000.0);
+    Ok(Report {
+        adapter: gpu.adapter,
+        kills: options.kills,
+        seed: options.seed,
+        size: options.size,
+        fps: options.fps,
+        backend: format!("{:?}", gpu.backend),
+        skipped_ticks: presented.skipped_ticks,
+        analysis,
+        send_errors: presented.send_errors,
+    })
 }

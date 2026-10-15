@@ -18,11 +18,12 @@ use spout_out::frame_tag;
 use crate::Error;
 use crate::analysis::{self, Analysis, Present};
 use crate::options::HostOptions;
+use crate::pacing;
 use crate::proc_stats::{self, ProcSample};
 use crate::protocol::Msg;
 use crate::schedule::KillSchedule;
 use crate::shm::{RingPath, SLOTS, SlotFile};
-use crate::supervise::{self, OnFrame, Shared, SuperviseConfig};
+use crate::supervise::{self, Mark, OnFrame, Shared, SuperviseConfig};
 
 /// Presents expected in a run, reserved up front so the presenter does not reallocate in its loop (10 minutes at 30 fps).
 const PRESENT_CAPACITY: usize = 40_000;
@@ -95,26 +96,29 @@ impl Store {
 }
 
 /// The steady-rate output loop: each tick shows the newest complete frame, or the previous one again when none arrived.
-fn present_loop(store: &Store, shared: &Shared, stop: &AtomicBool, period: Duration) -> Vec<Present> {
+fn present_loop(store: &Store, shared: &Shared, stop: &AtomicBool, period: Duration) -> (Vec<Present>, u64) {
     let mut presents = Vec::with_capacity(PRESENT_CAPACITY);
     while !store.has_frame() {
         if stop.load(Ordering::Acquire) {
-            return presents;
+            return (presents, 0);
         }
         thread::sleep(Duration::from_millis(1));
     }
     let mut shown: Option<Held> = None;
     let mut next = Instant::now();
+    let mut skipped_ticks = 0;
     while !stop.load(Ordering::Acquire) {
         let fresh = store.take_newest(&mut shown);
         let now_ms = shared.now_ms();
         if let Some(held) = &shown {
             presents.push(Present { t_ms: now_ms, index: held.index, fresh, age_ms: now_ms - held.arrived_ms });
         }
-        next += period;
+        let (following, skipped) = pacing::advance(next, period, Instant::now());
+        next = following;
+        skipped_ticks += skipped;
         thread::sleep(next.saturating_duration_since(Instant::now()));
     }
-    presents
+    (presents, skipped_ticks)
 }
 
 /// The machine the numbers came from.
@@ -127,7 +131,9 @@ pub struct Machine {
     /// Adapter name, driver and device type as wgpu reports them.
     pub adapter: String,
     /// Graphics backend.
-    pub backend: &'static str,
+    pub backend: String,
+    /// What the adapter says it is (`Cpu` for a software rasteriser, `DiscreteGpu`, ...).
+    pub device_type: String,
 }
 
 /// The host's own cost over a phase.
@@ -182,6 +188,8 @@ pub struct Report {
     pub host_baseline: Option<HostCost>,
     /// Host cost during the kill phase.
     pub host_kill_phase: HostCost,
+    /// Output deadlines that passed while a tick ran late and were skipped rather than caught up with.
+    pub skipped_ticks: u64,
     /// The timings.
     pub analysis: Analysis,
 }
@@ -209,6 +217,7 @@ fn probe_adapter() -> Result<String, Error> {
 pub fn run(options: &HostOptions) -> Result<Report, Error> {
     let exe = std::env::current_exe().map_err(Error::io("finding this executable"))?;
     let adapter = probe_adapter()?;
+    let device_type = adapter.split(" | ").nth(1).unwrap_or("unknown").to_owned();
     let frame_bytes = u64::from(options.size.0) * u64::from(options.size.1) * 4;
     let ring_path = PathBuf::from(format!("/dev/shm/omuzaki-wp-{}", std::process::id()));
     let _ring_guard = RingPath(ring_path.clone());
@@ -222,7 +231,7 @@ pub fn run(options: &HostOptions) -> Result<Report, Error> {
 
     let ticks = proc_stats::clock_ticks_per_second();
     let start = proc_stats::sample(ticks)?;
-    let boundary: Arc<Mutex<Option<ProcSample>>> = Arc::new(Mutex::new(None));
+    let marks: Mutex<Vec<(Mark, Result<ProcSample, Error>)>> = Mutex::new(Vec::new());
     let stop = Arc::new(AtomicBool::new(false));
 
     let spawn = |_gen: u32| {
@@ -236,7 +245,7 @@ pub fn run(options: &HostOptions) -> Result<Report, Error> {
             .arg("--fps")
             .arg(options.fps.to_string())
             .envs(options.worker_env.iter().map(|(k, v)| (k, v)))
-            .stdin(Stdio::null())
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped());
         command.spawn()
     };
@@ -247,29 +256,44 @@ pub fn run(options: &HostOptions) -> Result<Report, Error> {
     let config = SuperviseConfig {
         kills: options.kills,
         baseline: Duration::from_secs(options.baseline_s),
+        cold_starts: options.cold_starts,
         schedule: KillSchedule::new(options.seed, options.kill_window_ms.0, options.kill_window_ms.1),
     };
 
     let period = Duration::from_secs_f64(1.0 / options.fps);
     let presents = thread::scope(|scope| {
         let supervisor = scope.spawn(|| {
-            let on_boundary = || {
-                if let Ok(sample) = proc_stats::sample(ticks) {
-                    *boundary.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(sample);
-                }
+            let mark = |at: Mark| {
+                let sample = proc_stats::sample(ticks);
+                marks.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((at, sample));
             };
-            let result = supervise::run(&shared, config, spawn, &on_frame, on_boundary);
+            let result = supervise::run(&shared, config, spawn, &on_frame, mark);
             // The presenter stops whether or not the run succeeded.
             stop.store(true, Ordering::Release);
             result
         });
-        let presents = present_loop(&store, &shared, &stop, period);
-        supervisor.join().map_err(|_| Error::Panicked).and_then(|result| result).map(|()| presents)
+        let presented = present_loop(&store, &shared, &stop, period);
+        supervisor.join().map_err(|_| Error::Panicked).and_then(|result| result).map(|()| presented)
     })?;
+    let (presents, skipped_ticks) = presents;
     let end = proc_stats::sample(ticks)?;
 
     let timeline = shared.take();
-    let boundary_sample = *boundary.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    // A failed /proc sample at a boundary fails the run: the two phases' costs must not silently merge.
+    let (mut baseline_end, mut kill_start) = (None, None);
+    for (at, sample) in marks.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner) {
+        match at {
+            Mark::BaselineEnd => baseline_end = Some(sample?),
+            Mark::KillStart => kill_start = Some(sample?),
+        }
+    }
+    let kill_start = kill_start.ok_or_else(|| Error::Config("the kill phase never started".into()))?;
+    let host_baseline = if options.baseline_s > 0 {
+        let end = baseline_end.ok_or_else(|| Error::Config("the baseline phase never ended".into()))?;
+        Some(cost(&start, &end))
+    } else {
+        None
+    };
     let ingest_ms = std::mem::take(&mut store.lock().ingest_ms);
     let analysis = analysis::analyse(&timeline, &presents, &ingest_ms, period.as_secs_f64() * 1000.0);
     Ok(Report {
@@ -281,11 +305,13 @@ pub fn run(options: &HostOptions) -> Result<Report, Error> {
             cpu: cpu_model(),
             cores: thread::available_parallelism().map_or(1, usize::from),
             adapter,
-            backend: "Vulkan (lavapipe, no GPU)",
+            backend: "Vulkan".into(),
+            device_type,
         },
         fds_at_start: start.fds,
-        host_baseline: boundary_sample.as_ref().map(|b| cost(&start, b)),
-        host_kill_phase: cost(boundary_sample.as_ref().unwrap_or(&start), &end),
+        host_baseline,
+        host_kill_phase: cost(&kill_start, &end),
+        skipped_ticks,
         analysis,
     })
 }
