@@ -265,8 +265,25 @@ fn matches_the_spec_with_sphere_and_capsule_colliders() {
 }
 
 /// The three extended colliders, placed where the hair of `Fixture::hair(3, 4)` swings into them.
-fn extended_colliders() -> [(&'static str, ColliderShape); 3] {
+fn extended_colliders() -> [(&'static str, ColliderShape); 5] {
     [
+        // A capsule whose ends coincide is a ball: it must still collide (the spec's 0/0 would not).
+        (
+            "capsule_of_zero_length",
+            ColliderShape::Capsule {
+                offset: Vec3::new(0.0, -0.12, 0.0),
+                radius: 0.1,
+                tail: Vec3::new(0.0, -0.12, 0.0),
+            },
+        ),
+        (
+            "capsule_inside_of_zero_length",
+            ColliderShape::CapsuleInside {
+                offset: Vec3::new(0.0, -0.12, 0.0),
+                radius: 0.14,
+                tail: Vec3::new(0.0, -0.12, 0.0),
+            },
+        ),
         ("sphere_inside", ColliderShape::SphereInside { offset: Vec3::new(0.0, -0.12, 0.0), radius: 0.14 }),
         (
             "capsule_inside",

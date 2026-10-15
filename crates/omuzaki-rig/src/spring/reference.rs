@@ -200,6 +200,10 @@ fn collide(world: &DMat4, shape: ColliderShape, next_tail: DVec3, joint_radius: 
         let transformed_tail = world.transform_point3(tail.as_dvec3());
         let offset_to_tail = transformed_tail - transformed_offset;
         let mut delta = next_tail - transformed_offset;
+        if offset_to_tail.length_squared() == 0.0 {
+            // The ends coincide: a ball. The spec's division by the span would be 0/0.
+            return delta;
+        }
         let dot = offset_to_tail.dot(delta);
         if dot < 0.0 {
             // At the head side of the capsule: nothing to do.
