@@ -1,0 +1,25 @@
+[package]
+name = "omuzaki-secrets"
+description = "The OS keychain secret store: KeychainSecrets implements SecretStore over Windows Credential Manager, macOS Keychain and the Linux Secret Service (CN-05)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+keyring.workspace = true
+omuzaki-secrets-api = { path = "../omuzaki-secrets-api" }
+
+[dev-dependencies]
+omuzaki-secrets-mock = { path = "../omuzaki-secrets-mock" }
+
+[lints]
+workspace = true
+
+# Native only: talks to the operating system's credential store
+[package.metadata.omuzaki]
+kind = "Implementation"
+summary = "the OS keychain secret store (CN-05): `KeychainSecrets` keeps one entry per label under the service name `omuzaki` through `keyring`; Linux without a Secret Service daemon is `SecretError::Unavailable` with a hint, never a file fallback"
+wasm = false
