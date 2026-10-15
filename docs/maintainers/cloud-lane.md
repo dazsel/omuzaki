@@ -49,8 +49,8 @@ A lead runs one read-only watcher, so it hears the Director and its pull request
 the lead only for:
 - a post on #2 starting `**Director` (rulings, priorities, handovers);
 - on the pull requests in its area: a comment starting `**Director`, an implementer's question (a comment starting
-  `**<Area> (question):**`), a change in Codex's review state (the `codex-review-state:v1` block in Codex's summary
-  comment: a finished review, or new unresolved findings), and a failed `gate` check;
+  `**<Area> (question):**`), Codex finishing a review (the status row of its summary comment reads Completed for
+  the current head; the `codex-review-state:v1` block is there only while a review runs) or new findings, and a failed `gate` check;
 - a post from another area's lead on #2 that names this area.
 
 **Only maintainers' comments count.** The repository is public, so anyone can post a comment that starts
