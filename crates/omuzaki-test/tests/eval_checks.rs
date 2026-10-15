@@ -486,3 +486,87 @@ fn a_placeholder_nothing_defines_is_a_broken_check_for_every_kind_that_can_carry
         "[[check]]\nid='c'\nkind='query'\nop='evaltest.doc'\nat='/chars/a/name'\nexpect={ equals = '{\"a\": 1}' }\n";
     assert_eq!(grade_with(json_text).outcome, Outcome::Fail);
 }
+
+/// The check kinds that carry a name, each with a way to put `name` where the kind reads one.
+/// A check kind's name, and how it puts a name where the kind reads one.
+type NameUser = (&'static str, fn(&str) -> String);
+
+/// A source of names: what it is, the task text it needs, the name to use, and the exports it gets.
+type NameSource = (&'static str, &'static str, &'static str, Vec<(&'static str, &'static str)>);
+
+fn name_users() -> Vec<NameUser> {
+    vec![
+        ("query", |n| {
+            format!("kind='query'\nop='evaltest.char'\nargs={{ id = '{n}' }}\nat='/name'\nexpect={{ equals = 'A' }}\n")
+        }),
+        ("gate", |n| format!("kind='gate'\nops=['{n}']\n")),
+        ("log.applied", |n| format!("kind='log.applied'\nop='{n}'\n")),
+        ("log.not_applied", |n| format!("kind='log.not_applied'\nop='{n}'\n")),
+        ("log.within", |n| format!("kind='log.within'\nops=['{n}']\n")),
+        ("doc.exists", |n| format!("kind='doc.exists'\npath='chars/{n}'\n")),
+    ]
+}
+
+/// Where a name can come from, and one malformed input for each: the task text and the exports it gets.
+fn broken_name_sources() -> Vec<NameSource> {
+    let bind =
+        |body: &str| -> &'static str { Box::leak(format!("[bind]\nx = {{ {body}, pick='new' }}\n").into_boxed_str()) };
+    vec![
+        // (source, task head, the name to use, exports)
+        ("an undefined name", "", "{nope}", vec![]),
+        ("a binding whose pointer reaches numbers", bind("op='evaltest.doc', at='/counter'"), "{x}", vec![]),
+        ("a binding with a malformed pointer", bind("op='evaltest.chars', at='ids/*'"), "{x}", vec![]),
+        ("a binding whose op fails on the fixture", bind("op='evaltest.boom', at='/ids/*'"), "{x}", vec![]),
+        ("a binding naming an op nothing registers", bind("op='evaltest.nope', at='/ids/*'"), "{x}", vec![]),
+        (
+            "a binding naming an edit op",
+            bind("op='evaltest.set_counter', args={ value = 1 }, at='/ids/*'"),
+            "{x}",
+            vec![],
+        ),
+        ("a name that is both an export and a bind", bind("op='evaltest.chars', at='/ids/*'"), "{x}", vec![("x", "a")]),
+    ]
+}
+
+#[test]
+fn every_malformed_input_is_a_harness_error_for_every_check_kind_that_reads_it() {
+    let fixture = runner(&json!({"counter": 1, "chars": {"a": {"name": "A"}}}));
+    let result = runner(&json!({"counter": 5, "chars": {"a": {"name": "A"}, "fox": {"name": "Fox"}}}));
+    for (kind, use_name) in name_users() {
+        for (source, head, name, exports) in broken_name_sources() {
+            let toml = format!("{head}[[check]]\nid='c'\n{}", use_name(name));
+            let exports = exports.into_iter().map(|(k, v)| (k.to_owned(), v.to_owned())).collect();
+            let report = Checker::new(fixture.clone(), result.clone(), Transcript::default())
+                .with_exports(exports)
+                .grade(&task(&toml));
+            assert_eq!(report.results[0].outcome, Outcome::Error, "{kind} with {source}: {}", report.results[0].detail);
+        }
+    }
+}
+
+#[test]
+fn malformed_arguments_pointers_and_answers_are_harness_errors_not_the_agents_fail() {
+    let char_query = |args: &str| {
+        format!(
+            "[[check]]\nid='c'\nkind='query'\nop='evaltest.char'\nargs={args}\nat='/name'\nexpect={{ equals = 'A' }}\n"
+        )
+    };
+    // Op arguments that do not decode against the op's schema: a missing field, the wrong type.
+    for args in ["{}", "{ id = 5 }", "{ id = ['a'] }"] {
+        assert_eq!(outcome(&char_query(args)), Outcome::Error, "{args}");
+    }
+    // The result project missing the object is the agent's.
+    assert_eq!(outcome(&char_query("{ id = 'nobody' }")), Outcome::Fail);
+    // An op nothing registers, and an edit op, as a query.
+    for op in ["evaltest.nope", "evaltest.set_counter"] {
+        let toml = format!("[[check]]\nid='c'\nkind='query'\nop='{op}'\nat='/x'\nexpect={{ equals = 1 }}\n");
+        assert_eq!(outcome(&toml), Outcome::Error, "{op}");
+    }
+    // A gate op that does not answer `passed` as a boolean.
+    let gate = "[[check]]\nid='c'\nkind='gate'\nops=['evaltest.doc']\n";
+    assert_eq!(outcome(gate), Outcome::Error);
+    // A binding that reaches a number mixed in with ids is not silently filtered down to the strings.
+    let mixed = "[bind]\nx = { op='evaltest.doc', at='/*', pick='new' }\n\
+                 [[check]]\nid='c'\nkind='log.applied'\nop='{x}'\n";
+    assert_eq!(outcome(mixed), Outcome::Error);
+}

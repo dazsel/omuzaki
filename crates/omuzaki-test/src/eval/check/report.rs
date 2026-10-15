@@ -1,5 +1,12 @@
 //! What grading produces: one [`CheckResult`] per check, with an [`Outcome`] that keeps the model's mistakes apart
 //! from the harness's (design 5.4).
+//!
+//! **The rule, written once:** only a fact about the *result project*, read through a well-formed check, can be a
+//! [`Outcome::Fail`]. Everything else is an [`Outcome::Error`]: a name, pointer or argument the task wrote that does
+//! not resolve or decode; a binding that does not name ids; anything read from the fixture; an op, gate or server
+//! answer in a shape the contract does not allow. The one place that decides it for an op that failed on the result is
+//! [`Outcome::of_result_error`], which every check kind reaches through `value::result_failure`; the checks that read
+//! shapes (bindings, gates) return `error` for any shape they do not expect, never a fail.
 
 use omuzaki_ops_api::{ErrorCode, OpError};
 use serde::Serialize;
@@ -19,11 +26,13 @@ pub enum Outcome {
 
 impl Outcome {
     /// The outcome of an op that failed on the **result** project: `not_found` and `invalid` mean the agent broke or
-    /// removed what the check reads, so they are a fail; anything else is the harness's.
+    /// removed what the check reads, so they are a fail. Arguments that do not decode against the op's schema are
+    /// `invalid` too, but are decided before the project is read: the task wrote them, so they are the harness's, as
+    /// is anything else.
     #[must_use]
     pub fn of_result_error(error: &OpError) -> Self {
         match error.code {
-            ErrorCode::NotFound | ErrorCode::Invalid => Self::Fail,
+            ErrorCode::NotFound | ErrorCode::Invalid if !error.is_decode_error() => Self::Fail,
             _ => Self::Error,
         }
     }

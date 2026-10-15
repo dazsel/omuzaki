@@ -1,6 +1,6 @@
 //! The `gate` check: gate ops pass on the result, or the failed gates the project declares are none.
 
-use serde_json::Map;
+use serde_json::{Map, Value};
 
 use super::Checker;
 use super::query::allowed;
@@ -11,8 +11,8 @@ use super::value::{call, pointer_all, result_failure};
 const DESCRIBE_OP: &str = "project.describe";
 /// Where `project.describe` lists the gates that fail, as an array of names (confirmed shape for VF-09).
 const FAILED_GATES: &str = "/gates/failed";
-/// Where a gate op's output says whether it passed, as a boolean. Anything else (absent, false, not a boolean) is a
-/// failed gate, so a gate op that answers nothing cannot pass vacuously.
+/// Where a gate op's output says whether it passed, as a boolean. Anything else (absent, not a boolean) is an `error`:
+/// a gate op that answers in another shape cannot pass vacuously, and is not the agent's fault either.
 const PASSED: &str = "/passed";
 
 impl Checker {
@@ -27,8 +27,11 @@ impl Checker {
             }
             match call(&*self.result, op, &Map::new()) {
                 Ok(output) => match pointer_all(&output, PASSED) {
-                    Ok(found) if found.first().is_some_and(|v| v.as_bool() == Some(true)) => {}
-                    Ok(_) => failed.push(op.clone()),
+                    Ok(found) => match found.as_slice() {
+                        [Value::Bool(true)] => {}
+                        [Value::Bool(false)] => failed.push(op.clone()),
+                        _ => return Verdict::error(format!("gate `{op}` has no boolean `{PASSED}` in its answer")),
+                    },
                     Err(verdict) => return verdict,
                 },
                 Err(e) => return result_failure(&format!("gate `{op}`"), &e),
@@ -59,9 +62,14 @@ impl Checker {
         }
         let output = call(&*self.result, DESCRIBE_OP, &Map::new()).map_err(|e| result_failure(DESCRIBE_OP, &e))?;
         match pointer_all(&output, FAILED_GATES)?.as_slice() {
-            [serde_json::Value::Array(names)] => {
-                Ok(names.iter().map(|n| n.as_str().map_or_else(|| n.to_string(), str::to_owned)).collect())
-            }
+            [Value::Array(names)] => names
+                .iter()
+                .map(|n| {
+                    n.as_str().map(str::to_owned).ok_or_else(|| {
+                        Verdict::error(format!("`{DESCRIBE_OP}` lists a failed gate that is not a name: {n}"))
+                    })
+                })
+                .collect(),
             _ => Err(Verdict::error(format!("`{DESCRIBE_OP}` has no `{FAILED_GATES}` list"))),
         }
     }

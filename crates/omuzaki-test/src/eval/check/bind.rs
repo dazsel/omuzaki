@@ -3,8 +3,6 @@
 
 use std::collections::BTreeMap;
 
-use serde_json::Value;
-
 use super::query::allowed;
 use super::report::Verdict;
 use super::value::{call, pointer_all, result_failure};
@@ -14,7 +12,17 @@ use omuzaki_ops_api::{OpError, Runner};
 /// The ids a binding's op names, from one project. `on_error` makes the verdict of an op that failed there.
 fn ids(runner: &dyn Runner, bind: &Bind, on_error: fn(&Bind, &OpError) -> Verdict) -> Result<Vec<String>, Verdict> {
     let output = call(runner, &bind.op, &bind.args).map_err(|e| on_error(bind, &e))?;
-    Ok(pointer_all(&output, &bind.at)?.into_iter().filter_map(Value::as_str).map(str::to_owned).collect())
+    pointer_all(&output, &bind.at)?
+        .into_iter()
+        .map(|found| {
+            found.as_str().map(str::to_owned).ok_or_else(|| {
+                Verdict::error(format!(
+                    "binding `{}` at `{}` reached {found}; the pointer must name ids (strings)",
+                    bind.op, bind.at
+                ))
+            })
+        })
+        .collect()
 }
 
 /// Resolves one binding: the single id the result has that the fixture did not.
