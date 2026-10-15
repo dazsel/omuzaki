@@ -17,8 +17,8 @@ argument order, and blocks:
   can't fall behind;
 - a `git push` that forces (`--force`, `-f`, a `+` refspec, `--mirror`) or deletes (`--delete`, `-d`, a `:` refspec,
   `--prune`), and a `--force-with-lease` push to any branch but the one checked out, or to many refs at once
-  (`--all`, `--branches`, `--tags`, or no refspec where `push.default` is `matching` or a `remote.<name>.push` refspec
-  adds refs).
+  (`--all`, `--branches`, `--tags`, or no refspec where `push.default` is `matching`, or `upstream` to another branch
+  name, or a `remote.<name>.push` refspec adds refs).
 
 Backslash-newline continuations are joined first, as the shell joins them. It guards against a session's mistakes,
 not a determined bypass: a variable holding `merge`, a script file or `eval`
@@ -79,7 +79,9 @@ GH_API_FIELD_FLAG = re.compile(r"-[A-Za-z]*?[fF](.*)", re.DOTALL)
 GRAPHQL_MUTATION = re.compile(r"\bmutation\b", re.IGNORECASE)
 # git options that take a value before the subcommand (`git -C dir push`), and git push options that take one.
 GIT_OPTIONS_WITH_VALUE = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"}
-PUSH_OPTIONS_WITH_VALUE = {"-o", "--push-option", "--receive-pack", "--exec"}
+# git push options that take a value as the next word (`--recurse-submodules check`), from `git push -h`. Their `=` or
+# attached forms (`--repo=x`, `-oopt`) take none, and `--no-` negations take none. `-o` is the only short one.
+PUSH_OPTIONS_WITH_VALUE = {"--repo", "--receive-pack", "--exec", "--recurse-submodules", "--push-option"}
 # Nesting depth for commands quoted inside commands (`sh -c "gh pr merge 1"`).
 MAX_DEPTH = 3
 
@@ -209,6 +211,16 @@ def git_config(directory, key, overrides=()):
     return values + [value for name, _, value in overrides if config_key(name) == wanted]
 
 
+def takes_next_word(arg):
+    """Whether a git push option takes its value as the next word: a long one in PUSH_OPTIONS_WITH_VALUE, or a short
+    group whose `o` is its last letter (`-qo <option>`; `-oopt` attaches the value instead)."""
+    if arg.startswith("--"):
+        return arg in PUSH_OPTIONS_WITH_VALUE
+    letters = arg[1:]
+    at = letters.find("o")
+    return arg.startswith("-") and at != -1 and at == len(letters) - 1
+
+
 def push_words(push_args):
     """A push's positional words (its remote, then its refspecs) and the `--repo` value, or None without one."""
     positional, repo, skip = [], None, False
@@ -220,7 +232,7 @@ def push_words(push_args):
             skip = True
         elif arg.startswith("--repo="):
             repo = arg.split("=", 1)[1]
-        elif arg in PUSH_OPTIONS_WITH_VALUE:
+        elif takes_next_word(arg):
             skip = True
         elif not arg.startswith("-"):
             positional.append(arg)
@@ -244,12 +256,20 @@ def default_remote(directory, branch, overrides):
 
 def implicit_push_refusal(remote, directory, branch, overrides):
     """Why a `--force-with-lease` push with no refspec reaches other refs, or None. Under the default `push.default`
-    (`simple`) git pushes only the checked-out branch; `matching` pushes every branch of that name, and a
-    `remote.<name>.push` refspec adds refs of its own."""
+    (`simple`) git pushes only the checked-out branch; `matching` pushes every branch of that name; `upstream` (or its
+    alias `tracking`) pushes to `branch.<name>.merge`, which may name another branch; and a `remote.<name>.push` refspec
+    adds refs of its own."""
     defaults = git_config(directory, "push.default", overrides)
-    if defaults and defaults[-1] == "matching":
+    mode = defaults[-1] if defaults else "simple"
+    if mode == "matching":
         return ("a `--force-with-lease` push with no refspec under `push.default=matching`, which reaches other"
                 " branches,")
+    if mode in ("upstream", "tracking"):
+        merged = git_config(directory, f"branch.{branch}.merge", overrides) if branch else []
+        targets = [ref.removeprefix("refs/heads/") for ref in merged]
+        if targets != [branch]:
+            return (f"a `--force-with-lease` push with no refspec under `push.default={mode}`, which pushes to"
+                    f" `{', '.join(targets) or 'no upstream branch'}` rather than the checked-out branch,")
     name = remote or default_remote(directory, branch, overrides)
     if git_config(directory, f"remote.{name}.push", overrides):
         return f"a `--force-with-lease` push with no refspec, which `remote.{name}.push` widens,"

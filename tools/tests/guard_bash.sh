@@ -17,8 +17,8 @@ check() {  # check <want exit> <command> [cwd]
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 repo="$work/plain"; matching="$work/matching"; pushspec="$work/pushspec"; pushdefault="$work/pushdefault"
-layered="$work/layered"; lone="$work/lone"
-for dir in "$repo" "$matching" "$pushspec" "$pushdefault" "$layered" "$lone"; do
+layered="$work/layered"; lone="$work/lone"; upstream="$work/upstream"; upstreamsame="$work/upstreamsame"
+for dir in "$repo" "$matching" "$pushspec" "$pushdefault" "$layered" "$lone" "$upstream" "$upstreamsame"; do
   git init -q -b cloud/mine "$dir" && git -C "$dir" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
 done
 git -C "$matching" config push.default matching
@@ -29,6 +29,11 @@ git -C "$layered" config --add push.default matching
 git -C "$layered" config --add push.default simple
 git -C "$lone" remote add upstream https://example.invalid/up.git
 git -C "$lone" config remote.upstream.push 'refs/heads/cloud/mine:refs/heads/cloud/mine'
+# `push.default=upstream` pushes to `branch.<name>.merge`: another branch in `upstream`, the same name in `upstreamsame`.
+git -C "$upstream" config push.default upstream
+git -C "$upstream" config branch.cloud/mine.merge refs/heads/other
+git -C "$upstreamsame" config push.default upstream
+git -C "$upstreamsame" config branch.cloud/mine.merge refs/heads/cloud/mine
 # Secret paths, including the bare directories.
 check 2 'cat .env'
 check 2 'cat .env.local'
@@ -140,6 +145,18 @@ check 2 'git push --repo=origin --force-with-lease' "$pushspec"
 check 2 'git push --force-with-lease origin' "$pushdefault"
 check 2 'git -c push.default=matching push --force-with-lease' "$repo"
 check 2 'git -c remote.origin.push=refs/heads/cloud/mine:refs/heads/cloud/mine push --force-with-lease' "$repo"
+# `upstream` (or `tracking`) pushes to `branch.<name>.merge`: another branch is refused, and no upstream at all is too.
+check 2 'git push --force-with-lease' "$upstream"
+check 2 'git push --force-with-lease origin' "$upstream"
+check 2 'git -c push.default=tracking push --force-with-lease' "$upstream"
+check 2 'git -c push.default=upstream push --force-with-lease' "$repo"
+# A push option that takes a value hides that value from the remote: `--recurse-submodules check` is not the remote.
+check 2 'git push --recurse-submodules check --force-with-lease' "$pushspec"
+check 2 'git push --receive-pack check --force-with-lease' "$pushspec"
+check 2 'git push --exec check --force-with-lease' "$pushspec"
+check 2 'git push --push-option check --force-with-lease' "$pushspec"
+check 2 'git push -o check --force-with-lease' "$pushspec"
+check 2 'git push -qo check --force-with-lease' "$pushspec"
 # Config keys match whatever the spelling of their section and variable, and a lone remote is the default remote.
 check 2 'git -c PUSH.DEFAULT=matching push --force-with-lease' "$repo"
 check 2 'git -c remote.origin.Push=refs/heads/cloud/mine:refs/heads/cloud/mine push --force-with-lease' "$repo"
@@ -162,6 +179,11 @@ check 0 'git push --force-with-lease origin HEAD:refs/heads/cloud/mine' "$repo"
 check 0 'git push --force-with-lease' "$layered"
 check 0 'git -c PUSH.DEFAULT=simple push --force-with-lease' "$matching"
 check 0 'git -c push.default=matching -c push.default=simple push --force-with-lease' "$repo"
+check 0 'git push --force-with-lease' "$upstreamsame"
+check 0 'git -c push.default=tracking push --force-with-lease' "$upstreamsame"
+check 0 'git push --recurse-submodules check --force-with-lease origin cloud/mine' "$repo"
+check 0 'git push -qo check --force-with-lease origin cloud/mine' "$repo"
+check 0 'git push --recurse-submodules=check --force-with-lease' "$repo"
 check 0 'git -c core.hooksPath=/dev/null commit -m "merge main"'
 check 0 'git merge origin/main'
 check 0 'gh pr view 12 --json mergeable'
