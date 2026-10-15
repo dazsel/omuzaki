@@ -37,13 +37,14 @@ pub struct TrackerConfig {
     pub tier: QualityTier,
     /// With no frame published for this long (a stalled camera), the tracker publishes one
     /// [`TrackStatus::Lost`](omuzaki_anim_api::TrackStatus::Lost) frame, so the pipeline never holds a stale face.
-    /// Saved as whole milliseconds, `lost_after_ms`, at least 1: a person edits it.
+    /// Saved as whole milliseconds, `lost_after_ms`, at least 1: a person edits it. A value set here is saved rounded
+    /// up to whole milliseconds, at least 1 ms; [`with_lost_after`](Self::with_lost_after) normalises it the same way.
     #[serde(rename = "lost_after_ms", with = "whole_millis", default = "default_lost_after")]
     #[schemars(with = "u64", range(min = 1))]
     pub lost_after: Duration,
 }
 
-/// A [`Duration`] saved as whole milliseconds, at least 1 (sub-millisecond parts are dropped when saving).
+/// A [`Duration`] saved as whole milliseconds, rounded up, at least 1, so every value saves to one that reads back.
 mod whole_millis {
     use std::time::Duration;
 
@@ -51,7 +52,13 @@ mod whole_millis {
     use serde::{Deserialize, Deserializer, Serializer};
 
     pub(super) fn serialize<S: Serializer>(value: &Duration, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_u64(u64::try_from(value.as_millis()).unwrap_or(u64::MAX))
+        serializer.serialize_u64(ceil_millis(*value))
+    }
+
+    /// Whole milliseconds, rounded up, at least 1.
+    pub(super) fn ceil_millis(value: Duration) -> u64 {
+        let ms = value.as_nanos().div_ceil(1_000_000).max(1);
+        u64::try_from(ms).unwrap_or(u64::MAX)
     }
 
     pub(super) fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Duration, D::Error> {
@@ -88,10 +95,11 @@ impl TrackerConfig {
         self
     }
 
-    /// With this stall time before a lost frame.
+    /// With this stall time before a lost frame, rounded up to whole milliseconds and at least 1 ms, as it is saved
+    /// (`Duration::ZERO` gives 1 ms, 1.5 ms gives 2 ms).
     #[must_use]
     pub fn with_lost_after(mut self, lost_after: Duration) -> Self {
-        self.lost_after = lost_after;
+        self.lost_after = Duration::from_millis(whole_millis::ceil_millis(lost_after));
         self
     }
 }
@@ -175,6 +183,20 @@ mod tests {
         assert_eq!(serde_json::from_str::<TrackerConfig>("{}").unwrap(), TrackerConfig::default());
         assert!(serde_json::from_str::<TrackerConfig>(r#"{"lost_after_ms": 0}"#).is_err());
         assert!(serde_json::from_str::<TrackerConfig>(r#"{"lost_after_ms": 0.5}"#).is_err());
+    }
+
+    #[test]
+    fn with_lost_after_rounds_up_to_a_millisecond_that_round_trips() {
+        for (given, want) in [(Duration::ZERO, 1), (Duration::from_micros(1500), 2), (Duration::from_millis(7), 7)] {
+            let config = TrackerConfig::default().with_lost_after(given);
+            assert_eq!(config.lost_after, Duration::from_millis(want), "{given:?}");
+            let json = serde_json::to_value(config).unwrap();
+            assert_eq!(json["lost_after_ms"], want, "{given:?}");
+            assert_eq!(serde_json::from_value::<TrackerConfig>(json).unwrap(), config, "{given:?}");
+        }
+        // A value set on the field directly still saves to one that reads back.
+        let raw = TrackerConfig { lost_after: Duration::ZERO, ..TrackerConfig::default() };
+        assert_eq!(serde_json::to_value(raw).unwrap()["lost_after_ms"], 1);
     }
 
     #[test]

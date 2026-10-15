@@ -93,7 +93,8 @@ impl FrameSource for ScriptedSource {
             return None;
         }
         let visible = self.script[self.next..].iter().take_while(|(at, _)| at.as_secs_f64() <= now.0).count();
-        let frame = if visible > 0 {
+        let mut newest = None;
+        if visible > 0 {
             self.next += visible;
             let (at, frame) = self.script[self.next - 1];
             let frame = TrackFrame { time: Seconds(at.as_secs_f64()), ..frame };
@@ -101,12 +102,15 @@ impl FrameSource for ScriptedSource {
             if !self.lost_sent {
                 self.last = Some(frame);
             }
-            frame
-        } else {
-            let last = self.last.filter(|last| !self.lost_sent && now.0 - last.time.0 >= self.lost_after)?;
+            newest = Some(frame);
+        }
+        // A lost frame already due is newer than any scripted frame seen in this poll (it falls `lost_after` after
+        // the newest tracked one), so it wins, as it would in a real tracker's mailbox.
+        if let Some(last) = self.last.filter(|last| !self.lost_sent && now.0 - last.time.0 >= self.lost_after) {
             self.lost_sent = true;
-            TrackFrame::lost(last.seq, Seconds(last.time.0 + self.lost_after), last.profile)
-        };
+            newest = Some(TrackFrame::lost(last.seq, Seconds(last.time.0 + self.lost_after), last.profile));
+        }
+        let frame = newest?;
         self.delivered.fetch_add(1, Ordering::Relaxed);
         Some(frame)
     }

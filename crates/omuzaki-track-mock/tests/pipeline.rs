@@ -143,3 +143,23 @@ fn a_refused_restart_still_stops_the_old_source() {
     assert_eq!(tracker.start(&missing, &TrackerConfig::default()).err(), Some(TrackError::NoDevice(missing)));
     assert_eq!(old.poll(Seconds(1.0)), None, "the old session ended with the refused restart");
 }
+
+#[test]
+fn a_late_first_poll_gets_the_due_lost_frame_not_the_stale_one() {
+    let mut tracker = FakeTracker::scripted(vec![(Duration::ZERO, tracked(1))]);
+    let mut source = tracker.start(&FakeCamera::id(), &TrackerConfig::default()).unwrap();
+    let first = source.poll(Seconds(1.0)).unwrap();
+    assert_eq!(first.status, TrackStatus::Lost, "the lost frame at 0.2 s is newer than the frame at 0");
+    assert_eq!(first.seq, 1);
+    assert!((first.time.0 - 0.2).abs() < 1e-9, "{}", first.time.0);
+    assert_eq!(source.poll(Seconds(2.0)), None, "one lost signal per gap");
+}
+
+#[test]
+fn a_gap_inside_one_poll_gives_the_newest_frame() {
+    let script = vec![(Duration::ZERO, tracked(1)), (Duration::from_secs(1), tracked(2))];
+    let mut tracker = FakeTracker::scripted(script);
+    let mut source = tracker.start(&FakeCamera::id(), &TrackerConfig::default()).unwrap();
+    let f = source.poll(Seconds(1.05)).unwrap();
+    assert_eq!((f.status, f.seq), (TrackStatus::Tracking, 2), "the frame at 1 s is newer than the lost one at 0.2 s");
+}
