@@ -7,17 +7,17 @@ use std::time::Duration;
 use omuzaki_core::time::Clock;
 use omuzaki_doc_api::{DocPath, DocWrite, Value};
 use omuzaki_ops_api::{
-    Actor, Cause, DynOp, Event, Grants, JobId, JobInfo, JobShape, Jobs, Mode, OpCtx, OpError, OpInfo, OpKind, OpMeta,
-    OpRecord, OpRegistration, Outcome, Plan, ProjectDir, Request, Runner, Scope, Services, SessionId, TxId,
+    Actor, Cause, DynOp, Event, Grants, JobId, JobInfo, JobShape, Jobs, Mode, OpCtx, OpError, OpInfo, OpKind, OpRecord,
+    OpRegistration, Outcome, Plan, ProjectDir, Request, Runner, Scope, Services, SessionId, TxId, checks,
     registrations,
 };
 
+use crate::ExecutorError;
 use crate::bus::Bus;
 use crate::index::OpIndex;
 use crate::jobs::Manager;
 use crate::state::{Edit, State};
 use crate::sync::lock;
-use crate::{ExecutorError, error};
 
 /// Records that a job is starting: called with its snapshot and arguments before its `work` can run. See
 /// [`Executor::with_job_journal`].
@@ -68,7 +68,7 @@ impl Env {
             op: meta.name,
             scope: meta.scope,
             undo: meta.undo,
-            args: op.args()?,
+            args: checks::record_args(op)?,
             patch: &plan.patch,
             actor: actor.clone(),
             cause: cause.clone(),
@@ -209,22 +209,10 @@ impl Executor {
         self.jobs.wait_detached(at_most);
     }
 
-    /// Plans `op` against the current document. Queries must not plan a patch: a query that did would otherwise
-    /// change the document through an interface everyone assumes is read-only.
-    fn plan(&self, state: &State, op: &dyn DynOp, meta: OpMeta, req: &Request) -> Result<Plan, OpError> {
-        let ctx = self.env.op_ctx(state, &req.actor, &req.grants, req.mode == Mode::DryRun);
-        let plan = op.plan(&ctx)?;
-        if meta.kind == OpKind::Query && !plan.patch.changes.is_empty() {
-            return Err(OpError::internal(format!("{} is a query but planned a change to the document", meta.name))
-                .hint("this is a bug in the op: queries return an answer and no patch"));
-        }
-        // A job changes the document once, at finish: a plan that already carries a patch would apply twice or not
-        // at all, so it is refused here, in the dry-run too.
-        if meta.kind == OpKind::Job && !plan.patch.changes.is_empty() {
-            return Err(OpError::internal(format!("{} is a job but planned a change to the document", meta.name))
-                .hint("this is a bug in the op: a job's plan returns no patch; its `finish` returns the change"));
-        }
-        Ok(plan)
+    /// Authorizes, plans and checks `op` against the current document, with the checks every runner shares
+    /// ([`checks::plan`]).
+    fn plan(&self, state: &State, op: &dyn DynOp, req: &Request) -> Result<Plan, OpError> {
+        checks::plan(op, req, self.env.op_ctx(state, &req.actor, &req.grants, req.mode == Mode::DryRun))
     }
 
     /// The refusals that depend only on the request and the op: a job is not part of a transaction, and a driver job
@@ -242,29 +230,18 @@ impl Executor {
 
     /// Plans a job under the lock and starts it on the manager. `awaited` keeps its outcome for [`Runner::run`].
     fn start_job(&self, op: Arc<dyn DynOp>, req: Request, awaited: bool) -> Result<JobInfo, OpError> {
-        let meta = op.meta();
-        let plan = {
-            let state = lock(&self.env.state);
-            require(&req.grants, &req.actor, meta.scope, meta.name)?;
-            self.plan(&state, &*op, meta, &req)?
-        };
+        let plan = self.plan(&lock(&self.env.state), &*op, &req)?;
         self.jobs.start(op, req, plan, awaited)
     }
 
     /// The part of [`Runner::run`] that holds the lock.
     fn run_locked(&self, state: &mut State, op: &dyn DynOp, req: &Request) -> Result<Outcome, OpError> {
-        let meta = op.meta();
         if let Some(tx) = req.tx {
             state.check_tx(tx, &req.actor)?;
         }
-        // `read` was checked before the lookup. Applying also needs the op's own scope. A dry-run of an edit needs
-        // only `read` (it is how an actor shows what it would ask permission for), but a query's plan *is* its answer,
-        // so a dry-run of one is gated like the real thing.
-        if req.mode == Mode::Apply || meta.kind == OpKind::Query {
-            require(&req.grants, &req.actor, meta.scope, meta.name)?;
-        }
-        let plan = self.plan(state, op, meta, req)?;
-        if req.mode == Mode::DryRun || meta.kind == OpKind::Query {
+        // `read` was checked before the lookup; the op's own scope is checked before it plans.
+        let plan = self.plan(state, op, req)?;
+        if checks::answers_only(op.meta(), req.mode) {
             return Ok(Outcome::new(plan));
         }
         let record = self.env.apply(state, op, (&req.actor, &req.cause, req.tx), &plan)?;
@@ -287,17 +264,7 @@ impl Drop for Executor {
 
 /// The actor needs `scope` to run `op`.
 pub(crate) fn require(grants: &Grants, actor: &Actor, scope: Scope, op: &str) -> Result<(), OpError> {
-    if grants.allows(scope) { Ok(()) } else { Err(error::denied(actor, &format!("run {op}"), scope)) }
-}
-
-/// The reader needs `read` to `doing`. The grants alone say who is asking: reads carry no actor.
-fn require_read(grants: &Grants, doing: &str) -> Result<(), OpError> {
-    if grants.allows(Scope::Read) {
-        Ok(())
-    } else {
-        Err(OpError::denied(format!("the caller may not {doing}: it needs the {} scope", Scope::Read))
-            .hint(format!("grant the {} scope for this session, then retry", Scope::Read)))
-    }
+    checks::require_run(grants, actor, scope, op)
 }
 
 impl Runner for Executor {
@@ -343,17 +310,17 @@ impl Runner for Executor {
     }
 
     fn subscribe(&self, grants: &Grants) -> Result<Receiver<Event>, OpError> {
-        require_read(grants, "subscribe to events")?;
+        checks::require_read(grants, "subscribe to events")?;
         Ok(self.env.bus.subscribe())
     }
 
     fn get(&self, path: &DocPath, grants: &Grants) -> Result<Option<Value>, OpError> {
-        require_read(grants, "read the document")?;
+        checks::require_read(grants, "read the document")?;
         Ok(lock(&self.env.state).doc().get(path).cloned())
     }
 
     fn log(&self, after_seq: u64, limit: usize, grants: &Grants) -> Result<Vec<OpRecord>, OpError> {
-        require_read(grants, "read the op log")?;
+        checks::require_read(grants, "read the op log")?;
         let state = lock(&self.env.state);
         // Sequence numbers run 1, 2, 3, ... so the records after `after_seq` start at that index.
         let start = usize::try_from(after_seq).unwrap_or(usize::MAX);
@@ -377,12 +344,12 @@ impl Jobs for Executor {
     }
 
     fn job(&self, id: JobId, grants: &Grants) -> Result<Option<JobInfo>, OpError> {
-        require_read(grants, "read a job")?;
+        checks::require_read(grants, "read a job")?;
         Ok(self.jobs.job(id))
     }
 
     fn jobs(&self, grants: &Grants) -> Result<Vec<JobInfo>, OpError> {
-        require_read(grants, "list jobs")?;
+        checks::require_read(grants, "list jobs")?;
         Ok(self.jobs.list())
     }
 

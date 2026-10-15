@@ -16,6 +16,7 @@
 
 mod actor;
 mod approval;
+pub mod checks;
 mod ctx;
 mod error;
 mod fence;

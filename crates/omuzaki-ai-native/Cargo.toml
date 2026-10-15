@@ -1,0 +1,26 @@
+[package]
+name = "omuzaki-ai-native"
+description = "The shared pinned-archive unpacker for the AI runtimes: the wanted files of a verified `.tgz` or `.zip`, size-capped and renamed into place atomically (ADR 0061 §4)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+flate2.workspace = true
+tar.workspace = true
+tempfile.workspace = true
+zip.workspace = true
+
+[lints]
+workspace = true
+
+# Shared by `omuzaki-ai-ort` and `omuzaki-ai-litert`, which cannot depend on each other. It registers nothing.
+# Native only: unpacking is for libraries that are loaded from disk, and wasm32 has none.
+[package.metadata.omuzaki]
+kind = "Lib"
+summary = "the shared pinned-archive unpacker (ADR 0061 §4): the wanted files of a verified `.tgz` or `.zip` written to a folder beside the archive, a size cap per file, an atomic rename so an interrupted unpack leaves nothing, and a second call reuses the folder; used by `omuzaki-ai-ort` and `omuzaki-ai-litert`"
+layer = "lib"
+wasm = false

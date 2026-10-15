@@ -126,9 +126,13 @@ impl SpringChain {
     }
 }
 
-/// A collision shape attached to a bone, in the bone's local space (VRM `sphere` and `capsule`).
+/// A collision shape attached to a bone, in the bone's local space (VRM `sphere` and `capsule`, and the extended
+/// colliders' `sphere_inside`, `capsule_inside` and `plane`).
+///
+/// `#[non_exhaustive]`: a match outside this crate needs a wildcard arm, so the next shape breaks nothing.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ColliderShape {
     /// A ball.
     Sphere {
@@ -149,12 +153,71 @@ pub enum ColliderShape {
         #[schemars(with = "[f32; 3]")]
         tail: Vec3,
     },
+    /// The inside of a ball: pushes a joint back toward the centre when it would leave it.
+    SphereInside {
+        /// Centre.
+        #[schemars(with = "[f32; 3]")]
+        offset: Vec3,
+        /// Radius, metres.
+        radius: f32,
+    },
+    /// The inside of a capsule (see [`Self::Capsule`]): pushes a joint back toward its axis when it would leave.
+    CapsuleInside {
+        /// Centre of the start cap.
+        #[schemars(with = "[f32; 3]")]
+        offset: Vec3,
+        /// Radius of the caps and the cylinder, metres.
+        radius: f32,
+        /// Centre of the end cap.
+        #[schemars(with = "[f32; 3]")]
+        tail: Vec3,
+    },
+    /// A half-space. A joint behind the plane is pushed back to the side `normal` points to. The spec keeps the bone
+    /// length after collisions, so a tail whose root is closer to the plane than a bone length can still end a step
+    /// behind it.
+    Plane {
+        /// A point on the plane.
+        #[schemars(with = "[f32; 3]")]
+        offset: Vec3,
+        /// Unit-length direction of the allowed side (not scaled with the character).
+        #[schemars(with = "[f32; 3]")]
+        normal: Vec3,
+    },
 }
 
+/// How far a plane normal's length may stray from 1.
+const NORMAL_TOLERANCE: f32 = 1e-3;
+
 impl ColliderShape {
-    fn radius(&self) -> f32 {
+    /// The shape's radius, or `None` for a plane, which has none.
+    fn radius(&self) -> Option<f32> {
         match *self {
-            Self::Sphere { radius, .. } | Self::Capsule { radius, .. } => radius,
+            Self::Sphere { radius, .. }
+            | Self::Capsule { radius, .. }
+            | Self::SphereInside { radius, .. }
+            | Self::CapsuleInside { radius, .. } => Some(radius),
+            Self::Plane { .. } => None,
+        }
+    }
+
+    /// Why the shape is malformed, if it is: a negative or non-finite radius, or a plane normal that isn't unit length.
+    fn check(&self) -> Option<&'static str> {
+        match *self {
+            _ if !self.radius().is_none_or(|r| r >= 0.0 && r.is_finite()) => Some("radius must be 0 or more"),
+            Self::Sphere { offset, .. } | Self::SphereInside { offset, .. } if !offset.is_finite() => {
+                Some("offset must be finite")
+            }
+            Self::Capsule { offset, tail, .. } | Self::CapsuleInside { offset, tail, .. }
+                if !(offset.is_finite() && tail.is_finite()) =>
+            {
+                Some("offset and tail must be finite")
+            }
+            Self::Plane { offset, normal }
+                if !offset.is_finite() || !normal.is_finite() || (normal.length() - 1.0).abs() > NORMAL_TOLERANCE =>
+            {
+                Some("plane normal must be unit length (within the normal tolerance) and the offset finite")
+            }
+            _ => None,
         }
     }
 }
@@ -295,8 +358,8 @@ impl SpringSet {
             for (i, c) in group.colliders.iter().enumerate() {
                 let what = format!("collider {i} of group {:?}", group.name);
                 bone_ok(&what, c.bone)?;
-                if !(c.shape.radius() >= 0.0 && c.shape.radius().is_finite()) {
-                    return Err(SpringError::BadParams { what, reason: "radius must be 0 or more" });
+                if let Some(reason) = c.shape.check() {
+                    return Err(SpringError::BadParams { what, reason });
                 }
             }
         }
@@ -466,6 +529,54 @@ mod tests {
             }],
         };
         SpringSet { chains: vec![chain], groups: vec![group] }
+    }
+
+    fn with_shape(shape: ColliderShape) -> (SpringSet, Skeleton) {
+        let (sk, ids, head) = skeleton();
+        let mut set = valid_set(ids, head);
+        set.groups[0].colliders[0].shape = shape;
+        (set, sk)
+    }
+
+    #[test]
+    fn extended_shapes_round_trip_through_json() {
+        let shapes = [
+            ColliderShape::Sphere { offset: Vec3::Y, radius: 0.1 },
+            ColliderShape::Capsule { offset: Vec3::Y, radius: 0.1, tail: Vec3::Z },
+            ColliderShape::SphereInside { offset: Vec3::Y, radius: 0.5 },
+            ColliderShape::CapsuleInside { offset: Vec3::Y, radius: 0.5, tail: Vec3::Z },
+            ColliderShape::Plane { offset: Vec3::Y, normal: Vec3::X },
+        ];
+        let names = ["sphere", "capsule", "sphere_inside", "capsule_inside", "plane"];
+        for (shape, name) in shapes.into_iter().zip(names) {
+            let json = serde_json::to_value(shape).unwrap();
+            assert!(json.get(name).is_some(), "{json}");
+            assert_eq!(serde_json::from_value::<ColliderShape>(json).unwrap(), shape);
+            let (set, sk) = with_shape(shape);
+            set.validate(&sk).unwrap();
+        }
+    }
+
+    #[test]
+    fn bad_radii_and_plane_normals_are_rejected() {
+        let bad = [
+            ColliderShape::Sphere { offset: Vec3::ZERO, radius: -0.1 },
+            ColliderShape::Capsule { offset: Vec3::ZERO, radius: f32::NAN, tail: Vec3::Y },
+            ColliderShape::SphereInside { offset: Vec3::ZERO, radius: -1.0 },
+            ColliderShape::CapsuleInside { offset: Vec3::ZERO, radius: f32::INFINITY, tail: Vec3::Y },
+            ColliderShape::Plane { offset: Vec3::ZERO, normal: Vec3::new(0.0, 2.0, 0.0) },
+            ColliderShape::Plane { offset: Vec3::ZERO, normal: Vec3::ZERO },
+            ColliderShape::Plane { offset: Vec3::ZERO, normal: Vec3::new(f32::NAN, 1.0, 0.0) },
+            ColliderShape::Sphere { offset: Vec3::new(f32::NAN, 0.0, 0.0), radius: 0.1 },
+            ColliderShape::CapsuleInside { offset: Vec3::ZERO, radius: 0.1, tail: Vec3::new(0.0, f32::INFINITY, 0.0) },
+        ];
+        for shape in bad {
+            let (set, sk) = with_shape(shape);
+            assert!(matches!(set.validate(&sk), Err(SpringError::BadParams { .. })), "{shape:?}");
+        }
+        // A normal within the tolerance is accepted.
+        let (set, sk) = with_shape(ColliderShape::Plane { offset: Vec3::ZERO, normal: Vec3::new(0.0, 1.0005, 0.0) });
+        set.validate(&sk).unwrap();
     }
 
     #[test]

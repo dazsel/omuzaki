@@ -1,0 +1,12 @@
+# The check job's reference (design §7): the official wheel at the LiteRT version built, and numpy, for CPython 3.12 on
+# the three build platforms. Installed with `pip install --require-hashes --no-deps -r`; the interpreter imports only
+# numpy, so the wheel's other requirements are not installed.
+ai-edge-litert==2.3.0 \
+    --hash=sha256:dc9f56c23e0dcf182b6c35f23fbb102ed048296588882b806d5eff7654c04c88 \
+    --hash=sha256:b33b039667da6c57815f88d4709c1b31890375fa2cd35f165a3bf9dfd36f23a3 \
+    --hash=sha256:2cd92f02fc9616755670027c5b020bfee5c72ae50cf5d33e92465a863b705a8b
+numpy==2.3.4 \
+    --hash=sha256:4121c5beb58a7f9e6dfdee612cb24f4df5cd4db6e8261d7f4d7450a997a65d6a \
+    --hash=sha256:985f1e46358f06c2a09921e8921e2c98168ed4ae12ccd6e5e87a4f1857923f32 \
+    --hash=sha256:c2f91f496a87235c6aaf6d3f3d89b17dba64996abadccb289f48456cff931ca9 \
+    --hash=sha256:f77e5b3d3da652b474cc80a14084927a5e86a5eccf54ca8ca5cbd697bf7f2667

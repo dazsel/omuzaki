@@ -21,8 +21,8 @@ entry is a path or glob: backtick-quoted or bare, comma- or space-separated, one
 - total cap: `--total-cap` or more open PRs in total.
 - contract first: the fence names an `*-api` crate or `omuzaki-core` and another open PR touches that crate.
 
-Fail closed: a fence entry that cannot be understood makes the task wait. `gh pr list` returns at most 100 files per PR, so a PR with more reads its full list from the REST API. If
-that list cannot be read, every task waits. If the `crates/` folder cannot be read, a task with a wildcard crate waits.
+Fail closed: a fence entry that cannot be understood makes the task wait. `gh pr list` returns at most 100 files per PR, so a PR with more reads its full list from the REST API. That list
+holds at most 3,000 files, so a PR with 3,000 or more counts as unreadable. If that list cannot be read, every task waits. If the `crates/` folder cannot be read, a task with a wildcard crate waits.
 
 Open PRs are listed in one call with a limit of PR_LIMIT. Reaching the limit means the list may be cut, so the script
 stops rather than guess.
@@ -31,6 +31,7 @@ stops rather than guess.
 import argparse
 import fnmatch
 import json
+import os
 import re
 import subprocess
 import sys
@@ -38,6 +39,8 @@ from collections import defaultdict
 
 REPO = "dazsel/omuzaki"
 PR_LIMIT = 1000
+# The REST files endpoint returns at most this many files; a list of this size or more may be cut short.
+REST_FILE_CAP = 3000
 LANES = ("cloud", "local", "port")
 # A brace group may expand to at most this many alternatives; a larger one makes its entry unreadable (fail closed).
 BRACE_LIMIT = 256
@@ -98,9 +101,28 @@ def gh_json_pages(args):
     return items
 
 
+def rest_only():
+    """True when DISPATCH_CHECK_REST=1 skips GraphQL, so the REST path can be tested where GraphQL works."""
+    return os.environ.get("DISPATCH_CHECK_REST") == "1"
+
+
+def note_fallback(exc):
+    """Say on stderr that a GraphQL read was refused and REST is used; the verdict on stdout does not change."""
+    print(f"dispatch-check: GraphQL refused, reading REST instead: {exc}", file=sys.stderr)
+
+
 def load_issue(number):
-    """The issue's number, title and body."""
-    return gh_json(["issue", "view", str(number), "-R", REPO, "--json", "number,title,body"])
+    """The issue's number, title and body, with a null body read as "".
+
+    GraphQL first; cloud sessions sit behind a proxy that refuses GraphQL, so a refused call falls back to REST.
+    """
+    if not rest_only():
+        try:
+            return gh_json(["issue", "view", str(number), "-R", REPO, "--json", "number,title,body"])
+        except GhError as exc:
+            note_fallback(exc)
+    data = gh_json(["api", f"repos/{REPO}/issues/{number}"])
+    return {"number": data["number"], "title": data["title"], "body": data.get("body") or ""}
 
 
 def load_dependencies(number):
@@ -124,43 +146,58 @@ def load_crates():
 def pr_files(number, listed, changed):
     """The changed paths of a pull request, its renamed files' old paths included, or None when they cannot be read.
 
-    Only the file list can be incomplete; the rename check is a separate read, and if it fails the list is None too.
+    `gh pr list` lists at most 100 files; `changed` is the true count. Up to that count the listed paths are used; more
+    are read from the REST list. The REST list is fetched once and gives the renamed files' old paths too. None means
+    the list is incomplete, and the caller must wait rather than assume no overlap.
     """
-    paths = listed_or_full_files(number, listed, changed)
-    if paths is None:
+    files = rest_files(number)
+    if files is None:
         return None
-    try:
-        sources = renamed_sources(number)
-    except GhError:
+    listed_paths = [f["path"] for f in listed]
+    total = len(listed_paths) if changed is None else changed
+    if total <= len(listed_paths):
+        paths = listed_paths
+    elif len(files) >= total:
+        paths = [f["filename"] for f in files]
+    else:
         return None
-    return paths + [source for source in sources if source not in paths]
+    return with_renamed_sources(paths, files)
 
 
-def listed_or_full_files(number, listed, changed):
-    """The changed paths of a pull request, or None when they cannot be read in full.
+def rest_pr_files(number):
+    """The changed paths of a pull request read in full from REST, renamed files included, or None when unreadable.
 
-    `gh pr list` lists at most 100 files; `changed` is the true count. A PR with more reads the full list from the REST
-    API. None means the list is incomplete, and the caller must wait rather than assume no overlap.
+    REST has no 100-file cap, so this needs no `gh pr list` file list at all.
     """
-    paths = [f["path"] for f in listed]
-    total = len(paths) if changed is None else changed
-    if total <= len(paths):
-        return paths
+    files = rest_files(number)
+    return None if files is None else with_renamed_sources([f["filename"] for f in files], files)
+
+
+def rest_files(number):
+    """The REST file list of a pull request, one entry per changed file, or None when it cannot be read in full.
+
+    The files endpoint returns at most REST_FILE_CAP files, so a list that long may be cut short and counts as unreadable.
+    The paths and the renames both come from this one fetch, so each pull request is read once.
+    """
     try:
         files = gh_json_pages(["api", "--paginate", f"repos/{REPO}/pulls/{number}/files"])
     except GhError:
         return None
-    paths = [f["filename"] for f in files]
-    return paths if len(paths) >= total else None
+    return None if len(files) >= REST_FILE_CAP else files
 
 
-def renamed_sources(number):
-    """The previous paths of the files this PR renames, from the REST list. Raises GhError when it cannot be read.
+def with_renamed_sources(paths, files):
+    """`paths` plus the old paths of the renamed files in `files`, a REST file list; each path is listed once."""
+    sources = [f["previous_filename"] for f in files if f.get("status") == "renamed" and f.get("previous_filename")]
+    return paths + [source for source in sources if source not in paths]
 
-    `gh pr list` gives the new path only, so a rename out of a fenced folder would be missed without this.
-    """
-    files = gh_json_pages(["api", "--paginate", f"repos/{REPO}/pulls/{number}/files"])
-    return [f["previous_filename"] for f in files if f.get("status") == "renamed" and f.get("previous_filename")]
+
+def load_default_branch():
+    """The name of the repository's default branch. Raises GhError when it cannot be read."""
+    branch = gh_json(["api", f"repos/{REPO}"]).get("default_branch")
+    if not branch:
+        raise GhError(f"gh api repos/{REPO} gave no default_branch")
+    return branch
 
 
 def load_top_level():
@@ -176,14 +213,65 @@ def closing_numbers(refs):
     }
 
 
-def load_prs():
-    """Every open pull request, with its draft flag, branch, creation time, changed paths and the issues it closes."""
-    raw = gh_json(
-        ["pr", "list", "-R", REPO, "--state", "open", "--limit", str(PR_LIMIT),
-         "--json", "number,headRefName,isDraft,createdAt,files,changedFiles,closingIssuesReferences"]
-    )
+# GitHub's closing keywords as REST has them in a PR body (GraphQL gives closingIssuesReferences instead). GitHub's
+# rule is lexical, so this one is too: the keyword must start a word and be followed by `#N` directly, and
+# "Does not close #42" still closes #42, as it does on GitHub. `Fixes owner/repo#N` names another repository and is
+# not counted.
+CLOSING_REFERENCE = re.compile(
+    r"(?<![\w-])(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?)[ \t]*:?[ \t]*#(\d+)(?!\d)", re.IGNORECASE
+)
+
+
+# Markdown GitHub does not read keywords in: HTML comments, fenced code blocks, indented code blocks and inline code
+# spans. Fences first, so a backtick inside a fence cannot open a span; an unclosed fence or comment runs to the end of
+# the body, as it renders. An indented block is a run of lines indented by four spaces or a tab that starts the body or
+# follows a blank line; inside a list such lines are text, not code, and dropping them can only turn a go into a wait.
+LITERAL_MARKDOWN = re.compile(
+    r"<!--.*?(?:-->|\Z)"
+    r"|^[ \t]{0,3}(?P<fence>`{3,}|~{3,}).*?(?:^[ \t]{0,3}(?P=fence)[`~]*[ \t]*$|\Z)"
+    r"|(?:\A|(?<=\n)[ \t]*\n)(?:(?: {4}|\t)[^\n]*(?:\n|\Z))+"
+    r"|(?P<ticks>`+).+?(?P=ticks)",
+    re.DOTALL | re.MULTILINE,
+)
+
+
+# Block-quote markers at the start of a line (`> `, nested `> > `). Removed before LITERAL_MARKDOWN, so code inside a
+# quote is recognised as it is at the margin.
+QUOTE_PREFIX = re.compile(r"^(?:[ \t]{0,3}>[ \t]?)+", re.MULTILINE)
+
+
+def closes_in_body(body):
+    """The issue numbers in this repository a PR body closes, by GitHub's keyword rule (see CLOSING_REFERENCE).
+
+    Keywords inside literal Markdown (LITERAL_MARKDOWN) are examples, not references, so they are removed first, with
+    block-quote markers taken off so quoted code counts as code.
+    """
+    prose = LITERAL_MARKDOWN.sub(" ", QUOTE_PREFIX.sub("", body or ""))
+    return {int(number) for number in CLOSING_REFERENCE.findall(prose)}
+
+
+def check_list_limit(raw):
+    """Stop when the open PR list reached PR_LIMIT: the list may be cut, and a cut list would hide overlaps."""
     if len(raw) >= PR_LIMIT:
         raise GhError(f"{len(raw)} open pull requests reached the list limit of {PR_LIMIT}; the list may be cut")
+
+
+def load_prs():
+    """Every open pull request, with its draft flag, branch, creation time, changed paths and the issues it closes.
+
+    GraphQL first, in one `gh pr list` call. A refused call falls back to load_prs_rest, which reads the same list.
+    """
+    if rest_only():
+        return load_prs_rest()
+    try:
+        raw = gh_json(
+            ["pr", "list", "-R", REPO, "--state", "open", "--limit", str(PR_LIMIT),
+             "--json", "number,headRefName,isDraft,createdAt,files,changedFiles,closingIssuesReferences"]
+        )
+    except GhError as exc:
+        note_fallback(exc)
+        return load_prs_rest()
+    check_list_limit(raw)
     return [
         {
             "number": pr["number"],
@@ -191,9 +279,35 @@ def load_prs():
             "draft": bool(pr["isDraft"]),
             "created": pr.get("createdAt") or "",
             "files": pr_files(pr["number"], pr.get("files") or [], pr.get("changedFiles")),
-            # The issues GitHub itself says this PR closes in this repository; prose such as "Does not close #42" is
-            # not a reference, and `Fixes other/repo#42` names another repository's issue 42.
+            # The issues GitHub itself says this PR closes in this repository; `Fixes other/repo#42` names another
+            # repository's issue 42.
             "closes": closing_numbers(pr.get("closingIssuesReferences")),
+        }
+        for pr in raw
+    ]
+
+
+def load_prs_rest():
+    """The same list as load_prs, read from REST: `pulls` for the PRs and `pulls/N/files` for each one's paths.
+
+    REST has no closing references, so `closes` is read from the PR body by closes_in_body. GitHub honours closing
+    keywords only on pull requests into the default branch, so a PR into any other base closes nothing.
+
+    REST cannot see an issue linked only from the Development sidebar. Such a PR closes nothing here, so a task's own
+    PR counts as an overlap and the check says wait, never go: the fallback errs on the safe side. Task PRs name their
+    issue with `Closes #<issue>` in the body (docs/maintainers/cloud-lane.md), which REST does see.
+    """
+    default = load_default_branch()
+    raw = gh_json_pages(["api", "--paginate", f"repos/{REPO}/pulls?state=open&per_page=100"])
+    check_list_limit(raw)
+    return [
+        {
+            "number": pr["number"],
+            "branch": pr["head"]["ref"],
+            "draft": bool(pr.get("draft")),
+            "created": pr.get("created_at") or "",
+            "files": rest_pr_files(pr["number"]),
+            "closes": closes_in_body(pr.get("body")) if (pr.get("base") or {}).get("ref") == default else set(),
         }
         for pr in raw
     ]
