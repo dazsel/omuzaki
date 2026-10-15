@@ -281,6 +281,24 @@ fn overlaps(a: Rect, b: Rect) -> bool {
     shared.width() > EDGE_SLACK && shared.height() > EDGE_SLACK
 }
 
+/// The area a galley's glyphs occupy, relative to its origin. A galley's own rectangle starts at its origin, but the
+/// first row of a label laid out after other widgets in a wrapped row begins with a leading indent (the width of what
+/// is already on the line), so the rectangle runs from the line's start to the end of the text while the glyphs sit
+/// at its right. Each row is taken from its first glyph, so that indent is not text that was drawn.
+fn ink_rect(galley: &egui::Galley) -> Rect {
+    galley
+        .rows
+        .iter()
+        .filter_map(|row| {
+            let rect = row.rect();
+            row.glyphs
+                .first()
+                .map(|glyph| Rect::from_min_max(egui::pos2(glyph.pos.x.max(rect.min.x), rect.min.y), rect.max))
+        })
+        .reduce(Rect::union)
+        .unwrap_or(galley.rect)
+}
+
 /// Text that is clipped, lies outside `window`, or is drawn over other text in the frame.
 ///
 /// Text is the one thing every control shows, so this is the first layout check; controls are checked through
@@ -298,7 +316,7 @@ pub fn layout_findings(output: &FullOutput, window: Rect) -> Vec<LayoutFinding> 
             if text.galley.job.text.trim().is_empty() {
                 continue;
             }
-            let rect = text.galley.rect.translate(text.pos.to_vec2());
+            let rect = ink_rect(&text.galley).translate(text.pos.to_vec2());
             texts.push((text.galley.job.text.clone(), rect, *clip_rect));
         }
     }
