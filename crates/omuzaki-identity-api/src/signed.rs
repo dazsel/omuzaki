@@ -5,7 +5,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::canonical::{CanonicalError, canonical_hash};
+use crate::canonical::{CanonicalError, canonical_hash, to_json_value};
 use crate::domain::Domain;
 use crate::key::{Identity, Signature};
 use crate::service::{Check, Mismatch, TrustStore};
@@ -52,6 +52,6 @@ impl<T: Serialize> Signed<T> {
 /// # Errors
 /// [`CanonicalError`] when the body has no JSON form.
 pub fn hash_of<T: Serialize>(body: &T, signer: &Identity) -> Result<ContentHash, CanonicalError> {
-    let body = serde_json::to_value(body).map_err(|e| CanonicalError(e.to_string()))?;
+    let body = to_json_value(body)?;
     canonical_hash(&json!({ "body": body, "signer": { "key": signer.key, "name": signer.name } }))
 }

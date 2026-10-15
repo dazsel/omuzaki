@@ -80,6 +80,10 @@ fn the_check_covers_valid_trust_tampered_and_malformed() {
         signature: ok.signature,
     };
     assert!(unserialisable.hash().is_err());
+    let nan = Signed { body: Some(f64::NAN), signer: ok.signer.clone(), signature: ok.signature };
+    assert!(nan.hash().is_err());
+    assert!(matches!(nan.check(Domain::Export, &trust), Check::Malformed(m) if m.contains("not a JSON number")));
+    assert!(hash_of(&Some(f64::INFINITY), &ok.signer).is_err(), "a signer is refused before anything is signed");
     assert!(matches!(unserialisable.check(Domain::Export, &trust), Check::Malformed(_)));
 }
 
