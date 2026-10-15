@@ -255,3 +255,15 @@ fn a_record_that_does_not_read_is_an_error_naming_its_path() {
         assert!(error.message.contains("characters/mira/applied/face"), "{op}: {}", error.message);
     }
 }
+
+#[test]
+fn an_applied_node_that_is_not_a_table_is_an_error_not_no_applications() {
+    let doc = doc(&ItemRights::first_party(), &[("face", json!("not a record"))]);
+    let error = plan(&doc, "licence.derive", json!({ "character": "mira" })).expect_err("a string is not a record");
+    assert_eq!(error.field.as_deref(), Some("applied/face"));
+    let mut root = doc.root().clone();
+    root["characters"]["mira"]["applied"] = json!("oops");
+    let error =
+        plan(&MemDoc::from_value(root), "licence.derive", json!({ "character": "mira" })).expect_err("not a table");
+    assert_eq!(error.field.as_deref(), Some("applied"));
+}

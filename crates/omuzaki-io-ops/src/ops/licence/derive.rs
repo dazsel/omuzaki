@@ -507,15 +507,25 @@ pub(crate) fn load(ctx: &OpCtx<'_>, id: &CharId) -> Result<DerivedLicence, OpErr
 /// The character's application records, in application-key order.
 ///
 /// # Errors
-/// `invalid`, naming `applied/<app>`, for a record that does not read.
+/// `invalid`, naming `applied/<app>`, for a record that does not read, or `applied` for a node that is not a table.
 fn load_applications(ctx: &OpCtx<'_>, id: &CharId) -> Result<Vec<ApplicationInput>, OpError> {
-    let Some(Value::Object(table)) = ctx.doc.get(&paths::applied(id)) else { return Ok(Vec::new()) };
-    let mut keys: Vec<&String> = table.keys().collect();
-    keys.sort_unstable();
-    keys.into_iter()
-        .map(|app| {
+    let table = match ctx.doc.get(&paths::applied(id)) {
+        None => return Ok(Vec::new()),
+        Some(Value::Object(table)) => table,
+        // Fail closed: records that cannot be read must not read as "none applied".
+        Some(_) => {
+            let path = paths::applied(id);
+            return Err(OpError::invalid("applied", format!("{path} is not a table of application records"))
+                .hint("it holds one record per application, written by library.apply"));
+        }
+    };
+    let mut entries: Vec<(&String, &Value)> = table.iter().collect();
+    entries.sort_unstable_by_key(|(app, _)| app.as_str());
+    entries
+        .into_iter()
+        .map(|(app, node)| {
             let path = paths::application(id, app);
-            let record = ApplicationRecord::from_node(&table[app.as_str()]).map_err(|e| {
+            let record = ApplicationRecord::from_node(node).map_err(|e| {
                 OpError::invalid(format!("applied/{app}"), format!("the application record at {path}: {e}")).hint(
                     "a record is written by library.apply; remove it with library.detach, or apply the item again",
                 )
