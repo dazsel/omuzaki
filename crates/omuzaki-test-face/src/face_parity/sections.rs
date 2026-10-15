@@ -16,7 +16,9 @@ use std::path::{Path, PathBuf};
 use image::RgbaImage;
 use omuzaki_face::raster::SkiaRasterizer;
 use omuzaki_face::{RealPainter, Section};
-use omuzaki_face_api::{DrawList, FaceDrawing, FaceInput, FaceLayerId, FacePainter, FaceRasterizer, Raster};
+use omuzaki_face_api::{
+    DrawList, FaceDrawing, FaceError, FaceInput, FaceLayerId, FacePainter, FaceProjection, FaceRasterizer, Raster,
+};
 use serde::Deserialize;
 
 use super::js_params::case_inputs;
@@ -324,11 +326,15 @@ fn region(entries: &[&IndexSection], size: (u32, u32)) -> Rect {
 /// Cuts a section's Base-layer list down to one piece of it (see [`check_tags`]).
 pub type Select<'a> = &'a dyn Fn(&DrawList) -> DrawList;
 
+/// Paints one piece of a section into a Base-layer list, from the case's input, the projection and the pixels per metre
+/// (see [`check_tags_painted`]).
+pub type Paint<'a> = &'a dyn Fn(&FaceInput<'_>, FaceProjection, f32) -> Result<DrawList, FaceError>;
+
 /// One section of one case through the painter and the CPU rasteriser, as straight-alpha pixels; `None` when the
-/// painter's lists for the compared layers are empty. With `select`, only the Base layer is taken, cut down by it.
+/// painter's lists for the compared layers are empty. With `paint`, only the Base layer is taken, and it is what `paint` returns.
 fn paint_section(
     section: Section,
-    select: Option<&Select<'_>>,
+    paint: Option<Paint<'_>>,
     setup: &Setup,
     input: &FaceInput<'_>,
     size: (u32, u32),
@@ -340,20 +346,21 @@ fn paint_section(
     let px_per_m = size.0 as f32 / setup.projection.rect.width();
     let mut painter = RealPainter::new(setup.projection, px_per_m);
     let mut drawing = FaceDrawing::new();
-    painter.paint_section(section, input, &mut drawing).map_err(face)?;
+    let piece = if let Some(paint) = paint {
+        Some(paint(input, setup.projection, px_per_m).map_err(face)?)
+    } else {
+        painter.paint_section(section, input, &mut drawing).map_err(face)?;
+        None
+    };
 
     let mut stack = vec![[0_u8; 4]; size.0 as usize * size.1 as usize];
     let mut drew = false;
     let mut rasterizer = SkiaRasterizer::new();
     let mut raster = Raster::new(1, 1);
     for spec in painter.layers().iter().filter(|s| COMPARED_LAYERS.contains(&s.id)) {
-        let selected;
-        let list = match select {
+        let list = match &piece {
             Some(_) if spec.id != FaceLayerId::Base => continue,
-            Some(select) => {
-                selected = select(&drawing[spec.id]);
-                &selected
-            }
+            Some(piece) => piece,
             None => &drawing[spec.id],
         };
         if list.is_empty() {
@@ -432,12 +439,12 @@ struct Run {
 struct Job<'a> {
     section: Section,
     tags: Vec<String>,
-    select: Option<Select<'a>>,
+    paint: Option<Paint<'a>>,
 }
 
 /// The whole-section jobs for `sections`.
 fn whole(sections: &[Section]) -> Vec<Job<'static>> {
-    sections.iter().map(|&section| Job { section, tags: tags(section), select: None }).collect()
+    sections.iter().map(|&section| Job { section, tags: tags(section), paint: None }).collect()
 }
 
 /// Compares `jobs` over every case of the index; `evidence` (when given) receives a picture per compared case.
@@ -480,7 +487,7 @@ fn run(
             let entries: Vec<&IndexSection> = case.sections.iter().filter(|e| job.tags.contains(&e.tag)).collect();
             let reference = stack_reference(js, &entries, size)?;
             let rect = region(&entries, size);
-            let actual = paint_section(section, job.select.as_ref(), &variant.setup, &input, size, &case.id)?;
+            let actual = paint_section(section, job.paint, &variant.setup, &input, size, &case.id)?;
             let outcome = judge(actual.as_ref(), &reference, rect, tolerance, &case.id)?;
             if let (Some(dir), Outcome::Compared { .. }, Some(actual)) = (evidence, &outcome, &actual) {
                 write_evidence(dir, case, section, actual, &reference, rect, tolerance)?;
@@ -584,12 +591,12 @@ pub fn check_section_in(
 }
 
 /// [`check_section`] over a subset of one section's tags, for a piece of a section that has its own parity test (the
-/// eye's aperture, iris, ...).
+/// eye's aperture, ...). Use it when the piece is a part of the list the painter draws anyway.
 ///
-/// The reference is only the listed `tags` stacked, and the compared rectangle is only their boxes. `select` cuts the
-/// painter's Base-layer list for the section down to the piece, so the pixels compared are the piece's alone (the
-/// Overlay layer is not compared). `tags` outside the section are allowed; names the index lacks in a case simply add
-/// nothing to that case's reference.
+/// The reference is only the listed `tags` stacked, and the compared rectangle is only their boxes. The section is
+/// painted once; `select` cuts its Base-layer list down to the piece, so the pixels compared are the piece's alone (the
+/// Overlay layer is not compared). When the piece can't be cut from that one painting, because it takes a different
+/// profile or params or the difference of several paintings, use [`check_tags_painted`].
 ///
 /// ```ignore
 /// let check = face_parity::check_tags(Section::Eyes, &["eye-L-sclera", "eye-R-sclera"], &eye_whites, T_FACE).unwrap();
@@ -620,7 +627,47 @@ pub fn check_tags_in(
     select: Select<'_>,
     tolerance: SectionTolerance,
 ) -> Result<SectionCheck, ParityError> {
-    let job = Job { section, tags: tags.iter().map(|t| (*t).to_owned()).collect(), select: Some(select) };
+    let paint = |input: &FaceInput<'_>, projection: FaceProjection, px_per_m: f32| {
+        let mut painter = RealPainter::new(projection, px_per_m);
+        let mut drawing = FaceDrawing::new();
+        painter.paint_section(section, input, &mut drawing)?;
+        Ok(select(&drawing[FaceLayerId::Base]))
+    };
+    check_tags_painted_in(js, section, tags, &paint, tolerance)
+}
+
+/// [`check_tags`] where the caller paints the piece: `paint` gets the case's input, the projection and the pixels per
+/// metre and returns the piece's Base-layer list. Use it when the piece isn't a cut of one painting of the section, for
+/// instance the iris, which is the difference between paintings with later pieces switched off.
+///
+/// Reference, rectangle and layers are as for [`check_tags`]. `section` only names the result.
+///
+/// # Errors
+/// As [`check_section`]; a [`FaceError`] from `paint` is a [`ParityError::Face`] for its case.
+pub fn check_tags_painted(
+    section: Section,
+    tags: &[&str],
+    paint: Paint<'_>,
+    tolerance: SectionTolerance,
+) -> Result<SectionCheck, ParityError> {
+    match JsRef::open() {
+        Some(js) => check_tags_painted_in(&js, section, tags, paint, tolerance),
+        None => Ok(SectionCheck::Skipped("no JS reference dump".to_owned())),
+    }
+}
+
+/// [`check_tags_painted`] against the dump `js` (a fixture, in tests).
+///
+/// # Errors
+/// As [`check_tags_painted`].
+pub fn check_tags_painted_in(
+    js: &JsRef,
+    section: Section,
+    tags: &[&str],
+    paint: Paint<'_>,
+    tolerance: SectionTolerance,
+) -> Result<SectionCheck, ParityError> {
+    let job = Job { section, tags: tags.iter().map(|t| (*t).to_owned()).collect(), paint: Some(paint) };
     check_jobs_in(js, &[job], tolerance)
 }
 
@@ -772,6 +819,8 @@ pub fn markdown(
 #[cfg(test)]
 mod tests {
     use image::Rgba;
+    use omuzaki_core::colour::Colour;
+    use omuzaki_core::glam::Vec2;
     use serde_json::{Value, json};
 
     use super::*;
@@ -1041,6 +1090,23 @@ mod tests {
         // Both listed: both stacked.
         let both = check_tags_in(&js, Section::Nose, &["nose", "lip-rim"], &keep_all, TOL).unwrap();
         assert_eq!(both.failures()[0].tags, ["nose", "lip-rim"]);
+        // A piece that no cut of the painter's Base list could give: `paint` ignores the painter and returns a square
+        // of its own, so the nose (which the painter leaves empty here) is compared against a drawn list, and fails.
+        let paint = |_: &FaceInput<'_>, _: FaceProjection, _: f32| {
+            let mut list = DrawList::new();
+            let square = list
+                .path()
+                .move_to(Vec2::new(-0.01, -0.01))
+                .line_to(Vec2::new(0.01, -0.01))
+                .line_to(Vec2::new(0.01, 0.01))
+                .line_to(Vec2::new(-0.01, 0.01))
+                .close()
+                .finish();
+            list.fill(square, omuzaki_face_api::Paint::Solid(Colour { r: 200, g: 90, b: 90, a: 255 }));
+            Ok(list)
+        };
+        let painted = check_tags_painted_in(&js, Section::Nose, &["nose"], &paint, TOL).unwrap();
+        assert!(matches!(painted.failures()[0].outcome, Outcome::Compared { passed: false, .. }), "{painted:?}");
         // None listed: an empty reference, which an empty painting matches.
         let none = check_tags_in(&js, Section::Nose, &[], &keep_all, TOL).unwrap();
         assert!(none.problems().is_none(), "{none:?}");

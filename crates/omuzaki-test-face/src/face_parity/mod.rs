@@ -43,7 +43,8 @@ pub mod sections;
 
 pub use js_params::ParamError;
 pub use sections::{
-    CaseResult, InkDrift, Outcome, SectionCheck, SectionReport, Select, check_section, check_tags, report,
+    CaseResult, InkDrift, Outcome, Paint, SectionCheck, SectionReport, Select, check_section, check_tags,
+    check_tags_painted, report,
 };
 
 /// The golden variants and the look of the character each one shows: the prototype's `game` variant is the character
