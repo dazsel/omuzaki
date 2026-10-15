@@ -57,6 +57,9 @@ pub enum Trigger {
     Manual,
     /// A named version (VC-01), pinned until the name is removed.
     Named,
+    /// The state a recording or replay save pins (ADR 0052). Takes its stem through `Snapshots::take`, which stores it
+    /// in [`SnapshotInfo::stem`].
+    Take,
 }
 
 /// How a snapshot was checked.
@@ -112,6 +115,10 @@ pub struct SnapshotInfo {
     /// The version's name; named versions only.
     #[serde(default)]
     pub name: Option<String>,
+    /// The take's stem; take snapshots only (ADR 0052). Kept apart from `name`, because a name pins a named version
+    /// (VC-01) and a take's pin is its own.
+    #[serde(default)]
+    pub stem: Option<String>,
     /// A pin: retention keeps the snapshot until this time. Absent: retention decides.
     #[serde(default)]
     pub keep_until: Option<WallTime>,
@@ -133,6 +140,7 @@ impl SnapshotInfo {
             history: None,
             thumbnail: None,
             name: None,
+            stem: None,
             keep_until: None,
             verified: None,
         }
@@ -211,11 +219,14 @@ pub trait Snapshots: Service {
     /// [`SnapshotError::Io`] when the refs cannot be read.
     fn list(&self) -> Result<Vec<SnapshotInfo>, SnapshotError>;
 
-    /// Takes a snapshot now and returns its id. `name` is for [`Trigger::Named`].
+    /// Takes a snapshot now and returns its id. `name` is the version's name for [`Trigger::Named`] (required there),
+    /// and the take's stem for [`Trigger::Take`] (optional; stored in [`SnapshotInfo::stem`]). No other trigger takes
+    /// a value.
     ///
     /// # Errors
     ///
-    /// [`SnapshotError::Invalid`] for a name on a trigger that takes none, [`SnapshotError::Io`] when storing fails.
+    /// [`SnapshotError::Invalid`] for a missing name on `Named`, or a value on any other trigger,
+    /// [`SnapshotError::Io`] when storing fails.
     fn take(&self, trigger: Trigger, name: Option<&str>) -> Result<SnapshotId, SnapshotError>;
 
     /// The document as of snapshot `id`.
@@ -269,10 +280,18 @@ mod tests {
     }
 
     #[test]
+    fn a_take_trigger_round_trips_as_take() {
+        let text = serde_json::to_string(&Trigger::Take).unwrap_or_default();
+        assert_eq!(text, "\"take\"");
+        let back: Result<Trigger, _> = serde_json::from_str(&text);
+        assert_eq!(back.ok(), Some(Trigger::Take));
+    }
+
+    #[test]
     fn a_ref_missing_optional_facts_still_reads() {
         let info = SnapshotInfo::new(id(), Lsn(5), "s", WallTime(1_760_279_525_000), Trigger::Auto);
         let mut json = serde_json::to_value(&info).unwrap_or_default();
-        for key in ["label", "history", "thumbnail", "name", "keep_until", "verified"] {
+        for key in ["label", "history", "thumbnail", "name", "stem", "keep_until", "verified"] {
             if let Some(map) = json.as_object_mut() {
                 map.remove(key);
             }

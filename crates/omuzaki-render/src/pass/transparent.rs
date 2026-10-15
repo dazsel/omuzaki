@@ -208,7 +208,7 @@ impl Transparent {
             let bounds = cx
                 .resources
                 .morphs
-                .bounds(draw.instance)
+                .sort_bounds(draw.instance)
                 .unwrap_or(&mesh.bounds)
                 .instance(&instance.transform, palette);
             let centre =

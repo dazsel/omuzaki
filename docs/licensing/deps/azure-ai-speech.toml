@@ -1,0 +1,7 @@
+section = "models"
+item = "Azure AI Speech (incl. Personal Voice)"
+kind = "service"
+used_for = "CN-10 hosted TTS candidate"
+status = "unverified"
+condition = "no primary source read (host refused 2026-10-15); price, output ownership, data use and Personal Voice access terms unread"
+audit = "research 2026-10-hosted-tts-voice.md"

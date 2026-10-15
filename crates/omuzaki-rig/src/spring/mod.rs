@@ -5,7 +5,8 @@
 //! the section `SpringBone Algorithm`): Verlet integration of each joint's tail with inertia, stiffness and gravity, a constraint
 //! that keeps the tail at the bone's length, push-out from sphere and capsule colliders (and, from `VRMC_springBone_extended_collider`, push-in to the
 //! inside of a sphere or capsule and push-out of a plane's back side), and then the bone is rotated
-//! to point at the tail. Chains are updated root to tip, and a chain hanging off another chain's joint after it.
+//! to point at the tail. A joint's `VRMC_springBone_limit` (cone, hinge or spherical, see [`limit`]) holds the tail's direction
+//! inside its range right after the inertia update and again after each collider push. Chains are updated root to tip, and a chain hanging off another chain's joint after it.
 //!
 //! # Provenance
 //!
@@ -31,6 +32,9 @@
 //!   bone is overridden, as it is in other VRM runtimes.
 //! - **Tails start at rest in the pose they are first seen in**, and again after [`reset`](omuzaki_anim_api::SpringSolver::reset),
 //!   so a character that first appears away from the origin does not whip its hair into place.
+//! - **A limit sits in the head's rest frame under its parent's current rotation**, as the limit spec's `Rotation` listing
+//!   has it, so it bounds the swing rather than following the bone. Its order in the step is quoted in [`limit`]'s docs. A
+//!   limit on a chain's last joint is ignored, as the spec requires.
 //! - **A zero-length pair does not move.** A joint on top of the next one has no direction to swing in; it keeps its
 //!   rest rotation.
 //! - **Colliders push, then the bone length is kept**, as the spec orders it (and three-vrm does). A push that moves a
@@ -67,6 +71,7 @@
 //! per joint per sub-step (`cargo bench -p omuzaki-rig`).
 
 mod collide;
+mod limit;
 mod solver;
 
 #[cfg(test)]
