@@ -14,12 +14,18 @@
 //!
 //! | Exchange | No-replace rename | Hard links | Replace a file ([`replace_checked`]) | Write a new file | Delete ([`remove_checked`]) |
 //! |---|---|---|---|---|---|
-//! | yes | either | yes | linked backup, swap, check, undo on a race | no-replace link | linked backup; move aside; delete, or put back by link |
+//! | yes | yes | yes | linked backup, swap, check, undo on a race | no-replace link | linked backup; move aside by no-replace rename; delete, or put back by link |
+//! | yes | no | yes | as above | no-replace link | refused |
 //! | yes | yes | no | copied backup, swap, check, undo on a race; the original then replaces the copy | no-replace rename | copied backup; move aside by no-replace rename; original over the copy, or put back by no-replace rename |
 //! | yes | no | no | as above | refused | refused |
-//! | no | either | yes | refused | no-replace link | as in the first row |
-//! | no | yes | no | refused | no-replace rename | as in the second row |
+//! | no | yes | yes | refused | no-replace link | as in the first row |
+//! | no | no | yes | refused (Windows: the non-atomic cell below) | no-replace link | refused (Windows: the non-atomic cell below) |
+//! | no | yes | no | refused | no-replace rename | as in the third row |
 //! | no | no | no | refused | refused | refused |
+//!
+//! Every move into a slot of our own (a deletion's hidden quarantine name beside the file, a `.displaced` entry of the
+//! replaced folder) is a no-replace rename too, and an occupied slot (a crashed process's leftover whose pid was
+//! reused) is skipped for the next name, never replaced.
 //!
 //! Where each platform stands with what this crate's dependencies reach today:
 //!
@@ -36,6 +42,9 @@
 //! `FILE_RENAME_FLAG_POSIX_SEMANTICS` only when that fails with access denied. An editor's atomic save in the
 //! microseconds between the hash check and the rename is overwritten; the checked file survives in the kept entry. The
 //! first use in a process says so on standard error. Without hard links (FAT, exFAT) Windows refuses as the table says.
+//! The same cell covers Windows's moves into our own slots (a deletion's quarantine name, a `.displaced` entry): with
+//! no rename that won't replace, the slot is checked to be free and then renamed into, so a file created in that slot
+//! in between would be replaced. Only Omuzaki writes those names.
 //!
 //! Each cell of the first table is tested with the capabilities forced off through the test seam (`Hooks`).
 
@@ -378,7 +387,7 @@ fn replace_checked_with(
     hooks: &Hooks<'_>,
 ) -> Result<Replace, StoreError> {
     refuse_links(dir, path)?;
-    let tmp = stage(dir, path, text)?;
+    let tmp = stage(dir, path, text, hooks)?;
     (hooks.staged)();
     let outcome = match back_up(dir, path, expected, hooks)? {
         Backup::Absent => {
@@ -436,13 +445,13 @@ fn replace_held(dir: &Path, path: &Path, tmp: &Path, held: &Held, hooks: &Hooks<
     }
     // Someone replaced or edited the target: put their file back.
     if let Err(e) = hooks.exchange(tmp, path) {
-        preserve(dir, tmp)?;
+        preserve(dir, tmp, hooks)?;
         return Err(capability_error(path, NO_EXCHANGE, e));
     }
     (hooks.undone)();
     // Our file was visible at the target between the swap and the undo, so an editor may have it open and write into
     // it later, through a handle no hash check can see. It is therefore always kept, even if it still reads as ours.
-    preserve(dir, tmp)?;
+    preserve(dir, tmp, hooks)?;
     Ok(Replace::Refused)
 }
 
@@ -539,7 +548,7 @@ fn exchange(_: &Path, _: &Path) -> io::Result<()> {
 }
 
 /// Writes `text` to the hidden temporary file beside `path` and flushes it; returns the temporary file's path.
-fn stage(dir: &Path, path: &Path, text: &str) -> Result<PathBuf, StoreError> {
+fn stage(dir: &Path, path: &Path, text: &str, hooks: &Hooks<'_>) -> Result<PathBuf, StoreError> {
     let io_err = |e| StoreError::io(path, e);
     let Some(parent) = path.parent() else { return Err(io_err(io::ErrorKind::InvalidInput.into())) };
     fs::create_dir_all(parent).map_err(io_err)?;
@@ -550,7 +559,7 @@ fn stage(dir: &Path, path: &Path, text: &str) -> Result<PathBuf, StoreError> {
     // A leftover may be the file an interrupted save displaced, so it is kept, not deleted. `create_new` never
     // follows a link, so what is there (or a link put there) must be out of the way first.
     if fs::symlink_metadata(&tmp).is_ok() {
-        preserve(dir, &tmp)?;
+        preserve(dir, &tmp, hooks)?;
     }
     let written = OpenOptions::new()
         .write(true)
@@ -581,17 +590,58 @@ fn replaced_name(dir: &Path, path: &Path, suffix: &str) -> Result<PathBuf, Store
 
 /// Moves `from` (a displaced or leftover file) into the replaced folder as `<name>.displaced` and flushes it and the
 /// folder. Never deletes.
-fn preserve(dir: &Path, from: &Path) -> Result<PathBuf, StoreError> {
-    let to = replaced_name(dir, from, ".displaced")?;
-    if let Some(parent) = to.parent() {
+fn preserve(dir: &Path, from: &Path, hooks: &Hooks<'_>) -> Result<PathBuf, StoreError> {
+    if let Some(parent) = replaced_name(dir, from, "")?.parent() {
         fs::create_dir_all(parent).map_err(|e| StoreError::io(parent, e))?;
     }
     if fs::symlink_metadata(from).is_ok_and(|m| m.is_file()) {
         File::open(from).and_then(|f| f.sync_all()).map_err(|e| StoreError::io(from, e))?;
     }
-    fs::rename(from, &to).map_err(|e| StoreError::io(from, e))?;
+    let to = move_to_free_slot(from, &|| replaced_name(dir, from, ".displaced"), true, hooks)?
+        .ok_or_else(|| StoreError::io(from, io::ErrorKind::NotFound.into()))?;
     sync_folder(to.parent())?;
     Ok(to)
+}
+
+/// How many occupied names [`move_to_free_slot`] skips before it gives up.
+const SLOT_TRIES: usize = 1024;
+
+/// Moves `from` to the first name `slot` gives that is free, never replacing one that is occupied (a crashed
+/// process's leftover can hold the same name once its pid is reused): each name is tried with [`move_no_replace`],
+/// and an occupied one is skipped for the next. `None` if `from` is gone. `windows_cell` allows Windows's
+/// check-then-rename (see [`move_no_replace`]).
+fn move_to_free_slot(
+    from: &Path,
+    slot: &dyn Fn() -> Result<PathBuf, StoreError>,
+    windows_cell: bool,
+    hooks: &Hooks<'_>,
+) -> Result<Option<PathBuf>, StoreError> {
+    for _ in 0..SLOT_TRIES {
+        let to = slot()?;
+        match move_no_replace(from, &to, windows_cell, hooks) {
+            Ok(true) => return Ok(Some(to)),
+            Ok(false) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(capability_error(from, NO_NO_REPLACE, e)),
+        }
+    }
+    Err(StoreError::io(from, io::Error::new(io::ErrorKind::AlreadyExists, "found no free name to move it to")))
+}
+
+/// Renames `from` to `to` unless `to` exists; false if it does. Atomic where the system has a rename that won't
+/// replace ([`rename_no_replace`]). Windows has none in reach, and there, the one documented non-atomic cell of the
+/// module's table, `to` is checked first and then renamed over when `windows_cell` allows it, so a file created at
+/// `to` in between would be replaced; otherwise a missing no-replace rename is [`io::ErrorKind::Unsupported`].
+fn move_no_replace(from: &Path, to: &Path, windows_cell: bool, hooks: &Hooks<'_>) -> io::Result<bool> {
+    match hooks.rename_no_replace(from, to) {
+        Err(e) if cfg!(windows) && windows_cell && e.kind() == io::ErrorKind::Unsupported => {
+            if fs::symlink_metadata(to).is_ok() {
+                return Ok(false);
+            }
+            fs::rename(from, to).map(|()| true)
+        }
+        moved => moved,
+    }
 }
 
 /// Deletes up to [`PRUNE_MAX`] `.kept` entries of the replaced folder of the project `dir` that are older than
@@ -797,9 +847,9 @@ fn rename_no_replace(_: &Path, _: &Path) -> io::Result<bool> {
 /// conflict) either way. If putting it back fails, the error is returned and the file stays beside the target under
 /// the hidden name the error gives.
 ///
-/// Putting a file back needs a hard link or a rename that won't replace. A hard-linked backup shows the file system
-/// has links; with only a copy, the move aside is itself made with the rename that won't replace, so a system without
-/// either refuses with [`StoreError::NoSafeChange`] before the target is touched.
+/// The move aside is a rename that won't replace (an occupied quarantine name is skipped for the next), so a system
+/// without one refuses with [`StoreError::NoSafeChange`] before the target is touched, outside the Windows cell of the
+/// module's table. Putting a file back is a no-replace hard link, or that rename where links fail.
 pub(crate) fn remove_checked(dir: &Path, segs: &[String], expected: Option<ContentHash>) -> Result<bool, StoreError> {
     remove_checked_with(dir, segs, expected, &Hooks::default())
 }
@@ -836,29 +886,29 @@ fn remove_checked_with(
     Ok(true)
 }
 
-/// Removes the file at `path` if it is the backed-up one; false if another file was there, which is kept.
-fn unlink_held(dir: &Path, path: &Path, held: &Held, hooks: &Hooks<'_>) -> Result<bool, StoreError> {
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
+/// Counts the quarantine names this process has handed out.
+static QUARANTINE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// A fresh hidden name beside `path` to move it aside to: `.<name>.<pid>-<n>.del`.
+fn quarantine_name(path: &Path) -> PathBuf {
     let mut name = std::ffi::OsString::from(".");
     name.push(path.file_name().unwrap_or_default());
-    name.push(format!(".{}-{}.del", std::process::id(), COUNTER.fetch_add(1, Ordering::Relaxed)));
-    let quarantine = path.with_file_name(name);
-    // With links an editor's file can be put back by a no-replace link. Without them it can only be put back by a
-    // rename that won't replace, so the move aside uses that rename too: where it is missing, nothing moves.
-    let moved = if held.by_link {
-        fs::rename(path, &quarantine).map(|()| true)
-    } else {
-        hooks.rename_no_replace(path, &quarantine)
-    };
-    let moved = moved.and_then(|placed| if placed { Ok(()) } else { Err(io::ErrorKind::AlreadyExists.into()) });
-    match moved {
-        Ok(()) => {}
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(true),
+    name.push(format!(".{}-{}.del", std::process::id(), QUARANTINE_COUNTER.fetch_add(1, Ordering::Relaxed)));
+    path.with_file_name(name)
+}
+
+/// Removes the file at `path` if it is the backed-up one; false if another file was there, which is kept.
+fn unlink_held(dir: &Path, path: &Path, held: &Held, hooks: &Hooks<'_>) -> Result<bool, StoreError> {
+    // The move aside never replaces an occupied quarantine name, and where there is no rename that won't replace,
+    // nothing moves, except in the Windows cell (hard links, no swap): see `move_to_free_slot`.
+    let quarantine = match move_to_free_slot(path, &|| Ok(quarantine_name(path)), held.by_link, hooks) {
+        Ok(Some(quarantine)) => quarantine,
+        Ok(None) => return Ok(true),
         Err(e) => {
             drop(fs::remove_file(&held.path));
-            return Err(capability_error(path, NO_NO_REPLACE, e));
+            return Err(e);
         }
-    }
+    };
     (hooks.quarantined)();
     if held.is_file_at(&quarantine) {
         if held.linked.is_some() {
@@ -873,7 +923,7 @@ fn unlink_held(dir: &Path, path: &Path, held: &Held, hooks: &Hooks<'_>) -> Resul
         Ok(true) => Ok(false),
         // The name was taken again: that file stays at the target and this one is kept in the replaced folder.
         Ok(false) => {
-            preserve(dir, &quarantine)?;
+            preserve(dir, &quarantine, hooks)?;
             Ok(false)
         }
         // It stays beside the target, where the error says, not out of sight in the replaced folder.
@@ -1358,15 +1408,68 @@ mod tests {
         assert_eq!(text, None);
     }
 
-    /// Matrix, a deletion with links (no exchange, no no-replace rename needed).
+    /// Matrix, a deletion with links but no no-replace rename: refused before the file moves, except in the Windows
+    /// cell, where it moves aside after a check that the name is free.
     #[test]
-    fn with_links_a_deletion_needs_nothing_else() {
+    fn with_links_but_no_no_replace_rename_a_deletion_is_refused_outside_windows() {
         let tmp = TempDir::new().unwrap();
         let d = tmp.path();
         write(d, "a.toml", "x = 1\n");
         let hooks = Hooks { exchange_off: true.into(), no_replace_off: true.into(), ..Hooks::default() };
-        assert!(remove_checked_with(d, &["a".to_owned()], Some(ContentHash::of(b"x = 1\n")), &hooks).unwrap());
+        let out = remove_checked_with(d, &["a".to_owned()], Some(ContentHash::of(b"x = 1\n")), &hooks);
+        if cfg!(windows) {
+            assert!(out.unwrap());
+            assert!(!d.join("a.toml").exists());
+            assert_eq!(texts(&kept(d)), ["x = 1\n"]);
+        } else {
+            let err = out.unwrap_err();
+            assert!(matches!(err, StoreError::NoSafeChange { missing: NO_NO_REPLACE, .. }), "{err}");
+            assert_eq!(fs::read_to_string(d.join("a.toml")).unwrap(), "x = 1\n");
+            assert_eq!(kept(d), []);
+            assert_eq!(all_names(d), [".omuzaki", "a.toml"]);
+        }
+    }
+
+    /// An occupied slot (here a leftover with the same pid and counter) is never replaced: the move takes the next
+    /// name.
+    #[test]
+    fn a_move_into_a_slot_skips_an_occupied_name_and_keeps_it_intact() {
+        let tmp = TempDir::new().unwrap();
+        let d = tmp.path();
+        write(d, "a.toml", "x = 1\n");
+        write(d, ".a.toml.7-0.del", "leftover = 1\n");
+        let n = Cell::new(0);
+        let slot = || {
+            let name = d.join(format!(".a.toml.7-{}.del", n.get()));
+            n.set(n.get() + 1);
+            Ok(name)
+        };
+        let moved = move_to_free_slot(&d.join("a.toml"), &slot, true, &Hooks::default()).unwrap();
+        assert_eq!(moved, Some(d.join(".a.toml.7-1.del")));
+        assert_eq!(fs::read_to_string(d.join(".a.toml.7-0.del")).unwrap(), "leftover = 1\n");
+        assert_eq!(fs::read_to_string(d.join(".a.toml.7-1.del")).unwrap(), "x = 1\n");
         assert!(!d.join("a.toml").exists());
+        // A source that is gone is reported as gone, not as an error.
+        assert_eq!(move_to_free_slot(&d.join("a.toml"), &slot, true, &Hooks::default()).unwrap(), None);
+    }
+
+    /// The same through a deletion: leftovers holding this process's next quarantine names stay intact.
+    #[test]
+    fn a_deletion_never_replaces_a_leftover_quarantine_file() {
+        let tmp = TempDir::new().unwrap();
+        let d = tmp.path();
+        write(d, "a.toml", "x = 1\n");
+        let start = QUARANTINE_COUNTER.load(Ordering::Relaxed);
+        let leftovers: Vec<String> =
+            (start..start + 64).map(|n| format!(".a.toml.{}-{n}.del", std::process::id())).collect();
+        for name in &leftovers {
+            write(d, name, "leftover = 1\n");
+        }
+        assert!(remove_checked(d, &["a".to_owned()], Some(ContentHash::of(b"x = 1\n"))).unwrap());
+        assert!(!d.join("a.toml").exists());
+        for name in &leftovers {
+            assert_eq!(fs::read_to_string(d.join(name)).unwrap(), "leftover = 1\n", "{name}");
+        }
         assert_eq!(texts(&kept(d)), ["x = 1\n"]);
     }
 
