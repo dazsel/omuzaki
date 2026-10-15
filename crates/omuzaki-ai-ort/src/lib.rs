@@ -19,8 +19,6 @@
 //! - **Known exceptions:** two cases allocate inside `ort` itself: a model with more than 6 inputs or 4 outputs
 //!   (7 allocations per run for 7 and 5), and port names whose list totals 768 bytes or more (1 per run for an
 //!   800-byte name). Both are measured and pinned in `tests/allocations.rs`.
-//! - **Graph optimisation**: [`SessionOptions::graph_optimisation`](omuzaki_ai_api::SessionOptions) `Basic` and
-//!   `Extended` set ONNX Runtime's level 1 and 2; `Default` sets nothing, so a session loads exactly as before.
 //! - **Quiet**: one inter-op thread, `threads` intra-op threads, and no spin-waiting in either pool.
 //! - **Refusals** (ADR 0016 rule 4): custom-op domains and external data are refused before ONNX Runtime sees the
 //!   bytes ([`scan`]); `register_custom_ops_library` is never called. Models load from memory, so a relative

@@ -8,8 +8,8 @@ use std::collections::BTreeMap;
 
 use common::{NoNetwork, cache, fixture, local, with_source};
 use omuzaki_ai_api::{
-    DType, Dim, GraphOptimisation, LoadError, Provider, RunError, Runtime, Session as _, SessionOptions, Signature,
-    TensorBuf, TensorRef, TensorSpec, find_runtime,
+    DType, Dim, LoadError, Provider, RunError, Runtime, Session as _, SessionOptions, Signature, TensorBuf, TensorRef,
+    TensorSpec, find_runtime,
 };
 use omuzaki_ai_ort::OrtRuntime;
 
@@ -152,26 +152,6 @@ fn the_slot_names_ports_through_io_and_dynamic_sizes_follow_the_call() {
         let expected: Vec<f32> = left.iter().zip(&right).map(|(a, b)| a + b).collect();
         assert_eq!(out[0].as_f32().unwrap(), expected);
         assert_eq!(out[0].shape(), shape);
-    }
-}
-
-#[test]
-fn every_graph_optimisation_level_loads_and_runs_the_same_model() {
-    let Some(natives) = cache("every_graph_optimisation_level_loads_and_runs_the_same_model") else { return };
-    let path = fixture("add.onnx");
-    let files = [local("model.onnx", &path)];
-    let slot = Signature {
-        inputs: vec![spec("a", &[Dim::ANY, Dim::Fixed(3)]), spec("b", &[Dim::ANY, Dim::Fixed(3)])],
-        outputs: vec![spec("c", &[Dim::ANY, Dim::Fixed(3)])],
-    };
-    for level in [GraphOptimisation::Default, GraphOptimisation::Basic, GraphOptimisation::Extended] {
-        let options = SessionOptions::default().with_graph_optimisation(level);
-        let mut session = with_source(&files, &[], &natives, |s| OrtRuntime.load(s, &slot, &io(), &options))
-            .unwrap_or_else(|e| panic!("{level:?}: {e}"));
-        let mut out = TensorBuf::for_outputs(session.signature());
-        let (a, b) = ([1.0_f32, 2.0, 3.0], [10.0_f32, 20.0, 30.0]);
-        session.run(&[TensorRef::f32(&a, &[1, 3]), TensorRef::f32(&b, &[1, 3])], &mut out).unwrap();
-        assert_eq!(out[0].as_f32().unwrap(), [11.0, 22.0, 33.0], "{level:?}");
     }
 }
 

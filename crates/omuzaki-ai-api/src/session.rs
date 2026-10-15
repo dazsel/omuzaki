@@ -23,26 +23,9 @@ pub enum Provider {
     WebGpu,
 }
 
-/// How hard the runtime optimises a model's graph when it loads it. A higher level fuses and rewrites more operators,
-/// which can run faster but changes the order of floating-point maths, so a slot opts in only after its numeric check
-/// and its run-to-run determinism test pass at that level.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "lowercase")]
-#[non_exhaustive]
-pub enum GraphOptimisation {
-    /// The runtime's own default, whatever it is: the setting every session had before this option existed.
-    #[default]
-    Default,
-    /// Constant folding, redundant-node removal and the fusions that keep the graph's meaning. Results can differ
-    /// from the default in the last digits.
-    Basic,
-    /// [`Basic`](GraphOptimisation::Basic) plus the fusions that are specific to the CPU provider.
-    Extended,
-}
-
 /// How to load a session. The registry builds it: the manifest's provider preferences, filtered by the person's
 /// settings, and the slot's thread count. Build one with [`SessionOptions::new`] (the contract grows, so it is
-/// `#[non_exhaustive]`).
+/// `#[non_exhaustive]` and a field added later does not break callers).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[non_exhaustive]
 pub struct SessionOptions {
@@ -51,29 +34,18 @@ pub struct SessionOptions {
     /// Threads for the model's own maths (ONNX Runtime's intra-op pool). Never spin-waiting: `cpu.total` counts every
     /// cycle (spec §10).
     pub threads: u16,
-    /// How hard the runtime optimises the graph. Absent in stored options means [`GraphOptimisation::Default`].
-    #[serde(default)]
-    pub graph_optimisation: GraphOptimisation,
 }
 
 impl SessionOptions {
-    /// Options for `providers` and `threads`, at the runtime's default graph optimisation.
+    /// Options for `providers` and `threads`.
     #[must_use]
     pub fn new(providers: Vec<Provider>, threads: u16) -> Self {
-        Self { providers, threads, graph_optimisation: GraphOptimisation::Default }
-    }
-
-    /// The same options at `level`.
-    #[must_use]
-    pub fn with_graph_optimisation(mut self, level: GraphOptimisation) -> Self {
-        self.graph_optimisation = level;
-        self
+        Self { providers, threads }
     }
 }
 
 impl Default for SessionOptions {
-    /// CPU only, one thread, the runtime's default graph optimisation: the cheapest setting, right for small per-frame
-    /// models.
+    /// CPU only, one thread: the cheapest setting, right for small per-frame models.
     fn default() -> Self {
         Self::new(vec![Provider::Cpu], 1)
     }
@@ -84,30 +56,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_default_is_cpu_one_thread_and_the_runtimes_own_optimisation() {
+    fn the_default_is_cpu_and_one_thread() {
         let options = SessionOptions::default();
-        assert_eq!(options.providers, [Provider::Cpu]);
-        assert_eq!(options.threads, 1);
-        assert_eq!(options.graph_optimisation, GraphOptimisation::Default);
+        assert_eq!((options.providers.as_slice(), options.threads), ([Provider::Cpu].as_slice(), 1));
         assert_eq!(options, SessionOptions::new(vec![Provider::Cpu], 1));
     }
 
     #[test]
-    fn a_level_is_set_with_the_builder_and_nothing_else_changes() {
-        let options = SessionOptions::new(vec![Provider::Cuda, Provider::Cpu], 3)
-            .with_graph_optimisation(GraphOptimisation::Basic);
-        assert_eq!(options.graph_optimisation, GraphOptimisation::Basic);
+    fn the_constructor_keeps_what_it_is_given() {
+        let options = SessionOptions::new(vec![Provider::Cuda, Provider::Cpu], 3);
         assert_eq!((options.providers, options.threads), (vec![Provider::Cuda, Provider::Cpu], 3));
     }
 
     #[test]
-    fn stored_options_without_a_level_read_as_the_default() {
-        let old: SessionOptions = serde_json::from_str(r#"{"providers":["cpu"],"threads":2}"#).unwrap();
-        assert_eq!(old, SessionOptions::new(vec![Provider::Cpu], 2));
-        let json =
-            serde_json::to_string(&SessionOptions::default().with_graph_optimisation(GraphOptimisation::Extended))
-                .unwrap();
-        assert!(json.contains(r#""graph_optimisation":"extended""#), "{json}");
+    fn options_round_trip_through_serde() {
+        let options = SessionOptions::new(vec![Provider::Cpu], 2);
+        let json = serde_json::to_string(&options).unwrap();
+        assert_eq!(json, r#"{"providers":["cpu"],"threads":2}"#);
+        assert_eq!(serde_json::from_str::<SessionOptions>(&json).unwrap(), options);
     }
 }
 

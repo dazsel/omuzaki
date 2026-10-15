@@ -72,7 +72,7 @@ pub use registry::{
     Requester, SlotStatus, Stream,
 };
 pub use runtime::{LoadError, LocalFile, ModelSource, Probe, Runtime, RuntimeRegistration, find_runtime, runtimes};
-pub use session::{GraphOptimisation, Provider, Session, SessionInfo, SessionOptions};
+pub use session::{Provider, Session, SessionInfo, SessionOptions};
 pub use slot::{Slot, SlotInfo, SlotMode, SlotRegistration, find_slot, slots};
 pub use stream::{Block, BlockSink, BlockSource, StreamSpec, StreamStats};
 pub use tensor::{
