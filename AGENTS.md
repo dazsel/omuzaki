@@ -21,6 +21,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo xtask check --affected           # the CI gate on the crates you touched
 cargo xtask lint-deps                  # crate layering
 cargo xtask lint-links                 # link() wiring for registrations
+cargo xtask lint-registers             # a crate that registers sets `registers = true` in its manifest
 ```
 
 Optional heavy assets (models, audio) are not in the repository. If a test needs them, `OMUZAKI_ASSETS` points at the

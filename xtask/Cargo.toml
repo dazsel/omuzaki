@@ -24,6 +24,8 @@ omuzaki-library-api = { path = "../crates/omuzaki-library-api" }
 
 [dev-dependencies]
 tempfile.workspace = true
+# `tests/link_generation.rs` generates an App fixture's `link()` calls with the same code the Apps' build scripts run.
+omuzaki-link-build = { path = "../crates/omuzaki-link-build" }
 
 [lints]
 workspace = true

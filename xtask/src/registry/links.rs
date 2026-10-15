@@ -4,7 +4,9 @@
 //! linkable crate. The rules:
 //! 1. A linkable crate defines `link()` at the root of its library (`src/lib.rs`), with `omuzaki_core::define_link!`.
 //! 2. A crate that depends on a linkable crate under `[dependencies]` calls `<that_crate>::link()` somewhere in its
-//!    sources: from its own `link()` if other crates link it, at startup if it is an App binary.
+//!    sources: from its own `link()` if other crates link it, at startup if it is an App binary. A crate that lists
+//!    `omuzaki-link-build` under `[build-dependencies]` has the calls generated for every dependency that sets
+//!    `registers = true`, so for those dependencies it needs no call in its sources (ADR 0054 section 6).
 //!
 //! So an App that calls its dependencies' `link()` reaches every registering crate through a chain of real calls.
 //! On native targets naming the crate is enough to keep its registrations (rustc references every `#[used]` static
@@ -52,7 +54,9 @@ pub fn lint_links(sources: &Sources) -> Vec<String> {
         for dep in linkable_deps {
             // A linkable crate always has a library.
             let Some((ident, _)) = &dep.krate.lib else { continue };
-            if !calls.contains(&ident.as_str()) {
+            // A crate with a generated list calls every dependency that sets `registers = true`, and no source says so.
+            let generated = krate.krate.generates_links && dep.krate.registers;
+            if !generated && !calls.contains(&ident.as_str()) {
                 out.push(format!(
                     "{name} → {}: never calls `{ident}::link()`, so its registrations may not be linked",
                     dep.krate.name

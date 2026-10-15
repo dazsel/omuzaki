@@ -49,6 +49,10 @@ omuzaki-io-gltf = { path = "../omuzaki-io-gltf" }
 omuzaki-io-mock = { path = "../omuzaki-io-mock" }
 omuzaki-io-ops = { path = "../omuzaki-io-ops" }
 
+# The generator behind `build.rs`: the `link()` calls come from the dependencies' `registers` flags.
+[build-dependencies]
+omuzaki-link-build = { path = "../omuzaki-link-build" }
+
 [lints]
 workspace = true
 

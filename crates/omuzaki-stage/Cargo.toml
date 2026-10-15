@@ -87,3 +87,4 @@ workspace = true
 [package.metadata.omuzaki]
 kind = "App"
 summary = "not in the workspace yet: the character stage, which uploads a `BuiltCharacter` to the renderer and runs the rig, the runtimes and the face painter each frame. It is wiring, not an API+impl pair, because the UI, the CLI, the web player and the golden runner all link the same wiring"
+registers = true

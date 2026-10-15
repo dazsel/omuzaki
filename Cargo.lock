@@ -3512,6 +3512,7 @@ dependencies = [
  "omuzaki-io-gltf",
  "omuzaki-io-ops",
  "omuzaki-io-vrm",
+ "omuzaki-link-build",
  "omuzaki-mcp",
  "omuzaki-ops",
  "omuzaki-ops-api",
@@ -3813,6 +3814,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-link-build"
+version = "0.0.0"
+dependencies = [
+ "tempfile",
+ "toml",
+]
+
+[[package]]
 name = "omuzaki-mcp"
 version = "0.0.0"
 dependencies = [
@@ -4065,6 +4074,7 @@ dependencies = [
  "omuzaki-io-gltf",
  "omuzaki-io-mock",
  "omuzaki-io-ops",
+ "omuzaki-link-build",
  "omuzaki-ops-api",
  "omuzaki-render-api",
  "omuzaki-rig",
@@ -6853,6 +6863,7 @@ dependencies = [
  "clap",
  "flate2",
  "omuzaki-library-api",
+ "omuzaki-link-build",
  "serde",
  "serde_json",
  "sha2",

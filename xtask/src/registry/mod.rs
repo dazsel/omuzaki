@@ -180,6 +180,11 @@ impl ScannedCrate {
         self.files.iter().find(|file| file.path == *root).map(|file| &file.scan)
     }
 
+    /// The registrations its library makes.
+    pub fn library_registrations(&self) -> &[Registration] {
+        &self.lib
+    }
+
     /// The crates whose `link()` this crate's sources call, in its library and its binaries.
     fn link_calls(&self) -> Vec<&str> {
         self.files.iter().flat_map(|file| file.scan.link_calls.iter().map(String::as_str)).collect()
@@ -442,6 +447,8 @@ mod tests {
             lib: Some(("omuzaki_cli".into(), "src/lib.rs".into())),
             deps: Vec::new(),
             bins: vec![("omuzaki".into(), "src/main.rs".into()), ("fixture".into(), "src/bin/fixture.rs".into())],
+            registers: false,
+            generates_links: false,
         };
         assert_eq!(owning_bin(&krate, Path::new("src/main.rs")).as_deref(), Some("omuzaki"));
         assert_eq!(owning_bin(&krate, Path::new("src/bin/fixture.rs")).as_deref(), Some("fixture"));

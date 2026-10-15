@@ -1,0 +1,49 @@
+//! `xtask lint-registers` against fixture workspaces: a crate with a `register_*!` call must set `registers = true`
+//! (ADR 0054 section 6).
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
+mod support;
+
+use support::{Fixture, Section::Normal};
+
+const OP_MACRO: &str = "#[macro_export]\nmacro_rules! register_op { ($ty:ty) => {}; }\n";
+const FLAG: &str = "\n[package.metadata.omuzaki]\nregisters = true\n";
+
+/// A contract with the macro, and a crate that makes one registration, with or without the flag.
+fn workspace(flagged: bool) -> Fixture {
+    let fixture = Fixture::new().krate("omuzaki-ops-api", &[]).krate("omuzaki-char", &[("omuzaki-ops-api", Normal)]);
+    fixture.write("crates/omuzaki-ops-api/src/lib.rs", OP_MACRO);
+    fixture.write("crates/omuzaki-char/src/lib.rs", "omuzaki_ops_api::register_op!(Create);\n");
+    if flagged {
+        let manifest = std::fs::read_to_string(fixture.root().join("crates/omuzaki-char/Cargo.toml")).unwrap();
+        fixture.write("crates/omuzaki-char/Cargo.toml", &(manifest + FLAG));
+    }
+    fixture
+}
+
+#[test]
+fn a_registering_crate_with_the_flag_passes() {
+    let run = workspace(true).xtask(&["lint-registers"]);
+    assert!(run.success, "{}{}", run.stdout, run.stderr);
+    assert!(run.stdout.contains("lint-registers: ok (2 crates)"), "{}", run.stdout);
+}
+
+#[test]
+fn a_registering_crate_without_the_flag_fails_and_is_named_with_its_first_registration() {
+    let run = workspace(false).xtask(&["lint-registers"]);
+    assert!(!run.success, "{}", run.stdout);
+    let line = run.stdout.lines().next().unwrap();
+    assert!(
+        line.starts_with("omuzaki-char: makes 1 registration(s) (the first is register_op!(Create) at crates/omuzaki-char/src/lib.rs:1)"),
+        "{line}"
+    );
+    assert!(run.stdout.contains("lint-registers: 1 violation(s)"), "{}", run.stdout);
+}
+
+#[test]
+fn a_crate_that_registers_nothing_needs_no_flag_and_registrations_in_tests_do_not_count() {
+    let fixture = workspace(true).krate("omuzaki-doc", &[("omuzaki-ops-api", Normal)]);
+    fixture.write("crates/omuzaki-doc/tests/ops.rs", "omuzaki_ops_api::register_op!(TestOnly);\n");
+    let run = fixture.xtask(&["lint-registers"]);
+    assert!(run.success, "{}{}", run.stdout, run.stderr);
+}

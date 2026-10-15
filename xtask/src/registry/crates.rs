@@ -11,6 +11,9 @@ use toml::{Table, Value};
 
 use super::Error;
 
+/// The build-dependency that generates a crate's `link()` calls.
+const LINK_BUILD: &str = "omuzaki-link-build";
+
 /// One workspace member.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Crate {
@@ -25,6 +28,12 @@ pub struct Crate {
     pub deps: Vec<String>,
     /// Its binaries: name and root file relative to `dir`.
     pub bins: Vec<(String, PathBuf)>,
+    /// Whether its manifest sets `registers = true` under `[package.metadata.omuzaki]`: Apps generate a `link()` call
+    /// for it (ADR 0054 section 6).
+    pub registers: bool,
+    /// Whether it lists `omuzaki-link-build` under `[build-dependencies]`, so its `link()` calls are generated from the
+    /// `registers` flags of its dependencies and appear in no source file.
+    pub generates_links: bool,
 }
 
 /// Every member of the workspace at `root`, sorted by name.
@@ -62,6 +71,14 @@ pub fn load(root: &Path) -> Result<Vec<Crate>, Error> {
             Crate {
                 lib: library(&dir, &name, &manifest),
                 bins: binaries(&dir, &name, &manifest),
+                registers: manifest
+                    .get("package")
+                    .and_then(|p| p.get("metadata")?.get("omuzaki")?.get("registers")?.as_bool())
+                    .unwrap_or(false),
+                generates_links: manifest
+                    .get("build-dependencies")
+                    .and_then(Value::as_table)
+                    .is_some_and(|table| table.contains_key(LINK_BUILD)),
                 dir: dir.strip_prefix(root).unwrap_or(&dir).to_path_buf(),
                 name,
                 deps,
