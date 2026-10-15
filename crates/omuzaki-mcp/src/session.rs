@@ -657,6 +657,12 @@ impl ServerHandler for Session {
         })
     }
 
+    /// A ping may be a session's first request, and it carries the client's identity like any other.
+    async fn ping(&self, context: RequestContext<RoleServer>) -> Result<(), McpError> {
+        self.name_client(&context);
+        Ok(())
+    }
+
     async fn listen(&self, context: SubscriptionContext) -> Result<(), McpError> {
         self.name_client(context.request_context());
         let wanted: BTreeSet<String> = context.accepted().resource_subscriptions.iter().flatten().cloned().collect();

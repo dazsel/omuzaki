@@ -46,4 +46,6 @@ workspace = true
 
 # Native only: an MCP server on tokio, over stdio or a local TCP port (the web player talks to agents differently)
 [package.metadata.omuzaki]
+kind = "Implementation"
+summary = "the MCP server (§11): every registered op is a tool, served over stdio or a local Streamable HTTP port; native only, over `omuzaki-ops-api`, `omuzaki-doc-api` and `omuzaki-store-api`"
 wasm = false

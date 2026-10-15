@@ -19,3 +19,7 @@ omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 
 [lints]
 workspace = true
+
+[package.metadata.omuzaki]
+kind = "Mock"
+summary = "the shared in-memory `Runner` for tests (ADR 0054 §6): dry-run, grants, transactions, undo/redo, the op log and events over any `DocWrite`, built through the `omuzaki-ops-api` constructors"

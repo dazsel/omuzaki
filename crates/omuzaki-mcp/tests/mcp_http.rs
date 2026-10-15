@@ -72,7 +72,9 @@ async fn an_agent_lists_tools_previews_applies_and_undoes_over_a_real_port() {
     let agent = port.connect(&port.agent_token(), "http-agent").await;
 
     let tools = agent.list_all_tools().await.unwrap();
-    let mut expected: Vec<String> = port.runner.ops().iter().map(|o| o.name.replace('.', "_")).collect();
+    // `agent.connection` is registered but not offered: this server's host wired no connection service.
+    let mut expected: Vec<String> =
+        port.runner.ops().iter().filter(|o| o.name != "agent.connection").map(|o| o.name.replace('.', "_")).collect();
     expected.extend(BUILTINS.map(str::to_owned));
     expected.sort();
     assert_eq!(tools.iter().map(|t| t.name.to_string()).collect::<Vec<_>>(), expected);
