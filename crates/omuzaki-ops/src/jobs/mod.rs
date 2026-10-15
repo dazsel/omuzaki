@@ -143,10 +143,11 @@ impl Manager {
         self.env.clock.now().0
     }
 
-    /// Whether any job was ever admitted: from then on this manager owns jobs (or their ids and money history), and
-    /// must not be replaced.
-    pub(crate) fn admitted(&self) -> bool {
-        lock(&self.inner).next_id > 0
+    /// Whether this manager must not be replaced: once a job was admitted it owns jobs (or their ids and money
+    /// history), and once it is shut down a fresh manager would quietly take new jobs again.
+    pub(crate) fn committed(&self) -> bool {
+        let inner = lock(&self.inner);
+        inner.next_id > 0 || inner.closed
     }
 
     /// Queues `JobChanged` for `job`'s current snapshot and wakes waiters. Called with the manager lock held.
@@ -331,13 +332,17 @@ impl Manager {
                 job.cancel.cancel();
                 job.cancelling = Some(Cancelling { by, reason, grace_until: now + GRACE_SECS });
             }
+            // Shutdown reaches a job already in `finish` too, so its failure to apply ends it `Cancelled`. And it
+            // overrides an earlier reason (`Requested`, `Timeout`, `Budget`): shutdown promises every live job ends
+            // cancelled for shutdown, and the snapshot must agree with the error the run returns. The earlier grace
+            // deadline stands, so an upgrade never buys the work more time.
+            Phase::Working | Phase::Finishing if reason == CancelReason::Shutdown => {
+                job.cancel.cancel();
+                let grace_until = job.cancelling.as_ref().map_or(now + GRACE_SECS, |c| c.grace_until);
+                job.cancelling = Some(Cancelling { by, reason, grace_until });
+            }
             // The flag is the one handle work cloned out: flipping it still stops what outlived `work` (a stream), and
             // changes no state.
-            // Shutdown reaches a job already in `finish` too, so its failure to apply ends it `Cancelled`.
-            Phase::Finishing if reason == CancelReason::Shutdown && job.cancelling.is_none() => {
-                job.cancel.cancel();
-                job.cancelling = Some(Cancelling { by, reason, grace_until: now + GRACE_SECS });
-            }
             Phase::Working | Phase::Finishing | Phase::Ended => job.cancel.cancel(),
         }
     }

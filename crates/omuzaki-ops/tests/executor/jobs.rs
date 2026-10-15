@@ -39,6 +39,8 @@ enum How {
     FailWhenCancelled,
     /// Runs until cancelled, then panics.
     PanicWhenCancelled,
+    /// Runs until cancelled, signals again, waits for the gate, then fails with its own error.
+    FailAfterTheGate,
     /// Spends `before`, signals, waits for the gate, then spends `after` (late, past any cancel).
     Spend { before: u64, after: u64 },
     /// Spends twice `each`, so the second report passes a cap of less than twice that.
@@ -174,6 +176,16 @@ impl Op for TestJob {
                     std::thread::yield_now();
                 }
                 assert!(matches!(self.how, How::FailWhenCancelled), "the job's work panicked after its cancel");
+                Err(OpError::invalid("key", "boom after the cancel"))
+            }
+            How::FailAfterTheGate => {
+                let gate = gate.unwrap();
+                gate.announce();
+                while !job.is_cancelled() {
+                    std::thread::yield_now();
+                }
+                gate.announce();
+                gate.wait();
                 Err(OpError::invalid("key", "boom after the cancel"))
             }
             How::Spend { before, after } => {
@@ -809,6 +821,47 @@ fn shutdown_cancels_a_job_whose_work_then_fails_or_panics() {
         let ended = &rig.exec.jobs(&Grants::person()).unwrap()[0];
         assert_eq!(ended.state, JobState::Cancelled { by: None, reason: CancelReason::Shutdown }, "{how}");
     }
+}
+
+#[test]
+fn shutdown_overrides_an_earlier_cancel_reason() {
+    for (key, earlier) in [("so-req", CancelReason::Requested), ("so-time", CancelReason::Timeout)] {
+        let rig = rig(json!({}));
+        let gate = Gate::new(key);
+        let error = std::thread::scope(|scope| {
+            let running =
+                scope.spawn(|| rig.exec.run(job_with(key, &json!("fail_after_the_gate"), json!({"seconds": 1.0}))));
+            gate.wait_entered();
+            let id = rig.exec.jobs(&Grants::person()).unwrap()[0].id;
+            if earlier == CancelReason::Requested {
+                rig.exec.cancel(id, &person()).unwrap();
+            } else {
+                // An estimate of 1 s gives the 60 s cap.
+                advance(&rig, 61.0);
+            }
+            // `work` saw the earlier cancel and waits; shutdown comes while it is still running.
+            gate.wait_entered();
+            rig.exec.shutdown_jobs();
+            drop(gate);
+            running.join().unwrap().unwrap_err()
+        });
+        assert_eq!(code(&error), ErrorCode::Cancelled, "{earlier:?}: {error:?}");
+        assert!(
+            matches!(error.detail.as_deref(), Some(ErrorDetail::Cancelled { reason: CancelReason::Shutdown, .. })),
+            "{earlier:?}: {error:?}"
+        );
+        let ended = &rig.exec.jobs(&Grants::person()).unwrap()[0];
+        assert_eq!(ended.state, JobState::Cancelled { by: None, reason: CancelReason::Shutdown }, "{earlier:?}");
+    }
+}
+
+#[test]
+fn a_builder_called_after_shutdown_keeps_the_job_manager_closed() {
+    let Rig { exec, clock: _clock } = rig(json!({}));
+    exec.shutdown_jobs();
+    let exec = exec.with_job_budget(1_000_000);
+    let error = exec.start(job("sb", &json!("echo"))).unwrap_err();
+    assert_eq!(code(&error), ErrorCode::Unavailable, "a builder reopened a shut-down manager: {error:?}");
 }
 
 #[test]

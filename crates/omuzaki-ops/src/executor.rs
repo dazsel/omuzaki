@@ -137,9 +137,10 @@ impl Executor {
     /// Once a job has been admitted the manager owns it: its worker holds the manager, and only the manager can list,
     /// cancel, wait on or shut down the job, and it keeps the job ids and the money history. Replacing it would cut
     /// those jobs off, and changing the environment alone would leave ops and jobs seeing two configurations, so the
-    /// executor is returned unchanged instead.
+    /// executor is returned unchanged instead. The same holds once [`shutdown_jobs`](Self::shutdown_jobs) ran: a
+    /// fresh manager would take new jobs again.
     fn rewired(mut self, change: impl FnOnce(&mut Env, &mut u64)) -> Self {
-        if self.jobs.admitted() {
+        if self.jobs.committed() {
             return self;
         }
         change(&mut self.env, &mut self.job_budget);
