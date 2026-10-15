@@ -2,4 +2,5 @@
 //! stage. The submodules are added here.
 
 pub mod job;
+pub mod preview;
 pub mod still;
