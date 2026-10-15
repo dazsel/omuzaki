@@ -13,7 +13,6 @@
 //! |---|---|
 //! | [`ops::list_formats`], [`ops::inspect`] | the `io.list_formats` and `io.inspect` queries |
 //! | [`ops::import`] | `io.import`, the store-writing job |
-//! | [`ops::progress::JobProgress`] | the adapter from a job's context to the io progress trait |
 //! | [`ops::export`] | `io.export`, the gather, bake, write job |
 //! | [`ops::check_export`] | `io.check_export`, the export preflight query |
 //! | [`ops::licence`] | `licence.set`, `licence.describe`, `licence.derive`: the character's licence record; `licence.set_source`: a part's source row |
@@ -23,6 +22,7 @@
 //! | [`gather::springs`], [`gather::avatar`] | the VRM avatar block and spring bones |
 //! | [`prepare::humanoid`] | `auto_map`, `apply`: propose the humanoid bones of a skinned skeleton, with an override table |
 //! | [`fit_bones`] | `reduce_bones`: cut a skin's joints to a budget, the `fit.bones` stage |
+//! | [`ops::progress::JobProgress`] | the adapter from a job's context to the io progress trait |
 //!
 //! Ops register themselves with `omuzaki_ops_api::register_op!` next to their definition, so nothing here lists them.
 //! A binary keeps them only if it links this crate, so an app that wants the ops calls [`link`] at startup (ADR 0015).
