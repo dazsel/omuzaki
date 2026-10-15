@@ -26,7 +26,7 @@ use serde::de::DeserializeOwned;
 
 use crate::character::Attach;
 use crate::error::BuildError;
-use crate::fact::{Append, Cell, Fact, Keyed, Last, Slot, default_of};
+use crate::fact::{Append, Cell, Fact, FactId, Keyed, Last, Merged, Slot, default_of};
 use crate::geometry::{FaceOverlay, MaterialSpec, PartMesh, TextureData};
 use crate::ids::{AnchorId, BodyTemplateId, JointRef, MaterialName, PartId, PartKindId, TextureName};
 use crate::rig::RigContribution;
@@ -376,6 +376,8 @@ pub struct Anchor {
 pub struct Publishes {
     /// By fact name, so the merge order is deterministic.
     slots: BTreeMap<&'static str, Slot>,
+    /// The first value put for a fact whose name another fact already has here: [`Published::absorb`] refuses it.
+    clash: Option<String>,
 }
 
 impl Publishes {
@@ -386,7 +388,13 @@ impl Publishes {
         F::Value: Clone,
         F::Merged: Clone,
     {
-        self.slots.entry(F::NAME).or_insert_with(Slot::new::<F>).values.push(Cell::new(value));
+        let slot = self.slots.entry(F::NAME).or_insert_with(Slot::new::<F>);
+        match slot.id.clash(FactId::of::<F>(), F::NAME) {
+            None => slot.values.push(Cell::new(value)),
+            Some(message) => {
+                self.clash.get_or_insert(message);
+            }
+        }
     }
 
     /// [`Publishes::put`] for building a value in one expression.
@@ -402,13 +410,19 @@ impl Publishes {
 
     /// The values of fact `F` put so far, in order (what the part itself published, before any merge).
     pub fn values<F: Fact>(&self) -> impl Iterator<Item = &F::Value> {
-        self.slots.get(F::NAME).into_iter().flat_map(|slot| slot.values.iter()).filter_map(Cell::get::<F::Value>)
+        self.slots
+            .get(F::NAME)
+            .filter(|slot| slot.id.is::<F>())
+            .into_iter()
+            .flat_map(|slot| slot.values.iter())
+            .filter_map(Cell::get::<F::Value>)
     }
 
     /// The values of fact `F` put so far, in order, to change in place (the build scales them to real size).
     pub fn values_mut<F: Fact>(&mut self) -> impl Iterator<Item = &mut F::Value> {
         self.slots
             .get_mut(F::NAME)
+            .filter(|slot| slot.id.is::<F>())
             .into_iter()
             .flat_map(|slot| slot.values.iter_mut())
             .filter_map(Cell::get_mut::<F::Value>)
@@ -416,7 +430,7 @@ impl Publishes {
 
     /// Whether nothing was put: the part is silent to the parts after it.
     pub fn is_empty(&self) -> bool {
-        self.slots.is_empty()
+        self.slots.is_empty() && self.clash.is_none()
     }
 }
 
@@ -434,7 +448,7 @@ impl Debug for Publishes {
 #[derive(Clone, Default)]
 pub struct Published {
     /// The merged value of every fact published so far, by fact name.
-    merged: BTreeMap<&'static str, Cell>,
+    merged: BTreeMap<&'static str, Merged>,
 }
 
 impl Debug for Published {
@@ -550,7 +564,11 @@ fn same_bind(a: &HumanoidPose, b: &HumanoidPose) -> bool {
 impl Published {
     /// What fact `F` has merged so far: its `Default` when no part published it.
     pub fn get<F: Fact>(&self) -> &F::Merged {
-        self.merged.get(F::NAME).and_then(Cell::get::<F::Merged>).unwrap_or_else(|| default_of::<F::Merged>())
+        self.merged
+            .get(F::NAME)
+            .filter(|merged| merged.id.is::<F>())
+            .and_then(|merged| merged.cell.get::<F::Merged>())
+            .unwrap_or_else(|| default_of::<F::Merged>())
     }
 
     /// Adds what `part` published, merging each fact in name order and each fact's values in the order they were put.
@@ -558,8 +576,15 @@ impl Published {
     /// # Errors
     /// [`BuildError::Part`] with the message of the first fact that refuses a value, for example a fit bound in a pose
     /// that differs from the one an earlier part's fit is bound in (neither being the T-pose), or a second, different
-    /// stature. Nothing is absorbed then.
+    /// stature, or a fact whose name a different fact already has. Nothing is absorbed then.
     pub fn absorb(&mut self, part: &PartId, p: Publishes) -> Result<(), BuildError> {
+        if let Some(message) = p.clash {
+            return Err(BuildError::Part { part: part.clone(), message });
+        }
+        if p.slots.is_empty() {
+            // A silent part changes nothing, so it copies nothing.
+            return Ok(());
+        }
         let mut next = self.merged.clone();
         for slot in p.slots.into_values() {
             slot.merge_into(&mut next, part).map_err(|message| BuildError::Part { part: part.clone(), message })?;

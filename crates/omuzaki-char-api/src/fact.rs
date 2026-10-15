@@ -201,12 +201,49 @@ impl Clone for Cell {
     }
 }
 
+/// Who a fact is: its name and its type. Two different facts that share a name never share a slot: the build refuses
+/// the second one instead of merging it by the first one's rule.
+#[derive(Clone, Copy)]
+pub(crate) struct FactId {
+    type_id: TypeId,
+    type_name: &'static str,
+}
+
+impl FactId {
+    pub(crate) fn of<F: Fact>() -> Self {
+        Self { type_id: TypeId::of::<F>(), type_name: std::any::type_name::<F>() }
+    }
+
+    /// Whether this is fact `F`.
+    pub(crate) fn is<F: Fact>(self) -> bool {
+        self.type_id == TypeId::of::<F>()
+    }
+
+    /// The error for `other` claiming `name` when `self` already has it, or `None` when they are one fact.
+    pub(crate) fn clash(self, other: Self, name: &str) -> Option<String> {
+        (self.type_id != other.type_id).then(|| {
+            format!(
+                "two different facts are called '{name}': `{}` and `{}`; a fact's name must be unique",
+                self.type_name, other.type_name
+            )
+        })
+    }
+}
+
+/// A fact's merged state, with the fact it belongs to.
+#[derive(Clone)]
+pub(crate) struct Merged {
+    pub(crate) id: FactId,
+    pub(crate) cell: Cell,
+}
+
 /// Merges the values of one fact into `merged`, creating it as the `Default` on first use.
-type MergeFn = fn(&mut BTreeMap<&'static str, Cell>, &PartId, Vec<Cell>) -> Result<(), String>;
+type MergeFn = fn(&mut BTreeMap<&'static str, Merged>, &PartId, Vec<Cell>) -> Result<(), String>;
 
 /// Everything one part put for one fact, with the function that merges it.
 #[derive(Clone)]
 pub(crate) struct Slot {
+    pub(crate) id: FactId,
     merge: MergeFn,
     pub(crate) values: Vec<Cell>,
 }
@@ -217,39 +254,49 @@ impl Slot {
         F::Value: Clone,
         F::Merged: Clone,
     {
-        Self { merge: merge_all::<F>, values: Vec::new() }
+        Self { id: FactId::of::<F>(), merge: merge_all::<F>, values: Vec::new() }
     }
 
     /// Merges this slot's values, in the order they were put.
-    pub(crate) fn merge_into(self, merged: &mut BTreeMap<&'static str, Cell>, part: &PartId) -> Result<(), String> {
+    pub(crate) fn merge_into(self, merged: &mut BTreeMap<&'static str, Merged>, part: &PartId) -> Result<(), String> {
         (self.merge)(merged, part, self.values)
     }
 }
 
-fn merge_all<F: Fact>(merged: &mut BTreeMap<&'static str, Cell>, part: &PartId, values: Vec<Cell>) -> Result<(), String>
+fn merge_all<F: Fact>(merged: &mut BTreeMap<&'static str, Merged>, part: &PartId, values: Vec<Cell>) -> Result<(), String>
 where
     F::Value: Clone,
     F::Merged: Clone,
 {
-    let clash = || format!("two facts are called '{}'", F::NAME);
-    let cell = merged.entry(F::NAME).or_insert_with(|| Cell::new(F::Merged::default()));
-    let cell = cell.get_mut::<F::Merged>().ok_or_else(clash)?;
+    let id = FactId::of::<F>();
+    let entry = merged.entry(F::NAME).or_insert_with(|| Merged { id, cell: Cell::new(F::Merged::default()) });
+    if let Some(message) = entry.id.clash(id, F::NAME) {
+        return Err(message);
+    }
+    // The identity matched, so the types do; a failed downcast would be a bug in this module.
+    let lost = || format!("the merged value of fact '{}' has the wrong type", F::NAME);
+    let cell = entry.cell.get_mut::<F::Merged>().ok_or_else(lost)?;
     for value in values {
-        F::merge(cell, part, value.into_inner::<F::Value>().ok_or_else(clash)?)?;
+        F::merge(cell, part, value.into_inner::<F::Value>().ok_or_else(lost)?)?;
     }
     Ok(())
 }
 
 /// The `Default` of a merged type, made once and kept for the life of the process: what a reader sees when nothing was
 /// published. One small allocation per fact type, at build time.
+///
+/// The default is made outside the table's lock, so a `Default` that itself reads a fact that was never published
+/// doesn't deadlock. Two threads that both miss may each make one; the first one stored wins.
 pub(crate) fn default_of<M: Default + Send + Sync + 'static>() -> &'static M {
-    static DEFAULTS: LazyLock<Mutex<BTreeMap<TypeId, &'static (dyn Any + Send + Sync)>>> =
-        LazyLock::new(|| Mutex::new(BTreeMap::new()));
-    let mut defaults = DEFAULTS.lock().unwrap_or_else(PoisonError::into_inner);
-    let any = *defaults.entry(TypeId::of::<M>()).or_insert_with(|| Box::leak(Box::new(M::default())));
-    // The entry for `TypeId::of::<M>()` was made from an `M` above.
-    match any.downcast_ref::<M>() {
-        Some(m) => m,
-        None => Box::leak(Box::new(M::default())),
+    type Table = BTreeMap<TypeId, &'static (dyn Any + Send + Sync)>;
+    static DEFAULTS: LazyLock<Mutex<Table>> = LazyLock::new(|| Mutex::new(BTreeMap::new()));
+    let lock = || DEFAULTS.lock().unwrap_or_else(PoisonError::into_inner);
+    let stored = lock().get(&TypeId::of::<M>()).copied();
+    if let Some(m) = stored.and_then(|any| any.downcast_ref::<M>()) {
+        return m;
     }
+    let fresh: &'static M = Box::leak(Box::new(M::default()));
+    let any = *lock().entry(TypeId::of::<M>()).or_insert(fresh);
+    // The entry for `TypeId::of::<M>()` was made from an `M`.
+    any.downcast_ref::<M>().unwrap_or(fresh)
 }
