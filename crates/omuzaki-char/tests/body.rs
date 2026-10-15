@@ -192,7 +192,24 @@ fn the_kind_is_registered_project_owned_and_builds_a_rigged_body_on_every_templa
     for t in registry::templates() {
         let built = build(&character(t.id(), &serde_json::json!({})), Quality::Live);
         let names: Vec<&str> = built.meshes.iter().map(|m| m.mesh.name.as_str()).collect();
-        assert_eq!(names, ["torso", "arm.L", "arm.R", "leg.L", "leg.R", "foot.L", "foot.R"], "{}", t.id());
+        assert_eq!(
+            names,
+            [
+                "torso",
+                "arm.L",
+                "arm.R",
+                "leg.L",
+                "leg.R",
+                "foot.L",
+                "foot.R",
+                "hand-l",
+                "hand-lines-l",
+                "hand-r",
+                "hand-lines-r"
+            ],
+            "{}",
+            t.id()
+        );
         // The skin material: toon with the skin treatment and a coloured outline, from the palette's slots.
         let material = &built.materials[&MaterialName::new("body-skin").unwrap()];
         assert!(material.outline.is_some(), "{}", t.id());

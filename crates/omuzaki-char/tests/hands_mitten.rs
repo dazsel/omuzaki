@@ -162,7 +162,10 @@ fn a_hand_stays_within_the_triangle_budget_and_has_its_decals() {
             eprintln!("{style:?} {side}: {} triangles", tris(side));
             assert!(tris(side) <= BUDGET, "{style:?} {side}: {} triangles", tris(side));
         }
-        assert_eq!(parts.iter().any(|m| m.name == "hand-lines-l"), lines, "{style:?} decals");
+        let names: Vec<&str> = parts.iter().map(|m| m.name.as_str()).collect();
+        let want: &[&str] =
+            if lines { &["hand-l", "hand-lines-l", "hand-r", "hand-lines-r"] } else { &["hand-l", "hand-r"] };
+        assert_eq!(names, want, "{style:?} mesh names");
         if lines {
             // Three tubes of 8 points and 5 segments each.
             assert_eq!(mesh(&parts, "hand-lines-l").geometry.positions.len(), 3 * 8 * 6);

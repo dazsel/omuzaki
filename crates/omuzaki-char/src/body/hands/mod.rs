@@ -341,7 +341,8 @@ pub fn build(params: &BodyParams, layout: &BodyLayout, material: &MaterialName) 
     }
     // The layout is symmetric about x = 0 and the hand is built from the left joints, so the right hand is the left
     // one mirrored (x negated, winding reversed, bones swapped), never built separately.
-    let mirrored: Vec<_> = parts.iter().map(|(name, b)| (name.replace("-l", "-r"), b.mirrored())).collect();
+    let mirrored: Vec<_> =
+        parts.iter().map(|(name, b)| (format!("{}-r", name.trim_end_matches("-l")), b.mirrored())).collect();
     parts
         .into_iter()
         .map(|(name, b)| (name.to_string(), b))
