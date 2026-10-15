@@ -141,7 +141,8 @@ fn require_read(grants: &Grants) -> Result<(), OpError> {
 
 impl<D: DocWrite + Send> Runner for MockRunner<D> {
     fn ops(&self) -> Vec<OpInfo> {
-        let mut ops: Vec<OpInfo> = registrations().map(|r| OpInfo::new((r.meta)(), (r.schema)())).collect();
+        let mut ops: Vec<OpInfo> =
+            registrations().map(|r| OpInfo::new((r.meta)(), (r.schema)()).with_coalesces((r.coalesces)())).collect();
         ops.sort_by_key(|o| o.name);
         ops
     }
@@ -150,6 +151,8 @@ impl<D: DocWrite + Send> Runner for MockRunner<D> {
         let reg = find(&req.op).ok_or_else(|| OpError::invalid("op", format!("unknown op {}", req.op)))?;
         let op = (reg.decode)(req.args.clone())?;
         let meta = op.meta();
+        // The log keeps the decoded op's canonical arguments (defaults filled, aliases resolved), as the executor does.
+        let args = op.args()?;
         if !req.grants.allows(Scope::Read) {
             return Err(OpError::denied(format!("{} needs the `read` scope", meta.name))
                 .hint("ask the user to grant the `read` scope for this session"));
@@ -180,7 +183,7 @@ impl<D: DocWrite + Send> Runner for MockRunner<D> {
         let record = OpRecord::new(
             inner.log.len() as u64 + 1,
             req.op,
-            req.args,
+            args,
             req.actor,
             tx,
             Clock::now(&inner.clock),

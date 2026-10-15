@@ -5,7 +5,7 @@
 use omuzaki_doc_api::{DocPath, Patch};
 use omuzaki_doc_mock::MemDoc;
 use omuzaki_ops_api::{
-    Actor, ErrorCode, Grants, Mode, Op, OpCtx, OpError, OpKind, OpMeta, Plan, Request, Runner, Scope, Undo,
+    Actor, ErrorCode, Event, Grants, Mode, Op, OpCtx, OpError, OpKind, OpMeta, Plan, Request, Runner, Scope, Undo,
 };
 use omuzaki_ops_mock::MockRunner;
 use schemars::JsonSchema;
@@ -78,6 +78,37 @@ impl Op for AskDryRun {
     }
 }
 
+/// Sets `counter` to `value`, which a caller may spell `val`; `note` has a default. Its arguments are not canonical as
+/// sent, and it coalesces.
+#[derive(Serialize, Deserialize, JsonSchema)]
+struct SetAliased {
+    #[serde(alias = "val")]
+    value: i64,
+    #[serde(default)]
+    note: String,
+}
+
+impl Op for SetAliased {
+    fn meta() -> OpMeta {
+        OpMeta {
+            name: "mocktest.set_aliased",
+            summary: "Set the counter, with an alias and a default.",
+            kind: OpKind::Edit,
+            scope: Scope::EditScene,
+            undo: Undo::Auto,
+        }
+    }
+
+    fn coalesces() -> bool {
+        true
+    }
+
+    fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
+        Ok(Plan::edit(Patch::new().with(counter(), ctx.doc.get(&counter()).cloned(), Some(json!(self.value)))))
+    }
+}
+
+omuzaki_ops_api::register_op!(SetAliased);
 omuzaki_ops_api::register_op!(SetCounter);
 omuzaki_ops_api::register_op!(Composite);
 omuzaki_ops_api::register_op!(AskDryRun);
@@ -149,4 +180,29 @@ fn a_rollback_by_another_actor_is_refused_and_keeps_the_transaction() {
     assert!(runner.has_open_tx());
     runner.rollback(tx, &person()).unwrap();
     assert!(!runner.has_open_tx());
+}
+
+#[test]
+fn ops_report_the_registrations_coalescing() {
+    let ops = runner().ops();
+    let by_name = |name: &str| ops.iter().find(|o| o.name == name).unwrap().coalesces;
+    assert!(by_name("mocktest.set_aliased"), "an op that overrides `coalesces()` says so");
+    assert!(!by_name("mocktest.set_counter"), "the default stays false");
+}
+
+#[test]
+fn history_and_events_carry_the_decoded_ops_canonical_arguments() {
+    let runner = runner();
+    let grants = Grants::person();
+    let events = runner.subscribe(&grants).unwrap();
+    let sent = json!({"val": 3});
+    let outcome = runner.run(request("mocktest.set_aliased", sent, Mode::Apply, grants.clone())).unwrap();
+
+    let canonical = json!({"value": 3, "note": ""});
+    assert_eq!(outcome.applied.unwrap().args, canonical);
+    assert_eq!(runner.log(0, 10, &grants).unwrap()[0].args, canonical);
+    match events.try_recv().unwrap() {
+        Event::OpApplied { record, .. } => assert_eq!(record.args, canonical),
+        other => panic!("expected OpApplied, got {other:?}"),
+    }
 }
