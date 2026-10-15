@@ -711,7 +711,7 @@ Fixtures are synthetic projects (never the sample character or private material)
 | Apply to durable | p50 ≤ 2 ms, p99 ≤ 10 ms at 60 commits/s on a local SSD (ext4, NTFS); drvfs recorded, not gated | journal writer bench |
 | Writer throughput | ≥ 20,000 records/s of 1 KiB with flushing | journal writer bench |
 | Recovery | a 5,000-record tail over a 500-file project in ≤ 1 s | recovery bench |
-| Save | one edited file of the 200-file benchmark project saved and saved back (two saves) in ≤ 3.5 ms median on a CI-class 4-vCPU machine (measured 2.74 ms median, #1468; mostly the `fsync`s); no `fsync` traded for speed | `omuzaki-doc` `store` bench, `save` group |
+| Save | one edited file of the 200-file benchmark project saved and saved back (two saves) under 2 ms of CPU work (render, hash, write) on a CI-class 4-vCPU machine; the device's `fsync` is outside the budget, measured and reported separately, and never traded for speed. Saves run on the keeper (6), never on the UI or real-time threads | `omuzaki-doc` `store` bench, `save` group: on tmpfs (where `fsync` costs nothing) for the CPU work, on the local SSD for the total |
 | Open without recovery | within 5% of today's `open` bench; the base snapshot adds ≤ 20 ms on a local SSD when files changed while closed, nothing when they didn't | `omuzaki-doc` `open` bench |
 | Snapshot (off-thread) | ≤ 50 ms for a 500-file project with 10 changed files on a local SSD | snapshot bench |
 | Apple (estimate until measured on an M-series machine) | interactive apply to ordered p99 ≤ 10 ms with `F_BARRIERFSYNC`; an external acknowledgement waits one group-committed `F_FULLFSYNC` | journal writer bench on macOS |
