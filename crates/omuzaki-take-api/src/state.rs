@@ -10,10 +10,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// A cast member as the take found it.
-///
-/// Later fields are added with `#[serde(default)]`, so an older reader keeps reading the record. Empty and default
-/// fields are not written, so the minimal State serialises to exactly `doc_version`, `after_lsn`, `withheld` and
-/// `overflow` (T2); `overflow` is always written.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct CastEntry {
@@ -33,10 +29,6 @@ impl CastEntry {
 }
 
 /// A tracker source: the index `Track` records use.
-///
-/// Later fields are added with `#[serde(default)]`, so an older reader keeps reading the record. Empty and default
-/// fields are not written, so the minimal State serialises to exactly `doc_version`, `after_lsn`, `withheld` and
-/// `overflow` (T2); `overflow` is always written.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct SourceEntry {
@@ -58,10 +50,6 @@ impl SourceEntry {
 }
 
 /// An audio voice: the index `Voice`, `Cue` and `Withheld` records use.
-///
-/// Later fields are added with `#[serde(default)]`, so an older reader keeps reading the record. Empty and default
-/// fields are not written, so the minimal State serialises to exactly `doc_version`, `after_lsn`, `withheld` and
-/// `overflow` (T2); `overflow` is always written.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct VoiceEntry {
@@ -96,10 +84,6 @@ pub enum WithheldCause {
 }
 
 /// A muted or private run: the gap is shown, never silent. Open (`to` is `None`) at the start of a run.
-///
-/// Later fields are added with `#[serde(default)]`, so an older reader keeps reading the record. Empty and default
-/// fields are not written, so the minimal State serialises to exactly `doc_version`, `after_lsn`, `withheld` and
-/// `overflow` (T2); `overflow` is always written.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct Withheld {
@@ -192,11 +176,12 @@ fn is_zero_u32(v: &u32) -> bool {
 }
 
 impl StateRecord {
-    /// A full State with its required fields; everything else is empty. Set the rest with `with_*`.
-    pub fn new(doc_version: DocVersion, after_lsn: Lsn, withheld: Vec<Withheld>) -> Self {
+    /// A full State with its required fields, the project's name among them; everything else is empty. Set the rest
+    /// with `with_*`. Only [`StateRecord::minimal`] leaves the project out.
+    pub fn new(doc_version: DocVersion, project: impl Into<String>, after_lsn: Lsn, withheld: Vec<Withheld>) -> Self {
         Self {
             doc_version,
-            project: String::new(),
+            project: project.into(),
             scene: None,
             camera: None,
             cast: Vec::new(),
@@ -216,13 +201,7 @@ impl StateRecord {
     /// The minimal State the feed writes when the full one would pass 16 KiB (T2): the same required fields, with
     /// `overflow` set and nothing else. Readers treat the cast and live state as unknown for that group.
     pub fn minimal(doc_version: DocVersion, after_lsn: Lsn, withheld: Vec<Withheld>) -> Self {
-        Self { overflow: true, ..Self::new(doc_version, after_lsn, withheld) }
-    }
-
-    /// The same State with the project's name.
-    #[must_use]
-    pub fn with_project(self, project: impl Into<String>) -> Self {
-        Self { project: project.into(), ..self }
+        Self { overflow: true, ..Self::new(doc_version, String::new(), after_lsn, withheld) }
     }
 
     /// The same State with its active scene.

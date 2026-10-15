@@ -105,20 +105,20 @@ fn the_minimal_state_builds_through_its_constructor() {
 
 #[test]
 fn the_full_state_builds_through_its_constructors() {
-    let built = StateRecord::new(DocVersion(17), Lsn(41), vec![Withheld::new(0, WithheldCause::Muted, Seconds(12.5))])
-        .with_project("demo")
-        .with_scene(SceneId::new("main").expect("a slug"))
-        .with_camera("bust")
-        .with_cast(vec![CastEntry::new("mira", "mira", "ab12")])
-        .with_sources(vec![SourceEntry::new(0, "mira", "arkit", "iphone")])
-        .with_voices(vec![VoiceEntry::new(0, "mira", "mic")])
-        .with_models(BTreeMap::from([
-            ("tracker".to_owned(), "tracker-v2".to_owned()),
-            ("lipsync".to_owned(), "lipsync-v1".to_owned()),
-        ]))
-        .with_delay_s(0.25)
-        .with_omitted(vec!["obs".to_owned()], 3)
-        .with_live(BTreeMap::from([("expressions".to_owned(), json!({ "held": ["smile"] }))]));
+    let built =
+        StateRecord::new(DocVersion(17), "demo", Lsn(41), vec![Withheld::new(0, WithheldCause::Muted, Seconds(12.5))])
+            .with_scene(SceneId::new("main").expect("a slug"))
+            .with_camera("bust")
+            .with_cast(vec![CastEntry::new("mira", "mira", "ab12")])
+            .with_sources(vec![SourceEntry::new(0, "mira", "arkit", "iphone")])
+            .with_voices(vec![VoiceEntry::new(0, "mira", "mic")])
+            .with_models(BTreeMap::from([
+                ("tracker".to_owned(), "tracker-v2".to_owned()),
+                ("lipsync".to_owned(), "lipsync-v1".to_owned()),
+            ]))
+            .with_delay_s(0.25)
+            .with_omitted(vec!["obs".to_owned()], 3)
+            .with_live(BTreeMap::from([("expressions".to_owned(), json!({ "held": ["smile"] }))]));
     let expected: Value = serde_json::from_str(include_str!("golden/state_full.json")).expect("golden is JSON");
     assert_eq!(serde_json::to_value(&built).expect("serialises"), expected);
 }
@@ -164,4 +164,12 @@ fn an_unknown_withheld_cause_reads_as_unknown() {
     let withheld: Withheld = serde_json::from_str(include_str!("golden/withheld_unknown_cause.json")).expect("reads");
     assert_eq!(withheld.cause, WithheldCause::Unknown);
     assert_eq!(withheld.to, None);
+}
+
+#[test]
+fn a_full_state_written_by_new_contains_the_project() {
+    let value =
+        serde_json::to_value(StateRecord::new(DocVersion(17), "demo", Lsn(41), Vec::new())).expect("serialises");
+    assert_eq!(value["project"], "demo");
+    assert_eq!(value["overflow"], false);
 }

@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 /// The journal entry an [`EventRecord`] carries.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "form", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum TakeEntry {
     /// The entry in full, with an `Op`'s cause text cleared (T5). Never `Mark` or `Session`. Its own `entry` tag sits
     /// beside `form` in the JSON.
