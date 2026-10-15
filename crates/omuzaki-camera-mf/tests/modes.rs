@@ -11,8 +11,8 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use omuzaki_camera_mf::modes::{
-    Capacity, CaptureClock, ClockSource, FrameSpan, RowFlip, SeqTracker, Signal, SlotFailure, Take, TokenSlot,
-    take_after_retype,
+    Capacity, CaptureClock, ClockSource, FrameSpan, NativeSizes, RowFlip, SeqTracker, Signal, SlotFailure, Stamp, Take,
+    TokenSlot, is_progressive, reap, take_after_retype,
 };
 use omuzaki_track_api::camera::{CameraFormat, CameraFormatRequest, CameraId, PixelFormat};
 use omuzaki_track_api::error::TrackError;
@@ -399,23 +399,93 @@ fn row_flip_changes_mode_without_growing() {
     assert!(flip.set_len(4 * 4 * 3 + 1).is_err(), "never grows");
 }
 
-#[test]
-fn capture_time_prefers_the_driver_and_never_mixes_timelines() {
-    let mut clock = CaptureClock::new();
-    let first = clock.stamp(Some(5_000_000), 100);
-    assert_eq!((first.ticks, first.source, first.changed), (5_000_000, ClockSource::Device, true));
-    let second = clock.stamp(Some(5_333_333), 333_433);
-    assert_eq!((second.ticks, second.changed), (5_333_333, false));
-    // The driver omits the stamp once: the sample time is moved onto the device clock.
-    let third = clock.stamp(None, 666_766);
-    assert_eq!(third.source, ClockSource::SampleAligned);
-    assert_eq!(third.ticks, 5_666_666, "continues the device timeline: 666_766 + (5_333_333 - 333_433)");
-    assert!(third.changed);
+/// Runs frames through the clock and the sequence the way the stream does; returns the times and the numbers.
+fn run(frames: &[(Option<u64>, i64)]) -> (Vec<Stamp>, Vec<u64>) {
+    let (mut clock, mut seq) = (CaptureClock::new(), SeqTracker::new(30, 1));
+    let stamps: Vec<Stamp> = frames.iter().map(|&(device, sample)| clock.stamp(device, sample)).collect();
+    let numbers = stamps.iter().map(|s| seq.next(i64::try_from(s.ticks).unwrap_or(i64::MAX), false)).collect();
+    (stamps, numbers)
+}
 
-    let mut bare = CaptureClock::new();
-    let s = bare.stamp(None, 42);
-    assert_eq!((s.ticks, s.source, s.changed), (42, ClockSource::Sample, true));
-    assert_eq!(bare.stamp(None, -7).ticks, 0, "a negative time clamps to 0");
+const TICK: i64 = 333_333;
+const QPC_EPOCH: u64 = 90_000_000_000_000;
+
+#[test]
+fn a_stream_that_starts_with_the_device_timestamp_stays_on_its_epoch() {
+    let frames = [
+        (Some(QPC_EPOCH), 0),
+        (Some(QPC_EPOCH + TICK as u64), TICK),
+        (None, 2 * TICK), // the attribute disappears
+        (None, 3 * TICK),
+        (Some(QPC_EPOCH + 4 * TICK as u64), 4 * TICK), // and comes back
+    ];
+    let (stamps, numbers) = run(&frames);
+    assert_eq!(stamps[0].source, ClockSource::Device);
+    assert!(stamps[0].first_of_source);
+    assert_eq!(stamps[2].source, ClockSource::SampleAligned);
+    assert!(stamps[2].first_of_source && !stamps[3].first_of_source);
+    let ticks: Vec<u64> = stamps.iter().map(|s| s.ticks).collect();
+    assert_eq!(ticks, (0..5).map(|n| QPC_EPOCH + n * TICK as u64).collect::<Vec<_>>(), "one epoch, no jump");
+    assert_eq!(numbers, [0, 1, 2, 3, 4], "nothing counted as dropped");
+}
+
+#[test]
+fn a_stream_that_starts_without_it_ignores_a_timestamp_that_appears_later() {
+    let frames = [(None, 0), (None, TICK), (Some(QPC_EPOCH), 2 * TICK), (Some(QPC_EPOCH + TICK as u64), 3 * TICK)];
+    let (stamps, numbers) = run(&frames);
+    assert!(stamps.iter().all(|s| s.source == ClockSource::Sample));
+    let ticks: Vec<i64> = stamps.iter().map(|s| i64::try_from(s.ticks).unwrap()).collect();
+    assert_eq!(ticks, [0, TICK, 2 * TICK, 3 * TICK], "the sample epoch throughout; captured never jumps");
+    assert_eq!(numbers, [0, 1, 2, 3], "dropped does not move");
+}
+
+#[test]
+fn capture_times_never_go_negative() {
+    let mut clock = CaptureClock::new();
+    assert_eq!(clock.stamp(None, -7).ticks, 0);
+}
+
+#[test]
+fn only_progressive_modes_are_accepted() {
+    assert!(is_progressive(None), "most UVC webcams omit the attribute");
+    assert!(is_progressive(Some(0)), "unknown");
+    assert!(is_progressive(Some(2)), "progressive");
+    for explicit in [1, 3, 4, 5, 6, 7, 8, u32::MAX] {
+        assert!(!is_progressive(Some(explicit)), "interlace mode {explicit}");
+    }
+}
+
+#[test]
+fn gather_capacity_follows_the_native_types() {
+    // 1000x500 BGRA: tight 4000 bytes a row. A driver pads rows to 5000, beyond any 256-byte alignment (4096, 4352).
+    let padded = bgra(1000, 500);
+    let sizes = NativeSizes { sample_size: None, default_stride: Some(-5000) };
+    let capacity = Capacity::for_native(&[(padded, sizes)]);
+    assert_eq!(capacity.gather, 5000 * 500, "the declared stride, sign ignored");
+    // A declared sample size wins when it is the larger.
+    let declared = NativeSizes { sample_size: Some(3_000_000), default_stride: None };
+    assert_eq!(Capacity::for_native(&[(padded, declared)]).gather, 3_000_000);
+    // Nothing declared: the mode's own tight size, no assumed padding.
+    assert_eq!(Capacity::for_native(&[(padded, NativeSizes::default())]).gather, 4000 * 500);
+    // The largest of several native types.
+    let nv12 = mode(PixelFormat::Nv12, 1920, 1080, 30);
+    let both = Capacity::for_native(&[(padded, sizes), (nv12, NativeSizes::default())]);
+    assert_eq!(both.gather, 1920 * 1080 * 3 / 2);
+    // A renegotiated mode that fits what the native types allowed is admitted.
+    assert_eq!(both.admits(&padded), Ok(()));
+}
+
+#[test]
+fn reaping_returns_at_once_even_when_the_work_stalls() {
+    let (done, finished) = std::sync::mpsc::channel();
+    let started = Instant::now();
+    // The work stands in for a flush that a stalled driver takes 300 ms to answer.
+    reap(done, |done| {
+        std::thread::sleep(Duration::from_millis(300));
+        let _ = done.send(());
+    });
+    assert!(started.elapsed() < Duration::from_millis(100), "stop must not wait for the driver");
+    assert!(finished.recv_timeout(Duration::from_secs(10)).is_ok(), "and the work still runs to completion");
 }
 
 #[test]

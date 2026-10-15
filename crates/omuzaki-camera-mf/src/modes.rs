@@ -4,6 +4,7 @@
 use std::ffi::c_void;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
+use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use omuzaki_track_api::camera::{CameraFormat, CameraFormatRequest, CameraId, PixelFormat};
@@ -401,17 +402,38 @@ fn remaining(deadline: Option<Instant>) -> Option<Duration> {
     }
 }
 
-/// Padding a gather buffer allows per row beyond the tight width, in bytes (rows are rounded up to this).
-const GATHER_ROW_ALIGN: usize = 256;
-
-/// Bytes a sample of `mode` may take when its pieces are gathered into one buffer: the frame at rows padded up to
-/// [`GATHER_ROW_ALIGN`], or, for MJPG, twice the pixel count (a compressed image is smaller than raw YUY2).
+/// The least a sample of `mode` can take when its pieces are gathered into one buffer, from the mode alone: the
+/// frame at its tight stride, or, for MJPG (whose size varies), twice the pixel count, which a compressed image of
+/// that many pixels stays under.
 fn gather_bytes(mode: &ModeInfo) -> usize {
     let pixels = (mode.width as usize).saturating_mul(mode.height as usize);
     match mode.format.tight_stride(mode.width) {
         None => pixels.saturating_mul(2),
-        Some(row) => mode.format.frame_len(mode.height, row.next_multiple_of(GATHER_ROW_ALIGN)).unwrap_or(usize::MAX),
+        Some(row) => mode.format.frame_len(mode.height, row).unwrap_or(usize::MAX),
     }
+}
+
+/// What a native media type says about the size of its samples, when it says anything: `MF_MT_SAMPLE_SIZE` and
+/// `MF_MT_DEFAULT_STRIDE` (negative for a bottom-up image).
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct NativeSizes {
+    /// `MF_MT_SAMPLE_SIZE`: the bytes of one sample, padding included.
+    pub sample_size: Option<u32>,
+    /// `MF_MT_DEFAULT_STRIDE`, as the signed value Media Foundation stores in an unsigned attribute.
+    pub default_stride: Option<i32>,
+}
+
+/// The bytes one sample of `mode` can take, as far as its native type tells: the largest of the declared sample
+/// size, the declared stride's frame (planes included) and the mode's own tight size. Never less than the tight size.
+fn sample_bytes(mode: &ModeInfo, sizes: &NativeSizes) -> usize {
+    let declared = sizes.sample_size.map_or(0, |n| n as usize);
+    let strided = match (sizes.default_stride, mode.format) {
+        (Some(stride), format) if format != PixelFormat::Mjpg => {
+            format.frame_len(mode.height, stride.unsigned_abs() as usize).unwrap_or(usize::MAX)
+        }
+        _ => 0,
+    };
+    gather_bytes(mode).max(declared).max(strided)
 }
 
 /// Bytes of top-down copy a `mode` needs: BGRA, the one layout Windows hands over bottom-up, and nothing else.
@@ -433,10 +455,18 @@ pub struct Capacity {
 }
 
 impl Capacity {
-    /// Enough for every one of `modes`.
+    /// Enough for every one of `modes`, judged from the modes alone.
     pub fn for_modes(modes: &[ModeInfo]) -> Self {
-        let most = |bytes: fn(&ModeInfo) -> usize| modes.iter().map(bytes).max().unwrap_or(0);
-        Self { gather: most(gather_bytes), flip: most(flip_bytes) }
+        let native: Vec<(ModeInfo, NativeSizes)> = modes.iter().map(|m| (*m, NativeSizes::default())).collect();
+        Self::for_native(&native)
+    }
+
+    /// Enough for every one of the device's native types: the largest sample any of them declares or implies.
+    pub fn for_native(modes: &[(ModeInfo, NativeSizes)]) -> Self {
+        Self {
+            gather: modes.iter().map(|(m, sizes)| sample_bytes(m, sizes)).max().unwrap_or(0),
+            flip: modes.iter().map(|(m, _)| flip_bytes(m)).max().unwrap_or(0),
+        }
     }
 
     /// Whether `mode` fits.
@@ -511,10 +541,10 @@ impl RowFlip {
 pub enum ClockSource {
     /// The driver's capture timestamp (`MFSampleExtension_DeviceTimestamp`).
     Device,
-    /// The sample's presentation time, because the driver gave no capture timestamp.
+    /// The sample's presentation time, because the stream's first sample had no capture timestamp.
     Sample,
     /// The presentation time moved onto the device clock by the last offset between the two, for a frame that lacks
-    /// the timestamp after frames that had it.
+    /// the timestamp in a stream that started with it.
     SampleAligned,
 }
 
@@ -525,37 +555,78 @@ pub struct Stamp {
     pub ticks: u64,
     /// Where it came from.
     pub source: ClockSource,
-    /// The source differs from the previous frame's (or this is the first frame): worth logging.
-    pub changed: bool,
+    /// This is the first frame to use `source`: worth logging.
+    pub first_of_source: bool,
 }
 
-/// Chooses each frame's capture time: the driver's timestamp when it has one, otherwise the sample time, never mixing
-/// the two timelines (a frame without the timestamp, after frames with it, keeps the offset between them).
+/// Chooses each frame's capture time.
+///
+/// The source is chosen **once per stream, from its first sample**: the driver's timestamp if that sample has one,
+/// otherwise the sample's presentation time. It never changes, because the two are on different epochs (the device
+/// timestamp is in the QPC epoch, the sample time starts near zero with the stream), and a switch would look like an
+/// enormous jump, and an enormous number of dropped frames downstream.
+/// - Chosen the device clock, a later frame without the timestamp keeps that epoch: its sample time is moved by the
+///   offset between the two clocks at the last frame that had both.
+/// - Chosen the sample clock, a timestamp that turns up later is ignored.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct CaptureClock {
-    offset: Option<i64>,
-    last: Option<ClockSource>,
+    /// `Some(true)` once the stream is on the device clock, `Some(false)` on the sample clock.
+    on_device: Option<bool>,
+    offset: i64,
+    seen: u8,
 }
 
 impl CaptureClock {
     /// A clock that has seen no frame.
     pub const fn new() -> Self {
-        Self { offset: None, last: None }
+        Self { on_device: None, offset: 0, seen: 0 }
     }
 
     /// The capture time of a frame with this `device` timestamp (if the driver gave one) and `sample` time.
     pub fn stamp(&mut self, device: Option<u64>, sample: i64) -> Stamp {
-        let (ticks, source) = match (device, self.offset) {
-            (Some(d), _) => {
-                self.offset = Some(i64::try_from(d).unwrap_or(i64::MAX).saturating_sub(sample));
+        let on_device = *self.on_device.get_or_insert(device.is_some());
+        let (ticks, source) = match (on_device, device) {
+            (true, Some(d)) => {
+                self.offset = i64::try_from(d).unwrap_or(i64::MAX).saturating_sub(sample);
                 (d, ClockSource::Device)
             }
-            (None, Some(offset)) => (sample.saturating_add(offset).max(0).cast_unsigned(), ClockSource::SampleAligned),
-            (None, None) => (sample.max(0).cast_unsigned(), ClockSource::Sample),
+            (true, None) => (sample.saturating_add(self.offset).max(0).cast_unsigned(), ClockSource::SampleAligned),
+            (false, _) => (sample.max(0).cast_unsigned(), ClockSource::Sample),
         };
-        let changed = self.last != Some(source);
-        self.last = Some(source);
-        Stamp { ticks, source, changed }
+        let bit = match source {
+            ClockSource::Device => 1,
+            ClockSource::Sample => 2,
+            ClockSource::SampleAligned => 4,
+        };
+        let first_of_source = self.seen & bit == 0;
+        self.seen |= bit;
+        Stamp { ticks, source, first_of_source }
+    }
+}
+
+/// Whether a native type's `MF_MT_INTERLACE_MODE` (when it has one) describes progressive frames. Absent is
+/// progressive: most UVC webcams do not set it. `Unknown` (0) and `Progressive` (2) are accepted; every field-based
+/// or mixed mode is not, since the reader runs with video processing off and could only hand over combed or
+/// half-height frames.
+pub const fn is_progressive(interlace: Option<u32>) -> bool {
+    matches!(interlace, None | Some(0 | 2))
+}
+
+/// Runs `work(resource)` on a detached thread and returns at once, so a caller that must not wait (a stream being
+/// dropped inside a stop deadline) never waits on a stalled driver. If the thread cannot be started the resource is
+/// leaked: a leaked camera is better than a blocked tracker.
+pub fn reap<T: Send + 'static>(resource: T, work: fn(T)) {
+    let cell = std::sync::Arc::new(Mutex::new(Some(resource)));
+    let theirs = std::sync::Arc::clone(&cell);
+    let spawned = std::thread::Builder::new().name("camera-mf-reaper".into()).spawn(move || {
+        let taken = theirs.lock().unwrap_or_else(PoisonError::into_inner).take();
+        if let Some(resource) = taken {
+            work(resource);
+        }
+    });
+    if spawned.is_err() {
+        let taken = cell.lock().unwrap_or_else(PoisonError::into_inner).take();
+        std::mem::forget(taken);
     }
 }
 

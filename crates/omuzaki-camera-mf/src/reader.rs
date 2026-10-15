@@ -47,19 +47,20 @@ use windows::Win32::Media::MediaFoundation::{
     IMF2DBuffer, IMF2DBuffer2, IMFActivate, IMFAttributes, IMFMediaBuffer, IMFMediaSource, IMFMediaType, IMFSample,
     IMFSourceReader, IMFSourceReaderCallback, MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
     MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK,
-    MF_E_NO_MORE_TYPES, MF_MT_DEFAULT_STRIDE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_SUBTYPE,
-    MF_READWRITE_DISABLE_CONVERTERS, MF_SOURCE_READER_ASYNC_CALLBACK, MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING,
-    MF_SOURCE_READER_FIRST_VIDEO_STREAM, MF_VERSION, MF2DBuffer_LockFlags_Read, MFCreateAttributes,
-    MFCreateMemoryBuffer, MFCreateSourceReaderFromMediaSource, MFEnumDeviceSources, MFSTARTUP_FULL,
-    MFSampleExtension_DeviceTimestamp, MFSampleExtension_Discontinuity, MFShutdown, MFStartup,
+    MF_E_NO_MORE_TYPES, MF_MT_DEFAULT_STRIDE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE,
+    MF_MT_SAMPLE_SIZE, MF_MT_SUBTYPE, MF_READWRITE_DISABLE_CONVERTERS, MF_SOURCE_READER_ASYNC_CALLBACK,
+    MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, MF_SOURCE_READER_FIRST_VIDEO_STREAM, MF_VERSION,
+    MF2DBuffer_LockFlags_Read, MFCreateAttributes, MFCreateMemoryBuffer, MFCreateSourceReaderFromMediaSource,
+    MFEnumDeviceSources, MFSTARTUP_FULL, MFSampleExtension_DeviceTimestamp, MFSampleExtension_Discontinuity,
+    MFShutdown, MFStartup,
 };
 use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoTaskMemFree, CoUninitialize};
 use windows::Win32::System::Threading::{CreateEventW, SetEvent, WaitForSingleObject};
 use windows::core::{GUID, Interface, PCWSTR, PWSTR};
 
 use crate::modes::{
-    Capacity, CaptureClock, ClockSource, FrameSpan, ModeInfo, RowFlip, SeqTracker, Signal, SlotFailure, Take,
-    TokenSlot, choose_mode, frame_span, map_hresult, subtype_format, take_after_retype,
+    Capacity, CaptureClock, ClockSource, FrameSpan, ModeInfo, NativeSizes, RowFlip, SeqTracker, Signal, SlotFailure,
+    Take, TokenSlot, choose_mode, frame_span, is_progressive, map_hresult, reap, subtype_format, take_after_retype,
 };
 
 /// The reader's first video stream, as the `u32` the calls take.
@@ -375,28 +376,47 @@ fn open_reader(device: &Device, callback: Option<&IMFSourceReaderCallback>) -> w
     unsafe { MFCreateSourceReaderFromMediaSource(&source, &attrs) }
 }
 
-/// The mode a native media type describes, or `None` for a subtype we do not carry.
-fn mode_of(media: &IMFMediaType) -> windows::core::Result<Option<ModeInfo>> {
+/// The mode a native media type describes, with what it declares about its sample sizes; `None` for a subtype we do
+/// not carry and for any mode that is not progressive (this reader cannot deinterlace).
+fn mode_of(media: &IMFMediaType) -> windows::core::Result<Option<(ModeInfo, NativeSizes)>> {
     // SAFETY: the keys are valid statics and `media` is live.
     let (subtype, size, rate) = unsafe {
         (media.GetGUID(&MF_MT_SUBTYPE)?, media.GetUINT64(&MF_MT_FRAME_SIZE)?, media.GetUINT64(&MF_MT_FRAME_RATE)?)
+    };
+    // SAFETY: as above; each attribute may be absent, which is an error we read as "not declared".
+    let (interlace, sample_size, stride) = unsafe {
+        (
+            media.GetUINT32(&MF_MT_INTERLACE_MODE).ok(),
+            media.GetUINT32(&MF_MT_SAMPLE_SIZE).ok(),
+            media.GetUINT32(&MF_MT_DEFAULT_STRIDE).ok(),
+        )
     };
     // Both attributes pack two `u32`s into a `u64`: width and height, rate numerator and denominator.
     #[allow(clippy::cast_possible_truncation)] // each half is shifted or masked to 32 bits first
     let halves = |v: u64| ((v >> 32) as u32, (v & u64::from(u32::MAX)) as u32);
     let ((width, height), (fps_num, fps_den)) = (halves(size), halves(rate));
-    Ok(subtype_format(subtype.data1).map(|format| ModeInfo { format, width, height, fps_num, fps_den }))
+    // An absent interlace mode is progressive (see `is_progressive`).
+    let mode = subtype_format(subtype.data1).filter(|_| is_progressive(interlace)).map(|format| ModeInfo {
+        format,
+        width,
+        height,
+        fps_num,
+        fps_den,
+    });
+    let sizes = NativeSizes { sample_size, default_stride: stride.map(u32::cast_signed) };
+    Ok(mode.map(|mode| (mode, sizes)))
 }
 
-/// Every mode the reader's first video stream offers, with the media type that selects it.
-fn modes(reader: &IMFSourceReader) -> windows::core::Result<Vec<(ModeInfo, IMFMediaType)>> {
+/// Every progressive mode the reader's first video stream offers, with what its type says about sample sizes and the
+/// media type that selects it.
+fn modes(reader: &IMFSourceReader) -> windows::core::Result<Vec<(ModeInfo, NativeSizes, IMFMediaType)>> {
     let mut out = Vec::new();
     for index in 0.. {
         // SAFETY: plain call on a live reader.
         match unsafe { reader.GetNativeMediaType(VIDEO, index) } {
             Ok(media) => {
-                if let Some(mode) = mode_of(&media)? {
-                    out.push((mode, media));
+                if let Some((mode, sizes)) = mode_of(&media)? {
+                    out.push((mode, sizes, media));
                 }
             }
             Err(e) if e.code() == MF_E_NO_MORE_TYPES => break,
@@ -417,7 +437,7 @@ impl Camera for MfCamera {
             .map(|d| {
                 let formats = open_reader(&d, None)
                     .and_then(|r| modes(&r))
-                    .map(|m| m.iter().map(|(mode, _)| mode.to_format()).collect())
+                    .map(|m| m.iter().map(|(mode, _, _)| mode.to_format()).collect())
                     .unwrap_or_default();
                 // SAFETY: plain call; releases the camera the probe opened.
                 let _ = unsafe { d.activate.ShutdownObject() };
@@ -479,8 +499,9 @@ fn open_stream(runtime: &Arc<MfRuntime>, id: &CameraId, request: &CameraFormatRe
         bottom_up,
         seq: SeqTracker::new(mode.fps_num, mode.fps_den),
         packed_locks: 0,
+        oversize_logged: false,
         failed: None,
-        _runtime: Arc::clone(runtime),
+        runtime: Arc::clone(runtime),
     };
     stream.size_flip()?;
     // Start capture: from here the callback re-arms itself. If this fails the stream is dropped, which shuts the
@@ -502,13 +523,18 @@ fn configure(
 ) -> Result<(IMFSourceReader, ModeInfo, bool, Capacity), TrackError> {
     let reader = open_reader(device, Some(callback)).map_err(|e| err(&e, id))?;
     let available = modes(&reader).map_err(|e| err(&e, id))?;
-    let list: Vec<ModeInfo> = available.iter().map(|(m, _)| *m).collect();
+    let list: Vec<ModeInfo> = available.iter().map(|(m, _, _)| *m).collect();
     let mode = choose_mode(&list, request).ok_or(TrackError::FormatUnsupported(*request))?;
-    let media = available.iter().find(|(m, _)| *m == mode).map(|(_, t)| t);
+    let media = available.iter().find(|(m, _, _)| *m == mode).map(|(_, _, t)| t);
     let media = media.ok_or_else(|| TrackError::Backend("chosen mode vanished from the list".into()))?;
     // SAFETY: `media` is one of the reader's own native types, so no conversion is needed.
     unsafe { reader.SetCurrentMediaType(VIDEO, None, media) }.map_err(|e| err(&e, id))?;
-    Ok((reader, mode, is_bottom_up(media), Capacity::for_modes(&list)))
+    Ok((
+        reader,
+        mode,
+        is_bottom_up(media),
+        Capacity::for_native(&available.iter().map(|(m, n, _)| (*m, *n)).collect::<Vec<_>>()),
+    ))
 }
 
 /// Whether a media type's default stride is negative, so a plain `Lock` hands over rows bottom-up. An absent
@@ -719,10 +745,12 @@ struct MfStream {
     seq: SeqTracker,
     /// Frames locked the last-resort way (see [`Cost::MayCopy`]); logged when the first happens and again at drop.
     packed_locks: u64,
+    /// The oversize-sample warning has been logged.
+    oversize_logged: bool,
     /// Set when the camera changed to something we cannot hand over; every later call repeats it.
     failed: Option<TrackError>,
     /// Last, so Media Foundation outlives every interface above.
-    _runtime: Arc<MfRuntime>,
+    runtime: Arc<MfRuntime>,
 }
 
 impl MfStream {
@@ -737,9 +765,10 @@ impl MfStream {
         let live = self.live.as_ref().ok_or(TrackError::Lost)?;
         // SAFETY: plain call on the live reader.
         let media = unsafe { live.reader.GetCurrentMediaType(VIDEO) }.map_err(|e| err(&e, &self.id))?;
-        let mode = mode_of(&media)
-            .map_err(|e| err(&e, &self.id))?
-            .ok_or_else(|| TrackError::Backend("the camera changed to a format that cannot be handed over".into()))?;
+        // A format we do not carry, or a scan mode that is not progressive, ends the stream: fail closed.
+        let (mode, _) = mode_of(&media).map_err(|e| err(&e, &self.id))?.ok_or_else(|| {
+            TrackError::Backend("the camera changed to a format or scan mode that cannot be handed over".into())
+        })?;
         self.capacity.admits(&mode).map_err(|e| TrackError::Backend(e.into()))?;
         self.bottom_up = is_bottom_up(&media);
         self.seq.set_rate(mode.fps_num, mode.fps_den);
@@ -777,10 +806,19 @@ impl MfStream {
         let lost_before = unsafe { sample.GetUINT32(&MFSampleExtension_Discontinuity) }.is_ok_and(|v| v != 0);
         let device_time = unsafe { sample.GetUINT64(&MFSampleExtension_DeviceTimestamp) }.ok();
         let stamp = self.clock.stamp(device_time, sample_time);
-        if stamp.changed {
+        if stamp.first_of_source {
             Self::log_clock(&self.id, stamp.source);
         }
-        let buffer = live.contiguous(&sample, &self.id)?;
+        let buffer = match live.contiguous(&sample, &self.id) {
+            Ok(buffer) => buffer,
+            Err(e) => {
+                if !self.oversize_logged {
+                    self.oversize_logged = true;
+                    tracing::warn!(camera = %self.id.0, mode = ?self.mode, error = %e, "a sample did not fit the gather buffer");
+                }
+                return Err(e);
+            }
+        };
         let (held, cost) = lock_buffer(buffer, &self.mode, self.bottom_up, !self.flip.is_empty(), &self.id)?;
         if cost == Cost::MayCopy {
             self.packed_locks += 1;
@@ -849,47 +887,65 @@ impl CameraStream for MfStream {
     }
 }
 
+/// Everything a dropped stream hands to its reaper thread.
+struct Reaped {
+    live: Option<Live>,
+    shared: Arc<Shared>,
+    /// Kept so Media Foundation outlives the interfaces being released (and is never shut down under a leaked one).
+    runtime: Arc<MfRuntime>,
+}
+
 impl Drop for MfStream {
-    /// Releases the camera even with a read outstanding: stops the callback re-arming, waits for any in flight,
-    /// flushes the reader, waits (bounded) for the flush to finish, shuts the source down, then drops every
-    /// interface while COM is still initialised.
+    /// Never waits. Releasing a camera can take as long as its driver likes (a read stalled inside the driver, a flush
+    /// that is never answered), and a tracker has 100 ms to stop (`track-api.md` §9), so the interfaces go to a
+    /// detached reaper thread (see [`reap`]) and this returns at once.
     fn drop(&mut self) {
-        // Entered first, dropped last: after every interface below. Without COM we still release what we can.
-        let _com = ComScope::enter().ok();
         if self.packed_locks > 0 {
             tracing::warn!(camera = %self.id.0, frames = self.packed_locks, "frames locked through the packed Lock fallback");
         }
-        self.shared.slot.close();
-        self.shared.reader.store(std::ptr::null_mut(), Ordering::SeqCst);
-        // A callback that read the reader pointer before it was cleared is still using the reader: wait it out.
-        let deadline = std::time::Instant::now() + FLUSH_WAIT;
-        while self.shared.in_flight.load(Ordering::SeqCst) != 0 && std::time::Instant::now() < deadline {
-            std::thread::yield_now();
-        }
-        let safe_to_release = self.shared.in_flight.load(Ordering::SeqCst) == 0;
-        if let Some(mut live) = self.live.take() {
-            if let Some(held) = live.held.take() {
-                held.unlock();
-            }
-            if safe_to_release {
-                // SAFETY: plain call on a live reader; completion is reported to `OnFlush`.
-                if unsafe { live.reader.Flush(VIDEO) }.is_ok() {
-                    self.shared.slot.wait_flushed(FLUSH_WAIT);
-                }
-                // SAFETY: plain call; asks Media Foundation to release the camera now rather than at the last
-                // reference.
-                let _ = unsafe { live.activate.ShutdownObject() };
-                drop(live);
-            } else {
-                // A callback is stuck inside the reader: releasing it would be a use after free. Leak it instead.
-                std::mem::forget(live);
-            }
-        }
-        // Anything the callback delivered but nobody took.
-        if let Some(token) = self.shared.slot.drain() {
-            Shared::release(token);
-        }
+        let reaped =
+            Reaped { live: self.live.take(), shared: Arc::clone(&self.shared), runtime: Arc::clone(&self.runtime) };
+        reap(reaped, reap_stream);
     }
+}
+
+/// The reaper thread's work: stop the callback re-arming, wait (bounded) for any in flight, flush the reader, wait
+/// (bounded) for the flush to finish, shut the source down, and release every interface while COM is initialised.
+/// If a callback is stuck inside the reader, releasing it would be a use after free, so it is leaked instead.
+fn reap_stream(reaped: Reaped) {
+    let Reaped { live, shared, runtime } = reaped;
+    // Entered first, dropped last: after every interface below. Without COM we still release what we can.
+    let _com = ComScope::enter().ok();
+    shared.slot.close();
+    shared.reader.store(std::ptr::null_mut(), Ordering::SeqCst);
+    // A callback that read the reader pointer before it was cleared is still using the reader: wait it out.
+    let deadline = std::time::Instant::now() + FLUSH_WAIT;
+    while shared.in_flight.load(Ordering::SeqCst) != 0 && std::time::Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    if let Some(mut live) = live {
+        if shared.in_flight.load(Ordering::SeqCst) != 0 {
+            // Leak the reader, and with it Media Foundation: shutting that down under a live reader is no better.
+            std::mem::forget(live);
+            std::mem::forget(runtime);
+            return;
+        }
+        if let Some(held) = live.held.take() {
+            held.unlock();
+        }
+        // SAFETY: plain call on a live reader; completion is reported to `OnFlush`.
+        if unsafe { live.reader.Flush(VIDEO) }.is_ok() {
+            shared.slot.wait_flushed(FLUSH_WAIT);
+        }
+        // SAFETY: plain call; asks Media Foundation to release the camera now rather than at the last reference.
+        let _ = unsafe { live.activate.ShutdownObject() };
+        drop(live);
+    }
+    // Anything the callback delivered but nobody took.
+    if let Some(token) = shared.slot.drain() {
+        Shared::release(token);
+    }
+    drop(runtime);
 }
 
 #[cfg(test)]
