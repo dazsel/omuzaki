@@ -165,9 +165,32 @@ class ReadBack(unittest.TestCase):
         self.assertEqual(build.max_version("nothing", "GLIBC_"), "")
 
     def test_delegated_reads_the_plan_line(self):
-        self.assertEqual(build.delegated("delegated 210 of 210 in 1 partitions\n"), (210, 210, 1))
+        self.assertEqual(build.delegated("delegated 210 of 210 in 1 partitions\n"), (210, 210, 1, []))
         with self.assertRaises(build.Mismatch):
             build.delegated("")
+
+    def test_delegated_lists_the_ops_left_out(self):
+        printed = "delegated 180 of 182 in 1 partitions\nundelegated 22\nundelegated custom:Foo\n"
+        self.assertEqual(build.delegated(printed), (180, 182, 1, ["22", "custom:Foo"]))
+        with self.assertRaisesRegex(build.Mismatch, "listed 1 undelegated nodes for 2 left out"):
+            build.delegated("delegated 180 of 182 in 1 partitions\nundelegated 22\n")
+
+
+class Delegation(unittest.TestCase):
+    def test_the_measured_counts_match_the_pins(self):
+        self.assertEqual(build.delegation_problem("face_detector", 160, 160, 1), "")
+        self.assertEqual(build.delegation_problem("face_blendshapes", 181, 182, 1), "")
+
+    def test_a_change_in_either_direction_fails(self):
+        cases = [("face_detector", 159, 160, 1), ("face_detector", 160, 160, 2),
+                 ("face_blendshapes", 182, 182, 1), ("face_blendshapes", 180, 182, 1),
+                 ("face_blendshapes", 181, 183, 1), ("face_blendshapes", 181, 182, 2)]
+        for graph, taken, total, partitions in cases:
+            with self.subTest(graph=graph, taken=taken, total=total, partitions=partitions):
+                self.assertIn("pinned", build.delegation_problem(graph, taken, total, partitions))
+
+    def test_every_face_graph_has_a_pin(self):
+        self.assertEqual(sorted(build.PINS["delegation"]), sorted(build.FACE_GRAPHS))
 
 
 try:

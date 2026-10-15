@@ -454,8 +454,11 @@ jobs:
   check:        # matrix as build; needs: [build, collect]
     permissions: { contents: read }
     # download the same run's artifact; check its SHA-256 against fromJSON(needs.collect.outputs.sha256)[matrix.platform]; load the library with a
-    # small C smoke program: TfLiteVersion, omz_litert_abi, one face graph fetched by tools/models/mediapipe-face.sh,
-    # all nodes delegated to XNNPACK (the delegate's log line), outputs within 1e-4 of the ai-edge-litert wheel (7.2)
+    # small C smoke program: TfLiteVersion, omz_litert_abi, the three face graphs fetched by
+    # tools/models/mediapipe-face.sh. Each graph's delegation to XNNPACK must equal its pin in tools/litert/pins.toml,
+    # in either direction (counted by a plan program built with the library; the detector and landmarks are fully
+    # delegated, the blendshapes graph keeps 1 of its 182 nodes on a builtin kernel, the same on every platform), and
+    # every output must be within 1e-4 of the ai-edge-litert wheel (7.2), the builtin-kernel node included
   # no release job: publishing waits for the owner's decision (8.5)
 ```
 

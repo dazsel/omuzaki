@@ -29,6 +29,23 @@ flags = ["-c", "opt", "--repo_env=HERMETIC_PYTHON_VERSION=3.11"]
 [reference]
 tolerance = 1e-4
 
+# How many of each face graph's nodes the XNNPACK delegate takes, and in how many partitions, as measured on all three
+# platforms (design §8.2): "all", or a count `of` the graph's nodes. A change in either direction fails the check. The
+# parity gate above covers the nodes left on LiteRT's builtin kernels, since the wheel runs those the same way.
+[delegation.face_detector]
+nodes = "all"
+partitions = 1
+
+[delegation.face_landmarks_detector]
+nodes = "all"
+partitions = 1
+
+# One node stays on a builtin kernel (run 38748797856, identical on every platform); the check's summary names its op.
+[delegation.face_blendshapes]
+nodes = 181
+of = 182
+partitions = 1
+
 [platform.linux-x64]
 # The build runs in LiteRT's own CI image at the tag (`docker run`; its workflows pin this digest). The compiler and
 # the sysroot are not the image's: LiteRT's workspace pins a hermetic clang and a glibc 2.27 sysroot

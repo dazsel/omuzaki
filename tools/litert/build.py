@@ -39,8 +39,10 @@ HERE = Path(__file__).resolve().parent
 PINS = tomllib.loads((HERE / "pins.toml").read_text(encoding="utf-8"))
 OVERLAY = "omuzaki"  # the overlay package inside the LiteRT tree
 BAZELISK_URL = "https://github.com/bazelbuild/bazelisk/releases/download/{version}/{asset}"
-# What omz_litert_plan prints: the nodes the delegate took, the nodes in the graph, the partitions.
+# What omz_litert_plan prints: the nodes the delegate took, the nodes in the graph, the partitions; then one line per
+# node left on LiteRT's builtin kernels, naming its op.
 PLAN = re.compile(r"^delegated (\d+) of (\d+) in (\d+) partitions$", re.MULTILINE)
+UNDELEGATED = re.compile(r"^undelegated (\S+)$", re.MULTILINE)
 # The three face graphs the check runs, as tools/models/mediapipe-face.sh writes them.
 FACE_GRAPHS = ("face_detector", "face_landmarks_detector", "face_blendshapes")
 SOURCE_SUFFIXES = (".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".inc", ".S", ".s", ".asm")
@@ -544,13 +546,30 @@ def unpack(asset: Path, digest: str, into: Path) -> Path:
     return into / asset.name.removesuffix(".zip").removesuffix(".tar.gz")
 
 
-def delegated(printed: str) -> tuple[int, int, int]:
-    """(nodes taken, nodes in the graph, partitions) from omz_litert_plan's output; fails without its line."""
+def delegated(printed: str) -> tuple[int, int, int, list[str]]:
+    """(nodes taken, nodes in the graph, partitions, the undelegated nodes' ops) from omz_litert_plan's output; fails
+    without its count line, or when the ops it lists don't account for every node left out."""
     found = PLAN.search(printed)
     if not found:
         raise Mismatch(f"omz_litert_plan printed no count: {printed.strip()}")
     taken, total, partitions = (int(group) for group in found.groups())
-    return taken, total, partitions
+    left = UNDELEGATED.findall(printed)
+    if len(left) != total - taken:
+        raise Mismatch(f"omz_litert_plan listed {len(left)} undelegated nodes for {total - taken} left out")
+    return taken, total, partitions, left
+
+
+def delegation_problem(graph: str, taken: int, total: int, partitions: int) -> str:
+    """Why the delegation differs from pins.toml's [delegation] row for `graph`, or "" when it matches. "all" pins full
+    delegation whatever the node count; a number pins that many of `of` nodes. Either direction is a change."""
+    pin = PINS["delegation"][graph]
+    full = pin["nodes"] == "all"
+    expected = (total, total) if full else (pin["nodes"], pin["of"])
+    if (taken, total) == expected and partitions == pin["partitions"]:
+        return ""
+    pinned = "all nodes" if full else f"{pin['nodes']} of {pin['of']} nodes"
+    return (f"{graph}: XNNPACK took {taken} of {total} nodes in {partitions} partitions; pinned {pinned} in "
+            f"{pin['partitions']} (tools/litert/pins.toml)")
 
 
 def max_abs_diff(ours, reference, what: str) -> float:
@@ -593,7 +612,7 @@ def cmd_check(args):
     expect("omz_litert_abi()", int(loaded["abi"]), PINS["shim"]["abi"])
 
     manifest = json.loads((Path(args.models) / "manifest.json").read_text())
-    rows, tolerance = [], PINS["reference"]["tolerance"]
+    rows, problems, tolerance = [], [], PINS["reference"]["tolerance"]
     for graph in FACE_GRAPHS:
         model = Path(args.models) / f"{graph}.tflite"
         expect(f"SHA-256 of {model.name}", sha256(model), manifest["files"][model.name]["sha256"])
@@ -611,9 +630,8 @@ def cmd_check(args):
         expected = [reference.get_tensor(detail["index"]) for detail in reference.get_output_details()]
         produced = work / f"{graph}.out"
         printed = dict(line.split(" ", 1) for line in run([*smoke, model, produced, *inputs]).splitlines())
-        taken, total, partitions = delegated(run([programs / f"omz_litert_plan{executable}", model]))
-        if taken != total or partitions != 1:
-            raise Mismatch(f"{graph}: XNNPACK took {taken} of {total} nodes in {partitions} partitions, not all in one")
+        taken, total, partitions, left = delegated(run([programs / f"omz_litert_plan{executable}", model]))
+        problems.append(delegation_problem(graph, taken, total, partitions))
         ours = produced.read_bytes()
         expect(f"{graph} output bytes", len(ours), sum(tensor.nbytes for tensor in expected))
         worst, offset = 0.0, 0
@@ -622,15 +640,21 @@ def cmd_check(args):
             worst = max(worst, max_abs_diff(mine, tensor.ravel(), f"{graph} output {index}"))
             offset += tensor.nbytes
         if not printed.get("error"):
-            raise Mismatch(f"{graph}: omz_litert_capture_errors caught no text for a refused shape")
-        rows.append(f"| {graph} | {taken} of {total} | {worst:.3g} | {printed['error'][:80].replace('|', '/')} |")
+            problems.append(f"{graph}: omz_litert_capture_errors caught no text for a refused shape")
         if worst > tolerance:
-            raise Mismatch(f"{graph}: max |ours - wheel| = {worst:.3g}, over the {tolerance} gate")
+            problems.append(f"{graph}: max |ours - wheel| = {worst:.3g}, over the {tolerance} gate")
+        builtin = ", ".join(left) or "none"
+        rows.append(f"| {graph} | {taken} of {total} in {partitions} | {builtin} | {worst:.3g} | "
+                    f"{printed.get('error', '')[:80].replace('|', '/')} |")
     write_summary(f"### Check {args.platform}\n\n`TfLiteVersion()` {loaded['version']}, "
                   f"`omz_litert_abi()` {loaded['abi']}, {loaded['symbols']} symbols resolved.\n\n"
-                  "| graph | nodes delegated to XNNPACK | max abs diff vs ai-edge-litert | captured error (bad shape) |\n"
-                  "|---|---|---|---|\n"
+                  "| graph | nodes delegated to XNNPACK | ops left on builtin kernels (tflite/builtin_ops.h) | "
+                  "max abs diff vs ai-edge-litert | captured error (bad shape) |\n|---|---|---|---|---|\n"
                   + "\n".join(rows) + "\n")
+    # Every graph is measured and reported before any gate fails, so a failing run still shows all the numbers.
+    problems = [problem for problem in problems if problem]
+    if problems:
+        raise Mismatch("check:\n  " + "\n  ".join(problems))
 
 
 def main():
