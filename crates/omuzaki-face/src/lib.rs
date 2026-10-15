@@ -40,6 +40,9 @@ pub mod exaggeration;
 pub mod layer;
 pub mod library;
 pub mod ops;
+/// The helpers the face ops share. They sit beside `ops/`, not in it, because the generated family list in `ops/` makes
+/// every folder there `pub`, and these are crate-private.
+mod ops_shared;
 pub mod painter;
 pub mod raster;
 pub mod system;
