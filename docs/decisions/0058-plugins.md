@@ -86,8 +86,13 @@ manifest, rights, and how plugins relate to scripts (ADR 0034).
    never the plugin id, so another publisher's plugin with the same id never sees it; moving data between identities
    is a person-only op the person confirms. Removing a plugin keeps the data but deletes the package, approvals and
    settings, so it is `Undo::None` and confirmed first (reinstalling restores it; approvals are asked again);
-   deleting the data is its own `Undo::None` op, confirmed first. `plugin.install` is a job (ADR 0036): hashing,
-   verification, copying and compiling run in `work` off the document lock, and only the registration commit takes it.
+   deleting the data is its own `Undo::None` op, confirmed first, which renames the folder to a tombstone under the
+   lock and deletes it in a job off the lock (start-up sweeps leftovers). `plugin.install` is a job (ADR 0036),
+   `Undo::None` and confirmed first like removal (the way back is `plugin.remove`): hashing, verification, copying
+   and compiling run in `work` off the document lock, and only the registration commit takes it. The manifest's
+   `component` must be a normalised relative path that resolves to a regular file inside the staged package, so the
+   compiled bytes are the hashed and signed ones. Plugin settings values are tagged with the installation's owner,
+   so removal forgets only that plugin's.
    Plugin settings register at enable and leave at disable through a **runtime settings registry** in the settings
    contract (design §7 states what it must provide), its own contract task that lands, with conformance tests,
    before the plugin settings work builds on it.

@@ -404,7 +404,9 @@ plugin CPU and memory as their own line.
   nothing. `work` runs on a `Cpu` job thread without the lock: extraction into staging, hashing, the signature check,
   the manifest check, the copy into `plugins/<id>/<hash>/` and the component compile into the cache, with a
   `JobCtx::checkpoint` between steps. `finish` takes the lock only to commit the registration (the installed record and
-  the approval card), as one undo step. Its time cap and cancellation are ADR 0036's (decisions 3 and 4): a cancelled
+  the approval card). It is `Undo::None`, confirmed first like `plugin.remove`: the copied package, the compiled code
+  and the installed record are outside the document, so no inverse patch removes them; the dialog says the way back is
+  `plugin.remove`. Its time cap and cancellation are ADR 0036's (decisions 3 and 4): a cancelled
   or capped install deletes its staging and copied files, registers nothing, and leaves the cache only what it can
   reuse.
 - **Update** installs the new hash beside the old, carries approvals per 3.2, and swaps with a reload.
@@ -421,6 +423,10 @@ plugin CPU and memory as their own line.
 - **Deleting the data** (`plugin.remove_data {owner}`) deletes a data folder for good. It is `Undo::None`: the bytes
   are gone and no inverse patch brings them back, so the person confirms it first, on a dialog that names the plugin,
   the publisher and the folder's size. A data folder whose plugin is still installed is refused (remove it first).
+  Under the lock the op only renames `plugin-data/<owner>/` to `plugin-data/.tombstone-<owner>-<nonce>/` (one atomic
+  rename on the same volume), after which the folder is gone from `kept_data` and no import resolves it. The recursive
+  delete then runs as a `Cpu` job off the lock: a folder can hold up to 1 GiB in 4,096 files (§4.2), far too long to
+  hold the edit lock for. Start-up sweeps any `.tombstone-*` folder a crash left behind, with the same job.
   The manager's "Remove and delete its data" runs the two ops in that order, behind the one confirmation. Deleting
   the data stays its own op so that removal keeps the data unless the person asks otherwise.
 
@@ -445,7 +451,9 @@ plugin CPU and memory as their own line.
   its `list` is empty and the old folder is untouched); `reinstall_starts_empty_until_migrated` (same key: empty until
   `plugin.migrate_data`, then the old files); `update_same_key_keeps_data`, `update_other_key_gets_new_owner`;
   `migrate_is_person_only` (an agent or plugin session gets `person_only`); `remove_data_is_undo_none` (the op's
-  `OpMeta::undo` is `None`, it refuses an installed plugin's folder, and History shows no undo for it).
+  `OpMeta::undo` is `None`, it refuses an installed plugin's folder, and History shows no undo for it);
+  `remove_data_tombstones_under_lock` (the lock is held only for the rename; the delete runs as a job; a tombstone
+  left at start-up is swept).
 
 ## 7. The manifest
 
@@ -485,6 +493,12 @@ agent = "confirm"              # free, confirm or never; default never
   refuses the whole package on: an absolute path, a drive prefix or a `..` component; a symlink, hardlink or any entry
   that is not a regular file or folder; two entries equal after normalising (Unicode NFC, case-folded, `/` only); more
   than 256 entries or 32 MiB uncompressed. The hash is taken over the staged files, so what is hashed is what loads.
+- **The component path:** `Manifest::check` refuses a `component` that is not a normalised relative path: no root, no
+  drive prefix, no `..` or `.` component, no empty segment. Staging then resolves it inside the staged package and
+  refuses it unless it is a regular file (not a symlink) whose canonical path lies under the staging root. The bytes
+  the host compiles are therefore one of the hashed entries, covered by the content hash and the signature; nothing
+  outside the package is ever read as code (test `component_path_stays_in_package`: `../x.wasm`, `/x.wasm`,
+  `./a/../x.wasm`, `a//x.wasm` and a symlinked component are all refused).
 - **Settings** (at most 64, as are commands) register at enable under `plugin.<id>.*` with the manifest's scope and
   agent rule (default `never`), and leave at disable; `init` receives them as JSON. `settings.md` D2's registry is
   static (`register_setting!` at link time), so this needs a **runtime settings registry** in the settings contract
@@ -492,7 +506,7 @@ agent = "confirm"              # free, confirm or never; default never
   What that contract must provide:
   - `register(owner, prefix, defs) -> Result<RuntimeRegistration, SettingError>` and `unregister(registration)`, each
     one atomic snapshot swap and one `SettingsEvent` (new causes `Registered` and `Unregistered`), so a reader sees
-    all of a plugin's keys or none; `forget(owner)` drops an owner's stored values (plugin removal, 6.3).
+    all of a plugin's keys or none; `forget(owner)` drops one installation's stored values (plugin removal, 6.3).
   - A def carries what a static `SettingMeta` does, as data: key, summary, scope (`User` or `Machine`), `AgentWrite`,
     `Apply::Live`, a JSON Schema and a default that passes it. `InProfile::Excluded` always, so a profile never holds a
     key that can vanish.
@@ -502,8 +516,9 @@ agent = "confirm"              # free, confirm or never; default never
   - While registered, the keys behave as static ones: `get`, `list`, `set`, `reset`, the agent rules of D4, the Settings
     page and the agent's schema. After `unregister`, `get` and `set` fail `NotFound` and the keys leave `list`.
   - Stored values outlive `unregister` (D5's unknown keys are kept) and carry the registration's owner tag (for a
-    plugin, its publisher key, or its content hash when unsigned, so the tag roams with `User` settings); a
-    registration with a different owner never reads them and starts at the defaults (6.4's rule for settings). A
+    plugin, its installation's `DataOwner` (6.4): publisher key plus installation id, so two plugins from one
+    publisher never share values, and removal's `forget(owner)` drops only that plugin's); a registration with a
+    different owner never reads them and starts at the defaults (6.4's rule for settings). A
     stored value the new schema rejects falls back to the default with a `SettingFinding`.
   - Conformance tests in the settings mock's suite: register and unregister round trip with one event each; a
     collision with a static key, a reserved prefix or another live registration is refused; values survive
@@ -533,12 +548,12 @@ agent = "confirm"              # free, confirm or never; default never
 |---|---|---|---|---|
 | `plugin.list {}` | Query | `read` | anyone, agents included | installed plugins: `PluginInfo` (id, version, hash, publisher, licence, state, grants, worlds) |
 | `plugin.describe {id}` | Query | `read` | anyone | one plugin: manifest, requests, approvals, last faults, memory and CPU |
-| `plugin.install {path, watch?}` | Job (`OpKind::Job`, `Undo::Explicit`) | `edit:settings` | person only | checks and copies a package off the lock, then registers it (6.3); shows the card; does not enable |
+| `plugin.install {path, watch?}` | Job (`OpKind::Job`, `Undo::None`, confirmed first) | `edit:settings` | person only | checks and copies a package off the lock, then registers it (6.3); shows the card; does not enable; the way back is `plugin.remove` |
 | `plugin.enable {id, project?}` / `plugin.disable {id, project?}` | Edit | `edit:settings` | person only | writes `plugins.enabled`; starts or stops the instance |
 | `plugin.grant {id, scopes?, hosts?, data?}` | Edit | `edit:settings` | person only | sets what the person approves, never beyond the requests |
 | `plugin.reload {id}` | Edit | `edit:settings` | person only | 6.3 |
 | `plugin.remove {id}` | Edit (`Undo::None`, confirmed first) | `edit:settings` | person only | 6.3; the data folder stays; reinstalling restores the package, and approvals are asked again |
-| `plugin.remove_data {owner}` | Edit (`Undo::None`, confirmed first) | `edit:settings` | person only | deletes a removed plugin's data folder (6.3) |
+| `plugin.remove_data {owner}` | Edit (`Undo::None`, confirmed first) | `edit:settings` | person only | renames a removed plugin's data folder to a tombstone under the lock; a job deletes it (6.3) |
 | `plugin.migrate_data {from, to}` | Edit (`Undo::Explicit`) | `edit:settings` | person only | moves a kept data folder to an installed plugin's owner (6.4) |
 | `plugin.run {id, command, args}` | Driver job (as `script.run`) | `read`; the driver checks the command's declared scope first | anyone holding that scope | runs a plugin command (14.1) inside the caller's grants (3.2); the guest runs off the document lock and its inner calls go through `JobCtx::call` in one executor-owned transaction |
 
