@@ -10,6 +10,7 @@ use futures_util::StreamExt;
 use omuzaki_llm_api::error::LlmError;
 use omuzaki_llm_api::provider::{SecretLabel, SecretStore, SecretValue};
 use omuzaki_llm_api::stream::{Cancel, LlmEvent, TurnStream};
+use std::sync::atomic::Ordering;
 use tokio::runtime::Handle;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
@@ -187,7 +188,7 @@ async fn drive(job: &Job, tx: &Sender) -> Result<(), LlmError> {
 }
 
 /// Redacts `secret` from the text of `error`.
-fn redact_error(error: LlmError, secret: Option<&SecretValue>) -> LlmError {
+pub(crate) fn redact_error(error: LlmError, secret: Option<&SecretValue>) -> LlmError {
     match error {
         LlmError::Unsupported(m) => LlmError::Unsupported(redact(m, secret)),
         LlmError::Network(m) => LlmError::Network(redact(m, secret)),
@@ -232,11 +233,17 @@ async fn attempt_with(job: &Job, tx: &Sender, started: &mut bool, secret: Option
         };
         return Err(job.protocol.classify(status, retry_after, &body));
     }
-    let mut events = Box::pin(sse::events(response.stream()));
+    let (events, activity) = sse::events(response.stream());
+    let mut events = Box::pin(events);
     let mut decoder = job.protocol.decoder();
     let mut wait = job.timeouts.first_byte;
     loop {
         let Ok(item) = timeout(wait, events.next()).await else {
+            // Bytes without a whole event (a keep-alive comment) are a sign of life: wait again.
+            if activity.swap(false, Ordering::Relaxed) {
+                wait = job.timeouts.idle;
+                continue;
+            }
             return Err(Fail::network("no data before the timeout"));
         };
         wait = job.timeouts.idle;

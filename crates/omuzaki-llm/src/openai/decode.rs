@@ -10,10 +10,13 @@ use serde_json::Value;
 use crate::engine::{Decoder, Fail, short, status_fail};
 use crate::sse::SseEvent;
 
-/// The call being streamed: its position in the `tool_calls` array and its id.
+/// A call being streamed: its position in the `tool_calls` array, its id, name and the arguments so far. Servers may
+/// interleave deltas of parallel calls, so calls are held whole and handed on one after the other when they close.
 struct OpenCall {
     index: u64,
     id: String,
+    name: String,
+    arguments: String,
 }
 
 /// Decodes one attempt's body.
@@ -22,7 +25,7 @@ pub(crate) struct OpenAiDecoder {
     model: String,
     context_window: u64,
     started: bool,
-    call: Option<OpenCall>,
+    calls: Vec<OpenCall>,
     called: bool,
     refused: bool,
     finish: Option<String>,
@@ -35,7 +38,7 @@ impl OpenAiDecoder {
             model,
             context_window,
             started: false,
-            call: None,
+            calls: Vec::new(),
             called: false,
             refused: false,
             finish: None,
@@ -43,31 +46,35 @@ impl OpenAiDecoder {
         }
     }
 
+    /// Hands on every held call as a complete start, input, end sequence.
     fn close_call(&mut self, events: &mut Vec<LlmEvent>) {
-        if let Some(call) = self.call.take() {
+        for call in self.calls.drain(..) {
+            events.push(LlmEvent::tool_use_start(call.id.clone(), call.name));
+            if !call.arguments.is_empty() {
+                events.push(LlmEvent::ToolUseInput(call.arguments));
+            }
             events.push(LlmEvent::tool_use_end(call.id));
         }
     }
 
-    fn tool_call(&mut self, tc: &Value, events: &mut Vec<LlmEvent>) -> Result<(), Fail> {
+    fn tool_call(&mut self, tc: &Value) -> Result<(), Fail> {
         let index = tc.get("index").and_then(Value::as_u64).unwrap_or(0);
         let id = tc.get("id").and_then(Value::as_str).filter(|i| !i.is_empty());
         let function = tc.get("function").unwrap_or(&Value::Null);
         let name = function.get("name").and_then(Value::as_str).filter(|n| !n.is_empty());
         let arguments = function.get("arguments").and_then(Value::as_str).unwrap_or_default();
-        // A new call starts at a new index, or (for servers that reuse index 0) at a new id.
-        let continues = self.call.as_ref().is_some_and(|c| c.index == index && id.is_none_or(|i| i == c.id));
-        if !continues {
-            self.close_call(events);
+        // A delta continues the latest call at its index, unless it names a different id (servers that reuse index 0).
+        let open = self.calls.iter().rposition(|c| c.index == index && id.is_none_or(|i| i == c.id));
+        let at = if let Some(at) = open {
+            at
+        } else {
             let name = name.ok_or_else(|| Fail::Fatal(LlmError::Malformed("a tool call without a name".into())))?;
             let id = id.map_or_else(|| format!("call_{index}"), str::to_owned);
-            events.push(LlmEvent::tool_use_start(id.clone(), name));
-            self.call = Some(OpenCall { index, id });
+            self.calls.push(OpenCall { index, id, name: name.to_owned(), arguments: String::new() });
             self.called = true;
-        }
-        if !arguments.is_empty() {
-            events.push(LlmEvent::ToolUseInput(arguments.to_owned()));
-        }
+            self.calls.len() - 1
+        };
+        self.calls[at].arguments.push_str(arguments);
         Ok(())
     }
 
@@ -103,7 +110,7 @@ impl OpenAiDecoder {
             events.push(LlmEvent::TextDelta(text.to_owned()));
         }
         for tc in delta.get("tool_calls").and_then(Value::as_array).into_iter().flatten() {
-            self.tool_call(tc, &mut events)?;
+            self.tool_call(tc)?;
         }
         if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
             self.close_call(&mut events);
@@ -252,8 +259,7 @@ mod tests {
         let want = vec![
             LlmEvent::start("fallback"),
             LlmEvent::tool_use_start("call_a", "render"),
-            LlmEvent::ToolUseInput("{\"cam".into()),
-            LlmEvent::ToolUseInput("era\":1}".into()),
+            LlmEvent::ToolUseInput("{\"camera\":1}".into()),
             LlmEvent::tool_use_end("call_a"),
             LlmEvent::tool_use_start("call_b", "list"),
             LlmEvent::ToolUseInput("{}".into()),
@@ -262,6 +268,32 @@ mod tests {
             LlmEvent::Stop(StopReason::ToolUse),
         ];
         assert_eq!(got, want);
+    }
+
+    #[test]
+    fn interleaved_deltas_of_parallel_calls_are_handed_on_one_call_at_a_time() {
+        let mut d = decoder();
+        let got = all(
+            &mut d,
+            &[
+                r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"a","function":{"name":"one","arguments":"{\"x\""}},{"index":1,"id":"b","function":{"name":"two","arguments":"{\"y\""}}]}}]}"#,
+                r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":":1}"}}]}}]}"#,
+                r#"{"choices":[{"delta":{"tool_calls":[{"index":1,"function":{"arguments":":2}"}}]}}]}"#,
+                r#"{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#,
+                "[DONE]",
+            ],
+        );
+        assert_eq!(
+            &got[1..7],
+            &[
+                LlmEvent::tool_use_start("a", "one"),
+                LlmEvent::ToolUseInput("{\"x\":1}".into()),
+                LlmEvent::tool_use_end("a"),
+                LlmEvent::tool_use_start("b", "two"),
+                LlmEvent::ToolUseInput("{\"y\":2}".into()),
+                LlmEvent::tool_use_end("b"),
+            ]
+        );
     }
 
     #[test]

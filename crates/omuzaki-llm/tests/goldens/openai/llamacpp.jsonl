@@ -3,8 +3,7 @@
 {"TextDelta":"I will "}
 {"TextDelta":"render it."}
 {"ToolUseStart":{"id":"BxRk2vEyQhP0aLm4cW9zNtJ7sUdG5fHo","name":"render_preview"}}
-{"ToolUseInput":"{\"camera\": "}
-{"ToolUseInput":"\"side\"}"}
+{"ToolUseInput":"{\"camera\": \"side\"}"}
 {"ToolUseEnd":{"id":"BxRk2vEyQhP0aLm4cW9zNtJ7sUdG5fHo"}}
 {"Usage":{"input":88,"output":18,"cache_read":0,"cache_write":0}}
 {"Stop":"ToolUse"}

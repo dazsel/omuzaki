@@ -5,6 +5,7 @@ use std::sync::Arc;
 use omuzaki_llm_api::error::LlmError;
 use omuzaki_llm_api::message::{ContentBlock, ImageOrigin, TurnRequest};
 use omuzaki_llm_api::provider::{ProviderConfig, ProviderEnv, SecretLabel, SecretStore};
+use omuzaki_llm_api::usage::PriceTable;
 
 /// The key's label and the store to resolve it in. The value is read per request and never kept (llm-api D6).
 pub(crate) type KeyRef = Option<(SecretLabel, Arc<dyn SecretStore>)>;
@@ -12,6 +13,18 @@ pub(crate) type KeyRef = Option<(SecretLabel, Arc<dyn SecretStore>)>;
 /// The key reference of `config`, with the store it resolves in.
 pub(crate) fn key_ref(config: &ProviderConfig, env: &ProviderEnv) -> KeyRef {
     config.key.as_ref().map(|key| (key.0.clone(), Arc::clone(&env.secrets)))
+}
+
+/// A hosted model's price table must hold at least one tier: an empty table prices every turn at zero, which would
+/// let it past every cap.
+///
+/// # Errors
+/// `Unsupported` for a table with no tiers.
+pub(crate) fn check_hosted_prices(prices: &PriceTable) -> Result<(), LlmError> {
+    if prices.tiers.is_empty() {
+        return Err(LlmError::Unsupported("the price table has no tiers; a hosted model must be priced".into()));
+    }
+    Ok(())
 }
 
 fn has_camera_image(blocks: &[ContentBlock]) -> bool {
@@ -42,6 +55,13 @@ mod tests {
         let image = ContentBlock::image(ImageMime::Png, vec![1], origin);
         let block = if nested { ContentBlock::tool_result("t", vec![image]) } else { image };
         TurnRequest::new(vec![Message::new(Role::User, vec![block])], 8)
+    }
+
+    #[test]
+    fn an_empty_hosted_price_table_is_refused() {
+        assert!(check_hosted_prices(&PriceTable::new("2026-10-15", "test", Vec::new())).is_err());
+        let tier = omuzaki_llm_api::usage::PriceTier::new(None, omuzaki_llm_api::usage::Rates::default());
+        assert!(check_hosted_prices(&PriceTable::new("2026-10-15", "test", vec![tier])).is_ok());
     }
 
     #[test]

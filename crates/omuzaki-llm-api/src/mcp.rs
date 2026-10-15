@@ -141,7 +141,7 @@ fn image(data: Option<&str>, mime: Option<&str>, uri: Option<&str>) -> ContentBl
 /// because the API crate takes no codec dependency for the one place it decodes.
 fn base64_decode(text: &str) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(text.len() / 4 * 3);
-    let (mut acc, mut bits, mut padding) = (0u32, 0u32, 0u32);
+    let (mut acc, mut bits, mut padding, mut chars) = (0u32, 0u32, 0u32, 0u32);
     for byte in text.bytes().filter(|b| !b.is_ascii_whitespace()) {
         let value = match byte {
             b'A'..=b'Z' => byte - b'A',
@@ -160,12 +160,16 @@ fn base64_decode(text: &str) -> Option<Vec<u8>> {
         }
         acc = (acc << 6) | u32::from(value);
         bits += 6;
+        chars += 1;
         if bits >= 8 {
             bits -= 8;
             out.push(u8::try_from((acc >> bits) & 0xff).ok()?);
         }
     }
-    (padding <= 2 && (padding == 0 || (bits + 6 * padding) % 8 == 0)).then_some(out)
+    // RFC 4648: a lone character is not a byte; padding must finish the quantum; the unused low bits must be zero.
+    let whole = chars % 4 != 1 && padding <= 2 && (padding == 0 || (chars + padding) % 4 == 0);
+    let clean = acc & ((1u32 << bits) - 1) == 0;
+    (whole && clean).then_some(out)
 }
 
 #[cfg(test)]
@@ -181,6 +185,16 @@ mod tests {
         assert_eq!(base64_decode("Zm9v\nYmFy").as_deref(), Some(&b"foobar"[..]));
         assert_eq!(base64_decode("Zm9v!"), None);
         assert_eq!(base64_decode("Zg==Zg"), None);
+    }
+
+    #[test]
+    fn base64_rejects_what_rfc_4648_does_not_allow() {
+        assert_eq!(base64_decode("Z"), None, "one character is not a byte");
+        assert_eq!(base64_decode("Zh"), None, "non-zero trailing bits");
+        assert_eq!(base64_decode("Zm9="), None, "non-zero trailing bits before padding");
+        assert_eq!(base64_decode("Zm9v="), None, "padding after a full quantum");
+        assert_eq!(base64_decode("Zg="), None, "padding that does not finish the quantum");
+        assert_eq!(base64_decode("Zm8").as_deref(), Some(&b"fo"[..]));
     }
 
     #[test]

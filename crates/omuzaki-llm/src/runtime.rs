@@ -48,16 +48,34 @@ pub(crate) fn handle_of(runtime: &RuntimeHandle) -> Result<Handle, LlmError> {
 
 /// Runs `future` on `handle` and waits for its result on the calling thread, which may or may not be inside a
 /// runtime. For the blocking calls (model listing, probing) that are never on a hot path.
+///
+/// Inside a multi-thread runtime the wait is `block_in_place`, which hands the worker's queue to another thread, so
+/// even a one-worker runtime makes progress. Waiting on the runtime that is running the caller's own thread, when it
+/// is a current-thread one, cannot work (the future would need the thread that waits), so that is refused.
 pub(crate) fn block_on<T: Send + 'static>(
     handle: &Handle,
     future: impl std::future::Future<Output = T> + Send + 'static,
 ) -> Result<T, LlmError> {
+    let inside = Handle::try_current().ok();
+    let wait_in_place = match &inside {
+        Some(current) if current.runtime_flavor() == tokio::runtime::RuntimeFlavor::CurrentThread => {
+            if current.id() == handle.id() {
+                return Err(LlmError::Unsupported(
+                    "this call blocks, and the LLM runtime is the current-thread runtime of the calling task; call it from a blocking thread or use runtime::dedicated".into(),
+                ));
+            }
+            false
+        }
+        Some(_) => true,
+        None => false,
+    };
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
     handle.spawn(async move {
         // The caller may have gone; nothing to tell it then.
         let _ = tx.send(future.await);
     });
-    rx.recv().map_err(|_| LlmError::Network("the LLM runtime stopped before the call finished".into()))
+    let received = if wait_in_place { tokio::task::block_in_place(|| rx.recv()) } else { rx.recv() };
+    received.map_err(|_| LlmError::Network("the LLM runtime stopped before the call finished".into()))
 }
 
 #[cfg(test)]
@@ -71,6 +89,26 @@ mod tests {
         assert_eq!(block_on(&handle, async { 7 }), Ok(7));
         let wrapped = from_handle(handle);
         assert!(handle_of(&wrapped).is_ok());
+    }
+
+    #[test]
+    fn a_blocking_call_from_a_one_worker_runtime_still_completes() {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap_or_else(|e| panic!("{e}"));
+        let handle = rt.handle().clone();
+        let got = rt.block_on(async move { tokio::spawn(async move { block_on(&handle, async { 5 }) }).await });
+        assert_eq!(got.unwrap_or_else(|e| panic!("{e}")), Ok(5));
+    }
+
+    #[test]
+    fn a_blocking_call_on_the_calling_current_thread_runtime_is_refused_not_hung() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap_or_else(|e| panic!("{e}"));
+        let handle = rt.handle().clone();
+        let got = rt.block_on(async move { block_on(&handle, async { 5 }) });
+        assert!(matches!(got, Err(LlmError::Unsupported(_))), "{got:?}");
     }
 
     #[test]

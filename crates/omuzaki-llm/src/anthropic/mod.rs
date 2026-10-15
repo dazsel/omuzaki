@@ -18,9 +18,9 @@ use omuzaki_llm_api::{register_llm_provider, validate};
 use serde_json::Value;
 use tokio::runtime::Handle;
 
-use crate::common::{KeyRef, key_ref, refuse_camera};
-use crate::engine::{self, Decoder, Fail, Job, Protocol, Timeouts};
-use crate::http::{Endpoint, HeaderValue, Http, MAX_METADATA_BODY, Request};
+use crate::common::{KeyRef, check_hosted_prices, key_ref, refuse_camera};
+use crate::engine::{self, Decoder, Fail, Job, Protocol, Timeouts, redact_error};
+use crate::http::{Endpoint, HeaderValue, Http, Request, fetch_metadata};
 use crate::prices::{ANTHROPIC_IMAGE_TILE, anthropic_model};
 use crate::retry::random_seed;
 use crate::runtime::{block_on, handle_of};
@@ -112,11 +112,14 @@ impl AnthropicClient {
             info.context_window = window;
         }
         let prices = config.prices.clone().unwrap_or_else(|| entry.prices.clone());
+        check_hosted_prices(&prices)?;
+        // The wire reports the window the client validates against, override included.
+        let window = info.context_window;
         Ok(Self {
             info,
             prices,
             http: Http::new(&endpoint)?,
-            wire: Arc::new(Wire { context_window: entry.info.context_window, endpoint }),
+            wire: Arc::new(Wire { context_window: window, endpoint }),
             handle: handle_of(&env.runtime)?,
             key: key_ref(config, env),
             max_retries: config.retry.max_retries,
@@ -211,13 +214,13 @@ fn list_models(config: &ProviderConfig, env: &ProviderEnv) -> Result<Vec<ModelIn
                 ("anthropic-version", HeaderValue::Plain(VERSION.into())),
                 ("x-api-key", HeaderValue::Secret(key.clone())),
             ];
-            let response = http.send(Request::get(url, headers)).await.map_err(LlmError::from)?;
-            let status = response.status;
-            let body = response.read_limited(MAX_METADATA_BODY).await.map_err(LlmError::from)?;
+            let (status, body) = fetch_metadata(&http, Request::get(url, headers)).await?;
             if status != 200 {
-                return Err(match decode::classify(status, None, &body, 0) {
+                let error = match decode::classify(status, None, &body, 0) {
                     Fail::Fatal(e) | Fail::Retry { error: e, .. } => e,
-                });
+                };
+                // A server may echo the key into its message.
+                return Err(redact_error(error, Some(&key)));
             }
             let page: Value = serde_json::from_slice(&body)
                 .map_err(|e| LlmError::Malformed(format!("the model list is not JSON: {e}")))?;
@@ -228,10 +231,11 @@ fn list_models(config: &ProviderConfig, env: &ProviderEnv) -> Result<Vec<ModelIn
                 .filter(|more| *more)
                 .and(page.get("last_id").and_then(Value::as_str).map(str::to_owned));
             if after.is_none() {
-                break;
+                return Ok(models);
             }
         }
-        Ok(models)
+        // The cap stays, but a listing that is cut short says so rather than passing for the whole.
+        Err(LlmError::Malformed(format!("the model list has more than {MAX_PAGES} pages")))
     })?
 }
 

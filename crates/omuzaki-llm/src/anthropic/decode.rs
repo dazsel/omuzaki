@@ -164,7 +164,8 @@ fn event_fail(kind: &str, message: &str) -> Fail {
         "rate_limit_error" => Fail::Fatal(LlmError::rate_limited(None)),
         "authentication_error" | "permission_error" => Fail::Fatal(LlmError::Auth),
         "invalid_request_error" => Fail::Fatal(LlmError::Malformed(short(message))),
-        _ => Fail::network(format!("the provider reported {kind}: {}", short(message))),
+        // Only `overloaded_error` is retried (D5): any other kind surfaces at once.
+        _ => Fail::Fatal(LlmError::Network(format!("the provider reported {kind}: {}", short(message)))),
     }
 }
 
@@ -346,7 +347,7 @@ mod tests {
         assert!(matches!(error("overloaded_error"), Err(Fail::Retry { error: LlmError::Overloaded, .. })));
         assert!(matches!(error("authentication_error"), Err(Fail::Fatal(LlmError::Auth))));
         assert!(matches!(error("rate_limit_error"), Err(Fail::Fatal(LlmError::RateLimited { retry_after: None, .. }))));
-        assert!(matches!(error("api_error"), Err(Fail::Retry { error: LlmError::Network(_), .. })));
+        assert!(matches!(error("api_error"), Err(Fail::Fatal(LlmError::Network(_)))));
     }
 
     #[test]

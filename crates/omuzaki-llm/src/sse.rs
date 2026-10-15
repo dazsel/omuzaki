@@ -1,5 +1,8 @@
 //! Server-Sent Events over a body stream (llm-api D11), framed by `sse-stream`.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use futures_util::Stream;
 use sse_stream::{Error as SseError, Sse, SseStream};
 
@@ -31,11 +34,21 @@ fn convert(item: Result<Sse, SseError>) -> Result<Option<SseEvent>, SseFail> {
     }
 }
 
-/// The events in `body`, with comment-only frames (keep-alives) left out.
-pub(crate) fn events(body: ByteStream) -> impl Stream<Item = Result<SseEvent, SseFail>> + Send {
+/// Set whenever bytes arrive, whether or not they complete an event: a server that keeps a long generation alive with
+/// comment frames sends no event, but the connection is alive, so the engine's idle timer must not fire on it.
+pub(crate) type Activity = Arc<AtomicBool>;
+
+/// The events in `body`, with comment-only frames (keep-alives) left out, and the flag that bytes have arrived.
+pub(crate) fn events(body: ByteStream) -> (impl Stream<Item = Result<SseEvent, SseFail>> + Send, Activity) {
     use futures_util::StreamExt;
-    SseStream::from_bytes_stream(body.map(|chunk| chunk.map_err(|e: HttpFail| Boxed(e.to_string()))))
-        .filter_map(|item| std::future::ready(convert(item).transpose()))
+    let activity = Activity::default();
+    let seen = Arc::clone(&activity);
+    let counted = body.map(move |chunk| {
+        seen.store(true, Ordering::Relaxed);
+        chunk.map_err(|e: HttpFail| Boxed(e.to_string()))
+    });
+    let stream = SseStream::from_bytes_stream(counted).filter_map(|item| std::future::ready(convert(item).transpose()));
+    (stream, activity)
 }
 
 /// A body error as `std::error::Error`, which `sse-stream` wants.
@@ -63,7 +76,18 @@ mod tests {
     fn run(chunks: Vec<Vec<u8>>) -> Vec<Result<SseEvent, SseFail>> {
         let body: ByteStream = Box::pin(futures_util::stream::iter(chunks.into_iter().map(|c| Ok(Bytes::from(c)))));
         let rt = tokio::runtime::Builder::new_current_thread().build().unwrap_or_else(|e| panic!("{e}"));
-        rt.block_on(events(body).collect())
+        rt.block_on(events(body).0.collect())
+    }
+
+    #[test]
+    fn a_comment_only_stream_still_counts_as_activity() {
+        let body: ByteStream = Box::pin(futures_util::stream::iter(vec![Ok(Bytes::from_static(b": keep-alive\n\n"))]));
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap_or_else(|e| panic!("{e}"));
+        let (stream, activity) = events(body);
+        assert!(!activity.load(Ordering::Relaxed));
+        let got: Vec<_> = rt.block_on(stream.collect());
+        assert_eq!(got, Vec::new());
+        assert!(activity.swap(false, Ordering::Relaxed));
     }
 
     #[allow(clippy::unnecessary_wraps)] // the events are compared with `Result`s
@@ -101,7 +125,7 @@ mod tests {
             Err(HttpFail::Body("reset".into())),
         ]));
         let rt = tokio::runtime::Builder::new_current_thread().build().unwrap_or_else(|e| panic!("{e}"));
-        let got: Vec<_> = rt.block_on(events(body).collect());
+        let got: Vec<_> = rt.block_on(events(body).0.collect());
         assert_eq!(got[0], event(None, "a"));
         assert!(matches!(&got[1], Err(SseFail::Transport(m)) if m.contains("reset")), "{got:?}");
         let bad = run(vec![b"not an sse line without a colon\n\n".to_vec()]);

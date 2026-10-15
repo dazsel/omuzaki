@@ -21,6 +21,8 @@ pub(crate) const USER_AGENT: &str = concat!("Omuzaki/", env!("CARGO_PKG_VERSION"
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// The most of an error body that is read; the provider's message is short.
 pub(crate) const MAX_ERROR_BODY: usize = 64 * 1024;
+/// How long one metadata request (model list, capability probe) may take, headers and body together.
+pub(crate) const METADATA_TIMEOUT: Duration = Duration::from_secs(30);
 /// The most of a model list or other metadata answer that is read.
 pub(crate) const MAX_METADATA_BODY: usize = 4 * 1024 * 1024;
 
@@ -181,6 +183,22 @@ fn install_crypto_provider() -> Result<(), LlmError> {
     rustls::crypto::CryptoProvider::get_default()
         .map(|_| ())
         .ok_or_else(|| LlmError::Unsupported("cannot start the HTTP client: no TLS crypto provider".into()))
+}
+
+/// Sends `request` and reads the whole (bounded) answer within [`METADATA_TIMEOUT`]: the status and the body.
+///
+/// # Errors
+/// `Network` if the server does not answer in time, or the transport error.
+pub(crate) async fn fetch_metadata(http: &Http, request: Request) -> Result<(u16, Vec<u8>), LlmError> {
+    let work = async {
+        let response = http.send(request).await.map_err(LlmError::from)?;
+        let status = response.status;
+        let body = response.read_limited(MAX_METADATA_BODY).await.map_err(LlmError::from)?;
+        Ok((status, body))
+    };
+    tokio::time::timeout(METADATA_TIMEOUT, work)
+        .await
+        .unwrap_or_else(|_| Err(LlmError::Network("the server did not answer within the metadata timeout".into())))
 }
 
 /// The client of one provider: a connection pool for one endpoint.

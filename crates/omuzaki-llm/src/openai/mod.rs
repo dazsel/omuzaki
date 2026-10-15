@@ -23,9 +23,9 @@ use omuzaki_llm_api::{register_llm_provider, validate};
 use serde_json::Value;
 use tokio::runtime::Handle;
 
-use crate::common::{KeyRef, key_ref, refuse_camera};
-use crate::engine::{self, Decoder, Fail, Job, Protocol, Timeouts};
-use crate::http::{Endpoint, HeaderValue, Http, MAX_METADATA_BODY, Request, bearer};
+use crate::common::{KeyRef, check_hosted_prices, key_ref, refuse_camera};
+use crate::engine::{self, Decoder, Fail, Job, Protocol, Timeouts, redact_error};
+use crate::http::{Endpoint, HeaderValue, Http, Request, bearer, fetch_metadata};
 use crate::prices::local_prices;
 use crate::retry::random_seed;
 use crate::runtime::{block_on, handle_of};
@@ -118,7 +118,12 @@ impl OpenAiClient {
         let endpoint = endpoint_of(config)?;
         // A hosted model with no table cannot be built: an unpriced model would make every cap meaningless.
         let prices = match (&config.prices, endpoint.loopback) {
-            (Some(prices), _) => prices.clone(),
+            (Some(prices), _) => {
+                if !endpoint.loopback {
+                    check_hosted_prices(prices)?;
+                }
+                prices.clone()
+            }
             (None, true) => local_prices(),
             (None, false) => {
                 return Err(LlmError::Unsupported("a remote model needs prices in its configuration".into()));
@@ -224,13 +229,13 @@ fn list_models(config: &ProviderConfig, env: &ProviderEnv) -> Result<Vec<ModelIn
     block_on(&handle, async move {
         let mut headers = vec![("accept", HeaderValue::Plain("application/json".into()))];
         headers.extend(key.as_ref().map(bearer));
-        let response = http.send(Request::get(endpoint.url("/v1/models"), headers)).await.map_err(LlmError::from)?;
-        let status = response.status;
-        let body = response.read_limited(MAX_METADATA_BODY).await.map_err(LlmError::from)?;
+        let (status, body) = fetch_metadata(&http, Request::get(endpoint.url("/v1/models"), headers)).await?;
         if status != 200 {
-            return Err(match decode::classify(status, None, &body, window.unwrap_or(FALLBACK_CONTEXT)) {
+            let error = match decode::classify(status, None, &body, window.unwrap_or(FALLBACK_CONTEXT)) {
                 Fail::Fatal(e) | Fail::Retry { error: e, .. } => e,
-            });
+            };
+            // A server may echo the key into its message.
+            return Err(redact_error(error, key.as_ref()));
         }
         let list: Value = serde_json::from_slice(&body)
             .map_err(|e| LlmError::Malformed(format!("the model list is not JSON: {e}")))?;

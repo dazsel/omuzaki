@@ -267,6 +267,19 @@ fn no_first_byte_in_time_is_retried() {
     assert_eq!((error, retries(&events)), (None, 1));
 }
 
+#[test]
+fn comment_keep_alives_keep_a_quiet_stream_alive() {
+    let mut chunks = vec![b": keep-alive\n\n".to_vec(); 4];
+    chunks.push(common::fixture("anthropic/text.sse"));
+    let rig = Rig::new(vec![Reply::sse(chunks).pausing(Duration::from_millis(80))]);
+    let timeouts = Timeouts { first_byte: Duration::from_millis(100), idle: Duration::from_millis(100), ..quick() };
+    let client =
+        AnthropicClient::new(&config("anthropic", &rig.server, MODEL), &rig.env()).unwrap().with_timeouts(timeouts);
+    let (events, error) = drain(&mut client.stream(Rig::request(), &Cancel::new()).unwrap());
+    assert_eq!((error, retries(&events)), (None, 0));
+    assert_eq!(rig.server.requests().len(), 1);
+}
+
 // ---- D5: surfaced at once ----
 
 fn surfaces(reply: Reply, want: &LlmError) {
@@ -555,6 +568,52 @@ fn listing_models_follows_pages_and_marks_unpriced_ones_unusable() {
     assert_eq!(requests[0].header("x-api-key"), Some(common::KEY));
     let unusable = AnthropicClient::new(&config.clone().with_model("claude-brand-new-1"), &rig.env());
     assert!(matches!(unusable, Err(LlmError::Unsupported(_))));
+}
+
+#[test]
+fn a_model_list_error_never_carries_the_key() {
+    let echoed = format!(r#"{{"type":"error","error":{{"type":"api_error","message":"bad key {}"}}}}"#, common::KEY);
+    let rig = Rig::new(vec![Reply::status(500, &echoed)]);
+    omuzaki_llm::link();
+    let provider = omuzaki_llm_api::provider::provider("anthropic").unwrap().unwrap();
+    let error = (provider.list_models)(&config("anthropic", &rig.server, MODEL), &rig.env()).unwrap_err();
+    assert!(!format!("{error:?} {error}").contains(common::KEY), "{error:?}");
+}
+
+#[test]
+fn a_model_list_that_never_ends_is_an_error_not_a_short_list() {
+    let page = r#"{"data":[{"id":"claude-haiku-5-5","type":"model"}],"has_more":true,"last_id":"x"}"#;
+    let rig = Rig::new(vec![Reply::status(200, page); 12]);
+    omuzaki_llm::link();
+    let provider = omuzaki_llm_api::provider::provider("anthropic").unwrap().unwrap();
+    let result = (provider.list_models)(&config("anthropic", &rig.server, MODEL), &rig.env());
+    assert!(matches!(result, Err(LlmError::Malformed(_))), "{result:?}");
+    assert_eq!(rig.server.requests().len(), 10);
+}
+
+#[test]
+fn an_empty_price_override_is_refused_and_a_window_override_reaches_the_errors() {
+    let rig = Rig::new(vec![Reply::status(
+        400,
+        r#"{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 900 tokens > 500 maximum"}}"#,
+    )]);
+    let mut config = config("anthropic", &rig.server, MODEL);
+    config.prices = Some(omuzaki_llm_api::usage::PriceTable::new("2026-10-15", "test", Vec::new()));
+    assert!(matches!(AnthropicClient::new(&config, &rig.env()), Err(LlmError::Unsupported(_))));
+    config.prices = None;
+    config.context_window = Some(12_345);
+    let client = AnthropicClient::new(&config, &rig.env()).unwrap().with_timeouts(quick());
+    let (_, error) = drain(&mut client.stream(Rig::request(), &Cancel::new()).unwrap());
+    assert!(matches!(error, Some(LlmError::ContextTooLong { max: 12_345, .. })), "{error:?}");
+}
+
+#[test]
+fn an_api_error_event_before_message_start_is_not_retried() {
+    let event = "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"boom\"}}\n\n";
+    let rig = Rig::new(vec![Reply::sse_text(event), ok_reply()]);
+    let (events, error) = play(&rig);
+    assert!(matches!(error, Some(LlmError::Network(_))), "{error:?}");
+    assert_eq!((retries(&events), rig.server.requests().len()), (0, 1));
 }
 
 #[test]

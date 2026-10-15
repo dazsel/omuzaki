@@ -20,7 +20,7 @@ use omuzaki_llm_api::provider::SecretValue;
 use serde_json::Value;
 
 use super::wire::probe_body;
-use crate::http::{Endpoint, HeaderValue, Http, MAX_METADATA_BODY, Request, bearer};
+use crate::http::{Endpoint, HeaderValue, Http, Request, bearer, fetch_metadata};
 
 /// The context window assumed when neither the server nor the configuration says (llm-api D6).
 pub(crate) const FALLBACK_CONTEXT: u64 = 8_192;
@@ -68,9 +68,7 @@ impl Ask<'_> {
 
     /// The status and body of `request`.
     async fn run(&self, request: Request) -> Result<(u16, Vec<u8>), LlmError> {
-        let response = self.http.send(request).await.map_err(LlmError::from)?;
-        let status = response.status;
-        let body = response.read_limited(MAX_METADATA_BODY).await.map_err(LlmError::from)?;
+        let (status, body) = fetch_metadata(self.http, request).await?;
         if matches!(status, 401 | 403) {
             return Err(LlmError::Auth);
         }
