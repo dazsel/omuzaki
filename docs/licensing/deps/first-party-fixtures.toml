@@ -1,0 +1,52 @@
+section = "in-use"
+item = "First-party test fixtures and goldens (generated models, images and renders)"
+kind = "asset"
+used_for = "test inputs and golden outputs the repository's own scripts and renderers produce: tiny ONNX graphs, JPEG/RGB pixel samples, rasterizer and render goldens, eval transcripts"
+status = "yes"
+condition = "made by Dazsel from code in this repository (`make_models.py`, `make_fixtures.py`, the golden-update flow); no third-party material, so no notice is owed"
+audit = "(Dazsel, 2026-10-15)"
+paths = [
+  "crates/omuzaki-ai-ort/tests/fixtures/add.onnx",
+  "crates/omuzaki-ai-ort/tests/fixtures/add_sub.onnx",
+  "crates/omuzaki-ai-ort/tests/fixtures/custom_op.onnx",
+  "crates/omuzaki-ai-ort/tests/fixtures/external_data.onnx",
+  "crates/omuzaki-ai-ort/tests/fixtures/identity.onnx",
+  "crates/omuzaki-ai-ort/tests/fixtures/long_names.onnx",
+  "crates/omuzaki-ai-ort/tests/fixtures/many.onnx",
+  "crates/omuzaki-pixfmt/tests/fixtures/64x48_420.jpg",
+  "crates/omuzaki-pixfmt/tests/fixtures/64x48_420.rgb",
+  "crates/omuzaki-pixfmt/tests/fixtures/64x48_422.jpg",
+  "crates/omuzaki-pixfmt/tests/fixtures/64x48_422.rgb",
+  "crates/omuzaki-pixfmt/tests/fixtures/64x48_444.jpg",
+  "crates/omuzaki-pixfmt/tests/fixtures/64x48_444.rgb",
+  "crates/omuzaki-render/tests/golden/environment-cool-lit.png",
+  "crates/omuzaki-render/tests/golden/environment-cool-toon.png",
+  "crates/omuzaki-render/tests/golden/environment-warm-lit.png",
+  "crates/omuzaki-render/tests/golden/environment-warm-toon.png",
+  "crates/omuzaki-render/tests/golden/mock-hair.png",
+  "crates/omuzaki-render/tests/golden/spot_fog_fog_dense.png",
+  "crates/omuzaki-render/tests/golden/spot_fog_fog_light.png",
+  "crates/omuzaki-render/tests/golden/spot_fog_spot_inside.png",
+  "crates/omuzaki-render/tests/golden/spot_fog_spot_outside.png",
+  "crates/omuzaki-render/tests/golden/spot_fog_spot_penumbra.png",
+  "crates/omuzaki-render/tests/golden/stage_live_low.png",
+  "crates/omuzaki-render/tests/golden/stage_off.png",
+  "crates/omuzaki-render/tests/golden/stage_offline_high.png",
+  "crates/omuzaki-render/tests/golden/three_bloom_exposure_0_9.png",
+  "crates/omuzaki-render/tests/golden/three_bloom_outline_strip.png",
+  "crates/omuzaki-render/tests/golden/three_bloom_prototype.png",
+  "crates/omuzaki-render/tests/golden/three_bloom_strength_1_radius_1.png",
+  "crates/omuzaki-render/tests/golden/three_off_outline_strip.png",
+  "crates/omuzaki-render/tests/golden/toon_outline_dof_bloom.png",
+  "crates/omuzaki-render/tests/golden/transparent-mock-character.png",
+  "crates/omuzaki-render-mock/tests/golden/cube.png",
+  "crates/omuzaki-stage/tests/golden/sheet_a4_150.png",
+  "crates/omuzaki-test-face/fixtures/raster/clipped-radial-gradient.png",
+  "crates/omuzaki-test-face/fixtures/raster/hairline.png",
+  "crates/omuzaki-test-face/fixtures/raster/miter-join.png",
+  "crates/omuzaki-test-face/fixtures/raster/nested-transforms.png",
+  "crates/omuzaki-test-face/fixtures/raster/overlapping-fills.png",
+  "crates/omuzaki-test-face/fixtures/raster/round-capped-stroke.png",
+  "crates/omuzaki-test-face/fixtures/raster/tiny-ellipse.png",
+  "crates/omuzaki-test-face/fixtures/raster/translucent-stack.png",
+]

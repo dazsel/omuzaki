@@ -1,0 +1,336 @@
+# Builds Omuzaki's LiteRT library (the `tflite` runtime: ADR 0061, docs/design/litert-runtime.md §8) for linux-x64,
+# win-x64 and macos-arm64, and hands each archive to the jobs of the SAME run as a checksummed artifact. Nothing is
+# published (a GitHub Release waits for the owner, ADR 0061 decision 5), nothing is downloaded from another run, and no
+# job holds more than `contents: read`.
+#
+# A reusable workflow: a consumer (nightly's parity job, the R probe's job) calls it as a job of its own run, reads the
+# platform's SHA-256 from this workflow's outputs and downloads `litert-<version>-<platform>` from that run.
+#
+#   models   fetches MediaPipe's face graphs with tools/models/mediapipe-face.sh, for the check
+#   build    restores the archive from the cache, or builds it with tools/litert/build.py (notices first, so an
+#            unreviewed dependency fails fast; then the library and the check's two programs; then the archive).
+#            Either way it hashes the archive and uploads it, its programs and a one-line digest
+#   collect  merges the three digests into this workflow's outputs (a matrix job's output is one value)
+#   check    per platform, on a fresh runner: the archive against collect's SHA-256, BUILDINFO.json against the pins,
+#            the library loaded by the smoke program, the three face graphs fully delegated to XNNPACK and within 1e-4
+#            of the official wheel, and an error caught through the shim. It runs on a cache hit too.
+#   save     only with save-cache, only after every check passed: the checked archive and programs go into the cache
+#            under the key the build restored from, so a bad build never occupies a key
+#
+# The cache key hashes every build input: tools/litert/** (pins, overlay, shim, scripts), this file, and the runner
+# image by name and version. Only cache-warm.yml saves (save-cache: true, on main); every other run restores, and on a
+# miss builds without saving. Sessions never dispatch it; pull requests that change the build run it as their evidence.
+name: Runtime LiteRT
+
+on:
+  workflow_call:
+    inputs:
+      save-cache:
+        description: "Save a freshly built archive to the cache; true only from cache-warm.yml on main"
+        type: boolean
+        default: false
+    outputs:
+      sha256_linux_x64:
+        description: "SHA-256 of the linux-x64 archive this run built or restored"
+        value: ${{ jobs.collect.outputs.sha256_linux_x64 }}
+      sha256_win_x64:
+        description: "SHA-256 of the win-x64 archive"
+        value: ${{ jobs.collect.outputs.sha256_win_x64 }}
+      sha256_macos_arm64:
+        description: "SHA-256 of the macos-arm64 archive"
+        value: ${{ jobs.collect.outputs.sha256_macos_arm64 }}
+      sha256:
+        description: "The three as a JSON map, platform to SHA-256"
+        value: ${{ jobs.collect.outputs.sha256 }}
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/runtime-litert.yml"
+      - "tools/litert/**"
+
+concurrency:
+  group: runtime-litert-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  models:
+    name: models
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Face graphs
+        run: |
+          tools/models/mediapipe-face.sh --out "$RUNNER_TEMP/face"
+          mkdir "$RUNNER_TEMP/graphs"
+          cp "$RUNNER_TEMP"/face/*.tflite "$RUNNER_TEMP/face/manifest.json" "$RUNNER_TEMP/graphs/"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: litert-face-graphs
+          path: ${{ runner.temp }}/graphs
+          retention-days: 1
+          if-no-files-found: error
+
+  build:
+    name: build (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 330
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x64
+            runner: ubuntu-24.04
+          - platform: win-x64
+            runner: windows-2022
+          - platform: macos-arm64
+            runner: macos-15
+    env:
+      PLATFORM: ${{ matrix.platform }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      # The image carries the toolchains the pins don't fix on their own (MSVC, Xcode, the container runtime), so it is
+      # part of the cache key. Runner variables aren't in the `env` context, so a step reads them; empty fails.
+      - name: Runner image
+        id: image
+        run: |
+          [ -n "${ImageOS:-}" ] && [ -n "${ImageVersion:-}" ] \
+            || { echo "::error::ImageOS or ImageVersion is not set; the cache key needs the runner image"; exit 1; }
+          echo "id=${ImageOS}-${ImageVersion}" >>"$GITHUB_OUTPUT"
+          echo "OUT=$RUNNER_TEMP/out" >>"$GITHUB_ENV"
+      - name: Restore
+        id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/out/dist
+            ${{ runner.temp }}/out/programs
+          key: litert-v1-${{ matrix.platform }}-${{ steps.image.outputs.id }}-${{ hashFiles('tools/litert/**', '.github/workflows/runtime-litert.yml') }}
+      - name: Tests of the build script
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: python tools/litert/build.py --help >/dev/null && python tools/litert/test_build.py
+      # Linux builds inside LiteRT's own CI image, pinned by digest in pins.toml; the steps below call "$PY".
+      # The container runs as root, so the host creates the folders its own later steps write into first.
+      - name: Build environment
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "$OUT/digest" "$OUT/cachekey"
+          py="$RUNNER_TEMP/py"
+          image=$(python tools/litert/build.py container --platform "$PLATFORM")
+          if [ -n "$image" ]; then
+            docker pull --quiet "$image"
+            mkdir -p "$RUNNER_TEMP/home"
+            cat >"$py" <<EOF
+          #!/bin/sh
+          exec docker run --rm -e HOME="$RUNNER_TEMP/home" -e GITHUB_OUTPUT -e GITHUB_STEP_SUMMARY \
+            -e GITHUB_REPOSITORY -e GITHUB_RUN_ID -e GITHUB_SHA -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
+            -v "$RUNNER_TEMP:$RUNNER_TEMP" -w "$GITHUB_WORKSPACE" "$image" python3.11 "\$@"
+          EOF
+          else
+            printf '#!/bin/sh\nexec python "$@"\n' >"$py"
+          fi
+          chmod +x "$py"
+          echo "PY=$py" >>"$GITHUB_ENV"
+          echo "LITERT=$RUNNER_TEMP/litert" >>"$GITHUB_ENV"
+          echo "TOOLS=$RUNNER_TEMP/tools" >>"$GITHUB_ENV"
+      - name: Setup
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: '"$PY" tools/litert/build.py setup --platform "$PLATFORM" --litert "$LITERT" --tools "$TOOLS"'
+      - name: Notices
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: '"$PY" tools/litert/build.py notices --platform "$PLATFORM" --litert "$LITERT" --tools "$TOOLS" --out "$OUT"'
+      - name: Build
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: '"$PY" tools/litert/build.py build --platform "$PLATFORM" --litert "$LITERT" --tools "$TOOLS" --out "$OUT"'
+      - name: Pack
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: '"$PY" tools/litert/build.py pack --platform "$PLATFORM" --litert "$LITERT" --out "$OUT"'
+      - name: Digest
+        id: digest
+        env:
+          CACHE_KEY: ${{ steps.cache.outputs.cache-primary-key }}
+          CACHE_HIT: ${{ steps.cache.outputs.cache-hit == 'true' }}
+        run: |
+          python tools/litert/build.py digest --platform "$PLATFORM" --dist "$OUT/dist" --digests "$OUT/digest"
+          mkdir -p "$OUT/cachekey"
+          echo "$CACHE_KEY" >"$OUT/cachekey/key"
+          echo "$CACHE_HIT" >"$OUT/cachekey/hit"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ steps.digest.outputs.artifact }}
+          path: ${{ runner.temp }}/out/dist
+          retention-days: 7
+          compression-level: 0
+          if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: litert-digest-${{ matrix.platform }}
+          path: ${{ runner.temp }}/out/digest
+          retention-days: 7
+          if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: litert-programs-${{ matrix.platform }}
+          path: ${{ runner.temp }}/out/programs
+          retention-days: 7
+          if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: litert-cachekey-${{ matrix.platform }}
+          path: ${{ runner.temp }}/out/cachekey
+          retention-days: 1
+          if-no-files-found: error
+
+  collect:
+    name: collect
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      sha256_linux_x64: ${{ steps.merge.outputs.sha256_linux_x64 }}
+      sha256_win_x64: ${{ steps.merge.outputs.sha256_win_x64 }}
+      sha256_macos_arm64: ${{ steps.merge.outputs.sha256_macos_arm64 }}
+      sha256: ${{ steps.merge.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: litert-digest-*
+          path: ${{ runner.temp }}/digests
+          merge-multiple: true
+      - name: Merge
+        id: merge
+        run: python3 tools/litert/build.py collect --digests "$RUNNER_TEMP/digests"
+
+  check:
+    name: check (${{ matrix.platform }})
+    needs: [models, collect]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x64
+            runner: ubuntu-24.04
+          - platform: win-x64
+            runner: windows-2022
+          - platform: macos-arm64
+            runner: macos-15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Reference wheel
+        run: |
+          python -m pip install --require-hashes --no-deps --only-binary ':all:' -r tools/litert/requirements-check.txt
+          python tools/litert/test_build.py
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: litert-[0-9]*-${{ matrix.platform }}
+          path: ${{ runner.temp }}/dist
+          merge-multiple: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: litert-programs-${{ matrix.platform }}
+          path: ${{ runner.temp }}/programs
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: litert-face-graphs
+          path: ${{ runner.temp }}/graphs
+      - name: Check
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          # The trust root inside a run: the digest the build job computed on the runner that built or restored it.
+          EXPECTED_SHA256: ${{ fromJSON(needs.collect.outputs.sha256)[matrix.platform] }}
+        run: >-
+          python tools/litert/build.py check --platform "$PLATFORM" --dist "$RUNNER_TEMP/dist"
+          --programs "$RUNNER_TEMP/programs" --models "$RUNNER_TEMP/graphs" --work "$RUNNER_TEMP/work"
+
+  save:
+    name: save (${{ matrix.platform }})
+    needs: [collect, check]
+    if: inputs.save-cache
+    # The same OS as the build: a cache entry's paths and archive format are per OS.
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x64
+            runner: ubuntu-24.04
+          - platform: win-x64
+            runner: windows-2022
+          - platform: macos-arm64
+            runner: macos-15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: litert-[0-9]*-${{ matrix.platform }}
+          path: ${{ runner.temp }}/out/dist
+          merge-multiple: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: litert-programs-${{ matrix.platform }}
+          path: ${{ runner.temp }}/out/programs
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: litert-cachekey-${{ matrix.platform }}
+          path: ${{ runner.temp }}/cachekey
+      - name: Verify
+        id: verify
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          EXPECTED_SHA256: ${{ fromJSON(needs.collect.outputs.sha256)[matrix.platform] }}
+        run: >-
+          python tools/litert/build.py verify --platform "$PLATFORM" --dist "$RUNNER_TEMP/out/dist"
+          --cachekey "$RUNNER_TEMP/cachekey"
+      - name: Save
+        if: steps.verify.outputs.hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/out/dist
+            ${{ runner.temp }}/out/programs
+          key: ${{ steps.verify.outputs.key }}

@@ -22,6 +22,7 @@ serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
+omuzaki-ops-mock = { path = "../omuzaki-ops-mock" }
 
 [[bench]]
 name = "run"
@@ -29,3 +30,7 @@ harness = false
 
 [lints]
 workspace = true
+
+[package.metadata.omuzaki]
+kind = "Implementation"
+summary = "the op executor (`Runner`): read scope on every run, transactions with owner-only commit/rollback, per-actor undo that never wedges, op log, events"

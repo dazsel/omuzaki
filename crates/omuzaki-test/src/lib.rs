@@ -13,9 +13,9 @@
 //! - [`regioncmp`]: [`compare::compare`] inside a pixel rectangle, with a markdown table and a side-by-side picture
 //! - [`eval`]: agent eval task files, fixtures and eval sets: format, discovery, loader, lint and provenance
 //! - [`jsref`]: the JS prototype's reference dumps (under the assets folder) loaded into meshes, hair clumps, materials and face state
-//! - [`face_parity`]: the Rust face painter against the JS prototype's isolated face sections, one enforcement call per section
 //!
-//! The `omuzaki-test` binary wraps these for scripts and CI; see the crate `README.md` for the workflow.
+//! The `omuzaki-test` binary wraps these for scripts and CI; see the crate `README.md` for the workflow. The library
+//! depends on no implementation crate: tests across crates belong in the area test crates (`omuzaki-test-<area>`).
 #![deny(missing_docs)]
 
 pub mod budget;
@@ -23,7 +23,6 @@ pub mod compare;
 pub mod dirs;
 pub mod error;
 pub mod eval;
-pub mod face_parity;
 mod fsio;
 pub mod gc;
 mod git;
@@ -36,8 +35,3 @@ pub mod objects;
 pub mod regioncmp;
 pub mod summary;
 pub mod verify;
-
-// The face parity harness paints with `omuzaki-face`; Apps that link this crate reach its registrations through here (ADR 0015).
-omuzaki_core::define_link! {
-    omuzaki_face::link();
-}

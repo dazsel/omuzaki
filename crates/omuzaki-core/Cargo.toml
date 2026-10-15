@@ -17,6 +17,11 @@ thiserror.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
+proptest.workspace = true
 
 [lints]
 workspace = true
+
+[package.metadata.omuzaki]
+kind = "API"
+summary = "slugs and typed ids, deterministic RNG, clock, the sRGB `Colour`, the shared triangle `MeshData`, re-exported `glam`"

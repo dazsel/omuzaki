@@ -1,24 +1,24 @@
 //! Getting ONNX Runtime into the process: fetch the pinned archive through the app's [`FileSource`], unpack the
 //! library (and the provider libraries that must sit beside it), and hand its path to `ort` once.
 
-use std::fs::{self, File};
-use std::io::{self, Read};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use flate2::read::GzDecoder;
 use omuzaki_ai_api::{FileSource, LoadError, NoProgress, Provider};
+
+use omuzaki_ai_native::{ArchiveKind, LoadOnce, Unpack};
 
 use crate::builds::{Archive, Build, select};
 
 /// What a process has settled about its ONNX Runtime: the app's provider preference (until something loads) and the
-/// library that loaded (final).
+/// library that loaded (final, held by the shared once-per-process guard).
 struct Process {
     preferred: Vec<Provider>,
-    loaded: Option<Loaded>,
+    loaded: LoadOnce<Loaded, LoadError>,
 }
 
-static PROCESS: Mutex<Process> = Mutex::new(Process { preferred: Vec::new(), loaded: None });
+static PROCESS: Mutex<Process> = Mutex::new(Process { preferred: Vec::new(), loaded: LoadOnce::new() });
 
 fn lock(process: &Mutex<Process>) -> std::sync::MutexGuard<'_, Process> {
     process.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -30,7 +30,7 @@ fn lock(process: &Mutex<Process>) -> std::sync::MutexGuard<'_, Process> {
 /// `false`, and changes nothing, when the library is already loaded (the flavour is then final).
 pub fn prefer_providers(providers: &[Provider]) -> bool {
     let mut process = lock(&PROCESS);
-    if process.loaded.is_some() {
+    if process.loaded.get().is_some() {
         return false;
     }
     process.preferred = providers.to_vec();
@@ -54,7 +54,7 @@ pub struct Loaded {
 
 /// The library this process loaded through this crate, once some probe or load has loaded it.
 pub fn loaded() -> Option<Loaded> {
-    lock(&PROCESS).loaded.clone()
+    lock(&PROCESS).loaded.get().and_then(Result::ok)
 }
 
 /// Loads ONNX Runtime once per process and returns what was loaded; later calls return the first result whatever
@@ -86,9 +86,9 @@ fn ensure_in(
     wanted: &[Provider],
     init: &dyn Fn(&Path) -> Result<bool, LoadError>,
 ) -> Result<Loaded, LoadError> {
-    let mut process = lock(process);
-    if let Some(loaded) = &process.loaded {
-        return Ok(loaded.clone());
+    let process = lock(process);
+    if let Some(settled) = process.loaded.get() {
+        return settled;
     }
     let no_build = || LoadError::Runtime(format!("there is no pinned ONNX Runtime build for {os}-{arch}"));
     let chosen = flavour_providers(&process.preferred, wanted);
@@ -105,113 +105,30 @@ fn ensure_in(
         }
     };
     let dir = unpack(build, &archive).map_err(|e| LoadError::Runtime(format!("unpacking {}: {e}", build.asset)))?;
-    let ours = init(&dir.join(build.library))?;
-    let loaded = Loaded { build, ours };
-    process.loaded = Some(loaded.clone());
-    Ok(loaded)
+    process.loaded.get_or_init(build.asset, &build.sha256.to_string(), || {
+        let ours = init(&dir.join(build.library))?;
+        Ok(Loaded { build, ours })
+    })
 }
 
-/// The folder next to `archive` that holds its unpacked libraries: deterministic, so a second run reuses it.
-fn unpack_dir(archive: &Path) -> PathBuf {
-    let mut name = archive.as_os_str().to_owned();
-    name.push(".lib");
-    PathBuf::from(name)
-}
-
-/// True for the files of `lib/` worth keeping: the library itself and the provider libraries it loads from its own
-/// folder (CUDA's `libonnxruntime_providers_cuda.so` and its shared helper).
-fn wanted_file(build: &Build, name: &str) -> bool {
-    name == build.library || name.starts_with("libonnxruntime_providers") || name.starts_with("onnxruntime_providers")
-}
-
-/// Unpacks the libraries of `archive` (verified by the caller) to [`unpack_dir`] and returns it. Written to a
-/// temporary sibling and renamed, so an interrupted unpack never leaves a half-filled folder under the final name.
+/// The libraries of `build` unpacked beside its verified `archive` (the shared loader, `omuzaki-ai-native`).
 fn unpack(build: &Build, archive: &Path) -> io::Result<PathBuf> {
-    let dest = unpack_dir(archive);
-    if dest.join(build.library).is_file() {
-        return Ok(dest);
-    }
-    let parent = dest.parent().unwrap_or(Path::new("."));
-    let staging = tempfile::Builder::new().prefix(".ort-unpack-").tempdir_in(parent)?;
-    match build.archive {
-        Archive::TarGz => unpack_tar(build, archive, staging.path())?,
-        Archive::Zip => unpack_zip(build, archive, staging.path())?,
-    }
-    if !staging.path().join(build.library).is_file() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!("`{}` is not in the archive's lib folder", build.library),
-        ));
-    }
-    let staged = staging.keep();
-    if let Err(error) = fs::rename(&staged, &dest) {
-        // Another process finished first: keep its folder, drop ours.
-        let _ = fs::remove_dir_all(&staged);
-        if !dest.join(build.library).is_file() {
-            return Err(error);
-        }
-    }
-    Ok(dest)
+    let kind = match build.archive {
+        Archive::TarGz => ArchiveKind::TarGz,
+        Archive::Zip => ArchiveKind::Zip,
+    };
+    Unpack::new(kind, &build.lib_dir(), build.library).with_wanted(&provider_library).run(archive)
 }
 
-/// The name of `path` when it is a direct child of `lib_dir`, else `None`.
-fn child_name<'a>(path: &'a Path, lib_dir: &str) -> Option<&'a str> {
-    let name = path.file_name()?.to_str()?;
-    (path.parent()? == Path::new(lib_dir)).then_some(name)
-}
-
-/// The most one unpacked library may be: the biggest real one (CUDA's provider library) is 622 MB.
-const MAX_FILE_BYTES: u64 = 1 << 30;
-
-/// Writes `reader` to `out/name`, refusing more than [`MAX_FILE_BYTES`]. `name` is a bare file name that passed
-/// [`wanted_file`], never a path taken from the archive. The archive itself is already verified (size and SHA-256) by
-/// the [`FileSource`], so this guards against a pin mistake, not an attack.
-fn store(reader: impl Read, out: &Path, name: &str) -> io::Result<()> {
-    let mut file = File::create(out.join(name))?;
-    let copied = io::copy(&mut reader.take(MAX_FILE_BYTES + 1), &mut file)?;
-    if copied > MAX_FILE_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("`{name}` is larger than {MAX_FILE_BYTES} bytes"),
-        ));
-    }
-    Ok(())
-}
-
-fn unpack_tar(build: &Build, archive: &Path, out: &Path) -> io::Result<()> {
-    let lib_dir = build.lib_dir();
-    let mut tar = tar::Archive::new(GzDecoder::new(File::open(archive)?));
-    for entry in tar.entries()? {
-        let mut entry = entry?;
-        if !entry.header().entry_type().is_file() {
-            continue; // folders, and symlinks such as libonnxruntime.so -> libonnxruntime.so.1
-        }
-        let path = entry.path()?.into_owned();
-        if let Some(name) = child_name(&path, &lib_dir).filter(|n| wanted_file(build, n)) {
-            store(&mut entry, out, name)?;
-        }
-    }
-    Ok(())
-}
-
-fn unpack_zip(build: &Build, archive: &Path, out: &Path) -> io::Result<()> {
-    let lib_dir = build.lib_dir();
-    let mut zip = zip::ZipArchive::new(File::open(archive)?).map_err(io::Error::other)?;
-    for index in 0..zip.len() {
-        let mut entry = zip.by_index(index).map_err(io::Error::other)?;
-        if !entry.is_file() {
-            continue;
-        }
-        let Some(path) = entry.enclosed_name() else { continue };
-        if let Some(name) = child_name(&path, &lib_dir).filter(|n| wanted_file(build, n)) {
-            store(&mut entry, out, name)?;
-        }
-    }
-    Ok(())
+/// True for the files of `lib/` worth keeping beside the library itself: the provider libraries it loads from its own
+/// folder (CUDA's `libonnxruntime_providers_cuda.so` and its shared helper).
+fn provider_library(name: &str) -> bool {
+    name.starts_with("libonnxruntime_providers") || name.starts_with("onnxruntime_providers")
 }
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::io::Write;
 
     /// Serves a tiny archive per build, remembering which were asked for.
@@ -255,7 +172,7 @@ mod tests {
         calls: &[&[Provider]],
         natives: &FakeArchives,
     ) -> (Vec<Result<&'static str, String>>, Vec<String>) {
-        let process = Mutex::new(Process { preferred: preferred.to_vec(), loaded: None });
+        let process = Mutex::new(Process { preferred: preferred.to_vec(), loaded: LoadOnce::new() });
         let inits = std::cell::RefCell::new(Vec::new());
         let init = |library: &Path| {
             inits.borrow_mut().push(library.file_name().unwrap().to_string_lossy().into_owned());

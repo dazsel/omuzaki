@@ -40,6 +40,9 @@ pub mod exaggeration;
 pub mod layer;
 pub mod library;
 pub mod ops;
+/// The helpers the face ops share. They sit beside `ops/`, not in it, because the generated family list in `ops/` makes
+/// every folder there `pub`, and these are crate-private.
+mod ops_shared;
 pub mod painter;
 pub mod raster;
 pub mod system;
@@ -49,4 +52,6 @@ pub use layer::{FaceLayerPainter, GpuRasterizer};
 pub use painter::{MouthPiece, OpenMouth, PaintCtx, RealPainter, Section};
 pub use system::{FaceSystem, FaceTimings, FaceUpdate};
 
-omuzaki_core::define_link!();
+omuzaki_core::define_link! {
+    omuzaki_char_api::link();
+}

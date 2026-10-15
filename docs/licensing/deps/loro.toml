@@ -1,0 +1,7 @@
+section = "rust"
+item = "loro"
+kind = "crate"
+used_for = "project CRDT"
+status = "conditions"
+condition = "pulls MPL-2.0 `im`, `bitmaps`, `sized-chunks`: keep unmodified, ship notice"
+audit = "B3"

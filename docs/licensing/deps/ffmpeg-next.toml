@@ -1,0 +1,7 @@
+section = "rust"
+item = "ffmpeg-next / ffmpeg-sys-next"
+kind = "crate"
+used_for = "FFmpeg bindings"
+status = "unverified"
+condition = "WTFPL (legal review); never the `static`/`build`/gpl/nonfree features"
+audit = "B4"

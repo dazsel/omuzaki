@@ -1,4 +1,4 @@
-//! The mechanics the expression ops share beyond the face helpers in `ops::shared::edit`: the expression library inside a
+//! The mechanics the expression ops share beyond the face helpers in `ops_shared::edit`: the expression library inside a
 //! stored face, the entries the ops look up, and the working copy each op edits. As in every face op, an edit writes a
 //! copy of the face and diffs it against the stored one, so the patch names the smallest set of changes and undo is exact.
 
@@ -9,7 +9,7 @@ use omuzaki_ops_api::OpError;
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
-use crate::ops::shared::edit::diff;
+use crate::ops_shared::edit::diff;
 
 /// The expression library inside a stored face: `None` when the face has no `expressions` yet.
 ///

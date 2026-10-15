@@ -18,8 +18,8 @@ use omuzaki_char::template::skeleton::TemplateFit;
 use omuzaki_char::template::soft_sd::SoftSd;
 use omuzaki_char_api::{
     BodyFit, BuildCtx, BuildError, BuildOptions, BuildServices, BuiltCharacter, CharId, CharacterBuilder, CharacterDef,
-    EarKind, Ears, HeadParams, HeadSurface, JointRef, PartCategory, PartDef, PartId, PartKind, PartKindId, PartMeta,
-    PartOutput, Publishes, RegistryBuilder,
+    EarKind, Ears, FitFact, HeadParams, HeadSurface, JointRef, PartCategory, PartDef, PartId, PartKind, PartKindId,
+    PartMeta, PartOutput, Publishes, RegistryBuilder,
 };
 use omuzaki_char_mock::mock_character;
 use omuzaki_core::glam::{DVec3, Vec3};
@@ -40,7 +40,7 @@ impl PartKind for TemplateBody {
     fn build(p: &Self::Params, _: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
         let layout = SoftSd.layout(&p.proportions, &p.shape, &p.hand);
         let fit: Arc<dyn BodyFit> = Arc::new(TemplateFit::new(layout));
-        Ok(PartOutput { publishes: Publishes { fit: Some(fit), ..Publishes::default() }, ..PartOutput::default() })
+        Ok(PartOutput::new().with_publishes(Publishes::default().with::<FitFact>(fit)))
     }
 }
 

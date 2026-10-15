@@ -1,0 +1,7 @@
+section = "rust"
+item = "glam"
+kind = "crate"
+used_for = "math (vectors, matrices, quaternions), re-exported by omuzaki-core"
+status = "yes"
+audit = "(crates.io: MIT OR Apache-2.0)"
+crates = ["glam"]

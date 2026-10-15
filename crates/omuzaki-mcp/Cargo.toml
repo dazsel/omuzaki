@@ -27,6 +27,7 @@ tokio-util.workspace = true
 tracing.workspace = true
 omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-doc-api = { path = "../omuzaki-doc-api" }
+omuzaki-history-api = { path = "../omuzaki-history-api" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-store-api = { path = "../omuzaki-store-api" }
 
@@ -38,6 +39,8 @@ reqwest.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
+omuzaki-history-mock = { path = "../omuzaki-history-mock" }
+omuzaki-ops-mock = { path = "../omuzaki-ops-mock" }
 omuzaki-store-mock = { path = "../omuzaki-store-mock" }
 
 [lints]
@@ -45,4 +48,7 @@ workspace = true
 
 # Native only: an MCP server on tokio, over stdio or a local TCP port (the web player talks to agents differently)
 [package.metadata.omuzaki]
+kind = "Implementation"
+summary = "the MCP server (§11): every registered op is a tool, served over stdio or a local Streamable HTTP port; native only, over `omuzaki-ops-api`, `omuzaki-doc-api` and `omuzaki-store-api`"
 wasm = false
+registers = true

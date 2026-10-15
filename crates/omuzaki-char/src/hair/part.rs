@@ -2,9 +2,11 @@
 //! ([`tube`](super::tube)) with the hair shading program.
 //!
 //! **Meshes.** Static groups (not simulated) go into one mesh, `<part>-static`, skinned wholly to the head joint.
-//! Simulated groups go into `<part>-dynamic`, unskinned, at their rest shape: the simulation that moves them arrives
-//! with the physics tasks. Within a mesh the tubes come first, in group order, and any generator-made shells
-//! (the cap) after them, so a mesh can be walked clump by clump from the front ([`recolour`](Hair::recolour) does).
+//! Simulated groups go into `<part>-dynamic`, skinned wholly to the head joint too and not marked dynamic, so they
+//! follow the head at their rest shape. That is interim: until the hair runtime lands (#322) nothing moves them, and
+//! #322 reverts this to an unskinned, dynamic mesh. Within a mesh the tubes come first, in group order, and any
+//! generator-made shells (the cap) after them, so a mesh can be walked clump by clump from the front
+//! ([`recolour`](Hair::recolour) does).
 //!
 //! **Material.** One double-sided `hair` material per part: the `hair` shading program ([`HairShading::shading`]), vertex
 //! colours for streak tints, the outline in the hair's outline colour, and the brows overlay when `brows_through`. A palette
@@ -19,7 +21,7 @@
 use std::ops::Range;
 
 use omuzaki_char_api::{
-    BodyRegion, BuildCtx, BuildError, FaceOverlay, GroupId, HAIR_UV, HairParams, JointRef, KindProvenance,
+    BodyRegion, BuildCtx, BuildError, FaceOverlay, Generator, GroupId, HAIR_UV, HairParams, JointRef, KindProvenance,
     MaterialName, MaterialSpec, PartCategory, PartId, PartKind, PartMesh, PartMeta, PartOutput, RecolourCtx,
     Recoloured,
 };
@@ -103,25 +105,25 @@ pub fn build_with(
         if params.shading.brows_through { Ok(vec![ctx.face_overlay(FaceLayerId::Brows)?]) } else { Ok(Vec::new()) }
     };
     let material = hair_material(ctx.part, params, ctx.palette, overlays)?;
-    let mut out = PartOutput { materials: vec![(material_name.clone(), material)], warnings, ..PartOutput::default() };
-    let part_mesh = |suffix: &str, geometry: MeshData, dynamic: bool| {
-        let joint_bones = if dynamic { Vec::new() } else { vec![JointRef::HEAD] };
+    let mut out = PartOutput::new().with_materials(vec![(material_name.clone(), material)]).with_warnings(warnings);
+    // Both meshes are rigid to the head: the simulated one only until the runtime moves it (see the module doc).
+    let part_mesh = |simulated: bool, mut geometry: MeshData| {
+        skin_to_head(&mut geometry);
         PartMesh {
-            name: format!("{}-{suffix}", ctx.part),
+            name: mesh_name(ctx.part, simulated),
             geometry,
-            joint_bones,
+            joint_bones: vec![JointRef::HEAD],
             material: material_name.clone(),
             casts_shadow: true,
             render_order: 1,
-            dynamic,
+            dynamic: false,
         }
     };
-    if let Some(mut geometry) = stat {
-        skin_to_head(&mut geometry);
-        out.meshes.push(part_mesh("static", geometry, false));
+    if let Some(geometry) = stat {
+        out.meshes.push(part_mesh(false, geometry));
     }
     if let Some(geometry) = dynamic {
-        out.meshes.push(part_mesh("dynamic", geometry, true));
+        out.meshes.push(part_mesh(true, geometry));
     }
     Ok(out)
 }
@@ -208,6 +210,11 @@ fn strand_seed(index: usize, dynamic: bool) -> f32 {
     if dynamic { (i * 0.271 + 0.5).fract() } else { (i * 0.137).fract() }
 }
 
+/// The name of the static or the simulated mesh of `part`: `<part>-static` or `<part>-dynamic`.
+fn mesh_name(part: &PartId, simulated: bool) -> String {
+    format!("{part}-{}", if simulated { "dynamic" } else { "static" })
+}
+
 /// Skins every vertex wholly to the head joint, the one joint of `joint_bones`.
 fn skin_to_head(mesh: &mut MeshData) {
     let n = mesh.positions.len();
@@ -272,15 +279,21 @@ pub fn recolour_with(
     let layout = layout(params, generators);
     let groups: Vec<&GroupId> = layout.iter().map(|s| s.group).collect();
     let tints = params.shading.streak_tints(ctx.palette, &groups).map_err(|e| ctx.fail(e.to_string()))?;
-    // A mesh the layout says holds tubes must exist: without it there is nothing to tint, and `Done` would be a lie.
-    for dynamic in [false, true] {
-        let expects_tubes = layout.iter().any(|s| s.tube && s.simulate == dynamic);
-        if expects_tubes && !output.meshes.iter().any(|m| m.dynamic == dynamic) {
+    // A mesh the layout says holds tubes, or a cap's shell (which has no clumps, so the layout cannot see it), must
+    // exist: without it there is nothing to tint or keep, and `Done` would be a lie.
+    for simulated in [false, true] {
+        let expects_tubes = layout.iter().any(|s| s.tube && s.simulate == simulated);
+        let expects_shell =
+            enabled(params).any(|(_, g)| matches!(g.generator, Generator::Cap(_)) && g.dynamics.simulate == simulated);
+        let name = mesh_name(ctx.part, simulated);
+        if (expects_tubes || expects_shell) && !output.meshes.iter().any(|m| m.name == name) {
             return Ok(Recoloured::NeedsRebuild);
         }
     }
     for mesh in &mut output.meshes {
-        let mine = layout.iter().zip(&tints).filter(|(s, _)| s.tube && s.simulate == mesh.dynamic).map(|(_, t)| *t);
+        // Found by name: a mesh's `dynamic` flag is not the simulated groups' mark while no runtime moves them.
+        let simulated = mesh.name == mesh_name(ctx.part, true);
+        let mine = layout.iter().zip(&tints).filter(|(s, _)| s.tube && s.simulate == simulated).map(|(_, t)| *t);
         if !paint_tubes(&mut mesh.geometry, &mine.collect::<Vec<_>>()) {
             return Ok(Recoloured::NeedsRebuild); // not the hair `build` makes: don't guess
         }

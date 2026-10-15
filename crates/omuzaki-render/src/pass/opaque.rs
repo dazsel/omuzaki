@@ -20,7 +20,7 @@ use super::{FramePass, Outcome, PassCx};
 use crate::gpu::{DEPTH_FORMAT, SCENE_FORMAT};
 use crate::program::{AttributeSpec, MAX_ATTRIBUTES, ProgramSpec, Registry, opaque_source};
 use crate::resource::material::GpuMaterial;
-use crate::resource::mesh::{GpuMesh, extra_attribute, extra_layout, vertex_layout};
+use crate::resource::mesh::{GpuMesh, extra_attribute, extra_layout, vertex_layouts};
 use crate::shared::Shared;
 
 /// What distinguishes one pipeline from another: the state that varies per draw.
@@ -99,7 +99,7 @@ impl Opaque {
             let components = attributes.get(i).map_or(4, |a| a.components);
             (extra_attribute(i, components), components, variant.extras_present >> i & 1 == 1)
         });
-        let mut buffers = vec![Some(vertex_layout())];
+        let mut buffers = vertex_layouts().to_vec();
         buffers.extend(
             slots.iter().map(|(attribute, components, present)| Some(extra_layout(attribute, *components, *present))),
         );
@@ -193,7 +193,13 @@ impl FramePass for Opaque {
             pass.set_pipeline(pipeline);
             pass.set_bind_group(1, &material.bind_group, &[]);
             let attributes: &[AttributeSpec] = self.spec(variant.program).map_or(&[], |s| s.attributes);
-            mesh.draw_with_extras(&mut pass, draw.instance, attributes, &self.zeros);
+            mesh.draw_with_extras(
+                &mut pass,
+                draw.instance,
+                cx.resources.morphs.shapes(draw.instance),
+                attributes,
+                &self.zeros,
+            );
             cx.stats.draw_calls += 1;
             cx.stats.triangles += mesh.triangles;
         }

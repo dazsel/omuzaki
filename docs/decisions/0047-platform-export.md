@@ -1,3 +1,9 @@
+---
+title: "0047: Platform export is a data file and a registration in the op layer, fitted at export time (2026-10-13)"
+summary: "Platform export is a data file and a registration in the op layer, fitted at export time"
+area: decisions
+---
+
 # 0047: Platform export is a data file and a registration in the op layer, fitted at export time (2026-10-13)
 
 **Status:** proposed. **Context:** EX-03, EX-04, EX-13

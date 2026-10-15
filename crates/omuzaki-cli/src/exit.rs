@@ -1,9 +1,10 @@
 //! Process exit codes: one per [`ErrorCode`], documented in `omuzaki --help`.
 //!
-//! Scripts and agents branch on the code, so it is part of the CLI's contract. A new `ErrorCode` variant cannot be
-//! missed: [`describe`] is one exhaustive `match` (no wildcard) giving every variant its number and meaning, so the
-//! crate stops compiling until the new variant has a row, and both [`for_error`] and the `--help` table read that one
-//! row. The table lists the variants by asking `ErrorCode`'s own schema, so there is no second list to forget.
+//! Scripts and agents branch on the code, so it is part of the CLI's contract. [`describe`] gives every variant its
+//! number and meaning, and both [`for_error`] and the `--help` table read that one row. `ErrorCode` is
+//! `#[non_exhaustive]`, so the compiler no longer forces a row for a new variant: it exits like a bug (code 1) until it
+//! gets one, and the uniqueness test fails for it, which is what catches the missing row. The table lists the variants
+//! by asking `ErrorCode`'s own schema, so there is no second list to forget.
 
 use std::fmt::Write as _;
 
@@ -15,6 +16,11 @@ pub const OK: u8 = 0;
 
 /// The command line is wrong (unknown command, missing argument). clap exits with it before any op runs.
 pub const USAGE: u8 = 2;
+
+/// A store check ran and found something a person must look at (`store verify` found a problem, or `store repair`
+/// left one alone). Not an [`ErrorCode`]: the command succeeded and printed its report, so there is no error to name.
+/// Its number is the first unused one after [`ErrorCode::Cancelled`]'s 11, so no code means two things.
+pub const FOUND_PROBLEMS: u8 = 12;
 
 /// An exit code and what it means.
 struct Row {
@@ -55,6 +61,9 @@ const fn describe(code: ErrorCode) -> Row {
         ErrorCode::Cancelled => {
             Row { code: 11, meaning: "a job was cancelled (by a person, a stop or a limit); do not retry unchanged" }
         }
+        // A code added to the contract exits like a bug until it gets its own row here; the uniqueness test below
+        // fails for it, so the missing row is noticed.
+        _ => Row { code: 1, meaning: "an error this version of the command line does not know; please report it" },
     }
 }
 
@@ -86,6 +95,7 @@ pub fn help_text() -> String {
         .collect();
     rows.push((OK, "ok".to_owned(), "the command succeeded"));
     rows.push((USAGE, "usage".to_owned(), "the command line is wrong; see --help"));
+    rows.push((FOUND_PROBLEMS, "problems".to_owned(), "a store check ran and found problems; its report says which"));
     rows.sort_unstable();
     let width = rows.iter().map(|(_, name, _)| name.len()).max().unwrap_or(0);
     let mut text = String::from("Exit codes:\n");
@@ -122,7 +132,7 @@ mod tests {
     #[test]
     fn exit_codes_are_unique_and_do_not_reuse_ok_or_usage() {
         let mut seen: Vec<u8> = error_codes().into_iter().map(for_error).collect();
-        seen.extend([OK, USAGE]);
+        seen.extend([OK, USAGE, FOUND_PROBLEMS]);
         let total = seen.len();
         seen.sort_unstable();
         seen.dedup();
@@ -133,6 +143,6 @@ mod tests {
     fn help_lists_the_codes_in_numeric_order() {
         let numbers: Vec<u8> =
             help_text().lines().skip(1).filter_map(|l| l.split_whitespace().next()?.parse().ok()).collect();
-        assert_eq!(numbers, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+        assert_eq!(numbers, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
     }
 }

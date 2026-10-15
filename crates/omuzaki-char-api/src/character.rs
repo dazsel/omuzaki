@@ -12,6 +12,7 @@ use omuzaki_face_api::{FaceProfile, Palette};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::doc_key;
 use crate::ids::{AnchorId, BodyTemplateId, JointRef, PartId, PartKindId, SkinToneId};
 use crate::skin::WeightBrush;
 
@@ -206,8 +207,12 @@ pub struct PartDef {
 
 /// A character: everything in `character.toml` and `face.toml`. Rig, look and variants live in their own files
 /// (`rig.toml`, `look.toml`, `variants/<name>.toml`) and their own contracts.
+///
+/// `#[non_exhaustive]`: other crates make one with [`CharacterDef::new`] and the `with_*` methods (or assign the public
+/// fields), never a struct literal or an exhaustive pattern, so a field added here edits only this crate.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct CharacterDef {
     /// Display name (free text).
     pub name: String,
@@ -232,6 +237,71 @@ pub struct CharacterDef {
     /// Skin-weight corrections (RG-02) the builder applies to each part's skinned meshes after the part builds.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub weight_brushes: BTreeMap<PartId, Vec<WeightBrush>>,
+    /// Growth probe (feature `growth-probe`): a field no other crate knows about. See `tests/growth_probe.rs`.
+    #[cfg(feature = "growth-probe")]
+    #[serde(skip)]
+    // a saved field would also need the closed document-key lists (ADR 0054 §5), which this probe doesn't test
+    pub growth_probe: u8,
+}
+
+impl CharacterDef {
+    /// A character with a name and a body template: seed 0, the empty palette, no parts, the default face.
+    pub fn new(name: impl Into<String>, template: BodyTemplateId) -> Self {
+        Self {
+            name: name.into(),
+            template,
+            seed: 0,
+            palette: Palette::default(),
+            skin_tone: None,
+            parts: BTreeMap::new(),
+            face: FaceProfile::default(),
+            weight_brushes: BTreeMap::new(),
+            #[cfg(feature = "growth-probe")]
+            growth_probe: 0,
+        }
+    }
+
+    /// Sets the seed.
+    #[must_use]
+    pub fn with_seed(mut self, seed: u32) -> Self {
+        self.seed = seed;
+        self
+    }
+
+    /// Sets the palette.
+    #[must_use]
+    pub fn with_palette(mut self, palette: Palette) -> Self {
+        self.palette = palette;
+        self
+    }
+
+    /// Sets the skin tone chosen from the library.
+    #[must_use]
+    pub fn with_skin_tone(mut self, skin_tone: Option<SkinToneId>) -> Self {
+        self.skin_tone = skin_tone;
+        self
+    }
+
+    /// Sets the parts.
+    #[must_use]
+    pub fn with_parts(mut self, parts: BTreeMap<PartId, PartDef>) -> Self {
+        self.parts = parts;
+        self
+    }
+
+    /// Sets the face design.
+    #[must_use]
+    pub fn with_face(mut self, face: FaceProfile) -> Self {
+        self.face = face;
+        self
+    }
+
+    /// Sets the skin-weight corrections.
+    #[must_use]
+    pub fn with_weight_brushes(mut self, weight_brushes: BTreeMap<PartId, Vec<WeightBrush>>) -> Self {
+        self.weight_brushes = weight_brushes;
+        self
+    }
 }
 
 /// Why the parts don't form a buildable tree.
@@ -253,11 +323,15 @@ pub enum TreeError {
 /// The message for a key of a character node that no file of the character owns: the key, and the nearest valid one if
 /// it is close enough to be a typo, otherwise the definition keys.
 fn unknown_key_message(key: &str) -> String {
-    match nearest_name(key, CharacterDef::NODE_KEYS.into_iter().chain(CharacterDef::SIBLING_KEYS)) {
+    if let Err(collision) = doc_key::check(key) {
+        return format!("{collision}, so the character cannot use it");
+    }
+    let node_keys = &CharacterDef::NODE_KEYS;
+    match nearest_name(key, node_keys.iter().copied().chain(doc_key::sibling_keys().iter().copied())) {
         Some(near) => format!("unknown field `{key}` in the character, did you mean `{near}`?"),
         None => format!(
             "unknown field `{key}` in the character, expected one of {}",
-            CharacterDef::NODE_KEYS.map(|k| format!("`{k}`")).join(", ")
+            node_keys.iter().map(|k| format!("`{k}`")).collect::<Vec<_>>().join(", ")
         ),
     }
 }
@@ -277,16 +351,16 @@ pub(crate) fn nearest_name<'a>(key: &str, candidates: impl IntoIterator<Item = &
 
 impl CharacterDef {
     /// The keys of `characters/<id>` that make up a [`CharacterDef`] (`character.toml` and `face.toml`).
-    pub const NODE_KEYS: [&'static str; 8] =
-        ["name", "template", "seed", "palette", "skin_tone", "parts", "face", "weight_brushes"];
+    pub const NODE_KEYS: [&'static str; 8] = doc_key::BUILT_IN_NODE_KEYS;
 
     /// The other keys of `characters/<id>`: the character's other files, each a sub-tree with its own contract
     /// (`variants`, `colourways`, `rig.toml`, `look.toml`, the `licence` record, the per-part `sources` rows, the
     /// `applied` library records, the `poses` and the `emotes` sets). They are not part of the definition;
-    /// [`from_node`](Self::from_node) skips them and [`to_node`](Self::to_node) leaves them alone. A new file of the
-    /// character is added here.
-    pub const SIBLING_KEYS: [&'static str; 9] =
-        ["variants", "colourways", "rig", "look", "licence", "sources", "applied", "poses", "emotes"];
+    /// [`from_node`](Self::from_node) skips them and [`to_node`](Self::to_node) leaves them alone.
+    ///
+    /// This is the built-in list; a new file of the character registers its key with
+    /// [`register_doc_key!`](crate::register_doc_key), and [`doc_key::sibling_keys`] lists both.
+    pub const SIBLING_KEYS: [&'static str; 9] = doc_key::BUILT_IN_SIBLING_KEYS;
 
     /// The definition stored in the character node `node` (`characters/<id>`): reads [`NODE_KEYS`](Self::NODE_KEYS) and
     /// skips the [`SIBLING_KEYS`](Self::SIBLING_KEYS), so a character with variants, colourways, a rig or a look reads
@@ -301,7 +375,7 @@ impl CharacterDef {
     pub fn from_node(node: &Value) -> Result<Self, serde_json::Error> {
         let own = match node {
             Value::Object(map) => {
-                if let Some(unknown) = map.keys().find(|key| !Self::is_node_key(key)) {
+                if let Some(unknown) = map.keys().find(|key| doc_key::check(key).is_err() || !Self::is_node_key(key)) {
                     return Err(<serde_json::Error as serde::de::Error>::custom(unknown_key_message(unknown)));
                 }
                 Value::Object(
@@ -318,7 +392,7 @@ impl CharacterDef {
 
     /// True for a key a character node may hold: a definition key or the key of another file.
     fn is_node_key(key: &str) -> bool {
-        Self::NODE_KEYS.contains(&key) || Self::SIBLING_KEYS.contains(&key)
+        doc_key::is_node_key(key) || doc_key::is_sibling_key(key)
     }
 
     /// Writes this definition into the character node `into`: sets the [`NODE_KEYS`](Self::NODE_KEYS) it has a value
@@ -447,16 +521,9 @@ mod tests {
     }
 
     fn def(parts: &[(&str, PartDef)]) -> CharacterDef {
-        CharacterDef {
-            name: "Test".to_owned(),
-            template: BodyTemplateId::new("soft-sd").unwrap(),
-            seed: 1,
-            palette: Palette::default(),
-            skin_tone: None,
-            parts: parts.iter().map(|(n, p)| (id(n), p.clone())).collect(),
-            face: FaceProfile::default(),
-            weight_brushes: BTreeMap::new(),
-        }
+        CharacterDef::new("Test", BodyTemplateId::new("soft-sd").unwrap())
+            .with_seed(1)
+            .with_parts(parts.iter().map(|(n, p)| (id(n), p.clone())).collect())
     }
 
     fn no_requirements(_: &PartKindId) -> Vec<PartKindId> {

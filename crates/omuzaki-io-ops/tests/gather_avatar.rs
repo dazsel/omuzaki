@@ -336,6 +336,12 @@ fn set_from_io(sb: &SpringBones) -> SpringSet {
     let shape = |s: io::ColliderShape| match s {
         io::ColliderShape::Sphere { offset, radius } => ColliderShape::Sphere { offset, radius },
         io::ColliderShape::Capsule { offset, radius, tail } => ColliderShape::Capsule { offset, radius, tail },
+        io::ColliderShape::SphereInside { offset, radius } => ColliderShape::SphereInside { offset, radius },
+        io::ColliderShape::CapsuleInside { offset, radius, tail } => {
+            ColliderShape::CapsuleInside { offset, radius, tail }
+        }
+        io::ColliderShape::Plane { offset, normal } => ColliderShape::Plane { offset, normal },
+        other => panic!("the gather wrote a shape the runtime has no twin for: {other:?}"),
     };
     SpringSet {
         groups: sb
@@ -381,13 +387,13 @@ fn set_from_io(sb: &SpringBones) -> SpringSet {
 fn spring_chains_keep_their_parameters_through_the_file_structures() {
     for built in [mock_built(), rich_built()] {
         let set = &built.rig.springs;
-        let file = springs::to_io(set, 1.0);
+        let file = springs::to_io(set, 1.0, &mut io::Report::default());
         assert_eq!(set_from_io(&file), *set, "set -> file structures -> set");
         assert_eq!((file.chains.len(), file.collider_groups.len()), (set.chains.len(), set.groups.len()));
         assert_eq!(file.colliders.len(), set.groups.iter().map(|g| g.colliders.len()).sum::<usize>());
     }
     // The rich set has everything the file can say: two shapes, two groups, a centre, per-joint parameters.
-    let file = springs::to_io(&rich_built().rig.springs, 1.0);
+    let file = springs::to_io(&rich_built().rig.springs, 1.0, &mut io::Report::default());
     assert_eq!(
         (file.colliders.len(), file.chains[0].collider_groups.clone(), file.chains[1].center),
         (3, vec![0, 1], None)
@@ -396,10 +402,38 @@ fn spring_chains_keep_their_parameters_through_the_file_structures() {
 }
 
 #[test]
+fn the_extended_collider_shapes_reach_the_file_scaled_and_round_trip() {
+    let (offset, tail) = (Vec3::new(0.0, 0.1, 0.02), Vec3::new(0.0, 0.3, 0.0));
+    let shapes = [
+        ColliderShape::SphereInside { offset, radius: 0.2 },
+        ColliderShape::CapsuleInside { offset, radius: 0.2, tail },
+        ColliderShape::Plane { offset, normal: Vec3::Y },
+    ];
+    let mut set = rich_built().rig.springs;
+    set.groups[0].colliders =
+        shapes.iter().map(|&shape| Collider { bone: set.chains[0].joints[0].bone, shape }).collect();
+    let mut report = io::Report::default();
+    let file = springs::to_io(&set, 1.0, &mut report);
+    assert!(report.findings.is_empty(), "{report:?}");
+    assert_eq!(set_from_io(&file).groups[0].colliders, set.groups[0].colliders);
+
+    let half = springs::to_io(&set, 0.5, &mut report);
+    assert_eq!(
+        half.colliders[2].shape,
+        io::ColliderShape::Plane { offset: offset * 0.5, normal: Vec3::Y },
+        "a plane's offset scales and its normal does not"
+    );
+    assert_eq!(half.colliders[0].shape, io::ColliderShape::SphereInside { offset: offset * 0.5, radius: 0.1 });
+}
+
+#[test]
 fn only_lengths_follow_the_scale() {
     let set = rich_built().rig.springs;
     let scale = 0.37_f32;
-    let (base, scaled) = (springs::to_io(&set, 1.0), springs::to_io(&set, scale));
+    let (base, scaled) = (
+        springs::to_io(&set, 1.0, &mut io::Report::default()),
+        springs::to_io(&set, scale, &mut io::Report::default()),
+    );
     for (a, b) in base.chains.iter().flat_map(|c| &c.joints).zip(scaled.chains.iter().flat_map(|c| &c.joints)) {
         assert_eq!(b.hit_radius, a.hit_radius * scale);
         assert_eq!(
@@ -415,6 +449,7 @@ fn only_lengths_follow_the_scale() {
             io::ColliderShape::Capsule { offset, radius, tail } => {
                 io::ColliderShape::Capsule { offset: offset * scale, radius: radius * scale, tail: tail * scale }
             }
+            other => panic!("the test set holds only spheres and capsules, got {other:?}"),
         };
         assert_eq!((a.node, b.shape), (b.node, want));
     }
@@ -422,7 +457,7 @@ fn only_lengths_follow_the_scale() {
     let mut built = rich_built();
     built.rig.springs = set.clone();
     let gathered = vrm_gathered(&built, &clear_record(), Some(1.2));
-    assert_eq!(avatar_of(&gathered).spring_bones, springs::to_io(&set, gathered.scale));
+    assert_eq!(avatar_of(&gathered).spring_bones, springs::to_io(&set, gathered.scale, &mut io::Report::default()));
 }
 
 #[test]
