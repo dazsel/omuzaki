@@ -124,6 +124,10 @@ pub struct HeadOutline {
     pub height: f64,
     /// Superellipse exponent: 2 is an ellipse; lower is pointier, higher squarer.
     pub exponent: f64,
+    /// Superellipse exponent below the cheek line, joined C1 to `exponent` above it; `None` uses `exponent` for the
+    /// whole outline (today's single exponent).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub exponent_lower: Option<f64>,
     /// A longer chin (close-up faces), or `None` for the cranium's own.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub chin: Option<Chin>,
@@ -133,7 +137,15 @@ pub struct HeadOutline {
 
 impl Default for HeadOutline {
     fn default() -> Self {
-        Self { half_width: 0.15, top: -0.1, height: 0.1, exponent: 1.9, chin: None, cheek_puff: 0.0 }
+        Self {
+            half_width: 0.15,
+            top: -0.1,
+            height: 0.1,
+            exponent: 1.9,
+            exponent_lower: None,
+            chin: None,
+            cheek_puff: 0.0,
+        }
     }
 }
 
@@ -143,10 +155,18 @@ impl HeadOutline {
         self.chin.map_or(self.top - self.height, |c| c.y)
     }
 
-    /// Linear blend (CB-10 "blendable"). If only one side has a chin, the chin switches at `t = 0.5`.
+    /// Linear blend (CB-10 "blendable"). If only one side has a chin, the chin switches at `t = 0.5`. `exponent_lower`
+    /// is exact at the ends: `t = 0` gives `self`'s value and `t = 1` gives `other`'s, `None` included. Between them a
+    /// `None` side counts as that side's `exponent`, so the blend stays continuous; two `None`s stay `None`.
     #[must_use]
     pub fn lerp(&self, other: &Self, t: f64) -> Self {
         let m = |a: f64, b: f64| a + (b - a) * t;
+        let exponent_lower = match (self.exponent_lower, other.exponent_lower) {
+            (None, None) => None,
+            _ if t <= 0.0 => self.exponent_lower,
+            _ if t >= 1.0 => other.exponent_lower,
+            (a, b) => Some(m(a.unwrap_or(self.exponent), b.unwrap_or(other.exponent))),
+        };
         let chin = match (self.chin, other.chin) {
             (Some(a), Some(b)) => Some(Chin {
                 y: m(a.y, b.y),
@@ -166,6 +186,7 @@ impl HeadOutline {
             top: m(self.top, other.top),
             height: m(self.height, other.height),
             exponent: m(self.exponent, other.exponent),
+            exponent_lower,
             chin,
             cheek_puff: m(self.cheek_puff, other.cheek_puff),
         }
@@ -178,6 +199,9 @@ impl Validate for HeadOutline {
         c.range("top", self.top, -0.3, 0.2);
         c.range("height", self.height, 0.02, 0.4);
         c.range("exponent", self.exponent, 1.0, 4.0);
+        if let Some(lower) = self.exponent_lower {
+            c.range("exponent_lower", lower, 1.0, 4.0);
+        }
         c.range("cheek_puff", self.cheek_puff, 0.0, 0.05);
         if let Some(chin) = &self.chin {
             c.range("chin/y", chin.y, -0.5, 0.0);
@@ -396,6 +420,64 @@ mod tests {
         assert!(a.lerp(&b, 0.49).chin.is_none() && a.lerp(&b, 0.5).chin.is_some());
         assert!((a.lerp(&b, 0.5).exponent - 1.9).abs() < 1e-6);
         assert_eq!(b.lerp(&b, 0.3), b);
+    }
+
+    #[test]
+    fn a_missing_lower_exponent_is_not_written_and_old_files_still_parse() {
+        let json = serde_json::to_string(&HeadOutline::default()).unwrap();
+        assert!(!json.contains("exponent_lower"), "{json}");
+        let old: HeadOutline = serde_json::from_str(&json).unwrap();
+        assert_eq!(old.exponent_lower, None);
+        let lower: HeadOutline = serde_json::from_str(r#"{"exponent_lower":1.6}"#).unwrap();
+        assert_eq!(lower.exponent_lower, Some(1.6));
+        assert!(serde_json::to_string(&lower).unwrap().contains(r#""exponent_lower":1.6"#));
+    }
+
+    #[test]
+    fn two_missing_lower_exponents_blend_to_none() {
+        let a = HeadOutline { exponent: 2.0, ..HeadOutline::default() };
+        let b = HeadOutline { exponent: 1.8, ..HeadOutline::default() };
+        for t in [0.0, 0.3, 0.5, 1.0] {
+            assert_eq!(a.lerp(&b, t).exponent_lower, None, "t = {t}");
+        }
+    }
+
+    #[test]
+    fn a_missing_lower_exponent_blends_as_its_own_exponent() {
+        let some = HeadOutline { exponent: 2.0, exponent_lower: Some(1.5), ..HeadOutline::default() };
+        let none = HeadOutline { exponent: 1.8, ..HeadOutline::default() };
+        assert_eq!(some.lerp(&none, 0.0).exponent_lower, Some(1.5));
+        assert!((some.lerp(&none, 0.5).exponent_lower.unwrap() - 1.65).abs() < 1e-6);
+        assert_eq!(some.lerp(&none, 1.0).exponent_lower, None, "t = 1 is `other`, exactly");
+        // The `None` side on the left counts as its own `exponent` (1.8 here), so the blend is symmetric.
+        assert!((none.lerp(&some, 0.5).exponent_lower.unwrap() - 1.65).abs() < 1e-6);
+        assert_eq!(none.lerp(&some, 1.0).exponent_lower, Some(1.5));
+    }
+
+    #[test]
+    fn a_mixed_lower_exponent_is_exact_at_the_ends() {
+        let some = HeadOutline { exponent: 2.0, exponent_lower: Some(1.5), ..HeadOutline::default() };
+        let none = HeadOutline { exponent: 1.8, ..HeadOutline::default() };
+        // `t = 0` is `self` and `t = 1` is `other`, so no no-op blend gains or loses the key.
+        assert_eq!(none.lerp(&some, 0.0).exponent_lower, None);
+        assert_eq!(some.lerp(&none, 1.0).exponent_lower, None);
+        assert_eq!(some.lerp(&none, 0.0).exponent_lower, Some(1.5));
+        assert_eq!(none.lerp(&some, 1.0).exponent_lower, Some(1.5));
+        assert_eq!(none.lerp(&some, 0.0), none);
+    }
+
+    #[test]
+    fn a_lower_exponent_outside_the_range_names_its_field() {
+        for bad in [0.5, 4.5, f64::NAN] {
+            let mut h = HeadParams::default();
+            h.outline.exponent_lower = Some(bad);
+            let e = h.validate().unwrap_err();
+            let paths: Vec<_> = e.0.iter().map(|x| x.path.as_str()).collect();
+            assert_eq!(paths, ["outline/exponent_lower"], "{bad}");
+        }
+        let mut h = HeadParams::default();
+        h.outline.exponent_lower = Some(1.6);
+        h.validate().unwrap();
     }
 
     #[test]
