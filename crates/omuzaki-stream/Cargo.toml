@@ -14,6 +14,7 @@ repository.workspace = true
 bytes.workspace = true
 hound.workspace = true
 image.workspace = true
+schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -27,6 +28,7 @@ omuzaki-stream-api = { path = "../omuzaki-stream-api" }
 criterion.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
+omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 
 [features]
 # The testing kit (`testing`): a fake encoder, a memory muxer and a scripted audio source. Tests always see it.
@@ -55,3 +57,5 @@ workspace = true
 kind = "Implementation"
 summary = "the recording and streaming implementation (§25): the A/V timeline, PNG and WAV sinks, the recorder, the replay buffer, FFmpeg encoders behind `ffmpeg`, the watchdog and the stream and record ops, plus the testing kit behind `testing`"
 wasm = false
+# The window ops register themselves (ADR 0015, `cargo xtask lint-registers`).
+registers = true
