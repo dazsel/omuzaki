@@ -17,10 +17,13 @@ use egui::accesskit::Role;
 use egui::{Context, Event, Key, Modifiers, Pos2, RawInput, Rect, vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable as _;
+use omuzaki_core::colour::Colour;
 use omuzaki_doc_api::Value;
-use omuzaki_ui::ds::schema_form::{Form, FormValue, MAX_ESSENTIALS, SchemaForm};
+use omuzaki_ui::ds::schema_form::{EditPhase, Form, FormValue, MAX_ESSENTIALS, SchemaForm};
 use omuzaki_ui::ds::testing::{harness_state, press, unlabelled_interactive};
-use omuzaki_ui::ds::widgets::{Choice, Dropdown, FormRow, NumberField, Segment, Segmented, TextField};
+use omuzaki_ui::ds::widgets::{
+    Choice, ColourField, Curve, CurveEditor, Dropdown, FormRow, NumberField, Preset, Segment, Segmented, TextField,
+};
 use omuzaki_ui::ds::{English, Pseudo, Settings, apply_settings, set_strings};
 use schemars::{JsonSchema, Schema};
 use serde_json::json;
@@ -29,6 +32,8 @@ struct Rig {
     form: Form,
     value: FormValue,
     changes: u32,
+    /// Every edit the form reported, with its field's pointer.
+    edits: Vec<(String, EditPhase)>,
 }
 
 fn schema(json: Value) -> Schema {
@@ -38,9 +43,14 @@ fn schema(json: Value) -> Schema {
 fn rig(schema: &Schema) -> Harness<'static, Rig> {
     let form = Form::from_schema(schema);
     let value = form.default_value();
-    harness_state(Settings::default(), vec2(420.0, 1400.0), Rig { form, value, changes: 0 }, |ui, r| {
-        if SchemaForm::new(&r.form, &mut r.value).id_salt("test").show(ui).changed {
+    let rig = Rig { form, value, changes: 0, edits: Vec::new() };
+    harness_state(Settings::default(), vec2(420.0, 1400.0), rig, |ui, r| {
+        let out = SchemaForm::new(&r.form, &mut r.value).id_salt("test").show(ui);
+        if out.changed {
             r.changes += 1;
+        }
+        if let Some(edit) = out.edit {
+            r.edits.push((r.form.pointer(edit.field).unwrap_or("?").to_owned(), edit.phase));
         }
     })
 }
@@ -142,6 +152,227 @@ fn a_boolean_is_a_toggle() {
     focus(&mut h, Role::Switch, "Outlines");
     press(&mut h, Modifiers::NONE, Key::Space);
     assert_eq!(json_of(&h), json!({"field": true}));
+}
+
+#[test]
+fn a_colour_is_a_colour_field_whatever_way_the_schema_says_so() {
+    let hex = json!({"type": "string", "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$", "title": "Tint", "default": "#336699"});
+    for field in [
+        hex,
+        json!({"type": "string", "format": "color", "title": "Tint", "default": "#336699"}),
+        json!({"type": "string", "x-ui": {"widget": "colour"}, "title": "Tint", "default": "#336699"}),
+    ] {
+        let mut h = rig(&one_field(field));
+        assert_eq!(json_of(&h), json!({"field": "#336699"}));
+        focus(&mut h, Role::ColorWell, "Tint");
+        press(&mut h, Modifiers::NONE, Key::Enter);
+        h.run_steps(3);
+        focus(&mut h, Role::Slider, "Hue");
+        let before = json_of(&h);
+        press(&mut h, Modifiers::SHIFT, Key::ArrowRight);
+        press(&mut h, Modifiers::NONE, Key::Enter);
+        h.run_steps(3);
+        assert_ne!(json_of(&h), before, "a keyboard edit in the popover reaches the form's value");
+        assert!(h.state().edits.iter().any(|(p, phase)| p == "/field" && *phase == EditPhase::Commit));
+    }
+}
+
+#[test]
+fn a_colour_field_without_alpha_keeps_a_colour_with_alpha_as_it_is() {
+    let opaque = Form::from_schema(&one_field(json!({"type": "string", "pattern": "^#[0-9a-fA-F]{6}$"})));
+    assert_eq!(Value::from(&opaque.default_value()), json!({"field": "#000000"}));
+    let kept = opaque.value_from_json(&json!({"field": "#33669980"}));
+    assert!(matches!(&kept, FormValue::Object(f) if matches!(f[0].1, FormValue::Raw(_))), "{kept:?}");
+    let read = opaque.value_from_json(&json!({"field": "#336699"}));
+    assert_eq!(Value::from(&read), json!({"field": "#336699"}));
+    let other =
+        Form::from_schema(&one_field(json!({"type": "string", "pattern": "^#[0-9a-f]{3}$", "format": "color"})));
+    assert!(
+        matches!(other.default_value(), FormValue::Object(f) if f[0].1 == FormValue::Absent),
+        "a colour hint over a pattern the colour field can't promise is not a colour, and its format is read-only"
+    );
+}
+
+#[test]
+fn a_curve_array_is_a_curve_editor_and_arrows_move_a_point() {
+    let mut h = rig(&one_field(json!({
+        "title": "Response", "type": "array", "items": {"type": "number"}, "x-ui": {"widget": "curve"}
+    })));
+    assert_eq!(json_of(&h), json!({"field": [0, 0, 1, 1]}), "the straight line, as x and y pairs");
+    focus(&mut h, Role::Slider, "Response, point 1 of 2");
+    press(&mut h, Modifiers::NONE, Key::ArrowUp);
+    assert_eq!(json_of(&h), json!({"field": [0, 0.01, 1, 1]}));
+    assert_eq!(h.state().edits.last(), Some(&("/field".to_owned(), EditPhase::Commit)));
+}
+
+#[test]
+fn a_curve_value_the_editor_would_change_is_kept_as_it_is() {
+    let form = Form::from_schema(&one_field(
+        json!({"type": "array", "items": {"type": "number"}, "x-ui": {"widget": "curve"}}),
+    ));
+    for given in [
+        json!([0.2, 0, 1, 1]),                   // the editor would move the first point onto x = 0
+        json!([0, 0, 0.5, 2, 1, 1]),             // and clamp y into the unit range
+        json!([0, 0, 1]),                        // not pairs
+        json!([0, 0, 0.123_456_789, 0.5, 1, 1]), // more precision than a curve point holds
+    ] {
+        let value = form.value_from_json(&json!({"field": given}));
+        assert!(matches!(&value, FormValue::Object(f) if matches!(f[0].1, FormValue::Raw(_))), "{given}");
+        assert_eq!(Value::from(&value), json!({"field": given}), "passes through unchanged");
+    }
+    let fine = form.value_from_json(&json!({"field": [0, 0.25, 0.5, 0.3, 1, 1]}));
+    assert_eq!(Value::from(&fine), json!({"field": [0, 0.25, 0.5, 0.3, 1, 1]}));
+}
+
+#[test]
+fn x_ui_unit_step_and_decimals_reach_the_slider() {
+    let mut h = rig(&one_field(json!({
+        "title": "Width", "type": "number", "minimum": 0, "maximum": 10,
+        "x-ui": {"unit": "mm", "step": 0.25, "decimals": 3, "default": 5}
+    })));
+    let strings = omuzaki_ui::ds::testing::accesskit_strings(&h);
+    assert!(strings.iter().any(|s| s.contains("5.000") && s.contains("mm")), "{strings:?}");
+    focus(&mut h, Role::Slider, "Width");
+    press(&mut h, Modifiers::NONE, Key::ArrowRight);
+    assert_eq!(json_of(&h), json!({"field": 5.25}), "one arrow press is one x-ui.step");
+
+    let mut whole = rig(&one_field(json!({
+        "title": "Count", "type": "integer", "minimum": 0, "maximum": 100, "x-ui": {"step": 2.6, "decimals": 2}
+    })));
+    focus(&mut whole, Role::Slider, "Count");
+    press(&mut whole, Modifiers::NONE, Key::ArrowRight);
+    assert_eq!(json_of(&whole), json!({"field": 3}), "an integer's step is rounded to a whole number");
+    let strings = omuzaki_ui::ds::testing::accesskit_strings(&whole);
+    assert!(!strings.iter().any(|s| s.contains("3.00")), "an integer shows no decimals: {strings:?}");
+
+    let mut field =
+        rig(&one_field(json!({"title": "Gap", "type": "number", "minimum": 0, "x-ui": {"unit": "mm", "step": 0.5}})));
+    focus(&mut field, Role::SpinButton, "Gap");
+    press(&mut field, Modifiers::NONE, Key::ArrowUp);
+    assert_eq!(json_of(&field), json!({"field": 0.5}), "a number field steps by x-ui.step too");
+}
+
+#[test]
+fn a_reset_shows_only_away_from_the_default() {
+    let mut h = rig(&one_field(json!({"title": "Outlines", "type": "boolean", "default": true})));
+    assert_eq!(json_of(&h), json!({"field": true}));
+    assert!(
+        h.query_by_role_and_label(Role::Button, "Reset Outlines").is_none(),
+        "at the default there is nothing to reset"
+    );
+    focus(&mut h, Role::Switch, "Outlines");
+    press(&mut h, Modifiers::NONE, Key::Space);
+    assert_eq!(json_of(&h), json!({"field": false}));
+    h.get_by_role_and_label(Role::Button, "Reset Outlines").focus();
+    h.run();
+    press(&mut h, Modifiers::NONE, Key::Enter);
+    h.run_steps(3);
+    assert_eq!(json_of(&h), json!({"field": true}));
+    assert!(h.query_by_role_and_label(Role::Button, "Reset Outlines").is_none());
+    assert_eq!(h.state().edits.last(), Some(&("/field".to_owned(), EditPhase::Commit)), "a reset is one step");
+
+    let mut h = rig(&one_field(json!({"title": "Style", "enum": ["flat", "soft"], "default": "soft"})));
+    focus(&mut h, Role::RadioButton, "soft");
+    press(&mut h, Modifiers::NONE, Key::ArrowLeft);
+    assert_eq!(json_of(&h), json!({"field": "flat"}));
+    assert!(h.query_by_role_and_label(Role::Button, "Reset Style").is_some(), "choice rows get the same reset");
+
+    let mut h = rig(&one_field(json!({"title": "Name", "type": "string"})));
+    focus(&mut h, Role::TextInput, "Name");
+    h.event(Event::Text("x".to_owned()));
+    h.run_steps(3);
+    assert!(h.query_by_role_and_label(Role::Button, "Reset Name").is_none(), "no declared default, no reset");
+}
+
+#[test]
+fn typing_previews_and_leaving_the_field_commits() {
+    let mut h = rig(&one_field(json!({"title": "Name", "type": "string"})));
+    focus(&mut h, Role::TextInput, "Name");
+    h.event(Event::Text("ab".to_owned()));
+    h.run_steps(3);
+    let edits = &h.state().edits;
+    assert!(
+        matches!(edits.as_slice(), [_, ..]) && edits.iter().all(|(_, phase)| *phase == EditPhase::Preview),
+        "{edits:?}"
+    );
+    press(&mut h, Modifiers::NONE, Key::Tab);
+    assert_eq!(h.state().edits.last(), Some(&("/field".to_owned(), EditPhase::Commit)));
+}
+
+// ---- #2030's verification findings ----
+
+/// Replaces the text of the focused field with `text` and leaves it.
+fn retype(h: &mut Harness<'_, Rig>, label: &str, text: &str) {
+    focus(h, Role::TextInput, label);
+    press(h, Modifiers::COMMAND, Key::A);
+    h.event(Event::Text(text.to_owned()));
+    h.run_steps(3);
+}
+
+#[test]
+fn a_typed_integer_beyond_two_to_the_53_is_parsed_exactly_or_refused() {
+    let mut h = rig(&one_field(json!({"title": "Seed", "type": "integer", "format": "int64"})));
+    assert!(h.query_by_role_and_label(Role::TextInput, "Seed").is_some(), "an i64 is typed, not slid");
+    retype(&mut h, "Seed", "9007199254740993");
+    assert_eq!(json_of(&h), json!({"field": 9_007_199_254_740_993_i64}), "2^53 + 1, not rounded to 2^53");
+    retype(&mut h, "Seed", "9223372036854775807");
+    assert_eq!(json_of(&h), json!({"field": i64::MAX}));
+
+    for (typed, says) in [("12.5", "whole number"), ("1e20", "whole number"), ("9223372036854775808", "at most")] {
+        retype(&mut h, "Seed", typed);
+        assert_eq!(json_of(&h), json!({"field": i64::MAX}), "{typed} leaves the value alone");
+        assert!(h.query_by_label_contains(says).is_some(), "{typed} is refused with a message saying {says}");
+    }
+    press(&mut h, Modifiers::NONE, Key::Tab);
+    assert!(h.query_by_label_contains("whole number").is_none(), "leaving the field puts the value's text back");
+
+    let mut big = rig(&one_field(json!({"title": "Id", "type": "integer", "minimum": 0, "format": "uint64"})));
+    retype(&mut big, "Id", "18446744073709551615");
+    assert_eq!(json_of(&big), json!({"field": u64::MAX}));
+    retype(&mut big, "Id", "-1");
+    assert!(big.query_by_label_contains("at least 0").is_some());
+    assert_eq!(json_of(&big), json!({"field": u64::MAX}));
+}
+
+#[test]
+fn an_integer_a_float_cannot_hold_stays_raw_in_a_number_field() {
+    let form = Form::from_schema(&one_field(json!({"type": "number"})));
+    for given in [json!(9_007_199_254_740_993_u64), json!(u64::MAX), json!(i64::MIN + 1)] {
+        let value = form.value_from_json(&json!({"field": given}));
+        assert!(matches!(&value, FormValue::Object(f) if matches!(f[0].1, FormValue::Raw(_))), "{given}");
+        assert_eq!(Value::from(&value), json!({"field": given}), "{given} passes through unchanged");
+    }
+    let exact = form.value_from_json(&json!({"field": 9_007_199_254_740_992_u64}));
+    assert!(matches!(&exact, FormValue::Object(f) if matches!(f[0].1, FormValue::Number(_))), "2^53 is exact");
+}
+
+#[test]
+fn equal_inclusive_bounds_allow_their_one_value_and_only_an_empty_range_is_read_only() {
+    for (field, one) in [
+        (json!({"type": "number", "minimum": 2.5, "maximum": 2.5}), json!(2.5)),
+        (json!({"type": "number", "minimum": 2.5, "maximum": 2.5, "default": 9}), json!(2.5)),
+        (json!({"type": "integer", "minimum": 4, "maximum": 4}), json!(4)),
+    ] {
+        let form = Form::from_schema(&one_field(field.clone()));
+        assert_eq!(Value::from(&form.default_value()), json!({"field": one}), "{field}: the one value is the default");
+        let value = form.value_from_json(&json!({"field": one}));
+        assert!(!matches!(&value, FormValue::Object(f) if matches!(f[0].1, FormValue::Raw(_))), "{field}");
+    }
+    let h = rig(&one_field(json!({"title": "Pinned", "type": "number", "minimum": 1, "maximum": 1})));
+    assert!(h.query_by_role_and_label(Role::ComboBox, "Pinned").is_some(), "a choice of its one value, not read-only");
+    let form = Form::from_schema(&one_field(json!({"type": "number", "minimum": 1, "maximum": 1})));
+    let whole = form.value_from_json(&json!({"field": 1.0}));
+    assert!(!matches!(&whole, FormValue::Object(f) if matches!(f[0].1, FormValue::Raw(_))), "1.0 is the value 1");
+    for empty in [
+        json!({"type": "number", "minimum": 2, "maximum": 1}),
+        json!({"type": "number", "exclusiveMinimum": 1, "maximum": 1}),
+        json!({"type": "number", "minimum": 1, "exclusiveMaximum": 1}),
+        json!({"type": "integer", "minimum": 2, "maximum": 1}),
+        json!({"type": "integer", "exclusiveMinimum": 1, "maximum": 1}),
+    ] {
+        let form = Form::from_schema(&one_field(empty.clone()));
+        assert!(matches!(form.default_value(), FormValue::Object(f) if f[0].1 == FormValue::Absent), "{empty}");
+    }
 }
 
 #[test]
@@ -279,11 +510,12 @@ fn integers_keep_their_json_type_across_the_whole_i64_and_u64_range() {
 
 #[test]
 fn a_one_sided_bound_is_a_number_field_that_keeps_the_bound() {
+    // An integer with no upper bound can pass 2^53, so it is typed as text and parsed exactly; the arrows still step.
     let schema = one_field(json!({"title": "Seed", "type": "integer", "minimum": 5}));
     let mut h = rig(&schema);
     assert_eq!(json_of(&h), json!({"field": 5}), "the default respects the bound");
     assert!(h.query_by_role_and_label(Role::Slider, "Seed").is_none(), "one bound is not a slider");
-    assert!(h.query_by_role_and_label(Role::SpinButton, "Seed").is_some());
+    assert!(h.query_by_role_and_label(Role::TextInput, "Seed").is_some());
     let form = &h.state().form;
     let kept = form.value_from_json(&json!({"field": 4}));
     assert!(
@@ -292,9 +524,17 @@ fn a_one_sided_bound_is_a_number_field_that_keeps_the_bound() {
     );
     let big = form.value_from_json(&json!({"field": 5_000_000_000_u64}));
     assert_eq!(Value::from(&big), json!({"field": 5_000_000_000_u64}), "no hidden upper limit");
-    focus(&mut h, Role::SpinButton, "Seed");
+    focus(&mut h, Role::TextInput, "Seed");
     press(&mut h, Modifiers::NONE, Key::ArrowDown);
     assert_eq!(json_of(&h), json!({"field": 5}), "arrow down stops at the minimum");
+    press(&mut h, Modifiers::NONE, Key::ArrowUp);
+    assert_eq!(json_of(&h), json!({"field": 6}), "arrow up steps by one");
+
+    let float_bounded = rig(&one_field(json!({"title": "Free", "type": "number", "minimum": 5})));
+    assert!(
+        float_bounded.query_by_role_and_label(Role::SpinButton, "Free").is_some(),
+        "a number keeps its spin button"
+    );
 
     let only_max = Form::from_schema(&one_field(json!({"type": "number", "maximum": -2.5})));
     assert_eq!(Value::from(&only_max.default_value()), json!({"field": -2.5}));
@@ -515,7 +755,7 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static GLOBAL: Counting = Counting;
 
-/// The kinds of field a form has, eleven of them.
+/// The kinds of field a form has, fourteen of them.
 fn section_fields() -> Value {
     json!({
         "a": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.5},
@@ -528,7 +768,10 @@ fn section_fields() -> Value {
         "j": {"type": "string", "default": "text"},
         "k": {"type": "string", "pattern": "^[a-z]+$", "default": "slug"},
         "l": {"type": "number", "default": 3},
-        "m": {"type": "integer", "minimum": 0, "maximum": 40, "default": 4}
+        "m": {"type": "integer", "minimum": 0, "maximum": 40, "default": 4},
+        "n": {"type": "string", "x-ui": {"widget": "colour"}, "default": "#336699"},
+        "o": {"type": "array", "items": {"type": "number"}, "x-ui": {"widget": "curve"}, "default": [0, 0, 1, 1]},
+        "p": {"type": "integer", "format": "int64", "default": 7}
     })
 }
 
@@ -559,6 +802,8 @@ fn perturb(value: &mut FormValue) {
             *index = 1;
             *value = json!("q");
         }
+        FormValue::Colour(colour) => *colour = Colour::WHITE,
+        FormValue::Curve(curve) => curve.apply_preset(Preset::EaseIn),
         FormValue::Raw(_) | FormValue::Absent => {}
     }
 }
@@ -607,6 +852,8 @@ fn per_frame(form: &Form, modified: bool) -> f64 {
 fn by_hand(key: &str, count: usize) -> f64 {
     let (mut texts, mut picks) = (vec![String::from("slug"); count], vec![0usize; count]);
     let mut numbers = vec![3.0; count];
+    let mut colours = vec![Colour::hex(0x33_66_99); count];
+    let mut curves = vec![Curve::linear(); count];
     let (three, six) = ([("p", 0usize), ("q", 1), ("r", 2)], ["p", "q", "r", "s", "t", "u"]);
     measure(|ui| {
         for i in 0..count {
@@ -621,6 +868,12 @@ fn by_hand(key: &str, count: usize) -> f64 {
                 }
                 "text" => {
                     ui.add(TextField::new(name, &mut texts[i]).id_salt(i));
+                }
+                "colour" => {
+                    ColourField::new(name, &mut colours[i]).id_salt(i).show(ui);
+                }
+                "curve" => {
+                    CurveEditor::new(name, &mut curves[i]).id_salt(i).show(ui);
                 }
                 _ => {
                     NumberField::new(name, &mut numbers[i], -1.0e9..=1.0e9).id_salt(i).show(ui);
@@ -673,6 +926,9 @@ fn the_form_adds_no_allocation_to_the_widgets_it_composes() {
         ("j", "text"),
         ("k", "text"),
         ("l", "number"),
+        ("n", "colour"),
+        ("o", "curve"),
+        ("p", "text"),
     ] {
         let at_default = marginal(per_frame(&row_of(key, 2), false), per_frame(&row_of(key, 6), false));
         let own = if widget.is_empty() { 0.0 } else { marginal(by_hand(widget, 2), by_hand(widget, 6)) };
