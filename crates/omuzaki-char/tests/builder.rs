@@ -732,6 +732,7 @@ omuzaki_char_api::register_fact!(NoteFact);
 
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
+#[allow(clippy::struct_excessive_bools)] // each flag picks one fact the conformance tests exercise
 struct NoterParams {
     /// Publish the red channel of `tint` instead of 7: a fact that depends on the palette (what the kind does by default).
     from_palette: bool,
