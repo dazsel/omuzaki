@@ -97,46 +97,48 @@ impl FrameSource for MailboxReader {
 
 #[allow(clippy::cast_possible_truncation)] // splitting integers into their 32-bit words
 fn encode(f: &TrackFrame) -> [u32; WORDS] {
+    // Exhaustive patterns: a field added to any of these types fails to compile here until it is encoded.
+    let TrackFrame { seq, time, profile, status, blend, present, head, eyes } = *f;
     let mut w = [0; WORDS];
     let split = |w: &mut [u32], v: u64| {
         w[0] = v as u32;
         w[1] = (v >> 32) as u32;
     };
-    split(&mut w[SEQ..], f.seq);
-    split(&mut w[TIME..], f.time.0.to_bits());
-    let bits = f.present.bits();
+    split(&mut w[SEQ..], seq);
+    split(&mut w[TIME..], time.0.to_bits());
+    let bits = present.bits();
     for (i, word) in w[PRESENT..PRESENT + 4].iter_mut().enumerate() {
         *word = (bits >> (32 * i)) as u32;
     }
-    let mut flags = match f.profile {
+    let mut flags = match profile {
         DeviceProfile::Arkit => 0,
         // `DeviceProfile` is non-exhaustive; `every_profile_round_trips` fails when a variant is added unmapped.
         _ => 1,
     };
-    if f.status == TrackStatus::Lost {
+    if status == TrackStatus::Lost {
         flags |= LOST;
     }
-    for (word, value) in w[BLEND..HEAD].iter_mut().zip(f.blend) {
+    for (word, value) in w[BLEND..HEAD].iter_mut().zip(blend) {
         *word = value.to_bits();
     }
-    if let Some(head) = f.head {
+    if let Some(HeadPose { yaw, pitch, roll, position }) = head {
         flags |= HAS_HEAD;
-        w[HEAD] = head.yaw.to_bits();
-        w[HEAD + 1] = head.pitch.to_bits();
-        w[HEAD + 2] = head.roll.to_bits();
-        if let Some(p) = head.position {
+        w[HEAD] = yaw.to_bits();
+        w[HEAD + 1] = pitch.to_bits();
+        w[HEAD + 2] = roll.to_bits();
+        if let Some(p) = position {
             flags |= HAS_POSITION;
             w[HEAD + 3] = p.x.to_bits();
             w[HEAD + 4] = p.y.to_bits();
             w[HEAD + 5] = p.z.to_bits();
         }
     }
-    if let Some(e) = f.eyes {
+    if let Some(EyeAngles { left_yaw, left_pitch, right_yaw, right_pitch }) = eyes {
         flags |= HAS_EYES;
-        w[EYES] = e.left_yaw.to_bits();
-        w[EYES + 1] = e.left_pitch.to_bits();
-        w[EYES + 2] = e.right_yaw.to_bits();
-        w[EYES + 3] = e.right_pitch.to_bits();
+        w[EYES] = left_yaw.to_bits();
+        w[EYES + 1] = left_pitch.to_bits();
+        w[EYES + 2] = right_yaw.to_bits();
+        w[EYES + 3] = right_pitch.to_bits();
     }
     w[FLAGS] = flags;
     w

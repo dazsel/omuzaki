@@ -155,7 +155,8 @@ touched by its current owner a frame can't be torn. An unread frame is overwritt
   `omuzaki-audio-api` ring does the same). The swap's acquire/release ordering publishes the words, and their own
   accesses are relaxed. That keeps the workspace's `unsafe_code = "deny"` intact in an API crate; the cost is
   encoding and decoding about 300 bytes per frame, a copy the frame needed anyway. The encoding covers every
-  `TrackFrame` field; `DeviceProfile` is non-exhaustive, so a test walks its JSON schema and fails when a variant
+  `TrackFrame` field and destructures the frame exhaustively, so a field added in anim-api fails to compile here
+  until it is carried; `DeviceProfile` is non-exhaustive, so a test walks its JSON schema and fails when a variant
   is added without an encoding.
 - **One producer, one consumer** by construction: neither end is `Clone`.
 
