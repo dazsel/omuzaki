@@ -37,9 +37,6 @@ pub(super) fn allowed(runner: &dyn Runner, op: &str) -> Result<OpInfo, Verdict> 
 
 impl Checker {
     pub(super) fn query(&self, op: &str, args: &Map<String, Value>, at: &str, expect: &QueryExpect) -> Verdict {
-        if expect.equals.is_none() && expect.range.is_none() && expect.change.is_none() {
-            return Verdict::error("`expect` names no condition: a query that expects nothing passes whatever happens");
-        }
         if let Err(refused) = allowed(&*self.result, op) {
             return refused;
         }
@@ -68,7 +65,8 @@ impl Checker {
     }
 }
 
-/// Every condition `expect` gives must hold.
+/// Every condition `expect` gives must hold. The expectation has passed [`validate`](super::validate): its modifiers
+/// belong to a `change`, its numbers are finite and its bounds are ordered, so nothing here guards against that.
 fn judge(expect: &QueryExpect, before: Option<&Value>, after: &Value) -> Verdict {
     if let Some(want) = &expect.equals
         && !same_value(want, after)

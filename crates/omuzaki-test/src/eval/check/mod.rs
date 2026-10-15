@@ -18,6 +18,7 @@ mod number;
 mod query;
 mod report;
 mod resolve;
+mod validate;
 mod value;
 
 use std::collections::BTreeMap;

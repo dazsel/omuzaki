@@ -41,11 +41,35 @@ pub(super) fn result_failure(what: &str, error: &OpError) -> Verdict {
 /// An `error` verdict when it is not: a pointer such as `counter` would otherwise read the whole output like the
 /// empty pointer, and a broken check could pass.
 pub(super) fn well_formed(pointer: &str) -> Result<(), Verdict> {
-    if pointer.is_empty() || pointer.starts_with('/') {
-        Ok(())
-    } else {
-        Err(Verdict::error(format!("pointer `{pointer}` is malformed: a non-empty pointer starts with `/`")))
+    let malformed = |why: String| Verdict::error(format!("pointer `{pointer}` is malformed: {why}"));
+    if pointer.is_empty() {
+        return Ok(());
     }
+    let Some(rest) = pointer.strip_prefix('/') else {
+        return Err(malformed("a non-empty pointer starts with `/`".to_owned()));
+    };
+    rest.split('/').try_for_each(|token| valid_token(token).map_err(malformed))
+}
+
+/// One pointer token, by RFC 6901: `~` is `~0` or `~1` and nothing else, and a token that reads as a number is a
+/// canonical array index, `0` or a non-zero digit followed by digits (no leading zeros, `+`, `-`, spaces or fraction).
+/// A token that looks like a number but is not one is rejected rather than read as the index it resembles.
+fn valid_token(token: &str) -> Result<(), String> {
+    let mut chars = token.chars();
+    while let Some(c) = chars.next() {
+        if c == '~' && !matches!(chars.next(), Some('0' | '1')) {
+            return Err(format!("in `{token}`, `~` must be `~0` or `~1`"));
+        }
+    }
+    let number_like = !token.is_empty()
+        && token.chars().all(|c| c.is_ascii_digit() || matches!(c, '+' | '-' | '.') || c.is_whitespace())
+        && (token == "-" || token.chars().any(|c| c.is_ascii_digit()));
+    let canonical = token == "0"
+        || (token.starts_with(|c: char| ('1'..='9').contains(&c)) && token.chars().all(|c| c.is_ascii_digit()));
+    if number_like && !canonical {
+        return Err(format!("`{token}` is not a canonical array index (`0`, or a non-zero digit then digits)"));
+    }
+    Ok(())
 }
 
 /// Every value a JSON pointer reaches, where a `*` segment stands for each array item or object value.
@@ -95,6 +119,24 @@ mod tests {
         assert_eq!(pointer_all(&v, "/a/1/id").unwrap(), [&json!("y")]);
         assert_eq!(pointer_all(&v, "/a/2/id").unwrap().len(), 0);
         assert_eq!(pointer_all(&v, "").unwrap(), [&v]);
+    }
+
+    #[test]
+    fn pointer_tokens_follow_rfc_6901() {
+        for good in ["", "/", "/a", "/a/0", "/a/10", "/a//b", "/a~0b", "/a~1b", "/~01", "/*", "/a-b", "/x.y", "/+"] {
+            assert!(well_formed(good).is_ok(), "{good}");
+        }
+        for bad in [
+            "a", "/a/01", "/a/00", "/a/+1", "/a/-1", "/a/-", "/a/ 1", "/a/1 ", "/a/1.0", "/a/\t1", "/a~", "/a~2",
+            "/a~/b",
+        ] {
+            let verdict = well_formed(bad).unwrap_err();
+            assert_eq!(verdict.outcome, Outcome::Error, "{bad}");
+        }
+        // A malformed pointer is never traversed: `/items/01` does not read element 1.
+        let v = json!({"items": ["zero", "one"]});
+        assert!(pointer_all(&v, "/items/01").is_err());
+        assert_eq!(pointer_all(&v, "/items/1").unwrap(), [&json!("one")]);
     }
 
     #[test]

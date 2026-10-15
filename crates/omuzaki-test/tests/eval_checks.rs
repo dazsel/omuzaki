@@ -570,3 +570,138 @@ fn malformed_arguments_pointers_and_answers_are_harness_errors_not_the_agents_fa
                  [[check]]\nid='c'\nkind='log.applied'\nop='{x}'\n";
     assert_eq!(outcome(mixed), Outcome::Error);
 }
+
+/// One malformed form, the check text that carries it, and the field the message must name.
+type Row = (&'static str, String, &'static str);
+
+fn expect_row(label: &'static str, expect: &str, field: &'static str) -> Row {
+    (label, query("/counter", expect), field)
+}
+
+fn pointer_row(label: &'static str, at: &str, field: &'static str) -> Row {
+    (label, query(at, "{ equals = 1 }"), field)
+}
+
+fn malformed_rows() -> Vec<Row> {
+    let on = |body: &str| format!("[[check]]\nid='c'\n{body}");
+    vec![
+        // The modifiers of `change`.
+        expect_row("a negative at_least", "{ change = 'up', at_least = -0.04 }", "at_least"),
+        expect_row("at_least without change", "{ equals = 5, at_least = 100.0 }", "at_least"),
+        expect_row("relative without change", "{ equals = 5, relative = true }", "relative"),
+        expect_row("relative without at_least", "{ change = 'up', relative = true }", "relative"),
+        expect_row("change none with at_least", "{ change = 'none', at_least = 1.0 }", "none"),
+        expect_row("change none with relative", "{ change = 'none', relative = true, at_least = 0.1 }", "none"),
+        // Range and equals.
+        expect_row("a range above itself", "{ range = [6.0, 4.0] }", "range"),
+        expect_row("equals outside the range", "{ equals = 9, range = [4.0, 6.0] }", "equals"),
+        expect_row("a string equals beside a range", "{ equals = 'five', range = [4.0, 6.0] }", "equals"),
+        expect_row("a string equals beside a change", "{ equals = 'five', change = 'up' }", "equals"),
+        expect_row("an expectation of nothing", "{}", "expect"),
+        // Pointers, by RFC 6901.
+        pointer_row("an index with a leading zero", "/chars/01/name", "01"),
+        pointer_row("an index with a plus", "/chars/+1/name", "+1"),
+        pointer_row("an index with a space", "/chars/ 1/name", "canonical"),
+        pointer_row("an index with a fraction", "/chars/1.0/name", "1.0"),
+        pointer_row("the past-the-end index", "/chars/-", "canonical"),
+        pointer_row("a negative index", "/chars/-1", "-1"),
+        pointer_row("an escape that is neither ~0 nor ~1", "/chars/a~2b", "~"),
+        pointer_row("a dangling escape", "/chars/a~", "~"),
+        pointer_row("no leading slash", "chars/a", "starts with"),
+        // The rest of the grammar.
+        ("a gate naming nothing", on("kind='gate'\n"), "gate"),
+        ("a gate op with an empty name", on("kind='gate'\nops=['']\n"), "ops"),
+        ("a log op with an empty name", on("kind='log.applied'\nop=' '\n"), "op"),
+        ("a log.within entry with an empty name", on("kind='log.within'\nops=['evaltest.char', '']\n"), "ops"),
+        ("a query with an empty op", on("kind='query'\nop=''\nat='/x'\nexpect={ equals = 1 }\n"), "op"),
+        ("doc.range with no bound", on("kind='doc.range'\npath='counter'\n"), "min"),
+        ("doc.range above itself", on("kind='doc.range'\npath='counter'\nmin=5.0\nmax=1.0\n"), "min"),
+        (
+            "doc.change with a negative at_least",
+            on("kind='doc.change'\npath='counter'\nchange='up'\nat_least=-1.0\n"),
+            "at_least",
+        ),
+        (
+            "doc.change with relative alone",
+            on("kind='doc.change'\npath='counter'\nchange='up'\nrelative=true\n"),
+            "relative",
+        ),
+        (
+            "render.diff with no threshold",
+            on("kind='render.diff'\nrender={ op='render.preview' }\nregion=[0.0, 0.0, 1.0, 1.0]\nexpect={}\n"),
+            "threshold",
+        ),
+        (
+            "render.diff with a fraction above one",
+            on(
+                "kind='render.diff'\nrender={ op='render.preview' }\nregion=[0.0, 0.0, 1.0, 1.0]\nexpect={ changed_fraction_at_least = 2.0 }\n",
+            ),
+            "changed_fraction_at_least",
+        ),
+        (
+            "render.diff with its thresholds crossed",
+            on(
+                "kind='render.diff'\nrender={ op='render.preview' }\nregion=[0.0, 0.0, 1.0, 1.0]\nexpect={ changed_fraction_at_least = 0.8, changed_fraction_at_most = 0.2 }\n",
+            ),
+            "changed_fraction_at_least",
+        ),
+        (
+            "a render.diff region pointer with a leading zero",
+            on(
+                "kind='render.diff'\nrender={ op='render.preview' }\nregion={ op='evaltest.doc', at='/chars/01' }\nexpect={ changed_fraction_at_least = 0.1 }\n",
+            ),
+            "01",
+        ),
+        (
+            "a binding whose pointer has a leading zero",
+            format!(
+                "[bind]\nx = {{ op='evaltest.doc', at='/chars/01', pick='new' }}\n{}",
+                on("kind='log.applied'\nop='{x}'\n")
+            ),
+            "01",
+        ),
+        (
+            "a binding with an empty op",
+            format!("[bind]\nx = {{ op='', at='/ids/*', pick='new' }}\n{}", on("kind='log.applied'\nop='{x}'\n")),
+            "bind op",
+        ),
+    ]
+}
+
+#[test]
+fn every_malformed_form_is_a_harness_error_naming_its_field_before_anything_is_graded() {
+    for (label, toml, field) in malformed_rows() {
+        let report = grade(&toml, Vec::new());
+        let result = &report.results[0];
+        assert_eq!(result.outcome, Outcome::Error, "{label}: {}", result.detail);
+        assert!(result.detail.contains(field), "{label}: the message must name `{field}`: {}", result.detail);
+        assert_eq!((result.before.is_none(), result.after.is_none(), result.score), (true, true, None), "{label}");
+    }
+}
+
+#[test]
+fn well_formed_expectations_and_pointers_are_not_errors() {
+    let valid = [
+        query("/counter", "{ equals = 5 }"),
+        query("/counter", "{ equals = 5, range = [4.0, 6.0] }"),
+        query("/counter", "{ range = [5.0, 5.0] }"),
+        query("/counter", "{ change = 'up' }"),
+        query("/counter", "{ change = 'up', at_least = 0.0 }"),
+        query("/counter", "{ change = 'up', at_least = 0.5, relative = true }"),
+        query("/counter", "{ change = 'none' }"),
+        query("/counter", "{ equals = 5, change = 'up', at_least = 2.0 }"),
+        query("", "{ equals = 1 }"),
+        query("/chars/a/name", "{ equals = 'A' }"),
+        query("/chars/*/name", "{ equals = 'A' }"),
+        query("/chars/0", "{ equals = 'A' }"),
+        query("/chars/10", "{ equals = 'A' }"),
+        query("/chars/a~0b/c~1d", "{ equals = 'A' }"),
+        query("/chars/~01", "{ equals = 'A' }"),
+        query("/chars//a", "{ equals = 'A' }"),
+        query("/chars/a-b/x.y", "{ equals = 'A' }"),
+    ];
+    for toml in valid {
+        let result = &grade(&toml, Vec::new()).results[0];
+        assert_ne!(result.outcome, Outcome::Error, "{toml}: {}", result.detail);
+    }
+}

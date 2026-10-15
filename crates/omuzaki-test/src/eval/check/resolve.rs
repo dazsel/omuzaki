@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use serde_json::Value;
 
 use super::report::Verdict;
+use super::validate;
 use super::value::well_formed;
 use crate::eval::task::{CheckKind, Region};
 
@@ -20,6 +21,9 @@ pub(super) type Names = BTreeMap<String, Result<String, Verdict>>;
 /// An `error` verdict when a name it uses did not resolve, a `{name}` is left that nothing defines (a misspelt
 /// export or binding), or a pointer is malformed.
 pub(super) fn check(kind: &CheckKind, names: &Names) -> Result<CheckKind, Verdict> {
+    // First as parsed: the JSON the names are filled into cannot hold `inf` or `NaN` (they become `null`, and a
+    // threshold would silently vanish), so a number that is not finite must be caught before the round trip.
+    validate::kind(kind)?;
     let mut value =
         serde_json::to_value(kind).map_err(|e| Verdict::error(format!("check cannot be serialised: {e}")))?;
     substitute(&mut value, names)?;
@@ -33,6 +37,8 @@ pub(super) fn check(kind: &CheckKind, names: &Names) -> Result<CheckKind, Verdic
     let kind = serde_json::from_value::<CheckKind>(value)
         .map_err(|e| Verdict::error(format!("check with names filled in is invalid: {e}")))?;
     pointers(&kind).into_iter().try_for_each(well_formed)?;
+    // Again with the names in: an op name that was `{x}` can come out empty, and a pointer can come out malformed.
+    validate::kind(&kind)?;
     Ok(kind)
 }
 

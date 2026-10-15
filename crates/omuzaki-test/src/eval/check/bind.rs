@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 
 use super::query::allowed;
 use super::report::Verdict;
+use super::validate;
 use super::value::{call, pointer_all, result_failure};
 use crate::eval::task::{Bind, Pick};
 use omuzaki_ops_api::{OpError, Runner};
@@ -27,6 +28,7 @@ fn ids(runner: &dyn Runner, bind: &Bind, on_error: fn(&Bind, &OpError) -> Verdic
 
 /// Resolves one binding: the single id the result has that the fixture did not.
 fn resolve_one(fixture: &dyn Runner, result: &dyn Runner, bind: &Bind) -> Result<String, Verdict> {
+    validate::bind(bind)?;
     allowed(result, &bind.op)?;
     let before = ids(fixture, bind, |bind, e| Verdict::error(format!("binding `{}` on the fixture: {e}", bind.op)))?;
     let after = ids(result, bind, |bind, e| result_failure(&format!("binding `{}`", bind.op), e))?;

@@ -17,9 +17,6 @@ const PASSED: &str = "/passed";
 
 impl Checker {
     pub(super) fn gate(&self, ops: &[String], declared: bool) -> Verdict {
-        if ops.is_empty() && !declared {
-            return Verdict::error("a gate check names no ops and does not read the declared gates");
-        }
         let mut failed = Vec::new();
         for op in ops {
             if let Err(refused) = allowed(&*self.result, op) {
