@@ -51,7 +51,13 @@ pub struct Request {
 
 /// What running an op produced.
 ///
-/// `#[non_exhaustive]`: build one with [`Outcome::new`] and [`with_applied`](Self::with_applied).
+/// `#[non_exhaustive]`: build one with [`Outcome::new`] and [`with_applied`](Self::with_applied). A struct literal
+/// outside this crate does not compile:
+///
+/// ```compile_fail,E0639
+/// use omuzaki_ops_api::{Outcome, Plan};
+/// let _ = Outcome { plan: Plan::default(), applied: None };
+/// ```
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[non_exhaustive]
 pub struct Outcome {
@@ -147,10 +153,10 @@ impl OpRecord {
         }
     }
 
-    /// The same record with its `cause`.
+    /// The same record with its `cause` (a [`Cause`] or an `Option<Cause>`, as a request carries it).
     #[must_use]
-    pub fn with_cause(mut self, cause: Cause) -> Self {
-        self.cause = Some(cause);
+    pub fn with_cause(mut self, cause: impl Into<Option<Cause>>) -> Self {
+        self.cause = cause.into();
         self
     }
 
@@ -180,7 +186,22 @@ impl OpRecord {
 ///
 /// `#[non_exhaustive]`, and so is every variant: a new event or a new field edits only this crate. Build events with
 /// the constructors below ([`Event::op_applied`] and so on), match with a wildcard arm and `..` in variant patterns, or
-/// forward them through their serialised form.
+/// forward them through their serialised form. Neither a variant literal nor a `match` without a wildcard arm compiles
+/// outside this crate:
+///
+/// ```compile_fail,E0004
+/// use omuzaki_ops_api::Event;
+/// fn is_commit(event: &Event) -> bool {
+///     match event {
+///         Event::TxCommitted { .. } => true,
+///     }
+/// }
+/// ```
+///
+/// ```compile_fail,E0639
+/// use omuzaki_ops_api::{Actor, Event, TxId};
+/// let _ = Event::TxCommitted { tx: TxId(1), label: String::new(), actor: Actor::System };
+/// ```
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "event", rename_all = "snake_case")]
 #[non_exhaustive]

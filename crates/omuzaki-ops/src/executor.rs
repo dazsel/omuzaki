@@ -116,7 +116,7 @@ impl Executor {
         }
         let plan = self.plan(state, op, meta, req)?;
         if req.mode == Mode::DryRun || meta.kind == OpKind::Query {
-            return Ok(Outcome { plan, applied: None });
+            return Ok(Outcome::new(plan));
         }
         let record = state.apply_edit(Edit {
             op: meta.name,
@@ -129,7 +129,7 @@ impl Executor {
             tx: req.tx,
             at: self.clock.now(),
         })?;
-        Ok(Outcome { plan, applied: Some(record) })
+        Ok(Outcome::new(plan).with_applied(record))
     }
 
     /// Sends the queued events. Called after the state lock is released, so no subscriber is ever called (or waited

@@ -167,7 +167,7 @@ impl<D: DocWrite + Send> Runner for MockRunner<D> {
         let version =
             inner.doc.apply(&plan.patch).map_err(|e| OpError::conflict(e.to_string()).hint("re-plan and retry"))?;
         let tx = inner.attach(req.tx, &req.actor, meta.summary, &plan.patch);
-        let mut record = OpRecord::new(
+        let record = OpRecord::new(
             inner.log.len() as u64 + 1,
             req.op,
             req.args,
@@ -176,10 +176,8 @@ impl<D: DocWrite + Send> Runner for MockRunner<D> {
             Clock::now(&inner.clock),
             plan.patch.clone(),
             version,
-        );
-        if let Some(cause) = req.cause {
-            record = record.with_cause(cause);
-        }
+        )
+        .with_cause(req.cause);
         inner.log.push(record.clone());
         inner.emit(&Event::op_applied(record.clone()));
         Ok(Outcome::new(plan).with_applied(record))

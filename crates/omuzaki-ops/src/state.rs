@@ -174,22 +174,10 @@ impl State {
         };
 
         let tx = joined.as_ref().map_or_else(|| next_tx(&mut self.last_tx), |open| open.step.tx);
-        let record = OpRecord {
-            seq: self.log.len() as u64 + 1,
-            op: op.to_owned(),
-            args,
-            actor,
-            cause,
-            tx,
-            at,
-            patch: patch.clone(),
-            version,
-            on_behalf_of: None,
-            approval: None,
-            effect: None,
-        };
+        let record =
+            OpRecord::new(self.log.len() as u64 + 1, op, args, actor, tx, at, patch.clone(), version).with_cause(cause);
         self.log.push(record.clone());
-        self.outbox.push(Event::OpApplied { record: record.clone() });
+        self.outbox.push(Event::op_applied(record.clone()));
 
         if let Some(open) = joined {
             open.step.absorb(op, scope, undo, patch);
@@ -224,7 +212,7 @@ impl State {
         }
         self.open.remove(&tx);
         let version = self.doc.version();
-        self.outbox.push(Event::TxRolledBack { tx, actor: actor.clone(), version });
+        self.outbox.push(Event::tx_rolled_back(tx, actor.clone(), version));
         Ok(())
     }
 
@@ -255,7 +243,7 @@ impl State {
     /// invalidate the owner's redo: running a query must not throw away the user's redo history, and one actor's
     /// edits must not throw away another's.
     fn finish(&mut self, owner: &Actor, step: Step) {
-        self.outbox.push(Event::TxCommitted { tx: step.tx, label: step.label.clone(), actor: owner.clone() });
+        self.outbox.push(Event::tx_committed(step.tx, step.label.clone(), owner.clone()));
         if step.changes_document() {
             let history = self.history(owner);
             history.redo.clear();
@@ -302,8 +290,8 @@ impl State {
         // Undo is per actor for now, so the actor owns the step it moves; per-principal undo makes them differ.
         let (actor, owner, version) = (actor.clone(), actor.clone(), self.doc.version());
         self.outbox.push(match direction {
-            Direction::Undo => Event::Undone { tx, label: label.clone(), actor, owner, version },
-            Direction::Redo => Event::Redone { tx, label: label.clone(), actor, owner, version },
+            Direction::Undo => Event::undone(tx, label.clone(), actor, owner, version),
+            Direction::Redo => Event::redone(tx, label.clone(), actor, owner, version),
         });
         Ok(Some(label))
     }
