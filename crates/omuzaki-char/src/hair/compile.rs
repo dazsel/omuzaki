@@ -13,8 +13,8 @@
 //! prototype's Park-Miller stream shared by all groups (parity mode). Generators never construct their own generators.
 
 use omuzaki_char_api::{
-    Bulge, Dynamics, Generator, GroupId, GuidePoint, HairClump, HairGroup, HairParams, HairRng, HeadSurface, LegacyLcg,
-    Quality, Taper,
+    Bulge, Dynamics, Generator, GroupId, GuidePoint, HairClump, HairGroup, HairParams, HairRng, HairSide, HeadSurface,
+    LegacyLcg, Quality, Taper,
 };
 use omuzaki_core::glam::Vec3;
 use omuzaki_core::mesh::MeshData;
@@ -327,18 +327,18 @@ pub fn enabled(params: &HairParams) -> impl Iterator<Item = (&GroupId, &HairGrou
     params.groups.iter().filter(|(_, g)| g.enabled)
 }
 
-/// Whether a generator already makes both sides of the head, so mirroring its group would lay a second copy exactly on
-/// the first. The match has no wildcard: a new generator has to say which kind it is.
+/// Whether a generator makes both sides of the head itself, so its group's `mirror` is ignored: mirroring would add a
+/// second pair of the sides it already makes. A framing group is bilateral only at [`HairSide::Both`]. The match has no
+/// wildcard: a new generator has to say which kind it is.
 pub fn is_bilateral(generator: &Generator) -> bool {
     match generator {
-        Generator::Cap(_) | Generator::PartSweep(_) => true,
-        Generator::Framing(_)
+        Generator::Cap(_)
+        | Generator::PartSweep(_)
         | Generator::Braid(_)
         | Generator::Curtain(_)
-        | Generator::Bangs(_)
-        | Generator::Tail(_)
-        | Generator::Bun(_)
-        | Generator::Guides(_) => false,
+        | Generator::Bangs(_) => true,
+        Generator::Framing(g) => g.side == HairSide::Both,
+        Generator::Tail(_) | Generator::Bun(_) | Generator::Guides(_) => false,
     }
 }
 
