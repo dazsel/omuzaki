@@ -114,6 +114,7 @@
 //! let token = port.issue("Codex", Grants::agent_default())?;
 //! // The client sends `Authorization: Bearer <token.secret()>` to `port.url()`.
 //! port.revoke(token.id()).await; // ends its sessions too
+//! let connected = port.tokens().await; // the live tokens, for the "connected apps" panel: never their secrets
 //! ```
 //!
 //! What stands between a request and the runner, in order:
@@ -169,7 +170,7 @@ mod session;
 mod signature;
 mod suggest;
 
-pub use access::{AccessToken, RECORD_VERSION, TokenId, TokenRecord};
+pub use access::{AccessToken, RECORD_VERSION, TokenId, TokenInfo, TokenRecord};
 pub use connection::Connections;
 pub use error::ServerError;
 pub use http::{HttpOptions, HttpServer};
