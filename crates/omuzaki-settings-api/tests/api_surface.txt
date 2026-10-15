@@ -1,0 +1,101 @@
+src/check.rs: pub fn assert_crate(package: &str) {
+src/check.rs: macro_rules! check_crate {
+src/check.rs: pub fn problems(all: &[&SettingRegistration], package: &str) -> Vec<String> {
+src/error.rs: pub struct SettingError {
+src/error.rs: pub enum SettingErrorKind {
+src/error.rs: pub const fn id(&self) -> &'static str {
+src/error.rs: pub fn new(key: impl Into<String>, kind: SettingErrorKind) -> Self {
+src/error.rs: pub fn unknown_key(key: impl Into<String>) -> Self {
+src/error.rs: pub fn wrong_type(key: impl Into<String>, reason: impl fmt::Display) -> Self {
+src/error.rs: pub fn invalid(key: impl Into<String>, reason: impl Into<String>) -> Self {
+src/error.rs: pub fn range<T: PartialOrd + fmt::Display>(key: &str, value: T, min: T, max: T) -> Result<(), Self> {
+src/error.rs: pub struct SettingFinding {
+src/error.rs: pub fn new(error: SettingError, stored: Value, from: impl Into<String>) -> Self {
+src/event.rs: pub struct Change {
+src/event.rs: pub fn new(key: impl Into<String>, before: Value, after: Value, apply: Apply) -> Self {
+src/event.rs: pub enum ChangeCause {
+src/event.rs: pub struct SettingsEvent {
+src/event.rs: pub fn new(cause: ChangeCause, changes: Vec<Change>) -> Self {
+src/event.rs: pub fn change_of(&self, key: &str) -> Option<&Change> {
+src/event.rs: pub struct SwitchReport {
+src/event.rs: pub fn new(changed: u32, pending_restart: Vec<String>) -> Self {
+src/event.rs: pub struct SettingChange {
+src/event.rs: pub fn new(change: Change, actor: Actor, at: Seconds) -> Self {
+src/event.rs: pub const CHANGE_LOG_CAPACITY: usize = 200;
+src/event.rs: pub struct Subscription<T> {
+src/event.rs: pub fn next(&self) -> Option<T> {
+src/event.rs: pub fn drain(&self) -> Vec<T> {
+src/event.rs: pub struct Publisher<T> {
+src/event.rs: pub fn subscribe(&self) -> Subscription<T> {
+src/event.rs: pub fn publish(&self, event: &T) {
+src/lib.rs: pub mod check;
+src/lib.rs: pub mod error;
+src/lib.rs: pub mod event;
+src/lib.rs: pub mod meta;
+src/lib.rs: pub mod profile;
+src/lib.rs: pub mod registry;
+src/lib.rs: pub mod secret;
+src/lib.rs: pub mod service;
+src/lib.rs: pub mod session;
+src/lib.rs: pub mod setting;
+src/lib.rs: pub use inventory as __inventory;
+src/lib.rs: pub use omuzaki_core::__record_registration;
+src/meta.rs: pub enum SettingScope {
+src/meta.rs: pub enum AgentWrite {
+src/meta.rs: pub enum InProfile {
+src/meta.rs: pub enum Apply {
+src/meta.rs: pub struct SettingMeta {
+src/meta.rs: pub const fn new(
+src/meta.rs: pub fn area(&self) -> &'static str {
+src/profile.rs: pub fn from_name(name: &str, suffix: &str) -> Result<Self, SettingError> {
+src/profile.rs: pub struct ProfileInfo {
+src/profile.rs: pub fn new(id: ProfileId, name: impl Into<String>, keys: u32, active: bool) -> Self {
+src/profile.rs: pub enum ProfileSource {
+src/profile.rs: pub const NAME_MAX: usize = 48;
+src/profile.rs: pub fn validate_name(name: &str) -> Result<String, SettingError> {
+src/registry.rs: pub struct SettingRegistration {
+src/registry.rs: pub const fn of<S: Setting>(package: &'static str) -> Self {
+src/registry.rs: pub fn schema(&self) -> Schema {
+src/registry.rs: pub fn default_json(&self) -> Value {
+src/registry.rs: pub fn validate(&self, value: &Value) -> Result<(), SettingError> {
+src/registry.rs: pub fn migrate(&self, from: u32, old: Value) -> Result<Value, SettingError> {
+src/registry.rs: pub fn registrations() -> impl Iterator<Item = &'static SettingRegistration> {
+src/registry.rs: pub fn find(key: &str) -> Option<&'static SettingRegistration> {
+src/registry.rs: macro_rules! register_setting {
+src/secret.rs: pub struct SecretRef(String);
+src/secret.rs: pub const MAX_LEN: usize = 128;
+src/secret.rs: pub fn new(label: impl Into<String>) -> Result<Self, SettingError> {
+src/secret.rs: pub fn label(&self) -> &str {
+src/service.rs: pub enum Source {
+src/service.rs: pub enum Layer {
+src/service.rs: pub struct Resolved {
+src/service.rs: pub fn new(key: impl Into<String>, value: Value, default: Value, source: Source, meta: SettingMeta) -> Self {
+src/service.rs: pub fn is_modified(&self) -> bool {
+src/service.rs: pub struct ListFilter {
+src/service.rs: pub fn all() -> Self {
+src/service.rs: pub fn with_area(mut self, area: impl Into<String>) -> Self {
+src/service.rs: pub fn only_changed(mut self) -> Self {
+src/service.rs: pub struct Snapshot {
+src/service.rs: pub fn new(entries: BTreeMap<String, (Value, Source)>) -> Self {
+src/service.rs: pub fn defaults() -> Self {
+src/service.rs: pub fn value(&self, key: &str) -> Option<&Value> {
+src/service.rs: pub fn source(&self, key: &str) -> Option<&Source> {
+src/service.rs: pub fn iter(&self) -> impl Iterator<Item = (&str, &Value, &Source)> {
+src/service.rs: pub fn get<S: Setting>(&self) -> Result<S::Value, SettingError> {
+src/service.rs: pub trait Settings: Send + Sync {
+src/service.rs: pub trait SettingsExt: Settings {
+src/session.rs: pub const MAX_RECENT: usize = 20;
+src/session.rs: pub struct RecentProject {
+src/session.rs: pub fn new(path: impl Into<PathBuf>, name: impl Into<String>, opened: i64) -> Self {
+src/session.rs: pub struct WindowGeometry {
+src/session.rs: pub fn new(x: i32, y: i32, w: u32, h: u32) -> Self {
+src/session.rs: pub fn maximised(mut self, maximised: bool) -> Self {
+src/session.rs: pub fn on_monitor(mut self, monitor: impl Into<String>) -> Self {
+src/session.rs: pub struct SessionState {
+src/session.rs: pub fn begin_open(&mut self, project: &Path) {
+src/session.rs: pub fn opened(&mut self, project: &Path, name: &str, at: i64) {
+src/session.rs: pub fn forget(&mut self, project: &Path) {
+src/session.rs: pub fn set_window(&mut self, id: &str, geometry: WindowGeometry) {
+src/session.rs: pub fn mark_version_seen(&mut self, version: &str) {
+src/session.rs: pub trait SessionStore: Send + Sync {
+src/setting.rs: pub trait Setting: 'static {
