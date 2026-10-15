@@ -17,7 +17,7 @@ use omuzaki_test::dirs::Dirs;
 use omuzaki_test::eval::run::{self, Options, RunReport, Selection};
 use omuzaki_test::eval::script::{self, Script};
 use omuzaki_test::eval::transcript::EventLog;
-use omuzaki_test::eval::{self, gc as run_gc, lint};
+use omuzaki_test::eval::{self, gate, gc as run_gc, history, lint};
 use omuzaki_test::gc::{self, MIN_AGE, Object, Plan, Removal, total_bytes};
 use omuzaki_test::goldens::{GoldenId, Goldens, Mode, Outcome, load_png, save_png};
 use omuzaki_test::migrate::migrate;
@@ -197,6 +197,20 @@ enum EvalCommand {
         run_id: Option<String>,
         #[command(flatten)]
         root: RootArg,
+    },
+    /// Say which tasks and suites regressed, from the history (design 8).
+    ///
+    /// Scores the reference driver's attempts: a task regresses when its latest ten scored attempts are improbably few
+    /// passes under its own rate of the 28 days before (`P(X <= k | n = 10, p0) < 0.01`), and a model's nightly suite when
+    /// it falls below the median of the 14 nights before by more than max(5 points, 3 x MAD). Series with under 20 scored
+    /// attempts are provisional and never flag. Exits 1 on a regression, 0 otherwise; warnings do not fail it.
+    Gate {
+        /// Print the report as JSON: every series with its window, baseline, commits and transcripts.
+        #[arg(long)]
+        json: bool,
+        /// The status folder holding the history (default: `$OMUZAKI_EVAL_STATUS`, else `$OMUZAKI_ASSETS/status`).
+        #[arg(long, value_name = "DIR")]
+        status: Option<PathBuf>,
     },
     /// Remove run folders older than 90 days, unless an open issue or a promoted script names them.
     ///
@@ -392,6 +406,7 @@ fn run(cli: Cli) -> Verdict {
             let plan = RunArgs { driver, attempts, jobs, record, binary, omuzaki_bin, spend_usd, kind, run_id };
             eval_run(&root, select, plan)
         }
+        Command::Eval(EvalCommand::Gate { json, status }) => eval_gate(json, status),
         Command::Eval(EvalCommand::Gc { apply, issues, root }) => {
             eval_gc(&workspace_root(root.root)?, apply, issues.as_deref())
         }
@@ -562,6 +577,63 @@ fn print_run(report: &RunReport) {
         report.refused.len(),
         if run.valid { "valid" } else { "NOT valid: more than 10% of the attempts errored" },
     );
+}
+
+/// `eval gate`: reads the history and prints what regressed.
+fn eval_gate(json: bool, status: Option<PathBuf>) -> Verdict {
+    let status = match status {
+        Some(dir) => dir,
+        None => assets_folder("OMUZAKI_EVAL_STATUS", "status")?,
+    };
+    let attempts = history::read_attempts(&status.join(history::HISTORY_FILE))?;
+    let runs = history::read_runs(&status.join(history::RUNS_FILE))?;
+    let report = gate::gate(&attempts, &runs);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print_gate(&report);
+    }
+    Ok(!report.failed())
+}
+
+fn print_gate(report: &gate::GateReport) {
+    for task in &report.tasks {
+        let model = task.model.as_deref().unwrap_or("-");
+        let [low, high] = task.window.wilson;
+        let base = task.baseline.map_or_else(
+            || "no baseline".to_owned(),
+            |b| format!("baseline {}/{} = {:.0}%", b.passes, b.n, b.rate * 100.0),
+        );
+        println!(
+            "{:<10} {} v{} ({model}): window {}/{} = {:.0}% [{:.0}%..{:.0}%], {base}{}",
+            format!("{:?}", task.status).to_lowercase(),
+            task.task,
+            task.version,
+            task.window.passes,
+            task.window.n,
+            task.window.rate * 100.0,
+            low * 100.0,
+            high * 100.0,
+            if task.weak { ", WEAK: fix the tools" } else { "" },
+        );
+    }
+    for suite in &report.suites {
+        let said = match (suite.rate, suite.median, suite.tolerance) {
+            (Some(rate), Some(median), Some(tolerance)) => format!(
+                "{:.1}% against a median of {:.1}% (tolerance {:.1} points){}",
+                rate * 100.0,
+                median * 100.0,
+                tolerance * 100.0,
+                if suite.regression { ": REGRESSION" } else { "" }
+            ),
+            (Some(rate), ..) => format!("{:.1}%, fewer than 14 nights before it to judge by", rate * 100.0),
+            _ => "no non-provisional task ran".to_owned(),
+        };
+        println!("suite {} ({}): {said}", suite.model, suite.run);
+    }
+    for warning in &report.warnings {
+        println!("warning {}: {}", warning.task, warning.message);
+    }
 }
 
 /// `eval gc`: lists what would go, and removes it with `--apply`.

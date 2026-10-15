@@ -400,3 +400,60 @@ fn options_that_make_no_sense_are_refused_before_anything_runs() {
     }
     assert!(!tmp.path().join("out").exists() && !tmp.path().join("scratch").exists());
 }
+
+/// One reference-driver attempt line of the history, as the schema of design 7.1 spells it.
+fn history_line(run: &str, outcome: &str) -> String {
+    json!({
+        "v": 1, "run": run, "commit": "abc1234", "family": "task", "driver": "reference", "model": "m", "effort": null,
+        "task": "t", "task_version": 1, "task_hash": "b3:x", "feature": "QG-03", "attempt": 1, "outcome": outcome,
+        "reason": null, "checks": [], "turns": 3, "tool_calls": 5, "tool_errors": 0, "retries": 0,
+        "usage": {"input": 1, "output": 1, "cache_read": 1, "cache_write": 0}, "usd_micros": 10, "wall_ms": 1,
+        "tools_hash": "b3:t", "prompt_hash": "b3:p", "harness": "0", "transcript": format!("evals/runs/{run}/t/1/")
+    })
+    .to_string()
+}
+
+/// `eval gate` exits 1 on a regression and 0 otherwise, and `--json` carries what a report needs.
+#[test]
+fn the_gate_command_reads_the_history_and_exits_by_what_it_finds() {
+    let dir = tempfile::tempdir().unwrap();
+    let status = dir.path().join("status");
+    fs::create_dir_all(&status).unwrap();
+    // Thirty baseline attempts at 90% on days before the window, then ten attempts with `window_passes` passes.
+    let write_history = |window_passes: usize| {
+        let mut lines = Vec::new();
+        for day in 1..=10 {
+            for i in 0..3 {
+                let outcome = if day <= 3 && i == 0 { "fail" } else { "pass" };
+                lines.push(history_line(&format!("2026-09-{day:02}T00:00Z-nightly"), outcome));
+            }
+        }
+        for i in 0..10 {
+            lines.push(history_line("2026-09-12T00:00Z-nightly", if i < window_passes { "pass" } else { "fail" }));
+        }
+        fs::write(status.join(HISTORY_FILE), lines.join("\n") + "\n").unwrap();
+    };
+    let gate =
+        |extra: &[&str]| common::run(&[&["eval", "gate", "--status", common::arg(&status)], extra].concat(), &[]);
+
+    write_history(5);
+    let bad = gate(&[]);
+    assert_eq!(common::code(&bad), 1, "{}", common::text(&bad.stdout));
+    assert!(common::text(&bad.stdout).contains("regression"), "{}", common::text(&bad.stdout));
+    let json: serde_json::Value = serde_json::from_str(&common::text(&gate(&["--json"]).stdout)).unwrap();
+    assert_eq!(json["tasks"][0]["status"], "regression");
+    assert_eq!(json["tasks"][0]["baseline"]["n"], 30);
+    assert_eq!(json["tasks"][0]["failing"].as_array().unwrap().len(), 5);
+
+    write_history(6);
+    let fine = gate(&[]);
+    assert_eq!(common::code(&fine), 0, "{}", common::text(&fine.stdout));
+    assert!(common::text(&fine.stdout).starts_with("ok"), "{}", common::text(&fine.stdout));
+
+    // A history line the harness cannot read is a fault of the harness's, not a quiet night.
+    fs::write(status.join(HISTORY_FILE), "{\"v\": 2}\n").unwrap();
+    assert_eq!(common::code(&gate(&[])), 2);
+    // No history at all gates nothing.
+    fs::remove_file(status.join(HISTORY_FILE)).unwrap();
+    assert_eq!(common::code(&gate(&[])), 0);
+}

@@ -18,6 +18,7 @@ pub mod check;
 pub mod clock;
 pub mod driver;
 pub mod fixture;
+pub mod gate;
 pub mod gc;
 pub mod history;
 pub mod host;
