@@ -310,7 +310,7 @@ impl Shot {
 
 /// Renders the four views of `spec.pose` of the character on `stage`.
 ///
-/// The stage's scene is borrowed for the sheet (camera, lights from [`LIGHT_RIG`], background, and every other setting at its default) and put back after.
+/// The stage ticks once first, so a staged face variant is in before anything is measured. The stage's scene is borrowed for the sheet (camera, lights from [`LIGHT_RIG`], background, and every other setting at its default) and put back after.
 /// The character is ticked at each yaw, settled, ticked again and then drawn offline from that one scene, tile by
 /// tile where the cell is too big for one target.
 ///
@@ -325,6 +325,31 @@ pub fn render_turnaround(
     if spec.cell.x == 0 || spec.cell.y == 0 {
         return Err(TurnaroundError::Invalid("the cell has no pixels".to_owned()));
     }
+    let (lights, look) = LightRig::load(LIGHT_RIG).and_then(|rig| Ok((rig.to_lights()?, rig.post(false))))?;
+    // Everything that can fail without touching the stage comes first, so an error here leaves the caller's scene as it was.
+    let target = renderer
+        .create_target(&TargetDesc { size: UVec2::splat(1), alpha: AlphaEncoding::Straight })
+        .map_err(|e| StageError::render("the sheet's target", e))?;
+    let saved = stage.scene().clone();
+    *stage.scene_mut() = neutral_scene(&saved, Camera::default(), lights, look, spec.background);
+    let sheet = draw_sheet(stage, renderer, spec, target);
+    let released = renderer.release(ResourceRef::from(target));
+    *stage.scene_mut() = saved;
+    let sheet = sheet?;
+    released.map_err(|e| StageError::render("the sheet's target", e))?;
+    Ok(sheet)
+}
+
+/// Draws the four views from the stage's neutral scene.
+fn draw_sheet(
+    stage: &mut Stage,
+    renderer: &mut dyn Renderer,
+    spec: &TurnaroundSpec,
+    target: TargetId,
+) -> Result<TurnaroundSheet, TurnaroundError> {
+    // A face variant staged before the call swaps in at the next tick, and with it the character's meshes and rig, so
+    // that tick comes first and everything the sheet measures is read from the character it will draw.
+    stage.tick(renderer, &FrameInput::default())?;
     let subject = Subject::of(stage.built())?;
     let shot = Shot::new(&subject, spec);
     let tile = tile_side(renderer, spec);
@@ -335,19 +360,9 @@ pub fn render_turnaround(
         SheetPose::Rest => stage.built().rig.bind,
         SheetPose::Hero => hero_pose(&stage.built().rig.bind),
     };
-    let (lights, look) = LightRig::load(LIGHT_RIG).and_then(|rig| Ok((rig.to_lights()?, rig.post(false))))?;
-    // Everything that can fail comes before the scene is touched, so an error here leaves the caller's scene as it was.
-    let target = renderer
-        .create_target(&TargetDesc { size: UVec2::splat(1), alpha: AlphaEncoding::Straight })
-        .map_err(|e| StageError::render("the sheet's target", e))?;
-    let saved = stage.scene().clone();
-    *stage.scene_mut() = neutral_scene(&saved, shot.camera, lights, look, spec.background);
+    stage.scene_mut().camera = shot.camera;
     let run = Run { spec, subject, shot, pose, target, tile };
-    let views = View::ALL.into_iter().map(|view| run.view(stage, renderer, view)).collect::<Result<Vec<_>, _>>();
-    let released = renderer.release(ResourceRef::from(target));
-    *stage.scene_mut() = saved;
-    let views = views?;
-    released.map_err(|e| StageError::render("the sheet's target", e))?;
+    let views = View::ALL.into_iter().map(|view| run.view(stage, renderer, view)).collect::<Result<Vec<_>, _>>()?;
     Ok(TurnaroundSheet { pose: spec.pose, views })
 }
 

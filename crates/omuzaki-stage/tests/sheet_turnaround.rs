@@ -15,9 +15,17 @@
     clippy::cast_possible_truncation
 )]
 
-use omuzaki_char_api::{BuildOptions, BuildServices, BuiltCharacter, CharId, CharacterBuilder, RegistryBuilder};
+use std::sync::Arc;
+
+use omuzaki_char::builder::CachingBuilder;
+use omuzaki_char_api::{
+    BuildOptions, BuildServices, BuiltCharacter, CharId, CharacterBuilder, JointRef, RegistryBuilder, VariantId,
+    VariantSet, resolve_variant,
+};
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::{UVec2, Vec3};
+use omuzaki_face::FaceSystem;
+use omuzaki_face_mock::{MockPainter, MockRasterizer};
 use omuzaki_render_api::{
     AlphaEncoding, Background, Bloom, Camera, Capabilities, ColourGrade, DepthOfField, EnvironmentDesc, EnvironmentUse,
     FilmGrain, Fog, FrameReport, Image, Light, Material, MaterialId, MeshData, MeshId, MeshOptions, Painter, Post,
@@ -26,7 +34,8 @@ use omuzaki_render_api::{
 };
 use omuzaki_render_mock::MockRenderer;
 use omuzaki_stage::UploadOptions;
-use omuzaki_stage::frame::{Stage, StageClock};
+use omuzaki_stage::frame::face::{CharacterSource, FaceRig, InlineExecutor};
+use omuzaki_stage::frame::{FrameInput, Stage, StageClock};
 use omuzaki_stage::sheet::turnaround::{
     EYE_LINE_FRACTION, HEAD_CENTRE_FRACTION, Lens, MARGIN, SheetPose, TurnaroundError, TurnaroundSheet, TurnaroundSpec,
     View, hero_pose, render_turnaround,
@@ -370,6 +379,103 @@ fn nothing_the_caller_sets_on_the_scene_reaches_the_sheet() {
     for (a, b) in clear.views.iter().zip(&loud.views) {
         assert_eq!(a.image.rgba8, b.image.rgba8, "{:?} is drawn from a neutral scene", a.view);
     }
+}
+
+/// The row of the eye line in the front view of a sheet of `built`, from its head joint and its height.
+fn expected_eye_row(built: &BuiltCharacter) -> f32 {
+    let (sole, crown) = built
+        .meshes
+        .iter()
+        .flat_map(|m| m.mesh.geometry.positions.iter())
+        .fold((f32::MAX, f32::MIN), |(lo, hi), p| (lo.min(p.y), hi.max(p.y)));
+    let head = built.rig.bone(&JointRef::HEAD).expect("a head bone").index();
+    let joint = built.rig.inverse_bind()[head].inverse().transform_point3(Vec3::ZERO);
+    let ppm = CELL.y as f32 / ((crown - sole) * (1.0 + 2.0 * MARGIN));
+    let eye = joint.y + EYE_LINE_FRACTION * (crown - joint.y);
+    0.5 * CELL.y as f32 - (eye - f32::midpoint(crown, sole)) * ppm
+}
+
+/// A camera that sees the stage's head at `coverage` of the frame's height: what makes the variant service stage the
+/// close-up (as in `frame_face.rs`).
+fn camera_for(stage: &Stage, coverage: f64) -> Camera {
+    let built = stage.built();
+    let face = built.face.as_ref().expect("the mock has a face");
+    let head_height = f64::from(face.projection.rect.y1 - face.projection.rect.y0);
+    let bone = built.rig.bone(&JointRef::HEAD).expect("a head bone").index();
+    let bind = built.rig.inverse_bind()[bone].inverse().w_axis.truncate();
+    let head = stage.skin().get(bone).map_or(bind, |skin| skin.transform_point3(bind));
+    let distance = head_height / (coverage * 2.0 * (15.0_f64.to_radians()).tan());
+    Camera::look_at(
+        head + Vec3::new(0.0, 0.0, distance as f32),
+        head,
+        Vec3::Y,
+        Projection::Perspective { fov_y_deg: 30.0, near: 0.01, far: 50.0 },
+    )
+}
+
+#[test]
+fn a_variant_staged_before_the_call_is_framed_as_the_new_character() {
+    // The close-up lengthens the torso, so its rig and height differ from the wide variant's.
+    let variants: VariantSet = serde_json::from_str(
+        r#"{
+            "game": { "shot": { "min": 0.0, "max": 0.35 } },
+            "close-up": { "extends": "game", "shot": { "min": 0.35, "max": 5.0 },
+                          "overrides": { "parts/body/params/proportions/torso_length": 1.25 } }
+        }"#,
+    )
+    .expect("variants");
+    let base = omuzaki_char_mock::mock_character().expect("the fixture parses");
+    let id = |s: &str| VariantId::new(s).expect("a valid id");
+    let builder = Arc::new(CachingBuilder::new());
+    let options = BuildOptions { variant: Some(id("game")), ..BuildOptions::default() };
+    let services = BuildServices::default();
+    let def = resolve_variant(&base, &variants, &id("game")).expect("the variant resolves");
+    let built = builder.build(&CharId::new("mock").expect("an id"), &def, &options, &services).expect("builds");
+    let source = CharacterSource::new(builder, base, variants, options, services);
+
+    let mut renderer = MockRenderer::new();
+    let target = renderer
+        .create_target(&TargetDesc { size: UVec2::splat(32), alpha: AlphaEncoding::Straight })
+        .expect("a target");
+    let mut stage = Stage::new(
+        &mut renderer,
+        built,
+        UploadOptions { face_px_per_m: 2000.0 },
+        Scene::new(Camera::default()),
+        target,
+        Quality::live(),
+        StageClock::fixed(60.0),
+    )
+    .expect("the stage starts");
+    let rig = FaceRig::new(Box::new(|projection, _| {
+        FaceSystem::new(Box::new(MockPainter::new(*projection)), Box::new(MockRasterizer))
+    }))
+    .with_executor(Box::new(InlineExecutor))
+    .with_source(source);
+    stage.set_face(&mut renderer, rig).expect("the face binds");
+    stage.scene_mut().camera = camera_for(&stage, 0.15);
+    for _ in 0..5 {
+        stage.tick(&mut renderer, &FrameInput::default()).expect("warm-up frame");
+    }
+    stage.scene_mut().camera = camera_for(&stage, 0.8);
+    stage.service_variants(&mut renderer, &FrameInput::default()).expect("the close-up is staged");
+    assert_eq!(stage.built().variant, Some(id("game")), "staged, not yet swapped");
+    let wide = expected_eye_row(stage.built());
+
+    let sheet = render_turnaround(&mut stage, &mut renderer, &spec()).expect("the sheet renders");
+    assert_eq!(stage.built().variant, Some(id("close-up")), "the sheet's first tick swapped the variant in");
+    let close = expected_eye_row(stage.built());
+    assert!((close - wide).abs() > 2.0, "the variants' head joints differ, or this test aims at nothing");
+    for v in &sheet.views {
+        let row = v.framing.eye_line_row;
+        assert!(
+            (row - close).abs() < 1.0,
+            "{:?}: the eye line is on row {row}, the swapped-in character's is {close} (the old one's is {wide})",
+            v.view
+        );
+    }
+    stage.service_variants(&mut renderer, &FrameInput::default()).expect("the retired character is released");
+    stage.release(&mut renderer).expect("the stage releases");
 }
 
 #[test]
