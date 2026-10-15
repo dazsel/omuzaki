@@ -40,6 +40,10 @@ pub struct Crate {
     /// The members it depends on optionally, by the name of the implicit feature that switches each on (the
     /// dependency's key) and the package.
     pub optional_deps: Vec<(String, String)>,
+    /// Every member it depends on under `[dependencies]`, optional or not: the key it is declared under and the package.
+    pub dep_keys: Vec<(String, String)>,
+    /// Its `[features]`: each feature and what it lists.
+    pub features: Vec<(String, Vec<String>)>,
     /// The optional dependencies some feature lists as `dep:<key>`, which removes their implicit feature.
     pub dep_syntax: Vec<String>,
 }
@@ -73,9 +77,10 @@ pub fn load(root: &Path) -> Result<Vec<Crate>, Error> {
     let workspace_deps = workspace.get("workspace").and_then(|w| w.get("dependencies")).and_then(Value::as_table);
     let mut out: Vec<Crate> = Vec::new();
     for (dir, name, manifest) in crates {
-        let (mut deps, mut optional_deps) = (Vec::new(), Vec::new());
+        let (mut deps, mut optional_deps, mut dep_keys) = (Vec::new(), Vec::new(), Vec::new());
         for entry in path_deps(root, &dir, &manifest, workspace_deps)? {
             let Some(package) = by_dir.iter().find(|(d, _)| *d == entry.dir).map(|(_, n)| n.clone()) else { continue };
+            dep_keys.push((entry.key.clone(), package.clone()));
             if entry.optional {
                 optional_deps.push((entry.key, package));
             } else {
@@ -94,6 +99,8 @@ pub fn load(root: &Path) -> Result<Vec<Crate>, Error> {
             generates_links: generates_links(&dir, &manifest),
             lists_link_build: lists_link_build(&manifest),
             optional_deps,
+            dep_keys,
+            features: feature_table(&manifest),
             dep_syntax,
             dir: dir.strip_prefix(root).unwrap_or(&dir).to_path_buf(),
             name,
@@ -129,6 +136,19 @@ struct DepEntry {
     dir: PathBuf,
     /// Whether it is `optional = true`.
     optional: bool,
+}
+
+/// The `[features]` table as written.
+fn feature_table(manifest: &Table) -> Vec<(String, Vec<String>)> {
+    manifest
+        .get("features")
+        .and_then(Value::as_table)
+        .into_iter()
+        .flatten()
+        .map(|(name, list)| {
+            (name.clone(), list.as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect())
+        })
+        .collect()
 }
 
 /// Whether some feature lists `dep:<key>`.

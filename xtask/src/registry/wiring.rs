@@ -9,34 +9,72 @@ use super::lex::{Tok, Token, tokens};
 /// The generated file `omuzaki-link-build` writes.
 const GENERATED: &str = "link_calls.rs";
 
-/// Whether the build script's `fn main` calls `omuzaki_link_build::emit(...)`.
+/// The nesting depth of every token: how many delimiters are open in front of it.
+fn depths(toks: &[Token]) -> Vec<usize> {
+    let mut depth = 0usize;
+    toks.iter()
+        .map(|token| {
+            if matches!(token.tok, Tok::Punct('}' | ')' | ']')) {
+                depth = depth.saturating_sub(1);
+            }
+            let here = depth;
+            if matches!(token.tok, Tok::Punct('{' | '(' | '[')) {
+                depth += 1;
+            }
+            here
+        })
+        .collect()
+}
+
+/// Whether `main`, a top-level function of the build script, runs `omuzaki_link_build::emit(...)` unconditionally: as
+/// a statement of its own body, not inside an `if`, a loop, a closure, a block or another function, and without an
+/// attribute.
 pub fn build_script_emits(source: &str) -> bool {
     let toks = tokens(source);
-    let Some(body) = (0..toks.len())
-        .find(|&at| toks[at].is_ident("fn") && toks.get(at + 1).is_some_and(|t| t.is_ident("main")))
-        .and_then(|at| (at + 2..toks.len()).find(|&open| toks[open].is_punct('{')))
+    let depth = depths(&toks);
+    let Some((from, to)) = (0..toks.len())
+        .find(|&at| depth[at] == 0 && toks[at].is_ident("fn") && toks.get(at + 1).is_some_and(|t| t.is_ident("main")))
+        .and_then(|at| (at + 2..toks.len()).find(|&open| depth[open] == 0 && toks[open].is_punct('{')))
         .and_then(|open| group_at(&toks, open))
     else {
         return false;
     };
-    toks[body.0..body.1].windows(5).any(|w| {
-        w[0].is_ident("omuzaki_link_build")
-            && w[1].is_punct(':')
-            && w[2].is_punct(':')
-            && w[3].is_ident("emit")
-            && w[4].is_punct('(')
+    (from..to).any(|at| {
+        depth[at] == depth[from]
+            && toks[at].is_ident("omuzaki_link_build")
+            && toks[at + 1..to].starts_with_emit_call()
+            // A statement starts after the body's `{`, a `;` or a block's `}`; `|| emit()` or `#[cfg(..)] emit()` do not.
+            && (at == from || toks[at - 1].is_punct(';') || toks[at - 1].is_punct('}'))
     })
 }
 
-/// Whether the library's `define_link!` invocation contains `include!(... "link_calls.rs" ...)` unconditionally.
+/// `:: emit (` at the start of a token slice.
+trait EmitCall {
+    fn starts_with_emit_call(&self) -> bool;
+}
+
+impl EmitCall for [Token] {
+    fn starts_with_emit_call(&self) -> bool {
+        self.len() >= 4
+            && self[0].is_punct(':')
+            && self[1].is_punct(':')
+            && self[2].is_ident("emit")
+            && self[3].is_punct('(')
+    }
+}
+
+/// Whether the crate root's `define_link!` invocation contains `include!(concat!(env!("OUT_DIR"), "/link_calls.rs"))`
+/// unconditionally.
 ///
-/// Unconditional means: no attribute anywhere inside the invocation or on it (`#[cfg(any())]` on the include, or on
-/// something around it, would leave the compiled `link()` without the calls), and the include sits directly in the
-/// invocation, not inside a block, closure or `if`.
+/// Unconditional means: the invocation is at the top level of the root file (not inside a `mod`, a function or a
+/// macro body, where it would not define the exported `link()`), no attribute sits on it or anywhere inside it, and the
+/// include is a direct item of the invocation, not inside a block, closure or `if`.
 pub fn library_includes_generated(source: &str) -> bool {
     let toks = tokens(source);
+    let depth = depths(&toks);
     (0..toks.len()).any(|at| {
-        toks[at].is_ident("define_link")
+        depth[at] == 0
+            && toks[at].is_ident("define_link")
             && toks.get(at + 1).is_some_and(|t| t.is_punct('!'))
             && !attribute_before(&toks, at)
             && group_at(&toks, at + 2).is_some_and(|(from, to)| {
@@ -65,7 +103,8 @@ fn includes_at_top_level(inside: &[Token]) -> bool {
             Tok::Punct('}' | ')' | ']') => depth = depth.saturating_sub(1),
             _ => {}
         }
-        if depth == 0 && token.is_ident("include") && is_bare_include(&inside[at..]) {
+        let starts_item = at == 0 || inside[at - 1].is_punct(';') || inside[at - 1].is_punct('}');
+        if depth == 0 && starts_item && token.is_ident("include") && is_bare_include(&inside[at..]) {
             return true;
         }
     }
@@ -126,6 +165,37 @@ mod tests {
     fn a_build_script_emits_when_main_calls_the_generator() {
         assert!(build_script_emits("fn main() {\n    omuzaki_link_build::emit();\n}\n"));
         assert!(build_script_emits("fn main() -> Result<(), E> {\n    omuzaki_link_build::emit();\n    Ok(())\n}\n"));
+    }
+
+    #[test]
+    fn emit_must_run_unconditionally_from_main() {
+        for body in [
+            "if false { omuzaki_link_build::emit(); }",
+            "let _ = || omuzaki_link_build::emit();",
+            "for _ in 0..0 { omuzaki_link_build::emit(); }",
+            "{ omuzaki_link_build::emit(); }",
+            "#[cfg(any())]\n    omuzaki_link_build::emit();",
+            "let f = |_| omuzaki_link_build::emit();",
+        ] {
+            assert!(!build_script_emits(&format!("fn main() {{\n    {body}\n}}\n")), "{body}");
+        }
+        assert!(build_script_emits("fn main() {\n    println!(\"x\");\n    omuzaki_link_build::emit();\n}\n"));
+        assert!(!build_script_emits("mod m { fn main() { omuzaki_link_build::emit(); } }\nfn other() {}\n"));
+    }
+
+    #[test]
+    fn the_define_link_must_be_the_crate_roots_own() {
+        let include = "include!(concat!(env!(\"OUT_DIR\"), \"/link_calls.rs\"));";
+        for wrapped in [
+            format!(
+                "#[cfg(any())]\nmod off {{\n    omuzaki_core::define_link! {{ {include} }}\n}}\nomuzaki_core::define_link!();\n"
+            ),
+            format!("mod inner {{\n    omuzaki_core::define_link! {{ {include} }}\n}}\n"),
+            format!("fn f() {{\n    omuzaki_core::define_link! {{ {include} }}\n}}\n"),
+            format!("omuzaki_core::define_link! {{\n    let _ = || {include}\n}}\n"),
+        ] {
+            assert!(!library_includes_generated(&wrapped), "{wrapped}");
+        }
     }
 
     #[test]

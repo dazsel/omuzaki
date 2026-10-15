@@ -168,11 +168,11 @@ impl Reader<'_> {
 /// Generates the calls for the crate whose manifest is `manifest_dir/Cargo.toml`.
 ///
 /// Workspace crates are read by `path`, directly or inherited through `workspace = true` (the workspace manifest is a
-/// build input). Dependencies from a registry or git cannot carry the flag and are not read. An optional dependency
-/// must have an explicit activation feature, a feature that lists `dep:<name>`; the call sits under `cfg(feature =
-/// ...)` for that feature and every feature that enables it, so it is generated whenever the crate is linked through
-/// the manifest's own features. (`--features <name>/<feature>` on a command line can switch a dependency on behind the
-/// manifest's back; the link gate catches that build.)
+/// build input). Dependencies from a registry or git cannot carry the flag and are not read. An optional registering
+/// dependency's call sits under `cfg(feature = "<name>")`, its implicit feature, which Cargo turns on whenever the
+/// dependency is active, however it was switched on (a feature that lists `"<name>"`, or `--features
+/// <name>/<feature>` on a command line). So no feature may list `dep:<name>`, which would remove that implicit
+/// feature.
 ///
 /// # Errors
 /// A manifest that can't be read or parsed, a dependency form the generator does not read, a feature that lists
