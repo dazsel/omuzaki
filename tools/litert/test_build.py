@@ -99,26 +99,59 @@ class Notices(unittest.TestCase):
 
 
 class Archive(unittest.TestCase):
-    def test_archives_are_reproducible_and_unpack(self):
+    def test_archives_are_reproducible_and_unpack_against_the_build_digest(self):
         files = {"lib/x.so": b"\x7fELF", "LICENSE": b"text"}
         for kind in ("tar.gz", "zip"):
             first = build.archive_bytes("stem", files, kind)
             self.assertEqual(first, build.archive_bytes("stem", dict(reversed(files.items())), kind), kind)
             with tempfile.TemporaryDirectory() as tmp:
-                dist = Path(tmp) / "dist"
-                dist.mkdir()
-                (dist / f"stem.{kind}").write_bytes(first)
-                (dist / "SHA256SUMS").write_text(f"{build.sha256(dist / f'stem.{kind}')}  stem.{kind}\n")
-                folder = build.unpack(dist, Path(tmp) / "out")
+                asset = Path(tmp) / f"stem.{kind}"
+                asset.write_bytes(first)
+                folder = build.unpack(asset, build.sha256(asset), Path(tmp) / "out")
                 self.assertEqual((folder / "lib/x.so").read_bytes(), b"\x7fELF", kind)
 
-    def test_a_changed_archive_fails_its_checksum(self):
+    def test_unpack_refuses_a_wrong_or_missing_digest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            asset = Path(tmp) / "stem.zip"
+            asset.write_bytes(build.archive_bytes("stem", {"a": b"a"}, "zip"))
+            with self.assertRaisesRegex(build.Mismatch, "SHA-256 of stem.zip"):
+                build.unpack(asset, "0" * 64, Path(tmp) / "out")
+            with self.assertRaisesRegex(build.Mismatch, "no valid SHA-256"):
+                build.unpack(asset, "", Path(tmp) / "out")
+
+    def test_archive_in_wants_the_platform_archive_and_its_sums_line_only(self):
         with tempfile.TemporaryDirectory() as tmp:
             dist = Path(tmp)
-            (dist / "stem.zip").write_bytes(b"changed")
-            (dist / "SHA256SUMS").write_text(f"{'0' * 64}  stem.zip\n")
-            with self.assertRaisesRegex(build.Mismatch, "SHA-256 of stem.zip"):
-                build.unpack(dist, dist / "out")
+            asset = dist / f"{build.stem('win-x64')}.zip"
+            asset.write_bytes(b"archive")
+            (dist / "SHA256SUMS").write_text(f"{build.sha256(asset)}  {asset.name}\n")
+            self.assertEqual(build.archive_in(dist, "win-x64"), asset)
+            with self.assertRaisesRegex(build.Mismatch, "files in"):
+                build.archive_in(dist, "linux-x64")
+            (dist / "SHA256SUMS").write_text(f"{'0' * 64}  {asset.name}\n")
+            with self.assertRaisesRegex(build.Mismatch, "SHA256SUMS of"):
+                build.archive_in(dist, "win-x64")
+
+
+class Digests(unittest.TestCase):
+    def write(self, folder: Path, digests: dict):
+        for plat, digest in digests.items():
+            (folder / f"{plat}.sha256").write_text(digest + "\n")
+
+    def test_three_valid_digests_merge(self):
+        digests = {plat: f"{index:064x}" for index, plat in enumerate(build.PINS["platform"])}
+        with tempfile.TemporaryDirectory() as tmp:
+            self.write(Path(tmp), digests)
+            self.assertEqual(build.merge_digests(Path(tmp)), digests)
+
+    def test_a_missing_or_malformed_digest_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.write(Path(tmp), {"linux-x64": "a" * 64, "win-x64": "b" * 64})
+            with self.assertRaisesRegex(build.Mismatch, "digest files"):
+                build.merge_digests(Path(tmp))
+            self.write(Path(tmp), {"macos-arm64": "C" * 64})
+            with self.assertRaisesRegex(build.Mismatch, "not a SHA-256"):
+                build.merge_digests(Path(tmp))
 
 
 if __name__ == "__main__":

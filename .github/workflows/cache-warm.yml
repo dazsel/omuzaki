@@ -91,3 +91,17 @@ jobs:
           windows-cross: true
           free-disk: true
       - run: cargo build --locked --workspace --target x86_64-pc-windows-gnu
+
+  # The LiteRT archive (runtime-litert.yml): built and saved only when a push changes its inputs. The push payload lists
+  # each commit's changed files; a manual run of this workflow always warms it.
+  litert:
+    name: litert
+    if: >-
+      github.repository == 'dazsel/omuzaki' && (github.event_name == 'workflow_dispatch'
+      || contains(toJSON(github.event.commits), 'tools/litert/')
+      || contains(toJSON(github.event.commits), '.github/workflows/runtime-litert.yml'))
+    uses: ./.github/workflows/runtime-litert.yml
+    permissions:
+      contents: read
+    with:
+      save-cache: true

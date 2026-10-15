@@ -8,8 +8,12 @@ when what it finds differs from tools/litert/pins.toml:
   build    build the library and the check's two programs; read the compiler, glibc floor or minimum OS and the
            exported symbols back from the library
   notices  list the external repositories the library's sources come from; licence files and THIRD_PARTY_NOTICES.md
-  pack     the archive (lib/, LICENSE, notices, licences/, BUILDINFO.json), SHA256SUMS and the run summary
+  pack     the archive (lib/, LICENSE, notices, licences/, BUILDINFO.json) and its SHA256SUMS
+  digest   hash the archive (built or restored from the cache) into <platform>.sha256 and the run summary
+  collect  merge the three platforms' digests into the workflow's outputs, refusing anything but three valid digests
   check    verify an archive, load it with the smoke program and compare three face graphs with the official wheel
+
+`container` prints the image the Linux build runs in, for the workflow's `docker run`.
 
 Standard library only (Python 3.11 or newer, for tomllib), so it runs before anything is installed.
 """
@@ -326,10 +330,15 @@ def archive_bytes(root: str, files: dict, kind: str) -> bytes:
     return bytes(data)
 
 
-def buildinfo(plat: str, build: int, toolchain: dict) -> dict:
+def stem(plat: str) -> str:
+    """The archive's name without extension, which is also its top folder."""
+    return f"omuzaki-litert-{PINS['litert']['version']}-{plat}"
+
+
+def buildinfo(plat: str, toolchain: dict) -> dict:
     pins = platform_pins(plat)
     return {"litert": {key: PINS["litert"][key] for key in ("version", "tag", "commit", "tflite_version")},
-            "platform": plat, "build": build, "omz_litert_abi": PINS["shim"]["abi"], "library": pins["library"],
+            "platform": plat, "omz_litert_abi": PINS["shim"]["abi"], "library": pins["library"],
             "bazel": PINS["bazel"]["version"], "flags": build_flags(plat), "toolchain": toolchain,
             "run": {"repository": os.environ.get("GITHUB_REPOSITORY", ""), "id": os.environ.get("GITHUB_RUN_ID", ""),
                     "commit": os.environ.get("GITHUB_SHA", "")}}
@@ -337,8 +346,8 @@ def buildinfo(plat: str, build: int, toolchain: dict) -> dict:
 
 def cmd_pack(args):
     out, plat = Path(args.out), platform_pins(args.platform)
-    info = buildinfo(args.platform, args.build, json.loads((out / "toolchain.json").read_text()))
-    stem = f"omuzaki-litert-{PINS['litert']['version']}-{args.build}-{args.platform}"
+    info = buildinfo(args.platform, json.loads((out / "toolchain.json").read_text()))
+    root = stem(args.platform)
     files = {f"lib/{plat['library']}": (out / plat["library"]).read_bytes(),
              "LICENSE": (Path(args.litert) / "LICENSE").read_bytes(),
              "THIRD_PARTY_NOTICES.md": (out / "THIRD_PARTY_NOTICES.md").read_bytes(),
@@ -347,16 +356,54 @@ def cmd_pack(args):
         files[f"licences/{licence.name}"] = licence.read_bytes()
     dist = out / "dist"
     dist.mkdir(exist_ok=True)
-    asset = dist / f"{stem}.{plat['archive']}"
-    asset.write_bytes(archive_bytes(stem, files, plat["archive"]))
-    digest, size = sha256(asset), asset.stat().st_size
-    (dist / "SHA256SUMS").write_text(f"{digest}  {asset.name}\n")
+    asset = dist / f"{root}.{plat['archive']}"
+    asset.write_bytes(archive_bytes(root, files, plat["archive"]))
+    (dist / "SHA256SUMS").write_text(f"{sha256(asset)}  {asset.name}\n")
     licences = ", ".join(sorted(name.removeprefix("licences/") for name in files if name.startswith("licences/")))
-    library_size = len(files["lib/" + plat["library"]])
-    summary = (f"### {asset.name}\n\n| | |\n|---|---|\n| size | {size} bytes |\n| sha256 | `{digest}` |\n"
-               f"| library | {library_size} bytes |\n| toolchain | {info['toolchain']} |\n\nNotices: {licences}\n")
-    write_summary(summary)
-    write_output("artifact", f"litert-{PINS['litert']['version']}-{args.build}-{args.platform}")
+    write_summary(f"### Built {asset.name}\n\nLibrary {len(files['lib/' + plat['library']])} bytes; toolchain "
+                  f"{info['toolchain']}.\n\nNotices: {licences}\n")
+
+
+def archive_in(dist: Path, plat: str) -> Path:
+    """The platform's archive in `dist`, which must hold exactly it and its SHA256SUMS line, and match it."""
+    asset = dist / f"{stem(plat)}.{platform_pins(plat)['archive']}"
+    expect(f"files in {dist.name}", sorted(p.name for p in dist.iterdir()), sorted([asset.name, "SHA256SUMS"]))
+    expect(f"SHA256SUMS of {asset.name}", (dist / "SHA256SUMS").read_text(), f"{sha256(asset)}  {asset.name}\n")
+    return asset
+
+
+def cmd_digest(args):
+    """Hashes the archive, built or restored from the cache, for the collect job and the run summary."""
+    asset = archive_in(Path(args.dist), args.platform)
+    digest, size = sha256(asset), asset.stat().st_size
+    Path(args.digests).mkdir(parents=True, exist_ok=True)
+    (Path(args.digests) / f"{args.platform}.sha256").write_text(digest + "\n")
+    write_summary(f"### {asset.name}\n\n| | |\n|---|---|\n| size | {size} bytes |\n| sha256 | `{digest}` |\n")
+    write_output("artifact", f"litert-{PINS['litert']['version']}-{args.platform}")
+
+
+def merge_digests(folder: Path) -> dict:
+    """{platform: SHA-256} from one `<platform>.sha256` file per pinned platform; anything else fails."""
+    expected = sorted(f"{plat}.sha256" for plat in PINS["platform"])
+    expect(f"digest files in {folder.name}", sorted(p.name for p in folder.iterdir()), expected)
+    digests = {}
+    for plat in PINS["platform"]:
+        digest = (folder / f"{plat}.sha256").read_text().strip()
+        if not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise Mismatch(f"{plat}.sha256 holds {digest!r}, not a SHA-256")
+        digests[plat] = digest
+    return digests
+
+
+def cmd_collect(args):
+    digests = merge_digests(Path(args.digests))
+    for plat, digest in digests.items():
+        write_output(f"sha256_{plat.replace('-', '_')}", digest)
+    write_output("sha256", json.dumps(digests, sort_keys=True, separators=(",", ":")))
+
+
+def cmd_container(args):
+    print(platform_pins(args.platform).get("container", ""))
 
 
 def write_summary(text: str):
@@ -372,17 +419,18 @@ def write_output(key: str, value: str):
             fh.write(f"{key}={value}\n")
 
 
-def unpack(dist: Path, into: Path) -> Path:
-    """Checks the archive in `dist` against its SHA256SUMS line and unpacks it; returns its folder."""
-    digest, name = (dist / "SHA256SUMS").read_text().split()
-    expect(f"SHA-256 of {name}", sha256(dist / name), digest)
-    if name.endswith(".zip"):
-        with zipfile.ZipFile(dist / name) as archive:
+def unpack(asset: Path, digest: str, into: Path) -> Path:
+    """Checks `asset` against `digest`, the build job's, and unpacks it; returns its folder. An empty digest fails."""
+    if not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise Mismatch(f"no valid SHA-256 from the build job for {asset.name}: {digest!r}")
+    expect(f"SHA-256 of {asset.name}", sha256(asset), digest)
+    if asset.name.endswith(".zip"):
+        with zipfile.ZipFile(asset) as archive:
             archive.extractall(into)
     else:
-        with tarfile.open(dist / name) as archive:
+        with tarfile.open(asset) as archive:
             archive.extractall(into, filter="data")
-    return into / name.removesuffix(".zip").removesuffix(".tar.gz")
+    return into / asset.name.removesuffix(".zip").removesuffix(".tar.gz")
 
 
 def delegated(printed: str) -> tuple[int, int, int]:
@@ -408,9 +456,9 @@ def cmd_check(args):
 
     work = Path(args.work)
     work.mkdir(parents=True, exist_ok=True)
-    folder = unpack(Path(args.dist), work)
+    folder = unpack(archive_in(Path(args.dist), args.platform), os.environ.get("EXPECTED_SHA256", ""), work)
     info = json.loads((folder / "BUILDINFO.json").read_text())
-    expect("BUILDINFO litert", info["litert"], buildinfo(args.platform, info["build"], {})["litert"])
+    expect("BUILDINFO litert", info["litert"], buildinfo(args.platform, {})["litert"])
     expect("BUILDINFO platform", info["platform"], args.platform)
     expect("BUILDINFO omz_litert_abi", info["omz_litert_abi"], PINS["shim"]["abi"])
     library = folder / "lib" / platform_pins(args.platform)["library"]
@@ -464,16 +512,17 @@ def cmd_check(args):
 def main():
     steps = {"setup": (cmd_setup, ("litert", "tools")), "notices": (cmd_notices, ("litert", "tools", "out")),
              "build": (cmd_build, ("litert", "tools", "out")), "pack": (cmd_pack, ("litert", "out")),
+             "digest": (cmd_digest, ("dist", "digests")), "collect": (cmd_collect, ("digests",)),
+             "container": (cmd_container, ()),
              "check": (cmd_check, ("dist", "programs", "models", "work"))}
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
     for name, (_, needs) in steps.items():
         command = commands.add_parser(name)
-        command.add_argument("--platform", required=True, choices=sorted(PINS["platform"]))
+        if name != "collect":
+            command.add_argument("--platform", required=True, choices=sorted(PINS["platform"]))
         for option in needs:
             command.add_argument(f"--{option}", required=True)
-        if name == "pack":
-            command.add_argument("--build", required=True, type=int)
     args = parser.parse_args()
     try:
         steps[args.command][0](args)

@@ -30,8 +30,9 @@ flags = ["-c", "opt", "--repo_env=HERMETIC_PYTHON_VERSION=3.11"]
 tolerance = 1e-4
 
 [platform.linux-x64]
-# LiteRT's own CI image at the tag (its workflows pin this digest). The compiler and the sysroot are not the image's:
-# LiteRT's workspace pins a hermetic clang and a glibc 2.27 sysroot (rules_ml_toolchain), so the image only hosts Bazel.
+# The build runs in LiteRT's own CI image at the tag (`docker run`; its workflows pin this digest). The compiler and
+# the sysroot are not the image's: LiteRT's workspace pins a hermetic clang and a glibc 2.27 sysroot
+# (rules_ml_toolchain), so the image only hosts Bazel and Python.
 container = "us-docker.pkg.dev/ml-oss-artifacts-published/ml-public-container/ml-build@sha256:d6b429665f5269698f88ccd00bcb8a6eb685332c302f08f29fe0738cd6a6610c"
 bazelisk_asset = "bazelisk-linux-amd64"
 bazelisk_sha256 = "e1508323f347ad1465a887bc5d2bfb91cffc232d11e8e997b623227c6b32fb76"
@@ -60,6 +61,7 @@ bazel_sha256 = "2533ddc8628a96d1da3c5e99f45442d30fec93ee724316fd9687c78e56a84049
 flags = ["--config=macos_arm64", "--macos_minimum_os=13.0"]
 library = "libomuzaki_litert.dylib"
 archive = "tar.gz"
-# DEVELOPER_DIR points at this Xcode; build.py checks `xcodebuild -version` and the library's minimum OS.
+# The runner is macos-15 (ARM64). DEVELOPER_DIR points at this Xcode, which must be on that image: setup checks
+# `xcodebuild -version`, build checks the library's minimum OS, and the image's version is in the cache key.
 xcode = "16.4"
 macos_minimum = "13.0"
