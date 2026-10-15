@@ -5,11 +5,18 @@
 
 #[cfg(loom)]
 use loom::sync::atomic::{AtomicU64, Ordering, fence};
+#[cfg(loom)]
+use loom::thread::yield_now;
 #[cfg(not(loom))]
 use std::sync::atomic::{AtomicU64, Ordering, fence};
+#[cfg(not(loom))]
+use std::thread::yield_now;
 
 /// How many times a read tries before it gives the section up as `None`.
 pub(crate) const MAX_TRIES: u32 = 16;
+
+/// Tries a reader spins through before it starts giving up its time slice between tries.
+const SPIN_TRIES: u32 = 4;
 
 /// A latest-value cell of `N` words. `seq` is even when the words are stable (`0` before the first store) and odd
 /// while the writer is inside [`store`](Self::store).
@@ -54,7 +61,14 @@ impl<const N: usize> SeqCell<N> {
                 return None;
             }
             if before % 2 == 1 {
-                std::hint::spin_loop();
+                // The writer is mid-store, or was descheduled there: spinning through all the tries in a microsecond
+                // would give up on a store that is about to finish, so after a few spins let it have the core. This
+                // only ever delays the reader.
+                if *tries > SPIN_TRIES {
+                    yield_now();
+                } else {
+                    std::hint::spin_loop();
+                }
                 continue;
             }
             let mut out = [0u64; N];
