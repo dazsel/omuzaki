@@ -139,7 +139,11 @@ fn compare_with_spec(fixture: &Fixture, set: &SpringSet, fps: f32, frames: u64) 
         let input = fixture.pose_at(frame);
         let mut out = input.clone();
         solver.step(Tick::at_rate(frame, fps), skeleton, &mut out);
-        for _ in 0..solver.stats().substeps {
+        let substeps = solver.stats().substeps;
+        if substeps == 0 {
+            oracle.hold(&input);
+        }
+        for _ in 0..substeps {
             oracle.substep(&input);
         }
         for &b in &swinging {
@@ -188,13 +192,66 @@ fn matches_the_spec_with_tapered_parameters() {
     assert_agrees(&compare_with_spec(&fixture, &set_of(chains, vec![]), 60.0, 300), 0.3);
 }
 
+/// Every frame rate the solver must agree with the oracle at (#1849): the common display and video rates, 50 fps
+/// (not a divisor of 120, so whole and partial sub-steps alternate) and 144 fps (shorter than a sub-step, so some
+/// frames run none and only hold).
+const FRAME_RATES: [f32; 6] = [30.0, 50.0, 60.0, 90.0, 120.0, 144.0];
+
 #[test]
-fn matches_the_spec_at_other_frame_rates() {
+fn matches_the_spec_at_every_frame_rate() {
+    let (fixture, ids) = Fixture::hair(3, 4);
+    let free = set_of(chains_of(&ids, windy()), vec![]);
+    // The hold maps the tails out of centre space and re-aims under the new pose, so it gets a centre and a collider.
+    let mut chains = chains_of(&ids, windy());
+    for chain in &mut chains {
+        chain.center = Some(fixture.hips);
+        chain.collider_groups = vec!["head".into()];
+    }
+    let head =
+        ColliderGroup { name: "head".into(), colliders: vec![ball(fixture.head, Vec3::new(0.0, -0.1, 0.0), 0.12)] };
+    let centred = set_of(chains, vec![head]);
+    for (name, set) in [("free", &free), ("centre and collider", &centred)] {
+        for fps in FRAME_RATES {
+            let agreement = compare_with_spec(&fixture, set, fps, 300);
+            println!("{name}, {fps} fps: rotation {:.1e}, position {:.1e} m", agreement.rotation, agreement.position);
+            assert_agrees(&agreement, 0.1);
+        }
+    }
+}
+
+/// #1849's cause: at 144 fps a frame is shorter than a sub-step, so one frame in six owes none. The solver holds the
+/// tails and re-aims the bones from that frame's pose; a driver that gives the oracle nothing on such a frame compares
+/// the solver with the previous frame's pose (0.03 m apart) although the two simulations never diverged.
+#[test]
+fn a_frame_with_no_sub_step_is_one_in_six_at_144_fps_and_the_oracle_holds_it_too() {
     let (fixture, ids) = Fixture::hair(1, 4);
     let set = set_of(chains_of(&ids, windy()), vec![]);
-    for fps in [30.0, 120.0] {
-        assert_agrees(&compare_with_spec(&fixture, &set, fps, 200), 0.1);
+    let mut solver = VrmSpringSolver::new(&set, &fixture.skeleton).unwrap();
+    let counts: Vec<u32> = (0..12)
+        .map(|frame| {
+            let mut pose = fixture.pose_at(frame);
+            solver.step(Tick::at_rate(frame, 144.0), &fixture.skeleton, &mut pose);
+            solver.stats().substeps
+        })
+        .collect();
+    assert_eq!(counts, [0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1]);
+
+    // Without the hold, the oracle lags a frame on exactly those frames: the comparison would fail.
+    let mut oracle = Reference::new(&fixture.skeleton, &set, &fixture.pose_at(0));
+    let mut solver = VrmSpringSolver::new(&set, &fixture.skeleton).unwrap();
+    let tip = ids[0][3].index();
+    let mut world = Pose::default();
+    let mut lag = 0.0_f64;
+    for frame in 0..7 {
+        let mut pose = fixture.pose_at(frame);
+        solver.step(Tick::at_rate(frame, 144.0), &fixture.skeleton, &mut pose);
+        for _ in 0..solver.stats().substeps {
+            oracle.substep(&fixture.pose_at(frame));
+        }
+        fixture.skeleton.world_pose(&pose, &mut world);
+        lag = lag.max((world.local[tip].translation.as_dvec3() - oracle.world(tip).w_axis.truncate()).length());
     }
+    assert!(lag > 100.0 * TOLERANCE, "an unheld oracle should lag on frame 6, but it is only {lag} m off");
 }
 
 #[test]

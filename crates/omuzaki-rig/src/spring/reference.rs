@@ -141,17 +141,46 @@ impl Reference {
 
     /// One fixed step with the animated bones in `pose`.
     pub fn substep(&mut self, pose: &Pose) {
+        self.take_pose(pose);
+        for c in 0..self.chains.len() {
+            for j in 0..self.chains[c].joints.len() {
+                self.update_joint(c, j);
+            }
+        }
+    }
+
+    /// A frame too short to owe a sub-step: the animated bones take `pose`, the tails stay where they are, and each
+    /// swinging bone is turned to point at its tail again ("Applying rotation" alone). The spec runs one step per frame
+    /// so it has no such frame; this is the solver's documented choice (`Phase::Hold`), written the oracle's way.
+    pub fn hold(&mut self, pose: &Pose) {
+        self.take_pose(pose);
+        for c in 0..self.chains.len() {
+            let center_to_world = self.chains[c].center.map_or(DMat4::IDENTITY, |n| self.world(n));
+            for j in 0..self.chains[c].joints.len() {
+                let joint = &self.chains[c].joints[j];
+                let tail = center_to_world.transform_point3(joint.current_tail);
+                let parent_world = self.parent[joint.node].map_or(DMat4::IDENTITY, |p| self.world(p));
+                let node = joint.node;
+                self.local[node] = Self::aimed(joint, parent_world, tail);
+            }
+        }
+    }
+
+    /// Copies the animated (non-swinging) bones of `pose` into the local matrices.
+    fn take_pose(&mut self, pose: &Pose) {
         let swinging: Vec<usize> = self.chains.iter().flat_map(|c| c.joints.iter().map(|j| j.node)).collect();
         for i in 0..self.local.len() {
             if !swinging.contains(&i) {
                 self.local[i] = matrix(&pose.local[i]);
             }
         }
-        for c in 0..self.chains.len() {
-            for j in 0..self.chains[c].joints.len() {
-                self.update_joint(c, j);
-            }
-        }
+    }
+
+    /// The spec's "Applying rotation": the joint's local matrix that points its bone axis at the world-space `tail`.
+    fn aimed(joint: &Joint, parent_world: DMat4, tail: DVec3) -> DMat4 {
+        let to = (parent_world * joint.initial_local_matrix).inverse().transform_point3(tail).normalize();
+        let rotation = joint.initial_local_rotation * from_to(joint.bone_axis, to);
+        DMat4::from_rotation_translation(rotation, joint.initial_local_matrix.w_axis.truncate())
     }
 
     fn update_joint(&mut self, c: usize, j: usize) {
@@ -183,15 +212,13 @@ impl Reference {
         }
 
         // Applying rotation.
-        let to = (parent_world * joint.initial_local_matrix).inverse().transform_point3(next_tail).normalize();
-        let rotation = joint.initial_local_rotation * from_to(joint.bone_axis, to);
-        let translation = joint.initial_local_matrix.w_axis.truncate();
+        let local = Self::aimed(joint, parent_world, next_tail);
         let node = joint.node;
 
         let joint = &mut self.chains[c].joints[j];
         joint.prev_tail = joint.current_tail;
         joint.current_tail = world_to_center.transform_point3(next_tail);
-        self.local[node] = DMat4::from_rotation_translation(rotation, translation);
+        self.local[node] = local;
     }
 }
 
