@@ -10,6 +10,8 @@
 //! rights (io-api D5: the conservative mapping, `Unknown` wherever the file does not settle it), and each image of the
 //! scene under that same record, so an image never carries more rights than the model it came from. The store is
 //! content addressed, so importing the same bytes again stores nothing new.
+//! An asset already recorded is never overwritten: a re-import without a character, or with the same one, changes
+//! nothing, and one with a different character is a `Conflict` (several characters per asset is #1792).
 //! An object is shared with another import only under an identical record; the check runs before the first write and again
 //! after each `put`, and any difference is a `Conflict` that names both records (joining records is #1773).
 //!
@@ -142,9 +144,12 @@ impl Import {
     /// Nothing is stored unless the import succeeds and `progress` has not been cancelled by the time storing starts.
     ///
     /// # Errors
-    /// `Unsupported` when no importer recognises the bytes; `Invalid` for a `format` nobody registered, and for files
-    /// that are malformed, over `options.limits`, or rejected by the scene checks; `Conflict` when cancelled;
-    /// `Internal` when the store fails.
+    /// - `Unsupported` when no importer recognises the bytes, and when the model refers to other files;
+    /// - `Invalid` for a `format` nobody registered, and for files that are malformed, over `options.limits`, or
+    ///   rejected by the scene checks (the field blames `path` or `bytes`, whichever the file came from);
+    /// - `Conflict` when `progress` reports a cancel, and when an object is already stored under a record that differs
+    ///   from this model's, checked before the first write and again after each `put`;
+    /// - `Internal` when the store fails or `run_import` leaves the scene without a record.
     pub fn import_bytes(
         &self,
         name: &str,
@@ -339,21 +344,50 @@ fn require_character(doc: &dyn DocRead, id: &str) -> Result<(), OpError> {
     Err(OpError::not_found(format!("no character {id}")).hint("pass the id of a character in the project"))
 }
 
-/// The patch that records `asset`: a new entry under `assets/<original>`, creating `assets` when the document has none
-/// (a change needs its parent to exist). Importing the same file again with nothing new to say is an empty patch.
+/// The patch that records `asset` under `assets/<original>`, creating `assets` when the document has none (a change
+/// needs its parent to exist).
+///
+/// An entry that already exists is never overwritten, so a re-import cannot drop what it recorded. With no `character`,
+/// or the same one, the patch is empty; a `character` on an entry that has none is added; a different `character` is a
+/// `Conflict` naming the existing one (several characters per asset is #1792).
 fn record_patch(doc: &dyn DocRead, asset: &AssetRecord) -> Result<Patch, OpError> {
     let value = serde_json::to_value(asset).map_err(|e| OpError::internal(format!("serialising the asset: {e}")))?;
     let table = DocPath::root().join(ASSETS);
     let entry = table.join(asset.original.to_string());
-    let patch = match doc.get(&table) {
-        None => Patch::new().with(table, None, Some(Value::Object(std::iter::once((asset.original.to_string(), value)).collect()))),
-        Some(Value::Object(_)) => Patch::new().with(entry.clone(), doc.get(&entry).cloned(), Some(value)),
-        Some(_) => {
-            return Err(OpError::conflict(format!("{ASSETS} in the document is not a table"))
-                .hint("the document is damaged; restore it from history"));
+    match doc.get(&table) {
+        None => {
+            let created = Value::Object(std::iter::once((asset.original.to_string(), value)).collect());
+            Ok(Patch::new().with(table, None, Some(created)))
         }
+        Some(Value::Object(_)) => match doc.get(&entry) {
+            None => Ok(Patch::new().with(entry, None, Some(value))),
+            Some(existing) => keep_existing(existing, asset, entry),
+        },
+        Some(_) => Err(OpError::conflict(format!("{ASSETS} in the document is not a table"))
+            .hint("the document is damaged; restore it from history")),
+    }
+}
+
+/// The patch for an asset the document already records: see [`record_patch`].
+fn keep_existing(existing: &Value, asset: &AssetRecord, entry: DocPath) -> Result<Patch, OpError> {
+    let Value::Object(fields) = existing else {
+        return Err(OpError::conflict(format!("the record at {entry} is not an object"))
+            .hint("the document is damaged; restore it from history"));
     };
-    Ok(if patch.is_empty() { Patch::new() } else { patch })
+    let recorded = fields.get("character").and_then(Value::as_str);
+    match (recorded, asset.character.as_deref()) {
+        (_, None) => Ok(Patch::new()),
+        (Some(have), Some(want)) if have == want => Ok(Patch::new()),
+        (Some(have), Some(want)) => Err(OpError::conflict(format!(
+            "this asset is already recorded as a reference for character {have}, so it cannot also be one for {want}"
+        ))
+        .hint("an asset belongs to one character for now (#1792); import it without a character to keep the record")),
+        (None, Some(want)) => {
+            let mut updated = fields.clone();
+            updated.insert("character".to_owned(), Value::String(want.to_owned()));
+            Ok(Patch::new().with(entry, Some(existing.clone()), Some(Value::Object(updated))))
+        }
+    }
 }
 
 impl Op for Import {

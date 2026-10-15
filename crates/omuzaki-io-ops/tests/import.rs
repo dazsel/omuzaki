@@ -696,3 +696,65 @@ fn a_conflict_names_the_consent_of_both_records() {
     let error = refused_without_a_trace(&mut rig, &restrictive_probe(1, 1));
     assert_eq!(error.message.matches("consent None").count(), 2, "{}", error.message);
 }
+
+/// A rig whose document has the characters `mira` and `kai`.
+fn rig_with_two_characters() -> Rig {
+    let mut rig = Rig::new();
+    rig.doc = MemDoc::from_value(json!({ "characters": { "mira": {}, "kai": {} } }));
+    rig
+}
+
+fn import_for(rig: &mut Rig, character: Option<&str>) -> Result<(Value, Patch), OpError> {
+    let mut args = json!({ "bytes": probe(1, 1), "name": "model.bin" });
+    if let Some(character) = character {
+        args["character"] = json!(character);
+    }
+    rig.run(&Rig::op(args))
+}
+
+fn recorded_character(rig: &Rig, result: &Value) -> Option<String> {
+    let path = doc_path(&format!("assets/{}", hash(&result["asset"]["original"])));
+    rig.doc.get(&path).and_then(|entry| entry["character"].as_str()).map(str::to_owned)
+}
+
+#[test]
+fn a_reimport_without_a_character_keeps_the_recorded_association() {
+    let mut rig = rig_with_two_characters();
+    let (first, _) = import_for(&mut rig, Some("mira")).unwrap();
+    let before = rig.doc.root().clone();
+    let (_, patch) = import_for(&mut rig, None).unwrap();
+    assert_eq!(patch, Patch::new(), "nothing is overwritten");
+    assert_eq!(rig.doc.root(), &before);
+    assert_eq!(recorded_character(&rig, &first).as_deref(), Some("mira"));
+}
+
+#[test]
+fn a_reimport_with_the_same_character_is_a_no_op() {
+    let mut rig = rig_with_two_characters();
+    import_for(&mut rig, Some("mira")).unwrap();
+    let before = rig.doc.root().clone();
+    let (_, patch) = import_for(&mut rig, Some("mira")).unwrap();
+    assert_eq!(patch, Patch::new());
+    assert_eq!(rig.doc.root(), &before);
+}
+
+#[test]
+fn a_reimport_with_another_character_is_a_conflict_naming_the_existing_one() {
+    let mut rig = rig_with_two_characters();
+    let (first, _) = import_for(&mut rig, Some("mira")).unwrap();
+    let before = rig.doc.root().clone();
+    let error = import_for(&mut rig, Some("kai")).unwrap_err();
+    assert_eq!(error.code, ErrorCode::Conflict);
+    assert!(error.message.contains("mira") && error.message.contains("kai"), "{}", error.message);
+    assert_eq!(rig.doc.root(), &before, "the record is unchanged");
+    assert_eq!(recorded_character(&rig, &first).as_deref(), Some("mira"));
+}
+
+#[test]
+fn a_character_is_added_to_a_record_that_has_none() {
+    let mut rig = rig_with_two_characters();
+    let (first, _) = import_for(&mut rig, None).unwrap();
+    assert_eq!(recorded_character(&rig, &first), None);
+    import_for(&mut rig, Some("kai")).unwrap();
+    assert_eq!(recorded_character(&rig, &first).as_deref(), Some("kai"));
+}
