@@ -420,6 +420,97 @@ fn a_run_id_that_is_not_a_plain_folder_name_or_is_taken_is_refused_before_anythi
 }
 
 #[test]
+fn of_two_runs_that_start_together_with_one_id_only_one_gets_it() {
+    let ws = workspace();
+    let tmp = tempfile::tempdir().unwrap();
+    let folders = Folders::new(tmp.path());
+    let discovery = eval::discover(ws.path()).unwrap();
+    let no_items = |_: &eval::fixture::SetItemRef| Err(String::new());
+    let start = std::sync::Barrier::new(2);
+    let results: Vec<bool> = std::thread::scope(|scope| {
+        let runs: Vec<_> = (0..2)
+            .map(|_| {
+                scope.spawn(|| {
+                    let options = Options {
+                        select: Selection::default(),
+                        attempts: 1,
+                        jobs: 1,
+                        binary: None,
+                        kind: "manual".to_owned(),
+                        run_id: "2026-10-13T1000Z-manual".to_owned(),
+                        commit: "c".to_owned(),
+                        out: folders.out.clone(),
+                        status: Some(folders.status.clone()),
+                        scratch: folders.scratch.clone(),
+                        item_path: &no_items,
+                        store: None,
+                    };
+                    start.wait();
+                    run_scripted(&discovery, caps(), &PrivateList::default(), &options)
+                        .map(|_| true)
+                        .or_else(|e| if matches!(e, omuzaki_test::eval::run::RunError::Taken(_)) { Ok(false) } else { Err(e) })
+                        .unwrap()
+                })
+            })
+            .collect();
+        runs.into_iter().map(|r| r.join().unwrap()).collect()
+    });
+    assert_eq!(results.iter().filter(|ran| **ran).count(), 1, "{results:?}");
+    let runs = history::read_runs(&folders.status.join(RUNS_FILE)).unwrap();
+    assert_eq!(runs.len(), 1);
+}
+
+#[test]
+fn a_run_id_in_the_history_is_taken_even_when_its_folder_is_gone() {
+    let ws = workspace();
+    let tmp = tempfile::tempdir().unwrap();
+    let folders = Folders::new(tmp.path());
+    let first = play(ws.path(), &folders, "2026-10-13T1000Z-manual", 1, 1, true);
+    assert!(first.ok());
+    fs::remove_dir_all(folders.out.join("runs")).unwrap();
+    let discovery = eval::discover(ws.path()).unwrap();
+    let no_items = |_: &eval::fixture::SetItemRef| Err(String::new());
+    let options = Options {
+        select: Selection::default(),
+        attempts: 1,
+        jobs: 1,
+        binary: None,
+        kind: "manual".to_owned(),
+        run_id: "2026-10-13T1000Z-manual".to_owned(),
+        commit: "c".to_owned(),
+        out: folders.out.clone(),
+        status: Some(folders.status.clone()),
+        scratch: folders.scratch.clone(),
+        item_path: &no_items,
+        store: None,
+    };
+    let error = run_scripted(&discovery, caps(), &PrivateList::default(), &options).unwrap_err();
+    assert!(matches!(error, omuzaki_test::eval::run::RunError::Taken(_)), "{error}");
+    // A colon is no part of a run id: Windows does not allow it in a folder name.
+    let options = Options { run_id: "2026-10-13T10:00Z-manual".to_owned(), ..options };
+    let error = run_scripted(&discovery, caps(), &PrivateList::default(), &options).unwrap_err();
+    assert!(error.to_string().contains("not a folder name"), "{error}");
+}
+
+#[test]
+fn a_fixture_id_that_could_leave_the_scratch_folder_is_refused() {
+    let ws = workspace();
+    let dir = ws.path().join("crates/c/evals");
+    let fixture = fs::read_to_string(dir.join("fixtures/fx.toml")).unwrap();
+    write(&dir.join("fixtures/fx.toml"), &fixture.replace("id = 'fx'", "id = '../escape'"));
+    for name in ["up", "down"] {
+        let task = fs::read_to_string(dir.join(format!("{name}.toml"))).unwrap();
+        write(&dir.join(format!("{name}.toml")), &task.replace("fixture = 'fx'", "fixture = '../escape'"));
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let folders = Folders::new(tmp.path());
+    let report = play(ws.path(), &folders, "2026-10-13T1000Z-manual", 1, 1, false);
+    assert_eq!(report.refused.len(), 2, "{:?}", report.refused);
+    assert!(report.refused.iter().all(|r| r.why.contains("cannot name a folder")), "{:?}", report.refused);
+    assert!(!tmp.path().join("escape").exists() && !folders.scratch.join("escape").exists());
+}
+
+#[test]
 fn a_task_whose_id_cannot_be_a_folder_name_is_refused() {
     let ws = workspace();
     let toml = fs::read_to_string(ws.path().join("crates/c/evals/up.toml")).unwrap();

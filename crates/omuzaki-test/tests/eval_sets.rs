@@ -313,6 +313,31 @@ fn holdout_check_also_finds_a_held_out_item_named_by_its_sha256() {
 }
 
 #[test]
+fn holdout_check_will_not_pass_when_it_cannot_name_every_protected_item_or_read_every_manifest() {
+    let world = World::new();
+    let held = world.file("a", "held.png", b"held out");
+    let held_set = ["--new-in", "c", "--kind", "synthetic", "--split", "holdout", "--summary", "Held out."];
+    assert_eq!(common::code(&add_synthetic(&world, "held-1", &held, &held_set)), 0);
+    let training = world.ws.path().join("training.toml");
+    write(&training, "pin = \"nothing\"\n");
+    assert_eq!(common::code(&world.sets(&["holdout-check", common::arg(&training)])), 0);
+    // The item is gone from the store: its SHA-256 is unknown, so the check cannot say a manifest does not pin it.
+    let hash = world.store().put(b"held out").unwrap().hash;
+    let object = world.store.path().join("objects").join(hash.to_string());
+    fs::remove_file(&object).unwrap();
+    let blind = world.sets(&["holdout-check", common::arg(&training)]);
+    assert_eq!(common::code(&blind), 2, "{}", out(&blind));
+    assert!(out(&blind).contains("missing or damaged"), "{}", out(&blind));
+    // A set manifest that does not parse is a set nothing protects: both commands stop.
+    write(&world.ws.path().join("crates/c/evalsets/broken.toml"), "this is = not [valid\n");
+    for args in [&["holdout-check", common::arg(&training)][..], &["verify"][..]] {
+        let refused = world.sets(args);
+        assert_eq!(common::code(&refused), 2, "{args:?}: {}", out(&refused));
+        assert!(out(&refused).contains("does not parse"), "{args:?}: {}", out(&refused));
+    }
+}
+
+#[test]
 fn the_file_source_returns_the_path_of_verified_bytes_for_a_pin() {
     let dir = tempfile::tempdir().unwrap();
     let store = SetStore::new(dir.path());

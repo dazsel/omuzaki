@@ -194,6 +194,41 @@ fn an_item_left_half_rated_leaves_no_rating_so_it_is_asked_about_again_in_full()
 }
 
 #[test]
+fn a_rating_that_cannot_be_written_can_be_sent_again_and_is_written_once() {
+    let dir = tempfile::tempdir().unwrap();
+    // The ratings file is a folder, so nothing can be appended until it is removed.
+    let file = dir.path().join("ratings/review-1.jsonl");
+    fs::create_dir_all(&file).unwrap();
+    let (port, handle, items) = start(dir.path());
+    assert_eq!(post_rate(port, &rate_body(&items[0].id, "Round?", "yes")).status, 200);
+    assert_eq!(post_rate(port, &rate_body(&items[0].id, "Blue?", "no")).status, 500);
+    fs::remove_dir(&file).unwrap();
+    let again = post_rate(port, &rate_body(&items[0].id, "Blue?", "no"));
+    assert_eq!((again.status, again.json()["remaining"].clone()), (200, json!(1)));
+    assert_eq!(post_rate(port, &rate_body(&items[1].id, "Tall?", "yes")).status, 200);
+    assert_eq!(handle.join().unwrap(), Ended::Done);
+    let ratings = rate::read(&file).unwrap();
+    let seen: Vec<&str> = ratings.iter().map(|r| r.question.as_str()).collect();
+    assert_eq!(seen, ["Round?", "Blue?", "Tall?"], "each answer once");
+}
+
+#[test]
+fn a_task_that_asks_one_question_twice_cannot_be_rated() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = Session {
+        items: vec![item("a.one", 1, &["Round?", "Round?"])],
+        ratings: dir.path().join("ratings/review-1.jsonl"),
+        runs: dir.path().join("runs"),
+        rater: "tester".to_owned(),
+        token: TOKEN.to_owned(),
+        clock: || UNIX_EPOCH + Duration::from_secs(1_790_000_000),
+    };
+    let listener = server::bind(0).unwrap();
+    let error = server::serve(&listener, &session).unwrap_err().to_string();
+    assert!(error.contains("same question twice"), "{error}");
+}
+
+#[test]
 fn answering_every_question_writes_the_ratings_and_ends_the_session() {
     let dir = tempfile::tempdir().unwrap();
     let (port, handle, items) = start(dir.path());
@@ -266,6 +301,20 @@ fn agreement_world(dir: &Path) -> (String, String) {
     text.extend([rating(10, "no"), rating(11, "no"), rating(12, "unsure")]);
     fs::write(ratings.join("review-1.jsonl"), text.join("\n") + "\n").unwrap();
     (common::arg(&ws).to_owned(), common::arg(dir).to_owned())
+}
+
+#[test]
+fn eval_agreement_refuses_a_question_the_raters_were_not_asked() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ws, base) = agreement_world(dir.path());
+    let envs = [("OMUZAKI_EVAL_OUT", format!("{base}/evals")), ("OMUZAKI_EVAL_STATUS", format!("{base}/status"))];
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    let args = ["eval", "agreement", "--judge", "reads-oval", "--set", "review-1", "--question", "Is the face moer oval?", "--root", &ws];
+    let refused = common::run(&args, &envs);
+    assert_eq!(common::code(&refused), 2, "{}", common::text(&refused.stderr));
+    assert!(common::text(&refused.stderr).contains("rubric_for_people"), "{}", common::text(&refused.stderr));
+    let history = fs::read_to_string(Path::new(&base).join("status").join(HISTORY_FILE)).unwrap();
+    assert!(!history.contains("\"family\":\"judge\""), "nothing was recorded");
 }
 
 #[test]

@@ -21,7 +21,7 @@ use std::time::{Duration, SystemTime};
 use serde_json::{Value, json};
 
 use super::sample::Item;
-use super::{Answer, RateError, Rating, append};
+use super::{Answer, RateError, Rating, append_all};
 use crate::eval::clock::utc_minute;
 
 const PAGE: &str = include_str!("page/index.html");
@@ -91,6 +91,16 @@ struct Refusal(u16, &'static str);
 pub fn serve(listener: &TcpListener, session: &Session) -> Result<Ended, RateError> {
     let port =
         listener.local_addr().map_err(|source| RateError::Io { path: PathBuf::from("127.0.0.1"), source })?.port();
+    // A question asked twice of one item could be answered once only: the item could never be finished.
+    for item in &session.items {
+        let distinct: BTreeSet<&String> = item.questions.iter().collect();
+        if distinct.len() != item.questions.len() {
+            return Err(RateError::Invalid(format!(
+                "the task `{}` asks the same question twice in `rubric_for_people`; make each question different",
+                item.task
+            )));
+        }
+    }
     let mut answered: BTreeSet<(String, String)> = BTreeSet::new();
     // Answers wait here until the item's last question is answered, and only then go to the file together: an item that is
     // half rated when the rater leaves has no rating at all, so it is asked about again in full.
@@ -309,13 +319,15 @@ fn rate(
         rater: session.rater.clone(),
         at: utc_minute((session.clock)()),
     };
-    let waiting = pending.entry(item.id.clone()).or_default();
-    waiting.push(rating);
-    if waiting.len() == item.questions.len() {
-        for rating in waiting.iter() {
-            append(&session.ratings, rating).map_err(|_| Refusal(500, "the ratings could not be written"))?;
-        }
+    // The answer joins the item's waiting ones only once it is certain to stay: when the item's last answer cannot be
+    // written, nothing changes, and the same request can be made again.
+    let mut batch = pending.get(&item.id).cloned().unwrap_or_default();
+    batch.push(rating);
+    if batch.len() == item.questions.len() {
+        append_all(&session.ratings, &batch).map_err(|_| Refusal(500, "the ratings could not be written"))?;
         pending.remove(&item.id);
+    } else {
+        pending.insert(item.id.clone(), batch);
     }
     answered.insert(key);
     let total: usize = session.items.iter().map(|i| i.questions.len()).sum();

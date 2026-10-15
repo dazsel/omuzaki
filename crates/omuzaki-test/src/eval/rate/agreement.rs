@@ -118,6 +118,14 @@ impl HistoryJudge {
                     )));
                 }
             };
+            // A question the raters were never asked matches no rating: the measurement would be all "no judge answer".
+            if !file.task.rubric_for_people.contains(&wanted) {
+                return Err(RateError::Invalid(format!(
+                    "task `{}`: `{wanted}` is not one of its `rubric_for_people` questions ({})",
+                    file.task.id,
+                    file.task.rubric_for_people.join(" | ")
+                )));
+            }
             questions.insert(file.task.id.clone(), wanted);
         }
         if questions.is_empty() {

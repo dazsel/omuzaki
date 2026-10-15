@@ -127,14 +127,27 @@ pub fn read(path: &Path) -> Result<Vec<Rating>, RateError> {
 /// # Errors
 /// [`RateError::Io`] when the file cannot be written.
 pub fn append(path: &Path, rating: &Rating) -> Result<(), RateError> {
+    append_all(path, std::slice::from_ref(rating))
+}
+
+/// Appends `ratings` in one write: the lines are put together first and written with a single call to a file opened for
+/// appending, so a result's answers reach the file together or, when the write fails, not at all as far as a reader can
+/// tell (a partial write leaves a line that does not parse, which [`read`] reports instead of counting).
+///
+/// # Errors
+/// [`RateError::Io`] when the file cannot be written.
+pub fn append_all(path: &Path, ratings: &[Rating]) -> Result<(), RateError> {
     let io_err = |source| RateError::Io { path: path.to_owned(), source };
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).map_err(io_err)?;
     }
-    let mut line = serde_json::to_string(rating).map_err(|e| io_err(io::Error::other(e)))?;
-    line.push('\n');
+    let mut lines = String::new();
+    for rating in ratings {
+        lines.push_str(&serde_json::to_string(rating).map_err(|e| io_err(io::Error::other(e)))?);
+        lines.push('\n');
+    }
     let mut file = OpenOptions::new().create(true).append(true).open(path).map_err(io_err)?;
-    file.write_all(line.as_bytes()).map_err(io_err)
+    file.write_all(lines.as_bytes()).map_err(io_err)
 }
 
 #[cfg(test)]

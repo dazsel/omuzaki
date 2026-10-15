@@ -741,6 +741,10 @@ fn print_run(report: &RunReport) {
     for refused in &report.refused {
         println!("REFUSED {}: {}", refused.task, refused.why);
     }
+    // Tasks left out for a limit of this run (the binary host's grants): named, so a requested task never just vanishes.
+    for skipped in report.run.tasks_skipped.iter().filter(|s| !report.refused.contains(s)) {
+        println!("SKIPPED {}: {}", skipped.task, skipped.why);
+    }
     for d in &report.deviations {
         println!(
             "DEVIATION {} [{}] {}: expected {}, got {}: {}",
