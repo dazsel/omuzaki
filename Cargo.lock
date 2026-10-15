@@ -3322,6 +3322,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-agent"
+version = "0.0.0"
+dependencies = [
+ "blake3",
+ "omuzaki-agent-api",
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-llm-api",
+ "omuzaki-llm-mock",
+ "omuzaki-ops-api",
+ "omuzaki-settings-api",
+ "rmcp",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
 name = "omuzaki-agent-api"
 version = "0.0.0"
 dependencies = [
