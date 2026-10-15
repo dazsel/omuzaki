@@ -771,7 +771,7 @@ pub trait Rig: Send {
     /// builder (`FullRig::with_constraints` in `omuzaki-rig`): a constrained bone then takes its constraint's rotation.
     /// This is the VRM 1.0 order, in which `UniVRM` applies `VRMC_node_constraint` after the humanoid pose and before the
     /// spring bones. On a generic skeleton there are no humanoid bones, so `pose` is ignored and only the spring bones
-    /// move. Hot path: no allocation, no locking.
+    /// and any constrained bones move. Hot path: no allocation, no locking.
     fn solve(&mut self, tick: Tick, pose: &HumanoidPose, out: &mut Pose);
 
     /// Clears physics state (springs at rest, as after a teleport or a scrub).
