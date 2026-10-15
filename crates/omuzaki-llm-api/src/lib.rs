@@ -1,41 +1,38 @@
 //! The LLM contract (llm-api D1 to D5, D8; ADR 0032). Five features call a model through it; the real clients are in
 //! `omuzaki-llm`, the fake is `omuzaki-llm-mock`.
 //!
-//! - **[`LlmClient`]** starts a turn and returns a [`TurnStream`]: blocking and pull-based, so every caller is a plain
-//!   thread. [`TurnStream::try_next`] never blocks, [`TurnStream::collect`] folds a stream into a [`Turn`].
-//! - **[`TurnRequest`], [`Message`], [`ContentBlock`]** and friends: a provider-neutral, append-only history.
-//! - **[`Usage`], [`PriceTable`], [`MicroUsd`], [`Ledger`]**: integer micro-dollars from a dated table, and a
-//!   pre-request cost bound that needs no network.
-//! - **[`LlmError`], [`Cancel`]**: failures, and cancellation that holds on the very next call.
-//! - **[`LlmProvider`], [`register_llm_provider!`]**: providers register themselves; the secret types are local
+//! Callers import by module path (ADR 0054 §2): `omuzaki_llm_api::message::TurnRequest`.
+//!
+//! - **[`LlmClient`]** starts a turn and returns a [`stream::TurnStream`]: blocking and pull-based, so every caller is
+//!   a plain thread.
+//! - **[`message`]**: [`message::TurnRequest`], [`message::Message`], [`message::ContentBlock`] and friends, a
+//!   provider-neutral, append-only history.
+//! - **[`stream`]**: events, [`stream::TurnStream`] (`try_next` never blocks, `collect` folds a stream into a
+//!   [`stream::Turn`]) and [`stream::Cancel`], which holds on the very next call.
+//! - **[`usage`]**: [`usage::Usage`], integer [`usage::MicroUsd`] from a dated [`usage::PriceTable`], and the
+//!   [`usage::Ledger`]'s pre-request cost bound that needs no network.
+//! - **[`error`]**: [`error::LlmError`].
+//! - **[`provider`]**: providers register themselves with [`register_llm_provider!`]; the secret types there are local
 //!   stand-ins until `omuzaki-secrets-api` and `omuzaki-settings-api` land.
 //!
-//! This crate has no network stack and no async runtime. [`Usage::cost`] arrives with the price-table task.
+//! This crate has no network stack and no async runtime. `Usage::cost` arrives with the price-table task.
 #![deny(missing_docs)]
 
-mod error;
-mod message;
-mod provider;
-mod stream;
-mod usage;
-
-pub use error::LlmError;
-pub use message::{
-    CachePlan, ContentBlock, Effort, ImageMime, ImageOrigin, Message, Role, SystemBlock, ToolChoice, ToolDef,
-    TurnRequest,
-};
-pub use provider::{
-    BuildFn, CostModel, ListModelsFn, LlmCapability, LlmProvider, Privacy, ProviderConfig, ProviderEnv,
-    ProviderManifest, RetryPolicy, RuntimeHandle, SecretLabel, SecretRef, SecretStore, SecretValue, provider,
-    providers,
-};
-pub use stream::{Cancel, EventSource, LlmEvent, Next, StopReason, Turn, TurnStream};
-pub use usage::{ImageCost, Ledger, MicroUsd, ModelInfo, PriceTable, PriceTier, Rates, Usage};
+pub mod error;
+pub mod message;
+pub mod provider;
+pub mod stream;
+pub mod usage;
 
 #[doc(hidden)]
 pub use inventory as __inventory;
 #[doc(hidden)]
 pub use omuzaki_core::__record_registration;
+
+use error::LlmError;
+use message::TurnRequest;
+use stream::{Cancel, TurnStream};
+use usage::ModelInfo;
 
 /// A model behind a provider.
 pub trait LlmClient: Send + Sync {

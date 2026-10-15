@@ -5,7 +5,7 @@ use std::time::Duration;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// Why a call or a turn failed. Refusal is not here: it is [`StopReason::Refused`](crate::StopReason::Refused),
+/// Why a call or a turn failed. Refusal is not here: it is [`StopReason::Refused`](crate::stream::StopReason::Refused),
 /// because a refused turn still costs money. No variant ever carries a key or a request header.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error, Serialize, Deserialize, JsonSchema)]
 #[non_exhaustive]

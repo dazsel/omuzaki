@@ -3,7 +3,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{ContentBlock, ImageMime, TurnRequest};
+use crate::message::{ContentBlock, ImageMime, TurnRequest};
 
 /// Tokens a turn used. `input` excludes the two cache counters.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -118,7 +118,7 @@ pub struct ModelInfo {
     pub vision: bool,
     /// Accepts tools.
     pub tools: bool,
-    /// Honours [`Effort`](crate::Effort).
+    /// Honours [`Effort`](crate::message::Effort).
     pub effort: bool,
     /// Honours cache breakpoints.
     pub caching: bool,
