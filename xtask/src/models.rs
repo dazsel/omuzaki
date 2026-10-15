@@ -6,6 +6,12 @@
 //! `conditions`, or that doesn't name the same licence. It also refuses a `register_model!` that registers a different id
 //! for the file than the manifest says. Mock crates ship test fixtures, so their `models/` folders are exempt.
 //!
+//! A shipped model's lineage (`card.lineage`: base models, training data, code, conversions) is checked too, since a
+//! model is only as clean as its chain. It must document at least one base model or training data link, and every
+//! link must name an SPDX licence and a source `url`. A non-commercial or unknown licence (words, `LicenseRef-`,
+//! `unknown`) fails, naming the model and the link. See "What counts as documented lineage" in
+//! `docs/licensing/policy.md`.
+//!
 //! The licence comparison is exact: the entry's `condition` must name the manifest's whole SPDX expression as
 //! whole tokens, and no non-commercial licence ships. Every `register_model!` of a crate must include one of its own
 //! `models/*.model.toml`, or the gate fails: it can't check a manifest it doesn't scan.
@@ -44,7 +50,7 @@ use std::fs;
 use std::path::Path;
 use std::process::ExitCode;
 
-use omuzaki_ai_api::{ModelManifest, Origin};
+use omuzaki_ai_api::{LineageKind, ModelManifest, Origin};
 use xtask::registry::lex::{Tok, Token, tokens};
 
 use crate::lint_licences::register::{self, Named};
@@ -130,6 +136,7 @@ pub fn problems(file: &str, text: &str, register: &[Row], sources: &[(String, St
             }
         }
     }
+    out.extend(lineage_problems(&manifest));
     let file_name = base_name(file);
     for (path, source) in sources {
         for (id, include) in registrations(source).into_iter().flatten() {
@@ -143,6 +150,79 @@ pub fn problems(file: &str, text: &str, register: &[Row], sources: &[(String, St
         }
     }
     out
+}
+
+/// Every problem with a shipped model's lineage: none documented, or a link without a source or with a
+/// non-commercial, unknown or missing licence. Each names the model and the link.
+fn lineage_problems(manifest: &ModelManifest) -> Vec<String> {
+    let id = &manifest.id;
+    let lineage = &manifest.card.lineage;
+    let mut out = Vec::new();
+    if !lineage.iter().any(|link| matches!(link.kind, LineageKind::BaseModel | LineageKind::TrainingData)) {
+        out.push(format!(
+            "model `{id}` has no documented lineage; `card.lineage` needs a base_model or training_data link"
+        ));
+    }
+    for link in lineage {
+        let named = format!("model `{id}`: lineage link `{}` ({})", link.name, kind_name(link.kind));
+        let source = link.url.as_deref().map(str::trim).filter(|url| !url.is_empty());
+        if source.is_none() {
+            out.push(format!("{named} names no source `url`"));
+        }
+        let at = source.map_or(String::new(), |url| format!(" ({url})"));
+        match link.licence.as_deref().map(str::trim).filter(|licence| !licence.is_empty()) {
+            None => out.push(format!("{named} names no licence{at}")),
+            Some(licence) if is_non_commercial(licence) => {
+                out.push(format!(
+                    "{named} has the non-commercial licence `{licence}`{at}; a shipped model can't use it"
+                ));
+            }
+            Some(licence) if !is_known_spdx(licence) => {
+                out.push(format!("{named} has an unknown licence `{licence}`{at}; name its SPDX id"));
+            }
+            Some(_) => {}
+        }
+    }
+    out
+}
+
+/// A lineage link's kind as `card.lineage` spells it in TOML.
+fn kind_name(kind: LineageKind) -> &'static str {
+    match kind {
+        LineageKind::TrainingData => "training_data",
+        LineageKind::BaseModel => "base_model",
+        LineageKind::Code => "code",
+        LineageKind::Conversion => "conversion",
+    }
+}
+
+/// Whether `licence` is an SPDX expression: ids joined by `AND`, `OR` or `WITH`, with balanced parentheses. Words
+/// (`research only`), `LicenseRef-…` and placeholders (`unknown`, `NOASSERTION`) are not.
+fn is_known_spdx(licence: &str) -> bool {
+    let mut depth = 0_i32;
+    let mut operand_next = true;
+    for token in spdx_tokens(licence) {
+        match token.as_str() {
+            "(" if operand_next => depth += 1,
+            ")" if !operand_next && depth > 0 => depth -= 1,
+            "AND" | "OR" | "WITH" if !operand_next => operand_next = true,
+            "(" | ")" | "AND" | "OR" | "WITH" => return false,
+            id if operand_next && is_spdx_id(id) => operand_next = false,
+            _ => return false,
+        }
+    }
+    depth == 0 && !operand_next
+}
+
+/// Whether `id` can be an SPDX licence or exception id: not a placeholder or a `LicenseRef-` (words, not an id).
+fn is_spdx_id(id: &str) -> bool {
+    let lower = id.to_ascii_lowercase();
+    !lower.starts_with("licenseref-")
+        && !lower.starts_with("documentref-")
+        && !matches!(
+            lower.as_str(),
+            "unknown" | "unverified" | "none" | "noassertion" | "tbd" | "n/a" | "proprietary" | "custom" | "other"
+        )
 }
 
 /// The last segment of a path, with `\` read as `/` (Windows paths come back with `\`).
@@ -863,6 +943,12 @@ authors = "Omuzaki"
 
 [card.licence]
 spdx = "MIT OR Apache-2.0"
+
+[[card.lineage]]
+kind = "training_data"
+name = "Tiny corpus 1"
+licence = "CC0-1.0"
+url = "https://data.example/tiny-corpus"
 "#
         )
     }
@@ -878,6 +964,18 @@ spdx = "MIT OR Apache-2.0"
 
     const HTTPS: &str = r#""https://models.example/tiny/1.0.0/tiny.fake.toml""#;
     const FILE: &str = "crates/omuzaki-tiny/models/tiny.model.toml";
+
+    #[test]
+    fn lineage_licences_are_classified() {
+        for ok in ["MIT", "CC-BY-4.0", "Apache-2.0 WITH LLVM-exception", "(MIT OR Apache-2.0) AND CC0-1.0"] {
+            assert!(is_known_spdx(ok), "{ok}");
+        }
+        for bad in
+            ["", "unknown", "research only", "LicenseRef-custom", "MIT OR", "(MIT", "MIT Apache-2.0", "NOASSERTION"]
+        {
+            assert!(!is_known_spdx(bad), "{bad}");
+        }
+    }
 
     #[test]
     fn a_good_manifest_and_row_pass() {

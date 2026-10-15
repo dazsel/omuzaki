@@ -73,6 +73,15 @@ Everything the product uses or ships, and everything we use to build it:
 - **Service outputs the vendor owns or keeps rights to** (the free tiers of Meshy and Tripo), or outputs under unknown terms.
 - **Third-party IP in anything shippable:** characters, logos, a real person's likeness or voice, unless licensed and consented.
 
+## What counts as documented lineage
+
+A shipped model's `model.toml` lists its chain under `card.lineage`, and `cargo xtask models` checks it (ML-01):
+
+- **At least one `base_model` or `training_data` link.** A model trained from scratch names its dataset; a fine-tune names its base model and the data it was tuned on. `code` and `conversion` links alone don't document where a model came from.
+- **Every link names its licence as an SPDX expression** (`CC-BY-4.0`, `Apache-2.0`, `MIT OR Apache-2.0`) **and its source `url`.**
+- **The gate fails a link whose licence is missing, unknown or non-commercial,** naming the model and the link. Unknown means words instead of an SPDX id (`research only`, `scraped, terms unclear`), `LicenseRef-…`, or a placeholder such as `unknown` or `NOASSERTION`. Non-commercial uses the same test as the model's own weights (`CC-BY-NC-4.0`, `PolyForm-Noncommercial-1.0.0`).
+- A link whose licence you can't state as SPDX isn't cleared: find the primary source (step 1 under "Adding anything new") or the model doesn't ship.
+
 ## User-supplied models
 
 A model a person adds to a model slot (ML-13, `docs/decisions/0016-user-supplied-models.md`) is outside this policy's scope: we don't make, ship, bundle, mirror or auto-download it, so its licence is between the person and its author. The product shows its declared licence and a "not from Omuzaki" disclaimer, records the person's acknowledgement, carries the model into the licence record of everything it makes, and warns at export when a non-commercial or unknown licence would reach a commercial use. Nothing we ship may depend on a user-supplied model, and no default, preset, tutorial or agent suggestion may point people to a model this policy bans.
