@@ -279,17 +279,20 @@ impl Search<'_> {
 
 /// Golden-section search over `(a, b)` of `cost`, which gives `None` once the budget is spent (then this is `false`).
 ///
-/// Equal costs never end the search. Two interior probes that cost the same prove nothing at low resolution, where
-/// distinct values can rasterise alike, and the samples can straddle a dip between them. On a tie the ends and the
-/// midpoints of the three intervals are probed too, and if one of the seven is lower the search goes on in the bracket
-/// round it. If all seven agree it goes on in the whole bracket, and a tie always keeps the lower half, so the search
-/// is deterministic and narrows towards the lower end; it stops at [`BRACKET_TOLERANCE`] or the budget.
+/// Equal costs never end the search and never pick a side. Two interior probes that cost the same prove nothing at low
+/// resolution, where distinct values can rasterise alike, and the samples can straddle a dip between them. On a tie
+/// the ends and the midpoints of the three intervals are probed too (seven samples, six intervals), and the golden
+/// search runs in every interval that has a lowest sample at either end: when all seven tie, in all six, lowest first.
+/// [`Search::probe`] keeps the first strictly better result, so of equal results the lowest value wins and the outcome
+/// is deterministic. Inside one interval a tie keeps the lower half. The tolerance is [`BRACKET_TOLERANCE`] of the whole
+/// bracket, so an interval of a sixth is probed at its two interior points and no further. The search stops at the
+/// tolerance or the budget.
 fn golden((a, b): (f64, f64), cost: &mut dyn FnMut(f64) -> Result<Option<f64>, FitError>) -> Result<bool, FitError> {
     let (c, d) = (b - INV_PHI * (b - a), a + INV_PHI * (b - a));
     let Some(fc) = cost(c)? else { return Ok(false) };
     let Some(fd) = cost(d)? else { return Ok(false) };
     if (fc - fd).abs() >= FLAT {
-        return steps((a, b), (c, d), (fc, fd), cost);
+        return steps((a, b), (c, d), (fc, fd), (b - a) * BRACKET_TOLERANCE, cost);
     }
     let mut samples = [
         (a, f64::NAN),
@@ -304,26 +307,31 @@ fn golden((a, b): (f64, f64), cost: &mut dyn FnMut(f64) -> Result<Option<f64>, F
         let Some(v) = cost(*t)? else { return Ok(false) };
         *f = v;
     }
-    if samples.iter().all(|(_, f)| (f - fc).abs() < FLAT) {
-        return steps((a, b), (c, d), (fc, fd), cost);
+    let lowest = samples.iter().fold(f64::MAX, |m, (_, f)| m.min(*f));
+    for pair in samples.windows(2) {
+        if pair.iter().all(|(_, f)| *f > lowest + FLAT) {
+            continue;
+        }
+        let (lo, hi) = (pair[0].0, pair[1].0);
+        let (c, d) = (hi - INV_PHI * (hi - lo), lo + INV_PHI * (hi - lo));
+        let Some(fc) = cost(c)? else { return Ok(false) };
+        let Some(fd) = cost(d)? else { return Ok(false) };
+        if !steps((lo, hi), (c, d), (fc, fd), (b - a) * BRACKET_TOLERANCE, cost)? {
+            return Ok(false);
+        }
     }
-    let low = samples.iter().enumerate().fold(0, |m, (i, (_, f))| if *f < samples[m].1 { i } else { m });
-    let (lo, hi) = (samples[low.saturating_sub(1)].0, samples[(low + 1).min(samples.len() - 1)].0);
-    let (c, d) = (hi - INV_PHI * (hi - lo), lo + INV_PHI * (hi - lo));
-    let Some(fc) = cost(c)? else { return Ok(false) };
-    let Some(fd) = cost(d)? else { return Ok(false) };
-    steps((lo, hi), (c, d), (fc, fd), cost)
+    Ok(true)
 }
 
 /// The golden-section steps from the bracket `(a, b)` whose interior probes `(c, d)` cost `(fc, fd)`, until the
-/// bracket is [`BRACKET_TOLERANCE`] of its starting width. A tie keeps the lower half.
+/// bracket is no wider than `stop`. A tie keeps the lower half.
 fn steps(
     (mut a, mut b): (f64, f64),
     (mut c, mut d): (f64, f64),
     (mut fc, mut fd): (f64, f64),
+    stop: f64,
     cost: &mut dyn FnMut(f64) -> Result<Option<f64>, FitError>,
 ) -> Result<bool, FitError> {
-    let stop = (b - a) * BRACKET_TOLERANCE;
     while b - a > stop {
         let probed = if fc <= fd {
             (b, d, fd) = (d, c, fc);
@@ -389,6 +397,33 @@ mod tests {
         let (lo, hi) =
             (probes.iter().copied().fold(f64::MAX, f64::min), probes.iter().copied().fold(f64::MIN, f64::max));
         assert!((lo, hi) == (0.0, 1.0), "{probes:?}");
+    }
+
+    /// All seven samples tie and the only improvement lies above 0.236, in the second interval: it must be found.
+    #[test]
+    fn a_dip_above_the_lower_interval_is_found_when_all_samples_tie() {
+        let mut lowest = f64::MAX;
+        let ok = golden((0.0, 1.0), &mut |t| {
+            let f = if (t - 0.3).abs() < 0.01 { 0.0 } else { 1.0 };
+            lowest = lowest.min(f);
+            Ok(Some(f))
+        });
+        assert_eq!(ok, Ok(true));
+        assert!(lowest == 0.0, "the dip near 0.3 was never probed");
+    }
+
+    /// Of equal results in different intervals the lowest value wins, as the first strictly better one is kept.
+    #[test]
+    fn equal_dips_are_visited_lowest_first() {
+        let mut firsts = Vec::new();
+        let _ = golden((0.0, 1.0), &mut |t| {
+            let low = (t - 0.3).abs() < 0.01 || (t - 0.7).abs() < 0.01;
+            if low {
+                firsts.push(t);
+            }
+            Ok(Some(if low { 0.0 } else { 1.0 }))
+        });
+        assert!(firsts.first().is_some_and(|t| *t < 0.5), "{firsts:?}");
     }
 
     /// A dip only near 0.1: no sample of the first seven lands in it, and the search still reaches it.
