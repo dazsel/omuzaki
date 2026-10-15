@@ -25,6 +25,7 @@ inventory.workspace = true
 serde.workspace = true
 toml.workspace = true
 omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-doc-api = { path = "../omuzaki-doc-api" }
 omuzaki-l10n-api = { path = "../omuzaki-l10n-api" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 tracing.workspace = true
