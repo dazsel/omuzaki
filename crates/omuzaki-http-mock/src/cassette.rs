@@ -172,8 +172,10 @@ mod tests {
     use std::io::Read;
     use std::sync::Arc;
 
+    use base64::DecodeError;
     use omuzaki_http_api::{HttpBody, HttpRequest, HttpTransport, Method, NeverCancel};
 
+    use super::decode_base64;
     use crate::{CassetteError, FakeHttp};
 
     /// Loads a one-route cassette whose only reply is `reply`, and returns the body that reply serves.
@@ -205,6 +207,13 @@ mod tests {
     fn non_zero_trailing_bits_are_still_accepted() {
         assert_eq!(served_body(r#"{"status":200,"body_base64":"Zh=="}"#), b"f");
         assert_eq!(served_body(r#"{"status":200,"chunks":[{"base64":"Zh=="}]}"#), b"f");
+    }
+
+    #[test]
+    fn bad_base64_is_refused_with_the_crate_error() {
+        // The crate's own error values: an invalid symbol names its offset, and a missing pad is `InvalidPadding`.
+        assert_eq!(decode_base64("Zm9*"), Err(DecodeError::InvalidByte(3, b'*')));
+        assert_eq!(decode_base64("Zm9"), Err(DecodeError::InvalidPadding));
     }
 
     #[test]
