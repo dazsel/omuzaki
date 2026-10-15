@@ -45,6 +45,21 @@ pub fn build_script_emits(source: &str) -> bool {
             && toks[at + 1..to].starts_with_emit_call()
             // A statement starts after the body's `{`, a `;` or a block's `}`; `|| emit()` or `#[cfg(..)] emit()` do not.
             && (at == from || toks[at - 1].is_punct(';') || toks[at - 1].is_punct('}'))
+            && !can_leave_main(&toks[from..at])
+    })
+}
+
+/// Whether any of these tokens, at any depth, could end `main` before the statement that follows them: `return`, `?`,
+/// `exit(` (`process::exit`), or `panic!`, `unreachable!`, `todo!` or `unimplemented!`. A build script that leaves early
+/// leaves a stale `link_calls.rs` behind.
+fn can_leave_main(before: &[Token]) -> bool {
+    before.iter().enumerate().any(|(at, token)| {
+        let next = before.get(at + 1);
+        token.is_punct('?')
+            || token.is_ident("return")
+            || (token.is_ident("exit") && next.is_some_and(|t| t.is_punct('(')))
+            || (["panic", "unreachable", "todo", "unimplemented"].iter().any(|m| token.is_ident(m))
+                && next.is_some_and(|t| t.is_punct('!')))
     })
 }
 
@@ -161,9 +176,15 @@ mod tests {
             "{ omuzaki_link_build::emit(); }",
             "#[cfg(any())]\n    omuzaki_link_build::emit();",
             "let f = |_| omuzaki_link_build::emit();",
+            "if skip() { return; }\n    omuzaki_link_build::emit();",
+            "check()?;\n    omuzaki_link_build::emit();",
+            "if skip() { std::process::exit(0); }\n    omuzaki_link_build::emit();",
+            "if skip() { panic!(\"no\"); }\n    omuzaki_link_build::emit();",
+            "todo!();\n    omuzaki_link_build::emit();",
         ] {
             assert!(!build_script_emits(&format!("fn main() {{\n    {body}\n}}\n")), "{body}");
         }
+        // Work before `emit()` is fine as long as it cannot leave `main`.
         assert!(build_script_emits("fn main() {\n    println!(\"x\");\n    omuzaki_link_build::emit();\n}\n"));
         assert!(!build_script_emits("mod m { fn main() { omuzaki_link_build::emit(); } }\nfn other() {}\n"));
     }
