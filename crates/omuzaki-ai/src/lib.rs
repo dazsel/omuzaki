@@ -11,9 +11,21 @@
 //! [`link`] at startup (ADR 0015).
 #![deny(missing_docs)]
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the cache, the state file and the worker are the app's own files, never the person's; the ops stay fenced"
+)]
 mod fetch;
 pub mod ops;
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the cache, the state file and the worker are the app's own files, never the person's; the ops stay fenced"
+)]
 mod registry;
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the cache, the state file and the worker are the app's own files, never the person's; the ops stay fenced"
+)]
 pub mod sandbox;
 mod slot_session;
 

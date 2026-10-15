@@ -1,5 +1,6 @@
 //! Models a person adds, against the mock's `fake` runtime and its test slots: the checks `add` runs and what each
 //! refusal says, the acknowledgement flow, the requester rule in `select`, and `remove` freeing the cache. Offline.
+#![allow(clippy::disallowed_methods, reason = "tests set up their fixtures on disk; the fence is for ops")]
 #![allow(clippy::unwrap_used)] // helpers outside `#[test]` fns: a panic is a clear test failure
 
 mod common;

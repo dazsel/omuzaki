@@ -126,6 +126,7 @@ impl Op for ModelAdd {
 }
 
 /// Copies the file the person named at `path` into `staging` under its own name, through the checked handle.
+#[allow(clippy::disallowed_methods, reason = "the copy goes into the job's own fresh temporary folder, not a person's")]
 fn bring(job: &JobCtx<'_>, path: &str, staging: &Path) -> Result<PathBuf, OpError> {
     let name =
         Path::new(path).file_name().ok_or_else(|| OpError::invalid("path", format!("{path:?} names no file")))?;

@@ -1,6 +1,7 @@
 //! The `model.*` ops over a real registry (the mock's runtime, slots and fixtures; this test binary as the sandboxed
 //! worker): what an agent and a person may each do, did-you-mean on names, `model.add` through the person's file roots,
 //! and `model.status` while a download runs and after it fails. Offline.
+#![allow(clippy::disallowed_methods, reason = "tests set up their fixtures on disk; the fence is for ops")]
 #![allow(clippy::unwrap_used)] // helpers outside `#[test]` fns: a panic is a clear test failure
 
 mod common;

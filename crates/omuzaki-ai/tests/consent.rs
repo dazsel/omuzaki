@@ -1,6 +1,7 @@
 //! The consent hook (SE-05): a model whose card says it imitates a real person stays `NeedsConsent` until the app's
 //! lookup finds that person's record, and can't be selected meanwhile. Against the mock's slots: `test_stream@1`
 //! declares a voice-conversion likeness, `test_echo@1` none.
+#![allow(clippy::disallowed_methods, reason = "tests set up their fixtures on disk; the fence is for ops")]
 #![allow(clippy::unwrap_used)] // helpers outside `#[test]` fns: a panic is a clear test failure
 
 mod common;

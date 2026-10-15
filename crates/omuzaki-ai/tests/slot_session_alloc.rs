@@ -3,7 +3,7 @@
 //! while commits and the loader contend for the session's mailbox. The
 //! counting allocator is the one from `omuzaki-ai-mock`'s `hot_loop` test; it counts only on the measuring thread, per
 //! thread.
-
+#![allow(clippy::disallowed_methods, reason = "tests set up their fixtures on disk; the fence is for ops")]
 // A counting allocator is the only way to *prove* "no allocation"; the workspace denies unsafe code by default.
 #![allow(unsafe_code, clippy::unwrap_used)]
 

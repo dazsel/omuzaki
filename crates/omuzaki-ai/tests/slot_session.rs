@@ -3,6 +3,7 @@
 //! and `reset` reaches whatever runs next. A wrapper around the `fake` runtime
 //! (`slot-probe`) adds a load delay and records loads and resets; the models are the identity, as the slot's smoke
 //! test requires, and differ in their `load_ms` and `crash_after` lines.
+#![allow(clippy::disallowed_methods, reason = "tests set up their fixtures on disk; the fence is for ops")]
 #![allow(clippy::unwrap_used)] // helpers outside `#[test]` fns: a panic is a clear test failure
 
 mod common;

@@ -1,6 +1,7 @@
 //! The sandboxed worker (#1153), with this test binary standing in for `omuzaki-model-worker` (`common::rig`): a fake
 //! model runs there as it does in process, a crash or a stall kills the worker and is `Crashed`, the memory cap holds,
 //! and through the registry a crashing user model fails its slot, never the caller. Offline.
+#![allow(clippy::disallowed_methods, reason = "tests set up their fixtures on disk; the fence is for ops")]
 #![allow(clippy::unwrap_used)] // helpers outside `#[test]` fns: a panic is a clear test failure
 
 mod common;
