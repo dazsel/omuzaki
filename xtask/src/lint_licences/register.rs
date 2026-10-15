@@ -8,6 +8,10 @@ use serde::Deserialize;
 /// The verdicts `docs/licensing/policy.md` defines.
 pub const STATUSES: &[&str] = &["yes", "conditions", "external", "NO", "unverified", "private-test"];
 
+/// The verdicts that bar the item from anything in use (policy: `unverified` counts as `NO`; `private-test` material is
+/// never committed). A file with one of these may only list the item, never claim a crate, tool or path.
+const BARRED: &[&str] = &["NO", "unverified", "private-test"];
+
 /// The line in `register.md` that the table of one section replaces: `<!-- licence-table: <section> -->`.
 const MARKER: (&str, &str) = ("<!-- licence-table: ", " -->");
 
@@ -56,6 +60,14 @@ impl Entry {
         let mut found = Vec::new();
         if !STATUSES.contains(&self.status.as_str()) {
             found.push(format!("status `{}` is not one of {}", self.status, STATUSES.join(", ")));
+        }
+        if BARRED.contains(&self.status.as_str())
+            && !(self.crates.is_empty() && self.tools.is_empty() && self.paths.is_empty())
+        {
+            found.push(format!(
+                "status `{}` bars the item from use, yet the file claims a crate, tool or path that is in use",
+                self.status
+            ));
         }
         if self.cells().iter().any(|cell| cell.contains(['|', '\n'])) {
             found.push("a field holds `|` or a line break, which would break the table".to_owned());
@@ -163,6 +175,20 @@ mod tests {
         e.paths = vec!["fonts/".into(), "logo.png".into()];
         assert!(e.covers_path("fonts/a.ttf") && e.covers_path("logo.png"));
         assert!(!e.covers_path("fonts.ttf") && !e.covers_path("logo.png.bak"));
+    }
+
+    #[test]
+    fn a_barred_verdict_may_not_claim_anything_in_use() {
+        for status in BARRED {
+            let mut e = entry("a", "x", "");
+            e.status = (*status).into();
+            assert!(e.problems().is_empty(), "{status}: a planned item is fine");
+            e.crates = vec!["x".into()];
+            assert_eq!(e.problems().len(), 1, "{status}: {:?}", e.problems());
+            e.crates.clear();
+            e.paths = vec!["a/".into()];
+            assert_eq!(e.problems().len(), 1, "{status}");
+        }
     }
 
     #[test]

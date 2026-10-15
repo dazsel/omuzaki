@@ -68,14 +68,67 @@ fn tools_in(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// The committed third-party material: font files and `NOTICES.md` under `crates/`, and everything under
-/// `.github/assets/`. Paths are relative to `root`, `/`-separated and sorted.
+/// File extensions of binary assets: fonts, images, models, audio, video and meshes. Source, config and text files are
+/// code, not assets; a third-party text file is declared by a `NOTICES.md` beside it.
+const ASSET_EXTENSIONS: &[&str] = &[
+    "ttf",
+    "otf",
+    "ttc",
+    "woff",
+    "woff2",
+    "png",
+    "jpg",
+    "jpeg",
+    "gif",
+    "webp",
+    "bmp",
+    "tga",
+    "tif",
+    "tiff",
+    "ico",
+    "hdr",
+    "exr",
+    "dds",
+    "ktx",
+    "ktx2",
+    "rgb",
+    "onnx",
+    "safetensors",
+    "gguf",
+    "pt",
+    "pth",
+    "ckpt",
+    "bin",
+    "npy",
+    "npz",
+    "wav",
+    "ogg",
+    "mp3",
+    "flac",
+    "opus",
+    "mp4",
+    "mov",
+    "webm",
+    "mkv",
+    "glb",
+    "gltf",
+    "vrm",
+    "fbx",
+    "obj",
+    "blend",
+];
+
+/// Whether a file under `crates/` is third-party material that needs a licence file.
+fn is_asset(name: &str) -> bool {
+    let ext = Path::new(name).extension().map(std::ffi::OsStr::to_ascii_lowercase);
+    name == "NOTICES.md" || ext.is_some_and(|ext| ASSET_EXTENSIONS.iter().any(|known| ext == *known))
+}
+
+/// The committed third-party material: binary assets (see [`ASSET_EXTENSIONS`]) and `NOTICES.md` under `crates/`, and
+/// everything under `.github/assets/`. Paths are relative to `root`, `/`-separated and sorted.
 pub fn assets(root: &Path) -> Vec<String> {
     let mut found = Vec::new();
-    walk(root, Path::new("crates"), &mut found, &|name| {
-        let ext = Path::new(name).extension().map(std::ffi::OsStr::to_ascii_lowercase);
-        name == "NOTICES.md" || ext.is_some_and(|ext| ext == "ttf" || ext == "otf")
-    });
+    walk(root, Path::new("crates"), &mut found, &is_asset);
     walk(root, Path::new(".github/assets"), &mut found, &|_| true);
     found.sort();
     found
@@ -123,6 +176,23 @@ mod tests {
         .unwrap_or_default();
         assert_eq!(lock.direct.keys().collect::<Vec<_>>(), ["serde", "toml"]);
         assert!(lock.packages.contains("core") && !lock.direct.contains_key("serde_derive"));
+    }
+
+    #[test]
+    fn models_images_and_fonts_under_crates_are_assets_but_source_is_not() {
+        let root = tempfile::tempdir().expect("temp dir");
+        for file in ["crates/a/assets/model.ONNX", "crates/a/img/x.png", "crates/a/f.ttf", "crates/a/NOTICES.md"] {
+            let path = root.path().join(file);
+            fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+            fs::write(path, "").expect("write");
+        }
+        for file in ["crates/a/src/lib.rs", "crates/a/Cargo.toml", "crates/a/README.md", "crates/a/data.json"] {
+            fs::write(root.path().join(file), "").ok();
+        }
+        assert_eq!(
+            assets(root.path()),
+            ["crates/a/NOTICES.md", "crates/a/assets/model.ONNX", "crates/a/f.ttf", "crates/a/img/x.png"]
+        );
     }
 
     #[test]

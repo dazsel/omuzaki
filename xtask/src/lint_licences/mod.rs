@@ -57,8 +57,11 @@ fn lint(root: &Path) -> (Vec<String>, String, usize) {
         }
         for krate in &entry.crates {
             claims.entry(krate).or_default().push(name);
-            if !lock.packages.contains(krate) {
-                found.push(format!("{at}: orphaned: crate `{krate}` is not in Cargo.lock"));
+            if !lock.direct.contains_key(krate) {
+                let why =
+                    if lock.packages.contains(krate) { "only a transitive dependency" } else { "not in Cargo.lock" };
+                found
+                    .push(format!("{at}: orphaned: crate `{krate}` is no workspace crate's direct dependency ({why})"));
             }
         }
         for tool in entry.tools.iter().filter(|tool| !tools.contains(*tool)) {

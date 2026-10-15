@@ -80,7 +80,7 @@ fn orphaned_files_and_uncovered_tools_and_assets_are_caught() {
     let run = fixture.xtask(&["lint-licences"]);
     assert!(!run.success, "{}", run.stdout);
     for expected in [
-        "docs/licensing/deps/gone.toml: orphaned: crate `gone` is not in Cargo.lock",
+        "docs/licensing/deps/gone.toml: orphaned: crate `gone` is no workspace crate's direct dependency (not in Cargo.lock)",
         "docs/licensing/deps/gone.toml: orphaned: path `fonts/` does not exist",
         "tool `cargo-about` (installed by a workflow) has no file in docs/licensing/deps/",
         "`crates/app/assets/Font.ttf` has no file in docs/licensing/deps/ (list it under `paths`)",
@@ -107,5 +107,47 @@ fn a_file_that_does_not_fit_the_register_is_caught() {
         "crate `serde` (used by app) has no file",
     ] {
         assert!(run.stdout.contains(expected), "missing `{expected}` in:\n{}", run.stdout);
+    }
+}
+
+#[test]
+fn a_file_for_a_crate_that_is_only_transitive_now_is_an_orphan() {
+    let fixture = workspace();
+    let mut text = lock(&["serde"]);
+    text.push_str("\n[[package]]\nname = \"dropped\"\nversion = \"1.0.0\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n");
+    fixture.write("Cargo.lock", &text);
+    fixture.write("docs/licensing/deps/dropped.toml", &licence_file("dropped", "crates = [\"dropped\"]"));
+    let run = fixture.xtask(&["lint-licences"]);
+    assert!(!run.success, "{}", run.stdout);
+    assert!(
+        run.stdout.contains("orphaned: crate `dropped` is no workspace crate's direct dependency (only a transitive"),
+        "{}",
+        run.stdout
+    );
+}
+
+#[test]
+fn a_banned_verdict_cannot_cover_something_in_use() {
+    let fixture = workspace();
+    fixture.write("Cargo.lock", &lock(&["serde", "toml"]));
+    let banned = licence_file("toml", "crates = [\"toml\"]").replace("\"yes\"", "\"NO\"");
+    fixture.write("docs/licensing/deps/toml.toml", &banned);
+    let run = fixture.xtask(&["lint-licences"]);
+    assert!(!run.success, "{}", run.stdout);
+    assert!(run.stdout.contains("toml.toml: status `NO` bars the item from use"), "{}", run.stdout);
+
+    let planned = licence_file("toml", "").replace("\"yes\"", "\"NO\"");
+    fixture.write("docs/licensing/deps/toml.toml", &planned);
+    assert!(fixture.xtask(&["lint-licences"]).stdout.contains("crate `toml` (used by app) has no file"));
+}
+
+#[test]
+fn a_committed_model_or_image_under_crates_needs_a_file() {
+    let fixture = workspace();
+    fixture.write("crates/app/assets/model.onnx", "");
+    fixture.write("crates/app/assets/face.png", "");
+    let run = fixture.xtask(&["lint-licences"]);
+    for asset in ["crates/app/assets/model.onnx", "crates/app/assets/face.png"] {
+        assert!(run.stdout.contains(&format!("`{asset}` has no file")), "{}", run.stdout);
     }
 }
