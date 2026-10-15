@@ -26,6 +26,7 @@ omuzaki-settings-api = { path = "../omuzaki-settings-api" }
 
 [dev-dependencies]
 tempfile.workspace = true
+toml.workspace = true
 omuzaki-llm-mock = { path = "../omuzaki-llm-mock" }
 
 [lints]

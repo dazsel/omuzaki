@@ -4,6 +4,8 @@
 //! `omuzaki-llm`: the app hands it an in-process MCP link, an `Arc<dyn LlmClient>` and an `Arc<dyn Sessions>`.
 #![deny(missing_docs)]
 
+omuzaki_core::define_link!();
+
 mod calls;
 mod caps;
 mod config;
@@ -22,6 +24,7 @@ mod turn;
 mod tx;
 mod worker;
 mod link;
+pub mod settings;
 pub mod sink;
 pub mod store;
 mod wait;
