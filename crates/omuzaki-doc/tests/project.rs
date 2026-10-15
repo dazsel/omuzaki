@@ -5,7 +5,7 @@
 
 mod common;
 
-use common::{change, exists, p, read, snapshot, write};
+use common::{change, exists, p, read, snapshot, snapshot_except, write};
 use omuzaki_doc::{Project, SaveReport, StoreError};
 use omuzaki_doc_api::{DocRead, DocVersion, DocWrite, Patch, PatchError};
 use serde_json::json;
@@ -135,12 +135,13 @@ fn save_writes_only_the_files_that_changed() {
         ))
         .unwrap();
     assert_eq!(project.save().unwrap().written, 3);
-    let before = snapshot(&dir);
+    // `.omuzaki/` holds only `replaced/` here, the files saves keep for a while (`docs/design/journal.md` 6.1).
+    let before = snapshot_except(&dir, &[".omuzaki"]);
 
     assert_eq!(project.save().unwrap(), SaveReport::default(), "a second save has nothing to do");
     project.apply(&change("characters/a/rig/y", Some(json!(1)), Some(json!(2)))).unwrap();
     assert_eq!(project.save().unwrap(), SaveReport { written: 1, removed: 0 });
-    let after = snapshot(&dir);
+    let after = snapshot_except(&dir, &[".omuzaki"]);
     let changed: Vec<_> = before.iter().zip(&after).filter(|(b, a)| b != a).map(|(b, _)| b.0.as_str()).collect();
     assert_eq!(changed, ["characters/a/rig.toml"]);
 
@@ -148,7 +149,7 @@ fn save_writes_only_the_files_that_changed() {
     project.apply(&change("characters/b/face/x", Some(json!(1)), Some(json!(9)))).unwrap();
     project.apply(&change("characters/b/face/x", Some(json!(9)), Some(json!(1)))).unwrap();
     assert_eq!(project.save().unwrap().written, 0);
-    assert_eq!(snapshot(&dir), after);
+    assert_eq!(snapshot_except(&dir, &[".omuzaki"]), after);
 }
 
 #[test]
@@ -316,7 +317,8 @@ fn an_inverse_patch_restores_the_files() {
     let dir = tmp.path();
     write(dir, "project.toml", "name = \"S\"\nschema = 1\n");
     write(dir, "characters/a/face.toml", "# note\nx = 1\n");
-    let original = snapshot(dir);
+    // `.omuzaki/` holds only `replaced/` here, the files saves keep for a while (`docs/design/journal.md` 6.1).
+    let original = snapshot_except(dir, &[".omuzaki"]);
     let mut project = Project::open(dir).unwrap();
 
     let patch = Patch::new()
@@ -325,11 +327,11 @@ fn an_inverse_patch_restores_the_files() {
         .with(p("scenes"), None, Some(json!({"s": {"stage": "x"}})));
     project.apply(&patch).unwrap();
     project.save().unwrap();
-    assert_ne!(snapshot(dir), original);
+    assert_ne!(snapshot_except(dir, &[".omuzaki"]), original);
 
     project.apply(&patch.inverse()).unwrap();
     project.save().unwrap();
-    assert_eq!(snapshot(dir), original);
+    assert_eq!(snapshot_except(dir, &[".omuzaki"]), original);
 }
 
 #[test]
