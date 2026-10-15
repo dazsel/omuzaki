@@ -91,7 +91,7 @@ pub enum SheetPose {
     Hero,
     /// Any pose, in the normalised space of [`HumanoidPose`]: what the pose library (RG-06) will hand a sheet. The
     /// shot is framed by the bind-pose height, so a pose that leaves that frame (sitting, jumping, a raised arm) is
-    /// refused with [`TurnaroundError::Unsupported`], never clipped or reframed; posed framing is a follow-up on #1771.
+    /// refused with [`TurnaroundError::Unsupported`], never clipped or reframed; posed framing is follow-up #1854.
     Custom(Box<HumanoidPose>),
 }
 
@@ -229,7 +229,7 @@ pub enum TurnaroundError {
     #[error("{0}")]
     Invalid(String),
     /// The pose, as drawn, reaches outside the frame the shot was made for, so the sheet would be clipped. The shot is
-    /// framed by the character's bind-pose height; framing a pose that sits, jumps or reaches is a follow-up on #1771.
+    /// framed by the character's bind-pose height; framing a pose that sits, jumps or reaches is follow-up #1854.
     #[error("{0}")]
     Unsupported(String),
     /// The cell needs tiles but the lens is a perspective one, whose sub-windows are off-axis.
@@ -577,7 +577,7 @@ impl Run<'_> {
         if min.y < 0.0 || max.y > rows {
             return Err(TurnaroundError::Unsupported(format!(
                 "the {view:?} view's pose spans rows {:.0} to {:.0}, outside the {} rows of the cell the shot was framed \
-                 for from the bind pose's height; posed framing is a follow-up on #1771",
+                 for from the bind pose's height; posed framing is follow-up #1854",
                 min.y, max.y, self.shot.cell.y
             )));
         }

@@ -997,7 +997,7 @@ fn a_pose_that_leaves_the_frame_fails_closed_and_the_sheet_still_gives_everythin
     let error = render_turnaround(&mut stage, &mut renderer, &spec().with_pose(SheetPose::custom(sitting)))
         .expect_err("the pose does not fit");
     assert!(matches!(error, TurnaroundError::Unsupported(_)), "{error}");
-    assert!(error.to_string().contains("#1771"), "the message names the follow-up: {error}");
+    assert!(error.to_string().contains("#1854"), "the message names the follow-up: {error}");
     // Every field the sheet saves is back: the settings, the frame info, the pin, the target.
     assert!(same_settings(stage.scene(), &before));
     assert_eq!(stage.scene().frame, before.frame);
