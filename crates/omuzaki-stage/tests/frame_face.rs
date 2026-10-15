@@ -635,6 +635,38 @@ fn resizing_the_face_repaints_every_layer_at_the_new_density() {
 }
 
 #[test]
+fn tick_allocates_nothing_after_a_face_resize() {
+    let mut renderer = Spy::new(false);
+    let mut stage = stage_with_rig(&mut renderer, 32, false, FaceRig::standard());
+    let input = blink(false);
+    for _ in 0..5 {
+        stage.tick(&mut renderer, &input).expect("warm-up frame");
+    }
+    let layers = stage.character().face_layers().count();
+    // The frame-budget scheduler's knob, turned between frames: the new face system is made and warmed here.
+    let started = Instant::now();
+    stage.resize_face(&mut renderer, FACE_PX_PER_M / 2.0).expect("resized");
+    let resize = started.elapsed();
+
+    // The first tick paints every layer on the new textures; it and the two after it must not allocate.
+    renderer.quiet = true;
+    let mut per_tick = Vec::new();
+    let before = renderer.paints.len();
+    for _ in 0..3 {
+        let started = Instant::now();
+        let (result, allocations) = allocations_in(|| stage.tick(&mut renderer, &input));
+        result.expect("frame");
+        per_tick.push((allocations, started.elapsed()));
+    }
+    println!("resize_face {resize:?}, then per tick (allocations, time): {per_tick:?}");
+    let per_tick: Vec<u64> = per_tick.into_iter().map(|(allocations, _)| allocations).collect();
+    assert_eq!(renderer.paints.len() - before, layers, "every layer, once, on the new textures");
+    let allocations: u64 = per_tick.iter().sum();
+    assert_eq!(allocations, 0, "the three ticks after a resize allocated {allocations} times: {per_tick:?}");
+    stage.release(&mut renderer).expect("released");
+}
+
+#[test]
 fn the_face_path_allocates_nothing_in_steady_state() {
     let mut renderer = Spy::new(false);
     let mut stage = stage_on(&mut renderer, 32, true);

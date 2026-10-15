@@ -39,7 +39,7 @@ use std::mem;
 use std::sync::Arc;
 use std::sync::mpsc;
 
-use omuzaki_anim_api::{HumanoidPose, IkGoals, Tick};
+use omuzaki_anim_api::{ChannelBuf, HumanoidPose, IkGoals, Tick};
 use omuzaki_char::builder::CachingBuilder;
 use omuzaki_char_api::{
     BuildOptions, BuildServices, BuiltCharacter, CharId, CharacterBuilder, CharacterDef, CharacterRig, JointRef,
@@ -238,6 +238,8 @@ pub struct FaceRig {
     executor: Box<dyn SwitchExecutor>,
     /// The tick of the last frame: the build job solves a changed rig at it.
     last_tick: Option<Tick>,
+    /// The bus of the last frame: a face system made between frames warms against it.
+    last_channels: ChannelBuf,
     /// The answer to the build job in flight, if any.
     building: Option<mpsc::Receiver<BuildResult>>,
     /// A prepared variant waiting for the next `tick` to swap it in.
@@ -256,6 +258,7 @@ impl FaceRig {
             unpainted: [false; FaceLayerId::COUNT],
             executor: Box::new(ThreadExecutor),
             last_tick: None,
+            last_channels: ChannelBuf::NEUTRAL,
             building: None,
             staged: None,
             retiring: Retiring::default(),
@@ -321,6 +324,30 @@ impl FaceRig {
         };
         self.bound = Some(Bound { system, profile, projection, head });
     }
+
+    /// Readies a face system made between frames for the next [`tick`](Stage::tick): its first update (which sets up
+    /// its layer slots, drawing buffers and rasters) runs here against the last frame's bus, and every layer is owed a
+    /// paint, as its fingerprints now say the picture was shown. A no-op without a bound face.
+    ///
+    /// # Errors
+    /// [`StageError::Face`] if the painter or the rasteriser fails; the layers stay owed and the next frame retries.
+    fn warm_bound(&mut self) -> Result<(), StageError> {
+        let time = self.last_tick.map_or(Seconds(0.0), |tick| tick.time);
+        let Some(bound) = self.bound.as_mut() else { return Ok(()) };
+        self.unpainted = [true; FaceLayerId::COUNT];
+        warm_face(&mut bound.system, &bound.profile, &self.last_channels, time)
+    }
+}
+
+/// A new face system's first update, run outside `tick` so the frame's update allocates nothing.
+fn warm_face(
+    system: &mut FaceSystem,
+    profile: &FaceProfile,
+    channels: &ChannelBuf,
+    time: Seconds,
+) -> Result<(), StageError> {
+    let view = FaceView { highlight_shift: Vec2::ZERO };
+    system.update(channels, profile, time, view).map(|_| ()).map_err(face_error)
 }
 
 /// The head bone and size of `built`, if it has a head bone.
@@ -418,10 +445,10 @@ impl Stage {
         if self.character.face_px_per_m().to_bits() != before.to_bits()
             && let Some(rig) = self.face.as_mut()
         {
-            // A new system, because the painter's layer specs carry the density; the new textures are empty until its
-            // first update reports every layer as changed.
+            // A new system, because the painter's layer specs carry the density. It is warmed here, not in the next
+            // tick, and every layer is owed a paint: the new textures are empty.
             rig.bound = None;
-            let bound = rig.bind(&self.built, self.character.face_px_per_m());
+            let bound = rig.bind(&self.built, self.character.face_px_per_m()).and_then(|()| rig.warm_bound());
             resized?;
             return bound;
         }
@@ -500,6 +527,7 @@ impl Stage {
         input: &FrameInput,
     ) -> Result<(), StageError> {
         rig.last_tick = Some(tick);
+        rig.last_channels = input.channels;
         let Some(bound) = rig.bound.as_mut() else { return Ok(()) };
         // The gaze module's pure highlight shift is not available yet: no shift.
         let view = FaceView { highlight_shift: Vec2::ZERO };
@@ -661,8 +689,7 @@ impl Stage {
             Some(Resolved { profile, projection, head }) => {
                 let mut system = (rig.factory)(&projection, self.character.face_px_per_m());
                 // The first update of a face system sets up its scratch; do it here so the swap tick's update does not.
-                let view = FaceView { highlight_shift: Vec2::ZERO };
-                system.update(&input.channels, &profile, tick.time, view).map_err(face_error)?;
+                warm_face(&mut system, &profile, &input.channels, tick.time)?;
                 NextBound::Fresh(Box::new(Bound { system, profile, projection, head }))
             }
         };
