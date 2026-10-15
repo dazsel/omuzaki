@@ -27,7 +27,7 @@ fn answer(value: impl Serialize) -> Result<Plan, OpError> {
 }
 
 /// Bind a key to a face expression: pressing the key shows the expression, toggled or only while held. Binding a key
-/// that is already bound replaces its binding. There are at most 16 bindings; keys are 1 to 32 printable characters
+/// that is already bound replaces its binding. There are at most 16 bindings; keys are 1 to 32 printable characters (no control, invisible or non-space whitespace characters)
 /// and compare ignoring case.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Bind {

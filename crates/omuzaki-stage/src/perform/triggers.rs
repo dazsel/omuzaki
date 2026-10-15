@@ -49,13 +49,28 @@ pub struct TriggerInfo {
     pub missing: bool,
 }
 
-/// Checks a key: 1 to [`MAX_KEY_CHARS`] characters, none of them control characters.
+/// True when `c` shows as a mark on screen, so two different keys can always be told apart in a listing: not a
+/// control character, not whitespace other than a plain space, and not one of the invisible format characters
+/// (soft hyphen, zero-width and bidirectional marks, joiners, the invisible operators, variation selectors, the byte
+/// order mark, tag characters) that `char::is_control` lets through.
+fn is_printable(c: char) -> bool {
+    let invisible = matches!(
+        c,
+        '\u{00AD}' | '\u{034F}' | '\u{061C}' | '\u{115F}'..='\u{1160}' | '\u{17B4}'..='\u{17B5}'
+            | '\u{180B}'..='\u{180F}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{206F}' | '\u{3164}' | '\u{FE00}'..='\u{FE0F}' | '\u{FEFF}' | '\u{FFA0}'
+            | '\u{FFF9}'..='\u{FFFB}' | '\u{E0000}'..='\u{E0FFF}'
+    );
+    !c.is_control() && !invisible && (c == ' ' || !c.is_whitespace())
+}
+
+/// Checks a key: 1 to [`MAX_KEY_CHARS`] printable characters (see `is_printable`).
 ///
 /// # Errors
 /// [`PerformError::InvalidKey`] otherwise.
 pub fn check_key(key: &str) -> Result<(), PerformError> {
     let count = key.chars().count();
-    if (1..=MAX_KEY_CHARS).contains(&count) && key.chars().all(|c| !c.is_control()) {
+    if (1..=MAX_KEY_CHARS).contains(&count) && key.chars().all(is_printable) {
         Ok(())
     } else {
         Err(PerformError::InvalidKey)
@@ -162,11 +177,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn keys_are_one_to_thirty_two_non_control_characters() {
+    fn keys_are_one_to_thirty_two_printable_characters() {
         assert_eq!(check_key(""), Err(PerformError::InvalidKey));
         assert_eq!(check_key(&"k".repeat(MAX_KEY_CHARS)), Ok(()));
         assert_eq!(check_key(&"k".repeat(MAX_KEY_CHARS + 1)), Err(PerformError::InvalidKey));
         assert_eq!(check_key("F\u{7}"), Err(PerformError::InvalidKey));
+    }
+
+    #[test]
+    fn keys_refuse_invisible_and_exotic_whitespace_characters() {
+        for hidden in ["\u{200B}", "F\u{200B}1", "\u{FEFF}F1", "\u{00AD}", "\u{202E}F1", "\u{2060}", "\u{E0041}", "F\u{00A0}1", "F\u{2003}1"] {
+            assert_eq!(check_key(hidden), Err(PerformError::InvalidKey), "{hidden:?}");
+        }
+        for shown in ["F1", "Ctrl+Shift+A", "Numpad +", "\u{FC}", "\u{3042}", "\u{2318}", "+"] {
+            assert_eq!(check_key(shown), Ok(()), "{shown:?}");
+        }
     }
 
     #[test]
