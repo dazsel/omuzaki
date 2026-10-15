@@ -1,9 +1,9 @@
-//! `cargo xtask docs` and `cargo xtask lint-crate-table`: the crate table, generated from each crate's own manifest
+//! `cargo xtask crate-table` and `cargo xtask lint-crate-table`: the crate table, generated from each crate's own manifest
 //! (ADR 0053 §3).
 //!
 //! Why: the hand-written table in `crates/README.md` was edited by nearly every pull request that added or changed a
 //! crate, so parallel work collided on it. Each crate now describes itself under `[package.metadata.omuzaki]` (`kind`
-//! and `summary`), `docs` prints the table from those, and the lint keeps the README to the rules.
+//! and `summary`), `crate-table` prints the table from those, and the lint keeps the README to the rules.
 
 use std::fs;
 use std::process::ExitCode;
@@ -74,11 +74,16 @@ fn kind_name(kind: CrateKind) -> &'static str {
 pub fn table(rows: &[Row]) -> String {
     let mut out = String::from("| Crate | Kind | What it is |\n|---|---|---|\n");
     for row in rows {
-        let kind = row.kind.as_deref().unwrap_or("");
-        let summary = row.summary.as_deref().unwrap_or("");
-        out += &["| `", &row.name, "` | ", kind, " | ", summary, " |\n"].concat();
+        let kind = cell(row.kind.as_deref().unwrap_or(""));
+        let summary = cell(row.summary.as_deref().unwrap_or(""));
+        out += &["| `", &row.name, "` | ", &kind, " | ", &summary, " |\n"].concat();
     }
     out
+}
+
+/// Text made safe for one table cell: a `|` would open a new column, and a line break would end the row.
+fn cell(text: &str) -> String {
+    text.replace('|', "\\|").replace(['\r', '\n'], " ")
 }
 
 /// Every problem: a crate without its metadata, a `kind` that disagrees with the layering, a table in the README.
@@ -101,10 +106,11 @@ pub fn violations(rows: &[Row], readme: &str) -> Vec<String> {
             found.push(format!("{}: no `summary` under [package.metadata.omuzaki]", row.name));
         }
     }
+    let names: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
     for (number, line) in readme.lines().enumerate() {
-        if is_crate_row(line) {
+        if is_crate_row(line, &names) {
             found.push(format!(
-                "{README}:{}: a crate table row; the table is generated (`cargo xtask docs`)",
+                "{README}:{}: a crate table row; the table is generated (`cargo xtask crate-table`)",
                 number + 1
             ));
         }
@@ -112,18 +118,18 @@ pub fn violations(rows: &[Row], readme: &str) -> Vec<String> {
     found
 }
 
-/// A Markdown table row whose first cell is one code span (a crate name in backticks), the shape of a crate table row.
-fn is_crate_row(line: &str) -> bool {
+/// A Markdown table row whose first cell is a crate name in backticks. Other tables (a `wasm32` target, say) stay allowed.
+fn is_crate_row(line: &str, names: &[&str]) -> bool {
     let Some(rest) = line.trim_start().strip_prefix('|') else { return false };
     let cell = rest.split('|').next().unwrap_or("").trim();
-    cell.len() > 2 && cell.starts_with('`') && cell.ends_with('`') && !cell[1..cell.len() - 1].contains(['`', ' '])
+    cell.strip_prefix('`').and_then(|quoted| quoted.strip_suffix('`')).is_some_and(|name| names.contains(&name))
 }
 
-/// The `docs` command: prints the crate table.
+/// The `crate-table` command: prints the crate table.
 ///
 /// # Errors
 /// A manifest that can't be read or parsed.
-pub fn docs(workspace: &Workspace) -> Result<ExitCode> {
+pub fn print(workspace: &Workspace) -> Result<ExitCode> {
     print!("{}", table(&rows(workspace)?));
     Ok(ExitCode::SUCCESS)
 }
@@ -211,11 +217,26 @@ mod tests {
     fn a_crate_row_in_the_readme_is_caught_but_the_rules_table_is_not() {
         let readme = "# Rules\n\n| Kind | Names |\n|---|---|\n| **API** | `omuzaki-core`, `*-api` |\n\n\
                       | Crate | Kind |\n|---|---|\n| `omuzaki-core` | API |\n";
+        let rows = [row("omuzaki-core", Some("API"), Some("ids"), CrateKind::Api)];
         assert_eq!(
-            violations(&[], readme),
-            ["crates/README.md:9: a crate table row; the table is generated (`cargo xtask docs`)"]
+            violations(&rows, readme),
+            ["crates/README.md:9: a crate table row; the table is generated (`cargo xtask crate-table`)"]
         );
-        assert!(!is_crate_row("| `a b` | x |"));
-        assert!(!is_crate_row("text with | `pipe` |"));
+        assert!(!is_crate_row("| `a b` | x |", &["omuzaki-core"]));
+        assert!(!is_crate_row("text with | `pipe` |", &["omuzaki-core"]));
+    }
+
+    #[test]
+    fn a_code_span_that_is_not_a_crate_name_is_not_a_crate_row() {
+        let names = ["omuzaki-core"];
+        assert!(!is_crate_row("| `wasm32` | supported |", &names));
+        assert!(is_crate_row("| `omuzaki-core` | API |", &names));
+    }
+
+    #[test]
+    fn a_pipe_or_line_break_in_a_summary_stays_inside_its_cell() {
+        let rows =
+            [Row { summary: Some("a | b\nc".to_owned()), ..row("omuzaki-x", Some("API"), None, CrateKind::Api) }];
+        assert_eq!(table(&rows), "| Crate | Kind | What it is |\n|---|---|---|\n| `omuzaki-x` | API | a \\| b c |\n");
     }
 }

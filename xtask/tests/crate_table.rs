@@ -1,4 +1,4 @@
-//! `xtask docs` and `xtask lint-crate-table` against fixture workspaces: the crate table comes from each crate's own
+//! `xtask crate-table` and `xtask lint-crate-table` against fixture workspaces: the crate table comes from each crate's own
 //! manifest (ADR 0053 §3).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -31,7 +31,7 @@ fn described() -> Fixture {
 #[test]
 fn adding_a_crate_changes_the_table_without_editing_a_shared_file() {
     let before = described();
-    let first = before.xtask(&["docs"]);
+    let first = before.xtask(&["crate-table"]);
     assert!(first.success, "{}", first.stderr);
     assert_eq!(
         first.stdout,
@@ -46,7 +46,7 @@ fn adding_a_crate_changes_the_table_without_editing_a_shared_file() {
         "the frame-budget scheduler",
     );
     with_description(&after, "omuzaki-budget", "the frame budget");
-    let second = after.xtask(&["docs"]);
+    let second = after.xtask(&["crate-table"]);
     assert!(second.success, "{}", second.stderr);
     let added: Vec<&str> = second.stdout.lines().filter(|line| !first.stdout.lines().any(|old| old == *line)).collect();
     assert_eq!(added, ["| `omuzaki-budget` | Implementation | the frame-budget scheduler |"]);

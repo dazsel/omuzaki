@@ -55,7 +55,7 @@ Each crate describes itself in its own `Cargo.toml`, so adding a crate edits no 
     kind = "Implementation"     # API, Mock, Lib, Implementation or App, as in the table above
     summary = "..."             # one line: what the crate is
 
-`cargo xtask docs` prints the table of every crate from those lines. `cargo xtask lint-crate-table` fails on a crate
+`cargo xtask crate-table` prints the table of every crate from those lines. `cargo xtask lint-crate-table` fails on a crate
 without them, on a `kind` that disagrees with `lint-deps`, and on a crate table in this file.
 
 **Planned crates** (not in the workspace yet):
