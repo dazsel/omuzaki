@@ -1,0 +1,8 @@
+section = "rust"
+item = "semver"
+kind = "crate"
+used_for = "versions in the updater contract (`omuzaki-update-api`); ADR 0026 also plans it"
+status = "yes"
+condition = ""
+audit = "(crates.io: MIT OR Apache-2.0)"
+crates = ["semver"]
