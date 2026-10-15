@@ -63,7 +63,11 @@ fn call(id: &str, args: &str) -> Vec<LlmEvent> {
 }
 
 fn script(chunk: Option<usize>, events: Vec<LlmEvent>) -> Script {
-    Script { model: "m".into(), turns: vec![ScriptTurn { events, chunk, ..ScriptTurn::default() }] }
+    let turn = ScriptTurn::new(events);
+    Script::new("m").with_turn(match chunk {
+        Some(bytes) => turn.with_chunk(bytes),
+        None => turn,
+    })
 }
 
 fn play(make: Make<'_>, s: Script) -> Result<Turn, String> {
@@ -139,12 +143,9 @@ fn stop_reasons(make: Make<'_>) -> Result<(), String> {
 }
 
 fn usage_survives_a_drop(make: Make<'_>) -> Result<(), String> {
-    let turn = ScriptTurn {
-        events: vec![start(), usage(5, 1), LlmEvent::TextDelta("x".into()), stop(StopReason::EndTurn)],
-        error: Some(Injected { before: 2, error: LlmError::Network("reset".into()) }),
-        ..ScriptTurn::default()
-    };
-    let client = make(Script { model: "m".into(), turns: vec![turn] });
+    let turn = ScriptTurn::new(vec![start(), usage(5, 1), LlmEvent::TextDelta("x".into()), stop(StopReason::EndTurn)])
+        .with_error(Injected::new(2, LlmError::Network("reset".into())));
+    let client = make(Script::new("m").with_turn(turn));
     let mut stream = client.stream(request(), &Cancel::new()).map_err(|e| e.to_string())?;
     same(stream.collect(IDLE), Err(LlmError::Network("reset".into())))?;
     same(stream.usage_so_far().map(|u| u.tokens()), Some(6))

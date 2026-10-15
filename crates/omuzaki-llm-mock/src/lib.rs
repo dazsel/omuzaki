@@ -30,7 +30,7 @@ fn fake(config: &ProviderConfig) -> Result<FakeLlm, LlmError> {
     if config.endpoint.trim_start().starts_with('{') {
         FakeLlm::from_json(&config.endpoint)
     } else {
-        Ok(FakeLlm::new(Script { model: config.id.clone(), turns: Vec::new() }))
+        Ok(FakeLlm::new(Script::new(config.id.clone())))
     }
 }
 
