@@ -120,10 +120,14 @@ jobs:
       # On wasm a `registers` crate keeps its registrations only through the App's generated `link()` call (ADR 0015),
       # which no native gate can show. Build the test-only App for wasm32, run it in the runner's preinstalled node and
       # compare with the source, then build it with an empty `link()` and require the registrations gone, so the proof
-      # can fail. In scope when the probe or a crate it links changes (it depends on them), or xtask's scan does.
+      # can fail. In scope when the probe or a crate it links changes (it depends on them), when xtask's scan does, or
+      # when this workflow does: the crate scope never names `.github`, and a change to this step must run it.
       - name: WebAssembly link proof
-        if: contains(format(' {0} ', needs.plan.outputs.lint_crates), ' omuzaki-link-probe ') || contains(format(' {0} ', needs.plan.outputs.lint_crates), ' xtask ')
         run: |
+          case " $LINT_CRATES " in
+            *" omuzaki-link-probe "* | *" xtask "*) ;;
+            *) if git diff --quiet "$BASE"...HEAD -- .github/workflows/ci.yml; then echo "out of scope"; exit 0; fi ;;
+          esac
           cargo xtask wasm-link-proof
           cargo xtask wasm-link-proof --unlinked
       # Licences, bans and sources only: advisories come from a database that changes daily, so they run in nightly.yml
