@@ -223,6 +223,19 @@ class Parity(unittest.TestCase):
             with self.assertRaisesRegex(build.Mismatch, "non-finite"):
                 build.max_abs_diff(finite, broken, "out")
 
+    def test_a_non_finite_output_is_a_problem_and_the_other_outputs_are_still_measured(self):
+        wheel = [numpy.zeros(2, numpy.float32), numpy.zeros(2, numpy.float32)]
+        ours = numpy.array([0.0, numpy.nan, 0.25, 0.0], numpy.float32).tobytes()
+        worst, problems = build.graph_parity("g", ours, wheel)
+        self.assertTrue(numpy.isnan(worst))
+        self.assertEqual(len(problems), 1)
+        self.assertRegex(problems[0], "g output 0: ours has a non-finite")
+
+    def test_finite_outputs_give_the_largest_difference_and_no_problem(self):
+        wheel = [numpy.zeros(2, numpy.float32), numpy.zeros(1, numpy.float32)]
+        ours = numpy.array([0.0, 0.5, 0.25], numpy.float32).tobytes()
+        self.assertEqual(build.graph_parity("g", ours, wheel), (0.5, []))
+
 
 class Notices(unittest.TestCase):
     def setUp(self):

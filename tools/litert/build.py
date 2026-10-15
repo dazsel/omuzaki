@@ -24,6 +24,7 @@ import functools
 import hashlib
 import io
 import json
+import math
 import os
 import re
 import shutil
@@ -582,6 +583,23 @@ def max_abs_diff(ours, reference, what: str) -> float:
     return float(np.max(np.abs(ours.astype(np.float64) - reference.astype(np.float64)), initial=0.0))
 
 
+def graph_parity(graph: str, ours: bytes, expected) -> tuple[float, list[str]]:
+    """(the largest |ours - wheel| over a graph's outputs, the problems found). An output with a non-finite value is a
+    problem, not an exception, and makes the largest difference NaN, so the check still measures and reports every
+    other graph before it fails."""
+    import numpy as np  # installed by the check job
+
+    worst, offset, problems = 0.0, 0, []
+    for index, tensor in enumerate(expected):
+        mine = np.frombuffer(ours, dtype=tensor.dtype, count=tensor.size, offset=offset)
+        offset += tensor.nbytes
+        try:
+            worst = max(worst, max_abs_diff(mine, tensor.ravel(), f"{graph} output {index}"))
+        except Mismatch as why:
+            problems.append(str(why))
+    return (math.nan if problems else worst), problems
+
+
 def seeded_input(graph: str, shape, dtype, rng):
     """Inputs in each graph's working range, drawn as the converter's check draws them (convert_mediapipe_face.py)."""
     if graph == "face_blendshapes":
@@ -634,11 +652,8 @@ def cmd_check(args):
         problems.append(delegation_problem(graph, taken, total, partitions))
         ours = produced.read_bytes()
         expect(f"{graph} output bytes", len(ours), sum(tensor.nbytes for tensor in expected))
-        worst, offset = 0.0, 0
-        for index, tensor in enumerate(expected):
-            mine = np.frombuffer(ours, dtype=tensor.dtype, count=tensor.size, offset=offset)
-            worst = max(worst, max_abs_diff(mine, tensor.ravel(), f"{graph} output {index}"))
-            offset += tensor.nbytes
+        worst, parity = graph_parity(graph, ours, expected)
+        problems.extend(parity)
         if not printed.get("error"):
             problems.append(f"{graph}: omz_litert_capture_errors caught no text for a refused shape")
         if worst > tolerance:
