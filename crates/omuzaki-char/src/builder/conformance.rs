@@ -192,6 +192,11 @@ fn referenced_slots(def: &CharacterDef) -> BTreeSet<String> {
     named.into_iter().map(|s| s.trim_start_matches('@').to_owned()).collect()
 }
 
+/// The kind of `part` when it is one of `run_kinds`, the kinds a run checks.
+fn run_kind<'a>(def: &'a CharacterDef, part: &PartId, run_kinds: &[String]) -> Option<&'a str> {
+    def.parts.get(part).map(|p| p.kind.as_str()).filter(|k| run_kinds.iter().any(|w| w == k))
+}
+
 /// The names of the facts `publishes` holds (its `Debug` is a map from fact name to value count).
 fn fact_names(publishes: &Publishes) -> Vec<String> {
     let text = format!("{publishes:?}");
@@ -352,26 +357,23 @@ fn check_seed(
                 Ok(under_other) => {
                     compare(def, run_kinds, (&under_own, &under_other), (n, &options), probes, report);
                 }
-                // A palette with fewer slots may lack one a part needs: the colour palettes (every slot present) stay
-                // the judge, so a failure here hides nothing a colour alternative would show.
+                // A palette with fewer slots may lack one a part needs, so its build can fail where a fact would be
+                // read. That is the known gap of a removal alternative (no fact is compared at it); every colour
+                // alternative still compares the rest, since it keeps every slot.
                 Err(_) if palette.0.len() < def.palette.0.len() => {}
                 // An extra slot is in no part's cache key, so a part that fails when it appears would be served its
-                // old output: a violation, naming the part's kind and the alternative.
+                // old output. A part of a checked kind is a violation; a part of another kind fails the run instead,
+                // so this run's kinds are listed unreached rather than passing with nothing compared.
                 Err((Some(part), e)) if palette.0.len() > def.palette.0.len() => {
-                    let Some(kind) =
-                        def.parts.get(&part).map(|p| p.kind.as_str()).filter(|k| run_kinds.iter().any(|w| w == k))
-                    else {
-                        continue;
-                    };
-                    let line = format!(
-                        "kind '{kind}' (part '{part}'): does not build under alternative {n} ({options}), which adds a slot: {e}"
+                    let why = format!(
+                        "part '{part}' does not build under alternative {n}, which adds a slot ({options}): {e}"
                     );
-                    if !report
-                        .violations
-                        .iter()
-                        .any(|v| v.starts_with(&format!("kind '{kind}' (part '{part}'): does not build")))
-                    {
-                        report.violations.push(line);
+                    let Some(kind) = run_kind(def, &part, run_kinds) else {
+                        return Err(why);
+                    };
+                    let prefix = format!("kind '{kind}': part '{part}' does not build");
+                    if !report.violations.iter().any(|v| v.starts_with(&prefix)) {
+                        report.violations.push(format!("kind '{kind}': {why}"));
                     }
                 }
                 Err((_, e)) => return Err(format!("does not build ({options}): {e}")),
@@ -419,7 +421,8 @@ fn compare(
     report: &mut Report,
 ) {
     for ((part, under_a), (_, under_b)) in a.iter().zip(b) {
-        let Some(kind) = def.parts.get(part).map(|p| p.kind.as_str()).filter(|k| kinds.iter().any(|w| w == k)) else {
+        // A part of another kind is another run's to check.
+        let Some(kind) = run_kind(def, part, kinds) else {
             continue;
         };
         // Reported once per part and fact, however many palettes show it.
@@ -436,6 +439,7 @@ fn compare(
                     "publishes {under_a:?} under the character's palette and {under_b:?} under alternative {n} ({options})"
                 ),
             );
+            // The violation names the part; its facts are not compared on top of it.
             continue;
         }
         for name in fact_names(under_a) {

@@ -992,6 +992,21 @@ fn a_build_that_fails_when_the_palette_gains_a_slot_is_a_violation_naming_the_ki
     assert!(violation.contains("alternative") && violation.contains("more than"), "{violation}");
 }
 
+#[test]
+fn a_part_of_another_kind_that_fails_when_a_slot_is_added_leaves_the_checked_kind_unreached_not_clean() {
+    // The noter (kind `t-noter`) fails with one more slot; the check runs only the reader, so the failure is another
+    // kind's. The reader must come back unreached, not pass with nothing compared.
+    let limit = mock_character().unwrap().palette.0.len();
+    let mut def = noted_with(json!({ "from_palette": false, "slot_limit": limit }));
+    add(&mut def, "reader", "t-note-reader", 40, json!({ "publish": false }));
+    let probes = conformance::Probes::default().fact::<NoteFact>();
+    let report = conformance::check(&def, Some(&["t-note-reader"]), &probes, &BuildServices::default());
+    assert!(report.violations.is_empty(), "{report:?}");
+    let [(kind, why)] = report.unreached.as_slice() else { panic!("one unreached kind expected: {report:?}") };
+    assert_eq!(kind, "t-note-reader");
+    assert!(why.contains("part 'noter' does not build") && why.contains("alternative"), "{why}");
+}
+
 /// A pose that never moves: the simulations here ignore it.
 struct Still;
 
