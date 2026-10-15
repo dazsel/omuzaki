@@ -1,0 +1,8 @@
+section = "rust"
+item = "Noto Sans JP, SC, TC, KR (SubsetOTF, Regular + Medium; 4.5-8.3 MB each; a 31 KB coverage table `assets/fonts/coverage.bin`, made from their cmaps by `make_coverage.py`, picks the one needed)"
+kind = "font"
+used_for = "character-sheet text fallback for CJK, **downloaded on first need** (SHA-256 pinned, cached in the app data dir), never committed or embedded; 3 KB-class glyph subsets of JP/SC/KR are committed as test fixtures only (`crates/omuzaki-stage/tests/fixtures/fonts/`)"
+status = "conditions"
+condition = "OFL-1.1: ship the notice; never sold alone. Copyright line (font name table): \"© 2014-2021 Adobe (http://www.adobe.com/).\" Source: notofonts/noto-cjk commit f8d1575"
+audit = "(notofonts/noto-cjk)"
+paths = ["crates/omuzaki-stage/tests/fixtures/fonts/"]

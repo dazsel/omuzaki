@@ -1,0 +1,7 @@
+section = "rust"
+item = "ONNX Runtime"
+kind = "native"
+used_for = "inference engine"
+status = "conditions"
+condition = "ship LICENSE + ThirdPartyNotices (Eigen MPL). Pinned to 1.28.3 (the version omuzaki-audio's catalogue checksums), from Microsoft's release tarballs (MIT; the tarball carries `LICENSE` and `ThirdPartyNotices.txt`); `ort` is built with `default-features = false` and `load-dynamic`, so no Pyke binaries; CUDA runs use the `gpu_cuda12` tarball. The speech spike and `omuzaki-audio` load the official 1.28.3 release the same way (`libonnxruntime.so` from Microsoft's tarball; LICENSE: \"Copyright (c) Microsoft Corporation\", MIT; pinned in `omuzaki_audio::catalog`). `ort` and `ort-sys` are \"MIT OR Apache-2.0\", \"Copyright (c) 2023-2026 pyke.io\" and \"Copyright (c) 2020 Nicolas Bigaouette\"."
+audit = "B2"

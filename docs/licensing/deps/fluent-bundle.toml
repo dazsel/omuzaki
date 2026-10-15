@@ -1,0 +1,8 @@
+section = "rust"
+item = "fluent-bundle, fluent-syntax, fluent-langneg"
+kind = "crate"
+used_for = "Fluent message formatting, parsing and locale negotiation for op-text localisation (`omuzaki-l10n-api`, ADR 0023)"
+status = "yes"
+condition = "Apache-2.0 OR MIT (fluent-langneg: Apache-2.0): keep the notices"
+audit = "(crates.io)"
+crates = ["fluent-bundle", "fluent-syntax"]

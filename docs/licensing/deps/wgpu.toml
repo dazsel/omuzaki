@@ -1,0 +1,7 @@
+section = "rust"
+item = "wgpu"
+kind = "crate"
+used_for = "renderer"
+status = "yes"
+audit = "B1"
+crates = ["wgpu"]

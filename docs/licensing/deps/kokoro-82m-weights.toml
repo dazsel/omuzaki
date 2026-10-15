@@ -1,0 +1,7 @@
+section = "models"
+item = "Kokoro-82M weights"
+kind = "model"
+used_for = "TTS"
+status = "conditions"
+condition = "Apache-2.0; CC BY dataset attributions; lexicon provenance unverified"
+audit = "B5"

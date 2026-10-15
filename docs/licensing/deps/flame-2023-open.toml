@@ -1,0 +1,7 @@
+section = "models"
+item = "FLAME 2023 Open"
+kind = "model"
+used_for = "head-model fallback"
+status = "conditions"
+condition = "CC BY 4.0; that file only (other FLAME versions are non-commercial)"
+audit = "B5"

@@ -1,0 +1,7 @@
+section = "rust"
+item = "Noto Sans Arabic, Noto Sans Devanagari, Noto Sans Thai (Regular + Medium; 234-256 KB, 244 KB, 38 KB)"
+kind = "font"
+used_for = "character-sheet text fallback (Arabic, Hindi, Thai), downloaded on first need, SHA-256 pinned"
+status = "conditions"
+condition = "OFL-1.1: ship the notice. \"Copyright 2022 The Noto Project Authors (https://github.com/notofonts/arabic)\" (likewise `/devanagari`, `/thai`). Sources: notofonts/arabic 43674fa, devanagari 46287b3, thai e149ed2 (gh-pages built fonts)"
+audit = "(notofonts)"
