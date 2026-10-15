@@ -328,6 +328,8 @@ struct Hooks<'a> {
     no_replace_off: Cell<bool>,
     /// Make flushing a folder fail, where a step goes through [`Hooks::sync_folder`] (tests only).
     sync_off: Cell<bool>,
+    /// Take Windows's replacement without a swap on any system (tests only).
+    windows_shaped: Cell<bool>,
 }
 
 fn noop() {}
@@ -345,6 +347,7 @@ impl Default for Hooks<'_> {
             exchange_off: Cell::new(false),
             no_replace_off: Cell::new(false),
             sync_off: Cell::new(false),
+            windows_shaped: Cell::new(false),
         }
     }
 }
@@ -442,9 +445,18 @@ fn replace_held(
     (hooks.backed_up)();
     match hooks.exchange(tmp, path) {
         Ok(()) => {}
-        // Windows has no swap; its one documented non-atomic cell (see the module's table).
-        #[cfg(windows)]
-        Err(e) if e.kind() == io::ErrorKind::Unsupported && held.by_link => return replace_over_linked(path, tmp),
+        // Windows has no swap; its one documented non-atomic cell (see the module's table). Tests can take this path
+        // on any system.
+        Err(e)
+            if e.kind() == io::ErrorKind::Unsupported
+                && held.by_link
+                && (cfg!(windows) || hooks.windows_shaped.get()) =>
+        {
+            replace_over_linked(path, tmp)?;
+            // Our file is at the target: the linked backup is the kept entry.
+            *committed = true;
+            return Ok(Replace::Placed);
+        }
         // Without a swap nothing has moved yet, and nothing will: see the module's table.
         Err(e) => return Err(capability_error(path, NO_EXCHANGE, e)),
     }
@@ -484,9 +496,8 @@ fn replace_held(
 /// swap, so an editor's atomic save in the microseconds between the hash check and the rename is overwritten. The
 /// file the save checked survives in the kept entry, but the editor's newer one does not. The first use in a process
 /// says so on standard error. A writer holding the file open without delete sharing (most editors) makes the rename
-/// fail with a sharing violation, which the save reports.
-#[cfg(windows)]
-fn replace_over_linked(path: &Path, tmp: &Path) -> Result<Replace, StoreError> {
+/// fail with a sharing violation, which the save reports. Nothing has moved when it fails.
+fn replace_over_linked(path: &Path, tmp: &Path) -> Result<(), StoreError> {
     static WARNED: std::sync::Once = std::sync::Once::new();
     WARNED.call_once(|| {
         eprintln!(
@@ -494,7 +505,7 @@ fn replace_over_linked(path: &Path, tmp: &Path) -> Result<Replace, StoreError> {
              editor's save made in the same instant can be overwritten (the replaced file is kept in .omuzaki/replaced)"
         );
     });
-    fs::rename(tmp, path).map(|()| Replace::Placed).map_err(|e| StoreError::io(path, e))
+    fs::rename(tmp, path).map_err(|e| StoreError::io(path, e))
 }
 
 /// A backup of the file at the target.
@@ -1359,6 +1370,35 @@ mod tests {
             assert_eq!(texts(&kept(dir)), ["mine = 1\nlate = 9\n"]);
             assert!(no_temporary_file(dir));
             assert_eq!(prune_replaced(dir, later()), 0);
+        }
+    }
+
+    /// Every path that places our file over an existing one keeps the original as the `.kept` entry: the swap with a
+    /// linked backup, the swap with a copied backup, and Windows's rename over the target (driven here on any system).
+    #[test]
+    fn every_successful_replacement_keeps_the_backup() {
+        let exchange = cfg!(any(target_os = "linux", target_os = "macos"));
+        let cases = [
+            ("swap, linked backup", exchange, Hooks::default()),
+            ("swap, copied backup", exchange, Hooks { links_off: true.into(), ..Hooks::default() }),
+            (
+                "Windows-shaped",
+                true,
+                Hooks { exchange_off: true.into(), windows_shaped: true.into(), ..Hooks::default() },
+            ),
+        ];
+        for (name, reachable, hooks) in cases {
+            if !reachable {
+                continue;
+            }
+            let tmp = TempDir::new().unwrap();
+            let (dir, (path, expected)) = (tmp.path(), with_file(tmp.path()));
+            assert_eq!(replace_with(dir, expected, &hooks).unwrap(), Replace::Placed, "{name}");
+            assert_eq!(fs::read_to_string(&path).unwrap(), "ours = 3\n", "{name}");
+            let items = kept(dir);
+            assert_eq!(texts(&items), [MINE], "{name}");
+            assert!(items[0].0.ends_with(KEPT), "{name}: {items:?}");
+            assert!(no_temporary_file(dir), "{name}");
         }
     }
 
