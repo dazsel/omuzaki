@@ -59,6 +59,7 @@ fn ink(gpu: &Gpu, rasterizer: &mut VelloRasterizer, dir: Direction, width_px: f3
 }
 
 #[test]
+#[allow(clippy::cast_precision_loss)] // 17 positions
 fn thin_strokes_do_not_swing_with_sub_pixel_position() {
     let Some(gpu) = device() else { return };
     let mut rasterizer = VelloRasterizer::new();

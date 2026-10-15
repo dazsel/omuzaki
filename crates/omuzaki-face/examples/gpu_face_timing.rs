@@ -34,8 +34,11 @@ const WARM_UP: usize = 50;
 /// The probe size's width in pixels.
 const PROBE_WIDTH_PX: f32 = 256.0;
 
-/// A case: its name and what it changes in the resting parameters.
-const CASES: [(&str, fn(&mut PaintParams)); 4] = [
+/// What a case changes in the resting parameters.
+type Change = fn(&mut PaintParams);
+
+/// The cases: a name and its change.
+const CASES: [(&str, Change); 4] = [
     ("full face", |p| {
         p.mouth.open = 0.6;
         p.mouth.smile_left = 1.0;
@@ -87,7 +90,7 @@ fn arguments() -> Result<(usize, bool), String> {
 }
 
 /// One frame: its drawing and the section ranges of its Base layer.
-fn frame(painter: &mut RealPainter, change: fn(&mut PaintParams)) -> Result<(FaceDrawing, LayerSections), String> {
+fn frame(painter: &mut RealPainter, change: Change) -> Result<(FaceDrawing, LayerSections), String> {
     let profile = mock_profile();
     let mut params = FaceMapping::default().rest_params();
     change(&mut params);
@@ -131,13 +134,13 @@ impl Stamps {
     fn stamp(&self, device: &wgpu::Device, queue: &wgpu::Queue, index: u32) {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("timing") });
         let writes = if index == 0 {
-            wgpu::PassTimestampWrites {
+            wgpu::ComputePassTimestampWrites {
                 query_set: &self.set,
                 beginning_of_pass_write_index: Some(0),
                 end_of_pass_write_index: None,
             }
         } else {
-            wgpu::PassTimestampWrites {
+            wgpu::ComputePassTimestampWrites {
                 query_set: &self.set,
                 beginning_of_pass_write_index: None,
                 end_of_pass_write_index: Some(1),

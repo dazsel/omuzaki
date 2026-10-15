@@ -8,6 +8,7 @@
 mod common;
 
 use std::any::Any;
+use std::fmt::Write as _;
 use std::sync::{Arc, Mutex};
 
 use common::{Gpu, device, face_texture, image, read_back};
@@ -195,7 +196,7 @@ fn twenty_four_mixed_changes_leave_the_texture_a_full_repaint_would() {
             compare_region(&image(size, &partial_pixels), &image(size, &full_pixels), Rect::full(size.0, size.1), RULE)
                 .unwrap();
         if !report.passes(MIN_PSNR_DB) {
-            failures.push_str(&format!("frame {frame}: {}\n", report.stats));
+            let _ = writeln!(failures, "frame {frame}: {}", report.stats);
         }
     }
     eprintln!("{identical} of 24 partial repaints are byte-identical to the full repaint");

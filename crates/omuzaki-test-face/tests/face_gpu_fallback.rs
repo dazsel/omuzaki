@@ -62,7 +62,10 @@ fn base_layer_pixels(with_vello: bool) -> Vec<u8> {
 #[test]
 fn the_mock_renderers_target_gets_the_cpu_raster_byte_for_byte() {
     let without = base_layer_pixels(false);
-    assert!(without.chunks_exact(4).any(|p| p[3] > 0), "the face drew nothing, so the comparison proves nothing");
+    assert!(
+        without.as_chunks::<4>().0.iter().any(|p| p[3] > 0),
+        "the face drew nothing, so the comparison proves nothing"
+    );
     assert_eq!(base_layer_pixels(true), without);
 }
 
