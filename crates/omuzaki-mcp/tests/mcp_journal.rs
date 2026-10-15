@@ -228,3 +228,21 @@ async fn without_a_journal_replies_do_not_wait_or_warn() {
     assert_eq!(h.runner.blend(), Some(json!(0.4_f32)));
     assert!(data(&result).get("warning").is_none() && !text(&result).contains("Warning"));
 }
+
+#[tokio::test]
+async fn an_unsaved_change_warns_on_the_first_line_even_when_another_actor_changed_the_project() {
+    let probe = Probe::new(None);
+    probe.inner.script_sync(Some(SyncError::Failing { reason: "disk full".into() }));
+    probe.inner.script_status(JournalStatus::Failing { reason: "disk full".into() });
+    let h = Harness::connect(with(&probe)).await;
+    // A person edits the project after the session's start, so this call's heads-up has something to report.
+    h.runner.person_sets_blend(0.5);
+
+    let result = h.call("face_set_blend", json!({"character": "mira", "blend": 0.4})).await;
+    assert_eq!(result.is_error, Some(false));
+    assert_eq!(data(&result)["applied"], true);
+    let first = text(&result).lines().next().expect("a first line").to_owned();
+    assert_eq!(first, "Warning: applied, not yet saved: saving is failing: disk full", "{}", text(&result));
+    assert!(text(&result).contains("Heads-up: since your last call, others changed the project"), "{}", text(&result));
+    assert!(data(&result).get("warning").is_some() && data(&result).get("since_your_last_call").is_some());
+}
