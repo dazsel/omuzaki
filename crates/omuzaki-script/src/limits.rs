@@ -95,7 +95,7 @@ impl Limits {
     }
 
     /// The stack, in bytes, the worker thread of a run under these limits gets: enough for the deepest value the size
-    /// limits let a script nest, plus the engine's own frames (see the [module docs](self)). `None` when that is more
+    /// limits let a script nest, plus the engine's own frames (see the module docs in `limits.rs`). `None` when that is more
     /// than [`MAX_WORKER_STACK_BYTES`](Self::MAX_WORKER_STACK_BYTES), in which case a run is refused.
     pub fn worker_stack_bytes(&self) -> Option<usize> {
         // Every array and map of a nested value counts toward the totals Rhai limits, and the outermost one is the
