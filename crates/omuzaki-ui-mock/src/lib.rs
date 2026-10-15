@@ -156,7 +156,7 @@ impl MockHost {
             problems.push(format!("{id}: the screen-reader label is empty"));
         }
         let [w, h] = def.min_size;
-        for size in [def.min_size, [w / 2.0, h / 2.0], [1.0, 1.0]] {
+        for (index, size) in [def.min_size, [w / 2.0, h / 2.0], [1.0, 1.0]].into_iter().enumerate() {
             // A fresh panel and a fresh context for each size: a panel that sets itself up on its first draw must be
             // tried narrow on that first draw, and a panic can't leave state behind for the next size.
             let drawn = panic::catch_unwind(AssertUnwindSafe(|| {
@@ -164,7 +164,7 @@ impl MockHost {
                 draw(&accessible_context(), fresh.as_mut(), def, ctx, size)
             }));
             match drawn {
-                Ok(frame) if size == def.min_size => {
+                Ok(frame) if index == 0 => {
                     if !frame.body && def.empty.is_none() {
                         problems.push(format!("{id}: unavailable with no document, and registers no empty state"));
                     }
