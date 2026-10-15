@@ -158,18 +158,38 @@ fn a_file_changed_into_broken_toml_is_reported_as_a_syntax_error() {
 }
 
 #[test]
-fn a_replaced_file_leaves_nothing_behind_in_the_project() {
+fn a_replaced_file_is_kept_in_the_replaced_folder_under_its_hash() {
     let tmp = folder();
+    let before = read(tmp.path(), "characters/mia/face.toml");
     let mut project = Project::open(tmp.path()).unwrap();
     edit_blend(&mut project, 0.5, 0.9);
     project.save().unwrap();
-    // The displaced bytes were the last-known text, so no copy of them is kept.
-    let files: Vec<_> = snapshot(tmp.path())
+    // The displaced file stays (an editor may still hold it open), named with the hash it had: no copy of it.
+    let kept: Vec<_> =
+        snapshot(tmp.path()).into_iter().filter(|(name, _)| name.starts_with(".omuzaki/replaced/")).collect();
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    let (name, bytes) = &kept[0];
+    assert!(name.starts_with(".omuzaki/replaced/characters/mia/face.toml."), "{name}");
+    assert!(name.ends_with(&format!(".{}.kept", ContentHash::of(before.as_bytes()))), "{name}");
+    assert_eq!(bytes, before.as_bytes());
+}
+
+#[test]
+fn the_first_save_prunes_old_unchanged_entries_and_keeps_changed_ones() {
+    let tmp = folder();
+    let hash = ContentHash::of(b"old = 1\n");
+    // Kept long ago (the time in the name is 1970): one untouched, one written to since.
+    write(tmp.path(), &format!(".omuzaki/replaced/x.toml.1-1-0.{hash}.kept"), "old = 1\n");
+    write(tmp.path(), &format!(".omuzaki/replaced/y.toml.1-1-1.{hash}.kept"), "old = 1\nedited = 2\n");
+    let mut project = Project::open(tmp.path()).unwrap();
+    edit_blend(&mut project, 0.5, 0.9);
+    project.save().unwrap();
+    // Which files the entries left are of: the face this save replaced, and the changed one.
+    let kept: Vec<_> = snapshot(tmp.path())
         .into_iter()
-        .map(|(name, _)| name)
-        .filter(|n| n.starts_with(".omuzaki/replaced/"))
+        .filter_map(|(name, _)| Some(name.strip_prefix(".omuzaki/replaced/")?.split(".toml.").next()?.to_owned()))
         .collect();
-    assert_eq!(files, Vec::<String>::new());
+    assert_eq!(kept, ["characters/mia/face", "y"]);
 }
 
 /// The destination never goes missing during a replacement, so a reader opening the project while it is saved always

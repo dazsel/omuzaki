@@ -123,6 +123,8 @@ my-show.omuzaki/.omuzaki/
   snapshots/refs/20261012T143205Z-1a2b3c4d5e6f.toml   one per snapshot (7.1)
   snapshots/quarantine/                  DiskStore::repair's
   recovery/20261012T143300Z/             the journal of a recovered session, kept 30 days
+  replaced/characters/mia/face.toml.<time>-<pid>-<n>.<hash>.kept   a file a save replaced, kept 10 minutes (6.1)
+  replaced/characters/mia/face.toml.<time>-<pid>-<n>.displaced     a file that raced a save; never deleted automatically
 ```
 
 `.omuzaki/` is never committed and travels with a copied folder (`docs/design/ux/shell.md` section 17).
@@ -344,6 +346,36 @@ The keeper applies durable entries to its shadow `Project` and writes the files:
 - **A crash during a save** leaves a mix of old and new files, possibly a file and a folder with one name.
   Nothing reads that mix as truth: recovery rebuilds from the snapshot and the journal and writes the files back
   exactly (8.5).
+
+### 6.1 What a save keeps of the files it replaces (`.omuzaki/replaced/`)
+
+A file is replaced only if its bytes are the last-known ones, and the check runs on the file the save actually
+displaces (`omuzaki-doc` `disk::replace_checked`). An editor can still hold that file open and write into it after the
+check; no check can see a write through a handle that is already open. So the displaced file is **kept**, not deleted:
+
+- **Kept as the same file.** Before the swap the target is hard-linked into `.omuzaki/replaced/<path>.<time>-<pid>-<n>.<hash>.kept`
+  (same file system, no bytes copied), where `<hash>` is the BLAKE3 hash of its bytes, which the save has just checked
+  are the last-known ones. After the swap that entry is the displaced file, so a late write lands in it. Where the
+  file system has no hard links the backup is a verified copy, and after the swap the displaced file itself is renamed
+  over it, keeping the name.
+- **Pruned by later saves.** The first save of an open project, and then at most one save a minute, deletes up to
+  **64** `.kept` entries that are older than **10 minutes** and whose bytes still have the hash in their name.
+- **Written-to entries are never pruned.** An entry whose bytes no longer match its hash holds edits someone made after
+  the save; only a person deletes it. `.displaced` entries (a file that raced a save, or a temporary file an
+  interrupted save left) carry no hash and are never deleted automatically either.
+- **The residual window.** An editor that holds the old file open for more than 10 minutes after a save and only then
+  writes into it can lose that write, once a later save prunes the entry. Editors that write in place do so within
+  seconds of a save; a longer grace time is a one-constant change (`RETAIN_UNCHANGED`).
+- **Windows.** A save replaces a file by renaming over it. A writer that holds the file open without delete sharing
+  (the default for most editors) makes that rename fail with a sharing violation, so the save reports an error and
+  loses nothing. A writer that does allow delete sharing writes into the hard-linked `.kept` entry, as on Linux.
+- **What is tested where.** CI (Linux) tests a write through a handle opened before the save and made after the check
+  (the bytes are in the `.kept` entry and pruning keeps it), and the pruning rules: young entries, changed entries,
+  `.displaced` entries and other files stay, and one call deletes at most 64. The Windows behaviour is not tested in
+  CI.
+- **Crash safety.** The hard-linked entry's folder is not flushed (that would add a folder sync to every save): after a
+  power loss the handles that could write into it are gone too, and what it held when kept is the text the save
+  replaced. A copied backup's folder is flushed once, after the displaced file takes its name.
 
 ## 7. Snapshots
 
@@ -670,6 +702,7 @@ Fixtures are synthetic projects (never the sample character or private material)
 | Apply to durable | p50 ≤ 2 ms, p99 ≤ 10 ms at 60 commits/s on a local SSD (ext4, NTFS); drvfs recorded, not gated | journal writer bench |
 | Writer throughput | ≥ 20,000 records/s of 1 KiB with flushing | journal writer bench |
 | Recovery | a 5,000-record tail over a 500-file project in ≤ 1 s | recovery bench |
+| Save | one edited file of the 200-file benchmark project saved and saved back (two saves) under 2 ms on a CI-class 4-vCPU machine; no `fsync` traded for speed | `omuzaki-doc` `store` bench, `save` group |
 | Open without recovery | within 5% of today's `open` bench; the base snapshot adds ≤ 20 ms on a local SSD when files changed while closed, nothing when they didn't | `omuzaki-doc` `open` bench |
 | Snapshot (off-thread) | ≤ 50 ms for a 500-file project with 10 changed files on a local SSD | snapshot bench |
 | Apple (estimate until measured on an M-series machine) | interactive apply to ordered p99 ≤ 10 ms with `F_BARRIERFSYNC`; an external acknowledgement waits one group-committed `F_FULLFSYNC` | journal writer bench on macOS |

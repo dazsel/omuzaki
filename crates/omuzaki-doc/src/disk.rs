@@ -4,7 +4,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use omuzaki_store_api::ContentHash;
 use serde_json::{Map, Value};
@@ -187,10 +187,24 @@ fn refuse_links(dir: &Path, path: &Path) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// The folder (inside the project) that holds every file a save displaced and could not prove was the expected one
-/// (an editor's save or write that raced it). Only an explicit cleanup policy ever deletes from it; a save never does.
-/// A file that was replaced as expected leaves nothing here: its bytes are the text this project last read or wrote.
+/// The folder (inside the project) that keeps every file a save displaced; see `docs/design/journal.md` section 6.1.
+///
+/// - `<path>.<time>-<pid>-<n>.<hash>.kept`: a file a save replaced as expected, kept as the same file (inode), with
+///   the hash its bytes had when it was replaced. An editor that still holds it open writes into this entry, not
+///   into nothing. [`prune_replaced`] deletes it once it is older than [`RETAIN_UNCHANGED`] and still has that hash.
+/// - `<path>.<time>-<pid>-<n>.displaced`: a file that raced a save (an editor's save or write) or that an interrupted
+///   save left behind. No hash is recorded, so nothing ever deletes it automatically.
 const REPLACED_DIR: &str = ".omuzaki/replaced";
+
+/// The suffix of an entry of the replaced folder that [`prune_replaced`] may delete.
+const KEPT: &str = ".kept";
+
+/// How long a replaced file is kept even if nothing wrote to it: an editor that still holds the old file open and
+/// writes within this time finds its bytes in the replaced folder.
+pub(crate) const RETAIN_UNCHANGED: Duration = Duration::from_mins(10);
+
+/// The most entries one [`prune_replaced`] call deletes, so a save never stalls on a large backlog.
+pub(crate) const PRUNE_MAX: usize = 64;
 
 /// What [`replace_checked`] did.
 #[derive(Debug, PartialEq, Eq)]
@@ -208,17 +222,23 @@ pub(crate) enum Replace {
 /// away first leaves a gap in which the path is missing. This does neither, and never deletes a byte it did not write:
 /// 1. `text` is written to a hidden temporary file next to the target and flushed. A temporary file left by an
 ///    earlier, interrupted save is not deleted: it is moved into the replaced folder (it may hold a displaced file).
-/// 2. The target is backed up into `.omuzaki/replaced/<path>.<time>-<pid>-<n>`: by hard link, so the target never goes
-///    missing and an editor that writes in place afterwards writes into the backup too; if the file system has no
-///    links (EPERM, EXDEV or EOPNOTSUPP), by a copy that is flushed and read back to verify its hash. Any other
-///    failure is an error.
-/// 3. The backup is hashed. If it isn't `expected` the backup is removed and the result is [`Replace::Refused`].
+/// 2. The target is read and hashed. If it isn't `expected` the result is [`Replace::Refused`] and nothing else is
+///    done.
+/// 3. The target is backed up into `.omuzaki/replaced/<path>.<time>-<pid>-<n>.<hash>.kept`: by hard link, so the
+///    target never goes missing and an editor that writes in place afterwards writes into the backup too; if the file
+///    system has no links (EPERM, EXDEV or EOPNOTSUPP), by a copy that is flushed and read back to verify its hash.
+///    Any other failure is an error.
 /// 4. On Linux the temporary file and the target are swapped atomically (`renameat2` with `RENAME_EXCHANGE`). The file
-///    swapped out (now at the temporary path) must be the backup's: the same inode, or for a copied backup the same
-///    hash. If it isn't, an editor replaced or edited the target in the window: the swap is undone, the editor's file
-///    is back at the target and the result is [`Replace::Refused`]. Whatever is found at the temporary path while
-///    undoing (the editor's file when the undo fails, or our file with edits written into it between the swap and the
-///    undo) is moved into the replaced folder as `<path>.<time>-<pid>-<n>.displaced`, flushed, never deleted.
+///    swapped out (now at the temporary path) must be the one hashed: the backup's inode with the hashed bytes, or for
+///    a copied backup the hashed bytes. If it isn't, an editor replaced or edited the target in the window: the swap
+///    is undone, the editor's file is back at the target, the backup is removed and the result is
+///    [`Replace::Refused`]. Whatever is found at the temporary path while undoing (the editor's file when the undo
+///    fails, or our file with edits written into it between the swap and the undo) is moved into the replaced folder
+///    as `<path>.<time>-<pid>-<n>.displaced`, flushed, never deleted.
+/// 5. After a placement the displaced file stays in the replaced folder as the `.kept` entry: for a hard-linked backup
+///    it already is that file; a copied backup is replaced by the displaced file itself (one rename). An editor that
+///    still holds the old file open and writes after the check writes into that entry, which pruning then never
+///    deletes (its bytes no longer match the hash).
 ///
 /// If the kernel or file system can't exchange names (EINVAL, ENOSYS), and on macOS and Windows, step 4 is a
 /// plain `rename` over the target, with a one-time warning on Linux. That leaves a race of microseconds: an editor's
@@ -245,6 +265,8 @@ struct Hooks<'a> {
     backed_up: &'a dyn Fn(),
     /// After the swap, before it is checked or undone.
     swapped: &'a dyn Fn(),
+    /// After the displaced file is verified, before the temporary name is cleaned up.
+    verified: &'a dyn Fn(),
     /// After the swap is undone, before the file that was exposed at the target is preserved.
     undone: &'a dyn Fn(),
 }
@@ -253,7 +275,7 @@ fn noop() {}
 
 impl Default for Hooks<'_> {
     fn default() -> Self {
-        Self { staged: &noop, backed_up: &noop, swapped: &noop, undone: &noop }
+        Self { staged: &noop, backed_up: &noop, swapped: &noop, verified: &noop, undone: &noop }
     }
 }
 
@@ -267,17 +289,19 @@ fn replace_checked_with(
     refuse_links(dir, path)?;
     let tmp = stage(dir, path, text)?;
     (hooks.staged)();
-    let outcome = match back_up(dir, path)? {
+    let outcome = match back_up(dir, path, expected)? {
         Backup::Absent => {
             (hooks.backed_up)();
             place_no_replace(&tmp, path).map(|placed| if placed { Replace::Placed } else { Replace::Refused })
         }
+        Backup::Mismatch => Ok(Replace::Refused),
         Backup::Held(held) => {
-            let outcome = replace_held(dir, path, &tmp, &held, expected, hooks);
-            // Deleted whatever happened. After a placement the displaced bytes were verified to be the last-known
-            // text, so nothing the person wrote is lost; after a refusal or an error the target is as it was (or the
-            // editor's) and any displaced file is kept separately by `preserve`.
-            drop(fs::remove_file(&held.path));
+            let outcome = replace_held(dir, path, &tmp, &held, hooks);
+            // After a placement the backup is the kept entry (step 5). Otherwise the target is as it was (or the
+            // editor's) and any displaced file is kept separately by `preserve`, so the backup can go.
+            if !matches!(outcome, Ok(Replace::Placed)) {
+                drop(fs::remove_file(&held.path));
+            }
             outcome
         }
     };
@@ -289,34 +313,31 @@ fn replace_checked_with(
     outcome
 }
 
-/// Steps 3 and 4 for a target that has a backup.
-fn replace_held(
-    dir: &Path,
-    path: &Path,
-    tmp: &Path,
-    held: &Held,
-    expected: Option<ContentHash>,
-    hooks: &Hooks<'_>,
-) -> Result<Replace, StoreError> {
-    if Some(held.found) != expected {
-        return Ok(Replace::Refused);
-    }
+/// Steps 4 and 5 for a target that has a backup.
+fn replace_held(dir: &Path, path: &Path, tmp: &Path, held: &Held, hooks: &Hooks<'_>) -> Result<Replace, StoreError> {
     (hooks.backed_up)();
     if !exchange(tmp, path).map_err(|e| StoreError::io(path, e))? {
         fs::rename(tmp, path).map_err(|e| StoreError::io(path, e))?;
+        if !held.linked {
+            // The copy is now the only one of the replaced bytes.
+            sync_folder(held.path.parent())?;
+        }
         return Ok(Replace::Placed);
     }
     (hooks.swapped)();
-    // The file we displaced is at `tmp`, and it must still hold the bytes that were hashed. A hard-linked backup is
-    // the same file, so it keeps every byte and the name can go. A copy does not follow an editor that still holds
-    // the original open, so that file is kept as well. An in-place edit after the backup was hashed fails the check
-    // (even for a link, whose inode is unchanged) and falls through to the undo below.
+    // The file we displaced is at `tmp`, and it must still hold the bytes that were hashed. An in-place edit after
+    // they were hashed fails the check (even for a link, whose inode is unchanged) and falls through to the undo below.
     if held.is_file_at(tmp) {
+        (hooks.verified)();
         if held.linked {
+            // The backup is the same file, so it is the kept entry and this second name can go.
             drop(fs::remove_file(tmp));
         } else {
-            // Best effort: a failure leaves it at `tmp`, where the next save moves it, and the new text is placed.
-            drop(preserve(dir, tmp));
+            // A copy doesn't follow an editor that still holds the original open, so the original takes the copy's
+            // place. Best effort: a failure leaves it at `tmp`, where the next save moves it, and the copy stays.
+            if fs::rename(tmp, &held.path).is_ok() {
+                drop(sync_folder(held.path.parent()));
+            }
         }
         return Ok(Replace::Placed);
     }
@@ -334,9 +355,10 @@ fn replace_held(
 
 /// A backup of the file at the target.
 struct Held {
-    /// Where the backup is.
+    /// Where the backup is: the `.kept` entry if the save places its file.
     path: PathBuf,
-    /// The hash of its bytes when it was made; the displaced file must still hash to this.
+    /// The hash of the target's bytes when it was backed up (the expected one); the displaced file must still hash to
+    /// this.
     found: ContentHash,
     /// True if it is a hard link (the same inode as the target was); false for a verified copy.
     linked: bool,
@@ -448,6 +470,56 @@ fn preserve(dir: &Path, from: &Path) -> Result<PathBuf, StoreError> {
     Ok(to)
 }
 
+/// Deletes up to [`PRUNE_MAX`] `.kept` entries of the replaced folder of the project `dir` that are older than
+/// [`RETAIN_UNCHANGED`] at `now` and whose bytes still have the hash in their name; returns how many it deleted.
+///
+/// An entry that was written to after its save (an editor that held the old file open) no longer matches its hash
+/// and is never deleted here, nor is a `.displaced` entry or anything else in the folder. Best effort: what can't be
+/// read or deleted is left alone, and so is everything if the folder is reached through a symbolic link.
+pub(crate) fn prune_replaced(dir: &Path, now: SystemTime) -> usize {
+    let root = dir.join(REPLACED_DIR);
+    if refuse_links(dir, &root).is_err() {
+        return 0;
+    }
+    let Some(cutoff) = now.checked_sub(RETAIN_UNCHANGED).and_then(|t| t.duration_since(UNIX_EPOCH).ok()) else {
+        return 0;
+    };
+    let mut pruned = 0;
+    let mut folders = vec![root];
+    while let Some(folder) = folders.pop() {
+        let Ok(entries) = fs::read_dir(&folder) else { continue };
+        for entry in entries.flatten() {
+            if pruned == PRUNE_MAX {
+                return pruned;
+            }
+            let Ok(kind) = entry.file_type() else { continue };
+            if kind.is_dir() {
+                folders.push(entry.path());
+                continue;
+            }
+            let name = entry.file_name();
+            let Some((saved, hash)) = name.to_str().and_then(kept_stamp) else { continue };
+            if kind.is_file()
+                && saved < cutoff
+                && fs::read(entry.path()).is_ok_and(|bytes| ContentHash::of(&bytes) == hash)
+                && fs::remove_file(entry.path()).is_ok()
+            {
+                pruned += 1;
+            }
+        }
+    }
+    pruned
+}
+
+/// The time and hash in the name of a `.kept` entry (`<name>.<nanos>-<pid>-<n>.<hash>.kept`), or `None` for any
+/// other name.
+fn kept_stamp(name: &str) -> Option<(Duration, ContentHash)> {
+    let (rest, hash) = name.strip_suffix(KEPT)?.rsplit_once('.')?;
+    let (_, stamp) = rest.rsplit_once('.')?;
+    let nanos: u64 = stamp.split('-').next()?.parse().ok()?;
+    Some((Duration::from_nanos(nanos), hash.parse().ok()?))
+}
+
 /// Flushes a folder so a rename into it survives a crash (Unix; other systems have no way to open one).
 fn sync_folder(folder: Option<&Path>) -> Result<(), StoreError> {
     #[cfg(unix)]
@@ -463,18 +535,29 @@ fn sync_folder(folder: Option<&Path>) -> Result<(), StoreError> {
 enum Backup {
     /// There is no file at the path.
     Absent,
+    /// The file there isn't the expected one; nothing was backed up.
+    Mismatch,
     /// The file was backed up.
     Held(Held),
 }
 
-/// Backs up the file at `path` into the replaced folder: a hard link, or a verified copy where links aren't allowed.
-fn back_up(dir: &Path, path: &Path) -> Result<Backup, StoreError> {
-    match fs::symlink_metadata(path) {
-        Ok(_) => {}
+/// Hashes the file at `path` and, if it is `expected`, backs it up into the replaced folder under that hash: a hard
+/// link, or a verified copy where links aren't allowed.
+///
+/// The bytes are read before the link is made, so the backup itself is never read back. An editor's save in between
+/// links its file instead; the check after the swap (same inode and the hashed bytes) refuses that, and with no swap
+/// the backup keeps the editor's bytes under a hash they don't match, so pruning never deletes them.
+fn back_up(dir: &Path, path: &Path, expected: Option<ContentHash>) -> Result<Backup, StoreError> {
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Backup::Absent),
         Err(e) => return Err(StoreError::io(path, e)),
+    };
+    let found = ContentHash::of(&bytes);
+    if Some(found) != expected {
+        return Ok(Backup::Mismatch);
     }
-    let backup = replaced_name(dir, path, "")?;
+    let backup = replaced_name(dir, path, &format!(".{found}{KEPT}"))?;
     // The folder usually exists already, so link first and make folders only when that says they are missing.
     let mut linked = fs::hard_link(path, &backup);
     if linked.as_ref().is_err_and(|e| e.kind() == io::ErrorKind::NotFound)
@@ -485,15 +568,11 @@ fn back_up(dir: &Path, path: &Path) -> Result<Backup, StoreError> {
         linked = fs::hard_link(path, &backup);
     }
     match linked {
-        Ok(()) => {
-            let found =
-                fs::read(&backup).map(|bytes| ContentHash::of(&bytes)).map_err(|e| StoreError::io(&backup, e))?;
-            Ok(Backup::Held(Held { path: backup, found, linked: true }))
-        }
-        // Deleted between the check and the link: nothing to protect.
+        Ok(()) => Ok(Backup::Held(Held { path: backup, found, linked: true })),
+        // Deleted between the read and the link: nothing to protect.
         Err(e) if e.kind() == io::ErrorKind::NotFound && !path.exists() => Ok(Backup::Absent),
         // The file system has no links (or won't make this one): copy instead.
-        Err(e) if links_unsupported(&e) => copy_backup(path, backup),
+        Err(e) if links_unsupported(&e) => copy_backup(path, &bytes, backup),
         Err(e) => Err(StoreError::io(path, e)),
     }
 }
@@ -503,14 +582,12 @@ fn links_unsupported(e: &io::Error) -> bool {
     matches!(e.kind(), io::ErrorKind::PermissionDenied | io::ErrorKind::CrossesDevices | io::ErrorKind::Unsupported)
 }
 
-/// Copies the file at `path` to `backup`, flushes it and reads it back to check the hash.
-fn copy_backup(path: &Path, backup: PathBuf) -> Result<Backup, StoreError> {
-    let bytes = match fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Backup::Absent),
-        Err(e) => return Err(StoreError::io(path, e)),
-    };
-    let found = ContentHash::of(&bytes);
+/// Writes `bytes` (read from `path`) to `backup`, flushes it and reads it back to check the hash.
+///
+/// The folder is not synced here: until the swap the target still holds these bytes, and after a placement the
+/// displaced file takes this name and the folder is synced once then.
+fn copy_backup(path: &Path, bytes: &[u8], backup: PathBuf) -> Result<Backup, StoreError> {
+    let found = ContentHash::of(bytes);
     if let Some(parent) = backup.parent() {
         fs::create_dir_all(parent).map_err(|e| StoreError::io(parent, e))?;
     }
@@ -518,7 +595,7 @@ fn copy_backup(path: &Path, backup: PathBuf) -> Result<Backup, StoreError> {
         .write(true)
         .create_new(true)
         .open(&backup)
-        .and_then(|mut f| f.write_all(&bytes).and_then(|()| f.sync_all()))
+        .and_then(|mut f| f.write_all(bytes).and_then(|()| f.sync_all()))
         .map_err(|e| StoreError::io(&backup, e))?;
     let copied = fs::read(&backup).map_err(|e| StoreError::io(&backup, e))?;
     if ContentHash::of(&copied) != found {
@@ -526,7 +603,6 @@ fn copy_backup(path: &Path, backup: PathBuf) -> Result<Backup, StoreError> {
         drop(fs::remove_file(&backup));
         return Err(StoreError::Internal(format!("the backup of {} didn't read back identical", path.display())));
     }
-    sync_folder(backup.parent())?;
     Ok(Backup::Held(Held { path: backup, found, linked: false }))
 }
 
@@ -759,16 +835,21 @@ mod tests {
     }
 
     #[test]
-    fn replace_checked_replaces_and_leaves_no_old_file_or_temporary_file() {
+    fn replace_checked_replaces_keeps_the_old_file_under_its_hash_and_leaves_no_temporary_file() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("a/b.toml");
         assert_eq!(replace_checked(tmp.path(), &path, "x = 1\n", None).unwrap(), Replace::Placed);
-        let first = Some(ContentHash::of(b"x = 1\n"));
-        assert_eq!(replace_checked(tmp.path(), &path, "x = 2\n", first).unwrap(), Replace::Placed);
+        assert_eq!(kept(tmp.path()), [], "a new file displaces nothing");
+        let first = ContentHash::of(b"x = 1\n");
+        assert_eq!(replace_checked(tmp.path(), &path, "x = 2\n", Some(first)).unwrap(), Replace::Placed);
         assert_eq!(fs::read_to_string(&path).unwrap(), "x = 2\n");
         let names: Vec<_> = fs::read_dir(path.parent().unwrap()).unwrap().map(|e| e.unwrap().file_name()).collect();
         assert_eq!(names, ["b.toml"]);
-        assert_eq!(kept(tmp.path()), []);
+        let items = kept(tmp.path());
+        assert_eq!(texts(&items), ["x = 1\n"]);
+        let name = items[0].0.rsplit('/').next().unwrap();
+        assert!(name.starts_with("b.toml.") && name.ends_with(&format!(".{first}.kept")), "{name}");
+        assert!(kept_stamp(name).is_some_and(|(_, hash)| hash == first));
     }
 
     const MINE: &str = "mine = 1\n";
@@ -879,9 +960,10 @@ mod tests {
         assert_eq!(replace_checked(dir, &path, "ours = 3\n", expected).unwrap(), Replace::Placed);
         assert_eq!(fs::read_to_string(&path).unwrap(), "ours = 3\n");
         let items = kept(dir);
-        let mut all = texts(&items);
-        all.sort_unstable();
-        assert_eq!(all, ["displaced by a crash = 5\n"]);
+        let displaced: Vec<_> = items.iter().filter(|(n, _)| n.ends_with(".displaced")).map(|(_, t)| t).collect();
+        assert_eq!(displaced, ["displaced by a crash = 5\n"]);
+        let replaced: Vec<_> = items.iter().filter(|(n, _)| n.ends_with(KEPT)).map(|(_, t)| t).collect();
+        assert_eq!(replaced, [MINE]);
         assert!(no_temporary_file(dir));
     }
 
@@ -890,7 +972,8 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let (dir, (path, _)) = (tmp.path(), with_file(tmp.path()));
         let backup = dir.join(REPLACED_DIR).join("f.toml.copy");
-        let Backup::Held(held) = copy_backup(&path, backup.clone()).unwrap() else { panic!("no backup") };
+        let bytes = fs::read(&path).unwrap();
+        let Backup::Held(held) = copy_backup(&path, &bytes, backup.clone()).unwrap() else { panic!("no backup") };
         assert!(!held.linked && held.found == ContentHash::of(MINE.as_bytes()));
         assert_eq!(fs::read_to_string(&backup).unwrap(), MINE);
         assert!(held.is_file_at(&path));
@@ -934,6 +1017,112 @@ mod tests {
         assert!(items[0].0.ends_with(".displaced"), "{items:?}");
         assert!(texts(&items)[0].ends_with("late = 9\n"), "{items:?}");
         assert!(no_temporary_file(dir));
+    }
+
+    /// An editor that opened the file before the save and writes through that handle after the save checked the
+    /// displaced bytes writes into the kept entry, so nothing is lost, and pruning never deletes that entry.
+    #[cfg(unix)]
+    #[test]
+    fn a_write_through_a_handle_held_across_the_save_survives_in_the_replaced_folder() {
+        use std::io::Write as _;
+
+        let tmp = TempDir::new().unwrap();
+        let (dir, (path, expected)) = (tmp.path(), with_file(tmp.path()));
+        let handle = OpenOptions::new().append(true).open(&path).unwrap();
+        // `exchange` is Linux-only; elsewhere this runs at the end of the save, which is the same window or later.
+        let done = std::cell::Cell::new(false);
+        let late_write = || {
+            handle.try_clone().unwrap().write_all(b"late = 9\n").unwrap();
+            done.set(true);
+        };
+        let out = replace_with(dir, expected, &Hooks { verified: &late_write, ..Hooks::default() }).unwrap();
+        if !done.get() {
+            late_write();
+        }
+        handle.sync_all().unwrap();
+        assert_eq!(out, Replace::Placed);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "ours = 3\n");
+        let items = kept(dir);
+        assert_eq!(texts(&items), ["mine = 1\nlate = 9\n"]);
+        assert!(items[0].0.ends_with(KEPT), "{items:?}");
+        assert!(no_temporary_file(dir));
+        // Long after, the entry still isn't pruned: its bytes are not the ones it was kept with.
+        assert_eq!(prune_replaced(dir, later()), 0);
+        assert_eq!(texts(&kept(dir)), ["mine = 1\nlate = 9\n"]);
+    }
+
+    /// Just past the retention time from now.
+    fn later() -> SystemTime {
+        SystemTime::now() + RETAIN_UNCHANGED + Duration::from_secs(1)
+    }
+
+    /// Replaces `rel` in `dir` (writing it first if needed), so its old text is kept in the replaced folder.
+    fn replace_once(dir: &Path, rel: &str) {
+        let path = dir.join(rel);
+        if !path.exists() {
+            write(dir, rel, MINE);
+        }
+        let text = fs::read(&path).unwrap();
+        let out = replace_checked(dir, &path, "ours = 3\n", Some(ContentHash::of(&text))).unwrap();
+        assert_eq!(out, Replace::Placed);
+    }
+
+    #[test]
+    fn pruning_deletes_only_old_kept_entries_that_nothing_wrote_to() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        replace_once(dir, "a.toml");
+        replace_once(dir, "deep/b.toml");
+        replace_once(dir, "c.toml");
+        let items = kept(dir);
+        assert_eq!(items.len(), 3, "{items:?}");
+        // One entry was written to after its save; a raced file and a stray file sit beside them.
+        let changed = dir.join(REPLACED_DIR).join(&items.iter().find(|(n, _)| n.starts_with("c.toml")).unwrap().0);
+        fs::write(&changed, "edited later = 1\n").unwrap();
+        write(dir, ".omuzaki/replaced/d.toml.1-2-3.displaced", "raced = 1\n");
+        write(dir, ".omuzaki/replaced/notes.txt", "mine\n");
+
+        // Young entries are kept, however unchanged.
+        assert_eq!(prune_replaced(dir, SystemTime::now()), 0);
+        assert_eq!(kept(dir).len(), 5);
+        // Old and unchanged go; changed, raced and anything else stay.
+        assert_eq!(prune_replaced(dir, later()), 2);
+        let left: Vec<_> = kept(dir).into_iter().map(|(n, t)| (n.split('.').next().unwrap().to_owned(), t)).collect();
+        assert_eq!(
+            left,
+            [
+                ("c".to_owned(), "edited later = 1\n".to_owned()),
+                ("d".to_owned(), "raced = 1\n".to_owned()),
+                ("notes".to_owned(), "mine\n".to_owned()),
+            ]
+        );
+        // Nothing to prune is fine, and so is a project with no replaced folder.
+        assert_eq!(prune_replaced(dir, later()), 0);
+        assert_eq!(prune_replaced(&dir.join("deep"), later()), 0);
+    }
+
+    #[test]
+    fn pruning_deletes_at_most_its_limit_per_call() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        for _ in 0..PRUNE_MAX + 6 {
+            replace_once(dir, "a.toml");
+            fs::write(dir.join("a.toml"), MINE).unwrap();
+        }
+        assert_eq!(kept(dir).len(), PRUNE_MAX + 6);
+        assert_eq!(prune_replaced(dir, later()), PRUNE_MAX);
+        assert_eq!(kept(dir).len(), 6);
+        assert_eq!(prune_replaced(dir, later()), 6);
+        assert_eq!(kept(dir), []);
+    }
+
+    #[test]
+    fn only_kept_names_carry_a_time_and_a_hash() {
+        let hash = ContentHash::of(b"x");
+        assert_eq!(kept_stamp(&format!("f.toml.1500-7-0.{hash}.kept")), Some((Duration::from_nanos(1500), hash)));
+        for name in ["f.toml.1500-7-0.displaced", "f.toml.1500-7-0.nothex.kept", &format!("f.toml.x-7-0.{hash}.kept")] {
+            assert_eq!(kept_stamp(name), None, "{name}");
+        }
     }
 
     #[cfg(target_os = "linux")]

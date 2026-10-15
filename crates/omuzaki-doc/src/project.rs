@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant, SystemTime};
 
 use omuzaki_doc_api::{Change, DocPath, DocRead, DocVersion, DocWrite, Patch, PatchError, lookup};
 use omuzaki_store_api::ContentHash;
@@ -59,7 +60,13 @@ pub struct Project {
     layout: Layout,
     known: Known,
     upgraded_from: Option<u32>,
+    /// When this project last pruned the replaced folder; `None` until its first save.
+    pruned_at: Option<Instant>,
 }
+
+/// How often saves prune the replaced folder: often enough to keep it small, rarely enough that walking it doesn't
+/// slow saves that come every few seconds.
+const PRUNE_EVERY: Duration = Duration::from_mins(1);
 
 impl Project {
     /// Opens the project in `dir`, upgrading it in memory if it was written by an older version.
@@ -96,7 +103,7 @@ impl Project {
                 .map_err(|e| StoreError::MigratedTree(e.to_string()))?;
             layout.commit(edit);
         }
-        Ok(Self { dir: dir.to_path_buf(), root, version: DocVersion(0), layout, known, upgraded_from })
+        Ok(Self { dir: dir.to_path_buf(), root, version: DocVersion(0), layout, known, upgraded_from, pruned_at: None })
     }
 
     /// Creates a project called `name` in `dir` (making the folder if needed) and writes its `project.toml`.
@@ -124,6 +131,7 @@ impl Project {
             layout,
             known: Known::default(),
             upgraded_from: None,
+            pruned_at: None,
         };
         project.save()?;
         Ok(project)
@@ -198,12 +206,22 @@ impl Project {
     /// `project.toml` is not written after a refusal, for the reason above: the files it describes aren't all up to
     /// date.
     ///
+    /// Each file a save replaces is kept for a while under `.omuzaki/replaced/`, so an editor that still holds the
+    /// old file open can't lose what it writes there. The first save of a `Project`, and then at most one save a
+    /// minute, deletes up to 64 of those that are over 10 minutes old and that nothing wrote to since (see
+    /// `docs/design/journal.md` section 6.1).
+    ///
     /// # Errors
     /// A file can't be read, written or deleted; a file about to be edited was broken by hand and is no longer valid
     /// TOML (nothing is overwritten in that case); a file or folder to write into is a symbolic link
     /// ([`StoreError::Symlink`]: the store never writes through or over a link); or a file was changed on disk
     /// ([`StoreError::ChangedOnDisk`]).
     pub fn save(&mut self) -> Result<SaveReport, StoreError> {
+        let now = Instant::now();
+        if self.pruned_at.is_none_or(|at| now.duration_since(at) >= PRUNE_EVERY) {
+            disk::prune_replaced(&self.dir, SystemTime::now());
+            self.pruned_at = Some(now);
+        }
         let (project, others): (Vec<_>, Vec<_>) =
             self.layout.pending().into_iter().partition(|(segs, _)| segs.as_slice() == [PROJECT_KEY]);
         let mut report = SaveReport::default();
