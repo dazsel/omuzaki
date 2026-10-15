@@ -39,9 +39,10 @@ fn label_room(fit: f32, fixed: f32) -> f32 {
 /// cleared directly, not through `tip`: `tip` on an idle chip would show the tooltip of a chip that now fits.
 fn cut_tip<'a>(response: Response, cut: bool, whole: impl FnOnce() -> Cow<'a, str>) -> Response {
     let active = cut && (response.hovered() || response.has_focus());
-    if cut && response.has_focus() {
-        // Escape is the tooltip's to dismiss, so a focused cut chip keeps its focus when Escape is pressed.
-        let keep_on_escape = EventFilter { escape: true, ..EventFilter::default() };
+    if response.has_focus() {
+        // While the label is cut, Escape is the tooltip's to dismiss, so the chip keeps its focus. Once it fits, the
+        // lock is set back to the default every frame, so Escape moves focus like it does on any other widget.
+        let keep_on_escape = EventFilter { escape: cut, ..EventFilter::default() };
         response.ctx.memory_mut(|m| m.set_focus_lock_filter(response.id, keep_on_escape));
     }
     let key = response.id.with("cut_tip_active");

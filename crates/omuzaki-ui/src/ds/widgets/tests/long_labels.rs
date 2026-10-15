@@ -281,3 +281,20 @@ fn a_focused_cut_chip_whose_label_comes_to_fit_shows_no_tooltip() {
     let shown = painted(h.output());
     assert_eq!(shown.iter().filter(|p| p.text == NAME70).count(), 1, "only the chip's own label is drawn");
 }
+
+#[test]
+fn a_focused_chip_that_comes_to_fit_lets_escape_move_focus_away() {
+    let mut h = crate::ds::testing::harness_state(Settings::default(), vec2(PANEL, 400.0), 120.0_f32, |ui, room| {
+        ui.set_max_width(*room);
+        ui.add(GateChip::failed(NAME70, "0.81", "0.85"));
+    });
+    h.run_steps(3);
+    press(&mut h, Modifiers::NONE, Key::Tab);
+    h.run_steps(8);
+    *h.state_mut() = 600.0;
+    h.run_steps(8);
+    press(&mut h, Modifiers::NONE, Key::Escape);
+    h.run_steps(8);
+    let focused = h.root().children_recursive().any(|n| n.accesskit_node().is_focused());
+    assert!(!focused, "Escape moves focus away from a chip whose label now fits");
+}
