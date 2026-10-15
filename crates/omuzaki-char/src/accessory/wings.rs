@@ -157,11 +157,16 @@ const SHOULDER_UP: f64 = 0.03;
 const SHOULDER_GAP: f64 = 0.03;
 /// The clearance of the wing plane's front face behind the back, metres: the acceptance is 2 mm.
 const BACK_CLEARANCE: f64 = 0.003;
+/// The radius of the arm's bar at the shoulder, metres at a standard body.
+const BAR_RADIUS: f64 = 0.011;
+/// The radius of a mechanical wing's joint caps, metres at a standard body.
+const JOINT_RADIUS: f64 = 0.018;
 /// The directions of the three arm segments in the wing's plane (`x` outward, `y` up), at the spread pose, and each
 /// segment's share of the span.
 const ARM: [([f64; 2], f64); 3] = [([0.85, 0.52], 0.4), ([0.96, 0.28], 0.33), ([0.9, -0.1], 0.27)];
-/// How far the three frame bones turn about the back axis to fold, degrees (shoulder, elbow, wrist), positive down.
-const FOLD_DEG: [f64; 3] = [62.0, -125.0, 40.0];
+/// How far the three frame bones turn about the back axis to fold, degrees (shoulder, elbow, wrist), positive down: the
+/// arm ends up hanging down the back, a little out, in a shallow V.
+const FOLD_DEG: [f64; 3] = [110.0, -31.0, 2.0];
 
 /// The `wings` kind.
 pub struct Wings;
@@ -245,7 +250,7 @@ impl Wing {
     /// The arm as a tube: the bar the wing hangs from.
     fn bar(&self, seg: usize) -> Result<crate::kit::sweep::Sweep, KitError> {
         let path: Vec<DVec3> = (0..=14).map(|i| self.at(fraction(i, 14)).0).collect();
-        let r = 0.011 * self.k;
+        let r = BAR_RADIUS * self.k;
         closed_tube(&path, |t| (r * lerp(1.0, 0.55, t), r * lerp(1.0, 0.55, t)), seg, DVec3::Z)
     }
 }
@@ -268,7 +273,7 @@ impl Wings {
                 let sweep = 0.5 * (1.0 - u);
                 let dir = (wing.trailing(tangent) * sweep.cos() + tangent * sweep.sin()).normalize_or_zero();
                 let length = r.chord * p.feather_size * (0.55 + 0.45 * (PI * (0.15 + 0.8 * u)).sin());
-                let rows = 6;
+                let rows = 5;
                 let path: Vec<DVec3> = (0..=rows)
                     .map(|i| {
                         let t = fraction(i, rows);
@@ -284,14 +289,14 @@ impl Wings {
                         (thick * body.sqrt(), half_width * body.powf(0.6))
                     }
                 };
-                closed_tube(&path, leaf, if rhombus { 4 } else { seg }, DVec3::Z)
+                closed_tube(&path, leaf, if rhombus { 4 } else { seg.min(6) }, DVec3::Z)
             })
             .collect()
     }
 
     /// The bat's membrane: a closed lens-thin solid between the arm and a scalloped trailing edge.
     fn membrane(wing: &Wing, p: &WingsParams, r: &Resolved, seg: usize) -> Result<(Grid, Vec<DVec3>), KitError> {
-        let (cols, rows) = (seg * 2, 5);
+        let (cols, rows) = (seg * 3 / 2, 4);
         let chord = |u: f64| r.chord * (1.0 - 0.45 * u) * (0.8 + 0.2 * (TAU * 3.0 * u).cos());
         let half = 0.5 * p.thickness * wing.k;
         let point = |side: f64, v: usize, j: usize| {
@@ -370,6 +375,13 @@ impl WingsParams {
 }
 
 impl Wings {
+    /// How far the wing's shells reach either side of their plane, metres at a standard body: the thickest of the wing, the
+    /// arm and the mechanical joints.
+    fn depth(p: &WingsParams) -> f64 {
+        let joints = if p.kind == WingKind::Mechanical { JOINT_RADIUS } else { 0.0 };
+        (0.5 * p.thickness).max(BAR_RADIUS).max(joints)
+    }
+
     /// The rig of one wing: the three frame bones with the fold driver on each, and the flutter chain under the wrist.
     /// Returns the five joints, root first. `placed` are the bone points in the placed frame.
     fn rig(
@@ -458,7 +470,7 @@ impl Wings {
                     let path: Vec<DVec3> = (0..=8).map(|i| wing.bones[2].lerp(end, fraction(i, 8))).collect();
                     let radius = 0.005 * k;
                     let taper = |t: f64| (radius * lerp(1.0, 0.4, t), radius * lerp(1.0, 0.4, t));
-                    let finger = closed_tube(&path, taper, 6, DVec3::Z).map_err(&err)?;
+                    let finger = closed_tube(&path, taper, 4, DVec3::Z).map_err(&err)?;
                     add(1, &finger.grid, (false, true), &|i, _| finger.centres[i])?;
                 }
             }
@@ -466,7 +478,7 @@ impl Wings {
                 for (degrees, length, width) in
                     [(58.0, 0.8, 0.34), (18.0, 0.7, 0.26), (-22.0, 0.5, 0.22), (-50.0, 0.38, 0.16)]
                 {
-                    let lobe = Self::lobe(wing, degrees, length * r.span, width * r.span, p, 10).map_err(&err)?;
+                    let lobe = Self::lobe(wing, degrees, length * r.span, width * r.span, p, 6).map_err(&err)?;
                     let centre = lobe.points().iter().sum::<DVec3>() / usize_f(lobe.points().len());
                     add(0, &lobe, (false, true), &|_, _| centre)?;
                 }
@@ -475,7 +487,7 @@ impl Wings {
         if p.kind == WingKind::Mechanical {
             // Joint caps on the elbow and the wrist.
             for at in [wing.bones[1], wing.bones[2]] {
-                let cap = ellipsoid(at, DVec3::splat(0.018 * k), 8, 12).map_err(&err)?;
+                let cap = ellipsoid(at, DVec3::splat(JOINT_RADIUS * k), 8, 12).map_err(&err)?;
                 add(1, &cap, (false, true), &|_, _| at)?;
             }
         }
@@ -509,7 +521,7 @@ impl PartKind for Wings {
         let chest = DVec3::from(chest);
         // The wings' plane: behind the most backward point of the torso, so no pose of the wing touches the back.
         let back = torso_back(ctx)?.into_iter().map(|(_, z)| z).fold(f64::MAX, f64::min);
-        let z = back - BACK_CLEARANCE - 0.5 * p.thickness * k;
+        let z = back - BACK_CLEARANCE - Self::depth(p) * k;
         let place = attach.to_bind * default.to_bind.inverse();
         let mut rig = RigContribution::default();
         let mut shells = Shells::new(&attach, &default, 2);

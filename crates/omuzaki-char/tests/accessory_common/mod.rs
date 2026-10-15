@@ -13,9 +13,9 @@ use std::sync::Arc;
 
 use omuzaki_anim_api::{HumanoidBone, Pose};
 use omuzaki_char_api::{
-    Assembler, Attach, AttachOffset, BuildError, BuildOptions, BuildServices, BuiltCharacter, CharId, CharacterDef,
-    HeadFact, HeadSurface, JointRef, PartDef, PartId, PartKindId, PartMesh, PartOutput, Published, Recoloured,
-    build_part, plan, recolour_part,
+    Assembler, Attach, AttachOffset, BodyFit, BuildError, BuildOptions, BuildServices, BuiltCharacter, CharId,
+    CharacterDef, HeadFact, HeadSurface, JointRef, PartDef, PartId, PartKindId, PartMesh, PartOutput, Published,
+    Recoloured, build_part, plan, recolour_part,
 };
 use omuzaki_char_mock::mock_character;
 use omuzaki_core::glam::{Mat4, Quat, Vec3};
@@ -98,6 +98,8 @@ pub fn character(template: &str, kind: &str, params: Value, attach: Option<Attac
 pub struct Scene {
     pub built: BuiltCharacter,
     pub head: Arc<dyn HeadSurface>,
+    /// The body's outermost fit when the accessory was built.
+    pub fit: Arc<dyn BodyFit>,
 }
 
 /// Builds `def` part by part, keeping the head surface the head published.
@@ -109,7 +111,8 @@ pub fn scene(def: &CharacterDef) -> Result<Scene, BuildError> {
         assembler.add(&p, output)?;
     }
     let head = assembler.published().get::<HeadFact>().clone().expect("the character has a head");
-    Ok(Scene { built: assembler.finish()?, head })
+    let fit = assembler.published().outer_fit().expect("the character has a body").clone();
+    Ok(Scene { built: assembler.finish()?, head, fit })
 }
 
 pub fn built_scene(template: &str, kind: &str, params: Value, attach: Option<Attach>) -> Scene {
@@ -464,4 +467,39 @@ pub fn box_centre(points: &[Vec3]) -> Vec3 {
     let (lo, hi) =
         points.iter().fold((Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)), |(l, h), p| (l.min(*p), h.max(*p)));
     (lo + hi) / 2.0
+}
+
+// ------------------------------------------------------------------------------------------------ the rig
+
+/// The pose the meshes were built in: the skeleton's rest turned by the rig's bind pose (the rest rotations are identity),
+/// which is the pose in which a skinned mesh is the built mesh.
+pub fn bind_pose(b: &BuiltCharacter) -> Pose {
+    let skeleton = &b.rig.skeleton;
+    let mut rest = skeleton.rest_pose();
+    for (bone, id) in skeleton.humanoid_map().expect("a humanoid").iter() {
+        rest.local[id.index()].rotation = b.rig.bind.get(bone);
+    }
+    let hips = skeleton.humanoid_map().unwrap().hips().index();
+    rest.local[hips].translation += b.rig.bind.hips_offset;
+    rest
+}
+
+/// Skinning at the bind pose gives back the built vertices: the bones and their inverse bind matrices agree with the mesh.
+pub fn assert_skins_to_the_built_mesh_at_bind(b: &BuiltCharacter, what: &str) {
+    let bind = bind_pose(b);
+    for mesh in meshes(b) {
+        let posed = skinned(b, mesh, &bind);
+        let worst = posed.iter().zip(&mesh.geometry.positions).map(|(p, q)| p.distance(*q)).fold(0.0, f32::max);
+        assert!(worst < 1e-4, "{what}: {} skins {worst} m away from the built mesh at the bind pose", mesh.name);
+    }
+}
+
+/// The most backward point of the torso over its height: where nothing behind the back may touch.
+pub fn back_of_the_torso(fit: &dyn BodyFit) -> f32 {
+    (0..=20)
+        .map(|k| {
+            let section = fit.section(omuzaki_char_api::BodyRegion::Torso, k as f32 / 20.0).unwrap();
+            section.centre.z - section.radii.y
+        })
+        .fold(f32::MAX, f32::min)
 }
