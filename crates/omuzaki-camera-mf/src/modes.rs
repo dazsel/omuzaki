@@ -400,3 +400,182 @@ fn remaining(deadline: Option<Instant>) -> Option<Duration> {
         None => Some(Duration::from_secs(3600)),
     }
 }
+
+/// Padding a gather buffer allows per row beyond the tight width, in bytes (rows are rounded up to this).
+const GATHER_ROW_ALIGN: usize = 256;
+
+/// Bytes a sample of `mode` may take when its pieces are gathered into one buffer: the frame at rows padded up to
+/// [`GATHER_ROW_ALIGN`], or, for MJPG, twice the pixel count (a compressed image is smaller than raw YUY2).
+fn gather_bytes(mode: &ModeInfo) -> usize {
+    let pixels = (mode.width as usize).saturating_mul(mode.height as usize);
+    match mode.format.tight_stride(mode.width) {
+        None => pixels.saturating_mul(2),
+        Some(row) => mode.format.frame_len(mode.height, row.next_multiple_of(GATHER_ROW_ALIGN)).unwrap_or(usize::MAX),
+    }
+}
+
+/// Bytes of top-down copy a `mode` needs: BGRA, the one layout Windows hands over bottom-up, and nothing else.
+fn flip_bytes(mode: &ModeInfo) -> usize {
+    match (mode.format, mode.format.tight_stride(mode.width)) {
+        (PixelFormat::Bgra8, Some(row)) => row.saturating_mul(mode.height as usize),
+        _ => 0,
+    }
+}
+
+/// The storage a stream sizes once, at open, for the largest mode the device offers, so that no frame call, and no
+/// renegotiation, ever allocates or grows anything. A mode beyond it (a driver that lied about its modes) is refused.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Capacity {
+    /// Bytes of the gather buffer for samples delivered in several pieces.
+    pub gather: usize,
+    /// Bytes of the top-down copy buffer for bottom-up BGRA frames.
+    pub flip: usize,
+}
+
+impl Capacity {
+    /// Enough for every one of `modes`.
+    pub fn for_modes(modes: &[ModeInfo]) -> Self {
+        let most = |bytes: fn(&ModeInfo) -> usize| modes.iter().map(bytes).max().unwrap_or(0);
+        Self { gather: most(gather_bytes), flip: most(flip_bytes) }
+    }
+
+    /// Whether `mode` fits.
+    ///
+    /// # Errors
+    /// If it needs more storage than was sized at open.
+    pub fn admits(&self, mode: &ModeInfo) -> Result<(), &'static str> {
+        if gather_bytes(mode) <= self.gather && flip_bytes(mode) <= self.flip {
+            Ok(())
+        } else {
+            Err("the camera switched to a mode larger than any it offered at open")
+        }
+    }
+
+    /// Bytes of the top-down copy `mode` needs (0 when its frames are never flipped).
+    pub fn flip_len(mode: &ModeInfo) -> usize {
+        flip_bytes(mode)
+    }
+}
+
+/// The top-down copy of a bottom-up frame, fully allocated at open: switching modes only moves the length used.
+#[derive(Debug)]
+pub struct RowFlip {
+    buf: Vec<u8>,
+    len: usize,
+}
+
+impl RowFlip {
+    /// A buffer of `capacity` bytes, none in use. The only allocation it ever makes.
+    pub fn new(capacity: usize) -> Self {
+        Self { buf: vec![0; capacity], len: 0 }
+    }
+
+    /// Uses `len` bytes from now on (0 for a mode that is never flipped).
+    ///
+    /// # Errors
+    /// If `len` is more than was allocated; nothing is allocated to make room.
+    pub fn set_len(&mut self, len: usize) -> Result<(), &'static str> {
+        if len > self.buf.len() {
+            return Err("the top-down buffer sized at open is too small for this mode");
+        }
+        self.len = len;
+        Ok(())
+    }
+
+    /// Bytes in use.
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Whether nothing is in use (the mode is never flipped).
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Copies `block`'s rows into the buffer top row first (see [`copy_top_down`]) and lends the result.
+    ///
+    /// # Errors
+    /// As [`copy_top_down`], and if `row_bytes * rows` is not the length in use.
+    pub fn fill(&mut self, block: &[u8], pitch: isize, row_bytes: usize, rows: usize) -> Result<&[u8], &'static str> {
+        if row_bytes.checked_mul(rows) != Some(self.len) {
+            return Err("frame size does not match the top-down buffer");
+        }
+        let used = &mut self.buf[..self.len];
+        copy_top_down(block, pitch, row_bytes, rows, used)?;
+        Ok(used)
+    }
+}
+
+/// Which clock a frame's capture time came from.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ClockSource {
+    /// The driver's capture timestamp (`MFSampleExtension_DeviceTimestamp`).
+    Device,
+    /// The sample's presentation time, because the driver gave no capture timestamp.
+    Sample,
+    /// The presentation time moved onto the device clock by the last offset between the two, for a frame that lacks
+    /// the timestamp after frames that had it.
+    SampleAligned,
+}
+
+/// A frame's capture time, in 100 ns ticks.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Stamp {
+    /// The time.
+    pub ticks: u64,
+    /// Where it came from.
+    pub source: ClockSource,
+    /// The source differs from the previous frame's (or this is the first frame): worth logging.
+    pub changed: bool,
+}
+
+/// Chooses each frame's capture time: the driver's timestamp when it has one, otherwise the sample time, never mixing
+/// the two timelines (a frame without the timestamp, after frames with it, keeps the offset between them).
+#[derive(Copy, Clone, Debug, Default)]
+pub struct CaptureClock {
+    offset: Option<i64>,
+    last: Option<ClockSource>,
+}
+
+impl CaptureClock {
+    /// A clock that has seen no frame.
+    pub const fn new() -> Self {
+        Self { offset: None, last: None }
+    }
+
+    /// The capture time of a frame with this `device` timestamp (if the driver gave one) and `sample` time.
+    pub fn stamp(&mut self, device: Option<u64>, sample: i64) -> Stamp {
+        let (ticks, source) = match (device, self.offset) {
+            (Some(d), _) => {
+                self.offset = Some(i64::try_from(d).unwrap_or(i64::MAX).saturating_sub(sample));
+                (d, ClockSource::Device)
+            }
+            (None, Some(offset)) => (sample.saturating_add(offset).max(0).cast_unsigned(), ClockSource::SampleAligned),
+            (None, None) => (sample.max(0).cast_unsigned(), ClockSource::Sample),
+        };
+        let changed = self.last != Some(source);
+        self.last = Some(source);
+        Stamp { ticks, source, changed }
+    }
+}
+
+/// Takes from `slot` until a frame, a failure, a close or the original deadline, handling each media-type change on
+/// the way: `retype` gets the token that was waiting (to release, unused) and re-reads the type. A change costs the
+/// wait nothing, so `Take::Timeout` means the whole `timeout` passed.
+///
+/// # Errors
+/// What `retype` returns, if it fails.
+pub fn take_after_retype<S: Signal, E>(
+    slot: &TokenSlot<S>,
+    timeout: Duration,
+    mut retype: impl FnMut(Option<NonNull<c_void>>) -> Result<(), E>,
+) -> Result<Take<NonNull<c_void>>, E> {
+    let deadline = Instant::now().checked_add(timeout);
+    loop {
+        let left = deadline.map_or(timeout, |at| at.saturating_duration_since(Instant::now()));
+        match slot.take(left) {
+            Take::Retype(token) => retype(token)?,
+            other => return Ok(other),
+        }
+    }
+}

@@ -24,9 +24,11 @@
 //! 3. `next_frame` swaps the token out (or waits on the event with the timeout), rebuilds the sample, borrows its
 //!    single buffer directly, checks it against the real allocation and returns the borrow.
 //!
-//! No step locks or allocates. A multi-buffer sample is copied into one reusable buffer that grows only if a frame is
-//! larger than any before; a bottom-up BGRA frame goes through a buffer sized at open; both change only when the
-//! camera renegotiates its media type.
+//! No step locks or allocates. **The rule:** everything `next_frame` can use is sized once, at open, for the largest
+//! mode the device offers ([`Capacity`]): the gather buffer for samples delivered in several pieces, and the top-down
+//! copy for bottom-up BGRA frames. A renegotiation only changes how much of them is used; a mode beyond them (a driver
+//! that lied about its modes) fails the stream with an error. Nothing reachable from `next_frame` creates a buffer,
+//! grows a `Vec` or resizes anything.
 #![allow(unsafe_code)] // Win32/COM FFI has no safe binding; each block carries its own `// SAFETY:` comment.
 
 use std::ffi::c_void;
@@ -49,15 +51,15 @@ use windows::Win32::Media::MediaFoundation::{
     MF_READWRITE_DISABLE_CONVERTERS, MF_SOURCE_READER_ASYNC_CALLBACK, MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING,
     MF_SOURCE_READER_FIRST_VIDEO_STREAM, MF_VERSION, MF2DBuffer_LockFlags_Read, MFCreateAttributes,
     MFCreateMemoryBuffer, MFCreateSourceReaderFromMediaSource, MFEnumDeviceSources, MFSTARTUP_FULL,
-    MFSampleExtension_Discontinuity, MFShutdown, MFStartup,
+    MFSampleExtension_DeviceTimestamp, MFSampleExtension_Discontinuity, MFShutdown, MFStartup,
 };
 use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoTaskMemFree, CoUninitialize};
 use windows::Win32::System::Threading::{CreateEventW, SetEvent, WaitForSingleObject};
 use windows::core::{GUID, Interface, PCWSTR, PWSTR};
 
 use crate::modes::{
-    FrameSpan, ModeInfo, SeqTracker, Signal, SlotFailure, Take, TokenSlot, choose_mode, copy_top_down, frame_span,
-    map_hresult, subtype_format,
+    Capacity, CaptureClock, ClockSource, FrameSpan, ModeInfo, RowFlip, SeqTracker, Signal, SlotFailure, Take,
+    TokenSlot, choose_mode, frame_span, map_hresult, subtype_format, take_after_retype,
 };
 
 /// The reader's first video stream, as the `u32` the calls take.
@@ -448,7 +450,7 @@ fn open_stream(runtime: &Arc<MfRuntime>, id: &CameraId, request: &CameraFormatRe
     });
     let callback: IMFSourceReaderCallback = Callback { shared: Arc::clone(&shared) }.into();
     let configured = configure(&device, &callback, id, request);
-    let (reader, mode, bottom_up) = match configured {
+    let (reader, mode, bottom_up, capacity) = match configured {
         Ok(done) => done,
         Err(e) => {
             // SAFETY: plain call; releases the camera `configure` opened before it failed.
@@ -456,19 +458,31 @@ fn open_stream(runtime: &Arc<MfRuntime>, id: &CameraId, request: &CameraFormatRe
             return Err(e);
         }
     };
+    // The gather buffer is made now, once, for the largest sample of any mode.
+    // SAFETY: plain call; the buffer is owned by the stream from here.
+    let gather = match unsafe { MFCreateMemoryBuffer(u32::try_from(capacity.gather).unwrap_or(u32::MAX)) } {
+        Ok(buffer) => buffer,
+        Err(e) => {
+            // SAFETY: plain call; releases the camera `configure` opened.
+            let _ = unsafe { device.activate.ShutdownObject() };
+            return Err(err(&e, id));
+        }
+    };
     let mut stream = MfStream {
-        live: Some(Live { reader, activate: device.activate, held: None, gather: None }),
+        live: Some(Live { reader, activate: device.activate, held: None, gather, gather_len: capacity.gather }),
         shared,
         id: id.clone(),
         mode,
-        flip: Vec::new(),
+        flip: RowFlip::new(capacity.flip),
+        capacity,
+        clock: CaptureClock::new(),
         bottom_up,
         seq: SeqTracker::new(mode.fps_num, mode.fps_den),
         packed_locks: 0,
         failed: None,
         _runtime: Arc::clone(runtime),
     };
-    stream.size_flip();
+    stream.size_flip()?;
     // Start capture: from here the callback re-arms itself. If this fails the stream is dropped, which shuts the
     // camera down.
     let live = stream.live.as_ref().ok_or(TrackError::Lost)?;
@@ -478,14 +492,14 @@ fn open_stream(runtime: &Arc<MfRuntime>, id: &CameraId, request: &CameraFormatRe
     Ok(stream)
 }
 
-/// Opens the device's reader and sets the mode `request` picks: the reader, the mode and whether its rows arrive
-/// bottom-up.
+/// Opens the device's reader and sets the mode `request` picks: the reader, the mode, whether its rows arrive
+/// bottom-up, and the storage that every mode the device offers needs.
 fn configure(
     device: &Device,
     callback: &IMFSourceReaderCallback,
     id: &CameraId,
     request: &CameraFormatRequest,
-) -> Result<(IMFSourceReader, ModeInfo, bool), TrackError> {
+) -> Result<(IMFSourceReader, ModeInfo, bool, Capacity), TrackError> {
     let reader = open_reader(device, Some(callback)).map_err(|e| err(&e, id))?;
     let available = modes(&reader).map_err(|e| err(&e, id))?;
     let list: Vec<ModeInfo> = available.iter().map(|(m, _)| *m).collect();
@@ -494,7 +508,7 @@ fn configure(
     let media = media.ok_or_else(|| TrackError::Backend("chosen mode vanished from the list".into()))?;
     // SAFETY: `media` is one of the reader's own native types, so no conversion is needed.
     unsafe { reader.SetCurrentMediaType(VIDEO, None, media) }.map_err(|e| err(&e, id))?;
-    Ok((reader, mode, is_bottom_up(media)))
+    Ok((reader, mode, is_bottom_up(media), Capacity::for_modes(&list)))
 }
 
 /// Whether a media type's default stride is negative, so a plain `Lock` hands over rows bottom-up. An absent
@@ -655,13 +669,14 @@ struct Live {
     /// Owns the camera; shut down on drop so it is released at once.
     activate: IMFActivate,
     held: Option<Held>,
-    /// Where a sample with several buffers is gathered into one; made when the first such sample arrives and kept.
-    gather: Option<(IMFMediaBuffer, u32)>,
+    /// Where a sample with several buffers is gathered into one: made at open, `gather_len` bytes, never replaced.
+    gather: IMFMediaBuffer,
+    gather_len: usize,
 }
 
 impl Live {
     /// The sample's pixels as one buffer: its only buffer, borrowed as it is, or, for a sample in pieces, a copy in
-    /// the reusable gather buffer (grown, rarely, if a frame is bigger than any before).
+    /// the gather buffer made at open. A sample too big for that buffer is an error, never a new allocation.
     fn contiguous(&mut self, sample: &IMFSample, id: &CameraId) -> Result<IMFMediaBuffer, TrackError> {
         // SAFETY: plain calls on a live sample.
         let count = unsafe { sample.GetBufferCount() }.map_err(|e| err(&e, id))?;
@@ -671,16 +686,15 @@ impl Live {
         }
         // SAFETY: plain call on a live sample.
         let total = unsafe { sample.GetTotalLength() }.map_err(|e| err(&e, id))?;
-        let fits = self.gather.as_ref().is_some_and(|(_, capacity)| *capacity >= total);
-        if !fits {
-            // SAFETY: plain call; the buffer is owned by this stream from here.
-            let buffer = unsafe { MFCreateMemoryBuffer(total) }.map_err(|e| err(&e, id))?;
-            self.gather = Some((buffer, total));
+        if total as usize > self.gather_len {
+            return Err(TrackError::Backend(format!(
+                "a sample of {total} bytes does not fit the {} bytes sized at open",
+                self.gather_len
+            )));
         }
-        let Some((buffer, _)) = &self.gather else { return Err(TrackError::Backend("gather buffer missing".into())) };
         // SAFETY: both are live; the gather buffer is unlocked (the previous frame was released) and big enough.
-        unsafe { sample.CopyToBuffer(buffer) }.map_err(|e| err(&e, id))?;
-        Ok(buffer.clone())
+        unsafe { sample.CopyToBuffer(&self.gather) }.map_err(|e| err(&e, id))?;
+        Ok(self.gather.clone())
     }
 }
 
@@ -694,9 +708,12 @@ struct MfStream {
     shared: Arc<Shared>,
     id: CameraId,
     mode: ModeInfo,
-    /// Where bottom-up frames are turned top-down; sized at open (and when the camera changes its media type), only
-    /// for BGRA, the layout Windows delivers bottom-up. Empty for the other layouts.
-    flip: Vec<u8>,
+    /// Where bottom-up frames are turned top-down: allocated at open for the largest BGRA mode, in use (by length)
+    /// only while the mode is BGRA.
+    flip: RowFlip,
+    /// What was sized at open; a renegotiated mode must fit it.
+    capacity: Capacity,
+    clock: CaptureClock,
     /// The mode's default stride is negative, so a plain `Lock` hands over rows bottom-up.
     bottom_up: bool,
     seq: SeqTracker,
@@ -709,17 +726,13 @@ struct MfStream {
 }
 
 impl MfStream {
-    /// Sizes the flip buffer for the current mode.
-    fn size_flip(&mut self) {
-        let len = match (self.mode.format, self.mode.format.tight_stride(self.mode.width)) {
-            (PixelFormat::Bgra8, Some(row)) => row.saturating_mul(self.mode.height as usize),
-            _ => 0,
-        };
-        self.flip.clear();
-        self.flip.resize(len, 0);
+    /// Points the flip buffer at the current mode. It was sized at open; nothing is allocated here.
+    fn size_flip(&mut self) -> Result<(), TrackError> {
+        self.flip.set_len(Capacity::flip_len(&self.mode)).map_err(|e| TrackError::Backend(e.into()))
     }
 
-    /// Re-reads the current media type after the camera renegotiated, so no sample is described by the old one.
+    /// Re-reads the current media type after the camera renegotiated, so no sample is described by the old one. A
+    /// mode that needs more storage than was sized at open is refused.
     fn retype(&mut self) -> Result<(), TrackError> {
         let live = self.live.as_ref().ok_or(TrackError::Lost)?;
         // SAFETY: plain call on the live reader.
@@ -727,13 +740,31 @@ impl MfStream {
         let mode = mode_of(&media)
             .map_err(|e| err(&e, &self.id))?
             .ok_or_else(|| TrackError::Backend("the camera changed to a format that cannot be handed over".into()))?;
+        self.capacity.admits(&mode).map_err(|e| TrackError::Backend(e.into()))?;
         self.bottom_up = is_bottom_up(&media);
         self.seq.set_rate(mode.fps_num, mode.fps_den);
         if mode != self.mode {
             self.mode = mode;
-            self.size_flip();
+            self.size_flip()?;
         }
         Ok(())
+    }
+
+    /// Says which clock the capture times come from, when it is first known or changes.
+    fn log_clock(id: &CameraId, source: ClockSource) {
+        match source {
+            ClockSource::Device => {
+                tracing::info!(camera = %id.0, "capture times from the driver's device timestamp");
+            }
+            ClockSource::Sample => tracing::warn!(
+                camera = %id.0,
+                "the driver gives no device timestamp: capture times are the sample presentation times"
+            ),
+            ClockSource::SampleAligned => tracing::warn!(
+                camera = %id.0,
+                "a frame lacked the device timestamp: its sample time was moved onto the device clock"
+            ),
+        }
     }
 
     /// One frame from `token`, which this call now owns.
@@ -741,9 +772,14 @@ impl MfStream {
         // SAFETY: the token was made from a sample's raw pointer by `into_token`; this call owns it.
         let sample = unsafe { IMFSample::from_raw(token.as_ptr()) };
         let live = self.live.as_mut().ok_or(TrackError::Lost)?;
-        // SAFETY: plain calls on a live sample; an absent attribute means no discontinuity.
-        let time = unsafe { sample.GetSampleTime() }.map_err(|e| err(&e, &self.id))?;
+        // SAFETY: plain calls on a live sample; an absent attribute means no discontinuity or no driver timestamp.
+        let sample_time = unsafe { sample.GetSampleTime() }.map_err(|e| err(&e, &self.id))?;
         let lost_before = unsafe { sample.GetUINT32(&MFSampleExtension_Discontinuity) }.is_ok_and(|v| v != 0);
+        let device_time = unsafe { sample.GetUINT64(&MFSampleExtension_DeviceTimestamp) }.ok();
+        let stamp = self.clock.stamp(device_time, sample_time);
+        if stamp.changed {
+            Self::log_clock(&self.id, stamp.source);
+        }
         let buffer = live.contiguous(&sample, &self.id)?;
         let (held, cost) = lock_buffer(buffer, &self.mode, self.bottom_up, !self.flip.is_empty(), &self.id)?;
         if cost == Cost::MayCopy {
@@ -753,17 +789,17 @@ impl MfStream {
             }
         }
         let (width, height, pixel) = (self.mode.width, self.mode.height, self.mode.format);
-        let captured = DeviceTime(u64::try_from(time).unwrap_or(0).saturating_mul(NS_PER_TICK));
-        let seq = self.seq.next(time, lost_before);
+        let captured = DeviceTime(stamp.ticks.saturating_mul(NS_PER_TICK));
+        let seq = self.seq.next(i64::try_from(stamp.ticks).unwrap_or(i64::MAX), lost_before);
         // SAFETY: the lock is held until the next call to `next_frame`, which needs `&mut self` and so ends the
         // borrow this slice lives in first.
         let bytes = unsafe { held.bytes() };
         if held.pitch < 0 {
             let row_bytes = self.flip.len() / height as usize;
-            let copied = copy_top_down(bytes, held.pitch, row_bytes, height as usize, &mut self.flip);
+            let copied = self.flip.fill(bytes, held.pitch, row_bytes, height as usize);
             held.unlock();
-            copied.map_err(|e| TrackError::Backend(e.into()))?;
-            return Ok(Some(CameraFrame::new(&self.flip, width, height, row_bytes, pixel, captured, seq)));
+            let top_down = copied.map_err(|e| TrackError::Backend(e.into()))?;
+            return Ok(Some(CameraFrame::new(top_down, width, height, row_bytes, pixel, captured, seq)));
         }
         let stride = if pixel == PixelFormat::Mjpg { 0 } else { held.pitch.unsigned_abs() };
         live.held = Some(held);
@@ -777,7 +813,8 @@ impl CameraStream for MfStream {
     }
 
     /// The newest frame, waiting up to `timeout` for the device. `Ok(None)` means none arrived in time, or the driver
-    /// sent an empty tick, or announced a new media type (the frame that came with it is dropped). Capture does not depend on this call: the callback
+    /// sent an empty tick. A media-type change does not end the wait: the frame that came with it is dropped and the wait
+    /// goes on, to the original deadline, for one in the new format. Capture does not depend on this call: the callback
     /// keeps the next read armed, so a frame that arrives after a timeout is replaced by newer ones until you ask.
     /// A bottom-up BGRA frame is copied top-down into a buffer allocated at open; no other layout copies, except a
     /// sample the driver delivers in several buffers. `seq` follows the capture times (see [`SeqTracker`]), so a
@@ -793,21 +830,19 @@ impl CameraStream for MfStream {
         if let Some(held) = live.held.take() {
             held.unlock();
         }
-        match self.shared.slot.take(timeout) {
-            Take::Item(token) => self.frame_from(token),
-            Take::Retype(token) => {
-                // The camera changed its media type. Whatever was waiting may predate the change, so it is dropped;
-                // the next frame is read under the new type.
-                if let Some(token) = token {
-                    Shared::release(token);
-                }
-                if let Err(e) = self.retype() {
-                    self.failed = Some(e.clone());
-                    return Err(e);
-                }
-                Ok(None)
+        // A media-type change costs the wait nothing: after re-reading the type the wait goes on, up to the original
+        // deadline, for a frame in the new format. (An `Arc` clone is a counter, not an allocation.)
+        let shared = Arc::clone(&self.shared);
+        let outcome = take_after_retype(&shared.slot, timeout, |stale| {
+            // Whatever was waiting may predate the change, so it is dropped unused.
+            if let Some(token) = stale {
+                Shared::release(token);
             }
-            Take::Timeout => Ok(None),
+            self.retype().inspect_err(|e| self.failed = Some(e.clone()))
+        })?;
+        match outcome {
+            Take::Item(token) => self.frame_from(token),
+            Take::Timeout | Take::Retype(_) => Ok(None),
             Take::Failed(SlotFailure::Lost) | Take::Closed => Err(TrackError::Lost),
             Take::Failed(SlotFailure::Hresult(hr)) => Err(map_hresult(hr, &self.id)),
         }

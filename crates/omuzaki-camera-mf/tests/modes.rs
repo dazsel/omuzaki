@@ -10,7 +10,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use omuzaki_camera_mf::modes::{FrameSpan, SeqTracker, Signal, SlotFailure, Take, TokenSlot};
+use omuzaki_camera_mf::modes::{
+    Capacity, CaptureClock, ClockSource, FrameSpan, RowFlip, SeqTracker, Signal, SlotFailure, Take, TokenSlot,
+    take_after_retype,
+};
 use omuzaki_track_api::camera::{CameraFormat, CameraFormatRequest, CameraId, PixelFormat};
 use omuzaki_track_api::error::TrackError;
 
@@ -357,4 +360,96 @@ fn a_renegotiated_rate_keeps_the_numbering() {
     seq.set_rate(60, 1);
     assert_eq!(seq.next(333_333 + 166_667, false), 2);
     assert_eq!(seq.next(333_333 + 3 * 166_667, false), 4, "at 60 fps one capture is missing");
+}
+
+fn bgra(width: u32, height: u32) -> ModeInfo {
+    mode(PixelFormat::Bgra8, width, height, 30)
+}
+
+#[test]
+fn capacity_covers_the_largest_offered_mode_and_refuses_beyond() {
+    let offered = [
+        bgra(640, 480),
+        mode(PixelFormat::Nv12, 1920, 1080, 30),
+        bgra(1280, 720),
+        mode(PixelFormat::Mjpg, 3840, 2160, 30),
+    ];
+    let capacity = Capacity::for_modes(&offered);
+    assert_eq!(capacity.flip, 4 * 1280 * 720, "only BGRA is flipped");
+    assert!(capacity.gather >= 2 * 3840 * 2160, "MJPG at 4K");
+    for m in &offered {
+        assert_eq!(capacity.admits(m), Ok(()));
+    }
+    assert!(capacity.admits(&bgra(1920, 1080)).is_err(), "a BGRA mode that was never offered");
+    assert!(capacity.admits(&mode(PixelFormat::Nv12, 7680, 4320, 30)).is_err());
+    assert_eq!(Capacity::for_modes(&[]), Capacity { gather: 0, flip: 0 });
+}
+
+#[test]
+fn row_flip_changes_mode_without_growing() {
+    let mut flip = RowFlip::new(4 * 4 * 3);
+    assert!(flip.is_empty());
+    flip.set_len(4 * 4 * 3).unwrap();
+    let block: Vec<u8> = (0..48).collect();
+    let top_down = flip.fill(&block, -16, 16, 3).unwrap().to_vec();
+    assert_eq!(&top_down[..16], &block[32..48], "the last row in memory is the top row");
+    flip.set_len(4 * 2 * 2).unwrap(); // a smaller mode: only the length changes
+    assert_eq!(flip.len(), 16);
+    assert!(flip.fill(&block, -8, 8, 3).is_err(), "the size must match the mode");
+    assert!(flip.set_len(4 * 4 * 3 + 1).is_err(), "never grows");
+}
+
+#[test]
+fn capture_time_prefers_the_driver_and_never_mixes_timelines() {
+    let mut clock = CaptureClock::new();
+    let first = clock.stamp(Some(5_000_000), 100);
+    assert_eq!((first.ticks, first.source, first.changed), (5_000_000, ClockSource::Device, true));
+    let second = clock.stamp(Some(5_333_333), 333_433);
+    assert_eq!((second.ticks, second.changed), (5_333_333, false));
+    // The driver omits the stamp once: the sample time is moved onto the device clock.
+    let third = clock.stamp(None, 666_766);
+    assert_eq!(third.source, ClockSource::SampleAligned);
+    assert_eq!(third.ticks, 5_666_666, "continues the device timeline: 666_766 + (5_333_333 - 333_433)");
+    assert!(third.changed);
+
+    let mut bare = CaptureClock::new();
+    let s = bare.stamp(None, 42);
+    assert_eq!((s.ticks, s.source, s.changed), (42, ClockSource::Sample, true));
+    assert_eq!(bare.stamp(None, -7).ticks, 0, "a negative time clamps to 0");
+}
+
+#[test]
+fn a_retype_followed_by_a_frame_returns_that_frame() {
+    let slot = Arc::new(TokenSlot::new(Flag::default()));
+    let producer = Arc::clone(&slot);
+    let thread = std::thread::spawn(move || {
+        producer.set_retype();
+        std::thread::sleep(Duration::from_millis(20));
+        producer.put(token(2), |_| {}); // the first frame in the new format
+    });
+    let mut retyped = 0;
+    let got = take_after_retype(&slot, Duration::from_secs(10), |_| -> Result<(), ()> {
+        retyped += 1;
+        Ok(())
+    });
+    thread.join().unwrap();
+    assert_eq!(retyped, 1, "retyped once");
+    assert_eq!(got, Ok(Take::Item(token(2))), "and the wait went on to the next frame");
+}
+
+#[test]
+fn a_retype_without_a_frame_waits_out_the_deadline() {
+    let slot = TokenSlot::new(Flag::default());
+    slot.set_retype();
+    let started = Instant::now();
+    let mut calls = 0;
+    let got = take_after_retype(&slot, Duration::from_millis(40), |_| -> Result<(), ()> {
+        calls += 1;
+        Ok(())
+    });
+    assert_eq!((got, calls), (Ok(Take::Timeout), 1));
+    assert!(started.elapsed() >= Duration::from_millis(40), "the change did not cut the wait short");
+    let failing = TokenSlot::new(Flag::default());
+    failing.set_retype();
+    assert_eq!(take_after_retype(&failing, Duration::ZERO, |_| Err("unsupported")), Err("unsupported"));
 }
