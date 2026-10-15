@@ -15,7 +15,7 @@ use omuzaki_render_api::{
 use omuzaki_stage_api::resolve::{AnchorFrame, LightBuf};
 use omuzaki_stage_api::{
     Anchor, Backdrop, CameraDef, CameraId, CastMember, Focus, Framing, GroundKind, MAX_CAMERAS, MemberId,
-    REFERENCE_HEIGHT_M, SceneDef, SceneError,
+    SceneDef, SceneError,
 };
 
 use super::frame::frame;
@@ -191,6 +191,15 @@ impl ResolvedScene {
         aspect: f32,
     ) -> Result<Changes, StageError> {
         let def = scene.def();
+        // Everything below applies a figure's root and height; an unusable one fails here, not in a later result.
+        for (id, figure) in figures {
+            if !(figure.root.is_finite() && figure.height_m.is_finite() && figure.height_m > 0.0) {
+                return Err(scene_error(SceneError::new(
+                    format!("cast.{id}"),
+                    "the figure's root and height must be finite, and the height above 0",
+                )));
+            }
+        }
         // The default subject is the first member of the cast, visible or not: a hidden one leaves the subject
         // unavailable rather than handing its role to the next member.
         let subject = def.scene.subject.as_ref().or_else(|| def.cast.keys().next()).and_then(|id| figures.get(id));
@@ -303,6 +312,8 @@ fn resolve_camera(
     })?;
     let mut framed = frame(camera.framing, &figure.landmarks, camera, aspect)?;
     framed.transform = Mat4::from(figure.root) * framed.transform;
+    // `frame` validated the local camera; the root can still make the world-space one unusable.
+    framed.validate().map_err(|e| StageError::Framing { reason: format!("camera '{id}': {e}") })?;
     Ok(framed)
 }
 
@@ -337,7 +348,8 @@ fn free_camera(
         });
     }
     let distance = eye.distance(at);
-    let height = subject.map_or(REFERENCE_HEIGHT_M, |f| f.height_m);
+    // The 1 m figure of D4 when there is no subject, the same fallback the anchors use.
+    let height = subject.map_or(1.0, |f| f.height_m);
     let projection = Projection::Perspective {
         fov_y_deg: camera.fov,
         near: (FREE_NEAR_SHARE * distance).max(FREE_NEAR_FLOOR),
@@ -350,7 +362,7 @@ fn free_camera(
 }
 
 /// The render-api post: the lighting's exposure and bloom (when the scene switches it on) with the scene's own
-/// settings. A subject focus is the distance from `active` to the middle of the subject's head box, else its body box.
+/// settings. A subject focus is the depth, along the view axis of `active`, of the middle of the subject's head box, else its body box.
 fn resolve_post(
     def: &SceneDef,
     subject: Option<&Figure>,
