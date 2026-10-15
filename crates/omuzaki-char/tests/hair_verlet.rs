@@ -12,7 +12,7 @@ use std::cell::Cell;
 use std::f32::consts::TAU;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use omuzaki_char::hair::physics::verlet::{ChainSet, MAX_STEPS, VerletError};
+use omuzaki_char::hair::physics::verlet::{ChainSet, MAX_DT, MAX_STEPS, VerletError};
 use omuzaki_char_api::{
     Bulge, Falloff, Follow, GroupId, HairClump, HairPhysics, JointRef, PoseSource, SphereCollider, Taper,
 };
@@ -133,7 +133,8 @@ fn particles_subsample_the_rest_points_and_always_keep_the_last() {
     assert_eq!(copy.stiffness(), [0.5; 8]);
     let k = Falloff::default();
     assert_eq!(set.stiffness()[0], k.at(0.0));
-    assert_eq!(set.stiffness()[6], k.at(4.0 / 5.0));
+    assert_eq!(set.stiffness()[6], k.at(2.0 / 3.0), "by place in the chain, not by rest point");
+    assert_eq!(set.stiffness()[7], k.at(1.0));
 }
 
 #[test]
@@ -258,8 +259,10 @@ fn the_accumulator_carries_the_remainder_caps_the_steps_and_resets() {
     assert_eq!(set.step(0.5 / 90.0).unwrap(), 0);
     assert_eq!(set.step(0.75 / 90.0).unwrap(), 1);
     assert!((set.carried() - 0.25 / 90.0).abs() < 1e-6, "{}", set.carried());
+    let before = set.carried();
     assert_eq!(set.step(1.0).unwrap(), MAX_STEPS);
-    assert!(set.carried() < 1.0 / 90.0, "a hitch keeps only a fraction of a step");
+    let expected = before + MAX_DT - 8.0 / 90.0;
+    assert!((set.carried() - expected).abs() < 1e-6, "a hitch counts as {MAX_DT} s: {}", set.carried());
     set.step(0.9 / 90.0).unwrap();
     set.reset(&Pose::REST).unwrap();
     assert_eq!(set.carried(), 0.0);
@@ -276,6 +279,30 @@ fn body_locks_follow_the_chest_below_the_blend_and_the_head_above() {
     let (top, bottom) = (set.positions()[0], set.positions()[10]);
     assert!((top.x - 0.1).abs() < 1e-6, "the root (y 0.8) follows the head: {top}");
     assert!(bottom.x.abs() < 1e-6, "the tip (y 0.4) follows the chest: {bottom}");
+}
+
+#[test]
+fn the_first_targets_snap_to_the_pose_and_the_distance_pass_is_one_sided() {
+    let physics = HairPhysics { gravity_scale: 0.0, ..HairPhysics::default() };
+    let mut set = ChainSet::from_clumps(&[lock(0.0, 7, Follow::Head)], &physics, &[]).unwrap();
+    let pose = Pose::yawed(0.6);
+    set.targets(&pose).unwrap();
+    let mut reset = set.clone();
+    reset.reset(&pose).unwrap();
+    assert_eq!(set.positions(), reset.positions(), "the first targets after building snap like a reset");
+    set.targets(&Pose::REST).unwrap();
+    assert_eq!(set.positions(), reset.positions(), "later targets do not snap");
+    // Heavy gravity stretches the root segment; the one-sided pass (child onto parent, root to tip) puts every segment
+    // back at its rest length exactly, which a shared correction would not after two iterations.
+    let heavy = HairPhysics { gravity_scale: 3.0, ..HairPhysics::default() };
+    let mut stretched = ChainSet::from_clumps(&[lock(0.0, 7, Follow::Head)], &heavy, &[]).unwrap();
+    stretched.set_stiffness(&[1.0, 0.0, 0.0, 0.0]).unwrap();
+    stretched.reset(&Pose::REST).unwrap();
+    stretched.settle(1);
+    let p = stretched.positions();
+    for (j, seg) in stretched.segment_lengths().iter().enumerate().skip(1) {
+        assert!((p[j].distance(p[j - 1]) - seg).abs() < 1e-6, "segment {j} at rest length after a step");
+    }
 }
 
 #[test]

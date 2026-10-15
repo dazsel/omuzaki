@@ -4,20 +4,22 @@
 //! [`ChainSet::from_clumps`] makes one chain per simulated [`HairClump`]: a particle at every [`SUBSAMPLE`]th rest point
 //! and always at the last one. Each frame the caller sets [`ChainSet::targets`] from the pose (the styled shape carried
 //! by the head, or for [`Follow::Body`] by a blend of the head and the chest) and calls [`ChainSet::step`] with the frame
-//! time; the set runs whole fixed steps of `1 / HairPhysics::fixed_hz` (at most [`MAX_STEPS`]) and carries the
-//! remainder to the next frame. State is in world space; [`ChainSet::to_character`] converts back with the root.
+//! time (clamped to [`MAX_DT`]); the set runs whole fixed steps of `1 / HairPhysics::fixed_hz` (at most [`MAX_STEPS`])
+//! and carries the remainder to the next frame. The targets hold across a frame's steps. The first [`ChainSet::targets`]
+//! after building snaps every particle to its (posed) target, as [`ChainSet::reset`] does. State is in world space;
+//! [`ChainSet::to_character`] converts back with the root.
 //!
-//! One fixed step `h`, chain by chain in clump order, particles root to tip:
+//! One fixed step `h`, chain by chain in clump order, particles root to tip, in the prototype's order (`hair.js`, the
+//! Director's reference on #182):
 //! 1. The root particle is pinned to its target.
 //! 2. Every other particle integrates: `v = (x - x_prev) * damping`, `x += v + (gravity * gravity_scale + wind *
-//!    wind_scale) * h^2`, then springs toward its target by `1 - (1 - k)^(h * 90)` (`k` from `HairClump::stiffness`, so
-//!    the pull per second is the same at any `fixed_hz`).
-//! 3. `iterations` constraint passes, each a distance pass over the segments root to tip (the pinned root never moves; any
-//!    other pair shares the correction equally), then a collider pass (every non-root particle against every collider
-//!    in order, pushed to `radius + collider_margin`).
+//!    wind_scale) * h^2`, then springs toward its target by `1 - (1 - k)^(h * 90)`. `k` is `HairClump::stiffness` at
+//!    the particle's place in the chain, `j / (n - 1)` for particle `j` of `n`.
+//! 3. `iterations` passes, each a one-sided distance pass root to tip (only the child moves, onto its rest length from
+//!    the parent, so the order matters), then a collider pass (every non-root particle against every collider in
+//!    order, pushed out to `radius + collider_margin`). A collider can leave a segment slightly off its rest length.
 //!
-//! The pass order inside an iteration, the equal split of the distance correction and the root pin are this port's
-//! choices where the issue is silent; the local parity run against the prototype's dumps confirms them.
+//! Not in the prototype: wind (beside gravity), and [`ChainSet::reset`] also clearing the carried time (#68).
 //!
 //! Nothing here allocates or locks after [`ChainSet::from_clumps`]: every buffer is sized there.
 
@@ -27,8 +29,10 @@ use omuzaki_face_api::{ParamErrors, Validate, narrow};
 
 /// Particles sit at every `SUBSAMPLE`th rest point (and always the last).
 pub const SUBSAMPLE: usize = 2;
-/// The most fixed steps one [`ChainSet::step`] runs; time beyond them is dropped (a long hitch must not spiral).
+/// The most fixed steps one [`ChainSet::step`] runs; time beyond them stays carried.
 pub const MAX_STEPS: u32 = 8;
+/// The longest frame time [`ChainSet::step`] takes in, seconds: a longer hitch counts as this (the prototype's clamp).
+pub const MAX_DT: f32 = 0.1;
 /// Gravity, metres per second squared, before `HairPhysics::gravity_scale`.
 pub const GRAVITY: f32 = 9.8;
 /// The rate the stiffness numbers were tuned at: a spring factor `k` pulls by `k` per step at this rate.
@@ -109,6 +113,8 @@ pub struct ChainSet {
     root_inverse: Mat4,
     wind: Vec3,
     accumulator: f32,
+    /// Whether the next [`ChainSet::targets`] snaps the particles to the targets (only after building).
+    snap: bool,
     h: f32,
     damping: f32,
     gravity_scale: f32,
@@ -160,6 +166,7 @@ impl ChainSet {
             root_inverse: Mat4::IDENTITY,
             wind: Vec3::ZERO,
             accumulator: 0.0,
+            snap: true,
             h,
             damping: narrow(physics.damping),
             gravity_scale: narrow(physics.gravity_scale),
@@ -177,20 +184,22 @@ impl ChainSet {
             let indices = (0..last).step_by(SUBSAMPLE).chain(std::iter::once(last));
             for i in indices {
                 let p = rest[i];
-                let t = i as f32 / last as f32;
-                let k = clump.stiffness.at(t);
-                if !(0.0..=1.0).contains(&k) {
-                    return Err(VerletError::BadClump { clump: n });
-                }
                 set.segment.push(if set.rest.len() == start { 0.0 } else { set.rest[set.rest.len() - 1].distance(p) });
                 set.rest.push(p);
                 set.rest_index.push(u32::try_from(i).map_err(|_| VerletError::BadClump { clump: n })?);
-                set.stiffness.push(k);
-                set.spring.push(spring_factor(k, h));
                 set.head_weight.push(match clump.follow {
                     Follow::Head => 1.0,
                     Follow::Body => smoothstep(p.y, BODY_BLEND.0, BODY_BLEND.1),
                 });
+            }
+            let count = set.rest.len() - start;
+            for j in 0..count {
+                let k = clump.stiffness.at(j as f32 / (count - 1) as f32);
+                if !(0.0..=1.0).contains(&k) {
+                    return Err(VerletError::BadClump { clump: n });
+                }
+                set.stiffness.push(k);
+                set.spring.push(spring_factor(k, h));
             }
             set.chains.push(Chain { start, end: set.rest.len() });
         }
@@ -244,6 +253,9 @@ impl ChainSet {
             let on_head = head.transform_point3(p);
             *t = if w >= 1.0 { on_head } else { chest.transform_point3(p).lerp(on_head, w) };
         }
+        if self.snap {
+            self.snap_to_targets();
+        }
         Ok(())
     }
 
@@ -260,8 +272,8 @@ impl ChainSet {
         Ok(())
     }
 
-    /// Advances by a frame of `dt` seconds: as many fixed steps as fit (at most [`MAX_STEPS`]), the remainder carried to
-    /// the next call. Returns the steps run.
+    /// Advances by a frame of `dt` seconds (at most [`MAX_DT`]): as many fixed steps as fit (at most [`MAX_STEPS`]), the
+    /// remainder carried to the next call. Returns the steps run.
     ///
     /// # Errors
     /// [`VerletError::BadInput`] for a negative or non-finite `dt`; nothing moves.
@@ -269,16 +281,12 @@ impl ChainSet {
         if !(dt.is_finite() && dt >= 0.0) {
             return Err(VerletError::BadInput { what: "dt" });
         }
-        self.accumulator += dt;
+        self.accumulator += dt.min(MAX_DT);
         let mut steps = 0;
         while self.accumulator >= self.h && steps < MAX_STEPS {
             self.accumulator -= self.h;
             self.fixed_step();
             steps += 1;
-        }
-        // A hitch longer than `MAX_STEPS` steps keeps only its fraction of a step.
-        if self.accumulator >= self.h {
-            self.accumulator %= self.h;
         }
         Ok(steps)
     }
@@ -297,10 +305,15 @@ impl ChainSet {
     /// As [`ChainSet::targets`]; on error nothing changes.
     pub fn reset(&mut self, pose: &dyn PoseSource) -> Result<(), VerletError> {
         self.targets(pose)?;
-        self.pos.copy_from_slice(&self.target);
-        self.prev.copy_from_slice(&self.target);
+        self.snap_to_targets();
         self.accumulator = 0.0;
         Ok(())
+    }
+
+    fn snap_to_targets(&mut self) {
+        self.pos.copy_from_slice(&self.target);
+        self.prev.copy_from_slice(&self.target);
+        self.snap = false;
     }
 
     fn fixed_step(&mut self) {
@@ -330,15 +343,9 @@ impl ChainSet {
             let d = self.pos[i] - self.pos[i - 1];
             let len = d.length();
             if len <= f32::EPSILON {
-                continue; // coincident particles have no direction to correct along; the spring separates them
+                continue; // coincident particles have no direction to place along; the spring separates them
             }
-            let fix = d * ((len - self.segment[i]) / len);
-            if i - 1 == chain.start {
-                self.pos[i] -= fix;
-            } else {
-                self.pos[i - 1] += fix * 0.5;
-                self.pos[i] -= fix * 0.5;
-            }
+            self.pos[i] = self.pos[i - 1] + d * (self.segment[i] / len);
         }
     }
 
@@ -347,7 +354,7 @@ impl ChainSet {
             for &(centre, radius) in &self.spheres {
                 let d = *p - centre;
                 let len = d.length();
-                // A particle exactly at a centre has no way out to pick; the next step's motion gives it one.
+                // A particle exactly at a centre has no way out (the prototype's push is then zero too).
                 if len < radius && len > f32::EPSILON {
                     *p = centre + d * (radius / len);
                 }
