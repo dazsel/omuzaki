@@ -3,7 +3,7 @@
 //! it lives here because an implementation crate may not depend on the executor.
 
 // A test file: a failed unwrap is the failure.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::needless_pass_by_value)] // helpers take `json!(..)` temporaries
 
 use std::sync::Arc;
 
