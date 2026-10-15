@@ -10,7 +10,7 @@ use omuzaki_core::glam::{Affine3A, Mat4, Vec3};
 use omuzaki_render_api::{Camera, Projection};
 use omuzaki_stage_api::resolve::{AnchorFrame, LightBuf};
 use omuzaki_stage_api::{
-    Anchor, CameraDef, CameraId, CastMember, Framing, MAX_CAMERAS, MemberId, REFERENCE_HEIGHT_M, SceneDef, SceneError,
+    Anchor, CameraDef, CameraId, CastMember, Framing, MAX_CAMERAS, MemberId, SceneDef, SceneError,
 };
 
 use super::frame::frame;
@@ -22,6 +22,16 @@ const FREE_NEAR_SHARE: f32 = 0.02;
 const FREE_NEAR_FLOOR: f32 = 0.01;
 /// A free camera's far plane lies this many subject heights behind its target.
 const FREE_FAR_HEIGHTS: f32 = 10.0;
+
+/// The frame of the subject when there is none: the 1 m figure at the origin facing +Z (design D4), which is also what
+/// `Lighting::resolve_into` uses, and the frame of the stage, whose units are metres. Everything that needs the
+/// subject's frame takes it from [`subject_frame`], so the fallbacks can't drift apart.
+const UNIT_FRAME: AnchorFrame = AnchorFrame { root: Affine3A::IDENTITY, height_m: 1.0 };
+
+/// The frame of the subject, or the 1 m figure at the origin without one (design D4).
+fn subject_frame(subject: Option<&Figure>) -> AnchorFrame {
+    subject.map_or(UNIT_FRAME, Figure::anchor_frame)
+}
 
 /// One visible cast member as resolve sees it.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -117,7 +127,7 @@ impl ResolvedScene {
         let subject = def.scene.subject.as_ref().map_or_else(|| figures.values().next(), |id| figures.get(id));
         let frame_of = |anchor: &Anchor| match anchor {
             Anchor::Stage => None,
-            Anchor::Subject => subject.map(Figure::anchor_frame),
+            Anchor::Subject => Some(subject_frame(subject)),
             Anchor::Member(id) => figures.get(id).map(Figure::anchor_frame),
         };
 
@@ -214,21 +224,17 @@ fn free_camera(
     let anchor = camera.anchor.as_ref().unwrap_or(&Anchor::Stage);
     let missing = |field: &str| scene_error(SceneError::new(format!("cameras.{id}.{field}"), "a free camera needs it"));
     let (position, target) = (camera.position.ok_or_else(|| missing("position"))?, camera.target.ok_or_else(|| missing("target"))?);
-    let figure = match anchor {
-        Anchor::Stage => None,
-        Anchor::Subject => Some(subject),
-        Anchor::Member(member) => Some(figures.get(member)),
-    };
-    let (root, unit) = match figure {
-        None => (Affine3A::IDENTITY, 1.0),
-        Some(Some(f)) => (f.root, f.height_m),
-        Some(None) => {
-            return Err(scene_error(SceneError::new(
+    let frame = match anchor {
+        Anchor::Stage => UNIT_FRAME,
+        Anchor::Subject => subject_frame(subject),
+        Anchor::Member(member) => figures.get(member).map(Figure::anchor_frame).ok_or_else(|| {
+            scene_error(SceneError::new(
                 format!("cameras.{id}.anchor"),
                 format!("`{anchor}` has no visible figure to measure from"),
-            )));
-        }
+            ))
+        })?,
     };
+    let (root, unit) = (frame.root, frame.height_m);
     let place = |p: [f32; 3]| root.transform_point3(Vec3::from_array(p) * unit);
     let (eye, at) = (place(position), place(target));
     if !(eye.is_finite() && at.is_finite() && camera.fov.is_finite() && camera.fov > 0.0 && camera.fov < 180.0) {
@@ -243,7 +249,7 @@ fn free_camera(
             "a free camera's target is where it stands, so there is no direction to look in",
         )));
     }
-    let height = subject.map_or(REFERENCE_HEIGHT_M, |f| f.height_m);
+    let height = subject_frame(subject).height_m;
     let projection = Projection::Perspective {
         fov_y_deg: camera.fov,
         near: (FREE_NEAR_SHARE * distance).max(FREE_NEAR_FLOOR),

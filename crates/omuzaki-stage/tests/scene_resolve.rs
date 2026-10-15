@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 
 use omuzaki_char_api::{BuildOptions, BuildServices, CharId, CharacterBuilder, RegistryBuilder};
 use omuzaki_core::glam::Vec3;
-use omuzaki_render_api::Colour;
+use omuzaki_render_api::{Colour, Projection};
 use omuzaki_stage::StageError;
 use omuzaki_stage::scene::landmarks::Landmarks;
 use omuzaki_stage::scene::resolve::{Changes, Figure, ResolvedScene};
@@ -259,4 +259,43 @@ fn a_figure_with_no_usable_height_is_a_scene_error() {
         };
         assert_eq!(source.path, "cast.kiri");
     }
+}
+
+/// A scene with no cast: the subject is the 1 m figure at the origin (design D4), as for the lights.
+fn empty_cast_scene(position: [f32; 3], target: [f32; 3], anchor: Anchor) -> SceneDef {
+    let mut def = SceneDef::new(SceneSettings::named("Empty"));
+    let free = CameraDef {
+        framing: Framing::Free,
+        anchor: Some(anchor),
+        position: Some(position),
+        target: Some(target),
+        ..CameraDef::preset(Framing::Free)
+    };
+    def.cameras.insert(camera("free"), free);
+    def
+}
+
+#[test]
+fn a_free_camera_anchored_to_the_subject_of_an_empty_cast_uses_the_unit_figure() {
+    let def = empty_cast_scene([0.0, 0.5, 3.0], [0.0, 0.5, 0.0], Anchor::Subject);
+    let out = resolved(&def, &BTreeMap::new());
+    let (_, free) = &out.cameras[0];
+    assert!((free.position() - Vec3::new(0.0, 0.5, 3.0)).length() < 1e-6, "{}", free.position());
+}
+
+#[test]
+fn a_free_camera_anchored_to_an_absent_member_is_still_a_scene_error() {
+    let def = empty_cast_scene([0.0, 0.5, 3.0], [0.0, 0.5, 0.0], Anchor::Member(member("nobody")));
+    let Err(StageError::Scene { source }) = ResolvedScene::new().resolve_into(&def, &BTreeMap::new(), ASPECT) else {
+        panic!("expected a scene error");
+    };
+    assert_eq!(source.path, "cameras.free.anchor");
+}
+
+#[test]
+fn the_far_plane_of_an_empty_cast_scene_is_the_distance_plus_ten_unit_heights() {
+    let def = empty_cast_scene([0.0, 0.5, 3.0], [0.0, 0.5, 0.0], Anchor::Stage);
+    let out = resolved(&def, &BTreeMap::new());
+    let Projection::Perspective { far, .. } = out.cameras[0].1.projection else { panic!("perspective") };
+    assert!((far - (3.0 + 10.0)).abs() < 1e-5, "{far}");
 }
