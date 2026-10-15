@@ -160,6 +160,13 @@ messages! {
     ApprovalRejectStop = "ds-approval-reject-stop" => "Reject and stop",
     ApprovalBack = "ds-approval-back" => "Back",
 
+    FormEssentials = "ds-form-essentials" => "Essentials",
+    FormAdvanced = "ds-form-advanced" => "Advanced",
+    /// The badge on the collapsed Advanced section. Only used for two or more fields.
+    FormMore = "ds-form-more" => "{count} more",
+    FormUnsupported = "ds-form-unsupported" => "Not editable here ({type})",
+    FormPatternError = "ds-form-pattern-error" => "Doesn't match the pattern {pattern}",
+
     DropdownChoose = "ds-dropdown-choose" => "Choose…",
 
     TabClose = "ds-tab-close" => "Close {label}",
