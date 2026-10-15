@@ -157,6 +157,19 @@ impl Shared {
         }
     }
 
+    /// Records the finished turn's entry and drops the live text it replaces in one step, so a panel reading the
+    /// transcript never sees the turn twice or not at all.
+    pub(crate) fn record_turn(&self, entry: Entry) {
+        {
+            let mut ctl = self.lock();
+            ctl.live_text.clear();
+            ctl.transcript.push(entry.clone());
+        }
+        if let Err(error) = self.sink.append(&entry) {
+            self.emit(AssistantEvent::Error(error));
+        }
+    }
+
     /// The transcript for a panel opened late, with the turn in flight as it has been shown.
     pub(crate) fn transcript(&self) -> Vec<Entry> {
         let ctl = self.lock();

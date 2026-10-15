@@ -291,6 +291,7 @@ struct SessionsState {
     stop_behaviour: StopBehaviour,
     stop_hold: f64,
     close_open_tx_at: Option<f64>,
+    session_polls: usize,
 }
 
 /// A recording `Sessions`: one session, a settable budget, a settable state.
@@ -340,6 +341,7 @@ impl FakeSessions {
             stop_behaviour: StopBehaviour::Committed,
             stop_hold: 0.0,
             close_open_tx_at: None,
+            session_polls: 0,
         };
         Arc::new(Self { state: Mutex::new(state), clock })
     }
@@ -413,6 +415,10 @@ impl FakeSessions {
         self.st().budget_requests.clone()
     }
 
+    pub fn session_polls(&self) -> usize {
+        self.st().session_polls
+    }
+
     pub fn stop_calls(&self) -> usize {
         self.st().stop_calls.len()
     }
@@ -449,6 +455,7 @@ impl Sessions for FakeSessions {
 
     fn session(&self, id: SessionId) -> Option<SessionInfo> {
         let mut st = self.st();
+        st.session_polls += 1;
         if id != st.info.id {
             return None;
         }

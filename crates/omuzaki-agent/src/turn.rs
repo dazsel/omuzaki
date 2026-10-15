@@ -178,15 +178,14 @@ impl Worker {
                 run.text.push('\n');
             }
         }
-        self.shared.lock().live_text.clear();
-        self.shared.record(Entry::assistant(blocks.clone()));
+        self.shared.record_turn(Entry::assistant(blocks.clone()));
         self.messages.push(Message::new(Role::Assistant, blocks));
     }
 
     /// A turn that did not finish keeps the text the person was shown, and nothing else: a half-built tool call was
     /// never run and a half-thought block cannot be sent back.
     pub(crate) fn keep_partial_text(&mut self, run: &mut AnswerRun) {
-        let text = std::mem::take(&mut self.shared.lock().live_text);
+        let text = self.shared.lock().live_text.clone();
         if !text.is_empty() {
             self.commit_assistant(run, vec![ContentBlock::text(text)]);
         }
