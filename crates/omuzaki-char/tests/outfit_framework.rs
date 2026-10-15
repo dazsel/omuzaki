@@ -565,7 +565,6 @@ fn a_patterned_garment_without_a_rasteriser_names_what_is_missing() {
 
 /// Every trim of the library on a tube spanning `span` of the torso, placed by fractions of it.
 fn sheet_trims(span: [f64; 2]) -> Vec<TrimSpec> {
-    let t = |u: f64| span[0] + (span[1] - span[0]) * u;
     use omuzaki_char::outfit::trim::braid::Braid;
     use omuzaki_char::outfit::trim::buttons::{ButtonRow, ButtonShape, ButtonStyle};
     use omuzaki_char::outfit::trim::chain::Chain;
@@ -574,6 +573,7 @@ fn sheet_trims(span: [f64; 2]) -> Vec<TrimSpec> {
     use omuzaki_char::outfit::trim::lace::{Lace, LacePattern};
     use omuzaki_char::outfit::trim::piping::Piping;
     use omuzaki_char::outfit::trim::{Finish, LIFT, RailSpec};
+    let t = |u: f64| span[0] + (span[1] - span[0]) * u;
     let rail = |points: &[[f64; 2]], closed| RailSpec { points: points.to_vec(), closed, lift: LIFT };
     let gold = |radius, shape| ButtonStyle { radius, shank: 0.001, shape, finish: Finish::default() };
     let mut star = omuzaki_face_api::DrawList::new();
