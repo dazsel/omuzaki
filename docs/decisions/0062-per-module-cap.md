@@ -22,8 +22,9 @@ hour, which puts a 4 to 6 hour tail on independent work.
 
 1. **In `omuzaki-char` and `omuzaki-face`, the cap of 3 counts per top-level module** (`src/<module>/`), with a
    ceiling of 8 open pull requests for the crate.
-2. **A test file belongs to the module it tests.** A test file named for one module, such as `tests/hair_pipeline.rs`
-   for `hair/` or `tests/brows.rs` for the brows module, counts against that module.
+2. **Nested modules and test files count against their top-level module.** `src/painter/brows.rs` counts against
+   `painter/`, and so does its test `tests/brows.rs`; `tests/hair_pipeline.rs` counts against `hair/`. A test file
+   counts against the top-level module that contains the code it tests, whatever the test file is named.
 3. **One shared slot per crate.** A pull request that changes a crate-level shared file takes the crate's single
    shared slot: `lib.rs`, `Cargo.toml`, `build.rs`, or shared test infrastructure (`tests/common/` and any test
    aggregator).

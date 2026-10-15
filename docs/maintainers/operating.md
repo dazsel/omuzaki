@@ -87,7 +87,8 @@ goes to the Director first.
   `omuzaki-face` (ADR 0062); at most 40 open in total (raised as the merge rate rises);
   check a task's fence against open pull requests before starting (`tools/dispatch-check.py`). A pull request that
   only adds new files under a crate's `tests/` can't conflict with other work, so it is started first when a slot is
-  free; it still counts toward the cap of 3 per crate (ADR 0053 §1.1), which only a recorded decision can raise.
+  free; it still counts toward its crate's cap of 3 (ADR 0053 §1.1), or in `omuzaki-char` and `omuzaki-face` toward the
+  top-level module it tests (ADR 0062 §2). Only a recorded decision raises a cap.
 - **Freeze triggers** (ADR 0053 §1.3): the open total passes its limit, CI waits over 30 minutes, or opens exceed
   merges for two check-ins in a row while open pull requests pile up. While frozen, only fix rounds and merges.
 - **Priority:** unblock merges; fix rounds; the critical path (V0 now); the foundation; new tasks.
