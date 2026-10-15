@@ -12,6 +12,9 @@ pub const STATUSES: &[&str] = &["yes", "conditions", "external", "NO", "unverifi
 /// never committed). A file with one of these may only list the item, never claim a crate, tool or path.
 const BARRED: &[&str] = &["NO", "unverified", "private-test"];
 
+/// The verdict for a separately installed tool; only a tool may carry it.
+const EXTERNAL: &str = "external";
+
 /// The line in `register.md` that the table of one section replaces: `<!-- licence-table: <section> -->`.
 const MARKER: (&str, &str) = ("<!-- licence-table: ", " -->");
 
@@ -44,7 +47,8 @@ pub struct Entry {
     /// The tools CI installs (a workflow's `tools:` input) this file covers.
     #[serde(default)]
     pub tools: Vec<String>,
-    /// The repository files this file covers; a path ending in `/` covers everything under it.
+    /// The repository files this file covers, each named exactly: a folder (a path ending in `/`) is a problem, so a
+    /// file added later has no claim until someone audits it.
     #[serde(default)]
     pub paths: Vec<String>,
 }
@@ -69,15 +73,26 @@ impl Entry {
                 self.status
             ));
         }
+        if self.status == EXTERNAL && !(self.crates.is_empty() && self.paths.is_empty()) {
+            found.push(
+                "status `external` is for tools installed separately, yet the file claims a crate or a path".to_owned(),
+            );
+        }
+        found.extend(
+            self.paths
+                .iter()
+                .filter(|path| path.ends_with('/'))
+                .map(|path| format!("path `{path}` is a folder; name each file, so a new one needs an audit")),
+        );
         if self.cells().iter().any(|cell| cell.contains(['|', '\n'])) {
             found.push("a field holds `|` or a line break, which would break the table".to_owned());
         }
         found
     }
 
-    /// Whether `path` (relative, `/`-separated) is one of this file's paths or under one of its folders.
+    /// Whether `path` (relative, `/`-separated) is exactly one of this file's paths.
     pub fn covers_path(&self, path: &str) -> bool {
-        self.paths.iter().any(|own| own == path || (own.ends_with('/') && path.starts_with(own.as_str())))
+        self.paths.iter().any(|own| own == path)
     }
 
     fn row(&self) -> String {
@@ -170,11 +185,27 @@ mod tests {
     }
 
     #[test]
-    fn a_folder_path_covers_what_is_under_it() {
+    fn a_path_covers_exactly_its_file_and_a_folder_is_a_problem() {
         let mut e = entry("a", "x", "");
-        e.paths = vec!["fonts/".into(), "logo.png".into()];
-        assert!(e.covers_path("fonts/a.ttf") && e.covers_path("logo.png"));
-        assert!(!e.covers_path("fonts.ttf") && !e.covers_path("logo.png.bak"));
+        e.paths = vec!["fonts/a.ttf".into(), "logo.png".into()];
+        assert!(e.covers_path("fonts/a.ttf") && e.covers_path("logo.png") && e.problems().is_empty());
+        assert!(!e.covers_path("fonts/b.ttf") && !e.covers_path("logo.png.bak"));
+        e.paths = vec!["fonts/".into()];
+        assert!(!e.covers_path("fonts/a.ttf"), "a folder claims nothing");
+        assert_eq!(e.problems().len(), 1, "{:?}", e.problems());
+    }
+
+    #[test]
+    fn external_is_for_tools_only() {
+        let mut e = entry("a", "x", "");
+        e.status = "external".into();
+        e.tools = vec!["git".into()];
+        assert!(e.problems().is_empty(), "{:?}", e.problems());
+        e.crates = vec!["x".into()];
+        assert_eq!(e.problems().len(), 1, "{:?}", e.problems());
+        e.crates.clear();
+        e.paths = vec!["a/b.png".into()];
+        assert_eq!(e.problems().len(), 1, "{:?}", e.problems());
     }
 
     #[test]
@@ -186,7 +217,7 @@ mod tests {
             e.crates = vec!["x".into()];
             assert_eq!(e.problems().len(), 1, "{status}: {:?}", e.problems());
             e.crates.clear();
-            e.paths = vec!["a/".into()];
+            e.paths = vec!["a/b.png".into()];
             assert_eq!(e.problems().len(), 1, "{status}");
         }
     }
